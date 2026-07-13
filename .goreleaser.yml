@@ -1,0 +1,73 @@
+version: 2
+
+project_name: jitpass
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  # Two separate build entries (not a GOARCH list) because CGO_ENABLED=1 is
+  # required (internal/secureenclave, TECH_STACK.md §2.3) and cross-arch CGO
+  # builds need an explicit per-arch C compiler target — plain GOARCH switching
+  # isn't enough once cgo is involved. Both build natively from one arm64
+  # runner using clang's built-in multi-arch support against the macOS SDK's
+  # universal frameworks (Security/Foundation/LocalAuthentication).
+  - id: jit-arm64
+    main: ./cmd/jit
+    binary: jit
+    goos: [darwin]
+    goarch: [arm64]
+    env:
+      - CGO_ENABLED=1
+      - CC=clang -arch arm64
+    ldflags:
+      - -s -w -X github.com/jitpass/jit/internal/cli.version={{.Version}}
+
+  - id: jit-amd64
+    main: ./cmd/jit
+    binary: jit
+    goos: [darwin]
+    goarch: [amd64]
+    env:
+      - CGO_ENABLED=1
+      - CC=clang -arch x86_64
+    ldflags:
+      - -s -w -X github.com/jitpass/jit/internal/cli.version={{.Version}}
+
+# TODO (blocked on a real paid Developer ID Application certificate — see
+# TECH_STACK.md §5 and the deferred item on task #4/#6): code signing via
+# `codesign` and notarization via `xcrun notarytool` need to run here, most
+# commonly as a goreleaser `before`/`after` hook or a dedicated signing step,
+# gated on an APPLE_SIGNING_IDENTITY-style secret that doesn't exist yet.
+# Until then, CI's snapshot job runs with `--skip=sign` deliberately.
+
+archives:
+  - id: jit-archive
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: "checksums.txt"
+
+release:
+  github:
+    owner: jitpass
+    name: jit
+
+# Requires a separate jitpass/homebrew-tap repo (not yet created) and a
+# token with write access to it, supplied via HOMEBREW_TAP_GITHUB_TOKEN in CI.
+# `homebrew_casks`, not the older `brews` — brews is deprecated as of
+# goreleaser v2.10 (it hackily used Formulas to install precompiled binaries;
+# casks are the correct mechanism for that, per goreleaser.com/deprecations#brews).
+homebrew_casks:
+  - name: jitpass
+    repository:
+      owner: jitpass
+      name: homebrew-tap
+    directory: Casks
+    homepage: "https://github.com/jitpass/jit"
+    description: "Local-first developer secret runtime"
+    # Apache-2.0 — homebrew_casks has no `license:` field (unlike
+    # the deprecated `brews`/Formula schema); license lives in LICENSE instead.
