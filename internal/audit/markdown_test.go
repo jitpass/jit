@@ -27,7 +27,7 @@ func TestWriteMarkdownReportNeverLeaksRawValue(t *testing.T) {
 			Evidence:                 "key name matches production-indicator pattern",
 		},
 	}
-	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "host"}}, findings, 0)
+	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "host"}}, findings, 0, 0)
 
 	var buf bytes.Buffer
 	WriteMarkdownReport(&buf, findings, summary)
@@ -61,7 +61,7 @@ func TestWriteMarkdownReportGroupsMultipleFindingsInSameFile(t *testing.T) {
 		{FindingType: FindingTypeMCPEmbeddedSecret, Severity: SeverityHigh, FilePath: "/Users/alex/config.json", KeyName: &keyA, Evidence: "e"},
 		{FindingType: FindingTypeMCPEmbeddedSecret, Severity: SeverityHigh, FilePath: "/Users/alex/config.json", KeyName: &keyB, Evidence: "e"},
 	}
-	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "host"}}, findings, 0)
+	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "host"}}, findings, 0, 0)
 
 	var buf bytes.Buffer
 	WriteMarkdownReport(&buf, findings, summary)
@@ -73,7 +73,7 @@ func TestWriteMarkdownReportGroupsMultipleFindingsInSameFile(t *testing.T) {
 }
 
 func TestWriteMarkdownReportCleanScan(t *testing.T) {
-	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "host"}}, nil, 0)
+	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "host"}}, nil, 0, 0)
 	var buf bytes.Buffer
 	WriteMarkdownReport(&buf, nil, summary)
 	out := buf.String()

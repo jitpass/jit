@@ -172,7 +172,13 @@ func scanNpmrc(cfg Config) ([]Finding, error) {
 	var findings []Finding
 
 	globalPath := filepath.Join(cfg.HomeDir, ".npmrc")
-	if _, statErr := os.Stat(globalPath); statErr == nil {
+	// Lstat + IsRegular, not a bare Stat: `jit migrate home` can turn the
+	// global ~/.npmrc itself into a live template mount, and opening that
+	// FIFO would block the scan with no agent writing (or read decoy
+	// content and report jit's own protection as an exposed credential) —
+	// the same guard walkHomeDir applies to every walked file, needed here
+	// because this is a fixed path checked outside the walk.
+	if info, statErr := os.Lstat(globalPath); statErr == nil && info.Mode().IsRegular() {
 		f, err := scanNpmrcFile(globalPath, cfg)
 		if err != nil {
 			return nil, err

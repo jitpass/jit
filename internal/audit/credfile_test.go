@@ -184,3 +184,26 @@ aws_secret_access_key = examplesecret
 		t.Errorf("FindingType = %q, want %q", findings[0].FindingType, FindingTypeCredentialFile)
 	}
 }
+
+// The global ~/.npmrc is a fixed path checked outside walkHomeDir, so it
+// needs its own regular-file guard: `jit migrate home` can turn it into a
+// live template mount (a named pipe), and opening that for read would hang
+// the scan with no agent writing, or report agent-served decoy content as an
+// exposed credential.
+func TestScanNpmrcSkipsGlobalLiveMountFIFO(t *testing.T) {
+	home := t.TempDir()
+	mkfifo(t, filepath.Join(home, ".npmrc"))
+	mkdirAll(t, filepath.Join(home, "proj"))
+	writeFile(t, filepath.Join(home, "proj", ".npmrc"), "//registry.npmjs.org/:_authToken=npm_abc123def456\n")
+
+	findings, err := scanNpmrc(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("scanNpmrc: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want exactly 1 (the project .npmrc, not the global FIFO)", len(findings))
+	}
+	if findings[0].FilePath != filepath.Join(home, "proj", ".npmrc") {
+		t.Errorf("FilePath = %q, want the project .npmrc", findings[0].FilePath)
+	}
+}

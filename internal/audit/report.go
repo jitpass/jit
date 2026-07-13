@@ -339,7 +339,15 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 		}
 	}
 	fmt.Fprintf(w, "  %s\n", strings.Repeat("─", 35))
-	fmt.Fprintf(w, "  Total: %d finding(s)\n\n", summary.TotalFindings)
+	fmt.Fprintf(w, "  Total: %d finding(s)\n", summary.TotalFindings)
+	// Good news gets a line too: files jit already protects (live mounts,
+	// content served from the encrypted vault) are excluded from the
+	// findings above — say so, or their disappearance from the report reads
+	// as the scanner having missed them.
+	if summary.JitProtectedCount > 0 {
+		_, _ = color.New(color.FgGreen).Fprintf(w, "  Already protected by jit: %d live mount(s) — served from the encrypted vault, no plaintext on disk. Not scanned.\n", summary.JitProtectedCount)
+	}
+	fmt.Fprintln(w)
 
 	if summary.TotalFindings == 0 {
 		fmt.Fprintln(w, "No findings — this machine looks clean.")
