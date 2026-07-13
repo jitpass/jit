@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jitpass/jit/internal/audit"
+	"github.com/jitpass/jit/internal/mount"
 )
 
 var (
@@ -40,6 +41,14 @@ var auditCmd = &cobra.Command{
 		cfg, err := audit.NewConfig(version)
 		if err != nil {
 			return fmt.Errorf("jit audit: %w", err)
+		}
+		// Best-effort: lets the scan report registered live mounts as an
+		// "already protected" count instead of them silently vanishing from
+		// the findings (scanners skip named pipes regardless — see
+		// audit.Config.MountRegistryPath). An unresolvable root just means
+		// no count.
+		if root, rootErr := vaultRootDir(); rootErr == nil {
+			cfg.MountRegistryPath = mount.RegistryPath(root)
 		}
 
 		findings, summary, err := audit.Scan(cfg)

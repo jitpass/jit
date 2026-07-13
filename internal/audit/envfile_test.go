@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func mkdirAll(t *testing.T, path string) {
@@ -242,5 +244,38 @@ func TestScanEnvFilesNoneFound(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("got %d findings on empty home dir, want 0", len(findings))
+	}
+}
+
+// mkfifo plants a named pipe, standing in for a live jit mount's FIFO.
+func mkfifo(t *testing.T, path string) {
+	t.Helper()
+	if err := unix.Mkfifo(path, 0o600); err != nil {
+		t.Fatalf("mkfifo(%q): %v", path, err)
+	}
+}
+
+// A live jit mount is a named pipe at the .env path. Opening it for read
+// would block the whole scan forever when no agent is writing — and when one
+// is, it serves DECOY values, which are protection, not an at-rest exposure.
+// Either way the scanner must skip it by mode. NOTE: a regression here makes
+// this test HANG (blocked open on a writerless pipe), not merely fail.
+func TestScanEnvFilesSkipsLiveMountFIFO(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, "app"))
+	mkfifo(t, filepath.Join(home, "app", ".env"))
+	writeFile(t, filepath.Join(home, "app", ".env.local"), "API_KEY=realvalue123456\n")
+
+	findings, err := ScanEnvFiles(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	for _, f := range findings {
+		if f.FilePath == filepath.Join(home, "app", ".env") {
+			t.Errorf("the live-mount FIFO was scanned and reported: %+v", f)
+		}
+	}
+	if len(findings) != 1 {
+		t.Errorf("got %d findings, want exactly 1 (the regular .env.local, not the FIFO)", len(findings))
 	}
 }

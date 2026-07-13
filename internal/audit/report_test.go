@@ -27,7 +27,7 @@ func TestWriteHumanReportNeverLeaksRawValue(t *testing.T) {
 			Evidence:                 "key name matches production-indicator pattern",
 		},
 	}
-	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "Alexs-MacBook-Pro"}}, findings, 0)
+	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "Alexs-MacBook-Pro"}}, findings, 0, 0)
 
 	var buf bytes.Buffer
 	WriteHumanReport(&buf, findings, summary, "")
@@ -69,7 +69,7 @@ func TestWriteHumanReportShowsKeyName(t *testing.T) {
 			Evidence:     `embedded directly in MCP server "jamf"'s env block`,
 		},
 	}
-	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "host"}}, findings, 0)
+	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "host"}}, findings, 0, 0)
 
 	var buf bytes.Buffer
 	WriteHumanReport(&buf, findings, summary, "")
@@ -91,7 +91,7 @@ func TestWriteHumanReportGroupsMultipleFindingsInSameFile(t *testing.T) {
 		{FindingType: FindingTypeMCPEmbeddedSecret, Severity: SeverityHigh, FilePath: "/Users/alex/config.json", KeyName: &keyA, ValuePreview: &previewA, Evidence: "e"},
 		{FindingType: FindingTypeMCPEmbeddedSecret, Severity: SeverityHigh, FilePath: "/Users/alex/config.json", KeyName: &keyB, ValuePreview: &previewB, Evidence: "e"},
 	}
-	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "host"}}, findings, 0)
+	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "host"}}, findings, 0, 0)
 
 	var buf bytes.Buffer
 	WriteHumanReport(&buf, findings, summary, "")
@@ -126,7 +126,7 @@ func TestWriteHumanReportGroupsMixedSeverityFindingsInSameFile(t *testing.T) {
 		{FindingType: FindingTypeMCPEmbeddedSecret, Severity: SeverityHigh, FilePath: "/Users/alex/other.json", KeyName: &keyOther, Evidence: "other file's finding"},
 		{FindingType: FindingTypeMCPEmbeddedSecret, Severity: SeverityHigh, FilePath: "/Users/alex/config.json", KeyName: &keyHigh, Evidence: "high finding"},
 	}
-	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "host"}}, findings, 0)
+	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "host"}}, findings, 0, 0)
 
 	var buf bytes.Buffer
 	WriteHumanReport(&buf, findings, summary, "")
@@ -150,7 +150,7 @@ func TestWriteHumanReportCollapsesDuplicatePatternAcrossFiles(t *testing.T) {
 		{FindingType: FindingTypeMCPEmbeddedSecret, Severity: SeverityHigh, FilePath: "/Users/alex/b.json", KeyName: &key, ValuePreview: &preview, Evidence: "embedded directly in MCP server \"jamf\"'s env block"},
 		{FindingType: FindingTypeMCPEmbeddedSecret, Severity: SeverityHigh, FilePath: "/Users/alex/a.json", KeyName: &key, ValuePreview: &preview, Evidence: "embedded directly in MCP server \"jamf\"'s env block"},
 	}
-	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "host"}}, findings, 0)
+	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "host"}}, findings, 0, 0)
 
 	var buf bytes.Buffer
 	WriteHumanReport(&buf, findings, summary, "")
@@ -178,7 +178,7 @@ func TestWriteHumanReportDoesNotCollapseDifferentValuesSameKey(t *testing.T) {
 		{FindingType: FindingTypeMCPEmbeddedSecret, Severity: SeverityHigh, FilePath: "/Users/alex/a.json", KeyName: &key, ValuePreview: &previewA, Evidence: "e"},
 		{FindingType: FindingTypeMCPEmbeddedSecret, Severity: SeverityHigh, FilePath: "/Users/alex/b.json", KeyName: &key, ValuePreview: &previewB, Evidence: "e"},
 	}
-	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "host"}}, findings, 0)
+	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "host"}}, findings, 0, 0)
 
 	var buf bytes.Buffer
 	WriteHumanReport(&buf, findings, summary, "")
@@ -205,7 +205,7 @@ func TestWriteHumanReportDoesNotCollapseUnrelatedIACFiles(t *testing.T) {
 		{FindingType: FindingTypeIACVariableFile, Severity: SeverityInfo, FilePath: "/Users/alex/project-a/secrets.yaml", Evidence: "infrastructure-as-code variable file — detection only, no automated fix yet"},
 		{FindingType: FindingTypeIACVariableFile, Severity: SeverityInfo, FilePath: "/Users/alex/unrelated-repo/Secret.yaml", Evidence: "infrastructure-as-code variable file — detection only, no automated fix yet"},
 	}
-	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "host"}}, findings, 0)
+	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "host"}}, findings, 0, 0)
 
 	var buf bytes.Buffer
 	WriteHumanReport(&buf, findings, summary, "")
@@ -220,7 +220,7 @@ func TestWriteHumanReportDoesNotCollapseUnrelatedIACFiles(t *testing.T) {
 }
 
 func TestWriteHumanReportCleanScan(t *testing.T) {
-	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "host"}}, nil, 0)
+	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "host"}}, nil, 0, 0)
 	var buf bytes.Buffer
 	WriteHumanReport(&buf, nil, summary, "")
 	out := buf.String()
@@ -233,7 +233,7 @@ func TestWriteHumanReportCleanScan(t *testing.T) {
 }
 
 func TestWriteHumanReportAllCategoriesAlwaysListed(t *testing.T) {
-	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "a", Hostname: "h"}}, nil, 0)
+	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "a", Hostname: "h"}}, nil, 0, 0)
 	var buf bytes.Buffer
 	WriteHumanReport(&buf, nil, summary, "")
 	out := buf.String()
@@ -260,7 +260,7 @@ func TestWriteHumanReportShortensHomePaths(t *testing.T) {
 			Evidence:    "plaintext .env file",
 		},
 	}
-	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "host"}}, findings, 0)
+	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "host"}}, findings, 0, 0)
 	var buf bytes.Buffer
 	WriteHumanReport(&buf, findings, summary, "/Users/alex")
 	out := buf.String()
@@ -285,6 +285,30 @@ func TestShortenHome(t *testing.T) {
 	for _, c := range cases {
 		if got := ShortenHome(c.home, c.path); got != c.want {
 			t.Errorf("ShortenHome(%q, %q) = %q, want %q", c.home, c.path, got, c.want)
+		}
+	}
+}
+
+func TestReportsShowProtectedCountOnlyWhenNonZero(t *testing.T) {
+	base := ScanSummary{RiskLevel: RiskLevelClean, FindingsByCategory: map[string]int{}}
+
+	withCount := base
+	withCount.JitProtectedCount = 3
+	var human, md bytes.Buffer
+	WriteHumanReport(&human, nil, withCount, "")
+	WriteMarkdownReport(&md, nil, withCount)
+	for name, out := range map[string]string{"human": human.String(), "markdown": md.String()} {
+		if !strings.Contains(out, "Already protected by jit: 3") {
+			t.Errorf("%s report missing the protected-by-jit line:\n%s", name, out)
+		}
+	}
+
+	var humanZero, mdZero bytes.Buffer
+	WriteHumanReport(&humanZero, nil, base, "")
+	WriteMarkdownReport(&mdZero, nil, base)
+	for name, out := range map[string]string{"human": humanZero.String(), "markdown": mdZero.String()} {
+		if strings.Contains(out, "Already protected") {
+			t.Errorf("%s report shows a protected line at zero count:\n%s", name, out)
 		}
 	}
 }

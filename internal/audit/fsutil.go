@@ -80,7 +80,17 @@ func walkHomeDir(root string, fn func(path string, d fs.DirEntry) error) error {
 			}
 			return nil
 		}
-		if d.Type()&fs.ModeSymlink != 0 {
+		// Only regular files are passed to scanners: a symlink is skipped to
+		// avoid loops and silent scope expansion, and anything else
+		// non-regular (a named pipe, socket, device) has no at-rest content
+		// for an exposure scanner to report. The named-pipe case is the one
+		// that bit for real: a live jit mount's FIFO, opened for read, either
+		// blocks the whole scan forever (no agent running, so no writer) or
+		// returns the agent-served DECOY content — which the .env scanner
+		// then reported as a real plaintext secret, flagging exactly the
+		// files jit already protects. Scan reports registered live mounts as
+		// a separate protected count so this skip is visible, never silent.
+		if !d.Type().IsRegular() {
 			return nil
 		}
 		return fn(path, d)

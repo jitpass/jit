@@ -3,7 +3,12 @@
 
 package audit
 
-import "time"
+import (
+	"os"
+	"time"
+
+	"github.com/jitpass/jit/internal/mount"
+)
 
 // categoryScanners lists every RFC.md §4 category scanner, in the same
 // order as AllFindingTypes. Scan runs them in this fixed order so output
@@ -33,10 +38,37 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 		all = append(all, findings...)
 	}
 
-	return all, buildScanSummary(cfg, all, time.Since(start)), nil
+	return all, buildScanSummary(cfg, all, countProtectedMounts(cfg.MountRegistryPath), time.Since(start)), nil
 }
 
-func buildScanSummary(cfg Config, findings []Finding, duration time.Duration) ScanSummary {
+// countProtectedMounts returns how many of the mount registry's entries are
+// currently live (a named pipe occupies the registered path). Purely
+// informational — walkHomeDir's regular-file guard is what actually keeps
+// scanners away from pipes, registry or no registry — so any failure here
+// (no registry, unreadable, malformed) is a 0, never an error: this
+// package's read-only scan must not fail because jit's own bookkeeping is
+// absent or damaged. A registered path that is a regular file again (e.g.
+// someone replaced the pipe by hand) is deliberately NOT counted: whatever
+// is in that file now is plaintext at rest, and the scanners will judge it
+// like any other file.
+func countProtectedMounts(registryPath string) int {
+	if registryPath == "" {
+		return 0
+	}
+	entries, err := mount.LoadRegistry(registryPath)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, e := range entries {
+		if info, statErr := os.Lstat(e.MountPath); statErr == nil && info.Mode()&os.ModeNamedPipe != 0 {
+			n++
+		}
+	}
+	return n
+}
+
+func buildScanSummary(cfg Config, findings []Finding, protectedMounts int, duration time.Duration) ScanSummary {
 	byCategory := map[string]int{}
 	for _, ft := range AllFindingTypes {
 		byCategory[ft] = 0 // RFC.md §4: "all seven keys always present"
@@ -69,6 +101,7 @@ func buildScanSummary(cfg Config, findings []Finding, duration time.Duration) Sc
 		ProductionIndicatorCount: prodCount,
 		PublicIPCount:            ipCount,
 		ScanDurationMs:           duration.Milliseconds(),
+		JitProtectedCount:        protectedMounts,
 	}
 }
 

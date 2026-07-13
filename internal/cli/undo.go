@@ -119,6 +119,16 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(out, "  • %s (backed up %s ago)%s\n", displayPath(home, rec.OriginalPath), humanAgo(time.Since(time.Unix(rec.UnixTS, 0))), note)
 	}
 	fmt.Fprintln(out)
+	// Path scoping is easy to miss from --help alone — a real user asked
+	// for "project-specific undo" while the path argument already did
+	// exactly that. Say it at the moment it matters: a no-arg run about to
+	// restore more than one file. Same section-scoped-hint pattern as
+	// printMigratePlan's --only suggestion (yellow: actionable, not a
+	// passive "why" label).
+	if len(args) == 0 && len(latest) > 1 {
+		_, _ = color.New(color.FgYellow).Fprintln(out, "This restores EVERY file listed above. To undo just one project or file, pass its path: `jit migrate undo <path>` (a directory restores only what's under it).")
+		fmt.Fprintln(out)
+	}
 	warn := color.New(color.FgYellow)
 	_, _ = warn.Fprintln(out, "Each file is restored EXACTLY as backed up — edits made since are replaced")
 	_, _ = warn.Fprintln(out, "(the replaced content is snapshotted into the vault first, so this is itself")

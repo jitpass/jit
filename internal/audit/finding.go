@@ -15,7 +15,8 @@ import (
 
 // SchemaVersion is the NDJSON record schema version (RFC.md §4) — versioned
 // independently from ScannerVersion, which tracks the jit binary itself.
-const SchemaVersion = "0.1.0"
+// 0.2.0 added scan_summary's jit_protected_count (additive, so a minor bump).
+const SchemaVersion = "0.2.0"
 
 // ScannerName identifies this tool in the shared NDJSON envelope, matching
 // bumblebee's record shape so a receiver can co-ingest both (RFC.md §4).
@@ -158,6 +159,13 @@ type ScanSummary struct {
 	ProductionIndicatorCount int            `json:"production_indicator_count"`
 	PublicIPCount            int            `json:"public_ip_count"`
 	ScanDurationMs           int64          `json:"scan_duration_ms"`
+	// JitProtectedCount is how many registered jit live mounts (FIFOs
+	// currently occupying a path jit migrated) exist on this machine.
+	// Scanners never read those paths — a pipe has no at-rest content, and
+	// what the agent serves through it is decoy values, not an exposure —
+	// so this count is what keeps the skip visible instead of silent: the
+	// files ARE there, they're just already protected.
+	JitProtectedCount int `json:"jit_protected_count"`
 }
 
 // Config carries per-run context shared by every category scanner: where to
@@ -168,6 +176,13 @@ type Config struct {
 	RunID          string
 	ScannerVersion string
 	Endpoint       Endpoint
+	// MountRegistryPath is jit's own mounts.yaml (read-only here, like
+	// everything else this package touches) — used ONLY to count currently
+	// live mounts for ScanSummary.JitProtectedCount, never to decide what
+	// gets scanned (that's walkHomeDir's regular-file guard, which needs no
+	// registry: a named pipe has no at-rest content whether jit made it or
+	// not). Empty (the default in tests) means no count is reported.
+	MountRegistryPath string
 }
 
 // NewConfig builds a Config for a real run against the actual machine.

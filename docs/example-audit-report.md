@@ -23,6 +23,7 @@ scan time: 2026-07-06T09:14:22.000Z          duration: 340ms
   Suspicious Filenames   1 finding(s)
   ───────────────────────────────────
   Total: 18 finding(s)
+  Already protected by jit: 2 live mount(s) — served from the encrypted vault, no plaintext on disk. Not scanned.
 
 [Shell Configs]
   /Users/alex/.zshrc

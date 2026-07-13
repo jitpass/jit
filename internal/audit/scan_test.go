@@ -6,6 +6,8 @@ package audit
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/jitpass/jit/internal/mount"
 )
 
 func findingOfType(ft string) Finding {
@@ -136,5 +138,63 @@ func TestScanCleanHomeDir(t *testing.T) {
 	}
 	if summary.TotalFindings != 0 {
 		t.Errorf("TotalFindings = %d, want 0", summary.TotalFindings)
+	}
+}
+
+// The protected count reports registered mounts whose path is currently a
+// live pipe — and ONLY those: a registered path that is a regular file again
+// holds plaintext at rest (scanners judge it normally), and a path that's
+// gone protects nothing.
+func TestScanCountsProtectedLiveMounts(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, "app"))
+	fifoPath := filepath.Join(home, "app", ".env")
+	mkfifo(t, fifoPath)
+	regularPath := filepath.Join(home, "app", ".env.local")
+	writeFile(t, regularPath, "API_KEY=stillplaintext123\n")
+
+	registryPath := filepath.Join(t.TempDir(), "mounts.yaml")
+	for _, p := range []string{fifoPath, regularPath, filepath.Join(home, "gone", ".env")} {
+		if err := mount.AddMount(registryPath, mount.Entry{MountPath: p, ProfilePath: "/unused/profile.yaml"}); err != nil {
+			t.Fatalf("AddMount(%q): %v", p, err)
+		}
+	}
+
+	findings, summary, err := Scan(Config{
+		HomeDir:           home,
+		RunID:             "test-run-id",
+		ScannerVersion:    "test",
+		MountRegistryPath: registryPath,
+	})
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if summary.JitProtectedCount != 1 {
+		t.Errorf("JitProtectedCount = %d, want 1 (only the live FIFO counts)", summary.JitProtectedCount)
+	}
+	// The still-plaintext registered file must remain a normal finding.
+	found := false
+	for _, f := range findings {
+		if f.FilePath == regularPath {
+			found = true
+		}
+		if f.FilePath == fifoPath {
+			t.Errorf("the live-mount FIFO produced a finding: %+v", f)
+		}
+	}
+	if !found {
+		t.Errorf("registered-but-regular %s produced no finding — plaintext at rest must still be reported", regularPath)
+	}
+}
+
+// No registry path (the default for every test Config) and a missing
+// registry file both mean a plain zero — a read-only scan must never fail
+// because jit's own bookkeeping is absent.
+func TestCountProtectedMountsBestEffort(t *testing.T) {
+	if got := countProtectedMounts(""); got != 0 {
+		t.Errorf("countProtectedMounts(\"\") = %d, want 0", got)
+	}
+	if got := countProtectedMounts(filepath.Join(t.TempDir(), "missing.yaml")); got != 0 {
+		t.Errorf("countProtectedMounts(missing) = %d, want 0", got)
 	}
 }

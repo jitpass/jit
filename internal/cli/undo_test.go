@@ -36,9 +36,9 @@ func execMigrateUndo(t *testing.T, args ...string) (stdout string, err error) {
 }
 
 // plantBackupRecord writes a backups.yaml under the fixture home's vault
-// root recording originalPath — enough for undo's pre-confirmation phase
-// (plan + prompt), which never needs the vault itself.
-func plantBackupRecord(t *testing.T, originalPath string) {
+// root recording each originalPath — enough for undo's pre-confirmation
+// phase (plan + prompt), which never needs the vault itself.
+func plantBackupRecord(t *testing.T, originalPaths ...string) {
 	t.Helper()
 	root, err := vaultRootDir()
 	if err != nil {
@@ -47,10 +47,12 @@ func plantBackupRecord(t *testing.T, originalPath string) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatalf("mkdir vault root: %v", err)
 	}
-	content := "backups:\n" +
-		"    - original_path: " + originalPath + "\n" +
-		"      vault_path: _backups/fixture.jit-bak-1\n" +
-		"      unix_ts: " + timestampFixture() + "\n"
+	content := "backups:\n"
+	for i, originalPath := range originalPaths {
+		content += "    - original_path: " + originalPath + "\n" +
+			fmt.Sprintf("      vault_path: _backups/fixture.jit-bak-%d\n", i+1) +
+			"      unix_ts: " + timestampFixture() + "\n"
+	}
 	if err := os.WriteFile(migrate.BackupIndexPath(root), []byte(content), 0o600); err != nil {
 		t.Fatalf("writing fixture backups.yaml: %v", err)
 	}
@@ -285,5 +287,48 @@ func TestHumanAgo(t *testing.T) {
 		if got := humanAgo(c.d); got != c.want {
 			t.Errorf("humanAgo(%v) = %q, want %q", c.d, got, c.want)
 		}
+	}
+}
+
+// A no-arg undo about to restore more than one file must surface the path
+// scoping it already supports — a real user asked for "project-specific
+// undo" without discovering the path argument from --help. A scoped run (or
+// a single-file one) must NOT show the hint: it's answering a question that
+// run already answered.
+func TestMigrateUndoNoArgHintsPathScoping(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+
+	pathA := filepath.Join(home, "proj-a", ".env")
+	pathB := filepath.Join(home, "proj-b", ".env")
+	for _, p := range []string{pathA, pathB} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(p, []byte("KEY=value\n"), 0o600); err != nil {
+			t.Fatalf("writing %s: %v", p, err)
+		}
+	}
+	plantBackupRecord(t, pathA, pathB)
+
+	const hint = "jit migrate undo <path>"
+
+	out, err := execMigrateUndo(t, "--dry-run")
+	if err != nil {
+		t.Fatalf("migrate undo --dry-run: %v", err)
+	}
+	if !strings.Contains(out, hint) {
+		t.Errorf("no-arg multi-file plan should hint at path scoping, got:\n%s", out)
+	}
+
+	scoped, err := execMigrateUndo(t, "--dry-run", filepath.Join(home, "proj-a"))
+	if err != nil {
+		t.Fatalf("migrate undo --dry-run proj-a: %v", err)
+	}
+	if strings.Contains(scoped, hint) {
+		t.Errorf("a path-scoped run should not repeat the scoping hint, got:\n%s", scoped)
+	}
+	if !strings.Contains(scoped, displayPath(home, pathA)) || strings.Contains(scoped, displayPath(home, pathB)) {
+		t.Errorf("scoping to proj-a should list only proj-a's file, got:\n%s", scoped)
 	}
 }

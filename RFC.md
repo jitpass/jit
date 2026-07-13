@@ -175,6 +175,8 @@ Four mechanisms follow, tiered by preference — each trades off footprint, comp
 
 **Redaction is not optional.** Matching bumblebee's own posture on MCP `env` blocks ("parses configs for inventory but does not emit those values"), `jit audit` never prints or emits a real secret value — only file path, key name, category, risk level, and a masked preview (`sk_test_5**********`). A value that's already masked in the scanned file (e.g. `****`) is not re-flagged as a prod/IP match, matching the source script's behavior of skipping already-masked values for both detections.
 
+**Files jit already protects are excluded from findings — visibly, never silently.** Scanners only ever read regular files: a live mount's named pipe has no at-rest content to report (and what the agent serves through it is decoy values, i.e. the protection working, not an exposure — reading it back as a finding was a real false positive on every mounted `.env`). Registered live mounts are instead counted into the summary's `jit_protected_count` and reported as an "already protected by jit" line, so a migrated file's disappearance from the findings list reads as the success it is rather than a scanner miss.
+
 ```bash
 # Human-readable terminal report (default): color-coded risk banner, per-category
 # counts, and exact file:line locations — no secret values printed, nothing on
@@ -214,7 +216,7 @@ Two record types, emitted one per line; a run ends with exactly one `scan_summar
 |---|---|---|
 | `record_type` | string | `"finding"` \| `"scan_summary"` |
 | `record_id` | string \| null | Content-addressed hash of `(finding_type, file_path, key_name)`. Stable across runs, so re-scans dedupe cleanly. `null` on `scan_summary` — `run_id` is already unique per run. |
-| `schema_version` | string | `"0.1.0"` — versioned independently from bumblebee's schema, same style. |
+| `schema_version` | string | `"0.2.0"` — versioned independently from bumblebee's schema, same style. 0.2.0 added `scan_summary`'s `jit_protected_count` (additive). |
 | `scanner_name` | string | `"jit"` |
 | `scanner_version` | string | e.g. `"v0.1.0"` |
 | `run_id` | string | Random per-invocation ID; every record from one `jit audit` run shares it. |
@@ -247,6 +249,7 @@ Two record types, emitted one per line; a run ends with exactly one `scan_summar
 | `production_indicator_count` | int | |
 | `public_ip_count` | int | |
 | `scan_duration_ms` | int | |
+| `jit_protected_count` | int | Registered jit live mounts currently occupying their path as a named pipe — files excluded from scanning because they're already protected (content served from the encrypted vault, no plaintext at rest). Added in schema 0.2.0. |
 
 <details>
 <summary>Example: a shell-config finding escalated to critical by a production-indicator match</summary>
@@ -255,7 +258,7 @@ Two record types, emitted one per line; a run ends with exactly one `scan_summar
 {
   "record_type": "finding",
   "record_id": "finding:8f2c1a9b3d4e5f60",
-  "schema_version": "0.1.0",
+  "schema_version": "0.2.0",
   "scanner_name": "jit",
   "scanner_version": "v0.1.0",
   "run_id": "b6d4a1e2c3f4a5b6c7d8e9f0a1b2c3d4",
@@ -291,7 +294,7 @@ Two record types, emitted one per line; a run ends with exactly one `scan_summar
 {
   "record_type": "finding",
   "record_id": "finding:9c8b7a6f5e4d3c2b",
-  "schema_version": "0.1.0",
+  "schema_version": "0.2.0",
   "scanner_name": "jit",
   "scanner_version": "v0.1.0",
   "run_id": "b6d4a1e2c3f4a5b6c7d8e9f0a1b2c3d4",
@@ -327,7 +330,7 @@ Two record types, emitted one per line; a run ends with exactly one `scan_summar
 {
   "record_type": "scan_summary",
   "record_id": null,
-  "schema_version": "0.1.0",
+  "schema_version": "0.2.0",
   "scanner_name": "jit",
   "scanner_version": "v0.1.0",
   "run_id": "b6d4a1e2c3f4a5b6c7d8e9f0a1b2c3d4",
@@ -353,7 +356,8 @@ Two record types, emitted one per line; a run ends with exactly one `scan_summar
   "risk_level": "critical",
   "production_indicator_count": 1,
   "public_ip_count": 0,
-  "scan_duration_ms": 842
+  "scan_duration_ms": 842,
+  "jit_protected_count": 2
 }
 ```
 
