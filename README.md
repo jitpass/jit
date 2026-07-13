@@ -51,37 +51,14 @@ go install ./cmd/jit
 
 ### Shell completion
 
-`jit <TAB>` completes subcommands, flags, and their descriptions.
-
-**zsh** (macOS default):
+`jit <TAB>` completes subcommands, flags, and their descriptions:
 
 ```sh
-echo 'source <(jit completion zsh)' >> ~/.zshrc
-exec zsh
+echo 'source <(jit completion zsh)' >> ~/.zshrc && exec zsh
 ```
 
-If you use oh-my-zsh/prezto, that's all. On a *plain* zsh setup, completions
-need zsh's completion system initialized first. Add this line **before** the
-one above if `jit <TAB>` still completes filenames:
-
-```sh
-echo 'autoload -Uz compinit && compinit' >> ~/.zshrc
-```
-
-**bash** (requires the `bash-completion` package):
-
-```sh
-echo 'source <(jit completion bash)' >> ~/.bashrc
-```
-
-**fish**:
-
-```sh
-jit completion fish > ~/.config/fish/completions/jit.fish
-```
-
-`jit completion <shell> --help` has per-shell details, including system-wide
-install locations.
+bash and fish instructions, plus the fix if your zsh setup hasn't run
+`compinit`, are in **[docs/USAGE.md](./docs/USAGE.md#shell-completion)**.
 
 ## Quickstart
 
@@ -99,21 +76,33 @@ backed up (encrypted, into the vault) before it's touched, and
 `jit migrate undo` restores any of them byte-for-byte. The full command
 walkthrough lives in **[docs/USAGE.md](./docs/USAGE.md)**.
 
-## How it works, in one paragraph
+## What it covers
+
+Each credential flows back to its consumer through that tool's own native
+mechanism, so everything keeps working:
+
+| Where the secret lives | Example | How it keeps working after `jit migrate` |
+| --- | --- | --- |
+| `.env` files | `DATABASE_URL=...` in a project `.env` | Live-mounted file: decoy values by default, real ones during a short revealed window |
+| Shell config exports | `export STRIPE_KEY=...` in `~/.zshrc` | An `eval "$(jit export ...)"` line in the config |
+| MCP server configs | project `mcp.json`, Claude Desktop config | The server command wrapped in `jit run` |
+| AWS credentials | `~/.aws/credentials` | `credential_process` in `~/.aws/config`: the CLI and SDKs fetch on demand, no file at all |
+| kubeconfig | client keys/tokens in `~/.kube/config` | A kubectl `exec` credential plugin |
+| Terraform Cloud token | `~/.terraform.d/credentials.tfrc.json` | A `credentials_helper`; `terraform login`/`logout` keep working |
+| `.npmrc` auth tokens | project or global `.npmrc` | Live-mounted from a template; non-secret settings untouched |
+
+GCP application-default credentials aren't covered yet (GAPS.md #16).
+
+## How it works
 
 Secrets live as individually encrypted files in a local vault, gated by a
-Touch ID/passcode challenge and unlocked through a launchd agent so you
-authenticate once per session, not once per command (the commands that write
-secrets back to disk always re-prompt, by design: `jit unmount`,
-`jit migrate undo`, `jit vault export`). Each credential then
-flows back to its consumer through that tool's own native mechanism:
-`credential_process` for the AWS CLI/SDK, an exec plugin for kubectl, a
-credentials helper for Terraform (`terraform login/logout` keep working), a
-`jit run` wrapper for MCP servers, an `eval` line for shell configs, and for
-`.env`/`.npmrc` a live-mounted file that serves **decoy values by default**
-and real ones only during a short revealed window (wired automatically into your
-`.envrc` or npm `dev`/`start` scripts, so the common case needs no manual
-step). `jit agent status` shows who read what, and when.
+Touch ID/passcode challenge and unlocked through a launchd agent, so you
+authenticate once per session, not once per command. The commands that put
+secrets back on disk (`jit unmount`, `jit migrate undo`, `jit vault export`)
+always re-prompt, by design. For the live-mounted files, the reveal step is
+wired automatically into your `.envrc` or npm `dev`/`start` scripts, so the
+common case needs no manual step. `jit agent status` shows who read what,
+and when.
 
 ## What the security model is (and isn't)
 
