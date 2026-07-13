@@ -160,10 +160,6 @@ Contributions are welcome: sign-off via DCO
 - **[TECH_STACK.md](./TECH_STACK.md)**: implementation choices and why
 - **[docs/example-audit-report.md](./docs/example-audit-report.md)**: what `jit audit` output looks like (synthetic mockup)
 
-## License & security
+## License
 
-The `jit` CLI is **[Apache-2.0](./LICENSE)**: fully open source, free to use
-and build on. It's licensed permissively rather than source-available because
-the CLI has no hosted component to wall off; any future team/collaboration
-features would be a separate layer, not a restriction on anything here.
-Vulnerability reports: **[SECURITY.md](./SECURITY.md)**.
+Apache License 2.0. See [LICENSE](./LICENSE).
