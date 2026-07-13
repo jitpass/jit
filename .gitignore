@@ -1,0 +1,54 @@
+# If you prefer the allow list template instead of the deny list, see community template:
+# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
+#
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Code coverage profiles and other test artifacts
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# Go workspace file
+go.work
+go.work.sum
+
+# env file
+.env
+
+# Editor/IDE
+# .idea/
+# .vscode/
+
+# macOS Finder metadata
+.DS_Store
+
+# Local Claude Code tooling config — not project source, machine/session-specific
+.claude/
+
+# Spike binaries and throwaway run output (source + FINDINGS.md are kept, compiled
+# artifacts and logs are not) — matches the extensionless Mach-O binaries each
+# spike/*/main.go builds to.
+spike/*/*-spike
+spike/*/*.log
+dist/
+
+# The jit binary itself, if built at the repo root (`go build -o jit ./cmd/jit`)
+/jit
+
+# Manual `jit audit` output written to the repo root during ad hoc testing
+/report.md
+
+# Stale pre-rename build artifact
+/zenv
