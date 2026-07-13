@@ -324,6 +324,40 @@ Restored 5 secret(s) from /Users/alex/backup.json.
 
 There's no way to recover a forgotten passphrase — jit never stores it anywhere, on purpose.
 
+## Shell completion
+
+`jit <TAB>` completes subcommands, flags, and their descriptions.
+
+**zsh** (macOS default):
+
+```sh
+echo 'source <(jit completion zsh)' >> ~/.zshrc
+exec zsh
+```
+
+If you use oh-my-zsh/prezto, that's all. On a *plain* zsh setup, completions
+need zsh's completion system initialized first. Add this line **before** the
+one above if `jit <TAB>` still completes filenames:
+
+```sh
+echo 'autoload -Uz compinit && compinit' >> ~/.zshrc
+```
+
+**bash** (requires the `bash-completion` package):
+
+```sh
+echo 'source <(jit completion bash)' >> ~/.bashrc
+```
+
+**fish**:
+
+```sh
+jit completion fish > ~/.config/fish/completions/jit.fish
+```
+
+`jit completion <shell> --help` has per-shell details, including system-wide
+install locations.
+
 ---
 
 ## Command reference
