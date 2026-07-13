@@ -49,6 +49,27 @@ go install ./cmd/jit
 > dialog per rebuild ("jit wants to use your confidential information…").
 > That's expected, not a bug. A stably-signed release build asks once, ever.
 
+## Upgrade
+
+New versions are announced on the
+[Releases page](https://github.com/jitpass/jit/releases). Upgrading is two
+steps, not one:
+
+```sh
+go install github.com/jitpass/jit/cmd/jit@v0.4.0   # 1. reinstall the binary (pin the new tag)
+jit agent install                                  # 2. restart the background agent on it
+```
+
+Pin the tag rather than `@latest` right after a release: the Go module proxy
+caches `@latest`, so it can quietly hand you the previous version for a while.
+
+The second step is the one people skip. If you installed the background agent,
+launchd keeps the old process (and the old binary) running right through your
+reinstall; every command that talks to it still gets last version's behavior,
+which reads as "I upgraded but nothing changed." `jit status` and
+`jit agent status` warn with "different build" until you restart it. If you
+never ran `jit agent install`, step 1 alone is the whole upgrade.
+
 ### Shell completion
 
 `jit <TAB>` completes subcommands, flags, and their descriptions:
