@@ -146,6 +146,59 @@ func seedFixtureVault(t *testing.T, path string) string {
 	return root
 }
 
+// TestVaultPathCompletionListsSecretsWithoutAuth drives cobra's
+// __complete machinery for `jit vault get <TAB>` end to end: stored
+// secret paths come back as candidates, _backups/ bookkeeping doesn't,
+// the toComplete prefix filters, and the whole thing runs with no
+// KeyWrapper anywhere in reach — completion must never be the thing
+// that pops a Touch ID prompt.
+func TestVaultPathCompletionListsSecretsWithoutAuth(t *testing.T) {
+	withFixtureHome(t)
+	seedFixtureVault(t, "stripe/dev-key")
+	root := seedFixtureVault(t, "aws/s3-access-key")
+	v := &vault.Vault{Root: root, KeyWrapper: newFakeKeyWrapper(), RecipientID: "test-device"}
+	if err := v.Set("_backups/a/.env.jit-bak-1", []byte("backup-bytes")); err != nil {
+		t.Fatalf("seeding backup: %v", err)
+	}
+
+	complete := func(args ...string) string {
+		t.Helper()
+		var buf bytes.Buffer
+		rootCmd.SetOut(&buf)
+		rootCmd.SetErr(&buf)
+		rootCmd.SetArgs(append([]string{cobra.ShellCompRequestCmd}, args...))
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("__complete %v: %v", args, err)
+		}
+		return buf.String()
+	}
+
+	out := complete("vault", "get", "")
+	for _, want := range []string{"aws/s3-access-key", "stripe/dev-key"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q among completions, got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "_backups/") {
+		t.Errorf("expected _backups/ entries hidden from completion, got:\n%s", out)
+	}
+
+	out = complete("vault", "set", "stripe/")
+	if strings.Contains(out, "aws/s3-access-key") {
+		t.Errorf("expected the stripe/ prefix to filter out aws paths, got:\n%s", out)
+	}
+	if !strings.Contains(out, "stripe/dev-key") {
+		t.Errorf("expected stripe/dev-key for the stripe/ prefix, got:\n%s", out)
+	}
+
+	// Past the path argument (set's [value]) nothing should be offered,
+	// including the shell's default file-name fallback.
+	out = complete("vault", "set", "stripe/dev-key", "")
+	if strings.Contains(out, "aws/") || strings.Contains(out, "stripe/") {
+		t.Errorf("expected no path candidates for set's value argument, got:\n%s", out)
+	}
+}
+
 // TestVaultPruneKeepsNewestBackupPerFile (issue #5): migrate→undo cycles
 // accumulate _backups/ entries unboundedly; prune must delete every stale
 // one while keeping exactly the newest per file — the record `jit migrate

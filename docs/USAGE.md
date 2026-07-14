@@ -456,7 +456,11 @@ it, on purpose. Restore with `jit vault import ~/backup.json`.
 
 ## Shell completion
 
-`jit <TAB>` completes subcommands, flags, and their descriptions.
+`jit <TAB>` completes subcommands, flags, and their descriptions. With
+completion installed, `jit vault get <TAB>` (and `set`/`rm`) also completes
+the secret paths currently stored in your vault — names only, read straight
+from the vault's file listing, so it never decrypts anything and never
+triggers a Touch ID prompt mid-keystroke.
 
 **zsh** (macOS default):
 
