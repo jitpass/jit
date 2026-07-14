@@ -125,12 +125,12 @@ func TestRevealWindowNaturalExpiryEndToEnd(t *testing.T) {
 		t.Errorf("after reveal expiry, mount = %q, want decoy content", got)
 	}
 
-	_, _, mountStatuses, _, err := client.Status()
+	st, err := client.Status()
 	if err != nil {
 		t.Fatalf("Client.Status: %v", err)
 	}
 	found := false
-	for _, ms := range mountStatuses {
+	for _, ms := range st.Mounts {
 		if ms.Path != mountPath {
 			continue
 		}
@@ -145,7 +145,7 @@ func TestRevealWindowNaturalExpiryEndToEnd(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("Client.Status didn't include %s at all, got %+v", mountPath, mountStatuses)
+		t.Fatalf("Client.Status didn't include %s at all, got %+v", mountPath, st.Mounts)
 	}
 }
 
@@ -175,11 +175,11 @@ func TestRevealRefusedWhenNothingRealToServe(t *testing.T) {
 	}
 
 	// The refusal must leave the mount hidden — no countdown in status.
-	_, _, mountStatuses, _, statusErr := client.Status()
+	st, statusErr := client.Status()
 	if statusErr != nil {
 		t.Fatalf("Client.Status: %v", statusErr)
 	}
-	for _, ms := range mountStatuses {
+	for _, ms := range st.Mounts {
 		if ms.Path == mountPath && ms.Revealed {
 			t.Errorf("status reports the mount revealed (%ds remaining) after a refused reveal", ms.RevealedForSeconds)
 		}

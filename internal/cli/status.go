@@ -189,13 +189,13 @@ func gatherAgentStatus(root string) (statusAgent, error) {
 	if !client.Reachable() {
 		return statusAgent{}, nil
 	}
-	unlocked, remaining, mounts, build, err := client.Status()
+	st, err := client.Status()
 	if err != nil {
 		return statusAgent{}, err
 	}
-	result := statusAgent{Running: true, Unlocked: unlocked, Mounts: mounts, Build: build}
-	if unlocked {
-		result.LocksInSeconds = int64(remaining.Round(time.Second).Seconds())
+	result := statusAgent{Running: true, Unlocked: st.Unlocked, Mounts: st.Mounts, Build: st.Build}
+	if st.Unlocked {
+		result.LocksInSeconds = int64(st.Remaining.Round(time.Second).Seconds())
 	}
 	return result, nil
 }
