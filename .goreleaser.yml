@@ -7,12 +7,11 @@ before:
     - go mod tidy
 
 builds:
-  # Two separate build entries (not a GOARCH list) because CGO_ENABLED=1 is
-  # required (internal/secureenclave, TECH_STACK.md §2.3) and cross-arch CGO
-  # builds need an explicit per-arch C compiler target — plain GOARCH switching
-  # isn't enough once cgo is involved. Both build natively from one arm64
-  # runner using clang's built-in multi-arch support against the macOS SDK's
-  # universal frameworks (Security/Foundation/LocalAuthentication).
+  # Apple Silicon only, on purpose: we have no Intel hardware to test a
+  # darwin/amd64 build on, and an untested binary of a security tool
+  # shouldn't be published. Intel Macs still work via `go install` (source
+  # builds on any Mac). CGO_ENABLED=1 is required (internal/secureenclave,
+  # TECH_STACK.md §2.3), which is also why CI/releases run on macOS runners.
   - id: jit-arm64
     main: ./cmd/jit
     binary: jit
@@ -21,17 +20,6 @@ builds:
     env:
       - CGO_ENABLED=1
       - CC=clang -arch arm64
-    ldflags:
-      - -s -w -X github.com/jitpass/jit/internal/cli.version={{.Version}}
-
-  - id: jit-amd64
-    main: ./cmd/jit
-    binary: jit
-    goos: [darwin]
-    goarch: [amd64]
-    env:
-      - CGO_ENABLED=1
-      - CC=clang -arch x86_64
     ldflags:
       - -s -w -X github.com/jitpass/jit/internal/cli.version={{.Version}}
 
