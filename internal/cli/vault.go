@@ -136,7 +136,8 @@ var vaultSetCmd = &cobra.Command{
 	Long: "Stores a secret at <path> (e.g. \"stripe/dev-key\"). If [value] is omitted,\n" +
 		"prompts for it with hidden input. Use --stdin for scripts. Passing the value\n" +
 		"as a bare argument works but lands in shell history — prefer the prompt or --stdin.",
-	Args: cobra.RangeArgs(1, 2),
+	Args:              cobra.RangeArgs(1, 2),
+	ValidArgsFunction: completeVaultPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		path := args[0]
 
@@ -178,7 +179,8 @@ var vaultGetCmd = &cobra.Command{
 	Long: "Prints the decrypted value to stdout, where it lands in your terminal\n" +
 		"scrollback and any output capture (tmux, script, CI logs). Prefer\n" +
 		"--copy to send it straight to the clipboard instead.",
-	Args: cobra.ExactArgs(1),
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeVaultPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		v, err := openVault()
 		if err != nil {
@@ -244,9 +246,10 @@ var vaultListCmd = &cobra.Command{
 }
 
 var vaultRmCmd = &cobra.Command{
-	Use:   "rm <path>",
-	Short: "Delete a secret",
-	Args:  cobra.ExactArgs(1),
+	Use:               "rm <path>",
+	Short:             "Delete a secret",
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeVaultPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if !vaultRmForce && !confirmPrompt(cmd, fmt.Sprintf("Permanently delete %s from the vault? This can't be undone. [y/N] ", args[0])) {
 			fmt.Fprintln(cmd.OutOrStdout(), "Aborted.")
@@ -844,6 +847,40 @@ func copyToClipboard(value []byte) error {
 // jit entirely — the challenge is still application-enforced until the
 // Secure Enclave work lands (GAPS.md #1) — but "a prompt the user didn't
 // initiate just appeared" is precisely the signal that boundary can add.
+// completeVaultPaths powers tab completion for `jit vault get/set/rm
+// <path>` (via `jit completion <shell>`). It lists stored secret paths
+// with a bare Vault{Root} — List only walks filenames, so completion
+// never decrypts anything and never triggers a Touch ID/passcode prompt
+// mid-keystroke. Deliberately not openVaultReadOnly: that constructor
+// calls EnsureDeviceID, which writes the device-id file when missing,
+// and tab completion must never mutate vault state as a side effect.
+// _backups/ entries are filtered out for the same reason vault list
+// hides them by default: they're jit's own bookkeeping, and completing
+// them into a get/rm invocation is never what the user is reaching for.
+func completeVaultPaths(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) != 0 {
+		// Only the first positional is a secret path (set's second is
+		// the value) — never offer path or file completions past it.
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	root, err := vaultRootDir()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	paths, err := (&vault.Vault{Root: root}).List()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	secrets, _ := splitBackupPaths(paths)
+	matches := []string{}
+	for _, p := range secrets {
+		if strings.HasPrefix(p, toComplete) {
+			matches = append(matches, p)
+		}
+	}
+	return matches, cobra.ShellCompDirectiveNoFileComp
+}
+
 func openVaultFreshAuth() (*vault.Vault, error) {
 	root, err := vaultRootDir()
 	if err != nil {
