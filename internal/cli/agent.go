@@ -357,7 +357,7 @@ type agentStatusResult struct {
 	// is registered/served, never omitted outright, so a script parsing
 	// this doesn't need to special-case "field missing" vs "empty list."
 	Mounts []agent.MountRevealStatus `json:"mounts"`
-	// LastUnlock/LastLock are GAPS.md #50's session provenance — who unlocked
+	// LastUnlock/LastLock are GAPS.md #75's session provenance — who unlocked
 	// this agent, what launched them, and what dropped the session since.
 	// Omitted (not zero-valued) when the agent has never unlocked: "no
 	// provenance" and "unlocked by nobody at the epoch" must not look alike
@@ -569,7 +569,7 @@ func shortenCommand(home, cmd string) string {
 }
 
 // printSessionProvenance is the "who put the session in this state" lines
-// under `jit agent status`'s headline (GAPS.md #50).
+// under `jit agent status`'s headline (GAPS.md #75).
 //
 // The motivating report: a Touch ID prompt appeared unbidden while the user
 // was doing something entirely unrelated, and reconstructing why took

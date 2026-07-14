@@ -17,7 +17,7 @@ import (
 	"github.com/jitpass/jit/internal/lineage"
 )
 
-// TestAgentStatusExplainsAnUnexplainedPrompt is GAPS.md #50 from the user's
+// TestAgentStatusExplainsAnUnexplainedPrompt is GAPS.md #75 from the user's
 // side of the screen. The report that motivated it: a Touch ID prompt
 // appeared while the user was doing something unrelated, and `jit agent
 // status` — the one command you'd run to ask why — said only "jit agent is

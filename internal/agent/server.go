@@ -148,7 +148,7 @@ type Server struct {
 	expiry    time.Time
 	lockTimer *time.Timer
 	// lastUnlock/lastLock are the session's provenance: who unlocked it and
-	// what dropped it (GAPS.md #50). Kept even while locked — the whole point
+	// what dropped it (GAPS.md #75). Kept even while locked — the whole point
 	// is to still be able to explain a session that has already ended, which
 	// is exactly when someone asks.
 	lastUnlock *SessionEvent
