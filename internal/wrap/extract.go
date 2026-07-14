@@ -19,7 +19,8 @@ type extractor func(data []byte, selector string) (value string, found bool)
 // data contains zero parsing (docs/WRAP-PLAN.md §4).
 var extractors = map[string]extractor{
 	"yaml": extractYAML,
-	"toml": extractTOML,
+	"toml": extractTOML, // also covers INI files — same line shape
+	"json": extractJSON,
 }
 
 // ExtractToken reads src's file under home and applies its extractor.

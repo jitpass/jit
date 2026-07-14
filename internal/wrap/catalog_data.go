@@ -76,6 +76,65 @@ var catalog = map[string]CatalogEntry{
 		},
 		VerifyHint: "stripe config --list",
 	},
+	"hcloud": {
+		Tool:    "hcloud",
+		Kind:    KindShim,
+		Doc:     "Hetzner Cloud API token",
+		EnvVars: map[string]string{"HCLOUD_TOKEN": "HCLOUD_TOKEN"},
+		Order:   []string{"HCLOUD_TOKEN"},
+		Sources: []TokenSource{
+			// [[contexts]] name/token pairs; the line extractor matches the
+			// first context's token — the active one for single-context
+			// setups, which is the common case worth auto-migrating.
+			{Path: "~/.config/hcloud/cli.toml", Format: "toml", Selector: "contexts/token"},
+		},
+		VerifyHint: "hcloud server list",
+	},
+	"flyctl": {
+		Tool:    "flyctl",
+		Kind:    KindShim,
+		Doc:     "Fly.io access token",
+		EnvVars: map[string]string{"FLY_API_TOKEN": "FLY_API_TOKEN"},
+		Order:   []string{"FLY_API_TOKEN"},
+		Sources: []TokenSource{
+			{Path: "~/.fly/config.yml", Format: "yaml", Selector: "access_token"},
+		},
+		VerifyHint: "flyctl auth whoami",
+	},
+	"vercel": {
+		Tool:    "vercel",
+		Kind:    KindShim,
+		Doc:     "Vercel CLI token",
+		EnvVars: map[string]string{"VERCEL_TOKEN": "VERCEL_TOKEN"},
+		Order:   []string{"VERCEL_TOKEN"},
+		Sources: []TokenSource{
+			{Path: "~/Library/Application Support/com.vercel.cli/auth.json", Format: "json", Selector: "token"},
+		},
+		VerifyHint: "vercel whoami",
+	},
+	"railway": {
+		Tool:    "railway",
+		Kind:    KindShim,
+		Doc:     "Railway CLI token",
+		EnvVars: map[string]string{"RAILWAY_TOKEN": "RAILWAY_TOKEN"},
+		Order:   []string{"RAILWAY_TOKEN"},
+		Sources: []TokenSource{
+			{Path: "~/.railway/config.json", Format: "json", Selector: "user/token"},
+		},
+		VerifyHint: "railway whoami",
+	},
+	"databricks": {
+		Tool:    "databricks",
+		Kind:    KindShim,
+		Doc:     "Databricks personal access token",
+		EnvVars: map[string]string{"DATABRICKS_TOKEN": "DATABRICKS_TOKEN"},
+		Order:   []string{"DATABRICKS_TOKEN"},
+		Sources: []TokenSource{
+			// .databrickscfg is INI; the toml extractor's line shape covers it.
+			{Path: "~/.databrickscfg", Format: "toml", Selector: "DEFAULT/token"},
+		},
+		VerifyHint: "databricks current-user me",
+	},
 	"openai": {
 		Tool:    "openai",
 		Kind:    KindShim,
