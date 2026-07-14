@@ -31,7 +31,11 @@ type statusResult struct {
 }
 
 type statusVault struct {
+	// SecretsStored counts real secrets only; `_backups/…` entries (kept
+	// for `jit migrate undo`) are reported separately so the headline
+	// number always agrees with `jit vault list`.
 	SecretsStored int `json:"secrets_stored"`
+	BackupsStored int `json:"backups_stored"`
 	// ExportRecorded/ExportUnixTime/ExportStale surface the vault's one
 	// disaster-recovery path: the vault only decrypts on this machine
 	// (device keychain-bound), and `jit vault export` is what survives
@@ -145,7 +149,8 @@ func gatherVaultStatus(v *vault.Vault) (statusVault, error) {
 	if err != nil {
 		return statusVault{}, err
 	}
-	result := statusVault{SecretsStored: len(paths)}
+	secrets, backups := splitBackupPaths(paths)
+	result := statusVault{SecretsStored: len(secrets), BackupsStored: len(backups)}
 	if len(paths) == 0 {
 		return result, nil // an empty vault has nothing worth exporting — no nudge
 	}
@@ -252,10 +257,14 @@ func gatherMountStatus(root string, agentStatus statusAgent) (statusMounts, erro
 }
 
 func printStatusText(w io.Writer, r statusResult) {
-	if r.Vault.SecretsStored == 0 {
+	if r.Vault.SecretsStored == 0 && r.Vault.BackupsStored == 0 {
 		fmt.Fprintln(w, "Vault: no secrets stored yet. Run `jit vault init` if you haven't set it up, or `jit migrate local` to populate it.")
 	} else {
-		fmt.Fprintf(w, "Vault: %d secret(s) stored.\n", r.Vault.SecretsStored)
+		if r.Vault.BackupsStored > 0 {
+			fmt.Fprintf(w, "Vault: %d secret(s) stored, plus %d encrypted file backup(s) kept for `jit migrate undo`.\n", r.Vault.SecretsStored, r.Vault.BackupsStored)
+		} else {
+			fmt.Fprintf(w, "Vault: %d secret(s) stored.\n", r.Vault.SecretsStored)
+		}
 		switch {
 		case !r.Vault.ExportRecorded:
 			_, _ = color.New(color.FgYellow).Fprintln(w, "Backup: no vault export on record — the vault only decrypts on this Mac. Run `jit vault export <file>` so losing it isn't losing every secret.")
