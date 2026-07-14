@@ -165,7 +165,7 @@ Catalog: `gh`, `glab`, `ngrok`, `doctl`, `stripe`, `openai` (shim-based),
 a shim, because the native hook also covers SDKs and `terraform
 login`/`logout`, which a PATH shim never sees.
 
-`jit audit` reports wrappable plaintext tokens it finds (category
+The full supported-tools list lives in [PLUGINS.md](./PLUGINS.md). `jit audit` reports wrappable plaintext tokens it finds (category
 "Wrappable CLI Tokens") with the one-command fix inline.
 
 | Subcommand | Meaning |
