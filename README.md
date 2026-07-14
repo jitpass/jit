@@ -96,17 +96,17 @@ go install github.com/jitpass/jit/cmd/jit@latest
 A locally-compiled binary isn't quarantined either, so there's no
 Gatekeeper prompt to click through here.
 
-### Then, either way
+### Shell completion (both options)
 
-**3. Shell completion** (`jit <TAB>` completes subcommands, flags, and their
-descriptions):
+`jit <TAB>` completes subcommands, flags, and their descriptions:
 
 ```sh
 echo 'source <(jit completion zsh)' >> ~/.zshrc && exec zsh
 ```
 
-**4. If that prints `command not found: jit` or `command not found:
-compdef`** (common on a fresh Homebrew-installed Go with a plain zsh setup):
+**If that prints `command not found: jit` or `command not found:
+compdef`** (common with Option B on a fresh Homebrew-installed Go and a
+plain zsh setup):
 `go install` puts the binary at `~/go/bin/jit`, which isn't on your PATH by
 default, and a plain zsh never initializes its completion system. Your
 `~/.zshrc` needs these lines, in this order:
