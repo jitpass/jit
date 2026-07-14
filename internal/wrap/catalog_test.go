@@ -112,6 +112,11 @@ func TestCatalogSelectorsAgainstFixtures(t *testing.T) {
 		{"doctl", 0, "doctl/config.yaml", "dop_v1_FIXTURE0123456789abcdef0123456789abcdef"},
 		{"stripe", 0, "stripe/config.toml", "sk_live_FIXTURE0123456789abcdef"},
 		{"stripe", 1, "stripe/config.toml", "sk_test_FIXTURE0123456789abcdef"},
+		{"hcloud", 0, "hcloud/cli.toml", "FIXTUREhcloudToken0123456789abcdefFIXTURE0123456789abcdef"},
+		{"flyctl", 0, "flyctl/config.yml", "FlyV1_FIXTUREflytoken0123456789abcdef"},
+		{"vercel", 0, "vercel/auth.json", "FIXTUREvercelToken0123456789abcdef"},
+		{"railway", 0, "railway/config.json", "FIXTURErailwayToken0123456789abcdef"},
+		{"databricks", 0, "databricks/databrickscfg", "dapiFIXTURE0123456789abcdef"},
 	}
 	for _, tc := range cases {
 		entry, ok := Lookup(tc.tool)
