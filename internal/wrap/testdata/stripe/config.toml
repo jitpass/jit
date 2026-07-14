@@ -1,0 +1,7 @@
+color = "auto"
+
+[default]
+  device_name = "alexs-mbp"
+  live_mode_api_key = "sk_live_FIXTURE0123456789abcdef"
+  test_mode_api_key = "sk_test_FIXTURE0123456789abcdef"
+  test_mode_pub_key = "pk_test_FIXTURE0123456789abcdef"
