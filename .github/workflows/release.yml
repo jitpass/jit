@@ -1,0 +1,36 @@
+name: Release
+
+# Tag push (v*) is the normal path. workflow_dispatch exists so a release can
+# be (re-)built for an existing tag: `gh workflow run release.yml --ref v0.4.0`.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# CGO_ENABLED=1 (required by internal/secureenclave, TECH_STACK.md §2.3) needs a
+# real macOS toolchain — this can't run on Linux runners.
+jobs:
+  goreleaser:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Write access to jitpass/homebrew-tap. Until this secret exists,
+          # .goreleaser.yml skips the cask upload (binaries still publish).
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
