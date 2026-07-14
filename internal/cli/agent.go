@@ -423,6 +423,88 @@ var agentStatusCmd = &cobra.Command{
 	},
 }
 
+// agentHistoryFormat is agentHistoryCmd's --format flag, matching `jit agent
+// status`'s own.
+var agentHistoryFormat string
+
+var agentHistoryCmd = &cobra.Command{
+	Use:   "history",
+	Short: "List every unlock and lock this agent has seen, and what caused them",
+	Long: "Prints the agent's session history, most recent first: every Touch ID prompt\n" +
+		"that succeeded (with the command that triggered it and what launched that\n" +
+		"command) and every lock (with its cause — an idle timeout, or an explicit\n" +
+		"`jit agent lock`).\n\n" +
+		"This is the answer to \"why does it keep asking me?\" — a question the agent\n" +
+		"previously had no way to answer, since only locks were ever recorded and the\n" +
+		"unlocks that did the prompting left no trace at all.\n\n" +
+		"In-memory and bounded, so a restart (launchd restarts the agent at every\n" +
+		"login) empties it. The same events are also appended to the agent's log file,\n" +
+		"which is the durable record.",
+	Args:         cobra.NoArgs,
+	SilenceUsage: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateOutputFormat(agentHistoryFormat); err != nil {
+			return fmt.Errorf("jit agent history: %w", err)
+		}
+		root, err := vaultRootDir()
+		if err != nil {
+			return fmt.Errorf("jit agent history: %w", err)
+		}
+		client := agent.NewClient(agent.SocketPath(root))
+		if !client.Reachable() {
+			if agentHistoryFormat == "json" {
+				return writeJSON(cmd.OutOrStdout(), []agent.SessionEvent{})
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "jit agent is not running. Run `jit agent install` to set it up.")
+			return nil
+		}
+
+		events, err := client.History()
+		if err != nil {
+			return fmt.Errorf("jit agent history: %w", err)
+		}
+		if agentHistoryFormat == "json" {
+			if events == nil {
+				events = []agent.SessionEvent{} // an empty list, never a bare null
+			}
+			return writeJSON(cmd.OutOrStdout(), events)
+		}
+		printSessionHistory(cmd.OutOrStdout(), events)
+		return nil
+	},
+}
+
+// printSessionHistory renders `jit agent history` — the same bullet shape as
+// the Session block in `jit agent status`, just without the two-event limit.
+func printSessionHistory(w io.Writer, events []agent.SessionEvent) {
+	if len(events) == 0 {
+		fmt.Fprintln(w, "No unlocks or locks recorded since the agent started.")
+		return
+	}
+	home, _ := os.UserHomeDir()
+
+	fmt.Fprintln(w, "Session history (most recent first):")
+	for _, e := range events {
+		switch e.Kind {
+		case agent.KindLock:
+			cause := e.Cause
+			if cause == "" {
+				cause = "unknown cause"
+			}
+			fmt.Fprintf(w, "  • %s — %s\n", sessionWhen("locked", e.UnixTime), cause)
+		default:
+			line := fmt.Sprintf("  • %s", sessionWhen("unlocked", e.UnixTime))
+			if e.LaunchedBy != "" {
+				line += fmt.Sprintf(" — launched by %s", e.LaunchedBy)
+			}
+			fmt.Fprintln(w, line)
+			if e.By != "" {
+				fmt.Fprintf(w, "      %s\n", shortenCommand(home, e.By))
+			}
+		}
+	}
+}
+
 // logSessionEvent writes an unlock or a lock to the agent's log, with the
 // provenance that made it happen.
 //
@@ -437,8 +519,12 @@ var agentStatusCmd = &cobra.Command{
 // The full command goes in untruncated: a log file is not a modal dialog, and
 // the whole point of the line is to still be useful weeks later.
 func logSessionEvent(w io.Writer, e agent.SessionEvent) {
-	if e.Cause != "" { // a lock: the cause IS the news ("why was I asked again?")
-		fmt.Fprintf(w, "jit agent: session locked — %s\n", e.Cause)
+	if e.Kind == agent.KindLock { // a lock: the cause IS the news ("why was I asked again?")
+		cause := e.Cause
+		if cause == "" {
+			cause = "unknown cause"
+		}
+		fmt.Fprintf(w, "jit agent: session locked — %s\n", cause)
 		return
 	}
 
@@ -594,10 +680,7 @@ func printMountStatuses(w io.Writer, mounts []agent.MountRevealStatus) {
 			fmt.Fprintf(w, "  • %s — not revealed\n", path)
 		}
 		if ls := m.LastServe; ls != nil {
-			reader := "an unidentified process"
-			if ls.ReaderPath != "" {
-				reader = fmt.Sprintf("%s (pid %d)", filepath.Base(ls.ReaderPath), ls.ReaderPID)
-			}
+			reader := describeReader(ls)
 			ago := humanAgo(time.Since(time.Unix(ls.UnixTime, 0)))
 			if ls.Decoy {
 				_, _ = color.New(color.FgYellow).Fprintf(w, "      read %s ago by %s: decoy values — if that was your app, reveal and retry: jit agent reveal %s\n", ago, reader, path)
@@ -609,6 +692,35 @@ func printMountStatuses(w io.Writer, mounts []agent.MountRevealStatus) {
 			}
 		}
 	}
+}
+
+// describeReader names whoever last read a mount, as precisely as jit can
+// honestly claim — and no more.
+//
+// Three tiers, because there really are three states. A reader the scan caught
+// outright is named flatly. One carried over from this mount's previous scan
+// (still alive, still holding the file open, but this scan raced its open) is
+// named as "likely", because it is an inference, and an audit line that
+// overstates its confidence is worse than one that admits doubt. Only a reader
+// jit has genuinely never seen falls back to "an unidentified process" — which
+// used to be the answer even for an editor jit had identified by name seconds
+// earlier.
+//
+// The launcher rides along for the same reason it does on an unlock line:
+// "python3 read your Wiz credentials" is a fact you can't act on, and
+// "python3, launched by claude" is one you can.
+func describeReader(ls *agent.MountServeEvent) string {
+	if ls.ReaderPath == "" {
+		return "an unidentified process"
+	}
+	who := fmt.Sprintf("%s (pid %d)", filepath.Base(ls.ReaderPath), ls.ReaderPID)
+	if ls.ReaderLikely {
+		who = "likely " + who
+	}
+	if ls.ReaderLaunchedBy != "" {
+		who += fmt.Sprintf(", launched by %s", ls.ReaderLaunchedBy)
+	}
+	return who
 }
 
 // humanAgo renders an elapsed duration at the precision a human scanning
@@ -695,6 +807,7 @@ func init() {
 	agentRevealCmd.Flags().DurationVar(&revealForDuration, "for", 5*time.Minute, "how long to serve real content (clamped to 10m)")
 	agentRevealCmd.Flags().BoolVarP(&revealQuiet, "quiet", "q", false, "suppress the success message — for embedding in a pre-run hook")
 	agentStatusCmd.Flags().StringVar(&agentStatusFormat, "format", "text", `output format: "text" (default) or "json"`)
-	agentCmd.AddCommand(agentRunCmd, agentInstallCmd, agentUninstallCmd, agentUnlockCmd, agentLockCmd, agentStatusCmd, agentRevealCmd)
+	agentHistoryCmd.Flags().StringVar(&agentHistoryFormat, "format", "text", `output format: "text" (default) or "json"`)
+	agentCmd.AddCommand(agentRunCmd, agentInstallCmd, agentUninstallCmd, agentUnlockCmd, agentLockCmd, agentStatusCmd, agentHistoryCmd, agentRevealCmd)
 	rootCmd.AddCommand(agentCmd)
 }

@@ -177,6 +177,20 @@ type Status struct {
 	Build string
 }
 
+// History asks for every unlock and lock this agent process has seen, newest
+// first. Bounded (maxSessionEvents) and in-memory: a launchd restart empties
+// it, which is exactly why the same events also go to the agent's log.
+//
+// Never triggers a challenge — asking why you keep being prompted must not
+// prompt you.
+func (c *Client) History() ([]SessionEvent, error) {
+	resp, err := c.call(Request{Op: OpHistory})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Events, nil
+}
+
 // Status asks the running agent for that snapshot.
 func (c *Client) Status() (Status, error) {
 	resp, err := c.call(Request{Op: OpStatus})

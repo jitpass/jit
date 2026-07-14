@@ -31,6 +31,13 @@ const (
 	OpRefresh   = "refresh"
 	OpReveal    = "reveal"
 	OpStopMount = "stop_mount"
+	OpHistory   = "history"
+)
+
+// SessionEvent.Kind values.
+const (
+	KindUnlock = "unlock"
+	KindLock   = "lock"
 )
 
 // Response answers a Request.
@@ -59,6 +66,12 @@ type Response struct {
 	// across a restart.
 	LastUnlock *SessionEvent `json:"last_unlock,omitempty"`
 	LastLock   *SessionEvent `json:"last_lock,omitempty"`
+	// Events answers "history" — every unlock and lock this agent PROCESS has
+	// seen, newest first, bounded by maxSessionEvents. Status deliberately
+	// carries only the two latest instead (a status call happens constantly,
+	// including from shell prompts; shipping the whole ring each time would
+	// be wasteful), so the full sequence needs asking for.
+	Events []SessionEvent `json:"events,omitempty"`
 	// Build is the serving agent process's own BuildID(), set on "status"
 	// (GAPS.md #49) — launchd's KeepAlive keeps an agent process alive
 	// across rebuilds and reinstalls indefinitely, so without this there
@@ -79,6 +92,12 @@ type Response struct {
 // never fail the unlock itself.
 type SessionEvent struct {
 	UnixTime int64 `json:"unix_time"`
+	// Kind is "unlock" or "lock". Callers used to tell the two apart by
+	// checking whether Cause was set, which worked only because locks happen
+	// to be the only events that carry one — a coincidence, not a contract,
+	// and one that would have broken silently the first time an unlock needed
+	// a cause of its own.
+	Kind string `json:"kind"`
 	// Op is the RPC that forced the unlock ("unwrap", "reveal", ...), or
 	// "serve_mounts" for the agent's own in-process unlock when it resolves
 	// a mount's real content. Empty on a lock event.
@@ -142,4 +161,14 @@ type MountServeEvent struct {
 	Decoy      bool   `json:"decoy"`
 	ReaderPID  int32  `json:"reader_pid,omitempty"`
 	ReaderPath string `json:"reader_path,omitempty"`
+	// ReaderLaunchedBy is what launched the reader ("claude", "Code") —
+	// "python3 read your credentials" is a fact you can't act on; "python3,
+	// launched by claude" is one you can.
+	ReaderLaunchedBy string `json:"reader_launched_by,omitempty"`
+	// ReaderLikely marks an identity carried over from an earlier scan of this
+	// same mount (the reader is still alive and still holding the file open,
+	// but this particular scan raced its open and missed it). True means
+	// "almost certainly this process"; it must never be displayed as
+	// certainty, because it is an inference.
+	ReaderLikely bool `json:"reader_likely,omitempty"`
 }

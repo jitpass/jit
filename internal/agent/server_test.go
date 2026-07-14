@@ -814,3 +814,65 @@ func TestServerRevealFreshChallengeFiresOnUnlockForRevealNotOnUnlock(t *testing.
 		t.Errorf("fallback hook sequence = %v, want [unlock reveal]", fallbackCalls)
 	}
 }
+
+// TestServerHistoryRecordsEveryUnlockNotJustTheLast closes the gap the
+// last-unlock/last-lock pair structurally cannot: each new unlock overwrites
+// the previous one, so "has it been prompting me all afternoon, and for what?"
+// had no answer. The ring keeps them all, newest first.
+func TestServerHistoryRecordsEveryUnlockNotJustTheLast(t *testing.T) {
+	_, socketPath, cleanup := startTestServer(t, 40*time.Millisecond, nil)
+	defer cleanup()
+
+	c := NewClient(socketPath)
+	for i := 0; i < 3; i++ {
+		if _, err := c.WrapKey([]byte("x")); err != nil {
+			t.Fatalf("WrapKey %d: %v", i, err)
+		}
+		time.Sleep(80 * time.Millisecond) // let the TTL lapse: a real re-challenge each time
+	}
+
+	events, err := c.History()
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+
+	var unlocks, locks int
+	for _, e := range events {
+		switch e.Kind {
+		case KindUnlock:
+			unlocks++
+		case KindLock:
+			locks++
+		default:
+			t.Errorf("event with no Kind: %+v", e)
+		}
+	}
+	if unlocks != 3 {
+		t.Errorf("history has %d unlocks, want 3 — every prompt must be recorded, not just the most recent", unlocks)
+	}
+	if locks < 2 {
+		t.Errorf("history has %d locks, want at least 2 idle-timeout locks between the unlocks", locks)
+	}
+
+	// Newest first: the order the CLI prints, decided here so no consumer has
+	// to know which end is which.
+	for i := 1; i < len(events); i++ {
+		if events[i].UnixTime > events[i-1].UnixTime {
+			t.Errorf("history is not newest-first at index %d (%d after %d)", i, events[i].UnixTime, events[i-1].UnixTime)
+		}
+	}
+}
+
+// Asking the agent why it keeps prompting must never itself prompt.
+func TestServerHistoryNeverTriggersAChallenge(t *testing.T) {
+	var calls int32
+	_, socketPath, cleanup := startTestServer(t, time.Minute, &calls)
+	defer cleanup()
+
+	if _, err := NewClient(socketPath).History(); err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Errorf("History triggered %d challenge(s), want 0 — an agent you can't ask about its prompts without being prompted is useless", got)
+	}
+}

@@ -163,6 +163,38 @@ func Ancestry(pid int32) []Process {
 	return chain
 }
 
+// LaunchedBy names the nearest ancestor that actually EXPLAINS a process,
+// skipping the shells and wrappers that merely relay it — a `jit run` typed by
+// a human has a shell parent, and "launched by zsh" is technically true and
+// completely uninformative. Empty when the chain is all relays: for something
+// a human ran at a prompt, the honest answer is "you did", and saying nothing
+// is how that gets said.
+//
+// ancestors is the chain WITHOUT the process itself (Ancestry(pid)[1:]).
+// Shared by the agent (who unlocked the vault) and the mount manager (who
+// read a secret file), which ask the same question of different processes.
+func LaunchedBy(ancestors []Process) string {
+	for _, p := range ancestors {
+		if name := p.Name(); name != "" && !isRelay(name) {
+			return name
+		}
+	}
+	return ""
+}
+
+// isRelay reports whether name is a process that passes work along rather than
+// being the reason for it. Shells dominate, but the login/exec wrappers belong
+// here too — none of them is ever the interesting answer to "why is this
+// happening".
+func isRelay(name string) bool {
+	switch strings.TrimPrefix(name, "-") { // login shells appear as "-zsh"
+	case "zsh", "bash", "sh", "dash", "fish", "tcsh", "csh", "ksh",
+		"login", "env", "sudo", "xargs", "time":
+		return true
+	}
+	return false
+}
+
 // procArgs reads pid's argv from the kernel via sysctl kern.procargs2,
 // whose layout is: int32 argc, the exec path, NUL padding, then argc
 // NUL-terminated argv strings (the environment follows, which we
