@@ -263,6 +263,33 @@ Each fetch needs the vault unlocked (the agent's shared session, or a Touch
 ID prompt). `terraform login` and `logout` keep working; a re-login lands
 in the vault instead of back in a plaintext file.
 
+### Wrap a CLI tool's token: `jit wrap`
+
+Dev CLIs keep their tokens in plaintext dotfiles (`~/.config/gh/hosts.yml`,
+stripe's `config.toml`, ngrok's `ngrok.yml`). `jit wrap gh` moves the token
+into the vault and puts a shim named `gh` first on PATH — you keep typing
+`gh` exactly as before, and the token exists only inside each `gh` process,
+for its lifetime:
+
+```console
+$ jit wrap gh
+Found the GitHub CLI OAuth token in ~/.config/gh/hosts.yml — moved into the vault at wrap-gh/GH_TOKEN.
+Wrapped gh:
+  profile  wrap-gh (~/.jit/profiles/wrap-gh.yaml)
+  shim     ~/.jit/shims/gh
+Scrubbed the plaintext from ~/.config/gh/hosts.yml (original backed up encrypted).
+Check it: open a new shell and run `gh auth status`.
+```
+
+Because it's a PATH shim (like rbenv/mise use), it works everywhere the
+binary is invoked — scripts, Makefiles, git hooks, tools spawning tools —
+not just when you type it. `jit wrap undo gh` puts everything back.
+
+Not in the catalog? `jit wrap add mytool --env MY_TOKEN=path/in/vault`
+wraps any tool that reads an env var. And `jit wrap aws` /
+`jit wrap terraform` route to the native credential hooks above instead —
+stronger than a shim, since SDKs consult those too.
+
 ### Quick health checks: `jit status` and `jit doctor`
 
 Neither ever decrypts a secret or triggers Touch ID; both are safe to run as

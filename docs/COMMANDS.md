@@ -138,6 +138,46 @@ this project is kept and reported, never deleted out from under the other
 profile. Writes plaintext to disk *and* permanently deletes vault secrets,
 so it always requires its own fresh Touch ID/passcode approval.
 
+### `jit wrap <tool>`
+
+Shell-plugin-style wrapping for CLI tools (docs/WRAP-PLAN.md): a shim named
+after the tool goes first on PATH, so you keep typing `gh` exactly as
+before while the token materializes only inside that one process — via
+`jit run --profile wrap-<tool>` — never in a plaintext config file. Shims
+cover every invocation path (scripts, Makefiles, git hooks, tools spawning
+tools), not just interactive shells the way alias-based wrappers do, and
+add ~20–30 ms per invocation with an unlocked agent.
+
+For a cataloged tool, one command does the whole flow: find the live token
+(the tool's config file, or its own keyring export like `gh auth token`),
+store it encrypted, write the `wrap-<tool>` profile, install the shim,
+scrub the plaintext line (after an encrypted byte-for-byte backup —
+`jit migrate undo <file>` restores it), and name the verify command.
+
+```sh
+jit wrap gh
+gh pr list        # exactly as before; GH_TOKEN exists only inside this process
+```
+
+Catalog: `gh`, `glab`, `ngrok`, `doctl`, `stripe`, `openai` (shim-based),
+plus `aws` and `terraform` — those two delegate to the existing
+`credential_process`/`credentials_helper` migrations instead of installing
+a shim, because the native hook also covers SDKs and `terraform
+login`/`logout`, which a PATH shim never sees.
+
+`jit audit` reports wrappable plaintext tokens it finds (category
+"Wrappable CLI Tokens") with the one-command fix inline.
+
+| Subcommand | Meaning |
+|---|---|
+| `jit wrap add <tool> --env VAR=<vault-path> [--env ...]` | wrap any uncataloged tool by hand: profile + shim, no discovery or scrubbing |
+| `jit wrap list` | wrapped tools, their profiles, and shim health |
+| `jit wrap undo <tool>` | remove shim + profile; vault secrets are kept (the shim PATH line goes too when the last tool is unwrapped) |
+| `jit wrap doctor` | verify shim dir permissions, PATH order, every shim's target, real binary, and profile |
+
+A shim that can't do its job fails loudly (exit 127, named error) — never
+a silent unwrapped run of the target.
+
 ### `jit doctor`
 
 Checks that every secret path a profile references actually exists in the

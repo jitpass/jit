@@ -48,6 +48,7 @@ mechanism, so everything keeps working:
 | kubeconfig | client keys/tokens in `~/.kube/config` | A kubectl `exec` credential plugin |
 | Terraform Cloud token | `~/.terraform.d/credentials.tfrc.json` | A `credentials_helper`; `terraform login`/`logout` keep working |
 | `.npmrc` auth tokens | project or global `.npmrc` | Live-mounted from a template; non-secret settings untouched |
+| CLI tool tokens | `gh`, `glab`, `stripe`, `ngrok`, `doctl` config files | `jit wrap gh`: a PATH shim injects the token per invocation — works in scripts and subprocesses, ~25 ms overhead |
 
 GCP application-default credentials aren't covered yet.
 
