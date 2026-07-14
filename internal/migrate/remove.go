@@ -68,6 +68,7 @@ func RestorePointerFile(v *vault.Vault, path string) ([]string, error) {
 		return nil, fmt.Errorf("reading pointer file %s: %w", path, err)
 	}
 	values := map[string]string{}
+	var order []string
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
@@ -81,9 +82,12 @@ func RestorePointerFile(v *vault.Vault, path string) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("resolving %s (%s): %w", name, ref, err)
 		}
+		if _, dup := values[name]; !dup {
+			order = append(order, name)
+		}
 		values[name] = string(secret)
 	}
-	if err := os.WriteFile(path, mount.FormatDotenv(values), 0o600); err != nil {
+	if err := os.WriteFile(path, mount.FormatDotenv(values, order), 0o600); err != nil {
 		return nil, fmt.Errorf("writing %s: %w", path, err)
 	}
 	names := make([]string, 0, len(values))

@@ -36,9 +36,12 @@ func PointerFilePath(mountPath string) string {
 // vault get` are the only ways to actually get the real value — this
 // file is deliberately never resolved or parsed by jit itself, purely a
 // human-readable map of "what's here and where it actually lives."
-func WritePointerFile(mountPath string, vars profile.Profile) error {
+// order carries the source file's variable order (issue #4) — same
+// contract as mount.FormatDotenv: listed names first, leftovers sorted,
+// nil for fully sorted.
+func WritePointerFile(mountPath string, vars profile.Profile, order []string) error {
 	dest := PointerFilePath(mountPath)
-	if err := os.WriteFile(dest, pointerFileContent(vars), 0o644); err != nil { // #nosec G306 -- deliberately world-readable: this file never contains a secret value, only vault paths, and is meant to be committed to git and opened casually
+	if err := os.WriteFile(dest, pointerFileContent(vars, order), 0o644); err != nil { // #nosec G306 -- deliberately world-readable: this file never contains a secret value, only vault paths, and is meant to be committed to git and opened casually
 		return fmt.Errorf("writing pointer file %s: %w", dest, err)
 	}
 	return nil
@@ -54,8 +57,8 @@ func WritePointerFile(mountPath string, vars profile.Profile) error {
 // live mount gets alongside it) still moves the real values into the
 // vault and leaves an honest trail of where they went, without ever
 // creating an unservable pipe in the first place.
-func ReplaceWithPointerFile(path string, vars profile.Profile) error {
-	if err := os.WriteFile(path, pointerFileContent(vars), 0o644); err != nil { // #nosec G306 -- same rationale as WritePointerFile
+func ReplaceWithPointerFile(path string, vars profile.Profile, order []string) error {
+	if err := os.WriteFile(path, pointerFileContent(vars, order), 0o644); err != nil { // #nosec G306 -- same rationale as WritePointerFile
 		return fmt.Errorf("replacing %s with a pointer file: %w", path, err)
 	}
 	return nil
@@ -86,13 +89,25 @@ func LooksLikePointerContent(path string) bool {
 }
 
 // pointerFileContent renders vars as WritePointerFile/ReplaceWithPointerFile's
-// shared "no secret values here, only vault paths" format.
-func pointerFileContent(vars profile.Profile) []byte {
+// shared "no secret values here, only vault paths" format — in order
+// (source-file variable order, issue #4) first, remaining names sorted.
+func pointerFileContent(vars profile.Profile, order []string) []byte {
 	names := make([]string, 0, len(vars))
-	for name := range vars {
-		names = append(names, name)
+	seen := make(map[string]bool, len(vars))
+	for _, name := range order {
+		if _, ok := vars[name]; ok && !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
 	}
-	sort.Strings(names)
+	rest := make([]string, 0, len(vars)-len(names))
+	for name := range vars {
+		if !seen[name] {
+			rest = append(rest, name)
+		}
+	}
+	sort.Strings(rest)
+	names = append(names, rest...)
 
 	var b strings.Builder
 	b.WriteString(pointerFileHeaderPrefix + " — no secret values here, only vault paths.\n")

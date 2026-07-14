@@ -243,7 +243,7 @@ func migrateMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, serverNam
 		entries[envKey] = secretPath
 	}
 
-	if err := writeProfileManifest(profilePath, entries); err != nil {
+	if err := writeProfileManifest(profilePath, entries, nil); err != nil {
 		return MCPServerMigration{}, fmt.Errorf("writing profile %s: %w", profilePath, err)
 	}
 	// Stamp ownership AFTER the manifest write: a crash in between leaves a

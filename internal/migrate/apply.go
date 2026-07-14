@@ -12,8 +12,6 @@ import (
 	"sort"
 	"strings"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/vault"
@@ -242,7 +240,7 @@ func DiscoverEnvFiles(root string) ([]string, error) {
 // failure partway through never leaves the source file gone with nothing
 // usable in its place.
 func ApplyEnvFile(v *vault.Vault, profilesRoot, envPath string) (EnvFileMigration, error) {
-	values, unparsed, err := parseEnvFile(envPath)
+	values, varNames, unparsed, err := parseEnvFile(envPath)
 	if err != nil {
 		return EnvFileMigration{}, fmt.Errorf("parsing %s: %w", envPath, err)
 	}
@@ -261,12 +259,6 @@ func ApplyEnvFile(v *vault.Vault, profilesRoot, envPath string) (EnvFileMigratio
 	if len(values) == 0 {
 		return EnvFileMigration{}, fmt.Errorf("%s has no active KEY=value lines to migrate", envPath)
 	}
-
-	varNames := make([]string, 0, len(values))
-	for name := range values {
-		varNames = append(varNames, name)
-	}
-	sort.Strings(varNames)
 
 	// claimNamespace both loads whatever the target profile already holds
 	// (merge, never overwrite outright — matching ApplyShellConfig/
@@ -292,7 +284,7 @@ func ApplyEnvFile(v *vault.Vault, profilesRoot, envPath string) (EnvFileMigratio
 		entries[name] = secretPath
 	}
 
-	if err := writeProfileManifest(profilePath, entries); err != nil {
+	if err := writeProfileManifest(profilePath, entries, varNames); err != nil {
 		return EnvFileMigration{}, fmt.Errorf("writing profile %s: %w", profilePath, err)
 	}
 
@@ -331,7 +323,7 @@ func ApplyEnvFile(v *vault.Vault, profilesRoot, envPath string) (EnvFileMigratio
 		if err := mount.CreateFIFO(envPath); err != nil {
 			return EnvFileMigration{}, fmt.Errorf("mounting %s: %w", envPath, err)
 		}
-	} else if err := ReplaceWithPointerFile(envPath, entries); err != nil {
+	} else if err := ReplaceWithPointerFile(envPath, entries, varNames); err != nil {
 		return EnvFileMigration{}, fmt.Errorf("replacing %s with a pointer file: %w", envPath, err)
 	}
 
@@ -440,14 +432,19 @@ var envExportPrefix = regexp.MustCompile(`^export\s+`)
 // (newlines inside the quotes preserved). Content after a closing quote
 // on the same line (e.g. an inline comment) is ignored, matching those
 // loaders' own tolerance.
-func parseEnvFile(path string) (map[string]string, []int, error) {
+// It also returns the variable names in source-file order (first
+// occurrence for a name assigned twice — dotenv's last-wins applies to
+// the value only), which is what lets the live mount and the manifest
+// keep the file's own order instead of alphabetizing (issue #4).
+func parseEnvFile(path string) (map[string]string, []string, []int, error) {
 	data, err := os.ReadFile(path) // #nosec G304 -- path comes from DiscoverEnvFiles' own filesystem walk, not external input
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
 
 	values := make(map[string]string)
+	var names []string
 	var unparsed []int
 	for i := 0; i < len(lines); i++ {
 		line := strings.TrimSpace(lines[i])
@@ -470,9 +467,12 @@ func parseEnvFile(path string) (map[string]string, []int, error) {
 			continue
 		}
 		i += consumed
+		if _, dup := values[m[1]]; !dup {
+			names = append(names, m[1])
+		}
 		values[m[1]] = value
 	}
-	return values, unparsed, nil
+	return values, names, unparsed, nil
 }
 
 // parseEnvValue interprets raw (everything after the "=" on an entry's
@@ -591,8 +591,12 @@ func unquoteEnvValue(v string) string {
 	return v
 }
 
-func writeProfileManifest(path string, p profile.Profile) error {
-	data, err := yaml.Marshal(p)
+// order is the source file's own variable order, persisted into the
+// manifest so the mount can serve it back faithfully (issue #4) — see
+// profile.MarshalOrdered. nil means alphabetical, the old behavior every
+// non-.env category keeps.
+func writeProfileManifest(path string, p profile.Profile, order []string) error {
+	data, err := profile.MarshalOrdered(p, order)
 	if err != nil {
 		return err
 	}

@@ -148,7 +148,7 @@ func ApplyKubeconfigUser(v *vault.Vault, home, userName string, dedup ...*Backup
 		entries[name] = secretPath
 	}
 
-	if err := writeProfileManifest(vaultProfilePath, entries); err != nil {
+	if err := writeProfileManifest(vaultProfilePath, entries, nil); err != nil {
 		return KubeconfigUserMigration{}, fmt.Errorf("writing profile %s: %w", vaultProfilePath, err)
 	}
 

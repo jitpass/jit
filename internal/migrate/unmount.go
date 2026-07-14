@@ -36,7 +36,7 @@ import (
 // FIFO an agent is mid-Serve() on with a regular file can race in ways
 // that redo the agent's next write into the caller's fresh plaintext.
 func UnmountFile(v *vault.Vault, profilePath, mountPath, templatePath string) ([]string, error) {
-	p, err := profile.LoadFile(profilePath)
+	p, order, err := profile.LoadFileOrdered(profilePath)
 	if err != nil {
 		return nil, fmt.Errorf("loading profile %s: %w", profilePath, err)
 	}
@@ -53,7 +53,7 @@ func UnmountFile(v *vault.Vault, profilePath, mountPath, templatePath string) ([
 		}
 		content = mount.FormatTemplate(tmpl, values)
 	} else {
-		content = mount.FormatDotenv(values)
+		content = mount.FormatDotenv(values, order)
 	}
 
 	// RetireFIFO instead of a bare remove: a reader blocked in open(2) on

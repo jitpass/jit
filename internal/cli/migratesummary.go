@@ -91,11 +91,11 @@ func (s *migrateSummary) checkGitHistory(path string) {
 // structs and this is the one extra piece only the CLI layer's feature
 // needs.
 func (s *migrateSummary) writePointerFile(mountPath, profilePath string) error {
-	p, err := profile.LoadFile(profilePath)
+	p, varOrder, err := profile.LoadFileOrdered(profilePath)
 	if err != nil {
 		return fmt.Errorf("loading profile to write pointer file: %w", err)
 	}
-	if err := migrate.WritePointerFile(mountPath, p); err != nil {
+	if err := migrate.WritePointerFile(mountPath, p, varOrder); err != nil {
 		return err
 	}
 	s.pointerFiles++

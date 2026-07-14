@@ -269,7 +269,7 @@ func (m *mountManager) ensureServing(entries []mount.Entry) {
 			continue
 		}
 
-		p, err := profile.LoadFile(entry.ProfilePath)
+		p, varOrder, err := profile.LoadFileOrdered(entry.ProfilePath)
 		if err != nil {
 			fmt.Fprintf(m.stderr, "jit agent: skipping mount %s: %v\n", entry.MountPath, err)
 			continue
@@ -287,7 +287,7 @@ func (m *mountManager) ensureServing(entries []mount.Entry) {
 			}
 			decoy = mount.FormatTemplate(tmpl, decoyValues)
 		} else {
-			decoy = mount.FormatDotenv(decoyValues)
+			decoy = mount.FormatDotenv(decoyValues, varOrder)
 		}
 		// Decoy content self-diagnoses: whoever opens the file sees what
 		// these values are and the one command that fixes it, instead of
@@ -413,7 +413,7 @@ func (m *mountManager) resolveReal(entries []mount.Entry, v *vault.Vault, floorR
 			continue // ensureServing should always run first; nothing to resolve into otherwise
 		}
 
-		p, err := profile.LoadFile(entry.ProfilePath)
+		p, varOrder, err := profile.LoadFileOrdered(entry.ProfilePath)
 		if err != nil {
 			fmt.Fprintf(m.stderr, "jit agent: skipping mount %s: %v\n", entry.MountPath, err)
 			sm.setResolveErr(err)
@@ -436,7 +436,7 @@ func (m *mountManager) resolveReal(entries []mount.Entry, v *vault.Vault, floorR
 			}
 			real = mount.FormatTemplate(tmpl, values)
 		} else {
-			real = mount.FormatDotenv(values)
+			real = mount.FormatDotenv(values, varOrder)
 		}
 		sm.setReal(real)
 

@@ -119,27 +119,82 @@ func LoadWithScope(root, name string) (Profile, Scope, string, error) {
 // specific manifest's real path rather than a project root to resolve a
 // name against.
 func LoadFile(path string) (Profile, error) {
+	p, _, err := LoadFileOrdered(path)
+	return p, err
+}
+
+// LoadFileOrdered is LoadFile plus the manifest's own key order. A YAML
+// map decodes into a Go map, which forgets the order the file wrote its
+// keys in — but the file itself never does, and since migrate writes
+// manifests in the source file's variable order (issue #4), that order is
+// what lets a mount serve variables the way the original .env listed them
+// instead of alphabetically. Manifests written by older jit builds are
+// simply alphabetical on disk, so their order degrades to the old sorted
+// rendering.
+func LoadFileOrdered(path string) (Profile, []string, error) {
 	data, err := os.ReadFile(path) // #nosec G304 -- path is either built from a validated name under a fixed project-relative directory (Load), or read from jit's own mount registry (LoadFile's other caller), never raw external input
 	if err != nil {
-		return nil, fmt.Errorf("reading profile %s: %w", path, err)
+		return nil, nil, fmt.Errorf("reading profile %s: %w", path, err)
 	}
 
 	var p Profile
 	if err := yaml.Unmarshal(data, &p); err != nil {
-		return nil, fmt.Errorf("parsing profile %s: %w", path, err)
+		return nil, nil, fmt.Errorf("parsing profile %s: %w", path, err)
 	}
 	if len(p) == 0 {
-		return nil, fmt.Errorf("profile %s has no entries", path)
+		return nil, nil, fmt.Errorf("profile %s has no entries", path)
 	}
 	for varName, secretPath := range p {
 		if strings.TrimSpace(varName) == "" {
-			return nil, fmt.Errorf("profile %s: has an entry with an empty variable name", path)
+			return nil, nil, fmt.Errorf("profile %s: has an entry with an empty variable name", path)
 		}
 		if strings.TrimSpace(secretPath) == "" {
-			return nil, fmt.Errorf("profile %s: %s has no secret path", path, varName)
+			return nil, nil, fmt.Errorf("profile %s: %s has no secret path", path, varName)
 		}
 	}
-	return p, nil
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return p, nil, nil // order is best-effort; the validated map is what matters
+	}
+	mapping := doc.Content[0]
+	order := make([]string, 0, len(p))
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		order = append(order, mapping.Content[i].Value)
+	}
+	return p, order, nil
+}
+
+// MarshalOrdered renders p as YAML with its keys in order — names p
+// contains from order first, then any p has that order doesn't, sorted.
+// yaml.Marshal on a map always alphabetizes; this is how migrate persists
+// a source file's own variable order into the manifest (issue #4), which
+// LoadFileOrdered later reads back.
+func MarshalOrdered(p Profile, order []string) ([]byte, error) {
+	names := make([]string, 0, len(p))
+	seen := make(map[string]bool, len(p))
+	for _, name := range order {
+		if _, ok := p[name]; ok && !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	rest := make([]string, 0, len(p)-len(names))
+	for name := range p {
+		if !seen[name] {
+			rest = append(rest, name)
+		}
+	}
+	sort.Strings(rest)
+	names = append(names, rest...)
+
+	node := &yaml.Node{Kind: yaml.MappingNode}
+	for _, name := range names {
+		node.Content = append(node.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: name},
+			&yaml.Node{Kind: yaml.ScalarNode, Value: p[name]})
+	}
+	return yaml.Marshal(node)
 }
 
 // Overlay merges layers in ascending precedence order — a later layer's

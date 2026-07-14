@@ -8,19 +8,35 @@ import (
 	"strings"
 )
 
-// FormatDotenv renders values as dotenv-format content (KEY=value lines,
-// sorted for determinism) suitable for serving over a mounted .env FIFO —
-// the actual file format standard loaders (python-dotenv, Node's dotenv,
-// etc.) expect, which is NOT shell `export` syntax. A value is left bare
-// when that's unambiguous; otherwise it's double-quoted with internal
-// quotes/backslashes escaped, matching the common convention those
-// loaders already support.
-func FormatDotenv(values map[string]string) []byte {
+// FormatDotenv renders values as dotenv-format content (KEY=value lines)
+// suitable for serving over a mounted .env FIFO — the actual file format
+// standard loaders (python-dotenv, Node's dotenv, etc.) expect, which is
+// NOT shell `export` syntax. A value is left bare when that's unambiguous;
+// otherwise it's double-quoted with internal quotes/backslashes escaped,
+// matching the common convention those loaders already support.
+//
+// order carries the source file's original variable order (issue #4: a
+// mounted .env used to serve alphabetically, breaking visual/byte fidelity
+// against the file it replaced) — names appear in that order first, then
+// any names values has that order doesn't, sorted for determinism. A nil
+// order is the old fully-sorted rendering.
+func FormatDotenv(values map[string]string, order []string) []byte {
 	names := make([]string, 0, len(values))
-	for name := range values {
-		names = append(names, name)
+	seen := make(map[string]bool, len(values))
+	for _, name := range order {
+		if _, ok := values[name]; ok && !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
 	}
-	sort.Strings(names)
+	rest := make([]string, 0, len(values)-len(names))
+	for name := range values {
+		if !seen[name] {
+			rest = append(rest, name)
+		}
+	}
+	sort.Strings(rest)
+	names = append(names, rest...)
 
 	var b strings.Builder
 	for _, name := range names {
