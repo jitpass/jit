@@ -53,7 +53,33 @@ GCP application-default credentials aren't covered yet.
 
 ## Install
 
-jit is macOS-only and needs Touch ID or a device passcode.
+jit is macOS-only and needs Touch ID or a device passcode. Two ways in —
+no Homebrew tap yet (planned for the first signed release).
+
+### Option A: prebuilt binary (no Go required)
+
+Apple Silicon:
+
+```sh
+curl -sLO https://github.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz
+tar -xzf jitpass_darwin_arm64.tar.gz jit
+sudo mv jit /usr/local/bin/
+```
+
+Intel Mac: same commands with `jitpass_darwin_amd64.tar.gz`. (Unsure which
+you have? `uname -m` — `arm64` is Apple Silicon, `x86_64` is Intel.)
+
+To verify the download, `checksums.txt` on the
+[release page](https://github.com/jitpass/jit/releases/latest) has the
+SHA-256s: `shasum -a 256 --check checksums.txt --ignore-missing`.
+
+Use `curl`, not the browser: browser downloads get macOS's quarantine
+attribute, and Gatekeeper blocks quarantined binaries that aren't
+Developer-ID signed (release builds aren't, yet — same signing work as the
+Homebrew tap). If you already downloaded one that way, un-quarantine it
+with `xattr -d com.apple.quarantine jit`.
+
+### Option B: build from source with Go
 
 **1. Install Go** (1.26+), if you don't have it:
 
@@ -67,9 +93,10 @@ brew install go
 go install github.com/jitpass/jit/cmd/jit@latest
 ```
 
-No Homebrew tap yet (planned for the first signed release), so this builds
-from source. That's deliberate: a locally-compiled binary isn't quarantined,
-so there's no Gatekeeper prompt to click through.
+A locally-compiled binary isn't quarantined either, so there's no
+Gatekeeper prompt to click through here.
+
+### Then, either way
 
 **3. Shell completion** (`jit <TAB>` completes subcommands, flags, and their
 descriptions):
@@ -115,7 +142,9 @@ go install ./cmd/jit
 
 New versions are announced on the
 [Releases page](https://github.com/jitpass/jit/releases). Upgrading is two
-steps, not one:
+steps, not one. Step 1 is reinstalling the binary — for a prebuilt install,
+re-run the same three Option A commands (`releases/latest/download/...`
+always serves the newest version); from source:
 
 ```sh
 go install github.com/jitpass/jit/cmd/jit@v0.4.0   # 1. reinstall the binary (pin the new tag)
@@ -124,6 +153,8 @@ jit agent install                                  # 2. restart the background a
 
 Pin the tag rather than `@latest` right after a release: the Go module proxy
 caches `@latest`, so it can quietly hand you the previous version for a while.
+
+Step 2 is the same for both install methods.
 
 The second step is the one people skip. If you installed the background agent,
 launchd keeps the old process (and the old binary) running right through your
