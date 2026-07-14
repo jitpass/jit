@@ -50,6 +50,15 @@ func NewBackupTracker() *BackupTracker {
 	return &BackupTracker{backups: map[string]string{}, created: map[string]bool{}}
 }
 
+// BackupSecretFile stores path's exact bytes encrypted in the vault and
+// records the undo-index entry, exactly as every migrate category does
+// before touching a file. Exported for `jit wrap <tool>`'s scrub step
+// (docs/WRAP-PLAN.md §3.3 step 4), so a wrapped tool's config file gets the
+// same byte-for-byte `jit migrate undo` guarantee as a migrated one.
+func BackupSecretFile(v *vault.Vault, path string) (string, error) {
+	return backupSecretFile(v, path)
+}
+
 // backupOnce backs up path exactly once for the tracker's run: the first call
 // for a given path calls backupSecretFile (storing the pristine bytes and
 // recording the undo index entry) and caches the result; later calls for the

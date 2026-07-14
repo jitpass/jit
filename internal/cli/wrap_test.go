@@ -96,11 +96,17 @@ func TestWrapListEmpty(t *testing.T) {
 	}
 }
 
-func TestWrapCatalogFlowNotImplementedYet(t *testing.T) {
+func TestWrapUnknownToolListsCatalogAndEscapeHatch(t *testing.T) {
 	withFixtureHome(t)
-	_, err := execWrap(t, "gh")
-	if err == nil || !strings.Contains(err.Error(), "jit wrap add gh") {
-		t.Fatalf("expected the not-implemented error to point at `jit wrap add gh`, got: %v", err)
+	_, err := execWrap(t, "sometool")
+	if err == nil {
+		t.Fatal("expected an error for an uncataloged tool")
+	}
+	if !strings.Contains(err.Error(), "gh") || !strings.Contains(err.Error(), "aws") {
+		t.Errorf("error should list the catalog, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "jit wrap add sometool") {
+		t.Errorf("error should point at the manual escape hatch, got: %v", err)
 	}
 }
 

@@ -22,6 +22,7 @@ var categoryScanners = []func(Config) ([]Finding, error){
 	ScanPrivateKeys,
 	ScanIACFiles,
 	ScanSuspiciousFilenames,
+	ScanWrappableCLITokens,
 }
 
 // Scan runs every category scanner and returns the individual findings plus

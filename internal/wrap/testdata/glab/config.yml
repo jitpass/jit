@@ -1,0 +1,6 @@
+git_protocol: ssh
+check_update: true
+hosts:
+    gitlab.com:
+        token: glpat-FIXTUREtoken123456789
+        api_protocol: https

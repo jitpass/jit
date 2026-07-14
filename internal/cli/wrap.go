@@ -6,6 +6,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/wrap"
 )
 
@@ -34,11 +36,123 @@ var wrapCmd = &cobra.Command{
 		"`jit wrap add <tool> --env VAR=<vault-path>`. See docs/WRAP-PLAN.md for\n" +
 		"where this is headed (a catalog of known tools with automatic discovery).",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) > 0 {
-			return fmt.Errorf("jit wrap: catalog wrapping isn't implemented yet — use `jit wrap add %s --env VAR=<vault-path>`", args[0])
+		if len(args) == 0 {
+			return cmd.Help()
 		}
-		return cmd.Help()
+		if len(args) > 1 {
+			return fmt.Errorf("jit wrap: one tool at a time — `jit wrap %s`", args[0])
+		}
+		return runCatalogWrap(cmd, args[0])
 	},
+}
+
+// runCatalogWrap is `jit wrap <tool>` (docs/WRAP-PLAN.md §3.3): look the
+// tool up in the catalog, discover its live token, vault it, install
+// profile + shim, scrub the plaintext source (backed up encrypted first),
+// and say how to verify.
+func runCatalogWrap(cmd *cobra.Command, tool string) error {
+	entry, ok := wrap.Lookup(tool)
+	if !ok {
+		return fmt.Errorf("jit wrap: %q isn't in the catalog (%s) — `jit wrap add %s --env VAR=<vault-path>` wraps any tool by hand",
+			tool, strings.Join(wrap.CatalogTools(), ", "), tool)
+	}
+	out := cmd.OutOrStdout()
+
+	// Native tools delegate to the migrate flow that already hooks their
+	// own credential mechanism — stronger than a shim (SDKs, login/logout).
+	if entry.Kind == wrap.KindNative {
+		d, err := wrap.Delegation(entry)
+		if err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		fmt.Fprintf(out, "%s: %s.\n", entry.Tool, entry.Doc)
+		fmt.Fprintf(out, "Running `jit %s` — no shim needed or installed.\n\n", strings.Join(d.Command, " "))
+		self, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		sub := exec.Command(self, d.Command...) // #nosec G204 -- self + compiled-in catalog args
+		sub.Stdin, sub.Stdout, sub.Stderr = cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr()
+		return sub.Run()
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("jit wrap: %w", err)
+	}
+	if _, err := exec.LookPath(tool); err != nil {
+		return fmt.Errorf("jit wrap: %s isn't installed (not on PATH) — install it first", tool)
+	}
+
+	discovery, found, err := wrap.DiscoverToken(home, entry)
+	if err != nil {
+		return fmt.Errorf("jit wrap: %w", err)
+	}
+	primary := entry.PrimaryVar()
+	vaultPath := entry.VaultPath(primary)
+
+	if found {
+		v, err := openVault()
+		if err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		if err := v.Set(vaultPath, []byte(discovery.Value)); err != nil {
+			return fmt.Errorf("jit wrap: storing %s: %w", vaultPath, err)
+		}
+		if discovery.Source != nil {
+			fmt.Fprintf(out, "Found the %s in %s — moved into the vault at %s.\n", entry.Doc, discovery.Source.Path, vaultPath)
+		} else {
+			fmt.Fprintf(out, "Exported the %s from the tool's own keyring — copied into the vault at %s.\n", entry.Doc, vaultPath)
+		}
+	} else {
+		fmt.Fprintf(out, "No %s found on this machine — store it first:\n  jit vault set %s\nthen re-run `jit wrap %s`. Installing the shim and profile now anyway.\n",
+			entry.Doc, vaultPath, tool)
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("jit wrap: %w", err)
+	}
+	jitBinary, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		return fmt.Errorf("jit wrap: %w", err)
+	}
+	env := make(map[string]string, len(entry.EnvVars))
+	for varName := range entry.EnvVars {
+		env[varName] = entry.VaultPath(varName)
+	}
+	res, err := wrap.Add(home, wrap.AddRequest{Tool: tool, Env: env, Order: entry.Order, JitBinary: jitBinary})
+	if err != nil {
+		return fmt.Errorf("jit wrap: %w", err)
+	}
+	fmt.Fprintf(out, "Wrapped %s:\n  profile  %s (%s)\n  shim     %s\n", tool, res.ProfileName, res.ProfilePath, res.ShimPath)
+
+	// Scrub only after the vault holds the value and the profile+shim are
+	// in place, and only after an encrypted byte-for-byte backup — the
+	// same order-of-operations discipline as every migrate category.
+	if found && discovery.Source != nil {
+		v, err := openVault()
+		if err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		srcPath := wrap.ExpandHome(home, discovery.Source.Path)
+		if _, err := migrate.BackupSecretFile(v, srcPath); err != nil {
+			return fmt.Errorf("jit wrap: backing up %s: %w", srcPath, err)
+		}
+		if err := wrap.ScrubToken(home, *discovery.Source, discovery.Value); err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		fmt.Fprintf(out, "Scrubbed the plaintext from %s (original backed up encrypted — `jit migrate undo %s` restores it byte-for-byte).\n",
+			discovery.Source.Path, srcPath)
+	}
+
+	if err := ensureShimOnPath(cmd, home, tool); err != nil {
+		return fmt.Errorf("jit wrap: %w", err)
+	}
+	if entry.VerifyHint != "" {
+		fmt.Fprintf(out, "Check it: open a new shell and run `%s`.\n", entry.VerifyHint)
+	}
+	return nil
 }
 
 var wrapAddEnv []string
@@ -89,19 +203,30 @@ var wrapAddCmd = &cobra.Command{
 		fmt.Fprintf(out, "  profile  %s (%s)\n", res.ProfileName, res.ProfilePath)
 		fmt.Fprintf(out, "  shim     %s\n", res.ShimPath)
 
-		rc := wrap.RcFile(home, os.Getenv("SHELL"))
-		changed, err := wrap.EnsurePathLine(rc)
-		if err != nil {
+		if err := ensureShimOnPath(cmd, home, tool); err != nil {
 			return fmt.Errorf("jit wrap add: %w", err)
-		}
-		if changed {
-			fmt.Fprintf(out, "  added to %s: %s\n", rc, wrap.PathLine())
-			fmt.Fprintf(out, "\nOpen a new shell (or run `%s` in this one) and %s is wrapped.\n", wrap.PathLine(), tool)
-		} else {
-			fmt.Fprintf(out, "\n%s is wrapped for new shells; current shells need the shim dir on PATH already.\n", tool)
 		}
 		return nil
 	},
+}
+
+// ensureShimOnPath puts the one shim PATH line in the user's rc file (once)
+// and tells them how to apply it to the current shell — shared by the
+// catalog flow and `wrap add`.
+func ensureShimOnPath(cmd *cobra.Command, home, tool string) error {
+	out := cmd.OutOrStdout()
+	rc := wrap.RcFile(home, os.Getenv("SHELL"))
+	changed, err := wrap.EnsurePathLine(rc)
+	if err != nil {
+		return err
+	}
+	if changed {
+		fmt.Fprintf(out, "Added to %s: %s\n", rc, wrap.PathLine())
+		fmt.Fprintf(out, "Open a new shell (or run `%s` in this one) and %s is wrapped.\n", wrap.PathLine(), tool)
+	} else {
+		fmt.Fprintf(out, "%s is wrapped for new shells (shim PATH line already present).\n", tool)
+	}
+	return nil
 }
 
 var wrapListCmd = &cobra.Command{

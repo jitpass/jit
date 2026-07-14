@@ -16,7 +16,9 @@ import (
 // SchemaVersion is the NDJSON record schema version (RFC.md §4) — versioned
 // independently from ScannerVersion, which tracks the jit binary itself.
 // 0.2.0 added scan_summary's jit_protected_count (additive, so a minor bump).
-const SchemaVersion = "0.2.0"
+// 0.3.0 added the wrappable_cli_token finding type and its
+// findings_by_category key (additive).
+const SchemaVersion = "0.3.0"
 
 // ScannerName identifies this tool in the shared NDJSON envelope, matching
 // bumblebee's record shape so a receiver can co-ingest both (RFC.md §4).
@@ -42,11 +44,13 @@ const (
 	FindingTypePrivateKeyRisk     = "private_key_risk"
 	FindingTypeIACVariableFile    = "iac_variable_file"
 	FindingTypeSuspiciousFilename = "suspicious_filename"
+	FindingTypeWrappableCLIToken  = "wrappable_cli_token" // #nosec G101 -- enum label, not a credential
 )
 
 // AllFindingTypes lists every finding_type in the fixed order used for
-// scan_summary's findings_by_category map (RFC.md §4: "all seven keys always
-// present").
+// scan_summary's findings_by_category map (RFC.md §4's original seven
+// categories: "all seven keys always present" — plus wrappable_cli_token,
+// added in schema 0.3.0; every key is always present either way).
 var AllFindingTypes = []string{
 	FindingTypeShellConfigSecret,
 	FindingTypeEnvFilePresent,
@@ -55,6 +59,7 @@ var AllFindingTypes = []string{
 	FindingTypePrivateKeyRisk,
 	FindingTypeIACVariableFile,
 	FindingTypeSuspiciousFilename,
+	FindingTypeWrappableCLIToken,
 }
 
 // Severity levels for an individual finding.
