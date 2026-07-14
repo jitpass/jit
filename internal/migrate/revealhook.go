@@ -176,7 +176,7 @@ func writeNpmHookFile(pkgPath string, cleaned, original []byte) ([]byte, error) 
 		(len(cleaned) == 0 || cleaned[len(cleaned)-1] != '\n') {
 		cleaned = append(cleaned, '\n')
 	}
-	if err := os.WriteFile(pkgPath, cleaned, 0o600); err != nil {
+	if err := os.WriteFile(pkgPath, cleaned, 0o600); err != nil { // #nosec G703 -- pkgPath is the mount's own directory joined with a fixed literal filename, never external input
 		return nil, err
 	}
 	return cleaned, nil
@@ -460,7 +460,7 @@ func installNpmRevealHook(dir, jitPath string, mountPaths []string) (RevealHookK
 			return RevealHookNone, err
 		}
 	}
-	if err := os.WriteFile(pkgPath, out, 0o600); err != nil {
+	if err := os.WriteFile(pkgPath, out, 0o600); err != nil { // #nosec G703 -- pkgPath is dir (the mount's own directory, from jit's own migrate walk) joined with a fixed literal filename
 		return RevealHookNone, fmt.Errorf("writing %s: %w", pkgPath, err)
 	}
 	return RevealHookNpm, nil

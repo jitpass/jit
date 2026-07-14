@@ -206,7 +206,7 @@ func procArgs(pid int32) []string {
 	if err != nil || len(buf) < 4 {
 		return nil
 	}
-	argc := int(int32(binary.LittleEndian.Uint32(buf[:4])))
+	argc := int(int32(binary.LittleEndian.Uint32(buf[:4]))) // #nosec G115 -- deliberate: kern.procargs2's argc field IS an int32; reinterpreting the raw uint32 as signed is the decode, and the <=0 check below rejects any wrapped/garbage value
 	if argc <= 0 {
 		return nil
 	}
