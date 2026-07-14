@@ -145,7 +145,7 @@ func ApplyShellConfig(v *vault.Vault, path string) (ShellConfigMigration, error)
 		entries[name] = secretPath
 	}
 
-	if err := writeProfileManifest(profilePath, entries); err != nil {
+	if err := writeProfileManifest(profilePath, entries, nil); err != nil {
 		return ShellConfigMigration{}, fmt.Errorf("writing profile %s: %w", profilePath, err)
 	}
 

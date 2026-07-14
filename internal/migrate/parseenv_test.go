@@ -16,7 +16,7 @@ func parseFixtureEnv(t *testing.T, content string) (map[string]string, []int) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("writing fixture: %v", err)
 	}
-	values, unparsed, err := parseEnvFile(path)
+	values, _, unparsed, err := parseEnvFile(path)
 	if err != nil {
 		t.Fatalf("parseEnvFile: %v", err)
 	}

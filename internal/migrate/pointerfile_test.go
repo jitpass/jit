@@ -28,7 +28,7 @@ func TestWritePointerFileNeverContainsRealValues(t *testing.T) {
 		"STRIPE_API_KEY": "myapp/STRIPE_API_KEY",
 	}
 
-	if err := WritePointerFile(mountPath, vars); err != nil {
+	if err := WritePointerFile(mountPath, vars, nil); err != nil {
 		t.Fatalf("WritePointerFile: %v", err)
 	}
 
@@ -66,7 +66,7 @@ func TestWritePointerFileIsSortedAndDeterministic(t *testing.T) {
 		"APPLE": "myapp/APPLE",
 	}
 
-	if err := WritePointerFile(mountPath, vars); err != nil {
+	if err := WritePointerFile(mountPath, vars, nil); err != nil {
 		t.Fatalf("WritePointerFile: %v", err)
 	}
 	data, err := os.ReadFile(PointerFilePath(mountPath))
@@ -84,7 +84,7 @@ func TestWritePointerFileIsSortedAndDeterministic(t *testing.T) {
 func TestWritePointerFileNeverCreatesAFIFO(t *testing.T) {
 	dir := t.TempDir()
 	mountPath := filepath.Join(dir, ".env")
-	if err := WritePointerFile(mountPath, profile.Profile{"A": "myapp/A"}); err != nil {
+	if err := WritePointerFile(mountPath, profile.Profile{"A": "myapp/A"}, nil); err != nil {
 		t.Fatalf("WritePointerFile: %v", err)
 	}
 

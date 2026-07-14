@@ -146,7 +146,7 @@ func ApplyAWSProfile(v *vault.Vault, home, profileName string, dedup ...*BackupT
 	}
 	sort.Strings(varNames)
 
-	if err := writeProfileManifest(vaultProfilePath, entries); err != nil {
+	if err := writeProfileManifest(vaultProfilePath, entries, nil); err != nil {
 		return AWSCredentialMigration{}, fmt.Errorf("writing profile %s: %w", vaultProfilePath, err)
 	}
 

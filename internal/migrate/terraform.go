@@ -228,7 +228,7 @@ func upsertTerraformProfile(v *vault.Vault, host string, token []byte) (name, ma
 		return "", "", "", fmt.Errorf("storing token in vault: %w", err)
 	}
 	entries["TOKEN"] = secretPath
-	if err := writeProfileManifest(manifestPath, entries); err != nil {
+	if err := writeProfileManifest(manifestPath, entries, nil); err != nil {
 		return "", "", "", fmt.Errorf("writing profile %s: %w", manifestPath, err)
 	}
 	return name, manifestPath, secretPath, nil

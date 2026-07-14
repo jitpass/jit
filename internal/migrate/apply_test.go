@@ -163,7 +163,7 @@ func TestDiscoverEnvFilesSkipsPointerFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("profile.LoadFile: %v", err)
 	}
-	if err := WritePointerFile(result.EnvPath, p); err != nil {
+	if err := WritePointerFile(result.EnvPath, p, nil); err != nil {
 		t.Fatalf("WritePointerFile: %v", err)
 	}
 
@@ -291,6 +291,36 @@ func TestApplyEnvFileEndToEnd(t *testing.T) {
 	}
 	if info.Mode()&os.ModeNamedPipe == 0 {
 		t.Errorf(".env at %s is not a named pipe after migration", path)
+	}
+}
+
+// Issue #4: a live-mounted .env used to serve alphabetically because the
+// manifest (a YAML map) forgot the source file's variable order. The
+// manifest must now be written in source order, and LoadFileOrdered must
+// hand that order back — it's what the agent's mount rendering and the
+// .pointers companion consume.
+func TestApplyEnvFilePreservesSourceOrder(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ".env")
+	writeFile(t, path, "DATABASE_URL=postgres://x\nPROD_DATABASE_URL=postgres://y\nSTRIPE_API_KEY=sk_test\nDEBUG=true\n")
+
+	v := newTestVault(t)
+	result, err := ApplyEnvFile(v, root, path)
+	if err != nil {
+		t.Fatalf("ApplyEnvFile: %v", err)
+	}
+
+	wantOrder := []string{"DATABASE_URL", "PROD_DATABASE_URL", "STRIPE_API_KEY", "DEBUG"}
+	if strings.Join(result.Variables, ",") != strings.Join(wantOrder, ",") {
+		t.Errorf("Variables = %v, want source order %v", result.Variables, wantOrder)
+	}
+
+	_, order, err := profile.LoadFileOrdered(result.ProfilePath)
+	if err != nil {
+		t.Fatalf("LoadFileOrdered: %v", err)
+	}
+	if strings.Join(order, ",") != strings.Join(wantOrder, ",") {
+		t.Errorf("manifest key order = %v, want source order %v", order, wantOrder)
 	}
 }
 

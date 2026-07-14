@@ -526,9 +526,9 @@ func TestServeGatesRealContentBehindRevealState(t *testing.T) {
 	reveal := NewRevealState()
 	provideContent := func() []byte {
 		if reveal.IsRevealed() {
-			return FormatDotenv(real)
+			return FormatDotenv(real, nil)
 		}
-		return FormatDotenv(decoy)
+		return FormatDotenv(decoy, nil)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -538,23 +538,23 @@ func TestServeGatesRealContentBehindRevealState(t *testing.T) {
 
 	// Hidden: must get decoy content, never the real value.
 	got := readFIFO(t, path)
-	if string(got) != string(FormatDotenv(decoy)) {
-		t.Errorf("hidden reader got %q, want decoy %q", got, FormatDotenv(decoy))
+	if string(got) != string(FormatDotenv(decoy, nil)) {
+		t.Errorf("hidden reader got %q, want decoy %q", got, FormatDotenv(decoy, nil))
 	}
 
 	// Revealed: must get real content.
 	reveal.Reveal(time.Second)
 	got = readFIFO(t, path)
-	if string(got) != string(FormatDotenv(real)) {
-		t.Errorf("revealed reader got %q, want real %q", got, FormatDotenv(real))
+	if string(got) != string(FormatDotenv(real, nil)) {
+		t.Errorf("revealed reader got %q, want real %q", got, FormatDotenv(real, nil))
 	}
 
 	// Window naturally expires: back to decoy without any code re-checking
 	// anything other than IsRevealed on the next cycle.
 	reveal.Hide()
 	got = readFIFO(t, path)
-	if string(got) != string(FormatDotenv(decoy)) {
-		t.Errorf("reader after hide got %q, want decoy %q", got, FormatDotenv(decoy))
+	if string(got) != string(FormatDotenv(decoy, nil)) {
+		t.Errorf("reader after hide got %q, want decoy %q", got, FormatDotenv(decoy, nil))
 	}
 
 	cancel()
@@ -613,7 +613,7 @@ func TestFormatDotenv(t *testing.T) {
 		"EMPTY":      "",
 		"HAS_HASH":   "a#b",
 		"HAS_DOLLAR": "a$b",
-	})
+	}, nil)
 	want := "EMPTY=\"\"\n" +
 		"HAS_DOLLAR=\"a$b\"\n" +
 		"HAS_HASH=\"a#b\"\n" +
@@ -625,8 +625,34 @@ func TestFormatDotenv(t *testing.T) {
 	}
 }
 
+// Issue #4: a live-mounted .env used to serve its variables alphabetically.
+// With the source order supplied, rendering follows it — and any name the
+// order doesn't cover still appears, sorted, at the end (a manifest edited
+// by hand, or an older alphabetical manifest, degrades gracefully).
+func TestFormatDotenvPreservesGivenOrder(t *testing.T) {
+	values := map[string]string{
+		"DATABASE_URL":      "postgres://x",
+		"PROD_DATABASE_URL": "postgres://y",
+		"STRIPE_API_KEY":    "sk_test",
+		"DEBUG":             "true",
+		"ZZZ_EXTRA":         "1",
+		"AAA_EXTRA":         "2",
+	}
+	order := []string{"DATABASE_URL", "PROD_DATABASE_URL", "STRIPE_API_KEY", "DEBUG"}
+	got := FormatDotenv(values, order)
+	want := "DATABASE_URL=postgres://x\n" +
+		"PROD_DATABASE_URL=postgres://y\n" +
+		"STRIPE_API_KEY=sk_test\n" +
+		"DEBUG=true\n" +
+		"AAA_EXTRA=2\n" +
+		"ZZZ_EXTRA=1\n"
+	if string(got) != want {
+		t.Errorf("FormatDotenv = %q, want %q", got, want)
+	}
+}
+
 func TestFormatDotenvEscapesBackslashAndNewline(t *testing.T) {
-	got := FormatDotenv(map[string]string{"X": "a\\b\nc"})
+	got := FormatDotenv(map[string]string{"X": "a\\b\nc"}, nil)
 	want := "X=\"a\\\\b\\nc\"\n"
 	if string(got) != want {
 		t.Errorf("FormatDotenv = %q, want %q", got, want)

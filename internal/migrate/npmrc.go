@@ -208,7 +208,7 @@ func ApplyNpmrc(v *vault.Vault, profilesRoot, path string, global bool) (NpmrcMi
 		entries[name] = secretPath
 	}
 
-	if err := writeProfileManifest(profilePath, entries); err != nil {
+	if err := writeProfileManifest(profilePath, entries, nil); err != nil {
 		return NpmrcMigration{}, fmt.Errorf("writing profile %s: %w", profilePath, err)
 	}
 
