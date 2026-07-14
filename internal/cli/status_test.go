@@ -62,6 +62,45 @@ func TestStatusVaultReportsSecretCount(t *testing.T) {
 	}
 }
 
+// `_backups/…` entries are migrate-undo snapshots, not secrets — folding
+// them into the headline count made `jit status` disagree with
+// `jit vault list` for the same vault (issue #1).
+func TestStatusVaultCountExcludesBackups(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	plantVaultSecret(t, home, "stripe/dev-key")
+	plantVaultSecret(t, home, "aws/s3-access-key")
+	plantVaultSecret(t, home, "_backups/Users/x/app/.env.jit-bak-1")
+	plantVaultSecret(t, home, "_backups/Users/x/app/.env.jit-bak-2")
+
+	out, err := execStatus(t)
+	if err != nil {
+		t.Fatalf("jit status: %v", err)
+	}
+	if !strings.Contains(out, "Vault: 2 secret(s) stored, plus 2 encrypted file backup(s) kept for `jit migrate undo`.") {
+		t.Errorf("expected backups excluded from the secret count and reported separately, got:\n%s", out)
+	}
+}
+
+// A vault holding only undo backups is not "no secrets stored yet" — the
+// `jit vault init` nudge would be wrong there.
+func TestStatusVaultOnlyBackups(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	plantVaultSecret(t, home, "_backups/Users/x/app/.env.jit-bak-1")
+
+	out, err := execStatus(t)
+	if err != nil {
+		t.Fatalf("jit status: %v", err)
+	}
+	if !strings.Contains(out, "Vault: 0 secret(s) stored, plus 1 encrypted file backup(s) kept for `jit migrate undo`.") {
+		t.Errorf("expected a backups-only vault line, got:\n%s", out)
+	}
+	if strings.Contains(out, "no secrets stored yet") {
+		t.Errorf("backups-only vault should not claim the vault is empty, got:\n%s", out)
+	}
+}
+
 // The three backup-nudge states: the vault's one disaster-recovery path
 // (`jit vault export`) used to be entirely invisible — nothing ever
 // suggested it existed, on a vault that only decrypts on this machine.
