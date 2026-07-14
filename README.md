@@ -153,6 +153,9 @@ source <(jit completion zsh)
 Then `exec zsh` again. bash and fish instructions are in
 **[docs/USAGE.md](./docs/USAGE.md#shell-completion)**.
 
+That's the install done — jump ahead to the **[Quick start](#quick-start)**;
+the Upgrading section below can wait until there's something to upgrade.
+
 **Contributing rather than just using it?** Build from a clone instead; same
 result:
 
