@@ -324,8 +324,25 @@ exactly why a profile manifest is safe to commit.
 - **"No secret stored at ..." or a doctor failure.** A profile references a
   vault path that's gone (usually a `jit vault rm` after migration).
   Re-set it with `jit vault set <path>`, or update the profile.
-- **Touch ID prompts feel too frequent.** Install the agent (§3), or
-  lengthen its window: `jit agent install --ttl 1h`.
+- **A Touch ID prompt appeared and you don't know why.** Read it — it names
+  what it's for and what set it off ("unlock the vault for profile
+  `mcp-jamf`, launched by claude"). If it's already gone, `jit agent status`
+  shows who unlocked the current session and what dropped it, and
+  `jit agent history` lists every unlock and lock since the agent started:
+
+  ```
+  Session history (most recent first):
+    • unlocked 4s ago (13:19:19) — launched by claude
+        ~/go/bin/jit run --profile mcp-caido -- caido-mcp-server serve
+    • locked   10s ago (13:19:13) — explicit lock, launched by claude
+  ```
+
+  A common surprise: opening an editor. If your project's `.mcp.json` wraps
+  an MCP server in `jit run --profile ...`, then starting that editor starts
+  a secret-injecting process, which prompts if the session has lapsed.
+- **Touch ID prompts feel too frequent.** First find out what's asking —
+  `jit agent history` (above) names each one. If they're all legitimate,
+  install the agent (§3) or lengthen its window: `jit agent install --ttl 1h`.
 - **"different build" warning from `jit status`.** The running agent is an
   older binary than the CLI you're typing. Run `jit agent install` again to
   restart it on the current one (see the README's
