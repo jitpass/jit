@@ -1,0 +1,6 @@
+#!/bin/sh
+# Stub injector: mimics `jit run --profile X -- cmd args...` without any
+# vault/agent work, to isolate the shim's own overhead. Args arrive as:
+#   run --profile wrap-<tool> -- <real> <args...>
+shift 4
+FAKE_TOKEN="stub-injected-value" exec "$@"
