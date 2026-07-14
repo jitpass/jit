@@ -1,5 +1,5 @@
 // Copyright 2026 Meni Tasa
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 
 // Command keychain-interim-key-spike answers one question before building
 // internal/vault's interim key-wrapping backend on top of it: does a PLAIN

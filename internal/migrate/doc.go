@@ -1,5 +1,5 @@
 // Copyright 2026 Meni Tasa
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 
 // Package migrate implements jit migrate: RFC.md's guided fix path for
 // findings jit audit reports. A separate command from jit audit, not a

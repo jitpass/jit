@@ -1,5 +1,5 @@
 // Copyright 2026 Meni Tasa
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 
 // Package profile implements named profile manifests (RFC.md Pillar IV): a
 // small, git-safe YAML file under .jit/profiles/ that maps environment

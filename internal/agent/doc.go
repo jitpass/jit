@@ -1,5 +1,5 @@
 // Copyright 2026 Meni Tasa
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 
 // Package agent implements the jit-agent session broker (RFC.md Pillar
 // II): a Unix-socket server (Server) holding the decrypted MEK in memory
