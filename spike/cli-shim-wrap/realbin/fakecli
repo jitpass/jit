@@ -1,0 +1,11 @@
+#!/bin/sh
+# Stands in for a wrapped CLI (gh, stripe, ...). Reports whether its
+# credential env var arrived, without ever printing the value.
+if [ "$1" = "-q" ]; then
+  exit 0
+fi
+if [ -n "$FAKE_TOKEN" ]; then
+  echo "fakecli: FAKE_TOKEN present (${#FAKE_TOKEN} chars) args=[$*]"
+else
+  echo "fakecli: FAKE_TOKEN missing args=[$*]"
+fi
