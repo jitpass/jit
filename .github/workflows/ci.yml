@@ -39,7 +39,9 @@ jobs:
         run: govulncheck ./...
 
       - name: Install gosec
-        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+        # Pinned: a floating @latest meant gosec releases change CI results under
+        # unrelated commits (v2.28.0 landed mid-day and broke three pushes). Bump deliberately.
+        run: go install github.com/securego/gosec/v2/cmd/gosec@v2.28.0
 
       - name: gosec
         # -exclude-generated skips cgo-generated glue (keychainwrap/lineage/secureenclave):
