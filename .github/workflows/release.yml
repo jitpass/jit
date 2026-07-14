@@ -31,6 +31,3 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Write access to jitpass/homebrew-tap. Until this secret exists,
-          # .goreleaser.yml skips the cask upload (binaries still publish).
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}

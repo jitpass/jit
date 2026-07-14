@@ -60,36 +60,9 @@ release:
   # name and notes and just upload the artifacts.
   mode: keep-existing
 
-# Requires a separate jitpass/homebrew-tap repo (not yet created) and a
-# token with write access to it, supplied via HOMEBREW_TAP_GITHUB_TOKEN in CI.
-# `homebrew_casks`, not the older `brews` — brews is deprecated as of
-# goreleaser v2.10 (it hackily used Formulas to install precompiled binaries;
-# casks are the correct mechanism for that, per goreleaser.com/deprecations#brews).
-homebrew_casks:
-  - name: jitpass
-    repository:
-      owner: jitpass
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    directory: Casks
-    # The archive's binary is `jit`; without this the cask defaults to
-    # linking a binary named after the cask (jitpass) and install breaks.
-    binaries: [jit]
-    homepage: "https://github.com/jitpass/jit"
-    description: "Local-first developer secret runtime"
-    # Apache-2.0 — homebrew_casks has no `license:` field (unlike
-    # the deprecated `brews`/Formula schema); license lives in LICENSE instead.
-    # Don't fail the whole release while the tap token secret doesn't exist
-    # yet — binaries still publish, only the cask push is skipped.
-    skip_upload: '{{ if eq (envOrDefault "HOMEBREW_TAP_GITHUB_TOKEN" "") "" }}true{{ else }}false{{ end }}'
-    # Release binaries are only ad-hoc signed until we have a Developer ID
-    # certificate (see the signing TODO above). Homebrew quarantines cask
-    # downloads, and Gatekeeper kills quarantined ad-hoc binaries on first
-    # run — so drop the quarantine attribute on install, per
-    # goreleaser.com/customization/homebrew_casks (unsigned binaries).
-    hooks:
-      post:
-        install: |
-          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/jit"]
-          end
+# Homebrew tap publishing (homebrew_casks → jitpass/homebrew-tap) is
+# deliberately absent until releases are signed with a Developer ID
+# certificate and notarized — we don't want to promote an install path for
+# unsigned binaries. When signing lands, restore the `homebrew_casks` block
+# (git history has a working version: cask `jitpass`, binaries [jit],
+# HOMEBREW_TAP_GITHUB_TOKEN for the push).
