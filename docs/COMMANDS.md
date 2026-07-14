@@ -222,6 +222,17 @@ vault itself stays initialized, so `set`/`migrate` keep working
 immediately. Refuses while any file is still live-mounted; unmount first.
 Confirms unless `-y, --yes`.
 
+#### `jit vault prune`
+
+Deletes stale encrypted file backups, keeping each file's newest — the one
+`jit migrate undo` restores from, so undo keeps working. Backups accumulate
+on purpose: every `jit migrate` rewrite stores one, and every `jit migrate
+undo` snapshots the pre-undo state too (undo is itself undoable), with no
+automatic TTL or cap — a recovery snapshot silently aging out would be
+worse. Run this whenever the `plus N encrypted file backup(s)` count in
+`jit status`/`jit vault list` grows past what you care to keep. Confirms
+unless `-y, --yes`.
+
 #### `jit vault delete`
 
 Destroys the entire vault: every secret, the backups and their undo index,

@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -562,6 +563,93 @@ var vaultCleanCmd = &cobra.Command{
 	},
 }
 
+var vaultPruneYes bool
+
+// vaultPruneCmd is the answer to the backups-accumulation question (issue
+// #5): every migrate→undo cycle adds fresh `_backups/…` entries (undo
+// snapshots the pre-undo state so it's itself undoable), nothing ever
+// removes the older ones, and there is deliberately no automatic TTL/cap —
+// silently expiring a recovery snapshot is worse than letting the user
+// decide when history is disposable. Pruning keeps exactly what
+// `jit migrate undo` would use (the newest backup per file) and deletes
+// the rest.
+var vaultPruneCmd = &cobra.Command{
+	Use:   "prune",
+	Short: "Delete stale encrypted file backups, keeping each file's newest",
+	Long: "jit migrate backs a file up into the vault (under _backups/...) every time\n" +
+		"it rewrites one, and `jit migrate undo` snapshots the pre-undo state too, so\n" +
+		"repeated migrate/undo cycles accumulate backups indefinitely — nothing\n" +
+		"expires them automatically, on purpose (a recovery snapshot silently aging\n" +
+		"out is worse than a big vault). This prunes the accumulation: for every\n" +
+		"file, the NEWEST backup — the one `jit migrate undo` would restore — is\n" +
+		"kept, and every older one is permanently deleted.\n\n" +
+		"Backups taken by jit builds before the undo index existed aren't touched\n" +
+		"(they're invisible to undo but may be your only copy) — see them with\n" +
+		"`jit vault list --all` and delete by hand with `jit vault rm` if wanted.",
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		out := cmd.OutOrStdout()
+		root, err := vaultRootDir()
+		if err != nil {
+			return fmt.Errorf("jit vault prune: %w", err)
+		}
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("jit vault prune: %w", err)
+		}
+		recs, err := migrate.LoadBackupRecords(root)
+		if err != nil {
+			return fmt.Errorf("jit vault prune: %w", err)
+		}
+
+		// Keep the newest record per file — exactly the set undo restores
+		// from. RemoveOnRestore records have no vault entry at all
+		// (VaultPath is empty); they cost nothing and must never land in
+		// the drop set, where an empty VaultPath would match every one of
+		// them in DropBackupRecords.
+		keep := map[string]bool{}
+		for _, r := range migrate.LatestBackups(recs) {
+			if r.VaultPath != "" {
+				keep[r.VaultPath] = true
+			}
+		}
+		var stale []migrate.BackupRecord
+		for _, r := range recs {
+			if r.VaultPath != "" && !keep[r.VaultPath] {
+				stale = append(stale, r)
+			}
+		}
+		if len(stale) == 0 {
+			fmt.Fprintln(out, "Nothing to prune — each backed-up file already has only its newest backup.")
+			return nil
+		}
+
+		fmt.Fprintf(out, "Pruning %d stale backup(s) — each file's newest backup is kept, so `jit migrate undo` still works:\n", len(stale))
+		for _, r := range stale {
+			fmt.Fprintf(out, "  • %s (%s, backed up %s ago)\n", r.VaultPath, displayPath(home, r.OriginalPath), humanAgo(time.Since(time.Unix(r.UnixTS, 0))))
+		}
+		if !vaultPruneYes && !confirmPrompt(cmd, fmt.Sprintf("Permanently delete %d stale backup(s)? This can't be undone. [y/N] ", len(stale))) {
+			fmt.Fprintln(out, "Aborted. Nothing was deleted.")
+			return nil
+		}
+
+		v, err := openVaultReadOnly()
+		if err != nil {
+			return fmt.Errorf("jit vault prune: %w", err)
+		}
+		for _, r := range stale {
+			if err := v.Remove(r.VaultPath); err != nil && !errors.Is(err, vault.ErrNotFound) {
+				return fmt.Errorf("jit vault prune: deleting %s: %w", r.VaultPath, err)
+			}
+		}
+		if err := migrate.DropBackupRecords(root, stale); err != nil {
+			return fmt.Errorf("jit vault prune: %w", err)
+		}
+		fmt.Fprintf(out, "Pruned %d stale backup(s). %d file(s) keep their newest backup for `jit migrate undo`.\n", len(stale), len(keep))
+		return nil
+	},
+}
+
 var vaultDeleteYes bool
 
 // vaultDeleteCmd destroys the entire vault: every secret, the undo index,
@@ -810,7 +898,8 @@ func init() {
 	vaultImportCmd.Flags().BoolVarP(&vaultImportYes, "yes", "y", false, "skip the confirmation prompt and import immediately")
 
 	vaultCleanCmd.Flags().BoolVarP(&vaultCleanYes, "yes", "y", false, "skip the confirmation prompt")
+	vaultPruneCmd.Flags().BoolVarP(&vaultPruneYes, "yes", "y", false, "skip the confirmation prompt")
 	vaultDeleteCmd.Flags().BoolVarP(&vaultDeleteYes, "yes", "y", false, "skip the confirmation prompt")
-	vaultCmd.AddCommand(vaultInitCmd, vaultSetCmd, vaultGetCmd, vaultListCmd, vaultRmCmd, vaultCleanCmd, vaultDeleteCmd, vaultExportCmd, vaultImportCmd)
+	vaultCmd.AddCommand(vaultInitCmd, vaultSetCmd, vaultGetCmd, vaultListCmd, vaultRmCmd, vaultCleanCmd, vaultPruneCmd, vaultDeleteCmd, vaultExportCmd, vaultImportCmd)
 	rootCmd.AddCommand(vaultCmd)
 }
