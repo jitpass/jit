@@ -93,6 +93,15 @@ tar -xzf jitpass_darwin_arm64.tar.gz jit
 sudo mv jit /usr/local/bin/
 ```
 
+Optional, for `jit <TAB>` completion (if it errors, see
+[Shell completion](#shell-completion-both-options) below):
+
+```sh
+echo 'source <(jit completion zsh)' >> ~/.zshrc && exec zsh
+```
+
+That's the install done — jump ahead to the **[Quick start](#quick-start)**.
+
 Prebuilt binaries are Apple Silicon only — we don't have Intel hardware to
 test on, and won't publish what we can't test. On an Intel Mac, use
 Option B (it builds from source, so it works on any Mac).
@@ -152,9 +161,6 @@ source <(jit completion zsh)
 
 Then `exec zsh` again. bash and fish instructions are in
 **[docs/USAGE.md](./docs/USAGE.md#shell-completion)**.
-
-That's the install done — jump ahead to the **[Quick start](#quick-start)**;
-the Upgrading section below can wait until there's something to upgrade.
 
 **Contributing rather than just using it?** Build from a clone instead; same
 result:
