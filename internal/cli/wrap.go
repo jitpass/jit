@@ -303,6 +303,32 @@ var wrapUndoCmd = &cobra.Command{
 	},
 }
 
+var wrapDoctorCmd = &cobra.Command{
+	Use:   "doctor",
+	Short: "Verify every wrapped tool's shim, PATH entry, and profile",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("jit wrap doctor: %w", err)
+		}
+		checks := wrap.Doctor(home, os.Getenv("PATH"), os.Getenv("SHELL"))
+		out := cmd.OutOrStdout()
+		failed := 0
+		for _, c := range checks {
+			mark := "✓"
+			if !c.OK {
+				mark = "✗"
+				failed++
+			}
+			fmt.Fprintf(out, "%s %-12s %s\n", mark, c.Name, c.Detail)
+		}
+		if failed > 0 {
+			return fmt.Errorf("jit wrap doctor: %d check(s) failed", failed)
+		}
+		return nil
+	},
+}
+
 // parseWrapEnv turns repeated --env VAR=<vault-path> flags into the map +
 // order wrap.Add wants. Order is the flags' own order, which becomes the
 // profile manifest's variable order.
@@ -336,6 +362,6 @@ func sortedTools(m wrap.Manifest) []string {
 
 func init() {
 	wrapAddCmd.Flags().StringArrayVar(&wrapAddEnv, "env", nil, "environment variable to inject, as VAR=<vault-path> (repeatable)")
-	wrapCmd.AddCommand(wrapAddCmd, wrapListCmd, wrapUndoCmd)
+	wrapCmd.AddCommand(wrapAddCmd, wrapListCmd, wrapUndoCmd, wrapDoctorCmd)
 	rootCmd.AddCommand(wrapCmd)
 }
