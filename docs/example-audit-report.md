@@ -102,7 +102,7 @@ No secret values are ever printed in full. Run `jit audit --format ndjson` for m
 
 ## What made this Critical
 
-A **production-indicator match** — `/Users/alex/code/webapp/.env` contains a value matching the production-indicator pattern (a `PROD_DATABASE_URL`-shaped connection string). This is the only thing that escalated this scan to Critical; a public IP address in a visible value triggers the same escalation (RFC.md §4) but isn't present in this fixture.
+A **production-indicator match** — `/Users/alex/code/webapp/.env` contains a value matching the production-indicator pattern (a `PROD_DATABASE_URL`-shaped connection string). This is the only thing that escalated this scan to Critical; a public IP address in a visible value triggers the same escalation but isn't present in this fixture.
 
 The risk banner lists the triggering file path directly (`- /Users/alex/code/webapp/.env`) rather than just saying "see below" — with dozens of findings spread across several categories on a real machine, a bare "see below" cost a full read of the report to resolve into an actual file to go fix.
 

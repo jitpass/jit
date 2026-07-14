@@ -16,7 +16,7 @@ Either way, the report stays private between you and the maintainer — no publi
 Please include, if possible:
 - The affected component (vault, injection mechanism, audit scanner, etc.)
 - A minimal reproduction
-- If relevant, which [RFC.md §2](./RFC.md) threat-model boundary (B1–B10) you believe is violated — this helps distinguish a new finding from an already-documented, accepted limitation. A report describing behavior that matches a documented boundary (e.g. "the target process can read its own injected secret" — B1) is expected behavior, not a vulnerability, though it's still worth flagging if you think the boundary itself is stated incorrectly.
+- If relevant, which documented limitation you believe is violated (see the README's security-model section and the "known, accepted limitations" list in [security/](./security/)) — this helps distinguish a new finding from an already-documented, accepted one. A report describing behavior that matches a documented boundary (e.g. "the target process can read its own injected secret") is expected behavior, not a vulnerability, though it's still worth flagging if you think the boundary itself is stated incorrectly.
 
 ## Response Expectations
 

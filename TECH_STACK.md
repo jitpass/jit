@@ -1,6 +1,6 @@
 # Technology Stack: jit
 
-**Companion to [`RFC.md`](./RFC.md) — implementation-level technology choices for the Phase 1 (macOS) build.** The RFC states *what* jit does and where its guarantees end; this document states *what it's built out of* and why each piece was chosen over the obvious alternatives. Phase 2/3 platform stacks (§7) are exploratory previews, not commitments — consistent with RFC §5.5's "sequenced, not parallel" stance.
+**Companion to the project RFC — implementation-level technology choices for the Phase 1 (macOS) build.** The RFC states *what* jit does and where its guarantees end; this document states *what it's built out of* and why each piece was chosen over the obvious alternatives. (The RFC itself is maintained in a private planning repo; the `RFC.md:<line>` citations below refer to it.) Phase 2/3 platform stacks (§7) are exploratory previews, not commitments — consistent with RFC §5.5's "sequenced, not parallel" stance.
 
 ---
 
