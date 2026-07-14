@@ -56,9 +56,7 @@ GCP application-default credentials aren't covered yet.
 jit is macOS-only and needs Touch ID or a device passcode. Two ways in —
 no Homebrew tap yet (planned for the first signed release).
 
-### Option A: prebuilt binary (no Go required)
-
-Apple Silicon:
+### Option A: prebuilt binary (Apple Silicon, no Go required)
 
 ```sh
 curl -sLO https://github.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz
@@ -66,8 +64,9 @@ tar -xzf jitpass_darwin_arm64.tar.gz jit
 sudo mv jit /usr/local/bin/
 ```
 
-Intel Mac: same commands with `jitpass_darwin_amd64.tar.gz`. (Unsure which
-you have? `uname -m` — `arm64` is Apple Silicon, `x86_64` is Intel.)
+Prebuilt binaries are Apple Silicon only — we don't have Intel hardware to
+test on, and won't publish what we can't test. On an Intel Mac, use
+Option B (it builds from source, so it works on any Mac).
 
 To verify the download, `checksums.txt` on the
 [release page](https://github.com/jitpass/jit/releases/latest) has the
