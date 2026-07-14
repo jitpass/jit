@@ -100,7 +100,7 @@ Optional, for `jit <TAB>` completion (if it errors, see
 echo 'source <(jit completion zsh)' >> ~/.zshrc && exec zsh
 ```
 
-That's the install done — jump ahead to the **[Quick start](#quick-start)**.
+That's the install done. Jump ahead to the **[Quick start](#quick-start)**.
 
 Prebuilt binaries are Apple Silicon only — we don't have Intel hardware to
 test on, and won't publish what we can't test. On an Intel Mac, use
