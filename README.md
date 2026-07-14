@@ -18,6 +18,7 @@ so everything keeps working without the secret sitting on disk:
 ```
 jit audit                  # what's exposed on this machine? (strictly read-only)
 jit migrate local          # fix this project; tools keep working
+jit wrap gh                # move a CLI's token into the vault; keep typing `gh` as before
 jit run -- npm run dev     # or inject secrets straight into a process, no file at all
 ```
 

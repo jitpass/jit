@@ -1,6 +1,6 @@
 # Example: what `jit audit` finds
 
-This is **real output** from `WriteHumanReport` (`internal/audit/report.go`), run against a throwaway fixture `$HOME` built inside a Go test — not hand-typed. Every path, username, and value below is fabricated (fake keys, fake tokens, a disposable ed25519 key generated just for this run) and was never a real credential. The fixture and the test that produced this file are not checked in; regenerate by writing a short `_test.go` in `internal/audit` that builds a fixture directory tree, calls `Scan`/`WriteHumanReport` against it, and deletes itself afterward — see the commit that introduced this version of the doc for the exact fixture used.
+This is **real output** from `WriteHumanReport` (`internal/audit/report.go`), run against a throwaway fixture `$HOME` built inside a Go test — not hand-typed. (One hand-applied delta since generation: the `Wrappable CLI Tokens` summary line, which the renderer now always prints — the fixture predates that category and has no such finding, so `0 finding(s)` is exactly what a regeneration would produce.) Every path, username, and value below is fabricated (fake keys, fake tokens, a disposable ed25519 key generated just for this run) and was never a real credential. The fixture and the test that produced this file are not checked in; regenerate by writing a short `_test.go` in `internal/audit` that builds a fixture directory tree, calls `Scan`/`WriteHumanReport` against it, and deletes itself afterward — see the commit that introduced this version of the doc for the exact fixture used.
 
 Keeping this generated from the real renderer, rather than hand-maintained, is the whole point: a mockup that silently drifts from actual output is worse than no example at all — that's what happened to the previous version of this file, which predated the renderer's real key/value/why-labeled format entirely.
 
@@ -21,6 +21,7 @@ scan time: 2026-07-06T09:14:22.000Z          duration: 340ms
   Private Keys           2 finding(s)
   IaC Variable Files     1 finding(s)
   Suspicious Filenames   1 finding(s)
+  Wrappable CLI Tokens   0 finding(s)
   ───────────────────────────────────
   Total: 18 finding(s)
   Already protected by jit: 2 live mount(s) — served from the encrypted vault, no plaintext on disk. Not scanned.

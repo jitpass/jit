@@ -7,7 +7,7 @@ information at the terminal.
 
 Commands are grouped the way `jit --help` groups them:
 
-- [Find and fix exposed secrets](#find-and-fix-exposed-secrets): `audit`, `migrate`, `doctor`, `status`
+- [Find and fix exposed secrets](#find-and-fix-exposed-secrets): `audit`, `migrate`, `wrap`, `doctor`, `status`
 - [Vault and profiles](#vault-and-profiles): `vault`, `profile`, `run`, `export`, `unmount`
 - [Background agent](#background-agent): `agent`
 - [Invoked by other tools](#invoked-by-other-tools): `aws-credential-process`, `k8s-exec-credential`, `terraform-credentials`
