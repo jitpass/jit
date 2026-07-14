@@ -160,7 +160,7 @@ gh pr list        # exactly as before; GH_TOKEN exists only inside this process
 ```
 
 Catalog: `gh`, `glab`, `ngrok`, `doctl`, `stripe`, `openai` (shim-based),
-plus `aws` and `terraform` — those two delegate to the existing
+`hcloud`, `flyctl`, `vercel`, `railway`, `databricks`, plus `aws` and `terraform` — those two delegate to the existing
 `credential_process`/`credentials_helper` migrations instead of installing
 a shim, because the native hook also covers SDKs and `terraform
 login`/`logout`, which a PATH shim never sees.
