@@ -34,6 +34,7 @@ scan time: 2026-07-07T14:48:08.370Z          duration: 2ms
   Private Keys           0 finding(s)
   IaC Variable Files     0 finding(s)
   Suspicious Filenames   0 finding(s)
+  Wrappable CLI Tokens   0 finding(s)
   ───────────────────────────────────
   Total: 2 finding(s)
 
@@ -162,6 +163,15 @@ GCP application-default credentials are detected by `audit` but have no
 migrate path yet.
 
 ---
+
+### 6. Wrap your CLI tools: `jit wrap` (optional)
+
+Dev CLIs like `gh`, `stripe`, and `ngrok` keep their tokens in their own
+config files, which `migrate` doesn't cover — `jit wrap <tool>` does. One
+command moves the token into the vault and puts a shim on PATH so the
+command keeps working exactly as you type it. See
+[the walkthrough below](#wrap-a-cli-tools-token-jit-wrap) and
+[PLUGINS.md](./PLUGINS.md) for every supported tool.
 
 ## Day to day
 

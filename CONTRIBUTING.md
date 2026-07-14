@@ -80,6 +80,20 @@ before opening a PR.
   one.
 - Make sure `git commit -s` sign-off is present on every commit.
 
+## Adding a `jit wrap` plugin
+
+The lowest-friction contribution in the repo: teaching `jit wrap` (and
+`jit audit`) about another CLI's token is one data block in
+`internal/wrap/catalog_data.go`, one sanitized config sample in
+`internal/wrap/testdata/<tool>/`, a row in each of
+`internal/wrap/catalog_test.go`'s fixture table and
+[docs/PLUGINS.md](./docs/PLUGINS.md) — no logic. Tests enforce all of it:
+malformed entries fail `TestCatalogEntriesAreWellFormed`, and an
+undocumented tool fails the PLUGINS.md drift guard. In the PR, link the
+tool's own docs for where it stores its credential and which env var it
+reads (that's what review checks — see WRAP-PLAN.md §3.2 for how the
+shim-vs-native kind is chosen).
+
 ## Scope
 
 Only `cmd/` and `internal/` are production code. Everything under `spike/` is

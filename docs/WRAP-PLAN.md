@@ -1,7 +1,25 @@
 # Plan: `jit wrap` — shell-plugin-style CLI wrapping
 
-Status: **proposed** (spike validated, see `spike/cli-shim-wrap/FINDINGS.md`).
-Date: 2026-07-14.
+Status: **implemented** — all four milestones shipped on `feat/jit-wrap`,
+2026-07-14 (spike: `spike/cli-shim-wrap/FINDINGS.md`; supported tools:
+[PLUGINS.md](./PLUGINS.md); command reference: [COMMANDS.md](./COMMANDS.md)).
+This document is kept as the design record. Deltas between plan and
+implementation:
+
+- The M4 catalog grew beyond the table in §3.2: hcloud, flyctl, vercel,
+  railway, and databricks shipped too (a `json` extractor joined
+  yaml/toml; `.databrickscfg`'s INI rides the toml line extractor).
+- Discovery gained a `TokenCommand` fallback the plan didn't have: tools
+  that keep their token in the OS keyring (modern gh) export it via their
+  own documented command; nothing is scrubbed in that case.
+- §3.6's overlay rule (project env layers over the wrap profile) is NOT
+  implemented yet — the shim uses plain `--profile` semantics. Still open,
+  alongside multi-account profiles and agent-history attribution for wrap
+  invocations.
+- `jit wrap undo` of a scrubbed file points at `jit migrate undo <path>`
+  for the byte-for-byte restore rather than doing it inline.
+
+Original plan follows.
 
 ## 1. What this is
 
