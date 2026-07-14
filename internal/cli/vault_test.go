@@ -146,6 +146,77 @@ func seedFixtureVault(t *testing.T, path string) string {
 	return root
 }
 
+// TestVaultPruneKeepsNewestBackupPerFile (issue #5): migrate→undo cycles
+// accumulate _backups/ entries unboundedly; prune must delete every stale
+// one while keeping exactly the newest per file — the record `jit migrate
+// undo` restores from — and never touch real secrets or RemoveOnRestore
+// records (whose empty VaultPath must not wildcard-match in the drop set).
+func TestVaultPruneKeepsNewestBackupPerFile(t *testing.T) {
+	withFixtureHome(t)
+	vaultPruneYes = true
+	t.Cleanup(func() { vaultPruneYes = false })
+	root := seedFixtureVault(t, "fixture/API_KEY")
+	v := &vault.Vault{Root: root, KeyWrapper: newFakeKeyWrapper(), RecipientID: "test-device"}
+	for _, p := range []string{"_backups/a/.env.jit-bak-1", "_backups/a/.env.jit-bak-2", "_backups/a/.env.jit-bak-3", "_backups/b/.env.jit-bak-1"} {
+		if err := v.Set(p, []byte("backup-bytes")); err != nil {
+			t.Fatalf("seeding backup %s: %v", p, err)
+		}
+	}
+	index := "backups:\n" +
+		"    - {original_path: /a/.env, vault_path: _backups/a/.env.jit-bak-1, unix_ts: 1}\n" +
+		"    - {original_path: /a/.env, vault_path: _backups/a/.env.jit-bak-2, unix_ts: 2}\n" +
+		"    - {original_path: /a/.env, vault_path: _backups/a/.env.jit-bak-3, unix_ts: 3}\n" +
+		"    - {original_path: /b/.env, vault_path: _backups/b/.env.jit-bak-1, unix_ts: 1}\n" +
+		"    - {original_path: /c/created-by-migrate, unix_ts: 1, remove_on_restore: true}\n"
+	if err := os.WriteFile(migrate.BackupIndexPath(root), []byte(index), 0o600); err != nil {
+		t.Fatalf("seeding undo index: %v", err)
+	}
+
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"vault", "prune"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("jit vault prune --yes: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Pruned 2 stale backup(s)") {
+		t.Errorf("expected 2 stale backups pruned (a's two older), got:\n%s", buf.String())
+	}
+
+	ro := &vault.Vault{Root: root, RecipientID: "test-device"}
+	paths, err := ro.List()
+	if err != nil {
+		t.Fatalf("List after prune: %v", err)
+	}
+	want := []string{"_backups/a/.env.jit-bak-3", "_backups/b/.env.jit-bak-1", "fixture/API_KEY"}
+	if strings.Join(paths, ",") != strings.Join(want, ",") {
+		t.Errorf("vault after prune = %v, want %v", paths, want)
+	}
+
+	recs, err := migrate.LoadBackupRecords(root)
+	if err != nil {
+		t.Fatalf("LoadBackupRecords after prune: %v", err)
+	}
+	if len(recs) != 3 {
+		t.Errorf("undo index has %d record(s) after prune, want 3 (newest per file + the RemoveOnRestore record)", len(recs))
+	}
+	for _, r := range recs {
+		if r.VaultPath == "_backups/a/.env.jit-bak-1" || r.VaultPath == "_backups/a/.env.jit-bak-2" {
+			t.Errorf("stale record %s still in the undo index", r.VaultPath)
+		}
+	}
+
+	// Idempotent: a second prune finds nothing.
+	buf.Reset()
+	rootCmd.SetArgs([]string{"vault", "prune"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("second jit vault prune: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Nothing to prune") {
+		t.Errorf("expected a nothing-to-prune message, got:\n%s", buf.String())
+	}
+}
+
 // TestVaultCleanDeclinedConfirmationAborts: declining must leave every
 // secret in place — and, per this package's ordering discipline, the
 // listing/count shown in the prompt itself must never have cost any auth

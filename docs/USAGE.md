@@ -370,6 +370,13 @@ wiz/WIZ_CLIENT_SECRET
 5 secret(s) stored, plus 2 encrypted file backup(s) kept for `jit migrate undo` (list with --all).
 ```
 
+Those file backups accumulate by design — every `jit migrate` rewrite
+stores one, and every `jit migrate undo` snapshots the pre-undo state too
+(so an undo is itself undoable). Nothing expires them automatically. If
+repeated migrate/undo cycles have grown the count past what you care to
+keep, `jit vault prune` deletes the stale ones while keeping each file's
+newest backup, so undo keeps working.
+
 To replace a value that's already there, like a rotated API key or a
 new token, see the next section.
 
