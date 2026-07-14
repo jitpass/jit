@@ -337,7 +337,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 	// work that's about to be aborted anyway. This same plan is what
 	// --dry-run prints too (see below) — one rendering path, so the
 	// preview you confirm against is exactly the preview --dry-run shows.
-	printMigratePlan(cmd.OutOrStdout(), home, wholeHome, envFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, npmrcFiles)
+	printMigratePlan(cmd.OutOrStdout(), home, wholeHome, envFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, npmrcFiles, planRevealHooks(home, envFiles, npmrcFiles))
 	if len(skippedArchived) > 0 {
 		fmt.Fprintf(cmd.OutOrStdout(), "\n(Skipped %d finding(s) under an archived/backup-looking directory — rerun with --include-archived to include them.)\n", len(skippedArchived))
 	}
