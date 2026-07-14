@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -140,17 +141,16 @@ func jsonSemanticallyEqual(a, b []byte) bool {
 }
 
 // writeNpmHookFile writes pkgPath's surgically-cleaned content and returns
-// the bytes actually written. The JSON round-trip the surgical edit rides
-// on (map[string]json.RawMessage in, MarshalIndent out) alphabetizes
-// top-level keys and drops any trailing newline — semantically identical,
-// but git-dirty after an undo that promises byte-for-byte (a real E2E
-// finding: a full migrate-then-undo left package.json reordered, with git
-// flagging "\ No newline at end of file"). So when the cleaned content is
-// semantically identical to a ".jit-bak" sibling — the exact pre-install
-// bytes backupFile kept — those original bytes are restored verbatim
-// instead. A file the user edited since install never matches any backup
-// and falls through to the surgical rewrite, which then at least preserves
-// the original file's trailing-newline convention.
+// the bytes actually written. When the cleaned content is semantically
+// identical to a ".jit-bak" sibling — the exact pre-install bytes
+// backupFile kept — those original bytes are restored verbatim instead, so
+// an undo that promises byte-for-byte really is (a real E2E finding: a
+// full migrate-then-undo used to leave package.json reordered, with git
+// flagging "\ No newline at end of file"). A file the user edited since
+// install never matches any backup and falls through to the surgical
+// splice, which since issue #2 preserves key order and the trailing
+// newline on its own; the newline guard below only covers the re-marshal
+// fallback path.
 func writeNpmHookFile(pkgPath string, cleaned, original []byte) ([]byte, error) {
 	matches, err := filepath.Glob(pkgPath + ".jit-bak-*")
 	if err == nil {
@@ -172,7 +172,8 @@ func writeNpmHookFile(pkgPath string, cleaned, original []byte) ([]byte, error) 
 			}
 		}
 	}
-	if len(original) > 0 && original[len(original)-1] == '\n' {
+	if len(original) > 0 && original[len(original)-1] == '\n' &&
+		(len(cleaned) == 0 || cleaned[len(cleaned)-1] != '\n') {
 		cleaned = append(cleaned, '\n')
 	}
 	if err := os.WriteFile(pkgPath, cleaned, 0o600); err != nil {
@@ -274,8 +275,8 @@ func uninstallNpmRevealHook(dir string, mountPaths []string) error {
 	if !ok {
 		return nil
 	}
-	var scripts map[string]string
-	if err := json.Unmarshal(scriptsRaw, &scripts); err != nil {
+	entries, ok := parseScriptEntries(scriptsRaw)
+	if !ok {
 		return nil
 	}
 
@@ -287,10 +288,11 @@ func uninstallNpmRevealHook(dir string, mountPaths []string) error {
 	changed := false
 	for _, target := range npmRevealHookScripts {
 		preKey := "pre" + target
-		existing, ok := scripts[preKey]
-		if !ok {
+		idx := indexOfScript(entries, preKey)
+		if idx < 0 {
 			continue
 		}
+		existing := entries[idx].value
 		// The pre-script is jit's reveal command(s) joined with " && " and,
 		// if the user already had a pre-script, their command appended after
 		// another " && " (see installNpmRevealHook). Split on the same
@@ -311,24 +313,27 @@ func uninstallNpmRevealHook(dir string, mountPaths []string) error {
 		}
 		changed = true
 		if strings.TrimSpace(newVal) == "" {
-			delete(scripts, preKey) // it was entirely jit's — remove the key
+			entries = slices.Delete(entries, idx, idx+1) // it was entirely jit's — remove the key
 		} else {
-			scripts[preKey] = newVal
+			entries[idx].value = newVal
 		}
 	}
 	if !changed {
 		return nil
 	}
 
-	scriptsJSON, err := marshalJSONNoEscape(scripts, "")
+	// Same splice as installNpmRevealHook: only the "scripts" value changes,
+	// the rest of the file keeps its original bytes.
+	newScripts, err := renderScriptEntries(entries, scriptsRaw)
 	if err != nil {
 		return err
 	}
-	pkg["scripts"] = scriptsJSON
-
-	out, err := marshalJSONNoEscape(pkg, "  ")
-	if err != nil {
-		return err
+	out, ok := replaceTopLevelValue(data, "scripts", newScripts)
+	if !ok {
+		out, err = remarshalPackageJSON(pkg, entries)
+		if err != nil {
+			return err
+		}
 	}
 	written, err := writeNpmHookFile(pkgPath, out, data)
 	if err != nil {
@@ -374,20 +379,7 @@ func installDirenvRevealHook(dir, jitPath string, mountPaths []string) (RevealHo
 	// so a re-run (or a later migrate adding one new mount to a dir with
 	// hooks already wired) edits the file at most once, for the genuinely
 	// new paths.
-	var missing []string
-	for _, mountPath := range mountPaths {
-		revealLine := revealHookCommand(jitPath, mountPath)
-		present := false
-		for _, l := range lines {
-			if strings.Contains(l, revealLine) {
-				present = true
-				break
-			}
-		}
-		if !present {
-			missing = append(missing, revealLine)
-		}
-	}
+	missing := missingRevealLines(lines, jitPath, mountPaths)
 	if len(missing) == 0 {
 		return RevealHookDirenv, nil
 	}
@@ -435,39 +427,12 @@ func installNpmRevealHook(dir, jitPath string, mountPaths []string) (RevealHookK
 	if !ok {
 		return RevealHookNone, nil
 	}
-	var scripts map[string]string
-	if err := json.Unmarshal(scriptsRaw, &scripts); err != nil {
+	entries, ok := parseScriptEntries(scriptsRaw)
+	if !ok {
 		return RevealHookNone, nil
 	}
 
-	changed := false
-	for _, target := range npmRevealHookScripts {
-		if _, exists := scripts[target]; !exists {
-			continue
-		}
-		preKey := "pre" + target
-		existing := scripts[preKey]
-		// Per-path idempotency, same as the direnv installer: only
-		// commands not already present get prepended, joined into ONE
-		// combined prefix so all of a directory's mounts land in a single
-		// edit of this pre-script.
-		var missing []string
-		for _, mountPath := range mountPaths {
-			if revealCmd := revealHookCommand(jitPath, mountPath); !strings.Contains(existing, revealCmd) {
-				missing = append(missing, revealCmd)
-			}
-		}
-		if len(missing) == 0 {
-			continue // already installed by an earlier migrate run
-		}
-		combined := strings.Join(missing, " && ")
-		if existing == "" {
-			scripts[preKey] = combined
-		} else {
-			scripts[preKey] = combined + " && " + existing
-		}
-		changed = true
-	}
+	entries, changed := applyNpmRevealEntries(entries, jitPath, mountPaths)
 	if !changed {
 		return RevealHookNone, nil
 	}
@@ -476,22 +441,45 @@ func installNpmRevealHook(dir, jitPath string, mountPaths []string) (RevealHookK
 		return RevealHookNone, fmt.Errorf("backing up %s: %w", pkgPath, err)
 	}
 
-	scriptsJSON, err := marshalJSONNoEscape(scripts, "")
+	// Splice only the new "scripts" value into the original bytes: every
+	// other member, the file's own key order, its indentation, and its
+	// trailing-newline convention survive untouched (issue #2 — the old
+	// map re-marshal alphabetized top-level keys and dropped the final
+	// newline, dirtying git blame and fighting Prettier).
+	newScripts, err := renderScriptEntries(entries, scriptsRaw)
 	if err != nil {
 		return RevealHookNone, err
 	}
-	pkg["scripts"] = scriptsJSON
-
-	// Re-marshaling a map[string]json.RawMessage sorts top-level keys
-	// alphabetically (encoding/json doesn't preserve original map key
-	// order) — the same tradeoff ApplyMCPConfig already accepts for
-	// mcp.json/claude_desktop_config.json, not a new one introduced here.
-	out, err := marshalJSONNoEscape(pkg, "  ")
-	if err != nil {
-		return RevealHookNone, err
+	out, ok := replaceTopLevelValue(data, "scripts", newScripts)
+	if !ok {
+		// Splice couldn't pin the value's byte range — fall back to a
+		// whole-file re-marshal (alphabetized, like the pre-fix behavior)
+		// rather than fail the migrate run.
+		out, err = remarshalPackageJSON(pkg, entries)
+		if err != nil {
+			return RevealHookNone, err
+		}
 	}
 	if err := os.WriteFile(pkgPath, out, 0o600); err != nil {
 		return RevealHookNone, fmt.Errorf("writing %s: %w", pkgPath, err)
 	}
 	return RevealHookNpm, nil
+}
+
+// remarshalPackageJSON is the last-resort writer for a package.json whose
+// "scripts" value replaceTopLevelValue couldn't splice: a whole-file
+// re-marshal that alphabetizes top-level keys (encoding/json doesn't
+// preserve map key order). Kept only as a fallback — the splice path is
+// what preserves the file's own layout.
+func remarshalPackageJSON(pkg map[string]json.RawMessage, entries []scriptEntry) ([]byte, error) {
+	scripts := make(map[string]string, len(entries))
+	for _, e := range entries {
+		scripts[e.key] = e.value
+	}
+	scriptsJSON, err := marshalJSONNoEscape(scripts, "")
+	if err != nil {
+		return nil, err
+	}
+	pkg["scripts"] = scriptsJSON
+	return marshalJSONNoEscape(pkg, "  ")
 }

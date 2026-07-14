@@ -55,7 +55,7 @@ import (
 // (splitMCPByScope/splitNpmrcByScope) since a single Discover* call
 // there still mixes the fixed path in with items found by the
 // whole-$HOME walk.
-func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, npmrcFiles []string) {
+func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, npmrcFiles, revealHookFiles []string) {
 	scope := "local"
 	if wholeHome {
 		scope = "home"
@@ -86,7 +86,7 @@ func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, shellC
 		return out
 	}
 
-	hasScoped := len(envFiles) > 0 || len(mcpScoped) > 0 || len(npmrcScoped) > 0
+	hasScoped := len(envFiles) > 0 || len(mcpScoped) > 0 || len(npmrcScoped) > 0 || len(revealHookFiles) > 0
 	hasFixed := len(shellConfigs) > 0 || len(mcpFixed) > 0 || len(awsProfiles) > 0 || len(k8sUsers) > 0 || len(terraformHosts) > 0 || len(npmrcFixed) > 0
 
 	if hasScoped {
@@ -106,6 +106,13 @@ func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, shellC
 		printMigratePlanCategory(w,
 			"npmrc file(s) → secrets move to the vault; the file keeps working via a live, auto-updating mount",
 			shorten(npmrcScoped))
+		// The reveal-hook wiring rewrites a file the categories above never
+		// name (issue #3: `--dry-run` promised the full plan while
+		// package.json changed invisibly) — so it's a planned change like
+		// any other, listed and counted.
+		printMigratePlanCategory(w,
+			"project hook file(s) → a `jit agent reveal` pre-run line is added (npm predev/prestart or .envrc) so the mounts above show real values right before they're read",
+			shorten(revealHookFiles))
 	}
 
 	if hasFixed {
@@ -152,7 +159,7 @@ func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, shellC
 	}
 
 	categories, total := 0, 0
-	for _, items := range [][]string{envFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, npmrcFiles} {
+	for _, items := range [][]string{envFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, npmrcFiles, revealHookFiles} {
 		if len(items) > 0 {
 			categories++
 		}
@@ -160,6 +167,48 @@ func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, shellC
 	}
 	fmt.Fprintln(w, strings.Repeat("─", 44))
 	fmt.Fprintf(w, "  %d change(s) planned across %d %s\n", total, categories, pluralWord(categories, "category", "categories"))
+}
+
+// planRevealHooks predicts which project hook files (.envrc/package.json)
+// wireRevealHooks will edit after mutation, so the plan and --dry-run list
+// them and count them (issue #3: package.json was rewritten by every npm-
+// project migrate yet never appeared in the plan, the change count, or the
+// undo list). Mirrors runMigrate's recordRevealHook calls exactly: every
+// .env that will become a live mount (backup-suffixed ones become pointer
+// files instead) plus every project-local .npmrc, grouped per directory
+// the way wireRevealHooks batches them. Best-effort like the wiring
+// itself — a directory whose prediction errors is simply left out.
+func planRevealHooks(home string, envFiles, npmrcFiles []string) []string {
+	var dirs []string
+	byDir := map[string][]string{}
+	add := func(path string) {
+		dir := filepath.Dir(path)
+		if _, seen := byDir[dir]; !seen {
+			dirs = append(dirs, dir)
+		}
+		byDir[dir] = append(byDir[dir], path)
+	}
+	for _, envPath := range envFiles {
+		if migrate.IsEnvBackupOnlySuffix(filepath.Base(envPath)) {
+			continue // replaced with a pointer file, never mounted — no hook
+		}
+		add(envPath)
+	}
+	for _, npmrcPath := range npmrcFiles {
+		if npmrcPath == migrate.GlobalNpmrcPath(home) {
+			continue // not tied to any one project dir — never hooked
+		}
+		add(npmrcPath)
+	}
+	var hookFiles []string
+	for _, dir := range dirs {
+		hookPath, _, err := migrate.PlanRevealHook(dir, byDir[dir]...)
+		if err != nil || hookPath == "" {
+			continue
+		}
+		hookFiles = append(hookFiles, hookPath)
+	}
+	return hookFiles
 }
 
 // splitMCPByScope separates Claude Desktop's always-checked fixed path

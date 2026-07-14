@@ -118,6 +118,15 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Fprintf(out, "  • %s (backed up %s ago)%s\n", displayPath(home, rec.OriginalPath), humanAgo(time.Since(time.Unix(rec.UnixTS, 0))), note)
 	}
+	// The reveal-hook edit is reversed per restored mount (see restoreOne),
+	// but the file it rewrites (package.json/.envrc) isn't itself a backup
+	// record — it used to change without ever being named here (issue #3).
+	if hookFiles := undoRevealHookFiles(latest); len(hookFiles) > 0 {
+		fmt.Fprintf(out, "Also removing jit's automatic reveal line from %d project hook file(s) — only jit's own command is removed, never a script you wrote:\n", len(hookFiles))
+		for _, hf := range hookFiles {
+			fmt.Fprintf(out, "  • %s\n", displayPath(home, hf))
+		}
+	}
 	fmt.Fprintln(out)
 	// Path scoping is easy to miss from --help alone — a real user asked
 	// for "project-specific undo" while the path argument already did
@@ -208,6 +217,24 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 	}
 
 	return runRestores(out, home, latest, restoreOne)
+}
+
+// undoRevealHookFiles collects, deduplicated and in record order, every
+// hook file (.envrc/package.json) that currently carries jit's reveal
+// command for one of the files about to be restored — the files
+// restoreOne's UninstallRevealHook call will edit.
+func undoRevealHookFiles(recs []migrate.BackupRecord) []string {
+	seen := map[string]bool{}
+	var files []string
+	for _, rec := range recs {
+		for _, hf := range migrate.RevealHookFiles(filepath.Dir(rec.OriginalPath), rec.OriginalPath) {
+			if !seen[hf] {
+				seen[hf] = true
+				files = append(files, hf)
+			}
+		}
+	}
+	return files
 }
 
 // undoFailure records one file runRestores could not restore, so the batch

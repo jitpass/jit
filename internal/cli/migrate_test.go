@@ -337,6 +337,33 @@ func TestMigrateLocalDryRunMatchesRealPlanExactly(t *testing.T) {
 	}
 }
 
+// Issue #3: `--dry-run` is documented as previewing the full plan, but the
+// package.json reveal-hook rewrite (and its share of the change count)
+// never appeared in it — a cautious user could not see that package.json
+// would change.
+func TestMigrateLocalDryRunListsRevealHookFile(t *testing.T) {
+	withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	if err := os.WriteFile(filepath.Join(cwd, ".env"), []byte("STRIPE_KEY=sk_test_fixture\n"), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	pkgPath := filepath.Join(cwd, "package.json")
+	if err := os.WriteFile(pkgPath, []byte(`{"name":"x","scripts":{"dev":"node server.js"}}`), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := execMigrate(t, "local", "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate local --dry-run: %v", err)
+	}
+	if !strings.Contains(out, pkgPath) {
+		t.Errorf("expected the plan to list the package.json the reveal hook will rewrite, got:\n%s", out)
+	}
+	if !strings.Contains(out, "2 change(s) planned across 2 categories") {
+		t.Errorf("expected the hook rewrite counted as a planned change, got:\n%s", out)
+	}
+}
+
 func TestMigrateLocalDryRunCleanFixture(t *testing.T) {
 	withFixtureHome(t) // empty fixture — nothing planted
 	withFixtureCwd(t)

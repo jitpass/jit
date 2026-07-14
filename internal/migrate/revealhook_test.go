@@ -150,6 +150,80 @@ func TestInstallRevealHookNpmDevAndStart(t *testing.T) {
 	}
 }
 
+// Issue #2: the install rewrite used to re-marshal the whole file through a
+// map, alphabetizing top-level keys and dropping the trailing newline. The
+// splice-based edit must leave every byte outside the "scripts" value
+// untouched — key order, 4-space indentation, and the final newline — and
+// inside "scripts" preserve member order, inserting each pre-hook right
+// above its target.
+func TestInstallRevealHookNpmPreservesLayout(t *testing.T) {
+	dir := t.TempDir()
+	pkgPath := filepath.Join(dir, "package.json")
+	original := `{
+    "name": "acme-checkout",
+    "version": "1.0.0",
+    "private": true,
+    "description": "Mock checkout service",
+    "scripts": {
+        "dev": "node server.js",
+        "start": "node server.js"
+    }
+}
+`
+	writeFile(t, pkgPath, original)
+
+	kind, err := InstallRevealHook(dir, "/fixture/.env")
+	if err != nil {
+		t.Fatalf("InstallRevealHook: %v", err)
+	}
+	if kind != RevealHookNpm {
+		t.Fatalf("kind = %q, want %q", kind, RevealHookNpm)
+	}
+
+	raw, err := os.ReadFile(pkgPath)
+	if err != nil {
+		t.Fatalf("reading package.json: %v", err)
+	}
+	got := string(raw)
+
+	// Everything outside the scripts value is byte-identical: same key
+	// order, same indent, same trailing newline.
+	wantPrefix := "{\n    \"name\": \"acme-checkout\",\n    \"version\": \"1.0.0\",\n    \"private\": true,\n    \"description\": \"Mock checkout service\",\n    \"scripts\": {\n"
+	if !strings.HasPrefix(got, wantPrefix) {
+		t.Errorf("top-level layout changed, got:\n%s", got)
+	}
+	if !strings.HasSuffix(got, "}\n") {
+		t.Errorf("trailing newline dropped, file ends with %q", got[len(got)-2:])
+	}
+
+	// Scripts keep source order with each pre-hook inserted above its
+	// target, at the block's own 8-space member indent.
+	for _, pair := range [][2]string{
+		{"\"predev\"", "\"dev\""},
+		{"\"prestart\"", "\"start\""},
+	} {
+		hook, target := strings.Index(got, pair[0]), strings.Index(got, pair[1]+":")
+		if hook < 0 || target < 0 || hook > target {
+			t.Errorf("expected %s inserted before %s, got:\n%s", pair[0], pair[1], got)
+		}
+	}
+	if !strings.Contains(got, "\n        \"predev\":") {
+		t.Errorf("scripts member indent not preserved, got:\n%s", got)
+	}
+
+	// And the edit round-trips: undo restores the original bytes exactly.
+	if err := UninstallRevealHook(dir, "/fixture/.env"); err != nil {
+		t.Fatalf("UninstallRevealHook: %v", err)
+	}
+	restored, err := os.ReadFile(pkgPath)
+	if err != nil {
+		t.Fatalf("reading restored package.json: %v", err)
+	}
+	if string(restored) != original {
+		t.Errorf("undo did not restore original bytes:\nwant:\n%s\ngot:\n%s", original, restored)
+	}
+}
+
 func TestInstallRevealHookNpmPreservesExistingPreScript(t *testing.T) {
 	dir := t.TempDir()
 	pkgPath := filepath.Join(dir, "package.json")
