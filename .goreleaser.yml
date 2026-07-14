@@ -45,8 +45,12 @@ builds:
 archives:
   - id: jit-archive
     formats: [tar.gz]
+    # No {{ .Version }} on purpose: stable asset names make
+    # `releases/latest/download/jitpass_darwin_<arch>.tar.gz` an evergreen
+    # URL, so the README's install command never goes stale. The release tag
+    # and `jit --version` still carry the version.
     name_template: >-
-      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+      {{ .ProjectName }}_{{ .Os }}_{{ .Arch }}
 
 checksum:
   name_template: "checksums.txt"
