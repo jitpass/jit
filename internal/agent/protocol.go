@@ -57,7 +57,7 @@ type Response struct {
 	// no way to see it at all). Empty on every other Op.
 	Mounts []MountRevealStatus `json:"mounts,omitempty"`
 	// LastUnlock and LastLock answer "status"'s missing question: not what
-	// state the session is in, but who put it there (GAPS.md #50). Status
+	// state the session is in, but who put it there (GAPS.md #75). Status
 	// could always say "running and locked" — never "unlocked 10:19:07 by
 	// `jit run --profile mcp-jamf`, which Claude Code started; auto-locked
 	// 15m later", which is the thing a user staring at an unexplained Touch

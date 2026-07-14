@@ -167,7 +167,7 @@ type Status struct {
 	// `jit status` invocation can't do.
 	Mounts []MountRevealStatus
 	// LastUnlock and LastLock are who moved the session to its current state,
-	// and why (GAPS.md #50). Nil until this agent process has actually
+	// and why (GAPS.md #75). Nil until this agent process has actually
 	// unlocked (or locked) once.
 	LastUnlock *SessionEvent
 	LastLock   *SessionEvent

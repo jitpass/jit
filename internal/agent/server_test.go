@@ -575,7 +575,7 @@ func TestServerStatusWhenNeverUnlocked(t *testing.T) {
 	}
 }
 
-// TestServerRecordsWhoUnlockedIt is GAPS.md #50's regression test. The agent
+// TestServerRecordsWhoUnlockedIt is GAPS.md #75's regression test. The agent
 // used to prompt for Touch ID and then forget entirely that it had: `jit
 // agent status` could say "running and locked" and nothing else, so a user
 // who saw an unexplained prompt had no way — short of correlating the agent
