@@ -356,16 +356,16 @@ func TestLockAgentAfterMEKDeletion(t *testing.T) {
 	if _, _, err := client.Unlock(); err != nil {
 		t.Fatalf("Unlock: %v", err)
 	}
-	if unlocked, _, _, _, err := client.Status(); err != nil || !unlocked {
-		t.Fatalf("precondition: agent should be unlocked (unlocked=%v, err=%v)", unlocked, err)
+	if st, err := client.Status(); err != nil || !st.Unlocked {
+		t.Fatalf("precondition: agent should be unlocked (unlocked=%v, err=%v)", st.Unlocked, err)
 	}
 
 	var stderr bytes.Buffer
 	if got := lockAgentAfterMEKDeletion(root, &stderr); got == "" {
 		t.Fatalf("expected a locked-session description, got empty (stderr: %q)", stderr.String())
 	}
-	if unlocked, _, _, _, err := client.Status(); err != nil || unlocked {
-		t.Errorf("agent still unlocked after lockAgentAfterMEKDeletion (unlocked=%v, err=%v)", unlocked, err)
+	if st, err := client.Status(); err != nil || st.Unlocked {
+		t.Errorf("agent still unlocked after lockAgentAfterMEKDeletion (unlocked=%v, err=%v)", st.Unlocked, err)
 	}
 }
 
