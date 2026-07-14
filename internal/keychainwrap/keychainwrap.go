@@ -103,8 +103,16 @@ func New() *Wrapper {
 // manages its own TTL-based expiry on top of this rather than relying on
 // a Wrapper's forever-cache — internal/agent constructs a fresh Wrapper
 // per unlock specifically so an expired session really does re-challenge.
-func (w *Wrapper) FetchMEK() ([]byte, error) {
-	return w.fetchMEK("unlock jit agent")
+//
+// reason comes from the caller because only the agent knows what the unlock
+// is FOR. This used to be the fixed string "unlock jit agent", which macOS
+// rendered as "jit is trying to unlock jit agent." — true, circular, and
+// unable to answer the only question a surprise prompt raises. The agent now
+// builds the reason from the kernel-derived identity of whoever asked (see
+// internal/agent's challengeReason), so the dialog can say "...for profile
+// "mcp-jamf", launched by claude" instead.
+func (w *Wrapper) FetchMEK(reason string) ([]byte, error) {
+	return w.fetchMEK(reason)
 }
 
 // EnsureMEK generates and stores the master encryption key if one doesn't

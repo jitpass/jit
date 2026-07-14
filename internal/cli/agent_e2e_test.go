@@ -28,7 +28,7 @@ import (
 // interactive LocalAuthentication boundary, which can't be scripted.
 type fakeMEKFetcher struct{ key []byte }
 
-func (f *fakeMEKFetcher) FetchMEK() ([]byte, error) { return f.key, nil }
+func (f *fakeMEKFetcher) FetchMEK(reason string) ([]byte, error) { return f.key, nil }
 
 // TestDecoyGateEndToEnd drives the real GAPS.md #2 mechanism through the
 // actual agent.Server/Client/mountManager/mount.Serve code paths — no
@@ -132,12 +132,12 @@ func TestDecoyGateEndToEnd(t *testing.T) {
 	// GAPS.md #37: Client.Status() (the real RPC, not mountManager's
 	// in-process state directly) must report this mount as revealed — this
 	// is what `jit status`/`jit agent status` actually call.
-	_, _, mountStatuses, _, err := client.Status()
+	st, err := client.Status()
 	if err != nil {
 		t.Fatalf("Client.Status: %v", err)
 	}
 	found := false
-	for _, ms := range mountStatuses {
+	for _, ms := range st.Mounts {
 		if ms.Path != mountPath {
 			continue
 		}
@@ -150,7 +150,7 @@ func TestDecoyGateEndToEnd(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("Client.Status didn't include %s at all, got %+v", mountPath, mountStatuses)
+		t.Fatalf("Client.Status didn't include %s at all, got %+v", mountPath, st.Mounts)
 	}
 
 	// Audit logging ran alongside without influencing the above —

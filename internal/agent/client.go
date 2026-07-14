@@ -150,18 +150,59 @@ func (c *Client) StopMount(mountPath string) error {
 	return err
 }
 
-// Status reports whether the agent is currently unlocked and, if so, how
-// long until it auto-locks, plus every currently-served mount's own reveal
-// state (GAPS.md #37) — "is X revealed, and for how long" used to have no
-// answer anywhere short of reading mountManager's in-process state
-// directly, which a separate `jit status` invocation can't do. build is
-// the agent process's own BuildID (GAPS.md #49), for the caller to
-// compare against its own and notice a stale, launchd-kept-alive agent
-// that predates the binary on disk.
-func (c *Client) Status() (unlocked bool, remaining time.Duration, mounts []MountRevealStatus, build string, err error) {
+// Status is everything the agent can say about itself in one round trip.
+//
+// A struct rather than the return tuple this used to be: the tuple had
+// reached five values, callers were writing `unlocked, _, _, _, err :=` to
+// reach past the ones they didn't want, and the two provenance fields below
+// would have made it seven. Named fields also let a caller take only what it
+// needs without silently depending on positional order.
+type Status struct {
+	Unlocked bool
+	// Remaining is how long until the idle auto-lock, zero when locked.
+	Remaining time.Duration
+	// Mounts is every currently-served mount's reveal state (GAPS.md #37) —
+	// "is X revealed, and for how long" used to have no answer anywhere short
+	// of reading mountManager's in-process state directly, which a separate
+	// `jit status` invocation can't do.
+	Mounts []MountRevealStatus
+	// LastUnlock and LastLock are who moved the session to its current state,
+	// and why (GAPS.md #75). Nil until this agent process has actually
+	// unlocked (or locked) once.
+	LastUnlock *SessionEvent
+	LastLock   *SessionEvent
+	// Build is the agent process's own BuildID (GAPS.md #49), for the caller
+	// to compare against its own and notice a stale, launchd-kept-alive agent
+	// that predates the binary on disk.
+	Build string
+}
+
+// History asks for every unlock and lock this agent process has seen, newest
+// first. Bounded (maxSessionEvents) and in-memory: a launchd restart empties
+// it, which is exactly why the same events also go to the agent's log.
+//
+// Never triggers a challenge — asking why you keep being prompted must not
+// prompt you.
+func (c *Client) History() ([]SessionEvent, error) {
+	resp, err := c.call(Request{Op: OpHistory})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Events, nil
+}
+
+// Status asks the running agent for that snapshot.
+func (c *Client) Status() (Status, error) {
 	resp, err := c.call(Request{Op: OpStatus})
 	if err != nil {
-		return false, 0, nil, "", err
+		return Status{}, err
 	}
-	return resp.Unlocked, time.Duration(resp.ExpiresInSeconds) * time.Second, resp.Mounts, resp.Build, nil
+	return Status{
+		Unlocked:   resp.Unlocked,
+		Remaining:  time.Duration(resp.ExpiresInSeconds) * time.Second,
+		Mounts:     resp.Mounts,
+		LastUnlock: resp.LastUnlock,
+		LastLock:   resp.LastLock,
+		Build:      resp.Build,
+	}, nil
 }

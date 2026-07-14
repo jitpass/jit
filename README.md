@@ -51,6 +51,35 @@ mechanism, so everything keeps working:
 
 GCP application-default credentials aren't covered yet.
 
+### Every prompt tells you why it appeared
+
+A Touch ID prompt you can't explain is one you'll approve out of habit — which
+defeats the point of asking. So when jit asks, it names what it's asking *for*
+and what set it off:
+
+> jit is trying to **unlock the vault for profile "mcp-jamf", launched by claude**.
+
+That's an MCP server your editor started, wanting the secrets in your
+`mcp-jamf` profile. Approve or cancel on the facts, not on a guess.
+
+The same provenance is kept afterwards, because "why did that happen?" is
+usually asked *after* the prompt is gone. `jit agent status` shows who unlocked
+the current session and what dropped it; `jit agent history` lists every unlock
+and lock the agent has seen; and both are written to the agent's log, which
+survives restarts.
+
+```
+Session (most recent first):
+  • locked   48m ago (11:48:04) — 15m0s idle timeout
+  • unlocked 1h ago (11:33:04) — launched by claude
+      ~/go/bin/jit run --profile mcp-jamf -- uv --directory ~/Documents/…
+```
+
+Who the caller is comes from the kernel (its pid on the socket, then its
+command line and parent chain), never from anything the caller says about
+itself — so it can't be faked by a process filling in a field. It is used to
+*explain* and to *audit*, never to decide: see the security note below.
+
 ## Install
 
 jit is macOS-only and needs Touch ID or a device passcode. Two ways in —
@@ -211,6 +240,14 @@ We'd rather you read the boundaries than discover them:
   user, and we won't tell you otherwise.
 - A secret injected into a process is plaintext inside that process; jit
   narrows the exposure window, but it can't sandbox your dependencies.
+- **Caller identification is for explaining, never for deciding.** The name in
+  a prompt ("launched by claude") and in `jit agent status` comes from the
+  kernel and can't be forged by a caller filling in a field — but a process can
+  `exec` something else after connecting, and pids get reused, so nothing is
+  ever *granted* on the strength of who a caller appears to be. The only access
+  check on the agent's socket is that the peer runs as the same OS user. Same
+  for the process named as having read a live-mounted file: audit signal, not a
+  gate.
 - The commands that put secrets back on disk (`jit unmount`,
   `jit migrate undo`, `jit vault export`) always re-prompt, by design.
 - Each published review in [security/](./security/) ends with the known,

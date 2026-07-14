@@ -31,6 +31,13 @@ const (
 	OpRefresh   = "refresh"
 	OpReveal    = "reveal"
 	OpStopMount = "stop_mount"
+	OpHistory   = "history"
+)
+
+// SessionEvent.Kind values.
+const (
+	KindUnlock = "unlock"
+	KindLock   = "lock"
 )
 
 // Response answers a Request.
@@ -49,12 +56,67 @@ type Response struct {
 	// same round trip, instead of inferring it (or, before this, having
 	// no way to see it at all). Empty on every other Op.
 	Mounts []MountRevealStatus `json:"mounts,omitempty"`
+	// LastUnlock and LastLock answer "status"'s missing question: not what
+	// state the session is in, but who put it there (GAPS.md #75). Status
+	// could always say "running and locked" — never "unlocked 10:19:07 by
+	// `jit run --profile mcp-jamf`, which Claude Code started; auto-locked
+	// 15m later", which is the thing a user staring at an unexplained Touch
+	// ID prompt actually needs. Nil when nothing has unlocked (or locked)
+	// this agent process yet: in-memory state, like Mounts, not persisted
+	// across a restart.
+	LastUnlock *SessionEvent `json:"last_unlock,omitempty"`
+	LastLock   *SessionEvent `json:"last_lock,omitempty"`
+	// Events answers "history" — every unlock and lock this agent PROCESS has
+	// seen, newest first, bounded by maxSessionEvents. Status deliberately
+	// carries only the two latest instead (a status call happens constantly,
+	// including from shell prompts; shipping the whole ring each time would
+	// be wasteful), so the full sequence needs asking for.
+	Events []SessionEvent `json:"events,omitempty"`
 	// Build is the serving agent process's own BuildID(), set on "status"
 	// (GAPS.md #49) — launchd's KeepAlive keeps an agent process alive
 	// across rebuilds and reinstalls indefinitely, so without this there
 	// was no way to notice the running agent predates the CLI talking to
 	// it: a just-fixed bug looks unfixed, with nothing anywhere saying why.
 	Build string `json:"build,omitempty"`
+}
+
+// SessionEvent is one transition of the agent's session — an unlock or a
+// lock — with the provenance the agent learned at the moment it happened.
+// Deliberately plain strings/ints (this package's protocol convention), and
+// deliberately kernel-derived, never self-reported: see internal/agent's
+// caller and internal/lineage.
+//
+// Every field except UnixTime is best-effort. A caller the kernel wouldn't
+// identify (it exited before the agent could look) leaves By/ByPID/LaunchedBy
+// empty, and the status line simply says less — identification failing must
+// never fail the unlock itself.
+type SessionEvent struct {
+	UnixTime int64 `json:"unix_time"`
+	// Kind is "unlock" or "lock". Callers used to tell the two apart by
+	// checking whether Cause was set, which worked only because locks happen
+	// to be the only events that carry one — a coincidence, not a contract,
+	// and one that would have broken silently the first time an unlock needed
+	// a cause of its own.
+	Kind string `json:"kind"`
+	// Op is the RPC that forced the unlock ("unwrap", "reveal", ...), or
+	// "serve_mounts" for the agent's own in-process unlock when it resolves
+	// a mount's real content. Empty on a lock event.
+	Op string `json:"op,omitempty"`
+	// By is the caller's full command line as the kernel reports it, and
+	// ByPID its pid — the literal "what asked for this", for a terminal wide
+	// enough to print it. The Touch ID prompt gets a much shorter phrasing
+	// (see challengeReason); this is the investigative version.
+	By    string `json:"by,omitempty"`
+	ByPID int32  `json:"by_pid,omitempty"`
+	// LaunchedBy is the nearest ancestor that explains the call — "claude",
+	// "Code" — with the shells that merely relayed it skipped. Empty when a
+	// human ran jit at a prompt themselves, because then there is nothing to
+	// explain.
+	LaunchedBy string `json:"launched_by,omitempty"`
+	// Cause is set on lock events only: what dropped the session ("15m idle
+	// timeout" vs. an explicit lock). "Why am I being asked again?" is
+	// usually answered here, not by the unlock at all.
+	Cause string `json:"cause,omitempty"`
 }
 
 // MountRevealStatus is one currently-served mount's reveal state — deliberately
@@ -99,4 +161,14 @@ type MountServeEvent struct {
 	Decoy      bool   `json:"decoy"`
 	ReaderPID  int32  `json:"reader_pid,omitempty"`
 	ReaderPath string `json:"reader_path,omitempty"`
+	// ReaderLaunchedBy is what launched the reader ("claude", "Code") —
+	// "python3 read your credentials" is a fact you can't act on; "python3,
+	// launched by claude" is one you can.
+	ReaderLaunchedBy string `json:"reader_launched_by,omitempty"`
+	// ReaderLikely marks an identity carried over from an earlier scan of this
+	// same mount (the reader is still alive and still holding the file open,
+	// but this particular scan raced its open and missed it). True means
+	// "almost certainly this process"; it must never be displayed as
+	// certainty, because it is an inference.
+	ReaderLikely bool `json:"reader_likely,omitempty"`
 }

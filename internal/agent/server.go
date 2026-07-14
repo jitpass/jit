@@ -25,8 +25,14 @@ import (
 // one across multiple Server-level unlocks would silently skip the
 // challenge after the very first, defeating Server's own TTL-based
 // re-locking entirely.
+//
+// reason is what the human reads on the resulting prompt (macOS renders it
+// as "jit is trying to <reason>."), built per-unlock by challengeReason from
+// who actually asked. It is a parameter rather than a constant inside the
+// fetcher because only Server knows that — and a prompt that can't say why
+// it appeared is the entire problem this plumbing exists to fix.
 type MEKFetcher interface {
-	FetchMEK() ([]byte, error)
+	FetchMEK(reason string) ([]byte, error)
 }
 
 // Server is the session broker RFC.md Pillar II describes: holds the
@@ -110,6 +116,19 @@ type Server struct {
 	// all, same reasoning as OnStopMount. Returns the current snapshot;
 	// Server doesn't cache or interpret it.
 	OnMountStatus func() []MountRevealStatus
+	// OnSessionEvent, if set, is called after every fresh unlock and every
+	// real lock, with that transition's provenance — so the agent's LOG can
+	// carry it, not just the in-memory snapshot `jit agent status` reads.
+	//
+	// The distinction matters more than it looks: status dies with the
+	// process, and launchd restarts this agent across logins and rebuilds. The
+	// log is the only record that outlives that, and it was exactly the thing
+	// someone had to read (against their own shell history) to work out why a
+	// prompt appeared. It logged every lock and not one unlock, so the event
+	// that actually prompted them was the one event it never mentioned.
+	//
+	// Fires OUTSIDE Server's lock, like OnUnlock/OnLock, and before them.
+	OnSessionEvent func(SessionEvent)
 
 	// readTimeout bounds how long a connected client gets to send a
 	// complete request (and, on the way out, to drain the response).
@@ -128,6 +147,18 @@ type Server struct {
 	mek       []byte
 	expiry    time.Time
 	lockTimer *time.Timer
+	// lastUnlock/lastLock are the session's provenance: who unlocked it and
+	// what dropped it (GAPS.md #75). Kept even while locked — the whole point
+	// is to still be able to explain a session that has already ended, which
+	// is exactly when someone asks.
+	lastUnlock *SessionEvent
+	lastLock   *SessionEvent
+	// events is every unlock and lock this process has seen, oldest first,
+	// capped at maxSessionEvents. lastUnlock/lastLock answer "explain the
+	// session I'm looking at"; this answers "was it prompting me all
+	// afternoon, and for what" — a question a single before/after pair
+	// structurally cannot, since each new unlock overwrites the last.
+	events []SessionEvent
 
 	listener net.Listener
 }
@@ -207,16 +238,23 @@ func (s *Server) handleConn(conn net.Conn) {
 		return
 	}
 
+	// Identify the peer BEFORE handling: a `jit run` that execs its child
+	// (which is what jit run does) has already replaced its own argv by the
+	// time a slow interactive challenge finishes, so asking the kernel
+	// afterwards would describe the wrong program. nil is fine and expected
+	// (peer already gone) — handling never depends on it.
+	c := callerFromConn(conn)
+
 	// Handling can block on an interactive challenge far longer than the
 	// request-read bound — clear the deadline for it, then re-bound just
 	// the response write.
 	_ = conn.SetDeadline(time.Time{})
-	resp := s.handle(req)
+	resp := s.handle(req, c)
 	_ = conn.SetWriteDeadline(time.Now().Add(s.readTimeout))
 	_ = json.NewEncoder(conn).Encode(resp)
 }
 
-func (s *Server) handle(req Request) Response {
+func (s *Server) handle(req Request, c *caller) Response {
 	switch req.Op {
 	case OpStatus:
 		unlocked, remaining := s.status()
@@ -224,18 +262,24 @@ func (s *Server) handle(req Request) Response {
 		if s.OnMountStatus != nil {
 			mounts = s.OnMountStatus()
 		}
-		return Response{OK: true, Unlocked: unlocked, ExpiresInSeconds: int64(remaining.Seconds()), Mounts: mounts, Build: BuildID()}
+		lastUnlock, lastLock := s.provenance()
+		return Response{OK: true, Unlocked: unlocked, ExpiresInSeconds: int64(remaining.Seconds()), Mounts: mounts, LastUnlock: lastUnlock, LastLock: lastLock, Build: BuildID()}
+	case OpHistory:
+		// Deliberately no ensureUnlocked: reading which prompts have already
+		// happened must never itself cause one. An agent you can't ask "why do
+		// you keep prompting me?" without being prompted is a joke.
+		return Response{OK: true, Events: s.history()}
 	case OpLock:
-		s.lock()
+		s.lock(lockCause(c))
 		return Response{OK: true, Unlocked: false}
 	case OpUnlock:
-		if _, err := s.ensureUnlocked(); err != nil {
+		if _, err := s.ensureUnlocked(req.Op, c); err != nil {
 			return Response{OK: false, Error: err.Error()}
 		}
 		unlocked, remaining := s.status()
 		return Response{OK: true, Unlocked: unlocked, ExpiresInSeconds: int64(remaining.Seconds())}
 	case OpRefresh:
-		if _, err := s.ensureUnlocked(); err != nil {
+		if _, err := s.ensureUnlocked(req.Op, c); err != nil {
 			return Response{OK: false, Error: err.Error()}
 		}
 		if s.OnRefresh != nil {
@@ -255,7 +299,7 @@ func (s *Server) handle(req Request) Response {
 		if s.OnUnlockForReveal != nil {
 			onFresh = s.OnUnlockForReveal
 		}
-		if _, err := s.ensureUnlockedNotify(onFresh); err != nil {
+		if _, err := s.ensureUnlockedNotify(onFresh, req.Op, c); err != nil {
 			return Response{OK: false, Error: err.Error()}
 		}
 		if s.OnReveal != nil {
@@ -275,7 +319,7 @@ func (s *Server) handle(req Request) Response {
 		}
 		return Response{OK: true}
 	case OpWrap:
-		mek, err := s.ensureUnlocked()
+		mek, err := s.ensureUnlocked(req.Op, c)
 		if err != nil {
 			return Response{OK: false, Error: err.Error()}
 		}
@@ -285,7 +329,7 @@ func (s *Server) handle(req Request) Response {
 		}
 		return Response{OK: true, Data: wrapped}
 	case OpUnwrap:
-		mek, err := s.ensureUnlocked()
+		mek, err := s.ensureUnlocked(req.Op, c)
 		if err != nil {
 			return Response{OK: false, Error: err.Error()}
 		}
@@ -305,8 +349,12 @@ func (s *Server) handle(req Request) Response {
 // in-process, with no socket round trip. Other processes get the same
 // operations via Client, which talks to these same ensureUnlocked/seal/
 // open primitives over the socket instead.
+// These two are the agent unlocking ITSELF — no socket, so no peer to
+// identify (nil caller), and opServeMounts rather than a wire op name, since
+// what's really happening is "resolve this project's mounted files", not a
+// wrap/unwrap someone asked for.
 func (s *Server) WrapKey(dek []byte) ([]byte, error) {
-	mek, err := s.ensureUnlocked()
+	mek, err := s.ensureUnlocked(opServeMounts, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -314,15 +362,15 @@ func (s *Server) WrapKey(dek []byte) ([]byte, error) {
 }
 
 func (s *Server) UnwrapKey(wrapped []byte) ([]byte, error) {
-	mek, err := s.ensureUnlocked()
+	mek, err := s.ensureUnlocked(opServeMounts, nil)
 	if err != nil {
 		return nil, err
 	}
 	return open(mek, wrapped)
 }
 
-func (s *Server) ensureUnlocked() ([]byte, error) {
-	return s.ensureUnlockedNotify(s.OnUnlock)
+func (s *Server) ensureUnlocked(op string, c *caller) ([]byte, error) {
+	return s.ensureUnlockedNotify(s.OnUnlock, op, c)
 }
 
 // ensureUnlockedNotify is ensureUnlocked with a caller-chosen "a fresh
@@ -331,7 +379,7 @@ func (s *Server) ensureUnlocked() ([]byte, error) {
 // every other caller goes through ensureUnlocked. onFresh fires exactly
 // where OnUnlock did: after the lock is released, and only for a genuine
 // fresh challenge, never a cache hit.
-func (s *Server) ensureUnlockedNotify(onFresh func()) ([]byte, error) {
+func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller) ([]byte, error) {
 	s.mu.Lock()
 
 	if s.mek != nil && time.Now().Before(s.expiry) {
@@ -349,7 +397,7 @@ func (s *Server) ensureUnlockedNotify(onFresh func()) ([]byte, error) {
 		if s.lockTimer != nil {
 			s.lockTimer.Stop()
 		}
-		s.lockTimer = time.AfterFunc(s.ttl, s.lock)
+		s.lockTimer = time.AfterFunc(s.ttl, s.idleLock)
 		s.mu.Unlock()
 		return mek, nil
 	}
@@ -363,30 +411,46 @@ func (s *Server) ensureUnlockedNotify(onFresh func()) ([]byte, error) {
 	// rather than each independently triggering their own Touch ID
 	// prompt. OnUnlock fires only after releasing the lock below, and
 	// only for a fresh challenge — never for a cache hit above.
-	mek, err := s.newFetcher().FetchMEK()
+	//
+	// The reason handed to the fetcher is the prompt the human is about to
+	// read, so it is built HERE, where both the op and the caller are known
+	// — the fetcher itself has no idea who it's prompting on behalf of.
+	mek, err := s.newFetcher().FetchMEK(challengeReason(op, c))
 	if err != nil {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unlocking: %w", err)
 	}
 	s.mek = mek
+	event := unlockEvent(op, c)
+	s.lastUnlock = event
+	s.recordEvent(*event)
 	s.expiry = time.Now().Add(s.ttl)
 	if s.lockTimer != nil {
 		s.lockTimer.Stop()
 	}
-	s.lockTimer = time.AfterFunc(s.ttl, s.lock)
+	s.lockTimer = time.AfterFunc(s.ttl, s.idleLock)
 	s.mu.Unlock()
 
+	if s.OnSessionEvent != nil {
+		s.OnSessionEvent(*event)
+	}
 	if onFresh != nil {
 		onFresh()
 	}
 	return mek, nil
 }
 
-// lock drops the cached MEK. Safe to call as a time.AfterFunc callback
-// (TTL auto-lock) or directly (explicit "lock now"). OnLock only fires if
-// there was actually a session to drop — calling lock on an
-// already-locked agent is a no-op, not a repeated notification.
-func (s *Server) lock() {
+// lock drops the cached MEK, recording WHY. OnLock only fires if there was
+// actually a session to drop — calling lock on an already-locked agent is a
+// no-op, not a repeated notification — and so, for the same reason, does the
+// provenance record: an already-locked agent must keep the cause of the lock
+// that actually happened, not overwrite it with a no-op's.
+//
+// cause is the answer to the question a re-prompt raises ("I authorized this
+// twenty minutes ago — why again?"), and it is almost always the idle
+// timeout rather than anything the user did. Saying so is the difference
+// between the auto-lock looking like policy and looking like a bug.
+func (s *Server) lock(cause string) {
 	s.mu.Lock()
 	hadSession := s.mek != nil
 	if s.mek != nil {
@@ -398,11 +462,97 @@ func (s *Server) lock() {
 		s.lockTimer.Stop()
 		s.lockTimer = nil
 	}
+	var event *SessionEvent
+	if hadSession {
+		event = &SessionEvent{UnixTime: time.Now().Unix(), Kind: KindLock, Cause: cause}
+		s.lastLock = event
+		s.recordEvent(*event)
+	}
 	s.mu.Unlock()
 
-	if hadSession && s.OnLock != nil {
+	if !hadSession {
+		return
+	}
+	if s.OnSessionEvent != nil {
+		s.OnSessionEvent(*event)
+	}
+	if s.OnLock != nil {
 		s.OnLock()
 	}
+}
+
+// idleLock is the TTL auto-lock — the time.AfterFunc callback, which takes
+// no arguments, hence this rather than a closure at each of the two call
+// sites that arm the timer.
+func (s *Server) idleLock() {
+	s.lock(fmt.Sprintf("%s idle timeout", s.ttl))
+}
+
+// lockCause names an explicit `jit agent lock` (or a `jit vault` command that
+// locks when it's done), attributing it when the kernel identified the caller.
+func lockCause(c *caller) string {
+	if by := c.launchedBy(); by != "" {
+		return fmt.Sprintf("explicit lock, launched by %s", by)
+	}
+	return "explicit lock"
+}
+
+// unlockEvent snapshots who caused a fresh unlock, at the moment it happened
+// — the caller may well have exec'd (jit run) or exited by the time anyone
+// runs `jit agent status` to ask.
+func unlockEvent(op string, c *caller) *SessionEvent {
+	e := &SessionEvent{UnixTime: time.Now().Unix(), Kind: KindUnlock, Op: op}
+	if c != nil {
+		e.By = c.command()
+		e.ByPID = c.pid
+		e.LaunchedBy = c.launchedBy()
+	}
+	return e
+}
+
+// maxSessionEvents bounds the in-memory history. An agent process lives for
+// weeks across launchd restarts, so this must not grow without limit; 200
+// events is several days of ordinary use (a handful of unlock/lock pairs a
+// day) and a few kilobytes. Anything older has already been written to the
+// agent's log, which is the durable record — this ring is the convenient one.
+const maxSessionEvents = 200
+
+// recordEvent appends to the ring. Caller must hold s.mu.
+func (s *Server) recordEvent(e SessionEvent) {
+	s.events = append(s.events, e)
+	if len(s.events) > maxSessionEvents {
+		s.events = append([]SessionEvent(nil), s.events[len(s.events)-maxSessionEvents:]...)
+	}
+}
+
+// history returns the ring NEWEST FIRST — the order it will be read in, and
+// the order `jit agent history` prints. Reversing here (rather than in the
+// CLI) keeps every consumer, including a --format json one, from having to
+// know which end is which.
+func (s *Server) history() []SessionEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]SessionEvent, 0, len(s.events))
+	for i := len(s.events) - 1; i >= 0; i-- {
+		out = append(out, s.events[i])
+	}
+	return out
+}
+
+// provenance returns copies, so a status response can never hand a caller a
+// pointer into state the agent keeps mutating under its own lock.
+func (s *Server) provenance() (lastUnlock, lastLock *SessionEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lastUnlock != nil {
+		u := *s.lastUnlock
+		lastUnlock = &u
+	}
+	if s.lastLock != nil {
+		l := *s.lastLock
+		lastLock = &l
+	}
+	return lastUnlock, lastLock
 }
 
 func (s *Server) status() (unlocked bool, remaining time.Duration) {
