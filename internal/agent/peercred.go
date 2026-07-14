@@ -81,5 +81,5 @@ func peerPID(conn net.Conn) (int32, error) {
 	if sockErr != nil {
 		return 0, fmt.Errorf("LOCAL_PEERPID failed: %w", sockErr)
 	}
-	return int32(pid), nil
+	return int32(pid), nil // #nosec G115 -- LOCAL_PEERPID returns a pid_t, which is int32 on darwin; GetsockoptInt merely widened it, so narrowing back cannot lose bits
 }
