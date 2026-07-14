@@ -68,37 +68,15 @@ func (c *caller) command() string {
 	return fmt.Sprintf("pid %d", c.pid)
 }
 
-// launchedBy names the nearest ancestor that actually EXPLAINS the call,
-// skipping the shells and process wrappers that merely relay it (a `jit run`
-// typed by a human has a shell parent — reporting "launched by zsh" is
-// technically true and completely uninformative). Empty when the chain is
-// all shells: for a human typing at a prompt, the honest answer is "you did,
-// just now", and saying nothing is how you say that.
+// launchedBy names the nearest ancestor that actually EXPLAINS the call. The
+// rule (skip the shells that merely relayed it) lives in internal/lineage,
+// because the mount manager asks the same question of a different process:
+// "who launched the thing that just READ this secret file".
 func (c *caller) launchedBy() string {
 	if c == nil {
 		return ""
 	}
-	for _, p := range c.ancestors {
-		name := p.Name()
-		if name == "" || isRelay(name) {
-			continue
-		}
-		return name
-	}
-	return ""
-}
-
-// isRelay reports whether name is a process that passes work along rather
-// than being the reason for it. Shells dominate, but the login/exec wrappers
-// belong here too — none of them is ever the interesting answer to "why is
-// this happening".
-func isRelay(name string) bool {
-	switch strings.TrimPrefix(name, "-") { // login shells appear as "-zsh"
-	case "zsh", "bash", "sh", "dash", "fish", "tcsh", "csh", "ksh",
-		"login", "env", "sudo", "xargs", "time":
-		return true
-	}
-	return false
+	return lineage.LaunchedBy(c.ancestors)
 }
 
 // profile extracts the profile name when the caller is a `jit run --profile

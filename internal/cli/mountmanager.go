@@ -114,9 +114,26 @@ type mountManager struct {
 // content decision itself. identified=false means the scan missed the
 // reader, which a fast-closing reader legitimately can.
 type readerIdentity struct {
-	pid        int32
-	execPath   string
+	pid      int32
+	execPath string
+	// launchedBy is what launched the reader ("claude", "Code") — the same
+	// question the agent answers about whoever unlocked the vault, asked of
+	// whoever read the secret. "python3 read your Wiz credentials" is a fact;
+	// "python3, launched by claude, read your Wiz credentials" is the one you
+	// can act on.
+	launchedBy string
 	identified bool
+	// likely marks an identity carried over from this mount's previous scan
+	// rather than found by this one. The scan is rate-limited and a
+	// fast-closing reader evades it outright, so a mount being re-read in a
+	// watcher loop produced a stream of "an unidentified process" lines —
+	// about a process jit had identified seconds earlier, and which is still
+	// holding the file open. Carrying it forward (only while that same pid is
+	// still alive and still running the same executable, so pid reuse can't
+	// launder one process's identity onto another) turns a useless line into a
+	// useful one. Marked "likely", never asserted: it is an inference, and the
+	// display says so.
+	likely bool
 }
 
 // serveRecord is one completed content decision: what a connected reader
@@ -471,9 +488,14 @@ func (m *mountManager) noteReaderConnected(path string, sm *servedMount) {
 	sm.mu.Unlock()
 
 	if doScan {
-		pid, execPath, ok := lineage.IdentifyFIFOReader(path)
 		sm.mu.Lock()
-		sm.pendingReader = readerIdentity{pid: pid, execPath: execPath, identified: ok}
+		previous := sm.pendingReader
+		sm.mu.Unlock()
+
+		next := identifyReader(path, previous)
+
+		sm.mu.Lock()
+		sm.pendingReader = next
 		sm.mu.Unlock()
 	}
 	if !doLog {
@@ -487,10 +509,67 @@ func (m *mountManager) noteReaderConnected(path string, sm *servedMount) {
 		suffix = fmt.Sprintf(" (+%d reads since the last logged one)", suppressed)
 	}
 	if r.identified {
-		fmt.Fprintf(m.stderr, "jit agent: mount %s: reader pid=%d (%s)%s\n", path, r.pid, r.execPath, suffix)
+		qualifier := ""
+		if r.likely {
+			qualifier = " (still holding it open; this scan missed the open itself)"
+		}
+		launcher := ""
+		if r.launchedBy != "" {
+			launcher = fmt.Sprintf(", launched by %s", r.launchedBy)
+		}
+		fmt.Fprintf(m.stderr, "jit agent: mount %s: reader pid=%d (%s)%s%s%s\n", path, r.pid, r.execPath, launcher, qualifier, suffix)
 		return
 	}
 	fmt.Fprintf(m.stderr, "jit agent: mount %s: reader connected (not identified — best-effort scan missed it)%s\n", path, suffix)
+}
+
+// identifyReader is the best-effort "who is reading this mount" scan, with a
+// fallback to whoever this mount's PREVIOUS scan found.
+//
+// The fallback exists because the plain scan produced a genuinely useless log:
+// a mount in an editor's watcher loop alternated between "reader pid=57346
+// (…/Code)" and "reader connected (not identified — best-effort scan missed
+// it)" — the same editor both times, one of which jit had just named. The scan
+// is rate-limited and races a reader that closes fast, so misses are normal,
+// not exceptional.
+//
+// Carried forward only while the remembered pid is still alive AND still
+// running the same executable: pids get reused, and without that check a
+// recycled pid would let jit attribute one process's read to another program
+// entirely — an audit log that lies is worse than one that admits it doesn't
+// know. The result is marked likely, and every display of it says so.
+func identifyReader(path string, previous readerIdentity) readerIdentity {
+	if pid, execPath, ok := lineage.IdentifyFIFOReader(path); ok {
+		return readerIdentity{
+			pid:        pid,
+			execPath:   execPath,
+			launchedBy: launcherOf(pid),
+			identified: true,
+		}
+	}
+	if previous.identified && stillRunning(previous) {
+		previous.likely = true
+		return previous
+	}
+	return readerIdentity{}
+}
+
+// stillRunning reports whether a remembered reader is still the same live
+// process — same pid, still executing the same binary. The exec-path check is
+// what makes pid reuse safe to ignore.
+func stillRunning(r readerIdentity) bool {
+	p, ok := lineage.Describe(r.pid)
+	return ok && p.ExecPath == r.execPath
+}
+
+// launcherOf names what launched pid, skipping relay shells — the mount's
+// answer to the same question `jit agent status` answers about an unlock.
+func launcherOf(pid int32) string {
+	chain := lineage.Ancestry(pid)
+	if len(chain) < 2 {
+		return ""
+	}
+	return lineage.LaunchedBy(chain[1:])
 }
 
 // noteServeError logs a mount's transient write/close errors with the same
@@ -602,6 +681,8 @@ func (m *mountManager) mountRevealStatuses() []agent.MountRevealStatus {
 			if ls.reader.identified {
 				status.LastServe.ReaderPID = ls.reader.pid
 				status.LastServe.ReaderPath = ls.reader.execPath
+				status.LastServe.ReaderLaunchedBy = ls.reader.launchedBy
+				status.LastServe.ReaderLikely = ls.reader.likely
 			}
 		}
 		if time.Since(sm.readWindowStart) <= time.Minute {

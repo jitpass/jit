@@ -343,6 +343,45 @@ mount was actually served (real or decoy values, and by which process).
 Warns if the running agent is an older build than the CLI. `--format json`
 for scripting.
 
+It also answers *who put the session in this state* — the command that
+unlocked it, what launched that command, and what dropped the session
+afterwards:
+
+```
+jit agent is running and locked.
+
+Session (most recent first):
+  • locked   48m ago (11:48:04) — 15m0s idle timeout
+  • unlocked 1h ago (11:33:04) — launched by claude
+      ~/go/bin/jit run --profile mcp-jamf -- uv --directory ~/Documents/…
+```
+
+Read that as: an MCP server your editor started asked for the `mcp-jamf`
+profile's secrets, and the session then lapsed on its own 15 minutes later.
+Both facts come from the kernel, not from anything the calling process
+claimed about itself.
+
+#### `jit agent history`
+
+The same session events, all of them, most recent first — every unlock (with
+the command that triggered the prompt and what launched it) and every lock
+(with its cause). This is the answer to "why does it keep asking me?", which
+`status` can only ever half-answer, since it holds just the latest of each.
+
+```
+Session history (most recent first):
+  • unlocked 4s ago (13:19:19) — launched by claude
+      ~/go/bin/jit run --profile mcp-caido -- caido-mcp-server serve
+  • locked   10s ago (13:19:13) — explicit lock, launched by claude
+  • unlocked 10s ago (13:19:13) — launched by claude
+      ~/go/bin/jit run --profile mcp-jamf -- uv --directory ~/Documents/…
+```
+
+In-memory and bounded, so a restart empties it (launchd restarts the agent at
+every login). The same events are appended to the agent's log file, which is
+the durable record. Asking never triggers a prompt. `--format json` for
+scripting.
+
 #### `jit agent unlock` / `jit agent lock`
 
 Pre-warm the shared session so the next command doesn't prompt, or drop it

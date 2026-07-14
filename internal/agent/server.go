@@ -153,6 +153,12 @@ type Server struct {
 	// is exactly when someone asks.
 	lastUnlock *SessionEvent
 	lastLock   *SessionEvent
+	// events is every unlock and lock this process has seen, oldest first,
+	// capped at maxSessionEvents. lastUnlock/lastLock answer "explain the
+	// session I'm looking at"; this answers "was it prompting me all
+	// afternoon, and for what" — a question a single before/after pair
+	// structurally cannot, since each new unlock overwrites the last.
+	events []SessionEvent
 
 	listener net.Listener
 }
@@ -258,6 +264,11 @@ func (s *Server) handle(req Request, c *caller) Response {
 		}
 		lastUnlock, lastLock := s.provenance()
 		return Response{OK: true, Unlocked: unlocked, ExpiresInSeconds: int64(remaining.Seconds()), Mounts: mounts, LastUnlock: lastUnlock, LastLock: lastLock, Build: BuildID()}
+	case OpHistory:
+		// Deliberately no ensureUnlocked: reading which prompts have already
+		// happened must never itself cause one. An agent you can't ask "why do
+		// you keep prompting me?" without being prompted is a joke.
+		return Response{OK: true, Events: s.history()}
 	case OpLock:
 		s.lock(lockCause(c))
 		return Response{OK: true, Unlocked: false}
@@ -412,6 +423,7 @@ func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller) ([]b
 	s.mek = mek
 	event := unlockEvent(op, c)
 	s.lastUnlock = event
+	s.recordEvent(*event)
 	s.expiry = time.Now().Add(s.ttl)
 	if s.lockTimer != nil {
 		s.lockTimer.Stop()
@@ -452,8 +464,9 @@ func (s *Server) lock(cause string) {
 	}
 	var event *SessionEvent
 	if hadSession {
-		event = &SessionEvent{UnixTime: time.Now().Unix(), Cause: cause}
+		event = &SessionEvent{UnixTime: time.Now().Unix(), Kind: KindLock, Cause: cause}
 		s.lastLock = event
+		s.recordEvent(*event)
 	}
 	s.mu.Unlock()
 
@@ -488,13 +501,42 @@ func lockCause(c *caller) string {
 // — the caller may well have exec'd (jit run) or exited by the time anyone
 // runs `jit agent status` to ask.
 func unlockEvent(op string, c *caller) *SessionEvent {
-	e := &SessionEvent{UnixTime: time.Now().Unix(), Op: op}
+	e := &SessionEvent{UnixTime: time.Now().Unix(), Kind: KindUnlock, Op: op}
 	if c != nil {
 		e.By = c.command()
 		e.ByPID = c.pid
 		e.LaunchedBy = c.launchedBy()
 	}
 	return e
+}
+
+// maxSessionEvents bounds the in-memory history. An agent process lives for
+// weeks across launchd restarts, so this must not grow without limit; 200
+// events is several days of ordinary use (a handful of unlock/lock pairs a
+// day) and a few kilobytes. Anything older has already been written to the
+// agent's log, which is the durable record — this ring is the convenient one.
+const maxSessionEvents = 200
+
+// recordEvent appends to the ring. Caller must hold s.mu.
+func (s *Server) recordEvent(e SessionEvent) {
+	s.events = append(s.events, e)
+	if len(s.events) > maxSessionEvents {
+		s.events = append([]SessionEvent(nil), s.events[len(s.events)-maxSessionEvents:]...)
+	}
+}
+
+// history returns the ring NEWEST FIRST — the order it will be read in, and
+// the order `jit agent history` prints. Reversing here (rather than in the
+// CLI) keeps every consumer, including a --format json one, from having to
+// know which end is which.
+func (s *Server) history() []SessionEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]SessionEvent, 0, len(s.events))
+	for i := len(s.events) - 1; i >= 0; i-- {
+		out = append(out, s.events[i])
+	}
+	return out
 }
 
 // provenance returns copies, so a status response can never hand a caller a

@@ -7,11 +7,14 @@ package cli
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jitpass/jit/internal/agent"
+	"github.com/jitpass/jit/internal/lineage"
 )
 
 // TestAgentStatusExplainsAnUnexplainedPrompt is GAPS.md #50 from the user's
@@ -185,9 +188,70 @@ func TestSessionLogRecordsUnlocksNotJustLocks(t *testing.T) {
 // leaves "why am I being prompted again?" exactly as unanswered as before.
 func TestSessionLogNamesTheLockCause(t *testing.T) {
 	var buf bytes.Buffer
-	logSessionEvent(&buf, agent.SessionEvent{UnixTime: time.Now().Unix(), Cause: "15m0s idle timeout"})
+	logSessionEvent(&buf, agent.SessionEvent{UnixTime: time.Now().Unix(), Kind: agent.KindLock, Cause: "15m0s idle timeout"})
 
 	if got := buf.String(); !strings.Contains(got, "session locked") || !strings.Contains(got, "15m0s idle timeout") {
 		t.Errorf("lock log line = %q, want it to name the lock and its cause", got)
+	}
+}
+
+// TestDescribeReaderStatesItsConfidence pins the three honest tiers. The
+// motivating output: a mount in an editor's watcher loop alternated between
+// naming the editor and saying "an unidentified process" — the same editor
+// both times. A carried-over identity fixes that, but must never be presented
+// as certainty: it's an inference, and an audit line that overstates itself is
+// worse than one that admits doubt.
+func TestDescribeReaderStatesItsConfidence(t *testing.T) {
+	scanned := describeReader(&agent.MountServeEvent{ReaderPath: "/Applications/Visual Studio Code.app/Contents/MacOS/Code", ReaderPID: 57346})
+	if scanned != "Code (pid 57346)" {
+		t.Errorf("a directly-scanned reader = %q, want it named flatly with no hedging", scanned)
+	}
+
+	carried := describeReader(&agent.MountServeEvent{ReaderPath: "/usr/bin/python3", ReaderPID: 900, ReaderLikely: true, ReaderLaunchedBy: "claude"})
+	if !strings.HasPrefix(carried, "likely ") {
+		t.Errorf("a carried-over reader = %q, want it hedged as \"likely\" — it's an inference, not an observation", carried)
+	}
+	if !strings.Contains(carried, "launched by claude") {
+		t.Errorf("reader = %q, want the launcher named: \"python3 read your credentials\" is not actionable, \"launched by claude\" is", carried)
+	}
+
+	if unknown := describeReader(&agent.MountServeEvent{}); unknown != "an unidentified process" {
+		t.Errorf("a genuinely unseen reader = %q, want the honest fallback", unknown)
+	}
+}
+
+// The carried-over identity is only safe because of the pid-reuse guard: a
+// remembered pid that now runs a DIFFERENT binary must be dropped, never
+// re-attributed. Without this, jit would eventually blame one program for
+// another program's read — an audit log that lies.
+func TestIdentifyReaderRejectsAReusedPID(t *testing.T) {
+	// A path nothing holds open, so the live scan is guaranteed to miss and
+	// the fallback is what's under test.
+	unread := filepath.Join(t.TempDir(), "nobody-reads-this")
+
+	stale := readerIdentity{pid: 999999, execPath: "/usr/bin/python3", identified: true}
+	if got := identifyReader(unread, stale); got.identified {
+		t.Errorf("carried forward a reader whose pid is dead or now runs another binary: %+v", got)
+	}
+
+	// This test process, on the other hand, IS alive and IS its own executable
+	// — the case the fallback exists to serve.
+	//
+	// The remembered path comes from lineage.Describe, not os.Executable, and
+	// that's the contract, not a convenience: both sides of stillRunning's
+	// comparison must come from the same kernel accessor. os.Executable reports
+	// /var/folders/... where proc_pidpath reports /private/var/folders/... for
+	// the same binary (macOS symlinks /var into /private), so mixing the two
+	// sources compares two spellings of one path and concludes they're
+	// different programs. In production both sides are proc_pidpath, via
+	// IdentifyFIFOReader and Describe respectively.
+	self, ok := lineage.Describe(int32(os.Getpid()))
+	if !ok {
+		t.Fatal("lineage.Describe couldn't identify this test process")
+	}
+	live := readerIdentity{pid: self.PID, execPath: self.ExecPath, identified: true}
+	got := identifyReader(unread, live)
+	if !got.identified || !got.likely {
+		t.Errorf("dropped a live, still-running reader instead of carrying it forward as likely: %+v", got)
 	}
 }
