@@ -338,8 +338,8 @@ exactly why a profile manifest is safe to commit.
 Not everything comes in through `migrate`. `jit vault set myapp/NEW_KEY`
 prompts for a value and stores it (add `-f` to overwrite an existing
 path, `--stdin` to pipe the value in); `jit vault rm <path>` deletes one
-secret (it confirms first). `jit vault list` shows what's stored — names
-and paths only, never values — one path per line, so it pipes cleanly
+secret (it confirms first). `jit vault list` shows what's stored (names
+and paths only, never values), one path per line, so it pipes cleanly
 into `grep`:
 
 ```
@@ -353,8 +353,8 @@ wiz/WIZ_CLIENT_SECRET
 5 secret(s) stored, plus 2 encrypted file backup(s) kept for `jit migrate undo` (list with --all).
 ```
 
-To replace a value that's already there — a rotated API key, a new
-token — see the next section.
+To replace a value that's already there, like a rotated API key or a
+new token, see the next section.
 
 ### Changed an API key? Update the vault, not the file
 
