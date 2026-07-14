@@ -1,24 +1,24 @@
-# Using jit
+# Using jit day to day
 
-A walkthrough of the actual command surface, in the order you'd realistically use it: find what's exposed, fix it, then live with the fix day to day. For *why* jit works this way (threat model, what it doesn't protect against), see [RFC.md](../RFC.md). For what's still short of the target design, see [GAPS.md](../GAPS.md).
+This is the practical guide: set jit up once, then live with it. Installing
+the binary is covered in the [README](../README.md#install), and the README's
+security-model section covers what jit deliberately does *not* protect
+against.
 
-**Platform:** macOS only today (Windows/Linux are unbuilt — GAPS.md #15). No Homebrew tap yet — clone the repo and build it yourself:
-
-```
-git clone https://github.com/jitpass/jit.git
-cd jit
-go build -o jit ./cmd/jit
-sudo mv jit /usr/local/bin/
-jit --help
-```
-
-`go build -o jit` only puts the binary in your current directory — the `mv` into `/usr/local/bin` (already on `PATH` for virtually every macOS shell setup) is what makes plain `jit audit` etc. work from anywhere, which every example below assumes. If you'd rather not install it system-wide, skip the `mv` and run `./jit audit` (from inside the repo directory) instead — every command below works identically either way, just with that prefix.
+The short version of daily life with jit: you set it up once, migrate your
+projects once, and after that you mostly just work. Your app starts normally,
+`aws`/`kubectl`/`terraform` behave exactly as before, and roughly once per
+15 minutes of active use, macOS asks for a Touch ID confirmation.
 
 ---
 
-## 1. Find out what's exposed: `jit audit`
+## First-time setup
 
-Start here, always — `audit` is strictly read-only under every flag. It never touches, encrypts, or rewrites anything, and never prints a real secret value in full, only a masked preview.
+### 1. See what's exposed: `jit audit`
+
+Start here. `audit` is strictly read-only under every flag: it never touches,
+encrypts, or rewrites anything, and never prints a real secret value in full,
+only a masked preview.
 
 ```
 $ jit audit
@@ -47,19 +47,14 @@ scan time: 2026-07-07T14:48:08.370Z          duration: 2ms
   /Users/alex/code/myapp/.env
     [high]
         why:    contains a value matching Stripe Test Secret Key's known token format
-
-No secret values are ever printed in full. Run `jit audit --format ndjson` for machine-readable output (same redaction rules apply).
 ```
 
-**Important:** `audit` always scans relative to `$HOME`, not your current directory — running it from inside a project doesn't narrow the scan, it's a whole-machine (well, whole-home) pass every time. That's by design: the point is "is my machine clean," not "is this one project clean."
+`audit` always scans your whole home directory, not your current directory.
+The question it answers is "is my machine clean," not "is this one project
+clean." Useful flags: `--format markdown` or `--format ndjson` for a saved
+report or piping into another tool, `-o report.md` to write to a file.
 
-Other flags:
-- `--format markdown` / `--format ndjson` — for a saved report or piping into another tool.
-- `-o report.md` — write to a file instead of stdout.
-
-## 2. Set up the vault: `jit vault init`
-
-Before anything can be fixed, jit needs somewhere to put real secrets:
+### 2. Create the vault: `jit vault init`
 
 ```
 $ jit vault init
@@ -67,18 +62,35 @@ Vault initialized at /Users/alex/Library/Application Support/jitpass.
 Run `jit vault set <path>` to add a secret, or `jit migrate` to move existing secrets in.
 ```
 
-This generates a Master Encryption Key and stores it in your macOS Keychain. **You'll see a Touch ID / passcode prompt** — that's expected, and it's the same prompt you'll see the first time anything touches the vault in a given session (see §4 on `jit agent` for how to stop seeing it repeatedly).
+This generates a master encryption key and stores it in your macOS Keychain.
+You'll see a Touch ID / passcode prompt; that's expected.
 
-## 3. Fix it: `jit migrate local` or `jit migrate home`
+### 3. Install the background agent: `jit agent install`
 
-`migrate` is a **separate command from `audit`**, deliberately — a read-only scanner can never be turned into a mutating one by a mistyped flag. It has two subcommands, picking an explicit scope instead of one flag whose preview and real behavior used to silently disagree:
+Without the agent, every vault-touching command asks for Touch ID
+independently. With it, you unlock once and everything shares that session
+for the next 15 minutes of activity:
 
-- **`jit migrate local`** — `.env`/MCP/npmrc findings under the **current directory tree only**. Touches nothing outside the project you're standing in — no shell configs, AWS, kubeconfig, Claude Desktop's config, or global `~/.npmrc`, since none of those live under this directory.
-- **`jit migrate home`** — everything under `$HOME`: `.env`/MCP/npmrc findings **anywhere under `$HOME`**, plus shell configs, AWS, kubeconfig, Claude Desktop's config, and the global `~/.npmrc` — these five have no project-scoped form at all, so they only ever show up here, never under `local`.
+```
+$ jit agent install
+Set up jit agent to start automatically at every login (and restart itself if it crashes), staying unlocked for up to 15m0s after each Touch ID prompt, until you run `jit agent uninstall`? [y/N] y
+Installed — jit agent now starts automatically every time you log in (survives reboots) and stays unlocked for up to 15m0s after your last Touch ID prompt.
+```
 
-Both take `--dry-run` (preview only — and it's an *accurate* preview: it runs the exact same discovery a real run in that scope would, so what you're shown is exactly what would happen), `--only` (scope to specific categories), and `--yes` (skip the confirmation prompt, for scripting).
+The agent process itself runs indefinitely and never needs Touch ID just to
+exist; only the cached key inside it locks after 15 minutes of inactivity
+(`--ttl` to change that), re-prompting on next use. The agent is also what
+serves live-mounted files (more on those below), so if you migrate a `.env`
+file, you want it installed. Everything still works without it, just with
+more prompts.
 
-**Preview first**, from inside the project you want to fix:
+### 4. Fix a project: `jit migrate local`
+
+`migrate` is a separate command from `audit`, deliberately: a read-only
+scanner can never be turned into a mutating one by a mistyped flag.
+
+Always preview first. `--dry-run` runs the exact same discovery a real run
+would, so the preview is accurate:
 
 ```
 $ cd ~/code/myapp
@@ -95,124 +107,89 @@ Scoped to this run — under the current directory tree
   1 change(s) planned across 1 category
 
 [DRY RUN] No files will be changed. Run without --dry-run to apply this plan.
-This only covers what jit migrate can act on — run `jit audit` for a complete picture, including findings it can never auto-fix, like private keys.
 ```
 
-**Then apply it** — drop `--dry-run`:
+Then apply it by dropping `--dry-run`. The same plan prints again, followed
+by a `Proceed? [y/N]` confirmation; answering `y` triggers the vault writes
+(one Touch ID prompt if the agent isn't unlocked yet). Declining aborts with
+nothing changed.
 
-```
-$ jit migrate local
-jit migrate — plan (local scope)
-Each modified file is backed up before it's rewritten.
+Before any file is rewritten, its exact original bytes are backed up,
+encrypted, into the vault. `jit migrate undo` restores them byte-for-byte
+at any point later. If a file being migrated has ever been committed to git,
+`migrate` warns explicitly: it never scrubs git history, so the old value is
+still recoverable via `git log -p` no matter what happens going forward.
 
-Scoped to this run — under the current directory tree
+### 5. Or fix the whole machine: `jit migrate home`
 
-[.env file(s) → secrets move to the vault; the file keeps working as a live, auto-updating mount] (1)
-  • /Users/alex/code/myapp/.env
+`local` only ever touches what's under the directory you're standing in.
+`home` covers everything under `$HOME`: every project's `.env`/`mcp.json`/
+`.npmrc`, plus the machine-wide files that have no project-scoped form at
+all: shell configs, `~/.aws/credentials`, `~/.kube/config`, the Terraform
+Cloud token file, Claude Desktop's MCP config, and the global `~/.npmrc`.
+The plan groups those under a separate "Machine-wide" section so it's clear
+they're not part of a directory walk.
 
-────────────────────────────────────────────
-  1 change(s) planned across 1 category
-Proceed? [y/N] y
-```
+`home` skips anything under a directory named `archive`, `archived`,
+`backup`, `backups`, or `.trash` by default (pass `--include-archived` to
+override): converting a forgotten project's `.env` into a live mount nothing
+will ever read again makes it *less* recoverable, not more secure. `local`
+never applies this filter; deliberately standing in an old project and
+migrating it is an explicit choice.
 
-Answering `y` (or passing `--yes`/`-y` up front) triggers the actual vault writes — a Touch ID prompt if you don't have `jit agent` running yet (§4). Declining aborts with nothing changed and no vault access at all.
-
-**Want to actually clean the whole machine in one run?** Use `home` instead of `local`. This also picks up shell configs/AWS/kubeconfig/Claude Desktop's config/global `~/.npmrc`, which `local` never touches — the plan groups those under a separate "Machine-wide" section so it's clear they're not part of the current-directory walk:
-
-```
-$ jit migrate home --dry-run
-jit migrate — plan (home scope)
-Each modified file is backed up before it's rewritten.
-
-Scoped to this run — anywhere under $HOME
-
-[.env file(s) → secrets move to the vault; the file keeps working as a live, auto-updating mount] (1)
-  • /Users/alex/code/myapp/.env
-
-Machine-wide config files — only included on a home-scope run
-
-[shell config(s) → secrets move to the vault; loaded back automatically when your shell starts] (1)
-  • /Users/alex/.zshrc
-
-  Use --only env to leave these machine-wide files out of the plan.
-
-────────────────────────────────────────────
-  2 change(s) planned across 2 categories
-
-(Skipped 1 finding(s) under an archived/backup-looking directory — rerun with --include-archived to include them.)
-
-[DRY RUN] No files will be changed. Run without --dry-run to apply this plan.
-This only covers what jit migrate can act on — run `jit audit` for a complete picture, including findings it can never auto-fix, like private keys.
-```
-
-`home` skips anything under a directory literally named `archive`, `archived`, `backup`, `backups`, or `.trash` **by default** — converting a forgotten project's `.env` into a live-mounted pipe that nothing will ever serve again turns "insecure but readable" into "permanently unreadable," which is worse. Pass `--include-archived` if you really want those too. `local` never applies this filter — deliberately `cd`-ing into an old project and running `migrate local` there is an explicit action, not an implicit sweep.
-
-To scope either subcommand to just one or two categories, use `--only` (now works with `--dry-run` too):
+To limit either scope to specific categories, use `--only`:
 
 ```
 $ jit migrate home --only=env,aws
 ```
 
-Valid categories: `env`, `shell`, `mcp`, `aws`, `kube`, `npmrc`.
+Valid categories: `env`, `shell`, `mcp`, `aws`, `kube`, `terraform`, `npmrc`.
 
-**What actually happens to each category:**
+**What each category turns into** (each credential flows back through the
+consuming tool's own native mechanism, so everything keeps working):
 
 | Category | Vault gets | The original file becomes |
 |---|---|---|
-| `.env` | one secret per variable | a live-mounted named pipe (see §5), plus a git-safe `.env.pointers` companion listing each variable's vault path — safe to open in an editor or commit, unlike the mount itself |
+| `.env` | one secret per variable | a live-mounted named pipe, plus a git-safe `.env.pointers` companion listing each variable's vault path |
 | shell config | one secret per `export KEY=value` line | the export line replaced with `eval "$(jit export --profile ...)"` |
 | MCP config | one secret per server's env-block value | the server's `command` rewritten to launch via `jit run` |
-| AWS (`~/.aws/credentials`) | the profile's access key/secret/session token | a `credential_process` line in `~/.aws/config` — no file with the real value at all |
+| AWS (`~/.aws/credentials`) | the profile's access key/secret/session token | a `credential_process` line in `~/.aws/config`; no file with the real value at all |
 | kubeconfig (`~/.kube/config`) | the user's bearer token or cert/key pair | an `exec` block calling jit (client-go's exec-plugin protocol) |
-| npmrc | just the secret lines (`_authToken`, etc.) | a live-mounted pipe serving a template (plus its own `.pointers` companion) — everything else in the file untouched |
+| Terraform Cloud (`~/.terraform.d/credentials.tfrc.json`) | each host's API token | a `credentials_helper` wired into `~/.terraformrc`; `terraform login`/`logout` keep working |
+| npmrc | just the secret lines (`_authToken`, etc.) | a live-mounted pipe serving a template; everything else in the file untouched |
 
-Every rewritten file gets a `<file>.jit-bak-<timestamp>` backup first. If a file being migrated has ever been committed to git, `migrate` warns explicitly — it never scrubs git history, so the old value is still recoverable via `git log -p` regardless of what happens going forward.
+GCP application-default credentials are detected by `audit` but have no
+migrate path yet.
 
-Terraform Cloud and GCP application-default-credentials are detected by `audit` but have no `migrate` path yet (GAPS.md #16).
+---
 
-## 4. Stop re-entering Touch ID: `jit agent`
+## Day to day
 
-Every vault-touching command so far has needed a fresh Touch ID/passcode challenge. `jit agent` is a small persistent background helper that other jit commands share one unlocked session with instead:
+### Starting your app just works (usually)
 
-```
-$ jit agent install
-Set up jit agent to start automatically at every login (and restart itself if it crashes), staying unlocked for up to 15m0s after each Touch ID prompt, until you run `jit agent uninstall`? [y/N] y
-Installed — jit agent now starts automatically every time you log in (survives reboots) and stays unlocked for up to 15m0s after your last Touch ID prompt.
-Run `jit agent uninstall` to remove it. (~/Library/LaunchAgents/com.jitpass.agent.plist)
-```
+A migrated `.env` is no longer a regular file: it's a named pipe the agent
+serves fresh content into on every read. One thing to know up front: **the
+mount serves fake-looking placeholder values by default, and real values
+only during a short revealed window.** A file that served real secrets to
+whatever opened it would defeat the point of moving them off disk.
 
-This registers a launchd LaunchAgent. The **process** runs indefinitely without needing Touch ID at all; only the **cached key inside it** locks after 15 minutes of inactivity (`--ttl` to change that), re-challenging on next use. Once it's running, `jit vault get`, `jit run`, `jit export`, and `jit migrate` all transparently use its shared session instead of prompting independently — unlock once, and everything else "just works" for the rest of that window.
+In practice you rarely think about this:
 
-Other agent commands:
-- `jit agent status` — is it running, is it unlocked right now, which mounts are revealed (and for how long), when the last reveal window ended, and what the most recent reader of each mount was actually served (real or decoy values, and by which process). It also warns if the running agent was built from an older version than the CLI you're typing — run `jit agent install` to restart it on the current binary.
-- `jit agent unlock` / `jit agent lock` — pre-warm the session, or drop it immediately without waiting for the TTL.
-- `jit agent uninstall` — stop and remove it.
+- `jit migrate` wires an automatic reveal into your `.envrc` (direnv) or
+  `package.json` `dev`/`start` script, so `npm run dev` and friends just
+  work. The window also opens automatically for 60 seconds whenever the
+  agent unlocks or a migrate runs.
+- If a process reads `.env` outside a window (say, a dev server restarted
+  minutes later), reveal by hand: `jit agent reveal <path>`, with
+  `--for <duration>` for a longer window (up to 10 minutes). Revealing fails
+  loudly, instead of pretending to work, if a referenced secret is missing
+  from the vault; `jit doctor` shows what's missing.
+- Wondering whether a mount is revealed right now, or why your app saw
+  placeholders? `jit agent status` shows each mount's reveal countdown and
+  what the most recent reader was actually served, real or decoy, and by
+  which process.
 
-If the agent isn't running, every vault-touching command still works — it just falls back to its own independent Touch ID challenge every time.
-
-## 5. Living with a live-mounted `.env`
-
-Once `.env` is migrated, the file at that path is no longer a regular file — it's a named pipe that `jit agent` re-serves fresh content into on every read. This has one real consequence worth knowing up front: **the mount serves fake-looking placeholder values by default, and only real values during a short window** (auto-revealed for 60 seconds right after `jit agent` unlocks or `jit migrate` runs, or explicitly via `jit agent reveal` — an unlock caused by `jit agent reveal` itself reveals only the file you named, never the rest). This is deliberate — see GAPS.md #2 — not a bug: a mount that always served real content the moment anything opened the file would defeat most of the point of moving secrets off disk.
-
-In practice:
-- **Starting your app normally just works.** `jit migrate` tries to wire an automatic reveal call into an existing `.envrc` (direnv) or your `package.json`'s `dev`/`start` script, so the common case needs no manual step.
-- **If a dev server reads `.env` well after the window closed** (long-running process, restarted after 60s), run `jit agent reveal <path>` by hand first, or `--for <duration>` for a longer window (clamped to 10 minutes). Revealing fails loudly — instead of pretending to work — if the mount's secrets can't actually be resolved from the vault (e.g. a referenced secret was removed); `jit doctor` shows what's missing.
-- **Not sure whether a mount is revealed, or why your app got placeholder values?** `jit agent status` answers both: it shows each mount's reveal countdown (or when the last window ended) and what the most recent reader was served.
-- **Don't `cat`/open the live-mounted file itself to "just check what's in it."** Outside the revealed window you'll see decoy values, not an error — and even during the window, a FIFO can't support everything a real file can (`stat` for size, `lseek`, `mmap` — GAPS.md #6), so some tools (text editors included) may behave oddly against it regardless. Instead:
-  - Open the **`.env.pointers`** file `migrate` writes right next to the mount — a plain, regular, git-safe file listing each variable as `KEY=jit://vault/<path>` instead of its value. Opening it in an editor, `cat`-ing it, or committing it all work exactly like a normal file, since it *is* one — it just tells you *where* a value lives, never the value itself.
-  - Use `jit export --profile <name>` or `jit vault get <path>` (§7) to actually see a real value — those go straight to the vault, no mount involved.
-- **Reverse it** with `jit unmount <path>` if you want the plain file back — it decrypts the vault values and writes them out as a regular file again, replacing the pipe. The vault secrets and profile stay put; this only reverses the file.
-- **Leave entirely** with `jit migrate remove` (run from the project) — restores every file in the project to plaintext AND deletes the project's profiles, its vault secrets, its encrypted backups, any reveal hooks migrate wired in, and the `.jit/` directory. It always asks for its own Touch ID/passcode approval, even with the agent unlocked. (`jit migrate undo` is the gentler sibling: it restores each file's exact pre-migration content and keeps the vault untouched.)
-
-## 6. AWS and kubeconfig: no file at all
-
-For AWS and kubeconfig, migration doesn't create a mount — it wires the AWS CLI/kubectl's own native credential-helper protocol directly to jit (`aws-credential-process`, `k8s-exec-credential`). You won't normally run these yourself; the AWS CLI/SDK or kubectl invoke them automatically, and each needs the vault unlocked (agent or Touch ID) to answer.
-
-## 7. Using secrets day to day: `jit run` and `jit export`
-
-For anything that isn't a migrated `.env`/shell-config/AWS/kubeconfig file, or when you just want a secret in one shell session without touching any file:
-
-**Run one command with secrets injected, nothing left behind:**
+### Run anything with secrets: `jit run`
 
 ```
 $ cd myapp
@@ -220,39 +197,105 @@ $ jit run -- npm run dev
 jit run: merging .env, .env.local (last wins) — profiles myapp, myapp-local
 ```
 
-From inside a migrated project, `jit run` **resolves the project's `.env` layers by itself** — you don't have to name a profile. It finds the project's migrated `.env`-family files (looking upward from the current directory, the way git finds `.git`, so it works from any subfolder) and injects their merged result in standard dotenv order: `.env` first, `.env.local` overriding it — the same effective environment your app sees when it reads those files directly. It always prints exactly what it merged (real secrets are going into the process, so it never does that silently), and warns if a layer file exists on disk but was never migrated.
+From inside a migrated project, `jit run` needs no arguments beyond your
+command. It finds the project's migrated `.env`-family files (looking upward
+from wherever you are, the way git finds `.git`) and injects their merged
+result in standard dotenv order: `.env` first, `.env.local` overriding it.
+It always prints what it merged (real secrets are entering a process, so it
+never does that silently), and warns if a layer file exists on disk but was
+never migrated.
 
-Mode-specific layers (`.env.production`, `.env.development`, …) are **never merged unless you ask** — production secrets shouldn't ride into a dev run because a file exists. Ask with `--mode`:
+Mode-specific layers (`.env.production`, `.env.development`, ...) are never
+merged unless you ask, so production secrets can't ride into a dev run just
+because a file exists:
 
 ```
 $ jit run --mode production -- npm start
 jit run: merging .env, .env.production, .env.local (last wins) — profiles myapp, myapp-production, myapp-local
 ```
 
-The full precedence with a mode is `.env < .env.<mode> < .env.local < .env.<mode>.local` (the Next.js/CRA convention). If nothing is migrated here at all, jit falls back to the project's single profile if exactly one exists, and otherwise asks you to name one with `--profile` rather than guessing.
+Full precedence with a mode: `.env` < `.env.<mode>` < `.env.local` <
+`.env.<mode>.local` (the Next.js/CRA convention).
 
-The `--` separating jit's own flags from your command is optional too — jit stops reading its flags at the first non-flag argument, so `jit run npm run dev` is equivalent, and your command's own flags (`npm run dev -- --port 3000`) pass straight through. Naming a profile explicitly turns all merging off and uses exactly that one — handy for a home-rooted global profile like AWS:
+The `--` is optional (jit stops reading its own flags at the first non-flag
+argument), and your command's flags pass straight through. Naming a profile
+explicitly turns merging off and uses exactly that one, handy for a global
+profile like AWS:
 
 ```
 $ jit run --profile aws-admin -- terraform plan
 ```
 
-This replaces the current process image (`execve`) with your command — jit itself is gone from memory the instant it starts. The target process holds the plaintext once running (jit narrows the exposure window, it can't sandbox what the target does with it — RFC.md B1).
+`jit run` replaces its own process with your command (`execve`); jit itself
+is gone from memory the instant your command starts.
 
-**Print `export` statements for the current shell:**
+### Secrets in your current shell: `jit export`
 
 ```
 $ eval "$(jit export)"
 jit export: merging .env, .env.local (last wins) — profiles myapp, myapp-local
 ```
 
-`jit export` selects profiles exactly like `jit run` — same layer merge, same `--mode`, same explicit `--profile` override (`eval "$(jit export --profile aws-admin)"`). The merge announcement goes to stderr, so `eval` never swallows it. Run it without `eval` to see the resolved values printed to your terminal — this is the sanctioned way to "peek" at what's in a profile, instead of opening a live-mounted file.
+`jit export` selects profiles exactly like `jit run`: same layer merge, same
+`--mode`, same `--profile` override. The merge announcement goes to stderr,
+so `eval` never swallows it.
 
-Both commands resolve **profiles** — see §8 for what those are.
+### Peeking at a value
 
-## 8. Profiles: `jit profile`
+Don't `cat` or open a live-mounted file to "just check what's in it".
+Outside the revealed window you'll see decoy values, not an error, and a
+named pipe can't support everything a regular file can (`stat` for size,
+`mmap`), so editors may behave oddly against it regardless. Instead:
 
-A profile is a small YAML manifest mapping environment-variable names to vault paths — `jit migrate` creates these automatically, but you can inspect them directly:
+- **Where does a variable live?** Open the `.env.pointers` file next to the
+  mount. It's a plain, regular, git-safe file mapping each variable to its
+  vault path (`KEY=jit://vault/<path>`), never to a value.
+- **What's the actual value?** `jit vault get <path>` prints one secret
+  (`--copy` sends it to the clipboard instead), or run `jit export` *without*
+  `eval` to see a whole profile's resolved values in your terminal.
+
+### AWS, kubectl, and Terraform: nothing changes
+
+For these three there's no file and no window to think about. Migration
+wired each tool's own credential-helper protocol directly to jit, so the
+AWS CLI/SDKs, kubectl, and terraform fetch credentials on demand, invisibly.
+Each fetch needs the vault unlocked (the agent's shared session, or a Touch
+ID prompt). `terraform login` and `logout` keep working; a re-login lands
+in the vault instead of back in a plaintext file.
+
+### Quick health checks: `jit status` and `jit doctor`
+
+Neither ever decrypts a secret or triggers Touch ID; both are safe to run as
+often as you like.
+
+`jit status` is the one-screen rollup:
+
+```
+$ jit status
+Vault: 5 secret(s) stored.
+Agent: running and unlocked (locks in 12m30s).
+Profiles: 2 profile(s), 5 secret reference(s) all resolve cleanly.
+Mounts: 1 registered, agent unlocked and serving them.
+```
+
+`jit doctor` verifies every path a profile references actually exists in the
+vault, catching "the profile says X but nothing's stored there" before an
+app crashes on an empty environment variable:
+
+```
+$ jit doctor
+✓ 2 profile(s), 5 secret reference(s) all resolve cleanly
+```
+
+Both take `--format json` for scripting; `doctor` also exits non-zero on a
+problem, so it works as a CI health check.
+
+### Behind the scenes: profiles
+
+Migration's bookkeeping unit is the **profile**: a small YAML manifest
+mapping environment-variable names to vault paths. `jit migrate` creates
+them automatically; `jit run`, `jit export`, and `jit doctor` resolve them.
+You can inspect them any time:
 
 ```
 $ jit profile list
@@ -265,46 +308,99 @@ myapp (project: /Users/alex/code/myapp/.jit/profiles/myapp.yaml)
   STRIPE_API_KEY -> myapp/STRIPE_API_KEY
 ```
 
-Never prints a secret value — names and vault paths only. It's git-safe to commit a profile manifest for exactly that reason.
+These never print a secret value, only names and vault paths, which is
+exactly why a profile manifest is safe to commit.
 
-## 9. Sanity checks: `jit doctor` and `jit status`
+---
 
-**`jit doctor`** verifies every path a profile references actually exists in the vault — catches "the profile says X, but nothing's actually stored there" before an app crashes on an empty environment variable at runtime:
+## If something looks wrong
 
-```
-$ jit doctor
-✓ 2 profile(s), 5 secret reference(s) all resolve cleanly
-```
+- **Your app got placeholder values.** The mount wasn't revealed when the
+  app read it. `jit agent status` confirms (it shows what the last reader
+  was served); `jit agent reveal <path>` fixes it, then restart the app.
+- **A command hangs reading `.env`.** The agent probably isn't running or
+  serving that mount; `jit status` will say. `jit agent install` (re)starts
+  it.
+- **"No secret stored at ..." or a doctor failure.** A profile references a
+  vault path that's gone (usually a `jit vault rm` after migration).
+  Re-set it with `jit vault set <path>`, or update the profile.
+- **Touch ID prompts feel too frequent.** Install the agent (§3), or
+  lengthen its window: `jit agent install --ttl 1h`.
+- **"different build" warning from `jit status`.** The running agent is an
+  older binary than the CLI you're typing. Run `jit agent install` again to
+  restart it on the current one (see the README's
+  [Upgrading](../README.md#upgrading) section).
 
-**`jit status`** is a one-shot rollup of vault/agent/profile/mount health — what used to take four separate commands:
+## Occasional tasks
 
-```
-$ jit status
-Vault: 5 secret(s) stored.
-Agent: running and unlocked (locks in 12m30s).
-Profiles: 2 profile(s), 5 secret reference(s) all resolve cleanly.
-Mounts: 1 registered, agent unlocked and serving them.
-```
+### Manage secrets by hand: `jit vault set/get/list/rm`
 
-Both support `--format json` for scripting or a CI health check:
+Not everything comes in through `migrate`. `jit vault set myapp/NEW_KEY`
+prompts for a value and stores it; `jit vault list` shows names and paths
+(never values); `jit vault rm <path>` deletes one secret (it confirms
+first).
 
-```
-$ jit status --format json
-{
-  "vault": { "secrets_stored": 5 },
-  "agent": { "running": true, "unlocked": true, "locks_in_seconds": 750 },
-  "profiles": { "profiles_found": 2, "secret_references": 5, "problems": 0 },
-  "mounts": { "registered": 1, "being_served": true }
-}
-```
+### Changed an API key? Update the vault, not the file
 
-`doctor` still exits non-zero on a problem in JSON mode too — a CI check needs both the parseable body and a reliable exit code.
+After migration, the file on disk is no longer where a secret lives, so
+when a provider issues you a new key, don't paste it into `.env`. Update
+the vault value instead:
 
-Neither ever decrypts a secret value or needs Touch ID — both are safe to run as often as you like.
+1. **Find the secret's path.** Open the `.env.pointers` file next to the
+   mount, or run `jit profile show <name>`; both map each variable to its
+   vault path.
+2. **Set the new value:**
 
-## 10. Backup and restore: `jit vault export` / `jit vault import`
+   ```
+   $ jit vault set myapp/STRIPE_API_KEY
+   Enter value for myapp/STRIPE_API_KEY:
+   myapp/STRIPE_API_KEY already exists in the vault. Overwrite it? The current value can't be recovered afterward. [y/N] y
+   Stored myapp/STRIPE_API_KEY
+   ```
 
-For disaster recovery (laptop loss, a reformat) — **not** a cloud-sync mechanism, just a local file you move around however you choose:
+   (`-f` skips the overwrite confirmation, `--stdin` reads the value from
+   a pipe for scripting.)
+
+No re-migration needed; everything downstream picks the new value up on
+its next fetch:
+
+- A live-mounted `.env`/`.npmrc` serves fresh vault content on every read,
+  so the next revealed read sees the new key.
+- `jit run`, `jit export`, the AWS CLI/SDKs, and kubectl all resolve the
+  vault on demand.
+- Anything already *holding* the old value keeps it until restarted: a
+  running dev server, an MCP server, or a shell that ran
+  `eval "$(jit export ...)"` at startup. Restart the process (or open a
+  new shell) and it picks up the new key.
+
+One special case: for a new **Terraform Cloud** token, just run
+`terraform login` again. Migration wired terraform's credentials helper to
+jit, so the re-login lands directly in the vault instead of back in a
+plaintext file.
+
+### Put a file back on disk: `jit unmount` and `jit migrate undo`
+
+- `jit unmount <path>` reverses a single live mount: decrypts the vault
+  values and writes them out as a regular plain file again. The vault
+  secrets and profile stay put.
+- `jit migrate undo [path...]` restores migrated files, of any category,
+  from their encrypted pre-migration backups, byte-for-byte. No path means
+  everything; a file restores that file; a directory restores everything
+  under it. The vault stays untouched.
+
+Both always ask for their own fresh Touch ID/passcode approval, even with
+the agent unlocked: putting secrets back on disk should never happen
+silently on a cached session.
+
+### Remove jit from a project: `jit migrate remove`
+
+Run from the project, this is the full exit: every file back to plaintext,
+plus the project's profiles, vault secrets, encrypted backups, reveal hooks,
+and `.jit/` directory all deleted. Also always a fresh Touch ID.
+
+### Back up the vault: `jit vault export` / `jit vault import`
+
+For disaster recovery (laptop loss, a reformat), not a sync mechanism:
 
 ```
 $ jit vault export ~/backup.json
@@ -313,16 +409,10 @@ Confirm passphrase: ********
 Exported 5 secret(s) to /Users/alex/backup.json.
 ```
 
-This is deliberately **not** the same encryption the vault uses day to day — that's bound to this specific device's Touch ID/Secure Enclave and useless on a different machine. The export instead derives its key from the passphrase you type (via Argon2id), which is the only thing that makes the file restorable somewhere else:
-
-```
-$ jit vault import ~/backup.json
-Import secrets from /Users/alex/backup.json, overwriting any existing secret at the same path? [y/N] y
-Enter the export's passphrase: ********
-Restored 5 secret(s) from /Users/alex/backup.json.
-```
-
-There's no way to recover a forgotten passphrase — jit never stores it anywhere, on purpose.
+The vault's day-to-day encryption is bound to this machine's keychain and
+useless anywhere else, so the export derives its key from the passphrase you
+type (Argon2id). That passphrase is the only way back in; jit never stores
+it, on purpose. Restore with `jit vault import ~/backup.json`.
 
 ## Shell completion
 
@@ -335,13 +425,25 @@ echo 'source <(jit completion zsh)' >> ~/.zshrc
 exec zsh
 ```
 
-If you use oh-my-zsh/prezto, that's all. On a *plain* zsh setup, completions
-need zsh's completion system initialized first. Add this line **before** the
-one above if `jit <TAB>` still completes filenames:
+If you use oh-my-zsh/prezto and `jit` is already on your PATH, that's all. On
+a *plain* zsh setup (say, Go freshly installed via Homebrew and nothing else
+configured), two things must come **before** that line in `~/.zshrc`, in this
+order:
 
 ```sh
-echo 'autoload -Uz compinit && compinit' >> ~/.zshrc
+# 1. make jit findable (go install puts it in ~/go/bin)
+export PATH="$HOME/go/bin:$PATH"
+
+# 2. init zsh's completion system (skip if oh-my-zsh already does this)
+autoload -Uz compinit && compinit
+
+# 3. now this works: jit is on PATH and compdef exists
+source <(jit completion zsh)
 ```
+
+How to tell which piece is missing: `command not found: jit` means PATH,
+`command not found: compdef` means `compinit` hasn't run, and `jit <TAB>`
+completing plain filenames means the source line never ran at all.
 
 **bash** (requires the `bash-completion` package):
 
@@ -362,22 +464,7 @@ install locations.
 
 ## Command reference
 
-| Command | What it does |
-|---|---|
-| `jit audit` | Read-only whole-home scan for exposed plaintext secrets. |
-| `jit migrate local [--dry-run] [--only=...] [--yes]` | Fix `.env`/MCP/npmrc findings under the current directory tree only — no shell config/AWS/kubeconfig/Claude Desktop/global npmrc. |
-| `jit migrate home [--dry-run] [--only=...] [--yes] [--include-archived]` | Same three, but anywhere under `$HOME`, plus shell config/AWS/kubeconfig/Claude Desktop/global npmrc (home scope only) — skips archived-looking directories by default. |
-| `jit vault init/set/get/list/rm/export/import` | Manage the encrypted vault directly. |
-| `jit run [--profile <name>] [--mode <m>] [--] <cmd>` | Inject secrets into a subprocess's environment, nothing on disk. By default merges the project's migrated `.env` layers in dotenv order (found from any subfolder); `--mode` layers `.env.<m>` in; `--profile` uses one profile verbatim. `--` optional. |
-| `jit export [--profile <name>] [--mode <m>]` | Print `export` statements — eval into your shell, or just read the values. Selects profiles exactly like `jit run`. |
-| `jit agent install/status/unlock/lock/reveal/uninstall` | The shared-session broker + live mount server. |
-| `jit vault clean` / `jit vault delete` | Wipe all secrets (vault stays set up) / destroy the vault entirely, encryption key included. Both confirm first; `delete` refuses while anything is still live-mounted. |
-| `jit doctor [--profile <name>] [--format json]` | Verify a profile's secret references all exist in the vault. |
-| `jit profile list/show` | Inspect profile manifests (names/paths only, never values). |
-| `jit status [--format json]` | One-shot vault/agent/profile/mount health rollup. |
-| `jit unmount <path>` | Reverse a live mount back into a plain file. |
-| `jit migrate undo [path...]` | Restore migrated files from their encrypted pre-migration backups; vault and profiles stay. |
-| `jit migrate remove` | Remove jit from the current project completely: plaintext back, profiles/secrets/backups/hooks/`.jit/` deleted. Always fresh Touch ID. |
-| `jit aws-credential-process` / `jit k8s-exec-credential` | Internal — invoked by the AWS CLI/kubectl themselves, not by hand. |
-
-Every command supports `--help` for its full flag list and a more detailed explanation than this walkthrough covers.
+Every command and flag, including the ones this walkthrough doesn't cover
+(`jit vault clean`/`delete`, `--stdin`, `--force`, the credential-helper
+verbs), is documented in **[COMMANDS.md](./COMMANDS.md)**. At the terminal,
+`jit <command> --help` has the same information.

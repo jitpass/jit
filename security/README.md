@@ -5,8 +5,8 @@ publish the results here, including the honest limits, not just the clean parts.
 This folder is the running record.
 
 To **report** a vulnerability, see [SECURITY.md](../SECURITY.md) (private disclosure).
-For the full threat model (everything jit deliberately does *not* defend against),
-see [RFC.md §2](../RFC.md).
+For what jit deliberately does *not* defend against, see the README's
+security-model section and each review's "known, accepted limitations" list.
 
 ## Published reviews
 

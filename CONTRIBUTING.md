@@ -27,13 +27,13 @@ large PR — a quick issue to align on approach first saves everyone time.
 
 ## Before you start
 
-- Read **[RFC.md](./RFC.md)** for the architecture and — importantly — the
-  explicit threat-model boundaries (what jit deliberately does *not* defend
-  against). A change that "fixes" a documented boundary may be changing the
-  design on purpose; open an issue to discuss first.
-- Check **[GAPS.md](./GAPS.md)** — the honest list of where current behavior
-  falls short of the target design. If you're picking up work, it's the best
-  map of what's actually open.
+- Read the README's security-model section for the explicit threat-model
+  boundaries (what jit deliberately does *not* defend against). A change that
+  "fixes" a documented boundary may be changing the design on purpose; open
+  an issue to discuss first. (Code comments cite the full design docs — RFC
+  sections, `GAPS.md #NN` — which are maintained in a private planning repo;
+  if a change hinges on one, ask in the issue and we'll quote the relevant
+  part.)
 - Each `internal/*` package has a `doc.go` with the reasoning behind the code
   and pointers to the relevant design docs. Read it before changing a package —
   a lot of non-obvious behavior is deliberate.
