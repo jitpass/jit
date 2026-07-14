@@ -170,19 +170,27 @@ go install ./cmd/jit
 
 New versions are announced on the
 [Releases page](https://github.com/jitpass/jit/releases). Upgrading is two
-steps, not one. Step 1 is reinstalling the binary — for a prebuilt install,
-re-run the same three Option A commands (`releases/latest/download/...`
-always serves the newest version); from source:
+steps, not one: reinstall the binary, then restart the background agent on it.
+
+**Prebuilt install (Option A)** — no Go needed; the same three install
+commands (`releases/latest/download/...` always serves the newest version):
 
 ```sh
-go install github.com/jitpass/jit/cmd/jit@v0.4.0   # 1. reinstall the binary (pin the new tag)
+curl -sLO https://github.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz
+tar -xzf jitpass_darwin_arm64.tar.gz jit
+sudo mv jit /usr/local/bin/                        # 1. reinstall the binary
+jit agent install                                  # 2. restart the background agent on it
+```
+
+**Source install (Option B):**
+
+```sh
+go install github.com/jitpass/jit/cmd/jit@v0.5.0   # 1. reinstall the binary (pin the new tag)
 jit agent install                                  # 2. restart the background agent on it
 ```
 
 Pin the tag rather than `@latest` right after a release: the Go module proxy
 caches `@latest`, so it can quietly hand you the previous version for a while.
-
-Step 2 is the same for both install methods.
 
 The second step is the one people skip. If you installed the background agent,
 launchd keeps the old process (and the old binary) running right through your
