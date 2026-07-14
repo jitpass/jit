@@ -677,7 +677,11 @@ func (m *mountManager) stop() {
 		sm.reveal.Hide()
 	}
 	if len(served) > 0 {
-		fmt.Fprintln(m.stdout, "jit agent: session locked, mounts now serving decoy content only")
+		// Deliberately no longer says "session locked" — Server's own
+		// OnSessionEvent line, written immediately before this one, announces
+		// the lock AND names its cause (idle timeout vs. explicit). This line
+		// reports only what it alone knows: the consequence for the mounts.
+		fmt.Fprintln(m.stdout, "jit agent: mounts now serving decoy content only")
 	}
 }
 

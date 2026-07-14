@@ -14,6 +14,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -33,15 +35,22 @@ func shortSocketPath(t *testing.T) string {
 
 // fakeFetcher is a deterministic MEKFetcher for tests — counts calls so
 // tests can assert exactly how many times a real challenge would have
-// fired.
+// fired, and records the reason each one carried, since that string is
+// what a human would have read on the prompt.
 type fakeFetcher struct {
 	key   []byte
 	calls *int32
 	err   error
 	delay time.Duration
+
+	mu      sync.Mutex
+	reasons []string
 }
 
-func (f *fakeFetcher) FetchMEK() ([]byte, error) {
+func (f *fakeFetcher) FetchMEK(reason string) ([]byte, error) {
+	f.mu.Lock()
+	f.reasons = append(f.reasons, reason)
+	f.mu.Unlock()
 	if f.calls != nil {
 		atomic.AddInt32(f.calls, 1)
 	}
@@ -169,11 +178,11 @@ func TestServerTTLSlidesWithActivity(t *testing.T) {
 	// reset by the last use, not left on the original schedule.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		unlocked, _, _, _, err := c.Status()
+		st, err := c.Status()
 		if err != nil {
 			t.Fatalf("Status: %v", err)
 		}
-		if !unlocked {
+		if !st.Unlocked {
 			return
 		}
 		time.Sleep(25 * time.Millisecond)
@@ -231,22 +240,22 @@ func TestServerLockDropsSessionImmediately(t *testing.T) {
 	if _, err := c.WrapKey([]byte("x")); err != nil {
 		t.Fatalf("WrapKey: %v", err)
 	}
-	unlocked, _, _, _, err := c.Status()
+	st, err := c.Status()
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if !unlocked {
+	if !st.Unlocked {
 		t.Fatal("expected unlocked after WrapKey, got locked")
 	}
 
 	if err := c.Lock(); err != nil {
 		t.Fatalf("Lock: %v", err)
 	}
-	unlocked, _, _, _, err = c.Status()
+	st, err = c.Status()
 	if err != nil {
 		t.Fatalf("Status after Lock: %v", err)
 	}
-	if unlocked {
+	if st.Unlocked {
 		t.Fatal("expected locked after explicit Lock, got unlocked")
 	}
 
@@ -375,11 +384,11 @@ func TestServerAutoLocksAfterTTLAndFiresOnLock(t *testing.T) {
 		t.Errorf("OnLock fired %d times after TTL expiry with no activity, want exactly 1 (auto-lock, no client-side poking needed)", got)
 	}
 
-	unlocked, _, _, _, err := c.Status()
+	st, err := c.Status()
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if unlocked {
+	if st.Unlocked {
 		t.Error("expected locked after TTL auto-lock, got unlocked")
 	}
 }
@@ -442,11 +451,11 @@ func TestServerRefreshCallsOnRefreshAndEnsuresUnlocked(t *testing.T) {
 		t.Errorf("OnRefresh called %d times, want 1", got)
 	}
 
-	unlocked, _, _, _, err := c.Status()
+	st, err := c.Status()
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if !unlocked {
+	if !st.Unlocked {
 		t.Error("expected Refresh to have ensured the session is unlocked (it needs to read the vault), got locked")
 	}
 }
@@ -488,11 +497,11 @@ func TestServerRevealCallsOnRevealWithMountPathAndDurationAndEnsuresUnlocked(t *
 		t.Errorf("OnReveal duration = %v, want 90s", gotDuration)
 	}
 
-	unlocked, _, _, _, err := c.Status()
+	st, err := c.Status()
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if !unlocked {
+	if !st.Unlocked {
 		t.Error("expected Reveal to have ensured the session is unlocked, got locked")
 	}
 }
@@ -551,12 +560,140 @@ func TestServerStatusWhenNeverUnlocked(t *testing.T) {
 	defer cleanup()
 
 	c := NewClient(socketPath)
-	unlocked, remaining, _, _, err := c.Status()
+	st, err := c.Status()
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if unlocked || remaining != 0 {
-		t.Errorf("Status = (%v, %v), want (false, 0) before any unlock", unlocked, remaining)
+	if st.Unlocked || st.Remaining != 0 {
+		t.Errorf("Status = (%v, %v), want (false, 0) before any unlock", st.Unlocked, st.Remaining)
+	}
+	// An agent that has never unlocked has no history to explain. Reporting
+	// an empty-but-present event would make `jit agent status` print a line
+	// full of blanks; nil is how "nothing to say" is said.
+	if st.LastUnlock != nil || st.LastLock != nil {
+		t.Errorf("Status returned provenance before anything ever unlocked: %+v / %+v", st.LastUnlock, st.LastLock)
+	}
+}
+
+// TestServerRecordsWhoUnlockedIt is GAPS.md #50's regression test. The agent
+// used to prompt for Touch ID and then forget entirely that it had: `jit
+// agent status` could say "running and locked" and nothing else, so a user
+// who saw an unexplained prompt had no way — short of correlating the agent
+// log with their shell history — to find out what had asked for their
+// secrets. The session's provenance must outlive the session itself, since
+// "why did that happen?" is asked AFTER the session has already auto-locked.
+func TestServerRecordsWhoUnlockedItAndWhyItLocked(t *testing.T) {
+	_, socketPath, cleanup := startTestServer(t, time.Minute, nil)
+	defer cleanup()
+
+	c := NewClient(socketPath)
+	if _, _, err := c.Unlock(); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+
+	st, err := c.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if st.LastUnlock == nil {
+		t.Fatal("no LastUnlock recorded after a fresh unlock — the agent still can't explain its own prompts")
+	}
+	if st.LastUnlock.Op != OpUnlock {
+		t.Errorf("LastUnlock.Op = %q, want %q", st.LastUnlock.Op, OpUnlock)
+	}
+	// The peer here is this test binary, identified through the real
+	// LOCAL_PEERPID path — no fake. Its identity is whatever `go test`
+	// happens to be called, so assert only that the kernel answered at all.
+	if st.LastUnlock.ByPID != int32(os.Getpid()) {
+		t.Errorf("LastUnlock.ByPID = %d, want this test process's pid %d — the peer-pid lookup is what makes every other field trustworthy", st.LastUnlock.ByPID, os.Getpid())
+	}
+	if st.LastUnlock.By == "" {
+		t.Error("LastUnlock.By is empty — the kernel identified the peer's pid but nothing recorded what it was")
+	}
+
+	if err := c.Lock(); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+	st, err = c.Status()
+	if err != nil {
+		t.Fatalf("Status after Lock: %v", err)
+	}
+	if st.LastUnlock == nil {
+		t.Error("LastUnlock disappeared once the session locked — the explanation is needed most AFTER the session is gone")
+	}
+	if st.LastLock == nil || st.LastLock.Cause == "" {
+		t.Fatalf("no lock cause recorded after an explicit Lock: %+v", st.LastLock)
+	}
+	if !strings.Contains(st.LastLock.Cause, "explicit") {
+		t.Errorf("LastLock.Cause = %q, want it to distinguish an explicit lock from the idle timeout — that distinction is the answer to \"why am I being asked again?\"", st.LastLock.Cause)
+	}
+}
+
+// The idle auto-lock is the cause behind almost every surprise re-prompt, so
+// it has to name itself as such — a lock with no cause, or one indistinguishable
+// from an explicit lock, leaves the user's actual question unanswered.
+func TestServerRecordsIdleTimeoutAsTheLockCause(t *testing.T) {
+	_, socketPath, cleanup := startTestServer(t, 50*time.Millisecond, nil)
+	defer cleanup()
+
+	c := NewClient(socketPath)
+	if _, err := c.WrapKey([]byte("x")); err != nil {
+		t.Fatalf("WrapKey: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		st, err := c.Status()
+		if err != nil {
+			t.Fatalf("Status: %v", err)
+		}
+		if !st.Unlocked && st.LastLock != nil {
+			if !strings.Contains(st.LastLock.Cause, "idle timeout") {
+				t.Errorf("LastLock.Cause = %q, want it to name the idle timeout", st.LastLock.Cause)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Error("session never auto-locked within 3s of a 50ms TTL")
+}
+
+// The reason string is the prompt text. A wrap and an unwrap must not read
+// alike ("store" vs "read" is the difference between jit taking a secret and
+// jit handing one out), and the reason must actually reach the fetcher —
+// which is the component that renders it to the human.
+func TestServerPassesAPerOpReasonToTheChallenge(t *testing.T) {
+	socketPath := shortSocketPath(t)
+	fetcher := &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32)}
+	s := NewServer(socketPath, func() MEKFetcher { return fetcher }, 0) // ttl 0: every op re-challenges
+	if err := s.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = s.Serve(ctx); close(done) }()
+	defer func() { cancel(); _ = s.Close(); <-done }()
+
+	c := NewClient(socketPath)
+	if _, err := c.WrapKey([]byte("x")); err != nil {
+		t.Fatalf("WrapKey: %v", err)
+	}
+	if _, err := c.UnwrapKey([]byte("not-a-real-ciphertext")); err == nil {
+		t.Log("UnwrapKey on garbage failed as expected; only the challenge that preceded it matters here")
+	}
+
+	fetcher.mu.Lock()
+	reasons := append([]string(nil), fetcher.reasons...)
+	fetcher.mu.Unlock()
+
+	if len(reasons) < 2 {
+		t.Fatalf("got %d challenge reasons, want one per op: %q", len(reasons), reasons)
+	}
+	if !strings.Contains(reasons[0], "store a secret") {
+		t.Errorf("wrap challenged with %q, want it to say a secret is being stored", reasons[0])
+	}
+	if !strings.Contains(reasons[1], "read a secret") {
+		t.Errorf("unwrap challenged with %q, want it to say a secret is being read", reasons[1])
 	}
 }
 

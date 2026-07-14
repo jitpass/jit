@@ -103,6 +103,7 @@ var agentRunCmd = &cobra.Command{
 		server.OnReveal = mounts.revealMount
 		server.OnStopMount = mounts.stopMount
 		server.OnMountStatus = mounts.mountRevealStatuses
+		server.OnSessionEvent = func(e agent.SessionEvent) { logSessionEvent(stdout, e) }
 
 		if err := server.Listen(); err != nil {
 			return fmt.Errorf("jit agent run: %w", err)
@@ -356,6 +357,13 @@ type agentStatusResult struct {
 	// is registered/served, never omitted outright, so a script parsing
 	// this doesn't need to special-case "field missing" vs "empty list."
 	Mounts []agent.MountRevealStatus `json:"mounts"`
+	// LastUnlock/LastLock are GAPS.md #50's session provenance — who unlocked
+	// this agent, what launched them, and what dropped the session since.
+	// Omitted (not zero-valued) when the agent has never unlocked: "no
+	// provenance" and "unlocked by nobody at the epoch" must not look alike
+	// to a script.
+	LastUnlock *agent.SessionEvent `json:"last_unlock,omitempty"`
+	LastLock   *agent.SessionEvent `json:"last_lock,omitempty"`
 	// Build is the running agent PROCESS's build (GAPS.md #49) — compare
 	// against this CLI's own to catch a launchd-kept-alive agent that
 	// predates the binary on disk. Empty when the agent isn't running.
@@ -389,29 +397,161 @@ var agentStatusCmd = &cobra.Command{
 			fmt.Fprintln(cmd.OutOrStdout(), "jit agent is not running. Run `jit agent install` to set it up.")
 			return nil
 		}
-		unlocked, remaining, mounts, build, err := client.Status()
+		st, err := client.Status()
 		if err != nil {
 			return fmt.Errorf("jit agent status: %w", err)
 		}
 
 		if agentStatusFormat == "json" {
-			result := agentStatusResult{Running: true, Unlocked: unlocked, Mounts: mounts, Build: build}
-			if unlocked {
-				result.LocksInSeconds = int64(remaining.Round(time.Second).Seconds())
+			result := agentStatusResult{Running: true, Unlocked: st.Unlocked, Mounts: st.Mounts, LastUnlock: st.LastUnlock, LastLock: st.LastLock, Build: st.Build}
+			if st.Unlocked {
+				result.LocksInSeconds = int64(st.Remaining.Round(time.Second).Seconds())
 			}
 			return writeJSON(cmd.OutOrStdout(), result)
 		}
-		if unlocked {
-			fmt.Fprintf(cmd.OutOrStdout(), "jit agent is running and unlocked (locks in %s).\n", remaining.Round(time.Second))
+		if st.Unlocked {
+			fmt.Fprintf(cmd.OutOrStdout(), "jit agent is running and unlocked (locks in %s).\n", st.Remaining.Round(time.Second))
 		} else {
 			fmt.Fprintln(cmd.OutOrStdout(), "jit agent is running and locked.")
 		}
-		printMountStatuses(cmd.OutOrStdout(), mounts)
-		if warning := agentBuildMismatch(build); warning != "" {
+		printSessionProvenance(cmd.OutOrStdout(), st)
+		printMountStatuses(cmd.OutOrStdout(), st.Mounts)
+		if warning := agentBuildMismatch(st.Build); warning != "" {
 			_, _ = color.New(color.FgYellow).Fprintf(cmd.OutOrStdout(), "%s\n", warning)
 		}
 		return nil
 	},
+}
+
+// logSessionEvent writes an unlock or a lock to the agent's log, with the
+// provenance that made it happen.
+//
+// The log used to record every lock and no unlock at all — so the one event a
+// user ever asks about (the prompt that just interrupted them) was the one
+// event with no line anywhere. Reconstructing a single unlock meant reading
+// this log against the user's own shell history to guess which command had
+// run when. Both halves are written now, and unlike `jit agent status`'s
+// in-memory snapshot, these survive the launchd restarts that happen at every
+// login and every rebuild.
+//
+// The full command goes in untruncated: a log file is not a modal dialog, and
+// the whole point of the line is to still be useful weeks later.
+func logSessionEvent(w io.Writer, e agent.SessionEvent) {
+	if e.Cause != "" { // a lock: the cause IS the news ("why was I asked again?")
+		fmt.Fprintf(w, "jit agent: session locked — %s\n", e.Cause)
+		return
+	}
+
+	line := "jit agent: session unlocked"
+	if e.Op != "" {
+		line += fmt.Sprintf(" (%s)", e.Op)
+	}
+	if e.By != "" {
+		line += fmt.Sprintf(" by %s", e.By)
+		if e.ByPID != 0 {
+			line += fmt.Sprintf(" [pid %d]", e.ByPID)
+		}
+	}
+	if e.LaunchedBy != "" {
+		line += fmt.Sprintf(", launched by %s", e.LaunchedBy)
+	}
+	fmt.Fprintln(w, line)
+}
+
+// maxCommandLen bounds the unlocking command on a status line. A
+// jit-launched MCP server's real argv runs to ~170 characters of absolute
+// paths — it wraps twice in a terminal and buries the part that matters
+// (`jit run --profile mcp-jamf`) in the middle of the wreckage. The full,
+// untruncated command stays in --format json, which is where a script (or a
+// human who genuinely wants the child's arguments) should be looking.
+const maxCommandLen = 72
+
+// shortenCommand makes a kernel-reported command line fit a status line:
+// $HOME collapses to ~ (the same courtesy printMountStatuses already extends
+// to paths), and what's still too long is cut. jit's own arguments come
+// first in the string, so a cut tail costs the child command's arguments —
+// the least interesting part — rather than the profile name.
+func shortenCommand(home, cmd string) string {
+	if home != "" {
+		cmd = strings.ReplaceAll(cmd, home+"/", "~/")
+	}
+	r := []rune(cmd)
+	if len(r) <= maxCommandLen {
+		return cmd
+	}
+	return string(r[:maxCommandLen-1]) + "…"
+}
+
+// printSessionProvenance is the "who put the session in this state" lines
+// under `jit agent status`'s headline (GAPS.md #50).
+//
+// The motivating report: a Touch ID prompt appeared unbidden while the user
+// was doing something entirely unrelated, and reconstructing why took
+// cross-referencing the agent's log against shell history — the answer being
+// "Claude Code started, and two of the MCP servers it boots are `jit run
+// --profile ...`". The agent knew every one of those facts at the moment it
+// prompted and stored none of them. It does now, so status can just say it.
+//
+// Prints nothing when this agent process has never unlocked: a freshly
+// installed agent has no history to explain, and inventing lines that say
+// "unknown" is worse than silence.
+// Reads as a "Session" group in the same bulleted shape as Mounts below,
+// NEWEST EVENT FIRST — and says so in its own heading. An unlock and the lock
+// that ends it routinely land in the same second (an unlock, then a `jit
+// vault` command locking on its way out), so two bare timestamped lines gave
+// a reader no way to tell which came last; "2m ago" on both, in an order
+// nothing declared, is not a history. Stating the order in the heading costs
+// three words and removes the guess.
+func printSessionProvenance(w io.Writer, st agent.Status) {
+	if st.LastUnlock == nil {
+		return
+	}
+
+	// While unlocked, the headline already says when the session WILL lock. A
+	// "locked ..." bullet from the previous cycle would sit right under it,
+	// flatly contradicting it — so the lock only appears once it's the truth.
+	showLock := !st.Unlocked && st.LastLock != nil
+
+	heading := "\nSession:"
+	if showLock {
+		heading = "\nSession (most recent first):"
+	}
+	fmt.Fprintln(w, heading)
+
+	if showLock {
+		l := st.LastLock
+		cause := l.Cause
+		if cause == "" {
+			cause = "unknown cause"
+		}
+		fmt.Fprintf(w, "  • %s — %s\n", sessionWhen("locked", l.UnixTime), cause)
+	}
+
+	u := st.LastUnlock
+	line := fmt.Sprintf("  • %s", sessionWhen("unlocked", u.UnixTime))
+	if u.LaunchedBy != "" {
+		// The half that answers "why now" — and the half nobody could get at
+		// before, since a process's parent is gone from every log jit keeps.
+		line += fmt.Sprintf(" — launched by %s", u.LaunchedBy)
+	}
+	fmt.Fprintln(w, line)
+
+	// The command goes on its own indented line, like a mount's last-read
+	// detail: on the bullet it pushed the line past 120 characters, where it
+	// wrapped and stopped being read at all.
+	if u.By != "" {
+		home, _ := os.UserHomeDir()
+		fmt.Fprintf(w, "      %s\n", shortenCommand(home, u.By))
+	}
+}
+
+// sessionWhen renders one event's verb and time — "locked    2m ago
+// (12:58:59)" — padding the verb so the times line up under each other, which
+// is what makes two bullets scan as a sequence rather than as two unrelated
+// sentences.
+func sessionWhen(verb string, unixTime int64) string {
+	at := time.Unix(unixTime, 0)
+	return fmt.Sprintf("%-8s %s ago (%s)", verb, humanAgo(time.Since(at)), at.Format("15:04:05"))
 }
 
 // printMountStatuses renders the per-mount section of `jit agent status`
