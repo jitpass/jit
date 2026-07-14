@@ -1,5 +1,5 @@
 // Copyright 2026 Meni Tasa
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 
 // Command unix-socket-peercred-spike confirms that jit-agent can verify which
 // process/user is on the other end of its Unix domain socket before releasing

@@ -1,5 +1,5 @@
 // Copyright 2026 Meni Tasa
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 
 // Package cli wires up jit's command-line surface. Each subcommand is
 // added to rootCmd by the package that implements it (via init(), in its

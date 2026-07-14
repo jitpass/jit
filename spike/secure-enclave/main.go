@@ -1,5 +1,5 @@
 // Copyright 2026 Meni Tasa
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 
 // Command secure-enclave-spike is a throwaway technical spike (ROADMAP.md's
 // "Spike: Secure Enclave key generation + Touch ID + ECDH") that answers one

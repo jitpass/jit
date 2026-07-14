@@ -15,11 +15,13 @@ large PR — a quick issue to align on approach first saves everyone time.
   ```
 
   By signing off you assert you have the right to submit the work under the
-  project's [Apache-2.0](./LICENSE) license. There is no CLA.
+  project's [BUSL-1.1](./LICENSE) license. There is no CLA.
 
-- **License.** All contributions are made under Apache-2.0. New source files
-  should be compatible with that license; don't paste in code under an
-  incompatible one.
+- **License.** The project is licensed under the Business Source License 1.1
+  (BUSL-1.1), converting to Apache-2.0 on the Change Date stated in
+  [LICENSE](./LICENSE). All contributions are made under BUSL-1.1 with that
+  same conversion. Don't paste in code under a license incompatible with
+  this arrangement (for example, copyleft code).
 
 - **Security issues are not regular PRs.** If you've found a vulnerability, do
   **not** open a public issue or PR — follow [SECURITY.md](./SECURITY.md) for

@@ -1,5 +1,5 @@
 // Copyright 2026 Meni Tasa
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 
 // Package vault implements atomic, file-per-secret storage (RFC.md Pillar I)
 // and envelope encryption (RFC.md Pillar II): each secret gets its own

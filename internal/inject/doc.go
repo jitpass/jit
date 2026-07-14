@@ -1,5 +1,5 @@
 // Copyright 2026 Meni Tasa
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 
 // Package inject resolves a profile (internal/profile) against the vault
 // (internal/vault) into plaintext environment variable values, shared by
