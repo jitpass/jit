@@ -45,6 +45,7 @@ One page per tool - requirements, verification, and per-tool gotchas:
 | [`railway`](./railway.md) | `RAILWAY_TOKEN` | `~/.railway/config.json` |
 | [`databricks`](./databricks.md) | `DATABRICKS_TOKEN` | `~/.databrickscfg` |
 | [`hf`](./hf.md) | `HF_TOKEN` | `~/.cache/huggingface/token` (the whole file is the token) |
+| [`supabase`](./supabase.md) | `SUPABASE_ACCESS_TOKEN` | `~/.supabase/access-token` when the OS keyring isn't available |
 | [`openai`](./openai.md) | `OPENAI_API_KEY` | nowhere standard - `jit vault set wrap-openai/OPENAI_API_KEY` first |
 
 ## Native-hook plugins (no shim - stronger)

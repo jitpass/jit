@@ -151,6 +151,21 @@ var catalog = map[string]CatalogEntry{
 		},
 		VerifyHint: "hf auth whoami",
 	},
+	"supabase": {
+		Tool:    "supabase",
+		Kind:    KindShim,
+		Doc:     "Supabase personal access token",
+		EnvVars: map[string]string{"SUPABASE_ACCESS_TOKEN": "SUPABASE_ACCESS_TOKEN"}, // #nosec G101 -- env var name, not a credential
+		Order:   []string{"SUPABASE_ACCESS_TOKEN"},
+		Sources: []TokenSource{
+			// `supabase login` prefers the OS keyring (already encrypted at
+			// rest) and writes this plain file only as its fallback — the
+			// case worth migrating. The env var is the CLI's highest-priority
+			// token source, so the shim's injection always wins.
+			{Path: "~/.supabase/access-token", Format: "raw"},
+		},
+		VerifyHint: "supabase projects list",
+	},
 	"openai": {
 		Tool:    "openai",
 		Kind:    KindShim,
