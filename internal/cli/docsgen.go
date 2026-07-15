@@ -34,7 +34,7 @@ func init() {
 			if len(args) == 1 {
 				dir = args[0]
 			}
-			if err := os.MkdirAll(dir, 0o755); err != nil {
+			if err := os.MkdirAll(dir, 0o755); err != nil { // #nosec G301 -- public docs tree in the repo, conventional mode
 				return fmt.Errorf("jit docs-gen: %w", err)
 			}
 			// Clear previous output first so a renamed or removed command
@@ -81,7 +81,7 @@ func genCommandTree(dir string, cmd *cobra.Command) error {
 		}
 	}
 	page := renderCommandPage(cmd)
-	return os.WriteFile(filepath.Join(dir, commandPageName(cmd)), []byte(page), 0o644)
+	return os.WriteFile(filepath.Join(dir, commandPageName(cmd)), []byte(page), 0o644) // #nosec G306 -- generated public docs page, conventional non-secret mode
 }
 
 // commandPageName is cobra/doc's naming scheme ("jit vault set" →
