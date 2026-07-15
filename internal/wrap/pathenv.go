@@ -95,7 +95,7 @@ func RemovePathLine(rcPath string) (changed bool, err error) {
 	if info, statErr := os.Stat(rcPath); statErr == nil {
 		mode = info.Mode()
 	}
-	if err := os.WriteFile(rcPath, []byte(strings.Join(kept, "\n")), mode); err != nil {
+	if err := os.WriteFile(rcPath, []byte(strings.Join(kept, "\n")), mode); err != nil { // #nosec G703 -- rcPath is the user's own shell rc file; removing the stale wrap PATH line is the point of undo
 		return false, fmt.Errorf("rewriting %s: %w", rcPath, err)
 	}
 	return true, nil

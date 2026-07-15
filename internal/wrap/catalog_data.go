@@ -41,7 +41,7 @@ var catalog = map[string]CatalogEntry{
 		Tool:    "ngrok",
 		Kind:    KindShim,
 		Doc:     "ngrok agent authtoken",
-		EnvVars: map[string]string{"NGROK_AUTHTOKEN": "NGROK_AUTHTOKEN"},
+		EnvVars: map[string]string{"NGROK_AUTHTOKEN": "NGROK_AUTHTOKEN"}, // #nosec G101 -- env var name, not a credential
 		Order:   []string{"NGROK_AUTHTOKEN"},
 		Sources: []TokenSource{
 			// agent config v3 nests under agent:; v2 is top-level.
@@ -94,7 +94,7 @@ var catalog = map[string]CatalogEntry{
 		Tool:    "flyctl",
 		Kind:    KindShim,
 		Doc:     "Fly.io access token",
-		EnvVars: map[string]string{"FLY_API_TOKEN": "FLY_API_TOKEN"},
+		EnvVars: map[string]string{"FLY_API_TOKEN": "FLY_API_TOKEN"}, // #nosec G101 -- env var name, not a credential
 		Order:   []string{"FLY_API_TOKEN"},
 		Sources: []TokenSource{
 			{Path: "~/.fly/config.yml", Format: "yaml", Selector: "access_token"},
@@ -105,7 +105,7 @@ var catalog = map[string]CatalogEntry{
 		Tool:    "vercel",
 		Kind:    KindShim,
 		Doc:     "Vercel CLI token",
-		EnvVars: map[string]string{"VERCEL_TOKEN": "VERCEL_TOKEN"},
+		EnvVars: map[string]string{"VERCEL_TOKEN": "VERCEL_TOKEN"}, // #nosec G101 -- env var name, not a credential
 		Order:   []string{"VERCEL_TOKEN"},
 		Sources: []TokenSource{
 			{Path: "~/Library/Application Support/com.vercel.cli/auth.json", Format: "json", Selector: "token"},

@@ -53,7 +53,7 @@ func ScrubToken(home string, src TokenSource, value string) error {
 	if info, statErr := os.Stat(path); statErr == nil {
 		mode = info.Mode()
 	}
-	if err := os.WriteFile(path, []byte(strings.Join(kept, "\n")), mode); err != nil {
+	if err := os.WriteFile(path, []byte(strings.Join(kept, "\n")), mode); err != nil { // #nosec G703 -- path is the catalog-listed config file the token was just extracted from; rewriting it minus the token is what scrub does
 		return fmt.Errorf("rewriting %s: %w", path, err)
 	}
 	return nil

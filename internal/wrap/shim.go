@@ -118,7 +118,7 @@ func lookPathSkipping(pathEnv, tool, skipDir string) (string, error) {
 			continue
 		}
 		candidate := filepath.Join(dir, tool)
-		info, err := os.Stat(candidate)
+		info, err := os.Stat(candidate) // #nosec G703 -- candidate is the user's own PATH entries joined with the wrapped tool's name; walking them is what PATH lookup is
 		if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
 			continue
 		}
