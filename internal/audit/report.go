@@ -14,7 +14,7 @@ import (
 )
 
 // findingTypeLabels are human-readable section headers, in AllFindingTypes
-// order, matching docs/example-audit-report.md's preview format. Keys are
+// order, matching docs/audit/example-report.md's preview format. Keys are
 // enum labels, not credential material — see finding.go's justification for
 // the same gosec G101 pattern-match false positive.
 var findingTypeLabels = map[string]string{ // #nosec G101 -- enum label keys, not credentials

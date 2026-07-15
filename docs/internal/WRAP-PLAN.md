@@ -7,7 +7,7 @@ sits encrypted in the vault and materializes only inside the one process
 that needs it, gated by the same biometric agent every other jit flow uses.
 
 **Shipped in v0.8.0 (2026-07-14).** Supported tools:
-[PLUGINS.md](./PLUGINS.md); command reference: [COMMANDS.md](./COMMANDS.md);
+[docs/wrap/](../wrap/index.md); command reference: [docs/reference/commands/](../reference/commands/jit.md);
 spike evidence: `spike/cli-shim-wrap/FINDINGS.md`.
 
 This document is the feature's reference and its design record. A few

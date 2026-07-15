@@ -7,7 +7,7 @@ import "fmt"
 
 // NativeDelegation describes how the CLI should serve a KindNative catalog
 // entry: by running the existing migrate flow for that tool's category
-// (docs/WRAP-PLAN.md §3.2 — the native hook reaches SDKs and login/logout
+// (docs/internal/WRAP-PLAN.md §3.2 — the native hook reaches SDKs and login/logout
 // paths a PATH shim never sees, so wrap must not shadow it with a shim).
 // This file holds routing only; the credential logic it points to lives in
 // internal/migrate and is invoked at the cli layer, keeping this package

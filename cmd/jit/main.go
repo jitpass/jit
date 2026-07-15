@@ -14,7 +14,7 @@ import (
 )
 
 func main() {
-	// Shim dispatch (docs/WRAP-PLAN.md §3.1): invoked through a
+	// Shim dispatch (docs/internal/WRAP-PLAN.md §3.1): invoked through a
 	// ~/.jit/shims symlink named after a wrapped tool, this process
 	// becomes `jit run --profile wrap-<tool> -- <real-tool> ...`.
 	// ShimExec returns only on failure, and failure is loud (exit 127) —

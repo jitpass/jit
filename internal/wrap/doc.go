@@ -1,7 +1,7 @@
 // Copyright 2026 Meni Tasa
 // SPDX-License-Identifier: BUSL-1.1
 
-// Package wrap implements shell-plugin-style CLI wrapping (docs/WRAP-PLAN.md):
+// Package wrap implements shell-plugin-style CLI wrapping (docs/internal/WRAP-PLAN.md):
 // a directory of symlinks to the jit binary (~/.jit/shims), each named after
 // a wrapped tool, placed first on PATH. Invoked through such a symlink, jit
 // enters shim mode (ShimInvocation/ShimExec) and replaces itself with

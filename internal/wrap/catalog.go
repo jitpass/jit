@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// Kind says which mechanism serves a catalog entry (docs/WRAP-PLAN.md §3.2).
+// Kind says which mechanism serves a catalog entry (docs/internal/WRAP-PLAN.md §3.2).
 type Kind string
 
 const (

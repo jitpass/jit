@@ -16,7 +16,7 @@ Either way, the report stays private between you and the maintainer — no publi
 Please include, if possible:
 - The affected component (vault, injection mechanism, audit scanner, etc.)
 - A minimal reproduction
-- If relevant, which documented limitation you believe is violated (see the README's security-model section and the "known, accepted limitations" list in [security/](./security/)) — this helps distinguish a new finding from an already-documented, accepted one. A report describing behavior that matches a documented boundary (e.g. "the target process can read its own injected secret") is expected behavior, not a vulnerability, though it's still worth flagging if you think the boundary itself is stated incorrectly.
+- If relevant, which documented limitation you believe is violated (see the [security architecture](./docs/security/architecture.md) and the "known, accepted limitations" list in each [published review](./docs/security/self-reviews/index.md)) — this helps distinguish a new finding from an already-documented, accepted one. A report describing behavior that matches a documented boundary (e.g. "the target process can read its own injected secret") is expected behavior, not a vulnerability, though it's still worth flagging if you think the boundary itself is stated incorrectly.
 
 ## Response Expectations
 

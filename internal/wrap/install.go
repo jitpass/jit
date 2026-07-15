@@ -44,7 +44,7 @@ func ValidateToolName(tool string) error {
 
 // InstallShim creates (or refreshes) the shim symlink for tool, pointing at
 // jitBinary, and returns the symlink's path. The shim dir is created 0700
-// (docs/WRAP-PLAN.md §3.5). An existing entry is replaced only if it is
+// (docs/internal/WRAP-PLAN.md §3.5). An existing entry is replaced only if it is
 // itself a symlink — a regular file squatting on the name is somebody
 // else's and an error, never silently deleted.
 func InstallShim(home, jitBinary, tool string) (string, error) {
