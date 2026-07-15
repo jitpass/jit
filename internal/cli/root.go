@@ -27,6 +27,51 @@ const (
 	groupPlumbing = "plumbing"
 )
 
+// helpVisibleAnnotation marks a command that is Hidden solely to keep it
+// out of shell tab-completion (cobra has exactly one visibility flag, and
+// completion ignores command groups, so grouping alone still left the
+// plumbing commands in every Tab list). Annotated commands are rendered
+// by rootUsageTemplate under their group and get generated docs pages
+// (docsgen.go), so they stay discoverable everywhere except completion.
+// A Hidden command WITHOUT this annotation (docs-gen) stays invisible
+// everywhere.
+const helpVisibleAnnotation = "jit-help-visible"
+
+// rootUsageTemplate is cobra v1.10.2's defaultUsageTemplate with one
+// change: the per-group command loop also admits Hidden commands carrying
+// helpVisibleAnnotation. If a cobra upgrade changes its default template,
+// re-diff against defaultUsageTemplate in cobra's command.go.
+const rootUsageTemplate = `Usage:{{if .Runnable}}
+  {{.UseLine}}{{end}}{{if .HasAvailableSubCommands}}
+  {{.CommandPath}} [command]{{end}}{{if gt (len .Aliases) 0}}
+
+Aliases:
+  {{.NameAndAliases}}{{end}}{{if .HasExample}}
+
+Examples:
+{{.Example}}{{end}}{{if .HasAvailableSubCommands}}{{$cmds := .Commands}}{{if eq (len .Groups) 0}}
+
+Available Commands:{{range $cmds}}{{if (or .IsAvailableCommand (eq .Name "help"))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{else}}{{range $group := .Groups}}
+
+{{.Title}}{{range $cmds}}{{if (and (eq .GroupID $group.ID) (or .IsAvailableCommand (eq .Name "help") (index .Annotations "jit-help-visible")))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{end}}{{if not .AllChildCommandsHaveGroup}}
+
+Additional Commands:{{range $cmds}}{{if (and (eq .GroupID "") (or .IsAvailableCommand (eq .Name "help")))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{end}}{{end}}{{end}}{{if .HasAvailableLocalFlags}}
+
+Flags:
+{{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}{{if .HasAvailableInheritedFlags}}
+
+Global Flags:
+{{.InheritedFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}{{if .HasHelpSubCommands}}
+
+Additional help topics:{{range .Commands}}{{if .IsAdditionalHelpTopicCommand}}
+  {{rpad .CommandPath .CommandPathPadding}} {{.Short}}{{end}}{{end}}{{end}}{{if .HasAvailableSubCommands}}
+
+Use "{{.CommandPath}} [command] --help" for more information about a command.{{end}}
+`
+
 var rootCmd = newRootCmd()
 
 func newRootCmd() *cobra.Command {
@@ -63,6 +108,7 @@ func newRootCmd() *cobra.Command {
 		&cobra.Group{ID: groupAgent, Title: "Background agent:"},
 		&cobra.Group{ID: groupPlumbing, Title: "Invoked by other tools, not by hand:"},
 	)
+	cmd.SetUsageTemplate(rootUsageTemplate)
 	return cmd
 }
 

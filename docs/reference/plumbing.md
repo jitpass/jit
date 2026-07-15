@@ -6,7 +6,8 @@ description: The commands other tools invoke - aws-credential-process, k8s-exec-
 # Plumbing protocols
 
 Three commands exist to be invoked by *other tools' configuration*, not by
-hand - `jit --help` groups them separately for exactly that reason. Each
+hand - `jit --help` groups them separately and shell tab-completion omits
+them entirely, for exactly that reason. Each
 implements the consuming tool's documented credential-plugin protocol, and
 each fetch requires the vault to be unlocked (the
 [agent](../agent/index.md)'s session, or a Touch ID prompt).
