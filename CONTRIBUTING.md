@@ -29,8 +29,9 @@ large PR — a quick issue to align on approach first saves everyone time.
 
 ## Before you start
 
-- Read the README's security-model section for the explicit threat-model
-  boundaries (what jit deliberately does *not* defend against). A change that
+- Read the [security architecture](./docs/security/architecture.md) for the
+  explicit threat-model boundaries (what jit deliberately does *not* defend
+  against). A change that
   "fixes" a documented boundary may be changing the design on purpose; open
   an issue to discuss first. (Code comments cite the full design docs — RFC
   sections, `GAPS.md #NN` — which are maintained in a private planning repo;
@@ -85,13 +86,15 @@ before opening a PR.
 The lowest-friction contribution in the repo: teaching `jit wrap` (and
 `jit audit`) about another CLI's token is one data block in
 `internal/wrap/catalog_data.go`, one sanitized config sample in
-`internal/wrap/testdata/<tool>/`, a row in each of
-`internal/wrap/catalog_test.go`'s fixture table and
-[docs/PLUGINS.md](./docs/PLUGINS.md) — no logic. Tests enforce all of it:
-malformed entries fail `TestCatalogEntriesAreWellFormed`, and an
-undocumented tool fails the PLUGINS.md drift guard. In the PR, link the
+`internal/wrap/testdata/<tool>/`, a row in
+`internal/wrap/catalog_test.go`'s fixture table, a row in
+[docs/wrap/index.md](./docs/wrap/index.md), and a
+[docs/wrap/](./docs/wrap/) page for the tool - no logic. Tests enforce all
+of it: malformed entries fail `TestCatalogEntriesAreWellFormed`, and an
+undocumented tool fails the wrap-docs drift guard. In the PR, link the
 tool's own docs for where it stores its credential and which env var it
-reads (that's what review checks — see WRAP-PLAN.md §3.2 for how the
+reads (that's what review checks - see
+[docs/internal/WRAP-PLAN.md](./docs/internal/WRAP-PLAN.md) §3.2 for how the
 shim-vs-native kind is chosen).
 
 ## Scope

@@ -19,7 +19,7 @@ import (
 )
 
 // Thin cobra wiring only — flag parsing and output formatting; the actual
-// wrap flow lives in internal/wrap (docs/WRAP-PLAN.md §4). The catalog flow
+// wrap flow lives in internal/wrap (docs/internal/WRAP-PLAN.md §4). The catalog flow
 // (`jit wrap gh` with no flags, discovery + scrub) is plan M2 and not
 // implemented yet; wrapCmd's own RunE says so instead of guessing.
 
@@ -33,8 +33,8 @@ var wrapCmd = &cobra.Command{
 		"file. Works in scripts, Makefiles, and tools spawning tools — anywhere the\n" +
 		"binary is invoked, not just interactive shells.\n\n" +
 		"Store the secret first (`jit vault set`), then describe the tool:\n" +
-		"`jit wrap add <tool> --env VAR=<vault-path>`. See docs/WRAP-PLAN.md for\n" +
-		"where this is headed (a catalog of known tools with automatic discovery).",
+		"`jit wrap add <tool> --env VAR=<vault-path>`. See docs/wrap/ for the\n" +
+		"catalog of known tools with automatic discovery.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			return cmd.Help()
@@ -46,7 +46,7 @@ var wrapCmd = &cobra.Command{
 	},
 }
 
-// runCatalogWrap is `jit wrap <tool>` (docs/WRAP-PLAN.md §3.3): look the
+// runCatalogWrap is `jit wrap <tool>` (docs/internal/WRAP-PLAN.md §3.3): look the
 // tool up in the catalog, discover its live token, vault it, install
 // profile + shim, scrub the plaintext source (backed up encrypted first),
 // and say how to verify.

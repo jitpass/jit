@@ -3,7 +3,7 @@
 
 package wrap
 
-// The catalog entries. Pure data, zero branching (docs/WRAP-PLAN.md §4):
+// The catalog entries. Pure data, zero branching (docs/internal/WRAP-PLAN.md §4):
 // adding a tool means one block here plus a testdata/<tool>/ fixture, and
 // nothing else. Paths and selectors are asserted against those fixtures in
 // catalog_test.go / extract tests — a fixture is a sanitized copy of the

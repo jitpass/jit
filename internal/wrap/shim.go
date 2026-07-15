@@ -16,7 +16,7 @@ import (
 // This file is the per-invocation hot path — it runs on every wrapped CLI
 // call before the target starts — so it stays stdlib-only and does no
 // parsing or vault work of its own; all of that belongs to the jit run
-// process it execs into (docs/WRAP-PLAN.md §4).
+// process it execs into (docs/internal/WRAP-PLAN.md §4).
 
 // ShimInvocation reports which wrapped tool this process was invoked as, if
 // any: argv[0]'s basename isn't "jit" AND the invoked executable lives in
@@ -45,7 +45,7 @@ func ShimInvocation() (tool string, ok bool) {
 // ShimExec replaces this process with
 // `jit run --profile wrap-<tool> -- <real-tool> <args...>`. It returns only
 // on failure; the caller prints the error and exits 127 — loudly, never
-// silently degrading to an unwrapped run (docs/WRAP-PLAN.md §3.1).
+// silently degrading to an unwrapped run (docs/internal/WRAP-PLAN.md §3.1).
 func ShimExec(tool string, args []string) error {
 	// Belt-and-braces recursion guard: even if real-binary resolution is
 	// somehow defeated (the PATH skip below is the primary defense), the

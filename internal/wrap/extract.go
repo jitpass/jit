@@ -16,7 +16,7 @@ type extractor func(data []byte, selector string) (value string, found bool)
 
 // extractors registers one extractor per TokenSource.Format. Formats and
 // their files stay decoupled: extractors contain zero tool names, catalog
-// data contains zero parsing (docs/WRAP-PLAN.md §4).
+// data contains zero parsing (docs/internal/WRAP-PLAN.md §4).
 var extractors = map[string]extractor{
 	"yaml": extractYAML,
 	"toml": extractTOML, // also covers INI files — same line shape

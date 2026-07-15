@@ -11,7 +11,7 @@ import (
 )
 
 // ScanWrappableCLITokens reports plaintext tokens sitting in the config
-// files of CLIs the wrap catalog knows how to fix (docs/WRAP-PLAN.md §3.4).
+// files of CLIs the wrap catalog knows how to fix (docs/internal/WRAP-PLAN.md §3.4).
 // It consumes wrap's own catalog and extractors, so detection here and
 // migration in `jit wrap <tool>` literally share code and can't drift: a
 // token this scanner can see is by construction one wrap can move.

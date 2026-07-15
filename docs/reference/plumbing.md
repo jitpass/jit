@@ -1,0 +1,36 @@
+---
+title: Plumbing protocols
+description: The commands other tools invoke - aws-credential-process, k8s-exec-credential, terraform-credentials.
+---
+
+# Plumbing protocols
+
+Three commands exist to be invoked by *other tools' configuration*, not by
+hand - `jit --help` groups them separately for exactly that reason. Each
+implements the consuming tool's documented credential-plugin protocol, and
+each fetch requires the vault to be unlocked (the
+[agent](../agent/index.md)'s session, or a Touch ID prompt).
+
+## `jit aws-credential-process --profile <name>`
+
+Implements AWS's [`credential_process`] contract: prints a JSON document
+with the profile's access key, secret key, and session token to stdout.
+Wired into `~/.aws/config` by [the AWS migration](../migrate/aws.md);
+consulted by the CLI and every SDK that reads shared config.
+
+## `jit k8s-exec-credential --profile <name>`
+
+Implements client-go's exec credential plugin protocol: prints an
+`ExecCredential` JSON document carrying the user's bearer token or client
+cert/key pair. Wired into `~/.kube/config` by [the kubeconfig
+migration](../migrate/kubernetes.md).
+
+## `jit terraform-credentials <get|store|forget> <hostname>`
+
+Implements Terraform's credentials-helper protocol: `get` prints the
+host's token as JSON; `store` saves a new token into the vault (this is
+what makes `terraform login` keep working); `forget` removes it
+(`terraform logout`). Wired into `~/.terraformrc` by [the Terraform
+migration](../migrate/terraform.md).
+
+[`credential_process`]: https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sourcing-external.html
