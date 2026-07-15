@@ -60,9 +60,20 @@ func init() {
 	rootCmd.AddCommand(cmd)
 }
 
+// docsInclude mirrors rootUsageTemplate's visibility rule: every available
+// command, plus commands hidden only from tab-completion (the plumbing
+// commands, marked with helpVisibleAnnotation — see root.go). Plain hidden
+// commands like docs-gen itself stay out.
+func docsInclude(c *cobra.Command) bool {
+	if c.IsAdditionalHelpTopicCommand() {
+		return false
+	}
+	return c.IsAvailableCommand() || c.Annotations[helpVisibleAnnotation] != ""
+}
+
 func genCommandTree(dir string, cmd *cobra.Command) error {
 	for _, c := range cmd.Commands() {
-		if !c.IsAvailableCommand() || c.IsAdditionalHelpTopicCommand() {
+		if !docsInclude(c) {
 			continue
 		}
 		if err := genCommandTree(dir, c); err != nil {
@@ -105,7 +116,7 @@ func renderCommandPage(cmd *cobra.Command) string {
 		related = append(related, seeAlsoLine(parent))
 	}
 	for _, c := range cmd.Commands() {
-		if !c.IsAvailableCommand() || c.IsAdditionalHelpTopicCommand() {
+		if !docsInclude(c) {
 			continue
 		}
 		related = append(related, seeAlsoLine(c))

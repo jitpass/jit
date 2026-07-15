@@ -34,7 +34,11 @@ type awsCredentialProcessOutput struct {
 var awsCredentialProcessCmd = &cobra.Command{
 	Use:     "aws-credential-process --profile <name>",
 	GroupID: groupPlumbing,
-	Short:   "Print AWS credential_process JSON for a migrated profile",
+	// Hidden only from shell tab-completion: helpVisibleAnnotation keeps
+	// it in the root help (rootUsageTemplate) and the generated docs.
+	Hidden:      true,
+	Annotations: map[string]string{helpVisibleAnnotation: "1"},
+	Short:       "Print AWS credential_process JSON for a migrated profile",
 	Long: "Not typically run by hand: jit migrate rewrites the matching ~/.aws/config\n" +
 		"profile to invoke this command directly\n" +
 		"(`credential_process = jit aws-credential-process --profile aws-<name>`),\n" +

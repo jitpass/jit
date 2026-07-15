@@ -40,7 +40,11 @@ type k8sExecCredentialOutput struct {
 var k8sExecCredentialCmd = &cobra.Command{
 	Use:     "k8s-exec-credential --profile <name>",
 	GroupID: groupPlumbing,
-	Short:   "Print a Kubernetes ExecCredential JSON for a migrated profile",
+	// Hidden only from shell tab-completion: helpVisibleAnnotation keeps
+	// it in the root help (rootUsageTemplate) and the generated docs.
+	Hidden:      true,
+	Annotations: map[string]string{helpVisibleAnnotation: "1"},
+	Short:       "Print a Kubernetes ExecCredential JSON for a migrated profile",
 	Long: "Not typically run by hand: jit migrate rewrites the matching kubeconfig\n" +
 		"user's `exec` block to invoke this command directly, so kubectl/client-go\n" +
 		"get credentials with no plaintext token or key on disk at all.\n\n" +

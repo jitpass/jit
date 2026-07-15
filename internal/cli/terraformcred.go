@@ -30,7 +30,11 @@ type terraformCredentialOutput struct {
 var terraformCredentialsCmd = &cobra.Command{
 	Use:     "terraform-credentials <get|store|forget> <hostname>",
 	GroupID: groupPlumbing,
-	Short:   "Implement Terraform's credentials-helper protocol for a migrated token",
+	// Hidden only from shell tab-completion: helpVisibleAnnotation keeps
+	// it in the root help (rootUsageTemplate) and the generated docs.
+	Hidden:      true,
+	Annotations: map[string]string{helpVisibleAnnotation: "1"},
+	Short:       "Implement Terraform's credentials-helper protocol for a migrated token",
 	Long: "Not typically run by hand: jit migrate writes a terraform-credentials-jit\n" +
 		"helper script that invokes this command, and a credentials_helper block in\n" +
 		"~/.terraformrc, so terraform fetches its API token from the vault with no\n" +
