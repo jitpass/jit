@@ -26,6 +26,14 @@ jobs:
       - name: Test
         run: go test -race -v ./...
 
+      # The command reference under docs/reference/commands/ is generated
+      # from the cobra tree; a change to any command's help text must land
+      # with its regenerated pages (run `go run ./cmd/jit docs-gen`).
+      - name: Command reference is current
+        run: |
+          go run ./cmd/jit docs-gen
+          git diff --exit-code docs/reference/commands
+
       - name: Install staticcheck
         run: go install honnef.co/go/tools/cmd/staticcheck@latest
 
