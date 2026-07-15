@@ -135,6 +135,22 @@ var catalog = map[string]CatalogEntry{
 		},
 		VerifyHint: "databricks current-user me",
 	},
+	"hf": {
+		Tool:    "hf",
+		Kind:    KindShim,
+		Doc:     "Hugging Face Hub access token",
+		EnvVars: map[string]string{"HF_TOKEN": "HF_TOKEN"},
+		Order:   []string{"HF_TOKEN"},
+		Sources: []TokenSource{
+			// `hf auth login` writes the active token as the file's entire
+			// contents — no keys, no structure. HF_TOKEN (which the shim
+			// injects) is documented to take priority over this file. The
+			// path is the documented default; with HF_HOME/XDG_CACHE_HOME
+			// set it moves, and the wrap flow falls back to `jit vault set`.
+			{Path: "~/.cache/huggingface/token", Format: "raw"},
+		},
+		VerifyHint: "hf auth whoami",
+	},
 	"openai": {
 		Tool:    "openai",
 		Kind:    KindShim,

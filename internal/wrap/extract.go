@@ -21,6 +21,7 @@ var extractors = map[string]extractor{
 	"yaml": extractYAML,
 	"toml": extractTOML, // also covers INI files — same line shape
 	"json": extractJSON,
+	"raw":  extractRaw, // the whole file is the credential; selector unused
 }
 
 // ExtractToken reads src's file under home and applies its extractor.

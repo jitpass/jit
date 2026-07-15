@@ -35,6 +35,38 @@ func TestScrubTokenRemovesOnlyTheTokenLines(t *testing.T) {
 	}
 }
 
+func TestScrubTokenRawEmptiesTheTokenFile(t *testing.T) {
+	hf, _ := Lookup("hf")
+	src := hf.Sources[0]
+	home := fixtureHomeFor(t, src, "hf/token")
+	token := "hf_FIXTUREtoken0123456789abcdefFIXTURE"
+
+	if err := ScrubToken(home, src, token); err != nil {
+		t.Fatalf("ScrubToken: %v", err)
+	}
+	data, err := os.ReadFile(ExpandHome(home, src.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != "" {
+		t.Errorf("raw scrub left content behind: %q", string(data))
+	}
+}
+
+func TestScrubTokenRawRefusesWhenValueMoved(t *testing.T) {
+	hf, _ := Lookup("hf")
+	src := hf.Sources[0]
+	home := fixtureHomeFor(t, src, "hf/token")
+
+	if err := ScrubToken(home, src, "hf_aTokenTheFileNoLongerHolds"); err == nil {
+		t.Fatal("expected ScrubToken to refuse when the raw file no longer holds the extracted token")
+	}
+	data, _ := os.ReadFile(ExpandHome(home, src.Path))
+	if !strings.Contains(string(data), "hf_FIXTUREtoken") {
+		t.Error("file was modified despite the refusal")
+	}
+}
+
 func TestScrubTokenRefusesWhenValueMoved(t *testing.T) {
 	gh, _ := Lookup("gh")
 	src := gh.Sources[0]
