@@ -5,6 +5,7 @@ package audit
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/jitpass/jit/internal/wrap"
@@ -40,6 +41,9 @@ func ScanWrappableCLITokens(cfg Config) ([]Finding, error) {
 			f.FilePath = wrap.ExpandHome(cfg.HomeDir, src.Path)
 			parts := strings.Split(src.Selector, "/")
 			key := parts[len(parts)-1]
+			if key == "" { // raw source: no selector — the file name is the key
+				key = filepath.Base(src.Path)
+			}
 			f.KeyName = &key
 			preview := MaskValue(value)
 			f.ValuePreview = &preview

@@ -12,16 +12,19 @@ import (
 // ScrubToken removes the one line carrying the extracted secret from src's
 // file, leaving every other byte alone — the file usually carries
 // non-secret settings that must survive (the same discipline as migrate's
-// npmrc rewriter). Line-oriented on purpose: both cataloged formats keep
+// npmrc rewriter). Line-oriented on purpose: the cataloged formats keep
 // one credential per line, and a whole-file re-marshal would reorder and
 // reformat a config the tool itself wrote.
 //
 // The line to remove must contain BOTH the selector's final key and the
 // secret value — either alone could match an unrelated line (a comment
-// naming the key, a second account with a different token). No match is an
-// error: the caller already extracted the value from this file, so failing
-// to find it again means the file changed underneath us, and scrubbing
-// blind would be worse than leaving the token.
+// naming the key, a second account with a different token). A "raw" source
+// has no key — the whole file is the credential — so there the line to
+// remove is the token itself, leaving an empty file behind (which the tool
+// treats as "not logged in", the state the shim's injection replaces). No
+// match is an error: the caller already extracted the value from this
+// file, so failing to find it again means the file changed underneath us,
+// and scrubbing blind would be worse than leaving the token.
 //
 // The caller is responsible for backing the file up (encrypted, via
 // migrate's machinery) BEFORE calling this.
@@ -34,12 +37,18 @@ func ScrubToken(home string, src TokenSource, value string) error {
 
 	parts := selectorParts(src.Selector)
 	key := parts[len(parts)-1]
+	matches := func(line string) bool {
+		if src.Format == "raw" {
+			return strings.TrimSpace(line) == value
+		}
+		return strings.Contains(line, key) && strings.Contains(line, value)
+	}
 
 	lines := strings.Split(string(data), "\n")
 	removed := false
 	kept := make([]string, 0, len(lines))
 	for _, line := range lines {
-		if !removed && strings.Contains(line, key) && strings.Contains(line, value) {
+		if !removed && matches(line) {
 			removed = true
 			continue
 		}

@@ -42,8 +42,17 @@ func TestCatalogEntriesAreWellFormed(t *testing.T) {
 				if _, ok := extractors[src.Format]; !ok {
 					t.Errorf("%s: source %s uses unregistered format %q", tool, src.Path, src.Format)
 				}
-				if src.Selector == "" || src.Path == "" {
-					t.Errorf("%s: source with empty path or selector", tool)
+				if src.Path == "" {
+					t.Errorf("%s: source with empty path", tool)
+				}
+				// A raw source takes the whole file; its selector must stay
+				// empty so the data can't imply structure that isn't there.
+				if src.Format == "raw" {
+					if src.Selector != "" {
+						t.Errorf("%s: raw source %s must leave Selector empty", tool, src.Path)
+					}
+				} else if src.Selector == "" {
+					t.Errorf("%s: source %s has an empty selector", tool, src.Path)
 				}
 			}
 			if e.NativeCategory != "" {
@@ -117,6 +126,7 @@ func TestCatalogSelectorsAgainstFixtures(t *testing.T) {
 		{"vercel", 0, "vercel/auth.json", "FIXTUREvercelToken0123456789abcdef"},
 		{"railway", 0, "railway/config.json", "FIXTURErailwayToken0123456789abcdef"},
 		{"databricks", 0, "databricks/databrickscfg", "dapiFIXTURE0123456789abcdef"},
+		{"hf", 0, "hf/token", "hf_FIXTUREtoken0123456789abcdefFIXTURE"},
 	}
 	for _, tc := range cases {
 		entry, ok := Lookup(tc.tool)

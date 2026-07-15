@@ -44,6 +44,7 @@ One page per tool - requirements, verification, and per-tool gotchas:
 | [`vercel`](./vercel.md) | `VERCEL_TOKEN` | `~/Library/Application Support/com.vercel.cli/auth.json` |
 | [`railway`](./railway.md) | `RAILWAY_TOKEN` | `~/.railway/config.json` |
 | [`databricks`](./databricks.md) | `DATABRICKS_TOKEN` | `~/.databrickscfg` |
+| [`hf`](./hf.md) | `HF_TOKEN` | `~/.cache/huggingface/token` (the whole file is the token) |
 | [`openai`](./openai.md) | `OPENAI_API_KEY` | nowhere standard - `jit vault set wrap-openai/OPENAI_API_KEY` first |
 
 ## Native-hook plugins (no shim - stronger)
