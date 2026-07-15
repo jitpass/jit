@@ -1,30 +1,35 @@
-# Plan: `jit wrap` — shell-plugin-style CLI wrapping
+# Feature: `jit wrap` — shell-plugin-style CLI wrapping
 
-Status: **implemented** — all four milestones shipped on `feat/jit-wrap`,
-2026-07-14 (spike: `spike/cli-shim-wrap/FINDINGS.md`; supported tools:
-[PLUGINS.md](./PLUGINS.md); command reference: [COMMANDS.md](./COMMANDS.md)).
-This document is kept as the design record. Deltas between plan and
-implementation:
+`jit wrap <tool>` gives developers transparent, vault-backed credentials
+for the CLIs they already run: they keep typing `gh pr list` exactly as
+before, but the GitHub token no longer lives in plaintext on disk — it
+sits encrypted in the vault and materializes only inside the one process
+that needs it, gated by the same biometric agent every other jit flow uses.
 
-- The M4 catalog grew beyond the table in §3.2: hcloud, flyctl, vercel,
-  railway, and databricks shipped too (a `json` extractor joined
+**Shipped in v0.8.0 (2026-07-14).** Supported tools:
+[PLUGINS.md](./PLUGINS.md); command reference: [COMMANDS.md](./COMMANDS.md);
+spike evidence: `spike/cli-shim-wrap/FINDINGS.md`.
+
+This document is the feature's reference and its design record. A few
+places where the shipped feature went beyond the original design:
+
+- The catalog grew past the table in §3.2: hcloud, flyctl, vercel,
+  railway, and databricks are covered too (a `json` extractor joined
   yaml/toml; `.databrickscfg`'s INI rides the toml line extractor).
-- Discovery gained a `TokenCommand` fallback the plan didn't have: tools
-  that keep their token in the OS keyring (modern gh) export it via their
-  own documented command; nothing is scrubbed in that case.
-- §3.6's overlay rule (project env layers over the wrap profile) is NOT
+- Discovery has a `TokenCommand` fallback: tools that keep their token in
+  the OS keyring (modern gh) export it via their own documented command;
+  nothing is scrubbed in that case.
+- §3.6's overlay rule (project env layers over the wrap profile) is not
   implemented yet — the shim uses plain `--profile` semantics. Still open,
   alongside multi-account profiles and agent-history attribution for wrap
   invocations.
 - `jit wrap undo` of a scrubbed file points at `jit migrate undo <path>`
   for the byte-for-byte restore rather than doing it inline.
 
-Original plan follows.
-
 ## 1. What this is
 
-The 1Password Shell Plugins experience, built on jit's existing vault, agent,
-and profiles: a developer runs one command —
+Shell-plugin-style CLI wrapping, built on jit's existing vault, agent, and
+profiles: a developer runs one command —
 
 ```
 $ jit wrap gh
@@ -51,8 +56,8 @@ undo. What's missing is exactly three things:
 **Before:** a gh/stripe/ngrok/doctl token lives in a plaintext dotfile,
 readable by every process running as the user, swept into Time Machine and
 Spotlight, alive years after it was pasted. The "secure" alternative is
-retyping tokens or hand-rolling `op`-style aliases that silently stop
-working inside scripts.
+retyping tokens or hand-rolling credential-injecting aliases that silently
+stop working inside scripts.
 
 **After `jit wrap gh`:**
 
@@ -122,8 +127,8 @@ type TokenSource struct {
 
 Compiled-in (not user-editable files) for v1: entries are code-reviewed
 data, and `jit audit`'s detection must agree with `wrap`'s extraction, so
-they ship together. 1Password's public plugin list is the coverage
-roadmap. Initial set, chosen for token-in-plaintext-file pain:
+they ship together. The catalog grows by developer-tool popularity. Initial
+set, chosen for token-in-plaintext-file pain:
 
 | Tool | Kind | Mechanism | Plaintext source today |
 | --- | --- | --- | --- |
@@ -337,7 +342,10 @@ Rules that keep it maintainable as the catalog grows:
 - **No grab-bag files**: nothing named `util.go`/`helpers.go`; a helper
   lives in the file of its single caller until a second caller exists.
 
-## 5. Milestones
+## 5. How it shipped (milestones)
+
+All four milestones landed for v0.8.0. They're recorded here in delivery
+order as the feature's build history.
 
 **M1 — mechanism (small, no catalog):** `argv[0]` dispatch in `cmd/jit`,
 shim-mode exec path (port of the spike's `main.go` with its guards),
@@ -360,8 +368,8 @@ hints, `wrap list` health output, shell-completion sanity check through
 shims (expected to just work — command names are unchanged), latency note
 in docs with the spike's numbers.
 
-**M4 — expansion:** grow the catalog (1Password's plugin list as the
-backlog, ordered by dev-tool popularity), multi-account support
+**M4 — expansion:** grow the catalog (ordered by dev-tool popularity),
+multi-account support
 (profile-per-account, `jit wrap gh --account work` → `wrap-gh-work`),
 possibly project-scoped wrap profiles.
 
@@ -369,28 +377,29 @@ Sequencing note: M1 is deliberately shippable alone — `jit wrap add`
 already covers any tool a motivated user has — so catalog breadth never
 blocks the mechanism landing.
 
-## 6. Open questions (decide during M1/M2)
+## 6. Design questions and how they resolved
 
-1. `argv[0]` symlink dispatch vs. dedicated shim binary — resolve with a
-   quick check on macOS `os.Executable()` behavior under symlink exec
-   (the skip logic doesn't depend on it, since the shim dir path is
-   known config, but error messages do).
+1. `argv[0]` symlink dispatch vs. dedicated shim binary — **resolved:**
+   `argv[0]` dispatch, shim entries symlinked to the jit binary (§3.1).
+   The skip logic never depended on it, since the shim dir path is known
+   config.
 2. Does `wrap` share migrate's pointer-file/lineage bookkeeping or keep
-   its own manifest under `~/.jit/wrap.json`? Leaning: reuse migrate's
-   backup tracker, separate manifest for shims.
+   its own manifest? **Resolved:** reuse migrate's backup tracker, with a
+   separate manifest for shims.
 3. Rotation story: `jit wrap refresh gh` re-extracts after the user runs
-   `gh auth login` again (which recreates the plaintext file) — M2 or M4?
+   `gh auth login` again (which recreates the plaintext file). **Still
+   open** — a follow-up, not in v0.8.0.
 4. Should `jit migrate home` auto-suggest wraps for detected catalog
-   tools, or stay a separate explicit verb? Leaning: audit suggests,
-   never auto-wraps.
+   tools, or stay a separate explicit verb? **Resolved:** audit suggests
+   (§3.4), never auto-wraps.
 
 ## 7. Spike evidence (summary)
 
 From `spike/cli-shim-wrap/FINDINGS.md` (2026-07-14, macOS arm64, real
 `jit run` + unlocked agent):
 
-- Aliases (1Password's mechanism) silently skip injection in scripts and
-  execvp spawns; shims inject in every path tested. → shims.
+- Aliases silently skip injection in scripts and execvp spawns; shims
+  inject in every path tested. → shims.
 - Recursion fully controlled: PATH-skip + env guard; clean 127s, correct
   exit-code propagation (42 → 42).
 - Overhead: 8.9 ms baseline vs 26.3 ms full pipeline ≈ **+17 ms** per

@@ -245,32 +245,33 @@ The day-to-day walkthrough (setup, migrating, living with the fix) is
 - **[security/](./security/)**: we review jit's own code for vulnerabilities and publish the results (scope, findings, fixes, and the honest limits)
 - **[CONTRIBUTING.md](./CONTRIBUTING.md)**: build/test setup and conventions; sign-off via DCO (`git commit -s`), no CLA
 
-### What the security model is (and isn't)
+### `jit wrap`: CLI tokens in the vault, muscle memory unchanged
 
-We'd rather you read the boundaries than discover them:
+Plenty of developer CLIs keep a long-lived token in a plaintext dotfile —
+`gh` in `~/.config/gh/hosts.yml`, plus `glab`, `stripe`, `ngrok`, `doctl`,
+and more. `jit wrap` moves that token into the vault and lets you keep
+typing the command exactly as before:
 
-- **`jit audit` is read-only under every flag, no exceptions.** It also never
-  prints a secret value, only masked previews.
-- The vault's local-auth gate is currently **enforced by jit's own code via a
-  real OS Touch ID/passcode prompt, not yet by OS-enforced Keychain
-  ACL/Secure Enclave binding** (that's blocked on a signing identity). It
-  protects against file-grabbing malware, backup/index leaks, and casual
-  exfiltration. It does not stop an attacker already executing code as your
-  user, and we won't tell you otherwise.
-- A secret injected into a process is plaintext inside that process; jit
-  narrows the exposure window, but it can't sandbox your dependencies.
-- **Caller identification is for explaining, never for deciding.** The name in
-  a prompt ("launched by claude") and in `jit agent status` comes from the
-  kernel and can't be forged by a caller filling in a field — but a process can
-  `exec` something else after connecting, and pids get reused, so nothing is
-  ever *granted* on the strength of who a caller appears to be. The only access
-  check on the agent's socket is that the peer runs as the same OS user. Same
-  for the process named as having read a live-mounted file: audit signal, not a
-  gate.
-- The commands that put secrets back on disk (`jit unmount`,
-  `jit migrate undo`, `jit vault export`) always re-prompt, by design.
-- Each published review in [security/](./security/) ends with the known,
-  accepted limitations of the build it covers.
+```sh
+jit wrap gh                # discover the token, vault it, scrub the file
+gh pr list                 # works exactly as before — token injected per call
+jit wrap list              # what's wrapped, shim health, PATH position
+jit wrap undo gh           # restore the original file byte-for-byte
+```
+
+Under the hood it installs a PATH shim named after the tool. On each
+invocation the shim injects the token from the vault into just that one
+process, gated by the same biometric agent as every other jit flow. Because
+it's a shim and not a shell alias, it keeps working inside scripts,
+Makefiles, git hooks, and any subprocess that spawns the tool — the paths
+aliases miss — at about 25 ms overhead per call with an unlocked agent.
+
+`jit audit` flags the tokens worth wrapping and prints the one-command fix.
+`aws` and `terraform` are wrapped too, through their own native credential
+mechanisms rather than a shim, so every SDK keeps working. Uncataloged
+tools work via `jit wrap add <tool> --env VAR=<vault-path>`. Full list and
+design: **[docs/PLUGINS.md](./docs/PLUGINS.md)** and
+**[docs/WRAP-PLAN.md](./docs/WRAP-PLAN.md)**.
 
 ## License
 
