@@ -127,6 +127,7 @@ func TestCatalogSelectorsAgainstFixtures(t *testing.T) {
 		{"railway", 0, "railway/config.json", "FIXTURErailwayToken0123456789abcdef"},
 		{"databricks", 0, "databricks/databrickscfg", "dapiFIXTURE0123456789abcdef"},
 		{"hf", 0, "hf/token", "hf_FIXTUREtoken0123456789abcdefFIXTURE"},
+		{"supabase", 0, "supabase/access-token", "sbp_FIXTURE0123456789abcdef0123456789abcdef"},
 	}
 	for _, tc := range cases {
 		entry, ok := Lookup(tc.tool)
