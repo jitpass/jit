@@ -66,6 +66,14 @@ type Response struct {
 	// across a restart.
 	LastUnlock *SessionEvent `json:"last_unlock,omitempty"`
 	LastLock   *SessionEvent `json:"last_lock,omitempty"`
+	// PendingUnlock, set on "status" only, is the challenge currently
+	// sitting on the user's screen — who triggered it and when the prompt
+	// appeared (UnixTime is prompt-appearance, not approval; Kind is empty
+	// because nothing has happened yet — this is not a history event, and
+	// it never becomes one unless approved). Status can answer during a
+	// challenge precisely because reads don't queue behind it, so this is
+	// the agent explaining a prompt WHILE the human is staring at it.
+	PendingUnlock *SessionEvent `json:"pending_unlock,omitempty"`
 	// Events answers "history" — every unlock and lock this agent PROCESS has
 	// seen, newest first, bounded by maxSessionEvents. Status deliberately
 	// carries only the two latest instead (a status call happens constantly,
