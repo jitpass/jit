@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -24,8 +25,8 @@ func newFakeKeyWrapper() *fakeKeyWrapper {
 	return &fakeKeyWrapper{key: bytes.Repeat([]byte{0x42}, dekSize)}
 }
 
-func (f *fakeKeyWrapper) WrapKey(dek []byte) ([]byte, error)       { return seal(f.key, dek) }
-func (f *fakeKeyWrapper) UnwrapKey(wrapped []byte) ([]byte, error) { return open(f.key, wrapped) }
+func (f *fakeKeyWrapper) WrapKey(dek []byte) ([]byte, error)       { return seal(f.key, dek, nil) }
+func (f *fakeKeyWrapper) UnwrapKey(wrapped []byte) ([]byte, error) { return open(f.key, wrapped, nil) }
 
 func newTestVault(t *testing.T) *Vault {
 	t.Helper()
@@ -271,4 +272,209 @@ func TestVaultPassesSecretPathAsLabelWhenWrapperSupportsIt(t *testing.T) {
 	if len(kw.unwrapLabels) != 1 || kw.unwrapLabels[0] != "stripe/dev-key" {
 		t.Errorf("unwrap labels = %v, want the secret's own path", kw.unwrapLabels)
 	}
+}
+
+// writeV1Envelope hand-writes a version-1 (AAD-less, metadata-less)
+// envelope the way every jit before envelope v2 did — the fixture for
+// pinning that old vaults keep decrypting with zero migration.
+func writeV1Envelope(t *testing.T, v *Vault, path string, value []byte) {
+	t.Helper()
+	kw := v.KeyWrapper.(*fakeKeyWrapper)
+	dek := bytes.Repeat([]byte{0x07}, dekSize)
+	sealedPayload, err := seal(dek, value, nil)
+	if err != nil {
+		t.Fatalf("sealing v1 payload: %v", err)
+	}
+	wrapped, err := kw.WrapKey(dek)
+	if err != nil {
+		t.Fatalf("wrapping v1 DEK: %v", err)
+	}
+	env := envelope{
+		Version:    envelopeVersionAADLess,
+		Recipients: map[string]string{v.RecipientID: hex.EncodeToString(wrapped)},
+		Payload:    hex.EncodeToString(sealedPayload),
+	}
+	data, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("encoding v1 envelope: %v", err)
+	}
+	dest := filepath.Join(v.Root, "vault", path+".enc")
+	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dest, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestVaultReadsV1EnvelopesForever(t *testing.T) {
+	v := newTestVault(t)
+	writeV1Envelope(t, v, "legacy/old-key", []byte("pre-v2 value"))
+
+	got, err := v.Get("legacy/old-key")
+	if err != nil {
+		t.Fatalf("Get on a v1 envelope: %v", err)
+	}
+	if string(got) != "pre-v2 value" {
+		t.Errorf("Get = %q, want %q", got, "pre-v2 value")
+	}
+}
+
+func TestVaultRejectsNewerEnvelopeVersion(t *testing.T) {
+	v := newTestVault(t)
+	if err := v.Set("stripe/dev-key", []byte("sk_test")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// Bump the stored version past what this jit understands.
+	p := filepath.Join(v.Root, "vault", "stripe/dev-key.enc")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env envelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		t.Fatal(err)
+	}
+	env.Version = envelopeVersion + 1
+	data, err = json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = v.Get("stripe/dev-key")
+	if err == nil {
+		t.Fatal("Get on a newer-versioned envelope succeeded, want a version error")
+	}
+	if !strings.Contains(err.Error(), "upgrade jit") {
+		t.Errorf("error %q should say the fix (upgrade jit), not read as corruption", err)
+	}
+}
+
+func TestVaultSwappedEnvelopeFilesFailClosed(t *testing.T) {
+	v := newTestVault(t)
+	if err := v.Set("stripe/dev-key", []byte("sk_test")); err != nil {
+		t.Fatalf("Set dev: %v", err)
+	}
+	if err := v.Set("stripe/live-key", []byte("sk_live")); err != nil {
+		t.Fatalf("Set live: %v", err)
+	}
+
+	// Copy live's envelope over dev's — the swap that used to decrypt
+	// cleanly and hand the live key to whatever asked for the dev one.
+	dir := filepath.Join(v.Root, "vault", "stripe")
+	liveData, err := os.ReadFile(filepath.Join(dir, "live-key.enc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "dev-key.enc"), liveData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, err := v.Get("stripe/dev-key"); err == nil {
+		t.Fatalf("Get on a swapped envelope = %q, want AAD failure", got)
+	}
+	// The un-swapped secret is untouched.
+	if got, err := v.Get("stripe/live-key"); err != nil || string(got) != "sk_live" {
+		t.Fatalf("Get live after swap = %q, %v; want sk_live, nil", got, err)
+	}
+}
+
+func TestVaultTamperedTimestampFailsClosed(t *testing.T) {
+	v := newTestVault(t)
+	if err := v.Set("stripe/dev-key", []byte("sk_test")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	p := filepath.Join(v.Root, "vault", "stripe/dev-key.enc")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env envelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		t.Fatal(err)
+	}
+	env.UpdatedUnix++ // "freshen" a stale credential by one second
+	data, err = json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, err := v.Get("stripe/dev-key"); err == nil {
+		t.Fatalf("Get with a tampered timestamp = %q, want AAD failure", got)
+	}
+}
+
+func TestVaultOverwritePreservesCreatedUnix(t *testing.T) {
+	v := newTestVault(t)
+	if err := v.Set("stripe/dev-key", []byte("first")); err != nil {
+		t.Fatalf("Set 1: %v", err)
+	}
+	first, err := v.Info("stripe/dev-key")
+	if err != nil {
+		t.Fatalf("Info 1: %v", err)
+	}
+	if first.CreatedUnix == 0 || first.UpdatedUnix == 0 {
+		t.Fatalf("fresh secret Info = %+v, want nonzero timestamps", first)
+	}
+
+	// Backdate created on disk (re-sealing so the AAD still matches) to
+	// prove the overwrite below reads and preserves it rather than
+	// coincidentally writing the same "now."
+	backdated := first.CreatedUnix - 3600
+	if err := rewriteEnvelopeTimestamps(v, "stripe/dev-key", []byte("first"), backdated, first.UpdatedUnix); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := v.Set("stripe/dev-key", []byte("second")); err != nil {
+		t.Fatalf("Set 2: %v", err)
+	}
+	second, err := v.Info("stripe/dev-key")
+	if err != nil {
+		t.Fatalf("Info 2: %v", err)
+	}
+	if second.CreatedUnix != backdated {
+		t.Errorf("CreatedUnix after overwrite = %d, want the original %d", second.CreatedUnix, backdated)
+	}
+	if second.UpdatedUnix < first.UpdatedUnix {
+		t.Errorf("UpdatedUnix after overwrite = %d, want >= %d", second.UpdatedUnix, first.UpdatedUnix)
+	}
+	if got, _ := v.Get("stripe/dev-key"); string(got) != "second" {
+		t.Errorf("Get after overwrite = %q, want %q", got, "second")
+	}
+}
+
+// rewriteEnvelopeTimestamps re-seals value at path with the given
+// timestamps — test-only plumbing for constructing envelopes whose
+// metadata differs from wall-clock now while keeping the AAD valid.
+func rewriteEnvelopeTimestamps(v *Vault, path string, value []byte, createdUnix, updatedUnix int64) error {
+	kw := v.KeyWrapper.(*fakeKeyWrapper)
+	dek := bytes.Repeat([]byte{0x0a}, dekSize)
+	sealedPayload, err := seal(dek, value, envelopeAAD(path, envelopeVersion, createdUnix, updatedUnix))
+	if err != nil {
+		return err
+	}
+	wrapped, err := kw.WrapKey(dek)
+	if err != nil {
+		return err
+	}
+	env := envelope{
+		Version:     envelopeVersion,
+		CreatedUnix: createdUnix,
+		UpdatedUnix: updatedUnix,
+		Recipients:  map[string]string{v.RecipientID: hex.EncodeToString(wrapped)},
+		Payload:     hex.EncodeToString(sealedPayload),
+	}
+	data, err := json.Marshal(env)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(v.Root, "vault", path+".enc"), data, 0o600)
 }
