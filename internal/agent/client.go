@@ -5,10 +5,19 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"time"
 )
+
+// ErrNotRunning marks a dial failure: nothing answered the agent socket at
+// all. Wrapped into every Client method's connect error so a caller can
+// tell "no agent" (an expected state, usually deserving a friendly install
+// hint) from a real RPC failure with errors.Is — WITHOUT pre-flighting via
+// Reachable(), which costs a second dial per command just to learn what
+// the real call was about to report anyway.
+var ErrNotRunning = errors.New("agent is not running")
 
 // dialTimeout bounds only "is an agent even listening" — fast, since a
 // closed/nonexistent socket fails near-instantly either way.
@@ -59,7 +68,7 @@ func (c *Client) Reachable() bool {
 func (c *Client) call(req Request) (Response, error) {
 	conn, err := net.DialTimeout("unix", c.socketPath, dialTimeout)
 	if err != nil {
-		return Response{}, fmt.Errorf("connecting to agent: %w", err)
+		return Response{}, fmt.Errorf("connecting to agent: %w: %v", ErrNotRunning, err)
 	}
 	defer func() { _ = conn.Close() }()
 
