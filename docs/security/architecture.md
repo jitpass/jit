@@ -49,8 +49,10 @@ names the caller in the Touch ID prompt and in
 [`jit agent history`](../agent/provenance.md), but it is not
 authentication, and jit does not pretend a process name is a security
 boundary. The human approving the prompt is the decision point; the cached
-session locks after its TTL (default 15 minutes) and on
-`jit agent lock`.
+session locks after its TTL (default 15 minutes), on `jit agent lock`,
+and the moment the screen locks or the machine sleeps - the idle TTL is
+a proxy for "the user left," and those two events are the OS saying so
+outright.
 
 ## Deliberate limits
 
