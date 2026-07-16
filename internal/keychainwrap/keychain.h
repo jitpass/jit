@@ -25,4 +25,11 @@ KWResult kw_fetch_mek(const char *service, const char *account, unsigned char **
 // expected to be part of normal CLI operation.
 KWResult kw_delete_mek(const char *service, const char *account);
 
+// kw_set_mek stores the GIVEN key bytes under service/account, replacing
+// any existing item — the promote step of `jit vault rekey`, which must
+// install the exact staged key every envelope was just rewrapped under
+// (kw_ensure_mek can only generate a fresh random one). Same plain-item,
+// no-SecAccessControl posture as kw_ensure_mek, same reasons.
+KWResult kw_set_mek(const char *service, const char *account, const unsigned char *key, int key_len);
+
 #endif

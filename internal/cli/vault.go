@@ -1015,6 +1015,9 @@ func openVaultFreshAuth() (*vault.Vault, error) {
 	if err != nil {
 		return nil, err
 	}
+	if rekeyInProgress(root) {
+		return nil, errRekeyInProgress
+	}
 	deviceID, err := vault.EnsureDeviceID(root)
 	if err != nil {
 		return nil, fmt.Errorf("determining device recipient ID: %w", err)
@@ -1030,6 +1033,13 @@ func openVault() (*vault.Vault, error) {
 	root, err := vaultRootDir()
 	if err != nil {
 		return nil, err
+	}
+	// Mid-rekey, envelopes are split between two master keys and neither
+	// this process's KeyWrapper nor an agent's cached session is
+	// guaranteed to hold the right one — refuse rather than risk sealing
+	// anything under a key that's about to be destroyed.
+	if rekeyInProgress(root) {
+		return nil, errRekeyInProgress
 	}
 	// A persisted random ID, never os.Hostname() — a Mac rename or a
 	// DHCP-supplied hostname used to change the recipient key out from
