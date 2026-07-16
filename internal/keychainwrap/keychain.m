@@ -162,3 +162,42 @@ KWResult kw_delete_mek(const char *service, const char *account) {
     }
     return r;
 }
+
+KWResult kw_set_mek(const char *service, const char *account, const unsigned char *key, int key_len) {
+    KWResult r = {0, NULL};
+    @autoreleasepool {
+        NSString *svc = [NSString stringWithUTF8String:service];
+        NSString *acct = [NSString stringWithUTF8String:account];
+        NSData *keyData = [NSData dataWithBytes:key length:(NSUInteger)key_len];
+
+        NSDictionary *query = @{
+            (id)kSecClass: (id)kSecClassGenericPassword,
+            (id)kSecAttrService: svc,
+            (id)kSecAttrAccount: acct,
+        };
+        // Replace-then-add, not SecItemUpdate: identical outcome for the
+        // promote step either way, and this reuses the exact add-shape
+        // kw_ensure_mek already uses (same accessibility attribute, same
+        // plain-item posture) rather than a second code path to keep in sync.
+        OSStatus delStatus = SecItemDelete((__bridge CFDictionaryRef)query);
+        if (delStatus != errSecSuccess && delStatus != errSecItemNotFound) {
+            r.error_message = dupNSString([NSString stringWithFormat:@"replacing existing key failed, OSStatus=%d", (int)delStatus]);
+            return r;
+        }
+
+        NSDictionary *addQuery = @{
+            (id)kSecClass: (id)kSecClassGenericPassword,
+            (id)kSecAttrService: svc,
+            (id)kSecAttrAccount: acct,
+            (id)kSecValueData: keyData,
+            (id)kSecAttrAccessible: (id)kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+        };
+        OSStatus addStatus = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
+        if (addStatus != errSecSuccess) {
+            r.error_message = dupNSString([NSString stringWithFormat:@"storing key in keychain failed, OSStatus=%d", (int)addStatus]);
+            return r;
+        }
+        r.success = 1;
+    }
+    return r;
+}
