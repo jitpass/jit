@@ -6,6 +6,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -74,6 +76,9 @@ var agentRunCmd = &cobra.Command{
 	Short: "Run the agent in the foreground (normally started by launchd, not by hand)",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateAgentTTL(agentTTL); err != nil {
+			return fmt.Errorf("jit agent run: %w", err)
+		}
 		root, err := vaultRootDir()
 		if err != nil {
 			return fmt.Errorf("jit agent run: %w", err)
@@ -92,14 +97,22 @@ var agentRunCmd = &cobra.Command{
 		// Everything this long-lived process prints lands in one agent.log
 		// (the plist points both streams there) — timestamp every line, or
 		// the log can't answer "when," which is most of what a log of a
-		// weeks-lived process is for (GAPS.md #48).
-		stdout := newStampedWriter(cmd.OutOrStdout())
-		stderr := newStampedWriter(cmd.ErrOrStderr())
+		// weeks-lived process is for (GAPS.md #48). Both stamped streams
+		// share ONE mutex (lockedWriter) so the mid-run rotation below can
+		// hold it across its copy-then-truncate and never lose a line
+		// written in between.
+		var logMu sync.Mutex
+		stdout := newStampedWriter(&lockedWriter{mu: &logMu, w: cmd.OutOrStdout()})
+		stderr := newStampedWriter(&lockedWriter{mu: &logMu, w: cmd.ErrOrStderr()})
 
 		// Cap the log before this run's first write. The log otherwise
 		// grows for the machine's lifetime — a single watcher-loop
 		// afternoon once produced 635k lines (GAPS.md #47), and launchd
 		// keeps appending to the same file across every restart forever.
+		// Under launchd this is re-checked periodically too
+		// (rotateAgentLogPeriodically): a startup-only cap left a storm
+		// free to grow the log unboundedly until the NEXT restart, which
+		// can be weeks away.
 		if err := rotateAgentLog(logPath, agentLogMaxBytes); err != nil {
 			fmt.Fprintf(stderr, "jit agent: rotating %s: %v\n", logPath, err)
 		}
@@ -172,6 +185,10 @@ var agentRunCmd = &cobra.Command{
 		// Self-retire when the jit binary on disk is replaced (see
 		// agentbinary.go for the gates), but only under launchd — its
 		// KeepAlive restarts what exits; a foreground run has no such net.
+		// The periodic log-rotation check shares the gate: a foreground
+		// run's streams are a terminal, not agent.log, and truncating the
+		// file out from under a concurrently-installed agent's O_APPEND fd
+		// is exactly the cross-process interference to avoid.
 		if os.Getppid() == 1 {
 			if exePath, exeErr := os.Executable(); exeErr == nil {
 				go watchOwnBinary(runCtx, exePath, agentBinaryCheckInterval, server.Quiescent, func() {
@@ -179,6 +196,7 @@ var agentRunCmd = &cobra.Command{
 					endRun()
 				})
 			}
+			go rotateAgentLogPeriodically(runCtx, logPath, &logMu, stderr)
 		}
 
 		fmt.Fprintf(stdout, "jit agent listening on %s (session TTL %s, build %s)\n", agent.SocketPath(root), agentTTL, agent.BuildID())
@@ -227,6 +245,13 @@ var agentInstallCmd = &cobra.Command{
 		"only on the next login.",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Validated HERE, not just in `agent run`, because install bakes
+		// the value into the plist: a bad --ttl would otherwise install a
+		// service that fails validation on every launchd start, forever,
+		// with the error visible only in the agent log.
+		if err := validateAgentTTL(agentInstallTTL); err != nil {
+			return fmt.Errorf("jit agent install: %w", err)
+		}
 		// Writing a LaunchAgent plist is a system-persistence action — it
 		// runs code automatically at every login, beyond this one
 		// invocation, until explicitly uninstalled. Confirm before
@@ -460,7 +485,13 @@ var agentRevealCmd = &cobra.Command{
 // Running && Unlocked — omitted rather than zero-valued-but-misleading
 // when the agent isn't running at all or is already locked.
 type agentStatusResult struct {
-	Running        bool  `json:"running"`
+	Running bool `json:"running"`
+	// Installed is whether the launchd plist exists — with Running false,
+	// it's what separates "crashed or mid-restart" (launchd should be
+	// respawning it; `jit agent restart` forces it) from "never set up"
+	// (only `jit agent install` helps). A script alerting on dead agents
+	// needs exactly this distinction.
+	Installed      bool  `json:"installed"`
 	Unlocked       bool  `json:"unlocked"`
 	LocksInSeconds int64 `json:"locks_in_seconds,omitempty"`
 	// Mounts is GAPS.md #37's per-mount reveal snapshot — empty when nothing
@@ -510,8 +541,18 @@ var agentStatusCmd = &cobra.Command{
 		}
 		st, err := client.Status()
 		if errors.Is(err, agent.ErrNotRunning) {
+			installed := agentInstalled()
 			if agentStatusFormat == "json" {
-				return writeJSON(cmd.OutOrStdout(), agentStatusResult{})
+				return writeJSON(cmd.OutOrStdout(), agentStatusResult{Installed: installed})
+			}
+			if installed {
+				// An installed agent that isn't answering is a different
+				// situation from one that was never set up — launchd was
+				// supposed to keep this one alive, so "run install" is the
+				// wrong advice and hides that something actually failed.
+				fmt.Fprintln(cmd.OutOrStdout(), "jit agent is installed but not running — it may have crashed or be mid-restart.")
+				fmt.Fprintln(cmd.OutOrStdout(), "Try `jit agent restart`; `jit agent log` shows its recent output.")
+				return nil
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "jit agent is not running. Run `jit agent install` to set it up.")
 			return nil
@@ -521,7 +562,7 @@ var agentStatusCmd = &cobra.Command{
 		}
 
 		if agentStatusFormat == "json" {
-			result := agentStatusResult{Running: true, Unlocked: st.Unlocked, Mounts: st.Mounts, LastUnlock: st.LastUnlock, LastLock: st.LastLock, PendingUnlock: st.PendingUnlock, Build: st.Build, Version: st.Version}
+			result := agentStatusResult{Running: true, Installed: agentInstalled(), Unlocked: st.Unlocked, Mounts: st.Mounts, LastUnlock: st.LastUnlock, LastLock: st.LastLock, PendingUnlock: st.PendingUnlock, Build: st.Build, Version: st.Version}
 			if st.Unlocked {
 				result.LocksInSeconds = int64(st.Remaining.Round(time.Second).Seconds())
 			}
@@ -549,11 +590,14 @@ var agentHistoryFormat string
 
 var agentHistoryCmd = &cobra.Command{
 	Use:   "history",
-	Short: "List every unlock and lock this agent has seen, and what caused them",
+	Short: "List every unlock, lock, denial, and use this agent has seen, and what caused them",
 	Long: "Prints the agent's session history, most recent first: every Touch ID prompt\n" +
 		"that succeeded (with the command that triggered it and what launched that\n" +
-		"command), every lock (with its cause — an idle timeout, the screen locking,\n" +
-		"or an explicit `jit agent lock`), and every agent start.\n\n" +
+		"command), every prompt that was DECLINED (same provenance, plus why it\n" +
+		"failed), every lock (with its cause — an idle timeout, the screen locking,\n" +
+		"or an explicit `jit agent lock`), every use of the already-unlocked session\n" +
+		"(what flowed through it, collapsed per caller, with the secret names the\n" +
+		"caller reported), and every agent start.\n\n" +
 		"This is the answer to \"why does it keep asking me?\" — a question the agent\n" +
 		"previously had no way to answer, since only locks were ever recorded and the\n" +
 		"unlocks that did the prompting left no trace at all.\n\n" +
@@ -594,6 +638,109 @@ var agentHistoryCmd = &cobra.Command{
 	},
 }
 
+// agentLogLines and agentLogFollow are `jit agent log`'s flags.
+var agentLogLines int
+var agentLogFollow bool
+
+// agentLogPollInterval paces --follow's growth checks — comfortably
+// under a human's "is it live?" threshold without hammering stat.
+const agentLogPollInterval = 500 * time.Millisecond
+
+var agentLogCmd = &cobra.Command{
+	Use:   "log",
+	Short: "Show the agent's own log (session events, mount reads, serve errors)",
+	Long: "Prints the tail of the agent's log file — the durable, timestamped record\n" +
+		"of session events, mount reads (with who read them), and serve errors that\n" +
+		"outlives the in-memory snapshot `jit agent status` reports.\n\n" +
+		"The file lives alongside the vault as agent.log (the previous generation\n" +
+		"is kept as agent.log.1 after rotation). This command exists because the\n" +
+		"investigations that need the log are exactly the ones where hunting down\n" +
+		"its path is one obstacle too many.",
+	Args:         cobra.NoArgs,
+	SilenceUsage: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		root, err := vaultRootDir()
+		if err != nil {
+			return fmt.Errorf("jit agent log: %w", err)
+		}
+		logPath := filepath.Join(root, "agent.log")
+		out := cmd.OutOrStdout()
+
+		data, err := os.ReadFile(logPath) // #nosec G304 -- jit's own log file under its config root
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("jit agent log: %w", err)
+		}
+		if os.IsNotExist(err) && !agentLogFollow {
+			// Not an error: an empty history is a normal state on a machine
+			// where the agent hasn't run, and the useful output is what
+			// would make one exist.
+			fmt.Fprintf(out, "No agent log yet at %s — it's written once the agent runs (`jit agent install` sets that up).\n", displayLogPath(logPath))
+			return nil
+		}
+		_, _ = out.Write(tailLines(data, agentLogLines))
+
+		if !agentLogFollow {
+			return nil
+		}
+		// Follow by polling for growth. A rotation truncates in place (see
+		// rotateAgentLog), which reads as the file shrinking — restart from
+		// the top of the now-small file rather than waiting for it to grow
+		// past a stale offset that may be megabytes away.
+		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		offset := int64(len(data))
+		ticker := time.NewTicker(agentLogPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+			}
+			fi, err := os.Stat(logPath)
+			if err != nil {
+				continue // mid-rotation or not yet created; try again next tick
+			}
+			if fi.Size() < offset {
+				offset = 0
+			}
+			if fi.Size() == offset {
+				continue
+			}
+			f, err := os.Open(logPath) // #nosec G304 -- jit's own log file under its config root
+			if err != nil {
+				continue
+			}
+			if _, err := f.Seek(offset, io.SeekStart); err == nil {
+				n, _ := io.Copy(out, f)
+				offset += n
+			}
+			_ = f.Close()
+		}
+	},
+}
+
+// tailLines returns the last n lines of data, newline-terminated — the
+// whole file when it has fewer.
+func tailLines(data []byte, n int) []byte {
+	trimmed := bytes.TrimSuffix(data, []byte("\n"))
+	if n <= 0 || len(trimmed) == 0 {
+		return nil
+	}
+	lines := bytes.Split(trimmed, []byte("\n"))
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return append(bytes.Join(lines, []byte("\n")), '\n')
+}
+
+// displayLogPath ~-shortens the log path for a message, same courtesy as
+// every other path this file prints.
+func displayLogPath(logPath string) string {
+	home, _ := os.UserHomeDir()
+	return displayPath(home, logPath)
+}
+
 // printSessionHistory renders `jit agent history` — the same bullet shape as
 // the Session block in `jit agent status`, just without the two-event limit.
 func printSessionHistory(w io.Writer, events []agent.SessionEvent) {
@@ -622,6 +769,34 @@ func printSessionHistory(w io.Writer, events []agent.SessionEvent) {
 				line += " — agent process started"
 			}
 			fmt.Fprintf(w, "  • %s\n", line)
+		case agent.KindDenied:
+			// The prompt the human refused — in red, because among a page of
+			// routine unlocks it's the line an investigation is looking for,
+			// and the one event that used to leave no trace at all.
+			line := sessionWhen("denied", e.UnixTime)
+			if e.LaunchedBy != "" {
+				line += fmt.Sprintf(" — launched by %s", e.LaunchedBy)
+			}
+			_, _ = color.New(color.FgRed).Fprintf(w, "  • %s\n", line)
+			if e.By != "" {
+				fmt.Fprintf(w, "      %s\n", shortenCommand(home, e.By))
+			}
+			if e.Cause != "" {
+				fmt.Fprintf(w, "      %s\n", e.Cause)
+			}
+		case agent.KindUse:
+			line := fmt.Sprintf("  • %s — %s", sessionWhen("used", e.UnixTime), agent.DescribeUse(e.Op))
+			if e.Count > 1 {
+				line += fmt.Sprintf(" ×%d", e.Count)
+			}
+			if e.LaunchedBy != "" {
+				line += fmt.Sprintf(", launched by %s", e.LaunchedBy)
+			}
+			fmt.Fprintln(w, line)
+			if e.By != "" {
+				fmt.Fprintf(w, "      %s\n", shortenCommand(home, e.By))
+			}
+			printEventLabels(w, e.Labels)
 		default:
 			line := fmt.Sprintf("  • %s", sessionWhen("unlocked", e.UnixTime))
 			if e.LaunchedBy != "" {
@@ -631,8 +806,21 @@ func printSessionHistory(w io.Writer, events []agent.SessionEvent) {
 			if e.By != "" {
 				fmt.Fprintf(w, "      %s\n", shortenCommand(home, e.By))
 			}
+			printEventLabels(w, e.Labels)
 		}
 	}
+}
+
+// printEventLabels renders an event's caller-reported secret names, always
+// with the qualifier: unlike everything else on these lines, the labels
+// are what the CALLER said about itself (agent.Request.Label), not a fact
+// the kernel supplied — displaying them bare would launder a claim into
+// an observation.
+func printEventLabels(w io.Writer, labels []string) {
+	if len(labels) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "      secrets (caller-reported): %s\n", strings.Join(labels, ", "))
 }
 
 // logSessionEvent writes an unlock or a lock to the agent's log, with the
@@ -658,9 +846,22 @@ func logSessionEvent(w io.Writer, e agent.SessionEvent) {
 		return
 	}
 
-	line := "jit agent: session unlocked"
+	verb := "session unlocked"
+	switch e.Kind {
+	case agent.KindDenied:
+		// The refused prompt gets the same full provenance an approved one
+		// would have — it used to be the one event with no line anywhere.
+		verb = "unlock DENIED"
+	case agent.KindUse:
+		verb = "session used"
+	}
+	line := "jit agent: " + verb
 	if e.Op != "" {
-		line += fmt.Sprintf(" (%s)", e.Op)
+		op := e.Op
+		if e.Count > 1 {
+			op += fmt.Sprintf(" ×%d", e.Count)
+		}
+		line += fmt.Sprintf(" (%s)", op)
 	}
 	if e.By != "" {
 		line += fmt.Sprintf(" by %s", e.By)
@@ -670,6 +871,12 @@ func logSessionEvent(w io.Writer, e agent.SessionEvent) {
 	}
 	if e.LaunchedBy != "" {
 		line += fmt.Sprintf(", launched by %s", e.LaunchedBy)
+	}
+	if len(e.Labels) > 0 {
+		line += fmt.Sprintf(" — secrets (caller-reported): %s", strings.Join(e.Labels, ", "))
+	}
+	if e.Kind == agent.KindDenied && e.Cause != "" {
+		line += fmt.Sprintf(" — %s", e.Cause)
 	}
 	fmt.Fprintln(w, line)
 }
@@ -892,26 +1099,69 @@ func humanAgo(d time.Duration) string {
 	}
 }
 
+// validateAgentTTL rejects a --ttl the session logic can't honor: zero or
+// negative makes every touchSession see an already-expired session, so
+// EVERY operation re-prompts Touch ID — an agent that is all cost and no
+// session, installed with no error message anywhere near the mistake.
+func validateAgentTTL(ttl time.Duration) error {
+	if ttl <= 0 {
+		return fmt.Errorf("--ttl must be positive, got %s (a zero or negative TTL would re-prompt Touch ID on every single use)", ttl)
+	}
+	return nil
+}
+
+// agentRestartGrace is how long a dial keeps retrying when the agent is
+// INSTALLED but not answering — the launchd respawn gap of `jit agent
+// restart` or the agent's own stale-binary self-retirement, observed at
+// 1–2s. Only applied when the plist exists (see agentClient): when it
+// doesn't, "not answering" means "not installed" and waiting is pure
+// delay.
+const agentRestartGrace = 2 * time.Second
+
+// agentInstalled reports whether the launchd plist exists — i.e. whether
+// a non-answering socket means "mid-restart or crashed" (launchd will
+// respawn it; retrying and `jit agent restart` are the right moves)
+// rather than "never set up" (only `jit agent install` helps).
+func agentInstalled() bool {
+	plistPath, err := agentPlistPath()
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(plistPath)
+	return err == nil
+}
+
 // agentClient returns a Client for this machine's agent socket without
 // probing it first — Client's own calls wrap agent.ErrNotRunning when
 // nothing is listening (see notRunningHint), so a Reachable() pre-flight
-// would just dial the socket twice per command.
+// would just dial the socket twice per command. When the agent is
+// installed, the client rides out launchd's respawn gap (see
+// agentRestartGrace) instead of misreporting a restarting agent as absent.
 func agentClient() (*agent.Client, error) {
 	root, err := vaultRootDir()
 	if err != nil {
 		return nil, err
 	}
-	return agent.NewClient(agent.SocketPath(root)), nil
+	c := agent.NewClient(agent.SocketPath(root))
+	if agentInstalled() {
+		c = c.WithDialRetry(agentRestartGrace)
+	}
+	return c, nil
 }
 
 // notRunningHint rewrites a Client call's dial failure into the actionable
 // message the agent commands print — the raw error says the socket didn't
-// answer, but the thing a human can DO about that is install the agent.
+// answer, but the thing a human can DO about that differs: an installed
+// agent that isn't answering wants a restart (and its log), one that was
+// never installed wants installing.
 func notRunningHint(err error) error {
-	if errors.Is(err, agent.ErrNotRunning) {
-		return errors.New("no agent is running — run `jit agent install` first")
+	if !errors.Is(err, agent.ErrNotRunning) {
+		return err
 	}
-	return err
+	if agentInstalled() {
+		return errors.New("the agent is installed but isn't answering — it may have crashed or be mid-restart; try `jit agent restart`, and `jit agent log` for its recent output")
+	}
+	return errors.New("no agent is running — run `jit agent install` first")
 }
 
 // xmlEscape escapes the five XML metacharacters for splicing a string
@@ -963,6 +1213,53 @@ func rotateAgentLog(path string, maxBytes int64) error {
 		return err
 	}
 	return os.Truncate(path, 0)
+}
+
+// lockedWriter serializes writes through a SHARED mutex — unlike
+// stampedWriter's per-writer one — so `jit agent run` can put both its
+// streams and the mid-run log rotation behind the same lock: the
+// rotation's copy-then-truncate loses any line written between those two
+// steps, and holding this mutex across both is what rules that out.
+type lockedWriter struct {
+	mu *sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
+}
+
+// agentLogRotateCheckInterval paces the mid-run cap re-check. One stat
+// per ten minutes is nothing, and the worst case between checks (a
+// watcher storm at GAPS.md #47's observed rate, already collapsed by the
+// log-suppression there) stays far from filling a disk.
+const agentLogRotateCheckInterval = 10 * time.Minute
+
+// rotateAgentLogPeriodically re-applies the agent.log cap for the life of
+// the agent process. The startup-only rotation left a hole: launchd keeps
+// one process alive for weeks, so a mid-run storm had nothing to trim the
+// log until the NEXT restart. Caller gates on running under launchd —
+// see the gate's comment in agentRunCmd. mu is the shared writer mutex;
+// the failure line is printed outside it because stderr writes back
+// through that same mutex.
+func rotateAgentLogPeriodically(ctx context.Context, logPath string, mu *sync.Mutex, stderr io.Writer) {
+	ticker := time.NewTicker(agentLogRotateCheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		mu.Lock()
+		err := rotateAgentLog(logPath, agentLogMaxBytes)
+		mu.Unlock()
+		if err != nil {
+			fmt.Fprintf(stderr, "jit agent: rotating %s: %v\n", logPath, err)
+		}
+	}
 }
 
 func agentPlistPath() (string, error) {
@@ -1032,6 +1329,8 @@ func init() {
 	agentRevealCmd.Flags().BoolVarP(&revealQuiet, "quiet", "q", false, "suppress the success message — for embedding in a pre-run hook")
 	agentStatusCmd.Flags().StringVar(&agentStatusFormat, "format", "text", `output format: "text" (default) or "json"`)
 	agentHistoryCmd.Flags().StringVar(&agentHistoryFormat, "format", "text", `output format: "text" (default) or "json"`)
-	agentCmd.AddCommand(agentRunCmd, agentInstallCmd, agentUninstallCmd, agentRestartCmd, agentUnlockCmd, agentLockCmd, agentStatusCmd, agentHistoryCmd, agentRevealCmd)
+	agentLogCmd.Flags().IntVarP(&agentLogLines, "lines", "n", 50, "how many trailing lines to print")
+	agentLogCmd.Flags().BoolVarP(&agentLogFollow, "follow", "f", false, "keep printing new lines as the agent writes them (Ctrl-C to stop)")
+	agentCmd.AddCommand(agentRunCmd, agentInstallCmd, agentUninstallCmd, agentRestartCmd, agentUnlockCmd, agentLockCmd, agentStatusCmd, agentHistoryCmd, agentLogCmd, agentRevealCmd)
 	rootCmd.AddCommand(agentCmd)
 }

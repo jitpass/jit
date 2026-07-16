@@ -70,7 +70,7 @@ func (v *Vault) Set(path string, value []byte) error {
 		return fmt.Errorf("encrypting secret: %w", err)
 	}
 
-	wrappedDEK, err := v.KeyWrapper.WrapKey(dek)
+	wrappedDEK, err := v.wrapKey(dek, path)
 	if err != nil {
 		return fmt.Errorf("wrapping data encryption key: %w", err)
 	}
@@ -135,7 +135,7 @@ func (v *Vault) Get(path string) ([]byte, error) {
 		return nil, fmt.Errorf("corrupt envelope %s: invalid recipient encoding: %w", src, err)
 	}
 
-	dek, err := v.KeyWrapper.UnwrapKey(wrappedDEK)
+	dek, err := v.unwrapKey(wrappedDEK, path)
 	if err != nil {
 		return nil, fmt.Errorf("unwrapping data encryption key: %w", err)
 	}
@@ -151,6 +151,25 @@ func (v *Vault) Get(path string) ([]byte, error) {
 		return nil, fmt.Errorf("decrypting %s: %w", src, err)
 	}
 	return plaintext, nil
+}
+
+// wrapKey/unwrapKey route through the KeyWrapper, passing the secret's
+// own vault path as the audit label when the wrapper supports it
+// (LabeledKeyWrapper — the agent-backed wrapper does; keychainwrap
+// doesn't). The label is the caller-reported "what was this key FOR"
+// the agent's history is otherwise structurally blind to.
+func (v *Vault) wrapKey(dek []byte, label string) ([]byte, error) {
+	if lw, ok := v.KeyWrapper.(LabeledKeyWrapper); ok {
+		return lw.WrapKeyLabeled(dek, label)
+	}
+	return v.KeyWrapper.WrapKey(dek)
+}
+
+func (v *Vault) unwrapKey(wrapped []byte, label string) ([]byte, error) {
+	if lw, ok := v.KeyWrapper.(LabeledKeyWrapper); ok {
+		return lw.UnwrapKeyLabeled(wrapped, label)
+	}
+	return v.KeyWrapper.UnwrapKey(wrapped)
 }
 
 // Remove deletes the secret stored at path.

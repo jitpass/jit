@@ -987,7 +987,7 @@ func TestServerHandsOutMEKCopiesNotItsCache(t *testing.T) {
 
 	// Direction 1: lock() wiping the cache must not zero a copy already
 	// handed to an in-flight wrap.
-	inFlight, err := s.ensureUnlocked(OpWrap, nil)
+	inFlight, err := s.ensureUnlocked(OpWrap, nil, "")
 	if err != nil {
 		t.Fatalf("ensureUnlocked: %v", err)
 	}
@@ -998,12 +998,12 @@ func TestServerHandsOutMEKCopiesNotItsCache(t *testing.T) {
 
 	// Direction 2 (keychainwrap's own reason for copying): a caller's
 	// defer wipe(mek) must not zero the cache out from under everyone else.
-	first, err := s.ensureUnlocked(OpWrap, nil)
+	first, err := s.ensureUnlocked(OpWrap, nil, "")
 	if err != nil {
 		t.Fatalf("ensureUnlocked after re-unlock: %v", err)
 	}
 	wipe(first)
-	second, err := s.ensureUnlocked(OpWrap, nil) // cache hit — no fresh challenge
+	second, err := s.ensureUnlocked(OpWrap, nil, "") // cache hit — no fresh challenge
 	if err != nil {
 		t.Fatalf("ensureUnlocked cache hit: %v", err)
 	}

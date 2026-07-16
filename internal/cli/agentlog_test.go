@@ -9,7 +9,9 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestRotateAgentLogCopiesAsideAndTruncatesInPlace(t *testing.T) {
@@ -89,5 +91,94 @@ func TestRotateAgentLogNoOpUnderCapAndWhenMissing(t *testing.T) {
 	}
 	if _, err := os.Stat(path + ".1"); !os.IsNotExist(err) {
 		t.Error("under-cap rotation created agent.log.1")
+	}
+}
+
+func TestValidateAgentTTL(t *testing.T) {
+	for _, bad := range []time.Duration{0, -time.Minute} {
+		if err := validateAgentTTL(bad); err == nil {
+			t.Errorf("validateAgentTTL(%s) = nil, want an error — a non-positive TTL re-prompts Touch ID on every single use", bad)
+		}
+	}
+	if err := validateAgentTTL(15 * time.Minute); err != nil {
+		t.Errorf("validateAgentTTL(15m) = %v, want nil", err)
+	}
+}
+
+// TestAgentRunRejectsNonPositiveTTL drives the validation through the real
+// command so a plist baked with --ttl 0s fails loudly at startup instead
+// of silently re-prompting forever.
+func TestAgentRunRejectsNonPositiveTTL(t *testing.T) {
+	defer func() { agentTTL = 15 * time.Minute }() // package-level flag var; don't leak into other tests
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"agent", "run", "--ttl", "0s"})
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatal("jit agent run --ttl 0s succeeded, want a validation error")
+	}
+}
+
+func TestTailLines(t *testing.T) {
+	data := []byte("one\ntwo\nthree\n")
+	if got := string(tailLines(data, 2)); got != "two\nthree\n" {
+		t.Errorf("tailLines(n=2) = %q, want the last two lines", got)
+	}
+	if got := string(tailLines(data, 10)); got != "one\ntwo\nthree\n" {
+		t.Errorf("tailLines(n=10) = %q, want the whole file when shorter than n", got)
+	}
+	if got := tailLines(nil, 5); got != nil {
+		t.Errorf("tailLines(nil) = %q, want nil", got)
+	}
+	if got := tailLines(data, 0); got != nil {
+		t.Errorf("tailLines(n=0) = %q, want nil", got)
+	}
+	// A file without a trailing newline still yields newline-terminated output.
+	if got := string(tailLines([]byte("one\ntwo"), 1)); got != "two\n" {
+		t.Errorf("tailLines(no trailing newline, n=1) = %q, want %q", got, "two\n")
+	}
+}
+
+func execAgentLog(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	agentLogLines = 50
+	agentLogFollow = false
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs(append([]string{"agent", "log"}, args...))
+	err := rootCmd.Execute()
+	return buf.String(), err
+}
+
+func TestAgentLogCommandPrintsTail(t *testing.T) {
+	home := shortFixtureHome(t)
+	root := filepath.Join(home, "Library", "Application Support", "jitpass")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	content := "2026-07-16 10:00:00 line one\n2026-07-16 10:00:01 line two\n2026-07-16 10:00:02 line three\n"
+	if err := os.WriteFile(filepath.Join(root, "agent.log"), []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := execAgentLog(t, "-n", "2")
+	if err != nil {
+		t.Fatalf("jit agent log: %v", err)
+	}
+	if out != "2026-07-16 10:00:01 line two\n2026-07-16 10:00:02 line three\n" {
+		t.Errorf("jit agent log -n 2 = %q, want exactly the last two lines", out)
+	}
+}
+
+func TestAgentLogCommandExplainsMissingLog(t *testing.T) {
+	shortFixtureHome(t)
+
+	out, err := execAgentLog(t)
+	if err != nil {
+		t.Fatalf("jit agent log with no log file: %v — an absent log is a normal state, not an error", err)
+	}
+	if !strings.Contains(out, "No agent log yet") || !strings.Contains(out, "jit agent install") {
+		t.Errorf("output %q, want it to explain there's no log yet and how one comes to exist", out)
 	}
 }
