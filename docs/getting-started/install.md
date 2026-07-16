@@ -125,25 +125,28 @@ commands (`releases/latest/download/...` always serves the newest version):
 curl -sLO https://github.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz
 tar -xzf jitpass_darwin_arm64.tar.gz jit
 sudo mv jit /usr/local/bin/                        # 1. reinstall the binary
-jit agent install                                  # 2. restart the background agent on it
+jit agent restart                                  # 2. restart the background agent on it
 ```
 
 **Source install (Option B):**
 
 ```sh
 go install github.com/jitpass/jit/cmd/jit@v0.5.0   # 1. reinstall the binary (pin the new tag)
-jit agent install                                  # 2. restart the background agent on it
+jit agent restart                                  # 2. restart the background agent on it
 ```
 
 Pin the tag rather than `@latest` right after a release: the Go module proxy
 caches `@latest`, so it can quietly hand you the previous version for a while.
 
-The second step is the one people skip. If you installed the background agent,
-launchd keeps the old process (and the old binary) running right through your
-reinstall; every command that talks to it still gets last version's behavior,
-which reads as "I upgraded but nothing changed." `jit status` and
-`jit agent status` warn with "different build" until you restart it. If you
-never ran `jit agent install`, step 1 alone is the whole upgrade.
+The second step used to be the one people skipped. If you installed the
+background agent, launchd keeps the old process (and the old binary) running
+right through your reinstall; every command that talks to it still gets last
+version's behavior, which reads as "I upgraded but nothing changed."
+`jit status` and `jit agent status` warn with "different build" until it's
+restarted. The agent also notices the replaced binary itself and restarts
+onto it on its own — but only once its session is locked and no prompt is
+pending, so `jit agent restart` is for having it now. If you never ran
+`jit agent install`, step 1 alone is the whole upgrade.
 
 ---
 
