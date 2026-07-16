@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -215,10 +216,10 @@ func agentBuildMismatch(agentBuild string) string {
 // status` does.
 func gatherAgentStatus(root string) (statusAgent, error) {
 	client := agent.NewClient(agent.SocketPath(root))
-	if !client.Reachable() {
-		return statusAgent{}, nil
-	}
 	st, err := client.Status()
+	if errors.Is(err, agent.ErrNotRunning) {
+		return statusAgent{}, nil // not running is a reportable state, not an error
+	}
 	if err != nil {
 		return statusAgent{}, err
 	}
