@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // ErrNotFound is returned by Get/Remove when no secret exists at the given path.
@@ -52,11 +53,19 @@ func (v *Vault) Exists(path string) (bool, error) {
 }
 
 // Set encrypts value and atomically writes it to path, creating parent
-// directories as needed. An existing secret at path is overwritten.
+// directories as needed. An existing secret at path is overwritten — its
+// CreatedUnix carries over (this is a rotation of the same secret, not a
+// new one), while a genuinely new path gets CreatedUnix == UpdatedUnix.
 func (v *Vault) Set(path string, value []byte) error {
 	dest, err := sanitizeSecretPath(v.vaultDir(), path)
 	if err != nil {
 		return err
+	}
+
+	now := time.Now().Unix()
+	created := now
+	if old, err := v.readEnvelope(path); err == nil && old.CreatedUnix > 0 {
+		created = old.CreatedUnix
 	}
 
 	dek, err := generateDEK()
@@ -65,7 +74,7 @@ func (v *Vault) Set(path string, value []byte) error {
 	}
 	defer wipe(dek)
 
-	sealedPayload, err := seal(dek, value)
+	sealedPayload, err := seal(dek, value, envelopeAAD(path, envelopeVersion, created, now))
 	if err != nil {
 		return fmt.Errorf("encrypting secret: %w", err)
 	}
@@ -76,7 +85,9 @@ func (v *Vault) Set(path string, value []byte) error {
 	}
 
 	env := envelope{
-		Version: envelopeVersion,
+		Version:     envelopeVersion,
+		CreatedUnix: created,
+		UpdatedUnix: now,
 		Recipients: map[string]string{
 			v.RecipientID: hex.EncodeToString(wrappedDEK),
 		},
@@ -90,24 +101,50 @@ func (v *Vault) Set(path string, value []byte) error {
 	return AtomicWriteFile(dest, data)
 }
 
+// readEnvelope reads and parses the envelope stored at path without
+// decrypting anything — shared by Get (which goes on to decrypt), Set
+// (which preserves CreatedUnix across an overwrite), and Info.
+func (v *Vault) readEnvelope(path string) (envelope, error) {
+	src, err := sanitizeSecretPath(v.vaultDir(), path)
+	if err != nil {
+		return envelope{}, err
+	}
+	data, err := os.ReadFile(src) // #nosec G304 -- src is derived and validated by sanitizeSecretPath, not a raw external path
+	if err != nil {
+		if os.IsNotExist(err) {
+			return envelope{}, ErrNotFound
+		}
+		return envelope{}, fmt.Errorf("reading %s: %w", src, err)
+	}
+	var env envelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		return envelope{}, fmt.Errorf("parsing envelope %s: %w", src, err)
+	}
+	return env, nil
+}
+
 // Get decrypts and returns the secret stored at path.
 func (v *Vault) Get(path string) ([]byte, error) {
-	src, err := sanitizeSecretPath(v.vaultDir(), path)
+	env, err := v.readEnvelope(path)
 	if err != nil {
 		return nil, err
 	}
 
-	data, err := os.ReadFile(src) // #nosec G304 -- src is derived and validated by sanitizeSecretPath, not a raw external path
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, ErrNotFound
-		}
-		return nil, fmt.Errorf("reading %s: %w", src, err)
-	}
-
-	var env envelope
-	if err := json.Unmarshal(data, &env); err != nil {
-		return nil, fmt.Errorf("parsing envelope %s: %w", src, err)
+	// The AAD the payload must open under is decided by the envelope's own
+	// version — and an unknown version is rejected HERE, before any key
+	// material is touched. Skipping this check was a real (latent) bug:
+	// Version was written from day one and never read, so a future format
+	// would have surfaced as "decryption failed (wrong key or corrupted...)"
+	// — the exact message that makes a user fear their vault is gone —
+	// instead of the actual answer, "a newer jit wrote this."
+	var aad []byte
+	switch env.Version {
+	case envelopeVersionAADLess:
+		// v1: no AAD, no metadata. Readable forever.
+	case envelopeVersion:
+		aad = envelopeAAD(path, env.Version, env.CreatedUnix, env.UpdatedUnix)
+	default:
+		return nil, fmt.Errorf("secret %s has envelope version %d, newer than this jit understands (max %d) — upgrade jit to read it", path, env.Version, envelopeVersion)
 	}
 
 	wrappedHex, ok := env.Recipients[v.RecipientID]
@@ -127,12 +164,12 @@ func (v *Vault) Get(path string) ([]byte, error) {
 				wrappedHex = w
 			}
 		} else {
-			return nil, fmt.Errorf("no key for this device (%s) in %s — it was likely encrypted on a different machine", v.RecipientID, src)
+			return nil, fmt.Errorf("no key for this device (%s) in %s — it was likely encrypted on a different machine", v.RecipientID, path)
 		}
 	}
 	wrappedDEK, err := hex.DecodeString(wrappedHex)
 	if err != nil {
-		return nil, fmt.Errorf("corrupt envelope %s: invalid recipient encoding: %w", src, err)
+		return nil, fmt.Errorf("corrupt envelope %s: invalid recipient encoding: %w", path, err)
 	}
 
 	dek, err := v.unwrapKey(wrappedDEK, path)
@@ -143,14 +180,42 @@ func (v *Vault) Get(path string) ([]byte, error) {
 
 	sealedPayload, err := hex.DecodeString(env.Payload)
 	if err != nil {
-		return nil, fmt.Errorf("corrupt envelope %s: invalid payload encoding: %w", src, err)
+		return nil, fmt.Errorf("corrupt envelope %s: invalid payload encoding: %w", path, err)
 	}
 
-	plaintext, err := open(dek, sealedPayload)
+	plaintext, err := open(dek, sealedPayload, aad)
 	if err != nil {
-		return nil, fmt.Errorf("decrypting %s: %w", src, err)
+		return nil, fmt.Errorf("decrypting %s: %w", path, err)
 	}
 	return plaintext, nil
+}
+
+// SecretInfo describes a stored secret without decrypting it — everything
+// the envelope says in plaintext. CreatedUnix/UpdatedUnix are zero for
+// version-1 envelopes, which predate the metadata; callers must render
+// that as unknown, not as 1970.
+type SecretInfo struct {
+	Path        string
+	Version     int
+	CreatedUnix int64
+	UpdatedUnix int64
+}
+
+// Info returns path's SecretInfo. Never touches the KeyWrapper, so it can
+// never prompt — safe for listings and completion, same contract as List.
+// Note the metadata is only tamper-evident at decryption time (the AAD
+// check runs in Get, not here): Info reports what the file claims.
+func (v *Vault) Info(path string) (SecretInfo, error) {
+	env, err := v.readEnvelope(path)
+	if err != nil {
+		return SecretInfo{}, err
+	}
+	return SecretInfo{
+		Path:        path,
+		Version:     env.Version,
+		CreatedUnix: env.CreatedUnix,
+		UpdatedUnix: env.UpdatedUnix,
+	}, nil
 }
 
 // wrapKey/unwrapKey route through the KeyWrapper, passing the secret's
