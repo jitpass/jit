@@ -86,7 +86,8 @@ var agentRunCmd = &cobra.Command{
 		// user should read. Best-effort: the enclosing dir is already 0700,
 		// so this is defense-in-depth, and the file may not exist yet on the
 		// very first start before anything is written.
-		_ = os.Chmod(filepath.Join(root, "agent.log"), 0o600)
+		logPath := filepath.Join(root, "agent.log")
+		_ = os.Chmod(logPath, 0o600)
 
 		// Everything this long-lived process prints lands in one agent.log
 		// (the plist points both streams there) — timestamp every line, or
@@ -94,6 +95,14 @@ var agentRunCmd = &cobra.Command{
 		// weeks-lived process is for (GAPS.md #48).
 		stdout := newStampedWriter(cmd.OutOrStdout())
 		stderr := newStampedWriter(cmd.ErrOrStderr())
+
+		// Cap the log before this run's first write. The log otherwise
+		// grows for the machine's lifetime — a single watcher-loop
+		// afternoon once produced 635k lines (GAPS.md #47), and launchd
+		// keeps appending to the same file across every restart forever.
+		if err := rotateAgentLog(logPath, agentLogMaxBytes); err != nil {
+			fmt.Fprintf(stderr, "jit agent: rotating %s: %v\n", logPath, err)
+		}
 
 		server := agent.NewServer(agent.SocketPath(root), func() agent.MEKFetcher { return keychainwrap.New() }, agentTTL)
 		mounts := &mountManager{root: root, keyWrapper: server, stdout: stdout, stderr: stderr}
@@ -868,6 +877,43 @@ var xmlEscaper = strings.NewReplacer(
 	`"`, "&quot;",
 	"'", "&apos;",
 )
+
+// agentLogMaxBytes caps agent.log. 5MB is months of ordinary lines and
+// still small enough to open casually; the previous generation is kept in
+// agent.log.1, so a rotation never costs the recent past.
+const agentLogMaxBytes = 5 << 20
+
+// rotateAgentLog copies an over-cap agent.log aside to agent.log.1 and
+// truncates the original IN PLACE. In place is the load-bearing part:
+// launchd opened this file (StandardOutPath, O_APPEND) and that open fd IS
+// this process's stdout — a rename would strand every future write on the
+// rotated file, silently ending the live log. Truncating under an O_APPEND
+// fd is safe: the next write lands at the new EOF. Called once per agent
+// start, before this run's first log write, so the copy can't race a
+// writer — this process is the only one and it hasn't written yet.
+func rotateAgentLog(path string, maxBytes int64) error {
+	fi, err := os.Stat(path)
+	if err != nil || fi.Size() <= maxBytes {
+		return nil // missing (first ever start) or under cap
+	}
+	src, err := os.Open(path) // #nosec G304 -- jit's own log file under its config root
+	if err != nil {
+		return err
+	}
+	defer func() { _ = src.Close() }()
+	dst, err := os.OpenFile(path+".1", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		_ = dst.Close()
+		return err
+	}
+	if err := dst.Close(); err != nil {
+		return err
+	}
+	return os.Truncate(path, 0)
+}
 
 func agentPlistPath() (string, error) {
 	home, err := os.UserHomeDir()
