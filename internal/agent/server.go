@@ -675,6 +675,20 @@ func (s *Server) history() []SessionEvent {
 	return out
 }
 
+// Quiescent reports whether the agent is doing nothing anyone would miss
+// if the process exited right now: no live session (locked) and no
+// challenge awaiting a human on screen. The stale-binary self-restart
+// gates on this — restarting costs nothing while locked (the next use
+// re-prompts either way, and a lock has already hidden every mount), but
+// killing an unlocked session or a prompt mid-approval trades a warning
+// in status for a worse surprise.
+func (s *Server) Quiescent() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	unlocked := s.mek != nil && time.Now().Before(s.expiry)
+	return !unlocked && s.pendingChallenge == nil
+}
+
 // pendingUnlock returns a copy of the challenge currently awaiting the
 // human's answer, or nil when none is. Only answerable at all because
 // status no longer queues behind the challenge itself — the whole point of

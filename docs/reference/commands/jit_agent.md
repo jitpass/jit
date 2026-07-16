@@ -24,6 +24,7 @@ refresh, or explicitly via `jit agent reveal`.
 * [jit agent history](jit_agent_history.md)	 - List every unlock and lock this agent has seen, and what caused them
 * [jit agent install](jit_agent_install.md)	 - Start jit agent automatically at every login (survives reboots)
 * [jit agent lock](jit_agent_lock.md)	 - Lock the running agent's session immediately, without waiting for the TTL
+* [jit agent restart](jit_agent_restart.md)	 - Restart the agent process (picks up a newly built or updated jit binary)
 * [jit agent reveal](jit_agent_reveal.md)	 - Temporarily show real secret values in a live-mounted file
 * [jit agent run](jit_agent_run.md)	 - Run the agent in the foreground (normally started by launchd, not by hand)
 * [jit agent status](jit_agent_status.md)	 - Show whether the agent is running, and whether its session is unlocked
