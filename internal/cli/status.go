@@ -21,13 +21,27 @@ import (
 var statusFormat string
 
 // statusResult is `jit status`'s --format json shape (GAPS.md #22) — one
-// struct per section, mirroring the text report's four lines exactly so
+// struct per section, mirroring the text report's lines exactly so
 // the two representations never drift apart in what they cover.
 type statusResult struct {
+	CLI      statusCLI      `json:"cli"`
 	Vault    statusVault    `json:"vault"`
 	Agent    statusAgent    `json:"agent"`
 	Profiles statusProfiles `json:"profiles"`
 	Mounts   statusMounts   `json:"mounts"`
+}
+
+// statusCLI identifies the jit binary answering this very command — the
+// release-scale Version alongside the VCS-revision Build, same pair the
+// agent section carries for the agent process. Having both in one report
+// is what lets a user (or a bug report) say "CLI vX at revision Y, agent
+// vX at revision Z" without hunting through separate commands.
+type statusCLI struct {
+	Version string `json:"version"`
+	// Build is agent.BuildID()'s output verbatim, including its "unknown"
+	// sentinel (a binary with no VCS info embedded), matching how the
+	// agent's own build has always been reported.
+	Build string `json:"build,omitempty"`
 }
 
 type statusVault struct {
@@ -57,6 +71,10 @@ type statusAgent struct {
 	LocksInSeconds int64                     `json:"locks_in_seconds,omitempty"`
 	Mounts         []agent.MountRevealStatus `json:"mounts"`
 	Build          string                    `json:"build,omitempty"`
+	// Version is the running agent PROCESS's release version, empty when
+	// the agent isn't running or predates the field — the counterpart to
+	// statusCLI.Version, at the same release-scale zoom Build refines.
+	Version string `json:"version,omitempty"`
 }
 
 type statusProfiles struct {
@@ -132,7 +150,13 @@ var statusCmd = &cobra.Command{
 			return fmt.Errorf("jit status: reading mount registry: %w", err)
 		}
 
-		result := statusResult{Vault: vaultStatus, Agent: agentStatus, Profiles: profileStatus, Mounts: mountStatus}
+		result := statusResult{
+			CLI:      statusCLI{Version: agent.Version(), Build: agent.BuildID()},
+			Vault:    vaultStatus,
+			Agent:    agentStatus,
+			Profiles: profileStatus,
+			Mounts:   mountStatus,
+		}
 		if statusFormat == "json" {
 			return writeJSON(cmd.OutOrStdout(), result)
 		}
@@ -198,7 +222,7 @@ func gatherAgentStatus(root string) (statusAgent, error) {
 	if err != nil {
 		return statusAgent{}, err
 	}
-	result := statusAgent{Running: true, Unlocked: st.Unlocked, Mounts: st.Mounts, Build: st.Build}
+	result := statusAgent{Running: true, Unlocked: st.Unlocked, Mounts: st.Mounts, Build: st.Build, Version: st.Version}
 	if st.Unlocked {
 		result.LocksInSeconds = int64(st.Remaining.Round(time.Second).Seconds())
 	}
@@ -256,7 +280,30 @@ func gatherMountStatus(root string, agentStatus statusAgent) (statusMounts, erro
 	}, nil
 }
 
+// versionBuild renders one binary's identity — "dev (build 4486c1c1234a)"
+// — from whichever halves are actually known: BuildID's "unknown" sentinel
+// and an old agent's empty version both just drop out rather than being
+// printed as if they were facts.
+func versionBuild(version, build string) string {
+	if build == "" || build == "unknown" {
+		if version == "" {
+			return "version unknown"
+		}
+		return version
+	}
+	if version == "" {
+		return fmt.Sprintf("build %s", build)
+	}
+	return fmt.Sprintf("%s (build %s)", version, build)
+}
+
 func printStatusText(w io.Writer, r statusResult) {
+	if r.Agent.Running {
+		fmt.Fprintf(w, "Versions: jit %s; agent %s.\n", versionBuild(r.CLI.Version, r.CLI.Build), versionBuild(r.Agent.Version, r.Agent.Build))
+	} else {
+		fmt.Fprintf(w, "Versions: jit %s; agent not running.\n", versionBuild(r.CLI.Version, r.CLI.Build))
+	}
+
 	if r.Vault.SecretsStored == 0 && r.Vault.BackupsStored == 0 {
 		fmt.Fprintln(w, "Vault: no secrets stored yet. Run `jit vault init` if you haven't set it up, or `jit migrate local` to populate it.")
 	} else {

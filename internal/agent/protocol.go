@@ -78,6 +78,12 @@ type Response struct {
 	// was no way to notice the running agent predates the CLI talking to
 	// it: a just-fixed bug looks unfixed, with nothing anywhere saying why.
 	Build string `json:"build,omitempty"`
+	// Version is the serving agent process's own Version(), set on "status"
+	// alongside Build — the human-scale answer ("v0.4.0") to the same
+	// question Build answers at revision granularity. Empty when talking to
+	// an agent older than this field, which callers must render as
+	// unknown, not as a match.
+	Version string `json:"version,omitempty"`
 }
 
 // SessionEvent is one transition of the agent's session — an unlock or a

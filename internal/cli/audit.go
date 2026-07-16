@@ -11,6 +11,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
+	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/audit"
 	"github.com/jitpass/jit/internal/mount"
 )
@@ -38,7 +39,7 @@ var auditCmd = &cobra.Command{
 			return fmt.Errorf("jit audit: %w", err)
 		}
 
-		cfg, err := audit.NewConfig(version)
+		cfg, err := audit.NewConfig(agent.Version())
 		if err != nil {
 			return fmt.Errorf("jit audit: %w", err)
 		}

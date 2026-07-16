@@ -21,7 +21,7 @@ builds:
       - CGO_ENABLED=1
       - CC=clang -arch arm64
     ldflags:
-      - -s -w -X github.com/jitpass/jit/internal/cli.version={{.Version}}
+      - -s -w -X github.com/jitpass/jit/internal/agent.version={{.Version}}
 
 # TODO (blocked on a real paid Developer ID Application certificate — see
 # TECH_STACK.md §5 and the deferred item on task #4/#6): code signing via
