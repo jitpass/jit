@@ -64,8 +64,21 @@ func (v *Vault) Set(path string, value []byte) error {
 
 	now := time.Now().Unix()
 	created := now
-	if old, err := v.readEnvelope(path); err == nil && old.CreatedUnix > 0 {
-		created = old.CreatedUnix
+	// An existing secret at path is being rotated, not created: keep its
+	// CreatedUnix, and archive the outgoing envelope (raw bytes, still
+	// decryptable only back at this same path — see history.go) BEFORE the
+	// write below replaces it. Archive-then-write means a crash between
+	// the two leaves the old value both live and archived, never gone.
+	if oldData, err := os.ReadFile(dest); err == nil { // #nosec G304 -- dest is sanitizeSecretPath's output above
+		var old envelope
+		if json.Unmarshal(oldData, &old) == nil && old.CreatedUnix > 0 {
+			created = old.CreatedUnix
+		}
+		if err := v.archiveVersion(path, oldData, nowUnixNano()); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("reading existing %s: %w", dest, err)
 	}
 
 	dek, err := generateDEK()
@@ -237,7 +250,9 @@ func (v *Vault) unwrapKey(wrapped []byte, label string) ([]byte, error) {
 	return v.KeyWrapper.UnwrapKey(wrapped)
 }
 
-// Remove deletes the secret stored at path.
+// Remove deletes the secret stored at path — including its version
+// history, because rm means gone: a recoverable copy surviving an
+// explicit delete would betray the command's whole point.
 func (v *Vault) Remove(path string) error {
 	target, err := sanitizeSecretPath(v.vaultDir(), path)
 	if err != nil {
@@ -249,7 +264,7 @@ func (v *Vault) Remove(path string) error {
 		}
 		return fmt.Errorf("removing %s: %w", target, err)
 	}
-	return nil
+	return v.removeHistory(path)
 }
 
 // List returns every secret path currently stored, sorted, e.g.
@@ -264,12 +279,24 @@ func (v *Vault) List() ([]string, error) {
 			}
 			return err
 		}
-		if d.IsDir() || !strings.HasSuffix(d.Name(), ".enc") {
-			return nil
-		}
 		rel, err := filepath.Rel(root, p)
 		if err != nil {
 			return err
+		}
+		if d.IsDir() {
+			// _history/ is jit's own bookkeeping (see history.go): never a
+			// listed secret, never exported, never completed. Unlike
+			// _backups/ (which List returns and the CLI splits out for its
+			// count line), history versions shadow paths that ARE listed —
+			// including them would show every secret up to historyKeep+1
+			// times.
+			if rel == historyDirName {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), ".enc") {
+			return nil
 		}
 		rel = strings.TrimSuffix(rel, ".enc")
 		paths = append(paths, filepath.ToSlash(rel))
