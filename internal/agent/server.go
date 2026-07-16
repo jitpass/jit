@@ -273,15 +273,21 @@ func (s *Server) handle(req Request, c *caller) Response {
 		s.lock(lockCause(c))
 		return Response{OK: true, Unlocked: false}
 	case OpUnlock:
-		if _, err := s.ensureUnlocked(req.Op, c); err != nil {
+		// ensureUnlocked hands every caller its own MEK copy (see mekCopy);
+		// callers that only wanted the side effect wipe theirs immediately.
+		mek, err := s.ensureUnlocked(req.Op, c)
+		if err != nil {
 			return Response{OK: false, Error: err.Error()}
 		}
+		wipe(mek)
 		unlocked, remaining := s.status()
 		return Response{OK: true, Unlocked: unlocked, ExpiresInSeconds: int64(remaining.Seconds())}
 	case OpRefresh:
-		if _, err := s.ensureUnlocked(req.Op, c); err != nil {
+		mek, err := s.ensureUnlocked(req.Op, c)
+		if err != nil {
 			return Response{OK: false, Error: err.Error()}
 		}
+		wipe(mek)
 		if s.OnRefresh != nil {
 			s.OnRefresh()
 		}
@@ -299,9 +305,11 @@ func (s *Server) handle(req Request, c *caller) Response {
 		if s.OnUnlockForReveal != nil {
 			onFresh = s.OnUnlockForReveal
 		}
-		if _, err := s.ensureUnlockedNotify(onFresh, req.Op, c); err != nil {
+		mek, err := s.ensureUnlockedNotify(onFresh, req.Op, c)
+		if err != nil {
 			return Response{OK: false, Error: err.Error()}
 		}
+		wipe(mek)
 		if s.OnReveal != nil {
 			if err := s.OnReveal(req.MountPath, time.Duration(req.RevealSeconds)*time.Second); err != nil {
 				return Response{OK: false, Error: err.Error()}
@@ -323,6 +331,7 @@ func (s *Server) handle(req Request, c *caller) Response {
 		if err != nil {
 			return Response{OK: false, Error: err.Error()}
 		}
+		defer wipe(mek)
 		wrapped, err := seal(mek, req.Data)
 		if err != nil {
 			return Response{OK: false, Error: err.Error()}
@@ -333,6 +342,7 @@ func (s *Server) handle(req Request, c *caller) Response {
 		if err != nil {
 			return Response{OK: false, Error: err.Error()}
 		}
+		defer wipe(mek)
 		dek, err := open(mek, req.Data)
 		if err != nil {
 			return Response{OK: false, Error: err.Error()}
@@ -358,6 +368,7 @@ func (s *Server) WrapKey(dek []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer wipe(mek)
 	return seal(mek, dek)
 }
 
@@ -366,11 +377,30 @@ func (s *Server) UnwrapKey(wrapped []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer wipe(mek)
 	return open(mek, wrapped)
 }
 
 func (s *Server) ensureUnlocked(op string, c *caller) ([]byte, error) {
 	return s.ensureUnlockedNotify(s.OnUnlock, op, c)
+}
+
+// mekCopy returns a fresh copy of the cached MEK. Callers of
+// ensureUnlocked get a COPY, never s.mek's own backing array, for the same
+// reason keychainwrap.fetchMEK hands out copies: the cache and its
+// consumers wipe independently. Here the dangerous direction is the
+// reverse of keychainwrap's — not a caller's wipe zeroing the cache, but
+// lock() zeroing the cache mid-use: an explicit `jit agent lock` (another
+// connection's goroutine, or a `jit vault` command locking on its way out)
+// wipes s.mek in place while a wrap/unwrap that already got that slice is
+// still inside seal()/open(). A wrap that loses the race seals the DEK
+// under a partially-zeroed key and reports success — the stored envelope
+// is permanently undecryptable, and nothing anywhere errors at the time.
+// Caller must hold s.mu.
+func (s *Server) mekCopy() []byte {
+	out := make([]byte, len(s.mek))
+	copy(out, s.mek)
+	return out
 }
 
 // ensureUnlockedNotify is ensureUnlocked with a caller-chosen "a fresh
@@ -383,7 +413,7 @@ func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller) ([]b
 	s.mu.Lock()
 
 	if s.mek != nil && time.Now().Before(s.expiry) {
-		mek := s.mek
+		mek := s.mekCopy()
 		// The TTL is a true inactivity timeout (GAPS.md #45), exactly as
 		// `jit agent --help` and the docs describe it: every use of the still-valid
 		// session pushes auto-lock back out to a full ttl from now. The
@@ -421,6 +451,7 @@ func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller) ([]b
 		return nil, fmt.Errorf("unlocking: %w", err)
 	}
 	s.mek = mek
+	out := s.mekCopy()
 	event := unlockEvent(op, c)
 	s.lastUnlock = event
 	s.recordEvent(*event)
@@ -437,7 +468,7 @@ func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller) ([]b
 	if onFresh != nil {
 		onFresh()
 	}
-	return mek, nil
+	return out, nil
 }
 
 // lock drops the cached MEK, recording WHY. OnLock only fires if there was
