@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/jitpass/jit/internal/inject"
 )
@@ -48,6 +49,22 @@ var exportCmd = &cobra.Command{
 		p, err := resolveInjectionProfile("jit export", cwd, exportProfile, exportMode, cmd.ErrOrStderr())
 		if err != nil {
 			return fmt.Errorf("jit export: %w", err)
+		}
+
+		// Inside eval's command substitution stdout is a pipe — so a TTY
+		// stdout means the command was run bare, about to print every
+		// secret in the profile into terminal scrollback (and any
+		// tmux/script capture running over it). That's the exposure `jit
+		// vault get`'s own help warns about, times the whole profile —
+		// worth one question, asked BEFORE the vault is opened so
+		// answering no never costs a Touch ID prompt.
+		if term.IsTerminal(int(os.Stdout.Fd())) {
+			fmt.Fprintln(cmd.ErrOrStderr(), "jit export: stdout is your terminal — these plaintext secrets would land in scrollback.")
+			fmt.Fprintln(cmd.ErrOrStderr(), "The intended use is:  eval \"$(jit export)\"")
+			if !confirmPrompt(cmd, "Print them here anyway? [y/N] ") {
+				fmt.Fprintln(cmd.ErrOrStderr(), "Aborted.")
+				return nil
+			}
 		}
 
 		v, err := openVault()
