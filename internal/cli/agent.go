@@ -50,8 +50,6 @@ var revealQuiet bool
 // agentStatusFormat is agentStatusCmd's --format flag (GAPS.md #22).
 var agentStatusFormat string
 
-const agentPlistLabel = "com.jitpass.agent"
-
 var agentCmd = &cobra.Command{
 	Use:     "agent",
 	GroupID: groupAgent,
@@ -1118,19 +1116,6 @@ func validateAgentTTL(ttl time.Duration) error {
 // delay.
 const agentRestartGrace = 2 * time.Second
 
-// agentInstalled reports whether the launchd plist exists — i.e. whether
-// a non-answering socket means "mid-restart or crashed" (launchd will
-// respawn it; retrying and `jit agent restart` are the right moves)
-// rather than "never set up" (only `jit agent install` helps).
-func agentInstalled() bool {
-	plistPath, err := agentPlistPath()
-	if err != nil {
-		return false
-	}
-	_, err = os.Stat(plistPath)
-	return err == nil
-}
-
 // agentClient returns a Client for this machine's agent socket without
 // probing it first — Client's own calls wrap agent.ErrNotRunning when
 // nothing is listening (see notRunningHint), so a Reachable() pre-flight
@@ -1262,13 +1247,8 @@ func rotateAgentLogPeriodically(ctx context.Context, logPath string, mu *sync.Mu
 	}
 }
 
-func agentPlistPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, "Library", "LaunchAgents", agentPlistLabel+".plist"), nil
-}
+// agentPlistPath and agentInstalled live in agentinstalled.go (un-gated),
+// so status.go's portable agent section can share them.
 
 // agentDomainTarget and agentServiceTarget name the agent to launchctl's
 // modern verbs (bootstrap/bootout/kickstart): the per-user GUI domain, and
