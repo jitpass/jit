@@ -5,10 +5,9 @@ package cli
 
 import (
 	"github.com/spf13/cobra"
-)
 
-// version is set at build time via -ldflags "-X github.com/jitpass/jit/internal/cli.version=vX.Y.Z" (see .goreleaser.yml).
-var version = "dev"
+	"github.com/jitpass/jit/internal/agent"
+)
 
 // Command-group IDs (cobra.Group) — the root help renders commands under
 // these headings instead of one flat alphabetical list, so the three
@@ -80,7 +79,9 @@ func newRootCmd() *cobra.Command {
 		Short: "Local-first developer secret runtime",
 		Long: "jit finds plaintext secrets exposed on your machine and gives you a one-command way to fix it, without ever putting them back on disk in plaintext. See https://github.com/jitpass/jit for details.\n\n" +
 			"Start with `jit audit` (strictly read-only), then `jit migrate local --dry-run` to preview the guided fix for the project you're in.",
-		Version: version,
+		// Version lives in internal/agent (next to BuildID) because the
+		// agent reports it over the socket too — see agent/version.go.
+		Version: agent.Version(),
 		// cobra's default RunE-error handling prints "Error: <err>" itself,
 		// on top of cmd/jit/main.go's own fmt.Fprintln(os.Stderr, err) —
 		// every failing command printed its error twice. main.go is the

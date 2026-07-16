@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/vault"
 )
@@ -36,6 +37,7 @@ func TestStatusEverythingEmpty(t *testing.T) {
 		t.Fatalf("jit status: %v", err)
 	}
 	for _, want := range []string{
+		"Versions: jit " + versionBuild(agent.Version(), agent.BuildID()) + "; agent not running.",
 		"Vault: no secrets stored yet",
 		"Agent: not running",
 		"Profiles: none found",
@@ -252,6 +254,7 @@ func TestStatusFormatJSONMatchesTextSections(t *testing.T) {
 	}
 
 	want := statusResult{
+		CLI:      statusCLI{Version: agent.Version(), Build: agent.BuildID()},
 		Vault:    statusVault{SecretsStored: 1},
 		Agent:    statusAgent{Running: false, Unlocked: false},
 		Profiles: statusProfiles{ProfilesFound: 1, SecretReferences: 1, Problems: 0},

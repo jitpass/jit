@@ -368,6 +368,10 @@ type agentStatusResult struct {
 	// against this CLI's own to catch a launchd-kept-alive agent that
 	// predates the binary on disk. Empty when the agent isn't running.
 	Build string `json:"build,omitempty"`
+	// Version is the running agent PROCESS's release version — Build's
+	// release-scale counterpart. Empty when the agent isn't running or
+	// predates the field.
+	Version string `json:"version,omitempty"`
 }
 
 var agentStatusCmd = &cobra.Command{
@@ -403,7 +407,7 @@ var agentStatusCmd = &cobra.Command{
 		}
 
 		if agentStatusFormat == "json" {
-			result := agentStatusResult{Running: true, Unlocked: st.Unlocked, Mounts: st.Mounts, LastUnlock: st.LastUnlock, LastLock: st.LastLock, Build: st.Build}
+			result := agentStatusResult{Running: true, Unlocked: st.Unlocked, Mounts: st.Mounts, LastUnlock: st.LastUnlock, LastLock: st.LastLock, Build: st.Build, Version: st.Version}
 			if st.Unlocked {
 				result.LocksInSeconds = int64(st.Remaining.Round(time.Second).Seconds())
 			}
@@ -414,6 +418,7 @@ var agentStatusCmd = &cobra.Command{
 		} else {
 			fmt.Fprintln(cmd.OutOrStdout(), "jit agent is running and locked.")
 		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Versions: agent %s; CLI %s.\n", versionBuild(st.Version, st.Build), versionBuild(agent.Version(), agent.BuildID()))
 		printSessionProvenance(cmd.OutOrStdout(), st)
 		printMountStatuses(cmd.OutOrStdout(), st.Mounts)
 		if warning := agentBuildMismatch(st.Build); warning != "" {

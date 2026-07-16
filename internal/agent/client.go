@@ -175,6 +175,9 @@ type Status struct {
 	// to compare against its own and notice a stale, launchd-kept-alive agent
 	// that predates the binary on disk.
 	Build string
+	// Version is the agent process's own Version() — the release-scale
+	// counterpart to Build. Empty when the agent predates the field.
+	Version string
 }
 
 // History asks for every unlock and lock this agent process has seen, newest
@@ -204,5 +207,6 @@ func (c *Client) Status() (Status, error) {
 		LastUnlock: resp.LastUnlock,
 		LastLock:   resp.LastLock,
 		Build:      resp.Build,
+		Version:    resp.Version,
 	}, nil
 }
