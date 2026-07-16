@@ -22,7 +22,7 @@ func TestEnvLayerRank(t *testing.T) {
 	}{
 		{".env", "", 0, true},
 		{".env.local", "", 2, true},
-		{".env.development", "", 0, false},           // mode layer excluded without --mode
+		{".env.development", "", 0, false}, // mode layer excluded without --mode
 		{".env", "development", 0, true},
 		{".env.development", "development", 1, true},
 		{".env.local", "development", 2, true},
@@ -60,8 +60,8 @@ func TestDirEnvLayersOrdersAndFilters(t *testing.T) {
 		{MountPath: "/p/app/.env.local", ProfilePath: "/p/app/.jit/profiles/root-local.yaml"},
 		{MountPath: "/p/app/.env", ProfilePath: "/p/app/.jit/profiles/root.yaml"},
 		{MountPath: "/p/app/.npmrc", ProfilePath: "/p/app/.jit/profiles/npmrc.yaml", TemplatePath: "/t/npmrc.tmpl"}, // template mount: excluded
-		{MountPath: "/p/other/.env", ProfilePath: "/p/other/.jit/profiles/root.yaml"},                              // other dir: excluded
-		{MountPath: "/p/app/.env.production", ProfilePath: "/p/app/.jit/profiles/root-production.yaml"},            // mode layer, no mode: excluded
+		{MountPath: "/p/other/.env", ProfilePath: "/p/other/.jit/profiles/root.yaml"},                               // other dir: excluded
+		{MountPath: "/p/app/.env.production", ProfilePath: "/p/app/.jit/profiles/root-production.yaml"},             // mode layer, no mode: excluded
 	}
 
 	layers := dirEnvLayers(entries, "/p/app", "")

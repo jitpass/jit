@@ -24,16 +24,17 @@ import (
 	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
+	"github.com/jitpass/jit/internal/pasteboard"
 	"github.com/jitpass/jit/internal/vault"
 )
 
 var (
-	vaultSetStdin    bool
-	vaultSetForce    bool
-	vaultGetCopy     bool
-	vaultRmForce     bool
-	vaultListFormat  string
-	vaultListAll     bool
+	vaultSetStdin      bool
+	vaultSetForce      bool
+	vaultGetCopy       bool
+	vaultRmForce       bool
+	vaultListFormat    string
+	vaultListAll       bool
 	vaultExportStdin   bool
 	vaultImportStdin   bool
 	vaultImportYes     bool
@@ -197,10 +198,15 @@ var vaultGetCmd = &cobra.Command{
 		}
 
 		if vaultGetCopy {
-			if err := copyToClipboard(value); err != nil {
+			autoClear, err := copyToClipboard(value)
+			if err != nil {
 				return fmt.Errorf("jit vault get: %w", err)
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "Copied to clipboard.")
+			if autoClear {
+				fmt.Fprintf(cmd.OutOrStdout(), "Copied to clipboard — clears in %s unless something else is copied first.\n", clipboardClearDelay)
+			} else {
+				fmt.Fprintln(cmd.OutOrStdout(), "Copied to clipboard (auto-clear unavailable — it stays until you copy over it).")
+			}
 			return nil
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), string(value))
@@ -908,7 +914,32 @@ func readLineUnbuffered(r io.Reader) (string, error) {
 	}
 }
 
-func copyToClipboard(value []byte) error {
+// copyToClipboard puts value on the pasteboard — concealed from clipboard
+// managers (org.nspasteboard.ConcealedType) — and schedules a detached
+// helper to clear it after clipboardClearDelay, unless something else has
+// been copied by then. autoClear reports whether that helper actually got
+// scheduled: a copy that will sit on the pasteboard forever should be
+// SAID, not silently different.
+func copyToClipboard(value []byte) (autoClear bool, err error) {
+	count, err := pasteboard.WriteConcealed(value)
+	if errors.Is(err, pasteboard.ErrNotUTF8) {
+		// A non-UTF-8 secret can't ride NSString; pbcopy handles raw
+		// bytes. No concealment on this path, but the auto-clear still
+		// works — the changeCount contract doesn't care who wrote.
+		if err := pbcopy(value); err != nil {
+			return false, err
+		}
+		count = pasteboard.ChangeCount()
+	} else if err != nil {
+		return false, err
+	}
+	if err := spawnClipboardClear(count); err != nil {
+		return false, nil // copied fine; only the auto-clear is missing
+	}
+	return true, nil
+}
+
+func pbcopy(value []byte) error {
 	c := exec.Command("pbcopy") // #nosec G204 -- fixed macOS system binary, no user input in argv
 	stdin, err := c.StdinPipe()
 	if err != nil {
