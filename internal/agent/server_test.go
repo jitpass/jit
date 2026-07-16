@@ -1012,6 +1012,47 @@ func TestServerHandsOutMEKCopiesNotItsCache(t *testing.T) {
 	}
 }
 
+// TestServerSeedHistoryRestoresPastEventsUnderNewOnes pins the durable-
+// history contract: events seeded from a previous process's record come
+// back through OpHistory underneath (older than) everything the current
+// process adds, still newest-first, still capped.
+func TestServerSeedHistoryRestoresPastEventsUnderNewOnes(t *testing.T) {
+	s, socketPath, cleanup := startTestServer(t, time.Minute, nil)
+	defer cleanup()
+
+	seed := make([]SessionEvent, 0, MaxSessionEvents+50)
+	for i := 0; i < MaxSessionEvents+50; i++ {
+		seed = append(seed, SessionEvent{UnixTime: int64(i), Kind: KindUnlock})
+	}
+	seed = append(seed, SessionEvent{UnixTime: 9000, Kind: KindStart, Cause: "build test"})
+	s.SeedHistory(seed)
+
+	c := NewClient(socketPath)
+	if _, _, err := c.Unlock(); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+
+	events, err := c.History()
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	if len(events) == 0 || len(events) > MaxSessionEvents+1 {
+		t.Fatalf("history has %d events, want seeded history capped at MaxSessionEvents plus this process's unlock", len(events))
+	}
+	if events[0].Kind != KindUnlock || events[0].UnixTime < 9000 {
+		t.Errorf("newest event = %+v, want this process's own fresh unlock on top", events[0])
+	}
+	if events[1].Kind != KindStart {
+		t.Errorf("second-newest event = %+v, want the seeded start marker directly under the live events", events[1])
+	}
+	// The oldest seeded events must have been dropped by the cap, keeping
+	// the newest.
+	last := events[len(events)-1]
+	if last.UnixTime < 50 {
+		t.Errorf("oldest surviving event is %+v — seeding kept the OLD end of an over-cap history instead of the new end", last)
+	}
+}
+
 // Asking the agent why it keeps prompting must never itself prompt.
 func TestServerHistoryNeverTriggersAChallenge(t *testing.T) {
 	var calls int32
