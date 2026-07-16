@@ -20,6 +20,16 @@ type Request struct {
 	// handed to OnReveal/OnStopMount.
 	MountPath     string `json:"mount_path,omitempty"`
 	RevealSeconds int64  `json:"reveal_seconds,omitempty"`
+	// Label is the caller's own description of what a "wrap"/"unwrap" is
+	// FOR — the vault path of the secret whose DEK is in Data ("stripe/
+	// live-key"), which the agent otherwise cannot know: it only ever sees
+	// opaque key bytes. Audit-only and CALLER-REPORTED: unlike every other
+	// provenance fact the agent records, this one is what the caller says
+	// about itself, so history displays it with that qualifier and it must
+	// never reach the Touch ID prompt (challengeReason stays kernel-derived
+	// only — a caller could otherwise put a reassuring lie on the one line
+	// the human decides by) or gate anything. Optional; empty is fine.
+	Label string `json:"label,omitempty"`
 }
 
 const (
@@ -46,6 +56,21 @@ const (
 	// launchd restart didn't lock, the process died, and events on either
 	// side of a start marker belong to different agent processes.
 	KindStart = "start"
+	// KindDenied marks a challenge the human (or a timeout) REFUSED, with
+	// the same caller provenance an unlock would have carried and Cause
+	// naming the failure. It exists because a denied prompt used to leave
+	// no trace anywhere: the one event a user most needs to reconstruct —
+	// "something asked for my secrets and I said no... what was it?" — was
+	// the one event with no record. Denials also arm the re-prompt
+	// cooldown (see Server).
+	KindDenied = "denied"
+	// KindUse marks the session being USED without a fresh challenge — a
+	// wrap/unwrap/reveal riding the already-unlocked cache. Unlock events
+	// alone could say who OPENED the session but not what flowed through
+	// it afterwards, which is most of what an audit wants. Collapsed
+	// (Count, Labels) per caller+op over a short window, so a `jit run`
+	// resolving a ten-secret profile is one event, not ten.
+	KindUse = "use"
 )
 
 // Response answers a Request.
@@ -116,12 +141,12 @@ type Response struct {
 // never fail the unlock itself.
 type SessionEvent struct {
 	UnixTime int64 `json:"unix_time"`
-	// Kind is "unlock", "lock", or "start". Callers used to tell unlocks and
-	// locks apart by checking whether Cause was set, which worked only
-	// because locks happened to be the only events that carried one — a
-	// coincidence, not a contract, and one that would have broken silently
-	// the first time another kind needed a cause of its own (start events
-	// now do).
+	// Kind is "unlock", "lock", "start", "denied", or "use". Callers used
+	// to tell unlocks and locks apart by checking whether Cause was set,
+	// which worked only because locks happened to be the only events that
+	// carried one — a coincidence, not a contract, and one that would have
+	// broken silently the first time another kind needed a cause of its
+	// own (start and denied events now do).
 	Kind string `json:"kind"`
 	// Op is the RPC that forced the unlock ("unwrap", "reveal", ...), or
 	// "serve_mounts" for the agent's own in-process unlock when it resolves
@@ -138,10 +163,24 @@ type SessionEvent struct {
 	// human ran jit at a prompt themselves, because then there is nothing to
 	// explain.
 	LaunchedBy string `json:"launched_by,omitempty"`
-	// Cause is set on lock events only: what dropped the session ("15m idle
-	// timeout" vs. an explicit lock). "Why am I being asked again?" is
-	// usually answered here, not by the unlock at all.
+	// Cause is set on lock events (what dropped the session — "15m idle
+	// timeout" vs. an explicit lock; "Why am I being asked again?" is
+	// usually answered here, not by the unlock at all), on start events
+	// (the build), and on denied events (why the challenge failed).
 	Cause string `json:"cause,omitempty"`
+	// Labels are the caller-reported secret names this event touched
+	// (Request.Label) — "what was read", the one fact kernel provenance
+	// structurally cannot supply, since the agent only ever sees opaque
+	// key bytes. CLAIMED, not verified: any display must say so. On an
+	// unlock or denied event there is at most one; on a use event they
+	// accumulate across the collapse window, deduplicated and capped, so a
+	// long burst names what it touched without growing unboundedly.
+	Labels []string `json:"labels,omitempty"`
+	// Count, on use events, is how many uses this one event stands for —
+	// collapsed per caller+op over Server's use window, the same
+	// discipline the mount read-storm logging already applies. Zero/one
+	// everywhere else.
+	Count int64 `json:"count,omitempty"`
 }
 
 // MountRevealStatus is one currently-served mount's reveal state — deliberately

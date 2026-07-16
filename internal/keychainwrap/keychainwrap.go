@@ -45,6 +45,8 @@ import (
 	"sync"
 	"unsafe"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -172,6 +174,11 @@ func (w *Wrapper) fetchMEK(reason string) ([]byte, error) {
 		wipe(unsafe.Slice((*byte)(unsafe.Pointer(keyPtr)), int(keyLen)))
 		C.free(unsafe.Pointer(keyPtr))
 		w.mek = mek
+		// Best-effort: keep the cached MEK's page out of swap for this
+		// Wrapper's lifetime (same defense-in-depth internal/agent applies
+		// to ITS cache). Ignored on failure — a resource-limit refusal
+		// must never fail the unlock; macOS also encrypts swap by default.
+		_ = unix.Mlock(w.mek)
 	}
 
 	// A fresh copy every call: callers defer wipe(mek) on what they get

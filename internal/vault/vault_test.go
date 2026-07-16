@@ -233,3 +233,42 @@ func TestVaultSetIsAtomicNoLeftoverTempFiles(t *testing.T) {
 		t.Errorf("directory contents = %v, want exactly [dev-key.enc]", entries)
 	}
 }
+
+// fakeLabeledKeyWrapper also implements LabeledKeyWrapper, recording the
+// labels Vault passes — pinning that Get/Set hand the secret's own vault
+// path to a wrapper that can carry it (the agent-backed one does, for its
+// audit history).
+type fakeLabeledKeyWrapper struct {
+	fakeKeyWrapper
+	wrapLabels   []string
+	unwrapLabels []string
+}
+
+func (f *fakeLabeledKeyWrapper) WrapKeyLabeled(dek []byte, label string) ([]byte, error) {
+	f.wrapLabels = append(f.wrapLabels, label)
+	return f.WrapKey(dek)
+}
+
+func (f *fakeLabeledKeyWrapper) UnwrapKeyLabeled(wrapped []byte, label string) ([]byte, error) {
+	f.unwrapLabels = append(f.unwrapLabels, label)
+	return f.UnwrapKey(wrapped)
+}
+
+func TestVaultPassesSecretPathAsLabelWhenWrapperSupportsIt(t *testing.T) {
+	kw := &fakeLabeledKeyWrapper{fakeKeyWrapper: *newFakeKeyWrapper()}
+	v := &Vault{Root: t.TempDir(), KeyWrapper: kw, RecipientID: "test-device"}
+
+	if err := v.Set("stripe/dev-key", []byte("sk_test")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if _, err := v.Get("stripe/dev-key"); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	if len(kw.wrapLabels) != 1 || kw.wrapLabels[0] != "stripe/dev-key" {
+		t.Errorf("wrap labels = %v, want the secret's own path", kw.wrapLabels)
+	}
+	if len(kw.unwrapLabels) != 1 || kw.unwrapLabels[0] != "stripe/dev-key" {
+		t.Errorf("unwrap labels = %v, want the secret's own path", kw.unwrapLabels)
+	}
+}

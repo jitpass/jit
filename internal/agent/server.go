@@ -12,8 +12,11 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // MEKFetcher provides the raw MEK bytes, challenging (Touch ID/passcode)
@@ -143,6 +146,23 @@ type Server struct {
 	// it before Listen.
 	readTimeout time.Duration
 
+	// denialCooldown is how long, after a challenge the human declined,
+	// the agent refuses to put a NEW prompt up for anything except an
+	// explicit `jit agent unlock`. A declined prompt means "not now" — and
+	// the callers most likely to have triggered it (an MCP server a
+	// launcher restarts on failure, a retrying script) ask again
+	// immediately, turning one deliberate "no" into a prompt storm the
+	// user can only end by approving. Prompt fatigue is the exact failure
+	// this agent exists to avoid manufacturing. Explicit unlock bypasses
+	// it because a human typing `jit agent unlock` IS the "now" a denial
+	// withheld. Defaulted by NewServer; a field so tests can shorten it.
+	denialCooldown time.Duration
+
+	// useWindow is the collapse window for KindUse events (see recordUse):
+	// same-caller same-op uses inside one window merge into a single
+	// event. Defaulted by NewServer; a field so tests can shorten it.
+	useWindow time.Duration
+
 	// mu guards the session fields below and is only ever held for quick
 	// field access — NEVER across the interactive challenge. challengeMu is
 	// what serializes concurrent would-be unlockers behind a single Touch ID
@@ -156,6 +176,20 @@ type Server struct {
 	mek         []byte
 	expiry      time.Time
 	lockTimer   *time.Timer
+	// lastDenied is when a challenge most recently failed — what the
+	// denial cooldown above measures from — and lastDeniedCause is why, so
+	// the cooldown refusal can repeat the ORIGINAL failure instead of
+	// asserting "declined" about what may have been a keychain error (an
+	// uninitialized vault fails the fetch AFTER a successful Touch ID).
+	// Zeroed by the next successful unlock, so one approval fully clears
+	// the pause.
+	lastDenied      time.Time
+	lastDeniedCause string
+	// pendingUses accumulates KindUse events per caller+op until their
+	// collapse window closes (see recordUse/flushUsesLocked) — flushed
+	// lazily on later uses, on every lock (the session boundary), and on
+	// every history read, so history is always current when actually read.
+	pendingUses map[useKey]*useAggregate
 	// timerGen invalidates stale idle-lock timers: each (re-)arm bumps it,
 	// and a fired timer that lost the race to a concurrent touch/unlock
 	// (its Stop() came back false because the goroutine was already
@@ -187,10 +221,31 @@ type Server struct {
 	listener net.Listener
 }
 
+// defaultDenialCooldown pauses automatic re-prompts after a declined
+// challenge. 30 seconds is long enough to break the tight retry loops
+// that actually storm (a relaunching MCP server retries within a second
+// or two) and short enough that a genuine "oops, I meant to approve
+// that" only waits half a minute — or types `jit agent unlock`, which
+// bypasses it outright.
+const defaultDenialCooldown = 30 * time.Second
+
+// defaultUseWindow collapses same-caller same-op use events. One minute
+// merges a profile resolution's burst of unwraps (all within a second)
+// into a single event while keeping separate invocations minutes apart
+// as separate history lines.
+const defaultUseWindow = time.Minute
+
 // NewServer builds a Server. newFetcher must return a fresh MEKFetcher
 // each call (e.g. func() MEKFetcher { return keychainwrap.New() }).
 func NewServer(socketPath string, newFetcher func() MEKFetcher, ttl time.Duration) *Server {
-	return &Server{socketPath: socketPath, newFetcher: newFetcher, ttl: ttl, readTimeout: 10 * time.Second}
+	return &Server{
+		socketPath:     socketPath,
+		newFetcher:     newFetcher,
+		ttl:            ttl,
+		readTimeout:    10 * time.Second,
+		denialCooldown: defaultDenialCooldown,
+		useWindow:      defaultUseWindow,
+	}
 }
 
 // Listen opens the Unix socket, replacing any stale one left behind by a
@@ -299,7 +354,7 @@ func (s *Server) handle(req Request, c *caller) Response {
 	case OpUnlock:
 		// ensureUnlocked hands every caller its own MEK copy (see mekCopy);
 		// callers that only wanted the side effect wipe theirs immediately.
-		mek, err := s.ensureUnlocked(req.Op, c)
+		mek, err := s.ensureUnlocked(req.Op, c, "")
 		if err != nil {
 			return Response{OK: false, Error: err.Error()}
 		}
@@ -307,7 +362,7 @@ func (s *Server) handle(req Request, c *caller) Response {
 		unlocked, remaining := s.status()
 		return Response{OK: true, Unlocked: unlocked, ExpiresInSeconds: int64(remaining.Seconds())}
 	case OpRefresh:
-		mek, err := s.ensureUnlocked(req.Op, c)
+		mek, err := s.ensureUnlocked(req.Op, c, "")
 		if err != nil {
 			return Response{OK: false, Error: err.Error()}
 		}
@@ -329,7 +384,9 @@ func (s *Server) handle(req Request, c *caller) Response {
 		if s.OnUnlockForReveal != nil {
 			onFresh = s.OnUnlockForReveal
 		}
-		mek, err := s.ensureUnlockedNotify(onFresh, req.Op, c)
+		// The mount path doubles as the reveal's label: it's what this use
+		// of the session was FOR, exactly as Request.Label is for a wrap.
+		mek, err := s.ensureUnlockedNotify(onFresh, req.Op, c, req.MountPath)
 		if err != nil {
 			return Response{OK: false, Error: err.Error()}
 		}
@@ -351,7 +408,7 @@ func (s *Server) handle(req Request, c *caller) Response {
 		}
 		return Response{OK: true}
 	case OpWrap:
-		mek, err := s.ensureUnlocked(req.Op, c)
+		mek, err := s.ensureUnlocked(req.Op, c, req.Label)
 		if err != nil {
 			return Response{OK: false, Error: err.Error()}
 		}
@@ -362,7 +419,7 @@ func (s *Server) handle(req Request, c *caller) Response {
 		}
 		return Response{OK: true, Data: wrapped}
 	case OpUnwrap:
-		mek, err := s.ensureUnlocked(req.Op, c)
+		mek, err := s.ensureUnlocked(req.Op, c, req.Label)
 		if err != nil {
 			return Response{OK: false, Error: err.Error()}
 		}
@@ -388,7 +445,21 @@ func (s *Server) handle(req Request, c *caller) Response {
 // what's really happening is "resolve this project's mounted files", not a
 // wrap/unwrap someone asked for.
 func (s *Server) WrapKey(dek []byte) ([]byte, error) {
-	mek, err := s.ensureUnlocked(opServeMounts, nil)
+	return s.WrapKeyLabeled(dek, "")
+}
+
+func (s *Server) UnwrapKey(wrapped []byte) ([]byte, error) {
+	return s.UnwrapKeyLabeled(wrapped, "")
+}
+
+// WrapKeyLabeled/UnwrapKeyLabeled are the vault.LabeledKeyWrapper
+// (structural, same non-import convention as KeyWrapper above) variants:
+// label is the vault path of the secret whose DEK is being handled, so
+// the agent's own mount resolution shows up in history as "serve_mounts
+// touched these secrets" instead of an unlabeled blur — the same
+// audit-only, caller-reported label RPC callers send in Request.Label.
+func (s *Server) WrapKeyLabeled(dek []byte, label string) ([]byte, error) {
+	mek, err := s.ensureUnlocked(opServeMounts, nil, label)
 	if err != nil {
 		return nil, err
 	}
@@ -396,8 +467,8 @@ func (s *Server) WrapKey(dek []byte) ([]byte, error) {
 	return seal(mek, dek)
 }
 
-func (s *Server) UnwrapKey(wrapped []byte) ([]byte, error) {
-	mek, err := s.ensureUnlocked(opServeMounts, nil)
+func (s *Server) UnwrapKeyLabeled(wrapped []byte, label string) ([]byte, error) {
+	mek, err := s.ensureUnlocked(opServeMounts, nil, label)
 	if err != nil {
 		return nil, err
 	}
@@ -405,8 +476,8 @@ func (s *Server) UnwrapKey(wrapped []byte) ([]byte, error) {
 	return open(mek, wrapped)
 }
 
-func (s *Server) ensureUnlocked(op string, c *caller) ([]byte, error) {
-	return s.ensureUnlockedNotify(s.OnUnlock, op, c)
+func (s *Server) ensureUnlocked(op string, c *caller, label string) ([]byte, error) {
+	return s.ensureUnlockedNotify(s.OnUnlock, op, c, label)
 }
 
 // mekCopy returns a fresh copy of the cached MEK. Callers of
@@ -441,8 +512,9 @@ func (s *Server) mekCopy() []byte {
 // waiting for. s.mu is only ever held for field access, so a status/
 // history/lock request arriving mid-challenge is answered immediately
 // instead of queueing for up to the challenge's ~120s ceiling.
-func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller) ([]byte, error) {
+func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller, label string) ([]byte, error) {
 	if mek := s.touchSession(); mek != nil {
+		s.recordUse(op, c, label)
 		return mek, nil
 	}
 
@@ -451,7 +523,31 @@ func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller) ([]b
 
 	// The caller we queued behind may have just unlocked for us.
 	if mek := s.touchSession(); mek != nil {
+		s.recordUse(op, c, label)
 		return mek, nil
+	}
+
+	// The denial cooldown: a challenge the human just declined means "not
+	// now", and the very callers that trigger surprise prompts (an MCP
+	// server its launcher restarts on failure, a retrying script) ask
+	// again within seconds — each retry another prompt, until the only way
+	// to make it stop is to approve. Checked HERE, after the challengeMu
+	// queue, so the waiters that queued behind the very challenge that got
+	// declined are also turned away instead of re-prompting back-to-back.
+	// OpUnlock is exempt: an explicit `jit agent unlock` is a human
+	// overriding the pause on purpose.
+	if op != OpUnlock {
+		s.mu.Lock()
+		lastDenied := s.lastDenied
+		lastCause := s.lastDeniedCause
+		cooldown := s.denialCooldown
+		s.mu.Unlock()
+		// A zero lastDenied (nothing ever declined, or cleared by the last
+		// successful unlock) makes sinceDenied enormous, so it never trips.
+		if sinceDenied := time.Since(lastDenied); sinceDenied < cooldown {
+			return nil, fmt.Errorf("an unlock attempt failed %s ago (%s) — automatic re-prompts are paused for another %s (run `jit agent unlock` to try again now)",
+				sinceDenied.Round(time.Second), lastCause, (cooldown - sinceDenied).Round(time.Second))
+		}
 	}
 
 	// pending is what status reports while the prompt is on screen; its
@@ -466,18 +562,47 @@ func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller) ([]b
 	// The reason handed to the fetcher is the prompt the human is about to
 	// read, so it is built HERE, where both the op and the caller are known
 	// — the fetcher itself has no idea who it's prompting on behalf of.
+	// label is deliberately NOT part of it: it's caller-reported, and the
+	// one line a human decides by must never carry a fact the caller could
+	// have made up (see Request.Label).
 	mek, err := s.newFetcher().FetchMEK(challengeReason(op, c))
 
 	s.mu.Lock()
 	s.pendingChallenge = nil
 	if err != nil {
+		// The denial is recorded with the same provenance the unlock would
+		// have carried — a prompt the user refused used to vanish without
+		// a trace, making "what just asked, that I said no to?" the one
+		// question history couldn't answer. It also arms the cooldown
+		// above.
+		event := unlockEvent(op, c)
+		event.Kind = KindDenied
+		event.Cause = err.Error()
+		if label != "" {
+			event.Labels = []string{label}
+		}
+		s.lastDenied = time.Now()
+		s.lastDeniedCause = err.Error()
+		s.recordEvent(*event)
 		s.mu.Unlock()
+		if s.OnSessionEvent != nil {
+			s.OnSessionEvent(*event)
+		}
 		return nil, fmt.Errorf("unlocking: %w", err)
 	}
 	s.mek = mek
+	// Best-effort: keep the long-lived cached MEK off swap. The transient
+	// copies handed to callers are wiped within the request; this is the
+	// one buffer that persists for the whole TTL.
+	lockMemory(s.mek)
 	out := s.mekCopy()
 	event := unlockEvent(op, c)
+	if label != "" {
+		event.Labels = []string{label}
+	}
 	s.lastUnlock = event
+	s.lastDenied = time.Time{}
+	s.lastDeniedCause = ""
 	s.recordEvent(*event)
 	s.expiry = time.Now().Add(s.ttl)
 	s.armLockTimer()
@@ -512,6 +637,7 @@ func (s *Server) touchSession() []byte {
 		// Expired, but the idle-lock timer hasn't collected it yet — don't
 		// trust a timer to have fired to enforce the expiry.
 		wipe(s.mek)
+		unlockMemory(s.mek)
 		s.mek = nil
 		return nil
 	}
@@ -571,9 +697,17 @@ func (s *Server) lockIfGen(cause string, gen uint64) {
 		s.mu.Unlock()
 		return
 	}
+	// The lock is the session boundary: everything still pending in the
+	// use aggregation happened inside the session this lock ends, so it
+	// flushes here — recorded (and notified) BEFORE the lock event, the
+	// order it actually happened. Unconditional on purpose: a session that
+	// lazily expired via touchSession has mek == nil but can still hold
+	// pending uses.
+	flushed := s.flushUsesLocked(true, time.Now())
 	hadSession := s.mek != nil
 	if s.mek != nil {
 		wipe(s.mek)
+		unlockMemory(s.mek)
 		s.mek = nil
 	}
 	s.expiry = time.Time{}
@@ -589,6 +723,7 @@ func (s *Server) lockIfGen(cause string, gen uint64) {
 	}
 	s.mu.Unlock()
 
+	s.notifySessionEvents(flushed)
 	if !hadSession {
 		return
 	}
@@ -661,17 +796,128 @@ func (s *Server) recordEvent(e SessionEvent) {
 	}
 }
 
+// useKey groups uses that collapse into one KindUse event: same op, same
+// caller command line. Keyed on the command, not the pid, deliberately —
+// a relaunching MCP server is a new pid every time with an identical
+// argv, and it's exactly the caller whose uses need collapsing.
+type useKey struct {
+	op string
+	by string
+}
+
+// useAggregate is one pending KindUse event still inside its collapse
+// window. event holds the FIRST use's full provenance snapshot (pid,
+// launcher — later uses from the same command line add nothing but
+// count); start is that first use, which becomes the event's time.
+type useAggregate struct {
+	start time.Time
+	event SessionEvent
+}
+
+// maxUseLabels caps how many distinct caller-reported secret names one
+// collapsed use event carries. Eight names the typical profile in full;
+// past that, Count still says how much flowed, the list just stops
+// growing.
+const maxUseLabels = 8
+
+// recordUse notes a wrap/unwrap/reveal that rode the ALREADY-unlocked
+// session — the events history used to be blind to: unlocks said who
+// opened the session, locks said what closed it, and everything that
+// flowed through in between left no record at all. Collapsed per
+// caller+op over useWindow (the same discipline the mount read-storm
+// logging applies), so a profile resolution's burst of unwraps is one
+// event, not ten. Fresh challenges never come here — the unlock event
+// itself carries that use's provenance and label.
+//
+// Aggregates flush lazily: any later use flushes every EXPIRED aggregate
+// (so ongoing activity keeps history current), and lock()/history()
+// flush everything (the session boundary, and the moment someone
+// actually reads). A crash loses at most the still-pending window —
+// bounded, and the durable file gets everything else.
+func (s *Server) recordUse(op string, c *caller, label string) {
+	now := time.Now()
+	key := useKey{op: op, by: c.command()}
+
+	s.mu.Lock()
+	flushed := s.flushUsesLocked(false, now)
+	agg := s.pendingUses[key]
+	if agg == nil {
+		e := unlockEvent(op, c)
+		e.Kind = KindUse
+		e.UnixTime = now.Unix()
+		agg = &useAggregate{start: now, event: *e}
+		if s.pendingUses == nil {
+			s.pendingUses = map[useKey]*useAggregate{}
+		}
+		s.pendingUses[key] = agg
+	}
+	agg.event.Count++
+	if label != "" && len(agg.event.Labels) < maxUseLabels && !containsString(agg.event.Labels, label) {
+		agg.event.Labels = append(agg.event.Labels, label)
+	}
+	s.mu.Unlock()
+
+	s.notifySessionEvents(flushed)
+}
+
+// flushUsesLocked materializes pending use aggregates into the ring —
+// every one when all is set (a lock or a history read), otherwise only
+// those whose collapse window has closed — returning them (oldest first)
+// for the caller to hand to OnSessionEvent OUTSIDE s.mu, per that
+// callback's contract. Caller must hold s.mu.
+func (s *Server) flushUsesLocked(all bool, now time.Time) []SessionEvent {
+	if len(s.pendingUses) == 0 {
+		return nil
+	}
+	var out []SessionEvent
+	for k, agg := range s.pendingUses {
+		if all || now.Sub(agg.start) >= s.useWindow {
+			out = append(out, agg.event)
+			delete(s.pendingUses, k)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UnixTime < out[j].UnixTime })
+	for _, e := range out {
+		s.recordEvent(e)
+	}
+	return out
+}
+
+// notifySessionEvents hands flushed use events to OnSessionEvent, if set.
+// Its own function because three flush sites share the loop.
+func (s *Server) notifySessionEvents(events []SessionEvent) {
+	if s.OnSessionEvent == nil {
+		return
+	}
+	for _, e := range events {
+		s.OnSessionEvent(e)
+	}
+}
+
+func containsString(list []string, v string) bool {
+	for _, s := range list {
+		if s == v {
+			return true
+		}
+	}
+	return false
+}
+
 // history returns the ring NEWEST FIRST — the order it will be read in, and
 // the order `jit agent history` prints. Reversing here (rather than in the
 // CLI) keeps every consumer, including a --format json one, from having to
-// know which end is which.
+// know which end is which. Pending use aggregates flush first — the moment
+// someone actually reads history is exactly when it must be current, and
+// an aggregate mid-window would otherwise be invisible right then.
 func (s *Server) history() []SessionEvent {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	flushed := s.flushUsesLocked(true, time.Now())
 	out := make([]SessionEvent, 0, len(s.events))
 	for i := len(s.events) - 1; i >= 0; i-- {
 		out = append(out, s.events[i])
 	}
+	s.mu.Unlock()
+	s.notifySessionEvents(flushed)
 	return out
 }
 
@@ -718,6 +964,26 @@ func (s *Server) provenance() (lastUnlock, lastLock *SessionEvent) {
 		lastLock = &l
 	}
 	return lastUnlock, lastLock
+}
+
+// lockMemory/unlockMemory pin (and unpin) b's pages so the cached MEK
+// can't be written to swap for the lifetime of the session. Best-effort
+// defense in depth — macOS encrypts swap by default, mlock rounds to
+// whole pages, and the transient per-caller copies are wiped within
+// their request anyway — so failures are deliberately ignored: a
+// resource-limit refusal must never make an unlock fail. unlockMemory
+// runs AFTER wipe, so the page a munlock makes swappable again holds
+// only zeros.
+func lockMemory(b []byte) {
+	if len(b) > 0 {
+		_ = unix.Mlock(b)
+	}
+}
+
+func unlockMemory(b []byte) {
+	if len(b) > 0 {
+		_ = unix.Munlock(b)
+	}
 }
 
 func (s *Server) status() (unlocked bool, remaining time.Duration) {

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/jitpass/jit/internal/agent"
@@ -21,7 +22,8 @@ func TestHistoryLogRoundTrip(t *testing.T) {
 
 	events := []agent.SessionEvent{
 		{UnixTime: 100, Kind: agent.KindStart, Cause: "build abc123"},
-		{UnixTime: 200, Kind: agent.KindUnlock, Op: agent.OpUnwrap, By: "jit run --profile x", ByPID: 42, LaunchedBy: "claude"},
+		{UnixTime: 200, Kind: agent.KindUnlock, Op: agent.OpUnwrap, By: "jit run --profile x", ByPID: 42, LaunchedBy: "claude", Labels: []string{"stripe/live-key"}},
+		{UnixTime: 250, Kind: agent.KindUse, Op: agent.OpUnwrap, By: "jit run --profile x", Count: 7, Labels: []string{"a/b", "c/d"}},
 		{UnixTime: 300, Kind: agent.KindLock, Cause: "15m0s idle timeout"},
 	}
 	for _, e := range events {
@@ -33,7 +35,8 @@ func TestHistoryLogRoundTrip(t *testing.T) {
 		t.Fatalf("load returned %d events, want %d (stderr: %s)", len(got), len(events), stderr.String())
 	}
 	for i := range events {
-		if got[i] != events[i] {
+		// reflect.DeepEqual, not ==: SessionEvent carries a Labels slice now.
+		if !reflect.DeepEqual(got[i], events[i]) {
 			t.Errorf("event %d = %+v, want %+v — a restored event must carry every field it was recorded with", i, got[i], events[i])
 		}
 	}

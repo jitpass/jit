@@ -40,12 +40,13 @@ const (
 )
 
 // Client talks to a running Server over its Unix socket. Implements
-// vault.KeyWrapper (structurally — this package doesn't import
-// internal/vault) so other jit commands can reuse an already-unlocked
-// agent's session instead of prompting for their own independent Touch ID
-// challenge.
+// vault.KeyWrapper and vault.LabeledKeyWrapper (structurally — this
+// package doesn't import internal/vault) so other jit commands can reuse
+// an already-unlocked agent's session instead of prompting for their own
+// independent Touch ID challenge.
 type Client struct {
 	socketPath string
+	dialRetry  time.Duration
 }
 
 // NewClient returns a Client for the agent socket at socketPath.
@@ -53,11 +54,33 @@ func NewClient(socketPath string) *Client {
 	return &Client{socketPath: socketPath}
 }
 
+// WithDialRetry makes this Client keep retrying a failed dial for up to d
+// before concluding ErrNotRunning — for callers that KNOW an agent is
+// supposed to be there (the launchd plist is installed), where a dial
+// failure is usually the 1–2s respawn gap of `jit agent restart` or the
+// agent's own stale-binary self-retirement, not a missing agent. Without
+// it, a `jit run` landing in that gap silently falls back to an
+// independent Touch ID prompt — a surprise prompt caused by the agent's
+// own restart. Callers with no such knowledge should not set it: an
+// uninstalled agent would just cost every command d of pointless waiting.
+// Returns c for chaining.
+func (c *Client) WithDialRetry(d time.Duration) *Client {
+	c.dialRetry = d
+	return c
+}
+
+// dialRetryInterval paces WithDialRetry's re-dials. 100ms matches the
+// poll the CLI's own install/restart wait uses; a respawning agent binds
+// its socket within a couple of these.
+const dialRetryInterval = 100 * time.Millisecond
+
 // Reachable reports whether an agent is listening at all — used to decide
 // between using the agent's shared session and falling back to an
-// independent unlock when no agent is running.
+// independent unlock when no agent is running. Honors WithDialRetry, so a
+// caller that knows the agent is installed keeps that decision stable
+// across the agent's own restart gap.
 func (c *Client) Reachable() bool {
-	conn, err := net.DialTimeout("unix", c.socketPath, dialTimeout)
+	conn, err := c.dial()
 	if err != nil {
 		return false
 	}
@@ -65,8 +88,26 @@ func (c *Client) Reachable() bool {
 	return true
 }
 
-func (c *Client) call(req Request) (Response, error) {
+// dial connects to the agent socket, retrying for up to dialRetry (see
+// WithDialRetry) when set.
+func (c *Client) dial() (net.Conn, error) {
 	conn, err := net.DialTimeout("unix", c.socketPath, dialTimeout)
+	if err == nil || c.dialRetry <= 0 {
+		return conn, err
+	}
+	deadline := time.Now().Add(c.dialRetry)
+	for time.Now().Before(deadline) {
+		time.Sleep(dialRetryInterval)
+		conn, err = net.DialTimeout("unix", c.socketPath, dialTimeout)
+		if err == nil {
+			return conn, nil
+		}
+	}
+	return nil, err
+}
+
+func (c *Client) call(req Request) (Response, error) {
+	conn, err := c.dial()
 	if err != nil {
 		return Response{}, fmt.Errorf("connecting to agent: %w: %v", ErrNotRunning, err)
 	}
@@ -92,16 +133,31 @@ func (c *Client) call(req Request) (Response, error) {
 // using its cached MEK — challenging (Touch ID/passcode) first if the
 // agent's session is currently locked.
 func (c *Client) WrapKey(dek []byte) ([]byte, error) {
-	resp, err := c.call(Request{Op: OpWrap, Data: dek})
+	return c.WrapKeyLabeled(dek, "")
+}
+
+// UnwrapKey implements vault.KeyWrapper.
+func (c *Client) UnwrapKey(wrapped []byte) ([]byte, error) {
+	return c.UnwrapKeyLabeled(wrapped, "")
+}
+
+// WrapKeyLabeled implements vault.LabeledKeyWrapper: WrapKey plus the
+// vault path of the secret whose DEK this is, sent as Request.Label so
+// the agent's history can say WHAT was stored/read, not just who asked —
+// the one provenance fact the agent cannot learn from the kernel, since
+// it only ever sees opaque key bytes. Audit-only on the agent side, and
+// recorded there as caller-reported (see Request.Label).
+func (c *Client) WrapKeyLabeled(dek []byte, label string) ([]byte, error) {
+	resp, err := c.call(Request{Op: OpWrap, Data: dek, Label: label})
 	if err != nil {
 		return nil, err
 	}
 	return resp.Data, nil
 }
 
-// UnwrapKey implements vault.KeyWrapper.
-func (c *Client) UnwrapKey(wrapped []byte) ([]byte, error) {
-	resp, err := c.call(Request{Op: OpUnwrap, Data: wrapped})
+// UnwrapKeyLabeled implements vault.LabeledKeyWrapper — see WrapKeyLabeled.
+func (c *Client) UnwrapKeyLabeled(wrapped []byte, label string) ([]byte, error) {
+	resp, err := c.call(Request{Op: OpUnwrap, Data: wrapped, Label: label})
 	if err != nil {
 		return nil, err
 	}
