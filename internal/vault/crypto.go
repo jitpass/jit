@@ -22,7 +22,12 @@ func generateDEK() ([]byte, error) {
 }
 
 // seal AES-256-GCM encrypts plaintext under key, returning nonce||ciphertext.
-func seal(key, plaintext []byte) ([]byte, error) {
+// aad, if non-nil, is additional authenticated data: not stored, not
+// secret, but decryption fails unless open is given the identical bytes —
+// how a v2 envelope's payload gets bound to its own path and metadata
+// (envelopeAAD). nil means none, which every v1 envelope and every export
+// file uses and must keep using to stay decryptable.
+func seal(key, plaintext, aad []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("constructing cipher: %w", err)
@@ -35,11 +40,13 @@ func seal(key, plaintext []byte) ([]byte, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("generating nonce: %w", err)
 	}
-	return gcm.Seal(nonce, nonce, plaintext, nil), nil
+	return gcm.Seal(nonce, nonce, plaintext, aad), nil
 }
 
-// open reverses seal: key must be the same key, sealed must be nonce||ciphertext.
-func open(key, sealed []byte) ([]byte, error) {
+// open reverses seal: key must be the same key, sealed must be
+// nonce||ciphertext, and aad must be byte-identical to what seal was given
+// (nil for none).
+func open(key, sealed, aad []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("constructing cipher: %w", err)
@@ -52,7 +59,7 @@ func open(key, sealed []byte) ([]byte, error) {
 		return nil, fmt.Errorf("sealed data too short to contain a nonce")
 	}
 	nonce, ciphertext := sealed[:gcm.NonceSize()], sealed[gcm.NonceSize():]
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, aad)
 	if err != nil {
 		return nil, fmt.Errorf("decryption failed (wrong key or corrupted/tampered data): %w", err)
 	}

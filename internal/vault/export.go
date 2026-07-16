@@ -95,7 +95,9 @@ func (v *Vault) Export(passphrase []byte) (*ExportEnvelope, error) {
 	key := deriveExportKey(passphrase, salt)
 	defer wipe(key)
 
-	sealed, err := seal(key, plaintext)
+	// nil AAD, forever: export files predate AAD and must stay importable
+	// across jit versions in both directions within the same exportVersion.
+	sealed, err := seal(key, plaintext, nil)
 	if err != nil {
 		return nil, fmt.Errorf("encrypting export: %w", err)
 	}
@@ -162,7 +164,7 @@ func decryptExport(env *ExportEnvelope, passphrase []byte) (map[string][]byte, e
 	key := deriveExportKey(passphrase, salt)
 	defer wipe(key)
 
-	plaintext, err := open(key, sealed)
+	plaintext, err := open(key, sealed, nil)
 	if err != nil {
 		return nil, fmt.Errorf("decrypting export (wrong passphrase, or the file is corrupted): %w", err)
 	}

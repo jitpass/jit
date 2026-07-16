@@ -112,7 +112,7 @@ func TestGetMultiRecipientMismatchStillFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generateDEK: %v", err)
 	}
-	sealed, err := seal(dek, []byte("value"))
+	sealed, err := seal(dek, []byte("value"), nil)
 	if err != nil {
 		t.Fatalf("seal: %v", err)
 	}
