@@ -863,6 +863,116 @@ func TestServerHistoryRecordsEveryUnlockNotJustTheLast(t *testing.T) {
 	}
 }
 
+// TestServerStatusAnswersDuringAnInFlightChallenge pins the challengeMu/
+// s.mu split: an interactive challenge can legitimately sit ~120s waiting
+// for a human, and status/history/lock used to queue behind it on the one
+// mutex — so `jit agent status`, the exact command a user runs when an
+// unexplained prompt is on their screen, hung until the prompt resolved.
+// Reads must answer immediately, and status must name the pending
+// challenge while it's still pending.
+func TestServerStatusAnswersDuringAnInFlightChallenge(t *testing.T) {
+	socketPath := shortSocketPath(t)
+	newFetcher := func() MEKFetcher {
+		return &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32), delay: 3 * time.Second}
+	}
+	s := NewServer(socketPath, newFetcher, time.Minute)
+	if err := s.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = s.Serve(ctx); close(done) }()
+	defer func() { cancel(); _ = s.Close(); <-done }()
+
+	c := NewClient(socketPath)
+	wrapDone := make(chan error, 1)
+	go func() {
+		_, err := c.WrapKey([]byte("x"))
+		wrapDone <- err
+	}()
+	time.Sleep(500 * time.Millisecond) // let the wrap reach the (3s) challenge
+
+	start := time.Now()
+	st, err := c.Status()
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Status during a challenge: %v", err)
+	}
+	if elapsed > time.Second {
+		t.Errorf("Status took %v while a challenge was in flight — reads are queueing behind the prompt again", elapsed)
+	}
+	if st.Unlocked {
+		t.Error("Status reported unlocked while the challenge was still awaiting approval")
+	}
+	if st.PendingUnlock == nil {
+		t.Error("Status carried no PendingUnlock while a prompt was on screen — the one moment the question is being asked, and no answer")
+	} else if st.PendingUnlock.ByPID != int32(os.Getpid()) {
+		t.Errorf("PendingUnlock.ByPID = %d, want this test process's pid %d", st.PendingUnlock.ByPID, os.Getpid())
+	}
+
+	// History must answer mid-challenge too — "why do you keep prompting
+	// me?" is asked exactly while a prompt is up.
+	if _, err := c.History(); err != nil {
+		t.Fatalf("History during a challenge: %v", err)
+	}
+
+	if err := <-wrapDone; err != nil {
+		t.Fatalf("the wrap behind the slow challenge should still have succeeded: %v", err)
+	}
+	st, err = c.Status()
+	if err != nil {
+		t.Fatalf("Status after the challenge resolved: %v", err)
+	}
+	if st.PendingUnlock != nil {
+		t.Error("PendingUnlock still set after the challenge resolved — a stale 'prompt is up' line is worse than none")
+	}
+	if !st.Unlocked {
+		t.Error("expected unlocked once the challenge resolved")
+	}
+}
+
+// TestServerConcurrentUnlockersShareOneChallenge pins what the old
+// hold-s.mu-through-the-challenge design bought and challengeMu must keep
+// buying: N callers hitting a locked agent at once produce exactly ONE
+// prompt, with everyone else reusing the session the first approval
+// installed.
+func TestServerConcurrentUnlockersShareOneChallenge(t *testing.T) {
+	var calls int32
+	socketPath := shortSocketPath(t)
+	newFetcher := func() MEKFetcher {
+		return &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32), calls: &calls, delay: 300 * time.Millisecond}
+	}
+	s := NewServer(socketPath, newFetcher, time.Minute)
+	if err := s.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = s.Serve(ctx); close(done) }()
+	defer func() { cancel(); _ = s.Close(); <-done }()
+
+	c := NewClient(socketPath)
+	var wg sync.WaitGroup
+	errs := make(chan error, 5)
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := c.WrapKey([]byte("x")); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent WrapKey: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("5 concurrent unlockers triggered %d challenges, want exactly 1 — they must serialize behind a single prompt", got)
+	}
+}
+
 // TestServerHandsOutMEKCopiesNotItsCache locks in ensureUnlocked's copy
 // contract (see mekCopy): the cache and its consumers must be able to wipe
 // independently. The dangerous direction is lock() wiping the cache while a

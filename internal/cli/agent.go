@@ -364,6 +364,11 @@ type agentStatusResult struct {
 	// to a script.
 	LastUnlock *agent.SessionEvent `json:"last_unlock,omitempty"`
 	LastLock   *agent.SessionEvent `json:"last_lock,omitempty"`
+	// PendingUnlock is the challenge currently sitting on the user's screen,
+	// omitted when none is — status answers during a challenge (reads never
+	// queue behind it), so a script polling this sees the prompt the human
+	// is being asked to approve, while they're being asked.
+	PendingUnlock *agent.SessionEvent `json:"pending_unlock,omitempty"`
 	// Build is the running agent PROCESS's build (GAPS.md #49) — compare
 	// against this CLI's own to catch a launchd-kept-alive agent that
 	// predates the binary on disk. Empty when the agent isn't running.
@@ -407,7 +412,7 @@ var agentStatusCmd = &cobra.Command{
 		}
 
 		if agentStatusFormat == "json" {
-			result := agentStatusResult{Running: true, Unlocked: st.Unlocked, Mounts: st.Mounts, LastUnlock: st.LastUnlock, LastLock: st.LastLock, Build: st.Build, Version: st.Version}
+			result := agentStatusResult{Running: true, Unlocked: st.Unlocked, Mounts: st.Mounts, LastUnlock: st.LastUnlock, LastLock: st.LastLock, PendingUnlock: st.PendingUnlock, Build: st.Build, Version: st.Version}
 			if st.Unlocked {
 				result.LocksInSeconds = int64(st.Remaining.Round(time.Second).Seconds())
 			}
@@ -418,6 +423,7 @@ var agentStatusCmd = &cobra.Command{
 		} else {
 			fmt.Fprintln(cmd.OutOrStdout(), "jit agent is running and locked.")
 		}
+		printPendingUnlock(cmd.OutOrStdout(), st.PendingUnlock)
 		fmt.Fprintf(cmd.OutOrStdout(), "Versions: agent %s; CLI %s.\n", versionBuild(st.Version, st.Build), versionBuild(agent.Version(), agent.BuildID()))
 		printSessionProvenance(cmd.OutOrStdout(), st)
 		printMountStatuses(cmd.OutOrStdout(), st.Mounts)
@@ -571,6 +577,28 @@ func shortenCommand(home, cmd string) string {
 		return cmd
 	}
 	return string(r[:maxCommandLen-1]) + "…"
+}
+
+// printPendingUnlock names the Touch ID/passcode prompt that is on the
+// user's screen RIGHT NOW, if one is. This is the situation the whole
+// provenance effort exists for, caught in the act: the user typed `jit
+// agent status` because an unexplained prompt is sitting in front of them,
+// and status can answer only because reads no longer queue behind the
+// in-flight challenge itself. Yellow, because it's the one line that
+// demands a decision rather than describing the past.
+func printPendingUnlock(w io.Writer, p *agent.SessionEvent) {
+	if p == nil {
+		return
+	}
+	line := fmt.Sprintf("A Touch ID/passcode prompt is up right now (appeared %s ago)", humanAgo(time.Since(time.Unix(p.UnixTime, 0))))
+	if p.LaunchedBy != "" {
+		line += fmt.Sprintf(" — triggered by a command launched by %s", p.LaunchedBy)
+	}
+	_, _ = color.New(color.FgYellow).Fprintf(w, "%s\n", line)
+	if p.By != "" {
+		home, _ := os.UserHomeDir()
+		fmt.Fprintf(w, "      %s\n", shortenCommand(home, p.By))
+	}
 }
 
 // printSessionProvenance is the "who put the session in this state" lines
