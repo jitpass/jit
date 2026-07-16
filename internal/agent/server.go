@@ -551,6 +551,15 @@ func (s *Server) lock(cause string) {
 	s.lockIfGen(cause, 0)
 }
 
+// LockWithCause drops the session exactly as an explicit OpLock would,
+// recording cause verbatim in the session provenance — for in-process lock
+// triggers (the screen-lock/sleep watcher) that never arrive over the
+// socket and so have no caller to attribute. Same no-op-when-locked
+// semantics as every other lock.
+func (s *Server) LockWithCause(cause string) {
+	s.lock(cause)
+}
+
 // lockIfGen is lock with an optional timer-generation guard: gen 0 (an
 // explicit lock — armLockTimer starts at 1) always proceeds; a nonzero gen
 // is an idle timer identifying which arming it came from, and one that no
