@@ -29,7 +29,10 @@ is not authenticating one, and jit doesn't pretend otherwise (see
 
 - `jit agent status` shows who unlocked the current session and what
   dropped it, plus each mount's reveal state and what the most recent
-  reader was actually served, real or decoy, and by which process.
+  reader was actually served, real or decoy, and by which process. If a
+  Touch ID prompt is sitting on your screen *right now*, status names what
+  triggered it while it's still up - it answers immediately instead of
+  waiting for the prompt to resolve.
 - `jit agent history` lists every unlock and lock the agent has seen and
   what caused each:
 
@@ -40,5 +43,8 @@ is not authenticating one, and jit doesn't pretend otherwise (see
     • locked   10s ago (13:19:13) - explicit lock, launched by claude
   ```
 
-Both are written to the agent's log, which survives restarts. Both take
+History survives agent restarts (it's kept in `agent-history.jsonl`
+alongside the vault, as well as in the agent's log), and each restart
+appears in the list as its own "started" entry - so events on either side
+of one are never mistaken for a single session. Both commands take
 `--format json`.
