@@ -66,9 +66,9 @@ New here? **[Install](./getting-started/install.md)** →
 
 ## The vault
 
-- [Store, read, and delete secrets](./vault/index.md) - `set`/`get`/`list`/`rm`, rotating a key
+- [Store, read, and delete secrets](./vault/index.md) - `set`/`get`/`list`/`rm`, rotating a key, undoing a rotation with `history`/`restore`
 - [Back up and restore](./vault/backup-restore.md) - passphrase-encrypted export/import
-- [Maintenance](./vault/maintenance.md) - `prune`, `clean`, `delete`
+- [Maintenance](./vault/maintenance.md) - `rekey`, `prune`, `clean`, `delete`
 
 ## The background agent
 
