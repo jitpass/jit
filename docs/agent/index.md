@@ -25,21 +25,26 @@ to exist; only the cached key inside it locks after 15 minutes of
 inactivity, re-prompting on next use. Change the window with `--ttl`
 (`jit agent install --ttl 1h`); the value is baked into the launchd plist.
 
-Re-running `install` is also how you restart the agent after
-[upgrading the binary](../getting-started/install.md#upgrading).
-`jit agent uninstall` stops it and removes it from login startup, and
-`jit agent run` runs it in the foreground (normally launchd's job, useful
-for debugging).
+`jit agent restart` restarts the agent process — the step after
+[upgrading the binary](../getting-started/install.md#upgrading), though the
+agent also notices a replaced binary itself and restarts onto it once its
+session is locked and no prompt is pending. `jit agent uninstall` stops it
+and removes it from login startup, and `jit agent run` runs it in the
+foreground (normally launchd's job, useful for debugging).
 
 ## Locking and unlocking
 
 - `jit agent unlock` - unlock the session now (Touch ID if needed), rather
   than waiting for the next command to trigger it.
 - `jit agent lock` - lock immediately: the cached key is dropped and the
-  next vault access re-prompts. Walking away from the machine is the usual
-  reason (though the idle TTL covers the forgotten case).
+  next vault access re-prompts.
+- The session also locks itself the moment the screen locks or the machine
+  goes to sleep - walking away locks the vault without anyone typing
+  anything, and the idle TTL covers the case where you stay at your desk
+  but stop using it.
 - `jit agent status` - is it running, is it unlocked, when does it lock,
-  what mounts is it serving. `--format json` for scripting.
+  what mounts is it serving - and, if a Touch ID prompt is up right now,
+  who triggered it. `--format json` for scripting.
 
 ## Every unlock is attributed
 
