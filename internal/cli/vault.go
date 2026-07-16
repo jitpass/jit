@@ -912,8 +912,13 @@ func openVault() (*vault.Vault, error) {
 	}
 
 	var kw vault.KeyWrapper = keychainwrap.New()
-	if agentClient := agent.NewClient(agent.SocketPath(root)); agentClient.Reachable() {
-		kw = agentClient
+	// The retry-configured client (agentClient): when the agent is
+	// installed, a dial failure is usually its own restart gap (`jit agent
+	// restart`, stale-binary self-retirement) — without the retry, a
+	// command landing in that gap silently fell back to an independent
+	// Touch ID prompt caused by nothing the user did.
+	if c, err := agentClient(); err == nil && c.Reachable() {
+		kw = c
 	}
 
 	return &vault.Vault{

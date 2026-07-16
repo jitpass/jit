@@ -166,6 +166,31 @@ func intent(op string, c *caller) string {
 // wrap/unwrap it isn't.
 const opServeMounts = "serve_mounts"
 
+// DescribeUse renders a SessionEvent.Op for a human reading `jit agent
+// history` — the op vocabulary belongs to this package (opServeMounts
+// isn't even a wire op), so the mapping lives here rather than being
+// re-guessed by every displayer. Unknown ops pass through verbatim: an
+// older CLI reading a newer agent's history must degrade to the raw
+// name, never to silence.
+func DescribeUse(op string) string {
+	switch op {
+	case OpWrap:
+		return "stored a secret"
+	case OpUnwrap:
+		return "read a secret"
+	case OpReveal:
+		return "revealed a mounted file"
+	case OpRefresh:
+		return "refreshed mounts"
+	case OpUnlock:
+		return "extended the session"
+	case opServeMounts:
+		return "served mounted files"
+	default:
+		return op
+	}
+}
+
 // truncate cuts s to at most max RUNES. Runes, not bytes: profile names
 // are user-written and can be non-ASCII, and a byte-index cut through the
 // middle of a multi-byte character puts invalid UTF-8 into the one string
