@@ -143,10 +143,34 @@ type Server struct {
 	// it before Listen.
 	readTimeout time.Duration
 
-	mu        sync.Mutex
-	mek       []byte
-	expiry    time.Time
-	lockTimer *time.Timer
+	// mu guards the session fields below and is only ever held for quick
+	// field access — NEVER across the interactive challenge. challengeMu is
+	// what serializes concurrent would-be unlockers behind a single Touch ID
+	// prompt (see ensureUnlockedNotify). Keeping those two jobs on one mutex
+	// was a real defect: status/history/lock requests queued behind an
+	// in-flight challenge for up to the challenge's own ~120s ceiling — and
+	// `jit agent status` is exactly what a user runs when a prompt they
+	// don't understand is sitting on their screen.
+	mu          sync.Mutex
+	challengeMu sync.Mutex
+	mek         []byte
+	expiry      time.Time
+	lockTimer   *time.Timer
+	// timerGen invalidates stale idle-lock timers: each (re-)arm bumps it,
+	// and a fired timer that lost the race to a concurrent touch/unlock
+	// (its Stop() came back false because the goroutine was already
+	// running) must not drop the session it no longer times. Without this,
+	// a request arriving just as the TTL lapsed could have the old timer's
+	// lock() collect the FRESH session installed moments later, recording
+	// a bogus "idle timeout" immediately after a successful unlock.
+	timerGen uint64
+	// pendingChallenge, while non-nil, is the challenge currently sitting
+	// on the user's screen: who triggered it and when it appeared. Status
+	// reports it (Response.PendingUnlock) so the answer to "why is there a
+	// prompt right now?" is available at the exact moment the question is
+	// being asked — not only after the fact via lastUnlock. Never recorded
+	// in history; the unlock event (if the human approves) is.
+	pendingChallenge *SessionEvent
 	// lastUnlock/lastLock are the session's provenance: who unlocked it and
 	// what dropped it (GAPS.md #75). Kept even while locked — the whole point
 	// is to still be able to explain a session that has already ended, which
@@ -263,7 +287,7 @@ func (s *Server) handle(req Request, c *caller) Response {
 			mounts = s.OnMountStatus()
 		}
 		lastUnlock, lastLock := s.provenance()
-		return Response{OK: true, Unlocked: unlocked, ExpiresInSeconds: int64(remaining.Seconds()), Mounts: mounts, LastUnlock: lastUnlock, LastLock: lastLock, Build: BuildID(), Version: Version()}
+		return Response{OK: true, Unlocked: unlocked, ExpiresInSeconds: int64(remaining.Seconds()), Mounts: mounts, LastUnlock: lastUnlock, LastLock: lastLock, PendingUnlock: s.pendingUnlock(), Build: BuildID(), Version: Version()}
 	case OpHistory:
 		// Deliberately no ensureUnlocked: reading which prompts have already
 		// happened must never itself cause one. An agent you can't ask "why do
@@ -407,45 +431,45 @@ func (s *Server) mekCopy() []byte {
 // challenge just succeeded" callback in place of the default OnUnlock.
 // Only OpReveal passes anything other than OnUnlock (see OnUnlockForReveal) —
 // every other caller goes through ensureUnlocked. onFresh fires exactly
-// where OnUnlock did: after the lock is released, and only for a genuine
-// fresh challenge, never a cache hit.
+// where OnUnlock always has: after all internal locks are released, and
+// only for a genuine fresh challenge, never a cache hit.
+//
+// challengeMu — not s.mu — is what serializes concurrent callers behind a
+// single Touch ID prompt rather than each triggering their own. The second
+// caller in line re-checks the session after acquiring it, because the
+// first caller's approved challenge is usually exactly the unlock it was
+// waiting for. s.mu is only ever held for field access, so a status/
+// history/lock request arriving mid-challenge is answered immediately
+// instead of queueing for up to the challenge's ~120s ceiling.
 func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller) ([]byte, error) {
-	s.mu.Lock()
-
-	if s.mek != nil && time.Now().Before(s.expiry) {
-		mek := s.mekCopy()
-		// The TTL is a true inactivity timeout (GAPS.md #45), exactly as
-		// `jit agent --help` and the docs describe it: every use of the still-valid
-		// session pushes auto-lock back out to a full ttl from now. The
-		// code used to implement a fixed window since the last unlock
-		// instead (a cache hit never extended expiry), silently
-		// disagreeing with its own help text — under that reading, an
-		// actively-used session would re-prompt mid-work at a moment that
-		// has nothing to do with the user having stepped away, which is
-		// the only thing the auto-lock exists to cover.
-		s.expiry = time.Now().Add(s.ttl)
-		if s.lockTimer != nil {
-			s.lockTimer.Stop()
-		}
-		s.lockTimer = time.AfterFunc(s.ttl, s.idleLock)
-		s.mu.Unlock()
+	if mek := s.touchSession(); mek != nil {
 		return mek, nil
 	}
-	if s.mek != nil {
-		wipe(s.mek)
-		s.mek = nil
+
+	s.challengeMu.Lock()
+	defer s.challengeMu.Unlock()
+
+	// The caller we queued behind may have just unlocked for us.
+	if mek := s.touchSession(); mek != nil {
+		return mek, nil
 	}
 
-	// Held for the whole (possibly slow, interactive) challenge on
-	// purpose: concurrent callers must serialize behind the first one
-	// rather than each independently triggering their own Touch ID
-	// prompt. OnUnlock fires only after releasing the lock below, and
-	// only for a fresh challenge — never for a cache hit above.
-	//
+	// pending is what status reports while the prompt is on screen; its
+	// UnixTime is when the prompt APPEARED. The recorded unlock event is
+	// built fresh after success, so history carries when the human
+	// actually approved, not when they were first asked.
+	pending := unlockEvent(op, c)
+	s.mu.Lock()
+	s.pendingChallenge = pending
+	s.mu.Unlock()
+
 	// The reason handed to the fetcher is the prompt the human is about to
 	// read, so it is built HERE, where both the op and the caller are known
 	// — the fetcher itself has no idea who it's prompting on behalf of.
 	mek, err := s.newFetcher().FetchMEK(challengeReason(op, c))
+
+	s.mu.Lock()
+	s.pendingChallenge = nil
 	if err != nil {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("unlocking: %w", err)
@@ -456,10 +480,7 @@ func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller) ([]b
 	s.lastUnlock = event
 	s.recordEvent(*event)
 	s.expiry = time.Now().Add(s.ttl)
-	if s.lockTimer != nil {
-		s.lockTimer.Stop()
-	}
-	s.lockTimer = time.AfterFunc(s.ttl, s.idleLock)
+	s.armLockTimer()
 	s.mu.Unlock()
 
 	if s.OnSessionEvent != nil {
@@ -469,6 +490,51 @@ func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller) ([]b
 		onFresh()
 	}
 	return out, nil
+}
+
+// touchSession returns a copy of the MEK if the session is still valid —
+// extending the inactivity TTL — or nil, meaning a fresh challenge is
+// needed. The TTL is a true inactivity timeout (GAPS.md #45), exactly as
+// `jit agent --help` and the docs describe it: every use of the still-valid
+// session pushes auto-lock back out to a full ttl from now. The code used
+// to implement a fixed window since the last unlock instead (a cache hit
+// never extended expiry), silently disagreeing with its own help text —
+// under that reading, an actively-used session would re-prompt mid-work at
+// a moment that has nothing to do with the user having stepped away, which
+// is the only thing the auto-lock exists to cover.
+func (s *Server) touchSession() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.mek == nil {
+		return nil
+	}
+	if !time.Now().Before(s.expiry) {
+		// Expired, but the idle-lock timer hasn't collected it yet — don't
+		// trust a timer to have fired to enforce the expiry.
+		wipe(s.mek)
+		s.mek = nil
+		return nil
+	}
+	mek := s.mekCopy()
+	s.expiry = time.Now().Add(s.ttl)
+	s.armLockTimer()
+	return mek
+}
+
+// armLockTimer (re)arms the idle auto-lock a full TTL out. Caller must
+// hold s.mu. Bumping timerGen is what neutralizes a previously-armed timer
+// whose goroutine already started firing (Stop() too late to help): when
+// it eventually gets the lock, its generation no longer matches and it
+// must not touch the session it no longer times.
+func (s *Server) armLockTimer() {
+	s.timerGen++
+	gen := s.timerGen
+	if s.lockTimer != nil {
+		s.lockTimer.Stop()
+	}
+	s.lockTimer = time.AfterFunc(s.ttl, func() {
+		s.lockIfGen(fmt.Sprintf("%s idle timeout", s.ttl), gen)
+	})
 }
 
 // lock drops the cached MEK, recording WHY. OnLock only fires if there was
@@ -482,7 +548,20 @@ func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller) ([]b
 // timeout rather than anything the user did. Saying so is the difference
 // between the auto-lock looking like policy and looking like a bug.
 func (s *Server) lock(cause string) {
+	s.lockIfGen(cause, 0)
+}
+
+// lockIfGen is lock with an optional timer-generation guard: gen 0 (an
+// explicit lock — armLockTimer starts at 1) always proceeds; a nonzero gen
+// is an idle timer identifying which arming it came from, and one that no
+// longer matches lost a race to a touch/unlock that re-armed after it —
+// the session it would drop is not the one it timed.
+func (s *Server) lockIfGen(cause string, gen uint64) {
 	s.mu.Lock()
+	if gen != 0 && gen != s.timerGen {
+		s.mu.Unlock()
+		return
+	}
 	hadSession := s.mek != nil
 	if s.mek != nil {
 		wipe(s.mek)
@@ -510,13 +589,6 @@ func (s *Server) lock(cause string) {
 	if s.OnLock != nil {
 		s.OnLock()
 	}
-}
-
-// idleLock is the TTL auto-lock — the time.AfterFunc callback, which takes
-// no arguments, hence this rather than a closure at each of the two call
-// sites that arm the timer.
-func (s *Server) idleLock() {
-	s.lock(fmt.Sprintf("%s idle timeout", s.ttl))
 }
 
 // lockCause names an explicit `jit agent lock` (or a `jit vault` command that
@@ -568,6 +640,21 @@ func (s *Server) history() []SessionEvent {
 		out = append(out, s.events[i])
 	}
 	return out
+}
+
+// pendingUnlock returns a copy of the challenge currently awaiting the
+// human's answer, or nil when none is. Only answerable at all because
+// status no longer queues behind the challenge itself — the whole point of
+// challengeMu — and it turns that fix into an affirmative answer: status
+// during a prompt doesn't just return, it explains the prompt.
+func (s *Server) pendingUnlock() *SessionEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pendingChallenge == nil {
+		return nil
+	}
+	p := *s.pendingChallenge
+	return &p
 }
 
 // provenance returns copies, so a status response can never hand a caller a
