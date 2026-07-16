@@ -24,6 +24,7 @@ import (
 
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/keychainwrap"
+	"github.com/jitpass/jit/internal/screenlock"
 )
 
 var agentTTL time.Duration
@@ -124,8 +125,37 @@ var agentRunCmd = &cobra.Command{
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 
+		// Lock the moment the human demonstrably leaves — the screen
+		// locking or the machine going to sleep — instead of holding the
+		// session for the remainder of the idle TTL after they're gone.
+		// Best-effort: a watch failure is logged and the TTL still covers
+		// everything, just later.
+		if err := screenlock.Watch(func(cause string) { server.LockWithCause(cause) }); err != nil {
+			fmt.Fprintf(stderr, "jit agent: screen-lock/sleep watch unavailable (%v) — sessions will lock on the idle TTL alone\n", err)
+		}
+
 		fmt.Fprintf(stdout, "jit agent listening on %s (session TTL %s, build %s)\n", agent.SocketPath(root), agentTTL, agent.BuildID())
-		err = server.Serve(ctx)
+
+		// Serve from a goroutine so THIS goroutine — locked to the main OS
+		// thread by cmd/jit's init — can park in the main run loop, the
+		// only place macOS delivers the screen-lock/sleep notifications
+		// (see screenlock.RunMain). Serve ending for any reason must also
+		// unpark the loop, or a listener failure would leave the process
+		// alive doing nothing.
+		loopCtx, loopCancel := context.WithCancel(ctx)
+		defer loopCancel()
+		serveErr := make(chan error, 1)
+		go func() {
+			serveErr <- server.Serve(ctx)
+			loopCancel()
+		}()
+		if err := screenlock.RunMain(loopCtx); err != nil {
+			// Not on the main thread (an embedding or test arrangement):
+			// screen-lock events won't be delivered, but serving is
+			// unaffected — say so and keep running.
+			fmt.Fprintf(stderr, "jit agent: screen-lock/sleep events disabled: %v\n", err)
+		}
+		err = <-serveErr
 		if err != nil && !errors.Is(err, context.Canceled) {
 			return fmt.Errorf("jit agent run: %w", err)
 		}

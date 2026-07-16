@@ -8,10 +8,21 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime"
 
 	"github.com/jitpass/jit/internal/cli"
 	"github.com/jitpass/jit/internal/wrap"
 )
+
+func init() {
+	// Keep the main goroutine on the main OS thread. `jit agent run` hands
+	// that thread to internal/screenlock.RunMain — macOS delivers
+	// distributed notifications (the screen-lock signal the agent locks
+	// its session on) to the MAIN run loop only, so the thread must still
+	// be the main one when RunE executes. Free for every other command:
+	// the main goroutine simply runs where it started.
+	runtime.LockOSThread()
+}
 
 func main() {
 	// Shim dispatch (docs/internal/WRAP-PLAN.md §3.1): invoked through a
