@@ -34,9 +34,11 @@ var (
 	vaultRmForce     bool
 	vaultListFormat  string
 	vaultListAll     bool
-	vaultExportStdin bool
-	vaultImportStdin bool
-	vaultImportYes   bool
+	vaultExportStdin   bool
+	vaultImportStdin   bool
+	vaultImportYes     bool
+	vaultHistoryFormat string
+	vaultRestoreStamp  int64
 )
 
 // vaultListResult is jit vault list's --format json shape (GAPS.md #22).
@@ -271,6 +273,102 @@ var vaultRmCmd = &cobra.Command{
 	},
 }
 
+// vaultHistoryResult is jit vault history's --format json shape: one row
+// per archived version, newest first, matching the text output's order.
+type vaultHistoryResult struct {
+	Path     string                `json:"path"`
+	Versions []vaultHistoryVersion `json:"versions"`
+}
+
+type vaultHistoryVersion struct {
+	// Stamp is the opaque handle `jit vault restore --version` takes.
+	Stamp       int64 `json:"stamp"`
+	CreatedUnix int64 `json:"created_unix,omitempty"`
+	UpdatedUnix int64 `json:"updated_unix,omitempty"`
+}
+
+var vaultHistoryCmd = &cobra.Command{
+	Use:   "history <path>",
+	Short: "List a secret's archived previous versions",
+	Long: "Every overwrite of a stored secret keeps the outgoing value as an encrypted\n" +
+		"archived version (the newest " + fmt.Sprint(vault.HistoryKeep) + " are kept). This lists them — never\n" +
+		"decrypting anything, so it never prompts. `jit vault restore` brings one\n" +
+		"back; `jit vault rm` deletes them along with the secret.",
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeVaultPaths,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateOutputFormat(vaultHistoryFormat); err != nil {
+			return fmt.Errorf("jit vault history: %w", err)
+		}
+		v, err := openVaultReadOnly()
+		if err != nil {
+			return fmt.Errorf("jit vault history: %w", err)
+		}
+		versions, err := v.HistoryVersions(args[0])
+		if err != nil {
+			return fmt.Errorf("jit vault history: %w", err)
+		}
+
+		if vaultHistoryFormat == "json" {
+			rows := make([]vaultHistoryVersion, 0, len(versions))
+			for _, hv := range versions {
+				rows = append(rows, vaultHistoryVersion{Stamp: hv.ArchiveStamp, CreatedUnix: hv.CreatedUnix, UpdatedUnix: hv.UpdatedUnix})
+			}
+			return writeJSON(cmd.OutOrStdout(), vaultHistoryResult{Path: args[0], Versions: rows})
+		}
+
+		if len(versions) == 0 {
+			fmt.Fprintf(cmd.OutOrStdout(), "No archived versions for %s — history is kept from the first overwrite on.\n", args[0])
+			return nil
+		}
+		for _, hv := range versions {
+			when := time.Unix(0, hv.ArchiveStamp)
+			line := fmt.Sprintf("archived %s ago (%s)", humanAgo(time.Since(when)), when.Format("2006-01-02 15:04:05"))
+			if hv.UpdatedUnix > 0 {
+				line += fmt.Sprintf(", value from %s", time.Unix(hv.UpdatedUnix, 0).Format("2006-01-02"))
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%d  %s\n", hv.ArchiveStamp, line)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "\n%d archived %s. Restore the newest with `jit vault restore %s`, an older one with --version <stamp>.\n",
+			len(versions), pluralWord(len(versions), "version", "versions"), args[0])
+		return nil
+	},
+}
+
+var vaultRestoreCmd = &cobra.Command{
+	Use:   "restore <path>",
+	Short: "Bring back an archived previous version of a secret",
+	Long: "Replaces the secret's current value with an archived one from `jit vault\n" +
+		"history` — the newest by default, or the one named by --version <stamp>.\n" +
+		"The displaced current value is archived first, so a restore is itself\n" +
+		"restorable and flipping between two versions can never lose either.\n\n" +
+		"Restoring moves the archived encrypted file back into place byte-for-byte;\n" +
+		"nothing is decrypted, but a fresh Touch ID/passcode approval is required —\n" +
+		"changing what a secret resolves to must never happen silently.",
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeVaultPaths,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// Fresh auth, same reasoning as `jit migrate remove` (GAPS.md #60):
+		// Restore never touches the KeyWrapper (it moves envelope files),
+		// so without an explicit challenge the promised approval would
+		// silently never happen — and riding a cached agent session would
+		// let any same-user process quietly repoint a secret's value.
+		wrapper := keychainwrap.New()
+		if err := wrapper.RequireUserPresence(fmt.Sprintf("restore a previous version of %q", args[0])); err != nil {
+			return fmt.Errorf("jit vault restore: %w", err)
+		}
+		v, err := openVaultReadOnly()
+		if err != nil {
+			return fmt.Errorf("jit vault restore: %w", err)
+		}
+		if err := v.Restore(args[0], vaultRestoreStamp); err != nil {
+			return fmt.Errorf("jit vault restore: %w", err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Restored %s. The value it replaced is archived — `jit vault history %s`.\n", args[0], args[0])
+		return nil
+	},
+}
+
 var vaultExportCmd = &cobra.Command{
 	Use:   "export <file>",
 	Short: "Export every secret to a passphrase-encrypted local backup file",
@@ -478,7 +576,7 @@ func readSecretValue(cmd *cobra.Command, args []string) ([]byte, error) {
 }
 
 func confirmOverwrite(cmd *cobra.Command, path string) bool {
-	return confirmPrompt(cmd, fmt.Sprintf("%s already exists in the vault. Overwrite it? The current value can't be recovered afterward. [y/N] ", path))
+	return confirmPrompt(cmd, fmt.Sprintf("%s already exists in the vault. Overwrite it? The current value is kept as an archived version (`jit vault history %s`). [y/N] ", path, path))
 }
 
 var vaultCleanYes bool
@@ -942,6 +1040,8 @@ func init() {
 	vaultCleanCmd.Flags().BoolVarP(&vaultCleanYes, "yes", "y", false, "skip the confirmation prompt")
 	vaultPruneCmd.Flags().BoolVarP(&vaultPruneYes, "yes", "y", false, "skip the confirmation prompt")
 	vaultDeleteCmd.Flags().BoolVarP(&vaultDeleteYes, "yes", "y", false, "skip the confirmation prompt")
-	vaultCmd.AddCommand(vaultInitCmd, vaultSetCmd, vaultGetCmd, vaultListCmd, vaultRmCmd, vaultCleanCmd, vaultPruneCmd, vaultDeleteCmd, vaultExportCmd, vaultImportCmd)
+	vaultHistoryCmd.Flags().StringVar(&vaultHistoryFormat, "format", "text", `output format: "text" (default) or "json"`)
+	vaultRestoreCmd.Flags().Int64Var(&vaultRestoreStamp, "version", 0, "which archived version to restore, by its stamp from jit vault history (default: the newest)")
+	vaultCmd.AddCommand(vaultInitCmd, vaultSetCmd, vaultGetCmd, vaultListCmd, vaultHistoryCmd, vaultRestoreCmd, vaultRmCmd, vaultCleanCmd, vaultPruneCmd, vaultDeleteCmd, vaultExportCmd, vaultImportCmd)
 	rootCmd.AddCommand(vaultCmd)
 }
