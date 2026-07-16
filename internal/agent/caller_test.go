@@ -8,6 +8,7 @@ package agent
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/jitpass/jit/internal/lineage"
 )
@@ -56,8 +57,8 @@ func TestChallengeReasonNamesTheProfileNotTheFlag(t *testing.T) {
 	if strings.Contains(got, "/Users/") {
 		t.Errorf("reason = %q, must not carry absolute paths from the child command into a modal dialog", got)
 	}
-	if len(got) > maxReasonLen {
-		t.Errorf("reason is %d chars (%q), want <= %d — macOS renders it as one sentence in a small modal", len(got), got, maxReasonLen)
+	if n := utf8.RuneCountInString(got); n > maxReasonLen {
+		t.Errorf("reason is %d chars (%q), want <= %d — macOS renders it as one sentence in a small modal", n, got, maxReasonLen)
 	}
 }
 
@@ -125,7 +126,23 @@ func TestChallengeReasonHandlesNilCaller(t *testing.T) {
 func TestChallengeReasonTruncatesRunawayNames(t *testing.T) {
 	c := callerFor([]string{"jit", "run", "--profile", strings.Repeat("x", 300)})
 
-	if got := challengeReason(OpUnwrap, c); len(got) > maxReasonLen {
-		t.Errorf("reason is %d chars, want <= %d even with an absurd profile name", len(got), maxReasonLen)
+	if got := challengeReason(OpUnwrap, c); utf8.RuneCountInString(got) > maxReasonLen {
+		t.Errorf("reason is %d chars, want <= %d even with an absurd profile name", utf8.RuneCountInString(got), maxReasonLen)
+	}
+}
+
+// A profile name is user-written text and can be non-ASCII. Truncation
+// used to slice by byte index, so a cut landing inside a multi-byte
+// character put literally invalid UTF-8 into the one string whose entire
+// job is to be read by a human on the Touch ID dialog.
+func TestChallengeReasonTruncationNeverSplitsARune(t *testing.T) {
+	c := callerFor([]string{"jit", "run", "--profile", strings.Repeat("日本語の秘密", 20)})
+
+	got := challengeReason(OpUnwrap, c)
+	if !utf8.ValidString(got) {
+		t.Errorf("reason = %q is not valid UTF-8 — truncation split a multi-byte character", got)
+	}
+	if utf8.RuneCountInString(got) > maxReasonLen {
+		t.Errorf("reason is %d runes, want <= %d", utf8.RuneCountInString(got), maxReasonLen)
 	}
 }
