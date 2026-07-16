@@ -171,6 +171,11 @@ type Status struct {
 	// unlocked (or locked) once.
 	LastUnlock *SessionEvent
 	LastLock   *SessionEvent
+	// PendingUnlock is the challenge currently on the user's screen (nil
+	// when none): who triggered it and when the prompt appeared. The
+	// answer to "why is there a Touch ID prompt right now?", available
+	// while it's still being asked.
+	PendingUnlock *SessionEvent
 	// Build is the agent process's own BuildID (GAPS.md #49), for the caller
 	// to compare against its own and notice a stale, launchd-kept-alive agent
 	// that predates the binary on disk.
@@ -201,12 +206,13 @@ func (c *Client) Status() (Status, error) {
 		return Status{}, err
 	}
 	return Status{
-		Unlocked:   resp.Unlocked,
-		Remaining:  time.Duration(resp.ExpiresInSeconds) * time.Second,
-		Mounts:     resp.Mounts,
-		LastUnlock: resp.LastUnlock,
-		LastLock:   resp.LastLock,
-		Build:      resp.Build,
-		Version:    resp.Version,
+		Unlocked:      resp.Unlocked,
+		Remaining:     time.Duration(resp.ExpiresInSeconds) * time.Second,
+		Mounts:        resp.Mounts,
+		LastUnlock:    resp.LastUnlock,
+		LastLock:      resp.LastLock,
+		PendingUnlock: resp.PendingUnlock,
+		Build:         resp.Build,
+		Version:       resp.Version,
 	}, nil
 }
