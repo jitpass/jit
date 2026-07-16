@@ -194,9 +194,11 @@ type Status struct {
 	Version string
 }
 
-// History asks for every unlock and lock this agent process has seen, newest
-// first. Bounded (maxSessionEvents) and in-memory: a launchd restart empties
-// it, which is exactly why the same events also go to the agent's log.
+// History asks for every unlock and lock the agent knows of, newest first
+// — the running process's own events plus what it was seeded with from the
+// durable history file (SeedHistory), so the answer survives the launchd
+// restarts that happen at every login. Bounded by MaxSessionEvents; agent
+// restarts appear as "start" events.
 //
 // Never triggers a challenge — asking why you keep being prompted must not
 // prompt you.

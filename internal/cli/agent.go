@@ -104,7 +104,28 @@ var agentRunCmd = &cobra.Command{
 		server.OnReveal = mounts.revealMount
 		server.OnStopMount = mounts.stopMount
 		server.OnMountStatus = mounts.mountRevealStatuses
-		server.OnSessionEvent = func(e agent.SessionEvent) { logSessionEvent(stdout, e) }
+
+		// Durable session history: every event goes to agent-history.jsonl
+		// as well as the prose log, and the previous processes' events are
+		// seeded back into the ring — so `jit agent history` can answer for
+		// prompts that happened before the most recent launchd restart,
+		// which is exactly when the question gets asked (restarts happen at
+		// login; the question is asked the next morning, about yesterday).
+		// The start marker is what keeps the restored sequence honest: a
+		// session that "just locked" across a restart didn't lock, the
+		// process died.
+		hist := newHistoryLog(root, stderr)
+		hist.trim()
+		hist.append(agent.SessionEvent{
+			UnixTime: time.Now().Unix(),
+			Kind:     agent.KindStart,
+			Cause:    fmt.Sprintf("build %s", agent.BuildID()),
+		})
+		server.SeedHistory(hist.load(agent.MaxSessionEvents))
+		server.OnSessionEvent = func(e agent.SessionEvent) {
+			logSessionEvent(stdout, e)
+			hist.append(e)
+		}
 
 		if err := server.Listen(); err != nil {
 			return fmt.Errorf("jit agent run: %w", err)
@@ -472,14 +493,16 @@ var agentHistoryCmd = &cobra.Command{
 	Short: "List every unlock and lock this agent has seen, and what caused them",
 	Long: "Prints the agent's session history, most recent first: every Touch ID prompt\n" +
 		"that succeeded (with the command that triggered it and what launched that\n" +
-		"command) and every lock (with its cause — an idle timeout, or an explicit\n" +
-		"`jit agent lock`).\n\n" +
+		"command), every lock (with its cause — an idle timeout, the screen locking,\n" +
+		"or an explicit `jit agent lock`), and every agent start.\n\n" +
 		"This is the answer to \"why does it keep asking me?\" — a question the agent\n" +
 		"previously had no way to answer, since only locks were ever recorded and the\n" +
 		"unlocks that did the prompting left no trace at all.\n\n" +
-		"In-memory and bounded, so a restart (launchd restarts the agent at every\n" +
-		"login) empties it. The same events are also appended to the agent's log file,\n" +
-		"which is the durable record.",
+		"Survives restarts: events are also written to agent-history.jsonl alongside\n" +
+		"the vault, and each new agent process picks the newest back up — so asking\n" +
+		"about yesterday's prompts works even though logging in this morning restarted\n" +
+		"the agent. Agent starts appear in the list, marking where one process's\n" +
+		"events end and the previous one's begin.",
 	Args:         cobra.NoArgs,
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -530,6 +553,16 @@ func printSessionHistory(w io.Writer, events []agent.SessionEvent) {
 				cause = "unknown cause"
 			}
 			fmt.Fprintf(w, "  • %s — %s\n", sessionWhen("locked", e.UnixTime), cause)
+		case agent.KindStart:
+			// The process boundary: everything below this line happened in
+			// an earlier agent process (restored from the durable history).
+			line := sessionWhen("started", e.UnixTime)
+			if e.Cause != "" {
+				line += fmt.Sprintf(" — agent process started (%s)", e.Cause)
+			} else {
+				line += " — agent process started"
+			}
+			fmt.Fprintf(w, "  • %s\n", line)
 		default:
 			line := fmt.Sprintf("  • %s", sessionWhen("unlocked", e.UnixTime))
 			if e.LaunchedBy != "" {

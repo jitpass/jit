@@ -38,6 +38,14 @@ const (
 const (
 	KindUnlock = "unlock"
 	KindLock   = "lock"
+	// KindStart marks the agent PROCESS starting, with Cause carrying its
+	// build. Server never emits it — the CLI layer writes one per `jit
+	// agent run` into the durable history it seeds the ring from — but the
+	// ring and the wire carry it like any other event. It's what makes a
+	// restored history honest: a session that "just locked" across a
+	// launchd restart didn't lock, the process died, and events on either
+	// side of a start marker belong to different agent processes.
+	KindStart = "start"
 )
 
 // Response answers a Request.
@@ -74,11 +82,13 @@ type Response struct {
 	// challenge precisely because reads don't queue behind it, so this is
 	// the agent explaining a prompt WHILE the human is staring at it.
 	PendingUnlock *SessionEvent `json:"pending_unlock,omitempty"`
-	// Events answers "history" — every unlock and lock this agent PROCESS has
-	// seen, newest first, bounded by maxSessionEvents. Status deliberately
-	// carries only the two latest instead (a status call happens constantly,
-	// including from shell prompts; shipping the whole ring each time would
-	// be wasteful), so the full sequence needs asking for.
+	// Events answers "history" — every unlock and lock this agent process
+	// has seen, plus whatever an earlier process durably recorded and this
+	// one was seeded with (SeedHistory), newest first, bounded by
+	// MaxSessionEvents. Status deliberately carries only the two latest
+	// instead (a status call happens constantly, including from shell
+	// prompts; shipping the whole ring each time would be wasteful), so
+	// the full sequence needs asking for.
 	Events []SessionEvent `json:"events,omitempty"`
 	// Build is the serving agent process's own BuildID(), set on "status"
 	// (GAPS.md #49) — launchd's KeepAlive keeps an agent process alive
@@ -106,11 +116,12 @@ type Response struct {
 // never fail the unlock itself.
 type SessionEvent struct {
 	UnixTime int64 `json:"unix_time"`
-	// Kind is "unlock" or "lock". Callers used to tell the two apart by
-	// checking whether Cause was set, which worked only because locks happen
-	// to be the only events that carry one — a coincidence, not a contract,
-	// and one that would have broken silently the first time an unlock needed
-	// a cause of its own.
+	// Kind is "unlock", "lock", or "start". Callers used to tell unlocks and
+	// locks apart by checking whether Cause was set, which worked only
+	// because locks happened to be the only events that carried one — a
+	// coincidence, not a contract, and one that would have broken silently
+	// the first time another kind needed a cause of its own (start events
+	// now do).
 	Kind string `json:"kind"`
 	// Op is the RPC that forced the unlock ("unwrap", "reveal", ...), or
 	// "serve_mounts" for the agent's own in-process unlock when it resolves
