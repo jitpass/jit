@@ -263,7 +263,7 @@ func (s *Server) handle(req Request, c *caller) Response {
 			mounts = s.OnMountStatus()
 		}
 		lastUnlock, lastLock := s.provenance()
-		return Response{OK: true, Unlocked: unlocked, ExpiresInSeconds: int64(remaining.Seconds()), Mounts: mounts, LastUnlock: lastUnlock, LastLock: lastLock, Build: BuildID()}
+		return Response{OK: true, Unlocked: unlocked, ExpiresInSeconds: int64(remaining.Seconds()), Mounts: mounts, LastUnlock: lastUnlock, LastLock: lastLock, Build: BuildID(), Version: Version()}
 	case OpHistory:
 		// Deliberately no ensureUnlocked: reading which prompts have already
 		// happened must never itself cause one. An agent you can't ask "why do
