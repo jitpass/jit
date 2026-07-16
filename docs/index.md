@@ -87,6 +87,10 @@ New here? **[Install](./getting-started/install.md)** →
 - [Self-reviews](./security/self-reviews/index.md) - jit reviews its own code and publishes the results
 - [Reporting a vulnerability](./security/reporting.md)
 
+## Blog
+
+- [jit blog](./blog/index.md) - the threat lens (infostealers, supply-chain attacks, where tools store your tokens) and inside jit (architecture, features, rationale)
+
 ## About
 
 - [Contributing](./about/contributing.md) · [License (BUSL-1.1)](./about/license.md) · [Tech stack](./about/tech-stack.md)
