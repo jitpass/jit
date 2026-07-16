@@ -95,6 +95,12 @@ func TestStatusReflectsRealAgentRunningAndLocked(t *testing.T) {
 	if !strings.Contains(out, "Agent: running and unlocked") {
 		t.Errorf("expected an unlocked agent summary, got:\n%s", out)
 	}
+	// The in-test server runs in this same process, so its version/build are
+	// this binary's own — the Versions line must report both sides.
+	wantVersions := "Versions: jit " + versionBuild(agent.Version(), agent.BuildID()) + "; agent " + versionBuild(agent.Version(), agent.BuildID()) + "."
+	if !strings.Contains(out, wantVersions) {
+		t.Errorf("expected %q, got:\n%s", wantVersions, out)
+	}
 	if !strings.Contains(out, "Mounts: 1 registered, agent unlocked — real content available") {
 		t.Errorf("expected mounts to be reported as serving real content while unlocked, got:\n%s", out)
 	}
