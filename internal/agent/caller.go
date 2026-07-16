@@ -166,12 +166,17 @@ func intent(op string, c *caller) string {
 // wrap/unwrap it isn't.
 const opServeMounts = "serve_mounts"
 
+// truncate cuts s to at most max RUNES. Runes, not bytes: profile names
+// are user-written and can be non-ASCII, and a byte-index cut through the
+// middle of a multi-byte character puts invalid UTF-8 into the one string
+// whose entire job is to be read by a human on a Touch ID dialog.
 func truncate(s string, max int) string {
-	if len(s) <= max {
+	r := []rune(s)
+	if len(r) <= max {
 		return s
 	}
 	if max <= 1 {
-		return s[:max]
+		return string(r[:max])
 	}
-	return s[:max-1] + "…"
+	return string(r[:max-1]) + "…"
 }
