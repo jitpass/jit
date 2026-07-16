@@ -15,8 +15,16 @@ rationale.
 
 Every secret is an individually encrypted file under
 `~/Library/Application Support/jitpass/` (envelope encryption - a data key
-per secret, wrapped by the master key). The master key lives in the macOS
-login Keychain, gated by Touch ID / device passcode. The vault never syncs
+per secret, wrapped by the master key). Each encrypted payload is bound to
+its own vault path and timestamps (AEAD additional authenticated data), so
+a swapped, renamed, or metadata-tampered file fails to decrypt instead of
+quietly resolving as the wrong secret. Overwrites keep the outgoing value
+as an encrypted archived version ([`jit vault history` /
+`restore`](../vault/index.md#botched-a-rotation-history--restore), newest 5
+per secret; `rm` deletes them with the secret). The master key lives in the
+macOS login Keychain, gated by Touch ID / device passcode, and can be
+rotated in place with
+[`jit vault rekey`](../vault/maintenance.md#jit-vault-rekey---rotate-the-master-key). The vault never syncs
 anywhere; the only way secrets leave the machine is an explicit
 [passphrase-encrypted export](../vault/backup-restore.md) (Argon2id-derived
 key - machine-independent by design, protected only by the passphrase you
@@ -35,6 +43,10 @@ Secrets materialize at the moment of use and nowhere else:
   [Kubernetes](../migrate/kubernetes.md),
   [Terraform](../migrate/terraform.md)) hand the credential to the
   requesting tool on demand; no intermediate file exists.
+- The escape hatches are guarded too: `jit vault get --copy` conceals the
+  value from clipboard managers and auto-clears it after 45 seconds, and
+  `jit export` asks before printing plaintext to a terminal (its output is
+  meant for `eval`, not scrollback).
 
 ## The agent boundary
 

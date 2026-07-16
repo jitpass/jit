@@ -20,7 +20,8 @@ Most secrets arrive through [`jit migrate`](../migrate/index.md) or
 to overwrite an existing path, `--stdin` to pipe the value in);
 `jit vault rm <path>` deletes one secret (it confirms first).
 `jit vault get <path>` decrypts and prints one (`--copy` sends it to the
-clipboard instead). `jit vault list` shows what's stored - names and paths
+clipboard instead - marked so clipboard managers skip it, and auto-cleared
+after 45 seconds unless you've copied something else by then). `jit vault list` shows what's stored - names and paths
 only, never values - one path per line, so it pipes cleanly into `grep`:
 
 ```
@@ -50,7 +51,7 @@ the vault value instead:
    ```
    $ jit vault set myapp/STRIPE_API_KEY
    Enter value for myapp/STRIPE_API_KEY:
-   myapp/STRIPE_API_KEY already exists in the vault. Overwrite it? The current value can't be recovered afterward. [y/N] y
+   myapp/STRIPE_API_KEY already exists in the vault. Overwrite it? The current value is kept as an archived version (`jit vault history myapp/STRIPE_API_KEY`). [y/N] y
    Stored myapp/STRIPE_API_KEY
    ```
 
@@ -66,6 +67,27 @@ its next fetch:
   `eval "$(jit export ...)"` at startup. Restart the process (or open a
   new shell) and it picks up the new key.
 
+## Botched a rotation? `history` / `restore`
+
+Overwriting keeps the outgoing value as an encrypted archived version (the
+newest 5 per secret). If the new key turns out to be wrong - pasted the
+wrong thing, revoked the old one too soon - the old value is one command
+away:
+
+```
+$ jit vault history myapp/STRIPE_API_KEY
+1752655103906210000  archived 2m ago (2026-07-16 12:38:23), value from 2026-05-02
+
+$ jit vault restore myapp/STRIPE_API_KEY
+Restored myapp/STRIPE_API_KEY. The value it replaced is archived — `jit vault history myapp/STRIPE_API_KEY`.
+```
+
+`restore` takes a fresh Touch ID/passcode approval (changing what a secret
+resolves to never happens silently), brings back the newest version by
+default (`--version <stamp>` for an older one), and archives the value it
+displaces - so flipping between two versions can never lose either.
+`jit vault rm` deletes a secret's archived versions with it: rm means gone.
+
 One special case: for a new **Terraform Cloud** token, just run
 `terraform login` again - [migration wired terraform's credentials helper
 to jit](../migrate/terraform.md), so the re-login lands directly in the
@@ -75,5 +97,5 @@ vault.
 
 - **[Back up and restore](./backup-restore.md)** - `vault export` /
   `vault import`, for disaster recovery
-- **[Maintenance](./maintenance.md)** - `prune` stale backups, `clean` out
-  all secrets, or `delete` the vault entirely
+- **[Maintenance](./maintenance.md)** - `rekey` the master key, `prune`
+  stale backups, `clean` out all secrets, or `delete` the vault entirely
