@@ -863,6 +863,45 @@ func TestServerHistoryRecordsEveryUnlockNotJustTheLast(t *testing.T) {
 	}
 }
 
+// TestServerHandsOutMEKCopiesNotItsCache locks in ensureUnlocked's copy
+// contract (see mekCopy): the cache and its consumers must be able to wipe
+// independently. The dangerous direction is lock() wiping the cache while a
+// wrap/unwrap that already fetched the MEK is still inside seal()/open() —
+// an explicit `jit agent lock` races an in-flight wrap, the DEK gets sealed
+// under a partially-zeroed key, and the stored envelope is permanently
+// undecryptable with nothing erroring at the time. Sharing one backing
+// array is what made that possible; both directions of it are pinned here.
+func TestServerHandsOutMEKCopiesNotItsCache(t *testing.T) {
+	key := bytes.Repeat([]byte{0x42}, 32)
+	s := NewServer(shortSocketPath(t), func() MEKFetcher { return &fakeFetcher{key: key} }, time.Minute)
+
+	// Direction 1: lock() wiping the cache must not zero a copy already
+	// handed to an in-flight wrap.
+	inFlight, err := s.ensureUnlocked(OpWrap, nil)
+	if err != nil {
+		t.Fatalf("ensureUnlocked: %v", err)
+	}
+	s.lock("test lock racing an in-flight wrap")
+	if !bytes.Equal(inFlight, key) {
+		t.Fatal("lock() corrupted a MEK copy an in-flight wrap was still using — a wrap racing an explicit lock would seal the DEK under a zeroed key and lose the secret")
+	}
+
+	// Direction 2 (keychainwrap's own reason for copying): a caller's
+	// defer wipe(mek) must not zero the cache out from under everyone else.
+	first, err := s.ensureUnlocked(OpWrap, nil)
+	if err != nil {
+		t.Fatalf("ensureUnlocked after re-unlock: %v", err)
+	}
+	wipe(first)
+	second, err := s.ensureUnlocked(OpWrap, nil) // cache hit — no fresh challenge
+	if err != nil {
+		t.Fatalf("ensureUnlocked cache hit: %v", err)
+	}
+	if !bytes.Equal(second, key) {
+		t.Fatal("a caller wiping its own MEK copy corrupted the cached session for every later caller")
+	}
+}
+
 // Asking the agent why it keeps prompting must never itself prompt.
 func TestServerHistoryNeverTriggersAChallenge(t *testing.T) {
 	var calls int32
