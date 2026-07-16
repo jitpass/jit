@@ -39,8 +39,8 @@ var clipboardClearCmd = &cobra.Command{
 	Use:     "_clipboard-clear",
 	GroupID: groupPlumbing, // spawned by jit itself; hidden, so never rendered under the group anyway
 	Hidden:  true,
-	Short:  "Clear the pasteboard after a delay if it still holds jit's copy (internal)",
-	Args:   cobra.NoArgs,
+	Short:   "Clear the pasteboard after a delay if it still holds jit's copy (internal)",
+	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		time.Sleep(clipboardClearAfter)
 		pasteboard.ClearIfUnchanged(clipboardClearCount)
