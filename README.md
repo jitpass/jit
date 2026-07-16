@@ -73,10 +73,14 @@ That's an MCP server your editor started, wanting the secrets in your
 The same provenance is kept afterwards, because "why did that happen?" is
 usually asked *after* the prompt is gone. `jit agent status` shows who unlocked
 the current session and what dropped it - including a prompt that's on your
-screen *right now*; `jit agent history` lists every unlock and lock the agent
-has seen, and survives the agent's own restarts. What drops a session is
-recorded too: the idle TTL, an explicit `jit agent lock`, or the screen
-locking / the machine going to sleep - the session dies the moment you leave.
+screen *right now*; `jit agent history` lists every unlock, every prompt that
+was *declined*, every lock, and what the open session was used for in between,
+and survives the agent's own restarts (`jit agent log` has the raw record).
+What drops a session is recorded too: the idle TTL, an explicit
+`jit agent lock`, or the screen locking / the machine going to sleep - the
+session dies the moment you leave. A declined prompt also pauses automatic
+re-prompts for a short cooldown, so a retrying caller can't turn one
+deliberate "no" into a prompt storm.
 
 ```
 Session (most recent first):

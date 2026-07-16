@@ -45,6 +45,9 @@ foreground (normally launchd's job, useful for debugging).
 - `jit agent status` - is it running, is it unlocked, when does it lock,
   what mounts is it serving - and, if a Touch ID prompt is up right now,
   who triggered it. `--format json` for scripting.
+- `jit agent log` - the tail of the agent's own timestamped log (session
+  events, mount reads and who made them, serve errors); `-f` follows it
+  live.
 
 ## Every unlock is attributed
 
