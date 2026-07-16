@@ -67,7 +67,11 @@ type statusVault struct {
 // underlying state and shouldn't diverge in shape just because one is a
 // section of a larger report. Mounts (GAPS.md #37) is no exception.
 type statusAgent struct {
-	Running        bool                      `json:"running"`
+	Running bool `json:"running"`
+	// Installed mirrors agentStatusResult.Installed: with Running false,
+	// it separates "crashed or mid-restart" from "never set up" — two
+	// states with entirely different fixes.
+	Installed      bool                      `json:"installed"`
 	Unlocked       bool                      `json:"unlocked"`
 	LocksInSeconds int64                     `json:"locks_in_seconds,omitempty"`
 	Mounts         []agent.MountRevealStatus `json:"mounts"`
@@ -218,12 +222,14 @@ func gatherAgentStatus(root string) (statusAgent, error) {
 	client := agent.NewClient(agent.SocketPath(root))
 	st, err := client.Status()
 	if errors.Is(err, agent.ErrNotRunning) {
-		return statusAgent{}, nil // not running is a reportable state, not an error
+		// Not running is a reportable state, not an error — and whether
+		// it's ALSO installed decides which fix the report suggests.
+		return statusAgent{Installed: agentInstalled()}, nil
 	}
 	if err != nil {
 		return statusAgent{}, err
 	}
-	result := statusAgent{Running: true, Unlocked: st.Unlocked, Mounts: st.Mounts, Build: st.Build, Version: st.Version}
+	result := statusAgent{Running: true, Installed: agentInstalled(), Unlocked: st.Unlocked, Mounts: st.Mounts, Build: st.Build, Version: st.Version}
 	if st.Unlocked {
 		result.LocksInSeconds = int64(st.Remaining.Round(time.Second).Seconds())
 	}
@@ -324,6 +330,10 @@ func printStatusText(w io.Writer, r statusResult) {
 	}
 
 	switch {
+	case !r.Agent.Running && r.Agent.Installed:
+		// launchd was supposed to keep this one alive — "run install" is
+		// the wrong advice and hides that something actually failed.
+		fmt.Fprintln(w, "Agent: installed but not running — it may have crashed or be mid-restart. Try `jit agent restart`; `jit agent log` shows its recent output.")
 	case !r.Agent.Running:
 		fmt.Fprintln(w, "Agent: not running. Run `jit agent install` to start it.")
 	case r.Agent.Unlocked:

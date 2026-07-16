@@ -66,8 +66,9 @@ That's an MCP server your editor started, wanting the secrets in your
 `mcp-jamf` profile. Approve or cancel on the facts, not on a guess.
 
 The same provenance is kept afterwards: `jit agent status` shows who
-unlocked the current session, and `jit agent history` lists every unlock
-and lock the agent has seen. Who the caller is comes from the kernel (its
+unlocked the current session, and `jit agent history` lists every unlock,
+every prompt that was declined, every lock, and what the open session was
+used for in between. Who the caller is comes from the kernel (its
 pid on the socket, then its command line and parent chain), never from
 anything the caller says about itself. It is used to *explain* and to
 *audit*, never to decide. More in **[Provenance](../agent/provenance.md)**
