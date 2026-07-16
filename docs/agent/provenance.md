@@ -33,18 +33,46 @@ is not authenticating one, and jit doesn't pretend otherwise (see
   Touch ID prompt is sitting on your screen *right now*, status names what
   triggered it while it's still up - it answers immediately instead of
   waiting for the prompt to resolve.
-- `jit agent history` lists every unlock and lock the agent has seen and
-  what caused each:
+- `jit agent history` lists every unlock, denial, use, and lock the agent
+  has seen and what caused each:
 
   ```
   Session history (most recent first):
-    • unlocked 4s ago (13:19:19) - launched by claude
+    • locked   2s ago (13:21:40) - explicit lock, launched by claude
+    • used     8s ago (13:21:34) - read a secret ×4, launched by claude
         ~/go/bin/jit run --profile mcp-caido -- caido-mcp-server serve
-    • locked   10s ago (13:19:13) - explicit lock, launched by claude
+        secrets (caller-reported): caido/api-token, caido/proxy-cert
+    • unlocked 25s ago (13:21:17) - launched by claude
+        ~/go/bin/jit run --profile mcp-caido -- caido-mcp-server serve
+    • denied   3m ago (13:18:02) - launched by Code
+        ~/some-script.sh
+        unlocking: local authentication failed: the user canceled
   ```
+
+Four kinds of event appear:
+
+- **unlocked** - a Touch ID/passcode prompt the human approved, with the
+  command that triggered it and what launched that command.
+- **denied** - a prompt the human *refused* (or that failed), same
+  provenance, plus why. A refusal also pauses automatic re-prompts for a
+  short cooldown, so a retrying caller can't turn one deliberate "no"
+  into a prompt storm - during the pause, only an explicit
+  `jit agent unlock` will prompt again.
+- **used** - what flowed through the already-open session *between* the
+  prompts: reads, stores, and reveals that rode the cached unlock,
+  collapsed per caller (a profile resolve's burst of reads is one entry,
+  not ten). The secret names are what the calling jit process reported
+  about itself - useful for audit, labeled `caller-reported` because,
+  unlike everything else on these lines, they don't come from the kernel.
+- **locked** - what dropped the session: an idle timeout, the screen
+  locking, or an explicit `jit agent lock`.
 
 History survives agent restarts (it's kept in `agent-history.jsonl`
 alongside the vault, as well as in the agent's log), and each restart
 appears in the list as its own "started" entry - so events on either side
 of one are never mistaken for a single session. Both commands take
 `--format json`.
+
+For the raw, timestamped record behind all of this - including per-mount
+reader lineage and serve errors - `jit agent log` prints the tail of the
+agent's own log file, and `jit agent log -f` follows it live.
