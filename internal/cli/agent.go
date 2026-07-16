@@ -154,6 +154,11 @@ var agentRunCmd = &cobra.Command{
 
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
+		// runCtx additionally ends when the agent retires ITSELF — the
+		// stale-binary watcher below — with everything downstream (Serve,
+		// the run loop) shutting down exactly as it would on a signal.
+		runCtx, endRun := context.WithCancel(ctx)
+		defer endRun()
 
 		// Lock the moment the human demonstrably leaves — the screen
 		// locking or the machine going to sleep — instead of holding the
@@ -164,6 +169,18 @@ var agentRunCmd = &cobra.Command{
 			fmt.Fprintf(stderr, "jit agent: screen-lock/sleep watch unavailable (%v) — sessions will lock on the idle TTL alone\n", err)
 		}
 
+		// Self-retire when the jit binary on disk is replaced (see
+		// agentbinary.go for the gates), but only under launchd — its
+		// KeepAlive restarts what exits; a foreground run has no such net.
+		if os.Getppid() == 1 {
+			if exePath, exeErr := os.Executable(); exeErr == nil {
+				go watchOwnBinary(runCtx, exePath, agentBinaryCheckInterval, server.Quiescent, func() {
+					fmt.Fprintf(stdout, "jit agent: the jit binary on disk changed (this process is build %s) — exiting while the session is locked so launchd restarts the agent on the current build\n", agent.BuildID())
+					endRun()
+				})
+			}
+		}
+
 		fmt.Fprintf(stdout, "jit agent listening on %s (session TTL %s, build %s)\n", agent.SocketPath(root), agentTTL, agent.BuildID())
 
 		// Serve from a goroutine so THIS goroutine — locked to the main OS
@@ -172,11 +189,11 @@ var agentRunCmd = &cobra.Command{
 		// (see screenlock.RunMain). Serve ending for any reason must also
 		// unpark the loop, or a listener failure would leave the process
 		// alive doing nothing.
-		loopCtx, loopCancel := context.WithCancel(ctx)
+		loopCtx, loopCancel := context.WithCancel(runCtx)
 		defer loopCancel()
 		serveErr := make(chan error, 1)
 		go func() {
-			serveErr <- server.Serve(ctx)
+			serveErr <- server.Serve(runCtx)
 			loopCancel()
 		}()
 		if err := screenlock.RunMain(loopCtx); err != nil {
@@ -242,16 +259,15 @@ var agentInstallCmd = &cobra.Command{
 		}
 		logPath := filepath.Join(root, "agent.log")
 
-		// Unload any previously-installed instance first — launchctl load on
-		// an already-loaded label doesn't restart it with new arguments, so
-		// a re-install to change --ttl would otherwise silently keep running
-		// with the old value until next login. Best-effort: nothing to
-		// unload on a first-ever install (plistPath doesn't exist yet), and
-		// an unload failure here still leaves the load below to report the
-		// real error if something's actually wrong.
-		if _, statErr := os.Stat(plistPath); statErr == nil {
-			_ = exec.Command("launchctl", "unload", plistPath).Run() // #nosec G204 -- fixed subcommand, jit's own previously-written plist
-		}
+		// Boot out any previously-running instance first — bootstrap on an
+		// already-loaded label fails outright, and a re-install to change
+		// --ttl must take effect now, not at next login. Best-effort:
+		// nothing to boot out on a first-ever install, and a failure here
+		// still leaves the bootstrap below to report the real error if
+		// something's actually wrong. (bootstrap/bootout are the modern
+		// verbs; load/unload have been deprecated since 10.11 and their
+		// errors are famously unhelpful.)
+		_ = exec.Command("launchctl", "bootout", agentServiceTarget()).Run() // #nosec G204 -- fixed subcommand, jit's own label
 
 		// exePath/logPath are filesystem paths and can legally contain XML
 		// metacharacters (& is common in directory names) — splicing one
@@ -265,27 +281,19 @@ var agentInstallCmd = &cobra.Command{
 			return fmt.Errorf("jit agent install: %w", err)
 		}
 
-		out, err := exec.Command("launchctl", "load", plistPath).CombinedOutput() // #nosec G204 -- fixed subcommand, plistPath is a file jit itself just wrote
+		out, err := exec.Command("launchctl", "bootstrap", agentDomainTarget(), plistPath).CombinedOutput() // #nosec G204 -- fixed subcommand, plistPath is a file jit itself just wrote
 		if err != nil {
-			return fmt.Errorf("jit agent install: launchctl load failed: %w (%s)", err, strings.TrimSpace(string(out)))
+			return fmt.Errorf("jit agent install: launchctl bootstrap failed: %w (%s)", err, strings.TrimSpace(string(out)))
 		}
-		// launchctl load returns before the agent process has spawned and
-		// bound its socket — a real, observed first-run confusion: `jit
+		// launchctl bootstrap returns before the agent process has spawned
+		// and bound its socket — a real, observed first-run confusion: `jit
 		// agent status` typed right after a successful install said "not
 		// running — run `jit agent install` to set it up" for the ~2s
 		// launchd took to actually start it. Wait briefly until the socket
 		// answers so "Installed" also means "running"; if it still isn't
 		// up after the timeout, say what's actually happening rather than
 		// letting status contradict this command a moment later.
-		running := false
-		client := agent.NewClient(agent.SocketPath(root))
-		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
-			if client.Reachable() {
-				running = true
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
+		running := waitForAgentSocket(root, 5*time.Second)
 		fmt.Fprintf(cmd.OutOrStdout(),
 			"Installed — jit agent now starts automatically every time you log in (survives reboots) and stays unlocked for up to %s after your last Touch ID prompt.\nRun `jit agent uninstall` to remove it. (%s)\n",
 			agentInstallTTL, plistPath)
@@ -312,15 +320,57 @@ var agentUninstallCmd = &cobra.Command{
 		}
 
 		if _, statErr := os.Stat(plistPath); statErr == nil {
-			out, unloadErr := exec.Command("launchctl", "unload", plistPath).CombinedOutput() // #nosec G204 -- fixed subcommand, jit's own previously-written plist
+			out, unloadErr := exec.Command("launchctl", "bootout", agentServiceTarget()).CombinedOutput() // #nosec G204 -- fixed subcommand, jit's own label
 			if unloadErr != nil {
-				fmt.Fprintf(cmd.OutOrStdout(), "warning: launchctl unload failed (%v): %s\n", unloadErr, strings.TrimSpace(string(out)))
+				fmt.Fprintf(cmd.OutOrStdout(), "warning: launchctl bootout failed (%v): %s\n", unloadErr, strings.TrimSpace(string(out)))
 			}
 		}
 		if err := os.Remove(plistPath); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("jit agent uninstall: %w", err)
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "Uninstalled jit agent.")
+		return nil
+	},
+}
+
+var agentRestartCmd = &cobra.Command{
+	Use:   "restart",
+	Short: "Restart the agent process (picks up a newly built or updated jit binary)",
+	Long: "Kills and restarts the launchd-managed agent process — the immediate fix\n" +
+		"when `jit agent status` warns that the running agent predates the jit\n" +
+		"binary on disk. (The agent also retires itself onto the new binary\n" +
+		"automatically, but only once its session is locked and no prompt is\n" +
+		"pending; restart is for wanting it now.)\n\n" +
+		"The in-memory session is lost, so the next vault use prompts Touch ID\n" +
+		"again, and live-mounted files serve placeholder values until then.\n" +
+		"Session history survives — it's durable. Requires `jit agent install`.",
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		plistPath, err := agentPlistPath()
+		if err != nil {
+			return fmt.Errorf("jit agent restart: %w", err)
+		}
+		if _, err := os.Stat(plistPath); err != nil {
+			return errors.New("jit agent restart: the agent isn't installed — run `jit agent install` first")
+		}
+		// kickstart -k kills a running instance and starts a fresh one in
+		// a single verb; it also starts one that wasn't running at all.
+		out, err := exec.Command("launchctl", "kickstart", "-k", agentServiceTarget()).CombinedOutput() // #nosec G204 -- fixed subcommand, jit's own label
+		if err != nil {
+			return fmt.Errorf("jit agent restart: launchctl kickstart failed: %w (%s)", err, strings.TrimSpace(string(out)))
+		}
+		root, err := vaultRootDir()
+		if err != nil {
+			return fmt.Errorf("jit agent restart: %w", err)
+		}
+		// Same wait as install, same reason: "Restarted" must mean the new
+		// process is actually answering, or status contradicts us moments
+		// later.
+		if !waitForAgentSocket(root, 5*time.Second) {
+			fmt.Fprintln(cmd.OutOrStdout(), "Restart requested — the agent is still starting up in the background; give `jit agent status` a few seconds.")
+			return nil
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "Restarted — the agent is now running the current binary. The next vault use will prompt Touch ID.")
 		return nil
 	},
 }
@@ -901,7 +951,7 @@ func rotateAgentLog(path string, maxBytes int64) error {
 		return err
 	}
 	defer func() { _ = src.Close() }()
-	dst, err := os.OpenFile(path+".1", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	dst, err := os.OpenFile(path+".1", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600) // #nosec G304 -- jit's own log path under its config root, not external input
 	if err != nil {
 		return err
 	}
@@ -921,6 +971,31 @@ func agentPlistPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, "Library", "LaunchAgents", agentPlistLabel+".plist"), nil
+}
+
+// agentDomainTarget and agentServiceTarget name the agent to launchctl's
+// modern verbs (bootstrap/bootout/kickstart): the per-user GUI domain, and
+// the agent's service inside it.
+func agentDomainTarget() string {
+	return fmt.Sprintf("gui/%d", os.Getuid())
+}
+
+func agentServiceTarget() string {
+	return agentDomainTarget() + "/" + agentPlistLabel
+}
+
+// waitForAgentSocket polls until an agent answers the socket, or gives up.
+// install/restart use it so their success message never races launchd's
+// actual spawn of the process.
+func waitForAgentSocket(root string, timeout time.Duration) bool {
+	client := agent.NewClient(agent.SocketPath(root))
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
+		if client.Reachable() {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false
 }
 
 const agentPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
@@ -957,6 +1032,6 @@ func init() {
 	agentRevealCmd.Flags().BoolVarP(&revealQuiet, "quiet", "q", false, "suppress the success message — for embedding in a pre-run hook")
 	agentStatusCmd.Flags().StringVar(&agentStatusFormat, "format", "text", `output format: "text" (default) or "json"`)
 	agentHistoryCmd.Flags().StringVar(&agentHistoryFormat, "format", "text", `output format: "text" (default) or "json"`)
-	agentCmd.AddCommand(agentRunCmd, agentInstallCmd, agentUninstallCmd, agentUnlockCmd, agentLockCmd, agentStatusCmd, agentHistoryCmd, agentRevealCmd)
+	agentCmd.AddCommand(agentRunCmd, agentInstallCmd, agentUninstallCmd, agentRestartCmd, agentUnlockCmd, agentLockCmd, agentStatusCmd, agentHistoryCmd, agentRevealCmd)
 	rootCmd.AddCommand(agentCmd)
 }

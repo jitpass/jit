@@ -209,7 +209,7 @@ func agentBuildMismatch(agentBuild string) string {
 	if agentBuild == "" || agentBuild == "unknown" || cliBuild == "unknown" || agentBuild == cliBuild {
 		return ""
 	}
-	return fmt.Sprintf("Heads up: the running agent is a different build than this CLI (agent %s, CLI %s) — run `jit agent install` to restart it on the current binary.", agentBuild, cliBuild)
+	return fmt.Sprintf("Heads up: the running agent is a different build than this CLI (agent %s, CLI %s) — run `jit agent restart` to move it to the current binary now (it also restarts itself once its session is locked and idle).", agentBuild, cliBuild)
 }
 
 // gatherAgentStatus reports the same running/unlocked state `jit agent
