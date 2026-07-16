@@ -271,13 +271,13 @@ var agentUnlockCmd = &cobra.Command{
 	Long:  "Pre-warms the shared session so a run of jit run/vault get/export right after doesn't prompt.",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := dialAgent()
+		c, err := agentClient()
 		if err != nil {
 			return fmt.Errorf("jit agent unlock: %w", err)
 		}
 		_, remaining, err := c.Unlock()
 		if err != nil {
-			return fmt.Errorf("jit agent unlock: %w", err)
+			return fmt.Errorf("jit agent unlock: %w", notRunningHint(err))
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "Unlocked — locks automatically after %s of inactivity (or `jit agent lock` sooner).\n", remaining.Round(time.Second))
 		return nil
@@ -289,12 +289,12 @@ var agentLockCmd = &cobra.Command{
 	Short: "Lock the running agent's session immediately, without waiting for the TTL",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := dialAgent()
+		c, err := agentClient()
 		if err != nil {
 			return fmt.Errorf("jit agent lock: %w", err)
 		}
 		if err := c.Lock(); err != nil {
-			return fmt.Errorf("jit agent lock: %w", err)
+			return fmt.Errorf("jit agent lock: %w", notRunningHint(err))
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "Locked.")
 		return nil
@@ -331,12 +331,12 @@ var agentRevealCmd = &cobra.Command{
 			duration = revealMaxWindow
 		}
 
-		c, err := dialAgent()
+		c, err := agentClient()
 		if err != nil {
 			return fmt.Errorf("jit agent reveal: %w", err)
 		}
 		if err := c.Reveal(mountPath, duration); err != nil {
-			return fmt.Errorf("jit agent reveal: %w", err)
+			return fmt.Errorf("jit agent reveal: %w", notRunningHint(err))
 		}
 		if !revealQuiet {
 			fmt.Fprintf(cmd.OutOrStdout(), "Revealed %s for %s.\n", mountPath, duration.Round(time.Second))
@@ -394,19 +394,18 @@ var agentStatusCmd = &cobra.Command{
 			return fmt.Errorf("jit agent status: %w", err)
 		}
 
-		root, err := vaultRootDir()
+		client, err := agentClient()
 		if err != nil {
 			return fmt.Errorf("jit agent status: %w", err)
 		}
-		client := agent.NewClient(agent.SocketPath(root))
-		if !client.Reachable() {
+		st, err := client.Status()
+		if errors.Is(err, agent.ErrNotRunning) {
 			if agentStatusFormat == "json" {
 				return writeJSON(cmd.OutOrStdout(), agentStatusResult{})
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "jit agent is not running. Run `jit agent install` to set it up.")
 			return nil
 		}
-		st, err := client.Status()
 		if err != nil {
 			return fmt.Errorf("jit agent status: %w", err)
 		}
@@ -457,20 +456,18 @@ var agentHistoryCmd = &cobra.Command{
 		if err := validateOutputFormat(agentHistoryFormat); err != nil {
 			return fmt.Errorf("jit agent history: %w", err)
 		}
-		root, err := vaultRootDir()
+		client, err := agentClient()
 		if err != nil {
 			return fmt.Errorf("jit agent history: %w", err)
 		}
-		client := agent.NewClient(agent.SocketPath(root))
-		if !client.Reachable() {
+		events, err := client.History()
+		if errors.Is(err, agent.ErrNotRunning) {
 			if agentHistoryFormat == "json" {
 				return writeJSON(cmd.OutOrStdout(), []agent.SessionEvent{})
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "jit agent is not running. Run `jit agent install` to set it up.")
 			return nil
 		}
-
-		events, err := client.History()
 		if err != nil {
 			return fmt.Errorf("jit agent history: %w", err)
 		}
@@ -773,16 +770,26 @@ func humanAgo(d time.Duration) string {
 	}
 }
 
-func dialAgent() (*agent.Client, error) {
+// agentClient returns a Client for this machine's agent socket without
+// probing it first — Client's own calls wrap agent.ErrNotRunning when
+// nothing is listening (see notRunningHint), so a Reachable() pre-flight
+// would just dial the socket twice per command.
+func agentClient() (*agent.Client, error) {
 	root, err := vaultRootDir()
 	if err != nil {
 		return nil, err
 	}
-	c := agent.NewClient(agent.SocketPath(root))
-	if !c.Reachable() {
-		return nil, fmt.Errorf("no agent is running — run `jit agent install` first")
+	return agent.NewClient(agent.SocketPath(root)), nil
+}
+
+// notRunningHint rewrites a Client call's dial failure into the actionable
+// message the agent commands print — the raw error says the socket didn't
+// answer, but the thing a human can DO about that is install the agent.
+func notRunningHint(err error) error {
+	if errors.Is(err, agent.ErrNotRunning) {
+		return errors.New("no agent is running — run `jit agent install` first")
 	}
-	return c, nil
+	return err
 }
 
 // xmlEscape escapes the five XML metacharacters for splicing a string

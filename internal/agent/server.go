@@ -620,11 +620,15 @@ func unlockEvent(op string, c *caller) *SessionEvent {
 // agent's log, which is the durable record — this ring is the convenient one.
 const maxSessionEvents = 200
 
-// recordEvent appends to the ring. Caller must hold s.mu.
+// recordEvent appends to the ring, shifting out the oldest in place once
+// the cap is reached — the slice is bounded, so shifting beats allocating
+// a fresh 200-entry array on every event past the cap. Caller must hold
+// s.mu.
 func (s *Server) recordEvent(e SessionEvent) {
 	s.events = append(s.events, e)
 	if len(s.events) > maxSessionEvents {
-		s.events = append([]SessionEvent(nil), s.events[len(s.events)-maxSessionEvents:]...)
+		n := copy(s.events, s.events[len(s.events)-maxSessionEvents:])
+		s.events = s.events[:n]
 	}
 }
 
