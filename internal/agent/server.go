@@ -178,7 +178,7 @@ type Server struct {
 	lastUnlock *SessionEvent
 	lastLock   *SessionEvent
 	// events is every unlock and lock this process has seen, oldest first,
-	// capped at maxSessionEvents. lastUnlock/lastLock answer "explain the
+	// capped at MaxSessionEvents. lastUnlock/lastLock answer "explain the
 	// session I'm looking at"; this answers "was it prompting me all
 	// afternoon, and for what" — a question a single before/after pair
 	// structurally cannot, since each new unlock overwrites the last.
@@ -622,12 +622,32 @@ func unlockEvent(op string, c *caller) *SessionEvent {
 	return e
 }
 
-// maxSessionEvents bounds the in-memory history. An agent process lives for
-// weeks across launchd restarts, so this must not grow without limit; 200
-// events is several days of ordinary use (a handful of unlock/lock pairs a
-// day) and a few kilobytes. Anything older has already been written to the
-// agent's log, which is the durable record — this ring is the convenient one.
-const maxSessionEvents = 200
+// MaxSessionEvents bounds the in-memory history ring. An agent process
+// lives for weeks across launchd restarts, so this must not grow without
+// limit; 200 events is several days of ordinary use (a handful of
+// unlock/lock pairs a day) and a few kilobytes. Exported because the CLI
+// layer seeds the ring from the durable history file and caps its read to
+// the same number — anything older is still in the file for whoever wants
+// to read it directly.
+const MaxSessionEvents = 200
+
+// SeedHistory pre-populates the ring with events restored from the durable
+// history file (oldest first, the order they were appended), keeping the
+// newest MaxSessionEvents. Call before Listen — it replaces the ring, and
+// racing live recordEvent appends would drop them. This is what lets `jit
+// agent history` answer for prompts that happened before the most recent
+// launchd restart, which is exactly when "why was I being prompted all
+// afternoon?" gets asked (the restart happens at login, i.e. the next
+// morning). lastUnlock/lastLock stay process-local on purpose: they
+// describe THIS process's session, and a restart is why it's locked now.
+func (s *Server) SeedHistory(events []SessionEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(events) > MaxSessionEvents {
+		events = events[len(events)-MaxSessionEvents:]
+	}
+	s.events = append([]SessionEvent(nil), events...)
+}
 
 // recordEvent appends to the ring, shifting out the oldest in place once
 // the cap is reached — the slice is bounded, so shifting beats allocating
@@ -635,8 +655,8 @@ const maxSessionEvents = 200
 // s.mu.
 func (s *Server) recordEvent(e SessionEvent) {
 	s.events = append(s.events, e)
-	if len(s.events) > maxSessionEvents {
-		n := copy(s.events, s.events[len(s.events)-maxSessionEvents:])
+	if len(s.events) > MaxSessionEvents {
+		n := copy(s.events, s.events[len(s.events)-MaxSessionEvents:])
 		s.events = s.events[:n]
 	}
 }
