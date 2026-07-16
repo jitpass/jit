@@ -3,10 +3,24 @@ title: Vault maintenance
 description: Prune stale file backups, empty the vault, or destroy it entirely.
 ---
 
-# Vault maintenance - `prune`, `clean`, `delete`
+# Vault maintenance - `rekey`, `prune`, `clean`, `delete`
 
 Three commands, in increasing order of severity. All confirm first
 (`-y` skips the prompt).
+
+## `jit vault rekey` - rotate the master key
+
+Generates a new master encryption key, re-wraps every stored secret's key
+under it (live secrets, file backups, and archived versions - the encrypted
+values themselves are never touched), then replaces the old master key. One
+Touch ID/passcode approval covers the whole run.
+
+Run it if the old key may have been exposed, or simply on a schedule - the
+master key otherwise never changes for its whole life. Safe to interrupt at
+any point: both keys exist until the final step, every re-wrapped secret is
+verified before it's written, re-running `jit vault rekey` finishes an
+interrupted rotation, and other vault commands refuse to write while one is
+in progress.
 
 ## `jit vault prune` - delete stale file backups
 
