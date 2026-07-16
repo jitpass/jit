@@ -131,7 +131,7 @@ func (h *historyLog) trim() {
 		keep = keep[i+1:]
 	}
 	tmp := h.path + ".tmp"
-	if err := os.WriteFile(tmp, keep, 0o600); err != nil {
+	if err := os.WriteFile(tmp, keep, 0o600); err != nil { // #nosec G703 -- jit's own bookkeeping path under its config root, not external input
 		fmt.Fprintf(h.stderr, "jit agent: trimming session history: %v\n", err)
 		return
 	}
