@@ -281,7 +281,8 @@ func (v *Vault) Remove(path string) error {
 	return v.removeHistory(path)
 }
 
-// List returns every secret path currently stored, sorted, e.g.
+// List returns every secret path currently stored, sorted naturally
+// (digit runs compare numerically, see naturalLess), e.g.
 // ["aws/s3-access-key", "stripe/dev-key"] — names only, never values.
 func (v *Vault) List() ([]string, error) {
 	root := v.vaultDir()
@@ -319,7 +320,7 @@ func (v *Vault) List() ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listing vault: %w", err)
 	}
-	sort.Strings(paths)
+	sort.SliceStable(paths, func(i, j int) bool { return naturalLess(paths[i], paths[j]) })
 	return paths, nil
 }
 
