@@ -6,6 +6,7 @@ package audit
 import (
 	"fmt"
 	"io"
+	"strings"
 )
 
 // WriteMarkdownReport renders the same information as WriteHumanReport, in
@@ -107,21 +108,32 @@ func writeRenderItemMarkdown(w io.Writer, item renderItem) {
 	}
 }
 
+// writeFindingDetailMarkdown mirrors the terminal's row shape: the bounded
+// fields (severity, line, key, masked value) on one line, the free-form
+// reason nested beneath — or inline when the finding has neither key nor
+// value, exactly like writeFindingRow's compact case.
 func writeFindingDetailMarkdown(w io.Writer, f Finding, showLine bool) {
 	lineTag := ""
 	if showLine && f.Line != nil {
 		lineTag = fmt.Sprintf(" :%d", *f.Line)
 	}
-	fmt.Fprintf(w, "  - **[%s]**%s", f.Severity, lineTag)
+	fmt.Fprintf(w, "  - **%s**%s", strings.ToUpper(f.Severity), lineTag)
+	if f.KeyName == nil && f.ValuePreview == nil {
+		if f.Evidence != "" {
+			fmt.Fprintf(w, " %s", f.Evidence)
+		}
+		fmt.Fprintln(w)
+		return
+	}
 	if f.KeyName != nil {
-		fmt.Fprintf(w, " key: `%s`", *f.KeyName)
+		fmt.Fprintf(w, " `%s`", *f.KeyName)
+	}
+	if f.ValuePreview != nil {
+		fmt.Fprintf(w, " `%s`", *f.ValuePreview)
 	}
 	fmt.Fprintln(w)
-	if f.ValuePreview != nil {
-		fmt.Fprintf(w, "    - value: `%s`\n", *f.ValuePreview)
-	}
 	if f.Evidence != "" {
-		fmt.Fprintf(w, "    - why: %s\n", f.Evidence)
+		fmt.Fprintf(w, "    - %s\n", f.Evidence)
 	}
 }
 
