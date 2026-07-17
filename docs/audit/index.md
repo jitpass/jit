@@ -12,10 +12,11 @@ preview.
 
 ```
 $ jit audit
-jit audit - risk report for alex@Alexs-MacBook-Pro
+jit audit: risk report for alex@Alexs-MacBook-Pro
 scan time: 2026-07-07T14:48:08.370Z          duration: 2ms
 
   RISK LEVEL: HIGH
+  EXPOSURE:   65/100
 
   Shell Configs          1 finding(s)
   .env Files             1 finding(s)
@@ -29,15 +30,22 @@ scan time: 2026-07-07T14:48:08.370Z          duration: 2ms
   Total: 2 finding(s)
 
 [Shell Configs]
-  /Users/alex/.zshrc
-    :1  [high]  key: AWS_SECRET_ACCESSKEY
-        value:  AKIA**********
-        why:    export statement assigns a value to a key name that looks like a secret
+  ───────────────────────────────────
+  * /Users/alex/.zshrc
+
+    :1  HIGH  AWS_SECRET_ACCESSKEY  AKIA**********
+              └ export statement assigns a value to a key name that looks like a secret
 ```
 
 `audit` always scans your whole home directory, not your current directory.
 A full sample of the output is in the
 **[example report](./example-report.md)** (synthetic data).
+
+One exception to "everything counts": findings inside a
+[jitpass-playground](https://github.com/jitpass/jitpass-playground)
+checkout are synthetic demo secrets, so they are excluded from the counts
+and the exposure score. The report says how many were excluded and where,
+so nothing disappears silently.
 
 ## Output formats
 
