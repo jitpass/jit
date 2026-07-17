@@ -8,7 +8,7 @@ Keeping this generated from the real renderer, rather than hand-maintained, is t
 
 ```
 jit audit: risk report for alex@Alexs-MacBook-Pro
-scan time: 2026-07-17T11:46:49.165Z          duration: 2ms
+scan time: 2026-07-17T11:59:28.805Z          duration: 2ms
 
   RISK LEVEL: CRITICAL
   EXPOSURE:   100/100
@@ -30,7 +30,7 @@ scan time: 2026-07-17T11:46:49.165Z          duration: 2ms
 
 [Shell Configs]
   ───────────────────────────────────
-  * /Users/alex/.zshrc
+  • /Users/alex/.zshrc
 
     :2  HIGH  STRIPE_API_KEY  sk_l**********
               └ value matches Stripe Live Secret Key's known token format
@@ -40,23 +40,23 @@ scan time: 2026-07-17T11:46:49.165Z          duration: 2ms
 
 [.env Files]
   ───────────────────────────────────
-  * /Users/alex/code/webapp/.env
+  • /Users/alex/code/webapp/.env
 
     CRITICAL  contains a value matching the production-indicator pattern
 
-  same pattern in 2 files:
+  • same pattern in 2 files:
 
     HIGH      contains "JAMF_URL", a variable name that looks like a real credential
               - /Users/alex/code/tool-a/.env
               - /Users/alex/code/tool-b/.env
 
-  * /Users/alex/code/api-service/.env
+  • /Users/alex/code/api-service/.env
 
-    LOW       2 variable(s) in this file (2 active, 0 commented out); either way, the values are stored here in plaintext
+    LOW       2 plaintext variable(s) (2 active, 0 commented out)
 
 [Credential Files]
   ───────────────────────────────────
-  * /Users/alex/.aws/credentials
+  • /Users/alex/.aws/credentials
 
     HIGH  dev/aws_secret_access_key      fake**********
           └ AWS secret access key found in profile "dev"
@@ -64,51 +64,51 @@ scan time: 2026-07-17T11:46:49.165Z          duration: 2ms
     HIGH  staging/aws_secret_access_key  fake**********
           └ AWS secret access key found in profile "staging"
 
-  * /Users/alex/.config/gcloud/application_default_credentials.json
+  • /Users/alex/.config/gcloud/application_default_credentials.json
 
     HIGH  refresh_token                  1//f**********
           └ GCP application default credentials (authorized_user) found
 
-  * /Users/alex/.terraform.d/credentials.tfrc.json
+  • /Users/alex/.terraform.d/credentials.tfrc.json
 
     HIGH  app.terraform.io               fake**********
           └ Terraform Cloud API token found for host "app.terraform.io"
 
 [AI Tool / MCP Configs]
   ───────────────────────────────────
-  internal-tool/GITHUB_TOKEN (same value in 2 files):
+  • internal-tool/GITHUB_TOKEN (same value in 2 files):
 
     HIGH  internal-tool/GITHUB_TOKEN  ghp_**********
           └ value matches GitHub Personal Access Token's known token format
           - /Users/alex/.cursor/mcp.json
           - /Users/alex/code/webapp/.mcp.json
 
-  internal-tool/CAIDO_URL (same value in 2 files):
+  • internal-tool/CAIDO_URL (same value in 2 files):
 
     LOW   internal-tool/CAIDO_URL     http**********
-          └ plain URL in MCP server "internal-tool"'s env block: likely just an endpoint, but URLs can embed secrets too (e.g. webhook tokens)
+          └ plain URL in MCP server "internal-tool"'s env block; URLs can embed tokens
           - /Users/alex/.cursor/mcp.json
           - /Users/alex/code/webapp/.mcp.json
 
 [Private Keys]
   ───────────────────────────────────
-  * /Users/alex/.ssh/id_ed25519
+  • /Users/alex/.ssh/id_ed25519
 
     HIGH  no passphrase set
 
-  * /Users/alex/Downloads/old-server-access.pem
+  • /Users/alex/Downloads/old-server-access.pem
 
     HIGH  private key found outside ~/.ssh; no passphrase set
 
 [IaC Variable Files]
   ───────────────────────────────────
-  * /Users/alex/code/infra/k8s/secrets.yaml
+  • /Users/alex/code/infra/k8s/secrets.yaml
 
     INFO  infrastructure-as-code variable file: detection only, no automated fix yet
 
 [Suspicious Filenames]
   ───────────────────────────────────
-  * /Users/alex/Downloads/1Password Emergency Kit A3-XXXXXX-example.pdf
+  • /Users/alex/Downloads/1Password Emergency Kit A3-XXXXXX-example.pdf
 
     MEDIUM  1Password Emergency Kit: contains the account's master and secret key if genuine
 
@@ -118,7 +118,7 @@ No secret values are ever printed in full. Run `jit audit --format ndjson` for m
 
 ## How to read a finding block
 
-Each non-empty category opens with a bold header and a rule. Within it, every file the scanner flagged gets a `*`-marked path, and each finding under it is one aligned row: line number (when known), severity, key name, and masked value line up in columns, with the free-form reason hanging on its own `└` line beneath, where it can wrap on a narrow terminal without breaking the columns. Findings with neither a key nor a value (a plaintext `.env` file's presence, an unencrypted key) keep their reason inline next to the severity.
+Each non-empty category opens with a bold header and a rule. Within it, every block gets a `•`-marked header (a file path, or a pattern name for findings collapsed across files), and each finding is one aligned row: line number (when known), severity, key name, and masked value line up in columns, with the free-form reason hanging on its own `└` line beneath, where it can wrap on a narrow terminal without breaking the columns. Findings with neither a key nor a value (a plaintext `.env` file's presence, an unencrypted key) keep their reason inline next to the severity.
 
 ## What made this Critical
 

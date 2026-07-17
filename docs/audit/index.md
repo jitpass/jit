@@ -31,7 +31,7 @@ scan time: 2026-07-07T14:48:08.370Z          duration: 2ms
 
 [Shell Configs]
   ───────────────────────────────────
-  * /Users/alex/.zshrc
+  • /Users/alex/.zshrc
 
     :1  HIGH  AWS_SECRET_ACCESSKEY  AKIA**********
               └ export statement assigns a value to a key name that looks like a secret
