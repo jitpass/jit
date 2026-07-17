@@ -5,12 +5,12 @@ Start jit agent automatically at every login (survives reboots)
 ### Synopsis
 
 Sets up jit agent to start automatically every time you log in, and to
-restart itself if it crashes — until you run `jit agent uninstall`.
+restart itself if it crashes, until you run `jit agent uninstall`.
 Under the hood this writes and loads a launchd LaunchAgent plist that
 runs `jit agent run`.
 
 --ttl controls how long a session stays unlocked after your last Touch ID
-prompt (default 15m, same meaning as `jit agent run --ttl`) — baked into
+prompt (default 15m, same meaning as `jit agent run --ttl`), baked into
 the installed service so it applies from every future login, not just
 this one.
 

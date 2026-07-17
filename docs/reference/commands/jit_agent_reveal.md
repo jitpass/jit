@@ -22,7 +22,7 @@ jit agent reveal <mount-path> [flags]
 
 ```
       --for duration   how long to serve real content (clamped to 10m) (default 5m0s)
-  -q, --quiet          suppress the success message — for embedding in a pre-run hook
+  -q, --quiet          suppress the success message, for embedding in a pre-run hook
 ```
 
 ### SEE ALSO

@@ -139,7 +139,7 @@ func TestRevealWindowNaturalExpiryEndToEnd(t *testing.T) {
 			t.Errorf("status still reports revealed (%ds remaining) after expiry", ms.RevealedForSeconds)
 		}
 		if ms.RevealEndedUnix == 0 {
-			t.Error("status reports no RevealEndedUnix after a window expired — 'the timer ended' stays invisible (GAPS.md #48)")
+			t.Error("status reports no RevealEndedUnix after a window expired, 'the timer ended' stays invisible (GAPS.md #48)")
 		} else if since := time.Since(time.Unix(ms.RevealEndedUnix, 0)); since < 0 || since > time.Minute {
 			t.Errorf("RevealEndedUnix says the window ended %v ago, want just now", since)
 		}
@@ -165,7 +165,7 @@ func TestRevealRefusedWhenNothingRealToServe(t *testing.T) {
 
 	err := client.Reveal(mountPath, 5*time.Minute)
 	if err == nil {
-		t.Fatal("Client.Reveal succeeded on a mount with nothing real to serve — 'Revealed for 5m0s' with every read still a decoy is exactly the silent failure GAPS.md #46 records")
+		t.Fatal("Client.Reveal succeeded on a mount with nothing real to serve, 'Revealed for 5m0s' with every read still a decoy is exactly the silent failure GAPS.md #46 records")
 	}
 	if !strings.Contains(err.Error(), "nothing real to serve") {
 		t.Errorf("Reveal error = %q, want it to say the mount has nothing real to serve", err)

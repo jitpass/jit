@@ -38,16 +38,16 @@ func rekeyInProgress(root string) bool {
 // errRekeyInProgress is what every other vault command reports while the
 // marker exists — including after an interrupted rotation, which is
 // exactly when a user will be running other commands wondering why.
-var errRekeyInProgress = fmt.Errorf("a master-key rotation is in progress (or was interrupted) — run `jit vault rekey` to finish it first")
+var errRekeyInProgress = fmt.Errorf("a master-key rotation is in progress (or was interrupted), run `jit vault rekey` to finish it first")
 
 var vaultRekeyCmd = &cobra.Command{
 	Use:   "rekey",
 	Short: "Rotate the vault's master encryption key",
 	Long: "Generates a new master encryption key, re-wraps every stored secret's key\n" +
-		"under it (live secrets, file backups, and archived versions — the encrypted\n" +
+		"under it (live secrets, file backups, and archived versions, the encrypted\n" +
 		"values themselves are never touched), then replaces the old master key.\n" +
 		"One Touch ID/passcode approval covers the whole operation.\n\n" +
-		"Run it if the old key may have been exposed, or simply on a schedule —\n" +
+		"Run it if the old key may have been exposed, or simply on a schedule,\n" +
 		"the vault's master key otherwise never changes for its whole life.\n\n" +
 		"Safe to interrupt: until the very last step both keys exist, every\n" +
 		"re-wrapped secret is verified before it's written, and re-running\n" +
@@ -64,7 +64,7 @@ var vaultRekeyCmd = &cobra.Command{
 		primary := keychainwrap.New()
 		hasPrimary := primary.HasMEK()
 		if !hasPrimary && !resume {
-			return fmt.Errorf("jit vault rekey: no vault master key found — run `jit vault init` first")
+			return fmt.Errorf("jit vault rekey: no vault master key found, run `jit vault init` first")
 		}
 
 		if !vaultRekeyYes {
@@ -118,13 +118,13 @@ var vaultRekeyCmd = &cobra.Command{
 		if hasPrimary {
 			oldKW = primary
 		} else {
-			fmt.Fprintln(cmd.ErrOrStderr(), "jit vault rekey: resuming — the old master key is already gone; verifying every secret opens under the staged key.")
+			fmt.Fprintln(cmd.ErrOrStderr(), "jit vault rekey: resuming, the old master key is already gone; verifying every secret opens under the staged key.")
 		}
 		rewrapped, current, err := v.RewrapAll(oldKW, primary.StagedRekeyWrapper())
 		if err != nil {
 			// Marker stays: the vault is mid-rotation and other commands
 			// must keep refusing to write until a re-run gets past this.
-			return fmt.Errorf("jit vault rekey: %w (both keys are intact — fix the cause and re-run `jit vault rekey`)", err)
+			return fmt.Errorf("jit vault rekey: %w (both keys are intact, fix the cause and re-run `jit vault rekey`)", err)
 		}
 
 		if err := primary.PromoteStagedRekeyMEK(); err != nil {

@@ -101,7 +101,7 @@ func TestStatusReflectsRealAgentRunningAndLocked(t *testing.T) {
 	if !strings.Contains(out, wantVersions) {
 		t.Errorf("expected %q, got:\n%s", wantVersions, out)
 	}
-	if !strings.Contains(out, "Mounts: 1 registered, agent unlocked — real content available") {
+	if !strings.Contains(out, "Mounts: 1 registered, agent unlocked, real content available") {
 		t.Errorf("expected mounts to be reported as serving real content while unlocked, got:\n%s", out)
 	}
 
@@ -116,6 +116,6 @@ func TestStatusReflectsRealAgentRunningAndLocked(t *testing.T) {
 		t.Errorf("expected a locked agent summary, got:\n%s", out)
 	}
 	if !strings.Contains(out, "Mounts: 1 registered, serving decoy content only (agent locked") {
-		t.Errorf("expected mounts to be reported as still served (decoy-only) while locked, not fully unserved — GAPS.md #35, got:\n%s", out)
+		t.Errorf("expected mounts to be reported as still served (decoy-only) while locked, not fully unserved, GAPS.md #35, got:\n%s", out)
 	}
 }

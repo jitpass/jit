@@ -6,7 +6,7 @@ Restore secrets from a jit vault export file
 
 Decrypts <file> (written by `jit vault export`) with the passphrase you
 supply and writes every secret it contains into this vault, overwriting
-any existing secret at the same path. Confirms first unless --yes — the
+any existing secret at the same path. Confirms first unless --yes, the
 passphrase prompt only comes after that, so declining never costs a
 wasted attempt at typing it.
 

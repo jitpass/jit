@@ -40,7 +40,7 @@ func TestRotateAgentLogCopiesAsideAndTruncatesInPlace(t *testing.T) {
 		t.Fatalf("reading rotated log: %v", err)
 	}
 	if !bytes.Equal(rotated, content) {
-		t.Error("agent.log.1 does not carry the full previous log — rotation must never cost the recent past")
+		t.Error("agent.log.1 does not carry the full previous log, rotation must never cost the recent past")
 	}
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -50,7 +50,7 @@ func TestRotateAgentLogCopiesAsideAndTruncatesInPlace(t *testing.T) {
 		t.Errorf("agent.log is %d bytes after rotation, want 0 (truncated in place)", fi.Size())
 	}
 	if perm, _ := os.Stat(path + ".1"); perm.Mode().Perm() != 0o600 {
-		t.Errorf("agent.log.1 mode = %o, want 0600 — it carries the same reader lineage the live log does", perm.Mode().Perm())
+		t.Errorf("agent.log.1 mode = %o, want 0600, it carries the same reader lineage the live log does", perm.Mode().Perm())
 	}
 
 	// The held O_APPEND fd must land its next write at the new EOF —
@@ -97,7 +97,7 @@ func TestRotateAgentLogNoOpUnderCapAndWhenMissing(t *testing.T) {
 func TestValidateAgentTTL(t *testing.T) {
 	for _, bad := range []time.Duration{0, -time.Minute} {
 		if err := validateAgentTTL(bad); err == nil {
-			t.Errorf("validateAgentTTL(%s) = nil, want an error — a non-positive TTL re-prompts Touch ID on every single use", bad)
+			t.Errorf("validateAgentTTL(%s) = nil, want an error, a non-positive TTL re-prompts Touch ID on every single use", bad)
 		}
 	}
 	if err := validateAgentTTL(15 * time.Minute); err != nil {
@@ -176,7 +176,7 @@ func TestAgentLogCommandExplainsMissingLog(t *testing.T) {
 
 	out, err := execAgentLog(t)
 	if err != nil {
-		t.Fatalf("jit agent log with no log file: %v — an absent log is a normal state, not an error", err)
+		t.Fatalf("jit agent log with no log file: %v, an absent log is a normal state, not an error", err)
 	}
 	if !strings.Contains(out, "No agent log yet") || !strings.Contains(out, "jit agent install") {
 		t.Errorf("output %q, want it to explain there's no log yet and how one comes to exist", out)

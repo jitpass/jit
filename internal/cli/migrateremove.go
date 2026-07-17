@@ -42,20 +42,20 @@ var migrateRemoveCmd = &cobra.Command{
 		"again, and any server in the project's own mcp.json/.mcp.json launching\n" +
 		"through jit gets its plaintext env block back (all written from the\n" +
 		"CURRENT vault values, so edits made with `jit vault set` since migration\n" +
-		"are kept), and then the project's profile manifests — including the ones\n" +
-		"created for this project's MCP servers — the vault secrets they\n" +
+		"are kept), and then the project's profile manifests, including the ones\n" +
+		"created for this project's MCP servers, the vault secrets they\n" +
 		"reference, the project's encrypted file backups, any reveal hooks\n" +
 		"migrate wired into .envrc/package.json, and the .jit/ directory itself\n" +
 		"are all deleted.\n\n" +
 		"Machine-level migrations (shell configs, AWS, kubeconfig, Terraform\n" +
 		"Cloud, GCP application-default credentials, the global ~/.npmrc,\n" +
-		"Claude Desktop's MCP config) are not touched — they aren't part of any\n" +
+		"Claude Desktop's MCP config) are not touched, they aren't part of any\n" +
 		"one project; reverse those with `jit migrate undo`.\n\n" +
 		"A vault secret also referenced by a profile OUTSIDE this project is\n" +
 		"kept (and reported), never deleted out from under the other profile.\n\n" +
 		"This both writes real secret values back to disk in PLAINTEXT and\n" +
 		"permanently deletes them from the vault, so it always requires its own\n" +
-		"Touch ID/passcode approval — a running agent session is deliberately\n" +
+		"Touch ID/passcode approval, a running agent session is deliberately\n" +
 		"not enough.",
 	Args:         cobra.NoArgs,
 	SilenceUsage: true,
@@ -112,7 +112,7 @@ func runMigrateRemove(cmd *cobra.Command, args []string) error {
 	}
 	if len(plan.mounts) == 0 && len(plan.inPlace) == 0 && len(plan.companions) == 0 &&
 		len(plan.profileInfos) == 0 && len(plan.ownedGlobal) == 0 && len(plan.backups) == 0 && plan.jitDir == "" {
-		fmt.Fprintln(out, "No jit artifacts found in this project — nothing to remove. (Machine-level migrations are reversed with `jit migrate undo`.)")
+		fmt.Fprintln(out, "No jit artifacts found in this project, nothing to remove. (Machine-level migrations are reversed with `jit migrate undo`.)")
 		return nil
 	}
 

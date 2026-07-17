@@ -104,7 +104,7 @@ func TestAuditCommandNDJSONFormat(t *testing.T) {
 }
 
 func TestAuditCommandCleanFixture(t *testing.T) {
-	withFixtureHome(t) // empty fixture — nothing planted
+	withFixtureHome(t) // empty fixture, nothing planted
 	out := runAudit(t, "--format", "text")
 	if !strings.Contains(out, "RISK LEVEL: CLEAN") {
 		t.Errorf("expected a clean result on an empty fixture home, got:\n%s", out)

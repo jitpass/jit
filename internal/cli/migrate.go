@@ -44,7 +44,7 @@ func noteNamespaceMove(w io.Writer, movedFrom, profileName string) {
 	if movedFrom == "" {
 		return
 	}
-	_, _ = color.New(color.FgYellow).Fprintf(w, "    note: vault namespace %q already holds a different migration's secrets — this file's secrets live under %q instead\n", movedFrom, profileName)
+	_, _ = color.New(color.FgYellow).Fprintf(w, "    note: vault namespace %q already holds a different migration's secrets, this file's secrets live under %q instead\n", movedFrom, profileName)
 }
 
 // filterMigrateOnly validates only (the raw --only tokens) against
@@ -87,7 +87,7 @@ var migrateCmd = &cobra.Command{
 		"                       config, the global ~/.npmrc)\n\n" +
 		"Every run prints the full plan and asks for confirmation before touching\n" +
 		"anything, and every modified file is backed up (encrypted, into the vault)\n" +
-		"first — `jit migrate undo` restores any migrated file from that backup.\n" +
+		"first, `jit migrate undo` restores any migrated file from that backup.\n" +
 		"See each subcommand's --help for exactly what happens to each kind of file.",
 	Example: "  jit migrate local --dry-run    # preview this project's plan, change nothing\n" +
 		"  jit migrate local              # fix this project\n" +
@@ -98,7 +98,7 @@ var migrateCmd = &cobra.Command{
 var migrateLocalCmd = &cobra.Command{
 	Use:   "local",
 	Short: "Convert findings under the current directory only",
-	Long: "Converts findings under the current directory tree ONLY — nothing outside\n" +
+	Long: "Converts findings under the current directory tree ONLY, nothing outside\n" +
 		"the project you're standing in is discovered or touched. Machine-wide files\n" +
 		"(shell configs, AWS, kubeconfig, Terraform Cloud, GCP application-default\n" +
 		"credentials, Claude Desktop's config, the global ~/.npmrc) live at fixed\n" +
@@ -106,17 +106,17 @@ var migrateLocalCmd = &cobra.Command{
 		"What happens per category:\n\n" +
 		"  .env files   Keys move into a profile and the vault; the file itself keeps\n" +
 		"               working as a live mount served by jit agent, showing\n" +
-		"               fake-looking values until revealed (`jit agent reveal` — wired\n" +
+		"               fake-looking values until revealed (`jit agent reveal`, wired\n" +
 		"               automatically into an existing .envrc or package.json\n" +
 		"               dev/start script when one exists). A git-safe <file>.pointers\n" +
-		"               companion is written alongside, listing vault paths only —\n" +
+		"               companion is written alongside, listing vault paths only,\n" +
 		"               always safe to open or commit.\n" +
 		"  MCP configs  Each server's env-block secrets move into the vault, and the\n" +
 		"               server's command is rewritten to launch via `jit run`.\n" +
 		"  .npmrc       Secret lines move into the vault; the file keeps working as a\n" +
 		"               live mount, with non-secret settings preserved verbatim.\n\n" +
 		"Migrating never scrubs git history: a value that was ever committed stays\n" +
-		"recoverable via `git log -p` regardless — jit warns per file instead of\n" +
+		"recoverable via `git log -p` regardless, jit warns per file instead of\n" +
 		"implying \"migrated = safe\".",
 	Example: "  jit migrate local --dry-run\n" +
 		"  jit migrate local --only env",
@@ -128,8 +128,8 @@ var migrateLocalCmd = &cobra.Command{
 
 var migrateHomeCmd = &cobra.Command{
 	Use:   "home",
-	Short: "Convert findings anywhere under $HOME — the whole machine, not just this project",
-	Long: "Converts findings anywhere under $HOME — the whole machine, not just this\n" +
+	Short: "Convert findings anywhere under $HOME, the whole machine, not just this project",
+	Long: "Converts findings anywhere under $HOME, the whole machine, not just this\n" +
 		"project. Covers everything `jit migrate local` does (see its --help for the\n" +
 		"per-category detail), discovered across every project under $HOME, plus the\n" +
 		"machine-wide files that live at fixed home paths:\n\n" +
@@ -138,7 +138,7 @@ var migrateHomeCmd = &cobra.Command{
 		"                   `eval \"$(jit export --profile ...)\"` instead.\n" +
 		"  AWS              ~/.aws/credentials profiles move into the vault; the AWS\n" +
 		"                   CLI/SDK fetches them live via a credential_process line\n" +
-		"                   in ~/.aws/config — no keys on disk at all.\n" +
+		"                   in ~/.aws/config, no keys on disk at all.\n" +
 		"  kubeconfig       A user's bearer token or client-certificate pair moves\n" +
 		"                   into the vault; kubectl fetches it via an exec block.\n" +
 		"  Terraform Cloud  ~/.terraform.d/credentials.tfrc.json tokens move into the\n" +
@@ -149,7 +149,7 @@ var migrateHomeCmd = &cobra.Command{
 		"  GCP              ~/.config/gcloud/application_default_credentials.json's\n" +
 		"                   refresh token (or a service account key's private key)\n" +
 		"                   moves into the vault; the file keeps working as a live\n" +
-		"                   mount — Google SDKs read the same path, non-secret fields\n" +
+		"                   mount, Google SDKs read the same path, non-secret fields\n" +
 		"                   preserved verbatim. (GCP has no AWS-style\n" +
 		"                   credential_process hook for these credential types, so\n" +
 		"                   the mount is what keeps SDKs working with no key on disk.)\n" +
@@ -314,7 +314,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 			fmt.Fprintln(cmd.OutOrStdout(), "server secrets, no AWS/kubeconfig/Terraform Cloud/GCP credentials, and no npmrc secrets found.")
 		}
 		if len(skippedArchived) > 0 {
-			fmt.Fprintf(cmd.OutOrStdout(), "(%d finding(s) skipped under an archived/backup-looking directory — rerun with --include-archived to include them.)\n", len(skippedArchived))
+			fmt.Fprintf(cmd.OutOrStdout(), "(%d finding(s) skipped under an archived/backup-looking directory, rerun with --include-archived to include them.)\n", len(skippedArchived))
 		}
 		return nil
 	}
@@ -335,7 +335,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 	// for --dry-run and the real confirmation prompt (GAPS.md #26's core
 	// guarantee) — see TestMigrateLocalDryRunMatchesRealPlanExactly.
 	if migrateDryRun {
-		_, _ = color.New(color.FgCyan, color.Bold).Fprintln(cmd.OutOrStdout(), "[DRY RUN] Preview — this run changes nothing; the plan below is what a real run would do.")
+		_, _ = color.New(color.FgCyan, color.Bold).Fprintln(cmd.OutOrStdout(), "[DRY RUN] Preview, this run changes nothing; the plan below is what a real run would do.")
 		fmt.Fprintln(cmd.OutOrStdout())
 	}
 
@@ -349,7 +349,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 	// preview you confirm against is exactly the preview --dry-run shows.
 	printMigratePlan(cmd.OutOrStdout(), home, wholeHome, envFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, gcpADCFiles, npmrcFiles, planRevealHooks(home, envFiles, npmrcFiles))
 	if len(skippedArchived) > 0 {
-		fmt.Fprintf(cmd.OutOrStdout(), "\n(Skipped %d finding(s) under an archived/backup-looking directory — rerun with --include-archived to include them.)\n", len(skippedArchived))
+		fmt.Fprintf(cmd.OutOrStdout(), "\n(Skipped %d finding(s) under an archived/backup-looking directory, rerun with --include-archived to include them.)\n", len(skippedArchived))
 	}
 
 	if migrateDryRun {
@@ -357,7 +357,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 		fmt.Fprintln(out)
 		_, _ = color.New(color.FgCyan, color.Bold).Fprint(out, "[DRY RUN]")
 		fmt.Fprintln(out, " No files were changed. Run without --dry-run to apply this plan.")
-		_, _ = color.New(color.FgYellow).Fprintln(out, "This only covers what jit migrate can act on — run `jit audit` for a complete picture, including findings it can never auto-fix, like private keys.")
+		_, _ = color.New(color.FgYellow).Fprintln(out, "This only covers what jit migrate can act on, run `jit audit` for a complete picture, including findings it can never auto-fix, like private keys.")
 		return nil
 	}
 
@@ -427,7 +427,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 			// pointer file), and nothing to reveal.
 			if !result.Mounted {
 				summary.backupOnlyFiles++
-				fmt.Fprintf(out, "  • %s -> profile %q (%d var(s)); backup: `jit vault get %s` — replaced with a safe pointer file (never mounted; nothing reads a backup file live)\n",
+				fmt.Fprintf(out, "  • %s -> profile %q (%d var(s)); backup: `jit vault get %s`, replaced with a safe pointer file (never mounted; nothing reads a backup file live)\n",
 					displayPath(home, envPath), result.ProfileName, len(result.Variables), result.BackupPath)
 				noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
 				continue
@@ -454,7 +454,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 			if err != nil {
 				return fmt.Errorf("jit migrate: %w", err)
 			}
-			fmt.Fprintf(out, "  • %s -> profile %q (%d var(s)); backup: `jit vault get %s` — open a new shell (or `source %s`)\n",
+			fmt.Fprintf(out, "  • %s -> profile %q (%d var(s)); backup: `jit vault get %s`, open a new shell (or `source %s`)\n",
 				displayPath(home, shellPath), result.ProfileName, len(result.Variables), result.BackupPath, displayPath(home, shellPath))
 		}
 		fmt.Fprintln(out)

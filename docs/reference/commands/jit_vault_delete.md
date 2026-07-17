@@ -7,7 +7,7 @@ Permanently destroy the whole vault, including its encryption key
 Destroys the entire vault: every secret, the encrypted file backups and
 their undo index, the device identity, and the vault's encryption key in
 the macOS keychain. Nothing on this machine can decrypt anything
-afterward — only a passphrase-encrypted `jit vault export` file survives
+afterward, only a passphrase-encrypted `jit vault export` file survives
 (restorable later via `jit vault init` + `jit vault import`).
 
 Refuses to run while any file is still live-mounted: unmount first

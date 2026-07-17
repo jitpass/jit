@@ -43,9 +43,9 @@ var profileCmd = &cobra.Command{
 	GroupID: groupSecrets,
 	Short:   "Inspect profile manifests (names and vault paths only, never secret values)",
 	Long: "A profile maps environment variable names to vault secret paths.\n" +
-		"jit profile lists and shows these manifests — both project-local ones\n" +
+		"jit profile lists and shows these manifests, both project-local ones\n" +
 		"under .jit/profiles/ and the home-rooted global ones jit migrate creates\n" +
-		"for shell-config/MCP/AWS/kubeconfig/npmrc secrets — without ever decrypting\n" +
+		"for shell-config/MCP/AWS/kubeconfig/npmrc secrets, without ever decrypting\n" +
 		"or printing a secret value. Use jit doctor to also verify a profile's\n" +
 		"referenced secrets actually exist in the vault.",
 }
