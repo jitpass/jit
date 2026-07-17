@@ -46,19 +46,19 @@ func TestChallengeReasonNamesTheProfileNotTheFlag(t *testing.T) {
 	got := challengeReason(OpUnwrap, c)
 
 	if !strings.Contains(got, `"mcp-jamf"`) {
-		t.Errorf("reason = %q, want it to name the profile mcp-jamf — that's the secret set being authorized", got)
+		t.Errorf("reason = %q, want it to name the profile mcp-jamf, that's the secret set being authorized", got)
 	}
 	if strings.Contains(got, "--profile") {
 		t.Errorf("reason = %q, must not contain the raw flag: a dialog saying --profile implies jit understands an \"mcp\" concept it has none of", got)
 	}
 	if !strings.Contains(got, "launched by claude") {
-		t.Errorf("reason = %q, want the launching process named — \"why is this happening right now\" is the question the prompt has to answer", got)
+		t.Errorf("reason = %q, want the launching process named, \"why is this happening right now\" is the question the prompt has to answer", got)
 	}
 	if strings.Contains(got, "/Users/") {
 		t.Errorf("reason = %q, must not carry absolute paths from the child command into a modal dialog", got)
 	}
 	if n := utf8.RuneCountInString(got); n > maxReasonLen {
-		t.Errorf("reason is %d chars (%q), want <= %d — macOS renders it as one sentence in a small modal", n, got, maxReasonLen)
+		t.Errorf("reason is %d chars (%q), want <= %d, macOS renders it as one sentence in a small modal", n, got, maxReasonLen)
 	}
 }
 
@@ -73,7 +73,7 @@ func TestChallengeReasonSkipsShellsInTheChain(t *testing.T) {
 	got := challengeReason(OpWrap, c)
 
 	if strings.Contains(got, "launched by") {
-		t.Errorf("reason = %q, want no attribution when only shells launched it — the human typed it themselves", got)
+		t.Errorf("reason = %q, want no attribution when only shells launched it, the human typed it themselves", got)
 	}
 	if !strings.Contains(got, "store a secret") {
 		t.Errorf("reason = %q, want the op named (a wrap is storing a secret)", got)
@@ -102,7 +102,7 @@ func TestCallerProfileStopsAtDoubleDash(t *testing.T) {
 	c := callerFor([]string{"jit", "run", "--", "some-tool", "--profile", "not-jits-profile"})
 
 	if got := c.profile(); got != "" {
-		t.Errorf("profile() = %q, want empty — everything after -- belongs to the child command", got)
+		t.Errorf("profile() = %q, want empty, everything after -- belongs to the child command", got)
 	}
 }
 
@@ -140,7 +140,7 @@ func TestChallengeReasonTruncationNeverSplitsARune(t *testing.T) {
 
 	got := challengeReason(OpUnwrap, c)
 	if !utf8.ValidString(got) {
-		t.Errorf("reason = %q is not valid UTF-8 — truncation split a multi-byte character", got)
+		t.Errorf("reason = %q is not valid UTF-8, truncation split a multi-byte character", got)
 	}
 	if utf8.RuneCountInString(got) > maxReasonLen {
 		t.Errorf("reason is %d runes, want <= %d", utf8.RuneCountInString(got), maxReasonLen)

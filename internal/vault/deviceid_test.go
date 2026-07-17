@@ -28,7 +28,7 @@ func TestEnsureDeviceIDStableAcrossCalls(t *testing.T) {
 		t.Fatalf("EnsureDeviceID (second call): %v", err)
 	}
 	if second != first {
-		t.Errorf("EnsureDeviceID changed across calls: %q then %q — the whole point is an identifier that never drifts", first, second)
+		t.Errorf("EnsureDeviceID changed across calls: %q then %q, the whole point is an identifier that never drifts", first, second)
 	}
 }
 
@@ -42,7 +42,7 @@ func TestEnsureDeviceIDDistinctPerRoot(t *testing.T) {
 		t.Fatalf("EnsureDeviceID (root b): %v", err)
 	}
 	if a == b {
-		t.Errorf("two fresh roots produced the same device ID %q — must be random per generation, never a shared constant", a)
+		t.Errorf("two fresh roots produced the same device ID %q, must be random per generation, never a shared constant", a)
 	}
 }
 
@@ -70,7 +70,7 @@ func TestEnsureDeviceIDRegeneratesEmptyFile(t *testing.T) {
 		t.Fatalf("EnsureDeviceID: %v", err)
 	}
 	if id == "" {
-		t.Error("EnsureDeviceID returned \"\" for an empty file — an empty identifier must never become every envelope's recipient key")
+		t.Error("EnsureDeviceID returned \"\" for an empty file, an empty identifier must never become every envelope's recipient key")
 	}
 }
 
@@ -93,7 +93,7 @@ func TestGetFallsBackToSingleRecipient(t *testing.T) {
 	reader := &Vault{Root: root, KeyWrapper: kw, RecipientID: "device-abc123"}
 	got, err := reader.Get("stripe/dev-key")
 	if err != nil {
-		t.Fatalf("Get under a different RecipientID: %v — a hostname change must not lock the vault", err)
+		t.Fatalf("Get under a different RecipientID: %v, a hostname change must not lock the vault", err)
 	}
 	if string(got) != string(want) {
 		t.Errorf("Get = %q, want %q", got, want)
@@ -141,6 +141,6 @@ func TestGetMultiRecipientMismatchStillFails(t *testing.T) {
 	}
 
 	if _, err := v.Get("multi/key"); err == nil {
-		t.Error("Get succeeded against a multi-recipient envelope with no matching recipient — the single-recipient fallback must never guess between several")
+		t.Error("Get succeeded against a multi-recipient envelope with no matching recipient, the single-recipient fallback must never guess between several")
 	}
 }

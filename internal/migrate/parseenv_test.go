@@ -68,7 +68,7 @@ func TestParseEnvFileMultilineQuoted(t *testing.T) {
 		t.Errorf("SIGNING_KEY = %q, want the full multiline value preserved", values["SIGNING_KEY"])
 	}
 	if values["AFTER"] != "1" {
-		t.Errorf("AFTER = %q — the line following a multiline value must still parse", values["AFTER"])
+		t.Errorf("AFTER = %q, the line following a multiline value must still parse", values["AFTER"])
 	}
 }
 
@@ -104,16 +104,16 @@ func TestParseEnvFileBareValueKeptVerbatim(t *testing.T) {
 
 func TestParseEnvFileReportsUnparsedLineNumbers(t *testing.T) {
 	content := "GOOD=1\n" + // line 1
-		"this line is not a KEY=value\n" + // line 2 — unparsed
+		"this line is not a KEY=value\n" + // line 2, unparsed
 		"# comment\n" + // line 3
 		"ALSO_GOOD=2\n" + // line 4
-		"BROKEN=\"never closed\n" // line 5 — unterminated quote
+		"BROKEN=\"never closed\n" // line 5, unterminated quote
 	values, unparsed := parseFixtureEnv(t, content)
 	if values["GOOD"] != "1" || values["ALSO_GOOD"] != "2" {
 		t.Errorf("values = %v, want the parseable lines still returned", values)
 	}
 	if len(unparsed) != 2 || unparsed[0] != 2 || unparsed[1] != 5 {
-		t.Errorf("unparsed = %v, want [2 5] — the exact 1-based lines a human needs to go fix", unparsed)
+		t.Errorf("unparsed = %v, want [2 5], the exact 1-based lines a human needs to go fix", unparsed)
 	}
 }
 
@@ -132,13 +132,13 @@ func TestApplyEnvFileUnparsedLineAborts(t *testing.T) {
 
 	_, err := ApplyEnvFile(v, dir, envPath)
 	if err == nil {
-		t.Fatal("ApplyEnvFile succeeded on a file with an unparseable line — silent data loss on a destructive path")
+		t.Fatal("ApplyEnvFile succeeded on a file with an unparseable line, silent data loss on a destructive path")
 	}
 	if !strings.Contains(err.Error(), "line 2") {
 		t.Errorf("error %q should name the offending line number", err)
 	}
 	if strings.Contains(err.Error(), "source other.env") {
-		t.Errorf("error %q leaks the unparsed line's content — it may hold a real secret and this lands in scrollback", err)
+		t.Errorf("error %q leaks the unparsed line's content, it may hold a real secret and this lands in scrollback", err)
 	}
 
 	data, readErr := os.ReadFile(envPath)
@@ -146,7 +146,7 @@ func TestApplyEnvFileUnparsedLineAborts(t *testing.T) {
 		t.Fatalf("re-reading fixture: %v", readErr)
 	}
 	if string(data) != original {
-		t.Error("the .env file was modified despite the abort — refusing must mean touching nothing")
+		t.Error("the .env file was modified despite the abort, refusing must mean touching nothing")
 	}
 	secrets, listErr := v.List()
 	if listErr != nil {

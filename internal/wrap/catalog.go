@@ -29,7 +29,7 @@ const (
 // YAML keys like "github.com" contain dots themselves.
 type TokenSource struct {
 	Path     string // "~"-rooted file path; expand with ExpandHome
-	Format   string // "yaml", "toml", "json", or "raw" — must have an extractor registered
+	Format   string // "yaml", "toml", "json", or "raw", must have an extractor registered
 	Selector string // format-specific, e.g. "github.com/oauth_token"; empty for "raw", where the whole file is the value
 }
 

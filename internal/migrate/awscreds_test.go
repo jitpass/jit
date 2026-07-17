@@ -108,7 +108,7 @@ func TestApplyAWSProfileDefaultUsesBareSectionInConfig(t *testing.T) {
 		t.Errorf("expected a bare [default] section (not [profile default]), got:\n%s", configContent)
 	}
 	if strings.Contains(configContent, "[profile default]") {
-		t.Errorf("must never use [profile default] — AWS's own default section is always bare [default], got:\n%s", configContent)
+		t.Errorf("must never use [profile default], AWS's own default section is always bare [default], got:\n%s", configContent)
 	}
 	if !strings.Contains(configContent, "credential_process") || !strings.Contains(configContent, "aws-credential-process") || !strings.Contains(configContent, "--profile aws-default") {
 		t.Errorf("expected a credential_process line invoking jit aws-credential-process --profile aws-default, got:\n%s", configContent)

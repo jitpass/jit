@@ -46,7 +46,7 @@ func TestRekeyStagePromoteRoundTrip(t *testing.T) {
 		t.Fatalf("fetching staged again: %v", err)
 	}
 	if !bytes.Equal(stagedBefore, stagedAfter) {
-		t.Fatal("EnsureStagedRekeyMEK replaced an existing staged key — a resumed rekey would lose the key half the vault is wrapped under")
+		t.Fatal("EnsureStagedRekeyMEK replaced an existing staged key, a resumed rekey would lose the key half the vault is wrapped under")
 	}
 
 	// Wrap under the staged key, promote, and unwrap under the primary:

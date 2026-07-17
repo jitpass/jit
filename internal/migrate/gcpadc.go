@@ -247,7 +247,7 @@ func ApplyGCPADC(v *vault.Vault, home, path string) (GCPADCMigration, error) {
 	}
 	template, secrets, credType, err := locateGCPADCSecrets(data)
 	if err != nil {
-		return GCPADCMigration{}, fmt.Errorf("%s: %v — refusing to half-migrate", path, err)
+		return GCPADCMigration{}, fmt.Errorf("%s: %v, refusing to half-migrate", path, err)
 	}
 
 	varNames := make([]string, 0, len(secrets))

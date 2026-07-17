@@ -110,8 +110,8 @@ func pointerFileContent(vars profile.Profile, order []string) []byte {
 	names = append(names, rest...)
 
 	var b strings.Builder
-	b.WriteString(pointerFileHeaderPrefix + " — no secret values here, only vault paths.\n")
-	b.WriteString("# Real values come from the live mount (while revealed — `jit agent reveal`)\n")
+	b.WriteString(pointerFileHeaderPrefix + ", no secret values here, only vault paths.\n")
+	b.WriteString("# Real values come from the live mount (while revealed, `jit agent reveal`)\n")
 	b.WriteString("# or `jit export`/`jit vault get`, never from this file. Safe to commit.\n")
 	for _, name := range names {
 		fmt.Fprintf(&b, "%s=jit://vault/%s\n", name, vars[name])

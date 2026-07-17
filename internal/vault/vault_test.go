@@ -217,7 +217,7 @@ func TestVaultDifferentRecipientAndKeyRejected(t *testing.T) {
 	wrongWrapper := &fakeKeyWrapper{key: bytes.Repeat([]byte{0x99}, dekSize)}
 	vB := &Vault{Root: root, KeyWrapper: wrongWrapper, RecipientID: "device-b"}
 	if _, err := vB.Get("stripe/dev-key"); err == nil {
-		t.Error("Get from a machine with a different key succeeded, want an error — the single-recipient fallback must never bypass the KeyWrapper itself")
+		t.Error("Get from a machine with a different key succeeded, want an error, the single-recipient fallback must never bypass the KeyWrapper itself")
 	}
 }
 

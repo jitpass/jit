@@ -86,7 +86,7 @@ func DiscoverMCPConfigs(home, cwd string, includeClaudeDesktop bool) ([]string, 
 		seen[path] = true
 		servers, err := parseMCPServers(path)
 		if err != nil {
-			return // malformed/unreadable — skip, matches audit's own tolerance
+			return // malformed/unreadable, skip, matches audit's own tolerance
 		}
 		for _, entry := range servers {
 			if hasNonEmptyEnv(entry) {

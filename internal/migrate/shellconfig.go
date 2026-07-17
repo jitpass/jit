@@ -236,7 +236,7 @@ func shellProfileName(path string) string {
 // blank "line" if the file ends with a newline so strings.Join(lines,
 // "\n") round-trips the original byte-for-byte when nothing is removed.
 func readLines(path string) ([]string, error) {
-	data, err := os.ReadFile(path) // #nosec G304 -- path is one of shellConfigFiles' fixed names under home, or a fixed/discovered MCP config path — never external input
+	data, err := os.ReadFile(path) // #nosec G304 -- path is one of shellConfigFiles' fixed names under home, or a fixed/discovered MCP config path, never external input
 	if err != nil {
 		return nil, err
 	}

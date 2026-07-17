@@ -37,7 +37,7 @@ func ValidateToolName(tool string) error {
 		return fmt.Errorf("tool name %q must contain only letters, digits, '.', '_', '-'", tool)
 	}
 	if tool == "jit" {
-		return fmt.Errorf("refusing to wrap %q — a shim named jit would shadow jit itself", tool)
+		return fmt.Errorf("refusing to wrap %q, a shim named jit would shadow jit itself", tool)
 	}
 	return nil
 }
@@ -61,7 +61,7 @@ func InstallShim(home, jitBinary, tool string) (string, error) {
 	link := filepath.Join(dir, tool)
 	if info, err := os.Lstat(link); err == nil {
 		if info.Mode()&os.ModeSymlink == 0 {
-			return "", fmt.Errorf("%s exists and is not a symlink — refusing to replace it", link)
+			return "", fmt.Errorf("%s exists and is not a symlink, refusing to replace it", link)
 		}
 		if err := os.Remove(link); err != nil {
 			return "", fmt.Errorf("replacing existing shim: %w", err)
@@ -92,7 +92,7 @@ func RemoveShim(home, tool string) (bool, error) {
 		return false, err
 	}
 	if info.Mode()&os.ModeSymlink == 0 {
-		return false, fmt.Errorf("%s is not a symlink — refusing to delete it", link)
+		return false, fmt.Errorf("%s is not a symlink, refusing to delete it", link)
 	}
 	if err := os.Remove(link); err != nil {
 		return false, err

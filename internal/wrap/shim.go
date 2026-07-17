@@ -53,7 +53,7 @@ func ShimExec(tool string, args []string) error {
 	// fork-looping.
 	guard := guardVar(tool)
 	if os.Getenv(guard) != "" {
-		return fmt.Errorf("recursion detected — shim invoked twice for the same tool, refusing to loop")
+		return fmt.Errorf("recursion detected, shim invoked twice for the same tool, refusing to loop")
 	}
 	if err := os.Setenv(guard, "1"); err != nil {
 		return err
@@ -65,7 +65,7 @@ func ShimExec(tool string, args []string) error {
 	}
 	realTool, err := lookPathSkipping(os.Getenv("PATH"), tool, ShimDir(home))
 	if err != nil {
-		return fmt.Errorf("real %q not found in PATH beyond the shim directory — `jit wrap undo %s` removes the shim", tool, tool)
+		return fmt.Errorf("real %q not found in PATH beyond the shim directory, `jit wrap undo %s` removes the shim", tool, tool)
 	}
 
 	exe, err := os.Executable()

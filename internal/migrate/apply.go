@@ -253,7 +253,7 @@ func ApplyEnvFile(v *vault.Vault, profilesRoot, envPath string) (EnvFileMigratio
 	// error lands in terminal scrollback.
 	if len(unparsed) > 0 {
 		return EnvFileMigration{}, fmt.Errorf(
-			"%s: %d line(s) could not be parsed as KEY=value (line %s) — stopping before touching this file so nothing is silently dropped; fix or comment out those lines and re-run",
+			"%s: %d line(s) could not be parsed as KEY=value (line %s), stopping before touching this file so nothing is silently dropped; fix or comment out those lines and re-run",
 			envPath, len(unparsed), joinLineNumbers(unparsed))
 	}
 	if len(values) == 0 {
@@ -504,7 +504,7 @@ func parseEnvValue(raw string, rest []string) (value string, consumed int, ok bo
 			return v, consumed, true
 		}
 		if consumed >= len(rest) {
-			return "", 0, false // unterminated quote — EOF before it closed
+			return "", 0, false // unterminated quote, EOF before it closed
 		}
 		b.WriteString(body)
 		b.WriteByte('\n')

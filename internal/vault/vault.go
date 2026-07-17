@@ -157,7 +157,7 @@ func (v *Vault) Get(path string) ([]byte, error) {
 	case envelopeVersion:
 		aad = envelopeAAD(path, env.Version, env.CreatedUnix, env.UpdatedUnix)
 	default:
-		return nil, fmt.Errorf("secret %s has envelope version %d, newer than this jit understands (max %d) — upgrade jit to read it", path, env.Version, envelopeVersion)
+		return nil, fmt.Errorf("secret %s has envelope version %d, newer than this jit understands (max %d), upgrade jit to read it", path, env.Version, envelopeVersion)
 	}
 
 	wrappedHex, ok := env.Recipients[v.RecipientID]
@@ -177,7 +177,7 @@ func (v *Vault) Get(path string) ([]byte, error) {
 				wrappedHex = w
 			}
 		} else {
-			return nil, fmt.Errorf("no key for this device (%s) in %s — it was likely encrypted on a different machine", v.RecipientID, path)
+			return nil, fmt.Errorf("no key for this device (%s) in %s, it was likely encrypted on a different machine", v.RecipientID, path)
 		}
 	}
 	wrappedDEK, err := hex.DecodeString(wrappedHex)

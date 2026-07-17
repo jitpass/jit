@@ -61,7 +61,7 @@ func TestServerRecordsDeniedChallengeWithProvenance(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if len(notified) != 1 || notified[0].Kind != KindDenied {
-		t.Errorf("OnSessionEvent saw %+v, want exactly the denied event — without it the durable history never records the denial", notified)
+		t.Errorf("OnSessionEvent saw %+v, want exactly the denied event, without it the durable history never records the denial", notified)
 	}
 }
 
@@ -97,14 +97,14 @@ func TestServerDenialCooldownPausesAutomaticRePrompts(t *testing.T) {
 		t.Errorf("cooldown error = %q, want it to say re-prompts are paused and name the override", err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 1 {
-		t.Errorf("fetcher called %d times after a cooldown-refused retry, want still 1 — the whole point is NOT prompting", got)
+		t.Errorf("fetcher called %d times after a cooldown-refused retry, want still 1, the whole point is NOT prompting", got)
 	}
 
 	// 3. Explicit unlock bypasses the cooldown (and succeeds now).
 	atomic.StoreInt32(&failing, 0)
 	mek, err := s.ensureUnlocked(OpUnlock, nil, "")
 	if err != nil {
-		t.Fatalf("explicit unlock during cooldown: %v — OpUnlock must bypass the pause", err)
+		t.Fatalf("explicit unlock during cooldown: %v, OpUnlock must bypass the pause", err)
 	}
 	wipe(mek)
 	if got := atomic.LoadInt32(&calls); got != 2 {
@@ -120,7 +120,7 @@ func TestServerDenialCooldownPausesAutomaticRePrompts(t *testing.T) {
 	}
 	wipe(mek)
 	if got := atomic.LoadInt32(&calls); got != 3 {
-		t.Errorf("fetcher called %d times, want 3 — a successful unlock must clear the cooldown", got)
+		t.Errorf("fetcher called %d times, want 3, a successful unlock must clear the cooldown", got)
 	}
 }
 
@@ -142,7 +142,7 @@ func TestServerCollapsesSessionUsesWithLabels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WrapKeyLabeled: %v", err)
 	}
-	if _, err := c.WrapKeyLabeled(dek, "stripe/live-key"); err != nil { // duplicate label — must dedupe
+	if _, err := c.WrapKeyLabeled(dek, "stripe/live-key"); err != nil { // duplicate label, must dedupe
 		t.Fatalf("WrapKeyLabeled: %v", err)
 	}
 	if _, err := c.WrapKeyLabeled(dek, "aws/s3-key"); err != nil {
@@ -171,7 +171,7 @@ func TestServerCollapsesSessionUsesWithLabels(t *testing.T) {
 		}
 	}
 	if wrapUse == nil {
-		t.Fatalf("no wrap use event in history %+v — cache-hit wraps left no record", events)
+		t.Fatalf("no wrap use event in history %+v, cache-hit wraps left no record", events)
 	}
 	if wrapUse.Count != 3 {
 		t.Errorf("wrap use count = %d, want 3 (collapsed into one event)", wrapUse.Count)
@@ -184,7 +184,7 @@ func TestServerCollapsesSessionUsesWithLabels(t *testing.T) {
 		t.Errorf("wrap use event carries no caller provenance: %+v", wrapUse)
 	}
 	if unwrapUse == nil {
-		t.Fatal("no unwrap use event in history — cache-hit unwraps left no record")
+		t.Fatal("no unwrap use event in history, cache-hit unwraps left no record")
 	}
 	if unwrapUse.Count != 1 || len(unwrapUse.Labels) != 1 || unwrapUse.Labels[0] != "stripe/live-key" {
 		t.Errorf("unwrap use event = %+v, want count 1 with the one label", unwrapUse)
@@ -219,7 +219,7 @@ func TestServerFlushesPendingUsesOnLock(t *testing.T) {
 		t.Fatalf("history has %d events, want 3 (lock, use, unlock newest-first): %+v", len(events), events)
 	}
 	if events[0].Kind != KindLock || events[1].Kind != KindUse || events[2].Kind != KindUnlock {
-		t.Errorf("history order = [%s %s %s], want [lock use unlock] — the lock must flush uses before recording itself", events[0].Kind, events[1].Kind, events[2].Kind)
+		t.Errorf("history order = [%s %s %s], want [lock use unlock], the lock must flush uses before recording itself", events[0].Kind, events[1].Kind, events[2].Kind)
 	}
 }
 
