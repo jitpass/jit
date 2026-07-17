@@ -130,3 +130,57 @@ func TestBackupsAreNeverArchived(t *testing.T) {
 		t.Errorf("backup overwrite grew history (%d versions), want none", len(versions))
 	}
 }
+
+// TestRestoreOldestVersionAtHistoryCapacity pins a confirmed data-loss
+// bug: with history full (HistoryKeep versions), restoring the OLDEST
+// version used to fail AND destroy it — Restore archived the displaced
+// live value via archiveVersion, whose prune pushed the count past the
+// cap and deleted the very file the rename was about to restore.
+func TestRestoreOldestVersionAtHistoryCapacity(t *testing.T) {
+	v := newTestVault(t)
+	values := []string{"v0", "v1", "v2", "v3", "v4", "v5"}
+	if len(values) != HistoryKeep+1 {
+		t.Fatalf("test wants exactly HistoryKeep+1 values, adjust for HistoryKeep=%d", HistoryKeep)
+	}
+	for _, val := range values {
+		if err := v.Set("p/key", []byte(val)); err != nil {
+			t.Fatalf("Set(%s): %v", val, err)
+		}
+	}
+	versions, err := v.HistoryVersions("p/key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(versions) != HistoryKeep {
+		t.Fatalf("expected a full history of %d, got %d", HistoryKeep, len(versions))
+	}
+	oldest := versions[len(versions)-1].ArchiveStamp
+
+	if err := v.Restore("p/key", oldest); err != nil {
+		t.Fatalf("Restore(oldest at capacity): %v", err)
+	}
+	got, err := v.Get("p/key")
+	if err != nil {
+		t.Fatalf("Get after restore: %v", err)
+	}
+	if string(got) != "v0" {
+		t.Errorf("restored value = %q, want the oldest archived %q", got, "v0")
+	}
+	// The displaced live value must be archived, and the count must be
+	// back within the cap: 5 - restored-out + live-archived = 5.
+	after, err := v.HistoryVersions("p/key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != HistoryKeep {
+		t.Errorf("history after restore = %d versions, want %d", len(after), HistoryKeep)
+	}
+	// And the restore must itself be restorable: newest archived is the
+	// displaced live value.
+	if err := v.Restore("p/key", 0); err != nil {
+		t.Fatalf("Restore back: %v", err)
+	}
+	if got, _ := v.Get("p/key"); string(got) != "v5" {
+		t.Errorf("restore-back value = %q, want the displaced live %q", got, "v5")
+	}
+}

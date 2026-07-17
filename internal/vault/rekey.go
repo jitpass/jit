@@ -92,6 +92,14 @@ func (v *Vault) rewrapFile(file string, oldKW, newKW KeyWrapper) (changed bool, 
 	if err := json.Unmarshal(data, &env); err != nil {
 		return false, fmt.Errorf("parsing envelope %s: %w", file, err)
 	}
+	// An envelope with no recipient entries would fall straight through
+	// the loop below and count as "current" — a silent skip of a file
+	// neither key opens, the exact outcome the package comment promises
+	// can never happen. Fail loudly instead, before the old MEK's
+	// deletion turns a corrupt-but-diagnosable file into a lost one.
+	if len(env.Recipients) == 0 {
+		return false, fmt.Errorf("%s has no recipient entries (corrupt envelope?), rekey cannot proceed past it", file)
+	}
 
 	for id, wrappedHex := range env.Recipients {
 		wrapped, err := hex.DecodeString(wrappedHex)
