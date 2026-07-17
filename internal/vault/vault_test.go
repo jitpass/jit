@@ -569,3 +569,75 @@ func TestCaseVariantPathRefusedClearly(t *testing.T) {
 		t.Errorf("exact spelling must keep working, got %q, %v", got, err)
 	}
 }
+
+// TestHistoryPrefixReserved: _history/ is the version-history tree; a
+// user secret planted there would read as an archived version of the
+// path it names, and Restore would rename it over the real secret.
+// EqualFold matters: on the default case-insensitive macOS filesystem,
+// "_History" is the same directory. _backups/ stays writable — jit
+// migrate stores its file backups through Set under that prefix.
+func TestHistoryPrefixReserved(t *testing.T) {
+	v := newTestVault(t)
+	for _, p := range []string{"_history/stripe/dev-key/123", "_History/x", "_history"} {
+		if err := v.Set(p, []byte("x")); err == nil {
+			t.Errorf("Set(%q) succeeded, want the reserved-prefix rejection", p)
+		}
+	}
+	if err := v.Set("_backups/some/file", []byte("x")); err != nil {
+		t.Errorf("Set(_backups/...) must stay allowed for jit migrate, got: %v", err)
+	}
+}
+
+// countingUnwrapKW counts UnwrapKey calls — each one is where a real
+// KeyWrapper would fire a Touch ID/passcode prompt.
+type countingUnwrapKW struct {
+	inner   KeyWrapper
+	unwraps int
+}
+
+func (c *countingUnwrapKW) WrapKey(d []byte) ([]byte, error) { return c.inner.WrapKey(d) }
+func (c *countingUnwrapKW) UnwrapKey(w []byte) ([]byte, error) {
+	c.unwraps++
+	return c.inner.UnwrapKey(w)
+}
+
+// TestCorruptPayloadFailsBeforeUnwrap: Get used to decode the payload hex
+// AFTER unwrapKey, so a corrupt envelope cost the user an authentication
+// prompt that could only ever turn into an error. Every fallible decode
+// must run before the KeyWrapper is touched.
+func TestCorruptPayloadFailsBeforeUnwrap(t *testing.T) {
+	v := newTestVault(t)
+	if err := v.Set("stripe/dev-key", []byte("value")); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(v.vaultDir(), "stripe", "dev-key.enc")
+	data, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env envelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		t.Fatal(err)
+	}
+	env.Payload = "not-hex!"
+	corrupted, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dest, corrupted, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	counter := &countingUnwrapKW{inner: v.KeyWrapper}
+	v.KeyWrapper = counter
+	_, err = v.Get("stripe/dev-key")
+	if err == nil {
+		t.Fatal("Get on a corrupt payload succeeded, want an error")
+	}
+	if !strings.Contains(err.Error(), "invalid payload encoding") {
+		t.Errorf("want the corrupt-payload error, got: %v", err)
+	}
+	if counter.unwraps != 0 {
+		t.Errorf("Get called UnwrapKey %d time(s) on a corrupt envelope — that's a wasted auth prompt on real hardware", counter.unwraps)
+	}
+}
