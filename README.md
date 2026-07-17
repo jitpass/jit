@@ -4,11 +4,12 @@
 
 Your `.env` files, `~/.aws/credentials`, shell exports, `.npmrc` tokens, and
 MCP configs are full of secrets sitting in plaintext — readable by anything
-running as you, *including every AI agent and MCP server on your machine*.
-`jit audit` shows you exactly what's exposed (strictly read-only, ~340ms);
-then `jit` moves each secret into a vault gated by Touch ID and rewrites the
-files so everything keeps working — putting a biometric prompt between your
-tools (and your agents) and your credentials.
+running as you: an infostealer from one bad `curl | sh`, a malicious `npm
+install`, or one of the AI agents now running in your editor with your full
+permissions. `jit audit` shows you exactly what's exposed (strictly
+read-only, ~340ms); then `jit` moves each secret into a vault gated by Touch
+ID and rewrites the files so everything keeps working — a biometric prompt
+between your tools (and your agents) and your credentials.
 
 <!-- TODO(demo): decoy → real .env flip GIF, ~3s loop. Record from the Playground. -->
 
