@@ -175,9 +175,16 @@ func (v *Vault) Restore(path string, stamp int64) error {
 	}
 	src := filepath.Join(v.historyDir(path), fmt.Sprintf("%d.enc", stamp))
 
+	// Archive the displaced live value WITHOUT pruning (not via
+	// archiveVersion): with history at HistoryKeep capacity, the archive
+	// pushes the count past the cap and the oldest entry can be src
+	// itself — pruning here deleted the very version being restored, so
+	// the rename below failed AND the requested version was gone for
+	// good. Prune only after the rename takes src out of history.
 	if live, err := os.ReadFile(dest); err == nil { // #nosec G304 -- dest is sanitizeSecretPath's output
-		if err := v.archiveVersion(path, live, nowUnixNano()); err != nil {
-			return err
+		archived := filepath.Join(v.historyDir(path), fmt.Sprintf("%d.enc", nowUnixNano()))
+		if err := AtomicWriteFile(archived, live); err != nil {
+			return fmt.Errorf("archiving previous version of %s: %w", path, err)
 		}
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("reading %s: %w", dest, err)
@@ -189,6 +196,9 @@ func (v *Vault) Restore(path string, stamp int64) error {
 	if err := os.Rename(src, dest); err != nil {
 		return fmt.Errorf("restoring %s: %w", path, err)
 	}
+	// Best-effort, like pruneHistory's own removes: the restore already
+	// succeeded, and a leftover extra version is untidy, not wrong.
+	_ = v.pruneHistory(path)
 	return nil
 }
 
