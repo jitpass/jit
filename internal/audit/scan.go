@@ -99,6 +99,7 @@ func buildScanSummary(cfg Config, findings []Finding, protectedMounts int, durat
 		TotalFindings:            len(findings),
 		FindingsByCategory:       byCategory,
 		RiskLevel:                ComputeRiskLevel(findings),
+		ExposureScore:            ComputeExposureScore(findings),
 		ProductionIndicatorCount: prodCount,
 		PublicIPCount:            ipCount,
 		ScanDurationMs:           duration.Milliseconds(),
