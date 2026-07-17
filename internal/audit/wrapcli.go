@@ -48,7 +48,7 @@ func ScanWrappableCLITokens(cfg Config) ([]Finding, error) {
 			preview := MaskValue(value)
 			f.ValuePreview = &preview
 			f.Confidence = ConfidenceHigh
-			f.Evidence = fmt.Sprintf("%s in plaintext — one command moves it into the vault and keeps %s working: jit wrap %s", entry.Doc, tool, tool)
+			f.Evidence = fmt.Sprintf("%s in plaintext; one command moves it into the vault and keeps %s working: jit wrap %s", entry.Doc, tool, tool)
 			f.RecordID = RecordID(f.FindingType, f.FilePath, f.KeyName)
 			findings = append(findings, f)
 			break // first matching source is the live token; one finding per tool

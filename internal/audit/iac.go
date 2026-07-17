@@ -110,7 +110,7 @@ func buildIACFinding(cfg Config, path string) (Finding, error) {
 		f.Evidence = "contains a public IP address in a visible value"
 	default:
 		f.Severity = SeverityInfo
-		f.Evidence = "infrastructure-as-code variable file — detection only, no automated fix yet"
+		f.Evidence = "infrastructure-as-code variable file: detection only, no automated fix yet"
 	}
 
 	f.RecordID = RecordID(f.FindingType, f.FilePath, nil)

@@ -53,7 +53,7 @@ it never writes, moves, or "fixes" anything, so it's safe to run before you
 trust jit with anything else:
 
 ```
-jit audit — risk report for you@your-mac
+jit audit: risk report for you@your-mac
 
   RISK LEVEL: CRITICAL
   (1 production-indicator/public-IP match(es) found)

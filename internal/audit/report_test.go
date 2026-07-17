@@ -159,7 +159,7 @@ func TestWriteHumanReportCollapsesDuplicatePatternAcrossFiles(t *testing.T) {
 	if strings.Count(out, "embedded directly in MCP server") != 1 {
 		t.Errorf("identical evidence shared by 2 files must be printed once, not once per file, got:\n%s", out)
 	}
-	if !strings.Contains(out, "jamf/JAMF_PRO_CLIENT_ID — same value in 2 files:") {
+	if !strings.Contains(out, "jamf/JAMF_PRO_CLIENT_ID (same value in 2 files):") {
 		t.Errorf("expected a collapsed block header naming the key and file count, got:\n%s", out)
 	}
 	if !strings.Contains(out, "- /Users/alex/a.json") || !strings.Contains(out, "- /Users/alex/b.json") {
@@ -202,8 +202,8 @@ func TestWriteHumanReportDoesNotCollapseDifferentValuesSameKey(t *testing.T) {
 // must never collapse (see collapsibleFindingTypes).
 func TestWriteHumanReportDoesNotCollapseUnrelatedIACFiles(t *testing.T) {
 	findings := []Finding{
-		{FindingType: FindingTypeIACVariableFile, Severity: SeverityInfo, FilePath: "/Users/alex/project-a/secrets.yaml", Evidence: "infrastructure-as-code variable file — detection only, no automated fix yet"},
-		{FindingType: FindingTypeIACVariableFile, Severity: SeverityInfo, FilePath: "/Users/alex/unrelated-repo/Secret.yaml", Evidence: "infrastructure-as-code variable file — detection only, no automated fix yet"},
+		{FindingType: FindingTypeIACVariableFile, Severity: SeverityInfo, FilePath: "/Users/alex/project-a/secrets.yaml", Evidence: "infrastructure-as-code variable file: detection only, no automated fix yet"},
+		{FindingType: FindingTypeIACVariableFile, Severity: SeverityInfo, FilePath: "/Users/alex/unrelated-repo/Secret.yaml", Evidence: "infrastructure-as-code variable file: detection only, no automated fix yet"},
 	}
 	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "host"}}, findings, 0, 0)
 
