@@ -8,6 +8,11 @@ Prints the decrypted value to stdout, where it lands in your terminal
 scrollback and any output capture (tmux, script, CI logs). Prefer
 --copy to send it straight to the clipboard instead.
 
+On a terminal, one faint metadata line follows on stderr: when the
+secret was last updated, which profiles reference it, and the config
+file its migration recorded as the source. Piped or redirected output
+receives the value only, never the footer.
+
 ```
 jit vault get <path> [flags]
 ```

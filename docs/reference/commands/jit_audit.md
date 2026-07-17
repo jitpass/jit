@@ -15,7 +15,7 @@ jit reports a 0-100 exposure score (EXPOSURE:) next to the categorical RISK LEVE
   3. Cap the total at 100.
   4. Clamp into the band of the scan's RISK LEVEL, so the number and the label can never disagree: clean 0, low 10-39, medium 40-64, high 65-84, critical 85-100.
 
-Run with --score to print just the score line and exit.
+Findings inside a jitpass playground checkout crossed during the scan are synthetic demo secrets, so they are excluded from every count and from the score (the report states how many were excluded and where). Run with --score to print just the score line and exit.
 
 ```
 jit audit [flags]

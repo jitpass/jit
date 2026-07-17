@@ -21,17 +21,25 @@ to overwrite an existing path, `--stdin` to pipe the value in);
 `jit vault rm <path>` deletes one secret (it confirms first).
 `jit vault get <path>` decrypts and prints one (`--copy` sends it to the
 clipboard instead - marked so clipboard managers skip it, and auto-cleared
-after 45 seconds unless you've copied something else by then). `jit vault list` shows what's stored - names and paths
-only, never values - one path per line, so it pipes cleanly into `grep`:
+after 45 seconds unless you've copied something else by then); on a
+terminal, a faint footer line follows on stderr with when the secret was
+last updated and which profile uses it - piped output gets the value only.
+`jit vault list` shows what's stored - names and paths only, never values.
+On a terminal, entries group under a header per prefix:
 
 ```
 $ jit vault list
-myapp/DATABASE_URL
-myapp/STRIPE_API_KEY
-notion-sync/NOTION_API_KEY
+myapp/ (2)
+  DATABASE_URL
+  STRIPE_API_KEY
+notion-sync/ (1)
+  NOTION_API_KEY
 
-3 secret(s) stored, plus 2 encrypted file backup(s) kept for `jit migrate undo` (list with --all).
+3 secrets stored, plus 2 encrypted file backups kept for `jit migrate undo` (list with --all).
 ```
+
+Piped or redirected, output stays one full path per line
+(`myapp/DATABASE_URL`), so it feeds `grep` and scripts unchanged.
 
 With [shell completion](../getting-started/install.md#shell-completion)
 installed, `jit vault get <TAB>` completes stored paths - names only, so
