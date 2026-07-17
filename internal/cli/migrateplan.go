@@ -60,7 +60,7 @@ func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, shellC
 	if wholeHome {
 		scope = "home"
 	}
-	fmt.Fprintf(w, "jit migrate — plan (%s scope)\n", scope)
+	fmt.Fprintf(w, "jit migrate, plan (%s scope)\n", scope)
 	fmt.Fprintln(w, "Each modified file is backed up before it's rewritten.")
 	fmt.Fprintln(w)
 
@@ -90,13 +90,13 @@ func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, shellC
 	hasFixed := len(shellConfigs) > 0 || len(mcpFixed) > 0 || len(awsProfiles) > 0 || len(k8sUsers) > 0 || len(terraformHosts) > 0 || len(gcpADCFiles) > 0 || len(npmrcFixed) > 0
 
 	if hasScoped {
-		_, _ = color.New(color.Bold).Fprintf(w, "Scoped to this run — %s\n\n", scopedTree)
+		_, _ = color.New(color.Bold).Fprintf(w, "Scoped to this run, %s\n\n", scopedTree)
 		printMigratePlanCategoryAnnotated(w,
 			".env file(s) → secrets move to the vault; the file keeps working as a live, auto-updating mount",
 			shorten(envFiles),
 			func(item string) string {
 				if migrate.IsEnvBackupOnlySuffix(filepath.Base(item)) {
-					return "backup-suffixed — replaced with a safe pointer file instead, never mounted"
+					return "backup-suffixed, replaced with a safe pointer file instead, never mounted"
 				}
 				return ""
 			})
@@ -116,7 +116,7 @@ func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, shellC
 	}
 
 	if hasFixed {
-		_, _ = color.New(color.Faint).Fprintln(w, "Machine-wide config files — only included on a home-scope run")
+		_, _ = color.New(color.Faint).Fprintln(w, "Machine-wide config files, only included on a home-scope run")
 		fmt.Fprintln(w)
 		printMigratePlanCategory(w,
 			"shell config(s) → secrets move to the vault; loaded back automatically when your shell starts",
@@ -193,13 +193,13 @@ func planRevealHooks(home string, envFiles, npmrcFiles []string) []string {
 	}
 	for _, envPath := range envFiles {
 		if migrate.IsEnvBackupOnlySuffix(filepath.Base(envPath)) {
-			continue // replaced with a pointer file, never mounted — no hook
+			continue // replaced with a pointer file, never mounted, no hook
 		}
 		add(envPath)
 	}
 	for _, npmrcPath := range npmrcFiles {
 		if npmrcPath == migrate.GlobalNpmrcPath(home) {
-			continue // not tied to any one project dir — never hooked
+			continue // not tied to any one project dir, never hooked
 		}
 		add(npmrcPath)
 	}

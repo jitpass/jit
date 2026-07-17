@@ -47,7 +47,7 @@ var awsCredentialProcessCmd = &cobra.Command{
 		"either a reachable jit agent with an already-unlocked session, or an\n" +
 		"interactive context able to show a Touch ID/passcode prompt. Invoked from\n" +
 		"a fully headless context (a cron job, a CI runner) with neither will hang\n" +
-		"or fail — the same tradeoff jit run/export already accept.",
+		"or fail, the same tradeoff jit run/export already accept.",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if awsCredProfile == "" {

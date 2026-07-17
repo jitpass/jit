@@ -11,11 +11,11 @@ created.
 
 `jit agent install` sets it up to start automatically every time you log
 in (and restart itself if it crashes). The helper process itself needs no
-Touch ID just to keep running — only your unlocked session inside it locks
+Touch ID just to keep running, only your unlocked session inside it locks
 after --ttl of inactivity (default 15m), prompting again on next use.
 
 A live-mounted file shows fake-looking values until revealed, and real values
-only during a short window — opened automatically right after unlock/
+only during a short window, opened automatically right after unlock/
 refresh, or explicitly via `jit agent reveal`.
 
 ### SEE ALSO

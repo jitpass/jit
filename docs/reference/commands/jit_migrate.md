@@ -23,7 +23,7 @@ Pick a scope:
 
 Every run prints the full plan and asks for confirmation before touching
 anything, and every modified file is backed up (encrypted, into the vault)
-first — `jit migrate undo` restores any migrated file from that backup.
+first, `jit migrate undo` restores any migrated file from that backup.
 See each subcommand's --help for exactly what happens to each kind of file.
 
 ### Examples
@@ -46,7 +46,7 @@ See each subcommand's --help for exactly what happens to each kind of file.
 ### SEE ALSO
 
 * [jit](jit.md)	 - Local-first developer secret runtime
-* [jit migrate home](jit_migrate_home.md)	 - Convert findings anywhere under $HOME — the whole machine, not just this project
+* [jit migrate home](jit_migrate_home.md)	 - Convert findings anywhere under $HOME, the whole machine, not just this project
 * [jit migrate local](jit_migrate_local.md)	 - Convert findings under the current directory only
 * [jit migrate remove](jit_migrate_remove.md)	 - Remove jit from this project completely (restore plaintext, delete its secrets)
 * [jit migrate undo](jit_migrate_undo.md)	 - Restore migrated files from their encrypted pre-migration backups

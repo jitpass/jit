@@ -203,7 +203,7 @@ func TestStatusProfilesWithProblemsPointsAtDoctor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "Profiles: 1 profile(s), 1 problem(s) found — run `jit doctor` for details.") {
+	if !strings.Contains(out, "Profiles: 1 profile(s), 1 problem(s) found, run `jit doctor` for details.") {
 		t.Errorf("expected a problem summary pointing at doctor, got:\n%s", out)
 	}
 	// status itself must not fail the process over a resolvable-elsewhere

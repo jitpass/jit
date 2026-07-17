@@ -77,7 +77,7 @@ func execMigrate(t *testing.T, scope string, args ...string) (stdout string, err
 	migrateIncludeArchived = false
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
-	rootCmd.SetErr(&buf)                 // confirmation prompts go to stderr — capture both streams in order
+	rootCmd.SetErr(&buf)                 // confirmation prompts go to stderr, capture both streams in order
 	rootCmd.SetIn(strings.NewReader("")) // default: EOF, i.e. an empty/declined answer if a confirm prompt is hit unexpectedly
 	rootCmd.SetArgs(append([]string{"migrate", scope}, args...))
 	err = rootCmd.Execute()
@@ -117,8 +117,8 @@ func TestMigrateCommandRejectsUnexpectedPositionalArg(t *testing.T) {
 // migrated the real Claude Desktop config on the machine running `go
 // test`, because os.UserHomeDir() still resolved to the real $HOME.
 func TestMigrateLocalNoFindings(t *testing.T) {
-	withFixtureHome(t) // guaranteed empty — no shell-config/MCP secrets anywhere under it
-	withFixtureCwd(t)  // guaranteed empty — no .env files anywhere under it
+	withFixtureHome(t) // guaranteed empty, no shell-config/MCP secrets anywhere under it
+	withFixtureCwd(t)  // guaranteed empty, no .env files anywhere under it
 	out, err := execMigrate(t, "local")
 	if err != nil {
 		t.Fatalf("jit migrate local on a directory with no .env files: %v", err)
@@ -327,7 +327,7 @@ func TestMigrateLocalDryRunMatchesRealPlanExactly(t *testing.T) {
 	// no leading newline of its own) — a cosmetic artifact of where each
 	// mode's own trailing text starts, not a real difference in the plan
 	// content itself.
-	const planTitle = "jit migrate — plan ("
+	const planTitle = "jit migrate, plan ("
 	dryRunOut = dryRunOut[strings.Index(dryRunOut, planTitle):]
 	realOut = realOut[strings.Index(realOut, planTitle):]
 	dryPlan := strings.TrimRight(strings.Split(dryRunOut, "\n[DRY RUN]")[0], "\n")
@@ -365,7 +365,7 @@ func TestMigrateLocalDryRunListsRevealHookFile(t *testing.T) {
 }
 
 func TestMigrateLocalDryRunCleanFixture(t *testing.T) {
-	withFixtureHome(t) // empty fixture — nothing planted
+	withFixtureHome(t) // empty fixture, nothing planted
 	withFixtureCwd(t)
 	out, err := execMigrate(t, "local", "--dry-run")
 	if err != nil {
@@ -382,7 +382,7 @@ func TestMigrateLocalDryRunCleanFixture(t *testing.T) {
 // does not.
 func TestMigrateHomeDiscoversAcrossWholeHome(t *testing.T) {
 	home := withFixtureHome(t)
-	withFixtureCwd(t) // cwd is an unrelated, empty fixture dir — NOT under the .env's directory
+	withFixtureCwd(t) // cwd is an unrelated, empty fixture dir, NOT under the .env's directory
 
 	otherProjectDir := filepath.Join(home, "code", "otherproject")
 	if err := os.MkdirAll(otherProjectDir, 0o700); err != nil {

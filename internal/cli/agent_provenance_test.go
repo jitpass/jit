@@ -51,7 +51,7 @@ func TestAgentStatusExplainsAnUnexplainedPrompt(t *testing.T) {
 		"idle timeout",       // why a re-prompt was needed at all
 	} {
 		if !strings.Contains(got, want) {
-			t.Errorf("status output is missing %q — that's one of the three facts a surprise prompt raises:\n%s", want, got)
+			t.Errorf("status output is missing %q, that's one of the three facts a surprise prompt raises:\n%s", want, got)
 		}
 	}
 
@@ -209,7 +209,7 @@ func TestDescribeReaderStatesItsConfidence(t *testing.T) {
 
 	carried := describeReader(&agent.MountServeEvent{ReaderPath: "/usr/bin/python3", ReaderPID: 900, ReaderLikely: true, ReaderLaunchedBy: "claude"})
 	if !strings.HasPrefix(carried, "likely ") {
-		t.Errorf("a carried-over reader = %q, want it hedged as \"likely\" — it's an inference, not an observation", carried)
+		t.Errorf("a carried-over reader = %q, want it hedged as \"likely\", it's an inference, not an observation", carried)
 	}
 	if !strings.Contains(carried, "launched by claude") {
 		t.Errorf("reader = %q, want the launcher named: \"python3 read your credentials\" is not actionable, \"launched by claude\" is", carried)

@@ -125,13 +125,13 @@ func TestDoctorMissingSecretFailsLoud(t *testing.T) {
 // status and jit profile list both counted it; doctor silently didn't.
 func TestDoctorChecksGlobalScopeProfilesByDefault(t *testing.T) {
 	home := withFixtureHome(t)
-	withFixtureCwd(t) // no project-local profile at all — only the global one below
+	withFixtureCwd(t) // no project-local profile at all, only the global one below
 	writeFixtureProfile(t, home, "shell", "STRIPE_KEY: stripe/dev-key\n")
 	// stripe/dev-key deliberately not planted in the vault.
 
 	out, err := execDoctor(t)
 	if err == nil {
-		t.Fatal("expected an error — the global-scope profile's secret is missing, got nil")
+		t.Fatal("expected an error, the global-scope profile's secret is missing, got nil")
 	}
 	if !strings.Contains(out, "STRIPE_KEY") || !strings.Contains(out, "stripe/dev-key") {
 		t.Errorf("expected the global-scope profile's missing variable to be reported, got:\n%s", out)

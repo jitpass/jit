@@ -37,7 +37,7 @@ func TestHistoryLogRoundTrip(t *testing.T) {
 	for i := range events {
 		// reflect.DeepEqual, not ==: SessionEvent carries a Labels slice now.
 		if !reflect.DeepEqual(got[i], events[i]) {
-			t.Errorf("event %d = %+v, want %+v — a restored event must carry every field it was recorded with", i, got[i], events[i])
+			t.Errorf("event %d = %+v, want %+v, a restored event must carry every field it was recorded with", i, got[i], events[i])
 		}
 	}
 	if stderr.Len() != 0 {
@@ -89,7 +89,7 @@ func TestHistoryLogLoadCapsToNewest(t *testing.T) {
 	}
 	got := h.load(3)
 	if len(got) != 3 || got[0].UnixTime != 7 || got[2].UnixTime != 9 {
-		t.Errorf("load(3) = %+v, want the NEWEST 3 in append order — seeding must favor recent history", got)
+		t.Errorf("load(3) = %+v, want the NEWEST 3 in append order, seeding must favor recent history", got)
 	}
 }
 
@@ -129,11 +129,11 @@ func TestHistoryLogTrimKeepsNewestHalf(t *testing.T) {
 		t.Fatal("no events survived the trim")
 	}
 	if got[len(got)-1].UnixTime != n-1 {
-		t.Errorf("newest surviving event is %d, want %d — trim must drop the OLD end", got[len(got)-1].UnixTime, n-1)
+		t.Errorf("newest surviving event is %d, want %d, trim must drop the OLD end", got[len(got)-1].UnixTime, n-1)
 	}
 	for i := 1; i < len(got); i++ {
 		if got[i].UnixTime != got[i-1].UnixTime+1 {
-			t.Fatalf("gap in surviving events at %d (%d then %d) — trim cut somewhere other than a line boundary", i, got[i-1].UnixTime, got[i].UnixTime)
+			t.Fatalf("gap in surviving events at %d (%d then %d), trim cut somewhere other than a line boundary", i, got[i-1].UnixTime, got[i].UnixTime)
 		}
 	}
 
@@ -153,7 +153,7 @@ func TestHistoryLogLoadMissingFile(t *testing.T) {
 		t.Errorf("load on a never-written file = %+v, want nil", got)
 	}
 	if stderr.Len() != 0 {
-		t.Errorf("a missing history file logged %q — first-ever start is normal, not an error", stderr.String())
+		t.Errorf("a missing history file logged %q, first-ever start is normal, not an error", stderr.String())
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(h.path))); err != nil {
 		t.Fatalf("temp dir: %v", err)

@@ -27,9 +27,9 @@ var unmountCmd = &cobra.Command{
 	Long: "jit unmount decrypts a mounted .env's secrets from the vault and writes\n" +
 		"them back out as a plain file at the same path, replacing the live-mounted\n" +
 		"pipe jit migrate created. The vault secrets and the profile manifest are\n" +
-		"left in place — only the physical mount is reversed.\n\n" +
+		"left in place, only the physical mount is reversed.\n\n" +
 		"If jit agent is running, this stops serving just this one mount first, so\n" +
-		"nothing races the file being replaced — every other mount keeps being\n" +
+		"nothing races the file being replaced, every other mount keeps being\n" +
 		"served undisturbed.",
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -63,7 +63,7 @@ var unmountCmd = &cobra.Command{
 			for _, e := range entries {
 				lines = append(lines, "  • "+displayPath(home, e.MountPath))
 			}
-			return fmt.Errorf("jit unmount: no mount registered at %s — currently mounted:\n%s", mountPath, strings.Join(lines, "\n"))
+			return fmt.Errorf("jit unmount: no mount registered at %s, currently mounted:\n%s", mountPath, strings.Join(lines, "\n"))
 		}
 
 		// An orphaned mount: its profile manifest is gone — the whole project
@@ -78,7 +78,7 @@ var unmountCmd = &cobra.Command{
 		// best-effort stop of any still-running serve goroutine.
 		if _, statErr := os.Stat(entry.ProfilePath); os.IsNotExist(statErr) {
 			if !unmountYes && !confirmPrompt(cmd, fmt.Sprintf(
-				"The mount at %s is orphaned — its profile %s is gone (the project was likely deleted), so there are no secrets to write back. Remove the stale registry entry? [y/N] ",
+				"The mount at %s is orphaned, its profile %s is gone (the project was likely deleted), so there are no secrets to write back. Remove the stale registry entry? [y/N] ",
 				mountPath, entry.ProfilePath)) {
 				fmt.Fprintln(cmd.OutOrStdout(), "Aborted. Nothing was changed.")
 				return nil
@@ -148,7 +148,7 @@ var unmountCmd = &cobra.Command{
 		}
 
 		fmt.Fprintf(cmd.OutOrStdout(), "Unmounted %s (%d variable(s) written back as plaintext).\n", mountPath, len(names))
-		fmt.Fprintln(cmd.OutOrStdout(), "The vault secrets and profile manifest are still there — only the mount itself was reversed.")
+		fmt.Fprintln(cmd.OutOrStdout(), "The vault secrets and profile manifest are still there, only the mount itself was reversed.")
 		return nil
 	},
 }

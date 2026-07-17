@@ -38,9 +38,9 @@ import (
 // envLayer is one mounted .env-family file participating in the merge.
 type envLayer struct {
 	rank        int    // ascending precedence (see envLayerRank)
-	fileName    string // e.g. ".env.local" — for announce lines
+	fileName    string // e.g. ".env.local", for announce lines
 	profilePath string // the layer's manifest, from the registry entry
-	profileName string // manifest basename minus extension — for announce lines
+	profileName string // manifest basename minus extension, for announce lines
 }
 
 // envLayerRank maps an .env-family filename to its merge precedence under
@@ -74,7 +74,7 @@ func validateEnvMode(mode string) error {
 		return nil
 	}
 	if mode == "local" {
-		return fmt.Errorf("--mode local is not a mode — .env.local is always merged (it's the override layer)")
+		return fmt.Errorf("--mode local is not a mode, .env.local is always merged (it's the override layer)")
 	}
 	if strings.ContainsAny(mode, "/\\") || strings.Contains(mode, "..") {
 		return fmt.Errorf("--mode %q must be a plain suffix like production or development", mode)
@@ -177,7 +177,7 @@ func unmigratedSiblingLayers(dir, mode string, merged []envLayer) []string {
 func resolveInjectionProfile(cmdName, cwd, explicit, mode string, w io.Writer) (profile.Profile, error) {
 	if explicit != "" {
 		if mode != "" {
-			return nil, fmt.Errorf("--mode only applies when jit merges a project's .env layers — with --profile %s, name the mode's profile directly instead", explicit)
+			return nil, fmt.Errorf("--mode only applies when jit merges a project's .env layers, with --profile %s, name the mode's profile directly instead", explicit)
 		}
 		return profile.Load(cwd, explicit)
 	}
@@ -201,7 +201,7 @@ func resolveInjectionProfile(cmdName, cwd, explicit, mode string, w io.Writer) (
 	dir, layers := findEnvLayers(entries, cwd, home, mode)
 	if len(layers) == 0 {
 		if mode != "" {
-			return nil, fmt.Errorf("--mode %s: no migrated .env layers found at or above this directory — mode selects among a project's migrated .env files", mode)
+			return nil, fmt.Errorf("--mode %s: no migrated .env layers found at or above this directory, mode selects among a project's migrated .env files", mode)
 		}
 		return resolveSingleProjectProfile(cmdName, cwd, w)
 	}
@@ -236,16 +236,16 @@ func resolveInjectionProfile(cmdName, cwd, explicit, mode string, w io.Writer) (
 	// exactly which layers (and whose directory) fed the environment.
 	where := ""
 	if dir != cwd {
-		where = fmt.Sprintf(" — in %s", displayPath(home, dir))
+		where = fmt.Sprintf(", in %s", displayPath(home, dir))
 	}
 	if len(layers) == 1 {
 		fmt.Fprintf(w, "%s: using profile %q (%s)%s\n", cmdName, profileNames[0], fileNames[0], where)
 	} else {
-		fmt.Fprintf(w, "%s: merging %s (last wins) — profiles %s%s\n",
+		fmt.Fprintf(w, "%s: merging %s (last wins), profiles %s%s\n",
 			cmdName, strings.Join(fileNames, ", "), strings.Join(profileNames, ", "), where)
 	}
 	if missing := unmigratedSiblingLayers(dir, mode, layers); len(missing) > 0 {
-		_, _ = color.New(color.FgYellow).Fprintf(w, "%s: note: %s in %s not migrated — not merged, and injected variables shadow it for most dotenv loaders (fix: jit migrate local)\n",
+		_, _ = color.New(color.FgYellow).Fprintf(w, "%s: note: %s in %s not migrated, not merged, and injected variables shadow it for most dotenv loaders (fix: jit migrate local)\n",
 			cmdName, strings.Join(missing, ", "), displayPath(home, dir))
 	}
 	return profile.Overlay(merged...), nil
@@ -267,11 +267,11 @@ func resolveSingleProjectProfile(cmdName, cwd string, w io.Writer) (profile.Prof
 	}
 	switch len(names) {
 	case 0:
-		return nil, fmt.Errorf("no profile given and none defined in %s/ — migrate this project with `jit migrate local`, or name one with --profile (see: jit profile list)", profile.ProfilesDir)
+		return nil, fmt.Errorf("no profile given and none defined in %s/, migrate this project with `jit migrate local`, or name one with --profile (see: jit profile list)", profile.ProfilesDir)
 	case 1:
 		fmt.Fprintf(w, "%s: using profile %q\n", cmdName, names[0])
 		return profile.Load(cwd, names[0])
 	default:
-		return nil, fmt.Errorf("no profile given and this project defines several (%s) — pick one with --profile", strings.Join(names, ", "))
+		return nil, fmt.Errorf("no profile given and this project defines several (%s), pick one with --profile", strings.Join(names, ", "))
 	}
 }
