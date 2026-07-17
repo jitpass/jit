@@ -7,7 +7,7 @@ architecture.
 ## 1. Goals
 
 - One folder tree of plain Markdown + frontmatter that any generator (Starlight,
-  MkDocs Material, Mintlify, Docusaurus) can build — the content never gets locked
+  MkDocs Material, Mintlify, Docusaurus) can build, the content never gets locked
   to a platform.
 - Mirror how users actually move through jit: **find secrets → fix them → live with
   the runtime**, the same way 1Password splits "Develop locally / Deploy securely".
@@ -38,11 +38,11 @@ jit's surface, grouped into the site's top navigation:
 
 ```
 docs/
-├── index.md                          # Landing: "Stop keeping secrets in plaintext" — hero + section cards
+├── index.md                          # Landing: "Stop keeping secrets in plaintext", hero + section cards
 ├── getting-started/
 │   ├── install.md                    # prebuilt binary, build from source, completions, upgrading
 │   ├── quickstart.md                 # audit → migrate → run in 5 minutes
-│   ├── how-it-works.md               # vault, agent, shims, mounts — the mental model diagram
+│   ├── how-it-works.md               # vault, agent, shims, mounts, the mental model diagram
 │   └── faq.md
 ├── audit/
 │   ├── index.md                      # running an audit, output formats (text/md/ndjson)
@@ -79,7 +79,7 @@ docs/
 │   ├── install.md                    # launchd install/uninstall, agent run foreground
 │   └── provenance.md                 # caller identification, agent history, agent status
 ├── reference/
-│   ├── commands/                     # GENERATED from cobra — one page per command
+│   ├── commands/                     # GENERATED from cobra, one page per command
 │   │   └── (jit.md, jit_audit.md, jit_wrap.md, …)
 │   ├── file-locations.md             # ~/Library/Application Support/jitpass/, ~/.jit/shims, .jit/profiles/
 │   ├── environment-variables.md      # JIT_SHIM_GUARD_*, injected vars per tool
@@ -94,13 +94,13 @@ docs/
 │   ├── contributing.md               # thin page linking to CONTRIBUTING.md
 │   ├── license.md                    # BUSL-1.1 explained
 │   └── tech-stack.md                 # (from TECH_STACK.md, trimmed for readers)
-└── internal/                         # NOT published — excluded from the site build
+└── internal/                         # NOT published, excluded from the site build
     ├── WRAP-PLAN.md                  # design docs stay in-repo but out of the site
     └── DOCS-SITE-PLAN.md             # this file
 ```
 
 Repo-root files (`README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `LICENSE`) stay
-where they are — GitHub renders them; the site pages link to or summarize them.
+where they are, GitHub renders them; the site pages link to or summarize them.
 `spike/` stays out of the site entirely.
 
 ## 4. Existing content → new home
@@ -119,19 +119,19 @@ where they are — GitHub renders them; the site pages link to or summarize them
 ## 5. Per-tool wrap page template
 
 Every `wrap/<tool>.md` follows one skeleton (same discipline as 1Password's
-shell-plugin pages — uniform, scannable, one tool per page):
+shell-plugin pages, uniform, scannable, one tool per page):
 
 ```markdown
 ---
 title: Wrap <tool> with jit
-description: Keep your <TOKEN_VAR> out of <plaintext path> — injected just-in-time.
+description: Keep your <TOKEN_VAR> out of <plaintext path>, injected just-in-time.
 ---
 # <tool>
 
 <one-line: what credential it stores, where, and what jit does about it>
 
 ## Requirements        # jit installed, vault init, agent running, tool version
-## Wrap it             # jit wrap <tool> — what it discovers, vaults, scrubs
+## Wrap it             # jit wrap <tool>, what it discovers, vaults, scrubs
 ## Verify              # the catalog VerifyHint (e.g. `gh auth status`)
 ## How it works        # env var injected, source file scrubbed, shim path
 ## Undo                # jit wrap undo <tool>
@@ -139,13 +139,13 @@ description: Keep your <TOKEN_VAR> out of <plaintext path> — injected just-in-
 ```
 
 The catalog in `internal/wrap/catalog_data.go` already holds tool, env var, source
-path, and verify hint — the first draft of all 13 pages can be generated from it.
+path, and verify hint, the first draft of all 13 pages can be generated from it.
 
 ## 6. Platform recommendation
 
 Content is generator-agnostic; the recommended build:
 
-- **Astro Starlight** — closest to the 1Password look (cards, tabs, dark mode,
+- **Astro Starlight**, closest to the 1Password look (cards, tabs, dark mode,
   built-in search via Pagefind, i18n later), pure static output, first-class
   GitHub Pages deploy action. Site scaffolding lives in `website/` at repo root,
   consuming `docs/` as its content dir, so the Go module stays clean.
@@ -164,16 +164,16 @@ Content is generator-agnostic; the recommended build:
   hand-edited pages are never overwritten).
 - **`llms.txt`**: build step walks the published tree and emits title + one-line
   description per page, served at the site root.
-- **Deploy**: GitHub Actions on push to `main` — build site, publish to Pages.
+- **Deploy**: GitHub Actions on push to `main`, build site, publish to Pages.
 
 ## 8. Milestones
 
-- **D1 — Scaffold & deploy pipeline.** Site skeleton, GitHub Pages action, empty
+- **D1, Scaffold & deploy pipeline.** Site skeleton, GitHub Pages action, empty
   sections live at the public URL. Proves the pipeline before content moves.
-- **D2 — Content migration.** Split USAGE/README/PLUGINS into the tree above;
+- **D2, Content migration.** Split USAGE/README/PLUGINS into the tree above;
   leave one-line pointer stubs in the old files for one release.
-- **D3 — Generated reference.** `jit docs-gen`, CI staleness check, delete
+- **D3, Generated reference.** `jit docs-gen`, CI staleness check, delete
   COMMANDS.md.
-- **D4 — Wrap tool pages.** Catalog-driven generation + hand polish of the top
+- **D4, Wrap tool pages.** Catalog-driven generation + hand polish of the top
   tools (gh, aws, stripe, vercel).
-- **D5 — Polish.** Landing page cards, search, llms.txt, security section.
+- **D5, Polish.** Landing page cards, search, llms.txt, security section.
