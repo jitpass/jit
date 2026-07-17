@@ -195,17 +195,20 @@ func (v *Vault) Get(path string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("corrupt envelope %s: invalid recipient encoding: %w", path, err)
 	}
+	// Payload decoded BEFORE unwrapKey: that call is where a Touch
+	// ID/passcode prompt can fire, and a corrupt envelope should fail
+	// without first costing the user an authentication they'll only
+	// watch turn into an error.
+	sealedPayload, err := hex.DecodeString(env.Payload)
+	if err != nil {
+		return nil, fmt.Errorf("corrupt envelope %s: invalid payload encoding: %w", path, err)
+	}
 
 	dek, err := v.unwrapKey(wrappedDEK, path)
 	if err != nil {
 		return nil, fmt.Errorf("unwrapping data encryption key: %w", err)
 	}
 	defer wipe(dek)
-
-	sealedPayload, err := hex.DecodeString(env.Payload)
-	if err != nil {
-		return nil, fmt.Errorf("corrupt envelope %s: invalid payload encoding: %w", path, err)
-	}
 
 	plaintext, err := open(dek, sealedPayload, aad)
 	if err != nil {
@@ -372,9 +375,17 @@ func AtomicWriteFile(dest string, data []byte) error {
 	// Fsync the directory too, so the rename itself survives power loss —
 	// best-effort: some filesystems don't support fsync on a directory,
 	// and the data-before-rename ordering above already holds without it.
-	if d, err := os.Open(dir); err == nil { // #nosec G304 -- dest's own parent directory, not external input
+	syncDir(dir)
+	return nil
+}
+
+// syncDir best-effort fsyncs a directory so a rename into it survives
+// power loss — the durability tail of AtomicWriteFile, shared with
+// Restore's own rename (which moves an already-synced file and needs
+// only this directory half).
+func syncDir(dir string) {
+	if d, err := os.Open(dir); err == nil { // #nosec G304 -- a parent directory of jit's own files, not external input
 		_ = d.Sync()
 		_ = d.Close()
 	}
-	return nil
 }
