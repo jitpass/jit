@@ -79,7 +79,7 @@ $ jit vault history myapp/STRIPE_API_KEY
 1752655103906210000  archived 2m ago (2026-07-16 12:38:23), value from 2026-05-02
 
 $ jit vault restore myapp/STRIPE_API_KEY
-Restored myapp/STRIPE_API_KEY. The value it replaced is archived — `jit vault history myapp/STRIPE_API_KEY`.
+Restored myapp/STRIPE_API_KEY. The value it replaced is archived, `jit vault history myapp/STRIPE_API_KEY`.
 ```
 
 `restore` takes a fresh Touch ID/passcode approval (changing what a secret

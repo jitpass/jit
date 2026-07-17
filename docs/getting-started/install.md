@@ -144,7 +144,7 @@ right through your reinstall; every command that talks to it still gets last
 version's behavior, which reads as "I upgraded but nothing changed."
 `jit status` and `jit agent status` warn with "different build" until it's
 restarted. The agent also notices the replaced binary itself and restarts
-onto it on its own — but only once its session is locked and no prompt is
+onto it on its own, but only once its session is locked and no prompt is
 pending, so `jit agent restart` is for having it now. If you never ran
 `jit agent install`, step 1 alone is the whole upgrade.
 
