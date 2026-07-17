@@ -5,6 +5,8 @@ package vault
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -102,5 +104,29 @@ func TestRewrapAllFailsClosedWhenNeitherKeyOpensAnEnvelope(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "cannot decrypt") {
 		t.Errorf("error %q should name the undecryptable envelope problem", err)
+	}
+}
+
+// TestRewrapFailsOnEnvelopeWithoutRecipients: an envelope with an empty
+// recipients map used to fall through rewrapFile's loop and count as
+// "current" — a silent skip of a file neither key opens, the exact
+// outcome RewrapAll's contract forbids (the old MEK's deletion would
+// turn it unrecoverable). It must be a hard error naming the file.
+func TestRewrapFailsOnEnvelopeWithoutRecipients(t *testing.T) {
+	v, oldKW, newKW := rekeyTestVault(t)
+	if err := v.Set("stripe/dev-key", []byte("healthy")); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(v.vaultDir(), "corrupt.enc")
+	if err := os.WriteFile(bad, []byte(`{"version":1,"recipients":{},"payload":""}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := v.RewrapAll(oldKW, newKW)
+	if err == nil {
+		t.Fatal("RewrapAll counted a recipient-less envelope as current, want a hard error")
+	}
+	if !strings.Contains(err.Error(), "no recipient entries") || !strings.Contains(err.Error(), "corrupt.enc") {
+		t.Errorf("error should explain and name the file, got: %v", err)
 	}
 }

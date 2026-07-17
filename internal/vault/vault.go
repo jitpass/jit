@@ -65,17 +65,15 @@ func (v *Vault) Set(path string, value []byte) error {
 	now := time.Now().Unix()
 	created := now
 	// An existing secret at path is being rotated, not created: keep its
-	// CreatedUnix, and archive the outgoing envelope (raw bytes, still
-	// decryptable only back at this same path — see history.go) BEFORE the
-	// write below replaces it. Archive-then-write means a crash between
-	// the two leaves the old value both live and archived, never gone.
-	if oldData, err := os.ReadFile(dest); err == nil { // #nosec G304 -- dest is sanitizeSecretPath's output above
+	// CreatedUnix, and hold on to the outgoing envelope's raw bytes so
+	// they can be archived below (still decryptable only back at this
+	// same path — see history.go).
+	var oldData []byte
+	if data, err := os.ReadFile(dest); err == nil { // #nosec G304 -- dest is sanitizeSecretPath's output above
+		oldData = data
 		var old envelope
 		if json.Unmarshal(oldData, &old) == nil && old.CreatedUnix > 0 {
 			created = old.CreatedUnix
-		}
-		if err := v.archiveVersion(path, oldData, nowUnixNano()); err != nil {
-			return err
 		}
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("reading existing %s: %w", dest, err)
@@ -95,6 +93,19 @@ func (v *Vault) Set(path string, value []byte) error {
 	wrappedDEK, err := v.wrapKey(dek, path)
 	if err != nil {
 		return fmt.Errorf("wrapping data encryption key: %w", err)
+	}
+
+	// Archive only now, with every fallible step behind us — wrapKey above
+	// is where a Touch ID/passcode prompt can be canceled, and archiving
+	// before it let a canceled (failed) Set mutate history anyway: it
+	// added a duplicate of the live value and, at HistoryKeep capacity,
+	// pruned the oldest REAL version to make room. Archive-then-write is
+	// still preserved: a crash between the two leaves the old value both
+	// live and archived, never gone.
+	if oldData != nil {
+		if err := v.archiveVersion(path, oldData, nowUnixNano()); err != nil {
+			return err
+		}
 	}
 
 	env := envelope{
