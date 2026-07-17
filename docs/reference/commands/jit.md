@@ -8,6 +8,10 @@ jit finds plaintext secrets exposed on your machine and gives you a one-command 
 
 Start with `jit audit` (strictly read-only), then `jit migrate local --dry-run` to preview the guided fix for the project you're in.
 
+```
+jit
+```
+
 ### SEE ALSO
 
 * [jit agent](jit_agent.md)	 - Run a background helper so you only unlock once, not once per command
