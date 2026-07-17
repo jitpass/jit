@@ -17,8 +17,9 @@ Pick a scope:
   jit migrate home    the whole machine: everything local finds, anywhere
                        under $HOME, plus the machine-wide files that live at
                        fixed home paths (shell configs, ~/.aws/credentials,
-                       ~/.kube/config, Terraform Cloud credentials, Claude
-                       Desktop's MCP config, the global ~/.npmrc)
+                       ~/.kube/config, Terraform Cloud credentials, GCP
+                       application-default credentials, Claude Desktop's MCP
+                       config, the global ~/.npmrc)
 
 Every run prints the full plan and asks for confirmation before touching
 anything, and every modified file is backed up (encrypted, into the vault)
@@ -38,7 +39,7 @@ See each subcommand's --help for exactly what happens to each kind of file.
 
 ```
       --dry-run        preview the plan for this scope without changing anything
-      --only strings   scope a run to just these comma-separated categories: env,shell,mcp,aws,kube,terraform,npmrc (default: all)
+      --only strings   scope a run to just these comma-separated categories: env,shell,mcp,aws,kube,terraform,gcp,npmrc (default: all)
   -y, --yes            skip the confirmation prompt and migrate immediately
 ```
 

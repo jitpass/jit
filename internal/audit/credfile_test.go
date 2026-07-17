@@ -5,6 +5,7 @@ package audit
 
 import (
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -164,6 +165,27 @@ func TestScanGCPApplicationDefaultCredentials(t *testing.T) {
 	}
 	if *findings[0].KeyName != "refresh_token" {
 		t.Errorf("KeyName = %q, want %q", *findings[0].KeyName, "refresh_token")
+	}
+}
+
+func TestScanGCPApplicationDefaultCredentialsSkipsFIFO(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, ".config", "gcloud"))
+	path := filepath.Join(home, ".config", "gcloud", "application_default_credentials.json")
+	// jit migrate home --only gcp turns the ADC file into a live-mount
+	// FIFO. The scanner must skip it without ever opening it for read —
+	// a bare os.Open here blocks forever when no agent is writing. If the
+	// guard regresses, this test hangs rather than fails; the go test
+	// timeout is what surfaces it.
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatalf("Mkfifo: %v", err)
+	}
+	findings, err := scanGCPApplicationDefaultCredentials(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("scanGCPApplicationDefaultCredentials: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("got %d findings for a FIFO mount, want 0", len(findings))
 	}
 }
 

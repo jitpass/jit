@@ -48,9 +48,9 @@ var migrateRemoveCmd = &cobra.Command{
 		"migrate wired into .envrc/package.json, and the .jit/ directory itself\n" +
 		"are all deleted.\n\n" +
 		"Machine-level migrations (shell configs, AWS, kubeconfig, Terraform\n" +
-		"Cloud, the global ~/.npmrc, Claude Desktop's MCP config) are not\n" +
-		"touched — they aren't part of any one project; reverse those with\n" +
-		"`jit migrate undo`.\n\n" +
+		"Cloud, GCP application-default credentials, the global ~/.npmrc,\n" +
+		"Claude Desktop's MCP config) are not touched — they aren't part of any\n" +
+		"one project; reverse those with `jit migrate undo`.\n\n" +
 		"A vault secret also referenced by a profile OUTSIDE this project is\n" +
 		"kept (and reported), never deleted out from under the other profile.\n\n" +
 		"This both writes real secret values back to disk in PLAINTEXT and\n" +

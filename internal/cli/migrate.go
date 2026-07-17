@@ -32,7 +32,7 @@ var (
 // Keyed by the short token a caller passes, not the display label used in
 // output — keep the two lists in this exact order so error messages and
 // --only's own help text stay in sync with printMigratePlan.
-var migrateCategories = []string{"env", "shell", "mcp", "aws", "kube", "terraform", "npmrc"}
+var migrateCategories = []string{"env", "shell", "mcp", "aws", "kube", "terraform", "gcp", "npmrc"}
 
 // noteNamespaceMove explains a claimNamespace bump (GAPS.md #55) directly
 // under the item it happened to. Yellow, matching the "heads up, read
@@ -82,8 +82,9 @@ var migrateCmd = &cobra.Command{
 		"  jit migrate home    the whole machine: everything local finds, anywhere\n" +
 		"                       under $HOME, plus the machine-wide files that live at\n" +
 		"                       fixed home paths (shell configs, ~/.aws/credentials,\n" +
-		"                       ~/.kube/config, Terraform Cloud credentials, Claude\n" +
-		"                       Desktop's MCP config, the global ~/.npmrc)\n\n" +
+		"                       ~/.kube/config, Terraform Cloud credentials, GCP\n" +
+		"                       application-default credentials, Claude Desktop's MCP\n" +
+		"                       config, the global ~/.npmrc)\n\n" +
 		"Every run prints the full plan and asks for confirmation before touching\n" +
 		"anything, and every modified file is backed up (encrypted, into the vault)\n" +
 		"first — `jit migrate undo` restores any migrated file from that backup.\n" +
@@ -99,9 +100,9 @@ var migrateLocalCmd = &cobra.Command{
 	Short: "Convert findings under the current directory only",
 	Long: "Converts findings under the current directory tree ONLY — nothing outside\n" +
 		"the project you're standing in is discovered or touched. Machine-wide files\n" +
-		"(shell configs, AWS, kubeconfig, Terraform Cloud, Claude Desktop's config,\n" +
-		"the global ~/.npmrc) live at fixed paths under $HOME, so only\n" +
-		"`jit migrate home` ever includes them.\n\n" +
+		"(shell configs, AWS, kubeconfig, Terraform Cloud, GCP application-default\n" +
+		"credentials, Claude Desktop's config, the global ~/.npmrc) live at fixed\n" +
+		"paths under $HOME, so only `jit migrate home` ever includes them.\n\n" +
 		"What happens per category:\n\n" +
 		"  .env files   Keys move into a profile and the vault; the file itself keeps\n" +
 		"               working as a live mount served by jit agent, showing\n" +
@@ -145,14 +146,19 @@ var migrateHomeCmd = &cobra.Command{
 		"                   credentials-helper protocol (`terraform login`/`logout`\n" +
 		"                   keep working). Fails loud, before touching anything, if a\n" +
 		"                   different credentials helper is already configured.\n" +
+		"  GCP              ~/.config/gcloud/application_default_credentials.json's\n" +
+		"                   refresh token (or a service account key's private key)\n" +
+		"                   moves into the vault; the file keeps working as a live\n" +
+		"                   mount — Google SDKs read the same path, non-secret fields\n" +
+		"                   preserved verbatim. (GCP has no AWS-style\n" +
+		"                   credential_process hook for these credential types, so\n" +
+		"                   the mount is what keeps SDKs working with no key on disk.)\n" +
 		"  Claude Desktop's MCP config and the global ~/.npmrc get the same\n" +
 		"  treatment as project MCP configs and .npmrc files.\n\n" +
 		"Skips anything under an archived/backup-looking directory (archive,\n" +
 		"archived, backup, backups, .trash) unless --include-archived: converting a\n" +
 		"forgotten project's .env into a live mount nobody will ever serve again\n" +
-		"would make it unreadable, which is worse than plaintext.\n\n" +
-		"GCP application-default credentials have no migration path yet —\n" +
-		"`jit audit` still reports them.",
+		"would make it unreadable, which is worse than plaintext.",
 	Example: "  jit migrate home --dry-run\n" +
 		"  jit migrate home --only aws,kube\n" +
 		"  jit migrate home --include-archived",
@@ -209,7 +215,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 	// does. This is what makes `local` actually match its name (a real,
 	// reported point of confusion when both scopes always included
 	// these — see GAPS.md #26).
-	var shellConfigs, awsProfiles, k8sUsers, terraformHosts []string
+	var shellConfigs, awsProfiles, k8sUsers, terraformHosts, gcpADCFiles []string
 	if wholeHome {
 		shellConfigs, err = migrate.DiscoverShellConfigs(home)
 		if err != nil {
@@ -224,6 +230,10 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 			return fmt.Errorf("jit migrate: %w", err)
 		}
 		terraformHosts, err = migrate.DiscoverTerraformHosts(home)
+		if err != nil {
+			return fmt.Errorf("jit migrate: %w", err)
+		}
+		gcpADCFiles, err = migrate.DiscoverGCPADC(home)
 		if err != nil {
 			return fmt.Errorf("jit migrate: %w", err)
 		}
@@ -269,6 +279,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 		"aws":       &awsProfiles,
 		"kube":      &k8sUsers,
 		"terraform": &terraformHosts,
+		"gcp":       &gcpADCFiles,
 		"npmrc":     &npmrcFiles,
 	}
 	if len(categorySlices) != len(migrateCategories) {
@@ -300,12 +311,11 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 			fmt.Fprintf(cmd.OutOrStdout(), "Nothing to migrate in the selected --only %s: %s.\n", pluralWord(len(migrateOnly), "category", "categories"), strings.Join(migrateOnly, ", "))
 		} else {
 			fmt.Fprintln(cmd.OutOrStdout(), "Nothing to migrate: no .env files, no secret-shaped shell-config exports, no MCP")
-			fmt.Fprintln(cmd.OutOrStdout(), "server secrets, no AWS/kubeconfig/Terraform Cloud credentials, and no npmrc secrets found.")
+			fmt.Fprintln(cmd.OutOrStdout(), "server secrets, no AWS/kubeconfig/Terraform Cloud/GCP credentials, and no npmrc secrets found.")
 		}
 		if len(skippedArchived) > 0 {
 			fmt.Fprintf(cmd.OutOrStdout(), "(%d finding(s) skipped under an archived/backup-looking directory — rerun with --include-archived to include them.)\n", len(skippedArchived))
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "(GCP application-default credentials still have no migration path — `jit audit` still reports them.)")
 		return nil
 	}
 
@@ -337,7 +347,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 	// work that's about to be aborted anyway. This same plan is what
 	// --dry-run prints too (see below) — one rendering path, so the
 	// preview you confirm against is exactly the preview --dry-run shows.
-	printMigratePlan(cmd.OutOrStdout(), home, wholeHome, envFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, npmrcFiles, planRevealHooks(home, envFiles, npmrcFiles))
+	printMigratePlan(cmd.OutOrStdout(), home, wholeHome, envFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, gcpADCFiles, npmrcFiles, planRevealHooks(home, envFiles, npmrcFiles))
 	if len(skippedArchived) > 0 {
 		fmt.Fprintf(cmd.OutOrStdout(), "\n(Skipped %d finding(s) under an archived/backup-looking directory — rerun with --include-archived to include them.)\n", len(skippedArchived))
 	}
@@ -519,6 +529,32 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 		fmt.Fprintln(out)
 	}
 
+	if n := len(gcpADCFiles); n > 0 {
+		printMigrateResultCategory(out, "GCP application-default credentials migrated", n)
+		for _, adcPath := range gcpADCFiles {
+			summary.checkGitHistory(adcPath)
+
+			result, err := migrate.ApplyGCPADC(v, home, adcPath)
+			if err != nil {
+				return fmt.Errorf("jit migrate: %w", err)
+			}
+			if err := mount.AddMount(registryPath, mount.Entry{MountPath: adcPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
+				return fmt.Errorf("jit migrate: registering mount for %s: %w", adcPath, err)
+			}
+			if err := summary.writePointerFile(adcPath, result.ProfilePath); err != nil {
+				return fmt.Errorf("jit migrate: %w", err)
+			}
+			fmt.Fprintf(out, "  • %s (%s) -> profile %q (%d var(s)); backup: `jit vault get %s`\n",
+				displayPath(home, adcPath), result.CredType, result.ProfileName, len(result.Variables), result.BackupPath)
+			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
+			// Like the global ~/.npmrc: not tied to any one project
+			// directory, so there's no project-level hook to wire a reveal
+			// call into — the post-unlock default reveal window is what
+			// makes the next SDK read work.
+		}
+		fmt.Fprintln(out)
+	}
+
 	if n := len(npmrcFiles); n > 0 {
 		printMigrateResultCategory(out, "npmrc file(s) migrated", n)
 		for _, npmrcPath := range npmrcFiles {
@@ -564,7 +600,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 
 	summary.wireRevealHooks()
 	summary.print(out)
-	reportAgentStatus(out, root, len(envFiles) > 0 || len(npmrcFiles) > 0)
+	reportAgentStatus(out, root, len(envFiles) > 0 || len(npmrcFiles) > 0 || len(gcpADCFiles) > 0)
 	return nil
 }
 

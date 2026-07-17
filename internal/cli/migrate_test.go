@@ -462,6 +462,59 @@ func TestMigrateTerraformHomeOnlyAndOnlyFlag(t *testing.T) {
 	}
 }
 
+// TestMigrateGCPADCHomeOnlyAndOnlyFlag: GCP application-default
+// credentials live at exactly one fixed path under $HOME (like
+// AWS/kubeconfig/Terraform), so `local` never discovers them, `home`
+// does, and `--only gcp` scopes a home run to just that category (the
+// GCP half of GAPS.md #16).
+func TestMigrateGCPADCHomeOnlyAndOnlyFlag(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+
+	adcPath := filepath.Join(home, ".config", "gcloud", "application_default_credentials.json")
+	if err := os.MkdirAll(filepath.Dir(adcPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(adcPath, []byte(`{"client_id":"x.apps.googleusercontent.com","client_secret":"public","refresh_token":"1//0gfixture","type":"authorized_user"}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// An unrelated .env so --only has something to exclude.
+	envPath := filepath.Join(home, "code", "proj", ".env")
+	if err := os.MkdirAll(filepath.Dir(envPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(envPath, []byte("STRIPE_KEY=sk_test_fixture\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	localOut, err := execMigrate(t, "local", "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate local --dry-run: %v", err)
+	}
+	if strings.Contains(localOut, "application_default_credentials") {
+		t.Errorf("expected local to never discover GCP ADC (fixed home path), got:\n%s", localOut)
+	}
+
+	homeOut, err := execMigrate(t, "home", "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate home --dry-run: %v", err)
+	}
+	if !strings.Contains(homeOut, displayPath(home, adcPath)) || !strings.Contains(homeOut, "GCP application-default credentials") {
+		t.Errorf("expected home's plan to include the GCP ADC category with its file, got:\n%s", homeOut)
+	}
+
+	onlyOut, err := execMigrate(t, "home", "--dry-run", "--only", "gcp")
+	if err != nil {
+		t.Fatalf("jit migrate home --dry-run --only gcp: %v", err)
+	}
+	if !strings.Contains(onlyOut, displayPath(home, adcPath)) {
+		t.Errorf("expected --only gcp to keep the ADC finding, got:\n%s", onlyOut)
+	}
+	if strings.Contains(onlyOut, envPath) {
+		t.Errorf("expected --only gcp to exclude the .env finding, got:\n%s", onlyOut)
+	}
+}
+
 // TestMigrateHomeSkipsArchivedByDefault confirms GAPS.md #26's safety net:
 // a whole-machine sweep must not convert a finding under an
 // archived/backup-looking directory into a live-mounted pipe by default
