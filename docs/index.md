@@ -18,7 +18,8 @@ jit wrap gh                # move a CLI's token into the vault; keep typing `gh`
 jit run -- npm run dev     # or inject secrets straight into a process, no file at all
 ```
 
-New here? **[Install](./getting-started/install.md)** →
+New here? Start with **[Why jit](./why-jit.md)** for the benefits in one page,
+then **[Install](./getting-started/install.md)** →
 **[Quickstart](./getting-started/quickstart.md)** →
 **[How it works](./getting-started/how-it-works.md)**.
 
