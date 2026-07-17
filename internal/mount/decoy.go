@@ -33,10 +33,18 @@ func DecoyValues(real map[string]string) map[string]string {
 // server failing on `jit-hidden-API_KEY` values sends its owner
 // through app logs and service dashboards before anyone thinks to `cat`
 // the .env — and the values alone say what they are but not what to DO
-// about it. A `#` line comment is safe in both content formats a mount
-// serves (dotenv loaders and npm's ini parser both treat `#` as a
-// comment). Deliberately absent from real (revealed) content — its presence
-// IS the "you're looking at decoys" signal.
+// about it. A `#` line comment is safe in two of the content formats a
+// mount serves (dotenv loaders and npm's ini parser both treat `#` as a
+// comment); in the third — JSON (the GCP ADC template mount) — it is a
+// syntax error, and that is deliberate, not an oversight: an unrevealed
+// ADC read then fails locally and immediately at the parse, instead of a
+// valid-JSON decoy shipping a fake refresh token to Google's live token
+// endpoint to fail remotely with a far more confusing invalid_grant.
+// A human who `cat`s the file still sees this line either way. Making
+// this notice "format-aware" someday must not silently flip JSON decoys
+// to valid — that would invert the local-vs-remote failure mode
+// docs/migrate/gcp.md documents. Deliberately absent from real (revealed)
+// content — its presence IS the "you're looking at decoys" signal.
 func DecoyNotice(mountPath string) []byte {
 	return fmt.Appendf(nil, "# jit: fake placeholder values — this mount is not revealed. Run: jit agent reveal %s\n", mountPath)
 }

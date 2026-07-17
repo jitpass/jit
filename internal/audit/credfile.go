@@ -285,6 +285,19 @@ func scanTerraformCloud(cfg Config) ([]Finding, error) {
 
 func scanGCPApplicationDefaultCredentials(cfg Config) ([]Finding, error) {
 	path := filepath.Join(cfg.HomeDir, ".config", "gcloud", "application_default_credentials.json")
+	// Lstat + IsRegular, not a bare open: `jit migrate home` can turn this
+	// file itself into a live template mount, and opening that FIFO would
+	// block the scan forever with no agent writing (or read decoy/real
+	// mount content and report jit's own protection as an exposed
+	// credential) — the same guard scanNpmrc applies to the global
+	// ~/.npmrc, needed here because this is a fixed path checked outside
+	// walkHomeDir's own filter.
+	if info, statErr := os.Lstat(path); statErr != nil || !info.Mode().IsRegular() {
+		if statErr != nil && !os.IsNotExist(statErr) {
+			return nil, statErr
+		}
+		return nil, nil
+	}
 	file, err := openFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

@@ -16,9 +16,9 @@ migrate wired into .envrc/package.json, and the .jit/ directory itself
 are all deleted.
 
 Machine-level migrations (shell configs, AWS, kubeconfig, Terraform
-Cloud, the global ~/.npmrc, Claude Desktop's MCP config) are not
-touched — they aren't part of any one project; reverse those with
-`jit migrate undo`.
+Cloud, GCP application-default credentials, the global ~/.npmrc,
+Claude Desktop's MCP config) are not touched — they aren't part of any
+one project; reverse those with `jit migrate undo`.
 
 A vault secret also referenced by a profile OUTSIDE this project is
 kept (and reported), never deleted out from under the other profile.
@@ -42,7 +42,7 @@ jit migrate remove [flags]
 
 ```
       --dry-run        preview the plan for this scope without changing anything
-      --only strings   scope a run to just these comma-separated categories: env,shell,mcp,aws,kube,terraform,npmrc (default: all)
+      --only strings   scope a run to just these comma-separated categories: env,shell,mcp,aws,kube,terraform,gcp,npmrc (default: all)
 ```
 
 ### SEE ALSO

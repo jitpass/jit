@@ -12,7 +12,7 @@ a masked value preview, and a one-line *why* explaining what matched.
 |---|---|---|
 | **Shell Configs** | `~/.zshrc`, `~/.bashrc`, profile files - `export KEY=value` lines whose key name or value shape looks like a secret | [`jit migrate`](../migrate/shell-configs.md) |
 | **.env Files** | project `.env`-family files whose values match known token formats or secret-shaped entropy | [`jit migrate`](../migrate/env-files.md) |
-| **Credential Files** | `~/.aws/credentials`, `~/.kube/config`, `.npmrc` auth tokens, the Terraform Cloud token file, GCP application-default credentials | [`jit migrate`](../migrate/index.md) (GCP: detected, no migrate path yet) |
+| **Credential Files** | `~/.aws/credentials`, `~/.kube/config`, `.npmrc` auth tokens, the Terraform Cloud token file, GCP application-default credentials | [`jit migrate`](../migrate/index.md) |
 | **AI Tool / MCP Configs** | MCP server configs (project `mcp.json`, Claude Desktop config) with secrets in their env blocks | [`jit migrate`](../migrate/mcp.md) |
 | **Private Keys** | on-disk private key material | surfaced for your judgment |
 | **IaC Variable Files** | Terraform/IaC variable files carrying secret-shaped values | surfaced for your judgment |
