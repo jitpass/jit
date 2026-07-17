@@ -3,21 +3,39 @@
 **Just-in-time credentials for your dev machine.**
 
 Your `.env` files, `~/.aws/credentials`, shell exports, `.npmrc` tokens, and
-MCP configs are full of secrets sitting in plaintext — readable by anything
+MCP configs are full of secrets sitting in plaintext, readable by anything
 running as you: an infostealer from one bad `curl | sh`, a malicious `npm
 install`, or one of the AI agents now running in your editor with your full
 permissions. `jit audit` shows you exactly what's exposed (strictly
 read-only, ~340ms); then `jit` moves each secret into a vault gated by Touch
-ID and rewrites the files so everything keeps working — a biometric prompt
+ID and rewrites the files so everything keeps working: a biometric prompt
 between your tools (and your agents) and your credentials.
-
-<!-- TODO(demo): decoy → real .env flip GIF, ~3s loop. Record from the Playground. -->
 
 **[Documentation](./docs/index.md)** ·
 [Quickstart](./docs/getting-started/quickstart.md) ·
 [Supported tools](./docs/wrap/index.md) ·
 [Command reference](./docs/reference/commands/jit.md) ·
 [Security](./docs/security/architecture.md)
+
+**Decoy by default, real only when you ask.** A migrated `.env` serves
+fake-looking values to anything that reads it uninvited; the real ones appear
+only inside a short reveal window your tooling opens on purpose. Same file,
+same command, two different truths:
+
+```sh
+# default: a stray cat, editor, backup, or infostealer gets a decoy
+$ cat .env
+STRIPE_API_KEY=jit-hidden-STRIPE_API_KEY
+PROD_DATABASE_URL=jit-hidden-PROD_DATABASE_URL
+```
+
+```sh
+# inside a reveal window: the app gets the real value, briefly
+$ npm run dev
+✓ STRIPE_API_KEY  sk_live_••••4f2   (auto-expires)
+```
+
+▶ **[Watch it flip live at jitpass.com](https://jitpass.com)**: the interactive decoy→real animation.
 
 ## Introduction
 
@@ -27,11 +45,11 @@ kubeconfig client keys, Terraform Cloud tokens, `.npmrc` auth tokens, MCP
 server configs. Every one of them is readable by anything running as your
 user, gets swept into backups and file indexes, and stays on disk long after
 the moment you actually needed it. That "anything running as your user" now
-includes the AI agents and MCP servers in your editor — they run with your
+includes the AI agents and MCP servers in your editor: they run with your
 full privileges and can read every one of those files right now.
 
-**See what's on your own machine first.** `jit audit` is strictly read-only —
-it never writes, moves, or "fixes" anything — so it's safe to run before you
+**See what's on your own machine first.** `jit audit` is strictly read-only:
+it never writes, moves, or "fixes" anything, so it's safe to run before you
 trust jit with anything else:
 
 ```
@@ -50,7 +68,7 @@ jit audit — risk report for you@your-mac
   Total: 18 finding(s)
 ```
 
-That's a real report from the renderer (against a synthetic machine) — no
+That's a real report from the renderer (against a synthetic machine); no
 secret value is ever printed in full. See the
 [full example](./docs/audit/example-report.md).
 
@@ -76,7 +94,7 @@ byte-for-byte.
 
 > **Try it without pointing it at your real machine.** The
 > [jitpass-playground](https://github.com/jitpass/jitpass-playground) is a
-> mock app seeded with synthetic secrets and a 10-minute guided tour — audit,
+> mock app seeded with synthetic secrets and a 10-minute guided tour: audit,
 > migrate, watch the decoys flip to real values, undo it all. It's the
 > safest way to see the whole flow before day one.
 
