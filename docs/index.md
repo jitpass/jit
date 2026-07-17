@@ -41,7 +41,7 @@ New here? **[Install](./getting-started/install.md)** →
 - Per-credential guides: [.env files](./migrate/env-files.md) ·
   [shell configs](./migrate/shell-configs.md) · [AWS](./migrate/aws.md) ·
   [Kubernetes](./migrate/kubernetes.md) · [Terraform](./migrate/terraform.md) ·
-  [npm](./migrate/npm.md) · [MCP / AI tools](./migrate/mcp.md)
+  [GCP](./migrate/gcp.md) · [npm](./migrate/npm.md) · [MCP / AI tools](./migrate/mcp.md)
 - [Undo, unmount, and remove](./migrate/undo-and-remove.md) - every change is reversible
 
 ## Wrap CLI tools - `jit wrap`

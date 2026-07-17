@@ -2,6 +2,16 @@
 
 **Just-in-time credentials for your dev machine.**
 
+Your `.env` files, `~/.aws/credentials`, shell exports, `.npmrc` tokens, and
+MCP configs are full of secrets sitting in plaintext — readable by anything
+running as you, *including every AI agent and MCP server on your machine*.
+`jit audit` shows you exactly what's exposed (strictly read-only, ~340ms);
+then `jit` moves each secret into a vault gated by Touch ID and rewrites the
+files so everything keeps working — putting a biometric prompt between your
+tools (and your agents) and your credentials.
+
+<!-- TODO(demo): decoy → real .env flip GIF, ~3s loop. Record from the Playground. -->
+
 **[Documentation](./docs/index.md)** ·
 [Quickstart](./docs/getting-started/quickstart.md) ·
 [Supported tools](./docs/wrap/index.md) ·
@@ -15,7 +25,33 @@ files, `export STRIPE_KEY=...` lines in shell configs, `~/.aws/credentials`,
 kubeconfig client keys, Terraform Cloud tokens, `.npmrc` auth tokens, MCP
 server configs. Every one of them is readable by anything running as your
 user, gets swept into backups and file indexes, and stays on disk long after
-the moment you actually needed it.
+the moment you actually needed it. That "anything running as your user" now
+includes the AI agents and MCP servers in your editor — they run with your
+full privileges and can read every one of those files right now.
+
+**See what's on your own machine first.** `jit audit` is strictly read-only —
+it never writes, moves, or "fixes" anything — so it's safe to run before you
+trust jit with anything else:
+
+```
+jit audit — risk report for you@your-mac
+
+  RISK LEVEL: CRITICAL
+  (1 production-indicator/public-IP match(es) found)
+    - ~/code/webapp/.env
+
+  Shell Configs          2 finding(s)
+  .env Files             4 finding(s)
+  Credential Files       4 finding(s)
+  AI Tool / MCP Configs  4 finding(s)
+  Private Keys           2 finding(s)
+  ───────────────────────────────────
+  Total: 18 finding(s)
+```
+
+That's a real report from the renderer (against a synthetic machine) — no
+secret value is ever printed in full. See the
+[full example](./docs/audit/example-report.md).
 
 **What jit does.** `jit` finds those secrets (`jit audit`, strictly
 read-only), moves them into a local encrypted vault, and rewrites each file
@@ -37,6 +73,12 @@ not once per command. Every rewritten file is backed up (encrypted, into the
 vault) before it's touched, and `jit migrate undo` restores it
 byte-for-byte.
 
+> **Try it without pointing it at your real machine.** The
+> [jitpass-playground](https://github.com/jitpass/jitpass-playground) is a
+> mock app seeded with synthetic secrets and a 10-minute guided tour — audit,
+> migrate, watch the decoys flip to real values, undo it all. It's the
+> safest way to see the whole flow before day one.
+
 **Status: early development, macOS-only.** Everything below works if you
 build from source; code signing/notarization and a Homebrew tap are what
 stand between this and packaged releases.
@@ -54,10 +96,9 @@ mechanism, so everything keeps working:
 | AWS credentials | `~/.aws/credentials` | `credential_process` in `~/.aws/config`: the CLI and SDKs fetch on demand, no file at all |
 | kubeconfig | client keys/tokens in `~/.kube/config` | A kubectl `exec` credential plugin |
 | Terraform Cloud token | `~/.terraform.d/credentials.tfrc.json` | A `credentials_helper`; `terraform login`/`logout` keep working |
+| GCP application-default credentials | `~/.config/gcloud/application_default_credentials.json` | Live-mounted from a template; Google SDKs read the same path, non-secret fields untouched |
 | `.npmrc` auth tokens | project or global `.npmrc` | Live-mounted from a template; non-secret settings untouched |
 | CLI tool tokens | `gh`, `glab`, `stripe`, `ngrok`, `doctl` config files | `jit wrap gh`: a PATH shim injects the token per invocation - works in scripts and subprocesses, ~25 ms overhead |
-
-GCP application-default credentials aren't covered yet.
 
 ### Every prompt tells you why it appeared
 

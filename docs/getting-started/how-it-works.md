@@ -48,11 +48,9 @@ mechanism, so nothing about your workflow changes:
 | AWS credentials | `~/.aws/credentials` | [`credential_process`](../migrate/aws.md) in `~/.aws/config`: the CLI and SDKs fetch on demand, no file at all |
 | kubeconfig | client keys/tokens in `~/.kube/config` | A kubectl [`exec` credential plugin](../migrate/kubernetes.md) |
 | Terraform Cloud token | `~/.terraform.d/credentials.tfrc.json` | A [`credentials_helper`](../migrate/terraform.md); `terraform login`/`logout` keep working |
+| GCP application-default credentials | `~/.config/gcloud/application_default_credentials.json` | [Live-mounted from a template](../migrate/gcp.md); Google SDKs read the same path, non-secret fields untouched |
 | `.npmrc` auth tokens | project or global `.npmrc` | [Live-mounted from a template](../migrate/npm.md); non-secret settings untouched |
 | CLI tool tokens | `gh`, `stripe`, `ngrok`, … config files | [`jit wrap`](../wrap/index.md): a PATH shim injects the token per invocation, ~25 ms overhead |
-
-GCP application-default credentials aren't covered yet (audit detects them;
-there's no migrate path).
 
 ## Every prompt tells you why it appeared
 

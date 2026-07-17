@@ -20,8 +20,8 @@
 // which is what made the gap visible in practice. Sharing one discovery
 // call per scope is what makes that structurally impossible now.
 //
-// Real mutation covers seven finding types (GAPS.md #7, #8, and #16's
-// Terraform half are closed):
+// Real mutation covers eight finding types (GAPS.md #7, #8, and both of
+// #16's halves — Terraform and GCP — are closed):
 //
 //   - .env files (apply.go/unmount.go), scoped to the chosen root (cwd for
 //     jit migrate local, $HOME for jit migrate home), converted into a
@@ -60,6 +60,18 @@
 //     login`/`logout` keep working through the vault afterward). Fails
 //     loud before mutating anything if a different helper is already
 //     configured — Terraform allows exactly one. Both files backed up.
+//   - GCP application-default credentials (gcpadc.go, Tier 3/4 hybrid):
+//     ~/.config/gcloud/application_default_credentials.json's refresh_token
+//     (authorized_user) or private_key (service_account) moves into the
+//     vault; the file becomes a template-based mount like npmrc's, since it
+//     mixes those secrets with non-secret fields (client_id, project ids)
+//     that must survive byte-for-byte. A mount, not a credential-hook
+//     rewrite like AWS's, because GCP has no credential_process equivalent
+//     for these credential types — its only executable hook (AIP-4117's
+//     credential_source.executable) exists solely for workload identity
+//     federation's external_account files and can't source either secret
+//     shape audit actually finds; see gcpADCSecretFields' doc comment.
+//     Closes GAPS.md #16's GCP half.
 //   - npmrc (npmrc.go, Tier 4): global ~/.npmrc always checked, plus
 //     project .npmrc under the chosen root. Architecturally different
 //     from the other five — npm has no native credential hook, and an
@@ -93,9 +105,6 @@
 // tracing deriveProfileName's own relative-path logic, not a failing
 // test). jit migrate local is unaffected: every file it discovers
 // genuinely is under cwd already.
-//
-// GCP application-default-credentials are detected by audit but have no
-// migration path yet — see GAPS.md #16.
 //
 // revealhook.go's InstallRevealHook is a small addition on top of the .env/npmrc
 // live-mount path (GAPS.md #2): after creating a mount, migrate best-effort
