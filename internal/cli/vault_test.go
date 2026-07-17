@@ -8,6 +8,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -24,11 +25,9 @@ import (
 )
 
 // TestVaultListRejectsUnknownFormatBeforeOpeningVault confirms an invalid
-// --format value fails validation before openVault() is ever reached — the
-// only part of `jit vault list` this package can exercise without a real
-// Touch ID/passcode approval (this package's testing discipline: any
-// RunE reaching openVault() needs manual verification on real hardware
-// instead).
+// --format value fails validation before the vault is even read — list
+// runs on a bare read-only Vault and can never prompt, but a bad flag
+// should still fail before any filesystem walk happens.
 func TestVaultListRejectsUnknownFormatBeforeOpeningVault(t *testing.T) {
 	vaultListFormat = "text"
 	var buf bytes.Buffer
@@ -516,36 +515,135 @@ func TestPrintVaultList(t *testing.T) {
 	backups := []string{"_backups/Users/x/notion/.env.jit-bak-1"}
 
 	var buf bytes.Buffer
-	printVaultList(&buf, secrets, backups, false)
+	printVaultList(&buf, secrets, backups, false, false)
 	out := buf.String()
 	if strings.Contains(out, "_backups/") {
 		t.Errorf("default listing must not include _backups/ entries, got:\n%s", out)
 	}
-	if !strings.Contains(out, "2 secret(s) stored, plus 1 encrypted file backup(s) kept for `jit migrate undo` (list with --all).") {
+	if !strings.Contains(out, "2 secrets stored, plus 1 encrypted file backup kept for `jit migrate undo` (list with --all).") {
 		t.Errorf("count line must summarize hidden backups and how to see them, got:\n%s", out)
 	}
 
 	buf.Reset()
-	printVaultList(&buf, secrets, backups, true)
+	printVaultList(&buf, secrets, backups, true, false)
 	out = buf.String()
 	if !strings.Contains(out, "_backups/Users/x/notion/.env.jit-bak-1") {
 		t.Errorf("--all must list backup entries, got:\n%s", out)
 	}
-	if !strings.Contains(out, "2 secret(s) stored, plus 1 encrypted file backup(s) kept for `jit migrate undo`.") {
+	if !strings.Contains(out, "2 secrets stored, plus 1 encrypted file backup kept for `jit migrate undo`.") {
 		t.Errorf("--all count line must still separate secrets from backups, got:\n%s", out)
 	}
 
 	buf.Reset()
-	printVaultList(&buf, nil, backups, false)
+	printVaultList(&buf, nil, backups, false, false)
 	out = buf.String()
-	if !strings.Contains(out, "No secrets stored yet, 1 encrypted file backup(s) kept for `jit migrate undo` (list with --all).") {
+	if !strings.Contains(out, "No secrets stored yet, 1 encrypted file backup kept for `jit migrate undo` (list with --all).") {
 		t.Errorf("backups-only vault needs an honest empty state, got:\n%s", out)
 	}
 
+	// Backups-only with --all: the backups list, and the closing line
+	// still says "No secrets" rather than the old "0 secret(s)".
 	buf.Reset()
-	printVaultList(&buf, nil, nil, false)
+	printVaultList(&buf, nil, backups, true, false)
+	out = buf.String()
+	if !strings.Contains(out, "_backups/Users/x/notion/.env.jit-bak-1") {
+		t.Errorf("backups-only --all must list backup entries, got:\n%s", out)
+	}
+	if !strings.Contains(out, "No secrets stored yet, 1 encrypted file backup kept for `jit migrate undo`.") {
+		t.Errorf("backups-only --all count line must not say '0 secrets', got:\n%s", out)
+	}
+
+	buf.Reset()
+	printVaultList(&buf, nil, nil, false, false)
 	if !strings.Contains(buf.String(), "No secrets stored yet. Run `jit vault set <path>`") {
 		t.Errorf("empty vault keeps the standard empty state, got:\n%s", buf.String())
+	}
+}
+
+// TestPrintVaultListGrouped pins the terminal display: secrets collapse
+// under a "prefix/ (n)" header per first path segment with keys indented,
+// pathless entries stay bare lines, backups stay flat full paths even
+// under --all, and the closing count line is unchanged by grouping.
+func TestPrintVaultListGrouped(t *testing.T) {
+	secrets := []string{
+		"descope/KEY_1",
+		"descope/KEY_2",
+		"toplevel-secret",
+		"wiz/WIZ_CLIENT_ID",
+	}
+	backups := []string{"_backups/Users/x/notion/.env.jit-bak-1"}
+
+	var buf bytes.Buffer
+	printVaultList(&buf, secrets, backups, true, true)
+	out := buf.String()
+	for _, want := range []string{
+		"descope/ (2)",
+		"  KEY_1",
+		"  KEY_2",
+		"toplevel-secret",
+		"wiz/ (1)",
+		"  WIZ_CLIENT_ID",
+		"_backups/Users/x/notion/.env.jit-bak-1",
+		"4 secrets stored, plus 1 encrypted file backup kept for `jit migrate undo`.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("grouped listing missing %q, got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "  descope/KEY_1") {
+		t.Errorf("grouped keys must not repeat their prefix, got:\n%s", out)
+	}
+	if strings.Contains(out, "_backups/ (") {
+		t.Errorf("backups must never be grouped, got:\n%s", out)
+	}
+}
+
+// TestVaultListEndToEndWithoutAuth drives the full `jit vault list` RunE
+// through rootCmd — possible at all only because list runs on a bare
+// read-only Vault (no agent dial, no KeyWrapper, no device-id write), the
+// regression this test pins. Also covers natural ordering end to end and
+// the --format json shape.
+func TestVaultListEndToEndWithoutAuth(t *testing.T) {
+	withFixtureHome(t)
+	vaultListFormat = "text"
+	vaultListAll = false
+	t.Cleanup(func() { vaultListFormat = "text" })
+	seedFixtureVault(t, "descope/PROJECT_10")
+	seedFixtureVault(t, "descope/PROJECT_2")
+
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"vault", "list"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("jit vault list: %v", err)
+	}
+	out := buf.String()
+	i2, i10 := strings.Index(out, "descope/PROJECT_2"), strings.Index(out, "descope/PROJECT_10")
+	if i2 < 0 || i10 < 0 || i2 > i10 {
+		t.Errorf("expected PROJECT_2 before PROJECT_10 (natural order), got:\n%s", out)
+	}
+	if !strings.Contains(out, "2 secrets stored.") {
+		t.Errorf("expected the closing count line, got:\n%s", out)
+	}
+
+	buf.Reset()
+	rootCmd.SetArgs([]string{"vault", "list", "--format", "json"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("jit vault list --format json: %v", err)
+	}
+	var res struct {
+		Secrets []string `json:"secrets"`
+		Backups []string `json:"backups"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &res); err != nil {
+		t.Fatalf("parsing json output: %v\n%s", err, buf.String())
+	}
+	if strings.Join(res.Secrets, ",") != "descope/PROJECT_2,descope/PROJECT_10" {
+		t.Errorf("json secrets = %v, want natural order", res.Secrets)
+	}
+	if res.Backups == nil || len(res.Backups) != 0 {
+		t.Errorf("json backups = %#v, want empty non-nil array", res.Backups)
 	}
 }
 
@@ -564,6 +662,40 @@ func TestSplitBackupPaths(t *testing.T) {
 	secrets, backups = splitBackupPaths(nil)
 	if secrets == nil || backups == nil {
 		t.Error("splitBackupPaths(nil) must return empty slices, never nil")
+	}
+}
+
+// TestSecretProfileReferences drives the `jit vault get` footer's lookup:
+// a global-store manifest referencing the secret comes back by name with
+// the .source sidecar's recorded config file, and an unreferenced path
+// returns nothing. The footer itself is stderr-TTY-gated (invisible to
+// piped test output by design), so the helper is the testable surface.
+func TestSecretProfileReferences(t *testing.T) {
+	home := withFixtureHome(t)
+	profilesDir := filepath.Join(home, ".jit", "profiles")
+	if err := os.MkdirAll(profilesDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(profilesDir, "mcp-wiz.yaml"),
+		[]byte("WIZ_CLIENT_ID: mcp-wiz/WIZ_CLIENT_ID\n"), 0o600); err != nil {
+		t.Fatalf("writing manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(profilesDir, "mcp-wiz.source"),
+		[]byte("/Users/x/proj/.mcp.json\n"), 0o600); err != nil {
+		t.Fatalf("writing sidecar: %v", err)
+	}
+
+	names, source := secretProfileReferences("mcp-wiz/WIZ_CLIENT_ID")
+	if strings.Join(names, ",") != "mcp-wiz" {
+		t.Errorf("names = %v, want [mcp-wiz]", names)
+	}
+	if source != "/Users/x/proj/.mcp.json" {
+		t.Errorf("source = %q, want the sidecar's recorded config file", source)
+	}
+
+	names, source = secretProfileReferences("unreferenced/PATH")
+	if len(names) != 0 || source != "" {
+		t.Errorf("unreferenced path returned names=%v source=%q, want none", names, source)
 	}
 }
 
