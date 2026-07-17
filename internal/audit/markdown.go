@@ -28,6 +28,7 @@ func WriteMarkdownReport(w io.Writer, findings []Finding, summary ScanSummary) {
 	fmt.Fprintf(w, "**Scan time:** %s (%dms)\n\n", summary.ScanTime, summary.ScanDurationMs)
 
 	fmt.Fprintf(w, "## Risk Level: %s\n\n", riskLevelMarkdownBadge(summary.RiskLevel))
+	fmt.Fprintf(w, "**Exposure score:** %d/100\n\n", summary.ExposureScore)
 	if matches := summary.ProductionIndicatorCount + summary.PublicIPCount; matches > 0 {
 		fmt.Fprintf(w, "> %d production-indicator/public-IP match(es) found:\n", matches)
 		for _, path := range criticalTriggerPaths(findings) {
