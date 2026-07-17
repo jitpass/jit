@@ -41,7 +41,8 @@ func TestWriteHumanReportNeverLeaksRawValue(t *testing.T) {
 		"RISK LEVEL: CRITICAL",
 		"Shell Configs",
 		"/Users/alex/.zshrc",
-		":12  [critical]  key: AWS_SECRET_ACCESS_KEY",
+		":12",
+		"CRITICAL  AWS_SECRET_ACCESS_KEY",
 		preview,
 		"key name matches production-indicator pattern",
 		"jit audit --format ndjson",
@@ -75,7 +76,7 @@ func TestWriteHumanReportShowsKeyName(t *testing.T) {
 	WriteHumanReport(&buf, findings, summary, "")
 	out := buf.String()
 
-	if !strings.Contains(out, "key: jamf/JAMF_API_TOKEN") {
+	if !strings.Contains(out, "jamf/JAMF_API_TOKEN") {
 		t.Errorf("report must show the finding's KeyName so a reader knows which variable to act on, got:\n%s", out)
 	}
 }
@@ -100,7 +101,7 @@ func TestWriteHumanReportGroupsMultipleFindingsInSameFile(t *testing.T) {
 	if got := strings.Count(out, "/Users/alex/config.json"); got != 1 {
 		t.Errorf("file path should appear exactly once even with 2 findings in it, appeared %d times:\n%s", got, out)
 	}
-	if !strings.Contains(out, "key: jamf/JAMF_PRO_CLIENT_ID") || !strings.Contains(out, "key: jamf/JAMF_PRO_CLIENT_SECRET") {
+	if !strings.Contains(out, "jamf/JAMF_PRO_CLIENT_ID") || !strings.Contains(out, "jamf/JAMF_PRO_CLIENT_SECRET") {
 		t.Errorf("both findings' key names should still be shown, got:\n%s", out)
 	}
 }
@@ -309,6 +310,36 @@ func TestReportsShowProtectedCountOnlyWhenNonZero(t *testing.T) {
 	for name, out := range map[string]string{"human": humanZero.String(), "markdown": mdZero.String()} {
 		if strings.Contains(out, "Already protected") {
 			t.Errorf("%s report shows a protected line at zero count:\n%s", name, out)
+		}
+	}
+}
+
+func TestReportsShowSyntheticExclusionOnlyWhenNonZero(t *testing.T) {
+	base := ScanSummary{RiskLevel: RiskLevelClean, FindingsByCategory: map[string]int{}}
+
+	withSynthetic := base
+	withSynthetic.SyntheticFindingCount = 8
+	withSynthetic.SyntheticPlaygroundPaths = []string{"/Users/alex/jitpass-playground"}
+	var human, md bytes.Buffer
+	WriteHumanReport(&human, nil, withSynthetic, "/Users/alex")
+	WriteMarkdownReport(&md, nil, withSynthetic)
+	if !strings.Contains(human.String(), "Excluded from the score: 8 synthetic finding(s)") {
+		t.Errorf("human report missing the synthetic-exclusion line:\n%s", human.String())
+	}
+	// Human output "~"-shortens the playground path; markdown keeps it absolute.
+	if !strings.Contains(human.String(), "~/jitpass-playground") {
+		t.Errorf("human report should shorten the playground path:\n%s", human.String())
+	}
+	if !strings.Contains(md.String(), "/Users/alex/jitpass-playground") {
+		t.Errorf("markdown report should keep the absolute playground path:\n%s", md.String())
+	}
+
+	var humanZero, mdZero bytes.Buffer
+	WriteHumanReport(&humanZero, nil, base, "")
+	WriteMarkdownReport(&mdZero, nil, base)
+	for name, out := range map[string]string{"human": humanZero.String(), "markdown": mdZero.String()} {
+		if strings.Contains(out, "Excluded from the score") {
+			t.Errorf("%s report shows a synthetic-exclusion line at zero count:\n%s", name, out)
 		}
 	}
 }

@@ -20,11 +20,13 @@ import (
 )
 
 // playgroundMarker is the file the jitpass-playground repo ships at its root
-// so `jit` can recognize a sandbox checkout. Detection is cosmetic: it only
-// softens the copy ("these are synthetic") and forces the project-scoped
+// so `jit` can recognize a sandbox checkout. Detection here is cosmetic: it
+// only softens the copy ("these are synthetic") and forces the project-scoped
 // reveal, so a missing marker just falls back to generic project handling,
-// never to anything unsafe.
-const playgroundMarker = ".jitpass-playground"
+// never to anything unsafe. Aliased to audit.PlaygroundMarkerFile so the CLI
+// and the audit scanner (which excludes playground findings from the score)
+// can never disagree on the filename.
+const playgroundMarker = audit.PlaygroundMarkerFile
 
 // firstRunDeps are the seams the first-run flow is exercised through. The real
 // root command wires them to production implementations in prodFirstRunDeps;
