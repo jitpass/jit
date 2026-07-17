@@ -196,6 +196,11 @@ func (v *Vault) Restore(path string, stamp int64) error {
 	if err := os.Rename(src, dest); err != nil {
 		return fmt.Errorf("restoring %s: %w", path, err)
 	}
+	// Same durability standard as AtomicWriteFile's own rename: without
+	// the directory fsync, a power cut could leave the restore not yet
+	// durable (the version would still be safe in history, but the
+	// command's success would be a lie).
+	syncDir(filepath.Dir(dest))
 	// Best-effort, like pruneHistory's own removes: the restore already
 	// succeeded, and a leftover extra version is untidy, not wrong.
 	_ = v.pruneHistory(path)
