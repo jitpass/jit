@@ -161,6 +161,7 @@ type ScanSummary struct {
 	TotalFindings            int            `json:"total_findings"`
 	FindingsByCategory       map[string]int `json:"findings_by_category"`
 	RiskLevel                string         `json:"risk_level"`
+	ExposureScore            int            `json:"exposure_score"` // 0..100, see ComputeExposureScore
 	ProductionIndicatorCount int            `json:"production_indicator_count"`
 	PublicIPCount            int            `json:"public_ip_count"`
 	ScanDurationMs           int64          `json:"scan_duration_ms"`

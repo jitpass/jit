@@ -1,6 +1,6 @@
 # Example: what `jit audit` finds
 
-This is **real output** from `WriteHumanReport` (`internal/audit/report.go`), run against a throwaway fixture `$HOME` built inside a Go test — not hand-typed. (One hand-applied delta since generation: the `Wrappable CLI Tokens` summary line, which the renderer now always prints — the fixture predates that category and has no such finding, so `0 finding(s)` is exactly what a regeneration would produce.) Every path, username, and value below is fabricated (fake keys, fake tokens, a disposable ed25519 key generated just for this run) and was never a real credential. The fixture and the test that produced this file are not checked in; regenerate by writing a short `_test.go` in `internal/audit` that builds a fixture directory tree, calls `Scan`/`WriteHumanReport` against it, and deletes itself afterward — see the commit that introduced this version of the doc for the exact fixture used.
+This is **real output** from `WriteHumanReport` (`internal/audit/report.go`), run against a throwaway fixture `$HOME` built inside a Go test — not hand-typed. (Two hand-applied deltas since generation: the `Wrappable CLI Tokens` summary line, which the renderer now always prints for a category the fixture predates, so `0 finding(s)` is exactly what a regeneration would produce; and the `EXPOSURE:` score line, added when the exposure score landed.) Every path, username, and value below is fabricated (fake keys, fake tokens, a disposable ed25519 key generated just for this run) and was never a real credential. The fixture and the test that produced this file are not checked in; regenerate by writing a short `_test.go` in `internal/audit` that builds a fixture directory tree, calls `Scan`/`WriteHumanReport` against it, and deletes itself afterward — see the commit that introduced this version of the doc for the exact fixture used.
 
 Keeping this generated from the real renderer, rather than hand-maintained, is the whole point: a mockup that silently drifts from actual output is worse than no example at all — that's what happened to the previous version of this file, which predated the renderer's real key/value/why-labeled format entirely.
 
@@ -11,6 +11,7 @@ jit audit — risk report for alex@Alexs-MacBook-Pro
 scan time: 2026-07-06T09:14:22.000Z          duration: 340ms
 
   RISK LEVEL: CRITICAL
+  EXPOSURE:   100/100
   (1 production-indicator/public-IP match(es) found)
     - /Users/alex/code/webapp/.env
 
