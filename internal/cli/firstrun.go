@@ -224,7 +224,7 @@ func execSelf(args ...string) error {
 	if err != nil {
 		return fmt.Errorf("jit: locating own binary: %w", err)
 	}
-	c := exec.Command(exe, args...)
+	c := exec.Command(exe, args...) // #nosec G204 -- re-execs jit's own binary (os.Executable) with a fixed set of internal subcommands ({"vault","init"}, ...), never attacker-controlled input
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return c.Run()
 }
