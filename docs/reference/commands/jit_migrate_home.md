@@ -22,6 +22,13 @@ machine-wide files that live at fixed home paths:
                    credentials-helper protocol (`terraform login`/`logout`
                    keep working). Fails loud, before touching anything, if a
                    different credentials helper is already configured.
+  GCP              ~/.config/gcloud/application_default_credentials.json's
+                   refresh token (or a service account key's private key)
+                   moves into the vault; the file keeps working as a live
+                   mount — Google SDKs read the same path, non-secret fields
+                   preserved verbatim. (GCP has no AWS-style
+                   credential_process hook for these credential types, so
+                   the mount is what keeps SDKs working with no key on disk.)
   Claude Desktop's MCP config and the global ~/.npmrc get the same
   treatment as project MCP configs and .npmrc files.
 
@@ -29,9 +36,6 @@ Skips anything under an archived/backup-looking directory (archive,
 archived, backup, backups, .trash) unless --include-archived: converting a
 forgotten project's .env into a live mount nobody will ever serve again
 would make it unreadable, which is worse than plaintext.
-
-GCP application-default credentials have no migration path yet —
-`jit audit` still reports them.
 
 ```
 jit migrate home [flags]
@@ -55,7 +59,7 @@ jit migrate home [flags]
 
 ```
       --dry-run        preview the plan for this scope without changing anything
-      --only strings   scope a run to just these comma-separated categories: env,shell,mcp,aws,kube,terraform,npmrc (default: all)
+      --only strings   scope a run to just these comma-separated categories: env,shell,mcp,aws,kube,terraform,gcp,npmrc (default: all)
   -y, --yes            skip the confirmation prompt and migrate immediately
 ```
 
