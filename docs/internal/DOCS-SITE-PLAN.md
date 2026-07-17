@@ -83,7 +83,7 @@ docs/
 │   │   └── (jit.md, jit_audit.md, jit_wrap.md, …)
 │   ├── file-locations.md             # ~/Library/Application Support/jitpass/, ~/.jit/shims, .jit/profiles/
 │   ├── environment-variables.md      # JIT_SHIM_GUARD_*, injected vars per tool
-│   ├── audit-ndjson.md               # NDJSON schema (v0.3.0)
+│   ├── audit-ndjson.md               # NDJSON schema (v0.4.0)
 │   └── plumbing.md                   # aws-credential-process, k8s-exec-credential, terraform-credentials
 ├── security/
 │   ├── architecture.md               # threat model, envelope encryption, Keychain/Secure Enclave, peercred

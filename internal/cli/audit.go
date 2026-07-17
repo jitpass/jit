@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -19,6 +20,7 @@ import (
 var (
 	auditFormat string
 	auditOutput string
+	auditScore  bool
 )
 
 var auditCmd = &cobra.Command{
@@ -55,6 +57,14 @@ var auditCmd = &cobra.Command{
 		findings, summary, err := audit.Scan(cfg)
 		if err != nil {
 			return fmt.Errorf("jit audit: %w", err)
+		}
+
+		if auditScore {
+			// Terse mode: just the score line, no report. --format/--output
+			// don't apply here — this is for scripts, badges, and a quick
+			// "how bad is it" without the full dump.
+			fmt.Fprintf(cmd.OutOrStdout(), "Exposure: %d/100 (%s)\n", summary.ExposureScore, strings.ToUpper(summary.RiskLevel))
+			return nil
 		}
 
 		out := cmd.OutOrStdout()
@@ -127,5 +137,6 @@ func writeAuditReport(w io.Writer, format string, findings []audit.Finding, summ
 func init() {
 	auditCmd.Flags().StringVar(&auditFormat, "format", "text", `output format: "text" (default), "markdown"/"md", or "ndjson"`)
 	auditCmd.Flags().StringVarP(&auditOutput, "output", "o", "", "write the report to this file instead of stdout")
+	auditCmd.Flags().BoolVar(&auditScore, "score", false, `print only the exposure score (e.g. "Exposure: 92/100 (CRITICAL)") and exit`)
 	rootCmd.AddCommand(auditCmd)
 }
