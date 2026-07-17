@@ -32,30 +32,30 @@ var migrateUndoCmd = &cobra.Command{
 		"bytes back. With no argument it restores EVERY file with a recorded\n" +
 		"backup (each to its most recent one). Pass one or more paths to scope\n" +
 		"it: a file path restores just that file, a DIRECTORY path restores every\n" +
-		"migrated file recorded under that tree — so you can undo a single project\n" +
+		"migrated file recorded under that tree, so you can undo a single project\n" +
 		"without disturbing anything migrated elsewhere.\n\n" +
 		"A file that can't be restored (its backup was cleaned from the vault, a\n" +
-		"symlink reappeared at the path, …) is reported and skipped — the rest\n" +
+		"symlink reappeared at the path, …) is reported and skipped, the rest\n" +
 		"still restore, and the command exits non-zero if any file failed, so a\n" +
 		"single missing backup never silently aborts the whole batch partway.\n\n" +
 		"What it does per file: if the file is a registered live mount, the\n" +
 		"running agent stops serving it first (other mounts are undisturbed), the\n" +
 		"registry entry and the .pointers companion are removed, then the backed-\n" +
 		"up content is written back. The current content is snapshotted into the\n" +
-		"vault before being overwritten, so an undo is itself undoable — nothing\n" +
+		"vault before being overwritten, so an undo is itself undoable, nothing\n" +
 		"is ever simply destroyed.\n\n" +
 		"It also reverses the `jit agent reveal` hook migrate wired into a\n" +
-		"mount's .envrc/package.json — surgically, removing only jit's own\n" +
+		"mount's .envrc/package.json, surgically, removing only jit's own\n" +
 		"marked command for the mount being restored, so a script you edited\n" +
 		"yourself is never touched and another mount's hook is left intact. Once\n" +
 		"a hook file has no jit command left, its .jit-bak backup is cleaned up.\n\n" +
 		"What it deliberately does NOT do: vault secrets and profile manifests\n" +
 		"stay (`jit migrate remove` deletes a project's completely).\n\n" +
 		"Like every restore-to-plaintext operation, this writes real secret\n" +
-		"values back to disk — it prints the full plan and confirms first\n" +
+		"values back to disk, it prints the full plan and confirms first\n" +
 		"(--yes skips, --dry-run previews only).\n\n" +
 		"Backups made by jit builds before this command existed aren't in its\n" +
-		"index — restore those by hand: `jit vault list` (look under _backups/)\n" +
+		"index, restore those by hand: `jit vault list` (look under _backups/)\n" +
 		"+ `jit vault get <path>`.",
 	Args: cobra.ArbitraryArgs,
 	RunE: runMigrateUndo,
@@ -66,7 +66,7 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 	// rather than silently ignore — the exact silently-accepted-and-ignored
 	// trap GAPS.md #21/#25 fixed elsewhere in this command tree.
 	if len(migrateOnly) > 0 {
-		return fmt.Errorf("jit migrate undo: --only doesn't apply here — pass a path argument to restore a single file")
+		return fmt.Errorf("jit migrate undo: --only doesn't apply here, pass a path argument to restore a single file")
 	}
 
 	out := cmd.OutOrStdout()
@@ -88,7 +88,7 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(latest) == 0 {
-		fmt.Fprintln(out, "No jit-written backups are recorded — nothing to restore. (Backups made by builds before `jit migrate undo` existed aren't indexed; see `jit vault list` under _backups/ for those.)")
+		fmt.Fprintln(out, "No jit-written backups are recorded, nothing to restore. (Backups made by builds before `jit migrate undo` existed aren't indexed; see `jit vault list` under _backups/ for those.)")
 		return nil
 	}
 
@@ -96,7 +96,7 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 		// Same leading banner discipline as migrate local/home (GAPS.md
 		// #32): the preview-vs-real signal comes BEFORE the plan, not only
 		// after it.
-		_, _ = color.New(color.FgCyan, color.Bold).Fprintln(out, "[DRY RUN] Preview — this run changes nothing; the plan below is what a real run would do.")
+		_, _ = color.New(color.FgCyan, color.Bold).Fprintln(out, "[DRY RUN] Preview, this run changes nothing; the plan below is what a real run would do.")
 	}
 
 	registryPath := mount.RegistryPath(root)
@@ -110,10 +110,10 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 		note := ""
 		if found {
 			mounted[rec.OriginalPath] = entry
-			note = " — live mount: stops being served, unregistered"
+			note = ", live mount: stops being served, unregistered"
 		}
 		if rec.RemoveOnRestore {
-			fmt.Fprintf(out, "  • %s (created by migration — will be removed)%s\n", displayPath(home, rec.OriginalPath), note)
+			fmt.Fprintf(out, "  • %s (created by migration, will be removed)%s\n", displayPath(home, rec.OriginalPath), note)
 			continue
 		}
 		fmt.Fprintf(out, "  • %s (backed up %s ago)%s\n", displayPath(home, rec.OriginalPath), humanAgo(time.Since(time.Unix(rec.UnixTS, 0))), note)
@@ -122,7 +122,7 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 	// but the file it rewrites (package.json/.envrc) isn't itself a backup
 	// record — it used to change without ever being named here (issue #3).
 	if hookFiles := undoRevealHookFiles(latest); len(hookFiles) > 0 {
-		fmt.Fprintf(out, "Also removing jit's automatic reveal line from %d project hook file(s) — only jit's own command is removed, never a script you wrote:\n", len(hookFiles))
+		fmt.Fprintf(out, "Also removing jit's automatic reveal line from %d project hook file(s), only jit's own command is removed, never a script you wrote:\n", len(hookFiles))
 		for _, hf := range hookFiles {
 			fmt.Fprintf(out, "  • %s\n", displayPath(home, hf))
 		}
@@ -139,10 +139,10 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(out)
 	}
 	warn := color.New(color.FgYellow)
-	_, _ = warn.Fprintln(out, "Each file is restored EXACTLY as backed up — edits made since are replaced")
+	_, _ = warn.Fprintln(out, "Each file is restored EXACTLY as backed up, edits made since are replaced")
 	_, _ = warn.Fprintln(out, "(the replaced content is snapshotted into the vault first, so this is itself")
 	_, _ = warn.Fprintln(out, "undoable), and real secret values return to disk in PLAINTEXT.")
-	fmt.Fprintln(out, "Vault secrets and profile manifests are left in place — this reverses files, never the vault.")
+	fmt.Fprintln(out, "Vault secrets and profile manifests are left in place, this reverses files, never the vault.")
 
 	if migrateDryRun {
 		fmt.Fprintln(out)
@@ -260,7 +260,7 @@ func runRestores(out io.Writer, home string, recs []migrate.BackupRecord, restor
 	for _, rec := range recs {
 		if err := restoreOne(rec); err != nil {
 			failures = append(failures, undoFailure{path: rec.OriginalPath, err: err})
-			_, _ = color.New(color.FgYellow).Fprintf(out, "SKIPPED %s — %v\n", displayPath(home, rec.OriginalPath), err)
+			_, _ = color.New(color.FgYellow).Fprintf(out, "SKIPPED %s, %v\n", displayPath(home, rec.OriginalPath), err)
 			continue
 		}
 		restored++
@@ -273,7 +273,7 @@ func runRestores(out io.Writer, home string, recs []migrate.BackupRecord, restor
 
 	fmt.Fprintln(out)
 	if restored > 0 {
-		fmt.Fprintf(out, "Restored %d file(s). Vault secrets and profile manifests are still there — `jit migrate remove` deletes a project's completely.\n", restored)
+		fmt.Fprintf(out, "Restored %d file(s). Vault secrets and profile manifests are still there, `jit migrate remove` deletes a project's completely.\n", restored)
 	}
 	if len(failures) > 0 {
 		_, _ = color.New(color.FgYellow).Fprintf(out, "%d file(s) could NOT be restored and were left exactly as they were:\n", len(failures))
@@ -318,7 +318,7 @@ func selectBackups(latest []migrate.BackupRecord, args []string) ([]migrate.Back
 			}
 		}
 		if matched == 0 {
-			return nil, fmt.Errorf("no recorded backup for %s — run `jit migrate undo --dry-run` with no argument to see every restorable file", abs)
+			return nil, fmt.Errorf("no recorded backup for %s, run `jit migrate undo --dry-run` with no argument to see every restorable file", abs)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].OriginalPath < out[j].OriginalPath })

@@ -55,7 +55,7 @@ func TestWatchOwnBinaryRestartsOnlyOnceQuiescentAndSteady(t *testing.T) {
 	writeBinary(t, path, "build two, longer content")
 	time.Sleep(150 * time.Millisecond)
 	if got := restarts.Load(); got != 0 {
-		t.Fatalf("watcher restarted %d times while not quiescent — it killed a live session for a rebuild", got)
+		t.Fatalf("watcher restarted %d times while not quiescent, it killed a live session for a rebuild", got)
 	}
 
 	// Session locks: now (and only now) the pending change may fire, once.

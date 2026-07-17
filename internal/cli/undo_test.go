@@ -28,7 +28,7 @@ func execMigrateUndo(t *testing.T, args ...string) (stdout string, err error) {
 	migrateOnly = nil
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
-	rootCmd.SetErr(&buf)                 // confirmation prompts go to stderr — capture both streams in order
+	rootCmd.SetErr(&buf)                 // confirmation prompts go to stderr, capture both streams in order
 	rootCmd.SetIn(strings.NewReader("")) // EOF = declined if a confirm prompt is hit
 	rootCmd.SetArgs(append([]string{"migrate", "undo"}, args...))
 	err = rootCmd.Execute()
@@ -161,7 +161,7 @@ func TestMigrateUndoRejectsOnlyFlag(t *testing.T) {
 
 	_, err := execMigrateUndo(t, "--only", "env")
 	if err == nil {
-		t.Fatal("expected an error: --only filters categories, undo restores files — accepting and ignoring it is the GAPS.md #21/#25 trap")
+		t.Fatal("expected an error: --only filters categories, undo restores files, accepting and ignoring it is the GAPS.md #21/#25 trap")
 	}
 }
 
@@ -251,7 +251,7 @@ func TestRunRestoresContinuesPastFailureAndExitsNonZero(t *testing.T) {
 		t.Fatal("a batch with a failed file must return a non-nil error (non-zero exit)")
 	}
 	if len(restored) != 2 {
-		t.Fatalf("the failure must not abort the batch — expected the other 2 restored, got %d (%v)", len(restored), restored)
+		t.Fatalf("the failure must not abort the batch, expected the other 2 restored, got %d (%v)", len(restored), restored)
 	}
 	out := buf.String()
 	if !strings.Contains(out, "Restored 2 file(s)") {

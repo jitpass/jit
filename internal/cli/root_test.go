@@ -23,7 +23,7 @@ func TestEveryTopLevelCommandHasGroupID(t *testing.T) {
 			continue
 		}
 		if c.GroupID == "" {
-			t.Errorf("top-level command %q has no GroupID — set one of the group constants in root.go", c.Name())
+			t.Errorf("top-level command %q has no GroupID, set one of the group constants in root.go", c.Name())
 		}
 	}
 }
@@ -40,7 +40,7 @@ func TestNoInternalTrackerReferencesInHelpText(t *testing.T) {
 		for _, text := range []string{c.Short, c.Long, c.Example} {
 			for _, marker := range []string{"GAPS.md", "RFC.md", "Pillar"} {
 				if strings.Contains(text, marker) {
-					t.Errorf("%q help text references internal tracker/vocabulary %q — say what the user observes instead:\n%s", c.CommandPath(), marker, text)
+					t.Errorf("%q help text references internal tracker/vocabulary %q, say what the user observes instead:\n%s", c.CommandPath(), marker, text)
 				}
 			}
 		}

@@ -93,7 +93,7 @@ func printVaultList(out io.Writer, secrets, backups []string, showBackups bool) 
 	case showBackups:
 		fmt.Fprintf(out, "\n%d secret(s) stored, plus %d encrypted file backup(s) kept for `jit migrate undo`.\n", len(secrets), len(backups))
 	case len(secrets) == 0:
-		fmt.Fprintf(out, "No secrets stored yet — %d encrypted file backup(s) kept for `jit migrate undo` (list with --all).\n", len(backups))
+		fmt.Fprintf(out, "No secrets stored yet, %d encrypted file backup(s) kept for `jit migrate undo` (list with --all).\n", len(backups))
 	default:
 		fmt.Fprintf(out, "\n%d secret(s) stored, plus %d encrypted file backup(s) kept for `jit migrate undo` (list with --all).\n", len(secrets), len(backups))
 	}
@@ -104,7 +104,7 @@ var vaultCmd = &cobra.Command{
 	GroupID: groupSecrets,
 	Short:   "Manage the local encrypted secret vault",
 	Long: "jit vault stores each secret as its own encrypted file under jit's data\n" +
-		"directory — no monolithic database. Access is gated by a Touch ID/passcode\n" +
+		"directory, no monolithic database. Access is gated by a Touch ID/passcode\n" +
 		"prompt enforced by jit itself (a real prompt, though not yet an OS-enforced\n" +
 		"Keychain/Secure Enclave guarantee).",
 }
@@ -138,7 +138,7 @@ var vaultSetCmd = &cobra.Command{
 	Short: "Encrypt and store a secret",
 	Long: "Stores a secret at <path> (e.g. \"stripe/dev-key\"). If [value] is omitted,\n" +
 		"prompts for it with hidden input. Use --stdin for scripts. Passing the value\n" +
-		"as a bare argument works but lands in shell history — prefer the prompt or --stdin.",
+		"as a bare argument works but lands in shell history, prefer the prompt or --stdin.",
 	Args:              cobra.RangeArgs(1, 2),
 	ValidArgsFunction: completeVaultPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -203,9 +203,9 @@ var vaultGetCmd = &cobra.Command{
 				return fmt.Errorf("jit vault get: %w", err)
 			}
 			if autoClear {
-				fmt.Fprintf(cmd.OutOrStdout(), "Copied to clipboard — clears in %s unless something else is copied first.\n", clipboardClearDelay)
+				fmt.Fprintf(cmd.OutOrStdout(), "Copied to clipboard, clears in %s unless something else is copied first.\n", clipboardClearDelay)
 			} else {
-				fmt.Fprintln(cmd.OutOrStdout(), "Copied to clipboard (auto-clear unavailable — it stays until you copy over it).")
+				fmt.Fprintln(cmd.OutOrStdout(), "Copied to clipboard (auto-clear unavailable, it stays until you copy over it).")
 			}
 			return nil
 		}
@@ -297,7 +297,7 @@ var vaultHistoryCmd = &cobra.Command{
 	Use:   "history <path>",
 	Short: "List a secret's archived previous versions",
 	Long: "Every overwrite of a stored secret keeps the outgoing value as an encrypted\n" +
-		"archived version (the newest " + fmt.Sprint(vault.HistoryKeep) + " are kept). This lists them — never\n" +
+		"archived version (the newest " + fmt.Sprint(vault.HistoryKeep) + " are kept). This lists them, never\n" +
 		"decrypting anything, so it never prompts. `jit vault restore` brings one\n" +
 		"back; `jit vault rm` deletes them along with the secret.",
 	Args:              cobra.ExactArgs(1),
@@ -324,7 +324,7 @@ var vaultHistoryCmd = &cobra.Command{
 		}
 
 		if len(versions) == 0 {
-			fmt.Fprintf(cmd.OutOrStdout(), "No archived versions for %s — history is kept from the first overwrite on.\n", args[0])
+			fmt.Fprintf(cmd.OutOrStdout(), "No archived versions for %s, history is kept from the first overwrite on.\n", args[0])
 			return nil
 		}
 		for _, hv := range versions {
@@ -345,11 +345,11 @@ var vaultRestoreCmd = &cobra.Command{
 	Use:   "restore <path>",
 	Short: "Bring back an archived previous version of a secret",
 	Long: "Replaces the secret's current value with an archived one from `jit vault\n" +
-		"history` — the newest by default, or the one named by --version <stamp>.\n" +
+		"history`, the newest by default, or the one named by --version <stamp>.\n" +
 		"The displaced current value is archived first, so a restore is itself\n" +
 		"restorable and flipping between two versions can never lose either.\n\n" +
 		"Restoring moves the archived encrypted file back into place byte-for-byte;\n" +
-		"nothing is decrypted, but a fresh Touch ID/passcode approval is required —\n" +
+		"nothing is decrypted, but a fresh Touch ID/passcode approval is required,\n" +
 		"changing what a secret resolves to must never happen silently.",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeVaultPaths,
@@ -370,7 +370,7 @@ var vaultRestoreCmd = &cobra.Command{
 		if err := v.Restore(args[0], vaultRestoreStamp); err != nil {
 			return fmt.Errorf("jit vault restore: %w", err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Restored %s. The value it replaced is archived — `jit vault history %s`.\n", args[0], args[0])
+		fmt.Fprintf(cmd.OutOrStdout(), "Restored %s. The value it replaced is archived, `jit vault history %s`.\n", args[0], args[0])
 		return nil
 	},
 }
@@ -379,15 +379,15 @@ var vaultExportCmd = &cobra.Command{
 	Use:   "export <file>",
 	Short: "Export every secret to a passphrase-encrypted local backup file",
 	Long: "Decrypts every secret currently in the vault and re-encrypts the whole set\n" +
-		"under a passphrase you supply — NOT the vault's own per-secret encryption,\n" +
+		"under a passphrase you supply, NOT the vault's own per-secret encryption,\n" +
 		"which is bound to this device and useless on a different machine. A\n" +
 		"passphrase-derived key is what actually makes this file restorable after\n" +
-		"laptop loss or a reformat — `jit vault import <file>` reverses it, on this\n" +
+		"laptop loss or a reformat, `jit vault import <file>` reverses it, on this\n" +
 		"machine or any other. Remembering the passphrase is entirely on you: jit\n" +
 		"never stores it anywhere. This is a local file, moved around by whatever\n" +
-		"means you choose — jit never uploads it.\n\n" +
+		"means you choose, jit never uploads it.\n\n" +
 		"--stdin reads the passphrase from stdin (one line, no confirmation\n" +
-		"double-entry) instead of the default hidden prompt — for scripting, e.g.\n" +
+		"double-entry) instead of the default hidden prompt, for scripting, e.g.\n" +
 		"piping one in from a password manager's own CLI.",
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -446,7 +446,7 @@ var vaultImportCmd = &cobra.Command{
 	Short: "Restore secrets from a jit vault export file",
 	Long: "Decrypts <file> (written by `jit vault export`) with the passphrase you\n" +
 		"supply and writes every secret it contains into this vault, overwriting\n" +
-		"any existing secret at the same path. Confirms first unless --yes — the\n" +
+		"any existing secret at the same path. Confirms first unless --yes, the\n" +
 		"passphrase prompt only comes after that, so declining never costs a\n" +
 		"wasted attempt at typing it.",
 	Args: cobra.ExactArgs(1),
@@ -598,11 +598,11 @@ var vaultCleanCmd = &cobra.Command{
 	Use:   "clean",
 	Short: "Delete every secret in the vault (the vault itself stays set up)",
 	Long: "Permanently deletes every secret stored in the vault, including the\n" +
-		"encrypted file backups jit migrate keeps for `jit migrate undo` — after\n" +
+		"encrypted file backups jit migrate keeps for `jit migrate undo`, after\n" +
 		"this, undo has nothing left to restore from. The vault itself stays\n" +
 		"initialized (its encryption key and device identity are kept), so\n" +
 		"`jit vault set`/`jit migrate` keep working immediately afterward.\n" +
-		"Refuses while any file is still live-mounted — unmount first, or the\n" +
+		"Refuses while any file is still live-mounted, unmount first, or the\n" +
 		"mounted file's real content would be gone for good.\n" +
 		"To destroy the vault entirely, key included, use `jit vault delete`.",
 	Args: cobra.NoArgs,
@@ -623,7 +623,7 @@ var vaultCleanCmd = &cobra.Command{
 			return fmt.Errorf("jit vault clean: reading the mount registry: %w", err)
 		}
 		if len(entries) > 0 {
-			return fmt.Errorf("jit vault clean: %d file(s) are still live-mounted — run `jit unmount <path>` on each first, or their real content is gone for good", len(entries))
+			return fmt.Errorf("jit vault clean: %d file(s) are still live-mounted, run `jit unmount <path>` on each first, or their real content is gone for good", len(entries))
 		}
 
 		v, err := openVaultReadOnly()
@@ -635,7 +635,7 @@ var vaultCleanCmd = &cobra.Command{
 			return fmt.Errorf("jit vault clean: %w", err)
 		}
 		if len(paths) == 0 {
-			fmt.Fprintln(cmd.OutOrStdout(), "The vault is already empty — nothing to clean.")
+			fmt.Fprintln(cmd.OutOrStdout(), "The vault is already empty, nothing to clean.")
 			return nil
 		}
 		backups := 0
@@ -646,7 +646,7 @@ var vaultCleanCmd = &cobra.Command{
 		}
 		warning := ""
 		if backups > 0 {
-			warning = fmt.Sprintf(" — including %d encrypted file backup(s), so `jit migrate undo` will have nothing left to restore from", backups)
+			warning = fmt.Sprintf(", including %d encrypted file backup(s), so `jit migrate undo` will have nothing left to restore from", backups)
 		}
 		if !vaultCleanYes && !confirmPrompt(cmd, fmt.Sprintf(
 			"Permanently delete ALL %d secret(s) from the vault%s? This can't be undone. [y/N] ", len(paths), warning)) {
@@ -665,7 +665,7 @@ var vaultCleanCmd = &cobra.Command{
 		if err := os.Remove(migrate.BackupIndexPath(root)); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("jit vault clean: removing the undo index: %w", err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Deleted %d secret(s). The vault itself is still set up — `jit vault set` works immediately.\n", len(paths))
+		fmt.Fprintf(cmd.OutOrStdout(), "Deleted %d secret(s). The vault itself is still set up, `jit vault set` works immediately.\n", len(paths))
 		return nil
 	},
 }
@@ -685,13 +685,13 @@ var vaultPruneCmd = &cobra.Command{
 	Short: "Delete stale encrypted file backups, keeping each file's newest",
 	Long: "jit migrate backs a file up into the vault (under _backups/...) every time\n" +
 		"it rewrites one, and `jit migrate undo` snapshots the pre-undo state too, so\n" +
-		"repeated migrate/undo cycles accumulate backups indefinitely — nothing\n" +
+		"repeated migrate/undo cycles accumulate backups indefinitely, nothing\n" +
 		"expires them automatically, on purpose (a recovery snapshot silently aging\n" +
 		"out is worse than a big vault). This prunes the accumulation: for every\n" +
-		"file, the NEWEST backup — the one `jit migrate undo` would restore — is\n" +
+		"file, the NEWEST backup, the one `jit migrate undo` would restore, is\n" +
 		"kept, and every older one is permanently deleted.\n\n" +
 		"Backups taken by jit builds before the undo index existed aren't touched\n" +
-		"(they're invisible to undo but may be your only copy) — see them with\n" +
+		"(they're invisible to undo but may be your only copy), see them with\n" +
 		"`jit vault list --all` and delete by hand with `jit vault rm` if wanted.",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -727,11 +727,11 @@ var vaultPruneCmd = &cobra.Command{
 			}
 		}
 		if len(stale) == 0 {
-			fmt.Fprintln(out, "Nothing to prune — each backed-up file already has only its newest backup.")
+			fmt.Fprintln(out, "Nothing to prune, each backed-up file already has only its newest backup.")
 			return nil
 		}
 
-		fmt.Fprintf(out, "Pruning %d stale backup(s) — each file's newest backup is kept, so `jit migrate undo` still works:\n", len(stale))
+		fmt.Fprintf(out, "Pruning %d stale backup(s), each file's newest backup is kept, so `jit migrate undo` still works:\n", len(stale))
 		for _, r := range stale {
 			fmt.Fprintf(out, "  • %s (%s, backed up %s ago)\n", r.VaultPath, displayPath(home, r.OriginalPath), humanAgo(time.Since(time.Unix(r.UnixTS, 0))))
 		}
@@ -771,7 +771,7 @@ var vaultDeleteCmd = &cobra.Command{
 	Long: "Destroys the entire vault: every secret, the encrypted file backups and\n" +
 		"their undo index, the device identity, and the vault's encryption key in\n" +
 		"the macOS keychain. Nothing on this machine can decrypt anything\n" +
-		"afterward — only a passphrase-encrypted `jit vault export` file survives\n" +
+		"afterward, only a passphrase-encrypted `jit vault export` file survives\n" +
 		"(restorable later via `jit vault init` + `jit vault import`).\n\n" +
 		"Refuses to run while any file is still live-mounted: unmount first\n" +
 		"(`jit unmount <path>`), or the mounted file would be permanently stuck\n" +
@@ -787,7 +787,7 @@ var vaultDeleteCmd = &cobra.Command{
 			return fmt.Errorf("jit vault delete: reading the mount registry: %w", err)
 		}
 		if len(entries) > 0 {
-			return fmt.Errorf("jit vault delete: %d file(s) are still live-mounted — run `jit unmount <path>` on each first, or their real content is gone for good", len(entries))
+			return fmt.Errorf("jit vault delete: %d file(s) are still live-mounted, run `jit unmount <path>` on each first, or their real content is gone for good", len(entries))
 		}
 
 		v, err := openVaultReadOnly()
@@ -801,11 +801,11 @@ var vaultDeleteCmd = &cobra.Command{
 		noBackup := ""
 		if len(paths) > 0 {
 			if _, exported, err := vault.LastExport(root); err == nil && !exported {
-				noBackup = " No vault export exists — every secret will be unrecoverable."
+				noBackup = " No vault export exists, every secret will be unrecoverable."
 			}
 		}
 		if !vaultDeleteYes && !confirmPrompt(cmd, fmt.Sprintf(
-			"Permanently destroy the ENTIRE vault — %d secret(s), the undo backups, and the encryption key in the macOS keychain?%s [y/N] ", len(paths), noBackup)) {
+			"Permanently destroy the ENTIRE vault, %d secret(s), the undo backups, and the encryption key in the macOS keychain?%s [y/N] ", len(paths), noBackup)) {
 			fmt.Fprintln(cmd.OutOrStdout(), "Aborted. Nothing was deleted.")
 			return nil
 		}
@@ -859,7 +859,7 @@ func lockAgentAfterMEKDeletion(root string, w io.Writer) string {
 		return ""
 	}
 	if err := agentClient.Lock(); err != nil {
-		fmt.Fprintf(w, "warning: couldn't lock the running agent's cached session — run `jit agent lock` before using a new vault: %v\n", err)
+		fmt.Fprintf(w, "warning: couldn't lock the running agent's cached session, run `jit agent lock` before using a new vault: %v\n", err)
 		return ""
 	}
 	return "the running agent's cached session (locked)"

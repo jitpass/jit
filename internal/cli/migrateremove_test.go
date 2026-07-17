@@ -129,7 +129,7 @@ func TestBuildProjectRemovalPlanKeepsSharedVaultPaths(t *testing.T) {
 		t.Errorf("deletePaths = %v, want [myapp/MINE]", plan.deletePaths)
 	}
 	if len(plan.keptShared) != 1 || plan.keptShared[0] != "root/SHARED" {
-		t.Errorf("keptShared = %v, want [root/SHARED] — deleting it would break the global profile", plan.keptShared)
+		t.Errorf("keptShared = %v, want [root/SHARED], deleting it would break the global profile", plan.keptShared)
 	}
 }
 
@@ -175,7 +175,7 @@ func TestBuildProjectRemovalPlanClaimsOwnedMCPProfiles(t *testing.T) {
 		t.Fatalf("ownedGlobal = %+v, want just mcp-mine", plan.ownedGlobal)
 	}
 	if len(plan.deletePaths) != 1 || plan.deletePaths[0] != "mcp-mine/TOKEN" {
-		t.Errorf("deletePaths = %v, want [mcp-mine/TOKEN] — the foreign profile's secret must never be deleted", plan.deletePaths)
+		t.Errorf("deletePaths = %v, want [mcp-mine/TOKEN], the foreign profile's secret must never be deleted", plan.deletePaths)
 	}
 	if plan.mcpRestores[ownedConfig]["mcp-mine"] != ownedManifest {
 		t.Errorf("mcpRestores = %v, want the still-wrapped server slated for plaintext restore", plan.mcpRestores)

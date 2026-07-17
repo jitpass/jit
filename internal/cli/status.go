@@ -107,9 +107,9 @@ var statusCmd = &cobra.Command{
 	Use:     "status",
 	GroupID: groupWorkflow,
 	Short:   "One-shot overview of vault, agent, profile, and mount health",
-	Long: "Rolls up what previously took several separate commands to piece together — " +
+	Long: "Rolls up what previously took several separate commands to piece together, " +
 		"is the vault initialized, is the agent running and unlocked, do this project's " +
-		"profiles resolve, are mounts being served — into one read-only report. Never " +
+		"profiles resolve, are mounts being served, into one read-only report. Never " +
 		"decrypts a secret value or triggers a Touch ID/passcode prompt, matching " +
 		"jit doctor and jit profile's own safe-to-run-often shape; each section " +
 		"points at the dedicated command for full detail rather than duplicating it.\n\n" +
@@ -181,7 +181,7 @@ func gatherVaultStatus(v *vault.Vault) (statusVault, error) {
 	secrets, backups := splitBackupPaths(paths)
 	result := statusVault{SecretsStored: len(secrets), BackupsStored: len(backups)}
 	if len(paths) == 0 {
-		return result, nil // an empty vault has nothing worth exporting — no nudge
+		return result, nil // an empty vault has nothing worth exporting, no nudge
 	}
 	exportedAt, recorded, err := vault.LastExport(v.Root)
 	if err != nil {
@@ -213,7 +213,7 @@ func agentBuildMismatch(agentBuild string) string {
 	if agentBuild == "" || agentBuild == "unknown" || cliBuild == "unknown" || agentBuild == cliBuild {
 		return ""
 	}
-	return fmt.Sprintf("Heads up: the running agent is a different build than this CLI (agent %s, CLI %s) — run `jit agent restart` to move it to the current binary now (it also restarts itself once its session is locked and idle).", agentBuild, cliBuild)
+	return fmt.Sprintf("Heads up: the running agent is a different build than this CLI (agent %s, CLI %s), run `jit agent restart` to move it to the current binary now (it also restarts itself once its session is locked and idle).", agentBuild, cliBuild)
 }
 
 // gatherAgentStatus reports the same running/unlocked state `jit agent
@@ -321,7 +321,7 @@ func printStatusText(w io.Writer, r statusResult) {
 		}
 		switch {
 		case !r.Vault.ExportRecorded:
-			_, _ = color.New(color.FgYellow).Fprintln(w, "Backup: no vault export on record — the vault only decrypts on this Mac. Run `jit vault export <file>` so losing it isn't losing every secret.")
+			_, _ = color.New(color.FgYellow).Fprintln(w, "Backup: no vault export on record, the vault only decrypts on this Mac. Run `jit vault export <file>` so losing it isn't losing every secret.")
 		case r.Vault.ExportStale:
 			_, _ = color.New(color.FgYellow).Fprintf(w, "Backup: secrets have changed since the last vault export (%s). Run `jit vault export <file>` to refresh it.\n", time.Unix(r.Vault.ExportUnixTime, 0).Format("2006-01-02"))
 		default:
@@ -333,7 +333,7 @@ func printStatusText(w io.Writer, r statusResult) {
 	case !r.Agent.Running && r.Agent.Installed:
 		// launchd was supposed to keep this one alive — "run install" is
 		// the wrong advice and hides that something actually failed.
-		fmt.Fprintln(w, "Agent: installed but not running — it may have crashed or be mid-restart. Try `jit agent restart`; `jit agent log` shows its recent output.")
+		fmt.Fprintln(w, "Agent: installed but not running, it may have crashed or be mid-restart. Try `jit agent restart`; `jit agent log` shows its recent output.")
 	case !r.Agent.Running:
 		fmt.Fprintln(w, "Agent: not running. Run `jit agent install` to start it.")
 	case r.Agent.Unlocked:
@@ -351,7 +351,7 @@ func printStatusText(w io.Writer, r statusResult) {
 	case r.Profiles.Problems == 0:
 		fmt.Fprintf(w, "Profiles: %d profile(s), %d secret reference(s) all resolve cleanly.\n", r.Profiles.ProfilesFound, r.Profiles.SecretReferences)
 	default:
-		_, _ = color.New(color.FgRed).Fprintf(w, "Profiles: %d profile(s), %d problem(s) found — run `jit doctor` for details.\n", r.Profiles.ProfilesFound, r.Profiles.Problems)
+		_, _ = color.New(color.FgRed).Fprintf(w, "Profiles: %d profile(s), %d problem(s) found, run `jit doctor` for details.\n", r.Profiles.ProfilesFound, r.Profiles.Problems)
 	}
 
 	switch {
@@ -365,12 +365,12 @@ func printStatusText(w io.Writer, r statusResult) {
 			}
 		}
 		if revealed > 0 {
-			fmt.Fprintf(w, "Mounts: %d registered, agent unlocked — %d currently revealed (real content), the rest decoy. Run `jit agent status` to see which.\n", r.Mounts.Registered, revealed)
+			fmt.Fprintf(w, "Mounts: %d registered, agent unlocked, %d currently revealed (real content), the rest decoy. Run `jit agent status` to see which.\n", r.Mounts.Registered, revealed)
 		} else {
-			fmt.Fprintf(w, "Mounts: %d registered, agent unlocked — real content available within each mount's reveal window, decoy otherwise.\n", r.Mounts.Registered)
+			fmt.Fprintf(w, "Mounts: %d registered, agent unlocked, real content available within each mount's reveal window, decoy otherwise.\n", r.Mounts.Registered)
 		}
 	case r.Mounts.BeingServed:
-		fmt.Fprintf(w, "Mounts: %d registered, serving decoy content only (agent locked — resumes real content automatically on next unlock).\n", r.Mounts.Registered)
+		fmt.Fprintf(w, "Mounts: %d registered, serving decoy content only (agent locked, resumes real content automatically on next unlock).\n", r.Mounts.Registered)
 	default:
 		fmt.Fprintf(w, "Mounts: %d registered, not being served (agent not running).\n", r.Mounts.Registered)
 	}
@@ -387,7 +387,7 @@ func printStatusText(w io.Writer, r statusResult) {
 		}
 	}
 	if decoyReads > 0 {
-		_, _ = color.New(color.FgYellow).Fprintf(w, "  Heads up: %d mount(s) most recently served decoy values to a reader — run `jit agent status` to see which reader, when.\n", decoyReads)
+		_, _ = color.New(color.FgYellow).Fprintf(w, "  Heads up: %d mount(s) most recently served decoy values to a reader, run `jit agent status` to see which reader, when.\n", decoyReads)
 	}
 }
 

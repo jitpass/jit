@@ -60,10 +60,10 @@ var agentCmd = &cobra.Command{
 		"created.\n\n" +
 		"`jit agent install` sets it up to start automatically every time you log\n" +
 		"in (and restart itself if it crashes). The helper process itself needs no\n" +
-		"Touch ID just to keep running — only your unlocked session inside it locks\n" +
+		"Touch ID just to keep running, only your unlocked session inside it locks\n" +
 		"after --ttl of inactivity (default 15m), prompting again on next use.\n\n" +
 		"A live-mounted file shows fake-looking values until revealed, and real values\n" +
-		"only during a short window — opened automatically right after unlock/\n" +
+		"only during a short window, opened automatically right after unlock/\n" +
 		"refresh, or explicitly via `jit agent reveal`.",
 }
 
@@ -177,7 +177,7 @@ var agentRunCmd = &cobra.Command{
 		// Best-effort: a watch failure is logged and the TTL still covers
 		// everything, just later.
 		if err := screenlock.Watch(func(cause string) { server.LockWithCause(cause) }); err != nil {
-			fmt.Fprintf(stderr, "jit agent: screen-lock/sleep watch unavailable (%v) — sessions will lock on the idle TTL alone\n", err)
+			fmt.Fprintf(stderr, "jit agent: screen-lock/sleep watch unavailable (%v), sessions will lock on the idle TTL alone\n", err)
 		}
 
 		// Self-retire when the jit binary on disk is replaced (see
@@ -190,7 +190,7 @@ var agentRunCmd = &cobra.Command{
 		if os.Getppid() == 1 {
 			if exePath, exeErr := os.Executable(); exeErr == nil {
 				go watchOwnBinary(runCtx, exePath, agentBinaryCheckInterval, server.Quiescent, func() {
-					fmt.Fprintf(stdout, "jit agent: the jit binary on disk changed (this process is build %s) — exiting while the session is locked so launchd restarts the agent on the current build\n", agent.BuildID())
+					fmt.Fprintf(stdout, "jit agent: the jit binary on disk changed (this process is build %s), exiting while the session is locked so launchd restarts the agent on the current build\n", agent.BuildID())
 					endRun()
 				})
 			}
@@ -231,11 +231,11 @@ var agentInstallCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Start jit agent automatically at every login (survives reboots)",
 	Long: "Sets up jit agent to start automatically every time you log in, and to\n" +
-		"restart itself if it crashes — until you run `jit agent uninstall`.\n" +
+		"restart itself if it crashes, until you run `jit agent uninstall`.\n" +
 		"Under the hood this writes and loads a launchd LaunchAgent plist that\n" +
 		"runs `jit agent run`.\n\n" +
 		"--ttl controls how long a session stays unlocked after your last Touch ID\n" +
-		"prompt (default 15m, same meaning as `jit agent run --ttl`) — baked into\n" +
+		"prompt (default 15m, same meaning as `jit agent run --ttl`), baked into\n" +
 		"the installed service so it applies from every future login, not just\n" +
 		"this one.\n\n" +
 		"Safe to run again to change --ttl later: an already-installed instance is\n" +
@@ -318,10 +318,10 @@ var agentInstallCmd = &cobra.Command{
 		// letting status contradict this command a moment later.
 		running := waitForAgentSocket(root, 5*time.Second)
 		fmt.Fprintf(cmd.OutOrStdout(),
-			"Installed — jit agent now starts automatically every time you log in (survives reboots) and stays unlocked for up to %s after your last Touch ID prompt.\nRun `jit agent uninstall` to remove it. (%s)\n",
+			"Installed, jit agent now starts automatically every time you log in (survives reboots) and stays unlocked for up to %s after your last Touch ID prompt.\nRun `jit agent uninstall` to remove it. (%s)\n",
 			agentInstallTTL, plistPath)
 		if !running {
-			fmt.Fprintln(cmd.OutOrStdout(), "The agent is still starting up in the background — give `jit agent status` a few seconds.")
+			fmt.Fprintln(cmd.OutOrStdout(), "The agent is still starting up in the background, give `jit agent status` a few seconds.")
 		}
 		return nil
 	},
@@ -330,11 +330,11 @@ var agentInstallCmd = &cobra.Command{
 var agentUninstallCmd = &cobra.Command{
 	Use:   "uninstall",
 	Short: "Stop jit agent and remove it from login startup",
-	Long: "Stops the background helper and removes it from login startup — it will\n" +
+	Long: "Stops the background helper and removes it from login startup, it will\n" +
 		"no longer start automatically. Any files it was live-mounting stop being\n" +
 		"served (they don't disappear; they just go quiet until you run\n" +
 		"`jit agent install` again). Doesn't touch the vault or any secrets\n" +
-		"already stored — only the background helper itself.",
+		"already stored, only the background helper itself.",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		plistPath, err := agentPlistPath()
@@ -359,14 +359,14 @@ var agentUninstallCmd = &cobra.Command{
 var agentRestartCmd = &cobra.Command{
 	Use:   "restart",
 	Short: "Restart the agent process (picks up a newly built or updated jit binary)",
-	Long: "Kills and restarts the launchd-managed agent process — the immediate fix\n" +
+	Long: "Kills and restarts the launchd-managed agent process, the immediate fix\n" +
 		"when `jit agent status` warns that the running agent predates the jit\n" +
 		"binary on disk. (The agent also retires itself onto the new binary\n" +
 		"automatically, but only once its session is locked and no prompt is\n" +
 		"pending; restart is for wanting it now.)\n\n" +
 		"The in-memory session is lost, so the next vault use prompts Touch ID\n" +
 		"again, and live-mounted files serve placeholder values until then.\n" +
-		"Session history survives — it's durable. Requires `jit agent install`.",
+		"Session history survives, it's durable. Requires `jit agent install`.",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		plistPath, err := agentPlistPath()
@@ -374,7 +374,7 @@ var agentRestartCmd = &cobra.Command{
 			return fmt.Errorf("jit agent restart: %w", err)
 		}
 		if _, err := os.Stat(plistPath); err != nil {
-			return errors.New("jit agent restart: the agent isn't installed — run `jit agent install` first")
+			return errors.New("jit agent restart: the agent isn't installed, run `jit agent install` first")
 		}
 		// kickstart -k kills a running instance and starts a fresh one in
 		// a single verb; it also starts one that wasn't running at all.
@@ -390,10 +390,10 @@ var agentRestartCmd = &cobra.Command{
 		// process is actually answering, or status contradicts us moments
 		// later.
 		if !waitForAgentSocket(root, 5*time.Second) {
-			fmt.Fprintln(cmd.OutOrStdout(), "Restart requested — the agent is still starting up in the background; give `jit agent status` a few seconds.")
+			fmt.Fprintln(cmd.OutOrStdout(), "Restart requested, the agent is still starting up in the background; give `jit agent status` a few seconds.")
 			return nil
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "Restarted — the agent is now running the current binary. The next vault use will prompt Touch ID.")
+		fmt.Fprintln(cmd.OutOrStdout(), "Restarted, the agent is now running the current binary. The next vault use will prompt Touch ID.")
 		return nil
 	},
 }
@@ -412,7 +412,7 @@ var agentUnlockCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit agent unlock: %w", notRunningHint(err))
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Unlocked — locks automatically after %s of inactivity (or `jit agent lock` sooner).\n", remaining.Round(time.Second))
+		fmt.Fprintf(cmd.OutOrStdout(), "Unlocked, locks automatically after %s of inactivity (or `jit agent lock` sooner).\n", remaining.Round(time.Second))
 		return nil
 	},
 }
@@ -548,7 +548,7 @@ var agentStatusCmd = &cobra.Command{
 				// situation from one that was never set up — launchd was
 				// supposed to keep this one alive, so "run install" is the
 				// wrong advice and hides that something actually failed.
-				fmt.Fprintln(cmd.OutOrStdout(), "jit agent is installed but not running — it may have crashed or be mid-restart.")
+				fmt.Fprintln(cmd.OutOrStdout(), "jit agent is installed but not running, it may have crashed or be mid-restart.")
 				fmt.Fprintln(cmd.OutOrStdout(), "Try `jit agent restart`; `jit agent log` shows its recent output.")
 				return nil
 			}
@@ -592,15 +592,15 @@ var agentHistoryCmd = &cobra.Command{
 	Long: "Prints the agent's session history, most recent first: every Touch ID prompt\n" +
 		"that succeeded (with the command that triggered it and what launched that\n" +
 		"command), every prompt that was DECLINED (same provenance, plus why it\n" +
-		"failed), every lock (with its cause — an idle timeout, the screen locking,\n" +
+		"failed), every lock (with its cause, an idle timeout, the screen locking,\n" +
 		"or an explicit `jit agent lock`), every use of the already-unlocked session\n" +
 		"(what flowed through it, collapsed per caller, with the secret names the\n" +
 		"caller reported), and every agent start.\n\n" +
-		"This is the answer to \"why does it keep asking me?\" — a question the agent\n" +
+		"This is the answer to \"why does it keep asking me?\", a question the agent\n" +
 		"previously had no way to answer, since only locks were ever recorded and the\n" +
 		"unlocks that did the prompting left no trace at all.\n\n" +
 		"Survives restarts: events are also written to agent-history.jsonl alongside\n" +
-		"the vault, and each new agent process picks the newest back up — so asking\n" +
+		"the vault, and each new agent process picks the newest back up, so asking\n" +
 		"about yesterday's prompts works even though logging in this morning restarted\n" +
 		"the agent. Agent starts appear in the list, marking where one process's\n" +
 		"events end and the previous one's begin.",
@@ -647,7 +647,7 @@ const agentLogPollInterval = 500 * time.Millisecond
 var agentLogCmd = &cobra.Command{
 	Use:   "log",
 	Short: "Show the agent's own log (session events, mount reads, serve errors)",
-	Long: "Prints the tail of the agent's log file — the durable, timestamped record\n" +
+	Long: "Prints the tail of the agent's log file, the durable, timestamped record\n" +
 		"of session events, mount reads (with who read them), and serve errors that\n" +
 		"outlives the in-memory snapshot `jit agent status` reports.\n\n" +
 		"The file lives alongside the vault as agent.log (the previous generation\n" +
@@ -672,7 +672,7 @@ var agentLogCmd = &cobra.Command{
 			// Not an error: an empty history is a normal state on a machine
 			// where the agent hasn't run, and the useful output is what
 			// would make one exist.
-			fmt.Fprintf(out, "No agent log yet at %s — it's written once the agent runs (`jit agent install` sets that up).\n", displayLogPath(logPath))
+			fmt.Fprintf(out, "No agent log yet at %s, it's written once the agent runs (`jit agent install` sets that up).\n", displayLogPath(logPath))
 			return nil
 		}
 		_, _ = out.Write(tailLines(data, agentLogLines))
@@ -756,15 +756,15 @@ func printSessionHistory(w io.Writer, events []agent.SessionEvent) {
 			if cause == "" {
 				cause = "unknown cause"
 			}
-			fmt.Fprintf(w, "  • %s — %s\n", sessionWhen("locked", e.UnixTime), cause)
+			fmt.Fprintf(w, "  • %s, %s\n", sessionWhen("locked", e.UnixTime), cause)
 		case agent.KindStart:
 			// The process boundary: everything below this line happened in
 			// an earlier agent process (restored from the durable history).
 			line := sessionWhen("started", e.UnixTime)
 			if e.Cause != "" {
-				line += fmt.Sprintf(" — agent process started (%s)", e.Cause)
+				line += fmt.Sprintf(", agent process started (%s)", e.Cause)
 			} else {
-				line += " — agent process started"
+				line += ", agent process started"
 			}
 			fmt.Fprintf(w, "  • %s\n", line)
 		case agent.KindDenied:
@@ -773,7 +773,7 @@ func printSessionHistory(w io.Writer, events []agent.SessionEvent) {
 			// and the one event that used to leave no trace at all.
 			line := sessionWhen("denied", e.UnixTime)
 			if e.LaunchedBy != "" {
-				line += fmt.Sprintf(" — launched by %s", e.LaunchedBy)
+				line += fmt.Sprintf(", launched by %s", e.LaunchedBy)
 			}
 			_, _ = color.New(color.FgRed).Fprintf(w, "  • %s\n", line)
 			if e.By != "" {
@@ -783,7 +783,7 @@ func printSessionHistory(w io.Writer, events []agent.SessionEvent) {
 				fmt.Fprintf(w, "      %s\n", e.Cause)
 			}
 		case agent.KindUse:
-			line := fmt.Sprintf("  • %s — %s", sessionWhen("used", e.UnixTime), agent.DescribeUse(e.Op))
+			line := fmt.Sprintf("  • %s, %s", sessionWhen("used", e.UnixTime), agent.DescribeUse(e.Op))
 			if e.Count > 1 {
 				line += fmt.Sprintf(" ×%d", e.Count)
 			}
@@ -798,7 +798,7 @@ func printSessionHistory(w io.Writer, events []agent.SessionEvent) {
 		default:
 			line := fmt.Sprintf("  • %s", sessionWhen("unlocked", e.UnixTime))
 			if e.LaunchedBy != "" {
-				line += fmt.Sprintf(" — launched by %s", e.LaunchedBy)
+				line += fmt.Sprintf(", launched by %s", e.LaunchedBy)
 			}
 			fmt.Fprintln(w, line)
 			if e.By != "" {
@@ -840,7 +840,7 @@ func logSessionEvent(w io.Writer, e agent.SessionEvent) {
 		if cause == "" {
 			cause = "unknown cause"
 		}
-		fmt.Fprintf(w, "jit agent: session locked — %s\n", cause)
+		fmt.Fprintf(w, "jit agent: session locked, %s\n", cause)
 		return
 	}
 
@@ -871,10 +871,10 @@ func logSessionEvent(w io.Writer, e agent.SessionEvent) {
 		line += fmt.Sprintf(", launched by %s", e.LaunchedBy)
 	}
 	if len(e.Labels) > 0 {
-		line += fmt.Sprintf(" — secrets (caller-reported): %s", strings.Join(e.Labels, ", "))
+		line += fmt.Sprintf(", secrets (caller-reported): %s", strings.Join(e.Labels, ", "))
 	}
 	if e.Kind == agent.KindDenied && e.Cause != "" {
-		line += fmt.Sprintf(" — %s", e.Cause)
+		line += fmt.Sprintf(", %s", e.Cause)
 	}
 	fmt.Fprintln(w, line)
 }
@@ -916,7 +916,7 @@ func printPendingUnlock(w io.Writer, p *agent.SessionEvent) {
 	}
 	line := fmt.Sprintf("A Touch ID/passcode prompt is up right now (appeared %s ago)", humanAgo(time.Since(time.Unix(p.UnixTime, 0))))
 	if p.LaunchedBy != "" {
-		line += fmt.Sprintf(" — triggered by a command launched by %s", p.LaunchedBy)
+		line += fmt.Sprintf(", triggered by a command launched by %s", p.LaunchedBy)
 	}
 	_, _ = color.New(color.FgYellow).Fprintf(w, "%s\n", line)
 	if p.By != "" {
@@ -967,7 +967,7 @@ func printSessionProvenance(w io.Writer, st agent.Status) {
 		if cause == "" {
 			cause = "unknown cause"
 		}
-		fmt.Fprintf(w, "  • %s — %s\n", sessionWhen("locked", l.UnixTime), cause)
+		fmt.Fprintf(w, "  • %s, %s\n", sessionWhen("locked", l.UnixTime), cause)
 	}
 
 	u := st.LastUnlock
@@ -975,7 +975,7 @@ func printSessionProvenance(w io.Writer, st agent.Status) {
 	if u.LaunchedBy != "" {
 		// The half that answers "why now" — and the half nobody could get at
 		// before, since a process's parent is gone from every log jit keeps.
-		line += fmt.Sprintf(" — launched by %s", u.LaunchedBy)
+		line += fmt.Sprintf(", launched by %s", u.LaunchedBy)
 	}
 	fmt.Fprintln(w, line)
 
@@ -1026,26 +1026,26 @@ func printMountStatuses(w io.Writer, mounts []agent.MountRevealStatus) {
 		path := displayPath(home, m.Path)
 		switch {
 		case m.Revealed:
-			fmt.Fprintf(w, "  • %s — revealed, %s left\n", path, time.Duration(m.RevealedForSeconds)*time.Second)
+			fmt.Fprintf(w, "  • %s, revealed, %s left\n", path, time.Duration(m.RevealedForSeconds)*time.Second)
 		case m.RevealEndedUnix != 0:
 			// Reveal expiry is lazy — nothing fires when a window ends — so
 			// this line is the only place "the timer ended" is visible at
 			// all; without it the revealed line just silently disappeared,
 			// which read as "it never switched to hidden" (GAPS.md #48).
-			fmt.Fprintf(w, "  • %s — not revealed (window ended %s ago)\n", path, humanAgo(time.Since(time.Unix(m.RevealEndedUnix, 0))))
+			fmt.Fprintf(w, "  • %s, not revealed (window ended %s ago)\n", path, humanAgo(time.Since(time.Unix(m.RevealEndedUnix, 0))))
 		default:
-			fmt.Fprintf(w, "  • %s — not revealed\n", path)
+			fmt.Fprintf(w, "  • %s, not revealed\n", path)
 		}
 		if ls := m.LastServe; ls != nil {
 			reader := describeReader(ls)
 			ago := humanAgo(time.Since(time.Unix(ls.UnixTime, 0)))
 			if ls.Decoy {
-				_, _ = color.New(color.FgYellow).Fprintf(w, "      read %s ago by %s: decoy values — if that was your app, reveal and retry: jit agent reveal %s\n", ago, reader, path)
+				_, _ = color.New(color.FgYellow).Fprintf(w, "      read %s ago by %s: decoy values, if that was your app, reveal and retry: jit agent reveal %s\n", ago, reader, path)
 			} else {
 				fmt.Fprintf(w, "      read %s ago by %s: real values\n", ago, reader)
 			}
 			if m.ReadsLastMinute >= readStormThreshold {
-				_, _ = color.New(color.FgYellow).Fprintf(w, "      read %d times in the last minute — usually an editor or file watcher re-reading it in a loop; excluding this file from it stops the churn\n", m.ReadsLastMinute)
+				_, _ = color.New(color.FgYellow).Fprintf(w, "      read %d times in the last minute, usually an editor or file watcher re-reading it in a loop; excluding this file from it stops the churn\n", m.ReadsLastMinute)
 			}
 		}
 	}
@@ -1144,9 +1144,9 @@ func notRunningHint(err error) error {
 		return err
 	}
 	if agentInstalled() {
-		return errors.New("the agent is installed but isn't answering — it may have crashed or be mid-restart; try `jit agent restart`, and `jit agent log` for its recent output")
+		return errors.New("the agent is installed but isn't answering, it may have crashed or be mid-restart; try `jit agent restart`, and `jit agent log` for its recent output")
 	}
-	return errors.New("no agent is running — run `jit agent install` first")
+	return errors.New("no agent is running, run `jit agent install` first")
 }
 
 // xmlEscape escapes the five XML metacharacters for splicing a string
@@ -1306,7 +1306,7 @@ func init() {
 	agentInstallCmd.Flags().DurationVar(&agentInstallTTL, "ttl", 15*time.Minute, "how long an unlocked session stays cached before auto-locking, baked into the installed plist")
 	agentInstallCmd.Flags().BoolVarP(&agentInstallYes, "yes", "y", false, "skip the confirmation prompt and install immediately")
 	agentRevealCmd.Flags().DurationVar(&revealForDuration, "for", 5*time.Minute, "how long to serve real content (clamped to 10m)")
-	agentRevealCmd.Flags().BoolVarP(&revealQuiet, "quiet", "q", false, "suppress the success message — for embedding in a pre-run hook")
+	agentRevealCmd.Flags().BoolVarP(&revealQuiet, "quiet", "q", false, "suppress the success message, for embedding in a pre-run hook")
 	agentStatusCmd.Flags().StringVar(&agentStatusFormat, "format", "text", `output format: "text" (default) or "json"`)
 	agentHistoryCmd.Flags().StringVar(&agentHistoryFormat, "format", "text", `output format: "text" (default) or "json"`)
 	agentLogCmd.Flags().IntVarP(&agentLogLines, "lines", "n", 50, "how many trailing lines to print")

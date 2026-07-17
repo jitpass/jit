@@ -159,11 +159,11 @@ func (s *migrateSummary) print(w io.Writer) {
 
 	if s.backupOnlyFiles > 0 {
 		sep()
-		fmt.Fprintf(w, "%d backup-suffixed file(s) (.bak/.old/.orig/.backup) had their secrets moved to the vault but were never mounted — nothing reads a backup file live, so each was replaced with a safe pointer file instead of a FIFO.\n", s.backupOnlyFiles)
+		fmt.Fprintf(w, "%d backup-suffixed file(s) (.bak/.old/.orig/.backup) had their secrets moved to the vault but were never mounted, nothing reads a backup file live, so each was replaced with a safe pointer file instead of a FIFO.\n", s.backupOnlyFiles)
 	}
 	if len(s.gitHistoryFiles) > 0 {
 		sep()
-		_, _ = color.New(color.FgYellow).Fprintf(w, "⚠ %d file(s) migrated already have git history — jit migrate does not scrub it:\n", len(s.gitHistoryFiles))
+		_, _ = color.New(color.FgYellow).Fprintf(w, "⚠ %d file(s) migrated already have git history, jit migrate does not scrub it:\n", len(s.gitHistoryFiles))
 		for _, f := range s.gitHistoryFiles {
 			fmt.Fprintf(w, "  • %s\n", f)
 		}
@@ -174,7 +174,7 @@ func (s *migrateSummary) print(w io.Writer) {
 	}
 	if s.pointerFiles > 0 {
 		sep()
-		fmt.Fprintf(w, "%d git-safe .pointers file(s) written alongside the mount(s) above — list vault paths only, safe to open or commit.\n", s.pointerFiles)
+		fmt.Fprintf(w, "%d git-safe .pointers file(s) written alongside the mount(s) above, list vault paths only, safe to open or commit.\n", s.pointerFiles)
 	}
 	if len(s.hooksWired) > 0 {
 		sep()
@@ -201,7 +201,7 @@ func (s *migrateSummary) print(w io.Writer) {
 	}
 	if s.exportNudge {
 		sep()
-		_, _ = color.New(color.FgYellow).Fprintln(w, "⚠ These secrets now live only in this Mac's vault, and no passphrase-encrypted backup of it has ever been made — run `jit vault export <file>` once (`jit status` will say when it needs refreshing).")
+		_, _ = color.New(color.FgYellow).Fprintln(w, "⚠ These secrets now live only in this Mac's vault, and no passphrase-encrypted backup of it has ever been made, run `jit vault export <file>` once (`jit status` will say when it needs refreshing).")
 	}
 }
 
@@ -233,7 +233,7 @@ func reportAgentStatus(w io.Writer, root string, producedMount bool) {
 	case !agentClient.Reachable() && producedMount:
 		bold("Run `jit agent install` to start serving the new mount(s), and so kubectl/AWS CLI/MCP hosts/new shells don't each need their own Touch ID prompt.")
 	case !agentClient.Reachable():
-		bold("Run `jit agent install` so kubectl/AWS CLI/MCP hosts/new shells don't each need their own Touch ID prompt — some of those run headless and would otherwise hang waiting for one.")
+		bold("Run `jit agent install` so kubectl/AWS CLI/MCP hosts/new shells don't each need their own Touch ID prompt, some of those run headless and would otherwise hang waiting for one.")
 	case producedMount:
 		// Its own OnUnlock (if this migrate run's vault writes were the
 		// very unlock that just happened) fires BEFORE this point, so a

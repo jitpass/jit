@@ -51,7 +51,7 @@ func TestDecoyGateEndToEnd(t *testing.T) {
 		t.Fatalf("CreateFIFO: %v", err)
 	}
 
-	socketPath := filepath.Join(t.TempDir(), "a.sock") // short path — see agent's shortSocketPath convention (sockaddr_un ~104 byte limit)
+	socketPath := filepath.Join(t.TempDir(), "a.sock") // short path, see agent's shortSocketPath convention (sockaddr_un ~104 byte limit)
 	mek := bytes.Repeat([]byte{0x24}, 32)
 	server := agent.NewServer(socketPath, func() agent.MEKFetcher { return &fakeMEKFetcher{key: mek} }, time.Minute)
 
@@ -208,7 +208,7 @@ func TestMountNeverHangsRegardlessOfLockState(t *testing.T) {
 	waitForMountServing(t, mounts, mountPath)
 	got := readMountOnceWithTimeout(t, mountPath, 2*time.Second)
 	if !bytes.Contains(got, []byte("jit-hidden-API_KEY")) {
-		t.Fatalf("before any unlock, mount = %q, want decoy content (and, critically, a response at all — the read must never hang)", got)
+		t.Fatalf("before any unlock, mount = %q, want decoy content (and, critically, a response at all, the read must never hang)", got)
 	}
 
 	// (2) Write the real secret, THEN trigger the same start() OnUnlock
@@ -251,7 +251,7 @@ func TestMountNeverHangsRegardlessOfLockState(t *testing.T) {
 	_, stillServed := mounts.served[mountPath]
 	mounts.mu.Unlock()
 	if !stillServed {
-		t.Error("expected the mount to still be in m.served after stop() — locking must not tear down serving")
+		t.Error("expected the mount to still be in m.served after stop(), locking must not tear down serving")
 	}
 }
 
@@ -283,7 +283,7 @@ func readMountOnceWithTimeout(t *testing.T, path string, timeout time.Duration) 
 		}
 		return r.data
 	case <-time.After(timeout):
-		t.Fatalf("reading %s timed out after %s — the mount has no writer and is hanging", path, timeout)
+		t.Fatalf("reading %s timed out after %s, the mount has no writer and is hanging", path, timeout)
 		return nil
 	}
 }

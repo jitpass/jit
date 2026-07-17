@@ -1,10 +1,10 @@
 ## jit migrate home
 
-Convert findings anywhere under $HOME — the whole machine, not just this project
+Convert findings anywhere under $HOME, the whole machine, not just this project
 
 ### Synopsis
 
-Converts findings anywhere under $HOME — the whole machine, not just this
+Converts findings anywhere under $HOME, the whole machine, not just this
 project. Covers everything `jit migrate local` does (see its --help for the
 per-category detail), discovered across every project under $HOME, plus the
 machine-wide files that live at fixed home paths:
@@ -14,7 +14,7 @@ machine-wide files that live at fixed home paths:
                    `eval "$(jit export --profile ...)"` instead.
   AWS              ~/.aws/credentials profiles move into the vault; the AWS
                    CLI/SDK fetches them live via a credential_process line
-                   in ~/.aws/config — no keys on disk at all.
+                   in ~/.aws/config, no keys on disk at all.
   kubeconfig       A user's bearer token or client-certificate pair moves
                    into the vault; kubectl fetches it via an exec block.
   Terraform Cloud  ~/.terraform.d/credentials.tfrc.json tokens move into the
@@ -25,7 +25,7 @@ machine-wide files that live at fixed home paths:
   GCP              ~/.config/gcloud/application_default_credentials.json's
                    refresh token (or a service account key's private key)
                    moves into the vault; the file keeps working as a live
-                   mount — Google SDKs read the same path, non-secret fields
+                   mount, Google SDKs read the same path, non-secret fields
                    preserved verbatim. (GCP has no AWS-style
                    credential_process hook for these credential types, so
                    the mount is what keeps SDKs working with no key on disk.)
