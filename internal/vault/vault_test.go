@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -477,4 +478,94 @@ func rewriteEnvelopeTimestamps(v *Vault, path string, value []byte, createdUnix,
 		return err
 	}
 	return os.WriteFile(filepath.Join(v.Root, "vault", path+".enc"), data, 0o600)
+}
+
+// failingWrapKW fails WrapKey the way Vault.Set sees a canceled Touch
+// ID/passcode prompt, while unwrap still works (reads keep succeeding).
+type failingWrapKW struct{ inner KeyWrapper }
+
+func (f *failingWrapKW) WrapKey([]byte) ([]byte, error) {
+	return nil, errors.New("user canceled authentication")
+}
+func (f *failingWrapKW) UnwrapKey(w []byte) ([]byte, error) { return f.inner.UnwrapKey(w) }
+
+// TestFailedSetLeavesHistoryUntouched pins a confirmed bug: Set archived
+// the outgoing envelope BEFORE wrapKey (where a prompt can be canceled),
+// so a failed Set still mutated history — it added a duplicate of the
+// live value and, at HistoryKeep capacity, pruned the oldest REAL
+// version to make room. A failed Set must change nothing.
+func TestFailedSetLeavesHistoryUntouched(t *testing.T) {
+	v := newTestVault(t)
+	for _, val := range []string{"v0", "v1", "v2", "v3", "v4", "v5"} {
+		if err := v.Set("p/key", []byte(val)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := v.HistoryVersions("p/key")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	good := v.KeyWrapper
+	v.KeyWrapper = &failingWrapKW{inner: good}
+	if err := v.Set("p/key", []byte("never-stored")); err == nil {
+		t.Fatal("expected the canceled-auth Set to fail")
+	}
+	v.KeyWrapper = good
+
+	after, err := v.HistoryVersions("p/key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) || after[len(after)-1].ArchiveStamp != before[len(before)-1].ArchiveStamp {
+		t.Errorf("failed Set mutated history: before=%v after=%v", before, after)
+	}
+	if got, _ := v.Get("p/key"); string(got) != "v5" {
+		t.Errorf("live value after failed Set = %q, want untouched %q", got, "v5")
+	}
+}
+
+// TestDotSegmentPathRejected: "." segments are collapsed by filepath.Join,
+// so "a/./b" used to store its file at a/b.enc while sealing the AAD to
+// "a/./b" — List then showed a/b and Get(a/b) failed with the
+// corrupted/tampered message on a perfectly healthy vault.
+func TestDotSegmentPathRejected(t *testing.T) {
+	v := newTestVault(t)
+	for _, p := range []string{"a/./b", "./a", "a/."} {
+		if err := v.Set(p, []byte("x")); err == nil {
+			t.Errorf("Set(%q) succeeded, want a rejection", p)
+		}
+	}
+}
+
+// TestCaseVariantPathRefusedClearly: on the default (case-insensitive)
+// macOS filesystem, a case-variant path opened the stored file and failed
+// its AAD check as if tampered with; on a case-sensitive one it reported
+// not-found beside a listing showing a near-identical name. Both now get
+// the same honest refusal naming the stored spelling — and the exact
+// spelling keeps working.
+func TestCaseVariantPathRefusedClearly(t *testing.T) {
+	v := newTestVault(t)
+	if err := v.Set("stripe/Dev-Key", []byte("value")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := v.Get("stripe/dev-key")
+	if err == nil {
+		t.Fatal("Get with a case-variant path succeeded, want a clear refusal")
+	}
+	if !strings.Contains(err.Error(), "letter case") || !strings.Contains(err.Error(), "stripe/Dev-Key") {
+		t.Errorf("error should name the stored spelling, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "tampered") {
+		t.Errorf("a case variant must never read as tampering, got: %v", err)
+	}
+
+	if err := v.Set("Stripe/other", []byte("x")); err == nil {
+		t.Error("Set with a case-variant directory segment succeeded, want a refusal")
+	}
+
+	if got, err := v.Get("stripe/Dev-Key"); err != nil || string(got) != "value" {
+		t.Errorf("exact spelling must keep working, got %q, %v", got, err)
+	}
 }
