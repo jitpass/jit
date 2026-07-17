@@ -102,6 +102,16 @@ func newRootCmd() *cobra.Command {
 		// set their own SilenceUsage redundantly; that's now belt-and-braces,
 		// not load-bearing.
 		SilenceUsage: true,
+		// Bare `jit` (no subcommand) runs the first-run flow instead of
+		// dumping help: on a fresh machine it audits and offers the guided
+		// setup; an already-configured machine, a non-interactive shell, or
+		// an unknown command all fall through to cobra's help/errors exactly
+		// as before. NoArgs is what turns `jit bogus` into cobra's "unknown
+		// command" error instead of routing it into RunE with args.
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runFirstRun(cmd)
+		},
 	}
 	cmd.AddGroup(
 		&cobra.Group{ID: groupWorkflow, Title: "Find & fix exposed secrets:"},
