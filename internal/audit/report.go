@@ -150,7 +150,7 @@ type renderItem struct {
 // of whatever item preceded it.
 func collapsedHeader(it renderItem) string {
 	if it.rep.KeyName != nil {
-		return fmt.Sprintf("%s — same value in %d files:", *it.rep.KeyName, len(it.locations))
+		return fmt.Sprintf("%s (same value in %d files):", *it.rep.KeyName, len(it.locations))
 	}
 	return fmt.Sprintf("same pattern in %d files:", len(it.locations))
 }
@@ -316,7 +316,7 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 		host = "unknown"
 	}
 
-	fmt.Fprintf(w, "jit audit — risk report for %s@%s\n", who, host)
+	fmt.Fprintf(w, "jit audit: risk report for %s@%s\n", who, host)
 	fmt.Fprintf(w, "scan time: %s          duration: %dms\n\n", summary.ScanTime, summary.ScanDurationMs)
 
 	_, _ = colorOr(riskLevelColor, summary.RiskLevel).Fprintf(w, "  RISK LEVEL: %s\n", strings.ToUpper(summary.RiskLevel))
@@ -347,12 +347,12 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	// findings above — say so, or their disappearance from the report reads
 	// as the scanner having missed them.
 	if summary.JitProtectedCount > 0 {
-		_, _ = color.New(color.FgGreen).Fprintf(w, "  Already protected by jit: %d live mount(s) — served from the encrypted vault, no plaintext on disk. Not scanned.\n", summary.JitProtectedCount)
+		_, _ = color.New(color.FgGreen).Fprintf(w, "  Already protected by jit: %d live mount(s), served from the encrypted vault, no plaintext on disk. Not scanned.\n", summary.JitProtectedCount)
 	}
 	fmt.Fprintln(w)
 
 	if summary.TotalFindings == 0 {
-		fmt.Fprintln(w, "No findings — this machine looks clean.")
+		fmt.Fprintln(w, "No findings. This machine looks clean.")
 		return
 	}
 

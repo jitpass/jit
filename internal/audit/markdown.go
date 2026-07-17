@@ -47,11 +47,11 @@ func WriteMarkdownReport(w io.Writer, findings []Finding, summary ScanSummary) {
 	// Parity with WriteHumanReport's protected line: excluded-but-protected
 	// files are stated, never silently absent.
 	if summary.JitProtectedCount > 0 {
-		fmt.Fprintf(w, "Already protected by jit: %d live mount(s) — served from the encrypted vault, no plaintext on disk. Not scanned.\n\n", summary.JitProtectedCount)
+		fmt.Fprintf(w, "Already protected by jit: %d live mount(s), served from the encrypted vault, no plaintext on disk. Not scanned.\n\n", summary.JitProtectedCount)
 	}
 
 	if summary.TotalFindings == 0 {
-		fmt.Fprintln(w, "No findings — this machine looks clean.")
+		fmt.Fprintln(w, "No findings. This machine looks clean.")
 		return
 	}
 
