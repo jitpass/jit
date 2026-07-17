@@ -20,9 +20,9 @@ import (
 )
 
 // playgroundMarker is the file the jitpass-playground repo ships at its root
-// so `jit` can recognize a sandbox checkout. Detection is cosmetic — it only
+// so `jit` can recognize a sandbox checkout. Detection is cosmetic: it only
 // softens the copy ("these are synthetic") and forces the project-scoped
-// reveal — so a missing marker just falls back to generic project handling,
+// reveal, so a missing marker just falls back to generic project handling,
 // never to anything unsafe.
 const playgroundMarker = ".jitpass-playground"
 
@@ -67,8 +67,8 @@ func firstRun(cmd *cobra.Command, d firstRunDeps) error {
 	// Cwd-aware reveal: scope to the project you're standing in first (safe
 	// and on-message in the playground), and fall back to a machine-wide scan
 	// only when the current directory isn't itself a project with exposed
-	// secrets. The chosen scan result is reused for rendering — never
-	// re-scanned — so the scary machine-wide walk happens at most once.
+	// secrets. The chosen scan result is reused for rendering, never
+	// re-scanned, so the scary machine-wide walk happens at most once.
 	var (
 		findings    []audit.Finding
 		summary     audit.ScanSummary
@@ -102,14 +102,14 @@ func firstRun(cmd *cobra.Command, d firstRunDeps) error {
 	fmt.Fprintln(out)
 	switch {
 	case playground:
-		fmt.Fprintln(out, "You're in the jitpass playground — every secret here is synthetic, so")
+		fmt.Fprintln(out, "You're in the jitpass playground. Every secret here is synthetic, so")
 		fmt.Fprintln(out, "it's safe to run the whole flow. Here's what this project exposes")
 		fmt.Fprintln(out, "(read-only, nothing is changed):")
 	case projectMode:
-		fmt.Fprintln(out, "Welcome to jit. Here's what's exposed in this project — read-only,")
+		fmt.Fprintln(out, "Welcome to jit. Here's what's exposed in this project (read-only),")
 		fmt.Fprintln(out, "nothing is changed:")
 	default:
-		fmt.Fprintln(out, "Welcome to jit. Here's what's exposed on this machine — read-only,")
+		fmt.Fprintln(out, "Welcome to jit. Here's what's exposed on this machine (read-only),")
 		fmt.Fprintln(out, "nothing is changed:")
 	}
 	fmt.Fprintln(out)
@@ -118,10 +118,10 @@ func firstRun(cmd *cobra.Command, d firstRunDeps) error {
 
 	if len(findings) == 0 {
 		if playground {
-			fmt.Fprintln(out, "Nothing exposed here yet — add a secret and run `jit` again, or follow")
+			fmt.Fprintln(out, "Nothing exposed here yet. Add a secret and run `jit` again, or follow")
 			fmt.Fprintln(out, "the tour in the playground README.")
 		} else {
-			fmt.Fprintln(out, "No plaintext secrets found — nice.")
+			fmt.Fprintln(out, "No plaintext secrets found. Nice.")
 			fmt.Fprintln(out, "Want to see the whole flow risk-free? github.com/jitpass/jitpass-playground")
 		}
 		return nil
@@ -132,13 +132,13 @@ func firstRun(cmd *cobra.Command, d firstRunDeps) error {
 	fmt.Fprintln(out, "reversible with `jit migrate undo`.")
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "Set up jit and fix %s now? This runs, in order:\n", scopeWord)
-	fmt.Fprintln(out, "  1. jit vault init      — create the vault (one Touch ID prompt)")
-	fmt.Fprintln(out, "  2. jit agent install   — unlock once per session, not once per command")
-	fmt.Fprintf(out, "  3. %-20s— shows the fix plan and asks again before any change\n", "jit migrate "+migrateArg)
+	fmt.Fprintln(out, "  1. jit vault init      (creates the vault, one Touch ID prompt)")
+	fmt.Fprintln(out, "  2. jit agent install   (unlock once per session, not once per command)")
+	fmt.Fprintf(out, "  3. %-20s(shows the fix plan, asks again before any change)\n", "jit migrate "+migrateArg)
 
 	if !d.confirm("Set up the vault now? [y/N] ") {
 		fmt.Fprintln(out)
-		fmt.Fprintln(out, "No problem — nothing was changed. When you're ready, run these yourself:")
+		fmt.Fprintln(out, "No problem, nothing was changed. When you're ready, run these yourself:")
 		fmt.Fprintln(out, "  jit vault init")
 		fmt.Fprintln(out, "  jit agent install")
 		fmt.Fprintf(out, "  jit migrate %s\n", migrateArg)
@@ -216,7 +216,7 @@ func isPlaygroundDir(dir string) bool {
 }
 
 // execSelf re-runs jit itself with args, inheriting the real terminal, so each
-// guided-setup step behaves exactly as if the user had typed it — its own
+// guided-setup step behaves exactly as if the user had typed it: its own
 // prompts, its own Touch ID challenge, its own exit behavior. Only ever called
 // from the interactive first-run path, so os.Std* is the user's terminal.
 func execSelf(args ...string) error {
