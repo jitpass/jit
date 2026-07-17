@@ -283,7 +283,7 @@ func ApplyGCPADC(v *vault.Vault, home, path string) (GCPADCMigration, error) {
 	}
 
 	templatePath := strings.TrimSuffix(profilePath, ".yaml") + ".adc.json.tmpl"
-	if err := os.WriteFile(templatePath, template, 0o600); err != nil {
+	if err := os.WriteFile(templatePath, template, 0o600); err != nil { // #nosec G703 -- templatePath is internally derived (claimNamespace's hardcoded "gcp-adc" namespace + a fixed suffix), not user-controlled path input
 		return GCPADCMigration{}, fmt.Errorf("writing template %s: %w", templatePath, err)
 	}
 
