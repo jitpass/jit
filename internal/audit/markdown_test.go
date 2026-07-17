@@ -42,8 +42,7 @@ func TestWriteMarkdownReportNeverLeaksRawValue(t *testing.T) {
 		"CRITICAL",
 		"### Shell Configs",
 		"`/Users/alex/.zshrc`",
-		"[critical]** :12 key: `AWS_SECRET_ACCESS_KEY`",
-		"value: `" + preview + "`",
+		"**CRITICAL** :12 `AWS_SECRET_ACCESS_KEY` `" + preview + "`",
 		"key name matches production-indicator pattern",
 	} {
 		if !strings.Contains(out, want) {
