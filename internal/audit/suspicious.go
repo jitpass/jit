@@ -47,7 +47,7 @@ var suspiciousFilenameRules = []suspiciousFilenameRule{
 		match: func(name string) bool {
 			return strings.HasPrefix(strings.ToLower(name), "1password emergency kit")
 		},
-		evidence:   "1Password Emergency Kit — contains the account's master and secret key if genuine",
+		evidence:   "1Password Emergency Kit: contains the account's master and secret key if genuine",
 		severity:   SeverityMedium,
 		confidence: ConfidenceHigh,
 	},

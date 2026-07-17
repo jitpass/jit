@@ -232,7 +232,7 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 		// plaintext regardless of whether it's currently active or
 		// commented out.
 		f.Evidence = fmt.Sprintf(
-			"%d variable(s) in this file (%d active, %d commented out) — either way, the values are stored here in plaintext",
+			"%d variable(s) in this file (%d active, %d commented out); either way, the values are stored here in plaintext",
 			active+commented, active, commented,
 		)
 	}
