@@ -148,7 +148,7 @@ func TestApplyTerraformHostEndToEnd(t *testing.T) {
 		t.Fatalf("stat helper: %v", err)
 	}
 	if info.Mode().Perm()&0o100 == 0 {
-		t.Errorf("helper script mode = %v, want owner-executable — terraform discovers helpers as executables", info.Mode())
+		t.Errorf("helper script mode = %v, want owner-executable, terraform discovers helpers as executables", info.Mode())
 	}
 
 	rcRaw, err := os.ReadFile(TerraformRCPath(home)) // #nosec G304 -- test-controlled path
@@ -162,7 +162,7 @@ func TestApplyTerraformHostEndToEnd(t *testing.T) {
 		t.Errorf("RCBackup = %q, want empty when ~/.terraformrc didn't exist before", result.RCBackup)
 	}
 	if result.CredentialsBackup == "" {
-		t.Error("CredentialsBackup is empty — the pre-rewrite backup must be recorded")
+		t.Error("CredentialsBackup is empty, the pre-rewrite backup must be recorded")
 	}
 }
 
@@ -183,7 +183,7 @@ func TestApplyTerraformHostSecondHostIdempotentWiring(t *testing.T) {
 		t.Fatalf("second ApplyTerraformHost: %v", err)
 	}
 	if result.RCBackup == "" {
-		t.Error("RCBackup empty on the second run — ~/.terraformrc existed by then and must be backed up before any rewrite")
+		t.Error("RCBackup empty on the second run, ~/.terraformrc existed by then and must be backed up before any rewrite")
 	}
 
 	rcRaw, err := os.ReadFile(TerraformRCPath(home)) // #nosec G304 -- test-controlled path

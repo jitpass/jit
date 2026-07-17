@@ -76,7 +76,7 @@ func RestorePointerFile(v *vault.Vault, path string) ([]string, error) {
 		}
 		name, ref, ok := strings.Cut(trimmed, "=")
 		if !ok || !strings.HasPrefix(ref, pointerValuePrefix) {
-			return nil, fmt.Errorf("%s line %d isn't a jit pointer line — refusing to restore a file jit doesn't fully understand", path, i+1)
+			return nil, fmt.Errorf("%s line %d isn't a jit pointer line, refusing to restore a file jit doesn't fully understand", path, i+1)
 		}
 		secret, err := v.Get(strings.TrimPrefix(ref, pointerValuePrefix))
 		if err != nil {

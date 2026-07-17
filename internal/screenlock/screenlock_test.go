@@ -53,7 +53,7 @@ func TestWatchDeliversDistributedNotifications(t *testing.T) {
 	// A second watch in the same process must refuse rather than
 	// double-register process-global observers.
 	if err := watch(map[string]string{name: "dup"}, false, func(string) {}); err == nil {
-		t.Error("second watch in one process succeeded, want an error — observers are process-global")
+		t.Error("second watch in one process succeeded, want an error, observers are process-global")
 	}
 
 	// Delivery through notifyd is asynchronous, so post repeatedly until
@@ -84,6 +84,6 @@ func TestRunMainRefusesOffMainThread(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	if err := RunMain(context.Background()); err == nil {
-		t.Fatal("RunMain succeeded off the main thread — it would have parked a loop nothing ever delivers to")
+		t.Fatal("RunMain succeeded off the main thread, it would have parked a loop nothing ever delivers to")
 	}
 }

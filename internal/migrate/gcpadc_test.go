@@ -228,7 +228,7 @@ func TestApplyGCPADCServiceAccountKeepsEscapedKey(t *testing.T) {
 		t.Errorf("PRIVATE_KEY = %q, want the raw escaped JSON string body", got)
 	}
 	if strings.Contains(string(got), "\n") {
-		t.Errorf("PRIVATE_KEY contains a real newline — value was decoded, breaking the served JSON")
+		t.Errorf("PRIVATE_KEY contains a real newline, value was decoded, breaking the served JSON")
 	}
 
 	tmpl, err := os.ReadFile(result.TemplatePath)

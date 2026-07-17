@@ -171,7 +171,7 @@ func (v *Vault) Restore(path string, stamp int64) error {
 	if stamp == 0 {
 		stamp = stamps[len(stamps)-1]
 	} else if !slices.Contains(stamps, stamp) {
-		return fmt.Errorf("no version %d in %s's history — see `jit vault history %s`", stamp, path, path)
+		return fmt.Errorf("no version %d in %s's history, see `jit vault history %s`", stamp, path, path)
 	}
 	src := filepath.Join(v.historyDir(path), fmt.Sprintf("%d.enc", stamp))
 

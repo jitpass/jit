@@ -62,7 +62,7 @@ func TestWrapUnwrapRoundTrip(t *testing.T) {
 		t.Fatalf("WrapKey: %v", err)
 	}
 	if bytes.Equal(wrapped, dek) {
-		t.Error("WrapKey returned the DEK unmodified — not actually wrapped")
+		t.Error("WrapKey returned the DEK unmodified, not actually wrapped")
 	}
 
 	got, err := w.UnwrapKey(wrapped)
@@ -76,7 +76,7 @@ func TestWrapUnwrapRoundTrip(t *testing.T) {
 
 func TestWrapFailsWithoutEnsureMEK(t *testing.T) {
 	w := testWrapper(noChallenge)
-	cleanupTestMEK(t, w) // no EnsureMEK call after this — item stays absent
+	cleanupTestMEK(t, w) // no EnsureMEK call after this, item stays absent
 
 	if _, err := w.WrapKey(bytes.Repeat([]byte{0x01}, 32)); err == nil {
 		t.Error("WrapKey succeeded with no MEK ever created, want an error")
@@ -152,7 +152,7 @@ func TestWrapperFetchMEKReturnsIndependentCopies(t *testing.T) {
 		t.Fatalf("fetchMEK (2nd): %v", err)
 	}
 	if bytes.Equal(second, make([]byte, len(second))) {
-		t.Error("second fetchMEK call returned all-zero bytes — the cache was corrupted by wiping the first call's copy")
+		t.Error("second fetchMEK call returned all-zero bytes, the cache was corrupted by wiping the first call's copy")
 	}
 }
 
