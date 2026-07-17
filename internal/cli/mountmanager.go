@@ -520,7 +520,7 @@ func (m *mountManager) noteReaderConnected(path string, sm *servedMount) {
 		fmt.Fprintf(m.stderr, "jit agent: mount %s: reader pid=%d (%s)%s%s%s\n", path, r.pid, r.execPath, launcher, qualifier, suffix)
 		return
 	}
-	fmt.Fprintf(m.stderr, "jit agent: mount %s: reader connected (not identified — best-effort scan missed it)%s\n", path, suffix)
+	fmt.Fprintf(m.stderr, "jit agent: mount %s: reader connected (not identified, best-effort scan missed it)%s\n", path, suffix)
 }
 
 // identifyReader is the best-effort "who is reading this mount" scan, with a
@@ -628,7 +628,7 @@ func (m *mountManager) revealMount(mountPath string, requested time.Duration) er
 	resolveErr := sm.lastResolveErr
 	sm.mu.Unlock()
 	if !hasReal {
-		msg := fmt.Sprintf("%s has nothing real to serve — revealing it would only keep serving placeholder values", mountPath)
+		msg := fmt.Sprintf("%s has nothing real to serve, revealing it would only keep serving placeholder values", mountPath)
 		if resolveErr != "" {
 			msg = fmt.Sprintf("%s (resolving its secrets failed: %s)", msg, resolveErr)
 		}

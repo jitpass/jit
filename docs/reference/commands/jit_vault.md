@@ -5,7 +5,7 @@ Manage the local encrypted secret vault
 ### Synopsis
 
 jit vault stores each secret as its own encrypted file under jit's data
-directory — no monolithic database. Access is gated by a Touch ID/passcode
+directory, no monolithic database. Access is gated by a Touch ID/passcode
 prompt enforced by jit itself (a real prompt, though not yet an OS-enforced
 Keychain/Secure Enclave guarantee).
 

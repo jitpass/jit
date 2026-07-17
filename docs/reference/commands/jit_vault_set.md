@@ -6,7 +6,7 @@ Encrypt and store a secret
 
 Stores a secret at <path> (e.g. "stripe/dev-key"). If [value] is omitted,
 prompts for it with hidden input. Use --stdin for scripts. Passing the value
-as a bare argument works but lands in shell history — prefer the prompt or --stdin.
+as a bare argument works but lands in shell history, prefer the prompt or --stdin.
 
 ```
 jit vault set <path> [value] [flags]

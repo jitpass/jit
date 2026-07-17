@@ -38,16 +38,16 @@ var doctorCmd = &cobra.Command{
 	GroupID: groupWorkflow,
 	Short:   "Verify every secret a profile references actually exists in the vault",
 	Long: "jit doctor checks that every secret path a profile manifest references\n" +
-		"actually exists in the vault — failing fast with a named missing secret\n" +
+		"actually exists in the vault, failing fast with a named missing secret\n" +
 		"instead of letting an app crash later on an empty environment variable.\n" +
 		"Only checks existence, never decrypts a value, so it never needs local\n" +
 		"authentication.\n\n" +
 		"By default checks every profile visible from the current directory: both\n" +
 		"project-local ones under .jit/profiles/ and the home-rooted global ones\n" +
-		"jit migrate writes for shell-config/MCP/AWS/kubeconfig/npmrc secrets —\n" +
+		"jit migrate writes for shell-config/MCP/AWS/kubeconfig/npmrc secrets,\n" +
 		"the same set `jit profile list` shows. Use --profile to check just one.\n" +
 		"--format json prints a machine-readable snapshot instead of the default\n" +
-		"text report — still exits non-zero on any problem either way.",
+		"text report, still exits non-zero on any problem either way.",
 	Args: cobra.NoArgs,
 	// A "problems found" exit is a normal, expected outcome here, not a
 	// usage mistake — cobra's default of dumping the usage string to
@@ -99,7 +99,7 @@ var doctorCmd = &cobra.Command{
 			if doctorFormat == "json" {
 				return writeJSON(cmd.OutOrStdout(), doctorResult{OK: true, Problems: []string{}})
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "No profiles found under %s/ or the global store — nothing to check.\n", profile.ProfilesDir)
+			fmt.Fprintf(cmd.OutOrStdout(), "No profiles found under %s/ or the global store, nothing to check.\n", profile.ProfilesDir)
 			return nil
 		}
 
@@ -139,7 +139,7 @@ var doctorCmd = &cobra.Command{
 				}
 				if !exists {
 					problems = append(problems, fmt.Sprintf(
-						"[missing] profile %q: %s -> %s (not in the vault — run \"jit vault set %s\" to add it, or \"jit migrate home\" if it came from a scan)",
+						"[missing] profile %q: %s -> %s (not in the vault, run \"jit vault set %s\" to add it, or \"jit migrate home\" if it came from a scan)",
 						t.name, varName, secretPath, secretPath))
 				}
 			}

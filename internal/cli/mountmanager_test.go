@@ -79,7 +79,7 @@ func TestEnsureServingConcurrentCallsClaimSlotOnce(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("shutdown() hung — an ensureServing race left a Serve goroutine no CancelFunc can reach, the exact orphan the single-critical-section claim exists to prevent")
+		t.Fatal("shutdown() hung, an ensureServing race left a Serve goroutine no CancelFunc can reach, the exact orphan the single-critical-section claim exists to prevent")
 	}
 }
 
@@ -147,7 +147,7 @@ func TestRevealMountRefusedWithNothingRealToServe(t *testing.T) {
 
 	err := m.revealMount("/tmp/fixture/.env", time.Minute)
 	if err == nil {
-		t.Fatal("revealMount succeeded on a mount with no real content — the reveal would be a silent no-op serving decoys")
+		t.Fatal("revealMount succeeded on a mount with no real content, the reveal would be a silent no-op serving decoys")
 	}
 	if !strings.Contains(err.Error(), "secret not found") {
 		t.Errorf("revealMount error = %q, want the recorded resolve error included", err)
@@ -184,13 +184,13 @@ func TestMountManagerStopClearsRevealAndRealContentWithoutCancelling(t *testing.
 	m.stop()
 
 	if cancelled {
-		t.Error("stop() must not cancel a mount's Serve goroutine (GAPS.md #35) — only clear real content and hide")
+		t.Error("stop() must not cancel a mount's Serve goroutine (GAPS.md #35), only clear real content and hide")
 	}
 	if sm.reveal.IsRevealed() {
-		t.Error("expected hidden after stop — locking must not leave a mount revealed")
+		t.Error("expected hidden after stop, locking must not leave a mount revealed")
 	}
 	if got := sm.provideContent(); string(got) != "decoy" {
-		t.Errorf("provideContent after stop = %q, want decoy — real content must be forgotten", got)
+		t.Errorf("provideContent after stop = %q, want decoy, real content must be forgotten", got)
 	}
 }
 
@@ -324,10 +324,10 @@ func TestResolveRealScopedRevealResolvesButFloorRevealsNothing(t *testing.T) {
 		hasReal := sm.real != nil
 		sm.mu.Unlock()
 		if !hasReal {
-			t.Errorf("mount %s: real content not resolved — revealMount would then refuse the explicit reveal for 'nothing real resolved'", name)
+			t.Errorf("mount %s: real content not resolved, revealMount would then refuse the explicit reveal for 'nothing real resolved'", name)
 		}
 		if sm.reveal.IsRevealed() {
-			t.Errorf("mount %s: floor-revealed by a reveal-driven unlock — that's exactly the blanket reveal the scoped path removes", name)
+			t.Errorf("mount %s: floor-revealed by a reveal-driven unlock, that's exactly the blanket reveal the scoped path removes", name)
 		}
 	}
 }
@@ -348,7 +348,7 @@ func TestResolveRealGrantsNoWindowOnFailedResolve(t *testing.T) {
 	m.resolveReal([]mount.Entry{{MountPath: "/tmp/fixture/.env", ProfilePath: "/tmp/fixture/nope.yaml"}}, nil, true)
 
 	if sm.reveal.IsRevealed() {
-		t.Error("resolveReal revealed a mount whose resolution failed — status would report a revealed countdown on a decoy-only mount")
+		t.Error("resolveReal revealed a mount whose resolution failed, status would report a revealed countdown on a decoy-only mount")
 	}
 	sm.mu.Lock()
 	resolveErr := sm.lastResolveErr
@@ -383,7 +383,7 @@ func TestNoteReaderConnectedCollapsesStormLogging(t *testing.T) {
 		t.Errorf("readLogSuppressed = %d, want 24", suppressed)
 	}
 	if count != 25 {
-		t.Errorf("readWindowCount = %d, want 25 — the rolling counter must count every read, logged or not", count)
+		t.Errorf("readWindowCount = %d, want 25, the rolling counter must count every read, logged or not", count)
 	}
 }
 
@@ -504,12 +504,12 @@ func TestPrintMountStatusesShowsLastServe(t *testing.T) {
 	out := buf.String()
 
 	for _, want := range []string{
-		"• /p/decoy.env — not revealed",
+		"• /p/decoy.env, not revealed",
 		"read 2m ago by node (pid 4823): decoy values",
 		"jit agent reveal /p/decoy.env",
-		"• /p/real.env — revealed, 1m30s left",
+		"• /p/real.env, revealed, 1m30s left",
 		"read 30s ago by an unidentified process: real values",
-		"• /p/quiet.env — not revealed",
+		"• /p/quiet.env, not revealed",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected output to contain %q, got:\n%s", want, out)
@@ -595,7 +595,7 @@ func TestResolveRealReResolvesUpdatedSecret(t *testing.T) {
 		t.Fatalf("real content after first resolve = %q, want it to contain first-value", got)
 	}
 	if got := realContent(); strings.Contains(got, "# jit:") {
-		t.Errorf("real content = %q carries the decoy notice — its absence is part of the revealed signal", got)
+		t.Errorf("real content = %q carries the decoy notice, its absence is part of the revealed signal", got)
 	}
 
 	if err := v.Set("fixture/API_KEY", []byte("second-value")); err != nil {
@@ -603,7 +603,7 @@ func TestResolveRealReResolvesUpdatedSecret(t *testing.T) {
 	}
 	m.resolveReal(entries, v, true)
 	if got := realContent(); !strings.Contains(got, "second-value") {
-		t.Errorf("real content after re-resolve = %q, want the UPDATED second-value — a stale mount serving a replaced secret forever is the exact GAPS.md #43 bug", got)
+		t.Errorf("real content after re-resolve = %q, want the UPDATED second-value, a stale mount serving a replaced secret forever is the exact GAPS.md #43 bug", got)
 	}
 }
 
@@ -664,7 +664,7 @@ func TestEnsureServingRemovesDeadMountFromServed(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("dead mount still in m.served 5s after its Serve loop exited — it would never be restarted and still look alive to status/reveal (GAPS.md #44)")
+	t.Fatal("dead mount still in m.served 5s after its Serve loop exited, it would never be restarted and still look alive to status/reveal (GAPS.md #44)")
 }
 
 // TestMountRevealStatusesReportsRevealedAndHidden is GAPS.md #37's regression
@@ -734,7 +734,7 @@ func TestMountManagerStopMountWaitsForGoroutineToExit(t *testing.T) {
 
 	select {
 	case <-returned:
-		t.Fatal("stopMount returned before the Serve goroutine signaled done — this is the exact race that let recreateFIFO clobber a file jit unmount had just replaced")
+		t.Fatal("stopMount returned before the Serve goroutine signaled done, this is the exact race that let recreateFIFO clobber a file jit unmount had just replaced")
 	case <-time.After(50 * time.Millisecond):
 		// Still blocked, as expected — simulate the goroutine finishing
 		// its in-flight cycle now.

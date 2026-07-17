@@ -7,7 +7,7 @@ Wrap CLI tools so their tokens are injected just-in-time
 jit wrap puts a shim first on PATH for each wrapped tool: you keep typing
 `gh` exactly as before, and the token materializes only inside that one
 process (via `jit run --profile wrap-<tool>`), never in a plaintext config
-file. Works in scripts, Makefiles, and tools spawning tools — anywhere the
+file. Works in scripts, Makefiles, and tools spawning tools, anywhere the
 binary is invoked, not just interactive shells.
 
 Store the secret first (`jit vault set`), then describe the tool:

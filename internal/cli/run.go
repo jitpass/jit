@@ -28,18 +28,18 @@ var runCmd = &cobra.Command{
 	GroupID: groupSecrets,
 	Short:   "Execute a command with a profile's secrets injected into its environment",
 	Long: "jit run decrypts every secret a profile references and replaces the jit\n" +
-		"process entirely with the target command (execve) — jit itself is gone\n" +
+		"process entirely with the target command (execve), jit itself is gone\n" +
 		"from memory the instant the target starts. The target process still holds\n" +
 		"the plaintext once running: jit narrows the exposure window, it doesn't\n" +
 		"sandbox what the target does with it.\n\n" +
 		"Without --profile, jit resolves the project's migrated .env layers (looking\n" +
 		"upward from the current directory, like git) and injects their merged\n" +
-		"result in dotenv order — .env overridden by .env.local — printing exactly\n" +
+		"result in dotenv order, .env overridden by .env.local, printing exactly\n" +
 		"what it merged. --mode <m> additionally layers .env.<m> and .env.<m>.local\n" +
 		"in (.env < .env.<m> < .env.local < .env.<m>.local); a mode layer is never\n" +
 		"merged without being asked for. --profile names one profile verbatim and\n" +
 		"disables merging entirely.\n\n" +
-		"The -- separating jit's own flags from the command is optional — jit stops\n" +
+		"The -- separating jit's own flags from the command is optional, jit stops\n" +
 		"reading its flags at the first non-flag argument, so `jit run npm start`\n" +
 		"works (jit's flags, if any, come before the command).",
 	Example: "  jit run -- npm start\n" +
@@ -52,7 +52,7 @@ var runCmd = &cobra.Command{
 	// depends on.
 	Args: func(cmd *cobra.Command, args []string) error {
 		if len(args) < 1 {
-			return fmt.Errorf("jit run: no command given — usage: jit run [--profile <name>] [--] <command> [args...]")
+			return fmt.Errorf("jit run: no command given, usage: jit run [--profile <name>] [--] <command> [args...]")
 		}
 		return nil
 	},

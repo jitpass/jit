@@ -64,8 +64,8 @@ func TestVaultImportDeclinedConfirmationAborts(t *testing.T) {
 
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
-	rootCmd.SetErr(&buf)                 // confirmation prompts go to stderr — capture both streams in order
-	rootCmd.SetIn(strings.NewReader("")) // EOF — an empty/declined answer
+	rootCmd.SetErr(&buf)                 // confirmation prompts go to stderr, capture both streams in order
+	rootCmd.SetIn(strings.NewReader("")) // EOF, an empty/declined answer
 	rootCmd.SetArgs([]string{"vault", "import", exportPath})
 
 	err := rootCmd.Execute()
@@ -336,7 +336,7 @@ func TestVaultCleanRemovesEverySecret(t *testing.T) {
 		t.Errorf("secrets remain after clean: %v", paths)
 	}
 	if _, err := os.Stat(migrate.BackupIndexPath(root)); !os.IsNotExist(err) {
-		t.Error("undo index still exists after clean — jit migrate undo would half-fail against deleted backup secrets")
+		t.Error("undo index still exists after clean, jit migrate undo would half-fail against deleted backup secrets")
 	}
 }
 
@@ -538,7 +538,7 @@ func TestPrintVaultList(t *testing.T) {
 	buf.Reset()
 	printVaultList(&buf, nil, backups, false)
 	out = buf.String()
-	if !strings.Contains(out, "No secrets stored yet — 1 encrypted file backup(s) kept for `jit migrate undo` (list with --all).") {
+	if !strings.Contains(out, "No secrets stored yet, 1 encrypted file backup(s) kept for `jit migrate undo` (list with --all).") {
 		t.Errorf("backups-only vault needs an honest empty state, got:\n%s", out)
 	}
 

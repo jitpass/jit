@@ -4,7 +4,7 @@ Show the agent's own log (session events, mount reads, serve errors)
 
 ### Synopsis
 
-Prints the tail of the agent's log file — the durable, timestamped record
+Prints the tail of the agent's log file, the durable, timestamped record
 of session events, mount reads (with who read them), and serve errors that
 outlives the in-memory snapshot `jit agent status` reports.
 
