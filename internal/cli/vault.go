@@ -25,6 +25,7 @@ import (
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/pasteboard"
+	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -70,32 +71,71 @@ func splitBackupPaths(paths []string) (secrets, backups []string) {
 	return secrets, backups
 }
 
-// printVaultList renders jit vault list's text output: secrets one per
-// line (grep/pipe-friendly, no decoration), backups collapsed into the
-// closing count line unless showBackups (--all) lists them too, and
-// exactly one closing count line so nobody has to count rows themselves.
-func printVaultList(out io.Writer, secrets, backups []string, showBackups bool) {
+// printVaultList renders jit vault list's text output. Piped (grouped
+// false), secrets stay one full path per line, grep/pipe-friendly with no
+// decoration; on a terminal (grouped true) they collapse under a faint
+// per-group header — first path segment plus a count — with the remainder
+// indented, which is what keeps a 50-secret listing scannable. Backups are
+// collapsed into the closing count line unless showBackups (--all) lists
+// them too (always flat: they're deep bookkeeping paths, grouping adds
+// nothing), and exactly one closing count line so nobody has to count rows
+// themselves.
+func printVaultList(out io.Writer, secrets, backups []string, showBackups, grouped bool) {
 	if len(secrets) == 0 && len(backups) == 0 {
 		fmt.Fprintln(out, "No secrets stored yet. Run `jit vault set <path>` to add one, or `jit migrate local` to move existing secrets in.")
 		return
 	}
-	for _, p := range secrets {
-		fmt.Fprintln(out, p)
+	if grouped {
+		printGroupedSecrets(out, secrets)
+	} else {
+		for _, p := range secrets {
+			fmt.Fprintln(out, p)
+		}
 	}
 	if showBackups {
 		for _, p := range backups {
 			fmt.Fprintln(out, p)
 		}
 	}
+	secretsWord := pluralWord(len(secrets), "secret", "secrets")
+	backupsWord := pluralWord(len(backups), "backup", "backups")
 	switch {
 	case len(backups) == 0:
-		fmt.Fprintf(out, "\n%d secret(s) stored.\n", len(secrets))
-	case showBackups:
-		fmt.Fprintf(out, "\n%d secret(s) stored, plus %d encrypted file backup(s) kept for `jit migrate undo`.\n", len(secrets), len(backups))
+		fmt.Fprintf(out, "\n%d %s stored.\n", len(secrets), secretsWord)
+	case len(secrets) == 0 && showBackups:
+		fmt.Fprintf(out, "\nNo secrets stored yet, %d encrypted file %s kept for `jit migrate undo`.\n", len(backups), backupsWord)
 	case len(secrets) == 0:
-		fmt.Fprintf(out, "No secrets stored yet, %d encrypted file backup(s) kept for `jit migrate undo` (list with --all).\n", len(backups))
+		fmt.Fprintf(out, "No secrets stored yet, %d encrypted file %s kept for `jit migrate undo` (list with --all).\n", len(backups), backupsWord)
+	case showBackups:
+		fmt.Fprintf(out, "\n%d %s stored, plus %d encrypted file %s kept for `jit migrate undo`.\n", len(secrets), secretsWord, len(backups), backupsWord)
 	default:
-		fmt.Fprintf(out, "\n%d secret(s) stored, plus %d encrypted file backup(s) kept for `jit migrate undo` (list with --all).\n", len(secrets), len(backups))
+		fmt.Fprintf(out, "\n%d %s stored, plus %d encrypted file %s kept for `jit migrate undo` (list with --all).\n", len(secrets), secretsWord, len(backups), backupsWord)
+	}
+}
+
+// printGroupedSecrets renders secrets grouped by their first path segment:
+// a faint "prefix/ (n)" header, then each key indented with the prefix
+// stripped. Relies on List's naturally-sorted input keeping every path
+// that shares a "prefix/" contiguous (naturalLess is a total order decided
+// on the shared prefix, so it does). Pathless entries print as bare lines.
+func printGroupedSecrets(out io.Writer, secrets []string) {
+	faint := color.New(color.Faint)
+	for i := 0; i < len(secrets); {
+		slash := strings.Index(secrets[i], "/")
+		if slash < 0 {
+			fmt.Fprintln(out, secrets[i])
+			i++
+			continue
+		}
+		prefix := secrets[i][:slash+1]
+		j := i
+		for j < len(secrets) && strings.HasPrefix(secrets[j], prefix) {
+			j++
+		}
+		_, _ = faint.Fprintf(out, "%s (%d)\n", prefix, j-i)
+		for ; i < j; i++ {
+			fmt.Fprintf(out, "  %s\n", secrets[i][len(prefix):])
+		}
 	}
 }
 
@@ -181,7 +221,11 @@ var vaultGetCmd = &cobra.Command{
 	Short: "Decrypt and print a secret",
 	Long: "Prints the decrypted value to stdout, where it lands in your terminal\n" +
 		"scrollback and any output capture (tmux, script, CI logs). Prefer\n" +
-		"--copy to send it straight to the clipboard instead.",
+		"--copy to send it straight to the clipboard instead.\n\n" +
+		"On a terminal, one faint metadata line follows on stderr: when the\n" +
+		"secret was last updated, which profiles reference it, and the config\n" +
+		"file its migration recorded as the source. Piped or redirected output\n" +
+		"receives the value only, never the footer.",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeVaultPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -207,20 +251,99 @@ var vaultGetCmd = &cobra.Command{
 			} else {
 				fmt.Fprintln(cmd.OutOrStdout(), "Copied to clipboard (auto-clear unavailable, it stays until you copy over it).")
 			}
+			printVaultGetFooter(cmd, v, args[0])
 			return nil
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), string(value))
+		printVaultGetFooter(cmd, v, args[0])
 		return nil
 	},
+}
+
+// printVaultGetFooter follows a successful `jit vault get` with one faint
+// metadata line: last-updated age, the profile(s) whose manifests
+// reference the secret, and the config file recorded as its source (the
+// .source sidecar MCP migrations write — other migrations don't record
+// one yet, so that part is simply omitted, never guessed). Written to
+// stderr and only when stderr is a terminal: stdout must stay byte-clean
+// for pipes and capture, and scripts never see decoration at all.
+// Best-effort throughout — the value already printed, so no metadata
+// hiccup may turn a successful get into a failure.
+func printVaultGetFooter(cmd *cobra.Command, v *vault.Vault, path string) {
+	if !term.IsTerminal(int(os.Stderr.Fd())) {
+		return
+	}
+	var parts []string
+	// Info reads only the envelope header, no decryption and no second
+	// prompt. Version-1 envelopes predate timestamps; omit rather than lie.
+	if info, err := v.Info(path); err == nil && info.UpdatedUnix > 0 {
+		when := time.Unix(info.UpdatedUnix, 0)
+		parts = append(parts, fmt.Sprintf("updated %s ago (%s)", humanAgo(time.Since(when)), when.Format("2006-01-02")))
+	}
+	if names, source := secretProfileReferences(path); len(names) > 0 {
+		parts = append(parts, fmt.Sprintf("used by %s %s", pluralWord(len(names), "profile", "profiles"), strings.Join(names, ", ")))
+		if source != "" {
+			if home, err := os.UserHomeDir(); err == nil {
+				source = displayPath(home, source)
+			}
+			parts = append(parts, "migrated from "+source)
+		}
+	}
+	if len(parts) == 0 {
+		return
+	}
+	_, _ = color.New(color.Faint).Fprintln(cmd.ErrOrStderr(), strings.Join(parts, " · "))
+}
+
+// secretProfileReferences returns the names of every profile manifest
+// visible from the current directory (project-local plus the home-rooted
+// global store, profile.ListAll) with at least one variable resolving to
+// secretPath, and the first recorded source config file among them.
+// Best-effort: an unreadable store or manifest yields fewer names, never
+// an error — provenance is garnish on the footer, not something `jit
+// vault get` may fail over.
+func secretProfileReferences(secretPath string) (names []string, source string) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, ""
+	}
+	infos, err := profile.ListAll(cwd)
+	if err != nil {
+		return nil, ""
+	}
+	seen := map[string]bool{}
+	for _, info := range infos {
+		entries, err := profile.LoadFile(info.Path)
+		if err != nil {
+			continue
+		}
+		for _, p := range entries {
+			if p != secretPath {
+				continue
+			}
+			if !seen[info.Name] {
+				seen[info.Name] = true
+				names = append(names, info.Name)
+			}
+			if source == "" {
+				source = migrate.ProfileOwnerConfig(info.Path)
+			}
+			break
+		}
+	}
+	return names, source
 }
 
 var vaultListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List stored secret paths (names only, never values)",
-	Long: "Lists every secret path currently stored, never a value. The encrypted\n" +
-		"file backups jit migrate keeps for `jit migrate undo` are summarized in\n" +
-		"the count line rather than listed; --all lists them too. --format json\n" +
-		"prints {\"secrets\": [...], \"backups\": [...]} instead of one path per line.",
+	Long: "Lists every secret path currently stored, never a value. On a terminal,\n" +
+		"secrets are grouped under a faint header per first path segment with a\n" +
+		"count; piped or redirected, output stays one full path per line, so it\n" +
+		"feeds grep and scripts unchanged. The encrypted file backups jit migrate\n" +
+		"keeps for `jit migrate undo` are summarized in the count line rather than\n" +
+		"listed; --all lists them too. --format json prints\n" +
+		"{\"secrets\": [...], \"backups\": [...]} instead of one path per line.",
 	Args: cobra.NoArgs,
 	// See doctor.go's SilenceUsage comment — the same "don't corrupt a
 	// --format json snapshot with usage text on a RunE error" reasoning
@@ -231,11 +354,18 @@ var vaultListCmd = &cobra.Command{
 			return fmt.Errorf("jit vault list: %w", err)
 		}
 
-		v, err := openVault()
+		// A bare read-only Vault, never openVault(): List only walks
+		// filenames, so a names-only listing must not dial the agent (or
+		// sit through its restart-gap retries), refuse mid-rekey (reading
+		// filenames is exactly the triage you want available then), or
+		// write the device-id file as a side effect on a machine that
+		// never ran `jit vault init` — the same never-mutate-on-read
+		// reasoning completeVaultPaths documents for tab completion.
+		root, err := vaultRootDir()
 		if err != nil {
 			return fmt.Errorf("jit vault list: %w", err)
 		}
-		paths, err := v.List()
+		paths, err := (&vault.Vault{Root: root}).List()
 		if err != nil {
 			return fmt.Errorf("jit vault list: %w", err)
 		}
@@ -248,7 +378,7 @@ var vaultListCmd = &cobra.Command{
 			return writeJSON(cmd.OutOrStdout(), vaultListResult{Secrets: secrets, Backups: backups})
 		}
 
-		printVaultList(cmd.OutOrStdout(), secrets, backups, vaultListAll)
+		printVaultList(cmd.OutOrStdout(), secrets, backups, vaultListAll, term.IsTerminal(int(os.Stdout.Fd())))
 		return nil
 	},
 }
