@@ -45,6 +45,9 @@ var auditCmd = &cobra.Command{
 		"  4. Clamp into the band of the scan's RISK LEVEL, so the number and the " +
 		"label can never disagree: clean 0, low 10-39, medium 40-64, high 65-84, " +
 		"critical 85-100.\n\n" +
+		"Findings inside a jitpass playground checkout crossed during the scan are " +
+		"synthetic demo secrets, so they are excluded from every count and from the " +
+		"score (the report states how many were excluded and where). " +
 		"Run with --score to print just the score line and exit.",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {

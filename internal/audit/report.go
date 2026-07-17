@@ -296,6 +296,20 @@ func ShortenHome(home, path string) string {
 	return path
 }
 
+// playgroundLocation renders the human phrase for where excluded synthetic
+// findings came from: the single "~"-shortened path when there is one
+// playground, a plain count when several, or a bare label as a fallback.
+func playgroundLocation(home string, paths []string) string {
+	switch len(paths) {
+	case 0:
+		return "a jitpass playground"
+	case 1:
+		return "a jitpass playground (" + ShortenHome(home, paths[0]) + ")"
+	default:
+		return fmt.Sprintf("%d jitpass playgrounds", len(paths))
+	}
+}
+
 // WriteHumanReport renders the default jit audit report (RFC.md §4):
 // a color-coded risk banner, per-category counts, and exact file:line
 // locations. Never a real secret value — only Finding.ValuePreview, which
@@ -349,6 +363,13 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	if summary.JitProtectedCount > 0 {
 		_, _ = color.New(color.FgGreen).Fprintf(w, "  Already protected by jit: %d live mount(s), served from the encrypted vault, no plaintext on disk. Not scanned.\n", summary.JitProtectedCount)
 	}
+	// Same "excluded, but say so" treatment: synthetic findings from a jitpass
+	// playground crossed during the walk are dropped from every count above so
+	// demo bait can't inflate a real machine's score — state it so the drop is
+	// visible, not a silent gap.
+	if summary.SyntheticFindingCount > 0 {
+		_, _ = color.New(color.FgGreen).Fprintf(w, "  Excluded from the score: %d synthetic finding(s) in %s. Synthetic playground secrets, not real exposure.\n", summary.SyntheticFindingCount, playgroundLocation(home, summary.SyntheticPlaygroundPaths))
+	}
 	fmt.Fprintln(w)
 
 	if summary.TotalFindings == 0 {
@@ -358,17 +379,27 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 
 	byType := groupFindingsByType(findings)
 
+	// Each non-empty category renders as its own block: a bold header, a rule
+	// beneath it, and a trailing blank line. Dense reports used to run several
+	// categories together separated by a single blank line, so where one
+	// category's findings ended and the next began was easy to lose — the rule
+	// and the bold header give every section an unmistakable start.
+	sectionRule := strings.Repeat("─", 35)
 	for _, ft := range AllFindingTypes {
 		group := byType[ft]
 		if len(group) == 0 {
 			continue
 		}
 
-		fmt.Fprintf(w, "[%s]\n", findingTypeLabels[ft])
+		_, _ = color.New(color.Bold).Fprintf(w, "[%s]\n", findingTypeLabels[ft])
+		_, _ = color.New(color.Faint).Fprintf(w, "  %s\n", sectionRule)
+		cols := computeColumns(group)
 		for _, item := range buildRenderItems(group) {
-			writeRenderItemText(w, item, home)
+			writeRenderItemText(w, item, home, cols)
 		}
-		fmt.Fprintln(w)
+		// No extra blank here: every render item already ends with its own
+		// blank line (the breathing room between rows), which doubles as the
+		// section separator before the next bold header.
 	}
 
 	// The report's only prior "next step" pointed at an output-format
@@ -380,58 +411,134 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	_, _ = color.New(color.Faint).Fprintln(w, "No secret values are ever printed in full. Run `jit audit --format ndjson` for machine-readable output (same redaction rules apply).")
 }
 
-// writeRenderItemText renders one renderItem in WriteHumanReport's format.
-// A per-file item prints the path once (see buildRenderItems) with every
-// finding for it beneath. A collapsed item prints its OWN header line first
-// (never omitted) — a real user found that a headerless collapsed block
-// sitting directly under the previous item's file path read as if it were
-// more findings for that same file, when it was actually an unrelated
-// pattern shared by different files entirely. The header is what makes a
-// new block visually start, exactly like a file path does for the
-// per-file case.
-func writeRenderItemText(w io.Writer, item renderItem, home string) {
+// findingIndent is the left margin every finding row sits at, one step in
+// from its file-path header (which itself sits one "* " marker in from the
+// category).
+const findingIndent = "    "
+
+// columns holds one category's display widths. The bounded fields — line,
+// severity, masked value — plus the key align in fixed columns across every
+// finding in the category, so a file with several findings reads like a
+// structured log. The reason is deliberately NOT a column: it is free-form
+// prose with no natural width, so it drops to its own hanging-indent line
+// under the key, where it can wrap without breaking the alignment of the
+// fields above it. Widths are computed once per category and shared by every
+// row so they line up.
+type columns struct {
+	lineW, sevW, keyW int
+	hasLine, hasKey   bool
+	hasValue          bool
+}
+
+func lineTag(n int) string { return fmt.Sprintf(":%d", n) }
+
+func computeColumns(group []Finding) columns {
+	c := columns{}
+	for _, f := range group {
+		if f.Line != nil {
+			c.hasLine = true
+			c.lineW = max(c.lineW, len(lineTag(*f.Line)))
+		}
+		c.sevW = max(c.sevW, len(strings.ToUpper(f.Severity)))
+		if f.KeyName != nil {
+			c.hasKey = true
+			c.keyW = max(c.keyW, len(*f.KeyName))
+		}
+		if f.ValuePreview != nil {
+			c.hasValue = true
+		}
+	}
+	return c
+}
+
+// reasonIndent is the column the key starts at, and therefore where a
+// finding's reason line (and a collapsed item's file list) hangs, so the
+// prose sits tucked under the key it explains rather than under the margin.
+func (c columns) reasonIndent() int {
+	n := len(findingIndent)
+	if c.hasLine {
+		n += c.lineW + 2
+	}
+	n += c.sevW + 2
+	return n
+}
+
+// writeRenderItemText renders one renderItem. A per-file item prints its path
+// once as a "* "-marked header, a blank line, then each finding spaced out
+// beneath. A collapsed item prints its OWN header line first (never omitted) —
+// a real user found that a headerless collapsed block sitting directly under
+// the previous item's file path read as if it were more findings for that
+// same file, when it was actually an unrelated pattern shared by different
+// files — then the shared finding and the file list.
+func writeRenderItemText(w io.Writer, item renderItem, home string, cols columns) {
 	if item.collapsed {
-		fmt.Fprintf(w, "  %s\n", collapsedHeader(item))
-		writeFindingDetailText(w, item.rep, false)
+		fmt.Fprintf(w, "  %s\n\n", collapsedHeader(item))
+		cols.writeFindingRow(w, item.rep, false)
+		locIndent := strings.Repeat(" ", cols.reasonIndent())
 		for _, loc := range item.locations {
 			if loc.Line != nil {
-				fmt.Fprintf(w, "          - %s:%d\n", ShortenHome(home, loc.Path), *loc.Line)
+				fmt.Fprintf(w, "%s- %s:%d\n", locIndent, ShortenHome(home, loc.Path), *loc.Line)
 			} else {
-				fmt.Fprintf(w, "          - %s\n", ShortenHome(home, loc.Path))
+				fmt.Fprintf(w, "%s- %s\n", locIndent, ShortenHome(home, loc.Path))
 			}
 		}
+		fmt.Fprintln(w)
 		return
 	}
 
-	fmt.Fprintf(w, "  %s\n", ShortenHome(home, item.rep.FilePath))
+	// A "* " marker makes each file the eye's anchor within a category, and a
+	// blank line after it (plus one after every finding) gives the block room
+	// to breathe instead of packing rows edge to edge.
+	fmt.Fprintf(w, "  * %s\n\n", ShortenHome(home, item.rep.FilePath))
 	for _, f := range item.findings {
-		writeFindingDetailText(w, f, true)
+		cols.writeFindingRow(w, f, true)
+		fmt.Fprintln(w)
 	}
 }
 
-// writeFindingDetailText writes one finding's severity/key/value/why lines.
-// showLine is false for a collapsed item's representative finding, since a
-// single line number would be misleading when the pattern spans multiple
-// files at different lines — each location's own line (if any) is shown
-// next to its path in the bullet list instead.
-func writeFindingDetailText(w io.Writer, f Finding, showLine bool) {
-	lineTag := ""
-	if showLine && f.Line != nil {
-		lineTag = fmt.Sprintf(":%d  ", *f.Line)
+// writeFindingRow renders one finding: a row of aligned bounded fields
+// (severity, key, masked value) with the reason on its own hanging-indent
+// line beneath, tucked under the key with a "└" connector. showLine is false
+// for a collapsed item's representative finding, since a single line number
+// would be misleading when the pattern spans several files at different lines.
+// A finding with neither key nor value has nothing to columnize but its
+// severity, so its reason stays inline rather than dangling under an empty row.
+func (c columns) writeFindingRow(w io.Writer, f Finding, showLine bool) {
+	fmt.Fprint(w, findingIndent)
+	if c.hasLine {
+		lt := ""
+		if showLine && f.Line != nil {
+			lt = lineTag(*f.Line)
+		}
+		fmt.Fprintf(w, "%-*s  ", c.lineW, lt)
 	}
-	_, _ = colorOr(severityColor, f.Severity).Fprintf(w, "    %s[%s]", lineTag, f.Severity)
-	// KeyName is the single most useful piece of context here — without
-	// it, a finding says "some value was found" without saying which
-	// variable to actually go act on. Every field gets an explicit
-	// label so the report is unambiguous without cross-referencing NDJSON.
-	if f.KeyName != nil {
-		fmt.Fprintf(w, "  key: %s", *f.KeyName)
+	// Pad the severity BEFORE coloring it: the ANSI escape codes have no
+	// display width, so padding the colored string would misalign the column.
+	_, _ = colorOr(severityColor, f.Severity).Fprintf(w, "%-*s", c.sevW, strings.ToUpper(f.Severity))
+
+	if !c.hasKey && !c.hasValue {
+		if f.Evidence != "" {
+			fmt.Fprintf(w, "  %s", f.Evidence)
+		}
+		fmt.Fprintln(w)
+		return
+	}
+
+	if c.hasKey {
+		key := ""
+		if f.KeyName != nil {
+			key = *f.KeyName
+		}
+		fmt.Fprintf(w, "  %-*s", c.keyW, key)
+	}
+	if c.hasValue && f.ValuePreview != nil {
+		fmt.Fprintf(w, "  %s", *f.ValuePreview)
 	}
 	fmt.Fprintln(w)
-	if f.ValuePreview != nil {
-		fmt.Fprintf(w, "        value:  %s\n", *f.ValuePreview)
-	}
+
 	if f.Evidence != "" {
-		fmt.Fprintf(w, "        why:    %s\n", f.Evidence)
+		indent := strings.Repeat(" ", c.reasonIndent())
+		_, _ = color.New(color.Faint).Fprintf(w, "%s└ ", indent)
+		fmt.Fprintln(w, f.Evidence)
 	}
 }
