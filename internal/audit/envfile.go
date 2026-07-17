@@ -225,14 +225,14 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 		f.Evidence = fmt.Sprintf("contains %q, a variable name that looks like a real credential", secretShapedKey)
 	default:
 		f.Severity = SeverityLow
-		// Spell out *why* this is a finding at all, not just the raw count —
+		// Lead with *why* this is a finding at all, not just the raw count —
 		// a real user reading "12 variable(s) found (12 active, 0 commented
-		// out)" understandably asked what that meant. The point isn't the
-		// count, it's that every one of those values is stored here as
-		// plaintext regardless of whether it's currently active or
-		// commented out.
+		// out)" understandably asked what that meant. "plaintext" up front
+		// carries that answer; commented-out values count because they are
+		// stored here just the same. Kept terse: the reason renders on one
+		// line in the report.
 		f.Evidence = fmt.Sprintf(
-			"%d variable(s) in this file (%d active, %d commented out); either way, the values are stored here in plaintext",
+			"%d plaintext variable(s) (%d active, %d commented out)",
 			active+commented, active, commented,
 		)
 	}
