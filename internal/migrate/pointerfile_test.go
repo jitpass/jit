@@ -93,7 +93,7 @@ func TestWritePointerFileNeverCreatesAFIFO(t *testing.T) {
 		t.Fatalf("Lstat: %v", err)
 	}
 	if info.Mode()&os.ModeNamedPipe != 0 {
-		t.Error("pointer file must never be a FIFO — the whole point is it's safe to stat/mmap/peek casually")
+		t.Error("pointer file must never be a FIFO, the whole point is it's safe to stat/mmap/peek casually")
 	}
 	if !info.Mode().IsRegular() {
 		t.Errorf("pointer file mode = %v, want a regular file", info.Mode())

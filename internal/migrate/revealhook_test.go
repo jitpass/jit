@@ -57,10 +57,10 @@ func TestInstallRevealHookNeverCreatesEnvrc(t *testing.T) {
 		t.Fatalf("InstallRevealHook: %v", err)
 	}
 	if kind != RevealHookNone {
-		t.Errorf("kind = %q, want RevealHookNone — a project with no existing .envrc/package.json must get no hook", kind)
+		t.Errorf("kind = %q, want RevealHookNone, a project with no existing .envrc/package.json must get no hook", kind)
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".envrc")); err == nil {
-		t.Error("InstallRevealHook created a .envrc that didn't exist before — must never opt a project into direnv")
+		t.Error("InstallRevealHook created a .envrc that didn't exist before, must never opt a project into direnv")
 	}
 }
 
@@ -90,7 +90,7 @@ func TestInstallRevealHookIsIdempotent(t *testing.T) {
 		t.Fatalf("ReadFile: %v", err)
 	}
 	if string(firstContent) != string(secondContent) {
-		t.Errorf("second migrate run changed .envrc — not idempotent:\nfirst:\n%s\nsecond:\n%s", firstContent, secondContent)
+		t.Errorf("second migrate run changed .envrc, not idempotent:\nfirst:\n%s\nsecond:\n%s", firstContent, secondContent)
 	}
 
 	backups, _ := filepath.Glob(envrcPath + ".jit-bak-*")
@@ -146,7 +146,7 @@ func TestInstallRevealHookNpmDevAndStart(t *testing.T) {
 		t.Errorf("package.json on disk contains HTML-escaped metacharacters:\n%s", raw)
 	}
 	if _, ok := scripts["pretest"]; ok {
-		t.Error("must not add a pretest hook — only dev/start are targeted, not every script")
+		t.Error("must not add a pretest hook, only dev/start are targeted, not every script")
 	}
 }
 
@@ -278,12 +278,12 @@ func TestInstallRevealHookDirenvTakesPrecedenceOverNpm(t *testing.T) {
 		t.Fatalf("InstallRevealHook: %v", err)
 	}
 	if kind != RevealHookDirenv {
-		t.Errorf("kind = %q, want %q — installs at most one hook", kind, RevealHookDirenv)
+		t.Errorf("kind = %q, want %q, installs at most one hook", kind, RevealHookDirenv)
 	}
 
 	scripts := readPackageScripts(t, filepath.Join(dir, "package.json"))
 	if _, ok := scripts["predev"]; ok {
-		t.Error("package.json was also modified — InstallRevealHook must install at most one hook, not both")
+		t.Error("package.json was also modified, InstallRevealHook must install at most one hook, not both")
 	}
 }
 

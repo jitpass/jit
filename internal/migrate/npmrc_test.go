@@ -67,7 +67,7 @@ func TestDiscoverNpmrcFilesIncludeGlobalFlag(t *testing.T) {
 		t.Fatalf("DiscoverNpmrcFiles: %v", err)
 	}
 	if len(found) != 0 {
-		t.Errorf("found = %v, want empty — includeGlobal=false must exclude it", found)
+		t.Errorf("found = %v, want empty, includeGlobal=false must exclude it", found)
 	}
 
 	found, err = DiscoverNpmrcFiles(home, cwd, true)
@@ -75,7 +75,7 @@ func TestDiscoverNpmrcFilesIncludeGlobalFlag(t *testing.T) {
 		t.Fatalf("DiscoverNpmrcFiles: %v", err)
 	}
 	if len(found) != 1 || found[0] != GlobalNpmrcPath(home) {
-		t.Errorf("found = %v, want [%s] — includeGlobal=true must include it", found, GlobalNpmrcPath(home))
+		t.Errorf("found = %v, want [%s], includeGlobal=true must include it", found, GlobalNpmrcPath(home))
 	}
 }
 
@@ -106,7 +106,7 @@ func TestDiscoverNpmrcFilesToleratesUnreadableDirectory(t *testing.T) {
 		t.Fatalf("DiscoverNpmrcFiles must tolerate an unreadable subdirectory, not abort: %v", err)
 	}
 	if len(found) != 1 || found[0] != projectPath {
-		t.Errorf("found = %v, want [%s] — the unreadable dir must be skipped, not stop discovery of everything else", found, projectPath)
+		t.Errorf("found = %v, want [%s], the unreadable dir must be skipped, not stop discovery of everything else", found, projectPath)
 	}
 }
 

@@ -48,7 +48,7 @@ func Add(home string, req AddRequest) (AddResult, error) {
 		return AddResult{}, err
 	}
 	if len(req.Env) == 0 {
-		return AddResult{}, fmt.Errorf("nothing to inject — pass at least one --env VAR=<vault-path>")
+		return AddResult{}, fmt.Errorf("nothing to inject, pass at least one --env VAR=<vault-path>")
 	}
 	for name, vaultPath := range req.Env {
 		if !envNamePattern.MatchString(name) {
@@ -71,7 +71,7 @@ func Add(home string, req AddRequest) (AddResult, error) {
 	}
 	if _, managed := manifest.Tools[req.Tool]; !managed {
 		if _, statErr := os.Stat(profilePath); statErr == nil {
-			return AddResult{}, fmt.Errorf("profile %s already exists at %s but wasn't created by jit wrap — refusing to overwrite it", name, profilePath)
+			return AddResult{}, fmt.Errorf("profile %s already exists at %s but wasn't created by jit wrap, refusing to overwrite it", name, profilePath)
 		}
 	}
 

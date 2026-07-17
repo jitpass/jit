@@ -193,7 +193,7 @@ func checkTerraformRCConflict(rcPath string) (alreadyInstalled bool, err error) 
 	if string(m[1]) == terraformHelperName {
 		return true, nil
 	}
-	return false, fmt.Errorf("%s already configures credentials_helper %q — Terraform allows only one helper, so jit won't replace it; remove that block first if you want jit to manage these tokens", rcPath, string(m[1]))
+	return false, fmt.Errorf("%s already configures credentials_helper %q, Terraform allows only one helper, so jit won't replace it; remove that block first if you want jit to manage these tokens", rcPath, string(m[1]))
 }
 
 // upsertTerraformProfile merges TOKEN -> its vault path into host's
@@ -356,7 +356,7 @@ func writeTerraformHelper(home string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(helperPath), 0o700); err != nil {
 		return "", fmt.Errorf("creating %s: %w", filepath.Dir(helperPath), err)
 	}
-	script := fmt.Sprintf("#!/bin/sh\n# Written by jit migrate — Terraform credentials helper. See `jit terraform-credentials --help`.\nexec %s terraform-credentials \"$@\"\n", singleQuote(jitPath))
+	script := fmt.Sprintf("#!/bin/sh\n# Written by jit migrate, Terraform credentials helper. See `jit terraform-credentials --help`.\nexec %s terraform-credentials \"$@\"\n", singleQuote(jitPath))
 	if err := os.WriteFile(helperPath, []byte(script), 0o700); err != nil { // #nosec G306 -- must be executable; helper runs as this same user
 		return "", fmt.Errorf("writing %s: %w", helperPath, err)
 	}

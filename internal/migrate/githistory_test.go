@@ -78,7 +78,7 @@ func TestHasGitHistoryFalseAfterFileDeletedButHistoryRemains(t *testing.T) {
 		t.Fatalf("HasGitHistory: %v", err)
 	}
 	if !has {
-		t.Error("expected true — the file has prior history even though it isn't currently tracked, got false")
+		t.Error("expected true, the file has prior history even though it isn't currently tracked, got false")
 	}
 }
 

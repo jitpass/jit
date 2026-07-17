@@ -265,7 +265,7 @@ func uninstallNpmRevealHook(dir string, mountPaths []string) error {
 	pkgPath := filepath.Join(dir, "package.json")
 	data, err := os.ReadFile(pkgPath) // #nosec G304 -- dir is jit's own restored mount directory joined with a fixed filename
 	if err != nil {
-		return nil // no package.json — nothing to undo
+		return nil // no package.json, nothing to undo
 	}
 	var pkg map[string]json.RawMessage
 	if err := json.Unmarshal(data, &pkg); err != nil {
@@ -313,7 +313,7 @@ func uninstallNpmRevealHook(dir string, mountPaths []string) error {
 		}
 		changed = true
 		if strings.TrimSpace(newVal) == "" {
-			entries = slices.Delete(entries, idx, idx+1) // it was entirely jit's — remove the key
+			entries = slices.Delete(entries, idx, idx+1) // it was entirely jit's, remove the key
 		} else {
 			entries[idx].value = newVal
 		}
@@ -421,7 +421,7 @@ func installNpmRevealHook(dir, jitPath string, mountPaths []string) (RevealHookK
 
 	var pkg map[string]json.RawMessage
 	if err := json.Unmarshal(data, &pkg); err != nil {
-		return RevealHookNone, nil // malformed package.json — not this function's problem to fix
+		return RevealHookNone, nil // malformed package.json, not this function's problem to fix
 	}
 	scriptsRaw, ok := pkg["scripts"]
 	if !ok {
