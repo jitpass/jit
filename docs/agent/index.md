@@ -25,7 +25,7 @@ to exist; only the cached key inside it locks after 15 minutes of
 inactivity, re-prompting on next use. Change the window with `--ttl`
 (`jit agent install --ttl 1h`); the value is baked into the launchd plist.
 
-`jit agent restart` restarts the agent process — the step after
+`jit agent restart` restarts the agent process, the step after
 [upgrading the binary](../getting-started/install.md#upgrading), though the
 agent also notices a replaced binary itself and restarts onto it once its
 session is locked and no prompt is pending. `jit agent uninstall` stops it
