@@ -320,6 +320,7 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	fmt.Fprintf(w, "scan time: %s          duration: %dms\n\n", summary.ScanTime, summary.ScanDurationMs)
 
 	_, _ = colorOr(riskLevelColor, summary.RiskLevel).Fprintf(w, "  RISK LEVEL: %s\n", strings.ToUpper(summary.RiskLevel))
+	_, _ = colorOr(riskLevelColor, summary.RiskLevel).Fprintf(w, "  EXPOSURE:   %d/100\n", summary.ExposureScore)
 	if matches := summary.ProductionIndicatorCount + summary.PublicIPCount; matches > 0 {
 		fmt.Fprintf(w, "  (%d production-indicator/public-IP match(es) found)\n", matches)
 		for _, path := range criticalTriggerPaths(findings) {
