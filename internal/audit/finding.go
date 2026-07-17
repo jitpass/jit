@@ -19,7 +19,18 @@ import (
 // 0.3.0 added the wrappable_cli_token finding type and its
 // findings_by_category key (additive).
 // 0.4.0 added scan_summary's exposure_score (additive).
-const SchemaVersion = "0.4.0"
+// 0.5.0 added scan_summary's synthetic_finding_count and
+// synthetic_playground_paths (additive): findings living inside a jitpass
+// playground checkout crossed during a machine-wide walk, excluded from the
+// score so synthetic bait never inflates a real machine's risk.
+const SchemaVersion = "0.5.0"
+
+// PlaygroundMarkerFile is the file the jitpass-playground repo ships at its
+// root. Its presence in a directory means every "secret" beneath it is
+// synthetic demo material, not a real at-rest credential. Exported as the
+// single source of truth: internal/cli's first-run flow references this same
+// const instead of keeping its own copy that could drift.
+const PlaygroundMarkerFile = ".jitpass-playground"
 
 // ScannerName identifies this tool in the shared NDJSON envelope, matching
 // bumblebee's record shape so a receiver can co-ingest both (RFC.md §4).
@@ -173,6 +184,18 @@ type ScanSummary struct {
 	// so this count is what keeps the skip visible instead of silent: the
 	// files ARE there, they're just already protected.
 	JitProtectedCount int `json:"jit_protected_count"`
+	// SyntheticFindingCount is how many findings were dropped for living
+	// inside a jitpass playground checkout (PlaygroundMarkerFile) crossed
+	// during a machine-wide walk. They are excluded from every field above
+	// (total, categories, risk, score, trigger paths) so synthetic demo bait
+	// never inflates a real machine's exposure — the same "skipped, but say
+	// so" treatment as JitProtectedCount. Zero when the scan root is itself a
+	// playground (the first-run tour), where showing them IS the point.
+	SyntheticFindingCount int `json:"synthetic_finding_count"`
+	// SyntheticPlaygroundPaths lists the distinct playground roots those
+	// excluded findings came from, sorted, for a precise "excluded N in
+	// <path>" message.
+	SyntheticPlaygroundPaths []string `json:"synthetic_playground_paths"`
 }
 
 // Config carries per-run context shared by every category scanner: where to
