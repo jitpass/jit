@@ -105,7 +105,7 @@ func scanMCPConfigFile(cfg Config, path string) ([]Finding, error) {
 				// webhook token in the path) that this heuristic misses.
 				severity, confidence = SeverityLow, ConfidenceLow
 				evidence = fmt.Sprintf(
-					"plain URL in MCP server %q's env block — likely just an endpoint, but URLs can embed secrets too (e.g. webhook tokens)",
+					"plain URL in MCP server %q's env block: likely just an endpoint, but URLs can embed secrets too (e.g. webhook tokens)",
 					serverName,
 				)
 			}
