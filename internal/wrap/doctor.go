@@ -35,13 +35,13 @@ func Doctor(home, pathEnv, shell string) []DoctorCheck {
 		return append(checks, DoctorCheck{Name: "manifest", OK: false, Detail: err.Error()})
 	}
 	if len(manifest.Tools) == 0 {
-		return append(checks, DoctorCheck{Name: "wrapped tools", OK: true, Detail: "none — nothing to check"})
+		return append(checks, DoctorCheck{Name: "wrapped tools", OK: true, Detail: "none, nothing to check"})
 	}
 
 	if info, statErr := os.Stat(dir); statErr != nil {
-		checks = append(checks, DoctorCheck{Name: "shim dir", OK: false, Detail: dir + " missing — re-run `jit wrap add` for any tool"})
+		checks = append(checks, DoctorCheck{Name: "shim dir", OK: false, Detail: dir + " missing, re-run `jit wrap add` for any tool"})
 	} else if perm := info.Mode().Perm(); perm != 0o700 {
-		checks = append(checks, DoctorCheck{Name: "shim dir", OK: false, Detail: fmt.Sprintf("%s is %o, want 0700 — `chmod 700 %s`", dir, perm, dir)})
+		checks = append(checks, DoctorCheck{Name: "shim dir", OK: false, Detail: fmt.Sprintf("%s is %o, want 0700, `chmod 700 %s`", dir, perm, dir)})
 	} else {
 		checks = append(checks, DoctorCheck{Name: "shim dir", OK: true, Detail: dir + " (0700)"})
 	}
@@ -56,14 +56,14 @@ func Doctor(home, pathEnv, shell string) []DoctorCheck {
 	if onPath {
 		checks = append(checks, DoctorCheck{Name: "PATH", OK: true, Detail: "shim dir is on PATH in this shell"})
 	} else {
-		checks = append(checks, DoctorCheck{Name: "PATH", OK: false, Detail: "shim dir not on PATH in this shell — open a new shell or `" + PathLine() + "`"})
+		checks = append(checks, DoctorCheck{Name: "PATH", OK: false, Detail: "shim dir not on PATH in this shell, open a new shell or `" + PathLine() + "`"})
 	}
 
 	rc := RcFile(home, shell)
 	if data, readErr := os.ReadFile(rc); readErr == nil && strings.Contains(string(data), ".jit/shims") { // #nosec G304 -- the user's own rc file
 		checks = append(checks, DoctorCheck{Name: "rc file", OK: true, Detail: rc + " has the shim PATH line"})
 	} else {
-		checks = append(checks, DoctorCheck{Name: "rc file", OK: false, Detail: rc + " missing the shim PATH line — re-run `jit wrap add` for any tool"})
+		checks = append(checks, DoctorCheck{Name: "rc file", OK: false, Detail: rc + " missing the shim PATH line, re-run `jit wrap add` for any tool"})
 	}
 
 	for _, tool := range manifestTools(manifest) {
@@ -74,17 +74,17 @@ func Doctor(home, pathEnv, shell string) []DoctorCheck {
 		target, linkErr := os.Readlink(link)
 		switch {
 		case linkErr != nil:
-			checks = append(checks, DoctorCheck{Name: name, OK: false, Detail: "shim symlink missing — `jit wrap add " + tool + " ...` reinstalls it"})
+			checks = append(checks, DoctorCheck{Name: name, OK: false, Detail: "shim symlink missing, `jit wrap add " + tool + " ...` reinstalls it"})
 			continue
 		default:
 			if info, statErr := os.Stat(target); statErr != nil || info.Mode()&0o111 == 0 {
-				checks = append(checks, DoctorCheck{Name: name, OK: false, Detail: "shim points at " + target + ", which isn't an executable — jit moved? re-run `jit wrap add " + tool + " ...`"})
+				checks = append(checks, DoctorCheck{Name: name, OK: false, Detail: "shim points at " + target + ", which isn't an executable, jit moved? re-run `jit wrap add " + tool + " ...`"})
 				continue
 			}
 		}
 
 		if _, lookErr := lookPathSkipping(pathEnv, tool, dir); lookErr != nil {
-			checks = append(checks, DoctorCheck{Name: name, OK: false, Detail: "real " + tool + " not found on PATH beyond the shim dir — is it still installed?"})
+			checks = append(checks, DoctorCheck{Name: name, OK: false, Detail: "real " + tool + " not found on PATH beyond the shim dir, is it still installed?"})
 			continue
 		}
 

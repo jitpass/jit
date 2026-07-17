@@ -96,7 +96,7 @@ func watch(names map[string]string, power bool, onEvent func(cause string)) erro
 // thread here.
 func RunMain(ctx context.Context) error {
 	if C.sl_is_main_thread() == 0 {
-		return errors.New("RunMain must run on the process's main thread — distributed notifications are only ever delivered to the main run loop")
+		return errors.New("RunMain must run on the process's main thread, distributed notifications are only ever delivered to the main run loop")
 	}
 	// Already on the main thread; pin the goroutine to it for the loop's
 	// whole life so the scheduler can't migrate us mid-run.

@@ -25,10 +25,10 @@ func TestDecoyValuesSameKeysDifferentValues(t *testing.T) {
 			continue
 		}
 		if decoyValue == realValue {
-			t.Errorf("decoy value for %q equals the real value %q — must never coincide", name, realValue)
+			t.Errorf("decoy value for %q equals the real value %q, must never coincide", name, realValue)
 		}
 		if decoyValue == "" {
-			t.Errorf("decoy value for %q is empty — apps checking for a non-empty var would behave unexpectedly", name)
+			t.Errorf("decoy value for %q is empty, apps checking for a non-empty var would behave unexpectedly", name)
 		}
 	}
 }
@@ -47,7 +47,7 @@ func TestDecoyValuesEmptyInput(t *testing.T) {
 func TestDecoyNoticeSelfDiagnoses(t *testing.T) {
 	notice := string(DecoyNotice("/Users/dev/proj/.env"))
 	if !strings.HasPrefix(notice, "# ") {
-		t.Errorf("DecoyNotice = %q, want a `# ` comment line — anything else risks breaking a dotenv/ini parser", notice)
+		t.Errorf("DecoyNotice = %q, want a `# ` comment line, anything else risks breaking a dotenv/ini parser", notice)
 	}
 	if !strings.HasSuffix(notice, "\n") {
 		t.Errorf("DecoyNotice = %q, want a trailing newline so the first real line isn't glued to it", notice)

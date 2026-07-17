@@ -16,7 +16,7 @@ type UndoResult struct {
 	RemovedShim    bool
 	RemovedProfile bool
 	ProfilePath    string
-	VaultPaths     []string // paths the removed profile referenced — the user's to keep or `jit vault rm`
+	VaultPaths     []string // paths the removed profile referenced, the user's to keep or `jit vault rm`
 	Remaining      int      // wrap-managed tools left after this undo
 }
 
@@ -34,7 +34,7 @@ func Undo(home, tool string) (UndoResult, error) {
 	}
 	entry, ok := manifest.Tools[tool]
 	if !ok {
-		return UndoResult{}, fmt.Errorf("%s isn't wrap-managed — `jit wrap list` shows what is", tool)
+		return UndoResult{}, fmt.Errorf("%s isn't wrap-managed, `jit wrap list` shows what is", tool)
 	}
 
 	var res UndoResult

@@ -100,7 +100,7 @@ func (v *Vault) rewrapFile(file string, oldKW, newKW KeyWrapper) (changed bool, 
 		}
 
 		if dek, err := newKW.UnwrapKey(wrapped); err == nil {
-			wipe(dek) // already current — a resumed run re-finding its own work
+			wipe(dek) // already current, a resumed run re-finding its own work
 			continue
 		}
 
@@ -109,7 +109,7 @@ func (v *Vault) rewrapFile(file string, oldKW, newKW KeyWrapper) (changed bool, 
 			dek, err = oldKW.UnwrapKey(wrapped)
 		}
 		if oldKW == nil || err != nil {
-			return false, fmt.Errorf("%s: cannot decrypt with the current or the staged master key — rekey cannot proceed past it (err: %v)", file, err)
+			return false, fmt.Errorf("%s: cannot decrypt with the current or the staged master key, rekey cannot proceed past it (err: %v)", file, err)
 		}
 
 		rewrappedDEK, err := newKW.WrapKey(dek)
@@ -121,7 +121,7 @@ func (v *Vault) rewrapFile(file string, oldKW, newKW KeyWrapper) (changed bool, 
 		if err != nil || !bytes.Equal(verify, dek) {
 			wipe(dek)
 			wipe(verify)
-			return false, fmt.Errorf("verifying rewrapped key for %s failed (err: %v) — envelope left untouched", file, err)
+			return false, fmt.Errorf("verifying rewrapped key for %s failed (err: %v), envelope left untouched", file, err)
 		}
 		wipe(dek)
 		wipe(verify)

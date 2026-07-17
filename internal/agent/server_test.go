@@ -171,7 +171,7 @@ func TestServerTTLSlidesWithActivity(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	if got := atomic.LoadInt32(&calls); got != 1 {
-		t.Errorf("MEKFetcher called %d times across continuous activity spanning more than one TTL, want exactly 1 — the TTL is an inactivity timeout, not a fixed window since unlock", got)
+		t.Errorf("MEKFetcher called %d times across continuous activity spanning more than one TTL, want exactly 1, the TTL is an inactivity timeout, not a fixed window since unlock", got)
 	}
 
 	// And genuine inactivity must still lock: the timer has to have been
@@ -187,7 +187,7 @@ func TestServerTTLSlidesWithActivity(t *testing.T) {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	t.Error("session still unlocked 3s after the last activity with a 500ms TTL — sliding must not mean never locking")
+	t.Error("session still unlocked 3s after the last activity with a 500ms TTL, sliding must not mean never locking")
 }
 
 // TestServerClosesConnThatNeverSendsRequest confirms a client that
@@ -227,7 +227,7 @@ func TestServerClosesConnThatNeverSendsRequest(t *testing.T) {
 	if _, err := conn.Read(buf); err == nil {
 		t.Fatal("expected the read to end with the server closing the connection, got data")
 	} else if ne, ok := err.(net.Error); ok && ne.Timeout() {
-		t.Fatal("server never closed a connection whose client sent nothing — a stalled client pins the handler goroutine forever")
+		t.Fatal("server never closed a connection whose client sent nothing, a stalled client pins the handler goroutine forever")
 	}
 }
 
@@ -596,7 +596,7 @@ func TestServerRecordsWhoUnlockedItAndWhyItLocked(t *testing.T) {
 		t.Fatalf("Status: %v", err)
 	}
 	if st.LastUnlock == nil {
-		t.Fatal("no LastUnlock recorded after a fresh unlock — the agent still can't explain its own prompts")
+		t.Fatal("no LastUnlock recorded after a fresh unlock, the agent still can't explain its own prompts")
 	}
 	if st.LastUnlock.Op != OpUnlock {
 		t.Errorf("LastUnlock.Op = %q, want %q", st.LastUnlock.Op, OpUnlock)
@@ -605,10 +605,10 @@ func TestServerRecordsWhoUnlockedItAndWhyItLocked(t *testing.T) {
 	// LOCAL_PEERPID path — no fake. Its identity is whatever `go test`
 	// happens to be called, so assert only that the kernel answered at all.
 	if st.LastUnlock.ByPID != int32(os.Getpid()) {
-		t.Errorf("LastUnlock.ByPID = %d, want this test process's pid %d — the peer-pid lookup is what makes every other field trustworthy", st.LastUnlock.ByPID, os.Getpid())
+		t.Errorf("LastUnlock.ByPID = %d, want this test process's pid %d, the peer-pid lookup is what makes every other field trustworthy", st.LastUnlock.ByPID, os.Getpid())
 	}
 	if st.LastUnlock.By == "" {
-		t.Error("LastUnlock.By is empty — the kernel identified the peer's pid but nothing recorded what it was")
+		t.Error("LastUnlock.By is empty, the kernel identified the peer's pid but nothing recorded what it was")
 	}
 
 	if err := c.Lock(); err != nil {
@@ -619,13 +619,13 @@ func TestServerRecordsWhoUnlockedItAndWhyItLocked(t *testing.T) {
 		t.Fatalf("Status after Lock: %v", err)
 	}
 	if st.LastUnlock == nil {
-		t.Error("LastUnlock disappeared once the session locked — the explanation is needed most AFTER the session is gone")
+		t.Error("LastUnlock disappeared once the session locked, the explanation is needed most AFTER the session is gone")
 	}
 	if st.LastLock == nil || st.LastLock.Cause == "" {
 		t.Fatalf("no lock cause recorded after an explicit Lock: %+v", st.LastLock)
 	}
 	if !strings.Contains(st.LastLock.Cause, "explicit") {
-		t.Errorf("LastLock.Cause = %q, want it to distinguish an explicit lock from the idle timeout — that distinction is the answer to \"why am I being asked again?\"", st.LastLock.Cause)
+		t.Errorf("LastLock.Cause = %q, want it to distinguish an explicit lock from the idle timeout, that distinction is the answer to \"why am I being asked again?\"", st.LastLock.Cause)
 	}
 }
 
@@ -789,7 +789,7 @@ func TestServerRevealFreshChallengeFiresOnUnlockForRevealNotOnUnlock(t *testing.
 	}
 	want := []string{"unlock-for-reveal", "reveal"}
 	if len(calls) != len(want) || calls[0] != want[0] || calls[1] != want[1] {
-		t.Errorf("hook sequence = %v, want %v — OnUnlock must NOT fire for a reveal-driven fresh challenge when OnUnlockForReveal is set", calls, want)
+		t.Errorf("hook sequence = %v, want %v, OnUnlock must NOT fire for a reveal-driven fresh challenge when OnUnlockForReveal is set", calls, want)
 	}
 
 	// Fallback: without the scoped hook, the reveal-driven challenge uses
@@ -848,7 +848,7 @@ func TestServerHistoryRecordsEveryUnlockNotJustTheLast(t *testing.T) {
 		}
 	}
 	if unlocks != 3 {
-		t.Errorf("history has %d unlocks, want 3 — every prompt must be recorded, not just the most recent", unlocks)
+		t.Errorf("history has %d unlocks, want 3, every prompt must be recorded, not just the most recent", unlocks)
 	}
 	if locks < 2 {
 		t.Errorf("history has %d locks, want at least 2 idle-timeout locks between the unlocks", locks)
@@ -899,13 +899,13 @@ func TestServerStatusAnswersDuringAnInFlightChallenge(t *testing.T) {
 		t.Fatalf("Status during a challenge: %v", err)
 	}
 	if elapsed > time.Second {
-		t.Errorf("Status took %v while a challenge was in flight — reads are queueing behind the prompt again", elapsed)
+		t.Errorf("Status took %v while a challenge was in flight, reads are queueing behind the prompt again", elapsed)
 	}
 	if st.Unlocked {
 		t.Error("Status reported unlocked while the challenge was still awaiting approval")
 	}
 	if st.PendingUnlock == nil {
-		t.Error("Status carried no PendingUnlock while a prompt was on screen — the one moment the question is being asked, and no answer")
+		t.Error("Status carried no PendingUnlock while a prompt was on screen, the one moment the question is being asked, and no answer")
 	} else if st.PendingUnlock.ByPID != int32(os.Getpid()) {
 		t.Errorf("PendingUnlock.ByPID = %d, want this test process's pid %d", st.PendingUnlock.ByPID, os.Getpid())
 	}
@@ -924,7 +924,7 @@ func TestServerStatusAnswersDuringAnInFlightChallenge(t *testing.T) {
 		t.Fatalf("Status after the challenge resolved: %v", err)
 	}
 	if st.PendingUnlock != nil {
-		t.Error("PendingUnlock still set after the challenge resolved — a stale 'prompt is up' line is worse than none")
+		t.Error("PendingUnlock still set after the challenge resolved, a stale 'prompt is up' line is worse than none")
 	}
 	if !st.Unlocked {
 		t.Error("expected unlocked once the challenge resolved")
@@ -969,7 +969,7 @@ func TestServerConcurrentUnlockersShareOneChallenge(t *testing.T) {
 		t.Errorf("concurrent WrapKey: %v", err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 1 {
-		t.Errorf("5 concurrent unlockers triggered %d challenges, want exactly 1 — they must serialize behind a single prompt", got)
+		t.Errorf("5 concurrent unlockers triggered %d challenges, want exactly 1, they must serialize behind a single prompt", got)
 	}
 }
 
@@ -993,7 +993,7 @@ func TestServerHandsOutMEKCopiesNotItsCache(t *testing.T) {
 	}
 	s.lock("test lock racing an in-flight wrap")
 	if !bytes.Equal(inFlight, key) {
-		t.Fatal("lock() corrupted a MEK copy an in-flight wrap was still using — a wrap racing an explicit lock would seal the DEK under a zeroed key and lose the secret")
+		t.Fatal("lock() corrupted a MEK copy an in-flight wrap was still using, a wrap racing an explicit lock would seal the DEK under a zeroed key and lose the secret")
 	}
 
 	// Direction 2 (keychainwrap's own reason for copying): a caller's
@@ -1003,7 +1003,7 @@ func TestServerHandsOutMEKCopiesNotItsCache(t *testing.T) {
 		t.Fatalf("ensureUnlocked after re-unlock: %v", err)
 	}
 	wipe(first)
-	second, err := s.ensureUnlocked(OpWrap, nil, "") // cache hit — no fresh challenge
+	second, err := s.ensureUnlocked(OpWrap, nil, "") // cache hit, no fresh challenge
 	if err != nil {
 		t.Fatalf("ensureUnlocked cache hit: %v", err)
 	}
@@ -1049,7 +1049,7 @@ func TestServerSeedHistoryRestoresPastEventsUnderNewOnes(t *testing.T) {
 	// the newest.
 	last := events[len(events)-1]
 	if last.UnixTime < 50 {
-		t.Errorf("oldest surviving event is %+v — seeding kept the OLD end of an over-cap history instead of the new end", last)
+		t.Errorf("oldest surviving event is %+v, seeding kept the OLD end of an over-cap history instead of the new end", last)
 	}
 }
 
@@ -1063,6 +1063,6 @@ func TestServerHistoryNeverTriggersAChallenge(t *testing.T) {
 		t.Fatalf("History: %v", err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 0 {
-		t.Errorf("History triggered %d challenge(s), want 0 — an agent you can't ask about its prompts without being prompted is useless", got)
+		t.Errorf("History triggered %d challenge(s), want 0, an agent you can't ask about its prompts without being prompted is useless", got)
 	}
 }

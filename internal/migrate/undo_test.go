@@ -27,7 +27,7 @@ func TestBackupSecretFileWritesUndoIndexRecord(t *testing.T) {
 		t.Fatalf("len(records) = %d, want 1", len(recs))
 	}
 	if recs[0].OriginalPath != envPath {
-		t.Errorf("OriginalPath = %q, want %q — the lossy vault path can't be reversed, this record is the only mapping back", recs[0].OriginalPath, envPath)
+		t.Errorf("OriginalPath = %q, want %q, the lossy vault path can't be reversed, this record is the only mapping back", recs[0].OriginalPath, envPath)
 	}
 	if exists, _ := v.Exists(recs[0].VaultPath); !exists {
 		t.Errorf("record's VaultPath %q has no vault entry behind it", recs[0].VaultPath)
@@ -151,7 +151,7 @@ func TestRestoreFromBackupSnapshotsCurrentStateFirst(t *testing.T) {
 		t.Fatalf("reading redone rc: %v", err)
 	}
 	if string(after) != string(migrated) {
-		t.Errorf("after undo+undo = %q, want the migrated state %q back — the pre-restore snapshot must be the newest record", after, migrated)
+		t.Errorf("after undo+undo = %q, want the migrated state %q back, the pre-restore snapshot must be the newest record", after, migrated)
 	}
 }
 
@@ -171,7 +171,7 @@ func TestBackupSecretFileSameSecondNeverOverwrites(t *testing.T) {
 	}
 
 	if first == second {
-		t.Fatalf("two same-second backups landed on one vault path %q — the later would silently destroy the earlier's bytes", first)
+		t.Fatalf("two same-second backups landed on one vault path %q, the later would silently destroy the earlier's bytes", first)
 	}
 	got, err := v.Get(first)
 	if err != nil {
@@ -218,7 +218,7 @@ func TestValidateRestorePathRejectsUntrustworthyDestinations(t *testing.T) {
 	}
 	for _, p := range bad {
 		if err := validateRestorePath(p); err == nil {
-			t.Errorf("validateRestorePath(%q) = nil, want an error — this path should never receive a restored secret", p)
+			t.Errorf("validateRestorePath(%q) = nil, want an error, this path should never receive a restored secret", p)
 		}
 	}
 	for _, p := range []string{"/Users/x/.env", "/Users/x/code/proj/.env"} {
@@ -270,7 +270,7 @@ func TestRestoreFromBackupDoesNotFollowSymlink(t *testing.T) {
 	}
 
 	if got, _ := os.ReadFile(victim); string(got) != "do-not-touch\n" {
-		t.Errorf("victim was written through the symlink: got %q — the secret must never follow a link", got)
+		t.Errorf("victim was written through the symlink: got %q, the secret must never follow a link", got)
 	}
 	info, err := os.Lstat(envPath)
 	if err != nil {

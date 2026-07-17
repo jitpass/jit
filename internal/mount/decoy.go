@@ -46,5 +46,5 @@ func DecoyValues(real map[string]string) map[string]string {
 // docs/migrate/gcp.md documents. Deliberately absent from real (revealed)
 // content — its presence IS the "you're looking at decoys" signal.
 func DecoyNotice(mountPath string) []byte {
-	return fmt.Appendf(nil, "# jit: fake placeholder values — this mount is not revealed. Run: jit agent reveal %s\n", mountPath)
+	return fmt.Appendf(nil, "# jit: fake placeholder values, this mount is not revealed. Run: jit agent reveal %s\n", mountPath)
 }

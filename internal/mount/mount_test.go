@@ -155,14 +155,14 @@ func TestServeContinuesAfterReaderClosesEarly(t *testing.T) {
 	hadErr := gotErr != nil
 	mu.Unlock()
 	if !hadErr {
-		t.Fatal("expected onError to fire for the early-closing reader — test setup isn't triggering the race it's meant to")
+		t.Fatal("expected onError to fire for the early-closing reader, test setup isn't triggering the race it's meant to")
 	}
 
 	// Second reader: a normal, full read. The loop must have re-opened and
 	// still be serving — this is the actual regression this test guards.
 	got := readFIFO(t, path)
 	if !bytes.Equal(got, content) {
-		t.Error("second reader did not get the full content — Serve stopped after the first reader's transient error instead of re-opening")
+		t.Error("second reader did not get the full content, Serve stopped after the first reader's transient error instead of re-opening")
 	}
 
 	cancel()
@@ -229,7 +229,7 @@ func TestServeIsolatesStaleReaderFromNextCycle(t *testing.T) {
 	// this must observe a clean EOF, never cycle 2's content.
 	n, err = f1.Read(buf)
 	if err != io.EOF {
-		t.Errorf("reader 1's second read = (%d, %v), want (0, io.EOF) — got stale-reader concatenation instead", n, err)
+		t.Errorf("reader 1's second read = (%d, %v), want (0, io.EOF), got stale-reader concatenation instead", n, err)
 	}
 	if err := f1.Close(); err != nil {
 		t.Fatalf("closing reader 1: %v", err)
@@ -298,7 +298,7 @@ func TestServeReusesPipeWhenReaderClosedCleanly(t *testing.T) {
 		t.Fatalf("closing early: %v", err)
 	}
 	select {
-	case <-errCh: // the cycle's EPIPE — onError fires after the reuse-vs-recreate decision is made
+	case <-errCh: // the cycle's EPIPE, onError fires after the reuse-vs-recreate decision is made
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected the early-closing reader to surface a write error")
 	}
@@ -308,7 +308,7 @@ func TestServeReusesPipeWhenReaderClosedCleanly(t *testing.T) {
 		t.Fatalf("Stat after: %v", err)
 	}
 	if !os.SameFile(before, after) {
-		t.Error("Serve recreated the FIFO after a cleanly-closed reader — every such rename is a filesystem event that feeds a file watcher's re-read loop (GAPS.md #47)")
+		t.Error("Serve recreated the FIFO after a cleanly-closed reader, every such rename is a filesystem event that feeds a file watcher's re-read loop (GAPS.md #47)")
 	}
 
 	// The reused pipe must still serve the next reader normally.
@@ -389,7 +389,7 @@ func TestServeReusesPipeAfterDrainedReadWhenNothingLingers(t *testing.T) {
 		t.Fatalf("Stat after: %v", err)
 	}
 	if !os.SameFile(before, after) {
-		t.Error("Serve renamed the FIFO after a drained read with no lingering reader — that rename is the filesystem event that feeds a watcher's re-read loop (GAPS.md #47)")
+		t.Error("Serve renamed the FIFO after a drained read with no lingering reader, that rename is the filesystem event that feeds a watcher's re-read loop (GAPS.md #47)")
 	}
 
 	// And the reused pipe still serves the next reader normally.
@@ -463,7 +463,7 @@ func TestServeIsolatesWhenLingeringReaderReported(t *testing.T) {
 	// The lingering fd must see a clean EOF, never cycle 2's bytes.
 	n, err = f1.Read(buf)
 	if err != io.EOF {
-		t.Errorf("reader 1's second read = (%d, %v), want (0, io.EOF) — stale-reader isolation lost on the callback path", n, err)
+		t.Errorf("reader 1's second read = (%d, %v), want (0, io.EOF), stale-reader isolation lost on the callback path", n, err)
 	}
 
 	after, err := os.Stat(path)

@@ -180,13 +180,13 @@ var catalog = map[string]CatalogEntry{
 	"aws": {
 		Tool:           "aws",
 		Kind:           KindNative,
-		Doc:            "AWS access keys — served via credential_process, which SDKs consult too",
+		Doc:            "AWS access keys, served via credential_process, which SDKs consult too",
 		NativeCategory: "aws",
 	},
 	"terraform": {
 		Tool:           "terraform",
 		Kind:           KindNative,
-		Doc:            "Terraform Cloud API token — served via credentials_helper; terraform login/logout keep working",
+		Doc:            "Terraform Cloud API token, served via credentials_helper; terraform login/logout keep working",
 		NativeCategory: "terraform",
 	},
 }

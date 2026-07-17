@@ -94,5 +94,5 @@ func claimNamespace(v *vault.Vault, profilesRoot, base string, varNames []string
 			return name, profilePath, entries, movedFrom, nil
 		}
 	}
-	return "", "", nil, "", fmt.Errorf("no free vault namespace for %q after %d candidates — every candidate path already holds another migration's secret", base, maxNamespaceCandidates)
+	return "", "", nil, "", fmt.Errorf("no free vault namespace for %q after %d candidates, every candidate path already holds another migration's secret", base, maxNamespaceCandidates)
 }

@@ -545,7 +545,7 @@ func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller, labe
 		// A zero lastDenied (nothing ever declined, or cleared by the last
 		// successful unlock) makes sinceDenied enormous, so it never trips.
 		if sinceDenied := time.Since(lastDenied); sinceDenied < cooldown {
-			return nil, fmt.Errorf("an unlock attempt failed %s ago (%s) — automatic re-prompts are paused for another %s (run `jit agent unlock` to try again now)",
+			return nil, fmt.Errorf("an unlock attempt failed %s ago (%s), automatic re-prompts are paused for another %s (run `jit agent unlock` to try again now)",
 				sinceDenied.Round(time.Second), lastCause, (cooldown - sinceDenied).Round(time.Second))
 		}
 	}

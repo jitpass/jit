@@ -33,7 +33,7 @@ func RcFile(home, shell string) string {
 	switch filepath.Base(shell) {
 	case "bash":
 		return filepath.Join(home, ".bashrc")
-	case "zsh", ".": // "." is filepath.Base of an unset $SHELL — assume macOS's default shell
+	case "zsh", ".": // "." is filepath.Base of an unset $SHELL, assume macOS's default shell
 		return filepath.Join(home, ".zshrc")
 	default:
 		return filepath.Join(home, ".profile")

@@ -55,7 +55,7 @@ func ScrubToken(home string, src TokenSource, value string) error {
 		kept = append(kept, line)
 	}
 	if !removed {
-		return fmt.Errorf("%s: the extracted token isn't where it was — refusing to scrub a file that changed underneath the wrap", path)
+		return fmt.Errorf("%s: the extracted token isn't where it was, refusing to scrub a file that changed underneath the wrap", path)
 	}
 
 	mode := os.FileMode(0o600)

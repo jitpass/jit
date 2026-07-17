@@ -11,7 +11,7 @@ import (
 func TestRevealStateStartsHidden(t *testing.T) {
 	s := NewRevealState()
 	if s.IsRevealed() {
-		t.Error("a brand-new RevealState must start hidden — a mount must never default to serving real content")
+		t.Error("a brand-new RevealState must start hidden, a mount must never default to serving real content")
 	}
 }
 
@@ -67,7 +67,7 @@ func TestRevealStateRemaining(t *testing.T) {
 func TestRevealStateWindowEnded(t *testing.T) {
 	s := NewRevealState()
 	if _, ended := s.WindowEnded(); ended {
-		t.Error("WindowEnded on a never-revealed state = true, want false — there was never a window to end")
+		t.Error("WindowEnded on a never-revealed state = true, want false, there was never a window to end")
 	}
 
 	s.Reveal(time.Minute)

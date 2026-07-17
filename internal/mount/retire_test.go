@@ -68,7 +68,7 @@ func TestRetireFIFOReleasesReaderBlockedInOpen(t *testing.T) {
 			t.Errorf("rescued reader got %q, want the replacement content %q", r.data, replacement)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("reader is still blocked after release — the stranded-open rescue didn't fire")
+		t.Fatal("reader is still blocked after release, the stranded-open rescue didn't fire")
 	}
 
 	if _, err := os.Lstat(path + ".jit-prev"); !os.IsNotExist(err) {

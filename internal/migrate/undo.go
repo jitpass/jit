@@ -222,7 +222,7 @@ func RestoreFromBackup(v *vault.Vault, rec BackupRecord) error {
 	// than write through a symlink. See this function's doc comment.
 	f, err := os.OpenFile(rec.OriginalPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
-		return fmt.Errorf("creating %s (something reappeared at this path — refusing to write a secret through it): %w", rec.OriginalPath, err)
+		return fmt.Errorf("creating %s (something reappeared at this path, refusing to write a secret through it): %w", rec.OriginalPath, err)
 	}
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
@@ -248,7 +248,7 @@ func RestoreFromBackup(v *vault.Vault, rec BackupRecord) error {
 // any path that survives unchanged has no traversal left in it.
 func validateRestorePath(p string) error {
 	if p == "" {
-		return fmt.Errorf("backup record has an empty original_path — refusing to restore")
+		return fmt.Errorf("backup record has an empty original_path, refusing to restore")
 	}
 	if !filepath.IsAbs(p) {
 		return fmt.Errorf("refusing to restore to non-absolute path %q", p)

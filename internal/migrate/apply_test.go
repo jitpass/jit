@@ -116,7 +116,7 @@ func TestDiscoverEnvFilesToleratesUnreadableDirectory(t *testing.T) {
 	}
 	want := filepath.Join(root, "myapp", ".env")
 	if len(found) != 1 || found[0] != want {
-		t.Errorf("found = %v, want [%s] — the unreadable dir must be skipped, not stop discovery of everything else", found, want)
+		t.Errorf("found = %v, want [%s], the unreadable dir must be skipped, not stop discovery of everything else", found, want)
 	}
 }
 
@@ -172,7 +172,7 @@ func TestDiscoverEnvFilesSkipsPointerFiles(t *testing.T) {
 		t.Fatalf("DiscoverEnvFiles: %v", err)
 	}
 	if len(found) != 0 {
-		t.Errorf("found = %v, want empty — the .pointers companion must never be rediscovered as a new .env file", found)
+		t.Errorf("found = %v, want empty, the .pointers companion must never be rediscovered as a new .env file", found)
 	}
 }
 
@@ -198,7 +198,7 @@ func TestDiscoverEnvFilesSkipsOwnBackupFiles(t *testing.T) {
 		t.Fatalf("DiscoverEnvFiles: %v", err)
 	}
 	if len(found) != 0 {
-		t.Errorf("found = %v, want empty — the .jit-bak- backup must never be rediscovered as a new .env file", found)
+		t.Errorf("found = %v, want empty, the .jit-bak- backup must never be rediscovered as a new .env file", found)
 	}
 }
 
@@ -233,7 +233,7 @@ func TestDiscoverEnvFilesSkipsInPlacePointerFiles(t *testing.T) {
 		t.Fatalf("DiscoverEnvFiles: %v", err)
 	}
 	if len(found) != 0 {
-		t.Errorf("found = %v, want empty — an in-place-replaced .env.bak pointer file must not be rediscovered as a real .env", found)
+		t.Errorf("found = %v, want empty, an in-place-replaced .env.bak pointer file must not be rediscovered as a real .env", found)
 	}
 }
 
@@ -353,7 +353,7 @@ func TestApplyEnvFileBackupNeverWritesPlaintextToDisk(t *testing.T) {
 	}
 	for _, e := range entries {
 		if strings.Contains(e.Name(), "jit-bak") {
-			t.Errorf("found a plaintext backup file on disk: %s — the backup must live only in the vault", e.Name())
+			t.Errorf("found a plaintext backup file on disk: %s, the backup must live only in the vault", e.Name())
 		}
 	}
 
@@ -431,7 +431,7 @@ func TestApplyEnvFileRefusesToOverwriteAnotherProjectsSecrets(t *testing.T) {
 		t.Fatalf("ApplyEnvFile(B): %v", err)
 	}
 	if resultB.ProfileName != "api-2" {
-		t.Errorf("B ProfileName = %q, want api-2 — the second project must never claim the first one's namespace", resultB.ProfileName)
+		t.Errorf("B ProfileName = %q, want api-2, the second project must never claim the first one's namespace", resultB.ProfileName)
 	}
 	if resultB.NamespaceMovedFrom != "api" {
 		t.Errorf("B NamespaceMovedFrom = %q, want %q so callers can explain the move", resultB.NamespaceMovedFrom, "api")
@@ -439,7 +439,7 @@ func TestApplyEnvFileRefusesToOverwriteAnotherProjectsSecrets(t *testing.T) {
 
 	// The point of the whole mechanism: project A's live secret survives.
 	if got, err := v.Get("api/API_KEY"); err != nil || string(got) != "from-project-a" {
-		t.Errorf("api/API_KEY = (%q, %v), want (from-project-a, nil) — project B's migration must not touch it", got, err)
+		t.Errorf("api/API_KEY = (%q, %v), want (from-project-a, nil), project B's migration must not touch it", got, err)
 	}
 	if got, err := v.Get("api-2/API_KEY"); err != nil || string(got) != "from-project-b" {
 		t.Errorf("api-2/API_KEY = (%q, %v), want (from-project-b, nil)", got, err)
@@ -474,7 +474,7 @@ func TestApplyEnvFileReRunRefreshesItsOwnNamespace(t *testing.T) {
 		t.Fatalf("second ApplyEnvFile: %v", err)
 	}
 	if second.ProfileName != first.ProfileName || second.NamespaceMovedFrom != "" {
-		t.Errorf("re-run: (ProfileName, NamespaceMovedFrom) = (%q, %q), want (%q, \"\") — a re-run refreshes its own namespace, never forks", second.ProfileName, second.NamespaceMovedFrom, first.ProfileName)
+		t.Errorf("re-run: (ProfileName, NamespaceMovedFrom) = (%q, %q), want (%q, \"\"), a re-run refreshes its own namespace, never forks", second.ProfileName, second.NamespaceMovedFrom, first.ProfileName)
 	}
 	if got, err := v.Get(first.ProfileName + "/API_KEY"); err != nil || string(got) != "v2" {
 		t.Errorf("after re-run, %s/API_KEY = (%q, %v), want (v2, nil)", first.ProfileName, got, err)
@@ -508,7 +508,7 @@ func TestApplyEnvFileVariantSuffixDisambiguatesProfile(t *testing.T) {
 	}
 
 	if envResult.ProfileName == bakResult.ProfileName {
-		t.Fatalf(".env and .env.bak derived the SAME profile name %q — they must be distinct, or one silently overwrites the other's vault entries", envResult.ProfileName)
+		t.Fatalf(".env and .env.bak derived the SAME profile name %q, they must be distinct, or one silently overwrites the other's vault entries", envResult.ProfileName)
 	}
 	dirName := filepath.Base(root)
 	if envResult.ProfileName != dirName {
@@ -530,7 +530,7 @@ func TestApplyEnvFileVariantSuffixDisambiguatesProfile(t *testing.T) {
 		t.Fatalf("v.Get(%s): %v", envProfile["SHARED"], err)
 	}
 	if string(got) != "from-env" {
-		t.Errorf(".env's SHARED = %q after .env.bak was migrated, want %q — .env.bak must not overwrite .env's vault value", got, "from-env")
+		t.Errorf(".env's SHARED = %q after .env.bak was migrated, want %q, .env.bak must not overwrite .env's vault value", got, "from-env")
 	}
 	if _, ok := envProfile["ONLY_IN_ENV"]; !ok {
 		t.Error(".env's ONLY_IN_ENV entry is missing from its own profile after .env.bak was migrated")
@@ -557,12 +557,12 @@ func TestApplyEnvFileBackupSuffixNeverMounted(t *testing.T) {
 		t.Fatalf("ApplyEnvFile: %v", err)
 	}
 	if result.Mounted {
-		t.Error("Mounted = true, want false — a .bak file must never become a live mount")
+		t.Error("Mounted = true, want false, a .bak file must never become a live mount")
 	}
 
 	got, err := v.Get(result.ProfileName + "/DATABASE_URL")
 	if err != nil || string(got) != "postgres://admin:secret@db/app" {
-		t.Errorf("vault value = (%q, %v), want (postgres://admin:secret@db/app, nil) — secrets must still be migrated even though the file isn't mounted", got, err)
+		t.Errorf("vault value = (%q, %v), want (postgres://admin:secret@db/app, nil), secrets must still be migrated even though the file isn't mounted", got, err)
 	}
 
 	info, err := os.Lstat(path)
@@ -570,14 +570,14 @@ func TestApplyEnvFileBackupSuffixNeverMounted(t *testing.T) {
 		t.Fatalf("Lstat: %v", err)
 	}
 	if info.Mode()&os.ModeNamedPipe != 0 {
-		t.Error(".env.bak was converted into a named pipe — it must stay a regular file")
+		t.Error(".env.bak was converted into a named pipe, it must stay a regular file")
 	}
 	content, err := os.ReadFile(path) // #nosec G304 -- test-controlled path, confirmed not a FIFO above
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
 	if strings.Contains(string(content), "postgres://admin:secret@db/app") {
-		t.Error(".env.bak still contains the raw secret value after migration — it must be replaced with a pointer file")
+		t.Error(".env.bak still contains the raw secret value after migration, it must be replaced with a pointer file")
 	}
 	if !strings.Contains(string(content), "jit://vault/") {
 		t.Errorf(".env.bak was not replaced with pointer content, got:\n%s", content)
@@ -673,7 +673,7 @@ func TestDiscoverEnvFilesSkipsGoModCache(t *testing.T) {
 		t.Fatalf("DiscoverEnvFiles: %v", err)
 	}
 	if len(found) != 1 || found[0] != filepath.Join(root, ".env") {
-		t.Errorf("found = %v, want only the project .env — the Go module cache is read-only, checksummed public source and must never be rewritten", found)
+		t.Errorf("found = %v, want only the project .env, the Go module cache is read-only, checksummed public source and must never be rewritten", found)
 	}
 }
 

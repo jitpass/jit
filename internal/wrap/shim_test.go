@@ -105,6 +105,6 @@ func TestLookPathSkippingIgnoresNonExecutablesAndDirs(t *testing.T) {
 	}
 	pathEnv := strings.Join([]string{dir, other}, string(os.PathListSeparator))
 	if _, err := lookPathSkipping(pathEnv, "gh", t.TempDir()); err == nil {
-		t.Fatal("expected an error — no executable gh exists on this PATH")
+		t.Fatal("expected an error, no executable gh exists on this PATH")
 	}
 }

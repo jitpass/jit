@@ -83,7 +83,7 @@ func TestDiscoverMCPConfigsIncludeClaudeDesktopFlag(t *testing.T) {
 		t.Fatalf("DiscoverMCPConfigs: %v", err)
 	}
 	if len(found) != 0 {
-		t.Errorf("found = %v, want empty — includeClaudeDesktop=false must exclude it", found)
+		t.Errorf("found = %v, want empty, includeClaudeDesktop=false must exclude it", found)
 	}
 
 	found, err = DiscoverMCPConfigs(home, cwd, true)
@@ -91,7 +91,7 @@ func TestDiscoverMCPConfigsIncludeClaudeDesktopFlag(t *testing.T) {
 		t.Fatalf("DiscoverMCPConfigs: %v", err)
 	}
 	if len(found) != 1 || found[0] != claudePath {
-		t.Errorf("found = %v, want [%s] — includeClaudeDesktop=true must include it", found, claudePath)
+		t.Errorf("found = %v, want [%s], includeClaudeDesktop=true must include it", found, claudePath)
 	}
 }
 
@@ -122,7 +122,7 @@ func TestDiscoverMCPConfigsToleratesUnreadableDirectory(t *testing.T) {
 		t.Fatalf("DiscoverMCPConfigs must tolerate an unreadable subdirectory, not abort: %v", err)
 	}
 	if len(found) != 1 || found[0] != projectPath {
-		t.Errorf("found = %v, want [%s] — the unreadable dir must be skipped, not stop discovery of everything else", found, projectPath)
+		t.Errorf("found = %v, want [%s], the unreadable dir must be skipped, not stop discovery of everything else", found, projectPath)
 	}
 }
 
@@ -320,7 +320,7 @@ func TestApplyMCPConfigSameServerNameDifferentConfigs(t *testing.T) {
 	}
 	smB := resultB.Servers[0]
 	if smB.ProfileName != "mcp-github-2" {
-		t.Errorf("B ProfileName = %q, want mcp-github-2 — a different config's server must never claim the first one's namespace", smB.ProfileName)
+		t.Errorf("B ProfileName = %q, want mcp-github-2, a different config's server must never claim the first one's namespace", smB.ProfileName)
 	}
 	if smB.NamespaceMovedFrom != "mcp-github" {
 		t.Errorf("B NamespaceMovedFrom = %q, want mcp-github", smB.NamespaceMovedFrom)
@@ -367,7 +367,7 @@ func TestApplyMCPConfigReRunSameConfigRefreshes(t *testing.T) {
 	}
 	sm := result.Servers[0]
 	if sm.ProfileName != "mcp-github" || sm.NamespaceMovedFrom != "" {
-		t.Errorf("re-run: (ProfileName, NamespaceMovedFrom) = (%q, %q), want (mcp-github, \"\") — a re-run refreshes, never forks", sm.ProfileName, sm.NamespaceMovedFrom)
+		t.Errorf("re-run: (ProfileName, NamespaceMovedFrom) = (%q, %q), want (mcp-github, \"\"), a re-run refreshes, never forks", sm.ProfileName, sm.NamespaceMovedFrom)
 	}
 	if got, err := v.Get("mcp-github/GITHUB_TOKEN"); err != nil || string(got) != "token-v2" {
 		t.Errorf("after re-run, token = (%q, %v), want (token-v2, nil)", got, err)
@@ -421,7 +421,7 @@ func TestApplyMCPConfigLegacyUnstampedProfile(t *testing.T) {
 		t.Errorf("different config must bump, got %q", resultDiff.Servers[0].ProfileName)
 	}
 	if got, err := v.Get("mcp-github/GITHUB_TOKEN"); err != nil || string(got) != "same-token" {
-		t.Errorf("legacy secret = (%q, %v), want (same-token, nil) — must survive the different config's migration", got, err)
+		t.Errorf("legacy secret = (%q, %v), want (same-token, nil), must survive the different config's migration", got, err)
 	}
 }
 
@@ -521,7 +521,7 @@ func TestUnwrapMCPConfigLeavesForeignWrappersAlone(t *testing.T) {
 		t.Fatalf("UnwrapMCPConfig: %v", err)
 	}
 	if len(restored) != 0 {
-		t.Fatalf("restored = %+v, want nothing — mcp-other is not in the owned set", restored)
+		t.Fatalf("restored = %+v, want nothing, mcp-other is not in the owned set", restored)
 	}
 	after, err := os.ReadFile(path) // #nosec G304 -- test-controlled path
 	if err != nil {

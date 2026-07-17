@@ -118,7 +118,7 @@ func (w *Wrapper) PromoteStagedRekeyMEK() error {
 	}
 	defer wipe(got)
 	if !bytes.Equal(got, mek) {
-		return fmt.Errorf("verifying new master key: keychain read back a different key — staged key kept, rekey NOT complete")
+		return fmt.Errorf("verifying new master key: keychain read back a different key, staged key kept, rekey NOT complete")
 	}
 
 	return staged.deleteMEK()

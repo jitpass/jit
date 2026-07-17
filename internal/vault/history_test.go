@@ -95,7 +95,7 @@ func TestHistoryHiddenFromListAndPurgedByRemove(t *testing.T) {
 		t.Fatalf("Remove: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(v.Root, "vault", historyDirName, "stripe/dev-key")); !os.IsNotExist(err) {
-		t.Errorf("history dir survives Remove (err=%v), want gone — rm must mean gone", err)
+		t.Errorf("history dir survives Remove (err=%v), want gone, rm must mean gone", err)
 	}
 	if versions, _ := v.HistoryVersions("stripe/dev-key"); len(versions) != 0 {
 		t.Errorf("HistoryVersions after Remove = %v, want none", versions)
