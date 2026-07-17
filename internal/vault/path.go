@@ -51,6 +51,15 @@ func sanitizeSecretPath(vaultDir, path string) (string, error) {
 			return "", fmt.Errorf("secret path %q must not contain \".\" segments", path)
 		}
 	}
+	// _history/ is the version-history tree (history.go), written only by
+	// the archive machinery itself — unlike _backups/, which jit migrate
+	// legitimately writes through Set. A user secret planted there would
+	// read as an archived version of whatever path it names, and Restore
+	// would rename it over the real secret. EqualFold, not ==: on the
+	// default case-insensitive macOS filesystem, "_History" IS "_history".
+	if first := strings.SplitN(path, "/", 2)[0]; strings.EqualFold(first, historyDirName) {
+		return "", fmt.Errorf("secret path %q is reserved for jit's own version history (%s/)", path, historyDirName)
+	}
 
 	full := filepath.Join(vaultDir, path+".enc")
 	cleanVaultDir := filepath.Clean(vaultDir)
