@@ -472,7 +472,10 @@ func (c columns) reasonIndent() int {
 // files — then the shared finding and the file list.
 func writeRenderItemText(w io.Writer, item renderItem, home string, cols columns) {
 	if item.collapsed {
-		fmt.Fprintf(w, "  %s\n\n", collapsedHeader(item))
+		// Same "• " marker as a file path: both kinds of header anchor a
+		// block, and a category mixing marked files with unmarked collapsed
+		// headers read as if only some blocks were "real".
+		fmt.Fprintf(w, "  • %s\n\n", collapsedHeader(item))
 		cols.writeFindingRow(w, item.rep, false)
 		locIndent := strings.Repeat(" ", cols.reasonIndent())
 		for _, loc := range item.locations {
@@ -486,10 +489,12 @@ func writeRenderItemText(w io.Writer, item renderItem, home string, cols columns
 		return
 	}
 
-	// A "* " marker makes each file the eye's anchor within a category, and a
-	// blank line after it (plus one after every finding) gives the block room
-	// to breathe instead of packing rows edge to edge.
-	fmt.Fprintf(w, "  * %s\n\n", ShortenHome(home, item.rep.FilePath))
+	// A "• " marker makes each file the eye's anchor within a category (a
+	// real bullet, matching the report's other glyphs — the "─" rules and
+	// "└" connectors), and a blank line after it (plus one after every
+	// finding) gives the block room to breathe instead of packing rows
+	// edge to edge.
+	fmt.Fprintf(w, "  • %s\n\n", ShortenHome(home, item.rep.FilePath))
 	for _, f := range item.findings {
 		cols.writeFindingRow(w, f, true)
 		fmt.Fprintln(w)

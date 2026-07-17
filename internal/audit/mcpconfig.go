@@ -104,10 +104,10 @@ func scanMCPConfigFile(cfg Config, path string) ([]Finding, error) {
 				// suppress, since a URL CAN still embed a secret (a
 				// webhook token in the path) that this heuristic misses.
 				severity, confidence = SeverityLow, ConfidenceLow
-				evidence = fmt.Sprintf(
-					"plain URL in MCP server %q's env block: likely just an endpoint, but URLs can embed secrets too (e.g. webhook tokens)",
-					serverName,
-				)
+				// Keep this terse: the reason renders on one line in the
+				// report, and the full endpoint-vs-webhook-token nuance made
+				// it the longest line on real machines by a wide margin.
+				evidence = fmt.Sprintf("plain URL in MCP server %q's env block; URLs can embed tokens", serverName)
 			}
 
 			findings = append(findings, cfg.ValueFinding(ValueFindingParams{
