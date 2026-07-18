@@ -13,7 +13,7 @@ materializing only at the moment of use.
 
 ```sh
 jit audit                  # what's exposed on this machine? (strictly read-only)
-jit migrate local          # fix this project; tools keep working
+jit migrate                # fix everything it found; tools keep working
 jit wrap gh                # move a CLI's token into the vault; keep typing `gh` as before
 jit run -- npm run dev     # or inject secrets straight into a process, no file at all
 ```
@@ -38,7 +38,7 @@ then **[Install](./getting-started/install.md)** →
 
 ## Fix them - `jit migrate`
 
-- [Migrating a project or your whole machine](./migrate/index.md) - `local` vs `home`, dry runs, safety model
+- [Migrating a project or your whole machine](./migrate/index.md) - the whole-machine default, `local` vs `home`, dry runs, safety model
 - Per-credential guides: [.env files](./migrate/env-files.md) ·
   [shell configs](./migrate/shell-configs.md) · [AWS](./migrate/aws.md) ·
   [Kubernetes](./migrate/kubernetes.md) · [Terraform](./migrate/terraform.md) ·
