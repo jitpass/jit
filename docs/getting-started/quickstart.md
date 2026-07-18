@@ -11,8 +11,8 @@ The whole arc, in six commands:
 jit audit                     # 1. see the problem (read-only, run it anywhere)
 jit vault init                # 2. create the vault (master key in your login keychain)
 jit agent install             # 3. background helper: unlock once, everything shares it
-jit migrate local --dry-run   # 4. preview the fix for the project you're in
-jit migrate local             # 5. apply it: plan, [y/N], one Touch ID prompt
+jit migrate --dry-run         # 4. preview the fix, same whole-machine scope as audit
+jit migrate                   # 5. apply it: plan, [y/N], one Touch ID prompt
 jit status                    # 6. vault / agent / mounts / backup health, one screen
 ```
 
@@ -66,27 +66,28 @@ The agent is also what serves live-mounted files, so if you migrate a `.env`
 file, you want it installed. Everything still works without it, just with
 more prompts. More in **[The background agent](../agent/index.md)**.
 
-## 4–5. Fix a project: `jit migrate local`
+## 4–5. Fix what audit found: `jit migrate`
 
 Always preview first. `--dry-run` runs the exact same discovery a real run
-would, so the preview is accurate:
+would, so the preview is accurate, and `jit migrate` covers the same
+whole-machine ground `jit audit` scans, so what the report showed is what
+the plan fixes:
 
 ```
-$ cd ~/code/myapp
-$ jit migrate local --dry-run
-jit migrate - plan (local scope)
+$ jit migrate --dry-run
+jit migrate - plan (home scope)
 Each modified file is backed up before it's rewritten.
 
 [.env file(s) → secrets move to the vault; the file keeps working as a live, auto-updating mount] (1)
-  • /Users/alex/code/myapp/.env
+  • ~/code/myapp/.env
 
 [DRY RUN] No files will be changed. Run without --dry-run to apply this plan.
 ```
 
 Then apply it by dropping `--dry-run`. The same plan prints again, followed
-by a `Proceed? [y/N]` confirmation. `jit migrate home` does the same for
-everything under `$HOME`, including machine-wide files like `~/.zshrc` and
-`~/.aws/credentials`. More in **[Migrating](../migrate/index.md)**.
+by a `Proceed? [y/N]` confirmation. To fix just one project instead, `cd`
+into it and run `jit migrate local`: only what's under that directory
+tree is discovered or touched. More in **[Migrating](../migrate/index.md)**.
 
 ## 6. Check health: `jit status`
 

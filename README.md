@@ -78,7 +78,7 @@ so everything keeps working without the secret sitting on disk:
 
 ```
 jit audit                  # what's exposed on this machine? (strictly read-only)
-jit migrate local          # fix this project; tools keep working
+jit migrate                # fix everything it found; tools keep working
 jit wrap gh                # move a CLI's token into the vault; keep typing `gh` as before
 jit run -- npm run dev     # or inject secrets straight into a process, no file at all
 ```
@@ -290,8 +290,8 @@ never ran `jit agent install`, step 1 alone is the whole upgrade.
 jit audit                     # 1. see the problem (read-only, run it anywhere)
 jit vault init                # 2. create the vault (master key in your login keychain)
 jit agent install             # 3. background helper: unlock once, everything shares it
-jit migrate local --dry-run   # 4. preview the fix for the project you're in
-jit migrate local             # 5. apply it: plan, [y/N], one Touch ID prompt
+jit migrate --dry-run         # 4. preview the fix, same whole-machine scope as audit
+jit migrate                   # 5. apply it: plan, [y/N], one Touch ID prompt
 jit status                    # 6. vault / agent / mounts / backup health, one screen
 ```
 

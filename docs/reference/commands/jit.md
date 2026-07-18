@@ -6,7 +6,7 @@ Local-first developer secret runtime
 
 jit finds plaintext secrets exposed on your machine and gives you a one-command way to fix it, without ever putting them back on disk in plaintext. See https://github.com/jitpass/jit for details.
 
-Start with `jit audit` (strictly read-only), then `jit migrate local --dry-run` to preview the guided fix for the project you're in.
+Start with `jit audit` (strictly read-only), then `jit migrate --dry-run` to preview the guided fix for everything it found.
 
 ```
 jit

@@ -115,9 +115,17 @@ type tfvarsMatch struct {
 // a named pipe is left alone. Idempotent by construction: a file whose
 // secret assignments were already migrated has none left to match, so it
 // simply isn't returned again.
-func DiscoverTfvarsFiles(root string) ([]string, error) {
-	var found []string
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+//
+// complexOnly lists files whose secret-shaped assignments are ALL
+// unmigratable (heredocs, maps, multi-line values — parseTfvarsLines'
+// skipped set) with not one simple-string match among them. `jit audit`
+// flags every tfvars file, so without this second list such a file
+// appeared in the audit report yet nowhere at all in the migrate plan —
+// not even ApplyTfvarsDir's per-file SkippedComplex note, which only ever
+// fires for files that made found. Callers surface complexOnly so the
+// plan can say "seen, nothing movable" instead of staying silent.
+func DiscoverTfvarsFiles(root string) (found, complexOnly []string, err error) {
+	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if path == root {
 				return err
@@ -125,36 +133,39 @@ func DiscoverTfvarsFiles(root string) ([]string, error) {
 			return filepath.SkipDir
 		}
 		if d.IsDir() {
-			if skipDiscoveryDir(path, d.Name()) {
+			if skipDiscoveryDir(root, path, d.Name()) {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		// Regular files only, same rule as audit's walk (fsutil.go):
+		// reading a FIFO would block forever, and a symlinked tfvars file
+		// must not be rewritten through the link.
+		if !d.Type().IsRegular() {
 			return nil
 		}
 		if !tfvarsFileName(d.Name()) {
 			return nil
 		}
-		info, ierr := d.Info()
-		if ierr != nil {
-			return nil // race with deletion — skip just this file
-		}
-		if info.Mode()&fs.ModeNamedPipe != 0 {
-			return nil // reading a FIFO would block forever
-		}
 		lines, rerr := readLines(path)
 		if rerr != nil {
 			return nil // unreadable file — skip it, don't fail the whole walk
 		}
-		matches, _ := parseTfvarsLines(lines)
-		if len(matches) > 0 {
+		matches, skipped := parseTfvarsLines(lines)
+		switch {
+		case len(matches) > 0:
 			found = append(found, path)
+		case len(skipped) > 0:
+			complexOnly = append(complexOnly, path)
 		}
 		return nil
 	})
-	if err != nil {
-		return nil, fmt.Errorf("walking %s: %w", root, err)
+	if walkErr != nil {
+		return nil, nil, fmt.Errorf("walking %s: %w", root, walkErr)
 	}
 	sort.Strings(found)
-	return found, nil
+	sort.Strings(complexOnly)
+	return found, complexOnly, nil
 }
 
 // GroupTfvarsByDir groups discovered tfvars paths by their directory,

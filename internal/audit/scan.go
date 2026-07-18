@@ -48,6 +48,14 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 	// surfaced in the summary so the exclusion is visible, never silent.
 	real, syntheticCount, playgrounds := partitionSynthetic(cfg, all)
 
+	// Tag findings under archived/backup-looking directories centrally
+	// (not per scanner): `jit migrate home` skips exactly these by default,
+	// and the report renderers surface the tag so that skip is legible from
+	// the audit side of the funnel too.
+	for i := range real {
+		real[i].Archived = LooksArchived(real[i].FilePath)
+	}
+
 	summary := buildScanSummary(cfg, real, countProtectedMounts(cfg.MountRegistryPath), time.Since(start))
 	summary.SyntheticFindingCount = syntheticCount
 	summary.SyntheticPlaygroundPaths = playgrounds
@@ -86,6 +94,21 @@ func partitionSynthetic(cfg Config, all []Finding) (real []Finding, syntheticCou
 	}
 	sort.Strings(playgrounds)
 	return real, syntheticCount, playgrounds
+}
+
+// InSyntheticPlayground reports whether path lives inside a
+// jitpass-playground checkout beneath home, mirroring partitionSynthetic's
+// own exclusion exactly, including its escape hatch: when home itself sits
+// inside a playground (a scan deliberately rooted at the checkout, like the
+// first-run tour), nothing counts as synthetic. Exported for
+// internal/migrate: a whole-machine sweep must skip the same playground
+// subtrees audit excludes from its score, or `jit migrate home` would
+// convert the tour repo's planted bait into vault entries and live mounts.
+func InSyntheticPlayground(home, path string) bool {
+	if home == "" || rootInPlayground(home) {
+		return false
+	}
+	return playgroundRootFor(filepath.Dir(path), home, map[string]string{}) != ""
 }
 
 // hasPlaygroundMarker reports whether dir directly holds the playground marker.

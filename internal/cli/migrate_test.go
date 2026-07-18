@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jitpass/jit/internal/audit"
 )
 
 // TestMigrateSummaryPrintCollapsesRepeatedExplanations locks in the fix
@@ -68,7 +70,8 @@ func TestMigrateSummaryExportNudge(t *testing.T) {
 // execMigrate drives `jit migrate <scope> <args...>` through rootCmd
 // (mirrors execAudit's discipline — see audit_test.go), resetting every
 // migrate package-level flag var first so tests never inherit state from
-// each other. scope is "local" or "home".
+// each other. scope is "local", "home", or "" for the bare command
+// (which runs the home scope by default).
 func execMigrate(t *testing.T, scope string, args ...string) (stdout string, err error) {
 	t.Helper()
 	migrateDryRun = false
@@ -79,7 +82,11 @@ func execMigrate(t *testing.T, scope string, args ...string) (stdout string, err
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)                 // confirmation prompts go to stderr, capture both streams in order
 	rootCmd.SetIn(strings.NewReader("")) // default: EOF, i.e. an empty/declined answer if a confirm prompt is hit unexpectedly
-	rootCmd.SetArgs(append([]string{"migrate", scope}, args...))
+	cmdArgs := []string{"migrate"}
+	if scope != "" {
+		cmdArgs = append(cmdArgs, scope)
+	}
+	rootCmd.SetArgs(append(cmdArgs, args...))
 	err = rootCmd.Execute()
 	return buf.String(), err
 }
@@ -380,6 +387,42 @@ func TestMigrateLocalDryRunCleanFixture(t *testing.T) {
 // an .env file anywhere under $HOME, not just under cwd — the actual new
 // capability (GAPS.md #26) — while jit migrate local from the same cwd
 // does not.
+// TestMigrateBareDefaultsToHomeScope: `jit audit` scans the whole machine
+// with no scope choice, so its report's "run `jit migrate --dry-run`"
+// trailer must work verbatim and cover the same ground — bare `jit
+// migrate` used to print help instead, forcing a local/home fork on the
+// reader at their highest-intent moment (and `local` from an arbitrary
+// cwd silently leaves most audit findings unfixed).
+func TestMigrateBareDefaultsToHomeScope(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t) // an unrelated, empty cwd: only a home-scope run can find the .env below
+
+	envPath := filepath.Join(home, "code", "otherproject", ".env")
+	if err := os.MkdirAll(filepath.Dir(envPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(envPath, []byte("STRIPE_KEY=sk_test_fixture\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := execMigrate(t, "", "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate --dry-run: %v", err)
+	}
+	if !strings.Contains(out, "plan (home scope)") {
+		t.Errorf("expected bare `jit migrate` to run the home scope, got:\n%s", out)
+	}
+	if !strings.Contains(out, displayPath(home, envPath)) {
+		t.Errorf("expected bare `jit migrate --dry-run` to find a .env anywhere under $HOME, got:\n%s", out)
+	}
+
+	// The bare command runs the home sweep, so it must accept
+	// --include-archived like `jit migrate home` does.
+	if _, err := execMigrate(t, "", "--dry-run", "--include-archived"); err != nil {
+		t.Errorf("jit migrate --dry-run --include-archived: %v", err)
+	}
+}
+
 func TestMigrateHomeDiscoversAcrossWholeHome(t *testing.T) {
 	home := withFixtureHome(t)
 	withFixtureCwd(t) // cwd is an unrelated, empty fixture dir, NOT under the .env's directory
@@ -537,14 +580,109 @@ func TestMigrateHomeSkipsArchivedByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit migrate home --dry-run: %v", err)
 	}
-	if strings.Contains(out, envPath) {
-		t.Errorf("expected the archived finding to be skipped by default, got:\n%s", out)
+	if strings.Contains(out, "• "+displayPath(home, envPath)) {
+		t.Errorf("expected the archived finding to never be a planned change, got:\n%s", out)
 	}
-	if !strings.Contains(out, "1 finding(s) skipped under an archived/backup-looking directory") {
-		t.Errorf("expected an explicit skipped-archived count (fail safe and loud), got:\n%s", out)
+	if !strings.Contains(out, "Skipped 1 finding(s) under an archived/backup-looking directory") {
+		t.Errorf("expected an explicit skipped-archived note (fail safe and loud), got:\n%s", out)
+	}
+	if !strings.Contains(out, displayPath(home, envPath)) {
+		t.Errorf("expected the skip note to list the skipped path itself, not a bare count, got:\n%s", out)
 	}
 	if !strings.Contains(out, "--include-archived") {
 		t.Errorf("expected a pointer to --include-archived, got:\n%s", out)
+	}
+}
+
+// TestMigrateHomeSkipsPlaygroundLoudly: a jitpass-playground checkout's
+// planted bait is excluded from `jit audit`'s score, so a whole-machine
+// sweep must skip it too (vaulting fake secrets and live-mounting the tour
+// repo's .env files would wreck the checkout) — and must say so with the
+// paths, not a bare count, so the skip never reads as a lost finding.
+func TestMigrateHomeSkipsPlaygroundLoudly(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+
+	playground := filepath.Join(home, "jitpass-playground")
+	if err := os.MkdirAll(filepath.Join(playground, "api"), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(playground, audit.PlaygroundMarkerFile), nil, 0o600); err != nil {
+		t.Fatalf("WriteFile marker: %v", err)
+	}
+	pgEnv := filepath.Join(playground, "api", ".env")
+	if err := os.WriteFile(pgEnv, []byte("STRIPE_KEY=sk_test_bait\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	realEnv := filepath.Join(home, "code", "realproj", ".env")
+	if err := os.MkdirAll(filepath.Dir(realEnv), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(realEnv, []byte("STRIPE_KEY=sk_test_fixture\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := execMigrate(t, "home", "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate home --dry-run: %v", err)
+	}
+	if strings.Contains(out, "• "+displayPath(home, pgEnv)) {
+		t.Errorf("expected the playground .env to never be a planned change, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Skipped 1 finding(s) inside a jitpass-playground checkout") {
+		t.Errorf("expected a loud playground-skip note, got:\n%s", out)
+	}
+	if !strings.Contains(out, displayPath(home, pgEnv)) {
+		t.Errorf("expected the skip note to list the skipped path itself, got:\n%s", out)
+	}
+	if !strings.Contains(out, "• "+displayPath(home, realEnv)) {
+		t.Errorf("expected the real project's .env to still be planned, got:\n%s", out)
+	}
+}
+
+// TestMigrateLocalInsidePlaygroundStillWorks: the first-run tour has users
+// practice a migration from inside the checkout, so `jit migrate local`
+// run there must keep discovering the planted files (mirrors audit's own
+// home-in-playground escape hatch).
+func TestMigrateLocalInsidePlaygroundStillWorks(t *testing.T) {
+	home := withFixtureHome(t)
+
+	playground := filepath.Join(home, "jitpass-playground")
+	if err := os.MkdirAll(playground, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(playground, audit.PlaygroundMarkerFile), nil, 0o600); err != nil {
+		t.Fatalf("WriteFile marker: %v", err)
+	}
+	pgEnv := filepath.Join(playground, ".env")
+	if err := os.WriteFile(pgEnv, []byte("STRIPE_KEY=sk_test_bait\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	original, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd: %v", err)
+	}
+	if err := os.Chdir(playground); err != nil {
+		t.Fatalf("os.Chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(original) })
+	// Discovery roots at os.Getwd(), which resolves macOS's /var ->
+	// /private/var symlink while $HOME keeps the unresolved spelling, so
+	// build the expected plan bullet from the resolved cwd, not from home.
+	resolvedCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd: %v", err)
+	}
+
+	out, err := execMigrate(t, "local", "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate local --dry-run: %v", err)
+	}
+	if !strings.Contains(out, "• "+displayPath(home, filepath.Join(resolvedCwd, ".env"))) {
+		t.Errorf("expected local from inside the playground to plan its .env, got:\n%s", out)
+	}
+	if strings.Contains(out, "jitpass-playground checkout") && strings.Contains(out, "Skipped") {
+		t.Errorf("expected no playground-skip note on a local run, got:\n%s", out)
 	}
 }
 
