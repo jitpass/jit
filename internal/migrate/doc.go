@@ -20,7 +20,7 @@
 // which is what made the gap visible in practice. Sharing one discovery
 // call per scope is what makes that structurally impossible now.
 //
-// Real mutation covers eight finding types (GAPS.md #7, #8, and both of
+// Real mutation covers nine finding types (GAPS.md #7, #8, and both of
 // #16's halves — Terraform and GCP — are closed):
 //
 //   - .env files (apply.go/unmount.go), scoped to the chosen root (cwd for
@@ -72,6 +72,20 @@
 //     federation's external_account files and can't source either secret
 //     shape audit actually finds; see gcpADCSecretFields' doc comment.
 //     Closes GAPS.md #16's GCP half.
+//   - Terraform tfvars (tfvars.go): terraform.tfvars/*.auto.tfvars under
+//     the chosen root — the automated fix for audit's IaC variable-file
+//     finding's Terraform half. Secret-shaped simple string assignments
+//     move into the vault under ONE profile per directory (all tfvars in a
+//     directory feed the same terraform root, processed in Terraform's own
+//     ascending file-precedence order so a doubly-assigned variable vaults
+//     the winning value); those lines are removed in place, everything
+//     else preserved. Terraform's TF_VAR_<name> env convention ranks below
+//     every tfvars file but above defaults, so `jit run --profile <p> --
+//     terraform apply` (or eval'd `jit export`) is what serves the values
+//     back — no mount, no credential hook, no new serving code. The
+//     Kubernetes secret(s).yaml half of that audit finding deliberately
+//     stays detection-only: its consumer is a cluster/CI pipeline no local
+//     rewrite can serve.
 //   - npmrc (npmrc.go, Tier 4): global ~/.npmrc always checked, plus
 //     project .npmrc under the chosen root. Architecturally different
 //     from the other five — npm has no native credential hook, and an
