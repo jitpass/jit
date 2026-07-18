@@ -25,7 +25,10 @@ import (
 // score so synthetic bait never inflates a real machine's risk.
 // 0.6.0 added the sops_age_key finding type and its findings_by_category
 // key (additive, same shape as 0.3.0's wrappable_cli_token bump).
-const SchemaVersion = "0.6.0"
+// 0.7.0 added the finding's archived flag (additive): true when the file
+// lives under an archived/backup-looking directory, which `jit migrate
+// home` skips by default (--include-archived includes them).
+const SchemaVersion = "0.7.0"
 
 // PlaygroundMarkerFile is the file the jitpass-playground repo ships at its
 // root. Its presence in a directory means every "secret" beneath it is
@@ -160,6 +163,13 @@ type Finding struct {
 	Confidence               string  `json:"confidence"`
 	Evidence                 string  `json:"evidence"`
 	AlreadyMasked            bool    `json:"already_masked"`
+	// Archived is true when FilePath sits under an archived/backup-looking
+	// directory (LooksArchived) — the same test `jit migrate home` uses to
+	// skip a finding unless --include-archived, so a consumer (or the
+	// report renderers) can tell "migrate will skip this one" apart from
+	// an ordinary actionable finding. Set centrally by Scan, not by the
+	// individual scanners.
+	Archived bool `json:"archived"`
 }
 
 // ScanSummary is the single closing "scan_summary" NDJSON record for a run
