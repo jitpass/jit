@@ -440,7 +440,7 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	// report had no pointer from here to the command that actually fixes
 	// any of it. jit migrate's own dry-run trailer already points back
 	// at `jit audit` the other way; this closes the loop.
-	fmt.Fprintln(w, "Run `jit migrate local --dry-run` (or `jit migrate home --dry-run`) to see the guided fix plan for what's fixable here.")
+	fmt.Fprintln(w, "Run `jit migrate --dry-run` to see the guided fix plan for what's fixable here.")
 	_, _ = color.New(color.Faint).Fprintln(w, "No secret values are ever printed in full. Run `jit audit --format ndjson` for machine-readable output (same redaction rules apply).")
 }
 
