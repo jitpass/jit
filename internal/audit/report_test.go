@@ -97,6 +97,33 @@ func TestWriteHumanReportTagsArchivedFindings(t *testing.T) {
 	}
 }
 
+// TestWriteHumanReportEscapesSpacesInPaths: a real support case — a user
+// copy-pasted the report's `~/Library/Application Support/Claude/
+// claude_desktop_config.json` finding into `cat`, the unquoted space split
+// it into two arguments, and the resulting "No such file or directory"
+// read as a false positive. Terminal-report paths must paste into a shell
+// verbatim.
+func TestWriteHumanReportEscapesSpacesInPaths(t *testing.T) {
+	f := Finding{
+		FindingType: FindingTypeMCPEmbeddedSecret,
+		Severity:    SeverityHigh,
+		FilePath:    "/Users/alex/Library/Application Support/Claude/claude_desktop_config.json",
+		Evidence:    "embedded directly in MCP server \"jamf\"'s env block",
+	}
+	findings := []Finding{f}
+
+	var buf bytes.Buffer
+	WriteHumanReport(&buf, findings, buildScanSummary(Config{}, findings, 0, 0), "/Users/alex")
+	out := buf.String()
+
+	if !strings.Contains(out, `~/Library/Application\ Support/Claude/claude_desktop_config.json`) {
+		t.Errorf("expected the space in the path to be backslash-escaped for shell copy-paste, got:\n%s", out)
+	}
+	if strings.Contains(out, "Application Support/Claude") {
+		t.Errorf("expected no unescaped variant of the path, got:\n%s", out)
+	}
+}
+
 // TestWriteHumanReportShowsKeyName guards against exactly the gap a real
 // user found (2026-07-06): an MCP-embedded-secret finding showing a masked
 // value and "why" text but never which variable it actually was, forcing a
