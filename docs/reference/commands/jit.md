@@ -24,6 +24,7 @@ jit
 * [jit migrate](jit_migrate.md)	 - Guided fix path for findings jit audit reports
 * [jit profile](jit_profile.md)	 - Inspect profile manifests (names and vault paths only, never secret values)
 * [jit run](jit_run.md)	 - Execute a command with a profile's secrets injected into its environment
+* [jit sops-age-key](jit_sops-age-key.md)	 - Print the SOPS age private key from a migrated profile
 * [jit status](jit_status.md)	 - One-shot overview of vault, agent, profile, and mount health
 * [jit terraform-credentials](jit_terraform-credentials.md)	 - Implement Terraform's credentials-helper protocol for a migrated token
 * [jit unmount](jit_unmount.md)	 - Reverse a live .env mount back into a plain file

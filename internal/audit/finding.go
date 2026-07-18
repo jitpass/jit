@@ -23,7 +23,9 @@ import (
 // synthetic_playground_paths (additive): findings living inside a jitpass
 // playground checkout crossed during a machine-wide walk, excluded from the
 // score so synthetic bait never inflates a real machine's risk.
-const SchemaVersion = "0.5.0"
+// 0.6.0 added the sops_age_key finding type and its findings_by_category
+// key (additive, same shape as 0.3.0's wrappable_cli_token bump).
+const SchemaVersion = "0.6.0"
 
 // PlaygroundMarkerFile is the file the jitpass-playground repo ships at its
 // root. Its presence in a directory means every "secret" beneath it is
@@ -57,6 +59,7 @@ const (
 	FindingTypeIACVariableFile    = "iac_variable_file"
 	FindingTypeSuspiciousFilename = "suspicious_filename"
 	FindingTypeWrappableCLIToken  = "wrappable_cli_token" // #nosec G101 -- enum label, not a credential
+	FindingTypeSOPSAgeKey         = "sops_age_key"        // #nosec G101 -- enum label, not a credential
 )
 
 // AllFindingTypes lists every finding_type in the fixed order used for
@@ -72,6 +75,7 @@ var AllFindingTypes = []string{
 	FindingTypeIACVariableFile,
 	FindingTypeSuspiciousFilename,
 	FindingTypeWrappableCLIToken,
+	FindingTypeSOPSAgeKey,
 }
 
 // Severity levels for an individual finding.
