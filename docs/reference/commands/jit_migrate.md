@@ -10,11 +10,12 @@ sitting on disk. It's a separate command from jit audit, not a flag on it,
 so the read-only scanner can never be turned into a mutating one by a
 mistyped flag.
 
-Pick a scope:
+By default it covers the same ground jit audit scans, the whole machine:
+`jit migrate` is `jit migrate home`. Narrow the scope with a subcommand:
 
   jit migrate local   only what's under the current directory tree
                        (.env files, tfvars files, project mcp.json, project .npmrc)
-  jit migrate home    the whole machine: everything local finds, anywhere
+  jit migrate home    the default: everything local finds, anywhere
                        under $HOME, plus the machine-wide files that live at
                        fixed home paths (shell configs, ~/.aws/credentials,
                        ~/.kube/config, Terraform Cloud credentials, GCP
@@ -26,11 +27,16 @@ anything, and every modified file is backed up (encrypted, into the vault)
 first, `jit migrate undo` restores any migrated file from that backup.
 See each subcommand's --help for exactly what happens to each kind of file.
 
+```
+jit migrate [flags]
+```
+
 ### Examples
 
 ```
-  jit migrate local --dry-run    # preview this project's plan, change nothing
-  jit migrate local              # fix this project
+  jit migrate --dry-run          # preview the whole-machine plan, change nothing
+  jit migrate                    # fix everything the plan shows
+  jit migrate local --dry-run    # preview just this project's plan
   jit migrate home --only aws,kube
   jit migrate undo               # restore migrated files from their backups
 ```
@@ -38,9 +44,10 @@ See each subcommand's --help for exactly what happens to each kind of file.
 ### Options
 
 ```
-      --dry-run        preview the plan for this scope without changing anything
-      --only strings   scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,gcp,sops,npmrc (default: all)
-  -y, --yes            skip the confirmation prompt and migrate immediately
+      --dry-run            preview the plan for this scope without changing anything
+      --include-archived   also convert findings under an archived/backup-looking directory (archive, archived, backup, backups, .trash)
+      --only strings       scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,gcp,sops,npmrc (default: all)
+  -y, --yes                skip the confirmation prompt and migrate immediately
 ```
 
 ### SEE ALSO

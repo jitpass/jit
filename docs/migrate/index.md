@@ -11,24 +11,35 @@ via that tool's own native mechanism, so everything keeps working. It's a
 separate command from `audit`, deliberately: a read-only scanner can never
 be turned into a mutating one by a mistyped flag.
 
-## Pick a scope: `local` or `home`
+## Scope: the whole machine by default
 
-**`jit migrate local`** only ever touches what's under the directory you're
-standing in - one project.
+**`jit migrate`** covers the same ground `jit audit` scans - everything
+under `$HOME`. That's deliberate: audit's report is machine-wide, so the
+command it points you at fixes machine-wide too, no scope decision in
+between. It's shorthand for `jit migrate home`: every project's
+`.env`/tfvars/`mcp.json`/`.npmrc`, plus the machine-wide files that have
+no project-scoped form at all - shell configs, `~/.aws/credentials`,
+`~/.kube/config`, the Terraform Cloud token file, GCP application-default
+credentials, the SOPS age key, Claude Desktop's MCP config, and the global
+`~/.npmrc`. The plan groups those under a separate "Machine-wide" section
+so it's clear they're not part of a directory walk.
 
-**`jit migrate home`** covers everything under `$HOME`: every project's
-`.env`/`mcp.json`/`.npmrc`, plus the machine-wide files that have no
-project-scoped form at all - shell configs, `~/.aws/credentials`,
-`~/.kube/config`, the Terraform Cloud token file, Claude Desktop's MCP
-config, and the global `~/.npmrc`. The plan groups those under a separate
-"Machine-wide" section so it's clear they're not part of a directory walk.
+**`jit migrate local`** narrows to one project: only what's under the
+directory you're standing in is discovered or touched.
 
-`home` skips anything under a directory named `archive`, `archived`,
-`backup`, `backups`, or `.trash` by default (pass `--include-archived` to
-override): converting a forgotten project's `.env` into a live mount
-nothing will ever read again makes it *less* recoverable, not more secure.
-`local` never applies this filter; deliberately standing in an old project
-and migrating it is an explicit choice.
+A home-scope run skips anything under a directory named `archive`,
+`archived`, `backup`, `backups`, or `.trash` by default (pass
+`--include-archived` to override): converting a forgotten project's `.env`
+into a live mount nothing will ever read again makes it *less*
+recoverable, not more secure. Skipped paths are listed at the end of the
+plan, and `jit audit` tags the same findings `[archived]`, so the two
+reports always agree on what was left alone. A
+[jitpass-playground](https://github.com/jitpass/jitpass-playground)
+checkout gets the same treatment - its planted secrets are synthetic bait,
+already excluded from audit's score, so a whole-machine sweep never vaults
+them (run `jit migrate local` from inside the checkout to practice there).
+`local` never applies either filter; deliberately standing in an old
+project and migrating it is an explicit choice.
 
 ## Always preview first
 
@@ -36,9 +47,8 @@ and migrating it is an explicit choice.
 is accurate:
 
 ```
-$ cd ~/code/myapp
-$ jit migrate local --dry-run
-jit migrate - plan (local scope)
+$ jit migrate --dry-run
+jit migrate - plan (home scope)
 Each modified file is backed up before it's rewritten.
 
 [.env file(s) → secrets move to the vault; the file keeps working as a live, auto-updating mount] (1)

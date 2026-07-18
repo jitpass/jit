@@ -58,7 +58,7 @@ change a thing.
 
 ## 2. Lock it down without breaking anything
 
-`jit migrate local` moves the secrets into the vault and rewrites each file so
+`jit migrate` moves the secrets into the vault and rewrites each file so
 your tools keep working, each through that tool's own native mechanism:
 
 | Where the secret lives | How it keeps working after jit |
@@ -135,7 +135,7 @@ Anything not in the catalog works through `jit wrap add`.
 ```
 jit                        # a fresh machine? bare jit walks you through setup
 jit audit                  # see what's exposed (read-only, safe anywhere)
-jit migrate local          # fix this project; tools keep working
+jit migrate                # fix everything it found; tools keep working
 ```
 
 ## If you already use 1Password (or another password manager)
