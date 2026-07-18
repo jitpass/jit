@@ -6,9 +6,10 @@ Convert findings under the current directory only
 
 Converts findings under the current directory tree ONLY, nothing outside
 the project you're standing in is discovered or touched. Machine-wide files
-(shell configs, AWS, kubeconfig, Terraform Cloud, GCP application-default
-credentials, Claude Desktop's config, the global ~/.npmrc) live at fixed
-paths under $HOME, so only `jit migrate home` ever includes them.
+(shell configs, AWS, kubeconfig, Terraform Cloud, Docker registry logins,
+GCP application-default credentials, Claude Desktop's config, the global
+~/.npmrc) live at fixed paths under $HOME, so only `jit migrate home` ever
+includes them.
 
 What happens per category:
 
@@ -47,7 +48,7 @@ jit migrate local
 
 ```
       --dry-run        preview the plan for this scope without changing anything
-      --only strings   scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,gcp,sops,npmrc (default: all)
+      --only strings   scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,docker,gcp,sops,npmrc (default: all)
   -y, --yes            skip the confirmation prompt and migrate immediately
 ```
 

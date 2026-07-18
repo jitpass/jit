@@ -189,4 +189,10 @@ var catalog = map[string]CatalogEntry{
 		Doc:            "Terraform Cloud API token, served via credentials_helper; terraform login/logout keep working",
 		NativeCategory: "terraform",
 	},
+	"docker": {
+		Tool:           "docker",
+		Kind:           KindNative,
+		Doc:            "Docker registry logins, served via a credential helper; docker login/logout keep working",
+		NativeCategory: "docker",
+	},
 }

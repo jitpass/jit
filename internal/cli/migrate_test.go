@@ -777,3 +777,55 @@ func TestMigrateHomeLabelMentionsHome(t *testing.T) {
 		t.Errorf("expected the local-scoped .env label, got:\n%s", localOut)
 	}
 }
+
+// TestMigrateDockerHomeOnlyAndOnlyFlag: Docker registry credentials live
+// at exactly one fixed path under $HOME (~/.docker/config.json, like
+// AWS/kubeconfig/Terraform), so `local` never discovers them, `home`
+// does, and `--only docker` scopes a home run to just that category.
+func TestMigrateDockerHomeOnlyAndOnlyFlag(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+
+	configPath := filepath.Join(home, ".docker", "config.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(`{"auths":{"registry.example.com":{"auth":"YWxpY2U6czNjcmV0LXBhc3M="}}}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// An unrelated .env so --only has something to exclude.
+	envPath := filepath.Join(home, "code", "proj", ".env")
+	if err := os.MkdirAll(filepath.Dir(envPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(envPath, []byte("STRIPE_KEY=sk_test_fixture\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	localOut, err := execMigrate(t, "local", "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate local --dry-run: %v", err)
+	}
+	if strings.Contains(localOut, "registry.example.com") {
+		t.Errorf("expected local to never discover Docker registry credentials (fixed home path), got:\n%s", localOut)
+	}
+
+	homeOut, err := execMigrate(t, "home", "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate home --dry-run: %v", err)
+	}
+	if !strings.Contains(homeOut, "registry.example.com") || !strings.Contains(homeOut, "Docker registry credential(s)") {
+		t.Errorf("expected home's plan to include the Docker category with its registry, got:\n%s", homeOut)
+	}
+
+	onlyOut, err := execMigrate(t, "home", "--dry-run", "--only", "docker")
+	if err != nil {
+		t.Fatalf("jit migrate home --dry-run --only docker: %v", err)
+	}
+	if !strings.Contains(onlyOut, "registry.example.com") {
+		t.Errorf("expected --only docker to keep the Docker finding, got:\n%s", onlyOut)
+	}
+	if strings.Contains(onlyOut, envPath) {
+		t.Errorf("expected --only docker to exclude the .env finding, got:\n%s", onlyOut)
+	}
+}

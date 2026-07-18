@@ -59,6 +59,7 @@ see: SDKs inside your language runtime, and login/logout flows.
 |---|---|---|
 | [`aws`](./aws.md) | `credential_process` in `~/.aws/config` | boto3, aws-sdk-go, Terraform's AWS provider - every SDK that reads the shared config |
 | [`terraform`](./terraform.md) | `credentials_helper` in `~/.terraformrc` | `terraform login` / `logout` |
+| [`docker`](./docker.md) | credential helper in `~/.docker/config.json` | `docker login` / `logout`, compose and buildx pulls |
 
 ## Not in the catalog?
 

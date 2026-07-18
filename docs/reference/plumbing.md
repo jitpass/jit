@@ -1,11 +1,11 @@
 ---
 title: Plumbing protocols
-description: The commands other tools invoke - aws-credential-process, k8s-exec-credential, terraform-credentials.
+description: The commands other tools invoke - aws-credential-process, k8s-exec-credential, terraform-credentials, docker-credential.
 ---
 
 # Plumbing protocols
 
-Four commands exist to be invoked by *other tools' configuration*, not by
+Five commands exist to be invoked by *other tools' configuration*, not by
 hand - `jit --help` groups them separately and shell tab-completion omits
 them entirely, for exactly that reason. Each
 implements the consuming tool's documented credential-plugin protocol, and
@@ -42,4 +42,17 @@ what makes `terraform login` keep working); `forget` removes it
 (`terraform logout`). Wired into `~/.terraformrc` by [the Terraform
 migration](../migrate/terraform.md).
 
+## `jit docker-credential <get|store|erase|list>`
+
+Implements Docker's [credential-helper protocol], payloads on stdin:
+`get` reads a registry address and prints the credential as JSON (or the
+protocol's "credentials not found" sentinel, so anonymous pulls keep
+working with no prompt); `store` saves a `docker login` into the vault;
+`erase` handles `docker logout`; `list` prints an empty object (docker
+resolves each registry through `get`, and a truthful list would need a
+vault unlock inside headless docker calls). Invoked through the
+`docker-credential-jit` script [the Docker migration](../migrate/docker.md)
+writes, wired into `~/.docker/config.json`.
+
 [`credential_process`]: https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sourcing-external.html
+[credential-helper protocol]: https://docs.docker.com/reference/cli/docker/login/#credential-helper-protocol
