@@ -32,7 +32,7 @@ var (
 // Keyed by the short token a caller passes, not the display label used in
 // output — keep the two lists in this exact order so error messages and
 // --only's own help text stay in sync with printMigratePlan.
-var migrateCategories = []string{"env", "shell", "mcp", "aws", "kube", "terraform", "gcp", "npmrc"}
+var migrateCategories = []string{"env", "tfvars", "shell", "mcp", "aws", "kube", "terraform", "gcp", "npmrc"}
 
 // noteNamespaceMove explains a claimNamespace bump (GAPS.md #55) directly
 // under the item it happened to. Yellow, matching the "heads up, read
@@ -78,7 +78,7 @@ var migrateCmd = &cobra.Command{
 		"mistyped flag.\n\n" +
 		"Pick a scope:\n\n" +
 		"  jit migrate local   only what's under the current directory tree\n" +
-		"                       (.env files, project mcp.json, project .npmrc)\n" +
+		"                       (.env files, tfvars files, project mcp.json, project .npmrc)\n" +
 		"  jit migrate home    the whole machine: everything local finds, anywhere\n" +
 		"                       under $HOME, plus the machine-wide files that live at\n" +
 		"                       fixed home paths (shell configs, ~/.aws/credentials,\n" +
@@ -111,6 +111,10 @@ var migrateLocalCmd = &cobra.Command{
 		"               dev/start script when one exists). A git-safe <file>.pointers\n" +
 		"               companion is written alongside, listing vault paths only,\n" +
 		"               always safe to open or commit.\n" +
+		"  tfvars       Secret-shaped `name = \"value\"` assignments in terraform.tfvars\n" +
+		"               and *.auto.tfvars move into the vault, one profile per directory.\n" +
+		"               Terraform reads them back as TF_VAR_ environment variables when\n" +
+		"               you run it through jit: `jit run --profile <p> -- terraform apply`.\n" +
 		"  MCP configs  Each server's env-block secrets move into the vault, and the\n" +
 		"               server's command is rewritten to launch via `jit run`.\n" +
 		"  .npmrc       Secret lines move into the vault; the file keeps working as a\n" +
@@ -199,6 +203,10 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 	if err != nil {
 		return fmt.Errorf("jit migrate: %w", err)
 	}
+	tfvarsFiles, err := migrate.DiscoverTfvarsFiles(projectRoot)
+	if err != nil {
+		return fmt.Errorf("jit migrate: %w", err)
+	}
 	mcpConfigs, err := migrate.DiscoverMCPConfigs(home, projectRoot, wholeHome)
 	if err != nil {
 		return fmt.Errorf("jit migrate: %w", err)
@@ -251,6 +259,8 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 		var skipped []string
 		envFiles, skipped = migrate.FilterArchived(envFiles)
 		skippedArchived = append(skippedArchived, skipped...)
+		tfvarsFiles, skipped = migrate.FilterArchived(tfvarsFiles)
+		skippedArchived = append(skippedArchived, skipped...)
 		mcpConfigs, skipped = migrate.FilterArchived(mcpConfigs)
 		skippedArchived = append(skippedArchived, skipped...)
 		npmrcFiles, skipped = migrate.FilterArchived(npmrcFiles)
@@ -274,6 +284,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 	// instead, on every run, before anything is filtered or mutated.
 	categorySlices := map[string]*[]string{
 		"env":       &envFiles,
+		"tfvars":    &tfvarsFiles,
 		"shell":     &shellConfigs,
 		"mcp":       &mcpConfigs,
 		"aws":       &awsProfiles,
@@ -310,8 +321,9 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 		if len(migrateOnly) > 0 {
 			fmt.Fprintf(cmd.OutOrStdout(), "Nothing to migrate in the selected --only %s: %s.\n", pluralWord(len(migrateOnly), "category", "categories"), strings.Join(migrateOnly, ", "))
 		} else {
-			fmt.Fprintln(cmd.OutOrStdout(), "Nothing to migrate: no .env files, no secret-shaped shell-config exports, no MCP")
-			fmt.Fprintln(cmd.OutOrStdout(), "server secrets, no AWS/kubeconfig/Terraform Cloud/GCP credentials, and no npmrc secrets found.")
+			fmt.Fprintln(cmd.OutOrStdout(), "Nothing to migrate: no .env files, no tfvars secrets, no secret-shaped shell-config")
+			fmt.Fprintln(cmd.OutOrStdout(), "exports, no MCP server secrets, no AWS/kubeconfig/Terraform Cloud/GCP credentials,")
+			fmt.Fprintln(cmd.OutOrStdout(), "and no npmrc secrets found.")
 		}
 		if len(skippedArchived) > 0 {
 			fmt.Fprintf(cmd.OutOrStdout(), "(%d finding(s) skipped under an archived/backup-looking directory, rerun with --include-archived to include them.)\n", len(skippedArchived))
@@ -347,7 +359,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 	// work that's about to be aborted anyway. This same plan is what
 	// --dry-run prints too (see below) — one rendering path, so the
 	// preview you confirm against is exactly the preview --dry-run shows.
-	printMigratePlan(cmd.OutOrStdout(), home, wholeHome, envFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, gcpADCFiles, npmrcFiles, planRevealHooks(home, envFiles, npmrcFiles))
+	printMigratePlan(cmd.OutOrStdout(), home, wholeHome, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, gcpADCFiles, npmrcFiles, planRevealHooks(home, envFiles, npmrcFiles))
 	if len(skippedArchived) > 0 {
 		fmt.Fprintf(cmd.OutOrStdout(), "\n(Skipped %d finding(s) under an archived/backup-looking directory, rerun with --include-archived to include them.)\n", len(skippedArchived))
 	}
@@ -441,6 +453,42 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 			fmt.Fprintf(out, "  • %s -> profile %q (%d var(s)); backup: `jit vault get %s`\n", displayPath(home, envPath), result.ProfileName, len(result.Variables), result.BackupPath)
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
 			summary.recordRevealHook(filepath.Dir(result.EnvPath), result.EnvPath)
+		}
+		fmt.Fprintln(out)
+	}
+
+	if n := len(tfvarsFiles); n > 0 {
+		printMigrateResultCategory(out, "Terraform variable file(s) migrated", n)
+		// One profile per directory: every tfvars file in a directory feeds
+		// the same terraform root, so they migrate as a unit (see
+		// migrate.ApplyTfvarsDir's doc comment on precedence).
+		tfvarsDirs, tfvarsByDir := migrate.GroupTfvarsByDir(tfvarsFiles)
+		for _, dir := range tfvarsDirs {
+			for _, path := range tfvarsByDir[dir] {
+				summary.checkGitHistory(path)
+			}
+			// Same profilesRoot rule as .env above: the directory's own
+			// path in wholeHome mode, cwd in local mode.
+			tfvarsProfilesRoot := cwd
+			if wholeHome {
+				tfvarsProfilesRoot = dir
+			}
+			result, err := migrate.ApplyTfvarsDir(v, tfvarsProfilesRoot, dir, tfvarsByDir[dir])
+			if err != nil {
+				return fmt.Errorf("jit migrate: %w", err)
+			}
+			backups := make([]string, len(result.Backups))
+			for i, b := range result.Backups {
+				backups[i] = fmt.Sprintf("`jit vault get %s`", b)
+			}
+			fmt.Fprintf(out, "  • %s (%d file(s)) -> profile %q (%d var(s)); backup(s): %s\n",
+				displayPath(home, dir), len(result.Files), result.ProfileName, len(result.Variables), strings.Join(backups, ", "))
+			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
+			if len(result.SkippedComplex) > 0 {
+				_, _ = color.New(color.FgYellow).Fprintf(out, "    note: %d secret-shaped value(s) left in place, not simple one-line strings: %s\n",
+					len(result.SkippedComplex), strings.Join(result.SkippedComplex, ", "))
+			}
+			fmt.Fprintf(out, "    run terraform through jit from that directory: jit run --profile %s -- terraform apply\n", result.ProfileName)
 		}
 		fmt.Fprintln(out)
 	}
