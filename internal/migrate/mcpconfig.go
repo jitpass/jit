@@ -116,9 +116,13 @@ func DiscoverMCPConfigs(home, cwd string, includeClaudeDesktop bool) ([]string, 
 			return filepath.SkipDir
 		}
 		if d.IsDir() {
-			if skipDiscoveryDir(path, d.Name()) {
+			if skipDiscoveryDir(cwd, path, d.Name()) {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		// Regular files only, same rule as audit's walk (fsutil.go).
+		if !d.Type().IsRegular() {
 			return nil
 		}
 		if mcpConfigFileNames[d.Name()] {
