@@ -96,10 +96,11 @@ default (`--version <stamp>` for an older one), and archives the value it
 displaces - so flipping between two versions can never lose either.
 `jit vault rm` deletes a secret's archived versions with it: rm means gone.
 
-One special case: for a new **Terraform Cloud** token, just run
-`terraform login` again - [migration wired terraform's credentials helper
-to jit](../migrate/terraform.md), so the re-login lands directly in the
-vault.
+One special case: for a new **Terraform Cloud** token or **Docker
+registry** login, just run [`terraform login`](../migrate/terraform.md)
+or [`docker login`](../migrate/docker.md) again - migration wired each
+tool's own credentials helper to jit, so the re-login lands directly in
+the vault.
 
 ## More
 
