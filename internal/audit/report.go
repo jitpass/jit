@@ -297,6 +297,20 @@ func ShortenHome(home, path string) string {
 	return path
 }
 
+// displayFilePath renders a path for the terminal report: "~"-shortened
+// and with spaces backslash-escaped so the line works pasted into a shell
+// verbatim. A real support case: a user cat'ed the report's
+// `~/Library/Application Support/Claude/claude_desktop_config.json`
+// finding, the unquoted space split the path into two arguments, the "No
+// such file or directory" that followed read as a false positive, and a
+// real HIGH finding went uninvestigated. Backslash-escaping (rather than
+// single-quoting) keeps the leading `~` expandable. The Markdown renderer
+// deliberately doesn't do this: its paths sit in backtick code spans,
+// already unambiguous, and literal backslashes there would be wrong.
+func displayFilePath(home, path string) string {
+	return strings.ReplaceAll(ShortenHome(home, path), " ", "\\ ")
+}
+
 // archivedTag renders the per-path "[archived]" marker: the same
 // LooksArchived test `jit migrate home` uses to skip a finding by default,
 // so a reader can map an audit finding onto migrate's skip note instead of
@@ -364,7 +378,7 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	if matches := summary.ProductionIndicatorCount + summary.PublicIPCount; matches > 0 {
 		fmt.Fprintf(w, "  (%d production-indicator/public-IP match(es) found)\n", matches)
 		for _, path := range criticalTriggerPaths(findings) {
-			fmt.Fprintf(w, "    - %s\n", ShortenHome(home, path))
+			fmt.Fprintf(w, "    - %s\n", displayFilePath(home, path))
 		}
 	}
 	fmt.Fprintln(w)
@@ -513,9 +527,9 @@ func writeRenderItemText(w io.Writer, item renderItem, home string, cols columns
 		locIndent := strings.Repeat(" ", cols.reasonIndent())
 		for _, loc := range item.locations {
 			if loc.Line != nil {
-				fmt.Fprintf(w, "%s- %s:%d%s\n", locIndent, ShortenHome(home, loc.Path), *loc.Line, archivedTag(loc.Path))
+				fmt.Fprintf(w, "%s- %s:%d%s\n", locIndent, displayFilePath(home, loc.Path), *loc.Line, archivedTag(loc.Path))
 			} else {
-				fmt.Fprintf(w, "%s- %s%s\n", locIndent, ShortenHome(home, loc.Path), archivedTag(loc.Path))
+				fmt.Fprintf(w, "%s- %s%s\n", locIndent, displayFilePath(home, loc.Path), archivedTag(loc.Path))
 			}
 		}
 		fmt.Fprintln(w)
@@ -527,7 +541,7 @@ func writeRenderItemText(w io.Writer, item renderItem, home string, cols columns
 	// "└" connectors), and a blank line after it (plus one after every
 	// finding) gives the block room to breathe instead of packing rows
 	// edge to edge.
-	fmt.Fprintf(w, "  • %s%s\n\n", ShortenHome(home, item.rep.FilePath), archivedTag(item.rep.FilePath))
+	fmt.Fprintf(w, "  • %s%s\n\n", displayFilePath(home, item.rep.FilePath), archivedTag(item.rep.FilePath))
 	for _, f := range item.findings {
 		cols.writeFindingRow(w, f, true)
 		fmt.Fprintln(w)
