@@ -77,6 +77,7 @@ Limit either scope to specific categories with `--only`
 | `kube` | the user's bearer token or cert/key pair | an `exec` block calling jit (client-go's exec-plugin protocol) | [Kubernetes](./kubernetes.md) |
 | `terraform` | each host's API token | a `credentials_helper` wired into `~/.terraformrc` | [Terraform](./terraform.md) |
 | `gcp` | the ADC refresh token (or service account private key) | a live-mounted pipe serving a template; non-secret fields untouched | [GCP](./gcp.md) |
+| `sops` | the SOPS age private key | a live-mounted pipe serving a template; sops v3.10+ can also fetch the key via `SOPS_AGE_KEY_CMD` | [SOPS](./sops.md) |
 | `npmrc` | just the secret lines (`_authToken`, etc.) | a live-mounted pipe serving a template; everything else untouched | [npm](./npm.md) |
 
 CLI tool tokens (`gh`, `stripe`, `ngrok`, …) live in their own config files

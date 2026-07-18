@@ -32,7 +32,7 @@ var (
 // Keyed by the short token a caller passes, not the display label used in
 // output — keep the two lists in this exact order so error messages and
 // --only's own help text stay in sync with printMigratePlan.
-var migrateCategories = []string{"env", "tfvars", "shell", "mcp", "aws", "kube", "terraform", "gcp", "npmrc"}
+var migrateCategories = []string{"env", "tfvars", "shell", "mcp", "aws", "kube", "terraform", "gcp", "sops", "npmrc"}
 
 // noteNamespaceMove explains a claimNamespace bump (GAPS.md #55) directly
 // under the item it happened to. Yellow, matching the "heads up, read
@@ -157,6 +157,11 @@ var migrateHomeCmd = &cobra.Command{
 		"                   preserved verbatim. (GCP has no AWS-style\n" +
 		"                   credential_process hook for these credential types, so\n" +
 		"                   the mount is what keeps SDKs working with no key on disk.)\n" +
+		"  SOPS age key     keys.txt (~/.config/sops/age/ or its Application Support\n" +
+		"                   sibling) moves into the vault; the file keeps working as\n" +
+		"                   a live mount for sops/kluctl/Flux/helm-secrets, and sops\n" +
+		"                   v3.10+ can fetch the key directly via\n" +
+		"                   SOPS_AGE_KEY_CMD=\"jit sops-age-key\", no file read at all.\n" +
 		"  Claude Desktop's MCP config and the global ~/.npmrc get the same\n" +
 		"  treatment as project MCP configs and .npmrc files.\n\n" +
 		"Skips anything under an archived/backup-looking directory (archive,\n" +
@@ -223,7 +228,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 	// does. This is what makes `local` actually match its name (a real,
 	// reported point of confusion when both scopes always included
 	// these — see GAPS.md #26).
-	var shellConfigs, awsProfiles, k8sUsers, terraformHosts, gcpADCFiles []string
+	var shellConfigs, awsProfiles, k8sUsers, terraformHosts, gcpADCFiles, sopsAgeFiles []string
 	if wholeHome {
 		shellConfigs, err = migrate.DiscoverShellConfigs(home)
 		if err != nil {
@@ -242,6 +247,10 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 			return fmt.Errorf("jit migrate: %w", err)
 		}
 		gcpADCFiles, err = migrate.DiscoverGCPADC(home)
+		if err != nil {
+			return fmt.Errorf("jit migrate: %w", err)
+		}
+		sopsAgeFiles, err = migrate.DiscoverSOPSAge(home)
 		if err != nil {
 			return fmt.Errorf("jit migrate: %w", err)
 		}
@@ -291,6 +300,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 		"kube":      &k8sUsers,
 		"terraform": &terraformHosts,
 		"gcp":       &gcpADCFiles,
+		"sops":      &sopsAgeFiles,
 		"npmrc":     &npmrcFiles,
 	}
 	if len(categorySlices) != len(migrateCategories) {
@@ -323,7 +333,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 		} else {
 			fmt.Fprintln(cmd.OutOrStdout(), "Nothing to migrate: no .env files, no tfvars secrets, no secret-shaped shell-config")
 			fmt.Fprintln(cmd.OutOrStdout(), "exports, no MCP server secrets, no AWS/kubeconfig/Terraform Cloud/GCP credentials,")
-			fmt.Fprintln(cmd.OutOrStdout(), "and no npmrc secrets found.")
+			fmt.Fprintln(cmd.OutOrStdout(), "no SOPS age key, and no npmrc secrets found.")
 		}
 		if len(skippedArchived) > 0 {
 			fmt.Fprintf(cmd.OutOrStdout(), "(%d finding(s) skipped under an archived/backup-looking directory, rerun with --include-archived to include them.)\n", len(skippedArchived))
@@ -359,7 +369,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 	// work that's about to be aborted anyway. This same plan is what
 	// --dry-run prints too (see below) — one rendering path, so the
 	// preview you confirm against is exactly the preview --dry-run shows.
-	printMigratePlan(cmd.OutOrStdout(), home, wholeHome, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, gcpADCFiles, npmrcFiles, planRevealHooks(home, envFiles, npmrcFiles))
+	printMigratePlan(cmd.OutOrStdout(), home, wholeHome, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, planRevealHooks(home, envFiles, npmrcFiles))
 	if len(skippedArchived) > 0 {
 		fmt.Fprintf(cmd.OutOrStdout(), "\n(Skipped %d finding(s) under an archived/backup-looking directory, rerun with --include-archived to include them.)\n", len(skippedArchived))
 	}
@@ -603,6 +613,37 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 		fmt.Fprintln(out)
 	}
 
+	if n := len(sopsAgeFiles); n > 0 {
+		printMigrateResultCategory(out, "SOPS age key file(s) migrated", n)
+		for _, keyPath := range sopsAgeFiles {
+			summary.checkGitHistory(keyPath)
+
+			result, err := migrate.ApplySOPSAge(v, home, keyPath)
+			if err != nil {
+				return fmt.Errorf("jit migrate: %w", err)
+			}
+			if err := mount.AddMount(registryPath, mount.Entry{MountPath: keyPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
+				return fmt.Errorf("jit migrate: registering mount for %s: %w", keyPath, err)
+			}
+			if err := summary.writePointerFile(keyPath, result.ProfilePath); err != nil {
+				return fmt.Errorf("jit migrate: %w", err)
+			}
+			fmt.Fprintf(out, "  • %s -> profile %q; backup: `jit vault get %s`\n",
+				displayPath(home, keyPath), result.ProfileName, result.BackupPath)
+			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
+			// Two consumption paths, user's pick: the live mount serves the
+			// key file itself (any sops version, kluctl's embedded sops,
+			// anything else that reads keys.txt), while sops v3.10+ can skip
+			// the file entirely via its native command hook. Like the global
+			// ~/.npmrc, keys.txt isn't tied to any one project directory, so
+			// there's no project-level reveal hook to wire — print the hook
+			// one-liner instead.
+			fmt.Fprintf(out, "    sops v3.10+ can fetch it directly: export SOPS_AGE_KEY_CMD=\"jit sops-age-key\"\n")
+			fmt.Fprintf(out, "    older sops/kluctl read the mounted file: jit run --profile %s -- kluctl deploy\n", result.ProfileName)
+		}
+		fmt.Fprintln(out)
+	}
+
 	if n := len(npmrcFiles); n > 0 {
 		printMigrateResultCategory(out, "npmrc file(s) migrated", n)
 		for _, npmrcPath := range npmrcFiles {
@@ -648,7 +689,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 
 	summary.wireRevealHooks()
 	summary.print(out)
-	reportAgentStatus(out, root, len(envFiles) > 0 || len(npmrcFiles) > 0 || len(gcpADCFiles) > 0)
+	reportAgentStatus(out, root, len(envFiles) > 0 || len(npmrcFiles) > 0 || len(gcpADCFiles) > 0 || len(sopsAgeFiles) > 0)
 	return nil
 }
 

@@ -5,7 +5,7 @@ description: The commands other tools invoke - aws-credential-process, k8s-exec-
 
 # Plumbing protocols
 
-Three commands exist to be invoked by *other tools' configuration*, not by
+Four commands exist to be invoked by *other tools' configuration*, not by
 hand - `jit --help` groups them separately and shell tab-completion omits
 them entirely, for exactly that reason. Each
 implements the consuming tool's documented credential-plugin protocol, and
@@ -25,6 +25,14 @@ Implements client-go's exec credential plugin protocol: prints an
 `ExecCredential` JSON document carrying the user's bearer token or client
 cert/key pair. Wired into `~/.kube/config` by [the kubeconfig
 migration](../migrate/kubernetes.md).
+
+## `jit sops-age-key [--profile <name>]`
+
+Implements sops's `SOPS_AGE_KEY_CMD` hook (sops v3.10+): prints the bare
+age private key to stdout, nothing else - sops parses the output as key
+material. Defaults to the `sops-age` profile [the SOPS
+migration](../migrate/sops.md) creates; tools whose embedded sops
+predates the hook read the migrated `keys.txt` live mount instead.
 
 ## `jit terraform-credentials <get|store|forget> <hostname>`
 

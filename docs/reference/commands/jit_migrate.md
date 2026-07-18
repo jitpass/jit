@@ -13,7 +13,7 @@ mistyped flag.
 Pick a scope:
 
   jit migrate local   only what's under the current directory tree
-                       (.env files, project mcp.json, project .npmrc)
+                       (.env files, tfvars files, project mcp.json, project .npmrc)
   jit migrate home    the whole machine: everything local finds, anywhere
                        under $HOME, plus the machine-wide files that live at
                        fixed home paths (shell configs, ~/.aws/credentials,
@@ -39,7 +39,7 @@ See each subcommand's --help for exactly what happens to each kind of file.
 
 ```
       --dry-run        preview the plan for this scope without changing anything
-      --only strings   scope a run to just these comma-separated categories: env,shell,mcp,aws,kube,terraform,gcp,npmrc (default: all)
+      --only strings   scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,gcp,sops,npmrc (default: all)
   -y, --yes            skip the confirmation prompt and migrate immediately
 ```
 

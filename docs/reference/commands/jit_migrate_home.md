@@ -29,6 +29,11 @@ machine-wide files that live at fixed home paths:
                    preserved verbatim. (GCP has no AWS-style
                    credential_process hook for these credential types, so
                    the mount is what keeps SDKs working with no key on disk.)
+  SOPS age key     keys.txt (~/.config/sops/age/ or its Application Support
+                   sibling) moves into the vault; the file keeps working as
+                   a live mount for sops/kluctl/Flux/helm-secrets, and sops
+                   v3.10+ can fetch the key directly via
+                   SOPS_AGE_KEY_CMD="jit sops-age-key", no file read at all.
   Claude Desktop's MCP config and the global ~/.npmrc get the same
   treatment as project MCP configs and .npmrc files.
 
@@ -59,7 +64,7 @@ jit migrate home [flags]
 
 ```
       --dry-run        preview the plan for this scope without changing anything
-      --only strings   scope a run to just these comma-separated categories: env,shell,mcp,aws,kube,terraform,gcp,npmrc (default: all)
+      --only strings   scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,gcp,sops,npmrc (default: all)
   -y, --yes            skip the confirmation prompt and migrate immediately
 ```
 
