@@ -71,6 +71,7 @@ Limit either scope to specific categories with `--only`
 | `--only` | Vault gets | The original file becomes | Guide |
 |---|---|---|---|
 | `env` | one secret per variable | a live-mounted named pipe, plus a git-safe `.env.pointers` companion | [.env files](./env-files.md) |
+| `tfvars` | one secret per variable, stored as `TF_VAR_<name>` | the secret lines deleted; terraform reads them back as `TF_VAR_` env vars via `jit run` | [Terraform tfvars](./tfvars.md) |
 | `shell` | one secret per `export KEY=value` line | the export line replaced with `eval "$(jit export --profile ...)"` | [Shell configs](./shell-configs.md) |
 | `mcp` | one secret per server's env-block value | the server's `command` rewritten to launch via `jit run` | [MCP / AI tools](./mcp.md) |
 | `aws` | the profile's access key/secret/session token | a `credential_process` line in `~/.aws/config`; no file with the real value at all | [AWS](./aws.md) |
