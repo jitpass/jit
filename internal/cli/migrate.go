@@ -241,7 +241,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 	if err != nil {
 		return fmt.Errorf("jit migrate: %w", err)
 	}
-	tfvarsFiles, err := migrate.DiscoverTfvarsFiles(projectRoot)
+	tfvarsFiles, tfvarsComplexOnly, err := migrate.DiscoverTfvarsFiles(projectRoot)
 	if err != nil {
 		return fmt.Errorf("jit migrate: %w", err)
 	}
@@ -307,6 +307,11 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 		skippedArchived = append(skippedArchived, skipped...)
 		npmrcFiles, skipped = migrate.FilterArchived(npmrcFiles)
 		skippedArchived = append(skippedArchived, skipped...)
+		// Note-only paths (nothing migratable in them), so an archived one
+		// is dropped silently rather than added to skippedArchived — the
+		// archived note's "rerun with --include-archived" would falsely
+		// promise a rerun could convert it.
+		tfvarsComplexOnly, _ = migrate.FilterArchived(tfvarsComplexOnly)
 	}
 
 	// A jitpass-playground checkout's planted bait is excluded from `jit
@@ -325,6 +330,8 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 		skippedPlayground = append(skippedPlayground, skipped...)
 		npmrcFiles, skipped = migrate.FilterPlayground(home, npmrcFiles)
 		skippedPlayground = append(skippedPlayground, skipped...)
+		// Same note-only treatment as the archived filter above.
+		tfvarsComplexOnly, _ = migrate.FilterPlayground(home, tfvarsComplexOnly)
 	}
 
 	// --only scopes a run to just the named categories (GAPS.md #21) —
@@ -372,6 +379,9 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 				*items = nil
 			}
 		}
+		if !selected["tfvars"] {
+			tfvarsComplexOnly = nil // note-only companion of the tfvars category, scoped with it
+		}
 	}
 
 	total := 0
@@ -390,6 +400,8 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 			"Rerun with --include-archived to include them.")
 		printSkippedFindings(cmd.OutOrStdout(), home, len(skippedPlayground), "inside a jitpass-playground checkout (synthetic bait, not real exposure)", skippedPlayground,
 			"To practice migrating them, run `jit migrate local` from inside the checkout.")
+		printSkippedFindings(cmd.OutOrStdout(), home, len(tfvarsComplexOnly), "in Terraform variable file(s) whose secret-shaped values aren't simple one-line strings", tfvarsComplexOnly,
+			"Nothing migrate can move safely; they stay in place, and `jit audit` keeps reporting them.")
 		return nil
 	}
 
@@ -426,6 +438,8 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 		"Rerun with --include-archived to include them.")
 	printSkippedFindings(cmd.OutOrStdout(), home, len(skippedPlayground), "inside a jitpass-playground checkout (synthetic bait, not real exposure)", skippedPlayground,
 		"To practice migrating them, run `jit migrate local` from inside the checkout.")
+	printSkippedFindings(cmd.OutOrStdout(), home, len(tfvarsComplexOnly), "in Terraform variable file(s) whose secret-shaped values aren't simple one-line strings", tfvarsComplexOnly,
+		"Nothing migrate can move safely; they stay in place, and `jit audit` keeps reporting them.")
 
 	if migrateDryRun {
 		out := cmd.OutOrStdout()
