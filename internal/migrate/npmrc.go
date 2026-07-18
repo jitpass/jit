@@ -117,22 +117,19 @@ func DiscoverNpmrcFiles(home, cwd string, includeGlobal bool) ([]string, error) 
 			return filepath.SkipDir
 		}
 		if d.IsDir() {
-			if skipDiscoveryDir(path, d.Name()) {
+			if skipDiscoveryDir(cwd, path, d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
+		// Regular files only, same rule as audit's walk (fsutil.go): an
+		// already-mounted FIFO would block check's read forever, and a
+		// symlinked .npmrc must not be rewritten through the link.
+		if !d.Type().IsRegular() {
+			return nil
+		}
 		if d.Name() != ".npmrc" {
 			return nil
-		}
-		info, ierr := d.Info()
-		if ierr != nil {
-			// Same tolerance as above, for a single file's own stat
-			// failing (e.g. a race with deletion) — skip just this file.
-			return nil
-		}
-		if info.Mode()&fs.ModeNamedPipe != 0 {
-			return nil // already mounted
 		}
 		return check(path)
 	})
