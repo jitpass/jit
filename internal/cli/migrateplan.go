@@ -55,7 +55,7 @@ import (
 // (splitMCPByScope/splitNpmrcByScope) since a single Discover* call
 // there still mixes the fixed path in with items found by the
 // whole-$HOME walk.
-func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, gcpADCFiles, npmrcFiles, revealHookFiles []string) {
+func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, gcpADCFiles, npmrcFiles, revealHookFiles []string) {
 	scope := "local"
 	if wholeHome {
 		scope = "home"
@@ -86,7 +86,7 @@ func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, shellC
 		return out
 	}
 
-	hasScoped := len(envFiles) > 0 || len(mcpScoped) > 0 || len(npmrcScoped) > 0 || len(revealHookFiles) > 0
+	hasScoped := len(envFiles) > 0 || len(tfvarsFiles) > 0 || len(mcpScoped) > 0 || len(npmrcScoped) > 0 || len(revealHookFiles) > 0
 	hasFixed := len(shellConfigs) > 0 || len(mcpFixed) > 0 || len(awsProfiles) > 0 || len(k8sUsers) > 0 || len(terraformHosts) > 0 || len(gcpADCFiles) > 0 || len(npmrcFixed) > 0
 
 	if hasScoped {
@@ -100,6 +100,9 @@ func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, shellC
 				}
 				return ""
 			})
+		printMigratePlanCategory(w,
+			"Terraform tfvars file(s) → secret values move to the vault; terraform reads them back as TF_VAR_ environment variables when run through jit",
+			shorten(tfvarsFiles))
 		printMigratePlanCategory(w,
 			"MCP config(s) → secrets move to the vault; injected automatically when the server launches",
 			shorten(mcpScoped))
@@ -146,23 +149,30 @@ func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, shellC
 		// split — selecting "mcp" or "npmrc" always pulls in their own
 		// always-checked fixed file too (Claude Desktop's config, global
 		// ~/.npmrc), since that file is inherent to the category, not a
-		// separate scope switch. "env" is the one category with no
-		// machine-wide sibling at all, so it's the only token that
-		// actually guarantees zero items from this section — recommending
+		// separate scope switch. "env" and "tfvars" are the only categories
+		// with no machine-wide sibling at all, so they're the only tokens
+		// that actually guarantee zero items from this section — recommending
 		// mcp/npmrc here would promise something --only can't do (a real
 		// bug, caught by a user testing `--only mcp` and still seeing
 		// Claude Desktop's config in the plan).
+		var onlyTokens []string
 		if len(envFiles) > 0 {
+			onlyTokens = append(onlyTokens, "env")
+		}
+		if len(tfvarsFiles) > 0 {
+			onlyTokens = append(onlyTokens, "tfvars")
+		}
+		if len(onlyTokens) > 0 {
 			caveat := ""
 			if len(mcpScoped) > 0 || len(npmrcScoped) > 0 {
 				caveat = " (mcp/npmrc still pull in their own always-checked file above when selected)"
 			}
-			_, _ = color.New(color.FgYellow).Fprintf(w, "  Use --only env to leave these machine-wide files out of the plan%s.\n\n", caveat)
+			_, _ = color.New(color.FgYellow).Fprintf(w, "  Use --only %s to leave these machine-wide files out of the plan%s.\n\n", strings.Join(onlyTokens, ","), caveat)
 		}
 	}
 
 	categories, total := 0, 0
-	for _, items := range [][]string{envFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, gcpADCFiles, npmrcFiles, revealHookFiles} {
+	for _, items := range [][]string{envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, gcpADCFiles, npmrcFiles, revealHookFiles} {
 		if len(items) > 0 {
 			categories++
 		}
