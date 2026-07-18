@@ -31,3 +31,6 @@ plaintext file, and `logout` removes it (`forget`).
 `jit terraform-credentials <get|store|forget>` is the [plumbing
 command](../reference/plumbing.md) Terraform invokes - you never run it by
 hand. Reversing the migration: [`jit migrate undo`](./undo-and-remove.md).
+
+Looking for secrets in **`terraform.tfvars` variable files**? That's the
+separate [`tfvars` category](./tfvars.md).
