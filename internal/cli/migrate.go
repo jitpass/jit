@@ -96,10 +96,11 @@ var migrateCmd = &cobra.Command{
 		"sitting on disk. It's a separate command from jit audit, not a flag on it,\n" +
 		"so the read-only scanner can never be turned into a mutating one by a\n" +
 		"mistyped flag.\n\n" +
-		"Pick a scope:\n\n" +
+		"By default it covers the same ground jit audit scans, the whole machine:\n" +
+		"`jit migrate` is `jit migrate home`. Narrow the scope with a subcommand:\n\n" +
 		"  jit migrate local   only what's under the current directory tree\n" +
 		"                       (.env files, tfvars files, project mcp.json, project .npmrc)\n" +
-		"  jit migrate home    the whole machine: everything local finds, anywhere\n" +
+		"  jit migrate home    the default: everything local finds, anywhere\n" +
 		"                       under $HOME, plus the machine-wide files that live at\n" +
 		"                       fixed home paths (shell configs, ~/.aws/credentials,\n" +
 		"                       ~/.kube/config, Terraform Cloud credentials, GCP\n" +
@@ -109,10 +110,22 @@ var migrateCmd = &cobra.Command{
 		"anything, and every modified file is backed up (encrypted, into the vault)\n" +
 		"first, `jit migrate undo` restores any migrated file from that backup.\n" +
 		"See each subcommand's --help for exactly what happens to each kind of file.",
-	Example: "  jit migrate local --dry-run    # preview this project's plan, change nothing\n" +
-		"  jit migrate local              # fix this project\n" +
+	Example: "  jit migrate --dry-run          # preview the whole-machine plan, change nothing\n" +
+		"  jit migrate                    # fix everything the plan shows\n" +
+		"  jit migrate local --dry-run    # preview just this project's plan\n" +
 		"  jit migrate home --only aws,kube\n" +
 		"  jit migrate undo               # restore migrated files from their backups",
+	// Bare `jit migrate` runs the home scope: jit audit scans the whole
+	// machine with no scope choice, so the natural next step after reading
+	// its report must not fork into a local/home decision the reader has
+	// no basis to make (picking `local` from an arbitrary cwd silently
+	// leaves most of the audit's findings unfixed). The plan+confirm gate,
+	// encrypted backups, and `jit migrate undo` are what make a
+	// whole-machine default safe; scope was never the real safety net.
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runMigrate(cmd, true)
+	},
 }
 
 var migrateLocalCmd = &cobra.Command{
@@ -737,6 +750,12 @@ func init() {
 	migrateCmd.PersistentFlags().BoolVar(&migrateDryRun, "dry-run", false, "preview the plan for this scope without changing anything")
 	migrateCmd.PersistentFlags().BoolVarP(&migrateYes, "yes", "y", false, "skip the confirmation prompt and migrate immediately")
 	migrateCmd.PersistentFlags().StringSliceVar(&migrateOnly, "only", nil, "scope a run to just these comma-separated categories: "+strings.Join(migrateCategories, ",")+" (default: all)")
+	// Registered on the bare command AND the home subcommand (same bound
+	// var), not as a persistent flag: bare `jit migrate` runs the home
+	// sweep so it needs the flag, but `jit migrate local` never filters
+	// archived paths and must reject it rather than silently accept a
+	// no-op.
+	migrateCmd.Flags().BoolVar(&migrateIncludeArchived, "include-archived", false, "also convert findings under an archived/backup-looking directory (archive, archived, backup, backups, .trash)")
 	migrateHomeCmd.Flags().BoolVar(&migrateIncludeArchived, "include-archived", false, "also convert findings under an archived/backup-looking directory (archive, archived, backup, backups, .trash)")
 
 	migrateCmd.AddCommand(migrateLocalCmd, migrateHomeCmd)

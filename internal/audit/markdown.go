@@ -86,7 +86,7 @@ func WriteMarkdownReport(w io.Writer, findings []Finding, summary ScanSummary) {
 	if anyArchived(findings) {
 		fmt.Fprintln(w, "[archived] findings live under an archived/backup-looking directory: `jit migrate home` skips them by default, rerun it with `--include-archived` to convert them too.")
 	}
-	fmt.Fprintln(w, "Run `jit migrate local --dry-run` (or `jit migrate home --dry-run`) to see the guided fix plan for what's fixable here.")
+	fmt.Fprintln(w, "Run `jit migrate --dry-run` to see the guided fix plan for what's fixable here.")
 	fmt.Fprintln(w, "No secret values are ever printed in full. Run `jit audit --format ndjson` for machine-readable output (same redaction rules apply).")
 }
 
