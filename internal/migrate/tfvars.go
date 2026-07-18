@@ -125,20 +125,19 @@ func DiscoverTfvarsFiles(root string) ([]string, error) {
 			return filepath.SkipDir
 		}
 		if d.IsDir() {
-			if skipDiscoveryDir(path, d.Name()) {
+			if skipDiscoveryDir(root, path, d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if !tfvarsFileName(d.Name()) {
+		// Regular files only, same rule as audit's walk (fsutil.go):
+		// reading a FIFO would block forever, and a symlinked tfvars file
+		// must not be rewritten through the link.
+		if !d.Type().IsRegular() {
 			return nil
 		}
-		info, ierr := d.Info()
-		if ierr != nil {
-			return nil // race with deletion — skip just this file
-		}
-		if info.Mode()&fs.ModeNamedPipe != 0 {
-			return nil // reading a FIFO would block forever
+		if !tfvarsFileName(d.Name()) {
+			return nil
 		}
 		lines, rerr := readLines(path)
 		if rerr != nil {

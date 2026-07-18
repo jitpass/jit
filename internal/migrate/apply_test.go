@@ -84,6 +84,41 @@ func TestDiscoverEnvFiles(t *testing.T) {
 	}
 }
 
+// TestDiscoverEnvFilesSharesAuditNoiseList is the regression test for the
+// audit/migrate skip-list drift: migrate once kept its own 4-entry copy of
+// audit's 16-entry noise list, so `jit migrate home` discovered (and
+// offered to rewrite) fixture .env files under .venv site-packages,
+// .vscode/extensions bundles, dist/ outputs, and everything under
+// ~/Library — none of which `jit audit` reports. Discovery must skip
+// exactly what audit's walk skips, plus migrate's own extras (.jit), and
+// must skip symlinked .env files the way audit's regular-files-only walk
+// does.
+func TestDiscoverEnvFilesSharesAuditNoiseList(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "myapp", ".env"), "A=1\n")
+	for _, noise := range []string{
+		filepath.Join(".venv", "lib", "site-packages", "pkg"),
+		filepath.Join(".vscode", "extensions", "some.ext-1.0.0"),
+		filepath.Join("Library", "Caches", "app"),
+		"dist",
+		filepath.Join(".jit", "profiles"),
+	} {
+		writeFile(t, filepath.Join(root, noise, ".env"), "FAKE=fixture\n")
+	}
+	if err := os.Symlink(filepath.Join(root, "myapp", ".env"), filepath.Join(root, ".env")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	found, err := DiscoverEnvFiles(root)
+	if err != nil {
+		t.Fatalf("DiscoverEnvFiles: %v", err)
+	}
+	want := filepath.Join(root, "myapp", ".env")
+	if len(found) != 1 || found[0] != want {
+		t.Errorf("found = %v, want [%s]: noise dirs audit skips (and symlinks) must not be discovered by migrate", found, want)
+	}
+}
+
 // TestDiscoverEnvFilesToleratesUnreadableDirectory is a real bug's
 // regression test: `jit migrate home` walks the whole $HOME tree
 // (GAPS.md #26), which on a real machine routinely contains a
