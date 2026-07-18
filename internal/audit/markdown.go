@@ -81,6 +81,11 @@ func WriteMarkdownReport(w io.Writer, findings []Finding, summary ScanSummary) {
 	}
 
 	fmt.Fprintln(w, "---")
+	// Parity with WriteHumanReport's [archived] legend: tag without
+	// explanation is jargon, explanation without a tagged finding is noise.
+	if anyArchived(findings) {
+		fmt.Fprintln(w, "[archived] findings live under an archived/backup-looking directory: `jit migrate home` skips them by default, rerun it with `--include-archived` to convert them too.")
+	}
 	fmt.Fprintln(w, "Run `jit migrate local --dry-run` (or `jit migrate home --dry-run`) to see the guided fix plan for what's fixable here.")
 	fmt.Fprintln(w, "No secret values are ever printed in full. Run `jit audit --format ndjson` for machine-readable output (same redaction rules apply).")
 }
@@ -94,15 +99,15 @@ func writeRenderItemMarkdown(w io.Writer, item renderItem) {
 		writeFindingDetailMarkdown(w, item.rep, false)
 		for _, loc := range item.locations {
 			if loc.Line != nil {
-				fmt.Fprintf(w, "      - `%s` :%d\n", loc.Path, *loc.Line)
+				fmt.Fprintf(w, "      - `%s` :%d%s\n", loc.Path, *loc.Line, archivedTag(loc.Path))
 			} else {
-				fmt.Fprintf(w, "      - `%s`\n", loc.Path)
+				fmt.Fprintf(w, "      - `%s`%s\n", loc.Path, archivedTag(loc.Path))
 			}
 		}
 		return
 	}
 
-	fmt.Fprintf(w, "- `%s`\n", item.rep.FilePath)
+	fmt.Fprintf(w, "- `%s`%s\n", item.rep.FilePath, archivedTag(item.rep.FilePath))
 	for _, f := range item.findings {
 		writeFindingDetailMarkdown(w, f, true)
 	}

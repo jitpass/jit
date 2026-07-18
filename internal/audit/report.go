@@ -297,6 +297,31 @@ func ShortenHome(home, path string) string {
 	return path
 }
 
+// archivedTag renders the per-path "[archived]" marker: the same
+// LooksArchived test `jit migrate home` uses to skip a finding by default,
+// so a reader can map an audit finding onto migrate's skip note instead of
+// wondering why the fix plan dropped it (a real, reported confusion: audit
+// showed a finding under ~/Documents/archive/, the dry-run showed only a
+// skip count, and nothing connected the two). Computed from the path, not
+// Finding.Archived, so the renderers stay correct for findings that never
+// passed through Scan's tagging pass.
+func archivedTag(path string) string {
+	if LooksArchived(path) {
+		return " [archived]"
+	}
+	return ""
+}
+
+// anyArchived reports whether any finding would carry archivedTag's marker.
+func anyArchived(findings []Finding) bool {
+	for _, f := range findings {
+		if LooksArchived(f.FilePath) {
+			return true
+		}
+	}
+	return false
+}
+
 // playgroundLocation renders the human phrase for where excluded synthetic
 // findings came from: the single "~"-shortened path when there is one
 // playground, a plain count when several, or a bare label as a fallback.
@@ -403,6 +428,13 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 		// section separator before the next bold header.
 	}
 
+	// The [archived] legend renders once, above the migrate trailer, and
+	// only when some finding actually carries the tag — the tag without an
+	// explanation would read as jargon, and the explanation without any
+	// tagged finding would be noise.
+	if anyArchived(findings) {
+		_, _ = color.New(color.FgYellow).Fprintln(w, "[archived] findings live under an archived/backup-looking directory: `jit migrate home` skips them by default, rerun it with --include-archived to convert them too.")
+	}
 	// The report's only prior "next step" pointed at an output-format
 	// flag, not remediation — a first-time reader of a HIGH/CRITICAL
 	// report had no pointer from here to the command that actually fixes
@@ -481,9 +513,9 @@ func writeRenderItemText(w io.Writer, item renderItem, home string, cols columns
 		locIndent := strings.Repeat(" ", cols.reasonIndent())
 		for _, loc := range item.locations {
 			if loc.Line != nil {
-				fmt.Fprintf(w, "%s- %s:%d\n", locIndent, ShortenHome(home, loc.Path), *loc.Line)
+				fmt.Fprintf(w, "%s- %s:%d%s\n", locIndent, ShortenHome(home, loc.Path), *loc.Line, archivedTag(loc.Path))
 			} else {
-				fmt.Fprintf(w, "%s- %s\n", locIndent, ShortenHome(home, loc.Path))
+				fmt.Fprintf(w, "%s- %s%s\n", locIndent, ShortenHome(home, loc.Path), archivedTag(loc.Path))
 			}
 		}
 		fmt.Fprintln(w)
@@ -495,7 +527,7 @@ func writeRenderItemText(w io.Writer, item renderItem, home string, cols columns
 	// "└" connectors), and a blank line after it (plus one after every
 	// finding) gives the block room to breathe instead of packing rows
 	// edge to edge.
-	fmt.Fprintf(w, "  • %s\n\n", ShortenHome(home, item.rep.FilePath))
+	fmt.Fprintf(w, "  • %s%s\n\n", ShortenHome(home, item.rep.FilePath), archivedTag(item.rep.FilePath))
 	for _, f := range item.findings {
 		cols.writeFindingRow(w, f, true)
 		fmt.Fprintln(w)
