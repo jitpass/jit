@@ -53,6 +53,50 @@ func TestWriteHumanReportNeverLeaksRawValue(t *testing.T) {
 	}
 }
 
+// TestWriteHumanReportTagsArchivedFindings: a finding under an archived/
+// backup-looking directory is exactly what `jit migrate home` skips by
+// default, and that skip used to be illegible from the audit side (a real,
+// reported confusion: audit showed a HIGH finding under ~/Documents/
+// archive/, migrate's dry-run showed only a skip count, and nothing
+// connected the two). The report must tag the path and explain the tag
+// once; a report with no archived finding must show neither.
+func TestWriteHumanReportTagsArchivedFindings(t *testing.T) {
+	archived := Finding{
+		FindingType: FindingTypeMCPEmbeddedSecret,
+		Severity:    SeverityHigh,
+		FilePath:    "/Users/alex/Documents/archive/oldproj/.mcp.json",
+		Evidence:    "embedded directly in MCP server \"jamf\"'s env block",
+	}
+	active := Finding{
+		FindingType: FindingTypeEnvFilePresent,
+		Severity:    SeverityMedium,
+		FilePath:    "/Users/alex/code/myapp/.env",
+		Evidence:    "plaintext .env file",
+	}
+	findings := []Finding{archived, active}
+	summary := buildScanSummary(Config{}, findings, 0, 0)
+
+	var buf bytes.Buffer
+	WriteHumanReport(&buf, findings, summary, "")
+	out := buf.String()
+
+	if !strings.Contains(out, archived.FilePath+" [archived]") {
+		t.Errorf("expected the archived path to carry the [archived] tag, got:\n%s", out)
+	}
+	if strings.Contains(out, active.FilePath+" [archived]") {
+		t.Errorf("expected the active path to carry no tag, got:\n%s", out)
+	}
+	if !strings.Contains(out, "--include-archived") {
+		t.Errorf("expected the [archived] legend explaining migrate's default skip, got:\n%s", out)
+	}
+
+	buf.Reset()
+	WriteHumanReport(&buf, []Finding{active}, buildScanSummary(Config{}, []Finding{active}, 0, 0), "")
+	if strings.Contains(buf.String(), "[archived]") {
+		t.Errorf("expected no [archived] tag or legend without an archived finding, got:\n%s", buf.String())
+	}
+}
+
 // TestWriteHumanReportShowsKeyName guards against exactly the gap a real
 // user found (2026-07-06): an MCP-embedded-secret finding showing a masked
 // value and "why" text but never which variable it actually was, forcing a
