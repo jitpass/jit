@@ -271,7 +271,7 @@ jit agent install                                  # 2. restart the background a
 **Source install (Option B):**
 
 ```sh
-go install github.com/jitpass/jit/cmd/jit@v0.15.0   # 1. reinstall the binary (pin the new tag)
+go install github.com/jitpass/jit/cmd/jit@v0.16.0   # 1. reinstall the binary (pin the new tag)
 jit agent install                                  # 2. restart the background agent on it
 ```
 
