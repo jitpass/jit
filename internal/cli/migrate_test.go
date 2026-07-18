@@ -70,7 +70,8 @@ func TestMigrateSummaryExportNudge(t *testing.T) {
 // execMigrate drives `jit migrate <scope> <args...>` through rootCmd
 // (mirrors execAudit's discipline — see audit_test.go), resetting every
 // migrate package-level flag var first so tests never inherit state from
-// each other. scope is "local" or "home".
+// each other. scope is "local", "home", or "" for the bare command
+// (which runs the home scope by default).
 func execMigrate(t *testing.T, scope string, args ...string) (stdout string, err error) {
 	t.Helper()
 	migrateDryRun = false
@@ -81,7 +82,11 @@ func execMigrate(t *testing.T, scope string, args ...string) (stdout string, err
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)                 // confirmation prompts go to stderr, capture both streams in order
 	rootCmd.SetIn(strings.NewReader("")) // default: EOF, i.e. an empty/declined answer if a confirm prompt is hit unexpectedly
-	rootCmd.SetArgs(append([]string{"migrate", scope}, args...))
+	cmdArgs := []string{"migrate"}
+	if scope != "" {
+		cmdArgs = append(cmdArgs, scope)
+	}
+	rootCmd.SetArgs(append(cmdArgs, args...))
 	err = rootCmd.Execute()
 	return buf.String(), err
 }
@@ -382,6 +387,42 @@ func TestMigrateLocalDryRunCleanFixture(t *testing.T) {
 // an .env file anywhere under $HOME, not just under cwd — the actual new
 // capability (GAPS.md #26) — while jit migrate local from the same cwd
 // does not.
+// TestMigrateBareDefaultsToHomeScope: `jit audit` scans the whole machine
+// with no scope choice, so its report's "run `jit migrate --dry-run`"
+// trailer must work verbatim and cover the same ground — bare `jit
+// migrate` used to print help instead, forcing a local/home fork on the
+// reader at their highest-intent moment (and `local` from an arbitrary
+// cwd silently leaves most audit findings unfixed).
+func TestMigrateBareDefaultsToHomeScope(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t) // an unrelated, empty cwd: only a home-scope run can find the .env below
+
+	envPath := filepath.Join(home, "code", "otherproject", ".env")
+	if err := os.MkdirAll(filepath.Dir(envPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(envPath, []byte("STRIPE_KEY=sk_test_fixture\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := execMigrate(t, "", "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate --dry-run: %v", err)
+	}
+	if !strings.Contains(out, "plan (home scope)") {
+		t.Errorf("expected bare `jit migrate` to run the home scope, got:\n%s", out)
+	}
+	if !strings.Contains(out, displayPath(home, envPath)) {
+		t.Errorf("expected bare `jit migrate --dry-run` to find a .env anywhere under $HOME, got:\n%s", out)
+	}
+
+	// The bare command runs the home sweep, so it must accept
+	// --include-archived like `jit migrate home` does.
+	if _, err := execMigrate(t, "", "--dry-run", "--include-archived"); err != nil {
+		t.Errorf("jit migrate --dry-run --include-archived: %v", err)
+	}
+}
+
 func TestMigrateHomeDiscoversAcrossWholeHome(t *testing.T) {
 	home := withFixtureHome(t)
 	withFixtureCwd(t) // cwd is an unrelated, empty fixture dir, NOT under the .env's directory
