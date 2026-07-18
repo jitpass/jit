@@ -9,12 +9,15 @@ import (
 	"strings"
 )
 
-// ScanIACFiles implements RFC.md §4 category 6: IaC variable files,
-// detection only (no auto-fix yet, per RFC.md §1/§4). Covers Terraform's
-// terraform.tfvars/*.auto.tfvars convention and Kubernetes/Helm-style
-// secrets.yaml manifests — the latter added after real-world review
-// (2026-07-06, see ROADMAP.md) showed it's far more common in practice
-// than .tfvars alone. Findings are file-level, with content still
+// ScanIACFiles implements RFC.md §4 category 6: IaC variable files.
+// Covers Terraform's terraform.tfvars/*.auto.tfvars convention and
+// Kubernetes/Helm-style secrets.yaml manifests — the latter added after
+// real-world review (2026-07-06, see ROADMAP.md) showed it's far more
+// common in practice than .tfvars alone. The Terraform half now has an
+// automated fix (jit migrate's tfvars category, internal/migrate/
+// tfvars.go) and its advisory says so; the Kubernetes half stays
+// detection-only, since that file's consumer is a cluster or CI pipeline
+// no local rewrite can serve. Findings are file-level, with content still
 // inspected for the universal cross-cutting escalation signals (RFC.md §4:
 // "regardless of category").
 func ScanIACFiles(cfg Config) ([]Finding, error) {
@@ -39,7 +42,7 @@ func ScanIACFiles(cfg Config) ([]Finding, error) {
 			}
 		}
 
-		f, err := buildIACFinding(cfg, path)
+		f, err := buildIACFinding(cfg, path, isTFVars)
 		if err != nil {
 			return nil // unreadable file — skip it, don't fail the whole audit
 		}
@@ -64,7 +67,7 @@ func fileContainsSubstring(path, substr string) (bool, error) {
 	return false, scanner.Err()
 }
 
-func buildIACFinding(cfg Config, path string) (Finding, error) {
+func buildIACFinding(cfg Config, path string, isTFVars bool) (Finding, error) {
 	file, err := openFile(path)
 	if err != nil {
 		return Finding{}, err
@@ -110,7 +113,11 @@ func buildIACFinding(cfg Config, path string) (Finding, error) {
 		f.Evidence = "contains a public IP address in a visible value"
 	default:
 		f.Severity = SeverityInfo
-		f.Evidence = "infrastructure-as-code variable file: detection only, no automated fix yet"
+		if isTFVars {
+			f.Evidence = "terraform variable file: `jit migrate` can move its secret values into the vault"
+		} else {
+			f.Evidence = "infrastructure-as-code variable file: detection only, no automated fix yet"
+		}
 	}
 
 	f.RecordID = RecordID(f.FindingType, f.FilePath, nil)

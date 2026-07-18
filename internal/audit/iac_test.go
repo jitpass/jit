@@ -5,6 +5,7 @@ package audit
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -23,6 +24,12 @@ instance_type = "t3.micro"
 	}
 	if findings[0].Severity != SeverityInfo {
 		t.Errorf("severity = %q, want %q", findings[0].Severity, SeverityInfo)
+	}
+	// The Terraform half of this category has an automated fix (jit
+	// migrate's tfvars category) and the advisory must say so, unlike the
+	// Kubernetes half's detection-only text.
+	if !strings.Contains(findings[0].Evidence, "jit migrate") {
+		t.Errorf("evidence = %q, want it to point at jit migrate", findings[0].Evidence)
 	}
 }
 
@@ -59,6 +66,9 @@ data:
 	}
 	if len(findings) != 1 {
 		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+	if !strings.Contains(findings[0].Evidence, "detection only") {
+		t.Errorf("evidence = %q, want the k8s detection-only advisory", findings[0].Evidence)
 	}
 }
 
