@@ -52,9 +52,9 @@ value Terraform would actually have used is what lands in the vault.
   some entries go stale.
 - If the tfvars file was ever committed to git, `migrate` warns: the old
   value is still in git history - rotate it.
-- `jit migrate local` covers the project you're standing in;
-  `jit migrate home` finds tfvars files across every project under
-  `$HOME`.
+- `jit migrate` (the whole-machine default) finds tfvars files across
+  every project under `$HOME`; `jit migrate local` covers just the
+  project you're standing in.
 
 Looking for the **Terraform Cloud API token** (`terraform login`)? That's
 the separate [`terraform` category](./terraform.md). Reversing this
