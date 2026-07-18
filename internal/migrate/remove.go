@@ -115,9 +115,15 @@ func DiscoverPointerArtifacts(root string) (companions, inPlace []string, err er
 			return filepath.SkipDir
 		}
 		if d.IsDir() {
-			if skipDiscoveryDir(path, d.Name()) {
+			if skipDiscoveryDir(root, path, d.Name()) {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		// Regular files only, same rule as audit's walk (fsutil.go): a
+		// live mount's FIFO is not a pointer artifact, and IsPointerFile
+		// below must never open one (its read would block forever).
+		if !d.Type().IsRegular() {
 			return nil
 		}
 		if strings.HasSuffix(d.Name(), jitPointerFileSuffix) {
