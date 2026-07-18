@@ -4,40 +4,28 @@
 package migrate
 
 import (
-	"path/filepath"
-	"strings"
-
 	"github.com/jitpass/jit/internal/audit"
 )
 
-// archivedDirNames are path components (matched case-insensitively) that
-// mark a finding as living under a project that looks archived/backed-up
-// rather than actively worked on. `jit migrate home`'s whole-machine
-// sweep skips anything under one of these by default (--include-archived
-// overrides it) — GAPS.md #26.
+// LooksArchived reports whether path lives under a directory that looks
+// archived/backed-up rather than actively worked on. `jit migrate home`'s
+// whole-machine sweep skips anything matching it by default
+// (--include-archived overrides) — GAPS.md #26. The name list itself is
+// audit.LooksArchived's (this package already imports audit, not the
+// other way around), so the audit report's [archived] tag and this
+// sweep's skip can never disagree about which findings are archived.
 //
-// Why this matters specifically for .env/MCP/npmrc and not the other
-// migrate categories: converting a forgotten project's .env into a live-
-// mounted pipe (internal/mount) can turn it from "insecure but readable"
-// into "permanently unreadable" — nothing will ever serve that pipe's
-// content unless something later runs `jit agent` from that exact
-// project again, which is exactly what won't happen for a project nobody
-// revisits. Shell-config/AWS/kubeconfig don't have this failure mode (no
-// file is left behind at all), so they're never filtered by this.
-var archivedDirNames = map[string]bool{
-	"archive": true, "archived": true, ".trash": true, "trash": true,
-	"backup": true, "backups": true,
-}
-
-// LooksArchived reports whether any path component of path matches
-// archivedDirNames, case-insensitively.
+// Why this matters specifically for the walked categories (.env, tfvars,
+// MCP, npmrc) and not the fixed-path ones: converting a forgotten
+// project's .env into a live-mounted pipe (internal/mount) can turn it
+// from "insecure but readable" into "permanently unreadable" — nothing
+// will ever serve that pipe's content unless something later runs `jit
+// agent` from that exact project again, which is exactly what won't
+// happen for a project nobody revisits. Shell-config/AWS/kubeconfig live
+// at fixed home paths that never look archived, so they're never
+// filtered by this.
 func LooksArchived(path string) bool {
-	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
-		if archivedDirNames[strings.ToLower(part)] {
-			return true
-		}
-	}
-	return false
+	return audit.LooksArchived(path)
 }
 
 // FilterArchived splits paths into kept (doesn't look archived) and

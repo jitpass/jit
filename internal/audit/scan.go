@@ -48,6 +48,14 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 	// surfaced in the summary so the exclusion is visible, never silent.
 	real, syntheticCount, playgrounds := partitionSynthetic(cfg, all)
 
+	// Tag findings under archived/backup-looking directories centrally
+	// (not per scanner): `jit migrate home` skips exactly these by default,
+	// and the report renderers surface the tag so that skip is legible from
+	// the audit side of the funnel too.
+	for i := range real {
+		real[i].Archived = LooksArchived(real[i].FilePath)
+	}
+
 	summary := buildScanSummary(cfg, real, countProtectedMounts(cfg.MountRegistryPath), time.Since(start))
 	summary.SyntheticFindingCount = syntheticCount
 	summary.SyntheticPlaygroundPaths = playgrounds

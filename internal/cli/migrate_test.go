@@ -539,11 +539,14 @@ func TestMigrateHomeSkipsArchivedByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit migrate home --dry-run: %v", err)
 	}
-	if strings.Contains(out, envPath) {
-		t.Errorf("expected the archived finding to be skipped by default, got:\n%s", out)
+	if strings.Contains(out, "• "+displayPath(home, envPath)) {
+		t.Errorf("expected the archived finding to never be a planned change, got:\n%s", out)
 	}
-	if !strings.Contains(out, "1 finding(s) skipped under an archived/backup-looking directory") {
-		t.Errorf("expected an explicit skipped-archived count (fail safe and loud), got:\n%s", out)
+	if !strings.Contains(out, "Skipped 1 finding(s) under an archived/backup-looking directory") {
+		t.Errorf("expected an explicit skipped-archived note (fail safe and loud), got:\n%s", out)
+	}
+	if !strings.Contains(out, displayPath(home, envPath)) {
+		t.Errorf("expected the skip note to list the skipped path itself, not a bare count, got:\n%s", out)
 	}
 	if !strings.Contains(out, "--include-archived") {
 		t.Errorf("expected a pointer to --include-archived, got:\n%s", out)
