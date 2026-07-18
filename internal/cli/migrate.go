@@ -373,9 +373,8 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 			fmt.Fprintln(cmd.OutOrStdout(), "exports, no MCP server secrets, no AWS/kubeconfig/Terraform Cloud/GCP credentials,")
 			fmt.Fprintln(cmd.OutOrStdout(), "no SOPS age key, and no npmrc secrets found.")
 		}
-		if len(skippedArchived) > 0 {
-			fmt.Fprintf(cmd.OutOrStdout(), "(%d finding(s) skipped under an archived/backup-looking directory, rerun with --include-archived to include them.)\n", len(skippedArchived))
-		}
+		printSkippedFindings(cmd.OutOrStdout(), home, len(skippedArchived), "under an archived/backup-looking directory", skippedArchived,
+			"Rerun with --include-archived to include them.")
 		printSkippedFindings(cmd.OutOrStdout(), home, len(skippedPlayground), "inside a jitpass-playground checkout (synthetic bait, not real exposure)", skippedPlayground,
 			"To practice migrating them, run `jit migrate local` from inside the checkout.")
 		return nil
@@ -410,9 +409,8 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 	// --dry-run prints too (see below) — one rendering path, so the
 	// preview you confirm against is exactly the preview --dry-run shows.
 	printMigratePlan(cmd.OutOrStdout(), home, wholeHome, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, planRevealHooks(home, envFiles, npmrcFiles))
-	if len(skippedArchived) > 0 {
-		fmt.Fprintf(cmd.OutOrStdout(), "\n(Skipped %d finding(s) under an archived/backup-looking directory, rerun with --include-archived to include them.)\n", len(skippedArchived))
-	}
+	printSkippedFindings(cmd.OutOrStdout(), home, len(skippedArchived), "under an archived/backup-looking directory", skippedArchived,
+		"Rerun with --include-archived to include them.")
 	printSkippedFindings(cmd.OutOrStdout(), home, len(skippedPlayground), "inside a jitpass-playground checkout (synthetic bait, not real exposure)", skippedPlayground,
 		"To practice migrating them, run `jit migrate local` from inside the checkout.")
 
