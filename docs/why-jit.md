@@ -68,6 +68,7 @@ your tools keep working, each through that tool's own native mechanism:
 | AWS credentials | `credential_process` in `~/.aws/config`: the CLI and SDKs fetch on demand, no file at all |
 | kubeconfig | A kubectl `exec` credential plugin |
 | Terraform Cloud token | A `credentials_helper`; `terraform login`/`logout` keep working |
+| Docker registry logins | A credential helper; `docker login`/`logout` keep working |
 | GCP application-default credentials | Live-mounted from a template; Google SDKs read the same path |
 | `.npmrc` auth tokens | Live-mounted from a template; non-secret settings untouched |
 | MCP server configs | The server command wrapped in `jit run` |

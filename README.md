@@ -41,8 +41,8 @@ $ npm run dev
 
 **The problem.** A working dev machine accumulates plaintext secrets: `.env`
 files, `export STRIPE_KEY=...` lines in shell configs, `~/.aws/credentials`,
-kubeconfig client keys, Terraform Cloud tokens, `.npmrc` auth tokens, MCP
-server configs. Every one of them is readable by anything running as your
+kubeconfig client keys, Terraform Cloud tokens, Docker registry logins,
+`.npmrc` auth tokens, MCP server configs. Every one of them is readable by anything running as your
 user, gets swept into backups and file indexes, and stays on disk long after
 the moment you actually needed it. That "anything running as your user" now
 includes the AI agents and MCP servers in your editor: they run with your
@@ -115,6 +115,7 @@ mechanism, so everything keeps working:
 | AWS credentials | `~/.aws/credentials` | `credential_process` in `~/.aws/config`: the CLI and SDKs fetch on demand, no file at all |
 | kubeconfig | client keys/tokens in `~/.kube/config` | A kubectl `exec` credential plugin |
 | Terraform Cloud token | `~/.terraform.d/credentials.tfrc.json` | A `credentials_helper`; `terraform login`/`logout` keep working |
+| Docker registry logins | base64 `auths` in `~/.docker/config.json` | A credential helper; `docker login`/`logout` keep working, compose and buildx pulls too |
 | GCP application-default credentials | `~/.config/gcloud/application_default_credentials.json` | Live-mounted from a template; Google SDKs read the same path, non-secret fields untouched |
 | `.npmrc` auth tokens | project or global `.npmrc` | Live-mounted from a template; non-secret settings untouched |
 | CLI tool tokens | `gh`, `glab`, `stripe`, `ngrok`, `doctl` config files | `jit wrap gh`: a PATH shim injects the token per invocation - works in scripts and subprocesses, ~25 ms overhead |
