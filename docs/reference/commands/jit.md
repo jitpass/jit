@@ -18,6 +18,7 @@ jit
 * [jit audit](jit_audit.md)	 - Scan for plaintext secrets exposed on this machine (read-only)
 * [jit aws-credential-process](jit_aws-credential-process.md)	 - Print AWS credential_process JSON for a migrated profile
 * [jit completion](jit_completion.md)	 - Generate the autocompletion script for the specified shell
+* [jit docker-credential](jit_docker-credential.md)	 - Implement Docker's credential-helper protocol for migrated registry logins
 * [jit doctor](jit_doctor.md)	 - Verify every secret a profile references actually exists in the vault
 * [jit export](jit_export.md)	 - Print shell export statements for a profile's secrets
 * [jit k8s-exec-credential](jit_k8s-exec-credential.md)	 - Print a Kubernetes ExecCredential JSON for a migrated profile
