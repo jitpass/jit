@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jitpass/jit/internal/audit"
 )
 
 // TestMigrateSummaryPrintCollapsesRepeatedExplanations locks in the fix
@@ -545,6 +547,98 @@ func TestMigrateHomeSkipsArchivedByDefault(t *testing.T) {
 	}
 	if !strings.Contains(out, "--include-archived") {
 		t.Errorf("expected a pointer to --include-archived, got:\n%s", out)
+	}
+}
+
+// TestMigrateHomeSkipsPlaygroundLoudly: a jitpass-playground checkout's
+// planted bait is excluded from `jit audit`'s score, so a whole-machine
+// sweep must skip it too (vaulting fake secrets and live-mounting the tour
+// repo's .env files would wreck the checkout) — and must say so with the
+// paths, not a bare count, so the skip never reads as a lost finding.
+func TestMigrateHomeSkipsPlaygroundLoudly(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+
+	playground := filepath.Join(home, "jitpass-playground")
+	if err := os.MkdirAll(filepath.Join(playground, "api"), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(playground, audit.PlaygroundMarkerFile), nil, 0o600); err != nil {
+		t.Fatalf("WriteFile marker: %v", err)
+	}
+	pgEnv := filepath.Join(playground, "api", ".env")
+	if err := os.WriteFile(pgEnv, []byte("STRIPE_KEY=sk_test_bait\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	realEnv := filepath.Join(home, "code", "realproj", ".env")
+	if err := os.MkdirAll(filepath.Dir(realEnv), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(realEnv, []byte("STRIPE_KEY=sk_test_fixture\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := execMigrate(t, "home", "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate home --dry-run: %v", err)
+	}
+	if strings.Contains(out, "• "+displayPath(home, pgEnv)) {
+		t.Errorf("expected the playground .env to never be a planned change, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Skipped 1 finding(s) inside a jitpass-playground checkout") {
+		t.Errorf("expected a loud playground-skip note, got:\n%s", out)
+	}
+	if !strings.Contains(out, displayPath(home, pgEnv)) {
+		t.Errorf("expected the skip note to list the skipped path itself, got:\n%s", out)
+	}
+	if !strings.Contains(out, "• "+displayPath(home, realEnv)) {
+		t.Errorf("expected the real project's .env to still be planned, got:\n%s", out)
+	}
+}
+
+// TestMigrateLocalInsidePlaygroundStillWorks: the first-run tour has users
+// practice a migration from inside the checkout, so `jit migrate local`
+// run there must keep discovering the planted files (mirrors audit's own
+// home-in-playground escape hatch).
+func TestMigrateLocalInsidePlaygroundStillWorks(t *testing.T) {
+	home := withFixtureHome(t)
+
+	playground := filepath.Join(home, "jitpass-playground")
+	if err := os.MkdirAll(playground, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(playground, audit.PlaygroundMarkerFile), nil, 0o600); err != nil {
+		t.Fatalf("WriteFile marker: %v", err)
+	}
+	pgEnv := filepath.Join(playground, ".env")
+	if err := os.WriteFile(pgEnv, []byte("STRIPE_KEY=sk_test_bait\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	original, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd: %v", err)
+	}
+	if err := os.Chdir(playground); err != nil {
+		t.Fatalf("os.Chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(original) })
+	// Discovery roots at os.Getwd(), which resolves macOS's /var ->
+	// /private/var symlink while $HOME keeps the unresolved spelling, so
+	// build the expected plan bullet from the resolved cwd, not from home.
+	resolvedCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd: %v", err)
+	}
+
+	out, err := execMigrate(t, "local", "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate local --dry-run: %v", err)
+	}
+	if !strings.Contains(out, "• "+displayPath(home, filepath.Join(resolvedCwd, ".env"))) {
+		t.Errorf("expected local from inside the playground to plan its .env, got:\n%s", out)
+	}
+	if strings.Contains(out, "jitpass-playground checkout") && strings.Contains(out, "Skipped") {
+		t.Errorf("expected no playground-skip note on a local run, got:\n%s", out)
 	}
 }
 

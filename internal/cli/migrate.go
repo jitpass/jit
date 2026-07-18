@@ -47,6 +47,26 @@ func noteNamespaceMove(w io.Writer, movedFrom, profileName string) {
 	_, _ = color.New(color.FgYellow).Fprintf(w, "    note: vault namespace %q already holds a different migration's secrets, this file's secrets live under %q instead\n", movedFrom, profileName)
 }
 
+// printSkippedFindings renders one whole-machine-sweep skip note: a
+// yellow headline with the count and reason, then the skipped paths
+// themselves, then an optional hint line. Listing the paths is the point
+// (a real, reported gap): a bare "(Skipped N finding(s)...)" count gave
+// the reader no way to map a finding `jit audit` just showed them onto
+// "migrate deliberately left this one alone", which reads as the tool
+// losing findings rather than protecting them.
+func printSkippedFindings(w io.Writer, home string, count int, reason string, paths []string, hint string) {
+	if count == 0 {
+		return
+	}
+	_, _ = color.New(color.FgYellow).Fprintf(w, "\nSkipped %d finding(s) %s:\n", count, reason)
+	for _, p := range paths {
+		fmt.Fprintf(w, "  - %s\n", displayPath(home, p))
+	}
+	if hint != "" {
+		fmt.Fprintf(w, "  %s\n", hint)
+	}
+}
+
 // filterMigrateOnly validates only (the raw --only tokens) against
 // migrateCategories and returns the set of selected categories. An unknown
 // token fails loud rather than being silently ignored — a typo'd category
@@ -276,6 +296,24 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 		skippedArchived = append(skippedArchived, skipped...)
 	}
 
+	// A jitpass-playground checkout's planted bait is excluded from `jit
+	// audit`'s score, so a whole-machine sweep must not offer to vault it
+	// either — and unlike the archived filter above there's no override
+	// flag: `jit migrate local` from inside the checkout is the supported
+	// way to practice a migration there (see migrate.FilterPlayground).
+	var skippedPlayground []string
+	if wholeHome {
+		var skipped []string
+		envFiles, skipped = migrate.FilterPlayground(home, envFiles)
+		skippedPlayground = append(skippedPlayground, skipped...)
+		tfvarsFiles, skipped = migrate.FilterPlayground(home, tfvarsFiles)
+		skippedPlayground = append(skippedPlayground, skipped...)
+		mcpConfigs, skipped = migrate.FilterPlayground(home, mcpConfigs)
+		skippedPlayground = append(skippedPlayground, skipped...)
+		npmrcFiles, skipped = migrate.FilterPlayground(home, npmrcFiles)
+		skippedPlayground = append(skippedPlayground, skipped...)
+	}
+
 	// --only scopes a run to just the named categories (GAPS.md #21) —
 	// validated against migrateCategories BEFORE anything else, including
 	// the "nothing to migrate" check below, so a typo'd category name
@@ -338,6 +376,8 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 		if len(skippedArchived) > 0 {
 			fmt.Fprintf(cmd.OutOrStdout(), "(%d finding(s) skipped under an archived/backup-looking directory, rerun with --include-archived to include them.)\n", len(skippedArchived))
 		}
+		printSkippedFindings(cmd.OutOrStdout(), home, len(skippedPlayground), "inside a jitpass-playground checkout (synthetic bait, not real exposure)", skippedPlayground,
+			"To practice migrating them, run `jit migrate local` from inside the checkout.")
 		return nil
 	}
 
@@ -373,6 +413,8 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 	if len(skippedArchived) > 0 {
 		fmt.Fprintf(cmd.OutOrStdout(), "\n(Skipped %d finding(s) under an archived/backup-looking directory, rerun with --include-archived to include them.)\n", len(skippedArchived))
 	}
+	printSkippedFindings(cmd.OutOrStdout(), home, len(skippedPlayground), "inside a jitpass-playground checkout (synthetic bait, not real exposure)", skippedPlayground,
+		"To practice migrating them, run `jit migrate local` from inside the checkout.")
 
 	if migrateDryRun {
 		out := cmd.OutOrStdout()
