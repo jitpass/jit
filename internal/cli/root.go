@@ -78,7 +78,7 @@ func newRootCmd() *cobra.Command {
 		Use:   "jit",
 		Short: "Local-first developer secret runtime",
 		Long: "jit finds plaintext secrets exposed on your machine and gives you a one-command way to fix it, without ever putting them back on disk in plaintext. See https://github.com/jitpass/jit for details.\n\n" +
-			"Start with `jit audit` (strictly read-only), then `jit migrate local --dry-run` to preview the guided fix for the project you're in.",
+			"Start with `jit audit` (strictly read-only), then `jit migrate --dry-run` to preview the guided fix for everything it found.",
 		// Version lives in internal/agent (next to BuildID) because the
 		// agent reports it over the socket too — see agent/version.go.
 		Version: agent.Version(),
