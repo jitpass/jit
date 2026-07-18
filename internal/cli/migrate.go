@@ -47,6 +47,26 @@ func noteNamespaceMove(w io.Writer, movedFrom, profileName string) {
 	_, _ = color.New(color.FgYellow).Fprintf(w, "    note: vault namespace %q already holds a different migration's secrets, this file's secrets live under %q instead\n", movedFrom, profileName)
 }
 
+// printSkippedFindings renders one whole-machine-sweep skip note: a
+// yellow headline with the count and reason, then the skipped paths
+// themselves, then an optional hint line. Listing the paths is the point
+// (a real, reported gap): a bare "(Skipped N finding(s)...)" count gave
+// the reader no way to map a finding `jit audit` just showed them onto
+// "migrate deliberately left this one alone", which reads as the tool
+// losing findings rather than protecting them.
+func printSkippedFindings(w io.Writer, home string, count int, reason string, paths []string, hint string) {
+	if count == 0 {
+		return
+	}
+	_, _ = color.New(color.FgYellow).Fprintf(w, "\nSkipped %d finding(s) %s:\n", count, reason)
+	for _, p := range paths {
+		fmt.Fprintf(w, "  - %s\n", displayPath(home, p))
+	}
+	if hint != "" {
+		fmt.Fprintf(w, "  %s\n", hint)
+	}
+}
+
 // filterMigrateOnly validates only (the raw --only tokens) against
 // migrateCategories and returns the set of selected categories. An unknown
 // token fails loud rather than being silently ignored — a typo'd category
@@ -76,10 +96,11 @@ var migrateCmd = &cobra.Command{
 		"sitting on disk. It's a separate command from jit audit, not a flag on it,\n" +
 		"so the read-only scanner can never be turned into a mutating one by a\n" +
 		"mistyped flag.\n\n" +
-		"Pick a scope:\n\n" +
+		"By default it covers the same ground jit audit scans, the whole machine:\n" +
+		"`jit migrate` is `jit migrate home`. Narrow the scope with a subcommand:\n\n" +
 		"  jit migrate local   only what's under the current directory tree\n" +
 		"                       (.env files, tfvars files, project mcp.json, project .npmrc)\n" +
-		"  jit migrate home    the whole machine: everything local finds, anywhere\n" +
+		"  jit migrate home    the default: everything local finds, anywhere\n" +
 		"                       under $HOME, plus the machine-wide files that live at\n" +
 		"                       fixed home paths (shell configs, ~/.aws/credentials,\n" +
 		"                       ~/.kube/config, Terraform Cloud credentials, GCP\n" +
@@ -89,10 +110,22 @@ var migrateCmd = &cobra.Command{
 		"anything, and every modified file is backed up (encrypted, into the vault)\n" +
 		"first, `jit migrate undo` restores any migrated file from that backup.\n" +
 		"See each subcommand's --help for exactly what happens to each kind of file.",
-	Example: "  jit migrate local --dry-run    # preview this project's plan, change nothing\n" +
-		"  jit migrate local              # fix this project\n" +
+	Example: "  jit migrate --dry-run          # preview the whole-machine plan, change nothing\n" +
+		"  jit migrate                    # fix everything the plan shows\n" +
+		"  jit migrate local --dry-run    # preview just this project's plan\n" +
 		"  jit migrate home --only aws,kube\n" +
 		"  jit migrate undo               # restore migrated files from their backups",
+	// Bare `jit migrate` runs the home scope: jit audit scans the whole
+	// machine with no scope choice, so the natural next step after reading
+	// its report must not fork into a local/home decision the reader has
+	// no basis to make (picking `local` from an arbitrary cwd silently
+	// leaves most of the audit's findings unfixed). The plan+confirm gate,
+	// encrypted backups, and `jit migrate undo` are what make a
+	// whole-machine default safe; scope was never the real safety net.
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runMigrate(cmd, true)
+	},
 }
 
 var migrateLocalCmd = &cobra.Command{
@@ -208,7 +241,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 	if err != nil {
 		return fmt.Errorf("jit migrate: %w", err)
 	}
-	tfvarsFiles, err := migrate.DiscoverTfvarsFiles(projectRoot)
+	tfvarsFiles, tfvarsComplexOnly, err := migrate.DiscoverTfvarsFiles(projectRoot)
 	if err != nil {
 		return fmt.Errorf("jit migrate: %w", err)
 	}
@@ -274,6 +307,31 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 		skippedArchived = append(skippedArchived, skipped...)
 		npmrcFiles, skipped = migrate.FilterArchived(npmrcFiles)
 		skippedArchived = append(skippedArchived, skipped...)
+		// Note-only paths (nothing migratable in them), so an archived one
+		// is dropped silently rather than added to skippedArchived — the
+		// archived note's "rerun with --include-archived" would falsely
+		// promise a rerun could convert it.
+		tfvarsComplexOnly, _ = migrate.FilterArchived(tfvarsComplexOnly)
+	}
+
+	// A jitpass-playground checkout's planted bait is excluded from `jit
+	// audit`'s score, so a whole-machine sweep must not offer to vault it
+	// either — and unlike the archived filter above there's no override
+	// flag: `jit migrate local` from inside the checkout is the supported
+	// way to practice a migration there (see migrate.FilterPlayground).
+	var skippedPlayground []string
+	if wholeHome {
+		var skipped []string
+		envFiles, skipped = migrate.FilterPlayground(home, envFiles)
+		skippedPlayground = append(skippedPlayground, skipped...)
+		tfvarsFiles, skipped = migrate.FilterPlayground(home, tfvarsFiles)
+		skippedPlayground = append(skippedPlayground, skipped...)
+		mcpConfigs, skipped = migrate.FilterPlayground(home, mcpConfigs)
+		skippedPlayground = append(skippedPlayground, skipped...)
+		npmrcFiles, skipped = migrate.FilterPlayground(home, npmrcFiles)
+		skippedPlayground = append(skippedPlayground, skipped...)
+		// Same note-only treatment as the archived filter above.
+		tfvarsComplexOnly, _ = migrate.FilterPlayground(home, tfvarsComplexOnly)
 	}
 
 	// --only scopes a run to just the named categories (GAPS.md #21) —
@@ -321,6 +379,9 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 				*items = nil
 			}
 		}
+		if !selected["tfvars"] {
+			tfvarsComplexOnly = nil // note-only companion of the tfvars category, scoped with it
+		}
 	}
 
 	total := 0
@@ -335,9 +396,12 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 			fmt.Fprintln(cmd.OutOrStdout(), "exports, no MCP server secrets, no AWS/kubeconfig/Terraform Cloud/GCP credentials,")
 			fmt.Fprintln(cmd.OutOrStdout(), "no SOPS age key, and no npmrc secrets found.")
 		}
-		if len(skippedArchived) > 0 {
-			fmt.Fprintf(cmd.OutOrStdout(), "(%d finding(s) skipped under an archived/backup-looking directory, rerun with --include-archived to include them.)\n", len(skippedArchived))
-		}
+		printSkippedFindings(cmd.OutOrStdout(), home, len(skippedArchived), "under an archived/backup-looking directory", skippedArchived,
+			"Rerun with --include-archived to include them.")
+		printSkippedFindings(cmd.OutOrStdout(), home, len(skippedPlayground), "inside a jitpass-playground checkout (synthetic bait, not real exposure)", skippedPlayground,
+			"To practice migrating them, run `jit migrate local` from inside the checkout.")
+		printSkippedFindings(cmd.OutOrStdout(), home, len(tfvarsComplexOnly), "in Terraform variable file(s) whose secret-shaped values aren't simple one-line strings", tfvarsComplexOnly,
+			"Nothing migrate can move safely; they stay in place, and `jit audit` keeps reporting them.")
 		return nil
 	}
 
@@ -370,9 +434,12 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 	// --dry-run prints too (see below) — one rendering path, so the
 	// preview you confirm against is exactly the preview --dry-run shows.
 	printMigratePlan(cmd.OutOrStdout(), home, wholeHome, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, planRevealHooks(home, envFiles, npmrcFiles))
-	if len(skippedArchived) > 0 {
-		fmt.Fprintf(cmd.OutOrStdout(), "\n(Skipped %d finding(s) under an archived/backup-looking directory, rerun with --include-archived to include them.)\n", len(skippedArchived))
-	}
+	printSkippedFindings(cmd.OutOrStdout(), home, len(skippedArchived), "under an archived/backup-looking directory", skippedArchived,
+		"Rerun with --include-archived to include them.")
+	printSkippedFindings(cmd.OutOrStdout(), home, len(skippedPlayground), "inside a jitpass-playground checkout (synthetic bait, not real exposure)", skippedPlayground,
+		"To practice migrating them, run `jit migrate local` from inside the checkout.")
+	printSkippedFindings(cmd.OutOrStdout(), home, len(tfvarsComplexOnly), "in Terraform variable file(s) whose secret-shaped values aren't simple one-line strings", tfvarsComplexOnly,
+		"Nothing migrate can move safely; they stay in place, and `jit audit` keeps reporting them.")
 
 	if migrateDryRun {
 		out := cmd.OutOrStdout()
@@ -697,6 +764,12 @@ func init() {
 	migrateCmd.PersistentFlags().BoolVar(&migrateDryRun, "dry-run", false, "preview the plan for this scope without changing anything")
 	migrateCmd.PersistentFlags().BoolVarP(&migrateYes, "yes", "y", false, "skip the confirmation prompt and migrate immediately")
 	migrateCmd.PersistentFlags().StringSliceVar(&migrateOnly, "only", nil, "scope a run to just these comma-separated categories: "+strings.Join(migrateCategories, ",")+" (default: all)")
+	// Registered on the bare command AND the home subcommand (same bound
+	// var), not as a persistent flag: bare `jit migrate` runs the home
+	// sweep so it needs the flag, but `jit migrate local` never filters
+	// archived paths and must reject it rather than silently accept a
+	// no-op.
+	migrateCmd.Flags().BoolVar(&migrateIncludeArchived, "include-archived", false, "also convert findings under an archived/backup-looking directory (archive, archived, backup, backups, .trash)")
 	migrateHomeCmd.Flags().BoolVar(&migrateIncludeArchived, "include-archived", false, "also convert findings under an archived/backup-looking directory (archive, archived, backup, backups, .trash)")
 
 	migrateCmd.AddCommand(migrateLocalCmd, migrateHomeCmd)

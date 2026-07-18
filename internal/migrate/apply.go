@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jitpass/jit/internal/audit"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/vault"
@@ -93,8 +94,12 @@ func isJitGeneratedEnvArtifact(name string) bool {
 
 var envLinePattern = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$`)
 
-var migrateNoiseDirs = map[string]bool{
-	".git": true, "node_modules": true, "vendor": true, ".jit": true,
+// migrateExtraNoiseDirs are skipped on top of audit.SkipNoiseDir's shared
+// list: .jit is jit's own vault/profile directory, which only this package
+// (the one that writes there) has any reason to exclude — audit's scanners
+// never match anything inside it, so it isn't on the shared list.
+var migrateExtraNoiseDirs = map[string]bool{
+	".jit": true,
 }
 
 // goModCacheDir resolves the Go module cache root the way the go tool does:
@@ -119,15 +124,22 @@ func goModCacheDir() string {
 }
 
 // skipDiscoveryDir is the shared per-directory gate every Discover* walk in
-// this package uses: the always-irrelevant noise directories, plus the Go
-// module cache. The module cache holds read-only, checksum-verified copies of
-// PUBLIC module source — a `.env` there is some dependency's test fixture,
-// never this machine's secret, and rewriting it would corrupt the cache
-// (`go mod verify` starts failing) on a tree the go tool treats as immutable.
-// A real `jit migrate home` plan on this repo's own dev machine included
-// gotenv's .env fixtures — exactly the rewrite this exists to prevent.
-func skipDiscoveryDir(path, name string) bool {
-	if migrateNoiseDirs[name] {
+// this package uses: audit.SkipNoiseDir's shared noise list (so `jit
+// migrate home --dry-run` and `jit audit` can never disagree about which
+// directories exist — this package once kept its own shorter copy, which
+// let migrate discover fixture .env files under .venv and .vscode/
+// extensions that audit deliberately excludes), plus migrateExtraNoiseDirs
+// and the Go module cache. The module cache holds read-only,
+// checksum-verified copies of PUBLIC module source — a `.env` there is some
+// dependency's test fixture, never this machine's secret, and rewriting it
+// would corrupt the cache (`go mod verify` starts failing) on a tree the go
+// tool treats as immutable. A real `jit migrate home` plan on this repo's
+// own dev machine included gotenv's .env fixtures — exactly the rewrite
+// this exists to prevent. The absolute-path cache check stays even though
+// the shared list covers ~/go/pkg/mod relative to $HOME, because a `jit
+// migrate local` walk is rooted at cwd (and $GOMODCACHE can point anywhere).
+func skipDiscoveryDir(root, path, name string) bool {
+	if audit.SkipNoiseDir(root, path, name) || migrateExtraNoiseDirs[name] {
 		return true
 	}
 	cache := goModCacheDir()
@@ -187,9 +199,18 @@ func DiscoverEnvFiles(root string) ([]string, error) {
 			return filepath.SkipDir
 		}
 		if d.IsDir() {
-			if skipDiscoveryDir(path, d.Name()) {
+			if skipDiscoveryDir(root, path, d.Name()) {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		// Regular files only, same rule as audit's walk (fsutil.go): a
+		// named pipe is an earlier migration's live mount (reading it
+		// would block forever waiting for jit agent), and a symlinked
+		// .env must not be migrated — rewriting through the link would
+		// mutate a target possibly outside root, and audit never reports
+		// symlinks in the first place.
+		if !d.Type().IsRegular() {
 			return nil
 		}
 		name := d.Name()
@@ -203,21 +224,12 @@ func DiscoverEnvFiles(root string) ([]string, error) {
 		if envTemplateSuffixes[ext] {
 			return nil
 		}
-		info, err := d.Info()
-		if err != nil {
-			// Same tolerance as above, for a single file's own stat
-			// failing (e.g. a race with deletion) — skip just this file.
-			return nil
-		}
-		if info.Mode()&fs.ModeNamedPipe != 0 {
-			return nil // already mounted
-		}
 		// A backup-suffixed file (.env.bak etc.) that an earlier migrate
 		// replaced in place with pointer content keeps its original name, so
 		// the name check above can't skip it — recognize it by content and
 		// leave it alone, or a second run would migrate its jit://vault/...
 		// pointers as if they were real secrets (GAPS.md #66). Safe to read:
-		// the FIFO guard above already ruled out a live mount.
+		// the regular-files-only guard above already ruled out a live mount.
 		if LooksLikePointerContent(path) {
 			return nil
 		}

@@ -120,8 +120,12 @@ func TestDiscoverTfvarsFiles(t *testing.T) {
 	// Wrong names never match.
 	writeFile(t, filepath.Join(root, "infra", "variables.tf"), "variable \"db_password\" {}\n")
 	writeFile(t, filepath.Join(root, "infra", "dev.tfvars"), "password = \"un-auto'd tfvars is CLI-only\"\n")
+	// Secret-shaped but nothing migratable (heredoc only): reported in
+	// complexOnly, never in found — `jit audit` flags this file, so a
+	// migrate plan silent about it read as the funnel losing a finding.
+	writeFile(t, filepath.Join(root, "certs", "terraform.tfvars"), "cert_password = <<EOT\npem\nEOT\n")
 
-	found, err := DiscoverTfvarsFiles(root)
+	found, complexOnly, err := DiscoverTfvarsFiles(root)
 	if err != nil {
 		t.Fatalf("DiscoverTfvarsFiles: %v", err)
 	}
@@ -136,6 +140,10 @@ func TestDiscoverTfvarsFiles(t *testing.T) {
 		if found[i] != want[i] {
 			t.Errorf("found[%d] = %q, want %q", i, found[i], want[i])
 		}
+	}
+	wantComplex := []string{filepath.Join(root, "certs", "terraform.tfvars")}
+	if len(complexOnly) != 1 || complexOnly[0] != wantComplex[0] {
+		t.Errorf("complexOnly = %v, want %v", complexOnly, wantComplex)
 	}
 }
 
@@ -225,7 +233,7 @@ func TestApplyTfvarsDirMovesSecretsAndRedactsFiles(t *testing.T) {
 	}
 
 	// Idempotency: nothing migratable is left, so discovery goes quiet.
-	found, err := DiscoverTfvarsFiles(root)
+	found, _, err := DiscoverTfvarsFiles(root)
 	if err != nil {
 		t.Fatalf("DiscoverTfvarsFiles after apply: %v", err)
 	}

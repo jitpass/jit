@@ -47,6 +47,28 @@ var noiseRelativePaths = []string{
 	filepath.Join(".cursor", "extensions"),
 }
 
+// SkipNoiseDir reports whether a discovery walk under root should skip the
+// directory at path (bare name name) entirely: the always-irrelevant
+// noiseDirs plus the root-relative noiseRelativePaths. Exported for
+// internal/migrate, whose Discover* walks must skip exactly the same
+// directories this package's walk does — the two lists once drifted apart,
+// which let `jit migrate home` discover (and offer to rewrite) fixture
+// files audit deliberately excludes: bundled .env files under
+// .vscode/extensions, .venv site-packages, everything under ~/Library.
+func SkipNoiseDir(root, path, name string) bool {
+	if noiseDirs[name] {
+		return true
+	}
+	if rel, err := filepath.Rel(root, path); err == nil {
+		for _, noise := range noiseRelativePaths {
+			if rel == noise {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // walkHomeDir walks root, calling fn for every regular file found. This is
 // the shared "broad, bounded" discovery mechanism multiple category
 // scanners use: real-world review (2026-07-06, see ROADMAP.md) showed most
@@ -68,15 +90,8 @@ func walkHomeDir(root string, fn func(path string, d fs.DirEntry) error) error {
 			if path == root {
 				return nil
 			}
-			if noiseDirs[d.Name()] {
+			if SkipNoiseDir(root, path, d.Name()) {
 				return filepath.SkipDir
-			}
-			if rel, relErr := filepath.Rel(root, path); relErr == nil {
-				for _, noise := range noiseRelativePaths {
-					if rel == noise {
-						return filepath.SkipDir
-					}
-				}
 			}
 			return nil
 		}
