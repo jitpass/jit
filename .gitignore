@@ -52,3 +52,6 @@ dist/
 
 # Stale pre-rename build artifact
 /zenv
+
+# Packaged release tarballs built at the repo root
+/jitpass_*.tar.gz
