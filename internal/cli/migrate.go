@@ -18,6 +18,7 @@ import (
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/vault"
+	"github.com/jitpass/jit/internal/wrap"
 )
 
 var (
@@ -32,7 +33,7 @@ var (
 // Keyed by the short token a caller passes, not the display label used in
 // output — keep the two lists in this exact order so error messages and
 // --only's own help text stay in sync with printMigratePlan.
-var migrateCategories = []string{"env", "tfvars", "shell", "mcp", "aws", "kube", "terraform", "gcp", "sops", "npmrc"}
+var migrateCategories = []string{"env", "tfvars", "shell", "mcp", "aws", "kube", "terraform", "docker", "gcp", "sops", "npmrc"}
 
 // noteNamespaceMove explains a claimNamespace bump (GAPS.md #55) directly
 // under the item it happened to. Yellow, matching the "heads up, read
@@ -103,7 +104,8 @@ var migrateCmd = &cobra.Command{
 		"  jit migrate home    the default: everything local finds, anywhere\n" +
 		"                       under $HOME, plus the machine-wide files that live at\n" +
 		"                       fixed home paths (shell configs, ~/.aws/credentials,\n" +
-		"                       ~/.kube/config, Terraform Cloud credentials, GCP\n" +
+		"                       ~/.kube/config, Terraform Cloud credentials,\n" +
+		"                       ~/.docker/config.json registry logins, GCP\n" +
 		"                       application-default credentials, Claude Desktop's MCP\n" +
 		"                       config, the global ~/.npmrc)\n\n" +
 		"Every run prints the full plan and asks for confirmation before touching\n" +
@@ -133,9 +135,10 @@ var migrateLocalCmd = &cobra.Command{
 	Short: "Convert findings under the current directory only",
 	Long: "Converts findings under the current directory tree ONLY, nothing outside\n" +
 		"the project you're standing in is discovered or touched. Machine-wide files\n" +
-		"(shell configs, AWS, kubeconfig, Terraform Cloud, GCP application-default\n" +
-		"credentials, Claude Desktop's config, the global ~/.npmrc) live at fixed\n" +
-		"paths under $HOME, so only `jit migrate home` ever includes them.\n\n" +
+		"(shell configs, AWS, kubeconfig, Terraform Cloud, Docker registry logins,\n" +
+		"GCP application-default credentials, Claude Desktop's config, the global\n" +
+		"~/.npmrc) live at fixed paths under $HOME, so only `jit migrate home` ever\n" +
+		"includes them.\n\n" +
 		"What happens per category:\n\n" +
 		"  .env files   Keys move into a profile and the vault; the file itself keeps\n" +
 		"               working as a live mount served by jit agent, showing\n" +
@@ -183,6 +186,13 @@ var migrateHomeCmd = &cobra.Command{
 		"                   credentials-helper protocol (`terraform login`/`logout`\n" +
 		"                   keep working). Fails loud, before touching anything, if a\n" +
 		"                   different credentials helper is already configured.\n" +
+		"  Docker           plaintext registry logins in ~/.docker/config.json (base64\n" +
+		"                   is encoding, not encryption) move into the vault; docker\n" +
+		"                   fetches them through its own credential-helper protocol\n" +
+		"                   (`docker login`/`logout` keep working, compose and buildx\n" +
+		"                   pulls too). Never replaces an existing credential store\n" +
+		"                   like Docker Desktop's; jit becomes the default store only\n" +
+		"                   when the config had none at all.\n" +
 		"  GCP              ~/.config/gcloud/application_default_credentials.json's\n" +
 		"                   refresh token (or a service account key's private key)\n" +
 		"                   moves into the vault; the file keeps working as a live\n" +
@@ -261,7 +271,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 	// does. This is what makes `local` actually match its name (a real,
 	// reported point of confusion when both scopes always included
 	// these — see GAPS.md #26).
-	var shellConfigs, awsProfiles, k8sUsers, terraformHosts, gcpADCFiles, sopsAgeFiles []string
+	var shellConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gcpADCFiles, sopsAgeFiles []string
 	if wholeHome {
 		shellConfigs, err = migrate.DiscoverShellConfigs(home)
 		if err != nil {
@@ -276,6 +286,10 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 			return fmt.Errorf("jit migrate: %w", err)
 		}
 		terraformHosts, err = migrate.DiscoverTerraformHosts(home)
+		if err != nil {
+			return fmt.Errorf("jit migrate: %w", err)
+		}
+		dockerRegistries, err = migrate.DiscoverDockerRegistries(home)
 		if err != nil {
 			return fmt.Errorf("jit migrate: %w", err)
 		}
@@ -357,6 +371,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 		"aws":       &awsProfiles,
 		"kube":      &k8sUsers,
 		"terraform": &terraformHosts,
+		"docker":    &dockerRegistries,
 		"gcp":       &gcpADCFiles,
 		"sops":      &sopsAgeFiles,
 		"npmrc":     &npmrcFiles,
@@ -393,8 +408,8 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 			fmt.Fprintf(cmd.OutOrStdout(), "Nothing to migrate in the selected --only %s: %s.\n", pluralWord(len(migrateOnly), "category", "categories"), strings.Join(migrateOnly, ", "))
 		} else {
 			fmt.Fprintln(cmd.OutOrStdout(), "Nothing to migrate: no .env files, no tfvars secrets, no secret-shaped shell-config")
-			fmt.Fprintln(cmd.OutOrStdout(), "exports, no MCP server secrets, no AWS/kubeconfig/Terraform Cloud/GCP credentials,")
-			fmt.Fprintln(cmd.OutOrStdout(), "no SOPS age key, and no npmrc secrets found.")
+			fmt.Fprintln(cmd.OutOrStdout(), "exports, no MCP server secrets, no AWS/kubeconfig/Terraform Cloud/Docker registry/")
+			fmt.Fprintln(cmd.OutOrStdout(), "GCP credentials, no SOPS age key, and no npmrc secrets found.")
 		}
 		printSkippedFindings(cmd.OutOrStdout(), home, len(skippedArchived), "under an archived/backup-looking directory", skippedArchived,
 			"Rerun with --include-archived to include them.")
@@ -433,7 +448,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 	// work that's about to be aborted anyway. This same plan is what
 	// --dry-run prints too (see below) — one rendering path, so the
 	// preview you confirm against is exactly the preview --dry-run shows.
-	printMigratePlan(cmd.OutOrStdout(), home, wholeHome, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, planRevealHooks(home, envFiles, npmrcFiles))
+	printMigratePlan(cmd.OutOrStdout(), home, wholeHome, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gcpADCFiles, sopsAgeFiles, npmrcFiles, planRevealHooks(home, envFiles, npmrcFiles))
 	printSkippedFindings(cmd.OutOrStdout(), home, len(skippedArchived), "under an archived/backup-looking directory", skippedArchived,
 		"Rerun with --include-archived to include them.")
 	printSkippedFindings(cmd.OutOrStdout(), home, len(skippedPlayground), "inside a jitpass-playground checkout (synthetic bait, not real exposure)", skippedPlayground,
@@ -650,6 +665,40 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 			}
 			fmt.Fprintf(out, "  • %q -> vault profile %q (%d var(s)); backups: %s\n",
 				tfHost, result.VaultProfileName, len(result.Variables), backups)
+		}
+		fmt.Fprintln(out)
+	}
+
+	if len(dockerRegistries) > 0 {
+		summary.checkGitHistory(migrate.DockerConfigPath(home))
+		printMigrateResultCategory(out, "Docker registry credential(s) migrated", len(dockerRegistries))
+		claimedDefaultStore := false
+		for _, dockerRegistry := range dockerRegistries {
+			result, err := migrate.ApplyDockerRegistry(v, home, dockerRegistry, backups)
+			if err != nil {
+				return fmt.Errorf("jit migrate: %w", err)
+			}
+			claimedDefaultStore = claimedDefaultStore || result.ClaimedDefaultStore
+			fmt.Fprintf(out, "  • %q -> vault profile %q (%d var(s)); backup: `jit vault get %s`\n",
+				dockerRegistry, result.VaultProfileName, len(result.Variables), result.ConfigBackup)
+		}
+		if claimedDefaultStore {
+			fmt.Fprintln(out, "  ~/.docker/config.json had no credential store, so jit is now its default:")
+			fmt.Fprintln(out, "  a future `docker login` to ANY registry lands in the vault, not in base64.")
+		}
+		// Docker discovers docker-credential-jit strictly by $PATH lookup,
+		// and the helper lives in jit's shim directory — reuse wrap's own
+		// rc-file PATH line so the next shell (and everything it spawns,
+		// docker included) resolves it. Idempotent; a machine that already
+		// wrapped a tool has the line and prints nothing new here.
+		rc := wrap.RcFile(home, os.Getenv("SHELL"))
+		rcChanged, err := wrap.EnsurePathLine(rc)
+		if err != nil {
+			return fmt.Errorf("jit migrate: %w", err)
+		}
+		if rcChanged {
+			fmt.Fprintf(out, "  Added to %s: %s\n", displayPath(home, rc), wrap.PathLine())
+			fmt.Fprintln(out, "  (docker finds the credential helper via PATH, open a new shell before the next pull/push)")
 		}
 		fmt.Fprintln(out)
 	}

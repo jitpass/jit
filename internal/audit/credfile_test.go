@@ -229,3 +229,68 @@ func TestScanNpmrcSkipsGlobalLiveMountFIFO(t *testing.T) {
 		t.Errorf("FilePath = %q, want the project .npmrc", findings[0].FilePath)
 	}
 }
+
+func TestScanDockerConfig(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, ".docker"))
+	// One base64 auth entry, one empty marker ({} — what docker leaves once
+	// a credential store holds the secret), one entry with only an email:
+	// exactly one finding, for the entry that actually carries a secret.
+	writeFile(t, filepath.Join(home, ".docker", "config.json"), `{
+  "auths": {
+    "registry.example.com": {
+      "auth": "YWxpY2U6czNjcmV0LXBhc3M="
+    },
+    "https://index.docker.io/v1/": {},
+    "ghcr.io": {"email": "alice@example.com"}
+  },
+  "credsStore": "osxkeychain"
+}
+`)
+	findings, err := scanDockerConfig(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("scanDockerConfig: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+	if *findings[0].KeyName != "registry.example.com" {
+		t.Errorf("KeyName = %q, want %q", *findings[0].KeyName, "registry.example.com")
+	}
+	if findings[0].FindingType != FindingTypeCredentialFile {
+		t.Errorf("FindingType = %q, want %q", findings[0].FindingType, FindingTypeCredentialFile)
+	}
+}
+
+func TestScanDockerConfigIdentityToken(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, ".docker"))
+	writeFile(t, filepath.Join(home, ".docker", "config.json"), `{
+  "auths": {
+    "https://index.docker.io/v1/": {
+      "auth": "YWxpY2U6czNjcmV0LXBhc3M=",
+      "identitytoken": "eyJhbGciOi.example.token"
+    }
+  }
+}
+`)
+	findings, err := scanDockerConfig(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("scanDockerConfig: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+}
+
+func TestScanDockerConfigMissingOrMalformed(t *testing.T) {
+	if findings, err := scanDockerConfig(Config{HomeDir: t.TempDir()}); err != nil || len(findings) != 0 {
+		t.Fatalf("missing file: findings=%v err=%v, want none", findings, err)
+	}
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, ".docker"))
+	writeFile(t, filepath.Join(home, ".docker", "config.json"), "not json at all")
+	if findings, err := scanDockerConfig(Config{HomeDir: home}); err != nil || len(findings) != 0 {
+		t.Fatalf("malformed file: findings=%v err=%v, want none", findings, err)
+	}
+}

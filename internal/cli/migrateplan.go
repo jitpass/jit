@@ -55,7 +55,7 @@ import (
 // (splitMCPByScope/splitNpmrcByScope) since a single Discover* call
 // there still mixes the fixed path in with items found by the
 // whole-$HOME walk.
-func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, revealHookFiles []string) {
+func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gcpADCFiles, sopsAgeFiles, npmrcFiles, revealHookFiles []string) {
 	scope := "local"
 	if wholeHome {
 		scope = "home"
@@ -87,7 +87,7 @@ func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, tfvars
 	}
 
 	hasScoped := len(envFiles) > 0 || len(tfvarsFiles) > 0 || len(mcpScoped) > 0 || len(npmrcScoped) > 0 || len(revealHookFiles) > 0
-	hasFixed := len(shellConfigs) > 0 || len(mcpFixed) > 0 || len(awsProfiles) > 0 || len(k8sUsers) > 0 || len(terraformHosts) > 0 || len(gcpADCFiles) > 0 || len(sopsAgeFiles) > 0 || len(npmrcFixed) > 0
+	hasFixed := len(shellConfigs) > 0 || len(mcpFixed) > 0 || len(awsProfiles) > 0 || len(k8sUsers) > 0 || len(terraformHosts) > 0 || len(dockerRegistries) > 0 || len(gcpADCFiles) > 0 || len(sopsAgeFiles) > 0 || len(npmrcFixed) > 0
 
 	if hasScoped {
 		_, _ = color.New(color.Bold).Fprintf(w, "Scoped to this run, %s\n\n", scopedTree)
@@ -127,8 +127,8 @@ func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, tfvars
 		printMigratePlanCategory(w,
 			"MCP config(s) → secrets move to the vault; injected automatically when the server launches",
 			shorten(mcpFixed))
-		// AWS/kubeconfig/Terraform items are profile/user/host NAMES, not
-		// paths — nothing to shorten.
+		// AWS/kubeconfig/Terraform/Docker items are profile/user/host/
+		// registry NAMES, not paths — nothing to shorten.
 		printMigratePlanCategory(w,
 			"AWS profile(s) in ~/.aws/credentials → secrets move to the vault; fetched automatically when the AWS CLI/SDK needs them",
 			awsProfiles)
@@ -138,6 +138,9 @@ func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, tfvars
 		printMigratePlanCategory(w,
 			"Terraform Cloud host(s) in ~/.terraform.d/credentials.tfrc.json → tokens move to the vault; fetched automatically whenever terraform runs",
 			terraformHosts)
+		printMigratePlanCategory(w,
+			"Docker registry credential(s) in ~/.docker/config.json → credentials move to the vault; fetched automatically whenever docker needs them (docker login/logout keep working)",
+			dockerRegistries)
 		printMigratePlanCategory(w,
 			"GCP application-default credentials → secrets move to the vault; the file keeps working via a live, auto-updating mount",
 			shorten(gcpADCFiles))
@@ -175,7 +178,7 @@ func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, tfvars
 	}
 
 	categories, total := 0, 0
-	for _, items := range [][]string{envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, revealHookFiles} {
+	for _, items := range [][]string{envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gcpADCFiles, sopsAgeFiles, npmrcFiles, revealHookFiles} {
 		if len(items) > 0 {
 			categories++
 		}

@@ -5,6 +5,7 @@ package audit
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -23,7 +24,11 @@ import (
 //
 // Terraform Cloud and GCP application-default-credentials were added to the
 // original RFC-named set (AWS, kubeconfig, npmrc) after real-world review
-// (2026-07-06, see ROADMAP.md) showed both appearing repeatedly.
+// (2026-07-06, see ROADMAP.md) showed both appearing repeatedly. Docker
+// registry logins (~/.docker/config.json) joined for the same reason:
+// `docker login` without a credential store keeps them base64-encoded in
+// the file — encoding, not encryption, the same gap as a base64 Secret
+// manifest.
 func ScanCredentialFiles(cfg Config) ([]Finding, error) {
 	var all []Finding
 	for _, scan := range []func(Config) ([]Finding, error){
@@ -31,6 +36,7 @@ func ScanCredentialFiles(cfg Config) ([]Finding, error) {
 		scanKubeconfig,
 		scanNpmrc,
 		scanTerraformCloud,
+		scanDockerConfig,
 		scanGCPApplicationDefaultCredentials,
 	} {
 		findings, err := scan(cfg)
@@ -276,6 +282,70 @@ func scanTerraformCloud(cfg Config) ([]Finding, error) {
 			BaseSeverity: SeverityHigh,
 			Confidence:   ConfidenceHigh,
 			Evidence:     fmt.Sprintf("Terraform Cloud API token found for host %q", host),
+		}))
+	}
+	return findings, nil
+}
+
+// --- Docker registry logins (~/.docker/config.json, JSON) ---
+
+// dockerConfigFile decodes only the fields the scan needs; a registry
+// entry left as {} (docker's own marker once a credential store holds the
+// secret) has none of them and is skipped.
+type dockerConfigFile struct {
+	Auths map[string]struct {
+		Auth          string `json:"auth"`
+		Password      string `json:"password"`
+		IdentityToken string `json:"identitytoken"`
+	} `json:"auths"`
+}
+
+func scanDockerConfig(cfg Config) ([]Finding, error) {
+	path := filepath.Join(cfg.HomeDir, ".docker", "config.json")
+	file, err := openFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer file.Close()
+
+	var dc dockerConfigFile
+	if err := json.NewDecoder(file).Decode(&dc); err != nil {
+		return nil, nil // malformed file — skip it, don't fail the whole audit
+	}
+
+	var findings []Finding
+	for registry, entry := range dc.Auths {
+		// The secret is whichever of the three fields actually holds one:
+		// an identity token, the password half of the base64 "user:pass"
+		// auth value, or a rare literal password field.
+		secret := entry.IdentityToken
+		if secret == "" && entry.Auth != "" {
+			if decoded, err := base64.StdEncoding.DecodeString(entry.Auth); err == nil {
+				// The username can't contain ':' (the registry protocol
+				// rejects it), so everything after the FIRST colon is the
+				// password even when the password itself contains colons.
+				if _, pass, found := strings.Cut(string(decoded), ":"); found {
+					secret = pass
+				}
+			}
+		}
+		if secret == "" {
+			secret = entry.Password
+		}
+		if secret == "" {
+			continue
+		}
+		findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+			FindingType:  FindingTypeCredentialFile,
+			FilePath:     path,
+			KeyName:      registry,
+			RawValue:     secret,
+			BaseSeverity: SeverityHigh,
+			Confidence:   ConfidenceHigh,
+			Evidence:     fmt.Sprintf("Docker registry credential found for %q (config.json's base64 auth is encoding, not encryption)", registry),
 		}))
 	}
 	return findings, nil
