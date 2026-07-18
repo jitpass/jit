@@ -19,6 +19,10 @@ What happens per category:
                dev/start script when one exists). A git-safe <file>.pointers
                companion is written alongside, listing vault paths only,
                always safe to open or commit.
+  tfvars       Secret-shaped `name = "value"` assignments in terraform.tfvars
+               and *.auto.tfvars move into the vault, one profile per directory.
+               Terraform reads them back as TF_VAR_ environment variables when
+               you run it through jit: `jit run --profile <p> -- terraform apply`.
   MCP configs  Each server's env-block secrets move into the vault, and the
                server's command is rewritten to launch via `jit run`.
   .npmrc       Secret lines move into the vault; the file keeps working as a
@@ -43,7 +47,7 @@ jit migrate local
 
 ```
       --dry-run        preview the plan for this scope without changing anything
-      --only strings   scope a run to just these comma-separated categories: env,shell,mcp,aws,kube,terraform,gcp,npmrc (default: all)
+      --only strings   scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,gcp,sops,npmrc (default: all)
   -y, --yes            skip the confirmation prompt and migrate immediately
 ```
 

@@ -26,6 +26,7 @@ var findingTypeLabels = map[string]string{ // #nosec G101 -- enum label keys, no
 	FindingTypeIACVariableFile:    "IaC Variable Files",
 	FindingTypeSuspiciousFilename: "Suspicious Filenames",
 	FindingTypeWrappableCLIToken:  "Wrappable CLI Tokens",
+	FindingTypeSOPSAgeKey:         "SOPS Age Keys",
 }
 
 var riskLevelColor = map[string]*color.Color{
