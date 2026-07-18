@@ -19,9 +19,9 @@ command it points you at fixes machine-wide too, no scope decision in
 between. It's shorthand for `jit migrate home`: every project's
 `.env`/tfvars/`mcp.json`/`.npmrc`, plus the machine-wide files that have
 no project-scoped form at all - shell configs, `~/.aws/credentials`,
-`~/.kube/config`, the Terraform Cloud token file, GCP application-default
-credentials, the SOPS age key, Claude Desktop's MCP config, and the global
-`~/.npmrc`. The plan groups those under a separate "Machine-wide" section
+`~/.kube/config`, the Terraform Cloud token file, Docker registry logins
+in `~/.docker/config.json`, GCP application-default credentials, the SOPS
+age key, Claude Desktop's MCP config, and the global `~/.npmrc`. The plan groups those under a separate "Machine-wide" section
 so it's clear they're not part of a directory walk.
 
 **`jit migrate local`** narrows to one project: only what's under the
@@ -87,6 +87,7 @@ Limit either scope to specific categories with `--only`
 | `aws` | the profile's access key/secret/session token | a `credential_process` line in `~/.aws/config`; no file with the real value at all | [AWS](./aws.md) |
 | `kube` | the user's bearer token or cert/key pair | an `exec` block calling jit (client-go's exec-plugin protocol) | [Kubernetes](./kubernetes.md) |
 | `terraform` | each host's API token | a `credentials_helper` wired into `~/.terraformrc` | [Terraform](./terraform.md) |
+| `docker` | each registry's username + password/token | a credential helper wired into `~/.docker/config.json`; `docker login`/`logout` keep working | [Docker](./docker.md) |
 | `gcp` | the ADC refresh token (or service account private key) | a live-mounted pipe serving a template; non-secret fields untouched | [GCP](./gcp.md) |
 | `sops` | the SOPS age private key | a live-mounted pipe serving a template; sops v3.10+ can also fetch the key via `SOPS_AGE_KEY_CMD` | [SOPS](./sops.md) |
 | `npmrc` | just the secret lines (`_authToken`, etc.) | a live-mounted pipe serving a template; everything else untouched | [npm](./npm.md) |

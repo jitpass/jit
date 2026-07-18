@@ -22,6 +22,13 @@ machine-wide files that live at fixed home paths:
                    credentials-helper protocol (`terraform login`/`logout`
                    keep working). Fails loud, before touching anything, if a
                    different credentials helper is already configured.
+  Docker           plaintext registry logins in ~/.docker/config.json (base64
+                   is encoding, not encryption) move into the vault; docker
+                   fetches them through its own credential-helper protocol
+                   (`docker login`/`logout` keep working, compose and buildx
+                   pulls too). Never replaces an existing credential store
+                   like Docker Desktop's; jit becomes the default store only
+                   when the config had none at all.
   GCP              ~/.config/gcloud/application_default_credentials.json's
                    refresh token (or a service account key's private key)
                    moves into the vault; the file keeps working as a live
@@ -64,7 +71,7 @@ jit migrate home [flags]
 
 ```
       --dry-run        preview the plan for this scope without changing anything
-      --only strings   scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,gcp,sops,npmrc (default: all)
+      --only strings   scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,docker,gcp,sops,npmrc (default: all)
   -y, --yes            skip the confirmation prompt and migrate immediately
 ```
 
