@@ -77,14 +77,28 @@ func ShimExec(tool string, args []string) error {
 		return err
 	}
 
+	// A grant-wrap runs `jit run --with <name>`; an env-wrap runs
+	// `jit run --profile wrap-<tool>`. The manifest is the one place that
+	// distinction lives; reading it here (a small JSON file under $HOME)
+	// keeps the shim mode-agnostic apart from this branch.
+	manifest, err := LoadManifest(home)
+	if err != nil {
+		return err
+	}
+
 	// syscall.Exec never returns on success — same contract as jit run's
 	// own exec, which this process is about to become.
-	return syscall.Exec(jitBinary, shimArgv(tool, realTool, args), os.Environ()) // #nosec G204 -- tool comes from the shim symlink's own name, installed by `jit wrap add`; args are the user's own command line
+	return syscall.Exec(jitBinary, shimArgv(tool, realTool, manifest.Tools[tool], args), os.Environ()) // #nosec G204 -- tool comes from the shim symlink's own name, installed by `jit wrap add`; args are the user's own command line
 }
 
 // shimArgv builds the jit run invocation a shim execs into. argv[0] is
 // "jit" so the re-exec'd binary takes its normal CLI path, not shim mode.
-func shimArgv(tool, realTool string, args []string) []string {
+// A grant-wrap (entry.With set) grants a global mount; an env-wrap injects
+// a profile.
+func shimArgv(tool, realTool string, entry Entry, args []string) []string {
+	if entry.IsGrant() {
+		return append([]string{"jit", "run", "--with", entry.With, "--", realTool}, args...)
+	}
 	return append([]string{"jit", "run", "--profile", ProfileName(tool), "--", realTool}, args...)
 }
 
