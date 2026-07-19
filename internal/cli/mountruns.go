@@ -203,13 +203,13 @@ func (m *mountManager) registerRun(att *runAttachment) {
 	if prev := m.runs[att.pid]; prev != nil {
 		if prev.startMicro == att.startMicro {
 			prev.mounts = append(prev.mounts, att.mounts...)
-			atomic.AddInt32(&m.grantModeRuns, int32(att.grantMountCount()))
+			atomic.AddInt32(&m.grantModeRuns, int32(att.grantMountCount())) // #nosec G115 -- a run's grant-mount count is a tiny non-negative int, always in int32 range
 			m.runsMu.Unlock()
 			return // watcher already armed by the first registration
 		}
-		atomic.AddInt32(&m.grantModeRuns, int32(-prev.grantMountCount()))
+		atomic.AddInt32(&m.grantModeRuns, int32(-prev.grantMountCount())) // #nosec G115 -- a run's grant-mount count is a tiny int, always in int32 range
 	}
-	atomic.AddInt32(&m.grantModeRuns, int32(att.grantMountCount()))
+	atomic.AddInt32(&m.grantModeRuns, int32(att.grantMountCount())) // #nosec G115 -- a run's grant-mount count is a tiny non-negative int, always in int32 range
 	m.runs[att.pid] = att
 	m.runsMu.Unlock()
 	m.watchRunPID(att.pid)
@@ -246,7 +246,7 @@ func (m *mountManager) onRunExit(pid int32, why string) {
 		return
 	}
 	delete(m.runs, pid)
-	atomic.AddInt32(&m.grantModeRuns, int32(-att.grantMountCount()))
+	atomic.AddInt32(&m.grantModeRuns, int32(-att.grantMountCount())) // #nosec G115 -- a run's grant-mount count is a tiny int, always in int32 range
 	var toRestore, endedGrants []string
 	for _, am := range att.mounts {
 		switch am.mode {
@@ -423,7 +423,7 @@ func (m *mountManager) watchRunPID(pid int32) {
 		return
 	}
 	ev := unix.Kevent_t{
-		Ident:  uint64(pid),
+		Ident:  uint64(pid), // #nosec G115 -- a real pid is a positive int32, always fits uint64
 		Filter: unix.EVFILT_PROC,
 		Flags:  unix.EV_ADD | unix.EV_ENABLE,
 		Fflags: unix.NOTE_EXIT,
