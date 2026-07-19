@@ -67,6 +67,24 @@ Any tool that reads its credential from an environment variable works even
 without a catalog entry: see **[Custom tools](./custom-tools.md)**
 (`jit wrap add <tool> --env VAR=<vault-path>`).
 
+## Tools that read a credential *file* (gcloud, sops)
+
+Some tools don't read an env var - they read a machine-wide credential
+*file* (Google SDKs read the gcp ADC JSON; sops reads its age key). For
+those, wrap with `--grant` instead of `--env`:
+
+```
+jit migrate home --only gcp     # move the ADC into the vault, mount the file
+jit wrap add gcloud --grant gcp # shim: `gcloud` now runs jit run --with gcp
+gcloud storage ls               # native; the shim grants the real ADC
+```
+
+The shim runs `jit run --with <name>`, so each invocation grants the mount
+to that one process (scoped, gone when it exits) and prompts a **disclosed
+Touch ID** naming the credential - a global credential is never granted
+silently. Names: `gcp`, `sops`, `npm`. See
+[Delivering a secret](../getting-started/delivering-secrets.md).
+
 ## Adding a tool
 
 A catalog entry is one data block in `internal/wrap/catalog_data.go` plus

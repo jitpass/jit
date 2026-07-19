@@ -28,16 +28,31 @@ func TestGuardVar(t *testing.T) {
 }
 
 func TestShimArgv(t *testing.T) {
-	argv := shimArgv("gh", "/opt/homebrew/bin/gh", []string{"pr", "list", "--limit", "5"})
+	// env-wrap: injects the profile.
+	argv := shimArgv("gh", "/opt/homebrew/bin/gh", Entry{Profile: "wrap-gh"}, []string{"pr", "list", "--limit", "5"})
 	want := []string{"jit", "run", "--profile", "wrap-gh", "--", "/opt/homebrew/bin/gh", "pr", "list", "--limit", "5"}
-	if len(argv) != len(want) {
-		t.Fatalf("shimArgv returned %v, want %v", argv, want)
+	if !equalArgv(argv, want) {
+		t.Fatalf("env-wrap shimArgv = %v, want %v", argv, want)
+	}
+
+	// grant-wrap: grants the global mount by name.
+	argv = shimArgv("gcloud", "/opt/homebrew/bin/gcloud", Entry{With: "gcp"}, []string{"storage", "ls"})
+	want = []string{"jit", "run", "--with", "gcp", "--", "/opt/homebrew/bin/gcloud", "storage", "ls"}
+	if !equalArgv(argv, want) {
+		t.Fatalf("grant-wrap shimArgv = %v, want %v", argv, want)
+	}
+}
+
+func equalArgv(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
 	}
 	for i := range want {
-		if argv[i] != want[i] {
-			t.Fatalf("shimArgv[%d] = %q, want %q (full: %v)", i, argv[i], want[i], argv)
+		if got[i] != want[i] {
+			return false
 		}
 	}
+	return true
 }
 
 // writeExecutable drops an executable file named tool into dir.

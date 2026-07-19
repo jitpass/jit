@@ -88,6 +88,14 @@ func Doctor(home, pathEnv, shell string) []DoctorCheck {
 			continue
 		}
 
+		// A grant-wrap has no profile — it grants a global mount by name,
+		// validated by `jit run --with` at use time. The shim + real binary
+		// resolving is all doctor can (and needs to) check here.
+		if entry.IsGrant() {
+			checks = append(checks, DoctorCheck{Name: name, OK: true, Detail: "shim and real binary resolve; grants the " + entry.With + " mount via `jit run --with`"})
+			continue
+		}
+
 		profilePath := filepath.Join(home, ".jit", "profiles", entry.Profile+".yaml")
 		if _, statErr := os.Stat(profilePath); statErr != nil {
 			checks = append(checks, DoctorCheck{Name: name, OK: false, Detail: "profile " + entry.Profile + " missing at " + profilePath})

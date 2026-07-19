@@ -21,12 +21,20 @@ type Manifest struct {
 	Tools map[string]Entry `json:"tools"`
 }
 
-// Entry describes one wrapped tool.
+// Entry describes one wrapped tool. Exactly one of Profile (an env-wrap,
+// the shim injects the profile's vars) or With (a grant-wrap, the shim
+// grants a global file-delivered mount by name — gcp/sops/npm — for tools
+// that read a machine-wide credential FILE rather than an env var) is set.
 type Entry struct {
-	Profile string    `json:"profile"`
-	Vars    []string  `json:"vars"` // env var names the profile injects, for `jit wrap list`
+	Profile string    `json:"profile,omitempty"`
+	With    string    `json:"with,omitempty"`
+	Vars    []string  `json:"vars,omitempty"` // env var names the profile injects, for `jit wrap list`
 	AddedAt time.Time `json:"added_at"`
 }
+
+// IsGrant reports whether e is a grant-wrap (runs `jit run --with`) rather
+// than an env-wrap (runs `jit run --profile`).
+func (e Entry) IsGrant() bool { return e.With != "" }
 
 // ManifestPath returns the manifest's location under home.
 func ManifestPath(home string) string {

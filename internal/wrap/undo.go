@@ -43,21 +43,25 @@ func Undo(home, tool string) (UndoResult, error) {
 		return res, err
 	}
 
-	res.ProfilePath, err = profile.Path(home, entry.Profile)
-	if err != nil {
-		return res, err
-	}
-	if p, loadErr := profile.LoadFile(res.ProfilePath); loadErr == nil {
-		for _, vaultPath := range p {
-			res.VaultPaths = append(res.VaultPaths, vaultPath)
+	// A grant-wrap has no profile to remove — just the shim and the manifest
+	// entry. An env-wrap removes its wrap-<tool> profile too.
+	if !entry.IsGrant() {
+		res.ProfilePath, err = profile.Path(home, entry.Profile)
+		if err != nil {
+			return res, err
 		}
-		sort.Strings(res.VaultPaths)
-	}
-	switch err := os.Remove(res.ProfilePath); {
-	case err == nil:
-		res.RemovedProfile = true
-	case !os.IsNotExist(err):
-		return res, fmt.Errorf("removing %s: %w", res.ProfilePath, err)
+		if p, loadErr := profile.LoadFile(res.ProfilePath); loadErr == nil {
+			for _, vaultPath := range p {
+				res.VaultPaths = append(res.VaultPaths, vaultPath)
+			}
+			sort.Strings(res.VaultPaths)
+		}
+		switch err := os.Remove(res.ProfilePath); {
+		case err == nil:
+			res.RemovedProfile = true
+		case !os.IsNotExist(err):
+			return res, fmt.Errorf("removing %s: %w", res.ProfilePath, err)
+		}
 	}
 
 	delete(manifest.Tools, tool)

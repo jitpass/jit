@@ -19,6 +19,7 @@ func execWrap(t *testing.T, args ...string) (stdout string, err error) {
 	// binary (cobra re-parses into the same variable), so an --env from a
 	// previous test would leak into a call that passes none.
 	wrapAddEnv = nil
+	wrapAddGrant = ""
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
@@ -55,7 +56,7 @@ func TestWrapAddListUndoRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit wrap list: %v", err)
 	}
-	if !strings.Contains(out, "faketool") || !strings.Contains(out, "wrap-faketool") || !strings.Contains(out, "ok") {
+	if !strings.Contains(out, "faketool") || !strings.Contains(out, "env") || !strings.Contains(out, "FAKE_TOKEN") || !strings.Contains(out, "ok") {
 		t.Errorf("list missing the wrapped tool row:\n%s", out)
 	}
 
@@ -125,5 +126,37 @@ func TestParseWrapEnv(t *testing.T) {
 		if _, _, err := parseWrapEnv(bad); err == nil {
 			t.Errorf("parseWrapEnv(%v): expected an error", bad)
 		}
+	}
+}
+
+// TestWrapAddGrantRoundTrip covers the grant-wrap path: `jit wrap add
+// <tool> --grant <name>` installs a shim that grants a global mount (no
+// profile), list shows it as a grant, doctor is happy, undo removes it.
+func TestWrapAddGrantRoundTrip(t *testing.T) {
+	withFixtureHome(t)
+
+	out, err := execWrap(t, "add", "gcloud", "--grant", "gcp")
+	if err != nil {
+		t.Fatalf("jit wrap add --grant: %v", err)
+	}
+	if !strings.Contains(out, "Grant-wrapped gcloud") || !strings.Contains(out, "--with gcp") {
+		t.Errorf("add --grant output missing the grant note:\n%s", out)
+	}
+
+	out, err = execWrap(t, "list")
+	if err != nil {
+		t.Fatalf("jit wrap list: %v", err)
+	}
+	if !strings.Contains(out, "gcloud") || !strings.Contains(out, "grant") || !strings.Contains(out, "--with gcp") {
+		t.Errorf("list missing the grant-wrap row:\n%s", out)
+	}
+
+	// --env and --grant are mutually exclusive.
+	if _, err := execWrap(t, "add", "x", "--env", "A=p", "--grant", "gcp"); err == nil {
+		t.Error("expected an error when --env and --grant are combined")
+	}
+
+	if _, err := execWrap(t, "undo", "gcloud"); err != nil {
+		t.Fatalf("jit wrap undo: %v", err)
 	}
 }

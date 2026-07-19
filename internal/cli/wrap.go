@@ -156,18 +156,24 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 }
 
 var wrapAddEnv []string
+var wrapAddGrant string
 
 var wrapAddCmd = &cobra.Command{
-	Use:   "add <tool> --env VAR=<vault-path> [--env ...]",
-	Short: "Wrap a tool by hand: shim on PATH + a wrap-<tool> profile",
+	Use:   "add <tool> --env VAR=<vault-path> [--env ...] | --grant <name>",
+	Short: "Wrap a tool by hand: a shim on PATH that injects a profile or grants a global mount",
+	Long: "jit wrap add installs a shim so a tool works by its native name. Two forms:\n" +
+		"--env wraps a tool that reads a token from an ENV VAR (gh, stripe): the shim\n" +
+		"injects a wrap-<tool> profile. --grant wraps a tool that reads a machine-wide\n" +
+		"credential FILE (gcloud reads the gcp ADC): the shim runs `jit run --with\n" +
+		"<name>` so the tool gets the real file, gated by a disclosed challenge.",
 	Example: "  jit vault set wrap-gh/GH_TOKEN\n" +
-		"  jit wrap add gh --env GH_TOKEN=wrap-gh/GH_TOKEN",
+		"  jit wrap add gh --env GH_TOKEN=wrap-gh/GH_TOKEN\n" +
+		"  jit wrap add gcloud --grant gcp",
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		tool := args[0]
-		env, order, err := parseWrapEnv(wrapAddEnv)
-		if err != nil {
-			return fmt.Errorf("jit wrap add: %w", err)
+		if wrapAddEnv != nil && wrapAddGrant != "" {
+			return fmt.Errorf("jit wrap add: use either --env (inject a token) or --grant (grant a global mount), not both")
 		}
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -181,7 +187,24 @@ var wrapAddCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit wrap add: %w", err)
 		}
+		out := cmd.OutOrStdout()
 
+		if wrapAddGrant != "" {
+			res, err := wrap.AddGrant(home, tool, wrapAddGrant, jitBinary)
+			if err != nil {
+				return fmt.Errorf("jit wrap add: %w", err)
+			}
+			fmt.Fprintf(out, "Grant-wrapped %s:\n", tool)
+			fmt.Fprintf(out, "  grants   the %q global mount (jit run --with %s)\n", wrapAddGrant, wrapAddGrant)
+			fmt.Fprintf(out, "  shim     %s\n", res.ShimPath)
+			fmt.Fprintf(cmd.ErrOrStderr(), "note: %s must be migrated (e.g. `jit migrate home --only %s`); each run prompts a disclosed Touch ID for the credential.\n", wrapAddGrant, wrapAddGrant)
+			return ensureShimOnPath(cmd, home, tool)
+		}
+
+		env, order, err := parseWrapEnv(wrapAddEnv)
+		if err != nil {
+			return fmt.Errorf("jit wrap add: %w", err)
+		}
 		// A missing secret is a warning, not an error: wrapping before
 		// storing is a legal order of operations, and jit doctor verifies
 		// profile references anyway.
@@ -197,16 +220,11 @@ var wrapAddCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit wrap add: %w", err)
 		}
-
-		out := cmd.OutOrStdout()
 		fmt.Fprintf(out, "Wrapped %s:\n", tool)
 		fmt.Fprintf(out, "  profile  %s (%s)\n", res.ProfileName, res.ProfilePath)
 		fmt.Fprintf(out, "  shim     %s\n", res.ShimPath)
 
-		if err := ensureShimOnPath(cmd, home, tool); err != nil {
-			return fmt.Errorf("jit wrap add: %w", err)
-		}
-		return nil
+		return ensureShimOnPath(cmd, home, tool)
 	},
 }
 
@@ -256,14 +274,18 @@ var wrapListCmd = &cobra.Command{
 		}
 
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "TOOL\tPROFILE\tVARS\tSHIM")
+		fmt.Fprintln(w, "TOOL\tKIND\tINJECTS/GRANTS\tSHIM")
 		for _, tool := range sortedTools(manifest) {
 			entry := manifest.Tools[tool]
 			health := "ok"
 			if !installed[tool] {
 				health = "missing, re-run `jit wrap add " + tool + " ...`"
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", tool, entry.Profile, strings.Join(entry.Vars, ","), health)
+			kind, detail := "env", strings.Join(entry.Vars, ",")
+			if entry.IsGrant() {
+				kind, detail = "grant", "--with "+entry.With
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", tool, kind, detail, health)
 		}
 		return w.Flush()
 	},
@@ -362,6 +384,7 @@ func sortedTools(m wrap.Manifest) []string {
 
 func init() {
 	wrapAddCmd.Flags().StringArrayVar(&wrapAddEnv, "env", nil, "environment variable to inject, as VAR=<vault-path> (repeatable)")
+	wrapAddCmd.Flags().StringVar(&wrapAddGrant, "grant", "", "grant a global file-delivered mount by name (gcp, sops, npm) instead of injecting an env var - for tools that read a credential file")
 	wrapCmd.AddCommand(wrapAddCmd, wrapListCmd, wrapUndoCmd, wrapDoctorCmd)
 	rootCmd.AddCommand(wrapCmd)
 }

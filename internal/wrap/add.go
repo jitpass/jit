@@ -103,6 +103,47 @@ func Add(home string, req AddRequest) (AddResult, error) {
 	return AddResult{ProfileName: name, ProfilePath: profilePath, ShimPath: shimPath}, nil
 }
 
+// AddGrant installs a GRANT-wrap: a shim that runs `jit run --with
+// <mountName> -- <tool>` so a tool reading a global, file-delivered
+// credential (gcloud reading the ADC file, sops reading its age key) works
+// when typed by its native name, with the disclosed challenge still gating
+// each grant. Unlike Add there is no profile — a grant-wrap injects no env
+// var; it grants a mount. mountName is validated by `jit run --with` at use
+// time (unknown/unmigrated names fail loudly there), so this only checks it
+// is non-empty.
+func AddGrant(home, tool, mountName, jitBinary string) (AddResult, error) {
+	if err := ValidateToolName(tool); err != nil {
+		return AddResult{}, err
+	}
+	if mountName == "" {
+		return AddResult{}, fmt.Errorf("--grant needs a mount name (gcp, sops, npm)")
+	}
+
+	manifest, err := LoadManifest(home)
+	if err != nil {
+		return AddResult{}, err
+	}
+	// Refuse to clobber a hand-written env profile for this tool that jit
+	// wrap doesn't manage — same guard Add applies.
+	if _, managed := manifest.Tools[tool]; !managed {
+		if profilePath, perr := profile.Path(home, ProfileName(tool)); perr == nil {
+			if _, statErr := os.Stat(profilePath); statErr == nil {
+				return AddResult{}, fmt.Errorf("profile %s already exists at %s but wasn't created by jit wrap, refusing to grant-wrap over it", ProfileName(tool), profilePath)
+			}
+		}
+	}
+
+	shimPath, err := InstallShim(home, jitBinary, tool)
+	if err != nil {
+		return AddResult{}, err
+	}
+	manifest.Tools[tool] = Entry{With: mountName, AddedAt: time.Now().UTC()}
+	if err := manifest.Save(home); err != nil {
+		return AddResult{}, err
+	}
+	return AddResult{ShimPath: shimPath}, nil
+}
+
 // orderedNames returns env's variable names in order (names order lists
 // first, then any stragglers sorted) — mirroring profile.MarshalOrdered's
 // own completion rule so the manifest lists vars the way the profile
