@@ -7,7 +7,6 @@ package cli
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/profile"
@@ -24,48 +23,6 @@ import (
 // path so a swap-in and a concurrent restore can never interleave; it is
 // ordered OUTSIDE the registry lock and is never taken by the read path, so
 // a swap-in holding it across stopMount can't deadlock an in-flight serve.
-
-// swapForPID is revealForPID's swap-mode attach: for each served mount,
-// replace the FIFO with a comment-only pointer file (once, on the first run
-// to hold it) and register the run. Mounts that aren't served are skipped
-// with a logged reason; the RPC fails only when NO mount could be swapped.
-func (m *mountManager) swapForPID(mountPaths []string, pid int32) error {
-	att, ok := m.newRunAttachment(pid, attachSwap)
-	if !ok {
-		return fmt.Errorf("reveal_pid: target pid %d not found", pid)
-	}
-
-	m.swapMu.Lock()
-	defer m.swapMu.Unlock()
-
-	var problems []string
-	for _, path := range mountPaths {
-		entry, ok := m.registryEntryForPath(path)
-		if !ok {
-			problems = append(problems, fmt.Sprintf("no such mount: %s", path))
-			continue
-		}
-		m.runsMu.Lock()
-		alreadySwapped := m.mountSwapHeldByOtherLocked(path, pid)
-		m.runsMu.Unlock()
-		if !alreadySwapped {
-			if err := m.performSwapIn(path, entry); err != nil {
-				problems = append(problems, fmt.Sprintf("%s: %v", path, err))
-				continue
-			}
-		}
-		att.mounts = append(att.mounts, path)
-		fmt.Fprintf(m.stdout, "jit agent: mount %s: swapped to a compatibility file for pid %d's run (%s) until it exits\n", path, pid, att.command)
-	}
-	for _, p := range problems {
-		fmt.Fprintf(m.stderr, "jit agent: reveal_pid (swap) skipped: %s\n", p)
-	}
-	if len(att.mounts) == 0 {
-		return fmt.Errorf("reveal_pid: no mount swapped: %s", strings.Join(problems, "; "))
-	}
-	m.registerRun(att)
-	return nil
-}
 
 // performSwapIn stops serving path's FIFO and replaces it with the
 // comment-only pointer file. Caller holds swapMu.

@@ -211,18 +211,32 @@ func (c *Client) Reveal(mountPath string, duration time.Duration) error {
 // the tree, fail-closed gating, and teardown (target exit, lock, hard cap)
 // are all agent-side; Client makes no assumptions about any of them.
 func (c *Client) RevealForPID(mountPaths []string, pid int32) error {
-	_, err := c.call(Request{Op: OpRevealPID, MountPaths: mountPaths, TargetPID: pid})
-	return err
+	return c.RunForPID(mountsWithMode(mountPaths, MountModeGrant), pid)
 }
 
 // SwapForPID is RevealForPID's compatibility-swap variant (the jit run
 // default): for pid's lifetime, each mount becomes a regular comment-only
 // pointer file instead of the decoy FIFO, so regular-file guards pass and
 // re-reads parse to nothing. Same lifecycle and teardown as a grant; the
-// difference is what the mount IS during the run. See Request.Swap.
+// difference is what the mount IS during the run.
 func (c *Client) SwapForPID(mountPaths []string, pid int32) error {
-	_, err := c.call(Request{Op: OpRevealPID, MountPaths: mountPaths, TargetPID: pid, Swap: true})
+	return c.RunForPID(mountsWithMode(mountPaths, MountModeSwap), pid)
+}
+
+// RunForPID is the general form: attach pid's process tree to a set of
+// mounts, each in its own mode (swap or grant), for the run's lifetime.
+// One call can mix modes — swap the project .env while granting its .npmrc.
+func (c *Client) RunForPID(mounts []RunMount, pid int32) error {
+	_, err := c.call(Request{Op: OpRevealPID, RunMounts: mounts, TargetPID: pid})
 	return err
+}
+
+func mountsWithMode(paths []string, mode string) []RunMount {
+	out := make([]RunMount, len(paths))
+	for i, p := range paths {
+		out[i] = RunMount{Path: p, Mode: mode}
+	}
+	return out
 }
 
 // StopMount asks the agent to stop serving mountPath specifically —

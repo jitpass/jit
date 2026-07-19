@@ -54,7 +54,7 @@ func swapTestFixture(t *testing.T) (*mountManager, string) {
 func TestSwapForPIDSwapsAndRestores(t *testing.T) {
 	m, path := swapTestFixture(t)
 
-	if err := m.swapForPID([]string{path}, 100); err != nil {
+	if err := m.revealForPID(runMountsSwap(path), 100); err != nil {
 		t.Fatalf("swapForPID: %v", err)
 	}
 	// The FIFO is now a regular comment-only pointer file.
@@ -84,10 +84,10 @@ func TestSwapForPIDSwapsAndRestores(t *testing.T) {
 func TestSwapForPIDRefcountsConcurrentRuns(t *testing.T) {
 	m, path := swapTestFixture(t)
 
-	if err := m.swapForPID([]string{path}, 100); err != nil {
+	if err := m.revealForPID(runMountsSwap(path), 100); err != nil {
 		t.Fatalf("swapForPID 100: %v", err)
 	}
-	if err := m.swapForPID([]string{path}, 101); err != nil {
+	if err := m.revealForPID(runMountsSwap(path), 101); err != nil {
 		t.Fatalf("swapForPID 101: %v", err)
 	}
 	// First run exits — still swapped (101 holds it).
@@ -104,14 +104,14 @@ func TestSwapForPIDRefcountsConcurrentRuns(t *testing.T) {
 
 func TestSwapForPIDUnknownMountFails(t *testing.T) {
 	m, _ := swapTestFixture(t)
-	if err := m.swapForPID([]string{"/tmp/not/a/mount/.env"}, 100); err == nil {
+	if err := m.revealForPID(runMountsSwap("/tmp/not/a/mount/.env"), 100); err == nil {
 		t.Error("expected an error swapping an unregistered mount")
 	}
 }
 
 func TestSwapClearedOnLock(t *testing.T) {
 	m, path := swapTestFixture(t)
-	if err := m.swapForPID([]string{path}, 100); err != nil {
+	if err := m.revealForPID(runMountsSwap(path), 100); err != nil {
 		t.Fatalf("swapForPID: %v", err)
 	}
 	m.clearAllRuns()
@@ -128,7 +128,7 @@ func TestSwapClearedOnLock(t *testing.T) {
 // swap whose target pid is gone even if the exit watcher never fired.
 func TestSwapPrunesDeadTarget(t *testing.T) {
 	m, path := swapTestFixture(t)
-	if err := m.swapForPID([]string{path}, 100); err != nil {
+	if err := m.revealForPID(runMountsSwap(path), 100); err != nil {
 		t.Fatalf("swapForPID: %v", err)
 	}
 	// Make the target look gone, then let a status read prune it.
@@ -141,7 +141,7 @@ func TestSwapPrunesDeadTarget(t *testing.T) {
 
 func TestSwapStatusesReportsHolder(t *testing.T) {
 	m, path := swapTestFixture(t)
-	if err := m.swapForPID([]string{path}, 100); err != nil {
+	if err := m.revealForPID(runMountsSwap(path), 100); err != nil {
 		t.Fatalf("swapForPID: %v", err)
 	}
 	st := m.mountRevealStatuses()
