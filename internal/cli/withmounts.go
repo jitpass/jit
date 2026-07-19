@@ -7,6 +7,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 
@@ -83,6 +84,64 @@ func knownWithNames(kinds map[string][]string) string {
 	}
 	sort.Strings(names) // small fixed set; sort for a stable error message
 	return strings.Join(names, ", ")
+}
+
+// globalMountGuidance describes how to USE a migrated global file-delivered
+// mount: the --with name that grants it and the tools that read it. It is the
+// single source for the "how do I use this?" reminder shown at both
+// discoverability moments (the jit migrate summary and jit doctor), per the
+// global-mount-grants plan §12a.
+type globalMountGuidance struct {
+	name  string // the --with name (gcp, sops, npm)
+	tools string // human list of the tools that read the mounted file
+}
+
+// usageLine is the one-line reminder both migrate and doctor print.
+func (g globalMountGuidance) usageLine() string {
+	return fmt.Sprintf("%s (%s): jit run --with %s <command>", g.name, g.tools, g.name)
+}
+
+// globalMountGuidanceForPath maps a registered mount path back to its usage
+// guidance, or false if the path isn't a known global file-delivered mount.
+func globalMountGuidanceForPath(home, mountPath string) (globalMountGuidance, bool) {
+	switch mountPath {
+	case migrate.GCPADCPath(home):
+		return globalMountGuidance{name: "gcp", tools: "gcloud, terraform, Google SDKs"}, true
+	case migrate.GlobalNpmrcPath(home):
+		return globalMountGuidance{name: "npm", tools: "npm, yarn, pnpm"}, true
+	}
+	for _, p := range migrate.SOPSAgeKeyPaths(home) {
+		if mountPath == p {
+			return globalMountGuidance{name: "sops", tools: "sops, kluctl"}, true
+		}
+	}
+	return globalMountGuidance{}, false
+}
+
+// printGlobalMountReminders lists every migrated global file-delivered mount
+// with its one-line `jit run --with` reminder — the discoverability half of
+// the feature, so the `--with` usage stays findable long after the migrate
+// summary scrolled off (plan §12a). Best-effort and silent when there are
+// none or the registry can't be read: it is guidance, never a doctor problem.
+func printGlobalMountReminders(w io.Writer) {
+	entries, home, err := loadMountRegistry()
+	if err != nil {
+		return
+	}
+	var lines []string
+	for _, e := range entries {
+		if g, ok := globalMountGuidanceForPath(home, e.MountPath); ok {
+			lines = append(lines, "  • "+g.usageLine())
+		}
+	}
+	if len(lines) == 0 {
+		return
+	}
+	sort.Strings(lines)
+	fmt.Fprintln(w, "\nGlobal credential mounts (granted only by an explicit --with, never by project config):")
+	for _, l := range lines {
+		fmt.Fprintln(w, l)
+	}
 }
 
 // globalMountPaths is the set of every candidate on-disk path that is a

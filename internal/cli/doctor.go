@@ -164,10 +164,12 @@ var doctorCmd = &cobra.Command{
 			for _, p := range problems {
 				_, _ = color.New(color.FgRed).Fprintf(cmd.OutOrStdout(), "✗ %s\n", p)
 			}
+			printGlobalMountReminders(cmd.OutOrStdout())
 			return fmt.Errorf("jit doctor: %d problem(s) found", len(problems))
 		}
 
 		_, _ = color.New(color.FgGreen, color.Bold).Fprintf(cmd.OutOrStdout(), "✓ %d profile(s), %d secret reference(s) all resolve cleanly\n", len(targets), checked)
+		printGlobalMountReminders(cmd.OutOrStdout())
 		return nil
 	},
 }
