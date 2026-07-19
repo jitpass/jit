@@ -234,6 +234,30 @@ don't detect for global mounts at all.
    repo), only if declare-once ergonomics prove wanted.
 5. **Short-lived token broker** for gcloud (hardening), last.
 
+## 12a. Guidance at migrate / doctor time (discoverability)
+
+A mount the user can't figure out how to *use* is a papercut even when the
+migration succeeds — the same lesson as the compatibility swap. So a
+file-delivered global mount must ship with its usage guidance, at the two
+moments the user is already looking:
+
+- **`jit migrate` summary.** After migrating a file-delivered global mount,
+  the per-category output names the consuming tools and the command:
+  > `gcp` migrated → `~/.config/gcloud/application_default_credentials.json`
+  > is now a live mount. Tools that read it (`gcloud`, `terraform`, Google
+  > SDKs) get real credentials when you run them with
+  > `jit run --with gcp <command>`.
+  This replaces the generic reveal-hook line for these mounts, since the
+  hook path (direnv/npm) does not apply to gcloud/sops/global-npmrc.
+- **`jit doctor`.** For an already-migrated file-delivered global mount,
+  doctor carries the same one-line reminder, so the `--with` usage is
+  discoverable long after the migration scrolled off screen.
+
+Note this is guidance about the mount `jit migrate` created — it is NOT a
+suggestion to `jit wrap` the tool. gcloud is handled by the mount; the
+`jit wrap`-style grant-shim (§4.2) is an optional convenience the guidance
+may mention as "for a tool you run constantly," never as the primary fix.
+
 ## 13. Verification
 
 - **Unit:** `--with` resolves each kind; a project-local `grants:`
