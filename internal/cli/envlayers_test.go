@@ -14,6 +14,33 @@ import (
 	"github.com/jitpass/jit/internal/profile"
 )
 
+// TestInjectionProfileForRunWithTolerance guards the grant-wrap flow: a
+// `jit run --with gcp -- gcloud` typed in a non-project directory must NOT
+// fail with "no profile" — it injects nothing and exists only to grant the
+// global mount. Without --with, a missing profile stays a hard error, and an
+// explicit --profile that doesn't resolve still errors even with --with.
+func TestInjectionProfileForRunWithTolerance(t *testing.T) {
+	withFixtureHome(t)
+	cwd := t.TempDir() // no .jit/profiles, no migrated .env layers
+	var buf bytes.Buffer
+
+	if _, _, err := injectionProfileForRun(cwd, "", "", false, &buf); err == nil {
+		t.Error("expected an error with no profile and no --with")
+	}
+
+	p, gm, err := injectionProfileForRun(cwd, "", "", true, &buf)
+	if err != nil {
+		t.Fatalf("a --with run should tolerate a missing profile, got: %v", err)
+	}
+	if len(p) != 0 || len(gm) != 0 {
+		t.Errorf("expected an empty injection profile and no grant mounts, got p=%v gm=%v", p, gm)
+	}
+
+	if _, _, err := injectionProfileForRun(cwd, "does-not-exist", "", true, &buf); err == nil {
+		t.Error("expected an error for a missing explicit --profile, even with --with")
+	}
+}
+
 func TestEnvLayerRank(t *testing.T) {
 	cases := []struct {
 		file, mode string
