@@ -114,7 +114,7 @@ type Server struct {
 	// CLI layer (mountManager), keeping Server's no-internal/mount
 	// dependency direction. A non-nil error becomes the RPC's own failure,
 	// same contract (and same reported-bug rationale) as OnReveal.
-	OnRevealPID func(mountPaths []string, pid int32) error
+	OnRevealPID func(mountPaths []string, pid int32, swap bool) error
 	// OnStopMount, if set, answers an OpStopMount request — unlike
 	// OnRefresh/OnReveal, this does NOT go through ensureUnlocked first:
 	// stopping a mount's serving goroutine needs no vault access at all
@@ -429,7 +429,7 @@ func (s *Server) handle(req Request, c *caller) Response {
 		}
 		wipe(mek)
 		if s.OnRevealPID != nil {
-			if err := s.OnRevealPID(req.MountPaths, req.TargetPID); err != nil {
+			if err := s.OnRevealPID(req.MountPaths, req.TargetPID, req.Swap); err != nil {
 				return Response{OK: false, Error: err.Error()}
 			}
 		}

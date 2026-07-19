@@ -33,7 +33,7 @@ func grantTestServer(t *testing.T) (*agent.Server, *agent.Client, *atomic.Value)
 	server := agent.NewServer(socketPath, func() agent.MEKFetcher { return &fakeMEKFetcher{key: mek} }, time.Minute)
 
 	var recorded atomic.Value // stores struct{ paths []string; pid int32 }
-	server.OnRevealPID = func(mountPaths []string, pid int32) error {
+	server.OnRevealPID = func(mountPaths []string, pid int32, swap bool) error {
 		recorded.Store(struct {
 			paths []string
 			pid   int32
@@ -107,7 +107,7 @@ func TestRequestRunGrantSilentWhenAgentUnreachableOrRefusing(t *testing.T) {
 	// Refusing: OnRevealPID errors (e.g. nothing real to serve) — the run
 	// proceeds without a grant and without noise.
 	server, c, _ := grantTestServer(t)
-	server.OnRevealPID = func([]string, int32) error {
+	server.OnRevealPID = func([]string, int32, bool) error {
 		return errFixtureRefused
 	}
 	if _, _, err := c.Unlock(); err != nil {

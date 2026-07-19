@@ -74,13 +74,26 @@ type grantVerdict struct {
 	expires time.Time
 }
 
-// revealForPID is OnRevealPID's handler. Grants are created only for
+// revealForPID is OnRevealPID's handler, dispatching on the mode jit run
+// asked for: swap replaces each mount with a compatibility pointer file for
+// the run (the default — see swapForPID in mountswap.go), while the grant
+// path below keeps the FIFO and gates reads by process tree (jit run
+// --live). Both share the same pid-lifetime teardown (watchGrantPID /
+// onRunExit).
+func (m *mountManager) revealForPID(mountPaths []string, pid int32, swap bool) error {
+	if swap {
+		return m.swapForPID(mountPaths, pid)
+	}
+	return m.grantForPID(mountPaths, pid)
+}
+
+// grantForPID creates per-read ancestry grants. Grants are created only for
 // mounts that are currently served AND have real content resolved — the
 // same honesty rule revealMount enforces (GAPS.md #46): a "grant" on a
 // mount that can only serve decoys would report success while changing
 // nothing. Mounts that can't be granted are skipped with a logged reason;
 // the RPC fails only when NO mount could be granted.
-func (m *mountManager) revealForPID(mountPaths []string, pid int32) error {
+func (m *mountManager) grantForPID(mountPaths []string, pid int32) error {
 	startMicro, ok := m.grantStart(pid)
 	if !ok {
 		return fmt.Errorf("reveal_pid: target pid %d not found", pid)
@@ -389,7 +402,7 @@ func (m *mountManager) watchGrantPID(pid int32) {
 	if _, err := unix.Kevent(m.grantKq, []unix.Kevent_t{ev}, nil, nil); err != nil {
 		// ESRCH: the target exited between grant creation and here — the
 		// exact race the registration exists to catch, just earlier.
-		m.dropGrantsForPID(pid, "process already exited")
+		m.onRunExit(pid, "process already exited")
 		return
 	}
 	m.grantWatched[pid] = true
@@ -413,7 +426,7 @@ func (m *mountManager) grantWatchLoop(kq int) {
 			m.watchMu.Lock()
 			delete(m.grantWatched, pid)
 			m.watchMu.Unlock()
-			m.dropGrantsForPID(pid, "process exited")
+			m.onRunExit(pid, "process exited")
 		}
 	}
 }
