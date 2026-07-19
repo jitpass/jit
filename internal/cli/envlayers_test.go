@@ -355,3 +355,39 @@ func TestResolveInjectionProfileGrantMountsForExplicitProfile(t *testing.T) {
 		t.Errorf("grantMounts = %v for an unmounted profile, want none", grantMounts)
 	}
 }
+
+// TestProjectTemplateMounts: a project-local template mount (a project
+// .npmrc) at or above cwd is returned; a global mount at $HOME is not
+// (those take explicit --with, never a directory walk).
+func TestProjectTemplateMounts(t *testing.T) {
+	home := withFixtureHome(t)
+	root, err := vaultRootDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	proj := filepath.Join(home, "code", "app")
+	if err := os.MkdirAll(proj, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	reg := mount.RegistryPath(root)
+	// project .npmrc (template mount, under the project)
+	if err := mount.AddMount(reg, mount.Entry{MountPath: filepath.Join(proj, ".npmrc"), ProfilePath: "p", TemplatePath: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	// project .env (dotenv, NOT a template) — must be excluded
+	if err := mount.AddMount(reg, mount.Entry{MountPath: filepath.Join(proj, ".env"), ProfilePath: "p"}); err != nil {
+		t.Fatal(err)
+	}
+	// global ~/.npmrc (template mount AT home) — must be excluded
+	if err := mount.AddMount(reg, mount.Entry{MountPath: filepath.Join(home, ".npmrc"), ProfilePath: "p", TemplatePath: "t"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := projectTemplateMounts(filepath.Join(proj, "sub"))
+	if len(got) != 1 || got[0] != filepath.Join(proj, ".npmrc") {
+		t.Errorf("projectTemplateMounts = %v, want just the project .npmrc (not .env, not the global ~/.npmrc)", got)
+	}
+}
