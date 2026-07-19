@@ -124,6 +124,15 @@ type mountManager struct {
 	grantHoldersFn  func(path string) (pids []int32, ok bool)
 	grantAncestryFn func(pid, root int32) bool
 	grantStartFn    func(pid int32) (unixMicro int64, ok bool)
+
+	// Compatibility swaps (mountswap.go): swaps maps a mount path to the
+	// run pids currently holding it as a regular pointer file. swapMu
+	// serializes every FIFO<->file transition for a path so a swap-in and
+	// a concurrent restore can't interleave; it is ordered OUTSIDE m.mu
+	// (swap handlers take swapMu, then call ensureServing/stopMount which
+	// take m.mu — never the reverse).
+	swapMu sync.Mutex
+	swaps  map[string]*mountSwap
 }
 
 // readerIdentity is internal/lineage's best-effort answer to "who just
@@ -735,6 +744,16 @@ func (m *mountManager) mountRevealStatuses() []agent.MountRevealStatus {
 		sm.mu.Unlock()
 		out = append(out, status)
 	}
+	// Swapped mounts aren't in m.served (their Serve goroutine is stopped
+	// while they're a plain file), so add them separately — one status
+	// entry per swapped path, its holding run(s) in Grants.
+	for path, attaches := range m.swapStatuses() {
+		st := agent.MountRevealStatus{Path: path, Swapped: true}
+		for _, a := range attaches {
+			st.Grants = append(st.Grants, agent.MountGrantStatus{PID: a.pid, Command: a.command, SinceUnix: a.since.Unix()})
+		}
+		out = append(out, st)
+	}
 	return out
 }
 
@@ -801,9 +820,10 @@ func (m *mountManager) stop() {
 		sm.setReal(nil)
 		sm.reveal.Hide()
 	}
-	// Grants end with the session the same way reveal windows do — see
-	// clearAllGrants for why this isn't only hygiene.
+	// Grants and swaps both end with the session — see clearAllGrants /
+	// clearAllSwaps for why this isn't only hygiene.
 	m.clearAllGrants()
+	m.clearAllSwaps()
 	if len(served) > 0 {
 		// Deliberately no longer says "session locked" — Server's own
 		// OnSessionEvent line, written immediately before this one, announces

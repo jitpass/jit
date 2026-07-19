@@ -215,6 +215,16 @@ func (c *Client) RevealForPID(mountPaths []string, pid int32) error {
 	return err
 }
 
+// SwapForPID is RevealForPID's compatibility-swap variant (the jit run
+// default): for pid's lifetime, each mount becomes a regular comment-only
+// pointer file instead of the decoy FIFO, so regular-file guards pass and
+// re-reads parse to nothing. Same lifecycle and teardown as a grant; the
+// difference is what the mount IS during the run. See Request.Swap.
+func (c *Client) SwapForPID(mountPaths []string, pid int32) error {
+	_, err := c.call(Request{Op: OpRevealPID, MountPaths: mountPaths, TargetPID: pid, Swap: true})
+	return err
+}
+
 // StopMount asks the agent to stop serving mountPath specifically —
 // unlike Lock, every other mount keeps being served undisturbed. `jit
 // unmount` uses this right before physically replacing the FIFO with a

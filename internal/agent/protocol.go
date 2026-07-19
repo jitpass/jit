@@ -29,6 +29,15 @@ type Request struct {
 	// teardown trigger live entirely in the CLI layer's OnRevealPID.
 	MountPaths []string `json:"mount_paths,omitempty"`
 	TargetPID  int32    `json:"target_pid,omitempty"`
+	// Swap selects "reveal_pid"'s compatibility-swap mode (the jit run
+	// default): instead of keeping the FIFO and gating reads by process
+	// tree, replace each mount with a regular comment-only pointer file for
+	// the run's lifetime, so a script's `[ -f ]`/is_file() guard passes and
+	// a re-read parses to nothing. False keeps the FIFO and uses the
+	// per-read ancestry grant (jit run --live), for tools that read real
+	// values from the file itself (docker compose env_file, etc.). Opaque
+	// to Server; the CLI layer's OnRevealPID interprets it.
+	Swap bool `json:"swap,omitempty"`
 	// Label is the caller's own description of what a "wrap"/"unwrap" is
 	// FOR — the vault path of the secret whose DEK is in Data ("stripe/
 	// live-key"), which the agent otherwise cannot know: it only ever sees
@@ -228,6 +237,11 @@ type MountRevealStatus struct {
 	// lifetime. In-memory like LastServe — a grant never survives the
 	// agent process, by design.
 	Grants []MountGrantStatus `json:"grants,omitempty"`
+	// Swapped is true while this mount is a compatibility pointer file
+	// (the jit run default) rather than the decoy FIFO — for the lifetime
+	// of the run(s) in Grants. A swapped mount isn't "served" in the FIFO
+	// sense; Revealed/LastServe don't apply while it's a plain file.
+	Swapped bool `json:"swapped,omitempty"`
 }
 
 // MountGrantStatus is one active run-scoped reveal grant as status reports
