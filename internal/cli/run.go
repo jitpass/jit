@@ -43,6 +43,12 @@ var runCmd = &cobra.Command{
 		"in (.env < .env.<m> < .env.local < .env.<m>.local); a mode layer is never\n" +
 		"merged without being asked for. --profile names one profile verbatim and\n" +
 		"disables merging entirely.\n\n" +
+		"When the agent is running and unlocked, jit run also grants the target's\n" +
+		"process tree a run-scoped reveal on the mounted files backing those same\n" +
+		"values: a script that re-reads its .env mid-run gets the real values it\n" +
+		"was launched with, while every other process still sees decoys, and the\n" +
+		"grant ends the moment the command exits. No agent, or a locked one,\n" +
+		"skips this silently — injection works exactly the same either way.\n\n" +
 		"The -- separating jit's own flags from the command is optional, jit stops\n" +
 		"reading its flags at the first non-flag argument, so `jit run npm start`\n" +
 		"works (jit's flags, if any, come before the command).",
