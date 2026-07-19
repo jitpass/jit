@@ -20,24 +20,17 @@ type Request struct {
 	// handed to OnReveal/OnStopMount.
 	MountPath     string `json:"mount_path,omitempty"`
 	RevealSeconds int64  `json:"reveal_seconds,omitempty"`
-	// MountPaths and TargetPID are "reveal_pid"'s arguments: serve real
-	// content on each of these mounts to TargetPID's process tree, for as
-	// long as that process lives (jit run sends its OWN pid right before
-	// execve, which keeps the pid — so this is the target command's pid,
-	// known exactly, not guessed). Opaque to Server, same as MountPath:
-	// what a grant means, how readers are matched to the tree, and every
-	// teardown trigger live entirely in the CLI layer's OnRevealPID.
-	MountPaths []string `json:"mount_paths,omitempty"`
-	TargetPID  int32    `json:"target_pid,omitempty"`
-	// Swap selects "reveal_pid"'s compatibility-swap mode (the jit run
-	// default): instead of keeping the FIFO and gating reads by process
-	// tree, replace each mount with a regular comment-only pointer file for
-	// the run's lifetime, so a script's `[ -f ]`/is_file() guard passes and
-	// a re-read parses to nothing. False keeps the FIFO and uses the
-	// per-read ancestry grant (jit run --live), for tools that read real
-	// values from the file itself (docker compose env_file, etc.). Opaque
-	// to Server; the CLI layer's OnRevealPID interprets it.
-	Swap bool `json:"swap,omitempty"`
+	// RunMounts and TargetPID are "reveal_pid"'s arguments: for TargetPID's
+	// process tree, for as long as that process lives (jit run sends its OWN
+	// pid right before execve, which keeps the pid — so this is the target
+	// command's pid, known exactly), treat each mount in the run's chosen
+	// per-mount MODE. One run can carry several modes at once — swap its
+	// .env while granting its .npmrc — which is why this is a list of
+	// {path, mode}, not a single flag. Opaque to Server: what a mode means,
+	// how readers are matched to the tree, and every teardown trigger live
+	// entirely in the CLI layer's OnRevealPID.
+	RunMounts []RunMount `json:"run_mounts,omitempty"`
+	TargetPID int32      `json:"target_pid,omitempty"`
 	// Label is the caller's own description of what a "wrap"/"unwrap" is
 	// FOR — the vault path of the secret whose DEK is in Data ("stripe/
 	// live-key"), which the agent otherwise cannot know: it only ever sees
@@ -49,6 +42,27 @@ type Request struct {
 	// the human decides by) or gate anything. Optional; empty is fine.
 	Label string `json:"label,omitempty"`
 }
+
+// RunMount is one mount's requested run-scoped treatment in a reveal_pid
+// request: which mount, and how jit run wants it handled for this run.
+// Mode is a string (not a bool) so the set can grow — swap, grant, and
+// later a disclosed global grant — without another protocol break.
+type RunMount struct {
+	Path string `json:"path"`
+	Mode string `json:"mode"`
+}
+
+// RunMount.Mode values.
+const (
+	// MountModeSwap replaces the mount with an inert compatibility file for
+	// the run (jit run default) — guards pass, re-reads set nothing, real
+	// values arrive via the injected environment.
+	MountModeSwap = "swap"
+	// MountModeGrant keeps the live mount and serves real content to the
+	// run's process tree, per read (jit run --live, and project template
+	// mounts like .npmrc that a tool reads from the file itself).
+	MountModeGrant = "grant"
+)
 
 const (
 	OpWrap      = "wrap"

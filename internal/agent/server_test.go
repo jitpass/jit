@@ -537,8 +537,10 @@ func TestServerRevealPIDCallsOnRevealPIDAndEnsuresUnlocked(t *testing.T) {
 	var gotPaths []string
 	var gotPID int32
 	var calls int32
-	s.OnRevealPID = func(mountPaths []string, pid int32, swap bool) error {
-		gotPaths = mountPaths
+	s.OnRevealPID = func(mounts []RunMount, pid int32) error {
+		for _, m := range mounts {
+			gotPaths = append(gotPaths, m.Path)
+		}
 		gotPID = pid
 		atomic.AddInt32(&calls, 1)
 		return nil
@@ -580,7 +582,7 @@ func TestServerRevealPIDRejectsMissingArguments(t *testing.T) {
 	socketPath := shortSocketPath(t)
 	newFetcher := func() MEKFetcher { return &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32)} }
 	s := NewServer(socketPath, newFetcher, time.Minute)
-	s.OnRevealPID = func([]string, int32, bool) error {
+	s.OnRevealPID = func([]RunMount, int32) error {
 		t.Error("OnRevealPID must not fire for a request missing mount_paths or target_pid")
 		return nil
 	}
@@ -609,7 +611,7 @@ func TestServerRevealPIDReturnsErrorFromCallback(t *testing.T) {
 	socketPath := shortSocketPath(t)
 	newFetcher := func() MEKFetcher { return &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32)} }
 	s := NewServer(socketPath, newFetcher, time.Minute)
-	s.OnRevealPID = func([]string, int32, bool) error { return fmt.Errorf("no such mount") }
+	s.OnRevealPID = func([]RunMount, int32) error { return fmt.Errorf("no such mount") }
 
 	if err := s.Listen(); err != nil {
 		t.Fatalf("Listen: %v", err)

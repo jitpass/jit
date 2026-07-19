@@ -32,12 +32,19 @@ func grantTestServer(t *testing.T) (*agent.Server, *agent.Client, *atomic.Value)
 	mek := bytes.Repeat([]byte{0x24}, 32)
 	server := agent.NewServer(socketPath, func() agent.MEKFetcher { return &fakeMEKFetcher{key: mek} }, time.Minute)
 
-	var recorded atomic.Value // stores struct{ paths []string; pid int32 }
-	server.OnRevealPID = func(mountPaths []string, pid int32, swap bool) error {
+	var recorded atomic.Value // stores struct{ paths []string; pid int32; mode string }
+	server.OnRevealPID = func(mounts []agent.RunMount, pid int32) error {
+		paths := make([]string, len(mounts))
+		mode := ""
+		for i, m := range mounts {
+			paths[i] = m.Path
+			mode = m.Mode
+		}
 		recorded.Store(struct {
 			paths []string
 			pid   int32
-		}{mountPaths, pid})
+			mode  string
+		}{paths, pid, mode})
 		return nil
 	}
 
@@ -65,12 +72,16 @@ func TestRequestRunGrantSendsLayerMountsAndOwnPID(t *testing.T) {
 	got, ok := recorded.Load().(struct {
 		paths []string
 		pid   int32
+		mode  string
 	})
 	if !ok {
 		t.Fatal("OnRevealPID never fired for an unlocked session")
 	}
 	if len(got.paths) != 2 || got.paths[0] != mounts[0] || got.paths[1] != mounts[1] || got.pid != 4242 {
 		t.Errorf("OnRevealPID got %v pid %d, want %v pid 4242", got.paths, got.pid, mounts)
+	}
+	if got.mode != agent.MountModeGrant {
+		t.Errorf("mode = %q, want grant (this test forces live=true)", got.mode)
 	}
 	if !strings.Contains(out.String(), ".env, .env.local serving real values to this run") {
 		t.Errorf("announce = %q, want the mounts named", out.String())
@@ -107,7 +118,7 @@ func TestRequestRunGrantSilentWhenAgentUnreachableOrRefusing(t *testing.T) {
 	// Refusing: OnRevealPID errors (e.g. nothing real to serve) — the run
 	// proceeds without a grant and without noise.
 	server, c, _ := grantTestServer(t)
-	server.OnRevealPID = func([]string, int32, bool) error {
+	server.OnRevealPID = func([]agent.RunMount, int32) error {
 		return errFixtureRefused
 	}
 	if _, _, err := c.Unlock(); err != nil {
@@ -127,14 +138,15 @@ func (e fixtureError) Error() string { return string(e) }
 const errFixtureRefused fixtureError = "no grant created: fixture refusal"
 
 func TestRequestRunCompatDefaultSwapsAndAutodetectsLive(t *testing.T) {
-	// Default (live=false): a SwapForPID request must arrive.
+	// Default (live=false): the run's mounts must arrive in swap mode.
 	server, c, _ := grantTestServer(t)
 	var swapPID atomic.Int32
-	var live atomic.Bool
-	live.Store(true) // will be flipped false when Swap arrives
-	server.OnRevealPID = func(paths []string, pid int32, swap bool) error {
+	var gotMode atomic.Value
+	server.OnRevealPID = func(mounts []agent.RunMount, pid int32) error {
 		swapPID.Store(pid)
-		live.Store(!swap)
+		if len(mounts) > 0 {
+			gotMode.Store(mounts[0].Mode)
+		}
 		return nil
 	}
 	if _, _, err := c.Unlock(); err != nil {
@@ -142,8 +154,8 @@ func TestRequestRunCompatDefaultSwapsAndAutodetectsLive(t *testing.T) {
 	}
 	var out bytes.Buffer
 	requestRunCompatVia(c, &out, []string{"/tmp/fixture/.env"}, 7777, false)
-	if swapPID.Load() != 7777 || live.Load() {
-		t.Errorf("default compat did not send a swap for the run pid (pid=%d live=%v)", swapPID.Load(), live.Load())
+	if swapPID.Load() != 7777 || gotMode.Load() != agent.MountModeSwap {
+		t.Errorf("default compat did not send a swap for the run pid (pid=%d mode=%v)", swapPID.Load(), gotMode.Load())
 	}
 	if !strings.Contains(out.String(), "compatibility file") {
 		t.Errorf("announce = %q, want the compatibility-file phrasing", out.String())

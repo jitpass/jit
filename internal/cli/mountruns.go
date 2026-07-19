@@ -7,11 +7,13 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"golang.org/x/sys/unix"
 
+	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/lineage"
 )
 
@@ -61,39 +63,113 @@ func (r attachMode) String() string {
 	return "grant"
 }
 
-// runAttachment is one jit run attached to a set of mounts in one mode.
-// startMicro is the target's fork-time stamp, recorded while jit run was
-// provably alive (mid-RPC) and re-checked before every use — stable across
-// execve (spike-verified), so a recycled pid can never inherit a dead run's
-// attachment. command is kernel-derived (never caller-reported), matching
-// SessionEvent.By's convention.
+// attachedMount is one mount within a run, with its own mode — a run can
+// swap its .env while granting its .npmrc, so mode lives per mount, not per
+// run.
+type attachedMount struct {
+	path string
+	mode attachMode
+}
+
+// runAttachment is one jit run attached to a set of mounts, each in its own
+// mode. startMicro is the target's fork-time stamp, recorded while jit run
+// was provably alive (mid-RPC) and re-checked before every use — stable
+// across execve (spike-verified), so a recycled pid can never inherit a dead
+// run's attachment. command is kernel-derived (never caller-reported),
+// matching SessionEvent.By's convention.
 type runAttachment struct {
 	pid        int32
 	startMicro int64
 	command    string
-	mode       attachMode
-	mounts     []string
+	mounts     []attachedMount
 	since      time.Time
 	hardCap    time.Time
 }
 
-// revealForPID is OnRevealPID's handler (the agent RPC jit run sends right
-// before execve), dispatching on the mode jit run asked for: swap replaces
-// each mount with a compatibility pointer file (the default — swapForPID in
-// mountswap.go), grant keeps the FIFO and gates reads by process tree (jit
-// run --live — grantForPID in mountgrants.go). Both register into the one
-// run registry and share this file's teardown.
-func (m *mountManager) revealForPID(mountPaths []string, pid int32, swap bool) error {
-	if swap {
-		return m.swapForPID(mountPaths, pid)
+// grantMountCount is how many of att's mounts are grant-mode — what
+// grantModeRuns (the read path's fast-path counter) is a running sum of.
+func (att *runAttachment) grantMountCount() int {
+	n := 0
+	for _, am := range att.mounts {
+		if am.mode == attachGrant {
+			n++
+		}
 	}
-	return m.grantForPID(mountPaths, pid)
+	return n
+}
+
+// revealForPID is OnRevealPID's handler (the agent RPC jit run sends right
+// before execve). It builds ONE attachment covering every mount the run
+// asked for, each in its requested mode — swap (compatibility file) or
+// grant (keep the FIFO, gate reads by process tree) — so a single run can
+// mix modes. Mounts that can't be attached are skipped with a logged
+// reason; the RPC fails only when NONE could be attached.
+func (m *mountManager) revealForPID(mounts []agent.RunMount, pid int32) error {
+	att, ok := m.newRunAttachment(pid)
+	if !ok {
+		return fmt.Errorf("reveal_pid: target pid %d not found", pid)
+	}
+
+	var grantPaths, swapPaths []string
+	for _, rm := range mounts {
+		switch rm.Mode {
+		case agent.MountModeSwap:
+			swapPaths = append(swapPaths, rm.Path)
+		case agent.MountModeGrant:
+			grantPaths = append(grantPaths, rm.Path)
+		default:
+			fmt.Fprintf(m.stderr, "jit agent: reveal_pid: unknown mode %q for %s, skipped\n", rm.Mode, rm.Path)
+		}
+	}
+
+	var problems []string
+	// Grant mounts first — no swapMu needed, they keep their FIFO.
+	for _, path := range grantPaths {
+		if err := m.validateGrantMount(path); err != nil {
+			problems = append(problems, err.Error())
+			continue
+		}
+		att.mounts = append(att.mounts, attachedMount{path: path, mode: attachGrant})
+		fmt.Fprintf(m.stdout, "jit agent: mount %s: serving real content to pid %d's process tree (%s) until it exits\n", path, pid, att.command)
+	}
+
+	// Swap mounts under swapMu, held through registerRun so the
+	// check-and-swap refcount stays atomic with registration.
+	m.swapMu.Lock()
+	for _, path := range swapPaths {
+		entry, ok := m.registryEntryForPath(path)
+		if !ok {
+			problems = append(problems, fmt.Sprintf("no such mount: %s", path))
+			continue
+		}
+		m.runsMu.Lock()
+		already := m.mountSwapHeldByOtherLocked(path, pid)
+		m.runsMu.Unlock()
+		if !already {
+			if err := m.performSwapIn(path, entry); err != nil {
+				problems = append(problems, fmt.Sprintf("%s: %v", path, err))
+				continue
+			}
+		}
+		att.mounts = append(att.mounts, attachedMount{path: path, mode: attachSwap})
+		fmt.Fprintf(m.stdout, "jit agent: mount %s: swapped to a compatibility file for pid %d's run (%s) until it exits\n", path, pid, att.command)
+	}
+	for _, p := range problems {
+		fmt.Fprintf(m.stderr, "jit agent: reveal_pid skipped: %s\n", p)
+	}
+	if len(att.mounts) == 0 {
+		m.swapMu.Unlock()
+		return fmt.Errorf("reveal_pid: nothing attached: %s", strings.Join(problems, "; "))
+	}
+	m.registerRun(att)
+	m.swapMu.Unlock()
+	return nil
 }
 
 // newRunAttachment resolves the kernel facts an attachment needs. ok is
 // false when the target pid can't be seen (already gone) — the caller turns
 // that into the RPC's own failure.
-func (m *mountManager) newRunAttachment(pid int32, mode attachMode) (*runAttachment, bool) {
+func (m *mountManager) newRunAttachment(pid int32) (*runAttachment, bool) {
 	startMicro, ok := m.grantStart(pid)
 	if !ok {
 		return nil, false
@@ -103,39 +179,37 @@ func (m *mountManager) newRunAttachment(pid int32, mode attachMode) (*runAttachm
 		command = p.Command()
 	}
 	now := time.Now()
-	return &runAttachment{pid: pid, startMicro: startMicro, command: command, mode: mode, since: now, hardCap: now.Add(runHardCap)}, true
+	return &runAttachment{pid: pid, startMicro: startMicro, command: command, since: now, hardCap: now.Add(runHardCap)}, true
 }
 
 // registerRun records att in the registry (replacing any prior attachment
 // for the same pid) and keeps grantModeRuns — the read path's fast-path
-// counter — in step. Returns after arming the exit watcher.
+// counter, a running sum of active grant-mode mounts — in step. Returns
+// after arming the exit watcher.
 func (m *mountManager) registerRun(att *runAttachment) {
 	m.runsMu.Lock()
 	if m.runs == nil {
 		m.runs = map[int32]*runAttachment{}
 	}
-	prev := m.runs[att.pid]
-	if prev != nil && prev.mode == attachGrant {
-		atomic.AddInt32(&m.grantModeRuns, -1)
+	if prev := m.runs[att.pid]; prev != nil {
+		atomic.AddInt32(&m.grantModeRuns, int32(-prev.grantMountCount()))
 	}
-	if att.mode == attachGrant {
-		atomic.AddInt32(&m.grantModeRuns, 1)
-	}
+	atomic.AddInt32(&m.grantModeRuns, int32(att.grantMountCount()))
 	m.runs[att.pid] = att
 	m.runsMu.Unlock()
 	m.watchRunPID(att.pid)
 }
 
-// mountSwapHeldByOther reports whether any run OTHER than exceptPID holds
-// path swapped — the refcount check that keeps the FIFO out until the last
-// swapping run exits. Caller holds runsMu.
+// mountSwapHeldByOtherLocked reports whether any run OTHER than exceptPID
+// holds path swapped — the refcount check that keeps the FIFO out until the
+// last swapping run exits. Caller holds runsMu.
 func (m *mountManager) mountSwapHeldByOtherLocked(path string, exceptPID int32) bool {
 	for pid, att := range m.runs {
-		if pid == exceptPID || att.mode != attachSwap {
+		if pid == exceptPID {
 			continue
 		}
-		for _, p := range att.mounts {
-			if p == path {
+		for _, am := range att.mounts {
+			if am.mode == attachSwap && am.path == path {
 				return true
 			}
 		}
@@ -145,9 +219,9 @@ func (m *mountManager) mountSwapHeldByOtherLocked(path string, exceptPID int32) 
 
 // onRunExit is the single teardown for a finished (or vanished) run pid,
 // shared by the NOTE_EXIT watcher and the already-exited registration
-// path: drop the attachment, and for a swap restore the FIFO of every
-// mount no other run still holds swapped. Grant teardown is just the
-// registry removal — the gate stops authorizing the instant the
+// path: drop the attachment, restore the FIFO of every swap-mount no other
+// run still holds swapped, and log every grant-mount ending. Grant teardown
+// is just the registry removal — the gate stops authorizing the instant the
 // attachment is gone.
 func (m *mountManager) onRunExit(pid int32, why string) {
 	m.runsMu.Lock()
@@ -157,15 +231,16 @@ func (m *mountManager) onRunExit(pid int32, why string) {
 		return
 	}
 	delete(m.runs, pid)
-	if att.mode == attachGrant {
-		atomic.AddInt32(&m.grantModeRuns, -1)
-	}
-	var toRestore []string
-	if att.mode == attachSwap {
-		for _, path := range att.mounts {
-			if !m.mountSwapHeldByOtherLocked(path, pid) {
-				toRestore = append(toRestore, path)
+	atomic.AddInt32(&m.grantModeRuns, int32(-att.grantMountCount()))
+	var toRestore, endedGrants []string
+	for _, am := range att.mounts {
+		switch am.mode {
+		case attachSwap:
+			if !m.mountSwapHeldByOtherLocked(am.path, pid) {
+				toRestore = append(toRestore, am.path)
 			}
+		case attachGrant:
+			endedGrants = append(endedGrants, am.path)
 		}
 	}
 	m.runsMu.Unlock()
@@ -173,10 +248,8 @@ func (m *mountManager) onRunExit(pid int32, why string) {
 	for _, path := range toRestore {
 		m.restoreSwappedMount(path, why)
 	}
-	if att.mode == attachGrant {
-		for _, path := range att.mounts {
-			fmt.Fprintf(m.stdout, "jit agent: mount %s: run-scoped grant for pid %d ended (%s)\n", path, pid, why)
-		}
+	for _, path := range endedGrants {
+		fmt.Fprintf(m.stdout, "jit agent: mount %s: run-scoped grant for pid %d ended (%s)\n", path, pid, why)
 	}
 }
 
@@ -190,13 +263,13 @@ func (m *mountManager) clearAllRuns() {
 	grants, swaps := 0, 0
 	restore := map[string]bool{}
 	for _, att := range m.runs {
-		if att.mode == attachSwap {
-			swaps++
-			for _, p := range att.mounts {
-				restore[p] = true
+		for _, am := range att.mounts {
+			if am.mode == attachSwap {
+				swaps++
+				restore[am.path] = true
+			} else {
+				grants++
 			}
-		} else {
-			grants++
 		}
 	}
 	m.runs = nil
@@ -262,8 +335,8 @@ func (m *mountManager) runStatusesByPath() map[string][]runHolder {
 	defer m.runsMu.Unlock()
 	out := map[string][]runHolder{}
 	for pid, att := range m.runs {
-		for _, path := range att.mounts {
-			out[path] = append(out[path], runHolder{pid: pid, command: att.command, since: att.since, mode: att.mode})
+		for _, am := range att.mounts {
+			out[am.path] = append(out[am.path], runHolder{pid: pid, command: att.command, since: att.since, mode: am.mode})
 		}
 	}
 	return out
@@ -278,12 +351,9 @@ func (m *mountManager) grantRootsForPath(path string) []int32 {
 	var roots []int32
 	var deadPIDs []int32
 	for pid, att := range m.runs {
-		if att.mode != attachGrant {
-			continue
-		}
 		covers := false
-		for _, p := range att.mounts {
-			if p == path {
+		for _, am := range att.mounts {
+			if am.mode == attachGrant && am.path == path {
 				covers = true
 				break
 			}
