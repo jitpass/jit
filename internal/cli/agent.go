@@ -1037,12 +1037,25 @@ func printMountStatuses(w io.Writer, mounts []agent.MountRevealStatus) {
 		default:
 			fmt.Fprintf(w, "  • %s, not revealed\n", path)
 		}
+		for _, g := range m.Grants {
+			// A live run-scoped grant is the narrow counterpart of the
+			// revealed line above it: real values, but only to one run's
+			// process tree, only while that run lives.
+			cmd := g.Command
+			if cmd == "" {
+				cmd = "unknown command"
+			}
+			fmt.Fprintf(w, "      serving real values to jit run pid %d (%s) since %s ago, until it exits\n", g.PID, cmd, humanAgo(time.Since(time.Unix(g.SinceUnix, 0))))
+		}
 		if ls := m.LastServe; ls != nil {
 			reader := describeReader(ls)
 			ago := humanAgo(time.Since(time.Unix(ls.UnixTime, 0)))
-			if ls.Decoy {
+			switch {
+			case ls.Decoy:
 				_, _ = color.New(color.FgYellow).Fprintf(w, "      read %s ago by %s: decoy values, if that was your app, reveal and retry: jit agent reveal %s\n", ago, reader, path)
-			} else {
+			case ls.GrantServed:
+				fmt.Fprintf(w, "      read %s ago by %s: real values (run-scoped grant)\n", ago, reader)
+			default:
 				fmt.Fprintf(w, "      read %s ago by %s: real values\n", ago, reader)
 			}
 			if m.ReadsLastMinute >= readStormThreshold {

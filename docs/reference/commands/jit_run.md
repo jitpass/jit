@@ -18,6 +18,13 @@ in (.env < .env.<m> < .env.local < .env.<m>.local); a mode layer is never
 merged without being asked for. --profile names one profile verbatim and
 disables merging entirely.
 
+When the agent is running and unlocked, jit run also grants the target's
+process tree a run-scoped reveal on the mounted files backing those same
+values: a script that re-reads its .env mid-run gets the real values it
+was launched with, while every other process still sees decoys, and the
+grant ends the moment the command exits. No agent, or a locked one,
+skips this silently — injection works exactly the same either way.
+
 The -- separating jit's own flags from the command is optional, jit stops
 reading its flags at the first non-flag argument, so `jit run npm start`
 works (jit's flags, if any, come before the command).
