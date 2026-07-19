@@ -70,6 +70,31 @@ You rarely think about either mode. If you want the full picture of when to
 reach for what, see [Which command delivers a secret](../getting-started/delivering-secrets.md),
 and [live-mounted files](./mounts.md) for how the mount itself behaves.
 
+## Granting a machine-global credential file (`--with`)
+
+Some tools read a single machine-wide credential *file* rather than a
+project's `.env`: Google's application-default credentials (read by `gcloud`,
+`terraform`, and Google SDKs), the SOPS age key, the global `~/.npmrc`. After
+`jit migrate home` vaults one of these, grant it to a run by naming it:
+
+```
+$ jit run --with gcp -- terraform apply
+```
+
+`--with gcp|sops|npm` is explicit intent by design. A machine-global
+credential is never granted by a project's config or by which directory you
+run from, only by a `--with` you type, and every grant prompts a fresh Touch
+ID that names the credential (even when the vault is already unlocked). The
+real values reach only that run's process tree and the grant ends when the run
+exits. An unknown name, or one whose mount isn't migrated, fails loudly rather
+than silently serving a decoy.
+
+To keep typing the tool directly, grant-wrap it once with
+[`jit wrap add <tool> --grant <name>`](../wrap/index.md); the shim runs
+`jit run --with` for you. See
+[Which command delivers a secret](../getting-started/delivering-secrets.md)
+for when to reach for `--with` versus `--profile` or `jit wrap`.
+
 ## Where else `jit run` shows up
 
 Migrated [MCP configs](../migrate/mcp.md) launch their servers through
