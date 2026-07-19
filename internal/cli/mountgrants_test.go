@@ -53,7 +53,7 @@ func TestRevealForPIDCreatesGrantOnServedMountWithRealContent(t *testing.T) {
 	sm := newTestServedMount()
 	m := newGrantTestManager(sm)
 
-	if err := m.revealForPID([]string{"/tmp/fixture/.env"}, 100); err != nil {
+	if err := m.grantForPID([]string{"/tmp/fixture/.env"}, 100); err != nil {
 		t.Fatalf("revealForPID: %v", err)
 	}
 	sm.mu.Lock()
@@ -71,7 +71,7 @@ func TestRevealForPIDReplacesExistingGrantForSamePID(t *testing.T) {
 	sm.grants = []mountGrant{grantFor(100, 555)} // stale stamp from an earlier (hypothetical) run
 	m := newGrantTestManager(sm)
 
-	if err := m.revealForPID([]string{"/tmp/fixture/.env"}, 100); err != nil {
+	if err := m.grantForPID([]string{"/tmp/fixture/.env"}, 100); err != nil {
 		t.Fatalf("revealForPID: %v", err)
 	}
 	sm.mu.Lock()
@@ -94,7 +94,7 @@ func TestRevealForPIDRefusedWithNothingRealToServe(t *testing.T) {
 	sm.lastResolveErr = "resolving API_KEY (fixture/MISSING): secret not found"
 	m := newGrantTestManager(sm)
 
-	err := m.revealForPID([]string{"/tmp/fixture/.env"}, 100)
+	err := m.grantForPID([]string{"/tmp/fixture/.env"}, 100)
 	if err == nil {
 		t.Fatal("expected an error granting on a mount with nothing real to serve")
 	}
@@ -112,10 +112,10 @@ func TestRevealForPIDUnknownMountAndDeadTargetFail(t *testing.T) {
 	sm := newTestServedMount()
 	m := newGrantTestManager(sm)
 
-	if err := m.revealForPID([]string{"/tmp/fixture/other.env"}, 100); err == nil {
+	if err := m.grantForPID([]string{"/tmp/fixture/other.env"}, 100); err == nil {
 		t.Error("expected an error for an unserved mount path")
 	}
-	if err := m.revealForPID([]string{"/tmp/fixture/.env"}, 999); err == nil {
+	if err := m.grantForPID([]string{"/tmp/fixture/.env"}, 999); err == nil {
 		t.Error("expected an error for a target pid the kernel can't see")
 	}
 }
@@ -128,7 +128,7 @@ func TestRevealForPIDPartialGrantSucceeds(t *testing.T) {
 	sm := newTestServedMount()
 	m := newGrantTestManager(sm)
 
-	if err := m.revealForPID([]string{"/tmp/fixture/.env", "/tmp/fixture/gone.env"}, 100); err != nil {
+	if err := m.grantForPID([]string{"/tmp/fixture/.env", "/tmp/fixture/gone.env"}, 100); err != nil {
 		t.Fatalf("revealForPID with one grantable mount: %v", err)
 	}
 	sm.mu.Lock()
