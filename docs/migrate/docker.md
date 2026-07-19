@@ -71,10 +71,14 @@ plaintext; `docker logout <registry>` clears it).
   `~/.docker/config.json` and invokes the same helper - covered
   automatically.
 - **`.env` files and `env_file:`**: compose interpolation is the [.env
-  migration](./env-files.md)'s territory. Shell environment wins over
-  `.env` in compose's precedence, so
-  `jit run --profile <p> -- docker compose up` injects the real values
-  over the masked mount.
+  migration](./env-files.md)'s territory. For `${VAR}` interpolation in
+  `compose.yml`, shell environment wins over `.env` in compose's precedence,
+  so `jit run -- docker compose up` injects the real values over the masked
+  mount. For an `env_file:` that compose reads *from disk* into containers,
+  `jit run` auto-detects the `docker`/`docker-compose`/`podman` command and
+  keeps the live file serving real values to that run (the same as
+  [`--live`](../run/index.md#reading-the-file-itself-during-a-run)); a
+  compose-only project can pin `read_as_file: true` in `.jit/config.yaml`.
 - **`secrets:` with a `file:` source**: compose mounts that file into the
   container at `/run/secrets/<name>`. Point the `file:` at a jit-managed
   path (an [.env-style mount](./env-files.md) or any vaulted file) and

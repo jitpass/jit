@@ -60,10 +60,11 @@ then **[Install](./getting-started/install.md)** →
 
 ## Use secrets - `jit run` & profiles
 
-- [Run a command with secrets](./run/index.md) - layer merging, modes, `--profile`
+- [Which command delivers a secret](./getting-started/choosing.md) - when to use `jit wrap`, `jit run`, `jit run --profile`, and `read_as_file`
+- [Run a command with secrets](./run/index.md) - layer merging, modes, `--profile`, the compatibility swap and `--live`
 - [Profiles](./run/profiles.md) - the manifest mapping variables to vault paths
 - [Shell exports](./run/export.md) - `eval "$(jit export)"`
-- [Live-mounted files](./run/mounts.md) - decoys, reveal windows, and reading values safely
+- [Live-mounted files](./run/mounts.md) - decoys, reveal windows, the compatibility swap, and reading values safely
 
 ## The vault
 
