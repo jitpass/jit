@@ -47,6 +47,29 @@ $ jit run --profile aws-admin -- terraform plan
 `jit run` replaces its own process with your command (`execve`); jit itself
 is gone from memory the instant your command starts.
 
+## Reading the file itself during a run
+
+A migrated `.env` is a live mount (a named pipe), not a regular file. For the
+lifetime of a `jit run`, jit makes that mount compatible with whatever your
+command does with it, automatically:
+
+- **By default it swaps in a plain, inert file.** `[ -f .env ]` /
+  `Path.is_file()` guards pass, and a script that re-reads the file with
+  `source` or a dotenv loader sets nothing (the real values are already in
+  the environment). The mount returns to its protected state the instant the
+  command exits. This fits shell scripts, dotenv loaders, and anything that
+  reads its config from the environment.
+- **`--live` keeps the live mount and serves real values through the file**,
+  for a tool that reads values *from the file itself* — `docker compose` with
+  `env_file:` is the canonical case. jit auto-detects the common ones
+  (`docker`, `docker-compose`, `podman`), and a project that always reads the
+  file can pin this with `read_as_file: true` in its `.jit/config.yaml`
+  instead of typing `--live`.
+
+You rarely think about either mode. If you want the full picture of when to
+reach for what, see [Which command delivers a secret](../getting-started/choosing.md),
+and [live-mounted files](./mounts.md) for how the mount itself behaves.
+
 ## Where else `jit run` shows up
 
 Migrated [MCP configs](../migrate/mcp.md) launch their servers through

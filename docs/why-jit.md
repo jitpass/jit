@@ -84,8 +84,10 @@ reversible.
 ## 3. Decoys by default, real values on a timer
 
 A migrated `.env` becomes a live file that serves `jit-hidden-...` decoy values
-by default. The real values appear only inside a short reveal window that you
-open on purpose, then they vanish on their own.
+by default. Real values appear only when you ask - inside a short reveal window
+you open on purpose, or for the lifetime of a `jit run` (which delivers them
+through the process environment and hands the file itself only to that run) -
+and the file goes back to decoys the moment you're done.
 
 **Why it matters:** a backup tool, a file indexer, an infostealer, or an
 over-eager agent that reads the file at the wrong moment gets a decoy, not your

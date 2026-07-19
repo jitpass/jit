@@ -38,7 +38,12 @@ Secrets materialize at the moment of use and nowhere else:
   into exactly one process's environment, then `execve` - jit's own process
   image is replaced, so jit is gone from memory when your command runs.
 - [Live mounts](../run/mounts.md) are named pipes: nothing is on disk, and
-  reads outside a revealed window get decoy values, not secrets.
+  reads outside a revealed window get decoy values, not secrets. Under
+  `jit run` the mount is either swapped for an inert comment-only file (the
+  default - real values reach the command through the environment, never the
+  file) or, with `--live`, kept as a pipe that serves real values only to
+  that run's own process tree. Neither writes a secret to disk, and both
+  end the instant the command exits.
 - Credential-helper fetches ([AWS](../migrate/aws.md),
   [Kubernetes](../migrate/kubernetes.md),
   [Terraform](../migrate/terraform.md)) hand the credential to the
@@ -78,9 +83,12 @@ compromised user account safe. The boundaries worth knowing:
 - **Git history is never rewritten.** A migrated file that was ever
   committed still has its old value in `git log -p`; `migrate` warns, and
   the fix is rotating that credential.
-- **During a revealed window, a mount serves real values to readers.**
-  The window is short, attributed, and observable (`jit agent status`),
-  but it is a window.
+- **While real values are available, a mount serves them to readers.**
+  That happens during a revealed window (short, attributed, observable via
+  `jit agent status`), and under a `jit run --live` grant (scoped to that
+  run's process tree, for its lifetime, per-read by process ancestry). The
+  ancestry check narrows a grant; it is never the security boundary on its
+  own - the boundary is the grant, issued only to a run the user authorized.
 
 Each published review carries a "known, accepted limitations" list that
 states these boundaries precisely as of that review -

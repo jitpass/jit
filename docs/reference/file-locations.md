@@ -13,6 +13,7 @@ description: Where the vault, profiles, shims, and rewritten config files live o
 | macOS login Keychain | the vault's master encryption key (Touch ID/passcode gated) |
 | `~/.jit/profiles/` | global [profile](../run/profiles.md) manifests (machine-wide migrations, `wrap-<tool>` profiles) |
 | `<project>/.jit/profiles/` | project profile manifests - names and vault paths only, safe to commit |
+| `<project>/.jit/config.yaml` | optional per-project settings, currently `read_as_file: true` to pin [`jit run`](../run/index.md) to live mode - safe to commit |
 | `~/.jit/shims/` | PATH shims installed by [`jit wrap`](../wrap/index.md) |
 
 ## Files jit rewrites (never owns)
