@@ -32,6 +32,12 @@ A project whose tools always read the file itself can pin live mode by
 putting `read_as_file: true` in its .jit/config.yaml, instead of --live
 on every run.
 
+--with names a global, file-delivered credential to grant this run — gcp
+(gcloud ADC), sops, or npm (~/.npmrc) — for a tool that reads a
+machine-wide credential file, e.g. `jit run --with gcp terraform apply`.
+It takes explicit intent by design: a global credential is never
+granted by a project's config, only by a --with you type.
+
 The -- separating jit's own flags from the command is optional, jit stops
 reading its flags at the first non-flag argument, so `jit run npm start`
 works (jit's flags, if any, come before the command).
@@ -51,9 +57,10 @@ jit run [--profile <name>] [--mode <mode>] [--] <command> [args...] [flags]
 ### Options
 
 ```
-      --live             keep the live mount and grant this run real file reads, for tools that read values from the .env file itself (docker compose env_file); default swaps in a compatibility file
-      --mode string      also merge .env.<mode> and .env.<mode>.local layers (e.g. production)
-      --profile string   profile to inject verbatim (default: merge this project's migrated .env layers)
+      --live                                        keep the live mount and grant this run real file reads, for tools that read values from the .env file itself (docker compose env_file); default swaps in a compatibility file
+      --mode string                                 also merge .env.<mode> and .env.<mode>.local layers (e.g. production)
+      --profile string                              profile to inject verbatim (default: merge this project's migrated .env layers)
+      --with jit run --with gcp gcloud storage ls   also grant this run a global file-delivered mount by name (gcp, sops, npm) - for tools that read a machine-wide credential file, e.g. jit run --with gcp gcloud storage ls (repeatable)
 ```
 
 ### SEE ALSO
