@@ -28,7 +28,7 @@ run: by default it swaps in a plain, inert file so `[ -f .env ]` guards pass
 and re-reads set nothing (values come from the injected environment), and
 `--live` keeps the live file for tools that read values from it directly
 (`docker compose` with `env_file:`). You don't configure any of this; see
-[Which command delivers a secret](../getting-started/choosing.md).
+[Which command delivers a secret](../getting-started/delivering-secrets.md).
 
 For running *outside* `jit run` — a direnv or npm project you enter by `cd`
 or `npm run dev` — `jit migrate` also wires an automatic reveal into your
