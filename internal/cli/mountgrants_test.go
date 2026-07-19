@@ -18,10 +18,9 @@ import (
 // newGrantTestManager is a mountManager with the grant gate's kernel
 // lookups faked and the kqueue exit watcher disabled (grantKq = -1, the
 // same "permanently unavailable" state a real Kqueue() failure leaves —
-// the gate's per-use liveness check is the correctness path either way).
+// pruneStaleRuns' liveness check is the correctness path either way).
 // Defaults describe the happy path: one live target (pid 100, start stamp
-// 1000), holders all in-tree; individual tests override the fields they
-// exercise.
+// 1000), holders all in-tree; individual tests override what they exercise.
 func newGrantTestManager(sm *servedMount) *mountManager {
 	m := &mountManager{
 		stdout:  &bytes.Buffer{},
@@ -44,51 +43,47 @@ func newGrantTestManager(sm *servedMount) *mountManager {
 	return m
 }
 
-func grantFor(pid int32, startMicro int64) mountGrant {
-	now := time.Now()
-	return mountGrant{pid: pid, startMicro: startMicro, since: now, hardCap: now.Add(grantHardCap)}
+// installGrant registers a grant attachment for pid covering path directly
+// in the registry — the same state grantForPID would leave, without needing
+// a real served mount with resolved content.
+func installGrant(m *mountManager, path string, pid int32, startMicro int64) {
+	m.runsMu.Lock()
+	if m.runs == nil {
+		m.runs = map[int32]*runAttachment{}
+	}
+	m.runs[pid] = &runAttachment{
+		pid: pid, startMicro: startMicro, mode: attachGrant,
+		mounts: []string{path}, since: time.Now(), hardCap: time.Now().Add(runHardCap),
+	}
+	m.runsMu.Unlock()
+	atomic.AddInt32(&m.grantModeRuns, 1)
 }
 
-func TestRevealForPIDCreatesGrantOnServedMountWithRealContent(t *testing.T) {
+func TestGrantForPIDRegistersAttachment(t *testing.T) {
 	sm := newTestServedMount()
 	m := newGrantTestManager(sm)
 
 	if err := m.grantForPID([]string{"/tmp/fixture/.env"}, 100); err != nil {
-		t.Fatalf("revealForPID: %v", err)
+		t.Fatalf("grantForPID: %v", err)
 	}
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	if len(sm.grants) != 1 {
-		t.Fatalf("grants = %d, want 1", len(sm.grants))
+	m.runsMu.Lock()
+	defer m.runsMu.Unlock()
+	att, ok := m.runs[100]
+	if !ok {
+		t.Fatal("no run attachment registered for pid 100")
 	}
-	if sm.grants[0].pid != 100 || sm.grants[0].startMicro != 1000 {
-		t.Errorf("grant = pid %d start %d, want pid 100 start 1000", sm.grants[0].pid, sm.grants[0].startMicro)
+	if att.mode != attachGrant || att.startMicro != 1000 || len(att.mounts) != 1 {
+		t.Errorf("attachment = %+v, want a grant for start 1000 on one mount", att)
 	}
-}
-
-func TestRevealForPIDReplacesExistingGrantForSamePID(t *testing.T) {
-	sm := newTestServedMount()
-	sm.grants = []mountGrant{grantFor(100, 555)} // stale stamp from an earlier (hypothetical) run
-	m := newGrantTestManager(sm)
-
-	if err := m.grantForPID([]string{"/tmp/fixture/.env"}, 100); err != nil {
-		t.Fatalf("revealForPID: %v", err)
-	}
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	if len(sm.grants) != 1 {
-		t.Fatalf("grants = %d, want 1 (replaced, not appended)", len(sm.grants))
-	}
-	if sm.grants[0].startMicro != 1000 {
-		t.Errorf("grant startMicro = %d, want the fresh 1000", sm.grants[0].startMicro)
+	if atomic.LoadInt32(&m.grantModeRuns) != 1 {
+		t.Errorf("grantModeRuns = %d, want 1", m.grantModeRuns)
 	}
 }
 
-// TestRevealForPIDRefusedWithNothingRealToServe mirrors revealMount's
-// GAPS.md #46 honesty rule at the grant level: a grant that could only
-// ever authorize decoys must be refused, with the resolve error carried in
-// the refusal.
-func TestRevealForPIDRefusedWithNothingRealToServe(t *testing.T) {
+// TestGrantForPIDRefusedWithNothingRealToServe mirrors revealMount's
+// GAPS.md #46 honesty rule: a grant that could only ever authorize decoys
+// must be refused, with the resolve error carried in the refusal.
+func TestGrantForPIDRefusedWithNothingRealToServe(t *testing.T) {
 	sm := newTestServedMount()
 	sm.real = nil
 	sm.lastResolveErr = "resolving API_KEY (fixture/MISSING): secret not found"
@@ -101,14 +96,14 @@ func TestRevealForPIDRefusedWithNothingRealToServe(t *testing.T) {
 	if !strings.Contains(err.Error(), "secret not found") {
 		t.Errorf("error %q should carry the recorded resolve failure", err)
 	}
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	if len(sm.grants) != 0 {
-		t.Errorf("grants = %d, want 0 after refusal", len(sm.grants))
+	m.runsMu.Lock()
+	defer m.runsMu.Unlock()
+	if len(m.runs) != 0 {
+		t.Errorf("runs = %d, want 0 after refusal", len(m.runs))
 	}
 }
 
-func TestRevealForPIDUnknownMountAndDeadTargetFail(t *testing.T) {
+func TestGrantForPIDUnknownMountAndDeadTargetFail(t *testing.T) {
 	sm := newTestServedMount()
 	m := newGrantTestManager(sm)
 
@@ -120,32 +115,14 @@ func TestRevealForPIDUnknownMountAndDeadTargetFail(t *testing.T) {
 	}
 }
 
-// TestRevealForPIDPartialGrantSucceeds: one grantable mount plus one
-// unknown must create the grant and succeed — jit run sends every merged
-// layer, and one broken layer shouldn't strip the working ones of their
-// grant (the skipped one is logged agent-side).
-func TestRevealForPIDPartialGrantSucceeds(t *testing.T) {
-	sm := newTestServedMount()
-	m := newGrantTestManager(sm)
-
-	if err := m.grantForPID([]string{"/tmp/fixture/.env", "/tmp/fixture/gone.env"}, 100); err != nil {
-		t.Fatalf("revealForPID with one grantable mount: %v", err)
-	}
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	if len(sm.grants) != 1 {
-		t.Errorf("grants = %d, want 1", len(sm.grants))
-	}
-}
-
-func TestGrantGateServesRealToInTreeHolders(t *testing.T) {
+func TestServeContentServesRealToInTreeHolders(t *testing.T) {
 	sm := newTestServedMount()
 	sm.decoy = []byte("decoy")
-	sm.grants = []mountGrant{grantFor(100, 1000)}
 	m := newGrantTestManager(sm)
+	installGrant(m, "/tmp/fixture/.env", 100, 1000)
 
-	if got := m.provideMountContent("/tmp/fixture/.env", sm); string(got) != "API_KEY=real\n" {
-		t.Fatalf("provideMountContent = %q, want real content for an all-in-tree holder set", got)
+	if got := m.serveContent("/tmp/fixture/.env", sm); string(got) != "API_KEY=real\n" {
+		t.Fatalf("serveContent = %q, want real content for an all-in-tree holder set", got)
 	}
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -154,18 +131,17 @@ func TestGrantGateServesRealToInTreeHolders(t *testing.T) {
 	}
 }
 
-func TestGrantGateFailsClosedOnStrangerHolder(t *testing.T) {
+func TestServeContentFailsClosedOnStrangerHolder(t *testing.T) {
 	sm := newTestServedMount()
 	sm.decoy = []byte("decoy")
-	sm.grants = []mountGrant{grantFor(100, 1000)}
 	m := newGrantTestManager(sm)
-	// Two holders attached at one rendezvous: one in-tree (200), one
-	// stranger (666) — the spike's mixed-concurrent scenario.
+	installGrant(m, "/tmp/fixture/.env", 100, 1000)
+	// Two holders at one rendezvous: one in-tree (200), one stranger (666).
 	m.grantHoldersFn = func(string) ([]int32, bool) { return []int32{200, 666}, true }
 	m.grantAncestryFn = func(pid, root int32) bool { return pid == 200 && root == 100 }
 
-	if got := m.provideMountContent("/tmp/fixture/.env", sm); string(got) != "decoy" {
-		t.Fatalf("provideMountContent = %q, want decoy when any holder is out-of-tree", got)
+	if got := m.serveContent("/tmp/fixture/.env", sm); string(got) != "decoy" {
+		t.Fatalf("serveContent = %q, want decoy when any holder is out-of-tree", got)
 	}
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -174,77 +150,77 @@ func TestGrantGateFailsClosedOnStrangerHolder(t *testing.T) {
 	}
 }
 
-func TestGrantGateFailsClosedOnScanUncertaintyAndZeroHolders(t *testing.T) {
+func TestServeContentFailsClosedOnScanUncertaintyAndZeroHolders(t *testing.T) {
 	sm := newTestServedMount()
 	sm.decoy = []byte("decoy")
-	sm.grants = []mountGrant{grantFor(100, 1000)}
 	m := newGrantTestManager(sm)
+	installGrant(m, "/tmp/fixture/.env", 100, 1000)
 
 	m.grantHoldersFn = func(string) ([]int32, bool) { return []int32{200}, false } // truncated scan
-	if got := m.provideMountContent("/tmp/fixture/.env", sm); string(got) != "decoy" {
-		t.Errorf("provideMountContent = %q, want decoy on an untrustworthy holder scan", got)
+	if got := m.serveContent("/tmp/fixture/.env", sm); string(got) != "decoy" {
+		t.Errorf("serveContent = %q, want decoy on an untrustworthy holder scan", got)
 	}
 
 	m.grantHoldersFn = func(string) ([]int32, bool) { return nil, true } // nobody attached
-	if got := m.provideMountContent("/tmp/fixture/.env", sm); string(got) != "decoy" {
-		t.Errorf("provideMountContent = %q, want decoy with zero enumerable holders", got)
+	if got := m.serveContent("/tmp/fixture/.env", sm); string(got) != "decoy" {
+		t.Errorf("serveContent = %q, want decoy with zero enumerable holders", got)
 	}
 }
 
-// TestGrantGatePrunesDeadAndRecycledTargets: a grant whose target exited
-// (start lookup fails) or whose pid now belongs to a different process
-// (stamp mismatch) must be dropped at the gate, serving decoys.
-func TestGrantGatePrunesDeadAndRecycledTargets(t *testing.T) {
+// TestServeContentPrunesDeadAndRecycledTargets: a grant whose target exited
+// or whose pid now belongs to a different process (stamp mismatch) must be
+// dropped at the gate, serving decoys.
+func TestServeContentPrunesDeadAndRecycledTargets(t *testing.T) {
 	sm := newTestServedMount()
 	sm.decoy = []byte("decoy")
 	m := newGrantTestManager(sm)
 
-	sm.grants = []mountGrant{grantFor(100, 1000)}
+	installGrant(m, "/tmp/fixture/.env", 100, 1000)
 	m.grantStartFn = func(int32) (int64, bool) { return 0, false } // exited
-	if got := m.provideMountContent("/tmp/fixture/.env", sm); string(got) != "decoy" {
-		t.Errorf("provideMountContent = %q, want decoy after target exit", got)
+	if got := m.serveContent("/tmp/fixture/.env", sm); string(got) != "decoy" {
+		t.Errorf("serveContent = %q, want decoy after target exit", got)
 	}
-	sm.mu.Lock()
-	remaining := len(sm.grants)
-	sm.mu.Unlock()
+	m.runsMu.Lock()
+	remaining := len(m.runs)
+	m.runsMu.Unlock()
 	if remaining != 0 {
-		t.Errorf("grants = %d, want 0 after prune", remaining)
+		t.Errorf("runs = %d, want 0 after prune", remaining)
 	}
 
-	sm.grants = []mountGrant{grantFor(100, 1000)}
+	installGrant(m, "/tmp/fixture/.env", 100, 1000)
 	m.grantStartFn = func(int32) (int64, bool) { return 2222, true } // recycled pid
-	if got := m.provideMountContent("/tmp/fixture/.env", sm); string(got) != "decoy" {
-		t.Errorf("provideMountContent = %q, want decoy for a recycled target pid", got)
+	if got := m.serveContent("/tmp/fixture/.env", sm); string(got) != "decoy" {
+		t.Errorf("serveContent = %q, want decoy for a recycled target pid", got)
 	}
 }
 
-func TestGrantGateEnforcesHardCap(t *testing.T) {
+func TestServeContentEnforcesHardCap(t *testing.T) {
 	sm := newTestServedMount()
 	sm.decoy = []byte("decoy")
-	g := grantFor(100, 1000)
-	g.hardCap = time.Now().Add(-time.Second)
-	sm.grants = []mountGrant{g}
 	m := newGrantTestManager(sm)
+	installGrant(m, "/tmp/fixture/.env", 100, 1000)
+	m.runsMu.Lock()
+	m.runs[100].hardCap = time.Now().Add(-time.Second)
+	m.runsMu.Unlock()
 
-	if got := m.provideMountContent("/tmp/fixture/.env", sm); string(got) != "decoy" {
-		t.Errorf("provideMountContent = %q, want decoy past the hard cap", got)
+	if got := m.serveContent("/tmp/fixture/.env", sm); string(got) != "decoy" {
+		t.Errorf("serveContent = %q, want decoy past the hard cap", got)
 	}
 }
 
-// TestGrantGateRevealWindowStillWins: an active reveal window serves real
-// exactly as before grants existed, and the record must NOT claim the
-// grant did it.
-func TestGrantGateRevealWindowStillWins(t *testing.T) {
+// TestServeContentRevealWindowStillWins: an active reveal window serves real
+// exactly as before grants existed, and the record must NOT claim a grant.
+func TestServeContentRevealWindowStillWins(t *testing.T) {
 	sm := newTestServedMount()
 	sm.decoy = []byte("decoy")
-	sm.grants = []mountGrant{grantFor(100, 1000)}
 	m := newGrantTestManager(sm)
-	m.grantHoldersFn = func(string) ([]int32, bool) { return []int32{666}, true } // stranger — irrelevant under a window
+	installGrant(m, "/tmp/fixture/.env", 100, 1000)
+	m.grantHoldersFn = func(string) ([]int32, bool) { return []int32{666}, true } // stranger, irrelevant under a window
 	m.grantAncestryFn = func(int32, int32) bool { return false }
 	sm.reveal.Reveal(time.Minute)
 
-	if got := m.provideMountContent("/tmp/fixture/.env", sm); string(got) != "API_KEY=real\n" {
-		t.Fatalf("provideMountContent = %q, want real under an active reveal window", got)
+	if got := m.serveContent("/tmp/fixture/.env", sm); string(got) != "API_KEY=real\n" {
+		t.Fatalf("serveContent = %q, want real under an active reveal window", got)
 	}
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -253,13 +229,32 @@ func TestGrantGateRevealWindowStillWins(t *testing.T) {
 	}
 }
 
-// TestGrantVerdictCacheAmortizesAncestryWalks: within grantVerdictTTL,
-// repeated reads by the same holder must not re-walk its ancestry — the
-// read-storm cost control the gate cannot get from skipping scans.
-func TestGrantVerdictCacheAmortizesAncestryWalks(t *testing.T) {
+// TestServeContentNoGrantsTakesFastPath: with no grant runs anywhere, the
+// gate is skipped entirely (grantModeRuns==0) and the decision is a pure
+// reveal-window one.
+func TestServeContentNoGrantsTakesFastPath(t *testing.T) {
 	sm := newTestServedMount()
-	sm.grants = []mountGrant{grantFor(100, 1000)}
+	sm.decoy = []byte("decoy")
 	m := newGrantTestManager(sm)
+	m.grantHoldersFn = func(string) ([]int32, bool) {
+		t.Fatal("holder scan ran with no grant runs — fast path was not taken")
+		return nil, false
+	}
+	if got := m.serveContent("/tmp/fixture/.env", sm); string(got) != "decoy" {
+		t.Errorf("serveContent = %q, want decoy (hidden, no grant)", got)
+	}
+	sm.reveal.Reveal(time.Minute)
+	if got := m.serveContent("/tmp/fixture/.env", sm); string(got) != "API_KEY=real\n" {
+		t.Errorf("serveContent = %q, want real (revealed, no grant)", got)
+	}
+}
+
+// TestServeContentVerdictCacheAmortizesAncestryWalks: within grantVerdictTTL,
+// repeated reads by the same holder must not re-walk its ancestry.
+func TestServeContentVerdictCacheAmortizesAncestryWalks(t *testing.T) {
+	sm := newTestServedMount()
+	m := newGrantTestManager(sm)
+	installGrant(m, "/tmp/fixture/.env", 100, 1000)
 	var walks int32
 	m.grantAncestryFn = func(pid, root int32) bool {
 		atomic.AddInt32(&walks, 1)
@@ -267,8 +262,8 @@ func TestGrantVerdictCacheAmortizesAncestryWalks(t *testing.T) {
 	}
 
 	for i := 0; i < 10; i++ {
-		if got := m.provideMountContent("/tmp/fixture/.env", sm); string(got) != "API_KEY=real\n" {
-			t.Fatalf("read %d: provideMountContent = %q, want real", i, got)
+		if got := m.serveContent("/tmp/fixture/.env", sm); string(got) != "API_KEY=real\n" {
+			t.Fatalf("read %d: serveContent = %q, want real", i, got)
 		}
 	}
 	if got := atomic.LoadInt32(&walks); got != 1 {
@@ -276,45 +271,59 @@ func TestGrantVerdictCacheAmortizesAncestryWalks(t *testing.T) {
 	}
 }
 
-func TestMountManagerStopDropsGrants(t *testing.T) {
+func TestOnRunExitDropsOnlyThatPID(t *testing.T) {
 	sm := newTestServedMount()
-	sm.grants = []mountGrant{grantFor(100, 1000)}
+	m := newGrantTestManager(sm)
+	installGrant(m, "/tmp/fixture/.env", 100, 1000)
+	m.grantStartFn = func(pid int32) (int64, bool) { return 1000, true } // both live
+	installGrant(m, "/tmp/fixture/.env", 101, 1000)
+
+	m.onRunExit(100, "process exited")
+
+	m.runsMu.Lock()
+	defer m.runsMu.Unlock()
+	if _, ok := m.runs[100]; ok {
+		t.Error("pid 100's attachment survived onRunExit")
+	}
+	if _, ok := m.runs[101]; !ok {
+		t.Error("pid 101's attachment was wrongly dropped")
+	}
+	if atomic.LoadInt32(&m.grantModeRuns) != 1 {
+		t.Errorf("grantModeRuns = %d, want 1 after one of two grants ended", m.grantModeRuns)
+	}
+}
+
+func TestClearAllRunsDropsGrantsAndClearsCache(t *testing.T) {
+	sm := newTestServedMount()
 	sm.grantVerdicts = map[grantVerdictKey]grantVerdict{{holder: 200, root: 100}: {inTree: true, expires: time.Now().Add(time.Hour)}}
 	m := newGrantTestManager(sm)
+	installGrant(m, "/tmp/fixture/.env", 100, 1000)
 
-	m.stop()
+	m.clearAllRuns()
 
+	m.runsMu.Lock()
+	nRuns := len(m.runs)
+	m.runsMu.Unlock()
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	if len(sm.grants) != 0 || sm.grantVerdicts != nil {
-		t.Errorf("grants = %d, verdicts = %v after stop, want both cleared on lock", len(sm.grants), sm.grantVerdicts)
+	verdicts := sm.grantVerdicts
+	sm.mu.Unlock()
+	if nRuns != 0 || verdicts != nil || atomic.LoadInt32(&m.grantModeRuns) != 0 {
+		t.Errorf("after clearAllRuns: runs=%d verdicts=%v grantModeRuns=%d, want all cleared", nRuns, verdicts, m.grantModeRuns)
 	}
 }
 
-func TestDropGrantsForPIDRemovesOnlyThatPID(t *testing.T) {
-	sm := newTestServedMount()
-	sm.grants = []mountGrant{grantFor(100, 1000), grantFor(101, 2000)}
-	m := newGrantTestManager(sm)
-
-	m.dropGrantsForPID(100, "process exited")
-
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	if len(sm.grants) != 1 || sm.grants[0].pid != 101 {
-		t.Errorf("grants = %+v, want only pid 101's to survive", sm.grants)
-	}
-}
-
-func TestMountRevealStatusesReportsGrantsAndGrantServed(t *testing.T) {
+func TestMountRevealStatusesReportsGrant(t *testing.T) {
 	sm := newTestServedMount()
 	sm.decoy = []byte("decoy")
-	sm.grants = []mountGrant{grantFor(100, 1000)}
-	sm.grants[0].command = "./run_all_exports.sh"
 	m := newGrantTestManager(sm)
+	installGrant(m, "/tmp/fixture/.env", 100, 1000)
+	m.runsMu.Lock()
+	m.runs[100].command = "./run_all_exports.sh"
+	m.runsMu.Unlock()
 
 	// One grant-served read on record.
-	if got := m.provideMountContent("/tmp/fixture/.env", sm); string(got) != "API_KEY=real\n" {
-		t.Fatalf("setup: provideMountContent = %q, want real", got)
+	if got := m.serveContent("/tmp/fixture/.env", sm); string(got) != "API_KEY=real\n" {
+		t.Fatalf("setup: serveContent = %q, want real", got)
 	}
 
 	statuses := m.mountRevealStatuses()
@@ -325,11 +334,14 @@ func TestMountRevealStatusesReportsGrantsAndGrantServed(t *testing.T) {
 	if len(st.Grants) != 1 || st.Grants[0].PID != 100 || st.Grants[0].Command != "./run_all_exports.sh" {
 		t.Errorf("Grants = %+v, want pid 100 with its command", st.Grants)
 	}
+	if st.Swapped {
+		t.Error("a grant-mode mount must not be reported Swapped")
+	}
 	if st.LastServe == nil || !st.LastServe.GrantServed || st.LastServe.Decoy {
 		t.Errorf("LastServe = %+v, want a grant-served real record", st.LastServe)
 	}
 
-	// The same snapshot must prune a dead target rather than report it.
+	// A dead target must be pruned from status, not reported.
 	m.grantStartFn = func(int32) (int64, bool) { return 0, false }
 	statuses = m.mountRevealStatuses()
 	if len(statuses[0].Grants) != 0 {

@@ -114,17 +114,17 @@ func TestSwapClearedOnLock(t *testing.T) {
 	if err := m.swapForPID([]string{path}, 100); err != nil {
 		t.Fatalf("swapForPID: %v", err)
 	}
-	m.clearAllSwaps()
+	m.clearAllRuns()
 	if !isFIFOPath(t, path) {
-		t.Error("FIFO not restored after clearAllSwaps (lock)")
+		t.Error("FIFO not restored after clearAllRuns (lock)")
 	}
 	// Status must no longer report it swapped.
-	if got := m.swapStatuses(); len(got) != 0 {
-		t.Errorf("swapStatuses = %v after clear, want empty", got)
+	if got := m.runStatusesByPath(); len(got) != 0 {
+		t.Errorf("runStatusesByPath = %v after clear, want empty", got)
 	}
 }
 
-// TestSwapPrunesRecycledTarget: pruneStaleSwaps must restore the FIFO for a
+// TestSwapPrunesRecycledTarget: pruneStaleRuns must restore the FIFO for a
 // swap whose target pid is gone even if the exit watcher never fired.
 func TestSwapPrunesDeadTarget(t *testing.T) {
 	m, path := swapTestFixture(t)
@@ -133,7 +133,7 @@ func TestSwapPrunesDeadTarget(t *testing.T) {
 	}
 	// Make the target look gone, then let a status read prune it.
 	m.grantStartFn = func(int32) (int64, bool) { return 0, false }
-	m.pruneStaleSwaps()
+	m.pruneStaleRuns()
 	if !isFIFOPath(t, path) {
 		t.Error("FIFO not restored after the target was pruned as gone")
 	}
