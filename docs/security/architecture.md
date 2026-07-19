@@ -44,6 +44,17 @@ Secrets materialize at the moment of use and nowhere else:
   file) or, with `--live`, kept as a pipe that serves real values only to
   that run's own process tree. Neither writes a secret to disk, and both
   end the instant the command exits.
+- Machine-global credential *files* (the gcloud ADC, a SOPS age key, the
+  global `~/.npmrc`) migrate the same way, but are never granted implicitly.
+  `jit run --with gcp|sops|npm` grants one to a single run's process tree,
+  and every such grant forces a fresh, *disclosed* Touch ID that names the
+  credential, even when the session is already unlocked. The invariant behind
+  this: project-local configuration may reconfigure a project's own secrets,
+  but it never authorizes access to a machine-global credential. A cloned
+  repo's `.jit/config.yaml`, or a script that slips a `--with` into a
+  command, can never hand out a machine-wide credential silently; the unlock
+  authorizes the session, not the scope, and only an explicit `--with` you
+  type widens it.
 - Credential-helper fetches ([AWS](../migrate/aws.md),
   [Kubernetes](../migrate/kubernetes.md),
   [Terraform](../migrate/terraform.md)) hand the credential to the
