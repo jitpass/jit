@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -104,6 +105,16 @@ type Server struct {
 	// CLI can print it instead of that living only in the agent's log
 	// (GAPS.md #46).
 	OnReveal func(mountPath string, requested time.Duration) error
+	// OnRevealPID, if set, answers an OpRevealPID request — after
+	// ensureUnlocked succeeds via the same reveal-scoped path OpReveal uses
+	// (OnUnlockForReveal, no blanket floor-reveal). The arguments are the
+	// caller's mount paths and target pid exactly as sent; what a
+	// run-scoped grant means — how readers are matched against the target's
+	// process tree, and when the grant is torn down — lives entirely in the
+	// CLI layer (mountManager), keeping Server's no-internal/mount
+	// dependency direction. A non-nil error becomes the RPC's own failure,
+	// same contract (and same reported-bug rationale) as OnReveal.
+	OnRevealPID func(mountPaths []string, pid int32) error
 	// OnStopMount, if set, answers an OpStopMount request — unlike
 	// OnRefresh/OnReveal, this does NOT go through ensureUnlocked first:
 	// stopping a mount's serving goroutine needs no vault access at all
@@ -393,6 +404,32 @@ func (s *Server) handle(req Request, c *caller) Response {
 		wipe(mek)
 		if s.OnReveal != nil {
 			if err := s.OnReveal(req.MountPath, time.Duration(req.RevealSeconds)*time.Second); err != nil {
+				return Response{OK: false, Error: err.Error()}
+			}
+		}
+		return Response{OK: true}
+	case OpRevealPID:
+		if len(req.MountPaths) == 0 {
+			return Response{OK: false, Error: "reveal_pid: missing mount_paths"}
+		}
+		if req.TargetPID <= 0 {
+			return Response{OK: false, Error: "reveal_pid: missing target_pid"}
+		}
+		// Same reveal-scoped unlock as OpReveal: a fresh challenge caused by
+		// a grant request must not blanket floor-reveal every mount.
+		onFresh := s.OnUnlock
+		if s.OnUnlockForReveal != nil {
+			onFresh = s.OnUnlockForReveal
+		}
+		// The joined mount paths are this use's label, like OpReveal's single
+		// path: what the session was used FOR.
+		mek, err := s.ensureUnlockedNotify(onFresh, req.Op, c, strings.Join(req.MountPaths, ", "))
+		if err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		wipe(mek)
+		if s.OnRevealPID != nil {
+			if err := s.OnRevealPID(req.MountPaths, req.TargetPID); err != nil {
 				return Response{OK: false, Error: err.Error()}
 			}
 		}

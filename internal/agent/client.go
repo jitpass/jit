@@ -203,6 +203,18 @@ func (c *Client) Reveal(mountPath string, duration time.Duration) error {
 	return err
 }
 
+// RevealForPID asks the agent to serve real content on each of mountPaths
+// to pid's process tree for as long as that process lives (ensuring the
+// session is unlocked first, challenging if needed). jit run calls this
+// with its OWN pid immediately before execve — which keeps the pid — so
+// the grant lands on exactly the command being run. Matching readers to
+// the tree, fail-closed gating, and teardown (target exit, lock, hard cap)
+// are all agent-side; Client makes no assumptions about any of them.
+func (c *Client) RevealForPID(mountPaths []string, pid int32) error {
+	_, err := c.call(Request{Op: OpRevealPID, MountPaths: mountPaths, TargetPID: pid})
+	return err
+}
+
 // StopMount asks the agent to stop serving mountPath specifically —
 // unlike Lock, every other mount keeps being served undisturbed. `jit
 // unmount` uses this right before physically replacing the FIFO with a

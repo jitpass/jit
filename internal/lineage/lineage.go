@@ -144,6 +144,25 @@ func PathHeldOpen(path string) bool {
 	return false
 }
 
+// vfifoType mirrors C.VFIFO for the non-CGo files in this package
+// (grant.go compares vnode types without needing its own CGo preamble).
+var vfifoType = int32(C.VFIFO)
+
+// resolveTarget normalizes a mount path the way every scan in this package
+// compares it: symlinks resolved, absolute — falling back to the raw path
+// when resolution fails, matching the scans' historical behavior.
+func resolveTarget(path string) string {
+	target, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		target = path
+	}
+	target, err = filepath.Abs(target)
+	if err != nil {
+		target = path
+	}
+	return target
+}
+
 func listAllPIDs() ([]int32, error) {
 	pids, _, err := listAllPIDsChecked()
 	return pids, err

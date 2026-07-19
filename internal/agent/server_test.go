@@ -529,6 +529,102 @@ func TestServerRevealRejectsMissingMountPath(t *testing.T) {
 	}
 }
 
+func TestServerRevealPIDCallsOnRevealPIDAndEnsuresUnlocked(t *testing.T) {
+	socketPath := shortSocketPath(t)
+	newFetcher := func() MEKFetcher { return &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32)} }
+	s := NewServer(socketPath, newFetcher, time.Minute)
+
+	var gotPaths []string
+	var gotPID int32
+	var calls int32
+	s.OnRevealPID = func(mountPaths []string, pid int32) error {
+		gotPaths = mountPaths
+		gotPID = pid
+		atomic.AddInt32(&calls, 1)
+		return nil
+	}
+
+	if err := s.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = s.Serve(ctx); close(done) }()
+	defer func() { cancel(); _ = s.Close(); <-done }()
+
+	c := NewClient(socketPath)
+	want := []string{"/tmp/fixture/.env", "/tmp/fixture/.env.local"}
+	if err := c.RevealForPID(want, 4242); err != nil {
+		t.Fatalf("RevealForPID: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("OnRevealPID called %d times, want 1", got)
+	}
+	if len(gotPaths) != 2 || gotPaths[0] != want[0] || gotPaths[1] != want[1] {
+		t.Errorf("OnRevealPID mountPaths = %v, want %v", gotPaths, want)
+	}
+	if gotPID != 4242 {
+		t.Errorf("OnRevealPID pid = %d, want 4242", gotPID)
+	}
+
+	st, err := c.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !st.Unlocked {
+		t.Error("expected RevealForPID to have ensured the session is unlocked, got locked")
+	}
+}
+
+func TestServerRevealPIDRejectsMissingArguments(t *testing.T) {
+	socketPath := shortSocketPath(t)
+	newFetcher := func() MEKFetcher { return &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32)} }
+	s := NewServer(socketPath, newFetcher, time.Minute)
+	s.OnRevealPID = func([]string, int32) error {
+		t.Error("OnRevealPID must not fire for a request missing mount_paths or target_pid")
+		return nil
+	}
+
+	if err := s.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = s.Serve(ctx); close(done) }()
+	defer func() { cancel(); _ = s.Close(); <-done }()
+
+	c := NewClient(socketPath)
+	if err := c.RevealForPID(nil, 4242); err == nil {
+		t.Error("expected an error for missing mount paths, got nil")
+	}
+	if err := c.RevealForPID([]string{"/tmp/fixture/.env"}, 0); err == nil {
+		t.Error("expected an error for a missing target pid, got nil")
+	}
+}
+
+// TestServerRevealPIDReturnsErrorFromCallback mirrors OnReveal's own
+// error-surfacing contract (the "silently reported success" bug class): a
+// grant the mountManager can't create must fail the RPC, message included.
+func TestServerRevealPIDReturnsErrorFromCallback(t *testing.T) {
+	socketPath := shortSocketPath(t)
+	newFetcher := func() MEKFetcher { return &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32)} }
+	s := NewServer(socketPath, newFetcher, time.Minute)
+	s.OnRevealPID = func([]string, int32) error { return fmt.Errorf("no such mount") }
+
+	if err := s.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = s.Serve(ctx); close(done) }()
+	defer func() { cancel(); _ = s.Close(); <-done }()
+
+	c := NewClient(socketPath)
+	if err := c.RevealForPID([]string{"/tmp/fixture/never-served.env"}, 4242); err == nil {
+		t.Error("expected an error when OnRevealPID reports failure, got nil")
+	}
+}
+
 // TestServerRevealReturnsErrorWhenOnRevealReportsNotFound locks in a real,
 // reported bug: OpReveal used to return Response{OK: true} unconditionally,
 // so a mount-path mismatch (the CLI forwarding an unresolved relative path
