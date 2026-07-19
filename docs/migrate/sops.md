@@ -16,8 +16,10 @@ target on a machine that uses SOPS.
 `jit migrate home` (category `sops`) moves the key into the vault and
 replaces `keys.txt` with a [live mount](../run/mounts.md) serving a
 template: the non-secret comment lines (public key, creation date) pass
-through byte-for-byte, and the key line fills from the vault only during
-a revealed window.
+through byte-for-byte, and the key line fills from the vault only for a
+run you explicitly grant it to with `jit run --with sops` (or during a
+post-unlock reveal window). The age key is a machine-wide credential, so
+it is never granted by a project's config, only by a `--with` you type.
 
 ## Two ways tools get the key back
 
@@ -34,22 +36,25 @@ session, or a Touch ID prompt), no key file read at all.
 
 **Everything else reads the mounted file.** Tools whose embedded sops
 predates the hook (older kluctl builds, other readers of `keys.txt`) keep
-reading the same path; run them through jit so the reveal window is open
-when they do:
+reading the same path; grant them the key for the run with `--with sops`:
 
 ```sh
-jit run --profile sops-age -- kluctl deploy -t prod
+jit run --with sops -- kluctl deploy -t prod
 ```
 
+The grant is scoped to that run's process tree and gone when it exits.
 `jit run` also injects `SOPS_AGE_KEY` into the child environment, which
 current sops and kluctl prefer over the key file, so either mechanism
-alone is enough.
+alone is enough. To keep typing a tool directly (no `jit run` prefix),
+`jit wrap add <tool> --grant sops` installs a shim that grants the key
+per invocation.
 
 ## What to expect
 
-- Outside a revealed window, a reader of `keys.txt` sees a placeholder
-  and decryption fails fast with a clear error, exactly the
-  decoy-by-default behavior `.env` mounts have.
+- Outside a run you granted the key to (and outside a post-unlock reveal
+  window), a reader of `keys.txt` sees a placeholder and decryption fails
+  fast with a clear error, exactly the decoy-by-default behavior `.env`
+  mounts have.
 - The file is machine-wide (one per user), so it's covered by
   `jit migrate home` only, `local` never touches it.
 - Files holding **multiple** age keys are skipped, never half-migrated:

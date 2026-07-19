@@ -6,6 +6,7 @@
 package cli
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -96,5 +97,56 @@ func TestProjectTemplateMountsExcludesGlobals(t *testing.T) {
 	got := projectTemplateMounts(projectDir)
 	if len(got) != 1 || got[0] != projectNpmrc {
 		t.Errorf("projectTemplateMounts(%s) = %v, want [%s]", projectDir, got, projectNpmrc)
+	}
+}
+
+// TestGlobalMountReminders covers the Stage 4 discoverability guidance: a
+// migrated global file-delivered mount surfaces its `jit run --with` usage
+// reminder, and a plain project mount surfaces nothing.
+func TestGlobalMountReminders(t *testing.T) {
+	home := withFixtureHome(t)
+	root, err := vaultRootDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	reg := mount.RegistryPath(root)
+
+	// No global mounts yet -> the reminder block is silent.
+	var buf bytes.Buffer
+	printGlobalMountReminders(&buf)
+	if buf.Len() != 0 {
+		t.Errorf("reminders printed with no global mounts:\n%s", buf.String())
+	}
+
+	// Register the gcp ADC and a plain project .env (which must NOT get a
+	// reminder — it isn't a global file-delivered mount).
+	gcpPath := migrate.GCPADCPath(home)
+	if err := mount.AddMount(reg, mount.Entry{MountPath: gcpPath, ProfilePath: "p", TemplatePath: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mount.AddMount(reg, mount.Entry{MountPath: filepath.Join(home, "proj", ".env"), ProfilePath: "p"}); err != nil {
+		t.Fatal(err)
+	}
+
+	buf.Reset()
+	printGlobalMountReminders(&buf)
+	out := buf.String()
+	if !strings.Contains(out, "jit run --with gcp") {
+		t.Errorf("gcp reminder missing:\n%s", out)
+	}
+	if strings.Contains(out, ".env") {
+		t.Errorf("a plain project mount leaked into the global reminders:\n%s", out)
+	}
+
+	// The kind/tool mapping resolves for each known global path and rejects
+	// an unknown one.
+	if g, ok := globalMountGuidanceForPath(home, gcpPath); !ok || g.name != "gcp" {
+		t.Errorf("globalMountGuidanceForPath(gcp) = %+v, %v", g, ok)
+	}
+	if _, ok := globalMountGuidanceForPath(home, "/nope/creds"); ok {
+		t.Error("globalMountGuidanceForPath matched an unknown path")
 	}
 }
