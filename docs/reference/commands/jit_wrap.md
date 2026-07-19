@@ -21,7 +21,7 @@ jit wrap
 ### SEE ALSO
 
 * [jit](jit.md)	 - Local-first developer secret runtime
-* [jit wrap add](jit_wrap_add.md)	 - Wrap a tool by hand: shim on PATH + a wrap-<tool> profile
+* [jit wrap add](jit_wrap_add.md)	 - Wrap a tool by hand: a shim on PATH that injects a profile or grants a global mount
 * [jit wrap doctor](jit_wrap_doctor.md)	 - Verify every wrapped tool's shim, PATH entry, and profile
 * [jit wrap list](jit_wrap_list.md)	 - Show wrapped tools and their shim health
 * [jit wrap undo](jit_wrap_undo.md)	 - Unwrap a tool: remove its shim and wrap profile
