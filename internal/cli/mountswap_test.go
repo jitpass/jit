@@ -170,3 +170,39 @@ func isFIFOPath(t *testing.T, path string) bool {
 	}
 	return info.Mode()&os.ModeNamedPipe != 0
 }
+
+// TestReconcileSwappedMountsRestoresJitFileNotUserFile is crash recovery:
+// a leftover jit pointer file at a mount path (agent died mid-run) is
+// restored to a FIFO on startup, while a file a user restored by hand is
+// left intact.
+func TestReconcileSwappedMountsRestoresJitFileNotUserFile(t *testing.T) {
+	root := t.TempDir()
+	proj := t.TempDir()
+
+	jitPath := filepath.Join(proj, ".env")
+	if err := os.WriteFile(jitPath, mount.SwapPointerContent([]string{"API_KEY"}, nil), 0o644); err != nil {
+		t.Fatalf("write jit pointer file: %v", err)
+	}
+	userPath := filepath.Join(proj, "b.env")
+	userContent := []byte("API_KEY=user_restored_by_hand\n")
+	if err := os.WriteFile(userPath, userContent, 0o644); err != nil {
+		t.Fatalf("write user file: %v", err)
+	}
+
+	m := &mountManager{root: root, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, grantKq: -1}
+	m.reconcileSwappedMounts([]mount.Entry{
+		{MountPath: jitPath, ProfilePath: "p"},
+		{MountPath: userPath, ProfilePath: "p"},
+	})
+
+	if !isFIFOPath(t, jitPath) {
+		t.Error("jit's leftover pointer file was not reconciled to a FIFO")
+	}
+	got, _ := os.ReadFile(userPath)
+	if string(got) != string(userContent) {
+		t.Errorf("a user's hand-restored file was clobbered: %q", got)
+	}
+	if isFIFOPath(t, userPath) {
+		t.Error("a user's file was turned into a FIFO — provenance gate failed")
+	}
+}

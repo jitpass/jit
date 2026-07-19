@@ -14,13 +14,20 @@ moving them off disk.
 
 ## In practice you rarely think about this
 
-- `jit run <command>` grants its own command's process tree a
-  **run-scoped reveal**: for as long as that command runs, the mounted
-  files backing the values it injected serve real content to that run's
-  processes (decided per read, by process ancestry), and decoys to
-  everything else. A script that re-reads its own `.env` mid-run sees the
-  same values it was launched with; the grant ends the moment the command
-  exits. `jit agent status` lists any live grant per mount.
+- `jit run <command>` makes this run's mounted files compatible with the
+  command reading them, for the run's lifetime only. By **default** it
+  swaps each mount to a plain, inert *compatibility file* (comment-only
+  pointers): `[ -f .env ]` and `Path.is_file()` guards pass, and
+  re-reading the file with `source` or a dotenv loader sets nothing,
+  because the real values are already in the run's environment. The decoy
+  mount returns the instant the command exits.
+- `jit run --live <command>` instead keeps the live mount and grants the
+  run's process tree **real file reads** (decided per read, by process
+  ancestry; decoys to everything else). Use this for tools that read
+  values *from the `.env` file itself* rather than the environment, such
+  as `docker compose` with `env_file:` — jit run auto-detects the common
+  ones. `jit agent status` shows whether each mount is swapped or granted,
+  and for which run.
 - `jit migrate` wires an automatic reveal into your `.envrc` (direnv) or
   `package.json` `dev`/`start` script, so `npm run dev` and friends just
   work. The window also opens automatically for 60 seconds whenever the

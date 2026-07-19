@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -188,4 +189,116 @@ func (b *safeBuffer) Bytes() []byte {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return append([]byte(nil), b.buf.Bytes()...)
+}
+
+// TestRunScopedSwapEndToEnd drives the compatibility swap through the real
+// agent/mountManager/mount code with a live registry+FIFO+vault: a run's
+// SwapForPID turns the FIFO into a regular inert pointer file (so [ -f ]
+// passes and sourcing sets nothing), and the run's exit restores the FIFO.
+func TestRunScopedSwapEndToEnd(t *testing.T) {
+	root := t.TempDir()
+
+	profilePath := filepath.Join(root, "fixture-profile.yaml")
+	writeYAML(t, profilePath, profile.Profile{"API_KEY": "fixture/API_KEY"})
+
+	mountDir := t.TempDir()
+	mountPath := filepath.Join(mountDir, ".env")
+	if err := mount.CreateFIFO(mountPath); err != nil {
+		t.Fatalf("CreateFIFO: %v", err)
+	}
+
+	socketPath := filepath.Join(t.TempDir(), "a.sock")
+	mek := bytes.Repeat([]byte{0x24}, 32)
+	server := agent.NewServer(socketPath, func() agent.MEKFetcher { return &fakeMEKFetcher{key: mek} }, time.Minute)
+
+	var stdout, stderr bytes.Buffer
+	mounts := &mountManager{root: root, keyWrapper: server, stdout: &stdout, stderr: &stderr}
+	server.OnUnlock = mounts.start
+	server.OnUnlockForReveal = mounts.startForReveal
+	server.OnLock = mounts.stop
+	server.OnRefresh = mounts.start
+	server.OnReveal = mounts.revealMount
+	server.OnRevealPID = mounts.revealForPID
+	server.OnMountStatus = mounts.mountRevealStatuses
+
+	if err := server.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = server.Serve(ctx); close(done) }()
+	defer func() { cancel(); _ = server.Close(); <-done }()
+
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatalf("os.Hostname: %v", err)
+	}
+	v := &vault.Vault{Root: root, KeyWrapper: server, RecipientID: hostname}
+	if err := v.Set("fixture/API_KEY", []byte("sk_live_REAL_SECRET")); err != nil {
+		t.Fatalf("vault Set: %v", err)
+	}
+	if err := mount.AddMount(mount.RegistryPath(root), mount.Entry{MountPath: mountPath, ProfilePath: profilePath}); err != nil {
+		t.Fatalf("AddMount: %v", err)
+	}
+	client := agent.NewClient(socketPath)
+	if err := client.Refresh(); err != nil {
+		t.Fatalf("Client.Refresh: %v", err)
+	}
+	waitForMountServing(t, mounts, mountPath)
+
+	// The "granted run": a live sleep, standing in for jit run's target.
+	runProc := exec.Command("/bin/sleep", "30")
+	if err := runProc.Start(); err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	defer func() { _ = runProc.Process.Kill(); _ = runProc.Wait() }()
+
+	if err := client.SwapForPID([]string{mountPath}, int32(runProc.Process.Pid)); err != nil {
+		t.Fatalf("Client.SwapForPID: %v", err)
+	}
+
+	// During the run: the mount is a regular inert file that passes [ -f ]
+	// and sources to nothing, and never leaks the real secret.
+	info, err := os.Lstat(mountPath)
+	if err != nil {
+		t.Fatalf("Lstat during swap: %v", err)
+	}
+	if info.Mode()&os.ModeNamedPipe != 0 {
+		t.Fatal("mount is still a FIFO during a swap run")
+	}
+	out, err := exec.Command("/bin/sh", "-c",
+		"[ -f "+mountPath+" ] && echo FILE_OK; set -a; . "+mountPath+"; set +a; echo \"API_KEY=[${API_KEY:-unset}]\"").CombinedOutput()
+	if err != nil {
+		t.Fatalf("guard/source check: %v (%s)", err, out)
+	}
+	if !strings.Contains(string(out), "FILE_OK") || !strings.Contains(string(out), "API_KEY=[unset]") {
+		t.Errorf("swapped file failed guard/inertness: %q", out)
+	}
+	if bytes.Contains(out, []byte("sk_live_REAL_SECRET")) {
+		t.Fatalf("swapped compatibility file leaked the real secret: %q", out)
+	}
+
+	// Status shows it swapped.
+	st, err := client.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if len(st.Mounts) != 1 || !st.Mounts[0].Swapped {
+		t.Fatalf("Status.Mounts = %+v, want the mount marked Swapped", st.Mounts)
+	}
+
+	// Run exits -> FIFO restored, back to decoy.
+	_ = runProc.Process.Kill()
+	_ = runProc.Wait()
+	waitFor(t, "the FIFO to be restored after the run exits", func() bool {
+		info, err := os.Lstat(mountPath)
+		return err == nil && info.Mode()&os.ModeNamedPipe != 0
+	})
+	after := readMountOnce(t, mountPath)
+	if bytes.Contains(after, []byte("sk_live_REAL_SECRET")) {
+		t.Fatalf("restored mount served the real secret while hidden: %q", after)
+	}
+	if !bytes.Contains(after, []byte("jit-hidden-API_KEY")) {
+		t.Errorf("restored mount = %q, want decoy content", after)
+	}
 }

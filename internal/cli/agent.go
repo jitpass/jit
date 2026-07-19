@@ -1025,6 +1025,21 @@ func printMountStatuses(w io.Writer, mounts []agent.MountRevealStatus) {
 	fmt.Fprintln(w, "\nMounts:")
 	for _, m := range sorted {
 		path := displayPath(home, m.Path)
+		// A swapped mount is a plain compatibility file for the run(s)
+		// listed below it — the FIFO, and so the whole reveal/decoy
+		// vocabulary, doesn't apply while it's swapped, so this replaces
+		// the revealed/not-revealed line rather than adding to it.
+		if m.Swapped {
+			fmt.Fprintf(w, "  • %s, compatibility file (real values are in the run's environment; the file is inert)\n", path)
+			for _, g := range m.Grants {
+				cmd := g.Command
+				if cmd == "" {
+					cmd = "unknown command"
+				}
+				fmt.Fprintf(w, "      swapped for jit run pid %d (%s) since %s ago, decoy mount returns when it exits\n", g.PID, cmd, humanAgo(time.Since(time.Unix(g.SinceUnix, 0))))
+			}
+			continue
+		}
 		switch {
 		case m.Revealed:
 			fmt.Fprintf(w, "  • %s, revealed, %s left\n", path, time.Duration(m.RevealedForSeconds)*time.Second)

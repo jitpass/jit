@@ -60,7 +60,7 @@ func TestRequestRunGrantSendsLayerMountsAndOwnPID(t *testing.T) {
 
 	var out bytes.Buffer
 	mounts := []string{"/tmp/fixture/.env", "/tmp/fixture/.env.local"}
-	requestRunGrantVia(c, &out, mounts, 4242)
+	requestRunCompatVia(c, &out, mounts, 4242, true)
 
 	got, ok := recorded.Load().(struct {
 		paths []string
@@ -85,7 +85,7 @@ func TestRequestRunGrantNeverPromptsALockedSession(t *testing.T) {
 	_, c, recorded := grantTestServer(t)
 
 	var out bytes.Buffer
-	requestRunGrantVia(c, &out, []string{"/tmp/fixture/.env"}, 4242)
+	requestRunCompatVia(c, &out, []string{"/tmp/fixture/.env"}, 4242, true)
 
 	if recorded.Load() != nil {
 		t.Error("OnRevealPID fired against a locked session — the guard must skip, never challenge")
@@ -99,7 +99,7 @@ func TestRequestRunGrantSilentWhenAgentUnreachableOrRefusing(t *testing.T) {
 	// Unreachable: a client dialed at a socket nothing listens on.
 	dead := agent.NewClient(filepath.Join(t.TempDir(), "dead.sock"))
 	var out bytes.Buffer
-	requestRunGrantVia(dead, &out, []string{"/tmp/fixture/.env"}, 4242)
+	requestRunCompatVia(dead, &out, []string{"/tmp/fixture/.env"}, 4242, true)
 	if out.Len() != 0 {
 		t.Errorf("announce = %q with no agent, want silence", out.String())
 	}
@@ -114,7 +114,7 @@ func TestRequestRunGrantSilentWhenAgentUnreachableOrRefusing(t *testing.T) {
 		t.Fatalf("Unlock: %v", err)
 	}
 	out.Reset()
-	requestRunGrantVia(c, &out, []string{"/tmp/fixture/.env"}, 4242)
+	requestRunCompatVia(c, &out, []string{"/tmp/fixture/.env"}, 4242, true)
 	if out.Len() != 0 {
 		t.Errorf("announce = %q after an agent refusal, want silence", out.String())
 	}
@@ -125,3 +125,46 @@ type fixtureError string
 func (e fixtureError) Error() string { return string(e) }
 
 const errFixtureRefused fixtureError = "no grant created: fixture refusal"
+
+func TestRequestRunCompatDefaultSwapsAndAutodetectsLive(t *testing.T) {
+	// Default (live=false): a SwapForPID request must arrive.
+	server, c, _ := grantTestServer(t)
+	var swapPID atomic.Int32
+	var live atomic.Bool
+	live.Store(true) // will be flipped false when Swap arrives
+	server.OnRevealPID = func(paths []string, pid int32, swap bool) error {
+		swapPID.Store(pid)
+		live.Store(!swap)
+		return nil
+	}
+	if _, _, err := c.Unlock(); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+	var out bytes.Buffer
+	requestRunCompatVia(c, &out, []string{"/tmp/fixture/.env"}, 7777, false)
+	if swapPID.Load() != 7777 || live.Load() {
+		t.Errorf("default compat did not send a swap for the run pid (pid=%d live=%v)", swapPID.Load(), live.Load())
+	}
+	if !strings.Contains(out.String(), "compatibility file") {
+		t.Errorf("announce = %q, want the compatibility-file phrasing", out.String())
+	}
+}
+
+func TestCommandReadsEnvFileAutodetect(t *testing.T) {
+	for _, tc := range []struct {
+		argv []string
+		want bool
+	}{
+		{[]string{"docker", "compose", "up"}, true},
+		{[]string{"/usr/local/bin/docker-compose", "up"}, true},
+		{[]string{"podman", "run"}, true},
+		{[]string{"npm", "run", "dev"}, false},
+		{[]string{"./run_all_exports.sh"}, false},
+		{[]string{"python3", "app.py"}, false},
+		{nil, false},
+	} {
+		if got := commandReadsEnvFile(tc.argv); got != tc.want {
+			t.Errorf("commandReadsEnvFile(%v) = %v, want %v", tc.argv, got, tc.want)
+		}
+	}
+}
