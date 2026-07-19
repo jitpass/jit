@@ -21,13 +21,15 @@ jit run -- npm run dev     # or inject secrets straight into a process, no file 
 New here? Start with **[Why jit](./why-jit.md)** for the benefits in one page,
 then **[Install](./getting-started/install.md)** →
 **[Quickstart](./getting-started/quickstart.md)** →
-**[How it works](./getting-started/how-it-works.md)**.
+**[How it works](./getting-started/how-it-works.md)** →
+**[Delivering a secret](./getting-started/delivering-secrets.md)** (which command to use, and when).
 
 ## Get started
 
 - [Install](./getting-started/install.md) - prebuilt binary or build from source, shell completion, upgrading
 - [Quickstart](./getting-started/quickstart.md) - audit → vault → agent → migrate, start to finish
 - [How it works](./getting-started/how-it-works.md) - the vault, the agent, mounts, shims, and provenance
+- [Delivering a secret to a program](./getting-started/delivering-secrets.md) - when to use `jit wrap`, `jit run`, `jit run --profile`, and `read_as_file`
 - [Troubleshooting](./getting-started/troubleshooting.md) - placeholder values, hangs, surprise Touch ID prompts
 
 ## Find exposed secrets - `jit audit`
