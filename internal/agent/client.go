@@ -231,6 +231,17 @@ func (c *Client) RunForPID(mounts []RunMount, pid int32) error {
 	return err
 }
 
+// GrantGlobalForPID grants pid's process tree a set of GLOBAL, file-delivered
+// mounts (jit run --with), gated by a fresh disclosed challenge worded
+// exactly as reason — even when the session is already unlocked. A declined
+// challenge returns an error; the caller drops just these global mounts and
+// lets the rest of the run proceed. Sent as its own call so a decline never
+// takes the run's ordinary .env swap down with it.
+func (c *Client) GrantGlobalForPID(mounts []RunMount, pid int32, reason string) error {
+	_, err := c.call(Request{Op: OpRevealPID, RunMounts: mounts, TargetPID: pid, DiscloseReason: reason})
+	return err
+}
+
 func mountsWithMode(paths []string, mode string) []RunMount {
 	out := make([]RunMount, len(paths))
 	for i, p := range paths {

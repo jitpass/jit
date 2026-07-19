@@ -31,6 +31,14 @@ type Request struct {
 	// entirely in the CLI layer's OnRevealPID.
 	RunMounts []RunMount `json:"run_mounts,omitempty"`
 	TargetPID int32      `json:"target_pid,omitempty"`
+	// DiscloseReason, set on "reveal_pid" only, forces a FRESH challenge
+	// naming a global credential even when the session is already unlocked —
+	// the disclosed-grant gate for machine-wide file-delivered mounts
+	// (gcloud ADC, sops, ~/.npmrc) that `jit run --with` grants. Without it,
+	// a global-mount grant would ride the session silently, so a `jit run
+	// --with gcp` a script (not the human) put in a Makefile could hand out
+	// your gcloud credentials with no prompt. Empty for every ordinary run.
+	DiscloseReason string `json:"disclose_reason,omitempty"`
 	// Label is the caller's own description of what a "wrap"/"unwrap" is
 	// FOR — the vault path of the secret whose DEK is in Data ("stripe/
 	// live-key"), which the agent otherwise cannot know: it only ever sees

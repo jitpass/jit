@@ -607,6 +607,82 @@ func TestServerRevealPIDRejectsMissingArguments(t *testing.T) {
 	}
 }
 
+// TestGrantGlobalForcesDisclosedChallengeEvenWhenUnlocked is the security
+// heart of --with: a global-mount grant must prompt a FRESH Touch ID naming
+// the credential even though the session is already unlocked, so a script
+// that slipped a --with into a command can't grant a machine-wide
+// credential silently.
+func TestGrantGlobalForcesDisclosedChallengeEvenWhenUnlocked(t *testing.T) {
+	socketPath := shortSocketPath(t)
+	fetcher := &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32)}
+	s := NewServer(socketPath, func() MEKFetcher { return fetcher }, time.Minute)
+	var granted int32
+	s.OnRevealPID = func([]RunMount, int32) error { atomic.AddInt32(&granted, 1); return nil }
+
+	if err := s.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = s.Serve(ctx); close(done) }()
+	defer func() { cancel(); _ = s.Close(); <-done }()
+
+	c := NewClient(socketPath)
+	if _, _, err := c.Unlock(); err != nil { // session now unlocked
+		t.Fatalf("Unlock: %v", err)
+	}
+	fetcher.mu.Lock()
+	fetcher.reasons = nil // forget the unlock's reason
+	fetcher.mu.Unlock()
+
+	reason := "grant this run access to your global gcp credential(s)"
+	if err := c.GrantGlobalForPID([]RunMount{{Path: "/x/ADC", Mode: MountModeGrant}}, 4242, reason); err != nil {
+		t.Fatalf("GrantGlobalForPID: %v", err)
+	}
+	if atomic.LoadInt32(&granted) != 1 {
+		t.Error("OnRevealPID did not fire after an approved disclosed challenge")
+	}
+	fetcher.mu.Lock()
+	reasons := fetcher.reasons
+	fetcher.mu.Unlock()
+	if len(reasons) != 1 || reasons[0] != reason {
+		t.Errorf("disclosed challenge reasons = %v, want exactly the disclosed reason (a FRESH prompt fired despite the unlocked session)", reasons)
+	}
+}
+
+// TestGrantGlobalDeclineBlocksTheGrant: a declined disclosed challenge must
+// fail the RPC and never grant.
+func TestGrantGlobalDeclineBlocksTheGrant(t *testing.T) {
+	socketPath := shortSocketPath(t)
+	fetcher := &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32)}
+	s := NewServer(socketPath, func() MEKFetcher { return fetcher }, time.Minute)
+	var granted int32
+	s.OnRevealPID = func([]RunMount, int32) error { atomic.AddInt32(&granted, 1); return nil }
+
+	if err := s.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = s.Serve(ctx); close(done) }()
+	defer func() { cancel(); _ = s.Close(); <-done }()
+
+	c := NewClient(socketPath)
+	if _, _, err := c.Unlock(); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+	// The session rides the cache for the normal unlock; only the disclosed
+	// challenge calls the fetcher again — make that one decline.
+	fetcher.err = fmt.Errorf("user declined")
+
+	if err := c.GrantGlobalForPID([]RunMount{{Path: "/x/ADC", Mode: MountModeGrant}}, 4242, "grant gcp"); err == nil {
+		t.Error("expected an error when the disclosed challenge is declined")
+	}
+	if atomic.LoadInt32(&granted) != 0 {
+		t.Error("OnRevealPID fired despite a declined disclosed challenge")
+	}
+}
+
 // TestServerRevealPIDReturnsErrorFromCallback mirrors OnReveal's own
 // error-surfacing contract (the "silently reported success" bug class): a
 // grant the mountManager can't create must fail the RPC, message included.

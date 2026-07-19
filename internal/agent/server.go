@@ -432,6 +432,15 @@ func (s *Server) handle(req Request, c *caller) Response {
 			return Response{OK: false, Error: err.Error()}
 		}
 		wipe(mek)
+		// A global-mount grant (jit run --with) forces a fresh, disclosed
+		// challenge naming the credential — even though the session is
+		// already unlocked — so it can never happen silently on the back of
+		// the run's own unlock (see Request.DiscloseReason).
+		if req.DiscloseReason != "" {
+			if err := s.forceDisclosedChallenge(req.DiscloseReason, c); err != nil {
+				return Response{OK: false, Error: err.Error()}
+			}
+		}
 		if s.OnRevealPID != nil {
 			if err := s.OnRevealPID(req.RunMounts, req.TargetPID); err != nil {
 				return Response{OK: false, Error: err.Error()}
@@ -553,6 +562,47 @@ func (s *Server) mekCopy() []byte {
 // waiting for. s.mu is only ever held for field access, so a status/
 // history/lock request arriving mid-challenge is answered immediately
 // instead of queueing for up to the challenge's ~120s ceiling.
+// forceDisclosedChallenge prompts for a fresh Touch ID with reason as its
+// exact wording — ALWAYS, even when the session is already unlocked — as a
+// standalone approval gate. Unlike ensureUnlockedNotify it never rides the
+// cached session: a disclosed global-mount grant (jit run --with) must put
+// the credential's name in front of the human every time, so a script that
+// slipped a --with into a command can't grant a machine-wide credential
+// silently. The returned MEK is discarded (the session was already
+// unlocked; this is a confirmation, not an unlock), so session state is
+// untouched. A decline is recorded for audit and returned; it does NOT arm
+// the global re-prompt cooldown, since "no, not this global credential" is
+// a targeted refusal, not "stop trying to unlock."
+func (s *Server) forceDisclosedChallenge(reason string, c *caller) error {
+	s.challengeMu.Lock()
+	defer s.challengeMu.Unlock()
+
+	pending := unlockEvent(OpRevealPID, c)
+	pending.Cause = reason
+	s.mu.Lock()
+	s.pendingChallenge = pending
+	s.mu.Unlock()
+
+	mek, err := s.newFetcher().FetchMEK(reason)
+
+	s.mu.Lock()
+	s.pendingChallenge = nil
+	if err != nil {
+		event := unlockEvent(OpRevealPID, c)
+		event.Kind = KindDenied
+		event.Cause = fmt.Sprintf("%s: %s", reason, err)
+		s.recordEvent(*event)
+		s.mu.Unlock()
+		if s.OnSessionEvent != nil {
+			s.OnSessionEvent(*event)
+		}
+		return fmt.Errorf("disclosed grant declined: %w", err)
+	}
+	s.mu.Unlock()
+	wipe(mek)
+	return nil
+}
+
 func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller, label string) ([]byte, error) {
 	if mek := s.touchSession(); mek != nil {
 		s.recordUse(op, c, label)
