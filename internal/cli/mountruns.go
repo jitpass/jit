@@ -182,16 +182,31 @@ func (m *mountManager) newRunAttachment(pid int32) (*runAttachment, bool) {
 	return &runAttachment{pid: pid, startMicro: startMicro, command: command, since: now, hardCap: now.Add(runHardCap)}, true
 }
 
-// registerRun records att in the registry (replacing any prior attachment
-// for the same pid) and keeps grantModeRuns — the read path's fast-path
-// counter, a running sum of active grant-mode mounts — in step. Returns
-// after arming the exit watcher.
+// registerRun records att in the registry and keeps grantModeRuns — the read
+// path's fast-path counter, a running sum of active grant-mode mounts — in
+// step. Returns after arming the exit watcher.
+//
+// jit run sends a SECOND reveal_pid for the same pid when a run mixes its own
+// project mounts with a --with global grant: the project mounts ride the
+// run's own unlock, the global grant a separate disclosed challenge, so they
+// can't share one RPC. When that second attachment arrives for a pid that is
+// provably the same process (matching fork-time stamp), its mounts are MERGED
+// into the existing attachment rather than replacing it — replacing would
+// orphan the first call's swaps and grants, losing their teardown (a swapped
+// .env would never be restored). A stamp mismatch means a recycled pid whose
+// prior attachment the watcher/prune will drop, so that case still replaces.
 func (m *mountManager) registerRun(att *runAttachment) {
 	m.runsMu.Lock()
 	if m.runs == nil {
 		m.runs = map[int32]*runAttachment{}
 	}
 	if prev := m.runs[att.pid]; prev != nil {
+		if prev.startMicro == att.startMicro {
+			prev.mounts = append(prev.mounts, att.mounts...)
+			atomic.AddInt32(&m.grantModeRuns, int32(att.grantMountCount()))
+			m.runsMu.Unlock()
+			return // watcher already armed by the first registration
+		}
 		atomic.AddInt32(&m.grantModeRuns, int32(-prev.grantMountCount()))
 	}
 	atomic.AddInt32(&m.grantModeRuns, int32(att.grantMountCount()))

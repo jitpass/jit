@@ -123,6 +123,7 @@ var agentRunCmd = &cobra.Command{
 		server.OnRefresh = mounts.start
 		server.OnReveal = mounts.revealMount
 		server.OnRevealPID = mounts.revealForPID
+		server.OnCanGrant = mounts.canGrantAll
 		server.OnStopMount = mounts.stopMount
 		server.OnMountStatus = mounts.mountRevealStatuses
 

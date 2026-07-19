@@ -7,10 +7,10 @@ package cli
 
 import (
 	"fmt"
-	"os"
+	"sort"
+	"strings"
 
 	"github.com/jitpass/jit/internal/migrate"
-	"github.com/jitpass/jit/internal/mount"
 )
 
 // This file resolves `jit run --with <name>` into a global, file-delivered
@@ -45,17 +45,9 @@ func withMountPaths(names []string) ([]string, error) {
 	if len(names) == 0 {
 		return nil, nil
 	}
-	home, err := os.UserHomeDir()
+	entries, home, err := loadMountRegistry()
 	if err != nil {
 		return nil, err
-	}
-	root, err := vaultRootDir()
-	if err != nil {
-		return nil, err
-	}
-	entries, err := mount.LoadRegistry(mount.RegistryPath(root))
-	if err != nil {
-		return nil, fmt.Errorf("reading mount registry: %w", err)
 	}
 	registered := make(map[string]bool, len(entries))
 	for _, e := range entries {
@@ -89,20 +81,24 @@ func knownWithNames(kinds map[string][]string) string {
 	for n := range kinds {
 		names = append(names, n)
 	}
-	// small fixed set; sort for a stable error message
-	for i := 0; i < len(names); i++ {
-		for j := i + 1; j < len(names); j++ {
-			if names[j] < names[i] {
-				names[i], names[j] = names[j], names[i]
-			}
+	sort.Strings(names) // small fixed set; sort for a stable error message
+	return strings.Join(names, ", ")
+}
+
+// globalMountPaths is the set of every candidate on-disk path that is a
+// machine-global file-delivered mount (the gcp ADC, sops age keys, the global
+// ~/.npmrc). Project-scope logic (projectTemplateMounts) EXCLUDES these: a
+// global credential is granted only by an explicit --with, never because a
+// run's cwd happened to walk into the directory the credential lives in —
+// which for gcp (~/.config/gcloud) and sops (~/.config/sops/age,
+// ~/Library/Application Support/sops/age) is a $HOME SUBDIRECTORY, not $HOME
+// itself, so a "parent == $HOME" test alone would miss them.
+func globalMountPaths(home string) map[string]bool {
+	set := map[string]bool{}
+	for _, candidates := range globalMountKinds(home) {
+		for _, p := range candidates {
+			set[p] = true
 		}
 	}
-	out := ""
-	for i, n := range names {
-		if i > 0 {
-			out += ", "
-		}
-		out += n
-	}
-	return out
+	return set
 }

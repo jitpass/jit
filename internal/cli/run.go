@@ -58,8 +58,8 @@ var runCmd = &cobra.Command{
 		"A project whose tools always read the file itself can pin live mode by\n" +
 		"putting `read_as_file: true` in its .jit/config.yaml, instead of --live\n" +
 		"on every run.\n\n" +
-		"--with names a global, file-delivered credential to grant this run — gcp\n" +
-		"(gcloud ADC), sops, or npm (~/.npmrc) — for a tool that reads a\n" +
+		"--with names a global, file-delivered credential to grant this run:\n" +
+		"gcp (gcloud ADC), sops, or npm (~/.npmrc), for a tool that reads a\n" +
 		"machine-wide credential file, e.g. `jit run --with gcp terraform apply`.\n" +
 		"It takes explicit intent by design: a global credential is never\n" +
 		"granted by a project's config, only by a --with you type.\n\n" +
@@ -170,16 +170,9 @@ func requestRunCompat(w io.Writer, mountPaths, withNames, withMounts, argv []str
 	// template mounts always granted) ride the run's own unlock. The --with
 	// global mounts are handled separately, behind a disclosed challenge.
 	runMounts := make([]agent.RunMount, 0, len(mountPaths)+len(templateMounts))
-	for _, p := range mountPaths {
-		runMounts = append(runMounts, agent.RunMount{Path: p, Mode: dotenvMode})
-	}
-	for _, p := range templateMounts {
-		runMounts = append(runMounts, agent.RunMount{Path: p, Mode: agent.MountModeGrant})
-	}
-	global := make([]agent.RunMount, len(withMounts))
-	for i, p := range withMounts {
-		global[i] = agent.RunMount{Path: p, Mode: agent.MountModeGrant}
-	}
+	runMounts = append(runMounts, agent.RunMounts(mountPaths, dotenvMode)...)
+	runMounts = append(runMounts, agent.RunMounts(templateMounts, agent.MountModeGrant)...)
+	global := agent.RunMounts(withMounts, agent.MountModeGrant)
 	requestRunCompatVia(c, w, runMounts, global, withNames, int32(os.Getpid())) // #nosec G115 -- getpid always fits int32
 }
 

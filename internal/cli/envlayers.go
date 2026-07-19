@@ -35,6 +35,31 @@ import (
 // wasn't asked for is never merged, so production secrets can't ride into a
 // dev run by default.
 
+// loadMountRegistry reads the mount registry together with $HOME — the two
+// facts every registry consumer on the run path needs — so the
+// home+root+LoadRegistry boilerplate lives in one place instead of being
+// copied per call site (resolveInjectionProfile, projectTemplateMounts,
+// withMountPaths, grantMountsForProfileName). Consumers that don't need home
+// discard it. (Deliberately not memoized: each caller runs at most once per
+// `jit run`, on the cold pre-exec path, reading a small cached file — sharing
+// one load would mean threading state through several tested signatures for a
+// negligible I/O saving.)
+func loadMountRegistry() (entries []mount.Entry, home string, err error) {
+	home, err = os.UserHomeDir()
+	if err != nil {
+		return nil, "", err
+	}
+	root, err := vaultRootDir()
+	if err != nil {
+		return nil, "", err
+	}
+	entries, err = mount.LoadRegistry(mount.RegistryPath(root))
+	if err != nil {
+		return nil, "", fmt.Errorf("reading mount registry: %w", err)
+	}
+	return entries, home, nil
+}
+
 // envLayer is one mounted .env-family file participating in the merge.
 type envLayer struct {
 	rank        int    // ascending precedence (see envLayerRank)
@@ -117,28 +142,25 @@ func dirEnvLayers(entries []mount.Entry, dir, mode string) []envLayer {
 // and the like — non-empty TemplatePath) at or above cwd but strictly below
 // $HOME, walking git/direnv style. These are file-delivered secrets a tool
 // reads from the file itself, so a run grants them (never swaps — an inert
-// file would starve the tool). Global template mounts (a `~/.npmrc`, the
-// gcloud ADC, sops keys) live AT $HOME and are deliberately excluded: they
-// are machine-wide, and granting them takes explicit `--with` intent, never
-// a run walking into a directory. Best-effort: a registry read failure
-// yields nothing, and jit run proceeds without the grant.
+// file would starve the tool). Machine-global mounts are deliberately
+// excluded: they are granted only by an explicit `--with`, never because a
+// run walked into a directory. Exclusion is by KNOWN global path
+// (globalMountPaths), not by directory position — a `~/.npmrc` sits directly
+// at $HOME (so the walk's `d != home` bound already skips it), but the gcloud
+// ADC and sops keys live in $HOME SUBDIRECTORIES the walk visits, so they
+// must be filtered out explicitly or a run launched under ~/.config/gcloud
+// would grant the global ADC with no disclosed challenge. Best-effort: a
+// registry read failure yields nothing, and jit run proceeds without the grant.
 func projectTemplateMounts(cwd string) []string {
-	home, err := os.UserHomeDir()
+	entries, home, err := loadMountRegistry()
 	if err != nil {
 		return nil
 	}
-	root, err := vaultRootDir()
-	if err != nil {
-		return nil
-	}
-	entries, err := mount.LoadRegistry(mount.RegistryPath(root))
-	if err != nil {
-		return nil
-	}
+	global := globalMountPaths(home)
 	var out []string
 	for d := cwd; d != home; {
 		for _, e := range entries {
-			if e.TemplatePath != "" && filepath.Dir(e.MountPath) == d {
+			if e.TemplatePath != "" && filepath.Dir(e.MountPath) == d && !global[e.MountPath] {
 				out = append(out, e.MountPath)
 			}
 		}
@@ -239,17 +261,9 @@ func resolveInjectionProfile(cmdName, cwd, explicit, mode string, w io.Writer) (
 		return nil, nil, err
 	}
 
-	home, err := os.UserHomeDir()
+	entries, home, err := loadMountRegistry()
 	if err != nil {
 		return nil, nil, err
-	}
-	root, err := vaultRootDir()
-	if err != nil {
-		return nil, nil, err
-	}
-	entries, err := mount.LoadRegistry(mount.RegistryPath(root))
-	if err != nil {
-		return nil, nil, fmt.Errorf("reading mount registry: %w", err)
 	}
 
 	dir, layers := findEnvLayers(entries, cwd, home, mode)
@@ -320,11 +334,7 @@ func grantMountsForProfileName(cwd, name string) []string {
 	if name == "" {
 		return nil
 	}
-	root, err := vaultRootDir()
-	if err != nil {
-		return nil
-	}
-	entries, err := mount.LoadRegistry(mount.RegistryPath(root))
+	entries, _, err := loadMountRegistry()
 	if err != nil {
 		return nil
 	}

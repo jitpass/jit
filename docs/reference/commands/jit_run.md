@@ -32,8 +32,8 @@ A project whose tools always read the file itself can pin live mode by
 putting `read_as_file: true` in its .jit/config.yaml, instead of --live
 on every run.
 
---with names a global, file-delivered credential to grant this run — gcp
-(gcloud ADC), sops, or npm (~/.npmrc) — for a tool that reads a
+--with names a global, file-delivered credential to grant this run:
+gcp (gcloud ADC), sops, or npm (~/.npmrc), for a tool that reads a
 machine-wide credential file, e.g. `jit run --with gcp terraform apply`.
 It takes explicit intent by design: a global credential is never
 granted by a project's config, only by a --with you type.
