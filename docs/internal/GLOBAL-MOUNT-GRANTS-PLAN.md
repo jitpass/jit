@@ -93,13 +93,52 @@ consumer auto-detection for global mounts** (see §9 for why).
    attacker cannot type it for you. (`--` before the command is optional; jit
    stops reading its own flags at the first non-flag argument. Use `--` only
    when the command's own leading flags would be mistaken for jit's.)
-2. **A grant-shim** (`jit wrap`-style, permanent) — for a tool you run
-   constantly, set it up once so the tool always grants its mount. This is a
-   *variant* of `jit wrap`: instead of injecting an env var (the model for
-   `gh`/`aws`), the shim runs `jit run --with <name> <tool>`, i.e. it grants
-   a mount. Explicit permanent intent, still gated by the disclosed challenge.
+2. **A grant-wrap** (a new mode of `jit wrap`, permanent) — for a tool you
+   run by its native name (see §4a). Explicit permanent intent, still gated by
+   the disclosed challenge.
 
 Rejected: a project-local `grants:` declaration (violates §2).
+
+## 4a. Native-tool use: grant-wraps (the primary answer for "just type gcloud")
+
+The chosen solution for using a file-delivered tool by its native name
+(`gcloud storage ls`, not `jit run … gcloud …`) is a **grant-mode extension
+of `jit wrap`**, reusing the existing wrap machinery whole. `jit wrap` today
+has exactly one mode; add a second:
+
+- **env-wrap** (today): the shim runs `jit run --profile wrap-<tool> <tool>`
+  → injects a token. For `gh`, `aws`, `stripe`.
+- **grant-wrap** (new): the shim runs `jit run --with <mount> <tool>`
+  → grants a file-delivered mount. For `gcloud`, `terraform`-against-gcp,
+  SDK-using scripts.
+
+```
+jit wrap gcloud        # one-time: installs a grant-shim for the gcp mount
+gcloud storage ls      # native from here; the shim transparently grants the ADC
+```
+
+Everything else is unchanged: the `~/.jit/shims` PATH entry, real-binary
+resolution beyond the shim, and `jit wrap list`/`doctor`/`undo`. The only new
+concept is "a wrapped tool may grant a mount instead of injecting an env var,"
+a small branch in the wrap install path. `jit wrap` thereby becomes the single
+"use a tool by its native name" answer for env- and file-delivered tools alike.
+
+Security: the shim runs `jit run --with <mount>`, i.e. the disclosed-challenge
+grant. The user gets **one disclosed unlock per session** ("grant `gcloud` your
+global gcloud credentials?"), cached for the session thereafter; each grant is
+scoped to that tool's process tree and ends on exit — never a broad window.
+
+Full usage story for a native file-delivered tool:
+
+| Want | Do | Security |
+|---|---|---|
+| Native, all the time | `jit wrap gcloud` once, then `gcloud …` | scoped grant, one disclosed unlock/session |
+| Occasional, no setup | `jit agent reveal <path>`, then `gcloud …` | broad window, manual |
+| Scripted / one-off | `jit run --with gcp gcloud …` | scoped grant, per-run |
+
+Bare `gcloud` with no wrap, no window, and no `jit run` gets decoys and fails
+fast — by design (decoy-by-default requires *something* to authorize a real
+read; there is no un-mediated real read).
 
 ## 5. The disclosed challenge
 
@@ -228,8 +267,8 @@ don't detect for global mounts at all.
 2. **`--with <name>` + the known-mount-kinds table + the disclosed
    challenge** (disclosed `OpRevealPID` / `OpGrantGlobal`). The minimum that
    makes gcp work safely under `jit run`.
-3. **Grant-shim** (`jit wrap`-style permanent grant) for the run-it-constantly
-   ergonomics.
+3. **Grant-wraps** (§4a) — the grant-mode of `jit wrap` for native-tool use.
+   The primary answer for `gcloud`/`terraform`/SDK scripts.
 4. **Machine-level `jit trust`** (direnv-style approval stored outside the
    repo), only if declare-once ergonomics prove wanted.
 5. **Short-lived token broker** for gcloud (hardening), last.
