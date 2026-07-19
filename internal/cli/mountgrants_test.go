@@ -21,6 +21,25 @@ import (
 // pruneStaleRuns' liveness check is the correctness path either way).
 // Defaults describe the happy path: one live target (pid 100, start stamp
 // 1000), holders all in-tree; individual tests override what they exercise.
+
+// runMountsGrant/runMountsSwap build a RunMount list of one mode for the
+// revealForPID calls (which now carry per-mount modes).
+func runMountsGrant(paths ...string) []agent.RunMount {
+	out := make([]agent.RunMount, len(paths))
+	for i, p := range paths {
+		out[i] = agent.RunMount{Path: p, Mode: agent.MountModeGrant}
+	}
+	return out
+}
+
+func runMountsSwap(paths ...string) []agent.RunMount {
+	out := make([]agent.RunMount, len(paths))
+	for i, p := range paths {
+		out[i] = agent.RunMount{Path: p, Mode: agent.MountModeSwap}
+	}
+	return out
+}
+
 func newGrantTestManager(sm *servedMount) *mountManager {
 	m := &mountManager{
 		stdout:  &bytes.Buffer{},
@@ -52,8 +71,8 @@ func installGrant(m *mountManager, path string, pid int32, startMicro int64) {
 		m.runs = map[int32]*runAttachment{}
 	}
 	m.runs[pid] = &runAttachment{
-		pid: pid, startMicro: startMicro, mode: attachGrant,
-		mounts: []string{path}, since: time.Now(), hardCap: time.Now().Add(runHardCap),
+		pid: pid, startMicro: startMicro,
+		mounts: []attachedMount{{path: path, mode: attachGrant}}, since: time.Now(), hardCap: time.Now().Add(runHardCap),
 	}
 	m.runsMu.Unlock()
 	atomic.AddInt32(&m.grantModeRuns, 1)
@@ -63,7 +82,7 @@ func TestGrantForPIDRegistersAttachment(t *testing.T) {
 	sm := newTestServedMount()
 	m := newGrantTestManager(sm)
 
-	if err := m.grantForPID([]string{"/tmp/fixture/.env"}, 100); err != nil {
+	if err := m.revealForPID(runMountsGrant("/tmp/fixture/.env"), 100); err != nil {
 		t.Fatalf("grantForPID: %v", err)
 	}
 	m.runsMu.Lock()
@@ -72,7 +91,7 @@ func TestGrantForPIDRegistersAttachment(t *testing.T) {
 	if !ok {
 		t.Fatal("no run attachment registered for pid 100")
 	}
-	if att.mode != attachGrant || att.startMicro != 1000 || len(att.mounts) != 1 {
+	if att.startMicro != 1000 || len(att.mounts) != 1 || att.mounts[0].mode != attachGrant {
 		t.Errorf("attachment = %+v, want a grant for start 1000 on one mount", att)
 	}
 	if atomic.LoadInt32(&m.grantModeRuns) != 1 {
@@ -89,7 +108,7 @@ func TestGrantForPIDRefusedWithNothingRealToServe(t *testing.T) {
 	sm.lastResolveErr = "resolving API_KEY (fixture/MISSING): secret not found"
 	m := newGrantTestManager(sm)
 
-	err := m.grantForPID([]string{"/tmp/fixture/.env"}, 100)
+	err := m.revealForPID(runMountsGrant("/tmp/fixture/.env"), 100)
 	if err == nil {
 		t.Fatal("expected an error granting on a mount with nothing real to serve")
 	}
@@ -107,10 +126,10 @@ func TestGrantForPIDUnknownMountAndDeadTargetFail(t *testing.T) {
 	sm := newTestServedMount()
 	m := newGrantTestManager(sm)
 
-	if err := m.grantForPID([]string{"/tmp/fixture/other.env"}, 100); err == nil {
+	if err := m.revealForPID(runMountsGrant("/tmp/fixture/other.env"), 100); err == nil {
 		t.Error("expected an error for an unserved mount path")
 	}
-	if err := m.grantForPID([]string{"/tmp/fixture/.env"}, 999); err == nil {
+	if err := m.revealForPID(runMountsGrant("/tmp/fixture/.env"), 999); err == nil {
 		t.Error("expected an error for a target pid the kernel can't see")
 	}
 }

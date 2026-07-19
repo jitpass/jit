@@ -7,7 +7,6 @@ package cli
 
 import (
 	"fmt"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -49,49 +48,28 @@ type grantVerdict struct {
 	expires time.Time
 }
 
-// grantForPID is revealForPID's grant-mode attach: register a --live run
-// against every mount that is currently served AND has real content
-// resolved. The real-content rule is revealMount's honesty rule (GAPS.md
-// #46): a "grant" on a mount that can only serve decoys would report
-// success while changing nothing. Mounts that can't be granted are skipped
-// with a logged reason; the RPC fails only when NO mount could be granted.
-func (m *mountManager) grantForPID(mountPaths []string, pid int32) error {
-	att, ok := m.newRunAttachment(pid, attachGrant)
-	if !ok {
-		return fmt.Errorf("reveal_pid: target pid %d not found", pid)
+// validateGrantMount is revealForPID's grant-mode check for one mount: it
+// must be currently served AND have real content resolved. The real-content
+// rule is revealMount's honesty rule (GAPS.md #46): a "grant" on a mount
+// that can only serve decoys would report success while changing nothing. A
+// non-nil error is the skip reason revealForPID logs and collects.
+func (m *mountManager) validateGrantMount(path string) error {
+	m.mu.Lock()
+	sm, served := m.served[path]
+	m.mu.Unlock()
+	if !served {
+		return fmt.Errorf("no such mount: %s", path)
 	}
-
-	var problems []string
-	for _, path := range mountPaths {
-		m.mu.Lock()
-		sm, served := m.served[path]
-		m.mu.Unlock()
-		if !served {
-			problems = append(problems, fmt.Sprintf("no such mount: %s", path))
-			continue
+	sm.mu.Lock()
+	hasReal := sm.real != nil
+	resolveErr := sm.lastResolveErr
+	sm.mu.Unlock()
+	if !hasReal {
+		if resolveErr != "" {
+			return fmt.Errorf("%s has nothing real to serve (resolving its secrets failed: %s)", path, resolveErr)
 		}
-		sm.mu.Lock()
-		hasReal := sm.real != nil
-		resolveErr := sm.lastResolveErr
-		sm.mu.Unlock()
-		if !hasReal {
-			msg := fmt.Sprintf("%s has nothing real to serve", path)
-			if resolveErr != "" {
-				msg = fmt.Sprintf("%s (resolving its secrets failed: %s)", msg, resolveErr)
-			}
-			problems = append(problems, msg)
-			continue
-		}
-		att.mounts = append(att.mounts, path)
-		fmt.Fprintf(m.stdout, "jit agent: mount %s: serving real content to pid %d's process tree (%s) until it exits\n", path, pid, att.command)
+		return fmt.Errorf("%s has nothing real to serve", path)
 	}
-	for _, p := range problems {
-		fmt.Fprintf(m.stderr, "jit agent: reveal_pid skipped: %s\n", p)
-	}
-	if len(att.mounts) == 0 {
-		return fmt.Errorf("reveal_pid: no grant created: %s", strings.Join(problems, "; "))
-	}
-	m.registerRun(att)
 	return nil
 }
 
