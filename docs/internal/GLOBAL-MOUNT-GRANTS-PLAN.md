@@ -261,17 +261,23 @@ don't detect for global mounts at all.
 
 ## 12. Build stages
 
-1. **Per-mount mode** in the run→agent protocol + include project template
-   mounts in run resolution. Unblocks everything; also gives project `.npmrc`
-   grants for free.
-2. **`--with <name>` + the known-mount-kinds table + the disclosed
-   challenge** (disclosed `OpRevealPID` / `OpGrantGlobal`). The minimum that
-   makes gcp work safely under `jit run`.
-3. **Grant-wraps** (§4a) — the grant-mode of `jit wrap` for native-tool use.
-   The primary answer for `gcloud`/`terraform`/SDK scripts.
+Status: stages 1-3 plus the §12a guidance are BUILT and code-reviewed on
+branch `per-mount-mode` (unmerged). Stages 4-5 below remain, both conditional.
+
+1. **[DONE] Per-mount mode** in the run→agent protocol + include project
+   template mounts in run resolution. Unblocks everything; also gives project
+   `.npmrc` grants for free.
+2. **[DONE] `--with <name>` + the known-mount-kinds table + the disclosed
+   challenge** (disclosed `OpRevealPID`). The minimum that makes gcp work
+   safely under `jit run`.
+3. **[DONE] Grant-wraps** (§4a) — the grant-mode of `jit wrap` for
+   native-tool use. The primary answer for `gcloud`/`terraform`/SDK scripts.
+   Plus **[DONE] §12a guidance** at migrate + doctor time.
 4. **Machine-level `jit trust`** (direnv-style approval stored outside the
-   repo), only if declare-once ergonomics prove wanted.
-5. **Short-lived token broker** for gcloud (hardening), last.
+   repo), only if declare-once ergonomics prove wanted. NOT started —
+   deliberately deferred: it relaxes the disclosed challenge, so it should
+   wait until per-run-prompt friction is actually demonstrated.
+5. **Short-lived token broker** for gcloud (hardening), last. NOT started.
 
 ## 12a. Guidance at migrate / doctor time (discoverability)
 
