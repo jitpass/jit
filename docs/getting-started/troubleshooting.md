@@ -5,10 +5,21 @@ description: Placeholder values, hanging reads, surprise Touch ID prompts, and s
 
 # Troubleshooting
 
-- **Your app got placeholder values.** The mount wasn't revealed when the
-  app read it. `jit agent status` confirms (it shows what the last reader
-  was served); `jit agent reveal <path>` fixes it, then restart the app.
-  Background: [Live-mounted files](../run/mounts.md).
+- **Your app got placeholder values.** Under `jit run` this is handled for
+  you (the mount is swapped for a compatible file, and the real values are in
+  the environment), so this usually means the app read the mount *outside*
+  `jit run` and outside a reveal window. Run it with `jit run`, or
+  `jit agent reveal <path>` then restart the app. `jit agent status` shows
+  what the last reader was served. Background:
+  [Live-mounted files](../run/mounts.md).
+- **A script says `.env` is missing, or a tool ignores it.** A migrated
+  `.env` is a named pipe, not a regular file, so a `[ -f .env ]` /
+  `Path.is_file()` guard outside `jit run` sees "not a regular file." Run the
+  script with `jit run` — it swaps in a plain file for the run, so the guard
+  passes. If instead a tool reads values *from the file itself* (like
+  `docker compose` env_file) and gets nothing, use `jit run --live`, or pin
+  `read_as_file: true` in the project's `.jit/config.yaml`. See
+  [Which command delivers a secret](./choosing.md).
 - **A command hangs reading `.env`.** The agent probably isn't running or
   serving that mount; `jit status` will say. `jit agent install` (re)starts
   it.

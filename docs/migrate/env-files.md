@@ -20,16 +20,24 @@ things sit on disk afterwards, neither containing a secret:
   value. This is where you look to answer "where does this variable live
   now?"
 
-## The reveal step is wired for you
+## Running the project — it just works
 
-`jit migrate` wires an automatic reveal into your `.envrc` (direnv) or
-`package.json` `dev`/`start` script, so `npm run dev` and friends just
-work. The window also opens automatically for 60 seconds whenever the
-agent unlocks or a migrate runs. For everything else there's
-`jit agent reveal <path>`.
+When you run your commands with [`jit run`](../run/index.md), it makes the
+mount compatible with whatever your command does for the duration of that
+run: by default it swaps in a plain, inert file so `[ -f .env ]` guards pass
+and re-reads set nothing (values come from the injected environment), and
+`--live` keeps the live file for tools that read values from it directly
+(`docker compose` with `env_file:`). You don't configure any of this; see
+[Which command delivers a secret](../getting-started/choosing.md).
 
-Day-to-day behavior of mounts - decoys, reveal windows, how to check what
-a reader was served - is covered in
+For running *outside* `jit run` — a direnv or npm project you enter by `cd`
+or `npm run dev` — `jit migrate` also wires an automatic reveal into your
+`.envrc` or `package.json` `dev`/`start` script, and the reveal window opens
+for 60 seconds whenever the agent unlocks or a migrate runs. For anything
+else there's `jit agent reveal <path>`.
+
+Day-to-day behavior of mounts - decoys, reveal windows, the compatibility
+swap, how to check what a reader was served - is covered in
 **[Live-mounted files](../run/mounts.md)**.
 
 ## Layered .env files
