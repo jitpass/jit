@@ -721,10 +721,13 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 			fmt.Fprintf(out, "  • %s (%s) -> profile %q (%d var(s)); backup: `jit vault get %s`\n",
 				displayPath(home, adcPath), result.CredType, result.ProfileName, len(result.Variables), result.BackupPath)
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
-			// Like the global ~/.npmrc: not tied to any one project
-			// directory, so there's no project-level hook to wire a reveal
-			// call into — the post-unlock default reveal window is what
-			// makes the next SDK read work.
+			// A machine-global mount with no project directory to hang a
+			// reveal hook on: usage is explicit `jit run --with` intent (plan
+			// §12a), so name the tools and the command right here.
+			if g, ok := globalMountGuidanceForPath(home, adcPath); ok {
+				fmt.Fprintf(out, "    tools that read it (%s): jit run --with %s <command>\n", g.tools, g.name)
+				fmt.Fprintf(out, "    or, to keep typing gcloud directly: jit wrap add gcloud --grant %s\n", g.name)
+			}
 		}
 		fmt.Fprintln(out)
 	}
@@ -755,7 +758,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 			// there's no project-level reveal hook to wire — print the hook
 			// one-liner instead.
 			fmt.Fprintf(out, "    sops v3.10+ can fetch it directly: export SOPS_AGE_KEY_CMD=\"jit sops-age-key\"\n")
-			fmt.Fprintf(out, "    older sops/kluctl read the mounted file: jit run --profile %s -- kluctl deploy\n", result.ProfileName)
+			fmt.Fprintf(out, "    older sops/kluctl read the mounted file: jit run --with sops -- kluctl deploy\n")
 		}
 		fmt.Fprintln(out)
 	}
@@ -792,6 +795,10 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 				// (.envrc/package.json) to wire a reveal call into — only a
 				// project-local .npmrc has a natural "dir" for this.
 				summary.recordRevealHook(filepath.Dir(npmrcPath), npmrcPath)
+			} else if g, ok := globalMountGuidanceForPath(home, npmrcPath); ok {
+				// The global ~/.npmrc is a machine-wide mount: usage is
+				// explicit `jit run --with npm` intent (plan §12a).
+				fmt.Fprintf(out, "    %s read it with: jit run --with %s <command>\n", g.tools, g.name)
 			}
 		}
 		fmt.Fprintln(out)

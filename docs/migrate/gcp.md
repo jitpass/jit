@@ -15,7 +15,14 @@ service account's private key there instead. Every Google client library
 `refresh_token`, or a service account's `private_key`, into the vault and
 replaces the file with a [live mount](../run/mounts.md) serving a
 template: every non-secret field passes through byte-for-byte, and the
-secret slot fills from the vault only during a revealed window.
+secret slot fills from the vault only for a run you explicitly grant it to
+with `jit run --with gcp`. The ADC is a machine-wide credential, so it is
+never granted by a project's config, only by a `--with` you type.
+
+```sh
+jit run --with gcp -- terraform apply     # scoped to this run, gone on exit
+jit wrap add gcloud --grant gcp           # or: keep typing gcloud directly
+```
 
 ## Why a mount and not a credential hook?
 
@@ -34,9 +41,10 @@ leaves it alone.)
 ## What to expect
 
 - SDKs, `gcloud auth application-default print-access-token`, and
-  Terraform read the mount like a normal file. Outside a revealed window
-  they see placeholder values and fail fast with a local parse error,
-  `jit agent reveal <path>` opens a window, and `jit agent status` shows
+  Terraform read the mount like a normal file. Run them under
+  `jit run --with gcp` (or a grant-wrapped `gcloud`) and they get real
+  credentials, scoped to that run. Outside such a run they see placeholder
+  values and fail fast with a local parse error; `jit agent status` shows
   what the last reader was served.
 - The file is machine-wide (one per user), so it's covered by
   `jit migrate home` only, `local` never touches it.
