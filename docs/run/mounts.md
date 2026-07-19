@@ -28,6 +28,13 @@ moving them off disk.
   as `docker compose` with `env_file:` — jit run auto-detects the common
   ones. `jit agent status` shows whether each mount is swapped or granted,
   and for which run.
+- A project whose tools **always** read the file itself can pin live mode
+  once instead of typing `--live` every time: put `read_as_file: true` in
+  the project's `.jit/config.yaml`. Only set it when the project genuinely
+  reads the file rather than the environment — it is an explicit
+  declaration, not a guess, because choosing live for a project whose
+  scripts guard with `[ -f .env ]` would break those guards. See
+  [Which command delivers a secret](../getting-started/choosing.md).
 - `jit migrate` wires an automatic reveal into your `.envrc` (direnv) or
   `package.json` `dev`/`start` script, so `npm run dev` and friends just
   work. The window also opens automatically for 60 seconds whenever the
