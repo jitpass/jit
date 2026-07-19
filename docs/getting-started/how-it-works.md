@@ -80,3 +80,9 @@ encrypted, into the vault. `jit migrate undo` restores them byte-for-byte;
 `jit unmount` turns a live mount back into a plain file; `jit migrate
 remove` is the full exit from a project; `jit wrap undo` unwraps a tool.
 More in **[Undo, unmount, and remove](../migrate/undo-and-remove.md)**.
+
+---
+
+Next: **[Delivering a secret to a program](./delivering-secrets.md)** - now that
+you know the pieces, which command to reach for (`jit wrap`, `jit run`,
+`jit run --profile`) and when to set `read_as_file`.
