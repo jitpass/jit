@@ -8,7 +8,7 @@ package agent
 // one Response, close — no multiplexing needed for this CLI-tool traffic
 // pattern).
 type Request struct {
-	Op string `json:"op"` // "wrap" | "unwrap" | "unlock" | "lock" | "status" | "refresh" | "reveal" | "stop_mount"
+	Op string `json:"op"` // "wrap" | "unwrap" | "unlock" | "lock" | "status" | "refresh" | "reveal" | "reveal_pid" | "stop_mount" | "history"
 	// Data is the DEK (for "wrap") or the wrapped DEK (for "unwrap").
 	// encoding/json base64-encodes a []byte field automatically.
 	Data []byte `json:"data,omitempty"`
@@ -20,6 +20,15 @@ type Request struct {
 	// handed to OnReveal/OnStopMount.
 	MountPath     string `json:"mount_path,omitempty"`
 	RevealSeconds int64  `json:"reveal_seconds,omitempty"`
+	// MountPaths and TargetPID are "reveal_pid"'s arguments: serve real
+	// content on each of these mounts to TargetPID's process tree, for as
+	// long as that process lives (jit run sends its OWN pid right before
+	// execve, which keeps the pid — so this is the target command's pid,
+	// known exactly, not guessed). Opaque to Server, same as MountPath:
+	// what a grant means, how readers are matched to the tree, and every
+	// teardown trigger live entirely in the CLI layer's OnRevealPID.
+	MountPaths []string `json:"mount_paths,omitempty"`
+	TargetPID  int32    `json:"target_pid,omitempty"`
 	// Label is the caller's own description of what a "wrap"/"unwrap" is
 	// FOR — the vault path of the secret whose DEK is in Data ("stripe/
 	// live-key"), which the agent otherwise cannot know: it only ever sees
@@ -40,6 +49,7 @@ const (
 	OpStatus    = "status"
 	OpRefresh   = "refresh"
 	OpReveal    = "reveal"
+	OpRevealPID = "reveal_pid"
 	OpStopMount = "stop_mount"
 	OpHistory   = "history"
 )
@@ -212,6 +222,22 @@ type MountRevealStatus struct {
 	// read the mount since the agent process started (this is in-memory
 	// state, not persisted).
 	LastServe *MountServeEvent `json:"last_serve,omitempty"`
+	// Grants are the run-scoped reveal grants currently active on this
+	// mount (usually zero or one): each names the jit-run target whose
+	// process tree gets real content per-read, for that process's
+	// lifetime. In-memory like LastServe — a grant never survives the
+	// agent process, by design.
+	Grants []MountGrantStatus `json:"grants,omitempty"`
+}
+
+// MountGrantStatus is one active run-scoped reveal grant as status reports
+// it — which process tree may read real content from a mount right now.
+// Command is kernel-derived at grant time (internal/lineage), not
+// caller-reported, matching SessionEvent.By's convention.
+type MountGrantStatus struct {
+	PID       int32  `json:"pid"`
+	Command   string `json:"command,omitempty"`
+	SinceUnix int64  `json:"since_unix"`
 }
 
 // MountServeEvent describes one read of a mount: when, what kind of
@@ -235,4 +261,8 @@ type MountServeEvent struct {
 	// "almost certainly this process"; it must never be displayed as
 	// certainty, because it is an inference.
 	ReaderLikely bool `json:"reader_likely,omitempty"`
+	// GrantServed marks a REAL serve that was authorized by a run-scoped
+	// grant (every attached reader verified inside the granted process
+	// tree) rather than by a reveal window. Always false on decoy serves.
+	GrantServed bool `json:"grant_served,omitempty"`
 }
