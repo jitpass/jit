@@ -67,7 +67,7 @@ func TestRequestRunGrantSendsLayerMountsAndOwnPID(t *testing.T) {
 
 	var out bytes.Buffer
 	mounts := []string{"/tmp/fixture/.env", "/tmp/fixture/.env.local"}
-	requestRunCompatVia(c, &out, mounts, 4242, true)
+	requestRunCompatVia(c, &out, runMountsGrant(mounts...), 4242)
 
 	got, ok := recorded.Load().(struct {
 		paths []string
@@ -96,7 +96,7 @@ func TestRequestRunGrantNeverPromptsALockedSession(t *testing.T) {
 	_, c, recorded := grantTestServer(t)
 
 	var out bytes.Buffer
-	requestRunCompatVia(c, &out, []string{"/tmp/fixture/.env"}, 4242, true)
+	requestRunCompatVia(c, &out, runMountsGrant("/tmp/fixture/.env"), 4242)
 
 	if recorded.Load() != nil {
 		t.Error("OnRevealPID fired against a locked session — the guard must skip, never challenge")
@@ -110,7 +110,7 @@ func TestRequestRunGrantSilentWhenAgentUnreachableOrRefusing(t *testing.T) {
 	// Unreachable: a client dialed at a socket nothing listens on.
 	dead := agent.NewClient(filepath.Join(t.TempDir(), "dead.sock"))
 	var out bytes.Buffer
-	requestRunCompatVia(dead, &out, []string{"/tmp/fixture/.env"}, 4242, true)
+	requestRunCompatVia(dead, &out, runMountsGrant("/tmp/fixture/.env"), 4242)
 	if out.Len() != 0 {
 		t.Errorf("announce = %q with no agent, want silence", out.String())
 	}
@@ -125,7 +125,7 @@ func TestRequestRunGrantSilentWhenAgentUnreachableOrRefusing(t *testing.T) {
 		t.Fatalf("Unlock: %v", err)
 	}
 	out.Reset()
-	requestRunCompatVia(c, &out, []string{"/tmp/fixture/.env"}, 4242, true)
+	requestRunCompatVia(c, &out, runMountsGrant("/tmp/fixture/.env"), 4242)
 	if out.Len() != 0 {
 		t.Errorf("announce = %q after an agent refusal, want silence", out.String())
 	}
@@ -153,7 +153,7 @@ func TestRequestRunCompatDefaultSwapsAndAutodetectsLive(t *testing.T) {
 		t.Fatalf("Unlock: %v", err)
 	}
 	var out bytes.Buffer
-	requestRunCompatVia(c, &out, []string{"/tmp/fixture/.env"}, 7777, false)
+	requestRunCompatVia(c, &out, runMountsSwap("/tmp/fixture/.env"), 7777)
 	if swapPID.Load() != 7777 || gotMode.Load() != agent.MountModeSwap {
 		t.Errorf("default compat did not send a swap for the run pid (pid=%d mode=%v)", swapPID.Load(), gotMode.Load())
 	}

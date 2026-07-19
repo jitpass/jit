@@ -113,6 +113,44 @@ func dirEnvLayers(entries []mount.Entry, dir, mode string) []envLayer {
 	return layers
 }
 
+// projectTemplateMounts returns the PROJECT-local template mounts (npmrc
+// and the like — non-empty TemplatePath) at or above cwd but strictly below
+// $HOME, walking git/direnv style. These are file-delivered secrets a tool
+// reads from the file itself, so a run grants them (never swaps — an inert
+// file would starve the tool). Global template mounts (a `~/.npmrc`, the
+// gcloud ADC, sops keys) live AT $HOME and are deliberately excluded: they
+// are machine-wide, and granting them takes explicit `--with` intent, never
+// a run walking into a directory. Best-effort: a registry read failure
+// yields nothing, and jit run proceeds without the grant.
+func projectTemplateMounts(cwd string) []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	root, err := vaultRootDir()
+	if err != nil {
+		return nil
+	}
+	entries, err := mount.LoadRegistry(mount.RegistryPath(root))
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for d := cwd; d != home; {
+		for _, e := range entries {
+			if e.TemplatePath != "" && filepath.Dir(e.MountPath) == d {
+				out = append(out, e.MountPath)
+			}
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			break
+		}
+		d = parent
+	}
+	return out
+}
+
 // findEnvLayers walks from startDir up toward home (git/direnv style),
 // returning the first directory with at least one mergeable layer. The walk
 // checks home itself last, then stops — it never scans above $HOME (or above
