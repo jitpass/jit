@@ -45,8 +45,10 @@ var exportCmd = &cobra.Command{
 			return fmt.Errorf("jit export: %w", err)
 		}
 		// Announce on stderr: stdout must carry only the export lines,
-		// which are meant to be eval'd.
-		p, err := resolveInjectionProfile("jit export", cwd, exportProfile, exportMode, cmd.ErrOrStderr())
+		// which are meant to be eval'd. Grant mounts deliberately ignored:
+		// an export lands in the calling shell, not a child process tree
+		// jit could scope a run grant to.
+		p, _, err := resolveInjectionProfile("jit export", cwd, exportProfile, exportMode, cmd.ErrOrStderr())
 		if err != nil {
 			return fmt.Errorf("jit export: %w", err)
 		}

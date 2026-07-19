@@ -39,6 +39,7 @@ import (
 type envLayer struct {
 	rank        int    // ascending precedence (see envLayerRank)
 	fileName    string // e.g. ".env.local", for announce lines
+	mountPath   string // the layer's live mount on disk, from the registry entry — what a run-scoped grant names
 	profilePath string // the layer's manifest, from the registry entry
 	profileName string // manifest basename minus extension, for announce lines
 }
@@ -103,6 +104,7 @@ func dirEnvLayers(entries []mount.Entry, dir, mode string) []envLayer {
 		layers = append(layers, envLayer{
 			rank:        rank,
 			fileName:    name,
+			mountPath:   e.MountPath,
 			profilePath: e.ProfilePath,
 			profileName: strings.TrimSuffix(filepath.Base(e.ProfilePath), filepath.Ext(e.ProfilePath)),
 		})
@@ -165,45 +167,63 @@ func unmigratedSiblingLayers(dir, mode string, merged []envLayer) []string {
 // makes on w (stderr — stdout belongs to the target command / the export
 // lines). cmdName is "jit run" or "jit export", for error/announce voice.
 //
+// grantMounts is the second answer the same resolution produces: the live
+// mount paths whose files serve exactly the values being injected — what
+// `jit run` names in its run-scoped reveal grant so a script that re-reads
+// the mounted file mid-run gets those same real values instead of decoys
+// (the reported jit-hidden-* clobber incident). Best-effort by design:
+// empty means "nothing to grant" (an unmounted profile, an unreadable
+// registry), never an error — injection must not fail over grant lookup.
+//
 // Resolution order:
 //  1. explicit --profile: used verbatim (project-then-global via
 //     profile.Load), no merge, silent. --mode is an error here — it only
-//     means something for the layer merge.
+//     means something for the layer merge. grantMounts is whatever
+//     registry entries reference that profile's manifest.
 //  2. the mount registry's .env layers for the nearest directory at or
-//     above cwd (findEnvLayers): overlaid in precedence order.
+//     above cwd (findEnvLayers): overlaid in precedence order. grantMounts
+//     is exactly the merged layers' mount paths.
 //  3. no layers anywhere: fall back to the single project-local profile if
 //     exactly one exists; zero or several stay a hard error that says how
 //     to disambiguate. --mode without any layers is also a hard error.
-func resolveInjectionProfile(cmdName, cwd, explicit, mode string, w io.Writer) (profile.Profile, error) {
+func resolveInjectionProfile(cmdName, cwd, explicit, mode string, w io.Writer) (p profile.Profile, grantMounts []string, err error) {
 	if explicit != "" {
 		if mode != "" {
-			return nil, fmt.Errorf("--mode only applies when jit merges a project's .env layers, with --profile %s, name the mode's profile directly instead", explicit)
+			return nil, nil, fmt.Errorf("--mode only applies when jit merges a project's .env layers, with --profile %s, name the mode's profile directly instead", explicit)
 		}
-		return profile.Load(cwd, explicit)
+		p, err := profile.Load(cwd, explicit)
+		if err != nil {
+			return nil, nil, err
+		}
+		return p, grantMountsForProfileName(cwd, explicit), nil
 	}
 	if err := validateEnvMode(mode); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	root, err := vaultRootDir()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	entries, err := mount.LoadRegistry(mount.RegistryPath(root))
 	if err != nil {
-		return nil, fmt.Errorf("reading mount registry: %w", err)
+		return nil, nil, fmt.Errorf("reading mount registry: %w", err)
 	}
 
 	dir, layers := findEnvLayers(entries, cwd, home, mode)
 	if len(layers) == 0 {
 		if mode != "" {
-			return nil, fmt.Errorf("--mode %s: no migrated .env layers found at or above this directory, mode selects among a project's migrated .env files", mode)
+			return nil, nil, fmt.Errorf("--mode %s: no migrated .env layers found at or above this directory, mode selects among a project's migrated .env files", mode)
 		}
-		return resolveSingleProjectProfile(cmdName, cwd, w)
+		p, name, err := resolveSingleProjectProfile(cmdName, cwd, w)
+		if err != nil {
+			return nil, nil, err
+		}
+		return p, grantMountsForProfileName(cwd, name), nil
 	}
 
 	if mode != "" {
@@ -215,7 +235,7 @@ func resolveInjectionProfile(cmdName, cwd, explicit, mode string, w io.Writer) (
 			}
 		}
 		if !hasModeLayer {
-			return nil, fmt.Errorf("--mode %s: no migrated .env.%s (or .env.%s.local) in %s", mode, mode, mode, displayPath(home, dir))
+			return nil, nil, fmt.Errorf("--mode %s: no migrated .env.%s (or .env.%s.local) in %s", mode, mode, mode, displayPath(home, dir))
 		}
 	}
 
@@ -225,11 +245,12 @@ func resolveInjectionProfile(cmdName, cwd, explicit, mode string, w io.Writer) (
 	for _, l := range layers {
 		p, err := profile.LoadFile(l.profilePath)
 		if err != nil {
-			return nil, fmt.Errorf("layer %s: %w", l.fileName, err)
+			return nil, nil, fmt.Errorf("layer %s: %w", l.fileName, err)
 		}
 		merged = append(merged, p)
 		fileNames = append(fileNames, l.fileName)
 		profileNames = append(profileNames, l.profileName)
+		grantMounts = append(grantMounts, l.mountPath)
 	}
 
 	// Injecting real plaintext secrets should never be silent — say
@@ -248,7 +269,50 @@ func resolveInjectionProfile(cmdName, cwd, explicit, mode string, w io.Writer) (
 		_, _ = color.New(color.FgYellow).Fprintf(w, "%s: note: %s in %s not migrated, not merged, and injected variables shadow it for most dotenv loaders (fix: jit migrate local)\n",
 			cmdName, strings.Join(missing, ", "), displayPath(home, dir))
 	}
-	return profile.Overlay(merged...), nil
+	return profile.Overlay(merged...), grantMounts, nil
+}
+
+// grantMountsForProfileName finds the live mounts (if any) whose registry
+// entries reference the named profile's manifest — the grant targets for
+// the --profile and single-project-profile paths, where no layer merge
+// carries the mount paths along. Best-effort throughout: any lookup
+// failure just means no grant, matching resolveInjectionProfile's
+// grantMounts contract.
+func grantMountsForProfileName(cwd, name string) []string {
+	if name == "" {
+		return nil
+	}
+	root, err := vaultRootDir()
+	if err != nil {
+		return nil
+	}
+	entries, err := mount.LoadRegistry(mount.RegistryPath(root))
+	if err != nil {
+		return nil
+	}
+	infos, err := profile.ListAll(cwd)
+	if err != nil {
+		return nil
+	}
+	// First name match wins — ListAll orders project-local before global,
+	// the same precedence profile.Load itself resolves with.
+	profilePath := ""
+	for _, info := range infos {
+		if info.Name == name {
+			profilePath = info.Path
+			break
+		}
+	}
+	if profilePath == "" {
+		return nil
+	}
+	var mounts []string
+	for _, e := range entries {
+		if e.TemplatePath == "" && e.ProfilePath == profilePath {
+			mounts = append(mounts, e.MountPath)
+		}
+	}
+	return mounts
 }
 
 // resolveSingleProjectProfile is the pre-layer fallback: use the project's
@@ -260,18 +324,21 @@ func resolveInjectionProfile(cmdName, cwd, explicit, mode string, w io.Writer) (
 // would inject a different project's (or a shell/MCP/AWS) secret-set just
 // because it happens to be the only global one. Naming it explicitly with
 // --profile still works, since profile.Load falls back to the global store.
-func resolveSingleProjectProfile(cmdName, cwd string, w io.Writer) (profile.Profile, error) {
+// The chosen name is returned alongside so the caller can look up grant
+// mounts for it ("" when erroring).
+func resolveSingleProjectProfile(cmdName, cwd string, w io.Writer) (profile.Profile, string, error) {
 	names, err := profile.ListNames(cwd)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	switch len(names) {
 	case 0:
-		return nil, fmt.Errorf("no profile given and none defined in %s/, migrate this project with `jit migrate local`, or name one with --profile (see: jit profile list)", profile.ProfilesDir)
+		return nil, "", fmt.Errorf("no profile given and none defined in %s/, migrate this project with `jit migrate local`, or name one with --profile (see: jit profile list)", profile.ProfilesDir)
 	case 1:
 		fmt.Fprintf(w, "%s: using profile %q\n", cmdName, names[0])
-		return profile.Load(cwd, names[0])
+		p, err := profile.Load(cwd, names[0])
+		return p, names[0], err
 	default:
-		return nil, fmt.Errorf("no profile given and this project defines several (%s), pick one with --profile", strings.Join(names, ", "))
+		return nil, "", fmt.Errorf("no profile given and this project defines several (%s), pick one with --profile", strings.Join(names, ", "))
 	}
 }
