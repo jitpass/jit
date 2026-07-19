@@ -34,7 +34,7 @@ moving them off disk.
   reads the file rather than the environment — it is an explicit
   declaration, not a guess, because choosing live for a project whose
   scripts guard with `[ -f .env ]` would break those guards. See
-  [Which command delivers a secret](../getting-started/choosing.md).
+  [Which command delivers a secret](../getting-started/delivering-secrets.md).
 - `jit migrate` wires an automatic reveal into your `.envrc` (direnv) or
   `package.json` `dev`/`start` script, so `npm run dev` and friends just
   work. The window also opens automatically for 60 seconds whenever the

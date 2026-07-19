@@ -19,7 +19,7 @@ description: Placeholder values, hanging reads, surprise Touch ID prompts, and s
   passes. If instead a tool reads values *from the file itself* (like
   `docker compose` env_file) and gets nothing, use `jit run --live`, or pin
   `read_as_file: true` in the project's `.jit/config.yaml`. See
-  [Which command delivers a secret](./choosing.md).
+  [Which command delivers a secret](./delivering-secrets.md).
 - **A command hangs reading `.env`.** The agent probably isn't running or
   serving that mount; `jit status` will say. `jit agent install` (re)starts
   it.
