@@ -107,6 +107,23 @@ type mountManager struct {
 	mu     sync.Mutex
 	wg     sync.WaitGroup
 	served map[string]*servedMount
+
+	// Run-scoped grant exit watcher (mountgrants.go): the kqueue fd (0
+	// unstarted, -1 permanently unavailable) and which pids are armed on
+	// it. Its own mutex — watch registration happens on RPC goroutines and
+	// must never contend with the serve-path's m.mu.
+	watchMu      sync.Mutex
+	grantKq      int
+	grantWatched map[int32]bool
+
+	// Test seams for the grant gate's kernel lookups (mountgrants.go);
+	// nil means the real internal/lineage implementations. The gate's
+	// logic — fail-closed rules, verdict caching, pruning — is what unit
+	// tests need to pin down, and none of it should require spawning real
+	// process trees to observe.
+	grantHoldersFn  func(path string) (pids []int32, ok bool)
+	grantAncestryFn func(pid, root int32) bool
+	grantStartFn    func(pid int32) (unixMicro int64, ok bool)
 }
 
 // readerIdentity is internal/lineage's best-effort answer to "who just
@@ -146,6 +163,11 @@ type serveRecord struct {
 	at     time.Time
 	decoy  bool
 	reader readerIdentity
+	// grantServed marks a real serve authorized by a run-scoped grant
+	// (mountgrants.go) rather than a reveal window — status distinguishes
+	// them because their stories differ: a window says "anything could have
+	// read real values then", a grant says "only this run's tree could".
+	grantServed bool
 }
 
 // servedMount is one mount's live, dynamic state — read fresh by
@@ -186,6 +208,13 @@ type servedMount struct {
 	// what that reader actually gets.
 	pendingReader readerIdentity
 	lastServe     *serveRecord
+
+	// Run-scoped grants active on this mount and the per-(holder,root)
+	// ancestry verdict cache behind their gate — see mountgrants.go. Both
+	// nil for any mount jit run never granted, which keeps the entire
+	// grant path out of provideMountContent's fast path.
+	grants        []mountGrant
+	grantVerdicts map[grantVerdictKey]grantVerdict
 
 	// Watcher-loop cost bookkeeping (see the lineageScanMinGap block's doc
 	// comment): when the lineage scan last actually ran, when a reader-
@@ -321,6 +350,15 @@ func (m *mountManager) ensureServing(entries []mount.Entry) {
 			return func() { m.noteReaderConnected(path, sm) }
 		}(entry.MountPath, sm)
 
+		// provideMountContent, not sm.provideContent directly: the manager
+		// wrapper adds the run-scoped grant gate (mountgrants.go), which
+		// needs the mount path for its holder scan. With no grants active
+		// it delegates straight to sm.provideContent — identical decision,
+		// identical cost.
+		provideContent := func(path string, sm *servedMount) func() []byte {
+			return func() []byte { return m.provideMountContent(path, sm) }
+		}(entry.MountPath, sm)
+
 		// hasLingeringReader is mount.Serve's GAPS.md #47 reuse decision:
 		// after a drained cycle, isolate (rename — a filesystem event a
 		// watcher will re-read on) only if something still holds the pipe
@@ -348,7 +386,7 @@ func (m *mountManager) ensureServing(entries []mount.Entry) {
 			onError := func(err error) {
 				m.noteServeError(path, sm, err)
 			}
-			if err := mount.Serve(ctx, path, sm.provideContent, onError, onReaderConnected, hasLingeringReader); err != nil && !errors.Is(err, context.Canceled) {
+			if err := mount.Serve(ctx, path, provideContent, onError, onReaderConnected, hasLingeringReader); err != nil && !errors.Is(err, context.Canceled) {
 				fmt.Fprintf(m.stderr, "jit agent: mount %s stopped: %v\n", path, err)
 				// A mount whose Serve loop died structurally must not
 				// stay in the map looking alive (GAPS.md #44): a stale
@@ -675,9 +713,15 @@ func (m *mountManager) mountRevealStatuses() []agent.MountRevealStatus {
 		if ended, ok := sm.reveal.WindowEnded(); ok {
 			status.RevealEndedUnix = ended.Unix()
 		}
+		// liveGrants prunes before reporting, so status never shows a grant
+		// whose target already exited or whose pid was recycled — the same
+		// "status must not lie" bar the reveal fields hold themselves to.
+		for _, g := range m.liveGrants(path, sm) {
+			status.Grants = append(status.Grants, agent.MountGrantStatus{PID: g.pid, Command: g.command, SinceUnix: g.since.Unix()})
+		}
 		sm.mu.Lock()
 		if ls := sm.lastServe; ls != nil {
-			status.LastServe = &agent.MountServeEvent{UnixTime: ls.at.Unix(), Decoy: ls.decoy}
+			status.LastServe = &agent.MountServeEvent{UnixTime: ls.at.Unix(), Decoy: ls.decoy, GrantServed: ls.grantServed}
 			if ls.reader.identified {
 				status.LastServe.ReaderPID = ls.reader.pid
 				status.LastServe.ReaderPath = ls.reader.execPath
@@ -757,6 +801,9 @@ func (m *mountManager) stop() {
 		sm.setReal(nil)
 		sm.reveal.Hide()
 	}
+	// Grants end with the session the same way reveal windows do — see
+	// clearAllGrants for why this isn't only hygiene.
+	m.clearAllGrants()
 	if len(served) > 0 {
 		// Deliberately no longer says "session locked" — Server's own
 		// OnSessionEvent line, written immediately before this one, announces
