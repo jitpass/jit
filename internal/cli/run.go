@@ -134,47 +134,65 @@ var runCmd = &cobra.Command{
 // ALREADY unlocked, so a compat request can't conjure a Touch ID prompt the
 // command didn't require.
 func requestRunCompat(w io.Writer, mountPaths, argv []string, cwd string, live bool) {
-	if len(mountPaths) == 0 {
+	templateMounts := projectTemplateMounts(cwd)
+	if len(mountPaths) == 0 && len(templateMounts) == 0 {
 		return
 	}
 	c, err := agentClient()
 	if err != nil {
 		return
 	}
-	// Live mode (keep the FIFO + grant) is chosen only on explicit intent,
-	// never a guess: the --live flag, a project that pinned read_as_file in
-	// its .jit/config.yaml, or a command jit recognizes as reading values
-	// from the file itself. Everything else takes the safe default swap —
-	// guessing live wrong reintroduces the regular-file-guard trap.
-	useLive := live || readAsFilePinned(cwd) || commandReadsEnvFile(argv)
-	requestRunCompatVia(c, w, mountPaths, int32(os.Getpid()), useLive) // #nosec G115 -- getpid always fits int32
+	// Live mode (keep the FIFO + grant) for the dotenv layers is chosen only
+	// on explicit intent, never a guess: the --live flag, a project that
+	// pinned read_as_file in its .jit/config.yaml, or a command jit
+	// recognizes as reading values from the file itself. Everything else
+	// takes the safe default swap — guessing live wrong reintroduces the
+	// regular-file-guard trap.
+	dotenvMode := agent.MountModeSwap
+	if live || readAsFilePinned(cwd) || commandReadsEnvFile(argv) {
+		dotenvMode = agent.MountModeGrant
+	}
+	// Project template mounts (a project .npmrc) are ALWAYS granted, never
+	// swapped: the tool reads real values from the file, so an inert
+	// compatibility file would starve it.
+	runMounts := make([]agent.RunMount, 0, len(mountPaths)+len(templateMounts))
+	for _, p := range mountPaths {
+		runMounts = append(runMounts, agent.RunMount{Path: p, Mode: dotenvMode})
+	}
+	for _, p := range templateMounts {
+		runMounts = append(runMounts, agent.RunMount{Path: p, Mode: agent.MountModeGrant})
+	}
+	requestRunCompatVia(c, w, runMounts, int32(os.Getpid())) // #nosec G115 -- getpid always fits int32
 }
 
 // requestRunCompatVia is requestRunCompat minus the ambient client/pid —
 // the testable core, exercised against a real in-process agent.Server.
-func requestRunCompatVia(c *agent.Client, w io.Writer, mountPaths []string, pid int32, live bool) {
-	if !c.Reachable() {
+func requestRunCompatVia(c *agent.Client, w io.Writer, runMounts []agent.RunMount, pid int32) {
+	if len(runMounts) == 0 || !c.Reachable() {
 		return
 	}
 	st, err := c.Status()
 	if err != nil || !st.Unlocked {
 		return
 	}
-	names := make([]string, 0, len(mountPaths))
-	for _, p := range mountPaths {
-		names = append(names, filepath.Base(p))
+	if err := c.RunForPID(runMounts, pid); err != nil {
+		return
 	}
-	if live {
-		if err := c.RevealForPID(mountPaths, pid); err != nil {
-			return
+	var swapped, granted []string
+	for _, m := range runMounts {
+		name := filepath.Base(m.Path)
+		if m.Mode == agent.MountModeSwap {
+			swapped = append(swapped, name)
+		} else {
+			granted = append(granted, name)
 		}
-		fmt.Fprintf(w, "jit run: %s serving real values to this run's processes only (until it exits)\n", strings.Join(names, ", "))
-		return
 	}
-	if err := c.SwapForPID(mountPaths, pid); err != nil {
-		return
+	if len(swapped) > 0 {
+		fmt.Fprintf(w, "jit run: %s is a compatibility file for this run (real values are in the environment; the file itself is inert)\n", strings.Join(swapped, ", "))
 	}
-	fmt.Fprintf(w, "jit run: %s is a compatibility file for this run (real values are in the environment; the file itself is inert)\n", strings.Join(names, ", "))
+	if len(granted) > 0 {
+		fmt.Fprintf(w, "jit run: %s serving real values to this run's processes only (until it exits)\n", strings.Join(granted, ", "))
+	}
 }
 
 // commandReadsEnvFile recognizes the small set of tools that read real
