@@ -14,6 +14,13 @@ moving them off disk.
 
 ## In practice you rarely think about this
 
+- `jit run <command>` grants its own command's process tree a
+  **run-scoped reveal**: for as long as that command runs, the mounted
+  files backing the values it injected serve real content to that run's
+  processes (decided per read, by process ancestry), and decoys to
+  everything else. A script that re-reads its own `.env` mid-run sees the
+  same values it was launched with; the grant ends the moment the command
+  exits. `jit agent status` lists any live grant per mount.
 - `jit migrate` wires an automatic reveal into your `.envrc` (direnv) or
   `package.json` `dev`/`start` script, so `npm run dev` and friends just
   work. The window also opens automatically for 60 seconds whenever the
