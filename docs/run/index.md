@@ -67,7 +67,7 @@ command does with it, automatically:
   instead of typing `--live`.
 
 You rarely think about either mode. If you want the full picture of when to
-reach for what, see [Which command delivers a secret](../getting-started/choosing.md),
+reach for what, see [Which command delivers a secret](../getting-started/delivering-secrets.md),
 and [live-mounted files](./mounts.md) for how the mount itself behaves.
 
 ## Where else `jit run` shows up
