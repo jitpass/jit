@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/profile"
 )
@@ -204,5 +205,60 @@ func TestReconcileSwappedMountsRestoresJitFileNotUserFile(t *testing.T) {
 	}
 	if isFIFOPath(t, userPath) {
 		t.Error("a user's file was turned into a FIFO — provenance gate failed")
+	}
+}
+
+// TestRevealForPIDMixedModeOneRun is the whole point of per-mount mode: a
+// single run swaps one mount and grants another at the same time.
+func TestRevealForPIDMixedModeOneRun(t *testing.T) {
+	m, swapPath := swapTestFixture(t)
+	// Add a second served mount to grant (with real content).
+	grantSM := newTestServedMount()
+	grantPath := "/tmp/fixture/grant.env"
+	m.mu.Lock()
+	m.served[grantPath] = grantSM
+	m.mu.Unlock()
+	// grantStartFn already returns live for pid 100 in the fixture.
+
+	err := m.revealForPID([]agent.RunMount{
+		{Path: swapPath, Mode: agent.MountModeSwap},
+		{Path: grantPath, Mode: agent.MountModeGrant},
+	}, 100)
+	if err != nil {
+		t.Fatalf("mixed revealForPID: %v", err)
+	}
+
+	// The swap mount is now a regular file; the grant mount stays a FIFO.
+	if isFIFOPath(t, swapPath) {
+		t.Error("swap-mode mount is still a FIFO")
+	}
+	// The one attachment carries both modes.
+	m.runsMu.Lock()
+	att := m.runs[100]
+	m.runsMu.Unlock()
+	if att == nil || len(att.mounts) != 2 {
+		t.Fatalf("attachment = %+v, want one run with two mounts", att)
+	}
+	modes := map[string]attachMode{}
+	for _, am := range att.mounts {
+		modes[am.path] = am.mode
+	}
+	if modes[swapPath] != attachSwap || modes[grantPath] != attachGrant {
+		t.Errorf("per-mount modes wrong: %v", modes)
+	}
+	if att.grantMountCount() != 1 {
+		t.Errorf("grantMountCount = %d, want 1", att.grantMountCount())
+	}
+
+	// Run exits: swap restored to FIFO, grant dropped.
+	m.onRunExit(100, "process exited")
+	if !isFIFOPath(t, swapPath) {
+		t.Error("swap mount not restored to FIFO after exit")
+	}
+	m.runsMu.Lock()
+	_, stillThere := m.runs[100]
+	m.runsMu.Unlock()
+	if stillThere {
+		t.Error("attachment survived onRunExit")
 	}
 }
