@@ -36,6 +36,15 @@ import (
 // section as the re-check; this test drives 8 concurrent calls at one
 // fresh entry and requires both a single served slot and a shutdown()
 // that actually completes.
+
+// serveNoGrant runs the unified content decision (serveContent) with no
+// grant runs active — the fast path, behaviorally identical to the old
+// sm.provideContent: decoy unless the reveal window is open.
+func serveNoGrant(sm *servedMount) []byte {
+	m := &mountManager{stdout: io.Discard, stderr: io.Discard}
+	return m.serveContent("/tmp/fixture/.env", sm)
+}
+
 func TestEnsureServingConcurrentCallsClaimSlotOnce(t *testing.T) {
 	dir := t.TempDir()
 	profilePath := filepath.Join(dir, "profile.yaml")
@@ -177,7 +186,7 @@ func TestMountManagerStopClearsRevealAndRealContentWithoutCancelling(t *testing.
 	sm.reveal.Reveal(time.Minute)
 	m := &mountManager{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, served: map[string]*servedMount{"/tmp/fixture/.env": sm}}
 
-	if got := sm.provideContent(); string(got) != "real" {
+	if got := serveNoGrant(sm); string(got) != "real" {
 		t.Fatalf("setup: provideContent = %q, want real content while revealed", got)
 	}
 
@@ -189,7 +198,7 @@ func TestMountManagerStopClearsRevealAndRealContentWithoutCancelling(t *testing.
 	if sm.reveal.IsRevealed() {
 		t.Error("expected hidden after stop, locking must not leave a mount revealed")
 	}
-	if got := sm.provideContent(); string(got) != "decoy" {
+	if got := serveNoGrant(sm); string(got) != "decoy" {
 		t.Errorf("provideContent after stop = %q, want decoy, real content must be forgotten", got)
 	}
 }
@@ -415,7 +424,7 @@ func TestProvideContentRecordsLastServe(t *testing.T) {
 	sm := newTestServedMount()
 	sm.decoy = []byte("decoy")
 
-	if got := sm.provideContent(); string(got) != "decoy" {
+	if got := serveNoGrant(sm); string(got) != "decoy" {
 		t.Fatalf("provideContent = %q, want decoy while hidden", got)
 	}
 	sm.mu.Lock()
@@ -434,7 +443,7 @@ func TestProvideContentRecordsLastServe(t *testing.T) {
 	sm.pendingReader = readerIdentity{pid: 4823, execPath: "/usr/local/bin/node", identified: true}
 	sm.mu.Unlock()
 
-	if got := sm.provideContent(); string(got) != "real" {
+	if got := serveNoGrant(sm); string(got) != "real" {
 		t.Fatalf("provideContent = %q, want real while revealed and resolved", got)
 	}
 	sm.mu.Lock()
@@ -457,7 +466,7 @@ func TestMountRevealStatusesIncludesLastServe(t *testing.T) {
 	read.mu.Lock()
 	read.pendingReader = readerIdentity{pid: 4823, execPath: "/usr/local/bin/node", identified: true}
 	read.mu.Unlock()
-	read.provideContent()
+	serveNoGrant(read)
 	neverRead := newTestServedMount()
 	m := &mountManager{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, served: map[string]*servedMount{
 		"/tmp/fixture/read.env":  read,

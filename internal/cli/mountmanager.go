@@ -116,6 +116,20 @@ type mountManager struct {
 	grantKq      int
 	grantWatched map[int32]bool
 
+	// The unified run engine (mountruns.go): runs is the single registry of
+	// jit-run attachments, in either mode (grant or swap), keyed by pid.
+	// runsMu guards it and is taken only briefly — never across a blocking
+	// call. grantModeRuns is the read path's fast-path counter: with no
+	// grant-mode run active, serveContent skips the grant gate entirely and
+	// a read costs exactly what it did before grants existed. swapMu
+	// serializes swap-mode FILESYSTEM transitions (swap-in vs restore) and
+	// is never taken by the read path, so a swap-in holding it across
+	// stopMount can't deadlock an in-flight serve cycle.
+	runsMu        sync.Mutex
+	runs          map[int32]*runAttachment
+	grantModeRuns int32
+	swapMu        sync.Mutex
+
 	// Test seams for the grant gate's kernel lookups (mountgrants.go);
 	// nil means the real internal/lineage implementations. The gate's
 	// logic — fail-closed rules, verdict caching, pruning — is what unit
@@ -124,15 +138,6 @@ type mountManager struct {
 	grantHoldersFn  func(path string) (pids []int32, ok bool)
 	grantAncestryFn func(pid, root int32) bool
 	grantStartFn    func(pid int32) (unixMicro int64, ok bool)
-
-	// Compatibility swaps (mountswap.go): swaps maps a mount path to the
-	// run pids currently holding it as a regular pointer file. swapMu
-	// serializes every FIFO<->file transition for a path so a swap-in and
-	// a concurrent restore can't interleave; it is ordered OUTSIDE m.mu
-	// (swap handlers take swapMu, then call ensureServing/stopMount which
-	// take m.mu — never the reverse).
-	swapMu sync.Mutex
-	swaps  map[string]*mountSwap
 }
 
 // readerIdentity is internal/lineage's best-effort answer to "who just
@@ -218,11 +223,11 @@ type servedMount struct {
 	pendingReader readerIdentity
 	lastServe     *serveRecord
 
-	// Run-scoped grants active on this mount and the per-(holder,root)
-	// ancestry verdict cache behind their gate — see mountgrants.go. Both
-	// nil for any mount jit run never granted, which keeps the entire
-	// grant path out of provideMountContent's fast path.
-	grants        []mountGrant
+	// grantVerdicts is this mount's per-(holder,root) ancestry verdict
+	// cache — the read gate's amortization of the libproc ancestry walk
+	// (mountgrants.go). Nil for any mount no grant run ever touched. The
+	// grant attachments themselves live in the run registry (mountruns.go),
+	// not here: this is only the gate's cache.
 	grantVerdicts map[grantVerdictKey]grantVerdict
 
 	// Watcher-loop cost bookkeeping (see the lineageScanMinGap block's doc
@@ -250,18 +255,6 @@ func (sm *servedMount) setResolveErr(err error) {
 	sm.mu.Lock()
 	sm.lastResolveErr = err.Error()
 	sm.mu.Unlock()
-}
-
-func (sm *servedMount) provideContent() []byte {
-	revealed := sm.reveal.IsRevealed()
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	content, decoy := sm.decoy, true
-	if sm.real != nil && revealed {
-		content, decoy = sm.real, false
-	}
-	sm.lastServe = &serveRecord{at: time.Now(), decoy: decoy, reader: sm.pendingReader}
-	return content
 }
 
 // loadRegistry reads the mount registry, logging (not erroring — this
@@ -359,13 +352,13 @@ func (m *mountManager) ensureServing(entries []mount.Entry) {
 			return func() { m.noteReaderConnected(path, sm) }
 		}(entry.MountPath, sm)
 
-		// provideMountContent, not sm.provideContent directly: the manager
-		// wrapper adds the run-scoped grant gate (mountgrants.go), which
-		// needs the mount path for its holder scan. With no grants active
-		// it delegates straight to sm.provideContent — identical decision,
-		// identical cost.
+		// serveContent (mountgrants.go) is the single content decision:
+		// reveal window OR run-scoped grant, decoy otherwise. It needs the
+		// mount path for the grant gate's holder scan; with no grant run
+		// active the gate is skipped and a read costs exactly what a bare
+		// reveal decision did.
 		provideContent := func(path string, sm *servedMount) func() []byte {
-			return func() []byte { return m.provideMountContent(path, sm) }
+			return func() []byte { return m.serveContent(path, sm) }
 		}(entry.MountPath, sm)
 
 		// hasLingeringReader is mount.Serve's GAPS.md #47 reuse decision:
@@ -705,6 +698,12 @@ func (m *mountManager) revealMount(mountPath string, requested time.Duration) er
 // was actually the agent's own session lock racing the mount's reveal
 // window, with no way to see either timer from outside the process.
 func (m *mountManager) mountRevealStatuses() []agent.MountRevealStatus {
+	// Gather run holders FIRST, before taking m.mu: runStatusesByPath prunes
+	// stale runs, and a pruned swap restores its FIFO via ensureServing,
+	// which takes m.mu — so nesting this inside m.mu would deadlock. The two
+	// locks are only ever taken sequentially, never nested.
+	holdersByPath := m.runStatusesByPath()
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := make([]agent.MountRevealStatus, 0, len(m.served))
@@ -722,11 +721,11 @@ func (m *mountManager) mountRevealStatuses() []agent.MountRevealStatus {
 		if ended, ok := sm.reveal.WindowEnded(); ok {
 			status.RevealEndedUnix = ended.Unix()
 		}
-		// liveGrants prunes before reporting, so status never shows a grant
-		// whose target already exited or whose pid was recycled — the same
-		// "status must not lie" bar the reveal fields hold themselves to.
-		for _, g := range m.liveGrants(path, sm) {
-			status.Grants = append(status.Grants, agent.MountGrantStatus{PID: g.pid, Command: g.command, SinceUnix: g.since.Unix()})
+		// Grant-mode runs covering this served mount, from the registry.
+		for _, h := range holdersByPath[path] {
+			if h.mode == attachGrant {
+				status.Grants = append(status.Grants, agent.MountGrantStatus{PID: h.pid, Command: h.command, SinceUnix: h.since.Unix()})
+			}
 		}
 		sm.mu.Lock()
 		if ls := sm.lastServe; ls != nil {
@@ -745,12 +744,15 @@ func (m *mountManager) mountRevealStatuses() []agent.MountRevealStatus {
 		out = append(out, status)
 	}
 	// Swapped mounts aren't in m.served (their Serve goroutine is stopped
-	// while they're a plain file), so add them separately — one status
-	// entry per swapped path, its holding run(s) in Grants.
-	for path, attaches := range m.swapStatuses() {
+	// while they're a plain file), so add them separately — one status entry
+	// per swapped path, its holding run(s) in Grants.
+	for path, holders := range holdersByPath {
+		if _, served := m.served[path]; served {
+			continue // already covered above (a grant-mode mount stays served)
+		}
 		st := agent.MountRevealStatus{Path: path, Swapped: true}
-		for _, a := range attaches {
-			st.Grants = append(st.Grants, agent.MountGrantStatus{PID: a.pid, Command: a.command, SinceUnix: a.since.Unix()})
+		for _, h := range holders {
+			st.Grants = append(st.Grants, agent.MountGrantStatus{PID: h.pid, Command: h.command, SinceUnix: h.since.Unix()})
 		}
 		out = append(out, st)
 	}
@@ -847,10 +849,9 @@ func (m *mountManager) stop() {
 		sm.setReal(nil)
 		sm.reveal.Hide()
 	}
-	// Grants and swaps both end with the session — see clearAllGrants /
-	// clearAllSwaps for why this isn't only hygiene.
-	m.clearAllGrants()
-	m.clearAllSwaps()
+	// Every run attachment ends with the session — see clearAllRuns for
+	// why this isn't only hygiene.
+	m.clearAllRuns()
 	if len(served) > 0 {
 		// Deliberately no longer says "session locked" — Server's own
 		// OnSessionEvent line, written immediately before this one, announces
