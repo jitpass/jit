@@ -28,6 +28,9 @@ for tools that read values from the .env file itself (docker compose
 env_file), which jit run also auto-detects. Either way the mount returns
 to its decoy state the moment the command exits; no agent, or a locked
 one, skips this silently and injection works the same regardless.
+A project whose tools always read the file itself can pin live mode by
+putting `read_as_file: true` in its .jit/config.yaml, instead of --live
+on every run.
 
 The -- separating jit's own flags from the command is optional, jit stops
 reading its flags at the first non-flag argument, so `jit run npm start`
