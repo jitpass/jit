@@ -534,13 +534,11 @@ func TestServerRevealPIDCallsOnRevealPIDAndEnsuresUnlocked(t *testing.T) {
 	newFetcher := func() MEKFetcher { return &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32)} }
 	s := NewServer(socketPath, newFetcher, time.Minute)
 
-	var gotPaths []string
+	var gotMounts []RunMount
 	var gotPID int32
 	var calls int32
 	s.OnRevealPID = func(mounts []RunMount, pid int32) error {
-		for _, m := range mounts {
-			gotPaths = append(gotPaths, m.Path)
-		}
+		gotMounts = mounts
 		gotPID = pid
 		atomic.AddInt32(&calls, 1)
 		return nil
@@ -555,15 +553,20 @@ func TestServerRevealPIDCallsOnRevealPIDAndEnsuresUnlocked(t *testing.T) {
 	defer func() { cancel(); _ = s.Close(); <-done }()
 
 	c := NewClient(socketPath)
-	want := []string{"/tmp/fixture/.env", "/tmp/fixture/.env.local"}
-	if err := c.RevealForPID(want, 4242); err != nil {
-		t.Fatalf("RevealForPID: %v", err)
+	// A mixed-mode run — swap one mount, grant another — must survive the
+	// socket with paths and per-mount modes intact.
+	want := []RunMount{
+		{Path: "/tmp/fixture/.env", Mode: MountModeSwap},
+		{Path: "/tmp/fixture/.npmrc", Mode: MountModeGrant},
+	}
+	if err := c.RunForPID(want, 4242); err != nil {
+		t.Fatalf("RunForPID: %v", err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Fatalf("OnRevealPID called %d times, want 1", got)
 	}
-	if len(gotPaths) != 2 || gotPaths[0] != want[0] || gotPaths[1] != want[1] {
-		t.Errorf("OnRevealPID mountPaths = %v, want %v", gotPaths, want)
+	if len(gotMounts) != 2 || gotMounts[0] != want[0] || gotMounts[1] != want[1] {
+		t.Errorf("OnRevealPID mounts = %v, want %v (paths and modes intact)", gotMounts, want)
 	}
 	if gotPID != 4242 {
 		t.Errorf("OnRevealPID pid = %d, want 4242", gotPID)
