@@ -53,7 +53,10 @@ var runCmd = &cobra.Command{
 		"for tools that read values from the .env file itself (docker compose\n" +
 		"env_file), which jit run also auto-detects. Either way the mount returns\n" +
 		"to its decoy state the moment the command exits; no agent, or a locked\n" +
-		"one, skips this silently and injection works the same regardless.\n\n" +
+		"one, skips this silently and injection works the same regardless.\n" +
+		"A project whose tools always read the file itself can pin live mode by\n" +
+		"putting `read_as_file: true` in its .jit/config.yaml, instead of --live\n" +
+		"on every run.\n\n" +
 		"The -- separating jit's own flags from the command is optional, jit stops\n" +
 		"reading its flags at the first non-flag argument, so `jit run npm start`\n" +
 		"works (jit's flags, if any, come before the command).",
@@ -101,7 +104,7 @@ var runCmd = &cobra.Command{
 		// default swaps each mount to a regular pointer file so guards and
 		// loaders just work; --live (or an auto-detected file-value tool)
 		// keeps the FIFO and grants its process tree real reads.
-		requestRunCompat(cmd.ErrOrStderr(), grantMounts, args, runLive)
+		requestRunCompat(cmd.ErrOrStderr(), grantMounts, args, cwd, runLive)
 
 		// syscall.Exec never returns on success — it replaces this
 		// process's image entirely — so an error here always means it
@@ -130,7 +133,7 @@ var runCmd = &cobra.Command{
 // before. The deliberate guard: never proceed unless the session is
 // ALREADY unlocked, so a compat request can't conjure a Touch ID prompt the
 // command didn't require.
-func requestRunCompat(w io.Writer, mountPaths, argv []string, live bool) {
+func requestRunCompat(w io.Writer, mountPaths, argv []string, cwd string, live bool) {
 	if len(mountPaths) == 0 {
 		return
 	}
@@ -138,7 +141,12 @@ func requestRunCompat(w io.Writer, mountPaths, argv []string, live bool) {
 	if err != nil {
 		return
 	}
-	useLive := live || commandReadsEnvFile(argv)
+	// Live mode (keep the FIFO + grant) is chosen only on explicit intent,
+	// never a guess: the --live flag, a project that pinned read_as_file in
+	// its .jit/config.yaml, or a command jit recognizes as reading values
+	// from the file itself. Everything else takes the safe default swap —
+	// guessing live wrong reintroduces the regular-file-guard trap.
+	useLive := live || readAsFilePinned(cwd) || commandReadsEnvFile(argv)
 	requestRunCompatVia(c, w, mountPaths, int32(os.Getpid()), useLive) // #nosec G115 -- getpid always fits int32
 }
 
