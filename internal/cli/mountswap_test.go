@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"github.com/jitpass/jit/internal/agent"
@@ -160,6 +161,58 @@ func TestSwapStatusesReportsHolder(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("swapped mount %s absent from status", path)
+	}
+}
+
+// TestRevealForPIDMergesSecondCallSamePID is the regression guard for the
+// two-call clobber: jit run sends a SECOND reveal_pid for the same pid when a
+// run mixes its project mounts (first call) with a --with global grant
+// (second call, after a disclosed challenge). The second attachment must
+// MERGE into the first, not replace it — replacing would orphan the first
+// call's swap so its FIFO is never restored on exit.
+func TestRevealForPIDMergesSecondCallSamePID(t *testing.T) {
+	m, swapPath := swapTestFixture(t)
+	// A second served mount to grant on the second call.
+	grantPath := "/tmp/fixture/global.env"
+	m.mu.Lock()
+	m.served[grantPath] = newTestServedMount()
+	m.mu.Unlock()
+
+	// Call 1: the run's own project .env, swapped.
+	if err := m.revealForPID(runMountsSwap(swapPath), 100); err != nil {
+		t.Fatalf("revealForPID call 1 (swap): %v", err)
+	}
+	// Call 2: the --with global mount, granted, SAME pid.
+	if err := m.revealForPID([]agent.RunMount{{Path: grantPath, Mode: agent.MountModeGrant}}, 100); err != nil {
+		t.Fatalf("revealForPID call 2 (grant): %v", err)
+	}
+
+	// One merged attachment carrying BOTH mounts, not a clobbered one.
+	m.runsMu.Lock()
+	att := m.runs[100]
+	m.runsMu.Unlock()
+	if att == nil || len(att.mounts) != 2 {
+		t.Fatalf("attachment = %+v, want one run merged to two mounts", att)
+	}
+	if att.grantMountCount() != 1 {
+		t.Errorf("grantMountCount = %d, want 1", att.grantMountCount())
+	}
+	if got := atomic.LoadInt32(&m.grantModeRuns); got != 1 {
+		t.Errorf("grantModeRuns = %d, want 1 (merge must not double- or zero-count)", got)
+	}
+	// The swap from call 1 must still be present as a regular file.
+	if isFIFOPath(t, swapPath) {
+		t.Error("call 2 orphaned the swap — mount reverted to a FIFO mid-run")
+	}
+
+	// Run exits: the merged swap is restored (the whole point — a clobber
+	// would have lost this teardown).
+	m.onRunExit(100, "process exited")
+	if !isFIFOPath(t, swapPath) {
+		t.Error("swap not restored after exit — its teardown was orphaned by the second call")
+	}
+	if got := atomic.LoadInt32(&m.grantModeRuns); got != 0 {
+		t.Errorf("grantModeRuns = %d after exit, want 0", got)
 	}
 }
 

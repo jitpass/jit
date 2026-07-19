@@ -115,6 +115,14 @@ type Server struct {
 	// dependency direction. A non-nil error becomes the RPC's own failure,
 	// same contract (and same reported-bug rationale) as OnReveal.
 	OnRevealPID func(mounts []RunMount, pid int32) error
+	// OnCanGrant, if set, validates that every grant-mode mount in a
+	// DISCLOSED reveal_pid (jit run --with) is currently grantable — served
+	// with real content — WITHOUT attaching anything. It runs before the
+	// disclosed challenge so an unservable mount fails without burning a Touch
+	// ID, and so an approved challenge grants the whole named set or none of
+	// it (never a partial grant reported as full). A non-nil error becomes the
+	// RPC's failure before any prompt.
+	OnCanGrant func(mounts []RunMount) error
 	// OnStopMount, if set, answers an OpStopMount request — unlike
 	// OnRefresh/OnReveal, this does NOT go through ensureUnlocked first:
 	// stopping a mount's serving goroutine needs no vault access at all
@@ -427,20 +435,33 @@ func (s *Server) handle(req Request, c *caller) Response {
 		for i, m := range req.RunMounts {
 			paths[i] = m.Path
 		}
+		// A global-mount grant (jit run --with) forces a fresh, disclosed
+		// challenge naming the credential — even though the session is already
+		// unlocked — so it can never happen silently on the back of the run's
+		// own unlock (see Request.DiscloseReason). Its steps are ordered to
+		// keep the audit trail honest:
+		//   1. validate every requested mount is grantable BEFORE prompting,
+		//      so an unservable mount fails without burning a Touch ID and an
+		//      approved challenge grants the whole named set or none of it;
+		//   2. prompt — a decline records only a denial, never a use;
+		//   3. record the use (via ensureUnlockedNotify) ONLY after approval.
+		// The project-mount path (no DiscloseReason) is unchanged: it records
+		// use on its own unlock and best-efforts per mount.
+		if req.DiscloseReason != "" {
+			if s.OnCanGrant != nil {
+				if err := s.OnCanGrant(req.RunMounts); err != nil {
+					return Response{OK: false, Error: err.Error()}
+				}
+			}
+			if err := s.forceDisclosedChallenge(req.DiscloseReason, c); err != nil {
+				return Response{OK: false, Error: err.Error()}
+			}
+		}
 		mek, err := s.ensureUnlockedNotify(onFresh, req.Op, c, strings.Join(paths, ", "))
 		if err != nil {
 			return Response{OK: false, Error: err.Error()}
 		}
 		wipe(mek)
-		// A global-mount grant (jit run --with) forces a fresh, disclosed
-		// challenge naming the credential — even though the session is
-		// already unlocked — so it can never happen silently on the back of
-		// the run's own unlock (see Request.DiscloseReason).
-		if req.DiscloseReason != "" {
-			if err := s.forceDisclosedChallenge(req.DiscloseReason, c); err != nil {
-				return Response{OK: false, Error: err.Error()}
-			}
-		}
 		if s.OnRevealPID != nil {
 			if err := s.OnRevealPID(req.RunMounts, req.TargetPID); err != nil {
 				return Response{OK: false, Error: err.Error()}
