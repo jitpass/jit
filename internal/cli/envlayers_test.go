@@ -154,7 +154,7 @@ func TestResolveInjectionProfileMergesLayers(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	p, err := resolveInjectionProfile("jit run", proj, "", "", &buf)
+	p, _, err := resolveInjectionProfile("jit run", proj, "", "", &buf)
 	if err != nil {
 		t.Fatalf("resolveInjectionProfile: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestResolveInjectionProfileWalksUpFromSubdir(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	p, err := resolveInjectionProfile("jit run", sub, "", "", &buf)
+	p, _, err := resolveInjectionProfile("jit run", sub, "", "", &buf)
 	if err != nil {
 		t.Fatalf("resolveInjectionProfile from subdir: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestResolveInjectionProfileModeLayers(t *testing.T) {
 
 	// Without --mode: production must NOT ride along.
 	var buf bytes.Buffer
-	p, err := resolveInjectionProfile("jit run", proj, "", "", &buf)
+	p, _, err := resolveInjectionProfile("jit run", proj, "", "", &buf)
 	if err != nil {
 		t.Fatalf("no mode: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestResolveInjectionProfileModeLayers(t *testing.T) {
 
 	// With --mode production: layered in between .env and .env.local.
 	buf.Reset()
-	p, err = resolveInjectionProfile("jit run", proj, "", "production", &buf)
+	p, _, err = resolveInjectionProfile("jit run", proj, "", "production", &buf)
 	if err != nil {
 		t.Fatalf("mode production: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestResolveInjectionProfileModeLayers(t *testing.T) {
 	}
 
 	// A mode with no matching layer is a hard error (typo protection).
-	if _, err := resolveInjectionProfile("jit run", proj, "", "staging", &buf); err == nil {
+	if _, _, err := resolveInjectionProfile("jit run", proj, "", "staging", &buf); err == nil {
 		t.Error("mode with no matching layer should be a hard error")
 	}
 }
@@ -239,7 +239,7 @@ func TestResolveInjectionProfileExplicitProfile(t *testing.T) {
 
 	// Explicit --profile: exactly that one layer, no merge, no announce.
 	var buf bytes.Buffer
-	p, err := resolveInjectionProfile("jit run", proj, "root", "", &buf)
+	p, _, err := resolveInjectionProfile("jit run", proj, "root", "", &buf)
 	if err != nil {
 		t.Fatalf("explicit: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestResolveInjectionProfileExplicitProfile(t *testing.T) {
 	}
 
 	// --profile + --mode is a hard error.
-	if _, err := resolveInjectionProfile("jit run", proj, "root", "production", &buf); err == nil {
+	if _, _, err := resolveInjectionProfile("jit run", proj, "root", "production", &buf); err == nil {
 		t.Error("--profile with --mode should be a hard error")
 	}
 }
@@ -264,7 +264,7 @@ func TestResolveInjectionProfileFallsBackToSingleProjectProfile(t *testing.T) {
 	writeFixtureProfile(t, proj, "root-bak", "API_KEY: root-bak/API_KEY\n")
 
 	var buf bytes.Buffer
-	p, err := resolveInjectionProfile("jit run", proj, "", "", &buf)
+	p, _, err := resolveInjectionProfile("jit run", proj, "", "", &buf)
 	if err != nil {
 		t.Fatalf("fallback: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestResolveInjectionProfileFallsBackToSingleProjectProfile(t *testing.T) {
 
 	// Several profiles, no layers: still refuses to guess.
 	writeFixtureProfile(t, proj, "other", "B: other/B\n")
-	if _, err := resolveInjectionProfile("jit run", proj, "", "", &buf); err == nil {
+	if _, _, err := resolveInjectionProfile("jit run", proj, "", "", &buf); err == nil {
 		t.Error("several project profiles with no layers should be a hard error")
 	}
 }
@@ -293,10 +293,65 @@ func TestResolveInjectionProfileWarnsOnUnmigratedSibling(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if _, err := resolveInjectionProfile("jit run", proj, "", "", &buf); err != nil {
+	if _, _, err := resolveInjectionProfile("jit run", proj, "", "", &buf); err != nil {
 		t.Fatalf("resolveInjectionProfile: %v", err)
 	}
 	if !strings.Contains(buf.String(), ".env.local") || !strings.Contains(buf.String(), "not migrated") {
 		t.Errorf("expected an unmigrated-sibling heads-up naming .env.local, got: %q", buf.String())
+	}
+}
+
+// TestResolveInjectionProfileReturnsGrantMountsInMergeOrder pins the
+// second thing resolution answers: the mount paths jit run names in its
+// run-scoped reveal grant — exactly the merged layers, in precedence
+// order, so a script re-reading any of those files mid-run reads the same
+// values that were injected.
+func TestResolveInjectionProfileReturnsGrantMountsInMergeOrder(t *testing.T) {
+	home := withFixtureHome(t)
+	proj := writeLayerFixture(t, home, map[string]string{
+		".env":       "API_KEY: root/API_KEY\n",
+		".env.local": "API_KEY: root-local/API_KEY\n",
+	})
+
+	var buf bytes.Buffer
+	_, grantMounts, err := resolveInjectionProfile("jit run", proj, "", "", &buf)
+	if err != nil {
+		t.Fatalf("resolveInjectionProfile: %v", err)
+	}
+	want := []string{filepath.Join(proj, ".env"), filepath.Join(proj, ".env.local")}
+	if len(grantMounts) != 2 || grantMounts[0] != want[0] || grantMounts[1] != want[1] {
+		t.Errorf("grantMounts = %v, want %v", grantMounts, want)
+	}
+}
+
+// TestResolveInjectionProfileGrantMountsForExplicitProfile: --profile
+// disables the merge, but a mount registered against that profile's
+// manifest is still the file a re-reading script would open — it must be
+// grantable too.
+func TestResolveInjectionProfileGrantMountsForExplicitProfile(t *testing.T) {
+	home := withFixtureHome(t)
+	proj := writeLayerFixture(t, home, map[string]string{
+		".env": "API_KEY: root/API_KEY\n",
+	})
+
+	var buf bytes.Buffer
+	_, grantMounts, err := resolveInjectionProfile("jit run", proj, "root", "", &buf)
+	if err != nil {
+		t.Fatalf("resolveInjectionProfile --profile root: %v", err)
+	}
+	want := filepath.Join(proj, ".env")
+	if len(grantMounts) != 1 || grantMounts[0] != want {
+		t.Errorf("grantMounts = %v, want [%s]", grantMounts, want)
+	}
+
+	// A profile with no mount behind it grants nothing — and that's a
+	// silent non-event, not an error.
+	writeFixtureProfile(t, proj, "unmounted", "TOKEN: fixture/TOKEN\n")
+	_, grantMounts, err = resolveInjectionProfile("jit run", proj, "unmounted", "", &buf)
+	if err != nil {
+		t.Fatalf("resolveInjectionProfile --profile unmounted: %v", err)
+	}
+	if len(grantMounts) != 0 {
+		t.Errorf("grantMounts = %v for an unmounted profile, want none", grantMounts)
 	}
 }

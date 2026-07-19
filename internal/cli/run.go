@@ -7,12 +7,16 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
 
+	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/inject"
 	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/vault"
@@ -64,7 +68,7 @@ var runCmd = &cobra.Command{
 
 		// Announce lines go to stderr, not stdout: stdout belongs
 		// entirely to the target command.
-		p, err := resolveInjectionProfile("jit run", cwd, runProfile, runMode, cmd.ErrOrStderr())
+		p, grantMounts, err := resolveInjectionProfile("jit run", cwd, runProfile, runMode, cmd.ErrOrStderr())
 		if err != nil {
 			return fmt.Errorf("jit run: %w", err)
 		}
@@ -79,11 +83,63 @@ var runCmd = &cobra.Command{
 			return fmt.Errorf("jit run: %w", err)
 		}
 
+		// Last thing before the exec: ask the agent to serve real content
+		// on this run's mounts to this very process's tree. execve keeps
+		// the pid, so the grant registered on os.Getpid() lands on exactly
+		// the command about to run.
+		requestRunGrant(cmd.ErrOrStderr(), grantMounts)
+
 		// syscall.Exec never returns on success — it replaces this
 		// process's image entirely — so an error here always means it
 		// failed to start, never that the target already ran.
 		return syscall.Exec(binary, argv, env) // #nosec G204 -- args[0] is the command the user themselves asked `jit run --` to execute
 	},
+}
+
+// requestRunGrant asks the running agent for a run-scoped reveal grant
+// (mountgrants.go): the mounts backing this run's injected values serve
+// real content to this process tree — so a script that re-reads its
+// mounted .env mid-run gets the same values jit run just put in its
+// environment, instead of decoys that a clobbering loader would export
+// over them (a real dogfood incident: int('jit-hidden-KEEP_REPORTS')).
+//
+// Every skip is silent, matching the wired reveal hooks' best-effort
+// contract (`... --quiet 2>/dev/null || true`): no agent, or an agent
+// that refuses, leaves behavior exactly as it was before grants existed.
+// The one deliberate guard: never proceed unless the session is ALREADY
+// unlocked — a grant request must not conjure a Touch ID prompt the user's
+// command didn't require (if resolution just unlocked via the agent, the
+// session is unlocked here; if it unlocked via the keychain directly, the
+// locked agent stays undisturbed).
+func requestRunGrant(w io.Writer, mountPaths []string) {
+	if len(mountPaths) == 0 {
+		return
+	}
+	c, err := agentClient()
+	if err != nil {
+		return
+	}
+	requestRunGrantVia(c, w, mountPaths, int32(os.Getpid())) // #nosec G115 -- getpid always fits int32
+}
+
+// requestRunGrantVia is requestRunGrant minus the ambient client/pid — the
+// testable core, exercised against a real in-process agent.Server.
+func requestRunGrantVia(c *agent.Client, w io.Writer, mountPaths []string, pid int32) {
+	if !c.Reachable() {
+		return
+	}
+	st, err := c.Status()
+	if err != nil || !st.Unlocked {
+		return
+	}
+	if err := c.RevealForPID(mountPaths, pid); err != nil {
+		return
+	}
+	names := make([]string, 0, len(mountPaths))
+	for _, p := range mountPaths {
+		names = append(names, filepath.Base(p))
+	}
+	fmt.Fprintf(w, "jit run: %s serving real values to this run's processes only (until it exits)\n", strings.Join(names, ", "))
 }
 
 // resolveRunPlan does everything jit run needs before the actual
