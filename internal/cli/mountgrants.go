@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/lineage"
 )
 
@@ -69,6 +70,24 @@ func (m *mountManager) validateGrantMount(path string) error {
 			return fmt.Errorf("%s has nothing real to serve (resolving its secrets failed: %s)", path, resolveErr)
 		}
 		return fmt.Errorf("%s has nothing real to serve", path)
+	}
+	return nil
+}
+
+// canGrantAll is OnCanGrant's handler: the all-or-nothing pre-check a
+// disclosed --with grant runs BEFORE its challenge, so jit run --with fails
+// (without prompting) if any named credential can't be served, rather than
+// prompting and then partially granting. It attaches nothing — just runs
+// validateGrantMount for every grant-mode mount. Swap-mode mounts are ignored
+// (a --with only ever sends grants).
+func (m *mountManager) canGrantAll(mounts []agent.RunMount) error {
+	for _, rm := range mounts {
+		if rm.Mode != agent.MountModeGrant {
+			continue
+		}
+		if err := m.validateGrantMount(rm.Path); err != nil {
+			return err
+		}
 	}
 	return nil
 }
