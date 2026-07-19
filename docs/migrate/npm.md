@@ -15,10 +15,14 @@ revealed window.
 
 ## What to expect
 
-- `npm install` and friends read the mount like a normal file. Outside a
-  revealed window they see placeholder values - if a publish or install
-  fails auth unexpectedly, `jit agent status` shows what the last reader
-  was served, and `jit agent reveal <path>` opens a window.
+- `npm install` and friends read the mount like a normal file. Running them
+  with [`jit run`](../run/index.md) grants a **project** `.npmrc` to that
+  run's process tree automatically (npm reads the real token, scoped to the
+  run, gone when it exits) - so `jit run npm ci` just works, no window
+  needed. Outside `jit run`, or for the global `~/.npmrc`, the reveal window
+  applies: outside one they see placeholder values, `jit agent status` shows
+  what the last reader was served, and `jit agent reveal <path>` opens a
+  window.
 - The global `~/.npmrc` is machine-wide, so it's covered by
   `jit migrate home`; a project `.npmrc` is covered by `local` too.
 - Rotating a token: `jit vault set` on the path shown in the mount's
