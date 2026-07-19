@@ -18,12 +18,16 @@ in (.env < .env.<m> < .env.local < .env.<m>.local); a mode layer is never
 merged without being asked for. --profile names one profile verbatim and
 disables merging entirely.
 
-When the agent is running and unlocked, jit run also grants the target's
-process tree a run-scoped reveal on the mounted files backing those same
-values: a script that re-reads its .env mid-run gets the real values it
-was launched with, while every other process still sees decoys, and the
-grant ends the moment the command exits. No agent, or a locked one,
-skips this silently — injection works exactly the same either way.
+When the agent is running and unlocked, jit run also makes this run's
+mounted files compatible with the command reading them, for the run's
+lifetime only. By default it swaps each mount to a plain inert pointer
+file, so `[ -f .env ]`/is_file() guards pass and re-reading the file
+sets nothing (the real values are in the environment). --live instead
+keeps the live mount and grants this run's process tree real file reads,
+for tools that read values from the .env file itself (docker compose
+env_file), which jit run also auto-detects. Either way the mount returns
+to its decoy state the moment the command exits; no agent, or a locked
+one, skips this silently and injection works the same regardless.
 
 The -- separating jit's own flags from the command is optional, jit stops
 reading its flags at the first non-flag argument, so `jit run npm start`
@@ -44,6 +48,7 @@ jit run [--profile <name>] [--mode <mode>] [--] <command> [args...] [flags]
 ### Options
 
 ```
+      --live             keep the live mount and grant this run real file reads, for tools that read values from the .env file itself (docker compose env_file); default swaps in a compatibility file
       --mode string      also merge .env.<mode> and .env.<mode>.local layers (e.g. production)
       --profile string   profile to inject verbatim (default: merge this project's migrated .env layers)
 ```

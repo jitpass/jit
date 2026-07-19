@@ -25,6 +25,7 @@ import (
 var (
 	runProfile string
 	runMode    string
+	runLive    bool
 )
 
 var runCmd = &cobra.Command{
@@ -43,12 +44,16 @@ var runCmd = &cobra.Command{
 		"in (.env < .env.<m> < .env.local < .env.<m>.local); a mode layer is never\n" +
 		"merged without being asked for. --profile names one profile verbatim and\n" +
 		"disables merging entirely.\n\n" +
-		"When the agent is running and unlocked, jit run also grants the target's\n" +
-		"process tree a run-scoped reveal on the mounted files backing those same\n" +
-		"values: a script that re-reads its .env mid-run gets the real values it\n" +
-		"was launched with, while every other process still sees decoys, and the\n" +
-		"grant ends the moment the command exits. No agent, or a locked one,\n" +
-		"skips this silently — injection works exactly the same either way.\n\n" +
+		"When the agent is running and unlocked, jit run also makes this run's\n" +
+		"mounted files compatible with the command reading them, for the run's\n" +
+		"lifetime only. By default it swaps each mount to a plain inert pointer\n" +
+		"file, so `[ -f .env ]`/is_file() guards pass and re-reading the file\n" +
+		"sets nothing (the real values are in the environment). --live instead\n" +
+		"keeps the live mount and grants this run's process tree real file reads,\n" +
+		"for tools that read values from the .env file itself (docker compose\n" +
+		"env_file), which jit run also auto-detects. Either way the mount returns\n" +
+		"to its decoy state the moment the command exits; no agent, or a locked\n" +
+		"one, skips this silently and injection works the same regardless.\n\n" +
 		"The -- separating jit's own flags from the command is optional, jit stops\n" +
 		"reading its flags at the first non-flag argument, so `jit run npm start`\n" +
 		"works (jit's flags, if any, come before the command).",
@@ -89,11 +94,14 @@ var runCmd = &cobra.Command{
 			return fmt.Errorf("jit run: %w", err)
 		}
 
-		// Last thing before the exec: ask the agent to serve real content
-		// on this run's mounts to this very process's tree. execve keeps
-		// the pid, so the grant registered on os.Getpid() lands on exactly
-		// the command about to run.
-		requestRunGrant(cmd.ErrOrStderr(), grantMounts)
+		// Last thing before the exec: ask the agent to make this run's
+		// mounts compatible with the command about to read them. execve
+		// keeps the pid, so whatever we register on os.Getpid() lands on
+		// exactly that command. Two modes (see requestRunCompat): the
+		// default swaps each mount to a regular pointer file so guards and
+		// loaders just work; --live (or an auto-detected file-value tool)
+		// keeps the FIFO and grants its process tree real reads.
+		requestRunCompat(cmd.ErrOrStderr(), grantMounts, args, runLive)
 
 		// syscall.Exec never returns on success — it replaces this
 		// process's image entirely — so an error here always means it
@@ -102,22 +110,27 @@ var runCmd = &cobra.Command{
 	},
 }
 
-// requestRunGrant asks the running agent for a run-scoped reveal grant
-// (mountgrants.go): the mounts backing this run's injected values serve
-// real content to this process tree — so a script that re-reads its
-// mounted .env mid-run gets the same values jit run just put in its
-// environment, instead of decoys that a clobbering loader would export
-// over them (a real dogfood incident: int('jit-hidden-KEEP_REPORTS')).
+// requestRunCompat makes this run's mounts compatible with the command
+// about to read them. Two modes:
+//
+//   - SWAP (default): each mount becomes a regular comment-only pointer
+//     file for the run's lifetime, so `[ -f .env ]`/is_file() guards pass
+//     and a `source`/dotenv re-read parses to nothing. Real values reach
+//     the command through the environment jit run already injected. This
+//     fits the overwhelming majority — shell scripts, dotenv loaders.
+//   - LIVE (--live, or an auto-detected file-value tool): the FIFO stays
+//     and this run's process tree is granted real per-read content, for a
+//     tool that reads real values FROM the file itself (docker compose
+//     env_file:, which copies the file's contents into containers and
+//     ignores our injected environment). A swap would feed such a tool
+//     comments; the grant feeds it the real file.
 //
 // Every skip is silent, matching the wired reveal hooks' best-effort
-// contract (`... --quiet 2>/dev/null || true`): no agent, or an agent
-// that refuses, leaves behavior exactly as it was before grants existed.
-// The one deliberate guard: never proceed unless the session is ALREADY
-// unlocked — a grant request must not conjure a Touch ID prompt the user's
-// command didn't require (if resolution just unlocked via the agent, the
-// session is unlocked here; if it unlocked via the keychain directly, the
-// locked agent stays undisturbed).
-func requestRunGrant(w io.Writer, mountPaths []string) {
+// contract: no agent, or an agent that refuses, leaves behavior exactly as
+// before. The deliberate guard: never proceed unless the session is
+// ALREADY unlocked, so a compat request can't conjure a Touch ID prompt the
+// command didn't require.
+func requestRunCompat(w io.Writer, mountPaths, argv []string, live bool) {
 	if len(mountPaths) == 0 {
 		return
 	}
@@ -125,12 +138,13 @@ func requestRunGrant(w io.Writer, mountPaths []string) {
 	if err != nil {
 		return
 	}
-	requestRunGrantVia(c, w, mountPaths, int32(os.Getpid())) // #nosec G115 -- getpid always fits int32
+	useLive := live || commandReadsEnvFile(argv)
+	requestRunCompatVia(c, w, mountPaths, int32(os.Getpid()), useLive) // #nosec G115 -- getpid always fits int32
 }
 
-// requestRunGrantVia is requestRunGrant minus the ambient client/pid — the
-// testable core, exercised against a real in-process agent.Server.
-func requestRunGrantVia(c *agent.Client, w io.Writer, mountPaths []string, pid int32) {
+// requestRunCompatVia is requestRunCompat minus the ambient client/pid —
+// the testable core, exercised against a real in-process agent.Server.
+func requestRunCompatVia(c *agent.Client, w io.Writer, mountPaths []string, pid int32, live bool) {
 	if !c.Reachable() {
 		return
 	}
@@ -138,14 +152,40 @@ func requestRunGrantVia(c *agent.Client, w io.Writer, mountPaths []string, pid i
 	if err != nil || !st.Unlocked {
 		return
 	}
-	if err := c.RevealForPID(mountPaths, pid); err != nil {
-		return
-	}
 	names := make([]string, 0, len(mountPaths))
 	for _, p := range mountPaths {
 		names = append(names, filepath.Base(p))
 	}
-	fmt.Fprintf(w, "jit run: %s serving real values to this run's processes only (until it exits)\n", strings.Join(names, ", "))
+	if live {
+		if err := c.RevealForPID(mountPaths, pid); err != nil {
+			return
+		}
+		fmt.Fprintf(w, "jit run: %s serving real values to this run's processes only (until it exits)\n", strings.Join(names, ", "))
+		return
+	}
+	if err := c.SwapForPID(mountPaths, pid); err != nil {
+		return
+	}
+	fmt.Fprintf(w, "jit run: %s is a compatibility file for this run (real values are in the environment; the file itself is inert)\n", strings.Join(names, ", "))
+}
+
+// commandReadsEnvFile recognizes the small set of tools that read real
+// values FROM a .env file rather than from the environment — for those a
+// swap (comment-only file) would silently starve them, so jit run
+// auto-selects live mode. Deliberately narrow and name-based: the cost of a
+// false negative is one `--live` the user adds; the cost of guessing swap
+// wrong is a confusing empty-config failure, so only clear file-readers
+// belong here. docker/docker-compose/podman with compose all support
+// `env_file:`.
+func commandReadsEnvFile(argv []string) bool {
+	if len(argv) == 0 {
+		return false
+	}
+	switch filepath.Base(argv[0]) {
+	case "docker", "docker-compose", "podman", "podman-compose", "nerdctl":
+		return true
+	}
+	return false
 }
 
 // resolveRunPlan does everything jit run needs before the actual
@@ -171,6 +211,7 @@ func resolveRunPlan(v *vault.Vault, p profile.Profile, args []string) (binary st
 func init() {
 	runCmd.Flags().StringVar(&runProfile, "profile", "", "profile to inject verbatim (default: merge this project's migrated .env layers)")
 	runCmd.Flags().StringVar(&runMode, "mode", "", "also merge .env.<mode> and .env.<mode>.local layers (e.g. production)")
+	runCmd.Flags().BoolVar(&runLive, "live", false, "keep the live mount and grant this run real file reads, for tools that read values from the .env file itself (docker compose env_file); default swaps in a compatibility file")
 	// Stop parsing jit's own flags at the first non-flag argument, so the
 	// target command's flags (`npm start --port 3000`) pass straight
 	// through without needing a -- separator. jit's flags come before the

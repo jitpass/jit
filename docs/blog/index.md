@@ -21,6 +21,7 @@ not protect against.
 ## Posts
 
 - **2026-07-20** · [What an infostealer actually takes from a dev laptop](./2026-07-20-what-an-infostealer-takes.md) - the real file-grab list from AMOS, s1ngularity, and Shai-Hulud, and the paper-thin boundary that makes it all work. `threat-lens`
+- **2026-07-18** · [docker login stores your password in base64 - and the 4-verb protocol that fixes it](./2026-07-18-docker-login-base64.md) - who has plaintext registry logins right now, how Docker's credential-helper protocol works, and what jit v0.16 does with it. `inside-jit`
 
 <!--
 Post entry format, newest first:
