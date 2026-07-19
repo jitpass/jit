@@ -118,7 +118,7 @@ var runCmd = &cobra.Command{
 		// exactly that command. The project's .env layers swap by default
 		// (or grant with --live); project template mounts and any --with
 		// global mounts are granted (see requestRunCompat).
-		requestRunCompat(cmd.ErrOrStderr(), grantMounts, withMounts, args, cwd, runLive)
+		requestRunCompat(cmd.ErrOrStderr(), grantMounts, runWith, withMounts, args, cwd, runLive)
 
 		// syscall.Exec never returns on success — it replaces this
 		// process's image entirely — so an error here always means it
@@ -147,7 +147,7 @@ var runCmd = &cobra.Command{
 // before. The deliberate guard: never proceed unless the session is
 // ALREADY unlocked, so a compat request can't conjure a Touch ID prompt the
 // command didn't require.
-func requestRunCompat(w io.Writer, mountPaths, withMounts, argv []string, cwd string, live bool) {
+func requestRunCompat(w io.Writer, mountPaths, withNames, withMounts, argv []string, cwd string, live bool) {
 	templateMounts := projectTemplateMounts(cwd)
 	if len(mountPaths) == 0 && len(templateMounts) == 0 && len(withMounts) == 0 {
 		return
@@ -166,50 +166,67 @@ func requestRunCompat(w io.Writer, mountPaths, withMounts, argv []string, cwd st
 	if live || readAsFilePinned(cwd) || commandReadsEnvFile(argv) {
 		dotenvMode = agent.MountModeGrant
 	}
-	// Project template mounts (a project .npmrc) and any --with global
-	// mounts (gcp/sops/npm) are ALWAYS granted, never swapped: the tool
-	// reads real values from the file, so an inert compatibility file would
-	// starve it.
-	runMounts := make([]agent.RunMount, 0, len(mountPaths)+len(templateMounts)+len(withMounts))
+	// The project's own mounts (dotenv layers swapped-or-granted, project
+	// template mounts always granted) ride the run's own unlock. The --with
+	// global mounts are handled separately, behind a disclosed challenge.
+	runMounts := make([]agent.RunMount, 0, len(mountPaths)+len(templateMounts))
 	for _, p := range mountPaths {
 		runMounts = append(runMounts, agent.RunMount{Path: p, Mode: dotenvMode})
 	}
 	for _, p := range templateMounts {
 		runMounts = append(runMounts, agent.RunMount{Path: p, Mode: agent.MountModeGrant})
 	}
-	for _, p := range withMounts {
-		runMounts = append(runMounts, agent.RunMount{Path: p, Mode: agent.MountModeGrant})
+	global := make([]agent.RunMount, len(withMounts))
+	for i, p := range withMounts {
+		global[i] = agent.RunMount{Path: p, Mode: agent.MountModeGrant}
 	}
-	requestRunCompatVia(c, w, runMounts, int32(os.Getpid())) // #nosec G115 -- getpid always fits int32
+	requestRunCompatVia(c, w, runMounts, global, withNames, int32(os.Getpid())) // #nosec G115 -- getpid always fits int32
 }
 
 // requestRunCompatVia is requestRunCompat minus the ambient client/pid —
-// the testable core, exercised against a real in-process agent.Server.
-func requestRunCompatVia(c *agent.Client, w io.Writer, runMounts []agent.RunMount, pid int32) {
-	if len(runMounts) == 0 || !c.Reachable() {
+// the testable core, exercised against a real in-process agent.Server. It
+// makes two agent calls: the project's own mounts ride the run's unlock,
+// while the global --with mounts go through a separate disclosed challenge
+// naming the credentials — so declining a global grant drops only that,
+// never the run's own .env swap.
+func requestRunCompatVia(c *agent.Client, w io.Writer, runMounts, global []agent.RunMount, withNames []string, pid int32) {
+	if !c.Reachable() {
 		return
 	}
 	st, err := c.Status()
 	if err != nil || !st.Unlocked {
 		return
 	}
-	if err := c.RunForPID(runMounts, pid); err != nil {
-		return
-	}
-	var swapped, granted []string
-	for _, m := range runMounts {
-		name := filepath.Base(m.Path)
-		if m.Mode == agent.MountModeSwap {
-			swapped = append(swapped, name)
-		} else {
-			granted = append(granted, name)
+
+	if len(runMounts) > 0 {
+		if err := c.RunForPID(runMounts, pid); err == nil {
+			var swapped, granted []string
+			for _, m := range runMounts {
+				name := filepath.Base(m.Path)
+				if m.Mode == agent.MountModeSwap {
+					swapped = append(swapped, name)
+				} else {
+					granted = append(granted, name)
+				}
+			}
+			if len(swapped) > 0 {
+				fmt.Fprintf(w, "jit run: %s is a compatibility file for this run (real values are in the environment; the file itself is inert)\n", strings.Join(swapped, ", "))
+			}
+			if len(granted) > 0 {
+				fmt.Fprintf(w, "jit run: %s serving real values to this run's processes only (until it exits)\n", strings.Join(granted, ", "))
+			}
 		}
 	}
-	if len(swapped) > 0 {
-		fmt.Fprintf(w, "jit run: %s is a compatibility file for this run (real values are in the environment; the file itself is inert)\n", strings.Join(swapped, ", "))
-	}
-	if len(granted) > 0 {
-		fmt.Fprintf(w, "jit run: %s serving real values to this run's processes only (until it exits)\n", strings.Join(granted, ", "))
+
+	if len(global) > 0 {
+		reason := fmt.Sprintf("grant this run access to your global %s credential(s)", strings.Join(withNames, ", "))
+		if err := c.GrantGlobalForPID(global, pid, reason); err != nil {
+			// Declined or failed: the global grant is dropped, the run
+			// proceeds (the tool will get decoys and fail if it needed them).
+			fmt.Fprintf(w, "jit run: global grant for %s not applied (%v)\n", strings.Join(withNames, ", "), err)
+			return
+		}
+		fmt.Fprintf(w, "jit run: granted this run your global %s credential(s) until it exits\n", strings.Join(withNames, ", "))
 	}
 }
 
