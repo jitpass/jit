@@ -766,7 +766,34 @@ func (m *mountManager) startDecoyOnly() {
 	if !ok {
 		return
 	}
+	m.reconcileSwappedMounts(entries)
 	m.ensureServing(entries)
+}
+
+// reconcileSwappedMounts repairs the one state a crash mid-run can leave:
+// a registry entry whose path is a leftover compatibility pointer file (the
+// agent died while a jit run had it swapped), which ensureServing would
+// then try to serve as if it were a FIFO — its blocking O_WRONLY open would
+// instead succeed against the regular file and write decoy bytes into it.
+// For each such path that is provably jit's OWN swap artifact
+// (IsSwapPointerFile — the provenance gate), restore the FIFO before
+// serving. A regular file at a mount path that is NOT jit's swap artifact
+// (a user restored real content by hand) is left untouched and surfaced,
+// never clobbered — the swap file holds no secret, so a leftover is only an
+// availability blip, and overwriting a user's deliberate file would be far
+// worse. Safe at raw startup: no vault access, same as the rest of this
+// path.
+func (m *mountManager) reconcileSwappedMounts(entries []mount.Entry) {
+	for _, e := range entries {
+		if !mount.IsSwapPointerFile(e.MountPath) {
+			continue
+		}
+		if err := mount.RestoreFIFO(e.MountPath); err != nil {
+			fmt.Fprintf(m.stderr, "jit agent: mount %s: restoring FIFO from a leftover compatibility file failed: %v\n", e.MountPath, err)
+			continue
+		}
+		fmt.Fprintf(m.stdout, "jit agent: mount %s: restored the decoy mount from a compatibility file left by an interrupted run\n", e.MountPath)
+	}
 }
 
 // start is OnUnlock/OnRefresh's handler: makes sure decoy serving is
