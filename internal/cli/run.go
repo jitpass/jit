@@ -26,6 +26,7 @@ var (
 	runProfile string
 	runMode    string
 	runLive    bool
+	runWith    []string
 )
 
 var runCmd = &cobra.Command{
@@ -57,6 +58,11 @@ var runCmd = &cobra.Command{
 		"A project whose tools always read the file itself can pin live mode by\n" +
 		"putting `read_as_file: true` in its .jit/config.yaml, instead of --live\n" +
 		"on every run.\n\n" +
+		"--with names a global, file-delivered credential to grant this run — gcp\n" +
+		"(gcloud ADC), sops, or npm (~/.npmrc) — for a tool that reads a\n" +
+		"machine-wide credential file, e.g. `jit run --with gcp terraform apply`.\n" +
+		"It takes explicit intent by design: a global credential is never\n" +
+		"granted by a project's config, only by a --with you type.\n\n" +
 		"The -- separating jit's own flags from the command is optional, jit stops\n" +
 		"reading its flags at the first non-flag argument, so `jit run npm start`\n" +
 		"works (jit's flags, if any, come before the command).",
@@ -97,14 +103,22 @@ var runCmd = &cobra.Command{
 			return fmt.Errorf("jit run: %w", err)
 		}
 
+		// --with names global, file-delivered mounts (gcp, sops, npm) to
+		// grant for this run. Resolved here (not in the best-effort compat
+		// path) because a --with the user typed must fail loudly if the
+		// name is unknown or its mount isn't migrated.
+		withMounts, err := withMountPaths(runWith)
+		if err != nil {
+			return fmt.Errorf("jit run: %w", err)
+		}
+
 		// Last thing before the exec: ask the agent to make this run's
 		// mounts compatible with the command about to read them. execve
 		// keeps the pid, so whatever we register on os.Getpid() lands on
-		// exactly that command. Two modes (see requestRunCompat): the
-		// default swaps each mount to a regular pointer file so guards and
-		// loaders just work; --live (or an auto-detected file-value tool)
-		// keeps the FIFO and grants its process tree real reads.
-		requestRunCompat(cmd.ErrOrStderr(), grantMounts, args, cwd, runLive)
+		// exactly that command. The project's .env layers swap by default
+		// (or grant with --live); project template mounts and any --with
+		// global mounts are granted (see requestRunCompat).
+		requestRunCompat(cmd.ErrOrStderr(), grantMounts, withMounts, args, cwd, runLive)
 
 		// syscall.Exec never returns on success — it replaces this
 		// process's image entirely — so an error here always means it
@@ -133,9 +147,9 @@ var runCmd = &cobra.Command{
 // before. The deliberate guard: never proceed unless the session is
 // ALREADY unlocked, so a compat request can't conjure a Touch ID prompt the
 // command didn't require.
-func requestRunCompat(w io.Writer, mountPaths, argv []string, cwd string, live bool) {
+func requestRunCompat(w io.Writer, mountPaths, withMounts, argv []string, cwd string, live bool) {
 	templateMounts := projectTemplateMounts(cwd)
-	if len(mountPaths) == 0 && len(templateMounts) == 0 {
+	if len(mountPaths) == 0 && len(templateMounts) == 0 && len(withMounts) == 0 {
 		return
 	}
 	c, err := agentClient()
@@ -152,14 +166,18 @@ func requestRunCompat(w io.Writer, mountPaths, argv []string, cwd string, live b
 	if live || readAsFilePinned(cwd) || commandReadsEnvFile(argv) {
 		dotenvMode = agent.MountModeGrant
 	}
-	// Project template mounts (a project .npmrc) are ALWAYS granted, never
-	// swapped: the tool reads real values from the file, so an inert
-	// compatibility file would starve it.
-	runMounts := make([]agent.RunMount, 0, len(mountPaths)+len(templateMounts))
+	// Project template mounts (a project .npmrc) and any --with global
+	// mounts (gcp/sops/npm) are ALWAYS granted, never swapped: the tool
+	// reads real values from the file, so an inert compatibility file would
+	// starve it.
+	runMounts := make([]agent.RunMount, 0, len(mountPaths)+len(templateMounts)+len(withMounts))
 	for _, p := range mountPaths {
 		runMounts = append(runMounts, agent.RunMount{Path: p, Mode: dotenvMode})
 	}
 	for _, p := range templateMounts {
+		runMounts = append(runMounts, agent.RunMount{Path: p, Mode: agent.MountModeGrant})
+	}
+	for _, p := range withMounts {
 		runMounts = append(runMounts, agent.RunMount{Path: p, Mode: agent.MountModeGrant})
 	}
 	requestRunCompatVia(c, w, runMounts, int32(os.Getpid())) // #nosec G115 -- getpid always fits int32
@@ -238,6 +256,7 @@ func init() {
 	runCmd.Flags().StringVar(&runProfile, "profile", "", "profile to inject verbatim (default: merge this project's migrated .env layers)")
 	runCmd.Flags().StringVar(&runMode, "mode", "", "also merge .env.<mode> and .env.<mode>.local layers (e.g. production)")
 	runCmd.Flags().BoolVar(&runLive, "live", false, "keep the live mount and grant this run real file reads, for tools that read values from the .env file itself (docker compose env_file); default swaps in a compatibility file")
+	runCmd.Flags().StringArrayVar(&runWith, "with", nil, "also grant this run a global file-delivered mount by name (gcp, sops, npm) - for tools that read a machine-wide credential file, e.g. `jit run --with gcp gcloud storage ls` (repeatable)")
 	// Stop parsing jit's own flags at the first non-flag argument, so the
 	// target command's flags (`npm start --port 3000`) pass straight
 	// through without needing a -- separator. jit's flags come before the
