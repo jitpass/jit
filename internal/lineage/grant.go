@@ -46,7 +46,7 @@ func FIFOHolders(path string) (pids []int32, ok bool) {
 	if err != nil || truncated {
 		return nil, false
 	}
-	self := int32(os.Getpid())
+	self := int32(os.Getpid()) // #nosec G115 -- getpid always fits int32 on darwin
 	for _, candidate := range all {
 		if candidate == self || candidate <= 0 {
 			continue
