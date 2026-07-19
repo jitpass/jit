@@ -246,6 +246,23 @@ func unmigratedSiblingLayers(dir, mode string, merged []envLayer) []string {
 //  3. no layers anywhere: fall back to the single project-local profile if
 //     exactly one exists; zero or several stay a hard error that says how
 //     to disambiguate. --mode without any layers is also a hard error.
+//
+// injectionProfileForRun wraps resolveInjectionProfile with jit run's one
+// tolerance: a run that carries global --with grants and named neither
+// --profile nor --mode may inject NOTHING and exist purely to grant a global
+// mount (a grant-wrapped `gcloud` typed in a non-project directory is exactly
+// this). For that case a missing project profile is not an error: the run
+// proceeds with an empty injection profile. An explicit --profile or --mode
+// that fails to resolve still errors, and a run with no --with still requires
+// a profile as before.
+func injectionProfileForRun(cwd, explicit, mode string, hasWith bool, w io.Writer) (profile.Profile, []string, error) {
+	p, grantMounts, err := resolveInjectionProfile("jit run", cwd, explicit, mode, w)
+	if err != nil && hasWith && explicit == "" && mode == "" {
+		return profile.Profile{}, nil, nil
+	}
+	return p, grantMounts, err
+}
+
 func resolveInjectionProfile(cmdName, cwd, explicit, mode string, w io.Writer) (p profile.Profile, grantMounts []string, err error) {
 	if explicit != "" {
 		if mode != "" {

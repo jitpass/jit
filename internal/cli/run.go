@@ -88,7 +88,7 @@ var runCmd = &cobra.Command{
 
 		// Announce lines go to stderr, not stdout: stdout belongs
 		// entirely to the target command.
-		p, grantMounts, err := resolveInjectionProfile("jit run", cwd, runProfile, runMode, cmd.ErrOrStderr())
+		p, grantMounts, err := injectionProfileForRun(cwd, runProfile, runMode, len(runWith) > 0, cmd.ErrOrStderr())
 		if err != nil {
 			return fmt.Errorf("jit run: %w", err)
 		}
