@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jitpass/jit/internal/agent"
 )
 
 // newGrantTestManager is a mountManager with the grant gate's kernel
@@ -332,5 +334,27 @@ func TestMountRevealStatusesReportsGrantsAndGrantServed(t *testing.T) {
 	statuses = m.mountRevealStatuses()
 	if len(statuses[0].Grants) != 0 {
 		t.Errorf("Grants = %+v after target death, want none reported", statuses[0].Grants)
+	}
+}
+
+func TestPrintMountStatusesShowsGrants(t *testing.T) {
+	var out bytes.Buffer
+	printMountStatuses(&out, []agent.MountRevealStatus{{
+		Path:   "/tmp/fixture/.env",
+		Grants: []agent.MountGrantStatus{{PID: 4242, Command: "./run_all_exports.sh", SinceUnix: time.Now().Add(-30 * time.Second).Unix()}},
+		LastServe: &agent.MountServeEvent{
+			UnixTime:    time.Now().Unix(),
+			Decoy:       false,
+			GrantServed: true,
+			ReaderPID:   4243,
+			ReaderPath:  "/bin/cat",
+		},
+	}})
+	s := out.String()
+	if !strings.Contains(s, "serving real values to jit run pid 4242 (./run_all_exports.sh)") {
+		t.Errorf("output missing the grant line: %q", s)
+	}
+	if !strings.Contains(s, "real values (run-scoped grant)") {
+		t.Errorf("output missing the grant-served read qualifier: %q", s)
 	}
 }
