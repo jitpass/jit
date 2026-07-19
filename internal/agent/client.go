@@ -211,7 +211,7 @@ func (c *Client) Reveal(mountPath string, duration time.Duration) error {
 // the tree, fail-closed gating, and teardown (target exit, lock, hard cap)
 // are all agent-side; Client makes no assumptions about any of them.
 func (c *Client) RevealForPID(mountPaths []string, pid int32) error {
-	return c.RunForPID(mountsWithMode(mountPaths, MountModeGrant), pid)
+	return c.RunForPID(RunMounts(mountPaths, MountModeGrant), pid)
 }
 
 // SwapForPID is RevealForPID's compatibility-swap variant (the jit run
@@ -220,7 +220,7 @@ func (c *Client) RevealForPID(mountPaths []string, pid int32) error {
 // re-reads parse to nothing. Same lifecycle and teardown as a grant; the
 // difference is what the mount IS during the run.
 func (c *Client) SwapForPID(mountPaths []string, pid int32) error {
-	return c.RunForPID(mountsWithMode(mountPaths, MountModeSwap), pid)
+	return c.RunForPID(RunMounts(mountPaths, MountModeSwap), pid)
 }
 
 // RunForPID is the general form: attach pid's process tree to a set of
@@ -242,7 +242,10 @@ func (c *Client) GrantGlobalForPID(mounts []RunMount, pid int32, reason string) 
 	return err
 }
 
-func mountsWithMode(paths []string, mode string) []RunMount {
+// RunMounts labels each of paths with a single mode — the common shape when
+// every mount in a group shares one treatment (all grants, or all swaps).
+// One helper so the paths->[]RunMount transform lives in exactly one place.
+func RunMounts(paths []string, mode string) []RunMount {
 	out := make([]RunMount, len(paths))
 	for i, p := range paths {
 		out[i] = RunMount{Path: p, Mode: mode}
