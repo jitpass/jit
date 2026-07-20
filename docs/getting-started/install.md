@@ -14,9 +14,15 @@ no Homebrew tap yet (planned for the first signed release).
 curl -sLO https://github.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz
 tar -xzf jitpass_darwin_arm64.tar.gz jit
 sudo mv jit /usr/local/bin/
+jit agent install -y
 ```
 
-That's the install done - continue with the **[Quickstart](./quickstart.md)**.
+The fourth line sets up the background agent so you unlock once, not once per
+command. It's the same line you run to upgrade, so it's worth building into
+muscle memory now: on a fresh machine it installs the agent; on an upgrade it points
+the agent at the new binary and restarts it on the spot (moving the binary
+alone can't do that - a file on disk can't restart a running process). That's
+the install done - continue with the **[Quickstart](./quickstart.md)**.
 
 Prebuilt binaries are Apple Silicon only - we don't have Intel hardware to
 test on, and won't publish what we can't test. On an Intel Mac, use
@@ -116,23 +122,25 @@ install locations.
 
 New versions are announced on the
 [Releases page](https://github.com/jitpass/jit/releases). Upgrading is two
-steps, not one: reinstall the binary, then restart the background agent on it.
+steps, not one: reinstall the binary, then point the background agent at it -
+the exact same commands as a fresh install (`jit agent install -y` is
+idempotent).
 
-**Prebuilt install (Option A)** - no Go needed; the same three install
+**Prebuilt install (Option A)** - no Go needed; the same four install
 commands (`releases/latest/download/...` always serves the newest version):
 
 ```sh
 curl -sLO https://github.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz
 tar -xzf jitpass_darwin_arm64.tar.gz jit
 sudo mv jit /usr/local/bin/                        # 1. reinstall the binary
-jit agent restart                                  # 2. restart the background agent on it
+jit agent install -y                               # 2. point the agent at it and restart it now
 ```
 
 **Source install (Option B):**
 
 ```sh
-go install github.com/jitpass/jit/cmd/jit@v0.10.1   # 1. reinstall the binary (pin the new tag)
-jit agent restart                                  # 2. restart the background agent on it
+go install github.com/jitpass/jit/cmd/jit@v0.19.2   # 1. reinstall the binary (pin the new tag)
+jit agent install -y                               # 2. point the agent at it and restart it now
 ```
 
 Pin the tag rather than `@latest` right after a release: the Go module proxy
@@ -145,8 +153,13 @@ version's behavior, which reads as "I upgraded but nothing changed."
 `jit status` and `jit agent status` warn with "different build" until it's
 restarted. The agent also notices the replaced binary itself and restarts
 onto it on its own, but only once its session is locked and no prompt is
-pending, so `jit agent restart` is for having it now. If you never ran
-`jit agent install`, step 1 alone is the whole upgrade.
+pending - so run `jit agent install -y` to have it now. Why `install -y`
+rather than `jit agent restart`: it does everything restart does, and it also
+re-points the launchd service if the binary moved and re-bootstraps it if
+launchd had dropped the service (a plist on disk with no running process),
+neither of which restart can fix. If you never ran `jit agent install`, that
+line is simply the one-time agent setup; the binary reinstall alone is
+otherwise the whole upgrade.
 
 ---
 
