@@ -80,7 +80,7 @@ so everything keeps working without the secret sitting on disk:
 jit audit                  # what's exposed on this machine? (strictly read-only)
 jit migrate                # fix everything it found; tools keep working
 jit wrap gh                # move a CLI's token into the vault; keep typing `gh` as before
-jit run -- npm run dev     # or inject secrets straight into a process, no file at all
+jit run npm run dev        # or inject secrets straight into a process, no file at all
 ```
 
 **How it resolves it.** Secrets materialize at the moment of use (a process
@@ -169,7 +169,13 @@ no Homebrew tap yet (planned for the first signed release).
 curl -sLO https://github.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz
 tar -xzf jitpass_darwin_arm64.tar.gz jit
 sudo mv jit /usr/local/bin/
+jit agent install -y
 ```
+
+The fourth line sets up the background agent (unlock once, not once per
+command) - and it's the same line you run to upgrade, so moving it into muscle
+memory now pays off later: on a fresh machine it installs the agent, on an
+upgrade it points the agent at the new binary and restarts it.
 
 Optional, for `jit <TAB>` completion (if it errors, see
 [Shell completion](#shell-completion-both-options) below):
@@ -257,23 +263,25 @@ go install ./cmd/jit
 
 New versions are announced on the
 [Releases page](https://github.com/jitpass/jit/releases). Upgrading is two
-steps, not one: reinstall the binary, then restart the background agent on it.
+steps, not one: reinstall the binary, then point the background agent at it -
+the exact same commands as a fresh install (`jit agent install -y` is
+idempotent).
 
-**Prebuilt install (Option A)** - no Go needed; the same three install
+**Prebuilt install (Option A)** - no Go needed; the same four install
 commands (`releases/latest/download/...` always serves the newest version):
 
 ```sh
 curl -sLO https://github.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz
 tar -xzf jitpass_darwin_arm64.tar.gz jit
 sudo mv jit /usr/local/bin/                        # 1. reinstall the binary
-jit agent install                                  # 2. restart the background agent on it
+jit agent install -y                               # 2. point the agent at it and restart it now
 ```
 
 **Source install (Option B):**
 
 ```sh
-go install github.com/jitpass/jit/cmd/jit@v0.19.0   # 1. reinstall the binary (pin the new tag)
-jit agent install                                  # 2. restart the background agent on it
+go install github.com/jitpass/jit/cmd/jit@v0.19.2   # 1. reinstall the binary (pin the new tag)
+jit agent install -y                               # 2. point the agent at it and restart it now
 ```
 
 Pin the tag rather than `@latest` right after a release: the Go module proxy
@@ -283,8 +291,12 @@ The second step is the one people skip. If you installed the background agent,
 launchd keeps the old process (and the old binary) running right through your
 reinstall; every command that talks to it still gets last version's behavior,
 which reads as "I upgraded but nothing changed." `jit status` and
-`jit agent status` warn with "different build" until you restart it. If you
-never ran `jit agent install`, step 1 alone is the whole upgrade.
+`jit agent status` warn with "different build" until you restart it.
+`jit agent install -y` is the surest way to do that: unlike `jit agent
+restart`, it also re-points the launchd service if the binary moved and
+re-bootstraps it if launchd had dropped the service entirely. If you never ran
+`jit agent install`, that line is the one-time agent setup; the binary
+reinstall alone is otherwise the whole upgrade.
 
 ## Quick start
 
