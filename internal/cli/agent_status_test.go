@@ -90,3 +90,28 @@ func TestAgentStatusFormatRejectsUnknownValue(t *testing.T) {
 		t.Fatal("expected an error for an unknown --format value, got nil")
 	}
 }
+
+// TestServiceNotLoadedRecognizesLaunchctlMissingService pins the trigger for
+// `jit agent restart`'s bootstrap fallback: only launchctl's "Could not find
+// service" wording (case-insensitive) counts as "the plist exists but launchd
+// dropped the service", the one kickstart failure a bootstrap recovers.
+// Real launchctl output for exit 113 opens exactly this way.
+func TestServiceNotLoadedRecognizesLaunchctlMissingService(t *testing.T) {
+	cases := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{"exit-113 wording", `Could not find service "com.jitpass.agent" in domain for user gui: 502`, true},
+		{"lowercased", "could not find service \"com.jitpass.agent\"", true},
+		{"unrelated failure", "Bootstrap failed: 5: Input/output error", false},
+		{"empty", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := serviceNotLoaded([]byte(tc.output)); got != tc.want {
+				t.Errorf("serviceNotLoaded(%q) = %v, want %v", tc.output, got, tc.want)
+			}
+		})
+	}
+}
