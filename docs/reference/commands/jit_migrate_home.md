@@ -41,6 +41,10 @@ machine-wide files that live at fixed home paths:
                    a live mount for sops/kluctl/Flux/helm-secrets, and sops
                    v3.10+ can fetch the key directly via
                    SOPS_AGE_KEY_CMD="jit sops-age-key", no file read at all.
+  .netrc           Every `password` value in ~/.netrc moves into the vault;
+                   the file keeps working as a live mount, curl/git/ftp
+                   read it exactly as before, `machine`/`login` lines and
+                   any macdef scripts survive verbatim.
   Claude Desktop's MCP config and the global ~/.npmrc get the same
   treatment as project MCP configs and .npmrc files.
 
@@ -71,7 +75,7 @@ jit migrate home [flags]
 
 ```
       --dry-run        preview the plan for this scope without changing anything
-      --only strings   scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,docker,gcp,sops,npmrc (default: all)
+      --only strings   scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,docker,gcp,sops,npmrc,netrc (default: all)
   -y, --yes            skip the confirmation prompt and migrate immediately
 ```
 

@@ -176,6 +176,60 @@ var catalog = map[string]CatalogEntry{
 		// pasted it (usually a shell export — migrate's territory). Wrap
 		// still works: `jit vault set wrap-openai/OPENAI_API_KEY` first.
 	},
+	"claude": {
+		Tool:    "claude",
+		Kind:    KindShim,
+		Doc:     "Anthropic API key for Claude Code",
+		EnvVars: map[string]string{"ANTHROPIC_API_KEY": "ANTHROPIC_API_KEY"},
+		Order:   []string{"ANTHROPIC_API_KEY"},
+		// No Sources and no TokenCommand: on macOS Claude Code keeps its
+		// subscription OAuth in the Keychain (already encrypted at rest,
+		// nothing to migrate), and an API key lives wherever the user
+		// exported it (shell config — migrate's territory). Wrap is for
+		// API-key setups: `jit vault set wrap-claude/ANTHROPIC_API_KEY`
+		// first. ANTHROPIC_API_KEY switches Claude Code to API billing,
+		// which is exactly what an API-key user wants and a subscription
+		// user doesn't — docs/wrap/claude.md carries that caveat.
+	},
+	"gemini": {
+		Tool:    "gemini",
+		Kind:    KindShim,
+		Doc:     "Gemini API key",
+		EnvVars: map[string]string{"GEMINI_API_KEY": "GEMINI_API_KEY"},
+		Order:   []string{"GEMINI_API_KEY"},
+		Sources: []TokenSource{
+			// Gemini CLI's documented .env loading: ~/.gemini/.env is its
+			// dedicated file, plain ~/.env the documented fallback. dotenv
+			// KEY=value lines are the toml extractor's sectionless line
+			// shape. If jit migrate home already turned either path into a
+			// live mount, ExtractToken's FIFO guard refuses to read it
+			// (rather than "discovering" today's decoy cycle as the token)
+			// — see that function's doc comment.
+			{Path: "~/.gemini/.env", Format: "toml", Selector: "GEMINI_API_KEY"},
+			{Path: "~/.env", Format: "toml", Selector: "GEMINI_API_KEY"},
+		},
+		VerifyHint: `gemini -p "hello"`,
+	},
+	"codex": {
+		Tool:    "codex",
+		Kind:    KindShim,
+		Doc:     "OpenAI API key for Codex CLI",
+		EnvVars: map[string]string{"CODEX_API_KEY": "CODEX_API_KEY"},
+		Order:   []string{"CODEX_API_KEY"},
+		Sources: []TokenSource{
+			// ~/.codex/auth.json's OPENAI_API_KEY field is set only by an
+			// API-key login (`codex login --with-api-key`) — a ChatGPT
+			// OAuth login leaves it null, which extractJSON reads as
+			// not-found, so the OAuth tokens in the same file are never
+			// what gets vaulted or scrubbed. The shim injects
+			// CODEX_API_KEY (Codex's documented non-interactive auth var),
+			// deliberately NOT OPENAI_API_KEY: codex spawns the user's
+			// commands as children, and OPENAI_API_KEY in that inherited
+			// environment would hand the key to every one of them.
+			{Path: "~/.codex/auth.json", Format: "json", Selector: "OPENAI_API_KEY"},
+		},
+		VerifyHint: `codex exec "say hi"`,
+	},
 
 	"aws": {
 		Tool:           "aws",

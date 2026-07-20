@@ -47,6 +47,9 @@ One page per tool - requirements, verification, and per-tool gotchas:
 | [`hf`](./hf.md) | `HF_TOKEN` | `~/.cache/huggingface/token` (the whole file is the token) |
 | [`supabase`](./supabase.md) | `SUPABASE_ACCESS_TOKEN` | `~/.supabase/access-token` when the OS keyring isn't available |
 | [`openai`](./openai.md) | `OPENAI_API_KEY` | nowhere standard - `jit vault set wrap-openai/OPENAI_API_KEY` first |
+| [`claude`](./claude-code.md) | `ANTHROPIC_API_KEY` | nowhere standard - `jit vault set wrap-claude/ANTHROPIC_API_KEY` first |
+| [`gemini`](./gemini.md) | `GEMINI_API_KEY` | `~/.gemini/.env` (or `~/.env` as a fallback) |
+| [`codex`](./codex.md) | `CODEX_API_KEY` | `~/.codex/auth.json`'s `OPENAI_API_KEY` field (API-key logins only) |
 
 ## Native-hook plugins (no shim - stronger)
 
@@ -82,7 +85,7 @@ gcloud storage ls               # native; the shim grants the real ADC
 The shim runs `jit run --with <name>`, so each invocation grants the mount
 to that one process (scoped, gone when it exits) and prompts a **disclosed
 Touch ID** naming the credential - a global credential is never granted
-silently. Names: `gcp`, `sops`, `npm`. See
+silently. Names: `gcp`, `sops`, `npm`, `netrc`. See
 [Delivering a secret](../getting-started/delivering-secrets.md).
 
 ## Adding a tool

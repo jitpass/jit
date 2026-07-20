@@ -189,6 +189,83 @@ func TestScanGCPApplicationDefaultCredentialsSkipsFIFO(t *testing.T) {
 	}
 }
 
+func TestScanNetrc(t *testing.T) {
+	home := t.TempDir()
+	writeFile(t, filepath.Join(home, ".netrc"), `machine api.github.com
+  login alex
+  password ghp_exampletoken1234567890
+
+machine ftp.example.com login bob password ftpsecretexample
+`)
+	findings, err := scanNetrc(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("scanNetrc: %v", err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("got %d findings, want 2 (one per password)", len(findings))
+	}
+	byKey := map[string]Finding{}
+	for _, f := range findings {
+		byKey[*f.KeyName] = f
+	}
+	if _, ok := byKey["api.github.com"]; !ok {
+		t.Error("expected a finding keyed by machine api.github.com")
+	}
+	if _, ok := byKey["ftp.example.com"]; !ok {
+		t.Error("expected a finding keyed by machine ftp.example.com")
+	}
+}
+
+// TestScanNetrcSkipsMacdefBodies is the audit half of the agreement with
+// internal/migrate's TestApplyNetrcMacdefBodyNeverParsedAsCredentials: a
+// "password" word inside a macro body must not be reported, so audit flags
+// exactly what migrate will convert — never a false finding migrate then
+// refuses to touch. Exercises netrcPasswords directly (the finding only
+// carries a redacted ValuePreview, so the raw values are asserted here).
+func TestScanNetrcSkipsMacdefBodies(t *testing.T) {
+	data := []byte(`machine real.example.com login u password REAL_secret_value
+
+macdef init
+echo password fake_value_inside_macro
+quit
+
+machine second.example.com login v password SECOND_secret_value
+`)
+	got := netrcPasswords(data)
+	if len(got) != 2 {
+		t.Fatalf("got %d passwords, want 2 (the macro body's lookalike must be ignored): %+v", len(got), got)
+	}
+	for _, pw := range got {
+		if pw.value == "fake_value_inside_macro" {
+			t.Error("extracted a password from inside a macdef body")
+		}
+	}
+	if got[0].value != "REAL_secret_value" || got[0].machine != "real.example.com" {
+		t.Errorf("first password = %+v, want real.example.com/REAL_secret_value", got[0])
+	}
+	if got[1].value != "SECOND_secret_value" || got[1].machine != "second.example.com" {
+		t.Errorf("second password = %+v, want second.example.com/SECOND_secret_value", got[1])
+	}
+}
+
+func TestScanNetrcSkipsFIFO(t *testing.T) {
+	home := t.TempDir()
+	// jit migrate home --only netrc turns ~/.netrc into a live-mount FIFO.
+	// The scanner must skip it without opening it for read — a bare open
+	// blocks forever with no agent writing. If the guard regresses, this
+	// test hangs rather than fails; the go test timeout surfaces it.
+	if err := syscall.Mkfifo(filepath.Join(home, ".netrc"), 0o600); err != nil {
+		t.Fatalf("Mkfifo: %v", err)
+	}
+	findings, err := scanNetrc(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("scanNetrc: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("got %d findings for a FIFO mount, want 0", len(findings))
+	}
+}
+
 func TestScanCredentialFilesAggregatesAll(t *testing.T) {
 	home := t.TempDir()
 	mkdirAll(t, filepath.Join(home, ".aws"))
