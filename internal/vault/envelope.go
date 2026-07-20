@@ -31,6 +31,37 @@ type envelope struct {
 	Payload string `json:"payload"`
 }
 
+// wrappedDEKFor selects the hex-encoded wrapped DEK this device should use to
+// open the envelope — the single recipient-resolution rule Get and Verify
+// MUST agree on (a doctor that validated a recipient Get never reads would
+// false-flag a shareable envelope as corrupt, or pass one this device can't
+// actually open). It is deliberately the only place that rule lives.
+//
+// Exact match first. Failing that, a single-recipient envelope is still worth
+// returning: every envelope this vault has ever written has exactly one
+// recipient (Set always writes one), so a mismatch there almost always means
+// the machine's IDENTIFIER changed, not the machine — envelopes written before
+// EnsureDeviceID existed are keyed by os.Hostname(), which drifts with a Mac
+// rename or even a DHCP-supplied name. If the wrapped DEK genuinely came from
+// a different machine, UnwrapKey fails at the KeyWrapper layer anyway (the MEK
+// won't match), so returning it costs nothing and never decrypts anything this
+// device couldn't already decrypt. A multi-recipient envelope with no match,
+// by contrast, is genuinely not for this device and is reported as such.
+func (env envelope) wrappedDEKFor(recipientID, path string) (string, error) {
+	if w, ok := env.Recipients[recipientID]; ok {
+		return w, nil
+	}
+	switch len(env.Recipients) {
+	case 0:
+		return "", fmt.Errorf("corrupt envelope %s: no recipients, its wrapped key is gone", path)
+	case 1:
+		for _, w := range env.Recipients {
+			return w, nil
+		}
+	}
+	return "", fmt.Errorf("no key for this device (%s) in %s, it was likely encrypted on a different machine", recipientID, path)
+}
+
 const (
 	// envelopeVersionAADLess is the original schema: no metadata, payload
 	// sealed with no additional authenticated data. Never written anymore,

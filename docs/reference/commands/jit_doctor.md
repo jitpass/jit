@@ -1,21 +1,31 @@
 ## jit doctor
 
-Verify every secret a profile references actually exists in the vault
+One-shot health check: profiles, secrets, agent, backup, and wrap shims
 
 ### Synopsis
 
-jit doctor checks that every secret path a profile manifest references
-actually exists in the vault, failing fast with a named missing secret
-instead of letting an app crash later on an empty environment variable.
-Only checks existence, never decrypts a value, so it never needs local
-authentication.
+jit doctor is the single "what's wrong" rollup for a jit setup. Its core
+job: verify that every secret path a profile references actually exists in
+the vault AND that its envelope is one this build of jit can read, failing
+fast with a named problem instead of letting an app crash later on an empty
+environment variable or a value that won't decrypt. It never decrypts a
+value (existence and envelope structure are both plaintext on disk), so it
+never needs local authentication and is safe to run often.
 
-By default checks every profile visible from the current directory: both
+By default it checks every profile visible from the current directory: both
 project-local ones under .jit/profiles/ and the home-rooted global ones
 jit migrate writes for shell-config/MCP/AWS/kubeconfig/npmrc secrets,
-the same set `jit profile list` shows. Use --profile to check just one.
---format json prints a machine-readable snapshot instead of the default
-text report, still exits non-zero on any problem either way.
+the same set `jit profile list` shows. It also folds in the health checks
+that used to take `jit status` and `jit wrap doctor` to see: the background
+agent, your vault backup, and any wrapped-tool shims.
+
+It exits non-zero only when a profile's secret is missing, corrupt, or
+unparseable. Everything else it reports is an advisory warning, never a
+failure: an orphaned secret (with --orphans), a profile name shadowed
+across scopes, a stopped agent, a stale or missing vault backup, a broken
+shim. Use --profile to narrow the run to a single profile (the system-
+health sections are skipped then), --verbose to list every reference it
+cleared, and --format json for a machine-readable snapshot.
 
 ```
 jit doctor [flags]
@@ -25,7 +35,9 @@ jit doctor [flags]
 
 ```
       --format string    output format: "text" (default) or "json" (default "text")
-      --profile string   check only this profile instead of every profile under .jit/profiles/
+      --orphans          also warn about vault secrets no profile references (advisory, never a failure)
+      --profile string   check only this profile, and skip the agent/backup/wrap health sections
+      --verbose          on success, list every variable→path reference that was checked
 ```
 
 ### SEE ALSO

@@ -238,30 +238,21 @@ func gatherAgentStatus(root string) (statusAgent, error) {
 
 // gatherProfileStatus summarizes the same per-secret-reference check jit
 // doctor performs in full, without repeating its per-problem listing —
-// pointing at doctor for detail keeps this a rollup, not a duplicate.
+// pointing at doctor for detail keeps this a rollup, not a duplicate. It
+// runs the SHARED checker (runProfileCheck) doctor itself uses, so the
+// glance and the detail can never disagree on what counts as a problem; it
+// asks for the cheap existence-only pass (no envelope integrity, no orphan
+// sweep — those are doctor's deeper job) to stay the fast overview.
 func gatherProfileStatus(cwd string, v *vault.Vault) (statusProfiles, error) {
-	infos, err := profile.ListAll(cwd)
+	outcome, err := runProfileCheck(cwd, v, checkOptions{})
 	if err != nil {
 		return statusProfiles{}, err
 	}
-
-	checked := 0
-	problems := 0
-	for _, info := range infos {
-		p, err := profile.LoadFile(info.Path)
-		if err != nil {
-			problems++
-			continue
-		}
-		for _, secretPath := range p {
-			checked++
-			exists, err := v.Exists(secretPath)
-			if err != nil || !exists {
-				problems++
-			}
-		}
-	}
-	return statusProfiles{ProfilesFound: len(infos), SecretReferences: checked, Problems: problems}, nil
+	return statusProfiles{
+		ProfilesFound:    outcome.ProfilesChecked,
+		SecretReferences: outcome.SecretsChecked,
+		Problems:         len(outcome.Problems()),
+	}, nil
 }
 
 // gatherMountStatus reports how many mounts are registered and infers
