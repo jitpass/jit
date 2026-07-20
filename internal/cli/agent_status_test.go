@@ -123,14 +123,59 @@ func TestReloadAgentServiceBootoutThenBootstrap(t *testing.T) {
 		t.Errorf("bootstrap must be handed the plist path, got %v", calls[1])
 	}
 
-	// And a bootstrap failure IS surfaced.
+	// And a non-transient bootstrap failure IS surfaced (a race error like EIO
+	// would instead be retried — see TestReloadAgentServiceRetriesThroughBootoutRace).
 	launchctlRun = func(args ...string) ([]byte, error) {
 		if args[0] == "bootstrap" {
-			return []byte("Bootstrap failed: 5: Input/output error"), errors.New("exit status 5")
+			return []byte("Bootstrap failed: 112: Operation not permitted"), errors.New("exit status 112")
 		}
 		return nil, nil
 	}
 	if _, err := reloadAgentService("/tmp/whatever.plist"); err == nil {
 		t.Fatal("a bootstrap failure must be returned, got nil")
+	}
+}
+
+// TestReloadAgentServiceRetriesThroughBootoutRace pins the fix for a race
+// found running on real launchd: bootout returns before the old service is
+// fully torn down, and a bootstrap landing in that window fails with EIO
+// ("Input/output error"). reloadAgentService must retry through it, but must
+// NOT retry a genuine (non-race) bootstrap failure.
+func TestReloadAgentServiceRetriesThroughBootoutRace(t *testing.T) {
+	restore := launchctlRun
+	t.Cleanup(func() { launchctlRun = restore })
+
+	var bootstraps int
+	launchctlRun = func(args ...string) ([]byte, error) {
+		if args[0] == "bootout" {
+			return nil, nil
+		}
+		bootstraps++
+		if bootstraps < 3 { // launchd still tearing the old service down
+			return []byte("Bootstrap failed: 5: Input/output error"), errors.New("exit status 5")
+		}
+		return nil, nil
+	}
+	if _, err := reloadAgentService("/tmp/x.plist"); err != nil {
+		t.Fatalf("reload must retry through the EIO race and succeed, got %v", err)
+	}
+	if bootstraps != 3 {
+		t.Errorf("want 3 bootstrap attempts (2 EIO + 1 success), got %d", bootstraps)
+	}
+
+	// A non-transient bootstrap error returns immediately, no retry.
+	bootstraps = 0
+	launchctlRun = func(args ...string) ([]byte, error) {
+		if args[0] == "bootstrap" {
+			bootstraps++
+			return []byte("Bootstrap failed: 112: some permanent problem"), errors.New("exit status 112")
+		}
+		return nil, nil
+	}
+	if _, err := reloadAgentService("/tmp/x.plist"); err == nil {
+		t.Fatal("a non-race bootstrap error must be returned")
+	}
+	if bootstraps != 1 {
+		t.Errorf("a non-race error must not be retried, got %d attempts", bootstraps)
 	}
 }

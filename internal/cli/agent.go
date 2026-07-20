@@ -1325,9 +1325,38 @@ var launchctlRun = func(args ...string) ([]byte, error) {
 // load or an already-dropped service, and its failure there is expected, so
 // only bootstrap's result decides success. bootout/bootstrap are the modern
 // verbs; load/unload have been deprecated since 10.11.
+//
+// bootout returns before launchd has finished tearing the old service down,
+// and a bootstrap that lands in that window fails with "Input/output error"
+// (EIO, launchctl exit 5) — observed on real hardware. The previous install
+// code happened to dodge it by writing the plist between bootout and
+// bootstrap, which gave launchd that beat; doing the two back-to-back exposed
+// it. So retry the bootstrap through the teardown window rather than
+// surfacing a transient race as a hard failure. A non-transient error (bad
+// plist, permissions) is returned on the first try.
 func reloadAgentService(plistPath string) ([]byte, error) {
 	_, _ = launchctlRun("bootout", agentServiceTarget())
-	return launchctlRun("bootstrap", agentDomainTarget(), plistPath)
+	var out []byte
+	var err error
+	for attempt := 0; attempt < 15; attempt++ {
+		out, err = launchctlRun("bootstrap", agentDomainTarget(), plistPath)
+		if err == nil || !bootstrapRaceError(out) {
+			return out, err
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return out, err
+}
+
+// bootstrapRaceError reports whether a failed bootstrap is the transient
+// "the service this is replacing is still being torn down" state that a
+// retry clears — EIO right after a bootout, or launchd still reporting the
+// old instance as loaded. Anything else is a real error to surface.
+func bootstrapRaceError(launchctlOutput []byte) bool {
+	l := bytes.ToLower(launchctlOutput)
+	return bytes.Contains(l, []byte("input/output error")) ||
+		bytes.Contains(l, []byte("already loaded")) ||
+		bytes.Contains(l, []byte("service already bootstrapped"))
 }
 
 // waitForAgentSocket polls until an agent answers the socket, or gives up.
