@@ -38,10 +38,15 @@ const grantVerdictTTL = 2 * time.Second
 
 // grantVerdictKey caches "is holder inside root's tree" per PAIR — not per
 // holder — so one grant root dying can never let a holder classified under
-// it keep riding a different, still-live root's authorization.
+// it keep riding a different, still-live root's authorization. rootStart (the
+// root's fork-time stamp) is part of the key so a recycled root pid — same
+// number, new process — gets a fresh key rather than inheriting the exited
+// process's verdict, closing a narrow fail-open where a positive verdict
+// could authorize a holder that isn't in the NEW root's tree.
 type grantVerdictKey struct {
-	holder int32
-	root   int32
+	holder    int32
+	root      int32
+	rootStart int64
 }
 
 type grantVerdict struct {
@@ -149,9 +154,9 @@ func (m *mountManager) grantAuthorizes(path string, sm *servedMount) bool {
 // consulting (and filling) the per-pair verdict cache. Negative verdicts
 // are cached too: a stranger holding the mount open in a read loop would
 // otherwise force a full ancestry walk per read.
-func (m *mountManager) holderAuthorized(sm *servedMount, holder int32, roots []int32, now time.Time) bool {
+func (m *mountManager) holderAuthorized(sm *servedMount, holder int32, roots []grantRoot, now time.Time) bool {
 	for _, root := range roots {
-		key := grantVerdictKey{holder: holder, root: root}
+		key := grantVerdictKey{holder: holder, root: root.pid, rootStart: root.startMicro}
 		sm.mu.Lock()
 		v, cached := sm.grantVerdicts[key]
 		sm.mu.Unlock()
@@ -161,7 +166,7 @@ func (m *mountManager) holderAuthorized(sm *servedMount, holder int32, roots []i
 			}
 			continue
 		}
-		inTree := m.grantAncestry(holder, root)
+		inTree := m.grantAncestry(holder, root.pid)
 		sm.mu.Lock()
 		if sm.grantVerdicts == nil {
 			sm.grantVerdicts = map[grantVerdictKey]grantVerdict{}

@@ -394,22 +394,29 @@ func (s *Server) handle(req Request, c *caller) Response {
 		if req.MountPath == "" {
 			return Response{OK: false, Error: "reveal: missing mount_path"}
 		}
-		// Reveal-scoped unlock: a fresh challenge here runs OnUnlockForReveal
-		// (resolve every mount's real content, floor-reveal none) instead of
-		// OnUnlock's blanket floor-reveal, so this explicit reveal lights up only
-		// the mount OnReveal reveals below — not every other mount too. Falls back
-		// to OnUnlock when OnUnlockForReveal is unset.
-		onFresh := s.OnUnlock
+		// Reveal-scoped resolve: OnUnlockForReveal resolves every mount's real
+		// content and floor-reveals NONE (so this explicit reveal lights up
+		// only the mount OnReveal names below), falling back to OnUnlock's
+		// blanket floor-reveal when unset. It is passed as nil to
+		// ensureUnlockedNotify and invoked UNCONDITIONALLY afterward, not only
+		// on a fresh challenge: a reveal riding an already-unlocked session
+		// must still resolve CURRENT values, or a `jit vault set` since the
+		// last unlock would have this serve the stale ones (revealMount's
+		// real!=nil check passes on cached content just the same).
+		onResolve := s.OnUnlock
 		if s.OnUnlockForReveal != nil {
-			onFresh = s.OnUnlockForReveal
+			onResolve = s.OnUnlockForReveal
 		}
 		// The mount path doubles as the reveal's label: it's what this use
 		// of the session was FOR, exactly as Request.Label is for a wrap.
-		mek, err := s.ensureUnlockedNotify(onFresh, req.Op, c, req.MountPath)
+		mek, err := s.ensureUnlockedNotify(nil, req.Op, c, req.MountPath)
 		if err != nil {
 			return Response{OK: false, Error: err.Error()}
 		}
 		wipe(mek)
+		if onResolve != nil {
+			onResolve()
+		}
 		if s.OnReveal != nil {
 			if err := s.OnReveal(req.MountPath, time.Duration(req.RevealSeconds)*time.Second); err != nil {
 				return Response{OK: false, Error: err.Error()}
@@ -775,11 +782,13 @@ func (s *Server) armLockTimer() {
 	})
 }
 
-// lock drops the cached MEK, recording WHY. OnLock only fires if there was
-// actually a session to drop — calling lock on an already-locked agent is a
-// no-op, not a repeated notification — and so, for the same reason, does the
-// provenance record: an already-locked agent must keep the cause of the lock
-// that actually happened, not overwrite it with a no-op's.
+// lock drops the cached MEK, recording WHY. The provenance record and the
+// KindLock event only fire when there was actually a session to drop —
+// calling lock on an already-locked agent must not overwrite the cause of
+// the lock that actually happened with a no-op's. OnLock (the mount-clearing
+// side effect) DOES fire regardless, idempotently: a lazy expiry can nil the
+// MEK before the idle timer runs, leaving mounts to clear even when no
+// session remains to record (see lockIfGen).
 //
 // cause is the answer to the question a re-prompt raises ("I authorized this
 // twenty minutes ago — why again?"), and it is almost always the idle
@@ -836,12 +845,18 @@ func (s *Server) lockIfGen(cause string, gen uint64) {
 	s.mu.Unlock()
 
 	s.notifySessionEvents(flushed)
-	if !hadSession {
-		return
-	}
-	if s.OnSessionEvent != nil {
+	if hadSession && s.OnSessionEvent != nil {
 		s.OnSessionEvent(*event)
 	}
+	// OnLock runs even when hadSession is false. A lazy TTL expiry via
+	// touchSession nils the MEK the moment a request notices the session has
+	// lapsed — which can beat this idle timer's own goroutine to s.mu, so by
+	// the time the timer runs there is no session left to "drop" (hadSession
+	// false), yet the mounts still hold the resolved real content and any
+	// open reveal/grant from the session that just ended. Skipping OnLock
+	// there left them serving real values while the agent reported locked.
+	// OnLock (mountManager.stop) is idempotent and stays silent when it
+	// clears nothing, so firing it on a genuine no-op lock costs nothing.
 	if s.OnLock != nil {
 		s.OnLock()
 	}
@@ -1096,6 +1111,17 @@ func unlockMemory(b []byte) {
 	if len(b) > 0 {
 		_ = unix.Munlock(b)
 	}
+}
+
+// SessionUnlocked reports whether a live session is currently cached, WITHOUT
+// challenging or extending the TTL — a pure read. mountManager uses it so a
+// teardown-time resolve (restoring a swapped mount when a run exits, which
+// can happen while locked) serves real content only when the session is
+// already open and stays decoy otherwise, instead of raising a Touch ID
+// prompt from a status read or a lock (the "status must never prompt" rule).
+func (s *Server) SessionUnlocked() bool {
+	unlocked, _ := s.status()
+	return unlocked
 }
 
 func (s *Server) status() (unlocked bool, remaining time.Duration) {

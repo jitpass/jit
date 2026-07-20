@@ -316,13 +316,24 @@ func TestServerOnUnlockFiresOnceForFreshChallengeOnly(t *testing.T) {
 	}
 }
 
-func TestServerOnLockFiresOnExplicitLockButNotWhenAlreadyLocked(t *testing.T) {
+func TestServerLockEventOnlyOnRealSessionDrop(t *testing.T) {
 	socketPath := shortSocketPath(t)
 	newFetcher := func() MEKFetcher { return &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32)} }
 	s := NewServer(socketPath, newFetcher, time.Minute)
 
-	var lockCalls int32
-	s.OnLock = func() { atomic.AddInt32(&lockCalls, 1) }
+	// The load-bearing invariant is the lock EVENT / provenance: it must be
+	// recorded only when a session was actually dropped, never on a no-op
+	// lock (which would overwrite the real lock's cause). OnLock, the
+	// mount-clearing side effect, is deliberately idempotent and may fire on
+	// a no-op too (see lockIfGen: a lazy TTL expiry can leave mounts to clear
+	// with no session left to record), so its call count is NOT the invariant
+	// under test here.
+	var lockEvents int32
+	s.OnSessionEvent = func(e SessionEvent) {
+		if e.Kind == KindLock {
+			atomic.AddInt32(&lockEvents, 1)
+		}
+	}
 
 	if err := s.Listen(); err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -333,12 +344,12 @@ func TestServerOnLockFiresOnExplicitLockButNotWhenAlreadyLocked(t *testing.T) {
 	defer func() { cancel(); _ = s.Close(); <-done }()
 
 	c := NewClient(socketPath)
-	// Locking an already-locked (never unlocked) agent must not fire OnLock.
+	// Locking an already-locked (never unlocked) agent records no lock event.
 	if err := c.Lock(); err != nil {
 		t.Fatalf("Lock (while already locked): %v", err)
 	}
-	if got := atomic.LoadInt32(&lockCalls); got != 0 {
-		t.Errorf("OnLock fired %d times locking an already-locked agent, want 0", got)
+	if got := atomic.LoadInt32(&lockEvents); got != 0 {
+		t.Errorf("lock event recorded %d times locking an already-locked agent, want 0", got)
 	}
 
 	if _, err := c.WrapKey([]byte("x")); err != nil {
@@ -347,8 +358,8 @@ func TestServerOnLockFiresOnExplicitLockButNotWhenAlreadyLocked(t *testing.T) {
 	if err := c.Lock(); err != nil {
 		t.Fatalf("Lock: %v", err)
 	}
-	if got := atomic.LoadInt32(&lockCalls); got != 1 {
-		t.Errorf("OnLock fired %d times after a real unlock+lock, want exactly 1", got)
+	if got := atomic.LoadInt32(&lockEvents); got != 1 {
+		t.Errorf("lock event recorded %d times after a real unlock+lock, want exactly 1", got)
 	}
 }
 
