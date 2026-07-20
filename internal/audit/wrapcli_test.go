@@ -61,6 +61,41 @@ func TestScanWrappableCLITokensQuietWhenNothingExposed(t *testing.T) {
 	}
 }
 
+func TestScanWrappableCLITokensSkipsEnvFamilySources(t *testing.T) {
+	// gemini's catalog Sources point at ~/.env and ~/.gemini/.env, which
+	// ScanEnvFiles already owns. This scanner must skip them so the same
+	// at-rest key isn't double-counted under two finding types (once as
+	// env_file_present, once as wrappable_cli_token) — the inflation the
+	// native-entry skip in this scanner exists to prevent.
+	home := t.TempDir()
+	key := "AIzaSyFIXTUREgeminiKey0123456789abcdefFIXTURE"
+	writeWrapFixture(t, home, ".gemini/.env", "GEMINI_API_KEY="+key+"\n")
+
+	findings, err := ScanWrappableCLITokens(Config{HomeDir: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("wrappable-CLI scanner must not report a .env-family source (ScanEnvFiles owns it); got %+v", findings)
+	}
+
+	// And the whole scan reports that key exactly once, via ScanEnvFiles.
+	all, _, err := Scan(Config{HomeDir: home, ScannerVersion: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	target := filepath.Join(home, ".gemini/.env")
+	for _, f := range all {
+		if f.FilePath == target {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("gemini key at %s reported %d times across the scan, want 1", target, n)
+	}
+}
+
 func TestScanWrappableCLITokensOneFindingPerTool(t *testing.T) {
 	home := t.TempDir()
 	// ngrok's v3 and v2 selectors both match this file; only the first

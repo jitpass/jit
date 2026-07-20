@@ -17,9 +17,17 @@ import (
 // migration in `jit wrap <tool>` literally share code and can't drift: a
 // token this scanner can see is by construction one wrap can move.
 //
-// Native-delegated entries (aws, terraform) are skipped — their files are
-// already ScanCredentialFiles' beat, and double-reporting one file under
-// two categories would inflate the summary counts.
+// Native-delegated entries (aws, terraform, docker) are skipped — their
+// files are already ScanCredentialFiles' beat, and double-reporting one
+// file under two categories would inflate the summary counts.
+//
+// A Source that points at a .env-family file (gemini's ~/.env and
+// ~/.gemini/.env) is skipped here for the same reason: ScanEnvFiles already
+// walks and reports those, so letting this scanner report them too would
+// double-count the identical at-rest secret under two finding types (a real
+// inflation of TotalFindings/ExposureScore, confirmed for GEMINI_API_KEY).
+// ScanEnvFiles' name/value heuristics catch GEMINI_API_KEY there anyway, so
+// nothing goes uncovered.
 func ScanWrappableCLITokens(cfg Config) ([]Finding, error) {
 	var findings []Finding
 	for _, tool := range wrap.CatalogTools() {
@@ -28,6 +36,9 @@ func ScanWrappableCLITokens(cfg Config) ([]Finding, error) {
 			continue
 		}
 		for _, src := range entry.Sources {
+			if envFileNamePattern.MatchString(filepath.Base(src.Path)) {
+				continue // ScanEnvFiles owns .env-family files; don't double-report
+			}
 			value, found, err := wrap.ExtractToken(cfg.HomeDir, src)
 			if err != nil || !found {
 				// An unreadable or token-less file is a skip, never a
