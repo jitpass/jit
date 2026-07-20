@@ -219,7 +219,11 @@ Gatekeeper prompt to click through here.
 
 ### Shell completion (both options)
 
-`jit <TAB>` completes subcommands, flags, and their descriptions:
+`jit <TAB>` completes subcommands, flags, and their descriptions - and the
+arguments only jit knows: vault paths, restorable `migrate undo` paths, live
+mount paths, profile names, and wrappable tool names (see the
+[install guide](./docs/getting-started/install.md#shell-completion) for the
+full list):
 
 ```sh
 echo 'source <(jit completion zsh)' >> ~/.zshrc && exec zsh

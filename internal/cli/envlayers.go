@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/fatih/color"
+	"github.com/spf13/cobra"
 
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/profile"
@@ -58,6 +59,27 @@ func loadMountRegistry() (entries []mount.Entry, home string, err error) {
 		return nil, "", fmt.Errorf("reading mount registry: %w", err)
 	}
 	return entries, home, nil
+}
+
+// completeMountPaths offers the registered live-mount paths for the
+// commands whose argument must name one — `jit unmount` and `jit agent
+// reveal`. Like completeVaultPaths it returns only real, known targets
+// (NoFileComp): a path that isn't a registered mount is not a valid
+// argument for either command, so offering arbitrary filesystem paths
+// would only mislead.
+func completeMountPaths(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	entries, _, err := loadMountRegistry()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	var out []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.MountPath, toComplete) {
+			out = append(out, e.MountPath+"\tlive mount")
+		}
+	}
+	sort.Strings(out)
+	return out, cobra.ShellCompDirectiveNoFileComp
 }
 
 // envLayer is one mounted .env-family file participating in the merge.

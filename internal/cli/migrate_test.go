@@ -829,3 +829,32 @@ func TestMigrateDockerHomeOnlyAndOnlyFlag(t *testing.T) {
 		t.Errorf("expected --only docker to exclude the .env finding, got:\n%s", onlyOut)
 	}
 }
+
+// TestCompleteMigrateCategories locks in the comma-aware completion of the
+// StringSlice `--only` flag: it must carry the already-typed prefix so
+// `env,tf` completes to `env,tfvars`, and omit categories already listed
+// so the menu only ever offers what's left to add.
+func TestCompleteMigrateCategories(t *testing.T) {
+	// Bare segment: every category, prefix-filtered.
+	got, _ := completeMigrateCategories(nil, nil, "sh")
+	if len(got) != 1 || got[0] != "shell" {
+		t.Errorf(`"sh" should complete to just [shell], got %v`, got)
+	}
+
+	// Mid-list segment carries the base prefix through verbatim.
+	got, _ = completeMigrateCategories(nil, nil, "env,tf")
+	if len(got) != 1 || got[0] != "env,tfvars" {
+		t.Errorf(`"env,tf" should complete to [env,tfvars], got %v`, got)
+	}
+
+	// Already-chosen categories are never re-offered for the next segment.
+	got, _ = completeMigrateCategories(nil, nil, "env,shell,")
+	for _, c := range got {
+		if strings.HasSuffix(c, ",env") || strings.HasSuffix(c, ",shell") {
+			t.Errorf("already-listed category re-offered: %q in %v", c, got)
+		}
+	}
+	if len(got) != len(migrateCategories)-2 {
+		t.Errorf("expected %d remaining categories after choosing 2, got %d: %v", len(migrateCategories)-2, len(got), got)
+	}
+}

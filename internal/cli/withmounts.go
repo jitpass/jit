@@ -8,8 +8,11 @@ package cli
 import (
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
+
+	"github.com/spf13/cobra"
 
 	"github.com/jitpass/jit/internal/migrate"
 )
@@ -76,6 +79,26 @@ func withMountPaths(names []string) ([]string, error) {
 		out = append(out, matched)
 	}
 	return out, nil
+}
+
+// completeGlobalMountNames offers the global file-delivered mount names
+// (gcp, sops, npm, netrc) for the `--with` flag (jit run) and the
+// `--grant` flag (jit wrap add). It reads the names straight from
+// globalMountKinds so the completion can never drift from the one table
+// that defines what those flags accept.
+func completeGlobalMountNames(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	var names []string
+	for name := range globalMountKinds(home) {
+		if strings.HasPrefix(name, toComplete) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names, cobra.ShellCompDirectiveNoFileComp
 }
 
 func knownWithNames(kinds map[string][]string) string {

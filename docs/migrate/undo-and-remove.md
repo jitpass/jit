@@ -21,6 +21,13 @@ Restores migrated files, of any category, from their encrypted
 pre-migration backups. No path means everything; a file restores that
 file; a directory restores everything under it. The vault stays untouched.
 
+To scope an undo to just the project you're in, pass its path:
+`jit migrate undo .` (or a project directory from anywhere). With [shell
+completion](../getting-started/install.md#shell-completion) installed,
+`jit migrate undo <TAB>` lists exactly the files that have a restorable
+backup, plus each one's parent directory, so you never have to guess which
+paths are in play. Add `--dry-run` to preview the plan first.
+
 An undo is itself undoable: every `jit migrate undo` snapshots the
 pre-undo state too. Backups accumulate by design and nothing expires them
 automatically - [`jit vault prune`](../vault/maintenance.md) cleans up
