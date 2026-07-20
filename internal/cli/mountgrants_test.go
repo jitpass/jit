@@ -297,7 +297,7 @@ func TestOnRunExitDropsOnlyThatPID(t *testing.T) {
 	m.grantStartFn = func(pid int32) (int64, bool) { return 1000, true } // both live
 	installGrant(m, "/tmp/fixture/.env", 101, 1000)
 
-	m.onRunExit(100, "process exited")
+	m.onRunExit(100, "process exited", false)
 
 	m.runsMu.Lock()
 	defer m.runsMu.Unlock()

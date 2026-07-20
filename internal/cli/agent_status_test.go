@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -91,27 +92,45 @@ func TestAgentStatusFormatRejectsUnknownValue(t *testing.T) {
 	}
 }
 
-// TestServiceNotLoadedRecognizesLaunchctlMissingService pins the trigger for
-// `jit agent restart`'s bootstrap fallback: only launchctl's "Could not find
-// service" wording (case-insensitive) counts as "the plist exists but launchd
-// dropped the service", the one kickstart failure a bootstrap recovers.
-// Real launchctl output for exit 113 opens exactly this way.
-func TestServiceNotLoadedRecognizesLaunchctlMissingService(t *testing.T) {
-	cases := []struct {
-		name   string
-		output string
-		want   bool
-	}{
-		{"exit-113 wording", `Could not find service "com.jitpass.agent" in domain for user gui: 502`, true},
-		{"lowercased", "could not find service \"com.jitpass.agent\"", true},
-		{"unrelated failure", "Bootstrap failed: 5: Input/output error", false},
-		{"empty", "", false},
+// TestReloadAgentServiceBootoutThenBootstrap pins reloadAgentService's
+// recovery contract (the launchctl seam is what makes this testable at all,
+// which the old exec'd path was not): it ALWAYS boots out first, then
+// bootstraps, and it recovers a launchd-dropped service — the bootout
+// failing with "Could not find service" is expected and must not fail the
+// reload, only the bootstrap result decides. Guards against a future edit
+// that drops the bootout, reorders the two, or lets bootout's error abort.
+func TestReloadAgentServiceBootoutThenBootstrap(t *testing.T) {
+	var calls [][]string
+	restore := launchctlRun
+	t.Cleanup(func() { launchctlRun = restore })
+
+	launchctlRun = func(args ...string) ([]byte, error) {
+		calls = append(calls, args)
+		if args[0] == "bootout" {
+			// The dropped-service case: launchd has no record to boot out.
+			return []byte(`Could not find service "com.jitpass.agent" in domain for user gui: 502`), errors.New("exit status 113")
+		}
+		return nil, nil // bootstrap succeeds
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := serviceNotLoaded([]byte(tc.output)); got != tc.want {
-				t.Errorf("serviceNotLoaded(%q) = %v, want %v", tc.output, got, tc.want)
-			}
-		})
+
+	if out, err := reloadAgentService("/tmp/whatever.plist"); err != nil {
+		t.Fatalf("reload must succeed when only bootout fails (dropped service): err=%v out=%q", err, out)
+	}
+	if len(calls) != 2 || calls[0][0] != "bootout" || calls[1][0] != "bootstrap" {
+		t.Fatalf("want bootout then bootstrap, got %v", calls)
+	}
+	if calls[1][len(calls[1])-1] != "/tmp/whatever.plist" {
+		t.Errorf("bootstrap must be handed the plist path, got %v", calls[1])
+	}
+
+	// And a bootstrap failure IS surfaced.
+	launchctlRun = func(args ...string) ([]byte, error) {
+		if args[0] == "bootstrap" {
+			return []byte("Bootstrap failed: 5: Input/output error"), errors.New("exit status 5")
+		}
+		return nil, nil
+	}
+	if _, err := reloadAgentService("/tmp/whatever.plist"); err == nil {
+		t.Fatal("a bootstrap failure must be returned, got nil")
 	}
 }

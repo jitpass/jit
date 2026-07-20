@@ -107,6 +107,13 @@ type mountManager struct {
 	mu     sync.Mutex
 	wg     sync.WaitGroup
 	served map[string]*servedMount
+	// shuttingDown is set once by shutdown() (under mu) so ensureServing
+	// refuses to start — and wg.Add — a new Serve goroutine after shutdown
+	// snapshotted served and began wg.Wait(). Without it, an in-flight RPC's
+	// OnUnlock -> ensureServing racing process teardown could Add to a
+	// WaitGroup already being Waited (panic) or leak an un-cancellable
+	// goroutine into a fresh map shutdown no longer consults.
+	shuttingDown bool
 
 	// Run-scoped grant exit watcher (mountgrants.go): the kqueue fd (0
 	// unstarted, -1 permanently unavailable) and which pids are armed on
@@ -123,8 +130,9 @@ type mountManager struct {
 	// grant-mode run active, serveContent skips the grant gate entirely and
 	// a read costs exactly what it did before grants existed. swapMu
 	// serializes swap-mode FILESYSTEM transitions (swap-in vs restore) and
-	// is never taken by the read path, so a swap-in holding it across
-	// stopMount can't deadlock an in-flight serve cycle.
+	// is never taken ON the serve/read goroutine (the read gate defers a
+	// swapMu-taking FIFO restore to a detached goroutine), so a swap-in
+	// holding it across stopMount can't deadlock an in-flight serve cycle.
 	runsMu        sync.Mutex
 	runs          map[int32]*runAttachment
 	grantModeRuns int32
@@ -211,6 +219,15 @@ type servedMount struct {
 	mu    sync.Mutex
 	decoy []byte
 	real  []byte // nil until resolveReal succeeds; cleared again by stop()
+	// gen advances every time the session locks (invalidateReal). resolveReal
+	// captures it before its decrypt and only installs real content if it is
+	// still unchanged afterward, so a resolve that was mid-decrypt when the
+	// session locked can't re-arm real content on a mount the lock just
+	// cleared — the race that let a mount serve real values while `jit agent
+	// status` reported "locked". serveContent gates real content on real !=
+	// nil + reveal/grant, never on the session directly, so keeping real
+	// truthfully nil while locked is what the whole guarantee rests on.
+	gen uint64
 	// lastResolveErr is why real is still nil (or last failed to refresh) —
 	// what revealMount puts in its refusal so `jit agent reveal` can say WHY
 	// revealing can't serve anything real, instead of that living only in the
@@ -244,11 +261,42 @@ type servedMount struct {
 	readWindowCount   int64
 }
 
-func (sm *servedMount) setReal(b []byte) {
+// captureGen reads the mount's current resolve generation, for resolveReal
+// to hand back to setRealIfGen after its decrypt.
+func (sm *servedMount) captureGen() uint64 {
 	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	return sm.gen
+}
+
+// setRealIfGen installs resolved real content only if the generation is
+// unchanged since gen was captured — i.e. no invalidateReal (a session lock)
+// intervened during the decrypt. Returns false when a lock raced the resolve,
+// discarding the content so the mount stays decoy rather than re-arming real
+// values the lock had just cleared.
+func (sm *servedMount) setRealIfGen(b []byte, gen uint64) bool {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if sm.gen != gen {
+		return false
+	}
 	sm.real = b
 	sm.lastResolveErr = ""
-	sm.mu.Unlock()
+	return true
+}
+
+// invalidateReal drops any resolved real content and advances the generation
+// so an in-flight resolveReal can't install stale real bytes afterward
+// (setRealIfGen). Returns whether there was real content to drop, so a lock
+// that clears nothing can stay silent.
+func (sm *servedMount) invalidateReal() bool {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	had := sm.real != nil
+	sm.gen++
+	sm.real = nil
+	sm.lastResolveErr = ""
+	return had
 }
 
 func (sm *servedMount) setResolveErr(err error) {
@@ -336,6 +384,14 @@ func (m *mountManager) ensureServing(entries []mount.Entry) {
 		// so shutdown()'s snapshot-then-Wait can never see a goroutine the
 		// map doesn't also know how to cancel.
 		m.mu.Lock()
+		if m.shuttingDown {
+			// The process is tearing down; do not start (and wg.Add) a new
+			// goroutine shutdown's snapshot can't cancel and its wg.Wait would
+			// then block on forever.
+			m.mu.Unlock()
+			cancel()
+			continue
+		}
 		if m.served == nil {
 			m.served = map[string]*servedMount{}
 		}
@@ -453,6 +509,13 @@ func (m *mountManager) resolveReal(entries []mount.Entry, v *vault.Vault, floorR
 			continue // ensureServing should always run first; nothing to resolve into otherwise
 		}
 
+		// Capture the resolve generation BEFORE the slow decrypt below. If a
+		// lock (invalidateReal) lands while inject.Resolve is running,
+		// setRealIfGen sees the bumped generation and discards this content,
+		// so a resolve can never re-arm real values on a mount the lock just
+		// hid (the "serves real while status says locked" race).
+		gen := sm.captureGen()
+
 		p, varOrder, err := profile.LoadFileOrdered(entry.ProfilePath)
 		if err != nil {
 			fmt.Fprintf(m.stderr, "jit agent: skipping mount %s: %v\n", entry.MountPath, err)
@@ -478,7 +541,9 @@ func (m *mountManager) resolveReal(entries []mount.Entry, v *vault.Vault, floorR
 		} else {
 			real = mount.FormatDotenv(values, varOrder)
 		}
-		sm.setReal(real)
+		if !sm.setRealIfGen(real, gen) {
+			continue // a lock raced this resolve; leave the mount decoy, don't floor-reveal it
+		}
 
 		// The ergonomic default reveal window is granted only AFTER a
 		// successful resolve — revealing a mount that has nothing real to
@@ -845,18 +910,26 @@ func (m *mountManager) stop() {
 	}
 	m.mu.Unlock()
 
+	cleared := false
 	for _, sm := range served {
-		sm.setReal(nil)
+		wasRevealed := sm.reveal.IsRevealed()
+		if sm.invalidateReal() || wasRevealed {
+			cleared = true
+		}
 		sm.reveal.Hide()
 	}
 	// Every run attachment ends with the session — see clearAllRuns for
 	// why this isn't only hygiene.
 	m.clearAllRuns()
-	if len(served) > 0 {
-		// Deliberately no longer says "session locked" — Server's own
-		// OnSessionEvent line, written immediately before this one, announces
-		// the lock AND names its cause (idle timeout vs. explicit). This line
-		// reports only what it alone knows: the consequence for the mounts.
+	if cleared {
+		// Print only when this lock actually hid something (some mount had
+		// real content or an open reveal window): stop() now also runs on a
+		// lazy-expiry lock where the MEK was already nil'd, and a lock that
+		// changed nothing should stay silent. Deliberately no longer says
+		// "session locked" — Server's own OnSessionEvent line, written
+		// immediately before this one, announces the lock AND names its cause
+		// (idle timeout vs. explicit). This line reports only what it alone
+		// knows: the consequence for the mounts.
 		fmt.Fprintln(m.stdout, "jit agent: mounts now serving decoy content only")
 	}
 }
@@ -900,6 +973,7 @@ func (m *mountManager) stopMount(path string) {
 // closes the listening socket afterward never races an in-flight write.
 func (m *mountManager) shutdown() {
 	m.mu.Lock()
+	m.shuttingDown = true
 	served := m.served
 	m.served = nil
 	m.mu.Unlock()
