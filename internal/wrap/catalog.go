@@ -78,6 +78,29 @@ func CatalogTools() []string {
 	return names
 }
 
+// WrappableToolForPath returns the shim catalog tool whose token Source file
+// lives at path (home-expanded), if any — so a scanner that finds a secret in
+// that file can point the user at `jit wrap <tool>` as the fix even when it
+// reports the file under a different category. Its motivating case: gemini's
+// Source is a .env-family file that ScanEnvFiles owns and reports as a generic
+// env finding, so the audit needs this to add gemini's wrap affordance back to
+// that finding rather than emitting a second, double-counted one. ok is false
+// for a path no shim tool declares as a Source.
+func WrappableToolForPath(home, path string) (tool string, ok bool) {
+	for _, name := range CatalogTools() {
+		entry, _ := Lookup(name)
+		if entry.Kind != KindShim {
+			continue
+		}
+		for _, src := range entry.Sources {
+			if ExpandHome(home, src.Path) == path {
+				return name, true
+			}
+		}
+	}
+	return "", false
+}
+
 // VaultPath returns the vault path a catalog entry stores varName's value
 // at: wrap-<tool>/<subpath>.
 func (e CatalogEntry) VaultPath(varName string) string {
