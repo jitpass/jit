@@ -58,8 +58,11 @@ then **[Install](./getting-started/install.md)** →
   [doctl](./wrap/doctl.md) · [hcloud](./wrap/hcloud.md) ·
   [flyctl](./wrap/flyctl.md) · [vercel](./wrap/vercel.md) ·
   [railway](./wrap/railway.md) · [databricks](./wrap/databricks.md) ·
-  [openai](./wrap/openai.md) · [aws](./wrap/aws.md) ·
-  [terraform](./wrap/terraform.md)
+  [hf](./wrap/hf.md) · [supabase](./wrap/supabase.md) ·
+  [openai](./wrap/openai.md) · [claude](./wrap/claude-code.md) ·
+  [gemini](./wrap/gemini.md) · [codex](./wrap/codex.md) ·
+  [aws](./wrap/aws.md) · [terraform](./wrap/terraform.md) ·
+  [docker](./wrap/docker.md)
 - [Custom tools](./wrap/custom-tools.md) - wrap anything that reads an env var
 - [Wrap troubleshooting](./wrap/troubleshooting.md) - `wrap list`, `wrap doctor`, `wrap undo`
 

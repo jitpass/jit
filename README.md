@@ -118,7 +118,8 @@ mechanism, so everything keeps working:
 | Docker registry logins | base64 `auths` in `~/.docker/config.json` | A credential helper; `docker login`/`logout` keep working, compose and buildx pulls too |
 | GCP application-default credentials | `~/.config/gcloud/application_default_credentials.json` | Live-mounted from a template; Google SDKs read the same path, non-secret fields untouched |
 | `.npmrc` auth tokens | project or global `.npmrc` | Live-mounted from a template; non-secret settings untouched |
-| CLI tool tokens | `gh`, `glab`, `stripe`, `ngrok`, `doctl` config files | `jit wrap gh`: a PATH shim injects the token per invocation - works in scripts and subprocesses, ~25 ms overhead |
+| `.netrc` passwords | `machine ... password ...` in `~/.netrc` | Live-mounted from a template; curl/git/ftp keep working, `machine`/`login` lines untouched |
+| CLI tool tokens | `gh`, `glab`, `stripe`, `gemini`, `codex` config files | `jit wrap gh`: a PATH shim injects the token per invocation - works in scripts and subprocesses, ~25 ms overhead |
 
 ### Every prompt tells you why it appeared
 
@@ -271,7 +272,7 @@ jit agent install                                  # 2. restart the background a
 **Source install (Option B):**
 
 ```sh
-go install github.com/jitpass/jit/cmd/jit@v0.18.0   # 1. reinstall the binary (pin the new tag)
+go install github.com/jitpass/jit/cmd/jit@v0.19.0   # 1. reinstall the binary (pin the new tag)
 jit agent install                                  # 2. restart the background agent on it
 ```
 

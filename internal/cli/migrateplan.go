@@ -55,7 +55,7 @@ import (
 // (splitMCPByScope/splitNpmrcByScope) since a single Discover* call
 // there still mixes the fixed path in with items found by the
 // whole-$HOME walk.
-func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gcpADCFiles, sopsAgeFiles, npmrcFiles, revealHookFiles []string) {
+func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, revealHookFiles []string) {
 	scope := "local"
 	if wholeHome {
 		scope = "home"
@@ -87,7 +87,7 @@ func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, tfvars
 	}
 
 	hasScoped := len(envFiles) > 0 || len(tfvarsFiles) > 0 || len(mcpScoped) > 0 || len(npmrcScoped) > 0 || len(revealHookFiles) > 0
-	hasFixed := len(shellConfigs) > 0 || len(mcpFixed) > 0 || len(awsProfiles) > 0 || len(k8sUsers) > 0 || len(terraformHosts) > 0 || len(dockerRegistries) > 0 || len(gcpADCFiles) > 0 || len(sopsAgeFiles) > 0 || len(npmrcFixed) > 0
+	hasFixed := len(shellConfigs) > 0 || len(mcpFixed) > 0 || len(awsProfiles) > 0 || len(k8sUsers) > 0 || len(terraformHosts) > 0 || len(dockerRegistries) > 0 || len(gcpADCFiles) > 0 || len(sopsAgeFiles) > 0 || len(npmrcFixed) > 0 || len(netrcFiles) > 0
 
 	if hasScoped {
 		_, _ = color.New(color.Bold).Fprintf(w, "Scoped to this run, %s\n\n", scopedTree)
@@ -150,6 +150,9 @@ func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, tfvars
 		printMigratePlanCategory(w,
 			"npmrc file(s) → secrets move to the vault; the file keeps working via a live, auto-updating mount",
 			shorten(npmrcFixed))
+		printMigratePlanCategory(w,
+			"~/.netrc password(s) → secrets move to the vault; the file keeps working via a live, auto-updating mount (login/machine lines untouched)",
+			shorten(netrcFiles))
 
 		// --only filters by CATEGORY, not by this scoped/machine-wide
 		// split — selecting "mcp" or "npmrc" always pulls in their own
@@ -178,7 +181,7 @@ func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, tfvars
 	}
 
 	categories, total := 0, 0
-	for _, items := range [][]string{envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gcpADCFiles, sopsAgeFiles, npmrcFiles, revealHookFiles} {
+	for _, items := range [][]string{envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, revealHookFiles} {
 		if len(items) > 0 {
 			categories++
 		}

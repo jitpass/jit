@@ -45,8 +45,9 @@ Secrets materialize at the moment of use and nowhere else:
   that run's own process tree. Neither writes a secret to disk, and both
   end the instant the command exits.
 - Machine-global credential *files* (the gcloud ADC, a SOPS age key, the
-  global `~/.npmrc`) migrate the same way, but are never granted implicitly.
-  `jit run --with gcp|sops|npm` grants one to a single run's process tree,
+  global `~/.npmrc`, `~/.netrc`) migrate the same way, but are never granted
+  implicitly. `jit run --with gcp|sops|npm|netrc` grants one to a single
+  run's process tree,
   and every such grant forces a fresh, *disclosed* Touch ID that names the
   credential, even when the session is already unlocked. The invariant behind
   this: project-local configuration may reconfigure a project's own secrets,

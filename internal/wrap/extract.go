@@ -28,12 +28,36 @@ var extractors = map[string]extractor{
 // A missing file is (found=false, nil): the tool simply isn't configured
 // there. Used by both the wrap flow and audit's wrappable-cli-token signal,
 // which is what keeps detection and migration from ever disagreeing.
+//
+// A source path that is currently a live jit mount (a FIFO — GAPS.md #2,
+// see internal/mount.RevealState) is refused with an error, never read: a
+// plain os.ReadFile against a FIFO with jit's own Serve goroutine behind it
+// doesn't fail or block, it rendezvouses with whatever cycle is being
+// served right now — decoy content by default. Reading it here would
+// silently vault decoy bytes (`jit-hidden-...`) as if they were the real
+// credential, and a later ScrubToken write against the same path would
+// push bytes into the pipe instead of editing a file. No catalog entry's
+// Source could collide with a mount until gemini/codex: their Source IS a
+// `.env`/JSON file jit migrate's own home-wide `.env` discovery
+// (migrate.DiscoverEnvFiles, matched by filename pattern anywhere under
+// $HOME) can independently turn into a mount before `jit wrap` ever runs.
 func ExtractToken(home string, src TokenSource) (value string, found bool, err error) {
 	ext, ok := extractors[src.Format]
 	if !ok {
 		return "", false, fmt.Errorf("no extractor for format %q", src.Format)
 	}
-	data, err := os.ReadFile(ExpandHome(home, src.Path)) // #nosec G304 -- a fixed catalog path under the user's home dir
+	path := ExpandHome(home, src.Path)
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	if info.Mode()&os.ModeNamedPipe != 0 {
+		return "", false, fmt.Errorf("%s is a live jit mount, not a plaintext file — its value is already in the vault under whatever profile `jit migrate` created for it, not readable here; reveal the mount (`jit agent reveal %s`) to see the value, or check `jit status` for the profile it belongs to", path, path)
+	}
+	data, err := os.ReadFile(path) // #nosec G304 -- a fixed catalog path under the user's home dir
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", false, nil

@@ -1,0 +1,3 @@
+# Gemini CLI environment overrides
+GEMINI_API_KEY=FIXTUREgeminiToken0123456789abcdefFIXTURE
+GOOGLE_GENAI_USE_VERTEXAI=false
