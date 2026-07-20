@@ -5,6 +5,7 @@ package audit
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -38,6 +39,7 @@ func ScanCredentialFiles(cfg Config) ([]Finding, error) {
 		scanTerraformCloud,
 		scanDockerConfig,
 		scanGCPApplicationDefaultCredentials,
+		scanNetrc,
 	} {
 		findings, err := scan(cfg)
 		if err != nil {
@@ -403,4 +405,146 @@ func scanGCPApplicationDefaultCredentials(cfg Config) ([]Finding, error) {
 		})}, nil
 	}
 	return nil, nil
+}
+
+// --- netrc (~/.netrc, machine/login/password) ---
+
+func scanNetrc(cfg Config) ([]Finding, error) {
+	path := filepath.Join(cfg.HomeDir, ".netrc")
+	// Lstat + IsRegular, the same FIFO guard scanNpmrc/scanGCP apply: `jit
+	// migrate home` can turn ~/.netrc itself into a live template mount, and
+	// reading that FIFO would block the scan with no agent writing (or read
+	// decoy content and report jit's own protection as an exposed
+	// credential). This is a fixed path checked outside walkHomeDir's own
+	// filter, so it needs its own guard.
+	info, statErr := os.Lstat(path)
+	if statErr != nil {
+		if os.IsNotExist(statErr) {
+			return nil, nil
+		}
+		return nil, statErr
+	}
+	if !info.Mode().IsRegular() {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path) // #nosec G304 -- fixed ~/.netrc path under the audited home, not external input
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var findings []Finding
+	for _, pw := range netrcPasswords(data) {
+		machine := pw.machine
+		if machine == "" {
+			machine = "netrc"
+		}
+		findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+			FindingType:  FindingTypeCredentialFile,
+			FilePath:     path,
+			KeyName:      machine,
+			RawValue:     pw.value,
+			BaseSeverity: SeverityHigh,
+			Confidence:   ConfidenceHigh,
+			Evidence:     fmt.Sprintf("netrc password found for machine %q", machine),
+		}))
+	}
+	return findings, nil
+}
+
+type netrcPassword struct {
+	machine string
+	value   string
+}
+
+// netrcPasswords extracts every `password <value>` with its machine
+// context, mirroring internal/migrate/netrc.go's walkNetrcTokens grammar
+// EXACTLY — machine/default context, login/account values skipped as
+// usernames (not secrets), and macdef macro bodies skipped to their
+// terminating blank line. That agreement is the point: `jit audit` must
+// report precisely the passwords `jit migrate --only netrc` will convert,
+// never a "password" word inside a curl/ftp macro script. Kept as audit's
+// own copy (audit doesn't import internal/migrate) — the same
+// mirror-with-cross-reference discipline scanNpmrc/scanShellConfig follow.
+func netrcPasswords(data []byte) []netrcPassword {
+	type tok struct {
+		text     string
+		start    int
+		afterEnd int
+	}
+	var toks []tok
+	isSpace := func(b byte) bool { return b == ' ' || b == '\t' || b == '\n' || b == '\r' }
+	for i, n := 0, len(data); i < n; {
+		for i < n && isSpace(data[i]) {
+			i++
+		}
+		if i >= n {
+			break
+		}
+		s := i
+		for i < n && !isSpace(data[i]) {
+			i++
+		}
+		toks = append(toks, tok{text: string(data[s:i]), start: s, afterEnd: i})
+	}
+
+	// macdefBodyEnd mirrors internal/migrate/netrc.go's netrcMacdefBodyEnd:
+	// from is just past the macro NAME token (still mid-declaration-line), so
+	// the first newline ends the declaration and the body starts on the next
+	// line; the body runs to the first blank line, or EOF.
+	macdefBodyEnd := func(from int) int {
+		declEnd := bytes.IndexByte(data[from:], '\n')
+		if declEnd < 0 {
+			return len(data)
+		}
+		j := from + declEnd + 1
+		for j < len(data) {
+			nl := bytes.IndexByte(data[j:], '\n')
+			if nl < 0 {
+				return len(data)
+			}
+			lineEnd := j + nl + 1
+			if len(bytes.TrimSpace(data[j:lineEnd])) == 0 {
+				return lineEnd
+			}
+			j = lineEnd
+		}
+		return len(data)
+	}
+
+	var out []netrcPassword
+	machine := ""
+	skipUntil := -1
+	for k := 0; k < len(toks); k++ {
+		t := toks[k]
+		if t.start < skipUntil {
+			continue
+		}
+		switch t.text {
+		case "machine":
+			if k+1 < len(toks) {
+				machine = toks[k+1].text
+				k++
+			}
+		case "default":
+			machine = "default"
+		case "login", "account":
+			if k+1 < len(toks) {
+				k++ // value is a username, not a secret — skip it
+			}
+		case "password":
+			if k+1 < len(toks) {
+				out = append(out, netrcPassword{machine: machine, value: toks[k+1].text})
+				k++
+			}
+		case "macdef":
+			if k+1 < len(toks) {
+				skipUntil = macdefBodyEnd(toks[k+1].afterEnd)
+				k++
+			}
+		}
+	}
+	return out
 }

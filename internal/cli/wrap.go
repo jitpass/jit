@@ -384,7 +384,7 @@ func sortedTools(m wrap.Manifest) []string {
 
 func init() {
 	wrapAddCmd.Flags().StringArrayVar(&wrapAddEnv, "env", nil, "environment variable to inject, as VAR=<vault-path> (repeatable)")
-	wrapAddCmd.Flags().StringVar(&wrapAddGrant, "grant", "", "grant a global file-delivered mount by name (gcp, sops, npm) instead of injecting an env var - for tools that read a credential file")
+	wrapAddCmd.Flags().StringVar(&wrapAddGrant, "grant", "", "grant a global file-delivered mount by name (gcp, sops, npm, netrc) instead of injecting an env var - for tools that read a credential file")
 	wrapCmd.AddCommand(wrapAddCmd, wrapListCmd, wrapUndoCmd, wrapDoctorCmd)
 	rootCmd.AddCommand(wrapCmd)
 }

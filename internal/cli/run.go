@@ -59,8 +59,9 @@ var runCmd = &cobra.Command{
 		"putting `read_as_file: true` in its .jit/config.yaml, instead of --live\n" +
 		"on every run.\n\n" +
 		"--with names a global, file-delivered credential to grant this run:\n" +
-		"gcp (gcloud ADC), sops, or npm (~/.npmrc), for a tool that reads a\n" +
-		"machine-wide credential file, e.g. `jit run --with gcp terraform apply`.\n" +
+		"gcp (gcloud ADC), sops, npm (~/.npmrc), or netrc (~/.netrc), for a tool\n" +
+		"that reads a machine-wide credential file, e.g. `jit run --with gcp\n" +
+		"terraform apply`.\n" +
 		"It takes explicit intent by design: a global credential is never\n" +
 		"granted by a project's config, only by a --with you type.\n\n" +
 		"The -- separating jit's own flags from the command is optional, jit stops\n" +
@@ -103,7 +104,7 @@ var runCmd = &cobra.Command{
 			return fmt.Errorf("jit run: %w", err)
 		}
 
-		// --with names global, file-delivered mounts (gcp, sops, npm) to
+		// --with names global, file-delivered mounts (gcp, sops, npm, netrc) to
 		// grant for this run. Resolved here (not in the best-effort compat
 		// path) because a --with the user typed must fail loudly if the
 		// name is unknown or its mount isn't migrated.
@@ -266,7 +267,7 @@ func init() {
 	runCmd.Flags().StringVar(&runProfile, "profile", "", "profile to inject verbatim (default: merge this project's migrated .env layers)")
 	runCmd.Flags().StringVar(&runMode, "mode", "", "also merge .env.<mode> and .env.<mode>.local layers (e.g. production)")
 	runCmd.Flags().BoolVar(&runLive, "live", false, "keep the live mount and grant this run real file reads, for tools that read values from the .env file itself (docker compose env_file); default swaps in a compatibility file")
-	runCmd.Flags().StringArrayVar(&runWith, "with", nil, "also grant this run a global file-delivered mount by name (gcp, sops, npm) - for tools that read a machine-wide credential file, e.g. `jit run --with gcp gcloud storage ls` (repeatable)")
+	runCmd.Flags().StringArrayVar(&runWith, "with", nil, "also grant this run a global file-delivered mount by name (gcp, sops, npm, netrc) - for tools that read a machine-wide credential file, e.g. `jit run --with gcp gcloud storage ls` (repeatable)")
 	// Stop parsing jit's own flags at the first non-flag argument, so the
 	// target command's flags (`npm start --port 3000`) pass straight
 	// through without needing a -- separator. jit's flags come before the

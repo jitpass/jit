@@ -74,14 +74,15 @@ and [live-mounted files](./mounts.md) for how the mount itself behaves.
 
 Some tools read a single machine-wide credential *file* rather than a
 project's `.env`: Google's application-default credentials (read by `gcloud`,
-`terraform`, and Google SDKs), the SOPS age key, the global `~/.npmrc`. After
+`terraform`, and Google SDKs), the SOPS age key, the global `~/.npmrc`,
+`~/.netrc` (curl, git, ftp). After
 `jit migrate home` vaults one of these, grant it to a run by naming it:
 
 ```
 $ jit run --with gcp -- terraform apply
 ```
 
-`--with gcp|sops|npm` is explicit intent by design. A machine-global
+`--with gcp|sops|npm|netrc` is explicit intent by design. A machine-global
 credential is never granted by a project's config or by which directory you
 run from, only by a `--with` you type, and every grant prompts a fresh Touch
 ID that names the credential (even when the vault is already unlocked). The
