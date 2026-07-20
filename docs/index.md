@@ -91,6 +91,7 @@ then **[Install](./getting-started/install.md)** →
 ## Security
 
 - [Architecture](./security/architecture.md) - encryption, the agent boundary, what jit does not protect against
+- [Security brief](./security/brief.md) - a one-page summary for a security reviewer
 - [Self-reviews](./security/self-reviews/index.md) - jit reviews its own code and publishes the results
 - [Reporting a vulnerability](./security/reporting.md)
 

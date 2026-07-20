@@ -7,7 +7,38 @@ description: Straight answers to the questions developers and security engineers
 
 Two tracks: **[developer questions](#developer-questions)** (using it, day to
 day) and **[security questions](#security-questions)** (the threat model and
-its limits). Answers are deliberately blunt, including where jit stops.
+its limits). Answers are deliberately blunt, including where jit stops. For
+security reviewers, the standalone **[security brief](./security/brief.md)**
+collects the threat-model answers on one page.
+
+**Developer**
+
+- [Do I have to change how I work?](#do-i-have-to-change-how-i-work)
+- [Do I have to prefix everything with `jit run`?](#do-i-have-to-prefix-everything-with-jit-run)
+- [How do I know which command to use?](#how-do-i-know-which-command-to-use)
+- [Does it tell me when I need to `jit wrap` something?](#does-it-tell-me-when-i-need-to-jit-wrap-something)
+- [Does it work inside scripts, Makefiles, and git hooks?](#does-it-work-inside-scripts-makefiles-and-git-hooks)
+- [Does it work in CI?](#does-it-work-in-ci)
+- [What if a tool breaks after I migrate?](#what-if-a-tool-breaks-after-i-migrate)
+- [Which platforms does it run on?](#which-platforms-does-it-run-on)
+- [What happens if the agent is locked or not running?](#what-happens-if-the-agent-is-locked-or-not-running)
+- [Can my team share a vault?](#can-my-team-share-a-vault)
+
+**Security**
+
+- [What is the threat model in one line?](#what-is-the-threat-model-in-one-line)
+- [How are secrets encrypted at rest?](#how-are-secrets-encrypted-at-rest)
+- [Where does the master key live, and is it hardware-bound?](#where-does-the-master-key-live-and-is-it-hardware-bound)
+- [Can an attacker who already runs code as me read my secrets?](#so-can-an-attacker-who-already-runs-code-as-me-read-my-secrets)
+- [Is the master key ever in memory?](#is-the-master-key-ever-in-memory)
+- [Can a malicious repo I clone steal my cloud credentials?](#can-a-malicious-repo-i-clone-steal-my-cloud-credentials)
+- [The mounts identify the reading process, isn't that spoofable?](#the-mounts-identify-the-reading-process-isnt-that-spoofable)
+- [Does jit phone home or sync anywhere?](#does-jit-phone-home-or-sync-anywhere)
+- [Is `jit audit` safe to run on a sensitive machine?](#is-jit-audit-safe-to-run-on-a-sensitive-machine)
+- [What about secrets already committed to git?](#what-about-secrets-already-committed-to-git)
+- [Once a secret reaches a process, what stops it leaking it?](#once-a-secret-reaches-a-process-what-stops-that-process-from-leaking-it)
+- [How is it distributed and signed?](#how-is-it-distributed-and-signed)
+- [Where can I report a security issue?](#where-can-i-report-a-security-issue)
 
 ## Developer questions
 
