@@ -33,6 +33,7 @@ then **[Install](./getting-started/install.md)** →
 - [How it all fits together](./getting-started/how-it-fits.md) - the three delivery models, and how integrating (migrate/wrap) and running (native hook, shim, or `jit run`) connect
 - [Delivering a secret to a program](./getting-started/delivering-secrets.md) - when to use `jit wrap`, `jit run`, `jit run --profile`, and `read_as_file`
 - [Troubleshooting](./getting-started/troubleshooting.md) - placeholder values, hangs, surprise Touch ID prompts
+- [FAQ for developers and security](./faq.md) - blunt answers on how it works, what it protects, and what it deliberately does not
 
 ## Find exposed secrets - `jit audit`
 
