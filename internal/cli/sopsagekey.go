@@ -89,5 +89,6 @@ func buildSOPSAgeKeyOutput(values map[string]string) (string, error) {
 func init() {
 	sopsAgeKeyCmd.Flags().StringVar(&sopsAgeKeyProfile, "profile", "sops-age",
 		"vault profile to resolve (defaults to the one jit migrate creates)")
+	_ = sopsAgeKeyCmd.RegisterFlagCompletionFunc("profile", completeProfileNames)
 	rootCmd.AddCommand(sopsAgeKeyCmd)
 }

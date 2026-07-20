@@ -141,5 +141,6 @@ func pemFromKubeconfigData(v string) string {
 
 func init() {
 	k8sExecCredentialCmd.Flags().StringVar(&k8sCredProfile, "profile", "", "vault profile to resolve (required, e.g. k8s-myuser)")
+	_ = k8sExecCredentialCmd.RegisterFlagCompletionFunc("profile", completeProfileNames)
 	rootCmd.AddCommand(k8sExecCredentialCmd)
 }

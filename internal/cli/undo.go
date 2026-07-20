@@ -57,8 +57,43 @@ var migrateUndoCmd = &cobra.Command{
 		"Backups made by jit builds before this command existed aren't in its\n" +
 		"index, restore those by hand: `jit vault list` (look under _backups/)\n" +
 		"+ `jit vault get <path>`.",
-	Args: cobra.ArbitraryArgs,
-	RunE: runMigrateUndo,
+	Args:              cobra.ArbitraryArgs,
+	ValidArgsFunction: completeMigrateUndoPaths,
+	RunE:              runMigrateUndo,
+}
+
+// completeMigrateUndoPaths makes the `[path...]` argument discoverable at
+// the one place people look for what a command accepts: `jit migrate undo
+// <TAB>`. Without it the shell offered only flags, so a real user couldn't
+// tell a path could scope the restore at all (the whole reason for this
+// function). It offers exactly the files a run could restore, plus each
+// one's parent directory — a directory arg restores everything migrated
+// under it — each labeled so the two kinds are self-explanatory. The
+// Default (not NoFileComp) directive keeps normal filesystem completion
+// alive too, so a relative `.` from inside a project still completes.
+func completeMigrateUndoPaths(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	root, err := vaultRootDir()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveDefault
+	}
+	recs, err := migrate.LoadBackupRecords(root)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveDefault
+	}
+	seen := map[string]bool{}
+	var out []string
+	add := func(p, desc string) {
+		if p == "" || seen[p] || !strings.HasPrefix(p, toComplete) {
+			return
+		}
+		seen[p] = true
+		out = append(out, p+"\t"+desc)
+	}
+	for _, r := range migrate.LatestBackups(recs) {
+		add(r.OriginalPath, "restore this migrated file")
+		add(filepath.Dir(r.OriginalPath), "restore everything migrated under here")
+	}
+	return out, cobra.ShellCompDirectiveDefault
 }
 
 func runMigrateUndo(cmd *cobra.Command, args []string) error {
