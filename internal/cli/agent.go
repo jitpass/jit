@@ -284,16 +284,6 @@ var agentInstallCmd = &cobra.Command{
 		}
 		logPath := filepath.Join(root, "agent.log")
 
-		// Boot out any previously-running instance first — bootstrap on an
-		// already-loaded label fails outright, and a re-install to change
-		// --ttl must take effect now, not at next login. Best-effort:
-		// nothing to boot out on a first-ever install, and a failure here
-		// still leaves the bootstrap below to report the real error if
-		// something's actually wrong. (bootstrap/bootout are the modern
-		// verbs; load/unload have been deprecated since 10.11 and their
-		// errors are famously unhelpful.)
-		_ = exec.Command("launchctl", "bootout", agentServiceTarget()).Run() // #nosec G204 -- fixed subcommand, jit's own label
-
 		// exePath/logPath are filesystem paths and can legally contain XML
 		// metacharacters (& is common in directory names) — splicing one
 		// into the plist unescaped produces a file launchctl rejects, or
@@ -306,7 +296,12 @@ var agentInstallCmd = &cobra.Command{
 			return fmt.Errorf("jit agent install: %w", err)
 		}
 
-		out, err := exec.Command("launchctl", "bootstrap", agentDomainTarget(), plistPath).CombinedOutput() // #nosec G204 -- fixed subcommand, plistPath is a file jit itself just wrote
+		// reloadAgentService boots out any previously-running instance before
+		// bootstrapping the just-written plist — bootstrap on an already-loaded
+		// label fails outright, and a re-install to change --ttl must take
+		// effect now, not at next login. The same helper `jit agent restart`
+		// uses, so install and restart can't drift on how they (re)load.
+		out, err := reloadAgentService(plistPath)
 		if err != nil {
 			return fmt.Errorf("jit agent install: launchctl bootstrap failed: %w (%s)", err, strings.TrimSpace(string(out)))
 		}
@@ -345,7 +340,7 @@ var agentUninstallCmd = &cobra.Command{
 		}
 
 		if _, statErr := os.Stat(plistPath); statErr == nil {
-			out, unloadErr := exec.Command("launchctl", "bootout", agentServiceTarget()).CombinedOutput() // #nosec G204 -- fixed subcommand, jit's own label
+			out, unloadErr := launchctlRun("bootout", agentServiceTarget())
 			if unloadErr != nil {
 				fmt.Fprintf(cmd.OutOrStdout(), "warning: launchctl bootout failed (%v): %s\n", unloadErr, strings.TrimSpace(string(out)))
 			}
@@ -378,27 +373,16 @@ var agentRestartCmd = &cobra.Command{
 		if _, err := os.Stat(plistPath); err != nil {
 			return errors.New("jit agent restart: the agent isn't installed, run `jit agent install` first")
 		}
-		// kickstart -k kills a running instance and starts a fresh one in
-		// a single verb; it also starts one that wasn't running at all — but
-		// only while the service is still bootstrapped into the domain.
-		// launchd drops a service outright when it gives up on a crash loop,
-		// on an explicit bootout, or when an upgrade unloaded the old one; the
-		// plist file is still on disk (so status/agentInstalled report
-		// "installed"), yet kickstart fails with "Could not find service"
-		// because launchd has no live record to kick. That state is
-		// recoverable only by re-bootstrapping the plist — exactly what `jit
-		// agent install` does, minus rewriting it — so fall back to that
-		// rather than dead-ending on an error whose only fix was a command
-		// this one is supposed to stand in for.
-		out, err := exec.Command("launchctl", "kickstart", "-k", agentServiceTarget()).CombinedOutput() // #nosec G204 -- fixed subcommand, jit's own label
-		if err != nil {
-			if !serviceNotLoaded(out) {
-				return fmt.Errorf("jit agent restart: launchctl kickstart failed: %w (%s)", err, strings.TrimSpace(string(out)))
-			}
-			bootOut, bootErr := exec.Command("launchctl", "bootstrap", agentDomainTarget(), plistPath).CombinedOutput() // #nosec G204 -- fixed subcommand, plistPath is jit's own plist that os.Stat above confirmed exists
-			if bootErr != nil {
-				return fmt.Errorf("jit agent restart: launchd had dropped the agent's service and re-bootstrapping it failed: %w (%s); run `jit agent install` to reinstall it", bootErr, strings.TrimSpace(string(bootOut)))
-			}
+		// bootout + bootstrap (reloadAgentService) restarts a running agent
+		// AND recovers one launchd has dropped (the plist on disk with no live
+		// service, e.g. after a crash loop launchd gave up on or an upgrade
+		// that unloaded the old one) in a single unconditional sequence. It
+		// replaced a kickstart -k that only worked while the service was still
+		// bootstrapped and otherwise dead-ended on "Could not find service" —
+		// and it needs no fragile parsing of launchctl's undocumented,
+		// localizable error text to decide which state we're in.
+		if out, err := reloadAgentService(plistPath); err != nil {
+			return fmt.Errorf("jit agent restart: reloading the launchd service failed: %w (%s); if this persists, `jit agent install` reinstalls it", err, strings.TrimSpace(string(out)))
 		}
 		root, err := vaultRootDir()
 		if err != nil {
@@ -566,8 +550,7 @@ var agentStatusCmd = &cobra.Command{
 				// situation from one that was never set up — launchd was
 				// supposed to keep this one alive, so "run install" is the
 				// wrong advice and hides that something actually failed.
-				fmt.Fprintln(cmd.OutOrStdout(), "jit agent is installed but not running, it may have crashed or be mid-restart.")
-				fmt.Fprintln(cmd.OutOrStdout(), "Try `jit agent restart` (it reloads the service if launchd dropped it); if that doesn't bring it back, `jit agent install` reinstalls it. `jit agent log` shows recent output.")
+				fmt.Fprintln(cmd.OutOrStdout(), installedNotRunningAdvice("jit agent is"))
 				return nil
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "jit agent is not running. Run `jit agent install` to set it up.")
@@ -1132,6 +1115,10 @@ func describeReader(ls *agent.MountServeEvent) string {
 // tells a human whether edits-since-backup are plausible.
 func humanAgo(d time.Duration) string {
 	switch {
+	case d < 0:
+		// An event stamped ahead of the reader's clock (durable history
+		// crossing an NTP step-back) would otherwise render as "-3s ago".
+		return "0s"
 	case d < time.Minute:
 		return fmt.Sprintf("%ds", int(d.Seconds()))
 	case d < time.Hour:
@@ -1185,12 +1172,24 @@ func agentClient() (*agent.Client, error) {
 // answer, but the thing a human can DO about that differs: an installed
 // agent that isn't answering wants a restart (and its log), one that was
 // never installed wants installing.
+// installedNotRunningAdvice is the SINGLE source of the "installed but not
+// running" guidance, shared by `jit status`, `jit agent status`, and the
+// notRunningHint agent subcommands print on a dial failure — so the wording
+// can't drift across the three. It did drift once: a change to what restart
+// recovers updated only `jit agent status`, leaving `jit status` (the first
+// place a user sees this) and notRunningHint on stale advice. subject is the
+// caller's sentence opener ("Agent:", "jit agent is", "the agent is") so each
+// surface keeps its own voice while the actionable half stays identical.
+func installedNotRunningAdvice(subject string) string {
+	return subject + " installed but not running, it may have crashed or be mid-restart. Try `jit agent restart` (it reloads the service, recovering even one launchd has dropped); if that doesn't bring it back, `jit agent install` reinstalls it. `jit agent log` shows recent output."
+}
+
 func notRunningHint(err error) error {
 	if !errors.Is(err, agent.ErrNotRunning) {
 		return err
 	}
 	if agentInstalled() {
-		return errors.New("the agent is installed but isn't answering, it may have crashed or be mid-restart; try `jit agent restart`, and `jit agent log` for its recent output")
+		return errors.New(installedNotRunningAdvice("the agent is"))
 	}
 	return errors.New("no agent is running, run `jit agent install` first")
 }
@@ -1307,18 +1306,28 @@ func agentServiceTarget() string {
 	return agentDomainTarget() + "/" + agentPlistLabel
 }
 
-// serviceNotLoaded reports whether a launchctl failure was specifically
-// "this service isn't bootstrapped into the domain" — the exit-113 case
-// kickstart/kill hit when the plist exists on disk but launchd has no live
-// record of it. It is the one launchctl failure a bootstrap recovers, so it
-// gates `jit agent restart`'s fallback; every other failure (a malformed
-// plist, a permissions problem) is a real error to surface, not to paper
-// over with a bootstrap that would fail the same way. Matched on the message
-// text rather than the exit code because launchctl's numeric codes are
-// undocumented and have shifted across macOS releases, while this wording
-// has been stable.
-func serviceNotLoaded(launchctlOutput []byte) bool {
-	return bytes.Contains(bytes.ToLower(launchctlOutput), []byte("could not find service"))
+// launchctlRun runs launchctl with fixed, jit-controlled arguments and
+// returns its combined output. A package var (not a direct exec) purely so
+// tests can substitute a fake and drive install/restart's recovery logic
+// without spawning real launchd — the exec'd path was otherwise untestable.
+var launchctlRun = func(args ...string) ([]byte, error) {
+	return exec.Command("launchctl", args...).CombinedOutput() // #nosec G204 -- fixed subcommands with jit's own label/domain/plist path, never external input
+}
+
+// reloadAgentService (re)loads the agent's launchd service from plistPath:
+// boot out any currently-loaded instance, then bootstrap the plist back in.
+// This one unconditional sequence recovers EVERY installed-but-not-running
+// state without having to detect which it is — a healthy running agent
+// (booted out, then restarted onto the current binary), a crash loop launchd
+// gave up on, or a service launchd dropped entirely (the plist on disk with
+// no live record, where the old kickstart -k dead-ended on "Could not find
+// service"). The bootout is best-effort: nothing to boot out on a first-ever
+// load or an already-dropped service, and its failure there is expected, so
+// only bootstrap's result decides success. bootout/bootstrap are the modern
+// verbs; load/unload have been deprecated since 10.11.
+func reloadAgentService(plistPath string) ([]byte, error) {
+	_, _ = launchctlRun("bootout", agentServiceTarget())
+	return launchctlRun("bootstrap", agentDomainTarget(), plistPath)
 }
 
 // waitForAgentSocket polls until an agent answers the socket, or gives up.

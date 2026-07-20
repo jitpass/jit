@@ -77,7 +77,7 @@ func TestSwapForPIDSwapsAndRestores(t *testing.T) {
 	}
 
 	// Run exits -> FIFO restored.
-	m.onRunExit(100, "process exited")
+	m.onRunExit(100, "process exited", false)
 	if !isFIFOPath(t, path) {
 		t.Error("FIFO not restored after the run exited")
 	}
@@ -93,12 +93,12 @@ func TestSwapForPIDRefcountsConcurrentRuns(t *testing.T) {
 		t.Fatalf("swapForPID 101: %v", err)
 	}
 	// First run exits — still swapped (101 holds it).
-	m.onRunExit(100, "process exited")
+	m.onRunExit(100, "process exited", false)
 	if isFIFOPath(t, path) {
 		t.Fatal("FIFO restored while a second run still holds the swap")
 	}
 	// Last run exits — now restored.
-	m.onRunExit(101, "process exited")
+	m.onRunExit(101, "process exited", false)
 	if !isFIFOPath(t, path) {
 		t.Error("FIFO not restored after the last run exited")
 	}
@@ -207,7 +207,7 @@ func TestRevealForPIDMergesSecondCallSamePID(t *testing.T) {
 
 	// Run exits: the merged swap is restored (the whole point — a clobber
 	// would have lost this teardown).
-	m.onRunExit(100, "process exited")
+	m.onRunExit(100, "process exited", false)
 	if !isFIFOPath(t, swapPath) {
 		t.Error("swap not restored after exit — its teardown was orphaned by the second call")
 	}
@@ -304,7 +304,7 @@ func TestRevealForPIDMixedModeOneRun(t *testing.T) {
 	}
 
 	// Run exits: swap restored to FIFO, grant dropped.
-	m.onRunExit(100, "process exited")
+	m.onRunExit(100, "process exited", false)
 	if !isFIFOPath(t, swapPath) {
 		t.Error("swap mount not restored to FIFO after exit")
 	}

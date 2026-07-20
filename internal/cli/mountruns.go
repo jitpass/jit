@@ -40,8 +40,10 @@ import (
 // Locking: runsMu guards the registry and is taken briefly (never held
 // across a blocking call). The read gate takes it only when grantModeRuns
 // > 0 (an atomic fast-path: with no grant runs, a read pays nothing). Swap
-// filesystem transitions are serialized by swapMu (mountmanager.go),
-// which the read path never touches, so a swap-in holding swapMu across
+// filesystem transitions are serialized by swapMu (mountmanager.go), which
+// the serve/read goroutine never takes inline — when the read gate discovers
+// a dead run it defers the swapMu-taking FIFO restore to a detached
+// goroutine (onRunExit's restoreAsync), so a swap-in holding swapMu across
 // stopMount can't deadlock an in-flight serve cycle.
 
 // runHardCap bounds an attachment's lifetime even if every teardown signal
@@ -161,8 +163,17 @@ func (m *mountManager) revealForPID(mounts []agent.RunMount, pid int32) error {
 		m.swapMu.Unlock()
 		return fmt.Errorf("reveal_pid: nothing attached: %s", strings.Join(problems, "; "))
 	}
-	m.registerRun(att)
+	isNew := m.registerRun(att)
 	m.swapMu.Unlock()
+	// Arm the exit watcher AFTER releasing swapMu, never under it: if the
+	// target already exited, watchRunPID tears the attachment down inline
+	// (onRunExit -> restoreSwappedMount, which takes swapMu). Doing that while
+	// still holding swapMu re-locked a non-reentrant mutex and hung the RPC
+	// goroutine forever, wedging every future swap. The window between
+	// registerRun and here is covered by the lazy prune either way.
+	if isNew {
+		m.watchRunPID(att.pid)
+	}
 	return nil
 }
 
@@ -195,7 +206,11 @@ func (m *mountManager) newRunAttachment(pid int32) (*runAttachment, bool) {
 // orphan the first call's swaps and grants, losing their teardown (a swapped
 // .env would never be restored). A stamp mismatch means a recycled pid whose
 // prior attachment the watcher/prune will drop, so that case still replaces.
-func (m *mountManager) registerRun(att *runAttachment) {
+// isNew is true when this call created a fresh registration the caller must
+// arm the exit watcher for (done OUTSIDE swapMu, see revealForPID); false on
+// a merge into an existing same-pid attachment, whose watcher is already
+// armed.
+func (m *mountManager) registerRun(att *runAttachment) (isNew bool) {
 	m.runsMu.Lock()
 	if m.runs == nil {
 		m.runs = map[int32]*runAttachment{}
@@ -205,14 +220,14 @@ func (m *mountManager) registerRun(att *runAttachment) {
 			prev.mounts = append(prev.mounts, att.mounts...)
 			atomic.AddInt32(&m.grantModeRuns, int32(att.grantMountCount())) // #nosec G115 -- a run's grant-mount count is a tiny non-negative int, always in int32 range
 			m.runsMu.Unlock()
-			return // watcher already armed by the first registration
+			return false // merged; watcher already armed by the first registration
 		}
 		atomic.AddInt32(&m.grantModeRuns, int32(-prev.grantMountCount())) // #nosec G115 -- a run's grant-mount count is a tiny int, always in int32 range
 	}
 	atomic.AddInt32(&m.grantModeRuns, int32(att.grantMountCount())) // #nosec G115 -- a run's grant-mount count is a tiny non-negative int, always in int32 range
 	m.runs[att.pid] = att
 	m.runsMu.Unlock()
-	m.watchRunPID(att.pid)
+	return true
 }
 
 // mountSwapHeldByOtherLocked reports whether any run OTHER than exceptPID
@@ -232,13 +247,38 @@ func (m *mountManager) mountSwapHeldByOtherLocked(path string, exceptPID int32) 
 	return false
 }
 
+// mountSwapHeldByAnyLocked reports whether ANY currently-registered run holds
+// path swapped — restoreSwappedMount's authoritative re-check under swapMu
+// that no run re-claimed the path after teardown decided to restore it (the
+// exiting run is already deleted from the registry by then, so "any" is the
+// right question, not "any other"). Caller holds runsMu.
+func (m *mountManager) mountSwapHeldByAnyLocked(path string) bool {
+	for _, att := range m.runs {
+		for _, am := range att.mounts {
+			if am.mode == attachSwap && am.path == path {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // onRunExit is the single teardown for a finished (or vanished) run pid,
 // shared by the NOTE_EXIT watcher and the already-exited registration
 // path: drop the attachment, restore the FIFO of every swap-mount no other
 // run still holds swapped, and log every grant-mount ending. Grant teardown
 // is just the registry removal — the gate stops authorizing the instant the
 // attachment is gone.
-func (m *mountManager) onRunExit(pid int32, why string) {
+// restoreAsync controls whether the swap-mount FIFO restores run on this
+// goroutine or a detached one. The read gate (grantRootsForPath) and the
+// status prune (pruneStaleRuns) MUST pass true: restoreSwappedMount takes
+// swapMu, and taking it on the serve/read path deadlocks against a
+// concurrent performSwapIn that holds swapMu while blocked on that same serve
+// cycle's sm.done. The kqueue watch loop and the already-exited registration
+// path hold no locks, so they restore inline (false) for prompt teardown.
+// Grant deregistration (the registry delete above) is always synchronous, so
+// the gate stops authorizing the instant this returns regardless.
+func (m *mountManager) onRunExit(pid int32, why string, restoreAsync bool) {
 	m.runsMu.Lock()
 	att, ok := m.runs[pid]
 	if !ok {
@@ -261,7 +301,11 @@ func (m *mountManager) onRunExit(pid int32, why string) {
 	m.runsMu.Unlock()
 
 	for _, path := range toRestore {
-		m.restoreSwappedMount(path, why)
+		if restoreAsync {
+			go m.restoreSwappedMount(path, why)
+		} else {
+			m.restoreSwappedMount(path, why)
+		}
 	}
 	for _, path := range endedGrants {
 		fmt.Fprintf(m.stdout, "jit agent: mount %s: run-scoped grant for pid %d ended (%s)\n", path, pid, why)
@@ -329,7 +373,12 @@ func (m *mountManager) pruneStaleRuns() {
 	}
 	m.runsMu.Unlock()
 	for _, pid := range deadPIDs {
-		m.onRunExit(pid, "run gone")
+		// Synchronous restore: pruneStaleRuns runs on the status goroutine,
+		// never on a serve goroutine, so taking swapMu here is only a lock
+		// wait, not the read-path cycle that forces grantRootsForPath to
+		// defer. Keeping it inline means a status read that prunes a dead run
+		// has the FIFO genuinely restored by the time it returns.
+		m.onRunExit(pid, "run gone", false)
 	}
 }
 
@@ -357,13 +406,23 @@ func (m *mountManager) runStatusesByPath() map[string][]runHolder {
 	return out
 }
 
+// grantRoot is one live grant-mode root: its pid AND the fork-time stamp
+// that pid was attached with. The stamp travels with the pid into the read
+// gate's verdict cache key so a recycled pid (same number, new process) can
+// never reuse an ancestry verdict computed for the process that held it
+// before.
+type grantRoot struct {
+	pid        int32
+	startMicro int64
+}
+
 // grantRootsForPath returns the live grant-mode roots covering path (pid +
 // its recorded start stamp), pruning any that died — the read gate's view
 // of the registry. Caller must NOT hold runsMu.
-func (m *mountManager) grantRootsForPath(path string) []int32 {
+func (m *mountManager) grantRootsForPath(path string) []grantRoot {
 	now := time.Now()
 	m.runsMu.Lock()
-	var roots []int32
+	var roots []grantRoot
 	var deadPIDs []int32
 	for pid, att := range m.runs {
 		covers := false
@@ -381,11 +440,11 @@ func (m *mountManager) grantRootsForPath(path string) []int32 {
 			deadPIDs = append(deadPIDs, pid)
 			continue
 		}
-		roots = append(roots, pid)
+		roots = append(roots, grantRoot{pid: pid, startMicro: att.startMicro})
 	}
 	m.runsMu.Unlock()
 	for _, pid := range deadPIDs {
-		m.onRunExit(pid, "run gone")
+		m.onRunExit(pid, "run gone", true)
 	}
 	return roots
 }
@@ -431,7 +490,7 @@ func (m *mountManager) watchRunPID(pid int32) {
 	if _, err := unix.Kevent(m.grantKq, []unix.Kevent_t{ev}, nil, nil); err != nil {
 		// ESRCH: the target exited between attachment and here — the exact
 		// race the registration exists to catch, just earlier.
-		m.onRunExit(pid, "process already exited")
+		m.onRunExit(pid, "process already exited", false)
 		return
 	}
 	m.grantWatched[pid] = true
@@ -455,7 +514,7 @@ func (m *mountManager) runWatchLoop(kq int) {
 			m.watchMu.Lock()
 			delete(m.grantWatched, pid)
 			m.watchMu.Unlock()
-			m.onRunExit(pid, "process exited")
+			m.onRunExit(pid, "process exited", false)
 		}
 	}
 }
