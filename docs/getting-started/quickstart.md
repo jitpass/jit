@@ -95,9 +95,14 @@ tree is discovered or touched. More in **[Migrating](../migrate/index.md)**.
 $ jit status
 Vault: 5 secret(s) stored.
 Agent: running and unlocked (locks in 12m30s).
-Profiles: 2 profile(s), 5 secret reference(s) all resolve cleanly.
+Profiles: 2 profile(s), 5 secret reference(s) all resolve cleanly. Run `jit doctor` to also verify secret integrity.
 Mounts: 1 registered, agent unlocked and serving them.
 ```
+
+`jit status` is the quick read-only snapshot; `jit doctor` is the deeper
+pass/fail diagnostic (it also verifies each secret's envelope, sweeps for
+orphaned secrets, and checks agent, backup, and shim health). See
+**[Profiles](../run/profiles.md#checking-a-profiles-health-jit-doctor)**.
 
 Neither `jit status` nor `jit doctor` ever decrypts a secret or triggers
 Touch ID; both are safe to run as often as you like.
