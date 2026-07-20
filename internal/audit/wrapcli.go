@@ -26,8 +26,10 @@ import (
 // walks and reports those, so letting this scanner report them too would
 // double-count the identical at-rest secret under two finding types (a real
 // inflation of TotalFindings/ExposureScore, confirmed for GEMINI_API_KEY).
-// ScanEnvFiles' name/value heuristics catch GEMINI_API_KEY there anyway, so
-// nothing goes uncovered.
+// ScanEnvFiles' name/value heuristics catch GEMINI_API_KEY there anyway, and
+// it re-attaches the `jit wrap` remediation to its own finding via
+// wrap.WrappableToolForPath, so skipping here costs neither detection nor the
+// actionable hint.
 func ScanWrappableCLITokens(cfg Config) ([]Finding, error) {
 	var findings []Finding
 	for _, tool := range wrap.CatalogTools() {

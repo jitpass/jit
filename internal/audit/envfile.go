@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/jitpass/jit/internal/wrap"
 )
 
 // envFileNamePattern matches .env, .env.local, .env.production, etc.
@@ -235,6 +237,16 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 			"%d plaintext variable(s) (%d active, %d commented out)",
 			active+commented, active, commented,
 		)
+	}
+
+	// If this .env-family file IS a wrappable CLI's own token Source (gemini's
+	// ~/.gemini/.env or ~/.env), add the wrap remediation here. ScanEnvFiles
+	// owns these paths and ScanWrappableCLITokens deliberately skips them to
+	// avoid double-counting the same secret — but the skip must not cost the
+	// user the actionable "one command fixes this" hint the wrappable finding
+	// carried, so it rides this finding instead.
+	if tool, ok := wrap.WrappableToolForPath(cfg.HomeDir, path); ok {
+		f.Evidence += fmt.Sprintf("; one command moves it into the vault and keeps %s working: jit wrap %s", tool, tool)
 	}
 
 	f.RecordID = RecordID(f.FindingType, f.FilePath, nil)
