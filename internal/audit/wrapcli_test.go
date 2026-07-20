@@ -86,13 +86,22 @@ func TestScanWrappableCLITokensSkipsEnvFamilySources(t *testing.T) {
 	}
 	n := 0
 	target := filepath.Join(home, ".gemini/.env")
+	var surviving Finding
 	for _, f := range all {
 		if f.FilePath == target {
 			n++
+			surviving = f
 		}
 	}
 	if n != 1 {
 		t.Errorf("gemini key at %s reported %d times across the scan, want 1", target, n)
+	}
+	// The surviving finding must still carry the wrap remediation the skipped
+	// wrappable_cli_token finding used to provide — losing it was a real
+	// regression (a user with GEMINI_API_KEY in ~/.gemini/.env no longer being
+	// told `jit wrap gemini` fixes it).
+	if !strings.Contains(surviving.Evidence, "jit wrap gemini") {
+		t.Errorf("surviving finding lost the wrap hint; evidence = %q", surviving.Evidence)
 	}
 }
 
