@@ -116,7 +116,7 @@ func AddGrant(home, tool, mountName, jitBinary string) (AddResult, error) {
 		return AddResult{}, err
 	}
 	if mountName == "" {
-		return AddResult{}, fmt.Errorf("--grant needs a mount name (gcp, sops, npm)")
+		return AddResult{}, fmt.Errorf("--grant needs a mount name (gcp, sops, npm, netrc)")
 	}
 
 	manifest, err := LoadManifest(home)

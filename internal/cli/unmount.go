@@ -31,7 +31,8 @@ var unmountCmd = &cobra.Command{
 		"If jit agent is running, this stops serving just this one mount first, so\n" +
 		"nothing races the file being replaced, every other mount keeps being\n" +
 		"served undisturbed.",
-	Args: cobra.ExactArgs(1),
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeMountPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		mountPath, err := filepath.Abs(args[0])
 		if err != nil {

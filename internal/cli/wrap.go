@@ -169,7 +169,8 @@ var wrapAddCmd = &cobra.Command{
 	Example: "  jit vault set wrap-gh/GH_TOKEN\n" +
 		"  jit wrap add gh --env GH_TOKEN=wrap-gh/GH_TOKEN\n" +
 		"  jit wrap add gcloud --grant gcp",
-	Args: cobra.ExactArgs(1),
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeWrapCatalog,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		tool := args[0]
 		if wrapAddEnv != nil && wrapAddGrant != "" {
@@ -292,9 +293,10 @@ var wrapListCmd = &cobra.Command{
 }
 
 var wrapUndoCmd = &cobra.Command{
-	Use:   "undo <tool>",
-	Short: "Unwrap a tool: remove its shim and wrap profile",
-	Args:  cobra.ExactArgs(1),
+	Use:               "undo <tool>",
+	Short:             "Unwrap a tool: remove its shim and wrap profile",
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeWrappedTools,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		tool := args[0]
 		home, err := os.UserHomeDir()
@@ -382,9 +384,46 @@ func sortedTools(m wrap.Manifest) []string {
 	return tools
 }
 
+// completeWrapCatalog offers every tool jit knows how to wrap, for `jit
+// wrap add <tool>` — turning the catalog buried in the docs into a
+// tab-completable list. It intentionally offers all cataloged tools, not
+// only unwrapped ones: re-running `wrap add` on an already-wrapped tool is
+// how you change its env/grant, so hiding it would remove a real workflow.
+func completeWrapCatalog(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	var out []string
+	for _, tool := range wrap.CatalogTools() {
+		if strings.HasPrefix(tool, toComplete) {
+			out = append(out, tool)
+		}
+	}
+	return out, cobra.ShellCompDirectiveNoFileComp
+}
+
+// completeWrappedTools offers only the tools CURRENTLY wrapped, for `jit
+// wrap undo <tool>` — undo can only act on those, so completing from the
+// full catalog (as add does) would offer names undo would just reject.
+func completeWrappedTools(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	m, err := wrap.LoadManifest(home)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	var out []string
+	for _, tool := range sortedTools(m) {
+		if strings.HasPrefix(tool, toComplete) {
+			out = append(out, tool)
+		}
+	}
+	return out, cobra.ShellCompDirectiveNoFileComp
+}
+
 func init() {
 	wrapAddCmd.Flags().StringArrayVar(&wrapAddEnv, "env", nil, "environment variable to inject, as VAR=<vault-path> (repeatable)")
 	wrapAddCmd.Flags().StringVar(&wrapAddGrant, "grant", "", "grant a global file-delivered mount by name (gcp, sops, npm, netrc) instead of injecting an env var - for tools that read a credential file")
+	_ = wrapAddCmd.RegisterFlagCompletionFunc("grant", completeGlobalMountNames)
 	wrapCmd.AddCommand(wrapAddCmd, wrapListCmd, wrapUndoCmd, wrapDoctorCmd)
 	rootCmd.AddCommand(wrapCmd)
 }

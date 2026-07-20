@@ -854,10 +854,35 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 	return nil
 }
 
+// completeMigrateCategories completes the comma-separated `--only` flag one
+// category at a time: it splits on the last comma so `--only env,tf<TAB>`
+// completes to `env,tfvars`, carries the already-chosen prefix through, and
+// omits categories already listed so the menu only ever shows what's left
+// to add. Sourced from migrateCategories, the same list the flag validates.
+func completeMigrateCategories(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	base, seg := "", toComplete
+	if i := strings.LastIndex(toComplete, ","); i >= 0 {
+		base, seg = toComplete[:i+1], toComplete[i+1:]
+	}
+	chosen := map[string]bool{}
+	for _, c := range strings.Split(base, ",") {
+		chosen[c] = true
+	}
+	var out []string
+	for _, cat := range migrateCategories {
+		if chosen[cat] || !strings.HasPrefix(cat, seg) {
+			continue
+		}
+		out = append(out, base+cat)
+	}
+	return out, cobra.ShellCompDirectiveNoFileComp
+}
+
 func init() {
 	migrateCmd.PersistentFlags().BoolVar(&migrateDryRun, "dry-run", false, "preview the plan for this scope without changing anything")
 	migrateCmd.PersistentFlags().BoolVarP(&migrateYes, "yes", "y", false, "skip the confirmation prompt and migrate immediately")
 	migrateCmd.PersistentFlags().StringSliceVar(&migrateOnly, "only", nil, "scope a run to just these comma-separated categories: "+strings.Join(migrateCategories, ",")+" (default: all)")
+	_ = migrateCmd.RegisterFlagCompletionFunc("only", completeMigrateCategories)
 	// Registered on the bare command AND the home subcommand (same bound
 	// var), not as a persistent flag: bare `jit migrate` runs the home
 	// sweep so it needs the flag, but `jit migrate local` never filters
