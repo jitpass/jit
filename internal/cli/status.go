@@ -340,7 +340,11 @@ func printStatusText(w io.Writer, r statusResult) {
 	case r.Profiles.ProfilesFound == 0:
 		fmt.Fprintf(w, "Profiles: none found under %s/ or the global store.\n", profile.ProfilesDir)
 	case r.Profiles.Problems == 0:
-		fmt.Fprintf(w, "Profiles: %d profile(s), %d secret reference(s) all resolve cleanly.\n", r.Profiles.ProfilesFound, r.Profiles.SecretReferences)
+		// "Resolve cleanly" here means every referenced secret EXISTS — this
+		// is the cheap glance, existence-only. jit doctor additionally
+		// verifies each envelope is readable, so point at it rather than let
+		// this line imply an integrity check it didn't run.
+		fmt.Fprintf(w, "Profiles: %d profile(s), %d secret reference(s) all resolve cleanly. Run `jit doctor` to also verify secret integrity.\n", r.Profiles.ProfilesFound, r.Profiles.SecretReferences)
 	default:
 		_, _ = color.New(color.FgRed).Fprintf(w, "Profiles: %d profile(s), %d problem(s) found, run `jit doctor` for details.\n", r.Profiles.ProfilesFound, r.Profiles.Problems)
 	}
