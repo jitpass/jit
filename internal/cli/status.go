@@ -333,7 +333,7 @@ func printStatusText(w io.Writer, r statusResult) {
 	case !r.Agent.Running && r.Agent.Installed:
 		// launchd was supposed to keep this one alive — "run install" is
 		// the wrong advice and hides that something actually failed.
-		fmt.Fprintln(w, "Agent: installed but not running, it may have crashed or be mid-restart. Try `jit agent restart`; `jit agent log` shows its recent output.")
+		fmt.Fprintln(w, installedNotRunningAdvice("Agent:"))
 	case !r.Agent.Running:
 		fmt.Fprintln(w, "Agent: not running. Run `jit agent install` to start it.")
 	case r.Agent.Unlocked:

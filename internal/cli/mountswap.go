@@ -21,8 +21,13 @@ import (
 //
 // swapMu (mountmanager.go) serializes every FIFO<->file transition for a
 // path so a swap-in and a concurrent restore can never interleave; it is
-// ordered OUTSIDE the registry lock and is never taken by the read path, so
-// a swap-in holding it across stopMount can't deadlock an in-flight serve.
+// ordered OUTSIDE the registry lock and is never taken ON the serve/read
+// goroutine, so a swap-in holding it across stopMount can't deadlock an
+// in-flight serve. The read gate (grantRootsForPath) can DISCOVER a dead run
+// that needs a swapped FIFO restored, but it dispatches that restore to a
+// detached goroutine rather than taking swapMu itself — taking it inline
+// would deadlock against a performSwapIn already holding swapMu and blocked
+// on that very serve cycle's sm.done.
 
 // performSwapIn stops serving path's FIFO and replaces it with the
 // comment-only pointer file. Caller holds swapMu.
@@ -55,6 +60,19 @@ func (m *mountManager) performSwapIn(path string, entry mount.Entry) error {
 func (m *mountManager) restoreSwappedMount(path, why string) {
 	m.swapMu.Lock()
 	defer m.swapMu.Unlock()
+	// Re-check under swapMu, not just at the teardown decision: onRunExit
+	// releases runsMu before we get here (and the read/prune paths dispatch
+	// this asynchronously), so a fresh run may have swapped this same path in
+	// during the gap. Restoring the FIFO then would strand that run's child on
+	// a live mount instead of the isolated pointer file it asked for. swapMu
+	// serializes us against that run's own swap-in, so this check is
+	// authoritative: if anyone still holds it swapped, leave their file alone.
+	m.runsMu.Lock()
+	stillHeld := m.mountSwapHeldByAnyLocked(path)
+	m.runsMu.Unlock()
+	if stillHeld {
+		return
+	}
 	entry, ok := m.registryEntryForPath(path)
 	if !ok {
 		return
@@ -75,6 +93,16 @@ func (m *mountManager) restoreSwappedMount(path, why string) {
 // there's no lock inversion.
 func (m *mountManager) resumeServing(entry mount.Entry) {
 	m.ensureServing([]mount.Entry{entry})
+	// Resolve real content ONLY if the session is already unlocked. This runs
+	// from teardown paths that fire while locked — a run exiting, or the lock
+	// itself (clearAllRuns) — and resolveReal would otherwise reach
+	// KeyWrapper.UnwrapKey and raise a Touch ID prompt from a status read or a
+	// lock, the one thing the mount layer must never do. Locked means leave
+	// the freshly-restored mount decoy-only, exactly what the next real unlock
+	// will fix.
+	if !m.sessionUnlocked() {
+		return
+	}
 	deviceID, err := vault.EnsureDeviceID(m.root)
 	if err != nil {
 		return
@@ -85,6 +113,16 @@ func (m *mountManager) resumeServing(entry mount.Entry) {
 	// anything, the opposite of the decoy-by-default posture we're
 	// returning to.
 	m.resolveReal([]mount.Entry{entry}, v, false)
+}
+
+// sessionUnlocked reports whether the agent session is currently unlocked,
+// without triggering a challenge, so a teardown-time resolve can be skipped
+// while locked instead of prompting. Falls back to false (skip, the safe
+// default) when the key wrapper can't answer — e.g. a test double, or any
+// wrapper that isn't the live *agent.Server.
+func (m *mountManager) sessionUnlocked() bool {
+	u, ok := m.keyWrapper.(interface{ SessionUnlocked() bool })
+	return ok && u.SessionUnlocked()
 }
 
 // mountVarNames loads entry's profile for the variable NAMES the pointer

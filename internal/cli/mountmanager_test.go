@@ -437,7 +437,7 @@ func TestProvideContentRecordsLastServe(t *testing.T) {
 		t.Errorf("lastServe.reader = %+v, want unidentified (no onReaderConnected ran)", ls.reader)
 	}
 
-	sm.setReal([]byte("real"))
+	sm.setRealIfGen([]byte("real"), sm.captureGen())
 	sm.reveal.Reveal(time.Minute)
 	sm.mu.Lock()
 	sm.pendingReader = readerIdentity{pid: 4823, execPath: "/usr/local/bin/node", identified: true}
@@ -755,5 +755,49 @@ func TestMountManagerStopMountWaitsForGoroutineToExit(t *testing.T) {
 	case <-returned:
 	case <-time.After(time.Second):
 		t.Fatal("stopMount never returned after the goroutine signaled done")
+	}
+}
+
+// TestServedMountGenGuardDropsResolveRacedByLock pins the fix for the
+// "serves real values while locked" race: a resolveReal that captured the
+// generation before its decrypt must NOT install real content if a lock
+// (invalidateReal) bumped the generation while it was decrypting.
+func TestServedMountGenGuardDropsResolveRacedByLock(t *testing.T) {
+	sm := &servedMount{}
+
+	// A resolve begins, capturing the generation before its (slow) decrypt.
+	gen := sm.captureGen()
+
+	// The session locks mid-decrypt: real is cleared, generation advances.
+	if sm.invalidateReal() {
+		t.Fatal("invalidateReal reported clearing real content on a mount that had none")
+	}
+
+	// The now-stale resolve completes and tries to install its bytes. It must
+	// be refused, leaving the mount decoy (real == nil) while locked.
+	if sm.setRealIfGen([]byte("SECRET"), gen) {
+		t.Fatal("setRealIfGen installed real content despite an intervening lock")
+	}
+	sm.mu.Lock()
+	got := sm.real
+	sm.mu.Unlock()
+	if got != nil {
+		t.Fatalf("real content leaked onto a locked mount: %q", got)
+	}
+
+	// A resolve with no intervening lock installs normally.
+	if !sm.setRealIfGen([]byte("SECRET"), sm.captureGen()) {
+		t.Fatal("setRealIfGen refused a resolve with an unchanged generation")
+	}
+	sm.mu.Lock()
+	got = sm.real
+	sm.mu.Unlock()
+	if string(got) != "SECRET" {
+		t.Fatalf("real = %q, want SECRET", got)
+	}
+
+	// And a later lock clears it and reports it did.
+	if !sm.invalidateReal() {
+		t.Fatal("invalidateReal should report clearing the real content just installed")
 	}
 }
