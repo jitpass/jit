@@ -1165,20 +1165,7 @@ func agentClient() (*agent.Client, error) {
 	if agentInstalled() {
 		c = c.WithDialRetry(agentRestartGrace)
 	}
-	c = c.WithWaitNotifier(announceTouchIDWait)
 	return c, nil
-}
-
-// announceTouchIDWait is the wait notifier every CLI agent client carries: it
-// prints one line to stderr when a request has been blocked long enough to
-// mean the agent is sitting on a Touch ID/passcode prompt. Without it the
-// terminal just hangs mid-command while the OS challenge waits offscreen, and
-// a user (or a demo viewer) has no way to connect the pause to the prompt on
-// their Mac — the same silent-prompt confusion internal/keychainwrap already
-// documents. stderr, so it never corrupts a --format json payload on stdout;
-// json/status commands don't challenge, so it won't fire for them anyway.
-func announceTouchIDWait() {
-	fmt.Fprintln(os.Stderr, "🔐 Touch ID required: approve the prompt on your Mac to continue...")
 }
 
 // notRunningHint rewrites a Client call's dial failure into the actionable
