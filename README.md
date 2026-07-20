@@ -315,6 +315,7 @@ The docs live under **[docs/](./docs/index.md)**, organized by task:
 
 - **[Quickstart](./docs/getting-started/quickstart.md)**: setup, migrating, living with the fix, step by step
 - **[How it works](./docs/getting-started/how-it-works.md)**: the vault, the agent, mounts, and shims in one page
+- **[How it all fits together](./docs/getting-started/how-it-fits.md)**: the mental model - the three delivery models, and how integrating and running connect
 - **[Command reference](./docs/reference/commands/jit.md)**: every command and flag, generated from the CLI itself
 - **[Example audit report](./docs/audit/example-report.md)**: what `jit audit` output looks like (synthetic mockup)
 - **[TECH_STACK.md](./TECH_STACK.md)**: implementation choices and why
