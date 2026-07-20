@@ -47,11 +47,33 @@ const (
 type Client struct {
 	socketPath string
 	dialRetry  time.Duration
+	waitNotify func()
 }
 
 // NewClient returns a Client for the agent socket at socketPath.
 func NewClient(socketPath string) *Client {
 	return &Client{socketPath: socketPath}
+}
+
+// waitNotifyDelay is how long a single RPC may sit unanswered before we
+// conclude the agent is blocked on a human-in-the-loop Touch ID/passcode
+// prompt and fire the wait notifier. A cached wrap/unwrap/unlock returns
+// over the local socket in well under this; the only thing that makes a
+// call take longer is a person standing at the OS prompt. High enough that
+// an ordinarily-not-instant reply on a loaded machine won't false-fire,
+// low enough to beat a human reading the terminal.
+const waitNotifyDelay = 400 * time.Millisecond
+
+// WithWaitNotifier registers a callback fired (at most once per RPC, from a
+// timer goroutine) when a call has been blocked for waitNotifyDelay — i.e.
+// the agent is almost certainly sitting on a Touch ID/passcode prompt right
+// now. It exists to answer the one question a surprise prompt raises from a
+// silently-hung terminal: "why did my command stop?" The notifier never
+// fires when the reply comes back promptly (no prompt appeared), so it can't
+// lie about a challenge that isn't happening. Returns c for chaining.
+func (c *Client) WithWaitNotifier(fn func()) *Client {
+	c.waitNotify = fn
+	return c
 }
 
 // WithDialRetry makes this Client keep retrying a failed dial for up to d
@@ -118,6 +140,15 @@ func (c *Client) call(req Request) (Response, error) {
 	}
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		return Response{}, fmt.Errorf("sending request: %w", err)
+	}
+	// A reply that doesn't come back within waitNotifyDelay almost always
+	// means the agent is blocked on a Touch ID/passcode prompt (see the
+	// const): fire the notifier so a hung terminal can explain itself. The
+	// timer is cancelled the moment Decode returns, so a prompt-free call
+	// that just happens to be quick still never notifies.
+	if c.waitNotify != nil {
+		t := time.AfterFunc(waitNotifyDelay, c.waitNotify)
+		defer t.Stop()
 	}
 	var resp Response
 	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
