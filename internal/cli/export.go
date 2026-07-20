@@ -100,6 +100,7 @@ func shellQuote(s string) string {
 
 func init() {
 	exportCmd.Flags().StringVar(&exportProfile, "profile", "", "profile to export verbatim (default: merge this project's migrated .env layers)")
+	_ = exportCmd.RegisterFlagCompletionFunc("profile", completeProfileNames)
 	exportCmd.Flags().StringVar(&exportMode, "mode", "", "also merge .env.<mode> and .env.<mode>.local layers (e.g. production)")
 	rootCmd.AddCommand(exportCmd)
 }

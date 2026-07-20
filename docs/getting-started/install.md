@@ -71,9 +71,22 @@ go install ./cmd/jit
 ## Shell completion
 
 `jit <TAB>` completes subcommands, flags, and their descriptions. With
-completion installed, `jit vault get <TAB>` (and `set`/`rm`) also completes
-the secret paths currently stored in your vault - names only, read straight
-from the vault's file listing, so it never decrypts anything and never
+completion installed it also fills in the *arguments only jit knows*, so you
+never have to remember or retype an exact path or name:
+
+| Type this | `<TAB>` offers |
+| --- | --- |
+| `jit vault get`/`set`/`rm` | secret paths stored in your vault |
+| `jit migrate undo` | files with a restorable backup, plus each one's parent directory |
+| `jit unmount`, `jit agent reveal` | your live-mounted file paths |
+| `jit profile show`, any `--profile` | profile names visible from the current directory |
+| `jit wrap add` | every tool jit knows how to wrap |
+| `jit wrap undo` | the tools you've currently wrapped |
+| `--with` / `--grant` | global mount names (`gcp`, `sops`, `npm`, `netrc`) |
+| `jit migrate --only` | migration categories, one comma-separated value at a time |
+
+Every one of these is read from a plain file listing, the mount registry, or
+a manifest - never by decrypting a secret - so completing an argument never
 triggers a Touch ID prompt mid-keystroke.
 
 **zsh** (macOS default):

@@ -104,5 +104,6 @@ func buildAWSCredentialProcessOutput(values map[string]string) (awsCredentialPro
 
 func init() {
 	awsCredentialProcessCmd.Flags().StringVar(&awsCredProfile, "profile", "", "vault profile to resolve (required, e.g. aws-default)")
+	_ = awsCredentialProcessCmd.RegisterFlagCompletionFunc("profile", completeProfileNames)
 	rootCmd.AddCommand(awsCredentialProcessCmd)
 }

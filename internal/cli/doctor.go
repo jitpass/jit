@@ -212,6 +212,7 @@ func formatFinding(f checkFinding) string {
 
 func init() {
 	doctorCmd.Flags().StringVar(&doctorProfile, "profile", "", "check only this profile, and skip the agent/backup/wrap health sections")
+	_ = doctorCmd.RegisterFlagCompletionFunc("profile", completeProfileNames)
 	doctorCmd.Flags().StringVar(&doctorFormat, "format", "text", `output format: "text" (default) or "json"`)
 	doctorCmd.Flags().BoolVar(&doctorVerbose, "verbose", false, "on success, list every variable→path reference that was checked")
 	doctorCmd.Flags().BoolVar(&doctorOrphans, "orphans", false, "also warn about vault secrets no profile references (advisory, never a failure)")

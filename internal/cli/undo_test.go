@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/jitpass/jit/internal/migrate"
 )
 
@@ -330,5 +332,43 @@ func TestMigrateUndoNoArgHintsPathScoping(t *testing.T) {
 	}
 	if !strings.Contains(scoped, displayPath(home, pathA)) || strings.Contains(scoped, displayPath(home, pathB)) {
 		t.Errorf("scoping to proj-a should list only proj-a's file, got:\n%s", scoped)
+	}
+}
+
+// TestCompleteMigrateUndoPathsSurfacesRestorablePaths locks in the fix for
+// the reported discoverability gap: `jit migrate undo <TAB>` offered only
+// flags, so the `[path...]` argument was invisible. Completion must now
+// offer every restorable file AND each one's parent directory (the unit a
+// user actually scopes to), and honor the typed prefix.
+func TestCompleteMigrateUndoPathsSurfacesRestorablePaths(t *testing.T) {
+	home := withFixtureHome(t)
+	pathA := filepath.Join(home, "proj-a", ".env")
+	pathB := filepath.Join(home, "proj-b", ".env")
+	plantBackupRecord(t, pathA, pathB)
+
+	names := func(comps []string) string { return strings.Join(comps, "\n") }
+
+	// No prefix: every file plus its parent dir, each labeled distinctly.
+	got, directive := completeMigrateUndoPaths(nil, nil, "")
+	if directive != cobra.ShellCompDirectiveDefault {
+		t.Errorf("directive = %v, want Default so filesystem completion still works", directive)
+	}
+	for _, want := range []string{
+		pathA + "\trestore this migrated file",
+		filepath.Dir(pathA) + "\trestore everything migrated under here",
+		pathB + "\trestore this migrated file",
+	} {
+		if !strings.Contains(names(got), want) {
+			t.Errorf("completion missing %q, got:\n%s", want, names(got))
+		}
+	}
+
+	// A prefix scopes the candidates to one project's subtree.
+	scoped, _ := completeMigrateUndoPaths(nil, nil, filepath.Join(home, "proj-a"))
+	if strings.Contains(names(scoped), pathB) {
+		t.Errorf("prefix proj-a should not offer proj-b, got:\n%s", names(scoped))
+	}
+	if !strings.Contains(names(scoped), pathA) {
+		t.Errorf("prefix proj-a should still offer proj-a's file, got:\n%s", names(scoped))
 	}
 }

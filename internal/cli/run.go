@@ -265,9 +265,11 @@ func resolveRunPlan(v *vault.Vault, p profile.Profile, args []string) (binary st
 
 func init() {
 	runCmd.Flags().StringVar(&runProfile, "profile", "", "profile to inject verbatim (default: merge this project's migrated .env layers)")
+	_ = runCmd.RegisterFlagCompletionFunc("profile", completeProfileNames)
 	runCmd.Flags().StringVar(&runMode, "mode", "", "also merge .env.<mode> and .env.<mode>.local layers (e.g. production)")
 	runCmd.Flags().BoolVar(&runLive, "live", false, "keep the live mount and grant this run real file reads, for tools that read values from the .env file itself (docker compose env_file); default swaps in a compatibility file")
 	runCmd.Flags().StringArrayVar(&runWith, "with", nil, "also grant this run a global file-delivered mount by name (gcp, sops, npm, netrc) - for tools that read a machine-wide credential file, e.g. `jit run --with gcp gcloud storage ls` (repeatable)")
+	_ = runCmd.RegisterFlagCompletionFunc("with", completeGlobalMountNames)
 	// Stop parsing jit's own flags at the first non-flag argument, so the
 	// target command's flags (`npm start --port 3000`) pass straight
 	// through without needing a -- separator. jit's flags come before the
