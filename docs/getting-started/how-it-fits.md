@@ -1,25 +1,45 @@
 ---
 title: How it all fits together
-description: The mental model - the three ways a tool reads a credential, how you integrate each (migrate vs wrap), and how you run it (native hook, shim, or jit run).
+description: The mental model - secrets only at the moment of use, the three ways a tool reads a credential, how you integrate each (migrate vs wrap) and run it (native hook, shim, or jit run), and the invariant that keeps it safe.
 ---
 
 # How it all fits together
 
 jit has one job: take the secrets that already sit in plaintext across your
 Mac, move them into an encrypted vault, and leave every tool working exactly
-as before. This page is the mental model that makes the rest of the docs
-click. For the moving parts underneath (the vault, the agent, live mounts),
-see **[How it works](./how-it-works.md)**; this page is about how you reason
-about the tool.
+as before. Everything below follows from that.
 
-Two questions organize everything: **how did the secret get into the vault**
-(integrate), and **how does it reach the tool at use time** (run).
+Two questions organize the whole tool: **how did the secret get into the
+vault** (integrate), and **how does it reach the tool at use time** (run).
 
-## The one distinction that decides the rest
+## Secrets should exist only at the moment of use
 
-A tool reads its credential in exactly one of three ways. This is not a
-preference you pick, it is a fact about the tool, and it decides both how you
-integrate it and how you run it.
+On a normal dev machine, secrets are permanent plaintext files: a `.env` per
+project, your registry password in `~/.docker/config.json`, a long-lived
+Google token in `~/.config/gcloud`, tokens in `~/.npmrc` and `~/.aws`. They
+sit there between uses, readable by any process running as you, copied into
+every backup.
+
+jit collapses that window. The secret lives encrypted in the vault, and it
+becomes readable only for the instant a tool actually needs it, then it is
+gone again. Read a migrated file cold and you get a **decoy**, not the secret.
+
+## Find, integrate, use
+
+Three steps, in order. The first is optional discovery, the middle is a
+one-time setup per secret, the last is every day.
+
+| Step | Command | What happens |
+| --- | --- | --- |
+| **1. Find** | `jit audit` | A read-only scan ranks every plaintext secret on the machine by exposure. Never writes, never prints a real value. |
+| **2. Integrate** | `jit migrate` / `jit wrap` | Move a secret into the vault and wire up how its tool will get it back. |
+| **3. Use** | `jit run` / the tool itself | Run your tools. The secret materializes only for that process, only while it runs. |
+
+## Three ways a tool consumes a credential
+
+This is the distinction everything else hangs off. A tool reads its secret in
+exactly one of three ways. It is not a preference you pick, it is a fact about
+the tool, and it decides both how you integrate it and how you run it.
 
 | Delivery model | The tool reads its secret by... | Examples |
 | --- | --- | --- |
@@ -27,7 +47,7 @@ integrate it and how you run it.
 | **Env-delivered** | Reading an environment variable jit injects into the one process, which then vanishes. | `.env` files, shell configs, tfvars, MCP configs, `gh` / `stripe` tokens |
 | **File-delivered** | Reading a file at a fixed path. jit leaves a [live mount](../run/mounts.md) there: decoy by default, real only when granted. | gcloud ADC, SOPS age key, `~/.npmrc` |
 
-## Integrating: two entry points
+## Integrating: two entry points into the vault
 
 - **[`jit migrate`](../migrate/index.md)** is the bulk mover. It scans your
   machine, vaults the secrets that live in files it understands, and wires up
@@ -72,14 +92,54 @@ secret) end to end:
 4. **Use, natively.** `jit wrap add gcloud --grant gcp` once, and typing
    `gcloud` after that carries the grant for you.
 5. **Throughout.** Every grant is a fresh Touch ID that names the credential,
-   even when jit is already unlocked.
+   even when jit is already unlocked. A cloned repo's config can never trigger
+   it.
+
+## What protects it: the vault, the agent, the mounts
+
+For the full model see **[How it works](./how-it-works.md)** and the
+[security architecture](../security/architecture.md); in brief:
+
+- **Envelope encryption.** Every secret is its own encrypted file: a
+  per-secret data key, wrapped by a single master key. Tampered or swapped
+  files fail to decrypt rather than resolving as the wrong secret.
+- **Master key in the Keychain.** The master key lives in the macOS login
+  Keychain, gated by Touch ID or the device passcode. The vault never syncs
+  anywhere; the only way out is an explicit, passphrase-encrypted export.
+- **Decoy-by-default mounts.** A migrated file becomes a named pipe. Read it
+  outside a grant and you get placeholder values, not the secret, so backups,
+  editors, and a stray `cat` see nothing real.
+- **The background agent.** One [agent](../agent/index.md) holds the unlocked
+  session and serves mounts. It names every caller from the kernel on each
+  prompt, and locks on its idle TTL, on screen lock, and on sleep.
 
 ## The rule that never bends
 
-Point 5 above is the load-bearing invariant:
+The load-bearing invariant:
 **project-local configuration may reconfigure a project's own secrets, but it
-never authorizes access to a machine-global credential.** A cloned repo's
-`.jit/config.yaml` can never grant your gcloud credentials; a machine-global
-grant takes an explicit `--with` you type and forces its own disclosed
-challenge. The unlock authorizes the session, not the scope. The full model
-is in the **[security architecture](../security/architecture.md)**.
+never authorizes access to a machine-global credential.**
+
+A cloned repo is untrusted input. If a `.jit/config.yaml` could say "grant
+this run my gcloud credentials," a malicious repo would siphon them the moment
+you ran anything in the directory, riding the Touch ID you approved for the
+*project*. So a machine-global grant is never driven by a file: it takes an
+explicit `--with` you type, and forces its own disclosed challenge naming the
+credential. The unlock authorizes the session, not the scope. Only you widen
+the scope. The full model is in the
+**[security architecture](../security/architecture.md)**.
+
+## What jit does not defend against
+
+jit narrows where and when plaintext exists. It does not make a compromised
+account safe, and it says so plainly.
+
+- **A process you grant a secret to can do anything with it.** Delivery hands
+  the real value to the target; what it does next is outside jit's control.
+  That is why every prompt names the caller: the decision happens before
+  delivery.
+- **Git history is never rewritten.** A file that was committed still holds
+  its old value in `git log -p`. jit warns; the fix is rotating that
+  credential.
+- **It is a local, macOS tool.** It protects the plaintext on your laptop and
+  in your working tree. Once a secret reaches a cluster or a CI store, jit is
+  no longer in the loop.
