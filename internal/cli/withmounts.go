@@ -31,9 +31,10 @@ import (
 // global file-delivered mount is registered.
 func globalMountKinds(home string) map[string][]string {
 	return map[string][]string{
-		"gcp":  {migrate.GCPADCPath(home)},
-		"sops": migrate.SOPSAgeKeyPaths(home),
-		"npm":  {migrate.GlobalNpmrcPath(home)},
+		"gcp":   {migrate.GCPADCPath(home)},
+		"sops":  migrate.SOPSAgeKeyPaths(home),
+		"npm":   {migrate.GlobalNpmrcPath(home)},
+		"netrc": {migrate.NetrcPath(home)},
 	}
 }
 
@@ -92,7 +93,7 @@ func knownWithNames(kinds map[string][]string) string {
 // discoverability moments (the jit migrate summary and jit doctor), per the
 // global-mount-grants plan §12a.
 type globalMountGuidance struct {
-	name  string // the --with name (gcp, sops, npm)
+	name  string // the --with name (gcp, sops, npm, netrc)
 	tools string // human list of the tools that read the mounted file
 }
 
@@ -109,6 +110,8 @@ func globalMountGuidanceForPath(home, mountPath string) (globalMountGuidance, bo
 		return globalMountGuidance{name: "gcp", tools: "gcloud, terraform, Google SDKs"}, true
 	case migrate.GlobalNpmrcPath(home):
 		return globalMountGuidance{name: "npm", tools: "npm, yarn, pnpm"}, true
+	case migrate.NetrcPath(home):
+		return globalMountGuidance{name: "netrc", tools: "curl, git, ftp, wget"}, true
 	}
 	for _, p := range migrate.SOPSAgeKeyPaths(home) {
 		if mountPath == p {

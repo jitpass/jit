@@ -21,7 +21,8 @@ between. It's shorthand for `jit migrate home`: every project's
 no project-scoped form at all - shell configs, `~/.aws/credentials`,
 `~/.kube/config`, the Terraform Cloud token file, Docker registry logins
 in `~/.docker/config.json`, GCP application-default credentials, the SOPS
-age key, Claude Desktop's MCP config, and the global `~/.npmrc`. The plan groups those under a separate "Machine-wide" section
+age key, `~/.netrc`, Claude Desktop's MCP config, and the global
+`~/.npmrc`. The plan groups those under a separate "Machine-wide" section
 so it's clear they're not part of a directory walk.
 
 **`jit migrate local`** narrows to one project: only what's under the
@@ -91,6 +92,7 @@ Limit either scope to specific categories with `--only`
 | `gcp` | the ADC refresh token (or service account private key) | a live-mounted pipe serving a template; non-secret fields untouched | [GCP](./gcp.md) |
 | `sops` | the SOPS age private key | a live-mounted pipe serving a template; sops v3.10+ can also fetch the key via `SOPS_AGE_KEY_CMD` | [SOPS](./sops.md) |
 | `npmrc` | just the secret lines (`_authToken`, etc.) | a live-mounted pipe serving a template; everything else untouched | [npm](./npm.md) |
+| `netrc` | every `password` value in `~/.netrc` | a live-mounted pipe serving a template; `machine`/`login` lines and macdef scripts untouched | [netrc](./netrc.md) |
 
 CLI tool tokens (`gh`, `stripe`, `ngrok`, …) live in their own config files
 that `migrate` doesn't cover - that's [`jit wrap`](../wrap/index.md)'s job.

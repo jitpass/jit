@@ -76,7 +76,8 @@ occasional or scripted commands where typing the prefix is fine.
 Some credentials are neither a project's `.env` nor a tool's own dotfile
 token. They are a single machine-wide *file* that many tools read: Google's
 application-default credentials (`~/.config/gcloud/…`, read by gcloud,
-terraform, and every Google SDK), the SOPS age key, the global `~/.npmrc`.
+terraform, and every Google SDK), the SOPS age key, the global `~/.npmrc`,
+`~/.netrc` (curl, git, ftp, wget).
 `jit migrate home` vaults the secret inside these and live-mounts the file.
 
 One of these unlocks a lot and belongs to your whole machine, not a project,
@@ -87,7 +88,7 @@ config asked. You grant it with explicit intent:
 jit run --with gcp -- terraform apply     # scoped to this run, gone on exit
 ```
 
-`--with gcp|sops|npm` names the credential. Every grant prompts a fresh
+`--with gcp|sops|npm|netrc` names the credential. Every grant prompts a fresh
 **disclosed Touch ID that names the credential**, even when the vault is
 already unlocked, so a script that slipped a `--with` into a command can't
 siphon a machine-wide credential silently. The real values reach only that

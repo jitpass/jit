@@ -45,7 +45,7 @@ the tool, and it decides both how you integrate it and how you run it.
 | --- | --- | --- |
 | **Call-out** | Asking jit on demand through the tool's own credential mechanism. Nothing is stored between calls. | `aws`, `kubectl`, `terraform`, `docker`, modern `sops` |
 | **Env-delivered** | Reading an environment variable jit injects into the one process, which then vanishes. | `.env` files, shell configs, tfvars, MCP configs, `gh` / `stripe` tokens |
-| **File-delivered** | Reading a file at a fixed path. jit leaves a [live mount](../run/mounts.md) there: decoy by default, real only when granted. | gcloud ADC, SOPS age key, `~/.npmrc` |
+| **File-delivered** | Reading a file at a fixed path. jit leaves a [live mount](../run/mounts.md) there: decoy by default, real only when granted. | gcloud ADC, SOPS age key, `~/.npmrc`, `~/.netrc` |
 
 ## Integrating: two entry points into the vault
 

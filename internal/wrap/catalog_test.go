@@ -128,6 +128,9 @@ func TestCatalogSelectorsAgainstFixtures(t *testing.T) {
 		{"databricks", 0, "databricks/databrickscfg", "dapiFIXTURE0123456789abcdef"},
 		{"hf", 0, "hf/token", "hf_FIXTUREtoken0123456789abcdefFIXTURE"},
 		{"supabase", 0, "supabase/access-token", "sbp_FIXTURE0123456789abcdef0123456789abcdef"},
+		{"gemini", 0, "gemini/env", "FIXTUREgeminiToken0123456789abcdefFIXTURE"},
+		{"gemini", 1, "gemini/home-dotenv", "FIXTUREgeminiHomeFallback0123456789FIXTURE"},
+		{"codex", 0, "codex/auth.json", "sk-FIXTUREcodexToken0123456789abcdefFIXTURE"},
 	}
 	for _, tc := range cases {
 		entry, ok := Lookup(tc.tool)
