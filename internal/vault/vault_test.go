@@ -641,3 +641,79 @@ func TestCorruptPayloadFailsBeforeUnwrap(t *testing.T) {
 		t.Errorf("Get called UnwrapKey %d time(s) on a corrupt envelope — that's a wasted auth prompt on real hardware", counter.unwraps)
 	}
 }
+
+// writeRawEnc writes literal bytes to a secret's .enc path, bypassing Set's
+// encryption entirely — for testing Verify against envelopes it must reject.
+func writeRawEnc(t *testing.T, v *Vault, path, content string) {
+	t.Helper()
+	dest := filepath.Join(v.Root, "vault", path+".enc")
+	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dest, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestVaultVerify(t *testing.T) {
+	v := newTestVault(t)
+	if err := v.Set("stripe/dev-key", []byte("sk_test_value")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// A healthy secret verifies clean — without ever touching the KeyWrapper.
+	counter := &countingUnwrapKW{inner: v.KeyWrapper}
+	v.KeyWrapper = counter
+	if err := v.Verify("stripe/dev-key"); err != nil {
+		t.Errorf("Verify on a healthy secret: %v", err)
+	}
+	if counter.unwraps != 0 {
+		t.Errorf("Verify unwrapped a key %d time(s) — it must never touch the KeyWrapper", counter.unwraps)
+	}
+
+	// v.RecipientID is "test-device". The single-recipient "test" cases rely
+	// on wrappedDEKFor's single-recipient fallback (Get's own behavior) to
+	// still select that lone key despite the id mismatch.
+	cases := []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{"malformed json", "{not json", "parsing envelope"},
+		{"future version", `{"version":999,"recipients":{"test":"00"},"payload":"00"}`, "newer than this jit understands"},
+		{"no recipients", `{"version":2,"recipients":{},"payload":"00"}`, "no recipients"},
+		{"unreadable wrapped key", `{"version":2,"recipients":{"test":"zz"},"payload":"00"}`, "unreadable wrapped key"},
+		{"empty payload", `{"version":2,"recipients":{"test":"00"},"payload":""}`, "empty payload"},
+		{"unreadable payload", `{"version":2,"recipients":{"test":"00"},"payload":"zz"}`, "unreadable payload"},
+		// Multi-recipient, none of them this device: Verify must report it
+		// as not-for-this-device exactly like Get, not as corrupt.
+		{"not for this device", `{"version":2,"recipients":{"laptop-a":"00","laptop-b":"01"},"payload":"00"}`, "no key for this device"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			writeRawEnc(t, v, "broken/secret", tc.content)
+			err := v.Verify("broken/secret")
+			if err == nil {
+				t.Fatalf("Verify accepted a %s envelope, want an error", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("Verify error = %q, want it to contain %q", err, tc.wantErr)
+			}
+		})
+	}
+
+	// A multi-recipient envelope where THIS device's key is valid but a
+	// co-recipient's is garbage must verify clean — Verify only checks the
+	// key Get would actually open, mirroring Get. Before the shared selector
+	// this was a false [corrupt] report.
+	t.Run("co-recipient garbage is irrelevant", func(t *testing.T) {
+		writeRawEnc(t, v, "shared/secret", `{"version":2,"recipients":{"test-device":"00","laptop-b":"zz"},"payload":"00"}`)
+		if err := v.Verify("shared/secret"); err != nil {
+			t.Errorf("Verify on an envelope this device CAN open: %v", err)
+		}
+	})
+
+	if err := v.Verify("does/not-exist"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Verify on a missing secret = %v, want ErrNotFound", err)
+	}
+}
