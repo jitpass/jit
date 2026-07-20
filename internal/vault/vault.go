@@ -171,25 +171,9 @@ func (v *Vault) Get(path string) ([]byte, error) {
 		return nil, fmt.Errorf("secret %s has envelope version %d, newer than this jit understands (max %d), upgrade jit to read it", path, env.Version, envelopeVersion)
 	}
 
-	wrappedHex, ok := env.Recipients[v.RecipientID]
-	if !ok {
-		// Exact match failed. A single-recipient envelope is still worth
-		// attempting: every envelope this vault has ever written has exactly
-		// one recipient (Set always writes one), so a mismatch here almost
-		// always means the machine's IDENTIFIER changed, not the machine —
-		// envelopes written before EnsureDeviceID existed are keyed by
-		// os.Hostname(), which drifts with a Mac rename or even a DHCP-
-		// supplied name. If the wrapped DEK genuinely came from a different
-		// machine, UnwrapKey below fails at the KeyWrapper layer anyway (the
-		// MEK won't match), so trying costs nothing and never decrypts
-		// anything this device couldn't already decrypt.
-		if len(env.Recipients) == 1 {
-			for _, w := range env.Recipients {
-				wrappedHex = w
-			}
-		} else {
-			return nil, fmt.Errorf("no key for this device (%s) in %s, it was likely encrypted on a different machine", v.RecipientID, path)
-		}
+	wrappedHex, err := env.wrappedDEKFor(v.RecipientID, path)
+	if err != nil {
+		return nil, err
 	}
 	wrappedDEK, err := hex.DecodeString(wrappedHex)
 	if err != nil {
@@ -226,6 +210,51 @@ type SecretInfo struct {
 	Version     int
 	CreatedUnix int64
 	UpdatedUnix int64
+}
+
+// Verify checks that the secret at path is structurally intact and readable
+// by *this* build of jit — WITHOUT decrypting it, so it never touches the
+// KeyWrapper and never prompts (same safe-to-run-often contract as Exists,
+// Info, and List). It runs exactly the validation Get performs before it
+// reaches for any key material: the envelope JSON parses, its version is one
+// this jit understands, and both the recipient-wrapped DEK and the payload
+// are present and hex-decodable. This is the gap `jit doctor` closes over a
+// bare Exists() check — a truncated, hand-edited, or future-version .enc file
+// passes Exists (the file is on disk) yet fails the moment an app actually
+// needs the value; Verify surfaces that at diagnosis time instead. It cannot
+// (and deliberately does not) prove the ciphertext decrypts to anything: that
+// needs the key and a local-auth prompt, which doctor never wants to trigger.
+func (v *Vault) Verify(path string) error {
+	env, err := v.readEnvelope(path)
+	if err != nil {
+		return err // ErrNotFound, or a concrete "parsing envelope …" error
+	}
+	// Mirror Get's version gate: an unknown (newer) version is the one
+	// "corruption" that isn't corruption at all, so name it as such rather
+	// than letting it read as a damaged file.
+	switch env.Version {
+	case envelopeVersionAADLess, envelopeVersion:
+	default:
+		return fmt.Errorf("secret %s has envelope version %d, newer than this jit understands (max %d), upgrade jit to read it", path, env.Version, envelopeVersion)
+	}
+	// Select the recipient exactly as Get would (shared wrappedDEKFor), so
+	// Verify validates the one key this device actually opens the secret
+	// with — not every recipient, some of which Get never touches — and
+	// reports a not-for-this-device envelope the same way Get does.
+	wrappedHex, err := env.wrappedDEKFor(v.RecipientID, path)
+	if err != nil {
+		return err
+	}
+	if _, err := hex.DecodeString(wrappedHex); err != nil {
+		return fmt.Errorf("corrupt envelope %s: unreadable wrapped key: %w", path, err)
+	}
+	if env.Payload == "" {
+		return fmt.Errorf("corrupt envelope %s: empty payload, the secret value is gone", path)
+	}
+	if _, err := hex.DecodeString(env.Payload); err != nil {
+		return fmt.Errorf("corrupt envelope %s: unreadable payload: %w", path, err)
+	}
+	return nil
 }
 
 // Info returns path's SecretInfo. Never touches the KeyWrapper, so it can

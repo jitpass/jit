@@ -5,49 +5,65 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
-	"sort"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
-
-	"github.com/jitpass/jit/internal/profile"
 )
 
 var (
 	doctorProfile string
 	doctorFormat  string
+	doctorVerbose bool
+	doctorOrphans bool
 )
 
-// doctorResult is jit doctor's --format json shape (GAPS.md #22) — Problems
-// stays a flat list of the same human-readable strings the text path
-// prints one-per-line, rather than a structured breakdown, since a script
-// consuming this almost always just wants OK/not-OK plus the count, and
-// restructuring every problem into fields (which profile, which variable,
-// which failure kind) isn't worth the churn until something actually needs
-// to filter on them programmatically.
+// doctorResult is jit doctor's --format json shape. Problems and Warnings
+// carry the SAME structured checkFinding objects the text path renders — a
+// change from the old flat []string, made deliberately (GAPS.md #22 chose
+// strings; leveling doctor up reverses that): a CI health check can now
+// filter on {kind, profile, variable, path} instead of regexing an English
+// sentence back apart. ok reflects hard Problems only — a missing/corrupt/
+// unparseable profile secret. Every other finding (orphan, shadowed profile,
+// agent/backup/wrap health) is a Warning and never flips ok, so a pipeline
+// that only cares whether its profiles resolve keeps passing.
+//
+// --verbose affects the TEXT report only (it lists each clean reference);
+// the JSON shape is stable regardless, so a consumer never has to strip an
+// unexpected field back out.
 type doctorResult struct {
-	ProfilesChecked int      `json:"profiles_checked"`
-	SecretsChecked  int      `json:"secrets_checked"`
-	OK              bool     `json:"ok"`
-	Problems        []string `json:"problems"`
+	ProfilesChecked int            `json:"profiles_checked"`
+	SecretsChecked  int            `json:"secrets_checked"`
+	OK              bool           `json:"ok"`
+	Problems        []checkFinding `json:"problems"`
+	Warnings        []checkFinding `json:"warnings"`
 }
 
 var doctorCmd = &cobra.Command{
 	Use:     "doctor",
 	GroupID: groupWorkflow,
-	Short:   "Verify every secret a profile references actually exists in the vault",
-	Long: "jit doctor checks that every secret path a profile manifest references\n" +
-		"actually exists in the vault, failing fast with a named missing secret\n" +
-		"instead of letting an app crash later on an empty environment variable.\n" +
-		"Only checks existence, never decrypts a value, so it never needs local\n" +
-		"authentication.\n\n" +
-		"By default checks every profile visible from the current directory: both\n" +
+	Short:   "One-shot health check: profiles, secrets, agent, backup, and wrap shims",
+	Long: "jit doctor is the single \"what's wrong\" rollup for a jit setup. Its core\n" +
+		"job: verify that every secret path a profile references actually exists in\n" +
+		"the vault AND that its envelope is one this build of jit can read, failing\n" +
+		"fast with a named problem instead of letting an app crash later on an empty\n" +
+		"environment variable or a value that won't decrypt. It never decrypts a\n" +
+		"value (existence and envelope structure are both plaintext on disk), so it\n" +
+		"never needs local authentication and is safe to run often.\n\n" +
+		"By default it checks every profile visible from the current directory: both\n" +
 		"project-local ones under .jit/profiles/ and the home-rooted global ones\n" +
 		"jit migrate writes for shell-config/MCP/AWS/kubeconfig/npmrc secrets,\n" +
-		"the same set `jit profile list` shows. Use --profile to check just one.\n" +
-		"--format json prints a machine-readable snapshot instead of the default\n" +
-		"text report, still exits non-zero on any problem either way.",
+		"the same set `jit profile list` shows. It also folds in the health checks\n" +
+		"that used to take `jit status` and `jit wrap doctor` to see: the background\n" +
+		"agent, your vault backup, and any wrapped-tool shims.\n\n" +
+		"It exits non-zero only when a profile's secret is missing, corrupt, or\n" +
+		"unparseable. Everything else it reports is an advisory warning, never a\n" +
+		"failure: an orphaned secret (with --orphans), a profile name shadowed\n" +
+		"across scopes, a stopped agent, a stale or missing vault backup, a broken\n" +
+		"shim. Use --profile to narrow the run to a single profile (the system-\n" +
+		"health sections are skipped then), --verbose to list every reference it\n" +
+		"cleared, and --format json for a machine-readable snapshot.",
 	Args: cobra.NoArgs,
 	// A "problems found" exit is a normal, expected outcome here, not a
 	// usage mistake — cobra's default of dumping the usage string to
@@ -64,93 +80,51 @@ var doctorCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit doctor: %w", err)
 		}
-
-		// targets is name+manifest pairs to check. The default (no
-		// --profile) case must cover BOTH project-local profiles AND the
-		// home-rooted global ones jit migrate writes for shell-config/
-		// MCP/AWS/kubeconfig/npmrc (profile.ListAll) — a real, reported
-		// bug: this used to call profile.ListNames(cwd), project-local
-		// only, so a global-only profile was invisible to a bare `jit
-		// doctor` even though `jit status`/`jit profile list` both
-		// count it and status's own "run jit doctor for details" pointer
-		// implied doctor would show the same problems it did. Loading via
-		// LoadFile(info.Path) (not profile.Load(cwd, name)) also sidesteps
-		// a subtler bug: if a project and a global profile ever share a
-		// name, Load always resolves to the project one regardless of
-		// which Info entry we're iterating, silently checking the same
-		// file twice under two different scope labels.
-		type target struct {
-			name string
-			path string // empty means "not yet resolved" (the --profile case, resolved via profile.Load itself below)
+		root, err := vaultRootDir()
+		if err != nil {
+			return fmt.Errorf("jit doctor: %w", err)
 		}
-		var targets []target
-		if doctorProfile != "" {
-			targets = []target{{name: doctorProfile}}
-		} else {
-			infos, err := profile.ListAll(cwd)
-			if err != nil {
-				return fmt.Errorf("jit doctor: %w", err)
-			}
-			for _, info := range infos {
-				targets = append(targets, target{name: info.Name, path: info.Path})
-			}
-		}
-		if len(targets) == 0 {
-			if doctorFormat == "json" {
-				return writeJSON(cmd.OutOrStdout(), doctorResult{OK: true, Problems: []string{}})
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "No profiles found under %s/ or the global store, nothing to check.\n", profile.ProfilesDir)
-			return nil
-		}
-
 		v, err := openVaultReadOnly()
 		if err != nil {
 			return fmt.Errorf("jit doctor: %w", err)
 		}
 
-		problems := []string{}
-		checked := 0
-		for _, t := range targets {
-			var p profile.Profile
-			var loadErr error
-			if t.path != "" {
-				p, loadErr = profile.LoadFile(t.path)
-			} else {
-				p, loadErr = profile.Load(cwd, t.name)
-			}
-			if loadErr != nil {
-				problems = append(problems, fmt.Sprintf("[parse] %s", loadErr))
-				continue
-			}
-
-			var vars []string
-			for varName := range p {
-				vars = append(vars, varName)
-			}
-			sort.Strings(vars)
-
-			for _, varName := range vars {
-				secretPath := p[varName]
-				checked++
-				exists, err := v.Exists(secretPath)
-				if err != nil {
-					problems = append(problems, fmt.Sprintf("[vault error] profile %q: checking %s (%s): %v", t.name, varName, secretPath, err))
-					continue
-				}
-				if !exists {
-					problems = append(problems, fmt.Sprintf(
-						"[missing] profile %q: %s -> %s (not in the vault, run \"jit vault set %s\" to add it, or \"jit migrate home\" if it came from a scan)",
-						t.name, varName, secretPath, secretPath))
-				}
-			}
+		// Integrity is always on: it is auth-free (envelope structure is
+		// plaintext) and cheap, and a "doctor" that couldn't tell a
+		// truncated secret from a healthy one would be missing the failure
+		// most likely to look like a jit bug at runtime.
+		outcome, err := runProfileCheck(cwd, v, checkOptions{
+			Profile:   doctorProfile,
+			Integrity: true,
+			Orphans:   doctorOrphans,
+		})
+		if err != nil {
+			return fmt.Errorf("jit doctor: %w", err)
 		}
 
+		// The absorbed system-health sections run on the full sweep only. A
+		// --profile run is a narrow "does THIS profile resolve" query; folding
+		// agent/backup/wrap warnings into it would be surprising noise.
+		if doctorProfile == "" {
+			outcome.Findings = append(outcome.Findings, gatherSystemFindings(root, v)...)
+		}
+
+		problems := outcome.Problems()
+		warnings := outcome.Warnings()
+
 		if doctorFormat == "json" {
+			if problems == nil {
+				problems = []checkFinding{}
+			}
+			if warnings == nil {
+				warnings = []checkFinding{}
+			}
 			if err := writeJSON(cmd.OutOrStdout(), doctorResult{
-				ProfilesChecked: len(targets),
-				SecretsChecked:  checked,
+				ProfilesChecked: outcome.ProfilesChecked,
+				SecretsChecked:  outcome.SecretsChecked,
 				OK:              len(problems) == 0,
 				Problems:        problems,
+				Warnings:        warnings,
 			}); err != nil {
 				return fmt.Errorf("jit doctor: %w", err)
 			}
@@ -160,22 +134,86 @@ var doctorCmd = &cobra.Command{
 			return nil
 		}
 
-		if len(problems) > 0 {
-			for _, p := range problems {
-				_, _ = color.New(color.FgRed).Fprintf(cmd.OutOrStdout(), "✗ %s\n", p)
-			}
-			printGlobalMountReminders(cmd.OutOrStdout())
-			return fmt.Errorf("jit doctor: %d problem(s) found", len(problems))
-		}
-
-		_, _ = color.New(color.FgGreen, color.Bold).Fprintf(cmd.OutOrStdout(), "✓ %d profile(s), %d secret reference(s) all resolve cleanly\n", len(targets), checked)
-		printGlobalMountReminders(cmd.OutOrStdout())
-		return nil
+		return renderDoctorText(cmd.OutOrStdout(), outcome, problems, warnings)
 	},
 }
 
+// renderDoctorText prints the human report and returns the non-zero-exit
+// error when there are hard problems. Order is: problems (red, the reason
+// you ran this), then warnings (yellow, advisory), then the profile summary
+// line, then — under --verbose — the per-reference detail, then the standing
+// global-mount reminders.
+func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings []checkFinding) error {
+	for _, f := range problems {
+		_, _ = color.New(color.FgRed).Fprintf(out, "✗ %s\n", formatFinding(f))
+	}
+	for _, f := range warnings {
+		_, _ = color.New(color.FgYellow).Fprintf(out, "⚠ %s\n", formatFinding(f))
+	}
+
+	switch {
+	case outcome.ProfilesChecked == 0:
+		fmt.Fprintln(out, "No profiles found under .jit/profiles/ or the global store.")
+	case len(problems) == 0:
+		_, _ = color.New(color.FgGreen, color.Bold).Fprintf(out,
+			"✓ %d profile(s), %d secret reference(s) all resolve cleanly\n",
+			outcome.ProfilesChecked, outcome.SecretsChecked)
+	}
+
+	// --verbose lists the individual references so a passing run can still
+	// answer "did it actually see my profile?" — a bare count can't.
+	if doctorVerbose && len(outcome.OKRefs) > 0 {
+		fmt.Fprintln(out, "\nChecked:")
+		for _, r := range outcome.OKRefs {
+			fmt.Fprintf(out, "  ✓ %s (%s): %s → %s\n", r.Profile, r.Scope, r.Variable, r.Path)
+		}
+	}
+
+	printGlobalMountReminders(out)
+
+	if len(problems) > 0 {
+		return fmt.Errorf("jit doctor: %d problem(s) found", len(problems))
+	}
+	return nil
+}
+
+// formatFinding renders one finding as a single human-readable line, tagged
+// by kind. kindMissing keeps its full remediation hint (the fix command by
+// name) — the line users act on most.
+func formatFinding(f checkFinding) string {
+	switch f.Kind {
+	case kindParse:
+		return fmt.Sprintf("[parse] %s", f.Detail)
+	case kindMissing:
+		return fmt.Sprintf(
+			"[missing] profile %q: %s -> %s (not in the vault, run \"jit vault set %s\" to add it, or \"jit migrate home\" if it came from a scan)",
+			f.Profile, f.Variable, f.Path, f.Path)
+	case kindCorrupt:
+		return fmt.Sprintf("[corrupt] profile %q: %s -> %s: %s", f.Profile, f.Variable, f.Path, f.Detail)
+	case kindVaultError:
+		if f.Profile == "" {
+			return fmt.Sprintf("[vault error] %s", f.Detail)
+		}
+		return fmt.Sprintf("[vault error] profile %q: checking %s (%s): %s", f.Profile, f.Variable, f.Path, f.Detail)
+	case kindOrphan:
+		return fmt.Sprintf("[orphan] %s (%s)", f.Path, f.Detail)
+	case kindShadowed:
+		return fmt.Sprintf("[shadowed] profile %q: %s", f.Profile, f.Detail)
+	case kindAgent:
+		return fmt.Sprintf("[agent] %s", f.Detail)
+	case kindBackup:
+		return fmt.Sprintf("[backup] %s", f.Detail)
+	case kindWrap:
+		return fmt.Sprintf("[wrap] %s", f.Detail)
+	default:
+		return f.Detail
+	}
+}
+
 func init() {
-	doctorCmd.Flags().StringVar(&doctorProfile, "profile", "", "check only this profile instead of every profile under .jit/profiles/")
+	doctorCmd.Flags().StringVar(&doctorProfile, "profile", "", "check only this profile, and skip the agent/backup/wrap health sections")
 	doctorCmd.Flags().StringVar(&doctorFormat, "format", "text", `output format: "text" (default) or "json"`)
+	doctorCmd.Flags().BoolVar(&doctorVerbose, "verbose", false, "on success, list every variable→path reference that was checked")
+	doctorCmd.Flags().BoolVar(&doctorOrphans, "orphans", false, "also warn about vault secrets no profile references (advisory, never a failure)")
 	rootCmd.AddCommand(doctorCmd)
 }

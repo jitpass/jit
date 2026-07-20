@@ -43,16 +43,33 @@ func writeFixtureProfile(t *testing.T, cwd, name, content string) {
 }
 
 // plantVaultSecret writes a vault-shaped file directly rather than going
-// through vault.Vault.Set, since Set requires a real KeyWrapper —
-// doctor only ever checks existence (Vault.Exists), which is oblivious to
-// the file's actual contents.
+// through vault.Vault.Set, since Set requires a real KeyWrapper. The bytes
+// are a structurally valid v2 envelope (a known version, a hex-decodable
+// wrapped key and payload) so it passes not just Vault.Exists but doctor's
+// auth-free Vault.Verify integrity check — it stops short of anything that
+// actually decrypts, so the payload need not be real ciphertext. Use
+// plantCorruptSecret for the it-exists-but-won't-read case.
 func plantVaultSecret(t *testing.T, home, path string) {
+	t.Helper()
+	writeVaultEnc(t, home, path, `{"version":2,"recipients":{"test":"00"},"payload":"00"}`)
+}
+
+// plantCorruptSecret writes a file that exists but whose envelope this jit
+// can't read — here, an envelope version from the future — so a bare
+// existence check passes yet Verify fails, exercising doctor's [corrupt]
+// path.
+func plantCorruptSecret(t *testing.T, home, path string) {
+	t.Helper()
+	writeVaultEnc(t, home, path, `{"version":999,"recipients":{"test":"00"},"payload":"00"}`)
+}
+
+func writeVaultEnc(t *testing.T, home, path, content string) {
 	t.Helper()
 	full := filepath.Join(home, "Library", "Application Support", "jitpass", "vault", path+".enc")
 	if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(full, []byte("{}"), 0o600); err != nil {
+	if err := os.WriteFile(full, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 }
@@ -61,6 +78,8 @@ func execDoctor(t *testing.T, args ...string) (stdout string, err error) {
 	t.Helper()
 	doctorProfile = ""
 	doctorFormat = "text"
+	doctorVerbose = false
+	doctorOrphans = false
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetArgs(append([]string{"doctor"}, args...))
@@ -76,8 +95,8 @@ func TestDoctorNoProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit doctor: %v", err)
 	}
-	if !strings.Contains(out, "nothing to check") {
-		t.Errorf("expected a nothing-to-check message, got:\n%s", out)
+	if !strings.Contains(out, "No profiles found") {
+		t.Errorf("expected a no-profiles message, got:\n%s", out)
 	}
 }
 
@@ -208,8 +227,8 @@ func TestDoctorFormatJSONMissingSecretStillFailsLoud(t *testing.T) {
 	if result.OK || len(result.Problems) != 1 {
 		t.Errorf("unexpected result: %+v", result)
 	}
-	if !strings.Contains(result.Problems[0], "aws/s3-access-key") {
-		t.Errorf("expected the missing path in the JSON problems list, got: %+v", result.Problems)
+	if result.Problems[0].Kind != kindMissing || result.Problems[0].Path != "aws/s3-access-key" || result.Problems[0].Variable != "AWS_ACCESS_KEY_ID" {
+		t.Errorf("expected a structured missing finding naming the variable and path, got: %+v", result.Problems)
 	}
 }
 
@@ -230,5 +249,156 @@ func TestDoctorNeverCallsKeyWrapper(t *testing.T) {
 	v := &vault.Vault{Root: filepath.Join(home, "Library", "Application Support", "jitpass"), RecipientID: "test"}
 	if _, err := v.Exists("does/not-exist"); err != nil {
 		t.Fatalf("Exists with a nil KeyWrapper: %v", err)
+	}
+}
+
+// TestDoctorCorruptEnvelopeFailsLoud is the capability a bare Exists() check
+// couldn't provide: a secret whose file is present but whose envelope this
+// jit can't read is caught at diagnosis time, not when an app tries to use
+// it. Integrity checking is auth-free, so this passes without a KeyWrapper.
+func TestDoctorCorruptEnvelopeFailsLoud(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	writeFixtureProfile(t, cwd, "aws-admin", "AWS_ACCESS_KEY_ID: aws/s3-access-key\n")
+	plantCorruptSecret(t, home, "aws/s3-access-key") // exists, but a future envelope version
+
+	out, err := execDoctor(t)
+	if err == nil {
+		t.Fatal("expected a non-zero exit for a corrupt envelope, got nil")
+	}
+	if !strings.Contains(out, "[corrupt]") || !strings.Contains(out, "aws/s3-access-key") {
+		t.Errorf("expected a [corrupt] finding naming the secret, got:\n%s", out)
+	}
+}
+
+// TestDoctorCorruptEnvelopeIsAProblemInJSON confirms the corrupt case is a
+// hard problem (ok=false, non-zero exit), structured with kind "corrupt".
+func TestDoctorCorruptEnvelopeIsAProblemInJSON(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	writeFixtureProfile(t, cwd, "aws-admin", "AWS_ACCESS_KEY_ID: aws/s3-access-key\n")
+	plantCorruptSecret(t, home, "aws/s3-access-key")
+
+	out, err := execDoctor(t, "--format", "json")
+	if err == nil {
+		t.Fatal("expected a non-zero exit for a corrupt envelope in JSON mode, got nil")
+	}
+	var result doctorResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("unmarshaling output %q: %v", out, err)
+	}
+	if result.OK || len(result.Problems) != 1 || result.Problems[0].Kind != kindCorrupt {
+		t.Errorf("expected one structured corrupt problem, got: %+v", result)
+	}
+}
+
+// TestDoctorOrphansAreAdvisory locks in that a vault secret no profile
+// references surfaces under --orphans as a warning — reported, but never a
+// reason to fail the run (a clean profile set with an extra secret still
+// exits zero).
+func TestDoctorOrphansAreAdvisory(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	writeFixtureProfile(t, cwd, "aws-admin", "AWS_ACCESS_KEY_ID: aws/s3-access-key\n")
+	plantVaultSecret(t, home, "aws/s3-access-key")
+	plantVaultSecret(t, home, "stripe/unused-key") // referenced by nothing
+
+	out, err := execDoctor(t, "--orphans")
+	if err != nil {
+		t.Fatalf("orphans are advisory and must not fail the run: %v", err)
+	}
+	if !strings.Contains(out, "[orphan]") || !strings.Contains(out, "stripe/unused-key") {
+		t.Errorf("expected an orphan warning naming the unused secret, got:\n%s", out)
+	}
+}
+
+// TestDoctorOrphansOffByDefault confirms the sweep is opt-in: without
+// --orphans, an unreferenced secret is silent.
+func TestDoctorOrphansOffByDefault(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	writeFixtureProfile(t, cwd, "aws-admin", "AWS_ACCESS_KEY_ID: aws/s3-access-key\n")
+	plantVaultSecret(t, home, "aws/s3-access-key")
+	plantVaultSecret(t, home, "stripe/unused-key")
+
+	out, err := execDoctor(t)
+	if err != nil {
+		t.Fatalf("jit doctor: %v", err)
+	}
+	if strings.Contains(out, "orphan") {
+		t.Errorf("expected no orphan output without --orphans, got:\n%s", out)
+	}
+}
+
+// TestDoctorVerboseListsEachReference confirms --verbose turns a passing
+// run's bare count into a per-reference listing.
+func TestDoctorVerboseListsEachReference(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	writeFixtureProfile(t, cwd, "aws-admin", "AWS_ACCESS_KEY_ID: aws/s3-access-key\n")
+	plantVaultSecret(t, home, "aws/s3-access-key")
+
+	out, err := execDoctor(t, "--verbose")
+	if err != nil {
+		t.Fatalf("jit doctor --verbose: %v", err)
+	}
+	if !strings.Contains(out, "Checked:") || !strings.Contains(out, "AWS_ACCESS_KEY_ID → aws/s3-access-key") {
+		t.Errorf("expected a per-reference listing under --verbose, got:\n%s", out)
+	}
+}
+
+// TestDoctorShadowedProfileWarns confirms a profile name present in both
+// project and global scope produces a [shadowed] warning (the project copy
+// wins; the global one is silently ignored, the "why isn't my global profile
+// taking effect" trap). Advisory: it must not fail the run.
+func TestDoctorShadowedProfileWarns(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	writeFixtureProfile(t, cwd, "shell", "TOKEN: shared/token\n")  // project
+	writeFixtureProfile(t, home, "shell", "TOKEN: shared/token\n") // global, same name
+	plantVaultSecret(t, home, "shared/token")
+
+	out, err := execDoctor(t)
+	if err != nil {
+		t.Fatalf("a shadowed profile is advisory and must not fail the run: %v", err)
+	}
+	if !strings.Contains(out, "[shadowed]") || !strings.Contains(out, "shell") {
+		t.Errorf("expected a [shadowed] warning naming the profile, got:\n%s", out)
+	}
+}
+
+// TestDoctorBackupWarningOnFullRun confirms the absorbed backup section fires:
+// a populated vault with no recorded export gets a [backup] warning, without
+// failing the run.
+func TestDoctorBackupWarningOnFullRun(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	writeFixtureProfile(t, cwd, "aws-admin", "AWS_ACCESS_KEY_ID: aws/s3-access-key\n")
+	plantVaultSecret(t, home, "aws/s3-access-key")
+
+	out, err := execDoctor(t)
+	if err != nil {
+		t.Fatalf("a backup warning is advisory and must not fail the run: %v", err)
+	}
+	if !strings.Contains(out, "[backup]") || !strings.Contains(out, "vault export") {
+		t.Errorf("expected a [backup] warning on a populated, never-exported vault, got:\n%s", out)
+	}
+}
+
+// TestDoctorProfileFlagSkipsSystemSections confirms --profile narrows to the
+// one profile and does NOT emit the agent/backup/wrap health warnings the
+// full sweep would — otherwise the focused query becomes surprising noise.
+func TestDoctorProfileFlagSkipsSystemSections(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	writeFixtureProfile(t, cwd, "aws-admin", "AWS_ACCESS_KEY_ID: aws/s3-access-key\n")
+	plantVaultSecret(t, home, "aws/s3-access-key") // populated vault, no export -> would warn on a full run
+
+	out, err := execDoctor(t, "--profile", "aws-admin")
+	if err != nil {
+		t.Fatalf("jit doctor --profile aws-admin: %v", err)
+	}
+	if strings.Contains(out, "[backup]") || strings.Contains(out, "[agent]") || strings.Contains(out, "[wrap]") {
+		t.Errorf("expected no system-health warnings under --profile, got:\n%s", out)
 	}
 }
