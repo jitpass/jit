@@ -25,6 +25,7 @@ description: Where the vault, profiles, shims, and rewritten config files live o
 | `~/.aws/config` | gains a `credential_process` line per migrated profile |
 | `~/.kube/config` | the user entry gains an `exec` credential-plugin block |
 | `~/.terraformrc` | gains a `credentials_helper` block |
+| `~/.gitconfig` | `credential.helper` set to `jit` (the plaintext `store` helper removed); `~/.git-credentials` has its migrated logins stripped |
 | `.npmrc` (project or `~`) | a live mount serving a template; non-secret lines untouched |
 | `mcp.json` / Claude Desktop config | server `command` wrapped in `jit run` |
 | per-tool CLI configs (`~/.config/gh/hosts.yml`, …) | token scrubbed by `jit wrap` - full list per tool in the [wrap catalog](../wrap/index.md) |

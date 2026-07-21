@@ -100,7 +100,9 @@ One special case: for a new **Terraform Cloud** token or **Docker
 registry** login, just run [`terraform login`](../migrate/terraform.md)
 or [`docker login`](../migrate/docker.md) again - migration wired each
 tool's own credentials helper to jit, so the re-login lands directly in
-the vault.
+the vault. A **[git HTTPS](../migrate/git.md)** push that re-authenticates
+with a fresh password lands there the same way, through git's own
+credential helper.
 
 ## More
 
