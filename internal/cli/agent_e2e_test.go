@@ -7,10 +7,10 @@ package cli
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,140 +29,6 @@ import (
 type fakeMEKFetcher struct{ key []byte }
 
 func (f *fakeMEKFetcher) FetchMEK(reason string) ([]byte, error) { return f.key, nil }
-
-// TestDecoyGateEndToEnd drives the real GAPS.md #2 mechanism through the
-// actual agent.Server/Client/mountManager/mount.Serve code paths — no
-// stubs beyond the MEK fetch — and confirms: an hidden mount serves
-// DecoyValues, an explicit `jit agent reveal`-equivalent RPC (agent.Client.Reveal)
-// makes it serve real content, and internal/lineage's audit scan runs
-// without disrupting either. This is the fixture-based verification for
-// the flow the manual/real-hardware pass (agent install -> jit migrate ->
-// jit agent reveal) can't be scripted for, since that needs a real Touch ID
-// approval.
-func TestDecoyGateEndToEnd(t *testing.T) {
-	root := t.TempDir()
-
-	profilePath := filepath.Join(root, "fixture-profile.yaml")
-	writeYAML(t, profilePath, profile.Profile{"API_KEY": "fixture/API_KEY"})
-
-	mountDir := t.TempDir()
-	mountPath := filepath.Join(mountDir, ".env")
-	if err := mount.CreateFIFO(mountPath); err != nil {
-		t.Fatalf("CreateFIFO: %v", err)
-	}
-
-	socketPath := filepath.Join(t.TempDir(), "a.sock") // short path, see agent's shortSocketPath convention (sockaddr_un ~104 byte limit)
-	mek := bytes.Repeat([]byte{0x24}, 32)
-	server := agent.NewServer(socketPath, func() agent.MEKFetcher { return &fakeMEKFetcher{key: mek} }, time.Minute)
-
-	var stdout, stderr bytes.Buffer
-	mounts := &mountManager{root: root, keyWrapper: server, stdout: &stdout, stderr: &stderr}
-	server.OnUnlock = mounts.start
-	server.OnLock = mounts.stop
-	server.OnRefresh = mounts.start
-	server.OnReveal = mounts.revealMount
-	server.OnMountStatus = mounts.mountRevealStatuses
-
-	if err := server.Listen(); err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { _ = server.Serve(ctx); close(done) }()
-	defer func() { cancel(); _ = server.Close(); <-done }()
-
-	// RecipientID must match what mountManager.start() itself computes
-	// (os.Hostname()) — it builds its own *vault.Vault internally to
-	// resolve a mount's profile.
-	hostname, err := os.Hostname()
-	if err != nil {
-		t.Fatalf("os.Hostname: %v", err)
-	}
-	v := &vault.Vault{Root: root, KeyWrapper: server, RecipientID: hostname}
-
-	// Order matters here exactly as it does in real jit migrate
-	// (internal/migrate.ApplyEnvFile then internal/cli/migrate.go's
-	// mount.AddMount + Client.Refresh): write the secret(s) FIRST, only
-	// register the mount in the registry AFTER. This first v.Set is what
-	// triggers the very first OnUnlock — if the mount were already
-	// registered at that point, mountManager.start() would attempt (and
-	// fail) to resolve it before the secret exists, permanently mark it
-	// "serving" in m.serving anyway, and then never retry on a later
-	// Refresh even once the secret is written — reproduced once while
-	// writing this test (registering the mount before Set caused exactly
-	// this permanent-skip and a hung readMountOnce). Registering only once
-	// the secret is safely in place, then explicitly Refresh-ing, is what
-	// real migrate already does specifically to avoid this.
-	if err := v.Set("fixture/API_KEY", []byte("sk_live_REAL_SECRET")); err != nil {
-		t.Fatalf("vault Set: %v", err)
-	}
-	if err := mount.AddMount(mount.RegistryPath(root), mount.Entry{MountPath: mountPath, ProfilePath: profilePath}); err != nil {
-		t.Fatalf("AddMount: %v", err)
-	}
-	client := agent.NewClient(socketPath)
-	if err := client.Refresh(); err != nil {
-		t.Fatalf("Client.Refresh: %v", err)
-	}
-	waitForMountServing(t, mounts, mountPath)
-	mounts.mu.Lock()
-	sm := mounts.served[mountPath]
-	mounts.mu.Unlock()
-	sm.reveal.Hide()
-
-	// Hidden: real value must never appear on the wire.
-	got := readMountOnce(t, mountPath)
-	if bytes.Contains(got, []byte("sk_live_REAL_SECRET")) {
-		t.Fatalf("hidden mount leaked the real secret: %q", got)
-	}
-	if !bytes.Contains(got, []byte("jit-hidden-API_KEY")) {
-		t.Errorf("hidden mount = %q, want decoy value jit-hidden-API_KEY", got)
-	}
-
-	// Explicit reveal via the real Client/OpReveal RPC — exactly what `jit agent
-	// reveal` and migrate's injected hook command do over the wire.
-	if err := client.Reveal(mountPath, 5*time.Second); err != nil {
-		t.Fatalf("Client.Reveal: %v", err)
-	}
-
-	got = readMountOnce(t, mountPath)
-	if !bytes.Contains(got, []byte("sk_live_REAL_SECRET")) {
-		t.Errorf("revealed mount = %q, want the real secret", got)
-	}
-
-	// GAPS.md #37: Client.Status() (the real RPC, not mountManager's
-	// in-process state directly) must report this mount as revealed — this
-	// is what `jit status`/`jit agent status` actually call.
-	st, err := client.Status()
-	if err != nil {
-		t.Fatalf("Client.Status: %v", err)
-	}
-	found := false
-	for _, ms := range st.Mounts {
-		if ms.Path != mountPath {
-			continue
-		}
-		found = true
-		if !ms.Revealed {
-			t.Errorf("Client.Status reported %s as hidden right after a successful Client.Reveal", mountPath)
-		}
-		if ms.RevealedForSeconds <= 0 || ms.RevealedForSeconds > 5 {
-			t.Errorf("Client.Status reported RevealedForSeconds=%d, want 0 < n <= 5 (revealed for 5s just now)", ms.RevealedForSeconds)
-		}
-	}
-	if !found {
-		t.Fatalf("Client.Status didn't include %s at all, got %+v", mountPath, st.Mounts)
-	}
-
-	// Audit logging ran alongside without influencing the above —
-	// mountManager's onReaderConnected calls internal/lineage on every
-	// cycle unconditionally. Expect "not identified" here specifically:
-	// IdentifyFIFOReader deliberately skips its own PID (see its doc
-	// comment), and this test's reader and the scan both run in this same
-	// test binary process. internal/lineage's own tests (a genuinely
-	// separate reader process) cover the scan's actual accuracy; this only
-	// confirms wiring it into Serve never crashes or blocks a read.
-	t.Logf("agent stderr (audit log lines expected here):\n%s", stderr.String())
-}
 
 // TestMountNeverHangsRegardlessOfLockState is GAPS.md #35's end-to-end
 // regression test for a real, reported incident: with the old design,
@@ -198,7 +64,6 @@ func TestMountNeverHangsRegardlessOfLockState(t *testing.T) {
 	server.OnUnlock = mounts.start
 	server.OnLock = mounts.stop
 	server.OnRefresh = mounts.start
-	server.OnReveal = mounts.revealMount
 	server.OnMountStatus = mounts.mountRevealStatuses
 
 	// (1) No unlock has ever happened — startDecoyOnly is the only thing
@@ -214,8 +79,9 @@ func TestMountNeverHangsRegardlessOfLockState(t *testing.T) {
 	// (2) Write the real secret, THEN trigger the same start() OnUnlock
 	// would call (directly, not via v.Set's own incidental WrapKey call —
 	// that would fire mid-Set, before the secret is actually written to
-	// disk yet, the exact ordering hazard TestDecoyGateEndToEnd's own
-	// comment already documents), then explicitly reveal.
+	// disk yet). Unlocking ARMS real content in memory but reveals nothing:
+	// with no run-scoped grant, a bare read must STILL get decoys, never the
+	// real secret.
 	hostname, err := os.Hostname()
 	if err != nil {
 		t.Fatalf("os.Hostname: %v", err)
@@ -227,19 +93,31 @@ func TestMountNeverHangsRegardlessOfLockState(t *testing.T) {
 	mounts.start()
 	mounts.mu.Lock()
 	sm := mounts.served[mountPath]
+	armed := string(sm.real)
 	mounts.mu.Unlock()
-	sm.reveal.Reveal(time.Minute)
-
+	if !strings.Contains(armed, "sk_live_REAL_SECRET") {
+		t.Fatalf("after unlock, sm.real = %q, want the real secret armed in memory", armed)
+	}
 	got = readMountOnceWithTimeout(t, mountPath, 2*time.Second)
-	if !bytes.Contains(got, []byte("sk_live_REAL_SECRET")) {
-		t.Fatalf("after unlock+reveal, mount = %q, want the real secret", got)
+	if bytes.Contains(got, []byte("sk_live_REAL_SECRET")) {
+		t.Fatalf("after unlock with NO grant, mount leaked the real secret: %q (real content must serve only to a run-scoped grant)", got)
+	}
+	if !bytes.Contains(got, []byte("jit-hidden-API_KEY")) {
+		t.Fatalf("after unlock with no grant, mount = %q, want decoy content", got)
 	}
 
-	// (3) Lock again — the actual regression. Must fall back to decoy
-	// immediately, never hang, and the Serve goroutine must still be the
-	// SAME one (never restarted) — confirmed by checking the mount is
-	// still present in m.served without ever having been removed.
+	// (3) Lock again — the actual regression. Must forget the armed real
+	// content, keep serving decoy immediately, never hang, and the Serve
+	// goroutine must still be the SAME one (never restarted) — confirmed by
+	// checking the mount is still present in m.served without ever having
+	// been removed.
 	mounts.stop()
+	mounts.mu.Lock()
+	stillArmed := sm.real
+	mounts.mu.Unlock()
+	if stillArmed != nil {
+		t.Errorf("after re-locking, sm.real = %q, want nil (real content forgotten on lock)", stillArmed)
+	}
 	got = readMountOnceWithTimeout(t, mountPath, 2*time.Second)
 	if bytes.Contains(got, []byte("sk_live_REAL_SECRET")) {
 		t.Fatalf("after re-locking, mount leaked the real secret: %q", got)

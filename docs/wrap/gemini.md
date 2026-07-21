@@ -51,8 +51,8 @@ jit wrap undo gemini
   refuses with an error rather than reading the file - reading a jit
   mount doesn't fail or hang, it silently returns a decoy value, and
   vaulting that as the "real" key would be worse than doing nothing. Run
-  `jit wrap gemini` **before** migrating that file, or reveal the mount
-  (`jit agent reveal <path>`) and copy the key out with
+  `jit wrap gemini` **before** migrating that file, or read the key out of
+  the vault (`jit vault get <path>`) and copy it into
   `jit vault set wrap-gemini/GEMINI_API_KEY` by hand.
 - Only the *file* path is scrubbed. `GEMINI_API_KEY` set directly in your
   shell profile overrides both the vault injection and the `.env` file -

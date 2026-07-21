@@ -78,7 +78,7 @@ never have to remember or retype an exact path or name:
 | --- | --- |
 | `jit vault get`/`set`/`rm` | secret paths stored in your vault |
 | `jit migrate undo` | files with a restorable backup, plus each one's parent directory |
-| `jit unmount`, `jit agent reveal` | your live-mounted file paths |
+| `jit unmount` | your live-mounted file paths |
 | `jit profile show`, any `--profile` | profile names visible from the current directory |
 | `jit wrap add` | every tool jit knows how to wrap |
 | `jit wrap undo` | the tools you've currently wrapped |

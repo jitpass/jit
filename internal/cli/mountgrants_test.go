@@ -99,9 +99,9 @@ func TestGrantForPIDRegistersAttachment(t *testing.T) {
 	}
 }
 
-// TestGrantForPIDRefusedWithNothingRealToServe mirrors revealMount's
-// GAPS.md #46 honesty rule: a grant that could only ever authorize decoys
-// must be refused, with the resolve error carried in the refusal.
+// TestGrantForPIDRefusedWithNothingRealToServe applies the GAPS.md #46
+// honesty rule: a grant that could only ever authorize decoys must be
+// refused, with the resolve error carried in the refusal.
 func TestGrantForPIDRefusedWithNothingRealToServe(t *testing.T) {
 	sm := newTestServedMount()
 	sm.real = nil
@@ -227,30 +227,9 @@ func TestServeContentEnforcesHardCap(t *testing.T) {
 	}
 }
 
-// TestServeContentRevealWindowStillWins: an active reveal window serves real
-// exactly as before grants existed, and the record must NOT claim a grant.
-func TestServeContentRevealWindowStillWins(t *testing.T) {
-	sm := newTestServedMount()
-	sm.decoy = []byte("decoy")
-	m := newGrantTestManager(sm)
-	installGrant(m, "/tmp/fixture/.env", 100, 1000)
-	m.grantHoldersFn = func(string) ([]int32, bool) { return []int32{666}, true } // stranger, irrelevant under a window
-	m.grantAncestryFn = func(int32, int32) bool { return false }
-	sm.reveal.Reveal(time.Minute)
-
-	if got := m.serveContent("/tmp/fixture/.env", sm); string(got) != "API_KEY=real\n" {
-		t.Fatalf("serveContent = %q, want real under an active reveal window", got)
-	}
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	if sm.lastServe == nil || sm.lastServe.grantServed {
-		t.Errorf("lastServe = %+v, want grantServed=false for a window-authorized serve", sm.lastServe)
-	}
-}
-
 // TestServeContentNoGrantsTakesFastPath: with no grant runs anywhere, the
-// gate is skipped entirely (grantModeRuns==0) and the decision is a pure
-// reveal-window one.
+// gate is skipped entirely (grantModeRuns==0) and every read is decoy —
+// real content flows only through a grant, never on its own.
 func TestServeContentNoGrantsTakesFastPath(t *testing.T) {
 	sm := newTestServedMount()
 	sm.decoy = []byte("decoy")
@@ -260,11 +239,7 @@ func TestServeContentNoGrantsTakesFastPath(t *testing.T) {
 		return nil, false
 	}
 	if got := m.serveContent("/tmp/fixture/.env", sm); string(got) != "decoy" {
-		t.Errorf("serveContent = %q, want decoy (hidden, no grant)", got)
-	}
-	sm.reveal.Reveal(time.Minute)
-	if got := m.serveContent("/tmp/fixture/.env", sm); string(got) != "API_KEY=real\n" {
-		t.Errorf("serveContent = %q, want real (revealed, no grant)", got)
+		t.Errorf("serveContent = %q, want decoy (no grant active)", got)
 	}
 }
 

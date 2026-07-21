@@ -4,88 +4,11 @@
 package migrate
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
-
-// TestRemoveRevealHooksRoundTrip pins RemoveRevealHooks as InstallRevealHook's
-// true inverse: whatever install wired into an .envrc or a package.json
-// pre-script, remove strips — and ONLY that, never a line or script the
-// user authored themselves.
-func TestRemoveRevealHooksRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	envrcPath := filepath.Join(dir, ".envrc")
-	writeFile(t, envrcPath, "dotenv\nexport FOO=bar\n")
-	pkgPath := filepath.Join(dir, "package.json")
-	writeFile(t, pkgPath, `{"name":"demo","scripts":{"dev":"vite","predev":"echo user-hook"}}`)
-
-	mountPath := filepath.Join(dir, ".env")
-	if _, err := InstallRevealHook(dir, mountPath); err != nil {
-		t.Fatalf("InstallRevealHook: %v", err)
-	}
-	installed, err := os.ReadFile(envrcPath) // #nosec G304 -- test-controlled path
-	if err != nil || !strings.Contains(string(installed), "agent reveal") {
-		t.Fatalf("precondition: hook not installed in .envrc (err %v):\n%s", err, installed)
-	}
-
-	edited, err := RemoveRevealHooks(dir)
-	if err != nil {
-		t.Fatalf("RemoveRevealHooks: %v", err)
-	}
-	if len(edited) != 1 || edited[0] != envrcPath {
-		t.Errorf("edited = %v, want just the .envrc (direnv wins install, so only it holds a hook)", edited)
-	}
-	after, err := os.ReadFile(envrcPath) // #nosec G304 -- test-controlled path
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if strings.Contains(string(after), "agent reveal") {
-		t.Errorf(".envrc still contains the reveal hook after removal:\n%s", after)
-	}
-	if !strings.Contains(string(after), "dotenv") || !strings.Contains(string(after), "export FOO=bar") {
-		t.Errorf(".envrc lost a user-authored line:\n%s", after)
-	}
-}
-
-// The npm variant: a predev that mixes jit's injected command with the
-// user's own must keep the user's part; a predev that was entirely jit's
-// must be deleted outright.
-func TestRemoveRevealHooksNpmPreservesUserPreScript(t *testing.T) {
-	dir := t.TempDir()
-	pkgPath := filepath.Join(dir, "package.json")
-	writeFile(t, pkgPath, `{"scripts":{"dev":"vite","predev":"echo user-hook","start":"node ."}}`)
-
-	mountPath := filepath.Join(dir, ".env")
-	if _, err := InstallRevealHook(dir, mountPath); err != nil {
-		t.Fatalf("InstallRevealHook: %v", err)
-	}
-
-	if _, err := RemoveRevealHooks(dir); err != nil {
-		t.Fatalf("RemoveRevealHooks: %v", err)
-	}
-	data, err := os.ReadFile(pkgPath) // #nosec G304 -- test-controlled path
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	var pkg struct {
-		Scripts map[string]string `json:"scripts"`
-	}
-	if err := json.Unmarshal(data, &pkg); err != nil {
-		t.Fatalf("package.json is no longer valid JSON after removal: %v\n%s", err, data)
-	}
-	if pkg.Scripts["predev"] != "echo user-hook" {
-		t.Errorf("predev = %q, want the user's own %q back", pkg.Scripts["predev"], "echo user-hook")
-	}
-	if _, exists := pkg.Scripts["prestart"]; exists {
-		t.Errorf("prestart (entirely jit's) should be deleted, got %q", pkg.Scripts["prestart"])
-	}
-	if pkg.Scripts["dev"] != "vite" || pkg.Scripts["start"] != "node ." {
-		t.Errorf("user scripts changed: %v", pkg.Scripts)
-	}
-}
 
 // TestRestorePointerFileRoundTrip: an in-place pointer file (what a
 // backup-suffixed .env.bak becomes, GAPS.md #34) restores to a plain

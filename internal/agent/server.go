@@ -76,44 +76,14 @@ type Server struct {
 	OnUnlock  func()
 	OnLock    func()
 	OnRefresh func()
-	// OnUnlockForReveal, if set, replaces OnUnlock for the FRESH challenge an
-	// OpReveal request triggers — and only that path. The difference is scope:
-	// OnUnlock blanket-reveals every mount for a short default window (the
-	// ergonomic "a human just unlocked, let a dev server started right after
-	// get real content" default), but an unlock whose sole cause is an
-	// explicit `jit agent reveal <path>` is a NARROWING intent — the user named
-	// one file, so inheriting the blanket reveal and lighting up every other
-	// mount for 60s reads as a bug (a real, reported one). OnUnlockForReveal
-	// still resolves real content for every mount (so OnReveal's own reveal of the
-	// named path can't be refused for "nothing real resolved"), it just
-	// doesn't floor-reveal any of them — OnReveal reveals the one the user asked for,
-	// right after. Falls back to OnUnlock when unset, so a Server with no
-	// mount manager wired (tests) behaves exactly as before.
-	OnUnlockForReveal func()
-	// OnReveal, if set, answers an OpReveal request — after ensureUnlocked
-	// succeeds, same as OnRefresh — with the mount path and requested
-	// duration exactly as the caller sent them. Server has no opinion on
-	// what "reveal" means (it never imports internal/mount) or on clamping
-	// the requested duration to a sane maximum; that's internal/cli/agent.go
-	// mountManager's job entirely, matching OnRefresh's own dependency
-	// direction. A non-nil error return becomes the RPC's own failure,
-	// message included — a real, reported bug: OpReveal used to return
-	// Response{OK: true} unconditionally, so `jit agent reveal .env` (an
-	// unresolved relative path that never matches the registry's absolute
-	// keys) silently reported success while revealing nothing; the error
-	// carries WHY (not found, nothing real resolved to serve, ...) so the
-	// CLI can print it instead of that living only in the agent's log
-	// (GAPS.md #46).
-	OnReveal func(mountPath string, requested time.Duration) error
 	// OnRevealPID, if set, answers an OpRevealPID request — after
-	// ensureUnlocked succeeds via the same reveal-scoped path OpReveal uses
-	// (OnUnlockForReveal, no blanket floor-reveal). The arguments are the
-	// caller's per-mount treatments (path + mode) and target pid exactly as
-	// sent; what a mode means — how readers are matched against the target's
-	// process tree, and when a swap/grant is torn down — lives entirely in
-	// the CLI layer (mountManager), keeping Server's no-internal/mount
-	// dependency direction. A non-nil error becomes the RPC's own failure,
-	// same contract (and same reported-bug rationale) as OnReveal.
+	// ensureUnlocked succeeds (OnUnlock resolves real content but reveals
+	// nothing on its own). The arguments are the caller's per-mount
+	// treatments (path + mode) and target pid exactly as sent; what a mode
+	// means — how readers are matched against the target's process tree, and
+	// when a swap/grant is torn down — lives entirely in the CLI layer
+	// (mountManager), keeping Server's no-internal/mount dependency
+	// direction. A non-nil error becomes the RPC's own failure.
 	OnRevealPID func(mounts []RunMount, pid int32) error
 	// OnCanGrant, if set, validates that every grant-mode mount in a
 	// DISCLOSED reveal_pid (jit run --with) is currently grantable — served
@@ -124,7 +94,7 @@ type Server struct {
 	// RPC's failure before any prompt.
 	OnCanGrant func(mounts []RunMount) error
 	// OnStopMount, if set, answers an OpStopMount request — unlike
-	// OnRefresh/OnReveal, this does NOT go through ensureUnlocked first:
+	// OnRefresh, this does NOT go through ensureUnlocked first:
 	// stopping a mount's serving goroutine needs no vault access at all
 	// (GAPS.md #35), so it must keep working even while locked — the
 	// same reasoning that makes decoy serving itself safe to run before
@@ -390,39 +360,6 @@ func (s *Server) handle(req Request, c *caller) Response {
 			s.OnRefresh()
 		}
 		return Response{OK: true}
-	case OpReveal:
-		if req.MountPath == "" {
-			return Response{OK: false, Error: "reveal: missing mount_path"}
-		}
-		// Reveal-scoped resolve: OnUnlockForReveal resolves every mount's real
-		// content and floor-reveals NONE (so this explicit reveal lights up
-		// only the mount OnReveal names below), falling back to OnUnlock's
-		// blanket floor-reveal when unset. It is passed as nil to
-		// ensureUnlockedNotify and invoked UNCONDITIONALLY afterward, not only
-		// on a fresh challenge: a reveal riding an already-unlocked session
-		// must still resolve CURRENT values, or a `jit vault set` since the
-		// last unlock would have this serve the stale ones (revealMount's
-		// real!=nil check passes on cached content just the same).
-		onResolve := s.OnUnlock
-		if s.OnUnlockForReveal != nil {
-			onResolve = s.OnUnlockForReveal
-		}
-		// The mount path doubles as the reveal's label: it's what this use
-		// of the session was FOR, exactly as Request.Label is for a wrap.
-		mek, err := s.ensureUnlockedNotify(nil, req.Op, c, req.MountPath)
-		if err != nil {
-			return Response{OK: false, Error: err.Error()}
-		}
-		wipe(mek)
-		if onResolve != nil {
-			onResolve()
-		}
-		if s.OnReveal != nil {
-			if err := s.OnReveal(req.MountPath, time.Duration(req.RevealSeconds)*time.Second); err != nil {
-				return Response{OK: false, Error: err.Error()}
-			}
-		}
-		return Response{OK: true}
 	case OpRevealPID:
 		if len(req.RunMounts) == 0 {
 			return Response{OK: false, Error: "reveal_pid: missing run_mounts"}
@@ -430,14 +367,11 @@ func (s *Server) handle(req Request, c *caller) Response {
 		if req.TargetPID <= 0 {
 			return Response{OK: false, Error: "reveal_pid: missing target_pid"}
 		}
-		// Same reveal-scoped unlock as OpReveal: a fresh challenge caused by
-		// a grant request must not blanket floor-reveal every mount.
+		// The fresh challenge a grant request may cause resolves every mount's
+		// real content (so a grant can serve current values) but reveals
+		// nothing on its own — real content flows only to the granted tree.
 		onFresh := s.OnUnlock
-		if s.OnUnlockForReveal != nil {
-			onFresh = s.OnUnlockForReveal
-		}
-		// The joined mount paths are this use's label, like OpReveal's single
-		// path: what the session was used FOR.
+		// The joined mount paths are this use's label: what the session was used FOR.
 		paths := make([]string, len(req.RunMounts))
 		for i, m := range req.RunMounts {
 			paths[i] = m.Path
@@ -577,11 +511,11 @@ func (s *Server) mekCopy() []byte {
 }
 
 // ensureUnlockedNotify is ensureUnlocked with a caller-chosen "a fresh
-// challenge just succeeded" callback in place of the default OnUnlock.
-// Only OpReveal passes anything other than OnUnlock (see OnUnlockForReveal) —
-// every other caller goes through ensureUnlocked. onFresh fires exactly
-// where OnUnlock always has: after all internal locks are released, and
-// only for a genuine fresh challenge, never a cache hit.
+// challenge just succeeded" callback in place of the default OnUnlock — the
+// disclosed grant path (OpRevealPID with a DiscloseReason) uses it to record
+// the use only after an approved challenge. onFresh fires exactly where
+// OnUnlock always has: after all internal locks are released, and only for a
+// genuine fresh challenge, never a cache hit.
 //
 // challengeMu — not s.mu — is what serializes concurrent callers behind a
 // single Touch ID prompt rather than each triggering their own. The second

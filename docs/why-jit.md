@@ -20,7 +20,7 @@ what you get and why it matters.
 ## The one idea
 
 A secret should exist in plaintext only at the moment it is used: a process
-launch, a credential handshake, a revealed file read. jit makes that the
+launch, a credential handshake, a granted file read. jit makes that the
 default and keeps the plaintext out of the way the rest of the time.
 
 ## 1. See what is already exposed
@@ -63,7 +63,7 @@ your tools keep working, each through that tool's own native mechanism:
 
 | Where the secret lives | How it keeps working after jit |
 | --- | --- |
-| `.env` files | Live-mounted file: decoy values by default, real ones during a short revealed window |
+| `.env` files | Live-mounted file: decoy values by default, real ones only to a `jit run` grant's process tree |
 | Shell config exports | An `eval "$(jit export ...)"` line in the config |
 | AWS credentials | `credential_process` in `~/.aws/config`: the CLI and SDKs fetch on demand, no file at all |
 | kubeconfig | A kubectl `exec` credential plugin |
@@ -82,13 +82,14 @@ touched, its exact original bytes are backed up (encrypted) into the vault, and
 risk a broken build. Every change is previewed first (`--dry-run`) and fully
 reversible.
 
-## 3. Decoys by default, real values on a timer
+## 3. Decoys by default, real values only to a `jit run` you launch
 
 A migrated `.env` becomes a live file that serves `jit-hidden-...` decoy values
-by default. Real values appear only when you ask - inside a short reveal window
-you open on purpose, or for the lifetime of a `jit run` (which delivers them
-through the process environment and hands the file itself only to that run) -
-and the file goes back to decoys the moment you're done.
+by default. Real values appear only for the lifetime of a `jit run` you launch
+on purpose - delivered through the process environment, or (with `jit run
+--live`) handed to that run's own process tree when it reads the file itself -
+and the file goes back to decoys the moment you're done. Unlocking the vault
+or `cd`-ing into a directory never makes a mount serve real values.
 
 **Why it matters:** a backup tool, a file indexer, an infostealer, or an
 over-eager agent that reads the file at the wrong moment gets a decoy, not your
@@ -160,9 +161,10 @@ Here is what jit does that a cloud password manager and its CLI do not:
   for you through each tool's native credential mechanism
   (`credential_process`, a kubectl exec plugin, a Terraform credentials helper,
   a live-mounted template), and every change is backed up and reversible.
-- **Serves decoys with a timed reveal.** A password manager hands your tool the
-  real value when asked. jit keeps a decoy in the file and reveals the real
-  value only for a short window, so a stray reader gets nothing.
+- **Serves decoys except to a run you launch.** A password manager hands your
+  tool the real value when asked. jit keeps a decoy in the file and serves the
+  real value only to the process tree of a `jit run` you launch on purpose, so
+  a stray reader gets nothing.
 - **Names the process that asked.** A biometric prompt from a password manager
   does not tell you which program triggered it. jit does, and keeps the history.
 - **Stays entirely on your machine.** Your secrets do not go to a vendor cloud,

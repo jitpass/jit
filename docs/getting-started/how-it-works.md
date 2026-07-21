@@ -6,7 +6,7 @@ description: The mental model - vault, agent, profiles, live mounts, shims, and 
 # How it works
 
 jit's job is to make secrets exist in plaintext only at the moment of use -
-a process launch, a credential handshake, a revealed file read - and nowhere
+a process launch, a credential handshake, a granted file read - and nowhere
 the rest of the time. Five pieces make that happen.
 
 ## The vault
@@ -23,7 +23,7 @@ anywhere - the vault's encryption is bound to this machine's keychain
 Unlocking the vault for every single command would mean a Touch ID prompt
 per command. The [agent](../agent/index.md) is a launchd-managed process
 that holds an unlocked session: you authenticate once, and everything
-shares that session for the next 15 minutes of activity (configurable).
+shares that session for the next 5 minutes of activity (configurable).
 It's also the process that serves live-mounted files.
 
 ## Profiles
@@ -42,7 +42,7 @@ mechanism, so nothing about your workflow changes:
 
 | Where the secret lives | Example | How it keeps working after jit |
 | --- | --- | --- |
-| `.env` files | `DATABASE_URL=...` in a project `.env` | [Live-mounted file](../run/mounts.md): decoy values by default, real ones during a short revealed window |
+| `.env` files | `DATABASE_URL=...` in a project `.env` | [Live-mounted file](../run/mounts.md): decoy values by default, real ones only to a `jit run` grant's process tree |
 | Shell config exports | `export STRIPE_KEY=...` in `~/.zshrc` | An [`eval "$(jit export ...)"` line](../migrate/shell-configs.md) in the config |
 | MCP server configs | project `mcp.json`, Claude Desktop config | The server command [wrapped in `jit run`](../migrate/mcp.md) |
 | AWS credentials | `~/.aws/credentials` | [`credential_process`](../migrate/aws.md) in `~/.aws/config`: the CLI and SDKs fetch on demand, no file at all |

@@ -43,6 +43,17 @@ var (
 	vaultRestoreStamp  int64
 )
 
+// requireUserPresence gates a destructive vault command (rm/clean/prune/
+// delete) behind a real LocalAuthentication challenge (Touch ID/passcode),
+// independent of the cached agent session. These commands only move or delete
+// envelope files and never exercise the KeyWrapper, so without this explicit
+// gate they would ride an unlocked session silently. It's a package var so
+// tests can replace it with a no-op — an automated test must never touch the
+// real production keychain (see internal/keychainwrap's TEST-ONLY rule).
+var requireUserPresence = func(reason string) error {
+	return keychainwrap.New().RequireUserPresence(reason)
+}
+
 // vaultListResult is jit vault list's --format json shape (GAPS.md #22).
 // Neither field is ever nil in JSON output even when the vault is empty —
 // an empty array, not a null field, so a script doesn't need a special
@@ -144,9 +155,14 @@ var vaultCmd = &cobra.Command{
 	GroupID: groupSecrets,
 	Short:   "Manage the local encrypted secret vault",
 	Long: "jit vault stores each secret as its own encrypted file under jit's data\n" +
-		"directory, no monolithic database. Access is gated by a Touch ID/passcode\n" +
-		"prompt enforced by jit itself (a real prompt, though not yet an OS-enforced\n" +
-		"Keychain/Secure Enclave guarantee).",
+		"directory, no monolithic database.\n\n" +
+		"Every command that reads, writes, or destroys a secret (get, set, rm,\n" +
+		"import, restore, clean, prune, delete, export) requires a fresh Touch\n" +
+		"ID/passcode on EACH invocation, whether or not the background agent's\n" +
+		"session is unlocked - these commands never ride the cached session, so a\n" +
+		"process running as you on an unlocked machine still can't read or destroy\n" +
+		"the vault without a live human gesture. Only `list` and `history` are\n" +
+		"prompt-free: they show secret names and version timestamps, never a value.",
 }
 
 var vaultInitCmd = &cobra.Command{
@@ -178,7 +194,9 @@ var vaultSetCmd = &cobra.Command{
 	Short: "Encrypt and store a secret",
 	Long: "Stores a secret at <path> (e.g. \"stripe/dev-key\"). If [value] is omitted,\n" +
 		"prompts for it with hidden input. Use --stdin for scripts. Passing the value\n" +
-		"as a bare argument works but lands in shell history, prefer the prompt or --stdin.",
+		"as a bare argument works but lands in shell history, prefer the prompt or --stdin.\n\n" +
+		"Requires a fresh Touch ID/passcode on every run, never the cached agent\n" +
+		"session, so writing a secret always takes a live human gesture.",
 	Args:              cobra.RangeArgs(1, 2),
 	ValidArgsFunction: completeVaultPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -192,7 +210,11 @@ var vaultSetCmd = &cobra.Command{
 			return fmt.Errorf("jit vault set: value must not be empty")
 		}
 
-		v, err := openVault()
+		// Fresh auth on every sensitive vault command, never the cached
+		// agent session: a fingerprint/passcode is required to write a
+		// secret whether the agent is locked or not (a same-user process on
+		// an unlocked session must not be able to store silently).
+		v, err := openVaultFreshAuth()
 		if err != nil {
 			return fmt.Errorf("jit vault set: %w", err)
 		}
@@ -225,11 +247,17 @@ var vaultGetCmd = &cobra.Command{
 		"On a terminal, one faint metadata line follows on stderr: when the\n" +
 		"secret was last updated, which profiles reference it, and the config\n" +
 		"file its migration recorded as the source. Piped or redirected output\n" +
-		"receives the value only, never the footer.",
+		"receives the value only, never the footer.\n\n" +
+		"Requires a fresh Touch ID/passcode on every run, never the cached agent\n" +
+		"session, so a decrypted secret can never be read silently, even on an\n" +
+		"already-unlocked machine.",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeVaultPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		v, err := openVault()
+		// Fresh auth on every read, never the cached agent session: printing
+		// a decrypted secret always costs a fingerprint/passcode, locked or
+		// not, so an unlocked session can't be looped to exfiltrate secrets.
+		v, err := openVaultFreshAuth()
 		if err != nil {
 			return fmt.Errorf("jit vault get: %w", err)
 		}
@@ -384,8 +412,12 @@ var vaultListCmd = &cobra.Command{
 }
 
 var vaultRmCmd = &cobra.Command{
-	Use:               "rm <path>",
-	Short:             "Delete a secret",
+	Use:   "rm <path>",
+	Short: "Delete a secret",
+	Long: "Permanently deletes the secret at <path>. Beyond the [y/N] confirmation,\n" +
+		"a fresh Touch ID/passcode is required (never the cached agent session),\n" +
+		"so a process running as you can't delete a secret without a live human\n" +
+		"gesture even while the vault is unlocked.",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeVaultPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -394,7 +426,16 @@ var vaultRmCmd = &cobra.Command{
 			return nil
 		}
 
-		v, err := openVault()
+		// Fresh biometric gate, same idiom as restore/delete: Remove only
+		// deletes envelope files (never touches the KeyWrapper), so an
+		// explicit user-presence check is what forces a fingerprint/passcode
+		// here, whether the agent is locked or not. The [y/N] above is a
+		// footgun guard (bypassable with --force); this is the real gate.
+		if err := requireUserPresence(fmt.Sprintf("delete the secret %q from the vault", args[0])); err != nil {
+			return fmt.Errorf("jit vault rm: %w", err)
+		}
+
+		v, err := openVaultReadOnly()
 		if err != nil {
 			return fmt.Errorf("jit vault rm: %w", err)
 		}
@@ -612,7 +653,11 @@ var vaultImportCmd = &cobra.Command{
 			return fmt.Errorf("jit vault import: %w", err)
 		}
 
-		v, err := openVault()
+		// Fresh auth, never the cached session: Import re-wraps every secret
+		// under this device's master key, so a fingerprint/passcode is
+		// required (on top of the export passphrase above) whether the agent
+		// is locked or not.
+		v, err := openVaultFreshAuth()
 		if err != nil {
 			return fmt.Errorf("jit vault import: %w", err)
 		}
@@ -783,6 +828,12 @@ var vaultCleanCmd = &cobra.Command{
 			fmt.Fprintln(cmd.OutOrStdout(), "Aborted. Nothing was deleted.")
 			return nil
 		}
+		// Fresh biometric gate before mass deletion: the [y/N] above is a
+		// footgun guard (bypassable with --yes); this fingerprint/passcode is
+		// the real gate, required whether the agent is locked or not.
+		if err := requireUserPresence(fmt.Sprintf("delete all %d secret(s) from the vault", len(paths))); err != nil {
+			return fmt.Errorf("jit vault clean: %w", err)
+		}
 
 		for _, p := range paths {
 			if err := v.Remove(p); err != nil {
@@ -869,6 +920,11 @@ var vaultPruneCmd = &cobra.Command{
 			fmt.Fprintln(out, "Aborted. Nothing was deleted.")
 			return nil
 		}
+		// Fresh biometric gate before deleting backups (bypassable [y/N]
+		// above is only a footgun guard), required locked or not.
+		if err := requireUserPresence(fmt.Sprintf("delete %d stale backup(s) from the vault", len(stale))); err != nil {
+			return fmt.Errorf("jit vault prune: %w", err)
+		}
 
 		v, err := openVaultReadOnly()
 		if err != nil {
@@ -938,6 +994,13 @@ var vaultDeleteCmd = &cobra.Command{
 			"Permanently destroy the ENTIRE vault, %d secret(s), the undo backups, and the encryption key in the macOS keychain?%s [y/N] ", len(paths), noBackup)) {
 			fmt.Fprintln(cmd.OutOrStdout(), "Aborted. Nothing was deleted.")
 			return nil
+		}
+		// Fresh biometric gate before destroying the whole vault: the [y/N]
+		// above is bypassable with --yes, so this fingerprint/passcode is the
+		// real barrier against a same-user process wiping everything, and it
+		// is required whether the agent is locked or not.
+		if err := requireUserPresence("permanently destroy the entire vault and its encryption key"); err != nil {
+			return fmt.Errorf("jit vault delete: %w", err)
 		}
 
 		removed, err := vault.DeleteLocalState(root)

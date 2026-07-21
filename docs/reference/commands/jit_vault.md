@@ -5,9 +5,15 @@ Manage the local encrypted secret vault
 ### Synopsis
 
 jit vault stores each secret as its own encrypted file under jit's data
-directory, no monolithic database. Access is gated by a Touch ID/passcode
-prompt enforced by jit itself (a real prompt, though not yet an OS-enforced
-Keychain/Secure Enclave guarantee).
+directory, no monolithic database.
+
+Every command that reads, writes, or destroys a secret (get, set, rm,
+import, restore, clean, prune, delete, export) requires a fresh Touch
+ID/passcode on EACH invocation, whether or not the background agent's
+session is unlocked - these commands never ride the cached session, so a
+process running as you on an unlocked machine still can't read or destroy
+the vault without a live human gesture. Only `list` and `history` are
+prompt-free: they show secret names and version timestamps, never a value.
 
 ### SEE ALSO
 

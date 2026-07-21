@@ -245,8 +245,8 @@ func readLines(path string) ([]string, error) {
 
 // backupFile copies path to a sibling "<path>.jit-bak-<unix-timestamp>"
 // file before a caller rewrites path in place. Used only for files that
-// never held a secret — revealhook.go's .envrc/package.json edits — since a
-// plaintext copy is fine when there's nothing sensitive in it. Any file
+// never held a secret, since a plaintext copy is fine when there's nothing
+// sensitive in it. Any file
 // that DID hold a real secret before migration uses backupSecretFile
 // instead (GAPS.md #33): every category originally used this for its
 // own pre-rewrite backup too, including .env's own backup added for

@@ -1,6 +1,6 @@
 ---
 title: Live-mounted files
-description: Migrated .env files serve decoy values by default and real ones during a short revealed window.
+description: Migrated .env files serve decoy values by default and real ones only to a jit run grant's own process tree.
 ---
 
 # Live-mounted files
@@ -8,11 +8,13 @@ description: Migrated .env files serve decoy values by default and real ones dur
 A migrated `.env` is no longer a regular file: it's a named pipe the
 [agent](../agent/index.md) serves fresh content into on every read. One
 thing to know up front: **the mount serves fake-looking placeholder values
-by default, and real values only during a short revealed window.** A file
-that served real secrets to whatever opened it would defeat the point of
-moving them off disk.
+by default, and real values only to the process tree of a `jit run` grant
+you launch on purpose.** Unlocking the vault, `cd`-ing into a directory, or
+a `cat` never makes a mount serve real values. A file that served real
+secrets to whatever opened it would defeat the point of moving them off
+disk.
 
-## In practice you rarely think about this
+## Real values flow only through `jit run`
 
 - `jit run <command>` makes this run's mounted files compatible with the
   command reading them, for the run's lifetime only. By **default** it
@@ -28,6 +30,10 @@ moving them off disk.
   as `docker compose` with `env_file:` — jit run auto-detects the common
   ones. `jit agent status` shows whether each mount is swapped or granted,
   and for which run.
+- `jit run --with <name> <command>` grants a machine-global file-delivered
+  credential (`gcp`, `sops`, `npm`, `netrc`) to the run, behind a fresh
+  disclosed Touch ID that names the credential. See
+  [Global mount grants](../getting-started/delivering-secrets.md).
 - A project whose tools **always** read the file itself can pin live mode
   once instead of typing `--live` every time: put `read_as_file: true` in
   the project's `.jit/config.yaml`. Only set it when the project genuinely
@@ -35,25 +41,21 @@ moving them off disk.
   declaration, not a guess, because choosing live for a project whose
   scripts guard with `[ -f .env ]` would break those guards. See
   [Which command delivers a secret](../getting-started/delivering-secrets.md).
-- `jit migrate` wires an automatic reveal into your `.envrc` (direnv) or
-  `package.json` `dev`/`start` script, so `npm run dev` and friends just
-  work. The window also opens automatically for 60 seconds whenever the
-  agent unlocks or a migrate runs.
-- If a process reads `.env` outside a window (say, a dev server restarted
-  minutes later), reveal by hand: `jit agent reveal <path>`, with
-  `--for <duration>` for a longer window (up to 10 minutes). Revealing
-  fails loudly, instead of pretending to work, if a referenced secret is
-  missing from the vault; `jit doctor` shows what's missing.
-- Wondering whether a mount is revealed right now, or why your app saw
-  placeholders? `jit agent status` shows each mount's reveal countdown and
-  what the most recent reader was actually served, real or decoy, and by
+- If a tool reads `.env` off disk, run it **through** `jit run`. An
+  unwrapped `npm run dev` (no `jit run` prefix) reads the mount cold and
+  gets decoys — that's the point. There is no automatic reveal window and no
+  `jit agent reveal` command: the only thing that makes a mount serve real
+  values is a `jit run` grant you type.
+- Wondering why your app saw placeholders, or which run is currently granted
+  a mount? `jit agent status` shows each mount as decoy or grant-serving,
+  and what the most recent reader was actually served, real or decoy, and by
   which process.
 
 ## Peeking at a value
 
 Don't `cat` or open a live-mounted file to "just check what's in it".
-Outside the revealed window you'll see decoy values, not an error, and a
-named pipe can't support everything a regular file can (`stat` for size,
+Without an active `jit run` grant you'll see decoy values, not an error, and
+a named pipe can't support everything a regular file can (`stat` for size,
 `mmap`), so editors may behave oddly against it regardless. Instead:
 
 - **Where does a variable live?** Open the `.env.pointers` file next to the

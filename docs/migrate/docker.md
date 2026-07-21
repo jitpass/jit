@@ -81,8 +81,9 @@ plaintext; `docker logout <registry>` clears it).
   compose-only project can pin `read_as_file: true` in `.jit/config.yaml`.
 - **`secrets:` with a `file:` source**: compose mounts that file into the
   container at `/run/secrets/<name>`. Point the `file:` at a jit-managed
-  path (an [.env-style mount](./env-files.md) or any vaulted file) and
-  reveal before `up`; jit doesn't auto-migrate arbitrary compose files.
+  path (an [.env-style mount](./env-files.md) or any vaulted file) and run
+  `up` through `jit run --live`; jit doesn't auto-migrate arbitrary compose
+  files.
 
 Swarm's `docker secret create` is cluster-side state on managers, not a
 local plaintext file - out of jit's scope.

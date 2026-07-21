@@ -153,7 +153,7 @@ accepted Phase 1 boundary, stated plainly rather than hidden.
 
 ### Is the master key ever in memory?
 
-Yes, in the background agent for the session TTL (default 15 minutes), so you
+Yes, in the background agent for the session TTL (default 5 minutes), so you
 are not prompted per command. It is page-locked (kept out of swap) and wiped
 when the session locks. jit's own CLI process holds a secret only for the
 instant of a single command, then `execve` replaces its whole image.
