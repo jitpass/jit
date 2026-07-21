@@ -10,7 +10,7 @@ Under the hood this writes and loads a launchd LaunchAgent plist that
 runs `jit agent run`.
 
 --ttl controls how long a session stays unlocked after your last Touch ID
-prompt (default 15m, same meaning as `jit agent run --ttl`), baked into
+prompt (default 5m, same meaning as `jit agent run --ttl`), baked into
 the installed service so it applies from every future login, not just
 this one.
 
@@ -25,7 +25,7 @@ jit agent install [flags]
 ### Options
 
 ```
-      --ttl duration   how long an unlocked session stays cached before auto-locking, baked into the installed plist (default 15m0s)
+      --ttl duration   how long an unlocked session stays cached before auto-locking, baked into the installed plist (default 5m0s)
   -y, --yes            skip the confirmation prompt and install immediately
 ```
 

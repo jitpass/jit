@@ -41,19 +41,19 @@ func TestDecoyValuesEmptyInput(t *testing.T) {
 }
 
 // TestDecoyNoticeSelfDiagnoses: the notice must be a comment line (safe
-// in both dotenv and npmrc/ini content) naming the exact command — with
-// the mount's own path — that fixes the situation, so a failing dev
-// server explains itself the moment someone opens the file.
+// in both dotenv and npmrc/ini content) naming the command that makes a
+// mount serve real values — a `jit run` grant — so a failing dev server
+// explains itself the moment someone opens the file.
 func TestDecoyNoticeSelfDiagnoses(t *testing.T) {
-	notice := string(DecoyNotice("/Users/dev/proj/.env"))
+	notice := string(DecoyNotice())
 	if !strings.HasPrefix(notice, "# ") {
 		t.Errorf("DecoyNotice = %q, want a `# ` comment line, anything else risks breaking a dotenv/ini parser", notice)
 	}
 	if !strings.HasSuffix(notice, "\n") {
 		t.Errorf("DecoyNotice = %q, want a trailing newline so the first real line isn't glued to it", notice)
 	}
-	if !strings.Contains(notice, "jit agent reveal /Users/dev/proj/.env") {
-		t.Errorf("DecoyNotice = %q, want the exact fixing command including the mount's own path", notice)
+	if !strings.Contains(notice, "jit run") {
+		t.Errorf("DecoyNotice = %q, want the fixing command (a jit run grant)", notice)
 	}
 	if strings.Count(notice, "\n") != 1 {
 		t.Errorf("DecoyNotice = %q, want exactly one line", notice)

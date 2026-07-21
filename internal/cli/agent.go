@@ -42,11 +42,6 @@ var agentInstallTTL time.Duration
 // --yes/-y convention as migrate/vault rm/vault import, for scripting.
 var agentInstallYes bool
 
-// revealForDuration is jit agent reveal's --for flag, parsed once at command
-// registration and re-read on each run.
-var revealForDuration time.Duration
-var revealQuiet bool
-
 // agentStatusFormat is agentStatusCmd's --format flag (GAPS.md #22).
 var agentStatusFormat string
 
@@ -61,10 +56,11 @@ var agentCmd = &cobra.Command{
 		"`jit agent install` sets it up to start automatically every time you log\n" +
 		"in (and restart itself if it crashes). The helper process itself needs no\n" +
 		"Touch ID just to keep running, only your unlocked session inside it locks\n" +
-		"after --ttl of inactivity (default 15m), prompting again on next use.\n\n" +
-		"A live-mounted file shows fake-looking values until revealed, and real values\n" +
-		"only during a short window, opened automatically right after unlock/\n" +
-		"refresh, or explicitly via `jit agent reveal`.",
+		"after --ttl of inactivity (default 5m), prompting again on next use.\n\n" +
+		"A live-mounted file shows fake-looking values by default. Real values flow\n" +
+		"only to a `jit run` grant's own process tree: `jit run --live` for a project\n" +
+		"mount, `jit run --with` for a global credential. Unlocking the vault never\n" +
+		"makes a mount serve real values on its own.",
 }
 
 // agentRunCmd is what the installed LaunchAgent's plist actually executes.
@@ -118,10 +114,8 @@ var agentRunCmd = &cobra.Command{
 		server := agent.NewServer(agent.SocketPath(root), func() agent.MEKFetcher { return keychainwrap.New() }, agentTTL)
 		mounts := &mountManager{root: root, keyWrapper: server, stdout: stdout, stderr: stderr}
 		server.OnUnlock = mounts.start
-		server.OnUnlockForReveal = mounts.startForReveal
 		server.OnLock = mounts.stop
 		server.OnRefresh = mounts.start
-		server.OnReveal = mounts.revealMount
 		server.OnRevealPID = mounts.revealForPID
 		server.OnCanGrant = mounts.canGrantAll
 		server.OnStopMount = mounts.stopMount
@@ -237,7 +231,7 @@ var agentInstallCmd = &cobra.Command{
 		"Under the hood this writes and loads a launchd LaunchAgent plist that\n" +
 		"runs `jit agent run`.\n\n" +
 		"--ttl controls how long a session stays unlocked after your last Touch ID\n" +
-		"prompt (default 15m, same meaning as `jit agent run --ttl`), baked into\n" +
+		"prompt (default 5m, same meaning as `jit agent run --ttl`), baked into\n" +
 		"the installed service so it applies from every future login, not just\n" +
 		"this one.\n\n" +
 		"Safe to run again to change --ttl later: an already-installed instance is\n" +
@@ -432,51 +426,6 @@ var agentLockCmd = &cobra.Command{
 			return fmt.Errorf("jit agent lock: %w", notRunningHint(err))
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "Locked.")
-		return nil
-	},
-}
-
-var agentRevealCmd = &cobra.Command{
-	Use:   "reveal <mount-path>",
-	Short: "Temporarily show real secret values in a live-mounted file",
-	Long: "A live-mounted file (the kind jit migrate creates for .env/npmrc) shows\n" +
-		"fake-looking values by default and only its real ones while \"revealed\".\n" +
-		"Every unlock/refresh already reveals every mount for a short default\n" +
-		"window automatically; this command is for when that's not enough (a\n" +
-		"dev server that reads .env well after the window closed).\n" +
-		"Requires the agent to be unlocked, prompting Touch ID/passcode if it isn't.\n\n" +
-		"Meant to be embedded in a pre-run hook (jit migrate wires this up\n" +
-		"automatically for direnv/npm projects) as well as run by hand.",
-	Args:              cobra.ExactArgs(1),
-	ValidArgsFunction: completeMountPaths,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		// mounts.yaml stores absolute paths (DiscoverEnvFiles walks an
-		// absolute root), so a relative arg here — the common case, typed
-		// from inside the project directory — must be resolved the same
-		// way before being sent, or it silently matches nothing server-side
-		// (a real bug: OpReveal used to report success regardless).
-		mountPath, err := filepath.Abs(args[0])
-		if err != nil {
-			return fmt.Errorf("jit agent reveal: %w", err)
-		}
-		duration := revealForDuration
-		if duration <= 0 {
-			duration = 5 * time.Minute
-		}
-		if duration > revealMaxWindow {
-			duration = revealMaxWindow
-		}
-
-		c, err := agentClient()
-		if err != nil {
-			return fmt.Errorf("jit agent reveal: %w", err)
-		}
-		if err := c.Reveal(mountPath, duration); err != nil {
-			return fmt.Errorf("jit agent reveal: %w", notRunningHint(err))
-		}
-		if !revealQuiet {
-			fmt.Fprintf(cmd.OutOrStdout(), "Revealed %s for %s.\n", mountPath, duration.Round(time.Second))
-		}
 		return nil
 	},
 }
@@ -1041,22 +990,15 @@ func printMountStatuses(w io.Writer, mounts []agent.MountRevealStatus) {
 			}
 			continue
 		}
-		switch {
-		case m.Revealed:
-			fmt.Fprintf(w, "  • %s, revealed, %s left\n", path, time.Duration(m.RevealedForSeconds)*time.Second)
-		case m.RevealEndedUnix != 0:
-			// Reveal expiry is lazy — nothing fires when a window ends — so
-			// this line is the only place "the timer ended" is visible at
-			// all; without it the revealed line just silently disappeared,
-			// which read as "it never switched to hidden" (GAPS.md #48).
-			fmt.Fprintf(w, "  • %s, not revealed (window ended %s ago)\n", path, humanAgo(time.Since(time.Unix(m.RevealEndedUnix, 0))))
-		default:
-			fmt.Fprintf(w, "  • %s, not revealed\n", path)
+		// A mount serves decoys by default; real content flows only to a
+		// run-scoped grant's own process tree (jit run --live / --with), each
+		// listed below. There is no reveal window.
+		if len(m.Grants) > 0 {
+			fmt.Fprintf(w, "  • %s, serving real values to %d active grant(s), decoy to everything else\n", path, len(m.Grants))
+		} else {
+			fmt.Fprintf(w, "  • %s, decoy (real values only inside a jit run --live/--with grant)\n", path)
 		}
 		for _, g := range m.Grants {
-			// A live run-scoped grant is the narrow counterpart of the
-			// revealed line above it: real values, but only to one run's
-			// process tree, only while that run lives.
 			cmd := g.Command
 			if cmd == "" {
 				cmd = "unknown command"
@@ -1068,7 +1010,7 @@ func printMountStatuses(w io.Writer, mounts []agent.MountRevealStatus) {
 			ago := humanAgo(time.Since(time.Unix(ls.UnixTime, 0)))
 			switch {
 			case ls.Decoy:
-				_, _ = color.New(color.FgYellow).Fprintf(w, "      read %s ago by %s: decoy values, if that was your app, reveal and retry: jit agent reveal %s\n", ago, reader, path)
+				_, _ = color.New(color.FgYellow).Fprintf(w, "      read %s ago by %s: decoy values, if that was your app, run it through: jit run --live -- <command>\n", ago, reader)
 			case ls.GrantServed:
 				fmt.Fprintf(w, "      read %s ago by %s: real values (run-scoped grant)\n", ago, reader)
 			default:
@@ -1414,15 +1356,13 @@ const agentPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 `
 
 func init() {
-	agentRunCmd.Flags().DurationVar(&agentTTL, "ttl", 15*time.Minute, "how long an unlocked session stays cached before auto-locking")
-	agentInstallCmd.Flags().DurationVar(&agentInstallTTL, "ttl", 15*time.Minute, "how long an unlocked session stays cached before auto-locking, baked into the installed plist")
+	agentRunCmd.Flags().DurationVar(&agentTTL, "ttl", 5*time.Minute, "how long an unlocked session stays cached before auto-locking")
+	agentInstallCmd.Flags().DurationVar(&agentInstallTTL, "ttl", 5*time.Minute, "how long an unlocked session stays cached before auto-locking, baked into the installed plist")
 	agentInstallCmd.Flags().BoolVarP(&agentInstallYes, "yes", "y", false, "skip the confirmation prompt and install immediately")
-	agentRevealCmd.Flags().DurationVar(&revealForDuration, "for", 5*time.Minute, "how long to serve real content (clamped to 10m)")
-	agentRevealCmd.Flags().BoolVarP(&revealQuiet, "quiet", "q", false, "suppress the success message, for embedding in a pre-run hook")
 	agentStatusCmd.Flags().StringVar(&agentStatusFormat, "format", "text", `output format: "text" (default) or "json"`)
 	agentHistoryCmd.Flags().StringVar(&agentHistoryFormat, "format", "text", `output format: "text" (default) or "json"`)
 	agentLogCmd.Flags().IntVarP(&agentLogLines, "lines", "n", 50, "how many trailing lines to print")
 	agentLogCmd.Flags().BoolVarP(&agentLogFollow, "follow", "f", false, "keep printing new lines as the agent writes them (Ctrl-C to stop)")
-	agentCmd.AddCommand(agentRunCmd, agentInstallCmd, agentUninstallCmd, agentRestartCmd, agentUnlockCmd, agentLockCmd, agentStatusCmd, agentHistoryCmd, agentLogCmd, agentRevealCmd)
+	agentCmd.AddCommand(agentRunCmd, agentInstallCmd, agentUninstallCmd, agentRestartCmd, agentUnlockCmd, agentLockCmd, agentStatusCmd, agentHistoryCmd, agentLogCmd)
 	rootCmd.AddCommand(agentCmd)
 }

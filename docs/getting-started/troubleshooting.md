@@ -8,10 +8,10 @@ description: Placeholder values, hanging reads, surprise Touch ID prompts, and s
 - **Your app got placeholder values.** Under `jit run` this is handled for
   you (the mount is swapped for a compatible file, and the real values are in
   the environment), so this usually means the app read the mount *outside*
-  `jit run` and outside a reveal window. Run it with `jit run`, or
-  `jit agent reveal <path>` then restart the app. `jit agent status` shows
-  what the last reader was served. Background:
-  [Live-mounted files](../run/mounts.md).
+  `jit run`. Launch it through `jit run` (or `jit run --live` if the tool
+  reads the `.env` file itself) — that's the only thing that makes a mount
+  serve real values. `jit agent status` shows what the last reader was
+  served. Background: [Live-mounted files](../run/mounts.md).
 - **A script says `.env` is missing, or a tool ignores it.** A migrated
   `.env` is a named pipe, not a regular file, so a `[ -f .env ]` /
   `Path.is_file()` guard outside `jit run` sees "not a regular file." Run the

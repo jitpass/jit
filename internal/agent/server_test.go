@@ -470,76 +470,6 @@ func TestServerRefreshCallsOnRefreshAndEnsuresUnlocked(t *testing.T) {
 		t.Error("expected Refresh to have ensured the session is unlocked (it needs to read the vault), got locked")
 	}
 }
-
-func TestServerRevealCallsOnRevealWithMountPathAndDurationAndEnsuresUnlocked(t *testing.T) {
-	socketPath := shortSocketPath(t)
-	newFetcher := func() MEKFetcher { return &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32)} }
-	s := NewServer(socketPath, newFetcher, time.Minute)
-
-	var gotPath string
-	var gotDuration time.Duration
-	var revealCalls int32
-	s.OnReveal = func(mountPath string, requested time.Duration) error {
-		gotPath = mountPath
-		gotDuration = requested
-		atomic.AddInt32(&revealCalls, 1)
-		return nil
-	}
-
-	if err := s.Listen(); err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { _ = s.Serve(ctx); close(done) }()
-	defer func() { cancel(); _ = s.Close(); <-done }()
-
-	c := NewClient(socketPath)
-	if err := c.Reveal("/tmp/fixture/.env", 90*time.Second); err != nil {
-		t.Fatalf("Reveal: %v", err)
-	}
-	if got := atomic.LoadInt32(&revealCalls); got != 1 {
-		t.Fatalf("OnReveal called %d times, want 1", got)
-	}
-	if gotPath != "/tmp/fixture/.env" {
-		t.Errorf("OnReveal mountPath = %q, want /tmp/fixture/.env", gotPath)
-	}
-	if gotDuration != 90*time.Second {
-		t.Errorf("OnReveal duration = %v, want 90s", gotDuration)
-	}
-
-	st, err := c.Status()
-	if err != nil {
-		t.Fatalf("Status: %v", err)
-	}
-	if !st.Unlocked {
-		t.Error("expected Reveal to have ensured the session is unlocked, got locked")
-	}
-}
-
-func TestServerRevealRejectsMissingMountPath(t *testing.T) {
-	socketPath := shortSocketPath(t)
-	newFetcher := func() MEKFetcher { return &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32)} }
-	s := NewServer(socketPath, newFetcher, time.Minute)
-	s.OnReveal = func(string, time.Duration) error {
-		t.Error("OnReveal must not fire for a request with no mount_path")
-		return nil
-	}
-
-	if err := s.Listen(); err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { _ = s.Serve(ctx); close(done) }()
-	defer func() { cancel(); _ = s.Close(); <-done }()
-
-	c := NewClient(socketPath)
-	if err := c.Reveal("", time.Minute); err == nil {
-		t.Error("expected an error for a missing mount path, got nil")
-	}
-}
-
 func TestServerRevealPIDCallsOnRevealPIDAndEnsuresUnlocked(t *testing.T) {
 	socketPath := shortSocketPath(t)
 	newFetcher := func() MEKFetcher { return &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32)} }
@@ -798,33 +728,6 @@ func TestServerRevealPIDReturnsErrorFromCallback(t *testing.T) {
 		t.Error("expected an error when OnRevealPID reports failure, got nil")
 	}
 }
-
-// TestServerRevealReturnsErrorWhenOnRevealReportsNotFound locks in a real,
-// reported bug: OpReveal used to return Response{OK: true} unconditionally,
-// so a mount-path mismatch (the CLI forwarding an unresolved relative path
-// that never matched the registry's absolute keys) silently reported
-// success while revealing nothing. OnReveal's error return must now surface as
-// the RPC's own failure, message included.
-func TestServerRevealReturnsErrorWhenOnRevealReportsNotFound(t *testing.T) {
-	socketPath := shortSocketPath(t)
-	newFetcher := func() MEKFetcher { return &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32)} }
-	s := NewServer(socketPath, newFetcher, time.Minute)
-	s.OnReveal = func(string, time.Duration) error { return fmt.Errorf("no such mount") }
-
-	if err := s.Listen(); err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { _ = s.Serve(ctx); close(done) }()
-	defer func() { cancel(); _ = s.Close(); <-done }()
-
-	c := NewClient(socketPath)
-	if err := c.Reveal("/tmp/fixture/never-served.env", time.Minute); err == nil {
-		t.Error("expected an error when OnReveal reports the mount wasn't found, got nil")
-	}
-}
-
 func TestServerStatusWhenNeverUnlocked(t *testing.T) {
 	_, socketPath, cleanup := startTestServer(t, time.Minute, nil)
 	defer cleanup()
@@ -1025,63 +928,6 @@ func TestServerRejectsMalformedRequest(t *testing.T) {
 	}
 	if resp.OK {
 		t.Error("expected OK=false for a malformed request")
-	}
-}
-
-// TestServerRevealFreshChallengeFiresOnUnlockForRevealNotOnUnlock locks in the
-// OpReveal-scoped unlock contract: when a LOCKED agent receives a reveal
-// request, the resulting fresh challenge must fire OnUnlockForReveal INSTEAD
-// of OnUnlock (so an explicit single-file reveal never inherits the blanket
-// floor-reveal a plain unlock grants every mount), firing before OnReveal; and
-// with OnUnlockForReveal unset, the same path must fall back to OnUnlock so
-// a Server without the scoped hook behaves exactly as before.
-func TestServerRevealFreshChallengeFiresOnUnlockForRevealNotOnUnlock(t *testing.T) {
-	socketPath := shortSocketPath(t)
-	newFetcher := func() MEKFetcher { return &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32)} }
-	s := NewServer(socketPath, newFetcher, time.Minute)
-
-	var calls []string
-	s.OnUnlock = func() { calls = append(calls, "unlock") }
-	s.OnUnlockForReveal = func() { calls = append(calls, "unlock-for-reveal") }
-	s.OnReveal = func(string, time.Duration) error { calls = append(calls, "reveal"); return nil }
-
-	if err := s.Listen(); err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { _ = s.Serve(ctx); close(done) }()
-	defer func() { cancel(); _ = s.Close(); <-done }()
-
-	c := NewClient(socketPath)
-	if err := c.Reveal("/tmp/fixture/.env", time.Minute); err != nil {
-		t.Fatalf("Reveal: %v", err)
-	}
-	want := []string{"unlock-for-reveal", "reveal"}
-	if len(calls) != len(want) || calls[0] != want[0] || calls[1] != want[1] {
-		t.Errorf("hook sequence = %v, want %v, OnUnlock must NOT fire for a reveal-driven fresh challenge when OnUnlockForReveal is set", calls, want)
-	}
-
-	// Fallback: without the scoped hook, the reveal-driven challenge uses
-	// OnUnlock, unchanged from the pre-OnUnlockForReveal contract.
-	s2 := NewServer(shortSocketPath(t), newFetcher, time.Minute)
-	var fallbackCalls []string
-	s2.OnUnlock = func() { fallbackCalls = append(fallbackCalls, "unlock") }
-	s2.OnReveal = func(string, time.Duration) error { fallbackCalls = append(fallbackCalls, "reveal"); return nil }
-	if err := s2.Listen(); err != nil {
-		t.Fatalf("Listen (fallback): %v", err)
-	}
-	ctx2, cancel2 := context.WithCancel(context.Background())
-	done2 := make(chan struct{})
-	go func() { _ = s2.Serve(ctx2); close(done2) }()
-	defer func() { cancel2(); _ = s2.Close(); <-done2 }()
-
-	c2 := NewClient(s2.socketPath)
-	if err := c2.Reveal("/tmp/fixture/.env", time.Minute); err != nil {
-		t.Fatalf("Reveal (fallback): %v", err)
-	}
-	if len(fallbackCalls) != 2 || fallbackCalls[0] != "unlock" || fallbackCalls[1] != "reveal" {
-		t.Errorf("fallback hook sequence = %v, want [unlock reveal]", fallbackCalls)
 	}
 }
 

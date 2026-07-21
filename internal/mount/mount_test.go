@@ -509,12 +509,12 @@ func TestServeStopsCleanlyWithNoReaders(t *testing.T) {
 	}
 }
 
-// TestServeGatesRealContentBehindRevealState locks in the actual GAPS.md #2
-// fix: an hidden mount must serve DecoyValues, not the real profile
-// values, and only serve real content during a revealed window — with
-// nothing in Serve itself deciding that (it just calls provideContent
-// fresh every cycle).
-func TestServeGatesRealContentBehindRevealState(t *testing.T) {
+// TestServeGatesRealContentFreshEachCycle locks in the contract the
+// decoy-by-default gate rests on: Serve itself decides nothing about
+// decoy-vs-real — it calls provideContent fresh on every reader cycle, so a
+// gate entirely outside Serve (in the real code, a run-scoped grant) controls
+// what each read gets. Here a plain boolean stands in for that external gate.
+func TestServeGatesRealContentFreshEachCycle(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")
 	if err := CreateFIFO(path); err != nil {
@@ -523,12 +523,20 @@ func TestServeGatesRealContentBehindRevealState(t *testing.T) {
 
 	real := map[string]string{"API_KEY": "sk_live_real"}
 	decoy := DecoyValues(real)
-	reveal := NewRevealState()
+	var mu sync.Mutex
+	authorized := false
 	provideContent := func() []byte {
-		if reveal.IsRevealed() {
+		mu.Lock()
+		defer mu.Unlock()
+		if authorized {
 			return FormatDotenv(real, nil)
 		}
 		return FormatDotenv(decoy, nil)
+	}
+	setAuthorized := func(v bool) {
+		mu.Lock()
+		authorized = v
+		mu.Unlock()
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -536,25 +544,25 @@ func TestServeGatesRealContentBehindRevealState(t *testing.T) {
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- Serve(ctx, path, provideContent, nil, nil, nil) }()
 
-	// Hidden: must get decoy content, never the real value.
+	// Unauthorized: must get decoy content, never the real value.
 	got := readFIFO(t, path)
 	if string(got) != string(FormatDotenv(decoy, nil)) {
-		t.Errorf("hidden reader got %q, want decoy %q", got, FormatDotenv(decoy, nil))
+		t.Errorf("unauthorized reader got %q, want decoy %q", got, FormatDotenv(decoy, nil))
 	}
 
-	// Revealed: must get real content.
-	reveal.Reveal(time.Second)
+	// Authorized: must get real content.
+	setAuthorized(true)
 	got = readFIFO(t, path)
 	if string(got) != string(FormatDotenv(real, nil)) {
-		t.Errorf("revealed reader got %q, want real %q", got, FormatDotenv(real, nil))
+		t.Errorf("authorized reader got %q, want real %q", got, FormatDotenv(real, nil))
 	}
 
-	// Window naturally expires: back to decoy without any code re-checking
-	// anything other than IsRevealed on the next cycle.
-	reveal.Hide()
+	// Deauthorized: back to decoy, with nothing in Serve re-checking
+	// anything other than provideContent on the next cycle.
+	setAuthorized(false)
 	got = readFIFO(t, path)
 	if string(got) != string(FormatDotenv(decoy, nil)) {
-		t.Errorf("reader after hide got %q, want decoy %q", got, FormatDotenv(decoy, nil))
+		t.Errorf("reader after deauthorize got %q, want decoy %q", got, FormatDotenv(decoy, nil))
 	}
 
 	cancel()

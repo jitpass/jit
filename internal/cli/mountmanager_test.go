@@ -38,8 +38,8 @@ import (
 // that actually completes.
 
 // serveNoGrant runs the unified content decision (serveContent) with no
-// grant runs active — the fast path, behaviorally identical to the old
-// sm.provideContent: decoy unless the reveal window is open.
+// grant runs active — the fast path: always decoy, since real content flows
+// only to a run-scoped grant's own process tree.
 func serveNoGrant(sm *servedMount) []byte {
 	m := &mountManager{stdout: io.Discard, stderr: io.Discard}
 	return m.serveContent("/tmp/fixture/.env", sm)
@@ -103,103 +103,34 @@ func TestEnsureServingConcurrentCallsClaimSlotOnce(t *testing.T) {
 func newTestServedMount() *servedMount {
 	done := make(chan struct{})
 	close(done)
-	// real content is pre-resolved: revealMount refuses a mount with nothing
-	// real to serve (GAPS.md #46), and these tests exercise the reveal
-	// mechanics, not that refusal — TestRevealMountRefusedWithNothingRealToServe
-	// covers it.
-	return &servedMount{reveal: mount.NewRevealState(), cancel: func() {}, done: done, real: []byte("API_KEY=real\n")}
+	// real content is pre-resolved (armed in memory); it serves only to a
+	// run-scoped grant's process tree, decoy to everyone else.
+	return &servedMount{cancel: func() {}, done: done, real: []byte("API_KEY=real\n")}
 }
-
-func TestRevealMountClampsToMaxWindow(t *testing.T) {
-	sm := newTestServedMount()
-	m := &mountManager{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, served: map[string]*servedMount{"/tmp/fixture/.env": sm}}
-
-	if err := m.revealMount("/tmp/fixture/.env", 24*time.Hour); err != nil {
-		t.Fatalf("revealMount: %v", err)
-	}
-	if !sm.reveal.IsRevealed() {
-		t.Fatal("expected revealed immediately after revealMount")
-	}
-	// Can't directly observe the clamped expiry without exposing internal
-	// state, so assert the documented ceiling indirectly: revealMaxWindow
-	// itself must be a small, bounded value, not something that could be
-	// mistaken for "effectively forever." This is a guard against silently
-	// widening the constant later without reconsidering GAPS.md #2's whole
-	// premise (bounding exposure, not eliminating identification).
-	if revealMaxWindow > 30*time.Minute {
-		t.Errorf("revealMaxWindow = %v, suspiciously large for a decoy-by-default gate's ceiling", revealMaxWindow)
-	}
-}
-
-func TestRevealMountZeroDurationUsesDefaultWindow(t *testing.T) {
-	sm := newTestServedMount()
-	m := &mountManager{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, served: map[string]*servedMount{"/tmp/fixture/.env": sm}}
-
-	if err := m.revealMount("/tmp/fixture/.env", 0); err != nil {
-		t.Fatalf("revealMount: %v", err)
-	}
-	if !sm.reveal.IsRevealed() {
-		t.Error("revealMount(path, 0) should fall back to revealDefaultWindow, not leave the mount hidden")
-	}
-}
-
-// TestRevealMountRefusedWithNothingRealToServe is GAPS.md #46's unit-level
-// half (the e2e half is TestRevealRefusedWhenNothingRealToServe): revealing a
-// mount whose real content never resolved must fail — with the recorded
-// resolve error included — and must leave the mount hidden, instead of
-// granting a countdown on a mount that can only ever serve decoys.
-func TestRevealMountRefusedWithNothingRealToServe(t *testing.T) {
-	sm := newTestServedMount()
-	sm.real = nil
-	sm.lastResolveErr = "resolving API_KEY (fixture/MISSING): secret not found"
-	m := &mountManager{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, served: map[string]*servedMount{"/tmp/fixture/.env": sm}}
-
-	err := m.revealMount("/tmp/fixture/.env", time.Minute)
-	if err == nil {
-		t.Fatal("revealMount succeeded on a mount with no real content, the reveal would be a silent no-op serving decoys")
-	}
-	if !strings.Contains(err.Error(), "secret not found") {
-		t.Errorf("revealMount error = %q, want the recorded resolve error included", err)
-	}
-	if sm.reveal.IsRevealed() {
-		t.Error("a refused reveal must leave the mount hidden")
-	}
-}
-
-// TestRevealMountUnservedPathIsANoOp confirms revealing a path that isn't
-// currently served logs and returns rather than panicking or silently
-// creating orphaned state — a real behavior change from the old
-// revealStateFor, which lazily created a RevealState for ANY path. Revealing now
-// only makes sense once a mount is actually being served (ensureServing
-// creates the RevealState alongside the Serve goroutine, GAPS.md #35); in
-// real usage `jit migrate`'s own Refresh call (or the agent's own
-// startup startDecoyOnly) always runs first, so this path is only ever
-// hit by a stale/mistyped mount_path.
-func TestRevealMountUnservedPathIsANoOp(t *testing.T) {
-	m := &mountManager{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
-	m.revealMount("/tmp/fixture/never-served.env", time.Minute) // must not panic
-}
-
-func TestMountManagerStopClearsRevealAndRealContentWithoutCancelling(t *testing.T) {
+func TestMountManagerStopClearsRealContentWithoutCancelling(t *testing.T) {
 	cancelled := false
-	sm := &servedMount{reveal: mount.NewRevealState(), decoy: []byte("decoy"), real: []byte("real"), cancel: func() { cancelled = true }}
-	sm.reveal.Reveal(time.Minute)
+	sm := &servedMount{decoy: []byte("decoy"), real: []byte("real"), cancel: func() { cancelled = true }}
 	m := &mountManager{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, served: map[string]*servedMount{"/tmp/fixture/.env": sm}}
 
-	if got := serveNoGrant(sm); string(got) != "real" {
-		t.Fatalf("setup: provideContent = %q, want real content while revealed", got)
+	// A mount serves decoys with no grant active, whether or not real content
+	// is armed — real flows only to a run-scoped grant's process tree.
+	if got := serveNoGrant(sm); string(got) != "decoy" {
+		t.Fatalf("setup: serveNoGrant = %q, want decoy with no grant active", got)
 	}
 
 	m.stop()
 
 	if cancelled {
-		t.Error("stop() must not cancel a mount's Serve goroutine (GAPS.md #35), only clear real content and hide")
+		t.Error("stop() must not cancel a mount's Serve goroutine (GAPS.md #35), only forget real content")
 	}
-	if sm.reveal.IsRevealed() {
-		t.Error("expected hidden after stop, locking must not leave a mount revealed")
+	sm.mu.Lock()
+	real := sm.real
+	sm.mu.Unlock()
+	if real != nil {
+		t.Error("expected real content forgotten after stop, so a later grant can't serve stale plaintext")
 	}
 	if got := serveNoGrant(sm); string(got) != "decoy" {
-		t.Errorf("provideContent after stop = %q, want decoy, real content must be forgotten", got)
+		t.Errorf("serveNoGrant after stop = %q, want decoy", got)
 	}
 }
 
@@ -231,139 +162,6 @@ func TestMountManagerStopMountCancelsOnlyThatMount(t *testing.T) {
 	}
 	if _, ok := m.served["/tmp/fixture/b.env"]; !ok {
 		t.Error("expected b.env to remain in the served map")
-	}
-}
-
-// TestResolveRealRevealFloorNeverShortensLongerWindow is GAPS.md #38's
-// regression test for a real, reported bug: an explicit `jit agent reveal
-// --for 5m` got silently cut down to the 60s revealDefaultWindow the moment
-// ANY later OnUnlock/OnRefresh fired (an unrelated command's fresh Touch
-// ID challenge, or another jit migrate run's own Refresh call) —
-// resolveReal used to call sm.reveal.Reveal(revealDefaultWindow) unconditionally,
-// and RevealState.Reveal always sets the expiry to exactly that duration from
-// now, shortening a deliberately-longer window right along with
-// extending a shorter one. The profile path here deliberately doesn't
-// exist, so resolution fails (logged, skipped) — which must leave the
-// existing window exactly as it was, doubly so now that a failed resolve
-// grants no window at all (GAPS.md #46).
-func TestResolveRealRevealFloorNeverShortensLongerWindow(t *testing.T) {
-	sm := newTestServedMount()
-	sm.reveal.Reveal(5 * time.Minute)
-	m := &mountManager{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, served: map[string]*servedMount{
-		"/tmp/fixture/.env": sm,
-	}}
-
-	m.resolveReal([]mount.Entry{{MountPath: "/tmp/fixture/.env", ProfilePath: "/tmp/fixture/profile.yaml"}}, nil, true)
-
-	if remaining := sm.reveal.Remaining(); remaining < 4*time.Minute {
-		t.Errorf("Remaining() after resolveReal = %v, want close to the original 5m window, not shortened to revealDefaultWindow (%v)", remaining, revealDefaultWindow)
-	}
-}
-
-// TestResolveRealRevealFloorExtendsShorterWindow confirms the other half:
-// after a SUCCESSFUL resolve, the ergonomic default window still applies
-// as a FLOOR — a hidden or short-revealed mount gets bumped up to
-// revealDefaultWindow, exactly the original GAPS.md #2 ergonomics the
-// floor-not-reset fix must not break.
-func TestResolveRealRevealFloorExtendsShorterWindow(t *testing.T) {
-	root := t.TempDir()
-	kw := newFakeKeyWrapper()
-	v := &vault.Vault{Root: root, KeyWrapper: kw, RecipientID: "test-device"}
-	if err := v.Set("fixture/API_KEY", []byte("real-value")); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	profilePath := filepath.Join(root, "profile.yaml")
-	if err := os.WriteFile(profilePath, []byte("API_KEY: fixture/API_KEY\n"), 0o600); err != nil {
-		t.Fatalf("writing fixture profile: %v", err)
-	}
-
-	sm := newTestServedMount()
-	// Starts hidden (Remaining() == 0) — newTestServedMount never reveals.
-	m := &mountManager{root: root, stdout: io.Discard, stderr: &bytes.Buffer{}, served: map[string]*servedMount{
-		"/tmp/fixture/.env": sm,
-	}}
-
-	m.resolveReal([]mount.Entry{{MountPath: "/tmp/fixture/.env", ProfilePath: profilePath}}, v, true)
-
-	remaining := sm.reveal.Remaining()
-	if remaining <= 0 || remaining > revealDefaultWindow {
-		t.Errorf("Remaining() after a successful resolveReal on a hidden mount = %v, want a positive value up to revealDefaultWindow (%v)", remaining, revealDefaultWindow)
-	}
-}
-
-// TestResolveRealScopedRevealResolvesButFloorRevealsNothing is the regression
-// test for a reveal-driven unlock (OnUnlockForReveal → startForReveal →
-// resolveReal with floorReveal=false): running `jit agent reveal <one-file>`
-// while the agent is LOCKED triggers a fresh challenge, and that unlock
-// used to blanket floor-reveal every OTHER mount for the 60s default window
-// too — a real, reported "I revealed one file and four got revealed" confusion.
-// With floorReveal=false, resolveReal must still resolve every mount's real
-// content (so the explicit reveal that follows can't be refused for "nothing
-// real resolved") while revealing NONE of them — revealMount reveals the single
-// named path afterward.
-func TestResolveRealScopedRevealResolvesButFloorRevealsNothing(t *testing.T) {
-	root := t.TempDir()
-	kw := newFakeKeyWrapper()
-	v := &vault.Vault{Root: root, KeyWrapper: kw, RecipientID: "test-device"}
-	if err := v.Set("fixture/API_KEY", []byte("real-value")); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	profilePath := filepath.Join(root, "profile.yaml")
-	if err := os.WriteFile(profilePath, []byte("API_KEY: fixture/API_KEY\n"), 0o600); err != nil {
-		t.Fatalf("writing fixture profile: %v", err)
-	}
-
-	// Two hidden mounts sharing the same resolvable profile — the "other"
-	// mounts the blanket reveal used to light up.
-	smA := newTestServedMount()
-	smB := newTestServedMount()
-	m := &mountManager{root: root, stdout: io.Discard, stderr: &bytes.Buffer{}, served: map[string]*servedMount{
-		"/tmp/fixture/a/.env": smA,
-		"/tmp/fixture/b/.env": smB,
-	}}
-	entries := []mount.Entry{
-		{MountPath: "/tmp/fixture/a/.env", ProfilePath: profilePath},
-		{MountPath: "/tmp/fixture/b/.env", ProfilePath: profilePath},
-	}
-
-	m.resolveReal(entries, v, false)
-
-	for name, sm := range map[string]*servedMount{"a": smA, "b": smB} {
-		sm.mu.Lock()
-		hasReal := sm.real != nil
-		sm.mu.Unlock()
-		if !hasReal {
-			t.Errorf("mount %s: real content not resolved, revealMount would then refuse the explicit reveal for 'nothing real resolved'", name)
-		}
-		if sm.reveal.IsRevealed() {
-			t.Errorf("mount %s: floor-revealed by a reveal-driven unlock, that's exactly the blanket reveal the scoped path removes", name)
-		}
-	}
-}
-
-// TestResolveRealGrantsNoWindowOnFailedResolve is the flip side (GAPS.md
-// #46): a mount whose resolution failed has nothing real to serve, so the
-// unlock/refresh auto-reveal must NOT put it in an "revealed" state — that
-// would show a live countdown in status while every read keeps getting
-// decoys, the same dishonesty revealMount now refuses.
-func TestResolveRealGrantsNoWindowOnFailedResolve(t *testing.T) {
-	sm := newTestServedMount()
-	sm.real = nil // nothing resolved yet
-	m := &mountManager{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, served: map[string]*servedMount{
-		"/tmp/fixture/.env": sm,
-	}}
-
-	// Nonexistent profile path — resolution fails and is logged.
-	m.resolveReal([]mount.Entry{{MountPath: "/tmp/fixture/.env", ProfilePath: "/tmp/fixture/nope.yaml"}}, nil, true)
-
-	if sm.reveal.IsRevealed() {
-		t.Error("resolveReal revealed a mount whose resolution failed, status would report a revealed countdown on a decoy-only mount")
-	}
-	sm.mu.Lock()
-	resolveErr := sm.lastResolveErr
-	sm.mu.Unlock()
-	if resolveErr == "" {
-		t.Error("expected the resolve failure recorded in lastResolveErr for revealMount's refusal message")
 	}
 }
 
@@ -436,25 +234,10 @@ func TestProvideContentRecordsLastServe(t *testing.T) {
 	if ls.reader.identified {
 		t.Errorf("lastServe.reader = %+v, want unidentified (no onReaderConnected ran)", ls.reader)
 	}
-
-	sm.setRealIfGen([]byte("real"), sm.captureGen())
-	sm.reveal.Reveal(time.Minute)
-	sm.mu.Lock()
-	sm.pendingReader = readerIdentity{pid: 4823, execPath: "/usr/local/bin/node", identified: true}
-	sm.mu.Unlock()
-
-	if got := serveNoGrant(sm); string(got) != "real" {
-		t.Fatalf("provideContent = %q, want real while revealed and resolved", got)
-	}
-	sm.mu.Lock()
-	ls = sm.lastServe
-	sm.mu.Unlock()
-	if ls == nil || ls.decoy {
-		t.Fatalf("lastServe after a real read = %+v, want recorded with decoy=false", ls)
-	}
-	if !ls.reader.identified || ls.reader.pid != 4823 || ls.reader.execPath != "/usr/local/bin/node" {
-		t.Errorf("lastServe.reader = %+v, want the pending reader identity carried through", ls.reader)
-	}
+	// The real-content, reader-identity-carried-through path only happens
+	// under a run-scoped grant now (there is no reveal window), so it's
+	// exercised by the grant e2e tests (rungrant_e2e_test.go) rather than
+	// here, where no grant machinery is wired.
 }
 
 // TestMountRevealStatusesIncludesLastServe confirms the serve record crosses
@@ -494,31 +277,31 @@ func TestMountRevealStatusesIncludesLastServe(t *testing.T) {
 }
 
 // TestPrintMountStatusesShowsLastServe pins the user-facing copy: one
-// sorted bullet per mount with its reveal state, the most recent read (kind
-// of values, reader, relative time) indented under it, the fixing command
-// inline on a decoy read — and every registered mount present, including
-// a never-read, never-revealed one (the section's shape stays stable; only
-// the states change between runs).
+// sorted bullet per mount showing whether it's grant-serving real values or
+// decoy, the most recent read (kind of values, reader, relative time)
+// indented under it, the fixing command inline on a decoy read — and every
+// registered mount present, including a never-read, never-granted one (the
+// section's shape stays stable; only the states change between runs).
 func TestPrintMountStatusesShowsLastServe(t *testing.T) {
 	var buf bytes.Buffer
 	printMountStatuses(&buf, []agent.MountRevealStatus{
 		{Path: "/p/decoy.env", LastServe: &agent.MountServeEvent{
 			UnixTime: time.Now().Add(-2 * time.Minute).Unix(), Decoy: true, ReaderPID: 4823, ReaderPath: "/usr/local/bin/node",
 		}},
-		{Path: "/p/real.env", Revealed: true, RevealedForSeconds: 90, LastServe: &agent.MountServeEvent{
-			UnixTime: time.Now().Add(-30 * time.Second).Unix(), Decoy: false,
+		{Path: "/p/real.env", Grants: []agent.MountGrantStatus{{PID: 111, Command: "docker compose up", SinceUnix: time.Now().Add(-time.Minute).Unix()}}, LastServe: &agent.MountServeEvent{
+			UnixTime: time.Now().Add(-30 * time.Second).Unix(), Decoy: false, GrantServed: true,
 		}},
 		{Path: "/p/quiet.env"},
 	})
 	out := buf.String()
 
 	for _, want := range []string{
-		"• /p/decoy.env, not revealed",
+		"• /p/decoy.env, decoy",
 		"read 2m ago by node (pid 4823): decoy values",
-		"jit agent reveal /p/decoy.env",
-		"• /p/real.env, revealed, 1m30s left",
-		"read 30s ago by an unidentified process: real values",
-		"• /p/quiet.env, not revealed",
+		"jit run --live",
+		"• /p/real.env, serving real values to 1 active grant(s)",
+		"read 30s ago by an unidentified process: real values (run-scoped grant)",
+		"• /p/quiet.env, decoy",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected output to contain %q, got:\n%s", want, out)
@@ -563,8 +346,8 @@ func TestEnsureServingDecoyCarriesNotice(t *testing.T) {
 	if !strings.HasPrefix(decoy, "# jit:") {
 		t.Errorf("decoy content = %q, want it to OPEN with the self-diagnosing notice", decoy)
 	}
-	if !strings.Contains(decoy, "jit agent reveal "+mountPath) {
-		t.Errorf("decoy content = %q, want the reveal command with this mount's own path", decoy)
+	if !strings.Contains(decoy, "jit run") {
+		t.Errorf("decoy content = %q, want the self-diagnosing notice naming a jit run grant", decoy)
 	}
 }
 
@@ -599,7 +382,7 @@ func TestResolveRealReResolvesUpdatedSecret(t *testing.T) {
 		return string(sm.real)
 	}
 
-	m.resolveReal(entries, v, true)
+	m.resolveReal(entries, v)
 	if got := realContent(); !strings.Contains(got, "first-value") {
 		t.Fatalf("real content after first resolve = %q, want it to contain first-value", got)
 	}
@@ -610,7 +393,7 @@ func TestResolveRealReResolvesUpdatedSecret(t *testing.T) {
 	if err := v.Set("fixture/API_KEY", []byte("second-value")); err != nil {
 		t.Fatalf("Set (update): %v", err)
 	}
-	m.resolveReal(entries, v, true)
+	m.resolveReal(entries, v)
 	if got := realContent(); !strings.Contains(got, "second-value") {
 		t.Errorf("real content after re-resolve = %q, want the UPDATED second-value, a stale mount serving a replaced secret forever is the exact GAPS.md #43 bug", got)
 	}
@@ -676,48 +459,6 @@ func TestEnsureServingRemovesDeadMountFromServed(t *testing.T) {
 	t.Fatal("dead mount still in m.served 5s after its Serve loop exited, it would never be restarted and still look alive to status/reveal (GAPS.md #44)")
 }
 
-// TestMountRevealStatusesReportsRevealedAndHidden is GAPS.md #37's regression
-// test: `jit status`/`jit agent status` used to have no way at all to
-// see which mount was revealed or for how long — a real, reported point of
-// confusion when a mount's reveal window appeared to silently "not work"
-// (it had actually been wiped out early by the agent's own session
-// lock, a completely separate timer with no visibility either).
-func TestMountRevealStatusesReportsRevealedAndHidden(t *testing.T) {
-	revealed := newTestServedMount()
-	revealed.reveal.Reveal(time.Minute)
-	hidden := newTestServedMount()
-	m := &mountManager{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, served: map[string]*servedMount{
-		"/tmp/fixture/revealed.env": revealed,
-		"/tmp/fixture/hidden.env":   hidden,
-	}}
-
-	statuses := m.mountRevealStatuses()
-	if len(statuses) != 2 {
-		t.Fatalf("len(statuses) = %d, want 2", len(statuses))
-	}
-
-	byPath := map[string]agent.MountRevealStatus{}
-	for _, s := range statuses {
-		byPath[s.Path] = s
-	}
-
-	got, ok := byPath["/tmp/fixture/revealed.env"]
-	if !ok {
-		t.Fatal("missing status for revealed.env")
-	}
-	if !got.Revealed || got.RevealedForSeconds <= 0 || got.RevealedForSeconds > 60 {
-		t.Errorf("revealed.env status = %+v, want Revealed=true and 0 < RevealedForSeconds <= 60", got)
-	}
-
-	got, ok = byPath["/tmp/fixture/hidden.env"]
-	if !ok {
-		t.Fatal("missing status for hidden.env")
-	}
-	if got.Revealed || got.RevealedForSeconds != 0 {
-		t.Errorf("hidden.env status = %+v, want Revealed=false and RevealedForSeconds=0", got)
-	}
-}
-
 // TestMountManagerStopMountWaitsForGoroutineToExit is GAPS.md #36's
 // regression test for the exact race a real unmount run hit: stopMount
 // must not return until the mount's Serve goroutine has actually
@@ -732,7 +473,7 @@ func TestMountRevealStatusesReportsRevealedAndHidden(t *testing.T) {
 // unregistered FIFO where the plaintext file should have been.
 func TestMountManagerStopMountWaitsForGoroutineToExit(t *testing.T) {
 	done := make(chan struct{})
-	sm := &servedMount{reveal: mount.NewRevealState(), cancel: func() {}, done: done}
+	sm := &servedMount{cancel: func() {}, done: done}
 	m := &mountManager{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, served: map[string]*servedMount{"/tmp/fixture/.env": sm}}
 
 	returned := make(chan struct{})

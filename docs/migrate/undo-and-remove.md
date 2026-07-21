@@ -37,7 +37,7 @@ stale ones while keeping each file's newest.
 
 Run from the project, this removes jit completely: every file back to
 plaintext, plus the project's profiles, vault secrets, encrypted backups,
-reveal hooks, and `.jit/` directory all deleted.
+and `.jit/` directory all deleted.
 
 ## All three always re-authenticate
 

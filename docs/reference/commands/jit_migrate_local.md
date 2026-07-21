@@ -15,9 +15,9 @@ What happens per category:
 
   .env files   Keys move into a profile and the vault; the file itself keeps
                working as a live mount served by jit agent, showing
-               fake-looking values until revealed (`jit agent reveal`, wired
-               automatically into an existing .envrc or package.json
-               dev/start script when one exists). A git-safe <file>.pointers
+               fake-looking values by default. Real values reach a tool
+               through `jit run` (env injection, or `jit run --live` for a
+               tool that reads the file itself). A git-safe <file>.pointers
                companion is written alongside, listing vault paths only,
                always safe to open or commit.
   tfvars       Secret-shaped `name = "value"` assignments in terraform.tfvars

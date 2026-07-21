@@ -9,7 +9,7 @@ jit agent run [flags]
 ### Options
 
 ```
-      --ttl duration   how long an unlocked session stays cached before auto-locking (default 15m0s)
+      --ttl duration   how long an unlocked session stays cached before auto-locking (default 5m0s)
 ```
 
 ### SEE ALSO

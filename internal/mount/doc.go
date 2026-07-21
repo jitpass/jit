@@ -25,11 +25,12 @@
 // reader that closes fast enough evades identification. Neither is
 // trustworthy enough to gate on.
 //
-// The actual gate is RevealState (reveal.go): a mount serves DecoyValues by
-// default and only serves real content during a short, explicitly
-// triggered window — trading "identify who's reading" (unreliable) for
-// "bound when anyone gets something real" (doesn't need reader identity at
-// all). internal/lineage's scan is still used, but only as a best-effort
+// The actual gate is the run-scoped grant (internal/cli mountgrants): a
+// mount serves DecoyValues by default and serves real content ONLY to the
+// process tree of an explicit `jit run --live`/`--with` grant, decided per
+// read by that run's own ancestry — trading "identify an arbitrary reader"
+// (unreliable) for "authorize one deliberately-launched run" (bounded by
+// intent). internal/lineage's scan is still used, but only as a best-effort
 // audit log layered on top (RFC.md §5.1 Process Lineage Logging), never as
 // what decides what gets served.
 package mount

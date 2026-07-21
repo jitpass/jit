@@ -23,7 +23,7 @@ backed up (encrypted, into the vault) before it's touched, and
 The rest of this page walks the same six steps with what to expect at each.
 After setup, daily life with jit is mostly nothing: your app starts normally,
 `aws`/`kubectl`/`terraform` behave exactly as before, and roughly once per
-15 minutes of active use, macOS asks for a Touch ID confirmation.
+5 minutes of active use, macOS asks for a Touch ID confirmation.
 
 ## 1. See what's exposed: `jit audit`
 
@@ -60,7 +60,7 @@ You'll see a Touch ID / passcode prompt; that's expected.
 
 Without the agent, every vault-touching command asks for Touch ID
 independently. With it, you unlock once and everything shares that session
-for the next 15 minutes of activity (`--ttl` to change that).
+for the next 5 minutes of activity (`--ttl` to change that).
 
 The agent is also what serves live-mounted files, so if you migrate a `.env`
 file, you want it installed. Everything still works without it, just with
@@ -96,7 +96,7 @@ $ jit status
 Vault: 5 secret(s) stored.
 Agent: running and unlocked (locks in 12m30s).
 Profiles: 2 profile(s), 5 secret reference(s) all resolve cleanly. Run `jit doctor` to also verify secret integrity.
-Mounts: 1 registered, agent unlocked and serving them.
+Mounts: 1 registered, agent unlocked, all serving decoy (real values flow only inside a jit run --live/--with grant).
 ```
 
 `jit status` is the quick read-only snapshot; `jit doctor` is the deeper
@@ -106,6 +106,30 @@ orphaned secrets, and checks agent, backup, and shim health). See
 
 Neither `jit status` nor `jit doctor` ever decrypts a secret or triggers
 Touch ID; both are safe to run as often as you like.
+
+## 7. Run your project: `jit run`
+
+After migration a `.env` serves **decoy** values to anything that reads it
+cold — a `cat`, a backup, or a bare `npm run dev`. Real values reach a tool
+**only** when you launch it through `jit run`:
+
+```
+$ jit run -- npm run dev      # injects your .env secrets into the process
+```
+
+There are four modes, split across two independent switches — `--live` for
+**this project's** files, `--with` for a **machine-global** credential:
+
+```
+$ jit run -- <cmd>                       # tool reads env vars (the common case)
+$ jit run --live -- <cmd>                # tool reads the .env FILE itself (docker compose env_file:)
+$ jit run --with gcp -- <cmd>            # tool needs a global cred (gcloud ADC, sops, ~/.npmrc, ~/.netrc)
+$ jit run --live --with gcp -- <cmd>     # needs both at once
+```
+
+Not sure whether you need `--live`? Just run the default first; if the tool
+acts like its config is empty, re-run with `--live`. Full guide, including a
+decision table, in **[Run a command with secrets](../run/index.md)**.
 
 ## Optional: wrap your CLI tools
 

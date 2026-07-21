@@ -87,7 +87,7 @@ func (m *mountManager) restoreSwappedMount(path, why string) {
 
 // resumeServing re-establishes decoy serving for one entry after its FIFO
 // was restored, and resolves real content if the session is unlocked so a
-// reveal window or a subsequent grant has something to serve. Best-effort:
+// subsequent run-scoped grant has something to serve. Best-effort:
 // a resolve failure just leaves the mount decoy-only, exactly as a locked
 // agent would. ensureServing/resolveReal take m.mu, never swapMu/runsMu, so
 // there's no lock inversion.
@@ -108,11 +108,9 @@ func (m *mountManager) resumeServing(entry mount.Entry) {
 		return
 	}
 	v := &vault.Vault{Root: m.root, KeyWrapper: m.keyWrapper, RecipientID: deviceID}
-	// floorReveal=false: restoring a mount after a run must not light up a
-	// fresh 60s reveal window on it — that would serve real content to
-	// anything, the opposite of the decoy-by-default posture we're
-	// returning to.
-	m.resolveReal([]mount.Entry{entry}, v, false)
+	// Re-arm real content in memory after a run's swap ends; it stays decoy
+	// to every reader until the next run-scoped grant, never auto-revealed.
+	m.resolveReal([]mount.Entry{entry}, v)
 }
 
 // sessionUnlocked reports whether the agent session is currently unlocked,

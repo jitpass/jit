@@ -16,6 +16,14 @@ Most secrets arrive through [`jit migrate`](../migrate/index.md) or
 
 ## Manage secrets by hand: `set` / `get` / `list` / `rm`
 
+**Every command that reads, writes, or destroys a secret requires a fresh
+Touch ID/passcode on each run** - `set`, `get`, `rm`, `import`, `restore`,
+`clean`, `prune`, `delete`, and `export`. These never ride the background
+agent's cached session: the prompt appears whether or not the agent is
+unlocked, so a process running as you can't read or destroy the vault
+silently on an already-unlocked machine. Only `list` and `history` are
+prompt-free, because they expose names and version timestamps, never a value.
+
 `jit vault set myapp/NEW_KEY` prompts for a value and stores it (add `-f`
 to overwrite an existing path, `--stdin` to pipe the value in);
 `jit vault rm <path>` deletes one secret (it confirms first).
@@ -67,7 +75,7 @@ No re-migration needed; everything downstream picks the new value up on
 its next fetch:
 
 - A live-mounted `.env`/`.npmrc` serves fresh vault content on every read,
-  so the next revealed read sees the new key.
+  so the next granted read sees the new key.
 - `jit run`, `jit export`, the AWS CLI/SDKs, and kubectl all resolve the
   vault on demand.
 - Anything already *holding* the old value keeps it until restarted: a
