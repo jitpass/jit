@@ -39,8 +39,7 @@ backups.
 - This covers raw `git` over HTTPS. The `gh` CLI has its own token, wrapped
   separately with [`jit wrap gh`](./gh.md).
 - If you authenticate over SSH, there's nothing here to migrate - your key
-  is already off the HTTPS credential path. See
-  [SSH keys](../getting-started/index.md) for that story.
+  is the credential, and it never touches the HTTPS credential path.
 - If git already uses a secure helper (`osxkeychain`, Git Credential
   Manager), your credentials aren't in plaintext, so there's usually
   nothing to migrate - jit only takes over the plaintext `store` helper
