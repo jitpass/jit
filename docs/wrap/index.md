@@ -46,6 +46,7 @@ One page per tool - requirements, verification, and per-tool gotchas:
 | [`databricks`](./databricks.md) | `DATABRICKS_TOKEN` | `~/.databrickscfg` |
 | [`hf`](./hf.md) | `HF_TOKEN` | `~/.cache/huggingface/token` (the whole file is the token) |
 | [`supabase`](./supabase.md) | `SUPABASE_ACCESS_TOKEN` | `~/.supabase/access-token` when the OS keyring isn't available |
+| [`wrangler`](./wrangler.md) | `CLOUDFLARE_API_TOKEN` | login stores a short-lived OAuth token; vault a real API token: `jit vault set wrap-wrangler/CLOUDFLARE_API_TOKEN` first |
 | [`openai`](./openai.md) | `OPENAI_API_KEY` | nowhere standard - `jit vault set wrap-openai/OPENAI_API_KEY` first |
 | [`claude`](./claude-code.md) | `ANTHROPIC_API_KEY` | nowhere standard - `jit vault set wrap-claude/ANTHROPIC_API_KEY` first |
 | [`gemini`](./gemini.md) | `GEMINI_API_KEY` | `~/.gemini/.env` (or `~/.env` as a fallback) |
