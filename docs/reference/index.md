@@ -16,4 +16,4 @@ description: Command reference, file locations, environment variables, and proto
   finding schema
 - **[Plumbing protocols](./plumbing.md)** - the commands other tools
   invoke (`aws-credential-process`, `k8s-exec-credential`,
-  `terraform-credentials`, `docker-credential`)
+  `terraform-credentials`, `docker-credential`, `git-credential`)

@@ -29,6 +29,12 @@ machine-wide files that live at fixed home paths:
                    pulls too). Never replaces an existing credential store
                    like Docker Desktop's; jit becomes the default store only
                    when the config had none at all.
+  git              plaintext HTTPS logins in ~/.git-credentials move into the
+                   vault; git fetches them through its own credential-helper
+                   protocol (credential.helper set to jit, the plaintext
+                   `store` helper replaced), so `git push`/`fetch` over HTTPS
+                   keep working. A secure helper like osxkeychain is left in
+                   place.
   GCP              ~/.config/gcloud/application_default_credentials.json's
                    refresh token (or a service account key's private key)
                    moves into the vault; the file keeps working as a live
@@ -75,7 +81,7 @@ jit migrate home [flags]
 
 ```
       --dry-run        preview the plan for this scope without changing anything
-      --only strings   scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,docker,gcp,sops,npmrc,netrc (default: all)
+      --only strings   scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,docker,git,gcp,sops,npmrc,netrc (default: all)
   -y, --yes            skip the confirmation prompt and migrate immediately
 ```
 

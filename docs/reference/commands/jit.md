@@ -21,6 +21,7 @@ jit
 * [jit docker-credential](jit_docker-credential.md)	 - Implement Docker's credential-helper protocol for migrated registry logins
 * [jit doctor](jit_doctor.md)	 - One-shot health check: profiles, secrets, agent, backup, and wrap shims
 * [jit export](jit_export.md)	 - Print shell export statements for a profile's secrets
+* [jit git-credential](jit_git-credential.md)	 - Implement git's credential-helper protocol for migrated HTTPS logins
 * [jit k8s-exec-credential](jit_k8s-exec-credential.md)	 - Print a Kubernetes ExecCredential JSON for a migrated profile
 * [jit migrate](jit_migrate.md)	 - Guided fix path for findings jit audit reports
 * [jit profile](jit_profile.md)	 - Inspect profile manifests (names and vault paths only, never secret values)

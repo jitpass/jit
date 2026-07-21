@@ -19,7 +19,8 @@ By default it covers the same ground jit audit scans, the whole machine:
                        under $HOME, plus the machine-wide files that live at
                        fixed home paths (shell configs, ~/.aws/credentials,
                        ~/.kube/config, Terraform Cloud credentials,
-                       ~/.docker/config.json registry logins, GCP
+                       ~/.docker/config.json registry logins,
+                       ~/.git-credentials HTTPS logins, GCP
                        application-default credentials, Claude Desktop's MCP
                        config, the global ~/.npmrc)
 
@@ -47,7 +48,7 @@ jit migrate [flags]
 ```
       --dry-run            preview the plan for this scope without changing anything
       --include-archived   also convert findings under an archived/backup-looking directory (archive, archived, backup, backups, .trash)
-      --only strings       scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,docker,gcp,sops,npmrc,netrc (default: all)
+      --only strings       scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,docker,git,gcp,sops,npmrc,netrc (default: all)
   -y, --yes                skip the confirmation prompt and migrate immediately
 ```
 
