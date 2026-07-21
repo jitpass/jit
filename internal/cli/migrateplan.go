@@ -55,7 +55,7 @@ import (
 // (splitMCPByScope/splitNpmrcByScope) since a single Discover* call
 // there still mixes the fixed path in with items found by the
 // whole-$HOME walk.
-func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, revealHookFiles []string) {
+func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, revealHookFiles []string) {
 	scope := "local"
 	if wholeHome {
 		scope = "home"
@@ -87,7 +87,7 @@ func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, tfvars
 	}
 
 	hasScoped := len(envFiles) > 0 || len(tfvarsFiles) > 0 || len(mcpScoped) > 0 || len(npmrcScoped) > 0 || len(revealHookFiles) > 0
-	hasFixed := len(shellConfigs) > 0 || len(mcpFixed) > 0 || len(awsProfiles) > 0 || len(k8sUsers) > 0 || len(terraformHosts) > 0 || len(dockerRegistries) > 0 || len(gcpADCFiles) > 0 || len(sopsAgeFiles) > 0 || len(npmrcFixed) > 0 || len(netrcFiles) > 0
+	hasFixed := len(shellConfigs) > 0 || len(mcpFixed) > 0 || len(awsProfiles) > 0 || len(k8sUsers) > 0 || len(terraformHosts) > 0 || len(dockerRegistries) > 0 || len(gitHosts) > 0 || len(gcpADCFiles) > 0 || len(sopsAgeFiles) > 0 || len(npmrcFixed) > 0 || len(netrcFiles) > 0
 
 	if hasScoped {
 		_, _ = color.New(color.Bold).Fprintf(w, "Scoped to this run, %s\n\n", scopedTree)
@@ -141,6 +141,9 @@ func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, tfvars
 		printMigratePlanCategory(w,
 			"Docker registry credential(s) in ~/.docker/config.json → credentials move to the vault; fetched automatically whenever docker needs them (docker login/logout keep working)",
 			dockerRegistries)
+		printMigratePlanCategory(w,
+			"git HTTPS host(s) in ~/.git-credentials → credentials move to the vault; fetched automatically whenever git pushes/fetches over HTTPS (credential.helper set to jit)",
+			gitHosts)
 		printMigratePlanCategory(w,
 			"GCP application-default credentials → secrets move to the vault; the file keeps working via a live, auto-updating mount",
 			shorten(gcpADCFiles))

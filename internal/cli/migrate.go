@@ -33,7 +33,7 @@ var (
 // Keyed by the short token a caller passes, not the display label used in
 // output — keep the two lists in this exact order so error messages and
 // --only's own help text stay in sync with printMigratePlan.
-var migrateCategories = []string{"env", "tfvars", "shell", "mcp", "aws", "kube", "terraform", "docker", "gcp", "sops", "npmrc", "netrc"}
+var migrateCategories = []string{"env", "tfvars", "shell", "mcp", "aws", "kube", "terraform", "docker", "git", "gcp", "sops", "npmrc", "netrc"}
 
 // noteNamespaceMove explains a claimNamespace bump (GAPS.md #55) directly
 // under the item it happened to. Yellow, matching the "heads up, read
@@ -289,7 +289,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 	// does. This is what makes `local` actually match its name (a real,
 	// reported point of confusion when both scopes always included
 	// these — see GAPS.md #26).
-	var shellConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gcpADCFiles, sopsAgeFiles, netrcFiles []string
+	var shellConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, netrcFiles []string
 	if wholeHome {
 		shellConfigs, err = migrate.DiscoverShellConfigs(home)
 		if err != nil {
@@ -310,6 +310,13 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 		dockerRegistries, err = migrate.DiscoverDockerRegistries(home)
 		if err != nil {
 			return fmt.Errorf("jit migrate: %w", err)
+		}
+		gitCreds, err := migrate.DiscoverGitCredentials(home)
+		if err != nil {
+			return fmt.Errorf("jit migrate: %w", err)
+		}
+		for _, c := range gitCreds {
+			gitHosts = append(gitHosts, c.Host)
 		}
 		gcpADCFiles, err = migrate.DiscoverGCPADC(home)
 		if err != nil {
@@ -394,6 +401,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 		"kube":      &k8sUsers,
 		"terraform": &terraformHosts,
 		"docker":    &dockerRegistries,
+		"git":       &gitHosts,
 		"gcp":       &gcpADCFiles,
 		"sops":      &sopsAgeFiles,
 		"npmrc":     &npmrcFiles,
@@ -432,7 +440,8 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 		} else {
 			fmt.Fprintln(cmd.OutOrStdout(), "Nothing to migrate: no .env files, no tfvars secrets, no secret-shaped shell-config")
 			fmt.Fprintln(cmd.OutOrStdout(), "exports, no MCP server secrets, no AWS/kubeconfig/Terraform Cloud/Docker registry/")
-			fmt.Fprintln(cmd.OutOrStdout(), "GCP credentials, no SOPS age key, no npmrc secrets, and no .netrc passwords found.")
+			fmt.Fprintln(cmd.OutOrStdout(), "git HTTPS credentials, no GCP credentials, no SOPS age key, no npmrc secrets, and no")
+			fmt.Fprintln(cmd.OutOrStdout(), ".netrc passwords found.")
 		}
 		printSkippedFindings(cmd.OutOrStdout(), home, len(skippedArchived), "under an archived/backup-looking directory", skippedArchived,
 			"Rerun with --include-archived to include them.")
@@ -471,7 +480,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 	// work that's about to be aborted anyway. This same plan is what
 	// --dry-run prints too (see below) — one rendering path, so the
 	// preview you confirm against is exactly the preview --dry-run shows.
-	printMigratePlan(cmd.OutOrStdout(), home, wholeHome, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, planRevealHooks(home, envFiles, npmrcFiles))
+	printMigratePlan(cmd.OutOrStdout(), home, wholeHome, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, planRevealHooks(home, envFiles, npmrcFiles))
 	printSkippedFindings(cmd.OutOrStdout(), home, len(skippedArchived), "under an archived/backup-looking directory", skippedArchived,
 		"Rerun with --include-archived to include them.")
 	printSkippedFindings(cmd.OutOrStdout(), home, len(skippedPlayground), "inside a jitpass-playground checkout (synthetic bait, not real exposure)", skippedPlayground,
@@ -722,6 +731,43 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 		if rcChanged {
 			fmt.Fprintf(out, "  Added to %s: %s\n", displayPath(home, rc), wrap.PathLine())
 			fmt.Fprintln(out, "  (docker finds the credential helper via PATH, open a new shell before the next pull/push)")
+		}
+		fmt.Fprintln(out)
+	}
+
+	if len(gitHosts) > 0 {
+		summary.checkGitHistory(migrate.GitCredentialsPath(home))
+		printMigrateResultCategory(out, "git HTTPS credential(s) migrated", len(gitHosts))
+		replacedStore := false
+		for _, gitHost := range gitHosts {
+			result, err := migrate.ApplyGitCredential(v, home, gitHost, backups)
+			if err != nil {
+				return fmt.Errorf("jit migrate: %w", err)
+			}
+			replacedStore = replacedStore || result.ReplacedStoreHelper
+			backupNote := fmt.Sprintf("`jit vault get %s`", result.CredentialsBackup)
+			if result.ConfigBackup != "" {
+				backupNote += fmt.Sprintf(", `jit vault get %s`", result.ConfigBackup)
+			}
+			fmt.Fprintf(out, "  • %q -> vault profile %q (%d var(s)); backups: %s\n",
+				gitHost, result.VaultProfileName, len(result.Variables), backupNote)
+		}
+		if replacedStore {
+			fmt.Fprintln(out, "  Replaced git's plaintext `store` credential helper with jit.")
+		}
+		// git discovers git-credential-jit strictly by $PATH lookup, and the
+		// helper lives in jit's shim directory — reuse wrap's own rc-file PATH
+		// line so the next shell (and everything it spawns, git included)
+		// resolves it. Idempotent; a machine that already wrapped a tool or
+		// migrated docker has the line and prints nothing new here.
+		rc := wrap.RcFile(home, os.Getenv("SHELL"))
+		rcChanged, err := wrap.EnsurePathLine(rc)
+		if err != nil {
+			return fmt.Errorf("jit migrate: %w", err)
+		}
+		if rcChanged {
+			fmt.Fprintf(out, "  Added to %s: %s\n", displayPath(home, rc), wrap.PathLine())
+			fmt.Fprintln(out, "  (git finds the credential helper via PATH, open a new shell before the next push/fetch)")
 		}
 		fmt.Fprintln(out)
 	}
