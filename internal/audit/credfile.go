@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -38,6 +39,7 @@ func ScanCredentialFiles(cfg Config) ([]Finding, error) {
 		scanNpmrc,
 		scanTerraformCloud,
 		scanDockerConfig,
+		scanGitCredentials,
 		scanGCPApplicationDefaultCredentials,
 		scanNetrc,
 	} {
@@ -348,6 +350,78 @@ func scanDockerConfig(cfg Config) ([]Finding, error) {
 			BaseSeverity: SeverityHigh,
 			Confidence:   ConfidenceHigh,
 			Evidence:     fmt.Sprintf("Docker registry credential found for %q (config.json's base64 auth is encoding, not encryption)", registry),
+		}))
+	}
+	return findings, nil
+}
+
+// --- git HTTPS credentials (~/.git-credentials and the XDG twin) ---
+
+// scanGitCredentials reports every plaintext login in git's `store` helper
+// files. git keeps them as `https://user:pass@host` lines, one per host, in
+// ~/.git-credentials (and ~/.config/git/credentials when XDG is in use) —
+// plaintext, the same at-rest gap as a base64 docker auth. Detection mirrors
+// internal/migrate.parseGitCredentialsFile, so `jit audit` reports exactly
+// the credentials `jit migrate --only git` (and `jit wrap git`) will convert.
+func scanGitCredentials(cfg Config) ([]Finding, error) {
+	var findings []Finding
+	for _, path := range []string{
+		filepath.Join(cfg.HomeDir, ".git-credentials"),
+		filepath.Join(cfg.HomeDir, ".config", "git", "credentials"),
+	} {
+		f, err := scanGitCredentialsFile(path, cfg)
+		if err != nil {
+			return findings, err
+		}
+		findings = append(findings, f...)
+	}
+	return findings, nil
+}
+
+func scanGitCredentialsFile(path string, cfg Config) ([]Finding, error) {
+	// Lstat + IsRegular, the same defensive guard the other fixed-path
+	// scanners use: never block on a FIFO or follow a symlink out of the
+	// audited home for a path checked outside walkHomeDir's own filter.
+	info, statErr := os.Lstat(path)
+	if statErr != nil {
+		if os.IsNotExist(statErr) {
+			return nil, nil
+		}
+		return nil, statErr
+	}
+	if !info.Mode().IsRegular() {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path) // #nosec G304 -- fixed git-credentials path under the audited home, not external input
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var findings []Finding
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		u, perr := url.Parse(line)
+		if perr != nil || u.Host == "" || u.User == nil {
+			continue
+		}
+		pw, ok := u.User.Password()
+		if !ok || pw == "" {
+			continue
+		}
+		findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+			FindingType:  FindingTypeCredentialFile,
+			FilePath:     path,
+			KeyName:      u.Host,
+			RawValue:     pw,
+			BaseSeverity: SeverityHigh,
+			Confidence:   ConfidenceHigh,
+			Evidence:     fmt.Sprintf("git HTTPS credential found for host %q in plaintext; jit wrap git moves it into the vault and keeps git push/fetch over HTTPS working", u.Host),
 		}))
 	}
 	return findings, nil
