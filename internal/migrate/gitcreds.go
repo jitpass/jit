@@ -461,7 +461,7 @@ func stripHostFromGitCredentials(path, host string) error {
 	if out != "" {
 		out += "\n"
 	}
-	return os.WriteFile(path, []byte(out), 0o600)
+	return os.WriteFile(path, []byte(out), 0o600) // #nosec G703 -- fixed git-credentials path under the audited home, not external input
 }
 
 // ApplyGitCredential moves host's credential out of git's plaintext store and
