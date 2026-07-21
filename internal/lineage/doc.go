@@ -14,8 +14,9 @@
 // identification — and RFC.md B6 already concedes process lineage in
 // general is "a speed bump and signal, not a guarantee against a
 // determined local attacker who already has code execution."
-// internal/mount.RevealState (the decoy-by-default gate that actually closes
-// GAPS.md #2) never consults this package to decide what gets served.
+// the run-scoped grant gate (internal/cli mountgrants — the decoy-by-default
+// gate that actually closes GAPS.md #2) uses process ancestry only to NARROW
+// a grant to one run's tree, never as the sole authority over what gets served.
 //
 // PathHeldOpen is the one deliberate exception to "never a gate," and it
 // gates something narrower than content: whether internal/mount.Serve's

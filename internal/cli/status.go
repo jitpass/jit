@@ -96,9 +96,10 @@ type statusMounts struct {
 	// ServingReal is true only when the agent is unlocked — GAPS.md #35
 	// made BeingServed true whenever the agent process is merely running,
 	// locked or not, since a mount always has at least decoy content
-	// behind it by then. Real content additionally needs an unlock (and,
-	// per mount, an active reveal window) — this field is what distinguishes
-	// "decoy only" from "real content is potentially available" in the
+	// behind it by then. Real content additionally needs an unlock (so the
+	// vault can be resolved) AND, per mount, an active run-scoped grant
+	// (jit run --live/--with) to actually flow to a reader — this field
+	// distinguishes "decoy only" from "real content can be granted" in the
 	// text report below.
 	ServingReal bool `json:"serving_real"`
 }
@@ -354,19 +355,19 @@ func printStatusText(w io.Writer, r statusResult) {
 	case r.Mounts.Registered == 0:
 		fmt.Fprintln(w, "Mounts: none registered.")
 	case r.Mounts.ServingReal:
-		revealed := 0
+		granted := 0
 		for _, m := range r.Agent.Mounts {
-			if m.Revealed {
-				revealed++
+			if len(m.Grants) > 0 {
+				granted++
 			}
 		}
-		if revealed > 0 {
-			fmt.Fprintf(w, "Mounts: %d registered, agent unlocked, %d currently revealed (real content), the rest decoy. Run `jit agent status` to see which.\n", r.Mounts.Registered, revealed)
+		if granted > 0 {
+			fmt.Fprintf(w, "Mounts: %d registered, agent unlocked, %d currently serving real content to an active jit run grant, the rest decoy. Run `jit agent status` to see which.\n", r.Mounts.Registered, granted)
 		} else {
-			fmt.Fprintf(w, "Mounts: %d registered, agent unlocked, real content available within each mount's reveal window, decoy otherwise.\n", r.Mounts.Registered)
+			fmt.Fprintf(w, "Mounts: %d registered, agent unlocked, all serving decoy (real values flow only inside a jit run --live/--with grant).\n", r.Mounts.Registered)
 		}
 	case r.Mounts.BeingServed:
-		fmt.Fprintf(w, "Mounts: %d registered, serving decoy content only (agent locked, resumes real content automatically on next unlock).\n", r.Mounts.Registered)
+		fmt.Fprintf(w, "Mounts: %d registered, serving decoy content only (agent locked).\n", r.Mounts.Registered)
 	default:
 		fmt.Fprintf(w, "Mounts: %d registered, not being served (agent not running).\n", r.Mounts.Registered)
 	}

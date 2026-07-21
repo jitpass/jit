@@ -11,9 +11,8 @@ through jit gets its plaintext env block back (all written from the
 CURRENT vault values, so edits made with `jit vault set` since migration
 are kept), and then the project's profile manifests, including the ones
 created for this project's MCP servers, the vault secrets they
-reference, the project's encrypted file backups, any reveal hooks
-migrate wired into .envrc/package.json, and the .jit/ directory itself
-are all deleted.
+reference, the project's encrypted file backups, and the .jit/ directory
+itself are all deleted.
 
 Machine-level migrations (shell configs, AWS, kubeconfig, Terraform
 Cloud, GCP application-default credentials, the global ~/.npmrc,

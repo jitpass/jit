@@ -30,7 +30,7 @@ var extractors = map[string]extractor{
 // which is what keeps detection and migration from ever disagreeing.
 //
 // A source path that is currently a live jit mount (a FIFO — GAPS.md #2,
-// see internal/mount.RevealState) is refused with an error, never read: a
+// decoy-by-default) is refused with an error, never read: a
 // plain os.ReadFile against a FIFO with jit's own Serve goroutine behind it
 // doesn't fail or block, it rendezvouses with whatever cycle is being
 // served right now — decoy content by default. Reading it here would
@@ -55,7 +55,7 @@ func ExtractToken(home string, src TokenSource) (value string, found bool, err e
 		return "", false, err
 	}
 	if info.Mode()&os.ModeNamedPipe != 0 {
-		return "", false, fmt.Errorf("%s is a live jit mount, not a plaintext file — its value is already in the vault under whatever profile `jit migrate` created for it, not readable here; reveal the mount (`jit agent reveal %s`) to see the value, or check `jit status` for the profile it belongs to", path, path)
+		return "", false, fmt.Errorf("%s is a live jit mount, not a plaintext file — its value is already in the vault under whatever profile `jit migrate` created for it, not readable here; run `jit vault get`/`jit export` to see the value, or check `jit status` for the profile it belongs to", path)
 	}
 	data, err := os.ReadFile(path) // #nosec G304 -- a fixed catalog path under the user's home dir
 	if err != nil {

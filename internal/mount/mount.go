@@ -91,9 +91,10 @@ func CreateFIFO(path string) error {
 //
 // provideContent is called fresh on every re-open cycle, AFTER a reader has
 // connected but BEFORE anything is written — not a fixed byte slice —
-// specifically so a caller can gate on live state (RevealState.IsRevealed) and
-// choose real values or DecoyValues per cycle (RFC.md B10, GAPS.md #2)
-// without restarting Serve. Calling it after the reader connects, not
+// specifically so a caller can gate on live state (is this read inside a
+// run-scoped grant's process tree?) and choose real values or DecoyValues
+// per cycle (RFC.md B10, GAPS.md #2) without restarting Serve. Calling it
+// after the reader connects, not
 // before, matters: spike/fifo-reader-identify/FINDINGS.md confirmed a
 // reader that's genuinely waiting on data can't receive anything until
 // this function decides to write, so the decoy gate can never be raced by

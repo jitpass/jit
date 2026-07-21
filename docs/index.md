@@ -72,7 +72,7 @@ then **[Install](./getting-started/install.md)** →
 - [Run a command with secrets](./run/index.md) - layer merging, modes, `--profile`, the compatibility swap and `--live`
 - [Profiles](./run/profiles.md) - the manifest mapping variables to vault paths
 - [Shell exports](./run/export.md) - `eval "$(jit export)"`
-- [Live-mounted files](./run/mounts.md) - decoys, reveal windows, the compatibility swap, and reading values safely
+- [Live-mounted files](./run/mounts.md) - decoys, grants, the compatibility swap, and reading values safely
 
 ## The vault
 

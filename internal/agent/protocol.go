@@ -8,18 +8,15 @@ package agent
 // one Response, close — no multiplexing needed for this CLI-tool traffic
 // pattern).
 type Request struct {
-	Op string `json:"op"` // "wrap" | "unwrap" | "unlock" | "lock" | "status" | "refresh" | "reveal" | "reveal_pid" | "stop_mount" | "history"
+	Op string `json:"op"` // "wrap" | "unwrap" | "unlock" | "lock" | "status" | "refresh" | "reveal_pid" | "stop_mount" | "history"
 	// Data is the DEK (for "wrap") or the wrapped DEK (for "unwrap").
 	// encoding/json base64-encodes a []byte field automatically.
 	Data []byte `json:"data,omitempty"`
-	// MountPath and RevealSeconds are "reveal"'s own arguments — which mount to
-	// reveal and for how long. "stop_mount" reuses MountPath too (which
-	// mount to stop serving), leaving RevealSeconds unset. Server doesn't
-	// interpret MountPath itself (it never imports internal/mount, same
-	// one-way dependency OnRefresh already keeps); it's opaque data
-	// handed to OnReveal/OnStopMount.
-	MountPath     string `json:"mount_path,omitempty"`
-	RevealSeconds int64  `json:"reveal_seconds,omitempty"`
+	// MountPath is "stop_mount"'s argument (which mount to stop serving).
+	// Server doesn't interpret it itself (it never imports internal/mount,
+	// same one-way dependency OnRefresh already keeps); it's opaque data
+	// handed to OnStopMount.
+	MountPath string `json:"mount_path,omitempty"`
 	// RunMounts and TargetPID are "reveal_pid"'s arguments: for TargetPID's
 	// process tree, for as long as that process lives (jit run sends its OWN
 	// pid right before execve, which keeps the pid — so this is the target
@@ -79,7 +76,6 @@ const (
 	OpLock      = "lock"
 	OpStatus    = "status"
 	OpRefresh   = "refresh"
-	OpReveal    = "reveal"
 	OpRevealPID = "reveal_pid"
 	OpStopMount = "stop_mount"
 	OpHistory   = "history"
@@ -224,21 +220,14 @@ type SessionEvent struct {
 	Count int64 `json:"count,omitempty"`
 }
 
-// MountRevealStatus is one currently-served mount's reveal state — deliberately
+// MountRevealStatus is one currently-served mount's state — deliberately
 // plain strings/bools/ints, not a type from internal/mount, since this
 // package never imports internal/mount (mountManager, the CLI layer,
-// populates this via Server.OnMountStatus).
+// populates this via Server.OnMountStatus). A mount serves decoys unless a
+// run-scoped grant (Grants) is currently authorizing real reads for its own
+// process tree; there is no reveal window.
 type MountRevealStatus struct {
-	Path               string `json:"path"`
-	Revealed           bool   `json:"revealed"`
-	RevealedForSeconds int64  `json:"revealed_for_seconds,omitempty"`
-	// RevealEndedUnix is when the most recent reveal window ended (naturally or
-	// force-hidden by a lock), set only while hidden. Reveal expiry is
-	// lazy — nothing fires at the moment a window ends — so this is what
-	// lets status say "the window ended Xm ago" instead of the revealed line
-	// just silently vanishing (GAPS.md #48). Zero if never revealed since
-	// the agent started (in-memory, like LastServe).
-	RevealEndedUnix int64 `json:"reveal_ended_unix,omitempty"`
+	Path string `json:"path"`
 	// ReadsLastMinute is how many readers connected to this mount within
 	// the current rolling minute — the signal that a file watcher is in a
 	// re-read loop with the mount (GAPS.md #47's residual case: a watcher

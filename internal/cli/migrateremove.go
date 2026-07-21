@@ -29,7 +29,7 @@ var migrateRemoveYes bool
 // out of the current project COMPLETELY — files back to plaintext (current
 // vault values, matching unmount's semantics rather than undo's
 // restore-the-backup), then the project's profiles, their vault secrets,
-// its encrypted file backups, its reveal hooks, and the .jit/ directory
+// its encrypted file backups, and the .jit/ directory
 // all deleted. Both plaintext-restoring AND destructive, so it takes the
 // strictest gate this package has: plan → [y/N] confirm →
 // openVaultFreshAuth (always its own Touch ID/passcode challenge, never a
@@ -44,9 +44,8 @@ var migrateRemoveCmd = &cobra.Command{
 		"CURRENT vault values, so edits made with `jit vault set` since migration\n" +
 		"are kept), and then the project's profile manifests, including the ones\n" +
 		"created for this project's MCP servers, the vault secrets they\n" +
-		"reference, the project's encrypted file backups, any reveal hooks\n" +
-		"migrate wired into .envrc/package.json, and the .jit/ directory itself\n" +
-		"are all deleted.\n\n" +
+		"reference, the project's encrypted file backups, and the .jit/ directory\n" +
+		"itself are all deleted.\n\n" +
 		"Machine-level migrations (shell configs, AWS, kubeconfig, Terraform\n" +
 		"Cloud, GCP application-default credentials, the global ~/.npmrc,\n" +
 		"Claude Desktop's MCP config) are not touched, they aren't part of any\n" +
@@ -87,7 +86,6 @@ type projectRemovalPlan struct {
 	deletePaths []string // vault secret paths to delete
 	keptShared  []string // vault paths kept because another profile references them
 	backups     []migrate.BackupRecord
-	hookDirs    []string
 	jitDir      string
 }
 
@@ -224,16 +222,6 @@ func runMigrateRemove(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("jit migrate remove: %w", err)
 	}
 
-	for _, dir := range plan.hookDirs {
-		edited, err := migrate.RemoveRevealHooks(dir)
-		if err != nil {
-			return fmt.Errorf("jit migrate remove: %w", err)
-		}
-		for _, f := range edited {
-			fmt.Fprintf(out, "Removed reveal hook from %s.\n", displayPath(home, f))
-		}
-	}
-
 	// Owned global-store profiles live outside the .jit directory the
 	// RemoveAll below covers — their manifest (+ .source sidecar) files are
 	// deleted explicitly.
@@ -366,18 +354,6 @@ func buildProjectRemovalPlan(root, cwd string) (projectRemovalPlan, error) {
 			plan.backups = append(plan.backups, rec)
 		}
 	}
-
-	hookDirSet := map[string]bool{}
-	for _, e := range plan.mounts {
-		hookDirSet[filepath.Dir(e.MountPath)] = true
-	}
-	for _, p := range plan.inPlace {
-		hookDirSet[filepath.Dir(p)] = true
-	}
-	for dir := range hookDirSet {
-		plan.hookDirs = append(plan.hookDirs, dir)
-	}
-	sort.Strings(plan.hookDirs)
 
 	jitDir := filepath.Join(cwd, ".jit")
 	if info, err := os.Stat(jitDir); err == nil && info.IsDir() {

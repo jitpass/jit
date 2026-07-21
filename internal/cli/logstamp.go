@@ -14,7 +14,7 @@ import (
 // wired around `jit agent run`'s stdout/stderr only (GAPS.md #48). The
 // agent process runs for weeks and everything it prints lands in one
 // agent.log; without timestamps a 635k-line log couldn't answer WHEN
-// anything happened, which made correlating reads against reveal windows and
+// anything happened, which made correlating reads against grants and
 // lock events impossible during a real investigation. Interactive
 // commands don't want this — their output is read at the moment it's
 // printed.

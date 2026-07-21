@@ -44,11 +44,6 @@ var migrateUndoCmd = &cobra.Command{
 		"up content is written back. The current content is snapshotted into the\n" +
 		"vault before being overwritten, so an undo is itself undoable, nothing\n" +
 		"is ever simply destroyed.\n\n" +
-		"It also reverses the `jit agent reveal` hook migrate wired into a\n" +
-		"mount's .envrc/package.json, surgically, removing only jit's own\n" +
-		"marked command for the mount being restored, so a script you edited\n" +
-		"yourself is never touched and another mount's hook is left intact. Once\n" +
-		"a hook file has no jit command left, its .jit-bak backup is cleaned up.\n\n" +
 		"What it deliberately does NOT do: vault secrets and profile manifests\n" +
 		"stay (`jit migrate remove` deletes a project's completely).\n\n" +
 		"Like every restore-to-plaintext operation, this writes real secret\n" +
@@ -153,15 +148,6 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Fprintf(out, "  • %s (backed up %s ago)%s\n", displayPath(home, rec.OriginalPath), humanAgo(time.Since(time.Unix(rec.UnixTS, 0))), note)
 	}
-	// The reveal-hook edit is reversed per restored mount (see restoreOne),
-	// but the file it rewrites (package.json/.envrc) isn't itself a backup
-	// record — it used to change without ever being named here (issue #3).
-	if hookFiles := undoRevealHookFiles(latest); len(hookFiles) > 0 {
-		fmt.Fprintf(out, "Also removing jit's automatic reveal line from %d project hook file(s), only jit's own command is removed, never a script you wrote:\n", len(hookFiles))
-		for _, hf := range hookFiles {
-			fmt.Fprintf(out, "  • %s\n", displayPath(home, hf))
-		}
-	}
 	fmt.Fprintln(out)
 	// Path scoping is easy to miss from --help alone — a real user asked
 	// for "project-specific undo" while the path argument already did
@@ -240,36 +226,10 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 		if err := os.Remove(migrate.PointerFilePath(rec.OriginalPath)); err != nil && !os.IsNotExist(err) {
 			fmt.Fprintf(out, "  warning: removing stale pointer file for %s: %v\n", displayPath(home, rec.OriginalPath), err)
 		}
-		// Reverse the reveal hook migrate wired into this mount's
-		// directory (package.json/.envrc) — surgically, for just this
-		// mount, so undoing one mount never disturbs another's hook or a
-		// script the user edited. Also cosmetic relative to the restore
-		// that already succeeded: a failure warns, never fails the file.
-		if err := migrate.UninstallRevealHook(filepath.Dir(rec.OriginalPath), rec.OriginalPath); err != nil {
-			fmt.Fprintf(out, "  warning: removing reveal hook for %s: %v\n", displayPath(home, rec.OriginalPath), err)
-		}
 		return nil
 	}
 
 	return runRestores(out, home, latest, restoreOne)
-}
-
-// undoRevealHookFiles collects, deduplicated and in record order, every
-// hook file (.envrc/package.json) that currently carries jit's reveal
-// command for one of the files about to be restored — the files
-// restoreOne's UninstallRevealHook call will edit.
-func undoRevealHookFiles(recs []migrate.BackupRecord) []string {
-	seen := map[string]bool{}
-	var files []string
-	for _, rec := range recs {
-		for _, hf := range migrate.RevealHookFiles(filepath.Dir(rec.OriginalPath), rec.OriginalPath) {
-			if !seen[hf] {
-				seen[hf] = true
-				files = append(files, hf)
-			}
-		}
-	}
-	return files
 }
 
 // undoFailure records one file runRestores could not restore, so the batch

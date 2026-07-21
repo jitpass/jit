@@ -143,9 +143,9 @@ var runCmd = &cobra.Command{
 //     ignores our injected environment). A swap would feed such a tool
 //     comments; the grant feeds it the real file.
 //
-// Every skip is silent, matching the wired reveal hooks' best-effort
-// contract: no agent, or an agent that refuses, leaves behavior exactly as
-// before. The deliberate guard: never proceed unless the session is
+// Every skip is silent, best-effort: no agent, or an agent that refuses,
+// leaves behavior exactly as before. The deliberate guard: never proceed
+// unless the session is
 // ALREADY unlocked, so a compat request can't conjure a Touch ID prompt the
 // command didn't require.
 func requestRunCompat(w io.Writer, mountPaths, withNames, withMounts, argv []string, cwd string, live bool) {

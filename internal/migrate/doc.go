@@ -120,11 +120,11 @@
 // test). jit migrate local is unaffected: every file it discovers
 // genuinely is under cwd already.
 //
-// revealhook.go's InstallRevealHook is a small addition on top of the .env/npmrc
-// live-mount path (GAPS.md #2): after creating a mount, migrate best-effort
-// wires an automatic `jit agent reveal` call into whatever project-level
-// pre-run hook already exists (an existing .envrc, or package.json's
-// dev/start scripts) — the automated half of the decoy-by-default gate's
-// trust signal, on top of internal/cli/agent.go's automatic post-unlock
-// reveal window and the fully manual `jit agent reveal` command.
+// A migrated .env/npmrc becomes a decoy-by-default live mount (GAPS.md #2):
+// after migrate creates it, it serves fake placeholder values to every
+// reader. Real values reach a tool only through a `jit run` grant — env
+// injection, `jit run --live` for a tool that reads the file itself, or
+// `jit run --with` for a machine-global credential. There is no automatic
+// reveal window and no reveal-hook wiring: unlocking the vault or entering a
+// directory never makes a mount serve real values on its own.
 package migrate

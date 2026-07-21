@@ -28,8 +28,9 @@ is not authenticating one, and jit doesn't pretend otherwise (see
 "Why did that happen?" is usually asked *after* the prompt is gone.
 
 - `jit agent status` shows who unlocked the current session and what
-  dropped it, plus each mount's reveal state and what the most recent
-  reader was actually served, real or decoy, and by which process. If a
+  dropped it, plus whether each mount is decoy or grant-serving (and to
+  which run) and what the most recent reader was actually served, real or
+  decoy, and by which process. If a
   Touch ID prompt is sitting on your screen *right now*, status names what
   triggered it while it's still up - it answers immediately instead of
   waiting for the prompt to resolve.
@@ -59,7 +60,7 @@ Four kinds of event appear:
   into a prompt storm - during the pause, only an explicit
   `jit agent unlock` will prompt again.
 - **used** - what flowed through the already-open session *between* the
-  prompts: reads, stores, and reveals that rode the cached unlock,
+  prompts: reads, stores, and grants that rode the cached unlock,
   collapsed per caller (a profile resolve's burst of reads is one entry,
   not ten). The secret names are what the calling jit process reported
   about itself - useful for audit, labeled `caller-reported` because,

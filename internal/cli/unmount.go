@@ -134,8 +134,8 @@ var unmountCmd = &cobra.Command{
 			return fmt.Errorf("jit unmount: %w", err)
 		}
 
-		// The .pointers companion and the reveal hook both describe a mount
-		// that no longer exists — stale the moment the plain file is back.
+		// The .pointers companion describes a mount that no longer exists —
+		// stale the moment the plain file is back.
 		// (A real leftover: unmount used to skip these, and a later `jit
 		// migrate undo` only cleans them for still-REGISTERED mounts, so an
 		// unmount-then-undo sequence orphaned the companion for good.) Both
@@ -143,9 +143,6 @@ var unmountCmd = &cobra.Command{
 		// succeeded, so a failure warns, never fails the command.
 		if err := os.Remove(migrate.PointerFilePath(mountPath)); err != nil && !os.IsNotExist(err) {
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: removing stale pointer file for %s: %v\n", mountPath, err)
-		}
-		if err := migrate.UninstallRevealHook(filepath.Dir(mountPath), mountPath); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: removing reveal hook for %s: %v\n", mountPath, err)
 		}
 
 		fmt.Fprintf(cmd.OutOrStdout(), "Unmounted %s (%d variable(s) written back as plaintext).\n", mountPath, len(names))

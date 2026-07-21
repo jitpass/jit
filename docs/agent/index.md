@@ -7,21 +7,29 @@ description: Unlock once per session instead of once per command - a launchd-man
 
 Without the agent, every vault-touching command asks for Touch ID
 independently. With it, you unlock once and everything shares that session
-for the next 15 minutes of activity. The agent is also the process that
+for the next 5 minutes of activity. The agent is also the process that
 serves [live-mounted files](../run/mounts.md), so if you migrate a `.env`
 file, you want it installed. Everything still works without it, just with
 more prompts.
+
+The shared session covers the high-frequency paths - native credential
+hooks (`aws`, `kubectl`) and `jit run`. It deliberately does **not** cover
+the sensitive [`jit vault`](../vault/index.md) management commands
+(`get`/`set`/`rm`/`import`/`restore`/`clean`/`prune`/`delete`/`export`):
+those always require a fresh Touch ID/passcode on every run, unlocked or
+not, so a deliberate vault operation always takes a live human gesture even
+mid-session. (`list`/`history` stay prompt-free - names and timestamps only.)
 
 ## Install it once: `jit agent install`
 
 ```
 $ jit agent install
-Set up jit agent to start automatically at every login (and restart itself if it crashes), staying unlocked for up to 15m0s after each Touch ID prompt, until you run `jit agent uninstall`? [y/N] y
-Installed - jit agent now starts automatically every time you log in (survives reboots) and stays unlocked for up to 15m0s after your last Touch ID prompt.
+Set up jit agent to start automatically at every login (and restart itself if it crashes), staying unlocked for up to 5m0s after each Touch ID prompt, until you run `jit agent uninstall`? [y/N] y
+Installed - jit agent now starts automatically every time you log in (survives reboots) and stays unlocked for up to 5m0s after your last Touch ID prompt.
 ```
 
 The agent process itself runs indefinitely and never needs Touch ID just
-to exist; only the cached key inside it locks after 15 minutes of
+to exist; only the cached key inside it locks after 5 minutes of
 inactivity, re-prompting on next use. Change the window with `--ttl`
 (`jit agent install --ttl 1h`); the value is baked into the launchd plist.
 

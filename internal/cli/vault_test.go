@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -203,8 +204,21 @@ func TestVaultPathCompletionListsSecretsWithoutAuth(t *testing.T) {
 // one while keeping exactly the newest per file — the record `jit migrate
 // undo` restores from — and never touch real secrets or RemoveOnRestore
 // records (whose empty VaultPath must not wildcard-match in the drop set).
+// stubUserPresence replaces the destructive-command biometric gate with a
+// no-op for the duration of a test. The real gate calls the production
+// keychain / a live Touch ID prompt, which no automated test may touch (see
+// internal/keychainwrap's TEST-ONLY rule); a test exercising the deletion
+// itself stubs the gate, and a separate test pins that a DENIED gate aborts.
+func stubUserPresence(t *testing.T) {
+	t.Helper()
+	prev := requireUserPresence
+	requireUserPresence = func(string) error { return nil }
+	t.Cleanup(func() { requireUserPresence = prev })
+}
+
 func TestVaultPruneKeepsNewestBackupPerFile(t *testing.T) {
 	withFixtureHome(t)
+	stubUserPresence(t)
 	vaultPruneYes = true
 	t.Cleanup(func() { vaultPruneYes = false })
 	root := seedFixtureVault(t, "fixture/API_KEY")
@@ -304,6 +318,7 @@ func TestVaultCleanDeclinedConfirmationAborts(t *testing.T) {
 // a _backups/ entry) plus the undo index, and the vault stays usable.
 func TestVaultCleanRemovesEverySecret(t *testing.T) {
 	withFixtureHome(t)
+	stubUserPresence(t)
 	vaultCleanYes = true
 	t.Cleanup(func() { vaultCleanYes = false })
 	root := seedFixtureVault(t, "fixture/API_KEY")
@@ -336,6 +351,40 @@ func TestVaultCleanRemovesEverySecret(t *testing.T) {
 	}
 	if _, err := os.Stat(migrate.BackupIndexPath(root)); !os.IsNotExist(err) {
 		t.Error("undo index still exists after clean, jit migrate undo would half-fail against deleted backup secrets")
+	}
+}
+
+// TestVaultCleanDeniedPresenceGateAborts pins the security contract of the
+// destructive-command biometric gate: if the fingerprint/passcode challenge
+// is DENIED (or unavailable), the command must abort with that error and
+// delete nothing, even past the [y/N] confirm. A same-user process on an
+// unlocked session that can't produce a live human gesture must not be able
+// to wipe the vault.
+func TestVaultCleanDeniedPresenceGateAborts(t *testing.T) {
+	withFixtureHome(t)
+	prev := requireUserPresence
+	requireUserPresence = func(string) error { return errors.New("the user canceled") }
+	t.Cleanup(func() { requireUserPresence = prev })
+	vaultCleanYes = true
+	t.Cleanup(func() { vaultCleanYes = false })
+	root := seedFixtureVault(t, "fixture/API_KEY")
+
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"vault", "clean"})
+	err := rootCmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "the user canceled") {
+		t.Fatalf("expected a denied-presence error, got: %v", err)
+	}
+
+	ro := &vault.Vault{Root: root, RecipientID: "test-device"}
+	paths, listErr := ro.List()
+	if listErr != nil {
+		t.Fatalf("List after aborted clean: %v", listErr)
+	}
+	if len(paths) == 0 {
+		t.Error("secrets were deleted despite a denied biometric gate, the gate is not actually blocking")
 	}
 }
 

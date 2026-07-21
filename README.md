@@ -17,10 +17,10 @@ between your tools (and your agents) and your credentials.
 [Command reference](./docs/reference/commands/jit.md) ·
 [Security](./docs/security/architecture.md)
 
-**Decoy by default, real only when you ask.** A migrated `.env` serves
-fake-looking values to anything that reads it uninvited; the real ones appear
-only inside a short reveal window your tooling opens on purpose. Same file,
-same command, two different truths:
+**Decoy by default, real only to a run you launch.** A migrated `.env` serves
+fake-looking values to anything that reads it uninvited; the real ones flow
+only to the process tree of a `jit run` you launch on purpose. Same file, two
+different truths:
 
 ```sh
 # default: a stray cat, editor, backup, or infostealer gets a decoy
@@ -30,9 +30,9 @@ PROD_DATABASE_URL=jit-hidden-PROD_DATABASE_URL
 ```
 
 ```sh
-# inside a reveal window: the app gets the real value, briefly
-$ npm run dev
-✓ STRIPE_API_KEY  sk_live_••••4f2   (auto-expires)
+# launched through jit run: the app gets the real value, only for this run
+$ jit run -- npm run dev
+✓ STRIPE_API_KEY  sk_live_••••4f2
 ```
 
 ▶ **[Watch it flip live at jitpass.com](https://jitpass.com)**: the interactive decoy→real animation.
@@ -84,12 +84,13 @@ jit run npm run dev        # or inject secrets straight into a process, no file 
 ```
 
 **How it resolves it.** Secrets materialize at the moment of use (a process
-launch, a credential handshake, a revealed file read) and exist nowhere in
+launch, a credential handshake, a granted file read) and exist nowhere in
 plaintext the rest of the time. The vault stores each secret as an
 individually encrypted file, gated by a Touch ID/passcode challenge and
-unlocked through a background agent, so you authenticate once per session,
-not once per command. Every rewritten file is backed up (encrypted, into the
-vault) before it's touched, and `jit migrate undo` restores it
+unlocked through a background agent, so everyday commands don't each prompt
+for Touch ID (the sensitive `jit vault` commands are the deliberate
+exception, always prompting). Every rewritten file is backed up (encrypted,
+into the vault) before it's touched, and `jit migrate undo` restores it
 byte-for-byte.
 
 > **Try it without pointing it at your real machine.** The
@@ -109,7 +110,7 @@ mechanism, so everything keeps working:
 
 | Where the secret lives | Example | How it keeps working after `jit migrate` |
 | --- | --- | --- |
-| `.env` files | `DATABASE_URL=...` in a project `.env` | Live-mounted file: decoy values by default, real ones during a short revealed window |
+| `.env` files | `DATABASE_URL=...` in a project `.env` | Live-mounted file: decoy values by default, real ones only to a `jit run` grant's process tree |
 | Shell config exports | `export STRIPE_KEY=...` in `~/.zshrc` | An `eval "$(jit export ...)"` line in the config |
 | MCP server configs | project `mcp.json`, Claude Desktop config | The server command wrapped in `jit run` |
 | AWS credentials | `~/.aws/credentials` | `credential_process` in `~/.aws/config`: the CLI and SDKs fetch on demand, no file at all |
@@ -146,7 +147,7 @@ deliberate "no" into a prompt storm.
 
 ```
 Session (most recent first):
-  • locked   48m ago (11:48:04) - 15m0s idle timeout
+  • locked   48m ago (11:48:04) - 5m0s idle timeout
   • unlocked 1h ago (11:33:04) - launched by claude
       ~/go/bin/jit run --profile mcp-jamf -- uv --directory ~/Documents/…
 ```
@@ -316,8 +317,9 @@ jit status                    # 6. vault / agent / mounts / backup health, one s
 Every mutating command prints its plan and asks first; every rewritten file is
 backed up (encrypted, into the vault) before it's touched, and
 `jit migrate undo` restores any of them byte-for-byte. For the live-mounted
-files, the reveal step is wired automatically into your `.envrc` or npm
-`dev`/`start` scripts, so the common case needs no manual step.
+files, launch the tool through `jit run` (or `jit run --live` when the tool
+reads the file itself) — that's the only thing that makes a mount serve real
+values.
 
 ## Playground
 

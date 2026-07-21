@@ -51,17 +51,7 @@ type migrateSummary struct {
 	home            string
 	gitHistoryFiles []string
 	pointerFiles    int
-	hooksWired      []string
-	hooksMissing    []string
-	hookErrors      []string
 	backupOnlyFiles int
-	// pendingHookDirs/pendingHookPaths buffer recordRevealHook calls so
-	// wireRevealHooks can install each directory's hooks in ONE
-	// InstallRevealHook call — a per-mount call re-edited (and re-backed-
-	// up) the same package.json once per mount, leaving several
-	// near-identical .jit-bak siblings from a single migrate run.
-	pendingHookDirs  []string
-	pendingHookPaths map[string][]string
 	// exportNudge is set when the vault holding everything just migrated
 	// has never been exported at all — the one moment this is most worth
 	// saying, since the plaintext originals are about to be gone and the
@@ -102,46 +92,6 @@ func (s *migrateSummary) writePointerFile(mountPath, profilePath string) error {
 	return nil
 }
 
-// recordRevealHook queues mountPath for an automatic `jit agent reveal`
-// trigger in dir's pre-run hook (GAPS.md #2's ergonomic layer on top of
-// the decoy-by-default mount — see migrate.InstallRevealHook for why this
-// is best-effort and deliberately narrow). Buffered, not installed
-// immediately: wireRevealHooks later installs each directory's queued
-// mounts in one InstallRevealHook call, so one migrate run edits (and
-// backs up) a given .envrc/package.json exactly once no matter how many
-// mounts the directory produced.
-func (s *migrateSummary) recordRevealHook(dir, mountPath string) {
-	if s.pendingHookPaths == nil {
-		s.pendingHookPaths = map[string][]string{}
-	}
-	if _, seen := s.pendingHookPaths[dir]; !seen {
-		s.pendingHookDirs = append(s.pendingHookDirs, dir)
-	}
-	s.pendingHookPaths[dir] = append(s.pendingHookPaths[dir], mountPath)
-}
-
-// wireRevealHooks installs every queued reveal hook, one InstallRevealHook
-// call per directory, and records the per-mount outcomes for print. A
-// failure here is a warning, not a migrate-ending error: the manual
-// `jit agent reveal` command and the automatic post-unlock reveal window both
-// still work with no hook installed at all.
-func (s *migrateSummary) wireRevealHooks() {
-	for _, dir := range s.pendingHookDirs {
-		paths := s.pendingHookPaths[dir]
-		kind, err := migrate.InstallRevealHook(dir, paths...)
-		for _, mountPath := range paths {
-			switch {
-			case err != nil:
-				s.hookErrors = append(s.hookErrors, fmt.Sprintf("%s: %v", displayPath(s.home, mountPath), err))
-			case kind != migrate.RevealHookNone:
-				s.hooksWired = append(s.hooksWired, fmt.Sprintf("%s (%s)", displayPath(s.home, mountPath), kind))
-			default:
-				s.hooksMissing = append(s.hooksMissing, displayPath(s.home, mountPath))
-			}
-		}
-	}
-}
-
 // print renders every non-empty block collected above, once each,
 // between the per-file "Migrated ..." lines above and reportAgentStatus's
 // closing pointer below.
@@ -175,29 +125,6 @@ func (s *migrateSummary) print(w io.Writer) {
 	if s.pointerFiles > 0 {
 		sep()
 		fmt.Fprintf(w, "%d git-safe .pointers file(s) written alongside the mount(s) above, list vault paths only, safe to open or commit.\n", s.pointerFiles)
-	}
-	if len(s.hooksWired) > 0 {
-		sep()
-		fmt.Fprintf(w, "Wired an automatic reveal trigger for %d mount(s) so real values are ready right before they're read:\n", len(s.hooksWired))
-		for _, h := range s.hooksWired {
-			fmt.Fprintf(w, "  • %s\n", h)
-		}
-	}
-	if len(s.hooksMissing) > 0 {
-		sep()
-		fmt.Fprintf(w, "%d mount(s) have no project-level pre-run hook (direnv/.envrc or npm dev/start scripts):\n", len(s.hooksMissing))
-		for _, p := range s.hooksMissing {
-			fmt.Fprintf(w, "  • %s\n", p)
-		}
-		fmt.Fprintln(w, "  Run `jit agent reveal <path>` before reading one of these, or rely on the short window after unlock.")
-	}
-	if len(s.hookErrors) > 0 {
-		sep()
-		fmt.Fprintf(w, "%d mount(s) failed to wire an automatic reveal trigger:\n", len(s.hookErrors))
-		for _, e := range s.hookErrors {
-			fmt.Fprintf(w, "  • %s\n", e)
-		}
-		fmt.Fprintln(w, "  Run `jit agent reveal <path>` by hand before reading one of these, or rely on the short window after unlock.")
 	}
 	if s.exportNudge {
 		sep()

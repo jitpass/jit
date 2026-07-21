@@ -25,7 +25,6 @@ func TestMigrateSummaryPrintCollapsesRepeatedExplanations(t *testing.T) {
 	s := &migrateSummary{
 		gitHistoryFiles: []string{"/proj/.env", "/proj/.env.bak", "/proj/.env.local"},
 		pointerFiles:    3,
-		hooksMissing:    []string{"/proj/.env", "/proj/.env.bak"},
 	}
 	var buf bytes.Buffer
 	s.print(&buf)
@@ -33,9 +32,6 @@ func TestMigrateSummaryPrintCollapsesRepeatedExplanations(t *testing.T) {
 
 	if n := strings.Count(out, "jit migrate does not scrub it"); n != 1 {
 		t.Errorf("git-history explanation printed %d time(s), want exactly 1 regardless of file count:\n%s", n, out)
-	}
-	if n := strings.Count(out, "no project-level pre-run hook"); n != 1 {
-		t.Errorf("no-pre-run-hook explanation printed %d time(s), want exactly 1 regardless of file count:\n%s", n, out)
 	}
 	for _, f := range []string{"/proj/.env", "/proj/.env.bak", "/proj/.env.local"} {
 		if !strings.Contains(out, f) {
@@ -341,33 +337,6 @@ func TestMigrateLocalDryRunMatchesRealPlanExactly(t *testing.T) {
 	realPlan := strings.TrimRight(strings.Split(realOut, "\nProceed?")[0], "\n")
 	if dryPlan != realPlan {
 		t.Errorf("dry-run plan and real-run plan differ:\n--dry-run:\n%s\n--real:\n%s", dryPlan, realPlan)
-	}
-}
-
-// Issue #3: `--dry-run` is documented as previewing the full plan, but the
-// package.json reveal-hook rewrite (and its share of the change count)
-// never appeared in it — a cautious user could not see that package.json
-// would change.
-func TestMigrateLocalDryRunListsRevealHookFile(t *testing.T) {
-	withFixtureHome(t)
-	cwd := withFixtureCwd(t)
-	if err := os.WriteFile(filepath.Join(cwd, ".env"), []byte("STRIPE_KEY=sk_test_fixture\n"), 0600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	pkgPath := filepath.Join(cwd, "package.json")
-	if err := os.WriteFile(pkgPath, []byte(`{"name":"x","scripts":{"dev":"node server.js"}}`), 0600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	out, err := execMigrate(t, "local", "--dry-run")
-	if err != nil {
-		t.Fatalf("jit migrate local --dry-run: %v", err)
-	}
-	if !strings.Contains(out, pkgPath) {
-		t.Errorf("expected the plan to list the package.json the reveal hook will rewrite, got:\n%s", out)
-	}
-	if !strings.Contains(out, "2 change(s) planned across 2 categories") {
-		t.Errorf("expected the hook rewrite counted as a planned change, got:\n%s", out)
 	}
 }
 

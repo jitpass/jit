@@ -38,7 +38,7 @@ Secrets materialize at the moment of use and nowhere else:
   into exactly one process's environment, then `execve` - jit's own process
   image is replaced, so jit is gone from memory when your command runs.
 - [Live mounts](../run/mounts.md) are named pipes: nothing is on disk, and
-  reads outside a revealed window get decoy values, not secrets. Under
+  reads outside a `jit run` grant get decoy values, not secrets. Under
   `jit run` the mount is either swapped for an inert comment-only file (the
   default - real values reach the command through the environment, never the
   file) or, with `--live`, kept as a pipe that serves real values only to
@@ -78,10 +78,19 @@ names the caller in the Touch ID prompt and in
 [`jit agent history`](../agent/provenance.md), but it is not
 authentication, and jit does not pretend a process name is a security
 boundary. The human approving the prompt is the decision point; the cached
-session locks after its TTL (default 15 minutes), on `jit agent lock`,
-and the moment the screen locks or the machine sleeps - the idle TTL is
-a proxy for "the user left," and those two events are the OS saying so
-outright.
+session locks after its TTL (default 5 minutes, user-configurable with
+`--ttl`), on `jit agent lock`, and the moment the screen locks or the
+machine sleeps - the idle TTL is a proxy for "the user left," and those two
+events are the OS saying so outright.
+
+The cached session covers only the high-frequency paths (native credential
+hooks and `jit run`). The sensitive `jit vault` management commands
+(`get`/`set`/`rm`/`import`/`restore`/`clean`/`prune`/`delete`/`export`)
+deliberately bypass it and require a fresh Touch ID/passcode on every
+invocation, locked or not - so a process running as you on an unlocked
+machine still cannot read, dump, or destroy the vault without a live human
+gesture. Only `list`/`history` (names and version timestamps, never a value)
+are prompt-free.
 
 ## Deliberate limits
 
@@ -96,9 +105,10 @@ compromised user account safe. The boundaries worth knowing:
   committed still has its old value in `git log -p`; `migrate` warns, and
   the fix is rotating that credential.
 - **While real values are available, a mount serves them to readers.**
-  That happens during a revealed window (short, attributed, observable via
-  `jit agent status`), and under a `jit run --live` grant (scoped to that
-  run's process tree, for its lifetime, per-read by process ancestry). The
+  That happens only under a `jit run --live`/`--with` grant (scoped to that
+  run's process tree, for its lifetime, per-read by process ancestry, and
+  observable via `jit agent status`). There is no ambient reveal window:
+  unlocking the vault never makes a mount serve real values on its own. The
   ancestry check narrows a grant; it is never the security boundary on its
   own - the boundary is the grant, issued only to a run the user authorized.
 
