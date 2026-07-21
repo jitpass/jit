@@ -166,6 +166,24 @@ var catalog = map[string]CatalogEntry{
 		},
 		VerifyHint: "supabase projects list",
 	},
+	"wrangler": {
+		Tool:    "wrangler",
+		Kind:    KindShim,
+		Doc:     "Cloudflare API token for the Workers CLI",
+		EnvVars: map[string]string{"CLOUDFLARE_API_TOKEN": "CLOUDFLARE_API_TOKEN"}, // #nosec G101 -- env var name, not a credential
+		Order:   []string{"CLOUDFLARE_API_TOKEN"},
+		// No Sources. `wrangler login` writes a short-lived OAuth access
+		// token (refresh-only) to ~/.config/.wrangler/config/default.toml,
+		// and newer wrangler encrypts even that into default.enc with the key
+		// in the OS keychain, so there's usually no durable plaintext to
+		// migrate. CLOUDFLARE_API_TOKEN, which the shim injects and which
+		// wrangler treats as its highest-priority credential, expects a
+		// durable API token from the Cloudflare dashboard. Wrap is for those
+		// setups: `jit vault set wrap-wrangler/CLOUDFLARE_API_TOKEN` first.
+		// Auto-migrating the OAuth token would yield a wrap that breaks the
+		// moment it expires.
+		VerifyHint: "wrangler whoami",
+	},
 	"openai": {
 		Tool:    "openai",
 		Kind:    KindShim,
