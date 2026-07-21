@@ -48,6 +48,20 @@ func noteNamespaceMove(w io.Writer, movedFrom, profileName string) {
 	_, _ = color.New(color.FgYellow).Fprintf(w, "    note: vault namespace %q already holds a different migration's secrets, this file's secrets live under %q instead\n", movedFrom, profileName)
 }
 
+// noteFolderRename warns, when a project's folder has been renamed since its
+// .env was migrated, that the vault still labels this project's secrets under
+// the OLD folder name. Purely informational: the secrets keep working (the
+// pointer files and manifests carry the frozen vault paths untouched), the
+// name is just cosmetic. Shared by jit migrate (local mode) and jit status;
+// stays silent unless migrate.DetectRenamedRootProject is confident.
+func noteFolderRename(w io.Writer, root string) {
+	oldName, newName, ok := migrate.DetectRenamedRootProject(root)
+	if !ok {
+		return
+	}
+	_, _ = color.New(color.FgYellow).Fprintf(w, "note: this project's folder was renamed after migration (migrated as %q, now %q). Nothing is broken: your secrets still work and jit keeps serving them under the original %q label, which is only cosmetic. No action is needed. Run `jit profile show %s` to see where they live, or `jit doctor` to verify the vault is healthy.\n", oldName, newName, oldName, oldName)
+}
+
 // printSkippedFindings renders one whole-machine-sweep skip note: a
 // yellow headline with the count and reason, then the skipped paths
 // themselves, then an optional hint line. Listing the paths is the point
@@ -851,6 +865,13 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 	summary.wireRevealHooks()
 	summary.print(out)
 	reportAgentStatus(out, root, len(envFiles) > 0 || len(npmrcFiles) > 0 || len(gcpADCFiles) > 0 || len(sopsAgeFiles) > 0 || len(netrcFiles) > 0)
+	// Local mode only: the check reads pointer companions under the project
+	// root, which is cwd here but an unrelated per-file directory in home
+	// mode (deriveProfileName's profilesRoot comment) — a home sweep has no
+	// single "this project" whose rename to flag.
+	if !wholeHome {
+		noteFolderRename(out, cwd)
+	}
 	return nil
 }
 
