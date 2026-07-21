@@ -119,7 +119,8 @@ var migrateCmd = &cobra.Command{
 		"                       under $HOME, plus the machine-wide files that live at\n" +
 		"                       fixed home paths (shell configs, ~/.aws/credentials,\n" +
 		"                       ~/.kube/config, Terraform Cloud credentials,\n" +
-		"                       ~/.docker/config.json registry logins, GCP\n" +
+		"                       ~/.docker/config.json registry logins,\n" +
+		"                       ~/.git-credentials HTTPS logins, GCP\n" +
 		"                       application-default credentials, Claude Desktop's MCP\n" +
 		"                       config, the global ~/.npmrc)\n\n" +
 		"Every run prints the full plan and asks for confirmation before touching\n" +
@@ -150,9 +151,9 @@ var migrateLocalCmd = &cobra.Command{
 	Long: "Converts findings under the current directory tree ONLY, nothing outside\n" +
 		"the project you're standing in is discovered or touched. Machine-wide files\n" +
 		"(shell configs, AWS, kubeconfig, Terraform Cloud, Docker registry logins,\n" +
-		"GCP application-default credentials, Claude Desktop's config, the global\n" +
-		"~/.npmrc) live at fixed paths under $HOME, so only `jit migrate home` ever\n" +
-		"includes them.\n\n" +
+		"git HTTPS logins, GCP application-default credentials, Claude Desktop's\n" +
+		"config, the global ~/.npmrc) live at fixed paths under $HOME, so only\n" +
+		"`jit migrate home` ever includes them.\n\n" +
 		"What happens per category:\n\n" +
 		"  .env files   Keys move into a profile and the vault; the file itself keeps\n" +
 		"               working as a live mount served by jit agent, showing\n" +
@@ -207,6 +208,12 @@ var migrateHomeCmd = &cobra.Command{
 		"                   pulls too). Never replaces an existing credential store\n" +
 		"                   like Docker Desktop's; jit becomes the default store only\n" +
 		"                   when the config had none at all.\n" +
+		"  git              plaintext HTTPS logins in ~/.git-credentials move into the\n" +
+		"                   vault; git fetches them through its own credential-helper\n" +
+		"                   protocol (credential.helper set to jit, the plaintext\n" +
+		"                   `store` helper replaced), so `git push`/`fetch` over HTTPS\n" +
+		"                   keep working. A secure helper like osxkeychain is left in\n" +
+		"                   place.\n" +
 		"  GCP              ~/.config/gcloud/application_default_credentials.json's\n" +
 		"                   refresh token (or a service account key's private key)\n" +
 		"                   moves into the vault; the file keeps working as a live\n" +

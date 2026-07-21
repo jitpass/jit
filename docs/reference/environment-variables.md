@@ -23,10 +23,11 @@ their token in the variable the tool documents:
 | `vercel` | `VERCEL_TOKEN` |
 | `railway` | `RAILWAY_TOKEN` |
 | `databricks` | `DATABRICKS_TOKEN` |
+| `wrangler` | `CLOUDFLARE_API_TOKEN` |
 | `openai` | `OPENAI_API_KEY` |
 
-(`aws` and `terraform` don't inject variables - they use [native
-credential hooks](../wrap/index.md#native-hook-plugins-no-shim--stronger).)
+(`aws`, `terraform`, `docker`, and `git` don't inject variables - they use
+[native credential hooks](../wrap/index.md#native-hook-plugins-no-shim--stronger).)
 
 An injected variable exists only inside that one process, for its
 lifetime - it is never exported to your shell or written anywhere.

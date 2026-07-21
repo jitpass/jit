@@ -1,6 +1,6 @@
 ---
 title: Plumbing protocols
-description: The commands other tools invoke - aws-credential-process, k8s-exec-credential, terraform-credentials, docker-credential.
+description: The commands other tools invoke - aws-credential-process, k8s-exec-credential, terraform-credentials, docker-credential, git-credential.
 ---
 
 # Plumbing protocols
@@ -54,5 +54,19 @@ vault unlock inside headless docker calls). Invoked through the
 `docker-credential-jit` script [the Docker migration](../migrate/docker.md)
 writes, wired into `~/.docker/config.json`.
 
+## `jit git-credential <get|store|erase>`
+
+Implements git's [credential-helper protocol][git-cred], `key=value` attributes on
+stdin (`protocol`, `host`, `path`, `username`, `password`): `get` reads a
+host and prints the matching `username=`/`password=` pair (or nothing, so
+git falls through to its next helper or prompt with no Touch ID); `store`
+saves a login into the vault (a `git push` that authenticated with a
+typed-in password afterward lands there, not back in plaintext); `erase`
+removes it. Keys on host alone, matching git's default
+(`credential.useHttpPath=false`). Invoked through the `git-credential-jit`
+script [the git migration](../migrate/git.md) writes, with
+`credential.helper` set to `jit` in your git config.
+
 [`credential_process`]: https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sourcing-external.html
 [credential-helper protocol]: https://docs.docker.com/reference/cli/docker/login/#credential-helper-protocol
+[git-cred]: https://git-scm.com/docs/gitcredentials#_custom_helpers
