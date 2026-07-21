@@ -166,6 +166,7 @@ var statusCmd = &cobra.Command{
 			return writeJSON(cmd.OutOrStdout(), result)
 		}
 		printStatusText(cmd.OutOrStdout(), result)
+		noteFolderRename(cmd.OutOrStdout(), cwd)
 		return nil
 	},
 }
