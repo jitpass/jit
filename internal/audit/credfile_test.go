@@ -5,6 +5,7 @@ package audit
 
 import (
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -213,6 +214,47 @@ machine ftp.example.com login bob password ftpsecretexample
 	}
 	if _, ok := byKey["ftp.example.com"]; !ok {
 		t.Error("expected a finding keyed by machine ftp.example.com")
+	}
+}
+
+func TestScanGitCredentials(t *testing.T) {
+	home := t.TempDir()
+	// Two plaintext logins in the classic store, a malformed line and a
+	// password-less line (both skipped), plus one login in the XDG store.
+	writeFile(t, filepath.Join(home, ".git-credentials"), strings.Join([]string{
+		"https://octocat:ghp_exampletoken@github.com",
+		"https://bob:s3cret@ghe.example.com",
+		"https://noPasswordHere@nopass.example.com",
+		"not a url",
+		"",
+	}, "\n"))
+	mkdirAll(t, filepath.Join(home, ".config", "git"))
+	writeFile(t, filepath.Join(home, ".config", "git", "credentials"), "https://carol:tok@gitlab.example.com\n")
+
+	findings, err := scanGitCredentials(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("scanGitCredentials: %v", err)
+	}
+	if len(findings) != 3 {
+		t.Fatalf("got %d findings, want 3 (two hosts in ~/.git-credentials, one in the XDG store)", len(findings))
+	}
+	byKey := map[string]Finding{}
+	for _, f := range findings {
+		byKey[*f.KeyName] = f
+	}
+	for _, host := range []string{"github.com", "ghe.example.com", "gitlab.example.com"} {
+		if _, ok := byKey[host]; !ok {
+			t.Errorf("expected a finding keyed by host %q", host)
+		}
+	}
+	if f := byKey["github.com"]; f.FindingType != FindingTypeCredentialFile || !strings.Contains(f.Evidence, "jit wrap git") {
+		t.Errorf("github.com finding = %+v, want a credential-file finding whose evidence points at `jit wrap git`", f)
+	}
+}
+
+func TestScanGitCredentialsMissing(t *testing.T) {
+	if findings, err := scanGitCredentials(Config{HomeDir: t.TempDir()}); err != nil || len(findings) != 0 {
+		t.Fatalf("missing files: findings=%v err=%v, want none", findings, err)
 	}
 }
 
