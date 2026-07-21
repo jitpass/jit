@@ -10,8 +10,8 @@ A project or global `.npmrc` often carries registry auth in plaintext
 settings. `jit migrate` (category `npmrc`) moves **just the secret lines**
 into the vault and replaces the file with a [live
 mount](../run/mounts.md) serving a template: the non-secret settings pass
-through untouched, and the token slots fill from the vault only during a
-revealed window.
+through untouched, and the token slots fill from the vault only for a
+`jit run` grant's own process tree.
 
 ## What to expect
 
@@ -22,12 +22,13 @@ revealed window.
   needed. The **global** `~/.npmrc` is machine-wide, so it is never granted
   automatically: name it explicitly with `jit run --with npm -- npm ci`,
   which prompts a disclosed Touch ID and scopes the token to that run.
-  Outside a grant they see placeholder values, `jit agent status` shows what
-  the last reader was served, and `jit agent reveal <path>` opens a window.
+  Outside a grant they see placeholder values (that's the point — launch npm
+  through `jit run`); `jit agent status` shows what the last reader was
+  served.
 - The global `~/.npmrc` is machine-wide, so it's covered by
   `jit migrate home`; a project `.npmrc` is covered by `local` too.
 - Rotating a token: `jit vault set` on the path shown in the mount's
-  pointers file - the next revealed read serves it.
+  pointers file - the next granted read serves it.
 
 Reversing: `jit unmount <path>` writes the file back plain, or
 [`jit migrate undo`](./undo-and-remove.md) restores the original bytes.

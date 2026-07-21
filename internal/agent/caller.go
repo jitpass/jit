@@ -150,8 +150,6 @@ func intent(op string, c *caller) string {
 		return "unlock the vault to store a secret"
 	case OpUnwrap:
 		return "unlock the vault to read a secret"
-	case OpReveal:
-		return "unlock the vault to reveal a mounted file"
 	case opServeMounts:
 		return "unlock the vault to serve this project's mounted files"
 	default: // OpUnlock, OpRefresh, and anything added later
@@ -178,8 +176,6 @@ func DescribeUse(op string) string {
 		return "stored a secret"
 	case OpUnwrap:
 		return "read a secret"
-	case OpReveal:
-		return "revealed a mounted file"
 	case OpRefresh:
 		return "refreshed mounts"
 	case OpUnlock:

@@ -16,8 +16,8 @@ the vault and replaces `~/.netrc` with a [live mount](../run/mounts.md)
 serving a template: `machine`/`default`/`login`/`account` lines, blank
 lines, indentation, and any `macdef` scripts pass through byte-for-byte -
 only the password values themselves are filled in from the vault, and
-only for a run you explicitly grant it to (`jit run --with netrc`) or
-during a post-unlock reveal window. `login` values are left alone: by
+only for a run you explicitly grant it to (`jit run --with netrc`).
+`login` values are left alone: by
 convention (curl's own docs, GitHub's PAT-over-HTTPS setup) the field
 named `password` is the credential and `login` is a username, not a
 secret.
@@ -37,13 +37,9 @@ there's no equivalent "inject it into the environment" shortcut here.
 To keep typing `curl`/`git` directly, `jit wrap add <tool> --grant netrc`
 installs a shim that grants the file per invocation.
 
-**Or use a reveal window:** right after `jit agent` unlocks (Touch ID),
-every migrated mount serves real content for a short default window -
-enough for a script that reads `~/.netrc` once at the top of a session.
-
 ## What to expect
 
-- Outside a granted run (and outside a reveal window), a reader of
+- Outside a granted run, a reader of
   `~/.netrc` sees fixed placeholder passwords - curl/git fail fast with a
   clear auth error instead of silently trying a garbage credential against
   a live server.

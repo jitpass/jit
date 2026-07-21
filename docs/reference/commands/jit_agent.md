@@ -12,11 +12,12 @@ created.
 `jit agent install` sets it up to start automatically every time you log
 in (and restart itself if it crashes). The helper process itself needs no
 Touch ID just to keep running, only your unlocked session inside it locks
-after --ttl of inactivity (default 15m), prompting again on next use.
+after --ttl of inactivity (default 5m), prompting again on next use.
 
-A live-mounted file shows fake-looking values until revealed, and real values
-only during a short window, opened automatically right after unlock/
-refresh, or explicitly via `jit agent reveal`.
+A live-mounted file shows fake-looking values by default. Real values flow
+only to a `jit run` grant's own process tree: `jit run --live` for a project
+mount, `jit run --with` for a global credential. Unlocking the vault never
+makes a mount serve real values on its own.
 
 ### SEE ALSO
 
@@ -26,7 +27,6 @@ refresh, or explicitly via `jit agent reveal`.
 * [jit agent lock](jit_agent_lock.md)	 - Lock the running agent's session immediately, without waiting for the TTL
 * [jit agent log](jit_agent_log.md)	 - Show the agent's own log (session events, mount reads, serve errors)
 * [jit agent restart](jit_agent_restart.md)	 - Restart the agent process (picks up a newly built or updated jit binary)
-* [jit agent reveal](jit_agent_reveal.md)	 - Temporarily show real secret values in a live-mounted file
 * [jit agent run](jit_agent_run.md)	 - Run the agent in the foreground (normally started by launchd, not by hand)
 * [jit agent status](jit_agent_status.md)	 - Show whether the agent is running, and whether its session is unlocked
 * [jit agent uninstall](jit_agent_uninstall.md)	 - Stop jit agent and remove it from login startup

@@ -13,6 +13,10 @@ secret was last updated, which profiles reference it, and the config
 file its migration recorded as the source. Piped or redirected output
 receives the value only, never the footer.
 
+Requires a fresh Touch ID/passcode on every run, never the cached agent
+session, so a decrypted secret can never be read silently, even on an
+already-unlocked machine.
+
 ```
 jit vault get <path> [flags]
 ```

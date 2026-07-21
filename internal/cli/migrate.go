@@ -157,9 +157,9 @@ var migrateLocalCmd = &cobra.Command{
 		"What happens per category:\n\n" +
 		"  .env files   Keys move into a profile and the vault; the file itself keeps\n" +
 		"               working as a live mount served by jit agent, showing\n" +
-		"               fake-looking values until revealed (`jit agent reveal`, wired\n" +
-		"               automatically into an existing .envrc or package.json\n" +
-		"               dev/start script when one exists). A git-safe <file>.pointers\n" +
+		"               fake-looking values by default. Real values reach a tool\n" +
+		"               through `jit run` (env injection, or `jit run --live` for a\n" +
+		"               tool that reads the file itself). A git-safe <file>.pointers\n" +
 		"               companion is written alongside, listing vault paths only,\n" +
 		"               always safe to open or commit.\n" +
 		"  tfvars       Secret-shaped `name = \"value\"` assignments in terraform.tfvars\n" +
@@ -487,7 +487,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 	// work that's about to be aborted anyway. This same plan is what
 	// --dry-run prints too (see below) — one rendering path, so the
 	// preview you confirm against is exactly the preview --dry-run shows.
-	printMigratePlan(cmd.OutOrStdout(), home, wholeHome, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, planRevealHooks(home, envFiles, npmrcFiles))
+	printMigratePlan(cmd.OutOrStdout(), home, wholeHome, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles)
 	printSkippedFindings(cmd.OutOrStdout(), home, len(skippedArchived), "under an archived/backup-looking directory", skippedArchived,
 		"Rerun with --include-archived to include them.")
 	printSkippedFindings(cmd.OutOrStdout(), home, len(skippedPlayground), "inside a jitpass-playground checkout (synthetic bait, not real exposure)", skippedPlayground,
@@ -583,7 +583,6 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 			}
 			fmt.Fprintf(out, "  • %s -> profile %q (%d var(s)); backup: `jit vault get %s`\n", displayPath(home, envPath), result.ProfileName, len(result.Variables), result.BackupPath)
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
-			summary.recordRevealHook(filepath.Dir(result.EnvPath), result.EnvPath)
 		}
 		fmt.Fprintln(out)
 	}
@@ -797,9 +796,8 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 			fmt.Fprintf(out, "  • %s (%s) -> profile %q (%d var(s)); backup: `jit vault get %s`\n",
 				displayPath(home, adcPath), result.CredType, result.ProfileName, len(result.Variables), result.BackupPath)
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
-			// A machine-global mount with no project directory to hang a
-			// reveal hook on: usage is explicit `jit run --with` intent (plan
-			// §12a), so name the tools and the command right here.
+			// A machine-global mount: usage is explicit `jit run --with` intent
+			// (plan §12a), so name the tools and the command right here.
 			if g, ok := globalMountGuidanceForPath(home, adcPath); ok {
 				fmt.Fprintf(out, "    tools that read it (%s): jit run --with %s <command>\n", g.tools, g.name)
 				fmt.Fprintf(out, "    or, to keep typing gcloud directly: jit wrap add gcloud --grant %s\n", g.name)
@@ -829,10 +827,9 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 			// Two consumption paths, user's pick: the live mount serves the
 			// key file itself (any sops version, kluctl's embedded sops,
 			// anything else that reads keys.txt), while sops v3.10+ can skip
-			// the file entirely via its native command hook. Like the global
-			// ~/.npmrc, keys.txt isn't tied to any one project directory, so
-			// there's no project-level reveal hook to wire — print the hook
-			// one-liner instead.
+			// the file entirely via its native command hook. keys.txt is a
+			// machine-global mount: usage is explicit `jit run --with sops`
+			// intent — print the one-liner instead.
 			fmt.Fprintf(out, "    sops v3.10+ can fetch it directly: export SOPS_AGE_KEY_CMD=\"jit sops-age-key\"\n")
 			fmt.Fprintf(out, "    older sops/kluctl read the mounted file: jit run --with sops -- kluctl deploy\n")
 		}
@@ -865,16 +862,12 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 			fmt.Fprintf(out, "  • %s -> profile %q (%d var(s)); backup: `jit vault get %s`\n",
 				displayPath(home, npmrcPath), result.ProfileName, len(result.Variables), result.BackupPath)
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
-			if npmrcPath != migrate.GlobalNpmrcPath(home) {
-				// The global ~/.npmrc isn't tied to any one project
-				// directory, so there's no single project-level hook
-				// (.envrc/package.json) to wire a reveal call into — only a
-				// project-local .npmrc has a natural "dir" for this.
-				summary.recordRevealHook(filepath.Dir(npmrcPath), npmrcPath)
-			} else if g, ok := globalMountGuidanceForPath(home, npmrcPath); ok {
-				// The global ~/.npmrc is a machine-wide mount: usage is
-				// explicit `jit run --with npm` intent (plan §12a).
-				fmt.Fprintf(out, "    %s read it with: jit run --with %s <command>\n", g.tools, g.name)
+			if npmrcPath == migrate.GlobalNpmrcPath(home) {
+				if g, ok := globalMountGuidanceForPath(home, npmrcPath); ok {
+					// The global ~/.npmrc is a machine-wide mount: usage is
+					// explicit `jit run --with npm` intent (plan §12a).
+					fmt.Fprintf(out, "    %s read it with: jit run --with %s <command>\n", g.tools, g.name)
+				}
 			}
 		}
 		fmt.Fprintln(out)
@@ -899,9 +892,7 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 				displayPath(home, netrcPath), result.ProfileName, len(result.Variables), result.BackupPath)
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
 			// ~/.netrc is a machine-wide mount, same as the global ~/.npmrc:
-			// usage is explicit `jit run --with netrc` intent (plan §12a), not
-			// a project-directory reveal hook (nothing project-local to wire
-			// one into).
+			// usage is explicit `jit run --with netrc` intent (plan §12a).
 			if g, ok := globalMountGuidanceForPath(home, netrcPath); ok {
 				fmt.Fprintf(out, "    %s read it with: jit run --with %s <command>\n", g.tools, g.name)
 			}
@@ -915,7 +906,6 @@ func runMigrate(cmd *cobra.Command, wholeHome bool) error {
 		summary.exportNudge = true
 	}
 
-	summary.wireRevealHooks()
 	summary.print(out)
 	reportAgentStatus(out, root, len(envFiles) > 0 || len(npmrcFiles) > 0 || len(gcpADCFiles) > 0 || len(sopsAgeFiles) > 0 || len(netrcFiles) > 0)
 	// Local mode only: the check reads pointer companions under the project

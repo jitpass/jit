@@ -56,9 +56,9 @@ type grantVerdict struct {
 
 // validateGrantMount is revealForPID's grant-mode check for one mount: it
 // must be currently served AND have real content resolved. The real-content
-// rule is revealMount's honesty rule (GAPS.md #46): a "grant" on a mount
-// that can only serve decoys would report success while changing nothing. A
-// non-nil error is the skip reason revealForPID logs and collects.
+// rule is the GAPS.md #46 honesty rule: a "grant" on a mount that can only
+// serve decoys would report success while changing nothing. A non-nil error
+// is the skip reason revealForPID logs and collects.
 func (m *mountManager) validateGrantMount(path string) error {
 	m.mu.Lock()
 	sm, served := m.served[path]
@@ -98,17 +98,17 @@ func (m *mountManager) canGrantAll(mounts []agent.RunMount) error {
 }
 
 // serveContent is the ONE content decision, called by mount.Serve on every
-// reader rendezvous. Real content flows when the mount is revealed (a
-// window) OR authorized by a run-scoped grant (this run's tree); decoy
-// otherwise. With no grant runs anywhere the grant gate is skipped outright
-// (the grantModeRuns fast path), so an ungranted mount pays exactly what it
-// did before grants existed. A swapped mount never reaches here — it's a
-// plain file with no Serve goroutine.
+// reader rendezvous. Real content flows ONLY when the read is authorized by
+// a run-scoped grant (this run's own process tree, jit run --live / --with);
+// every other reader gets decoys. There is no reveal window: unlocking the
+// vault never makes a mount serve real. With no grant runs anywhere the
+// grant gate is skipped outright (the grantModeRuns fast path), so an
+// ungranted mount pays exactly what it did before grants existed. A swapped
+// mount never reaches here — it's a plain file with no Serve goroutine.
 func (m *mountManager) serveContent(path string, sm *servedMount) []byte {
-	revealed := sm.reveal.IsRevealed()
-	authorized := revealed
+	authorized := false
 	grantServed := false
-	if !authorized && atomic.LoadInt32(&m.grantModeRuns) > 0 {
+	if atomic.LoadInt32(&m.grantModeRuns) > 0 {
 		if m.grantAuthorizes(path, sm) {
 			authorized = true
 			grantServed = true

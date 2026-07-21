@@ -39,10 +39,14 @@ account safe.
   named-pipe mount that serves decoys by default and real content only to an
   authorized run's process tree.
 - **The agent.** A background process holds the unlocked session for a TTL
-  (default 15 minutes) so the user is not prompted per command. It identifies
-  every caller from the kernel (socket peer credentials, then pid, command,
-  and parent chain), never from anything the caller claims. It re-locks on the
-  TTL, on screen lock, and on sleep.
+  (default 5 minutes, configurable) so the user is not prompted per command on
+  the high-frequency paths (native hooks, `jit run`). It identifies every
+  caller from the kernel (socket peer credentials, then pid, command, and
+  parent chain), never from anything the caller claims. It re-locks on the
+  TTL, on screen lock, and on sleep. The sensitive `jit vault` management
+  commands bypass the session entirely and require a fresh Touch ID/passcode
+  every time, so an unlocked session can't be used to read or destroy the
+  vault silently.
 
 ## The machine-global invariant
 

@@ -222,18 +222,6 @@ func (c *Client) Refresh() error {
 	return err
 }
 
-// Reveal asks the agent to serve mountPath's real content for the next
-// duration (ensuring the session is unlocked first, challenging if
-// needed) — the explicit half of GAPS.md #2's decoy-by-default gate,
-// alongside the automatic post-unlock reveal window OnUnlock/OnRefresh
-// trigger. The agent-side handler (internal/cli/agent.go's mountManager)
-// clamps duration to a maximum; Client makes no assumption about what
-// that maximum is.
-func (c *Client) Reveal(mountPath string, duration time.Duration) error {
-	_, err := c.call(Request{Op: OpReveal, MountPath: mountPath, RevealSeconds: int64(duration.Seconds())})
-	return err
-}
-
 // RevealForPID asks the agent to serve real content on each of mountPaths
 // to pid's process tree for as long as that process lives (ensuring the
 // session is unlocked first, challenging if needed). jit run calls this

@@ -26,12 +26,6 @@ up content is written back. The current content is snapshotted into the
 vault before being overwritten, so an undo is itself undoable, nothing
 is ever simply destroyed.
 
-It also reverses the `jit agent reveal` hook migrate wired into a
-mount's .envrc/package.json, surgically, removing only jit's own
-marked command for the mount being restored, so a script you edited
-yourself is never touched and another mount's hook is left intact. Once
-a hook file has no jit command left, its .jit-bak backup is cleaned up.
-
 What it deliberately does NOT do: vault secrets and profile manifests
 stay (`jit migrate remove` deletes a project's completely).
 

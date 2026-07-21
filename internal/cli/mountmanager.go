@@ -28,18 +28,6 @@ import (
 // reviewed) in one place without plist templates and flag registration in
 // between. The agent commands that drive it stay in agent.go.
 
-// revealDefaultWindow is how long a mount serves real content automatically
-// after a fresh unlock or an explicit jit migrate refresh (OnUnlock/
-// OnRefresh) — the ergonomic default so a dev server started right after
-// unlocking "just works" without a human remembering to reveal anything by
-// hand. revealMaxWindow bounds an explicit `jit agent reveal --for` request:
-// without a ceiling, "reveal forever" would silently recreate the exact
-// always-real exposure the decoy gate exists to avoid (GAPS.md #2).
-const (
-	revealDefaultWindow = 60 * time.Second
-	revealMaxWindow     = 10 * time.Minute
-)
-
 // A file watcher that re-reads a mount on every change can drive serve
 // cycles continuously (GAPS.md #47: the EPIPE-reuse fix starves the loop
 // for early-close watcher reads, but a read that DRAINS the content still
@@ -186,9 +174,9 @@ type serveRecord struct {
 	decoy  bool
 	reader readerIdentity
 	// grantServed marks a real serve authorized by a run-scoped grant
-	// (mountgrants.go) rather than a reveal window — status distinguishes
-	// them because their stories differ: a window says "anything could have
-	// read real values then", a grant says "only this run's tree could".
+	// (mountgrants.go) — which is the only way real content ever flows now.
+	// Status reports it so a real serve reads as "only this run's tree could
+	// have read it", never an ambient exposure.
 	grantServed bool
 }
 
@@ -213,8 +201,7 @@ type servedMount struct {
 	// different mount with no reader connected at that moment worked
 	// fine, which is what pointed at a timing race rather than a
 	// deterministic bug.
-	done   chan struct{}
-	reveal *mount.RevealState
+	done chan struct{}
 
 	mu    sync.Mutex
 	decoy []byte
@@ -225,12 +212,12 @@ type servedMount struct {
 	// session locked can't re-arm real content on a mount the lock just
 	// cleared — the race that let a mount serve real values while `jit agent
 	// status` reported "locked". serveContent gates real content on real !=
-	// nil + reveal/grant, never on the session directly, so keeping real
+	// nil + an active grant, never on the session directly, so keeping real
 	// truthfully nil while locked is what the whole guarantee rests on.
 	gen uint64
 	// lastResolveErr is why real is still nil (or last failed to refresh) —
-	// what revealMount puts in its refusal so `jit agent reveal` can say WHY
-	// revealing can't serve anything real, instead of that living only in the
+	// what a grant's refusal carries so `jit run --live/--with` can say WHY
+	// it can't serve anything real, instead of that living only in the
 	// agent's own log (GAPS.md #46). Cleared on every successful resolve.
 	lastResolveErr string
 	// pendingReader is set by the onReaderConnected hook (which mount.Serve
@@ -372,9 +359,9 @@ func (m *mountManager) ensureServing(entries []mount.Entry) {
 		// these values are and the one command that fixes it, instead of
 		// debugging `jit-hidden-*` strings through their app's own
 		// error output. Real content never carries this line.
-		decoy = append(mount.DecoyNotice(entry.MountPath), decoy...)
+		decoy = append(mount.DecoyNotice(), decoy...)
 
-		sm := &servedMount{reveal: mount.NewRevealState(), decoy: decoy, done: make(chan struct{})}
+		sm := &servedMount{decoy: decoy, done: make(chan struct{})}
 		ctx, cancel := context.WithCancel(context.Background())
 		sm.cancel = cancel
 
@@ -409,10 +396,10 @@ func (m *mountManager) ensureServing(entries []mount.Entry) {
 		}(entry.MountPath, sm)
 
 		// serveContent (mountgrants.go) is the single content decision:
-		// reveal window OR run-scoped grant, decoy otherwise. It needs the
-		// mount path for the grant gate's holder scan; with no grant run
-		// active the gate is skipped and a read costs exactly what a bare
-		// reveal decision did.
+		// real only to a run-scoped grant's process tree, decoy otherwise.
+		// It needs the mount path for the grant gate's holder scan; with no
+		// grant run active the gate is skipped and a read costs exactly what
+		// a bare decoy decision did.
 		provideContent := func(path string, sm *servedMount) func() []byte {
 			return func() []byte { return m.serveContent(path, sm) }
 		}(entry.MountPath, sm)
@@ -474,33 +461,14 @@ func (m *mountManager) ensureServing(entries []mount.Entry) {
 // skip here meant nothing ever invalidated it short of a full lock. The
 // decrypt cost is per unlock/refresh EVENT, not per read, so always
 // re-resolving is cheap; a resolution failure logs and keeps whatever
-// content the mount already had rather than downgrading it. Every
-// entry that resolves successfully also gets the ergonomic default reveal
-// window (GAPS.md #2): a human just proved presence (Touch ID) or jit
-// migrate just registered a mount it wants to work immediately, so a dev
-// server started right after either event gets real content without
-// anyone typing `jit agent reveal` by hand. A mount whose resolution FAILED
-// gets no window — revealing it would only put a live "revealed" countdown in
-// status while every read keeps serving decoys (GAPS.md #46).
+// content the mount already had rather than downgrading it.
 //
-// That default window is a FLOOR, never a reset (GAPS.md #38, a real,
-// reported bug: an explicit `jit agent reveal --for 5m` got silently cut
-// down to revealDefaultWindow — 60s — the moment ANY later OnUnlock/OnRefresh
-// fired, e.g. an unrelated command triggering a fresh Touch ID challenge
-// or another `jit migrate` run's own Refresh call). RevealState.Reveal always
-// sets the expiry to exactly d from now, so calling it unconditionally
-// here would shorten a deliberately-longer window right along with
-// extending a shorter or expired one — only bump a mount up to the
-// default when it currently has LESS time left than that, never when it
-// has more.
-//
-// floorReveal gates only that default-window grant, not the resolution: an
-// reveal-driven unlock (OnUnlockForReveal → startForReveal) still resolves every
-// mount's real content — so the explicit `jit agent reveal <path>` that
-// triggered it can't be refused for "nothing real resolved" — but passes
-// floorReveal=false so it floor-reveals NONE of them, leaving revealMount to reveal the
-// single path the user actually named. A plain unlock/refresh passes true.
-func (m *mountManager) resolveReal(entries []mount.Entry, v *vault.Vault, floorReveal bool) {
+// Resolution ARMS real content in memory but NEVER reveals it: unlocking
+// the vault does not make any mount serve real values. A mount's real
+// content flows only to a run-scoped grant's own process tree (jit run
+// --live / --with); every other reader, at every other time, gets decoys.
+// There is no automatic reveal window and no manual reveal command.
+func (m *mountManager) resolveReal(entries []mount.Entry, v *vault.Vault) {
 	for _, entry := range entries {
 		m.mu.Lock()
 		sm, ok := m.served[entry.MountPath]
@@ -542,21 +510,12 @@ func (m *mountManager) resolveReal(entries []mount.Entry, v *vault.Vault, floorR
 			real = mount.FormatDotenv(values, varOrder)
 		}
 		if !sm.setRealIfGen(real, gen) {
-			continue // a lock raced this resolve; leave the mount decoy, don't floor-reveal it
+			continue // a lock raced this resolve; leave the mount decoy
 		}
-
-		// The ergonomic default reveal window is granted only AFTER a
-		// successful resolve — revealing a mount that has nothing real to
-		// serve would make status show a live "revealed" countdown while
-		// every read keeps getting decoys (the same dishonesty revealMount
-		// refuses, GAPS.md #46), and it's the failure paths above that
-		// make that state reachable. A resolve failure that kept an older
-		// still-valid real content also deliberately gets no fresh window:
-		// "couldn't re-verify" shouldn't extend exposure, only an actual
-		// resolution should.
-		if floorReveal && sm.reveal.Remaining() < revealDefaultWindow {
-			sm.reveal.Reveal(revealDefaultWindow)
-		}
+		// Resolution only ARMS the real content in memory; it never opens a
+		// window. A mount serves that real content solely to a run-scoped
+		// grant's own process tree (jit run --live / --with) — there is no
+		// automatic reveal. Every other reader gets decoys.
 	}
 }
 
@@ -704,64 +663,12 @@ func (m *mountManager) noteServeError(path string, sm *servedMount, err error) {
 	fmt.Fprintf(m.stderr, "jit agent: mount %s: %v (still serving)%s\n", path, err, suffix)
 }
 
-// revealMount is OnReveal's handler: an explicit `jit agent reveal` RPC, clamped to
-// revealMaxWindow so "reveal forever" can never sneak back in through a caller
-// requesting an enormous duration. The error return is OpReveal's own
-// success/failure — a mount-path mismatch (e.g. the CLI forwarding a
-// relative path that never matches this map's absolute keys) used to
-// silently reveal nothing while still printing "Revealed ... for 5m0s."
-//
-// Revealing a mount with no real content resolved is refused, not silently
-// granted (GAPS.md #46, a real defect found by investigation): the
-// session is guaranteed unlocked by the time OpReveal gets here (Server
-// ensureUnlocked's a fresh challenge fires OnUnlock → resolveReal before
-// OnReveal), so real == nil means resolution itself FAILED — and "Revealed for
-// 5m0s" plus a live status countdown while every read kept serving decoys,
-// with the actual error visible only in the agent's own log file, is
-// exactly the "reveal isn't working and nothing says why" experience.
-func (m *mountManager) revealMount(mountPath string, requested time.Duration) error {
-	m.mu.Lock()
-	sm, ok := m.served[mountPath]
-	m.mu.Unlock()
-	if !ok {
-		fmt.Fprintf(m.stderr, "jit agent: reveal requested for %s, which isn't currently served\n", mountPath)
-		return fmt.Errorf("no such mount: %s", mountPath)
-	}
-
-	sm.mu.Lock()
-	hasReal := sm.real != nil
-	resolveErr := sm.lastResolveErr
-	sm.mu.Unlock()
-	if !hasReal {
-		msg := fmt.Sprintf("%s has nothing real to serve, revealing it would only keep serving placeholder values", mountPath)
-		if resolveErr != "" {
-			msg = fmt.Sprintf("%s (resolving its secrets failed: %s)", msg, resolveErr)
-		}
-		fmt.Fprintf(m.stderr, "jit agent: reveal refused: %s\n", msg)
-		return errors.New(msg)
-	}
-
-	d := requested
-	if d <= 0 {
-		d = revealDefaultWindow
-	}
-	if d > revealMaxWindow {
-		d = revealMaxWindow
-	}
-	sm.reveal.Reveal(d)
-	fmt.Fprintf(m.stdout, "jit agent: revealed %s for %s\n", mountPath, d.Round(time.Second))
-	return nil
-}
-
 // mountRevealStatuses is OnMountStatus's handler (GAPS.md #37) — a snapshot
-// of every currently-served mount's reveal state, needing no vault access
-// at all (same reasoning as stopMount/OnStopMount), so it's answered
-// regardless of lock state. `jit status`/`jit agent status` use this
-// to show "which mount is revealed and for how long" instead of leaving
-// that entirely invisible outside the agent process itself — a real,
-// reported point of confusion: a reveal appearing to silently "not work"
-// was actually the agent's own session lock racing the mount's reveal
-// window, with no way to see either timer from outside the process.
+// of every currently-served mount's state, needing no vault access at all
+// (same reasoning as stopMount/OnStopMount), so it's answered regardless of
+// lock state. `jit status`/`jit agent status` use this to show which mounts
+// are currently grant-served (and to which run) versus serving decoys, plus
+// what the most recent reader was actually handed.
 func (m *mountManager) mountRevealStatuses() []agent.MountRevealStatus {
 	// Gather run holders FIRST, before taking m.mu: runStatusesByPath prunes
 	// stale runs, and a pruned swap restores its FIFO via ensureServing,
@@ -773,19 +680,7 @@ func (m *mountManager) mountRevealStatuses() []agent.MountRevealStatus {
 	defer m.mu.Unlock()
 	out := make([]agent.MountRevealStatus, 0, len(m.served))
 	for path, sm := range m.served {
-		remaining := sm.reveal.Remaining()
-		status := agent.MountRevealStatus{
-			Path:               path,
-			Revealed:           remaining > 0,
-			RevealedForSeconds: int64(remaining.Round(time.Second).Seconds()),
-		}
-		// Expiry is lazy — nothing fires when a window ends — so status is
-		// the only place "the timer ended" can become visible at all;
-		// without this, the revealed line just silently disappears (a real,
-		// reported confusion: "it's not switching to hidden").
-		if ended, ok := sm.reveal.WindowEnded(); ok {
-			status.RevealEndedUnix = ended.Unix()
-		}
+		status := agent.MountRevealStatus{Path: path}
 		// Grant-mode runs covering this served mount, from the registry.
 		for _, h := range holdersByPath[path] {
 			if h.mode == attachGrant {
@@ -868,18 +763,10 @@ func (m *mountManager) reconcileSwappedMounts(entries []mount.Entry) {
 // own job, repeated here since a mount can appear in between), then
 // resolves real content for anything not yet resolved — the part that
 // actually needs the vault, which is why this is never called from raw
-// agent startup, only after an actual unlock. Floor-reveals every
-// successfully-resolved mount (the ergonomic "a human just unlocked"
-// default) — see startForReveal for the scoped variant.
-func (m *mountManager) start() { m.startResolving(true) }
-
-// startForReveal is OnUnlockForReveal's handler: identical to start EXCEPT it
-// floor-reveals nothing. Used only for the fresh challenge an explicit `jit
-// agent reveal <path>` triggers, so that reveal lights up only the path the user
-// named (revealMount, running right after, reveals it) instead of every mount.
-func (m *mountManager) startForReveal() { m.startResolving(false) }
-
-func (m *mountManager) startResolving(floorReveal bool) {
+// agent startup, only after an actual unlock. Resolving ARMS real content
+// in memory but reveals nothing: a mount serves it only to a run-scoped
+// grant's process tree (jit run --live / --with).
+func (m *mountManager) start() {
 	entries, ok := m.loadRegistry()
 	if !ok {
 		return
@@ -892,14 +779,13 @@ func (m *mountManager) startResolving(floorReveal bool) {
 		return
 	}
 	v := &vault.Vault{Root: m.root, KeyWrapper: m.keyWrapper, RecipientID: deviceID}
-	m.resolveReal(entries, v, floorReveal)
+	m.resolveReal(entries, v)
 }
 
 // stop is OnLock's handler — GAPS.md #35's core change from the previous
 // design: it no longer cancels anything. Every servedMount's real
-// content is forgotten and its reveal window ended immediately (Hide, not
-// waiting for natural expiry), so provideContent instantly falls back to
-// decoy on the very next reader — but the Serve goroutine itself, and
+// content is forgotten immediately, so provideContent instantly falls back
+// to decoy on the very next reader — but the Serve goroutine itself, and
 // therefore the pipe's writer, is left running. Locking no longer means
 // "nothing is listening"; it only means "nothing real is being served."
 func (m *mountManager) stop() {
@@ -912,18 +798,16 @@ func (m *mountManager) stop() {
 
 	cleared := false
 	for _, sm := range served {
-		wasRevealed := sm.reveal.IsRevealed()
-		if sm.invalidateReal() || wasRevealed {
+		if sm.invalidateReal() {
 			cleared = true
 		}
-		sm.reveal.Hide()
 	}
 	// Every run attachment ends with the session — see clearAllRuns for
 	// why this isn't only hygiene.
 	m.clearAllRuns()
 	if cleared {
 		// Print only when this lock actually hid something (some mount had
-		// real content or an open reveal window): stop() now also runs on a
+		// real content): stop() now also runs on a
 		// lazy-expiry lock where the MEK was already nil'd, and a lock that
 		// changed nothing should stay silent. Deliberately no longer says
 		// "session locked" — Server's own OnSessionEvent line, written

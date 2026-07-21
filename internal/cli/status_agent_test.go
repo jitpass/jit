@@ -68,7 +68,6 @@ func TestStatusReflectsRealAgentRunningAndLocked(t *testing.T) {
 	server.OnUnlock = mounts.start
 	server.OnLock = mounts.stop
 	server.OnRefresh = mounts.start
-	server.OnReveal = mounts.revealMount
 	server.OnMountStatus = mounts.mountRevealStatuses
 
 	if err := server.Listen(); err != nil {
@@ -101,8 +100,8 @@ func TestStatusReflectsRealAgentRunningAndLocked(t *testing.T) {
 	if !strings.Contains(out, wantVersions) {
 		t.Errorf("expected %q, got:\n%s", wantVersions, out)
 	}
-	if !strings.Contains(out, "Mounts: 1 registered, agent unlocked, real content available") {
-		t.Errorf("expected mounts to be reported as serving real content while unlocked, got:\n%s", out)
+	if !strings.Contains(out, "Mounts: 1 registered, agent unlocked, all serving decoy") {
+		t.Errorf("expected mounts reported as decoy while unlocked (real flows only inside a jit run grant), got:\n%s", out)
 	}
 
 	if err := client.Lock(); err != nil {

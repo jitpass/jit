@@ -17,9 +17,9 @@ target on a machine that uses SOPS.
 replaces `keys.txt` with a [live mount](../run/mounts.md) serving a
 template: the non-secret comment lines (public key, creation date) pass
 through byte-for-byte, and the key line fills from the vault only for a
-run you explicitly grant it to with `jit run --with sops` (or during a
-post-unlock reveal window). The age key is a machine-wide credential, so
-it is never granted by a project's config, only by a `--with` you type.
+run you explicitly grant it to with `jit run --with sops`. The age key is a
+machine-wide credential, so it is never granted by a project's config, only
+by a `--with` you type.
 
 ## Two ways tools get the key back
 
@@ -51,10 +51,9 @@ per invocation.
 
 ## What to expect
 
-- Outside a run you granted the key to (and outside a post-unlock reveal
-  window), a reader of `keys.txt` sees a placeholder and decryption fails
-  fast with a clear error, exactly the decoy-by-default behavior `.env`
-  mounts have.
+- Outside a run you granted the key to, a reader of `keys.txt` sees a
+  placeholder and decryption fails fast with a clear error, exactly the
+  decoy-by-default behavior `.env` mounts have.
 - The file is machine-wide (one per user), so it's covered by
   `jit migrate home` only, `local` never touches it.
 - Files holding **multiple** age keys are skipped, never half-migrated:

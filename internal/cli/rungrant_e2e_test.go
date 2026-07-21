@@ -56,10 +56,8 @@ func TestRunScopedGrantEndToEnd(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	mounts := &mountManager{root: root, keyWrapper: server, stdout: &stdout, stderr: &stderr}
 	server.OnUnlock = mounts.start
-	server.OnUnlockForReveal = mounts.startForReveal
 	server.OnLock = mounts.stop
 	server.OnRefresh = mounts.start
-	server.OnReveal = mounts.revealMount
 	server.OnRevealPID = mounts.revealForPID
 	server.OnMountStatus = mounts.mountRevealStatuses
 
@@ -89,10 +87,9 @@ func TestRunScopedGrantEndToEnd(t *testing.T) {
 		t.Fatalf("Client.Refresh: %v", err)
 	}
 	waitForMountServing(t, mounts, mountPath)
-	mounts.mu.Lock()
-	sm := mounts.served[mountPath]
-	mounts.mu.Unlock()
-	sm.reveal.Hide() // no window: whatever real content flows must be grant-authorized
+	// No reveal window exists: the mount serves decoys until a run-scoped
+	// grant authorizes real reads for its process tree, which is what the
+	// rest of this test exercises via RevealForPID.
 
 	// The "granted run": a live sh, executing one command per stdin line —
 	// its children are real descendants, exactly jit run's post-exec shape.
@@ -214,10 +211,8 @@ func TestRunScopedSwapEndToEnd(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	mounts := &mountManager{root: root, keyWrapper: server, stdout: &stdout, stderr: &stderr}
 	server.OnUnlock = mounts.start
-	server.OnUnlockForReveal = mounts.startForReveal
 	server.OnLock = mounts.stop
 	server.OnRefresh = mounts.start
-	server.OnReveal = mounts.revealMount
 	server.OnRevealPID = mounts.revealForPID
 	server.OnMountStatus = mounts.mountRevealStatuses
 
