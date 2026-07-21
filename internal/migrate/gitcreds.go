@@ -5,11 +5,13 @@ package migrate
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -314,6 +316,262 @@ func EraseGitCredential(v *vault.Vault, host string) error {
 		return err
 	}
 	return nil
+}
+
+// GitMigration describes what jit migrate did to one host's stored git
+// credential.
+type GitMigration struct {
+	Host              string
+	CredentialsPath   string // the ~/.git-credentials (or XDG) file the entry lived in
+	CredentialsBackup string
+	ConfigPath        string // the git config file whose credential.helper was set
+	ConfigBackup      string // "" when the config file didn't exist before this run
+	HelperPath        string
+	VaultProfileName  string // "git-<host>"
+	VaultProfilePath  string
+	Variables         []string
+	// ReplacedStoreHelper is true when this run removed a `store` (plaintext)
+	// credential.helper, the one jit is displacing.
+	ReplacedStoreHelper bool
+}
+
+// gitGlobalConfigPath returns the git config file `git config --global` would
+// write to: ~/.gitconfig, unless it's absent and the XDG file
+// (~/.config/git/config) exists. Git always reads ~/.gitconfig as a global
+// config with highest precedence, so setting credential.helper there takes
+// effect regardless.
+func gitGlobalConfigPath(home string) string {
+	dotfile := filepath.Join(home, ".gitconfig")
+	if _, err := os.Stat(dotfile); err == nil {
+		return dotfile
+	}
+	xdg := filepath.Join(home, ".config", "git", "config")
+	if _, err := os.Stat(xdg); err == nil {
+		return xdg
+	}
+	return dotfile
+}
+
+// runGitConfig runs `git config --file <cfgPath> <args...>` and returns its
+// trimmed stdout and exit code. git owns its own config format (includes,
+// escaping, ordering, multi-valued keys), so jit drives it through git rather
+// than hand-editing the INI, the same reason migrate already shells out to
+// git for HasGitHistory. A non-ExitError (git missing, not executable) is a
+// real error; an ExitError's code is returned for the caller to interpret
+// (git uses 1 for "key not found", 5 for "nothing to unset").
+func runGitConfig(cfgPath string, args ...string) (stdout string, code int, err error) {
+	full := append([]string{"config", "--file", cfgPath}, args...)
+	cmd := exec.Command("git", full...) // #nosec G204 -- fixed subcommand; cfgPath is jit's own home path, the rest are constants
+	var out, errb bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return strings.TrimRight(out.String(), "\n"), ee.ExitCode(), nil
+		}
+		return "", -1, fmt.Errorf("running git config: %w (%s)", err, strings.TrimSpace(errb.String()))
+	}
+	return strings.TrimRight(out.String(), "\n"), 0, nil
+}
+
+// gitCredentialHelpers returns the credential.helper values configured in
+// cfgPath, in order. A missing key or file (git exit 1) yields nothing.
+func gitCredentialHelpers(cfgPath string) ([]string, error) {
+	out, code, err := runGitConfig(cfgPath, "--get-all", "credential.helper")
+	if err != nil {
+		return nil, err
+	}
+	if code == 1 { // key not set, or file absent
+		return nil, nil
+	}
+	if code != 0 {
+		return nil, fmt.Errorf("git config --get-all credential.helper exited %d", code)
+	}
+	var helpers []string
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			helpers = append(helpers, line)
+		}
+	}
+	return helpers, nil
+}
+
+// configureGitHelper makes jit the credential helper in cfgPath: it removes
+// any `store` helper (the plaintext one jit displaces) and adds `jit` if not
+// already present, leaving any other helper (a secure one like osxkeychain)
+// in place, since git tries helpers in order and a secure store has nothing
+// in ~/.git-credentials to migrate anyway. Idempotent. Reports whether it
+// removed a store helper and whether jit was already installed.
+func configureGitHelper(cfgPath string) (replacedStore, alreadyInstalled bool, err error) {
+	helpers, err := gitCredentialHelpers(cfgPath)
+	if err != nil {
+		return false, false, err
+	}
+	var hasJit, hasStore bool
+	for _, h := range helpers {
+		switch h {
+		case gitHelperName:
+			hasJit = true
+		case "store":
+			hasStore = true
+		}
+	}
+	if hasStore {
+		// value regex ^store$ so an unrelated "storefoo" is never touched.
+		_, code, err := runGitConfig(cfgPath, "--unset-all", "credential.helper", `^store$`)
+		if err != nil {
+			return false, false, err
+		}
+		if code != 0 && code != 5 { // 5 == nothing matched, already gone
+			return false, false, fmt.Errorf("git config --unset-all credential.helper exited %d", code)
+		}
+		replacedStore = true
+	}
+	if !hasJit {
+		if _, code, err := runGitConfig(cfgPath, "--add", "credential.helper", gitHelperName); err != nil {
+			return false, false, err
+		} else if code != 0 {
+			return false, false, fmt.Errorf("git config --add credential.helper exited %d", code)
+		}
+	}
+	return replacedStore, hasJit, nil
+}
+
+// stripHostFromGitCredentials rewrites a git-credentials store file with
+// every line for host removed, keeping the rest byte-for-byte. Host-level,
+// matching the migration's keying.
+func stripHostFromGitCredentials(path, host string) error {
+	data, err := os.ReadFile(path) // #nosec G304 -- fixed ~/.git-credentials path, not external input
+	if err != nil {
+		return err
+	}
+	var kept []string
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if u, err := url.Parse(trimmed); err == nil && u.Host == host {
+			continue
+		}
+		kept = append(kept, trimmed)
+	}
+	out := strings.Join(kept, "\n")
+	if out != "" {
+		out += "\n"
+	}
+	return os.WriteFile(path, []byte(out), 0o600)
+}
+
+// ApplyGitCredential moves host's credential out of git's plaintext store and
+// into v's vault under a home-rooted global profile ("git-<host>" — git
+// invokes its credential helper from whatever directory a command runs in, so
+// the profile must resolve independent of cwd, same as AWS/Docker/Terraform),
+// writes the git-credential-jit helper executable, sets credential.helper to
+// jit in the git config (removing the plaintext `store` helper), and rewrites
+// the store file with that host's line removed. Standard ordering: vault
+// writes → profile manifest → backups → wiring → rewrite the source file.
+//
+// dedup, if non-nil, makes a run migrating several hosts back the shared
+// store file and git config up once, at their pristine pre-run state, rather
+// than once per host, so undo restores the original rather than the last,
+// most-stripped snapshot. See BackupTracker (GAPS.md #65).
+func ApplyGitCredential(v *vault.Vault, home, host string, dedup ...*BackupTracker) (GitMigration, error) {
+	var tracker *BackupTracker
+	if len(dedup) > 0 {
+		tracker = dedup[0]
+	}
+
+	var found *GitCredential
+	var credPath string
+	for _, path := range []string{GitCredentialsPath(home), GitCredentialsXDGPath(home)} {
+		creds, err := parseGitCredentialsFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return GitMigration{}, fmt.Errorf("reading %s: %w", path, err)
+		}
+		for i := range creds {
+			if creds[i].Host == host {
+				c := creds[i]
+				found, credPath = &c, path
+				break
+			}
+		}
+		if found != nil {
+			break
+		}
+	}
+	if found == nil {
+		return GitMigration{}, fmt.Errorf("host %q not found (or has no plaintext credential) in git's credential store", host)
+	}
+
+	cfgPath := gitGlobalConfigPath(home)
+
+	profileName, manifestPath, err := upsertGitProfile(v, host, found.Username, found.Password)
+	if err != nil {
+		return GitMigration{}, err
+	}
+
+	credBackup, err := tracker.backupOnce(v, credPath)
+	if err != nil {
+		return GitMigration{}, fmt.Errorf("backing up %s: %w", credPath, err)
+	}
+
+	// The git config file is shared across every host in this run and may not
+	// exist yet (git config --add creates it). Same discipline as
+	// ~/.terraformrc: back it up once at its pristine state if it existed; if
+	// jit creates it, record it for removal on undo.
+	cfgHandled := tracker.alreadyHandled(cfgPath)
+	_, cfgStatErr := os.Stat(cfgPath)
+	cfgExisted := cfgStatErr == nil
+	var cfgBackup string
+	if cfgExisted && !cfgHandled {
+		cfgBackup, err = tracker.backupOnce(v, cfgPath)
+		if err != nil {
+			return GitMigration{}, fmt.Errorf("backing up %s: %w", cfgPath, err)
+		}
+	}
+
+	helperPath, err := writeGitHelper(home)
+	if err != nil {
+		return GitMigration{}, err
+	}
+
+	replacedStore, _, err := configureGitHelper(cfgPath)
+	if err != nil {
+		return GitMigration{}, err
+	}
+
+	if !cfgExisted && !cfgHandled {
+		absCfg, err := filepath.Abs(cfgPath)
+		if err != nil {
+			return GitMigration{}, fmt.Errorf("resolving %s: %w", cfgPath, err)
+		}
+		if err := RecordCreatedFile(v.Root, absCfg); err != nil {
+			return GitMigration{}, fmt.Errorf("recording created %s in the undo index: %w", cfgPath, err)
+		}
+		tracker.markCreated(cfgPath)
+	}
+
+	if err := stripHostFromGitCredentials(credPath, host); err != nil {
+		return GitMigration{}, fmt.Errorf("rewriting %s: %w", credPath, err)
+	}
+
+	return GitMigration{
+		Host:                host,
+		CredentialsPath:     credPath,
+		CredentialsBackup:   credBackup,
+		ConfigPath:          cfgPath,
+		ConfigBackup:        cfgBackup,
+		HelperPath:          helperPath,
+		VaultProfileName:    profileName,
+		VaultProfilePath:    manifestPath,
+		Variables:           []string{"PASSWORD", "USERNAME"},
+		ReplacedStoreHelper: replacedStore,
+	}, nil
 }
 
 // writeGitHelper writes the git-credential-jit executable, a two-line shell

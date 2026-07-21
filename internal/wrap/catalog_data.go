@@ -267,4 +267,10 @@ var catalog = map[string]CatalogEntry{
 		Doc:            "Docker registry logins, served via a credential helper; docker login/logout keep working",
 		NativeCategory: "docker",
 	},
+	"git": {
+		Tool:           "git",
+		Kind:           KindNative,
+		Doc:            "git HTTPS credentials, served via a credential helper; git push/fetch over HTTPS keeps working",
+		NativeCategory: "git",
+	},
 }
