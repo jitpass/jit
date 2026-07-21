@@ -243,28 +243,6 @@ func readLines(path string) ([]string, error) {
 	return strings.Split(string(data), "\n"), nil
 }
 
-// backupFile copies path to a sibling "<path>.jit-bak-<unix-timestamp>"
-// file before a caller rewrites path in place. Used only for files that
-// never held a secret, since a plaintext copy is fine when there's nothing
-// sensitive in it. Any file
-// that DID hold a real secret before migration uses backupSecretFile
-// instead (GAPS.md #33): every category originally used this for its
-// own pre-rewrite backup too, including .env's own backup added for
-// GAPS.md #32, but a real, reported problem showed why that was wrong —
-// see backupSecretFile's own doc comment. Never overwrites a previous
-// backup; repeated calls just accumulate more of them.
-func backupFile(path string) (string, error) {
-	data, err := os.ReadFile(path) // #nosec G304 -- same fixed/discovered path as readLines above
-	if err != nil {
-		return "", err
-	}
-	backupPath := fmt.Sprintf("%s.jit-bak-%d", path, time.Now().Unix())
-	if err := os.WriteFile(backupPath, data, 0o600); err != nil { // #nosec G703 -- backupPath derives from a fixed/discovered shell/MCP config path, never external input
-		return "", err
-	}
-	return backupPath, nil
-}
-
 // vaultPathUnsafeChars sanitizes an absolute filesystem path into
 // something backupVaultPath can safely use as a vault path segment
 // (vault.sanitizeSecretPath only allows letters, digits, '.', '_', '-',
