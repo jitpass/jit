@@ -53,10 +53,14 @@ var agentCmd = &cobra.Command{
 		"other jit commands share, instead of each one prompting Touch ID\n" +
 		"separately, and that serves any live-mounted .env files jit migrate has\n" +
 		"created.\n\n" +
-		"`jit agent install` sets it up to start automatically every time you log\n" +
-		"in (and restart itself if it crashes). The helper process itself needs no\n" +
-		"Touch ID just to keep running, only your unlocked session inside it locks\n" +
-		"after --ttl of inactivity (default 5m), prompting again on next use.\n\n" +
+		"You usually don't need to set this up by hand: jit installs the agent\n" +
+		"automatically the first time a command needs it (a `jit run` that serves a\n" +
+		"mount, a `jit migrate`, or `jit agent unlock`). `jit agent install` just\n" +
+		"does that eagerly and lets you pick the session --ttl up front. Either way\n" +
+		"it starts automatically at every login (and restarts itself if it crashes).\n" +
+		"The helper process itself needs no Touch ID just to keep running, only your\n" +
+		"unlocked session inside it locks after --ttl of inactivity (default 5m),\n" +
+		"prompting again on next use.\n\n" +
 		"A live-mounted file shows fake-looking values by default. Real values flow\n" +
 		"only to a `jit run` grant's own process tree: `jit run --live` for a project\n" +
 		"mount, `jit run --with` for a global credential. Unlocking the vault never\n" +
@@ -226,7 +230,10 @@ var agentRunCmd = &cobra.Command{
 var agentInstallCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Start jit agent automatically at every login (survives reboots)",
-	Long: "Sets up jit agent to start automatically every time you log in, and to\n" +
+	Long: "You usually don't need to run this: jit sets the agent up automatically\n" +
+		"the first time a command needs it. Run it yourself to do that eagerly, or\n" +
+		"to choose the session --ttl up front.\n\n" +
+		"Sets up jit agent to start automatically every time you log in, and to\n" +
 		"restart itself if it crashes, until you run `jit agent uninstall`.\n" +
 		"Under the hood this writes and loads a launchd LaunchAgent plist that\n" +
 		"runs `jit agent run`.\n\n" +
