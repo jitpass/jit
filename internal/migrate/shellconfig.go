@@ -47,6 +47,21 @@ type ShellConfigMigration struct {
 	Variables   []string
 }
 
+// ShellConfigPaths returns the fixed set of shell config file paths under
+// home jit migrate knows how to convert (the same list DiscoverShellConfigs
+// scans), whether or not each one exists. jit migrate path uses it to route
+// an explicitly named ~/.zshrc (etc.) to shell-config handling instead of
+// the project-file discoveries — a shell config's name matches none of the
+// env/tfvars/mcp/npmrc recognizers, so without this a targeted ~/.zshrc
+// would silently fall through to "nothing to migrate."
+func ShellConfigPaths(home string) []string {
+	paths := make([]string, len(shellConfigFiles))
+	for i, name := range shellConfigFiles {
+		paths[i] = filepath.Join(home, name)
+	}
+	return paths
+}
+
 // DiscoverShellConfigs returns every shell config file under home
 // containing at least one secret-shaped `export KEY=value` line jit
 // migrate can convert (RFC.md §4 category 1's own file list and pattern —
