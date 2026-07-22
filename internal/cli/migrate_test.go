@@ -827,3 +827,183 @@ func TestCompleteMigrateCategories(t *testing.T) {
 		t.Errorf("expected %d remaining categories after choosing 2, got %d: %v", len(migrateCategories)-2, len(got), got)
 	}
 }
+
+// TestMigratePathEnvFileScopedToJustThatFile confirms the whole point of
+// `jit migrate path`: naming one .env file plans only that file, never a
+// walk of everything else under $HOME. A second unrelated .env is planted
+// far from the target and must appear nowhere in the plan.
+func TestMigratePathEnvFileScopedToJustThatFile(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	target := filepath.Join(home, "proj", ".env")
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(target, []byte("STRIPE_KEY=sk_test_fixture\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	other := filepath.Join(home, "other", ".env")
+	if err := os.MkdirAll(filepath.Dir(other), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(other, []byte("OTHER_KEY=sk_test_other\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := execMigrate(t, "path", target, "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate path <file> --dry-run: %v", err)
+	}
+	if !strings.Contains(out, "plan (path scope)") {
+		t.Errorf("expected the path-scope plan header, got:\n%s", out)
+	}
+	if !strings.Contains(out, displayPath(home, target)) {
+		t.Errorf("expected the named .env in the plan, got:\n%s", out)
+	}
+	if strings.Contains(out, displayPath(home, other)) {
+		t.Errorf("path scope must not discover the unrelated .env, got:\n%s", out)
+	}
+	if strings.Contains(out, "sk_test_fixture") {
+		t.Fatal("CLI output must never contain the raw secret value")
+	}
+}
+
+// TestMigratePathRoutesShellConfigToShellCategory confirms an explicitly
+// named machine-wide file (~/.zshrc) is routed to shell-config handling —
+// its name matches none of the project recognizers, so without the fixed-
+// path dispatch it would silently fall through to "nothing to migrate."
+func TestMigratePathRoutesShellConfigToShellCategory(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	zshrc := filepath.Join(home, ".zshrc")
+	if err := os.WriteFile(zshrc, []byte("export AWS_SECRET=sk_test_fixture_value\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := execMigrate(t, "path", zshrc, "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate path ~/.zshrc --dry-run: %v", err)
+	}
+	if !strings.Contains(out, "shell config(s)") {
+		t.Errorf("expected the shell-config category in the plan, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Machine-wide config files you named") {
+		t.Errorf("expected the path-scope machine-wide header, got:\n%s", out)
+	}
+	if strings.Contains(out, "only included on a home-scope run") {
+		t.Errorf("path scope must not claim these are home-only, got:\n%s", out)
+	}
+}
+
+// TestMigratePathDirectoryWalkExcludesMachineWide confirms a directory
+// target is walked like `migrate local` rooted there — project files only,
+// never the fixed machine-wide files (a ~/.zshrc under the same home).
+func TestMigratePathDirectoryWalkExcludesMachineWide(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	dir := filepath.Join(home, "proj")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("STRIPE_KEY=sk_test_fixture\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// A shell config under the same $HOME must NOT be pulled in by a folder
+	// target — it isn't "inside" the named directory.
+	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte("export AWS_SECRET=sk_test_fixture_value\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := execMigrate(t, "path", dir, "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate path <dir> --dry-run: %v", err)
+	}
+	if !strings.Contains(out, ".env file(s)") {
+		t.Errorf("expected the .env category from the walked directory, got:\n%s", out)
+	}
+	if strings.Contains(out, "shell config(s)") {
+		t.Errorf("a directory target must not discover machine-wide shell configs, got:\n%s", out)
+	}
+}
+
+// TestMigratePathMissingTargetFailsLoud confirms a nonexistent target is an
+// error, not a silent "nothing to migrate" — naming a path is a specific
+// request, and a typo should say so rather than look like a clean machine.
+func TestMigratePathMissingTargetFailsLoud(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	_, err := execMigrate(t, "path", filepath.Join(home, "does-not-exist.env"), "--dry-run")
+	if err == nil {
+		t.Fatal("expected an error for a nonexistent target, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("expected a does-not-exist error, got: %v", err)
+	}
+}
+
+// TestMigratePathSymlinkRefused confirms a symlink target is refused rather
+// than followed — the walk-based scopes skip symlinks so migrate never
+// rewrites through a link, and the path scope must not reintroduce that.
+func TestMigratePathSymlinkRefused(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	real := filepath.Join(home, "real.env")
+	if err := os.WriteFile(real, []byte("STRIPE_KEY=sk_test_fixture\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	link := filepath.Join(home, "link.env")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	_, err := execMigrate(t, "path", link, "--dry-run")
+	if err == nil {
+		t.Fatal("expected an error for a symlink target, got nil")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("expected a symlink error, got: %v", err)
+	}
+}
+
+// TestMigratePathUnrecognizedFileNothingToMigrate confirms a real file that
+// isn't a recognized secret-bearing file reports a path-scoped
+// nothing-to-migrate message, not the generic whole-catalog list.
+func TestMigratePathUnrecognizedFileNothingToMigrate(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	notes := filepath.Join(home, "notes.txt")
+	if err := os.WriteFile(notes, []byte("just some notes, no secrets\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	out, err := execMigrate(t, "path", notes)
+	if err != nil {
+		t.Fatalf("jit migrate path <plain file>: %v", err)
+	}
+	if !strings.Contains(out, "none of the path(s) you named") {
+		t.Errorf("expected the path-scoped nothing-to-migrate message, got:\n%s", out)
+	}
+}
+
+// TestMigratePathDedupesOverlappingTargets confirms naming a folder AND a
+// file inside it plans the shared finding once, not twice.
+func TestMigratePathDedupesOverlappingTargets(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	dir := filepath.Join(home, "proj")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	env := filepath.Join(dir, ".env")
+	if err := os.WriteFile(env, []byte("STRIPE_KEY=sk_test_fixture\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	out, err := execMigrate(t, "path", dir, env, "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate path <dir> <file> --dry-run: %v", err)
+	}
+	if got := strings.Count(out, displayPath(home, env)); got != 1 {
+		t.Errorf("expected the overlapping .env to appear exactly once, saw %d times:\n%s", got, out)
+	}
+	if !strings.Contains(out, "1 change(s) planned") {
+		t.Errorf("expected exactly 1 planned change after dedupe, got:\n%s", out)
+	}
+}

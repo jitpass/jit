@@ -55,22 +55,20 @@ import (
 // (splitMCPByScope/splitNpmrcByScope) since a single Discover* call
 // there still mixes the fixed path in with items found by the
 // whole-$HOME walk.
-func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles []string) {
-	scope := "local"
-	if wholeHome {
-		scope = "home"
-	}
-	fmt.Fprintf(w, "jit migrate, plan (%s scope)\n", scope)
-	fmt.Fprintln(w, "Each modified file is backed up before it's rewritten.")
-	fmt.Fprintln(w)
-
+func printMigratePlan(w io.Writer, home string, scope migrateScope, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles []string) {
 	// scopedTree deliberately reads as "under the current directory
 	// tree"/"anywhere under $HOME" (not just the trailing noun phrase) —
 	// TestMigrateHomeLabelMentionsHome checks for these exact phrases.
-	scopedTree := "under the current directory tree"
-	if wholeHome {
-		scopedTree = "anywhere under $HOME"
+	scopeLabel, scopedTree := "local", "under the current directory tree"
+	switch scope {
+	case scopeHome:
+		scopeLabel, scopedTree = "home", "anywhere under $HOME"
+	case scopePath:
+		scopeLabel, scopedTree = "path", "among the path(s) you named"
 	}
+	fmt.Fprintf(w, "jit migrate, plan (%s scope)\n", scopeLabel)
+	fmt.Fprintln(w, "Each modified file is backed up before it's rewritten.")
+	fmt.Fprintln(w)
 
 	// Split by scope BEFORE display-shortening — the split compares against
 	// full fixed paths (Claude Desktop's config, the global ~/.npmrc), and a
@@ -112,7 +110,14 @@ func printMigratePlan(w io.Writer, home string, wholeHome bool, envFiles, tfvars
 	}
 
 	if hasFixed {
-		_, _ = color.New(color.Faint).Fprintln(w, "Machine-wide config files, only included on a home-scope run")
+		// In a home sweep these appear because the sweep reaches them; in a
+		// path run they appear only because the caller named one explicitly,
+		// so the "only included on a home-scope run" note would be wrong there.
+		machineWideHeader := "Machine-wide config files, only included on a home-scope run"
+		if scope == scopePath {
+			machineWideHeader = "Machine-wide config files you named"
+		}
+		_, _ = color.New(color.Faint).Fprintln(w, machineWideHeader)
 		fmt.Fprintln(w)
 		printMigratePlanCategory(w,
 			"shell config(s) → secrets move to the vault; loaded back automatically when your shell starts",
