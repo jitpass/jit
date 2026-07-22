@@ -28,6 +28,21 @@ so it's clear they're not part of a directory walk.
 **`jit migrate local`** narrows to one project: only what's under the
 directory you're standing in is discovered or touched.
 
+**`jit migrate path <file-or-dir>...`** narrows further still: it converts
+only the specific file(s) and folder(s) you name, with no directory walk
+beyond a named folder itself. Reach for it when a home sweep of a large
+`$HOME` would take too long and you already know which secret you want
+moved - one project's `.env`, a single `~/.zshrc`, a directory of tfvars
+files. A named project file (`.env`/tfvars/`mcp.json`/`.npmrc`) migrates
+exactly as `local` would; a named machine-wide file at a known path (a
+shell config like `~/.zshrc`, `~/.aws/credentials`, `~/.kube/config`, and
+the rest of the machine-wide list above) routes to that category's `home`
+handling; a named directory is walked like `local` rooted there, project
+files only. Targets are explicit, so neither the archived nor the
+playground filter applies - naming a file is itself the decision to convert
+it. A missing path or a symlink fails loud rather than migrating the wrong
+thing.
+
 A home-scope run skips anything under a directory named `archive`,
 `archived`, `backup`, `backups`, or `.trash` by default (pass
 `--include-archived` to override): converting a forgotten project's `.env`

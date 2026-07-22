@@ -23,6 +23,10 @@ By default it covers the same ground jit audit scans, the whole machine:
                        ~/.git-credentials HTTPS logins, GCP
                        application-default credentials, Claude Desktop's MCP
                        config, the global ~/.npmrc)
+  jit migrate path    only the specific file(s)/folder(s) you name, with no
+                       directory walk (e.g. one project's .env, a single
+                       ~/.zshrc). The fast choice when a home sweep would
+                       take too long and you already know what to move
 
 Every run prints the full plan and asks for confirmation before touching
 anything, and every modified file is backed up (encrypted, into the vault)
@@ -40,6 +44,7 @@ jit migrate [flags]
   jit migrate                    # fix everything the plan shows
   jit migrate local --dry-run    # preview just this project's plan
   jit migrate home --only aws,kube
+  jit migrate path ~/proj/.env   # migrate just one file, no walk
   jit migrate undo               # restore migrated files from their backups
 ```
 
@@ -57,6 +62,7 @@ jit migrate [flags]
 * [jit](jit.md)	 - Local-first developer secret runtime
 * [jit migrate home](jit_migrate_home.md)	 - Convert findings anywhere under $HOME, the whole machine, not just this project
 * [jit migrate local](jit_migrate_local.md)	 - Convert findings under the current directory only
+* [jit migrate path](jit_migrate_path.md)	 - Convert only the specific file(s)/folder(s) you name, no directory walk
 * [jit migrate remove](jit_migrate_remove.md)	 - Remove jit from this project completely (restore plaintext, delete its secrets)
 * [jit migrate undo](jit_migrate_undo.md)	 - Restore migrated files from their encrypted pre-migration backups
 
