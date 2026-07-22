@@ -21,6 +21,22 @@ type envelope struct {
 	// silently backdating a stale credential.
 	CreatedUnix int64 `json:"created_unix,omitempty"`
 	UpdatedUnix int64 `json:"updated_unix,omitempty"`
+	// Class, GroupID, and Origin are birth-time provenance (version 3+, so
+	// all omitempty for older files). Class is the semantic source kind
+	// (ClassDotenv, ClassMCP, …); GroupID is a surrogate key every secret
+	// imported together from one source shares, so "these 14 came from the
+	// same .env" survives a folder rename or file move the way the raw path
+	// never could; Origin is the best-effort, normalized source path the
+	// secret was last seen at, allowed to go stale (OriginSeenUnix stamps
+	// when it was recorded). All three are BIRTH-immutable: Set preserves
+	// them across a rotation (a rotated value is the same secret, from the
+	// same place), so they never need to be re-derived. Like the timestamps
+	// they are plaintext on disk but AAD-bound (envelopeAAD), so editing
+	// them fails decryption rather than silently rewriting provenance.
+	Class          string `json:"class,omitempty"`
+	GroupID        string `json:"group_id,omitempty"`
+	Origin         string `json:"origin,omitempty"`
+	OriginSeenUnix int64  `json:"origin_seen_unix,omitempty"`
 	// Recipients maps a recipient ID (this device's hostname in Phase 1;
 	// Phase 2 adds real multi-recipient sharing, RFC.md §5.2) to that
 	// recipient's hex-encoded wrapped DEK.
@@ -68,8 +84,36 @@ const (
 	// readable forever — vaults full of v1 files must keep decrypting
 	// without a migration step.
 	envelopeVersionAADLess = 1
-	// envelopeVersion is what Set writes today.
-	envelopeVersion = 2
+	// envelopeVersionMetaOnly is the second schema: created/updated
+	// timestamps bound into the AAD, no provenance. Never written anymore
+	// (Set writes v3), readable forever, same as v1.
+	envelopeVersionMetaOnly = 2
+	// envelopeVersion is what Set writes today: v2's metadata plus
+	// class/group/origin provenance, all AAD-bound.
+	envelopeVersion = 3
+)
+
+// Class values name the semantic source a secret came from — the durable,
+// AAD-bound answer to "is this from a .env, an .mcp.json, my shell rc?".
+// One migrator stamps one class; a manual `jit vault set` stamps ClassManual.
+// An empty class means unknown (a v1/v2 secret written before provenance
+// existed), never an error.
+const (
+	ClassManual    = "manual"
+	ClassDotenv    = "dotenv"
+	ClassShell     = "shell"
+	ClassMCP       = "mcp"
+	ClassTfvars    = "tfvars"
+	ClassTerraform = "terraform"
+	ClassAWS       = "aws"
+	ClassDocker    = "docker"
+	ClassGCP       = "gcp"
+	ClassSOPS      = "sops"
+	ClassNpmrc     = "npmrc"
+	ClassGit       = "git"
+	ClassNetrc     = "netrc"
+	ClassKube      = "kube"
+	ClassWrap      = "wrap"
 )
 
 // envelopeAAD is the additional authenticated data a version-2+ payload is
@@ -83,6 +127,18 @@ const (
 // The path needs no escaping in this colon-joined string: sanitizeSecretPath
 // admits only [A-Za-z0-9_.-] and '/', so a colon can never appear in it and
 // the encoding is unambiguous.
-func envelopeAAD(path string, version int, createdUnix, updatedUnix int64) []byte {
+//
+// The AAD is version-shaped: a v3 payload was sealed under a string that
+// appends class:group:origin, a v2 payload under the four-field string that
+// predates them. Get MUST reconstruct whichever the stored version used, so
+// the branch here is keyed on version, NOT on whether the provenance fields
+// happen to be non-empty. class and group_id never contain a colon (fixed
+// vocabulary / hex id); origin can in principle, but it is the LAST field, so
+// everything past the final delimiter is origin and the encoding stays
+// unambiguous.
+func envelopeAAD(path string, version int, createdUnix, updatedUnix int64, class, groupID, origin string) []byte {
+	if version >= envelopeVersion {
+		return fmt.Appendf(nil, "jit-envelope:%d:%s:%d:%d:%s:%s:%s", version, path, createdUnix, updatedUnix, class, groupID, origin)
+	}
 	return fmt.Appendf(nil, "jit-envelope:%d:%s:%d:%d", version, path, createdUnix, updatedUnix)
 }

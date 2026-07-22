@@ -237,7 +237,7 @@ func DiscoverGitCredentials(home string) ([]GitCredential, error) {
 // host's global profile manifest, preserving any existing entries, the same
 // merge-not-overwrite discipline every other Apply/Store here follows.
 // Returns the profile name and manifest path used.
-func upsertGitProfile(v *vault.Vault, host, username, password string) (name, manifestPath string, err error) {
+func upsertGitProfile(v *vault.Vault, host, username, password string, meta vault.Meta) (name, manifestPath string, err error) {
 	name = GitProfileName(host)
 	if name == "" {
 		return "", "", fmt.Errorf("host %q sanitizes to nothing usable as a profile name", host)
@@ -265,7 +265,7 @@ func upsertGitProfile(v *vault.Vault, host, username, password string) (name, ma
 
 	for varName, value := range map[string]string{"USERNAME": username, "PASSWORD": password} {
 		secretPath := name + "/" + varName
-		if err := v.Set(secretPath, []byte(value)); err != nil {
+		if err := v.SetWithMeta(secretPath, []byte(value), meta); err != nil {
 			return "", "", fmt.Errorf("storing %s in vault: %w", varName, err)
 		}
 		entries[varName] = secretPath
@@ -285,7 +285,14 @@ func StoreGitCredential(v *vault.Vault, c GitCredential) error {
 	if c.Password == "" {
 		return fmt.Errorf("empty password for host %q", c.Host)
 	}
-	_, _, err := upsertGitProfile(v, c.Host, c.Username, c.Password)
+	// Live credential-helper "store" after migration: no store file to
+	// point at, so class-only provenance (fresh group, no origin), the same
+	// shape a re-migrated host keeps once it already exists in the vault.
+	meta, err := newProvenance(vault.ClassGit, "")
+	if err != nil {
+		return err
+	}
+	_, _, err = upsertGitProfile(v, c.Host, c.Username, c.Password, meta)
 	return err
 }
 
@@ -510,7 +517,11 @@ func ApplyGitCredential(v *vault.Vault, home, host string, dedup ...*BackupTrack
 
 	cfgPath := gitGlobalConfigPath(home)
 
-	profileName, manifestPath, err := upsertGitProfile(v, host, found.Username, found.Password)
+	meta, err := newProvenance(vault.ClassGit, credPath)
+	if err != nil {
+		return GitMigration{}, err
+	}
+	profileName, manifestPath, err := upsertGitProfile(v, host, found.Username, found.Password, meta)
 	if err != nil {
 		return GitMigration{}, err
 	}

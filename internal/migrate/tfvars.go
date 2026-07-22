@@ -238,9 +238,13 @@ func ApplyTfvarsDir(v *vault.Vault, profilesRoot, dir string, files []string) (T
 		return TfvarsMigration{}, err
 	}
 
+	meta, err := newProvenance(vault.ClassTfvars, dir)
+	if err != nil {
+		return TfvarsMigration{}, err
+	}
 	for _, envName := range envNames {
 		secretPath := profileName + "/" + envName
-		if err := v.Set(secretPath, []byte(values[strings.TrimPrefix(envName, TfvarsEnvPrefix)])); err != nil {
+		if err := v.SetWithMeta(secretPath, []byte(values[strings.TrimPrefix(envName, TfvarsEnvPrefix)]), meta); err != nil {
 			return TfvarsMigration{}, fmt.Errorf("storing %s in vault: %w", envName, err)
 		}
 		entries[envName] = secretPath

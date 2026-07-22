@@ -197,9 +197,13 @@ func ApplyNpmrc(v *vault.Vault, profilesRoot, path string, global bool) (NpmrcMi
 	for _, m := range matches {
 		values[m.VarName] = m.Value
 	}
+	meta, err := newProvenance(vault.ClassNpmrc, path)
+	if err != nil {
+		return NpmrcMigration{}, err
+	}
 	for _, name := range varNames {
 		secretPath := profileName + "/" + name
-		if err := v.Set(secretPath, []byte(values[name])); err != nil {
+		if err := v.SetWithMeta(secretPath, []byte(values[name]), meta); err != nil {
 			return NpmrcMigration{}, fmt.Errorf("storing %s in vault: %w", name, err)
 		}
 		entries[name] = secretPath
