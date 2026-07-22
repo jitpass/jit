@@ -1,9 +1,9 @@
 ---
 title: Running an audit
-description: jit audit - a strictly read-only scan for plaintext secrets exposed on this machine.
+description: jit scan - a strictly read-only scan for plaintext secrets exposed on this machine.
 ---
 
-# Running an audit - `jit audit`
+# Running an audit - `jit scan`
 
 `audit` answers one question: **is my machine clean?** It is strictly
 read-only under every flag: it never touches, encrypts, or rewrites
@@ -11,8 +11,8 @@ anything, and never prints a real secret value in full, only a masked
 preview.
 
 ```
-$ jit audit
-jit audit: risk report for alex@Alexs-MacBook-Pro
+$ jit scan
+jit scan: risk report for alex@Alexs-MacBook-Pro
 scan time: 2026-07-07T14:48:08.370Z          duration: 2ms
 
   RISK LEVEL: HIGH
@@ -51,10 +51,10 @@ so nothing disappears silently.
 
 | Invocation | Gets you |
 |---|---|
-| `jit audit` | the human-readable report above |
-| `jit audit --format markdown` | the same report as markdown, for saving or sharing |
-| `jit audit --format ndjson` | one JSON record per finding plus a closing summary, for piping into other tools ([schema](../reference/audit-ndjson.md)) |
-| `jit audit -o report.md` | write the report to a file instead of stdout |
+| `jit scan` | the human-readable report above |
+| `jit scan --format markdown` | the same report as markdown, for saving or sharing |
+| `jit scan --format ndjson` | one JSON record per finding plus a closing summary, for piping into other tools ([schema](../reference/audit-ndjson.md)) |
+| `jit scan -o report.md` | write the report to a file instead of stdout |
 
 ## What happens next
 

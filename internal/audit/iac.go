@@ -19,7 +19,7 @@ import (
 // base64-decode for signal inspection. Secrets max out at 1MiB cluster-side,
 // but a TLS bundle or embedded keystore can still be large, and the
 // escalation signals only ever match short human-scale strings — decoding
-// megabytes buys nothing but scan time (jit audit advertises ~340ms).
+// megabytes buys nothing but scan time (jit scan advertises ~340ms).
 const maxDecodedSecretValueBytes = 64 * 1024
 
 // ScanIACFiles implements RFC.md §4 category 6: IaC variable files.

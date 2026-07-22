@@ -37,7 +37,7 @@ func TestWriteMarkdownReportNeverLeaksRawValue(t *testing.T) {
 		t.Fatal("markdown report must never contain the raw secret value")
 	}
 	for _, want := range []string{
-		"# jit audit report",
+		"# jit scan report",
 		"alex@host",
 		"CRITICAL",
 		"### Shell Configs",

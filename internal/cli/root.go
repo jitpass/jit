@@ -4,6 +4,8 @@
 package cli
 
 import (
+	"time"
+
 	"github.com/spf13/cobra"
 
 	"github.com/jitpass/jit/internal/agent"
@@ -78,7 +80,7 @@ func newRootCmd() *cobra.Command {
 		Use:   "jit",
 		Short: "Local-first developer secret runtime",
 		Long: "jit finds plaintext secrets exposed on your machine and gives you a one-command way to fix it, without ever putting them back on disk in plaintext. See https://github.com/jitpass/jit for details.\n\n" +
-			"Start with `jit audit` (strictly read-only), then `jit migrate --dry-run` to preview the guided fix for everything it found.",
+			"Start with `jit scan` (strictly read-only), then `jit migrate --dry-run` to preview the guided fix for everything it found.",
 		// Version lives in internal/agent (next to BuildID) because the
 		// agent reports it over the socket too — see agent/version.go.
 		Version: agent.Version(),
@@ -123,7 +125,27 @@ func newRootCmd() *cobra.Command {
 	return cmd
 }
 
+// recordInvocation, when set, writes one line to the application audit log
+// for a finished command. It is a hook (nil default) rather than a direct
+// call so this portable file never has to import the darwin-only lineage /
+// keychainwrap machinery the real recorder needs; auditrecord.go installs the
+// implementation on darwin. A nil hook simply means no audit trail — the same
+// best-effort posture the recorder itself keeps internally.
+var recordInvocation func(cmd *cobra.Command, err error, elapsed time.Duration)
+
 // Execute runs the root command. Called from cmd/jit/main.go.
+//
+// ExecuteC (not Execute) so the audit log can record WHICH command actually
+// ran — cobra resolves the args to a concrete *cobra.Command and hands it
+// back, which a bare Execute() throws away. The command is recorded whether it
+// succeeded or failed: "what ran, when, by whom, and did it work" is exactly
+// the question an audit trail exists to answer, and the failures are often the
+// interesting half.
 func Execute() error {
-	return rootCmd.Execute()
+	start := time.Now()
+	cmd, err := rootCmd.ExecuteC()
+	if recordInvocation != nil {
+		recordInvocation(cmd, err, time.Since(start))
+	}
+	return err
 }

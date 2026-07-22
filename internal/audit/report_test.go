@@ -45,7 +45,7 @@ func TestWriteHumanReportNeverLeaksRawValue(t *testing.T) {
 		"CRITICAL  AWS_SECRET_ACCESS_KEY",
 		preview,
 		"key name matches production-indicator pattern",
-		"jit audit --format ndjson",
+		"jit scan --format ndjson",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("report output missing expected substring %q\n--- full output ---\n%s", want, out)

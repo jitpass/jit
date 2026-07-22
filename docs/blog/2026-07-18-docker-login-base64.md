@@ -92,7 +92,7 @@ config, this is the escape hatch to leave yourself.
 [jit](https://github.com/jitpass/jit) v0.16 turns that protocol into the
 exit ramp for the base64 case:
 
-- **`jit audit`** now flags every registry in `~/.docker/config.json`
+- **`jit scan`** now flags every registry in `~/.docker/config.json`
   whose entry still carries a real secret - base64 `auth`, identity
   token, or literal password - and skips docker's own empty markers.
 - **`jit migrate`** (category `docker`) moves each credential into the

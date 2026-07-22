@@ -5,7 +5,7 @@ description: jit migrate - move plaintext secrets into the vault and rewrite eac
 
 # Migrating secrets - `jit migrate`
 
-`migrate` is the guided fix for what [`jit audit`](../audit/index.md)
+`migrate` is the guided fix for what [`jit scan`](../audit/index.md)
 finds: it moves each secret into the vault and rewrites the consuming file
 via that tool's own native mechanism, so everything keeps working. It's a
 separate command from `audit`, deliberately: a read-only scanner can never
@@ -13,7 +13,7 @@ be turned into a mutating one by a mistyped flag.
 
 ## Scope: the whole machine by default
 
-**`jit migrate`** covers the same ground `jit audit` scans - everything
+**`jit migrate`** covers the same ground `jit scan` scans - everything
 under `$HOME`. That's deliberate: audit's report is machine-wide, so the
 command it points you at fixes machine-wide too, no scope decision in
 between. It's shorthand for `jit migrate home`: every project's
@@ -48,7 +48,7 @@ A home-scope run skips anything under a directory named `archive`,
 `--include-archived` to override): converting a forgotten project's `.env`
 into a live mount nothing will ever read again makes it *less*
 recoverable, not more secure. Skipped paths are listed at the end of the
-plan, and `jit audit` tags the same findings `[archived]`, so the two
+plan, and `jit scan` tags the same findings `[archived]`, so the two
 reports always agree on what was left alone. A
 [jitpass-playground](https://github.com/jitpass/jitpass-playground)
 checkout gets the same treatment - its planted secrets are synthetic bait,

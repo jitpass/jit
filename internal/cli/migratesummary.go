@@ -43,7 +43,7 @@ func printMigrateResultCategory(w io.Writer, label string, n int) {
 // closing "run `jit agent install`" pointer). Each explanation in
 // migrateSummary.print now appears exactly once, with the affected files
 // listed under it — the same collapse-identical-explanations convention
-// already applied to jit audit's human report.
+// already applied to jit scan's human report.
 type migrateSummary struct {
 	// home is the user's home directory, used to "~"-shorten the paths
 	// this summary displays (the recorded strings below are display-only;

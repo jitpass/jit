@@ -1,16 +1,16 @@
 ## jit migrate
 
-Guided fix path for findings jit audit reports
+Guided fix path for findings jit scan reports
 
 ### Synopsis
 
-jit migrate moves the plaintext secrets jit audit finds into the encrypted
+jit migrate moves the plaintext secrets jit scan finds into the encrypted
 vault and rewrites each file so everything keeps working without the secret
-sitting on disk. It's a separate command from jit audit, not a flag on it,
+sitting on disk. It's a separate command from jit scan, not a flag on it,
 so the read-only scanner can never be turned into a mutating one by a
 mistyped flag.
 
-By default it covers the same ground jit audit scans, the whole machine:
+By default it covers the same ground jit scan scans, the whole machine:
 `jit migrate` is `jit migrate home`. Narrow the scope with a subcommand:
 
   jit migrate local   only what's under the current directory tree

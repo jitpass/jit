@@ -124,6 +124,17 @@ var agentRunCmd = &cobra.Command{
 		server.OnCanGrant = mounts.canGrantAll
 		server.OnStopMount = mounts.stopMount
 		server.OnMountStatus = mounts.mountRevealStatuses
+		// Best-effort "how were you asked" for the audit trail: probe once per
+		// fresh challenge whether Touch ID is currently usable, so a denial or
+		// unlock records "Touch ID or device passcode" on a Mac with biometry
+		// and "device passcode" on one without. Never an auth decision — the OS
+		// challenge (LAPolicyDeviceOwnerAuthentication) accepts either anyway.
+		server.AuthMethodFn = func() string {
+			if keychainwrap.BiometryAvailable() {
+				return "Touch ID or device passcode"
+			}
+			return "device passcode"
+		}
 
 		// Durable session history: every event goes to agent-history.jsonl
 		// as well as the prose log, and the previous processes' events are

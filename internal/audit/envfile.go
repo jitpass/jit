@@ -46,7 +46,7 @@ func isEnvTemplateFile(name string) bool {
 // match (meant to catch `.env.local`/`.env.production`) also matches
 // jit's own `<file>.pointers` companion — e.g. `.env.pointers` — since
 // it's just ".env" followed by another suffix. Without this exclusion,
-// `jit audit` would falsely report a git-safe pointer file (which holds
+// `jit scan` would falsely report a git-safe pointer file (which holds
 // only `KEY=jit://vault/...` lines, never a real value) as an exposed
 // .env secret — confirmed as the same underlying pattern bug that made
 // `jit migrate` re-discover and destroy its own `.pointers` files on a

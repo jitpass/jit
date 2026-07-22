@@ -1,11 +1,11 @@
 ---
 title: Audit NDJSON output
-description: The machine-readable schema behind jit audit --format ndjson.
+description: The machine-readable schema behind jit scan --format ndjson.
 ---
 
 # Audit NDJSON output
 
-`jit audit --format ndjson` emits newline-delimited JSON: one **finding**
+`jit scan --format ndjson` emits newline-delimited JSON: one **finding**
 record per finding, then a single closing **scan summary** record. Values
 are always masked previews - the NDJSON stream never contains a full
 secret, same as every other audit format.

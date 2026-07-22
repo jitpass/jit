@@ -16,7 +16,7 @@ import (
 	"github.com/jitpass/jit/internal/vault"
 )
 
-// Terraform tfvars migration: the automated-fix half of jit audit's IaC
+// Terraform tfvars migration: the automated-fix half of jit scan's IaC
 // variable-file finding (internal/audit/iac.go, FindingTypeIACVariableFile),
 // for the Terraform side only — the Kubernetes secret(s).yaml side stays
 // detection-only, since that file's consumer is a cluster/CI pipeline no
@@ -118,7 +118,7 @@ type tfvarsMatch struct {
 //
 // complexOnly lists files whose secret-shaped assignments are ALL
 // unmigratable (heredocs, maps, multi-line values — parseTfvarsLines'
-// skipped set) with not one simple-string match among them. `jit audit`
+// skipped set) with not one simple-string match among them. `jit scan`
 // flags every tfvars file, so without this second list such a file
 // appeared in the audit report yet nowhere at all in the migrate plan —
 // not even ApplyTfvarsDir's per-file SkippedComplex note, which only ever

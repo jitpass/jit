@@ -239,6 +239,16 @@ func realChallenge(reason string) error {
 	return goErr(C.kw_challenge(cReason))
 }
 
+// BiometryAvailable reports whether Touch ID can currently satisfy a challenge
+// on this Mac (hardware present, a fingerprint enrolled, not locked out). It
+// performs no prompt. It exists only to sharpen the audit log's best-effort
+// "how were you asked" phrasing — "Touch ID or device passcode" when true,
+// "device passcode" when false — and is never an authorization signal:
+// challenges always fall back to the passcode regardless of what this returns.
+func BiometryAvailable() bool {
+	return C.kw_biometry_available() != 0
+}
+
 func goErr(r C.KWResult) error {
 	if r.success != 0 {
 		return nil
