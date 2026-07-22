@@ -92,7 +92,9 @@ Each modified file is backed up before it's rewritten.
 Then apply it by dropping `--dry-run`. The same plan prints again, followed
 by a `Proceed? [y/N]` confirmation. To fix just one project instead, `cd`
 into it and run `jit migrate local`: only what's under that directory
-tree is discovered or touched. More in **[Migrating](../migrate/index.md)**.
+tree is discovered or touched. To fix a single named file with no walk at
+all - one `.env`, a `~/.zshrc` - run `jit migrate path <file>`. More in
+**[Migrating](../migrate/index.md)**.
 
 ## 4. Check health: `jit status`
 
