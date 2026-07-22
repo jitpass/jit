@@ -169,48 +169,124 @@ func printVaultList(out io.Writer, secrets, backups []string, showBackups, group
 	default:
 		fmt.Fprintf(out, "\n%d %s stored, plus %d encrypted file %s kept for `jit migrate undo` (list with --all).\n", len(secrets), secretsWord, len(backups), backupsWord)
 	}
+	// Duplicate-group nudge only decorates the default terminal view — a
+	// piped/grep listing (grouped == false) and the provenance axes stay
+	// uncluttered.
+	if grouped && axis == "path" {
+		printDuplicateGroupNudge(out, secrets)
+	}
 }
 
-// printGroupedSecrets renders secrets grouped by their first path segment:
-// a faint "prefix/ (n)" header, then each key indented with the prefix
-// stripped. Relies on List's naturally-sorted input keeping every path
-// that shares a "prefix/" contiguous (naturalLess is a total order decided
-// on the shared prefix, so it does). Pathless entries print as bare lines.
-func printGroupedSecrets(out io.Writer, secrets []string, meta map[string]vault.SecretInfo) {
-	faint := color.New(color.Faint)
-	for i := 0; i < len(secrets); {
-		slash := strings.Index(secrets[i], "/")
+// printDuplicateGroupNudge emits one faint hint when two or more top-level
+// groups hold an identical set of key names — the "wiz/ and
+// custom_scripts-wiz/ are the same five WIZ_ keys" case, a common sign of an
+// accidentally re-migrated file. Conservative on purpose: it fires only for
+// sets of at least three keys, so intentional small look-alikes (a couple of
+// sandboxes each holding DATABASE_URL + STRIPE_KEY) don't trip it.
+func printDuplicateGroupNudge(out io.Writer, secrets []string) {
+	const minKeys = 3
+	members := map[string][]string{} // top-level group -> its sub-paths
+	var order []string
+	for _, p := range secrets {
+		slash := strings.Index(p, "/")
 		if slash < 0 {
-			fmt.Fprintln(out, secrets[i])
+			continue
+		}
+		g := p[:slash]
+		if _, ok := members[g]; !ok {
+			order = append(order, g)
+		}
+		members[g] = append(members[g], p[slash+1:])
+	}
+	bySignature := map[string][]string{} // key-set signature -> group names
+	for _, g := range order {
+		keys := members[g]
+		if len(keys) < minKeys {
+			continue
+		}
+		sorted := append([]string(nil), keys...)
+		sort.Strings(sorted)
+		sig := strings.Join(sorted, "\x00")
+		bySignature[sig] = append(bySignature[sig], g)
+	}
+	var dupes [][]string
+	for _, g := range order {
+		keys := members[g]
+		if len(keys) < minKeys {
+			continue
+		}
+		sorted := append([]string(nil), keys...)
+		sort.Strings(sorted)
+		sig := strings.Join(sorted, "\x00")
+		if groups := bySignature[sig]; len(groups) > 1 && groups[0] == g {
+			dupes = append(dupes, groups) // report once, at the first group
+		}
+	}
+	if len(dupes) == 0 {
+		return
+	}
+	faint := color.New(color.Faint)
+	for _, groups := range dupes {
+		_, _ = faint.Fprintf(out, "note: %s hold the same keys — a re-migrated file? `jit vault rm` the stale copy.\n", strings.Join(groups, ", "))
+	}
+}
+
+// printGroupedSecrets renders secrets as an indented tree, nesting on every
+// path segment rather than only the first: `a/b/KEY` and `a/c/KEY` collapse
+// under one `a/` header with `b/` and `c/` subtrees, instead of two flat
+// `a/b` and `a/c` groups. A single-level path (`descope/KEY`) renders exactly
+// as before — one `descope/ (n)` header with its keys indented — so the common
+// case is unchanged. Relies on List's naturally-sorted input keeping every
+// path that shares a prefix contiguous.
+func printGroupedSecrets(out io.Writer, secrets []string, meta map[string]vault.SecretInfo) {
+	printSecretTree(out, secrets, "", 0, meta)
+}
+
+// printSecretTree renders one level of the tree: paths are already stripped of
+// the ancestor prefix, ancestorPath (the full vault prefix consumed so far)
+// rebuilds each leaf's real path for the -l metadata lookup, and depth drives
+// the indent. A segment with children becomes a faint "seg/ (n)" header whose
+// subtree recurses one level deeper; a leaf prints at the current indent,
+// -l-annotated when meta is set. Direct leaves at this level align their
+// metadata column to the widest of them.
+func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth int, meta map[string]vault.SecretInfo) {
+	faint := color.New(color.Faint)
+	indent := strings.Repeat("  ", depth)
+
+	leafWidth := 0
+	if meta != nil {
+		for _, p := range paths {
+			if !strings.Contains(p, "/") && len(p) > leafWidth {
+				leafWidth = len(p)
+			}
+		}
+	}
+
+	for i := 0; i < len(paths); {
+		slash := strings.Index(paths[i], "/")
+		if slash < 0 {
+			key := paths[i]
+			if meta == nil {
+				fmt.Fprintf(out, "%s%s\n", indent, key)
+			} else {
+				fmt.Fprintf(out, "%s%-*s  ", indent, leafWidth, key)
+				_, _ = faint.Fprintln(out, secretMetaSuffix(meta[ancestorPath+key]))
+			}
 			i++
 			continue
 		}
-		prefix := secrets[i][:slash+1]
+		seg := paths[i][:slash+1]
 		j := i
-		for j < len(secrets) && strings.HasPrefix(secrets[j], prefix) {
+		for j < len(paths) && strings.HasPrefix(paths[j], seg) {
 			j++
 		}
-		_, _ = faint.Fprintf(out, "%s (%d)\n", prefix, j-i)
-		// In -l mode, align the metadata column to the widest key in THIS
-		// group (not the whole listing), so each group reads as its own tidy
-		// table without one giant prefix forcing everything else far right.
-		keyWidth := 0
-		if meta != nil {
-			for k := i; k < j; k++ {
-				if w := len(secrets[k][len(prefix):]); w > keyWidth {
-					keyWidth = w
-				}
-			}
+		_, _ = faint.Fprintf(out, "%s%s (%d)\n", indent, seg, j-i)
+		sub := make([]string, j-i)
+		for k := i; k < j; k++ {
+			sub[k-i] = paths[k][len(seg):]
 		}
-		for ; i < j; i++ {
-			key := secrets[i][len(prefix):]
-			if meta == nil {
-				fmt.Fprintf(out, "  %s\n", key)
-				continue
-			}
-			fmt.Fprintf(out, "  %-*s  ", keyWidth, key)
-			_, _ = faint.Fprintln(out, secretMetaSuffix(meta[secrets[i]]))
-		}
+		printSecretTree(out, sub, ancestorPath+seg, depth+1, meta)
+		i = j
 	}
 }
 
@@ -291,17 +367,56 @@ func printSecretsByProvenance(out io.Writer, secrets []string, meta map[string]v
 }
 
 // secretMetaSuffix is the faint `-l` annotation for one secret: its class
-// (or "unknown" for a v1/v2 secret written before provenance existed) and,
-// when the envelope records it, how long ago the value was last updated.
+// (or "unknown" for a v1/v2 secret written before provenance existed), how
+// long ago the value was last updated when the envelope records it, and a
+// gentle "likely config" when the key name looks non-secret (OUTPUT_FILE,
+// DEBUG). The config note is a hint about the NAME, never a claim about the
+// value — jit treats every value as opaque — so it errs toward silence.
 func secretMetaSuffix(info vault.SecretInfo) string {
 	class := info.Class
 	if class == "" {
 		class = "unknown"
 	}
+	parts := []string{class}
 	if info.UpdatedUnix > 0 {
-		return fmt.Sprintf("%s · updated %s ago", class, humanAgo(time.Since(time.Unix(info.UpdatedUnix, 0))))
+		parts = append(parts, "updated "+humanAgo(time.Since(time.Unix(info.UpdatedUnix, 0)))+" ago")
 	}
-	return class
+	if looksLikeConfig(leafKeyName(info.Path)) {
+		parts = append(parts, "likely config")
+	}
+	return strings.Join(parts, " · ")
+}
+
+// leafKeyName is the final path segment — the environment-variable-style key
+// name a secret is stored under (jamf/API_KEY -> API_KEY).
+func leafKeyName(path string) string {
+	if i := strings.LastIndex(path, "/"); i >= 0 {
+		return path[i+1:]
+	}
+	return path
+}
+
+// looksLikeConfig guesses, from the KEY NAME alone, whether a stored value is
+// ordinary configuration rather than a credential — deliberately conservative
+// so it never dims a real secret: anything with a secret-shaped token in its
+// name (KEY, TOKEN, SECRET, PASSWORD, CREDENTIAL, PRIVATE, CERT) is never
+// called config, and only names carrying an unambiguous config word (FILE,
+// PATH, DEBUG, PORT, REGION, …) are. URL/HOST/ENDPOINT are intentionally left
+// out: a DATABASE_URL routinely embeds a password, so flagging it config would
+// be exactly the wrong nudge.
+func looksLikeConfig(name string) bool {
+	up := strings.ToUpper(name)
+	for _, s := range []string{"KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "PRIVATE", "CERT", "SIGNING"} {
+		if strings.Contains(up, s) {
+			return false
+		}
+	}
+	for _, c := range []string{"FILE", "PATH", "DIR", "DEBUG", "OUTPUT", "INPUT", "PORT", "REGION", "ZONE", "TIMEOUT", "RETRIES", "VERSION", "MODE", "LEVEL", "FORMAT", "SHOW", "FIELDS", "TIMEZONE", "LOCALE", "VERBOSE", "ENABLED", "DISABLED"} {
+		if strings.Contains(up, c) {
+			return true
+		}
+	}
+	return false
 }
 
 var vaultCmd = &cobra.Command{
