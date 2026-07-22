@@ -56,5 +56,5 @@ jit wrap undo gemini
   `jit vault set wrap-gemini/GEMINI_API_KEY` by hand.
 - Only the *file* path is scrubbed. `GEMINI_API_KEY` set directly in your
   shell profile overrides both the vault injection and the `.env` file -
-  `jit audit`/`jit migrate home --only shell` covers that case.
+  `jit scan`/`jit migrate home --only shell` covers that case.
 </content>

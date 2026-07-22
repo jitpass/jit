@@ -1,6 +1,6 @@
 ---
 title: What audit looks for
-description: Every jit audit finding category, and which command fixes it.
+description: Every jit scan finding category, and which command fixes it.
 ---
 
 # What audit looks for
@@ -21,7 +21,7 @@ a masked value preview, and a one-line *why* explaining what matched.
 | **SOPS Age Keys** | the age private key file (`keys.txt`) that decrypts every SOPS-encrypted secret it guards - sops, kluctl, Flux, helm-secrets | [`jit migrate`](../migrate/sops.md) |
 
 Detection and migration share the same extractors: when a new tool enters
-the wrap catalog, `jit audit` starts flagging its token automatically.
+the wrap catalog, `jit scan` starts flagging its token automatically.
 
 ## Risk level
 

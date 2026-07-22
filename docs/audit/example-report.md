@@ -1,4 +1,4 @@
-# Example: what `jit audit` finds
+# Example: what `jit scan` finds
 
 This is **real output** from `WriteHumanReport` (`internal/audit/report.go`), run against a throwaway fixture `$HOME` built inside a Go test, not hand-typed. Every path, username, and value below is fabricated (fake keys, fake tokens, a disposable ed25519 key generated just for this run) and was never a real credential. The fixture includes two registered live jit mounts (the "Already protected" line) and a `jitpass-playground` checkout with synthetic bait (the "Excluded from the score" line). The fixture and the test that produced this file are not checked in; regenerate by writing a short `_test.go` in `internal/audit` that builds a fixture directory tree, calls `Scan`/`WriteHumanReport` against it, and deletes itself afterward, see the commit that introduced this version of the doc for the exact fixture used.
 
@@ -7,7 +7,7 @@ Keeping this generated from the real renderer, rather than hand-maintained, is t
 ---
 
 ```
-jit audit: risk report for alex@Alexs-MacBook-Pro
+jit scan: risk report for alex@Alexs-MacBook-Pro
 scan time: 2026-07-17T11:59:28.805Z          duration: 2ms
 
   RISK LEVEL: CRITICAL
@@ -113,7 +113,7 @@ scan time: 2026-07-17T11:59:28.805Z          duration: 2ms
     MEDIUM  1Password Emergency Kit: contains the account's master and secret key if genuine
 
 Run `jit migrate --dry-run` to see the guided fix plan for what's fixable here.
-No secret values are ever printed in full. Run `jit audit --format ndjson` for machine-readable output (same redaction rules apply).
+No secret values are ever printed in full. Run `jit scan --format ndjson` for machine-readable output (same redaction rules apply).
 ```
 
 ## How to read a finding block
@@ -149,4 +149,4 @@ This only collapses when the match is genuinely meaningful (severity + key name 
 ## What's *not* shown here, on purpose
 
 - No real value ever appears in full, everything is either a short masked preview (`sk_l**********`) or, for file-level findings like `.env`'s low-severity case, no value at all.
-- `jit audit` never writes or modifies anything, under any flag, this is exactly what got scanned, not what got "fixed." Fixing findings is a separate command, `jit migrate`, so the read-only audit tool can't be turned into a mutating one by a mistyped flag.
+- `jit scan` never writes or modifies anything, under any flag, this is exactly what got scanned, not what got "fixed." Fixing findings is a separate command, `jit migrate`, so the read-only audit tool can't be turned into a mutating one by a mistyped flag.

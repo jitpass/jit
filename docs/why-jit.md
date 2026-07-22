@@ -25,13 +25,13 @@ default and keeps the plaintext out of the way the rest of the time.
 
 ## 1. See what is already exposed
 
-`jit audit` is a read-only scan of your machine. It never writes, moves, or
+`jit scan` is a read-only scan of your machine. It never writes, moves, or
 "fixes" anything, so it is safe to run before you trust jit with anything else.
 In about 340ms it ranks every plaintext secret it finds by risk and gives you a
 single exposure score from 0 to 100.
 
 ```
-jit audit: risk report for alex@Alexs-MacBook-Pro
+jit scan: risk report for alex@Alexs-MacBook-Pro
 scan time: 2026-07-06T09:14:22.000Z          duration: 340ms
 
   RISK LEVEL: CRITICAL
@@ -48,8 +48,8 @@ scan time: 2026-07-06T09:14:22.000Z          duration: 340ms
   Total: 18 finding(s)
 ```
 
-No secret value is ever printed in full. Run `jit audit --score` when you only
-want the number, or `jit audit --format ndjson` for machine-readable output.
+No secret value is ever printed in full. Run `jit scan --score` when you only
+want the number, or `jit scan --format ndjson` for machine-readable output.
 
 **Why it matters:** you cannot fix what you cannot see. A password manager
 stores the secrets you deliberately put into it; it has no idea what is still
@@ -139,7 +139,7 @@ Anything not in the catalog works through `jit wrap add`.
 
 ```
 jit                        # a fresh machine? bare jit walks you through setup
-jit audit                  # see what's exposed (read-only, safe anywhere)
+jit scan                  # see what's exposed (read-only, safe anywhere)
 jit migrate                # fix everything it found; tools keep working
 ```
 
@@ -154,7 +154,7 @@ Here is what jit does that a cloud password manager and its CLI do not:
 - **Finds the plaintext you already have.** 1Password stores what you put in it.
   It does not scan your machine and tell you that a production database URL is
   sitting in a `.env`, or that an AWS key is in `~/.aws/credentials` right now.
-  `jit audit` does.
+  `jit scan` does.
 - **Migrates your existing files in place.** 1Password's model is to store the
   secret in its cloud and have you rewrite each file to reference it
   (`op://...`) or inject it as an environment variable. jit rewrites the files

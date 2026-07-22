@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 // Package migrate implements jit migrate: RFC.md's guided fix path for
-// findings jit audit reports. A separate command from jit audit, not a
+// findings jit scan reports. A separate command from jit scan, not a
 // flag on it, so audit's read-only guarantee holds under every flag
 // combination (see internal/audit/doc.go and RFC.md's read-only note in
 // §4).

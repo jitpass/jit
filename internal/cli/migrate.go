@@ -108,7 +108,7 @@ func noteFolderRename(w io.Writer, root string) {
 // yellow headline with the count and reason, then the skipped paths
 // themselves, then an optional hint line. Listing the paths is the point
 // (a real, reported gap): a bare "(Skipped N finding(s)...)" count gave
-// the reader no way to map a finding `jit audit` just showed them onto
+// the reader no way to map a finding `jit scan` just showed them onto
 // "migrate deliberately left this one alone", which reads as the tool
 // losing findings rather than protecting them.
 func printSkippedFindings(w io.Writer, home string, count int, reason string, paths []string, hint string) {
@@ -147,13 +147,13 @@ func filterMigrateOnly(only []string) (map[string]bool, error) {
 var migrateCmd = &cobra.Command{
 	Use:     "migrate",
 	GroupID: groupWorkflow,
-	Short:   "Guided fix path for findings jit audit reports",
-	Long: "jit migrate moves the plaintext secrets jit audit finds into the encrypted\n" +
+	Short:   "Guided fix path for findings jit scan reports",
+	Long: "jit migrate moves the plaintext secrets jit scan finds into the encrypted\n" +
 		"vault and rewrites each file so everything keeps working without the secret\n" +
-		"sitting on disk. It's a separate command from jit audit, not a flag on it,\n" +
+		"sitting on disk. It's a separate command from jit scan, not a flag on it,\n" +
 		"so the read-only scanner can never be turned into a mutating one by a\n" +
 		"mistyped flag.\n\n" +
-		"By default it covers the same ground jit audit scans, the whole machine:\n" +
+		"By default it covers the same ground jit scan scans, the whole machine:\n" +
 		"`jit migrate` is `jit migrate home`. Narrow the scope with a subcommand:\n\n" +
 		"  jit migrate local   only what's under the current directory tree\n" +
 		"                       (.env files, tfvars files, project mcp.json, project .npmrc)\n" +
@@ -179,7 +179,7 @@ var migrateCmd = &cobra.Command{
 		"  jit migrate home --only aws,kube\n" +
 		"  jit migrate path ~/proj/.env   # migrate just one file, no walk\n" +
 		"  jit migrate undo               # restore migrated files from their backups",
-	// Bare `jit migrate` runs the home scope: jit audit scans the whole
+	// Bare `jit migrate` runs the home scope: jit scan scans the whole
 	// machine with no scope choice, so the natural next step after reading
 	// its report must not fork into a local/home decision the reader has
 	// no basis to make (picking `local` from an arbitrary cwd silently
@@ -589,7 +589,7 @@ func applyMigrate(cmd *cobra.Command, scope migrateScope, cwd, home string, d *d
 		printSkippedFindings(cmd.OutOrStdout(), home, len(skippedPlayground), "inside a jitpass-playground checkout (synthetic bait, not real exposure)", skippedPlayground,
 			"To practice migrating them, run `jit migrate local` from inside the checkout.")
 		printSkippedFindings(cmd.OutOrStdout(), home, len(tfvarsComplexOnly), "in Terraform variable file(s) whose secret-shaped values aren't simple one-line strings", tfvarsComplexOnly,
-			"Nothing migrate can move safely; they stay in place, and `jit audit` keeps reporting them.")
+			"Nothing migrate can move safely; they stay in place, and `jit scan` keeps reporting them.")
 		return nil
 	}
 
@@ -627,14 +627,14 @@ func applyMigrate(cmd *cobra.Command, scope migrateScope, cwd, home string, d *d
 	printSkippedFindings(cmd.OutOrStdout(), home, len(skippedPlayground), "inside a jitpass-playground checkout (synthetic bait, not real exposure)", skippedPlayground,
 		"To practice migrating them, run `jit migrate local` from inside the checkout.")
 	printSkippedFindings(cmd.OutOrStdout(), home, len(tfvarsComplexOnly), "in Terraform variable file(s) whose secret-shaped values aren't simple one-line strings", tfvarsComplexOnly,
-		"Nothing migrate can move safely; they stay in place, and `jit audit` keeps reporting them.")
+		"Nothing migrate can move safely; they stay in place, and `jit scan` keeps reporting them.")
 
 	if migrateDryRun {
 		out := cmd.OutOrStdout()
 		fmt.Fprintln(out)
 		_, _ = color.New(color.FgCyan, color.Bold).Fprint(out, "[DRY RUN]")
 		fmt.Fprintln(out, " No files were changed. Run without --dry-run to apply this plan.")
-		_, _ = color.New(color.FgYellow).Fprintln(out, "This only covers what jit migrate can act on, run `jit audit` for a complete picture, including findings it can never auto-fix, like private keys.")
+		_, _ = color.New(color.FgYellow).Fprintln(out, "This only covers what jit migrate can act on, run `jit scan` for a complete picture, including findings it can never auto-fix, like private keys.")
 		return nil
 	}
 

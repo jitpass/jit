@@ -361,7 +361,7 @@ func scanDockerConfig(cfg Config) ([]Finding, error) {
 // files. git keeps them as `https://user:pass@host` lines, one per host, in
 // ~/.git-credentials (and ~/.config/git/credentials when XDG is in use) —
 // plaintext, the same at-rest gap as a base64 docker auth. Detection mirrors
-// internal/migrate.parseGitCredentialsFile, so `jit audit` reports exactly
+// internal/migrate.parseGitCredentialsFile, so `jit scan` reports exactly
 // the credentials `jit migrate --only git` (and `jit wrap git`) will convert.
 func scanGitCredentials(cfg Config) ([]Finding, error) {
 	var findings []Finding
@@ -537,7 +537,7 @@ type netrcPassword struct {
 // context, mirroring internal/migrate/netrc.go's walkNetrcTokens grammar
 // EXACTLY — machine/default context, login/account values skipped as
 // usernames (not secrets), and macdef macro bodies skipped to their
-// terminating blank line. That agreement is the point: `jit audit` must
+// terminating blank line. That agreement is the point: `jit scan` must
 // report precisely the passwords `jit migrate --only netrc` will convert,
 // never a "password" word inside a curl/ftp macro script. Kept as audit's
 // own copy (audit doesn't import internal/migrate) — the same

@@ -125,7 +125,7 @@ func goModCacheDir() string {
 
 // skipDiscoveryDir is the shared per-directory gate every Discover* walk in
 // this package uses: audit.SkipNoiseDir's shared noise list (so `jit
-// migrate home --dry-run` and `jit audit` can never disagree about which
+// migrate home --dry-run` and `jit scan` can never disagree about which
 // directories exist — this package once kept its own shorter copy, which
 // let migrate discover fixture .env files under .venv and .vscode/
 // extensions that audit deliberately excludes), plus migrateExtraNoiseDirs
@@ -174,11 +174,11 @@ type EnvFileMigration struct {
 }
 
 // DiscoverEnvFiles walks root (a project directory, not the whole home
-// directory — real mutation is scoped narrower than jit audit/jit
+// directory — real mutation is scoped narrower than jit scan/jit
 // migrate --dry-run's whole-machine preview, deliberately: rewriting .env
 // files across every unrelated project under $HOME in one command would be
 // a much bigger blast radius than "fix the project I'm standing in").
-// Skips template files (same convention as jit audit) and anything
+// Skips template files (same convention as jit scan) and anything
 // already a named pipe (an earlier migration's mount — reading it would
 // block forever waiting for a writer that only jit agent provides).
 func DiscoverEnvFiles(root string) ([]string, error) {

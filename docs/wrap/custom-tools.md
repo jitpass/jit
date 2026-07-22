@@ -43,4 +43,4 @@ their config file - check yours does).
 
 If the tool has a well-known config file, consider
 [adding it to the catalog](./index.md#adding-a-tool) - one data block and
-one fixture, and `jit audit` starts flagging its token for everyone.
+one fixture, and `jit scan` starts flagging its token for everyone.

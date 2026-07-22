@@ -356,7 +356,7 @@ func TestMigrateLocalDryRunCleanFixture(t *testing.T) {
 // an .env file anywhere under $HOME, not just under cwd — the actual new
 // capability (GAPS.md #26) — while jit migrate local from the same cwd
 // does not.
-// TestMigrateBareDefaultsToHomeScope: `jit audit` scans the whole machine
+// TestMigrateBareDefaultsToHomeScope: `jit scan` scans the whole machine
 // with no scope choice, so its report's "run `jit migrate --dry-run`"
 // trailer must work verbatim and cover the same ground — bare `jit
 // migrate` used to print help instead, forcing a local/home fork on the
@@ -564,7 +564,7 @@ func TestMigrateHomeSkipsArchivedByDefault(t *testing.T) {
 }
 
 // TestMigrateHomeSkipsPlaygroundLoudly: a jitpass-playground checkout's
-// planted bait is excluded from `jit audit`'s score, so a whole-machine
+// planted bait is excluded from `jit scan`'s score, so a whole-machine
 // sweep must skip it too (vaulting fake secrets and live-mounting the tour
 // repo's .env files would wreck the checkout) — and must say so with the
 // paths, not a bare count, so the skip never reads as a lost finding.

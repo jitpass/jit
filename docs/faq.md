@@ -34,7 +34,7 @@ collects the threat-model answers on one page.
 - [Can a malicious repo I clone steal my cloud credentials?](#can-a-malicious-repo-i-clone-steal-my-cloud-credentials)
 - [The mounts identify the reading process, isn't that spoofable?](#the-mounts-identify-the-reading-process-isnt-that-spoofable)
 - [Does jit phone home or sync anywhere?](#does-jit-phone-home-or-sync-anywhere)
-- [Is `jit audit` safe to run on a sensitive machine?](#is-jit-audit-safe-to-run-on-a-sensitive-machine)
+- [Is `jit scan` safe to run on a sensitive machine?](#is-jit-audit-safe-to-run-on-a-sensitive-machine)
 - [What about secrets already committed to git?](#what-about-secrets-already-committed-to-git)
 - [Once a secret reaches a process, what stops it leaking it?](#once-a-secret-reaches-a-process-what-stops-that-process-from-leaking-it)
 - [How is it distributed and signed?](#how-is-it-distributed-and-signed)
@@ -63,7 +63,7 @@ Often not. It depends on how the tool reads its credential:
 
 ### How do I know which command to use?
 
-You mostly do not decide. Run [`jit audit`](./audit/index.md), and it prints
+You mostly do not decide. Run [`jit scan`](./audit/index.md), and it prints
 the exact fix next to every finding, including `jit wrap <tool>` for CLI
 tokens. `jit migrate --dry-run` then shows the whole guided plan.
 [How the workflow flows](./getting-started/how-it-fits.md#find-integrate-use).
@@ -182,10 +182,10 @@ Never. The vault stays on the machine. The only way a secret leaves is an
 explicit [passphrase-encrypted export](./vault/backup-restore.md) you run
 yourself (an Argon2id-derived key, machine-independent by design).
 
-### Is `jit audit` safe to run on a sensitive machine?
+### Is `jit scan` safe to run on a sensitive machine?
 
 Yes. It is strictly read-only, never writes anything, and never prints a real
-value (every preview is masked). Use `jit audit --format ndjson` for
+value (every preview is masked). Use `jit scan --format ndjson` for
 machine-readable output under the same redaction rules.
 
 ### What about secrets already committed to git?

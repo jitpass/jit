@@ -55,5 +55,5 @@ jit migrate path <file-or-dir>...
 
 ### SEE ALSO
 
-* [jit migrate](jit_migrate.md)	 - Guided fix path for findings jit audit reports
+* [jit migrate](jit_migrate.md)	 - Guided fix path for findings jit scan reports
 
