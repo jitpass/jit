@@ -121,7 +121,7 @@ func TestDiscoverTfvarsFiles(t *testing.T) {
 	writeFile(t, filepath.Join(root, "infra", "variables.tf"), "variable \"db_password\" {}\n")
 	writeFile(t, filepath.Join(root, "infra", "dev.tfvars"), "password = \"un-auto'd tfvars is CLI-only\"\n")
 	// Secret-shaped but nothing migratable (heredoc only): reported in
-	// complexOnly, never in found — `jit audit` flags this file, so a
+	// complexOnly, never in found — `jit scan` flags this file, so a
 	// migrate plan silent about it read as the funnel losing a finding.
 	writeFile(t, filepath.Join(root, "certs", "terraform.tfvars"), "cert_password = <<EOT\npem\nEOT\n")
 

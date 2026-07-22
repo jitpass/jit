@@ -84,7 +84,7 @@ before opening a PR.
 ## Adding a `jit wrap` plugin
 
 The lowest-friction contribution in the repo: teaching `jit wrap` (and
-`jit audit`) about another CLI's token is one data block in
+`jit scan`) about another CLI's token is one data block in
 `internal/wrap/catalog_data.go`, one sanitized config sample in
 `internal/wrap/testdata/<tool>/`, a row in
 `internal/wrap/catalog_test.go`'s fixture table, a row in

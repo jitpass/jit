@@ -7,7 +7,7 @@ description: Keep your OpenAI API key off disk entirely - injected as OPENAI_API
 
 The OpenAI CLI reads its key from `OPENAI_API_KEY`, and there's no
 standard config file it writes - in practice the key lives wherever you
-pasted it, usually a shell `export` line ([`jit audit`](../audit/index.md)
+pasted it, usually a shell `export` line ([`jit scan`](../audit/index.md)
 flags those; [`jit migrate`](../migrate/shell-configs.md) fixes them).
 Wrapping keeps the key in the vault and injects it per invocation instead.
 

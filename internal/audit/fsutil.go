@@ -115,7 +115,7 @@ func walkHomeDir(root string, fn func(path string, d fs.DirEntry) error) error {
 // openFile opens a file for reading. Every category scanner funnels through
 // this instead of calling os.Open directly, so there is exactly one place
 // to justify gosec's G304 ("potential file inclusion via variable"): every
-// path jit audit ever reads is either a fixed, hardcoded filename (shell
+// path jit scan ever reads is either a fixed, hardcoded filename (shell
 // config names, credential file names) or discovered by our own directory
 // walk under a known root — never attacker- or network-controlled input,
 // which is what G304 actually guards against. Centralizing this also means

@@ -47,7 +47,7 @@ The spike validates the risky third of the feature. The full shape:
 1. **Catalog** (`internal/wrap/catalog.go`): per-CLI entries — env var(s) the tool reads (`gh` → `GH_TOKEN`), where its plaintext credential lives today (`~/.config/gh/hosts.yml`), how to extract it. This is data entry, not risk; 1Password's public plugin list is the coverage roadmap.
 2. **`jit wrap gh`**: find the existing plaintext token (reusing audit's detection), `vault set` it, write a `wrap-gh` profile (global scope, like shell/MCP migrations), install the shim (`~/.jit/shims/gh`), verify PATH order, offer to scrub the original file (backed up encrypted first, like every migrate).
 3. **Shim binary**: this spike's `main.go`, hardened — becomes either a tiny separate binary or `jit shim-exec` invoked via argv[0] dispatch.
-4. **`jit audit`** learns to report wrappable plaintext tokens ("gh token in hosts.yml — `jit wrap gh` fixes this"), which is how developers discover the feature.
+4. **`jit scan`** learns to report wrappable plaintext tokens ("gh token in hosts.yml — `jit wrap gh` fixes this"), which is how developers discover the feature.
 
 Open questions for the real implementation, none spike-shaped: tools that *require* a config file rather than an env var (kubectl-style exec plugins or live-mounts cover those), `jit migrate undo` integration, and whether `wrap` is a migrate subcommand or a top-level verb.
 

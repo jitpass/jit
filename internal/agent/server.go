@@ -122,6 +122,15 @@ type Server struct {
 	// Fires OUTSIDE Server's lock, like OnUnlock/OnLock, and before them.
 	OnSessionEvent func(SessionEvent)
 
+	// AuthMethodFn, if set, returns a best-effort description of how the local
+	// auth challenge asked the user ("Touch ID or device passcode" vs. "device
+	// passcode"), stamped onto the unlock/denied event a fresh challenge
+	// produces. The CLI wires it to keychainwrap's biometry probe; nil (a test
+	// server, or an old wiring) falls back to the honest policy description in
+	// authMethod. Never claims a specific method macOS won't confirm — see
+	// SessionEvent.AuthMethod.
+	AuthMethodFn func() string
+
 	// readTimeout bounds how long a connected client gets to send a
 	// complete request (and, on the way out, to drain the response).
 	// Without it, a client that connects and then stalls — or never
@@ -553,6 +562,7 @@ func (s *Server) forceDisclosedChallenge(reason string, c *caller) error {
 		event := unlockEvent(OpRevealPID, c)
 		event.Kind = KindDenied
 		event.Cause = fmt.Sprintf("%s: %s", reason, err)
+		event.AuthMethod = s.authMethod()
 		s.recordEvent(*event)
 		s.mu.Unlock()
 		if s.OnSessionEvent != nil {
@@ -631,6 +641,7 @@ func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller, labe
 		event := unlockEvent(op, c)
 		event.Kind = KindDenied
 		event.Cause = err.Error()
+		event.AuthMethod = s.authMethod()
 		if label != "" {
 			event.Labels = []string{label}
 		}
@@ -650,6 +661,7 @@ func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller, labe
 	lockMemory(s.mek)
 	out := s.mekCopy()
 	event := unlockEvent(op, c)
+	event.AuthMethod = s.authMethod()
 	if label != "" {
 		event.Labels = []string{label}
 	}
@@ -803,6 +815,20 @@ func lockCause(c *caller) string {
 		return fmt.Sprintf("explicit lock, launched by %s", by)
 	}
 	return "explicit lock"
+}
+
+// authMethod is the best-effort "how were you asked" phrase stamped on every
+// event a fresh challenge produced. It defers to AuthMethodFn when the CLI has
+// wired the biometry probe, and otherwise states the policy jit always uses —
+// never a specific method, since LAPolicyDeviceOwnerAuthentication does not
+// report whether the fingerprint or the passcode was the one that satisfied it.
+func (s *Server) authMethod() string {
+	if s.AuthMethodFn != nil {
+		if m := s.AuthMethodFn(); m != "" {
+			return m
+		}
+	}
+	return "Touch ID or device passcode"
 }
 
 // unlockEvent snapshots who caused a fresh unlock, at the moment it happened

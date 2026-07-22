@@ -58,7 +58,7 @@ fish are covered there too.
 ## Quick start
 
 ```sh
-jit audit                     # 1. see the problem (read-only, safe to run anywhere)
+jit scan                     # 1. see the problem (read-only, safe to run anywhere)
 jit vault init                # 2. create the vault (master key in your login keychain)
 jit agent install             # 3. (optional) start the shared-session agent now; migrate/run auto-start it too
 jit migrate --dry-run         # 4. preview the fix (same whole-machine scope as audit)
@@ -141,7 +141,7 @@ jit run --profile mcp-jamf -- uv --directory ~/servers/jamf run server.py
 
 ## The command surface
 
-- **`jit audit`**: the read-only scan. Ranks every plaintext secret on the
+- **`jit scan`**: the read-only scan. Ranks every plaintext secret on the
   machine by exposure; never writes, moves, or prints a real value. Safe to run
   against anything, ~340 ms.
 - **`jit migrate`**: the bulk mover. Vaults the secrets in files it understands

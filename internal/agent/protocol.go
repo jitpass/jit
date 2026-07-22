@@ -218,6 +218,18 @@ type SessionEvent struct {
 	// discipline the mount read-storm logging already applies. Zero/one
 	// everywhere else.
 	Count int64 `json:"count,omitempty"`
+	// AuthMethod, on the events that involved a FRESH local-auth challenge
+	// (unlock and denied), is a best-effort description of how the user was
+	// asked: "Touch ID or device passcode" when biometry is enrolled on this
+	// Mac, "device passcode" when it isn't. It is deliberately not more
+	// precise than that: jit challenges with LAPolicyDeviceOwnerAuthentication,
+	// which lets macOS accept EITHER a fingerprint or the passcode, and the
+	// LocalAuthentication reply does not report which one the user actually
+	// used — so claiming "authenticated by fingerprint" would be a fabrication.
+	// Empty on events that rode an already-unlocked session (no challenge
+	// happened) and on events restored from a jit version that predates this
+	// field.
+	AuthMethod string `json:"auth_method,omitempty"`
 }
 
 // MountRevealStatus is one currently-served mount's state — deliberately

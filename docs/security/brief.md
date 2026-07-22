@@ -92,7 +92,7 @@ the session, not the scope. A cloned repo's config, or a script that slips a
 
 - Every published [self-review](./self-reviews/index.md) tests the claims above and
   carries a precise "known, accepted limitations" list as of that review.
-- `jit audit` is strictly read-only and masks all values, so it is safe to run
+- `jit scan` is strictly read-only and masks all values, so it is safe to run
   on a sensitive machine for a firsthand look at what it detects.
 - Report an issue, or a boundary you think is mis-stated, through the
   [reporting page](./reporting.md).

@@ -89,7 +89,7 @@ func TestDiscoverEnvFiles(t *testing.T) {
 // audit's 16-entry noise list, so `jit migrate home` discovered (and
 // offered to rewrite) fixture .env files under .venv site-packages,
 // .vscode/extensions bundles, dist/ outputs, and everything under
-// ~/Library — none of which `jit audit` reports. Discovery must skip
+// ~/Library — none of which `jit scan` reports. Discovery must skip
 // exactly what audit's walk skips, plus migrate's own extras (.jit), and
 // must skip symlinked .env files the way audit's regular-files-only walk
 // does.

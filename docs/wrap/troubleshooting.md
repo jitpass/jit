@@ -35,7 +35,7 @@ but wrap-specific).
   each call costs ~25 ms after that.
 - **The tool re-wrote its config file** (a re-`login`, a token rotation
   command). The new token is on disk in plaintext again; re-run
-  `jit wrap <tool>` to vault it. [`jit audit`](../audit/index.md) will
+  `jit wrap <tool>` to vault it. [`jit scan`](../audit/index.md) will
   flag it in the meantime.
 
 ## Unwrap: `jit wrap undo <tool>`

@@ -1,21 +1,30 @@
 ## jit audit
 
-Scan for plaintext secrets exposed on this machine (read-only)
+Show the audit log: what jit commands ran, when, by whom, and every unlock
 
 ### Synopsis
 
-jit audit scans shell configs, .env files, credential files, MCP/AI-tool configs, private keys, IaC variable files, and suspicious filenames for plaintext secrets. Default behavior is strictly read-only: it never touches, encrypts, or rewrites a single file on disk. No real secret value is ever printed, only a masked preview.
+jit audit prints the application audit trail, most recent first: one line for
+every jit command that ran (what, when, which user and parent process, and
+whether it succeeded), interleaved with every local-auth event the agent saw
+(each unlock and each DECLINED prompt, with how you were asked, what triggered
+it, and the secret names each one touched).
 
-Exposure score
+Together they answer "what happened on this machine, and who did it": the
+command lines are the actions, the auth lines are the approvals those actions
+needed. Command arguments are recorded with any secret-looking value masked, so
+the log records that a command ran, never the secret it may have carried.
 
-jit reports a 0-100 exposure score (EXPOSURE:) next to the categorical RISK LEVEL. It is computed entirely locally and deterministically:
+On the auth method: jit challenges with a single macOS prompt that accepts
+either a fingerprint or the device passcode, and the OS does not report which
+one you used. So a line says "Touch ID or device passcode" (biometry is
+available on this Mac) or "device passcode" (it isn't), never a claim macOS
+can't back.
 
-  1. Sum a severity-weighted load over all findings: critical 30, high 15, medium 6, low 2, info 0. (info is detection-only, not an at-rest secret, so it adds nothing.)
-  2. Add 40 for each finding that carries a production indicator (a "prod"/"production" token) or a public IP address, the same signals that escalate the whole scan to CRITICAL.
-  3. Cap the total at 100.
-  4. Clamp into the band of the scan's RISK LEVEL, so the number and the label can never disagree: clean 0, low 10-39, medium 40-64, high 65-84, critical 85-100.
-
-Findings inside a jitpass playground checkout crossed during the scan are synthetic demo secrets, so they are excluded from every count and from the score (the report states how many were excluded and where). Run with --score to print just the score line and exit.
+Survives restarts and logouts: both halves are durable files alongside the
+vault (audit.jsonl and agent-history.jsonl), so this answers for last week as
+readily as for the last hour. To scan for plaintext secrets on disk instead,
+that command is now `jit scan`.
 
 ```
 jit audit [flags]
@@ -24,9 +33,8 @@ jit audit [flags]
 ### Options
 
 ```
-      --format string   output format: "text" (default), "markdown"/"md", or "ndjson" (default "text")
-  -o, --output string   write the report to this file instead of stdout
-      --score           print only the exposure score (e.g. "Exposure: 92/100 (CRITICAL)") and exit
+      --format string   output format: "text" (default) or "json" (default "text")
+      --limit int       show at most this many recent entries (0 for all) (default 50)
 ```
 
 ### SEE ALSO

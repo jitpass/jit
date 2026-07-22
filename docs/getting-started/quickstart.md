@@ -8,7 +8,7 @@ description: From plaintext secrets to a clean machine - audit, vault, agent, mi
 The whole arc, in five commands:
 
 ```sh
-jit audit                     # 1. see the problem (read-only, run it anywhere)
+jit scan                     # 1. see the problem (read-only, run it anywhere)
 jit vault init                # 2. create the vault (master key in your login keychain)
 jit migrate --dry-run         # 3. preview the fix, same whole-machine scope as audit
 jit migrate                   # 4. apply it: plan, [y/N], one Touch ID prompt
@@ -28,15 +28,15 @@ After setup, daily life with jit is mostly nothing: your app starts normally,
 `aws`/`kubectl`/`terraform` behave exactly as before, and roughly once per
 5 minutes of active use, macOS asks for a Touch ID confirmation.
 
-## 1. See what's exposed: `jit audit`
+## 1. See what's exposed: `jit scan`
 
 Start here. `audit` is strictly read-only under every flag: it never touches,
 encrypts, or rewrites anything, and never prints a real secret value in full,
 only a masked preview.
 
 ```
-$ jit audit
-jit audit - risk report for alex@Alexs-MacBook-Pro
+$ jit scan
+jit scan - risk report for alex@Alexs-MacBook-Pro
 
   RISK LEVEL: HIGH
 
@@ -75,7 +75,7 @@ do that early or pick a custom `--ttl`. More in
 
 Always preview first. `--dry-run` runs the exact same discovery a real run
 would, so the preview is accurate, and `jit migrate` covers the same
-whole-machine ground `jit audit` scans, so what the report showed is what
+whole-machine ground `jit scan` scans, so what the report showed is what
 the plan fixes:
 
 ```

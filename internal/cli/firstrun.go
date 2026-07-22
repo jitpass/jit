@@ -189,7 +189,7 @@ func prodFirstRunDeps(cmd *cobra.Command) firstRunDeps {
 // scanRoot runs the audit rooted at root instead of $HOME. HomeDir is the
 // scan root for every scanner (internal/audit/finding.go), so pointing it at
 // the current directory yields a project-scoped report from the exact same
-// engine and renderer `jit audit` uses.
+// engine and renderer `jit scan` uses.
 func scanRoot(root string) ([]audit.Finding, audit.ScanSummary, error) {
 	cfg, err := audit.NewConfig(agent.Version())
 	if err != nil {

@@ -31,7 +31,7 @@ one-time setup per secret, the last is every day.
 
 | Step | Command | What happens |
 | --- | --- | --- |
-| **1. Find** | `jit audit` | A read-only scan ranks every plaintext secret on the machine by exposure. Never writes, never prints a real value. |
+| **1. Find** | `jit scan` | A read-only scan ranks every plaintext secret on the machine by exposure. Never writes, never prints a real value. |
 | **2. Integrate** | `jit migrate` / `jit wrap` | Move a secret into the vault and wire up how its tool will get it back. |
 | **3. Use** | `jit run` / the tool itself | Run your tools. The secret materializes only for that process, only while it runs. |
 
@@ -81,7 +81,7 @@ The subtlety in one line: `aws` is *truly* native (jit hooked its
 Following the gcloud application-default credentials (a file-delivered
 secret) end to end:
 
-1. **Find.** [`jit audit`](../audit/index.md) flags
+1. **Find.** [`jit scan`](../audit/index.md) flags
    `~/.config/gcloud/application_default_credentials.json` as a plaintext
    refresh token.
 2. **Integrate.** `jit migrate home --only gcp` moves the secret field into

@@ -25,7 +25,7 @@ a shim and not a shell alias, it keeps working inside scripts, Makefiles,
 git hooks, and any subprocess that spawns the tool - the paths aliases
 miss - at about 25 ms overhead per call with an unlocked agent.
 
-[`jit audit`](../audit/index.md) flags the tokens worth wrapping and
+[`jit scan`](../audit/index.md) flags the tokens worth wrapping and
 prints the one-command fix next to each.
 
 ## Shim-based plugins
@@ -95,7 +95,7 @@ silently. Names: `gcp`, `sops`, `npm`, `netrc`. See
 A catalog entry is one data block in `internal/wrap/catalog_data.go` plus
 one sanitized config sample in `internal/wrap/testdata/<tool>/` - no logic.
 The entry states which env var the tool reads, where its plaintext token
-lives, and how to verify after wrapping; `jit audit` picks new entries up
+lives, and how to verify after wrapping; `jit scan` picks new entries up
 automatically, since detection and migration share the same extractors.
 PRs welcome - if your CLI reads a token from an env var, it belongs here.
 

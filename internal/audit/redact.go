@@ -30,7 +30,7 @@ func MaskValue(v string) string {
 }
 
 // alreadyMaskedPattern matches values that are already fully redacted at the
-// source (e.g. "****"), so jit audit doesn't re-mask (or re-evaluate for
+// source (e.g. "****"), so jit scan doesn't re-mask (or re-evaluate for
 // production/IP signals) something the scanned file already hid. RFC.md §4:
 // "A value that's already masked... is not re-flagged... skipping
 // already-masked values for both detections."

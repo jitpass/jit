@@ -32,4 +32,11 @@ KWResult kw_delete_mek(const char *service, const char *account);
 // no-SecAccessControl posture as kw_ensure_mek, same reasons.
 KWResult kw_set_mek(const char *service, const char *account, const unsigned char *key, int key_len);
 
+// kw_biometry_available reports whether this Mac can satisfy a challenge with
+// biometrics right now (Touch ID enrolled and usable) — 1 if so, 0 otherwise
+// (no Touch ID hardware, none enrolled, or it's locked out). It only informs
+// the audit log's "how were you asked" phrasing; it is never an authorization
+// signal, and a challenge always still falls back to the device passcode.
+int kw_biometry_available(void);
+
 #endif

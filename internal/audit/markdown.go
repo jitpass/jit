@@ -23,7 +23,7 @@ func WriteMarkdownReport(w io.Writer, findings []Finding, summary ScanSummary) {
 		host = "unknown"
 	}
 
-	fmt.Fprintln(w, "# jit audit report")
+	fmt.Fprintln(w, "# jit scan report")
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "**Scanned:** %s@%s  \n", who, host)
 	fmt.Fprintf(w, "**Scan time:** %s (%dms)\n\n", summary.ScanTime, summary.ScanDurationMs)
@@ -87,7 +87,7 @@ func WriteMarkdownReport(w io.Writer, findings []Finding, summary ScanSummary) {
 		fmt.Fprintln(w, "[archived] findings live under an archived/backup-looking directory: `jit migrate home` skips them by default, rerun it with `--include-archived` to convert them too.")
 	}
 	fmt.Fprintln(w, "Run `jit migrate --dry-run` to see the guided fix plan for what's fixable here.")
-	fmt.Fprintln(w, "No secret values are ever printed in full. Run `jit audit --format ndjson` for machine-readable output (same redaction rules apply).")
+	fmt.Fprintln(w, "No secret values are ever printed in full. Run `jit scan --format ndjson` for machine-readable output (same redaction rules apply).")
 }
 
 // writeRenderItemMarkdown is WriteMarkdownReport's counterpart to the text

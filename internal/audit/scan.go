@@ -69,7 +69,7 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 // When the scan root is ITSELF a playground — the first-run tour points the
 // scanner straight at the checkout (internal/cli scanRoot) — nothing is
 // synthetic: showing and scoring those findings is the entire point of the
-// tour, so this returns everything unchanged. `jit audit` proper always roots
+// tour, so this returns everything unchanged. `jit scan` proper always roots
 // at real $HOME, so a playground can only ever appear as a crossed subtree
 // there, which is exactly the case this filters.
 func partitionSynthetic(cfg Config, all []Finding) (real []Finding, syntheticCount int, playgrounds []string) {

@@ -52,6 +52,20 @@ KWResult kw_challenge(const char *reason) {
     return r;
 }
 
+int kw_biometry_available(void) {
+    @autoreleasepool {
+        LAContext *ctx = [[LAContext alloc] init];
+        // canEvaluatePolicy with the biometrics-only policy answers "could a
+        // fingerprint satisfy a challenge right now" — false on a Mac with no
+        // Touch ID, none enrolled, or biometry locked out after too many
+        // failures. It performs no prompt. The passcode-inclusive policy jit
+        // actually challenges with (kw_challenge) still works regardless; this
+        // only sharpens the audit log's description of how the user was asked.
+        BOOL ok = [ctx canEvaluatePolicy:LAPolicyDeviceOwnerAuthenticationWithBiometrics error:NULL];
+        return ok ? 1 : 0;
+    }
+}
+
 KWResult kw_ensure_mek(const char *service, const char *account, int keySize) {
     KWResult r = {0, NULL};
     @autoreleasepool {

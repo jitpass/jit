@@ -42,7 +42,7 @@ jit wrap undo stripe
 ## Notes
 
 - A Stripe **live-mode** key on disk is exactly the kind of finding
-  [`jit audit`](../audit/index.md) rates as production-indicating - worth
+  [`jit scan`](../audit/index.md) rates as production-indicating - worth
   wrapping first.
 - Multiple Stripe projects: the catalog extracts the default project's
   key. For another project's key, use
