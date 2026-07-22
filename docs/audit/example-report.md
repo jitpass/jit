@@ -1,6 +1,6 @@
 # Example: what `jit scan` finds
 
-This is **real output** from `WriteHumanReport` (`internal/audit/report.go`), run against a throwaway fixture `$HOME` built inside a Go test, not hand-typed. Every path, username, and value below is fabricated (fake keys, fake tokens, a disposable ed25519 key generated just for this run) and was never a real credential. The fixture includes two registered live jit mounts (the "Already protected" line) and a `jitpass-playground` checkout with synthetic bait (the "Excluded from the score" line). The fixture and the test that produced this file are not checked in; regenerate by writing a short `_test.go` in `internal/audit` that builds a fixture directory tree, calls `Scan`/`WriteHumanReport` against it, and deletes itself afterward, see the commit that introduced this version of the doc for the exact fixture used.
+This is **real output** from `WriteHumanReport` (`internal/audit/report.go`), run against a throwaway fixture `$HOME` built inside a Go test, not hand-typed. Every path, username, and value below is fabricated (fake keys, fake tokens, a disposable ed25519 key generated just for this run) and was never a real credential. The fixture includes two registered live jit mounts (the "Already protected" line). The fixture and the test that produced this file are not checked in; regenerate by writing a short `_test.go` in `internal/audit` that builds a fixture directory tree, calls `Scan`/`WriteHumanReport` against it, and deletes itself afterward, see the commit that introduced this version of the doc for the exact fixture used.
 
 Keeping this generated from the real renderer, rather than hand-maintained, is the whole point: a mockup that silently drifts from actual output is worse than no example at all.
 
@@ -26,7 +26,6 @@ scan time: 2026-07-17T11:59:28.805Z          duration: 2ms
   ───────────────────────────────────
   Total: 18 finding(s)
   Already protected by jit: 2 live mount(s), served from the encrypted vault, no plaintext on disk. Not scanned.
-  Excluded from the score: 2 synthetic finding(s) in a jitpass playground (/Users/alex/jitpass-playground). Synthetic playground secrets, not real exposure.
 
 [Shell Configs]
   ───────────────────────────────────
@@ -125,14 +124,6 @@ Each non-empty category opens with a bold header and a rule. Within it, every bl
 A **production-indicator match**, `/Users/alex/code/webapp/.env` contains a value matching the production-indicator pattern (a `PROD_DATABASE_URL`-shaped connection string). This is the only thing that escalated this scan to Critical; a public IP address in a visible value triggers the same escalation but isn't present in this fixture.
 
 The risk banner lists the triggering file path directly (`- /Users/alex/code/webapp/.env`) rather than just saying "see below", with dozens of findings spread across several categories on a real machine, a bare "see below" cost a full read of the report to resolve into an actual file to go fix.
-
-Note that the playground's own production-indicator bait did NOT escalate anything: see the next section.
-
-## What the "Excluded from the score" line means
-
-The fixture's home directory contains a `jitpass-playground` checkout (the sandbox repo from github.com/jitpass/jitpass-playground, recognized by its `.jitpass-playground` marker file). Its planted secrets exist precisely to trip every scanner, so counting them would inflate a real machine's score with fake exposure; before this exclusion, a machine whose only "critical" findings were playground bait scored a guaranteed 100/100 CRITICAL. Those findings are now dropped from every count, the risk level, and the exposure score, and the drop is stated rather than silent, the same treatment as the protected-mounts line above it.
-
-The exclusion only applies when a playground is *crossed* during a wider scan. A scan rooted inside the playground itself (the first-run tour that a bare `jit` runs there) still reports everything, because showing those findings is the playground's entire purpose.
 
 ## Why severity order matters within a category
 

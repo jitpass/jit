@@ -192,10 +192,3 @@ what is landing next:
   Touch ID gate, on the same signing work.
 - **More platforms.** jit goes deep on macOS first; Linux and beyond are on the
   roadmap.
-
-## Try it without touching your real machine
-
-The [jitpass-playground](https://github.com/jitpass/jitpass-playground) is a
-mock project seeded with synthetic secrets and a short guided tour: audit,
-migrate, watch the decoys flip to real values, and undo it all. It is the
-safest way to see the whole flow before day one.
