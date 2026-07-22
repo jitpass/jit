@@ -4,6 +4,10 @@ Start jit agent automatically at every login (survives reboots)
 
 ### Synopsis
 
+You usually don't need to run this: jit sets the agent up automatically
+the first time a command needs it. Run it yourself to do that eagerly, or
+to choose the session --ttl up front.
+
 Sets up jit agent to start automatically every time you log in, and to
 restart itself if it crashes, until you run `jit agent uninstall`.
 Under the hood this writes and loads a launchd LaunchAgent plist that
