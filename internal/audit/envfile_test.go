@@ -169,7 +169,7 @@ func TestScanEnvFilesTemplateFileStillEscalates(t *testing.T) {
 // regression test: envFileNamePattern's wildcard suffix match (meant to
 // catch .env.local/.env.production) also matched jit migrate's own
 // `<file>.pointers` companion (internal/migrate/pointerfile.go), since
-// it's just ".env" followed by another suffix — so `jit audit` would
+// it's just ".env" followed by another suffix — so `jit scan` would
 // falsely report a git-safe pointer file (holding only
 // `KEY=jit://vault/...` lines, never a real value) as an exposed .env
 // secret. Unlike a template file (still scanned for an accidental real

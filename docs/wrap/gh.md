@@ -54,5 +54,5 @@ Removes the shim and the `wrap-gh` profile;
 - `gh auth logout` / re-`login` write to gh's own storage again - re-run
   `jit wrap gh` after a re-login to vault the fresh token.
 - Anything already exporting `GH_TOKEN` in your shell overrides the shim's
-  injection (that's gh's own precedence). [`jit audit`](../audit/index.md)
+  injection (that's gh's own precedence). [`jit scan`](../audit/index.md)
   flags such exports.

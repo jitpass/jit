@@ -36,7 +36,7 @@ RFC §1 names "malicious dependency lifecycle scripts (`npm postinstall`)" as a 
 
 | Package | Role |
 |---|---|
-| `github.com/spf13/cobra` | Subcommand routing (`jit audit/migrate/run/export/doctor/status`, plus vault CRUD grouped under `jit vault {init,set,get,list,rm,share,revoke}`), flag parsing, `--help` generation. Industry-standard for exactly this shape of CLI (`kubectl`, `gh`, `docker`, `hugo`). |
+| `github.com/spf13/cobra` | Subcommand routing (`jit scan/migrate/run/export/doctor/status`, plus vault CRUD grouped under `jit vault {init,set,get,list,rm,share,revoke}`), flag parsing, `--help` generation. Industry-standard for exactly this shape of CLI (`kubectl`, `gh`, `docker`, `hugo`). |
 | `golang.org/x/term` | Hidden-input password prompt (`jit vault set stripe/dev-key` with no value arg reads from a non-echoing terminal read, not shell history) and TTY detection (to decide human-readable vs. machine output when `--format` isn't passed). |
 
 **Explicitly not** `github.com/spf13/viper` for config, see §4 (R2).
@@ -99,11 +99,11 @@ This is the one layer of the stack that is unavoidably macOS-only and unavoidabl
 |---|---|
 | `github.com/mitchellh/go-ps` | Cross-platform process listing with parent-PID resolution; on Darwin it's pure Go over `sysctl(KERN_PROC)`, no CGo needed for this one, unlike §2.3. Matches the three OS-native mechanisms the RFC names (`sysctl`, `/proc`, `ToolHelp32`) without hand-rolling each. |
 
-### 2.9 Terminal UX, `jit audit` human-readable report
+### 2.9 Terminal UX, `jit scan` human-readable report
 
 | Package | Role |
 |---|---|
-| `github.com/fatih/color` | Color-coded risk banner and per-category counts (RFC.md:179-181). Deliberately not a full TUI framework (Bubble Tea, etc.), `jit audit`'s default output is a report, not an interactive UI, and a heavier dependency isn't earned here. |
+| `github.com/fatih/color` | Color-coded risk banner and per-category counts (RFC.md:179-181). Deliberately not a full TUI framework (Bubble Tea, etc.), `jit scan`'s default output is a report, not an interactive UI, and a heavier dependency isn't earned here. |
 
 ### 2.10 Native credential-helper protocol types (Pillar III, Tier 2)
 
@@ -144,7 +144,7 @@ Mirroring the RFC's own boundary-table style (§2), stating what was *not* chose
 
 | # | Rejected | In favor of | Why |
 |---|---|---|---|
-| **R1** | A full TUI framework (Bubble Tea / `tview`) for `jit audit` | `fatih/color` + plain formatting | The audit report (RFC.md:178-195) is a report, not an interactive surface, no scrolling panes, no keybindings. A TUI framework is real weight for zero functional gain here. |
+| **R1** | A full TUI framework (Bubble Tea / `tview`) for `jit scan` | `fatih/color` + plain formatting | The audit report (RFC.md:178-195) is a report, not an interactive surface, no scrolling panes, no keybindings. A TUI framework is real weight for zero functional gain here. |
 | **R2** | `spf13/viper` for config | `gopkg.in/yaml.v3` + explicit flag parsing | Viper pulls a large transitive tree (remote config providers, multiple format decoders jit doesn't use) for a feature set (profiles, policy file) that's two flat YAML shapes. Directly in tension with §0's dependency-minimalism principle for a security tool. |
 | **R3** | A generic secrets-manager SDK (e.g., wrapping HashiCorp Vault's client) | Purpose-built envelope format (Pillar II) | jit's threat model (local-first, hardware-enclave-bound, no server) doesn't match Vault's (networked, server-mediated), adopting its SDK would import an entire client for a protocol jit doesn't speak. |
 | **R4** | `memfd_create`-backed shared memory for Tier 4 (legacy tools needing real random access) | Explicitly unsupported in Phase 1, allowlist stays narrow | `memfd_create` is Linux-only (B4, RFC.md:59), building a Phase 1 mechanism around it would mean either a macOS-only fake or dead code until the Linux port. Matches the RFC's own explicit non-goal here. |
@@ -171,7 +171,7 @@ Given §0's framing, a security tool's own build practices are part of its credi
 | Tool | Purpose |
 |---|---|
 | `go test` + `github.com/stretchr/testify` | Standard unit/table-driven tests; `testify/assert`/`require` for readable failure output. |
-| Go native fuzzing (`go test -fuzz`) | Targeted at the `jit audit` scanners (shell-config parsing, `.env` parsing, MCP JSON parsing), these parse untrusted, attacker-shaped input (a malicious `.mcp.json` or crafted shell config) by definition. |
+| Go native fuzzing (`go test -fuzz`) | Targeted at the `jit scan` scanners (shell-config parsing, `.env` parsing, MCP JSON parsing), these parse untrusted, attacker-shaped input (a malicious `.mcp.json` or crafted shell config) by definition. |
 | `govulncheck` | Official Go team tool, CI gate against known CVEs in the dependency graph, run on every PR. |
 | `staticcheck` | General Go static analysis in CI. |
 | `gosec` | Security-specific static analysis (hardcoded credentials, weak crypto primitives, command injection), points at the codebase, not just dependencies. |

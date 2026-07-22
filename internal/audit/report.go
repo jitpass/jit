@@ -350,7 +350,7 @@ func playgroundLocation(home string, paths []string) string {
 	}
 }
 
-// WriteHumanReport renders the default jit audit report (RFC.md §4):
+// WriteHumanReport renders the default jit scan report (RFC.md §4):
 // a color-coded risk banner, per-category counts, and exact file:line
 // locations. Never a real secret value — only Finding.ValuePreview, which
 // is already masked by the time it reaches here.
@@ -370,7 +370,7 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 		host = "unknown"
 	}
 
-	fmt.Fprintf(w, "jit audit: risk report for %s@%s\n", who, host)
+	fmt.Fprintf(w, "jit scan: risk report for %s@%s\n", who, host)
 	fmt.Fprintf(w, "scan time: %s          duration: %dms\n\n", summary.ScanTime, summary.ScanDurationMs)
 
 	_, _ = colorOr(riskLevelColor, summary.RiskLevel).Fprintf(w, "  RISK LEVEL: %s\n", strings.ToUpper(summary.RiskLevel))
@@ -453,9 +453,9 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	// flag, not remediation — a first-time reader of a HIGH/CRITICAL
 	// report had no pointer from here to the command that actually fixes
 	// any of it. jit migrate's own dry-run trailer already points back
-	// at `jit audit` the other way; this closes the loop.
+	// at `jit scan` the other way; this closes the loop.
 	fmt.Fprintln(w, "Run `jit migrate --dry-run` to see the guided fix plan for what's fixable here.")
-	_, _ = color.New(color.Faint).Fprintln(w, "No secret values are ever printed in full. Run `jit audit --format ndjson` for machine-readable output (same redaction rules apply).")
+	_, _ = color.New(color.Faint).Fprintln(w, "No secret values are ever printed in full. Run `jit scan --format ndjson` for machine-readable output (same redaction rules apply).")
 }
 
 // findingIndent is the left margin every finding row sits at, one step in

@@ -12,7 +12,7 @@ and rewrites each consuming file so everything keeps working - with secrets
 materializing only at the moment of use.
 
 ```sh
-jit audit                  # what's exposed on this machine? (strictly read-only)
+jit scan                  # what's exposed on this machine? (strictly read-only)
 jit migrate                # fix everything it found; tools keep working
 jit wrap gh                # move a CLI's token into the vault; keep typing `gh` as before
 jit run -- npm run dev     # or inject secrets straight into a process, no file at all
@@ -35,7 +35,7 @@ then **[Install](./getting-started/install.md)** →
 - [Troubleshooting](./getting-started/troubleshooting.md) - placeholder values, hangs, surprise Touch ID prompts
 - [FAQ for developers and security](./faq.md) - blunt answers on how it works, what it protects, and what it deliberately does not
 
-## Find exposed secrets - `jit audit`
+## Find exposed secrets - `jit scan`
 
 - [Running an audit](./audit/index.md) - strictly read-only, output formats, saving reports
 - [What audit looks for](./audit/findings.md) - every finding category explained

@@ -174,7 +174,7 @@ those files into an encrypted vault and rewrites each consumer to fetch its
 secret at the moment of use through that tool's own native mechanism:
 `credential_process` for AWS, a `.env` that's a live mount showing decoy
 values until a short reveal window, a PATH shim for `gh` and friends. Run
-`jit audit` (strictly read-only) and it'll enumerate exactly the file list
+`jit scan` (strictly read-only) and it'll enumerate exactly the file list
 above as it exists on your machine today.
 
 **What that actually stops:** the plaintext-at-rest sweep. A stealer reading
