@@ -202,7 +202,7 @@ var migrateLocalCmd = &cobra.Command{
 		"`jit migrate home` ever includes them.\n\n" +
 		"What happens per category:\n\n" +
 		"  .env files   Keys move into a profile and the vault; the file itself keeps\n" +
-		"               working as a live mount served by jit agent, showing\n" +
+		"               working as a live mount served by jit's background service, showing\n" +
 		"               fake-looking values by default. Real values reach a tool\n" +
 		"               through `jit run` (env injection, or `jit run --live` for a\n" +
 		"               tool that reads the file itself). A git-safe <file>.pointers\n" +
@@ -425,7 +425,7 @@ func runMigrate(cmd *cobra.Command, scope migrateScope) error {
 	// Whole-machine sweeps skip anything that looks archived/backed-up by
 	// default (GAPS.md #26) — see archived.go's doc comment for why a
 	// live-mounted pipe is a worse outcome than plaintext for a project
-	// nobody will run `jit agent` from again. `local` never filters:
+	// nobody will run `jit service` from again. `local` never filters:
 	// deliberately cd-ing into an old project and running `migrate local`
 	// is an explicit action, not an implicit sweep, so there's nothing to
 	// protect the caller from.

@@ -1,6 +1,6 @@
 ## jit doctor
 
-One-shot health check: profiles, secrets, agent, backup, and wrap shims
+One-shot health check: profiles, secrets, service, backup, and wrap shims
 
 ### Synopsis
 
@@ -17,12 +17,12 @@ project-local ones under .jit/profiles/ and the home-rooted global ones
 jit migrate writes for shell-config/MCP/AWS/kubeconfig/npmrc secrets,
 the same set `jit profile list` shows. It also folds in the health checks
 that used to take `jit status` and `jit wrap doctor` to see: the background
-agent, your vault backup, and any wrapped-tool shims.
+service, your vault backup, and any wrapped-tool shims.
 
 It exits non-zero only when a profile's secret is missing, corrupt, or
 unparseable. Everything else it reports is an advisory warning, never a
 failure: an orphaned secret (with --orphans), a profile name shadowed
-across scopes, a stopped agent, a stale or missing vault backup, a broken
+across scopes, a stopped service, a stale or missing vault backup, a broken
 shim. Use --profile to narrow the run to a single profile (the system-
 health sections are skipped then), --verbose to list every reference it
 cleared, and --format json for a machine-readable snapshot.
@@ -36,7 +36,7 @@ jit doctor [flags]
 ```
       --format string    output format: "text" (default) or "json" (default "text")
       --orphans          also warn about vault secrets no profile references (advisory, never a failure)
-      --profile string   check only this profile, and skip the agent/backup/wrap health sections
+      --profile string   check only this profile, and skip the service/backup/wrap health sections
       --verbose          on success, list every variable→path reference that was checked
 ```
 

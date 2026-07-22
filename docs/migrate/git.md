@@ -36,7 +36,7 @@ any directory a git command runs in.
 ## What to expect
 
 - Each credential fetch needs the vault unlocked - the
-  [agent](../agent/index.md)'s shared session, or a Touch ID prompt. A host
+  [service](../service/index.md)'s shared session, or a Touch ID prompt. A host
   jit holds nothing for gets an empty answer before any vault access, so
   git just falls through to its next helper or prompts, never a spurious
   Touch ID.

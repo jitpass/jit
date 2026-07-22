@@ -105,12 +105,12 @@ When jit asks for Touch ID, it names what it is asking for and what set it off:
 The caller identity comes from the kernel (its process id on the socket, then
 its command line and parent chain), never from anything the caller says about
 itself, so it cannot be faked. It is used to explain and to audit, never to
-decide. `jit agent status` shows who unlocked the current session;
-`jit agent history` lists every unlock, every declined prompt, and every lock.
+decide. `jit service status` shows who unlocked the current session;
+`jit audit` lists every unlock, every declined prompt, and every lock.
 
 **Why it matters:** this is 2026. The AI agents and MCP servers in your editor
 run with your full permissions and can read every secret you own. jit puts a
-prompt between them and your credentials, and tells you it was the agent that
+prompt between them and your credentials, and tells you it was the service that
 asked. A prompt you cannot explain is one you approve out of habit; jit gives
 you the facts to approve or cancel on.
 
@@ -131,7 +131,7 @@ machine you are already trusting to run your code.
 you keep typing `gh` (or `stripe`, `ngrok`, `doctl`, `vercel`, `railway`,
 `flyctl`, `supabase`, `glab`, and more) exactly as you did. On each call the
 shim injects the token from the vault into just that one process, gated by the
-same biometric agent, at about 25ms overhead. Because it is a shim and not a
+same biometric service, at about 25ms overhead. Because it is a shim and not a
 shell alias, it keeps working inside scripts, Makefiles, and git hooks.
 Anything not in the catalog works through `jit wrap add`.
 

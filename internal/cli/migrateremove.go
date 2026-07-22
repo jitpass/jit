@@ -54,7 +54,7 @@ var migrateRemoveCmd = &cobra.Command{
 		"kept (and reported), never deleted out from under the other profile.\n\n" +
 		"This both writes real secret values back to disk in PLAINTEXT and\n" +
 		"permanently deletes them from the vault, so it always requires its own\n" +
-		"Touch ID/passcode approval, a running agent session is deliberately\n" +
+		"Touch ID/passcode approval, a running service session is deliberately\n" +
 		"not enough.",
 	Args:         cobra.NoArgs,
 	SilenceUsage: true,
@@ -162,7 +162,7 @@ func runMigrateRemove(cmd *cobra.Command, args []string) error {
 	for _, e := range plan.mounts {
 		if agentReachable {
 			if err := agentClient.StopMount(e.MountPath); err != nil {
-				return fmt.Errorf("jit migrate remove: stopping the running agent's mount %s: %w", e.MountPath, err)
+				return fmt.Errorf("jit migrate remove: stopping the running service's mount %s: %w", e.MountPath, err)
 			}
 		}
 		names, err := migrate.UnmountFile(v, e.ProfilePath, e.MountPath, e.TemplatePath)

@@ -88,11 +88,11 @@ func TestAuditCommandTextMergesCommandsAndAuth(t *testing.T) {
 
 func TestAuditRecorderSkipsNonRunnableParent(t *testing.T) {
 	home := withFixtureHome(t)
-	// `jit agent un` resolves to the non-runnable `agent` parent: cobra accepts
-	// the stray "un", prints agent help, and exits 0. Recording that would log a
-	// successful `jit agent un` for a command that never existed. The recorder
+	// `jit service un` resolves to the non-runnable `service` parent: cobra accepts
+	// the stray "un", prints service help, and exits 0. Recording that would log a
+	// successful `jit service un` for a command that never existed. The recorder
 	// must skip non-runnable commands, so nothing lands in the durable log.
-	recordAuditEvent(agentCmd, nil, 0)
+	recordAuditEvent(serviceCmd, nil, 0)
 
 	root := filepath.Join(home, "Library", "Application Support", "jitpass")
 	if recs := auditlog.New(root, nil).Load(0); len(recs) != 0 {

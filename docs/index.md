@@ -28,8 +28,8 @@ then **[Install](./getting-started/install.md)** →
 ## Get started
 
 - [Install](./getting-started/install.md) - prebuilt binary or build from source, shell completion, upgrading
-- [Quickstart](./getting-started/quickstart.md) - audit → vault → agent → migrate, start to finish
-- [How it works](./getting-started/how-it-works.md) - the vault, the agent, mounts, shims, and provenance
+- [Quickstart](./getting-started/quickstart.md) - scan → vault → migrate → status, start to finish
+- [How it works](./getting-started/how-it-works.md) - the vault, the service, mounts, shims, and provenance
 - [How it all fits together](./getting-started/how-it-fits.md) - the three delivery models, and how integrating (migrate/wrap) and running (native hook, shim, or `jit run`) connect
 - [Delivering a secret to a program](./getting-started/delivering-secrets.md) - when to use `jit wrap`, `jit run`, `jit run --profile`, and `read_as_file`
 - [Troubleshooting](./getting-started/troubleshooting.md) - placeholder values, hangs, surprise Touch ID prompts
@@ -80,10 +80,10 @@ then **[Install](./getting-started/install.md)** →
 - [Back up and restore](./vault/backup-restore.md) - passphrase-encrypted export/import
 - [Maintenance](./vault/maintenance.md) - `rekey`, `prune`, `clean`, `delete`
 
-## The background agent
+## The background service
 
-- [Unlock once, not per command](./agent/index.md) - install, TTL, lock/unlock
-- [Provenance](./agent/provenance.md) - why every prompt names its caller, `status` and `history`
+- [Unlock once, not per command](./service/index.md) - always-on, TTL, lock/unlock
+- [Provenance](./service/provenance.md) - why every prompt names its caller, `status` and `audit`
 
 ## Reference
 
@@ -93,7 +93,7 @@ then **[Install](./getting-started/install.md)** →
 
 ## Security
 
-- [Architecture](./security/architecture.md) - encryption, the agent boundary, what jit does not protect against
+- [Architecture](./security/architecture.md) - encryption, the service boundary, what jit does not protect against
 - [Security brief](./security/brief.md) - a one-page summary for a security reviewer
 - [Self-reviews](./security/self-reviews/index.md) - jit reviews its own code and publishes the results
 - [Reporting a vulnerability](./security/reporting.md)

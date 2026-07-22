@@ -1,6 +1,6 @@
 ---
 title: Security architecture
-description: How jit protects secrets - encryption at rest, the agent boundary, provenance - and what it deliberately does not defend against.
+description: How jit protects secrets - encryption at rest, the service boundary, provenance - and what it deliberately does not defend against.
 ---
 
 # Security architecture
@@ -65,21 +65,21 @@ Secrets materialize at the moment of use and nowhere else:
   `jit export` asks before printing plaintext to a terminal (its output is
   meant for `eval`, not scrollback).
 
-## The agent boundary
+## The service boundary
 
-The [background agent](../agent/index.md) holds the unlocked session and
-serves mounts. Clients reach it over a unix domain socket, and the agent
+The [background service](../service/index.md) holds the unlocked session and
+serves mounts. Clients reach it over a unix domain socket, and the service
 identifies every caller from the kernel (peer credentials on the socket,
 then the pid's command line and parent chain) - never from anything the
 caller claims about itself.
 
 That identity is used to **explain and to audit, never to decide**: it
 names the caller in the Touch ID prompt and in
-[`jit agent history`](../agent/provenance.md), but it is not
+[`jit audit`](../service/provenance.md), but it is not
 authentication, and jit does not pretend a process name is a security
 boundary. The human approving the prompt is the decision point; the cached
 session locks after its TTL (default 5 minutes, user-configurable with
-`--ttl`), on `jit agent lock`, and the moment the screen locks or the
+`--ttl`), on `jit lock`, and the moment the screen locks or the
 machine sleeps - the idle TTL is a proxy for "the user left," and those two
 events are the OS saying so outright.
 
@@ -107,7 +107,7 @@ compromised user account safe. The boundaries worth knowing:
 - **While real values are available, a mount serves them to readers.**
   That happens only under a `jit run --live`/`--with` grant (scoped to that
   run's process tree, for its lifetime, per-read by process ancestry, and
-  observable via `jit agent status`). There is no ambient reveal window:
+  observable via `jit service status`). There is no ambient reveal window:
   unlocking the vault never makes a mount serve real values on its own. The
   ancestry check narrows a grant; it is never the security boundary on its
   own - the boundary is the grant, issued only to a run the user authorized.

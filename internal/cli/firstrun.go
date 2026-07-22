@@ -113,25 +113,24 @@ func firstRun(cmd *cobra.Command, d firstRunDeps) error {
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "Set up jit and fix %s now? This runs, in order:\n", scopeWord)
 	fmt.Fprintln(out, "  1. jit vault init      (creates the vault, one Touch ID prompt)")
-	fmt.Fprintln(out, "  2. jit agent install   (unlock once per session, not once per command)")
-	fmt.Fprintf(out, "  3. %-20s(shows the fix plan, asks again before any change)\n", "jit migrate "+migrateArg)
+	fmt.Fprintf(out, "  2. %-20s(shows the fix plan, asks again before any change)\n", "jit migrate "+migrateArg)
+	fmt.Fprintln(out, "jit's background service starts automatically along the way, so you unlock once per session, not once per command.")
 
 	if !d.confirm("Set up the vault now? [y/N] ") {
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "No problem, nothing was changed. When you're ready, run these yourself:")
 		fmt.Fprintln(out, "  jit vault init")
-		fmt.Fprintln(out, "  jit agent install")
 		fmt.Fprintf(out, "  jit migrate %s\n", migrateArg)
 		return nil
 	}
 
 	// Guided auto-chain. Each step keeps its own consent gate: vault init is
-	// non-destructive, agent install is skipped past its own prompt (--yes,
-	// the user just consented to it), and migrate still prints its plan and
-	// asks "Proceed? [y/N]" before rewriting a single file.
+	// non-destructive, and migrate still prints its plan and asks "Proceed?
+	// [y/N]" before rewriting a single file. The background service isn't a
+	// step of its own — it's a solid part of the app that sets itself up the
+	// first time migrate serves a mount, no install command to run.
 	for _, step := range [][]string{
 		{"vault", "init"},
-		{"agent", "install", "--yes"},
 		{"migrate", migrateArg},
 	} {
 		if err := d.runStep(step...); err != nil {

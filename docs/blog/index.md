@@ -14,7 +14,7 @@ by anything running as your user" boundary. These posts are written to be
 useful even if you never install jit.
 
 **Inside jit** - how jit works and why it's built that way. Architecture
-deep dives (the vault's envelope encryption, the agent boundary, live-mounted
+deep dives (the vault's envelope encryption, the service boundary, live-mounted
 files), feature walkthroughs, and honest notes on what jit deliberately does
 not protect against.
 

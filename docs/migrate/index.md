@@ -70,7 +70,7 @@ Each modified file is backed up before it's rewritten.
 
 Then apply it by dropping `--dry-run`. The same plan prints again, followed
 by a `Proceed? [y/N]` confirmation; answering `y` triggers the vault writes
-(one Touch ID prompt if the agent isn't unlocked yet). Declining aborts
+(one Touch ID prompt if the service isn't unlocked yet). Declining aborts
 with nothing changed.
 
 ## The safety model

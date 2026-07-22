@@ -62,20 +62,20 @@ func (h *historyLog) append(e agent.SessionEvent) {
 	defer h.mu.Unlock()
 	line, err := json.Marshal(e)
 	if err != nil {
-		fmt.Fprintf(h.stderr, "jit agent: recording session event: %v\n", err)
+		fmt.Fprintf(h.stderr, "jit service: recording session event: %v\n", err)
 		return
 	}
 	f, err := os.OpenFile(h.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
-		fmt.Fprintf(h.stderr, "jit agent: recording session event: %v\n", err)
+		fmt.Fprintf(h.stderr, "jit service: recording session event: %v\n", err)
 		return
 	}
 	_, werr := f.Write(append(line, '\n'))
 	cerr := f.Close()
 	if werr != nil {
-		fmt.Fprintf(h.stderr, "jit agent: recording session event: %v\n", werr)
+		fmt.Fprintf(h.stderr, "jit service: recording session event: %v\n", werr)
 	} else if cerr != nil {
-		fmt.Fprintf(h.stderr, "jit agent: recording session event: %v\n", cerr)
+		fmt.Fprintf(h.stderr, "jit service: recording session event: %v\n", cerr)
 	}
 }
 
@@ -88,7 +88,7 @@ func (h *historyLog) load(max int) []agent.SessionEvent {
 	data, err := os.ReadFile(h.path) // #nosec G304 -- jit's own bookkeeping file under its config root
 	if err != nil {
 		if !os.IsNotExist(err) {
-			fmt.Fprintf(h.stderr, "jit agent: reading session history: %v\n", err)
+			fmt.Fprintf(h.stderr, "jit service: reading session history: %v\n", err)
 		}
 		return nil
 	}
@@ -123,7 +123,7 @@ func (h *historyLog) trim() {
 	}
 	data, err := os.ReadFile(h.path) // #nosec G304 -- jit's own bookkeeping file under its config root
 	if err != nil {
-		fmt.Fprintf(h.stderr, "jit agent: trimming session history: %v\n", err)
+		fmt.Fprintf(h.stderr, "jit service: trimming session history: %v\n", err)
 		return
 	}
 	keep := data[len(data)-historyMaxBytes/2:]
@@ -132,10 +132,10 @@ func (h *historyLog) trim() {
 	}
 	tmp := h.path + ".tmp"
 	if err := os.WriteFile(tmp, keep, 0o600); err != nil { // #nosec G703 -- jit's own bookkeeping path under its config root, not external input
-		fmt.Fprintf(h.stderr, "jit agent: trimming session history: %v\n", err)
+		fmt.Fprintf(h.stderr, "jit service: trimming session history: %v\n", err)
 		return
 	}
 	if err := os.Rename(tmp, h.path); err != nil {
-		fmt.Fprintf(h.stderr, "jit agent: trimming session history: %v\n", err)
+		fmt.Fprintf(h.stderr, "jit service: trimming session history: %v\n", err)
 	}
 }

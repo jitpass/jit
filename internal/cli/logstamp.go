@@ -11,7 +11,7 @@ import (
 )
 
 // stampedWriter prefixes every output line with a wall-clock timestamp —
-// wired around `jit agent run`'s stdout/stderr only (GAPS.md #48). The
+// wired around `jit service run`'s stdout/stderr only (GAPS.md #48). The
 // agent process runs for weeks and everything it prints lands in one
 // agent.log; without timestamps a 635k-line log couldn't answer WHEN
 // anything happened, which made correlating reads against grants and

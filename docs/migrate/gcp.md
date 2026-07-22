@@ -44,7 +44,7 @@ leaves it alone.)
   Terraform read the mount like a normal file. Run them under
   `jit run --with gcp` (or a grant-wrapped `gcloud`) and they get real
   credentials, scoped to that run. Outside such a run they see placeholder
-  values and fail fast with a local parse error; `jit agent status` shows
+  values and fail fast with a local parse error; `jit service status` shows
   what the last reader was served.
 - The file is machine-wide (one per user), so it's covered by
   `jit migrate home` only, `local` never touches it.

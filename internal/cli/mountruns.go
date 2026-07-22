@@ -120,7 +120,7 @@ func (m *mountManager) revealForPID(mounts []agent.RunMount, pid int32) error {
 		case agent.MountModeGrant:
 			grantPaths = append(grantPaths, rm.Path)
 		default:
-			fmt.Fprintf(m.stderr, "jit agent: reveal_pid: unknown mode %q for %s, skipped\n", rm.Mode, rm.Path)
+			fmt.Fprintf(m.stderr, "jit service: reveal_pid: unknown mode %q for %s, skipped\n", rm.Mode, rm.Path)
 		}
 	}
 
@@ -132,7 +132,7 @@ func (m *mountManager) revealForPID(mounts []agent.RunMount, pid int32) error {
 			continue
 		}
 		att.mounts = append(att.mounts, attachedMount{path: path, mode: attachGrant})
-		fmt.Fprintf(m.stdout, "jit agent: mount %s: serving real content to pid %d's process tree (%s) until it exits\n", path, pid, att.command)
+		fmt.Fprintf(m.stdout, "jit service: mount %s: serving real content to pid %d's process tree (%s) until it exits\n", path, pid, att.command)
 	}
 
 	// Swap mounts under swapMu, held through registerRun so the
@@ -154,10 +154,10 @@ func (m *mountManager) revealForPID(mounts []agent.RunMount, pid int32) error {
 			}
 		}
 		att.mounts = append(att.mounts, attachedMount{path: path, mode: attachSwap})
-		fmt.Fprintf(m.stdout, "jit agent: mount %s: swapped to a compatibility file for pid %d's run (%s) until it exits\n", path, pid, att.command)
+		fmt.Fprintf(m.stdout, "jit service: mount %s: swapped to a compatibility file for pid %d's run (%s) until it exits\n", path, pid, att.command)
 	}
 	for _, p := range problems {
-		fmt.Fprintf(m.stderr, "jit agent: reveal_pid skipped: %s\n", p)
+		fmt.Fprintf(m.stderr, "jit service: reveal_pid skipped: %s\n", p)
 	}
 	if len(att.mounts) == 0 {
 		m.swapMu.Unlock()
@@ -308,7 +308,7 @@ func (m *mountManager) onRunExit(pid int32, why string, restoreAsync bool) {
 		}
 	}
 	for _, path := range endedGrants {
-		fmt.Fprintf(m.stdout, "jit agent: mount %s: run-scoped grant for pid %d ended (%s)\n", path, pid, why)
+		fmt.Fprintf(m.stdout, "jit service: mount %s: run-scoped grant for pid %d ended (%s)\n", path, pid, why)
 	}
 }
 
@@ -352,7 +352,7 @@ func (m *mountManager) clearAllRuns() {
 		sm.mu.Unlock()
 	}
 	if grants > 0 || swaps > 0 {
-		fmt.Fprintf(m.stdout, "jit agent: %d grant(s) and %d compatibility swap(s) ended (session locked)\n", grants, swaps)
+		fmt.Fprintf(m.stdout, "jit service: %d grant(s) and %d compatibility swap(s) ended (session locked)\n", grants, swaps)
 	}
 }
 
@@ -467,7 +467,7 @@ func (m *mountManager) watchRunPID(pid int32) {
 	if m.grantKq == 0 {
 		kq, err := unix.Kqueue()
 		if err != nil {
-			fmt.Fprintf(m.stderr, "jit agent: run exit watcher unavailable (%v), relying on per-status liveness checks\n", err)
+			fmt.Fprintf(m.stderr, "jit service: run exit watcher unavailable (%v), relying on per-status liveness checks\n", err)
 			m.grantKq = -1
 		} else {
 			m.grantKq = kq

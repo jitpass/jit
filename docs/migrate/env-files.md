@@ -7,7 +7,7 @@ description: Project .env files become live-mounted files - decoy values by defa
 
 `jit migrate` moves each variable in a `.env` file into the vault and
 replaces the file with a **live mount**: a named pipe the
-[agent](../agent/index.md) serves fresh content into on every read. Two
+[service](../service/index.md) serves fresh content into on every read. Two
 things sit on disk afterwards, neither containing a secret:
 
 - **The mount** at the original path, so every tool that expects `.env`
@@ -33,7 +33,7 @@ and re-reads set nothing (values come from the injected environment), and
 Real values reach a tool **only** through `jit run`. An unwrapped command
 (`npm run dev` with no `jit run` prefix, or a `cat`) reads the mount cold and
 gets decoys - that's the point, not a bug. There is no automatic reveal
-window and no `jit agent reveal` command: launch the tool with `jit run` (or
+window and no reveal command of any kind: launch the tool with `jit run` (or
 `jit run --live` for a tool that reads the file itself), and the grant lands
 on that run's process tree alone.
 

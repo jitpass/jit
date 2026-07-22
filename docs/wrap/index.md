@@ -20,10 +20,10 @@ jit wrap undo gh           # restore the original file byte-for-byte
 Under the hood it installs a PATH shim named after the tool (in
 `~/.jit/shims/`, like rbenv/mise use). On each invocation the shim injects
 the token from the vault into just that one process, gated by the same
-[biometric agent](../agent/index.md) as every other jit flow. Because it's
+[biometric service](../service/index.md) as every other jit flow. Because it's
 a shim and not a shell alias, it keeps working inside scripts, Makefiles,
 git hooks, and any subprocess that spawns the tool - the paths aliases
-miss - at about 25 ms overhead per call with an unlocked agent.
+miss - at about 25 ms overhead per call with an unlocked service.
 
 [`jit scan`](../audit/index.md) flags the tokens worth wrapping and
 prints the one-command fix next to each.

@@ -18,7 +18,7 @@ in the vault instead of back in a plaintext file; `forget <host>`
 (`terraform logout`) removes it.
 
 Requires local auth to resolve the vault the same way jit run/export do:
-either a reachable jit agent with an already-unlocked session, or an
+either a reachable jit background service with an already-unlocked session, or an
 interactive context able to show a Touch ID/passcode prompt.
 
 ```

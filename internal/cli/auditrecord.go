@@ -58,11 +58,11 @@ func recordAuditEvent(cmd *cobra.Command, cmdErr error, elapsed time.Duration) {
 		return
 	}
 	// A non-runnable command never ran anything on the user's secrets: cobra
-	// resolved the args to a parent group command (`jit agent`, `jit vault`)
-	// with no RunE and printed its help. This covers a bare `jit agent`, and
-	// crucially a MISTYPED subcommand like `jit agent un` — cobra's default arg
+	// resolved the args to a parent group command (`jit service`, `jit vault`)
+	// with no RunE and printed its help. This covers a bare `jit service`, and
+	// crucially a MISTYPED subcommand like `jit service un` — cobra's default arg
 	// handling accepts the stray "un" for a non-root parent, prints help, and
-	// exits 0. Recording that would put a successful `jit agent un` in the log
+	// exits 0. Recording that would put a successful `jit service un` in the log
 	// for a command that does not exist and did nothing; skip it, same as help.
 	if !cmd.Runnable() {
 		return

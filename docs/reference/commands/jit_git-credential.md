@@ -22,7 +22,7 @@ with a typed-in password lands in the vault instead of back in plaintext;
 
 `get` for a host jit holds nothing for, and `erase`, never cost a Touch ID
 prompt. A successful `get` resolves the vault the same way jit run/export
-do: either a reachable jit agent with an already-unlocked session, or an
+do: either a reachable jit background service with an already-unlocked session, or an
 interactive context able to show a Touch ID/passcode prompt.
 
 ```

@@ -46,7 +46,7 @@ jit wrap undo supabase
 - If your login went to the OS keyring (the default on macOS), there is
   no plaintext file and discovery finds nothing - that copy is already
   encrypted at rest, so wrapping is optional. To wrap anyway (e.g. to
-  gate use behind the biometric agent), generate a token at
+  gate use behind the biometric service), generate a token at
   [supabase.com/dashboard/account/tokens](https://supabase.com/dashboard/account/tokens),
   store it with `jit vault set wrap-supabase/SUPABASE_ACCESS_TOKEN`, and
   re-run `jit wrap supabase`.
