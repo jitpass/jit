@@ -22,7 +22,7 @@ func execAgentStatus(t *testing.T, args ...string) (stdout string, err error) {
 	agentStatusFormat = "text"
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
-	rootCmd.SetArgs(append([]string{"agent", "status"}, args...))
+	rootCmd.SetArgs(append([]string{"service", "status"}, args...))
 	err = rootCmd.Execute()
 	return buf.String(), err
 }

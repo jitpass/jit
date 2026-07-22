@@ -9,7 +9,7 @@ them back out as a plain file at the same path, replacing the live-mounted
 pipe jit migrate created. The vault secrets and the profile manifest are
 left in place, only the physical mount is reversed.
 
-If jit agent is running, this stops serving just this one mount first, so
+If jit's background service is running, this stops serving just this one mount first, so
 nothing races the file being replaced, every other mount keeps being
 served undisturbed.
 

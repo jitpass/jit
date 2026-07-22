@@ -31,7 +31,7 @@ hook runs a command to fetch the key on demand, the same shape as AWS's
 export SOPS_AGE_KEY_CMD="jit sops-age-key"
 ```
 
-Every `sops -d` then pulls the key straight from the vault (agent
+Every `sops -d` then pulls the key straight from the vault (service
 session, or a Touch ID prompt), no key file read at all.
 
 **Everything else reads the mounted file.** Tools whose embedded sops

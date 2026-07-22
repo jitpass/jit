@@ -23,7 +23,7 @@ rather than a shim; nothing about how you invoke your tools changes.
 ## What to expect
 
 - Each credential fetch needs the vault unlocked - the
-  [agent](../agent/index.md)'s shared session, or a Touch ID prompt.
+  [service](../service/index.md)'s shared session, or a Touch ID prompt.
 - SDKs cache the returned credentials per-process, so a long-running
   process doesn't re-prompt on every API call.
 - `jit wrap aws` routes to this same migration - there's one AWS

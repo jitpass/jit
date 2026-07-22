@@ -38,7 +38,7 @@ account safe.
   replaced), a native credential helper the tool already calls, or a live
   named-pipe mount that serves decoys by default and real content only to an
   authorized run's process tree.
-- **The agent.** A background process holds the unlocked session for a TTL
+- **The service.** A background process holds the unlocked session for a TTL
   (default 5 minutes, configurable) so the user is not prompted per command on
   the high-frequency paths (native hooks, `jit run`). It identifies every
   caller from the kernel (socket peer credentials, then pid, command, and
@@ -65,7 +65,7 @@ the session, not the scope. A cloned repo's config, or a script that slips a
   ACL or a Secure Enclave binding, because a real ACL needs an Apple Developer
   ID signing identity the project does not have yet. A determined attacker with
   local code execution could read the plain Keychain item directly while the
-  vault is locked, and could ask the agent while it is unlocked. This is the
+  vault is locked, and could ask the service while it is unlocked. This is the
   accepted Phase 1 boundary.
 - **A process you give a secret to can do anything with it.** Delivery is the
   end of jit's control; that is why the decision point is the caller-naming

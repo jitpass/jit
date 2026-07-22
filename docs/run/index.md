@@ -134,4 +134,4 @@ command with no `jit run` in front of it.
 Migrated [MCP configs](../migrate/mcp.md) launch their servers through
 `jit run`, and every [wrapped CLI's shim](../wrap/index.md) is `jit run`
 under the hood. Same injection, same unlock rules, same
-[provenance](../agent/provenance.md).
+[provenance](../service/provenance.md).

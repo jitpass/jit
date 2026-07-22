@@ -26,8 +26,8 @@ func agentPlistPath() (string, error) {
 
 // agentInstalled reports whether the launchd plist exists — i.e. whether
 // a non-answering socket means "mid-restart or crashed" (launchd will
-// respawn it; retrying and `jit agent restart` are the right moves)
-// rather than "never set up" (only `jit agent install` helps).
+// respawn it; retrying and `jit service restart` are the right moves)
+// rather than "never set up" (`jit service restart` recreates it).
 func agentInstalled() bool {
 	plistPath, err := agentPlistPath()
 	if err != nil {

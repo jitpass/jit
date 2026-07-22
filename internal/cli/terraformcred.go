@@ -47,7 +47,7 @@ var terraformCredentialsCmd = &cobra.Command{
 		"in the vault instead of back in a plaintext file; `forget <host>`\n" +
 		"(`terraform logout`) removes it.\n\n" +
 		"Requires local auth to resolve the vault the same way jit run/export do:\n" +
-		"either a reachable jit agent with an already-unlocked session, or an\n" +
+		"either a reachable jit background service with an already-unlocked session, or an\n" +
 		"interactive context able to show a Touch ID/passcode prompt.",
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {

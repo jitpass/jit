@@ -78,11 +78,11 @@ func (m *mountManager) restoreSwappedMount(path, why string) {
 		return
 	}
 	if err := mount.RestoreFIFO(path); err != nil {
-		fmt.Fprintf(m.stderr, "jit agent: mount %s: restoring FIFO after run exit failed: %v\n", path, err)
+		fmt.Fprintf(m.stderr, "jit service: mount %s: restoring FIFO after run exit failed: %v\n", path, err)
 		return
 	}
 	m.resumeServing(entry)
-	fmt.Fprintf(m.stdout, "jit agent: mount %s: compatibility file ended (%s), decoy mount restored\n", path, why)
+	fmt.Fprintf(m.stdout, "jit service: mount %s: compatibility file ended (%s), decoy mount restored\n", path, why)
 }
 
 // resumeServing re-establishes decoy serving for one entry after its FIFO

@@ -34,7 +34,7 @@ var sopsAgeKeyCmd = &cobra.Command{
 		"migrated keys.txt live mount instead (`jit run --with sops` grants the mount\n" +
 		"real reads for that run), so this hook is the fast path, not the only path.\n\n" +
 		"Requires local auth to resolve the vault the same way jit run/export do:\n" +
-		"either a reachable jit agent with an already-unlocked session, or an\n" +
+		"either a reachable jit background service with an already-unlocked session, or an\n" +
 		"interactive context able to show a Touch ID/passcode prompt. Invoked from\n" +
 		"a fully headless context (a cron job, a CI runner) with neither will hang\n" +
 		"or fail, the same tradeoff jit run/export already accept.",

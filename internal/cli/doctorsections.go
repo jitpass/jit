@@ -39,24 +39,24 @@ func gatherSystemFindings(root string, v *vault.Vault) []checkFinding {
 func agentFindings(root string) []checkFinding {
 	st, err := gatherAgentStatus(root)
 	if err != nil {
-		return []checkFinding{{Kind: kindAgent, Detail: fmt.Sprintf("could not check the agent: %v", err)}}
+		return []checkFinding{{Kind: kindService, Detail: fmt.Sprintf("could not check the service: %v", err)}}
 	}
 
 	var out []checkFinding
 	if warn := agentBuildMismatch(st.Build); warn != "" {
-		out = append(out, checkFinding{Kind: kindAgent, Detail: warn})
+		out = append(out, checkFinding{Kind: kindService, Detail: warn})
 	}
 
 	switch {
 	case !st.Running && st.Installed:
-		out = append(out, checkFinding{Kind: kindAgent, Detail: installedNotRunningAdvice("Agent:")})
+		out = append(out, checkFinding{Kind: kindService, Detail: installedNotRunningAdvice("Service:")})
 	case !st.Running:
 		// Not installed and not running is fine on its own — you just haven't
 		// set the agent up, and profiles/secrets resolve without it. It is
 		// only worth flagging when there are mounts that need serving.
 		if ms, mErr := gatherMountStatus(root, st); mErr == nil && ms.Registered > 0 {
-			out = append(out, checkFinding{Kind: kindAgent, Detail: fmt.Sprintf(
-				"agent not running, so %d registered mount(s) aren't being served; run `jit agent install` to start it", ms.Registered)})
+			out = append(out, checkFinding{Kind: kindService, Detail: fmt.Sprintf(
+				"the service isn't running, so %d registered mount(s) aren't being served; run `jit service restart` to start it", ms.Registered)})
 		}
 	}
 	return out

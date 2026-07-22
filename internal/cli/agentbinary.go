@@ -13,7 +13,7 @@ import (
 )
 
 // This file is the agent's stale-binary self-retirement (the automatic
-// half of what `jit agent restart` does by hand). launchd's KeepAlive
+// half of what `jit service restart` does by hand). launchd's KeepAlive
 // keeps an agent process alive across rebuilds and reinstalls
 // indefinitely, which made "the running agent predates the binary on
 // disk" a whole class of investigation trap — a just-built fix that looks
@@ -27,7 +27,7 @@ import (
 //     challenge on screen. A lock has already hidden every mount, and the
 //     next use re-prompts either way, so a quiescent restart is
 //     invisible; killing a live session or an in-flight prompt is not.
-//   - launchd parenthood (getppid == 1): a foreground `jit agent run` has
+//   - launchd parenthood (getppid == 1): a foreground `jit service run` has
 //     no KeepAlive behind it — self-exiting would just stop the agent the
 //     user deliberately started.
 

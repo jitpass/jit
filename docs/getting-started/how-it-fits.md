@@ -95,7 +95,7 @@ secret) end to end:
    even when jit is already unlocked. A cloned repo's config can never trigger
    it.
 
-## What protects it: the vault, the agent, the mounts
+## What protects it: the vault, the service, the mounts
 
 For the full model see **[How it works](./how-it-works.md)** and the
 [security architecture](../security/architecture.md); in brief:
@@ -109,7 +109,7 @@ For the full model see **[How it works](./how-it-works.md)** and the
 - **Decoy-by-default mounts.** A migrated file becomes a named pipe. Read it
   outside a grant and you get placeholder values, not the secret, so backups,
   editors, and a stray `cat` see nothing real.
-- **The background agent.** One [agent](../agent/index.md) holds the unlocked
+- **The background service.** One [service](../service/index.md) holds the unlocked
   session and serves mounts. It names every caller from the kernel on each
   prompt, and locks on its idle TTL, on screen lock, and on sleep.
 

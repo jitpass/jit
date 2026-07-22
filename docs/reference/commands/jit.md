@@ -14,22 +14,24 @@ jit
 
 ### SEE ALSO
 
-* [jit agent](jit_agent.md)	 - Run a background helper so you only unlock once, not once per command
 * [jit audit](jit_audit.md)	 - Show the audit log: what jit commands ran, when, by whom, and every unlock
 * [jit aws-credential-process](jit_aws-credential-process.md)	 - Print AWS credential_process JSON for a migrated profile
 * [jit completion](jit_completion.md)	 - Generate the autocompletion script for the specified shell
 * [jit docker-credential](jit_docker-credential.md)	 - Implement Docker's credential-helper protocol for migrated registry logins
-* [jit doctor](jit_doctor.md)	 - One-shot health check: profiles, secrets, agent, backup, and wrap shims
+* [jit doctor](jit_doctor.md)	 - One-shot health check: profiles, secrets, service, backup, and wrap shims
 * [jit export](jit_export.md)	 - Print shell export statements for a profile's secrets
 * [jit git-credential](jit_git-credential.md)	 - Implement git's credential-helper protocol for migrated HTTPS logins
 * [jit k8s-exec-credential](jit_k8s-exec-credential.md)	 - Print a Kubernetes ExecCredential JSON for a migrated profile
+* [jit lock](jit_lock.md)	 - Lock jit's session immediately, without waiting for the TTL
 * [jit migrate](jit_migrate.md)	 - Guided fix path for findings jit scan reports
 * [jit profile](jit_profile.md)	 - Inspect profile manifests (names and vault paths only, never secret values)
 * [jit run](jit_run.md)	 - Execute a command with a profile's secrets injected into its environment
 * [jit scan](jit_scan.md)	 - Scan for plaintext secrets exposed on this machine (read-only)
+* [jit service](jit_service.md)	 - Manage jit's background service (the daemon that holds your session and serves mounts)
 * [jit sops-age-key](jit_sops-age-key.md)	 - Print the SOPS age private key from a migrated profile
-* [jit status](jit_status.md)	 - One-shot overview of vault, agent, profile, and mount health
+* [jit status](jit_status.md)	 - One-shot overview of vault, service, profile, and mount health
 * [jit terraform-credentials](jit_terraform-credentials.md)	 - Implement Terraform's credentials-helper protocol for a migrated token
+* [jit unlock](jit_unlock.md)	 - Unlock jit's session now (prompts Touch ID if needed)
 * [jit unmount](jit_unmount.md)	 - Reverse a live .env mount back into a plain file
 * [jit vault](jit_vault.md)	 - Manage the local encrypted secret vault
 * [jit wrap](jit_wrap.md)	 - Wrap CLI tools so their tokens are injected just-in-time

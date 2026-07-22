@@ -44,7 +44,7 @@ const (
 	// taking effect" confusion. Advisory: nothing is broken, but the user
 	// should know one file is dead weight in this directory.
 	kindShadowed checkKind = "shadowed"
-	// kindAgent/kindBackup/kindWrap are the absorbed system-health sections
+	// kindService/kindBackup/kindWrap are the absorbed system-health sections
 	// (mega-doctor). All three are advisory: a stopped agent, an unrecorded
 	// or stale export, and a broken/misplaced wrap shim each break something
 	// worth surfacing, but none of them makes a profile's secret unresolvable
@@ -53,7 +53,7 @@ const (
 	// line among the rollup, and folding an environmental "shim dir not on
 	// PATH in THIS shell" check into doctor's exit code would fail CI runs
 	// that legitimately don't put it there.)
-	kindAgent  checkKind = "agent"
+	kindService  checkKind = "service"
 	kindBackup checkKind = "backup"
 	kindWrap   checkKind = "wrap"
 )
@@ -65,7 +65,7 @@ const (
 // backup, a broken wrap shim — is advisory.
 func (k checkKind) warning() bool {
 	switch k {
-	case kindOrphan, kindShadowed, kindAgent, kindBackup, kindWrap:
+	case kindOrphan, kindShadowed, kindService, kindBackup, kindWrap:
 		return true
 	default:
 		return false

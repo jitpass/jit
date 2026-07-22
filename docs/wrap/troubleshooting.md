@@ -29,9 +29,9 @@ but wrap-specific).
   couldn't find the real binary to exec into (was the tool uninstalled or
   moved?). A shim never silently degrades to running without injection -
   failing loudly is deliberate.
-- **A Touch ID prompt on a wrapped call.** The agent session had lapsed;
+- **A Touch ID prompt on a wrapped call.** The service session had lapsed;
   the prompt names the tool and its caller. With the
-  [agent installed](../agent/index.md), it's once per session window, and
+  [service running](../service/index.md), it's once per session window, and
   each call costs ~25 ms after that.
 - **The tool re-wrote its config file** (a re-`login`, a token rotation
   command). The new token is on disk in plaintext again; re-run

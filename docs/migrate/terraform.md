@@ -23,7 +23,7 @@ plaintext file, and `logout` removes it (`forget`).
 ## What to expect
 
 - Each token fetch needs the vault unlocked - the
-  [agent](../agent/index.md)'s shared session, or a Touch ID prompt.
+  [service](../service/index.md)'s shared session, or a Touch ID prompt.
 - **Rotating a token is just `terraform login` again.** No vault commands
   needed; the helper stores the new token for you.
 - `jit wrap terraform` routes to this same migration.

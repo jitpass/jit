@@ -25,7 +25,7 @@ jit wrap add wiz \
 
 Each `mytool` invocation then gets those variables injected from the
 vault, for that process only - same mechanics, same
-[agent](../agent/index.md) gating, and same
+[service](../service/index.md) gating, and same
 [`jit wrap undo mytool`](./troubleshooting.md) as a
 [cataloged tool](./index.md).
 

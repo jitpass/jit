@@ -39,7 +39,7 @@ var migrateUndoCmd = &cobra.Command{
 		"still restore, and the command exits non-zero if any file failed, so a\n" +
 		"single missing backup never silently aborts the whole batch partway.\n\n" +
 		"What it does per file: if the file is a registered live mount, the\n" +
-		"running agent stops serving it first (other mounts are undisturbed), the\n" +
+		"running service stops serving it first (other mounts are undisturbed), the\n" +
 		"registry entry and the .pointers companion are removed, then the backed-\n" +
 		"up content is written back. The current content is snapshotted into the\n" +
 		"vault before being overwritten, so an undo is itself undoable, nothing\n" +
@@ -203,7 +203,7 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 			// can clobber the fresh plaintext back into an empty pipe.
 			if agentUp {
 				if err := agentClient.StopMount(rec.OriginalPath); err != nil {
-					return fmt.Errorf("stopping the running agent's mount: %w", err)
+					return fmt.Errorf("stopping the running service's mount: %w", err)
 				}
 			}
 			if _, err := mount.RemoveMount(registryPath, rec.OriginalPath); err != nil {

@@ -43,7 +43,7 @@ type doctorResult struct {
 var doctorCmd = &cobra.Command{
 	Use:     "doctor",
 	GroupID: groupWorkflow,
-	Short:   "One-shot health check: profiles, secrets, agent, backup, and wrap shims",
+	Short:   "One-shot health check: profiles, secrets, service, backup, and wrap shims",
 	Long: "jit doctor is the single \"what's wrong\" rollup for a jit setup. Its core\n" +
 		"job: verify that every secret path a profile references actually exists in\n" +
 		"the vault AND that its envelope is one this build of jit can read, failing\n" +
@@ -56,11 +56,11 @@ var doctorCmd = &cobra.Command{
 		"jit migrate writes for shell-config/MCP/AWS/kubeconfig/npmrc secrets,\n" +
 		"the same set `jit profile list` shows. It also folds in the health checks\n" +
 		"that used to take `jit status` and `jit wrap doctor` to see: the background\n" +
-		"agent, your vault backup, and any wrapped-tool shims.\n\n" +
+		"service, your vault backup, and any wrapped-tool shims.\n\n" +
 		"It exits non-zero only when a profile's secret is missing, corrupt, or\n" +
 		"unparseable. Everything else it reports is an advisory warning, never a\n" +
 		"failure: an orphaned secret (with --orphans), a profile name shadowed\n" +
-		"across scopes, a stopped agent, a stale or missing vault backup, a broken\n" +
+		"across scopes, a stopped service, a stale or missing vault backup, a broken\n" +
 		"shim. Use --profile to narrow the run to a single profile (the system-\n" +
 		"health sections are skipped then), --verbose to list every reference it\n" +
 		"cleared, and --format json for a machine-readable snapshot.",
@@ -199,8 +199,8 @@ func formatFinding(f checkFinding) string {
 		return fmt.Sprintf("[orphan] %s (%s)", f.Path, f.Detail)
 	case kindShadowed:
 		return fmt.Sprintf("[shadowed] profile %q: %s", f.Profile, f.Detail)
-	case kindAgent:
-		return fmt.Sprintf("[agent] %s", f.Detail)
+	case kindService:
+		return fmt.Sprintf("[service] %s", f.Detail)
 	case kindBackup:
 		return fmt.Sprintf("[backup] %s", f.Detail)
 	case kindWrap:
@@ -211,7 +211,7 @@ func formatFinding(f checkFinding) string {
 }
 
 func init() {
-	doctorCmd.Flags().StringVar(&doctorProfile, "profile", "", "check only this profile, and skip the agent/backup/wrap health sections")
+	doctorCmd.Flags().StringVar(&doctorProfile, "profile", "", "check only this profile, and skip the service/backup/wrap health sections")
 	_ = doctorCmd.RegisterFlagCompletionFunc("profile", completeProfileNames)
 	doctorCmd.Flags().StringVar(&doctorFormat, "format", "text", `output format: "text" (default) or "json"`)
 	doctorCmd.Flags().BoolVar(&doctorVerbose, "verbose", false, "on success, list every variable→path reference that was checked")

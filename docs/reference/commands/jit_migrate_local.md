@@ -14,7 +14,7 @@ config, the global ~/.npmrc) live at fixed paths under $HOME, so only
 What happens per category:
 
   .env files   Keys move into a profile and the vault; the file itself keeps
-               working as a live mount served by jit agent, showing
+               working as a live mount served by jit's background service, showing
                fake-looking values by default. Real values reach a tool
                through `jit run` (env injection, or `jit run --live` for a
                tool that reads the file itself). A git-safe <file>.pointers

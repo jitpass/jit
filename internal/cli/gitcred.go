@@ -42,7 +42,7 @@ var gitCredentialCmd = &cobra.Command{
 		"(credential.useHttpPath=false).\n\n" +
 		"`get` for a host jit holds nothing for, and `erase`, never cost a Touch ID\n" +
 		"prompt. A successful `get` resolves the vault the same way jit run/export\n" +
-		"do: either a reachable jit agent with an already-unlocked session, or an\n" +
+		"do: either a reachable jit background service with an already-unlocked session, or an\n" +
 		"interactive context able to show a Touch ID/passcode prompt.",
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {

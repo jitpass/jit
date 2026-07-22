@@ -26,7 +26,7 @@ standard `ExecCredential` response; nothing about your workflow changes.
 ## What to expect
 
 - Each credential fetch needs the vault unlocked - the
-  [agent](../agent/index.md)'s shared session, or a Touch ID prompt.
+  [service](../service/index.md)'s shared session, or a Touch ID prompt.
 - Rotating: update the vault paths shown by `jit profile show
   kube-my-user`; the next fetch serves the new credential.
 

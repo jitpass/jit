@@ -10,7 +10,7 @@ hand - `jit --help` groups them separately and shell tab-completion omits
 them entirely, for exactly that reason. Each
 implements the consuming tool's documented credential-plugin protocol, and
 each fetch requires the vault to be unlocked (the
-[agent](../agent/index.md)'s session, or a Touch ID prompt).
+[service](../service/index.md)'s session, or a Touch ID prompt).
 
 ## `jit aws-credential-process --profile <name>`
 

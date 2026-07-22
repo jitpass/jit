@@ -45,7 +45,7 @@ var (
 
 // requireUserPresence gates a destructive vault command (rm/clean/prune/
 // delete) behind a real LocalAuthentication challenge (Touch ID/passcode),
-// independent of the cached agent session. These commands only move or delete
+// independent of the cached service session. These commands only move or delete
 // envelope files and never exercise the KeyWrapper, so without this explicit
 // gate they would ride an unlocked session silently. It's a package var so
 // tests can replace it with a no-op — an automated test must never touch the
@@ -158,7 +158,7 @@ var vaultCmd = &cobra.Command{
 		"directory, no monolithic database.\n\n" +
 		"Every command that reads, writes, or destroys a secret (get, set, rm,\n" +
 		"import, restore, clean, prune, delete, export) requires a fresh Touch\n" +
-		"ID/passcode on EACH invocation, whether or not the background agent's\n" +
+		"ID/passcode on EACH invocation, whether or not the background service's\n" +
 		"session is unlocked - these commands never ride the cached session, so a\n" +
 		"process running as you on an unlocked machine still can't read or destroy\n" +
 		"the vault without a live human gesture. Only `list` and `history` are\n" +
@@ -195,7 +195,7 @@ var vaultSetCmd = &cobra.Command{
 	Long: "Stores a secret at <path> (e.g. \"stripe/dev-key\"). If [value] is omitted,\n" +
 		"prompts for it with hidden input. Use --stdin for scripts. Passing the value\n" +
 		"as a bare argument works but lands in shell history, prefer the prompt or --stdin.\n\n" +
-		"Requires a fresh Touch ID/passcode on every run, never the cached agent\n" +
+		"Requires a fresh Touch ID/passcode on every run, never the cached service\n" +
 		"session, so writing a secret always takes a live human gesture.",
 	Args:              cobra.RangeArgs(1, 2),
 	ValidArgsFunction: completeVaultPaths,
@@ -248,13 +248,13 @@ var vaultGetCmd = &cobra.Command{
 		"secret was last updated, which profiles reference it, and the config\n" +
 		"file its migration recorded as the source. Piped or redirected output\n" +
 		"receives the value only, never the footer.\n\n" +
-		"Requires a fresh Touch ID/passcode on every run, never the cached agent\n" +
+		"Requires a fresh Touch ID/passcode on every run, never the cached service\n" +
 		"session, so a decrypted secret can never be read silently, even on an\n" +
 		"already-unlocked machine.",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeVaultPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Fresh auth on every read, never the cached agent session: printing
+		// Fresh auth on every read, never the cached service session: printing
 		// a decrypted secret always costs a fingerprint/passcode, locked or
 		// not, so an unlocked session can't be looped to exfiltrate secrets.
 		v, err := openVaultFreshAuth()
@@ -415,7 +415,7 @@ var vaultRmCmd = &cobra.Command{
 	Use:   "rm <path>",
 	Short: "Delete a secret",
 	Long: "Permanently deletes the secret at <path>. Beyond the [y/N] confirmation,\n" +
-		"a fresh Touch ID/passcode is required (never the cached agent session),\n" +
+		"a fresh Touch ID/passcode is required (never the cached service session),\n" +
 		"so a process running as you can't delete a secret without a live human\n" +
 		"gesture even while the vault is unlocked.",
 	Args:              cobra.ExactArgs(1),
@@ -1052,10 +1052,10 @@ func lockAgentAfterMEKDeletion(root string, w io.Writer) string {
 		return ""
 	}
 	if err := agentClient.Lock(); err != nil {
-		fmt.Fprintf(w, "warning: couldn't lock the running agent's cached session, run `jit agent lock` before using a new vault: %v\n", err)
+		fmt.Fprintf(w, "warning: couldn't lock the running service's cached session, run `jit lock` before using a new vault: %v\n", err)
 		return ""
 	}
-	return "the running agent's cached session (locked)"
+	return "the running service's cached session (locked)"
 }
 
 // confirmPrompt is the one confirmation gate every mutating command in
@@ -1245,7 +1245,7 @@ func openVault() (*vault.Vault, error) {
 
 	var kw vault.KeyWrapper = keychainwrap.New()
 	// The retry-configured client (agentClient): when the agent is
-	// installed, a dial failure is usually its own restart gap (`jit agent
+	// installed, a dial failure is usually its own restart gap (`jit service
 	// restart`, stale-binary self-retirement) — without the retry, a
 	// command landing in that gap silently fell back to an independent
 	// Touch ID prompt caused by nothing the user did.
