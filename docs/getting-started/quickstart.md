@@ -5,22 +5,25 @@ description: From plaintext secrets to a clean machine - audit, vault, agent, mi
 
 # Quickstart
 
-The whole arc, in six commands:
+The whole arc, in five commands:
 
 ```sh
 jit audit                     # 1. see the problem (read-only, run it anywhere)
 jit vault init                # 2. create the vault (master key in your login keychain)
-jit agent install             # 3. background helper: unlock once, everything shares it
-jit migrate --dry-run         # 4. preview the fix, same whole-machine scope as audit
-jit migrate                   # 5. apply it: plan, [y/N], one Touch ID prompt
-jit status                    # 6. vault / agent / mounts / backup health, one screen
+jit migrate --dry-run         # 3. preview the fix, same whole-machine scope as audit
+jit migrate                   # 4. apply it: plan, [y/N], one Touch ID prompt
+jit status                    # 5. vault / agent / mounts / backup health, one screen
 ```
+
+The background helper (so you unlock once, not once per command) installs
+itself automatically during that `jit migrate` - no separate step. Run
+`jit agent install` yourself only to set it up early or pick a custom `--ttl`.
 
 Every mutating command prints its plan and asks first; every rewritten file is
 backed up (encrypted, into the vault) before it's touched, and
 `jit migrate undo` restores any of them byte-for-byte.
 
-The rest of this page walks the same six steps with what to expect at each.
+The rest of this page walks the same steps with what to expect at each.
 After setup, daily life with jit is mostly nothing: your app starts normally,
 `aws`/`kubectl`/`terraform` behave exactly as before, and roughly once per
 5 minutes of active use, macOS asks for a Touch ID confirmation.
@@ -56,17 +59,19 @@ Vault initialized at /Users/alex/Library/Application Support/jitpass.
 This generates a master encryption key and stores it in your macOS Keychain.
 You'll see a Touch ID / passcode prompt; that's expected.
 
-## 3. Install the background agent: `jit agent install`
+### The background agent (set up automatically)
 
 Without the agent, every vault-touching command asks for Touch ID
 independently. With it, you unlock once and everything shares that session
-for the next 5 minutes of activity (`--ttl` to change that).
+for the next 5 minutes of activity (`--ttl` to change that). The agent is
+also what serves live-mounted files.
 
-The agent is also what serves live-mounted files, so if you migrate a `.env`
-file, you want it installed. Everything still works without it, just with
-more prompts. More in **[The background agent](../agent/index.md)**.
+You don't install it as a separate step: the `jit migrate` below sets it up
+for you the first time it's needed. Run `jit agent install` yourself only to
+do that early or pick a custom `--ttl`. More in
+**[The background agent](../agent/index.md)**.
 
-## 4–5. Fix what audit found: `jit migrate`
+## 3. Fix what audit found: `jit migrate`
 
 Always preview first. `--dry-run` runs the exact same discovery a real run
 would, so the preview is accurate, and `jit migrate` covers the same
@@ -89,7 +94,7 @@ by a `Proceed? [y/N]` confirmation. To fix just one project instead, `cd`
 into it and run `jit migrate local`: only what's under that directory
 tree is discovered or touched. More in **[Migrating](../migrate/index.md)**.
 
-## 6. Check health: `jit status`
+## 4. Check health: `jit status`
 
 ```
 $ jit status
@@ -107,7 +112,7 @@ orphaned secrets, and checks agent, backup, and shim health). See
 Neither `jit status` nor `jit doctor` ever decrypts a secret or triggers
 Touch ID; both are safe to run as often as you like.
 
-## 7. Run your project: `jit run`
+## 5. Run your project: `jit run`
 
 After migration a `.env` serves **decoy** values to anything that reads it
 cold — a `cat`, a backup, or a bare `npm run dev`. Real values reach a tool
