@@ -153,6 +153,13 @@ func requestRunCompat(w io.Writer, mountPaths, withNames, withMounts, argv []str
 	if len(mountPaths) == 0 && len(templateMounts) == 0 && len(withMounts) == 0 {
 		return
 	}
+	// This run actually has a mount to make compatible, so it needs the agent
+	// that serves it. Set one up silently on first use rather than leaving the
+	// mount unserved and the user to discover `jit agent install` — the agent
+	// is part of the app, not a separate setup step. Best-effort: a failed
+	// install just leaves the compat request on its existing no-agent no-op
+	// path below (agentClient's calls already degrade to "as before").
+	ensureAgentInstalled()
 	c, err := agentClient()
 	if err != nil {
 		return
