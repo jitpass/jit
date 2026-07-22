@@ -14,15 +14,14 @@ no Homebrew tap yet (planned for the first signed release).
 curl -sLO https://github.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz
 tar -xzf jitpass_darwin_arm64.tar.gz jit
 sudo mv jit /usr/local/bin/
-jit agent install -y
 ```
 
-The fourth line sets up the background agent so you unlock once, not once per
-command. It's the same line you run to upgrade, so it's worth building into
-muscle memory now: on a fresh machine it installs the agent; on an upgrade it points
-the agent at the new binary and restarts it on the spot (moving the binary
-alone can't do that - a file on disk can't restart a running process). That's
-the install done - continue with the **[Quickstart](./quickstart.md)**.
+That's the install done - continue with the **[Quickstart](./quickstart.md)**.
+The background agent that lets you unlock once per session (instead of once per
+command) sets itself up automatically the first time you run `jit migrate` or
+`jit run`; there's no separate install step. Run `jit agent install` yourself
+only if you'd rather set it up ahead of time or pick a non-default session
+`--ttl` (see [The background agent](../agent/index.md)).
 
 Prebuilt binaries are Apple Silicon only - we don't have Intel hardware to
 test on, and won't publish what we can't test. On an Intel Mac, use
@@ -134,45 +133,45 @@ install locations.
 ## Upgrading
 
 New versions are announced on the
-[Releases page](https://github.com/jitpass/jit/releases). Upgrading is two
-steps, not one: reinstall the binary, then point the background agent at it -
-the exact same commands as a fresh install (`jit agent install -y` is
-idempotent).
+[Releases page](https://github.com/jitpass/jit/releases). The core of an
+upgrade is one step - reinstall the binary. A running agent switches itself
+onto the new binary on its own (once its session is locked and no prompt is
+pending); the optional second line just makes that switch happen *now* instead
+of whenever the agent next goes idle.
 
-**Prebuilt install (Option A)** - no Go needed; the same four install
-commands (`releases/latest/download/...` always serves the newest version):
+**Prebuilt install (Option A)** - no Go needed
+(`releases/latest/download/...` always serves the newest version):
 
 ```sh
 curl -sLO https://github.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz
 tar -xzf jitpass_darwin_arm64.tar.gz jit
 sudo mv jit /usr/local/bin/                        # 1. reinstall the binary
-jit agent install -y                               # 2. point the agent at it and restart it now
+jit agent install -y                               # 2. (optional) switch the running agent over now
 ```
 
 **Source install (Option B):**
 
 ```sh
 go install github.com/jitpass/jit/cmd/jit@v0.19.2   # 1. reinstall the binary (pin the new tag)
-jit agent install -y                               # 2. point the agent at it and restart it now
+jit agent install -y                               # 2. (optional) switch the running agent over now
 ```
 
 Pin the tag rather than `@latest` right after a release: the Go module proxy
 caches `@latest`, so it can quietly hand you the previous version for a while.
 
-The second step used to be the one people skipped. If you installed the
-background agent, launchd keeps the old process (and the old binary) running
-right through your reinstall; every command that talks to it still gets last
-version's behavior, which reads as "I upgraded but nothing changed."
-`jit status` and `jit agent status` warn with "different build" until it's
-restarted. The agent also notices the replaced binary itself and restarts
-onto it on its own, but only once its session is locked and no prompt is
-pending - so run `jit agent install -y` to have it now. Why `install -y`
-rather than `jit agent restart`: it does everything restart does, and it also
-re-points the launchd service if the binary moved and re-bootstraps it if
-launchd had dropped the service (a plist on disk with no running process),
-neither of which restart can fix. If you never ran `jit agent install`, that
-line is simply the one-time agent setup; the binary reinstall alone is
-otherwise the whole upgrade.
+Why the second line matters. launchd keeps the old agent process (and the old
+binary) running right through your reinstall; every command that talks to it
+still gets last version's behavior, which reads as "I upgraded but nothing
+changed." `jit status` and `jit agent status` warn with "different build" until
+it's restarted. The agent does switch onto the replaced binary on its own, but
+only once its session is locked and no prompt is pending - so run
+`jit agent install -y` to have it now. Why `install -y` rather than
+`jit agent restart`: it does everything restart does, and it also re-points the
+launchd service if the binary moved and re-bootstraps it if launchd had dropped
+the service (a plist on disk with no running process), neither of which restart
+can fix. If the agent was never installed at all, that line is simply the
+one-time setup (though your first `jit migrate`/`jit run` would install it
+anyway); the binary reinstall is otherwise the whole upgrade.
 
 ---
 

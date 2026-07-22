@@ -9,10 +9,14 @@ other jit commands share, instead of each one prompting Touch ID
 separately, and that serves any live-mounted .env files jit migrate has
 created.
 
-`jit agent install` sets it up to start automatically every time you log
-in (and restart itself if it crashes). The helper process itself needs no
-Touch ID just to keep running, only your unlocked session inside it locks
-after --ttl of inactivity (default 5m), prompting again on next use.
+You usually don't need to set this up by hand: jit installs the agent
+automatically the first time a command needs it (a `jit run` that serves a
+mount, a `jit migrate`, or `jit agent unlock`). `jit agent install` just
+does that eagerly and lets you pick the session --ttl up front. Either way
+it starts automatically at every login (and restarts itself if it crashes).
+The helper process itself needs no Touch ID just to keep running, only your
+unlocked session inside it locks after --ttl of inactivity (default 5m),
+prompting again on next use.
 
 A live-mounted file shows fake-looking values by default. Real values flow
 only to a `jit run` grant's own process tree: `jit run --live` for a project

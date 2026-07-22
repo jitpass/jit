@@ -20,9 +20,9 @@ description: Placeholder values, hanging reads, surprise Touch ID prompts, and s
   `docker compose` env_file) and gets nothing, use `jit run --live`, or pin
   `read_as_file: true` in the project's `.jit/config.yaml`. See
   [Which command delivers a secret](./delivering-secrets.md).
-- **A command hangs reading `.env`.** The agent probably isn't running or
-  serving that mount; `jit status` will say. `jit agent install` (re)starts
-  it.
+- **A command hangs reading `.env`.** The agent is the mount's writer and
+  normally auto-starts; if it crashed or was uninstalled the read blocks with
+  nothing serving it. `jit status` will say. `jit agent install` (re)starts it.
 - **"No secret stored at ..." or a doctor failure.** A profile references a
   vault path that's gone (usually a `jit vault rm` after migration).
   Re-set it with `jit vault set <path>`, or update the profile.
@@ -44,7 +44,7 @@ description: Placeholder values, hanging reads, surprise Touch ID prompts, and s
   a secret-injecting process, which prompts if the session has lapsed.
 - **Touch ID prompts feel too frequent.** First find out what's asking -
   `jit agent history` (above) names each one. If they're all legitimate,
-  [install the agent](../agent/index.md) or lengthen its window:
+  lengthen the [agent's](../agent/index.md) session window:
   `jit agent install --ttl 1h`.
 - **"different build" warning from `jit status`.** The running agent is an
   older binary than the CLI you're typing. Run `jit agent install` again to

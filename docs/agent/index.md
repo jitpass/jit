@@ -8,9 +8,10 @@ description: Unlock once per session instead of once per command - a launchd-man
 Without the agent, every vault-touching command asks for Touch ID
 independently. With it, you unlock once and everything shares that session
 for the next 5 minutes of activity. The agent is also the process that
-serves [live-mounted files](../run/mounts.md), so if you migrate a `.env`
-file, you want it installed. Everything still works without it, just with
-more prompts.
+serves [live-mounted files](../run/mounts.md). You don't set it up by hand:
+jit installs it automatically the first time a command needs it (your first
+`jit migrate` or `jit run`). Everything still works before that, just with
+more prompts and no live mounts.
 
 The shared session covers the high-frequency paths - native credential
 hooks (`aws`, `kubectl`) and `jit run`. It deliberately does **not** cover
@@ -20,7 +21,14 @@ those always require a fresh Touch ID/passcode on every run, unlocked or
 not, so a deliberate vault operation always takes a live human gesture even
 mid-session. (`list`/`history` stay prompt-free - names and timestamps only.)
 
-## Install it once: `jit agent install`
+## Setup is automatic (`jit agent install` to do it eagerly)
+
+The first command that needs the agent installs it for you, silently: a
+`jit migrate` that produces a mount, a `jit run` that serves one, or an
+explicit `jit agent unlock`. There's no separate setup step to remember.
+
+Run `jit agent install` yourself only when you want to set it up ahead of
+time, or to pick the session window (`--ttl`) up front:
 
 ```
 $ jit agent install
@@ -32,6 +40,8 @@ The agent process itself runs indefinitely and never needs Touch ID just
 to exist; only the cached key inside it locks after 5 minutes of
 inactivity, re-prompting on next use. Change the window with `--ttl`
 (`jit agent install --ttl 1h`); the value is baked into the launchd plist.
+An automatic first-use install uses the 5m default; run `jit agent install --ttl <d>`
+any time to change it.
 
 `jit agent restart` restarts the agent process, the step after
 [upgrading the binary](../getting-started/install.md#upgrading), though the
