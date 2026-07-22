@@ -564,7 +564,7 @@ func TestPrintVaultList(t *testing.T) {
 	backups := []string{"_backups/Users/x/notion/.env.jit-bak-1"}
 
 	var buf bytes.Buffer
-	printVaultList(&buf, secrets, backups, false, false, nil)
+	printVaultList(&buf, secrets, backups, false, false, nil, "path")
 	out := buf.String()
 	if strings.Contains(out, "_backups/") {
 		t.Errorf("default listing must not include _backups/ entries, got:\n%s", out)
@@ -574,7 +574,7 @@ func TestPrintVaultList(t *testing.T) {
 	}
 
 	buf.Reset()
-	printVaultList(&buf, secrets, backups, true, false, nil)
+	printVaultList(&buf, secrets, backups, true, false, nil, "path")
 	out = buf.String()
 	if !strings.Contains(out, "_backups/Users/x/notion/.env.jit-bak-1") {
 		t.Errorf("--all must list backup entries, got:\n%s", out)
@@ -584,7 +584,7 @@ func TestPrintVaultList(t *testing.T) {
 	}
 
 	buf.Reset()
-	printVaultList(&buf, nil, backups, false, false, nil)
+	printVaultList(&buf, nil, backups, false, false, nil, "path")
 	out = buf.String()
 	if !strings.Contains(out, "No secrets stored yet, 1 encrypted file backup kept for `jit migrate undo` (list with --all).") {
 		t.Errorf("backups-only vault needs an honest empty state, got:\n%s", out)
@@ -593,7 +593,7 @@ func TestPrintVaultList(t *testing.T) {
 	// Backups-only with --all: the backups list, and the closing line
 	// still says "No secrets" rather than the old "0 secret(s)".
 	buf.Reset()
-	printVaultList(&buf, nil, backups, true, false, nil)
+	printVaultList(&buf, nil, backups, true, false, nil, "path")
 	out = buf.String()
 	if !strings.Contains(out, "_backups/Users/x/notion/.env.jit-bak-1") {
 		t.Errorf("backups-only --all must list backup entries, got:\n%s", out)
@@ -603,7 +603,7 @@ func TestPrintVaultList(t *testing.T) {
 	}
 
 	buf.Reset()
-	printVaultList(&buf, nil, nil, false, false, nil)
+	printVaultList(&buf, nil, nil, false, false, nil, "path")
 	if !strings.Contains(buf.String(), "No secrets stored yet. Run `jit vault set <path>`") {
 		t.Errorf("empty vault keeps the standard empty state, got:\n%s", buf.String())
 	}
@@ -623,7 +623,7 @@ func TestPrintVaultListGrouped(t *testing.T) {
 	backups := []string{"_backups/Users/x/notion/.env.jit-bak-1"}
 
 	var buf bytes.Buffer
-	printVaultList(&buf, secrets, backups, true, true, nil)
+	printVaultList(&buf, secrets, backups, true, true, nil, "path")
 	out := buf.String()
 	for _, want := range []string{
 		"descope/ (2)",
@@ -659,7 +659,7 @@ func TestPrintVaultListLong(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	printVaultList(&buf, secrets, nil, false, true, meta)
+	printVaultList(&buf, secrets, nil, false, true, meta, "path")
 	out := buf.String()
 
 	if !strings.Contains(out, "dotenv · updated") {
@@ -673,6 +673,41 @@ func TestPrintVaultListLong(t *testing.T) {
 		if strings.Contains(line, "OLD_KEY") && strings.Contains(line, "updated") {
 			t.Errorf("a secret with no UpdatedUnix must not show an age, got line:\n%s", line)
 		}
+	}
+}
+
+// TestPrintSecretsByProvenance pins --by origin: secrets bucket under their
+// source file (with class + count), a distinct file makes a distinct bucket,
+// and provenance-less secrets collect under "(no recorded source)" last.
+func TestPrintSecretsByProvenance(t *testing.T) {
+	secrets := []string{"jamf/CLIENT_ID", "jamf/CLIENT_SECRET", "mcp-x/TOKEN", "legacy/OLD"}
+	meta := map[string]vault.SecretInfo{
+		"jamf/CLIENT_ID":     {Class: vault.ClassDotenv, GroupID: "g1", Origin: "~/scripts/jamf/.env"},
+		"jamf/CLIENT_SECRET": {Class: vault.ClassDotenv, GroupID: "g1", Origin: "~/scripts/jamf/.env"},
+		"mcp-x/TOKEN":        {Class: vault.ClassMCP, GroupID: "g2", Origin: "~/.mcp.json"},
+		"legacy/OLD":         {}, // no provenance
+	}
+
+	var buf bytes.Buffer
+	printSecretsByProvenance(&buf, secrets, meta, "origin")
+	out := buf.String()
+
+	for _, want := range []string{
+		"~/scripts/jamf/.env  dotenv (2)",
+		"  jamf/CLIENT_ID",
+		"  jamf/CLIENT_SECRET",
+		"~/.mcp.json  mcp (1)",
+		"  mcp-x/TOKEN",
+		"(no recorded source) (1)",
+		"  legacy/OLD",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("--by origin output missing %q, got:\n%s", want, out)
+		}
+	}
+	// The unknown bucket sorts last.
+	if idx := strings.Index(out, "(no recorded source)"); idx >= 0 && idx < strings.Index(out, "~/.mcp.json") {
+		t.Errorf("(no recorded source) must sort after real origins, got:\n%s", out)
 	}
 }
 
@@ -724,14 +759,20 @@ func TestVaultListEndToEndWithoutAuth(t *testing.T) {
 		t.Fatalf("jit vault list --format json: %v", err)
 	}
 	var res struct {
-		Secrets []string `json:"secrets"`
+		Secrets []struct {
+			Path string `json:"path"`
+		} `json:"secrets"`
 		Backups []string `json:"backups"`
 	}
 	if err := json.Unmarshal(buf.Bytes(), &res); err != nil {
 		t.Fatalf("parsing json output: %v\n%s", err, buf.String())
 	}
-	if strings.Join(res.Secrets, ",") != "descope/PROJECT_2,descope/PROJECT_10" {
-		t.Errorf("json secrets = %v, want natural order", res.Secrets)
+	gotPaths := make([]string, len(res.Secrets))
+	for i, s := range res.Secrets {
+		gotPaths[i] = s.Path
+	}
+	if strings.Join(gotPaths, ",") != "descope/PROJECT_2,descope/PROJECT_10" {
+		t.Errorf("json secret paths = %v, want natural order", gotPaths)
 	}
 	if res.Backups == nil || len(res.Backups) != 0 {
 		t.Errorf("json backups = %#v, want empty non-nil array", res.Backups)
