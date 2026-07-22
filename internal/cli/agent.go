@@ -259,55 +259,10 @@ var agentInstallCmd = &cobra.Command{
 			return nil
 		}
 
-		exePath, err := os.Executable()
+		plistPath, running, err := installAgentService(agentInstallTTL)
 		if err != nil {
 			return fmt.Errorf("jit agent install: %w", err)
 		}
-		exePath, err = filepath.EvalSymlinks(exePath)
-		if err != nil {
-			return fmt.Errorf("jit agent install: %w", err)
-		}
-
-		plistPath, err := agentPlistPath()
-		if err != nil {
-			return fmt.Errorf("jit agent install: %w", err)
-		}
-		root, err := vaultRootDir()
-		if err != nil {
-			return fmt.Errorf("jit agent install: %w", err)
-		}
-		logPath := filepath.Join(root, "agent.log")
-
-		// exePath/logPath are filesystem paths and can legally contain XML
-		// metacharacters (& is common in directory names) — splicing one
-		// into the plist unescaped produces a file launchctl rejects, or
-		// worse, silently misparses.
-		plist := fmt.Sprintf(agentPlistTemplate, agentPlistLabel, xmlEscape(exePath), agentInstallTTL.String(), xmlEscape(logPath), xmlEscape(logPath))
-		if err := os.MkdirAll(filepath.Dir(plistPath), 0o700); err != nil {
-			return fmt.Errorf("jit agent install: %w", err)
-		}
-		if err := os.WriteFile(plistPath, []byte(plist), 0o600); err != nil {
-			return fmt.Errorf("jit agent install: %w", err)
-		}
-
-		// reloadAgentService boots out any previously-running instance before
-		// bootstrapping the just-written plist — bootstrap on an already-loaded
-		// label fails outright, and a re-install to change --ttl must take
-		// effect now, not at next login. The same helper `jit agent restart`
-		// uses, so install and restart can't drift on how they (re)load.
-		out, err := reloadAgentService(plistPath)
-		if err != nil {
-			return fmt.Errorf("jit agent install: launchctl bootstrap failed: %w (%s)", err, strings.TrimSpace(string(out)))
-		}
-		// launchctl bootstrap returns before the agent process has spawned
-		// and bound its socket — a real, observed first-run confusion: `jit
-		// agent status` typed right after a successful install said "not
-		// running — run `jit agent install` to set it up" for the ~2s
-		// launchd took to actually start it. Wait briefly until the socket
-		// answers so "Installed" also means "running"; if it still isn't
-		// up after the timeout, say what's actually happening rather than
-		// letting status contradict this command a moment later.
-		running := waitForAgentSocket(root, 5*time.Second)
 		fmt.Fprintf(cmd.OutOrStdout(),
 			"Installed, jit agent now starts automatically every time you log in (survives reboots) and stays unlocked for up to %s after your last Touch ID prompt.\nRun `jit agent uninstall` to remove it. (%s)\n",
 			agentInstallTTL, plistPath)
@@ -316,6 +271,99 @@ var agentInstallCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+// agentInstallDefaultTTL is the session TTL baked into a silently
+// auto-installed agent (ensureAgentInstalled) and the default for the
+// explicit `jit agent install`, kept as one constant so the two can't drift.
+const agentInstallDefaultTTL = 5 * time.Minute
+
+// installAgentService writes the launchd LaunchAgent plist that runs
+// `jit agent run --ttl <ttl>` and (re)loads it, returning the plist path and
+// whether the socket answered within a short wait. It is the shared core of
+// both the explicit `jit agent install` command and the silent first-use
+// auto-install (ensureAgentInstalled), so the two can never drift on how the
+// service is written or bootstrapped. It performs NO consent prompt of its
+// own: each caller decides whether this persistence needs confirming (the
+// explicit command asks; the first-use path doesn't — the user already ran a
+// command that can't work without the agent).
+func installAgentService(ttl time.Duration) (plistPath string, running bool, err error) {
+	exePath, err := os.Executable()
+	if err != nil {
+		return "", false, err
+	}
+	// Resolve the /usr/local/bin install symlink (or any shim) to the real
+	// binary: launchd re-execs this exact path at every login, and a path that
+	// later moves out from under it would leave the service pointing at nothing.
+	exePath, err = filepath.EvalSymlinks(exePath)
+	if err != nil {
+		return "", false, err
+	}
+	plistPath, err = agentPlistPath()
+	if err != nil {
+		return "", false, err
+	}
+	root, err := vaultRootDir()
+	if err != nil {
+		return plistPath, false, err
+	}
+	logPath := filepath.Join(root, "agent.log")
+
+	// exePath/logPath are filesystem paths and can legally contain XML
+	// metacharacters (& is common in directory names) — splicing one into the
+	// plist unescaped produces a file launchctl rejects, or worse, misparses.
+	plist := fmt.Sprintf(agentPlistTemplate, agentPlistLabel, xmlEscape(exePath), ttl.String(), xmlEscape(logPath), xmlEscape(logPath))
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o700); err != nil {
+		return plistPath, false, err
+	}
+	if err := os.WriteFile(plistPath, []byte(plist), 0o600); err != nil {
+		return plistPath, false, err
+	}
+
+	// reloadAgentService boots out any previously-running instance before
+	// bootstrapping the just-written plist — bootstrap on an already-loaded
+	// label fails outright, and a re-install to change --ttl must take effect
+	// now, not at next login. The same helper `jit agent restart` uses, so
+	// install and restart can't drift on how they (re)load.
+	out, err := reloadAgentService(plistPath)
+	if err != nil {
+		return plistPath, false, fmt.Errorf("launchctl bootstrap failed: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	// launchctl bootstrap returns before the agent process has spawned and
+	// bound its socket — a real, observed confusion where `jit agent status`
+	// typed right after a successful install said "not running" for the ~2s
+	// launchd took to actually start it. Wait briefly so "installed" also
+	// means "answering."
+	running = waitForAgentSocket(root, 5*time.Second)
+	return plistPath, running, nil
+}
+
+// ensureAgentInstalled silently sets up and starts the launchd agent the first
+// time a command that actually needs a live agent finds none installed — so a
+// user never has to run `jit agent install` by hand. The agent is an
+// implementation detail of "the app" (the same jit binary in daemon mode), not
+// a separate setup step, and unlike the explicit install command this path
+// does NOT prompt: the caller already ran something (a `jit run` that needs a
+// mount served, a `jit migrate` that just produced one, `jit agent unlock`)
+// that can't proceed without it, and the plist is a low-privilege, fully
+// reversible user LaunchAgent (`jit agent uninstall`).
+//
+// Best-effort and idempotent. An already-installed agent is left untouched
+// (didInstall false): running/crashed/mid-restart is the callers' existing
+// territory — dial retry, restart advice — not ours. Any install failure is
+// swallowed so the caller falls back to its own no-agent path (an independent
+// unlock, or notRunningHint's advice) rather than failing the user's real
+// command because a background convenience didn't take. Returns whether it just
+// installed the agent, and whether the agent is answering now.
+func ensureAgentInstalled() (didInstall, running bool) {
+	if agentInstalled() {
+		return false, false
+	}
+	_, running, err := installAgentService(agentInstallDefaultTTL)
+	if err != nil {
+		return false, false
+	}
+	return true, running
 }
 
 var agentUninstallCmd = &cobra.Command{
@@ -400,6 +448,10 @@ var agentUnlockCmd = &cobra.Command{
 	Long:  "Pre-warms the shared session so a run of jit run/vault get/export right after doesn't prompt.",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// No agent yet? Set one up silently rather than erroring with "run
+		// `jit agent install` first" — `unlock` IS the "get me a session"
+		// intent, so absence is a setup step to do, not a failure to report.
+		ensureAgentInstalled()
 		c, err := agentClient()
 		if err != nil {
 			return fmt.Errorf("jit agent unlock: %w", err)
@@ -1357,7 +1409,7 @@ const agentPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 
 func init() {
 	agentRunCmd.Flags().DurationVar(&agentTTL, "ttl", 5*time.Minute, "how long an unlocked session stays cached before auto-locking")
-	agentInstallCmd.Flags().DurationVar(&agentInstallTTL, "ttl", 5*time.Minute, "how long an unlocked session stays cached before auto-locking, baked into the installed plist")
+	agentInstallCmd.Flags().DurationVar(&agentInstallTTL, "ttl", agentInstallDefaultTTL, "how long an unlocked session stays cached before auto-locking, baked into the installed plist")
 	agentInstallCmd.Flags().BoolVarP(&agentInstallYes, "yes", "y", false, "skip the confirmation prompt and install immediately")
 	agentStatusCmd.Flags().StringVar(&agentStatusFormat, "format", "text", `output format: "text" (default) or "json"`)
 	agentHistoryCmd.Flags().StringVar(&agentHistoryFormat, "format", "text", `output format: "text" (default) or "json"`)
