@@ -156,27 +156,63 @@ func reportAgentStatus(w io.Writer, root string, producedMount bool) {
 		_, _ = color.New(color.Bold).Fprintf(w, format, a...)
 		fmt.Fprintln(w)
 	}
-	switch {
-	case !agentClient.Reachable() && producedMount:
-		bold("Run `jit agent install` to start serving the new mount(s), and so kubectl/AWS CLI/MCP hosts/new shells don't each need their own Touch ID prompt.")
-	case !agentClient.Reachable():
-		bold("Run `jit agent install` so kubectl/AWS CLI/MCP hosts/new shells don't each need their own Touch ID prompt, some of those run headless and would otherwise hang waiting for one.")
-	case producedMount:
-		// Its own OnUnlock (if this migrate run's vault writes were the
-		// very unlock that just happened) fires BEFORE this point, so a
-		// scan at that moment would have found nothing yet. Waiting for
-		// the next full lock/unlock cycle instead of refreshing now was a
-		// real bug: the mount would sit unserved (any read against it
-		// just hangs) until something else happened to unlock again.
+	// refreshMounts tells a reachable agent about the mount(s) this run just
+	// registered so they're served now, not only after the next lock/unlock
+	// cycle. Shared by the already-running and just-auto-installed paths so
+	// their success/warning wording can't drift.
+	refreshMounts := func(justInstalled bool) {
+		// Its own OnUnlock (if this migrate run's vault writes were the very
+		// unlock that just happened) fires BEFORE this point, so a scan at that
+		// moment would have found nothing yet. Refreshing now instead of
+		// waiting for the next full lock/unlock cycle was a real bug fix: the
+		// mount would otherwise sit unserved (any read against it just hangs)
+		// until something else happened to unlock again.
 		if err := agentClient.Refresh(); err != nil {
 			fmt.Fprintln(w)
 			_, _ = color.New(color.FgYellow).Fprintf(w, "Warning: could not tell the running agent about the new mount(s): %v\n", err)
 			bold("Run `jit agent status`, or `jit agent lock` then unlock again, to pick it up.")
+			return
+		}
+		if justInstalled {
+			fmt.Fprintln(w, "\njit agent is now set up (starts automatically at login) and serving the new mount(s).")
 		} else {
 			fmt.Fprintln(w, "\njit agent is already running and now serving the new mount(s).")
 		}
 	}
-	// Agent already running, nothing mount-related to refresh: shell-
-	// config/MCP/AWS/kubeconfig already resolve transparently through the
-	// running agent's shared session — nothing new to say.
+	switch {
+	case agentClient.Reachable():
+		if producedMount {
+			refreshMounts(false)
+		}
+		// Agent already running, nothing mount-related to refresh: shell-
+		// config/MCP/AWS/kubeconfig already resolve transparently through the
+		// running agent's shared session — nothing new to say.
+	case agentInstalled():
+		// Installed but not answering — crashed or mid-restart. Don't reinstall
+		// on top of it; point at restart, the same guidance every other surface
+		// gives for this state (installedNotRunningAdvice).
+		bold("%s", installedNotRunningAdvice("jit agent is"))
+	default:
+		// Never installed. Set it up silently now — this used to be the single
+		// next step every migrate run ended by telling the user to run
+		// themselves (`jit agent install`). Doing it for them is the whole
+		// point of the agent being part of the app, not a separate step.
+		didInstall, running := ensureAgentInstalled()
+		switch {
+		case running && producedMount:
+			refreshMounts(true)
+		case running:
+			fmt.Fprintln(w, "\njit agent is now set up and starts automatically at login, so kubectl/AWS CLI/MCP hosts/new shells share one unlocked session instead of each prompting Touch ID.")
+		case didInstall:
+			// Plist written but the socket hasn't answered yet (launchd still
+			// spawning). It'll be up momentarily; don't send the user off to
+			// reinstall something that's already installed.
+			fmt.Fprintln(w, "\njit agent is starting up in the background (give `jit agent status` a few seconds); it'll serve your mounts and share one unlocked session across tools.")
+		case producedMount:
+			// Auto-install failed outright — fall back to the original nudge.
+			bold("Run `jit agent install` to start serving the new mount(s), and so kubectl/AWS CLI/MCP hosts/new shells don't each need their own Touch ID prompt.")
+		default:
+			bold("Run `jit agent install` so kubectl/AWS CLI/MCP hosts/new shells don't each need their own Touch ID prompt, some of those run headless and would otherwise hang waiting for one.")
+		}
+	}
 }

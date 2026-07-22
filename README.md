@@ -29,14 +29,17 @@ Apple Silicon prebuilt binary, no Go required:
 curl -sLO https://github.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz
 tar -xzf jitpass_darwin_arm64.tar.gz jit
 sudo mv jit /usr/local/bin/
-jit agent install -y        # background agent: unlock once, not once per command
 ```
+
+That's it. The background agent that lets you unlock once per session (instead of
+once per command) sets itself up automatically the first time you run
+`jit migrate` or `jit run` — no separate install step.
 
 Use `curl`, not the browser: Gatekeeper blocks quarantined unsigned binaries
 (un-quarantine with `xattr -d com.apple.quarantine jit` if needed). Checksums are
 on the [release page](https://github.com/jitpass/jit/releases/latest). Upgrading
-is the same commands (reinstall the binary, then `jit agent install -y` to point
-the agent at it). On an Intel Mac, build from source instead: see the
+is just reinstalling the binary; the running agent notices the new build and
+restarts itself on it. On an Intel Mac, build from source instead: see the
 [install guide](./docs/getting-started/install.md).
 
 ### Shell completion
@@ -57,7 +60,7 @@ fish are covered there too.
 ```sh
 jit audit                     # 1. see the problem (read-only, safe to run anywhere)
 jit vault init                # 2. create the vault (master key in your login keychain)
-jit agent install             # 3. background helper: unlock once, everything shares it
+jit agent install             # 3. (optional) start the shared-session agent now; migrate/run auto-start it too
 jit migrate --dry-run         # 4. preview the fix (same whole-machine scope as audit)
 jit migrate                   # 5. apply it: plan, [y/N], one Touch ID prompt
 jit status                    # 6. vault / agent / mounts / backup health, one screen
