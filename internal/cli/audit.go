@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,11 +45,13 @@ var auditCmd = &cobra.Command{
 		"command lines are the actions, the auth lines are the approvals those actions\n" +
 		"needed. Command arguments are recorded with any secret-looking value masked, so\n" +
 		"the log records that a command ran, never the secret it may have carried.\n\n" +
+		"Output is logfmt: one key=value line per event, newest first, so it reads and\n" +
+		"greps like a real service log (filter with grep 'kind=unlock', 'status=denied',\n" +
+		"and the like). For a machine-parseable dump of the same data use --format json.\n\n" +
 		"On the auth method: jit challenges with a single macOS prompt that accepts\n" +
 		"either a fingerprint or the device passcode, and the OS does not report which\n" +
-		"one you used. So a line says \"Touch ID or device passcode\" (biometry is\n" +
-		"available on this Mac) or \"device passcode\" (it isn't), never a claim macOS\n" +
-		"can't back.\n\n" +
+		"one you used. So the method reads touchid-or-passcode (biometry is available on\n" +
+		"this Mac) or passcode (it isn't), never a claim macOS can't back.\n\n" +
 		"Survives restarts and logouts: both halves are durable files alongside the\n" +
 		"vault (audit.jsonl and agent-history.jsonl), so this answers for last week as\n" +
 		"readily as for the last hour. To scan for plaintext secrets on disk instead,\n" +
@@ -107,15 +110,18 @@ type auditJSON struct {
 }
 
 // auditEntry is one merged, rendered timeline row: its wall-clock time (for
-// the merge sort) and the already-formatted lines to print under a bullet.
+// the merge sort) and the already-formatted logfmt line to print.
 type auditEntry struct {
-	t     time.Time
-	lines []string
+	t    time.Time
+	line string
 }
 
 // printAuditLog merges command records and auth events into one reverse-
-// chronological view. limit, when positive, caps the merged output; the per-
-// source reads already trimmed to roughly this, so this is the exact final cut.
+// chronological logfmt stream: one `key=value` line per event, the shape a
+// real service log takes, so the output is scan- and grep-friendly and reads
+// as a log rather than a report. limit, when positive, caps the merged output;
+// the per-source reads already trimmed to roughly this, so this is the exact
+// final cut.
 func printAuditLog(w io.Writer, commands []auditlog.Record, events []agent.SessionEvent, limit int) {
 	if len(commands) == 0 && len(events) == 0 {
 		fmt.Fprintln(w, "No audit log yet. It fills in as you run jit commands; if the agent has never run, there are no unlocks to show either.")
@@ -137,106 +143,165 @@ func printAuditLog(w io.Writer, commands []auditlog.Record, events []agent.Sessi
 		entries = entries[:limit]
 	}
 
-	fmt.Fprintln(w, "Audit log (most recent first):")
 	for _, e := range entries {
-		for _, line := range e.lines {
-			fmt.Fprintln(w, line)
-		}
+		fmt.Fprintln(w, e.line)
 	}
 }
 
-// commandEntry renders one recorded jit invocation.
+// kv is one logfmt field. Emitted in slice order so the eye finds the same
+// fact in the same place on every line.
+type kv struct{ k, v string }
+
+// logfmtLine joins fields into a `key=value key="quoted value"` line.
+func logfmtLine(pairs []kv) string {
+	var b strings.Builder
+	for i, p := range pairs {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(p.k)
+		b.WriteByte('=')
+		b.WriteString(logfmtValue(p.v))
+	}
+	return b.String()
+}
+
+// logfmtValue quotes a value only when it must — empty, or containing a space,
+// tab, quote, or the `=` that separates fields — and escapes backslashes and
+// quotes inside the quotes, so a parser round-trips it.
+func logfmtValue(v string) string {
+	if v == "" {
+		return `""`
+	}
+	if !strings.ContainsAny(v, " \t\"=") {
+		return v
+	}
+	v = strings.ReplaceAll(v, `\`, `\\`)
+	v = strings.ReplaceAll(v, `"`, `\"`)
+	return `"` + v + `"`
+}
+
+// logfmtDur renders a duration the way service logs do: milliseconds under a
+// second, one-decimal seconds above, so a 13-second unlock reads as 13.3s.
+func logfmtDur(ms int64) string {
+	if ms >= 1000 {
+		return fmt.Sprintf("%.1fs", float64(ms)/1000)
+	}
+	return fmt.Sprintf("%dms", ms)
+}
+
+// commandEntry renders one recorded jit invocation as a logfmt line.
 func commandEntry(r auditlog.Record) auditEntry {
 	t := time.Unix(0, r.UnixNano)
 	invocation := "jit"
 	if len(r.Args) > 0 {
 		invocation = "jit " + strings.Join(r.Args, " ")
 	}
-	outcome := fmt.Sprintf("ok · %dms", r.DurationMS)
+	level, status := "info", "ok"
 	if !r.Success {
-		outcome = fmt.Sprintf("FAILED · %dms", r.DurationMS)
+		level, status = "error", "failed"
 	}
-	head := fmt.Sprintf("  • %s  %s  (%s)", t.Format(auditTimeLayout), invocation, outcome)
-	if !r.Success {
-		head = color.New(color.FgRed).Sprint(head)
+	pairs := []kv{
+		{"time", t.Format(auditTimeLayout)},
+		{"level", level},
+		{"kind", "cmd"},
+		{"status", status},
+		{"dur", logfmtDur(r.DurationMS)},
+		{"cmd", invocation},
 	}
-	lines := []string{head}
-
-	who := "  ran by " + r.User
+	if r.User != "" {
+		pairs = append(pairs, kv{"user", r.User})
+	}
 	if r.PID != 0 {
-		who += fmt.Sprintf(" (pid %d)", r.PID)
+		pairs = append(pairs, kv{"pid", strconv.Itoa(r.PID)})
 	}
-	if r.LaunchedBy != "" {
-		who += ", launched by " + r.LaunchedBy
-	} else if r.Parent != "" {
-		who += ", from " + r.Parent
+	if parent := launcher(r.LaunchedBy, r.Parent); parent != "" {
+		pairs = append(pairs, kv{"parent", parent})
 	}
-	lines = append(lines, "    "+who)
 	if r.Error != "" {
-		lines = append(lines, "    "+color.New(color.FgRed).Sprint("error: "+r.Error))
+		pairs = append(pairs, kv{"err", r.Error})
 	}
-	return auditEntry{t: t, lines: lines}
+	line := logfmtLine(pairs)
+	if !r.Success {
+		line = color.New(color.FgRed).Sprint(line)
+	}
+	return auditEntry{t: t, line: line}
 }
 
 // authEntry renders one agent session event (unlock, denial, use, lock, or
-// agent start) into the same bullet shape, reusing the session-history phrasing
-// but on an absolute-time axis and surfacing the recorded auth method.
+// agent start) as a logfmt line, on an absolute-time axis and surfacing the
+// recorded auth method.
 func authEntry(home string, e agent.SessionEvent) auditEntry {
 	t := time.Unix(e.UnixTime, 0)
-	ts := t.Format(auditTimeLayout)
-	var lines []string
+	pairs := []kv{{"time", t.Format(auditTimeLayout)}}
+	var lineColor *color.Color
 
 	switch e.Kind {
 	case agent.KindLock:
 		cause := e.Cause
 		if cause == "" {
-			cause = "unknown cause"
+			cause = "unknown"
 		}
-		lines = append(lines, fmt.Sprintf("  • %s  session locked, %s", ts, cause))
+		pairs = append(pairs, kv{"level", "info"}, kv{"kind", "lock"}, kv{"reason", cause})
 	case agent.KindStart:
-		line := fmt.Sprintf("  • %s  agent process started", ts)
-		if e.Cause != "" {
-			line += fmt.Sprintf(" (%s)", e.Cause)
+		pairs = append(pairs, kv{"level", "info"}, kv{"kind", "agent"}, kv{"msg", "process started"})
+		if b := strings.TrimPrefix(e.Cause, "build "); b != e.Cause {
+			pairs = append(pairs, kv{"build", b})
+		} else if e.Cause != "" {
+			pairs = append(pairs, kv{"note", e.Cause})
 		}
-		lines = append(lines, line)
 	case agent.KindDenied:
-		head := fmt.Sprintf("  • %s  unlock DENIED, via %s", ts, authMethodPhrase(e))
-		lines = append(lines, color.New(color.FgRed).Sprint(head))
-		if e.LaunchedBy != "" {
-			lines = append(lines, "    launched by "+e.LaunchedBy)
-		}
-		if e.By != "" {
-			lines = append(lines, "    "+shortenCommand(home, e.By))
-		}
+		pairs = append(pairs,
+			kv{"level", "warn"}, kv{"kind", "unlock"}, kv{"status", "denied"},
+			kv{"method", authMethodSlug(e)})
 		if e.Cause != "" {
-			lines = append(lines, "    "+e.Cause)
+			pairs = append(pairs, kv{"reason", e.Cause})
 		}
-		lines = append(lines, authLabelLines(e.Labels)...)
+		pairs = appendAuthContext(pairs, home, e)
+		lineColor = color.New(color.FgYellow)
 	case agent.KindUse:
-		line := fmt.Sprintf("  • %s  session used, %s", ts, agent.DescribeUse(e.Op))
+		pairs = append(pairs, kv{"level", "info"}, kv{"kind", "use"}, kv{"op", agent.DescribeUse(e.Op)})
 		if e.Count > 1 {
-			line += fmt.Sprintf(" ×%d", e.Count)
+			pairs = append(pairs, kv{"count", strconv.FormatInt(e.Count, 10)})
 		}
-		if e.LaunchedBy != "" {
-			line += ", launched by " + e.LaunchedBy
-		}
-		lines = append(lines, line)
-		if e.By != "" {
-			lines = append(lines, "    "+shortenCommand(home, e.By))
-		}
-		lines = append(lines, authLabelLines(e.Labels)...)
+		pairs = appendAuthContext(pairs, home, e)
 	default: // unlock
-		line := fmt.Sprintf("  • %s  unlock via %s", ts, authMethodPhrase(e))
-		if e.LaunchedBy != "" {
-			line += ", launched by " + e.LaunchedBy
-		}
-		lines = append(lines, line)
-		if e.By != "" {
-			lines = append(lines, "    "+shortenCommand(home, e.By))
-		}
-		lines = append(lines, authLabelLines(e.Labels)...)
+		pairs = append(pairs,
+			kv{"level", "info"}, kv{"kind", "unlock"}, kv{"status", "ok"},
+			kv{"method", authMethodSlug(e)})
+		pairs = appendAuthContext(pairs, home, e)
 	}
-	return auditEntry{t: t, lines: lines}
+
+	line := logfmtLine(pairs)
+	if lineColor != nil {
+		line = lineColor.Sprint(line)
+	}
+	return auditEntry{t: t, line: line}
+}
+
+// appendAuthContext adds the provenance fields shared by unlock, denied, and
+// use events: the caller command line, the ancestor that explains it, and the
+// caller-reported secret names. Each is best-effort and omitted when empty.
+func appendAuthContext(pairs []kv, home string, e agent.SessionEvent) []kv {
+	if e.By != "" {
+		pairs = append(pairs, kv{"cmd", shortenCommand(home, e.By)})
+	}
+	if e.LaunchedBy != "" {
+		pairs = append(pairs, kv{"parent", e.LaunchedBy})
+	}
+	if len(e.Labels) > 0 {
+		pairs = append(pairs, kv{"secrets", strings.Join(e.Labels, ", ")})
+	}
+	return pairs
+}
+
+// launcher picks the best "who explains this call" for a command record:
+// the resolved ancestor if we have one, else the immediate parent process.
+func launcher(launchedBy, parent string) string {
+	if launchedBy != "" {
+		return launchedBy
+	}
+	return parent
 }
 
 // authMethodPhrase is the recorded "how were you asked" for a challenge event,
@@ -249,11 +314,18 @@ func authMethodPhrase(e agent.SessionEvent) string {
 	return "Touch ID or device passcode"
 }
 
-func authLabelLines(labels []string) []string {
-	if len(labels) == 0 {
-		return nil
+// authMethodSlug turns the human auth-method phrase into a bare logfmt token,
+// so the common cases read as method=touchid-or-passcode rather than a quoted
+// sentence; anything unrecognized falls through to be quoted verbatim.
+func authMethodSlug(e agent.SessionEvent) string {
+	switch authMethodPhrase(e) {
+	case "Touch ID or device passcode":
+		return "touchid-or-passcode"
+	case "device passcode":
+		return "passcode"
+	default:
+		return authMethodPhrase(e)
 	}
-	return []string{"    secrets (caller-reported): " + strings.Join(labels, ", ")}
 }
 
 func init() {

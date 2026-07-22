@@ -67,24 +67,21 @@ func TestAuditCommandTextMergesCommandsAndAuth(t *testing.T) {
 		t.Fatalf("jit audit: %v", err)
 	}
 
-	if !strings.Contains(out, "Audit log (most recent first):") {
-		t.Errorf("missing header, got:\n%s", out)
-	}
-	if !strings.Contains(out, "jit vault get stripe/live-key") {
+	if !strings.Contains(out, `cmd="jit vault get stripe/live-key"`) {
 		t.Errorf("command invocation not shown, got:\n%s", out)
 	}
-	if !strings.Contains(out, "ran by alice") {
-		t.Errorf("command actor not shown, got:\n%s", out)
+	if !strings.Contains(out, "kind=cmd status=ok") || !strings.Contains(out, "user=alice") {
+		t.Errorf("command line/actor not shown, got:\n%s", out)
 	}
-	if !strings.Contains(out, "unlock via Touch ID or device passcode") {
+	if !strings.Contains(out, "kind=unlock") || !strings.Contains(out, "method=touchid-or-passcode") {
 		t.Errorf("auth event / method not shown, got:\n%s", out)
 	}
-	if !strings.Contains(out, "secrets (caller-reported): stripe/live-key") {
+	if !strings.Contains(out, "secrets=stripe/live-key") {
 		t.Errorf("auth labels not shown, got:\n%s", out)
 	}
 	// The auth event (unix 2000) is newer than the command (unix nano 1000, ~epoch),
-	// so it must sort ahead of the command line.
-	if strings.Index(out, "unlock via") > strings.Index(out, "jit vault get") {
+	// so its unlock line must sort ahead of the command line.
+	if strings.Index(out, "kind=unlock") > strings.Index(out, "kind=cmd") {
 		t.Errorf("entries not sorted newest-first, got:\n%s", out)
 	}
 }
@@ -146,7 +143,7 @@ func TestAuditCommandLimitCapsEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit audit --limit: %v", err)
 	}
-	if n := strings.Count(out, "  • "); n != 3 {
-		t.Errorf("--limit 3 showed %d bullets, want 3, got:\n%s", n, out)
+	if n := strings.Count(out, "kind=cmd"); n != 3 {
+		t.Errorf("--limit 3 showed %d entries, want 3, got:\n%s", n, out)
 	}
 }
