@@ -151,13 +151,6 @@ jit wrap gh
 
 See **[Wrap](../wrap/index.md)** for the full catalog.
 
-## Try it on a fake machine first
-
-Don't want to point a secrets tool at your real machine on day one? Fair.
-**[jitpass-playground](https://github.com/jitpass/jitpass-playground)** is a
-realistic mock app seeded with synthetic secrets and a guided 10-minute tour:
-audit, migrate, watch decoys flip to real values, undo it all.
-
 ---
 
 Next: **[How it works](./how-it-works.md)**

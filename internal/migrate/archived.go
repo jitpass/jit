@@ -42,24 +42,3 @@ func FilterArchived(paths []string) (kept, skipped []string) {
 	}
 	return kept, skipped
 }
-
-// FilterPlayground splits paths into kept and skipped-as-synthetic: a path
-// inside a jitpass-playground checkout under home is planted bait `jit
-// audit` excludes from its score (audit.InSyntheticPlayground), and a
-// whole-machine sweep must not convert it — vaulting fake secrets and
-// live-mounting the tour repo's .env files would wreck the checkout for
-// its actual purpose. Unlike FilterArchived there is no flag to override
-// this: practicing a migration inside the playground is what `jit migrate
-// local` run from the checkout is for (audit's own home-in-playground
-// escape hatch keeps that path working). Callers report skipped so the
-// sweep never silently drops a finding without saying so.
-func FilterPlayground(home string, paths []string) (kept, skipped []string) {
-	for _, p := range paths {
-		if audit.InSyntheticPlayground(home, p) {
-			skipped = append(skipped, p)
-		} else {
-			kept = append(kept, p)
-		}
-	}
-	return kept, skipped
-}

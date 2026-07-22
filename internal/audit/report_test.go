@@ -384,33 +384,3 @@ func TestReportsShowProtectedCountOnlyWhenNonZero(t *testing.T) {
 		}
 	}
 }
-
-func TestReportsShowSyntheticExclusionOnlyWhenNonZero(t *testing.T) {
-	base := ScanSummary{RiskLevel: RiskLevelClean, FindingsByCategory: map[string]int{}}
-
-	withSynthetic := base
-	withSynthetic.SyntheticFindingCount = 8
-	withSynthetic.SyntheticPlaygroundPaths = []string{"/Users/alex/jitpass-playground"}
-	var human, md bytes.Buffer
-	WriteHumanReport(&human, nil, withSynthetic, "/Users/alex")
-	WriteMarkdownReport(&md, nil, withSynthetic)
-	if !strings.Contains(human.String(), "Excluded from the score: 8 synthetic finding(s)") {
-		t.Errorf("human report missing the synthetic-exclusion line:\n%s", human.String())
-	}
-	// Human output "~"-shortens the playground path; markdown keeps it absolute.
-	if !strings.Contains(human.String(), "~/jitpass-playground") {
-		t.Errorf("human report should shorten the playground path:\n%s", human.String())
-	}
-	if !strings.Contains(md.String(), "/Users/alex/jitpass-playground") {
-		t.Errorf("markdown report should keep the absolute playground path:\n%s", md.String())
-	}
-
-	var humanZero, mdZero bytes.Buffer
-	WriteHumanReport(&humanZero, nil, base, "")
-	WriteMarkdownReport(&mdZero, nil, base)
-	for name, out := range map[string]string{"human": humanZero.String(), "markdown": mdZero.String()} {
-		if strings.Contains(out, "Excluded from the score") {
-			t.Errorf("%s report shows a synthetic-exclusion line at zero count:\n%s", name, out)
-		}
-	}
-}

@@ -5,7 +5,6 @@ package audit
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/jitpass/jit/internal/mount"
@@ -122,71 +121,6 @@ func TestScanIntegration(t *testing.T) {
 		if _, ok := summary.FindingsByCategory[ft]; !ok {
 			t.Errorf("FindingsByCategory missing key %q", ft)
 		}
-	}
-}
-
-// A machine-wide scan that crosses a jitpass playground checkout must drop
-// that checkout's synthetic findings from the score/risk (so demo bait never
-// inflates a real machine) while keeping real findings elsewhere, and surface
-// the exclusion as a count + source path rather than silently.
-func TestScanExcludesPlaygroundSubtree(t *testing.T) {
-	home := t.TempDir()
-
-	// A real finding outside the playground: a production-indicator match that
-	// WOULD escalate the whole scan to Critical if it counted.
-	mkdirAll(t, filepath.Join(home, "work", "app"))
-	writeFile(t, filepath.Join(home, "work", "app", ".env"), "API_KEY=realtoken1234567890\n")
-
-	// A jitpass playground checkout with its marker and its own synthetic bait,
-	// including a production-indicator match that must NOT reach the score.
-	pg := filepath.Join(home, "jitpass-playground")
-	mkdirAll(t, filepath.Join(pg, "services", "api"))
-	writeFile(t, filepath.Join(pg, PlaygroundMarkerFile), "# jitpass-playground marker\n")
-	writeFile(t, filepath.Join(pg, ".env"), "PROD_DATABASE_URL=postgres://admin:x@db.internal/prod\n")
-	writeFile(t, filepath.Join(pg, "services", "api", ".env"), "API_KEY=synthetic0987654321\n")
-
-	findings, summary, err := Scan(Config{HomeDir: home, RunID: "r", ScannerVersion: "test"})
-	if err != nil {
-		t.Fatalf("Scan: %v", err)
-	}
-
-	if summary.SyntheticFindingCount < 2 {
-		t.Errorf("SyntheticFindingCount = %d, want >= 2 (the two playground .env files)", summary.SyntheticFindingCount)
-	}
-	if len(summary.SyntheticPlaygroundPaths) != 1 || summary.SyntheticPlaygroundPaths[0] != pg {
-		t.Errorf("SyntheticPlaygroundPaths = %v, want [%s]", summary.SyntheticPlaygroundPaths, pg)
-	}
-	if summary.RiskLevel == RiskLevelCritical {
-		t.Errorf("RiskLevel = %q; the only production-indicator match is synthetic and must not escalate", summary.RiskLevel)
-	}
-	for _, f := range findings {
-		if strings.HasPrefix(f.FilePath, pg+string(filepath.Separator)) {
-			t.Errorf("playground finding leaked into results: %s", f.FilePath)
-		}
-	}
-	if len(findings) == 0 {
-		t.Error("the real finding outside the playground was dropped too")
-	}
-}
-
-// When the scan root IS the playground (the first-run tour points the scanner
-// straight at the checkout), nothing is excluded: showing and scoring those
-// findings is the whole point of the tour.
-func TestScanRootedInPlaygroundExcludesNothing(t *testing.T) {
-	pg := t.TempDir()
-	mkdirAll(t, filepath.Join(pg, "services"))
-	writeFile(t, filepath.Join(pg, PlaygroundMarkerFile), "# marker\n")
-	writeFile(t, filepath.Join(pg, "services", ".env"), "PROD_API_KEY=x1234567890abcd\n")
-
-	findings, summary, err := Scan(Config{HomeDir: pg, RunID: "r", ScannerVersion: "test"})
-	if err != nil {
-		t.Fatalf("Scan: %v", err)
-	}
-	if summary.SyntheticFindingCount != 0 {
-		t.Errorf("SyntheticFindingCount = %d, want 0 when the root itself is the playground", summary.SyntheticFindingCount)
-	}
-	if len(findings) == 0 {
-		t.Error("tour scan rooted at the playground must still report its findings")
 	}
 }
 

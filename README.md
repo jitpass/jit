@@ -70,11 +70,6 @@ Every mutating command prints its plan and asks first. Every rewritten file is
 backed up (encrypted, into the vault) before it's touched, and `jit migrate undo`
 restores it byte-for-byte.
 
-> **Try it without touching your real machine.** The
-> [jitpass-playground](https://github.com/jitpass/jitpass-playground) is a mock
-> app seeded with synthetic secrets and a 10-minute guided tour: audit, migrate,
-> watch decoys flip to real values, undo it all.
-
 ## After migrate: how does the tool still get its secret?
 
 Migrate does two things to each secret: it moves the value into the vault, and it
