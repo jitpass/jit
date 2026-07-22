@@ -140,9 +140,13 @@ func ApplyKubeconfigUser(v *vault.Vault, home, userName string, dedup ...*Backup
 		varNames = append(varNames, name)
 	}
 	sort.Strings(varNames)
+	meta, err := newProvenance(vault.ClassKube, KubeconfigPath(home))
+	if err != nil {
+		return KubeconfigUserMigration{}, err
+	}
 	for _, name := range varNames {
 		secretPath := vaultProfileName + "/" + name
-		if err := v.Set(secretPath, []byte(secrets[name])); err != nil {
+		if err := v.SetWithMeta(secretPath, []byte(secrets[name]), meta); err != nil {
 			return KubeconfigUserMigration{}, fmt.Errorf("storing %s in vault: %w", name, err)
 		}
 		entries[name] = secretPath

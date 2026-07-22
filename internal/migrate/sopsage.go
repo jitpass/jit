@@ -194,8 +194,12 @@ func ApplySOPSAge(v *vault.Vault, home, path string) (SOPSAgeMigration, error) {
 		return SOPSAgeMigration{}, err
 	}
 
+	meta, err := newProvenance(vault.ClassSOPS, path)
+	if err != nil {
+		return SOPSAgeMigration{}, err
+	}
 	secretPath := profileName + "/" + sopsAgeVarName
-	if err := v.Set(secretPath, key); err != nil {
+	if err := v.SetWithMeta(secretPath, key, meta); err != nil {
 		return SOPSAgeMigration{}, fmt.Errorf("storing %s in vault: %w", sopsAgeVarName, err)
 	}
 	entries[sopsAgeVarName] = secretPath

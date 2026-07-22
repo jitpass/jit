@@ -299,7 +299,7 @@ func DiscoverDockerRegistries(home string) ([]string, error) {
 // the registry's global profile manifest, preserving any existing
 // entries — the same merge-not-overwrite discipline every other Apply*
 // here follows. Returns the profile name and manifest path used.
-func upsertDockerProfile(v *vault.Vault, serverURL string, creds dockerPlainCreds) (name, manifestPath string, err error) {
+func upsertDockerProfile(v *vault.Vault, serverURL string, creds dockerPlainCreds, meta vault.Meta) (name, manifestPath string, err error) {
 	name = DockerProfileName(serverURL)
 	if name == "" {
 		return "", "", fmt.Errorf("registry address %q sanitizes to nothing usable as a profile name", serverURL)
@@ -327,7 +327,7 @@ func upsertDockerProfile(v *vault.Vault, serverURL string, creds dockerPlainCred
 
 	for varName, value := range map[string]string{"USERNAME": creds.Username, "SECRET": creds.Secret} {
 		secretPath := name + "/" + varName
-		if err := v.Set(secretPath, []byte(value)); err != nil {
+		if err := v.SetWithMeta(secretPath, []byte(value), meta); err != nil {
 			return "", "", fmt.Errorf("storing %s in vault: %w", varName, err)
 		}
 		entries[varName] = secretPath
@@ -375,7 +375,11 @@ func ApplyDockerRegistry(v *vault.Vault, home, registry string, dedup ...*Backup
 		return DockerMigration{}, fmt.Errorf("%s already routes %q to credential helper %q, jit won't take a registry over from a helper you configured; `docker logout %s` clears the stale plaintext entry instead", configPath, registry, h, registry)
 	}
 
-	profileName, manifestPath, err := upsertDockerProfile(v, registry, creds)
+	meta, err := newProvenance(vault.ClassDocker, configPath)
+	if err != nil {
+		return DockerMigration{}, err
+	}
+	profileName, manifestPath, err := upsertDockerProfile(v, registry, creds, meta)
 	if err != nil {
 		return DockerMigration{}, err
 	}
@@ -447,7 +451,14 @@ func StoreDockerCredential(v *vault.Vault, serverURL, username, secret string) e
 	if username == "" {
 		username = DockerTokenUsername
 	}
-	_, _, err := upsertDockerProfile(v, serverURL, dockerPlainCreds{Username: username, Secret: secret})
+	// Live `docker login` after migration: no config.json to point at, so
+	// class-only provenance (a fresh group, no origin), same shape a
+	// re-migrated registry keeps once it already exists in the vault.
+	meta, err := newProvenance(vault.ClassDocker, "")
+	if err != nil {
+		return err
+	}
+	_, _, err = upsertDockerProfile(v, serverURL, dockerPlainCreds{Username: username, Secret: secret}, meta)
 	return err
 }
 

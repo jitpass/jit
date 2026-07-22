@@ -152,9 +152,13 @@ func ApplyShellConfig(v *vault.Vault, path string) (ShellConfigMigration, error)
 	}
 	sort.Strings(varNames)
 
+	meta, err := newProvenance(vault.ClassShell, path)
+	if err != nil {
+		return ShellConfigMigration{}, err
+	}
 	for _, name := range varNames {
 		secretPath := profileName + "/" + name
-		if err := v.Set(secretPath, []byte(values[name])); err != nil {
+		if err := v.SetWithMeta(secretPath, []byte(values[name]), meta); err != nil {
 			return ShellConfigMigration{}, fmt.Errorf("storing %s in vault: %w", name, err)
 		}
 		entries[name] = secretPath

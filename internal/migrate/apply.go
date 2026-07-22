@@ -288,9 +288,13 @@ func ApplyEnvFile(v *vault.Vault, profilesRoot, envPath string) (EnvFileMigratio
 		return EnvFileMigration{}, err
 	}
 
+	meta, err := newProvenance(vault.ClassDotenv, envPath)
+	if err != nil {
+		return EnvFileMigration{}, err
+	}
 	for _, name := range varNames {
 		secretPath := profileName + "/" + name
-		if err := v.Set(secretPath, []byte(values[name])); err != nil {
+		if err := v.SetWithMeta(secretPath, []byte(values[name]), meta); err != nil {
 			return EnvFileMigration{}, fmt.Errorf("storing %s in vault: %w", name, err)
 		}
 		entries[name] = secretPath

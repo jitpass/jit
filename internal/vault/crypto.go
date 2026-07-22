@@ -21,6 +21,16 @@ func generateDEK() ([]byte, error) {
 	return dek, nil
 }
 
+// randomBytes returns n cryptographically random bytes — the shared source
+// for non-DEK identifiers like a secret's surrogate group id.
+func randomBytes(n int) ([]byte, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
 // seal AES-256-GCM encrypts plaintext under key, returning nonce||ciphertext.
 // aad, if non-nil, is additional authenticated data: not stored, not
 // secret, but decryption fails unless open is given the identical bytes —

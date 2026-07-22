@@ -230,7 +230,11 @@ var vaultSetCmd = &cobra.Command{
 			}
 		}
 
-		if err := v.Set(path, value); err != nil {
+		// A hand-entered secret is provenance ClassManual — but only when
+		// it's new: SetWithMeta preserves the existing class on a rotation,
+		// so editing a migrated (e.g. dotenv) secret through `vault set`
+		// keeps its real origin rather than relabeling it manual.
+		if err := v.SetWithMeta(path, value, vault.Meta{Class: vault.ClassManual}); err != nil {
 			return fmt.Errorf("jit vault set: %w", err)
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "Stored %s\n", path)

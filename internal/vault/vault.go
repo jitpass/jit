@@ -52,11 +52,48 @@ func (v *Vault) Exists(path string) (bool, error) {
 	return false, fmt.Errorf("checking %s: %w", target, err)
 }
 
-// Set encrypts value and atomically writes it to path, creating parent
-// directories as needed. An existing secret at path is overwritten — its
-// CreatedUnix carries over (this is a rotation of the same secret, not a
-// new one), while a genuinely new path gets CreatedUnix == UpdatedUnix.
+// Meta is the birth-time provenance a caller stamps onto a brand-new secret:
+// which kind of source it came from (Class, one of the vault.Class* values),
+// the surrogate GroupID every secret imported together shares, and the
+// normalized source path (Origin). It is honored ONLY when the path is new —
+// see SetWithMeta — because provenance describes where a secret was born, and
+// rotating its value doesn't move its origin.
+type Meta struct {
+	Class   string
+	GroupID string
+	Origin  string
+}
+
+// NewGroupID mints a fresh surrogate group id: 128 bits of randomness, hex
+// encoded. Callers importing several secrets from one source mint ONE and
+// pass it to every Set, so the group survives any later rename of the source
+// or of the secrets' vault paths (nothing about it is derived from a path).
+func NewGroupID() (string, error) {
+	b, err := randomBytes(16)
+	if err != nil {
+		return "", fmt.Errorf("generating group id: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// Set encrypts value and atomically writes it to path with no provenance —
+// the thin, provenance-agnostic entry point (export/import, callers that
+// genuinely have no source to record). A brand-new secret written this way
+// has an empty class, exactly like a pre-provenance v1/v2 file.
 func (v *Vault) Set(path string, value []byte) error {
+	return v.SetWithMeta(path, value, Meta{})
+}
+
+// SetWithMeta encrypts value and atomically writes it to path, creating
+// parent directories as needed, stamping meta as the secret's provenance.
+//
+// An existing secret at path is overwritten as a ROTATION of the same
+// secret: its CreatedUnix carries over, and so do its Class/GroupID/Origin —
+// meta is ignored on a rotation, because a new value from the same key is
+// still that key, born where it was born. A genuinely new path gets
+// CreatedUnix == UpdatedUnix and takes its provenance from meta (with Origin,
+// when present, stamped as seen now).
+func (v *Vault) SetWithMeta(path string, value []byte, meta Meta) error {
 	dest, err := sanitizeSecretPath(v.vaultDir(), path)
 	if err != nil {
 		return err
@@ -64,16 +101,24 @@ func (v *Vault) Set(path string, value []byte) error {
 
 	now := time.Now().Unix()
 	created := now
+	class, groupID, origin := meta.Class, meta.GroupID, meta.Origin
+	var originSeen int64
+	if origin != "" {
+		originSeen = now
+	}
 	// An existing secret at path is being rotated, not created: keep its
-	// CreatedUnix, and hold on to the outgoing envelope's raw bytes so
-	// they can be archived below (still decryptable only back at this
-	// same path — see history.go).
+	// CreatedUnix and its birth-time provenance, and hold on to the outgoing
+	// envelope's raw bytes so they can be archived below (still decryptable
+	// only back at this same path — see history.go).
 	var oldData []byte
 	if data, err := os.ReadFile(dest); err == nil { // #nosec G304 -- dest is sanitizeSecretPath's output above
 		oldData = data
 		var old envelope
-		if json.Unmarshal(oldData, &old) == nil && old.CreatedUnix > 0 {
-			created = old.CreatedUnix
+		if json.Unmarshal(oldData, &old) == nil {
+			if old.CreatedUnix > 0 {
+				created = old.CreatedUnix
+			}
+			class, groupID, origin, originSeen = old.Class, old.GroupID, old.Origin, old.OriginSeenUnix
 		}
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("reading existing %s: %w", dest, err)
@@ -85,7 +130,7 @@ func (v *Vault) Set(path string, value []byte) error {
 	}
 	defer wipe(dek)
 
-	sealedPayload, err := seal(dek, value, envelopeAAD(path, envelopeVersion, created, now))
+	sealedPayload, err := seal(dek, value, envelopeAAD(path, envelopeVersion, created, now, class, groupID, origin))
 	if err != nil {
 		return fmt.Errorf("encrypting secret: %w", err)
 	}
@@ -109,9 +154,13 @@ func (v *Vault) Set(path string, value []byte) error {
 	}
 
 	env := envelope{
-		Version:     envelopeVersion,
-		CreatedUnix: created,
-		UpdatedUnix: now,
+		Version:        envelopeVersion,
+		CreatedUnix:    created,
+		UpdatedUnix:    now,
+		Class:          class,
+		GroupID:        groupID,
+		Origin:         origin,
+		OriginSeenUnix: originSeen,
 		Recipients: map[string]string{
 			v.RecipientID: hex.EncodeToString(wrappedDEK),
 		},
@@ -165,8 +214,11 @@ func (v *Vault) Get(path string) ([]byte, error) {
 	switch env.Version {
 	case envelopeVersionAADLess:
 		// v1: no AAD, no metadata. Readable forever.
-	case envelopeVersion:
-		aad = envelopeAAD(path, env.Version, env.CreatedUnix, env.UpdatedUnix)
+	case envelopeVersionMetaOnly, envelopeVersion:
+		// v2 and v3 both bind their metadata into the AAD; envelopeAAD
+		// reconstructs the exact shape the stored version sealed under
+		// (v3 appends class/group/origin, which are empty on a v2 file).
+		aad = envelopeAAD(path, env.Version, env.CreatedUnix, env.UpdatedUnix, env.Class, env.GroupID, env.Origin)
 	default:
 		return nil, fmt.Errorf("secret %s has envelope version %d, newer than this jit understands (max %d), upgrade jit to read it", path, env.Version, envelopeVersion)
 	}
@@ -210,6 +262,14 @@ type SecretInfo struct {
 	Version     int
 	CreatedUnix int64
 	UpdatedUnix int64
+	// Class/GroupID/Origin are the birth-time provenance (see envelope);
+	// all empty for v1/v2 secrets written before provenance existed.
+	// OriginSeenUnix stamps when Origin was recorded, so a stale label can
+	// be shown honestly ("originally from …, seen 3 weeks ago").
+	Class          string
+	GroupID        string
+	Origin         string
+	OriginSeenUnix int64
 }
 
 // Verify checks that the secret at path is structurally intact and readable
@@ -233,7 +293,7 @@ func (v *Vault) Verify(path string) error {
 	// "corruption" that isn't corruption at all, so name it as such rather
 	// than letting it read as a damaged file.
 	switch env.Version {
-	case envelopeVersionAADLess, envelopeVersion:
+	case envelopeVersionAADLess, envelopeVersionMetaOnly, envelopeVersion:
 	default:
 		return fmt.Errorf("secret %s has envelope version %d, newer than this jit understands (max %d), upgrade jit to read it", path, env.Version, envelopeVersion)
 	}
@@ -267,10 +327,14 @@ func (v *Vault) Info(path string) (SecretInfo, error) {
 		return SecretInfo{}, err
 	}
 	return SecretInfo{
-		Path:        path,
-		Version:     env.Version,
-		CreatedUnix: env.CreatedUnix,
-		UpdatedUnix: env.UpdatedUnix,
+		Path:           path,
+		Version:        env.Version,
+		CreatedUnix:    env.CreatedUnix,
+		UpdatedUnix:    env.UpdatedUnix,
+		Class:          env.Class,
+		GroupID:        env.GroupID,
+		Origin:         env.Origin,
+		OriginSeenUnix: env.OriginSeenUnix,
 	}, nil
 }
 

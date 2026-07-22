@@ -130,6 +130,10 @@ func ApplyAWSProfile(v *vault.Vault, home, profileName string, dedup ...*BackupT
 		"aws_secret_access_key": "SECRET_ACCESS_KEY",
 		"aws_session_token":     "SESSION_TOKEN",
 	}
+	meta, err := newProvenance(vault.ClassAWS, AWSCredentialsPath(home))
+	if err != nil {
+		return AWSCredentialMigration{}, err
+	}
 	var varNames []string
 	for _, iniKey := range awsCredentialKeys {
 		val, ok := kv[iniKey]
@@ -138,7 +142,7 @@ func ApplyAWSProfile(v *vault.Vault, home, profileName string, dedup ...*BackupT
 		}
 		varName := varByINIKey[iniKey]
 		secretPath := vaultProfileName + "/" + varName
-		if err := v.Set(secretPath, []byte(val)); err != nil {
+		if err := v.SetWithMeta(secretPath, []byte(val), meta); err != nil {
 			return AWSCredentialMigration{}, fmt.Errorf("storing %s in vault: %w", varName, err)
 		}
 		entries[varName] = secretPath

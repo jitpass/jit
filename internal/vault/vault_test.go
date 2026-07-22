@@ -458,7 +458,7 @@ func TestVaultOverwritePreservesCreatedUnix(t *testing.T) {
 func rewriteEnvelopeTimestamps(v *Vault, path string, value []byte, createdUnix, updatedUnix int64) error {
 	kw := v.KeyWrapper.(*fakeKeyWrapper)
 	dek := bytes.Repeat([]byte{0x0a}, dekSize)
-	sealedPayload, err := seal(dek, value, envelopeAAD(path, envelopeVersion, createdUnix, updatedUnix))
+	sealedPayload, err := seal(dek, value, envelopeAAD(path, envelopeVersion, createdUnix, updatedUnix, "", "", ""))
 	if err != nil {
 		return err
 	}
