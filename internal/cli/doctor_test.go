@@ -398,7 +398,7 @@ func TestDoctorProfileFlagSkipsSystemSections(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit doctor --profile aws-admin: %v", err)
 	}
-	if strings.Contains(out, "[backup]") || strings.Contains(out, "[agent]") || strings.Contains(out, "[wrap]") {
+	if strings.Contains(out, "[backup]") || strings.Contains(out, "[service]") || strings.Contains(out, "[wrap]") {
 		t.Errorf("expected no system-health warnings under --profile, got:\n%s", out)
 	}
 }

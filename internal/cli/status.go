@@ -63,7 +63,7 @@ type statusVault struct {
 }
 
 // statusAgent mirrors agentStatusResult (agent.go) deliberately, field for
-// field — `jit status` and `jit agent status` report the same
+// field — `jit status` and `jit service status` report the same
 // underlying state and shouldn't diverge in shape just because one is a
 // section of a larger report. Mounts (GAPS.md #37) is no exception.
 type statusAgent struct {
@@ -76,7 +76,7 @@ type statusAgent struct {
 	LocksInSeconds int64                     `json:"locks_in_seconds,omitempty"`
 	Mounts         []agent.MountRevealStatus `json:"mounts"`
 	Build          string                    `json:"build,omitempty"`
-	// Version is the running agent PROCESS's release version, empty when
+	// Version is the running service PROCESS's release version, empty when
 	// the agent isn't running or predates the field — the counterpart to
 	// statusCLI.Version, at the same release-scale zoom Build refines.
 	Version string `json:"version,omitempty"`
@@ -107,15 +107,15 @@ type statusMounts struct {
 var statusCmd = &cobra.Command{
 	Use:     "status",
 	GroupID: groupWorkflow,
-	Short:   "One-shot overview of vault, agent, profile, and mount health",
+	Short:   "One-shot overview of vault, service, profile, and mount health",
 	Long: "Rolls up what previously took several separate commands to piece together, " +
-		"is the vault initialized, is the agent running and unlocked, do this project's " +
+		"is the vault initialized, is the service running and unlocked, do this project's " +
 		"profiles resolve, are mounts being served, into one read-only report. Never " +
 		"decrypts a secret value or triggers a Touch ID/passcode prompt, matching " +
 		"jit doctor and jit profile's own safe-to-run-often shape; each section " +
 		"points at the dedicated command for full detail rather than duplicating it.\n\n" +
 		"--format json prints a machine-readable snapshot instead of the default " +
-		"text report, in the same shape jit agent status/vault list/doctor's own " +
+		"text report, in the same shape jit service status/vault list/doctor's own " +
 		"--format json use for their overlapping sections.",
 	Args: cobra.NoArgs,
 	// See doctor.go's SilenceUsage comment — a --format json snapshot must
@@ -145,7 +145,7 @@ var statusCmd = &cobra.Command{
 		}
 		agentStatus, err := gatherAgentStatus(root)
 		if err != nil {
-			return fmt.Errorf("jit status: checking agent: %w", err)
+			return fmt.Errorf("jit status: checking the service: %w", err)
 		}
 		profileStatus, err := gatherProfileStatus(cwd, v)
 		if err != nil {
@@ -201,13 +201,13 @@ func gatherVaultStatus(v *vault.Vault) (statusVault, error) {
 	return result, nil
 }
 
-// agentBuildMismatch returns a warning when the running agent process was
+// agentBuildMismatch returns a warning when the running service process was
 // built from a different revision than this CLI, or "" when they match or
 // either side can't tell (GAPS.md #49). launchd's KeepAlive keeps an old
 // agent process alive across rebuilds and reinstalls indefinitely — a real
-// investigation trap: the running agent predated the binary on disk by 21
+// investigation trap: the running service predated the binary on disk by 21
 // minutes and nothing anywhere could say so, making a just-built fix look
-// like it didn't work. Shared by `jit status` and `jit agent status`;
+// like it didn't work. Shared by `jit status` and `jit service status`;
 // lives in this file (not agent.go) because status.go is deliberately
 // portable while agent.go is darwin-gated.
 func agentBuildMismatch(agentBuild string) string {
@@ -215,10 +215,10 @@ func agentBuildMismatch(agentBuild string) string {
 	if agentBuild == "" || agentBuild == "unknown" || cliBuild == "unknown" || agentBuild == cliBuild {
 		return ""
 	}
-	return fmt.Sprintf("Heads up: the running agent is a different build than this CLI (agent %s, CLI %s), run `jit agent restart` to move it to the current binary now (it also restarts itself once its session is locked and idle).", agentBuild, cliBuild)
+	return fmt.Sprintf("Heads up: the running service is a different build than this CLI (service %s, CLI %s), run `jit service restart` to move it to the current binary now (it also restarts itself once its session is locked and idle).", agentBuild, cliBuild)
 }
 
-// gatherAgentStatus reports the same running/unlocked state `jit agent
+// gatherAgentStatus reports the same running/unlocked state `jit service
 // status` does.
 func gatherAgentStatus(root string) (statusAgent, error) {
 	client := agent.NewClient(agent.SocketPath(root))
@@ -299,9 +299,9 @@ func versionBuild(version, build string) string {
 
 func printStatusText(w io.Writer, r statusResult) {
 	if r.Agent.Running {
-		fmt.Fprintf(w, "Versions: jit %s; agent %s.\n", versionBuild(r.CLI.Version, r.CLI.Build), versionBuild(r.Agent.Version, r.Agent.Build))
+		fmt.Fprintf(w, "Versions: jit %s; service %s.\n", versionBuild(r.CLI.Version, r.CLI.Build), versionBuild(r.Agent.Version, r.Agent.Build))
 	} else {
-		fmt.Fprintf(w, "Versions: jit %s; agent not running.\n", versionBuild(r.CLI.Version, r.CLI.Build))
+		fmt.Fprintf(w, "Versions: jit %s; service not running.\n", versionBuild(r.CLI.Version, r.CLI.Build))
 	}
 
 	if r.Vault.SecretsStored == 0 && r.Vault.BackupsStored == 0 {
@@ -326,13 +326,13 @@ func printStatusText(w io.Writer, r statusResult) {
 	case !r.Agent.Running && r.Agent.Installed:
 		// launchd was supposed to keep this one alive — "run install" is
 		// the wrong advice and hides that something actually failed.
-		fmt.Fprintln(w, installedNotRunningAdvice("Agent:"))
+		fmt.Fprintln(w, installedNotRunningAdvice("Service:"))
 	case !r.Agent.Running:
-		fmt.Fprintln(w, "Agent: not running. Run `jit agent install` to start it.")
+		fmt.Fprintln(w, "Service: not running. Run `jit service restart` to start it.")
 	case r.Agent.Unlocked:
-		fmt.Fprintf(w, "Agent: running and unlocked (locks in %s).\n", (time.Duration(r.Agent.LocksInSeconds) * time.Second).String())
+		fmt.Fprintf(w, "Service: running and unlocked (locks in %s).\n", (time.Duration(r.Agent.LocksInSeconds) * time.Second).String())
 	default:
-		fmt.Fprintln(w, "Agent: running and locked.")
+		fmt.Fprintln(w, "Service: running and locked.")
 	}
 	if warning := agentBuildMismatch(r.Agent.Build); warning != "" {
 		_, _ = color.New(color.FgYellow).Fprintf(w, "  %s\n", warning)
@@ -362,14 +362,14 @@ func printStatusText(w io.Writer, r statusResult) {
 			}
 		}
 		if granted > 0 {
-			fmt.Fprintf(w, "Mounts: %d registered, agent unlocked, %d currently serving real content to an active jit run grant, the rest decoy. Run `jit agent status` to see which.\n", r.Mounts.Registered, granted)
+			fmt.Fprintf(w, "Mounts: %d registered, service unlocked, %d currently serving real content to an active jit run grant, the rest decoy. Run `jit service status` to see which.\n", r.Mounts.Registered, granted)
 		} else {
-			fmt.Fprintf(w, "Mounts: %d registered, agent unlocked, all serving decoy (real values flow only inside a jit run --live/--with grant).\n", r.Mounts.Registered)
+			fmt.Fprintf(w, "Mounts: %d registered, service unlocked, all serving decoy (real values flow only inside a jit run --live/--with grant).\n", r.Mounts.Registered)
 		}
 	case r.Mounts.BeingServed:
-		fmt.Fprintf(w, "Mounts: %d registered, serving decoy content only (agent locked).\n", r.Mounts.Registered)
+		fmt.Fprintf(w, "Mounts: %d registered, serving decoy content only (service locked).\n", r.Mounts.Registered)
 	default:
-		fmt.Fprintf(w, "Mounts: %d registered, not being served (agent not running).\n", r.Mounts.Registered)
+		fmt.Fprintf(w, "Mounts: %d registered, not being served (service not running).\n", r.Mounts.Registered)
 	}
 
 	// A reader that most recently got DECOY values is the one mount fact
@@ -384,7 +384,7 @@ func printStatusText(w io.Writer, r statusResult) {
 		}
 	}
 	if decoyReads > 0 {
-		_, _ = color.New(color.FgYellow).Fprintf(w, "  Heads up: %d mount(s) most recently served decoy values to a reader, run `jit agent status` to see which reader, when.\n", decoyReads)
+		_, _ = color.New(color.FgYellow).Fprintf(w, "  Heads up: %d mount(s) most recently served decoy values to a reader, run `jit service status` to see which reader, when.\n", decoyReads)
 	}
 }
 

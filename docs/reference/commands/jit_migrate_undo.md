@@ -20,7 +20,7 @@ still restore, and the command exits non-zero if any file failed, so a
 single missing backup never silently aborts the whole batch partway.
 
 What it does per file: if the file is a registered live mount, the
-running agent stops serving it first (other mounts are undisturbed), the
+running service stops serving it first (other mounts are undisturbed), the
 registry entry and the .pointers companion are removed, then the backed-
 up content is written back. The current content is snapshotted into the
 vault before being overwritten, so an undo is itself undoable, nothing

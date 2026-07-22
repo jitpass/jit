@@ -28,7 +28,7 @@ var unmountCmd = &cobra.Command{
 		"them back out as a plain file at the same path, replacing the live-mounted\n" +
 		"pipe jit migrate created. The vault secrets and the profile manifest are\n" +
 		"left in place, only the physical mount is reversed.\n\n" +
-		"If jit agent is running, this stops serving just this one mount first, so\n" +
+		"If jit's background service is running, this stops serving just this one mount first, so\n" +
 		"nothing races the file being replaced, every other mount keeps being\n" +
 		"served undisturbed.",
 	Args:              cobra.ExactArgs(1),
@@ -112,7 +112,7 @@ var unmountCmd = &cobra.Command{
 
 		if agentClient := agent.NewClient(agent.SocketPath(root)); agentClient.Reachable() {
 			if err := agentClient.StopMount(mountPath); err != nil {
-				return fmt.Errorf("jit unmount: stopping the running agent's mount: %w", err)
+				return fmt.Errorf("jit unmount: stopping the running service's mount: %w", err)
 			}
 		}
 

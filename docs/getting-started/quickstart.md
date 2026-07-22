@@ -1,6 +1,6 @@
 ---
 title: Quickstart
-description: From plaintext secrets to a clean machine - audit, vault, agent, migrate, wrap.
+description: From plaintext secrets to a clean machine - scan, vault, migrate, wrap.
 ---
 
 # Quickstart
@@ -12,12 +12,12 @@ jit scan                     # 1. see the problem (read-only, run it anywhere)
 jit vault init                # 2. create the vault (master key in your login keychain)
 jit migrate --dry-run         # 3. preview the fix, same whole-machine scope as audit
 jit migrate                   # 4. apply it: plan, [y/N], one Touch ID prompt
-jit status                    # 5. vault / agent / mounts / backup health, one screen
+jit status                    # 5. vault / service / mounts / backup health, one screen
 ```
 
-The background helper (so you unlock once, not once per command) installs
-itself automatically during that `jit migrate` - no separate step. Run
-`jit agent install` yourself only to set it up early or pick a custom `--ttl`.
+The background service (so you unlock once, not once per command) installs
+itself automatically during that `jit migrate` - there's no install step. Pick
+a custom session length any time with `jit service ttl <d>`.
 
 Every mutating command prints its plan and asks first; every rewritten file is
 backed up (encrypted, into the vault) before it's touched, and
@@ -59,17 +59,16 @@ Vault initialized at /Users/alex/Library/Application Support/jitpass.
 This generates a master encryption key and stores it in your macOS Keychain.
 You'll see a Touch ID / passcode prompt; that's expected.
 
-### The background agent (set up automatically)
+### The background service (set up automatically)
 
-Without the agent, every vault-touching command asks for Touch ID
+Without the service, every vault-touching command asks for Touch ID
 independently. With it, you unlock once and everything shares that session
-for the next 5 minutes of activity (`--ttl` to change that). The agent is
-also what serves live-mounted files.
+for the next 5 minutes of activity (`jit service ttl` to change that). The
+service is also what serves live-mounted files.
 
-You don't install it as a separate step: the `jit migrate` below sets it up
-for you the first time it's needed. Run `jit agent install` yourself only to
-do that early or pick a custom `--ttl`. More in
-**[The background agent](../agent/index.md)**.
+You never install it as a separate step: the `jit migrate` below sets it up for
+you the first time it's needed, and launchd keeps it running across logins. More
+in **[The background service](../service/index.md)**.
 
 ## 3. Fix what audit found: `jit migrate`
 
@@ -101,14 +100,14 @@ all - one `.env`, a `~/.zshrc` - run `jit migrate path <file>`. More in
 ```
 $ jit status
 Vault: 5 secret(s) stored.
-Agent: running and unlocked (locks in 12m30s).
+Service: running and unlocked (locks in 12m30s).
 Profiles: 2 profile(s), 5 secret reference(s) all resolve cleanly. Run `jit doctor` to also verify secret integrity.
-Mounts: 1 registered, agent unlocked, all serving decoy (real values flow only inside a jit run --live/--with grant).
+Mounts: 1 registered, service unlocked, all serving decoy (real values flow only inside a jit run --live/--with grant).
 ```
 
 `jit status` is the quick read-only snapshot; `jit doctor` is the deeper
 pass/fail diagnostic (it also verifies each secret's envelope, sweeps for
-orphaned secrets, and checks agent, backup, and shim health). See
+orphaned secrets, and checks service, backup, and shim health). See
 **[Profiles](../run/profiles.md#checking-a-profiles-health-jit-doctor)**.
 
 Neither `jit status` nor `jit doctor` ever decrypts a secret or triggers

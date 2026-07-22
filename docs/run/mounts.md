@@ -6,7 +6,7 @@ description: Migrated .env files serve decoy values by default and real ones onl
 # Live-mounted files
 
 A migrated `.env` is no longer a regular file: it's a named pipe the
-[agent](../agent/index.md) serves fresh content into on every read. One
+[service](../service/index.md) serves fresh content into on every read. One
 thing to know up front: **the mount serves fake-looking placeholder values
 by default, and real values only to the process tree of a `jit run` grant
 you launch on purpose.** Unlocking the vault, `cd`-ing into a directory, or
@@ -28,7 +28,7 @@ disk.
   ancestry; decoys to everything else). Use this for tools that read
   values *from the `.env` file itself* rather than the environment, such
   as `docker compose` with `env_file:` — jit run auto-detects the common
-  ones. `jit agent status` shows whether each mount is swapped or granted,
+  ones. `jit service status` shows whether each mount is swapped or granted,
   and for which run.
 - `jit run --with <name> <command>` grants a machine-global file-delivered
   credential (`gcp`, `sops`, `npm`, `netrc`) to the run, behind a fresh
@@ -44,10 +44,10 @@ disk.
 - If a tool reads `.env` off disk, run it **through** `jit run`. An
   unwrapped `npm run dev` (no `jit run` prefix) reads the mount cold and
   gets decoys — that's the point. There is no automatic reveal window and no
-  `jit agent reveal` command: the only thing that makes a mount serve real
+  reveal command of any kind: the only thing that makes a mount serve real
   values is a `jit run` grant you type.
 - Wondering why your app saw placeholders, or which run is currently granted
-  a mount? `jit agent status` shows each mount as decoy or grant-serving,
+  a mount? `jit service status` shows each mount as decoy or grant-serving,
   and what the most recent reader was actually served, real or decoy, and by
   which process.
 

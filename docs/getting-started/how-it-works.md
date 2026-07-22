@@ -1,6 +1,6 @@
 ---
 title: How jit works
-description: The mental model - vault, agent, profiles, live mounts, shims, and provenance.
+description: The mental model - vault, service, profiles, live mounts, shims, and provenance.
 ---
 
 # How it works
@@ -18,10 +18,10 @@ anywhere - the vault's encryption is bound to this machine's keychain
 (disaster recovery goes through a
 [passphrase-encrypted export](../vault/backup-restore.md) instead).
 
-## The background agent
+## The background service
 
 Unlocking the vault for every single command would mean a Touch ID prompt
-per command. The [agent](../agent/index.md) is a launchd-managed process
+per command. The [service](../service/index.md) is a launchd-managed process
 that holds an unlocked session: you authenticate once, and everything
 shares that session for the next 5 minutes of activity (configurable).
 It's also the process that serves live-mounted files.
@@ -65,13 +65,13 @@ asking *for* and what set it off:
 That's an MCP server your editor started, wanting the secrets in your
 `mcp-jamf` profile. Approve or cancel on the facts, not on a guess.
 
-The same provenance is kept afterwards: `jit agent status` shows who
-unlocked the current session, and `jit agent history` lists every unlock,
+The same provenance is kept afterwards: `jit service status` shows who
+unlocked the current session, and `jit audit` lists every unlock,
 every prompt that was declined, every lock, and what the open session was
 used for in between. Who the caller is comes from the kernel (its
 pid on the socket, then its command line and parent chain), never from
 anything the caller says about itself. It is used to *explain* and to
-*audit*, never to decide. More in **[Provenance](../agent/provenance.md)**
+*audit*, never to decide. More in **[Provenance](../service/provenance.md)**
 and **[Security architecture](../security/architecture.md)**.
 
 ## Everything is reversible

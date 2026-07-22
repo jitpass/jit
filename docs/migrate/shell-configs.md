@@ -22,7 +22,7 @@ shell loaded.
 ## What to expect
 
 - Opening a new shell needs the vault unlocked: with the
-  [agent](../agent/index.md) installed that's at most one Touch ID prompt
+  [service](../service/index.md) installed that's at most one Touch ID prompt
   per session window, not per shell.
 - A shell that's already running keeps the values it loaded at startup.
   After [rotating a value](../vault/index.md) or locking the vault, open a

@@ -38,7 +38,7 @@ var auditCmd = &cobra.Command{
 	Short:   "Show the audit log: what jit commands ran, when, by whom, and every unlock",
 	Long: "jit audit prints the application audit trail, most recent first: one line for\n" +
 		"every jit command that ran (what, when, which user and parent process, and\n" +
-		"whether it succeeded), interleaved with every local-auth event the agent saw\n" +
+		"whether it succeeded), interleaved with every local-auth event the service saw\n" +
 		"(each unlock and each DECLINED prompt, with how you were asked, what triggered\n" +
 		"it, and the secret names each one touched).\n\n" +
 		"Together they answer \"what happened on this machine, and who did it\": the\n" +
@@ -67,7 +67,7 @@ var auditCmd = &cobra.Command{
 			return fmt.Errorf("jit audit: %w", err)
 		}
 
-		// Read both durable logs directly rather than asking the running agent:
+		// Read both durable logs directly rather than asking the running service:
 		// the audit trail must read the same whether or not the agent happens
 		// to be up, and the agent appends every event to the same file it would
 		// serve, so nothing recent is missed. A limit <= 0 means "everything";
@@ -124,7 +124,7 @@ type auditEntry struct {
 // final cut.
 func printAuditLog(w io.Writer, commands []auditlog.Record, events []agent.SessionEvent, limit int) {
 	if len(commands) == 0 && len(events) == 0 {
-		fmt.Fprintln(w, "No audit log yet. It fills in as you run jit commands; if the agent has never run, there are no unlocks to show either.")
+		fmt.Fprintln(w, "No audit log yet. It fills in as you run jit commands; if the service has never run, there are no unlocks to show either.")
 		return
 	}
 	home, _ := os.UserHomeDir()
@@ -244,7 +244,7 @@ func authEntry(home string, e agent.SessionEvent) auditEntry {
 		}
 		pairs = append(pairs, kv{"level", "info"}, kv{"kind", "lock"}, kv{"reason", cause})
 	case agent.KindStart:
-		pairs = append(pairs, kv{"level", "info"}, kv{"kind", "agent"}, kv{"msg", "process started"})
+		pairs = append(pairs, kv{"level", "info"}, kv{"kind", "service"}, kv{"msg", "process started"})
 		if b := strings.TrimPrefix(e.Cause, "build "); b != e.Cause {
 			pairs = append(pairs, kv{"build", b})
 		} else if e.Cause != "" {

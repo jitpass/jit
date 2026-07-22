@@ -18,7 +18,7 @@ in (.env < .env.<m> < .env.local < .env.<m>.local); a mode layer is never
 merged without being asked for. --profile names one profile verbatim and
 disables merging entirely.
 
-When the agent is running and unlocked, jit run also makes this run's
+When the service is running and unlocked, jit run also makes this run's
 mounted files compatible with the command reading them, for the run's
 lifetime only. By default it swaps each mount to a plain inert pointer
 file, so `[ -f .env ]`/is_file() guards pass and re-reading the file
@@ -26,7 +26,7 @@ sets nothing (the real values are in the environment). --live instead
 keeps the live mount and grants this run's process tree real file reads,
 for tools that read values from the .env file itself (docker compose
 env_file), which jit run also auto-detects. Either way the mount returns
-to its decoy state the moment the command exits; no agent, or a locked
+to its decoy state the moment the command exits; no service, or a locked
 one, skips this silently and injection works the same regardless.
 A project whose tools always read the file itself can pin live mode by
 putting `read_as_file: true` in its .jit/config.yaml, instead of --live

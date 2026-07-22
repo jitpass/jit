@@ -53,7 +53,7 @@ plaintext; `docker logout <registry>` clears it).
 ## What to expect
 
 - Each credential fetch needs the vault unlocked - the
-  [agent](../agent/index.md)'s shared session, or a Touch ID prompt.
+  [service](../service/index.md)'s shared session, or a Touch ID prompt.
   Anonymous pulls of public images never prompt: an unknown registry gets
   the protocol's "credentials not found" answer before any vault access.
 - **Rotating a credential is just `docker login` again.** Prefer a scoped

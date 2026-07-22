@@ -31,14 +31,14 @@ tar -xzf jitpass_darwin_arm64.tar.gz jit
 sudo mv jit /usr/local/bin/
 ```
 
-That's it. The background agent that lets you unlock once per session (instead of
+That's it. The background service that lets you unlock once per session (instead of
 once per command) sets itself up automatically the first time you run
 `jit migrate` or `jit run` — no separate install step.
 
 Use `curl`, not the browser: Gatekeeper blocks quarantined unsigned binaries
 (un-quarantine with `xattr -d com.apple.quarantine jit` if needed). Checksums are
 on the [release page](https://github.com/jitpass/jit/releases/latest). Upgrading
-is just reinstalling the binary; the running agent notices the new build and
+is just reinstalling the binary; the running service notices the new build and
 restarts itself on it. On an Intel Mac, build from source instead: see the
 [install guide](./docs/getting-started/install.md).
 
@@ -60,10 +60,9 @@ fish are covered there too.
 ```sh
 jit scan                     # 1. see the problem (read-only, safe to run anywhere)
 jit vault init                # 2. create the vault (master key in your login keychain)
-jit agent install             # 3. (optional) start the shared-session agent now; migrate/run auto-start it too
-jit migrate --dry-run         # 4. preview the fix (same whole-machine scope as audit)
-jit migrate                   # 5. apply it: plan, [y/N], one Touch ID prompt
-jit status                    # 6. vault / agent / mounts / backup health, one screen
+jit migrate --dry-run         # 3. preview the fix (same whole-machine scope as audit)
+jit migrate                   # 4. apply it: plan, [y/N], one Touch ID prompt
+jit status                    # 5. vault / service / mounts / backup health, one screen
 ```
 
 Every mutating command prints its plan and asks first. Every rewritten file is
@@ -150,11 +149,14 @@ jit run --profile mcp-jamf -- uv --directory ~/servers/jamf run server.py
 - **`jit vault`**: `set` / `get` / `list` / `rm`, `history` / `restore`,
   `rekey`, `backup export` / `import`. These sensitive commands always prompt for
   Touch ID.
-- **`jit agent`**: the background helper. It holds the unlock session (so
-  everyday commands share one Touch ID) *and* serves your live mounts, flipping a
-  decoy file to real values only for a granted `jit run`. `install` / `uninstall`
-  / `restart` the launchd helper, `status` to inspect it, `lock` / `unlock` the
-  session, and `history` / `log` for the audit trail of who unlocked what.
+- **`jit service`**: the background service (a solid part of jit, set up
+  automatically, no install step). It holds the unlock session (so everyday
+  commands share one Touch ID) *and* serves your live mounts, flipping a decoy
+  file to real values only for a granted `jit run`. `jit service status` to
+  inspect it, `restart` to move it onto a new binary or bring it back, `ttl` to
+  change the session length, `log` for its own output. Lock/unlock the session
+  with the top-level `jit lock` / `jit unlock`, and see who unlocked what with
+  `jit audit`.
 
 ## What it covers
 
@@ -178,11 +180,11 @@ from there, so everything keeps working:
 
 **At rest:** each secret is its own encrypted file (envelope encryption: a
 per-secret key, all wrapped by one master key). The master key lives in your macOS
-login keychain, released only behind Touch ID. A background agent holds the unlock
+login keychain, released only behind Touch ID. A background service holds the unlock
 so commands share one prompt, and re-locks on idle, screen lock, or sleep.
 
 **At use:** `jit run` resolves the secrets a command needs and injects them into
-just that process (or the agent serves real values through the decoy file for that
+just that process (or the service serves real values through the decoy file for that
 process tree). They vanish when it exits; anything else sees decoys. A `jit wrap`
 shim is the same machinery behind the tool's own name.
 
@@ -191,7 +193,7 @@ shim is the same machinery behind the tool's own name.
 The docs live under **[docs/](./docs/index.md)**, organized by task:
 
 - **[Quickstart](./docs/getting-started/quickstart.md)**: setup, migrating, living with the fix, step by step
-- **[How it works](./docs/getting-started/how-it-works.md)**: the vault, the agent, mounts, and shims in one page
+- **[How it works](./docs/getting-started/how-it-works.md)**: the vault, the service, mounts, and shims in one page
 - **[How it all fits together](./docs/getting-started/how-it-fits.md)**: the mental model behind the three delivery models
 - **[FAQ](./docs/faq.md)**: developer and security questions, answered bluntly
 - **[Command reference](./docs/reference/commands/jit.md)**: every command and flag, generated from the CLI

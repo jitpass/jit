@@ -62,8 +62,8 @@ func loadMountRegistry() (entries []mount.Entry, home string, err error) {
 }
 
 // completeMountPaths offers the registered live-mount paths for the
-// commands whose argument must name one — `jit unmount` and `jit agent
-// reveal`. Like completeVaultPaths it returns only real, known targets
+// command whose argument must name one — `jit unmount`. Like
+// completeVaultPaths it returns only real, known targets
 // (NoFileComp): a path that isn't a registered mount is not a valid
 // argument for either command, so offering arbitrary filesystem paths
 // would only mislead.

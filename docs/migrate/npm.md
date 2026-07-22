@@ -23,7 +23,7 @@ through untouched, and the token slots fill from the vault only for a
   automatically: name it explicitly with `jit run --with npm -- npm ci`,
   which prompts a disclosed Touch ID and scopes the token to that run.
   Outside a grant they see placeholder values (that's the point — launch npm
-  through `jit run`); `jit agent status` shows what the last reader was
+  through `jit run`); `jit service status` shows what the last reader was
   served.
 - The global `~/.npmrc` is machine-wide, so it's covered by
   `jit migrate home`; a project `.npmrc` is covered by `local` too.

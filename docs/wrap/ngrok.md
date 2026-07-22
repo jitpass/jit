@@ -31,7 +31,7 @@ ngrok config check
 ## How it works
 
 The shim injects `NGROK_AUTHTOKEN` from the vault into each `ngrok`
-process - the agent's documented env-var credential. Details:
+process - the ngrok agent's documented env-var credential. Details:
 [how wrapping works](./index.md).
 
 ## Undo

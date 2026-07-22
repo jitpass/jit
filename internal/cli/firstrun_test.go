@@ -169,7 +169,7 @@ func TestFirstRun_ProjectFindingsScopedChain(t *testing.T) {
 	if !strings.Contains(out, "exposed in this project") {
 		t.Errorf("project-scoped banner missing; output:\n%s", out)
 	}
-	wantSteps := [][]string{{"vault", "init"}, {"agent", "install", "--yes"}, {"migrate", "local"}}
+	wantSteps := [][]string{{"vault", "init"}, {"migrate", "local"}}
 	if !reflect.DeepEqual(rec.steps, wantSteps) {
 		t.Errorf("guided chain = %v, want %v", rec.steps, wantSteps)
 	}
@@ -180,7 +180,7 @@ func TestFirstRun_YesRunsGuidedChainInOrder(t *testing.T) {
 	d.scan = findingsFor(rec, "/home/u", 2) // machine-wide → migrate home
 	rec.confirmReturn = true
 	runFR(t, d)
-	wantSteps := [][]string{{"vault", "init"}, {"agent", "install", "--yes"}, {"migrate", "home"}}
+	wantSteps := [][]string{{"vault", "init"}, {"migrate", "home"}}
 	if !reflect.DeepEqual(rec.steps, wantSteps) {
 		t.Errorf("guided chain = %v, want %v", rec.steps, wantSteps)
 	}
