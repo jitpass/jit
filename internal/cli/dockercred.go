@@ -63,7 +63,7 @@ var dockerCredentialCmd = &cobra.Command{
 		"resolves every registry's real credential per-registry via `get`.\n\n" +
 		"`get` for a registry jit holds nothing for, and `erase`, never cost a\n" +
 		"Touch ID prompt. A successful `get` resolves the vault the same way\n" +
-		"jit run/export do: either a reachable jit agent with an already-unlocked\n" +
+		"jit run/export do: either a reachable jit background service with an already-unlocked\n" +
 		"session, or an interactive context able to show a Touch ID/passcode\n" +
 		"prompt.",
 	Args: cobra.ExactArgs(1),

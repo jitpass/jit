@@ -37,9 +37,9 @@ func TestStatusEverythingEmpty(t *testing.T) {
 		t.Fatalf("jit status: %v", err)
 	}
 	for _, want := range []string{
-		"Versions: jit " + versionBuild(agent.Version(), agent.BuildID()) + "; agent not running.",
+		"Versions: jit " + versionBuild(agent.Version(), agent.BuildID()) + "; service not running.",
 		"Vault: no secrets stored yet",
-		"Agent: not running",
+		"Service: not running",
 		"Profiles: none found",
 		"Mounts: none registered",
 	} {
@@ -225,7 +225,7 @@ func TestStatusMountsRegisteredButAgentNotRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "Mounts: 1 registered, not being served (agent not running).") {
+	if !strings.Contains(out, "Mounts: 1 registered, not being served (service not running).") {
 		t.Errorf("expected a not-being-served mount summary, got:\n%s", out)
 	}
 }

@@ -24,7 +24,7 @@ import (
 const (
 	groupWorkflow = "workflow"
 	groupSecrets  = "secrets"
-	groupAgent    = "agent"
+	groupService  = "service"
 	groupPlumbing = "plumbing"
 )
 
@@ -118,7 +118,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddGroup(
 		&cobra.Group{ID: groupWorkflow, Title: "Find & fix exposed secrets:"},
 		&cobra.Group{ID: groupSecrets, Title: "Vault & profiles:"},
-		&cobra.Group{ID: groupAgent, Title: "Background agent:"},
+		&cobra.Group{ID: groupService, Title: "Session & background service:"},
 		&cobra.Group{ID: groupPlumbing, Title: "Invoked by other tools, not by hand:"},
 	)
 	cmd.SetUsageTemplate(rootUsageTemplate)

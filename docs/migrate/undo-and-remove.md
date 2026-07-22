@@ -42,7 +42,7 @@ and `.jit/` directory all deleted.
 ## All three always re-authenticate
 
 Each of these asks for its own fresh Touch ID/passcode approval, even with
-the agent unlocked: putting secrets back on disk should never happen
+the service unlocked: putting secrets back on disk should never happen
 silently on a cached session.
 
 For wrapped CLI tools, the equivalent is

@@ -24,7 +24,7 @@ kept (and reported), never deleted out from under the other profile.
 
 This both writes real secret values back to disk in PLAINTEXT and
 permanently deletes them from the vault, so it always requires its own
-Touch ID/passcode approval, a running agent session is deliberately
+Touch ID/passcode approval, a running service session is deliberately
 not enough.
 
 ```

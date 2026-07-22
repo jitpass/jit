@@ -19,7 +19,7 @@ Most secrets arrive through [`jit migrate`](../migrate/index.md) or
 **Every command that reads, writes, or destroys a secret requires a fresh
 Touch ID/passcode on each run** - `set`, `get`, `rm`, `import`, `restore`,
 `clean`, `prune`, `delete`, and `export`. These never ride the background
-agent's cached session: the prompt appears whether or not the agent is
+service's cached session: the prompt appears whether or not the service is
 unlocked, so a process running as you can't read or destroy the vault
 silently on an already-unlocked machine. Only `list` and `history` are
 prompt-free, because they expose names and version timestamps, never a value.

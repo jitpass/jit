@@ -38,7 +38,7 @@ import (
 // CPU-minutes in one afternoon) run at most once per lineageScanMinGap
 // per mount; per-read log lines collapse to one summary line per
 // readLogMinGap; and a mount read at least readStormThreshold times in a
-// rolling minute gets a named heads-up in `jit agent status`, since the
+// rolling minute gets a named heads-up in `jit service status`, since the
 // only real kill for the loop is excluding the file from the watcher.
 const (
 	lineageScanMinGap  = 2 * time.Second
@@ -165,7 +165,7 @@ type readerIdentity struct {
 
 // serveRecord is one completed content decision: what a connected reader
 // was served, when, and (best-effort) by whom. Kept as each mount's
-// single most recent event — enough for `jit agent status` to answer
+// single most recent event — enough for `jit service status` to answer
 // "why did my app get decoys" without a log spelunk, and the natural
 // first cut of RFC.md §5's anomaly-signal scope without building any of
 // its persistence.
@@ -210,7 +210,7 @@ type servedMount struct {
 	// captures it before its decrypt and only installs real content if it is
 	// still unchanged afterward, so a resolve that was mid-decrypt when the
 	// session locked can't re-arm real content on a mount the lock just
-	// cleared — the race that let a mount serve real values while `jit agent
+	// cleared — the race that let a mount serve real values while `jit service
 	// status` reported "locked". serveContent gates real content on real !=
 	// nil + an active grant, never on the session directly, so keeping real
 	// truthfully nil while locked is what the whole guarantee rests on.
@@ -297,7 +297,7 @@ func (sm *servedMount) setResolveErr(err error) {
 func (m *mountManager) loadRegistry() ([]mount.Entry, bool) {
 	entries, err := mount.LoadRegistry(mount.RegistryPath(m.root))
 	if err != nil {
-		fmt.Fprintf(m.stderr, "jit agent: reading the list of mounted files: %v\n", err)
+		fmt.Fprintf(m.stderr, "jit service: reading the list of mounted files: %v\n", err)
 		return nil, false
 	}
 	return entries, true
@@ -337,7 +337,7 @@ func (m *mountManager) ensureServing(entries []mount.Entry) {
 
 		p, varOrder, err := profile.LoadFileOrdered(entry.ProfilePath)
 		if err != nil {
-			fmt.Fprintf(m.stderr, "jit agent: skipping mount %s: %v\n", entry.MountPath, err)
+			fmt.Fprintf(m.stderr, "jit service: skipping mount %s: %v\n", entry.MountPath, err)
 			continue
 		}
 		// DecoyValues only ever reads p's KEYS (variable names) — never a
@@ -348,7 +348,7 @@ func (m *mountManager) ensureServing(entries []mount.Entry) {
 		if entry.TemplatePath != "" {
 			tmpl, err := os.ReadFile(entry.TemplatePath) // #nosec G304 -- path comes from jit's own mount registry, not external input
 			if err != nil {
-				fmt.Fprintf(m.stderr, "jit agent: skipping mount %s: reading template: %v\n", entry.MountPath, err)
+				fmt.Fprintf(m.stderr, "jit service: skipping mount %s: reading template: %v\n", entry.MountPath, err)
 				continue
 			}
 			decoy = mount.FormatTemplate(tmpl, decoyValues)
@@ -432,7 +432,7 @@ func (m *mountManager) ensureServing(entries []mount.Entry) {
 				m.noteServeError(path, sm, err)
 			}
 			if err := mount.Serve(ctx, path, provideContent, onError, onReaderConnected, hasLingeringReader); err != nil && !errors.Is(err, context.Canceled) {
-				fmt.Fprintf(m.stderr, "jit agent: mount %s stopped: %v\n", path, err)
+				fmt.Fprintf(m.stderr, "jit service: mount %s stopped: %v\n", path, err)
 				// A mount whose Serve loop died structurally must not
 				// stay in the map looking alive (GAPS.md #44): a stale
 				// entry made every later ensureServing skip it (never
@@ -486,13 +486,13 @@ func (m *mountManager) resolveReal(entries []mount.Entry, v *vault.Vault) {
 
 		p, varOrder, err := profile.LoadFileOrdered(entry.ProfilePath)
 		if err != nil {
-			fmt.Fprintf(m.stderr, "jit agent: skipping mount %s: %v\n", entry.MountPath, err)
+			fmt.Fprintf(m.stderr, "jit service: skipping mount %s: %v\n", entry.MountPath, err)
 			sm.setResolveErr(err)
 			continue
 		}
 		values, err := inject.Resolve(v, p)
 		if err != nil {
-			fmt.Fprintf(m.stderr, "jit agent: skipping mount %s: %v\n", entry.MountPath, err)
+			fmt.Fprintf(m.stderr, "jit service: skipping mount %s: %v\n", entry.MountPath, err)
 			sm.setResolveErr(err)
 			continue
 		}
@@ -501,7 +501,7 @@ func (m *mountManager) resolveReal(entries []mount.Entry, v *vault.Vault) {
 		if entry.TemplatePath != "" {
 			tmpl, err := os.ReadFile(entry.TemplatePath) // #nosec G304 -- path comes from jit's own mount registry, not external input
 			if err != nil {
-				fmt.Fprintf(m.stderr, "jit agent: skipping mount %s: reading template: %v\n", entry.MountPath, err)
+				fmt.Fprintf(m.stderr, "jit service: skipping mount %s: reading template: %v\n", entry.MountPath, err)
 				sm.setResolveErr(err)
 				continue
 			}
@@ -581,10 +581,10 @@ func (m *mountManager) noteReaderConnected(path string, sm *servedMount) {
 		if r.launchedBy != "" {
 			launcher = fmt.Sprintf(", launched by %s", r.launchedBy)
 		}
-		fmt.Fprintf(m.stderr, "jit agent: mount %s: reader pid=%d (%s)%s%s%s\n", path, r.pid, r.execPath, launcher, qualifier, suffix)
+		fmt.Fprintf(m.stderr, "jit service: mount %s: reader pid=%d (%s)%s%s%s\n", path, r.pid, r.execPath, launcher, qualifier, suffix)
 		return
 	}
-	fmt.Fprintf(m.stderr, "jit agent: mount %s: reader connected (not identified, best-effort scan missed it)%s\n", path, suffix)
+	fmt.Fprintf(m.stderr, "jit service: mount %s: reader connected (not identified, best-effort scan missed it)%s\n", path, suffix)
 }
 
 // identifyReader is the best-effort "who is reading this mount" scan, with a
@@ -627,7 +627,7 @@ func stillRunning(r readerIdentity) bool {
 }
 
 // launcherOf names what launched pid, skipping relay shells — the mount's
-// answer to the same question `jit agent status` answers about an unlock.
+// answer to the same question `jit service status` answers about an unlock.
 func launcherOf(pid int32) string {
 	chain := lineage.Ancestry(pid)
 	if len(chain) < 2 {
@@ -660,13 +660,13 @@ func (m *mountManager) noteServeError(path string, sm *servedMount, err error) {
 	if suppressed > 0 {
 		suffix = fmt.Sprintf(" (+%d similar since the last logged one)", suppressed)
 	}
-	fmt.Fprintf(m.stderr, "jit agent: mount %s: %v (still serving)%s\n", path, err, suffix)
+	fmt.Fprintf(m.stderr, "jit service: mount %s: %v (still serving)%s\n", path, err, suffix)
 }
 
 // mountRevealStatuses is OnMountStatus's handler (GAPS.md #37) — a snapshot
 // of every currently-served mount's state, needing no vault access at all
 // (same reasoning as stopMount/OnStopMount), so it's answered regardless of
-// lock state. `jit status`/`jit agent status` use this to show which mounts
+// lock state. `jit status`/`jit service status` use this to show which mounts
 // are currently grant-served (and to which run) versus serving decoys, plus
 // what the most recent reader was actually handed.
 func (m *mountManager) mountRevealStatuses() []agent.MountRevealStatus {
@@ -751,10 +751,10 @@ func (m *mountManager) reconcileSwappedMounts(entries []mount.Entry) {
 			continue
 		}
 		if err := mount.RestoreFIFO(e.MountPath); err != nil {
-			fmt.Fprintf(m.stderr, "jit agent: mount %s: restoring FIFO from a leftover compatibility file failed: %v\n", e.MountPath, err)
+			fmt.Fprintf(m.stderr, "jit service: mount %s: restoring FIFO from a leftover compatibility file failed: %v\n", e.MountPath, err)
 			continue
 		}
-		fmt.Fprintf(m.stdout, "jit agent: mount %s: restored the decoy mount from a compatibility file left by an interrupted run\n", e.MountPath)
+		fmt.Fprintf(m.stdout, "jit service: mount %s: restored the decoy mount from a compatibility file left by an interrupted run\n", e.MountPath)
 	}
 }
 
@@ -775,7 +775,7 @@ func (m *mountManager) start() {
 
 	deviceID, err := vault.EnsureDeviceID(m.root)
 	if err != nil {
-		fmt.Fprintf(m.stderr, "jit agent: determining device recipient ID: %v\n", err)
+		fmt.Fprintf(m.stderr, "jit service: determining device recipient ID: %v\n", err)
 		return
 	}
 	v := &vault.Vault{Root: m.root, KeyWrapper: m.keyWrapper, RecipientID: deviceID}
@@ -814,7 +814,7 @@ func (m *mountManager) stop() {
 		// immediately before this one, announces the lock AND names its cause
 		// (idle timeout vs. explicit). This line reports only what it alone
 		// knows: the consequence for the mounts.
-		fmt.Fprintln(m.stdout, "jit agent: mounts now serving decoy content only")
+		fmt.Fprintln(m.stdout, "jit service: mounts now serving decoy content only")
 	}
 }
 

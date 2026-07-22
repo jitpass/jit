@@ -9,7 +9,7 @@ directory, no monolithic database.
 
 Every command that reads, writes, or destroys a secret (get, set, rm,
 import, restore, clean, prune, delete, export) requires a fresh Touch
-ID/passcode on EACH invocation, whether or not the background agent's
+ID/passcode on EACH invocation, whether or not the background service's
 session is unlocked - these commands never ride the cached session, so a
 process running as you on an unlocked machine still can't read or destroy
 the vault without a live human gesture. Only `list` and `history` are

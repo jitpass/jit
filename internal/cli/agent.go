@@ -31,36 +31,31 @@ import (
 
 var agentTTL time.Duration
 
-// agentInstallTTL is baked into the installed launchd plist's own
-// ProgramArguments (GAPS.md #18) — separate var from agentTTL (agentRunCmd's
-// flag) since they're read at different times: agentTTL when `agent run`
-// actually starts, agentInstallTTL when `agent install` writes the plist
-// that will later invoke `agent run --ttl <value>`.
-var agentInstallTTL time.Duration
-
-// agentInstallYes skips agentInstallCmd's confirmation prompt — same
-// --yes/-y convention as migrate/vault rm/vault import, for scripting.
-var agentInstallYes bool
-
 // agentStatusFormat is agentStatusCmd's --format flag (GAPS.md #22).
 var agentStatusFormat string
 
-var agentCmd = &cobra.Command{
-	Use:     "agent",
-	GroupID: groupAgent,
-	Short:   "Run a background helper so you only unlock once, not once per command",
-	Long: "jit agent is a small background helper that keeps one unlocked session\n" +
-		"other jit commands share, instead of each one prompting Touch ID\n" +
-		"separately, and that serves any live-mounted .env files jit migrate has\n" +
-		"created.\n\n" +
-		"You usually don't need to set this up by hand: jit installs the agent\n" +
-		"automatically the first time a command needs it (a `jit run` that serves a\n" +
-		"mount, a `jit migrate`, or `jit agent unlock`). `jit agent install` just\n" +
-		"does that eagerly and lets you pick the session --ttl up front. Either way\n" +
-		"it starts automatically at every login (and restarts itself if it crashes).\n" +
-		"The helper process itself needs no Touch ID just to keep running, only your\n" +
-		"unlocked session inside it locks after --ttl of inactivity (default 5m),\n" +
+var serviceCmd = &cobra.Command{
+	Use:     "service",
+	GroupID: groupService,
+	Short:   "Manage jit's background service (the daemon that holds your session and serves mounts)",
+	Long: "jit runs a small background service: a login-time daemon that keeps one\n" +
+		"unlocked session other jit commands share, instead of each one prompting\n" +
+		"Touch ID separately, and that serves any live-mounted .env files jit migrate\n" +
+		"has created.\n\n" +
+		"It is a solid part of jit, not an optional add-on: it sets itself up the\n" +
+		"first time a command needs it (a `jit run` that serves a mount, a `jit\n" +
+		"migrate`, or `jit unlock`), starts at every login, and restarts itself if it\n" +
+		"crashes. There is no install step. These subcommands are for the rare times\n" +
+		"you want to manage it by hand: `jit service ttl` shows or changes how long a\n" +
+		"session stays unlocked, `jit service status` reports its health, `jit service\n" +
+		"restart` restarts it (and brings it back if it ever stopped), and `jit\n" +
+		"service log` shows its own output. It goes away when you remove jit itself.\n" +
+		"The service process itself needs no Touch ID just to keep running, only your\n" +
+		"unlocked session inside it locks after the TTL of inactivity (default 5m),\n" +
 		"prompting again on next use.\n\n" +
+		"To control the session itself, use the top-level `jit unlock` and `jit lock`.\n" +
+		"To see what the service has done (unlocks, denials, mount reads), use\n" +
+		"`jit audit`.\n\n" +
 		"A live-mounted file shows fake-looking values by default. Real values flow\n" +
 		"only to a `jit run` grant's own process tree: `jit run --live` for a project\n" +
 		"mount, `jit run --with` for a global credential. Unlocking the vault never\n" +
@@ -71,15 +66,15 @@ var agentCmd = &cobra.Command{
 // Running it directly (not via launchd) works too, in the foreground.
 var agentRunCmd = &cobra.Command{
 	Use:   "run",
-	Short: "Run the agent in the foreground (normally started by launchd, not by hand)",
+	Short: "Run the service in the foreground (normally started by launchd, not by hand)",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := validateAgentTTL(agentTTL); err != nil {
-			return fmt.Errorf("jit agent run: %w", err)
+			return fmt.Errorf("jit service run: %w", err)
 		}
 		root, err := vaultRootDir()
 		if err != nil {
-			return fmt.Errorf("jit agent run: %w", err)
+			return fmt.Errorf("jit service run: %w", err)
 		}
 
 		// launchd creates the StandardOutPath/StandardErrorPath log 0644;
@@ -112,7 +107,7 @@ var agentRunCmd = &cobra.Command{
 		// free to grow the log unboundedly until the NEXT restart, which
 		// can be weeks away.
 		if err := rotateAgentLog(logPath, agentLogMaxBytes); err != nil {
-			fmt.Fprintf(stderr, "jit agent: rotating %s: %v\n", logPath, err)
+			fmt.Fprintf(stderr, "jit service: rotating %s: %v\n", logPath, err)
 		}
 
 		server := agent.NewServer(agent.SocketPath(root), func() agent.MEKFetcher { return keychainwrap.New() }, agentTTL)
@@ -138,7 +133,7 @@ var agentRunCmd = &cobra.Command{
 
 		// Durable session history: every event goes to agent-history.jsonl
 		// as well as the prose log, and the previous processes' events are
-		// seeded back into the ring — so `jit agent history` can answer for
+		// seeded back into the ring — so `jit audit` can answer for
 		// prompts that happened before the most recent launchd restart,
 		// which is exactly when the question gets asked (restarts happen at
 		// login; the question is asked the next morning, about yesterday).
@@ -159,7 +154,7 @@ var agentRunCmd = &cobra.Command{
 		}
 
 		if err := server.Listen(); err != nil {
-			return fmt.Errorf("jit agent run: %w", err)
+			return fmt.Errorf("jit service run: %w", err)
 		}
 		defer func() {
 			mounts.shutdown()
@@ -176,7 +171,7 @@ var agentRunCmd = &cobra.Command{
 
 		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		// runCtx additionally ends when the agent retires ITSELF — the
+		// runCtx additionally ends when the service retires ITSELF — the
 		// stale-binary watcher below — with everything downstream (Serve,
 		// the run loop) shutting down exactly as it would on a signal.
 		runCtx, endRun := context.WithCancel(ctx)
@@ -188,7 +183,7 @@ var agentRunCmd = &cobra.Command{
 		// Best-effort: a watch failure is logged and the TTL still covers
 		// everything, just later.
 		if err := screenlock.Watch(func(cause string) { server.LockWithCause(cause) }); err != nil {
-			fmt.Fprintf(stderr, "jit agent: screen-lock/sleep watch unavailable (%v), sessions will lock on the idle TTL alone\n", err)
+			fmt.Fprintf(stderr, "jit service: screen-lock/sleep watch unavailable (%v), sessions will lock on the idle TTL alone\n", err)
 		}
 
 		// Self-retire when the jit binary on disk is replaced (see
@@ -201,14 +196,14 @@ var agentRunCmd = &cobra.Command{
 		if os.Getppid() == 1 {
 			if exePath, exeErr := os.Executable(); exeErr == nil {
 				go watchOwnBinary(runCtx, exePath, agentBinaryCheckInterval, server.Quiescent, func() {
-					fmt.Fprintf(stdout, "jit agent: the jit binary on disk changed (this process is build %s), exiting while the session is locked so launchd restarts the agent on the current build\n", agent.BuildID())
+					fmt.Fprintf(stdout, "jit service: the jit binary on disk changed (this process is build %s), exiting while the session is locked so launchd restarts the service on the current build\n", agent.BuildID())
 					endRun()
 				})
 			}
 			go rotateAgentLogPeriodically(runCtx, logPath, &logMu, stderr)
 		}
 
-		fmt.Fprintf(stdout, "jit agent listening on %s (session TTL %s, build %s)\n", agent.SocketPath(root), agentTTL, agent.BuildID())
+		fmt.Fprintf(stdout, "jit service listening on %s (session TTL %s, build %s)\n", agent.SocketPath(root), agentTTL, agent.BuildID())
 
 		// Serve from a goroutine so THIS goroutine — locked to the main OS
 		// thread by cmd/jit's init — can park in the main run loop, the
@@ -227,84 +222,137 @@ var agentRunCmd = &cobra.Command{
 			// Not on the main thread (an embedding or test arrangement):
 			// screen-lock events won't be delivered, but serving is
 			// unaffected — say so and keep running.
-			fmt.Fprintf(stderr, "jit agent: screen-lock/sleep events disabled: %v\n", err)
+			fmt.Fprintf(stderr, "jit service: screen-lock/sleep events disabled: %v\n", err)
 		}
 		err = <-serveErr
 		if err != nil && !errors.Is(err, context.Canceled) {
-			return fmt.Errorf("jit agent run: %w", err)
+			return fmt.Errorf("jit service run: %w", err)
 		}
-		fmt.Fprintln(stdout, "jit agent stopped.")
+		fmt.Fprintln(stdout, "jit service stopped.")
 		return nil
 	},
 }
 
-var agentInstallCmd = &cobra.Command{
-	Use:   "install",
-	Short: "Start jit agent automatically at every login (survives reboots)",
-	Long: "You usually don't need to run this: jit sets the agent up automatically\n" +
-		"the first time a command needs it. Run it yourself to do that eagerly, or\n" +
-		"to choose the session --ttl up front.\n\n" +
-		"Sets up jit agent to start automatically every time you log in, and to\n" +
-		"restart itself if it crashes, until you run `jit agent uninstall`.\n" +
-		"Under the hood this writes and loads a launchd LaunchAgent plist that\n" +
-		"runs `jit agent run`.\n\n" +
-		"--ttl controls how long a session stays unlocked after your last Touch ID\n" +
-		"prompt (default 5m, same meaning as `jit agent run --ttl`), baked into\n" +
-		"the installed service so it applies from every future login, not just\n" +
-		"this one.\n\n" +
-		"Safe to run again to change --ttl later: an already-installed instance is\n" +
-		"unloaded first, so the new value takes effect immediately rather than\n" +
-		"only on the next login.",
-	Args: cobra.NoArgs,
+// serviceTTLCmd shows or changes the session TTL. It replaces the old
+// `jit service install --ttl`: there is no "install" step anymore (the service
+// is a solid part of the app and sets itself up on first use, GAPS.md #18), so
+// the one thing the install command uniquely offered — picking the session
+// length — lives here as its own discoverable verb. Setting a value also
+// creates the login item if it somehow wasn't there yet, so this doubles as
+// "make sure the service exists, with this TTL."
+var serviceTTLCmd = &cobra.Command{
+	Use:   "ttl [duration]",
+	Short: "Show or change how long a session stays unlocked before it auto-locks",
+	Long: "With no argument, prints the session TTL the background service is currently\n" +
+		"configured with. With a duration (e.g. 30s, 10m, 1h), changes it.\n\n" +
+		"The TTL is how long an unlocked session stays cached after your last Touch\n" +
+		"ID prompt before it locks itself, so the next use prompts again (default\n" +
+		"5m). It is baked into the service's login item, so a change persists across\n" +
+		"logins and reboots, not just this one.\n\n" +
+		"Changing it restarts the background service, so the current session is\n" +
+		"dropped and the next vault use prompts Touch ID once. Your vault and the\n" +
+		"session history are untouched.",
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Validated HERE, not just in `agent run`, because install bakes
-		// the value into the plist: a bad --ttl would otherwise install a
-		// service that fails validation on every launchd start, forever,
-		// with the error visible only in the agent log.
-		if err := validateAgentTTL(agentInstallTTL); err != nil {
-			return fmt.Errorf("jit agent install: %w", err)
-		}
-		// Writing a LaunchAgent plist is a system-persistence action — it
-		// runs code automatically at every login, beyond this one
-		// invocation, until explicitly uninstalled. Confirm before
-		// doing it, the same way vault
-		// rm/import gate their own less-reversible actions, rather than
-		// treating this as a routine, silent setup step.
-		if !agentInstallYes && !confirmPrompt(cmd, fmt.Sprintf(
-			"Set up jit agent to start automatically at every login (and restart itself if it crashes), staying unlocked for up to %s after each Touch ID prompt, until you run `jit agent uninstall`? [y/N] ",
-			agentInstallTTL)) {
-			fmt.Fprintln(cmd.OutOrStdout(), "Aborted. Nothing was installed.")
+		if len(args) == 0 {
+			ttl, ok := configuredAgentTTL()
+			if !ok {
+				fmt.Fprintf(cmd.OutOrStdout(), "The background service isn't running yet, so no TTL is set; the default %s applies once it starts (it starts on its own the first time you use jit).\n", agentInstallDefaultTTL)
+				return nil
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Session TTL: %s (a session locks this long after your last Touch ID prompt).\n", ttl)
 			return nil
 		}
-
-		plistPath, running, err := installAgentService(agentInstallTTL)
+		d, err := time.ParseDuration(args[0])
 		if err != nil {
-			return fmt.Errorf("jit agent install: %w", err)
+			return fmt.Errorf("jit service ttl: %q is not a duration, try 30s, 10m, or 1h: %w", args[0], err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(),
-			"Installed, jit agent now starts automatically every time you log in (survives reboots) and stays unlocked for up to %s after your last Touch ID prompt.\nRun `jit agent uninstall` to remove it. (%s)\n",
-			agentInstallTTL, plistPath)
+		// Validated before it reaches the plist: a zero or negative TTL bakes a
+		// service that re-prompts on every use, and the error would otherwise
+		// surface only in the service log at the next launchd start.
+		if err := validateAgentTTL(d); err != nil {
+			return fmt.Errorf("jit service ttl: %w", err)
+		}
+		// installAgentService writes the plist with the new --ttl and reloads
+		// it, creating the login item if it wasn't there yet.
+		_, running, err := installAgentService(d)
+		if err != nil {
+			return fmt.Errorf("jit service ttl: %w", err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Session TTL set to %s. The background service restarted, so the next vault use prompts Touch ID once.\n", d)
 		if !running {
-			fmt.Fprintln(cmd.OutOrStdout(), "The agent is still starting up in the background, give `jit agent status` a few seconds.")
+			fmt.Fprintln(cmd.OutOrStdout(), "It's still starting up in the background; give `jit service status` a few seconds.")
 		}
 		return nil
 	},
 }
 
-// agentInstallDefaultTTL is the session TTL baked into a silently
-// auto-installed agent (ensureAgentInstalled) and the default for the
-// explicit `jit agent install`, kept as one constant so the two can't drift.
+// configuredAgentTTL reads the session TTL baked into the installed launchd
+// plist's ProgramArguments (the `--ttl <value>` pair installAgentService
+// wrote). Returns ok=false when the service isn't installed or the plist has no
+// readable --ttl, so a caller can tell "not set up" from a real value rather
+// than reporting a misleading zero.
+func configuredAgentTTL() (time.Duration, bool) {
+	plistPath, err := agentPlistPath()
+	if err != nil {
+		return 0, false
+	}
+	data, err := os.ReadFile(plistPath) // #nosec G304 -- jit's own launchd plist under the user's LaunchAgents dir
+	if err != nil {
+		return 0, false
+	}
+	values := plistStringValues(data)
+	for i := 0; i+1 < len(values); i++ {
+		if values[i] == "--ttl" {
+			if d, perr := time.ParseDuration(values[i+1]); perr == nil {
+				return d, true
+			}
+			return 0, false
+		}
+	}
+	return 0, false
+}
+
+// plistStringValues returns the text of every <string>…</string> element in a
+// plist, in order — enough to walk ProgramArguments without a full XML parser.
+// The values it's used to match (the literal "--ttl" and a duration) carry no
+// XML entities, so it deliberately does not unescape.
+func plistStringValues(data []byte) []string {
+	const open, closing = "<string>", "</string>"
+	var out []string
+	s := string(data)
+	for {
+		i := strings.Index(s, open)
+		if i < 0 {
+			return out
+		}
+		s = s[i+len(open):]
+		j := strings.Index(s, closing)
+		if j < 0 {
+			return out
+		}
+		out = append(out, s[:j])
+		s = s[j+len(closing):]
+	}
+}
+
+// agentInstallDefaultTTL is the session TTL used whenever the service is set
+// up without a TTL chosen explicitly: the silent first-use auto-install
+// (ensureAgentInstalled) and `jit service restart` recreating a missing login
+// item. `jit service ttl <d>` overrides it. One constant so those paths can't
+// drift on the default.
 const agentInstallDefaultTTL = 5 * time.Minute
 
 // installAgentService writes the launchd LaunchAgent plist that runs
-// `jit agent run --ttl <ttl>` and (re)loads it, returning the plist path and
+// `jit service run --ttl <ttl>` and (re)loads it, returning the plist path and
 // whether the socket answered within a short wait. It is the shared core of
-// both the explicit `jit agent install` command and the silent first-use
-// auto-install (ensureAgentInstalled), so the two can never drift on how the
-// service is written or bootstrapped. It performs NO consent prompt of its
-// own: each caller decides whether this persistence needs confirming (the
-// explicit command asks; the first-use path doesn't — the user already ran a
-// command that can't work without the agent).
+// every path that creates or reconfigures the service — the silent first-use
+// auto-install (ensureAgentInstalled), `jit service ttl` changing the session
+// length, and `jit service restart` recreating a missing login item — so none
+// of them can drift on how the service is written or bootstrapped. It performs
+// NO consent prompt of its own: the service is a solid part of the app that
+// sets itself up on first use, and the plist is a low-privilege, fully
+// reversible user LaunchAgent.
 func installAgentService(ttl time.Duration) (plistPath string, running bool, err error) {
 	exePath, err := os.Executable()
 	if err != nil {
@@ -341,14 +389,14 @@ func installAgentService(ttl time.Duration) (plistPath string, running bool, err
 	// reloadAgentService boots out any previously-running instance before
 	// bootstrapping the just-written plist — bootstrap on an already-loaded
 	// label fails outright, and a re-install to change --ttl must take effect
-	// now, not at next login. The same helper `jit agent restart` uses, so
-	// install and restart can't drift on how they (re)load.
+	// now, not at next login. The same helper `jit service restart` uses, so
+	// so those callers can't drift on how they (re)load.
 	out, err := reloadAgentService(plistPath)
 	if err != nil {
 		return plistPath, false, fmt.Errorf("launchctl bootstrap failed: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
-	// launchctl bootstrap returns before the agent process has spawned and
-	// bound its socket — a real, observed confusion where `jit agent status`
+	// launchctl bootstrap returns before the service process has spawned and
+	// bound its socket — a real, observed confusion where `jit service status`
 	// typed right after a successful install said "not running" for the ~2s
 	// launchd took to actually start it. Wait briefly so "installed" also
 	// means "answering."
@@ -357,14 +405,13 @@ func installAgentService(ttl time.Duration) (plistPath string, running bool, err
 }
 
 // ensureAgentInstalled silently sets up and starts the launchd agent the first
-// time a command that actually needs a live agent finds none installed — so a
-// user never has to run `jit agent install` by hand. The agent is an
-// implementation detail of "the app" (the same jit binary in daemon mode), not
-// a separate setup step, and unlike the explicit install command this path
-// does NOT prompt: the caller already ran something (a `jit run` that needs a
-// mount served, a `jit migrate` that just produced one, `jit agent unlock`)
-// that can't proceed without it, and the plist is a low-privilege, fully
-// reversible user LaunchAgent (`jit agent uninstall`).
+// time a command that actually needs a live agent finds none installed — so
+// the service is always just there. It is a solid part of "the app" (the same
+// jit binary in daemon mode), not a separate setup step, so this path does NOT
+// prompt: the caller already ran something (a `jit run` that needs a mount
+// served, a `jit migrate` that just produced one, `jit unlock`) that can't
+// proceed without it, and the plist is a low-privilege user LaunchAgent that
+// goes away when jit itself is removed.
 //
 // Best-effort and idempotent. An already-installed agent is left untouched
 // (didInstall false): running/crashed/mid-restart is the callers' existing
@@ -372,7 +419,7 @@ func installAgentService(ttl time.Duration) (plistPath string, running bool, err
 // swallowed so the caller falls back to its own no-agent path (an independent
 // unlock, or notRunningHint's advice) rather than failing the user's real
 // command because a background convenience didn't take. Returns whether it just
-// installed the agent, and whether the agent is answering now.
+// installed the service, and whether the service is answering now.
 func ensureAgentInstalled() (didInstall, running bool) {
 	if agentInstalled() {
 		return false, false
@@ -384,54 +431,47 @@ func ensureAgentInstalled() (didInstall, running bool) {
 	return true, running
 }
 
-var agentUninstallCmd = &cobra.Command{
-	Use:   "uninstall",
-	Short: "Stop jit agent and remove it from login startup",
-	Long: "Stops the background helper and removes it from login startup, it will\n" +
-		"no longer start automatically. Any files it was live-mounting stop being\n" +
-		"served (they don't disappear; they just go quiet until you run\n" +
-		"`jit agent install` again). Doesn't touch the vault or any secrets\n" +
-		"already stored, only the background helper itself.",
-	Args: cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		plistPath, err := agentPlistPath()
-		if err != nil {
-			return fmt.Errorf("jit agent uninstall: %w", err)
-		}
-
-		if _, statErr := os.Stat(plistPath); statErr == nil {
-			out, unloadErr := launchctlRun("bootout", agentServiceTarget())
-			if unloadErr != nil {
-				fmt.Fprintf(cmd.OutOrStdout(), "warning: launchctl bootout failed (%v): %s\n", unloadErr, strings.TrimSpace(string(out)))
-			}
-		}
-		if err := os.Remove(plistPath); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("jit agent uninstall: %w", err)
-		}
-		fmt.Fprintln(cmd.OutOrStdout(), "Uninstalled jit agent.")
-		return nil
-	},
-}
-
 var agentRestartCmd = &cobra.Command{
 	Use:   "restart",
-	Short: "Restart the agent process (picks up a newly built or updated jit binary)",
-	Long: "Kills and restarts the launchd-managed agent process, the immediate fix\n" +
-		"when `jit agent status` warns that the running agent predates the jit\n" +
-		"binary on disk. (The agent also retires itself onto the new binary\n" +
-		"automatically, but only once its session is locked and no prompt is\n" +
-		"pending; restart is for wanting it now.)\n\n" +
+	Short: "Restart the background service (picks up a new binary, or brings a stopped one back)",
+	Long: "Restarts jit's background service. Two uses: the immediate fix when\n" +
+		"`jit service status` warns that the running service predates the jit binary\n" +
+		"on disk (the service also retires itself onto the new binary automatically,\n" +
+		"but only once its session is locked and no prompt is pending; restart is for\n" +
+		"wanting it now), and the way to bring the service back if it stopped.\n\n" +
+		"If the login item is missing entirely (it was never started, or was\n" +
+		"removed), this recreates it — jit keeps the service installed as a matter of\n" +
+		"course, so there is no separate install step.\n\n" +
 		"The in-memory session is lost, so the next vault use prompts Touch ID\n" +
 		"again, and live-mounted files serve placeholder values until then.\n" +
-		"Session history survives, it's durable. Requires `jit agent install`.",
+		"Session history survives, it's durable.",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		plistPath, err := agentPlistPath()
 		if err != nil {
-			return fmt.Errorf("jit agent restart: %w", err)
+			return fmt.Errorf("jit service restart: %w", err)
 		}
-		if _, err := os.Stat(plistPath); err != nil {
-			return errors.New("jit agent restart: the agent isn't installed, run `jit agent install` first")
+		if _, statErr := os.Stat(plistPath); os.IsNotExist(statErr) {
+			// No login item yet (never started, or uninstalled). Rather than
+			// dead-end, create it: restart is the single "get the service
+			// running" command, and the service is meant to always be present.
+			// Default TTL, since a missing plist has no configured value to
+			// preserve — `jit service ttl <d>` changes it afterward.
+			root, rerr := vaultRootDir()
+			if rerr != nil {
+				return fmt.Errorf("jit service restart: %w", rerr)
+			}
+			if _, _, ierr := installAgentService(agentInstallDefaultTTL); ierr != nil {
+				return fmt.Errorf("jit service restart: %w", ierr)
+			}
+			if !waitForAgentSocket(root, 5*time.Second) {
+				fmt.Fprintln(cmd.OutOrStdout(), "Started the background service; it's still coming up, give `jit service status` a few seconds.")
+				return nil
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "Started the background service. The next vault use will prompt Touch ID.")
+			return nil
+		} else if statErr != nil {
+			return fmt.Errorf("jit service restart: %w", statErr)
 		}
 		// bootout + bootstrap (reloadAgentService) restarts a running agent
 		// AND recovers one launchd has dropped (the plist on disk with no live
@@ -442,74 +482,84 @@ var agentRestartCmd = &cobra.Command{
 		// and it needs no fragile parsing of launchctl's undocumented,
 		// localizable error text to decide which state we're in.
 		if out, err := reloadAgentService(plistPath); err != nil {
-			return fmt.Errorf("jit agent restart: reloading the launchd service failed: %w (%s); if this persists, `jit agent install` reinstalls it", err, strings.TrimSpace(string(out)))
+			return fmt.Errorf("jit service restart: reloading the launchd service failed: %w (%s); `jit service log` shows recent output", err, strings.TrimSpace(string(out)))
 		}
 		root, err := vaultRootDir()
 		if err != nil {
-			return fmt.Errorf("jit agent restart: %w", err)
+			return fmt.Errorf("jit service restart: %w", err)
 		}
 		// Same wait as install, same reason: "Restarted" must mean the new
 		// process is actually answering, or status contradicts us moments
 		// later.
 		if !waitForAgentSocket(root, 5*time.Second) {
-			fmt.Fprintln(cmd.OutOrStdout(), "Restart requested, the agent is still starting up in the background; give `jit agent status` a few seconds.")
+			fmt.Fprintln(cmd.OutOrStdout(), "Restart requested, the service is still starting up in the background; give `jit service status` a few seconds.")
 			return nil
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "Restarted, the agent is now running the current binary. The next vault use will prompt Touch ID.")
+		fmt.Fprintln(cmd.OutOrStdout(), "Restarted, the service is now running the current binary. The next vault use will prompt Touch ID.")
 		return nil
 	},
 }
 
-var agentUnlockCmd = &cobra.Command{
-	Use:   "unlock",
-	Short: "Unlock the running agent's session now (prompts Touch ID if needed)",
-	Long:  "Pre-warms the shared session so a run of jit run/vault get/export right after doesn't prompt.",
-	Args:  cobra.NoArgs,
+var unlockCmd = &cobra.Command{
+	Use:     "unlock",
+	GroupID: groupService,
+	Short:   "Unlock jit's session now (prompts Touch ID if needed)",
+	Long: "Unlocks the shared session jit's background service holds, prompting Touch ID\n" +
+		"or your device passcode if it isn't already unlocked. Pre-warms it so a\n" +
+		"following jit run / vault get / export doesn't stop to prompt, and locks\n" +
+		"itself again after the session --ttl of inactivity (or `jit lock` sooner).\n\n" +
+		"If the background service isn't set up yet, this sets it up first: `unlock`\n" +
+		"is the \"get me a session\" intent, so there's nothing extra to run by hand.",
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// No agent yet? Set one up silently rather than erroring with "run
-		// `jit agent install` first" — `unlock` IS the "get me a session"
+		// No service yet? Set one up silently rather than erroring with "run
+		// starting the service first — `unlock` IS the "get me a session"
 		// intent, so absence is a setup step to do, not a failure to report.
 		ensureAgentInstalled()
 		c, err := agentClient()
 		if err != nil {
-			return fmt.Errorf("jit agent unlock: %w", err)
+			return fmt.Errorf("jit unlock: %w", err)
 		}
 		_, remaining, err := c.Unlock()
 		if err != nil {
-			return fmt.Errorf("jit agent unlock: %w", notRunningHint(err))
+			return fmt.Errorf("jit unlock: %w", notRunningHint(err))
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Unlocked, locks automatically after %s of inactivity (or `jit agent lock` sooner).\n", remaining.Round(time.Second))
+		fmt.Fprintf(cmd.OutOrStdout(), "Unlocked, locks automatically after %s of inactivity (or `jit lock` sooner).\n", remaining.Round(time.Second))
 		return nil
 	},
 }
 
-var agentLockCmd = &cobra.Command{
-	Use:   "lock",
-	Short: "Lock the running agent's session immediately, without waiting for the TTL",
-	Args:  cobra.NoArgs,
+var lockCmd = &cobra.Command{
+	Use:     "lock",
+	GroupID: groupService,
+	Short:   "Lock jit's session immediately, without waiting for the TTL",
+	Long: "Locks the shared session jit's background service holds, right now, instead\n" +
+		"of waiting out the remaining --ttl. The next vault use prompts Touch ID\n" +
+		"again, and live-mounted files serve placeholder values until then.",
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		c, err := agentClient()
 		if err != nil {
-			return fmt.Errorf("jit agent lock: %w", err)
+			return fmt.Errorf("jit lock: %w", err)
 		}
 		if err := c.Lock(); err != nil {
-			return fmt.Errorf("jit agent lock: %w", notRunningHint(err))
+			return fmt.Errorf("jit lock: %w", notRunningHint(err))
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "Locked.")
 		return nil
 	},
 }
 
-// agentStatusResult is `jit agent status`'s --format json shape
+// agentStatusResult is `jit service status`'s --format json shape
 // (GAPS.md #22). LocksInSeconds is only meaningful (and only nonzero) when
 // Running && Unlocked — omitted rather than zero-valued-but-misleading
-// when the agent isn't running at all or is already locked.
+// when the service isn't running at all or is already locked.
 type agentStatusResult struct {
 	Running bool `json:"running"`
 	// Installed is whether the launchd plist exists — with Running false,
 	// it's what separates "crashed or mid-restart" (launchd should be
-	// respawning it; `jit agent restart` forces it) from "never set up"
-	// (only `jit agent install` helps). A script alerting on dead agents
+	// respawning it; `jit service restart` forces it) from "never set up"
+	// (only jit reinstalling it, via any use or `jit service restart`, helps). A script alerting on dead agents
 	// needs exactly this distinction.
 	Installed      bool  `json:"installed"`
 	Unlocked       bool  `json:"unlocked"`
@@ -520,7 +570,7 @@ type agentStatusResult struct {
 	Mounts []agent.MountRevealStatus `json:"mounts"`
 	// LastUnlock/LastLock are GAPS.md #75's session provenance — who unlocked
 	// this agent, what launched them, and what dropped the session since.
-	// Omitted (not zero-valued) when the agent has never unlocked: "no
+	// Omitted (not zero-valued) when the service has never unlocked: "no
 	// provenance" and "unlocked by nobody at the epoch" must not look alike
 	// to a script.
 	LastUnlock *agent.SessionEvent `json:"last_unlock,omitempty"`
@@ -532,18 +582,18 @@ type agentStatusResult struct {
 	PendingUnlock *agent.SessionEvent `json:"pending_unlock,omitempty"`
 	// Build is the running agent PROCESS's build (GAPS.md #49) — compare
 	// against this CLI's own to catch a launchd-kept-alive agent that
-	// predates the binary on disk. Empty when the agent isn't running.
+	// predates the binary on disk. Empty when the service isn't running.
 	Build string `json:"build,omitempty"`
 	// Version is the running agent PROCESS's release version — Build's
-	// release-scale counterpart. Empty when the agent isn't running or
+	// release-scale counterpart. Empty when the service isn't running or
 	// predates the field.
 	Version string `json:"version,omitempty"`
 }
 
 var agentStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show whether the agent is running, and whether its session is unlocked",
-	Long: "Reports whether jit agent is running and, if so, whether its session is\n" +
+	Short: "Show whether the service is running, and whether its session is unlocked",
+	Long: "Reports whether jit's background service is running and, if so, whether its session is\n" +
 		"unlocked. --format json prints a machine-readable snapshot instead of the\n" +
 		"default text summary.",
 	Args: cobra.NoArgs,
@@ -552,12 +602,12 @@ var agentStatusCmd = &cobra.Command{
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := validateOutputFormat(agentStatusFormat); err != nil {
-			return fmt.Errorf("jit agent status: %w", err)
+			return fmt.Errorf("jit service status: %w", err)
 		}
 
 		client, err := agentClient()
 		if err != nil {
-			return fmt.Errorf("jit agent status: %w", err)
+			return fmt.Errorf("jit service status: %w", err)
 		}
 		st, err := client.Status()
 		if errors.Is(err, agent.ErrNotRunning) {
@@ -570,14 +620,14 @@ var agentStatusCmd = &cobra.Command{
 				// situation from one that was never set up — launchd was
 				// supposed to keep this one alive, so "run install" is the
 				// wrong advice and hides that something actually failed.
-				fmt.Fprintln(cmd.OutOrStdout(), installedNotRunningAdvice("jit agent is"))
+				fmt.Fprintln(cmd.OutOrStdout(), installedNotRunningAdvice("jit's background service is"))
 				return nil
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "jit agent is not running. Run `jit agent install` to set it up.")
+			fmt.Fprintln(cmd.OutOrStdout(), "jit's background service is not running. Run `jit service restart` to start it (or just use jit and it starts on its own).")
 			return nil
 		}
 		if err != nil {
-			return fmt.Errorf("jit agent status: %w", err)
+			return fmt.Errorf("jit service status: %w", err)
 		}
 
 		if agentStatusFormat == "json" {
@@ -588,12 +638,12 @@ var agentStatusCmd = &cobra.Command{
 			return writeJSON(cmd.OutOrStdout(), result)
 		}
 		if st.Unlocked {
-			fmt.Fprintf(cmd.OutOrStdout(), "jit agent is running and unlocked (locks in %s).\n", st.Remaining.Round(time.Second))
+			fmt.Fprintf(cmd.OutOrStdout(), "jit's background service is running and unlocked (locks in %s).\n", st.Remaining.Round(time.Second))
 		} else {
-			fmt.Fprintln(cmd.OutOrStdout(), "jit agent is running and locked.")
+			fmt.Fprintln(cmd.OutOrStdout(), "jit's background service is running and locked.")
 		}
 		printPendingUnlock(cmd.OutOrStdout(), st.PendingUnlock)
-		fmt.Fprintf(cmd.OutOrStdout(), "Versions: agent %s; CLI %s.\n", versionBuild(st.Version, st.Build), versionBuild(agent.Version(), agent.BuildID()))
+		fmt.Fprintf(cmd.OutOrStdout(), "Versions: service %s; CLI %s.\n", versionBuild(st.Version, st.Build), versionBuild(agent.Version(), agent.BuildID()))
 		printSessionProvenance(cmd.OutOrStdout(), st)
 		printMountStatuses(cmd.OutOrStdout(), st.Mounts)
 		if warning := agentBuildMismatch(st.Build); warning != "" {
@@ -603,61 +653,7 @@ var agentStatusCmd = &cobra.Command{
 	},
 }
 
-// agentHistoryFormat is agentHistoryCmd's --format flag, matching `jit agent
-// status`'s own.
-var agentHistoryFormat string
-
-var agentHistoryCmd = &cobra.Command{
-	Use:   "history",
-	Short: "List every unlock, lock, denial, and use this agent has seen, and what caused them",
-	Long: "Prints the agent's session history, most recent first: every Touch ID prompt\n" +
-		"that succeeded (with the command that triggered it and what launched that\n" +
-		"command), every prompt that was DECLINED (same provenance, plus why it\n" +
-		"failed), every lock (with its cause, an idle timeout, the screen locking,\n" +
-		"or an explicit `jit agent lock`), every use of the already-unlocked session\n" +
-		"(what flowed through it, collapsed per caller, with the secret names the\n" +
-		"caller reported), and every agent start.\n\n" +
-		"This is the answer to \"why does it keep asking me?\", a question the agent\n" +
-		"previously had no way to answer, since only locks were ever recorded and the\n" +
-		"unlocks that did the prompting left no trace at all.\n\n" +
-		"Survives restarts: events are also written to agent-history.jsonl alongside\n" +
-		"the vault, and each new agent process picks the newest back up, so asking\n" +
-		"about yesterday's prompts works even though logging in this morning restarted\n" +
-		"the agent. Agent starts appear in the list, marking where one process's\n" +
-		"events end and the previous one's begin.",
-	Args:         cobra.NoArgs,
-	SilenceUsage: true,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := validateOutputFormat(agentHistoryFormat); err != nil {
-			return fmt.Errorf("jit agent history: %w", err)
-		}
-		client, err := agentClient()
-		if err != nil {
-			return fmt.Errorf("jit agent history: %w", err)
-		}
-		events, err := client.History()
-		if errors.Is(err, agent.ErrNotRunning) {
-			if agentHistoryFormat == "json" {
-				return writeJSON(cmd.OutOrStdout(), []agent.SessionEvent{})
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), "jit agent is not running. Run `jit agent install` to set it up.")
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("jit agent history: %w", err)
-		}
-		if agentHistoryFormat == "json" {
-			if events == nil {
-				events = []agent.SessionEvent{} // an empty list, never a bare null
-			}
-			return writeJSON(cmd.OutOrStdout(), events)
-		}
-		printSessionHistory(cmd.OutOrStdout(), events)
-		return nil
-	},
-}
-
-// agentLogLines and agentLogFollow are `jit agent log`'s flags.
+// agentLogLines and agentLogFollow are `jit service log`'s flags.
 var agentLogLines int
 var agentLogFollow bool
 
@@ -667,10 +663,10 @@ const agentLogPollInterval = 500 * time.Millisecond
 
 var agentLogCmd = &cobra.Command{
 	Use:   "log",
-	Short: "Show the agent's own log (session events, mount reads, serve errors)",
-	Long: "Prints the tail of the agent's log file, the durable, timestamped record\n" +
+	Short: "Show the service's own log (session events, mount reads, serve errors)",
+	Long: "Prints the tail of the service's log file, the durable, timestamped record\n" +
 		"of session events, mount reads (with who read them), and serve errors that\n" +
-		"outlives the in-memory snapshot `jit agent status` reports.\n\n" +
+		"outlives the in-memory snapshot `jit service status` reports.\n\n" +
 		"The file lives alongside the vault as agent.log (the previous generation\n" +
 		"is kept as agent.log.1 after rotation). This command exists because the\n" +
 		"investigations that need the log are exactly the ones where hunting down\n" +
@@ -680,20 +676,20 @@ var agentLogCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		root, err := vaultRootDir()
 		if err != nil {
-			return fmt.Errorf("jit agent log: %w", err)
+			return fmt.Errorf("jit service log: %w", err)
 		}
 		logPath := filepath.Join(root, "agent.log")
 		out := cmd.OutOrStdout()
 
 		data, err := os.ReadFile(logPath) // #nosec G304 -- jit's own log file under its config root
 		if err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("jit agent log: %w", err)
+			return fmt.Errorf("jit service log: %w", err)
 		}
 		if os.IsNotExist(err) && !agentLogFollow {
 			// Not an error: an empty history is a normal state on a machine
-			// where the agent hasn't run, and the useful output is what
+			// where the service hasn't run, and the useful output is what
 			// would make one exist.
-			fmt.Fprintf(out, "No agent log yet at %s, it's written once the agent runs (`jit agent install` sets that up).\n", displayLogPath(logPath))
+			fmt.Fprintf(out, "No service log yet at %s, it's written once the service runs; it starts on its own the first time you use jit, or run `jit service restart`.\n", displayLogPath(logPath))
 			return nil
 		}
 		_, _ = out.Write(tailLines(data, agentLogLines))
@@ -760,11 +756,11 @@ func displayLogPath(logPath string) string {
 	return displayPath(home, logPath)
 }
 
-// printSessionHistory renders `jit agent history` — the same bullet shape as
-// the Session block in `jit agent status`, just without the two-event limit.
+// printSessionHistory renders `jit audit` — the same bullet shape as
+// the Session block in `jit service status`, just without the two-event limit.
 func printSessionHistory(w io.Writer, events []agent.SessionEvent) {
 	if len(events) == 0 {
-		fmt.Fprintln(w, "No unlocks or locks recorded since the agent started.")
+		fmt.Fprintln(w, "No unlocks or locks recorded since the service started.")
 		return
 	}
 	home, _ := os.UserHomeDir()
@@ -780,12 +776,12 @@ func printSessionHistory(w io.Writer, events []agent.SessionEvent) {
 			fmt.Fprintf(w, "  • %s, %s\n", sessionWhen("locked", e.UnixTime), cause)
 		case agent.KindStart:
 			// The process boundary: everything below this line happened in
-			// an earlier agent process (restored from the durable history).
+			// an earlier service process (restored from the durable history).
 			line := sessionWhen("started", e.UnixTime)
 			if e.Cause != "" {
-				line += fmt.Sprintf(", agent process started (%s)", e.Cause)
+				line += fmt.Sprintf(", service process started (%s)", e.Cause)
 			} else {
-				line += ", agent process started"
+				line += ", service process started"
 			}
 			fmt.Fprintf(w, "  • %s\n", line)
 		case agent.KindDenied:
@@ -842,14 +838,14 @@ func printEventLabels(w io.Writer, labels []string) {
 	fmt.Fprintf(w, "      secrets (caller-reported): %s\n", strings.Join(labels, ", "))
 }
 
-// logSessionEvent writes an unlock or a lock to the agent's log, with the
+// logSessionEvent writes an unlock or a lock to the service's log, with the
 // provenance that made it happen.
 //
 // The log used to record every lock and no unlock at all — so the one event a
 // user ever asks about (the prompt that just interrupted them) was the one
 // event with no line anywhere. Reconstructing a single unlock meant reading
 // this log against the user's own shell history to guess which command had
-// run when. Both halves are written now, and unlike `jit agent status`'s
+// run when. Both halves are written now, and unlike `jit service status`'s
 // in-memory snapshot, these survive the launchd restarts that happen at every
 // login and every rebuild.
 //
@@ -861,7 +857,7 @@ func logSessionEvent(w io.Writer, e agent.SessionEvent) {
 		if cause == "" {
 			cause = "unknown cause"
 		}
-		fmt.Fprintf(w, "jit agent: session locked, %s\n", cause)
+		fmt.Fprintf(w, "jit service: session locked, %s\n", cause)
 		return
 	}
 
@@ -874,7 +870,7 @@ func logSessionEvent(w io.Writer, e agent.SessionEvent) {
 	case agent.KindUse:
 		verb = "session used"
 	}
-	line := "jit agent: " + verb
+	line := "jit service: " + verb
 	if e.Op != "" {
 		op := e.Op
 		if e.Count > 1 {
@@ -947,16 +943,16 @@ func printPendingUnlock(w io.Writer, p *agent.SessionEvent) {
 }
 
 // printSessionProvenance is the "who put the session in this state" lines
-// under `jit agent status`'s headline (GAPS.md #75).
+// under `jit service status`'s headline (GAPS.md #75).
 //
 // The motivating report: a Touch ID prompt appeared unbidden while the user
 // was doing something entirely unrelated, and reconstructing why took
-// cross-referencing the agent's log against shell history — the answer being
+// cross-referencing the service's log against shell history — the answer being
 // "Claude Code started, and two of the MCP servers it boots are `jit run
-// --profile ...`". The agent knew every one of those facts at the moment it
+// --profile ...`". The service knew every one of those facts at the moment it
 // prompted and stored none of them. It does now, so status can just say it.
 //
-// Prints nothing when this agent process has never unlocked: a freshly
+// Prints nothing when this service process has never unlocked: a freshly
 // installed agent has no history to explain, and inventing lines that say
 // "unknown" is worse than silence.
 // Reads as a "Session" group in the same bulleted shape as Mounts below,
@@ -1018,7 +1014,7 @@ func sessionWhen(verb string, unixTime int64) string {
 	return fmt.Sprintf("%-8s %s ago (%s)", verb, humanAgo(time.Since(at)), at.Format("15:04:05"))
 }
 
-// printMountStatuses renders the per-mount section of `jit agent status`
+// printMountStatuses renders the per-mount section of `jit service status`
 // (GAPS.md #37/#48): a "Mounts:" group with one sorted bullet per mount —
 // reveal state on the bullet line, the most recent read (what was served, to
 // whom, when) on one indented line under it. It used to print a flat
@@ -1154,9 +1150,9 @@ func validateAgentTTL(ttl time.Duration) error {
 	return nil
 }
 
-// agentRestartGrace is how long a dial keeps retrying when the agent is
-// INSTALLED but not answering — the launchd respawn gap of `jit agent
-// restart` or the agent's own stale-binary self-retirement, observed at
+// agentRestartGrace is how long a dial keeps retrying when the service is
+// INSTALLED but not answering — the launchd respawn gap of `jit service
+// restart` or the service's own stale-binary self-retirement, observed at
 // 1–2s. Only applied when the plist exists (see agentClient): when it
 // doesn't, "not answering" means "not installed" and waiting is pure
 // delay.
@@ -1165,7 +1161,7 @@ const agentRestartGrace = 2 * time.Second
 // agentClient returns a Client for this machine's agent socket without
 // probing it first — Client's own calls wrap agent.ErrNotRunning when
 // nothing is listening (see notRunningHint), so a Reachable() pre-flight
-// would just dial the socket twice per command. When the agent is
+// would just dial the socket twice per command. When the service is
 // installed, the client rides out launchd's respawn gap (see
 // agentRestartGrace) instead of misreporting a restarting agent as absent.
 func agentClient() (*agent.Client, error) {
@@ -1183,7 +1179,7 @@ func agentClient() (*agent.Client, error) {
 
 // announceTouchIDWait is the wait notifier every CLI agent client carries: it
 // prints one line to stderr when a request has been blocked long enough to
-// mean the agent is sitting on a Touch ID/passcode prompt. Without it the
+// mean the service is sitting on a Touch ID/passcode prompt. Without it the
 // terminal just hangs mid-command while the OS challenge waits offscreen, and
 // a user (or a demo viewer) has no way to connect the pause to the prompt on
 // their Mac — the same silent-prompt confusion internal/keychainwrap already
@@ -1194,20 +1190,20 @@ func announceTouchIDWait() {
 }
 
 // notRunningHint rewrites a Client call's dial failure into the actionable
-// message the agent commands print — the raw error says the socket didn't
+// message the service commands print — the raw error says the socket didn't
 // answer, but the thing a human can DO about that differs: an installed
 // agent that isn't answering wants a restart (and its log), one that was
 // never installed wants installing.
 // installedNotRunningAdvice is the SINGLE source of the "installed but not
-// running" guidance, shared by `jit status`, `jit agent status`, and the
+// running" guidance, shared by `jit status`, `jit service status`, and the
 // notRunningHint agent subcommands print on a dial failure — so the wording
 // can't drift across the three. It did drift once: a change to what restart
-// recovers updated only `jit agent status`, leaving `jit status` (the first
+// recovers updated only `jit service status`, leaving `jit status` (the first
 // place a user sees this) and notRunningHint on stale advice. subject is the
-// caller's sentence opener ("Agent:", "jit agent is", "the agent is") so each
+// caller's sentence opener ("Service:", "jit's background service is", "the service is") so each
 // surface keeps its own voice while the actionable half stays identical.
 func installedNotRunningAdvice(subject string) string {
-	return subject + " installed but not running, it may have crashed or be mid-restart. Try `jit agent restart` (it reloads the service, recovering even one launchd has dropped); if that doesn't bring it back, `jit agent install` reinstalls it. `jit agent log` shows recent output."
+	return subject + " installed but not running, it may have crashed or be mid-restart. Try `jit service restart` (it reloads the service, recovering even one launchd has dropped, and recreates the login item if it was removed). `jit service log` shows recent output."
 }
 
 func notRunningHint(err error) error {
@@ -1215,9 +1211,9 @@ func notRunningHint(err error) error {
 		return err
 	}
 	if agentInstalled() {
-		return errors.New(installedNotRunningAdvice("the agent is"))
+		return errors.New(installedNotRunningAdvice("the service is"))
 	}
-	return errors.New("no agent is running, run `jit agent install` first")
+	return errors.New("the background service isn't running; run `jit service restart` to start it")
 }
 
 // xmlEscape escapes the five XML metacharacters for splicing a string
@@ -1272,7 +1268,7 @@ func rotateAgentLog(path string, maxBytes int64) error {
 }
 
 // lockedWriter serializes writes through a SHARED mutex — unlike
-// stampedWriter's per-writer one — so `jit agent run` can put both its
+// stampedWriter's per-writer one — so `jit service run` can put both its
 // streams and the mid-run log rotation behind the same lock: the
 // rotation's copy-then-truncate loses any line written between those two
 // steps, and holding this mutex across both is what rules that out.
@@ -1293,8 +1289,8 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 // log-suppression there) stays far from filling a disk.
 const agentLogRotateCheckInterval = 10 * time.Minute
 
-// rotateAgentLogPeriodically re-applies the agent.log cap for the life of
-// the agent process. The startup-only rotation left a hole: launchd keeps
+// rotateAgentLogPeriodically re-applies the service.log cap for the life of
+// the service process. The startup-only rotation left a hole: launchd keeps
 // one process alive for weeks, so a mid-run storm had nothing to trim the
 // log until the NEXT restart. Caller gates on running under launchd —
 // see the gate's comment in agentRunCmd. mu is the shared writer mutex;
@@ -1313,7 +1309,7 @@ func rotateAgentLogPeriodically(ctx context.Context, logPath string, mu *sync.Mu
 		err := rotateAgentLog(logPath, agentLogMaxBytes)
 		mu.Unlock()
 		if err != nil {
-			fmt.Fprintf(stderr, "jit agent: rotating %s: %v\n", logPath, err)
+			fmt.Fprintf(stderr, "jit service: rotating %s: %v\n", logPath, err)
 		}
 	}
 }
@@ -1321,9 +1317,9 @@ func rotateAgentLogPeriodically(ctx context.Context, logPath string, mu *sync.Mu
 // agentPlistPath and agentInstalled live in agentinstalled.go (un-gated),
 // so status.go's portable agent section can share them.
 
-// agentDomainTarget and agentServiceTarget name the agent to launchctl's
+// agentDomainTarget and agentServiceTarget name the service to launchctl's
 // modern verbs (bootstrap/bootout/kickstart): the per-user GUI domain, and
-// the agent's service inside it.
+// the service's service inside it.
 func agentDomainTarget() string {
 	return fmt.Sprintf("gui/%d", os.Getuid())
 }
@@ -1340,7 +1336,7 @@ var launchctlRun = func(args ...string) ([]byte, error) {
 	return exec.Command("launchctl", args...).CombinedOutput() // #nosec G204 -- fixed subcommands with jit's own label/domain/plist path, never external input
 }
 
-// reloadAgentService (re)loads the agent's launchd service from plistPath:
+// reloadAgentService (re)loads the service's launchd service from plistPath:
 // boot out any currently-loaded instance, then bootstrap the plist back in.
 // This one unconditional sequence recovers EVERY installed-but-not-running
 // state without having to detect which it is — a healthy running agent
@@ -1408,7 +1404,7 @@ const agentPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 	<key>ProgramArguments</key>
 	<array>
 		<string>%s</string>
-		<string>agent</string>
+		<string>service</string>
 		<string>run</string>
 		<string>--ttl</string>
 		<string>%s</string>
@@ -1425,14 +1421,48 @@ const agentPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `
 
+// agentCompatCmd is a hidden, deprecated alias for the pre-rename `jit agent`
+// command tree. It exists for exactly one reason: an already-installed launchd
+// plist written before the rename has `agent run` baked into its
+// ProgramArguments (see agentPlistTemplate's history), and launchd re-execs
+// that verbatim at every login. Without this alias those deployed agents would
+// silently fail to start on the new binary until something rewrote their plist.
+// New plists use `service run`; every `jit service ttl`/`restart` rewrites
+// an old plist to match, so this is a migration bridge to delete a release
+// later, not a permanent second name. Hidden (and off tab-completion) so it
+// never re-introduces the "agent" noun to anyone reading help.
+var agentCompatCmd = &cobra.Command{
+	Use:     "agent",
+	Hidden:  true,
+	GroupID: groupPlumbing, // never rendered (Hidden, no help-visible annotation); GroupID only satisfies the every-top-level-command-has-a-group rule
+	Short:   "Deprecated alias for jit service (kept only so old login items keep starting)",
+}
+
+// agentCompatRunCmd mirrors the installed plist's `agent run --ttl <d>`. It
+// delegates to the real service-run command rather than duplicating its body,
+// so the two can't drift. The closure defers the lookup to call time, so it
+// doesn't depend on package-var initialization order.
+var agentCompatRunCmd = &cobra.Command{
+	Use:    "run",
+	Hidden: true,
+	Args:   cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return agentRunCmd.RunE(cmd, args)
+	},
+}
+
 func init() {
 	agentRunCmd.Flags().DurationVar(&agentTTL, "ttl", 5*time.Minute, "how long an unlocked session stays cached before auto-locking")
-	agentInstallCmd.Flags().DurationVar(&agentInstallTTL, "ttl", agentInstallDefaultTTL, "how long an unlocked session stays cached before auto-locking, baked into the installed plist")
-	agentInstallCmd.Flags().BoolVarP(&agentInstallYes, "yes", "y", false, "skip the confirmation prompt and install immediately")
 	agentStatusCmd.Flags().StringVar(&agentStatusFormat, "format", "text", `output format: "text" (default) or "json"`)
-	agentHistoryCmd.Flags().StringVar(&agentHistoryFormat, "format", "text", `output format: "text" (default) or "json"`)
 	agentLogCmd.Flags().IntVarP(&agentLogLines, "lines", "n", 50, "how many trailing lines to print")
-	agentLogCmd.Flags().BoolVarP(&agentLogFollow, "follow", "f", false, "keep printing new lines as the agent writes them (Ctrl-C to stop)")
-	agentCmd.AddCommand(agentRunCmd, agentInstallCmd, agentUninstallCmd, agentRestartCmd, agentUnlockCmd, agentLockCmd, agentStatusCmd, agentHistoryCmd, agentLogCmd)
-	rootCmd.AddCommand(agentCmd)
+	agentLogCmd.Flags().BoolVarP(&agentLogFollow, "follow", "f", false, "keep printing new lines as the service writes them (Ctrl-C to stop)")
+	serviceCmd.AddCommand(agentRunCmd, serviceTTLCmd, agentRestartCmd, agentStatusCmd, agentLogCmd)
+
+	// The old plist's `agent run --ttl <d>` needs the same --ttl flag bound to
+	// the same target var; only one of the two run commands executes per
+	// process, so sharing agentTTL is safe.
+	agentCompatRunCmd.Flags().DurationVar(&agentTTL, "ttl", 5*time.Minute, "how long an unlocked session stays cached before auto-locking")
+	agentCompatCmd.AddCommand(agentCompatRunCmd)
+
+	rootCmd.AddCommand(serviceCmd, unlockCmd, lockCmd, agentCompatCmd)
 }

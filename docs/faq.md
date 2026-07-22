@@ -21,7 +21,7 @@ collects the threat-model answers on one page.
 - [Does it work in CI?](#does-it-work-in-ci)
 - [What if a tool breaks after I migrate?](#what-if-a-tool-breaks-after-i-migrate)
 - [Which platforms does it run on?](#which-platforms-does-it-run-on)
-- [What happens if the agent is locked or not running?](#what-happens-if-the-agent-is-locked-or-not-running)
+- [What happens if the service is locked or not running?](#what-happens-if-the-service-is-locked-or-not-running)
 - [Can my team share a vault?](#can-my-team-share-a-vault)
 
 **Security**
@@ -79,7 +79,7 @@ working: jit wrap gh`. You copy the command it prints.
 
 Yes. Wrapping installs a `PATH` shim, not a shell alias, so any subprocess
 that spawns the tool hits the shim too. Overhead is about 25 ms per call with
-an unlocked agent.
+an unlocked service.
 
 ### Does it work in CI?
 
@@ -102,10 +102,10 @@ placeholder errors.
 macOS only, currently, because the local-auth and Keychain integration is
 macOS-native. There is no Linux or Windows build.
 
-### What happens if the agent is locked or not running?
+### What happens if the service is locked or not running?
 
 Commands that need a secret trigger a Touch ID prompt to unlock, or fail
-loudly if you decline. A locked agent serves decoys from every mount, so a
+loudly if you decline. A locked service serves decoys from every mount, so a
 cold read is never a real secret.
 
 ### Can my team share a vault?
@@ -144,16 +144,16 @@ not have yet. So the honest statement is "OS local-authentication-bound," not
 
 ### So can an attacker who already runs code as me read my secrets?
 
-If the agent is unlocked, yes, the same way any local process could ask it,
+If the service is unlocked, yes, the same way any local process could ask it,
 which is why every prompt names the caller and the session locks aggressively
-(TTL, screen lock, sleep). If the agent is locked, the master key sits in a
+(TTL, screen lock, sleep). If the service is locked, the master key sits in a
 plain Keychain item with no OS-level ACL today, so a determined local attacker
 could read it directly, bypassing the app-level challenge. This is the
 accepted Phase 1 boundary, stated plainly rather than hidden.
 
 ### Is the master key ever in memory?
 
-Yes, in the background agent for the session TTL (default 5 minutes), so you
+Yes, in the background service for the session TTL (default 5 minutes), so you
 are not prompted per command. It is page-locked (kept out of swap) and wiped
 when the session locks. jit's own CLI process holds a secret only for the
 instant of a single command, then `execve` replaces its whole image.

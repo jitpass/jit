@@ -44,7 +44,7 @@ var awsCredentialProcessCmd = &cobra.Command{
 		"(`credential_process = jit aws-credential-process --profile aws-<name>`),\n" +
 		"so the AWS CLI/SDK gets credentials with no file on disk at all.\n\n" +
 		"Requires local auth to resolve the vault the same way jit run/export do:\n" +
-		"either a reachable jit agent with an already-unlocked session, or an\n" +
+		"either a reachable jit background service with an already-unlocked session, or an\n" +
 		"interactive context able to show a Touch ID/passcode prompt. Invoked from\n" +
 		"a fully headless context (a cron job, a CI runner) with neither will hang\n" +
 		"or fail, the same tradeoff jit run/export already accept.",

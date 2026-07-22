@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: Placeholder values, hanging reads, surprise Touch ID prompts, and stale-agent warnings.
+description: Placeholder values, hanging reads, surprise Touch ID prompts, and stale-service warnings.
 ---
 
 # Troubleshooting
@@ -10,7 +10,7 @@ description: Placeholder values, hanging reads, surprise Touch ID prompts, and s
   the environment), so this usually means the app read the mount *outside*
   `jit run`. Launch it through `jit run` (or `jit run --live` if the tool
   reads the `.env` file itself) — that's the only thing that makes a mount
-  serve real values. `jit agent status` shows what the last reader was
+  serve real values. `jit service status` shows what the last reader was
   served. Background: [Live-mounted files](../run/mounts.md).
 - **A script says `.env` is missing, or a tool ignores it.** A migrated
   `.env` is a named pipe, not a regular file, so a `[ -f .env ]` /
@@ -20,34 +20,32 @@ description: Placeholder values, hanging reads, surprise Touch ID prompts, and s
   `docker compose` env_file) and gets nothing, use `jit run --live`, or pin
   `read_as_file: true` in the project's `.jit/config.yaml`. See
   [Which command delivers a secret](./delivering-secrets.md).
-- **A command hangs reading `.env`.** The agent is the mount's writer and
-  normally auto-starts; if it crashed or was uninstalled the read blocks with
-  nothing serving it. `jit status` will say. `jit agent install` (re)starts it.
+- **A command hangs reading `.env`.** The service is the mount's writer and
+  normally auto-starts; if it crashed the read blocks with nothing serving it.
+  `jit status` will say. `jit service restart` (re)starts it.
 - **"No secret stored at ..." or a doctor failure.** A profile references a
   vault path that's gone (usually a `jit vault rm` after migration).
   Re-set it with `jit vault set <path>`, or update the profile.
 - **A Touch ID prompt appeared and you don't know why.** Read it - it names
   what it's for and what set it off ("unlock the vault for profile
-  `mcp-jamf`, launched by claude"). If it's already gone, `jit agent status`
+  `mcp-jamf`, launched by claude"). If it's already gone, `jit service status`
   shows who unlocked the current session and what dropped it, and
-  `jit agent history` lists every unlock and lock since the agent started:
+  `jit audit` lists every command, unlock, and lock, newest first:
 
   ```
-  Session history (most recent first):
-    • unlocked 4s ago (13:19:19) - launched by claude
-        ~/go/bin/jit run --profile mcp-caido -- caido-mcp-server serve
-    • locked   10s ago (13:19:13) - explicit lock, launched by claude
+  time=2026-07-22 13:19:19 level=info kind=unlock status=ok method=touchid-or-passcode cmd="~/go/bin/jit run --profile mcp-caido -- caido-mcp-server serve" parent=claude
+  time=2026-07-22 13:19:13 level=info kind=lock reason="explicit lock"
   ```
 
   A common surprise: opening an editor. If your project's `.mcp.json` wraps
   an MCP server in `jit run --profile ...`, then starting that editor starts
   a secret-injecting process, which prompts if the session has lapsed.
 - **Touch ID prompts feel too frequent.** First find out what's asking -
-  `jit agent history` (above) names each one. If they're all legitimate,
-  lengthen the [agent's](../agent/index.md) session window:
-  `jit agent install --ttl 1h`.
-- **"different build" warning from `jit status`.** The running agent is an
-  older binary than the CLI you're typing. Run `jit agent install` again to
+  `jit audit` (above) names each one. If they're all legitimate,
+  lengthen the [service's](../service/index.md) session window:
+  `jit service ttl 1h`.
+- **"different build" warning from `jit status`.** The running service is an
+  older binary than the CLI you're typing. Run `jit service restart` to
   restart it on the current one (see
   [Upgrading](./install.md#upgrading)).
 - **A wrapped tool stopped authenticating.** See

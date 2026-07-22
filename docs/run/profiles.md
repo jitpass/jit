@@ -46,7 +46,7 @@ $ jit doctor
 
 On the default full run it also folds in the health checks that used to take
 [`jit status`](../reference/commands/jit_status.md) and
-[`jit wrap doctor`](../wrap/troubleshooting.md) to see: the background agent,
+[`jit wrap doctor`](../wrap/troubleshooting.md) to see: the background service,
 your vault backup, and any wrapped-tool shims. These are surfaced as advisory
 warnings.
 
@@ -56,14 +56,14 @@ unparseable. Everything else it reports is a warning, never a failure:
 - an **orphaned** secret in the vault that no profile references (`--orphans`)
 - a profile name **shadowed** across scopes (the same name in both project and
   global; the project copy wins and the global one is ignored)
-- a stopped agent, a stale or missing vault backup, a broken shim
+- a stopped service, a stale or missing vault backup, a broken shim
 
 It never decrypts a secret or triggers Touch ID (existence and envelope
 structure are both plaintext on disk), so it is safe to run often. Useful
 flags:
 
 - `--profile <name>` narrows the run to a single profile and skips the
-  agent/backup/wrap sections.
+  service/backup/wrap sections.
 - `--verbose` lists every variable-to-path reference it cleared.
 - `--format json` prints a machine-readable snapshot: `ok` plus structured
   `problems` and `warnings` arrays (each entry carries `kind`, `profile`,

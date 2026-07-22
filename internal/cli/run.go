@@ -45,7 +45,7 @@ var runCmd = &cobra.Command{
 		"in (.env < .env.<m> < .env.local < .env.<m>.local); a mode layer is never\n" +
 		"merged without being asked for. --profile names one profile verbatim and\n" +
 		"disables merging entirely.\n\n" +
-		"When the agent is running and unlocked, jit run also makes this run's\n" +
+		"When the service is running and unlocked, jit run also makes this run's\n" +
 		"mounted files compatible with the command reading them, for the run's\n" +
 		"lifetime only. By default it swaps each mount to a plain inert pointer\n" +
 		"file, so `[ -f .env ]`/is_file() guards pass and re-reading the file\n" +
@@ -53,7 +53,7 @@ var runCmd = &cobra.Command{
 		"keeps the live mount and grants this run's process tree real file reads,\n" +
 		"for tools that read values from the .env file itself (docker compose\n" +
 		"env_file), which jit run also auto-detects. Either way the mount returns\n" +
-		"to its decoy state the moment the command exits; no agent, or a locked\n" +
+		"to its decoy state the moment the command exits; no service, or a locked\n" +
 		"one, skips this silently and injection works the same regardless.\n" +
 		"A project whose tools always read the file itself can pin live mode by\n" +
 		"putting `read_as_file: true` in its .jit/config.yaml, instead of --live\n" +
@@ -155,7 +155,7 @@ func requestRunCompat(w io.Writer, mountPaths, withNames, withMounts, argv []str
 	}
 	// This run actually has a mount to make compatible, so it needs the agent
 	// that serves it. Set one up silently on first use rather than leaving the
-	// mount unserved and the user to discover `jit agent install` — the agent
+	// mount unserved and the user to discover `jit service restart` — the agent
 	// is part of the app, not a separate setup step. Best-effort: a failed
 	// install just leaves the compat request on its existing no-agent no-op
 	// path below (agentClient's calls already degrade to "as before").

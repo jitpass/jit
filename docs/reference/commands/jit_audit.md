@@ -6,7 +6,7 @@ Show the audit log: what jit commands ran, when, by whom, and every unlock
 
 jit audit prints the application audit trail, most recent first: one line for
 every jit command that ran (what, when, which user and parent process, and
-whether it succeeded), interleaved with every local-auth event the agent saw
+whether it succeeded), interleaved with every local-auth event the service saw
 (each unlock and each DECLINED prompt, with how you were asked, what triggered
 it, and the secret names each one touched).
 

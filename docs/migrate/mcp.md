@@ -29,10 +29,10 @@ the AI tools themselves.
 ## What to expect
 
 - **Starting your editor now starts a secret-injecting process.** If the
-  agent's session has lapsed, that's a Touch ID prompt naming the profile
+  service's session has lapsed, that's a Touch ID prompt naming the profile
   and the caller ("unlock the vault for profile `mcp-jamf`, launched by
   claude") - the most common "why did that prompt appear?" case. See
-  [Provenance](../agent/provenance.md).
+  [Provenance](../service/provenance.md).
 - Claude Desktop's config is machine-wide, so it's covered by
   `jit migrate home`; a project `.mcp.json` is covered by `local` too.
 - Rotating: `jit vault set` on the paths shown by

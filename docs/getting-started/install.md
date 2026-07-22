@@ -17,11 +17,11 @@ sudo mv jit /usr/local/bin/
 ```
 
 That's the install done - continue with the **[Quickstart](./quickstart.md)**.
-The background agent that lets you unlock once per session (instead of once per
+The background service that lets you unlock once per session (instead of once per
 command) sets itself up automatically the first time you run `jit migrate` or
-`jit run`; there's no separate install step. Run `jit agent install` yourself
-only if you'd rather set it up ahead of time or pick a non-default session
-`--ttl` (see [The background agent](../agent/index.md)).
+`jit run`; there's no install step at all. Pick a non-default session length any
+time with `jit service ttl <d>` (see
+[The background service](../service/index.md)).
 
 Prebuilt binaries are Apple Silicon only - we don't have Intel hardware to
 test on, and won't publish what we can't test. On an Intel Mac, use
@@ -134,10 +134,10 @@ install locations.
 
 New versions are announced on the
 [Releases page](https://github.com/jitpass/jit/releases). The core of an
-upgrade is one step - reinstall the binary. A running agent switches itself
+upgrade is one step - reinstall the binary. A running service switches itself
 onto the new binary on its own (once its session is locked and no prompt is
 pending); the optional second line just makes that switch happen *now* instead
-of whenever the agent next goes idle.
+of whenever the service next goes idle.
 
 **Prebuilt install (Option A)** - no Go needed
 (`releases/latest/download/...` always serves the newest version):
@@ -146,32 +146,30 @@ of whenever the agent next goes idle.
 curl -sLO https://github.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz
 tar -xzf jitpass_darwin_arm64.tar.gz jit
 sudo mv jit /usr/local/bin/                        # 1. reinstall the binary
-jit agent install -y                               # 2. (optional) switch the running agent over now
+jit service restart                                # 2. (optional) switch the running service over now
 ```
 
 **Source install (Option B):**
 
 ```sh
 go install github.com/jitpass/jit/cmd/jit@v0.19.2   # 1. reinstall the binary (pin the new tag)
-jit agent install -y                               # 2. (optional) switch the running agent over now
+jit service restart                                # 2. (optional) switch the running service over now
 ```
 
 Pin the tag rather than `@latest` right after a release: the Go module proxy
 caches `@latest`, so it can quietly hand you the previous version for a while.
 
-Why the second line matters. launchd keeps the old agent process (and the old
+Why the second line matters. launchd keeps the old service process (and the old
 binary) running right through your reinstall; every command that talks to it
 still gets last version's behavior, which reads as "I upgraded but nothing
-changed." `jit status` and `jit agent status` warn with "different build" until
-it's restarted. The agent does switch onto the replaced binary on its own, but
+changed." `jit status` and `jit service status` warn with "different build" until
+it's restarted. The service does switch onto the replaced binary on its own, but
 only once its session is locked and no prompt is pending - so run
-`jit agent install -y` to have it now. Why `install -y` rather than
-`jit agent restart`: it does everything restart does, and it also re-points the
-launchd service if the binary moved and re-bootstraps it if launchd had dropped
-the service (a plist on disk with no running process), neither of which restart
-can fix. If the agent was never installed at all, that line is simply the
-one-time setup (though your first `jit migrate`/`jit run` would install it
-anyway); the binary reinstall is otherwise the whole upgrade.
+`jit service restart` to have it now. Restart re-points the launchd service if
+the binary moved, re-bootstraps it if launchd had dropped the service (a plist
+on disk with no running process), and recreates the login item if it was missing
+entirely - so it's the one command for any "get it onto the new binary" state.
+The binary reinstall is otherwise the whole upgrade.
 
 ---
 

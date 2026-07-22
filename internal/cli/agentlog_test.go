@@ -113,7 +113,7 @@ func TestAgentRunRejectsNonPositiveTTL(t *testing.T) {
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
-	rootCmd.SetArgs([]string{"agent", "run", "--ttl", "0s"})
+	rootCmd.SetArgs([]string{"service", "run", "--ttl", "0s"})
 	if err := rootCmd.Execute(); err == nil {
 		t.Fatal("jit agent run --ttl 0s succeeded, want a validation error")
 	}
@@ -146,7 +146,7 @@ func execAgentLog(t *testing.T, args ...string) (string, error) {
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
-	rootCmd.SetArgs(append([]string{"agent", "log"}, args...))
+	rootCmd.SetArgs(append([]string{"service", "log"}, args...))
 	err := rootCmd.Execute()
 	return buf.String(), err
 }
@@ -178,7 +178,7 @@ func TestAgentLogCommandExplainsMissingLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit agent log with no log file: %v, an absent log is a normal state, not an error", err)
 	}
-	if !strings.Contains(out, "No agent log yet") || !strings.Contains(out, "jit agent install") {
+	if !strings.Contains(out, "No service log yet") || !strings.Contains(out, "jit service restart") {
 		t.Errorf("output %q, want it to explain there's no log yet and how one comes to exist", out)
 	}
 }
