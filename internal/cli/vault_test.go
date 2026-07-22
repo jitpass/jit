@@ -711,6 +711,78 @@ func TestPrintSecretsByProvenance(t *testing.T) {
 	}
 }
 
+// TestPrintGroupedSecretsNests pins the tree renderer: multi-segment paths
+// collapse under a shared parent with indented subtrees, while a single-level
+// path renders flat exactly as before.
+func TestPrintGroupedSecretsNests(t *testing.T) {
+	secrets := []string{
+		"custom_scripts/jamf/CLIENT_ID",
+		"custom_scripts/jamf/CLIENT_SECRET",
+		"custom_scripts/notion/API_KEY",
+		"flat/ONLY",
+	}
+	var buf bytes.Buffer
+	printGroupedSecrets(&buf, secrets, nil)
+	out := buf.String()
+
+	for _, want := range []string{
+		"custom_scripts/ (3)",
+		"  jamf/ (2)",
+		"    CLIENT_ID",
+		"    CLIENT_SECRET",
+		"  notion/ (1)",
+		"    API_KEY",
+		"flat/ (1)",
+		"  ONLY",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("nested tree missing %q, got:\n%s", want, out)
+		}
+	}
+	// The old flat behavior (key keeping its mid-path) must be gone.
+	if strings.Contains(out, "jamf/CLIENT_ID") {
+		t.Errorf("nested path must not render flat, got:\n%s", out)
+	}
+}
+
+func TestLooksLikeConfig(t *testing.T) {
+	config := []string{"OUTPUT_FILE", "DEBUG", "AWS_REGION", "LOG_LEVEL", "HIBOB_FIELDS", "PORT"}
+	secret := []string{"API_KEY", "JAMF_CLIENT_SECRET", "STRIPE_KEY", "DATABASE_URL", "AUTH_TOKEN", "WIZ_CLIENT_ID", "PRIVATE_KEY"}
+	for _, n := range config {
+		if !looksLikeConfig(n) {
+			t.Errorf("looksLikeConfig(%q) = false, want true", n)
+		}
+	}
+	for _, n := range secret {
+		if looksLikeConfig(n) {
+			t.Errorf("looksLikeConfig(%q) = true, want false (never dim a possible secret)", n)
+		}
+	}
+}
+
+// TestPrintDuplicateGroupNudge: identical key sets across groups trigger one
+// hint, but small look-alikes (2 keys) and genuinely distinct groups don't.
+func TestPrintDuplicateGroupNudge(t *testing.T) {
+	// wiz/ and custom_scripts-wiz/ share five keys -> nudge.
+	dup := []string{
+		"wiz/A", "wiz/B", "wiz/C", "wiz/D",
+		"custom_scripts-wiz/A", "custom_scripts-wiz/B", "custom_scripts-wiz/C", "custom_scripts-wiz/D",
+	}
+	var buf bytes.Buffer
+	printDuplicateGroupNudge(&buf, dup)
+	if !strings.Contains(buf.String(), "wiz/, custom_scripts-wiz/") && !strings.Contains(buf.String(), "hold the same keys") {
+		t.Errorf("expected a duplicate-group nudge, got:\n%s", buf.String())
+	}
+
+	// Two-key sandboxes are below the threshold -> silence.
+	buf.Reset()
+	small := []string{"sandbox/DATABASE_URL", "sandbox/STRIPE_KEY", "sandbox-2/DATABASE_URL", "sandbox-2/STRIPE_KEY"}
+	printDuplicateGroupNudge(&buf, small)
+	if buf.Len() != 0 {
+		t.Errorf("2-key look-alikes must not nudge, got:\n%s", buf.String())
+	}
+}
+
 func TestSecretMetaSuffix(t *testing.T) {
 	if got := secretMetaSuffix(vault.SecretInfo{}); got != "unknown" {
 		t.Errorf("empty info suffix = %q, want %q", got, "unknown")
@@ -721,6 +793,13 @@ func TestSecretMetaSuffix(t *testing.T) {
 	got := secretMetaSuffix(vault.SecretInfo{Class: vault.ClassMCP, UpdatedUnix: time.Now().Unix()})
 	if !strings.HasPrefix(got, "mcp · updated ") {
 		t.Errorf("classed+timed suffix = %q, want prefix %q", got, "mcp · updated ")
+	}
+	// A config-shaped key name appends the hint; a secret-shaped one never does.
+	if got := secretMetaSuffix(vault.SecretInfo{Path: "hibob/OUTPUT_FILE", Class: vault.ClassDotenv}); !strings.Contains(got, "likely config") {
+		t.Errorf("config-named suffix = %q, want a \"likely config\" hint", got)
+	}
+	if got := secretMetaSuffix(vault.SecretInfo{Path: "jamf/CLIENT_SECRET", Class: vault.ClassDotenv}); strings.Contains(got, "likely config") {
+		t.Errorf("secret-named suffix = %q, must not be hinted as config", got)
 	}
 }
 
