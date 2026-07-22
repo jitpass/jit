@@ -33,9 +33,11 @@ var (
 	vaultSetStdin      bool
 	vaultSetForce      bool
 	vaultGetCopy       bool
+	vaultGetJSON       bool
 	vaultRmForce       bool
 	vaultListFormat    string
 	vaultListAll       bool
+	vaultListLong      bool
 	vaultExportStdin   bool
 	vaultImportStdin   bool
 	vaultImportYes     bool
@@ -68,6 +70,24 @@ type vaultListResult struct {
 	Backups []string `json:"backups"`
 }
 
+// vaultGetResult is `jit vault get --json`'s object: the decrypted value plus
+// the envelope's plaintext provenance (class/group/origin) and timestamps —
+// the structured form of the faint footer, so a script gets the source kind
+// as a first-class field instead of parsing decoration or joining to the
+// prunable backup ledger. Empty provenance fields are omitted (a v1/v2 secret
+// written before provenance existed), never rendered as a guess.
+type vaultGetResult struct {
+	Path           string `json:"path"`
+	Version        int    `json:"version"`
+	Class          string `json:"class,omitempty"`
+	GroupID        string `json:"group_id,omitempty"`
+	Origin         string `json:"origin,omitempty"`
+	OriginSeenUnix int64  `json:"origin_seen_unix,omitempty"`
+	CreatedUnix    int64  `json:"created_unix,omitempty"`
+	UpdatedUnix    int64  `json:"updated_unix,omitempty"`
+	Value          string `json:"value"`
+}
+
 // splitBackupPaths separates a vault listing into user secrets and jit
 // migrate's own _backups/ entries, preserving order within each.
 func splitBackupPaths(paths []string) (secrets, backups []string) {
@@ -91,13 +111,16 @@ func splitBackupPaths(paths []string) (secrets, backups []string) {
 // them too (always flat: they're deep bookkeeping paths, grouping adds
 // nothing), and exactly one closing count line so nobody has to count rows
 // themselves.
-func printVaultList(out io.Writer, secrets, backups []string, showBackups, grouped bool) {
+// meta, when non-nil (`-l` on a terminal), carries each secret's header
+// info so the grouped view can annotate every line with its class and
+// last-updated age; nil keeps the plain, unannotated listing.
+func printVaultList(out io.Writer, secrets, backups []string, showBackups, grouped bool, meta map[string]vault.SecretInfo) {
 	if len(secrets) == 0 && len(backups) == 0 {
 		fmt.Fprintln(out, "No secrets stored yet. Run `jit vault set <path>` to add one, or `jit migrate local` to move existing secrets in.")
 		return
 	}
 	if grouped {
-		printGroupedSecrets(out, secrets)
+		printGroupedSecrets(out, secrets, meta)
 	} else {
 		for _, p := range secrets {
 			fmt.Fprintln(out, p)
@@ -129,7 +152,7 @@ func printVaultList(out io.Writer, secrets, backups []string, showBackups, group
 // stripped. Relies on List's naturally-sorted input keeping every path
 // that shares a "prefix/" contiguous (naturalLess is a total order decided
 // on the shared prefix, so it does). Pathless entries print as bare lines.
-func printGroupedSecrets(out io.Writer, secrets []string) {
+func printGroupedSecrets(out io.Writer, secrets []string, meta map[string]vault.SecretInfo) {
 	faint := color.New(color.Faint)
 	for i := 0; i < len(secrets); {
 		slash := strings.Index(secrets[i], "/")
@@ -144,10 +167,41 @@ func printGroupedSecrets(out io.Writer, secrets []string) {
 			j++
 		}
 		_, _ = faint.Fprintf(out, "%s (%d)\n", prefix, j-i)
+		// In -l mode, align the metadata column to the widest key in THIS
+		// group (not the whole listing), so each group reads as its own tidy
+		// table without one giant prefix forcing everything else far right.
+		keyWidth := 0
+		if meta != nil {
+			for k := i; k < j; k++ {
+				if w := len(secrets[k][len(prefix):]); w > keyWidth {
+					keyWidth = w
+				}
+			}
+		}
 		for ; i < j; i++ {
-			fmt.Fprintf(out, "  %s\n", secrets[i][len(prefix):])
+			key := secrets[i][len(prefix):]
+			if meta == nil {
+				fmt.Fprintf(out, "  %s\n", key)
+				continue
+			}
+			fmt.Fprintf(out, "  %-*s  ", keyWidth, key)
+			_, _ = faint.Fprintln(out, secretMetaSuffix(meta[secrets[i]]))
 		}
 	}
+}
+
+// secretMetaSuffix is the faint `-l` annotation for one secret: its class
+// (or "unknown" for a v1/v2 secret written before provenance existed) and,
+// when the envelope records it, how long ago the value was last updated.
+func secretMetaSuffix(info vault.SecretInfo) string {
+	class := info.Class
+	if class == "" {
+		class = "unknown"
+	}
+	if info.UpdatedUnix > 0 {
+		return fmt.Sprintf("%s · updated %s ago", class, humanAgo(time.Since(time.Unix(info.UpdatedUnix, 0))))
+	}
+	return class
 }
 
 var vaultCmd = &cobra.Command{
@@ -252,12 +306,20 @@ var vaultGetCmd = &cobra.Command{
 		"secret was last updated, which profiles reference it, and the config\n" +
 		"file its migration recorded as the source. Piped or redirected output\n" +
 		"receives the value only, never the footer.\n\n" +
+		"--json prints an object with the value and the envelope's provenance\n" +
+		"(class, group, origin) and timestamps instead of the bare value.\n\n" +
 		"Requires a fresh Touch ID/passcode on every run, never the cached service\n" +
 		"session, so a decrypted secret can never be read silently, even on an\n" +
 		"already-unlocked machine.",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeVaultPaths,
+	// A --json error must not be buried under cobra usage text — same
+	// reasoning as vault list's SilenceUsage.
+	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if vaultGetCopy && vaultGetJSON {
+			return fmt.Errorf("jit vault get: --copy and --json are mutually exclusive (one hides the value, the other prints it)")
+		}
 		// Fresh auth on every read, never the cached service session: printing
 		// a decrypted secret always costs a fingerprint/passcode, locked or
 		// not, so an unlocked session can't be looped to exfiltrate secrets.
@@ -271,6 +333,25 @@ var vaultGetCmd = &cobra.Command{
 				return fmt.Errorf("jit vault get: no secret stored at %q", args[0])
 			}
 			return fmt.Errorf("jit vault get: %w", err)
+		}
+
+		if vaultGetJSON {
+			// Info reads only the envelope header — no decryption, no second
+			// prompt (the one Get already cost is enough). Best-effort: the
+			// value is in hand, so a header hiccup drops metadata, never the
+			// whole get.
+			info, _ := v.Info(args[0])
+			return writeJSON(cmd.OutOrStdout(), vaultGetResult{
+				Path:           args[0],
+				Version:        info.Version,
+				Class:          info.Class,
+				GroupID:        info.GroupID,
+				Origin:         info.Origin,
+				OriginSeenUnix: info.OriginSeenUnix,
+				CreatedUnix:    info.CreatedUnix,
+				UpdatedUnix:    info.UpdatedUnix,
+				Value:          string(value),
+			})
 		}
 
 		if vaultGetCopy {
@@ -397,7 +478,8 @@ var vaultListCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit vault list: %w", err)
 		}
-		paths, err := (&vault.Vault{Root: root}).List()
+		readVault := &vault.Vault{Root: root}
+		paths, err := readVault.List()
 		if err != nil {
 			return fmt.Errorf("jit vault list: %w", err)
 		}
@@ -410,7 +492,21 @@ var vaultListCmd = &cobra.Command{
 			return writeJSON(cmd.OutOrStdout(), vaultListResult{Secrets: secrets, Backups: backups})
 		}
 
-		printVaultList(cmd.OutOrStdout(), secrets, backups, vaultListAll, term.IsTerminal(int(os.Stdout.Fd())))
+		grouped := term.IsTerminal(int(os.Stdout.Fd()))
+		// -l reads each secret's envelope header for its class and age. Info
+		// touches no key material and never prompts (same read-only contract
+		// as List), so a names-only listing stays auth-free. Only meaningful
+		// grouped (on a terminal); a piped listing stays byte-clean for grep.
+		var meta map[string]vault.SecretInfo
+		if vaultListLong && grouped {
+			meta = make(map[string]vault.SecretInfo, len(secrets))
+			for _, p := range secrets {
+				if info, err := readVault.Info(p); err == nil {
+					meta[p] = info
+				}
+			}
+		}
+		printVaultList(cmd.OutOrStdout(), secrets, backups, vaultListAll, grouped, meta)
 		return nil
 	},
 }
@@ -1268,9 +1364,11 @@ func init() {
 	vaultSetCmd.Flags().BoolVar(&vaultSetStdin, "stdin", false, "read the secret value from stdin instead of prompting")
 	vaultSetCmd.Flags().BoolVarP(&vaultSetForce, "force", "f", false, "overwrite an existing secret without confirmation")
 	vaultGetCmd.Flags().BoolVarP(&vaultGetCopy, "copy", "c", false, "copy the value to the clipboard instead of printing it")
+	vaultGetCmd.Flags().BoolVar(&vaultGetJSON, "json", false, "print an object with the value plus provenance (class/group/origin) and timestamps")
 	vaultRmCmd.Flags().BoolVarP(&vaultRmForce, "force", "f", false, "delete without confirmation")
 	vaultListCmd.Flags().StringVar(&vaultListFormat, "format", "text", `output format: "text" (default) or "json"`)
 	vaultListCmd.Flags().BoolVar(&vaultListAll, "all", false, "also list jit migrate's encrypted file backups (_backups/...)")
+	vaultListCmd.Flags().BoolVarP(&vaultListLong, "long", "l", false, "show each secret's class and last-updated age (terminal output only)")
 	vaultExportCmd.Flags().BoolVar(&vaultExportStdin, "stdin", false, "read the passphrase from stdin instead of prompting (no confirmation double-entry)")
 	vaultImportCmd.Flags().BoolVar(&vaultImportStdin, "stdin", false, "read the passphrase from stdin instead of prompting")
 	vaultImportCmd.Flags().BoolVarP(&vaultImportYes, "yes", "y", false, "skip the confirmation prompt and import immediately")

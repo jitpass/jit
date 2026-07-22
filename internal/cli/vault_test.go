@@ -564,7 +564,7 @@ func TestPrintVaultList(t *testing.T) {
 	backups := []string{"_backups/Users/x/notion/.env.jit-bak-1"}
 
 	var buf bytes.Buffer
-	printVaultList(&buf, secrets, backups, false, false)
+	printVaultList(&buf, secrets, backups, false, false, nil)
 	out := buf.String()
 	if strings.Contains(out, "_backups/") {
 		t.Errorf("default listing must not include _backups/ entries, got:\n%s", out)
@@ -574,7 +574,7 @@ func TestPrintVaultList(t *testing.T) {
 	}
 
 	buf.Reset()
-	printVaultList(&buf, secrets, backups, true, false)
+	printVaultList(&buf, secrets, backups, true, false, nil)
 	out = buf.String()
 	if !strings.Contains(out, "_backups/Users/x/notion/.env.jit-bak-1") {
 		t.Errorf("--all must list backup entries, got:\n%s", out)
@@ -584,7 +584,7 @@ func TestPrintVaultList(t *testing.T) {
 	}
 
 	buf.Reset()
-	printVaultList(&buf, nil, backups, false, false)
+	printVaultList(&buf, nil, backups, false, false, nil)
 	out = buf.String()
 	if !strings.Contains(out, "No secrets stored yet, 1 encrypted file backup kept for `jit migrate undo` (list with --all).") {
 		t.Errorf("backups-only vault needs an honest empty state, got:\n%s", out)
@@ -593,7 +593,7 @@ func TestPrintVaultList(t *testing.T) {
 	// Backups-only with --all: the backups list, and the closing line
 	// still says "No secrets" rather than the old "0 secret(s)".
 	buf.Reset()
-	printVaultList(&buf, nil, backups, true, false)
+	printVaultList(&buf, nil, backups, true, false, nil)
 	out = buf.String()
 	if !strings.Contains(out, "_backups/Users/x/notion/.env.jit-bak-1") {
 		t.Errorf("backups-only --all must list backup entries, got:\n%s", out)
@@ -603,7 +603,7 @@ func TestPrintVaultList(t *testing.T) {
 	}
 
 	buf.Reset()
-	printVaultList(&buf, nil, nil, false, false)
+	printVaultList(&buf, nil, nil, false, false, nil)
 	if !strings.Contains(buf.String(), "No secrets stored yet. Run `jit vault set <path>`") {
 		t.Errorf("empty vault keeps the standard empty state, got:\n%s", buf.String())
 	}
@@ -623,7 +623,7 @@ func TestPrintVaultListGrouped(t *testing.T) {
 	backups := []string{"_backups/Users/x/notion/.env.jit-bak-1"}
 
 	var buf bytes.Buffer
-	printVaultList(&buf, secrets, backups, true, true)
+	printVaultList(&buf, secrets, backups, true, true, nil)
 	out := buf.String()
 	for _, want := range []string{
 		"descope/ (2)",
@@ -644,6 +644,48 @@ func TestPrintVaultListGrouped(t *testing.T) {
 	}
 	if strings.Contains(out, "_backups/ (") {
 		t.Errorf("backups must never be grouped, got:\n%s", out)
+	}
+}
+
+// TestPrintVaultListLong pins the -l annotation: each key gains its class
+// and last-updated age, a secret without provenance reads "unknown", and a
+// secret with no timestamp shows the class alone (never a 1970 age).
+func TestPrintVaultListLong(t *testing.T) {
+	secrets := []string{"jamf/API_KEY", "jamf/OLD_KEY"}
+	now := time.Now().Unix()
+	meta := map[string]vault.SecretInfo{
+		"jamf/API_KEY": {Path: "jamf/API_KEY", Class: vault.ClassDotenv, UpdatedUnix: now - 3*24*3600},
+		"jamf/OLD_KEY": {Path: "jamf/OLD_KEY"}, // no class, no timestamp (a v1 secret)
+	}
+
+	var buf bytes.Buffer
+	printVaultList(&buf, secrets, nil, false, true, meta)
+	out := buf.String()
+
+	if !strings.Contains(out, "dotenv · updated") {
+		t.Errorf("-l must annotate the class and age, got:\n%s", out)
+	}
+	if !strings.Contains(out, "unknown") {
+		t.Errorf("-l must render a provenance-less secret as \"unknown\", got:\n%s", out)
+	}
+	// The no-timestamp secret shows class only, never a bogus age.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "OLD_KEY") && strings.Contains(line, "updated") {
+			t.Errorf("a secret with no UpdatedUnix must not show an age, got line:\n%s", line)
+		}
+	}
+}
+
+func TestSecretMetaSuffix(t *testing.T) {
+	if got := secretMetaSuffix(vault.SecretInfo{}); got != "unknown" {
+		t.Errorf("empty info suffix = %q, want %q", got, "unknown")
+	}
+	if got := secretMetaSuffix(vault.SecretInfo{Class: vault.ClassMCP}); got != "mcp" {
+		t.Errorf("classed-but-timeless suffix = %q, want %q", got, "mcp")
+	}
+	got := secretMetaSuffix(vault.SecretInfo{Class: vault.ClassMCP, UpdatedUnix: time.Now().Unix()})
+	if !strings.HasPrefix(got, "mcp · updated ") {
+		t.Errorf("classed+timed suffix = %q, want prefix %q", got, "mcp · updated ")
 	}
 }
 
