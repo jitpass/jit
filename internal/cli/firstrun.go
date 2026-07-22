@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -19,15 +18,6 @@ import (
 	"github.com/jitpass/jit/internal/mount"
 )
 
-// playgroundMarker is the file the jitpass-playground repo ships at its root
-// so `jit` can recognize a sandbox checkout. Detection here is cosmetic: it
-// only softens the copy ("these are synthetic") and forces the project-scoped
-// reveal, so a missing marker just falls back to generic project handling,
-// never to anything unsafe. Aliased to audit.PlaygroundMarkerFile so the CLI
-// and the audit scanner (which excludes playground findings from the score)
-// can never disagree on the filename.
-const playgroundMarker = audit.PlaygroundMarkerFile
-
 // firstRunDeps are the seams the first-run flow is exercised through. The real
 // root command wires them to production implementations in prodFirstRunDeps;
 // tests inject fakes so the whole decision tree runs without a keychain, an
@@ -37,7 +27,6 @@ type firstRunDeps struct {
 	isTTY        func() bool            // interactive stdin AND stdout?
 	cwd          func() (string, error) // current directory
 	homeDir      func() (string, error) // $HOME
-	isPlayground func(dir string) bool  // a jitpass-playground checkout?
 	scan         func(root string) ([]audit.Finding, audit.ScanSummary, error)
 	render       func(w io.Writer, findings []audit.Finding, summary audit.ScanSummary)
 	confirm      func(prompt string) bool   // y/N gate
@@ -64,13 +53,12 @@ func firstRun(cmd *cobra.Command, d firstRunDeps) error {
 
 	out := cmd.OutOrStdout()
 	cwd, _ := d.cwd()
-	playground := cwd != "" && d.isPlayground(cwd)
 
-	// Cwd-aware reveal: scope to the project you're standing in first (safe
-	// and on-message in the playground), and fall back to a machine-wide scan
-	// only when the current directory isn't itself a project with exposed
-	// secrets. The chosen scan result is reused for rendering, never
-	// re-scanned, so the scary machine-wide walk happens at most once.
+	// Cwd-aware reveal: scope to the project you're standing in first, and
+	// fall back to a machine-wide scan only when the current directory isn't
+	// itself a project with exposed secrets. The chosen scan result is reused
+	// for rendering, never re-scanned, so the scary machine-wide walk happens
+	// at most once.
 	var (
 		findings    []audit.Finding
 		summary     audit.ScanSummary
@@ -81,7 +69,7 @@ func firstRun(cmd *cobra.Command, d firstRunDeps) error {
 		if err != nil {
 			return err
 		}
-		if len(cf) > 0 || playground {
+		if len(cf) > 0 {
 			findings, summary, projectMode = cf, cs, true
 		}
 	}
@@ -103,10 +91,6 @@ func firstRun(cmd *cobra.Command, d firstRunDeps) error {
 
 	fmt.Fprintln(out)
 	switch {
-	case playground:
-		fmt.Fprintln(out, "You're in the jitpass playground. Every secret here is synthetic, so")
-		fmt.Fprintln(out, "it's safe to run the whole flow. Here's what this project exposes")
-		fmt.Fprintln(out, "(read-only, nothing is changed):")
 	case projectMode:
 		fmt.Fprintln(out, "Welcome to jit. Here's what's exposed in this project (read-only),")
 		fmt.Fprintln(out, "nothing is changed:")
@@ -119,13 +103,7 @@ func firstRun(cmd *cobra.Command, d firstRunDeps) error {
 	fmt.Fprintln(out)
 
 	if len(findings) == 0 {
-		if playground {
-			fmt.Fprintln(out, "Nothing exposed here yet. Add a secret and run `jit` again, or follow")
-			fmt.Fprintln(out, "the tour in the playground README.")
-		} else {
-			fmt.Fprintln(out, "No plaintext secrets found. Nice.")
-			fmt.Fprintln(out, "Want to see the whole flow risk-free? github.com/jitpass/jitpass-playground")
-		}
+		fmt.Fprintln(out, "No plaintext secrets found. Nice.")
 		return nil
 	}
 
@@ -175,7 +153,6 @@ func prodFirstRunDeps(cmd *cobra.Command) firstRunDeps {
 		},
 		cwd:          os.Getwd,
 		homeDir:      os.UserHomeDir,
-		isPlayground: isPlaygroundDir,
 		scan:         scanRoot,
 		render: func(w io.Writer, f []audit.Finding, s audit.ScanSummary) {
 			home, _ := os.UserHomeDir() // display-only "~"-shortening
@@ -200,21 +177,6 @@ func scanRoot(root string) ([]audit.Finding, audit.ScanSummary, error) {
 		cfg.MountRegistryPath = mount.RegistryPath(vroot)
 	}
 	return audit.Scan(cfg)
-}
-
-// isPlaygroundDir reports whether dir or any ancestor holds the playground
-// marker file. Walking up lets it fire from a subdirectory of the checkout too.
-func isPlaygroundDir(dir string) bool {
-	for {
-		if _, err := os.Stat(filepath.Join(dir, playgroundMarker)); err == nil {
-			return true
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir { // reached the filesystem root
-			return false
-		}
-		dir = parent
-	}
 }
 
 // execSelf re-runs jit itself with args, inheriting the real terminal, so each

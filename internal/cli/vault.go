@@ -787,7 +787,7 @@ var vaultCleanCmd = &cobra.Command{
 		// the file as decoys — and unmounting AFTER a clean is impossible
 		// (unmount needs the vault to write the plaintext back), so the
 		// only recoverable order is unmount first. A real incident: a
-		// playground vault cleaned with 4 mounts registered left all four
+		// test vault cleaned with 4 mounts registered left all four
 		// unrecoverable and every profile broken.
 		root, err := vaultRootDir()
 		if err != nil {

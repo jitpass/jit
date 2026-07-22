@@ -336,20 +336,6 @@ func anyArchived(findings []Finding) bool {
 	return false
 }
 
-// playgroundLocation renders the human phrase for where excluded synthetic
-// findings came from: the single "~"-shortened path when there is one
-// playground, a plain count when several, or a bare label as a fallback.
-func playgroundLocation(home string, paths []string) string {
-	switch len(paths) {
-	case 0:
-		return "a jitpass playground"
-	case 1:
-		return "a jitpass playground (" + ShortenHome(home, paths[0]) + ")"
-	default:
-		return fmt.Sprintf("%d jitpass playgrounds", len(paths))
-	}
-}
-
 // WriteHumanReport renders the default jit scan report (RFC.md §4):
 // a color-coded risk banner, per-category counts, and exact file:line
 // locations. Never a real secret value — only Finding.ValuePreview, which
@@ -402,13 +388,6 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	// as the scanner having missed them.
 	if summary.JitProtectedCount > 0 {
 		_, _ = color.New(color.FgGreen).Fprintf(w, "  Already protected by jit: %d live mount(s), served from the encrypted vault, no plaintext on disk. Not scanned.\n", summary.JitProtectedCount)
-	}
-	// Same "excluded, but say so" treatment: synthetic findings from a jitpass
-	// playground crossed during the walk are dropped from every count above so
-	// demo bait can't inflate a real machine's score — state it so the drop is
-	// visible, not a silent gap.
-	if summary.SyntheticFindingCount > 0 {
-		_, _ = color.New(color.FgGreen).Fprintf(w, "  Excluded from the score: %d synthetic finding(s) in %s. Synthetic playground secrets, not real exposure.\n", summary.SyntheticFindingCount, playgroundLocation(home, summary.SyntheticPlaygroundPaths))
 	}
 	fmt.Fprintln(w)
 

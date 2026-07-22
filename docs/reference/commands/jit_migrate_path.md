@@ -24,10 +24,9 @@ Each target is resolved on its own:
                fixed-path files (those aren't "under" any project directory).
 
 Unlike `jit migrate home`, path targets are explicit, so nothing is skipped
-for looking archived/backup-like, and a jitpass-playground checkout is not
-filtered either. Naming a file is itself the decision to convert it. The
-per-category outcome (live mount, exec plugin, credential helper, ...) is
-identical to the other scopes; see `jit migrate local --help` and
+for looking archived/backup-like. Naming a file is itself the decision to
+convert it. The per-category outcome (live mount, exec plugin, credential
+helper, ...) is identical to the other scopes; see `jit migrate local --help` and
 `jit migrate home --help` for the detail. Every run still prints the full
 plan and asks for confirmation, backs each file up into the vault first, and
 is reversible with `jit migrate undo`.

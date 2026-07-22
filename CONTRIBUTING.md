@@ -69,8 +69,8 @@ before opening a PR.
   in `internal/cli` and `internal/migrate` use.
 - **Anything requiring an interactive Touch ID/passcode prompt cannot be tested
   automatically**, those paths are stubbed in tests and verified manually
-  against the [playground](https://github.com/jitpass/jitpass-playground).
-  Never point a test at the production keychain identifier.
+  against a throwaway fixture `$HOME`. Never point a test at the production
+  keychain identifier.
 
 ## Pull requests
 

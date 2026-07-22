@@ -41,12 +41,6 @@ scan time: 2026-07-07T14:48:08.370Z          duration: 2ms
 A full sample of the output is in the
 **[example report](./example-report.md)** (synthetic data).
 
-One exception to "everything counts": findings inside a
-[jitpass-playground](https://github.com/jitpass/jitpass-playground)
-checkout are synthetic demo secrets, so they are excluded from the counts
-and the exposure score. The report says how many were excluded and where,
-so nothing disappears silently.
-
 ## Output formats
 
 | Invocation | Gets you |

@@ -50,13 +50,6 @@ func WriteMarkdownReport(w io.Writer, findings []Finding, summary ScanSummary) {
 	if summary.JitProtectedCount > 0 {
 		fmt.Fprintf(w, "Already protected by jit: %d live mount(s), served from the encrypted vault, no plaintext on disk. Not scanned.\n\n", summary.JitProtectedCount)
 	}
-	// Parity with WriteHumanReport's synthetic line: playground findings
-	// crossed during the walk are excluded from the score, stated not silent.
-	// Markdown keeps absolute paths (empty home), like every other path here.
-	if summary.SyntheticFindingCount > 0 {
-		fmt.Fprintf(w, "Excluded from the score: %d synthetic finding(s) in %s. Synthetic playground secrets, not real exposure.\n\n", summary.SyntheticFindingCount, playgroundLocation("", summary.SyntheticPlaygroundPaths))
-	}
-
 	if summary.TotalFindings == 0 {
 		fmt.Fprintln(w, "No findings. This machine looks clean.")
 		return
