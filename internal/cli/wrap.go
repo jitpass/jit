@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jitpass/jit/internal/migrate"
+	"github.com/jitpass/jit/internal/vault"
 	"github.com/jitpass/jit/internal/wrap"
 )
 
@@ -96,7 +97,15 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 		if err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
-		if err := v.Set(vaultPath, []byte(discovery.Value)); err != nil {
+		gid, err := vault.NewGroupID()
+		if err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		origin := ""
+		if discovery.Source != nil {
+			origin = discovery.Source.Path // already ~-form (see wrap.ExpandHome)
+		}
+		if err := v.SetWithMeta(vaultPath, []byte(discovery.Value), vault.Meta{Class: vault.ClassWrap, GroupID: gid, Origin: origin}); err != nil {
 			return fmt.Errorf("jit wrap: storing %s: %w", vaultPath, err)
 		}
 		if discovery.Source != nil {
