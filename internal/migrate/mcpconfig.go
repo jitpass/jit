@@ -239,9 +239,13 @@ func migrateMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, serverNam
 	}
 	sort.Strings(varNames)
 
+	meta, err := newProvenance(vault.ClassMCP, sourcePath)
+	if err != nil {
+		return MCPServerMigration{}, err
+	}
 	for _, envKey := range varNames {
 		secretPath := profileName + "/" + envKey
-		if err := v.Set(secretPath, []byte(env[envKey])); err != nil {
+		if err := v.SetWithMeta(secretPath, []byte(env[envKey]), meta); err != nil {
 			return MCPServerMigration{}, fmt.Errorf("storing %s in vault: %w", envKey, err)
 		}
 		entries[envKey] = secretPath

@@ -200,7 +200,7 @@ func checkTerraformRCConflict(rcPath string) (alreadyInstalled bool, err error) 
 // global profile manifest, preserving any existing entries — the same
 // merge-not-overwrite discipline every other Apply* here follows.
 // Returns the profile name, manifest path, and secret path used.
-func upsertTerraformProfile(v *vault.Vault, host string, token []byte) (name, manifestPath, secretPath string, err error) {
+func upsertTerraformProfile(v *vault.Vault, host string, token []byte, meta vault.Meta) (name, manifestPath, secretPath string, err error) {
 	name = terraformProfilePrefix + host
 	globalRoot, err := profile.GlobalRoot()
 	if err != nil {
@@ -224,7 +224,7 @@ func upsertTerraformProfile(v *vault.Vault, host string, token []byte) (name, ma
 	}
 
 	secretPath = name + "/TOKEN"
-	if err := v.Set(secretPath, token); err != nil {
+	if err := v.SetWithMeta(secretPath, token, meta); err != nil {
 		return "", "", "", fmt.Errorf("storing token in vault: %w", err)
 	}
 	entries["TOKEN"] = secretPath
@@ -272,7 +272,11 @@ func ApplyTerraformHost(v *vault.Vault, home, host string, dedup ...*BackupTrack
 		return TerraformMigration{}, err
 	}
 
-	profileName, manifestPath, _, err := upsertTerraformProfile(v, host, []byte(token))
+	meta, err := newProvenance(vault.ClassTerraform, credPath)
+	if err != nil {
+		return TerraformMigration{}, err
+	}
+	profileName, manifestPath, _, err := upsertTerraformProfile(v, host, []byte(token), meta)
 	if err != nil {
 		return TerraformMigration{}, err
 	}
@@ -395,7 +399,14 @@ func StoreTerraformToken(v *vault.Vault, host, token string) error {
 	if token == "" {
 		return fmt.Errorf("empty token for host %q", host)
 	}
-	_, _, _, err := upsertTerraformProfile(v, host, []byte(token))
+	// Live `terraform login` after migration: no credentials file to point
+	// at, so class-only provenance (fresh group, no origin), the same shape
+	// a re-migrated host keeps once it already exists in the vault.
+	meta, err := newProvenance(vault.ClassTerraform, "")
+	if err != nil {
+		return err
+	}
+	_, _, _, err = upsertTerraformProfile(v, host, []byte(token), meta)
 	return err
 }
 

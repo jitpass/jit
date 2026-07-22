@@ -265,9 +265,13 @@ func ApplyGCPADC(v *vault.Vault, home, path string) (GCPADCMigration, error) {
 		return GCPADCMigration{}, err
 	}
 
+	meta, err := newProvenance(vault.ClassGCP, path)
+	if err != nil {
+		return GCPADCMigration{}, err
+	}
 	for _, s := range secrets {
 		secretPath := profileName + "/" + s.VarName
-		if err := v.Set(secretPath, s.RawValue); err != nil {
+		if err := v.SetWithMeta(secretPath, s.RawValue, meta); err != nil {
 			return GCPADCMigration{}, fmt.Errorf("storing %s in vault: %w", s.VarName, err)
 		}
 		entries[s.VarName] = secretPath

@@ -304,9 +304,13 @@ func ApplyNetrc(v *vault.Vault, home, path string) (NetrcMigration, error) {
 		return NetrcMigration{}, err
 	}
 
+	meta, err := newProvenance(vault.ClassNetrc, path)
+	if err != nil {
+		return NetrcMigration{}, err
+	}
 	for _, m := range matches {
 		secretPath := profileName + "/" + m.VarName
-		if err := v.Set(secretPath, []byte(m.Token.text)); err != nil {
+		if err := v.SetWithMeta(secretPath, []byte(m.Token.text), meta); err != nil {
 			return NetrcMigration{}, fmt.Errorf("storing %s in vault: %w", m.VarName, err)
 		}
 		entries[m.VarName] = secretPath
