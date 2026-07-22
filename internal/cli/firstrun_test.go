@@ -34,7 +34,6 @@ func baseDeps() (*firstRunDeps, *frRec) {
 		isTTY:        func() bool { return true },
 		cwd:          func() (string, error) { return "/proj", nil },
 		homeDir:      func() (string, error) { return "/home/u", nil },
-		isPlayground: func(string) bool { return false },
 		scan: func(root string) ([]audit.Finding, audit.ScanSummary, error) {
 			rec.scanRoots = append(rec.scanRoots, root)
 			return nil, audit.ScanSummary{}, nil
@@ -162,14 +161,13 @@ func TestFirstRun_MachineWideFallback(t *testing.T) {
 	}
 }
 
-func TestFirstRun_PlaygroundBannerAndScopedChain(t *testing.T) {
+func TestFirstRun_ProjectFindingsScopedChain(t *testing.T) {
 	d, rec := baseDeps()
-	d.isPlayground = func(string) bool { return true }
 	d.scan = findingsFor(rec, "/proj", 1)
 	rec.confirmReturn = true
 	out := runFR(t, d)
-	if !strings.Contains(out, "synthetic") {
-		t.Errorf("playground reassurance banner missing; output:\n%s", out)
+	if !strings.Contains(out, "exposed in this project") {
+		t.Errorf("project-scoped banner missing; output:\n%s", out)
 	}
 	wantSteps := [][]string{{"vault", "init"}, {"agent", "install", "--yes"}, {"migrate", "local"}}
 	if !reflect.DeepEqual(rec.steps, wantSteps) {

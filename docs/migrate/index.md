@@ -38,10 +38,9 @@ exactly as `local` would; a named machine-wide file at a known path (a
 shell config like `~/.zshrc`, `~/.aws/credentials`, `~/.kube/config`, and
 the rest of the machine-wide list above) routes to that category's `home`
 handling; a named directory is walked like `local` rooted there, project
-files only. Targets are explicit, so neither the archived nor the
-playground filter applies - naming a file is itself the decision to convert
-it. A missing path or a symlink fails loud rather than migrating the wrong
-thing.
+files only. Targets are explicit, so the archived filter doesn't apply -
+naming a file is itself the decision to convert it. A missing path or a
+symlink fails loud rather than migrating the wrong thing.
 
 A home-scope run skips anything under a directory named `archive`,
 `archived`, `backup`, `backups`, or `.trash` by default (pass
@@ -49,13 +48,9 @@ A home-scope run skips anything under a directory named `archive`,
 into a live mount nothing will ever read again makes it *less*
 recoverable, not more secure. Skipped paths are listed at the end of the
 plan, and `jit scan` tags the same findings `[archived]`, so the two
-reports always agree on what was left alone. A
-[jitpass-playground](https://github.com/jitpass/jitpass-playground)
-checkout gets the same treatment - its planted secrets are synthetic bait,
-already excluded from audit's score, so a whole-machine sweep never vaults
-them (run `jit migrate local` from inside the checkout to practice there).
-`local` never applies either filter; deliberately standing in an old
-project and migrating it is an explicit choice.
+reports always agree on what was left alone. `local` never applies the
+filter; deliberately standing in an old project and migrating it is an
+explicit choice.
 
 ## Always preview first
 
