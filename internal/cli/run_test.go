@@ -10,6 +10,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"slices"
 	"strings"
 	"testing"
 
@@ -99,6 +100,50 @@ func TestResolveRunPlanMissingSecretFailsLoud(t *testing.T) {
 	if _, _, _, err := resolveRunPlan(v, p, []string{"echo"}); err == nil {
 		t.Fatal("expected an error for a profile referencing a missing secret, got nil")
 	}
+}
+
+func TestWithSopsAgeKeyCmd(t *testing.T) {
+	base := []string{"PATH=/usr/bin", "HOME=/tmp"}
+
+	t.Run("no sops grant leaves env untouched", func(t *testing.T) {
+		got := withSopsAgeKeyCmd(base, []string{"gcp", "npm"})
+		if len(got) != len(base) {
+			t.Fatalf("expected env unchanged, got %v", got)
+		}
+	})
+
+	t.Run("sops grant adds SOPS_AGE_KEY_CMD", func(t *testing.T) {
+		got := withSopsAgeKeyCmd(base, []string{"sops"})
+		var found string
+		for _, e := range got {
+			if strings.HasPrefix(e, "SOPS_AGE_KEY_CMD=") {
+				found = e
+			}
+		}
+		if found == "" {
+			t.Fatal("expected SOPS_AGE_KEY_CMD to be set, was not")
+		}
+		if !strings.HasSuffix(found, " sops-age-key") {
+			t.Fatalf("expected the value to invoke `sops-age-key`, got %q", found)
+		}
+	})
+
+	t.Run("a user's own SOPS_AGE_KEY_CMD wins", func(t *testing.T) {
+		theirs := "SOPS_AGE_KEY_CMD=/opt/mine --print"
+		got := withSopsAgeKeyCmd(append(slices.Clone(base), theirs), []string{"sops"})
+		count := 0
+		for _, e := range got {
+			if strings.HasPrefix(e, "SOPS_AGE_KEY_CMD=") {
+				count++
+				if e != theirs {
+					t.Fatalf("expected the user's value preserved, got %q", e)
+				}
+			}
+		}
+		if count != 1 {
+			t.Fatalf("expected exactly one SOPS_AGE_KEY_CMD, got %d", count)
+		}
+	})
 }
 
 // resolveProfileName's old unit tests were superseded when it became

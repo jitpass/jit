@@ -10,9 +10,10 @@ works with no plaintext keys.txt on disk at all:
 
   export SOPS_AGE_KEY_CMD="jit sops-age-key"
 
-Tools whose embedded sops predates SOPS_AGE_KEY_CMD keep working through the
-migrated keys.txt live mount instead (`jit run --with sops` grants the mount
-real reads for that run), so this hook is the fast path, not the only path.
+`jit run --with sops` sets this for the granted run automatically, so you
+rarely export it by hand. Tools whose embedded sops predates SOPS_AGE_KEY_CMD
+keep working through the migrated keys.txt live mount instead (still granted
+for that run), so this hook is the fast path, not the only path.
 
 Requires local auth to resolve the vault the same way jit run/export do:
 either a reachable jit background service with an already-unlocked session, or an
