@@ -93,7 +93,8 @@ Each modified file is backed up before it's rewritten.
 Then apply it by dropping `--dry-run`. The same plan prints again, followed
 by a `Proceed? [y/N]` confirmation. Name a directory to walk a whole
 project (`jit migrate ~/code/myapp`), or a single file to convert just
-that one - one `.env`, a `~/.zshrc`. More in
+that one - one `.env`, a `~/.zshrc`, or even a bare token in a plain file
+(`jit migrate token.txt`). More in
 **[Migrating](../migrate/index.md)**.
 
 ## 4. Check health: `jit status`

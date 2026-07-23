@@ -43,7 +43,7 @@ then **[Install](./getting-started/install.md)** →
 
 ## Fix them - `jit migrate`
 
-- [Migrating a project or a single file](./migrate/index.md) - name what to convert, dry runs, safety model
+- [Migrating a project or a single file](./migrate/index.md) - name what to convert, dry runs, safety model, and loose secret files (a bare token in `token.txt`)
 - Per-credential guides: [.env files](./migrate/env-files.md) ·
   [shell configs](./migrate/shell-configs.md) · [AWS](./migrate/aws.md) ·
   [Kubernetes](./migrate/kubernetes.md) · [Terraform](./migrate/terraform.md) ·
