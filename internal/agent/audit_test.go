@@ -138,17 +138,17 @@ func TestServerCollapsesSessionUsesWithLabels(t *testing.T) {
 	}
 
 	dek := bytes.Repeat([]byte{0x07}, 32)
-	wrapped, err := c.WrapKeyLabeled(dek, "stripe/live-key")
+	wrapped, err := c.WrapKeyLabeled(dek, "stripe/live-key", "")
 	if err != nil {
 		t.Fatalf("WrapKeyLabeled: %v", err)
 	}
-	if _, err := c.WrapKeyLabeled(dek, "stripe/live-key"); err != nil { // duplicate label, must dedupe
+	if _, err := c.WrapKeyLabeled(dek, "stripe/live-key", ""); err != nil { // duplicate label, must dedupe
 		t.Fatalf("WrapKeyLabeled: %v", err)
 	}
-	if _, err := c.WrapKeyLabeled(dek, "aws/s3-key"); err != nil {
+	if _, err := c.WrapKeyLabeled(dek, "aws/s3-key", ""); err != nil {
 		t.Fatalf("WrapKeyLabeled: %v", err)
 	}
-	if _, err := c.UnwrapKeyLabeled(wrapped, "stripe/live-key"); err != nil {
+	if _, err := c.UnwrapKeyLabeled(wrapped, "stripe/live-key", ""); err != nil {
 		t.Fatalf("UnwrapKeyLabeled: %v", err)
 	}
 
@@ -204,7 +204,7 @@ func TestServerFlushesPendingUsesOnLock(t *testing.T) {
 	if _, _, err := c.Unlock(); err != nil {
 		t.Fatalf("Unlock: %v", err)
 	}
-	if _, err := c.WrapKeyLabeled(bytes.Repeat([]byte{0x07}, 32), "a/b"); err != nil {
+	if _, err := c.WrapKeyLabeled(bytes.Repeat([]byte{0x07}, 32), "a/b", ""); err != nil {
 		t.Fatalf("WrapKeyLabeled: %v", err)
 	}
 	if err := c.Lock(); err != nil {
@@ -231,7 +231,7 @@ func TestServerUnlockEventCarriesLabel(t *testing.T) {
 	defer cleanup()
 
 	c := NewClient(socketPath)
-	if _, err := c.WrapKeyLabeled(bytes.Repeat([]byte{0x07}, 32), "npm/token"); err != nil {
+	if _, err := c.WrapKeyLabeled(bytes.Repeat([]byte{0x07}, 32), "npm/token", ""); err != nil {
 		t.Fatalf("WrapKeyLabeled: %v", err)
 	}
 

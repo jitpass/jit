@@ -46,6 +46,13 @@ type Request struct {
 	// only — a caller could otherwise put a reassuring lie on the one line
 	// the human decides by) or gate anything. Optional; empty is fine.
 	Label string `json:"label,omitempty"`
+	// Class is the secret's provenance Class (a vault.Class* value) for a
+	// "wrap"/"unwrap". Unlike Label it is NOT merely advisory: the agent binds
+	// it into the DEK-wrap as AES-GCM additional authenticated data, so an
+	// unwrap that names the wrong class fails the auth tag. That is what lets
+	// the agent gate consent on it without a caller being able to lie its way
+	// around the gate. Empty for legacy (v1/v2) secrets with no provenance.
+	Class string `json:"class,omitempty"`
 }
 
 // RunMount is one mount's requested run-scoped treatment in a reveal_pid

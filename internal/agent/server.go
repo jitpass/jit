@@ -451,7 +451,7 @@ func (s *Server) handle(req Request, c *caller) Response {
 			return Response{OK: false, Error: err.Error()}
 		}
 		defer wipe(mek)
-		wrapped, err := seal(mek, req.Data)
+		wrapped, err := seal(mek, req.Data, []byte(req.Class))
 		if err != nil {
 			return Response{OK: false, Error: err.Error()}
 		}
@@ -462,7 +462,7 @@ func (s *Server) handle(req Request, c *caller) Response {
 			return Response{OK: false, Error: err.Error()}
 		}
 		defer wipe(mek)
-		dek, err := open(mek, req.Data)
+		dek, err := open(mek, req.Data, []byte(req.Class))
 		if err != nil {
 			return Response{OK: false, Error: err.Error()}
 		}
@@ -483,11 +483,11 @@ func (s *Server) handle(req Request, c *caller) Response {
 // what's really happening is "resolve this project's mounted files", not a
 // wrap/unwrap someone asked for.
 func (s *Server) WrapKey(dek []byte) ([]byte, error) {
-	return s.WrapKeyLabeled(dek, "")
+	return s.WrapKeyLabeled(dek, "", "")
 }
 
 func (s *Server) UnwrapKey(wrapped []byte) ([]byte, error) {
-	return s.UnwrapKeyLabeled(wrapped, "")
+	return s.UnwrapKeyLabeled(wrapped, "", "")
 }
 
 // WrapKeyLabeled/UnwrapKeyLabeled are the vault.LabeledKeyWrapper
@@ -496,22 +496,22 @@ func (s *Server) UnwrapKey(wrapped []byte) ([]byte, error) {
 // the agent's own mount resolution shows up in history as "serve_mounts
 // touched these secrets" instead of an unlabeled blur — the same
 // audit-only, caller-reported label RPC callers send in Request.Label.
-func (s *Server) WrapKeyLabeled(dek []byte, label string) ([]byte, error) {
+func (s *Server) WrapKeyLabeled(dek []byte, label, class string) ([]byte, error) {
 	mek, err := s.ensureUnlocked(opServeMounts, nil, label)
 	if err != nil {
 		return nil, err
 	}
 	defer wipe(mek)
-	return seal(mek, dek)
+	return seal(mek, dek, []byte(class))
 }
 
-func (s *Server) UnwrapKeyLabeled(wrapped []byte, label string) ([]byte, error) {
+func (s *Server) UnwrapKeyLabeled(wrapped []byte, label, class string) ([]byte, error) {
 	mek, err := s.ensureUnlocked(opServeMounts, nil, label)
 	if err != nil {
 		return nil, err
 	}
 	defer wipe(mek)
-	return open(mek, wrapped)
+	return open(mek, wrapped, []byte(class))
 }
 
 func (s *Server) ensureUnlocked(op string, c *caller, label string) ([]byte, error) {
