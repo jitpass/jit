@@ -59,6 +59,12 @@ jit audit [flags]
       --user string     only commands this user ran (auth events carry no user)
 ```
 
+### Options inherited from parent commands
+
+```
+      --quiet   suppress the progress spinner/status trail (results still print)
+```
+
 ### SEE ALSO
 
 * [jit](jit.md)	 - Local-first developer secret runtime

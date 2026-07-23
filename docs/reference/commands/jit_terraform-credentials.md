@@ -25,6 +25,12 @@ interactive context able to show a Touch ID/passcode prompt.
 jit terraform-credentials <get|store|forget> <hostname>
 ```
 
+### Options inherited from parent commands
+
+```
+      --quiet   suppress the progress spinner/status trail (results still print)
+```
+
 ### SEE ALSO
 
 * [jit](jit.md)	 - Local-first developer secret runtime

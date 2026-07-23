@@ -19,6 +19,12 @@ jit vault history <path> [flags]
       --format string   output format: "text" (default) or "json" (default "text")
 ```
 
+### Options inherited from parent commands
+
+```
+      --quiet   suppress the progress spinner/status trail (results still print)
+```
+
 ### SEE ALSO
 
 * [jit vault](jit_vault.md)	 - Manage the local encrypted secret vault

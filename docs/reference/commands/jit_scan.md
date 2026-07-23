@@ -33,6 +33,12 @@ jit scan [path...] [flags]
       --score           print only the exposure score (e.g. "Exposure: 92/100 (CRITICAL)") and exit
 ```
 
+### Options inherited from parent commands
+
+```
+      --quiet   suppress the progress spinner/status trail (results still print)
+```
+
 ### SEE ALSO
 
 * [jit](jit.md)	 - Local-first developer secret runtime

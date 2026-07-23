@@ -64,6 +64,12 @@ jit run [--profile <name>] [--mode <mode>] [--] <command> [args...] [flags]
       --with jit run --with gcp gcloud storage ls   also grant this run a global file-delivered mount by name (gcp, sops, npm, netrc) - for tools that read a machine-wide credential file, e.g. jit run --with gcp gcloud storage ls (repeatable)
 ```
 
+### Options inherited from parent commands
+
+```
+      --quiet   suppress the progress spinner/status trail (results still print)
+```
+
 ### SEE ALSO
 
 * [jit](jit.md)	 - Local-first developer secret runtime

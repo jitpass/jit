@@ -24,6 +24,12 @@ jit k8s-exec-credential --profile <name> [flags]
       --profile string   vault profile to resolve (required, e.g. k8s-myuser)
 ```
 
+### Options inherited from parent commands
+
+```
+      --quiet   suppress the progress spinner/status trail (results still print)
+```
+
 ### SEE ALSO
 
 * [jit](jit.md)	 - Local-first developer secret runtime
