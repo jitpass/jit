@@ -5,6 +5,7 @@ package consent
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -149,5 +150,72 @@ func TestDecisionIsPerToolAndPerCredential(t *testing.T) {
 	sameToolOtherCred := Request{Credential: "aws", Caller: Caller{ExecPath: "/usr/local/bin/gcloud", Strength: Hard}}
 	if _, _ = e.Decide(sameToolOtherCred, p); calls != 3 {
 		t.Errorf("same tool, other credential must prompt: prompts=%d, want 3", calls)
+	}
+}
+
+// TestUnidentifiedCallerIsNeverCached pins the empty-ExecPath fix: a caller with
+// no resolved identity must re-decide every access, so one anonymous process's
+// approval can't leak to every other anonymous process this session.
+func TestUnidentifiedCallerIsNeverCached(t *testing.T) {
+	e, _ := clockedEngine(5 * time.Minute)
+	calls := 0
+	p := countingPrompter(Allow, Session, &calls) // asks for Session, which for a known tool WOULD cache
+
+	anon := Request{Credential: "gcp", Caller: Caller{PID: 1, ExecPath: "", Strength: BestEffort}}
+	if _, _ = e.Decide(anon, p); calls != 1 {
+		t.Fatalf("first anonymous access should prompt: prompts=%d, want 1", calls)
+	}
+	// A second anonymous access to the same credential must prompt AGAIN — the
+	// decision is not cached, because there is no stable identity to cache under.
+	if _, _ = e.Decide(anon, p); calls != 2 {
+		t.Errorf("an unidentified caller's decision must never be cached: prompts=%d, want 2", calls)
+	}
+}
+
+// TestConcurrentFirstAccessPromptsOnce pins the single-flight fix: many callers
+// reaching for the same credential at once produce ONE prompt, and the rest ride
+// the answer it caches.
+func TestConcurrentFirstAccessPromptsOnce(t *testing.T) {
+	e, _ := clockedEngine(5 * time.Minute)
+
+	var mu sync.Mutex
+	calls := 0
+	release := make(chan struct{})
+	// A slow prompter: it blocks until released, so all goroutines are guaranteed
+	// to be past the cache lookup and contending before any answer is cached.
+	p := func(Request) (Decision, Scope, error) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		<-release
+		return Allow, Session, nil
+	}
+
+	const n = 16
+	var wg sync.WaitGroup
+	got := make([]Decision, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			d, _ := e.Decide(gcloud(false), p)
+			got[i] = d
+		}(i)
+	}
+	// Give every goroutine time to reach the prompt or queue behind the leader,
+	// then let the single in-flight prompt complete.
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Errorf("concurrent first accesses should single-flight to one prompt, got %d", calls)
+	}
+	for i, d := range got {
+		if d != Allow {
+			t.Errorf("caller %d got %v, want Allow from the shared decision", i, d)
+		}
 	}
 }
