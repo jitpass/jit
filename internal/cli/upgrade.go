@@ -393,7 +393,7 @@ func restartServiceOntoCurrentBinary() error {
 		return err
 	}
 	if _, statErr := os.Stat(plistPath); errors.Is(statErr, os.ErrNotExist) {
-		if _, _, ierr := installAgentService(agentInstallDefaultTTL); ierr != nil {
+		if _, _, ierr := installAgentService(agentInstallDefaultTTL, false); ierr != nil {
 			return ierr
 		}
 		return nil
