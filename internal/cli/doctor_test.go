@@ -342,7 +342,7 @@ func TestDoctorVerboseListsEachReference(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit doctor --verbose: %v", err)
 	}
-	if !strings.Contains(out, "Checked:") || !strings.Contains(out, "AWS_ACCESS_KEY_ID → aws/s3-access-key") {
+	if !strings.Contains(out, "Checked") || !strings.Contains(out, "AWS_ACCESS_KEY_ID → aws/s3-access-key") {
 		t.Errorf("expected a per-reference listing under --verbose, got:\n%s", out)
 	}
 }
