@@ -29,6 +29,12 @@ jit vault list [flags]
   -l, --long            show each secret's class and last-updated age (terminal output only)
 ```
 
+### Options inherited from parent commands
+
+```
+      --quiet   suppress the progress spinner/status trail (results still print)
+```
+
 ### SEE ALSO
 
 * [jit vault](jit_vault.md)	 - Manage the local encrypted secret vault

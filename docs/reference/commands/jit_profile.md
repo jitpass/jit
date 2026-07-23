@@ -15,6 +15,12 @@ are managed elsewhere, and which are orphaned — use jit status --secrets
 (the successor to the deprecated jit profile list). Use jit doctor to also
 verify a profile's referenced secrets actually exist in the vault.
 
+### Options inherited from parent commands
+
+```
+      --quiet   suppress the progress spinner/status trail (results still print)
+```
+
 ### SEE ALSO
 
 * [jit](jit.md)	 - Local-first developer secret runtime

@@ -30,6 +30,12 @@ only to a `jit run` grant's own process tree: `jit run --live` for a project
 mount, `jit run --with` for a global credential. Unlocking the vault never
 makes a mount serve real values on its own.
 
+### Options inherited from parent commands
+
+```
+      --quiet   suppress the progress spinner/status trail (results still print)
+```
+
 ### SEE ALSO
 
 * [jit](jit.md)	 - Local-first developer secret runtime

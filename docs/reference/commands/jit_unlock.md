@@ -16,6 +16,12 @@ is the "get me a session" intent, so there's nothing extra to run by hand.
 jit unlock
 ```
 
+### Options inherited from parent commands
+
+```
+      --quiet   suppress the progress spinner/status trail (results still print)
+```
+
 ### SEE ALSO
 
 * [jit](jit.md)	 - Local-first developer secret runtime

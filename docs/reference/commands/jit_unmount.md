@@ -23,6 +23,12 @@ jit unmount <path> [flags]
   -y, --yes   skip the confirmation prompt and unmount immediately
 ```
 
+### Options inherited from parent commands
+
+```
+      --quiet   suppress the progress spinner/status trail (results still print)
+```
+
 ### SEE ALSO
 
 * [jit](jit.md)	 - Local-first developer secret runtime

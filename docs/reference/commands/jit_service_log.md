@@ -31,6 +31,12 @@ jit service log [flags]
   -n, --lines int   how many trailing lines to print (default 50)
 ```
 
+### Options inherited from parent commands
+
+```
+      --quiet   suppress the progress spinner/status trail (results still print)
+```
+
 ### SEE ALSO
 
 * [jit service](jit_service.md)	 - Manage jit's background service (the daemon that holds your session and serves mounts)

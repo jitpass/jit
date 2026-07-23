@@ -18,6 +18,12 @@ jit service status [flags]
       --format string   output format: "text" (default) or "json" (default "text")
 ```
 
+### Options inherited from parent commands
+
+```
+      --quiet   suppress the progress spinner/status trail (results still print)
+```
+
 ### SEE ALSO
 
 * [jit service](jit_service.md)	 - Manage jit's background service (the daemon that holds your session and serves mounts)

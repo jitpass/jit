@@ -15,6 +15,12 @@ process running as you on an unlocked machine still can't read or destroy
 the vault without a live human gesture. Only `list` and `history` are
 prompt-free: they show secret names and version timestamps, never a value.
 
+### Options inherited from parent commands
+
+```
+      --quiet   suppress the progress spinner/status trail (results still print)
+```
+
 ### SEE ALSO
 
 * [jit](jit.md)	 - Local-first developer secret runtime

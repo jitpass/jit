@@ -40,6 +40,12 @@ jit doctor [flags]
       --verbose          on success, list every variable→path reference that was checked
 ```
 
+### Options inherited from parent commands
+
+```
+      --quiet   suppress the progress spinner/status trail (results still print)
+```
+
 ### SEE ALSO
 
 * [jit](jit.md)	 - Local-first developer secret runtime
