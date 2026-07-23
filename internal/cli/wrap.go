@@ -348,12 +348,14 @@ var wrapDoctorCmd = &cobra.Command{
 		out := cmd.OutOrStdout()
 		failed := 0
 		for _, c := range checks {
-			mark := "✓"
-			if !c.OK {
-				mark = "✗"
+			if c.OK {
+				_, _ = cOK.Fprintf(out, "%s ", glyphDone)
+			} else {
+				_, _ = cRisk.Fprintf(out, "%s ", glyphRisk)
 				failed++
 			}
-			fmt.Fprintf(out, "%s %-12s %s\n", mark, c.Name, c.Detail)
+			_, _ = cBold.Fprintf(out, "%-12s", c.Name)
+			_, _ = cDim.Fprintf(out, " %s\n", c.Detail)
 		}
 		if failed > 0 {
 			return fmt.Errorf("jit wrap doctor: %d check(s) failed", failed)

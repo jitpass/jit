@@ -679,12 +679,12 @@ func TestPrintVaultListGrouped(t *testing.T) {
 	printVaultList(&buf, secrets, backups, true, true, nil, "path")
 	out := buf.String()
 	for _, want := range []string{
-		"descope/ (2)",
-		"  KEY_1",
-		"  KEY_2",
+		"descope 2",
+		"KEY_1",
+		"KEY_2",
 		"toplevel-secret",
-		"wiz/ (1)",
-		"  WIZ_CLIENT_ID",
+		"wiz 1",
+		"WIZ_CLIENT_ID",
 		"_backups/Users/x/notion/.env.jit-bak-1",
 		"4 secrets stored, plus 1 encrypted file backup kept for `jit migrate undo`.",
 	} {
@@ -695,7 +695,7 @@ func TestPrintVaultListGrouped(t *testing.T) {
 	if strings.Contains(out, "  descope/KEY_1") {
 		t.Errorf("grouped keys must not repeat their prefix, got:\n%s", out)
 	}
-	if strings.Contains(out, "_backups/ (") {
+	if strings.Contains(out, "_backups 1") {
 		t.Errorf("backups must never be grouped, got:\n%s", out)
 	}
 }
@@ -779,14 +779,14 @@ func TestPrintGroupedSecretsNests(t *testing.T) {
 	out := buf.String()
 
 	for _, want := range []string{
-		"custom_scripts/ (3)",
-		"  jamf/ (2)",
-		"    CLIENT_ID",
-		"    CLIENT_SECRET",
-		"  notion/ (1)",
-		"    API_KEY",
-		"flat/ (1)",
-		"  ONLY",
+		"custom_scripts 3",
+		"  jamf 2",
+		"CLIENT_ID",
+		"CLIENT_SECRET",
+		"  notion 1",
+		"API_KEY",
+		"flat 1",
+		"ONLY",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("nested tree missing %q, got:\n%s", want, out)

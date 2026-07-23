@@ -103,6 +103,7 @@ func firstRun(cmd *cobra.Command, d firstRunDeps) error {
 	fmt.Fprintln(out)
 
 	if len(findings) == 0 {
+		_, _ = cOK.Fprintf(out, "%s ", glyphDone)
 		fmt.Fprintln(out, "No plaintext secrets found. Nice.")
 		return nil
 	}
@@ -119,8 +120,8 @@ func firstRun(cmd *cobra.Command, d firstRunDeps) error {
 	if !d.confirm("Set up the vault now? [y/N] ") {
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "No problem, nothing was changed. When you're ready, run these yourself:")
-		fmt.Fprintln(out, "  jit vault init")
-		fmt.Fprintf(out, "  jit migrate %s\n", migrateArg)
+		_, _ = cPath.Fprintln(out, "  jit vault init")
+		_, _ = cPath.Fprintf(out, "  jit migrate %s\n", migrateArg)
 		return nil
 	}
 

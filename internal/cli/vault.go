@@ -250,28 +250,56 @@ func printGroupedSecrets(out io.Writer, secrets []string, meta map[string]vault.
 // -l-annotated when meta is set. Direct leaves at this level align their
 // metadata column to the widest of them.
 func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth int, meta map[string]vault.SecretInfo) {
-	faint := color.New(color.Faint)
 	indent := strings.Repeat("  ", depth)
 
-	leafWidth := 0
-	if meta != nil {
+	// Plain listing (no -l): this level's own keys flow into aligned columns
+	// (house style — a 12-key group is three tidy rows, not a twelve-line
+	// stack), then each child segment recurses under a bold name + dim count.
+	if meta == nil {
+		var leaves []string
 		for _, p := range paths {
-			if !strings.Contains(p, "/") && len(p) > leafWidth {
-				leafWidth = len(p)
+			if !strings.Contains(p, "/") {
+				leaves = append(leaves, p)
 			}
 		}
+		flowNames(out, leaves, indent+"  ")
+		for i := 0; i < len(paths); {
+			slash := strings.Index(paths[i], "/")
+			if slash < 0 {
+				i++
+				continue
+			}
+			seg := paths[i][:slash+1]
+			j := i
+			for j < len(paths) && strings.HasPrefix(paths[j], seg) {
+				j++
+			}
+			printSecretGroupHeader(out, indent, paths[i][:slash], j-i)
+			sub := make([]string, j-i)
+			for k := i; k < j; k++ {
+				sub[k-i] = paths[k][len(seg):]
+			}
+			printSecretTree(out, sub, ancestorPath+seg, depth+1, meta)
+			i = j
+		}
+		return
 	}
 
+	// -l listing: every leaf carries a metadata column, so it keeps its own
+	// line; the group headers still get the bold-name/dim-count treatment.
+	faint := color.New(color.Faint)
+	leafWidth := 0
+	for _, p := range paths {
+		if !strings.Contains(p, "/") && len(p) > leafWidth {
+			leafWidth = len(p)
+		}
+	}
 	for i := 0; i < len(paths); {
 		slash := strings.Index(paths[i], "/")
 		if slash < 0 {
 			key := paths[i]
-			if meta == nil {
-				fmt.Fprintf(out, "%s%s\n", indent, key)
-			} else {
-				fmt.Fprintf(out, "%s%-*s  ", indent, leafWidth, key)
-				_, _ = faint.Fprintln(out, secretMetaSuffix(meta[ancestorPath+key]))
-			}
+			fmt.Fprintf(out, "%s  %-*s  ", indent, leafWidth, key)
+			_, _ = faint.Fprintln(out, secretMetaSuffix(meta[ancestorPath+key]))
 			i++
 			continue
 		}
@@ -280,7 +308,7 @@ func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth i
 		for j < len(paths) && strings.HasPrefix(paths[j], seg) {
 			j++
 		}
-		_, _ = faint.Fprintf(out, "%s%s (%d)\n", indent, seg, j-i)
+		printSecretGroupHeader(out, indent, paths[i][:slash], j-i)
 		sub := make([]string, j-i)
 		for k := i; k < j; k++ {
 			sub[k-i] = paths[k][len(seg):]
@@ -288,6 +316,14 @@ func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth i
 		printSecretTree(out, sub, ancestorPath+seg, depth+1, meta)
 		i = j
 	}
+}
+
+// printSecretGroupHeader renders a vault-tree segment header in the house
+// style: a bold segment name and a dim count, at the given indent. The tree's
+// indentation, not a trailing slash, is what now shows the nesting.
+func printSecretGroupHeader(out io.Writer, indent, name string, n int) {
+	_, _ = cBold.Fprintf(out, "%s%s", indent, name)
+	_, _ = cDim.Fprintf(out, " %d\n", n)
 }
 
 // validateListBy guards the --by axis. "path" is the default first-segment
