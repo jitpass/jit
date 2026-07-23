@@ -31,10 +31,14 @@ import (
 //     no KeepAlive behind it — self-exiting would just stop the agent the
 //     user deliberately started.
 
-// agentBinaryCheckInterval paces the stat. One stat per 30s is nothing,
-// and a rebuild waits at most one interval past quiescence to be picked
-// up.
-const agentBinaryCheckInterval = 30 * time.Second
+// agentBinaryCheckInterval paces the stat. A stat every few seconds is
+// nothing, and the interval is the only latency between "new binary on
+// disk, session already locked" and the self-restart onto it — so keep it
+// short. The "fingerprint must hold steady for two consecutive checks"
+// gate in watchOwnBinary still absorbs a build mid-write at this cadence,
+// and the quiescent gate (restart only while locked) already prevents
+// rebuild thrash during development, so a shorter interval costs nothing.
+const agentBinaryCheckInterval = 5 * time.Second
 
 // binaryFingerprint identifies one on-disk build of the executable.
 // Inode + size + mtime: `go build` (and any install) replaces the file
