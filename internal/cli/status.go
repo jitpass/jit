@@ -465,34 +465,49 @@ func printSecretsSection(w io.Writer, s statusSecrets) {
 	}
 	fmt.Fprintf(w, "Secrets: %d stored in %d group(s).\n", s.TotalSecrets, s.TotalGroups)
 
+	// Each state leads with a semantic glyph so the eye finds the one that
+	// needs attention (an amber ○ unreferenced, or a red ✗ broken) before
+	// reading a word — the same glyph vocabulary `jit status --secrets` uses
+	// for these exact states, so the rollup and the detail read as one.
 	switch {
 	case s.WiredProfiles == 0:
-		fmt.Fprintf(w, "  %-18s none (no project-local profile).\n", "Wired here:")
+		printRollupLine(w, cDim, glyphOK, "Wired here:", "none (no project-local profile).")
 	case s.WiredProblems == 0:
 		// "Resolve" here means the referenced secret EXISTS — the cheap glance,
 		// existence-only. jit doctor additionally verifies each envelope reads,
 		// so point there rather than imply an integrity check this didn't run.
-		fmt.Fprintf(w, "  %-18s %d group(s) via %d profile(s) (%d reference(s)), all resolve.\n",
-			"Wired here:", s.WiredGroups, s.WiredProfiles, s.WiredReferences)
+		printRollupLine(w, cOK, glyphOK, "Wired here:", fmt.Sprintf("%d group(s) via %d profile(s) (%d reference(s)), all resolve.",
+			s.WiredGroups, s.WiredProfiles, s.WiredReferences))
 	default:
-		_, _ = color.New(color.FgRed).Fprintf(w, "  %-18s %d group(s) via %d profile(s) (%d reference(s)), %d broken — run `jit doctor` for details.\n",
-			"Wired here:", s.WiredGroups, s.WiredProfiles, s.WiredReferences, s.WiredProblems)
+		printRollupLine(w, cRisk, glyphRisk, "Wired here:", fmt.Sprintf("%d group(s) via %d profile(s) (%d reference(s)), %d broken — run `jit doctor` for details.",
+			s.WiredGroups, s.WiredProfiles, s.WiredReferences, s.WiredProblems))
 	}
 
-	fmt.Fprintf(w, "  %-18s %d group(s) (referenced only by global profiles or mounts).\n",
-		"Managed elsewhere:", s.ManagedElsewhereGroups)
+	printRollupLine(w, cOK, glyphOK, "Managed elsewhere:", fmt.Sprintf("%d group(s) (referenced only by global profiles or mounts).",
+		s.ManagedElsewhereGroups))
 
 	if s.UnreferencedGroups == 0 {
-		fmt.Fprintf(w, "  %-18s none.\n", "Unreferenced here:")
+		printRollupLine(w, cDim, glyphOK, "Unreferenced here:", "none.")
 	} else {
-		_, _ = color.New(color.FgYellow).Fprintf(w, "  %-18s %d group(s), %d secret(s). May belong to another project.\n",
-			"Unreferenced here:", s.UnreferencedGroups, s.UnreferencedSecrets)
-		fmt.Fprintf(w, "  %-18s Run `jit status --secrets` to inspect, `jit vault orphans` to prune.\n", "")
+		printRollupLine(w, cWarn, glyphWarn, "Unreferenced here:", fmt.Sprintf("%d group(s), %d secret(s). May belong to another project.",
+			s.UnreferencedGroups, s.UnreferencedSecrets))
+		fmt.Fprintf(w, "    %-18s Run `jit status --secrets` to inspect, `jit vault orphans` to prune.\n", "")
 	}
 
 	if s.ParseFailures > 0 {
 		_, _ = color.New(color.FgYellow).Fprintf(w, "  Heads up: %d profile manifest(s) couldn't be read and were skipped; run `jit doctor` to see which.\n", s.ParseFailures)
 	}
+}
+
+// printRollupLine renders one Secrets-rollup row: a semantic state glyph, the
+// fixed-width state label, and its body. The glyph carries the state in color
+// (green healthy, amber needs-a-look, red broken); the body stays default
+// weight so the glyph column, not a wall of colored text, is what the eye
+// scans down. The label pad matches the continuation indent above.
+func printRollupLine(w io.Writer, glyphColor *color.Color, glyph, label, body string) {
+	fmt.Fprint(w, "  ")
+	_, _ = glyphColor.Fprintf(w, "%s ", glyph)
+	fmt.Fprintf(w, "%-18s %s\n", label, body)
 }
 
 // printSecretsDetail is the `jit status --secrets` body: the full reconciliation,
@@ -514,15 +529,21 @@ func printSecretsDetail(w io.Writer, rec secretsReconciliation, v *vault.Vault) 
 		}
 	}
 
-	fmt.Fprintf(w, "\nWired here (%d group(s), %d profile(s)):\n", len(wired), rec.WiredProfiles)
+	// Section headers follow the house style: a bold title with a dim one-line
+	// summary, then the groups, then a blank line — whitespace and weight do
+	// the separating, no rules (see design/output-style.md).
+	printSecretsStateHeader(w, glyphOK, "Wired here",
+		fmt.Sprintf("%d %s · %d %s", len(wired), pluralWord(len(wired), "group", "groups"), rec.WiredProfiles, pluralWord(rec.WiredProfiles, "profile", "profiles")))
 	printGroupsWithKeys(w, wired)
 
-	fmt.Fprintf(w, "\nManaged elsewhere (%d group(s)):\n", len(elsewhere))
+	printSecretsStateHeader(w, glyphOK, "Managed elsewhere",
+		fmt.Sprintf("%d %s · referenced by global profiles or mounts", len(elsewhere), pluralWord(len(elsewhere), "group", "groups")))
 	printGroupsWithKeys(w, elsewhere)
 
-	fmt.Fprintf(w, "\nUnreferenced here (%d group(s), %d secret(s)):\n", len(unref), rec.UnreferencedSecrets)
+	printSecretsStateHeader(w, glyphWarn, "Unreferenced here",
+		fmt.Sprintf("%d %s · %d %s · may belong to another project", len(unref), pluralWord(len(unref), "group", "groups"), rec.UnreferencedSecrets, pluralWord(rec.UnreferencedSecrets, "secret", "secrets")))
 	if len(unref) == 0 {
-		fmt.Fprintln(w, "  none.")
+		_, _ = cDim.Fprintln(w, "  none")
 		return
 	}
 	var paths []string
@@ -532,27 +553,56 @@ func printSecretsDetail(w io.Writer, rec secretsReconciliation, v *vault.Vault) 
 		}
 	}
 	printOrphanGroups(w, v, paths)
-	fmt.Fprintln(w, "  Inspect with `jit vault list`, prune with `jit vault orphans --prune`.")
+	_, _ = cDim.Fprint(w, "  Inspect with ")
+	_, _ = cPath.Fprint(w, "jit vault list")
+	_, _ = cDim.Fprint(w, ", prune with ")
+	_, _ = cPath.Fprint(w, "jit vault orphans --prune")
+	fmt.Fprintln(w)
+}
+
+// printSecretsStateHeader renders one --secrets state block header: a blank
+// line, a colored state glyph, the bold state name, and a dim one-line
+// summary. This is the dashboard-family header — light, no [brackets], no
+// rule — matching how the top status rollup names each state.
+func printSecretsStateHeader(w io.Writer, glyph, name, summary string) {
+	fmt.Fprintln(w)
+	_, _ = cWarnOrOK(glyph).Fprintf(w, "%s ", glyph)
+	_, _ = cBold.Fprint(w, name)
+	_, _ = cDim.Fprintf(w, "  %s\n", summary)
+}
+
+// cWarnOrOK picks the glyph's semantic color so the state reads at a glance:
+// the warn glyph is amber, everything else (the healthy states) green.
+func cWarnOrOK(glyph string) *color.Color {
+	if glyph == glyphWarn {
+		return cWarn
+	}
+	return cOK
 }
 
 // printGroupsWithKeys lists each group and its secret keys, the enriched
 // successor to `jit profile list`'s flat rows. A mixed group (members in
 // different states, e.g. after a re-migration split one) is flagged so the
-// dominant-state bucketing above isn't silently lossy.
+// dominant-state bucketing above isn't silently lossy. Keys flow into
+// aligned columns rather than one bullet per line: a 14-secret group is
+// three tidy rows, not a fourteen-line stack (GAPS.md readability).
 func printGroupsWithKeys(w io.Writer, groups []secretGroup) {
 	if len(groups) == 0 {
-		fmt.Fprintln(w, "  none.")
+		_, _ = cDim.Fprintln(w, "  none")
 		return
 	}
 	for _, g := range groups {
-		mixed := ""
+		_, _ = cBold.Fprintf(w, "  %s", g.Name)
+		_, _ = cDim.Fprintf(w, " %d", len(g.Members))
 		if g.Mixed {
-			mixed = "  [mixed states]"
+			_, _ = cWarn.Fprint(w, "  [mixed states]")
 		}
-		fmt.Fprintf(w, "  %s/ (%d)%s\n", g.Name, len(g.Members), mixed)
-		for _, m := range g.Members {
-			fmt.Fprintf(w, "    • %s\n", m.Key)
+		fmt.Fprintln(w)
+		keys := make([]string, len(g.Members))
+		for i, m := range g.Members {
+			keys[i] = m.Key
 		}
+		flowNames(w, keys, "      ")
 	}
 }
 

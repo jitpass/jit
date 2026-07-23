@@ -1350,19 +1350,48 @@ func printOrphanGroups(out io.Writer, v *vault.Vault, orphans []string) {
 	sort.Strings(order)
 	for _, prefix := range order {
 		members := groups[prefix]
-		fmt.Fprintf(out, "%s/ (%d)\n", prefix, len(members))
-		for _, p := range members {
-			name := strings.TrimPrefix(p, prefix+"/")
-			origin := "no recorded origin (pre-provenance, or set directly)"
-			if info, err := v.Info(p); err == nil && info.Origin != "" {
-				origin = "from " + info.Origin
-				if info.OriginSeenUnix > 0 {
-					origin += fmt.Sprintf(", seen %s ago", humanAgo(time.Since(time.Unix(info.OriginSeenUnix, 0))))
-				}
+		names := make([]string, len(members))
+		origins := make([]string, len(members))
+		uniform := true
+		for i, p := range members {
+			names[i] = strings.TrimPrefix(p, prefix+"/")
+			origins[i] = orphanOrigin(v, p)
+			if origins[i] != origins[0] {
+				uniform = false
 			}
-			fmt.Fprintf(out, "  • %s  (%s)\n", name, origin)
+		}
+		// Header: bold group name, dim count. When every secret shares the
+		// same origin (the common pre-provenance case — all "no recorded
+		// origin"), state it ONCE on the header instead of tacking the same
+		// parenthetical onto all N lines, and flow the names into columns.
+		// When origins genuinely differ, that per-secret provenance is worth
+		// keeping, so fall back to one name-plus-origin line each.
+		_, _ = cBold.Fprintf(out, "  %s", prefix)
+		if uniform {
+			_, _ = cDim.Fprintf(out, " %d · %s\n", len(members), origins[0])
+			flowNames(out, names, "      ")
+			continue
+		}
+		_, _ = cDim.Fprintf(out, " %d\n", len(members))
+		for i, name := range names {
+			_, _ = cBold.Fprintf(out, "      %s", name)
+			_, _ = cDim.Fprintf(out, "  %s\n", origins[i])
 		}
 	}
+}
+
+// orphanOrigin renders one secret's provenance for the orphan/unreferenced
+// listing: its recorded Origin and how long ago it was seen, or the
+// pre-provenance fallback when the vault never recorded one.
+func orphanOrigin(v *vault.Vault, path string) string {
+	if info, err := v.Info(path); err == nil && info.Origin != "" {
+		s := "from " + info.Origin
+		if info.OriginSeenUnix > 0 {
+			s += fmt.Sprintf(", seen %s ago", humanAgo(time.Since(time.Unix(info.OriginSeenUnix, 0))))
+		}
+		return s
+	}
+	return "no recorded origin (pre-provenance, or set directly)"
 }
 
 // vaultOrphansCmd is the actionable half of `jit doctor --orphans` (which only

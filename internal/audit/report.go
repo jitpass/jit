@@ -403,16 +403,19 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	// beneath it, and a trailing blank line. Dense reports used to run several
 	// categories together separated by a single blank line, so where one
 	// category's findings ended and the next began was easy to lose — the rule
-	// and the bold header give every section an unmistakable start.
-	sectionRule := strings.Repeat("─", 35)
+	// bold header gives every section an unmistakable start. No rule beneath
+	// it: the weight of the bold header plus the blank line before the next
+	// one already separates sections (house style — whitespace and weight
+	// over box-rules, see design/output-style.md). The count in the header
+	// matches jit migrate's `[name] (N)` so both reports read the same way.
 	for _, ft := range AllFindingTypes {
 		group := byType[ft]
 		if len(group) == 0 {
 			continue
 		}
 
-		_, _ = color.New(color.Bold).Fprintf(w, "[%s]\n", findingTypeLabels[ft])
-		_, _ = color.New(color.Faint).Fprintf(w, "  %s\n", sectionRule)
+		_, _ = color.New(color.Bold).Fprintf(w, "[%s]", findingTypeLabels[ft])
+		_, _ = color.New(color.Faint).Fprintf(w, " %d\n", summary.FindingsByCategory[ft])
 		cols := computeColumns(group)
 		for _, item := range buildRenderItems(group) {
 			writeRenderItemText(w, item, home, cols)

@@ -360,7 +360,7 @@ func TestPrintMountStatusesShowsGrants(t *testing.T) {
 	if !strings.Contains(s, "serving real values to jit run pid 4242 (./run_all_exports.sh)") {
 		t.Errorf("output missing the grant line: %q", s)
 	}
-	if !strings.Contains(s, "real values (run-scoped grant)") {
+	if !strings.Contains(s, "real (run-scoped grant)") {
 		t.Errorf("output missing the grant-served read qualifier: %q", s)
 	}
 }
