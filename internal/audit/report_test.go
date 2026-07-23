@@ -168,7 +168,10 @@ func TestWriteHumanReportGroupsMultipleFindingsInSameFile(t *testing.T) {
 	WriteHumanReport(&buf, findings, summary, "")
 	out := buf.String()
 
-	if got := strings.Count(out, "/Users/alex/config.json"); got != 1 {
+	// Count within the findings body only: the migrate trailer intentionally
+	// names a flagged path once more as a copy-pasteable fix command, which is
+	// a separate concern from the "one file, listed once" guarantee here.
+	if got := strings.Count(reportBody(out), "/Users/alex/config.json"); got != 1 {
 		t.Errorf("file path should appear exactly once even with 2 findings in it, appeared %d times:\n%s", got, out)
 	}
 	if !strings.Contains(out, "jamf/JAMF_PRO_CLIENT_ID") || !strings.Contains(out, "jamf/JAMF_PRO_CLIENT_SECRET") {
@@ -203,9 +206,19 @@ func TestWriteHumanReportGroupsMixedSeverityFindingsInSameFile(t *testing.T) {
 	WriteHumanReport(&buf, findings, summary, "")
 	out := buf.String()
 
-	if got := strings.Count(out, "/Users/alex/config.json"); got != 1 {
+	if got := strings.Count(reportBody(out), "/Users/alex/config.json"); got != 1 {
 		t.Errorf("file path should appear exactly once even when its findings span severities, appeared %d times:\n%s", got, out)
 	}
+}
+
+// reportBody returns everything in a human report above the migrate trailer,
+// so path-count assertions exercise the findings listing without tripping over
+// the trailer's copy-pasteable `jit migrate <flagged path>` example.
+func reportBody(out string) string {
+	if i := strings.Index(out, "Run `jit migrate"); i >= 0 {
+		return out[:i]
+	}
+	return out
 }
 
 // TestWriteHumanReportCollapsesDuplicatePatternAcrossFiles guards the
