@@ -75,6 +75,7 @@ your tools keep working, each through that tool's own native mechanism:
 | GCP application-default credentials | Live-mounted from a template; Google SDKs read the same path |
 | `.npmrc` auth tokens | Live-mounted from a template; non-secret settings untouched |
 | MCP server configs | The server command wrapped in `jit run` |
+| A bare token in a plain file (`token.txt`) | Vaulted; the file becomes a git-safe pointer (`jit vault get` to retrieve), or with `--mount` stays live at its path |
 
 Nothing about your workflow changes, and nothing is one-way. Before any file is
 touched, its exact original bytes are backed up (encrypted) into the vault, and
