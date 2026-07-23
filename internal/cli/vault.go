@@ -137,7 +137,7 @@ func splitBackupPaths(paths []string) (secrets, backups []string) {
 // last-updated age; nil keeps the plain, unannotated listing.
 func printVaultList(out io.Writer, secrets, backups []string, showBackups, grouped bool, meta map[string]vault.SecretInfo, axis string) {
 	if len(secrets) == 0 && len(backups) == 0 {
-		fmt.Fprintln(out, "No secrets stored yet. Run `jit vault set <path>` to add one, or `jit migrate .` to move existing secrets in.")
+		fmt.Fprintln(out, hlCmds("No secrets stored yet. Run `jit vault set <path>` to add one, or `jit migrate .` to move existing secrets in."))
 		return
 	}
 	switch {
@@ -489,7 +489,7 @@ var vaultInitCmd = &cobra.Command{
 		if _, err := vault.EnsureDeviceID(root); err != nil {
 			return fmt.Errorf("jit vault init: %w", err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Vault initialized at %s.\nRun `jit vault set <path>` to add a secret, or `jit migrate .` to move existing secrets in.\n", root)
+		fmt.Fprint(cmd.OutOrStdout(), hlCmds(fmt.Sprintf("Vault initialized at %s.\nRun `jit vault set <path>` to add a secret, or `jit migrate .` to move existing secrets in.\n", root)))
 		return nil
 	},
 }
@@ -1599,7 +1599,7 @@ var vaultDeleteCmd = &cobra.Command{
 		for _, r := range removed {
 			fmt.Fprintf(cmd.OutOrStdout(), "Removed %s\n", r)
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "The vault is gone. Run `jit vault init` to start fresh.")
+		fmt.Fprintln(cmd.OutOrStdout(), hlCmds("The vault is gone. Run `jit vault init` to start fresh."))
 		return nil
 	},
 }

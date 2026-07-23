@@ -639,7 +639,7 @@ var agentStatusCmd = &cobra.Command{
 				fmt.Fprintln(cmd.OutOrStdout(), installedNotRunningAdvice("jit's background service is"))
 				return nil
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "jit's background service is not running. Run `jit service restart` to start it (or just use jit and it starts on its own).")
+			fmt.Fprintln(cmd.OutOrStdout(), hlCmds("jit's background service is not running. Run `jit service restart` to start it (or just use jit and it starts on its own)."))
 			return nil
 		}
 		if err != nil {
@@ -711,7 +711,7 @@ var agentLogCmd = &cobra.Command{
 			// Not an error: an empty history is a normal state on a machine
 			// where the service hasn't run, and the useful output is what
 			// would make one exist.
-			fmt.Fprintf(out, "No service log yet at %s, it's written once the service runs; it starts on its own the first time you use jit, or run `jit service restart`.\n", displayLogPath(logPath))
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("No service log yet at %s, it's written once the service runs; it starts on its own the first time you use jit, or run `jit service restart`.\n", displayLogPath(logPath))))
 			return nil
 		}
 		_, _ = out.Write(tailLines(data, agentLogLines))

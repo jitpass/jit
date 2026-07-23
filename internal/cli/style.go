@@ -72,12 +72,49 @@ func outputWidth() int {
 	return defaultWidth
 }
 
+// hlCmds highlights the `backtick`-delimited command spans in a user-facing
+// message: each is rendered cyan (the house color for something the reader can
+// run) and its backticks dropped. When color is off — piped output, TERM=dumb,
+// tests — cPath.Sprint returns the text unchanged, so the backticks are simply
+// removed and the line reads as clean plain text. Use it on directive lines
+// ("run `jit x` to …"), not on every incidental mention, so cyan stays a
+// signal rather than noise.
+func hlCmds(s string) string {
+	var b strings.Builder
+	for {
+		i := strings.IndexByte(s, '`')
+		if i < 0 {
+			b.WriteString(s)
+			return b.String()
+		}
+		j := strings.IndexByte(s[i+1:], '`')
+		if j < 0 {
+			b.WriteString(s)
+			return b.String()
+		}
+		b.WriteString(s[:i])
+		b.WriteString(cPath.Sprint(s[i+1 : i+1+j]))
+		s = s[i+1+j+1:]
+	}
+}
+
+// maxFlowWidth caps how wide flowNames lays out, and maxFlowCols how many
+// columns, regardless of how wide the terminal is. Flowing to the full width
+// of a very wide window produced a dense six-or-more-column wall that was
+// harder to scan than the stack it replaced; a comfortable reading measure
+// and a low column cap keep it tidy — a few short rows, generous gutters.
+const (
+	maxFlowWidth = 88
+	maxFlowCols  = 4
+)
+
 // flowNames prints names packed into aligned whitespace columns beneath a
 // group header — the docker/gh instinct that turns a 12-item vertical stack
-// into three tidy rows. Every column is padded to the widest name plus a
+// into a few tidy rows. Every column is padded to the widest name plus a
 // two-space gutter so names line up down the page; the last column in a row
 // isn't padded so there's no trailing whitespace. indent leads every row.
-// A no-op on empty input.
+// Column count is bounded (see maxFlowWidth/maxFlowCols) so a wide terminal
+// stays readable rather than sprawling. A no-op on empty input.
 func flowNames(w io.Writer, names []string, indent string) {
 	if len(names) == 0 {
 		return
@@ -89,7 +126,14 @@ func flowNames(w io.Writer, names []string, indent string) {
 		}
 	}
 	colW := longest + 2
-	cols := (outputWidth() - len(indent)) / colW
+	width := outputWidth()
+	if width > maxFlowWidth {
+		width = maxFlowWidth
+	}
+	cols := (width - len(indent)) / colW
+	if cols > maxFlowCols {
+		cols = maxFlowCols
+	}
 	if cols < 1 {
 		cols = 1
 	}
