@@ -70,12 +70,16 @@ jobs:
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
-          version: latest
+          # Pin the goreleaser MAJOR, not "latest", so CI's config check and
+          # snapshot build track the same v2 the release job uses.
+          version: "~> v2"
           args: check
 
       - name: Snapshot build (no publish, no signing)
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
-          version: latest
+          # Pin the goreleaser MAJOR, not "latest", so CI's config check and
+          # snapshot build track the same v2 the release job uses.
+          version: "~> v2"
           args: release --snapshot --clean --skip=publish,sign
