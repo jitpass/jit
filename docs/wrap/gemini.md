@@ -43,10 +43,9 @@ jit wrap undo gemini
 
 ## Notes
 
-- **If `jit migrate home` already protects this file, wrap it first.**
-  `jit migrate home` independently discovers *any* `.env`-named file
-  under your home directory (that's how it protects a stray `~/.env`
-  used for other tools) and turns it into a live-mounted pipe. If that's
+- **If `jit migrate` already protects this file, wrap it first.**
+  `jit migrate ~/.gemini/.env` (or a directory walk that reaches it) turns
+  a `.env`-named file into a live-mounted pipe. If that's
   already happened to `~/.gemini/.env` or `~/.env`, `jit wrap gemini`
   refuses with an error rather than reading the file - reading a jit
   mount doesn't fail or hang, it silently returns a decoy value, and
@@ -56,5 +55,6 @@ jit wrap undo gemini
   `jit vault set wrap-gemini/GEMINI_API_KEY` by hand.
 - Only the *file* path is scrubbed. `GEMINI_API_KEY` set directly in your
   shell profile overrides both the vault injection and the `.env` file -
-  `jit scan`/`jit migrate home --only shell` covers that case.
+  `jit scan` flags it and `jit migrate ~/.zshrc --only shell` covers that
+  case.
 </content>

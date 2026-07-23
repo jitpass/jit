@@ -36,7 +36,7 @@ secret, same as every other audit format.
 | `confidence` | how sure the scanner is this is a real secret |
 | `evidence` | the one-line "why" shown in the human report |
 | `already_masked` | the on-disk value was already a masked/placeholder shape |
-| `archived` | the file sits under an archived/backup-looking directory; `jit migrate` skips it unless `--include-archived` (schema 0.7.0+) |
+| `archived` | the file sits under an archived/backup-looking directory (archive, backup, .trash, …); a flag to help you triage - name such a file explicitly in `jit migrate <path>` to convert it (schema 0.7.0+) |
 
 ## The scan summary record
 

@@ -140,7 +140,7 @@ Anything not in the catalog works through `jit wrap add`.
 ```
 jit                        # a fresh machine? bare jit walks you through setup
 jit scan                  # see what's exposed (read-only, safe anywhere)
-jit migrate                # fix everything it found; tools keep working
+jit migrate ~/code/myapp   # fix a file or project it found; tools keep working
 ```
 
 ## If you already use 1Password (or another password manager)

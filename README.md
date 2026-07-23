@@ -58,11 +58,11 @@ fish are covered there too.
 ## Quick start
 
 ```sh
-jit scan                     # 1. see the problem (read-only, safe to run anywhere)
-jit vault init                # 2. create the vault (master key in your login keychain)
-jit migrate --dry-run         # 3. preview the fix (same whole-machine scope as audit)
-jit migrate                   # 4. apply it: plan, [y/N], one Touch ID prompt
-jit status                    # 5. vault / service / mounts / backup health, one screen
+jit scan                       # 1. see the problem (read-only, safe to run anywhere)
+jit vault init                  # 2. create the vault (master key in your login keychain)
+jit migrate ~/code/myapp --dry-run  # 3. preview the fix for a file or project scan flagged
+jit migrate ~/code/myapp        # 4. apply it: plan, [y/N], one Touch ID prompt
+jit status                      # 5. vault / service / mounts / backup health, one screen
 ```
 
 Every mutating command prints its plan and asks first. Every rewritten file is
@@ -138,9 +138,10 @@ jit run --profile mcp-jamf -- uv --directory ~/servers/jamf run server.py
 - **`jit scan`**: the read-only scan. Ranks every plaintext secret on the
   machine by exposure; never writes, moves, or prints a real value. Safe to run
   against anything, ~340 ms.
-- **`jit migrate`**: the bulk mover. Vaults the secrets in files it understands
-  and wires up each one's delivery model (whole-machine default; `local` vs
-  `home` scope). Every change is reversible with `jit migrate undo`, byte-for-byte.
+- **`jit migrate <path>`**: the bulk mover. Vaults the secrets in files it
+  understands and wires up each one's delivery model. You name the file(s) or
+  project(s) to convert. Every change is reversible with `jit migrate undo`,
+  byte-for-byte.
 - **`jit wrap <tool>`**: the per-CLI bridge. Moves one tool's token into the
   vault and keeps you typing the command as before; ~19 supported tools (`gh`,
   `glab`, `stripe`, `aws`, `terraform`, `docker`, `claude`, `gemini`, and more).

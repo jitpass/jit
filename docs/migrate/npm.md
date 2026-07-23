@@ -25,8 +25,9 @@ through untouched, and the token slots fill from the vault only for a
   Outside a grant they see placeholder values (that's the point — launch npm
   through `jit run`); `jit service status` shows what the last reader was
   served.
-- The global `~/.npmrc` is machine-wide, so it's covered by
-  `jit migrate home`; a project `.npmrc` is covered by `local` too.
+- The global `~/.npmrc` is machine-wide - name it explicitly to convert
+  it; a project `.npmrc` is picked up when you name that project's
+  directory.
 - Rotating a token: `jit vault set` on the path shown in the mount's
   pointers file - the next granted read serves it.
 
