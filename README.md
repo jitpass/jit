@@ -142,8 +142,10 @@ jit run --profile mcp-jamf -- uv --directory ~/servers/jamf run server.py
   in files the whole-machine scan's naming rules would skip.
 - **`jit migrate <path>`**: the bulk mover. Vaults the secrets in files it
   understands and wires up each one's delivery model. You name the file(s) or
-  project(s) to convert. Every change is reversible with `jit migrate undo`,
-  byte-for-byte.
+  project(s) to convert. Also handles a bare token in a plain file (`jit migrate
+  token.txt`): it vaults the value and leaves a git-safe pointer, or with
+  `--mount` keeps the file live at its path. Every change is reversible with
+  `jit migrate undo`, byte-for-byte.
 - **`jit wrap <tool>`**: the per-CLI bridge. Moves one tool's token into the
   vault and keeps you typing the command as before; ~19 supported tools (`gh`,
   `glab`, `stripe`, `aws`, `terraform`, `docker`, `claude`, `gemini`, and more).
@@ -177,6 +179,7 @@ from there, so everything keeps working:
 | Docker registry logins | Login comes from the vault; `docker login`, compose, and buildx keep working. |
 | GCP application-default creds | Google SDKs read the usual path; it shows real values only when granted. |
 | `.npmrc` / `.netrc` tokens | The file shows decoys; non-secret settings stay untouched. |
+| A bare token in a plain file (`token.txt`) | The value moves to the vault and the file becomes a git-safe pointer (`jit vault get` to retrieve); `--mount` keeps it live at its path instead. |
 | CLI tool tokens (`gh`, `glab`, `stripe`, …) | Keep typing the command as before; the token is injected per call. |
 
 ## How it works under the hood
