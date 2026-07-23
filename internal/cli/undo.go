@@ -20,6 +20,7 @@ import (
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
+	"github.com/jitpass/jit/internal/vault"
 )
 
 var migrateUndoCmd = &cobra.Command{
@@ -44,7 +45,9 @@ var migrateUndoCmd = &cobra.Command{
 		"vault before being overwritten, so an undo is itself undoable, nothing\n" +
 		"is ever simply destroyed.\n\n" +
 		"What it deliberately does NOT do: vault secrets and profile manifests\n" +
-		"stay (`jit migrate remove` deletes a project's completely).\n\n" +
+		"stay (`jit migrate remove` deletes a project's completely, and\n" +
+		"`jit migrate remove <file>` deletes a loose secret's completely). When an\n" +
+		"undone file was a loose secret, undo ends by pointing you at that command.\n\n" +
 		"Like every restore-to-plaintext operation, this writes real secret\n" +
 		"values back to disk, it prints the full plan and confirms first\n" +
 		"(--yes skips, --dry-run previews only).\n\n" +
@@ -236,7 +239,56 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	return runRestores(out, home, latest, restoreOne)
+	restoreErr := runRestores(out, home, latest, restoreOne)
+	// A restored loose secret file's dedicated vault secret is still there —
+	// undo reverses files, never the vault. Unlike a project secret it is
+	// unshared and has no further use once its file is back, so point the user
+	// at the one command that clears it too. Best-effort and auth-free (Info
+	// reads envelope plaintext); printed even after a partial failure, since
+	// the nudge only names files whose secret genuinely still exists.
+	nudgeLooseRemainders(out, v, home, latest)
+	return restoreErr
+}
+
+// nudgeLooseRemainders prints, for each just-restored file that still has a
+// dedicated loose_file vault secret pointing back at it, a hint to the
+// file-scoped `jit migrate remove` that would delete that secret too. Any read
+// error simply skips the nudge — it never affects the undo's own result.
+func nudgeLooseRemainders(out io.Writer, v *vault.Vault, home string, recs []migrate.BackupRecord) {
+	restored := make(map[string]bool, len(recs))
+	for _, rec := range recs {
+		restored[rec.OriginalPath] = true
+	}
+	paths, err := v.List()
+	if err != nil {
+		return
+	}
+	remaining := map[string]bool{}
+	for _, p := range paths {
+		if strings.HasPrefix(p, "_backups/") {
+			continue
+		}
+		info, err := v.Info(p)
+		if err != nil || info.Class != vault.ClassLooseFile || info.Origin == "" {
+			continue
+		}
+		if origin := expandTilde(info.Origin, home); restored[origin] {
+			remaining[origin] = true
+		}
+	}
+	if len(remaining) == 0 {
+		return
+	}
+	files := make([]string, 0, len(remaining))
+	for f := range remaining {
+		files = append(files, f)
+	}
+	sort.Strings(files)
+	fmt.Fprintln(out)
+	for _, f := range files {
+		_, _ = color.New(color.FgCyan).Fprintf(out,
+			"Its vault secret is still stored. `jit migrate remove %s` deletes that too.\n", displayPath(home, f))
+	}
 }
 
 // undoFailure records one file runRestores could not restore, so the batch
