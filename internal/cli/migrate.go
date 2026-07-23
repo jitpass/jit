@@ -791,6 +791,16 @@ func runMigratePath(cmd *cobra.Command, targets []string) error {
 		return fmt.Errorf("jit migrate path: %w", err)
 	}
 
+	// Discovery walks each named directory looking for migratable secrets and
+	// is otherwise silent — the plan only prints once every target has been
+	// examined. A status trail on stderr keeps a large-tree scan from looking
+	// hung. It's stopped before applyMigrate, which streams its own per-item
+	// output to stdout (and prompts for confirmation), so the spinner never
+	// overlaps a prompt. defer covers the early error returns below; the
+	// explicit Stop handles the happy path before the plan is printed.
+	progress := newProgress(cmd, false)
+	defer progress.Stop()
+
 	d := &discovered{}
 	for _, target := range targets {
 		abs := expandTilde(target, home)
@@ -798,6 +808,7 @@ func runMigratePath(cmd *cobra.Command, targets []string) error {
 			abs = filepath.Join(cwd, abs)
 		}
 		abs = filepath.Clean(abs)
+		progress.Step("Scanning "+displayPath(home, abs)+" for secrets…", "Scanned "+displayPath(home, abs))
 
 		info, err := os.Lstat(abs)
 		if err != nil {
@@ -830,6 +841,7 @@ func runMigratePath(cmd *cobra.Command, targets []string) error {
 	// collapse duplicates before applyMigrate, which assumes a unique set.
 	d.dedupe()
 
+	progress.Stop() // settle the discovery trail before the plan/prompt prints
 	return applyMigrate(cmd, home, d)
 }
 

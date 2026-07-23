@@ -44,8 +44,14 @@ func TargetedScan(cfg Config, targets []string) ([]Finding, ScanSummary, error) 
 		case info.Mode()&os.ModeSymlink != 0:
 			continue // no-follow, same policy as walkHomeDir
 		case info.IsDir():
+			if cfg.Progress != nil {
+				cfg.Progress(filepath.Base(target))
+			}
 			all = append(all, scanTargetDir(cfg, target)...)
 		case info.Mode().IsRegular():
+			if cfg.Progress != nil {
+				cfg.Progress(filepath.Base(target))
+			}
 			all = append(all, scanTargetFile(cfg, target)...)
 		}
 	}

@@ -122,8 +122,19 @@ func newRootCmd() *cobra.Command {
 		&cobra.Group{ID: groupPlumbing, Title: "Invoked by other tools, not by hand:"},
 	)
 	cmd.SetUsageTemplate(rootUsageTemplate)
+	// --quiet is persistent so it silences the progress trail (see
+	// newProgress) uniformly across every long-running command — scan,
+	// migrate, vault rekey — rather than each adding its own flag. It only
+	// affects the transient stderr spinner; the command's actual result on
+	// stdout is never suppressed.
+	cmd.PersistentFlags().BoolVar(&quietFlag, "quiet", false, "suppress the progress spinner/status trail (results still print)")
 	return cmd
 }
+
+// quietFlag is bound to the root's persistent --quiet flag and read by
+// newProgress. A package var (not threaded through every RunE) because it's a
+// global display preference, like color, not a per-command argument.
+var quietFlag bool
 
 // recordInvocation, when set, writes one line to the application audit log
 // for a finished command. It is a hook (nil default) rather than a direct
