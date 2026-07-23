@@ -49,7 +49,9 @@ scan time: 2026-07-06T09:14:22.000Z          duration: 340ms
 ```
 
 No secret value is ever printed in full. Run `jit scan --score` when you only
-want the number, or `jit scan --format ndjson` for machine-readable output.
+want the number, or `jit scan --format ndjson` for machine-readable output. To
+check a single file or folder instead of the whole machine, name it: `jit scan
+./project token.txt`.
 
 **Why it matters:** you cannot fix what you cannot see. A password manager
 stores the secrets you deliberately put into it; it has no idea what is still
