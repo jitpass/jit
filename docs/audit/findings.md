@@ -19,7 +19,7 @@ a masked value preview, and a one-line *why* explaining what matched.
 | **Suspicious Filenames** | files whose names suggest stashed secrets (`secrets.txt` and friends) | surfaced for your judgment |
 | **Wrappable CLI Tokens** | plaintext tokens in the config files of CLIs the [wrap catalog](../wrap/index.md) knows how to fix (`gh`, `stripe`, `ngrok`, …) | [`jit wrap <tool>`](../wrap/index.md) - audit prints the exact command |
 | **SOPS Age Keys** | the age private key file (`keys.txt`) that decrypts every SOPS-encrypted secret it guards - sops, kluctl, Flux, helm-secrets | [`jit migrate`](../migrate/sops.md) |
-| **Exposed Secrets** | a known vendor token or JWT found by **content** in a file you name explicitly to `jit scan <path>`, whatever the file is called (`token.txt`, a random dump). Only produced by a targeted scan of named paths, never the whole-machine walk | surfaced for your judgment |
+| **Exposed Secrets** | a known vendor token or JWT found by **content** in a file you name explicitly to `jit scan <path>`, whatever the file is called (`token.txt`, a random dump). Only produced by a targeted scan of named paths, never the whole-machine walk | [`jit migrate <path>`](../migrate/index.md) when the whole file is the token (vault-and-neutralize); a token embedded in a larger file is surfaced for your judgment |
 
 Detection and migration share the same extractors: when a new tool enters
 the wrap catalog, `jit scan` starts flagging its token automatically.
