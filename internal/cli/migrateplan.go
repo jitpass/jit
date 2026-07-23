@@ -247,7 +247,7 @@ func printMigratePlanCategoryAnnotated(w io.Writer, headline string, items []str
 		return
 	}
 	name, outcome := splitHeadline(headline)
-	_, _ = color.New(color.Bold).Fprintf(w, "[%s]", name)
+	fmt.Fprintf(w, "[%s]", name)
 	_, _ = color.New(color.Faint).Fprintf(w, " %d\n", len(items))
 	if outcome != "" {
 		_, _ = color.New(color.Faint).Fprintf(w, "  → %s\n", outcome)
