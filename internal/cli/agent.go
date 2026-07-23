@@ -25,11 +25,18 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jitpass/jit/internal/agent"
+	"github.com/jitpass/jit/internal/consent"
 	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/screenlock"
 )
 
 var agentTTL time.Duration
+
+// agentConsent turns on per-process credential consent in the running service
+// (design/per-process-credential-consent.md). Off by default; opt in with
+// `jit service run --consent` while the feature is proven out. Not yet baked
+// into the auto-installed plist, so it applies to a hand-started service run.
+var agentConsent bool
 
 // agentStatusFormat is agentStatusCmd's --format flag (GAPS.md #22).
 var agentStatusFormat string
@@ -111,6 +118,12 @@ var agentRunCmd = &cobra.Command{
 		}
 
 		server := agent.NewServer(agent.SocketPath(root), func() agent.MEKFetcher { return keychainwrap.New() }, agentTTL)
+		if agentConsent {
+			// Align the consent cache lifetime with the unlock session's, so an
+			// approval never outlives the session it rode in on.
+			server.Consent = consent.New(agentTTL)
+			fmt.Fprintln(stdout, "jit service: per-process credential consent ENABLED (prompting on credential unwraps)")
+		}
 		mounts := &mountManager{root: root, keyWrapper: server, stdout: stdout, stderr: stderr}
 		server.OnUnlock = mounts.start
 		server.OnLock = mounts.stop
@@ -1355,6 +1368,7 @@ var agentCompatRunCmd = &cobra.Command{
 
 func init() {
 	agentRunCmd.Flags().DurationVar(&agentTTL, "ttl", 5*time.Minute, "how long an unlocked session stays cached before auto-locking")
+	agentRunCmd.Flags().BoolVar(&agentConsent, "consent", false, "prompt for per-process consent (Touch ID) on each credential unwrap (experimental)")
 	agentStatusCmd.Flags().StringVar(&agentStatusFormat, "format", "text", `output format: "text" (default) or "json"`)
 	agentLogCmd.Flags().IntVarP(&agentLogLines, "lines", "n", 50, "how many trailing lines to print")
 	agentLogCmd.Flags().BoolVarP(&agentLogFollow, "follow", "f", false, "keep printing new lines as the service writes them (Ctrl-C to stop)")
