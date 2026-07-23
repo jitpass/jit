@@ -30,9 +30,10 @@ var sopsAgeKeyCmd = &cobra.Command{
 		"native hook for fetching the age key from an external command, so decryption\n" +
 		"works with no plaintext keys.txt on disk at all:\n\n" +
 		"  export SOPS_AGE_KEY_CMD=\"jit sops-age-key\"\n\n" +
-		"Tools whose embedded sops predates SOPS_AGE_KEY_CMD keep working through the\n" +
-		"migrated keys.txt live mount instead (`jit run --with sops` grants the mount\n" +
-		"real reads for that run), so this hook is the fast path, not the only path.\n\n" +
+		"`jit run --with sops` sets this for the granted run automatically, so you\n" +
+		"rarely export it by hand. Tools whose embedded sops predates SOPS_AGE_KEY_CMD\n" +
+		"keep working through the migrated keys.txt live mount instead (still granted\n" +
+		"for that run), so this hook is the fast path, not the only path.\n\n" +
 		"Requires local auth to resolve the vault the same way jit run/export do:\n" +
 		"either a reachable jit background service with an already-unlocked session, or an\n" +
 		"interactive context able to show a Touch ID/passcode prompt. Invoked from\n" +
