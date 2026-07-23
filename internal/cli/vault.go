@@ -1375,15 +1375,15 @@ var vaultOrphansCmd = &cobra.Command{
 	Use:   "orphans",
 	Short: "List (and with --prune delete) secrets no profile references",
 	Long: "Lists every stored secret that no profile jit can currently see points at,\n" +
-		"grouped by path with each secret's recorded origin — the leftovers a\n" +
+		"grouped by path with each secret's recorded origin: the leftovers a\n" +
 		"path-only `jit migrate undo`/`remove` leaves in the vault once the profile\n" +
 		"that named them is gone. With --prune, they are permanently deleted after a\n" +
 		"[y/N] confirmation and a fresh Touch ID/passcode.\n\n" +
 		"\"Referenced\" is judged against every profile jit can see: the project-local\n" +
 		"(current directory) and global profile stores, plus the profile behind every\n" +
 		"registered mount. A secret used ONLY by a different project you're not in and\n" +
-		"haven't mounted would look orphaned here — check each secret's origin before\n" +
-		"pruning, and delete a single one with `jit vault rm <path>` if you're unsure.",
+		"haven't mounted would look orphaned here, so check each secret's origin\n" +
+		"before pruning, and delete a single one with `jit vault rm <path>` if unsure.",
 	Args:         cobra.NoArgs,
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {

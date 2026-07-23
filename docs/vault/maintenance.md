@@ -3,10 +3,10 @@ title: Vault maintenance
 description: Prune stale file backups, empty the vault, or destroy it entirely.
 ---
 
-# Vault maintenance - `rekey`, `prune`, `clean`, `delete`
+# Vault maintenance - `rekey`, `prune`, `orphans`, `clean`, `delete`
 
-Three commands, in increasing order of severity. All confirm first
-(`-y` skips the prompt).
+These commands run in increasing order of severity. The destructive ones
+confirm first (`-y` skips the prompt) and require a fresh Touch ID/passcode.
 
 ## `jit vault rekey` - rotate the master key
 
@@ -31,6 +31,20 @@ repeated migrate/undo cycles have grown the count past what you care to
 keep (`jit vault list --all` shows them), `prune` deletes the stale ones
 while keeping each file's newest backup, so
 [`jit migrate undo`](../migrate/undo-and-remove.md) keeps working.
+
+## `jit vault orphans` - find and delete secrets nothing references
+
+Lists every stored secret that no profile jit can see points at, grouped by
+path with each secret's recorded origin. These are the leftovers a path-only
+[`jit migrate undo`/`remove`](../migrate/undo-and-remove.md) can leave behind
+once the profile that named a secret is gone. By default it only lists them;
+`--prune` deletes them, after a confirmation and a fresh Touch ID/passcode.
+
+"Referenced" is judged against every profile jit can see: the project-local
+(current directory) and global profile stores, plus the profile behind every
+registered mount. A secret used only by another project you are not in and
+have not mounted would look orphaned here, so check each secret's origin
+before pruning, or delete just one with `jit vault rm <path>`.
 
 ## `jit vault clean` - delete every secret
 
