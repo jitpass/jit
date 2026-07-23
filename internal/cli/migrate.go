@@ -88,7 +88,7 @@ func noteFolderRename(w io.Writer, root string) {
 	if !ok {
 		return
 	}
-	_, _ = color.New(color.FgYellow).Fprintf(w, "note: this project's folder was renamed after migration (migrated as %q, now %q). Nothing is broken: your secrets still work and jit keeps serving them under the original %q label, which is only cosmetic. No action is needed. Run `jit profile show %s` to see where they live, or `jit doctor` to verify the vault is healthy.\n", oldName, newName, oldName, oldName)
+	_, _ = color.New(color.FgYellow).Fprintf(w, "note: this project's folder was renamed after migration (migrated as %q, now %q). Nothing is broken: your secrets still work and jit keeps serving them under the original %q label, which is only cosmetic. No action is needed. Run `jit status --secrets` to see where they live, or `jit doctor` to verify the vault is healthy.\n", oldName, newName, oldName)
 }
 
 // printSkippedFindings renders one whole-machine-sweep skip note: a

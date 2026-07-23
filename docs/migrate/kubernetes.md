@@ -27,8 +27,8 @@ standard `ExecCredential` response; nothing about your workflow changes.
 
 - Each credential fetch needs the vault unlocked - the
   [service](../service/index.md)'s shared session, or a Touch ID prompt.
-- Rotating: update the vault paths shown by `jit profile show
-  kube-my-user`; the next fetch serves the new credential.
+- Rotating: update the vault paths shown by `jit status --secrets`; the
+  next fetch serves the new credential.
 
 `jit k8s-exec-credential` is the [plumbing
 command](../reference/plumbing.md) the kubeconfig invokes - you never run

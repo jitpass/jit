@@ -54,7 +54,7 @@ var doctorCmd = &cobra.Command{
 		"By default it checks every profile visible from the current directory: both\n" +
 		"project-local ones under .jit/profiles/ and the home-rooted global ones\n" +
 		"jit migrate writes for shell-config/MCP/AWS/kubeconfig/npmrc secrets,\n" +
-		"the same set `jit profile list` shows. It also folds in the health checks\n" +
+		"the same set `jit status --secrets` reconciles. It also folds in the health checks\n" +
 		"that used to take `jit status` and `jit wrap doctor` to see: the background\n" +
 		"service, your vault backup, and any wrapped-tool shims.\n\n" +
 		"It exits non-zero only when a profile's secret is missing, corrupt, or\n" +

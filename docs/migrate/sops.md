@@ -60,7 +60,7 @@ per invocation.
   one `SOPS_AGE_KEY` variable can't serve two keys. The audit finding
   stays visible instead.
 - Rotating: generate a new key, update the vault path shown by
-  `jit profile show sops-age`, and re-encrypt your repos against the new
+  `jit status --secrets`, and re-encrypt your repos against the new
   recipient.
 
 `jit sops-age-key` is the [plumbing command](../reference/plumbing.md)

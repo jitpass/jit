@@ -192,14 +192,13 @@ var statusCmd = &cobra.Command{
 		"is the vault initialized, is the service running and unlocked, how do this " +
 		"project's stored secrets line up against its profiles, are mounts being served, " +
 		"into one read-only report. Never decrypts a secret value or triggers a Touch " +
-		"ID/passcode prompt, matching jit doctor and jit profile's own safe-to-run-often " +
+		"ID/passcode prompt, matching jit doctor's own safe-to-run-often " +
 		"shape; each section points at the dedicated command for full detail rather than " +
 		"duplicating it.\n\n" +
 		"The Secrets section reconciles the vault against the profiles jit can see: every " +
 		"stored secret is wired here (a project-local profile uses it), managed elsewhere " +
 		"(referenced only by a global profile or a mount), or unreferenced (a candidate " +
-		"orphan). Add --secrets to expand it into the full per-group listing, the successor " +
-		"to the deprecated jit profile list.\n\n" +
+		"orphan). Add --secrets to expand it into the full per-group listing.\n\n" +
 		"--format json prints a machine-readable snapshot instead of the default " +
 		"text report, in the same shape jit service status/vault list/doctor's own " +
 		"--format json use for their overlapping sections.",
@@ -559,6 +558,6 @@ func printGroupsWithKeys(w io.Writer, groups []secretGroup) {
 
 func init() {
 	statusCmd.Flags().StringVar(&statusFormat, "format", "text", `output format: "text" (default) or "json"`)
-	statusCmd.Flags().BoolVar(&statusSecretsDetail, "secrets", false, "expand the Secrets section into a full per-group reconciliation (replaces `jit profile list`)")
+	statusCmd.Flags().BoolVar(&statusSecretsDetail, "secrets", false, "expand the Secrets section into a full per-group reconciliation")
 	rootCmd.AddCommand(statusCmd)
 }
