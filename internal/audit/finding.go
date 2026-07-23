@@ -31,7 +31,11 @@ import (
 // 0.8.0 removed scan_summary's synthetic_finding_count and
 // synthetic_playground_paths along with the jitpass playground feature they
 // described (0.5.0); consumers that read them should treat them as absent.
-const SchemaVersion = "0.8.0"
+// 0.9.0 added the exposed_secret finding type and its findings_by_category
+// key (additive, same shape as 0.3.0/0.6.0's type bumps): a vendor-token or
+// JWT match found by content in a file the user named explicitly to `jit
+// scan <path>`, independent of the file's name or location.
+const SchemaVersion = "0.9.0"
 
 // ScannerName identifies this tool in the shared NDJSON envelope, matching
 // bumblebee's record shape so a receiver can co-ingest both (RFC.md §4).
@@ -59,6 +63,7 @@ const (
 	FindingTypeSuspiciousFilename = "suspicious_filename"
 	FindingTypeWrappableCLIToken  = "wrappable_cli_token" // #nosec G101 -- enum label, not a credential
 	FindingTypeSOPSAgeKey         = "sops_age_key"        // #nosec G101 -- enum label, not a credential
+	FindingTypeExposedSecret      = "exposed_secret"      // #nosec G101 -- enum label, not a credential
 )
 
 // AllFindingTypes lists every finding_type in the fixed order used for
@@ -75,6 +80,7 @@ var AllFindingTypes = []string{
 	FindingTypeSuspiciousFilename,
 	FindingTypeWrappableCLIToken,
 	FindingTypeSOPSAgeKey,
+	FindingTypeExposedSecret,
 }
 
 // Severity levels for an individual finding.

@@ -58,10 +58,10 @@ func ScanMCPConfigs(cfg Config) ([]Finding, error) {
 	}
 
 	err := walkHomeDir(cfg.HomeDir, func(path string, d fs.DirEntry) error {
-		if !mcpConfigFileNames[d.Name()] || path == claudeDesktopPath {
-			return nil
+		if path == claudeDesktopPath {
+			return nil // already scanned above by its fixed path
 		}
-		f, ferr := scanMCPConfigFile(cfg, path)
+		f, ferr := classifyMCPFile(cfg, path, d.Name())
 		if ferr != nil {
 			return nil // malformed file — skip it, don't fail the whole audit
 		}
@@ -69,6 +69,17 @@ func ScanMCPConfigs(cfg Config) ([]Finding, error) {
 		return nil
 	})
 	return findings, err
+}
+
+// classifyMCPFile is the name-gated per-file half of ScanMCPConfigs, split out
+// so `jit scan <path>`'s targeted walk recognizes the same mcp.json /
+// .mcp.json / claude_desktop_config.json names a machine-wide walk does.
+// Returns nil for a name that isn't a known MCP config file.
+func classifyMCPFile(cfg Config, path, name string) ([]Finding, error) {
+	if !mcpConfigFileNames[name] {
+		return nil, nil
+	}
+	return scanMCPConfigFile(cfg, path)
 }
 
 func scanMCPConfigFile(cfg Config, path string) ([]Finding, error) {
