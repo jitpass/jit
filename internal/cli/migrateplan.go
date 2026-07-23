@@ -87,9 +87,11 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, shellConf
 		printMigratePlanCategory(w,
 			"npmrc file(s) → secrets move to the vault; the file keeps working via a live, auto-updating mount",
 			shorten(npmrcScoped))
-		printMigratePlanCategory(w,
-			"loose secret file(s) → the whole file is a bare token; it moves to the vault and the file is replaced with a git-safe pointer (retrieve with `jit vault get`, or re-mount later with `jit mount`)",
-			shorten(looseSecretFiles))
+		looseHeadline := "loose secret file(s) → the whole file is a bare token; it moves to the vault and the file is replaced with a git-safe pointer (retrieve with `jit vault get`)"
+		if migrateMount {
+			looseHeadline = "loose secret file(s) → the secret(s) move to the vault; the file stays live at its path as a mount (real value to `jit run` grants, a decoy otherwise), non-secret content preserved"
+		}
+		printMigratePlanCategory(w, looseHeadline, shorten(looseSecretFiles))
 	}
 
 	if hasFixed {

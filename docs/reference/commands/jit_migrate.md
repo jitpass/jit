@@ -54,9 +54,10 @@ jit migrate <file-or-dir>...
 ### Options
 
 ```
-      --dry-run        preview the plan without changing anything
-      --only strings   scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,docker,git,gcp,sops,npmrc,netrc,loose (default: all)
-  -y, --yes            skip the confirmation prompt and migrate immediately
+      --dry-run         preview the plan without changing anything
+      --mount jit run   for a loose secret file, keep it live at its path as a mount (real value to jit run grants, a decoy otherwise) instead of replacing it with a pointer; also required to protect a file that mixes a secret with other content
+      --only strings    scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,docker,git,gcp,sops,npmrc,netrc,loose (default: all)
+  -y, --yes             skip the confirmation prompt and migrate immediately
 ```
 
 ### SEE ALSO

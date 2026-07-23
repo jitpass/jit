@@ -26,6 +26,7 @@ var (
 	migrateDryRun bool
 	migrateYes    bool
 	migrateOnly   []string
+	migrateMount  bool
 )
 
 // migrateCategories are the --only tokens real (non---dry-run) migrate
@@ -56,6 +57,11 @@ type discovered struct {
 	npmrcFiles        []string
 	netrcFiles        []string
 	looseSecretFiles  []string
+	// looseEmbeddedSkipped is note-only (like tfvarsComplexOnly): files that
+	// mix a secret with other content, which neutralize can't move whole.
+	// Populated only without --mount; with --mount they migrate as templates
+	// and land in looseSecretFiles instead.
+	looseEmbeddedSkipped []string
 }
 
 // noteNamespaceMove explains a claimNamespace bump (GAPS.md #55) directly
@@ -213,6 +219,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 	npmrcFiles := d.npmrcFiles
 	netrcFiles := d.netrcFiles
 	looseSecretFiles := d.looseSecretFiles
+	looseEmbeddedSkipped := d.looseEmbeddedSkipped
 
 	// --only scopes a run to just the named categories (GAPS.md #21) —
 	// validated against migrateCategories BEFORE anything else, including
@@ -283,6 +290,8 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 		}
 		printSkippedFindings(cmd.OutOrStdout(), home, len(tfvarsComplexOnly), "in Terraform variable file(s) whose secret-shaped values aren't simple one-line strings", tfvarsComplexOnly,
 			"Nothing migrate can move safely; they stay in place, and `jit scan` keeps reporting them.")
+		printSkippedFindings(cmd.OutOrStdout(), home, len(looseEmbeddedSkipped), "file(s) that mix a secret with other content", looseEmbeddedSkipped,
+			"Re-run with --mount to protect them in place as a live mount (the non-secret content is preserved); otherwise they stay put and `jit scan` keeps reporting them.")
 		return nil
 	}
 
@@ -317,6 +326,8 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 	printMigratePlan(cmd.OutOrStdout(), home, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, looseSecretFiles)
 	printSkippedFindings(cmd.OutOrStdout(), home, len(tfvarsComplexOnly), "in Terraform variable file(s) whose secret-shaped values aren't simple one-line strings", tfvarsComplexOnly,
 		"Nothing migrate can move safely; they stay in place, and `jit scan` keeps reporting them.")
+	printSkippedFindings(cmd.OutOrStdout(), home, len(looseEmbeddedSkipped), "file(s) that mix a secret with other content", looseEmbeddedSkipped,
+		"Re-run with --mount to protect them in place as a live mount (the non-secret content is preserved); otherwise they stay put and `jit scan` keeps reporting them.")
 
 	if migrateDryRun {
 		out := cmd.OutOrStdout()
@@ -410,13 +421,30 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 			// profilesRoot is the file's OWN directory, same rule as .env: an
 			// explicitly named loose file can sit anywhere, so its profile lives
 			// alongside it, not under the invoking cwd.
+			if migrateMount {
+				// --mount: the file becomes a live FIFO serving a template.
+				result, err := migrate.ApplyLooseSecretFileMount(v, filepath.Dir(path), path)
+				if err != nil {
+					return fmt.Errorf("jit migrate: %w", err)
+				}
+				if err := mount.AddMount(registryPath, mount.Entry{MountPath: path, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
+					return fmt.Errorf("jit migrate: registering mount for %s: %w", path, err)
+				}
+				if err := summary.writePointerFile(path, result.ProfilePath); err != nil {
+					return fmt.Errorf("jit migrate: %w", err)
+				}
+				fmt.Fprintf(out, "  • %s -> profile %q (%d secret(s)); backup: `jit vault get %s`, live mount (real value to `jit run` grants, a decoy otherwise)\n",
+					displayPath(home, path), result.ProfileName, len(result.Variables), result.BackupPath)
+				noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
+				continue
+			}
+			// Default: vault-and-neutralize. ApplyLooseSecretFile replaced the
+			// file in place with a git-safe pointer, so there's no mount to
+			// register and nothing to reveal — retrieval is `jit vault get`.
 			result, err := migrate.ApplyLooseSecretFile(v, filepath.Dir(path), path)
 			if err != nil {
 				return fmt.Errorf("jit migrate: %w", err)
 			}
-			// Vault-and-neutralize: the file was replaced in place with a
-			// git-safe pointer (ApplyLooseSecretFile did it), so there's no mount
-			// to register and nothing to reveal — retrieval is `jit vault get`.
 			summary.backupOnlyFiles++
 			fmt.Fprintf(out, "  • %s -> profile %q (%d secret(s)); backup: `jit vault get %s`, replaced with a safe pointer file (retrieve with `jit vault get %s/%s`)\n",
 				displayPath(home, path), result.ProfileName, len(result.Variables), result.BackupPath, result.ProfileName, result.Variables[0])
@@ -965,8 +993,19 @@ func discoverFileTarget(d *discovered, home, path string) error {
 	// scan keeps reporting it). Never runs on a directory walk, only on a file
 	// the user named directly, matching the intent gate scan uses.
 	if d.total() == before {
-		if _, pure, err := migrate.ClassifyLooseSecretFile(path); err == nil && pure {
-			d.looseSecretFiles = append(d.looseSecretFiles, path)
+		if tokens, pure, err := migrate.ClassifyLooseSecretFile(path); err == nil && len(tokens) > 0 {
+			switch {
+			case pure || migrateMount:
+				// A pure file neutralizes by default (or mounts with --mount);
+				// an embedded file can only be protected as a template mount,
+				// so it needs --mount to be migrated at all. applyMigrate reads
+				// migrateMount to pick neutralize vs mount for each.
+				d.looseSecretFiles = append(d.looseSecretFiles, path)
+			default:
+				// Embedded, no --mount: neutralizing would destroy the file's
+				// non-secret content, so note it instead of moving it.
+				d.looseEmbeddedSkipped = append(d.looseEmbeddedSkipped, path)
+			}
 		}
 	}
 	return nil
@@ -995,7 +1034,7 @@ func (d *discovered) dedupe() {
 		&d.envFiles, &d.tfvarsFiles, &d.tfvarsComplexOnly, &d.shellConfigs,
 		&d.mcpConfigs, &d.awsProfiles, &d.k8sUsers, &d.terraformHosts,
 		&d.dockerRegistries, &d.gitHosts, &d.gcpADCFiles, &d.sopsAgeFiles,
-		&d.npmrcFiles, &d.netrcFiles, &d.looseSecretFiles,
+		&d.npmrcFiles, &d.netrcFiles, &d.looseSecretFiles, &d.looseEmbeddedSkipped,
 	} {
 		dedupeStrings(s)
 	}
@@ -1066,6 +1105,7 @@ func init() {
 	migrateCmd.PersistentFlags().BoolVarP(&migrateYes, "yes", "y", false, "skip the confirmation prompt and migrate immediately")
 	migrateCmd.PersistentFlags().StringSliceVar(&migrateOnly, "only", nil, "scope a run to just these comma-separated categories: "+strings.Join(migrateCategories, ",")+" (default: all)")
 	_ = migrateCmd.RegisterFlagCompletionFunc("only", completeMigrateCategories)
+	migrateCmd.PersistentFlags().BoolVar(&migrateMount, "mount", false, "for a loose secret file, keep it live at its path as a mount (real value to `jit run` grants, a decoy otherwise) instead of replacing it with a pointer; also required to protect a file that mixes a secret with other content")
 
 	migrateCmd.AddCommand(migratePathCmd)
 	rootCmd.AddCommand(migrateCmd)
