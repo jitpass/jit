@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -113,6 +114,13 @@ var runCmd = &cobra.Command{
 			return fmt.Errorf("jit run: %w", err)
 		}
 
+		// When this run grants --with sops, point sops at jit's native
+		// SOPS_AGE_KEY_CMD hook: sops v3.10+ fetches the age key through the
+		// broker (jit sops-age-key) and never reads the granted keys.txt mount
+		// at all. Older sops falls back to that mount, which stays granted
+		// below, so this is a delivery upgrade, not a compatibility break.
+		env = withSopsAgeKeyCmd(env, runWith)
+
 		// Last thing before the exec: ask the agent to make this run's
 		// mounts compatible with the command about to read them. execve
 		// keeps the pid, so whatever we register on os.Getpid() lands on
@@ -126,6 +134,29 @@ var runCmd = &cobra.Command{
 		// failed to start, never that the target already ran.
 		return syscall.Exec(binary, argv, env) // #nosec G204 -- args[0] is the command the user themselves asked `jit run --` to execute
 	},
+}
+
+// withSopsAgeKeyCmd sets SOPS_AGE_KEY_CMD for a run that grants --with sops, so
+// sops (v3.10+) fetches the age key through jit's broker hook instead of reading
+// the granted keys.txt mount, keeping the key off disk entirely. It is a no-op
+// unless sops is among the granted --with names, and it never overrides a
+// SOPS_AGE_KEY_CMD the user already set (theirs wins). The value mirrors the
+// documented `jit sops-age-key` usage; sops runs it via `sh -c`, so the absolute
+// executable path plus the subcommand is a valid command string.
+func withSopsAgeKeyCmd(env, withNames []string) []string {
+	if !slices.Contains(withNames, "sops") {
+		return env
+	}
+	for _, e := range env {
+		if strings.HasPrefix(e, "SOPS_AGE_KEY_CMD=") {
+			return env
+		}
+	}
+	exe, err := os.Executable()
+	if err != nil || exe == "" {
+		exe = "jit" // fall back to a PATH lookup, as the command's own docs show
+	}
+	return append(env, fmt.Sprintf("SOPS_AGE_KEY_CMD=%s sops-age-key", exe))
 }
 
 // requestRunCompat makes this run's mounts compatible with the command
