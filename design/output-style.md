@@ -90,6 +90,6 @@ ever mis-widths them — nothing references the symbols directly.
 
 Tracked so the next pass knows where to look, not a claim they're broken:
 
-- `jit status` top rows (`Versions:`/`Vault:`/`Backup:`/`Service:`) are still
-  prose sentences rather than aligned label/value rows.
+- `jit vault list`'s tree could flow its members into columns the way
+  `jit status --secrets` now does.
 - `jit doctor`, `jit wrap` catalog, and the first-run flow predate this style.
