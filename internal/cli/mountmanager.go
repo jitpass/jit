@@ -86,9 +86,19 @@ const (
 // anyone's at their desk must never trigger a surprise Touch ID prompt
 // just because mounts exist) — only decoy serving is safe to start
 // unconditionally, since it needs no Touch ID at all.
+// readerConsent decides best-effort per-reader consent for a FIFO credential
+// mount. Implemented by *agent.Server (ConsentReaders); nil on mountManager
+// means consent is off, and the serve path keeps its exact pre-consent
+// behavior (grant-or-decoy).
+type readerConsent interface {
+	ConsentReaders(cred string, holders []int32) bool
+}
+
 type mountManager struct {
 	root       string
+	home       string
 	keyWrapper vault.KeyWrapper
+	consent    readerConsent
 	stdout     io.Writer
 	stderr     io.Writer
 
