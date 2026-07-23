@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/wrap"
 )
 
@@ -42,7 +43,12 @@ var uninstallCmd = &cobra.Command{
 		"it on this Mac, so uninstall leaves your secrets in place and tells you where\n" +
 		"they are. Add --purge to also erase the vault and global config; uninstall\n" +
 		"will name how many secrets that destroys and recommend `jit vault export`\n" +
-		"first.",
+		"first.\n\n" +
+		"Uninstalling requires a fresh Touch ID/passcode approval — so someone at your\n" +
+		"unlocked Mac can't remove jit (or --purge your secrets) without your presence.\n" +
+		"--yes skips only the typed y/N confirmation, never the fingerprint. (This\n" +
+		"guards the `jit uninstall` path; it is not a substitute for file permissions —\n" +
+		"anyone with your shell can still delete files directly.)",
 	Args:    cobra.NoArgs,
 	GroupID: groupService,
 	RunE:    runUninstall,
@@ -107,6 +113,16 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 			fmt.Fprintln(out, "Aborted, nothing was changed.")
 			return nil
 		}
+	}
+
+	// Security gate: a fresh fingerprint, required even under --yes. Removing
+	// jit (and especially --purge erasing the vault) is exactly the kind of
+	// destructive act an attacker at an unlocked Mac would reach for, so it
+	// gets the same fresh-user-presence challenge as `jit migrate remove`,
+	// answered by THIS process (never a cached agent session). Placed after
+	// the confirm so a decline never costs a Touch ID prompt.
+	if err := requireUninstallPresence(secretCount); err != nil {
+		return fmt.Errorf("jit uninstall: authorization failed, nothing was changed: %w", err)
 	}
 
 	var failures []string
@@ -183,6 +199,28 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+// requireUninstallPresence forces a fresh Touch ID/passcode gesture before
+// anything is removed. When the vault holds secrets it challenges through the
+// vault's own key wrapper (requireFreshUserPresence — the biometric-gated MEK
+// fetch, which also stamps the fresh auth into the audit record); with no
+// secrets to protect there's no MEK to gate on, so it falls back to a bare
+// LocalAuthentication prompt that still proves a human is present. Either way
+// the gesture is unskippable — that's the whole point of gating uninstall.
+func requireUninstallPresence(secretCount int) error {
+	reason := "authorize uninstalling jit from this Mac"
+	if uninstallPurge {
+		reason = "authorize erasing jit and its vault from this Mac"
+	}
+	if secretCount > 0 {
+		v, err := openVaultFreshAuth()
+		if err != nil {
+			return err
+		}
+		return requireFreshUserPresence(v, reason)
+	}
+	return keychainwrap.Challenge(reason)
+}
+
 // removePath deletes a single file, escalating to `sudo rm -f` only when a
 // direct unlink is refused because the containing directory isn't writable
 // (a root-owned /usr/local/bin). Mirrors upgrade's replaceBinary sudo path.
@@ -220,7 +258,7 @@ func vaultSecretCount() int {
 
 func init() {
 	uninstallCmd.Flags().BoolVar(&uninstallPurge, "purge", false, "also erase the vault and global config (destroys your secrets)")
-	uninstallCmd.Flags().BoolVarP(&uninstallYes, "yes", "y", false, "skip the confirmation prompt")
+	uninstallCmd.Flags().BoolVarP(&uninstallYes, "yes", "y", false, "skip the typed y/N confirmation (still requires the Touch ID/passcode gate)")
 	uninstallCmd.Flags().BoolVar(&uninstallKeepBinary, "keep-binary", false, "leave the jit binary in place (e.g. it's managed by a package manager)")
 	rootCmd.AddCommand(uninstallCmd)
 }
