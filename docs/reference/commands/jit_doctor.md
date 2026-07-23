@@ -15,7 +15,7 @@ never needs local authentication and is safe to run often.
 By default it checks every profile visible from the current directory: both
 project-local ones under .jit/profiles/ and the home-rooted global ones
 jit migrate writes for shell-config/MCP/AWS/kubeconfig/npmrc secrets,
-the same set `jit profile list` shows. It also folds in the health checks
+the same set `jit status --secrets` reconciles. It also folds in the health checks
 that used to take `jit status` and `jit wrap doctor` to see: the background
 service, your vault backup, and any wrapped-tool shims.
 

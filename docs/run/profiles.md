@@ -8,28 +8,23 @@ description: The YAML manifest mapping environment variables to vault paths - na
 Migration's bookkeeping unit is the **profile**: a small YAML manifest
 mapping environment-variable names to vault paths. `jit migrate` and
 `jit wrap` create them automatically; `jit run`, `jit export`, and
-`jit doctor` resolve them. You can inspect one any time:
+`jit doctor` resolve them. A manifest holds only names and vault paths,
+never a secret value, which is exactly why it is safe to commit:
 
 ```
-$ jit profile show myapp
-myapp (project: /Users/alex/code/myapp/.jit/profiles/myapp.yaml)
-  DATABASE_URL -> myapp/DATABASE_URL
-  STRIPE_API_KEY -> myapp/STRIPE_API_KEY
+# .jit/profiles/myapp.yaml
+DATABASE_URL: myapp/DATABASE_URL
+STRIPE_API_KEY: myapp/STRIPE_API_KEY
 ```
 
-This never prints a secret value, only names and vault paths, which is
-exactly why a profile manifest is safe to commit.
-
-To see how *all* your stored secrets line up against your profiles, not just
-one manifest, use [`jit status --secrets`](../reference/commands/jit_status.md).
-It reconciles the vault against the profiles jit can see and sorts every stored
-secret into one of three states: **wired here** (a project-local profile uses
-it), **managed elsewhere** (referenced only by a global profile or a mount), or
-**unreferenced** (a candidate orphan). That is the picture the old
-`jit profile list` could never draw, since it only ever listed the manifest
-files in the current directory and said nothing about the secrets they don't
-touch. `jit profile list` still works but is deprecated in favor of
-`jit status --secrets`.
+To see how your stored secrets line up against your profiles, use
+[`jit status --secrets`](../reference/commands/jit_status.md). It reconciles
+the vault against the profiles jit can see and sorts every stored secret into
+one of three states: **wired here** (a project-local profile uses it),
+**managed elsewhere** (referenced only by a global profile or a mount), or
+**unreferenced** (a candidate orphan). That is the whole picture a per-manifest
+listing could never draw, since a bare manifest says nothing about the secrets
+it doesn't touch.
 
 Profiles come in two scopes: **project** profiles live in the project's
 `.jit/profiles/` (created when you migrate that project's layers), and

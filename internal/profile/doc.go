@@ -16,7 +16,7 @@
 // from any particular working directory.
 //
 // ListAll/LoadWithScope surface which store (project or global) a profile
-// was found in, for `jit profile list`/`show` (internal/cli/profile.go,
-// GAPS.md #19) — inspection commands that, like doctor, only ever report
-// names and vault paths, never secret values.
+// was found in, for jit status --secrets, jit doctor, and the --profile
+// completions — inspection surfaces that only ever report names and vault
+// paths, never secret values.
 package profile
