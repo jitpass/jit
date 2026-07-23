@@ -15,6 +15,16 @@ description: Where the vault, profiles, shims, and rewritten config files live o
 | `<project>/.jit/profiles/` | project profile manifests - names and vault paths only, safe to commit |
 | `<project>/.jit/config.yaml` | optional per-project settings, currently `read_as_file: true` to pin [`jit run`](../run/index.md) to live mode - safe to commit |
 | `~/.jit/shims/` | PATH shims installed by [`jit wrap`](../wrap/index.md) |
+| `~/Library/LaunchAgents/com.jitpass.agent.plist` | the launchd login item for the [background service](../service/index.md) |
+| the `jit` binary itself | wherever you installed it (`which jit`) - e.g. `/usr/local/bin/jit` |
+
+[`jit uninstall`](./commands/jit_uninstall.md) reverses all of the above
+*except the vault*: it removes the service, shims, and binary but keeps
+`~/Library/Application Support/jitpass/` and `~/.jit/` so your secrets
+survive, printing where they are. `jit uninstall --purge` also erases the
+vault and `~/.jit` (irreversible - `jit vault export` first). Either way it
+requires a fresh Touch ID/passcode. The Keychain master key is released when
+the vault is gone.
 
 ## Files jit rewrites (never owns)
 
