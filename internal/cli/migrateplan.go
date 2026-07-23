@@ -217,6 +217,24 @@ func printMigratePlanCategory(w io.Writer, headline string, items []string) {
 	printMigratePlanCategoryAnnotated(w, headline, items, nil)
 }
 
+// planSectionRule is the faint underline beneath each category header,
+// the same width jit scan's [Category] sections use
+// (internal/audit/report.go) so both reports read as one house style.
+var planSectionRule = strings.Repeat("─", 35)
+
+// splitHeadline separates a category headline's short NAME from its longer
+// "→ outcome" clause. The two used to render jammed together inside one set
+// of brackets — `[loose secret file(s) → the whole file is a bare token; it
+// moves to the vault and …] (1)` — which was a wall of text hard to scan.
+// Split, the name anchors a bold header and the outcome drops to its own
+// line, matching how scan renders a bold [Category] over its detail.
+func splitHeadline(headline string) (name, outcome string) {
+	if i := strings.Index(headline, " → "); i >= 0 {
+		return headline[:i], headline[i+len(" → "):]
+	}
+	return headline, ""
+}
+
 // printMigratePlanCategoryAnnotated is printMigratePlanCategory, plus an
 // optional per-item note appended to a bullet when annotate returns
 // non-empty — used by .env's own category (GAPS.md #34) so a backup-
@@ -224,11 +242,21 @@ func printMigratePlanCategory(w io.Writer, headline string, items []string) {
 // never mounted) is visible right on its own bullet, instead of the
 // category headline's "the file keeps working as a live mount" promise
 // silently not applying to every item it covers.
+//
+// The block mirrors jit scan's [Category] layout: a bold `[name] (count)`
+// header, a faint rule, then the "→ outcome" description on its own faint
+// line above the file bullets — one consistent report shape across the app,
+// and far easier on the eyes than the old one-line bracketed headline.
 func printMigratePlanCategoryAnnotated(w io.Writer, headline string, items []string, annotate func(string) string) {
 	if len(items) == 0 {
 		return
 	}
-	fmt.Fprintf(w, "[%s] (%d)\n", headline, len(items))
+	name, outcome := splitHeadline(headline)
+	_, _ = color.New(color.Bold).Fprintf(w, "[%s] (%d)\n", name, len(items))
+	_, _ = color.New(color.Faint).Fprintf(w, "  %s\n", planSectionRule)
+	if outcome != "" {
+		_, _ = color.New(color.Faint).Fprintf(w, "  → %s\n", outcome)
+	}
 	for _, item := range items {
 		note := ""
 		if annotate != nil {
