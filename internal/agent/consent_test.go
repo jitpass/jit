@@ -95,3 +95,38 @@ func TestConsentGateAllowsDeniesAndCaches(t *testing.T) {
 		t.Error("a declined consent must deny the unwrap (fail closed)")
 	}
 }
+
+// TestConsentTrustDescentSkipsPrompt pins phase 1c: a caller inside a
+// --trust'd run's tree is auto-allowed with no prompt, and re-locking clears
+// that trust.
+func TestConsentTrustDescentSkipsPrompt(t *testing.T) {
+	var deny atomic.Bool
+	s, socket := startConsentServer(t, &deny)
+	c := NewClient(socket)
+	dek := bytes.Repeat([]byte{0x07}, 32)
+
+	wrapped, err := c.WrapKeyLabeled(dek, "aws/default/key", "aws")
+	if err != nil {
+		t.Fatalf("WrapKeyLabeled: %v", err)
+	}
+
+	// Register this process (the socket peer) as a trust root: the test IS the
+	// caller, so its own unwrap descends from the trust trivially.
+	if err := c.Trust(); err != nil {
+		t.Fatalf("Trust: %v", err)
+	}
+
+	// With every consent prompt now denied, a trusted caller must STILL succeed
+	// because it skips the prompt entirely.
+	deny.Store(true)
+	got, err := c.UnwrapKeyLabeled(wrapped, "aws/default/key", "aws")
+	if err != nil || !bytes.Equal(got, dek) {
+		t.Fatalf("a trusted caller must skip the prompt and unwrap: got %x err %v", got, err)
+	}
+
+	// Re-locking clears trust, so the same unwrap now prompts and is denied.
+	s.LockWithCause("relock")
+	if _, err := c.UnwrapKeyLabeled(wrapped, "aws/default/key", "aws"); err == nil {
+		t.Error("re-lock must clear trust, so a denied consent blocks again")
+	}
+}

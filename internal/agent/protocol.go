@@ -86,6 +86,13 @@ const (
 	OpRevealPID = "reveal_pid"
 	OpStopMount = "stop_mount"
 	OpHistory   = "history"
+	// OpTrust registers the CALLER's own process (the kernel peer pid) as a
+	// consent trust root: `jit run --trust` marks its run so any credential a
+	// process in that run's tree reaches for is auto-allowed without a
+	// per-process consent prompt. The agent records the peer's fork-time stamp
+	// so a recycled pid can't inherit a dead run's trust; the grant is dropped
+	// on the next re-lock.
+	OpTrust = "trust"
 )
 
 // SessionEvent.Kind values.
