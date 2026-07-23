@@ -49,9 +49,10 @@ the tool, and it decides both how you integrate it and how you run it.
 
 ## Integrating: two entry points into the vault
 
-- **[`jit migrate`](../migrate/index.md)** is the bulk mover. It scans your
-  machine, vaults the secrets that live in files it understands, and wires up
-  the correct delivery model for each. This is how most things get in.
+- **[`jit migrate <path>`](../migrate/index.md)** is the bulk mover. You name
+  a file or project, it vaults the secrets that live in files it understands
+  and wires up the correct delivery model for each. This is how most things
+  get in.
 - **[`jit wrap`](../wrap/index.md)** is the per-tool bridge for a single CLI
   that carries its own token. It either installs a small `PATH` shim (for a
   tool with no native hook, like `gh`) or, for a tool that does have one
@@ -84,9 +85,9 @@ secret) end to end:
 1. **Find.** [`jit scan`](../audit/index.md) flags
    `~/.config/gcloud/application_default_credentials.json` as a plaintext
    refresh token.
-2. **Integrate.** `jit migrate home --only gcp` moves the secret field into
-   the vault and leaves a live mount at the same path. Read it cold now and
-   you get a decoy.
+2. **Integrate.** `jit migrate ~/.config/gcloud/application_default_credentials.json`
+   moves the secret field into the vault and leaves a live mount at the same
+   path. Read it cold now and you get a decoy.
 3. **Use, one-off.** `jit run --with gcp -- terraform apply` grants the real
    file to that run's process tree, and only that tree, until it exits.
 4. **Use, natively.** `jit wrap add gcloud --grant gcp` once, and typing

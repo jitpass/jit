@@ -6,9 +6,9 @@ description: export KEY=value lines in ~/.zshrc move to the vault; an eval "$(ji
 # Shell configs
 
 `export STRIPE_KEY=sk_live_...` in `~/.zshrc` is a secret readable by
-anything running as your user, forever. `jit migrate` (category `shell`,
-machine-wide scope - so `jit migrate home`) moves each such value into the
-vault and replaces the export lines with one line:
+anything running as your user, forever. `jit migrate ~/.zshrc` (category
+`shell`) moves each such value into the vault and replaces the export lines
+with one line:
 
 ```sh
 eval "$(jit export --profile <name>)"

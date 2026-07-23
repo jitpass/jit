@@ -41,7 +41,7 @@ The shim injects `CLOUDFLARE_API_TOKEN` from the vault into each
 `wrangler` process. It's wrangler's highest-priority credential, so the
 injection wins over any lingering `wrangler login` session. If you had an
 `export CLOUDFLARE_API_TOKEN=...` line, remove it (or let
-[`jit migrate home`](../migrate/shell-configs.md) convert it) - a shell
+[`jit migrate ~/.zshrc`](../migrate/shell-configs.md) convert it) - a shell
 export overrides the shim. Details: [how wrapping works](./index.md).
 
 ## Undo

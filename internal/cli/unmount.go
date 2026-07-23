@@ -124,6 +124,12 @@ var unmountCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit unmount: %w", err)
 		}
+		// Force the fresh Touch ID/passcode NOW and record it into this
+		// invocation's audit entry, the same gate jit migrate undo/remove use
+		// — unmounting writes real secret values back to disk in plaintext.
+		if err := requireFreshUserPresence(v, fmt.Sprintf("unmount %s (write its secret values back to disk in plaintext)", filepath.Base(mountPath))); err != nil {
+			return fmt.Errorf("jit unmount: %w", err)
+		}
 
 		names, err := migrate.UnmountFile(v, entry.ProfilePath, mountPath, entry.TemplatePath)
 		if err != nil {

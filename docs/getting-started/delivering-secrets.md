@@ -47,7 +47,7 @@ When it is a *project's* `.env` full of variables that your own scripts read,
 migrate the project and run your commands under `jit run`:
 
 ```
-jit migrate local          # .env secrets move to the vault; .env becomes a live mount
+jit migrate .              # .env secrets move to the vault; .env becomes a live mount
 jit run -- ./deploy.sh      # scripts run with the secrets injected into their environment
 ```
 
@@ -78,7 +78,8 @@ token. They are a single machine-wide *file* that many tools read: Google's
 application-default credentials (`~/.config/gcloud/…`, read by gcloud,
 terraform, and every Google SDK), the SOPS age key, the global `~/.npmrc`,
 `~/.netrc` (curl, git, ftp, wget).
-`jit migrate home` vaults the secret inside these and live-mounts the file.
+Naming one of these files in `jit migrate` vaults the secret inside it and
+live-mounts the file.
 
 One of these unlocks a lot and belongs to your whole machine, not a project,
 so jit never grants it just because you `cd`'d into a directory or a repo's

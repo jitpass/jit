@@ -76,7 +76,7 @@ Some tools read a single machine-wide credential *file* rather than a
 project's `.env`: Google's application-default credentials (read by `gcloud`,
 `terraform`, and Google SDKs), the SOPS age key, the global `~/.npmrc`,
 `~/.netrc` (curl, git, ftp). After
-`jit migrate home` vaults one of these, grant it to a run by naming it:
+`jit migrate <path>` vaults one of these, grant it to a run by naming it:
 
 ```
 $ jit run --with gcp -- terraform apply

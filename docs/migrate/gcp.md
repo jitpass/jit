@@ -11,8 +11,9 @@ plaintext, next to non-secret fields like the client ID. Some setups put a
 service account's private key there instead. Every Google client library
 (and Terraform's google provider) reads that one path.
 
-`jit migrate home` (category `gcp`) moves **just the secret field**, the
-`refresh_token`, or a service account's `private_key`, into the vault and
+`jit migrate <path-to-ADC-json>` (category `gcp`) moves **just the secret
+field**, the `refresh_token`, or a service account's `private_key`, into
+the vault and
 replaces the file with a [live mount](../run/mounts.md) serving a
 template: every non-secret field passes through byte-for-byte, and the
 secret slot fills from the vault only for a run you explicitly grant it to
@@ -46,13 +47,13 @@ leaves it alone.)
   credentials, scoped to that run. Outside such a run they see placeholder
   values and fail fast with a local parse error; `jit service status` shows
   what the last reader was served.
-- The file is machine-wide (one per user), so it's covered by
-  `jit migrate home` only, `local` never touches it.
+- The file is machine-wide (one per user), so name it explicitly to
+  convert it (a project directory walk never touches it).
 - The gcloud CLI's *own* login (`gcloud auth login`) lives elsewhere
   (`~/.config/gcloud/credentials.db`) and isn't part of this migration.
 - Re-running `gcloud auth application-default login` replaces the mount
-  with a fresh plaintext file; run `jit migrate home --only gcp` again to
-  re-vault it.
+  with a fresh plaintext file; run `jit migrate <path-to-ADC-json>` again
+  to re-vault it.
 
 Reversing: `jit unmount <path>` writes the file back plain, or
 [`jit migrate undo`](./undo-and-remove.md) restores the original bytes.
