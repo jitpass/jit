@@ -284,13 +284,13 @@ func downloadToFile(ctx context.Context, client *http.Client, url, dest string) 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("server returned %s", resp.Status)
 	}
-	f, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600) // #nosec G304 -- dest is jit's own temp download path
 	if err != nil {
 		return "", err
 	}
 	h := sha256.New()
 	if _, err := io.Copy(io.MultiWriter(f, h), resp.Body); err != nil {
-		f.Close()
+		_ = f.Close()
 		return "", err
 	}
 	if err := f.Close(); err != nil {
@@ -328,14 +328,14 @@ func extractBinaryFromTarGz(archivePath, name, dest string) error {
 		if hdr.Typeflag != tar.TypeReg {
 			return fmt.Errorf("%q in archive is not a regular file", name)
 		}
-		w, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+		w, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755) // #nosec G304 G302 -- dest is jit's own staged temp path; a binary must be executable
 		if err != nil {
 			return err
 		}
 		// Bound the copy so a doctored archive can't exhaust the disk; a jit
 		// binary is a few MB, 200 MB is generous headroom.
 		if _, err := io.Copy(w, io.LimitReader(tr, 200<<20)); err != nil {
-			w.Close()
+			_ = w.Close()
 			return err
 		}
 		return w.Close()
@@ -412,7 +412,7 @@ func dirWritable(dir string) bool {
 		return false
 	}
 	name := f.Name()
-	f.Close()
+	_ = f.Close()
 	_ = os.Remove(name)
 	return true
 }
@@ -423,12 +423,12 @@ func copyFile(src, dst string, mode os.FileMode) error {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode) // #nosec G304 -- dst is jit's own staged path in the install dir
 	if err != nil {
 		return err
 	}
 	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
+		_ = out.Close()
 		return err
 	}
 	return out.Close()
