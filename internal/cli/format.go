@@ -7,9 +7,34 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+
+	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/jitpass/jit/internal/audit"
+	"github.com/jitpass/jit/internal/ui"
 )
+
+// newProgress builds the shared status-trail tracker for a long-running
+// command, applying the one gating policy every command should use so the
+// decision lives in exactly one place:
+//
+//   - Output goes to stderr (cmd.ErrOrStderr()), never stdout — stdout stays
+//     byte-clean for pipes, captured reports, and --output files.
+//   - It's silent unless stderr is a real terminal, so piped/CI/test runs are
+//     byte-for-byte unchanged (this is the repo's existing decoration rule,
+//     see printVaultGetFooter in vault.go).
+//   - --quiet and any machine-readable mode (JSON/NDJSON/--output, passed as
+//     machineMode) silence it even on a terminal.
+//   - A TERM=dumb terminal still gets a plain step-per-line trail, just no
+//     spinner animation or ANSI redraw.
+func newProgress(cmd *cobra.Command, machineMode bool) *ui.Tracker {
+	tty := term.IsTerminal(int(os.Stderr.Fd()))
+	enabled := tty && !quietFlag && !machineMode
+	animate := enabled && os.Getenv("TERM") != "dumb"
+	return ui.New(cmd.ErrOrStderr(), enabled, animate)
+}
 
 // validateOutputFormat is the shared --format check for commands whose
 // machine-readable output is a single JSON snapshot rather than a stream

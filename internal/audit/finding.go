@@ -217,6 +217,15 @@ type Config struct {
 	// registry: a named pipe has no at-rest content whether jit made it or
 	// not). Empty (the default in tests) means no count is reported.
 	MountRegistryPath string
+
+	// Progress, when non-nil, is called once as each category (or targeted
+	// path) is about to be scanned, with a short human noun for it
+	// ("credential files", ".env files", or a target's base name). It's a
+	// UI-agnostic hook — this package emits the category name and never
+	// touches the terminal — so the CLI can render a live status trail while
+	// a full home-directory scan runs. nil (the default, and in every test)
+	// means no reporting and identical behavior.
+	Progress func(category string)
 }
 
 // NewConfig builds a Config for a real run against the actual machine.
