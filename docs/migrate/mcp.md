@@ -33,8 +33,9 @@ the AI tools themselves.
   and the caller ("unlock the vault for profile `mcp-jamf`, launched by
   claude") - the most common "why did that prompt appear?" case. See
   [Provenance](../service/provenance.md).
-- Claude Desktop's config is machine-wide, so it's covered by
-  `jit migrate home`; a project `.mcp.json` is covered by `local` too.
+- Claude Desktop's config is machine-wide - name it explicitly to convert
+  it; a project `.mcp.json` is picked up when you name that project's
+  directory.
 - Rotating: `jit vault set` on the paths shown by
   `jit profile show mcp-<name>`; restart the MCP server (usually: restart
   the editor) to pick up the new value.

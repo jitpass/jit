@@ -8,11 +8,11 @@ description: From plaintext secrets to a clean machine - scan, vault, migrate, w
 The whole arc, in five commands:
 
 ```sh
-jit scan                     # 1. see the problem (read-only, run it anywhere)
-jit vault init                # 2. create the vault (master key in your login keychain)
-jit migrate --dry-run         # 3. preview the fix, same whole-machine scope as audit
-jit migrate                   # 4. apply it: plan, [y/N], one Touch ID prompt
-jit status                    # 5. vault / service / mounts / backup health, one screen
+jit scan                       # 1. see the problem (read-only, run it anywhere)
+jit vault init                  # 2. create the vault (master key in your login keychain)
+jit migrate ~/code/myapp --dry-run  # 3. preview the fix for a file or project scan flagged
+jit migrate ~/code/myapp        # 4. apply it: plan, [y/N], one Touch ID prompt
+jit status                      # 5. vault / service / mounts / backup health, one screen
 ```
 
 The background service (so you unlock once, not once per command) installs
@@ -78,21 +78,20 @@ whole-machine ground `jit scan` scans, so what the report showed is what
 the plan fixes:
 
 ```
-$ jit migrate --dry-run
-jit migrate - plan (home scope)
+$ jit migrate ~/code/myapp/.env --dry-run
+jit migrate, plan
 Each modified file is backed up before it's rewritten.
 
 [.env file(s) → secrets move to the vault; the file keeps working as a live, auto-updating mount] (1)
   • ~/code/myapp/.env
 
-[DRY RUN] No files will be changed. Run without --dry-run to apply this plan.
+[DRY RUN] No files were changed. Run without --dry-run to apply this plan.
 ```
 
 Then apply it by dropping `--dry-run`. The same plan prints again, followed
-by a `Proceed? [y/N]` confirmation. To fix just one project instead, `cd`
-into it and run `jit migrate local`: only what's under that directory
-tree is discovered or touched. To fix a single named file with no walk at
-all - one `.env`, a `~/.zshrc` - run `jit migrate path <file>`. More in
+by a `Proceed? [y/N]` confirmation. Name a directory to walk a whole
+project (`jit migrate ~/code/myapp`), or a single file to convert just
+that one - one `.env`, a `~/.zshrc`. More in
 **[Migrating](../migrate/index.md)**.
 
 ## 4. Check health: `jit status`

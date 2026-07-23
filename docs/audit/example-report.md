@@ -111,7 +111,7 @@ scan time: 2026-07-17T11:59:28.805Z          duration: 2ms
 
     MEDIUM  1Password Emergency Kit: contains the account's master and secret key if genuine
 
-Run `jit migrate --dry-run` to see the guided fix plan for what's fixable here.
+Run `jit migrate <path> --dry-run` to see the guided fix plan for a flagged file.
 No secret values are ever printed in full. Run `jit scan --format ndjson` for machine-readable output (same redaction rules apply).
 ```
 
