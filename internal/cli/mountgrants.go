@@ -7,6 +7,9 @@ package cli
 
 import (
 	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -126,7 +129,7 @@ func (m *mountManager) serveContent(path string, sm *servedMount) []byte {
 	if !authorized && m.consent != nil {
 		if cred, ok := m.credentialMount(path); ok {
 			if holders, ok := m.grantHolders(path); ok && len(holders) > 0 {
-				if m.consent.ConsentReaders(cred, holders) {
+				if m.consentAuthorizes(sm, cred, holders) {
 					authorized = true
 				}
 			}
@@ -141,6 +144,57 @@ func (m *mountManager) serveContent(path string, sm *servedMount) []byte {
 	}
 	sm.lastServe = &serveRecord{at: time.Now(), decoy: decoy, reader: sm.pendingReader, grantServed: !decoy && grantServed}
 	return content
+}
+
+// consentVerdict caches serveContent's best-effort consent decision for one
+// mount, valid only while the holder set is byte-for-byte the set it was
+// decided for. holderKey is the sorted pid-set; a different set (any join or
+// departure) fails the equality check and forces a fresh decision, so a reader
+// that wasn't in the authorized set can never inherit a cached true.
+type consentVerdict struct {
+	holderKey  string
+	authorized bool
+	expires    time.Time
+}
+
+// consentAuthorizes is serveContent's consent fallback with the per-holder
+// identity work amortized: on a cache hit for the identical holder set it
+// returns the remembered answer, skipping the libproc scan + trust-ancestry
+// walk ConsentReaders does per holder. On a miss (first read, changed set, or
+// expiry) it asks ConsentReaders and caches the result under this mount's
+// short TTL — the same amortize-don't-skip rule the grant gate uses.
+func (m *mountManager) consentAuthorizes(sm *servedMount, cred string, holders []int32) bool {
+	key := holderSetKey(holders)
+	now := time.Now()
+
+	sm.mu.Lock()
+	v := sm.consentVerdict
+	sm.mu.Unlock()
+	if v != nil && v.holderKey == key && now.Before(v.expires) {
+		return v.authorized
+	}
+
+	authorized := m.consent.ConsentReaders(cred, holders)
+
+	sm.mu.Lock()
+	sm.consentVerdict = &consentVerdict{holderKey: key, authorized: authorized, expires: now.Add(grantVerdictTTL)}
+	sm.mu.Unlock()
+	return authorized
+}
+
+// holderSetKey renders a holder pid set into a stable cache key, order-
+// independent so the same set found in a different scan order still hits.
+func holderSetKey(holders []int32) string {
+	sorted := append([]int32(nil), holders...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	var b strings.Builder
+	for i, pid := range sorted {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(strconv.Itoa(int(pid)))
+	}
+	return b.String()
 }
 
 // credentialMount reports whether path is a machine-global credential mount
