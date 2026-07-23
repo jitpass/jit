@@ -18,11 +18,12 @@ Most secrets arrive through [`jit migrate`](../migrate/index.md) or
 
 **Every command that reads, writes, or destroys a secret requires a fresh
 Touch ID/passcode on each run** - `set`, `get`, `rm`, `import`, `restore`,
-`clean`, `prune`, `delete`, and `export`. These never ride the background
-service's cached session: the prompt appears whether or not the service is
-unlocked, so a process running as you can't read or destroy the vault
-silently on an already-unlocked machine. Only `list` and `history` are
-prompt-free, because they expose names and version timestamps, never a value.
+`clean`, `prune`, `orphans --prune`, `delete`, and `export`. These never ride
+the background service's cached session: the prompt appears whether or not the
+service is unlocked, so a process running as you can't read or destroy the
+vault silently on an already-unlocked machine. Only `list`, `history`, and
+`orphans` (without `--prune`) are prompt-free, because they expose names and
+version timestamps, never a value.
 
 `jit vault set myapp/NEW_KEY` prompts for a value and stores it (add `-f`
 to overwrite an existing path, `--stdin` to pipe the value in);
@@ -117,4 +118,5 @@ credential helper.
 - **[Back up and restore](./backup-restore.md)** - `vault export` /
   `vault import`, for disaster recovery
 - **[Maintenance](./maintenance.md)** - `rekey` the master key, `prune`
-  stale backups, `clean` out all secrets, or `delete` the vault entirely
+  stale backups, delete secrets nothing references with `orphans`, `clean`
+  out all secrets, or `delete` the vault entirely
