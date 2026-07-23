@@ -44,18 +44,30 @@ var profileCmd = &cobra.Command{
 	GroupID: groupSecrets,
 	Short:   "Inspect profile manifests (names and vault paths only, never secret values)",
 	Long: "A profile maps environment variable names to vault secret paths.\n" +
-		"jit profile lists and shows these manifests, both project-local ones\n" +
+		"jit profile show prints one profile's mapping, both project-local ones\n" +
 		"under .jit/profiles/ and the home-rooted global ones jit migrate creates\n" +
 		"for shell-config/MCP/AWS/kubeconfig/npmrc secrets, without ever decrypting\n" +
-		"or printing a secret value. Use jit doctor to also verify a profile's\n" +
-		"referenced secrets actually exist in the vault.",
+		"or printing a secret value.\n\n" +
+		"For the whole picture — which stored secrets are wired to a profile, which\n" +
+		"are managed elsewhere, and which are orphaned — use jit status --secrets\n" +
+		"(the successor to the deprecated jit profile list). Use jit doctor to also\n" +
+		"verify a profile's referenced secrets actually exist in the vault.",
 }
 
 var profileListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List every profile manifest visible from the current directory",
-	Args:  cobra.NoArgs,
+	Short: "Deprecated: use `jit status --secrets`",
+	Long: "Lists the profile manifests visible from the current directory.\n\n" +
+		"Deprecated: this only ever shows the manifests in this folder, never the\n" +
+		"secrets those manifests don't touch — so a vault full of secrets can look\n" +
+		"empty here. `jit status --secrets` reconciles the two: which stored secrets\n" +
+		"are wired to a profile, which are managed elsewhere, and which are orphaned.",
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// The successor draws the full picture; nudge toward it on stderr so a
+		// script still parsing stdout keeps working through the deprecation window.
+		fmt.Fprintln(cmd.ErrOrStderr(), "note: `jit profile list` is deprecated; use `jit status --secrets` for the full picture (which secrets are wired, managed elsewhere, or orphaned).")
+
 		cwd, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("jit profile list: %w", err)

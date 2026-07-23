@@ -29,7 +29,7 @@ jit
 * [jit scan](jit_scan.md)	 - Scan for plaintext secrets exposed on this machine (read-only)
 * [jit service](jit_service.md)	 - Manage jit's background service (the daemon that holds your session and serves mounts)
 * [jit sops-age-key](jit_sops-age-key.md)	 - Print the SOPS age private key from a migrated profile
-* [jit status](jit_status.md)	 - One-shot overview of vault, service, profile, and mount health
+* [jit status](jit_status.md)	 - One-shot overview of vault, service, secret, and mount health
 * [jit terraform-credentials](jit_terraform-credentials.md)	 - Implement Terraform's credentials-helper protocol for a migrated token
 * [jit unlock](jit_unlock.md)	 - Unlock jit's session now (prompts Touch ID if needed)
 * [jit unmount](jit_unmount.md)	 - Reverse a live .env mount back into a plain file
