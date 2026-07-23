@@ -70,7 +70,7 @@ with the service unlocked - never a cached session. Putting secrets back on
 disk in plaintext, or deleting them outright, should never happen silently
 on an unlock some other process is riding. Each run also records that a
 fresh fingerprint gated it in the application audit log, visible as `auth=`
-in [`jit audit`](../audit/index.md), so the trail proves a live approval
+in [`jit audit`](../service/provenance.md), so the trail proves a live approval
 stood behind every restore and removal.
 
 For wrapped CLI tools, the equivalent is
