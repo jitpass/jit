@@ -218,6 +218,13 @@ func commandEntry(r auditlog.Record) auditEntry {
 	if parent := launcher(r.LaunchedBy, r.Parent); parent != "" {
 		pairs = append(pairs, kv{"parent", parent})
 	}
+	// A command that forced its own fresh Touch ID/passcode (jit migrate
+	// undo/remove) surfaces it here — the audit trail should show a
+	// plaintext-restoring or destructive action was gated by a live
+	// fingerprint, not a cached session.
+	if r.Auth != "" {
+		pairs = append(pairs, kv{"auth", r.Auth})
+	}
 	if r.Error != "" {
 		pairs = append(pairs, kv{"err", r.Error})
 	}

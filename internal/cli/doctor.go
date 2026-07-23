@@ -186,7 +186,7 @@ func formatFinding(f checkFinding) string {
 		return fmt.Sprintf("[parse] %s", f.Detail)
 	case kindMissing:
 		return fmt.Sprintf(
-			"[missing] profile %q: %s -> %s (not in the vault, run \"jit vault set %s\" to add it, or \"jit migrate home\" if it came from a scan)",
+			"[missing] profile %q: %s -> %s (not in the vault, run \"jit vault set %s\" to add it, or \"jit migrate <path>\" to convert the file it came from)",
 			f.Profile, f.Variable, f.Path, f.Path)
 	case kindCorrupt:
 		return fmt.Sprintf("[corrupt] profile %q: %s -> %s: %s", f.Profile, f.Variable, f.Path, f.Detail)

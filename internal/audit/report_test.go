@@ -54,12 +54,11 @@ func TestWriteHumanReportNeverLeaksRawValue(t *testing.T) {
 }
 
 // TestWriteHumanReportTagsArchivedFindings: a finding under an archived/
-// backup-looking directory is exactly what `jit migrate home` skips by
-// default, and that skip used to be illegible from the audit side (a real,
+// backup-looking directory used to be illegible from the audit side (a real,
 // reported confusion: audit showed a HIGH finding under ~/Documents/
-// archive/, migrate's dry-run showed only a skip count, and nothing
-// connected the two). The report must tag the path and explain the tag
-// once; a report with no archived finding must show neither.
+// archive/, and nothing explained how to act on it). The report must tag the
+// path and explain the tag once — naming such a file explicitly is what
+// converts it; a report with no archived finding must show neither.
 func TestWriteHumanReportTagsArchivedFindings(t *testing.T) {
 	archived := Finding{
 		FindingType: FindingTypeMCPEmbeddedSecret,
@@ -86,8 +85,8 @@ func TestWriteHumanReportTagsArchivedFindings(t *testing.T) {
 	if strings.Contains(out, active.FilePath+" [archived]") {
 		t.Errorf("expected the active path to carry no tag, got:\n%s", out)
 	}
-	if !strings.Contains(out, "--include-archived") {
-		t.Errorf("expected the [archived] legend explaining migrate's default skip, got:\n%s", out)
+	if !strings.Contains(out, "name such a file explicitly to convert it") {
+		t.Errorf("expected the [archived] legend explaining how to convert a named archived file, got:\n%s", out)
 	}
 
 	buf.Reset()

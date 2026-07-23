@@ -207,7 +207,7 @@ var wrapAddCmd = &cobra.Command{
 			fmt.Fprintf(out, "Grant-wrapped %s:\n", tool)
 			fmt.Fprintf(out, "  grants   the %q global mount (jit run --with %s)\n", wrapAddGrant, wrapAddGrant)
 			fmt.Fprintf(out, "  shim     %s\n", res.ShimPath)
-			fmt.Fprintf(cmd.ErrOrStderr(), "note: %s must be migrated (e.g. `jit migrate home --only %s`); each run prompts a disclosed Touch ID for the credential.\n", wrapAddGrant, wrapAddGrant)
+			fmt.Fprintf(cmd.ErrOrStderr(), "note: %s must be migrated first (name its file: `jit migrate <path-to-%s-file>`); each run prompts a disclosed Touch ID for the credential.\n", wrapAddGrant, wrapAddGrant)
 			return ensureShimOnPath(cmd, home, tool)
 		}
 

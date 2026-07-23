@@ -65,10 +65,13 @@ func timestampFixture() string {
 }
 
 func TestMigrateUndoNoBackupsRecorded(t *testing.T) {
-	withFixtureHome(t)
+	home := withFixtureHome(t)
 	withFixtureCwd(t)
 
-	out, err := execMigrateUndo(t)
+	// A path is required now, but with nothing recorded the empty-state
+	// message must still fire (before the path is matched) rather than a
+	// per-path "no recorded backup for <path>."
+	out, err := execMigrateUndo(t, home)
 	if err != nil {
 		t.Fatalf("migrate undo on an empty fixture: %v", err)
 	}
@@ -94,7 +97,7 @@ func TestMigrateUndoDeclinedConfirmationChangesNothing(t *testing.T) {
 	}
 	plantBackupRecord(t, target)
 
-	out, err := execMigrateUndo(t) // stdin is EOF -> declined
+	out, err := execMigrateUndo(t, target) // stdin is EOF -> declined
 	if err != nil {
 		t.Fatalf("migrate undo (declined): %v", err)
 	}
@@ -125,7 +128,7 @@ func TestMigrateUndoDryRunChangesNothing(t *testing.T) {
 	}
 	plantBackupRecord(t, target)
 
-	out, err := execMigrateUndo(t, "--dry-run")
+	out, err := execMigrateUndo(t, "--dry-run", target)
 	if err != nil {
 		t.Fatalf("migrate undo --dry-run: %v", err)
 	}
@@ -145,8 +148,13 @@ func TestMigrateUndoDryRunChangesNothing(t *testing.T) {
 }
 
 func TestMigrateUndoUnknownPathFailsLoud(t *testing.T) {
-	withFixtureHome(t)
+	home := withFixtureHome(t)
 	withFixtureCwd(t)
+
+	// Record an unrelated backup so the run is past the "nothing recorded at
+	// all" empty state — the point here is that a NAMED path matching none of
+	// the recorded backups fails loud, not that the vault is empty.
+	plantBackupRecord(t, filepath.Join(home, "proj", ".env"))
 
 	_, err := execMigrateUndo(t, "/nonexistent/never-migrated/.env")
 	if err == nil {
@@ -158,12 +166,17 @@ func TestMigrateUndoUnknownPathFailsLoud(t *testing.T) {
 }
 
 func TestMigrateUndoRejectsOnlyFlag(t *testing.T) {
-	withFixtureHome(t)
+	home := withFixtureHome(t)
 	withFixtureCwd(t)
 
-	_, err := execMigrateUndo(t, "--only", "env")
+	// The --only rejection fires before any path matching, so the path arg
+	// (required by the command) just needs to be present, not resolvable.
+	_, err := execMigrateUndo(t, "--only", "env", filepath.Join(home, ".zshrc"))
 	if err == nil {
 		t.Fatal("expected an error: --only filters categories, undo restores files, accepting and ignoring it is the GAPS.md #21/#25 trap")
+	}
+	if !strings.Contains(err.Error(), "--only doesn't apply") {
+		t.Errorf("expected the --only-doesn't-apply error, got: %v", err)
 	}
 }
 
@@ -292,12 +305,10 @@ func TestHumanAgo(t *testing.T) {
 	}
 }
 
-// A no-arg undo about to restore more than one file must surface the path
-// scoping it already supports — a real user asked for "project-specific
-// undo" without discovering the path argument from --help. A scoped run (or
-// a single-file one) must NOT show the hint: it's answering a question that
-// run already answered.
-func TestMigrateUndoNoArgHintsPathScoping(t *testing.T) {
+// TestMigrateUndoScopesToNamedProject confirms a directory arg restores only
+// what's recorded under that tree, leaving other projects' backups untouched
+// — the scoping that makes "undo just this project" safe.
+func TestMigrateUndoScopesToNamedProject(t *testing.T) {
 	home := withFixtureHome(t)
 	withFixtureCwd(t)
 
@@ -313,22 +324,9 @@ func TestMigrateUndoNoArgHintsPathScoping(t *testing.T) {
 	}
 	plantBackupRecord(t, pathA, pathB)
 
-	const hint = "jit migrate undo <path>"
-
-	out, err := execMigrateUndo(t, "--dry-run")
-	if err != nil {
-		t.Fatalf("migrate undo --dry-run: %v", err)
-	}
-	if !strings.Contains(out, hint) {
-		t.Errorf("no-arg multi-file plan should hint at path scoping, got:\n%s", out)
-	}
-
 	scoped, err := execMigrateUndo(t, "--dry-run", filepath.Join(home, "proj-a"))
 	if err != nil {
 		t.Fatalf("migrate undo --dry-run proj-a: %v", err)
-	}
-	if strings.Contains(scoped, hint) {
-		t.Errorf("a path-scoped run should not repeat the scoping hint, got:\n%s", scoped)
 	}
 	if !strings.Contains(scoped, displayPath(home, pathA)) || strings.Contains(scoped, displayPath(home, pathB)) {
 		t.Errorf("scoping to proj-a should list only proj-a's file, got:\n%s", scoped)

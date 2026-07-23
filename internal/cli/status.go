@@ -305,7 +305,7 @@ func printStatusText(w io.Writer, r statusResult) {
 	}
 
 	if r.Vault.SecretsStored == 0 && r.Vault.BackupsStored == 0 {
-		fmt.Fprintln(w, "Vault: no secrets stored yet. Run `jit vault init` if you haven't set it up, or `jit migrate local` to populate it.")
+		fmt.Fprintln(w, "Vault: no secrets stored yet. Run `jit vault init` if you haven't set it up, or `jit migrate .` to populate it.")
 	} else {
 		if r.Vault.BackupsStored > 0 {
 			fmt.Fprintf(w, "Vault: %d secret(s) stored, plus %d encrypted file backup(s) kept for `jit migrate undo`.\n", r.Vault.SecretsStored, r.Vault.BackupsStored)

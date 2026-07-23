@@ -53,9 +53,9 @@ const (
 	// line among the rollup, and folding an environmental "shim dir not on
 	// PATH in THIS shell" check into doctor's exit code would fail CI runs
 	// that legitimately don't put it there.)
-	kindService  checkKind = "service"
-	kindBackup checkKind = "backup"
-	kindWrap   checkKind = "wrap"
+	kindService checkKind = "service"
+	kindBackup  checkKind = "backup"
+	kindWrap    checkKind = "wrap"
 )
 
 // warning reports whether a finding of this kind is advisory (does not fail

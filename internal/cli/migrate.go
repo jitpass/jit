@@ -23,10 +23,9 @@ import (
 )
 
 var (
-	migrateDryRun          bool
-	migrateYes             bool
-	migrateOnly            []string
-	migrateIncludeArchived bool
+	migrateDryRun bool
+	migrateYes    bool
+	migrateOnly   []string
 )
 
 // migrateCategories are the --only tokens real (non---dry-run) migrate
@@ -36,28 +35,11 @@ var (
 // --only's own help text stay in sync with printMigratePlan.
 var migrateCategories = []string{"env", "tfvars", "shell", "mcp", "aws", "kube", "terraform", "docker", "git", "gcp", "sops", "npmrc", "netrc"}
 
-// migrateScope is which set of files a run discovers. It replaced a plain
-// wholeHome bool once a third scope (path) existed that is neither "walk
-// cwd" nor "walk $HOME": scopePath discovers nothing by walking at all, it
-// converts exactly the file(s)/folder(s) named on the command line. The
-// three differ only in DISCOVERY (which files become findings) and a few
-// cosmetic labels — every scope funnels the same discovered set through the
-// one applyMigrate path, so backups, dry-run parity, pointer files, and the
-// confirmation gate are identical no matter how the findings were gathered.
-type migrateScope int
-
-const (
-	scopeLocal migrateScope = iota // only what's under the current directory tree
-	scopeHome                      // everything under $HOME plus the fixed machine-wide files
-	scopePath                      // only the explicit file/folder target(s) named on the command line
-)
-
-// discovered holds one run's findings per category, plus the skip list a
-// home sweep produces (archived). Both the walk-based
-// discovery (runMigrate) and the target dispatch (runMigratePath) populate
-// one of these and hand it to applyMigrate — the single plan/confirm/apply
-// path — so a `jit migrate path` run is byte-for-byte as safe as a home
-// sweep, just over a narrower, explicitly named set of files.
+// discovered holds one run's findings per category. runMigratePath resolves
+// each named target into one of these and hands it to applyMigrate — the
+// single plan/confirm/apply path — so every migrate run gets identical
+// backups, dry-run parity, pointer files, and the confirmation gate no
+// matter which file(s) were named.
 type discovered struct {
 	envFiles          []string
 	tfvarsFiles       []string
@@ -73,7 +55,6 @@ type discovered struct {
 	sopsAgeFiles      []string
 	npmrcFiles        []string
 	netrcFiles        []string
-	skippedArchived   []string
 }
 
 // noteNamespaceMove explains a claimNamespace bump (GAPS.md #55) directly
@@ -144,327 +125,78 @@ func filterMigrateOnly(only []string) (map[string]bool, error) {
 }
 
 var migrateCmd = &cobra.Command{
-	Use:     "migrate",
+	Use:     "migrate <file-or-dir>...",
 	GroupID: groupWorkflow,
-	Short:   "Guided fix path for findings jit scan reports",
+	Short:   "Guided fix path for findings jit scan reports (name the file(s) to convert)",
 	Long: "jit migrate moves the plaintext secrets jit scan finds into the encrypted\n" +
 		"vault and rewrites each file so everything keeps working without the secret\n" +
 		"sitting on disk. It's a separate command from jit scan, not a flag on it,\n" +
 		"so the read-only scanner can never be turned into a mutating one by a\n" +
 		"mistyped flag.\n\n" +
-		"By default it covers the same ground jit scan scans, the whole machine:\n" +
-		"`jit migrate` is `jit migrate home`. Narrow the scope with a subcommand:\n\n" +
-		"  jit migrate local   only what's under the current directory tree\n" +
-		"                       (.env files, tfvars files, project mcp.json, project .npmrc)\n" +
-		"  jit migrate home    the default: everything local finds, anywhere\n" +
-		"                       under $HOME, plus the machine-wide files that live at\n" +
-		"                       fixed home paths (shell configs, ~/.aws/credentials,\n" +
-		"                       ~/.kube/config, Terraform Cloud credentials,\n" +
-		"                       ~/.docker/config.json registry logins,\n" +
-		"                       ~/.git-credentials HTTPS logins, GCP\n" +
-		"                       application-default credentials, Claude Desktop's MCP\n" +
-		"                       config, the global ~/.npmrc)\n" +
-		"  jit migrate path    only the specific file(s)/folder(s) you name, with no\n" +
-		"                       directory walk (e.g. one project's .env, a single\n" +
-		"                       ~/.zshrc). The fast choice when a home sweep would\n" +
-		"                       take too long and you already know what to move\n\n" +
-		"Every run prints the full plan and asks for confirmation before touching\n" +
-		"anything, and every modified file is backed up (encrypted, into the vault)\n" +
-		"first, `jit migrate undo` restores any migrated file from that backup.\n" +
-		"See each subcommand's --help for exactly what happens to each kind of file.",
-	Example: "  jit migrate --dry-run          # preview the whole-machine plan, change nothing\n" +
-		"  jit migrate                    # fix everything the plan shows\n" +
-		"  jit migrate local --dry-run    # preview just this project's plan\n" +
-		"  jit migrate home --only aws,kube\n" +
-		"  jit migrate path ~/proj/.env   # migrate just one file, no walk\n" +
-		"  jit migrate undo               # restore migrated files from their backups",
-	// Bare `jit migrate` runs the home scope: jit scan scans the whole
-	// machine with no scope choice, so the natural next step after reading
-	// its report must not fork into a local/home decision the reader has
-	// no basis to make (picking `local` from an arbitrary cwd silently
-	// leaves most of the audit's findings unfixed). The plan+confirm gate,
-	// encrypted backups, and `jit migrate undo` are what make a
-	// whole-machine default safe; scope was never the real safety net.
-	Args: cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runMigrate(cmd, scopeHome)
-	},
-}
-
-var migrateLocalCmd = &cobra.Command{
-	Use:   "local",
-	Short: "Convert findings under the current directory only",
-	Long: "Converts findings under the current directory tree ONLY, nothing outside\n" +
-		"the project you're standing in is discovered or touched. Machine-wide files\n" +
-		"(shell configs, AWS, kubeconfig, Terraform Cloud, Docker registry logins,\n" +
-		"git HTTPS logins, GCP application-default credentials, Claude Desktop's\n" +
-		"config, the global ~/.npmrc) live at fixed paths under $HOME, so only\n" +
-		"`jit migrate home` ever includes them.\n\n" +
-		"What happens per category:\n\n" +
-		"  .env files   Keys move into a profile and the vault; the file itself keeps\n" +
-		"               working as a live mount served by jit's background service, showing\n" +
-		"               fake-looking values by default. Real values reach a tool\n" +
-		"               through `jit run` (env injection, or `jit run --live` for a\n" +
-		"               tool that reads the file itself). A git-safe <file>.pointers\n" +
-		"               companion is written alongside, listing vault paths only,\n" +
-		"               always safe to open or commit.\n" +
-		"  tfvars       Secret-shaped `name = \"value\"` assignments in terraform.tfvars\n" +
-		"               and *.auto.tfvars move into the vault, one profile per directory.\n" +
-		"               Terraform reads them back as TF_VAR_ environment variables when\n" +
-		"               you run it through jit: `jit run --profile <p> -- terraform apply`.\n" +
-		"  MCP configs  Each server's env-block secrets move into the vault, and the\n" +
-		"               server's command is rewritten to launch via `jit run`.\n" +
-		"  .npmrc       Secret lines move into the vault; the file keeps working as a\n" +
-		"               live mount, with non-secret settings preserved verbatim.\n\n" +
-		"Migrating never scrubs git history: a value that was ever committed stays\n" +
-		"recoverable via `git log -p` regardless, jit warns per file instead of\n" +
-		"implying \"migrated = safe\".",
-	Example: "  jit migrate local --dry-run\n" +
-		"  jit migrate local --only env",
-	Args: cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runMigrate(cmd, scopeLocal)
-	},
-}
-
-var migratePathCmd = &cobra.Command{
-	Use:   "path <file-or-dir>...",
-	Short: "Convert only the specific file(s)/folder(s) you name, no directory walk",
-	Long: "Converts only the exact file(s) and/or folder(s) you name, nothing else is\n" +
-		"discovered or touched. Use this when a `jit migrate home` sweep of a large\n" +
-		"$HOME would take too long and you already know which secret you want moved:\n" +
-		"a single project's .env, one ~/.zshrc, a directory of tfvars files.\n\n" +
-		"Each target is resolved on its own:\n\n" +
+		"You must name the file(s) and/or folder(s) to convert — jit migrate never\n" +
+		"sweeps your whole machine on its own. Nothing is discovered or touched\n" +
+		"except the targets you name, so a bare `jit migrate` with no path does\n" +
+		"nothing. Each target is resolved on its own:\n\n" +
 		"  A file       is routed to the right category by what it is. A project file\n" +
-		"               (.env, *.tfvars, mcp.json/.mcp.json, .npmrc) migrates exactly as\n" +
-		"               `jit migrate local` would migrate it. A machine-wide file at a\n" +
-		"               known path (a shell config like ~/.zshrc, ~/.aws/credentials,\n" +
-		"               ~/.kube/config, Terraform Cloud creds, ~/.docker/config.json,\n" +
-		"               ~/.git-credentials, GCP application-default credentials, a SOPS\n" +
-		"               age key, ~/.netrc, Claude Desktop's MCP config, the global\n" +
-		"               ~/.npmrc) is routed to that category's `home` handling.\n" +
-		"  A directory  is walked like `jit migrate local` rooted at that directory:\n" +
-		"               its .env/tfvars/mcp/npmrc findings only, never the machine-wide\n" +
-		"               fixed-path files (those aren't \"under\" any project directory).\n\n" +
-		"Unlike `jit migrate home`, path targets are explicit, so nothing is skipped\n" +
-		"for looking archived/backup-like. Naming a file is itself the decision to\n" +
-		"convert it. The per-category outcome (live mount, exec plugin, credential\n" +
-		"helper, ...) is identical to the other scopes; see `jit migrate local --help` and\n" +
-		"`jit migrate home --help` for the detail. Every run still prints the full\n" +
-		"plan and asks for confirmation, backs each file up into the vault first, and\n" +
-		"is reversible with `jit migrate undo`.",
-	Example: "  jit migrate path ~/proj/.env\n" +
-		"  jit migrate path ~/.zshrc ~/proj/.env\n" +
-		"  jit migrate path ~/proj/config --dry-run\n" +
-		"  jit migrate path ~/.aws/credentials --only aws",
-	Args: cobra.MinimumNArgs(1),
+		"               (.env, *.tfvars, mcp.json/.mcp.json, .npmrc) has its secrets\n" +
+		"               moved into a profile and the vault, the file keeps working as a\n" +
+		"               live mount (a git-safe <file>.pointers companion is written\n" +
+		"               alongside). A machine-wide file at a known path (a shell config\n" +
+		"               like ~/.zshrc, ~/.aws/credentials, ~/.kube/config, Terraform\n" +
+		"               Cloud creds, ~/.docker/config.json, ~/.git-credentials, GCP\n" +
+		"               application-default credentials, a SOPS age key, ~/.netrc,\n" +
+		"               Claude Desktop's MCP config, the global ~/.npmrc) is routed to\n" +
+		"               that credential type's handling (credential_process, exec\n" +
+		"               plugin, credential helper, or live mount, as appropriate).\n" +
+		"  A directory  is walked for its .env/tfvars/mcp/npmrc findings only, never\n" +
+		"               the machine-wide fixed-path files (those aren't \"under\" any\n" +
+		"               project directory) — name them explicitly to convert them.\n\n" +
+		"Targets are explicit, so nothing is skipped for looking archived/backup-like:\n" +
+		"naming a file is itself the decision to convert it. Every run prints the full\n" +
+		"plan and asks for confirmation before touching anything, and every modified\n" +
+		"file is backed up (encrypted, into the vault) first, `jit migrate undo <path>`\n" +
+		"restores a migrated file from that backup.",
+	Example: "  jit migrate ~/proj/.env         # migrate just one file\n" +
+		"  jit migrate ~/proj              # walk one project for .env/tfvars/mcp/npmrc\n" +
+		"  jit migrate ~/.zshrc ~/proj/.env\n" +
+		"  jit migrate ~/proj/.env --dry-run   # preview the plan, change nothing\n" +
+		"  jit migrate ~/.aws/credentials --only aws\n" +
+		"  jit migrate undo ~/proj/.env    # restore a migrated file from its backup",
+	Args: cobra.MinimumNArgs(1), // the file/dir args complete via the shell's default file completion
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runMigratePath(cmd, args)
 	},
 }
 
-var migrateHomeCmd = &cobra.Command{
-	Use:   "home",
-	Short: "Convert findings anywhere under $HOME, the whole machine, not just this project",
-	Long: "Converts findings anywhere under $HOME, the whole machine, not just this\n" +
-		"project. Covers everything `jit migrate local` does (see its --help for the\n" +
-		"per-category detail), discovered across every project under $HOME, plus the\n" +
-		"machine-wide files that live at fixed home paths:\n\n" +
-		"  Shell configs    Secret-shaped `export KEY=value` lines in .zshrc/.bashrc/\n" +
-		"                   etc. move into the vault; the file loads them back via\n" +
-		"                   `eval \"$(jit export --profile ...)\"` instead.\n" +
-		"  AWS              ~/.aws/credentials profiles move into the vault; the AWS\n" +
-		"                   CLI/SDK fetches them live via a credential_process line\n" +
-		"                   in ~/.aws/config, no keys on disk at all.\n" +
-		"  kubeconfig       A user's bearer token or client-certificate pair moves\n" +
-		"                   into the vault; kubectl fetches it via an exec block.\n" +
-		"  Terraform Cloud  ~/.terraform.d/credentials.tfrc.json tokens move into the\n" +
-		"                   vault; terraform fetches them through its own\n" +
-		"                   credentials-helper protocol (`terraform login`/`logout`\n" +
-		"                   keep working). Fails loud, before touching anything, if a\n" +
-		"                   different credentials helper is already configured.\n" +
-		"  Docker           plaintext registry logins in ~/.docker/config.json (base64\n" +
-		"                   is encoding, not encryption) move into the vault; docker\n" +
-		"                   fetches them through its own credential-helper protocol\n" +
-		"                   (`docker login`/`logout` keep working, compose and buildx\n" +
-		"                   pulls too). Never replaces an existing credential store\n" +
-		"                   like Docker Desktop's; jit becomes the default store only\n" +
-		"                   when the config had none at all.\n" +
-		"  git              plaintext HTTPS logins in ~/.git-credentials move into the\n" +
-		"                   vault; git fetches them through its own credential-helper\n" +
-		"                   protocol (credential.helper set to jit, the plaintext\n" +
-		"                   `store` helper replaced), so `git push`/`fetch` over HTTPS\n" +
-		"                   keep working. A secure helper like osxkeychain is left in\n" +
-		"                   place.\n" +
-		"  GCP              ~/.config/gcloud/application_default_credentials.json's\n" +
-		"                   refresh token (or a service account key's private key)\n" +
-		"                   moves into the vault; the file keeps working as a live\n" +
-		"                   mount, Google SDKs read the same path, non-secret fields\n" +
-		"                   preserved verbatim. (GCP has no AWS-style\n" +
-		"                   credential_process hook for these credential types, so\n" +
-		"                   the mount is what keeps SDKs working with no key on disk.)\n" +
-		"  SOPS age key     keys.txt (~/.config/sops/age/ or its Application Support\n" +
-		"                   sibling) moves into the vault; the file keeps working as\n" +
-		"                   a live mount for sops/kluctl/Flux/helm-secrets, and sops\n" +
-		"                   v3.10+ can fetch the key directly via\n" +
-		"                   SOPS_AGE_KEY_CMD=\"jit sops-age-key\", no file read at all.\n" +
-		"  .netrc           Every `password` value in ~/.netrc moves into the vault;\n" +
-		"                   the file keeps working as a live mount, curl/git/ftp\n" +
-		"                   read it exactly as before, `machine`/`login` lines and\n" +
-		"                   any macdef scripts survive verbatim.\n" +
-		"  Claude Desktop's MCP config and the global ~/.npmrc get the same\n" +
-		"  treatment as project MCP configs and .npmrc files.\n\n" +
-		"Skips anything under an archived/backup-looking directory (archive,\n" +
-		"archived, backup, backups, .trash) unless --include-archived: converting a\n" +
-		"forgotten project's .env into a live mount nobody will ever serve again\n" +
-		"would make it unreadable, which is worse than plaintext.",
-	Example: "  jit migrate home --dry-run\n" +
-		"  jit migrate home --only aws,kube\n" +
-		"  jit migrate home --include-archived",
-	Args: cobra.NoArgs,
+// migratePathCmd keeps `jit migrate path <file>...` working as an explicit
+// alias of the bare `jit migrate <file>...` form — same code path, same
+// behavior — so existing scripts and muscle memory don't break now that the
+// path is named directly on the parent command.
+var migratePathCmd = &cobra.Command{
+	Use:   "path <file-or-dir>...",
+	Short: "Alias for `jit migrate <file-or-dir>...`",
+	Long:  "Alias for `jit migrate <file-or-dir>...` — see `jit migrate --help`.",
+	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runMigrate(cmd, scopeHome)
+		return runMigratePath(cmd, args)
 	},
 }
 
-// runMigrate implements both jit migrate local (wholeHome=false) and
-// jit migrate home (wholeHome=true). wholeHome changes which root the
-// .env/MCP/npmrc Discover* calls walk (cwd vs $HOME), AND whether
-// shell config/AWS/kubeconfig/Claude Desktop's config/global ~/.npmrc
-// are discovered at all — those five have no project-scoped form, so
-// `local` (only what's under this directory tree) must skip them
-// entirely, not just narrow their walk. Sharing one function for
-// discovery, --only filtering, plan printing, confirmation, and apply is
-// what guarantees --dry-run's preview and a real run's actual behavior
-// can never drift apart the way a single whole-machine-scanning --dry-run
-// used to (GAPS.md #26): both paths call the exact same discovery with
-// the exact same root before branching on migrateDryRun.
-func runMigrate(cmd *cobra.Command, scope migrateScope) error {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("jit migrate: %w", err)
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("jit migrate: %w", err)
-	}
-
-	wholeHome := scope == scopeHome
-	projectRoot := cwd
-	if wholeHome {
-		projectRoot = home
-	}
-
-	d := &discovered{}
-	d.envFiles, err = migrate.DiscoverEnvFiles(projectRoot)
-	if err != nil {
-		return fmt.Errorf("jit migrate: %w", err)
-	}
-	d.tfvarsFiles, d.tfvarsComplexOnly, err = migrate.DiscoverTfvarsFiles(projectRoot)
-	if err != nil {
-		return fmt.Errorf("jit migrate: %w", err)
-	}
-	d.mcpConfigs, err = migrate.DiscoverMCPConfigs(home, projectRoot, wholeHome)
-	if err != nil {
-		return fmt.Errorf("jit migrate: %w", err)
-	}
-	d.npmrcFiles, err = migrate.DiscoverNpmrcFiles(home, projectRoot, wholeHome)
-	if err != nil {
-		return fmt.Errorf("jit migrate: %w", err)
-	}
-
-	// Shell config/AWS/kubeconfig have no project-scoped component at
-	// all — they live at exactly one fixed path under $HOME regardless
-	// of cwd. `local` means "only what's under this directory tree," so
-	// it must never discover them; only `home`'s whole-machine sweep
-	// does. This is what makes `local` actually match its name (a real,
-	// reported point of confusion when both scopes always included
-	// these — see GAPS.md #26).
-	if wholeHome {
-		d.shellConfigs, err = migrate.DiscoverShellConfigs(home)
-		if err != nil {
-			return fmt.Errorf("jit migrate: %w", err)
-		}
-		d.awsProfiles, err = migrate.DiscoverAWSProfiles(home)
-		if err != nil {
-			return fmt.Errorf("jit migrate: %w", err)
-		}
-		d.k8sUsers, err = migrate.DiscoverKubeconfigUsers(home)
-		if err != nil {
-			return fmt.Errorf("jit migrate: %w", err)
-		}
-		d.terraformHosts, err = migrate.DiscoverTerraformHosts(home)
-		if err != nil {
-			return fmt.Errorf("jit migrate: %w", err)
-		}
-		d.dockerRegistries, err = migrate.DiscoverDockerRegistries(home)
-		if err != nil {
-			return fmt.Errorf("jit migrate: %w", err)
-		}
-		gitCreds, err := migrate.DiscoverGitCredentials(home)
-		if err != nil {
-			return fmt.Errorf("jit migrate: %w", err)
-		}
-		for _, c := range gitCreds {
-			d.gitHosts = append(d.gitHosts, c.Host)
-		}
-		d.gcpADCFiles, err = migrate.DiscoverGCPADC(home)
-		if err != nil {
-			return fmt.Errorf("jit migrate: %w", err)
-		}
-		d.sopsAgeFiles, err = migrate.DiscoverSOPSAge(home)
-		if err != nil {
-			return fmt.Errorf("jit migrate: %w", err)
-		}
-		d.netrcFiles, err = migrate.DiscoverNetrc(home)
-		if err != nil {
-			return fmt.Errorf("jit migrate: %w", err)
-		}
-	}
-
-	// Whole-machine sweeps skip anything that looks archived/backed-up by
-	// default (GAPS.md #26) — see archived.go's doc comment for why a
-	// live-mounted pipe is a worse outcome than plaintext for a project
-	// nobody will run `jit service` from again. `local` never filters:
-	// deliberately cd-ing into an old project and running `migrate local`
-	// is an explicit action, not an implicit sweep, so there's nothing to
-	// protect the caller from.
-	if wholeHome && !migrateIncludeArchived {
-		var skipped []string
-		d.envFiles, skipped = migrate.FilterArchived(d.envFiles)
-		d.skippedArchived = append(d.skippedArchived, skipped...)
-		d.tfvarsFiles, skipped = migrate.FilterArchived(d.tfvarsFiles)
-		d.skippedArchived = append(d.skippedArchived, skipped...)
-		d.mcpConfigs, skipped = migrate.FilterArchived(d.mcpConfigs)
-		d.skippedArchived = append(d.skippedArchived, skipped...)
-		d.npmrcFiles, skipped = migrate.FilterArchived(d.npmrcFiles)
-		d.skippedArchived = append(d.skippedArchived, skipped...)
-		// Note-only paths (nothing migratable in them), so an archived one
-		// is dropped silently rather than added to skippedArchived — the
-		// archived note's "rerun with --include-archived" would falsely
-		// promise a rerun could convert it.
-		d.tfvarsComplexOnly, _ = migrate.FilterArchived(d.tfvarsComplexOnly)
-	}
-
-	return applyMigrate(cmd, scope, cwd, home, d)
-}
-
-// applyMigrate is the single plan/confirm/apply path every scope funnels
-// through once its findings are gathered into d — runMigrate (local/home
-// walk) and runMigratePath (explicit targets) both end here. Keeping one
-// mutation path is what guarantees a `jit migrate path` run gets the exact
-// same encrypted backups, --dry-run/real-plan parity (GAPS.md #26), pointer
-// files, mount registration, git-history warnings, and confirmation gate
-// (GAPS.md #17) as a whole-machine sweep. scope survives into here only to
-// drive the plan's cosmetic labels and three behavior forks: which root a
-// profile name derives from (cwd for local, the file's own directory
-// otherwise), and whether the local-only folder-rename note fires.
-func applyMigrate(cmd *cobra.Command, scope migrateScope, cwd, home string, d *discovered) error {
+// applyMigrate is the single plan/confirm/apply path runMigratePath funnels
+// its findings through once they're gathered into d. Keeping one mutation
+// path is what guarantees every migrate run gets the same encrypted backups,
+// --dry-run/real-plan parity (GAPS.md #26), pointer files, mount
+// registration, git-history warnings, and confirmation gate (GAPS.md #17).
+// A .env/tfvars/npmrc profile name always derives from the file's OWN
+// directory: an explicitly named target can sit under any project, so
+// deriving from the invoking cwd would produce a nonsensical profile name
+// disconnected from the secret's real home.
+func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 	// Locals aliased to d's fields so the --only filter, plan, and apply
 	// loops below read exactly as they did before this function was split
-	// out of runMigrate. categorySlices points at these locals, and the
-	// --only nil-out clears them, leaving d untouched (it's already served
-	// its purpose as the discovery hand-off).
+	// out. categorySlices points at these locals, and the --only nil-out
+	// clears them, leaving d untouched (it's already served its purpose as
+	// the discovery hand-off).
 	envFiles := d.envFiles
 	tfvarsFiles := d.tfvarsFiles
 	tfvarsComplexOnly := d.tfvarsComplexOnly
@@ -479,15 +211,6 @@ func applyMigrate(cmd *cobra.Command, scope migrateScope, cwd, home string, d *d
 	sopsAgeFiles := d.sopsAgeFiles
 	npmrcFiles := d.npmrcFiles
 	netrcFiles := d.netrcFiles
-	skippedArchived := d.skippedArchived
-
-	// perFileRoot is false only for local scope. It controls where a .env/
-	// tfvars/npmrc profile name derives from: cwd when every finding is
-	// genuinely under cwd (local), the file's OWN directory otherwise (home
-	// sweep and explicit path targets can both surface a file under a
-	// completely unrelated project, so deriving from cwd would produce a
-	// nonsensical profile name disconnected from the secret's real home).
-	perFileRoot := scope != scopeLocal
 
 	// --only scopes a run to just the named categories (GAPS.md #21) —
 	// validated against migrateCategories BEFORE anything else, including
@@ -549,21 +272,12 @@ func applyMigrate(cmd *cobra.Command, scope migrateScope, cwd, home string, d *d
 	if total == 0 {
 		if len(migrateOnly) > 0 {
 			fmt.Fprintf(cmd.OutOrStdout(), "Nothing to migrate in the selected --only %s: %s.\n", pluralWord(len(migrateOnly), "category", "categories"), strings.Join(migrateOnly, ", "))
-		} else if scope == scopePath {
-			// The caller named specific target(s), so the generic
-			// whole-catalog "no .env, no tfvars, ..." list below would read as
-			// a machine-wide report they didn't ask for. Say plainly that the
+		} else {
+			// The caller named specific target(s), so say plainly that the
 			// paths they named held nothing migratable (a missing path already
 			// failed loud in runMigratePath before ever reaching here).
 			fmt.Fprintln(cmd.OutOrStdout(), "Nothing to migrate: none of the path(s) you named contain plaintext secrets jit can move.")
-		} else {
-			fmt.Fprintln(cmd.OutOrStdout(), "Nothing to migrate: no .env files, no tfvars secrets, no secret-shaped shell-config")
-			fmt.Fprintln(cmd.OutOrStdout(), "exports, no MCP server secrets, no AWS/kubeconfig/Terraform Cloud/Docker registry/")
-			fmt.Fprintln(cmd.OutOrStdout(), "git HTTPS credentials, no GCP credentials, no SOPS age key, no npmrc secrets, and no")
-			fmt.Fprintln(cmd.OutOrStdout(), ".netrc passwords found.")
 		}
-		printSkippedFindings(cmd.OutOrStdout(), home, len(skippedArchived), "under an archived/backup-looking directory", skippedArchived,
-			"Rerun with --include-archived to include them.")
 		printSkippedFindings(cmd.OutOrStdout(), home, len(tfvarsComplexOnly), "in Terraform variable file(s) whose secret-shaped values aren't simple one-line strings", tfvarsComplexOnly,
 			"Nothing migrate can move safely; they stay in place, and `jit scan` keeps reporting them.")
 		return nil
@@ -597,9 +311,7 @@ func applyMigrate(cmd *cobra.Command, scope migrateScope, cwd, home string, d *d
 	// work that's about to be aborted anyway. This same plan is what
 	// --dry-run prints too (see below) — one rendering path, so the
 	// preview you confirm against is exactly the preview --dry-run shows.
-	printMigratePlan(cmd.OutOrStdout(), home, scope, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles)
-	printSkippedFindings(cmd.OutOrStdout(), home, len(skippedArchived), "under an archived/backup-looking directory", skippedArchived,
-		"Rerun with --include-archived to include them.")
+	printMigratePlan(cmd.OutOrStdout(), home, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles)
 	printSkippedFindings(cmd.OutOrStdout(), home, len(tfvarsComplexOnly), "in Terraform variable file(s) whose secret-shaped values aren't simple one-line strings", tfvarsComplexOnly,
 		"Nothing migrate can move safely; they stay in place, and `jit scan` keeps reporting them.")
 
@@ -652,21 +364,13 @@ func applyMigrate(cmd *cobra.Command, scope migrateScope, cwd, home string, d *d
 		for _, envPath := range envFiles {
 			summary.checkGitHistory(envPath)
 
-			// profilesRoot must be the file's OWN project directory in
-			// wholeHome mode, never the invoking cwd: deriveProfileName
-			// computes a relative path from profilesRoot to the file's
-			// directory, and in home mode a discovered .env can be under
-			// a completely unrelated project. Passing cwd there would
-			// silently derive a nonsensical profile name/path
-			// disconnected from the project the secret actually came
-			// from. In local mode every discovered file is genuinely
-			// under cwd, so cwd is correct and unchanged — this only
-			// branches for the non-local scopes (home sweep and explicit
-			// path targets, both of which can surface a file anywhere).
-			envProfilesRoot := cwd
-			if perFileRoot {
-				envProfilesRoot = filepath.Dir(envPath)
-			}
+			// profilesRoot is the file's OWN project directory:
+			// deriveProfileName computes a relative path from profilesRoot to
+			// the file's directory, and an explicitly named .env can sit under
+			// any project, so deriving from the invoking cwd would silently
+			// produce a nonsensical profile name/path disconnected from the
+			// project the secret actually came from.
+			envProfilesRoot := filepath.Dir(envPath)
 			result, err := migrate.ApplyEnvFile(v, envProfilesRoot, envPath)
 			if err != nil {
 				return fmt.Errorf("jit migrate: %w", err)
@@ -706,13 +410,8 @@ func applyMigrate(cmd *cobra.Command, scope migrateScope, cwd, home string, d *d
 			for _, path := range tfvarsByDir[dir] {
 				summary.checkGitHistory(path)
 			}
-			// Same profilesRoot rule as .env above: the directory's own
-			// path for a home sweep or explicit path target, cwd in local mode.
-			tfvarsProfilesRoot := cwd
-			if perFileRoot {
-				tfvarsProfilesRoot = dir
-			}
-			result, err := migrate.ApplyTfvarsDir(v, tfvarsProfilesRoot, dir, tfvarsByDir[dir])
+			// Same profilesRoot rule as .env above: the directory's own path.
+			result, err := migrate.ApplyTfvarsDir(v, dir, dir, tfvarsByDir[dir])
 			if err != nil {
 				return fmt.Errorf("jit migrate: %w", err)
 			}
@@ -953,10 +652,7 @@ func applyMigrate(cmd *cobra.Command, scope migrateScope, cwd, home string, d *d
 			globalNpmrc := npmrcPath == migrate.GlobalNpmrcPath(home)
 			npmrcRoot := home
 			if !globalNpmrc {
-				npmrcRoot = cwd
-				if perFileRoot {
-					npmrcRoot = filepath.Dir(npmrcPath)
-				}
+				npmrcRoot = filepath.Dir(npmrcPath)
 			}
 			result, err := migrate.ApplyNpmrc(v, npmrcRoot, npmrcPath, globalNpmrc)
 			if err != nil {
@@ -1017,25 +713,21 @@ func applyMigrate(cmd *cobra.Command, scope migrateScope, cwd, home string, d *d
 
 	summary.print(out)
 	reportAgentStatus(out, root, len(envFiles) > 0 || len(npmrcFiles) > 0 || len(gcpADCFiles) > 0 || len(sopsAgeFiles) > 0 || len(netrcFiles) > 0)
-	// Local mode only: the check reads pointer companions under the project
-	// root, which is cwd here but an unrelated per-file directory in home
-	// mode (deriveProfileName's profilesRoot comment) — neither a home sweep
-	// nor an explicit path target has a single "this project" under cwd
-	// whose rename to flag.
-	if scope == scopeLocal {
-		noteFolderRename(out, cwd)
-	}
+	// The folder-rename advisory is left to `jit status`: an explicitly named
+	// migrate target can sit under any project, so there's no single "this
+	// project" here whose rename to flag (see noteFolderRename, still used by
+	// status).
 	return nil
 }
 
-// runMigratePath implements jit migrate path: convert only the file(s) and
-// folder(s) named on the command line, with no directory walk beyond a
-// named folder itself. This is the answer to a home sweep being too slow on
-// a large $HOME when the caller already knows which secret they want moved
-// (one project's .env, a single ~/.zshrc). Each target is resolved and
-// classified on its own, its findings merged into one discovered set, then
-// handed to the shared applyMigrate path — so a targeted run gets the exact
-// same backups, plan/confirm gate, and undo support as any other scope.
+// runMigratePath implements `jit migrate <file-or-dir>...` (and its `path`
+// alias): convert only the file(s) and folder(s) named on the command line,
+// with no directory walk beyond a named folder itself. The caller always
+// names exactly what they want moved (one project's .env, a single ~/.zshrc,
+// a directory of tfvars files). Each target is resolved and classified on
+// its own, its findings merged into one discovered set, then handed to the
+// shared applyMigrate path for the plan/confirm gate, encrypted backups, and
+// undo support.
 func runMigratePath(cmd *cobra.Command, targets []string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -1081,12 +773,11 @@ func runMigratePath(cmd *cobra.Command, targets []string) error {
 		}
 	}
 	// Overlapping targets (the same file named twice, or a folder plus a
-	// file inside it) would otherwise migrate a finding more than once; the
-	// walk-based scopes can't produce a duplicate, so applyMigrate is
-	// entitled to assume none.
+	// file inside it) would otherwise migrate a finding more than once, so
+	// collapse duplicates before applyMigrate, which assumes a unique set.
 	d.dedupe()
 
-	return applyMigrate(cmd, scopePath, cwd, home, d)
+	return applyMigrate(cmd, home, d)
 }
 
 // expandTilde turns a leading ~ or ~/ into home. A login shell expands this
@@ -1103,11 +794,11 @@ func expandTilde(p, home string) string {
 	return p
 }
 
-// discoverDirTarget walks a named directory the way jit migrate local walks
-// cwd: project files only (.env/tfvars/mcp/npmrc), never the fixed
-// machine-wide paths. Those live under $HOME at large rather than "inside"
-// any project directory, so a folder target that happens to be $HOME must
-// not sweep them in — a path run is deliberately narrow.
+// discoverDirTarget walks a named directory for project files only
+// (.env/tfvars/mcp/npmrc), never the fixed machine-wide paths. Those live
+// under $HOME at large rather than "inside" any project directory, so a
+// folder target that happens to be $HOME must not sweep them in — a migrate
+// run is deliberately narrow, converting only what was named.
 func discoverDirTarget(d *discovered, home, dir string) error {
 	envs, err := migrate.DiscoverEnvFiles(dir)
 	if err != nil {
@@ -1136,10 +827,10 @@ func discoverDirTarget(d *discovered, home, dir string) error {
 // discoverFileTarget classifies one explicitly named file and routes it to
 // the right category. A fixed machine-wide path (a shell config, ~/.aws/
 // credentials, ~/.kube/config, ...) is matched by exact path and handed to
-// that category's own home-scoped discovery, narrowed back to just this file
+// that category's own machine-wide discovery, narrowed back to just this file
 // for the path-keyed categories. Anything else is treated as a project file
-// and run through the same single-file discovery jit migrate local applies
-// (WalkDir over one regular file yields just that file), so all the
+// and run through the same single-file project discovery discoverDirTarget
+// uses (WalkDir over one regular file yields just that file), so all the
 // .env/tfvars/mcp/npmrc naming and secret-content rules stay in one place —
 // including the global ~/.npmrc, whose global profile rooting applyMigrate
 // re-derives from the path itself.
@@ -1253,9 +944,9 @@ func filterToTarget(items []string, target string) []string {
 }
 
 // dedupe removes duplicate findings from every category, preserving
-// first-seen order. Only jit migrate path can produce a duplicate (two
-// overlapping targets surfacing the same file); the walk-based scopes each
-// discover a sorted, unique set, so applyMigrate assumes uniqueness.
+// first-seen order — two overlapping targets (a folder plus a file inside it,
+// or the same path named twice) can otherwise surface the same file more than
+// once, and applyMigrate assumes a unique set.
 func (d *discovered) dedupe() {
 	for _, s := range []*[]string{
 		&d.envFiles, &d.tfvarsFiles, &d.tfvarsComplexOnly, &d.shellConfigs,
@@ -1309,18 +1000,13 @@ func completeMigrateCategories(cmd *cobra.Command, args []string, toComplete str
 }
 
 func init() {
-	migrateCmd.PersistentFlags().BoolVar(&migrateDryRun, "dry-run", false, "preview the plan for this scope without changing anything")
+	// Persistent so the flags work on both `jit migrate <path>` and its
+	// `path` alias subcommand (and undo/remove, which read the same vars).
+	migrateCmd.PersistentFlags().BoolVar(&migrateDryRun, "dry-run", false, "preview the plan without changing anything")
 	migrateCmd.PersistentFlags().BoolVarP(&migrateYes, "yes", "y", false, "skip the confirmation prompt and migrate immediately")
 	migrateCmd.PersistentFlags().StringSliceVar(&migrateOnly, "only", nil, "scope a run to just these comma-separated categories: "+strings.Join(migrateCategories, ",")+" (default: all)")
 	_ = migrateCmd.RegisterFlagCompletionFunc("only", completeMigrateCategories)
-	// Registered on the bare command AND the home subcommand (same bound
-	// var), not as a persistent flag: bare `jit migrate` runs the home
-	// sweep so it needs the flag, but `jit migrate local` never filters
-	// archived paths and must reject it rather than silently accept a
-	// no-op.
-	migrateCmd.Flags().BoolVar(&migrateIncludeArchived, "include-archived", false, "also convert findings under an archived/backup-looking directory (archive, archived, backup, backups, .trash)")
-	migrateHomeCmd.Flags().BoolVar(&migrateIncludeArchived, "include-archived", false, "also convert findings under an archived/backup-looking directory (archive, archived, backup, backups, .trash)")
 
-	migrateCmd.AddCommand(migrateLocalCmd, migrateHomeCmd, migratePathCmd)
+	migrateCmd.AddCommand(migratePathCmd)
 	rootCmd.AddCommand(migrateCmd)
 }

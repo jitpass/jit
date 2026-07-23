@@ -159,7 +159,7 @@ func TestRedactTextMasksPunctuationWrappedSecrets(t *testing.T) {
 		`no secret stored at "` + secret + `"`, // quoted, the real error shape
 		"context: (" + secret + ") failed",     // parenthesized
 		"token=" + secret + " rejected",        // key=value inside a sentence
-		secret,                                  // bare
+		secret,                                 // bare
 	}
 	for _, in := range cases {
 		got := RedactText(in)
