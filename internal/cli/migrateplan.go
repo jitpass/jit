@@ -19,14 +19,14 @@ import (
 // This file is the migrate PLAN rendering — the single printMigratePlan
 // path both --dry-run's preview and the real confirmation prompt share
 // (GAPS.md #26's no-drift guarantee), plus its category/scope-split
-// helpers. Split out of migrate.go (command wiring + runMigrate) the same
+// helpers. Split out of migrate.go (command wiring + discovery) the same
 // way mountmanager.go was split out of agent.go; the mutation-log side
 // lives in migratesummary.go.
 
-// printMigratePlan prints what a run in this scope is about to do — the
-// SAME rendering used for both --dry-run's preview and the real
-// confirmation prompt right before mutating, so the two can never drift
-// apart (GAPS.md #26; GAPS.md #17 for the confirmation gate itself).
+// printMigratePlan prints what a run is about to do — the SAME rendering
+// used for both --dry-run's preview and the real confirmation prompt right
+// before mutating, so the two can never drift apart (GAPS.md #26; GAPS.md
+// #17 for the confirmation gate itself).
 //
 // Every category label states the user-visible OUTCOME, never jit's
 // internal mechanism. "vault + jit run wrapper" and "vault + exec
@@ -37,36 +37,16 @@ import (
 // mechanism name is still in `jit migrate --help`'s Long text for
 // whoever wants it.
 //
-// The plan is split into two groups instead of one flat list of six
-// categories. `jit migrate local` never discovers shell config/AWS/
-// kubeconfig at all — they have no project-scoped component, so "local"
-// (only what's under this directory tree) means they simply don't
-// apply — and DiscoverMCPConfigs/DiscoverNpmrcFiles only include their
-// fixed Claude Desktop/global-~/.npmrc path when wholeHome is true, for
-// the same reason. Only a `home` run can ever populate the
-// "machine-wide" group below; `local`'s plan is always just "scoped to
-// this run." This replaced an earlier design where every category was
-// always discovered regardless of scope and each got its own per-item
-// dim scope note explaining why it showed up anyway — a real, reported
-// point of confusion ("I asked for local, why am I seeing home paths?")
-// that a note alone didn't fix, because the underlying discovery still
-// disagreed with what the subcommand name promised. mcpConfigs/
-// npmrcFiles are still split item-by-item within a `home` run
-// (splitMCPByScope/splitNpmrcByScope) since a single Discover* call
-// there still mixes the fixed path in with items found by the
-// whole-$HOME walk.
-func printMigratePlan(w io.Writer, home string, scope migrateScope, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles []string) {
-	// scopedTree deliberately reads as "under the current directory
-	// tree"/"anywhere under $HOME" (not just the trailing noun phrase) —
-	// TestMigrateHomeLabelMentionsHome checks for these exact phrases.
-	scopeLabel, scopedTree := "local", "under the current directory tree"
-	switch scope {
-	case scopeHome:
-		scopeLabel, scopedTree = "home", "anywhere under $HOME"
-	case scopePath:
-		scopeLabel, scopedTree = "path", "among the path(s) you named"
-	}
-	fmt.Fprintf(w, "jit migrate, plan (%s scope)\n", scopeLabel)
+// The plan is split into two groups instead of one flat list: project
+// files the caller named (or found under a named directory) vs. the
+// machine-wide fixed-path files they named explicitly. A migrate run only
+// ever converts what was named, so both groups appear only because the
+// caller asked for their contents. mcpConfigs/npmrcFiles are still split
+// item-by-item (splitMCPByScope/splitNpmrcByScope) since Claude Desktop's
+// config / the global ~/.npmrc belong in the machine-wide group while a
+// project mcp.json/.npmrc belongs with the scoped files.
+func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles []string) {
+	fmt.Fprintln(w, "jit migrate, plan")
 	fmt.Fprintln(w, "Each modified file is backed up before it's rewritten.")
 	fmt.Fprintln(w)
 
@@ -88,7 +68,7 @@ func printMigratePlan(w io.Writer, home string, scope migrateScope, envFiles, tf
 	hasFixed := len(shellConfigs) > 0 || len(mcpFixed) > 0 || len(awsProfiles) > 0 || len(k8sUsers) > 0 || len(terraformHosts) > 0 || len(dockerRegistries) > 0 || len(gitHosts) > 0 || len(gcpADCFiles) > 0 || len(sopsAgeFiles) > 0 || len(npmrcFixed) > 0 || len(netrcFiles) > 0
 
 	if hasScoped {
-		_, _ = color.New(color.Bold).Fprintf(w, "Scoped to this run, %s\n\n", scopedTree)
+		_, _ = color.New(color.Bold).Fprintf(w, "Project files you named\n\n")
 		printMigratePlanCategoryAnnotated(w,
 			".env file(s) → secrets move to the vault; the file keeps working as a live, auto-updating mount",
 			shorten(envFiles),
@@ -110,14 +90,10 @@ func printMigratePlan(w io.Writer, home string, scope migrateScope, envFiles, tf
 	}
 
 	if hasFixed {
-		// In a home sweep these appear because the sweep reaches them; in a
-		// path run they appear only because the caller named one explicitly,
-		// so the "only included on a home-scope run" note would be wrong there.
-		machineWideHeader := "Machine-wide config files, only included on a home-scope run"
-		if scope == scopePath {
-			machineWideHeader = "Machine-wide config files you named"
-		}
-		_, _ = color.New(color.Faint).Fprintln(w, machineWideHeader)
+		// These appear only because the caller named a machine-wide file (or
+		// its exact path) explicitly — a migrate run never reaches them on its
+		// own, so the header states plainly that the caller asked for them.
+		_, _ = color.New(color.Faint).Fprintln(w, "Machine-wide config files you named")
 		fmt.Fprintln(w)
 		printMigratePlanCategory(w,
 			"shell config(s) → secrets move to the vault; loaded back automatically when your shell starts",
@@ -196,7 +172,7 @@ func printMigratePlan(w io.Writer, home string, scope migrateScope, envFiles, tf
 // (RFC.md's home-rooted global store) from any project-scoped
 // mcp.json/.mcp.json findings in the same DiscoverMCPConfigs result, so
 // printMigratePlan can render them in different sections instead of
-// implying both are subject to the same local/home scope rule.
+// implying both belong in the same section of the plan.
 func splitMCPByScope(home string, mcpConfigs []string) (scoped, fixed []string) {
 	claudePath := migrate.ClaudeDesktopConfigPath(home)
 	for _, path := range mcpConfigs {

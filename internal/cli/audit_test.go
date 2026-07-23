@@ -47,6 +47,28 @@ func seedAuditFixtures(t *testing.T, home string) {
 	})
 }
 
+// TestCommandEntrySurfacesFreshAuth: a command that forced its own fresh
+// Touch ID/passcode (jit migrate undo/remove set Record.Auth) must show that
+// in the audit line, so the trail proves a plaintext-restoring or
+// destructive action was gated by a live fingerprint. A command with no
+// fresh auth carries no auth= key.
+func TestCommandEntrySurfacesFreshAuth(t *testing.T) {
+	withAuth := commandEntry(auditlog.Record{
+		UnixNano: 1000, Command: "jit migrate undo", Args: []string{"migrate", "undo", "~/proj/.env"},
+		Success: true, Auth: freshUserPresenceMethod,
+	})
+	if !strings.Contains(withAuth.line, "auth="+freshUserPresenceMethod) {
+		t.Errorf("expected the fresh-auth marker in the audit line, got:\n%s", withAuth.line)
+	}
+
+	noAuth := commandEntry(auditlog.Record{
+		UnixNano: 1000, Command: "jit status", Args: []string{"status"}, Success: true,
+	})
+	if strings.Contains(noAuth.line, "auth=") {
+		t.Errorf("expected no auth= key for a command that didn't force a challenge, got:\n%s", noAuth.line)
+	}
+}
+
 func execAudit(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	auditFormat = "text"

@@ -219,7 +219,7 @@ var catalog = map[string]CatalogEntry{
 			// Gemini CLI's documented .env loading: ~/.gemini/.env is its
 			// dedicated file, plain ~/.env the documented fallback. dotenv
 			// KEY=value lines are the toml extractor's sectionless line
-			// shape. If jit migrate home already turned either path into a
+			// shape. If jit migrate already turned either path into a
 			// live mount, ExtractToken's FIFO guard refuses to read it
 			// (rather than "discovering" today's decoy cycle as the token)
 			// — see that function's doc comment.

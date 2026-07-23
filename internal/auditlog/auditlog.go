@@ -68,6 +68,14 @@ type Record struct {
 	// same masking as Args in case an error echoes an argument back).
 	Success bool   `json:"success"`
 	Error   string `json:"error,omitempty"`
+	// Auth names the authentication this invocation performed, when it forced
+	// its own fresh local user-presence challenge (Touch ID/passcode) rather
+	// than riding a cached agent session — the plaintext-restoring and
+	// destructive migrate commands (`jit migrate undo`, `jit migrate remove`)
+	// do this so an attacker can't reuse an unlocked session to exfiltrate or
+	// destroy secrets. Empty for everything else, so the field's presence is
+	// itself the signal that a fresh fingerprint gated the action.
+	Auth string `json:"auth,omitempty"`
 }
 
 // Logger appends Records to a JSONL file and reads them back. Concurrency-safe

@@ -58,7 +58,7 @@ type CatalogEntry struct {
 	VerifyHint   string // suggested check after wrapping, e.g. "gh auth status"
 
 	// KindNative fields.
-	NativeCategory string // the `jit migrate home --only <category>` token
+	NativeCategory string // the `jit migrate <path> --only <category>` token
 }
 
 // Lookup returns the catalog entry for tool.

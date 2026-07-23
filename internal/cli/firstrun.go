@@ -23,14 +23,14 @@ import (
 // tests inject fakes so the whole decision tree runs without a keychain, an
 // interactive terminal, or spawning jit subprocesses.
 type firstRunDeps struct {
-	vaultReady   func() bool            // is jit already set up? (prompt-free)
-	isTTY        func() bool            // interactive stdin AND stdout?
-	cwd          func() (string, error) // current directory
-	homeDir      func() (string, error) // $HOME
-	scan         func(root string) ([]audit.Finding, audit.ScanSummary, error)
-	render       func(w io.Writer, findings []audit.Finding, summary audit.ScanSummary)
-	confirm      func(prompt string) bool   // y/N gate
-	runStep      func(args ...string) error // re-exec jit <args>
+	vaultReady func() bool            // is jit already set up? (prompt-free)
+	isTTY      func() bool            // interactive stdin AND stdout?
+	cwd        func() (string, error) // current directory
+	homeDir    func() (string, error) // $HOME
+	scan       func(root string) ([]audit.Finding, audit.ScanSummary, error)
+	render     func(w io.Writer, findings []audit.Finding, summary audit.ScanSummary)
+	confirm    func(prompt string) bool   // y/N gate
+	runStep    func(args ...string) error // re-exec jit <args>
 }
 
 // runFirstRun backs the root command's RunE: bare `jit` with no subcommand.
@@ -150,9 +150,9 @@ func prodFirstRunDeps(cmd *cobra.Command) firstRunDeps {
 			// never block waiting on input.
 			return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
 		},
-		cwd:          os.Getwd,
-		homeDir:      os.UserHomeDir,
-		scan:         scanRoot,
+		cwd:     os.Getwd,
+		homeDir: os.UserHomeDir,
+		scan:    scanRoot,
 		render: func(w io.Writer, f []audit.Finding, s audit.ScanSummary) {
 			home, _ := os.UserHomeDir() // display-only "~"-shortening
 			audit.WriteHumanReport(w, f, s, home)

@@ -23,17 +23,16 @@ import (
 )
 
 var migrateUndoCmd = &cobra.Command{
-	Use:   "undo [path...]",
-	Short: "Restore migrated files from their encrypted pre-migration backups",
+	Use:   "undo <path>...",
+	Short: "Restore named migrated files from their encrypted pre-migration backups",
 	Long: "jit migrate undo puts back what jit migrate rewrote, using the encrypted\n" +
 		"backup every category stores in the vault before touching a file:\n" +
 		".env live mounts become plain files again, rewritten shell configs/\n" +
 		"MCP configs/AWS files/kubeconfigs/npmrc files get their exact original\n" +
-		"bytes back. With no argument it restores EVERY file with a recorded\n" +
-		"backup (each to its most recent one). Pass one or more paths to scope\n" +
-		"it: a file path restores just that file, a DIRECTORY path restores every\n" +
-		"migrated file recorded under that tree, so you can undo a single project\n" +
-		"without disturbing anything migrated elsewhere.\n\n" +
+		"bytes back. You must name what to restore: a file path restores just\n" +
+		"that file, a DIRECTORY path restores every migrated file recorded under\n" +
+		"that tree, so you can undo a single project without disturbing anything\n" +
+		"migrated elsewhere. A bare `jit migrate undo` with no path does nothing.\n\n" +
 		"A file that can't be restored (its backup was cleaned from the vault, a\n" +
 		"symlink reappeared at the path, …) is reported and skipped, the rest\n" +
 		"still restore, and the command exits non-zero if any file failed, so a\n" +
@@ -49,10 +48,14 @@ var migrateUndoCmd = &cobra.Command{
 		"Like every restore-to-plaintext operation, this writes real secret\n" +
 		"values back to disk, it prints the full plan and confirms first\n" +
 		"(--yes skips, --dry-run previews only).\n\n" +
-		"Backups made by jit builds before this command existed aren't in its\n" +
-		"index, restore those by hand: `jit vault list` (look under _backups/)\n" +
-		"+ `jit vault get <path>`.",
-	Args:              cobra.ArbitraryArgs,
+		"To see every restorable file first, run `jit migrate undo <dir> --dry-run`\n" +
+		"(e.g. your $HOME). Backups made by jit builds before this command existed\n" +
+		"aren't in its index, restore those by hand: `jit vault list` (look under\n" +
+		"_backups/) + `jit vault get <path>`.",
+	Example: "  jit migrate undo ~/proj/.env    # restore one migrated file\n" +
+		"  jit migrate undo ~/proj         # restore everything migrated under a project\n" +
+		"  jit migrate undo ~/proj --dry-run",
+	Args:              cobra.MinimumNArgs(1),
 	ValidArgsFunction: completeMigrateUndoPaths,
 	RunE:              runMigrateUndo,
 }
@@ -112,20 +115,25 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("jit migrate undo: %w", err)
 	}
-	latest, err := selectBackups(migrate.LatestBackups(recs), args)
+	// Report the empty state before matching against the path args: with
+	// nothing recorded at all, a bare "no recorded backup for <path>" would
+	// read as "that one file" rather than "nothing to restore anywhere."
+	all := migrate.LatestBackups(recs)
+	if len(all) == 0 {
+		fmt.Fprintln(out, "No jit-written backups are recorded, nothing to restore. (Backups made by builds before `jit migrate undo` existed aren't indexed; see `jit vault list` under _backups/ for those.)")
+		return nil
+	}
+	// args is non-empty (the command requires a path) and all is non-empty,
+	// so selectBackups either returns at least one record or fails loud on an
+	// arg that matched nothing — latest is never empty past here.
+	latest, err := selectBackups(all, args)
 	if err != nil {
 		return fmt.Errorf("jit migrate undo: %w", err)
 	}
 
-	if len(latest) == 0 {
-		fmt.Fprintln(out, "No jit-written backups are recorded, nothing to restore. (Backups made by builds before `jit migrate undo` existed aren't indexed; see `jit vault list` under _backups/ for those.)")
-		return nil
-	}
-
 	if migrateDryRun {
-		// Same leading banner discipline as migrate local/home (GAPS.md
-		// #32): the preview-vs-real signal comes BEFORE the plan, not only
-		// after it.
+		// Same leading banner discipline as jit migrate (GAPS.md #32): the
+		// preview-vs-real signal comes BEFORE the plan, not only after it.
 		_, _ = color.New(color.FgCyan, color.Bold).Fprintln(out, "[DRY RUN] Preview, this run changes nothing; the plan below is what a real run would do.")
 	}
 
@@ -149,16 +157,6 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(out, "  • %s (backed up %s ago)%s\n", displayPath(home, rec.OriginalPath), humanAgo(time.Since(time.Unix(rec.UnixTS, 0))), note)
 	}
 	fmt.Fprintln(out)
-	// Path scoping is easy to miss from --help alone — a real user asked
-	// for "project-specific undo" while the path argument already did
-	// exactly that. Say it at the moment it matters: a no-arg run about to
-	// restore more than one file. Same section-scoped-hint pattern as
-	// printMigratePlan's --only suggestion (yellow: actionable, not a
-	// passive "why" label).
-	if len(args) == 0 && len(latest) > 1 {
-		_, _ = color.New(color.FgYellow).Fprintln(out, "This restores EVERY file listed above. To undo just one project or file, pass its path: `jit migrate undo <path>` (a directory restores only what's under it).")
-		fmt.Fprintln(out)
-	}
 	warn := color.New(color.FgYellow)
 	_, _ = warn.Fprintln(out, "Each file is restored EXACTLY as backed up, edits made since are replaced")
 	_, _ = warn.Fprintln(out, "(the replaced content is snapshotted into the vault first, so this is itself")
@@ -185,6 +183,15 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 	// process could be riding.
 	v, err := openVaultFreshAuth()
 	if err != nil {
+		return fmt.Errorf("jit migrate undo: %w", err)
+	}
+	// Force the fresh Touch ID/passcode NOW, explicitly, and record it into
+	// this invocation's audit entry — the restore below would trigger a
+	// challenge on its first decrypt anyway, but priming it here makes the
+	// fingerprint mandatory and audited even if a future restore path ever
+	// wrote a file back without decrypting one (and means a multi-file batch
+	// prompts exactly once). Mirrors jit migrate remove's gate.
+	if err := requireFreshUserPresence(v, "restore migrated files to plaintext"); err != nil {
 		return fmt.Errorf("jit migrate undo: %w", err)
 	}
 	agentClient := agent.NewClient(agent.SocketPath(root))
@@ -280,16 +287,18 @@ func runRestores(out io.Writer, home string, recs []migrate.BackupRecord, restor
 	return nil
 }
 
-// selectBackups narrows latest to the records the path args name. No args ->
-// the whole set (a machine-wide restore). Otherwise each arg is resolved to
-// an absolute, cleaned path and matches a record whose OriginalPath either
+// selectBackups narrows latest to the records the path args name (the caller
+// always names at least one — the command requires it). Each arg is resolved
+// to an absolute, cleaned path and matches a record whose OriginalPath either
 // equals it (a single file) or lies under it (the arg names a directory) —
 // so `jit migrate undo ~/project` restores every file jit migrated anywhere
 // under that tree, the scoping that makes undoing one project without
-// touching another safe. An arg that matches nothing is a loud error naming
-// it, never a silent no-op (the GAPS.md #21/#25 trap). Results are deduped
-// (overlapping args can name the same file) and returned in the path-sorted
-// order LatestBackups already guarantees.
+// touching another safe. Naming a broad directory ($HOME, say) restores
+// everything under it, so a machine-wide restore is still one arg away. An
+// arg that matches nothing is a loud error naming it, never a silent no-op
+// (the GAPS.md #21/#25 trap). Results are deduped (overlapping args can name
+// the same file) and returned in the path-sorted order LatestBackups
+// already guarantees.
 func selectBackups(latest []migrate.BackupRecord, args []string) ([]migrate.BackupRecord, error) {
 	if len(args) == 0 {
 		return latest, nil
@@ -313,7 +322,7 @@ func selectBackups(latest []migrate.BackupRecord, args []string) ([]migrate.Back
 			}
 		}
 		if matched == 0 {
-			return nil, fmt.Errorf("no recorded backup for %s, run `jit migrate undo --dry-run` with no argument to see every restorable file", abs)
+			return nil, fmt.Errorf("no recorded backup for %s, run `jit migrate undo ~ --dry-run` (or name a broader directory) to see every restorable file", abs)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].OriginalPath < out[j].OriginalPath })

@@ -8,6 +8,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -26,19 +27,20 @@ var migrateRemoveYes bool
 
 // migrateRemoveCmd is `jit migrate undo`'s stronger sibling (GAPS.md #59):
 // undo reverses files and deliberately keeps the vault; remove takes jit
-// out of the current project COMPLETELY — files back to plaintext (current
-// vault values, matching unmount's semantics rather than undo's
+// out of a project COMPLETELY — files back to plaintext (current vault
+// values, matching unmount's semantics rather than undo's
 // restore-the-backup), then the project's profiles, their vault secrets,
-// its encrypted file backups, and the .jit/ directory
-// all deleted. Both plaintext-restoring AND destructive, so it takes the
-// strictest gate this package has: plan → [y/N] confirm →
-// openVaultFreshAuth (always its own Touch ID/passcode challenge, never a
-// cached agent session — GAPS.md #50's class).
+// its encrypted file backups, and the .jit/ directory all deleted. Both
+// plaintext-restoring AND destructive, so it takes the strictest gate this
+// package has: plan → [y/N] confirm → openVaultFreshAuth (always its own
+// Touch ID/passcode challenge, never a cached agent session — GAPS.md #50's
+// class). Like jit migrate itself, you must name the project to act on: a
+// folder is that project, a file resolves up to the project that owns it.
 var migrateRemoveCmd = &cobra.Command{
-	Use:   "remove",
-	Short: "Remove jit from this project completely (restore plaintext, delete its secrets)",
-	Long: "jit migrate remove takes jit back out of the current project: every live\n" +
-		"mount and pointer file under this directory tree becomes a plain file\n" +
+	Use:   "remove <file-or-dir>...",
+	Short: "Remove jit from a project completely (restore plaintext, delete its secrets)",
+	Long: "jit migrate remove takes jit back out of a project you name: every live\n" +
+		"mount and pointer file under that project tree becomes a plain file\n" +
 		"again, and any server in the project's own mcp.json/.mcp.json launching\n" +
 		"through jit gets its plaintext env block back (all written from the\n" +
 		"CURRENT vault values, so edits made with `jit vault set` since migration\n" +
@@ -46,6 +48,11 @@ var migrateRemoveCmd = &cobra.Command{
 		"created for this project's MCP servers, the vault secrets they\n" +
 		"reference, the project's encrypted file backups, and the .jit/ directory\n" +
 		"itself are all deleted.\n\n" +
+		"You must name the project to remove; a bare `jit migrate remove` with no\n" +
+		"path does nothing. Name a FOLDER to remove that project, or name any\n" +
+		"FILE inside a project (e.g. its .env) and jit resolves up to the .jit/\n" +
+		"project that owns it and removes the whole thing. Name several to remove\n" +
+		"several, each confirmed on its own.\n\n" +
 		"Machine-level migrations (shell configs, AWS, kubeconfig, Terraform\n" +
 		"Cloud, GCP application-default credentials, the global ~/.npmrc,\n" +
 		"Claude Desktop's MCP config) are not touched, they aren't part of any\n" +
@@ -56,7 +63,9 @@ var migrateRemoveCmd = &cobra.Command{
 		"permanently deletes them from the vault, so it always requires its own\n" +
 		"Touch ID/passcode approval, a running service session is deliberately\n" +
 		"not enough.",
-	Args:         cobra.NoArgs,
+	Example: "  jit migrate remove ~/proj\n" +
+		"  jit migrate remove ~/proj/.env   # removes the whole ~/proj project",
+	Args:         cobra.MinimumNArgs(1),
 	SilenceUsage: true,
 	RunE:         runMigrateRemove,
 }
@@ -90,7 +99,6 @@ type projectRemovalPlan struct {
 }
 
 func runMigrateRemove(cmd *cobra.Command, args []string) error {
-	out := cmd.OutOrStdout()
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("jit migrate remove: %w", err)
@@ -104,13 +112,96 @@ func runMigrateRemove(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("jit migrate remove: %w", err)
 	}
 
-	plan, err := buildProjectRemovalPlan(root, cwd)
+	projectRoots, err := resolveRemovalTargets(cwd, home, args)
+	if err != nil {
+		return fmt.Errorf("jit migrate remove: %w", err)
+	}
+	// Each named project is planned, confirmed, and (freshly) authed on its
+	// own — one project's removal is a distinct destructive act, and a
+	// combined confirm would let a single [y/N] delete several projects at
+	// once. Deliberately sequential rather than aggregated for that reason.
+	for _, projectRoot := range projectRoots {
+		if err := removeOneProject(cmd, root, home, projectRoot); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// resolveRemovalTargets maps each named file/dir to the project root jit
+// migrate remove should operate on, deduped in first-seen order. A directory
+// target is taken as the project root itself; a file target resolves to the
+// nearest ancestor directory that holds a .jit/ store, so naming any file in
+// a project (its .env, say) removes that whole project. A target that
+// doesn't exist, a symlink, or a file with no jit project above it is a loud
+// error rather than a silent no-op.
+func resolveRemovalTargets(cwd, home string, targets []string) ([]string, error) {
+	seen := map[string]bool{}
+	var roots []string
+	add := func(p string) {
+		if !seen[p] {
+			seen[p] = true
+			roots = append(roots, p)
+		}
+	}
+	for _, target := range targets {
+		abs := expandTilde(target, home)
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(cwd, abs)
+		}
+		abs = filepath.Clean(abs)
+		info, err := os.Lstat(abs)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, fmt.Errorf("%s does not exist", displayPath(home, abs))
+			}
+			return nil, fmt.Errorf("%s: %w", displayPath(home, abs), err)
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return nil, fmt.Errorf("%s is a symlink; name its target directly", displayPath(home, abs))
+		}
+		if info.IsDir() {
+			add(abs)
+			continue
+		}
+		projectRoot, ok := findProjectRoot(filepath.Dir(abs))
+		if !ok {
+			return nil, fmt.Errorf("%s is not inside a jit project (no .jit/ directory in it or any parent); name the project folder instead", displayPath(home, abs))
+		}
+		add(projectRoot)
+	}
+	return roots, nil
+}
+
+// findProjectRoot walks up from start looking for the directory that holds a
+// .jit/ store — the project root jit migrate remove deletes. Stops at the
+// filesystem root.
+func findProjectRoot(start string) (string, bool) {
+	dir := start
+	for {
+		if info, err := os.Stat(filepath.Join(dir, ".jit")); err == nil && info.IsDir() {
+			return dir, true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+}
+
+// removeOneProject plans, confirms, freshly authenticates, and applies the
+// removal of a single project rooted at projectRoot.
+func removeOneProject(cmd *cobra.Command, root, home, projectRoot string) error {
+	out := cmd.OutOrStdout()
+
+	plan, err := buildProjectRemovalPlan(root, projectRoot)
 	if err != nil {
 		return fmt.Errorf("jit migrate remove: %w", err)
 	}
 	if len(plan.mounts) == 0 && len(plan.inPlace) == 0 && len(plan.companions) == 0 &&
 		len(plan.profileInfos) == 0 && len(plan.ownedGlobal) == 0 && len(plan.backups) == 0 && plan.jitDir == "" {
-		fmt.Fprintln(out, "No jit artifacts found in this project, nothing to remove. (Machine-level migrations are reversed with `jit migrate undo`.)")
+		fmt.Fprintf(out, "No jit artifacts found in %s, nothing to remove. (Machine-level migrations are reversed with `jit migrate undo`.)\n", displayPath(home, projectRoot))
 		return nil
 	}
 
@@ -140,14 +231,9 @@ func runMigrateRemove(cmd *cobra.Command, args []string) error {
 	// and Vault.Remove never touches the KeyWrapper, so without this the
 	// promised Touch ID approval silently never happened (GAPS.md #60, a
 	// real first-run report). Priming here also means a run that DOES
-	// restore files won't prompt a second time. Fail loud if the fresh-auth
-	// wrapper ever stops supporting an explicit challenge — silently
-	// skipping is exactly the bug this exists to prevent.
-	presence, ok := v.KeyWrapper.(interface{ RequireUserPresence(string) error })
-	if !ok {
-		return fmt.Errorf("jit migrate remove: internal error: fresh-auth vault has no explicit user-presence challenge")
-	}
-	if err := presence.RequireUserPresence("permanently remove this project's secrets from the vault"); err != nil {
+	// restore files won't prompt a second time. requireFreshUserPresence
+	// also records the fresh auth into this invocation's audit entry.
+	if err := requireFreshUserPresence(v, "permanently remove this project's secrets from the vault"); err != nil {
 		return fmt.Errorf("jit migrate remove: %w", err)
 	}
 
