@@ -210,6 +210,26 @@ problem count (so the existing existence-check semantics survive intact).
   `--profile` flag.
 - Update `jit profile`'s group `Long` (profile.go:46) to stop advertising `list`.
 
+### Update (v0.44.0): whole command removed, not just `list`
+
+The deprecation shim shipped in v0.36.0 as planned above. In v0.44.0 the retirement
+was taken all the way: the entire `jit profile` command was removed — `list`, `show`,
+and the parent — with no shim, so `jit status --secrets` is now the single
+vault/profile reconciliation surface and `jit doctor` verifies a profile's secrets.
+
+Divergences from the plan above:
+
+- `jit profile show` was **not** kept. Its per-profile variable-to-vault-path mapping
+  has no direct replacement; `jit status --secrets` is the recommended surface, and
+  a manifest under `.jit/profiles/` is plaintext (names and vault paths only) if you
+  need the raw mapping.
+- `completeProfileNames` survived, moved to `internal/cli/profilecomplete.go`; it now
+  backs only the `--profile` flags (run/export/doctor/aws/k8s/sops), since `profile
+  show` is gone. `LoadWithScope`/`ListAll` stay (doctor + completion).
+- `profile.go` and `profile_test.go` were deleted; docs-gen dropped the three
+  `jit_profile*.md` reference pages; every help string, error, and doc that named
+  `jit profile list`/`show` now points at `jit status --secrets`.
+
 ## Files touched
 
 - `internal/cli/secretsreconcile.go` (new): `reconcileSecrets` + shared render helpers.
