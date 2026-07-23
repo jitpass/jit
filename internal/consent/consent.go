@@ -70,10 +70,13 @@ const (
 // Caller identifies the process reaching for a credential. ExecPath is the key
 // the session cache is keyed on (with the credential), so approving a tool once
 // covers every later invocation of that same tool for the session, without
-// re-prompting a fresh PID each command.
+// re-prompting a fresh PID each command. An EMPTY ExecPath means the caller
+// could not be identified (a best-effort scan that missed); such a decision is
+// deliberately never cached — see Decide — so one unidentifiable process's
+// approval can't leak to every other unidentifiable process this session.
 type Caller struct {
 	PID       int32
-	ExecPath  string // e.g. "/usr/local/bin/gcloud" — the cache key, per tool
+	ExecPath  string // e.g. "/usr/local/bin/gcloud" — the cache key, per tool ("" = unidentified, never cached)
 	Lineage   string // human summary, e.g. "launched by npm install" — for the prompt
 	Strength  Strength
 	// DescendsFromGrant is set by the call site when this caller (or an
@@ -107,6 +110,11 @@ type cached struct {
 type Engine struct {
 	mu         sync.Mutex
 	cache      map[string]cached
+	// pending single-flights concurrent first accesses for the same key: the
+	// first caller becomes the leader and prompts; the rest wait on its channel
+	// and re-read the cache it fills, so two tools reaching for the same
+	// credential at once produce one Touch ID prompt, not a stampede of them.
+	pending    map[string]chan struct{}
 	sessionTTL time.Duration
 	now        func() time.Time // injectable for tests
 }
@@ -117,6 +125,7 @@ type Engine struct {
 func New(sessionTTL time.Duration) *Engine {
 	return &Engine{
 		cache:      make(map[string]cached),
+		pending:    make(map[string]chan struct{}),
 		sessionTTL: sessionTTL,
 		now:        time.Now,
 	}
@@ -130,18 +139,68 @@ func (e *Engine) Decide(req Request, prompt Prompter) (Decision, error) {
 		return Allow, nil
 	}
 
-	// (2) A standing decision from earlier this session.
-	if d, ok := e.lookup(req.key()); ok {
+	key := req.key()
+
+	// An unidentified caller (empty ExecPath) has no stable key to cache under
+	// or single-flight on — two such callers are indistinguishable — so it just
+	// prompts, every time, and its answer is never remembered.
+	if req.Caller.ExecPath == "" {
+		d, _, err := prompt(req)
+		if err != nil {
+			return Undecided, err
+		}
 		return d, nil
 	}
 
-	// (3) Ask, and remember for the chosen scope.
-	d, scope, err := prompt(req)
-	if err != nil {
-		return Undecided, err
+	for {
+		// (2) A standing decision from earlier this session.
+		if d, ok := e.lookup(key); ok {
+			return d, nil
+		}
+
+		// (3) Ask, and remember for the chosen scope — but only one caller per
+		// key prompts at a time; the rest wait for that answer and re-check.
+		leader, wait := e.joinFlight(key)
+		if !leader {
+			<-wait
+			continue
+		}
+		d, scope, err := prompt(req)
+		if err == nil {
+			e.remember(key, d, scope)
+		}
+		e.finishFlight(key)
+		if err != nil {
+			return Undecided, err
+		}
+		return d, nil
 	}
-	e.remember(req.key(), d, scope)
-	return d, nil
+}
+
+// joinFlight registers the caller against key: the first returns leader=true
+// and owns the prompt; a later caller returns leader=false and a channel that
+// closes when the leader is done, at which point it re-reads the cache.
+func (e *Engine) joinFlight(key string) (leader bool, wait chan struct{}) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if ch, ok := e.pending[key]; ok {
+		return false, ch
+	}
+	ch := make(chan struct{})
+	e.pending[key] = ch
+	return true, ch
+}
+
+// finishFlight releases key's waiters once the leader has prompted (and, on
+// success, cached the answer they'll find on their re-check).
+func (e *Engine) finishFlight(key string) {
+	e.mu.Lock()
+	ch := e.pending[key]
+	delete(e.pending, key)
+	e.mu.Unlock()
+	if ch != nil {
+		close(ch)
+	}
 }
 
 func (e *Engine) lookup(key string) (Decision, bool) {

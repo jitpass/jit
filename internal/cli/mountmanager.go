@@ -59,6 +59,14 @@ const (
 	lingerRecheck = 25 * time.Millisecond
 )
 
+// readerConsent decides best-effort per-reader consent for a FIFO credential
+// mount. Implemented by *agent.Server (ConsentReaders); nil on mountManager
+// means consent is off, and the serve path keeps its exact pre-consent
+// behavior (grant-or-decoy).
+type readerConsent interface {
+	ConsentReaders(cred string, holders []int32) bool
+}
+
 // mountManager serves every registered .env mount. GAPS.md #35 split what
 // used to be one all-or-nothing lifecycle into two independent layers:
 //
@@ -86,14 +94,6 @@ const (
 // anyone's at their desk must never trigger a surprise Touch ID prompt
 // just because mounts exist) — only decoy serving is safe to start
 // unconditionally, since it needs no Touch ID at all.
-// readerConsent decides best-effort per-reader consent for a FIFO credential
-// mount. Implemented by *agent.Server (ConsentReaders); nil on mountManager
-// means consent is off, and the serve path keeps its exact pre-consent
-// behavior (grant-or-decoy).
-type readerConsent interface {
-	ConsentReaders(cred string, holders []int32) bool
-}
-
 type mountManager struct {
 	root       string
 	home       string
@@ -243,6 +243,16 @@ type servedMount struct {
 	// grant attachments themselves live in the run registry (mountruns.go),
 	// not here: this is only the gate's cache.
 	grantVerdicts map[grantVerdictKey]grantVerdict
+
+	// consentVerdict caches the best-effort per-reader consent decision
+	// (mountgrants.go's consent fallback) so a mount read repeatedly by the
+	// same holder set doesn't re-run the per-holder libproc identity scan and
+	// trust-ancestry walk on every read. Keyed on the exact holder pid-set: a
+	// changed set (a new stranger joins, a holder leaves) misses and
+	// re-evaluates, so the cache can never let a reader who wasn't in the
+	// authorized set ride another's verdict. Nil for any mount consent never
+	// gated. Same short TTL and best-effort doctrine as grantVerdicts.
+	consentVerdict *consentVerdict
 
 	// Watcher-loop cost bookkeeping (see the lineageScanMinGap block's doc
 	// comment): when the lineage scan last actually ran, when a reader-

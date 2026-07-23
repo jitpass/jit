@@ -46,9 +46,14 @@ func consentReason(cc consent.Caller, class string) string {
 // identified the caller — so it never blocks the agent's own in-process mount
 // serving (nil caller) or ordinary project secrets.
 //
-// The prompt is a fresh disclosed Touch ID; approve → allow, decline or no UI
-// → deny. Either outcome is remembered for the session (Scope Session) so a
-// tool reading the credential repeatedly is asked once, not once per read.
+// The prompt is a fresh disclosed Touch ID; approve → allow (remembered for the
+// session, so a tool reading the credential repeatedly is asked once, not once
+// per read). A challenge that DOESN'T approve is denied for this access but
+// scoped Once — never cached: forceDisclosedChallenge can't tell a genuine
+// decline from a transient failure (a keychain hiccup, a lost prompt), and
+// caching either as a session-long Deny would lock the credential out with no
+// recourse short of re-locking. Re-prompting the next access is the fail-safe
+// direction.
 func (s *Server) gateConsent(class string, c *caller) error {
 	if s.Consent == nil || c == nil || !consent.RequiresConsent(class) {
 		return nil
@@ -57,7 +62,7 @@ func (s *Server) gateConsent(class string, c *caller) error {
 	cc.DescendsFromGrant = s.descendsFromTrust(c.pid)
 	prompt := func(req consent.Request) (consent.Decision, consent.Scope, error) {
 		if err := s.forceDisclosedChallenge(consentReason(req.Caller, req.Credential), c); err != nil {
-			return consent.Deny, consent.Session, nil
+			return consent.Deny, consent.Once, nil
 		}
 		return consent.Allow, consent.Session, nil
 	}
@@ -155,7 +160,9 @@ func (s *Server) ConsentReaders(cred string, holders []int32) bool {
 		prompt := func(req consent.Request) (consent.Decision, consent.Scope, error) {
 			reason := consentReason(req.Caller, req.Credential) + " (identified by process scan)"
 			if err := s.forceDisclosedChallenge(reason, nil); err != nil {
-				return consent.Deny, consent.Session, nil
+				// Scoped Once, not Session: see gateConsent — a transient
+				// challenge failure must not cache a session-long Deny.
+				return consent.Deny, consent.Once, nil
 			}
 			return consent.Allow, consent.Session, nil
 		}
