@@ -137,7 +137,9 @@ jit run --profile mcp-jamf -- uv --directory ~/servers/jamf run server.py
 
 - **`jit scan`**: the read-only scan. Ranks every plaintext secret on the
   machine by exposure; never writes, moves, or prints a real value. Safe to run
-  against anything, ~340 ms.
+  against anything, ~340 ms. Pass a file or folder (`jit scan ./project
+  token.txt`) to scan just that, including a content sweep for tokens and JWTs
+  in files the whole-machine scan's naming rules would skip.
 - **`jit migrate <path>`**: the bulk mover. Vaults the secrets in files it
   understands and wires up each one's delivery model. You name the file(s) or
   project(s) to convert. Every change is reversible with `jit migrate undo`,
