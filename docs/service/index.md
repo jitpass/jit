@@ -57,11 +57,12 @@ dropped and the next vault use prompts once.
 - `jit service status` - is it running, is it unlocked, when does it lock,
   what mounts is it serving - and, if a Touch ID prompt is up right now,
   who triggered it. `--format json` for scripting.
-- `jit service restart` - restart the service process, the step after
-  [upgrading the binary](../getting-started/install.md#upgrading) (the
-  service also notices a replaced binary itself and restarts onto it once its
-  session is locked and no prompt is pending). It also brings the service
-  back if it ever stopped, recreating the login item if needed.
+- `jit service restart` - restart the service process by hand, the step after
+  [upgrading the binary](../getting-started/install.md#upgrading) manually
+  (`jit upgrade` does it for you; the service also notices a replaced binary
+  itself and restarts onto it within a few seconds once its session is locked
+  and no prompt is pending). It also brings the service back if it ever
+  stopped, recreating the login item if needed.
 - `jit service log` - the tail of the service's raw operational output (startup,
   mount reads and who made them, serve-error detail); `-f` follows it live. The
   session events themselves live in [`jit audit`](./provenance.md), not here.

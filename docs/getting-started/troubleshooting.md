@@ -9,13 +9,13 @@ description: Placeholder values, hanging reads, surprise Touch ID prompts, and s
   you (the mount is swapped for a compatible file, and the real values are in
   the environment), so this usually means the app read the mount *outside*
   `jit run`. Launch it through `jit run` (or `jit run --live` if the tool
-  reads the `.env` file itself) — that's the only thing that makes a mount
+  reads the `.env` file itself) - that's the only thing that makes a mount
   serve real values. `jit service status` shows what the last reader was
   served. Background: [Live-mounted files](../run/mounts.md).
 - **A script says `.env` is missing, or a tool ignores it.** A migrated
   `.env` is a named pipe, not a regular file, so a `[ -f .env ]` /
   `Path.is_file()` guard outside `jit run` sees "not a regular file." Run the
-  script with `jit run` — it swaps in a plain file for the run, so the guard
+  script with `jit run` - it swaps in a plain file for the run, so the guard
   passes. If instead a tool reads values *from the file itself* (like
   `docker compose` env_file) and gets nothing, use `jit run --live`, or pin
   `read_as_file: true` in the project's `.jit/config.yaml`. See
@@ -45,9 +45,11 @@ description: Placeholder values, hanging reads, surprise Touch ID prompts, and s
   lengthen the [service's](../service/index.md) session window:
   `jit service ttl 1h`.
 - **"different build" warning from `jit status`.** The running service is an
-  older binary than the CLI you're typing. Run `jit service restart` to
-  restart it on the current one (see
-  [Upgrading](./install.md#upgrading)).
+  older binary than the CLI you're typing - usually right after an upgrade.
+  `jit upgrade` restarts the service for you, so you won't see this if you
+  upgraded that way; otherwise run `jit service restart` to move it onto the
+  current binary now (it also switches on its own within a few seconds once
+  idle). See [Upgrading](./install.md#upgrading).
 - **A wrapped tool stopped authenticating.** See
   [Wrap troubleshooting](../wrap/troubleshooting.md) - `jit wrap doctor`
   checks every shim, PATH entry, and profile.
