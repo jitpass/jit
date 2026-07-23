@@ -45,9 +45,11 @@ jit scan - risk report for alex@Alexs-MacBook-Pro
   ...
 ```
 
-`audit` always scans your whole home directory, not your current directory -
-the question it answers is "is my machine clean," not "is this one project
-clean." More in **[Running an audit](../audit/index.md)**.
+With no arguments, `scan` covers your whole home directory, not just your
+current directory - the question it answers is "is my machine clean," not "is
+this one project clean." To check a single file or folder instead, name it:
+`jit scan ./my-project token.txt`. More in
+**[Running an audit](../audit/index.md)**.
 
 ## 2. Create the vault: `jit vault init`
 
