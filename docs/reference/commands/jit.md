@@ -9,7 +9,13 @@ jit finds plaintext secrets exposed on your machine and gives you a one-command 
 Start with `jit scan` (strictly read-only), then `jit migrate <path> --dry-run` to preview the guided fix for a file it flagged.
 
 ```
-jit
+jit [flags]
+```
+
+### Options
+
+```
+      --quiet   suppress the progress spinner/status trail (results still print)
 ```
 
 ### SEE ALSO
@@ -31,8 +37,10 @@ jit
 * [jit sops-age-key](jit_sops-age-key.md)	 - Print the SOPS age private key from a migrated profile
 * [jit status](jit_status.md)	 - One-shot overview of vault, service, secret, and mount health
 * [jit terraform-credentials](jit_terraform-credentials.md)	 - Implement Terraform's credentials-helper protocol for a migrated token
+* [jit uninstall](jit_uninstall.md)	 - Remove jit's service, shims, and binary (keeps your vault unless --purge)
 * [jit unlock](jit_unlock.md)	 - Unlock jit's session now (prompts Touch ID if needed)
 * [jit unmount](jit_unmount.md)	 - Reverse a live .env mount back into a plain file
+* [jit upgrade](jit_upgrade.md)	 - Download the latest release, verify it, and swap this binary + service onto it
 * [jit vault](jit_vault.md)	 - Manage the local encrypted secret vault
 * [jit wrap](jit_wrap.md)	 - Wrap CLI tools so their tokens are injected just-in-time
 

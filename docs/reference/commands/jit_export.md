@@ -34,6 +34,12 @@ jit export [--profile <name>] [--mode <mode>] [flags]
       --profile string   profile to export verbatim (default: merge this project's migrated .env layers)
 ```
 
+### Options inherited from parent commands
+
+```
+      --quiet   suppress the progress spinner/status trail (results still print)
+```
+
 ### SEE ALSO
 
 * [jit](jit.md)	 - Local-first developer secret runtime
