@@ -30,7 +30,7 @@ import (
 // instead of reading like a different tool's output. Kept in lockstep with
 // the plan header on purpose: a bold name, a dim count, no rule.
 func printMigrateResultCategory(w io.Writer, label string, n int) {
-	_, _ = cBold.Fprintf(w, "[%s]", label)
+	fmt.Fprintf(w, "[%s]", label)
 	_, _ = cDim.Fprintf(w, " %d\n", n)
 }
 

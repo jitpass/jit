@@ -414,7 +414,7 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 			continue
 		}
 
-		_, _ = color.New(color.Bold).Fprintf(w, "[%s]", findingTypeLabels[ft])
+		fmt.Fprintf(w, "[%s]", findingTypeLabels[ft])
 		_, _ = color.New(color.Faint).Fprintf(w, " %d\n", summary.FindingsByCategory[ft])
 		cols := computeColumns(group)
 		for _, item := range buildRenderItems(group) {
