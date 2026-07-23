@@ -426,14 +426,14 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	// explanation would read as jargon, and the explanation without any
 	// tagged finding would be noise.
 	if anyArchived(findings) {
-		_, _ = color.New(color.FgYellow).Fprintln(w, "[archived] findings live under an archived/backup-looking directory: `jit migrate home` skips them by default, rerun it with --include-archived to convert them too.")
+		_, _ = color.New(color.FgYellow).Fprintln(w, "[archived] findings live under an archived/backup-looking directory: name such a file explicitly to convert it, e.g. `jit migrate <path>`.")
 	}
 	// The report's only prior "next step" pointed at an output-format
 	// flag, not remediation — a first-time reader of a HIGH/CRITICAL
 	// report had no pointer from here to the command that actually fixes
 	// any of it. jit migrate's own dry-run trailer already points back
 	// at `jit scan` the other way; this closes the loop.
-	fmt.Fprintln(w, "Run `jit migrate --dry-run` to see the guided fix plan for what's fixable here.")
+	fmt.Fprintln(w, "Run `jit migrate <path> --dry-run` to see the guided fix plan for a flagged file.")
 	_, _ = color.New(color.Faint).Fprintln(w, "No secret values are ever printed in full. Run `jit scan --format ndjson` for machine-readable output (same redaction rules apply).")
 }
 

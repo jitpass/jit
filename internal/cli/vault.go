@@ -137,7 +137,7 @@ func splitBackupPaths(paths []string) (secrets, backups []string) {
 // last-updated age; nil keeps the plain, unannotated listing.
 func printVaultList(out io.Writer, secrets, backups []string, showBackups, grouped bool, meta map[string]vault.SecretInfo, axis string) {
 	if len(secrets) == 0 && len(backups) == 0 {
-		fmt.Fprintln(out, "No secrets stored yet. Run `jit vault set <path>` to add one, or `jit migrate local` to move existing secrets in.")
+		fmt.Fprintln(out, "No secrets stored yet. Run `jit vault set <path>` to add one, or `jit migrate .` to move existing secrets in.")
 		return
 	}
 	switch {
@@ -453,7 +453,7 @@ var vaultInitCmd = &cobra.Command{
 		if _, err := vault.EnsureDeviceID(root); err != nil {
 			return fmt.Errorf("jit vault init: %w", err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Vault initialized at %s.\nRun `jit vault set <path>` to add a secret, or `jit migrate local` to move existing secrets in.\n", root)
+		fmt.Fprintf(cmd.OutOrStdout(), "Vault initialized at %s.\nRun `jit vault set <path>` to add a secret, or `jit migrate .` to move existing secrets in.\n", root)
 		return nil
 	},
 }
@@ -1543,6 +1543,42 @@ func completeVaultPaths(cmd *cobra.Command, args []string, toComplete string) ([
 		}
 	}
 	return matches, cobra.ShellCompDirectiveNoFileComp
+}
+
+// invocationAuth records the authentication a command forced for itself,
+// read by recordAuditEvent when the invocation finishes so the audit trail
+// shows a fresh fingerprint gated the action. Set only by
+// requireFreshUserPresence; a package-level var (not threaded through every
+// signature) because the audit hook runs generically around Execute and has
+// no other channel to the command that ran. Single-invocation process, so
+// there's no cross-run contamination to guard against.
+var invocationAuth string
+
+// freshUserPresenceMethod is the label requireFreshUserPresence stamps into
+// the audit record. "local" = a Touch ID/passcode challenge answered by this
+// very process (keychainwrap), never the agent's cached session.
+const freshUserPresenceMethod = "local-userpresence"
+
+// requireFreshUserPresence forces v's key wrapper to run its own local
+// Touch ID/passcode challenge NOW, with reason shown in the dialog, and
+// records that a fresh user-presence auth happened for this invocation. Use
+// it for every plaintext-restoring or destructive action (jit migrate
+// undo/remove, vault rekey/restore): openVaultFreshAuth already hands back a
+// wrapper that talks to the keychain directly rather than a possibly-unlocked
+// agent session, and this makes the challenge explicit and mandatory even on
+// a code path that would otherwise not touch the key (a deletion-only remove,
+// GAPS.md #60), so an attacker riding an unlocked agent can never drive one
+// of these without a fresh fingerprint.
+func requireFreshUserPresence(v *vault.Vault, reason string) error {
+	presence, ok := v.KeyWrapper.(interface{ RequireUserPresence(string) error })
+	if !ok {
+		return fmt.Errorf("internal error: fresh-auth vault has no explicit user-presence challenge")
+	}
+	if err := presence.RequireUserPresence(reason); err != nil {
+		return err
+	}
+	invocationAuth = freshUserPresenceMethod
+	return nil
 }
 
 func openVaultFreshAuth() (*vault.Vault, error) {

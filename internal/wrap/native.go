@@ -14,7 +14,7 @@ import "fmt"
 // free of a migrate import cycle.
 type NativeDelegation struct {
 	Tool     string
-	Category string   // `jit migrate home --only <category>`
+	Category string   // `jit migrate <path> --only <category>`
 	Command  []string // the exact jit command the delegation runs, for display
 }
 
