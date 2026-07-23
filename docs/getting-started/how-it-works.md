@@ -26,6 +26,11 @@ that holds an unlocked session: you authenticate once, and everything
 shares that session for the next 5 minutes of activity (configurable).
 It's also the process that serves live-mounted files.
 
+On top of that session, [per-process consent](../service/consent.md) (on by
+default) prompts a Touch ID the first time each tool reaches for a real
+credential, naming what's asking, so an unlocked session still isn't a blank
+cheque. You approve a tool once and it's remembered until the vault re-locks.
+
 ## Profiles
 
 Migration's bookkeeping unit: a small YAML manifest mapping

@@ -9,7 +9,7 @@ jit service run [flags]
 ### Options
 
 ```
-      --consent        prompt for per-process consent (Touch ID) on each credential unwrap (experimental)
+      --consent        prompt for per-process consent (Touch ID) the first time each tool reaches for a credential (on by default; use --consent=false to disable) (default true)
       --ttl duration   how long an unlocked session stays cached before auto-locking (default 5m0s)
 ```
 
