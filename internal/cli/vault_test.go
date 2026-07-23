@@ -283,6 +283,59 @@ func TestVaultPruneKeepsNewestBackupPerFile(t *testing.T) {
 	}
 }
 
+// TestVaultOrphansListsAndPrunes: a secret no profile references is listed by
+// `jit vault orphans` and deleted by `--prune`, while a secret a profile does
+// reference is spared by both — even one with no recorded origin, since the
+// command keys on "referenced by nothing", not on provenance.
+func TestVaultOrphansListsAndPrunes(t *testing.T) {
+	withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	stubUserPresence(t)
+	t.Cleanup(func() { vaultOrphansPrune = false; vaultOrphansYes = false })
+
+	writeFixtureProfile(t, cwd, "myapp", "API_KEY: kept/API_KEY\n")
+	root := seedFixtureVault(t, "kept/API_KEY")
+	v := &vault.Vault{Root: root, KeyWrapper: newFakeKeyWrapper(), RecipientID: "test-device"}
+	if err := v.Set("custom_scripts-descope/DESCOPE_PROJECT_1", []byte("orphan")); err != nil {
+		t.Fatalf("seeding orphan: %v", err)
+	}
+
+	// List mode: names the orphan, spares the referenced secret, deletes nothing.
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"vault", "orphans"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("jit vault orphans: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "custom_scripts-descope/") || !strings.Contains(out, "DESCOPE_PROJECT_1") {
+		t.Errorf("expected the orphan listed, got:\n%s", out)
+	}
+	if strings.Contains(out, "kept") {
+		t.Errorf("a referenced secret must never be listed as an orphan, got:\n%s", out)
+	}
+	if ok, _ := v.Exists("custom_scripts-descope/DESCOPE_PROJECT_1"); !ok {
+		t.Error("listing must not delete the orphan")
+	}
+
+	// Prune mode: deletes the orphan, keeps the referenced secret.
+	buf.Reset()
+	rootCmd.SetArgs([]string{"vault", "orphans", "--prune", "--yes"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("jit vault orphans --prune: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Deleted 1 orphaned secret(s)") {
+		t.Errorf("expected the delete count, got:\n%s", buf.String())
+	}
+	if ok, _ := v.Exists("custom_scripts-descope/DESCOPE_PROJECT_1"); ok {
+		t.Error("prune must delete the orphan")
+	}
+	if ok, _ := v.Exists("kept/API_KEY"); !ok {
+		t.Error("prune must keep the referenced secret")
+	}
+}
+
 // TestVaultCleanDeclinedConfirmationAborts: declining must leave every
 // secret in place — and, per this package's ordering discipline, the
 // listing/count shown in the prompt itself must never have cost any auth
