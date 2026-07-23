@@ -86,10 +86,11 @@ Menlo) render `● ○ ✓ ✗` at single width. The `glyph*` constants in
 `style.go` are the single place to swap for ASCII (`+ ! x -`) if a terminal
 ever mis-widths them — nothing references the symbols directly.
 
-## Not yet converted
+## Coverage
 
-Tracked so the next pass knows where to look, not a claim they're broken:
-
-- `jit vault list`'s tree could flow its members into columns the way
-  `jit status --secrets` now does.
-- `jit doctor`, `jit wrap` catalog, and the first-run flow predate this style.
+Every list/report/dashboard surface is on the house style: `jit scan`,
+`jit migrate` (plan + summary), `jit status` (dashboard + `--secrets`),
+`jit vault list` / `jit vault orphans`, `jit service status`, `jit doctor`,
+`jit wrap doctor`, and the first-run flow. When adding a new command, reach
+for the `style.go` helpers rather than raw `color.New(...)` so it lands in
+the same style by default.
