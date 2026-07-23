@@ -130,22 +130,35 @@ func (w *Wrapper) EnsureMEK() error {
 
 // WrapKey implements vault.KeyWrapper.
 func (w *Wrapper) WrapKey(dek []byte) ([]byte, error) {
+	return w.WrapKeyLabeled(dek, "", "")
+}
+
+// UnwrapKey implements vault.KeyWrapper.
+func (w *Wrapper) UnwrapKey(wrapped []byte) ([]byte, error) {
+	return w.UnwrapKeyLabeled(wrapped, "", "")
+}
+
+// WrapKeyLabeled implements vault.LabeledKeyWrapper. keychainwrap has no audit
+// trail so it ignores label, but it MUST bind class into the wrap identically
+// to internal/agent (both wrappers protect the same vault; a DEK may cross
+// between them), so class flows into the AAD.
+func (w *Wrapper) WrapKeyLabeled(dek []byte, label, class string) ([]byte, error) {
 	mek, err := w.fetchMEK("unlock jit vault to store a secret")
 	if err != nil {
 		return nil, err
 	}
 	defer wipe(mek)
-	return seal(mek, dek)
+	return seal(mek, dek, []byte(class))
 }
 
-// UnwrapKey implements vault.KeyWrapper.
-func (w *Wrapper) UnwrapKey(wrapped []byte) ([]byte, error) {
+// UnwrapKeyLabeled implements vault.LabeledKeyWrapper — see WrapKeyLabeled.
+func (w *Wrapper) UnwrapKeyLabeled(wrapped []byte, label, class string) ([]byte, error) {
 	mek, err := w.fetchMEK("unlock jit vault to read a secret")
 	if err != nil {
 		return nil, err
 	}
 	defer wipe(mek)
-	return open(mek, wrapped)
+	return open(mek, wrapped, []byte(class))
 }
 
 func (w *Wrapper) fetchMEK(reason string) ([]byte, error) {

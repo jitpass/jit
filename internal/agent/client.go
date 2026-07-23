@@ -164,12 +164,12 @@ func (c *Client) call(req Request) (Response, error) {
 // using its cached MEK — challenging (Touch ID/passcode) first if the
 // agent's session is currently locked.
 func (c *Client) WrapKey(dek []byte) ([]byte, error) {
-	return c.WrapKeyLabeled(dek, "")
+	return c.WrapKeyLabeled(dek, "", "")
 }
 
 // UnwrapKey implements vault.KeyWrapper.
 func (c *Client) UnwrapKey(wrapped []byte) ([]byte, error) {
-	return c.UnwrapKeyLabeled(wrapped, "")
+	return c.UnwrapKeyLabeled(wrapped, "", "")
 }
 
 // WrapKeyLabeled implements vault.LabeledKeyWrapper: WrapKey plus the
@@ -178,8 +178,8 @@ func (c *Client) UnwrapKey(wrapped []byte) ([]byte, error) {
 // the one provenance fact the agent cannot learn from the kernel, since
 // it only ever sees opaque key bytes. Audit-only on the agent side, and
 // recorded there as caller-reported (see Request.Label).
-func (c *Client) WrapKeyLabeled(dek []byte, label string) ([]byte, error) {
-	resp, err := c.call(Request{Op: OpWrap, Data: dek, Label: label})
+func (c *Client) WrapKeyLabeled(dek []byte, label, class string) ([]byte, error) {
+	resp, err := c.call(Request{Op: OpWrap, Data: dek, Label: label, Class: class})
 	if err != nil {
 		return nil, err
 	}
@@ -187,8 +187,8 @@ func (c *Client) WrapKeyLabeled(dek []byte, label string) ([]byte, error) {
 }
 
 // UnwrapKeyLabeled implements vault.LabeledKeyWrapper — see WrapKeyLabeled.
-func (c *Client) UnwrapKeyLabeled(wrapped []byte, label string) ([]byte, error) {
-	resp, err := c.call(Request{Op: OpUnwrap, Data: wrapped, Label: label})
+func (c *Client) UnwrapKeyLabeled(wrapped []byte, label, class string) ([]byte, error) {
+	resp, err := c.call(Request{Op: OpUnwrap, Data: wrapped, Label: label, Class: class})
 	if err != nil {
 		return nil, err
 	}

@@ -101,31 +101,55 @@ func (v *Vault) rewrapFile(file string, oldKW, newKW KeyWrapper) (changed bool, 
 		return false, fmt.Errorf("%s has no recipient entries (corrupt envelope?), rekey cannot proceed past it", file)
 	}
 
+	// The DEK-wrap now binds the secret's Class as AEAD (see keywrapper.go),
+	// so rekey both rotates the MEK AND migrates a legacy empty-AAD wrap to a
+	// class-bound one. unwrapWith/wrapWith carry env.Class; the old side also
+	// falls back to a plain (empty-AAD) unwrap so a pre-binding wrap still
+	// decrypts on its way to being re-wrapped class-bound.
+	class := env.Class
+	unwrapWith := func(kw KeyWrapper, w []byte) ([]byte, error) {
+		if lw, ok := kw.(LabeledKeyWrapper); ok {
+			return lw.UnwrapKeyLabeled(w, "", class)
+		}
+		return kw.UnwrapKey(w)
+	}
+	wrapWith := func(kw KeyWrapper, dek []byte) ([]byte, error) {
+		if lw, ok := kw.(LabeledKeyWrapper); ok {
+			return lw.WrapKeyLabeled(dek, "", class)
+		}
+		return kw.WrapKey(dek)
+	}
+
 	for id, wrappedHex := range env.Recipients {
 		wrapped, err := hex.DecodeString(wrappedHex)
 		if err != nil {
 			return false, fmt.Errorf("corrupt envelope %s: invalid recipient encoding: %w", file, err)
 		}
 
-		if dek, err := newKW.UnwrapKey(wrapped); err == nil {
-			wipe(dek) // already current, a resumed run re-finding its own work
+		if dek, err := unwrapWith(newKW, wrapped); err == nil {
+			wipe(dek) // already current AND class-bound: a resumed run's own work
 			continue
 		}
 
 		var dek []byte
 		if oldKW != nil {
-			dek, err = oldKW.UnwrapKey(wrapped)
+			// Class-bound under the old key first (a plain MEK rotation), then
+			// a legacy empty-AAD unwrap (a pre-binding vault being migrated).
+			dek, err = unwrapWith(oldKW, wrapped)
+			if err != nil {
+				dek, err = oldKW.UnwrapKey(wrapped)
+			}
 		}
 		if oldKW == nil || err != nil {
 			return false, fmt.Errorf("%s: cannot decrypt with the current or the staged master key, rekey cannot proceed past it (err: %v)", file, err)
 		}
 
-		rewrappedDEK, err := newKW.WrapKey(dek)
+		rewrappedDEK, err := wrapWith(newKW, dek)
 		if err != nil {
 			wipe(dek)
 			return false, fmt.Errorf("rewrapping key for %s: %w", file, err)
 		}
-		verify, err := newKW.UnwrapKey(rewrappedDEK)
+		verify, err := unwrapWith(newKW, rewrappedDEK)
 		if err != nil || !bytes.Equal(verify, dek) {
 			wipe(dek)
 			wipe(verify)
