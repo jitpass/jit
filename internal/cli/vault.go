@@ -1285,6 +1285,171 @@ var vaultPruneCmd = &cobra.Command{
 	},
 }
 
+var (
+	vaultOrphansPrune bool
+	vaultOrphansYes   bool
+)
+
+// collectReferencedPaths gathers every vault path referenced by a profile jit
+// can currently see: every profile in the project-local (cwd) and global
+// stores, plus the profile behind every registered mount (which may live in
+// another project's tree). It is deliberately STRICT — a profile it can't
+// parse aborts with an error rather than returning a short set — because its
+// only deleting caller (`jit vault orphans --prune`) must never treat a secret
+// as unreferenced just because the manifest that names it failed to load.
+func collectReferencedPaths(root, cwd string) (map[string]bool, error) {
+	referenced := map[string]bool{}
+	add := func(path string) error {
+		p, err := profile.LoadFile(path)
+		if err != nil {
+			return fmt.Errorf("loading profile %s: %w", path, err)
+		}
+		for _, vaultPath := range p {
+			referenced[vaultPath] = true
+		}
+		return nil
+	}
+	infos, err := profile.ListAll(cwd)
+	if err != nil {
+		return nil, err
+	}
+	for _, info := range infos {
+		if err := add(info.Path); err != nil {
+			return nil, err
+		}
+	}
+	entries, err := mount.LoadRegistry(mount.RegistryPath(root))
+	if err != nil {
+		return nil, fmt.Errorf("reading the mount registry: %w", err)
+	}
+	for _, e := range entries {
+		if err := add(e.ProfilePath); err != nil {
+			return nil, err
+		}
+	}
+	return referenced, nil
+}
+
+// printOrphanGroups renders orphaned secret paths grouped by their first path
+// segment (the same grouping `jit vault list` shows), annotating each with its
+// recorded Origin and age so a secret that actually belongs to another project
+// is recognizable before it's deleted.
+func printOrphanGroups(out io.Writer, v *vault.Vault, orphans []string) {
+	groups := map[string][]string{}
+	var order []string
+	for _, p := range orphans {
+		prefix := p
+		if i := strings.IndexByte(p, '/'); i >= 0 {
+			prefix = p[:i]
+		}
+		if _, ok := groups[prefix]; !ok {
+			order = append(order, prefix)
+		}
+		groups[prefix] = append(groups[prefix], p)
+	}
+	sort.Strings(order)
+	for _, prefix := range order {
+		members := groups[prefix]
+		fmt.Fprintf(out, "%s/ (%d)\n", prefix, len(members))
+		for _, p := range members {
+			name := strings.TrimPrefix(p, prefix+"/")
+			origin := "no recorded origin (pre-provenance, or set directly)"
+			if info, err := v.Info(p); err == nil && info.Origin != "" {
+				origin = "from " + info.Origin
+				if info.OriginSeenUnix > 0 {
+					origin += fmt.Sprintf(", seen %s ago", humanAgo(time.Since(time.Unix(info.OriginSeenUnix, 0))))
+				}
+			}
+			fmt.Fprintf(out, "  • %s  (%s)\n", name, origin)
+		}
+	}
+}
+
+// vaultOrphansCmd is the actionable half of `jit doctor --orphans` (which only
+// warns): it lists the vault secrets no profile jit can see references, and
+// with --prune deletes them. This is what drains the secrets a path-only
+// `jit migrate undo`/`remove` stranded before `migrate remove` learned to
+// sweep them by Origin — and unlike that sweep, it catches pre-provenance
+// (v1/v2) orphans too, since it keys on "referenced by nothing", not on Origin.
+var vaultOrphansCmd = &cobra.Command{
+	Use:   "orphans",
+	Short: "List (and with --prune delete) secrets no profile references",
+	Long: "Lists every stored secret that no profile jit can currently see points at,\n" +
+		"grouped by path with each secret's recorded origin — the leftovers a\n" +
+		"path-only `jit migrate undo`/`remove` leaves in the vault once the profile\n" +
+		"that named them is gone. With --prune, they are permanently deleted after a\n" +
+		"[y/N] confirmation and a fresh Touch ID/passcode.\n\n" +
+		"\"Referenced\" is judged against every profile jit can see: the project-local\n" +
+		"(current directory) and global profile stores, plus the profile behind every\n" +
+		"registered mount. A secret used ONLY by a different project you're not in and\n" +
+		"haven't mounted would look orphaned here — check each secret's origin before\n" +
+		"pruning, and delete a single one with `jit vault rm <path>` if you're unsure.",
+	Args:         cobra.NoArgs,
+	SilenceUsage: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		out := cmd.OutOrStdout()
+		root, err := vaultRootDir()
+		if err != nil {
+			return fmt.Errorf("jit vault orphans: %w", err)
+		}
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("jit vault orphans: %w", err)
+		}
+
+		referenced, err := collectReferencedPaths(root, cwd)
+		if err != nil {
+			return fmt.Errorf("jit vault orphans: %w", err)
+		}
+
+		readVault := &vault.Vault{Root: root}
+		paths, err := readVault.List()
+		if err != nil {
+			return fmt.Errorf("jit vault orphans: %w", err)
+		}
+		secrets, _ := splitBackupPaths(paths)
+		var orphans []string
+		for _, p := range secrets {
+			if !referenced[p] {
+				orphans = append(orphans, p)
+			}
+		}
+		if len(orphans) == 0 {
+			fmt.Fprintln(out, "No orphaned secrets: every stored secret is referenced by a profile jit can see.")
+			return nil
+		}
+		sort.Strings(orphans)
+
+		printOrphanGroups(out, readVault, orphans)
+
+		if !vaultOrphansPrune {
+			fmt.Fprintf(out, "\n%d orphaned secret(s), referenced by no profile jit can currently see.\n"+
+				"Run `jit vault orphans --prune` to delete them, or `jit vault rm <path>` one at a time.\n", len(orphans))
+			return nil
+		}
+
+		if !vaultOrphansYes && !confirmPrompt(cmd, fmt.Sprintf(
+			"Permanently delete %d orphaned secret(s)? This can't be undone. [y/N] ", len(orphans))) {
+			fmt.Fprintln(out, "Aborted. Nothing was deleted.")
+			return nil
+		}
+		// Fresh biometric gate before deleting, same idiom as rm/clean/prune:
+		// Remove only unlinks envelope files (never touches the KeyWrapper), so
+		// this explicit user-presence check is what forces a fingerprint here,
+		// locked or not. The [y/N] above is only a footgun guard (--yes skips it).
+		if err := requireUserPresence(fmt.Sprintf("delete %d orphaned secret(s) from the vault", len(orphans))); err != nil {
+			return fmt.Errorf("jit vault orphans: %w", err)
+		}
+		for _, p := range orphans {
+			if err := readVault.Remove(p); err != nil && !errors.Is(err, vault.ErrNotFound) {
+				return fmt.Errorf("jit vault orphans: deleting %s: %w", p, err)
+			}
+		}
+		fmt.Fprintf(out, "Deleted %d orphaned secret(s).\n", len(orphans))
+		return nil
+	},
+}
+
 var vaultDeleteYes bool
 
 // vaultDeleteCmd destroys the entire vault: every secret, the undo index,
@@ -1654,9 +1819,11 @@ func init() {
 
 	vaultCleanCmd.Flags().BoolVarP(&vaultCleanYes, "yes", "y", false, "skip the confirmation prompt")
 	vaultPruneCmd.Flags().BoolVarP(&vaultPruneYes, "yes", "y", false, "skip the confirmation prompt")
+	vaultOrphansCmd.Flags().BoolVar(&vaultOrphansPrune, "prune", false, "delete the orphaned secrets (default: only list them)")
+	vaultOrphansCmd.Flags().BoolVarP(&vaultOrphansYes, "yes", "y", false, "with --prune, skip the confirmation prompt")
 	vaultDeleteCmd.Flags().BoolVarP(&vaultDeleteYes, "yes", "y", false, "skip the confirmation prompt")
 	vaultHistoryCmd.Flags().StringVar(&vaultHistoryFormat, "format", "text", `output format: "text" (default) or "json"`)
 	vaultRestoreCmd.Flags().Int64Var(&vaultRestoreStamp, "version", 0, "which archived version to restore, by its stamp from jit vault history (default: the newest)")
-	vaultCmd.AddCommand(vaultInitCmd, vaultSetCmd, vaultGetCmd, vaultListCmd, vaultHistoryCmd, vaultRestoreCmd, vaultRmCmd, vaultCleanCmd, vaultPruneCmd, vaultDeleteCmd, vaultExportCmd, vaultImportCmd)
+	vaultCmd.AddCommand(vaultInitCmd, vaultSetCmd, vaultGetCmd, vaultListCmd, vaultHistoryCmd, vaultRestoreCmd, vaultRmCmd, vaultCleanCmd, vaultPruneCmd, vaultOrphansCmd, vaultDeleteCmd, vaultExportCmd, vaultImportCmd)
 	rootCmd.AddCommand(vaultCmd)
 }
