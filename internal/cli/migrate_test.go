@@ -147,7 +147,8 @@ func TestMigrateLooseSecretFileDryRun(t *testing.T) {
 
 // TestMigrateEmbeddedSecretNotLoose: a file that mixes a token with other
 // content is NOT a pure loose secret file (migrating it whole would lose the
-// other content), so migrate reports nothing to move — scan keeps flagging it.
+// other content), so migrate reports nothing to move — but points the user at
+// --mount, which can protect it in place.
 func TestMigrateEmbeddedSecretNotLoose(t *testing.T) {
 	home := withFixtureHome(t)
 	withFixtureCwd(t)
@@ -163,6 +164,38 @@ func TestMigrateEmbeddedSecretNotLoose(t *testing.T) {
 	}
 	if !strings.Contains(out, "Nothing to migrate") {
 		t.Errorf("expected nothing-to-migrate for an embedded secret, got:\n%s", out)
+	}
+	if !strings.Contains(out, "--mount") {
+		t.Errorf("expected the skip note to point at --mount, got:\n%s", out)
+	}
+}
+
+// TestMigrateLooseMountDryRun: with --mount, a pure loose file is planned as a
+// live mount (not a neutralized pointer), and an embedded file becomes
+// migratable instead of being skipped.
+func TestMigrateLooseMountDryRun(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	jwt := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MX0.i-Bx9F2fjO5nvvo_hlUFY6bvnAOeTs68BiTBa-1zfoE"
+
+	pure := filepath.Join(home, "token.txt")
+	if err := os.WriteFile(pure, []byte(jwt+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	embedded := filepath.Join(home, "config.txt")
+	if err := os.WriteFile(embedded, []byte("key="+jwt+"\nport=8080\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := execMigrate(t, pure, embedded, "--mount", "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate --mount --dry-run: %v", err)
+	}
+	if !strings.Contains(out, "stays live at its path as a mount") {
+		t.Errorf("expected mount wording under --mount, got:\n%s", out)
+	}
+	if !strings.Contains(out, "2 change(s) planned") {
+		t.Errorf("expected both files planned under --mount, got:\n%s", out)
 	}
 }
 

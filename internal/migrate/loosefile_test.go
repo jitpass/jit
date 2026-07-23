@@ -132,6 +132,98 @@ func TestApplyLooseSecretFileEndToEnd(t *testing.T) {
 	}
 }
 
+func TestBuildLooseTemplate(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Run("pure single token", func(t *testing.T) {
+		p := filepath.Join(dir, "pure.txt")
+		writeFile(t, p, realJWT+"\n")
+		tokens, _, err := ClassifyLooseSecretFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines, _ := scanFileLines(p)
+		names, _ := nameLooseTokens(tokens)
+		got := string(buildLooseTemplate(lines, tokens, names))
+		if strings.Contains(got, realJWT) {
+			t.Errorf("template still contains the raw token: %q", got)
+		}
+		if !strings.Contains(got, "${"+names[0]+"}") {
+			t.Errorf("template = %q, want a ${%s} placeholder", got, names[0])
+		}
+	})
+
+	t.Run("embedded keeps surrounding text", func(t *testing.T) {
+		p := filepath.Join(dir, "embedded.txt")
+		writeFile(t, p, "key is sk-ant-api03-abcdefghijklmnopqrstuvwx here\nport=8080\n")
+		tokens, _, err := ClassifyLooseSecretFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines, _ := scanFileLines(p)
+		names, _ := nameLooseTokens(tokens)
+		got := string(buildLooseTemplate(lines, tokens, names))
+		if !strings.HasPrefix(got, "key is ${") || !strings.Contains(got, "} here") {
+			t.Errorf("template did not preserve surrounding text: %q", got)
+		}
+		if !strings.Contains(got, "port=8080") {
+			t.Errorf("template dropped the non-secret line: %q", got)
+		}
+		if strings.Contains(got, "sk-ant-api03") {
+			t.Errorf("template still contains the raw token: %q", got)
+		}
+	})
+}
+
+func TestApplyLooseSecretFileMount(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "token.txt")
+	writeFile(t, path, realJWT+"\n")
+
+	v := newTestVault(t)
+	result, err := ApplyLooseSecretFileMount(v, root, path)
+	if err != nil {
+		t.Fatalf("ApplyLooseSecretFileMount: %v", err)
+	}
+	if !result.Mounted {
+		t.Error("Mounted = false, want true")
+	}
+
+	// The file is now a live FIFO, not a regular pointer file.
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("Lstat: %v", err)
+	}
+	if info.Mode()&os.ModeNamedPipe == 0 {
+		t.Errorf("file mode = %v, want a named pipe (FIFO)", info.Mode())
+	}
+
+	// The template renders the value back, and doesn't hold the raw token.
+	tmpl, err := os.ReadFile(result.TemplatePath) // #nosec G304 -- test path under t.TempDir()
+	if err != nil {
+		t.Fatalf("reading template: %v", err)
+	}
+	if strings.Contains(string(tmpl), realJWT) {
+		t.Error("template must not contain the raw token")
+	}
+	if !strings.Contains(string(tmpl), "${"+result.Variables[0]+"}") {
+		t.Errorf("template = %q, want a placeholder", tmpl)
+	}
+
+	// The value is retrievable from the vault.
+	p, err := profile.Load(root, result.ProfileName)
+	if err != nil {
+		t.Fatalf("profile.Load: %v", err)
+	}
+	got, err := v.Get(p[result.Variables[0]])
+	if err != nil {
+		t.Fatalf("v.Get: %v", err)
+	}
+	if string(got) != realJWT {
+		t.Errorf("vault value = %q, want the JWT", got)
+	}
+}
+
 // TestApplyLooseSecretFileMultipleTokens: two JWTs get distinct, suffixed
 // names so neither collides in the vault.
 func TestApplyLooseSecretFileMultipleTokens(t *testing.T) {
