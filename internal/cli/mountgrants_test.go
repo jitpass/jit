@@ -13,7 +13,15 @@ import (
 	"time"
 
 	"github.com/jitpass/jit/internal/agent"
+	"github.com/jitpass/jit/internal/migrate"
 )
+
+// fakeReaderConsent is a stand-in for the agent's best-effort consent decision
+// (readerConsent), so serveContent's consent fallback can be exercised without
+// a real agent, engine, or Touch ID.
+type fakeReaderConsent struct{ allow bool }
+
+func (f fakeReaderConsent) ConsentReaders(cred string, holders []int32) bool { return f.allow }
 
 // newGrantTestManager is a mountManager with the grant gate's kernel
 // lookups faked and the kqueue exit watcher disabled (grantKq = -1, the
@@ -131,6 +139,50 @@ func TestGrantForPIDUnknownMountAndDeadTargetFail(t *testing.T) {
 	}
 	if err := m.revealForPID(runMountsGrant("/tmp/fixture/.env"), 999); err == nil {
 		t.Error("expected an error for a target pid the kernel can't see")
+	}
+}
+
+// TestServeContentConsentFallback pins phase 2: with no run-scoped grant, a
+// credential mount (gcp) consults best-effort consent — real on allow, decoy
+// on deny — while a project mount is never consent-gated and consent-off keeps
+// the pre-consent decoy behavior.
+func TestServeContentConsentFallback(t *testing.T) {
+	home := t.TempDir()
+	gcpPath := migrate.GCPADCPath(home)
+	sm := newTestServedMount() // real = "API_KEY=real\n"
+	sm.decoy = []byte("decoy")
+
+	m := &mountManager{
+		home:           home,
+		stdout:         &bytes.Buffer{},
+		stderr:         &bytes.Buffer{},
+		grantKq:        -1,
+		grantHoldersFn: func(string) ([]int32, bool) { return []int32{200}, true },
+	}
+
+	// Credential mount + consent allows -> real.
+	m.consent = fakeReaderConsent{allow: true}
+	if got := m.serveContent(gcpPath, sm); string(got) != "API_KEY=real\n" {
+		t.Errorf("consent allow: serveContent = %q, want real", got)
+	}
+
+	// Credential mount + consent denies -> decoy (fail closed).
+	m.consent = fakeReaderConsent{allow: false}
+	if got := m.serveContent(gcpPath, sm); string(got) != "decoy" {
+		t.Errorf("consent deny: serveContent = %q, want decoy", got)
+	}
+
+	// Consent off (nil) -> decoy, exactly the pre-consent behavior.
+	m.consent = nil
+	if got := m.serveContent(gcpPath, sm); string(got) != "decoy" {
+		t.Errorf("consent off: serveContent = %q, want decoy", got)
+	}
+
+	// A non-credential (project) mount is never consent-gated, even when the
+	// decider would allow.
+	m.consent = fakeReaderConsent{allow: true}
+	if got := m.serveContent("/tmp/fixture/.env", sm); string(got) != "decoy" {
+		t.Errorf("project mount must not be consent-gated: serveContent = %q, want decoy", got)
 	}
 }
 
