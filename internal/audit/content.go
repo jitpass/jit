@@ -1,0 +1,122 @@
+// Copyright 2026 Meni Tasa
+// SPDX-License-Identifier: BUSL-1.1
+
+package audit
+
+import (
+	"bufio"
+	"strings"
+)
+
+// maxContentScanSize bounds how large a file the generic content sweep will
+// read. A vendor token or JWT lives in text config/dump files, never in a
+// multi-megabyte blob; the cap keeps `jit scan <a-huge-file>` from reading a
+// database export or media file line by line looking for a prefix that
+// structurally can't hide there in bulk.
+const maxContentScanSize = 5 << 20 // 5 MiB
+
+// maxContentLineSize raises bufio.Scanner's default 64 KiB token limit: a
+// minified .json or a base64 dump can put a long-but-legitimate line in front
+// of the sweep, and the default would error the scan out at that line rather
+// than just reading past it. A JWT or vendor token is short, but the LINE it
+// sits on may not be.
+const maxContentLineSize = 1 << 20 // 1 MiB
+
+// scanFileContentForTokens sweeps a file's raw text for values matching a
+// known vendor credential format (knownTokenPatterns) and emits an
+// exposed_secret finding for each. This is the detector behind `jit scan
+// <file>` catching a bare JWT dropped in a token.txt — the name-based
+// category scanners can't, because the file matches none of their naming
+// rules. It is deliberately run ONLY on a file the user named explicitly:
+// the vendor-prefix patterns are low-false-positive by design, but sweeping
+// every file of a machine-wide walk with them is a separate, unshipped
+// decision (it would change the baseline full-scan findings for everyone).
+//
+// Private-key bodies are ceded to ScanPrivateKeys / inspectPrivateKeyFile,
+// which report the same key far more richly (passphrase, permissions,
+// location) — so the sweep skips the "*Private Key" patterns to avoid
+// double-reporting one file under two finding types.
+//
+// An unreadable or over-large file yields no findings (skip, never fail),
+// the same forgiveness every category scanner extends.
+func scanFileContentForTokens(cfg Config, path string) ([]Finding, error) {
+	file, err := openFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	if info, statErr := file.Stat(); statErr != nil || !info.Mode().IsRegular() || info.Size() > maxContentScanSize {
+		return nil, nil
+	}
+
+	var findings []Finding
+	seenVendor := map[string]bool{} // one finding per (file, vendor): see below
+
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxContentLineSize)
+	lineNum := 0
+	for scanner.Scan() {
+		lineNum++
+		line := scanner.Text()
+
+		// Claim character ranges as they're matched so a value caught by a
+		// specific prefix (sk-proj-…) isn't re-reported by a more generic one
+		// (sk-…) that overlaps it — knownTokenPatterns is ordered
+		// specific-first precisely so this "first claim wins" is correct.
+		var claimed [][2]int
+		overlaps := func(lo, hi int) bool {
+			for _, c := range claimed {
+				if lo < c[1] && c[0] < hi {
+					return true
+				}
+			}
+			return false
+		}
+
+		for _, tp := range knownTokenPatterns {
+			if strings.HasSuffix(tp.vendor, "Private Key") {
+				continue // ScanPrivateKeys owns key bodies; don't double-report
+			}
+			for _, loc := range tp.pattern.FindAllStringIndex(line, -1) {
+				lo, hi := loc[0], loc[1]
+				if overlaps(lo, hi) {
+					continue
+				}
+				match := line[lo:hi]
+				if tp.exclude != nil && tp.exclude.MatchString(match) {
+					continue // a known false-positive shape (e.g. a template placeholder)
+				}
+				claimed = append(claimed, [2]int{lo, hi})
+
+				// One finding per (file, vendor). record_id is
+				// finding_type+file_path+key_name and key_name is the vendor,
+				// so a second occurrence of the same vendor in the same file
+				// would collide on record_id anyway; collapsing here keeps the
+				// report from listing structurally identical duplicates. The
+				// first occurrence's line number is the one reported.
+				if seenVendor[tp.vendor] {
+					continue
+				}
+				seenVendor[tp.vendor] = true
+
+				ln := lineNum
+				vendor := tp.vendor
+				findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+					FindingType:  FindingTypeExposedSecret,
+					FilePath:     path,
+					Line:         &ln,
+					KeyName:      vendor,
+					RawValue:     match,
+					BaseSeverity: SeverityHigh,
+					Confidence:   ConfidenceHigh,
+					Evidence:     "value matches a known vendor credential format",
+				}))
+			}
+		}
+	}
+	// A scanner error (an over-long line past maxContentLineSize, a mid-read
+	// I/O error) returns what we found so far rather than failing the run —
+	// partial detection beats none.
+	return findings, nil
+}

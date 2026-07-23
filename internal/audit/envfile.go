@@ -100,23 +100,37 @@ var envLinePattern = regexp.MustCompile(`^\s*(#\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*=
 func ScanEnvFiles(cfg Config) ([]Finding, error) {
 	var findings []Finding
 	err := walkHomeDir(cfg.HomeDir, func(path string, d fs.DirEntry) error {
-		name := d.Name()
-		if !envFileNamePattern.MatchString(name) {
-			return nil
-		}
-		if isJitPointerFile(name) || isJitPointerContent(path) {
-			return nil
-		}
-		f, found, buildErr := buildEnvFileFinding(cfg, path, isEnvTemplateFile(name))
+		f, buildErr := classifyEnvFile(cfg, path, d.Name())
 		if buildErr != nil {
 			return nil // unreadable file — skip it, don't fail the whole scan
 		}
-		if found {
-			findings = append(findings, f)
-		}
+		findings = append(findings, f...)
 		return nil
 	})
 	return findings, err
+}
+
+// classifyEnvFile is the per-file half of ScanEnvFiles, split out so both the
+// machine-wide home walk and `jit scan <path>`'s targeted walk apply the exact
+// same .env naming, pointer-file, and template/escalation rules to a file —
+// the coupling of "which files" (discovery) to "is it exposed" (classification)
+// is what once made a file impossible to scan on its own. Returns nil (no
+// findings) for a name that isn't .env-shaped or a jit pointer file.
+func classifyEnvFile(cfg Config, path, name string) ([]Finding, error) {
+	if !envFileNamePattern.MatchString(name) {
+		return nil, nil
+	}
+	if isJitPointerFile(name) || isJitPointerContent(path) {
+		return nil, nil
+	}
+	f, found, err := buildEnvFileFinding(cfg, path, isEnvTemplateFile(name))
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, nil
+	}
+	return []Finding{f}, nil
 }
 
 // buildEnvFileFinding returns found=false (no Finding) when path is a

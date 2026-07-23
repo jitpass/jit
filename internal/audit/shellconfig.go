@@ -31,6 +31,19 @@ var shellConfigFiles = []string{
 // config) risk than what this category is about.
 var exportLinePattern = regexp.MustCompile(`^\s*export\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$`)
 
+// isShellConfigName reports whether name is one of the shell init files this
+// scanner recognizes. Used by `jit scan <path>` to route an explicitly named
+// shell config (e.g. `jit scan .zshrc`) to scanShellConfigFile even though the
+// machine-wide scan reaches those files by fixed path, not by name.
+func isShellConfigName(name string) bool {
+	for _, n := range shellConfigFiles {
+		if name == n {
+			return true
+		}
+	}
+	return false
+}
+
 // ScanShellConfigs implements RFC.md §4 category 1.
 func ScanShellConfigs(cfg Config) ([]Finding, error) {
 	var findings []Finding

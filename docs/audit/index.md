@@ -37,9 +37,30 @@ scan time: 2026-07-07T14:48:08.370Z          duration: 2ms
               └ export statement assigns a value to a key name that looks like a secret
 ```
 
-`audit` always scans your whole home directory, not your current directory.
-A full sample of the output is in the
+With no arguments, `jit scan` scans your whole home directory, not your current
+directory. A full sample of the output is in the
 **[example report](./example-report.md)** (synthetic data).
+
+## Scanning specific files or folders
+
+Pass one or more paths to scan only those, instead of the whole machine:
+
+```console
+$ jit scan ./my-project token.txt
+```
+
+- A **folder** is walked with the same name-based rules as the full scan
+  (`.env` files, IaC variable files, MCP configs, suspicious filenames), and
+  skips the usual noise directories (`node_modules`, `.git`, …).
+- A **file you name** is classified regardless of what it's called. A
+  shell/`.env`/MCP/IaC file is routed to its scanner; a private key is detected
+  by its contents; and anything else is swept for known vendor tokens and JWTs.
+  That last part is why `jit scan token.txt` catches a bare token that the
+  whole-machine scan's naming rules would never look at.
+
+Named paths never pull in the fixed machine-wide credential stores (`~/.aws`,
+`~/.ssh`, your shell configs) unless you name them, and symlinks are not
+followed. A path that doesn't exist is an error, not a silently empty scan.
 
 ## Output formats
 
