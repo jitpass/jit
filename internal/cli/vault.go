@@ -262,6 +262,7 @@ func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth i
 				leaves = append(leaves, p)
 			}
 		}
+		wrote := len(leaves) > 0
 		flowNames(out, leaves, indent+"  ")
 		for i := 0; i < len(paths); {
 			slash := strings.Index(paths[i], "/")
@@ -274,12 +275,20 @@ func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth i
 			for j < len(paths) && strings.HasPrefix(paths[j], seg) {
 				j++
 			}
+			// A blank line between top-level groups gives the listing room to
+			// breathe (house style — whitespace separates sections); it goes
+			// before each group but the first, so there's no trailing blank,
+			// and nested subgroups stay tight so a deep tree doesn't sprawl.
+			if depth == 0 && wrote {
+				fmt.Fprintln(out)
+			}
 			printSecretGroupHeader(out, indent, paths[i][:slash], j-i)
 			sub := make([]string, j-i)
 			for k := i; k < j; k++ {
 				sub[k-i] = paths[k][len(seg):]
 			}
 			printSecretTree(out, sub, ancestorPath+seg, depth+1, meta)
+			wrote = true
 			i = j
 		}
 		return
@@ -294,12 +303,14 @@ func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth i
 			leafWidth = len(p)
 		}
 	}
+	wrote := false
 	for i := 0; i < len(paths); {
 		slash := strings.Index(paths[i], "/")
 		if slash < 0 {
 			key := paths[i]
 			fmt.Fprintf(out, "%s  %-*s  ", indent, leafWidth, key)
 			_, _ = faint.Fprintln(out, secretMetaSuffix(meta[ancestorPath+key]))
+			wrote = true
 			i++
 			continue
 		}
@@ -308,12 +319,16 @@ func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth i
 		for j < len(paths) && strings.HasPrefix(paths[j], seg) {
 			j++
 		}
+		if depth == 0 && wrote {
+			fmt.Fprintln(out)
+		}
 		printSecretGroupHeader(out, indent, paths[i][:slash], j-i)
 		sub := make([]string, j-i)
 		for k := i; k < j; k++ {
 			sub[k-i] = paths[k][len(seg):]
 		}
 		printSecretTree(out, sub, ancestorPath+seg, depth+1, meta)
+		wrote = true
 		i = j
 	}
 }
