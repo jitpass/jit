@@ -10,20 +10,29 @@ import (
 	"github.com/jitpass/jit/internal/mount"
 )
 
+// categoryScanner pairs a scanner with a short human noun for it. The name is
+// what Config.Progress reports as each one runs (see Scan) — kept next to the
+// function so the label and the scanner can never drift out of sync the way a
+// parallel []string would.
+type categoryScanner struct {
+	name string
+	scan func(Config) ([]Finding, error)
+}
+
 // categoryScanners lists every RFC.md §4 category scanner, in the same
 // order as AllFindingTypes. Scan runs them in this fixed order so output
 // (and NDJSON in particular) is deterministic across runs, even though
 // record_id — not list position — is the documented dedup key.
-var categoryScanners = []func(Config) ([]Finding, error){
-	ScanShellConfigs,
-	ScanEnvFiles,
-	ScanCredentialFiles,
-	ScanMCPConfigs,
-	ScanPrivateKeys,
-	ScanIACFiles,
-	ScanSuspiciousFilenames,
-	ScanWrappableCLITokens,
-	ScanSOPSAgeKeys,
+var categoryScanners = []categoryScanner{
+	{"shell configs", ScanShellConfigs},
+	{".env files", ScanEnvFiles},
+	{"credential files", ScanCredentialFiles},
+	{"MCP configs", ScanMCPConfigs},
+	{"private keys", ScanPrivateKeys},
+	{"IaC files", ScanIACFiles},
+	{"suspicious filenames", ScanSuspiciousFilenames},
+	{"wrappable CLI tokens", ScanWrappableCLITokens},
+	{"SOPS age keys", ScanSOPSAgeKeys},
 }
 
 // Scan runs every category scanner and returns the individual findings plus
@@ -32,8 +41,11 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 	start := time.Now()
 
 	var all []Finding
-	for _, scan := range categoryScanners {
-		findings, err := scan(cfg)
+	for _, cs := range categoryScanners {
+		if cfg.Progress != nil {
+			cfg.Progress(cs.name)
+		}
+		findings, err := cs.scan(cfg)
 		if err != nil {
 			return all, ScanSummary{}, err
 		}

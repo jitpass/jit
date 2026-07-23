@@ -78,17 +78,34 @@ var scanCmd = &cobra.Command{
 			cfg.MountRegistryPath = mount.RegistryPath(root)
 		}
 
+		// A live status trail on stderr so a full home-directory scan (nine
+		// filesystem walks) doesn't look hung. Silenced automatically for the
+		// machine-readable formats and --output (where even stderr chatter is
+		// unwanted), for --quiet, and whenever stderr isn't a terminal — see
+		// newProgress. --score deliberately gets it too: it runs the entire
+		// scan before printing its one line, so it's just as silent otherwise.
+		machineScan := scanFormat == "ndjson" || scanFormat == "markdown" || scanFormat == "md" || scanOutput != ""
+		progress := newProgress(cmd, machineScan)
+		cfg.Progress = func(category string) {
+			progress.Step("Scanning "+category+"…", "Scanned "+category)
+		}
+
 		var findings []audit.Finding
 		var summary audit.ScanSummary
 		if len(args) > 0 {
 			targets, resolveErr := resolveScanTargets(args)
 			if resolveErr != nil {
+				progress.Stop()
 				return fmt.Errorf("jit scan: %w", resolveErr)
 			}
 			findings, summary, err = audit.TargetedScan(cfg, targets)
 		} else {
 			findings, summary, err = audit.Scan(cfg)
 		}
+		// Stop before any result is written — the trail lives on stderr, but
+		// the spinner's in-place line must be settled before stdout output (or
+		// the confirm-free score line) begins.
+		progress.Stop()
 		if err != nil {
 			return fmt.Errorf("jit scan: %w", err)
 		}
