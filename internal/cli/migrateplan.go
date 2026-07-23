@@ -217,11 +217,6 @@ func printMigratePlanCategory(w io.Writer, headline string, items []string) {
 	printMigratePlanCategoryAnnotated(w, headline, items, nil)
 }
 
-// planSectionRule is the faint underline beneath each category header,
-// the same width jit scan's [Category] sections use
-// (internal/audit/report.go) so both reports read as one house style.
-var planSectionRule = strings.Repeat("─", 35)
-
 // splitHeadline separates a category headline's short NAME from its longer
 // "→ outcome" clause. The two used to render jammed together inside one set
 // of brackets — `[loose secret file(s) → the whole file is a bare token; it
@@ -252,8 +247,8 @@ func printMigratePlanCategoryAnnotated(w io.Writer, headline string, items []str
 		return
 	}
 	name, outcome := splitHeadline(headline)
-	_, _ = color.New(color.Bold).Fprintf(w, "[%s] (%d)\n", name, len(items))
-	_, _ = color.New(color.Faint).Fprintf(w, "  %s\n", planSectionRule)
+	_, _ = color.New(color.Bold).Fprintf(w, "[%s]", name)
+	_, _ = color.New(color.Faint).Fprintf(w, " %d\n", len(items))
 	if outcome != "" {
 		_, _ = color.New(color.Faint).Fprintf(w, "  → %s\n", outcome)
 	}

@@ -24,12 +24,14 @@ import (
 // file. The plan rendering both --dry-run and the confirmation prompt
 // share lives in migrateplan.go.
 
-// printMigrateResultCategory renders the same "[Label] (N)" header the
-// plan itself uses (printMigratePlanCategory) — the past-tense mutation
-// log now visually matches the future-tense plan directly above it,
-// instead of reading like a different tool's output.
+// printMigrateResultCategory renders the same bold "[Label] <count>" header
+// the plan itself uses (printMigratePlanCategoryAnnotated) — the past-tense
+// mutation log visually matches the future-tense plan directly above it,
+// instead of reading like a different tool's output. Kept in lockstep with
+// the plan header on purpose: a bold name, a dim count, no rule.
 func printMigrateResultCategory(w io.Writer, label string, n int) {
-	fmt.Fprintf(w, "[%s] (%d)\n", label, n)
+	_, _ = cBold.Fprintf(w, "[%s]", label)
+	_, _ = cDim.Fprintf(w, " %d\n", n)
 }
 
 // migrateSummary collects everything that used to print inline, once per

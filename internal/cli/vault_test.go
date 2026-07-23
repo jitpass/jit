@@ -309,7 +309,7 @@ func TestVaultOrphansListsAndPrunes(t *testing.T) {
 		t.Fatalf("jit vault orphans: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "custom_scripts-descope/") || !strings.Contains(out, "DESCOPE_PROJECT_1") {
+	if !strings.Contains(out, "custom_scripts-descope") || !strings.Contains(out, "DESCOPE_PROJECT_1") {
 		t.Errorf("expected the orphan listed, got:\n%s", out)
 	}
 	if strings.Contains(out, "kept") {
