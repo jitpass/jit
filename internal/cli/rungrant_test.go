@@ -137,6 +137,45 @@ func (e fixtureError) Error() string { return string(e) }
 
 const errFixtureRefused fixtureError = "no grant created: fixture refusal"
 
+// TestRequestRunCompatReportsGlobalGrant pins the signal the strict sops path
+// depends on: requestRunCompatVia returns true only when a disclosed --with
+// grant was actually approved, so a declined (or impossible) grant leaves the
+// caller no reason to wire the SOPS_AGE_KEY_CMD hook.
+func TestRequestRunCompatReportsGlobalGrant(t *testing.T) {
+	global := runMountsGrant("/tmp/fixture/keys.txt")
+
+	t.Run("approved returns true", func(t *testing.T) {
+		_, c, _ := grantTestServer(t)
+		if _, _, err := c.Unlock(); err != nil {
+			t.Fatalf("Unlock: %v", err)
+		}
+		var out bytes.Buffer
+		if !requestRunCompatVia(c, &out, nil, global, []string{"sops"}, 4242) {
+			t.Errorf("approved global grant returned false; announce=%q", out.String())
+		}
+	})
+
+	t.Run("declined returns false", func(t *testing.T) {
+		server, c, _ := grantTestServer(t)
+		server.OnRevealPID = func([]agent.RunMount, int32) error { return errFixtureRefused }
+		if _, _, err := c.Unlock(); err != nil {
+			t.Fatalf("Unlock: %v", err)
+		}
+		var out bytes.Buffer
+		if requestRunCompatVia(c, &out, nil, global, []string{"sops"}, 4242) {
+			t.Error("declined global grant returned true")
+		}
+	})
+
+	t.Run("locked returns false", func(t *testing.T) {
+		_, c, _ := grantTestServer(t)
+		var out bytes.Buffer
+		if requestRunCompatVia(c, &out, nil, global, []string{"sops"}, 4242) {
+			t.Error("locked session returned true for a global grant")
+		}
+	})
+}
+
 func TestRequestRunCompatDefaultSwapsAndAutodetectsLive(t *testing.T) {
 	// Default (live=false): the run's mounts must arrive in swap mode.
 	server, c, _ := grantTestServer(t)
