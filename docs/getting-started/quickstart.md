@@ -102,13 +102,20 @@ that one - one `.env`, a `~/.zshrc`. More in
 $ jit status
 Vault: 5 secret(s) stored.
 Service: running and unlocked (locks in 12m30s).
-Profiles: 2 profile(s), 5 secret reference(s) all resolve cleanly. Run `jit doctor` to also verify secret integrity.
+Secrets: 5 stored in 2 group(s).
+  Wired here:        2 group(s) via 2 profile(s) (5 reference(s)), all resolve.
+  Managed elsewhere: 0 group(s) (referenced only by global profiles or mounts).
+  Unreferenced here: none.
 Mounts: 1 registered, service unlocked, all serving decoy (real values flow only inside a jit run --live/--with grant).
 ```
 
-`jit status` is the quick read-only snapshot; `jit doctor` is the deeper
-pass/fail diagnostic (it also verifies each secret's envelope, sweeps for
-orphaned secrets, and checks service, backup, and shim health). See
+`jit status` is the quick read-only snapshot. Its **Secrets** section
+reconciles the vault against your profiles: every stored secret is *wired
+here* (a project-local profile uses it), *managed elsewhere* (referenced only
+by a global profile or a mount), or *unreferenced* (a candidate orphan). Add
+`jit status --secrets` for the full per-group listing. `jit doctor` is the
+deeper pass/fail diagnostic (it also verifies each secret's envelope, sweeps
+for orphaned secrets, and checks service, backup, and shim health). See
 **[Profiles](../run/profiles.md#checking-a-profiles-health-jit-doctor)**.
 
 Neither `jit status` nor `jit doctor` ever decrypts a secret or triggers
