@@ -38,11 +38,11 @@ func TestStatusEverythingEmpty(t *testing.T) {
 		t.Fatalf("jit status: %v", err)
 	}
 	for _, want := range []string{
-		"Versions: jit " + versionBuild(agent.Version(), agent.BuildID()) + "; service not running.",
-		"Vault: no secrets stored yet",
-		"Service: not running",
-		"Secrets: none stored yet.",
-		"Mounts: none registered",
+		"jit       " + versionBuild(agent.Version(), agent.BuildID()) + " · service not running",
+		"vault     no secrets yet",
+		"service   ✗ not running",
+		"secrets   none stored yet",
+		"mounts    none registered",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected output to contain %q, got:\n%s", want, out)
@@ -60,7 +60,7 @@ func TestStatusVaultReportsSecretCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "Vault: 2 secret(s) stored.") {
+	if !strings.Contains(out, "vault     2 secret(s) stored") {
 		t.Errorf("expected a secret count, got:\n%s", out)
 	}
 }
@@ -80,12 +80,12 @@ func TestStatusVaultCountExcludesBackups(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "Vault: 2 secret(s) stored, plus 2 encrypted file backup(s) kept for `jit migrate undo`.") {
+	if !strings.Contains(out, "vault     2 secret(s) stored · 2 file backup(s) kept for `jit migrate undo`") {
 		t.Errorf("expected backups excluded from the secret count and reported separately, got:\n%s", out)
 	}
 }
 
-// A vault holding only undo backups is not "no secrets stored yet" — the
+// A vault holding only undo backups is not "no secrets yet" — the
 // `jit vault init` nudge would be wrong there.
 func TestStatusVaultOnlyBackups(t *testing.T) {
 	home := withFixtureHome(t)
@@ -96,10 +96,10 @@ func TestStatusVaultOnlyBackups(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "Vault: 0 secret(s) stored, plus 1 encrypted file backup(s) kept for `jit migrate undo`.") {
+	if !strings.Contains(out, "vault     0 secret(s) stored · 1 file backup(s) kept for `jit migrate undo`") {
 		t.Errorf("expected a backups-only vault line, got:\n%s", out)
 	}
-	if strings.Contains(out, "no secrets stored yet") {
+	if strings.Contains(out, "no secrets yet") {
 		t.Errorf("backups-only vault should not claim the vault is empty, got:\n%s", out)
 	}
 }
@@ -116,7 +116,7 @@ func TestStatusBackupNudgeWhenNeverExported(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "Backup: no vault export on record") || !strings.Contains(out, "jit vault export") {
+	if !strings.Contains(out, "backup    ✗ no vault export on record") || !strings.Contains(out, "jit vault export") {
 		t.Errorf("expected a never-exported nudge naming the command, got:\n%s", out)
 	}
 }
@@ -134,7 +134,7 @@ func TestStatusBackupUpToDate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "Backup: vault export up to date") {
+	if !strings.Contains(out, "backup    ● export up to date") {
 		t.Errorf("expected an up-to-date backup line, got:\n%s", out)
 	}
 }
@@ -159,7 +159,7 @@ func TestStatusBackupStaleAfterNewSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "Backup: secrets have changed since the last vault export") {
+	if !strings.Contains(out, "backup    ○ secrets changed since the last export") {
 		t.Errorf("expected a stale-backup nudge, got:\n%s", out)
 	}
 }
@@ -174,7 +174,7 @@ func TestStatusNoBackupNudgeOnEmptyVault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if strings.Contains(out, "Backup:") {
+	if strings.Contains(out, "backup    ") {
 		t.Errorf("expected no Backup line for an empty vault, got:\n%s", out)
 	}
 }
@@ -189,7 +189,7 @@ func TestStatusSecretsWiredResolveCleanly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "Secrets: 1 stored in 1 group(s).") {
+	if !strings.Contains(out, "secrets   1 stored in 1 group(s)") {
 		t.Errorf("expected a stored-secret headline, got:\n%s", out)
 	}
 	if !strings.Contains(out, "Wired here:") || !strings.Contains(out, "1 group(s) via 1 profile(s) (1 reference(s)), all resolve.") {
@@ -230,7 +230,7 @@ func TestStatusMountsRegisteredButAgentNotRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "Mounts: 1 registered, not being served (service not running).") {
+	if !strings.Contains(out, "mounts    1 registered · not being served (service not running)") {
 		t.Errorf("expected a not-being-served mount summary, got:\n%s", out)
 	}
 }
