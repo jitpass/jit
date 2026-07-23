@@ -19,9 +19,15 @@ import (
 // fakeReaderConsent is a stand-in for the agent's best-effort consent decision
 // (readerConsent), so serveContent's consent fallback can be exercised without
 // a real agent, engine, or Touch ID.
-type fakeReaderConsent struct{ allow bool }
+type fakeReaderConsent struct {
+	allow bool
+	calls int
+}
 
-func (f fakeReaderConsent) ConsentReaders(cred string, holders []int32) bool { return f.allow }
+func (f *fakeReaderConsent) ConsentReaders(cred string, holders []int32) bool {
+	f.calls++
+	return f.allow
+}
 
 // newGrantTestManager is a mountManager with the grant gate's kernel
 // lookups faked and the kqueue exit watcher disabled (grantKq = -1, the
@@ -161,13 +167,19 @@ func TestServeContentConsentFallback(t *testing.T) {
 	}
 
 	// Credential mount + consent allows -> real.
-	m.consent = fakeReaderConsent{allow: true}
+	m.consent = &fakeReaderConsent{allow: true}
 	if got := m.serveContent(gcpPath, sm); string(got) != "API_KEY=real\n" {
 		t.Errorf("consent allow: serveContent = %q, want real", got)
 	}
 
-	// Credential mount + consent denies -> decoy (fail closed).
-	m.consent = fakeReaderConsent{allow: false}
+	// Credential mount + consent denies -> decoy (fail closed). Clear the
+	// per-mount consent verdict first: the amortization cache would otherwise
+	// (correctly) reuse the allow decision above for this same holder set — the
+	// test flips the decider mid-session only to exercise both branches.
+	sm.mu.Lock()
+	sm.consentVerdict = nil
+	sm.mu.Unlock()
+	m.consent = &fakeReaderConsent{allow: false}
 	if got := m.serveContent(gcpPath, sm); string(got) != "decoy" {
 		t.Errorf("consent deny: serveContent = %q, want decoy", got)
 	}
@@ -180,9 +192,48 @@ func TestServeContentConsentFallback(t *testing.T) {
 
 	// A non-credential (project) mount is never consent-gated, even when the
 	// decider would allow.
-	m.consent = fakeReaderConsent{allow: true}
+	m.consent = &fakeReaderConsent{allow: true}
 	if got := m.serveContent("/tmp/fixture/.env", sm); string(got) != "decoy" {
 		t.Errorf("project mount must not be consent-gated: serveContent = %q, want decoy", got)
+	}
+}
+
+// TestServeContentConsentAmortized pins that repeated reads by the SAME holder
+// set consult the decider once (the per-mount verdict cache), while a CHANGED
+// holder set re-decides — the fail-safe part: a new set can't ride the cache.
+func TestServeContentConsentAmortized(t *testing.T) {
+	home := t.TempDir()
+	gcpPath := migrate.GCPADCPath(home)
+	sm := newTestServedMount()
+	sm.decoy = []byte("decoy")
+
+	holders := []int32{200}
+	fake := &fakeReaderConsent{allow: true}
+	m := &mountManager{
+		home:           home,
+		stdout:         &bytes.Buffer{},
+		stderr:         &bytes.Buffer{},
+		grantKq:        -1,
+		consent:        fake,
+		grantHoldersFn: func(string) ([]int32, bool) { return holders, true },
+	}
+
+	for i := 0; i < 5; i++ {
+		if got := m.serveContent(gcpPath, sm); string(got) != "API_KEY=real\n" {
+			t.Fatalf("read %d: serveContent = %q, want real", i, got)
+		}
+	}
+	if fake.calls != 1 {
+		t.Errorf("same holder set over 5 reads consulted the decider %d times, want 1 (amortized)", fake.calls)
+	}
+
+	// A changed holder set must not ride the cached verdict: it re-decides.
+	holders = []int32{200, 300}
+	if got := m.serveContent(gcpPath, sm); string(got) != "API_KEY=real\n" {
+		t.Fatalf("changed holder set: serveContent = %q, want real", got)
+	}
+	if fake.calls != 2 {
+		t.Errorf("a changed holder set consulted the decider %d times total, want 2 (cache missed as it must)", fake.calls)
 	}
 }
 

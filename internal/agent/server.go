@@ -487,14 +487,20 @@ func (s *Server) handle(req Request, c *caller) Response {
 		}
 		return Response{OK: true, Data: wrapped}
 	case OpUnwrap:
+		// Consent is gated BEFORE ensureUnlocked, not after: ensureUnlocked
+		// records a use the moment it rides an already-unlocked session, so
+		// gating first is what keeps a DENIED unwrap out of the audit log as a
+		// use. It needs no MEK (only the caller and the AEAD-bound class), and a
+		// consent decline never arms the unlock cooldown, so this reordering
+		// costs a cached session nothing and only ever avoids work on a denial.
+		if err := s.gateConsent(req.Class, c); err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
 		mek, err := s.ensureUnlocked(req.Op, c, req.Label)
 		if err != nil {
 			return Response{OK: false, Error: err.Error()}
 		}
 		defer wipe(mek)
-		if err := s.gateConsent(req.Class, c); err != nil {
-			return Response{OK: false, Error: err.Error()}
-		}
 		dek, err := open(mek, req.Data, []byte(req.Class))
 		if err != nil {
 			return Response{OK: false, Error: err.Error()}

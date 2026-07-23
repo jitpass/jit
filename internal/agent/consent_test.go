@@ -96,6 +96,40 @@ func TestConsentGateAllowsDeniesAndCaches(t *testing.T) {
 	}
 }
 
+// TestDeniedUnwrapIsNotRecordedAsUse pins the finding-6 fix: consent is gated
+// before ensureUnlocked, so a denied unwrap never rides the unlocked session as
+// a KindUse. History should show the denial, not a use of a credential that
+// never flowed.
+func TestDeniedUnwrapIsNotRecordedAsUse(t *testing.T) {
+	var deny atomic.Bool
+	_, socket := startConsentServer(t, &deny)
+	c := NewClient(socket)
+	dek := bytes.Repeat([]byte{0x07}, 32)
+
+	// Wrap unlocks the session (fresh challenge -> an unlock event, no use).
+	wrapped, err := c.WrapKeyLabeled(dek, "aws/default/key", "aws")
+	if err != nil {
+		t.Fatalf("WrapKeyLabeled: %v", err)
+	}
+
+	// The session is now unlocked, so an unwrap would ride it as a use — but
+	// consent is declined, so the unwrap must fail closed BEFORE recording one.
+	deny.Store(true)
+	if _, err := c.UnwrapKeyLabeled(wrapped, "aws/default/key", "aws"); err == nil {
+		t.Fatal("a declined consent must deny the unwrap")
+	}
+
+	events, err := c.History()
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	for _, e := range events {
+		if e.Kind == KindUse && e.Op == OpUnwrap {
+			t.Errorf("a denied unwrap must not be recorded as a use: %+v", e)
+		}
+	}
+}
+
 // TestConsentTrustDescentSkipsPrompt pins phase 1c: a caller inside a
 // --trust'd run's tree is auto-allowed with no prompt, and re-locking clears
 // that trust.
