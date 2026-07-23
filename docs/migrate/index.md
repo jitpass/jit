@@ -113,6 +113,61 @@ real value only under a [`jit run`](../service/index.md) grant, a decoy
 otherwise). It is also required to migrate a file that mixes a secret with
 other content, since replacing such a file wholesale would lose the rest.
 
+### Example: a bare token in `token.txt`
+
+Say you pasted a JWT into `~/token.txt`. [`jit scan`](../audit/index.md) flags
+it, and points you at migrate:
+
+```console
+$ jit scan token.txt
+  ...
+  Exposed Secrets        1 finding(s)
+
+[Exposed Secrets]
+  • ~/token.txt
+    :1  HIGH  JSON Web Token (JWT)  eyJh**********
+```
+
+Preview the fix, then apply it:
+
+```console
+$ jit migrate token.txt --dry-run
+jit migrate, plan
+
+Project files you named
+
+[loose secret file(s) → the whole file is a bare token; it moves to the vault and the file is replaced with a git-safe pointer (retrieve with `jit vault get`)] (1)
+  • ~/token.txt
+
+  1 change(s) planned across 1 category
+
+$ jit migrate token.txt          # drop --dry-run; plan reprints, then Proceed? [y/N]
+[loose secret file(s) migrated] (1)
+  • ~/token.txt -> profile "token" (1 secret(s)); backup: `jit vault get _backups/Users_you_token.txt.jit-bak-...`, replaced with a safe pointer file (retrieve with `jit vault get token/JSON_WEB_TOKEN_JWT`)
+```
+
+`token.txt` no longer holds the token; it is now a git-safe pointer:
+
+```console
+$ cat token.txt
+# jit pointer file, no secret values here, only vault paths.
+# Real values reach a tool through `jit run` (the live mount serves them
+# to that run), or `jit export`/`jit vault get`, never from this file. Safe to commit.
+JSON_WEB_TOKEN_JWT=jit://vault/token/JSON_WEB_TOKEN_JWT
+```
+
+Get the real value back whenever you need it (behind Touch ID):
+
+```console
+$ jit vault get token/JSON_WEB_TOKEN_JWT
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ...
+```
+
+`jit migrate undo` restores the original `token.txt` byte-for-byte from the
+backup. Had you passed `--mount`, `token.txt` would instead stay live at its
+path, serving the real token to a [`jit run`](../service/index.md) grant and a
+decoy to anything else.
+
 CLI tool tokens (`gh`, `stripe`, `ngrok`, …) live in their own config files
 that `migrate` doesn't cover - that's [`jit wrap`](../wrap/index.md)'s job.
 
