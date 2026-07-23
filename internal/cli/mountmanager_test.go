@@ -296,12 +296,13 @@ func TestPrintMountStatusesShowsLastServe(t *testing.T) {
 	out := buf.String()
 
 	for _, want := range []string{
-		"• /p/decoy.env, decoy",
-		"read 2m ago by node (pid 4823): decoy values",
+		"○ /p/decoy.env",
+		"read 2m ago by node (pid 4823) · decoy",
 		"jit run --live",
-		"• /p/real.env, serving real values to 1 active grant(s)",
-		"read 30s ago by an unidentified process: real values (run-scoped grant)",
-		"• /p/quiet.env, decoy",
+		"● /p/real.env",
+		"real to 1 active grant(s)",
+		"read 30s ago by an unidentified process · real (run-scoped grant)",
+		"○ /p/quiet.env",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected output to contain %q, got:\n%s", want, out)

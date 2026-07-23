@@ -920,55 +920,75 @@ func printMountStatuses(w io.Writer, mounts []agent.MountRevealStatus) {
 
 	home, _ := os.UserHomeDir()
 
-	fmt.Fprintln(w, "\nMounts:")
+	// State the decoy rule ONCE, in the header, instead of tailing the same
+	// "(real values only inside a jit run --live/--with grant)" onto every
+	// mount line — that parenthetical, repeated per mount, was most of the
+	// noise. Each mount then reads as a glyph plus its path: ○ decoy (the
+	// default), ● real-to-a-grant.
+	fmt.Fprint(w, "\n")
+	_, _ = cBold.Fprint(w, "Mounts:")
+	_, _ = cDim.Fprintf(w, " %d · decoy by default, real values flow only inside a jit run --live/--with grant\n", len(sorted))
+	decoyReads := 0
 	for _, m := range sorted {
 		path := displayPath(home, m.Path)
 		// A swapped mount is a plain compatibility file for the run(s)
 		// listed below it — the FIFO, and so the whole reveal/decoy
-		// vocabulary, doesn't apply while it's swapped, so this replaces
-		// the revealed/not-revealed line rather than adding to it.
+		// vocabulary, doesn't apply while it's swapped.
 		if m.Swapped {
-			fmt.Fprintf(w, "  • %s, compatibility file (real values are in the run's environment; the file is inert)\n", path)
+			_, _ = cOK.Fprint(w, "  "+glyphOK+" ")
+			fmt.Fprint(w, path)
+			_, _ = cDim.Fprintln(w, "  compatibility file (real values are in the run's environment; the file is inert)")
 			for _, g := range m.Grants {
-				cmd := g.Command
-				if cmd == "" {
-					cmd = "unknown command"
-				}
-				fmt.Fprintf(w, "      swapped for jit run pid %d (%s) since %s ago, decoy mount returns when it exits\n", g.PID, cmd, humanAgo(time.Since(time.Unix(g.SinceUnix, 0))))
+				cmd := grantCommand(g)
+				_, _ = cDim.Fprintf(w, "      swapped for jit run pid %d (%s) since %s ago, decoy mount returns when it exits\n", g.PID, cmd, humanAgo(time.Since(time.Unix(g.SinceUnix, 0))))
 			}
 			continue
 		}
-		// A mount serves decoys by default; real content flows only to a
-		// run-scoped grant's own process tree (jit run --live / --with), each
-		// listed below. There is no reveal window.
 		if len(m.Grants) > 0 {
-			fmt.Fprintf(w, "  • %s, serving real values to %d active grant(s), decoy to everything else\n", path, len(m.Grants))
+			_, _ = cOK.Fprint(w, "  "+glyphOK+" ")
+			fmt.Fprint(w, path)
+			_, _ = cDim.Fprintf(w, "  real to %d active grant(s), decoy to everything else\n", len(m.Grants))
 		} else {
-			fmt.Fprintf(w, "  • %s, decoy (real values only inside a jit run --live/--with grant)\n", path)
+			_, _ = cWarn.Fprint(w, "  "+glyphWarn+" ")
+			fmt.Fprintln(w, path)
 		}
 		for _, g := range m.Grants {
-			cmd := g.Command
-			if cmd == "" {
-				cmd = "unknown command"
-			}
-			fmt.Fprintf(w, "      serving real values to jit run pid %d (%s) since %s ago, until it exits\n", g.PID, cmd, humanAgo(time.Since(time.Unix(g.SinceUnix, 0))))
+			cmd := grantCommand(g)
+			_, _ = cDim.Fprintf(w, "      serving real values to jit run pid %d (%s) since %s ago, until it exits\n", g.PID, cmd, humanAgo(time.Since(time.Unix(g.SinceUnix, 0))))
 		}
 		if ls := m.LastServe; ls != nil {
 			reader := describeReader(ls)
 			ago := humanAgo(time.Since(time.Unix(ls.UnixTime, 0)))
 			switch {
 			case ls.Decoy:
-				_, _ = color.New(color.FgYellow).Fprintf(w, "      read %s ago by %s: decoy values, if that was your app, run it through: jit run --live -- <command>\n", ago, reader)
+				decoyReads++
+				_, _ = cDim.Fprintf(w, "      read %s ago by %s · decoy\n", ago, reader)
 			case ls.GrantServed:
-				fmt.Fprintf(w, "      read %s ago by %s: real values (run-scoped grant)\n", ago, reader)
+				_, _ = cDim.Fprintf(w, "      read %s ago by %s · real (run-scoped grant)\n", ago, reader)
 			default:
-				fmt.Fprintf(w, "      read %s ago by %s: real values\n", ago, reader)
+				_, _ = cDim.Fprintf(w, "      read %s ago by %s · real\n", ago, reader)
 			}
 			if m.ReadsLastMinute >= readStormThreshold {
-				_, _ = color.New(color.FgYellow).Fprintf(w, "      read %d times in the last minute, usually an editor or file watcher re-reading it in a loop; excluding this file from it stops the churn\n", m.ReadsLastMinute)
+				_, _ = cWarn.Fprintf(w, "      read %d times in the last minute, usually an editor or file watcher re-reading it in a loop; excluding this file from it stops the churn\n", m.ReadsLastMinute)
 			}
 		}
 	}
+	// The "if that was your app, run it through jit run --live" advice used to
+	// ride on every decoy read line. State it once, at the end, when any mount
+	// actually served a decoy to a reader — the one place the reader can act.
+	if decoyReads > 0 {
+		_, _ = cWarn.Fprint(w, "  If one of those decoy reads was your own app, run it through: ")
+		_, _ = cPath.Fprintln(w, "jit run --live -- <command>")
+	}
+}
+
+// grantCommand names the command behind a grant, falling back to a stable
+// placeholder when the record didn't capture one.
+func grantCommand(g agent.MountGrantStatus) string {
+	if g.Command == "" {
+		return "unknown command"
+	}
+	return g.Command
 }
 
 // describeReader names whoever last read a mount, as precisely as jit can
