@@ -1,6 +1,6 @@
 ---
 title: Install jit
-description: Prebuilt binary or build from source, shell completion, and how to upgrade.
+description: Prebuilt binary or build from source, shell completion, and how to upgrade or uninstall.
 ---
 
 # Install
@@ -132,15 +132,35 @@ install locations.
 
 ## Upgrading
 
-New versions are announced on the
-[Releases page](https://github.com/jitpass/jit/releases). The core of an
-upgrade is one step - reinstall the binary. A running service switches itself
-onto the new binary on its own (once its session is locked and no prompt is
-pending); the optional second line just makes that switch happen *now* instead
-of whenever the service next goes idle.
+Once you're on **v0.41.0 or newer**, upgrading is one command:
 
-**Prebuilt install (Option A)** - no Go needed
-(`releases/latest/download/...` always serves the newest version):
+```sh
+jit upgrade
+```
+
+It fetches the latest release, verifies its SHA-256 against the release
+`checksums.txt` *before* anything replaces your binary, swaps the binary jit
+runs from (prompting for `sudo` only if that path isn't writable), and
+restarts the service onto the new build - so there's no "I upgraded but
+nothing changed" gap and nothing to remember. `jit upgrade --force`
+reinstalls the latest even when you're already on it. It fetches the
+published Apple Silicon release; on an Intel or source install, use the
+`go install` line below instead.
+
+New versions are announced on the
+[Releases page](https://github.com/jitpass/jit/releases).
+
+### Manual upgrade (your first upgrade onto v0.41.0, Intel, or by preference)
+
+`jit upgrade` only exists once you've installed a build that has it, so the
+very first upgrade *onto* v0.41.0 - and every upgrade on an Intel/source
+install - uses the same commands as a fresh install. Reinstalling the binary
+is the whole upgrade; the running service switches onto it on its own within
+a few seconds once its session is locked, and the optional `jit service
+restart` just makes that happen *now*.
+
+**Prebuilt (Apple Silicon)** - `releases/latest/download/...` always serves
+the newest version:
 
 ```sh
 curl -sLO https://github.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz
@@ -149,27 +169,50 @@ sudo mv jit /usr/local/bin/                        # 1. reinstall the binary
 jit service restart                                # 2. (optional) switch the running service over now
 ```
 
-**Source install (Option B):**
+**Source (any Mac):**
 
 ```sh
-go install github.com/jitpass/jit/cmd/jit@v0.19.2   # 1. reinstall the binary (pin the new tag)
-jit service restart                                # 2. (optional) switch the running service over now
+go install github.com/jitpass/jit/cmd/jit@v0.41.0   # 1. reinstall the binary (pin the new tag)
+jit service restart                                 # 2. (optional) switch the running service over now
 ```
 
 Pin the tag rather than `@latest` right after a release: the Go module proxy
 caches `@latest`, so it can quietly hand you the previous version for a while.
 
-Why the second line matters. launchd keeps the old service process (and the old
-binary) running right through your reinstall; every command that talks to it
-still gets last version's behavior, which reads as "I upgraded but nothing
-changed." `jit status` and `jit service status` warn with "different build" until
-it's restarted. The service does switch onto the replaced binary on its own, but
-only once its session is locked and no prompt is pending - so run
-`jit service restart` to have it now. Restart re-points the launchd service if
-the binary moved, re-bootstraps it if launchd had dropped the service (a plist
-on disk with no running process), and recreates the login item if it was missing
-entirely - so it's the one command for any "get it onto the new binary" state.
-The binary reinstall is otherwise the whole upgrade.
+Why the `jit service restart` line helps. launchd keeps the old service
+process (and the old binary) running right through your reinstall, so until it
+restarts, every command that talks to it still gets last version's behavior -
+`jit status` warns "different build" until then. The service does switch onto
+the replaced binary on its own once its session is locked and idle; restart is
+for wanting it immediately. It also re-points launchd if the binary moved,
+re-bootstraps a service launchd had dropped, and recreates the login item if
+it was missing. (`jit upgrade` does this step for you.)
+
+## Uninstalling
+
+```sh
+jit uninstall
+```
+
+Removes the background service, the wrap shims, and the jit binary. It asks
+for a fresh Touch ID / passcode first, so nobody at your unlocked Mac can
+remove jit (or your secrets) without you present; `--yes` skips only the typed
+y/N confirmation, never the fingerprint.
+
+Your vault is **kept by default**. jit is the only thing that can decrypt it
+on this Mac, so uninstall leaves your secrets in place and prints where they
+are. Add `--purge` to also erase the vault and the `~/.jit` config - it names
+how many secrets that destroys and points you at `jit vault export` first.
+`--purge` is irreversible and there is no other copy on the machine, so export
+anything you might want back before running it:
+
+```sh
+jit vault export ~/jit-backup.age   # protect your secrets first
+jit uninstall --purge               # then erase everything, Touch ID required
+```
+
+The gate guards the `jit uninstall` path; it is not a substitute for file
+permissions - anyone with a shell as you can still delete the files directly.
 
 ---
 
