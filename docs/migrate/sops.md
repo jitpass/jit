@@ -13,8 +13,8 @@ decrypts every SOPS-encrypted secret in every repo the key guards, for
 every environment those repos cover. It is the single highest-value
 target on a machine that uses SOPS.
 
-`jit migrate home` (category `sops`) moves the key into the vault and
-replaces `keys.txt` with a [live mount](../run/mounts.md) serving a
+`jit migrate <path-to-keys.txt>` (category `sops`) moves the key into the
+vault and replaces `keys.txt` with a [live mount](../run/mounts.md) serving a
 template: the non-secret comment lines (public key, creation date) pass
 through byte-for-byte, and the key line fills from the vault only for a
 run you explicitly grant it to with `jit run --with sops`. The age key is a
@@ -54,8 +54,8 @@ per invocation.
 - Outside a run you granted the key to, a reader of `keys.txt` sees a
   placeholder and decryption fails fast with a clear error, exactly the
   decoy-by-default behavior `.env` mounts have.
-- The file is machine-wide (one per user), so it's covered by
-  `jit migrate home` only, `local` never touches it.
+- The file is machine-wide (one per user), so name it explicitly to
+  convert it (a project directory walk never touches it).
 - Files holding **multiple** age keys are skipped, never half-migrated:
   one `SOPS_AGE_KEY` variable can't serve two keys. The audit finding
   stays visible instead.

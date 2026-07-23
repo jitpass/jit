@@ -25,8 +25,8 @@ These never print a secret value, only names and vault paths, which is
 exactly why a profile manifest is safe to commit.
 
 Profiles come in two scopes: **project** profiles live in the project's
-`.jit/profiles/` (created by `jit migrate local` for that project's
-layers), and **global** profiles live in `~/.jit/profiles/` (machine-wide
+`.jit/profiles/` (created when you migrate that project's layers), and
+**global** profiles live in `~/.jit/profiles/` (machine-wide
 migrations and [wrapped tools](../wrap/index.md), whose profiles are named
 `wrap-<tool>`).
 

@@ -1,6 +1,6 @@
 ## jit migrate
 
-Guided fix path for findings jit scan reports
+Guided fix path for findings jit scan reports (name the file(s) to convert)
 
 ### Synopsis
 
@@ -10,59 +10,59 @@ sitting on disk. It's a separate command from jit scan, not a flag on it,
 so the read-only scanner can never be turned into a mutating one by a
 mistyped flag.
 
-By default it covers the same ground jit scan scans, the whole machine:
-`jit migrate` is `jit migrate home`. Narrow the scope with a subcommand:
+You must name the file(s) and/or folder(s) to convert — jit migrate never
+sweeps your whole machine on its own. Nothing is discovered or touched
+except the targets you name, so a bare `jit migrate` with no path does
+nothing. Each target is resolved on its own:
 
-  jit migrate local   only what's under the current directory tree
-                       (.env files, tfvars files, project mcp.json, project .npmrc)
-  jit migrate home    the default: everything local finds, anywhere
-                       under $HOME, plus the machine-wide files that live at
-                       fixed home paths (shell configs, ~/.aws/credentials,
-                       ~/.kube/config, Terraform Cloud credentials,
-                       ~/.docker/config.json registry logins,
-                       ~/.git-credentials HTTPS logins, GCP
-                       application-default credentials, Claude Desktop's MCP
-                       config, the global ~/.npmrc)
-  jit migrate path    only the specific file(s)/folder(s) you name, with no
-                       directory walk (e.g. one project's .env, a single
-                       ~/.zshrc). The fast choice when a home sweep would
-                       take too long and you already know what to move
+  A file       is routed to the right category by what it is. A project file
+               (.env, *.tfvars, mcp.json/.mcp.json, .npmrc) has its secrets
+               moved into a profile and the vault, the file keeps working as a
+               live mount (a git-safe <file>.pointers companion is written
+               alongside). A machine-wide file at a known path (a shell config
+               like ~/.zshrc, ~/.aws/credentials, ~/.kube/config, Terraform
+               Cloud creds, ~/.docker/config.json, ~/.git-credentials, GCP
+               application-default credentials, a SOPS age key, ~/.netrc,
+               Claude Desktop's MCP config, the global ~/.npmrc) is routed to
+               that credential type's handling (credential_process, exec
+               plugin, credential helper, or live mount, as appropriate).
+  A directory  is walked for its .env/tfvars/mcp/npmrc findings only, never
+               the machine-wide fixed-path files (those aren't "under" any
+               project directory) — name them explicitly to convert them.
 
-Every run prints the full plan and asks for confirmation before touching
-anything, and every modified file is backed up (encrypted, into the vault)
-first, `jit migrate undo` restores any migrated file from that backup.
-See each subcommand's --help for exactly what happens to each kind of file.
+Targets are explicit, so nothing is skipped for looking archived/backup-like:
+naming a file is itself the decision to convert it. Every run prints the full
+plan and asks for confirmation before touching anything, and every modified
+file is backed up (encrypted, into the vault) first, `jit migrate undo <path>`
+restores a migrated file from that backup.
 
 ```
-jit migrate [flags]
+jit migrate <file-or-dir>...
 ```
 
 ### Examples
 
 ```
-  jit migrate --dry-run          # preview the whole-machine plan, change nothing
-  jit migrate                    # fix everything the plan shows
-  jit migrate local --dry-run    # preview just this project's plan
-  jit migrate home --only aws,kube
-  jit migrate path ~/proj/.env   # migrate just one file, no walk
-  jit migrate undo               # restore migrated files from their backups
+  jit migrate ~/proj/.env         # migrate just one file
+  jit migrate ~/proj              # walk one project for .env/tfvars/mcp/npmrc
+  jit migrate ~/.zshrc ~/proj/.env
+  jit migrate ~/proj/.env --dry-run   # preview the plan, change nothing
+  jit migrate ~/.aws/credentials --only aws
+  jit migrate undo ~/proj/.env    # restore a migrated file from its backup
 ```
 
 ### Options
 
 ```
-      --dry-run            preview the plan for this scope without changing anything
-      --include-archived   also convert findings under an archived/backup-looking directory (archive, archived, backup, backups, .trash)
-      --only strings       scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,docker,git,gcp,sops,npmrc,netrc (default: all)
-  -y, --yes                skip the confirmation prompt and migrate immediately
+      --dry-run        preview the plan without changing anything
+      --only strings   scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,docker,git,gcp,sops,npmrc,netrc (default: all)
+  -y, --yes            skip the confirmation prompt and migrate immediately
 ```
 
 ### SEE ALSO
 
 * [jit](jit.md)	 - Local-first developer secret runtime
-* [jit migrate home](jit_migrate_home.md)	 - Convert findings anywhere under $HOME, the whole machine, not just this project
-* [jit migrate local](jit_migrate_local.md)	 - Convert findings under the current directory only
-* [jit migrate path](jit_migrate_path.md)	 - Convert only the specific file(s)/folder(s) you name, no directory walk
-* [jit migrate remove](jit_migrate_remove.md)	 - Remove jit from this project completely (restore plaintext, delete its secrets)
-* [jit migrate undo](jit_migrate_undo.md)	 - Restore migrated files from their encrypted pre-migration backups
+* [jit migrate path](jit_migrate_path.md)	 - Alias for `jit migrate <file-or-dir>...`
+* [jit migrate remove](jit_migrate_remove.md)	 - Remove jit from a project completely (restore plaintext, delete its secrets)
+* [jit migrate undo](jit_migrate_undo.md)	 - Restore named migrated files from their encrypted pre-migration backups
 

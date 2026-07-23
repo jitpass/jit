@@ -11,46 +11,43 @@ via that tool's own native mechanism, so everything keeps working. It's a
 separate command from `audit`, deliberately: a read-only scanner can never
 be turned into a mutating one by a mistyped flag.
 
-## Scope: the whole machine by default
+## Scope: you name what to convert
 
-**`jit migrate`** covers the same ground `jit scan` scans - everything
-under `$HOME`. That's deliberate: audit's report is machine-wide, so the
-command it points you at fixes machine-wide too, no scope decision in
-between. It's shorthand for `jit migrate home`: every project's
-`.env`/tfvars/`mcp.json`/`.npmrc`, plus the machine-wide files that have
-no project-scoped form at all - shell configs, `~/.aws/credentials`,
-`~/.kube/config`, the Terraform Cloud token file, Docker registry logins
-in `~/.docker/config.json`, git HTTPS logins in `~/.git-credentials`, GCP
-application-default credentials, the SOPS age key, `~/.netrc`, Claude
-Desktop's MCP config, and the global `~/.npmrc`. The plan groups those under a separate "Machine-wide" section
-so it's clear they're not part of a directory walk.
+`jit migrate` never sweeps your machine on its own. You point it at the
+file(s) and/or folder(s) to convert, and nothing else is discovered or
+touched:
 
-**`jit migrate local`** narrows to one project: only what's under the
-directory you're standing in is discovered or touched.
+```
+jit migrate ~/code/myapp/.env      # one file
+jit migrate ~/code/myapp           # walk one project for .env/tfvars/mcp/npmrc
+jit migrate ~/.zshrc ~/code/myapp  # several targets at once
+```
 
-**`jit migrate path <file-or-dir>...`** narrows further still: it converts
-only the specific file(s) and folder(s) you name, with no directory walk
-beyond a named folder itself. Reach for it when a home sweep of a large
-`$HOME` would take too long and you already know which secret you want
-moved - one project's `.env`, a single `~/.zshrc`, a directory of tfvars
-files. A named project file (`.env`/tfvars/`mcp.json`/`.npmrc`) migrates
-exactly as `local` would; a named machine-wide file at a known path (a
-shell config like `~/.zshrc`, `~/.aws/credentials`, `~/.kube/config`, and
-the rest of the machine-wide list above) routes to that category's `home`
-handling; a named directory is walked like `local` rooted there, project
-files only. Targets are explicit, so the archived filter doesn't apply -
-naming a file is itself the decision to convert it. A missing path or a
-symlink fails loud rather than migrating the wrong thing.
+Each target is resolved on its own:
 
-A home-scope run skips anything under a directory named `archive`,
-`archived`, `backup`, `backups`, or `.trash` by default (pass
-`--include-archived` to override): converting a forgotten project's `.env`
-into a live mount nothing will ever read again makes it *less*
-recoverable, not more secure. Skipped paths are listed at the end of the
-plan, and `jit scan` tags the same findings `[archived]`, so the two
-reports always agree on what was left alone. `local` never applies the
-filter; deliberately standing in an old project and migrating it is an
-explicit choice.
+- **A file** is routed to the right category by what it is. A project file
+  (`.env`, `*.tfvars`, `mcp.json`/`.mcp.json`, `.npmrc`) has its secrets
+  moved into a profile and the vault, and the file keeps working. A
+  machine-wide file at a known path - a shell config like `~/.zshrc`,
+  `~/.aws/credentials`, `~/.kube/config`, the Terraform Cloud token file,
+  `~/.docker/config.json`, `~/.git-credentials`, GCP application-default
+  credentials, the SOPS age key, `~/.netrc`, Claude Desktop's MCP config,
+  the global `~/.npmrc` - is routed to that credential type's handling.
+- **A directory** is walked for its `.env`/tfvars/`mcp.json`/`.npmrc`
+  findings only, never the machine-wide fixed-path files (those aren't
+  "under" any project directory - name them explicitly to convert them).
+
+Targets are explicit, so nothing is skipped for looking archived or
+backup-like: naming a file is itself the decision to convert it. A missing
+path or a symlink fails loud rather than migrating the wrong thing. A bare
+`jit migrate` with no path does nothing.
+
+!!! tip "Find what to name"
+    Run [`jit scan`](../audit/index.md) first - it lists every plaintext
+    secret on the machine, so you know exactly which files to hand to
+    `jit migrate`. `jit migrate path <file-or-dir>...` is a spelled-out
+    alias of the bare `jit migrate <file-or-dir>...` form, kept for
+    scripts and muscle memory.
 
 ## Always preview first
 
@@ -58,14 +55,14 @@ explicit choice.
 is accurate:
 
 ```
-$ jit migrate --dry-run
-jit migrate - plan (home scope)
+$ jit migrate ~/code/myapp/.env --dry-run
+jit migrate, plan
 Each modified file is backed up before it's rewritten.
 
 [.env file(s) → secrets move to the vault; the file keeps working as a live, auto-updating mount] (1)
   • /Users/alex/code/myapp/.env
 
-[DRY RUN] No files will be changed. Run without --dry-run to apply this plan.
+[DRY RUN] No files were changed. Run without --dry-run to apply this plan.
 ```
 
 Then apply it by dropping `--dry-run`. The same plan prints again, followed
@@ -86,8 +83,8 @@ that credential.
 
 ## What each category turns into
 
-Limit either scope to specific categories with `--only`
-(`jit migrate home --only=env,aws`):
+Limit a run to specific categories with `--only`
+(`jit migrate ~/code/myapp --only=env,aws`):
 
 | `--only` | Vault gets | The original file becomes | Guide |
 |---|---|---|---|

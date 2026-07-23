@@ -65,7 +65,8 @@ Often not. It depends on how the tool reads its credential:
 
 You mostly do not decide. Run [`jit scan`](./audit/index.md), and it prints
 the exact fix next to every finding, including `jit wrap <tool>` for CLI
-tokens. `jit migrate --dry-run` then shows the whole guided plan.
+tokens. `jit migrate <path> --dry-run` then shows the guided plan for the
+file(s) or project you name.
 [How the workflow flows](./getting-started/how-it-fits.md#find-integrate-use).
 
 ### Does it tell me when I need to `jit wrap` something?

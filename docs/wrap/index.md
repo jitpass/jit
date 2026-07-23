@@ -79,7 +79,7 @@ Some tools don't read an env var - they read a machine-wide credential
 those, wrap with `--grant` instead of `--env`:
 
 ```
-jit migrate home --only gcp     # move the ADC into the vault, mount the file
+jit migrate ~/.config/gcloud/application_default_credentials.json  # into the vault, mount the file
 jit wrap add gcloud --grant gcp # shim: `gcloud` now runs jit run --with gcp
 gcloud storage ls               # native; the shim grants the real ADC
 ```

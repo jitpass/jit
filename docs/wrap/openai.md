@@ -33,7 +33,7 @@ appearing in your shell environment or any file.
 
 The shim injects `OPENAI_API_KEY` from the vault into each `openai`
 process. If you previously had an `export OPENAI_API_KEY=...` line,
-remove it (or let `jit migrate home` convert it) - a shell export
+remove it (or let `jit migrate ~/.zshrc` convert it) - a shell export
 overrides the shim's injection. Details:
 [how wrapping works](./index.md).
 
