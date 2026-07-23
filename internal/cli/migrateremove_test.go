@@ -35,14 +35,77 @@ func execMigrateRemove(t *testing.T, input string, args ...string) (output strin
 // would hang on a Touch ID prompt if it did).
 func TestMigrateRemoveNothingToRemove(t *testing.T) {
 	withFixtureHome(t)
-	withFixtureCwd(t)
+	cwd := withFixtureCwd(t)
 
-	out, err := execMigrateRemove(t, "")
+	out, err := execMigrateRemove(t, "", cwd)
 	if err != nil {
 		t.Fatalf("jit migrate remove: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "No jit artifacts found in this project") {
+	if !strings.Contains(out, "No jit artifacts found in") {
 		t.Errorf("expected the empty state, got:\n%s", out)
+	}
+}
+
+// A bare `jit migrate remove` with no path must error, never fall back to
+// silently acting on the current directory — the whole point of the
+// path-required design on the most destructive command.
+func TestMigrateRemoveRequiresPath(t *testing.T) {
+	withFixtureHome(t)
+	withFixtureCwd(t)
+	if _, err := execMigrateRemove(t, ""); err == nil {
+		t.Error("jit migrate remove with no path: expected an error, got nil")
+	}
+}
+
+// Naming a FILE inside a project resolves up to the .jit/ project that owns
+// it and plans the whole project's removal — so `jit migrate remove
+// <proj>/.env` removes the project, not just the file.
+func TestMigrateRemoveFileResolvesToOwningProject(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+
+	profileDir := filepath.Join(cwd, ".jit", "profiles")
+	if err := os.MkdirAll(profileDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(profileDir, "myapp.yaml"), []byte("API_KEY: myapp/API_KEY\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// A file nested below the project root: removal must resolve up to cwd.
+	nested := filepath.Join(cwd, "src", "app", ".env")
+	if err := os.MkdirAll(filepath.Dir(nested), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(nested, []byte("placeholder"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := execMigrateRemove(t, "n\n", nested) // declined: never reaches auth
+	if err != nil {
+		t.Fatalf("jit migrate remove <file> (declined): %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "Removing jit from "+displayPath(home, cwd)) {
+		t.Errorf("expected the plan to target the owning project %s, got:\n%s", displayPath(home, cwd), out)
+	}
+}
+
+// A file with no .jit/ project above it is a loud error, not a silent no-op.
+func TestMigrateRemoveFileWithoutProjectFailsLoud(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	stray := filepath.Join(home, "loose", "notes.env")
+	if err := os.MkdirAll(filepath.Dir(stray), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(stray, []byte("placeholder"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	_, err := execMigrateRemove(t, "", stray)
+	if err == nil {
+		t.Fatal("expected an error for a file with no jit project above it, got nil")
+	}
+	if !strings.Contains(err.Error(), "not inside a jit project") {
+		t.Errorf("expected a no-project error, got: %v", err)
 	}
 }
 
@@ -73,7 +136,7 @@ func TestMigrateRemoveDeclinedTouchesNothing(t *testing.T) {
 		t.Fatalf("AddMount: %v", err)
 	}
 
-	out, err := execMigrateRemove(t, "n\n")
+	out, err := execMigrateRemove(t, "n\n", cwd)
 	if err != nil {
 		t.Fatalf("jit migrate remove (declined): %v\n%s", err, out)
 	}

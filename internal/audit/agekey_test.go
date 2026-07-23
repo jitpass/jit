@@ -95,7 +95,7 @@ func TestScanSOPSAgeKeysSkipsFIFO(t *testing.T) {
 	home := t.TempDir()
 	mkdirAll(t, filepath.Join(home, ".config", "sops", "age"))
 	path := filepath.Join(home, ".config", "sops", "age", "keys.txt")
-	// jit migrate home --only sops turns keys.txt into a live-mount FIFO.
+	// jit migrate <path> --only sops turns keys.txt into a live-mount FIFO.
 	// The scanner must skip it without ever opening it for read — a bare
 	// os.Open here blocks forever when no agent is writing. If the guard
 	// regresses, this test hangs rather than fails; the go test timeout is

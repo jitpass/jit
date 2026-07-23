@@ -357,8 +357,8 @@ func resolveInjectionProfile(cmdName, cwd, explicit, mode string, w io.Writer) (
 			cmdName, strings.Join(fileNames, ", "), strings.Join(profileNames, ", "), where)
 	}
 	if missing := unmigratedSiblingLayers(dir, mode, layers); len(missing) > 0 {
-		_, _ = color.New(color.FgYellow).Fprintf(w, "%s: note: %s in %s not migrated, not merged, and injected variables shadow it for most dotenv loaders (fix: jit migrate local)\n",
-			cmdName, strings.Join(missing, ", "), displayPath(home, dir))
+		_, _ = color.New(color.FgYellow).Fprintf(w, "%s: note: %s in %s not migrated, not merged, and injected variables shadow it for most dotenv loaders (fix: jit migrate %s)\n",
+			cmdName, strings.Join(missing, ", "), displayPath(home, dir), displayPath(home, dir))
 	}
 	return profile.Overlay(merged...), grantMounts, nil
 }
@@ -420,7 +420,7 @@ func resolveSingleProjectProfile(cmdName, cwd string, w io.Writer) (profile.Prof
 	}
 	switch len(names) {
 	case 0:
-		return nil, "", fmt.Errorf("no profile given and none defined in %s/, migrate this project with `jit migrate local`, or name one with --profile (see: jit profile list)", profile.ProfilesDir)
+		return nil, "", fmt.Errorf("no profile given and none defined in %s/, migrate this project with `jit migrate .`, or name one with --profile (see: jit profile list)", profile.ProfilesDir)
 	case 1:
 		fmt.Fprintf(w, "%s: using profile %q\n", cmdName, names[0])
 		p, err := profile.Load(cwd, names[0])

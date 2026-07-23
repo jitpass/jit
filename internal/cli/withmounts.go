@@ -74,7 +74,7 @@ func withMountPaths(names []string) ([]string, error) {
 			}
 		}
 		if matched == "" {
-			return nil, fmt.Errorf("--with %s: no migrated %s mount found (run `jit migrate home --only %s` first)", name, name, name)
+			return nil, fmt.Errorf("--with %s: no migrated %s mount found (migrate the %s file first by naming it, e.g. `jit migrate <path-to-%s-file>`)", name, name, name, name)
 		}
 		out = append(out, matched)
 	}

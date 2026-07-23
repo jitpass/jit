@@ -77,9 +77,9 @@ func WriteMarkdownReport(w io.Writer, findings []Finding, summary ScanSummary) {
 	// Parity with WriteHumanReport's [archived] legend: tag without
 	// explanation is jargon, explanation without a tagged finding is noise.
 	if anyArchived(findings) {
-		fmt.Fprintln(w, "[archived] findings live under an archived/backup-looking directory: `jit migrate home` skips them by default, rerun it with `--include-archived` to convert them too.")
+		fmt.Fprintln(w, "[archived] findings live under an archived/backup-looking directory: name such a file explicitly to convert it, e.g. `jit migrate <path>`.")
 	}
-	fmt.Fprintln(w, "Run `jit migrate --dry-run` to see the guided fix plan for what's fixable here.")
+	fmt.Fprintln(w, "Run `jit migrate <path> --dry-run` to see the guided fix plan for a flagged file.")
 	fmt.Fprintln(w, "No secret values are ever printed in full. Run `jit scan --format ndjson` for machine-readable output (same redaction rules apply).")
 }
 

@@ -30,10 +30,10 @@ type frRec struct {
 func baseDeps() (*firstRunDeps, *frRec) {
 	rec := &frRec{}
 	d := &firstRunDeps{
-		vaultReady:   func() bool { rec.vaultReadyCalled = true; return rec.vaultReadyReturn },
-		isTTY:        func() bool { return true },
-		cwd:          func() (string, error) { return "/proj", nil },
-		homeDir:      func() (string, error) { return "/home/u", nil },
+		vaultReady: func() bool { rec.vaultReadyCalled = true; return rec.vaultReadyReturn },
+		isTTY:      func() bool { return true },
+		cwd:        func() (string, error) { return "/proj", nil },
+		homeDir:    func() (string, error) { return "/home/u", nil },
 		scan: func(root string) ([]audit.Finding, audit.ScanSummary, error) {
 			rec.scanRoots = append(rec.scanRoots, root)
 			return nil, audit.ScanSummary{}, nil

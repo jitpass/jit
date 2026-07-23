@@ -173,7 +173,7 @@ func TestScanGCPApplicationDefaultCredentialsSkipsFIFO(t *testing.T) {
 	home := t.TempDir()
 	mkdirAll(t, filepath.Join(home, ".config", "gcloud"))
 	path := filepath.Join(home, ".config", "gcloud", "application_default_credentials.json")
-	// jit migrate home --only gcp turns the ADC file into a live-mount
+	// jit migrate <path> --only gcp turns the ADC file into a live-mount
 	// FIFO. The scanner must skip it without ever opening it for read —
 	// a bare os.Open here blocks forever when no agent is writing. If the
 	// guard regresses, this test hangs rather than fails; the go test
@@ -292,7 +292,7 @@ machine second.example.com login v password SECOND_secret_value
 
 func TestScanNetrcSkipsFIFO(t *testing.T) {
 	home := t.TempDir()
-	// jit migrate home --only netrc turns ~/.netrc into a live-mount FIFO.
+	// jit migrate <path> --only netrc turns ~/.netrc into a live-mount FIFO.
 	// The scanner must skip it without opening it for read — a bare open
 	// blocks forever with no agent writing. If the guard regresses, this
 	// test hangs rather than fails; the go test timeout surfaces it.
@@ -327,7 +327,7 @@ aws_secret_access_key = examplesecret
 }
 
 // The global ~/.npmrc is a fixed path checked outside walkHomeDir, so it
-// needs its own regular-file guard: `jit migrate home` can turn it into a
+// needs its own regular-file guard: `jit migrate <path>` can turn it into a
 // live template mount (a named pipe), and opening that for read would hang
 // the scan with no agent writing, or report agent-served decoy content as an
 // exposed credential.
