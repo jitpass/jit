@@ -25,10 +25,19 @@ type KeyWrapper interface {
 // was for, because the wire carries only opaque key bytes. The label is
 // that missing fact — strictly audit-side, self-reported by the caller,
 // and never allowed to gate anything (internal/agent records and displays
-// it as caller-reported). internal/keychainwrap deliberately doesn't
-// implement it: with no broker in between, there's no audit trail to feed.
+// it as caller-reported).
+//
+// class is different: it is the secret's provenance Class (one of the
+// vault.Class* values) and it is bound into the DEK-wrap as AEAD additional
+// authenticated data. Unlike label, class is therefore AUTHORITATIVE — an
+// unwrap that names the wrong class (or omits it) fails the auth tag, so a
+// caller cannot lie about what kind of credential it is unwrapping to dodge
+// a class-based policy, nor unwrap while lying. Binding class here is what
+// lets the agent gate consent on it (per-process credential consent). Both
+// wrappers (agent and keychainwrap) MUST bind it identically: a DEK wrapped
+// by one and unwrapped by the other has to agree on the AAD.
 type LabeledKeyWrapper interface {
 	KeyWrapper
-	WrapKeyLabeled(dek []byte, label string) (wrapped []byte, err error)
-	UnwrapKeyLabeled(wrapped []byte, label string) (dek []byte, err error)
+	WrapKeyLabeled(dek []byte, label, class string) (wrapped []byte, err error)
+	UnwrapKeyLabeled(wrapped []byte, label, class string) (dek []byte, err error)
 }
