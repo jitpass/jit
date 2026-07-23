@@ -26,7 +26,9 @@ vault before being overwritten, so an undo is itself undoable, nothing
 is ever simply destroyed.
 
 What it deliberately does NOT do: vault secrets and profile manifests
-stay (`jit migrate remove` deletes a project's completely).
+stay (`jit migrate remove` deletes a project's completely, and
+`jit migrate remove <file>` deletes a loose secret's completely). When an
+undone file was a loose secret, undo ends by pointing you at that command.
 
 Like every restore-to-plaintext operation, this writes real secret
 values back to disk, it prints the full plan and confirms first
