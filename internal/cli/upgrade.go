@@ -393,7 +393,10 @@ func restartServiceOntoCurrentBinary() error {
 		return err
 	}
 	if _, statErr := os.Stat(plistPath); errors.Is(statErr, os.ErrNotExist) {
-		if _, _, ierr := installAgentService(agentInstallDefaultTTL, false); ierr != nil {
+		// No plist to preserve a setting from, so install with the defaults
+		// (default TTL, consent on). An existing plist takes the reload branch
+		// below, which keeps whatever consent state it already has baked in.
+		if _, _, ierr := installAgentService(agentInstallDefaultTTL, true); ierr != nil {
 			return ierr
 		}
 		return nil
