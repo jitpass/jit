@@ -109,13 +109,16 @@ func TestStatusSecretsDetailListsGroups(t *testing.T) {
 		t.Fatalf("jit status --secrets: %v", err)
 	}
 	// The detail view is vault-centric: it lists each group's stored secret
-	// KEYS (the env-var-name -> path mapping is what `jit profile show` prints).
+	// KEYS in the house style — a bold "<group> <count>" header over the keys
+	// flowed into columns, with the unreferenced block's shared origin stated
+	// once rather than per key.
 	for _, want := range []string{
-		"Wired here (1 group(s)",
-		"aws/ (1)",
-		"• key1",
-		"Unreferenced here (1 group(s), 1 secret(s)):",
-		"orphan/ (1)",
+		"Wired here",
+		"aws 1",
+		"key1",
+		"Unreferenced here",
+		"orphan 1",
+		"no recorded origin",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected --secrets output to contain %q, got:\n%s", want, out)
