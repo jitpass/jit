@@ -433,9 +433,34 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	// flag, not remediation — a first-time reader of a HIGH/CRITICAL
 	// report had no pointer from here to the command that actually fixes
 	// any of it. jit migrate's own dry-run trailer already points back
-	// at `jit scan` the other way; this closes the loop.
-	fmt.Fprintln(w, "Run `jit migrate <path> --dry-run` to see the guided fix plan for a flagged file.")
+	// at `jit scan` the other way; this closes the loop. When there is a
+	// concrete finding, name its real path in the example rather than a
+	// `<path>` placeholder: `jit scan` runs pathless but `jit migrate`
+	// requires an explicit target (it mutates files, so it never sweeps a
+	// whole tree on its own), and re-deriving the flagged path by hand was
+	// the friction point. A copy-pasteable command bridges that gap.
+	if example := firstFindingPath(findings); example != "" {
+		fmt.Fprintf(w, "Run `jit migrate %s --dry-run` to see the guided fix plan for it.\n", displayFilePath(home, example))
+	} else {
+		fmt.Fprintln(w, "Run `jit migrate <path> --dry-run` to see the guided fix plan for a flagged file.")
+	}
 	_, _ = color.New(color.Faint).Fprintln(w, "No secret values are ever printed in full. Run `jit scan --format ndjson` for machine-readable output (same redaction rules apply).")
+}
+
+// firstFindingPath returns a representative flagged file path for the migrate
+// trailer, in the same category order the report renders, so the example names
+// a file the reader can actually see above it. Empty string when nothing was
+// flagged (a clean report needs no fix example).
+func firstFindingPath(findings []Finding) string {
+	byType := groupFindingsByType(findings)
+	for _, ft := range AllFindingTypes {
+		for _, f := range byType[ft] {
+			if f.FilePath != "" {
+				return f.FilePath
+			}
+		}
+	}
+	return ""
 }
 
 // findingIndent is the left margin every finding row sits at, one step in
