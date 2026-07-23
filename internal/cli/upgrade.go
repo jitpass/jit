@@ -175,7 +175,7 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintf(out, "Restarting service ... ")
 	if err := restartServiceOntoCurrentBinary(); err != nil {
 		fmt.Fprintln(out, "could not restart automatically")
-		fmt.Fprintf(out, "  Run `jit service restart` to move the service onto %s (%s).\n", latest, err)
+		fmt.Fprint(out, hlCmds(fmt.Sprintf("  Run `jit service restart` to move the service onto %s (%s).\n", latest, err)))
 	} else {
 		fmt.Fprintf(out, "now on %s.\n", latest)
 	}
