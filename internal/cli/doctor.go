@@ -145,27 +145,28 @@ var doctorCmd = &cobra.Command{
 // global-mount reminders.
 func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings []checkFinding) error {
 	for _, f := range problems {
-		_, _ = color.New(color.FgRed).Fprintf(out, "✗ %s\n", formatFinding(f))
+		_, _ = cRisk.Fprintf(out, "%s %s\n", glyphRisk, formatFinding(f))
 	}
 	for _, f := range warnings {
-		_, _ = color.New(color.FgYellow).Fprintf(out, "⚠ %s\n", formatFinding(f))
+		_, _ = cWarn.Fprintf(out, "%s %s\n", glyphWarn, formatFinding(f))
 	}
 
 	switch {
 	case outcome.ProfilesChecked == 0:
-		fmt.Fprintln(out, "No profiles found under .jit/profiles/ or the global store.")
+		_, _ = cDim.Fprintln(out, "No profiles found under .jit/profiles/ or the global store.")
 	case len(problems) == 0:
 		_, _ = color.New(color.FgGreen, color.Bold).Fprintf(out,
-			"✓ %d profile(s), %d secret reference(s) all resolve cleanly\n",
-			outcome.ProfilesChecked, outcome.SecretsChecked)
+			"%s %d profile(s), %d secret reference(s) all resolve cleanly\n",
+			glyphDone, outcome.ProfilesChecked, outcome.SecretsChecked)
 	}
 
 	// --verbose lists the individual references so a passing run can still
 	// answer "did it actually see my profile?" — a bare count can't.
 	if doctorVerbose && len(outcome.OKRefs) > 0 {
-		fmt.Fprintln(out, "\nChecked:")
+		_, _ = cBold.Fprintln(out, "\nChecked")
 		for _, r := range outcome.OKRefs {
-			fmt.Fprintf(out, "  ✓ %s (%s): %s → %s\n", r.Profile, r.Scope, r.Variable, r.Path)
+			_, _ = cOK.Fprintf(out, "  %s ", glyphDone)
+			fmt.Fprintf(out, "%s (%s): %s → %s\n", r.Profile, r.Scope, r.Variable, r.Path)
 		}
 	}
 
