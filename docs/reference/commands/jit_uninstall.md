@@ -14,6 +14,12 @@ they are. Add --purge to also erase the vault and global config; uninstall
 will name how many secrets that destroys and recommend `jit vault export`
 first.
 
+Uninstalling requires a fresh Touch ID/passcode approval — so someone at your
+unlocked Mac can't remove jit (or --purge your secrets) without your presence.
+--yes skips only the typed y/N confirmation, never the fingerprint. (This
+guards the `jit uninstall` path; it is not a substitute for file permissions —
+anyone with your shell can still delete files directly.)
+
 ```
 jit uninstall [flags]
 ```
@@ -23,7 +29,7 @@ jit uninstall [flags]
 ```
       --keep-binary   leave the jit binary in place (e.g. it's managed by a package manager)
       --purge         also erase the vault and global config (destroys your secrets)
-  -y, --yes           skip the confirmation prompt
+  -y, --yes           skip the typed y/N confirmation (still requires the Touch ID/passcode gate)
 ```
 
 ### Options inherited from parent commands
