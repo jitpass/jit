@@ -114,20 +114,24 @@ var runCmd = &cobra.Command{
 			return fmt.Errorf("jit run: %w", err)
 		}
 
-		// When this run grants --with sops, point sops at jit's native
-		// SOPS_AGE_KEY_CMD hook: sops v3.10+ fetches the age key through the
-		// broker (jit sops-age-key) and never reads the granted keys.txt mount
-		// at all. Older sops falls back to that mount, which stays granted
-		// below, so this is a delivery upgrade, not a compatibility break.
-		env = withSopsAgeKeyCmd(env, runWith)
-
 		// Last thing before the exec: ask the agent to make this run's
 		// mounts compatible with the command about to read them. execve
 		// keeps the pid, so whatever we register on os.Getpid() lands on
 		// exactly that command. The project's .env layers swap by default
 		// (or grant with --live); project template mounts and any --with
-		// global mounts are granted (see requestRunCompat).
-		requestRunCompat(cmd.ErrOrStderr(), grantMounts, runWith, withMounts, args, cwd, runLive)
+		// global mounts are granted (see requestRunCompat). The return reports
+		// whether the disclosed --with grant was actually approved.
+		globalGranted := requestRunCompat(cmd.ErrOrStderr(), grantMounts, runWith, withMounts, args, cwd, runLive)
+
+		// Only once that --with grant is approved do we point sops at its
+		// native SOPS_AGE_KEY_CMD hook, so sops v3.10+ fetches the age key
+		// through the broker (jit sops-age-key) with nothing on disk. A
+		// declined grant must leave the run no path to the key, the hook
+		// included, not just the mount. Older sops falls back to the still-
+		// granted keys.txt mount.
+		if globalGranted {
+			env = withSopsAgeKeyCmd(env, runWith)
+		}
 
 		// syscall.Exec never returns on success — it replaces this
 		// process's image entirely — so an error here always means it
@@ -136,13 +140,15 @@ var runCmd = &cobra.Command{
 	},
 }
 
-// withSopsAgeKeyCmd sets SOPS_AGE_KEY_CMD for a run that grants --with sops, so
-// sops (v3.10+) fetches the age key through jit's broker hook instead of reading
-// the granted keys.txt mount, keeping the key off disk entirely. It is a no-op
-// unless sops is among the granted --with names, and it never overrides a
-// SOPS_AGE_KEY_CMD the user already set (theirs wins). The value mirrors the
-// documented `jit sops-age-key` usage; sops runs it via `sh -c`, so the absolute
-// executable path plus the subcommand is a valid command string.
+// withSopsAgeKeyCmd sets SOPS_AGE_KEY_CMD for a run whose --with sops grant was
+// approved, so sops (v3.10+) fetches the age key through jit's broker hook
+// instead of reading the granted keys.txt mount, keeping the key off disk
+// entirely. The caller only invokes it after the disclosed grant succeeds, so a
+// declined grant leaves no hook behind. It is a no-op unless sops is among the
+// --with names, and it never overrides a SOPS_AGE_KEY_CMD the user already set
+// (theirs wins). The value mirrors the documented `jit sops-age-key` usage;
+// sops runs it via `sh -c`, so the absolute executable path plus the subcommand
+// is a valid command string.
 func withSopsAgeKeyCmd(env, withNames []string) []string {
 	if !slices.Contains(withNames, "sops") {
 		return env
@@ -179,10 +185,12 @@ func withSopsAgeKeyCmd(env, withNames []string) []string {
 // unless the session is
 // ALREADY unlocked, so a compat request can't conjure a Touch ID prompt the
 // command didn't require.
-func requestRunCompat(w io.Writer, mountPaths, withNames, withMounts, argv []string, cwd string, live bool) {
+// The return reports whether the disclosed global (--with) grant was approved,
+// so the caller can gate hook wiring (SOPS_AGE_KEY_CMD) on a real yes.
+func requestRunCompat(w io.Writer, mountPaths, withNames, withMounts, argv []string, cwd string, live bool) bool {
 	templateMounts := projectTemplateMounts(cwd)
 	if len(mountPaths) == 0 && len(templateMounts) == 0 && len(withMounts) == 0 {
-		return
+		return false
 	}
 	// This run actually has a mount to make compatible, so it needs the agent
 	// that serves it. Set one up silently on first use rather than leaving the
@@ -193,7 +201,7 @@ func requestRunCompat(w io.Writer, mountPaths, withNames, withMounts, argv []str
 	ensureAgentInstalled()
 	c, err := agentClient()
 	if err != nil {
-		return
+		return false
 	}
 	// Live mode (keep the FIFO + grant) for the dotenv layers is chosen only
 	// on explicit intent, never a guess: the --live flag, a project that
@@ -212,7 +220,7 @@ func requestRunCompat(w io.Writer, mountPaths, withNames, withMounts, argv []str
 	runMounts = append(runMounts, agent.RunMounts(mountPaths, dotenvMode)...)
 	runMounts = append(runMounts, agent.RunMounts(templateMounts, agent.MountModeGrant)...)
 	global := agent.RunMounts(withMounts, agent.MountModeGrant)
-	requestRunCompatVia(c, w, runMounts, global, withNames, int32(os.Getpid())) // #nosec G115 -- getpid always fits int32
+	return requestRunCompatVia(c, w, runMounts, global, withNames, int32(os.Getpid())) // #nosec G115 -- getpid always fits int32
 }
 
 // requestRunCompatVia is requestRunCompat minus the ambient client/pid —
@@ -221,13 +229,15 @@ func requestRunCompat(w io.Writer, mountPaths, withNames, withMounts, argv []str
 // while the global --with mounts go through a separate disclosed challenge
 // naming the credentials — so declining a global grant drops only that,
 // never the run's own .env swap.
-func requestRunCompatVia(c *agent.Client, w io.Writer, runMounts, global []agent.RunMount, withNames []string, pid int32) {
+// It returns true only when a disclosed global (--with) grant was requested and
+// approved, so the caller can wire a native hook only on a real yes.
+func requestRunCompatVia(c *agent.Client, w io.Writer, runMounts, global []agent.RunMount, withNames []string, pid int32) bool {
 	if !c.Reachable() {
-		return
+		return false
 	}
 	st, err := c.Status()
 	if err != nil || !st.Unlocked {
-		return
+		return false
 	}
 
 	if len(runMounts) > 0 {
@@ -256,10 +266,12 @@ func requestRunCompatVia(c *agent.Client, w io.Writer, runMounts, global []agent
 			// Declined or failed: the global grant is dropped, the run
 			// proceeds (the tool will get decoys and fail if it needed them).
 			fmt.Fprintf(w, "jit run: global grant for %s not applied (%v)\n", strings.Join(withNames, ", "), err)
-			return
+			return false
 		}
 		fmt.Fprintf(w, "jit run: granted this run your global %s credential(s) until it exits\n", strings.Join(withNames, ", "))
+		return true
 	}
+	return false
 }
 
 // commandReadsEnvFile recognizes the small set of tools that read real
