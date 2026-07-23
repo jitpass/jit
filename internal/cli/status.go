@@ -381,7 +381,7 @@ func printStatusText(w io.Writer, r statusResult) {
 
 	if r.Vault.SecretsStored == 0 && r.Vault.BackupsStored == 0 {
 		statusLabel(w, "vault")
-		fmt.Fprintln(w, "no secrets yet — run `jit vault init`, or `jit migrate .` to populate it.")
+		fmt.Fprintln(w, hlCmds("no secrets yet — run `jit vault init`, or `jit migrate .` to populate it."))
 	} else {
 		statusLabel(w, "vault")
 		if r.Vault.BackupsStored > 0 {
@@ -524,12 +524,14 @@ func printSecretsSection(w io.Writer, s statusSecrets) {
 	}
 }
 
-// statusLabel prints one dashboard row's dim, fixed-width label (jit, vault,
+// statusLabel prints one dashboard row's bold, fixed-width label (jit, vault,
 // backup, service, secrets, mounts) so the values line up in a column
-// docker-style. The caller prints the value — with a leading glyph for a
-// state-bearing row — immediately after, then its own newline.
+// docker-style. Bold, not faint: faint rendered as a dark grey that was hard
+// to read on a dark terminal, and the label is the row's anchor — it should
+// be legible, not receding. The caller prints the value — with a leading
+// glyph for a state-bearing row — immediately after, then its own newline.
 func statusLabel(w io.Writer, label string) {
-	_, _ = cDim.Fprintf(w, "%-10s", label)
+	_, _ = cBold.Fprintf(w, "%-10s", label)
 }
 
 // printRollupLine renders one Secrets-rollup row: a semantic state glyph, the
