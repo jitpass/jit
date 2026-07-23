@@ -7,12 +7,14 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/jitpass/jit/internal/mount"
+	"github.com/jitpass/jit/internal/vault"
 )
 
 // execMigrateRemove drives `jit migrate remove` through rootCmd, mirroring
@@ -184,7 +186,7 @@ func TestBuildProjectRemovalPlanKeepsSharedVaultPaths(t *testing.T) {
 	}
 
 	vaultRoot := filepath.Join(home, "Library", "Application Support", "jitpass")
-	plan, err := buildProjectRemovalPlan(vaultRoot, cwd)
+	plan, err := buildProjectRemovalPlan(vaultRoot, home, cwd, &vault.Vault{Root: vaultRoot})
 	if err != nil {
 		t.Fatalf("buildProjectRemovalPlan: %v", err)
 	}
@@ -193,6 +195,37 @@ func TestBuildProjectRemovalPlanKeepsSharedVaultPaths(t *testing.T) {
 	}
 	if len(plan.keptShared) != 1 || plan.keptShared[0] != "root/SHARED" {
 		t.Errorf("keptShared = %v, want [root/SHARED], deleting it would break the global profile", plan.keptShared)
+	}
+}
+
+// A vault secret no profile references but whose birth-time Origin falls
+// inside the project tree is swept into the removal by origin — the orphan a
+// path-only undo/remove used to strand. A secret whose Origin is outside the
+// tree, and one with no Origin at all (a pre-provenance v2 envelope), are left
+// untouched.
+func TestBuildProjectRemovalPlanSweepsOriginOrphans(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	vaultRoot := filepath.Join(home, "Library", "Application Support", "jitpass")
+
+	inside := filepath.ToSlash(filepath.Join(cwd, ".env"))
+	writeVaultEnc(t, home, "custom_scripts-descope/DESCOPE_PROJECT_1",
+		fmt.Sprintf(`{"version":3,"recipients":{"test":"00"},"payload":"00","origin":%q}`, inside))
+	outside := filepath.ToSlash(filepath.Join(home, "elsewhere", ".env"))
+	writeVaultEnc(t, home, "other/KEEP",
+		fmt.Sprintf(`{"version":3,"recipients":{"test":"00"},"payload":"00","origin":%q}`, outside))
+	writeVaultEnc(t, home, "legacy/NOORIGIN",
+		`{"version":2,"recipients":{"test":"00"},"payload":"00"}`)
+
+	plan, err := buildProjectRemovalPlan(vaultRoot, home, cwd, &vault.Vault{Root: vaultRoot})
+	if err != nil {
+		t.Fatalf("buildProjectRemovalPlan: %v", err)
+	}
+	if len(plan.deletePaths) != 1 || plan.deletePaths[0] != "custom_scripts-descope/DESCOPE_PROJECT_1" {
+		t.Errorf("deletePaths = %v, want just the in-tree orphan (the out-of-tree and no-origin secrets stay)", plan.deletePaths)
+	}
+	if len(plan.orphanSecrets) != 1 || plan.orphanSecrets[0] != "custom_scripts-descope/DESCOPE_PROJECT_1" {
+		t.Errorf("orphanSecrets = %v, want the origin-swept secret reported as an orphan", plan.orphanSecrets)
 	}
 }
 
@@ -230,7 +263,7 @@ func TestBuildProjectRemovalPlanClaimsOwnedMCPProfiles(t *testing.T) {
 	}
 
 	vaultRoot := filepath.Join(home, "Library", "Application Support", "jitpass")
-	plan, err := buildProjectRemovalPlan(vaultRoot, cwd)
+	plan, err := buildProjectRemovalPlan(vaultRoot, home, cwd, &vault.Vault{Root: vaultRoot})
 	if err != nil {
 		t.Fatalf("buildProjectRemovalPlan: %v", err)
 	}

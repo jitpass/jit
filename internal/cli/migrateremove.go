@@ -94,8 +94,15 @@ type projectRemovalPlan struct {
 	mcpRestores map[string]map[string]string
 	deletePaths []string // vault secret paths to delete
 	keptShared  []string // vault paths kept because another profile references them
-	backups     []migrate.BackupRecord
-	jitDir      string
+	// orphanSecrets are the subset of deletePaths that NO profile references —
+	// swept into the removal purely because their birth-time Origin falls
+	// inside this project tree. Tracked apart from the profile-derived paths
+	// because they have no profile to be listed under, and they are exactly the
+	// entries a path-only `jit migrate undo`/`remove` used to strand in the
+	// vault forever.
+	orphanSecrets []string
+	backups       []migrate.BackupRecord
+	jitDir        string
 }
 
 func runMigrateRemove(cmd *cobra.Command, args []string) error {
@@ -195,12 +202,21 @@ func findProjectRoot(start string) (string, bool) {
 func removeOneProject(cmd *cobra.Command, root, home, projectRoot string) error {
 	out := cmd.OutOrStdout()
 
-	plan, err := buildProjectRemovalPlan(root, projectRoot)
+	// A read-only vault for planning only: buildProjectRemovalPlan reads secret
+	// metadata (Origin) to find orphaned secrets, which is envelope-plaintext
+	// and never touches the KeyWrapper, so planning stays auth-free. The
+	// destructive pass below opens its OWN fresh-auth vault.
+	rv, err := openVaultReadOnly()
+	if err != nil {
+		return fmt.Errorf("jit migrate remove: %w", err)
+	}
+	plan, err := buildProjectRemovalPlan(root, home, projectRoot, rv)
 	if err != nil {
 		return fmt.Errorf("jit migrate remove: %w", err)
 	}
 	if len(plan.mounts) == 0 && len(plan.inPlace) == 0 && len(plan.companions) == 0 &&
-		len(plan.profileInfos) == 0 && len(plan.ownedGlobal) == 0 && len(plan.backups) == 0 && plan.jitDir == "" {
+		len(plan.profileInfos) == 0 && len(plan.ownedGlobal) == 0 && len(plan.backups) == 0 &&
+		len(plan.deletePaths) == 0 && plan.jitDir == "" {
 		fmt.Fprintf(out, "No jit artifacts found in %s, nothing to remove. (Machine-level migrations are reversed with `jit migrate undo`.)\n", displayPath(home, projectRoot))
 		return nil
 	}
@@ -334,7 +350,7 @@ func removeOneProject(cmd *cobra.Command, root, home, projectRoot string) error 
 // buildProjectRemovalPlan gathers everything under cwd's tree that jit
 // migrate ever created, without touching the vault's KeyWrapper — planning
 // must never cost an auth prompt.
-func buildProjectRemovalPlan(root, cwd string) (projectRemovalPlan, error) {
+func buildProjectRemovalPlan(root, home, cwd string, rv *vault.Vault) (projectRemovalPlan, error) {
 	plan := projectRemovalPlan{cwd: cwd}
 
 	entries, err := mount.LoadRegistry(mount.RegistryPath(root))
@@ -395,6 +411,51 @@ func buildProjectRemovalPlan(root, cwd string) (projectRemovalPlan, error) {
 		}
 	}
 
+	// Snapshot the profile-derived set before the Origin sweep widens it, so
+	// the sweep's additions can be reported as orphans (nothing names them).
+	profileDerived := make(map[string]bool, len(deleteSet))
+	for p := range deleteSet {
+		profileDerived[p] = true
+	}
+
+	// A path-only `jit migrate undo`/`remove` reverses a project's files and
+	// backups, but the vault secrets a migration created can outlive every
+	// profile that ever named them (a project's .jit/ profiles deleted, or a
+	// profile that was never persisted for this source). Those secrets are
+	// orphaned — invisible to the profile walk above — so a removal trusting
+	// profiles alone strands them in the vault forever (a real dogfood run left
+	// twelve custom_scripts-descope/* secrets behind after undo+remove). Each
+	// secret's birth-time Origin is the surviving link from this project's
+	// files back to its vault entries, so sweep by it too: any secret whose
+	// normalized Origin resolves inside cwd joins the delete set. Origin is
+	// best-effort and allowed to go stale, so this only ever ADDS candidates;
+	// the shared[] guard below still spares anything another profile references,
+	// and Info reads envelope plaintext only (no key, no auth prompt), so
+	// planning stays auth-free.
+	if rv != nil {
+		paths, err := rv.List()
+		if err != nil {
+			return plan, fmt.Errorf("listing vault for origin sweep: %w", err)
+		}
+		for _, p := range paths {
+			// _backups/ entries are raw file snapshots handled by their own
+			// records below, never project secrets — skip them.
+			if deleteSet[p] || strings.HasPrefix(p, "_backups/") {
+				continue
+			}
+			info, err := rv.Info(p)
+			if err != nil {
+				return plan, fmt.Errorf("reading secret metadata for %s: %w", p, err)
+			}
+			if info.Origin == "" {
+				continue
+			}
+			if pathWithinDir(cwd, expandTilde(info.Origin, home)) {
+				deleteSet[p] = true
+			}
+		}
+	}
+
 	// Never delete a vault path some OTHER profile still references — a
 	// pre-#55 vault (flat root/ namespace) genuinely has cross-project
 	// shared paths, and deleting one project's copy would break the other
@@ -427,9 +488,13 @@ func buildProjectRemovalPlan(root, cwd string) (projectRemovalPlan, error) {
 			continue
 		}
 		plan.deletePaths = append(plan.deletePaths, vaultPath)
+		if !profileDerived[vaultPath] {
+			plan.orphanSecrets = append(plan.orphanSecrets, vaultPath)
+		}
 	}
 	sort.Strings(plan.deletePaths)
 	sort.Strings(plan.keptShared)
+	sort.Strings(plan.orphanSecrets)
 
 	recs, err := migrate.LoadBackupRecords(root)
 	if err != nil {
@@ -497,6 +562,13 @@ func printProjectRemovalPlan(out interface{ Write([]byte) (int, error) }, home s
 		printMigrateResultCategory(out, "Profiles + their vault secrets deleted", n)
 		for _, info := range plan.profileInfos {
 			fmt.Fprintf(out, "  • %q (%s)\n", info.Name, displayPath(home, info.Path))
+		}
+		fmt.Fprintln(out)
+	}
+	if n := len(plan.orphanSecrets); n > 0 {
+		printMigrateResultCategory(out, "Orphaned vault secrets deleted (no profile; matched by origin in this project)", n)
+		for _, p := range plan.orphanSecrets {
+			fmt.Fprintf(out, "  • %s\n", p)
 		}
 		fmt.Fprintln(out)
 	}
