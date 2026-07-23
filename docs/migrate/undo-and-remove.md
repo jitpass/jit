@@ -54,6 +54,14 @@ jit migrate remove ~/code/myapp/.env   # removes the whole ~/code/myapp project
 A bare `jit migrate remove` with no path does nothing; a file with no jit
 project above it is a loud error.
 
+The vault secrets it deletes are not only the ones a profile references: any
+migrated secret whose recorded origin falls inside the project tree is swept
+out too, so secrets stranded by an earlier `undo` (their profile already gone)
+don't linger. A secret another profile or mount still references is always
+kept. For orphaned secrets that a project removal can't reach - older ones with
+no recorded origin, or ones tied to no single project - use
+[`jit vault orphans`](../vault/maintenance.md).
+
 ### undo vs. remove
 
 | | `jit migrate undo` | `jit migrate remove` |
