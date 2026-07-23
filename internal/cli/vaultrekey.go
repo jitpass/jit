@@ -120,7 +120,16 @@ var vaultRekeyCmd = &cobra.Command{
 		} else {
 			fmt.Fprintln(cmd.ErrOrStderr(), "jit vault rekey: resuming, the old master key is already gone; verifying every secret opens under the staged key.")
 		}
+		// RewrapAll re-wraps every stored envelope one keychain/agent call at a
+		// time and can run for a while on a large vault with nothing to show
+		// for it. A single animated step tells the user it's working; it needs
+		// no per-secret counter to stop looking hung, and threading one into
+		// RewrapAll would churn its whole test surface. Stopped before the
+		// result line prints.
+		progress := newProgress(cmd, false)
+		progress.Step("Re-wrapping every secret under the new master key…", "Re-wrapped every secret under the new master key")
 		rewrapped, current, err := v.RewrapAll(oldKW, primary.StagedRekeyWrapper())
+		progress.Stop()
 		if err != nil {
 			// Marker stays: the vault is mid-rotation and other commands
 			// must keep refusing to write until a re-run gets past this.
