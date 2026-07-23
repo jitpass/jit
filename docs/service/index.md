@@ -62,8 +62,9 @@ dropped and the next vault use prompts once.
   service also notices a replaced binary itself and restarts onto it once its
   session is locked and no prompt is pending). It also brings the service
   back if it ever stopped, recreating the login item if needed.
-- `jit service log` - the tail of the service's own timestamped log (session
-  events, mount reads and who made them, serve errors); `-f` follows it live.
+- `jit service log` - the tail of the service's raw operational output (startup,
+  mount reads and who made them, serve-error detail); `-f` follows it live. The
+  session events themselves live in [`jit audit`](./provenance.md), not here.
 - `jit service run` - run it in the foreground (normally launchd's job,
   useful for debugging).
 
@@ -81,5 +82,5 @@ dropped and the next vault use prompts once.
 ## Every unlock is attributed
 
 The service knows, from the kernel, exactly which process asked for every
-unlock - and keeps the history, which [`jit audit`](../audit/index.md)
+unlock - and keeps the history, which [`jit audit`](./provenance.md)
 prints. That's the subject of **[Provenance](./provenance.md)**.

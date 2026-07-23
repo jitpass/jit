@@ -131,15 +131,23 @@ var agentRunCmd = &cobra.Command{
 			return "device passcode"
 		}
 
-		// Durable session history: every event goes to agent-history.jsonl
-		// as well as the prose log, and the previous processes' events are
-		// seeded back into the ring — so `jit audit` can answer for
-		// prompts that happened before the most recent launchd restart,
-		// which is exactly when the question gets asked (restarts happen at
-		// login; the question is asked the next morning, about yesterday).
-		// The start marker is what keeps the restored sequence honest: a
-		// session that "just locked" across a restart didn't lock, the
-		// process died.
+		// Durable session history: every event goes to agent-history.jsonl,
+		// the one structured trail `jit audit` reads (merged with the command
+		// log), and the previous processes' events are seeded back into the
+		// ring — so `jit audit` can answer for prompts that happened before the
+		// most recent launchd restart, which is exactly when the question gets
+		// asked (restarts happen at login; the question is asked the next
+		// morning, about yesterday). The start marker is what keeps the
+		// restored sequence honest: a session that "just locked" across a
+		// restart didn't lock, the process died.
+		//
+		// This file is now the SOLE home of session events: they used to be
+		// double-written here and as prose into agent.log, so the same unlock
+		// sat in two places and agent.log doubled as an event log. It doesn't
+		// anymore — agent.log is the raw operational output (startup, mount
+		// notes, serve-error prose, panics) that `jit service log` tails, and
+		// `jit audit` is the one place the events themselves are read, filtered,
+		// and followed.
 		hist := newHistoryLog(root, stderr)
 		hist.trim()
 		hist.append(agent.SessionEvent{
@@ -149,8 +157,16 @@ var agentRunCmd = &cobra.Command{
 		})
 		server.SeedHistory(hist.load(agent.MaxSessionEvents))
 		server.OnSessionEvent = func(e agent.SessionEvent) {
-			logSessionEvent(stdout, e)
 			hist.append(e)
+		}
+		// Socket-boundary failures (a rejected peer, a malformed request, the
+		// accept loop dying) become durable KindError events in the same trail,
+		// so `jit audit` sees them and a SIEM can ship them — a rejected peer in
+		// particular used to be logged nowhere. A prose line still goes to the
+		// raw operational log so `jit service log` shows it in context too.
+		server.OnServeError = func(e agent.SessionEvent) {
+			hist.append(e)
+			fmt.Fprintf(stderr, "jit service: %s\n", e.Cause)
 		}
 
 		if err := server.Listen(); err != nil {
@@ -663,10 +679,16 @@ const agentLogPollInterval = 500 * time.Millisecond
 
 var agentLogCmd = &cobra.Command{
 	Use:   "log",
-	Short: "Show the service's own log (session events, mount reads, serve errors)",
-	Long: "Prints the tail of the service's log file, the durable, timestamped record\n" +
-		"of session events, mount reads (with who read them), and serve errors that\n" +
-		"outlives the in-memory snapshot `jit service status` reports.\n\n" +
+	Short: "Show the service's raw operational output (startup, mount notes, serve errors)",
+	Long: "Prints the tail of the service's raw output log: the timestamped operational\n" +
+		"lines the daemon prints as it runs, startup and shutdown, mount notes (with\n" +
+		"who read them), serve-error detail, and anything a crash leaves behind.\n\n" +
+		"This is the low-level debug view, not the audit trail. The session events\n" +
+		"themselves, every unlock, denial, lock, use, and refused peer, live in the\n" +
+		"structured trail that `jit audit` reads, filters, and follows; they are no\n" +
+		"longer duplicated as prose here. Reach for `jit audit` for \"what happened and\n" +
+		"who did it\", and for this when a serve error or a startup problem needs its\n" +
+		"raw context.\n\n" +
 		"The file lives alongside the vault as agent.log (the previous generation\n" +
 		"is kept as agent.log.1 after rotation). This command exists because the\n" +
 		"investigations that need the log are exactly the ones where hunting down\n" +
@@ -754,64 +776,6 @@ func tailLines(data []byte, n int) []byte {
 func displayLogPath(logPath string) string {
 	home, _ := os.UserHomeDir()
 	return displayPath(home, logPath)
-}
-
-// logSessionEvent writes an unlock or a lock to the service's log, with the
-// provenance that made it happen.
-//
-// The log used to record every lock and no unlock at all — so the one event a
-// user ever asks about (the prompt that just interrupted them) was the one
-// event with no line anywhere. Reconstructing a single unlock meant reading
-// this log against the user's own shell history to guess which command had
-// run when. Both halves are written now, and unlike `jit service status`'s
-// in-memory snapshot, these survive the launchd restarts that happen at every
-// login and every rebuild.
-//
-// The full command goes in untruncated: a log file is not a modal dialog, and
-// the whole point of the line is to still be useful weeks later.
-func logSessionEvent(w io.Writer, e agent.SessionEvent) {
-	if e.Kind == agent.KindLock { // a lock: the cause IS the news ("why was I asked again?")
-		cause := e.Cause
-		if cause == "" {
-			cause = "unknown cause"
-		}
-		fmt.Fprintf(w, "jit service: session locked, %s\n", cause)
-		return
-	}
-
-	verb := "session unlocked"
-	switch e.Kind {
-	case agent.KindDenied:
-		// The refused prompt gets the same full provenance an approved one
-		// would have — it used to be the one event with no line anywhere.
-		verb = "unlock DENIED"
-	case agent.KindUse:
-		verb = "session used"
-	}
-	line := "jit service: " + verb
-	if e.Op != "" {
-		op := e.Op
-		if e.Count > 1 {
-			op += fmt.Sprintf(" ×%d", e.Count)
-		}
-		line += fmt.Sprintf(" (%s)", op)
-	}
-	if e.By != "" {
-		line += fmt.Sprintf(" by %s", e.By)
-		if e.ByPID != 0 {
-			line += fmt.Sprintf(" [pid %d]", e.ByPID)
-		}
-	}
-	if e.LaunchedBy != "" {
-		line += fmt.Sprintf(", launched by %s", e.LaunchedBy)
-	}
-	if len(e.Labels) > 0 {
-		line += fmt.Sprintf(", secrets (caller-reported): %s", strings.Join(e.Labels, ", "))
-	}
-	if e.Kind == agent.KindDenied && e.Cause != "" {
-		line += fmt.Sprintf(", %s", e.Cause)
-	}
-	fmt.Fprintln(w, line)
 }
 
 // maxCommandLen bounds the unlocking command on a status line. A

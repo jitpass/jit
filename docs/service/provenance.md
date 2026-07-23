@@ -47,7 +47,7 @@ is not authenticating one, and jit doesn't pretend otherwise (see
   time=2026-07-22 13:18:02 level=warn kind=unlock status=denied method=touchid-or-passcode reason="local authentication failed: the user canceled" cmd="~/some-script.sh" parent=Code
   ```
 
-Among the auth events, four kinds appear:
+Among the auth events, five kinds appear:
 
 - **unlock (status=ok)** - a Touch ID/passcode prompt the human approved, with
   the command that triggered it and what launched that command.
@@ -64,13 +64,20 @@ Among the auth events, four kinds appear:
   unlike everything else on these lines, they don't come from the kernel.
 - **lock** - what dropped the session: an idle timeout, the screen
   locking, or an explicit `jit lock`.
+- **error** - something the service refused or failed at its socket: a rejected
+  peer (a process the kernel says isn't yours, probing the agent), a malformed
+  request, or the accept loop dying. A rejected peer carries the peer's own
+  provenance, and used to be logged nowhere. Filter for these with
+  `jit audit --kind error`.
 
 The auth events survive service restarts (they're kept in
-`agent-history.jsonl` alongside the vault, as well as in the service's log),
-and each restart appears as its own `kind=service` entry - so events on either
-side of one are never mistaken for a single session. `jit audit` takes
-`--format json`.
+`agent-history.jsonl` alongside the vault), and each restart appears as its own
+`kind=service` entry - so events on either side of one are never mistaken for a
+single session. `jit audit` takes `--format json`, and narrows with `--kind`,
+`--status`, `--since`/`--until`, `--parent`, `--secret`, and `--grep`; `--follow`
+(`-f`) streams new entries live.
 
-For the raw, timestamped record behind all of this - including per-mount
-reader lineage and serve errors - `jit service log` prints the tail of the
-service's own log file, and `jit service log -f` follows it live.
+The session events above are read only through `jit audit` now; they are no
+longer duplicated into the service's own log. That log, `jit service log` (and
+`-f` to follow it), is the raw operational record behind the daemon: startup,
+per-mount reader lineage, and the prose detail of any serve error.
