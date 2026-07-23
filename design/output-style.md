@@ -13,11 +13,16 @@ change happens in exactly one place.
 
 ## The five rules
 
-1. **Whitespace over box-rules.** A bold header plus a blank line separates
-   sections as clearly as a `─────` underline, with far less ink. The only
-   rule that stays is a single subtotal line under a numeric summary table
-   (scan's category counts, migrate's plan total) — a table total is the one
-   place a rule earns its keep.
+1. **One header shape: `[Name]  count`.** Every section, group, and dashboard
+   label across jit is a bracketed name in default weight (not bold — the
+   brackets delimit it, and they read better than bold), followed by a dim
+   count where there's something to count. `[Exposed Secrets] 1`,
+   `[custom_scripts-descope] 12`, `[vault]`, `● [Wired here]` — all the same
+   motif, so the whole tool looks like one tool. Structure comes from this
+   plus whitespace and weight, never box-rules; the only rule that stays is a
+   single subtotal line under a numeric summary table (scan's category
+   counts, migrate's plan total) — a table total is the one place a rule
+   earns its keep.
 2. **A glyph carries the state.** Every line that *has* a state leads with a
    colored mark, so status reads before prose:
    - `●` green — healthy / running / wired / serving real to a grant
