@@ -169,7 +169,17 @@ var migrateCmd = &cobra.Command{
 		"  jit migrate ~/proj/.env --dry-run   # preview the plan, change nothing\n" +
 		"  jit migrate ~/.aws/credentials --only aws\n" +
 		"  jit migrate undo ~/proj/.env    # restore a migrated file from its backup",
-	Args: cobra.MinimumNArgs(1), // the file/dir args complete via the shell's default file completion
+	Args: cobra.MinimumNArgs(1),
+	// migrateCmd carries subcommands (path/undo/remove), and cobra defaults
+	// argument completion on any command that has subcommands to NoFileComp —
+	// which silently suppresses the shell's file completion for the bare
+	// `jit migrate <file>` form (whereas `jit scan <file>`, a leaf command,
+	// gets file completion for free). Return Default here to opt file
+	// completion back in, so `jit migrate tok<Tab>` offers token.txt just like
+	// scan does. Cobra still lists the subcommand names alongside these.
+	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return nil, cobra.ShellCompDirectiveDefault
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runMigratePath(cmd, args)
 	},
