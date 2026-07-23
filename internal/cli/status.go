@@ -15,21 +15,23 @@ import (
 
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/mount"
-	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/vault"
 )
 
-var statusFormat string
+var (
+	statusFormat        string
+	statusSecretsDetail bool
+)
 
 // statusResult is `jit status`'s --format json shape (GAPS.md #22) — one
 // struct per section, mirroring the text report's lines exactly so
 // the two representations never drift apart in what they cover.
 type statusResult struct {
-	CLI      statusCLI      `json:"cli"`
-	Vault    statusVault    `json:"vault"`
-	Agent    statusAgent    `json:"agent"`
-	Profiles statusProfiles `json:"profiles"`
-	Mounts   statusMounts   `json:"mounts"`
+	CLI     statusCLI     `json:"cli"`
+	Vault   statusVault   `json:"vault"`
+	Agent   statusAgent   `json:"agent"`
+	Secrets statusSecrets `json:"secrets"`
+	Mounts  statusMounts  `json:"mounts"`
 }
 
 // statusCLI identifies the jit binary answering this very command — the
@@ -82,10 +84,88 @@ type statusAgent struct {
 	Version string `json:"version,omitempty"`
 }
 
-type statusProfiles struct {
-	ProfilesFound    int `json:"profiles_found"`
-	SecretReferences int `json:"secret_references"`
-	Problems         int `json:"problems"`
+// statusSecrets reconciles the flat vault store against the profiles jit can
+// see from cwd — the picture the retired `jit profile list` never drew. Every
+// stored secret is one of: wired here (a project-local profile uses it), managed
+// elsewhere (referenced only by a global profile or a mount), or unreferenced
+// (a candidate orphan). Groups is populated only with --secrets, to keep the
+// default snapshot small.
+type statusSecrets struct {
+	TotalSecrets int `json:"total_secrets"`
+	TotalGroups  int `json:"total_groups"`
+
+	WiredGroups     int `json:"wired_groups"`
+	WiredProfiles   int `json:"wired_profiles"`
+	WiredReferences int `json:"wired_references"`
+	// WiredProblems counts project-local references whose secret isn't stored —
+	// the wired-but-broken references `jit doctor` reports in full.
+	WiredProblems int `json:"wired_problems"`
+
+	ManagedElsewhereGroups int `json:"managed_elsewhere_groups"`
+
+	UnreferencedGroups  int `json:"unreferenced_groups"`
+	UnreferencedSecrets int `json:"unreferenced_secrets"`
+
+	// ParseFailures counts visible profile manifests that wouldn't load; their
+	// references are excluded, so secrets don't get mislabeled unreferenced.
+	ParseFailures int `json:"parse_failures,omitempty"`
+
+	Groups []statusSecretGroup `json:"groups,omitempty"`
+}
+
+// statusSecretGroup is one group's --secrets JSON row: its name, its dominant
+// state as a stable slug, its secret keys, and whether its members disagree.
+type statusSecretGroup struct {
+	Name    string   `json:"name"`
+	State   string   `json:"state"`
+	Secrets []string `json:"secrets"`
+	Mixed   bool     `json:"mixed,omitempty"`
+}
+
+// stateSlug renders a secretState as the stable identifier the JSON and the
+// text detail view both use.
+func stateSlug(s secretState) string {
+	switch s {
+	case stateWiredHere:
+		return "wired-here"
+	case stateManagedElsewhere:
+		return "managed-elsewhere"
+	default:
+		return "unreferenced"
+	}
+}
+
+// secretsStatusFrom projects a reconciliation onto the JSON/report shape,
+// attaching the per-group detail only when asked (the --secrets path).
+func secretsStatusFrom(rec secretsReconciliation, includeGroups bool) statusSecrets {
+	s := statusSecrets{
+		TotalSecrets:           rec.TotalSecrets,
+		TotalGroups:            rec.TotalGroups,
+		WiredGroups:            rec.WiredGroups,
+		WiredProfiles:          rec.WiredProfiles,
+		WiredReferences:        rec.WiredRefs,
+		WiredProblems:          rec.WiredProblems,
+		ManagedElsewhereGroups: rec.ElsewhereGroups,
+		UnreferencedGroups:     rec.UnreferencedGroups,
+		UnreferencedSecrets:    rec.UnreferencedSecrets,
+		ParseFailures:          rec.ParseFailures,
+	}
+	if includeGroups {
+		s.Groups = make([]statusSecretGroup, 0, len(rec.Groups))
+		for _, g := range rec.Groups {
+			keys := make([]string, 0, len(g.Members))
+			for _, m := range g.Members {
+				keys = append(keys, m.Key)
+			}
+			s.Groups = append(s.Groups, statusSecretGroup{
+				Name:    g.Name,
+				State:   stateSlug(g.State),
+				Secrets: keys,
+				Mixed:   g.Mixed,
+			})
+		}
+	}
+	return s
 }
 
 // statusMounts.BeingServed is inferred from agent running+unlocked state,
@@ -107,13 +187,19 @@ type statusMounts struct {
 var statusCmd = &cobra.Command{
 	Use:     "status",
 	GroupID: groupWorkflow,
-	Short:   "One-shot overview of vault, service, profile, and mount health",
+	Short:   "One-shot overview of vault, service, secret, and mount health",
 	Long: "Rolls up what previously took several separate commands to piece together, " +
-		"is the vault initialized, is the service running and unlocked, do this project's " +
-		"profiles resolve, are mounts being served, into one read-only report. Never " +
-		"decrypts a secret value or triggers a Touch ID/passcode prompt, matching " +
-		"jit doctor and jit profile's own safe-to-run-often shape; each section " +
-		"points at the dedicated command for full detail rather than duplicating it.\n\n" +
+		"is the vault initialized, is the service running and unlocked, how do this " +
+		"project's stored secrets line up against its profiles, are mounts being served, " +
+		"into one read-only report. Never decrypts a secret value or triggers a Touch " +
+		"ID/passcode prompt, matching jit doctor and jit profile's own safe-to-run-often " +
+		"shape; each section points at the dedicated command for full detail rather than " +
+		"duplicating it.\n\n" +
+		"The Secrets section reconciles the vault against the profiles jit can see: every " +
+		"stored secret is wired here (a project-local profile uses it), managed elsewhere " +
+		"(referenced only by a global profile or a mount), or unreferenced (a candidate " +
+		"orphan). Add --secrets to expand it into the full per-group listing, the successor " +
+		"to the deprecated jit profile list.\n\n" +
 		"--format json prints a machine-readable snapshot instead of the default " +
 		"text report, in the same shape jit service status/vault list/doctor's own " +
 		"--format json use for their overlapping sections.",
@@ -147,9 +233,9 @@ var statusCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit status: checking the service: %w", err)
 		}
-		profileStatus, err := gatherProfileStatus(cwd, v)
+		rec, err := reconcileSecrets(root, cwd, v)
 		if err != nil {
-			return fmt.Errorf("jit status: listing profiles: %w", err)
+			return fmt.Errorf("jit status: reconciling secrets: %w", err)
 		}
 		mountStatus, err := gatherMountStatus(root, agentStatus)
 		if err != nil {
@@ -157,16 +243,19 @@ var statusCmd = &cobra.Command{
 		}
 
 		result := statusResult{
-			CLI:      statusCLI{Version: agent.Version(), Build: agent.BuildID()},
-			Vault:    vaultStatus,
-			Agent:    agentStatus,
-			Profiles: profileStatus,
-			Mounts:   mountStatus,
+			CLI:     statusCLI{Version: agent.Version(), Build: agent.BuildID()},
+			Vault:   vaultStatus,
+			Agent:   agentStatus,
+			Secrets: secretsStatusFrom(rec, statusSecretsDetail),
+			Mounts:  mountStatus,
 		}
 		if statusFormat == "json" {
 			return writeJSON(cmd.OutOrStdout(), result)
 		}
 		printStatusText(cmd.OutOrStdout(), result)
+		if statusSecretsDetail {
+			printSecretsDetail(cmd.OutOrStdout(), rec, v)
+		}
 		noteFolderRename(cmd.OutOrStdout(), cwd)
 		return nil
 	},
@@ -236,25 +325,6 @@ func gatherAgentStatus(root string) (statusAgent, error) {
 		result.LocksInSeconds = int64(st.Remaining.Round(time.Second).Seconds())
 	}
 	return result, nil
-}
-
-// gatherProfileStatus summarizes the same per-secret-reference check jit
-// doctor performs in full, without repeating its per-problem listing —
-// pointing at doctor for detail keeps this a rollup, not a duplicate. It
-// runs the SHARED checker (runProfileCheck) doctor itself uses, so the
-// glance and the detail can never disagree on what counts as a problem; it
-// asks for the cheap existence-only pass (no envelope integrity, no orphan
-// sweep — those are doctor's deeper job) to stay the fast overview.
-func gatherProfileStatus(cwd string, v *vault.Vault) (statusProfiles, error) {
-	outcome, err := runProfileCheck(cwd, v, checkOptions{})
-	if err != nil {
-		return statusProfiles{}, err
-	}
-	return statusProfiles{
-		ProfilesFound:    outcome.ProfilesChecked,
-		SecretReferences: outcome.SecretsChecked,
-		Problems:         len(outcome.Problems()),
-	}, nil
 }
 
 // gatherMountStatus reports how many mounts are registered and infers
@@ -338,18 +408,7 @@ func printStatusText(w io.Writer, r statusResult) {
 		_, _ = color.New(color.FgYellow).Fprintf(w, "  %s\n", warning)
 	}
 
-	switch {
-	case r.Profiles.ProfilesFound == 0:
-		fmt.Fprintf(w, "Profiles: none found under %s/ or the global store.\n", profile.ProfilesDir)
-	case r.Profiles.Problems == 0:
-		// "Resolve cleanly" here means every referenced secret EXISTS — this
-		// is the cheap glance, existence-only. jit doctor additionally
-		// verifies each envelope is readable, so point at it rather than let
-		// this line imply an integrity check it didn't run.
-		fmt.Fprintf(w, "Profiles: %d profile(s), %d secret reference(s) all resolve cleanly. Run `jit doctor` to also verify secret integrity.\n", r.Profiles.ProfilesFound, r.Profiles.SecretReferences)
-	default:
-		_, _ = color.New(color.FgRed).Fprintf(w, "Profiles: %d profile(s), %d problem(s) found, run `jit doctor` for details.\n", r.Profiles.ProfilesFound, r.Profiles.Problems)
-	}
+	printSecretsSection(w, r.Secrets)
 
 	switch {
 	case r.Mounts.Registered == 0:
@@ -388,7 +447,118 @@ func printStatusText(w io.Writer, r statusResult) {
 	}
 }
 
+// printSecretsSection renders the vault<->profile reconciliation rollup: how
+// many secrets are stored, and how they split across wired-here (a project-local
+// profile uses them), managed-elsewhere (a global profile or a mount), and
+// unreferenced-here (candidate orphans). It replaces the old `Profiles:` line,
+// which could only ever count the manifests in this folder and never told the
+// user about the secrets those manifests don't touch.
+func printSecretsSection(w io.Writer, s statusSecrets) {
+	// "none stored yet" only when there is genuinely nothing to reconcile: no
+	// secrets, no profile, no unreadable manifest. A project profile that points
+	// at a missing secret (WiredProblems) must still surface even on an otherwise
+	// empty vault, so it can't short-circuit here. Deliberately not the phrase
+	// "no secrets stored yet" — that belongs to the Vault line, and colliding
+	// with it would make a backups-only vault look wrongly empty.
+	if s.TotalSecrets == 0 && s.WiredProfiles == 0 && s.ParseFailures == 0 {
+		fmt.Fprintln(w, "Secrets: none stored yet.")
+		return
+	}
+	fmt.Fprintf(w, "Secrets: %d stored in %d group(s).\n", s.TotalSecrets, s.TotalGroups)
+
+	switch {
+	case s.WiredProfiles == 0:
+		fmt.Fprintf(w, "  %-18s none (no project-local profile).\n", "Wired here:")
+	case s.WiredProblems == 0:
+		// "Resolve" here means the referenced secret EXISTS — the cheap glance,
+		// existence-only. jit doctor additionally verifies each envelope reads,
+		// so point there rather than imply an integrity check this didn't run.
+		fmt.Fprintf(w, "  %-18s %d group(s) via %d profile(s) (%d reference(s)), all resolve.\n",
+			"Wired here:", s.WiredGroups, s.WiredProfiles, s.WiredReferences)
+	default:
+		_, _ = color.New(color.FgRed).Fprintf(w, "  %-18s %d group(s) via %d profile(s) (%d reference(s)), %d broken — run `jit doctor` for details.\n",
+			"Wired here:", s.WiredGroups, s.WiredProfiles, s.WiredReferences, s.WiredProblems)
+	}
+
+	fmt.Fprintf(w, "  %-18s %d group(s) (referenced only by global profiles or mounts).\n",
+		"Managed elsewhere:", s.ManagedElsewhereGroups)
+
+	if s.UnreferencedGroups == 0 {
+		fmt.Fprintf(w, "  %-18s none.\n", "Unreferenced here:")
+	} else {
+		_, _ = color.New(color.FgYellow).Fprintf(w, "  %-18s %d group(s), %d secret(s). May belong to another project.\n",
+			"Unreferenced here:", s.UnreferencedGroups, s.UnreferencedSecrets)
+		fmt.Fprintf(w, "  %-18s Run `jit status --secrets` to inspect, `jit vault orphans` to prune.\n", "")
+	}
+
+	if s.ParseFailures > 0 {
+		_, _ = color.New(color.FgYellow).Fprintf(w, "  Heads up: %d profile manifest(s) couldn't be read and were skipped; run `jit doctor` to see which.\n", s.ParseFailures)
+	}
+}
+
+// printSecretsDetail is the `jit status --secrets` body: the full reconciliation,
+// one block per state. The unreferenced block reuses printOrphanGroups verbatim,
+// so it renders identically (origins and ages included) to `jit vault orphans` —
+// the two views can't drift. This is where the retired `jit profile list`
+// content now lives, enriched from "manifests in this folder" into "every stored
+// secret, and who references it".
+func printSecretsDetail(w io.Writer, rec secretsReconciliation, v *vault.Vault) {
+	var wired, elsewhere, unref []secretGroup
+	for _, g := range rec.Groups {
+		switch g.State {
+		case stateWiredHere:
+			wired = append(wired, g)
+		case stateManagedElsewhere:
+			elsewhere = append(elsewhere, g)
+		default:
+			unref = append(unref, g)
+		}
+	}
+
+	fmt.Fprintf(w, "\nWired here (%d group(s), %d profile(s)):\n", len(wired), rec.WiredProfiles)
+	printGroupsWithKeys(w, wired)
+
+	fmt.Fprintf(w, "\nManaged elsewhere (%d group(s)):\n", len(elsewhere))
+	printGroupsWithKeys(w, elsewhere)
+
+	fmt.Fprintf(w, "\nUnreferenced here (%d group(s), %d secret(s)):\n", len(unref), rec.UnreferencedSecrets)
+	if len(unref) == 0 {
+		fmt.Fprintln(w, "  none.")
+		return
+	}
+	var paths []string
+	for _, g := range unref {
+		for _, m := range g.Members {
+			paths = append(paths, m.Path)
+		}
+	}
+	printOrphanGroups(w, v, paths)
+	fmt.Fprintln(w, "  Inspect with `jit vault list`, prune with `jit vault orphans --prune`.")
+}
+
+// printGroupsWithKeys lists each group and its secret keys, the enriched
+// successor to `jit profile list`'s flat rows. A mixed group (members in
+// different states, e.g. after a re-migration split one) is flagged so the
+// dominant-state bucketing above isn't silently lossy.
+func printGroupsWithKeys(w io.Writer, groups []secretGroup) {
+	if len(groups) == 0 {
+		fmt.Fprintln(w, "  none.")
+		return
+	}
+	for _, g := range groups {
+		mixed := ""
+		if g.Mixed {
+			mixed = "  [mixed states]"
+		}
+		fmt.Fprintf(w, "  %s/ (%d)%s\n", g.Name, len(g.Members), mixed)
+		for _, m := range g.Members {
+			fmt.Fprintf(w, "    • %s\n", m.Key)
+		}
+	}
+}
+
 func init() {
 	statusCmd.Flags().StringVar(&statusFormat, "format", "text", `output format: "text" (default) or "json"`)
+	statusCmd.Flags().BoolVar(&statusSecretsDetail, "secrets", false, "expand the Secrets section into a full per-group reconciliation (replaces `jit profile list`)")
 	rootCmd.AddCommand(statusCmd)
 }
