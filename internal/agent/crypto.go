@@ -15,7 +15,12 @@ import (
 // reasoning as that package's own comment: a KeyWrapper-shaped component
 // owns its own wrapping details rather than sharing code across the
 // package boundary for three small functions.
-func seal(key, plaintext []byte) ([]byte, error) {
+// aad, when non-empty, is bound into the wrap as AES-GCM additional
+// authenticated data: the secret's provenance Class. An open must present the
+// same aad or the auth tag fails, which is what makes the class authoritative
+// for the consent gate. An empty aad ([]byte("") or nil) is the legacy shape
+// (v1/v2 secrets with no provenance), byte-compatible with the pre-AAD wraps.
+func seal(key, plaintext, aad []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("constructing cipher: %w", err)
@@ -28,10 +33,10 @@ func seal(key, plaintext []byte) ([]byte, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("generating nonce: %w", err)
 	}
-	return gcm.Seal(nonce, nonce, plaintext, nil), nil
+	return gcm.Seal(nonce, nonce, plaintext, aad), nil
 }
 
-func open(key, sealed []byte) ([]byte, error) {
+func open(key, sealed, aad []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("constructing cipher: %w", err)
@@ -44,9 +49,9 @@ func open(key, sealed []byte) ([]byte, error) {
 		return nil, fmt.Errorf("wrapped key too short to contain a nonce")
 	}
 	nonce, ciphertext := sealed[:gcm.NonceSize()], sealed[gcm.NonceSize():]
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, aad)
 	if err != nil {
-		return nil, fmt.Errorf("unwrap failed (wrong MEK or corrupted data): %w", err)
+		return nil, fmt.Errorf("unwrap failed (wrong MEK, wrong class, or corrupted data): %w", err)
 	}
 	return plaintext, nil
 }

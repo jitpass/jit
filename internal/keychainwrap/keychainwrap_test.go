@@ -160,11 +160,11 @@ func TestSealOpenRoundTrip(t *testing.T) {
 	key := bytes.Repeat([]byte{0x42}, 32)
 	plaintext := []byte("data encryption key material")
 
-	sealed, err := seal(key, plaintext)
+	sealed, err := seal(key, plaintext, []byte("aws"))
 	if err != nil {
 		t.Fatalf("seal: %v", err)
 	}
-	got, err := open(key, sealed)
+	got, err := open(key, sealed, []byte("aws"))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -176,12 +176,29 @@ func TestSealOpenRoundTrip(t *testing.T) {
 func TestOpenRejectsWrongKey(t *testing.T) {
 	key := bytes.Repeat([]byte{0x42}, 32)
 	wrongKey := bytes.Repeat([]byte{0x99}, 32)
-	sealed, err := seal(key, []byte("secret"))
+	sealed, err := seal(key, []byte("secret"), nil)
 	if err != nil {
 		t.Fatalf("seal: %v", err)
 	}
-	if _, err := open(wrongKey, sealed); err == nil {
+	if _, err := open(wrongKey, sealed, nil); err == nil {
 		t.Error("open with the wrong key succeeded, want an error")
+	}
+}
+
+// TestOpenRejectsWrongClass pins the class-binding: a DEK sealed under one
+// class must not open when a different class is presented as AAD — this is
+// what makes the class authoritative for the consent gate.
+func TestOpenRejectsWrongClass(t *testing.T) {
+	key := bytes.Repeat([]byte{0x42}, 32)
+	sealed, err := seal(key, []byte("secret"), []byte("aws"))
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	if _, err := open(key, sealed, []byte("dotenv")); err == nil {
+		t.Error("open with the wrong class succeeded, want an error (class must be AAD-bound)")
+	}
+	if got, err := open(key, sealed, []byte("aws")); err != nil || !bytes.Equal(got, []byte("secret")) {
+		t.Errorf("open with the right class failed: got %q err %v", got, err)
 	}
 }
 

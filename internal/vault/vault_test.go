@@ -246,12 +246,12 @@ type fakeLabeledKeyWrapper struct {
 	unwrapLabels []string
 }
 
-func (f *fakeLabeledKeyWrapper) WrapKeyLabeled(dek []byte, label string) ([]byte, error) {
+func (f *fakeLabeledKeyWrapper) WrapKeyLabeled(dek []byte, label, class string) ([]byte, error) {
 	f.wrapLabels = append(f.wrapLabels, label)
 	return f.WrapKey(dek)
 }
 
-func (f *fakeLabeledKeyWrapper) UnwrapKeyLabeled(wrapped []byte, label string) ([]byte, error) {
+func (f *fakeLabeledKeyWrapper) UnwrapKeyLabeled(wrapped []byte, label, class string) ([]byte, error) {
 	f.unwrapLabels = append(f.unwrapLabels, label)
 	return f.UnwrapKey(wrapped)
 }
