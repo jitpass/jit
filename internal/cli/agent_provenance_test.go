@@ -152,48 +152,13 @@ func TestShortenCommandKeepsTheProfileAndDropsTheChildArgs(t *testing.T) {
 	}
 }
 
-// TestSessionLogRecordsUnlocksNotJustLocks pins the asymmetry that made the
-// original incident so hard to unpick: the agent's log faithfully recorded
-// every lock and not a single unlock, so the one event the user actually
-// wanted explained — the prompt that had just interrupted them — was the one
-// event that left no trace. A log line for an unlock has to name what asked
-// and what launched it, or it repeats the same failure in a new place.
-func TestSessionLogRecordsUnlocksNotJustLocks(t *testing.T) {
-	var buf bytes.Buffer
-	logSessionEvent(&buf, agent.SessionEvent{
-		UnixTime:   time.Now().Unix(),
-		Op:         agent.OpUnwrap,
-		By:         "/Users/menit/go/bin/jit run --profile mcp-jamf -- /usr/bin/true",
-		ByPID:      9944,
-		LaunchedBy: "claude",
-	})
-	got := buf.String()
-
-	if !strings.Contains(got, "session unlocked") {
-		t.Errorf("unlock produced no unlock line: %q", got)
-	}
-	for _, want := range []string{"mcp-jamf", "pid 9944", "launched by claude"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("unlock log line missing %q: %q", want, got)
-		}
-	}
-	// Unlike the Touch ID prompt and the status line, the log is not
-	// width-constrained — truncating here would defeat reading it weeks later.
-	if !strings.Contains(got, "/usr/bin/true") {
-		t.Errorf("unlock log line truncated the command; the log must keep it whole: %q", got)
-	}
-}
-
-// A lock's news is its cause. Without it the log says a session ended and
-// leaves "why am I being prompted again?" exactly as unanswered as before.
-func TestSessionLogNamesTheLockCause(t *testing.T) {
-	var buf bytes.Buffer
-	logSessionEvent(&buf, agent.SessionEvent{UnixTime: time.Now().Unix(), Kind: agent.KindLock, Cause: "15m0s idle timeout"})
-
-	if got := buf.String(); !strings.Contains(got, "session locked") || !strings.Contains(got, "15m0s idle timeout") {
-		t.Errorf("lock log line = %q, want it to name the lock and its cause", got)
-	}
-}
+// The unlock/lock provenance the agent's log must carry — every unlock named
+// with what asked and what launched it, every lock named with its cause — is
+// now rendered by `jit audit` (logfmt), and pinned by
+// TestAuditCommandTextMergesCommandsAndAuth in audit_test.go. The prose
+// renderer these once tested (logSessionEvent) was retired when session events
+// stopped being double-written into agent.log: `jit audit` is the one place
+// the events are read.
 
 // TestDescribeReaderStatesItsConfidence pins the three honest tiers. The
 // motivating output: a mount in an editor's watcher loop alternated between

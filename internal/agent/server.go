@@ -122,6 +122,16 @@ type Server struct {
 	// Fires OUTSIDE Server's lock, like OnUnlock/OnLock, and before them.
 	OnSessionEvent func(SessionEvent)
 
+	// OnServeError, if set, is called with a KindError SessionEvent when the
+	// service refuses or fails a connection at the socket boundary: a rejected
+	// peer, a malformed request, or the accept loop dying. Separate from
+	// OnSessionEvent because these are not session transitions and must NOT
+	// enter the in-memory session ring (they'd bury the unlock/lock history a
+	// status call reports) — the CLI wires it straight to the durable log so
+	// the events reach `jit audit` without polluting the ring. Best-effort and
+	// fire-and-forget like the rest; nil discards them.
+	OnServeError func(SessionEvent)
+
 	// AuthMethodFn, if set, returns a best-effort description of how the local
 	// auth challenge asked the user ("Touch ID or device passcode" vs. "device
 	// passcode"), stamped onto the unlock/denied event a fresh challenge
@@ -280,6 +290,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			s.recordServeError("accept", fmt.Sprintf("accept: %v", err), nil)
 			return fmt.Errorf("accept: %w", err)
 		}
 		go s.handleConn(conn)
@@ -305,12 +316,18 @@ func (s *Server) handleConn(conn net.Conn) {
 	_ = conn.SetDeadline(time.Now().Add(s.readTimeout))
 
 	if err := verifyPeerUID(conn); err != nil {
+		// A peer the kernel says isn't this user is the one socket event most
+		// worth a durable record: someone else's process probing the agent.
+		// Enrich with its lineage while it's still connected — that identity
+		// is exactly what the audit trail is for.
+		s.recordServeError("reject", fmt.Sprintf("rejected peer: %v", err), callerFromConn(conn))
 		_ = json.NewEncoder(conn).Encode(Response{OK: false, Error: fmt.Sprintf("rejected: %v", err)})
 		return
 	}
 
 	var req Request
 	if err := json.NewDecoder(conn).Decode(&req); err != nil {
+		s.recordServeError("decode", fmt.Sprintf("bad request: %v", err), callerFromConn(conn))
 		_ = json.NewEncoder(conn).Encode(Response{OK: false, Error: fmt.Sprintf("bad request: %v", err)})
 		return
 	}
@@ -842,6 +859,25 @@ func unlockEvent(op string, c *caller) *SessionEvent {
 		e.LaunchedBy = c.launchedBy()
 	}
 	return e
+}
+
+// recordServeError hands a socket-boundary failure to OnServeError as a
+// KindError event: op names which failure ("reject", "decode", "accept"),
+// cause carries the detail, and c (when the kernel still named the peer)
+// stamps the same By/ByPID/LaunchedBy provenance an unlock would carry — for a
+// rejected peer that provenance is the whole point of recording it. No-op when
+// no sink is wired (a test server, or the KeyWrapper embedding with no socket).
+func (s *Server) recordServeError(op, cause string, c *caller) {
+	if s.OnServeError == nil {
+		return
+	}
+	e := SessionEvent{UnixTime: time.Now().Unix(), Kind: KindError, Op: op, Cause: cause}
+	if c != nil {
+		e.By = c.command()
+		e.ByPID = c.pid
+		e.LaunchedBy = c.launchedBy()
+	}
+	s.OnServeError(e)
 }
 
 // MaxSessionEvents bounds the in-memory history ring. An agent process
