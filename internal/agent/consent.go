@@ -119,3 +119,49 @@ func (s *Server) clearTrust() {
 	s.trustRoots = map[int32]int64{}
 	s.trustMu.Unlock()
 }
+
+// consentCallerForPID builds a consent.Caller for a FIFO mount reader found by
+// scanning holders. Identity is BEST-EFFORT (Strength BestEffort): there is no
+// socket peer to vouch for it, only an unprivileged process-table scan, so a
+// determined same-user attacker could spoof the lineage — the honest weaker
+// counterpart to the socket path's kernel-vouched identity.
+func consentCallerForPID(pid int32) consent.Caller {
+	cc := consent.Caller{PID: pid, Strength: consent.BestEffort}
+	if p, ok := lineage.Describe(pid); ok {
+		cc.ExecPath = p.ExecPath
+	}
+	if chain := lineage.Ancestry(pid); len(chain) > 1 {
+		cc.Lineage = lineage.LaunchedBy(chain[1:])
+	}
+	return cc
+}
+
+// ConsentReaders makes a best-effort consent decision for a FIFO credential
+// mount (gcp/npm/netrc) that no run-scoped grant already authorized: given the
+// mount's current holder pids and the credential name, it returns true to serve
+// real content. False when consent is off, there are no holders, or ANY holder
+// is denied or unidentified — fail closed, the same all-holders-must-pass rule
+// the run-scoped grant gate uses. A holder inside a --trust'd run or already
+// approved this session is honored without a fresh prompt. Exported because the
+// mount serve path lives in the CLI layer (internal/cli), across the package
+// boundary from the consent engine the agent holds.
+func (s *Server) ConsentReaders(cred string, holders []int32) bool {
+	if s.Consent == nil || len(holders) == 0 {
+		return false
+	}
+	for _, h := range holders {
+		cc := consentCallerForPID(h)
+		cc.DescendsFromGrant = s.descendsFromTrust(h)
+		prompt := func(req consent.Request) (consent.Decision, consent.Scope, error) {
+			reason := consentReason(req.Caller, req.Credential) + " (identified by process scan)"
+			if err := s.forceDisclosedChallenge(reason, nil); err != nil {
+				return consent.Deny, consent.Session, nil
+			}
+			return consent.Allow, consent.Session, nil
+		}
+		if d, err := s.Consent.Decide(consent.Request{Credential: cred, Caller: cc}, prompt); err != nil || d != consent.Allow {
+			return false
+		}
+	}
+	return true
+}

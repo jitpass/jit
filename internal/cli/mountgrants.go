@@ -115,6 +115,24 @@ func (m *mountManager) serveContent(path string, sm *servedMount) []byte {
 		}
 	}
 
+	// No run-scoped grant covered this read. If consent is on and this is a
+	// machine-global credential mount (gcp/npm/netrc), fall back to a
+	// best-effort per-reader consent decision: identify who's holding the
+	// mount and prompt (or honor a --trust'd tree / a session-cached answer).
+	// Limited to credential mounts so a project .env read never pays the
+	// holder scan, and done BEFORE sm.mu so the prompt can't block the mount's
+	// state. Fail-closed: no holders / not credential-mounts / any deny leaves
+	// it decoy.
+	if !authorized && m.consent != nil {
+		if cred, ok := m.credentialMount(path); ok {
+			if holders, ok := m.grantHolders(path); ok && len(holders) > 0 {
+				if m.consent.ConsentReaders(cred, holders) {
+					authorized = true
+				}
+			}
+		}
+	}
+
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	content, decoy := sm.decoy, true
@@ -123,6 +141,19 @@ func (m *mountManager) serveContent(path string, sm *servedMount) []byte {
 	}
 	sm.lastServe = &serveRecord{at: time.Now(), decoy: decoy, reader: sm.pendingReader, grantServed: !decoy && grantServed}
 	return content
+}
+
+// credentialMount reports whether path is a machine-global credential mount
+// (gcp/npm/netrc/sops) and, if so, the credential name used in the consent
+// prompt and cache key. A cheap path comparison (no scan), so the serve path
+// can check it per read and skip the consent machinery for ordinary project
+// mounts.
+func (m *mountManager) credentialMount(path string) (string, bool) {
+	g, ok := globalMountGuidanceForPath(m.home, path)
+	if !ok {
+		return "", false
+	}
+	return g.name, true
 }
 
 // grantAuthorizes applies the fail-closed rule: real content flows only
