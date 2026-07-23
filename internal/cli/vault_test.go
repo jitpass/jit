@@ -657,7 +657,7 @@ func TestPrintVaultList(t *testing.T) {
 
 	buf.Reset()
 	printVaultList(&buf, nil, nil, false, false, nil, "path")
-	if !strings.Contains(buf.String(), "No secrets stored yet. Run `jit vault set <path>`") {
+	if !strings.Contains(buf.String(), "No secrets stored yet. Run jit vault set <path>") {
 		t.Errorf("empty vault keeps the standard empty state, got:\n%s", buf.String())
 	}
 }
