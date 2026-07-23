@@ -61,7 +61,7 @@ jit run [--profile <name>] [--mode <mode>] [--] <command> [args...] [flags]
       --live                                        keep the live mount and grant this run real file reads, for tools that read values from the .env file itself (docker compose env_file); default swaps in a compatibility file
       --mode string                                 also merge .env.<mode> and .env.<mode>.local layers (e.g. production)
       --profile string                              profile to inject verbatim (default: merge this project's migrated .env layers)
-      --trust jit service run --consent             pre-authorize this run's whole process tree for any credential, so per-process consent prompts don't fire under it (experimental; pairs with jit service run --consent)
+      --trust                                       pre-authorize this run's whole process tree for any credential, so per-process consent prompts don't fire under it
       --with jit run --with gcp gcloud storage ls   also grant this run a global file-delivered mount by name (gcp, sops, npm, netrc) - for tools that read a machine-wide credential file, e.g. jit run --with gcp gcloud storage ls (repeatable)
 ```
 

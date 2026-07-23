@@ -33,9 +33,9 @@ import (
 var agentTTL time.Duration
 
 // agentConsent turns on per-process credential consent in the running service
-// (design/per-process-credential-consent.md). Off by default; opt in with
-// `jit service run --consent` while the feature is proven out. Not yet baked
-// into the auto-installed plist, so it applies to a hand-started service run.
+// (design/per-process-credential-consent.md). ON by default (the flag's default
+// is true, and every installed plist bakes its state explicitly); a user turns
+// it off with `jit service consent off`, which writes `--consent=false`.
 var agentConsent bool
 
 // agentStatusFormat is agentStatusCmd's --format flag (GAPS.md #22).
@@ -348,24 +348,29 @@ func configuredAgentTTL() (time.Duration, bool) {
 }
 
 // configuredAgentConsent reports whether per-process consent is baked into the
-// installed plist (the `--consent` flag installAgentService writes). False when
-// the service isn't installed or the flag isn't present — the same "off unless
-// explicitly on" default the running service uses.
+// installed plist. Consent is ON by default, so this returns true unless the
+// plist EXPLICITLY carries `--consent=false` (what `jit service consent off`
+// writes). An absent flag — a fresh install, or a plist written before consent
+// existed — reads as the default: on. Callers use it to preserve a user's
+// explicit choice across a TTL change or an upgrade.
 func configuredAgentConsent() bool {
 	plistPath, err := agentPlistPath()
 	if err != nil {
-		return false
+		return true
 	}
 	data, err := os.ReadFile(plistPath) // #nosec G304 -- jit's own launchd plist under the user's LaunchAgents dir
 	if err != nil {
-		return false
+		return true
 	}
 	for _, v := range plistStringValues(data) {
-		if v == "--consent" {
+		switch v {
+		case "--consent=false":
+			return false
+		case "--consent", "--consent=true":
 			return true
 		}
 	}
-	return false
+	return true
 }
 
 // serviceConsentCmd shows or sets per-process credential consent. Like
@@ -373,13 +378,13 @@ func configuredAgentConsent() bool {
 // survives restarts and logins, then reloads the service so it takes effect now.
 var serviceConsentCmd = &cobra.Command{
 	Use:   "consent [on|off]",
-	Short: "Show or set per-process credential consent (experimental)",
-	Long: "Per-process credential consent (experimental): when on, the background\n" +
-		"service prompts a fresh Touch ID the first time each tool reaches for a\n" +
-		"credential (AWS, git, docker, kube, gcloud/sops/npm/netrc keys), naming who\n" +
-		"is asking, and remembers your answer for the session. It closes the window\n" +
-		"where any process running as you can use a migrated credential silently\n" +
-		"while your vault is unlocked.\n\n" +
+	Short: "Show or set per-process credential consent",
+	Long: "Per-process credential consent (on by default): the background service\n" +
+		"prompts a fresh Touch ID the first time each tool reaches for a credential\n" +
+		"(AWS, git, docker, kube, gcloud/sops/npm/netrc keys), naming who is asking,\n" +
+		"and remembers your answer for the session. It closes the window where any\n" +
+		"process running as you can use a migrated credential silently while your\n" +
+		"vault is unlocked.\n\n" +
 		"With no argument, prints whether it's on. `on`/`off` set it and restart the\n" +
 		"service. Use `jit run --trust -- <cmd>` to pre-authorize a whole run's tree\n" +
 		"so it isn't prompted.",
@@ -483,13 +488,14 @@ func installAgentService(ttl time.Duration, consent bool) (plistPath string, run
 	// exePath/logPath are filesystem paths and can legally contain XML
 	// metacharacters (& is common in directory names) — splicing one into the
 	// plist unescaped produces a file launchctl rejects, or worse, misparses.
-	// When consent is on, bake the --consent flag into ProgramArguments so the
-	// setting survives launchd restarts and logins (the plist is the only
-	// durable home for it). Off writes nothing extra, matching a service that
-	// never had it.
-	consentArg := ""
-	if consent {
-		consentArg = "\n\t\t<string>--consent</string>"
+	// Consent is ON by default, so its state is baked into ProgramArguments
+	// EXPLICITLY (`--consent` on, `--consent=false` off) — that's what lets a
+	// user who turned it off keep it off across a reinstall/upgrade, instead of
+	// an absent flag being ambiguous between "off" and "never set". A plist with
+	// neither (one written before consent existed) reads as the default: on.
+	consentArg := "\n\t\t<string>--consent</string>"
+	if !consent {
+		consentArg = "\n\t\t<string>--consent=false</string>"
 	}
 	plist := fmt.Sprintf(agentPlistTemplate, agentPlistLabel, xmlEscape(exePath), ttl.String(), consentArg, xmlEscape(logPath), xmlEscape(logPath))
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0o700); err != nil {
@@ -537,7 +543,7 @@ func ensureAgentInstalled() (didInstall, running bool) {
 	if agentInstalled() {
 		return false, false
 	}
-	_, running, err := installAgentService(agentInstallDefaultTTL, false)
+	_, running, err := installAgentService(agentInstallDefaultTTL, true)
 	if err != nil {
 		return false, false
 	}
@@ -568,13 +574,14 @@ var agentRestartCmd = &cobra.Command{
 			// No login item yet (never started, or uninstalled). Rather than
 			// dead-end, create it: restart is the single "get the service
 			// running" command, and the service is meant to always be present.
-			// Default TTL, since a missing plist has no configured value to
-			// preserve — `jit service ttl <d>` changes it afterward.
+			// Default TTL and default (on) consent, since a missing plist has no
+			// configured value to preserve — `jit service ttl <d>` and
+			// `jit service consent off` change them afterward.
 			root, rerr := vaultRootDir()
 			if rerr != nil {
 				return fmt.Errorf("jit service restart: %w", rerr)
 			}
-			if _, _, ierr := installAgentService(agentInstallDefaultTTL, false); ierr != nil {
+			if _, _, ierr := installAgentService(agentInstallDefaultTTL, true); ierr != nil {
 				return fmt.Errorf("jit service restart: %w", ierr)
 			}
 			if !waitForAgentSocket(root, 5*time.Second) {
@@ -1452,7 +1459,7 @@ var agentCompatRunCmd = &cobra.Command{
 
 func init() {
 	agentRunCmd.Flags().DurationVar(&agentTTL, "ttl", 5*time.Minute, "how long an unlocked session stays cached before auto-locking")
-	agentRunCmd.Flags().BoolVar(&agentConsent, "consent", false, "prompt for per-process consent (Touch ID) on each credential unwrap (experimental)")
+	agentRunCmd.Flags().BoolVar(&agentConsent, "consent", true, "prompt for per-process consent (Touch ID) the first time each tool reaches for a credential (on by default; use --consent=false to disable)")
 	agentStatusCmd.Flags().StringVar(&agentStatusFormat, "format", "text", `output format: "text" (default) or "json"`)
 	agentLogCmd.Flags().IntVarP(&agentLogLines, "lines", "n", 50, "how many trailing lines to print")
 	agentLogCmd.Flags().BoolVarP(&agentLogFollow, "follow", "f", false, "keep printing new lines as the service writes them (Ctrl-C to stop)")

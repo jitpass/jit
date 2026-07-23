@@ -112,6 +112,13 @@ jit wrap gh                          # one time
 gh pr list                           # token injected per call, forever
 ```
 
+The first time a tool reaches for a real credential in a session, jit prompts
+Touch ID and names what's asking (`terraform wants your aws credential`), then
+remembers your answer until the vault locks. Kicking off something that needs
+several at once? `jit run --trust -- terraform apply` approves that whole run in
+one gesture. (This is [per-process consent](./docs/service/consent.md), on by
+default.)
+
 Why do some just work while others need `jit run` or `--with`? One rule: **can
 the tool ask jit for the secret itself?** AWS (via `credential_process`), your
 shell at login, and docker's registry logins (via a credential helper) all can,

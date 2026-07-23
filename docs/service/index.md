@@ -17,8 +17,11 @@ restarts itself if it crashes. Everything still works before that first use,
 just with more prompts and no live mounts.
 
 The shared session covers the high-frequency paths - native credential
-hooks (`aws`, `kubectl`) and `jit run`. It deliberately does **not** cover
-the sensitive [`jit vault`](../vault/index.md) management commands
+hooks (`aws`, `kubectl`) and `jit run`. On top of it,
+[per-process consent](./consent.md) (on by default) still prompts a Touch ID
+the first time each tool reaches for a real credential, naming who is asking,
+so an unlocked session is never a blank cheque. It deliberately does **not**
+cover the sensitive [`jit vault`](../vault/index.md) management commands
 (`get`/`set`/`rm`/`import`/`restore`/`clean`/`prune`/`delete`/`export`):
 those always require a fresh Touch ID/passcode on every run, unlocked or
 not, so a deliberate vault operation always takes a live human gesture even
@@ -68,6 +71,9 @@ dropped and the next vault use prompts once.
   session events themselves live in [`jit audit`](./provenance.md), not here.
 - `jit service run` - run it in the foreground (normally launchd's job,
   useful for debugging).
+- `jit service consent [on|off]` - show or set
+  [per-process credential consent](./consent.md), on by default: a Touch ID the
+  first time each tool reaches for a real credential, naming who is asking.
 
 ## Locking and unlocking
 
