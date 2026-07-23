@@ -21,6 +21,7 @@ import (
 func execStatus(t *testing.T, args ...string) (stdout string, err error) {
 	t.Helper()
 	statusFormat = "text"
+	statusSecretsDetail = false
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetArgs(append([]string{"status"}, args...))
@@ -40,7 +41,7 @@ func TestStatusEverythingEmpty(t *testing.T) {
 		"Versions: jit " + versionBuild(agent.Version(), agent.BuildID()) + "; service not running.",
 		"Vault: no secrets stored yet",
 		"Service: not running",
-		"Profiles: none found",
+		"Secrets: none stored yet.",
 		"Mounts: none registered",
 	} {
 		if !strings.Contains(out, want) {
@@ -178,7 +179,7 @@ func TestStatusNoBackupNudgeOnEmptyVault(t *testing.T) {
 	}
 }
 
-func TestStatusProfilesResolveCleanly(t *testing.T) {
+func TestStatusSecretsWiredResolveCleanly(t *testing.T) {
 	home := withFixtureHome(t)
 	cwd := withFixtureCwd(t)
 	writeFixtureProfile(t, cwd, "aws-admin", "AWS_ACCESS_KEY_ID: aws/s3-access-key\n")
@@ -188,23 +189,27 @@ func TestStatusProfilesResolveCleanly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "Profiles: 1 profile(s), 1 secret reference(s) all resolve cleanly.") {
-		t.Errorf("expected a clean profile summary, got:\n%s", out)
+	if !strings.Contains(out, "Secrets: 1 stored in 1 group(s).") {
+		t.Errorf("expected a stored-secret headline, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Wired here:") || !strings.Contains(out, "1 group(s) via 1 profile(s) (1 reference(s)), all resolve.") {
+		t.Errorf("expected the wired secret to resolve cleanly, got:\n%s", out)
 	}
 }
 
-func TestStatusProfilesWithProblemsPointsAtDoctor(t *testing.T) {
+func TestStatusSecretsWiredButBrokenPointsAtDoctor(t *testing.T) {
 	withFixtureHome(t)
 	cwd := withFixtureCwd(t)
 	writeFixtureProfile(t, cwd, "aws-admin", "AWS_ACCESS_KEY_ID: aws/s3-access-key\n")
-	// Deliberately no plantVaultSecret call — the referenced path is missing.
+	// Deliberately no plantVaultSecret call — the referenced path is missing, so
+	// the wired reference is broken even though the vault is otherwise empty.
 
 	out, err := execStatus(t)
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "Profiles: 1 profile(s), 1 problem(s) found, run `jit doctor` for details.") {
-		t.Errorf("expected a problem summary pointing at doctor, got:\n%s", out)
+	if !strings.Contains(out, "1 broken") || !strings.Contains(out, "jit doctor") {
+		t.Errorf("expected a broken-reference summary pointing at doctor, got:\n%s", out)
 	}
 	// status itself must not fail the process over a resolvable-elsewhere
 	// problem — it's a rollup, not a gate; jit doctor is what fails loud.
@@ -254,11 +259,14 @@ func TestStatusFormatJSONMatchesTextSections(t *testing.T) {
 	}
 
 	want := statusResult{
-		CLI:      statusCLI{Version: agent.Version(), Build: agent.BuildID()},
-		Vault:    statusVault{SecretsStored: 1},
-		Agent:    statusAgent{Running: false, Unlocked: false},
-		Profiles: statusProfiles{ProfilesFound: 1, SecretReferences: 1, Problems: 0},
-		Mounts:   statusMounts{Registered: 1, BeingServed: false},
+		CLI:   statusCLI{Version: agent.Version(), Build: agent.BuildID()},
+		Vault: statusVault{SecretsStored: 1},
+		Agent: statusAgent{Running: false, Unlocked: false},
+		Secrets: statusSecrets{
+			TotalSecrets: 1, TotalGroups: 1,
+			WiredGroups: 1, WiredProfiles: 1, WiredReferences: 1,
+		},
+		Mounts: statusMounts{Registered: 1, BeingServed: false},
 	}
 	if !reflect.DeepEqual(result, want) {
 		t.Errorf("result = %+v, want %+v", result, want)
