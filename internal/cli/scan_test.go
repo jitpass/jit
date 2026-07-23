@@ -172,16 +172,42 @@ func TestScanCommandRejectsUnknownFormat(t *testing.T) {
 	}
 }
 
-// TestScanCommandRejectsUnexpectedPositionalArg is a real bug's regression
-// test: scan had no Args validator at all (unlike every other subcommand
-// in this package), so a stray positional argument — e.g. `jit scan
-// help`, typed expecting help text — was silently accepted and ignored,
-// running a real scan instead of erroring. cobra.NoArgs makes this fail
-// loud like every other zero-argument command already does.
-func TestScanCommandRejectsUnexpectedPositionalArg(t *testing.T) {
+// TestScanCommandRejectsMissingPath: a path argument that doesn't exist is an
+// error, not a silently empty scan — the same fail-loud choice `jit migrate
+// <path>` makes, so a typo can't masquerade as a clean result.
+func TestScanCommandRejectsMissingPath(t *testing.T) {
 	withFixtureHome(t)
-	_, err := execScan(t, "help")
+	_, err := execScan(t, "definitely-not-a-real-path.txt")
 	if err == nil {
-		t.Fatal("expected an error for an unexpected positional argument, got nil")
+		t.Fatal("expected an error for a nonexistent path argument, got nil")
+	}
+	if !strings.Contains(err.Error(), "no such file or directory") {
+		t.Errorf("expected the error to name the missing path, got: %v", err)
+	}
+}
+
+// TestScanCommandScansNamedFile: pointing scan at a file classifies just that
+// file. A bare JWT in a plainly-named file — invisible to the name-gated full
+// scan — is caught as an Exposed Secret, and never printed in the clear.
+func TestScanCommandScansNamedFile(t *testing.T) {
+	withFixtureHome(t)
+	jwt := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+		"eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20iLCJpZCI6MX0." +
+		"i-Bx9F2fjO5nvvo_hlUFY6bvnAOeTs68BiTBa-1zfoE"
+	tokenPath := filepath.Join(t.TempDir(), "token.txt")
+	if err := os.WriteFile(tokenPath, []byte(jwt), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out := runScan(t, tokenPath)
+
+	if !strings.Contains(out, "Exposed Secrets") {
+		t.Errorf("expected an Exposed Secrets section, got:\n%s", out)
+	}
+	if !strings.Contains(out, "JSON Web Token (JWT)") {
+		t.Errorf("expected the JWT to be identified, got:\n%s", out)
+	}
+	if strings.Contains(out, jwt) {
+		t.Fatal("CLI output must never contain the raw token value")
 	}
 }

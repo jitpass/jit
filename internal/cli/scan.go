@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/fatih/color"
@@ -24,7 +25,7 @@ var (
 )
 
 var scanCmd = &cobra.Command{
-	Use:     "scan",
+	Use:     "scan [path...]",
 	GroupID: groupWorkflow,
 	Short:   "Scan for plaintext secrets exposed on this machine (read-only)",
 	Long: "jit scan scans shell configs, .env files, credential files, MCP/AI-tool " +
@@ -32,6 +33,15 @@ var scanCmd = &cobra.Command{
 		"plaintext secrets. Default behavior is strictly read-only: it never " +
 		"touches, encrypts, or rewrites a single file on disk. No real secret " +
 		"value is ever printed, only a masked preview.\n\n" +
+		"Scanning specific paths\n\n" +
+		"Pass one or more files or directories to scan only those, instead of the " +
+		"whole machine: `jit scan ./project token.txt`. A directory is walked with " +
+		"the same name-based rules as the full scan. A file you name explicitly is " +
+		"classified regardless of its name — a shell/env/MCP/IaC file is routed to " +
+		"its scanner, and anything else is swept for known vendor tokens and JWTs, " +
+		"so `jit scan token.txt` catches a bare token the full scan's naming rules " +
+		"would miss. Named paths never pull in the fixed machine-wide credential " +
+		"stores (~/.aws, ~/.ssh, …); symlinks are not followed.\n\n" +
 		"Exposure score\n\n" +
 		"jit reports a 0-100 exposure score (EXPOSURE:) next to the categorical " +
 		"RISK LEVEL. It is computed entirely locally and deterministically:\n\n" +
@@ -46,7 +56,7 @@ var scanCmd = &cobra.Command{
 		"label can never disagree: clean 0, low 10-39, medium 40-64, high 65-84, " +
 		"critical 85-100.\n\n" +
 		"Run with --score to print just the score line and exit.",
-	Args: cobra.NoArgs,
+	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Validate before touching the filesystem or doing any scanning —
 		// otherwise a bad --output path can mask a bad --format value (or
@@ -68,7 +78,17 @@ var scanCmd = &cobra.Command{
 			cfg.MountRegistryPath = mount.RegistryPath(root)
 		}
 
-		findings, summary, err := audit.Scan(cfg)
+		var findings []audit.Finding
+		var summary audit.ScanSummary
+		if len(args) > 0 {
+			targets, resolveErr := resolveScanTargets(args)
+			if resolveErr != nil {
+				return fmt.Errorf("jit scan: %w", resolveErr)
+			}
+			findings, summary, err = audit.TargetedScan(cfg, targets)
+		} else {
+			findings, summary, err = audit.Scan(cfg)
+		}
 		if err != nil {
 			return fmt.Errorf("jit scan: %w", err)
 		}
@@ -122,6 +142,29 @@ var scanCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+// resolveScanTargets turns the path arguments to `jit scan <path>...` into
+// absolute paths, failing loud on any that don't exist — a mistyped path
+// should be an error, not a silently empty scan (the same choice `jit migrate
+// <path>` makes). Absolute paths keep the findings' file_path locations
+// unambiguous regardless of the process's working directory.
+func resolveScanTargets(args []string) ([]string, error) {
+	targets := make([]string, 0, len(args))
+	for _, arg := range args {
+		abs, err := filepath.Abs(arg)
+		if err != nil {
+			return nil, fmt.Errorf("resolving %q: %w", arg, err)
+		}
+		if _, err := os.Lstat(abs); err != nil {
+			if os.IsNotExist(err) {
+				return nil, fmt.Errorf("no such file or directory: %s", arg)
+			}
+			return nil, fmt.Errorf("%s: %w", arg, err)
+		}
+		targets = append(targets, abs)
+	}
+	return targets, nil
 }
 
 func validateScanFormat(format string) error {

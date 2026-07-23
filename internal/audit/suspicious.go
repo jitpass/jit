@@ -57,28 +57,36 @@ var suspiciousFilenameRules = []suspiciousFilenameRule{
 func ScanSuspiciousFilenames(cfg Config) ([]Finding, error) {
 	var findings []Finding
 	err := walkHomeDir(cfg.HomeDir, func(path string, d fs.DirEntry) error {
-		// A backup-suffixed file (.env.bak etc.) that `jit migrate` replaced
-		// in place with pointer content is jit's own git-safe artifact, not a
-		// stray credential backup — don't re-flag it as suspicious (GAPS.md
-		// #66). Content-based, since the name still ends in .bak.
-		if isJitPointerContent(path) {
-			return nil
-		}
-		for _, rule := range suspiciousFilenameRules {
-			if !rule.match(d.Name()) {
-				continue
-			}
-			f := cfg.baseFinding()
-			f.FindingType = FindingTypeSuspiciousFilename
-			f.FilePath = path
-			f.Severity = rule.severity
-			f.Confidence = rule.confidence
-			f.Evidence = rule.evidence
-			f.RecordID = RecordID(f.FindingType, f.FilePath, nil)
-			findings = append(findings, f)
-			break // one finding per file, even if multiple rules would match
-		}
+		findings = append(findings, classifySuspiciousFile(cfg, path, d.Name())...)
 		return nil
 	})
 	return findings, err
+}
+
+// classifySuspiciousFile is the per-file half of ScanSuspiciousFilenames,
+// split out so `jit scan <path>`'s targeted walk applies the identical
+// suspicious-name rules (and the jit-pointer exemption) a machine-wide walk
+// does. Returns nil unless the name matches a rule.
+func classifySuspiciousFile(cfg Config, path, name string) []Finding {
+	// A backup-suffixed file (.env.bak etc.) that `jit migrate` replaced
+	// in place with pointer content is jit's own git-safe artifact, not a
+	// stray credential backup — don't re-flag it as suspicious (GAPS.md
+	// #66). Content-based, since the name still ends in .bak.
+	if isJitPointerContent(path) {
+		return nil
+	}
+	for _, rule := range suspiciousFilenameRules {
+		if !rule.match(name) {
+			continue
+		}
+		f := cfg.baseFinding()
+		f.FindingType = FindingTypeSuspiciousFilename
+		f.FilePath = path
+		f.Severity = rule.severity
+		f.Confidence = rule.confidence
+		f.Evidence = rule.evidence
+		f.RecordID = RecordID(f.FindingType, f.FilePath, nil)
+		return []Finding{f} // one finding per file, even if multiple rules would match
+	}
+	return nil
 }

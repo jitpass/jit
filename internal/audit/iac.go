@@ -43,48 +43,64 @@ const maxDecodedSecretValueBytes = 64 * 1024
 func ScanIACFiles(cfg Config) ([]Finding, error) {
 	var findings []Finding
 	err := walkHomeDir(cfg.HomeDir, func(path string, d fs.DirEntry) error {
-		name := strings.ToLower(d.Name())
-		isTFVars := d.Name() == "terraform.tfvars" || strings.HasSuffix(d.Name(), ".auto.tfvars")
-		// Any *secret*.y(a)ml is a candidate (db-secrets.yaml,
-		// prod.secret.yml, ...). The structured content gate below is what
-		// prevents false positives; this name gate only bounds how many
-		// files we open on a machine-wide walk.
-		isK8sCandidate := strings.Contains(name, "secret") &&
-			(strings.HasSuffix(name, ".yaml") || strings.HasSuffix(name, ".yml"))
-
-		switch {
-		case isTFVars:
-			f, err := buildTfvarsFinding(cfg, path)
-			if err != nil {
-				return nil // unreadable file — skip it, don't fail the whole audit
-			}
-			findings = append(findings, f)
-		case isK8sCandidate:
-			insp, flagged, err := inspectK8sSecretFile(path)
-			if err != nil {
-				// Not YAML we can parse. Fall back to the pre-2026-07-18
-				// substring + line-scan behavior so a hand-mangled but real
-				// Secret manifest still gets flagged rather than silently
-				// dropped.
-				confirmed, cerr := fileContainsSubstring(path, "kind: Secret")
-				if cerr != nil || !confirmed {
-					return nil
-				}
-				f, ferr := buildLegacyK8sFinding(cfg, path)
-				if ferr != nil {
-					return nil
-				}
-				findings = append(findings, f)
-				return nil
-			}
-			if !flagged {
-				return nil
-			}
-			findings = append(findings, buildK8sSecretFinding(cfg, path, insp))
-		}
+		findings = append(findings, classifyIACFile(cfg, path, d.Name())...)
 		return nil
 	})
 	return findings, err
+}
+
+// classifyIACFile is the per-file half of ScanIACFiles, split out so `jit scan
+// <path>`'s targeted walk applies the identical tfvars / *secret*.y(a)ml name
+// gates and structured-content checks a machine-wide walk does. An unreadable
+// or unparseable file yields no findings (skip, never fail) — matching the
+// walk closure it was extracted from.
+func classifyIACFile(cfg Config, path, fileName string) []Finding {
+	isTFVars, isK8sCandidate := iacNameGates(fileName)
+	var findings []Finding
+	switch {
+	case isTFVars:
+		f, err := buildTfvarsFinding(cfg, path)
+		if err != nil {
+			return nil // unreadable file — skip it, don't fail the whole audit
+		}
+		findings = append(findings, f)
+	case isK8sCandidate:
+		insp, flagged, err := inspectK8sSecretFile(path)
+		if err != nil {
+			// Not YAML we can parse. Fall back to the pre-2026-07-18
+			// substring + line-scan behavior so a hand-mangled but real
+			// Secret manifest still gets flagged rather than silently
+			// dropped.
+			confirmed, cerr := fileContainsSubstring(path, "kind: Secret")
+			if cerr != nil || !confirmed {
+				return nil
+			}
+			f, ferr := buildLegacyK8sFinding(cfg, path)
+			if ferr != nil {
+				return nil
+			}
+			return append(findings, f)
+		}
+		if !flagged {
+			return nil
+		}
+		findings = append(findings, buildK8sSecretFinding(cfg, path, insp))
+	}
+	return findings
+}
+
+// iacNameGates reports whether fileName is a tfvars file and/or a Kubernetes
+// Secret candidate by name only. The *secret*.y(a)ml gate is deliberately
+// broad (db-secrets.yaml, prod.secret.yml, …); classifyIACFile's structured
+// content check is what actually prevents false positives. Shared so `jit
+// scan <path>` can tell "a scanner claims this file type" apart from "this
+// file produced no finding" without re-deriving the suffix rules.
+func iacNameGates(fileName string) (isTFVars, isK8sCandidate bool) {
+	name := strings.ToLower(fileName)
+	isTFVars = fileName == "terraform.tfvars" || strings.HasSuffix(fileName, ".auto.tfvars")
+	isK8sCandidate = strings.Contains(name, "secret") &&
+		(strings.HasSuffix(name, ".yaml") || strings.HasSuffix(name, ".yml"))
+	return isTFVars, isK8sCandidate
 }
 
 func fileContainsSubstring(path, substr string) (bool, error) {

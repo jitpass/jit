@@ -6,6 +6,10 @@ Scan for plaintext secrets exposed on this machine (read-only)
 
 jit scan scans shell configs, .env files, credential files, MCP/AI-tool configs, private keys, IaC variable files, and suspicious filenames for plaintext secrets. Default behavior is strictly read-only: it never touches, encrypts, or rewrites a single file on disk. No real secret value is ever printed, only a masked preview.
 
+Scanning specific paths
+
+Pass one or more files or directories to scan only those, instead of the whole machine: `jit scan ./project token.txt`. A directory is walked with the same name-based rules as the full scan. A file you name explicitly is classified regardless of its name — a shell/env/MCP/IaC file is routed to its scanner, and anything else is swept for known vendor tokens and JWTs, so `jit scan token.txt` catches a bare token the full scan's naming rules would miss. Named paths never pull in the fixed machine-wide credential stores (~/.aws, ~/.ssh, …); symlinks are not followed.
+
 Exposure score
 
 jit reports a 0-100 exposure score (EXPOSURE:) next to the categorical RISK LEVEL. It is computed entirely locally and deterministically:
@@ -18,7 +22,7 @@ jit reports a 0-100 exposure score (EXPOSURE:) next to the categorical RISK LEVE
 Run with --score to print just the score line and exit.
 
 ```
-jit scan [flags]
+jit scan [path...] [flags]
 ```
 
 ### Options

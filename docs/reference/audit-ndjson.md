@@ -26,7 +26,7 @@ secret, same as every other audit format.
 
 | Field | Meaning |
 |---|---|
-| `finding_type` | the category (shell config, env file, credential file, …) |
+| `finding_type` | the category (shell config, env file, credential file, …); `exposed_secret` is a vendor token or JWT found by content in a file named to `jit scan <path>` (schema 0.9.0+) |
 | `severity` | the finding's risk rating |
 | `file_path`, `line` | where (`line` may be `null` for whole-file findings) |
 | `key_name` | the variable/key name, when there is one |
