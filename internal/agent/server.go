@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/jitpass/jit/internal/consent"
 )
 
 // MEKFetcher provides the raw MEK bytes, challenging (Touch ID/passcode)
@@ -131,6 +133,15 @@ type Server struct {
 	// the events reach `jit audit` without polluting the ring. Best-effort and
 	// fire-and-forget like the rest; nil discards them.
 	OnServeError func(SessionEvent)
+
+	// Consent, if set, turns on per-process credential consent: an OpUnwrap
+	// for a credential class (consent.RequiresConsent) is gated by a decision
+	// from this engine — a fresh disclosed Touch ID naming the kernel-identified
+	// caller and the class, cached for the session. Nil means off (the default);
+	// the CLI sets it when the service is started with consent enabled. It never
+	// gates the agent's own in-process mount serving (that call has a nil
+	// caller), only socket peers reaching a real credential.
+	Consent *consent.Engine
 
 	// AuthMethodFn, if set, returns a best-effort description of how the local
 	// auth challenge asked the user ("Touch ID or device passcode" vs. "device
@@ -462,6 +473,9 @@ func (s *Server) handle(req Request, c *caller) Response {
 			return Response{OK: false, Error: err.Error()}
 		}
 		defer wipe(mek)
+		if err := s.gateConsent(req.Class, c); err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
 		dek, err := open(mek, req.Data, []byte(req.Class))
 		if err != nil {
 			return Response{OK: false, Error: err.Error()}
@@ -806,6 +820,13 @@ func (s *Server) lockIfGen(cause string, gen uint64) {
 		s.recordEvent(*event)
 	}
 	s.mu.Unlock()
+
+	// Consent decisions ride the unlock session: clear them when it ends, so a
+	// re-lock forces a fresh prompt rather than honoring an approval you gave
+	// before you stepped away. Cheap and idempotent when there's nothing to drop.
+	if s.Consent != nil {
+		s.Consent.Clear()
+	}
 
 	s.notifySessionEvents(flushed)
 	if hadSession && s.OnSessionEvent != nil {
