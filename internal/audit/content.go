@@ -40,6 +40,67 @@ const maxContentLineSize = 1 << 20 // 1 MiB
 // An unreadable or over-large file yields no findings (skip, never fail),
 // the same forgiveness every category scanner extends.
 func scanFileContentForTokens(cfg Config, path string) ([]Finding, error) {
+	tokens, err := FindFileTokens(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var findings []Finding
+	seenVendor := map[string]bool{} // one finding per (file, vendor): see below
+	for _, tk := range tokens {
+		// One finding per (file, vendor). record_id is
+		// finding_type+file_path+key_name and key_name is the vendor, so a
+		// second occurrence of the same vendor in the same file would collide
+		// on record_id anyway; collapsing here keeps the report from listing
+		// structurally identical duplicates. The first occurrence's line
+		// number is the one reported.
+		if seenVendor[tk.Vendor] {
+			continue
+		}
+		seenVendor[tk.Vendor] = true
+
+		ln := tk.Line
+		vendor := tk.Vendor
+		findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+			FindingType:  FindingTypeExposedSecret,
+			FilePath:     path,
+			Line:         &ln,
+			KeyName:      vendor,
+			RawValue:     tk.Value,
+			BaseSeverity: SeverityHigh,
+			Confidence:   ConfidenceHigh,
+			Evidence:     "value matches a known vendor credential format",
+		}))
+	}
+	return findings, nil
+}
+
+// FileToken is one vendor-token/JWT match found in a file's raw text by
+// FindFileTokens: enough for a scanner to report it and for `jit migrate` to
+// extract and vault it. Line is 1-based; Start/End are byte offsets within
+// that line (not the whole file), which the template migrator uses to swap a
+// token span for a placeholder while keeping the rest of the line verbatim.
+type FileToken struct {
+	Line     int
+	Start    int
+	End      int
+	Vendor   string
+	Verified bool
+	Value    string
+}
+
+// FindFileTokens sweeps path's raw text for values matching a known vendor
+// credential format (knownTokenPatterns), returning every match in file order.
+// This is the shared detection behind both `jit scan <file>`'s exposed_secret
+// findings and `jit migrate <file>`'s loose-secret handling, so the two can
+// never disagree about what counts as a movable token. Private-key bodies are
+// ceded to ScanPrivateKeys (see scanFileContentForTokens' doc), so patterns
+// whose vendor ends in "Private Key" are skipped here too.
+//
+// An unreadable, non-regular, or over-large file returns no tokens and no
+// error (skip, never fail) — the same forgiveness every category scanner
+// extends; a scanner error mid-read returns what was found so far.
+func FindFileTokens(path string) ([]FileToken, error) {
 	file, err := openFile(path)
 	if err != nil {
 		return nil, err
@@ -50,9 +111,7 @@ func scanFileContentForTokens(cfg Config, path string) ([]Finding, error) {
 		return nil, nil
 	}
 
-	var findings []Finding
-	seenVendor := map[string]bool{} // one finding per (file, vendor): see below
-
+	var tokens []FileToken
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxContentLineSize)
 	lineNum := 0
@@ -88,35 +147,19 @@ func scanFileContentForTokens(cfg Config, path string) ([]Finding, error) {
 					continue // a known false-positive shape (e.g. a template placeholder)
 				}
 				claimed = append(claimed, [2]int{lo, hi})
-
-				// One finding per (file, vendor). record_id is
-				// finding_type+file_path+key_name and key_name is the vendor,
-				// so a second occurrence of the same vendor in the same file
-				// would collide on record_id anyway; collapsing here keeps the
-				// report from listing structurally identical duplicates. The
-				// first occurrence's line number is the one reported.
-				if seenVendor[tp.vendor] {
-					continue
-				}
-				seenVendor[tp.vendor] = true
-
-				ln := lineNum
-				vendor := tp.vendor
-				findings = append(findings, cfg.ValueFinding(ValueFindingParams{
-					FindingType:  FindingTypeExposedSecret,
-					FilePath:     path,
-					Line:         &ln,
-					KeyName:      vendor,
-					RawValue:     match,
-					BaseSeverity: SeverityHigh,
-					Confidence:   ConfidenceHigh,
-					Evidence:     "value matches a known vendor credential format",
-				}))
+				tokens = append(tokens, FileToken{
+					Line:     lineNum,
+					Start:    lo,
+					End:      hi,
+					Vendor:   tp.vendor,
+					Verified: tp.verified,
+					Value:    match,
+				})
 			}
 		}
 	}
 	// A scanner error (an over-long line past maxContentLineSize, a mid-read
 	// I/O error) returns what we found so far rather than failing the run —
 	// partial detection beats none.
-	return findings, nil
+	return tokens, nil
 }

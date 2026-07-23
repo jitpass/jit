@@ -33,7 +33,7 @@ var (
 // Keyed by the short token a caller passes, not the display label used in
 // output — keep the two lists in this exact order so error messages and
 // --only's own help text stay in sync with printMigratePlan.
-var migrateCategories = []string{"env", "tfvars", "shell", "mcp", "aws", "kube", "terraform", "docker", "git", "gcp", "sops", "npmrc", "netrc"}
+var migrateCategories = []string{"env", "tfvars", "shell", "mcp", "aws", "kube", "terraform", "docker", "git", "gcp", "sops", "npmrc", "netrc", "loose"}
 
 // discovered holds one run's findings per category. runMigratePath resolves
 // each named target into one of these and hands it to applyMigrate — the
@@ -55,6 +55,7 @@ type discovered struct {
 	sopsAgeFiles      []string
 	npmrcFiles        []string
 	netrcFiles        []string
+	looseSecretFiles  []string
 }
 
 // noteNamespaceMove explains a claimNamespace bump (GAPS.md #55) directly
@@ -211,6 +212,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 	sopsAgeFiles := d.sopsAgeFiles
 	npmrcFiles := d.npmrcFiles
 	netrcFiles := d.netrcFiles
+	looseSecretFiles := d.looseSecretFiles
 
 	// --only scopes a run to just the named categories (GAPS.md #21) —
 	// validated against migrateCategories BEFORE anything else, including
@@ -241,6 +243,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 		"sops":      &sopsAgeFiles,
 		"npmrc":     &npmrcFiles,
 		"netrc":     &netrcFiles,
+		"loose":     &looseSecretFiles,
 	}
 	if len(categorySlices) != len(migrateCategories) {
 		return fmt.Errorf("jit migrate: internal error: category table (%d) out of sync with --only categories (%d)", len(categorySlices), len(migrateCategories))
@@ -311,7 +314,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 	// work that's about to be aborted anyway. This same plan is what
 	// --dry-run prints too (see below) — one rendering path, so the
 	// preview you confirm against is exactly the preview --dry-run shows.
-	printMigratePlan(cmd.OutOrStdout(), home, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles)
+	printMigratePlan(cmd.OutOrStdout(), home, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, looseSecretFiles)
 	printSkippedFindings(cmd.OutOrStdout(), home, len(tfvarsComplexOnly), "in Terraform variable file(s) whose secret-shaped values aren't simple one-line strings", tfvarsComplexOnly,
 		"Nothing migrate can move safely; they stay in place, and `jit scan` keeps reporting them.")
 
@@ -395,6 +398,28 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 				return fmt.Errorf("jit migrate: %w", err)
 			}
 			fmt.Fprintf(out, "  • %s -> profile %q (%d var(s)); backup: `jit vault get %s`\n", displayPath(home, envPath), result.ProfileName, len(result.Variables), result.BackupPath)
+			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
+		}
+		fmt.Fprintln(out)
+	}
+
+	if n := len(looseSecretFiles); n > 0 {
+		printMigrateResultCategory(out, "loose secret file(s) migrated", n)
+		for _, path := range looseSecretFiles {
+			summary.checkGitHistory(path)
+			// profilesRoot is the file's OWN directory, same rule as .env: an
+			// explicitly named loose file can sit anywhere, so its profile lives
+			// alongside it, not under the invoking cwd.
+			result, err := migrate.ApplyLooseSecretFile(v, filepath.Dir(path), path)
+			if err != nil {
+				return fmt.Errorf("jit migrate: %w", err)
+			}
+			// Vault-and-neutralize: the file was replaced in place with a
+			// git-safe pointer (ApplyLooseSecretFile did it), so there's no mount
+			// to register and nothing to reveal — retrieval is `jit vault get`.
+			summary.backupOnlyFiles++
+			fmt.Fprintf(out, "  • %s -> profile %q (%d secret(s)); backup: `jit vault get %s`, replaced with a safe pointer file (retrieve with `jit vault get %s/%s`)\n",
+				displayPath(home, path), result.ProfileName, len(result.Variables), result.BackupPath, result.ProfileName, result.Variables[0])
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
 		}
 		fmt.Fprintln(out)
@@ -925,8 +950,26 @@ func discoverFileTarget(d *discovered, home, path string) error {
 		d.mcpConfigs = append(d.mcpConfigs, filterToTarget(cfgs, path)...)
 		return nil
 	}
-	// Not a fixed machine-wide path — treat it as a project file.
-	return discoverDirTarget(d, home, path)
+	// Not a fixed machine-wide path — treat it as a project file (.env/tfvars/
+	// mcp/npmrc by name).
+	before := d.total()
+	if err := discoverDirTarget(d, home, path); err != nil {
+		return err
+	}
+	// If no structured category claimed this explicitly-named file, fall back
+	// to loose-secret detection: a file whose whole content is bare token(s)
+	// (a JWT in token.txt) matches none of the named formats but is exactly
+	// what `jit scan <file>` flags as an exposed_secret. Only "pure" secret
+	// files are migratable this way — one that mixes a token with other content
+	// would lose that content if replaced wholesale, so it's left alone (jit
+	// scan keeps reporting it). Never runs on a directory walk, only on a file
+	// the user named directly, matching the intent gate scan uses.
+	if d.total() == before {
+		if _, pure, err := migrate.ClassifyLooseSecretFile(path); err == nil && pure {
+			d.looseSecretFiles = append(d.looseSecretFiles, path)
+		}
+	}
+	return nil
 }
 
 // filterToTarget keeps only the entries equal to target, narrowing a
@@ -952,10 +995,27 @@ func (d *discovered) dedupe() {
 		&d.envFiles, &d.tfvarsFiles, &d.tfvarsComplexOnly, &d.shellConfigs,
 		&d.mcpConfigs, &d.awsProfiles, &d.k8sUsers, &d.terraformHosts,
 		&d.dockerRegistries, &d.gitHosts, &d.gcpADCFiles, &d.sopsAgeFiles,
-		&d.npmrcFiles, &d.netrcFiles,
+		&d.npmrcFiles, &d.netrcFiles, &d.looseSecretFiles,
 	} {
 		dedupeStrings(s)
 	}
+}
+
+// total counts everything discovered across every category, so
+// discoverFileTarget can tell whether the structured scanners already claimed
+// a named file before falling back to loose-secret detection. tfvarsComplexOnly
+// is note-only (nothing migrate acts on), so it's excluded deliberately.
+func (d *discovered) total() int {
+	n := 0
+	for _, s := range [][]string{
+		d.envFiles, d.tfvarsFiles, d.shellConfigs, d.mcpConfigs, d.awsProfiles,
+		d.k8sUsers, d.terraformHosts, d.dockerRegistries, d.gitHosts,
+		d.gcpADCFiles, d.sopsAgeFiles, d.npmrcFiles, d.netrcFiles,
+		d.looseSecretFiles,
+	} {
+		n += len(s)
+	}
+	return n
 }
 
 // dedupeStrings drops repeated entries in place, keeping first-seen order.
