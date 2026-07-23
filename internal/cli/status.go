@@ -367,41 +367,61 @@ func versionBuild(version, build string) string {
 }
 
 func printStatusText(w io.Writer, r statusResult) {
+	// The dashboard reads as aligned label/value rows (docker-style): a dim
+	// fixed-width label, then the value, with a semantic glyph leading any row
+	// that carries a state so the one needing attention is found at a glance
+	// (design/output-style.md).
 	if r.Agent.Running {
-		fmt.Fprintf(w, "Versions: jit %s; service %s.\n", versionBuild(r.CLI.Version, r.CLI.Build), versionBuild(r.Agent.Version, r.Agent.Build))
+		statusLabel(w, "jit")
+		fmt.Fprintf(w, "%s · service %s\n", versionBuild(r.CLI.Version, r.CLI.Build), versionBuild(r.Agent.Version, r.Agent.Build))
 	} else {
-		fmt.Fprintf(w, "Versions: jit %s; service not running.\n", versionBuild(r.CLI.Version, r.CLI.Build))
+		statusLabel(w, "jit")
+		fmt.Fprintf(w, "%s · service not running\n", versionBuild(r.CLI.Version, r.CLI.Build))
 	}
 
 	if r.Vault.SecretsStored == 0 && r.Vault.BackupsStored == 0 {
-		fmt.Fprintln(w, "Vault: no secrets stored yet. Run `jit vault init` if you haven't set it up, or `jit migrate .` to populate it.")
+		statusLabel(w, "vault")
+		fmt.Fprintln(w, "no secrets yet — run `jit vault init`, or `jit migrate .` to populate it.")
 	} else {
+		statusLabel(w, "vault")
 		if r.Vault.BackupsStored > 0 {
-			fmt.Fprintf(w, "Vault: %d secret(s) stored, plus %d encrypted file backup(s) kept for `jit migrate undo`.\n", r.Vault.SecretsStored, r.Vault.BackupsStored)
+			fmt.Fprintf(w, "%d secret(s) stored · %d file backup(s) kept for `jit migrate undo`\n", r.Vault.SecretsStored, r.Vault.BackupsStored)
 		} else {
-			fmt.Fprintf(w, "Vault: %d secret(s) stored.\n", r.Vault.SecretsStored)
+			fmt.Fprintf(w, "%d secret(s) stored\n", r.Vault.SecretsStored)
 		}
+		statusLabel(w, "backup")
 		switch {
 		case !r.Vault.ExportRecorded:
-			_, _ = color.New(color.FgYellow).Fprintln(w, "Backup: no vault export on record, the vault only decrypts on this Mac. Run `jit vault export <file>` so losing it isn't losing every secret.")
+			_, _ = cRisk.Fprint(w, glyphRisk+" ")
+			fmt.Fprint(w, "no vault export on record, the vault only decrypts on this Mac — run ")
+			_, _ = cPath.Fprintln(w, "jit vault export <file>")
 		case r.Vault.ExportStale:
-			_, _ = color.New(color.FgYellow).Fprintf(w, "Backup: secrets have changed since the last vault export (%s). Run `jit vault export <file>` to refresh it.\n", time.Unix(r.Vault.ExportUnixTime, 0).Format("2006-01-02"))
+			_, _ = cWarn.Fprint(w, glyphWarn+" ")
+			fmt.Fprintf(w, "secrets changed since the last export (%s) — run ", time.Unix(r.Vault.ExportUnixTime, 0).Format("2006-01-02"))
+			_, _ = cPath.Fprintln(w, "jit vault export <file>")
 		default:
-			fmt.Fprintf(w, "Backup: vault export up to date (%s).\n", time.Unix(r.Vault.ExportUnixTime, 0).Format("2006-01-02"))
+			_, _ = cOK.Fprint(w, glyphOK+" ")
+			fmt.Fprintf(w, "export up to date (%s)\n", time.Unix(r.Vault.ExportUnixTime, 0).Format("2006-01-02"))
 		}
 	}
 
+	statusLabel(w, "service")
 	switch {
 	case !r.Agent.Running && r.Agent.Installed:
 		// launchd was supposed to keep this one alive — "run install" is
 		// the wrong advice and hides that something actually failed.
-		fmt.Fprintln(w, installedNotRunningAdvice("Service:"))
+		_, _ = cRisk.Fprint(w, glyphRisk+" ")
+		fmt.Fprintln(w, installedNotRunningAdvice("the service is"))
 	case !r.Agent.Running:
-		fmt.Fprintln(w, "Service: not running. Run `jit service restart` to start it.")
+		_, _ = cRisk.Fprint(w, glyphRisk+" ")
+		fmt.Fprint(w, "not running — run ")
+		_, _ = cPath.Fprintln(w, "jit service restart")
 	case r.Agent.Unlocked:
-		fmt.Fprintf(w, "Service: running and unlocked (locks in %s).\n", (time.Duration(r.Agent.LocksInSeconds) * time.Second).String())
+		_, _ = cOK.Fprint(w, glyphOK+" ")
+		fmt.Fprintf(w, "running · unlocked (locks in %s)\n", (time.Duration(r.Agent.LocksInSeconds) * time.Second).String())
 	default:
-		fmt.Fprintln(w, "Service: running and locked.")
+		_, _ = cOK.Fprint(w, glyphOK+" ")
+		fmt.Fprintln(w, "running · locked")
 	}
 	if warning := agentBuildMismatch(r.Agent.Build); warning != "" {
 		_, _ = color.New(color.FgYellow).Fprintf(w, "  %s\n", warning)
@@ -409,9 +429,10 @@ func printStatusText(w io.Writer, r statusResult) {
 
 	printSecretsSection(w, r.Secrets)
 
+	statusLabel(w, "mounts")
 	switch {
 	case r.Mounts.Registered == 0:
-		fmt.Fprintln(w, "Mounts: none registered.")
+		_, _ = cDim.Fprintln(w, "none registered")
 	case r.Mounts.ServingReal:
 		granted := 0
 		for _, m := range r.Agent.Mounts {
@@ -420,14 +441,16 @@ func printStatusText(w io.Writer, r statusResult) {
 			}
 		}
 		if granted > 0 {
-			fmt.Fprintf(w, "Mounts: %d registered, service unlocked, %d currently serving real content to an active jit run grant, the rest decoy. Run `jit service status` to see which.\n", r.Mounts.Registered, granted)
+			_, _ = cOK.Fprint(w, glyphOK+" ")
+			fmt.Fprintf(w, "%d registered · %d serving real content to an active jit run grant, the rest decoy\n", r.Mounts.Registered, granted)
 		} else {
-			fmt.Fprintf(w, "Mounts: %d registered, service unlocked, all serving decoy (real values flow only inside a jit run --live/--with grant).\n", r.Mounts.Registered)
+			fmt.Fprintf(w, "%d registered · unlocked, all decoy (real values flow only inside a jit run --live/--with grant)\n", r.Mounts.Registered)
 		}
 	case r.Mounts.BeingServed:
-		fmt.Fprintf(w, "Mounts: %d registered, serving decoy content only (service locked).\n", r.Mounts.Registered)
+		_, _ = cWarn.Fprint(w, glyphWarn+" ")
+		fmt.Fprintf(w, "%d registered · serving decoy content only (service locked)\n", r.Mounts.Registered)
 	default:
-		fmt.Fprintf(w, "Mounts: %d registered, not being served (service not running).\n", r.Mounts.Registered)
+		fmt.Fprintf(w, "%d registered · not being served (service not running)\n", r.Mounts.Registered)
 	}
 
 	// A reader that most recently got DECOY values is the one mount fact
@@ -460,10 +483,12 @@ func printSecretsSection(w io.Writer, s statusSecrets) {
 	// "no secrets stored yet" — that belongs to the Vault line, and colliding
 	// with it would make a backups-only vault look wrongly empty.
 	if s.TotalSecrets == 0 && s.WiredProfiles == 0 && s.ParseFailures == 0 {
-		fmt.Fprintln(w, "Secrets: none stored yet.")
+		statusLabel(w, "secrets")
+		_, _ = cDim.Fprintln(w, "none stored yet")
 		return
 	}
-	fmt.Fprintf(w, "Secrets: %d stored in %d group(s).\n", s.TotalSecrets, s.TotalGroups)
+	statusLabel(w, "secrets")
+	fmt.Fprintf(w, "%d stored in %d group(s)\n", s.TotalSecrets, s.TotalGroups)
 
 	// Each state leads with a semantic glyph so the eye finds the one that
 	// needs attention (an amber ○ unreferenced, or a red ✗ broken) before
@@ -497,6 +522,14 @@ func printSecretsSection(w io.Writer, s statusSecrets) {
 	if s.ParseFailures > 0 {
 		_, _ = color.New(color.FgYellow).Fprintf(w, "  Heads up: %d profile manifest(s) couldn't be read and were skipped; run `jit doctor` to see which.\n", s.ParseFailures)
 	}
+}
+
+// statusLabel prints one dashboard row's dim, fixed-width label (jit, vault,
+// backup, service, secrets, mounts) so the values line up in a column
+// docker-style. The caller prints the value — with a leading glyph for a
+// state-bearing row — immediately after, then its own newline.
+func statusLabel(w io.Writer, label string) {
+	_, _ = cDim.Fprintf(w, "%-10s", label)
 }
 
 // printRollupLine renders one Secrets-rollup row: a semantic state glyph, the
