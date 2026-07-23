@@ -333,11 +333,12 @@ func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth i
 	}
 }
 
-// printSecretGroupHeader renders a vault-tree segment header in the house
-// style: a bold segment name and a dim count, at the given indent. The tree's
-// indentation, not a trailing slash, is what now shows the nesting.
+// printSecretGroupHeader renders a vault-tree segment header in the one house
+// header shape every jit section/group uses: a `[segment]` name (default
+// weight — the brackets delimit it, no bold) and a dim count, at the given
+// indent. The tree's indentation shows the nesting.
 func printSecretGroupHeader(out io.Writer, indent, name string, n int) {
-	_, _ = cBold.Fprintf(out, "%s%s", indent, name)
+	fmt.Fprintf(out, "%s[%s]", indent, name)
 	_, _ = cDim.Fprintf(out, " %d\n", n)
 }
 
@@ -1417,7 +1418,7 @@ func printOrphanGroups(out io.Writer, v *vault.Vault, orphans []string) {
 		// parenthetical onto all N lines, and flow the names into columns.
 		// When origins genuinely differ, that per-secret provenance is worth
 		// keeping, so fall back to one name-plus-origin line each.
-		_, _ = cBold.Fprintf(out, "  %s", prefix)
+		fmt.Fprintf(out, "  [%s]", prefix)
 		if uniform {
 			_, _ = cDim.Fprintf(out, " %d · %s\n", len(members), origins[0])
 			flowNames(out, names, "      ")
@@ -1425,7 +1426,7 @@ func printOrphanGroups(out io.Writer, v *vault.Vault, orphans []string) {
 		}
 		_, _ = cDim.Fprintf(out, " %d\n", len(members))
 		for i, name := range names {
-			_, _ = cBold.Fprintf(out, "      %s", name)
+			fmt.Fprintf(out, "      %s", name)
 			_, _ = cDim.Fprintf(out, "  %s\n", origins[i])
 		}
 	}

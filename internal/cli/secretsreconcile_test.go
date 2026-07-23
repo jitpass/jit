@@ -113,11 +113,11 @@ func TestStatusSecretsDetailListsGroups(t *testing.T) {
 	// flowed into columns, with the unreferenced block's shared origin stated
 	// once rather than per key.
 	for _, want := range []string{
-		"Wired here",
-		"aws 1",
+		"[Wired here]",
+		"[aws] 1",
 		"key1",
-		"Unreferenced here",
-		"orphan 1",
+		"[Unreferenced here]",
+		"[orphan] 1",
 		"no recorded origin",
 	} {
 		if !strings.Contains(out, want) {
