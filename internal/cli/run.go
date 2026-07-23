@@ -28,6 +28,7 @@ var (
 	runMode    string
 	runLive    bool
 	runWith    []string
+	runTrust   bool
 )
 
 var runCmd = &cobra.Command{
@@ -131,6 +132,19 @@ var runCmd = &cobra.Command{
 		// granted keys.txt mount.
 		if globalGranted {
 			env = withSopsAgeKeyCmd(env, runWith)
+		}
+
+		// --trust pre-authorizes this run's whole process tree for any
+		// credential, so per-process consent (when the service enforces it)
+		// serves without a prompt for anything launched under this run. The
+		// agent anchors it to this pid's fork-time, and it lasts only until the
+		// next re-lock. Best-effort: no agent, or one not enforcing consent,
+		// just means the run prompts per credential as usual — register before
+		// the exec, since after it this process IS the command.
+		if runTrust {
+			if ac, err := agentClient(); err == nil {
+				_ = ac.Trust()
+			}
 		}
 
 		// syscall.Exec never returns on success — it replaces this
@@ -319,6 +333,7 @@ func init() {
 	runCmd.Flags().StringVar(&runMode, "mode", "", "also merge .env.<mode> and .env.<mode>.local layers (e.g. production)")
 	runCmd.Flags().BoolVar(&runLive, "live", false, "keep the live mount and grant this run real file reads, for tools that read values from the .env file itself (docker compose env_file); default swaps in a compatibility file")
 	runCmd.Flags().StringArrayVar(&runWith, "with", nil, "also grant this run a global file-delivered mount by name (gcp, sops, npm, netrc) - for tools that read a machine-wide credential file, e.g. `jit run --with gcp gcloud storage ls` (repeatable)")
+	runCmd.Flags().BoolVar(&runTrust, "trust", false, "pre-authorize this run's whole process tree for any credential, so per-process consent prompts don't fire under it (experimental; pairs with `jit service run --consent`)")
 	_ = runCmd.RegisterFlagCompletionFunc("with", completeGlobalMountNames)
 	// Stop parsing jit's own flags at the first non-flag argument, so the
 	// target command's flags (`npm start --port 3000`) pass straight

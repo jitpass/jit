@@ -195,6 +195,16 @@ func (c *Client) UnwrapKeyLabeled(wrapped []byte, label, class string) ([]byte, 
 	return resp.Data, nil
 }
 
+// Trust registers this process (the kernel-identified peer pid) as a consent
+// trust root: any credential a process in this run's tree reaches for is then
+// auto-allowed without a per-process consent prompt. Used by `jit run
+// --trust`. Best-effort — a failure just means the run prompts per credential
+// as usual, so callers proceed regardless.
+func (c *Client) Trust() error {
+	_, err := c.call(Request{Op: OpTrust})
+	return err
+}
+
 // Unlock asks the agent to unlock now (challenging if not already
 // unlocked), so a caller can pre-warm the session before running several
 // commands in a row that would otherwise each trigger their own prompt.
