@@ -143,6 +143,15 @@ type Server struct {
 	// caller), only socket peers reaching a real credential.
 	Consent *consent.Engine
 
+	// trustRoots maps a consent trust-root pid (a `jit run --trust`) to its
+	// fork-time stamp. A credential access whose caller descends from a live,
+	// same-fork-time root skips the consent prompt (design/per-process-
+	// credential-consent.md, phase 1c). Guarded by trustMu rather than s.mu
+	// because the descent check does sysctl ancestry walks that must not block
+	// status/lock; dropped on every re-lock, like the consent cache.
+	trustMu    sync.Mutex
+	trustRoots map[int32]int64
+
 	// AuthMethodFn, if set, returns a best-effort description of how the local
 	// auth challenge asked the user ("Touch ID or device passcode" vs. "device
 	// passcode"), stamped onto the unlock/denied event a fresh challenge
@@ -264,6 +273,7 @@ func NewServer(socketPath string, newFetcher func() MEKFetcher, ttl time.Duratio
 		readTimeout:    10 * time.Second,
 		denialCooldown: defaultDenialCooldown,
 		useWindow:      defaultUseWindow,
+		trustRoots:     map[int32]int64{},
 	}
 }
 
@@ -455,6 +465,15 @@ func (s *Server) handle(req Request, c *caller) Response {
 		if s.OnStopMount != nil {
 			s.OnStopMount(req.MountPath)
 		}
+		return Response{OK: true}
+	case OpTrust:
+		// Registering a trust root needs no vault access — it only records the
+		// kernel-identified peer's pid + fork-time for later descent checks.
+		// A caller the kernel won't name can't be trusted (no pid to anchor on).
+		if c == nil {
+			return Response{OK: false, Error: "trust: caller could not be identified"}
+		}
+		s.trust(c.pid)
 		return Response{OK: true}
 	case OpWrap:
 		mek, err := s.ensureUnlocked(req.Op, c, req.Label)
@@ -827,6 +846,7 @@ func (s *Server) lockIfGen(cause string, gen uint64) {
 	if s.Consent != nil {
 		s.Consent.Clear()
 	}
+	s.clearTrust()
 
 	s.notifySessionEvents(flushed)
 	if hadSession && s.OnSessionEvent != nil {
