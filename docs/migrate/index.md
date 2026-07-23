@@ -101,11 +101,17 @@ Limit a run to specific categories with `--only`
 | `sops` | the SOPS age private key | a live-mounted pipe serving a template; sops v3.10+ can also fetch the key via `SOPS_AGE_KEY_CMD` | [SOPS](./sops.md) |
 | `npmrc` | just the secret lines (`_authToken`, etc.) | a live-mounted pipe serving a template; everything else untouched | [npm](./npm.md) |
 | `netrc` | every `password` value in `~/.netrc` | a live-mounted pipe serving a template; `machine`/`login` lines and macdef scripts untouched | [netrc](./netrc.md) |
-| `loose` | a bare token in a plain file you named (a JWT in `token.txt`) that matches no format above | the value moves to the vault and the file is replaced with a git-safe pointer; retrieve with `jit vault get`. Only when the whole file is the token, a token mixed with other content is left in place | |
+| `loose` | a bare token in a plain file you named (a JWT in `token.txt`) that matches no format above | by default (whole-file token) the value moves to the vault and the file is replaced with a git-safe pointer; retrieve with `jit vault get`. With `--mount`, or for a token mixed with other content, the file stays live at its path as a mount (a template with `${VAR}` placeholders) serving the real value to `jit run` grants and a decoy otherwise | |
 
 The `loose` category never appears on its own, only when you explicitly name
 such a file: `jit migrate token.txt`. It is the migrate counterpart to `jit
 scan`'s Exposed Secrets finding.
+
+**`--mount`** keeps a loose file live at its path instead of neutralizing it,
+for the case where a program actually reads that path at runtime (getting the
+real value only under a [`jit run`](../service/index.md) grant, a decoy
+otherwise). It is also required to migrate a file that mixes a secret with
+other content, since replacing such a file wholesale would lose the rest.
 
 CLI tool tokens (`gh`, `stripe`, `ngrok`, …) live in their own config files
 that `migrate` doesn't cover - that's [`jit wrap`](../wrap/index.md)'s job.
