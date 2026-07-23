@@ -303,8 +303,9 @@ var serviceTTLCmd = &cobra.Command{
 			return fmt.Errorf("jit service ttl: %w", err)
 		}
 		// installAgentService writes the plist with the new --ttl and reloads
-		// it, creating the login item if it wasn't there yet.
-		_, running, err := installAgentService(d)
+		// it, creating the login item if it wasn't there yet. Preserve the
+		// consent setting across the TTL change.
+		_, running, err := installAgentService(d, configuredAgentConsent())
 		if err != nil {
 			return fmt.Errorf("jit service ttl: %w", err)
 		}
@@ -340,6 +341,77 @@ func configuredAgentTTL() (time.Duration, bool) {
 		}
 	}
 	return 0, false
+}
+
+// configuredAgentConsent reports whether per-process consent is baked into the
+// installed plist (the `--consent` flag installAgentService writes). False when
+// the service isn't installed or the flag isn't present — the same "off unless
+// explicitly on" default the running service uses.
+func configuredAgentConsent() bool {
+	plistPath, err := agentPlistPath()
+	if err != nil {
+		return false
+	}
+	data, err := os.ReadFile(plistPath) // #nosec G304 -- jit's own launchd plist under the user's LaunchAgents dir
+	if err != nil {
+		return false
+	}
+	for _, v := range plistStringValues(data) {
+		if v == "--consent" {
+			return true
+		}
+	}
+	return false
+}
+
+// serviceConsentCmd shows or sets per-process credential consent. Like
+// serviceTTLCmd it reinstalls the plist (preserving the TTL) so the setting
+// survives restarts and logins, then reloads the service so it takes effect now.
+var serviceConsentCmd = &cobra.Command{
+	Use:   "consent [on|off]",
+	Short: "Show or set per-process credential consent (experimental)",
+	Long: "Per-process credential consent (experimental): when on, the background\n" +
+		"service prompts a fresh Touch ID the first time each tool reaches for a\n" +
+		"credential (AWS, git, docker, kube, gcloud/sops/npm/netrc keys), naming who\n" +
+		"is asking, and remembers your answer for the session. It closes the window\n" +
+		"where any process running as you can use a migrated credential silently\n" +
+		"while your vault is unlocked.\n\n" +
+		"With no argument, prints whether it's on. `on`/`off` set it and restart the\n" +
+		"service. Use `jit run --trust -- <cmd>` to pre-authorize a whole run's tree\n" +
+		"so it isn't prompted.",
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			if configuredAgentConsent() {
+				fmt.Fprintln(cmd.OutOrStdout(), "Per-process credential consent is ON.")
+			} else {
+				fmt.Fprintln(cmd.OutOrStdout(), "Per-process credential consent is OFF. Turn it on with `jit service consent on`.")
+			}
+			return nil
+		}
+		var on bool
+		switch strings.ToLower(args[0]) {
+		case "on", "true", "enable", "enabled":
+			on = true
+		case "off", "false", "disable", "disabled":
+			on = false
+		default:
+			return fmt.Errorf("jit service consent: expected 'on' or 'off', got %q", args[0])
+		}
+		ttl, ok := configuredAgentTTL()
+		if !ok {
+			ttl = agentInstallDefaultTTL
+		}
+		if _, _, err := installAgentService(ttl, on); err != nil {
+			return fmt.Errorf("jit service consent: %w", err)
+		}
+		if on {
+			fmt.Fprintln(cmd.OutOrStdout(), "Per-process credential consent is now ON. The service restarted; the next credential use prompts Touch ID.")
+		} else {
+			fmt.Fprintln(cmd.OutOrStdout(), "Per-process credential consent is now OFF. The service restarted.")
+		}
+		return nil
+	},
 }
 
 // plistStringValues returns the text of every <string>…</string> element in a
@@ -382,7 +454,7 @@ const agentInstallDefaultTTL = 5 * time.Minute
 // NO consent prompt of its own: the service is a solid part of the app that
 // sets itself up on first use, and the plist is a low-privilege, fully
 // reversible user LaunchAgent.
-func installAgentService(ttl time.Duration) (plistPath string, running bool, err error) {
+func installAgentService(ttl time.Duration, consent bool) (plistPath string, running bool, err error) {
 	exePath, err := os.Executable()
 	if err != nil {
 		return "", false, err
@@ -407,7 +479,15 @@ func installAgentService(ttl time.Duration) (plistPath string, running bool, err
 	// exePath/logPath are filesystem paths and can legally contain XML
 	// metacharacters (& is common in directory names) — splicing one into the
 	// plist unescaped produces a file launchctl rejects, or worse, misparses.
-	plist := fmt.Sprintf(agentPlistTemplate, agentPlistLabel, xmlEscape(exePath), ttl.String(), xmlEscape(logPath), xmlEscape(logPath))
+	// When consent is on, bake the --consent flag into ProgramArguments so the
+	// setting survives launchd restarts and logins (the plist is the only
+	// durable home for it). Off writes nothing extra, matching a service that
+	// never had it.
+	consentArg := ""
+	if consent {
+		consentArg = "\n\t\t<string>--consent</string>"
+	}
+	plist := fmt.Sprintf(agentPlistTemplate, agentPlistLabel, xmlEscape(exePath), ttl.String(), consentArg, xmlEscape(logPath), xmlEscape(logPath))
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0o700); err != nil {
 		return plistPath, false, err
 	}
@@ -453,7 +533,7 @@ func ensureAgentInstalled() (didInstall, running bool) {
 	if agentInstalled() {
 		return false, false
 	}
-	_, running, err := installAgentService(agentInstallDefaultTTL)
+	_, running, err := installAgentService(agentInstallDefaultTTL, false)
 	if err != nil {
 		return false, false
 	}
@@ -490,7 +570,7 @@ var agentRestartCmd = &cobra.Command{
 			if rerr != nil {
 				return fmt.Errorf("jit service restart: %w", rerr)
 			}
-			if _, _, ierr := installAgentService(agentInstallDefaultTTL); ierr != nil {
+			if _, _, ierr := installAgentService(agentInstallDefaultTTL, false); ierr != nil {
 				return fmt.Errorf("jit service restart: %w", ierr)
 			}
 			if !waitForAgentSocket(root, 5*time.Second) {
@@ -1322,7 +1402,7 @@ const agentPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 		<string>service</string>
 		<string>run</string>
 		<string>--ttl</string>
-		<string>%s</string>
+		<string>%s</string>%s
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
@@ -1372,7 +1452,7 @@ func init() {
 	agentStatusCmd.Flags().StringVar(&agentStatusFormat, "format", "text", `output format: "text" (default) or "json"`)
 	agentLogCmd.Flags().IntVarP(&agentLogLines, "lines", "n", 50, "how many trailing lines to print")
 	agentLogCmd.Flags().BoolVarP(&agentLogFollow, "follow", "f", false, "keep printing new lines as the service writes them (Ctrl-C to stop)")
-	serviceCmd.AddCommand(agentRunCmd, serviceTTLCmd, agentRestartCmd, agentStatusCmd, agentLogCmd)
+	serviceCmd.AddCommand(agentRunCmd, serviceTTLCmd, serviceConsentCmd, agentRestartCmd, agentStatusCmd, agentLogCmd)
 
 	// The old plist's `agent run --ttl <d>` needs the same --ttl flag bound to
 	// the same target var; only one of the two run commands executes per

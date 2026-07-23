@@ -9,6 +9,7 @@ jit service run [flags]
 ### Options
 
 ```
+      --consent        prompt for per-process consent (Touch ID) on each credential unwrap (experimental)
       --ttl duration   how long an unlocked session stays cached before auto-locking (default 5m0s)
 ```
 
