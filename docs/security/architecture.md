@@ -59,7 +59,12 @@ Secrets materialize at the moment of use and nowhere else:
 - Credential-helper fetches ([AWS](../migrate/aws.md),
   [Kubernetes](../migrate/kubernetes.md),
   [Terraform](../migrate/terraform.md)) hand the credential to the
-  requesting tool on demand; no intermediate file exists.
+  requesting tool on demand; no intermediate file exists. By default,
+  [per-process consent](../service/consent.md) gates each fetch: the first time
+  a given tool reaches for one of these credentials in a session, the service
+  prompts a fresh Touch ID naming it and remembers the answer until re-lock, so
+  a migrated credential is never handed out completely silently even while the
+  vault is unlocked.
 - The escape hatches are guarded too: `jit vault get --copy` conceals the
   value from clipboard managers and auto-clears it after 45 seconds, and
   `jit export` asks before printing plaintext to a terminal (its output is
@@ -84,7 +89,10 @@ machine sleeps - the idle TTL is a proxy for "the user left," and those two
 events are the OS saying so outright.
 
 The cached session covers only the high-frequency paths (native credential
-hooks and `jit run`). The sensitive `jit vault` management commands
+hooks and `jit run`), and on top of it [per-process consent](../service/consent.md)
+(on by default) prompts once per tool the first time it reaches for a
+credential, so nothing is handed out entirely silently even mid-session. The
+sensitive `jit vault` management commands
 (`get`/`set`/`rm`/`import`/`restore`/`clean`/`prune`/`delete`/`export`)
 deliberately bypass it and require a fresh Touch ID/passcode on every
 invocation, locked or not - so a process running as you on an unlocked

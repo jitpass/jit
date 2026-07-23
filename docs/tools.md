@@ -35,6 +35,12 @@ own. You run them exactly as before:
 - **Shell exports**: your `~/.zshrc` vars, in every new shell. [shell configs](./migrate/shell-configs.md)
 - **MCP servers**: the server launches through jit automatically. [MCP / AI tools](./migrate/mcp.md)
 
+Nothing about the command you type changes. The credential-backed ones (AWS,
+Terraform, git, Docker, kubectl) do prompt Touch ID the first time each reaches
+for its credential in a session, naming what's asking, and remember your answer
+until the vault locks - that's [per-process consent](./service/consent.md), on
+by default. Shell exports and MCP servers aren't gated by it.
+
 ## `jit wrap <tool>`: CLIs that carry their own token
 
 These CLIs keep a long-lived token in their own config file. `jit wrap <tool>`

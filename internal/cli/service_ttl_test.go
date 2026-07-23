@@ -29,8 +29,9 @@ func TestConfiguredAgentTTLReadsPlist(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	// Exactly the plist installAgentService writes, with a non-default --ttl
-	// and no --consent arg (the 4th slot).
+	// A plist with a non-default --ttl and no consent arg at all (the 4th slot):
+	// this is what a pre-consent install looks like, and it must read as the
+	// default — consent ON.
 	plist := fmt.Sprintf(agentPlistTemplate, agentPlistLabel, "/usr/local/bin/jit", (12 * time.Minute).String(), "", "/x/agent.log", "/x/agent.log")
 	if err := os.WriteFile(filepath.Join(dir, agentPlistLabel+".plist"), []byte(plist), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -40,27 +41,38 @@ func TestConfiguredAgentTTLReadsPlist(t *testing.T) {
 	if !ok || got != 12*time.Minute {
 		t.Fatalf("configuredAgentTTL = %v, %v; want 12m0s, true", got, ok)
 	}
-	if configuredAgentConsent() {
-		t.Error("configuredAgentConsent = true for a plist without --consent")
+	if !configuredAgentConsent() {
+		t.Error("configuredAgentConsent = false for a plist with no consent arg; want the default (on)")
 	}
 }
 
-// TestConfiguredAgentConsentReadsPlist covers the --consent flag baked into
-// ProgramArguments: present -> true, absent -> false.
+// TestConfiguredAgentConsentReadsPlist covers how consent state round-trips
+// through ProgramArguments: `--consent` (or none) -> on by default, an explicit
+// `--consent=false` -> off.
 func TestConfiguredAgentConsentReadsPlist(t *testing.T) {
 	home := shortFixtureHome(t)
 	dir := filepath.Join(home, "Library", "LaunchAgents")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	// The plist installAgentService writes with consent on: the 4th slot is the
-	// --consent element.
-	plist := fmt.Sprintf(agentPlistTemplate, agentPlistLabel, "/usr/local/bin/jit", (5 * time.Minute).String(), "\n\t\t<string>--consent</string>", "/x/agent.log", "/x/agent.log")
-	if err := os.WriteFile(filepath.Join(dir, agentPlistLabel+".plist"), []byte(plist), 0o600); err != nil {
+	plistPath := filepath.Join(dir, agentPlistLabel+".plist")
+
+	// consent on: the 4th slot is the --consent element.
+	on := fmt.Sprintf(agentPlistTemplate, agentPlistLabel, "/usr/local/bin/jit", (5 * time.Minute).String(), "\n\t\t<string>--consent</string>", "/x/agent.log", "/x/agent.log")
+	if err := os.WriteFile(plistPath, []byte(on), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	if !configuredAgentConsent() {
 		t.Error("configuredAgentConsent = false for a plist with --consent")
+	}
+
+	// consent explicitly off: the 4th slot carries --consent=false.
+	off := fmt.Sprintf(agentPlistTemplate, agentPlistLabel, "/usr/local/bin/jit", (5 * time.Minute).String(), "\n\t\t<string>--consent=false</string>", "/x/agent.log", "/x/agent.log")
+	if err := os.WriteFile(plistPath, []byte(off), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if configuredAgentConsent() {
+		t.Error("configuredAgentConsent = true for a plist with --consent=false; want off")
 	}
 }
 
