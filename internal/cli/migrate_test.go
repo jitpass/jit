@@ -115,6 +115,57 @@ func TestMigratePathAliasStillWorks(t *testing.T) {
 	}
 }
 
+// TestMigrateLooseSecretFileDryRun: a file that matches no structured category
+// but whose whole content is a bare token is discovered as a loose secret file
+// and shown in the plan. This is the migrate half of the scan token.txt bug —
+// scan flags it as an exposed_secret, and now migrate can act on it.
+func TestMigrateLooseSecretFileDryRun(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	jwt := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+		"eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20iLCJpZCI6MX0." +
+		"i-Bx9F2fjO5nvvo_hlUFY6bvnAOeTs68BiTBa-1zfoE"
+	target := filepath.Join(home, "token.txt")
+	if err := os.WriteFile(target, []byte(jwt+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := execMigrate(t, target, "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate token.txt --dry-run: %v", err)
+	}
+	if !strings.Contains(out, "loose secret file") {
+		t.Errorf("expected a loose secret file plan section, got:\n%s", out)
+	}
+	if !strings.Contains(out, "1 change(s) planned") {
+		t.Errorf("expected the change counter to include the loose file, got:\n%s", out)
+	}
+	if strings.Contains(out, jwt) {
+		t.Fatal("dry-run plan must never print the raw token")
+	}
+}
+
+// TestMigrateEmbeddedSecretNotLoose: a file that mixes a token with other
+// content is NOT a pure loose secret file (migrating it whole would lose the
+// other content), so migrate reports nothing to move — scan keeps flagging it.
+func TestMigrateEmbeddedSecretNotLoose(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	jwt := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MX0.i-Bx9F2fjO5nvvo_hlUFY6bvnAOeTs68BiTBa-1zfoE"
+	target := filepath.Join(home, "notes.txt")
+	if err := os.WriteFile(target, []byte("my token is "+jwt+" keep it safe\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := execMigrate(t, target, "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate notes.txt --dry-run: %v", err)
+	}
+	if !strings.Contains(out, "Nothing to migrate") {
+		t.Errorf("expected nothing-to-migrate for an embedded secret, got:\n%s", out)
+	}
+}
+
 // TestMigrateNoFindings confirms a run over a target with nothing migratable
 // never reaches openVault() — and so never needs Touch ID. Real mutation
 // touching the vault for an actual .env file is verified manually against

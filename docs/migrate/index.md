@@ -101,6 +101,11 @@ Limit a run to specific categories with `--only`
 | `sops` | the SOPS age private key | a live-mounted pipe serving a template; sops v3.10+ can also fetch the key via `SOPS_AGE_KEY_CMD` | [SOPS](./sops.md) |
 | `npmrc` | just the secret lines (`_authToken`, etc.) | a live-mounted pipe serving a template; everything else untouched | [npm](./npm.md) |
 | `netrc` | every `password` value in `~/.netrc` | a live-mounted pipe serving a template; `machine`/`login` lines and macdef scripts untouched | [netrc](./netrc.md) |
+| `loose` | a bare token in a plain file you named (a JWT in `token.txt`) that matches no format above | the value moves to the vault and the file is replaced with a git-safe pointer; retrieve with `jit vault get`. Only when the whole file is the token, a token mixed with other content is left in place | |
+
+The `loose` category never appears on its own, only when you explicitly name
+such a file: `jit migrate token.txt`. It is the migrate counterpart to `jit
+scan`'s Exposed Secrets finding.
 
 CLI tool tokens (`gh`, `stripe`, `ngrok`, …) live in their own config files
 that `migrate` doesn't cover - that's [`jit wrap`](../wrap/index.md)'s job.

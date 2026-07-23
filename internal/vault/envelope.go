@@ -114,6 +114,11 @@ const (
 	ClassNetrc     = "netrc"
 	ClassKube      = "kube"
 	ClassWrap      = "wrap"
+	// ClassLooseFile is a bare secret migrated out of a file the user named
+	// explicitly to `jit migrate <path>` — a token in a plain file (token.txt)
+	// that matches none of the structured formats above. Origin is the file
+	// path; the whole file was the secret.
+	ClassLooseFile = "loose_file" // #nosec G101 -- provenance class label, not a credential
 )
 
 // envelopeAAD is the additional authenticated data a version-2+ payload is

@@ -55,7 +55,7 @@ jit migrate <file-or-dir>...
 
 ```
       --dry-run        preview the plan without changing anything
-      --only strings   scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,docker,git,gcp,sops,npmrc,netrc (default: all)
+      --only strings   scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,docker,git,gcp,sops,npmrc,netrc,loose (default: all)
   -y, --yes            skip the confirmation prompt and migrate immediately
 ```
 

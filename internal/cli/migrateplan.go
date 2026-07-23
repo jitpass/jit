@@ -45,7 +45,7 @@ import (
 // item-by-item (splitMCPByScope/splitNpmrcByScope) since Claude Desktop's
 // config / the global ~/.npmrc belong in the machine-wide group while a
 // project mcp.json/.npmrc belongs with the scoped files.
-func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles []string) {
+func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, looseSecretFiles []string) {
 	fmt.Fprintln(w, "jit migrate, plan")
 	fmt.Fprintln(w, "Each modified file is backed up before it's rewritten.")
 	fmt.Fprintln(w)
@@ -64,7 +64,7 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, shellConf
 		return out
 	}
 
-	hasScoped := len(envFiles) > 0 || len(tfvarsFiles) > 0 || len(mcpScoped) > 0 || len(npmrcScoped) > 0
+	hasScoped := len(envFiles) > 0 || len(tfvarsFiles) > 0 || len(mcpScoped) > 0 || len(npmrcScoped) > 0 || len(looseSecretFiles) > 0
 	hasFixed := len(shellConfigs) > 0 || len(mcpFixed) > 0 || len(awsProfiles) > 0 || len(k8sUsers) > 0 || len(terraformHosts) > 0 || len(dockerRegistries) > 0 || len(gitHosts) > 0 || len(gcpADCFiles) > 0 || len(sopsAgeFiles) > 0 || len(npmrcFixed) > 0 || len(netrcFiles) > 0
 
 	if hasScoped {
@@ -87,6 +87,9 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, shellConf
 		printMigratePlanCategory(w,
 			"npmrc file(s) → secrets move to the vault; the file keeps working via a live, auto-updating mount",
 			shorten(npmrcScoped))
+		printMigratePlanCategory(w,
+			"loose secret file(s) → the whole file is a bare token; it moves to the vault and the file is replaced with a git-safe pointer (retrieve with `jit vault get`, or re-mount later with `jit mount`)",
+			shorten(looseSecretFiles))
 	}
 
 	if hasFixed {
@@ -158,7 +161,7 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, shellConf
 	}
 
 	categories, total := 0, 0
-	for _, items := range [][]string{envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles} {
+	for _, items := range [][]string{envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, looseSecretFiles} {
 		if len(items) > 0 {
 			categories++
 		}
