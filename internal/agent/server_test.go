@@ -231,6 +231,48 @@ func TestServerClosesConnThatNeverSendsRequest(t *testing.T) {
 	}
 }
 
+// A malformed request must leave a durable KindError trail, not just a rejection
+// on the wire the caller sees and no one else ever does. (The rejected-peer path
+// is the more valuable one but can't be unit-tested here: a same-process dial
+// shares this uid and so passes verifyPeerUID; the decode path exercises the
+// same recordServeError wiring.)
+func TestServerRecordsMalformedRequestAsError(t *testing.T) {
+	socketPath := shortSocketPath(t)
+	newFetcher := func() MEKFetcher { return &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32)} }
+	s := NewServer(socketPath, newFetcher, time.Minute)
+	events := make(chan SessionEvent, 1)
+	s.OnServeError = func(e SessionEvent) { events <- e }
+
+	if err := s.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = s.Serve(ctx); close(done) }()
+	defer func() { cancel(); _ = s.Close(); <-done }()
+
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("this is not json\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	select {
+	case e := <-events:
+		if e.Kind != KindError || e.Op != "decode" {
+			t.Errorf("malformed request recorded as %+v, want Kind=error Op=decode", e)
+		}
+		if e.Cause == "" {
+			t.Error("serve-error event carried no cause detail")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("a malformed request produced no serve-error event")
+	}
+}
+
 func TestServerLockDropsSessionImmediately(t *testing.T) {
 	var calls int32
 	_, socketPath, cleanup := startTestServer(t, time.Minute, &calls)

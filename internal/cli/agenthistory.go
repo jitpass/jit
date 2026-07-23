@@ -37,20 +37,28 @@ type historyLog struct {
 	mu sync.Mutex
 }
 
+// historyFileName is the durable session-history file's basename under the
+// config root. Named once so the writer here and the follower in `jit audit`
+// (readAppended) agree on it without hardcoding the string twice.
+const historyFileName = "agent-history.jsonl"
+
 func newHistoryLog(root string, stderr io.Writer) *historyLog {
 	// The agent's very first start on a fresh machine runs before anything
 	// has created the config root (Server.Listen does it, but later) — and
 	// the first event written is exactly that start. Best-effort like every
 	// write here; a failure surfaces on the append instead.
 	_ = os.MkdirAll(root, 0o700)
-	return &historyLog{path: filepath.Join(root, "agent-history.jsonl"), stderr: stderr}
+	return &historyLog{path: filepath.Join(root, historyFileName), stderr: stderr}
 }
 
 // historyMaxBytes bounds the file. Half is kept on trim, so the file
-// oscillates between ~256KB and 512KB — at ~200 bytes per event that's
-// over a thousand events retained even right after a trim, years of
-// ordinary use, for less disk than one photo.
-const historyMaxBytes = 512 * 1024
+// oscillates between ~1MB and 2MB — at ~200 bytes per event that's ~10k
+// events retained even right after a trim, years of ordinary use, for less
+// disk than one photo. Raised from 512KB when this file became the SOLE home
+// of session events (they used to be double-written as prose into agent.log,
+// which carried a much larger 5MB cap): `jit audit` now reads only here, so
+// the depth that was effectively in agent.log lives here instead.
+const historyMaxBytes = 2 * 1024 * 1024
 
 // append writes one event as a JSON line. Open-per-append on purpose:
 // events are a handful per day, and never holding an fd means a trim (or a

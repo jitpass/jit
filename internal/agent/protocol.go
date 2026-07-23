@@ -108,6 +108,16 @@ const (
 	// (Count, Labels) per caller+op over a short window, so a `jit run`
 	// resolving a ten-secret profile is one event, not ten.
 	KindUse = "use"
+	// KindError marks something the service itself got wrong or refused at
+	// the socket: a rejected peer (a process the kernel says isn't this
+	// user's — someone else probing the agent socket), a malformed request,
+	// or the accept loop failing. Op names which ("reject", "decode",
+	// "accept") and Cause carries the detail. These used to exist only as
+	// prose in agent.log, invisible to `jit audit` and unshippable to a
+	// SIEM; as a structured event a rejected peer is now a first-class,
+	// greppable line in the same trail as every unlock. Enriched with the
+	// peer's provenance (By/ByPID/LaunchedBy) when the kernel still names it.
+	KindError = "error"
 )
 
 // Response answers a Request.
@@ -178,7 +188,7 @@ type Response struct {
 // never fail the unlock itself.
 type SessionEvent struct {
 	UnixTime int64 `json:"unix_time"`
-	// Kind is "unlock", "lock", "start", "denied", or "use". Callers used
+	// Kind is "unlock", "lock", "start", "denied", "use", or "error". Callers used
 	// to tell unlocks and locks apart by checking whether Cause was set,
 	// which worked only because locks happened to be the only events that
 	// carried one — a coincidence, not a contract, and one that would have
