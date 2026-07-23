@@ -29,6 +29,12 @@ jit wrap add <tool> --env VAR=<vault-path> [--env ...] | --grant <name> [flags]
       --grant string      grant a global file-delivered mount by name (gcp, sops, npm, netrc) instead of injecting an env var - for tools that read a credential file
 ```
 
+### Options inherited from parent commands
+
+```
+      --quiet   suppress the progress spinner/status trail (results still print)
+```
+
 ### SEE ALSO
 
 * [jit wrap](jit_wrap.md)	 - Wrap CLI tools so their tokens are injected just-in-time

@@ -30,6 +30,12 @@ jit sops-age-key [flags]
       --profile string   vault profile to resolve (defaults to the one jit migrate creates) (default "sops-age")
 ```
 
+### Options inherited from parent commands
+
+```
+      --quiet   suppress the progress spinner/status trail (results still print)
+```
+
 ### SEE ALSO
 
 * [jit](jit.md)	 - Local-first developer secret runtime

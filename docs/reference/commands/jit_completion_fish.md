@@ -27,6 +27,12 @@ jit completion fish [flags]
       --no-descriptions   disable completion descriptions
 ```
 
+### Options inherited from parent commands
+
+```
+      --quiet   suppress the progress spinner/status trail (results still print)
+```
+
 ### SEE ALSO
 
 * [jit completion](jit_completion.md)	 - Generate the autocompletion script for the specified shell

@@ -60,6 +60,12 @@ jit migrate <file-or-dir>...
   -y, --yes             skip the confirmation prompt and migrate immediately
 ```
 
+### Options inherited from parent commands
+
+```
+      --quiet   suppress the progress spinner/status trail (results still print)
+```
+
 ### SEE ALSO
 
 * [jit](jit.md)	 - Local-first developer secret runtime
