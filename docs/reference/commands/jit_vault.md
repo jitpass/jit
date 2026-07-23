@@ -26,6 +26,7 @@ prompt-free: they show secret names and version timestamps, never a value.
 * [jit vault import](jit_vault_import.md)	 - Restore secrets from a jit vault export file
 * [jit vault init](jit_vault_init.md)	 - Set up the local vault (generates the master encryption key)
 * [jit vault list](jit_vault_list.md)	 - List stored secret paths (names only, never values)
+* [jit vault orphans](jit_vault_orphans.md)	 - List (and with --prune delete) secrets no profile references
 * [jit vault prune](jit_vault_prune.md)	 - Delete stale encrypted file backups, keeping each file's newest
 * [jit vault rekey](jit_vault_rekey.md)	 - Rotate the vault's master encryption key
 * [jit vault restore](jit_vault_restore.md)	 - Bring back an archived previous version of a secret
