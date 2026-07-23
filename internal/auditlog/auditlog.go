@@ -187,7 +187,7 @@ func (l *Logger) Trim() {
 		keep = keep[i+1:]
 	}
 	tmp := l.path + ".tmp"
-	if err := os.WriteFile(tmp, keep, 0o600); err != nil { // #nosec G306 -- jit's own bookkeeping path under its config root
+	if err := os.WriteFile(tmp, keep, 0o600); err != nil { // #nosec G306 G703 -- jit's own bookkeeping path under its config root, not attacker-controlled
 		fmt.Fprintf(l.stderr, "jit: trimming audit log: %v\n", err)
 		return
 	}
