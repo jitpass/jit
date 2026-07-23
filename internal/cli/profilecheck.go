@@ -100,7 +100,7 @@ type checkedRef struct {
 type checkOptions struct {
 	// Profile limits the run to a single named profile; "" checks every
 	// profile visible from cwd (project-local and global), the same set
-	// jit profile list shows.
+	// jit status --secrets reconciles.
 	Profile string
 	// Integrity additionally runs vault.Verify on each existing secret,
 	// turning "the file is there" into "this build of jit can actually read

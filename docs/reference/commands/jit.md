@@ -30,7 +30,6 @@ jit [flags]
 * [jit k8s-exec-credential](jit_k8s-exec-credential.md)	 - Print a Kubernetes ExecCredential JSON for a migrated profile
 * [jit lock](jit_lock.md)	 - Lock jit's session immediately, without waiting for the TTL
 * [jit migrate](jit_migrate.md)	 - Guided fix path for findings jit scan reports (name the file(s) to convert)
-* [jit profile](jit_profile.md)	 - Inspect profile manifests (names and vault paths only, never secret values)
 * [jit run](jit_run.md)	 - Execute a command with a profile's secrets injected into its environment
 * [jit scan](jit_scan.md)	 - Scan for plaintext secrets exposed on this machine (read-only)
 * [jit service](jit_service.md)	 - Manage jit's background service (the daemon that holds your session and serves mounts)
