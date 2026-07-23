@@ -118,13 +118,17 @@ var agentRunCmd = &cobra.Command{
 		}
 
 		server := agent.NewServer(agent.SocketPath(root), func() agent.MEKFetcher { return keychainwrap.New() }, agentTTL)
+		home, _ := os.UserHomeDir()
+		mounts := &mountManager{root: root, home: home, keyWrapper: server, stdout: stdout, stderr: stderr}
 		if agentConsent {
 			// Align the consent cache lifetime with the unlock session's, so an
-			// approval never outlives the session it rode in on.
+			// approval never outlives the session it rode in on. mounts.consent
+			// routes the FIFO credential mounts (gcp/npm/netrc) through the same
+			// engine, best-effort.
 			server.Consent = consent.New(agentTTL)
-			fmt.Fprintln(stdout, "jit service: per-process credential consent ENABLED (prompting on credential unwraps)")
+			mounts.consent = server
+			fmt.Fprintln(stdout, "jit service: per-process credential consent ENABLED (prompting on credential reads)")
 		}
-		mounts := &mountManager{root: root, keyWrapper: server, stdout: stdout, stderr: stderr}
 		server.OnUnlock = mounts.start
 		server.OnLock = mounts.stop
 		server.OnRefresh = mounts.start
