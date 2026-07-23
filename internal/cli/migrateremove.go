@@ -53,6 +53,12 @@ var migrateRemoveCmd = &cobra.Command{
 		"FILE inside a project (e.g. its .env) and jit resolves up to the .jit/\n" +
 		"project that owns it and removes the whole thing. Name several to remove\n" +
 		"several, each confirmed on its own.\n\n" +
+		"Naming a LOOSE secret file that has no project of its own (a bare\n" +
+		"token.txt migrated at home level) removes just that one file's footprint:\n" +
+		"its plaintext back on disk, then its dedicated profile, vault secret(s),\n" +
+		"and backup deleted. It never escalates to the whole home store the file\n" +
+		"sits above, and naming your home directory itself is refused for that\n" +
+		"same reason.\n\n" +
 		"Machine-level migrations (shell configs, AWS, kubeconfig, Terraform\n" +
 		"Cloud, GCP application-default credentials, the global ~/.npmrc,\n" +
 		"Claude Desktop's MCP config) are not touched, they aren't part of any\n" +
@@ -64,7 +70,8 @@ var migrateRemoveCmd = &cobra.Command{
 		"Touch ID/passcode approval, a running service session is deliberately\n" +
 		"not enough.",
 	Example: "  jit migrate remove ~/proj\n" +
-		"  jit migrate remove ~/proj/.env   # removes the whole ~/proj project",
+		"  jit migrate remove ~/proj/.env   # removes the whole ~/proj project\n" +
+		"  jit migrate remove ~/token.txt   # removes just that loose secret",
 	Args:         cobra.MinimumNArgs(1),
 	SilenceUsage: true,
 	RunE:         runMigrateRemove,
@@ -119,36 +126,64 @@ func runMigrateRemove(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("jit migrate remove: %w", err)
 	}
 
-	projectRoots, err := resolveRemovalTargets(cwd, home, args)
+	targets, err := resolveRemovalTargets(cwd, home, args)
 	if err != nil {
 		return fmt.Errorf("jit migrate remove: %w", err)
 	}
-	// Each named project is planned, confirmed, and (freshly) authed on its
-	// own — one project's removal is a distinct destructive act, and a
-	// combined confirm would let a single [y/N] delete several projects at
-	// once. Deliberately sequential rather than aggregated for that reason.
-	for _, projectRoot := range projectRoots {
-		if err := removeOneProject(cmd, root, home, projectRoot); err != nil {
+	// Each named target is planned, confirmed, and (freshly) authed on its
+	// own — one removal is a distinct destructive act, and a combined confirm
+	// would let a single [y/N] delete several at once. Deliberately sequential
+	// rather than aggregated for that reason. A loose secret file (a bare
+	// token.txt migrated at home level, no project of its own) is removed at
+	// file granularity; everything else is a whole project.
+	for _, t := range targets {
+		if t.loose {
+			if err := removeOneLooseFile(cmd, root, home, t.path); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := removeOneProject(cmd, root, home, t.path); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// resolveRemovalTargets maps each named file/dir to the project root jit
-// migrate remove should operate on, deduped in first-seen order. A directory
-// target is taken as the project root itself; a file target resolves to the
-// nearest ancestor directory that holds a .jit/ store, so naming any file in
-// a project (its .env, say) removes that whole project. A target that
-// doesn't exist, a symlink, or a file with no jit project above it is a loud
-// error rather than a silent no-op.
-func resolveRemovalTargets(cwd, home string, targets []string) ([]string, error) {
+// removalTarget is one thing `jit migrate remove` will act on: either a
+// project root (loose=false, path is the directory holding the .jit/ store) or
+// a single loose secret file (loose=true, path is the file itself). The
+// distinction exists because a loose secret migrated at home level has no
+// project of its own — its only .jit/ ancestor is the home-level GLOBAL
+// profile store, which is emphatically not "a project" to tear down.
+type removalTarget struct {
+	path  string
+	loose bool
+}
+
+// resolveRemovalTargets classifies each named file/dir into a removalTarget,
+// deduped in first-seen order. A directory is a project root as named. A file
+// resolves to the nearest ancestor holding a .jit/ store, so naming any file
+// in a project (its .env, say) removes that whole project — UNLESS that
+// ancestor is the home directory itself: the home-level .jit/ is the GLOBAL
+// profile store (shell/AWS/kube/MCP/loose-file migrations all live there), not
+// a project, so resolving a home-level file to "the ~ project" would propose
+// deleting every global migration at once. A bare token migrated at home is
+// exactly that case; it becomes a single-file (loose) removal instead. Naming
+// the home directory as a DIRECTORY is refused outright for the same reason. A
+// target that doesn't exist or is a symlink is a loud error, never a silent
+// no-op.
+func resolveRemovalTargets(cwd, home string, targets []string) ([]removalTarget, error) {
 	seen := map[string]bool{}
-	var roots []string
-	add := func(p string) {
-		if !seen[p] {
-			seen[p] = true
-			roots = append(roots, p)
+	var out []removalTarget
+	add := func(t removalTarget) {
+		key := t.path
+		if t.loose {
+			key = "loose\x00" + key
+		}
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, t)
 		}
 	}
 	for _, target := range targets {
@@ -168,16 +203,23 @@ func resolveRemovalTargets(cwd, home string, targets []string) ([]string, error)
 			return nil, fmt.Errorf("%s is a symlink; name its target directly", displayPath(home, abs))
 		}
 		if info.IsDir() {
-			add(abs)
+			if abs == home {
+				return nil, fmt.Errorf("%s is your home directory, not a jit project; its .jit/ is the global profile store — name a specific project folder, or name the migrated file to remove just that", displayPath(home, abs))
+			}
+			add(removalTarget{path: abs})
 			continue
 		}
-		projectRoot, ok := findProjectRoot(filepath.Dir(abs))
-		if !ok {
-			return nil, fmt.Errorf("%s is not inside a jit project (no .jit/ directory in it or any parent); name the project folder instead", displayPath(home, abs))
+		// A file inside a real project (a .jit/ store in a SUBdirectory) names
+		// that whole project, as documented. But a file whose only .jit/
+		// ancestor is the home global store (or none at all) is a loose secret
+		// with no project of its own — remove just that file's footprint.
+		if projectRoot, ok := findProjectRoot(filepath.Dir(abs)); ok && projectRoot != home {
+			add(removalTarget{path: projectRoot})
+			continue
 		}
-		add(projectRoot)
+		add(removalTarget{path: abs, loose: true})
 	}
-	return roots, nil
+	return out, nil
 }
 
 // findProjectRoot walks up from start looking for the directory that holds a
@@ -345,6 +387,362 @@ func removeOneProject(cmd *cobra.Command, root, home, projectRoot string) error 
 		fmt.Fprintf(out, "Kept %d vault secret(s) another profile still references: %s\n", len(plan.keptShared), strings.Join(plan.keptShared, ", "))
 	}
 	return nil
+}
+
+// looseFileRemovalPlan is everything removeOneLooseFile decided to do for a
+// single loose secret file, gathered before anything is confirmed, authed, or
+// mutated. A loose secret has a self-contained footprint — its own dedicated
+// profile in the global store, its own vault secrets (class loose_file, origin
+// pointing back at this file), its own backups — so removal is scoped to
+// exactly that, never the whole home store the file happens to sit above.
+type looseFileRemovalPlan struct {
+	file       string
+	isMount    bool        // a live --mount FIFO: unmount it back to plaintext
+	mountEntry mount.Entry // valid when isMount
+	isPointer  bool        // a neutralized pointer file: restore its backed-up bytes
+	// restoreBackup is the pre-migration backup whose exact bytes go back to
+	// disk for the pointer (neutralize) case — a loose file's pointer is in
+	// KEY=jit://vault/… form, so reconstructing from vault values would change
+	// a bare token.txt into a dotenv file; the backup is the faithful original.
+	restoreBackup *migrate.BackupRecord
+	profilePaths  []string // this file's dedicated profile manifest(s), deleted
+	deletePaths   []string // vault secret paths deleted
+	keptShared    []string // vault paths kept because another profile references them
+	backups       []migrate.BackupRecord
+}
+
+// removeOneLooseFile plans, confirms, freshly authenticates, and applies the
+// removal of a single loose secret file: its plaintext back on disk, then its
+// dedicated profile, vault secrets, and backups all deleted. The strict gate
+// mirrors removeOneProject's — plan → [y/N] → openVaultFreshAuth (its own
+// Touch ID/passcode, never a cached agent session) — because this both writes
+// plaintext to disk AND permanently deletes vault secrets.
+func removeOneLooseFile(cmd *cobra.Command, root, home, file string) error {
+	out := cmd.OutOrStdout()
+
+	// Read-only vault for planning: buildLooseFileRemovalPlan reads secret
+	// metadata (Origin/Class) only, which is envelope-plaintext and never
+	// touches the KeyWrapper, so planning stays auth-free. The destructive
+	// pass opens its OWN fresh-auth vault.
+	rv, err := openVaultReadOnly()
+	if err != nil {
+		return fmt.Errorf("jit migrate remove: %w", err)
+	}
+	plan, err := buildLooseFileRemovalPlan(root, home, file, rv)
+	if err != nil {
+		return fmt.Errorf("jit migrate remove: %w", err)
+	}
+	if !plan.isMount && !plan.isPointer && len(plan.profilePaths) == 0 &&
+		len(plan.deletePaths) == 0 && len(plan.backups) == 0 {
+		fmt.Fprintf(out, "No jit artifacts found for %s, nothing to remove.\n", displayPath(home, file))
+		return nil
+	}
+
+	printLooseFileRemovalPlan(out, home, plan)
+
+	restoreCount := 0
+	if plan.isMount || plan.isPointer {
+		restoreCount = 1
+	}
+	// Confirm BEFORE auth — declining must never cost a Touch ID prompt for
+	// work about to be aborted (GAPS.md #17's ordering).
+	if !migrateRemoveYes && !confirmPrompt(cmd, fmt.Sprintf(
+		"Restore %d file(s) to PLAINTEXT and permanently delete %d vault secret(s) + %d backup(s)? This can't be undone. [y/N] ",
+		restoreCount, len(plan.deletePaths), len(plan.backups))) {
+		fmt.Fprintln(out, "Aborted. Nothing was changed.")
+		return nil
+	}
+
+	v, err := openVaultFreshAuth()
+	if err != nil {
+		return fmt.Errorf("jit migrate remove: %w", err)
+	}
+	// Force the fresh challenge NOW and audit it: a run whose file is already
+	// plaintext (undo already ran) is deletion-only, and Vault.Remove never
+	// touches the KeyWrapper, so without this the promised Touch ID approval
+	// would silently never happen (the same GAPS.md #60 class removeOneProject
+	// guards against). Priming here also means a run that DOES restore prompts
+	// exactly once.
+	if err := requireFreshUserPresence(v, "permanently remove this migrated file's secrets from the vault"); err != nil {
+		return fmt.Errorf("jit migrate remove: %w", err)
+	}
+
+	registryPath := mount.RegistryPath(root)
+	agentClient := agent.NewClient(agent.SocketPath(root))
+	agentReachable := agentClient.Reachable()
+
+	// File first: its plaintext is back before any secret it needs is deleted
+	// (migrate's ordering, run in reverse).
+	if plan.isMount {
+		e := plan.mountEntry
+		if agentReachable {
+			if err := agentClient.StopMount(e.MountPath); err != nil {
+				return fmt.Errorf("jit migrate remove: stopping the running service's mount %s: %w", e.MountPath, err)
+			}
+		}
+		names, err := migrate.UnmountFile(v, e.ProfilePath, e.MountPath, e.TemplatePath)
+		if err != nil {
+			return fmt.Errorf("jit migrate remove: %w", err)
+		}
+		if _, err := mount.RemoveMount(registryPath, e.MountPath); err != nil {
+			return fmt.Errorf("jit migrate remove: %w", err)
+		}
+		if e.TemplatePath != "" {
+			if err := os.Remove(e.TemplatePath); err != nil && !os.IsNotExist(err) {
+				fmt.Fprintf(out, "  warning: removing template %s: %v\n", displayPath(home, e.TemplatePath), err)
+			}
+		}
+		fmt.Fprintf(out, "Restored %s (%d variable(s) written back as plaintext).\n", displayPath(home, e.MountPath), len(names))
+	} else if plan.isPointer {
+		if plan.restoreBackup != nil {
+			if err := migrate.RestoreFromBackup(v, *plan.restoreBackup); err != nil {
+				return fmt.Errorf("jit migrate remove: %w", err)
+			}
+			fmt.Fprintf(out, "Restored %s from its pre-migration backup.\n", displayPath(home, plan.file))
+		} else {
+			// No indexed backup (a pre-index migration): fall back to
+			// reconstructing from the pointer's vault references. The values
+			// land on disk, though as KEY=value lines rather than the original
+			// layout — better than deleting the secrets out from under a
+			// pointer that would then dangle.
+			names, err := migrate.RestorePointerFile(v, plan.file)
+			if err != nil {
+				return fmt.Errorf("jit migrate remove: %w", err)
+			}
+			fmt.Fprintf(out, "Restored %s (%d variable(s), reconstructed from the vault — no backup was indexed).\n", displayPath(home, plan.file), len(names))
+		}
+	}
+
+	// A secret already gone is the desired end state, not a failure worth
+	// stranding the removal halfway.
+	for _, sp := range plan.deletePaths {
+		if err := v.Remove(sp); err != nil && !errors.Is(err, vault.ErrNotFound) {
+			return fmt.Errorf("jit migrate remove: deleting vault secret %s: %w", sp, err)
+		}
+	}
+
+	// Re-load the backup index AFTER the restore: RestoreFromBackup snapshots
+	// whatever occupied the path before overwriting it (its "an undo is itself
+	// undoable" property), so a fresh record may have appeared since planning.
+	// Delete every backup for this file — the planned ones plus any snapshot —
+	// so a removed loose file leaves nothing behind.
+	recs, err := migrate.LoadBackupRecords(root)
+	if err != nil {
+		return fmt.Errorf("jit migrate remove: %w", err)
+	}
+	var toDrop []migrate.BackupRecord
+	for _, rec := range recs {
+		if rec.OriginalPath == plan.file {
+			toDrop = append(toDrop, rec)
+			if rec.VaultPath == "" {
+				continue
+			}
+			if err := v.Remove(rec.VaultPath); err != nil && !errors.Is(err, vault.ErrNotFound) {
+				return fmt.Errorf("jit migrate remove: deleting backup %s: %w", rec.VaultPath, err)
+			}
+		}
+	}
+	if err := migrate.DropBackupRecords(root, toDrop); err != nil {
+		return fmt.Errorf("jit migrate remove: %w", err)
+	}
+
+	// Profiles last: nothing above needed them once the file's plaintext is
+	// back. RemoveOwnedProfile clears the manifest and any .source sidecar,
+	// idempotent on an already-missing file.
+	for _, pp := range plan.profilePaths {
+		if err := migrate.RemoveOwnedProfile(pp); err != nil {
+			return fmt.Errorf("jit migrate remove: removing profile %s: %w", pp, err)
+		}
+	}
+
+	fmt.Fprintf(out, "\nRemoved jit from %s: %d file(s) restored to plaintext, %d vault secret(s), %d profile(s), and %d backup(s) deleted.\n",
+		displayPath(home, plan.file), restoreCount, len(plan.deletePaths), len(plan.profilePaths), len(toDrop))
+	if len(plan.keptShared) > 0 {
+		fmt.Fprintf(out, "Kept %d vault secret(s) another profile still references: %s\n", len(plan.keptShared), strings.Join(plan.keptShared, ", "))
+	}
+	return nil
+}
+
+// buildLooseFileRemovalPlan gathers a loose secret file's whole footprint
+// without touching the vault's KeyWrapper — planning must never cost an auth
+// prompt (rv reads envelope-plaintext metadata only).
+func buildLooseFileRemovalPlan(root, home, file string, rv *vault.Vault) (looseFileRemovalPlan, error) {
+	plan := looseFileRemovalPlan{file: file}
+
+	entries, err := mount.LoadRegistry(mount.RegistryPath(root))
+	if err != nil {
+		return plan, fmt.Errorf("reading mount registry: %w", err)
+	}
+	for _, e := range entries {
+		if e.MountPath == file {
+			plan.isMount = true
+			plan.mountEntry = e
+			break
+		}
+	}
+	if !plan.isMount && migrate.IsPointerFile(file) {
+		plan.isPointer = true
+	}
+
+	// The secrets this file's migration created: every vault entry whose
+	// birth-time Origin resolves back to this exact file. A loose secret gets
+	// its own dedicated profile, so this Origin link ties the file to its vault
+	// entries even after any profile is gone.
+	originSecrets := map[string]bool{}
+	if rv != nil {
+		paths, err := rv.List()
+		if err != nil {
+			return plan, fmt.Errorf("listing vault for origin match: %w", err)
+		}
+		for _, p := range paths {
+			if strings.HasPrefix(p, "_backups/") {
+				continue
+			}
+			info, err := rv.Info(p)
+			if err != nil {
+				return plan, fmt.Errorf("reading secret metadata for %s: %w", p, err)
+			}
+			if info.Origin != "" && expandTilde(info.Origin, home) == file {
+				originSecrets[p] = true
+			}
+		}
+	}
+
+	// The profile(s) dedicated to this file: any profile referencing one of the
+	// origin-matched secrets, plus the mount's own profile. Their full
+	// reference sets join the delete set — a loose profile belongs to one file.
+	infos, err := profile.ListAll(home)
+	if err != nil {
+		return plan, err
+	}
+	deleteSet := map[string]bool{}
+	for p := range originSecrets {
+		deleteSet[p] = true
+	}
+	ourProfiles := map[string]bool{}
+	for _, info := range infos {
+		refs, err := profile.LoadFile(info.Path)
+		if err != nil {
+			return plan, fmt.Errorf("loading profile %s: %w", info.Path, err)
+		}
+		owns := plan.isMount && info.Path == plan.mountEntry.ProfilePath
+		if !owns {
+			for _, vp := range refs {
+				if originSecrets[vp] {
+					owns = true
+					break
+				}
+			}
+		}
+		if !owns {
+			continue
+		}
+		ourProfiles[info.Path] = true
+		plan.profilePaths = append(plan.profilePaths, info.Path)
+		for _, vp := range refs {
+			deleteSet[vp] = true
+		}
+	}
+	sort.Strings(plan.profilePaths)
+
+	// Never delete a secret another profile or another mount still references
+	// (a pre-namespaced vault can genuinely share paths). "Other" = every
+	// profile NOT marked as this file's, and every mount but this one.
+	shared := map[string]bool{}
+	for _, info := range infos {
+		if ourProfiles[info.Path] {
+			continue
+		}
+		if refs, err := profile.LoadFile(info.Path); err == nil {
+			for _, vp := range refs {
+				shared[vp] = true
+			}
+		}
+	}
+	for _, e := range entries {
+		if e.MountPath == file {
+			continue
+		}
+		if refs, err := profile.LoadFile(e.ProfilePath); err == nil {
+			for _, vp := range refs {
+				shared[vp] = true
+			}
+		}
+	}
+	for vp := range deleteSet {
+		if shared[vp] {
+			plan.keptShared = append(plan.keptShared, vp)
+			continue
+		}
+		plan.deletePaths = append(plan.deletePaths, vp)
+	}
+	sort.Strings(plan.deletePaths)
+	sort.Strings(plan.keptShared)
+
+	recs, err := migrate.LoadBackupRecords(root)
+	if err != nil {
+		return plan, err
+	}
+	for _, rec := range recs {
+		if rec.OriginalPath == file {
+			plan.backups = append(plan.backups, rec)
+		}
+	}
+	// The faithful bytes to put back for a pointer restore: the newest
+	// non-created backup (LatestBackups picks max-timestamp per path — the
+	// content captured just before the migration that left today's pointer).
+	if plan.isPointer {
+		for _, rec := range migrate.LatestBackups(plan.backups) {
+			if rec.OriginalPath == file && !rec.RemoveOnRestore {
+				r := rec
+				plan.restoreBackup = &r
+			}
+		}
+	}
+	return plan, nil
+}
+
+// printLooseFileRemovalPlan renders a loose file's removal plan in the
+// package's report shape: title → grouped non-empty sections → the
+// confirmation prompt right after serves as the closing line.
+func printLooseFileRemovalPlan(out interface{ Write([]byte) (int, error) }, home string, plan looseFileRemovalPlan) {
+	fmt.Fprintf(out, "Removing jit from %s:\n\n", displayPath(home, plan.file))
+	switch {
+	case plan.isMount:
+		printMigrateResultCategory(out, "Live mount -> plain file again (current vault values)", 1)
+		fmt.Fprintf(out, "  • %s\n\n", displayPath(home, plan.file))
+	case plan.isPointer:
+		printMigrateResultCategory(out, "Pointer file -> plain file again (pre-migration backup)", 1)
+		fmt.Fprintf(out, "  • %s\n\n", displayPath(home, plan.file))
+	}
+	if n := len(plan.profilePaths); n > 0 {
+		printMigrateResultCategory(out, "Profile(s) + their vault secrets deleted", n)
+		for _, p := range plan.profilePaths {
+			fmt.Fprintf(out, "  • %s\n", displayPath(home, p))
+		}
+		fmt.Fprintln(out)
+	}
+	if n := len(plan.deletePaths); n > 0 {
+		printMigrateResultCategory(out, "Vault secrets deleted", n)
+		for _, p := range plan.deletePaths {
+			fmt.Fprintf(out, "  • %s\n", p)
+		}
+		fmt.Fprintln(out)
+	}
+	if n := len(plan.keptShared); n > 0 {
+		printMigrateResultCategory(out, "Vault secrets KEPT (another profile still references them)", n)
+		for _, p := range plan.keptShared {
+			fmt.Fprintf(out, "  • %s\n", p)
+		}
+		fmt.Fprintln(out)
+	}
+	if n := len(plan.backups); n > 0 {
+		printMigrateResultCategory(out, "Encrypted file backups deleted", n)
+		for _, rec := range plan.backups {
+			fmt.Fprintf(out, "  • %s\n", rec.VaultPath)
+		}
+		fmt.Fprintln(out)
+	}
 }
 
 // buildProjectRemovalPlan gathers everything under cwd's tree that jit

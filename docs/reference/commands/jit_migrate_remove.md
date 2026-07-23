@@ -20,6 +20,13 @@ FILE inside a project (e.g. its .env) and jit resolves up to the .jit/
 project that owns it and removes the whole thing. Name several to remove
 several, each confirmed on its own.
 
+Naming a LOOSE secret file that has no project of its own (a bare
+token.txt migrated at home level) removes just that one file's footprint:
+its plaintext back on disk, then its dedicated profile, vault secret(s),
+and backup deleted. It never escalates to the whole home store the file
+sits above, and naming your home directory itself is refused for that
+same reason.
+
 Machine-level migrations (shell configs, AWS, kubeconfig, Terraform
 Cloud, GCP application-default credentials, the global ~/.npmrc,
 Claude Desktop's MCP config) are not touched, they aren't part of any
@@ -42,6 +49,7 @@ jit migrate remove <file-or-dir>... [flags]
 ```
   jit migrate remove ~/proj
   jit migrate remove ~/proj/.env   # removes the whole ~/proj project
+  jit migrate remove ~/token.txt   # removes just that loose secret
 ```
 
 ### Options

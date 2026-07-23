@@ -17,7 +17,42 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jitpass/jit/internal/migrate"
+	"github.com/jitpass/jit/internal/vault"
 )
+
+// TestNudgeLooseRemainders pins the post-undo hint: a restored loose secret
+// file whose dedicated vault secret is still there gets a file-scoped `jit
+// migrate remove` nudge, while a restored file with no such secret (or one of
+// a different class) gets none.
+func TestNudgeLooseRemainders(t *testing.T) {
+	home := withFixtureHome(t)
+	vaultRoot := filepath.Join(home, "Library", "Application Support", "jitpass")
+	v := &vault.Vault{Root: vaultRoot, KeyWrapper: newFakeKeyWrapper(), RecipientID: "test-device"}
+
+	loose := filepath.Join(home, "token.txt")
+	dotenv := filepath.Join(home, "proj", ".env")
+	if err := v.SetWithMeta("token/JWT", []byte("x"),
+		vault.Meta{Class: vault.ClassLooseFile, Origin: loose}); err != nil {
+		t.Fatalf("seed loose: %v", err)
+	}
+	// A non-loose secret from the other restored file must NOT trigger a nudge.
+	if err := v.SetWithMeta("proj/API_KEY", []byte("y"),
+		vault.Meta{Class: vault.ClassDotenv, Origin: dotenv}); err != nil {
+		t.Fatalf("seed dotenv: %v", err)
+	}
+
+	recs := []migrate.BackupRecord{{OriginalPath: loose}, {OriginalPath: dotenv}}
+	var buf bytes.Buffer
+	nudgeLooseRemainders(&buf, v, home, recs)
+	out := buf.String()
+
+	if !strings.Contains(out, "jit migrate remove "+displayPath(home, loose)) {
+		t.Errorf("expected a loose-file remove nudge, got:\n%s", out)
+	}
+	if strings.Contains(out, ".env") {
+		t.Errorf("a non-loose restored file must not be nudged, got:\n%s", out)
+	}
+}
 
 // execMigrateUndo drives `jit migrate undo <args...>` through rootCmd,
 // resetting migrate's shared package-level flag vars first (same

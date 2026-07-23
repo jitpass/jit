@@ -38,6 +38,11 @@ pre-undo state too. Backups accumulate by design and nothing expires them
 automatically - [`jit vault prune`](../vault/maintenance.md) cleans up
 stale ones while keeping each file's newest.
 
+When an undone file was a **loose secret** (a bare `token.txt` migrated on its
+own), its dedicated vault secret is unshared and has no further use once the
+file is back, so undo ends by pointing you at the one command that clears it
+too: `jit migrate remove <file>` (below).
+
 ## `jit migrate remove <file-or-dir>...` - the full exit from a project
 
 Removes jit completely from a project you name: every file back to
@@ -51,8 +56,24 @@ jit migrate remove ~/code/myapp        # the folder is the project
 jit migrate remove ~/code/myapp/.env   # removes the whole ~/code/myapp project
 ```
 
-A bare `jit migrate remove` with no path does nothing; a file with no jit
-project above it is a loud error.
+A bare `jit migrate remove` with no path does nothing.
+
+### Removing a loose secret
+
+A **loose secret** migrated on its own (a bare `token.txt`, no project of its
+own) has no project to tear down - its profile lives in the home-level global
+store alongside every machine-level migration. Naming it removes just **that
+one file's** footprint: its plaintext back on disk, then its dedicated profile,
+vault secret(s), and backup deleted. Nothing else in the global store is
+touched.
+
+```
+jit migrate remove ~/token.txt   # removes just that loose secret
+```
+
+Because that global store is not a project, `jit migrate remove` will never
+escalate a loose file to it, and naming your home directory itself is refused
+outright - it would otherwise read as "remove every migration at once."
 
 The vault secrets it deletes are not only the ones a profile references: any
 migrated secret whose recorded origin falls inside the project tree is swept
@@ -69,6 +90,10 @@ no recorded origin, or ones tied to no single project - use
 | File contents | exact original bytes from the pre-migration **backup** | current **vault values** written back as plaintext |
 | The vault | **kept** - secrets and profiles stay | **deleted** - profiles, secrets, backups, and `.jit/` erased |
 | Reversibility | itself undoable | **permanent** |
+
+(For a loose secret's pointer file, `remove` restores the exact original bytes
+from the backup rather than the vault values - a bare token file would otherwise
+come back reshaped as `KEY=value` lines.)
 
 ## All three always re-authenticate - and it's logged
 

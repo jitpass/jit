@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/vault"
 )
@@ -91,8 +92,11 @@ func TestMigrateRemoveFileResolvesToOwningProject(t *testing.T) {
 	}
 }
 
-// A file with no .jit/ project above it is a loud error, not a silent no-op.
-func TestMigrateRemoveFileWithoutProjectFailsLoud(t *testing.T) {
+// A file with no .jit/ project above it and no migration footprint is a loose
+// target that finds nothing — it reports "nothing to remove" and exits 0,
+// exactly as a project directory with no jit artifacts does. It must never
+// resolve up to a project (there is none) or touch the home global store.
+func TestMigrateRemoveStrayFileFindsNothing(t *testing.T) {
 	home := withFixtureHome(t)
 	withFixtureCwd(t)
 	stray := filepath.Join(home, "loose", "notes.env")
@@ -102,12 +106,113 @@ func TestMigrateRemoveFileWithoutProjectFailsLoud(t *testing.T) {
 	if err := os.WriteFile(stray, []byte("placeholder"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	_, err := execMigrateRemove(t, "", stray)
-	if err == nil {
-		t.Fatal("expected an error for a file with no jit project above it, got nil")
+	out, err := execMigrateRemove(t, "", stray)
+	if err != nil {
+		t.Fatalf("jit migrate remove <stray file>: %v\n%s", err, out)
 	}
-	if !strings.Contains(err.Error(), "not inside a jit project") {
-		t.Errorf("expected a no-project error, got: %v", err)
+	if !strings.Contains(out, "No jit artifacts found for "+displayPath(home, stray)) {
+		t.Errorf("expected a nothing-to-remove report for a stray file, got:\n%s", out)
+	}
+}
+
+// Naming the home directory as a directory is refused outright: its .jit/ is
+// the global profile store, not a project, so "remove that project" would
+// propose wiping every machine-level and loose-file migration at once.
+func TestMigrateRemoveHomeDirectoryRefused(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	if err := os.MkdirAll(filepath.Join(home, ".jit", "profiles"), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	_, err := execMigrateRemove(t, "", home)
+	if err == nil {
+		t.Fatal("expected `jit migrate remove ~` to be refused, got nil")
+	}
+	if !strings.Contains(err.Error(), "home directory") {
+		t.Errorf("expected a home-directory refusal, got: %v", err)
+	}
+}
+
+// A loose secret migrated at home level (a bare token.txt, no project of its
+// own) is removed at FILE granularity: the plan targets just that file, its
+// dedicated global-store profile, and its origin-matched secret — never the
+// whole home store the file happens to sit above, and never an unrelated
+// global profile. This is the footgun fix: `remove token.txt` used to resolve
+// up to ~/.jit and propose deleting every global migration.
+func TestMigrateRemoveLooseFileScopesToJustThatFile(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+
+	// The loose file itself, currently a jit pointer file.
+	looseFile := filepath.Join(home, "token.txt")
+	pointer := "# jit pointer file, no secret values here, only vault paths.\n" +
+		"JSON_WEB_TOKEN_JWT=jit://vault/token/JSON_WEB_TOKEN_JWT\n"
+	if err := os.WriteFile(looseFile, []byte(pointer), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Its dedicated profile in the global store, plus an UNRELATED global
+	// profile that must be left completely alone.
+	globalProfiles := filepath.Join(home, ".jit", "profiles")
+	if err := os.MkdirAll(globalProfiles, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(globalProfiles, "token.yaml"),
+		[]byte("JSON_WEB_TOKEN_JWT: token/JSON_WEB_TOKEN_JWT\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile token.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(globalProfiles, "shell.yaml"),
+		[]byte("PATH: shell/PATH\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile shell.yaml: %v", err)
+	}
+
+	// The vault: the loose secret (origin points back at the file) and an
+	// unrelated shell secret that must survive.
+	vaultRoot := filepath.Join(home, "Library", "Application Support", "jitpass")
+	v := &vault.Vault{Root: vaultRoot, KeyWrapper: newFakeKeyWrapper(), RecipientID: "test-device"}
+	if err := v.SetWithMeta("token/JSON_WEB_TOKEN_JWT", []byte("jwt-value"),
+		vault.Meta{Class: vault.ClassLooseFile, Origin: looseFile}); err != nil {
+		t.Fatalf("seeding loose secret: %v", err)
+	}
+	if err := v.SetWithMeta("shell/PATH", []byte("/usr/bin"),
+		vault.Meta{Class: vault.ClassShell, Origin: filepath.Join(home, ".zshrc")}); err != nil {
+		t.Fatalf("seeding shell secret: %v", err)
+	}
+
+	// A backup record for the loose file, so the plan reports it too.
+	backupYAML := "backups:\n" +
+		"  - original_path: " + looseFile + "\n" +
+		"    vault_path: _backups/token.txt.jit-bak-1\n" +
+		"    unix_ts: 1\n"
+	if err := os.WriteFile(migrate.BackupIndexPath(vaultRoot), []byte(backupYAML), 0o600); err != nil {
+		t.Fatalf("WriteFile backups.yaml: %v", err)
+	}
+
+	// Decline at the prompt: the plan is built and printed, nothing mutates.
+	out, err := execMigrateRemove(t, "n\n", looseFile)
+	if err != nil {
+		t.Fatalf("jit migrate remove token.txt (declined): %v\n%s", err, out)
+	}
+
+	if !strings.Contains(out, "Removing jit from "+displayPath(home, looseFile)) {
+		t.Errorf("plan must target the loose file itself, got:\n%s", out)
+	}
+	for _, want := range []string{
+		"token.yaml",
+		"token/JSON_WEB_TOKEN_JWT",
+		"_backups/token.txt.jit-bak-1",
+		"delete 1 vault secret(s)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("plan missing %q, got:\n%s", want, out)
+		}
+	}
+	// The unrelated global profile and its secret must never be swept in, and
+	// the whole-project teardown language must never appear.
+	for _, forbidden := range []string{"shell.yaml", "shell/PATH", "directory is removed entirely"} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("plan must not touch unrelated global state, but mentioned %q:\n%s", forbidden, out)
+		}
 	}
 }
 
