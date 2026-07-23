@@ -35,9 +35,9 @@ type Profile map[string]string
 
 // Scope identifies which store a profile manifest was found in — the
 // project-relative .jit/profiles/ a caller's root points at, or the
-// home-rooted GlobalRoot() fallback. Surfaced to commands like `jit
-// profile list`/`show` so a name that exists in both isn't ambiguous to
-// read about, even though Load's own resolution always prefers project.
+// home-rooted GlobalRoot() fallback. Surfaced to jit status --secrets and
+// jit doctor so a name that exists in both isn't ambiguous to read about,
+// even though Load's own resolution always prefers project.
 type Scope string
 
 const (
@@ -47,8 +47,9 @@ const (
 
 // Info describes one discovered profile manifest — its name, which store
 // it was found in, and its file path — without loading and parsing its
-// contents. For listing many profiles at once (`jit profile list`) where
-// per-entry contents aren't needed yet.
+// contents. For listing many profiles at once (as `jit status --secrets`
+// and the --profile completions do) where per-entry contents aren't needed
+// yet.
 type Info struct {
 	Name  string
 	Scope Scope
@@ -86,8 +87,8 @@ func Load(root, name string) (Profile, error) {
 
 // LoadWithScope behaves like Load but also reports which store the profile
 // was actually resolved from (its Scope) and the manifest's real file path
-// — for commands like `jit profile show` that display where a profile
-// lives, not just its contents.
+// — for callers like jit doctor that report where a profile lives, not
+// just its contents.
 func LoadWithScope(root, name string) (Profile, Scope, string, error) {
 	path, err := Path(root, name)
 	if err != nil {

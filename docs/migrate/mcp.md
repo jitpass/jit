@@ -37,7 +37,7 @@ the AI tools themselves.
   it; a project `.mcp.json` is picked up when you name that project's
   directory.
 - Rotating: `jit vault set` on the paths shown by
-  `jit profile show mcp-<name>`; restart the MCP server (usually: restart
+  `jit status --secrets`; restart the MCP server (usually: restart
   the editor) to pick up the new value.
 
 Reversing the migration: [`jit migrate undo`](./undo-and-remove.md).

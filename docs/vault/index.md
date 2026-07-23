@@ -61,7 +61,7 @@ when a provider issues you a new key, don't paste it into `.env`. Update
 the vault value instead:
 
 1. **Find the secret's path.** Open the `.env.pointers` file next to the
-   mount, or run `jit profile show <name>`; both map each variable to its
+   mount, or run `jit status --secrets`; both map each variable to its
    vault path.
 2. **Set the new value:**
 

@@ -33,7 +33,7 @@ rather than a shim; nothing about how you invoke your tools changes.
 
 New access keys go into the vault, not into a file:
 `jit vault set <path>` on the paths shown by
-`jit profile show aws-myprofile`. Everything picks the new values up on
+`jit status --secrets`. Everything picks the new values up on
 its next fetch.
 
 ## Plumbing
