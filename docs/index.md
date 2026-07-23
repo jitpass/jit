@@ -37,7 +37,7 @@ then **[Install](./getting-started/install.md)** →
 
 ## Find exposed secrets - `jit scan`
 
-- [Running an audit](./audit/index.md) - strictly read-only, output formats, saving reports
+- [Running an audit](./audit/index.md) - strictly read-only, output formats, saving reports, scanning specific files or folders
 - [What audit looks for](./audit/findings.md) - every finding category explained
 - [Example report](./audit/example-report.md) - what the output looks like (synthetic)
 
