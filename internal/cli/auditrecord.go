@@ -106,7 +106,7 @@ func recordAuditEvent(cmd *cobra.Command, cmdErr error, elapsed time.Duration) {
 // the session history read the same. Best-effort: an empty pair just means the
 // kernel wouldn't say (a parent that already exited, another user's process).
 func resolveInvoker() (parent, launchedBy string) {
-	chain := lineage.Ancestry(int32(os.Getpid()))
+	chain := lineage.Ancestry(int32(os.Getpid())) // #nosec G115 -- getpid always fits int32
 	if len(chain) < 2 {
 		return "", ""
 	}
