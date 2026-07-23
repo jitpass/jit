@@ -39,6 +39,7 @@ makes a mount serve real values on its own.
 ### SEE ALSO
 
 * [jit](jit.md)	 - Local-first developer secret runtime
+* [jit service consent](jit_service_consent.md)	 - Show or set per-process credential consent (experimental)
 * [jit service log](jit_service_log.md)	 - Show the service's raw operational output (startup, mount notes, serve errors)
 * [jit service restart](jit_service_restart.md)	 - Restart the background service (picks up a new binary, or brings a stopped one back)
 * [jit service run](jit_service_run.md)	 - Run the service in the foreground (normally started by launchd, not by hand)
