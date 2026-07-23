@@ -9,9 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/jitpass/jit/internal/audit"
+	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -29,6 +31,12 @@ type LooseSecretFileMigration struct {
 	Variables          []string
 	BackupPath         string
 	NamespaceMovedFrom string
+	// Mounted is true for the --mount variant (ApplyLooseSecretFileMount): the
+	// file became a live FIFO serving a template, not a static pointer.
+	// TemplatePath is the on-disk template the mount renders (empty when not
+	// mounted). The caller registers the mount with these.
+	Mounted      bool
+	TemplatePath string
 }
 
 // looseSecretNameRe collapses every run of non-alphanumeric characters in a
@@ -159,26 +167,7 @@ func ApplyLooseSecretFile(v *vault.Vault, profilesRoot, path string) (LooseSecre
 		return LooseSecretFileMigration{}, fmt.Errorf("%s is not a pure secret file jit can move whole", path)
 	}
 
-	// Name each token, disambiguating repeats of the same vendor within the
-	// one file with a 1-based suffix so no two collide.
-	baseNames := make([]string, len(tokens))
-	counts := map[string]int{}
-	for i, tk := range tokens {
-		baseNames[i] = looseSecretName(tk.Vendor)
-		counts[baseNames[i]]++
-	}
-	varNames := make([]string, 0, len(tokens))
-	values := make(map[string]string, len(tokens))
-	used := map[string]int{}
-	for i, tk := range tokens {
-		name := baseNames[i]
-		if counts[name] > 1 {
-			used[name]++
-			name = fmt.Sprintf("%s_%d", name, used[name])
-		}
-		varNames = append(varNames, name)
-		values[name] = tk.Value
-	}
+	varNames, values := nameLooseTokens(tokens)
 
 	profileName, profilePath, entries, movedFrom, err := claimNamespace(v, profilesRoot, deriveLooseProfileName(path), varNames)
 	if err != nil {
@@ -217,5 +206,144 @@ func ApplyLooseSecretFile(v *vault.Vault, profilesRoot, path string) (LooseSecre
 		Variables:          varNames,
 		BackupPath:         backupPath,
 		NamespaceMovedFrom: movedFrom,
+	}, nil
+}
+
+// nameLooseTokens assigns each detected token a stable, unique, env-style
+// variable name derived from its vendor, disambiguating repeats of the same
+// vendor within one file with a 1-based suffix. Returns the names aligned to
+// tokens (names[i] is tokens[i]'s), which double as the manifest order since
+// every name is unique, plus the name→value map. Shared by both the
+// neutralize and the --mount paths so a file migrated either way names its
+// secrets identically.
+func nameLooseTokens(tokens []audit.FileToken) (names []string, values map[string]string) {
+	base := make([]string, len(tokens))
+	counts := map[string]int{}
+	for i, tk := range tokens {
+		base[i] = looseSecretName(tk.Vendor)
+		counts[base[i]]++
+	}
+	names = make([]string, len(tokens))
+	values = make(map[string]string, len(tokens))
+	used := map[string]int{}
+	for i, tk := range tokens {
+		name := base[i]
+		if counts[name] > 1 {
+			used[name]++
+			name = fmt.Sprintf("%s_%d", name, used[name])
+		}
+		names[i] = name
+		values[name] = tk.Value
+	}
+	return names, values
+}
+
+// buildLooseTemplate reconstructs the file as a template: every token span is
+// replaced by its ${VAR} placeholder, everything else passes through verbatim
+// (the same shape rewriteNpmrcAsTemplate produces for npmrc). Replacing each
+// line's spans right-to-left keeps earlier byte offsets valid as later ones are
+// rewritten. names is aligned to tokens.
+func buildLooseTemplate(lines []string, tokens []audit.FileToken, names []string) []byte {
+	type span struct {
+		start, end int
+		name       string
+	}
+	byLine := make(map[int][]span, len(lines))
+	for i, tk := range tokens {
+		byLine[tk.Line] = append(byLine[tk.Line], span{tk.Start, tk.End, names[i]})
+	}
+
+	out := make([]string, len(lines))
+	for i, line := range lines {
+		spans := byLine[i+1] // FindFileTokens' Line is 1-based
+		if len(spans) == 0 {
+			out[i] = line
+			continue
+		}
+		sort.Slice(spans, func(a, b int) bool { return spans[a].start > spans[b].start })
+		s := line
+		for _, sp := range spans {
+			if sp.start < 0 || sp.end > len(s) || sp.start > sp.end {
+				continue // defensive: a span that doesn't fit the line is skipped, never panics
+			}
+			s = s[:sp.start] + "${" + sp.name + "}" + s[sp.end:]
+		}
+		out[i] = s
+	}
+	return []byte(strings.Join(out, "\n"))
+}
+
+// ApplyLooseSecretFileMount is the --mount variant: instead of replacing the
+// file with a static pointer, it turns the file into a live FIFO serving a
+// template (the file with every token swapped for a ${VAR} placeholder), so a
+// program that reads the path keeps working — getting the real value under a
+// `jit run` grant, a decoy otherwise. Unlike neutralize, this also handles an
+// embedded secret (a token mixed with other content): the non-token content is
+// preserved verbatim in the template. The caller registers the mount from the
+// returned TemplatePath. Same safety ordering as every other Apply*: vault
+// writes, manifest, template, and backup all precede the FIFO swap.
+func ApplyLooseSecretFileMount(v *vault.Vault, profilesRoot, path string) (LooseSecretFileMigration, error) {
+	tokens, _, err := ClassifyLooseSecretFile(path)
+	if err != nil {
+		return LooseSecretFileMigration{}, fmt.Errorf("inspecting %s: %w", path, err)
+	}
+	if len(tokens) == 0 {
+		return LooseSecretFileMigration{}, fmt.Errorf("%s contains no token jit can mount", path)
+	}
+	lines, err := scanFileLines(path)
+	if err != nil {
+		return LooseSecretFileMigration{}, fmt.Errorf("reading %s: %w", path, err)
+	}
+
+	names, values := nameLooseTokens(tokens)
+	// Manifest/vault order is the unique set of names, first-seen (names is
+	// already unique per token, so this preserves file order).
+	order := names
+
+	profileName, profilePath, entries, movedFrom, err := claimNamespace(v, profilesRoot, deriveLooseProfileName(path), order)
+	if err != nil {
+		return LooseSecretFileMigration{}, err
+	}
+
+	meta, err := newProvenance(vault.ClassLooseFile, path)
+	if err != nil {
+		return LooseSecretFileMigration{}, err
+	}
+	for _, name := range order {
+		secretPath := profileName + "/" + name
+		if err := v.SetWithMeta(secretPath, []byte(values[name]), meta); err != nil {
+			return LooseSecretFileMigration{}, fmt.Errorf("storing %s in vault: %w", name, err)
+		}
+		entries[name] = secretPath
+	}
+
+	if err := writeProfileManifest(profilePath, entries, order); err != nil {
+		return LooseSecretFileMigration{}, fmt.Errorf("writing profile %s: %w", profilePath, err)
+	}
+
+	backupPath, err := backupSecretFile(v, path)
+	if err != nil {
+		return LooseSecretFileMigration{}, fmt.Errorf("backing up %s: %w", path, err)
+	}
+
+	template := buildLooseTemplate(lines, tokens, names)
+	templatePath := strings.TrimSuffix(profilePath, ".yaml") + ".loose.tmpl"
+	if err := os.WriteFile(templatePath, template, 0o600); err != nil {
+		return LooseSecretFileMigration{}, fmt.Errorf("writing template %s: %w", templatePath, err)
+	}
+
+	if err := mount.CreateFIFO(path); err != nil {
+		return LooseSecretFileMigration{}, fmt.Errorf("mounting %s: %w", path, err)
+	}
+
+	return LooseSecretFileMigration{
+		Path:               path,
+		ProfileName:        profileName,
+		ProfilePath:        profilePath,
+		Variables:          order,
+		BackupPath:         backupPath,
+		NamespaceMovedFrom: movedFrom,
+		Mounted:            true,
+		TemplatePath:       templatePath,
 	}, nil
 }
