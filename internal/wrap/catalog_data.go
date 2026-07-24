@@ -321,6 +321,22 @@ var catalog = map[string]CatalogEntry{
 		// `jit vault set wrap-pulumi/PULUMI_ACCESS_TOKEN` first.
 		VerifyHint: "pulumi whoami",
 	},
+	"descope": {
+		Tool:    "descope",
+		Kind:    KindShim,
+		Doc:     "Descope CLI management key",
+		EnvVars: map[string]string{"DESCOPE_MANAGEMENT_KEY": "DESCOPE_MANAGEMENT_KEY"}, // #nosec G101 -- env var name, not a credential
+		Order:   []string{"DESCOPE_MANAGEMENT_KEY"},
+		// No Sources. The descope CLI reads DESCOPE_MANAGEMENT_KEY (the secret)
+		// and DESCOPE_PROJECT_ID (a non-secret project identifier) straight from
+		// the environment; its docs have you export both in ~/.zshrc, so there's
+		// no dedicated config file to auto-migrate. Wrap vaults the management
+		// key: `jit vault set wrap-descope/DESCOPE_MANAGEMENT_KEY` first. Keep
+		// DESCOPE_PROJECT_ID as a normal export (it isn't secret). If the key is
+		// already a plaintext export in ~/.zshrc, `jit migrate ~/.zshrc` covers
+		// that path instead.
+		VerifyHint: "descope flow list",
+	},
 
 	"aws": {
 		Tool:           "aws",
