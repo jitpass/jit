@@ -97,8 +97,7 @@ terraform apply                      # same creds, same command
 
 # GCP application-default credentials (a machine-wide credential)
 jit migrate ~/.config/gcloud/application_default_credentials.json
-terraform apply                         # just works after a Touch ID prompt
-jit run --with gcp -- terraform apply   # or name it explicitly: for scripts/CI, or a hard gate
+terraform apply                      # just works after a Touch ID prompt
 
 # Docker / docker-compose
 jit migrate ~/.docker/config.json    # registry logins move to the vault
