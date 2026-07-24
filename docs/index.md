@@ -59,10 +59,14 @@ then **[Install](./getting-started/install.md)** →
   [flyctl](./wrap/flyctl.md) · [vercel](./wrap/vercel.md) ·
   [railway](./wrap/railway.md) · [databricks](./wrap/databricks.md) ·
   [hf](./wrap/hf.md) · [supabase](./wrap/supabase.md) ·
-  [openai](./wrap/openai.md) · [claude](./wrap/claude-code.md) ·
-  [gemini](./wrap/gemini.md) · [codex](./wrap/codex.md) ·
+  [wrangler](./wrap/wrangler.md) · [openai](./wrap/openai.md) ·
+  [claude](./wrap/claude-code.md) · [gemini](./wrap/gemini.md) ·
+  [codex](./wrap/codex.md) · [sentry-cli](./wrap/sentry-cli.md) ·
+  [snyk](./wrap/snyk.md) · [circleci](./wrap/circleci.md) ·
+  [vault](./wrap/vault.md) · [pulumi](./wrap/pulumi.md) ·
+  [descope](./wrap/descope.md) · [okta-cli-client](./wrap/okta-cli-client.md) ·
   [aws](./wrap/aws.md) · [terraform](./wrap/terraform.md) ·
-  [docker](./wrap/docker.md)
+  [docker](./wrap/docker.md) · [git](./wrap/git.md)
 - [Custom tools](./wrap/custom-tools.md) - wrap anything that reads an env var
 - [Wrap troubleshooting](./wrap/troubleshooting.md) - `wrap list`, `wrap doctor`, `wrap undo`
 
