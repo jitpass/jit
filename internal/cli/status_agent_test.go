@@ -100,8 +100,8 @@ func TestStatusReflectsRealAgentRunningAndLocked(t *testing.T) {
 	if !strings.Contains(out, wantVersions) {
 		t.Errorf("expected %q, got:\n%s", wantVersions, out)
 	}
-	if !strings.Contains(out, "mounts   1 registered · unlocked, all decoy") {
-		t.Errorf("expected mounts reported as decoy while unlocked (real flows only inside a jit run grant), got:\n%s", out)
+	if !strings.Contains(out, "mounts   1 registered · unlocked, all decoy (real values flow through a jit run grant, or an approved consent prompt") {
+		t.Errorf("expected mounts reported as decoy while unlocked, with real values flowing via a jit run grant or an approved consent prompt, got:\n%s", out)
 	}
 
 	if err := client.Lock(); err != nil {
