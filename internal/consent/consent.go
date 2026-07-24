@@ -1,5 +1,5 @@
 // Copyright 2026 Meni Tasa
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: LicenseRef-PolyForm-Perimeter-1.0.0
 
 // Package consent is the decision core for per-process credential consent
 // (design/per-process-credential-consent.md). When a process reaches for a

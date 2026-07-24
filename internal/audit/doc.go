@@ -1,5 +1,5 @@
 // Copyright 2026 Meni Tasa
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: LicenseRef-PolyForm-Perimeter-1.0.0
 
 // Package audit implements the read-only risk scanner (RFC.md §4, jit scan).
 // The jit migrate guided fix path (task #7) is a separate command, not a

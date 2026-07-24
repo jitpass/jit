@@ -1,5 +1,5 @@
 // Copyright 2026 Meni Tasa
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: LicenseRef-PolyForm-Perimeter-1.0.0
 
 // Command exec-after-cgo-spike confirms that syscall.Exec (Tier 1 process
 // replacement, RFC.md Pillar III) is reliable immediately after this same

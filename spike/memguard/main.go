@@ -1,5 +1,5 @@
 // Copyright 2026 Meni Tasa
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: LicenseRef-PolyForm-Perimeter-1.0.0
 
 // Command memguard-spike confirms github.com/awnumar/memguard builds and
 // runs cleanly on this macOS/arm64 setup before it gets threaded through
