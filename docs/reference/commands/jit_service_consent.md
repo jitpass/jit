@@ -12,8 +12,9 @@ process running as you can use a migrated credential silently while your
 vault is unlocked.
 
 With no argument, prints whether it's on. `on`/`off` set it and restart the
-service. Use `jit run --trust -- <cmd>` to pre-authorize a whole run's tree
-so it isn't prompted.
+service; turning it OFF requires a fresh Touch ID/passcode, since disabling
+the guard reopens the window it closes. Use `jit run --trust -- <cmd>` to
+pre-authorize a whole run's tree so it isn't prompted.
 
 ```
 jit service consent [on|off]

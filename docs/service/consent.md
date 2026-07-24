@@ -13,7 +13,10 @@ reaches for a gated credential**, the background service prompts a fresh Touch
 ID, names who is asking, and remembers your answer for the rest of the session.
 
 Consent is **on by default**. A tool you approve once is not asked again until
-the session re-locks.
+the session re-locks. The check is **per tool**: approving `terraform`'s use of
+your AWS keys does not silently cover a different program that reaches for them,
+so an unexpected first use (a postinstall script, a tool you did not launch)
+still stops for a prompt you can decline.
 
 ```console
 # the first time terraform reaches for your AWS keys this session:

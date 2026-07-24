@@ -123,10 +123,12 @@ never authorizes access to a machine-global credential.**
 A cloned repo is untrusted input. If a `.jit/config.yaml` could say "grant
 this run my gcloud credentials," a malicious repo would siphon them the moment
 you ran anything in the directory, riding the Touch ID you approved for the
-*project*. So a machine-global grant is never driven by a file: it takes an
-explicit `--with` you type, and forces its own disclosed challenge naming the
-credential. The unlock authorizes the session, not the scope. Only you widen
-the scope. The full model is in the
+*project*. So a machine-global grant is never driven by a file. It takes a live
+human gesture every time: an explicit `--with` you type, or, with per-process
+consent on (the default), approving the disclosed prompt that fires the first
+time a tool reads the file. Either way the challenge names what is being
+granted, even mid-session. The unlock authorizes the session, not the scope.
+Only you widen the scope, and an unexpected prompt is your cue to decline. The full model is in the
 **[security architecture](../security/architecture.md)**.
 
 ## What jit does not defend against

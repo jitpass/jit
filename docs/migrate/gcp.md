@@ -16,9 +16,12 @@ field**, the `refresh_token`, or a service account's `private_key`, into
 the vault and
 replaces the file with a [live mount](../run/mounts.md) serving a
 template: every non-secret field passes through byte-for-byte, and the
-secret slot fills from the vault only for a run you explicitly grant it to
-with `jit run --with gcp`. The ADC is a machine-wide credential, so it is
-never granted by a project's config, only by a `--with` you type.
+secret slot fills from the vault when a read is authorized. With per-process
+consent on (the default), that is the everyday way: run your tool and approve
+the Touch ID prompt the first time it reads the file. `jit run --with gcp` is
+the explicit alternative (a hard gate, and what you use for scripts and CI).
+Either way the ADC is machine-wide, so a project's config can never grant it on
+its own.
 
 ```sh
 jit run --with gcp -- terraform apply     # scoped to this run, gone on exit
@@ -42,11 +45,13 @@ leaves it alone.)
 ## What to expect
 
 - SDKs, `gcloud auth application-default print-access-token`, and
-  Terraform read the mount like a normal file. Run them under
-  `jit run --with gcp` (or a grant-wrapped `gcloud`) and they get real
-  credentials, scoped to that run. Outside such a run they see placeholder
-  values and fail fast with a local parse error; `jit service status` shows
-  what the last reader was served.
+  Terraform read the mount like a normal file. With per-process consent on
+  (the default), the first such read prompts a Touch ID that names the reader
+  and returns real credentials on approval. `jit run --with gcp` (or a
+  grant-wrapped `gcloud`) is the explicit grant, scoped to that run. If consent
+  is off and no grant covers the read, they see placeholder values and fail fast
+  with a local parse error; `jit service status` shows what the last reader was
+  served.
 - The file is machine-wide (one per user), so name it explicitly to
   convert it (a project directory walk never touches it).
 - The gcloud CLI's *own* login (`gcloud auth login`) lives elsewhere

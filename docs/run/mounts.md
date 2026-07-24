@@ -32,8 +32,14 @@ disk.
   and for which run.
 - `jit run --with <name> <command>` grants a machine-global file-delivered
   credential (`gcp`, `sops`, `npm`, `netrc`) to the run, behind a fresh
-  disclosed Touch ID that names the credential. See
-  [Global mount grants](../getting-started/delivering-secrets.md).
+  disclosed Touch ID that names the credential. This is the explicit,
+  hard-gated path. With per-process consent on (the default), these same
+  credential mounts *also* serve real content on a **direct** read, behind a
+  consent prompt that names the reader (best-effort identity), so for the
+  everyday case you can run the tool without `--with`. That consent path is only
+  for the machine-global credential mounts, never for a project's own `.env`.
+  See [Global mount grants](../getting-started/delivering-secrets.md) and
+  [per-process consent](../service/consent.md).
 - A project whose tools **always** read the file itself can pin live mode
   once instead of typing `--live` every time: put `read_as_file: true` in
   the project's `.jit/config.yaml`. Only set it when the project genuinely
@@ -41,11 +47,13 @@ disk.
   declaration, not a guess, because choosing live for a project whose
   scripts guard with `[ -f .env ]` would break those guards. See
   [Which command delivers a secret](../getting-started/delivering-secrets.md).
-- If a tool reads `.env` off disk, run it **through** `jit run`. An
+- If a tool reads a project `.env` off disk, run it **through** `jit run`. An
   unwrapped `npm run dev` (no `jit run` prefix) reads the mount cold and
-  gets decoys — that's the point. There is no automatic reveal window and no
-  reveal command of any kind: the only thing that makes a mount serve real
-  values is a `jit run` grant you type.
+  gets decoys, and that's the point. For a project `.env` there is no automatic
+  reveal window and no reveal command of any kind: the only thing that makes it
+  serve real values is a `jit run` grant you type. (The machine-global
+  credential mounts above are the exception: with consent on, they also serve on
+  a direct read, behind a prompt.)
 - Wondering why your app saw placeholders, or which run is currently granted
   a mount? `jit service status` shows each mount as decoy or grant-serving,
   and what the most recent reader was actually served, real or decoy, and by
