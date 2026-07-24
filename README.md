@@ -240,14 +240,16 @@ The docs live under **[docs/](./docs/index.md)**, organized by task:
 
 ## License
 
-Business Source License 1.1 (BUSL-1.1). See [LICENSE](./LICENSE). In plain terms:
+[PolyForm Perimeter License 1.0.0](./LICENSE). In plain terms:
 
 - **Free for almost everyone**: individual developers, non-commercial use, and
   internal use inside any company (including commercial ones), in production.
-- **Not allowed**: offering jit as part of a commercial product or service that
-  competes with it. That needs a commercial license.
-- **It converts to open source**: on the Change Date in [LICENSE](./LICENSE) (or
-  four years after a version's first release, whichever comes first), that version
-  becomes Apache 2.0.
+- **Not allowed**: providing others a product that competes with jit (a
+  substitute for its functionality or value), in any form: commercial or free,
+  as a service, library, or plugin, on any platform. That needs a commercial
+  license.
+- **Source-available, not open source**: the code is public and you can read,
+  modify, and self-host it under the terms above, but it does not convert to an
+  open-source license.
 
 This summary is informational only; the [LICENSE](./LICENSE) text governs.
