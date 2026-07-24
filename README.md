@@ -137,16 +137,12 @@ lists exactly what to type for every tool, and how each is delivered.
 
 ## Two Touch ID moments, not one
 
-`jit` asks for your fingerprint at two different moments, doing two different
-jobs. Keeping them straight is the whole mental model:
+`jit` uses your fingerprint for two different jobs:
 
-1. **Unlocking your vault.** The first time you use `jit` after it locks, one
-   Touch ID opens the vault for the rest of the session (about 5 minutes of
-   activity, then it re-locks). You unlock once, not once per command.
-2. **Handing a credential to a tool.** On top of that, the first time a given
-   tool reaches for a credential, `jit` asks before handing it over and names
-   what is asking. This is what stops a program you didn't run from quietly
-   using your keys while the vault is unlocked.
+1. **Unlocking your vault** once per session (about 5 minutes, then it re-locks).
+2. **Handing a credential to a tool** the first time that tool asks, naming what
+   is asking, so a program you didn't run can't quietly use your keys while the
+   vault is unlocked.
 
 ```console
 $ aws s3 ls
@@ -160,23 +156,16 @@ $ terraform apply
   Touch ID  ->  terraform wants your aws credential   # a different tool: it asks for itself
 ```
 
-Gate 2 is what keeps an unlocked vault from being a free-for-all: even after
-you've used `aws`, a sketchy `npm install` reaching for those same keys still
-triggers a prompt that names it, so you can say no. Each distinct tool is asked
-once per session, so day to day it's a prompt or two, not a stream.
-
-Kicking off something that needs several credentials at once? `jit run --trust
--- terraform apply` approves that whole run's tools in one gesture.
-
-Don't want gate 2 at all? Turn it off; the vault lock (gate 1) stays:
+Each distinct tool is asked once per session, so it's a prompt or two, not a
+stream. Approve a whole run's tools in one gesture with `jit run --trust -- <cmd>`,
+or drop gate 2 entirely (the vault lock stays):
 
 ```sh
-jit service consent off   # tools resolve silently while the vault is unlocked
+jit service consent off   # tools resolve silently while the vault is unlocked (Touch ID to turn off)
 jit service consent on    # ask per tool again (the default)
 ```
 
-Turning it off itself takes a Touch ID, since disabling the guard reopens the
-window it closes. Full details: [per-process consent](./docs/service/consent.md).
+Full details: [per-process consent](./docs/service/consent.md).
 
 ## What it supports
 
