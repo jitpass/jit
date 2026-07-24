@@ -81,8 +81,8 @@ the session, not the scope. A cloned repo's config, or a script that slips a
 
 ## Trust and distribution
 
-- Source is public on GitHub under **BUSL-1.1** (source-available, not open
-  source); it can be built from source with Go.
+- Source is public on GitHub under the **PolyForm Perimeter License 1.0.0**
+  (source-available, not open source); it can be built from source with Go.
 - Builds are **ad-hoc signed** today (Developer ID and notarization pending),
   so a dev build's first run shows a one-time Keychain permission prompt.
 - No network calls, no telemetry, no auto-update. The vault leaves the machine

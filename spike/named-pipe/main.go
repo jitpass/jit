@@ -1,5 +1,5 @@
 // Copyright 2026 Meni Tasa
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: LicenseRef-PolyForm-Perimeter-1.0.0
 
 // Command named-pipe-spike prototypes the "re-opened FIFO" pattern RFC.md
 // Pillar III Tier 3 depends on: serve a live .env file at a conventional path

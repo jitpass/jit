@@ -204,8 +204,8 @@ before delivery, not after.
 
 ### How is it distributed and signed?
 
-The code is public on GitHub under BUSL-1.1 (source-available, not open
-source). Builds are ad-hoc signed today (a real Developer ID and notarization
+The code is public on GitHub under the PolyForm Perimeter License 1.0.0
+(source-available, not open source). Builds are ad-hoc signed today (a real Developer ID and notarization
 are pending), so the first run of a dev build shows a one-time macOS Keychain
 permission prompt. You can also build from source with Go.
 

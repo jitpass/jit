@@ -1,5 +1,5 @@
 // Copyright 2026 Meni Tasa
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: LicenseRef-PolyForm-Perimeter-1.0.0
 
 // Command run-compat-swap-spike validates the "compatibility swap": while a
 // jit run executes, the mount at .env is a plain regular comment-pointer

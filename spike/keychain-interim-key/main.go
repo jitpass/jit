@@ -1,5 +1,5 @@
 // Copyright 2026 Meni Tasa
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: LicenseRef-PolyForm-Perimeter-1.0.0
 
 // Command keychain-interim-key-spike answers one question before building
 // internal/vault's interim key-wrapping backend on top of it: does a PLAIN

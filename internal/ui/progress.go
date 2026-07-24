@@ -1,5 +1,5 @@
 // Copyright 2026 Meni Tasa
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: LicenseRef-PolyForm-Perimeter-1.0.0
 
 // Package ui holds small, dependency-light terminal-feedback helpers shared
 // across commands. It exists so long-running commands (scan, migrate, vault
