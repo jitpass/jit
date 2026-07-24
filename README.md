@@ -123,14 +123,17 @@ the tool ask jit for the secret itself?** AWS (via `credential_process`), your
 shell at login, and docker's registry logins (via a credential helper) all can,
 so you type nothing extra. Tools that only read a file at runtime (docker
 compose, plain SDKs) can't ask, so `jit run` hands them the value. GCP's ADC
-exposes no hook jit can use, so jit can only keep it working by masking the file
-and revealing it for a run you name with `--with gcp`.
+exposes no hook jit can use, so jit masks the file and serves the real value two
+ways: a run you name with `--with gcp` (explicit, and the only path a project's
+own config can never reach), or, with per-process consent on, a Touch ID prompt
+the first time a tool reads it directly.
 
-The same `--with` gate covers the other machine-global credential files:
-`sops`, `npm` (`~/.npmrc`), and `netrc` (`~/.netrc`). Why explicit? A global
-credential should never be reachable by an untrusted project's config, so you
-name the one you want, per run. **[Supported tools](./docs/tools.md)** lists
-exactly what to type for every tool, and how each is delivered.
+The same two paths cover the other machine-global credential files: `sops`,
+`npm` (`~/.npmrc`), and `netrc` (`~/.netrc`). Reach for `--with` when you want
+the hard gate or a non-interactive, pre-authorized run: a global credential
+should never be silently reachable by an untrusted project's config, so `--with`
+names the one you want, per run, up front. **[Supported tools](./docs/tools.md)**
+lists exactly what to type for every tool, and how each is delivered.
 
 ## Two Touch ID moments, not one
 
