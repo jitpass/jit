@@ -9,23 +9,18 @@ description: Variables jit injects into wrapped and run processes, and the ones 
 
 `jit run` injects whatever the resolved [profile](../run/profiles.md)
 maps - your `.env` variables under their own names. Wrapped tools get
-their token in the variable the tool documents:
+their token in the variable the tool documents, for example:
 
 | Wrapped tool | Injected variable |
 |---|---|
 | `gh` | `GH_TOKEN` |
-| `glab` | `GITLAB_TOKEN` |
 | `stripe` | `STRIPE_API_KEY` |
-| `ngrok` | `NGROK_AUTHTOKEN` |
-| `doctl` | `DIGITALOCEAN_ACCESS_TOKEN` |
-| `hcloud` | `HCLOUD_TOKEN` |
-| `flyctl` | `FLY_API_TOKEN` |
 | `vercel` | `VERCEL_TOKEN` |
-| `railway` | `RAILWAY_TOKEN` |
-| `databricks` | `DATABRICKS_TOKEN` |
 | `wrangler` | `CLOUDFLARE_API_TOKEN` |
-| `openai` | `OPENAI_API_KEY` |
+| `okta-cli-client` | `OKTA_CLIENT_TOKEN` |
 
+The **[wrap catalog](../wrap/index.md#shim-based-plugins)** lists every wrapped
+tool and its injected variable - it tracks the code, so it's always current.
 (`aws`, `terraform`, `docker`, and `git` don't inject variables - they use
 [native credential hooks](../wrap/index.md#native-hook-plugins-no-shim--stronger).)
 
