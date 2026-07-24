@@ -56,6 +56,7 @@ One page per tool - requirements, verification, and per-tool gotchas:
 | [`circleci`](./circleci.md) | `CIRCLECI_CLI_TOKEN` | `~/.circleci/cli.yml` |
 | [`vault`](./vault.md) | `VAULT_TOKEN` | `~/.vault-token` (the whole file is the token; wrap a long-lived one) |
 | [`pulumi`](./pulumi.md) | `PULUMI_ACCESS_TOKEN` | no auto-migrate (URL-keyed file); `jit vault set wrap-pulumi/PULUMI_ACCESS_TOKEN` first |
+| [`descope`](./descope.md) | `DESCOPE_MANAGEMENT_KEY` | env-only (docs export it in `~/.zshrc`); `jit vault set wrap-descope/DESCOPE_MANAGEMENT_KEY` first |
 
 ## Native-hook plugins (no shim - stronger)
 
