@@ -8,9 +8,7 @@
 [Command reference](./docs/reference/commands/jit.md) ·
 [Security](./docs/security/architecture.md)
 
-> **Status:** early development, macOS-only, Apple Silicon. Builds from source
-> today. Code signing and a Homebrew tap are what stand between this and
-> packaged releases.
+> **Status:** macOS-only (Apple Silicon), and still in development.
 
 ## What jit is (30 seconds)
 
@@ -97,7 +95,7 @@ terraform apply                      # same creds, same command
 
 # GCP application-default credentials (a machine-wide credential)
 jit migrate ~/.config/gcloud/application_default_credentials.json
-terraform apply                      # just works after a Touch ID prompt
+terraform apply                      # google provider reads ADC; works after a Touch ID prompt
 
 # Docker / docker-compose
 jit migrate ~/.docker/config.json    # registry logins move to the vault
@@ -171,6 +169,33 @@ Kicking off something that needs several credentials at once? `jit run --trust
 -- terraform apply` approves that whole run's tools in one gesture. Full details:
 [per-process consent](./docs/service/consent.md).
 
+## The audit trail: what happened, and who did it
+
+Every jit command and every unlock lands in a durable log you read back with
+`jit audit`, newest first, one `key=value` line per event, so it greps like a
+real service log. Command arguments are masked, so the log proves a command ran
+without ever storing the secret it carried.
+
+```console
+$ jit audit --since 1h
+time=2026-07-24 10:15:04 level=info kind=cmd status=ok dur=312ms cmd="jit migrate ~/.aws/credentials" user=meni parent=claude
+time=2026-07-24 10:16:22 level=info kind=use op="read a secret" cmd="aws s3 ls" parent=claude secrets=aws/default
+time=2026-07-24 10:31:09 level=warn kind=unlock status=denied method=touchid-or-passcode cmd="node postinstall.js" parent=npm secrets=aws/default
+```
+
+The middle line is the story jit exists to tell: `aws/default` was read by `aws
+s3 ls`, launched by `claude`. The last is a prompt you declined: a `node
+postinstall.js` under `npm` reaching for those same keys, refused. jit also logs
+what the service turned away at its socket (a process the kernel says isn't
+yours, probing the agent) as `kind=error`.
+
+Narrow it with flags instead of grep: `--kind`, `--status ok|failed|denied`,
+`--since`/`--until` (an age like `2h`/`3d` or a date), `--parent claude`,
+`--secret aws`, `--user`, `--grep <regexp>`. Add `--follow` (`-f`) to stream new
+events live like `tail -f`, or `--format json` for a machine-parseable dump. Both
+halves are durable files beside the vault, so it answers for last week as readily
+as the last hour.
+
 ## What it supports
 
 `.env` files, shell exports, AWS and Terraform, kubeconfig, Docker registry
@@ -208,6 +233,7 @@ The docs live under **[docs/](./docs/index.md)**, organized by task:
 - **[How it works](./docs/getting-started/how-it-works.md)**: the vault, the service, mounts, and shims in one page
 - **[FAQ](./docs/faq.md)**: developer and security questions, answered bluntly
 - **[Per-process consent](./docs/service/consent.md)**: what the per-tool prompts do, and how to tune or turn them off
+- **[Audit trail](./docs/reference/commands/jit_audit.md)**: read back every command, unlock, and refusal, filterable and followable
 - **[Command reference](./docs/reference/commands/jit.md)**: every command and flag, generated from the CLI
 - **[Security architecture](./docs/security/architecture.md)**: the threat model and the honest limits
 - **[CONTRIBUTING.md](./CONTRIBUTING.md)**: build/test setup; sign-off via DCO (`git commit -s`), no CLA
