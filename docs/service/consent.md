@@ -26,9 +26,16 @@ the session re-locks.
 
 ```sh
 jit service consent          # show whether it's on
-jit service consent off      # turn it off (restarts the service)
+jit service consent off      # turn it off (Touch ID required; restarts the service)
 jit service consent on       # turn it back on (restarts the service)
 ```
+
+Turning consent **off** requires a fresh Touch ID or passcode: disabling it
+reopens the exact window it closes, so it must never be flippable by a process
+running as you that happens to catch the vault unlocked. Turning it back on, or
+just reading the state, needs no gesture. (The gate covers the command; someone
+who can rewrite the launchd plist by hand bypasses it, the same limit
+[uninstall's gate](../reference/commands/jit_uninstall.md) has.)
 
 The setting is baked into the service's launchd plist, so it survives restarts
 and logins. Changing it reinstalls the plist (keeping your

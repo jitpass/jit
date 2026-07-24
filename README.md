@@ -22,8 +22,9 @@ of the AI agents now running in your editor with your full permissions.
 `jit` moves each secret into a local encrypted vault gated by Touch ID, and
 rewrites the files so your tools keep working. On disk there's now a decoy. The
 real value only appears, in memory, for the specific process that asked for it,
-after a biometric prompt. The result is one Touch ID between your tools (and
-your agents) and your credentials, and a decoy on disk the rest of the time.
+after a biometric prompt. The result: you unlock once, `jit` asks before handing
+a credential to a tool (or an agent), and there's a decoy on disk the rest of
+the time.
 
 ## Install
 
@@ -112,12 +113,10 @@ jit wrap gh                          # one time
 gh pr list                           # token injected per call, forever
 ```
 
-The first time a tool reaches for a real credential in a session, jit prompts
-Touch ID and names what's asking (`terraform wants your aws credential`), then
-remembers your answer until the vault locks. Kicking off something that needs
-several at once? `jit run --trust -- terraform apply` approves that whole run in
-one gesture. (This is [per-process consent](./docs/service/consent.md), on by
-default.)
+The first time each tool reaches for a real credential, `jit` asks once and
+remembers your answer until the vault locks. See [Two Touch ID moments](#two-touch-id-moments-not-one)
+for how that sits on top of the vault unlock, what `--trust` does, and how to
+turn the per-tool prompts off.
 
 Why do some just work while others need `jit run` or `--with`? One rule: **can
 the tool ask jit for the secret itself?** AWS (via `credential_process`), your
@@ -132,6 +131,49 @@ The same `--with` gate covers the other machine-global credential files:
 credential should never be reachable by an untrusted project's config, so you
 name the one you want, per run. **[Supported tools](./docs/tools.md)** lists
 exactly what to type for every tool, and how each is delivered.
+
+## Two Touch ID moments, not one
+
+`jit` asks for your fingerprint at two different moments, doing two different
+jobs. Keeping them straight is the whole mental model:
+
+1. **Unlocking your vault.** The first time you use `jit` after it locks, one
+   Touch ID opens the vault for the rest of the session (about 5 minutes of
+   activity, then it re-locks). You unlock once, not once per command.
+2. **Handing a credential to a tool.** On top of that, the first time a given
+   tool reaches for a credential, `jit` asks before handing it over and names
+   what is asking. This is what stops a program you didn't run from quietly
+   using your keys while the vault is unlocked.
+
+```console
+$ aws s3 ls
+  Touch ID  ->  unlock your vault                # gate 1: opens the vault for ~5 min
+  Touch ID  ->  aws wants your aws credential     # gate 2: this tool, this credential
+  ...your buckets...
+
+$ aws s3 cp ./file s3://bucket/     # same tool, same session: no prompt
+
+$ terraform apply
+  Touch ID  ->  terraform wants your aws credential   # a different tool: it asks for itself
+```
+
+Gate 2 is what keeps an unlocked vault from being a free-for-all: even after
+you've used `aws`, a sketchy `npm install` reaching for those same keys still
+triggers a prompt that names it, so you can say no. Each distinct tool is asked
+once per session, so day to day it's a prompt or two, not a stream.
+
+Kicking off something that needs several credentials at once? `jit run --trust
+-- terraform apply` approves that whole run's tools in one gesture.
+
+Don't want gate 2 at all? Turn it off; the vault lock (gate 1) stays:
+
+```sh
+jit service consent off   # tools resolve silently while the vault is unlocked
+jit service consent on    # ask per tool again (the default)
+```
+
+Turning it off itself takes a Touch ID, since disabling the guard reopens the
+window it closes. Full details: [per-process consent](./docs/service/consent.md).
 
 ## What it supports
 
@@ -169,6 +211,7 @@ The docs live under **[docs/](./docs/index.md)**, organized by task:
 - **[Quickstart](./docs/getting-started/quickstart.md)**: setup, migrating, living with the fix, step by step
 - **[How it works](./docs/getting-started/how-it-works.md)**: the vault, the service, mounts, and shims in one page
 - **[FAQ](./docs/faq.md)**: developer and security questions, answered bluntly
+- **[Per-process consent](./docs/service/consent.md)**: what the per-tool prompts do, and how to tune or turn them off
 - **[Command reference](./docs/reference/commands/jit.md)**: every command and flag, generated from the CLI
 - **[Security architecture](./docs/security/architecture.md)**: the threat model and the honest limits
 - **[CONTRIBUTING.md](./CONTRIBUTING.md)**: build/test setup; sign-off via DCO (`git commit -s`), no CLA
