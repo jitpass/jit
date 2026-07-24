@@ -15,13 +15,13 @@ large PR, a quick issue to align on approach first saves everyone time.
   ```
 
   By signing off you assert you have the right to submit the work under the
-  project's [BUSL-1.1](./LICENSE) license. There is no CLA.
+  project's [PolyForm Perimeter 1.0.0](./LICENSE) license. There is no CLA.
 
-- **License.** The project is licensed under the Business Source License 1.1
-  (BUSL-1.1), converting to Apache-2.0 on the Change Date stated in
-  [LICENSE](./LICENSE). All contributions are made under BUSL-1.1 with that
-  same conversion. Don't paste in code under a license incompatible with
-  this arrangement (for example, copyleft code).
+- **License.** The project is licensed under the PolyForm Perimeter License
+  1.0.0, a source-available license (see [LICENSE](./LICENSE)); it does not
+  convert to an open-source license. All contributions are made under those
+  same terms. Don't paste in code under a license incompatible with this
+  arrangement (for example, copyleft code).
 
 - **Security issues are not regular PRs.** If you've found a vulnerability, do
   **not** open a public issue or PR, follow [SECURITY.md](./SECURITY.md) for

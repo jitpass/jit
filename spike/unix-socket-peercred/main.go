@@ -1,5 +1,5 @@
 // Copyright 2026 Meni Tasa
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: LicenseRef-PolyForm-Perimeter-1.0.0
 
 // Command unix-socket-peercred-spike confirms that jit-agent can verify which
 // process/user is on the other end of its Unix domain socket before releasing

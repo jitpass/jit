@@ -1,5 +1,5 @@
 // Copyright 2026 Meni Tasa
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: LicenseRef-PolyForm-Perimeter-1.0.0
 
 // Package mount implements the re-opened named-pipe live mount (RFC.md
 // Pillar III, Tiers 3-4). Re-open mechanism confirmed in spike/named-pipe/.

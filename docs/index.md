@@ -105,4 +105,4 @@ then **[Install](./getting-started/install.md)** →
 
 ## About
 
-- [Contributing](./about/contributing.md) · [License (BUSL-1.1)](./about/license.md) · [Tech stack](./about/tech-stack.md)
+- [Contributing](./about/contributing.md) · [License (PolyForm Perimeter)](./about/license.md) · [Tech stack](./about/tech-stack.md)

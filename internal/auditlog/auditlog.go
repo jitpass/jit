@@ -1,5 +1,5 @@
 // Copyright 2026 Meni Tasa
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: LicenseRef-PolyForm-Perimeter-1.0.0
 
 // Package auditlog is jit's application audit trail: a durable, append-only
 // record of every jit command a user ran, what command, when, by whom, from
