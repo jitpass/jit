@@ -543,7 +543,8 @@ func statusLabel(w io.Writer, label string) {
 func printRollupLine(w io.Writer, glyphColor *color.Color, glyph, label, body string) {
 	fmt.Fprint(w, "  ")
 	_, _ = glyphColor.Fprintf(w, "%s ", glyph)
-	fmt.Fprintf(w, "%-20s %s\n", "["+label+"]", body)
+	_, _ = cBold.Fprintf(w, "%-18s", label)
+	fmt.Fprintf(w, "  %s\n", body)
 }
 
 // printSecretsDetail is the `jit status --secrets` body: the full reconciliation,
@@ -603,7 +604,7 @@ func printSecretsDetail(w io.Writer, rec secretsReconciliation, v *vault.Vault) 
 func printSecretsStateHeader(w io.Writer, glyph, name, summary string) {
 	fmt.Fprintln(w)
 	_, _ = cWarnOrOK(glyph).Fprintf(w, "%s ", glyph)
-	fmt.Fprintf(w, "[%s]", name)
+	_, _ = cBold.Fprint(w, name)
 	_, _ = cDim.Fprintf(w, "  %s\n", summary)
 }
 
