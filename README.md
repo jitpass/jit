@@ -97,7 +97,8 @@ terraform apply                      # same creds, same command
 
 # GCP application-default credentials (a machine-wide credential)
 jit migrate ~/.config/gcloud/application_default_credentials.json
-jit run --with gcp -- terraform apply   # grant the global cred to just this run
+terraform apply                         # just works after a Touch ID prompt
+jit run --with gcp -- terraform apply   # or name it explicitly: for scripts/CI, or a hard gate
 
 # Docker / docker-compose
 jit migrate ~/.docker/config.json    # registry logins move to the vault
@@ -118,22 +119,18 @@ remembers your answer until the vault locks. See [Two Touch ID moments](#two-tou
 for how that sits on top of the vault unlock, what `--trust` does, and how to
 turn the per-tool prompts off.
 
-Why do some just work while others need `jit run` or `--with`? One rule: **can
+Why do some tools need no setup while others take a `jit run`? One rule: **can
 the tool ask jit for the secret itself?** AWS (via `credential_process`), your
 shell at login, and docker's registry logins (via a credential helper) all can,
 so you type nothing extra. Tools that only read a file at runtime (docker
-compose, plain SDKs) can't ask, so `jit run` hands them the value. GCP's ADC
-exposes no hook jit can use, so jit masks the file and serves the real value two
-ways: a run you name with `--with gcp` (explicit, and the only path a project's
-own config can never reach), or, with per-process consent on, a Touch ID prompt
-the first time a tool reads it directly.
+compose, plain SDKs) can't ask, so `jit run` hands them the value.
 
-The same two paths cover the other machine-global credential files: `sops`,
-`npm` (`~/.npmrc`), and `netrc` (`~/.netrc`). Reach for `--with` when you want
-the hard gate or a non-interactive, pre-authorized run: a global credential
-should never be silently reachable by an untrusted project's config, so `--with`
-names the one you want, per run, up front. **[Supported tools](./docs/tools.md)**
-lists exactly what to type for every tool, and how each is delivered.
+The machine-global credential files (GCP ADC, `sops`, `npm`, `netrc`) work the
+same everyday way: run your tool and approve the per-process prompt. Add `jit run
+--with <name>` only when you want it explicit: for scripts and CI where there's
+no prompt to answer, or when you want a hard gate a project's own config can
+never reach. **[Supported tools](./docs/tools.md)** lists exactly what to type
+for every tool, and how each is delivered.
 
 ## Two Touch ID moments, not one
 
