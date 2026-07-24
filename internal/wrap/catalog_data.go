@@ -337,6 +337,26 @@ var catalog = map[string]CatalogEntry{
 		// that path instead.
 		VerifyHint: "descope flow list",
 	},
+	"okta-cli-client": {
+		Tool:    "okta-cli-client",
+		Kind:    KindShim,
+		Doc:     "Okta CLI API token",
+		EnvVars: map[string]string{"OKTA_CLIENT_TOKEN": "OKTA_CLIENT_TOKEN"}, // #nosec G101 -- env var name, not a credential
+		Order:   []string{"OKTA_CLIENT_TOKEN"},
+		Sources: []TokenSource{
+			// okta-cli-client reads its API token from ~/.okta/okta.yaml under
+			// okta.client.token, or from OKTA_CLIENT_TOKEN (which the shim
+			// injects). The file is user-authored, not written by a login flow,
+			// so this auto-migrate is opportunistic; with no file,
+			// `jit vault set wrap-okta-cli-client/OKTA_CLIENT_TOKEN` first. The
+			// client's OAuth PrivateKey mode (okta.client.privateKey) is a
+			// different credential type and deliberately out of scope here. The
+			// deprecated cli.okta.com `okta` binary is a different, unwrappable
+			// tool (it stores no durable API token).
+			{Path: "~/.okta/okta.yaml", Format: "yaml", Selector: "okta/client/token"},
+		},
+		VerifyHint: "okta-cli-client group lists",
+	},
 
 	"aws": {
 		Tool:           "aws",

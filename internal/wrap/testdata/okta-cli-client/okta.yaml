@@ -1,0 +1,8 @@
+okta:
+  client:
+    connectionTimeout: 30 # seconds
+    orgUrl: "https://dev-fixture.okta.com"
+    proxy:
+      port: null
+      host: null
+    token: FIXTUREoktaToken0123456789abcdefFIXTURE
