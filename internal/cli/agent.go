@@ -386,8 +386,9 @@ var serviceConsentCmd = &cobra.Command{
 		"process running as you can use a migrated credential silently while your\n" +
 		"vault is unlocked.\n\n" +
 		"With no argument, prints whether it's on. `on`/`off` set it and restart the\n" +
-		"service. Use `jit run --trust -- <cmd>` to pre-authorize a whole run's tree\n" +
-		"so it isn't prompted.",
+		"service; turning it OFF requires a fresh Touch ID/passcode, since disabling\n" +
+		"the guard reopens the window it closes. Use `jit run --trust -- <cmd>` to\n" +
+		"pre-authorize a whole run's tree so it isn't prompted.",
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
@@ -407,6 +408,16 @@ var serviceConsentCmd = &cobra.Command{
 		default:
 			return fmt.Errorf("jit service consent: expected 'on' or 'off', got %q", args[0])
 		}
+		// Turning consent OFF reopens the exact window the feature exists to
+		// close, so it must prove a human is present — never ride an unlocked
+		// agent session. Turning it ON (or reading state) only strengthens the
+		// guard and needs no gate. Auth BEFORE writing the plist: a declined
+		// gesture must leave the setting untouched.
+		if !on {
+			if err := requireConsentOffPresence(); err != nil {
+				return fmt.Errorf("jit service consent off: %w", err)
+			}
+		}
 		ttl, ok := configuredAgentTTL()
 		if !ok {
 			ttl = agentInstallDefaultTTL
@@ -421,6 +432,33 @@ var serviceConsentCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+// requireConsentOffPresence forces a fresh Touch ID/passcode gesture before
+// per-process consent can be DISABLED. Disabling consent reopens the exact
+// window it exists to close — any process running as you using a migrated
+// credential silently while the vault is unlocked — so flipping it off must
+// prove a human is present, not merely inherit an unlocked agent session.
+// Mirrors requireUninstallPresence: challenge through the vault's
+// biometric-gated MEK fetch when there are secrets to protect (which also
+// audit-stamps the fresh auth), falling back to a bare LocalAuthentication
+// prompt when the vault is empty or unreadable.
+//
+// Honest limit: this gates the `jit service consent off` COMMAND, not the plist
+// it writes. An attacker with code execution as you could rewrite the LaunchAgent
+// plist and reload it directly, exactly as they could `rm` the files uninstall
+// guards — the gate is anti-footgun and defense-in-depth over a scripted flip,
+// not a hard boundary (RFC.md B6/GAPS.md #1 already concede that adversary).
+func requireConsentOffPresence() error {
+	const reason = "authorize turning off per-process credential consent"
+	if vaultSecretCount() > 0 {
+		v, err := openVaultFreshAuth()
+		if err != nil {
+			return err
+		}
+		return requireFreshUserPresence(v, reason)
+	}
+	return keychainwrap.Challenge(reason)
 }
 
 // plistStringValues returns the text of every <string>…</string> element in a
