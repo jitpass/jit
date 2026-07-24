@@ -1063,13 +1063,13 @@ func printMountStatuses(w io.Writer, mounts []agent.MountRevealStatus) {
 	home, _ := os.UserHomeDir()
 
 	// State the decoy rule ONCE, in the header, instead of tailing the same
-	// "(real values only inside a jit run --live/--with grant)" onto every
-	// mount line — that parenthetical, repeated per mount, was most of the
-	// noise. Each mount then reads as a glyph plus its path: ○ decoy (the
+	// "(real values flow through a jit run grant or an approved consent prompt)"
+	// onto every mount line — that parenthetical, repeated per mount, was most of
+	// the noise. Each mount then reads as a glyph plus its path: ○ decoy (the
 	// default), ● real-to-a-grant.
 	fmt.Fprint(w, "\n")
 	_, _ = cBold.Fprint(w, "Mounts:")
-	_, _ = cDim.Fprintf(w, " %d · decoy by default, real values flow only inside a jit run --live/--with grant\n", len(sorted))
+	_, _ = cDim.Fprintf(w, " %d · decoy by default; real values flow through a jit run grant, or an approved consent prompt for a global credential file\n", len(sorted))
 	decoyReads := 0
 	for _, m := range sorted {
 		path := displayPath(home, m.Path)
