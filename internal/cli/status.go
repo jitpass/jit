@@ -543,7 +543,7 @@ func statusLabel(w io.Writer, label string) {
 func printRollupLine(w io.Writer, glyphColor *color.Color, glyph, label, body string) {
 	fmt.Fprint(w, "  ")
 	_, _ = glyphColor.Fprintf(w, "%s ", glyph)
-	_, _ = cBold.Fprintf(w, "%-18s", label)
+	fmt.Fprintf(w, "%-18s", label)
 	fmt.Fprintf(w, "  %s\n", body)
 }
 
@@ -566,9 +566,9 @@ func printSecretsDetail(w io.Writer, rec secretsReconciliation, v *vault.Vault) 
 		}
 	}
 
-	// Section headers follow the house style: a bold title with a dim one-line
-	// summary, then the groups, then a blank line — whitespace and weight do
-	// the separating, no rules (see design/output-style.md).
+	// Section headers follow the house style: a title with a dim one-line
+	// summary, then the groups, then a blank line — whitespace does the
+	// separating, no rules (see design/output-style.md).
 	printSecretsStateHeader(w, glyphOK, "Wired here",
 		fmt.Sprintf("%d %s · %d %s", len(wired), pluralWord(len(wired), "group", "groups"), rec.WiredProfiles, pluralWord(rec.WiredProfiles, "profile", "profiles")))
 	printGroupsWithKeys(w, wired)
@@ -598,13 +598,13 @@ func printSecretsDetail(w io.Writer, rec secretsReconciliation, v *vault.Vault) 
 }
 
 // printSecretsStateHeader renders one --secrets state block header: a blank
-// line, a colored state glyph, the bold state name, and a dim one-line
-// summary. This is the dashboard-family header — light, no [brackets], no
-// rule — matching how the top status rollup names each state.
+// line, a colored state glyph, the state name, and a dim one-line summary.
+// This is the dashboard-family header — light, no [brackets], no rule —
+// matching how the top status rollup names each state.
 func printSecretsStateHeader(w io.Writer, glyph, name, summary string) {
 	fmt.Fprintln(w)
 	_, _ = cWarnOrOK(glyph).Fprintf(w, "%s ", glyph)
-	_, _ = cBold.Fprint(w, name)
+	fmt.Fprint(w, name)
 	_, _ = cDim.Fprintf(w, "  %s\n", summary)
 }
 
