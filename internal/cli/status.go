@@ -444,7 +444,7 @@ func printStatusText(w io.Writer, r statusResult) {
 			_, _ = cOK.Fprint(w, glyphOK+" ")
 			fmt.Fprintf(w, "%d registered · %d serving real content to an active jit run grant, the rest decoy\n", r.Mounts.Registered, granted)
 		} else {
-			fmt.Fprintf(w, "%d registered · unlocked, all decoy (real values flow only inside a jit run --live/--with grant)\n", r.Mounts.Registered)
+			fmt.Fprintf(w, "%d registered · unlocked, all decoy (real values flow through a jit run grant, or an approved consent prompt for a global credential file)\n", r.Mounts.Registered)
 		}
 	case r.Mounts.BeingServed:
 		_, _ = cWarn.Fprint(w, glyphWarn+" ")
