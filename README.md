@@ -137,35 +137,43 @@ lists exactly what to type for every tool, and how each is delivered.
 
 ## Two Touch ID moments, not one
 
-`jit` uses your fingerprint for two different jobs:
+`jit` asks for your fingerprint at two different moments, doing two different jobs:
 
-1. **Unlocking your vault** once per session (about 5 minutes, then it re-locks).
-2. **Handing a credential to a tool** the first time that tool asks, naming what
-   is asking, so a program you didn't run can't quietly use your keys while the
-   vault is unlocked.
+1. **Unlocking your vault.** The first time you use `jit` after it locks, one
+   Touch ID opens the vault for the whole session (5 minutes of activity, then it
+   re-locks). You unlock once, not once per command.
+2. **Handing a credential to a tool.** On top of that, the first time a given
+   tool reaches for a real credential, `jit` asks before handing it over and
+   names what's asking. This is what stops a program you didn't run from quietly
+   using your keys while the vault is open.
 
 ```console
 $ aws s3 ls
-  Touch ID  ->  unlock your vault                # gate 1: opens the vault for ~5 min
-  Touch ID  ->  aws wants your aws credential     # gate 2: this tool, this credential
+  Touch ID  ->  unlock your vault              # gate 1: opens the vault for 5 min
+  Touch ID  ->  aws wants your aws credential   # gate 2: this tool, this credential
   ...your buckets...
 
-$ aws s3 cp ./file s3://bucket/     # same tool, same session: no prompt
+$ aws s3 cp ./file s3://bucket/   # same tool, same session: no prompt
 
 $ terraform apply
-  Touch ID  ->  terraform wants your aws credential   # a different tool: it asks for itself
+  Touch ID  ->  terraform wants your aws credential   # a different tool: it asks on its own
 ```
 
-Each distinct tool is asked once per session, so it's a prompt or two, not a
-stream. Approve a whole run's tools in one gesture with `jit run --trust -- <cmd>`,
-or drop gate 2 entirely (the vault lock stays):
+Gate 2 is what keeps an unlocked vault from being a free-for-all: even after
+you've used `aws` yourself, a sketchy `npm install` reaching for those same keys
+still triggers a prompt naming it, so you can say no.
+
+Don't want the second gate? Turn it off; the vault lock stays (turning it off
+itself takes a Touch ID, since it reopens the window it closes):
 
 ```sh
-jit service consent off   # tools resolve silently while the vault is unlocked (Touch ID to turn off)
+jit service consent off   # tools resolve silently while the vault is unlocked
 jit service consent on    # ask per tool again (the default)
 ```
 
-Full details: [per-process consent](./docs/service/consent.md).
+Kicking off something that needs several credentials at once? `jit run --trust
+-- terraform apply` approves that whole run's tools in one gesture. Full details:
+[per-process consent](./docs/service/consent.md).
 
 ## What it supports
 
