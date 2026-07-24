@@ -192,7 +192,7 @@ func TestStatusSecretsWiredResolveCleanly(t *testing.T) {
 	if !strings.Contains(out, "[secrets]  1 stored in 1 group(s)") {
 		t.Errorf("expected a stored-secret headline, got:\n%s", out)
 	}
-	if !strings.Contains(out, "[Wired here]") || !strings.Contains(out, "1 group(s) via 1 profile(s) (1 reference(s)), all resolve.") {
+	if !strings.Contains(out, "Wired here") || !strings.Contains(out, "1 group(s) via 1 profile(s) (1 reference(s)), all resolve.") {
 		t.Errorf("expected the wired secret to resolve cleanly, got:\n%s", out)
 	}
 }
