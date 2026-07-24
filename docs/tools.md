@@ -49,7 +49,7 @@ the token is injected per call.
 
 `gh`, `glab`, `stripe`, `ngrok`, `doctl`, `hcloud`, `flyctl`, `vercel`,
 `railway`, `databricks`, `hf`, `supabase`, `wrangler`, `openai`, `claude`,
-`gemini`, `codex`.
+`gemini`, `codex`, `sentry-cli`, `snyk`, `circleci`, `vault`, `pulumi`.
 
 Any other tool that reads its token from an environment variable can be added
 with `jit wrap add <tool> --env VAR=<vault-path>`. See
