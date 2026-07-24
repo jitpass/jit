@@ -524,15 +524,15 @@ func printSecretsSection(w io.Writer, s statusSecrets) {
 	}
 }
 
-// statusLabel prints one dashboard row's `[label]` in the same bracketed,
-// default-weight style every jit header uses (jit, vault, backup, service,
-// secrets, mounts), padded to a fixed width so the values line up in a column
-// docker-style. Brackets, not bold or faint: faint was an unreadable dark
-// grey, and the user preferred the bracket delimiter to bold. The caller
-// prints the value — with a leading glyph for a state-bearing row —
-// immediately after, then its own newline.
+// statusLabel prints one dashboard row's label (jit, vault, backup, service,
+// secrets, mounts) in plain default weight, padded to a fixed width so the
+// values line up in a column docker-style. No brackets, no bold or faint:
+// faint was an unreadable dark grey, and the user preferred a plain word to
+// both bold and the older bracket delimiter. The caller prints the value —
+// with a leading glyph for a state-bearing row — immediately after, then its
+// own newline.
 func statusLabel(w io.Writer, label string) {
-	fmt.Fprintf(w, "%-11s", "["+label+"]")
+	fmt.Fprintf(w, "%-9s", label)
 }
 
 // printRollupLine renders one Secrets-rollup row: a semantic state glyph, the

@@ -91,16 +91,16 @@ func TestStatusReflectsRealAgentRunningAndLocked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "[service]  ● running · unlocked") {
+	if !strings.Contains(out, "service  ● running · unlocked") {
 		t.Errorf("expected an unlocked agent summary, got:\n%s", out)
 	}
 	// The in-test server runs in this same process, so its version/build are
 	// this binary's own — the jit line must report both sides.
-	wantVersions := "[jit]      " + versionBuild(agent.Version(), agent.BuildID()) + " · service " + versionBuild(agent.Version(), agent.BuildID())
+	wantVersions := "jit      " + versionBuild(agent.Version(), agent.BuildID()) + " · service " + versionBuild(agent.Version(), agent.BuildID())
 	if !strings.Contains(out, wantVersions) {
 		t.Errorf("expected %q, got:\n%s", wantVersions, out)
 	}
-	if !strings.Contains(out, "[mounts]   1 registered · unlocked, all decoy") {
+	if !strings.Contains(out, "mounts   1 registered · unlocked, all decoy") {
 		t.Errorf("expected mounts reported as decoy while unlocked (real flows only inside a jit run grant), got:\n%s", out)
 	}
 
@@ -111,10 +111,10 @@ func TestStatusReflectsRealAgentRunningAndLocked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "[service]  ● running · locked") {
+	if !strings.Contains(out, "service  ● running · locked") {
 		t.Errorf("expected a locked agent summary, got:\n%s", out)
 	}
-	if !strings.Contains(out, "[mounts]   ○ 1 registered · serving decoy content only (service locked") {
+	if !strings.Contains(out, "mounts   ○ 1 registered · serving decoy content only (service locked") {
 		t.Errorf("expected mounts to be reported as still served (decoy-only) while locked, not fully unserved, GAPS.md #35, got:\n%s", out)
 	}
 }
