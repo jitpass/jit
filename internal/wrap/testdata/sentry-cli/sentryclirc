@@ -1,0 +1,6 @@
+[auth]
+token=FIXTUREsentryToken0123456789abcdefFIXTURE
+
+[defaults]
+org=fixture-org
+project=fixture-project
