@@ -161,6 +161,14 @@ type Server struct {
 	// SessionEvent.AuthMethod.
 	AuthMethodFn func() string
 
+	// identify resolves a connection's peer to a *caller. It defaults to
+	// callerFromConn (the kernel LOCAL_PEERPID path). It is a field, not a
+	// direct call, only so tests can inject a caller with a known ancestry: a
+	// test process cannot choose its own parents, and consent keying now turns
+	// on the caller's launcher (consentCaller), so exercising it deterministically
+	// needs a controllable lineage. A nil result is always legal (peer gone).
+	identify func(net.Conn) *caller
+
 	// readTimeout bounds how long a connected client gets to send a
 	// complete request (and, on the way out, to drain the response).
 	// Without it, a client that connects and then stalls — or never
@@ -274,6 +282,7 @@ func NewServer(socketPath string, newFetcher func() MEKFetcher, ttl time.Duratio
 		denialCooldown: defaultDenialCooldown,
 		useWindow:      defaultUseWindow,
 		trustRoots:     map[int32]int64{},
+		identify:       callerFromConn,
 	}
 }
 
@@ -341,14 +350,14 @@ func (s *Server) handleConn(conn net.Conn) {
 		// worth a durable record: someone else's process probing the agent.
 		// Enrich with its lineage while it's still connected — that identity
 		// is exactly what the audit trail is for.
-		s.recordServeError("reject", fmt.Sprintf("rejected peer: %v", err), callerFromConn(conn))
+		s.recordServeError("reject", fmt.Sprintf("rejected peer: %v", err), s.identify(conn))
 		_ = json.NewEncoder(conn).Encode(Response{OK: false, Error: fmt.Sprintf("rejected: %v", err)})
 		return
 	}
 
 	var req Request
 	if err := json.NewDecoder(conn).Decode(&req); err != nil {
-		s.recordServeError("decode", fmt.Sprintf("bad request: %v", err), callerFromConn(conn))
+		s.recordServeError("decode", fmt.Sprintf("bad request: %v", err), s.identify(conn))
 		_ = json.NewEncoder(conn).Encode(Response{OK: false, Error: fmt.Sprintf("bad request: %v", err)})
 		return
 	}
@@ -358,7 +367,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	// time a slow interactive challenge finishes, so asking the kernel
 	// afterwards would describe the wrong program. nil is fine and expected
 	// (peer already gone) — handling never depends on it.
-	c := callerFromConn(conn)
+	c := s.identify(conn)
 
 	// Handling can block on an interactive challenge far longer than the
 	// request-read bound — clear the deadline for it, then re-bound just
