@@ -248,6 +248,79 @@ var catalog = map[string]CatalogEntry{
 		},
 		VerifyHint: `codex exec "say hi"`,
 	},
+	"sentry-cli": {
+		Tool:    "sentry-cli",
+		Kind:    KindShim,
+		Doc:     "Sentry CLI auth token",
+		EnvVars: map[string]string{"SENTRY_AUTH_TOKEN": "SENTRY_AUTH_TOKEN"}, // #nosec G101 -- env var name, not a credential
+		Order:   []string{"SENTRY_AUTH_TOKEN"},
+		Sources: []TokenSource{
+			// .sentryclirc is INI; `sentry-cli login` writes the token under
+			// [auth]. The toml extractor's line shape covers it (same as
+			// .databrickscfg). SENTRY_AUTH_TOKEN, which the shim injects, is the
+			// CLI's documented highest-priority credential.
+			{Path: "~/.sentryclirc", Format: "toml", Selector: "auth/token"},
+		},
+		VerifyHint: "sentry-cli info",
+	},
+	"snyk": {
+		Tool:    "snyk",
+		Kind:    KindShim,
+		Doc:     "Snyk CLI API token",
+		EnvVars: map[string]string{"SNYK_TOKEN": "SNYK_TOKEN"}, // #nosec G101 -- env var name, not a credential
+		Order:   []string{"SNYK_TOKEN"},
+		Sources: []TokenSource{
+			// `snyk auth` writes the token via the `configstore` library as the
+			// JSON field "api" (not "token"). SNYK_TOKEN, which the shim injects,
+			// is the CLI's documented env credential and takes priority.
+			{Path: "~/.config/configstore/snyk.json", Format: "json", Selector: "api"},
+		},
+		VerifyHint: "snyk config get api",
+	},
+	"circleci": {
+		Tool:    "circleci",
+		Kind:    KindShim,
+		Doc:     "CircleCI CLI personal API token",
+		EnvVars: map[string]string{"CIRCLECI_CLI_TOKEN": "CIRCLECI_CLI_TOKEN"}, // #nosec G101 -- env var name, not a credential
+		Order:   []string{"CIRCLECI_CLI_TOKEN"},
+		Sources: []TokenSource{
+			// `circleci setup` writes the token top-level in cli.yml.
+			{Path: "~/.circleci/cli.yml", Format: "yaml", Selector: "token"},
+		},
+		VerifyHint: "circleci diagnostic",
+	},
+	"vault": {
+		Tool:    "vault",
+		Kind:    KindShim,
+		Doc:     "HashiCorp Vault token",
+		EnvVars: map[string]string{"VAULT_TOKEN": "VAULT_TOKEN"}, // #nosec G101 -- env var name, not a credential
+		Order:   []string{"VAULT_TOKEN"},
+		Sources: []TokenSource{
+			// `vault login` writes the current token as the whole file contents
+			// of ~/.vault-token (no keys, no structure). VAULT_TOKEN, which the
+			// shim injects, is Vault's documented highest-priority credential and
+			// overrides the file. Note: these tokens carry a TTL — wrap a
+			// long-lived token; a short-lived one breaks when it expires (see the
+			// docs page), the same caveat wrangler's OAuth token has.
+			{Path: "~/.vault-token", Format: "raw"},
+		},
+		VerifyHint: "vault token lookup",
+	},
+	"pulumi": {
+		Tool:    "pulumi",
+		Kind:    KindShim,
+		Doc:     "Pulumi access token",
+		EnvVars: map[string]string{"PULUMI_ACCESS_TOKEN": "PULUMI_ACCESS_TOKEN"}, // #nosec G101 -- env var name, not a credential
+		Order:   []string{"PULUMI_ACCESS_TOKEN"},
+		// No Sources. `pulumi login` writes the token into
+		// ~/.pulumi/credentials.json under an `accessTokens` map keyed by the
+		// backend URL (https://api.pulumi.com), which the catalog's flat
+		// selector can't address. PULUMI_ACCESS_TOKEN, which the shim injects and
+		// which pulumi treats as its highest-priority credential, expects a
+		// durable token from app.pulumi.com/account/tokens. Wrap is for those:
+		// `jit vault set wrap-pulumi/PULUMI_ACCESS_TOKEN` first.
+		VerifyHint: "pulumi whoami",
+	},
 
 	"aws": {
 		Tool:           "aws",

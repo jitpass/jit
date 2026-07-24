@@ -51,6 +51,11 @@ One page per tool - requirements, verification, and per-tool gotchas:
 | [`claude`](./claude-code.md) | `ANTHROPIC_API_KEY` | nowhere standard - `jit vault set wrap-claude/ANTHROPIC_API_KEY` first |
 | [`gemini`](./gemini.md) | `GEMINI_API_KEY` | `~/.gemini/.env` (or `~/.env` as a fallback) |
 | [`codex`](./codex.md) | `CODEX_API_KEY` | `~/.codex/auth.json`'s `OPENAI_API_KEY` field (API-key logins only) |
+| [`sentry-cli`](./sentry-cli.md) | `SENTRY_AUTH_TOKEN` | `~/.sentryclirc` (the `[auth] token`) |
+| [`snyk`](./snyk.md) | `SNYK_TOKEN` | `~/.config/configstore/snyk.json` (the `api` field) |
+| [`circleci`](./circleci.md) | `CIRCLECI_CLI_TOKEN` | `~/.circleci/cli.yml` |
+| [`vault`](./vault.md) | `VAULT_TOKEN` | `~/.vault-token` (the whole file is the token; wrap a long-lived one) |
+| [`pulumi`](./pulumi.md) | `PULUMI_ACCESS_TOKEN` | no auto-migrate (URL-keyed file); `jit vault set wrap-pulumi/PULUMI_ACCESS_TOKEN` first |
 
 ## Native-hook plugins (no shim - stronger)
 
