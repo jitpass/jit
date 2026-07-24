@@ -1,5 +1,5 @@
 // Copyright 2026 Meni Tasa
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: LicenseRef-PolyForm-Perimeter-1.0.0
 
 // Package migrate implements jit migrate: RFC.md's guided fix path for
 // findings jit scan reports. A separate command from jit scan, not a

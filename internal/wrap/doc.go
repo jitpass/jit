@@ -1,5 +1,5 @@
 // Copyright 2026 Meni Tasa
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: LicenseRef-PolyForm-Perimeter-1.0.0
 
 // Package wrap implements shell-plugin-style CLI wrapping (docs/internal/WRAP-PLAN.md):
 // a directory of symlinks to the jit binary (~/.jit/shims), each named after
