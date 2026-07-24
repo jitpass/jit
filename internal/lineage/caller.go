@@ -174,12 +174,32 @@ func Ancestry(pid int32) []Process {
 // Shared by the agent (who unlocked the vault) and the mount manager (who
 // read a secret file), which ask the same question of different processes.
 func LaunchedBy(ancestors []Process) string {
-	for _, p := range ancestors {
-		if name := p.Name(); name != "" && !isRelay(name) {
-			return name
-		}
+	if p, _, ok := LaunchedByProcess(ancestors); ok {
+		return p.Name()
 	}
 	return ""
+}
+
+// LaunchedByProcess is LaunchedBy's structured counterpart: it returns the
+// nearest explanatory ancestor Process itself (not just its display name), so a
+// caller can key on that launcher's identity — its ExecPath — and not only
+// render it. It also returns `above`, the ancestors strictly further up than
+// the launcher, so a caller can describe what launched the launcher without
+// re-finding it (LaunchedBy(above)). ok is false when the chain is all relays:
+// a human at a shell prompt, the same "you did" case where LaunchedBy is "".
+//
+// This exists because the agent's consent gate needs to key its session cache
+// on the REAL tool. Every gated socket credential reaches the agent through a
+// `jit <x>-credential` helper it spawned, so the connecting peer is always the
+// jit binary; the tool that actually wanted the credential is the nearest
+// explanatory ancestor, exactly the one this returns.
+func LaunchedByProcess(ancestors []Process) (launcher Process, above []Process, ok bool) {
+	for i, p := range ancestors {
+		if name := p.Name(); name != "" && !isRelay(name) {
+			return p, ancestors[i+1:], true
+		}
+	}
+	return Process{}, nil, false
 }
 
 // isRelay reports whether name is a process that passes work along rather than

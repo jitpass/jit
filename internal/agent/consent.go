@@ -11,17 +11,38 @@ import (
 	"github.com/jitpass/jit/internal/lineage"
 )
 
-// consentCaller maps the kernel-identified socket peer to a consent.Caller.
-// Strength is Hard: the pid came from LOCAL_PEERPID at connect time, not a
-// scan, so a same-user process cannot forge it.
+// consentCaller maps the kernel-identified socket peer to a consent.Caller,
+// keyed on the TOOL that wanted the credential — not on the jit helper that
+// carried the request. Every gated socket credential (aws/docker/git/terraform/
+// kube/sops) reaches the agent through a `jit <x>-credential` helper it spawned,
+// so c.self is ALWAYS the jit binary; keying the consent cache on c.self would
+// collapse every consumer of a class to one key, and approving aws once would
+// silently cover an unrelated script's aws for the rest of the session. The real
+// tool is the nearest explanatory ancestor of that helper — the same identity
+// the FIFO path keys on (consentCallerForPID) — so we key on ITS ExecPath and
+// describe what launched IT as the lineage, mirroring the FIFO side exactly.
+//
+// Strength stays Hard: the anchor is still the kernel-vouched peer pid
+// (LOCAL_PEERPID), and the launcher is one ancestry hop up from it, resolved
+// while that peer is alive. The launcher is ancestry-derived rather than the
+// peer itself, but it is not caller-reported — a process cannot forge its own
+// parent — and a tighter key can only ever prompt MORE, never let a stranger
+// ride a warm approval.
+//
+// If no explanatory launcher resolves (a human ran the helper directly at a
+// shell, or the ancestry was unreadable), ExecPath stays empty; consent.Decide
+// then declines to cache the decision at all and re-prompts every access —
+// fail-safe, never over-sharing.
 func consentCaller(c *caller) consent.Caller {
 	cc := consent.Caller{Strength: consent.Hard}
 	if c == nil {
 		return cc
 	}
 	cc.PID = c.pid
-	cc.ExecPath = c.self.ExecPath
-	cc.Lineage = lineage.LaunchedBy(c.ancestors)
+	if launcher, above, ok := lineage.LaunchedByProcess(c.ancestors); ok {
+		cc.ExecPath = launcher.ExecPath
+		cc.Lineage = lineage.LaunchedBy(above)
+	}
 	return cc
 }
 
