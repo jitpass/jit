@@ -6,7 +6,7 @@ large PR, a quick issue to align on approach first saves everyone time.
 
 ## Ground rules
 
-- **Sign off your commits (DCO, not a CLA).** Every commit must carry a
+- **Sign off your commits (DCO).** Every commit must carry a
   `Signed-off-by:` line certifying the [Developer Certificate of
   Origin](https://developercertificate.org/). Add it automatically with:
 
@@ -14,14 +14,23 @@ large PR, a quick issue to align on approach first saves everyone time.
   git commit -s
   ```
 
-  By signing off you assert you have the right to submit the work under the
-  project's [PolyForm Perimeter 1.0.0](./LICENSE) license. There is no CLA.
+  The DCO certifies the provenance of your work — that you have the right to
+  submit it.
+
+- **Agree to the CLA.** Contributions are also covered by the project's
+  [Contributor License Agreement](./CLA.md). It lets the project be maintained
+  sustainably and, where necessary, offered under commercial terms: you keep
+  copyright in your work, but you grant the maintainer a broad license including
+  the right to relicense your contribution (for example, to sell a commercial
+  license to a party the public license does not permit). You accept it by
+  signing off your commits and submitting your contribution. First-time
+  contributors may be asked to confirm acceptance in the PR.
 
 - **License.** The project is licensed under the PolyForm Perimeter License
   1.0.0, a source-available license (see [LICENSE](./LICENSE)); it does not
   convert to an open-source license. All contributions are made under those
-  same terms. Don't paste in code under a license incompatible with this
-  arrangement (for example, copyleft code).
+  same terms (and the [CLA](./CLA.md) above). Don't paste in code under a
+  license incompatible with this arrangement (for example, copyleft code).
 
 - **Security issues are not regular PRs.** If you've found a vulnerability, do
   **not** open a public issue or PR, follow [SECURITY.md](./SECURITY.md) for
@@ -79,7 +88,8 @@ before opening a PR.
   interactive prompt.
 - Describe *why*, not just *what*, link the relevant RFC/GAPS item if there is
   one.
-- Make sure `git commit -s` sign-off is present on every commit.
+- Make sure `git commit -s` sign-off is present on every commit (this also
+  signals your acceptance of the [CLA](./CLA.md)).
 
 ## Adding a `jit wrap` plugin
 
