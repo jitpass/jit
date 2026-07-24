@@ -16,7 +16,7 @@ short prefix. Here's what to type for your tool, and why.
 | `gh`, `glab`, `stripe`, and other CLIs with their own login token | **`jit wrap <tool>`** once, then the tool by name | Moves the token to the vault; you keep typing the command. |
 | A project `.env`, Terraform `tfvars` | **`jit run -- <cmd>`** | The tool reads secrets from environment variables. |
 | `docker compose`, `podman`, tools that read the `.env` file itself | **`jit run --live -- <cmd>`** | jit serves the real file to that run (auto-picked for these). |
-| `gcp`, `sops`, `npm`, `netrc` | **`jit run --with <name> -- <cmd>`** | A machine-global credential file; you grant it on purpose. |
+| `gcp`, `sops`, `npm`, `netrc` | **run it** and approve the prompt, or **`jit run --with <name> -- <cmd>`** | A machine-global credential file: consent prompts on first read, or `--with` grants it explicitly. |
 | A specific named set of secrets (an MCP server, a one-off) | **`jit run --profile <name> -- <cmd>`** | Loads that profile instead of the ambient project `.env`. |
 
 ## Just run them (nothing to type)
@@ -84,10 +84,17 @@ See [live-mounted files](./run/mounts.md).
 
 ## `jit run --with <name> -- <cmd>`: machine-global credential files
 
-Some credentials aren't tied to a project: they're one file per machine that any
-project could read. jit never lets a project's config reach one: **you name it
-explicitly, per run, behind a Touch ID**, so an untrusted repo can't pull your
-global credentials silently.
+Some credentials aren't tied to a project: one file per machine that any project
+could read. Nothing gets one silently, and there are two ways to use them:
+
+- **Everyday (per-process consent on, the default):** just run the tool. The
+  first time it reads the file, jit prompts a Touch ID that names the reader and
+  serves the real value on approval. The identity on these prompts is
+  best-effort (a process scan), so treat the name as a hint.
+- **Explicit:** `jit run --with <name>` names the credential up front behind a
+  kernel-vouched intent gate. Use it for scripts and CI (no prompt to answer), or
+  when you want the hard guarantee that a project can never even prompt for the
+  credential.
 
 | Name | The file | Read by |
 |---|---|---|
@@ -97,7 +104,8 @@ global credentials silently.
 | `netrc` | `~/.netrc` | curl, git, ftp, wget |
 
 ```sh
-jit run --with gcp -- terraform apply
+terraform apply                  # everyday: just run it, approve the prompt
+jit run --with gcp -- terraform apply   # explicit grant: scripts/CI, or a hard gate
 ```
 
 **Don't want to type `--with` every time?** Wrap the tool once so a shim adds it
@@ -112,8 +120,9 @@ Note what you **can't** do: a project's `.jit/config.yaml` can auto-select
 `--live` for its own `.env` (`read_as_file: true`), but it can **never**
 auto-grant a `--with` credential. A repo file travels with the repo, so letting
 one reach your machine-global creds would let any cloned project pull them
-silently. The grant is always a user action on your machine (the typed `--with`,
-or the `--grant` shim you installed), never a repo file.
+silently. The credential only ever flows on a user action on your machine
+(approving the consent prompt, a typed `--with`, or the `--grant` shim you
+installed), never from a repo file alone.
 
 How each is delivered under the hood (sops uses a native hook; gcp and netrc are
 masked files) is in

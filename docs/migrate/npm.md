@@ -20,11 +20,11 @@ through untouched, and the token slots fill from the vault only for a
   run's process tree automatically (npm reads the real token, scoped to the
   run, gone when it exits), so `jit run npm ci` just works, no window
   needed. The **global** `~/.npmrc` is machine-wide, so it is never granted
-  automatically: name it explicitly with `jit run --with npm -- npm ci`,
-  which prompts a disclosed Touch ID and scopes the token to that run.
-  Outside a grant they see placeholder values (that's the point — launch npm
-  through `jit run`); `jit service status` shows what the last reader was
-  served.
+  automatically. With per-process consent on (the default), just run npm and
+  approve the Touch ID prompt the first time it reads the file; `jit run --with
+  npm -- npm ci` is the explicit grant (for scripts and CI, or a hard gate),
+  scoped to that run. With consent off and no grant, a reader sees placeholder
+  values; `jit service status` shows what the last reader was served.
 - The global `~/.npmrc` is machine-wide - name it explicitly to convert
   it; a project `.npmrc` is picked up when you name that project's
   directory.

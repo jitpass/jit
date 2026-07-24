@@ -84,11 +84,13 @@ $ jit run --with gcp -- terraform apply
 
 `--with gcp|sops|npm|netrc` is explicit intent by design. A machine-global
 credential is never granted by a project's config or by which directory you
-run from, only by a `--with` you type, and every grant prompts a fresh Touch
-ID that names the credential (even when the vault is already unlocked). The
-real values reach only that run's process tree and the grant ends when the run
-exits. An unknown name, or one whose mount isn't migrated, fails loudly rather
-than silently serving a decoy.
+run from. With per-process consent on (the default) you can also just run the
+tool and approve the disclosed prompt the first time it reads the file; `--with`
+is the explicit, hard-gated alternative for scripts and CI. Either way a grant
+prompts a fresh Touch ID that names the credential (even when the vault is
+already unlocked). The real values reach only that run's process tree and the
+grant ends when the run exits. An unknown name, or one whose mount isn't
+migrated, fails loudly rather than silently serving a decoy.
 
 To keep typing the tool directly, grant-wrap it once with
 [`jit wrap add <tool> --grant <name>`](../wrap/index.md); the shim runs
