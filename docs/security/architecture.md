@@ -46,16 +46,19 @@ Secrets materialize at the moment of use and nowhere else:
   end the instant the command exits.
 - Machine-global credential *files* (the gcloud ADC, a SOPS age key, the
   global `~/.npmrc`, `~/.netrc`) migrate the same way, but are never granted
-  implicitly. `jit run --with gcp|sops|npm|netrc` grants one to a single
-  run's process tree,
-  and every such grant forces a fresh, *disclosed* Touch ID that names the
-  credential, even when the session is already unlocked. The invariant behind
-  this: project-local configuration may reconfigure a project's own secrets,
-  but it never authorizes access to a machine-global credential. A cloned
-  repo's `.jit/config.yaml`, or a script that slips a `--with` into a
-  command, can never hand out a machine-wide credential silently; the unlock
-  authorizes the session, not the scope, and only an explicit `--with` you
-  type widens it.
+  implicitly or silently. Two things can release one, and both take a live
+  human gesture: an explicit `jit run --with gcp|sops|npm|netrc`, which grants
+  it to a single run's process tree behind a fresh *disclosed* Touch ID that
+  names the credential (a kernel-vouched, hard gate); or, with
+  [per-process consent](../service/consent.md) on (the default), a direct read
+  of the file, which prompts a disclosed Touch ID naming the reader (best-effort
+  identity) and serves the value only on approval. The invariant behind both:
+  project-local configuration may reconfigure a project's own secrets, but it
+  never authorizes access to a machine-global credential on its own. A cloned
+  repo's `.jit/config.yaml`, or a script that slips a `--with` into a command,
+  can never hand one out silently; the unlock authorizes the session, not the
+  scope, and widening it always takes an explicit `--with` or an approved
+  consent prompt.
 - Credential-helper fetches ([AWS](../migrate/aws.md),
   [Kubernetes](../migrate/kubernetes.md),
   [Terraform](../migrate/terraform.md)) hand the credential to the
@@ -113,12 +116,16 @@ compromised user account safe. The boundaries worth knowing:
   committed still has its old value in `git log -p`; `migrate` warns, and
   the fix is rotating that credential.
 - **While real values are available, a mount serves them to readers.**
-  That happens only under a `jit run --live`/`--with` grant (scoped to that
-  run's process tree, for its lifetime, per-read by process ancestry, and
-  observable via `jit service status`). There is no ambient reveal window:
-  unlocking the vault never makes a mount serve real values on its own. The
-  ancestry check narrows a grant; it is never the security boundary on its
-  own - the boundary is the grant, issued only to a run the user authorized.
+  For a project `.env`, that happens only under a `jit run --live`/`--with`
+  grant (scoped to that run's process tree, for its lifetime, per-read by
+  process ancestry, and observable via `jit service status`). For the
+  machine-global credential mounts, with consent on, a direct read also serves
+  real values, but only after an approved disclosed prompt naming the reader.
+  There is no ambient reveal window: unlocking the vault never makes a mount
+  serve real values on its own, and a prompt always precedes a consent-served
+  read. The ancestry check narrows a grant; it is never the security boundary on
+  its own - the boundary is the grant (or the approved prompt), issued only for
+  a read the user authorized.
 
 Each published review carries a "known, accepted limitations" list that
 states these boundaries precisely as of that review -

@@ -16,7 +16,7 @@ This page is the decision guide.
 | A CLI tool that keeps its own token in a dotfile, and you run it by name (`gh`, `aws`, `npm`, `stripe`) | **`jit wrap`** | Set up once; type the tool name normally forever |
 | A project `.env` of variables that your scripts read | **`jit migrate`** then **`jit run`** | The file becomes a live mount; scripts run under `jit run` |
 | A one-off command that needs a specific profile | **`jit run --profile <name>`** | No setup; name the profile for this run only |
-| A machine-wide credential *file* a tool reads (gcloud ADC, SOPS age key, global `~/.npmrc`) | **`jit run --with <name>`** | Explicit intent; a fresh disclosed Touch ID per grant, never authorized by a repo |
+| A machine-wide credential *file* a tool reads (gcloud ADC, SOPS age key, global `~/.npmrc`) | **run it** and approve the prompt, or **`jit run --with <name>`** | Consent prompts on first read (default); `--with` is the explicit, hard-gated grant, never authorized by a repo |
 | Secrets in your current interactive shell | **`jit export`** | Prints `export` lines to `eval` |
 
 Everything below is the longer "why".
@@ -83,17 +83,26 @@ live-mounts the file.
 
 One of these unlocks a lot and belongs to your whole machine, not a project,
 so jit never grants it just because you `cd`'d into a directory or a repo's
-config asked. You grant it with explicit intent:
+config asked. Nothing gets it silently, and there are two paths:
+
+- **Everyday (per-process consent on, the default):** just run the tool. The
+  first time it reads the file, jit prompts a Touch ID naming the reader and
+  serves the real value on approval. The identity on these prompts is
+  best-effort (a process scan), so treat the name as a hint.
+- **Explicit:** grant it up front with `jit run --with`, behind a kernel-vouched
+  intent gate. Use it for scripts and CI, or when you want the hard guarantee
+  that a project can never even prompt for the credential.
 
 ```
-jit run --with gcp -- terraform apply     # scoped to this run, gone on exit
+terraform apply                        # everyday: run it, approve the prompt
+jit run --with gcp -- terraform apply  # explicit grant: scoped to this run, gone on exit
 ```
 
-`--with gcp|sops|npm|netrc` names the credential. Every grant prompts a fresh
-**disclosed Touch ID that names the credential**, even when the vault is
-already unlocked, so a script that slipped a `--with` into a command can't
-siphon a machine-wide credential silently. The real values reach only that
-run's process tree, and the grant ends when the run exits.
+`--with gcp|sops|npm|netrc` names the credential. The grant prompts a fresh
+**disclosed Touch ID that names it**, even when the vault is already unlocked,
+so a script that slipped a `--with` into a command can't siphon a machine-wide
+credential silently. The real values reach only that run's process tree, and the
+grant ends when the run exits.
 
 To keep typing the tool directly, with no `jit run` prefix, grant-wrap it once:
 
@@ -101,9 +110,11 @@ To keep typing the tool directly, with no `jit run` prefix, grant-wrap it once:
 jit wrap add gcloud --grant gcp           # then `gcloud …` grants the ADC per call
 ```
 
-**Use `jit run --with` when:** a tool reads a machine-wide credential file and
-you want it available for one run (or, grant-wrapped, every time you type the
-tool). See [jit run](../run/index.md) and the per-credential pages for
+**Use `jit run --with` when:** you want the explicit, hard-gated form instead of
+the consent prompt: a scripted or CI run with no prompt to answer, or a
+guarantee that a project can never even prompt for the credential (or,
+grant-wrapped, every time you type the tool). See [jit run](../run/index.md) and
+the per-credential pages for
 [gcp](../migrate/gcp.md), [sops](../migrate/sops.md), and [npm](../migrate/npm.md).
 
 ## How a migrated `.env` stays compatible with your scripts

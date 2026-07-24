@@ -161,12 +161,18 @@ instant of a single command, then `execve` replaces its whole image.
 
 ### Can a malicious repo I clone steal my cloud credentials?
 
-No. That is exactly what the machine-global grant model prevents. A project's
+Not silently, and never without a prompt you can decline. A project's
 `.jit/config.yaml` can never authorize a machine-global credential (the
-gcloud ADC, a SOPS key, `~/.npmrc`). Those are granted only by an explicit
-`jit run --with` you type, which forces a fresh **disclosed** Touch ID naming
-the credential even when the vault is already unlocked. The unlock authorizes
-the session, not the scope, and only you widen the scope.
+gcloud ADC, a SOPS key, `~/.npmrc`) on its own. The only ways one is released
+both take a live human gesture: an explicit `jit run --with` you type, or, with
+per-process consent on (the default), approving a fresh **disclosed** Touch ID
+that fires the first time a tool reads the file and names the reader. So a repo's
+tool that reaches for your cloud credentials cannot get them behind your back; it
+can only make a prompt appear, and an unexpected prompt is exactly the signal to
+say no. Two cautions: the identity on those file-read prompts is best-effort (a
+process scan a determined local attacker could spoof), so read the name as a
+hint, not proof; and if you do approve, the value flows to that process. The
+unlock authorizes the session, not the scope, and only you widen the scope.
 
 ### The mounts identify the reading process, isn't that spoofable?
 

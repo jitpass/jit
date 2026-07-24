@@ -16,10 +16,11 @@ target on a machine that uses SOPS.
 `jit migrate <path-to-keys.txt>` (category `sops`) moves the key into the
 vault and replaces `keys.txt` with a [live mount](../run/mounts.md) serving a
 template: the non-secret comment lines (public key, creation date) pass
-through byte-for-byte, and the key line fills from the vault only for a
-run you explicitly grant it to with `jit run --with sops`. The age key is a
-machine-wide credential, so it is never granted by a project's config, only
-by a `--with` you type.
+through byte-for-byte, and the key line fills from the vault when a read is
+authorized. With per-process consent on (the default), running the tool prompts
+a Touch ID the first time it reads the key and serves it on approval; `jit run
+--with sops` is the explicit grant (for scripts and CI, or a hard gate). The age
+key is machine-wide, so a project's config can never grant it on its own.
 
 ## Two ways tools get the key back
 
@@ -51,9 +52,10 @@ per invocation.
 
 ## What to expect
 
-- Outside a run you granted the key to, a reader of `keys.txt` sees a
-  placeholder and decryption fails fast with a clear error, exactly the
-  decoy-by-default behavior `.env` mounts have.
+- With consent off and no grant covering the read, a reader of `keys.txt` sees
+  a placeholder and decryption fails fast with a clear error, the
+  decoy-by-default behavior `.env` mounts have. With consent on, a direct read
+  prompts instead and serves the real key on approval.
 - The file is machine-wide (one per user), so name it explicitly to
   convert it (a project directory walk never touches it).
 - Files holding **multiple** age keys are skipped, never half-migrated:

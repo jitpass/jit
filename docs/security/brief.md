@@ -52,10 +52,12 @@ account safe.
 
 Project-local configuration may reconfigure a project's own secrets, but it
 **never** authorizes access to a machine-global credential (the gcloud ADC, a
-SOPS key, `~/.npmrc`). Those are granted only by an explicit `jit run --with`
-the user types, which forces a fresh **disclosed** Touch ID naming the
-credential even when the session is already unlocked. The unlock authorizes
-the session, not the scope. A cloned repo's config, or a script that slips a
+SOPS key, `~/.npmrc`) on its own. Two things can release one, and both take a
+live human gesture: an explicit `jit run --with` the user types, or, with
+per-process consent on (the default), an approved disclosed prompt when a tool
+reads the file. Either way a fresh **disclosed** Touch ID names what is being
+granted, even when the session is already unlocked. The unlock authorizes the
+session, not the scope. A cloned repo's config, or a script that slips a
 `--with` into a command, cannot hand out a machine-wide credential silently.
 
 ## Deliberate limits (stated plainly)

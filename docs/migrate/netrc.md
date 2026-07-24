@@ -16,7 +16,9 @@ the vault and replaces `~/.netrc` with a [live mount](../run/mounts.md)
 serving a template: `machine`/`default`/`login`/`account` lines, blank
 lines, indentation, and any `macdef` scripts pass through byte-for-byte -
 only the password values themselves are filled in from the vault, and
-only for a run you explicitly grant it to (`jit run --with netrc`).
+only when a read is authorized: with per-process consent on (the default), by
+approving the Touch ID prompt when a tool reads the file, or explicitly with
+`jit run --with netrc` (for scripts and CI, or a hard gate).
 `login` values are left alone: by
 convention (curl's own docs, GitHub's PAT-over-HTTPS setup) the field
 named `password` is the credential and `login` is a username, not a
@@ -39,10 +41,11 @@ installs a shim that grants the file per invocation.
 
 ## What to expect
 
-- Outside a granted run, a reader of
+- With consent off and no grant covering the read, a reader of
   `~/.netrc` sees fixed placeholder passwords - curl/git fail fast with a
   clear auth error instead of silently trying a garbage credential against
-  a live server.
+  a live server. With consent on, a direct read prompts instead and serves the
+  real password on approval.
 - The file is machine-wide (one per user), so name it explicitly to
   convert it: `jit migrate ~/.netrc`. A project directory walk never
   touches it.
