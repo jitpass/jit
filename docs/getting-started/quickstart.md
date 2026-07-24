@@ -107,7 +107,7 @@ Secrets: 5 stored in 2 group(s).
   Wired here:        2 group(s) via 2 profile(s) (5 reference(s)), all resolve.
   Managed elsewhere: 0 group(s) (referenced only by global profiles or mounts).
   Unreferenced here: none.
-Mounts: 1 registered, service unlocked, all serving decoy (real values flow only inside a jit run --live/--with grant).
+Mounts: 1 registered, service unlocked, all serving decoy (real values flow through a jit run grant, or an approved consent prompt for a global credential file).
 ```
 
 `jit status` is the quick read-only snapshot. Its **Secrets** section
