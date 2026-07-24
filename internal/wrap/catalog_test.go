@@ -135,6 +135,7 @@ func TestCatalogSelectorsAgainstFixtures(t *testing.T) {
 		{"snyk", 0, "snyk/snyk.json", "FIXTUREsnykToken0123-4567-89ab-cdef"},
 		{"circleci", 0, "circleci/cli.yml", "FIXTUREcircleciToken0123456789abcdef"},
 		{"vault", 0, "vault/vault-token", "hvs.FIXTUREvaultToken0123456789abcdef"},
+		{"okta-cli-client", 0, "okta-cli-client/okta.yaml", "FIXTUREoktaToken0123456789abcdefFIXTURE"},
 	}
 	for _, tc := range cases {
 		entry, ok := Lookup(tc.tool)
