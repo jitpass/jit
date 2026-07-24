@@ -131,6 +131,10 @@ func TestCatalogSelectorsAgainstFixtures(t *testing.T) {
 		{"gemini", 0, "gemini/env", "FIXTUREgeminiToken0123456789abcdefFIXTURE"},
 		{"gemini", 1, "gemini/home-dotenv", "FIXTUREgeminiHomeFallback0123456789FIXTURE"},
 		{"codex", 0, "codex/auth.json", "sk-FIXTUREcodexToken0123456789abcdefFIXTURE"},
+		{"sentry-cli", 0, "sentry-cli/sentryclirc", "FIXTUREsentryToken0123456789abcdefFIXTURE"},
+		{"snyk", 0, "snyk/snyk.json", "FIXTUREsnykToken0123-4567-89ab-cdef"},
+		{"circleci", 0, "circleci/cli.yml", "FIXTUREcircleciToken0123456789abcdef"},
+		{"vault", 0, "vault/vault-token", "hvs.FIXTUREvaultToken0123456789abcdef"},
 	}
 	for _, tc := range cases {
 		entry, ok := Lookup(tc.tool)
