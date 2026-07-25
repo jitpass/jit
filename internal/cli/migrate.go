@@ -169,7 +169,7 @@ var migrateCmd = &cobra.Command{
 		"  jit migrate ~/proj/.env --dry-run   # preview the plan, change nothing\n" +
 		"  jit migrate ~/.aws/credentials --only aws\n" +
 		"  jit migrate undo ~/proj/.env    # restore a migrated file from its backup",
-	Args: cobra.MinimumNArgs(1),
+	Args: requirePaths("jit migrate"),
 	// migrateCmd carries subcommands (path/undo/remove), and cobra defaults
 	// argument completion on any command that has subcommands to NoFileComp —
 	// which silently suppresses the shell's file completion for the bare
@@ -193,7 +193,7 @@ var migratePathCmd = &cobra.Command{
 	Use:   "path <file-or-dir>...",
 	Short: "Alias for `jit migrate <file-or-dir>...`",
 	Long:  "Alias for `jit migrate <file-or-dir>...` — see `jit migrate --help`.",
-	Args:  cobra.MinimumNArgs(1),
+	Args:  requirePaths("jit migrate path"),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runMigratePath(cmd, args)
 	},

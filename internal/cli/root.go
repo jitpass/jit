@@ -212,6 +212,21 @@ func unknownCommandError(cmd *cobra.Command, arg string) error {
 	return errors.New(sb.String())
 }
 
+// requirePaths is cobra.MinimumNArgs(1) in jit's own voice, for the commands
+// that must be told what to act on. Cobra's stock message is
+// "requires at least 1 arg(s), only received 0" — the one error in this CLI
+// that reads like a library talking to itself, next to a help text that
+// promises "a bare `jit migrate` with no path does nothing". Naming the
+// command and what it wants keeps the surface consistent.
+func requirePaths(name string) cobra.PositionalArgs {
+	return func(_ *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return fmt.Errorf("%s: name at least one file or folder to act on", name)
+		}
+		return nil
+	}
+}
+
 // newVersionCmd makes `jit version` a synonym for `jit --version`. Cobra
 // gives a Version-bearing command the --version/-v FLAG only, so `jit
 // version` — the first thing many people type, and what `git`/`docker`/`go`

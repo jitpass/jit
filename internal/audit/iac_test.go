@@ -334,3 +334,71 @@ func TestScanIACFilesNoneFound(t *testing.T) {
 		t.Errorf("got %d findings, want 0", len(findings))
 	}
 }
+
+// A tfvars finding reported only the whole-file signal that set its severity,
+// naming no variable: a file with a prod-flagged password AND an API token
+// said just "contains a value matching the production-indicator pattern", so
+// the reader couldn't tell which line to fix. Same gap .env findings had, and
+// the wording is shared with them via describeEnvHits.
+func TestScanIACFilesTfvarsEvidenceNamesVariables(t *testing.T) {
+	home := t.TempDir()
+	writeFile(t, filepath.Join(home, "terraform.tfvars"), `db_password = "hunter2-prod-postgres"
+region      = "us-east-1"
+api_token   = "cf_1234567890abcdefghijklmnopqrstuvwxyz"
+`)
+	findings, err := ScanIACFiles(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("ScanIACFiles: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+	ev := findings[0].Evidence
+	for _, want := range []string{"db_password", "api_token"} {
+		if !strings.Contains(ev, want) {
+			t.Errorf("evidence never names %s; got: %q", want, ev)
+		}
+	}
+	if strings.Contains(ev, "region") {
+		t.Errorf("evidence names region, which is ordinary config; got: %q", ev)
+	}
+}
+
+// A tfvars whose value positively matches a vendor's token format used to sit
+// at Info ("detection only") — jit knew a live credential was in the file and
+// filed it as an FYI. A .env with the same value is High; these now agree.
+func TestScanIACFilesTfvarsTokenMatchEscalates(t *testing.T) {
+	home := t.TempDir()
+	writeFile(t, filepath.Join(home, "x.auto.tfvars"),
+		"stripe_key = \""+fakeStripeLiveKey+"\"\n")
+	findings, err := ScanIACFiles(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("ScanIACFiles: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+	if findings[0].Severity != SeverityHigh {
+		t.Errorf("severity = %q, want %q for a positively-matched vendor token", findings[0].Severity, SeverityHigh)
+	}
+	if !strings.Contains(findings[0].Evidence, "Stripe") {
+		t.Errorf("evidence should name the vendor; got: %q", findings[0].Evidence)
+	}
+}
+
+// A tfvars with nothing secret-shaped in it stays the Info advisory it was —
+// the escalations above must not turn every terraform file into a finding.
+func TestScanIACFilesTfvarsPlainStaysInfo(t *testing.T) {
+	home := t.TempDir()
+	writeFile(t, filepath.Join(home, "terraform.tfvars"), "region = \"us-east-1\"\ninstance_count = 3\n")
+	findings, err := ScanIACFiles(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("ScanIACFiles: %v", err)
+	}
+	if len(findings) != 1 || findings[0].Severity != SeverityInfo {
+		t.Fatalf("findings = %+v, want a single Info advisory", findings)
+	}
+	if strings.Contains(findings[0].Evidence, "also") {
+		t.Errorf("plain tfvars grew an 'also' clause: %q", findings[0].Evidence)
+	}
+}
