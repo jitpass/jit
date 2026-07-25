@@ -413,6 +413,36 @@ func removeOneProject(cmd *cobra.Command, root, home, projectRoot string) error 
 	if err := migrate.DropBackupRecords(root, plan.backups); err != nil {
 		return fmt.Errorf("jit migrate remove: %w", err)
 	}
+	// plan.backups was captured before anything ran, so it can't include a
+	// record this very removal created: RestoreFromBackup snapshots whatever
+	// it is about to overwrite, which means every rewritten-in-place file
+	// leaves a fresh entry behind. Harmless in content (it's the migrated,
+	// secret-free state) but it outlives the project it belongs to, leaving
+	// `jit migrate undo` offering a path this command just finished erasing.
+	// Re-read and sweep whatever is still indexed under the tree.
+	late, err := migrate.LoadBackupRecords(root)
+	if err != nil {
+		return fmt.Errorf("jit migrate remove: %w", err)
+	}
+	var stragglers []migrate.BackupRecord
+	for _, rec := range late {
+		if pathWithinDir(projectRoot, rec.OriginalPath) {
+			stragglers = append(stragglers, rec)
+		}
+	}
+	if len(stragglers) > 0 {
+		for _, rec := range stragglers {
+			if rec.VaultPath == "" {
+				continue
+			}
+			if err := v.Remove(rec.VaultPath); err != nil && !errors.Is(err, vault.ErrNotFound) {
+				return fmt.Errorf("jit migrate remove: deleting backup %s: %w", rec.VaultPath, err)
+			}
+		}
+		if err := migrate.DropBackupRecords(root, stragglers); err != nil {
+			return fmt.Errorf("jit migrate remove: %w", err)
+		}
+	}
 
 	// Owned global-store profiles live outside the .jit directory the
 	// RemoveAll below covers — their manifest (+ .source sidecar) files are
