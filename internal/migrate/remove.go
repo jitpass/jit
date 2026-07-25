@@ -86,8 +86,14 @@ func RestorePointerFile(v *vault.Vault, path string) ([]string, error) {
 		}
 		values[name] = string(secret)
 	}
+	// 0600 first, widened after — same ordering and reason as UnmountFile.
 	if err := os.WriteFile(path, mount.FormatDotenv(values, order), 0o600); err != nil {
 		return nil, fmt.Errorf("writing %s: %w", path, err)
+	}
+	if mode := OriginalModeFor(v.Root, path); mode != defaultRestoreMode {
+		if err := os.Chmod(path, mode); err != nil {
+			return nil, fmt.Errorf("restoring permissions %#o on %s: %w", mode, path, err)
+		}
 	}
 	names := make([]string, 0, len(values))
 	for name := range values {
