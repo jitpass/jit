@@ -281,9 +281,9 @@ func TestWriteHumanReportDoesNotCollapseDifferentValuesSameKey(t *testing.T) {
 // exact same fixed advisory text ("detection only, no automated fix yet")
 // regardless of file content, so two completely unrelated Secret.yaml
 // manifests from different, unrelated repos collapsed into one block that
-// wrongly implied they were related. IaC/Suspicious Filenames evidence is
-// rule-level boilerplate, not a specific secret or variable name, so they
-// must never collapse (see collapsibleFindingTypes).
+// wrongly implied they were related. That tier's evidence is rule-level
+// boilerplate, not a specific secret or variable name, so it must never
+// collapse (see collapsibleFindingTypes).
 func TestWriteHumanReportDoesNotCollapseUnrelatedIACFiles(t *testing.T) {
 	findings := []Finding{
 		{FindingType: FindingTypeIACVariableFile, Severity: SeverityInfo, FilePath: "/Users/alex/project-a/secrets.yaml", Evidence: "infrastructure-as-code variable file: detection only, no automated fix yet"},

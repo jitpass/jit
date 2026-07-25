@@ -9,11 +9,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io/fs"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -32,11 +33,27 @@ import (
 // the file — encoding, not encryption, the same gap as a base64 Secret
 // manifest.
 func ScanCredentialFiles(cfg Config) ([]Finding, error) {
+	fixed, err := scanKnownCredentialFiles(cfg)
+	if err != nil {
+		return fixed, err
+	}
+	walked, err := walkForCategory(cfg, classifyProjectNpmrc)
+	// Same fixed-then-walked composition Scan performs, dedupe included, so
+	// this standalone entry point and a machine-wide scan can't report a
+	// different number of findings for the same home directory.
+	return append(fixed, dropAlreadyReported(fixed, walked)...), err
+}
+
+// scanKnownCredentialFiles is this category's fixed half (see categories):
+// every credential store that lives at one known path. The one part of the
+// category that has to be discovered — a project-local .npmrc, which can sit
+// anywhere — is classifyProjectNpmrc's job.
+func scanKnownCredentialFiles(cfg Config) ([]Finding, error) {
 	var all []Finding
 	for _, scan := range []func(Config) ([]Finding, error){
 		scanAWSCredentials,
 		scanKubeconfig,
-		scanNpmrc,
+		scanGlobalNpmrc,
 		scanTerraformCloud,
 		scanDockerConfig,
 		scanGitCredentials,
@@ -70,8 +87,16 @@ func scanAWSCredentials(cfg Config) ([]Finding, error) {
 		return nil, nil // malformed file — skip it, don't fail the whole audit
 	}
 
+	// Sorted, not raw map order: Go randomizes map iteration per run, so a
+	// file with two profiles emitted its findings in a different order every
+	// time — which made two NDJSON reports of an unchanged machine diff
+	// dirty, for no reason but the map. Every scanner that iterates a parsed
+	// map does this (see also scanTerraformCloud, scanDockerConfig,
+	// scanMCPConfigFile); Scan's fixed category order is only half of a
+	// deterministic report if the order within a category is a coin flip.
 	var findings []Finding
-	for profile, kv := range sections {
+	for _, profile := range slices.Sorted(maps.Keys(sections)) {
+		kv := sections[profile]
 		secret, ok := kv["aws_secret_access_key"]
 		if !ok || secret == "" {
 			continue
@@ -178,9 +203,7 @@ func scanKubeconfig(cfg Config) ([]Finding, error) {
 
 var npmrcLinePattern = regexp.MustCompile(`^\s*([^=\s]+)\s*=\s*(.*?)\s*$`)
 
-func scanNpmrc(cfg Config) ([]Finding, error) {
-	var findings []Finding
-
+func scanGlobalNpmrc(cfg Config) ([]Finding, error) {
 	globalPath := filepath.Join(cfg.HomeDir, ".npmrc")
 	// Lstat + IsRegular, not a bare Stat: `jit migrate home` can turn the
 	// global ~/.npmrc itself into a live template mount, and opening that
@@ -188,28 +211,32 @@ func scanNpmrc(cfg Config) ([]Finding, error) {
 	// content and report jit's own protection as an exposed credential) —
 	// the same guard walkHomeDir applies to every walked file, needed here
 	// because this is a fixed path checked outside the walk.
-	if info, statErr := os.Lstat(globalPath); statErr == nil && info.Mode().IsRegular() {
-		f, err := scanNpmrcFile(globalPath, cfg)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, f...)
+	info, err := os.Lstat(globalPath)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, nil
 	}
+	return scanNpmrcFile(globalPath, cfg)
+}
 
-	// Project-local .npmrc files can live anywhere — reuse the broad,
-	// bounded walk (task #22) rather than only checking cwd.
-	err := walkHomeDir(cfg.HomeDir, func(path string, d fs.DirEntry) error {
-		if d.Name() != ".npmrc" || path == globalPath {
-			return nil
-		}
-		f, ferr := scanNpmrcFile(path, cfg)
-		if ferr != nil {
-			return nil
-		}
-		findings = append(findings, f...)
+// classifyProjectNpmrc is the credential category's discovery half: a .npmrc
+// can live in any project, so it's found by the shared walk (task #22) rather
+// than by only checking cwd.
+//
+// It deliberately does NOT skip the global ~/.npmrc that scanGlobalNpmrc also
+// reads. A path check here looked like the obvious way to avoid double-
+// reporting that one file, but it silently broke `jit scan <dir>`: a targeted
+// scan runs no fixed half, so excluding the path meant the file was reported
+// by nobody. Scan drops the duplicate at the seam instead — see
+// dropAlreadyReported.
+func classifyProjectNpmrc(cfg Config, path, name string) []Finding {
+	if name != ".npmrc" {
 		return nil
-	})
-	return findings, err
+	}
+	findings, err := scanNpmrcFile(path, cfg)
+	if err != nil {
+		return nil // unreadable file — skip it, don't fail the whole scan
+	}
+	return findings
 }
 
 func scanNpmrcFile(path string, cfg Config) ([]Finding, error) {
@@ -274,7 +301,8 @@ func scanTerraformCloud(cfg Config) ([]Finding, error) {
 	}
 
 	var findings []Finding
-	for host, cred := range tfc.Credentials {
+	for _, host := range slices.Sorted(maps.Keys(tfc.Credentials)) { // sorted: see scanAWSCredentials
+		cred := tfc.Credentials[host]
 		if cred.Token == "" {
 			continue
 		}
@@ -321,7 +349,8 @@ func scanDockerConfig(cfg Config) ([]Finding, error) {
 	}
 
 	var findings []Finding
-	for registry, entry := range dc.Auths {
+	for _, registry := range slices.Sorted(maps.Keys(dc.Auths)) { // sorted: see scanAWSCredentials
+		entry := dc.Auths[registry]
 		// The secret is whichever of the three fields actually holds one:
 		// an identity token, the password half of the base64 "user:pass"
 		// auth value, or a rare literal password field.

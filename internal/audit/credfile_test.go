@@ -115,9 +115,14 @@ save-exact=true
 	writeFile(t, filepath.Join(home, "code", "myproject", ".npmrc"), `//registry.blockaidpypi.example/:_password=projectsecret
 `)
 
-	findings, err := scanNpmrc(Config{HomeDir: home})
+	// Through ScanCredentialFiles, not one npmrc function: the two halves of
+	// the npm check live apart now (scanGlobalNpmrc probes the fixed
+	// ~/.npmrc, classifyProjectNpmrc is fed project-local ones by the shared
+	// walk), and what matters is that the category as a whole still reports
+	// both. Nothing else in this temp home can produce a finding.
+	findings, err := ScanCredentialFiles(Config{HomeDir: home})
 	if err != nil {
-		t.Fatalf("scanNpmrc: %v", err)
+		t.Fatalf("ScanCredentialFiles: %v", err)
 	}
 	if len(findings) != 2 {
 		t.Fatalf("got %d findings, want 2 (global + project-local)", len(findings))
@@ -337,9 +342,9 @@ func TestScanNpmrcSkipsGlobalLiveMountFIFO(t *testing.T) {
 	mkdirAll(t, filepath.Join(home, "proj"))
 	writeFile(t, filepath.Join(home, "proj", ".npmrc"), "//registry.npmjs.org/:_authToken=npm_abc123def456\n")
 
-	findings, err := scanNpmrc(Config{HomeDir: home})
+	findings, err := ScanCredentialFiles(Config{HomeDir: home})
 	if err != nil {
-		t.Fatalf("scanNpmrc: %v", err)
+		t.Fatalf("ScanCredentialFiles: %v", err)
 	}
 	if len(findings) != 1 {
 		t.Fatalf("got %d findings, want exactly 1 (the project .npmrc, not the global FIFO)", len(findings))

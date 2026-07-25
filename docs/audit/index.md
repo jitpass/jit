@@ -24,7 +24,6 @@ scan time: 2026-07-07T14:48:08.370Z          duration: 2ms
   AI Tool / MCP Configs  0 finding(s)
   Private Keys           0 finding(s)
   IaC Variable Files     0 finding(s)
-  Suspicious Filenames   0 finding(s)
   Wrappable CLI Tokens   0 finding(s)
   ───────────────────────────────────
   Total: 2 finding(s)
@@ -50,7 +49,7 @@ $ jit scan ./my-project token.txt
 ```
 
 - A **folder** is walked with the same name-based rules as the full scan
-  (`.env` files, IaC variable files, MCP configs, suspicious filenames), and
+  (`.env` files, IaC variable files, MCP configs), and
   skips the usual noise directories (`node_modules`, `.git`, …).
 - A **file you name** is classified regardless of what it's called. A
   shell/`.env`/MCP/IaC file is routed to its scanner; a private key is detected
@@ -80,8 +79,8 @@ Each finding category maps to a fix:
 - **Wrappable CLI Tokens** findings are fixed by
   **[`jit wrap <tool>`](../wrap/index.md)** - audit prints the exact
   one-command fix next to each.
-- **Private Keys**, **IaC Variable Files**, and **Suspicious Filenames**
-  are surfaced for your judgment; there's no automatic migration for them.
+- **Private Keys** and **IaC Variable Files** are surfaced for your
+  judgment; there's no automatic migration for them.
 
 The full category list is in **[What audit looks for](./findings.md)**.
 

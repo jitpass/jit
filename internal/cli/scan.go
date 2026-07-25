@@ -29,7 +29,7 @@ var scanCmd = &cobra.Command{
 	GroupID: groupWorkflow,
 	Short:   "Scan for plaintext secrets exposed on this machine (read-only)",
 	Long: "jit scan scans shell configs, .env files, credential files, MCP/AI-tool " +
-		"configs, private keys, IaC variable files, and suspicious filenames for " +
+		"configs, private keys, and IaC variable files for " +
 		"plaintext secrets. Default behavior is strictly read-only: it never " +
 		"touches, encrypts, or rewrites a single file on disk. No real secret " +
 		"value is ever printed, only a masked preview.\n\n" +
@@ -78,8 +78,12 @@ var scanCmd = &cobra.Command{
 			cfg.MountRegistryPath = mount.RegistryPath(root)
 		}
 
-		// A live status trail on stderr so a full home-directory scan (nine
-		// filesystem walks) doesn't look hung. Silenced automatically for the
+		// A live status trail on stderr so a full home-directory scan doesn't
+		// look hung. Its first step is the one shared filesystem walk that
+		// feeds every discovery category at once (audit.discoverByWalk) and
+		// accounts for effectively all of a scan's runtime; the known-location
+		// categories that follow are each a handful of stats. Silenced
+		// automatically for the
 		// machine-readable formats and --output (where even stderr chatter is
 		// unwanted), for --quiet, and whenever stderr isn't a terminal — see
 		// newProgress. --score deliberately gets it too: it runs the entire
