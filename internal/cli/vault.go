@@ -1667,6 +1667,14 @@ func confirmPrompt(cmd *cobra.Command, prompt string) bool {
 	fmt.Fprintln(out)
 	_, _ = color.New(color.Bold).Fprint(out, prompt)
 	line, err := readLineUnbuffered(cmd.InOrStdin())
+	// On a terminal the user's own Return echoes the newline that closes this
+	// line. On a pipe nothing echoes, so without this the next thing printed
+	// continues the prompt's line — a scripted migrate rendered
+	// "Proceed? [y/N] [.env file(s) migrated] 3", with the result header
+	// swallowed into the question.
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		fmt.Fprintln(out)
+	}
 	if err != nil && line == "" {
 		return false
 	}
