@@ -240,23 +240,4 @@ The docs live under **[docs/](./docs/index.md)**, organized by task:
 
 ## License
 
-[PolyForm Perimeter License 1.0.0](./LICENSE). In plain terms:
-
-- **Free for almost everyone**: individual developers, non-commercial use, and
-  internal use inside any company (including commercial ones), in production.
-- **Not allowed**: providing others a product that competes with jit (a
-  substitute for its functionality or value), in any form: commercial or free,
-  as a service, library, or plugin, on any platform. That needs a commercial
-  license.
-- **Source-available, not open source**: the code is public and you can read,
-  modify, and self-host it under the terms above, but it does not convert to an
-  open-source license.
-
-**Commercial licensing**: if you want to do something the license doesn't permit
-(for example, ship a competing product), a commercial license is available.
-Contact **jitpass@outlook.com**.
-
-**Trademarks**: the "jitpass" name and logo are trademarks and are not granted by
-the license. See [TRADEMARKS.md](./TRADEMARKS.md); rename forks and redistributions.
-
-This summary is informational only; the [LICENSE](./LICENSE) text governs.
+[PolyForm Perimeter License 1.0.0](./LICENSE)
