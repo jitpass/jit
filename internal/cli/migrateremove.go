@@ -72,7 +72,7 @@ var migrateRemoveCmd = &cobra.Command{
 	Example: "  jit migrate remove ~/proj\n" +
 		"  jit migrate remove ~/proj/.env   # removes the whole ~/proj project\n" +
 		"  jit migrate remove ~/token.txt   # removes just that loose secret",
-	Args:         cobra.MinimumNArgs(1),
+	Args:         requirePaths("jit migrate remove"),
 	SilenceUsage: true,
 	RunE:         runMigrateRemove,
 }
