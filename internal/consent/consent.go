@@ -20,6 +20,7 @@
 package consent
 
 import (
+	"strconv"
 	"sync"
 	"time"
 )
@@ -27,9 +28,13 @@ import (
 // Strength records how trustworthy the caller's identity is. Hard means a
 // kernel-vouched identity (a socket peer PID) that a same-user process cannot
 // forge; BestEffort means an inferred identity (a libproc scan + PPID walk of a
-// FIFO reader) that a determined same-user attacker can spoof. It never changes
-// a decision here; it travels through so the prompt and audit can say "this is
-// who's asking" vs "this is who's asking, as best we can tell."
+// FIFO reader) that a determined same-user attacker can spoof. It travels
+// through so the prompt and audit can say "this is who's asking" vs "this is
+// who's asking, as best we can tell."
+//
+// It never decides an ALLOW or a DENY — a weak identity is not itself grounds
+// to refuse — but it does partition the decision cache (see Request.key), so
+// an answer given about one kind of identity is never spent on the other.
 type Strength int
 
 const (
@@ -75,10 +80,10 @@ const (
 // deliberately never cached — see Decide — so one unidentifiable process's
 // approval can't leak to every other unidentifiable process this session.
 type Caller struct {
-	PID       int32
-	ExecPath  string // e.g. "/usr/local/bin/gcloud" — the cache key, per tool ("" = unidentified, never cached)
-	Lineage   string // human summary, e.g. "launched by npm install" — for the prompt
-	Strength  Strength
+	PID      int32
+	ExecPath string // e.g. "/usr/local/bin/gcloud" — the cache key, per tool ("" = unidentified, never cached)
+	Lineage  string // human summary, e.g. "launched by npm install" — for the prompt
+	Strength Strength
 	// DescendsFromGrant is set by the call site when this caller (or an
 	// ancestor) is inside an active jit-run grant. It short-circuits to Allow
 	// with no prompt, so a tool you launched through a grant is transparent.
@@ -91,8 +96,20 @@ type Request struct {
 	Caller     Caller
 }
 
+// key identifies a cacheable decision. Strength is part of it, so a decision
+// made about a kernel-vouched identity is never reused for a merely inferred
+// one: the two paths reach this engine with genuinely different confidence
+// (a socket peer PID the kernel stands behind, vs. a libproc scan of a FIFO's
+// holders that a same-user process can influence), and a shared cache entry
+// would let the weaker path spend an approval the user granted on the strength
+// of the stronger one.
+//
+// The cost is a second prompt in the rare case where one tool reaches the same
+// credential over both paths in one session. That direction is the right one to
+// err in, and it is rare in practice: the socket classes (aws, docker, git,
+// kube, terraform) and the FIFO classes (gcp, npmrc, netrc) barely overlap.
 func (r Request) key() string {
-	return r.Credential + "\x00" + r.Caller.ExecPath
+	return r.Credential + "\x00" + r.Caller.ExecPath + "\x00" + strconv.Itoa(int(r.Caller.Strength))
 }
 
 // Prompter asks the user and returns their decision and how long it should
@@ -108,8 +125,8 @@ type cached struct {
 
 // Engine holds the session's standing decisions.
 type Engine struct {
-	mu         sync.Mutex
-	cache      map[string]cached
+	mu    sync.Mutex
+	cache map[string]cached
 	// pending single-flights concurrent first accesses for the same key: the
 	// first caller becomes the leader and prompts; the rest wait on its channel
 	// and re-read the cache it fills, so two tools reaching for the same

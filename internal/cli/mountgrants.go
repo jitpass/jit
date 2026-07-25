@@ -7,6 +7,7 @@ package cli
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -98,6 +99,40 @@ func (m *mountManager) canGrantAll(mounts []agent.RunMount) error {
 		}
 	}
 	return nil
+}
+
+// describeGrant is OnDescribeGrant's handler: it names, in the user's own
+// vocabulary, what a disclosed --with grant is about to hand over — "your gcp
+// credential", "your gcp, sops credentials".
+//
+// Every name it returns comes from credentialMount, i.e. from jit's OWN
+// registry of global credential mounts, keyed by the mount path. The caller's
+// path strings are used only to LOOK UP that table and are never echoed: a
+// path that isn't a known global credential mount contributes nothing to the
+// sentence. That is the whole point of deriving the wording here instead of
+// accepting it over the wire — an unrecognized or made-up path can make this
+// prompt vaguer, never more reassuring than the truth.
+func (m *mountManager) describeGrant(mounts []agent.RunMount) string {
+	var names []string
+	for _, rm := range mounts {
+		if rm.Mode != agent.MountModeGrant {
+			continue
+		}
+		cred, ok := m.credentialMount(rm.Path)
+		if !ok || slices.Contains(names, cred) {
+			continue
+		}
+		names = append(names, cred)
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	slices.Sort(names)
+	noun := "credential"
+	if len(names) > 1 {
+		noun = "credentials"
+	}
+	return fmt.Sprintf("your %s %s on this machine", strings.Join(names, ", "), noun)
 }
 
 // serveContent is the ONE content decision, called by mount.Serve on every

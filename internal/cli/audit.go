@@ -685,6 +685,20 @@ func authEntry(home string, e agent.SessionEvent) auditEntry {
 		}
 		pairs = appendAuthContext(pairs, home, e)
 		lineColor = color.New(color.FgYellow)
+	case agent.KindApproved:
+		// The counterpart to KindDenied: a disclosed challenge — a --with
+		// grant, a per-process consent prompt, a --trust registration — that
+		// the human APPROVED. Its own kind rather than an unlock, because no
+		// session transition happened; reason carries the exact sentence they
+		// read on the dialog, which is the point of recording it at all.
+		kind, status = "grant", "approved"
+		pairs = append(pairs,
+			kv{"level", "info"}, kv{"kind", "grant"}, kv{"status", "approved"},
+			kv{"method", authMethodSlug(e)})
+		if e.Cause != "" {
+			pairs = append(pairs, kv{"reason", e.Cause})
+		}
+		pairs = appendAuthContext(pairs, home, e)
 	case agent.KindUse:
 		kind = "use"
 		pairs = append(pairs, kv{"level", "info"}, kv{"kind", "use"}, kv{"op", agent.DescribeUse(e.Op)})
