@@ -9,12 +9,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -63,8 +65,11 @@ type Server struct {
 	ttl        time.Duration
 
 	// OnUnlock, if set, is called after every FRESH challenge succeeds
-	// (never for a cache hit) — outside any internal lock, so it's safe
-	// for it to call back into Server. OnLock is called after every
+	// (never for a cache hit) — outside every internal lock, and never
+	// re-entrantly, which is what makes it safe for it to call back into
+	// Server (see notifyFresh: it does, on every mount it resolves, and a
+	// session that lapses mid-resolve used to turn that into first a deadlock
+	// and then an unbounded recursion). OnLock is called after every
 	// transition from unlocked to locked (explicit Lock() or TTL expiry),
 	// but never for an already-locked no-op. OnRefresh is called on every
 	// OpRefresh request, after ensuring the session is unlocked — for a
@@ -87,6 +92,23 @@ type Server struct {
 	// (mountManager), keeping Server's no-internal/mount dependency
 	// direction. A non-nil error becomes the RPC's own failure.
 	OnRevealPID func(mounts []RunMount, pid int32) error
+	// OnDescribeGrant, if set, names what a DISCLOSED reveal_pid is about to
+	// grant, in the user's own vocabulary ("your gcp, sops credentials"), for
+	// the one line the Touch ID prompt puts in front of them. It is the reason
+	// the request itself no longer carries one: the wording used to be
+	// Request.DiscloseReason, chosen by the calling process, so anything that
+	// could reach the socket could grant itself the gcloud ADC behind a prompt
+	// reading "unlock the vault for profile dev" — a reassuring lie on exactly
+	// the line the human decides by, which is the thing Request.Label's own
+	// doc comment forbids.
+	//
+	// It receives the requested mounts and must resolve them through jit's OWN
+	// mount registry (mountManager.credentialMount), never by echoing the
+	// caller's path strings back: those are attacker-chosen too, and the
+	// swap-mode entries among them never even reach OnCanGrant's validation.
+	// Returning "" (or leaving this nil) falls back to a fixed generic phrase,
+	// which is less informative but can never be influenced at all.
+	OnDescribeGrant func(mounts []RunMount) string
 	// OnCanGrant, if set, validates that every grant-mode mount in a
 	// DISCLOSED reveal_pid (jit run --with) is currently grantable — served
 	// with real content — WITHOUT attaching anything. It runs before the
@@ -192,6 +214,11 @@ type Server struct {
 	// this agent exists to avoid manufacturing. Explicit unlock bypasses
 	// it because a human typing `jit agent unlock` IS the "now" a denial
 	// withheld. Defaulted by NewServer; a field so tests can shorten it.
+	//
+	// It is UX hardening, NOT a security boundary, and must never be counted
+	// as one: the OpUnlock exemption is reachable by any process that can
+	// reach the socket, so it stops an unwitting retry loop and not a
+	// deliberate one. The boundary is the human answering the prompt.
 	denialCooldown time.Duration
 
 	// useWindow is the collapse window for KindUse events (see recordUse):
@@ -209,9 +236,15 @@ type Server struct {
 	// don't understand is sitting on their screen.
 	mu          sync.Mutex
 	challengeMu sync.Mutex
-	mek         []byte
-	expiry      time.Time
-	lockTimer   *time.Timer
+	// freshMu guards notifyFresh's re-entrancy state — its own mutex because
+	// it is held across nothing but flag flips, while the callback it governs
+	// (a full mount resolve, vault reads and all) runs outside every lock here.
+	freshMu      sync.Mutex
+	freshRunning bool
+	freshPending bool
+	mek          []byte
+	expiry       time.Time
+	lockTimer    *time.Timer
 	// lastDenied is when a challenge most recently failed — what the
 	// denial cooldown above measures from — and lastDeniedCause is why, so
 	// the cooldown refusal can repeat the ORIGINAL failure instead of
@@ -292,9 +325,11 @@ func (s *Server) Listen() error {
 	if err := os.Remove(s.socketPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("removing stale socket %s: %w", s.socketPath, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(s.socketPath), 0o700); err != nil {
-		return fmt.Errorf("creating %s: %w", filepath.Dir(s.socketPath), err)
+	dir := filepath.Dir(s.socketPath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("creating %s: %w", dir, err)
 	}
+	tightenSocketDir(dir)
 	l, err := net.Listen("unix", s.socketPath)
 	if err != nil {
 		return fmt.Errorf("listening on %s: %w", s.socketPath, err)
@@ -305,6 +340,37 @@ func (s *Server) Listen() error {
 	}
 	s.listener = l
 	return nil
+}
+
+// tightenSocketDir narrows the socket's parent directory to 0700 when it is
+// ours and currently wider.
+//
+// It exists because net.Listen creates the socket at whatever the umask
+// allows (0755 under the common 022), and the chmod that fixes that runs one
+// syscall later — a window in which the socket is connectable by anyone. A
+// 0700 parent closes the window outright, and MkdirAll can't be relied on for
+// it: MkdirAll applies its mode only when it CREATES the directory, so a
+// jitpass dir left at 0755 by an older build keeps those permissions forever.
+//
+// Deliberately narrow and deliberately quiet:
+//
+//   - Only a directory THIS user owns is touched. A socket path under a shared
+//     directory (/tmp, as the tests use) belongs to the system, and chmodding
+//     it would be both futile and rude.
+//   - Failure is not fatal. This is the outer of two layers; verifyPeerUID is
+//     the one that actually decides, on every single connection, and an agent
+//     that refuses to start over a directory mode would trade a hardening
+//     measure for an outage.
+func tightenSocketDir(dir string) {
+	info, err := os.Stat(dir)
+	if err != nil || info.Mode().Perm()&0o077 == 0 {
+		return // unreadable, or already tight enough
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || int(st.Uid) != os.Getuid() {
+		return // not ours to narrow
+	}
+	_ = os.Chmod(dir, 0o700)
 }
 
 // Serve accepts connections until ctx is cancelled or the listener fails.
@@ -337,6 +403,17 @@ func (s *Server) Close() error {
 	return err
 }
 
+// maxRequestBytes bounds one request. The largest legitimate one is a
+// reveal_pid carrying a handful of mount paths, or a wrap/unwrap whose Data is
+// a single base64'd 32-byte DEK plus nonce and tag — kilobytes, and this is a
+// megabyte. The bound exists because the decoder read straight from the
+// connection with no limit: a peer had the whole read deadline to stream
+// arbitrary JSON into the agent's heap, and this process is meant to live for
+// weeks. Same-user code execution is conceded in the threat model, but the
+// concession is that such code reaches the unlocked agent — not that it gets
+// to take the service down for everything else on the machine.
+const maxRequestBytes = 1 << 20
+
 func (s *Server) handleConn(conn net.Conn) {
 	defer func() { _ = conn.Close() }()
 
@@ -356,7 +433,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 
 	var req Request
-	if err := json.NewDecoder(conn).Decode(&req); err != nil {
+	if err := json.NewDecoder(io.LimitReader(conn, maxRequestBytes)).Decode(&req); err != nil {
 		s.recordServeError("decode", fmt.Sprintf("bad request: %v", err), s.identify(conn))
 		_ = json.NewEncoder(conn).Encode(Response{OK: false, Error: fmt.Sprintf("bad request: %v", err)})
 		return
@@ -442,15 +519,21 @@ func (s *Server) handle(req Request, c *caller) Response {
 		//      approved challenge grants the whole named set or none of it;
 		//   2. prompt — a decline records only a denial, never a use;
 		//   3. record the use (via ensureUnlockedNotify) ONLY after approval.
-		// The project-mount path (no DiscloseReason) is unchanged: it records
+		// The project-mount path (not disclosed) is unchanged: it records
 		// use on its own unlock and best-efforts per mount.
-		if req.DiscloseReason != "" {
+		//
+		// The request supplies only the FLAG. What the prompt says is derived
+		// here, from the mounts, via OnDescribeGrant — see its doc comment for
+		// the prompt-spoofing hole that closed. DiscloseReason is still honored
+		// as a trigger so an older in-flight client keeps the gate, but its
+		// text is discarded.
+		if req.Disclose || req.DiscloseReason != "" {
 			if s.OnCanGrant != nil {
 				if err := s.OnCanGrant(req.RunMounts); err != nil {
 					return Response{OK: false, Error: err.Error()}
 				}
 			}
-			if err := s.forceDisclosedChallenge(req.DiscloseReason, c); err != nil {
+			if err := s.forceDisclosedChallenge(s.grantReason(req.RunMounts), c); err != nil {
 				return Response{OK: false, Error: err.Error()}
 			}
 		}
@@ -476,11 +559,27 @@ func (s *Server) handle(req Request, c *caller) Response {
 		}
 		return Response{OK: true}
 	case OpTrust:
-		// Registering a trust root needs no vault access — it only records the
-		// kernel-identified peer's pid + fork-time for later descent checks.
 		// A caller the kernel won't name can't be trusted (no pid to anchor on).
 		if c == nil {
 			return Response{OK: false, Error: "trust: caller could not be identified"}
+		}
+		// Registering a trust root needs no vault ACCESS, but it is the single
+		// widest thing a caller can ask for: every gated credential its whole
+		// process tree touches for the rest of the session, with no per-tool
+		// consent prompt. It used to take exactly that — nothing. Any same-user
+		// process could send one `trust` RPC and switch off its own consent
+		// gate, which is the mitigation that exists precisely for untrusted
+		// code running as you (design/per-process-credential-consent.md). The
+		// prompt is what makes `jit run --trust` mean what its docs say: the
+		// human, not the process, decides to widen the scope.
+		//
+		// Gated only when consent is actually enforcing — with consent off,
+		// trust roots decide nothing, so prompting for one would be a Touch ID
+		// that buys the user nothing.
+		if s.Consent != nil {
+			if err := s.forceDisclosedChallenge(trustReason(c), c); err != nil {
+				return Response{OK: false, Error: err.Error()}
+			}
 		}
 		s.trust(c.pid)
 		return Response{OK: true}
@@ -584,20 +683,6 @@ func (s *Server) mekCopy() []byte {
 	return out
 }
 
-// ensureUnlockedNotify is ensureUnlocked with a caller-chosen "a fresh
-// challenge just succeeded" callback in place of the default OnUnlock — the
-// disclosed grant path (OpRevealPID with a DiscloseReason) uses it to record
-// the use only after an approved challenge. onFresh fires exactly where
-// OnUnlock always has: after all internal locks are released, and only for a
-// genuine fresh challenge, never a cache hit.
-//
-// challengeMu — not s.mu — is what serializes concurrent callers behind a
-// single Touch ID prompt rather than each triggering their own. The second
-// caller in line re-checks the session after acquiring it, because the
-// first caller's approved challenge is usually exactly the unlock it was
-// waiting for. s.mu is only ever held for field access, so a status/
-// history/lock request arriving mid-challenge is answered immediately
-// instead of queueing for up to the challenge's ~120s ceiling.
 // forceDisclosedChallenge prompts for a fresh Touch ID with reason as its
 // exact wording — ALWAYS, even when the session is already unlocked — as a
 // standalone approval gate. Unlike ensureUnlockedNotify it never rides the
@@ -606,10 +691,35 @@ func (s *Server) mekCopy() []byte {
 // slipped a --with into a command can't grant a machine-wide credential
 // silently. The returned MEK is discarded (the session was already
 // unlocked; this is a confirmation, not an unlock), so session state is
-// untouched. A decline is recorded for audit and returned; it does NOT arm
-// the global re-prompt cooldown, since "no, not this global credential" is
-// a targeted refusal, not "stop trying to unlock."
+// untouched. It does NOT arm the global re-prompt cooldown either way, since
+// "no, not this global credential" is a targeted refusal, not "stop trying to
+// unlock."
+//
+// reason must be AGENT-DERIVED. Every caller of this function is putting a
+// sentence in front of a human who is about to authorize a machine-wide
+// credential on the strength of it, so it may never carry a string the
+// requesting process chose — the same rule Request.Label documents, on the
+// prompt where it matters most.
+//
+// BOTH outcomes are recorded (approved and declined). The approval used to be
+// recorded nowhere at all: `jit audit` had a line for every consent prompt the
+// user refused and none for any they accepted, so the trail could prove what
+// you blocked and never what you allowed.
 func (s *Server) forceDisclosedChallenge(reason string, c *caller) error {
+	event, err := s.discloseChallenge(reason, c)
+	// Outside challengeMu — see ensureUnlockedNotify for what happens when a
+	// callback runs under it.
+	if s.OnSessionEvent != nil {
+		s.OnSessionEvent(*event)
+	}
+	return err
+}
+
+// discloseChallenge is forceDisclosedChallenge's serialized half: it holds
+// challengeMu across the prompt (so a disclosed challenge queues behind an
+// in-flight one rather than stacking a second dialog) and returns the event
+// for the caller to notify on, outside the lock. The event is never nil.
+func (s *Server) discloseChallenge(reason string, c *caller) (*SessionEvent, error) {
 	s.challengeMu.Lock()
 	defer s.challengeMu.Unlock()
 
@@ -621,23 +731,26 @@ func (s *Server) forceDisclosedChallenge(reason string, c *caller) error {
 
 	mek, err := s.newFetcher().FetchMEK(reason)
 
-	s.mu.Lock()
-	s.pendingChallenge = nil
+	event := unlockEvent(OpRevealPID, c)
+	event.AuthMethod = s.authMethod()
 	if err != nil {
-		event := unlockEvent(OpRevealPID, c)
 		event.Kind = KindDenied
 		event.Cause = fmt.Sprintf("%s: %s", reason, err)
-		event.AuthMethod = s.authMethod()
-		s.recordEvent(*event)
-		s.mu.Unlock()
-		if s.OnSessionEvent != nil {
-			s.OnSessionEvent(*event)
-		}
-		return fmt.Errorf("disclosed grant declined: %w", err)
+	} else {
+		event.Kind = KindApproved
+		event.Cause = reason
 	}
+
+	s.mu.Lock()
+	s.pendingChallenge = nil
+	s.recordEvent(*event)
 	s.mu.Unlock()
+
+	if err != nil {
+		return event, fmt.Errorf("disclosed grant declined: %w", err)
+	}
 	wipe(mek)
-	return nil
+	return event, nil
 }
 
 func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller, label string) ([]byte, error) {
@@ -646,13 +759,105 @@ func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller, labe
 		return mek, nil
 	}
 
+	mek, event, err := s.challengeUnlock(op, c, label)
+
+	// Both callbacks fire only after challengeUnlock has RELEASED challengeMu.
+	// They used to run inside it (onFresh via a defer that outlived the call),
+	// which made the documented "safe to call back into Server" contract false
+	// and deadlocked the agent outright: OnUnlock is mountManager.start, which
+	// resolves every mount through Server-as-KeyWrapper, and if the session
+	// dropped mid-resolve — the screen-lock/sleep watcher, an explicit `jit
+	// lock`, a `jit vault` command locking on its way out — the next unwrap
+	// re-entered this path and took challengeMu a second time on the same
+	// goroutine. sync.Mutex is not reentrant, so that goroutine parked forever
+	// holding it, and every subsequent unlock in the process hung until its
+	// client timed out. Status and history kept answering (they only take
+	// s.mu), so the agent looked healthy while nothing could unlock.
+	if event != nil && s.OnSessionEvent != nil {
+		s.OnSessionEvent(*event)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if event != nil {
+		s.notifyFresh(onFresh)
+	}
+	return mek, nil
+}
+
+// notifyFresh runs a fresh-unlock callback, never re-entrantly.
+//
+// Moving the callback out from under challengeMu stopped it deadlocking, but
+// the shape underneath was worse than a lock-ordering slip: OnUnlock resolves
+// mounts THROUGH this same Server, so a session that lapses mid-resolve makes
+// the next unwrap unlock again, which fires OnUnlock again, which resolves
+// again. Under the old code that recursion happened to hit a non-reentrant
+// mutex on the second lap and parked; with the mutex out of the way it is
+// simply unbounded, and a stack overflow kills the agent outright instead of
+// hanging it. Re-entrancy is the actual bug, so this is where it is fixed.
+//
+// A callback that arrives while one is running sets pending instead of
+// nesting, and the runner makes one more pass when it finishes: a genuine
+// second unlock (another goroutine's, or one the resolve itself caused) still
+// gets its mounts resolved, and OnUnlock — mountManager.start, idempotent by
+// construction — just does its scan twice in the rare case both were really
+// the same event. The pass cap is a backstop against a session that keeps
+// lapsing mid-resolve turning "once more" into a treadmill; OnRefresh is the
+// explicit signal for anything that misses.
+func (s *Server) notifyFresh(onFresh func()) {
+	if onFresh == nil {
+		return
+	}
+	s.freshMu.Lock()
+	if s.freshRunning {
+		s.freshPending = true
+		s.freshMu.Unlock()
+		return
+	}
+	s.freshRunning = true
+	s.freshMu.Unlock()
+
+	for pass := 1; ; pass++ {
+		onFresh()
+		s.freshMu.Lock()
+		if !s.freshPending || pass >= maxFreshPasses {
+			s.freshRunning = false
+			s.freshPending = false
+			s.freshMu.Unlock()
+			return
+		}
+		s.freshPending = false
+		s.freshMu.Unlock()
+	}
+}
+
+// maxFreshPasses bounds notifyFresh's coalescing re-runs. Two is one full pass
+// plus one catch-up for whatever arrived during it, which is every case that
+// occurs when things are working; more than that means the session is lapsing
+// as fast as it opens, and looping harder would not help.
+const maxFreshPasses = 2
+
+// challengeUnlock is ensureUnlockedNotify's serialized half: everything that
+// must happen behind challengeMu, and nothing that must not. It returns the
+// MEK copy, and the session event a FRESH challenge produced (nil when the
+// session was already open — a re-check hit, which is not a fresh unlock and
+// must not fire onFresh) for the caller to notify on, outside the lock.
+//
+// challengeMu — not s.mu — is what serializes concurrent callers behind a
+// single Touch ID prompt rather than each triggering their own. The second
+// caller in line re-checks the session after acquiring it, because the first
+// caller's approved challenge is usually exactly the unlock it was waiting
+// for. s.mu is only ever held for field access, so a status/history/lock
+// request arriving mid-challenge is answered immediately instead of queueing
+// for up to the challenge's ~120s ceiling.
+func (s *Server) challengeUnlock(op string, c *caller, label string) ([]byte, *SessionEvent, error) {
 	s.challengeMu.Lock()
 	defer s.challengeMu.Unlock()
 
 	// The caller we queued behind may have just unlocked for us.
 	if mek := s.touchSession(); mek != nil {
 		s.recordUse(op, c, label)
-		return mek, nil
+		return mek, nil, nil
 	}
 
 	// The denial cooldown: a challenge the human just declined means "not
@@ -673,7 +878,7 @@ func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller, labe
 		// A zero lastDenied (nothing ever declined, or cleared by the last
 		// successful unlock) makes sinceDenied enormous, so it never trips.
 		if sinceDenied := time.Since(lastDenied); sinceDenied < cooldown {
-			return nil, fmt.Errorf("an unlock attempt failed %s ago (%s), automatic re-prompts are paused for another %s (run `jit agent unlock` to try again now)",
+			return nil, nil, fmt.Errorf("an unlock attempt failed %s ago (%s), automatic re-prompts are paused for another %s (run `jit agent unlock` to try again now)",
 				sinceDenied.Round(time.Second), lastCause, (cooldown - sinceDenied).Round(time.Second))
 		}
 	}
@@ -714,10 +919,7 @@ func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller, labe
 		s.lastDeniedCause = err.Error()
 		s.recordEvent(*event)
 		s.mu.Unlock()
-		if s.OnSessionEvent != nil {
-			s.OnSessionEvent(*event)
-		}
-		return nil, fmt.Errorf("unlocking: %w", err)
+		return nil, event, fmt.Errorf("unlocking: %w", err)
 	}
 	s.mek = mek
 	// Best-effort: keep the long-lived cached MEK off swap. The transient
@@ -738,13 +940,7 @@ func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller, labe
 	s.armLockTimer()
 	s.mu.Unlock()
 
-	if s.OnSessionEvent != nil {
-		s.OnSessionEvent(*event)
-	}
-	if onFresh != nil {
-		onFresh()
-	}
-	return out, nil
+	return out, event, nil
 }
 
 // touchSession returns a copy of the MEK if the session is still valid —

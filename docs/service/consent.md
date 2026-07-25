@@ -93,10 +93,26 @@ When you deliberately launch something that reaches for several credentials (a
 jit run --trust -- terraform apply
 ```
 
-Every process inside that run's tree is then allowed without a prompt, for any
-credential, until the next re-lock. A tool launched through a
-`jit run --with <cred>` grant is likewise already authorized for that credential
-and is not prompted again.
+Registering that trust takes one Touch ID of its own, naming the command and
+saying what trusting it means:
+
+```
+jit is trying to let terraform and everything it launches reach your
+credentials without further prompts.
+```
+
+Approve it once, and every process inside that run's tree is then allowed
+without a prompt, for any credential, until the next re-lock. A tool launched
+through a `jit run --with <cred>` grant is likewise already authorized for that
+credential and is not prompted again.
+
+That one prompt is not ceremony. `--trust` is the widest thing you can ask jit
+for — it switches off, for a whole process tree, the gate that exists precisely
+because code running as you is not automatically code you vetted. The service
+learns about a trust root over the same socket any process on your machine can
+reach, so if registering one took no gesture, anything that wanted to skip
+consent could simply ask to. The human answering the prompt is what makes
+`--trust` mean what this page says it means.
 
 ## See also
 

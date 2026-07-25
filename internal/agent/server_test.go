@@ -601,6 +601,7 @@ func TestGrantGlobalForcesDisclosedChallengeEvenWhenUnlocked(t *testing.T) {
 	s := NewServer(socketPath, func() MEKFetcher { return fetcher }, time.Minute)
 	var granted int32
 	s.OnRevealPID = func([]RunMount, int32) error { atomic.AddInt32(&granted, 1); return nil }
+	s.OnDescribeGrant = func([]RunMount) string { return "your gcp credential on this machine" }
 
 	if err := s.Listen(); err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -618,8 +619,7 @@ func TestGrantGlobalForcesDisclosedChallengeEvenWhenUnlocked(t *testing.T) {
 	fetcher.reasons = nil // forget the unlock's reason
 	fetcher.mu.Unlock()
 
-	reason := "grant this run access to your global gcp credential(s)"
-	if err := c.GrantGlobalForPID([]RunMount{{Path: "/x/ADC", Mode: MountModeGrant}}, 4242, reason); err != nil {
+	if err := c.GrantGlobalForPID([]RunMount{{Path: "/x/ADC", Mode: MountModeGrant}}, 4242); err != nil {
 		t.Fatalf("GrantGlobalForPID: %v", err)
 	}
 	if atomic.LoadInt32(&granted) != 1 {
@@ -628,8 +628,102 @@ func TestGrantGlobalForcesDisclosedChallengeEvenWhenUnlocked(t *testing.T) {
 	fetcher.mu.Lock()
 	reasons := fetcher.reasons
 	fetcher.mu.Unlock()
-	if len(reasons) != 1 || reasons[0] != reason {
-		t.Errorf("disclosed challenge reasons = %v, want exactly the disclosed reason (a FRESH prompt fired despite the unlocked session)", reasons)
+	want := "grant this run access to your gcp credential on this machine"
+	if len(reasons) != 1 || reasons[0] != want {
+		t.Errorf("disclosed challenge reasons = %v, want exactly [%q] (a FRESH prompt fired despite the unlocked session, worded by the agent)", reasons, want)
+	}
+}
+
+// TestGrantGlobalPromptIsAgentWordedNotCallerSupplied pins the fix for the
+// prompt-spoofing hole: the wording used to be Request.DiscloseReason, chosen
+// by whoever sent the RPC, so any same-user process could grant itself a
+// machine-wide credential behind a prompt that read like a routine unlock.
+// The agent now derives the sentence from the mounts, and a reason on the wire
+// still triggers the gate (an older client mid-upgrade must not lose it) while
+// contributing nothing to what the human reads.
+func TestGrantGlobalPromptIsAgentWordedNotCallerSupplied(t *testing.T) {
+	socketPath := shortSocketPath(t)
+	fetcher := &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32)}
+	s := NewServer(socketPath, func() MEKFetcher { return fetcher }, time.Minute)
+	s.OnRevealPID = func([]RunMount, int32) error { return nil }
+	s.OnDescribeGrant = func([]RunMount) string { return "your gcp credential on this machine" }
+
+	if err := s.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = s.Serve(ctx); close(done) }()
+	defer func() { cancel(); _ = s.Close(); <-done }()
+
+	c := NewClient(socketPath)
+	if _, _, err := c.Unlock(); err != nil { // the session a real run would ride
+		t.Fatalf("Unlock: %v", err)
+	}
+	fetcher.mu.Lock()
+	fetcher.reasons = nil
+	fetcher.mu.Unlock()
+
+	lie := "unlock the vault for profile \"dev\""
+	resp, err := c.call(Request{
+		Op:             OpRevealPID,
+		RunMounts:      []RunMount{{Path: "/x/ADC", Mode: MountModeGrant}},
+		TargetPID:      4242,
+		DiscloseReason: lie,
+	})
+	if err != nil || !resp.OK {
+		t.Fatalf("legacy disclosed reveal_pid: %v (%+v)", err, resp)
+	}
+
+	fetcher.mu.Lock()
+	reasons := fetcher.reasons
+	fetcher.mu.Unlock()
+	if len(reasons) != 1 {
+		t.Fatalf("challenge reasons = %v, want exactly one (the legacy reason field must still TRIGGER the gate)", reasons)
+	}
+	if strings.Contains(reasons[0], "profile") {
+		t.Errorf("prompt = %q, want the agent's own wording — caller-supplied text reached the dialog", reasons[0])
+	}
+	if reasons[0] != "grant this run access to your gcp credential on this machine" {
+		t.Errorf("prompt = %q, want the OnDescribeGrant-derived wording", reasons[0])
+	}
+}
+
+// TestGrantGlobalPromptFallsBackToAFixedPhrase: with nothing wired to classify
+// the mounts, the prompt must degrade to a fixed sentence rather than to a
+// best guess assembled from the caller's own path strings — those are
+// attacker-chosen too, and swap-mode entries never even reach OnCanGrant.
+func TestGrantGlobalPromptFallsBackToAFixedPhrase(t *testing.T) {
+	socketPath := shortSocketPath(t)
+	fetcher := &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32)}
+	s := NewServer(socketPath, func() MEKFetcher { return fetcher }, time.Minute)
+	s.OnRevealPID = func([]RunMount, int32) error { return nil }
+
+	if err := s.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = s.Serve(ctx); close(done) }()
+	defer func() { cancel(); _ = s.Close(); <-done }()
+
+	c := NewClient(socketPath)
+	if _, _, err := c.Unlock(); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+	fetcher.mu.Lock()
+	fetcher.reasons = nil
+	fetcher.mu.Unlock()
+
+	evil := "/tmp/totally-fine-just-a-dev-unlock"
+	if err := c.GrantGlobalForPID([]RunMount{{Path: evil, Mode: MountModeGrant}}, 4242); err != nil {
+		t.Fatalf("GrantGlobalForPID: %v", err)
+	}
+	fetcher.mu.Lock()
+	reasons := fetcher.reasons
+	fetcher.mu.Unlock()
+	if len(reasons) != 1 || strings.Contains(reasons[0], "totally-fine") {
+		t.Errorf("prompt = %v, want a fixed phrase with no caller path echoed into it", reasons)
 	}
 }
 
@@ -658,7 +752,7 @@ func TestGrantGlobalDeclineBlocksTheGrant(t *testing.T) {
 	// challenge calls the fetcher again — make that one decline.
 	fetcher.err = fmt.Errorf("user declined")
 
-	if err := c.GrantGlobalForPID([]RunMount{{Path: "/x/ADC", Mode: MountModeGrant}}, 4242, "grant gcp"); err == nil {
+	if err := c.GrantGlobalForPID([]RunMount{{Path: "/x/ADC", Mode: MountModeGrant}}, 4242); err == nil {
 		t.Error("expected an error when the disclosed challenge is declined")
 	}
 	if atomic.LoadInt32(&granted) != 0 {
@@ -694,7 +788,7 @@ func TestGrantGlobalPreCheckFailsBeforePrompt(t *testing.T) {
 	fetcher.reasons = nil // forget the unlock's reason
 	fetcher.mu.Unlock()
 
-	if err := c.GrantGlobalForPID([]RunMount{{Path: "/x/ADC", Mode: MountModeGrant}}, 4242, "grant gcp"); err == nil {
+	if err := c.GrantGlobalForPID([]RunMount{{Path: "/x/ADC", Mode: MountModeGrant}}, 4242); err == nil {
 		t.Error("expected the pre-check to fail the grant")
 	}
 	if atomic.LoadInt32(&granted) != 0 {
@@ -734,7 +828,7 @@ func TestGrantGlobalDeclineRecordsNoUse(t *testing.T) {
 	// make that one decline.
 	fetcher.err = fmt.Errorf("user declined")
 
-	if err := c.GrantGlobalForPID([]RunMount{{Path: "/x/ADC", Mode: MountModeGrant}}, 4242, "grant gcp"); err == nil {
+	if err := c.GrantGlobalForPID([]RunMount{{Path: "/x/ADC", Mode: MountModeGrant}}, 4242); err == nil {
 		t.Fatal("expected a declined grant to fail")
 	}
 	// No pending use for the reveal_pid op — the decline happened before any
@@ -1223,4 +1317,105 @@ func TestServerHistoryNeverTriggersAChallenge(t *testing.T) {
 	if got := atomic.LoadInt32(&calls); got != 0 {
 		t.Errorf("History triggered %d challenge(s), want 0, an agent you can't ask about its prompts without being prompted is useless", got)
 	}
+}
+
+// TestOnUnlockRunsOutsideChallengeMu pins the fix for a deadlock that wedged
+// the whole agent. OnUnlock is documented as safe to call back into Server,
+// but it used to run under challengeMu (via a defer that outlived the call).
+// The real OnUnlock is mountManager.start, which resolves every mount through
+// Server-as-KeyWrapper — so if the session dropped mid-resolve (the
+// screen-lock/sleep watcher, an explicit lock, a `jit vault` command locking on
+// its way out), the next unwrap re-entered the challenge path and took a
+// non-reentrant mutex a second time on the same goroutine. That goroutine
+// parked forever holding it, and every later unlock in the process hung until
+// its client timed out, while status and history kept cheerfully answering.
+func TestOnUnlockRunsOutsideChallengeMu(t *testing.T) {
+	s := NewServer(shortSocketPath(t), func() MEKFetcher {
+		return &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32)}
+	}, time.Minute)
+
+	var reResolved atomic.Bool
+	s.OnUnlock = func() {
+		// Exactly the sequence the screen-lock watcher can produce mid-resolve.
+		s.LockWithCause("screen locked")
+		_, _ = s.UnwrapKeyLabeled([]byte("not a real wrap"), "some/secret", "")
+		reResolved.Store(true)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		mek, err := s.ensureUnlocked(OpUnlock, nil, "")
+		if err != nil {
+			t.Errorf("ensureUnlocked: %v", err)
+		}
+		wipe(mek)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("OnUnlock re-entered the challenge path and deadlocked the agent")
+	}
+	if !reResolved.Load() {
+		t.Error("OnUnlock never completed")
+	}
+}
+
+// An APPROVED disclosed challenge must leave a durable record, not just a
+// declined one. `jit audit` used to be able to prove what you refused and
+// never what you allowed — the consent feature's whole output, missing.
+func TestApprovedDisclosedChallengeIsRecorded(t *testing.T) {
+	socketPath := shortSocketPath(t)
+	s := NewServer(socketPath, func() MEKFetcher {
+		return &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32)}
+	}, time.Minute)
+	s.OnRevealPID = func([]RunMount, int32) error { return nil }
+	s.OnDescribeGrant = func([]RunMount) string { return "your gcp credential on this machine" }
+
+	var notified []SessionEvent
+	var notifyMu sync.Mutex
+	s.OnSessionEvent = func(e SessionEvent) {
+		notifyMu.Lock()
+		notified = append(notified, e)
+		notifyMu.Unlock()
+	}
+
+	if err := s.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = s.Serve(ctx); close(done) }()
+	defer func() { cancel(); _ = s.Close(); <-done }()
+
+	if err := NewClient(socketPath).GrantGlobalForPID([]RunMount{{Path: "/x/ADC", Mode: MountModeGrant}}, 4242); err != nil {
+		t.Fatalf("GrantGlobalForPID: %v", err)
+	}
+
+	var found *SessionEvent
+	for _, e := range s.history() {
+		if e.Kind == KindApproved {
+			found = &e
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("an approved disclosed grant left no event in history")
+	}
+	if !strings.Contains(found.Cause, "gcp") {
+		t.Errorf("approved event cause = %q, want the wording the human actually read", found.Cause)
+	}
+	if found.AuthMethod == "" {
+		t.Error("approved event carries no auth method")
+	}
+
+	notifyMu.Lock()
+	defer notifyMu.Unlock()
+	for _, e := range notified {
+		if e.Kind == KindApproved {
+			return // also reached the durable log
+		}
+	}
+	t.Error("approved event never reached OnSessionEvent, so it never reaches the durable trail jit audit reads")
 }
