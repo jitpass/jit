@@ -9,11 +9,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io/fs"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -32,11 +33,28 @@ import (
 // the file — encoding, not encryption, the same gap as a base64 Secret
 // manifest.
 func ScanCredentialFiles(cfg Config) ([]Finding, error) {
+	fixed, err := scanKnownCredentialFiles(cfg)
+	if err != nil {
+		return fixed, err
+	}
+	walked, err := walkForCategory(cfg, classifyProjectNpmrc)
+	// Same fixed-then-walked composition Scan performs, dedupe included, so
+	// this standalone entry point and a machine-wide scan can't report a
+	// different number of findings for the same home directory.
+	return append(fixed, dropAlreadyReported(fixed, walked)...), err
+}
+
+// scanKnownCredentialFiles is this category's fixed half (see categories):
+// every credential store that lives at one known path. The one part of the
+// category that has to be discovered — a project-local .npmrc, which can sit
+// anywhere — is classifyProjectNpmrc's job.
+func scanKnownCredentialFiles(cfg Config) ([]Finding, error) {
 	var all []Finding
 	for _, scan := range []func(Config) ([]Finding, error){
 		scanAWSCredentials,
 		scanKubeconfig,
-		scanNpmrc,
+		scanGlobalNpmrc,
+		scanCargoCredentials,
 		scanTerraformCloud,
 		scanDockerConfig,
 		scanGitCredentials,
@@ -70,8 +88,16 @@ func scanAWSCredentials(cfg Config) ([]Finding, error) {
 		return nil, nil // malformed file — skip it, don't fail the whole audit
 	}
 
+	// Sorted, not raw map order: Go randomizes map iteration per run, so a
+	// file with two profiles emitted its findings in a different order every
+	// time — which made two NDJSON reports of an unchanged machine diff
+	// dirty, for no reason but the map. Every scanner that iterates a parsed
+	// map does this (see also scanTerraformCloud, scanDockerConfig,
+	// scanMCPConfigFile); Scan's fixed category order is only half of a
+	// deterministic report if the order within a category is a coin flip.
 	var findings []Finding
-	for profile, kv := range sections {
+	for _, profile := range slices.Sorted(maps.Keys(sections)) {
+		kv := sections[profile]
 		secret, ok := kv["aws_secret_access_key"]
 		if !ok || secret == "" {
 			continue
@@ -178,9 +204,7 @@ func scanKubeconfig(cfg Config) ([]Finding, error) {
 
 var npmrcLinePattern = regexp.MustCompile(`^\s*([^=\s]+)\s*=\s*(.*?)\s*$`)
 
-func scanNpmrc(cfg Config) ([]Finding, error) {
-	var findings []Finding
-
+func scanGlobalNpmrc(cfg Config) ([]Finding, error) {
 	globalPath := filepath.Join(cfg.HomeDir, ".npmrc")
 	// Lstat + IsRegular, not a bare Stat: `jit migrate home` can turn the
 	// global ~/.npmrc itself into a live template mount, and opening that
@@ -188,28 +212,32 @@ func scanNpmrc(cfg Config) ([]Finding, error) {
 	// content and report jit's own protection as an exposed credential) —
 	// the same guard walkHomeDir applies to every walked file, needed here
 	// because this is a fixed path checked outside the walk.
-	if info, statErr := os.Lstat(globalPath); statErr == nil && info.Mode().IsRegular() {
-		f, err := scanNpmrcFile(globalPath, cfg)
-		if err != nil {
-			return nil, err
-		}
-		findings = append(findings, f...)
+	info, err := os.Lstat(globalPath)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, nil
 	}
+	return scanNpmrcFile(globalPath, cfg)
+}
 
-	// Project-local .npmrc files can live anywhere — reuse the broad,
-	// bounded walk (task #22) rather than only checking cwd.
-	err := walkHomeDir(cfg.HomeDir, func(path string, d fs.DirEntry) error {
-		if d.Name() != ".npmrc" || path == globalPath {
-			return nil
-		}
-		f, ferr := scanNpmrcFile(path, cfg)
-		if ferr != nil {
-			return nil
-		}
-		findings = append(findings, f...)
+// classifyProjectNpmrc is the credential category's discovery half: a .npmrc
+// can live in any project, so it's found by the shared walk (task #22) rather
+// than by only checking cwd.
+//
+// It deliberately does NOT skip the global ~/.npmrc that scanGlobalNpmrc also
+// reads. A path check here looked like the obvious way to avoid double-
+// reporting that one file, but it silently broke `jit scan <dir>`: a targeted
+// scan runs no fixed half, so excluding the path meant the file was reported
+// by nobody. Scan drops the duplicate at the seam instead — see
+// dropAlreadyReported.
+func classifyProjectNpmrc(cfg Config, path, name string) []Finding {
+	if name != ".npmrc" {
 		return nil
-	})
-	return findings, err
+	}
+	findings, err := scanNpmrcFile(path, cfg)
+	if err != nil {
+		return nil // unreadable file — skip it, don't fail the whole scan
+	}
+	return findings
 }
 
 func scanNpmrcFile(path string, cfg Config) ([]Finding, error) {
@@ -249,6 +277,84 @@ func scanNpmrcFile(path string, cfg Config) ([]Finding, error) {
 	return findings, scanner.Err()
 }
 
+// --- Cargo / crates.io (~/.cargo/credentials.toml, TOML) ---
+
+// cargoCredentialPaths are the two files cargo reads a registry token from,
+// in its own resolution order: credentials.toml since 1.39, and the
+// extensionless credentials it still honors for anyone who logged in before
+// that. Both are scanned when both exist — cargo only reads the first, but a
+// stale second file is plaintext at rest just the same.
+//
+// This has to be a fixed-path check: ~/.cargo is in noiseDirs, so the
+// discovery walk never descends into it (a registry cache of vendored crate
+// source, tens of thousands of files, and none of them the user's). The
+// credential file sitting at the top of that pruned tree is exactly the kind
+// of thing a broad walk is the wrong tool for.
+var cargoCredentialPaths = [][]string{
+	{".cargo", "credentials.toml"},
+	{".cargo", "credentials"},
+}
+
+// scanCargoCredentials reports the crates.io API token (and any alternate
+// registry token) cargo stores in plaintext. It is a publish credential: with
+// it an attacker ships a new version of any crate the account owns, straight
+// into other people's builds, which is why it rates High like the other
+// registry tokens rather than being detection-only.
+func scanCargoCredentials(cfg Config) ([]Finding, error) {
+	var findings []Finding
+	for _, rel := range cargoCredentialPaths {
+		path := filepath.Join(append([]string{cfg.HomeDir}, rel...)...)
+		// Lstat + IsRegular before opening, the same guard scanGlobalNpmrc
+		// and ScanSOPSAgeKeys apply: `jit migrate` can turn this into a live
+		// mount, and opening that FIFO with no agent writing would hang the
+		// scan.
+		if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		findings = append(findings, scanCargoCredentialFile(cfg, path)...)
+	}
+	return findings, nil
+}
+
+func scanCargoCredentialFile(cfg Config, path string) []Finding {
+	file, err := openFile(path)
+	if err != nil {
+		return nil // unreadable — skip it, don't fail the whole audit
+	}
+	defer file.Close()
+
+	sections, err := parseINISections(file)
+	if err != nil {
+		return nil // malformed — skip it
+	}
+
+	// The format is TOML, but the shape cargo writes is exactly what
+	// parseINISections already handles: [registry] / [registries.<name>]
+	// tables holding a single quoted `token = "..."`. Reusing it beats
+	// pulling in a TOML dependency for one key (TECH_STACK.md §0).
+	var findings []Finding
+	for _, section := range slices.Sorted(maps.Keys(sections)) { // sorted: see scanAWSCredentials
+		token := unquote(sections[section]["token"])
+		if token == "" {
+			continue
+		}
+		registry := "crates.io"
+		if after, found := strings.CutPrefix(section, "registries."); found {
+			registry = after
+		}
+		findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+			FindingType:  FindingTypeCredentialFile,
+			FilePath:     path,
+			KeyName:      section + "/token",
+			RawValue:     token,
+			BaseSeverity: SeverityHigh,
+			Confidence:   ConfidenceHigh,
+			Evidence:     fmt.Sprintf("cargo registry token found for %s; it can publish crates as you", registry),
+		}))
+	}
+	return findings
+}
+
 // --- Terraform Cloud (~/.terraform.d/credentials.tfrc.json, JSON) ---
 
 type tfcCredentialsFile struct {
@@ -274,7 +380,8 @@ func scanTerraformCloud(cfg Config) ([]Finding, error) {
 	}
 
 	var findings []Finding
-	for host, cred := range tfc.Credentials {
+	for _, host := range slices.Sorted(maps.Keys(tfc.Credentials)) { // sorted: see scanAWSCredentials
+		cred := tfc.Credentials[host]
 		if cred.Token == "" {
 			continue
 		}
@@ -321,7 +428,8 @@ func scanDockerConfig(cfg Config) ([]Finding, error) {
 	}
 
 	var findings []Finding
-	for registry, entry := range dc.Auths {
+	for _, registry := range slices.Sorted(maps.Keys(dc.Auths)) { // sorted: see scanAWSCredentials
+		entry := dc.Auths[registry]
 		// The secret is whichever of the three fields actually holds one:
 		// an identity token, the password half of the base64 "user:pass"
 		// auth value, or a rare literal password field.

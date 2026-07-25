@@ -11,9 +11,8 @@ anything, and never prints a real secret value in full, only a masked
 preview.
 
 ```
-$ jit scan
 jit scan: risk report for alex@Alexs-MacBook-Pro
-scan time: 2026-07-07T14:48:08.370Z          duration: 2ms
+scan time: 2026-07-25T16:39:02.944Z          duration: 0ms
 
   RISK LEVEL: HIGH
   EXPOSURE:   65/100
@@ -24,17 +23,25 @@ scan time: 2026-07-07T14:48:08.370Z          duration: 2ms
   AI Tool / MCP Configs  0 finding(s)
   Private Keys           0 finding(s)
   IaC Variable Files     0 finding(s)
-  Suspicious Filenames   0 finding(s)
   Wrappable CLI Tokens   0 finding(s)
+  SOPS Age Keys          0 finding(s)
+  Exposed Secrets        0 finding(s)
   ───────────────────────────────────
   Total: 2 finding(s)
 
-[Shell Configs]
-  ───────────────────────────────────
+[Shell Configs] 1
   • /Users/alex/.zshrc
 
     :1  HIGH  AWS_SECRET_ACCESSKEY  AKIA**********
-              └ export statement assigns a value to a key name that looks like a secret
+              └ value matches AWS Access Key ID's known token format
+
+[.env Files] 1
+  • /Users/alex/code/webapp/.env
+
+    LOW  2 plaintext variable(s) (2 active, 0 commented out)
+
+Run `jit migrate /Users/alex/.zshrc --dry-run` to see the guided fix plan for it.
+No secret values are ever printed in full. Run `jit scan --format ndjson` for machine-readable output (same redaction rules apply).
 ```
 
 With no arguments, `jit scan` scans your whole home directory, not your current
@@ -50,7 +57,7 @@ $ jit scan ./my-project token.txt
 ```
 
 - A **folder** is walked with the same name-based rules as the full scan
-  (`.env` files, IaC variable files, MCP configs, suspicious filenames), and
+  (`.env` files, IaC variable files, MCP configs), and
   skips the usual noise directories (`node_modules`, `.git`, …).
 - A **file you name** is classified regardless of what it's called. A
   shell/`.env`/MCP/IaC file is routed to its scanner; a private key is detected
@@ -80,8 +87,8 @@ Each finding category maps to a fix:
 - **Wrappable CLI Tokens** findings are fixed by
   **[`jit wrap <tool>`](../wrap/index.md)** - audit prints the exact
   one-command fix next to each.
-- **Private Keys**, **IaC Variable Files**, and **Suspicious Filenames**
-  are surfaced for your judgment; there's no automatic migration for them.
+- **Private Keys** and **IaC Variable Files** are surfaced for your
+  judgment; there's no automatic migration for them.
 
 The full category list is in **[What audit looks for](./findings.md)**.
 

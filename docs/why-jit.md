@@ -27,12 +27,12 @@ default and keeps the plaintext out of the way the rest of the time.
 
 `jit scan` is a read-only scan of your machine. It never writes, moves, or
 "fixes" anything, so it is safe to run before you trust jit with anything else.
-In about 340ms it ranks every plaintext secret it finds by risk and gives you a
+In about 70ms it ranks every plaintext secret it finds by risk and gives you a
 single exposure score from 0 to 100.
 
 ```
 jit scan: risk report for alex@Alexs-MacBook-Pro
-scan time: 2026-07-06T09:14:22.000Z          duration: 340ms
+scan time: 2026-07-06T09:14:22.000Z          duration: 71ms
 
   RISK LEVEL: CRITICAL
   EXPOSURE:   100/100

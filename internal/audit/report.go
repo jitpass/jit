@@ -18,16 +18,15 @@ import (
 // enum labels, not credential material — see finding.go's justification for
 // the same gosec G101 pattern-match false positive.
 var findingTypeLabels = map[string]string{ // #nosec G101 -- enum label keys, not credentials
-	FindingTypeShellConfigSecret:  "Shell Configs",
-	FindingTypeEnvFilePresent:     ".env Files",
-	FindingTypeCredentialFile:     "Credential Files",
-	FindingTypeMCPEmbeddedSecret:  "AI Tool / MCP Configs",
-	FindingTypePrivateKeyRisk:     "Private Keys",
-	FindingTypeIACVariableFile:    "IaC Variable Files",
-	FindingTypeSuspiciousFilename: "Suspicious Filenames",
-	FindingTypeWrappableCLIToken:  "Wrappable CLI Tokens",
-	FindingTypeSOPSAgeKey:         "SOPS Age Keys",
-	FindingTypeExposedSecret:      "Exposed Secrets",
+	FindingTypeShellConfigSecret: "Shell Configs",
+	FindingTypeEnvFilePresent:    ".env Files",
+	FindingTypeCredentialFile:    "Credential Files",
+	FindingTypeMCPEmbeddedSecret: "AI Tool / MCP Configs",
+	FindingTypePrivateKeyRisk:    "Private Keys",
+	FindingTypeIACVariableFile:   "IaC Variable Files",
+	FindingTypeWrappableCLIToken: "Wrappable CLI Tokens",
+	FindingTypeSOPSAgeKey:        "SOPS Age Keys",
+	FindingTypeExposedSecret:     "Exposed Secrets",
 }
 
 var riskLevelColor = map[string]*color.Color{
@@ -112,10 +111,10 @@ type findingLocation struct {
 
 // collapsibleFindingTypes are the categories where identical evidence text
 // genuinely means "the same secret, variable name, or key weakness
-// repeated" — safe to collapse. IaC's unescalated tier and Suspicious
-// Filenames are deliberately excluded: their evidence is fixed, rule-level
-// text ("infrastructure-as-code variable file — detection only...") that
-// says nothing about a specific file's content, so any two unrelated files
+// repeated" — safe to collapse. IaC's unescalated tier is deliberately
+// excluded: its evidence is fixed, rule-level text
+// ("infrastructure-as-code variable file — detection only...") that says
+// nothing about a specific file's content, so any two unrelated files
 // matching the same rule would produce byte-identical evidence and
 // collapse into one block that wrongly implies they're related — a real
 // case dogfooding turned up (two Secret.yaml manifests from an unrelated

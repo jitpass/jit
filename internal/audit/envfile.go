@@ -6,7 +6,6 @@ package audit
 import (
 	"bufio"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -99,39 +98,31 @@ var envLinePattern = regexp.MustCompile(`^\s*(#\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*=
 // content is still inspected to decide whether a file-level finding
 // escalates to Critical, per the cross-cutting signals in RFC.md §4.
 func ScanEnvFiles(cfg Config) ([]Finding, error) {
-	var findings []Finding
-	err := walkHomeDir(cfg.HomeDir, func(path string, d fs.DirEntry) error {
-		f, buildErr := classifyEnvFile(cfg, path, d.Name())
-		if buildErr != nil {
-			return nil // unreadable file — skip it, don't fail the whole scan
-		}
-		findings = append(findings, f...)
-		return nil
-	})
-	return findings, err
+	return walkForCategory(cfg, classifyEnvFile)
 }
 
-// classifyEnvFile is the per-file half of ScanEnvFiles, split out so both the
-// machine-wide home walk and `jit scan <path>`'s targeted walk apply the exact
-// same .env naming, pointer-file, and template/escalation rules to a file —
-// the coupling of "which files" (discovery) to "is it exposed" (classification)
-// is what once made a file impossible to scan on its own. Returns nil (no
-// findings) for a name that isn't .env-shaped or a jit pointer file.
-func classifyEnvFile(cfg Config, path, name string) ([]Finding, error) {
+// classifyEnvFile is the per-file half of ScanEnvFiles, split out so the
+// machine-wide walk (see categories), a standalone ScanEnvFiles, and `jit
+// scan <path>`'s targeted walk all apply the exact same .env naming,
+// pointer-file, and template/escalation rules to a file — the coupling of
+// "which files" (discovery) to "is it exposed" (classification) is what once
+// made a file impossible to scan on its own. Returns nil (no findings) for a
+// name that isn't .env-shaped, for a jit pointer file, and for a file that
+// can't be read: an unreadable file is a skip, never a failed scan, which is
+// what every caller of the old ([]Finding, error) form did with the error
+// anyway.
+func classifyEnvFile(cfg Config, path, name string) []Finding {
 	if !envFileNamePattern.MatchString(name) {
-		return nil, nil
+		return nil
 	}
 	if isJitPointerFile(name) || isJitPointerContent(path) {
-		return nil, nil
+		return nil
 	}
 	f, found, err := buildEnvFileFinding(cfg, path, isEnvTemplateFile(name))
-	if err != nil {
-		return nil, err
+	if err != nil || !found {
+		return nil
 	}
-	if !found {
-		return nil, nil
-	}
-	return []Finding{f}, nil
+	return []Finding{f}
 }
 
 // buildEnvFileFinding returns found=false (no Finding) when path is a

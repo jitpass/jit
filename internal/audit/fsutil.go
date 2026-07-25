@@ -13,6 +13,20 @@ import (
 // walk: build artifacts and dependency caches that are large and never
 // contain files a category scanner cares about. "Library" is macOS-specific
 // (app support/caches, not a place developers put project files).
+//
+// The test for adding one is whether the tree can hold a secret that is the
+// USER's to fix. Vendored third-party source, language runtimes a version
+// manager installed, and download caches all fail it: whatever is in there
+// arrived from a registry, jit has nothing to offer for it, and the next
+// install would undo any rewrite anyway. On a real machine these dominate —
+// .rbenv alone was 44% of every file walked, for zero findings, and the
+// runtime/cache group below accounted for well over half the walk.
+//
+// Note what is deliberately NOT here, because the directory name looks like
+// a cache but the tool keeps a credential in it: ~/.gem (RubyGems API key in
+// .gem/credentials), ~/.m2 (server passwords in settings.xml), ~/.gradle
+// (gradle.properties), ~/.sbt (.credentials). Only their pure-cache
+// subdirectories are skipped, via noiseRelativePaths.
 var noiseDirs = map[string]bool{
 	"node_modules": true,
 	".git":         true,
@@ -28,8 +42,26 @@ var noiseDirs = map[string]bool{
 	".cache":       true,
 	".terraform":   true,
 	".tox":         true,
-	".cargo":       true,
+	".cargo":       true, // registry cache of vendored crate source; its credentials file is checked by fixed path, see scanCargoCredentials
 	"Library":      true,
+
+	// Language runtimes installed by a version manager: thousands of
+	// vendor-shipped files per installed version, none of them the user's.
+	".rbenv":  true,
+	".pyenv":  true,
+	".nvm":    true,
+	".rustup": true,
+	".asdf":   true,
+	".jenv":   true,
+	".goenv":  true,
+
+	// Package caches and vendored dependency trees.
+	"site-packages": true, // Python packages, incl. conda/system installs .venv misses
+	"Pods":          true, // CocoaPods
+	"_cacache":      true, // npm's content-addressed cache
+	".pnpm-store":   true,
+	"miniconda3":    true,
+	"anaconda3":     true,
 }
 
 // noiseRelativePaths are paths, relative to the walk root, skipped wholesale
@@ -41,10 +73,19 @@ var noiseDirs = map[string]bool{
 // content). ".vscode/extensions" specifically — not ".vscode" itself — since
 // a project-local .vscode directory legitimately holds files this tool needs
 // to find (a project's own .vscode/mcp.json, per the MCP config scanner).
+// The same reasoning covers the cache subdirectory of a tool whose top-level
+// directory DOES hold a credential (see noiseDirs): ~/.m2/repository is
+// vendored jars, but ~/.m2/settings.xml right next to it can hold a server
+// password, so only the former is skipped.
 var noiseRelativePaths = []string{
 	filepath.Join("go", "pkg", "mod"),
 	filepath.Join(".vscode", "extensions"),
 	filepath.Join(".cursor", "extensions"),
+	filepath.Join(".m2", "repository"),
+	filepath.Join(".gradle", "caches"),
+	filepath.Join(".local", "share", "uv"),          // uv-managed Python installs
+	filepath.Join(".local", "share", "virtualenvs"), // pipenv
+	filepath.Join(".ollama", "models"),              // model blobs
 }
 
 // SkipNoiseDir reports whether a discovery walk under root should skip the
