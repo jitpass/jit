@@ -28,13 +28,28 @@ type Request struct {
 	// entirely in the CLI layer's OnRevealPID.
 	RunMounts []RunMount `json:"run_mounts,omitempty"`
 	TargetPID int32      `json:"target_pid,omitempty"`
-	// DiscloseReason, set on "reveal_pid" only, forces a FRESH challenge
-	// naming a global credential even when the session is already unlocked —
-	// the disclosed-grant gate for machine-wide file-delivered mounts
-	// (gcloud ADC, sops, ~/.npmrc) that `jit run --with` grants. Without it,
-	// a global-mount grant would ride the session silently, so a `jit run
-	// --with gcp` a script (not the human) put in a Makefile could hand out
-	// your gcloud credentials with no prompt. Empty for every ordinary run.
+	// Disclose, set on "reveal_pid" only, forces a FRESH challenge naming a
+	// global credential even when the session is already unlocked — the
+	// disclosed-grant gate for machine-wide file-delivered mounts (gcloud ADC,
+	// sops, ~/.npmrc) that `jit run --with` grants. Without it, a global-mount
+	// grant would ride the session silently, so a `jit run --with gcp` a script
+	// (not the human) put in a Makefile could hand out your gcloud credentials
+	// with no prompt. False for every ordinary run.
+	//
+	// Deliberately a FLAG, not the prompt's wording. The wording is derived by
+	// the agent from the mounts it is about to grant (Server.OnDescribeGrant),
+	// for the same reason Label may never reach a prompt: the one line a human
+	// decides by must not be a string the caller chose. It used to be
+	// caller-supplied (DiscloseReason below), which let any same-user process
+	// put a reassuring lie — "unlock the vault for profile dev" — on a prompt
+	// that was actually granting away the gcloud ADC.
+	Disclose bool `json:"disclose,omitempty"`
+	// DiscloseReason is the pre-Disclose spelling of the flag above, honored
+	// ONLY as a trigger and never as text: an in-flight older client mid-upgrade
+	// must still get the disclosed gate (with the agent's own wording), rather
+	// than silently skipping it. Never set by this version's Client.
+	//
+	// Deprecated: send Disclose.
 	DiscloseReason string `json:"disclose_reason,omitempty"`
 	// Label is the caller's own description of what a "wrap"/"unwrap" is
 	// FOR — the vault path of the secret whose DEK is in Data ("stripe/
@@ -115,6 +130,19 @@ const (
 	// the one event with no record. Denials also arm the re-prompt
 	// cooldown (see Server).
 	KindDenied = "denied"
+	// KindApproved marks a DISCLOSED challenge the human approved: a `jit run
+	// --with` global grant, a per-process consent prompt, or a `jit run
+	// --trust` registration. Distinct from KindUnlock because no session
+	// transition happened — a disclosed challenge is a standalone confirmation
+	// that leaves the cached session exactly as it found it.
+	//
+	// It exists because the audit trail used to record only the refusals: a
+	// declined consent prompt became a KindDenied line, an APPROVED one became
+	// nothing at all. "At 14:03 you approved gcloud reaching your gcp
+	// credential" — the single line the whole consent feature exists to be able
+	// to show you afterwards — was the one thing it never wrote down. Cause
+	// carries the same wording the human read on the prompt.
+	KindApproved = "approved"
 	// KindUse marks the session being USED without a fresh challenge — a
 	// wrap/unwrap/reveal riding the already-unlocked cache. Unlock events
 	// alone could say who OPENED the session but not what flowed through
@@ -202,7 +230,8 @@ type Response struct {
 // never fail the unlock itself.
 type SessionEvent struct {
 	UnixTime int64 `json:"unix_time"`
-	// Kind is "unlock", "lock", "start", "denied", "use", or "error". Callers used
+	// Kind is "unlock", "lock", "start", "denied", "approved", "use", or
+	// "error". Callers used
 	// to tell unlocks and locks apart by checking whether Cause was set,
 	// which worked only because locks happened to be the only events that
 	// carried one — a coincidence, not a contract, and one that would have
@@ -227,7 +256,8 @@ type SessionEvent struct {
 	// Cause is set on lock events (what dropped the session — "15m idle
 	// timeout" vs. an explicit lock; "Why am I being asked again?" is
 	// usually answered here, not by the unlock at all), on start events
-	// (the build), and on denied events (why the challenge failed).
+	// (the build), on denied events (why the challenge failed), and on
+	// approved events (the wording the human read on the prompt).
 	Cause string `json:"cause,omitempty"`
 	// Labels are the caller-reported secret names this event touched
 	// (Request.Label) — "what was read", the one fact kernel provenance

@@ -8,6 +8,7 @@ package agent
 import (
 	"fmt"
 	"net"
+	"path/filepath"
 	"strings"
 
 	"github.com/jitpass/jit/internal/lineage"
@@ -155,6 +156,57 @@ func intent(op string, c *caller) string {
 	default: // OpUnlock, OpRefresh, and anything added later
 		return "unlock the vault"
 	}
+}
+
+// grantReason is the wording for a disclosed global-credential grant's Touch
+// ID prompt, derived from the mounts the request named — never from anything
+// the request said about them (see Server.OnDescribeGrant).
+//
+// The fallback, when nothing has wired OnDescribeGrant or it can't classify
+// the mounts, is deliberately a fixed phrase rather than a best guess built
+// from the caller's own path strings: vaguer, but there is no version of this
+// sentence that a requesting process gets to influence.
+func (s *Server) grantReason(mounts []RunMount) string {
+	if s.OnDescribeGrant != nil {
+		if named := s.OnDescribeGrant(mounts); named != "" {
+			return truncate(fmt.Sprintf("grant this run access to %s", named), maxReasonLen)
+		}
+	}
+	return "grant this run access to a global credential on this machine"
+}
+
+// trustReason words the `jit run --trust` prompt. It names the command being
+// trusted (kernel-derived, via the same command()/launchedBy() provenance
+// every other prompt uses) and, above all, says what trusting it MEANS — the
+// prompt has to carry "and everything it launches", because that scope is the
+// entire point of the flag and the reason it needs a human.
+func trustReason(c *caller) string {
+	who := truncate(displayCommand(c), maxTrustWhoLen)
+	if who == "" {
+		return "let this run reach your credentials without further prompts"
+	}
+	return truncate(fmt.Sprintf("let %s and everything it launches reach your credentials without further prompts", who), maxReasonLen)
+}
+
+// maxTrustWhoLen bounds the caller's own name inside trustReason so the
+// "and everything it launches" half — the part that states the scope, and the
+// only part that changes the decision — can never be the half that gets cut.
+const maxTrustWhoLen = 24
+
+// displayCommand is the caller's program name for a prompt: argv[0]'s base,
+// which is short enough for a dialog, where command() is the full invocation
+// meant for a terminal.
+func displayCommand(c *caller) string {
+	if c == nil {
+		return ""
+	}
+	if len(c.self.Argv) > 0 && c.self.Argv[0] != "" {
+		return filepath.Base(c.self.Argv[0])
+	}
+	if c.self.ExecPath != "" {
+		return filepath.Base(c.self.ExecPath)
+	}
+	return ""
 }
 
 // opServeMounts is not a wire op — it is the reason the agent unlocks ITSELF,

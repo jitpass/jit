@@ -134,6 +134,7 @@ var agentRunCmd = &cobra.Command{
 		server.OnRefresh = mounts.start
 		server.OnRevealPID = mounts.revealForPID
 		server.OnCanGrant = mounts.canGrantAll
+		server.OnDescribeGrant = mounts.describeGrant
 		server.OnStopMount = mounts.stopMount
 		server.OnMountStatus = mounts.mountRevealStatuses
 		// Best-effort "how were you asked" for the audit trail: probe once per
