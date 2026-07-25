@@ -879,6 +879,19 @@ var vaultHistoryCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit vault history: %w", err)
 		}
+		// A path with no secret behind it is an error, not an empty history.
+		// Both used to print "No archived versions for <path>" and exit 0, so
+		// a typo'd path reported the reassuring answer — the same silent
+		// success `jit vault <typo>` used to give — while `jit vault get` on
+		// the identical path correctly failed. Exists() needs no key material,
+		// so this stays the prompt-free command it advertises.
+		exists, err := v.Exists(args[0])
+		if err != nil {
+			return fmt.Errorf("jit vault history: %w", err)
+		}
+		if !exists {
+			return fmt.Errorf("jit vault history: no secret stored at %q", args[0])
+		}
 		versions, err := v.HistoryVersions(args[0])
 		if err != nil {
 			return fmt.Errorf("jit vault history: %w", err)
