@@ -58,7 +58,7 @@ var migrateUndoCmd = &cobra.Command{
 	Example: "  jit migrate undo ~/proj/.env    # restore one migrated file\n" +
 		"  jit migrate undo ~/proj         # restore everything migrated under a project\n" +
 		"  jit migrate undo ~/proj --dry-run",
-	Args:              cobra.MinimumNArgs(1),
+	Args:              requirePaths("jit migrate undo"),
 	ValidArgsFunction: completeMigrateUndoPaths,
 	RunE:              runMigrateUndo,
 }

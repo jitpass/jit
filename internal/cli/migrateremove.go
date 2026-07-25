@@ -6,6 +6,7 @@
 package cli
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -72,7 +73,7 @@ var migrateRemoveCmd = &cobra.Command{
 	Example: "  jit migrate remove ~/proj\n" +
 		"  jit migrate remove ~/proj/.env   # removes the whole ~/proj project\n" +
 		"  jit migrate remove ~/token.txt   # removes just that loose secret",
-	Args:         cobra.MinimumNArgs(1),
+	Args:         requirePaths("jit migrate remove"),
 	SilenceUsage: true,
 	RunE:         runMigrateRemove,
 }
@@ -109,6 +110,23 @@ type projectRemovalPlan struct {
 	// vault forever.
 	orphanSecrets []string
 	backups       []migrate.BackupRecord
+	// rewritten are files this project's migration REWROTE IN PLACE rather
+	// than turning into a mount, a pointer file, or an MCP wrapper launch —
+	// today that means terraform.tfvars, whose secret assignments are lifted
+	// out and replaced with a comment naming the profile that now holds them.
+	//
+	// They are restored from their encrypted pre-migration backups, the same
+	// way `jit migrate undo` reverses them. Without this they were reversed by
+	// NOTHING: removal deleted the vault secrets AND the backups while leaving
+	// the stripped file on disk pointing at a profile that no longer existed,
+	// so `jit migrate remove` on a project with migrated tfvars destroyed
+	// those values outright. The confirm prompt even said "Restore 0 file(s)"
+	// while deleting the only two copies that existed.
+	//
+	// Matched by backup record rather than by file type on purpose: any future
+	// rewrite-in-place category is covered the moment it takes a backup, which
+	// every migration already does.
+	rewritten []migrate.BackupRecord
 	// jitDirs are every .jit/ store this removal deletes: the named
 	// project's own first, then any NESTED project root under its tree,
 	// deepest-last. Nested roots exist because migrate gives each migrated
@@ -279,7 +297,7 @@ func removeOneProject(cmd *cobra.Command, root, home, projectRoot string) error 
 	// command here uses, GAPS.md #17).
 	if !migrateRemoveYes && !confirmPrompt(cmd, fmt.Sprintf(
 		"Restore %d file(s) to PLAINTEXT and permanently delete %d vault secret(s) + %d backup(s)? This can't be undone. [y/N] ",
-		len(plan.mounts)+len(plan.inPlace)+len(plan.mcpRestores), len(plan.deletePaths), len(plan.backups))) {
+		len(plan.mounts)+len(plan.inPlace)+len(plan.mcpRestores)+len(plan.rewritten), len(plan.deletePaths), len(plan.backups))) {
 		fmt.Fprintln(out, "Aborted. Nothing was changed.")
 		return nil
 	}
@@ -352,6 +370,27 @@ func removeOneProject(cmd *cobra.Command, root, home, projectRoot string) error 
 		}
 	}
 
+	// Files this migration rewrote in place (tfvars today) come back from
+	// their encrypted backups — still before any deletion, same files-first
+	// ordering. Nothing else reverses these; without it the removal deleted
+	// their vault secrets and their backups and left the stripped file
+	// behind, which is straightforward data loss.
+	for _, rec := range plan.rewritten {
+		same, err := backupMatchesDisk(v, rec)
+		if err != nil {
+			return fmt.Errorf("jit migrate remove: reading backup of %s: %w", displayPath(home, rec.OriginalPath), err)
+		}
+		if same {
+			// Already reversed (`jit migrate undo` first, then remove).
+			// Rewriting identical bytes would only add an undo-index entry.
+			continue
+		}
+		if err := migrate.RestoreFromBackup(v, rec); err != nil {
+			return fmt.Errorf("jit migrate remove: restoring %s: %w", displayPath(home, rec.OriginalPath), err)
+		}
+		fmt.Fprintf(out, "Restored %s from its pre-migration backup (secret values written back as plaintext).\n", displayPath(home, rec.OriginalPath))
+	}
+
 	for _, p := range plan.companions {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("jit migrate remove: removing pointer companion %s: %w", p, err)
@@ -374,6 +413,36 @@ func removeOneProject(cmd *cobra.Command, root, home, projectRoot string) error 
 	if err := migrate.DropBackupRecords(root, plan.backups); err != nil {
 		return fmt.Errorf("jit migrate remove: %w", err)
 	}
+	// plan.backups was captured before anything ran, so it can't include a
+	// record this very removal created: RestoreFromBackup snapshots whatever
+	// it is about to overwrite, which means every rewritten-in-place file
+	// leaves a fresh entry behind. Harmless in content (it's the migrated,
+	// secret-free state) but it outlives the project it belongs to, leaving
+	// `jit migrate undo` offering a path this command just finished erasing.
+	// Re-read and sweep whatever is still indexed under the tree.
+	late, err := migrate.LoadBackupRecords(root)
+	if err != nil {
+		return fmt.Errorf("jit migrate remove: %w", err)
+	}
+	var stragglers []migrate.BackupRecord
+	for _, rec := range late {
+		if pathWithinDir(projectRoot, rec.OriginalPath) {
+			stragglers = append(stragglers, rec)
+		}
+	}
+	if len(stragglers) > 0 {
+		for _, rec := range stragglers {
+			if rec.VaultPath == "" {
+				continue
+			}
+			if err := v.Remove(rec.VaultPath); err != nil && !errors.Is(err, vault.ErrNotFound) {
+				return fmt.Errorf("jit migrate remove: deleting backup %s: %w", rec.VaultPath, err)
+			}
+		}
+		if err := migrate.DropBackupRecords(root, stragglers); err != nil {
+			return fmt.Errorf("jit migrate remove: %w", err)
+		}
+	}
 
 	// Owned global-store profiles live outside the .jit directory the
 	// RemoveAll below covers — their manifest (+ .source sidecar) files are
@@ -391,7 +460,7 @@ func removeOneProject(cmd *cobra.Command, root, home, projectRoot string) error 
 	}
 
 	fmt.Fprintf(out, "\nRemoved jit from this project: %d file(s) restored to plaintext, %d vault secret(s) and %d backup(s) deleted, %s removed.\n",
-		len(plan.mounts)+len(plan.inPlace), len(plan.deletePaths), len(plan.backups), displayJitDirs(home, plan.jitDirs))
+		len(plan.mounts)+len(plan.inPlace)+len(plan.mcpRestores)+len(plan.rewritten), len(plan.deletePaths), len(plan.backups), displayJitDirs(home, plan.jitDirs))
 	if len(plan.keptShared) > 0 {
 		fmt.Fprintf(out, "Kept %d vault secret(s) another profile still references: %s\n", len(plan.keptShared), strings.Join(plan.keptShared, ", "))
 	}
@@ -933,6 +1002,7 @@ func buildProjectRemovalPlan(root, home, cwd string, rv *vault.Vault) (projectRe
 			plan.backups = append(plan.backups, rec)
 		}
 	}
+	plan.rewritten = rewrittenInPlace(plan)
 
 	if info, err := os.Stat(filepath.Join(cwd, ".jit")); err == nil && info.IsDir() {
 		plan.jitDirs = append(plan.jitDirs, filepath.Join(cwd, ".jit"))
@@ -941,6 +1011,72 @@ func buildProjectRemovalPlan(root, home, cwd string, rv *vault.Vault) (projectRe
 		plan.jitDirs = append(plan.jitDirs, filepath.Join(nested, ".jit"))
 	}
 	return plan, nil
+}
+
+// backupMatchesDisk reports whether rec's backed-up bytes are already what
+// sits at rec.OriginalPath — i.e. the file needs no reversing. A missing file
+// is not a match: there is something to put back.
+func backupMatchesDisk(v *vault.Vault, rec migrate.BackupRecord) (bool, error) {
+	want, err := v.Get(rec.VaultPath)
+	if err != nil {
+		if errors.Is(err, vault.ErrNotFound) {
+			// No bytes to compare against and none to restore; treat as
+			// "nothing to do" rather than failing the whole removal.
+			return true, nil
+		}
+		return false, err
+	}
+	got, err := os.ReadFile(rec.OriginalPath) // #nosec G304 -- path from jit's own undo index, validated by RestoreFromBackup
+	if err != nil {
+		return false, nil
+	}
+	return bytes.Equal(got, want), nil
+}
+
+// rewrittenInPlace picks the backed-up project files that no other restore
+// path in this plan covers — see projectRemovalPlan.rewritten. A file counts
+// only when all of these hold:
+//
+//   - it has a real backup (RemoveOnRestore records describe a file migration
+//     CREATED, which removal has no business resurrecting);
+//   - it isn't a mount, a pointer file, an MCP config, or a .pointers
+//     companion, each of which has its own, better reversal that writes
+//     CURRENT vault values rather than pre-migration ones;
+//   - it still exists as a regular file, so there is something to replace.
+//
+// Whether the file still NEEDS reversing can't be decided here: the plan is
+// built before the vault is authed, so the backup's bytes aren't readable
+// yet. removeOneProject makes that call at restore time, skipping a file
+// whose content already matches its backup (the common `jit migrate undo`
+// then `jit migrate remove` sequence).
+//
+// Only the newest backup per path is used, matching `jit migrate undo`.
+func rewrittenInPlace(plan projectRemovalPlan) []migrate.BackupRecord {
+	covered := map[string]bool{}
+	for _, e := range plan.mounts {
+		covered[e.MountPath] = true
+	}
+	for _, p := range plan.inPlace {
+		covered[p] = true
+	}
+	for _, p := range plan.companions {
+		covered[p] = true
+	}
+	for cfg := range plan.mcpRestores {
+		covered[cfg] = true
+	}
+
+	var out []migrate.BackupRecord
+	for _, rec := range migrate.LatestBackups(plan.backups) {
+		if rec.RemoveOnRestore || rec.VaultPath == "" || covered[rec.OriginalPath] {
+			continue
+		}
+		if info, err := os.Lstat(rec.OriginalPath); err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		out = append(out, rec)
+	}
+	return out
 }
 
 // discoverNestedProjectRoots returns every directory strictly BELOW cwd that
@@ -1005,6 +1141,16 @@ func printProjectRemovalPlan(out interface{ Write([]byte) (int, error) }, home s
 		printMigrateResultCategory(out, "Pointer files -> plain files again (current vault values)", n)
 		for _, p := range plan.inPlace {
 			fmt.Fprintf(out, "  • %s\n", displayPath(home, p))
+		}
+		fmt.Fprintln(out)
+	}
+	if n := len(plan.rewritten); n > 0 {
+		// "pre-migration backup", not "current vault values", because that is
+		// genuinely what these get — the distinction matters to anyone who has
+		// run `jit vault set` on one of these since migrating.
+		printMigrateResultCategory(out, "Rewritten files -> restored from their pre-migration backup", n)
+		for _, rec := range plan.rewritten {
+			fmt.Fprintf(out, "  • %s\n", displayPath(home, rec.OriginalPath))
 		}
 		fmt.Fprintln(out)
 	}

@@ -7,8 +7,10 @@ import (
 	"bufio"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -361,6 +363,17 @@ func buildTfvarsFinding(cfg Config, path string) (Finding, error) {
 	if err != nil {
 		return Finding{}, err
 	}
+	// Per-variable evidence, on top of the whole-file prod/IP signals above.
+	// A tfvars holding a prod-flagged password AND a Cloudflare token used to
+	// report only "contains a value matching the production-indicator
+	// pattern" — neither variable named, and the token not detected at all,
+	// so the file's most actionable content was invisible. This is the same
+	// gap .env findings had; describeEnvHits is shared with them so the two
+	// categories word it identically.
+	tokens, shaped, err := scanTfvarsAssignments(path)
+	if err != nil {
+		return Finding{}, err
+	}
 
 	f := cfg.baseFinding()
 	f.FindingType = FindingTypeIACVariableFile
@@ -371,6 +384,7 @@ func buildTfvarsFinding(cfg Config, path string) (Finding, error) {
 		f.PublicIPMatch = &publicIP
 	}
 
+	var leadVendor, leadKey string
 	switch {
 	case prodMatch:
 		f.Severity = SeverityCritical
@@ -378,13 +392,80 @@ func buildTfvarsFinding(cfg Config, path string) (Finding, error) {
 	case ipMatch:
 		f.Severity = SeverityCritical
 		f.Evidence = "contains a public IP address in a visible value"
+	case len(tokens) > 0:
+		// A value positively matching a vendor's token format is the same
+		// evidence here as in a .env, and was previously rated Info — jit knew
+		// a live credential was sitting in the file and filed it as
+		// detection-only. Rated and worded to match envfile.go.
+		f.Severity = SeverityHigh
+		leadVendor, leadKey = tokens[0].vendor, tokens[0].key
+		if tokens[0].verified {
+			f.Confidence = ConfidenceHigh
+			f.Evidence = fmt.Sprintf("contains a value matching %s's known token format", leadVendor)
+		} else {
+			f.Evidence = fmt.Sprintf("contains a value that looks like it may be a %s (pattern not independently verified)", leadVendor)
+		}
+	case len(shaped) > 0:
+		f.Severity = SeverityHigh
+		leadKey = shaped[0]
+		f.Evidence = fmt.Sprintf("contains %q, a variable name that looks like a real credential", leadKey)
 	default:
 		f.Severity = SeverityInfo
 		f.Evidence = "terraform variable file: `jit migrate` can move its secret values into the vault"
 	}
+	if rest := describeEnvHits(tokens, shaped, leadVendor, leadKey); rest != "" {
+		f.Evidence += "; also " + rest
+	}
 
 	f.RecordID = RecordID(f.FindingType, f.FilePath, nil)
 	return f, nil
+}
+
+// tfvarsAssignment matches an HCL `name = value` line, the only shape a
+// .tfvars file has. The value is captured raw (quotes included) so the
+// unquote below can hand token matching the same bare string a .env line
+// would produce.
+var tfvarsAssignment = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*(.+?)\s*$`)
+
+// scanTfvarsAssignments attributes a tfvars file's credentials to the
+// variables holding them: values matching a known vendor token format, and
+// secret-shaped variable NAMES with a non-empty value. Mirrors what
+// buildEnvFileFinding collects, so both categories can share describeEnvHits.
+func scanTfvarsAssignments(path string) ([]envTokenHit, []string, error) {
+	file, err := openFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+
+	var tokens []envTokenHit
+	var shaped []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(strings.TrimSpace(line), "#") || strings.HasPrefix(strings.TrimSpace(line), "//") {
+			continue
+		}
+		m := tfvarsAssignment.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		key, raw := m[1], strings.Trim(m[2], `"`)
+		if raw == "" || IsAlreadyMasked(raw) {
+			continue
+		}
+		if vendor, verified, ok := MatchKnownTokenPattern(raw); ok {
+			tokens = append(tokens, envTokenHit{key: key, vendor: vendor, verified: verified})
+			continue
+		}
+		if LooksLikeSecretKey(key) {
+			shaped = append(shaped, key)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, nil, err
+	}
+	return tokens, shaped, nil
 }
 
 // buildLegacyK8sFinding is the pre-structured-parse fallback for a file

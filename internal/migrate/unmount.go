@@ -64,8 +64,16 @@ func UnmountFile(v *vault.Vault, profilePath, mountPath, templatePath string) ([
 	if err != nil {
 		return nil, fmt.Errorf("removing mount at %s: %w", mountPath, err)
 	}
+	// Written 0600 first, then widened to whatever the file had before
+	// migration — the bytes are a plaintext secret, so they must never exist
+	// at a wider mode than 0600 even momentarily. See OriginalModeFor.
 	if err := os.WriteFile(mountPath, content, 0o600); err != nil { // #nosec G703 -- mountPath comes from jit's own mount registry, not external input
 		return nil, fmt.Errorf("writing %s: %w", mountPath, err)
+	}
+	if mode := OriginalModeFor(v.Root, mountPath); mode != defaultRestoreMode {
+		if err := os.Chmod(mountPath, mode); err != nil {
+			return nil, fmt.Errorf("restoring permissions %#o on %s: %w", mode, mountPath, err)
+		}
 	}
 	if err := release(content); err != nil {
 		return nil, fmt.Errorf("releasing readers of the old mount at %s (the file itself was restored): %w", mountPath, err)
