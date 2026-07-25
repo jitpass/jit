@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -40,6 +41,37 @@ type BackupRecord struct {
 	// behind, leaving both static keys AND a dangling credential_process
 	// pointing at jit.
 	RemoveOnRestore bool `yaml:"remove_on_restore,omitempty"`
+	// Mode is the file's permission bits at backup time, so a restore puts
+	// back the file the user had rather than jit's own 0600 default. Undo
+	// promises "byte-for-byte", and it delivered that for CONTENT while
+	// silently tightening a 0644 .env to 0600 — which is a safer default but
+	// still a change the user was never told about, and one that breaks a
+	// file another account or a container bind-mount has to read.
+	//
+	// Zero means "not recorded": every backup taken before this field
+	// existed, restored at the historical 0600 (see restoreMode). Stored as
+	// an octal STRING because YAML would read a bare 0644 as decimal 644.
+	Mode string `yaml:"mode,omitempty"`
+}
+
+// defaultRestoreMode is what a restore uses when a BackupRecord carries no
+// Mode: jit's original behavior, and the right conservative choice for a
+// file whose bytes are a plaintext secret.
+const defaultRestoreMode = os.FileMode(0o600)
+
+// restoreMode is rec's recorded permission bits, or defaultRestoreMode when
+// it has none or they're unparseable. Never widens past 0666: a backup index
+// entry is unauthenticated (see RestoreFromBackup), so a tampered record must
+// not be able to make a restore setuid or executable.
+func (rec BackupRecord) restoreMode() os.FileMode {
+	if rec.Mode == "" {
+		return defaultRestoreMode
+	}
+	parsed, err := strconv.ParseUint(rec.Mode, 8, 32)
+	if err != nil {
+		return defaultRestoreMode
+	}
+	return os.FileMode(parsed) & 0o666
 }
 
 type backupIndexFile struct {
@@ -153,9 +185,12 @@ func LatestBackups(recs []BackupRecord) []BackupRecord {
 // Callers are responsible for the mount-side bookkeeping when the path is
 // a registered mount (stopping the agent's Serve goroutine first, removing
 // the registry entry and the .pointers companion) — same division of labor
-// as UnmountFile. Restored files get 0600 regardless of the original's
-// mode: every file this package backs up held a secret, so the most
-// restrictive plausible mode is the only safe default.
+// as UnmountFile. A restored file gets the permission bits it had at backup
+// time (BackupRecord.Mode), capped at 0666 and never wider — a backup taken
+// before that field existed, or one whose mode didn't survive, falls back to
+// the historical 0600. The file is always CREATED 0600 and widened only
+// after its bytes are written, so a secret is never briefly readable by
+// anyone the recorded mode allows.
 //
 // The destination is validated and the write is symlink-safe. backups.yaml
 // is unencrypted, unauthenticated bookkeeping (see BackupRecord) — a
@@ -220,13 +255,25 @@ func RestoreFromBackup(v *vault.Vault, rec BackupRecord) error {
 	// between the Remove above and this open. O_EXCL makes the create fail
 	// rather than clobber whatever is there; O_NOFOLLOW makes it fail rather
 	// than write through a symlink. See this function's doc comment.
-	f, err := os.OpenFile(rec.OriginalPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+	// Created at 0600 regardless of the recorded mode, then widened after
+	// the write: the file holds a plaintext secret, and between create and
+	// write it must never be readable by anyone the original mode allowed.
+	f, err := os.OpenFile(rec.OriginalPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, defaultRestoreMode)
 	if err != nil {
 		return fmt.Errorf("creating %s (something reappeared at this path, refusing to write a secret through it): %w", rec.OriginalPath, err)
 	}
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
 		return fmt.Errorf("writing %s: %w", rec.OriginalPath, err)
+	}
+	// Chmod through the fd, not the path: the path could have been swapped
+	// for a symlink since the O_EXCL|O_NOFOLLOW create above, and a
+	// path-based chmod would follow it onto someone else's file.
+	if mode := rec.restoreMode(); mode != defaultRestoreMode {
+		if err := f.Chmod(mode); err != nil {
+			_ = f.Close()
+			return fmt.Errorf("restoring permissions %#o on %s: %w", mode, rec.OriginalPath, err)
+		}
 	}
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("closing %s: %w", rec.OriginalPath, err)
