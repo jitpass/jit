@@ -22,14 +22,20 @@ import (
 // fnFetcher is a MEKFetcher whose behavior a test controls per prompt reason,
 // so a consent challenge ("… wants your … credential") can be declined while
 // an ordinary unlock still succeeds.
-type fnFetcher struct{ fn func(reason string) ([]byte, error) }
+type fnFetcher struct {
+	fn func(reason string) ([]byte, error)
+}
 
 func (f fnFetcher) FetchMEK(reason string) ([]byte, error) { return f.fn(reason) }
 
 var errConsentDeclined = errors.New("fixture: consent declined")
 
 // startConsentServer is a real Server with consent enabled and a fetcher that
-// declines any consent-reason challenge while denyConsent is set.
+// declines any DISCLOSED challenge while denyConsent is set — a consent
+// prompt, a --with grant, or a --trust registration — while still letting an
+// ordinary unlock through. Keyed on the reason not being a plain unlock,
+// rather than on one prompt's wording, so a new kind of disclosed gate is
+// covered by default instead of silently sailing past the fixture.
 //
 // It also injects the caller's launcher: consent now keys its session cache on
 // the tool that reached for the credential (consentCaller), which is an
@@ -45,7 +51,7 @@ func startConsentServer(t *testing.T, denyConsent *atomic.Bool) (*Server, string
 	key := bytes.Repeat([]byte{0x42}, 32)
 	newFetcher := func() MEKFetcher {
 		return fnFetcher{fn: func(reason string) ([]byte, error) {
-			if denyConsent.Load() && strings.Contains(reason, "wants your") {
+			if denyConsent.Load() && !strings.HasPrefix(reason, "unlock the vault") {
 				return nil, errConsentDeclined
 			}
 			k := make([]byte, len(key))
@@ -270,5 +276,94 @@ func TestConsentIsPerLauncherNotPerClass(t *testing.T) {
 	launcher.Store(&aws)
 	if _, err := c.UnwrapKeyLabeled(wrapped, "aws/default/key", "aws"); err != nil {
 		t.Errorf("the original aws launcher's session approval must still hold: %v", err)
+	}
+}
+
+// TestTrustRequiresAChallenge pins the fix for an outright consent bypass.
+// OpTrust registers the caller's process tree as a consent trust root, which
+// auto-allows every gated credential its descendants touch for the rest of the
+// session — and it used to require nothing at all. Any process that could
+// reach the socket could send one `trust` RPC and switch off the gate that
+// exists precisely for untrusted code running as you. `jit run --trust` is a
+// flag a human types; the prompt is what makes the RPC mean that.
+func TestTrustRequiresAChallenge(t *testing.T) {
+	var deny atomic.Bool
+	deny.Store(true) // decline every disclosed challenge, including trust's
+	_, socket, _ := startConsentServer(t, &deny)
+	c := NewClient(socket)
+	dek := bytes.Repeat([]byte{0x07}, 32)
+
+	wrapped, err := c.WrapKeyLabeled(dek, "aws/default/key", "aws")
+	if err != nil {
+		t.Fatalf("WrapKeyLabeled: %v", err)
+	}
+	if _, err := c.UnwrapKeyLabeled(wrapped, "aws/default/key", "aws"); err == nil {
+		t.Fatal("precondition: a declined consent must deny the unwrap")
+	}
+
+	if err := c.Trust(); err == nil {
+		t.Error("a declined trust challenge must fail the RPC")
+	}
+	if _, err := c.UnwrapKeyLabeled(wrapped, "aws/default/key", "aws"); err == nil {
+		t.Error("BYPASS: an unapproved trust root disabled the consent gate")
+	}
+
+	// And with the challenge approved, trust does what it always did.
+	deny.Store(false)
+	if err := c.Trust(); err != nil {
+		t.Fatalf("approved Trust: %v", err)
+	}
+	deny.Store(true) // no further prompt may be needed now
+	if _, err := c.UnwrapKeyLabeled(wrapped, "aws/default/key", "aws"); err != nil {
+		t.Errorf("an approved trust root must serve without further prompts: %v", err)
+	}
+}
+
+// The trust prompt must say what trusting actually means. "and everything it
+// launches" is the entire scope of the flag, and the only part of the sentence
+// that would change anyone's answer, so it may never be what gets truncated.
+func TestTrustReasonStatesTheScope(t *testing.T) {
+	long := &caller{pid: 4242, self: lineage.Process{
+		PID:  4242,
+		Argv: []string{"/opt/some/deeply/nested/path/a-very-long-program-name-indeed"},
+	}}
+	for _, c := range []*caller{nil, long, {pid: 7}} {
+		reason := trustReason(c)
+		if !strings.Contains(reason, "everything it launches") && !strings.Contains(reason, "without further prompts") {
+			t.Errorf("trustReason(%v) = %q, want the scope stated", c, reason)
+		}
+		if len([]rune(reason)) > maxReasonLen {
+			t.Errorf("trustReason = %q (%d runes), want <= %d", reason, len([]rune(reason)), maxReasonLen)
+		}
+	}
+}
+
+// A consent prompt must not let a program's own filename disguise where it
+// came from, and must not be long enough to push the credential's name out of
+// the dialog.
+func TestConsentReasonDisambiguatesAndStaysBounded(t *testing.T) {
+	standard := consentReason(consent.Caller{PID: 1, ExecPath: "/usr/local/bin/gcloud"}, "gcp")
+	if !strings.HasPrefix(standard, "gcloud wants your gcp") {
+		t.Errorf("standard tool dir reason = %q, want the bare tool name", standard)
+	}
+
+	impostor := consentReason(consent.Caller{PID: 1, ExecPath: "/tmp/evil/gcloud"}, "gcp")
+	if !strings.Contains(impostor, "/tmp/evil") {
+		t.Errorf("reason = %q, want a non-standard location shown, not rendered as a bare %q", impostor, "gcloud")
+	}
+
+	huge := consentReason(consent.Caller{
+		PID:      1,
+		ExecPath: "/tmp/" + strings.Repeat("a", 400) + "/gcloud",
+		Lineage:  "launched by " + strings.Repeat("b", 400),
+	}, "gcp")
+	if len([]rune(huge)) > maxReasonLen {
+		t.Errorf("reason is %d runes, want <= %d", len([]rune(huge)), maxReasonLen)
+	}
+	if !strings.HasSuffix(huge, "wants your gcp credential") {
+		t.Errorf("reason = %q, want the credential name intact at the end", huge)
+	}
+	if !strings.Contains(huge, "gcloud") {
+		t.Errorf("reason = %q, want the program name kept when a long path is trimmed", huge)
 	}
 }

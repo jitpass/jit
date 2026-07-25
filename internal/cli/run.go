@@ -141,9 +141,16 @@ var runCmd = &cobra.Command{
 		// next re-lock. Best-effort: no agent, or one not enforcing consent,
 		// just means the run prompts per credential as usual — register before
 		// the exec, since after it this process IS the command.
+		// Registering it takes a Touch ID of its own now (the agent will not
+		// let a process declare itself trusted just by asking), so a decline
+		// is a thing the user did and has to be told about: the run still
+		// proceeds, it just prompts per credential the way it would without
+		// the flag. Silence there would read as "--trust didn't work".
 		if runTrust {
 			if ac, err := agentClient(); err == nil {
-				_ = ac.Trust()
+				if err := ac.Trust(); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "jit run: --trust not applied (%v); this run will prompt per credential\n", err)
+				}
 			}
 		}
 
@@ -275,8 +282,10 @@ func requestRunCompatVia(c *agent.Client, w io.Writer, runMounts, global []agent
 	}
 
 	if len(global) > 0 {
-		reason := fmt.Sprintf("grant this run access to your global %s credential(s)", strings.Join(withNames, ", "))
-		if err := c.GrantGlobalForPID(global, pid, reason); err != nil {
+		// No reason string: the agent words this prompt itself, from the mounts
+		// (agent.Server.OnDescribeGrant). withNames below is only for jit run's
+		// own stdout, which nobody authorizes anything on the strength of.
+		if err := c.GrantGlobalForPID(global, pid); err != nil {
 			// Declined or failed: the global grant is dropped, the run
 			// proceeds (the tool will get decoys and fail if it needed them).
 			fmt.Fprintf(w, "jit run: global grant for %s not applied (%v)\n", strings.Join(withNames, ", "), err)

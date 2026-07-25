@@ -50,15 +50,101 @@ func consentCaller(c *caller) consent.Caller {
 // kernel-derived (the caller and its lineage) or authoritative (the class is
 // AEAD-bound into the wrap, so a caller cannot lie about it) — nothing
 // caller-reported ever reaches this prompt, unlike Request.Label.
+//
+// Kernel-derived is not the same as attacker-independent, though, and this
+// prompt has to survive both differences:
+//
+//   - The BASENAME is chosen by whoever wrote the file. A process running from
+//     /tmp/x/gcloud is honestly reported by the kernel as exactly that, and
+//     rendering it as a bare "gcloud" turns the kernel's honesty into the
+//     attacker's disguise. So an executable outside the standard tool
+//     directories shows where it actually lives (see displayExecPath).
+//   - The LENGTH is chosen by the same person. challengeReason has always
+//     capped its output because macOS renders the reason as one sentence in a
+//     small modal; this one didn't, so a long enough filename could push the
+//     part that names the credential out of the dialog entirely. Each variable
+//     piece now gets its own budget, and the fixed "wants your <class>
+//     credential" tail — the half that carries the actual decision — is never
+//     what gets truncated.
 func consentReason(cc consent.Caller, class string) string {
-	who := filepath.Base(cc.ExecPath)
-	if who == "" || who == "." || who == "/" {
+	// Built tail-first, so the budget is apportioned from what the fixed part
+	// actually costs rather than from constants that have to be re-tuned every
+	// time a class name gets longer. Whatever is left over goes to the
+	// identity, which is the part that can be arbitrarily long.
+	tail := fmt.Sprintf(" wants your %s credential", class)
+	budget := maxReasonLen - len([]rune(tail))
+
+	var lineage string
+	if cc.Lineage != "" {
+		lineage = ", " + truncate(cc.Lineage, maxConsentLineageLen) + ","
+	}
+	if n := len([]rune(lineage)); n > budget-minConsentWhoLen {
+		lineage = "" // a pathological launcher is dropped, never the caller
+	}
+
+	who := truncateHead(displayExecPath(cc.ExecPath), budget-len([]rune(lineage)))
+	if who == "" {
 		who = fmt.Sprintf("a process (pid %d)", cc.PID)
 	}
-	if cc.Lineage != "" {
-		who = fmt.Sprintf("%s, %s,", who, cc.Lineage)
+	return who + lineage + tail
+}
+
+const (
+	// maxConsentLineageLen bounds the launcher half ("launched by npm
+	// install"), and minConsentWhoLen is the room reserved for the caller
+	// itself no matter what: the launcher is context, the caller is the
+	// subject of the sentence, so the launcher is what gets dropped when they
+	// can't both fit.
+	maxConsentLineageLen = 24
+	minConsentWhoLen     = 12
+)
+
+// standardToolDirs are the locations a legitimately-installed CLI lives in.
+// An executable in one of these is shown by name alone; anything else is shown
+// with its directory, because "gcloud" and "gcloud, from /tmp/x" are different
+// answers to the question the prompt is asking.
+//
+// Being outside this set is not evidence of anything — plenty of people run
+// tools from ~/go/bin or a project venv — which is why the difference is
+// surfaced to the human rather than used to decide.
+var standardToolDirs = map[string]bool{
+	"/bin":               true,
+	"/sbin":              true,
+	"/usr/bin":           true,
+	"/usr/sbin":          true,
+	"/usr/local/bin":     true,
+	"/usr/local/sbin":    true,
+	"/opt/homebrew/bin":  true,
+	"/opt/homebrew/sbin": true,
+}
+
+func displayExecPath(execPath string) string {
+	base := filepath.Base(execPath)
+	if execPath == "" || base == "." || base == "/" || base == string(filepath.Separator) {
+		return ""
 	}
-	return fmt.Sprintf("%s wants your %s credential", who, class)
+	if standardToolDirs[filepath.Dir(execPath)] {
+		return base
+	}
+	return execPath
+}
+
+// truncateHead cuts s to at most max RUNES from the FRONT, the opposite end
+// from truncate. Paths are the case: the tail ("…/x/gcloud") is what
+// identifies the program, so a path too long for the dialog has to lose its
+// leading directories, not its filename.
+func truncateHead(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	if max == 1 {
+		return string(r[len(r)-1:])
+	}
+	return "…" + string(r[len(r)-(max-1):])
 }
 
 // gateConsent runs the consent decision for one unwrap. It returns nil to
@@ -179,7 +265,11 @@ func (s *Server) ConsentReaders(cred string, holders []int32) bool {
 		cc := consentCallerForPID(h)
 		cc.DescendsFromGrant = s.descendsFromTrust(h)
 		prompt := func(req consent.Request) (consent.Decision, consent.Scope, error) {
-			reason := consentReason(req.Caller, req.Credential) + " (identified by process scan)"
+			// The qualifier is the honest part — this identity came from an
+			// unprivileged process scan, not a kernel-vouched socket peer — so
+			// it must not be what falls off the end of the dialog. Truncate
+			// the identity, then append.
+			reason := truncate(consentReason(req.Caller, req.Credential), maxReasonLen-len(" (identified by process scan)")) + " (identified by process scan)"
 			if err := s.forceDisclosedChallenge(reason, nil); err != nil {
 				// Scoped Once, not Session: see gateConsent — a transient
 				// challenge failure must not cache a session-long Deny.
