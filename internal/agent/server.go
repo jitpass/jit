@@ -370,7 +370,7 @@ func tightenSocketDir(dir string) {
 	if !ok || int(st.Uid) != os.Getuid() {
 		return // not ours to narrow
 	}
-	_ = os.Chmod(dir, 0o700)
+	_ = os.Chmod(dir, 0o700) // #nosec G302 -- a DIRECTORY, not a file: 0700 is the tightest mode that is still traversable by its owner, and G302's 0600 ceiling assumes a regular file. Matches the MkdirAll above.
 }
 
 // Serve accepts connections until ctx is cancelled or the listener fails.
