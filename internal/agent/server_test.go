@@ -273,6 +273,40 @@ func TestServerRecordsMalformedRequestAsError(t *testing.T) {
 	}
 }
 
+// The other half of the rule above: a peer that connects and closes without
+// sending a byte is Client.Reachable(), jit's own liveness probe, not an
+// attack. It runs from a dozen CLI paths (run, undo, unmount, vault, migrate
+// remove, rekey), so recording it filed two KindError lines per `jit run` —
+// and kind=error is the channel that is supposed to mean "a process the
+// kernel says isn't yours probed the agent". On a real machine every single
+// error event in a day's audit log was this probe, which makes the one
+// signal worth reading unreadable.
+func TestServerIgnoresLivenessProbe(t *testing.T) {
+	socketPath := shortSocketPath(t)
+	newFetcher := func() MEKFetcher { return &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32)} }
+	s := NewServer(socketPath, newFetcher, time.Minute)
+	events := make(chan SessionEvent, 1)
+	s.OnServeError = func(e SessionEvent) { events <- e }
+
+	if err := s.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = s.Serve(ctx); close(done) }()
+	defer func() { cancel(); _ = s.Close(); <-done }()
+
+	if !NewClient(socketPath).Reachable() {
+		t.Fatal("Reachable() on a listening server returned false")
+	}
+
+	select {
+	case e := <-events:
+		t.Errorf("liveness probe recorded a serve-error event, want none: %+v", e)
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
 func TestServerLockDropsSessionImmediately(t *testing.T) {
 	var calls int32
 	_, socketPath, cleanup := startTestServer(t, time.Minute, &calls)
