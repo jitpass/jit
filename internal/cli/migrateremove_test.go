@@ -435,3 +435,58 @@ func TestBuildProjectRemovalPlanClaimsOwnedMCPProfiles(t *testing.T) {
 		t.Errorf("mcpRestores = %v, want the still-wrapped server slated for plaintext restore", plan.mcpRestores)
 	}
 }
+
+// A migrated terraform.tfvars is rewritten IN PLACE — its secret assignments
+// lifted out and replaced with a comment naming the profile that now holds
+// them. It is not a mount, not a pointer file, not an MCP config, so it fell
+// through every restore path removal had: the vault secrets AND the encrypted
+// backup were deleted while the stripped file stayed on disk pointing at a
+// profile that no longer existed. The values were then unrecoverable, and the
+// confirm prompt had said "Restore 0 file(s)" on the way there.
+func TestRewrittenInPlaceCoversFilesNoOtherPathRestores(t *testing.T) {
+	dir := t.TempDir()
+	tfvars := filepath.Join(dir, "terraform.tfvars")
+	mountPath := filepath.Join(dir, ".env")
+	mcpPath := filepath.Join(dir, ".mcp.json")
+	for _, p := range []string{tfvars, mountPath, mcpPath} {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	plan := projectRemovalPlan{
+		mounts:      []mount.Entry{{MountPath: mountPath}},
+		mcpRestores: map[string]map[string]string{mcpPath: {"github": "p.yaml"}},
+		backups: []migrate.BackupRecord{
+			{OriginalPath: tfvars, VaultPath: "_backups/tfvars", UnixTS: 1},
+			{OriginalPath: mountPath, VaultPath: "_backups/env", UnixTS: 1},
+			{OriginalPath: mcpPath, VaultPath: "_backups/mcp", UnixTS: 1},
+		},
+	}
+
+	got := rewrittenInPlace(plan)
+	if len(got) != 1 || got[0].OriginalPath != tfvars {
+		t.Fatalf("rewrittenInPlace = %+v, want only the tfvars file (%s); a mount and an MCP config each have their own, better restore", got, tfvars)
+	}
+}
+
+// A RemoveOnRestore record describes a file the migration CREATED, and a
+// file that no longer exists has nothing to put back. Neither is something
+// removal should resurrect from a backup.
+func TestRewrittenInPlaceSkipsCreatedAndMissingFiles(t *testing.T) {
+	dir := t.TempDir()
+	created := filepath.Join(dir, "config")
+	gone := filepath.Join(dir, "deleted.tfvars")
+	if err := os.WriteFile(created, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	plan := projectRemovalPlan{backups: []migrate.BackupRecord{
+		{OriginalPath: created, RemoveOnRestore: true, UnixTS: 1},
+		{OriginalPath: gone, VaultPath: "_backups/gone", UnixTS: 1},
+	}}
+
+	if got := rewrittenInPlace(plan); len(got) != 0 {
+		t.Errorf("rewrittenInPlace = %+v, want none", got)
+	}
+}
