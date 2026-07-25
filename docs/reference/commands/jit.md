@@ -41,5 +41,6 @@ jit [flags]
 * [jit unmount](jit_unmount.md)	 - Reverse a live .env mount back into a plain file
 * [jit upgrade](jit_upgrade.md)	 - Download the latest release, verify it, and swap this binary + service onto it
 * [jit vault](jit_vault.md)	 - Manage the local encrypted secret vault
+* [jit version](jit_version.md)	 - Print jit's version (same as `jit --version`)
 * [jit wrap](jit_wrap.md)	 - Wrap CLI tools so their tokens are injected just-in-time
 
