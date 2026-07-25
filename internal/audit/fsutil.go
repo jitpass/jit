@@ -42,7 +42,7 @@ var noiseDirs = map[string]bool{
 	".cache":       true,
 	".terraform":   true,
 	".tox":         true,
-	".cargo":       true,
+	".cargo":       true, // registry cache of vendored crate source; its credentials file is checked by fixed path, see scanCargoCredentials
 	"Library":      true,
 
 	// Language runtimes installed by a version manager: thousands of

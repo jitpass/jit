@@ -54,6 +54,7 @@ func scanKnownCredentialFiles(cfg Config) ([]Finding, error) {
 		scanAWSCredentials,
 		scanKubeconfig,
 		scanGlobalNpmrc,
+		scanCargoCredentials,
 		scanTerraformCloud,
 		scanDockerConfig,
 		scanGitCredentials,
@@ -274,6 +275,84 @@ func scanNpmrcFile(path string, cfg Config) ([]Finding, error) {
 		}))
 	}
 	return findings, scanner.Err()
+}
+
+// --- Cargo / crates.io (~/.cargo/credentials.toml, TOML) ---
+
+// cargoCredentialPaths are the two files cargo reads a registry token from,
+// in its own resolution order: credentials.toml since 1.39, and the
+// extensionless credentials it still honors for anyone who logged in before
+// that. Both are scanned when both exist — cargo only reads the first, but a
+// stale second file is plaintext at rest just the same.
+//
+// This has to be a fixed-path check: ~/.cargo is in noiseDirs, so the
+// discovery walk never descends into it (a registry cache of vendored crate
+// source, tens of thousands of files, and none of them the user's). The
+// credential file sitting at the top of that pruned tree is exactly the kind
+// of thing a broad walk is the wrong tool for.
+var cargoCredentialPaths = [][]string{
+	{".cargo", "credentials.toml"},
+	{".cargo", "credentials"},
+}
+
+// scanCargoCredentials reports the crates.io API token (and any alternate
+// registry token) cargo stores in plaintext. It is a publish credential: with
+// it an attacker ships a new version of any crate the account owns, straight
+// into other people's builds, which is why it rates High like the other
+// registry tokens rather than being detection-only.
+func scanCargoCredentials(cfg Config) ([]Finding, error) {
+	var findings []Finding
+	for _, rel := range cargoCredentialPaths {
+		path := filepath.Join(append([]string{cfg.HomeDir}, rel...)...)
+		// Lstat + IsRegular before opening, the same guard scanGlobalNpmrc
+		// and ScanSOPSAgeKeys apply: `jit migrate` can turn this into a live
+		// mount, and opening that FIFO with no agent writing would hang the
+		// scan.
+		if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		findings = append(findings, scanCargoCredentialFile(cfg, path)...)
+	}
+	return findings, nil
+}
+
+func scanCargoCredentialFile(cfg Config, path string) []Finding {
+	file, err := openFile(path)
+	if err != nil {
+		return nil // unreadable — skip it, don't fail the whole audit
+	}
+	defer file.Close()
+
+	sections, err := parseINISections(file)
+	if err != nil {
+		return nil // malformed — skip it
+	}
+
+	// The format is TOML, but the shape cargo writes is exactly what
+	// parseINISections already handles: [registry] / [registries.<name>]
+	// tables holding a single quoted `token = "..."`. Reusing it beats
+	// pulling in a TOML dependency for one key (TECH_STACK.md §0).
+	var findings []Finding
+	for _, section := range slices.Sorted(maps.Keys(sections)) { // sorted: see scanAWSCredentials
+		token := unquote(sections[section]["token"])
+		if token == "" {
+			continue
+		}
+		registry := "crates.io"
+		if after, found := strings.CutPrefix(section, "registries."); found {
+			registry = after
+		}
+		findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+			FindingType:  FindingTypeCredentialFile,
+			FilePath:     path,
+			KeyName:      section + "/token",
+			RawValue:     token,
+			BaseSeverity: SeverityHigh,
+			Confidence:   ConfidenceHigh,
+			Evidence:     fmt.Sprintf("cargo registry token found for %s; it can publish crates as you", registry),
+		}))
+	}
+	return findings
 }
 
 // --- Terraform Cloud (~/.terraform.d/credentials.tfrc.json, JSON) ---

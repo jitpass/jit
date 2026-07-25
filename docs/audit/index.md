@@ -11,9 +11,8 @@ anything, and never prints a real secret value in full, only a masked
 preview.
 
 ```
-$ jit scan
 jit scan: risk report for alex@Alexs-MacBook-Pro
-scan time: 2026-07-07T14:48:08.370Z          duration: 2ms
+scan time: 2026-07-25T16:39:02.944Z          duration: 0ms
 
   RISK LEVEL: HIGH
   EXPOSURE:   65/100
@@ -25,15 +24,24 @@ scan time: 2026-07-07T14:48:08.370Z          duration: 2ms
   Private Keys           0 finding(s)
   IaC Variable Files     0 finding(s)
   Wrappable CLI Tokens   0 finding(s)
+  SOPS Age Keys          0 finding(s)
+  Exposed Secrets        0 finding(s)
   ───────────────────────────────────
   Total: 2 finding(s)
 
-[Shell Configs]
-  ───────────────────────────────────
+[Shell Configs] 1
   • /Users/alex/.zshrc
 
     :1  HIGH  AWS_SECRET_ACCESSKEY  AKIA**********
-              └ export statement assigns a value to a key name that looks like a secret
+              └ value matches AWS Access Key ID's known token format
+
+[.env Files] 1
+  • /Users/alex/code/webapp/.env
+
+    LOW  2 plaintext variable(s) (2 active, 0 commented out)
+
+Run `jit migrate /Users/alex/.zshrc --dry-run` to see the guided fix plan for it.
+No secret values are ever printed in full. Run `jit scan --format ndjson` for machine-readable output (same redaction rules apply).
 ```
 
 With no arguments, `jit scan` scans your whole home directory, not your current

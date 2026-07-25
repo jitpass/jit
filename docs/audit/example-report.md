@@ -2,13 +2,15 @@
 
 This is **real output** from `WriteHumanReport` (`internal/audit/report.go`), run against a throwaway fixture `$HOME` built inside a Go test, not hand-typed. Every path, username, and value below is fabricated (fake keys, fake tokens, a disposable ed25519 key generated just for this run) and was never a real credential. The fixture includes two registered live jit mounts (the "Already protected" line). The fixture and the test that produced this file are not checked in; regenerate by writing a short `_test.go` in `internal/audit` that builds a fixture directory tree, calls `Scan`/`WriteHumanReport` against it, and deletes itself afterward, see the commit that introduced this version of the doc for the exact fixture used.
 
+Every category appears in the summary, at zero if nothing matched. **Exposed Secrets** is zero here and always will be in a whole-machine scan: that category only comes from naming a path yourself (`jit scan token.txt`), where a file is swept for vendor tokens whatever it is called.
+
 Keeping this generated from the real renderer, rather than hand-maintained, is the whole point: a mockup that silently drifts from actual output is worse than no example at all.
 
 ---
 
 ```
 jit scan: risk report for alex@Alexs-MacBook-Pro
-scan time: 2026-07-17T11:59:28.805Z          duration: 2ms
+scan time: 2026-07-25T16:37:55.518Z          duration: 1ms
 
   RISK LEVEL: CRITICAL
   EXPOSURE:   100/100
@@ -17,17 +19,18 @@ scan time: 2026-07-17T11:59:28.805Z          duration: 2ms
 
   Shell Configs          2 finding(s)
   .env Files             4 finding(s)
-  Credential Files       4 finding(s)
+  Credential Files       5 finding(s)
   AI Tool / MCP Configs  4 finding(s)
   Private Keys           2 finding(s)
   IaC Variable Files     1 finding(s)
-  Wrappable CLI Tokens   0 finding(s)
+  Wrappable CLI Tokens   1 finding(s)
+  SOPS Age Keys          1 finding(s)
+  Exposed Secrets        0 finding(s)
   ───────────────────────────────────
-  Total: 17 finding(s)
+  Total: 20 finding(s)
   Already protected by jit: 2 live mount(s), served from the encrypted vault, no plaintext on disk. Not scanned.
 
-[Shell Configs]
-  ───────────────────────────────────
+[Shell Configs] 2
   • /Users/alex/.zshrc
 
     :2  HIGH  STRIPE_API_KEY  sk_l**********
@@ -36,8 +39,7 @@ scan time: 2026-07-17T11:59:28.805Z          duration: 2ms
     :3  HIGH  DB_PASSWORD     hunt**********
               └ export statement assigns a value to a key name that looks like a secret
 
-[.env Files]
-  ───────────────────────────────────
+[.env Files] 4
   • /Users/alex/code/webapp/.env
 
     CRITICAL  contains a value matching the production-indicator pattern
@@ -52,8 +54,7 @@ scan time: 2026-07-17T11:59:28.805Z          duration: 2ms
 
     LOW       2 plaintext variable(s) (2 active, 0 commented out)
 
-[Credential Files]
-  ───────────────────────────────────
+[Credential Files] 5
   • /Users/alex/.aws/credentials
 
     HIGH  dev/aws_secret_access_key      fake**********
@@ -61,6 +62,11 @@ scan time: 2026-07-17T11:59:28.805Z          duration: 2ms
 
     HIGH  staging/aws_secret_access_key  fake**********
           └ AWS secret access key found in profile "staging"
+
+  • /Users/alex/.cargo/credentials.toml
+
+    HIGH  registry/token                 cio2**********
+          └ cargo registry token found for crates.io; it can publish crates as you
 
   • /Users/alex/.config/gcloud/application_default_credentials.json
 
@@ -72,12 +78,11 @@ scan time: 2026-07-17T11:59:28.805Z          duration: 2ms
     HIGH  app.terraform.io               fake**********
           └ Terraform Cloud API token found for host "app.terraform.io"
 
-[AI Tool / MCP Configs]
-  ───────────────────────────────────
+[AI Tool / MCP Configs] 4
   • internal-tool/GITHUB_TOKEN (same value in 2 files):
 
     HIGH  internal-tool/GITHUB_TOKEN  ghp_**********
-          └ value matches GitHub Personal Access Token's known token format
+          └ embedded directly in MCP server "internal-tool"'s env block
           - /Users/alex/.cursor/mcp.json
           - /Users/alex/code/webapp/.mcp.json
 
@@ -88,8 +93,7 @@ scan time: 2026-07-17T11:59:28.805Z          duration: 2ms
           - /Users/alex/.cursor/mcp.json
           - /Users/alex/code/webapp/.mcp.json
 
-[Private Keys]
-  ───────────────────────────────────
+[Private Keys] 2
   • /Users/alex/.ssh/id_ed25519
 
     HIGH  no passphrase set
@@ -98,19 +102,30 @@ scan time: 2026-07-17T11:59:28.805Z          duration: 2ms
 
     HIGH  private key found outside ~/.ssh; no passphrase set
 
-[IaC Variable Files]
-  ───────────────────────────────────
+[IaC Variable Files] 1
   • /Users/alex/code/infra/k8s/secrets.yaml
 
-    INFO  infrastructure-as-code variable file: detection only, no automated fix yet
+    INFO  kubernetes Secret manifest (base64 is encoding, not encryption): detection only, no automated fix yet
 
-Run `jit migrate <path> --dry-run` to see the guided fix plan for a flagged file.
+[Wrappable CLI Tokens] 1
+  • /Users/alex/.config/gh/hosts.yml
+
+    HIGH  oauth_token  gho_**********
+          └ GitHub CLI OAuth token in plaintext; one command moves it into the vault and keeps gh working: jit wrap gh
+
+[SOPS Age Keys] 1
+  • /Users/alex/.config/sops/age/keys.txt
+
+    :3  HIGH  age_secret_key  AGE-**********
+              └ SOPS age private key: decrypts every SOPS-encrypted secret this key guards (sops, kluctl, Flux, helm-secrets)
+
+Run `jit migrate /Users/alex/.zshrc --dry-run` to see the guided fix plan for it.
 No secret values are ever printed in full. Run `jit scan --format ndjson` for machine-readable output (same redaction rules apply).
 ```
 
 ## How to read a finding block
 
-Each non-empty category opens with a bold header and a rule. Within it, every block gets a `•`-marked header (a file path, or a pattern name for findings collapsed across files), and each finding is one aligned row: line number (when known), severity, key name, and masked value line up in columns, with the free-form reason hanging on its own `└` line beneath, where it can wrap on a narrow terminal without breaking the columns. Findings with neither a key nor a value (a plaintext `.env` file's presence, an unencrypted key) keep their reason inline next to the severity.
+Each non-empty category opens with a bold header and its finding count (`[Credential Files] 5`). Within it, every block gets a `•`-marked header (a file path, or a pattern name for findings collapsed across files), and each finding is one aligned row: line number (when known), severity, key name, and masked value line up in columns, with the free-form reason hanging on its own `└` line beneath, where it can wrap on a narrow terminal without breaking the columns. Findings with neither a key nor a value (a plaintext `.env` file's presence, an unencrypted key) keep their reason inline next to the severity.
 
 ## What made this Critical
 
