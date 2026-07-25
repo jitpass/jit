@@ -74,6 +74,33 @@ func (rec BackupRecord) restoreMode() os.FileMode {
 	return os.FileMode(parsed) & 0o666
 }
 
+// OriginalModeFor returns the permission bits path had when jit last backed
+// it up, or defaultRestoreMode when nothing was recorded (every backup taken
+// before BackupRecord.Mode existed, and any path jit never backed up).
+//
+// It exists for the write-back paths that do NOT restore backed-up bytes —
+// UnmountFile and RestorePointerFile rebuild a file from current vault values
+// — which therefore have no record in hand and used to hardcode 0600. That
+// left `jit unmount` and `jit migrate remove` handing back a 0644 file as
+// 0600 even after RestoreFromBackup learned to preserve it, so the same
+// project could come back with different permissions depending on which
+// reversal the user reached for.
+//
+// Callers must still CREATE at defaultRestoreMode and widen only after the
+// secret bytes are written; see RestoreFromBackup.
+func OriginalModeFor(root, path string) os.FileMode {
+	recs, err := LoadBackupRecords(root)
+	if err != nil {
+		return defaultRestoreMode
+	}
+	for _, rec := range LatestBackups(recs) {
+		if rec.OriginalPath == path {
+			return rec.restoreMode()
+		}
+	}
+	return defaultRestoreMode
+}
+
 type backupIndexFile struct {
 	Backups []BackupRecord `yaml:"backups"`
 }
