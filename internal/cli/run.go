@@ -273,7 +273,10 @@ func requestRunCompatVia(c *agent.Client, w io.Writer, runMounts, global []agent
 				}
 			}
 			if len(swapped) > 0 {
-				fmt.Fprintf(w, "jit run: %s is a compatibility file for this run (real values are in the environment; the file itself is inert)\n", strings.Join(swapped, ", "))
+				fmt.Fprintf(w, "jit run: %s %s for this run (real values are in the environment; %s inert)\n",
+					strings.Join(swapped, ", "),
+					pluralWord(len(swapped), "is a compatibility file", "are compatibility files"),
+					pluralWord(len(swapped), "the file itself is", "the files themselves are"))
 			}
 			if len(granted) > 0 {
 				fmt.Fprintf(w, "jit run: %s serving real values to this run's processes only (until it exits)\n", strings.Join(granted, ", "))
