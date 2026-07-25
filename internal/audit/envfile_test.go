@@ -218,6 +218,66 @@ DESCOPE_MGMT_KEY=K3G4pkXnDUxYyKIbkdVPTNKNy5zLPyf2XxaT6KAboEHSHTgCWOA4I2hIaa6EuXK
 	}
 }
 
+// fakeStripeLiveKey is assembled at runtime, never written as one literal:
+// a string that satisfies stripeLiveKey's own regexp necessarily also
+// satisfies GitHub's secret scanner, and push protection rejects the whole
+// push when it finds one — which is precisely the check this project exists
+// to make people care about. Matches tokenpatterns_test.go's convention.
+var fakeStripeLiveKey = "sk_" + "live_" + strings.Repeat("a", 24)
+
+// A .env holding SEVERAL credentials used to report only the one signal that
+// happened to set its severity — a real file with a Postgres URL, a Stripe
+// live key, and an AWS secret key reported the database URL and nothing else,
+// so the sk_live_ key never appeared in the report at all and the user had no
+// way to know the scanner had seen it. The finding stays file-level per the
+// RFC; its evidence now names everything.
+func TestScanEnvFilesEvidenceNamesEveryCredential(t *testing.T) {
+	home := t.TempDir()
+	writeFile(t, filepath.Join(home, ".env"), `# demo app config
+DATABASE_URL=postgres://app:s3cr3tpassw0rd@db.internal:5432/appdb
+STRIPE_API_KEY=`+fakeStripeLiveKey+`
+AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+PORT=3000
+DEBUG=true
+`)
+	findings, err := ScanEnvFiles(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1 file-level finding", len(findings))
+	}
+	ev := findings[0].Evidence
+	for _, want := range []string{"STRIPE_API_KEY", "AWS_SECRET_ACCESS_KEY"} {
+		if !strings.Contains(ev, want) {
+			t.Errorf("evidence never mentions %s, the user can't act on a credential the report doesn't name; got: %q", want, ev)
+		}
+	}
+	// Non-secret config is not a credential and must not be listed as one.
+	for _, unwanted := range []string{"PORT", "DEBUG"} {
+		if strings.Contains(ev, unwanted) {
+			t.Errorf("evidence names %s, which is ordinary config, not a credential; got: %q", unwanted, ev)
+		}
+	}
+}
+
+// A file with exactly one credential must read as it always did — no dangling
+// "; also ..." clause with nothing after it.
+func TestScanEnvFilesEvidenceUnchangedForSingleCredential(t *testing.T) {
+	home := t.TempDir()
+	writeFile(t, filepath.Join(home, ".env"), "STRIPE_API_KEY="+fakeStripeLiveKey+"\n")
+	findings, err := ScanEnvFiles(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+	if strings.Contains(findings[0].Evidence, "also") {
+		t.Errorf("single-credential file grew an 'also' clause with nothing to add: %q", findings[0].Evidence)
+	}
+}
+
 // TestScanEnvFilesTemplateNotEscalatedBySecretShapedNames confirms templates
 // are exempt from the key-name check above: an .env.example's entire
 // purpose is documenting which secret-shaped variable NAMES a real .env

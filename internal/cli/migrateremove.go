@@ -109,7 +109,16 @@ type projectRemovalPlan struct {
 	// vault forever.
 	orphanSecrets []string
 	backups       []migrate.BackupRecord
-	jitDir        string
+	// jitDirs are every .jit/ store this removal deletes: the named
+	// project's own first, then any NESTED project root under its tree,
+	// deepest-last. Nested roots exist because migrate gives each migrated
+	// .env its OWN project directory (see migrate.go's envProfilesRoot), so
+	// `proj/sub/.env` builds a second store at `proj/sub/.jit` — which a
+	// single `filepath.Join(cwd, ".jit")` silently left behind, stranding a
+	// profile manifest that pointed at vault secrets this same removal had
+	// just deleted. `jit run` in that subdirectory then failed with a bare
+	// "secret not found" and nothing to act on.
+	jitDirs []string
 }
 
 func runMigrateRemove(cmd *cobra.Command, args []string) error {
@@ -258,7 +267,7 @@ func removeOneProject(cmd *cobra.Command, root, home, projectRoot string) error 
 	}
 	if len(plan.mounts) == 0 && len(plan.inPlace) == 0 && len(plan.companions) == 0 &&
 		len(plan.profileInfos) == 0 && len(plan.ownedGlobal) == 0 && len(plan.backups) == 0 &&
-		len(plan.deletePaths) == 0 && plan.jitDir == "" {
+		len(plan.deletePaths) == 0 && len(plan.jitDirs) == 0 {
 		fmt.Fprintf(out, "No jit artifacts found in %s, nothing to remove. (Machine-level migrations are reversed with `jit migrate undo`.)\n", displayPath(home, projectRoot))
 		return nil
 	}
@@ -375,14 +384,14 @@ func removeOneProject(cmd *cobra.Command, root, home, projectRoot string) error 
 		}
 	}
 
-	if plan.jitDir != "" {
-		if err := os.RemoveAll(plan.jitDir); err != nil {
-			return fmt.Errorf("jit migrate remove: removing %s: %w", plan.jitDir, err)
+	for _, dir := range plan.jitDirs {
+		if err := os.RemoveAll(dir); err != nil {
+			return fmt.Errorf("jit migrate remove: removing %s: %w", dir, err)
 		}
 	}
 
 	fmt.Fprintf(out, "\nRemoved jit from this project: %d file(s) restored to plaintext, %d vault secret(s) and %d backup(s) deleted, %s removed.\n",
-		len(plan.mounts)+len(plan.inPlace), len(plan.deletePaths), len(plan.backups), displayPath(home, plan.jitDir))
+		len(plan.mounts)+len(plan.inPlace), len(plan.deletePaths), len(plan.backups), displayJitDirs(home, plan.jitDirs))
 	if len(plan.keptShared) > 0 {
 		fmt.Fprintf(out, "Kept %d vault secret(s) another profile still references: %s\n", len(plan.keptShared), strings.Join(plan.keptShared, ", "))
 	}
@@ -777,6 +786,27 @@ func buildProjectRemovalPlan(root, home, cwd string, rv *vault.Vault) (projectRe
 	if err != nil {
 		return plan, err
 	}
+	// ListAll only sees cwd's own store (plus the global one). A nested
+	// project root's profiles are just as much part of this project — their
+	// secrets already get swept by the Origin pass below, so without this
+	// their manifests would survive pointing at deleted vault entries.
+	nestedRoots, err := discoverNestedProjectRoots(cwd)
+	if err != nil {
+		return plan, err
+	}
+	for _, nested := range nestedRoots {
+		names, err := profile.ListNames(nested)
+		if err != nil {
+			return plan, err
+		}
+		for _, name := range names {
+			path, err := profile.Path(nested, name)
+			if err != nil {
+				return plan, err
+			}
+			infos = append(infos, profile.Info{Name: name, Scope: profile.ScopeProject, Path: path})
+		}
+	}
 	deleteSet := map[string]bool{}
 	ownedPaths := map[string]bool{}
 	plan.mcpRestores = map[string]map[string]string{}
@@ -904,11 +934,50 @@ func buildProjectRemovalPlan(root, home, cwd string, rv *vault.Vault) (projectRe
 		}
 	}
 
-	jitDir := filepath.Join(cwd, ".jit")
-	if info, err := os.Stat(jitDir); err == nil && info.IsDir() {
-		plan.jitDir = jitDir
+	if info, err := os.Stat(filepath.Join(cwd, ".jit")); err == nil && info.IsDir() {
+		plan.jitDirs = append(plan.jitDirs, filepath.Join(cwd, ".jit"))
+	}
+	for _, nested := range nestedRoots {
+		plan.jitDirs = append(plan.jitDirs, filepath.Join(nested, ".jit"))
 	}
 	return plan, nil
+}
+
+// discoverNestedProjectRoots returns every directory strictly BELOW cwd that
+// holds its own .jit/ store, shallowest first. `jit migrate <dir>` walks a
+// tree and migrates each .env it finds into a project rooted at that file's
+// own directory, so one `jit migrate ~/proj` can build several stores —
+// ~/proj/.jit and ~/proj/sub/.jit — that `jit migrate remove ~/proj` must
+// tear down together to keep its "removes jit from this project completely"
+// promise. A .jit directory is never descended into (nothing nests inside a
+// store), and an unreadable subtree is skipped rather than failing the whole
+// removal: a store we cannot see is one we cannot delete either way.
+func discoverNestedProjectRoots(cwd string) ([]string, error) {
+	var roots []string
+	err := filepath.WalkDir(cwd, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if path == cwd {
+				return err
+			}
+			return fs.SkipDir
+		}
+		if !d.IsDir() || d.Name() != ".jit" {
+			return nil
+		}
+		// cwd's OWN store is the named project's, already accounted for by
+		// the caller — skipping the directory (not just the append) is also
+		// what stops the walk descending into any store.
+		if filepath.Dir(path) == cwd {
+			return fs.SkipDir
+		}
+		roots = append(roots, filepath.Dir(path))
+		return fs.SkipDir
+	})
+	if err != nil {
+		return nil, fmt.Errorf("scanning %s for nested jit projects: %w", cwd, err)
+	}
+	sort.Strings(roots)
+	return roots, nil
 }
 
 // pathWithinDir reports whether p is dir itself or lives under dir's tree.
@@ -984,9 +1053,22 @@ func printProjectRemovalPlan(out interface{ Write([]byte) (int, error) }, home s
 		}
 		fmt.Fprintln(out)
 	}
-	if plan.jitDir != "" {
-		fmt.Fprintf(out, "The %s directory is removed entirely.\n", displayPath(home, plan.jitDir))
+	if n := len(plan.jitDirs); n > 0 {
+		fmt.Fprintf(out, "The %s %s removed entirely.\n",
+			displayJitDirs(home, plan.jitDirs), pluralWord(n, "directory is", "directories are"))
 	}
+}
+
+// displayJitDirs renders a plan's .jit stores for the confirm prompt and the
+// closing summary. Naming each one matters here: a nested store is exactly
+// the thing a user does not know exists until `jit migrate remove` says it
+// deleted it.
+func displayJitDirs(home string, dirs []string) string {
+	shown := make([]string, 0, len(dirs))
+	for _, d := range dirs {
+		shown = append(shown, displayPath(home, d))
+	}
+	return strings.Join(shown, ", ")
 }
 
 func init() {

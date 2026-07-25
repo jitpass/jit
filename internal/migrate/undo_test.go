@@ -34,6 +34,76 @@ func TestBackupSecretFileWritesUndoIndexRecord(t *testing.T) {
 	}
 }
 
+// Undo says it restores a file "byte-for-byte", and it did — for content.
+// The permission bits were not restored: every restore created the file at
+// jit's 0600 default, so a 0644 .env came back 0600. Tightening is the safer
+// direction, but it's still a silent change to a file the user was told was
+// put back as it was, and it breaks anything that has to read the file as
+// another account or through a container bind-mount.
+func TestRestoreFromBackupRestoresOriginalFileMode(t *testing.T) {
+	v := newTestVault(t)
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	writeFile(t, envPath, "API_KEY=sk_live_123\n")
+	if err := os.Chmod(envPath, 0o644); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+
+	if _, err := ApplyEnvFile(v, dir, envPath); err != nil {
+		t.Fatalf("ApplyEnvFile: %v", err)
+	}
+	recs, err := LoadBackupRecords(v.Root)
+	if err != nil {
+		t.Fatalf("LoadBackupRecords: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("len(records) = %d, want 1", len(recs))
+	}
+	if recs[0].Mode != "644" {
+		t.Errorf("recorded Mode = %q, want \"644\"; without it the restore can't know what to put back", recs[0].Mode)
+	}
+	if err := RestoreFromBackup(v, recs[0]); err != nil {
+		t.Fatalf("RestoreFromBackup: %v", err)
+	}
+	info, err := os.Lstat(envPath)
+	if err != nil {
+		t.Fatalf("stat restored file: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o644 {
+		t.Errorf("restored mode = %#o, want %#o, the file the user had back exactly as it was", got, 0o644)
+	}
+}
+
+// A record with no Mode is every backup taken before the field existed. It
+// must keep restoring at 0600 — the historical behavior — rather than
+// landing on a zero mode no one can read.
+func TestRestoreFromBackupDefaultsModeWhenUnrecorded(t *testing.T) {
+	v := newTestVault(t)
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	writeFile(t, envPath, "API_KEY=sk_live_123\n")
+
+	if _, err := ApplyEnvFile(v, dir, envPath); err != nil {
+		t.Fatalf("ApplyEnvFile: %v", err)
+	}
+	recs, err := LoadBackupRecords(v.Root)
+	if err != nil {
+		t.Fatalf("LoadBackupRecords: %v", err)
+	}
+	rec := recs[0]
+	rec.Mode = "" // as a pre-Mode index entry would deserialize
+	if err := RestoreFromBackup(v, rec); err != nil {
+		t.Fatalf("RestoreFromBackup: %v", err)
+	}
+	info, err := os.Lstat(envPath)
+	if err != nil {
+		t.Fatalf("stat restored file: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("restored mode = %#o, want %#o for an unrecorded mode", got, 0o600)
+	}
+}
+
 // TestRestoreFromBackupRoundTripsMountedEnvFile is the core undo
 // guarantee: migrate a real .env (the file becomes a FIFO), restore it,
 // and get the EXACT original bytes back as a plain regular file —

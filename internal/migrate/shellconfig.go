@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -335,7 +336,15 @@ func backupSecretFile(v *vault.Vault, path string) (string, error) {
 	// Index it for `jit migrate undo` (undo.go): backupVaultPath's
 	// sanitization is lossy, so without this record the original path
 	// can't be recovered from the vault path alone.
-	if err := appendBackupRecord(v.Root, BackupRecord{OriginalPath: absPath, VaultPath: vaultPath, UnixTS: ts}); err != nil {
+	// Capture the permission bits alongside the bytes so undo can put the
+	// file back as it was, not at jit's 0600 default — see BackupRecord.Mode.
+	// A stat failure is not fatal: an unrecorded mode just means the historic
+	// 0600 restore, which is what every pre-existing backup gets anyway.
+	rec := BackupRecord{OriginalPath: absPath, VaultPath: vaultPath, UnixTS: ts}
+	if info, statErr := os.Stat(path); statErr == nil {
+		rec.Mode = strconv.FormatUint(uint64(info.Mode().Perm()), 8)
+	}
+	if err := appendBackupRecord(v.Root, rec); err != nil {
 		return "", fmt.Errorf("recording backup of %s in the undo index: %w", path, err)
 	}
 	return vaultPath, nil

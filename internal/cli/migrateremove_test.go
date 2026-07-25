@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -331,6 +332,58 @@ func TestBuildProjectRemovalPlanSweepsOriginOrphans(t *testing.T) {
 	}
 	if len(plan.orphanSecrets) != 1 || plan.orphanSecrets[0] != "custom_scripts-descope/DESCOPE_PROJECT_1" {
 		t.Errorf("orphanSecrets = %v, want the origin-swept secret reported as an orphan", plan.orphanSecrets)
+	}
+}
+
+// `jit migrate <dir>` roots every migrated .env at that FILE's own directory
+// (see migrate.go's envProfilesRoot), so migrating a project with a nested
+// `sub/.env` builds a SECOND store at sub/.jit. Removal used to look only at
+// filepath.Join(cwd, ".jit"), so it deleted the nested store's vault secret
+// (swept by Origin) while leaving its manifest on disk — `jit run` in that
+// subdirectory then died with a bare "secret not found" pointing at a secret
+// nothing could restore, and the project the help text promised to remove
+// "completely" was still half there.
+func TestBuildProjectRemovalPlanSweepsNestedProjectRoots(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+
+	for dir, manifest := range map[string]string{
+		filepath.Join(cwd, ".jit", "profiles"):        "TOP: myapp/TOP\n",
+		filepath.Join(cwd, "sub", ".jit", "profiles"): "NESTED: sub/NESTED\n",
+	} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		name := "myapp.yaml"
+		if strings.Contains(dir, "sub") {
+			name = "sub.yaml"
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(manifest), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	vaultRoot := filepath.Join(home, "Library", "Application Support", "jitpass")
+	plan, err := buildProjectRemovalPlan(vaultRoot, home, cwd, &vault.Vault{Root: vaultRoot})
+	if err != nil {
+		t.Fatalf("buildProjectRemovalPlan: %v", err)
+	}
+
+	want := []string{filepath.Join(cwd, ".jit"), filepath.Join(cwd, "sub", ".jit")}
+	if !reflect.DeepEqual(plan.jitDirs, want) {
+		t.Errorf("jitDirs = %v, want both stores %v", plan.jitDirs, want)
+	}
+	if len(plan.deletePaths) != 2 || plan.deletePaths[0] != "myapp/TOP" || plan.deletePaths[1] != "sub/NESTED" {
+		t.Errorf("deletePaths = %v, want both stores' secrets [myapp/TOP sub/NESTED]", plan.deletePaths)
+	}
+	var nested bool
+	for _, info := range plan.profileInfos {
+		if info.Name == "sub" {
+			nested = true
+		}
+	}
+	if !nested {
+		t.Errorf("nested profile not in plan.profileInfos = %+v, it would survive pointing at a deleted secret", plan.profileInfos)
 	}
 }
 

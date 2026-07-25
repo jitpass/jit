@@ -474,7 +474,11 @@ func looksLikeConfig(name string) bool {
 var vaultCmd = &cobra.Command{
 	Use:     "vault",
 	GroupID: groupSecrets,
-	Short:   "Manage the local encrypted secret vault",
+	// See runCommandGroup: without a Run of its own, `jit vault clen`
+	// printed help and exited 0 instead of failing on the typo.
+	RunE:        runCommandGroup,
+	Annotations: commandGroupAnnotations(),
+	Short:       "Manage the local encrypted secret vault",
 	Long: "jit vault stores each secret as its own encrypted file under jit's data\n" +
 		"directory, no monolithic database.\n\n" +
 		"Every command that reads, writes, or destroys a secret (get, set, rm,\n" +
@@ -1663,6 +1667,14 @@ func confirmPrompt(cmd *cobra.Command, prompt string) bool {
 	fmt.Fprintln(out)
 	_, _ = color.New(color.Bold).Fprint(out, prompt)
 	line, err := readLineUnbuffered(cmd.InOrStdin())
+	// On a terminal the user's own Return echoes the newline that closes this
+	// line. On a pipe nothing echoes, so without this the next thing printed
+	// continues the prompt's line — a scripted migrate rendered
+	// "Proceed? [y/N] [.env file(s) migrated] 3", with the result header
+	// swallowed into the question.
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		fmt.Fprintln(out)
+	}
 	if err != nil && line == "" {
 		return false
 	}

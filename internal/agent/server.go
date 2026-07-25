@@ -8,6 +8,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -434,6 +435,20 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	var req Request
 	if err := json.NewDecoder(io.LimitReader(conn, maxRequestBytes)).Decode(&req); err != nil {
+		// A peer that closed without sending a single byte is a liveness
+		// probe, not a malformed request: Client.Reachable() dials and
+		// closes exactly like this, and it runs from a dozen CLI paths
+		// (run, undo, unmount, vault, migrate remove, rekey), so recording
+		// it would file two KindError events per `jit run`. That noise
+		// lands in the durable audit log next to the events kind=error
+		// exists for — a peer the kernel says isn't this user, probing the
+		// agent — and drowns them. json.Decode reports this exact case as
+		// a bare io.EOF; a peer that sent SOME bytes and then died gives
+		// io.ErrUnexpectedEOF (or a syntax error) and is still recorded.
+		// There's nothing to reply to either way — the peer is gone.
+		if errors.Is(err, io.EOF) {
+			return
+		}
 		s.recordServeError("decode", fmt.Sprintf("bad request: %v", err), s.identify(conn))
 		_ = json.NewEncoder(conn).Encode(Response{OK: false, Error: fmt.Sprintf("bad request: %v", err)})
 		return
