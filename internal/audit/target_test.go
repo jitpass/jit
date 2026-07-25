@@ -99,6 +99,47 @@ func TestTargetedScanDirectory(t *testing.T) {
 	}
 }
 
+// TestTargetedScanDirectoryCoversEveryDiscoveryCategory locks in the property
+// that made scanTargetDir dispatch from the shared categories table instead of
+// naming classifiers by hand: a directory scan must cover EVERY category that
+// discovers its files by name, not whichever subset someone remembered to list
+// here. The project-local .npmrc below is the case that was actually missing —
+// the machine-wide walk found it, a targeted directory scan silently did not.
+func TestTargetedScanDirectoryCoversEveryDiscoveryCategory(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, ".env"), "API_KEY=ghp_1234567890123456789012345678901234ab\n")
+	writeFile(t, filepath.Join(root, ".npmrc"), "//registry.npmjs.org/:_authToken=npm_exampletoken1234\n")
+	writeFile(t, filepath.Join(root, ".mcp.json"), `{"mcpServers":{"gh":{"env":{"GITHUB_TOKEN":"ghp_exampletokenvalue1234"}}}}`)
+	writeFile(t, filepath.Join(root, "terraform.tfvars"), "db_password = \"examplevalue123\"\n")
+
+	findings, _, err := TargetedScan(Config{HomeDir: root}, []string{root})
+	if err != nil {
+		t.Fatalf("TargetedScan: %v", err)
+	}
+
+	// One expectation per category carrying a classify half, derived from the
+	// table itself so a new discovery category can't be added without either
+	// being covered here or failing this test.
+	wantByCategory := map[string]string{
+		".env files":       FindingTypeEnvFilePresent,
+		"credential files": FindingTypeCredentialFile,
+		"MCP configs":      FindingTypeMCPEmbeddedSecret,
+		"IaC files":        FindingTypeIACVariableFile,
+	}
+	for _, c := range categories {
+		if c.classify == nil {
+			continue
+		}
+		ft, ok := wantByCategory[c.name]
+		if !ok {
+			t.Fatalf("category %q discovers files by name but this test has no fixture for it — add one", c.name)
+		}
+		if got := countByType(findings, ft); got != 1 {
+			t.Errorf("%s (%s) = %d findings, want 1 — a targeted directory scan is missing this category", c.name, ft, got)
+		}
+	}
+}
+
 // TestTargetedScanDedupesOverlappingTargets: naming a dir and a file inside it
 // must not report that file twice.
 func TestTargetedScanDedupesOverlappingTargets(t *testing.T) {

@@ -115,9 +115,14 @@ save-exact=true
 	writeFile(t, filepath.Join(home, "code", "myproject", ".npmrc"), `//registry.blockaidpypi.example/:_password=projectsecret
 `)
 
-	findings, err := scanNpmrc(Config{HomeDir: home})
+	// Through ScanCredentialFiles, not one npmrc function: the two halves of
+	// the npm check live apart now (scanGlobalNpmrc probes the fixed
+	// ~/.npmrc, classifyProjectNpmrc is fed project-local ones by the shared
+	// walk), and what matters is that the category as a whole still reports
+	// both. Nothing else in this temp home can produce a finding.
+	findings, err := ScanCredentialFiles(Config{HomeDir: home})
 	if err != nil {
-		t.Fatalf("scanNpmrc: %v", err)
+		t.Fatalf("ScanCredentialFiles: %v", err)
 	}
 	if len(findings) != 2 {
 		t.Fatalf("got %d findings, want 2 (global + project-local)", len(findings))
@@ -337,9 +342,9 @@ func TestScanNpmrcSkipsGlobalLiveMountFIFO(t *testing.T) {
 	mkdirAll(t, filepath.Join(home, "proj"))
 	writeFile(t, filepath.Join(home, "proj", ".npmrc"), "//registry.npmjs.org/:_authToken=npm_abc123def456\n")
 
-	findings, err := scanNpmrc(Config{HomeDir: home})
+	findings, err := ScanCredentialFiles(Config{HomeDir: home})
 	if err != nil {
-		t.Fatalf("scanNpmrc: %v", err)
+		t.Fatalf("ScanCredentialFiles: %v", err)
 	}
 	if len(findings) != 1 {
 		t.Fatalf("got %d findings, want exactly 1 (the project .npmrc, not the global FIFO)", len(findings))
@@ -411,5 +416,85 @@ func TestScanDockerConfigMissingOrMalformed(t *testing.T) {
 	writeFile(t, filepath.Join(home, ".docker", "config.json"), "not json at all")
 	if findings, err := scanDockerConfig(Config{HomeDir: home}); err != nil || len(findings) != 0 {
 		t.Fatalf("malformed file: findings=%v err=%v, want none", findings, err)
+	}
+}
+
+// TestScanCargoCredentials covers the crates.io publish token in both the
+// modern and legacy file names, and both table shapes cargo writes:
+// [registry] for crates.io itself and [registries.<name>] for an alternate.
+func TestScanCargoCredentials(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, ".cargo"))
+	writeFile(t, filepath.Join(home, ".cargo", "credentials.toml"), `[registry]
+token = "cio2ExampleCratesIoTokenValue"
+
+[registries.internal]
+token = "altExampleRegistryTokenValue"
+`)
+
+	findings, err := scanCargoCredentials(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("scanCargoCredentials: %v", err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("got %d findings, want 2 (crates.io + the alternate registry): %+v", len(findings), findings)
+	}
+	// Sorted key order: "registries.internal" sorts before "registry".
+	if *findings[0].KeyName != "registries.internal/token" {
+		t.Errorf("KeyName[0] = %q, want %q", *findings[0].KeyName, "registries.internal/token")
+	}
+	if !strings.Contains(findings[0].Evidence, "internal") {
+		t.Errorf("evidence should name the alternate registry, got %q", findings[0].Evidence)
+	}
+	if !strings.Contains(findings[1].Evidence, "crates.io") {
+		t.Errorf("evidence should name crates.io, got %q", findings[1].Evidence)
+	}
+	for _, f := range findings {
+		if f.Severity != SeverityHigh {
+			t.Errorf("severity = %q, want high (it publishes crates as you)", f.Severity)
+		}
+		if f.ValuePreview == nil || strings.Contains(*f.ValuePreview, "TokenValue") {
+			t.Errorf("value must be masked, got %v", f.ValuePreview)
+		}
+	}
+}
+
+// TestScanCargoCredentialsLegacyFileName: cargo still honors the
+// extensionless name for anyone who logged in before 1.39.
+func TestScanCargoCredentialsLegacyFileName(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, ".cargo"))
+	writeFile(t, filepath.Join(home, ".cargo", "credentials"), "[registry]\ntoken = \"cio2LegacyExampleTokenValue\"\n")
+
+	findings, err := scanCargoCredentials(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("scanCargoCredentials: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+}
+
+// TestScanFindsCargoTokenDespitePrunedCargoDir is the whole point of making
+// this a fixed-path check: ~/.cargo is in noiseDirs, so a discovery walk never
+// descends into it. A machine-wide Scan must still report the token sitting at
+// the top of that pruned tree — and must not report the vendored crate source
+// underneath it.
+func TestScanFindsCargoTokenDespitePrunedCargoDir(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, ".cargo", "registry", "src", "somecrate"))
+	writeFile(t, filepath.Join(home, ".cargo", "credentials.toml"), "[registry]\ntoken = \"cio2ExampleCratesIoTokenValue\"\n")
+	// A vendored crate's own fixture .env: pruned, must never be reported.
+	writeFile(t, filepath.Join(home, ".cargo", "registry", "src", "somecrate", ".env"), "API_KEY=vendoredfixturevalue\n")
+
+	findings, _, err := Scan(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if got := countByType(findings, FindingTypeCredentialFile); got != 1 {
+		t.Fatalf("credential_file = %d, want 1 (the cargo token): %+v", got, findings)
+	}
+	if got := countByType(findings, FindingTypeEnvFilePresent); got != 0 {
+		t.Errorf("env_file_present = %d, want 0 — .cargo is pruned, vendored crate fixtures must stay invisible", got)
 	}
 }

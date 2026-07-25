@@ -6,9 +6,10 @@ package audit
 import (
 	"encoding/json"
 	"fmt"
-	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 )
 
 // mcpConfigFileNames are exact filenames recognized as MCP/AI-tool configs
@@ -46,40 +47,51 @@ type mcpServerEntry struct {
 // (2026-07-06) found a plain tool-endpoint URL (CAIDO_URL) getting flagged
 // exactly like a real credential, which is noise, not signal.
 func ScanMCPConfigs(cfg Config) ([]Finding, error) {
-	var findings []Finding
-
-	claudeDesktopPath := filepath.Join(cfg.HomeDir, "Library", "Application Support", "Claude", "claude_desktop_config.json")
-	if _, err := os.Stat(claudeDesktopPath); err == nil {
-		f, ferr := scanMCPConfigFile(cfg, claudeDesktopPath)
-		if ferr != nil {
-			return nil, ferr
-		}
-		findings = append(findings, f...)
+	fixed, err := scanClaudeDesktopMCPConfig(cfg)
+	if err != nil {
+		return nil, err
 	}
-
-	err := walkHomeDir(cfg.HomeDir, func(path string, d fs.DirEntry) error {
-		if path == claudeDesktopPath {
-			return nil // already scanned above by its fixed path
-		}
-		f, ferr := classifyMCPFile(cfg, path, d.Name())
-		if ferr != nil {
-			return nil // malformed file — skip it, don't fail the whole audit
-		}
-		findings = append(findings, f...)
-		return nil
-	})
-	return findings, err
+	walked, err := walkForCategory(cfg, classifyMCPFile)
+	// Composed exactly as Scan composes the two halves — see
+	// ScanCredentialFiles. No walk can currently reach the Claude Desktop
+	// config (~/Library is pruned), so nothing is dropped in practice; using
+	// the same expression everywhere is what stops that from being a fact
+	// someone has to re-verify per category.
+	return append(fixed, dropAlreadyReported(fixed, walked)...), err
 }
 
-// classifyMCPFile is the name-gated per-file half of ScanMCPConfigs, split out
-// so `jit scan <path>`'s targeted walk recognizes the same mcp.json /
-// .mcp.json / claude_desktop_config.json names a machine-wide walk does.
-// Returns nil for a name that isn't a known MCP config file.
-func classifyMCPFile(cfg Config, path, name string) ([]Finding, error) {
-	if !mcpConfigFileNames[name] {
-		return nil, nil
+// scanClaudeDesktopMCPConfig is the known-location half of the MCP category:
+// Claude Desktop's config lives at one fixed path under ~/Library, which the
+// discovery walk deliberately never reaches (noiseDirs prunes Library), so it
+// has to be probed directly.
+func scanClaudeDesktopMCPConfig(cfg Config) ([]Finding, error) {
+	path := filepath.Join(cfg.HomeDir, "Library", "Application Support", "Claude", "claude_desktop_config.json")
+	if _, err := os.Stat(path); err != nil {
+		return nil, nil // absent (or unstattable) — nothing to scan, never an error
 	}
 	return scanMCPConfigFile(cfg, path)
+}
+
+// classifyMCPFile is the name-gated per-file half of the MCP category, split
+// out so the machine-wide walk (see categories) and `jit scan <path>`'s
+// targeted walk recognize the same mcp.json / .mcp.json /
+// claude_desktop_config.json names. Returns nil for a name that isn't a known
+// MCP config file, and for one that is but can't be parsed (skip, never fail).
+//
+// No guard against re-reporting the Claude Desktop config scanned above is
+// needed: walkHomeDir prunes ~/Library outright, so no home walk can reach
+// that path. Leaving the guard out is also what keeps `jit scan
+// ~/Library/Application\ Support/Claude` — a path the user named explicitly,
+// where the known-location half never runs — reporting anything at all.
+func classifyMCPFile(cfg Config, path, name string) []Finding {
+	if !mcpConfigFileNames[name] {
+		return nil
+	}
+	findings, err := scanMCPConfigFile(cfg, path)
+	if err != nil {
+		return nil
+	}
+	return findings
 }
 
 func scanMCPConfigFile(cfg Config, path string) ([]Finding, error) {
@@ -99,9 +111,15 @@ func scanMCPConfigFile(cfg Config, path string) ([]Finding, error) {
 		servers = mc.Servers
 	}
 
+	// Both loops iterate sorted keys rather than raw map order — see
+	// scanAWSCredentials for why. This file is where it bit hardest: a single
+	// mcp.json commonly holds several servers with several env keys each, so
+	// its findings reshuffled on every run.
 	var findings []Finding
-	for serverName, entry := range servers {
-		for envKey, envValue := range entry.Env {
+	for _, serverName := range slices.Sorted(maps.Keys(servers)) {
+		entry := servers[serverName]
+		for _, envKey := range slices.Sorted(maps.Keys(entry.Env)) {
+			envValue := entry.Env[envKey]
 			if envValue == "" {
 				continue
 			}

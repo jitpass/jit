@@ -193,6 +193,32 @@ func TestScanEnvFilesSkipsPointerFiles(t *testing.T) {
 	}
 }
 
+// TestScanEnvFilesSkipsInPlacePointerFiles is the regression test for GAPS.md
+// #66, the case TestScanEnvFilesSkipsPointerFiles' name-based check misses:
+// after `jit migrate`, a backup-suffixed .env file (.env.bak) is replaced in
+// place with jit pointer content while keeping its original name, so only the
+// content check (isJitPointerContent) can tell it apart from a real stray
+// backup. It holds only `KEY=jit://vault/...` lines, never a real value.
+// (Inherited from the suspicious-filename scanner's test file when schema
+// 0.10.0 removed that category — ScanEnvFiles is the only scanner that
+// reports a .env.bak now, so it owns this regression.)
+func TestScanEnvFilesSkipsInPlacePointerFiles(t *testing.T) {
+	home := t.TempDir()
+	pointer := "# jit pointer file — no secret values here, only vault paths.\n" +
+		"# Real values come from the live mount or `jit vault get`, never this file.\n" +
+		"API_KEY=jit://vault/oldproject-bak/API_KEY\n"
+	mkdirAll(t, filepath.Join(home, "proj"))
+	writeFile(t, filepath.Join(home, "proj", ".env.bak"), pointer)
+
+	findings, err := ScanEnvFiles(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("env findings = %+v, want none — a pointer file holds no real secret", findings)
+	}
+}
+
 // TestScanEnvFilesSecretShapedKeyEscalates locks in the exact real-world
 // case (2026-07-06) that motivated this fix: a real, company-wide
 // management key sitting in a variable named "..._MGMT_KEY" was rated Low,

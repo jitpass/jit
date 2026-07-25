@@ -4,6 +4,7 @@
 package audit
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -32,13 +33,13 @@ func TestComputeRiskLevel(t *testing.T) {
 		{"three findings -> medium", []Finding{
 			findingOfType(FindingTypeEnvFilePresent),
 			findingOfType(FindingTypeIACVariableFile),
-			findingOfType(FindingTypeSuspiciousFilename),
+			findingOfType(FindingTypeEnvFilePresent),
 		}, RiskLevelMedium},
 		{"five low-severity findings, none individually High -> high via count", []Finding{
 			findingOfType(FindingTypeEnvFilePresent),
 			findingOfType(FindingTypeEnvFilePresent),
 			findingOfType(FindingTypeIACVariableFile),
-			findingOfType(FindingTypeSuspiciousFilename),
+			findingOfType(FindingTypeEnvFilePresent),
 			findingOfType(FindingTypeIACVariableFile),
 		}, RiskLevelHigh},
 		{"single shell-config finding (Severity: High, as the real scanner produces) -> high regardless of count",
@@ -196,5 +197,56 @@ func TestCountProtectedMountsBestEffort(t *testing.T) {
 	}
 	if got := countProtectedMounts(filepath.Join(t.TempDir(), "missing.yaml")); got != 0 {
 		t.Errorf("countProtectedMounts(missing) = %d, want 0", got)
+	}
+}
+
+// TestScanConcurrentWalkIsCompleteAndStable covers the two things a concurrent
+// discovery walk can silently get wrong: dropping files (a merge that loses a
+// goroutine's buckets, a race on the shared result) and reordering findings
+// between runs (concurrent traversal has no inherent order, so discoverByWalk
+// sorts). The fixture is deliberately wide and deep enough to saturate
+// walkConcurrency, which is what exercises the inline-recursion fallback taken
+// when every pool slot is busy — the branch a small fixture never reaches.
+// Run this one under -race; it is the only test that would catch a regression
+// there.
+func TestScanConcurrentWalkIsCompleteAndStable(t *testing.T) {
+	home := t.TempDir()
+	const projects, subdirs = 40, 8
+	for i := range projects {
+		for j := range subdirs {
+			dir := filepath.Join(home, fmt.Sprintf("proj%02d", i), fmt.Sprintf("sub%d", j), "deep")
+			mkdirAll(t, dir)
+			writeFile(t, filepath.Join(dir, ".env"), "API_KEY=ghp_1234567890123456789012345678901234ab\n")
+			writeFile(t, filepath.Join(dir, ".npmrc"), "//registry.npmjs.org/:_authToken=npm_tok1234567890\n")
+			writeFile(t, filepath.Join(dir, "noise.txt"), "nothing to find here")
+		}
+	}
+	want := projects * subdirs
+
+	var first []Finding
+	for run := range 5 {
+		findings, _, err := Scan(Config{HomeDir: home})
+		if err != nil {
+			t.Fatalf("Scan: %v", err)
+		}
+		if got := countByType(findings, FindingTypeEnvFilePresent); got != want {
+			t.Fatalf("run %d: env_file_present = %d, want %d — the walk lost files", run, got, want)
+		}
+		if got := countByType(findings, FindingTypeCredentialFile); got != want {
+			t.Fatalf("run %d: credential_file = %d, want %d — the walk lost files", run, got, want)
+		}
+		if run == 0 {
+			first = findings
+			continue
+		}
+		if len(findings) != len(first) {
+			t.Fatalf("run %d: %d findings, first run had %d", run, len(findings), len(first))
+		}
+		for i := range findings {
+			if findings[i].RecordID != first[i].RecordID {
+				t.Fatalf("run %d: order is not stable, index %d is %s but was %s",
+					run, i, findings[i].FilePath, first[i].FilePath)
+			}
+		}
 	}
 }

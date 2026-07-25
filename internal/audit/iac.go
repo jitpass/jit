@@ -8,7 +8,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
-	"io/fs"
+	"maps"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -19,7 +20,7 @@ import (
 // base64-decode for signal inspection. Secrets max out at 1MiB cluster-side,
 // but a TLS bundle or embedded keystore can still be large, and the
 // escalation signals only ever match short human-scale strings — decoding
-// megabytes buys nothing but scan time (jit scan advertises ~340ms).
+// megabytes buys nothing but scan time (jit scan advertises ~70ms).
 const maxDecodedSecretValueBytes = 64 * 1024
 
 // ScanIACFiles implements RFC.md §4 category 6: IaC variable files.
@@ -41,19 +42,15 @@ const maxDecodedSecretValueBytes = 64 * 1024
 // confidentiality" (the Kubernetes docs' own words) — so we decode before
 // judging, exactly like an attacker would.
 func ScanIACFiles(cfg Config) ([]Finding, error) {
-	var findings []Finding
-	err := walkHomeDir(cfg.HomeDir, func(path string, d fs.DirEntry) error {
-		findings = append(findings, classifyIACFile(cfg, path, d.Name())...)
-		return nil
-	})
-	return findings, err
+	return walkForCategory(cfg, classifyIACFile)
 }
 
-// classifyIACFile is the per-file half of ScanIACFiles, split out so `jit scan
-// <path>`'s targeted walk applies the identical tfvars / *secret*.y(a)ml name
-// gates and structured-content checks a machine-wide walk does. An unreadable
-// or unparseable file yields no findings (skip, never fail) — matching the
-// walk closure it was extracted from.
+// classifyIACFile is the per-file half of ScanIACFiles, split out so the
+// machine-wide walk (see categories) and `jit scan <path>`'s targeted walk
+// apply the identical tfvars / *secret*.y(a)ml name gates and
+// structured-content checks. An unreadable or unparseable file yields no
+// findings (skip, never fail) — matching the walk closure it was extracted
+// from.
 func classifyIACFile(cfg Config, path, fileName string) []Finding {
 	isTFVars, isK8sCandidate := iacNameGates(fileName)
 	var findings []Finding
@@ -249,11 +246,15 @@ func inspectSecretDoc(doc k8sSecretDoc) (bool, k8sSecretInspection) {
 			insp.publicIP = ip
 		}
 	}
-	for _, v := range doc.Data {
-		inspectValue(v, true)
+	// Sorted keys, same reasoning as scanAWSCredentials — here it decides
+	// which public IP a manifest with more than one gets reported for
+	// (inspectValue keeps the first match), so raw map order meant the
+	// evidence line could name a different address on every run.
+	for _, k := range slices.Sorted(maps.Keys(doc.Data)) {
+		inspectValue(doc.Data[k], true)
 	}
-	for _, v := range doc.StringData {
-		inspectValue(v, false)
+	for _, k := range slices.Sorted(maps.Keys(doc.StringData)) {
+		inspectValue(doc.StringData[k], false)
 	}
 
 	if encrypted == total {

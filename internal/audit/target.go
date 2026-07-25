@@ -20,7 +20,7 @@ import (
 //
 //   - a directory is walked (same noiseDir/symlink bounds as the home walk)
 //     and every file run through the name-gated content scanners — env, IaC,
-//     MCP, and suspicious-filename — exactly as a machine-wide walk would.
+//     and MCP — exactly as a machine-wide walk would.
 //   - a regular file is classified directly, name gate bypassed: naming it is
 //     a strong statement of intent, so a shell rc / env / MCP / IaC file is
 //     routed to its scanner by name, a private-key body is content-sniffed,
@@ -68,22 +68,24 @@ func TargetedScan(cfg Config, targets []string) ([]Finding, ScanSummary, error) 
 }
 
 // scanTargetDir walks dir and runs the name-gated content scanners on every
-// regular file, mirroring what a machine-wide walk does under $HOME. The
-// generic vendor-token sweep is deliberately NOT run here — it is reserved for
-// files the user names explicitly (scanTargetFile), so a directory scan keeps
-// the low-false-positive, name-gated behavior of the full scan.
+// regular file, mirroring what a machine-wide walk does under $HOME. It
+// dispatches from the same categories table Scan does, rather than naming the
+// classifiers by hand, so a category can never be covered by one walk and
+// silently missed by the other — which is exactly what had happened to the
+// project-local .npmrc check, present in the machine-wide walk and absent
+// here. The generic vendor-token sweep is deliberately NOT run — it is
+// reserved for files the user names explicitly (scanTargetFile), so a
+// directory scan keeps the low-false-positive, name-gated behavior of the
+// full scan.
 func scanTargetDir(cfg Config, dir string) []Finding {
 	var findings []Finding
 	_ = walkHomeDir(dir, func(path string, d fs.DirEntry) error {
 		name := d.Name()
-		if fs, err := classifyEnvFile(cfg, path, name); err == nil {
-			findings = append(findings, fs...)
+		for _, c := range categories {
+			if c.classify != nil {
+				findings = append(findings, c.classify(cfg, path, name)...)
+			}
 		}
-		findings = append(findings, classifyIACFile(cfg, path, name)...)
-		if fs, err := classifyMCPFile(cfg, path, name); err == nil {
-			findings = append(findings, fs...)
-		}
-		findings = append(findings, classifySuspiciousFile(cfg, path, name)...)
 		return nil
 	})
 	return findings
@@ -109,13 +111,19 @@ func scanTargetFile(cfg Config, path string) []Finding {
 	}
 	if envFileNamePattern.MatchString(name) {
 		structured = true
-		if fs, err := classifyEnvFile(cfg, path, name); err == nil {
-			findings = append(findings, fs...)
-		}
+		findings = append(findings, classifyEnvFile(cfg, path, name)...)
 	}
 	if mcpConfigFileNames[name] {
 		structured = true
-		if fs, err := classifyMCPFile(cfg, path, name); err == nil {
+		findings = append(findings, classifyMCPFile(cfg, path, name)...)
+	}
+	// scanNpmrcFile directly, not classifyProjectNpmrc: that one excludes the
+	// global ~/.npmrc because the machine-wide scan's fixed half owns it, but
+	// a targeted scan has no fixed half — naming ~/.npmrc explicitly has to
+	// scan it, not skip it.
+	if name == ".npmrc" {
+		structured = true
+		if fs, err := scanNpmrcFile(path, cfg); err == nil {
 			findings = append(findings, fs...)
 		}
 	}
@@ -124,13 +132,11 @@ func scanTargetFile(cfg Config, path string) []Finding {
 		findings = append(findings, classifyIACFile(cfg, path, name)...)
 	}
 
-	// Content checks that don't care what the file is named. The private-key
-	// sniff (inSSHDir=false → a key here is "outside ~/.ssh") always runs;
-	// suspicious-name rules are orthogonal to the structured categories above.
+	// A content check that doesn't care what the file is named: the
+	// private-key sniff (inSSHDir=false → a key here is "outside ~/.ssh").
 	if f, err := inspectPrivateKeyFile(cfg, path, false); err == nil && f != nil {
 		findings = append(findings, *f)
 	}
-	findings = append(findings, classifySuspiciousFile(cfg, path, name)...)
 
 	// The vendor-token sweep is the fallback for a file no structured scanner
 	// recognizes (token.txt, config.txt, a random dump) — the whole reason a
