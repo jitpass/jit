@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/jitpass/jit/internal/wrap"
@@ -146,6 +147,17 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 	var prodMatch, ipMatch, secretShaped, tokenMatch bool
 	var publicIP, secretShapedKey, tokenVendor string
 	var tokenVerified bool
+	// EVERY credential in the file, not just the first one that set a flag
+	// above. The flags decide severity (one match is enough to escalate);
+	// these decide what the report actually names. A real .env holding a
+	// database URL, a Stripe live key, and an AWS secret used to report only
+	// "contains a value matching Database connection string with embedded
+	// credentials's known token format" — whichever the severity switch
+	// happened to reach first — so the scariest thing in the file (an
+	// sk_live_ key) went unmentioned and the user had no way to know the
+	// scan had seen it. See describeEnvHits.
+	var tokenHits []envTokenHit
+	var secretShapedKeys []string
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
@@ -177,10 +189,11 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 		// file (a real token pasted into a .env.example is exactly the
 		// kind of accident worth catching) and even when commented out
 		// (still plaintext at rest).
-		if !tokenMatch {
-			if vendor, verified, ok := MatchKnownTokenPattern(rawValue); ok {
+		if vendor, verified, ok := MatchKnownTokenPattern(rawValue); ok {
+			if !tokenMatch {
 				tokenMatch, tokenVendor, tokenVerified = true, vendor, verified
 			}
+			tokenHits = append(tokenHits, envTokenHit{key: key, vendor: vendor, verified: verified})
 		}
 		// Only active (uncommented) variables count toward this, only for
 		// real files (not templates — see below), and rawValue being
@@ -198,9 +211,12 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 		// exactly what a template is supposed to contain) — the name alone
 		// is not evidence of anything for a template, only its value is
 		// (still covered by prodMatch/ipMatch above, which inspect values).
-		if !isTemplate && m[1] == "" && rawValue != "" && !secretShaped && LooksLikeSecretKey(key) {
-			secretShaped = true
-			secretShapedKey = key
+		if !isTemplate && m[1] == "" && rawValue != "" && LooksLikeSecretKey(key) {
+			if !secretShaped {
+				secretShaped = true
+				secretShapedKey = key
+			}
+			secretShapedKeys = append(secretShapedKeys, key)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -253,6 +269,17 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 		)
 	}
 
+	// Name the REST of what's in the file. The switch above reports only the
+	// single signal that set the severity, which on a file holding several
+	// credentials silently drops the others — see the tokenHits comment.
+	// Appended after the switch rather than folded into each case so the
+	// leading sentence stays exactly as it was; the default (Low) branch
+	// means nothing matched at all, so there is never anything to append to
+	// it.
+	if rest := describeEnvHits(tokenHits, secretShapedKeys, tokenVendor, secretShapedKey); rest != "" {
+		f.Evidence += "; also " + rest
+	}
+
 	// If this .env-family file IS a wrappable CLI's own token Source (gemini's
 	// ~/.gemini/.env or ~/.env), add the wrap remediation here. ScanEnvFiles
 	// owns these paths and ScanWrappableCLITokens deliberately skips them to
@@ -265,4 +292,93 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 
 	f.RecordID = RecordID(f.FindingType, f.FilePath, nil)
 	return f, true, nil
+}
+
+// envTokenHit is one variable in a .env whose VALUE matched a known vendor
+// token pattern — the vendor plus the variable that held it.
+type envTokenHit struct {
+	key      string
+	vendor   string
+	verified bool
+}
+
+// maxNamedEnvHits caps how many credentials describeEnvHits names before it
+// summarizes the tail. A .env with thirty secret-shaped variables is real,
+// and the finding renders on a couple of report lines; the point is to tell
+// the user there is more than one thing here and what the notable ones are,
+// not to reproduce the file's variable list.
+const maxNamedEnvHits = 4
+
+// describeEnvHits renders every credential in a .env that the finding's own
+// severity sentence didn't already name. leadVendor and leadKey are what that
+// sentence covered, so they're skipped here rather than repeated.
+//
+// Vendor-pattern hits come first and carry their variable name ("Stripe Live
+// Secret Key in STRIPE_API_KEY"): a positively-matched token is stronger
+// evidence than a suggestive variable name, and naming the variable is what
+// makes the finding actionable — "there's a Stripe key in this file" is not
+// something the user can act on without knowing which line. Name-only matches
+// follow as a plain list. Returns "" when there's nothing left to say.
+func describeEnvHits(tokens []envTokenHit, shapedKeys []string, leadVendor, leadKey string) string {
+	var parts []string
+	seen := map[string]bool{}
+	leadCovered := false
+	for _, h := range tokens {
+		// The lead sentence names a vendor but not which variable held it, so
+		// the FIRST hit for that vendor is what it was describing.
+		if !leadCovered && h.vendor == leadVendor {
+			leadCovered = true
+			continue
+		}
+		if seen[h.key+"\x00"+h.vendor] {
+			continue
+		}
+		seen[h.key+"\x00"+h.vendor] = true
+		if h.verified {
+			parts = append(parts, fmt.Sprintf("%s in %q", h.vendor, h.key))
+		} else {
+			parts = append(parts, fmt.Sprintf("a possible %s in %q", h.vendor, h.key))
+		}
+	}
+
+	var names []string
+	nameSeen := map[string]bool{}
+	for _, k := range shapedKeys {
+		// Skip a variable already named above by its vendor match, and the
+		// one the lead sentence quoted.
+		if k == leadKey || nameSeen[k] {
+			continue
+		}
+		nameSeen[k] = true
+		if slices.ContainsFunc(tokens, func(h envTokenHit) bool { return h.key == k }) {
+			continue
+		}
+		names = append(names, fmt.Sprintf("%q", k))
+	}
+
+	if len(names) > 0 {
+		shown := names
+		extra := 0
+		if len(shown) > maxNamedEnvHits {
+			extra = len(shown) - maxNamedEnvHits
+			shown = shown[:maxNamedEnvHits]
+		}
+		list := strings.Join(shown, ", ")
+		if extra > 0 {
+			list += fmt.Sprintf(" and %d more", extra)
+		}
+		if len(names) == 1 {
+			parts = append(parts, list+" looks like a credential name")
+		} else {
+			parts = append(parts, list+" look like credential names")
+		}
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+	if len(parts) > maxNamedEnvHits {
+		parts = append(parts[:maxNamedEnvHits], fmt.Sprintf("and %d more", len(parts)-maxNamedEnvHits))
+	}
+	return strings.Join(parts, ", ")
 }
