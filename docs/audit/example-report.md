@@ -21,10 +21,9 @@ scan time: 2026-07-17T11:59:28.805Z          duration: 2ms
   AI Tool / MCP Configs  4 finding(s)
   Private Keys           2 finding(s)
   IaC Variable Files     1 finding(s)
-  Suspicious Filenames   1 finding(s)
   Wrappable CLI Tokens   0 finding(s)
   ───────────────────────────────────
-  Total: 18 finding(s)
+  Total: 17 finding(s)
   Already protected by jit: 2 live mount(s), served from the encrypted vault, no plaintext on disk. Not scanned.
 
 [Shell Configs]
@@ -105,12 +104,6 @@ scan time: 2026-07-17T11:59:28.805Z          duration: 2ms
 
     INFO  infrastructure-as-code variable file: detection only, no automated fix yet
 
-[Suspicious Filenames]
-  ───────────────────────────────────
-  • /Users/alex/Downloads/1Password Emergency Kit A3-XXXXXX-example.pdf
-
-    MEDIUM  1Password Emergency Kit: contains the account's master and secret key if genuine
-
 Run `jit migrate <path> --dry-run` to see the guided fix plan for a flagged file.
 No secret values are ever printed in full. Run `jit scan --format ndjson` for machine-readable output (same redaction rules apply).
 ```
@@ -135,7 +128,7 @@ Every finding within a category is sorted worst-severity-first (file path as tie
 
 A collapsed block's header line matters, not just its content: an earlier version of this rendered a collapsed block with no header at all, directly beneath the previous item's file path, a real user found this genuinely ambiguous, since it read as if that block's findings belonged to the file printed just above it, when they were actually an unrelated pattern shared by different files entirely. Every block, per-file or collapsed, now starts with its own unambiguous header line for exactly this reason.
 
-This only collapses when the match is genuinely meaningful (severity + key name + evidence + masked value all identical): two files sharing the same variable name but a *different* actual value never collapse, and a handful of categories (IaC's unescalated tier, Suspicious Filenames) never collapse at all, since their evidence is fixed rule-level text that says nothing about a specific file's content, two unrelated files matching the same rule aren't actually related, and collapsing them would wrongly imply they are.
+This only collapses when the match is genuinely meaningful (severity + key name + evidence + masked value all identical): two files sharing the same variable name but a *different* actual value never collapse, and one category (IaC's unescalated tier) never collapses at all, since its evidence is fixed rule-level text that says nothing about a specific file's content, two unrelated files matching the same rule aren't actually related, and collapsing them would wrongly imply they are.
 
 ## What's *not* shown here, on purpose
 

@@ -4,7 +4,7 @@ Scan for plaintext secrets exposed on this machine (read-only)
 
 ### Synopsis
 
-jit scan scans shell configs, .env files, credential files, MCP/AI-tool configs, private keys, IaC variable files, and suspicious filenames for plaintext secrets. Default behavior is strictly read-only: it never touches, encrypts, or rewrites a single file on disk. No real secret value is ever printed, only a masked preview.
+jit scan scans shell configs, .env files, credential files, MCP/AI-tool configs, private keys, and IaC variable files for plaintext secrets. Default behavior is strictly read-only: it never touches, encrypts, or rewrites a single file on disk. No real secret value is ever printed, only a masked preview.
 
 Scanning specific paths
 

@@ -35,7 +35,15 @@ import (
 // key (additive, same shape as 0.3.0/0.6.0's type bumps): a vendor-token or
 // JWT match found by content in a file the user named explicitly to `jit
 // scan <path>`, independent of the file's name or location.
-const SchemaVersion = "0.9.0"
+// 0.10.0 removed the suspicious_filename finding type and its
+// findings_by_category key, along with the name-only scanner behind it (the
+// same shape of removal as 0.8.0); consumers that read that key should treat
+// it as absent. The category cost a full extra home-directory walk plus an
+// open of every file on the machine — its jit-pointer exemption ran before
+// any name rule matched — to produce name-only, judgment-call findings, and
+// its .env.bak rule duplicated what ScanEnvFiles already reports, since
+// envFileNamePattern matches ".env.bak" like any other .env-family suffix.
+const SchemaVersion = "0.10.0"
 
 // ScannerName identifies this tool in the shared NDJSON envelope, matching
 // bumblebee's record shape so a receiver can co-ingest both (RFC.md §4).
@@ -54,22 +62,22 @@ const (
 // per-line suppressions below rather than diverging from RFC.md's own
 // terminology.
 const (
-	FindingTypeShellConfigSecret  = "shell_config_secret" // #nosec G101 -- enum label, not a credential
-	FindingTypeEnvFilePresent     = "env_file_present"
-	FindingTypeCredentialFile     = "credential_file"     // #nosec G101 -- enum label, not a credential
-	FindingTypeMCPEmbeddedSecret  = "mcp_embedded_secret" // #nosec G101 -- enum label, not a credential
-	FindingTypePrivateKeyRisk     = "private_key_risk"
-	FindingTypeIACVariableFile    = "iac_variable_file"
-	FindingTypeSuspiciousFilename = "suspicious_filename"
-	FindingTypeWrappableCLIToken  = "wrappable_cli_token" // #nosec G101 -- enum label, not a credential
-	FindingTypeSOPSAgeKey         = "sops_age_key"        // #nosec G101 -- enum label, not a credential
-	FindingTypeExposedSecret      = "exposed_secret"      // #nosec G101 -- enum label, not a credential
+	FindingTypeShellConfigSecret = "shell_config_secret" // #nosec G101 -- enum label, not a credential
+	FindingTypeEnvFilePresent    = "env_file_present"
+	FindingTypeCredentialFile    = "credential_file"     // #nosec G101 -- enum label, not a credential
+	FindingTypeMCPEmbeddedSecret = "mcp_embedded_secret" // #nosec G101 -- enum label, not a credential
+	FindingTypePrivateKeyRisk    = "private_key_risk"
+	FindingTypeIACVariableFile   = "iac_variable_file"
+	FindingTypeWrappableCLIToken = "wrappable_cli_token" // #nosec G101 -- enum label, not a credential
+	FindingTypeSOPSAgeKey        = "sops_age_key"        // #nosec G101 -- enum label, not a credential
+	FindingTypeExposedSecret     = "exposed_secret"      // #nosec G101 -- enum label, not a credential
 )
 
 // AllFindingTypes lists every finding_type in the fixed order used for
 // scan_summary's findings_by_category map (RFC.md §4's original seven
-// categories: "all seven keys always present" — plus wrappable_cli_token,
-// added in schema 0.3.0; every key is always present either way).
+// categories, less suspicious_filename which schema 0.10.0 removed — plus
+// wrappable_cli_token, added in schema 0.3.0; every key is always present
+// either way).
 var AllFindingTypes = []string{
 	FindingTypeShellConfigSecret,
 	FindingTypeEnvFilePresent,
@@ -77,7 +85,6 @@ var AllFindingTypes = []string{
 	FindingTypeMCPEmbeddedSecret,
 	FindingTypePrivateKeyRisk,
 	FindingTypeIACVariableFile,
-	FindingTypeSuspiciousFilename,
 	FindingTypeWrappableCLIToken,
 	FindingTypeSOPSAgeKey,
 	FindingTypeExposedSecret,
