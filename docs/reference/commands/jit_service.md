@@ -30,6 +30,10 @@ only to a `jit run` grant's own process tree: `jit run --live` for a project
 mount, `jit run --with` for a global credential. Unlocking the vault never
 makes a mount serve real values on its own.
 
+```
+jit service
+```
+
 ### Options inherited from parent commands
 
 ```

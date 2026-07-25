@@ -15,6 +15,10 @@ process running as you on an unlocked machine still can't read or destroy
 the vault without a live human gesture. Only `list` and `history` are
 prompt-free: they show secret names and version timestamps, never a value.
 
+```
+jit vault
+```
+
 ### Options inherited from parent commands
 
 ```
