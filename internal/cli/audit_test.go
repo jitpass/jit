@@ -120,15 +120,37 @@ func TestAuditCommandTextMergesCommandsAndAuth(t *testing.T) {
 
 func TestAuditRecorderSkipsNonRunnableParent(t *testing.T) {
 	home := withFixtureHome(t)
-	// `jit service un` resolves to the non-runnable `service` parent: cobra accepts
-	// the stray "un", prints service help, and exits 0. Recording that would log a
-	// successful `jit service un` for a command that never existed. The recorder
-	// must skip non-runnable commands, so nothing lands in the durable log.
+	// A bare `jit service` resolves to the `service` command GROUP, which
+	// prints its help and returns nil. Nothing ran against the user's
+	// secrets, so nothing belongs in the durable log — the same treatment a
+	// genuinely non-runnable command gets. The group carries a RunE (so a
+	// mistyped subcommand can be rejected; see runCommandGroup), which is
+	// why the recorder can't just test Runnable() any more.
 	recordAuditEvent(serviceCmd, nil, 0)
 
 	root := filepath.Join(home, "Library", "Application Support", "jitpass")
 	if recs := auditlog.New(root, nil).Load(0); len(recs) != 0 {
-		t.Errorf("non-runnable parent command was recorded, want none: %+v", recs)
+		t.Errorf("bare command group was recorded, want none: %+v", recs)
+	}
+}
+
+// TestAuditRecorderRecordsMistypedSubcommand is the other half of the rule
+// above, and the reason it isn't simply "skip every group": `jit service
+// consnt off` used to print help and exit 0, which meant a script could
+// believe it had turned per-process consent off while it stayed on, with
+// nothing in the audit log to show for it. That invocation now fails, and a
+// failed invocation is exactly what the log exists to carry.
+func TestAuditRecorderRecordsMistypedSubcommand(t *testing.T) {
+	home := withFixtureHome(t)
+	recordAuditEvent(serviceCmd, unknownCommandError(serviceCmd, "consnt"), 0)
+
+	root := filepath.Join(home, "Library", "Application Support", "jitpass")
+	recs := auditlog.New(root, nil).Load(0)
+	if len(recs) != 1 {
+		t.Fatalf("mistyped subcommand not recorded, want 1 record: %+v", recs)
+	}
+	if recs[0].Success {
+		t.Errorf("mistyped subcommand recorded as successful, want failed: %+v", recs[0])
 	}
 }
 
