@@ -4,6 +4,10 @@
 package cli
 
 import (
+	"errors"
+	"fmt"
+	"strings"
+	"text/template"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -108,9 +112,16 @@ func newRootCmd() *cobra.Command {
 		// dumping help: on a fresh machine it audits and offers the guided
 		// setup; an already-configured machine, a non-interactive shell, or
 		// an unknown command all fall through to cobra's help/errors exactly
-		// as before. NoArgs is what turns `jit bogus` into cobra's "unknown
-		// command" error instead of routing it into RunE with args.
-		Args: cobra.NoArgs,
+		// as before. This validator is what turns `jit bogus` into an "unknown
+		// command" error instead of routing it into RunE with args; it stands
+		// in for cobra.NoArgs so the message carries the same "Did you mean
+		// this?" block a command group's does (plain NoArgs has none).
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return nil
+			}
+			return unknownCommandError(cmd, args[0])
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runFirstRun(cmd)
 		},
@@ -128,7 +139,100 @@ func newRootCmd() *cobra.Command {
 	// affects the transient stderr spinner; the command's actual result on
 	// stdout is never suppressed.
 	cmd.PersistentFlags().BoolVar(&quietFlag, "quiet", false, "suppress the progress spinner/status trail (results still print)")
+	cmd.AddCommand(newVersionCmd(cmd))
 	return cmd
+}
+
+// runCommandGroup is the RunE for a pure command GROUP — a command that
+// only holds subcommands and does nothing itself (jit vault, jit service).
+//
+// Such a command needs a Run at all only because of how cobra orders its
+// checks: execute() returns flag.ErrHelp for any !Runnable() command BEFORE
+// it ever calls ValidateArgs, so `Args: cobra.NoArgs` on a group is dead
+// code. Without this, cobra's legacyArgs accepted arbitrary args on any
+// non-root parent, and `jit vault clen` printed the help text and exited 0.
+// A typo'd destructive subcommand silently "succeeding" is the worst
+// failure mode this CLI has: `jit vault export "$f" && echo backed up`
+// would report success having backed up nothing, and `jit service consnt
+// off` would leave per-process consent ON while a script believed it was
+// off.
+//
+// A bare `jit vault` still prints help and exits 0, matching every other
+// command group.
+func runCommandGroup(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 {
+		return cmd.Help()
+	}
+	return unknownCommandError(cmd, args[0])
+}
+
+// annotationCommandGroup marks a command whose RunE is runCommandGroup.
+// The audit recorder needs to tell "this group just printed its help" from
+// real work, and a cobra.Command carries no way to compare RunE identity.
+const annotationCommandGroup = "jit.command_group"
+
+// commandGroupAnnotations is the Annotations value every command group sets,
+// alongside RunE: runCommandGroup. Kept as one shared map builder so the two
+// can't be wired up inconsistently.
+func commandGroupAnnotations() map[string]string {
+	return map[string]string{annotationCommandGroup: "true"}
+}
+
+// isCommandGroup reports whether cmd is a pure command group (see
+// runCommandGroup), i.e. one whose only action is printing its own help.
+func isCommandGroup(cmd *cobra.Command) bool {
+	return cmd != nil && cmd.Annotations[annotationCommandGroup] == "true"
+}
+
+// unknownCommandError builds cobra's own "unknown command" message plus its
+// "Did you mean this?" block, for the two places jit rejects an unrecognized
+// subcommand itself: the root's Args validator and runCommandGroup. Cobra
+// only assembles this text inside its unexported findSuggestions, reached
+// via legacyArgs — which jit deliberately bypasses at the root (NoArgs, so
+// bare `jit` reaches the first-run flow) and cannot reach on a group at all.
+// Sharing it here is what keeps `jit clen` and `jit vault clen` reading
+// identically.
+func unknownCommandError(cmd *cobra.Command, arg string) error {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "unknown command %q for %q", arg, cmd.CommandPath())
+	// SuggestionsFor compares against SuggestionsMinimumDistance as-is; the
+	// default-to-2 lives in findSuggestions, so calling SuggestionsFor
+	// directly with the zero value would reject every edit-distance match
+	// ("clen" -> "clean" is distance 1, and 1 <= 0 is false) and only ever
+	// suggest prefix matches.
+	if cmd.SuggestionsMinimumDistance <= 0 {
+		cmd.SuggestionsMinimumDistance = 2
+	}
+	if suggestions := cmd.SuggestionsFor(arg); len(suggestions) > 0 {
+		sb.WriteString("\n\nDid you mean this?\n")
+		for _, s := range suggestions {
+			fmt.Fprintf(&sb, "\t%v\n", s)
+		}
+	}
+	return errors.New(sb.String())
+}
+
+// newVersionCmd makes `jit version` a synonym for `jit --version`. Cobra
+// gives a Version-bearing command the --version/-v FLAG only, so `jit
+// version` — the first thing many people type, and what `git`/`docker`/`go`
+// all accept — failed with "unknown command", which the audit log then
+// recorded as a status=failed line. It renders the root's OWN version
+// template (cobra's tmpl helper is unexported, but that template uses only
+// stdlib actions) rather than re-formatting the string here, so the two
+// spellings can't drift apart if the template is ever customized.
+func newVersionCmd(root *cobra.Command) *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print jit's version (same as `jit --version`)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			t, err := template.New("version").Parse(root.VersionTemplate())
+			if err != nil {
+				return err
+			}
+			return t.Execute(cmd.OutOrStdout(), root)
+		},
+	}
 }
 
 // quietFlag is bound to the root's persistent --quiet flag and read by

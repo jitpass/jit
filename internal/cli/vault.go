@@ -474,7 +474,11 @@ func looksLikeConfig(name string) bool {
 var vaultCmd = &cobra.Command{
 	Use:     "vault",
 	GroupID: groupSecrets,
-	Short:   "Manage the local encrypted secret vault",
+	// See runCommandGroup: without a Run of its own, `jit vault clen`
+	// printed help and exited 0 instead of failing on the typo.
+	RunE:        runCommandGroup,
+	Annotations: commandGroupAnnotations(),
+	Short:       "Manage the local encrypted secret vault",
 	Long: "jit vault stores each secret as its own encrypted file under jit's data\n" +
 		"directory, no monolithic database.\n\n" +
 		"Every command that reads, writes, or destroys a secret (get, set, rm,\n" +
