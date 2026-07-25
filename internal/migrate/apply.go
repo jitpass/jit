@@ -452,6 +452,34 @@ var envExportPrefix = regexp.MustCompile(`^export\s+`)
 // occurrence for a name assigned twice — dotenv's last-wins applies to
 // the value only), which is what lets the live mount and the manifest
 // keep the file's own order instead of alphabetizing (issue #4).
+// EnvFilePreview reports what migrating path would move: how many variables
+// the file defines in total, and how many of those have secret-shaped names.
+//
+// It exists for `jit migrate`'s PLAN, which is the moment the user consents
+// to a mutating, credential-touching operation and so is the moment it has to
+// be honest about scope. The plan used to say only "3 change(s)" — three
+// files — while a migration moves EVERY variable in each file into the vault,
+// including ordinary config like PORT=3000 and DEBUG=true. That is the
+// correct behavior (the live mount has to reproduce the whole file, not a
+// subset of it), but a user reading "secrets move to the vault" reasonably
+// expects only the secrets to move, and nothing told them otherwise.
+//
+// An unreadable or unparseable file reports ok=false rather than an error:
+// this only enriches a display line, and a plan must still render for a file
+// the apply step will fail on for its own reasons.
+func EnvFilePreview(path string) (total, secretShaped int, ok bool) {
+	_, names, _, err := parseEnvFile(path)
+	if err != nil {
+		return 0, 0, false
+	}
+	for _, n := range names {
+		if audit.LooksLikeSecretKey(n) {
+			secretShaped++
+		}
+	}
+	return len(names), secretShaped, true
+}
+
 func parseEnvFile(path string) (map[string]string, []string, []int, error) {
 	data, err := os.ReadFile(path) // #nosec G304 -- path comes from DiscoverEnvFiles' own filesystem walk, not external input
 	if err != nil {

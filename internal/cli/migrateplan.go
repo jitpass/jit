@@ -68,15 +68,32 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, shellConf
 	hasFixed := len(shellConfigs) > 0 || len(mcpFixed) > 0 || len(awsProfiles) > 0 || len(k8sUsers) > 0 || len(terraformHosts) > 0 || len(dockerRegistries) > 0 || len(gitHosts) > 0 || len(gcpADCFiles) > 0 || len(sopsAgeFiles) > 0 || len(npmrcFixed) > 0 || len(netrcFiles) > 0
 
 	if hasScoped {
+		// The annotation callback below is handed the display-shortened path,
+		// which can't be opened; keep the mapping back to the real one so each
+		// .env can be counted.
+		envOriginal := make(map[string]string, len(envFiles))
+		for _, p := range envFiles {
+			envOriginal[displayPath(home, p)] = p
+		}
 		_, _ = color.New(color.Bold).Fprintf(w, "Project files you named\n\n")
 		printMigratePlanCategoryAnnotated(w,
-			".env file(s) → secrets move to the vault; the file keeps working as a live, auto-updating mount",
+			".env file(s) → EVERY variable moves to the vault (ordinary config too, so the file still works); the file keeps working as a live, auto-updating mount",
 			shorten(envFiles),
 			func(item string) string {
 				if migrate.IsEnvBackupOnlySuffix(filepath.Base(item)) {
 					return "backup-suffixed, replaced with a safe pointer file instead, never mounted"
 				}
-				return ""
+				// Per-file counts, because "3 change(s)" (three FILES) was the
+				// only number the plan gave for an operation that moves every
+				// variable in each of them into the vault.
+				total, shaped, ok := migrate.EnvFilePreview(envOriginal[item])
+				if !ok || total == 0 {
+					return ""
+				}
+				if shaped == 0 {
+					return fmt.Sprintf("%d variable(s)", total)
+				}
+				return fmt.Sprintf("%d variable(s), %d secret-shaped", total, shaped)
 			})
 		printMigratePlanCategory(w,
 			"Terraform tfvars file(s) → secret values move to the vault; terraform reads them back as TF_VAR_ environment variables when run through jit",
