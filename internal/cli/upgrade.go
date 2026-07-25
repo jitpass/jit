@@ -160,6 +160,19 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 
 	usedSudo, err := replaceBinary(exePath, staged)
 	if err != nil {
+		// The download and its checksum verification both succeeded — the
+		// expensive, security-critical half of the work is done and sitting in
+		// tmpDir, which the defer above is about to delete. The common failure
+		// here is a sudo password prompt with no terminal to read from (a CI
+		// step, a non-interactive shell, an editor's task runner), and simply
+		// reporting the raw `sudo mv` error made the user re-download from
+		// scratch to try again. Keep the verified binary and tell them the one
+		// command that finishes the job.
+		if kept, keepErr := preserveStagedBinary(staged, latest); keepErr == nil {
+			fmt.Fprintf(out, "\nThe verified %s binary is kept at %s.\n", latest, kept)
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  Finish the upgrade with: sudo mv -f %s %s && jit service restart\n", kept, exePath)))
+			fmt.Fprintln(out, "  (Or re-run `jit upgrade` from a terminal where sudo can prompt for your password.)")
+		}
 		return fmt.Errorf("jit upgrade: replacing %s: %w", exePath, err)
 	}
 	if usedSudo {
@@ -369,6 +382,41 @@ func replaceBinary(target, staged string) (usedSudo bool, err error) {
 	}
 	// mv preserves the staged file's 0755 mode; nothing more to do.
 	return true, nil
+}
+
+// preserveStagedBinary copies a verified, extracted jit binary out of the
+// download's soon-to-be-deleted temp dir so a failed install can be finished
+// by hand instead of re-downloading. Returns the path it kept.
+//
+// Deliberately a copy, not a rename: the sudo path in replaceBinary uses `mv`,
+// so on a partial failure `staged` may or may not still exist, and a copy that
+// finds nothing to read fails cleanly here rather than reporting a path that
+// isn't there. The destination is version-stamped so two interrupted upgrades
+// can't hand the user a stale binary under a familiar name.
+func preserveStagedBinary(staged, version string) (string, error) {
+	dir, err := os.MkdirTemp("", "jit-upgrade-"+sanitizeVersionForPath(version)+"-")
+	if err != nil {
+		return "", err
+	}
+	kept := filepath.Join(dir, "jit")
+	if err := copyFile(staged, kept, 0o755); err != nil {
+		_ = os.RemoveAll(dir)
+		return "", err
+	}
+	return kept, nil
+}
+
+// sanitizeVersionForPath reduces a release tag to characters safe in a
+// filename — a tag is server-supplied, and it lands in a path here.
+func sanitizeVersionForPath(version string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '-', r == '_':
+			return r
+		default:
+			return '-'
+		}
+	}, version)
 }
 
 // sudoCommand builds a sudo invocation wired to the user's terminal so its
