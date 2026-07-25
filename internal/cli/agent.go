@@ -44,7 +44,12 @@ var agentStatusFormat string
 var serviceCmd = &cobra.Command{
 	Use:     "service",
 	GroupID: groupService,
-	Short:   "Manage jit's background service (the daemon that holds your session and serves mounts)",
+	// See runCommandGroup: without a Run of its own, `jit service consnt
+	// off` printed help and exited 0, leaving per-process consent silently
+	// ON when a script believed it had turned it off.
+	RunE:        runCommandGroup,
+	Annotations: commandGroupAnnotations(),
+	Short:       "Manage jit's background service (the daemon that holds your session and serves mounts)",
 	Long: "jit runs a small background service: a login-time daemon that keeps one\n" +
 		"unlocked session other jit commands share, instead of each one prompting\n" +
 		"Touch ID separately, and that serves any live-mounted .env files jit migrate\n" +

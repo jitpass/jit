@@ -14,12 +14,16 @@ import (
 // previously review-time only: cobra does NOT error on a missing GroupID —
 // the command silently lands under "Additional Commands" next to
 // help/completion, undoing the grouped root help this package sets up.
-// Cobra's own built-in help/completion commands are the two deliberate
-// exceptions (they may or may not be registered yet depending on whether
-// an earlier test ran Execute).
+// Cobra's own built-in help/completion commands are deliberate exceptions
+// (they may or may not be registered yet depending on whether an earlier
+// test ran Execute), and so is `version`: it's a meta command about the
+// binary rather than a thing you do to your secrets, and none of the four
+// groups is where someone would look for it. Grouping it under "Additional
+// Commands" next to help/completion is the intended placement, not an
+// oversight — see newVersionCmd.
 func TestEveryTopLevelCommandHasGroupID(t *testing.T) {
 	for _, c := range rootCmd.Commands() {
-		if c.Name() == "help" || c.Name() == "completion" {
+		if c.Name() == "help" || c.Name() == "completion" || c.Name() == "version" {
 			continue
 		}
 		if c.GroupID == "" {

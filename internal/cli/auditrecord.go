@@ -57,14 +57,20 @@ func recordAuditEvent(cmd *cobra.Command, cmdErr error, elapsed time.Duration) {
 	if auditExcludedCommands[cmd.Name()] {
 		return
 	}
-	// A non-runnable command never ran anything on the user's secrets: cobra
-	// resolved the args to a parent group command (`jit service`, `jit vault`)
-	// with no RunE and printed its help. This covers a bare `jit service`, and
-	// crucially a MISTYPED subcommand like `jit service un` — cobra's default arg
-	// handling accepts the stray "un" for a non-root parent, prints help, and
-	// exits 0. Recording that would put a successful `jit service un` in the log
-	// for a command that does not exist and did nothing; skip it, same as help.
-	if !cmd.Runnable() {
+	// A command that only printed its help never touched the user's secrets,
+	// so it isn't an audit event. Two shapes reach here:
+	//
+	//   - a genuinely non-runnable command (no RunE at all), and
+	//   - a command GROUP (`jit service`, `jit vault`), which carries a RunE
+	//     only so a mistyped subcommand can be rejected — see runCommandGroup.
+	//     Invoked bare it prints help and returns nil, exactly like the first
+	//     case, so a nil error is what distinguishes "printed help" from work.
+	//
+	// A MISTYPED subcommand (`jit service un`) is deliberately NOT skipped
+	// any more: it now fails with "unknown command", and a failed invocation
+	// is precisely the kind of thing the log should carry — the same way
+	// `jit bogus` has always been recorded as status=failed.
+	if !cmd.Runnable() || (isCommandGroup(cmd) && cmdErr == nil) {
 		return
 	}
 	root, err := vaultRootDir()
