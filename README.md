@@ -1,4 +1,4 @@
-# jitpass: the `jit` CLI
+# jitpass - just-in-time credentials
 
 **Just-in-time credentials for your dev machine.**
 
