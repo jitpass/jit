@@ -24,6 +24,8 @@ after a biometric prompt. The result: you unlock once, `jit` asks before handing
 a credential to a tool (or an agent), and there's a decoy on disk the rest of
 the time.
 
+<img width="1512" height="883" alt="image" src="https://github.com/user-attachments/assets/e797790b-aadc-4616-8165-c6ca816ff80a" />
+
 ## Install
 
 Apple Silicon prebuilt binary, no Go required:
