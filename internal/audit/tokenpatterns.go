@@ -3,7 +3,10 @@
 
 package audit
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
 // tokenPattern is one recognizable vendor credential format. "Token
 // prefixing" — a stable, greppable prefix baked into the credential itself
@@ -102,14 +105,78 @@ var knownTokenPatterns = []tokenPattern{
 	{"Slack Configuration Token", regexp.MustCompile(`\bxoxr-[0-9A-Za-z\-]{10,}\b`), false, nil},
 }
 
+// placeholderRunLen is how many identical characters in a row mark a matched
+// token as hand-written filler rather than a real credential. Vendor formats
+// are random (base62 from a CSPRNG), so a run this long essentially cannot
+// occur in a genuine token: for a 40-character base62 credential the odds are
+// about 34 x 62^-7, or one in ten billion. Every hand-written placeholder, on
+// the other hand, is a run — "secret_xxxxxxxx…", "AKIAXXXXXXXXXXXXXXXX",
+// "ghp_000000…". Eight is low enough to catch the short ones and still far
+// past anything randomness produces.
+const placeholderRunLen = 8
+
+// placeholderTokenWords are literal words that only appear in a token a human
+// typed. Matched case-insensitively as substrings of the token itself, so
+// deliberately none of them occur inside any vendor PREFIX above — "test"
+// would kill every real sk_test_ key, "secret" every real Notion token.
+// Same one-in-billions reasoning as placeholderRunLen for a random credential
+// happening to contain one.
+var placeholderTokenWords = []string{
+	"your", "here", "changeme", "placeholder", "example", "dummy", "redacted",
+}
+
+// isPlaceholderToken reports whether a matched token span is obviously filler
+// a human typed into a template rather than a real credential.
+//
+// This is the general form of the per-pattern exclude regex (which stays for
+// the DB connection-string case, whose placeholder shape is about the userinfo
+// field, not the token body). Real-world dogfooding (2026-07-26) found the gap
+// it closes: an .env.example holding "NOTION_API_KEY=secret_xxxxxxxx…" was
+// reported HIGH by jit scan, because 43 x's are perfectly good [A-Za-z0-9] as
+// far as the Notion pattern is concerned. IsAlreadyMasked didn't catch it
+// either — alreadyMaskedPattern is anchored to the whole value (^[*xX]{3,}$),
+// so a vendor prefix in front of the mask defeats it. Since a token match is
+// what escalates a template file past buildEnvFileFinding's bail-out, that one
+// placeholder was enough to turn an ordinary .env.example into a HIGH finding,
+// and jit migrate — which skips template files outright — then had nothing to
+// offer for it. A scanner that cries wolf on .env.example files is exactly the
+// noise envTemplateSuffixes exists to prevent.
+func isPlaceholderToken(match string) bool {
+	run := 1
+	for i := 1; i < len(match); i++ {
+		if match[i] != match[i-1] {
+			run = 1
+			continue
+		}
+		if run++; run >= placeholderRunLen {
+			return true
+		}
+	}
+	lower := strings.ToLower(match)
+	for _, word := range placeholderTokenWords {
+		if strings.Contains(lower, word) {
+			return true
+		}
+	}
+	return false
+}
+
 // MatchKnownTokenPattern checks value against well-known vendor credential
 // formats. Returns the vendor/format name, whether that format is verified
 // (see tokenPattern.verified), and whether anything matched at all.
 func MatchKnownTokenPattern(value string) (vendor string, verified bool, ok bool) {
 	for _, tp := range knownTokenPatterns {
-		if tp.pattern.MatchString(value) && (tp.exclude == nil || !tp.exclude.MatchString(value)) {
-			return tp.vendor, tp.verified, true
+		match := tp.pattern.FindString(value)
+		if match == "" {
+			continue
 		}
+		if tp.exclude != nil && tp.exclude.MatchString(value) {
+			continue
+		}
+		if isPlaceholderToken(match) {
+			continue
+		}
+		return tp.vendor, tp.verified, true
 	}
 	return "", false, false
 }
