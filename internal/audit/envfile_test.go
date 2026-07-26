@@ -249,7 +249,7 @@ DESCOPE_MGMT_KEY=K3G4pkXnDUxYyKIbkdVPTNKNy5zLPyf2XxaT6KAboEHSHTgCWOA4I2hIaa6EuXK
 // satisfies GitHub's secret scanner, and push protection rejects the whole
 // push when it finds one — which is precisely the check this project exists
 // to make people care about. Matches tokenpatterns_test.go's convention.
-var fakeStripeLiveKey = "sk_" + "live_" + strings.Repeat("a", 24)
+var fakeStripeLiveKey = "sk_" + "live_" + tokenBody(24)
 
 // A .env holding SEVERAL credentials used to report only the one signal that
 // happened to set its severity — a real file with a Postgres URL, a Stripe
