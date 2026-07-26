@@ -146,6 +146,15 @@ func FindFileTokens(path string) ([]FileToken, error) {
 				if tp.exclude != nil && tp.exclude.MatchString(match) {
 					continue // a known false-positive shape (e.g. a template placeholder)
 				}
+				// Same placeholder rejection MatchKnownTokenPattern applies, so
+				// a template's "ghp_xxxxxxxx…" isn't reported as an exposed
+				// secret by the content scanner either. Left unclaimed on
+				// purpose: a more generic pattern overlapping this span (sk-
+				// under sk-proj-) is filler for the same reason and gets
+				// rejected here too.
+				if isPlaceholderToken(match) {
+					continue
+				}
 				claimed = append(claimed, [2]int{lo, hi})
 				tokens = append(tokens, FileToken{
 					Line:     lineNum,

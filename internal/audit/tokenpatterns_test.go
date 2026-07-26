@@ -4,9 +4,39 @@
 package audit
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// tokenBody builds n characters of realistic token body: base62, and never
+// the same character twice in a row. Fixtures used to be strings.Repeat("a",
+// n), which isPlaceholderToken now (correctly) rejects as filler — a run of
+// 36 a's is not what a real credential looks like, so those fixtures were
+// quietly testing the patterns against a value no vendor would ever issue.
+// The stride of 7 is coprime with the alphabet length, so consecutive
+// characters always differ and no placeholder word can form.
+func tokenBody(n int) string {
+	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = alphabet[(i*7+3)%len(alphabet)]
+	}
+	return string(b)
+}
+
+// hexBody is tokenBody for the formats whose body is hex-only (Twilio's SID,
+// DigitalOcean's token) — base62 filler doesn't satisfy their patterns at all.
+// Stride 3 is coprime with 16, so again no character repeats back to back.
+func hexBody(n int) string {
+	const alphabet = "0123456789abcdef"
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = alphabet[(i*3+1)%len(alphabet)]
+	}
+	return string(b)
+}
 
 func TestMatchKnownTokenPattern(t *testing.T) {
 	cases := []struct {
@@ -16,30 +46,30 @@ func TestMatchKnownTokenPattern(t *testing.T) {
 		wantVerified bool
 		wantOK       bool
 	}{
-		{"GitHub PAT", "ghp_" + strings.Repeat("a", 36), "GitHub Personal Access Token", true, true},
-		{"GitHub fine-grained PAT", "github_pat_" + strings.Repeat("a", 22), "GitHub Fine-Grained Personal Access Token", true, true},
-		{"GitLab PAT", "glpat-" + strings.Repeat("a", 20), "GitLab Personal Access Token", true, true},
+		{"GitHub PAT", "ghp_" + tokenBody(36), "GitHub Personal Access Token", true, true},
+		{"GitHub fine-grained PAT", "github_pat_" + tokenBody(22), "GitHub Fine-Grained Personal Access Token", true, true},
+		{"GitLab PAT", "glpat-" + tokenBody(20), "GitLab Personal Access Token", true, true},
 		{"AWS Access Key ID", "AKIAABCDEFGHIJKLMNOP", "AWS Access Key ID", true, true},
 		{"AWS temp Access Key ID", "ASIAABCDEFGHIJKLMNOP", "AWS Access Key ID", true, true},
-		{"Anthropic key", "sk-ant-api03-" + strings.Repeat("a", 20), "Anthropic Claude API Key", true, true},
-		{"OpenAI project key", "sk-proj-" + strings.Repeat("a", 20), "OpenAI Project API Key", true, true},
-		{"bare sk- key", "sk-" + strings.Repeat("a", 20), "OpenAI (legacy) or DeepSeek API Key", true, true},
-		{"Hugging Face token", "hf_" + strings.Repeat("a", 20), "Hugging Face Token", true, true},
-		{"Stripe live key", "sk_live_" + strings.Repeat("a", 24), "Stripe Live Secret Key", true, true},
-		{"Stripe restricted key", "rk_live_" + strings.Repeat("a", 24), "Stripe Restricted Key", true, true},
-		{"Slack bot token", "xoxb-" + strings.Repeat("1", 10), "Slack Bot Token", true, true},
-		{"Shopify token", "shpat_" + strings.Repeat("a", 20), "Shopify Access Token", true, true},
-		{"Twilio SID", "AC" + strings.Repeat("a", 32), "Twilio Account SID", true, true},
+		{"Anthropic key", "sk-ant-api03-" + tokenBody(20), "Anthropic Claude API Key", true, true},
+		{"OpenAI project key", "sk-proj-" + tokenBody(20), "OpenAI Project API Key", true, true},
+		{"bare sk- key", "sk-" + tokenBody(20), "OpenAI (legacy) or DeepSeek API Key", true, true},
+		{"Hugging Face token", "hf_" + tokenBody(20), "Hugging Face Token", true, true},
+		{"Stripe live key", "sk_live_" + tokenBody(24), "Stripe Live Secret Key", true, true},
+		{"Stripe restricted key", "rk_live_" + tokenBody(24), "Stripe Restricted Key", true, true},
+		{"Slack bot token", "xoxb-" + tokenBody(10), "Slack Bot Token", true, true},
+		{"Shopify token", "shpat_" + tokenBody(20), "Shopify Access Token", true, true},
+		{"Twilio SID", "AC" + hexBody(32), "Twilio Account SID", true, true},
 		{"SendGrid key", "SG.abcdefghij.abcdefghij", "SendGrid API Key", true, true},
-		{"Notion token", "secret_" + strings.Repeat("a", 40), "Notion Internal Integration Token", true, true},
+		{"Notion token", "secret_" + tokenBody(40), "Notion Internal Integration Token", true, true},
 		{"JWT", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123", "JSON Web Token (JWT)", true, true},
 		{"RSA private key header", "-----BEGIN RSA PRIVATE KEY-----", "RSA Private Key", true, true},
 		{"DB connection string with real creds", "postgres://admin:hunter2xyz@db.internal/prod", "Database connection string with embedded credentials", true, true},
-		{"unverified Cursor key", "crsr_" + strings.Repeat("a", 10), "Cursor API Key", false, true},
-		{"unverified Tavily key", "tvly-" + strings.Repeat("a", 10), "Tavily API Key", false, true},
+		{"unverified Cursor key", "crsr_" + tokenBody(10), "Cursor API Key", false, true},
+		{"unverified Tavily key", "tvly-" + tokenBody(10), "Tavily API Key", false, true},
 		{"plain string, no match", "just a normal value", "", false, false},
 		{"bare UUID, deliberately not matched", "550e8400-e29b-41d4-a716-446655440000", "", false, false},
-		{"bare 64-char hex, deliberately not matched", strings.Repeat("a", 64), "", false, false},
+		{"bare 64-char hex, deliberately not matched", tokenBody(64), "", false, false},
 	}
 
 	for _, c := range cases {
@@ -82,5 +112,82 @@ func TestMatchKnownTokenPatternDBConnectionStringPlaceholder(t *testing.T) {
 
 	if _, _, ok := MatchKnownTokenPattern("postgres://admin:hunter2xyz@db.internal/prod"); !ok {
 		t.Error("MatchKnownTokenPattern with a non-placeholder password should still match")
+	}
+}
+
+// TestMatchKnownTokenPatternPlaceholderToken locks in the false positive that
+// prompted isPlaceholderToken (2026-07-26 dogfooding): a real .env.example
+// holding "NOTION_API_KEY=secret_xxxxxxxx…" reported HIGH, because the masked
+// body is still [A-Za-z0-9] as far as the Notion pattern is concerned. Every
+// vendor format is affected the same way — the mask goes AFTER the prefix, so
+// the whole-value IsAlreadyMasked check can't see it.
+func TestMatchKnownTokenPatternPlaceholderToken(t *testing.T) {
+	placeholders := []string{
+		"secret_" + strings.Repeat("x", 43), // the reported .env.example, verbatim shape
+		"secret_" + strings.Repeat("X", 40),
+		"ghp_" + strings.Repeat("x", 36),
+		"ghp_" + strings.Repeat("0", 36),
+		"AKIA" + strings.Repeat("X", 16),
+		"sk-ant-api03-" + strings.Repeat("x", 20),
+		"sk_live_" + strings.Repeat("x", 24),
+		"xoxb-" + strings.Repeat("0", 10),
+		"hf_your_token_here_abcdefghij",
+		"shpat_placeholder_abcdefghijkl",
+		"github_pat_EXAMPLEEXAMPLEEXAMPLE12",
+	}
+	for _, v := range placeholders {
+		if vendor, _, ok := MatchKnownTokenPattern(v); ok {
+			t.Errorf("MatchKnownTokenPattern(%q) matched as %s, want rejected as a placeholder", v, vendor)
+		}
+	}
+
+	// The rejection must be narrow enough that a real credential still fires —
+	// a filter that silences genuine tokens is far worse than the noise it set
+	// out to remove. Short runs (up to placeholderRunLen-1) stay matched.
+	real := []string{
+		"secret_" + tokenBody(40),
+		"ghp_" + tokenBody(36),
+		"AKIAABCDEFGHIJKLMNOP",
+		"sk-ant-api03-" + tokenBody(20),
+		"ghp_aaaaaaa" + tokenBody(29), // a 7-long run is not enough
+	}
+	for _, v := range real {
+		if _, _, ok := MatchKnownTokenPattern(v); !ok {
+			t.Errorf("MatchKnownTokenPattern(%q) rejected, want a real-token match", v)
+		}
+	}
+}
+
+// TestFindFileTokensSkipsPlaceholders covers the content scanner's own copy of
+// the check (content.go) — the exposed-secret path is separate from
+// MatchKnownTokenPattern's and would otherwise still report template filler.
+func TestFindFileTokensSkipsPlaceholders(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env.example")
+	body := "NOTION_API_KEY=secret_" + strings.Repeat("x", 43) + "\nGH=ghp_" + strings.Repeat("0", 36) + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tokens, err := FindFileTokens(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tokens) != 0 {
+		t.Errorf("FindFileTokens found %d token(s) in an all-placeholder template, want 0: %+v", len(tokens), tokens)
+	}
+
+	realPath := filepath.Join(dir, ".env")
+	if err := os.WriteFile(realPath, []byte("NOTION_API_KEY=secret_"+tokenBody(40)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tokens, err = FindFileTokens(realPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tokens) != 1 {
+		t.Fatalf("FindFileTokens found %d token(s) for a real credential, want 1", len(tokens))
+	}
+	if tokens[0].Vendor != "Notion Internal Integration Token" {
+		t.Errorf("vendor = %q, want the Notion format", tokens[0].Vendor)
 	}
 }
