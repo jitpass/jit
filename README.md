@@ -24,7 +24,12 @@ after a biometric prompt. The result: you unlock once, `jit` asks before handing
 a credential to a tool (or an agent), and there's a decoy on disk the rest of
 the time.
 
-<img width="1512" height="883" alt="image" src="https://github.com/user-attachments/assets/e797790b-aadc-4616-8165-c6ca816ff80a" />
+| launched by Code | launched by claude |
+| :---: | :---: |
+| <img width="1917" height="946" alt="image" src="https://github.com/user-attachments/assets/e797790b-aadc-4616-8165-c6ca816ff80a" /> | <img width="1917" height="946" alt="image" src="https://github.com/user-attachments/assets/1487988e-b21a-4fe5-a196-94268dd284b6" /> |
+
+ 
+
 
 ## Install
 
