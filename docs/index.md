@@ -109,4 +109,4 @@ then **[Install](./getting-started/install.md)** →
 
 ## About
 
-- [Contributing](./about/contributing.md) · [License (PolyForm Perimeter)](./about/license.md) · [Tech stack](./about/tech-stack.md)
+- [Contributing](./about/contributing.md) · [License (PolyForm Perimeter)](./about/license.md) - free for personal and internal company use only · [Tech stack](./about/tech-stack.md)
