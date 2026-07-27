@@ -247,4 +247,5 @@ The docs live under **[docs/](./docs/index.md)**, organized by task:
 
 ## License
 
-[PolyForm Perimeter License 1.0.0](./LICENSE)
+[PolyForm Perimeter License 1.0.0](./LICENSE) - free for personal and internal
+company use only.
