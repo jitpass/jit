@@ -319,6 +319,7 @@ func buildScanSummary(cfg Config, findings []Finding, protectedMounts int, durat
 		PublicIPCount:            ipCount,
 		ScanDurationMs:           duration.Milliseconds(),
 		JitProtectedCount:        protectedMounts,
+		Unfiltered:               cfg.Unfiltered,
 	}
 }
 

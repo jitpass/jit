@@ -446,6 +446,11 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	} else {
 		fmt.Fprintln(w, "Run `jit migrate <path> --dry-run` to see the guided fix plan for a flagged file.")
 	}
+	// An unfiltered run is a deliberately noisy audit view, not a risk
+	// assessment — say so, or a saved report reads as the normal picture.
+	if summary.Unfiltered {
+		_, _ = color.New(color.FgYellow).Fprintln(w, "Suppression is OFF (--unfiltered): settings, paths, browser-public build variables and unfilled template values are all shown. Expect noise; this is the auditing view, not the everyday one.")
+	}
 	_, _ = color.New(color.Faint).Fprintln(w, "No secret values are ever printed in full. Run `jit scan --format ndjson` for machine-readable output (same redaction rules apply).")
 }
 

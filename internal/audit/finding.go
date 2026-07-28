@@ -43,7 +43,18 @@ import (
 // any name rule matched — to produce name-only, judgment-call findings, and
 // its .env.bak rule duplicated what ScanEnvFiles already reports, since
 // envFileNamePattern matches ".env.bak" like any other .env-family suffix.
-const SchemaVersion = "0.10.0"
+// 0.11.0 added scan_summary's unfiltered flag (additive): true when the run
+// was made with `jit scan --unfiltered`, which turns off the name/value
+// suppression gates. Without it a saved report is ambiguous — a deliberately
+// noisy audit run and a normal risk assessment are byte-indistinguishable,
+// and consumers cannot tell which they are looking at. The same bump records
+// a semantic change consumers should know about: exposed_secret findings are
+// no longer produced only by a targeted `jit scan <path>` (as 0.9.0 stated).
+// A machine-wide walk now emits them too, for files whose NAME says they hold
+// credentials (see classifyCredentialDump) — the finding still requires a
+// vendor-format match in the content, so its meaning is unchanged, only its
+// provenance is wider.
+const SchemaVersion = "0.11.0"
 
 // ScannerName identifies this tool in the shared NDJSON envelope, matching
 // bumblebee's record shape so a receiver can co-ingest both (RFC.md §4).
@@ -200,6 +211,9 @@ type ScanSummary struct {
 	ProductionIndicatorCount int            `json:"production_indicator_count"`
 	PublicIPCount            int            `json:"public_ip_count"`
 	ScanDurationMs           int64          `json:"scan_duration_ms"`
+	// Unfiltered records that Config.Unfiltered was set for this run, so a
+	// stored report says which view it is. See Config.Unfiltered.
+	Unfiltered bool `json:"unfiltered"`
 	// JitProtectedCount is how many registered jit live mounts (FIFOs
 	// currently occupying a path jit migrated) exist on this machine.
 	// Scanners never read those paths — a pipe has no at-rest content, and
