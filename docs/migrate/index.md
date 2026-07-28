@@ -31,7 +31,7 @@ Each target is resolved on its own:
   machine-wide file at a known path - a shell config like `~/.zshrc`,
   `~/.aws/credentials`, `~/.kube/config`, the Terraform Cloud token file,
   `~/.docker/config.json`, `~/.git-credentials`, GCP application-default
-  credentials, the SOPS age key, `~/.netrc`, Claude Desktop's MCP config,
+  credentials, the SOPS age key, `~/.netrc`, `~/.pypirc`, Claude Desktop's MCP config,
   the global `~/.npmrc` - is routed to that credential type's handling.
 - **A directory** is walked for its `.env`/tfvars/`mcp.json`/`.npmrc`
   findings only, never the machine-wide fixed-path files (those aren't
@@ -101,7 +101,8 @@ Limit a run to specific categories with `--only`
 | `sops` | the SOPS age private key | a live-mounted pipe serving a template; sops v3.10+ can also fetch the key via `SOPS_AGE_KEY_CMD` | [SOPS](./sops.md) |
 | `npmrc` | just the secret lines (`_authToken`, etc.) | a live-mounted pipe serving a template; everything else untouched | [npm](./npm.md) |
 | `netrc` | every `password` value in `~/.netrc` | a live-mounted pipe serving a template; `machine`/`login` lines and macdef scripts untouched | [netrc](./netrc.md) |
-| `loose` | a bare token in a plain file you named (a JWT in `token.txt`) that matches no format above | by default (whole-file token) the value moves to the vault and the file is replaced with a git-safe pointer; retrieve with `jit vault get`. With `--mount`, or for a token mixed with other content, the file stays live at its path as a mount (a template with `${VAR}` placeholders) serving the real value to `jit run` grants and a decoy otherwise | |
+| `pypirc` | every repository section's `password` in `~/.pypirc` | a live-mounted pipe serving a template; `[distutils]`, `repository` and `username` lines untouched | [PyPI](./pypi.md) |
+| `loose` | secrets in a plain file you named that matches no format above: a bare token (a JWT in `token.txt`), and any secret-shaped `key = value` assignment (`db_password = ...`) whose value isn't obviously a setting | by default (whole-file token) the value moves to the vault and the file is replaced with a git-safe pointer; retrieve with `jit vault get`. With `--mount`, or for a token mixed with other content, the file stays live at its path as a mount (a template with `${VAR}` placeholders) serving the real value to `jit run` grants and a decoy otherwise | |
 
 The `loose` category never appears on its own, only when you explicitly name
 such a file: `jit migrate token.txt`. It is the migrate counterpart to `jit

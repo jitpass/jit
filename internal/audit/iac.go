@@ -74,6 +74,17 @@ func classifyIACFile(cfg Config, path, fileName string) []Finding {
 			if cerr != nil || !confirmed {
 				return nil
 			}
+			// A Helm chart template is the common reason the parse failed,
+			// and it is not a manifest: its values arrive from values.yaml at
+			// deploy time, so the file holds nothing to protect. One real
+			// scan (2026-07-28) carried eight of these from the airbyte
+			// charts, each an unactionable finding. Skipped only when the
+			// templated data block also holds no literal value, so a chart
+			// that hardcodes a password among its template actions is still
+			// reported.
+			if templated, terr := isTemplateOnlySecretManifest(path); terr == nil && templated {
+				return nil
+			}
 			f, ferr := buildLegacyK8sFinding(cfg, path)
 			if ferr != nil {
 				return nil
@@ -86,6 +97,72 @@ func classifyIACFile(cfg Config, path, fileName string) []Finding {
 		findings = append(findings, buildK8sSecretFinding(cfg, path, insp))
 	}
 	return findings
+}
+
+// goTemplateAction matches a Go/Helm template action anywhere in a line.
+var goTemplateAction = regexp.MustCompile(`{{.*?}}`)
+
+// secretDataBlockKeys start the region of a Secret manifest that holds values.
+var secretDataBlockKeys = map[string]bool{"data": true, "stringData": true}
+
+// isTemplateOnlySecretManifest reports whether path is a Go/Helm template
+// whose data/stringData block contains no literal value — every entry is a
+// template action resolved at deploy time.
+//
+// Deliberately narrow. It runs ONLY after the YAML parse already failed (Helm
+// syntax is not valid YAML), and it demands both conditions: template actions
+// present AND no literal value. A chart that hardcodes
+// "password: hunter2" next to its {{- range }} still reports, because the
+// literal is what matters and templating does not excuse it.
+func isTemplateOnlySecretManifest(path string) (bool, error) {
+	file, err := openFile(path)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+
+	sawTemplate, inDataBlock := false, false
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if goTemplateAction.MatchString(line) {
+			sawTemplate = true
+		}
+		// A top-level key (no leading indentation) opens or closes the block.
+		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			key, _, isPair := strings.Cut(trimmed, ":")
+			inDataBlock = isPair && secretDataBlockKeys[strings.TrimSpace(key)]
+			continue
+		}
+		if !inDataBlock {
+			continue
+		}
+		// A line that is nothing but template actions carries no value.
+		// Checked BEFORE the Cut below, because a range action embeds ":="
+		// ("{{- range $k, $v := .Values.secrets }}") and splitting on the
+		// first colon would leave "= .Values.secrets }}" looking like a
+		// literal value — which read every Helm chart as having real content.
+		if strings.TrimSpace(goTemplateAction.ReplaceAllString(trimmed, "")) == "" {
+			continue
+		}
+		// Inside the block: a "key: value" whose value survives stripping
+		// template actions is a real, literal value.
+		_, value, isPair := strings.Cut(trimmed, ":")
+		if !isPair {
+			continue
+		}
+		if strings.TrimSpace(goTemplateAction.ReplaceAllString(value, "")) != "" {
+			return false, nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return false, err
+	}
+	return sawTemplate, nil
 }
 
 // iacNameGates reports whether fileName is a tfvars file and/or a Kubernetes
@@ -370,7 +447,7 @@ func buildTfvarsFinding(cfg Config, path string) (Finding, error) {
 	// so the file's most actionable content was invisible. This is the same
 	// gap .env findings had; describeEnvHits is shared with them so the two
 	// categories word it identically.
-	tokens, shaped, err := scanTfvarsAssignments(path)
+	tokens, shaped, err := scanTfvarsAssignments(cfg, path)
 	if err != nil {
 		return Finding{}, err
 	}
@@ -431,7 +508,7 @@ var tfvarsAssignment = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*(
 // variables holding them: values matching a known vendor token format, and
 // secret-shaped variable NAMES with a non-empty value. Mirrors what
 // buildEnvFileFinding collects, so both categories can share describeEnvHits.
-func scanTfvarsAssignments(path string) ([]envTokenHit, []string, error) {
+func scanTfvarsAssignments(cfg Config, path string) ([]envTokenHit, []string, error) {
 	file, err := openFile(path)
 	if err != nil {
 		return nil, nil, err
@@ -458,7 +535,7 @@ func scanTfvarsAssignments(path string) ([]envTokenHit, []string, error) {
 			tokens = append(tokens, envTokenHit{key: key, vendor: vendor, verified: verified})
 			continue
 		}
-		if LooksLikeSecretKey(key) {
+		if LooksLikeSecretKey(key) && !cfg.suppressName(key) && !cfg.suppressValue(raw) {
 			shaped = append(shaped, key)
 		}
 	}

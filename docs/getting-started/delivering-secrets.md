@@ -16,7 +16,7 @@ This page is the decision guide.
 | A CLI tool that keeps its own token in a dotfile, and you run it by name (`gh`, `aws`, `npm`, `stripe`) | **`jit wrap`** | Set up once; type the tool name normally forever |
 | A project `.env` of variables that your scripts read | **`jit migrate`** then **`jit run`** | The file becomes a live mount; scripts run under `jit run` |
 | A one-off command that needs a specific profile | **`jit run --profile <name>`** | No setup; name the profile for this run only |
-| A machine-wide credential *file* a tool reads (gcloud ADC, SOPS age key, global `~/.npmrc`) | **run it** and approve the prompt, or **`jit run --with <name>`** | Consent prompts on first read (default); `--with` is the explicit, hard-gated grant, never authorized by a repo |
+| A machine-wide credential *file* a tool reads (gcloud ADC, SOPS age key, global `~/.npmrc`, `~/.pypirc`) | **run it** and approve the prompt, or **`jit run --with <name>`** | Consent prompts on first read (default); `--with` is the explicit, hard-gated grant, never authorized by a repo |
 | Secrets in your current interactive shell | **`jit export`** | Prints `export` lines to `eval` |
 
 Everything below is the longer "why".
@@ -77,7 +77,8 @@ Some credentials are neither a project's `.env` nor a tool's own dotfile
 token. They are a single machine-wide *file* that many tools read: Google's
 application-default credentials (`~/.config/gcloud/…`, read by gcloud,
 terraform, and every Google SDK), the SOPS age key, the global `~/.npmrc`,
-`~/.netrc` (curl, git, ftp, wget).
+`~/.netrc` (curl, git, ftp, wget), and `~/.pypirc` (twine, `uv publish`,
+poetry).
 Naming one of these files in `jit migrate` vaults the secret inside it and
 live-mounts the file.
 
@@ -98,7 +99,7 @@ terraform apply                        # everyday: run it, approve the prompt
 jit run --with gcp -- terraform apply  # explicit grant: scoped to this run, gone on exit
 ```
 
-`--with gcp|sops|npm|netrc` names the credential. The grant prompts a fresh
+`--with gcp|sops|npm|netrc|pypi` names the credential. The grant prompts a fresh
 **disclosed Touch ID that names it**, even when the vault is already unlocked,
 so a script that slipped a `--with` into a command can't siphon a machine-wide
 credential silently. The real values reach only that run's process tree, and the

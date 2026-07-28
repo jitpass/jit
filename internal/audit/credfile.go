@@ -37,7 +37,7 @@ func ScanCredentialFiles(cfg Config) ([]Finding, error) {
 	if err != nil {
 		return fixed, err
 	}
-	walked, err := walkForCategory(cfg, classifyProjectNpmrc)
+	walked, err := walkForCategory(cfg, classifyCredentialWalkFile)
 	// Same fixed-then-walked composition Scan performs, dedupe included, so
 	// this standalone entry point and a machine-wide scan can't report a
 	// different number of findings for the same home directory.
@@ -55,6 +55,8 @@ func scanKnownCredentialFiles(cfg Config) ([]Finding, error) {
 		scanKubeconfig,
 		scanGlobalNpmrc,
 		scanCargoCredentials,
+		scanPypirc,
+		scanMCPAuthTokens,
 		scanTerraformCloud,
 		scanDockerConfig,
 		scanGitCredentials,
@@ -102,7 +104,7 @@ func scanAWSCredentials(cfg Config) ([]Finding, error) {
 		if !ok || secret == "" {
 			continue
 		}
-		findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+		f := cfg.ValueFinding(ValueFindingParams{
 			FindingType:  FindingTypeCredentialFile,
 			FilePath:     path,
 			KeyName:      profile + "/aws_secret_access_key",
@@ -110,7 +112,17 @@ func scanAWSCredentials(cfg Config) ([]Finding, error) {
 			BaseSeverity: SeverityHigh,
 			Confidence:   ConfidenceHigh,
 			Evidence:     fmt.Sprintf("AWS secret access key found in profile %q", profile),
-		}))
+		})
+		// The access key ID is the parsed-but-unreported half of the pair:
+		// this scanner deliberately reports only the secret (the ID alone
+		// authenticates nothing), but the content sweep's AKIA/ASIA pattern
+		// matches the ID — claiming it here is what keeps the sweep's
+		// re-discovery of it deduplicated without hiding a genuinely foreign
+		// token in the same file (dropRedundantExposedSecrets).
+		if id := kv["aws_access_key_id"]; id != "" {
+			f.ClaimedValuePreviews = []string{MaskValue(id)}
+		}
+		findings = append(findings, f)
 	}
 	return findings, nil
 }
@@ -277,6 +289,258 @@ func scanNpmrcFile(path string, cfg Config) ([]Finding, error) {
 	return findings, scanner.Err()
 }
 
+// --- Streamlit (.streamlit/secrets.toml, TOML) ---
+
+// streamlitSecretsDir / streamlitSecretsFile are the two halves of the path
+// Streamlit documents for its secrets: "<project>/.streamlit/secrets.toml"
+// alongside the app, and "~/.streamlit/secrets.toml" globally. Both are found
+// by the same walk — the global one is just the copy that happens to sit in
+// $HOME — so unlike npmrc there is no separate fixed-path scanner.
+const streamlitSecretsDir = ".streamlit"
+const streamlitSecretsFile = "secrets.toml" // #nosec G101 -- a filename, not a credential
+
+// classifyStreamlitSecrets is the discovery half for Streamlit's secrets file.
+// Streamlit's own docs call this file "secrets", tell you to gitignore it, and
+// have `st.secrets` read it directly — so unlike a generic .toml, its entire
+// purpose is holding credentials.
+//
+// This was a total blind spot before (2026-07-28 dogfooding): a
+// .streamlit/secrets.toml holding a live sk-proj- OpenAI key, a database
+// password and a Snowflake password scanned as "This machine looks clean."
+// Nothing matched it — it isn't a .env name, isn't a tfvars/Secret-yaml name,
+// and the content sweep deliberately only runs on explicitly-named files.
+//
+// The gate is BOTH the filename and its parent directory: "secrets.toml" on
+// its own is a common enough name (a Rust config, a Helm values file) that
+// matching it anywhere would report files with no Streamlit involvement, while
+// ".streamlit/secrets.toml" is unambiguous.
+func classifyStreamlitSecrets(cfg Config, path, name string) []Finding {
+	if name != streamlitSecretsFile || filepath.Base(filepath.Dir(path)) != streamlitSecretsDir {
+		return nil
+	}
+	findings, err := scanStreamlitSecretsFile(cfg, path)
+	if err != nil {
+		return nil // unreadable file — skip it, don't fail the whole scan
+	}
+	return findings
+}
+
+// classifyCredentialWalkFile is the credential category's single classify
+// entry point, fanning the one traversal out to every discovered-file format
+// the category owns. The category struct holds one classifier, and Scan's
+// whole design is one walk feeding all of them (see categories), so a second
+// format joins here rather than by adding a second walk.
+func classifyCredentialWalkFile(cfg Config, path, name string) []Finding {
+	var findings []Finding
+	for _, classify := range []func(Config, string, string) []Finding{
+		classifyProjectNpmrc,
+		classifyStreamlitSecrets,
+	} {
+		findings = append(findings, classify(cfg, path, name)...)
+	}
+	return findings
+}
+
+// scanStreamlitSecretsFile attributes the file's credentials to the keys
+// holding them, one finding per key.
+//
+// It shares tfvarsAssignment (HCL's `name = value`) rather than adding a TOML
+// parser: the two formats' assignment lines are the same shape, and a
+// `[section]` header simply doesn't match, which is the right outcome — a
+// header is never itself a credential, and the keys beneath it are still
+// matched on their own lines. Keeping to the line-oriented subset is the same
+// call extractTOML and scanCargoCredentialFile already make (TECH_STACK.md §0).
+//
+// One consequence of not tracking sections: two sections each holding a key
+// literally named "password" both report as "password". Acceptable for a
+// read-only finding whose job is to point a human at a file — it would NOT be
+// acceptable in a migrator, which needs distinct vault paths (see
+// pypircVarName, which folds the section in for exactly that reason).
+func scanStreamlitSecretsFile(cfg Config, path string) ([]Finding, error) {
+	file, err := openFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var findings []Finding
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if trimmed := strings.TrimSpace(line); trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		m := tfvarsAssignment.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		key, raw := m[1], unquote(m[2])
+		if raw == "" || IsAlreadyMasked(raw) {
+			continue
+		}
+
+		// Same two-signal split every other category uses: a value matching a
+		// vendor format is near-proof, a secret-shaped name is a weaker
+		// (Medium) signal. LooksLikeNonSecretName/Value keep the settings a
+		// secrets.toml legitimately carries (a connection's "port", a
+		// "dialect", an "account" URL) from reading as credentials.
+		// The value check runs even when the KEY looks innocuous, which is the
+		// point of having it: `foo = "sk-proj-…"` is still a live OpenAI key.
+		// Evidence is left to ValueFinding, which recognizes the vendor from
+		// the raw value and words it the same way every other category does —
+		// anything set here would just be overwritten.
+		if _, verified, ok := MatchKnownTokenPattern(raw); ok {
+			confidence := ConfidenceHigh
+			if !verified {
+				confidence = ConfidenceMedium
+			}
+			findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+				FindingType:  FindingTypeCredentialFile,
+				FilePath:     path,
+				KeyName:      key,
+				RawValue:     raw,
+				BaseSeverity: SeverityHigh,
+				Confidence:   confidence,
+			}))
+			continue
+		}
+		if LooksLikeSecretKey(key) && !cfg.suppressName(key) && !cfg.suppressValue(raw) {
+			findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+				FindingType:  FindingTypeCredentialFile,
+				FilePath:     path,
+				KeyName:      key,
+				RawValue:     raw,
+				BaseSeverity: SeverityHigh,
+				Confidence:   ConfidenceMedium,
+				Evidence:     "Streamlit secrets file holds a key name that looks like a real credential",
+			}))
+		}
+	}
+	return findings, scanner.Err()
+}
+
+// --- Remote MCP OAuth tokens (~/.mcp-auth/**/<hash>_tokens.json, JSON) ---
+
+// mcpAuthDir is where mcp-remote — the OAuth bridge that lets stdio-only MCP
+// clients talk to remote servers — keeps "all the credential information"
+// (its README's words). Files sit one level down, under a per-version
+// directory: ~/.mcp-auth/mcp-remote-0.1.37/<server-hash>_tokens.json.
+//
+// A MCP_REMOTE_CONFIG_DIR override moves this; that's out of scope here, the
+// same narrower-first-cut stance DiscoverNetrc documents.
+const mcpAuthDir = ".mcp-auth"
+
+// mcpAuthTokenSuffix is the filename tail that marks a token store, as
+// distinct from the sibling <hash>_debug.log and client-registration files.
+const mcpAuthTokenSuffix = "_tokens.json" // #nosec G101 -- a filename suffix, not a credential
+
+// mcpAuthTokens is the subset of the token store worth reading.
+//
+// Only refresh_token is reported. The sibling access_token is deliberately
+// ignored: mcp-remote's access tokens live 5-60 minutes, so one is very likely
+// dead before anyone reads the report — a finding for it is noise with no
+// remedy. It also carries a practical wrinkle that makes the noise worse:
+// these access tokens are usually JWTs, so ValueFinding recognizes the format
+// and escalates to High on the value alone, burying the one thing worth
+// saying here (revoke it; it can't be vaulted) under generic JWT wording.
+// The refresh token is the credential that actually matters — weeks of
+// validity, and the thing an attacker would take.
+type mcpAuthTokens struct {
+	RefreshToken string `json:"refresh_token"`
+	// AccessToken is parsed only to be CLAIMED, never reported: it lives
+	// 5-60 minutes, so reporting it alongside the weeks-valid refresh token
+	// would double the findings for strictly less risk. It is typically a
+	// JWT, which the content sweep's eyJ pattern matches — claiming its
+	// preview keeps the sweep from re-reporting it out from under this
+	// scanner's deliberate downgrade (dropRedundantExposedSecrets).
+	AccessToken string `json:"access_token"`
+}
+
+// scanMCPAuthTokens reports remote-MCP OAuth tokens sitting in plaintext.
+//
+// DETECTION-ONLY, deliberately, and this is the whole reason it's worth
+// writing down: mcp-remote ROTATES these. Access tokens live 5-60 minutes and
+// refresh tokens are re-issued on every use, with the file atomically
+// rewritten each time. Converting it to a jit mount would fight that — the
+// tool would replace jit's FIFO on its next refresh, and until it did jit
+// would be serving a token that had already been rotated away. It is the same
+// call the wrap catalog's wrangler entry documents for OAuth credentials:
+// migrating one yields protection that breaks the moment it expires.
+//
+// So the finding carries no `jit migrate` affordance. It rates Medium rather
+// than High for the same reason its remedy differs: the actionable response is
+// to revoke at the provider and `rm -rf ~/.mcp-auth` (mcp-remote's own
+// documented reset), not to move the value into the vault. Reporting it still
+// earns its place — a refresh token here is typically valid for 30-90 days and
+// grants an AI agent's access to whatever the remote server exposes, and most
+// people have no idea the directory exists.
+func scanMCPAuthTokens(cfg Config) ([]Finding, error) {
+	root := filepath.Join(cfg.HomeDir, mcpAuthDir)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, nil // absent or unreadable — nothing to report, never a scan failure
+	}
+
+	var findings []Finding
+	for _, versionDir := range entries {
+		if !versionDir.IsDir() {
+			continue
+		}
+		dir := filepath.Join(root, versionDir.Name())
+		files, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, file := range files {
+			if !strings.HasSuffix(file.Name(), mcpAuthTokenSuffix) {
+				continue
+			}
+			path := filepath.Join(dir, file.Name())
+			// Lstat + IsRegular before opening, the same guard every
+			// fixed-path scanner here applies.
+			if info, statErr := os.Lstat(path); statErr != nil || !info.Mode().IsRegular() {
+				continue
+			}
+			findings = append(findings, mcpAuthTokenFindings(cfg, path)...)
+		}
+	}
+	// Sorted by path: os.ReadDir is already lexical, but two version
+	// directories would otherwise interleave by discovery order rather than
+	// deterministically — same reasoning as scanAWSCredentials' sort.
+	slices.SortFunc(findings, func(a, b Finding) int { return strings.Compare(a.FilePath, b.FilePath) })
+	return findings, nil
+}
+
+func mcpAuthTokenFindings(cfg Config, path string) []Finding {
+	data, err := os.ReadFile(path) // #nosec G304 -- path is built from cfg.HomeDir and a fixed directory name
+	if err != nil {
+		return nil
+	}
+	var tokens mcpAuthTokens
+	if err := json.Unmarshal(data, &tokens); err != nil {
+		return nil // malformed — skip it
+	}
+
+	var findings []Finding
+	if tokens.RefreshToken == "" || IsAlreadyMasked(tokens.RefreshToken) {
+		return nil
+	}
+	f := cfg.ValueFinding(ValueFindingParams{
+		FindingType:  FindingTypeCredentialFile,
+		FilePath:     path,
+		KeyName:      "refresh_token",
+		RawValue:     tokens.RefreshToken,
+		BaseSeverity: SeverityMedium,
+		Confidence:   ConfidenceHigh,
+		Evidence:     "a remote MCP server's OAuth refresh token (typically valid for weeks) in plaintext; revoke it at the provider and reset with `rm -rf ~/.mcp-auth` — jit can't vault this one, mcp-remote rotates the file itself",
+	})
+	if tokens.AccessToken != "" {
+		f.ClaimedValuePreviews = []string{MaskValue(tokens.AccessToken)}
+	}
+	findings = append(findings, f)
+	return findings
+}
+
 // --- Cargo / crates.io (~/.cargo/credentials.toml, TOML) ---
 
 // cargoCredentialPaths are the two files cargo reads a registry token from,
@@ -353,6 +617,74 @@ func scanCargoCredentialFile(cfg Config, path string) []Finding {
 		}))
 	}
 	return findings
+}
+
+// --- PyPI (~/.pypirc, INI format) ---
+
+// scanPypirc reports the upload tokens twine, uv, poetry and setuptools read
+// from ~/.pypirc. This is the Python half of the same publish-credential class
+// scanCargoCredentials and scanGlobalNpmrc cover: with it an attacker ships a
+// new release of any project the account owns, straight into other people's
+// installs, so it rates High for the same reason.
+//
+// Format (packaging.python.org): a [distutils] index-servers list, then one
+// section per repository holding `username`/`password`. For a token login the
+// username is the literal "__token__" and the password IS the token — which is
+// why the password field is what's reported, not the username.
+func scanPypirc(cfg Config) ([]Finding, error) {
+	path := filepath.Join(cfg.HomeDir, ".pypirc")
+	// Lstat + IsRegular before opening, the same guard the cargo and npm
+	// scanners apply: `jit migrate` can turn this into a live mount, and
+	// opening that FIFO with no agent writing would hang the scan.
+	if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
+		return nil, nil
+	}
+	file, err := openFile(path)
+	if err != nil {
+		return nil, nil // unreadable — skip it, don't fail the whole audit
+	}
+	defer file.Close()
+
+	sections, err := parseINISections(file)
+	if err != nil {
+		return nil, nil // malformed — skip it
+	}
+
+	var findings []Finding
+	for _, section := range slices.Sorted(maps.Keys(sections)) { // sorted: see scanAWSCredentials
+		// [distutils] is the index-servers list, never a credential holder.
+		if section == "distutils" {
+			continue
+		}
+		password := unquote(sections[section]["password"])
+		if password == "" || IsAlreadyMasked(password) {
+			continue
+		}
+		repository := section
+		if repository == "" {
+			repository = "pypi"
+		}
+		// The fallback wording is per-section: only [pypi]/[testpypi] hold a
+		// PyPI token, and calling a private company index's password a "PyPI
+		// upload token" both mislabels the value and overstates its reach
+		// (it publishes to that index, not to PyPI). A value that DOES match
+		// a vendor format never sees this string — ValueFinding upgrades the
+		// evidence to name the recognized format.
+		evidence := fmt.Sprintf("package-index password found for %s in ~/.pypirc; it can publish to that index as you", repository)
+		if strings.EqualFold(repository, "pypi") || strings.EqualFold(repository, "testpypi") {
+			evidence = fmt.Sprintf("PyPI upload token found for %s; it can publish releases as you", repository)
+		}
+		findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+			FindingType:  FindingTypeCredentialFile,
+			FilePath:     path,
+			KeyName:      repository + "/password",
+			RawValue:     password,
+			BaseSeverity: SeverityHigh,
+			Confidence:   ConfidenceHigh,
+			Evidence:     evidence,
+		}))
+	}
+	return findings, nil
 }
 
 // --- Terraform Cloud (~/.terraform.d/credentials.tfrc.json, JSON) ---
@@ -522,7 +854,7 @@ func scanGitCredentialsFile(path string, cfg Config) ([]Finding, error) {
 		if !ok || pw == "" {
 			continue
 		}
-		findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+		f := cfg.ValueFinding(ValueFindingParams{
 			FindingType:  FindingTypeCredentialFile,
 			FilePath:     path,
 			KeyName:      u.Host,
@@ -530,7 +862,19 @@ func scanGitCredentialsFile(path string, cfg Config) ([]Finding, error) {
 			BaseSeverity: SeverityHigh,
 			Confidence:   ConfidenceHigh,
 			Evidence:     fmt.Sprintf("git HTTPS credential found for host %q in plaintext; jit wrap git moves it into the vault and keeps git push/fetch over HTTPS working", u.Host),
-		}))
+		})
+		// Claim the line's other spellings of this same credential: the
+		// content sweep's scheme-less connection-string pattern matches the
+		// "user:pass@host" span (starting right after "://"), which previews
+		// differently from the bare password reported above. Without the
+		// claim, dropRedundantExposedSecrets would treat that span as a
+		// foreign value and re-report the file (a token used AS the password
+		// is already covered — it previews identically to RawValue).
+		f.ClaimedValuePreviews = []string{MaskValue(line)}
+		if _, rest, found := strings.Cut(line, "://"); found {
+			f.ClaimedValuePreviews = append(f.ClaimedValuePreviews, MaskValue(rest))
+		}
+		findings = append(findings, f)
 	}
 	return findings, nil
 }

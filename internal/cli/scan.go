@@ -19,9 +19,10 @@ import (
 )
 
 var (
-	scanFormat string
-	scanOutput string
-	scanScore  bool
+	scanFormat     string
+	scanOutput     string
+	scanScore      bool
+	scanUnfiltered bool
 )
 
 var scanCmd = &cobra.Command{
@@ -88,6 +89,8 @@ var scanCmd = &cobra.Command{
 		// unwanted), for --quiet, and whenever stderr isn't a terminal — see
 		// newProgress. --score deliberately gets it too: it runs the entire
 		// scan before printing its one line, so it's just as silent otherwise.
+		cfg.Unfiltered = scanUnfiltered
+
 		machineScan := scanFormat == "ndjson" || scanFormat == "markdown" || scanFormat == "md" || scanOutput != ""
 		progress := newProgress(cmd, machineScan)
 		cfg.Progress = func(category string) {
@@ -215,6 +218,7 @@ func writeScanReport(w io.Writer, format string, findings []audit.Finding, summa
 func init() {
 	scanCmd.Flags().StringVar(&scanFormat, "format", "text", `output format: "text" (default), "markdown"/"md", or "ndjson"`)
 	scanCmd.Flags().StringVarP(&scanOutput, "output", "o", "", "write the report to this file instead of stdout")
+	scanCmd.Flags().BoolVar(&scanUnfiltered, "unfiltered", false, "show findings jit normally judges to be settings, paths, browser-public build variables or unfilled template values; use it to audit what the filters are hiding")
 	scanCmd.Flags().BoolVar(&scanScore, "score", false, `print only the exposure score (e.g. "Exposure: 92/100 (CRITICAL)") and exit`)
 	rootCmd.AddCommand(scanCmd)
 }

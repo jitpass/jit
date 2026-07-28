@@ -498,3 +498,205 @@ func TestScanFindsCargoTokenDespitePrunedCargoDir(t *testing.T) {
 		t.Errorf("env_file_present = %d, want 0 — .cargo is pruned, vendored crate fixtures must stay invisible", got)
 	}
 }
+
+// TestScanPypirc covers the Python half of the publish-credential class
+// scanCargoCredentials and scanGlobalNpmrc already handle. Added after real
+// developer scans (2026-07-28) showed Python packaging credentials on most
+// machines — Poetry and uv private-index passwords in shell configs, which
+// share ~/.pypirc's repository sections.
+func TestScanPypirc(t *testing.T) {
+	home := t.TempDir()
+	writeFile(t, filepath.Join(home, ".pypirc"), `[distutils]
+index-servers =
+    pypi
+    internal
+
+[pypi]
+username = __token__
+password = pypi-AgEIcHlwaS5vcmcCJDk0YTUxZmE0LTFhMmItNGMzZFabcdef
+
+[internal]
+repository = https://pypi.internal.example/simple
+username = ci-publisher
+password = Xk92QmPl4TzWhuCmu2qcwnu9PnWfMKNA
+`)
+
+	findings, err := scanPypirc(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("scanPypirc: %v", err)
+	}
+	// [distutils] is the index-servers list, not a credential holder.
+	if len(findings) != 2 {
+		t.Fatalf("got %d findings, want 2 (pypi + the private index), [distutils] excluded: %+v", len(findings), findings)
+	}
+	// Sorted key order: "internal" sorts before "pypi".
+	if *findings[0].KeyName != "internal/password" {
+		t.Errorf("KeyName[0] = %q, want %q", *findings[0].KeyName, "internal/password")
+	}
+	// Two evidence paths, both correct: the private index's password matches no
+	// vendor format, so it falls back to this scanner's own wording — which is
+	// per-section, because a company index's password is not a "PyPI upload
+	// token" and cannot publish to PyPI, only to that index; the pypi
+	// section's value DOES match, so ValueFinding upgrades the evidence to name
+	// the format it recognized.
+	if !strings.Contains(findings[0].Evidence, "package-index password") ||
+		!strings.Contains(findings[0].Evidence, "publish to that index") {
+		t.Errorf("evidence should name what the credential is and what it can reach, got %q", findings[0].Evidence)
+	}
+	if !strings.Contains(findings[1].Evidence, "PyPI Upload Token") {
+		t.Errorf("evidence should name the recognized format, got %q", findings[1].Evidence)
+	}
+	for _, f := range findings {
+		if f.Severity != SeverityHigh {
+			t.Errorf("severity = %q, want %q — a publish credential", f.Severity, SeverityHigh)
+		}
+	}
+}
+
+// TestScanPypircSkipsMaskedAndMissing confirms the two quiet paths: no file at
+// all, and a file jit already migrated (whose value reads back masked).
+func TestScanPypircSkipsMaskedAndMissing(t *testing.T) {
+	empty := t.TempDir()
+	findings, err := scanPypirc(Config{HomeDir: empty})
+	if err != nil || len(findings) != 0 {
+		t.Errorf("no ~/.pypirc should yield nothing, got %d findings, err=%v", len(findings), err)
+	}
+
+	masked := t.TempDir()
+	writeFile(t, filepath.Join(masked, ".pypirc"), `[pypi]
+username = __token__
+password = ***
+`)
+	findings, err = scanPypirc(Config{HomeDir: masked})
+	if err != nil || len(findings) != 0 {
+		t.Errorf("a masked password should yield nothing, got %d findings, err=%v", len(findings), err)
+	}
+}
+
+// TestClassifyStreamlitSecrets covers a total blind spot found in real
+// developer scans (2026-07-28): a .streamlit/secrets.toml holding a live
+// sk-proj- OpenAI key, a database password and a Snowflake password scanned as
+// "This machine looks clean". Nothing matched it — not a .env name, not a
+// tfvars/Secret-yaml name, and the content sweep only runs on explicitly-named
+// files.
+func TestClassifyStreamlitSecrets(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "proj", ".streamlit")
+	mkdirAll(t, dir)
+	path := filepath.Join(dir, "secrets.toml")
+	writeFile(t, path, `# Streamlit secrets
+OPENAI_API_KEY = "sk-proj-Ab3xKq9ZmPq2LrTvWn5cUd8eFg1hJk0uf4"
+db_password = "Tr0ub4dor3xKq9ZmPq2Lr"
+
+[connections.snowflake]
+account = "ACME-PROD"
+user = "analyst"
+port = 443
+password = "Xk92QmPl4TzWhuCmu2qcwnu9PnWfMKNA"
+`)
+
+	findings := classifyStreamlitSecrets(Config{HomeDir: home}, path, "secrets.toml")
+	if len(findings) != 3 {
+		var keys []string
+		for _, f := range findings {
+			keys = append(keys, *f.KeyName)
+		}
+		t.Fatalf("got %d findings %v, want 3 (the API key, db_password, password) — account/user/port are settings", len(findings), keys)
+	}
+	for _, f := range findings {
+		if f.Severity != SeverityHigh {
+			t.Errorf("%s: severity = %q, want %q", *f.KeyName, f.Severity, SeverityHigh)
+		}
+		if f.ValuePreview == nil || strings.Contains(*f.ValuePreview, "Tr0ub4dor3xKq9ZmPq2Lr") {
+			t.Errorf("%s: value must be masked in the preview, got %v", *f.KeyName, f.ValuePreview)
+		}
+	}
+}
+
+// TestClassifyStreamlitSecretsGate pins the two-part name gate. "secrets.toml"
+// is a common enough filename (Rust config, Helm values) that matching it
+// anywhere would report files with no Streamlit involvement.
+func TestClassifyStreamlitSecretsGate(t *testing.T) {
+	home := t.TempDir()
+	cfg := Config{HomeDir: home}
+
+	// Right name, wrong directory.
+	loose := filepath.Join(home, "proj", "secrets.toml")
+	mkdirAll(t, filepath.Dir(loose))
+	writeFile(t, loose, `api_key = "Xk92QmPl4TzWhuCmu2qcwnu9PnWfMKNA"`)
+	if got := classifyStreamlitSecrets(cfg, loose, "secrets.toml"); len(got) != 0 {
+		t.Errorf("secrets.toml outside .streamlit/ should not match, got %d findings", len(got))
+	}
+
+	// Right directory, wrong name.
+	other := filepath.Join(home, "proj", ".streamlit", "config.toml")
+	mkdirAll(t, filepath.Dir(other))
+	writeFile(t, other, `api_key = "Xk92QmPl4TzWhuCmu2qcwnu9PnWfMKNA"`)
+	if got := classifyStreamlitSecrets(cfg, other, "config.toml"); len(got) != 0 {
+		t.Errorf(".streamlit/config.toml holds settings, not secrets; got %d findings", len(got))
+	}
+}
+
+// TestScanMCPAuthTokens covers the remote-MCP OAuth token store mcp-remote
+// keeps in ~/.mcp-auth. Detection-only by design: mcp-remote rotates and
+// rewrites these files itself, so the finding's job is to say "revoke this",
+// not to offer a migration that the tool would immediately fight.
+func TestScanMCPAuthTokens(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".mcp-auth", "mcp-remote-0.1.37")
+	mkdirAll(t, dir)
+	writeFile(t, filepath.Join(dir, "fcc436b0_tokens.json"),
+		`{"access_token":"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1In0.abc","refresh_token":"rt_Ab3xKq9ZmPq2LrTvWn5cUd8eFg1h","expires_in":3600}`)
+	// Sibling files mcp-remote writes that are not token stores.
+	writeFile(t, filepath.Join(dir, "fcc436b0_debug.log"), "some log output\n")
+
+	findings, err := scanMCPAuthTokens(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("scanMCPAuthTokens: %v", err)
+	}
+	// One finding, not two: the short-lived access_token is deliberately not
+	// reported (see mcpAuthTokens' doc comment).
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1 (refresh_token only): %+v", len(findings), findings)
+	}
+	if *findings[0].KeyName != "refresh_token" {
+		t.Errorf("KeyName = %q, want refresh_token", *findings[0].KeyName)
+	}
+	if findings[0].Severity != SeverityMedium {
+		t.Errorf("severity = %q, want %q — the remedy is revocation, not migration", findings[0].Severity, SeverityMedium)
+	}
+	if !strings.Contains(findings[0].Evidence, "revoke") {
+		t.Errorf("evidence should tell the reader to revoke, got %q", findings[0].Evidence)
+	}
+}
+
+func TestScanMCPAuthTokensQuietCases(t *testing.T) {
+	t.Run("no directory", func(t *testing.T) {
+		findings, err := scanMCPAuthTokens(Config{HomeDir: t.TempDir()})
+		if err != nil || len(findings) != 0 {
+			t.Errorf("got (%d findings, %v), want (0, nil)", len(findings), err)
+		}
+	})
+
+	t.Run("no refresh token", func(t *testing.T) {
+		home := t.TempDir()
+		dir := filepath.Join(home, ".mcp-auth", "mcp-remote-0.1.37")
+		mkdirAll(t, dir)
+		writeFile(t, filepath.Join(dir, "abc_tokens.json"), `{"access_token":"short-lived-only"}`)
+		findings, err := scanMCPAuthTokens(Config{HomeDir: home})
+		if err != nil || len(findings) != 0 {
+			t.Errorf("got (%d findings, %v), want (0, nil) — nothing durable to report", len(findings), err)
+		}
+	})
+
+	t.Run("malformed json", func(t *testing.T) {
+		home := t.TempDir()
+		dir := filepath.Join(home, ".mcp-auth", "mcp-remote-0.1.37")
+		mkdirAll(t, dir)
+		writeFile(t, filepath.Join(dir, "abc_tokens.json"), `not json at all`)
+		findings, err := scanMCPAuthTokens(Config{HomeDir: home})
+		if err != nil || len(findings) != 0 {
+			t.Errorf("malformed file should be skipped, got (%d findings, %v)", len(findings), err)
+		}
+	})
+}

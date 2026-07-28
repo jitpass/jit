@@ -78,10 +78,19 @@ func scanShellConfigFile(cfg Config, path string) ([]Finding, error) {
 			continue
 		}
 		key := m[1]
-		if !LooksLikeSecretKey(key) {
+		// LooksLikeNonSecretName drops path-holding exports (SSH_KEY_PATH,
+		// CREDENTIALS_FILE) and documented-public names, which the name
+		// heuristic alone reads as credentials.
+		if !LooksLikeSecretKey(key) || cfg.suppressName(key) {
 			continue
 		}
 		rawValue := unquote(m[2])
+		// ...and LooksLikeNonSecretValue drops the ones the name can't settle:
+		// `export ANTHROPIC_BASE_URL=http://127.0.0.1:4000` is an endpoint, not
+		// a credential, however much "URL" looks like one to the name gate.
+		if cfg.suppressValue(rawValue) {
+			continue
+		}
 		line := lineNum // capture per-iteration value, not the loop variable's address
 
 		findings = append(findings, cfg.ValueFinding(ValueFindingParams{

@@ -48,12 +48,13 @@ type category struct {
 var categories = []category{
 	{name: "shell configs", fixed: ScanShellConfigs},
 	{name: ".env files", classify: classifyEnvFile},
-	{name: "credential files", fixed: scanKnownCredentialFiles, classify: classifyProjectNpmrc},
+	{name: "credential files", fixed: scanKnownCredentialFiles, classify: classifyCredentialWalkFile},
 	{name: "MCP configs", fixed: scanClaudeDesktopMCPConfig, classify: classifyMCPFile},
 	{name: "private keys", fixed: ScanPrivateKeys},
 	{name: "IaC files", classify: classifyIACFile},
 	{name: "wrappable CLI tokens", fixed: ScanWrappableCLITokens},
 	{name: "SOPS age keys", fixed: ScanSOPSAgeKeys},
+	{name: "exposed secrets", classify: classifyCredentialDump},
 }
 
 // Scan runs every category and returns the individual findings plus the
@@ -94,6 +95,8 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 		all = append(all, dropAlreadyReported(fixed, discovered[i])...)
 	}
 
+	all = dropRedundantExposedSecrets(all)
+
 	// Tag findings under archived/backup-looking directories centrally
 	// (not per scanner): `jit migrate home` skips exactly these by default,
 	// and the report renderers surface the tag so that skip is legible from
@@ -104,6 +107,76 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 
 	summary := buildScanSummary(cfg, all, countProtectedMounts(cfg.MountRegistryPath), time.Since(start))
 	return all, summary, nil
+}
+
+// dropRedundantExposedSecrets removes an exposed_secret finding for a file
+// some OTHER category already reported.
+//
+// classifyCredentialDump content-scans any walked file whose name says it
+// holds credentials, and "credential" matches ~/.aws/credentials — which
+// scanAWSCredentials already reports, properly, per profile. So every machine
+// with AWS keys got the same file twice: once as a Credential File naming the
+// field with a fix path, and once as an Exposed Secret saying only "AWS Access
+// Key ID". Regression found in review, 2026-07-28; it would have hit 8 of the
+// 12 machines this feature was built from. The same collision awaits every
+// fixed-path store whose name contains a hint word (.netrc, .pypirc,
+// credentials.json).
+//
+// The structured finding always wins: it names the profile or field, carries
+// the right fix, and is what `jit migrate` acts on. exposed_secret exists for
+// values no category covers — so within a claimed file, only an exposed_secret
+// whose VALUE the claiming scanner never judged survives. Dropping by path
+// alone went too far: a stray ghp_ token pasted into ~/.aws/credentials is
+// matched only by the content sweep, and the path-keyed version silently
+// swallowed it — the one finding that would have reported a real foreign
+// credential (found in review, 2026-07-28).
+//
+// The comparison key is the MaskValue preview, which both sides get from
+// cfg.ValueFinding: the same raw value always previews identically, and
+// values a scanner parsed but chose not to report are contributed via
+// Finding.ClaimedValuePreviews (the AWS access key ID beside its reported
+// secret, mcp-remote's rotating access token). A claimed path whose findings
+// carry no previews at all falls back to the old path-level drop — with
+// nothing to compare, hiding a possible duplicate beats re-introducing the
+// double report this function exists to prevent.
+//
+// Deliberately keyed on file path + preview, not record_id — the two findings
+// describe the same file under different types and key names, so record_id can
+// never match (see dropAlreadyReported's own note on why it is not a blanket
+// dedupe).
+func dropRedundantExposedSecrets(findings []Finding) []Finding {
+	claimed := make(map[string]map[string]bool, len(findings))
+	for _, f := range findings {
+		if f.FindingType == FindingTypeExposedSecret || f.FilePath == "" {
+			continue
+		}
+		set, ok := claimed[f.FilePath]
+		if !ok {
+			set = map[string]bool{}
+			claimed[f.FilePath] = set
+		}
+		if f.ValuePreview != nil {
+			set[*f.ValuePreview] = true
+		}
+		for _, p := range f.ClaimedValuePreviews {
+			set[p] = true
+		}
+	}
+	if len(claimed) == 0 {
+		return findings
+	}
+	out := make([]Finding, 0, len(findings))
+	for _, f := range findings {
+		if f.FindingType == FindingTypeExposedSecret {
+			if set, ok := claimed[f.FilePath]; ok {
+				if len(set) == 0 || f.ValuePreview == nil || set[*f.ValuePreview] {
+					continue
+				}
+			}
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // dropAlreadyReported returns walked without any finding the same category's
@@ -318,6 +391,7 @@ func buildScanSummary(cfg Config, findings []Finding, protectedMounts int, durat
 		PublicIPCount:            ipCount,
 		ScanDurationMs:           duration.Milliseconds(),
 		JitProtectedCount:        protectedMounts,
+		Unfiltered:               cfg.Unfiltered,
 	}
 }
 

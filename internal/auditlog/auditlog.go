@@ -204,11 +204,32 @@ const redactToken = "<redacted>"
 // secretPrefixes are the well-known "this is unambiguously a live credential"
 // leaders. A token starting with one is masked whole regardless of length or
 // entropy, these are never a path, a flag, or a vault label.
+// Kept in sync with internal/audit's knownTokenPatterns by
+// TestEveryRecognizedFormatIsRedactedInTheAuditLog, which derives each
+// pattern's literal prefix and asserts a SHORT token of that format is masked
+// here. The entropy floor below rescues most credentials whatever their
+// prefix, but only above 24 characters — a shorter token of a recognized
+// format would otherwise be written to the log in the clear, which is the one
+// thing this log promises never to do. The guard uses a deliberately short
+// body so it fails unless the prefix itself is listed.
+//
+// The two lists stay separate on purpose: auditlog is a leaf package the agent
+// links, and importing the scanner for one slice of strings would be a poor
+// trade. The test is what keeps them honest.
 var secretPrefixes = []string{
 	"sk-", "sk_", "pk_", "rk_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_",
-	"github_pat_", "glpat-", "xoxb-", "xoxp-", "xoxa-", "xapp-",
+	"github_pat_", "glpat-", "xoxb-", "xoxp-", "xoxa-", "xoxr-", "xapp-", "xwfp-",
 	"AKIA", "ASIA", "AIza", "ya29.", "AGPA", "shpat_", "shpss_",
 	"npm_", "dop_v1_", "dckr_pat_", "hf_", "sk-ant-",
+	// GitLab issues a distinct prefix per token class; glpat- above is only
+	// the personal one.
+	"gldt-", "glrt", "glcbt-", "glptt-", "gloas-", "glagent-", "glft-",
+	// Package registries and vendor formats the scanner recognizes.
+	"pypi-", "ntn_", "secret_", "SG.", "whsec_", "sb_secret_", "glsa_",
+	"dp.st.", "hvs.", "hvb.", "hvr.", "AGE-SECRET-KEY-", "crsr_", "tvly-",
+	// A JWT's header is always base64 of {"alg":... — "eyJ" is the whole
+	// format's tell, and a bare JWT in a log line is a live session.
+	"eyJ",
 }
 
 // highEntropyLen is the floor for the opaque-credential heuristic: a run of
@@ -232,6 +253,22 @@ func looksSecretToken(tok string) bool {
 			return true
 		}
 	}
+	return LooksHighEntropy(tok)
+}
+
+// LooksHighEntropy reports whether tok is a credential-shaped opaque run: long
+// enough, drawn entirely from the credential alphabet, and mixing letters with
+// digits. It is the prefix-independent half of looksSecretToken, exported so
+// the scanner can reuse this exact judgement instead of growing a second
+// entropy heuristic that would drift from this one — the way secretPrefixes
+// and knownTokenPatterns already did.
+//
+// Callers outside the log should pair it with their own context: this says
+// "opaque and credential-shaped", not "secret". A commit SHA and a correlation
+// ID satisfy it too, which is fine for a redactor that would rather mask a
+// non-secret than persist a real one, and NOT fine for a scanner that has to
+// justify every finding to a human.
+func LooksHighEntropy(tok string) bool {
 	return len(tok) >= highEntropyLen && tokenAlphabet.FindString(tok) == tok && hasMixedClasses(tok)
 }
 
