@@ -66,7 +66,7 @@ var connStringPlaceholderUserinfo = regexp.MustCompile(`(?i)` + placeholderUseri
 // schemeLessConnStringExclude adds one more rejection on top of the
 // placeholder-userinfo check, for the scheme-less pattern only.
 //
-// "scheme:something@host.tld" is the shape of a contact URI as much as a
+// A "scheme:user@host.tld" span is the shape of a contact URI as much as a
 // credential, and RE2 has no lookbehind to say "not preceded by a known
 // non-credential scheme" inside the pattern itself. Review (2026-07-28) caught
 // "CONTACT=mailto:engineering@blockaid.io" reporting as a database credential
@@ -251,8 +251,16 @@ const placeholderRunLen = 8
 // would kill every real sk_test_ key, "secret" every real Notion token.
 // Same one-in-billions reasoning as placeholderRunLen for a random credential
 // happening to contain one.
+// "fixture"/"sample"/"mock"/"fake" were added after dogfooding jit against its
+// own repository (2026-07-28): every sanitized file under internal/wrap/testdata
+// labels itself in the token body ("hf_FIXTUREtoken0123…"), and reporting a
+// project's own scrubbed test data as a live credential is the same cry-wolf
+// failure envTemplateSuffixes exists to prevent. Any repo with fixtures has
+// this shape. The odds of a CSPRNG-drawn credential containing one of these
+// words are the same one-in-billions the list already rests on.
 var placeholderTokenWords = []string{
 	"your", "here", "changeme", "placeholder", "example", "dummy", "redacted",
+	"fixture", "sample", "mock", "fake",
 }
 
 // isPlaceholderToken reports whether a matched token span is obviously filler
