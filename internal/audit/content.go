@@ -5,6 +5,7 @@ package audit
 
 import (
 	"bufio"
+	"path/filepath"
 	"strings"
 )
 
@@ -22,15 +23,82 @@ const maxContentScanSize = 5 << 20 // 5 MiB
 // sits on may not be.
 const maxContentLineSize = 1 << 20 // 1 MiB
 
+// credentialFileNameHints gate which files the MACHINE-WIDE walk will content
+// -scan (see classifyCredentialDump). A file whose own name announces that it
+// holds credentials is worth opening; everything else is left to the
+// name-based category scanners, so the walk's cost stays bounded.
+//
+// This list can afford to be broad — including the word "token", which sank
+// the old suspicious_filename category — because of one difference that
+// matters: this gate only decides what to READ. A finding still requires a
+// vendor-format match in the CONTENT. A crypto researcher's tokens.csv full
+// of contract addresses passes the name gate, matches no vendor pattern, and
+// produces nothing. The old category reported on the name alone, which is
+// exactly why it was noise.
+var credentialFileNameHints = []string{
+	"credential", "secret", "token", "apikey", "api_key", "api-key",
+	"password", "passwd", "auth",
+}
+
+// credentialDumpSkipExts are extensions whose contents cannot usefully hold a
+// greppable plaintext credential, skipped so a 2 MB PDF named
+// "Token_Scanning_Report.pdf" isn't read for nothing. Real machines are full
+// of these: the twelve scans behind this feature turned up token-named PDFs,
+// spreadsheets and images on nearly every one.
+var credentialDumpSkipExts = map[string]bool{
+	".pdf": true, ".png": true, ".jpg": true, ".jpeg": true, ".gif": true,
+	".zip": true, ".gz": true, ".tar": true, ".xlsx": true, ".xls": true,
+	".mp4": true, ".mov": true, ".woff": true, ".woff2": true, ".ttf": true,
+}
+
+// classifyCredentialDump content-scans a walked file whose NAME says it holds
+// credentials, and reports any vendor-format value inside it.
+//
+// The motivating case (2026-07-28, a twelfth developer scan) is the file the
+// AWS IAM console hands you when you download an access key:
+// "~/Downloads/<hash>-credentials.csv", holding a live AKIA key and its secret
+// access key. `jit scan <that file>` reported it HIGH; a bare `jit scan` —
+// the command the README opens with — reported the machine CLEAN, because the
+// content sweep ran only on explicitly-named files and no category scanner
+// claims a .csv in Downloads. The same shape recurs across the sample:
+// jwt-secret.txt, credentials.json, cursor2-token-secret.txt, api_key.json.
+//
+// This is the bounded version of the "sweep every walked file" decision
+// scanFileContentForTokens' doc comment declines to make: the patterns are
+// low-false-positive by design, so the open question was never accuracy but
+// cost, and a filename gate answers that without changing what a match means.
+func classifyCredentialDump(cfg Config, path, name string) []Finding {
+	lower := strings.ToLower(name)
+	if credentialDumpSkipExts[strings.ToLower(filepath.Ext(name))] {
+		return nil
+	}
+	hinted := false
+	for _, hint := range credentialFileNameHints {
+		if strings.Contains(lower, hint) {
+			hinted = true
+			break
+		}
+	}
+	if !hinted {
+		return nil
+	}
+	findings, err := scanFileContentForTokens(cfg, path)
+	if err != nil {
+		return nil // unreadable — skip it, never fail the whole scan
+	}
+	return findings
+}
+
 // scanFileContentForTokens sweeps a file's raw text for values matching a
 // known vendor credential format (knownTokenPatterns) and emits an
 // exposed_secret finding for each. This is the detector behind `jit scan
 // <file>` catching a bare JWT dropped in a token.txt — the name-based
 // category scanners can't, because the file matches none of their naming
-// rules. It is deliberately run ONLY on a file the user named explicitly:
-// the vendor-prefix patterns are low-false-positive by design, but sweeping
-// every file of a machine-wide walk with them is a separate, unshipped
-// decision (it would change the baseline full-scan findings for everyone).
+// rules.
+//
+// On a machine-wide walk it runs only for files classifyCredentialDump's
+// name gate admits, not for every file: the vendor-prefix patterns are
+// low-false-positive by design, so the constraint is cost, not accuracy.
 //
 // Private-key bodies are ceded to ScanPrivateKeys / inspectPrivateKeyFile,
 // which report the same key far more richly (passphrase, permissions,

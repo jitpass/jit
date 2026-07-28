@@ -54,6 +54,7 @@ var categories = []category{
 	{name: "IaC files", classify: classifyIACFile},
 	{name: "wrappable CLI tokens", fixed: ScanWrappableCLITokens},
 	{name: "SOPS age keys", fixed: ScanSOPSAgeKeys},
+	{name: "exposed secrets", classify: classifyCredentialDump},
 }
 
 // Scan runs every category and returns the individual findings plus the
