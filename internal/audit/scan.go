@@ -124,17 +124,42 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 //
 // The structured finding always wins: it names the profile or field, carries
 // the right fix, and is what `jit migrate` acts on. exposed_secret exists for
-// files no category claims, so a file that IS claimed has nothing to add.
+// values no category covers — so within a claimed file, only an exposed_secret
+// whose VALUE the claiming scanner never judged survives. Dropping by path
+// alone went too far: a stray ghp_ token pasted into ~/.aws/credentials is
+// matched only by the content sweep, and the path-keyed version silently
+// swallowed it — the one finding that would have reported a real foreign
+// credential (found in review, 2026-07-28).
 //
-// Deliberately keyed on file path, not record_id — the two findings describe
-// the same file under different types and key names, so record_id can never
-// match (see dropAlreadyReported's own note on why it is not a blanket
+// The comparison key is the MaskValue preview, which both sides get from
+// cfg.ValueFinding: the same raw value always previews identically, and
+// values a scanner parsed but chose not to report are contributed via
+// Finding.ClaimedValuePreviews (the AWS access key ID beside its reported
+// secret, mcp-remote's rotating access token). A claimed path whose findings
+// carry no previews at all falls back to the old path-level drop — with
+// nothing to compare, hiding a possible duplicate beats re-introducing the
+// double report this function exists to prevent.
+//
+// Deliberately keyed on file path + preview, not record_id — the two findings
+// describe the same file under different types and key names, so record_id can
+// never match (see dropAlreadyReported's own note on why it is not a blanket
 // dedupe).
 func dropRedundantExposedSecrets(findings []Finding) []Finding {
-	claimed := make(map[string]bool, len(findings))
+	claimed := make(map[string]map[string]bool, len(findings))
 	for _, f := range findings {
-		if f.FindingType != FindingTypeExposedSecret && f.FilePath != "" {
-			claimed[f.FilePath] = true
+		if f.FindingType == FindingTypeExposedSecret || f.FilePath == "" {
+			continue
+		}
+		set, ok := claimed[f.FilePath]
+		if !ok {
+			set = map[string]bool{}
+			claimed[f.FilePath] = set
+		}
+		if f.ValuePreview != nil {
+			set[*f.ValuePreview] = true
+		}
+		for _, p := range f.ClaimedValuePreviews {
+			set[p] = true
 		}
 	}
 	if len(claimed) == 0 {
@@ -142,8 +167,12 @@ func dropRedundantExposedSecrets(findings []Finding) []Finding {
 	}
 	out := make([]Finding, 0, len(findings))
 	for _, f := range findings {
-		if f.FindingType == FindingTypeExposedSecret && claimed[f.FilePath] {
-			continue
+		if f.FindingType == FindingTypeExposedSecret {
+			if set, ok := claimed[f.FilePath]; ok {
+				if len(set) == 0 || f.ValuePreview == nil || set[*f.ValuePreview] {
+					continue
+				}
+			}
 		}
 		out = append(out, f)
 	}

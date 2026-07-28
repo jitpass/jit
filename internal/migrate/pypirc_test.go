@@ -317,3 +317,94 @@ func TestApplyPypircIsUndoable(t *testing.T) {
 		t.Errorf("restored bytes differ.\ngot:  %q\nwant: %q", restored, original)
 	}
 }
+
+// TestApplyPypircDisambiguatesCollidingSectionNames guards the collision
+// found in review (2026-07-28): [my-index] and [my_index] are DISTINCT
+// configparser sections, but both sanitize to MY_INDEX_PASSWORD. Before
+// assignUniqueVarNames, the second section's password silently overwrote the
+// first's in the vault and the template stamped the surviving value into both
+// sections — the mount served repo B's password for repo A.
+func TestApplyPypircDisambiguatesCollidingSectionNames(t *testing.T) {
+	const original = `[distutils]
+index-servers =
+    my-index
+    my_index
+
+[my-index]
+repository = https://a.example/simple
+username = ci
+password = FirstIndexPasswordQmPl4TzWhu
+
+[my_index]
+repository = https://b.example/simple
+username = ci
+password = SecondIndexPasswordu2qcwnu9P
+`
+	home := t.TempDir()
+	path := PypircPath(home)
+	writeFile(t, path, original)
+
+	v := newTestVault(t)
+	result, err := ApplyPypirc(v, home, path)
+	if err != nil {
+		t.Fatalf("ApplyPypirc: %v", err)
+	}
+	if len(result.Variables) != 2 {
+		t.Fatalf("Variables = %v, want 2 — distinct sections must not merge onto one vault path", result.Variables)
+	}
+
+	// Both passwords must be in the vault, each under its own name.
+	values := map[string]string{}
+	for _, name := range result.Variables {
+		got, err := v.Get(result.ProfileName + "/" + name)
+		if err != nil {
+			t.Fatalf("vault get %s: %v", name, err)
+		}
+		values[name] = string(got)
+	}
+	seen := map[string]bool{}
+	for _, val := range values {
+		seen[val] = true
+	}
+	if !seen["FirstIndexPasswordQmPl4TzWhu"] || !seen["SecondIndexPasswordu2qcwnu9P"] {
+		t.Errorf("vault holds %v, want BOTH sections' passwords", values)
+	}
+
+	// And the template must render back the original bytes exactly, which is
+	// only possible when the two sections carry distinct placeholders.
+	tmpl, err := os.ReadFile(result.TemplatePath) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatalf("reading template: %v", err)
+	}
+	if rendered := string(mount.FormatTemplate(tmpl, values)); rendered != original {
+		t.Errorf("round-trip is lossy.\nrendered: %q\noriginal: %q", rendered, original)
+	}
+}
+
+// TestApplyPypircRefusesLiteralPlaceholder ports ApplyNetrc's guard:
+// mount.FormatTemplate is position-blind, so a file already containing the
+// literal ${PYPI_PASSWORD} (a commented-out remnant of an undone migration, a
+// pasted docs example) would get the real password substituted into that spot
+// at serve time — the served bytes would diverge from the original. Refusal
+// is the only safe answer.
+func TestApplyPypircRefusesLiteralPlaceholder(t *testing.T) {
+	home := t.TempDir()
+	path := PypircPath(home)
+	writeFile(t, path, `[pypi]
+# password = ${PYPI_PASSWORD}
+username = __token__
+password = pypi-AgEIcHlwaS5vcmcCJDk0YTUx
+`)
+
+	v := newTestVault(t)
+	_, err := ApplyPypirc(v, home, path)
+	if err == nil {
+		t.Fatal("ApplyPypirc should refuse a file already containing its own placeholder")
+	}
+	if !strings.Contains(err.Error(), "${PYPI_PASSWORD}") {
+		t.Errorf("error should name the offending placeholder, got %v", err)
+	}
+	if info, statErr := os.Lstat(path); statErr != nil || !info.Mode().IsRegular() {
+		t.Errorf("refusal must leave the original file untouched, got %v (err=%v)", info, statErr)
+	}
+}

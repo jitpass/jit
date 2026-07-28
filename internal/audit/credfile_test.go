@@ -534,11 +534,14 @@ password = Xk92QmPl4TzWhuCmu2qcwnu9PnWfMKNA
 		t.Errorf("KeyName[0] = %q, want %q", *findings[0].KeyName, "internal/password")
 	}
 	// Two evidence paths, both correct: the private index's password matches no
-	// vendor format, so it falls back to this scanner's own wording; the pypi
+	// vendor format, so it falls back to this scanner's own wording — which is
+	// per-section, because a company index's password is not a "PyPI upload
+	// token" and cannot publish to PyPI, only to that index; the pypi
 	// section's value DOES match, so ValueFinding upgrades the evidence to name
 	// the format it recognized.
-	if !strings.Contains(findings[0].Evidence, "publish releases") {
-		t.Errorf("evidence should say what the credential can do, got %q", findings[0].Evidence)
+	if !strings.Contains(findings[0].Evidence, "package-index password") ||
+		!strings.Contains(findings[0].Evidence, "publish to that index") {
+		t.Errorf("evidence should name what the credential is and what it can reach, got %q", findings[0].Evidence)
 	}
 	if !strings.Contains(findings[1].Evidence, "PyPI Upload Token") {
 		t.Errorf("evidence should name the recognized format, got %q", findings[1].Evidence)

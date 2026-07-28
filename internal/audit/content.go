@@ -5,6 +5,8 @@ package audit
 
 import (
 	"bufio"
+	"bytes"
+	"io"
 	"path/filepath"
 	"strings"
 )
@@ -40,15 +42,28 @@ var credentialFileNameHints = []string{
 	"password", "passwd", "auth",
 }
 
+// credentialFileNameHintStops removes stems that contain a hint word without
+// meaning it, BEFORE the hints are matched: "tokenize" covers every
+// tokenizer_config.json / tokenizer.model a cloned ML repo carries (routinely
+// megabytes each, and every one was being fully content-scanned per walk for
+// the "token" inside its name), and "author" covers AUTHORS files and
+// authorized_keys. Removal, not rejection, so a name like
+// "tokenizer_secrets.txt" still hints on the words that remain.
+var credentialFileNameHintStops = strings.NewReplacer("tokenize", "", "author", "")
+
 // credentialDumpSkipExts are extensions whose contents cannot usefully hold a
 // greppable plaintext credential, skipped so a 2 MB PDF named
 // "Token_Scanning_Report.pdf" isn't read for nothing. Real machines are full
 // of these: the twelve scans behind this feature turned up token-named PDFs,
-// spreadsheets and images on nearly every one.
+// spreadsheets and images on nearly every one. Only an open()-saving
+// optimization for the common formats — the NUL sniff in FindFileTokens is
+// what actually keeps every binary format out of the line scanner.
 var credentialDumpSkipExts = map[string]bool{
 	".pdf": true, ".png": true, ".jpg": true, ".jpeg": true, ".gif": true,
 	".zip": true, ".gz": true, ".tar": true, ".xlsx": true, ".xls": true,
 	".mp4": true, ".mov": true, ".woff": true, ".woff2": true, ".ttf": true,
+	".docx": true, ".pptx": true, ".dmg": true, ".sqlite": true,
+	".webp": true, ".heic": true, ".7z": true, ".tgz": true,
 }
 
 // classifyCredentialDump content-scans a walked file whose NAME says it holds
@@ -68,10 +83,10 @@ var credentialDumpSkipExts = map[string]bool{
 // low-false-positive by design, so the open question was never accuracy but
 // cost, and a filename gate answers that without changing what a match means.
 func classifyCredentialDump(cfg Config, path, name string) []Finding {
-	lower := strings.ToLower(name)
 	if credentialDumpSkipExts[strings.ToLower(filepath.Ext(name))] {
 		return nil
 	}
+	lower := credentialFileNameHintStops.Replace(strings.ToLower(name))
 	hinted := false
 	for _, hint := range credentialFileNameHints {
 		if strings.Contains(lower, hint) {
@@ -179,8 +194,20 @@ func FindFileTokens(path string) ([]FileToken, error) {
 		return nil, nil
 	}
 
+	// A NUL in the first block means a binary file — a SQLite db, a .docx, a
+	// mach-o — which a line-based text sweep can't usefully read; the
+	// extension skip-list catches the common formats without an open(), this
+	// catches all the rest. (UTF-16 text is skipped too: every ASCII-range
+	// credential in it is NUL-interleaved, unreachable for these patterns
+	// anyway.)
+	head := make([]byte, 512)
+	n, _ := io.ReadFull(file, head)
+	if bytes.IndexByte(head[:n], 0) >= 0 {
+		return nil, nil
+	}
+
 	var tokens []FileToken
-	scanner := bufio.NewScanner(file)
+	scanner := bufio.NewScanner(io.MultiReader(bytes.NewReader(head[:n]), file))
 	scanner.Buffer(make([]byte, 0, 64*1024), maxContentLineSize)
 	lineNum := 0
 	for scanner.Scan() {

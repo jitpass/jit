@@ -190,6 +190,19 @@ type Finding struct {
 	// an ordinary actionable finding. Set centrally by Scan, not by the
 	// individual scanners.
 	Archived bool `json:"archived"`
+
+	// ClaimedValuePreviews lists MaskValue previews of values this finding's
+	// scanner PARSED but deliberately did not report — the non-secret half of
+	// a credential pair (an AWS access key ID next to its reported secret),
+	// or a value whose reporting the scanner declined on purpose (mcp-remote's
+	// short-lived access token next to its reported refresh token).
+	//
+	// In-process only, never serialized: dropRedundantExposedSecrets uses it
+	// to tell "the content sweep re-found a value this file's scanner already
+	// judged" (redundant, dropped) from "the sweep found a value the scanner
+	// never saw" (a foreign token pasted into a claimed file — a real finding
+	// that must survive).
+	ClaimedValuePreviews []string `json:"-"`
 }
 
 // ScanSummary is the single closing "scan_summary" NDJSON record for a run
