@@ -84,9 +84,12 @@ func firstRun(cmd *cobra.Command, d firstRunDeps) error {
 		}
 	}
 
-	migrateArg, scopeWord := "home", "your machine"
+	// Bare `jit migrate` executes the machine-wide protect plan (the same
+	// one the scan report's green section shows); a project first-run scopes
+	// to the current directory instead.
+	migrateStep, migrateCmdLine, scopeWord := []string{"migrate"}, "jit migrate", "your machine"
 	if projectMode {
-		migrateArg, scopeWord = "local", "this project"
+		migrateStep, migrateCmdLine, scopeWord = []string{"migrate", "."}, "jit migrate .", "this project"
 	}
 
 	fmt.Fprintln(out)
@@ -114,14 +117,14 @@ func firstRun(cmd *cobra.Command, d firstRunDeps) error {
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "Set up jit and fix %s now? This runs, in order:\n", scopeWord)
 	fmt.Fprintln(out, "  1. jit vault init      (creates the vault, one Touch ID prompt)")
-	fmt.Fprintf(out, "  2. %-20s(shows the fix plan, asks again before any change)\n", "jit migrate "+migrateArg)
+	fmt.Fprintf(out, "  2. %-20s(shows the fix plan, asks again before any change)\n", migrateCmdLine)
 	fmt.Fprintln(out, "jit's background service starts automatically along the way, so you unlock once per session, not once per command.")
 
 	if !d.confirm("Set up the vault now? [y/N] ") {
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "No problem, nothing was changed. When you're ready, run these yourself:")
 		_, _ = cPath.Fprintln(out, "  jit vault init")
-		_, _ = cPath.Fprintf(out, "  jit migrate %s\n", migrateArg)
+		_, _ = cPath.Fprintf(out, "  %s\n", migrateCmdLine)
 		return nil
 	}
 
@@ -132,7 +135,7 @@ func firstRun(cmd *cobra.Command, d firstRunDeps) error {
 	// first time migrate serves a mount, no install command to run.
 	for _, step := range [][]string{
 		{"vault", "init"},
-		{"migrate", migrateArg},
+		migrateStep,
 	} {
 		if err := d.runStep(step...); err != nil {
 			return err

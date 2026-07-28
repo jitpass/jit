@@ -36,14 +36,21 @@ only a masked preview.
 
 ```
 $ jit scan
-jit scan - risk report for alex@Alexs-MacBook-Pro
+jit scan — alex@Alexs-MacBook-Pro — scanned ~/ (7 files) — 1ms
 
-  RISK LEVEL: HIGH
+  YOUR SECRETS: 7 — 0 protected by jit (0%)
+  ▱▱▱▱▱▱▱▱▱▱  to 100%: one command +71% · 2 thing(s) only you can fix +28%
 
-  Shell Configs          1 finding(s)
-  .env Files             1 finding(s)
+  jit will protect these — 5 secret(s) in 4 file(s), 0% → 71%
+      → jit migrate
+        one command; it vaults the values and rewrites 4 file(s) —
+        every tool that reads them keeps working:
   ...
 ```
+
+The green section is exactly what bare `jit migrate` will do; the red
+section is what only you can do. `jit scan --full` shows the per-category
+inventory with severities.
 
 With no arguments, `scan` covers your whole home directory, not just your
 current directory - the question it answers is "is my machine clean," not "is

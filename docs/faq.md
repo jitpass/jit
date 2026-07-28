@@ -63,18 +63,21 @@ Often not. It depends on how the tool reads its credential:
 
 ### How do I know which command to use?
 
-You mostly do not decide. Run [`jit scan`](./audit/index.md), and it prints
-the exact fix next to every finding, including `jit wrap <tool>` for CLI
-tokens. `jit migrate <path> --dry-run` then shows the guided plan for the
-file(s) or project you name.
+You mostly do not decide. Run [`jit scan`](./audit/index.md): its green
+section is everything jit can fix, and bare `jit migrate` runs that whole
+plan (wraps included) after showing it and asking. `jit migrate <path>
+--dry-run` shows the guided plan for just the file(s) or project you name.
 [How the workflow flows](./getting-started/how-it-fits.md#find-integrate-use).
 
 ### Does it tell me when I need to `jit wrap` something?
 
-Yes, explicitly. Audit has a **Wrappable CLI Tokens** category whose finding
-text is the instruction itself, for example:
-`gh token in plaintext; one command moves it into the vault and keeps gh
-working: jit wrap gh`. You copy the command it prints.
+Yes, explicitly. The scan's "jit will protect these" section marks each
+wrappable token with the tool it wraps (`· wraps gh`), and bare `jit
+migrate` runs those wraps as part of the plan - each prints its `jit wrap
+undo <tool>` line as it happens. `jit scan --full` groups them under a
+**Wrappable CLI Tokens** category whose finding text is the instruction
+itself (`... one command moves it into the vault and keeps gh working: jit
+wrap gh`) if you'd rather run them one at a time.
 
 ### Does it work inside scripts, Makefiles, and git hooks?
 

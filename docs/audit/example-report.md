@@ -1,151 +1,162 @@
-# Example: what `jit scan` finds
+# Example: what `jit scan` prints
 
-This is **real output** from `WriteHumanReport` (`internal/audit/report.go`), run against a throwaway fixture `$HOME` built inside a Go test, not hand-typed. Every path, username, and value below is fabricated (fake keys, fake tokens, a disposable ed25519 key generated just for this run) and was never a real credential. The fixture includes two registered live jit mounts (the "Already protected" line). The fixture and the test that produced this file are not checked in; regenerate by writing a short `_test.go` in `internal/audit` that builds a fixture directory tree, calls `Scan`/`WriteHumanReport` against it, and deletes itself afterward, see the commit that introduced this version of the doc for the exact fixture used.
+This is **real output** from both renderers (`WriteTriageReport` and
+`WriteHumanReport`, `internal/audit/triage.go` / `report.go`), run against a
+throwaway fixture `$HOME` built inside a Go test, not hand-typed. Every path,
+username, and value below is fabricated (fake keys, fake tokens) and was never
+a real credential. The fixture and the test that produced this file are not
+checked in; regenerate by writing a short `_test.go` in `internal/audit` that
+builds a fixture directory tree, calls `Scan` and both renderers against it,
+and deletes itself afterward - see the commit that introduced this version of
+the doc for the exact fixture used.
 
-Every category appears in the summary, at zero if nothing matched. **Exposed Secrets** is zero here and always will be in a whole-machine scan: that category only comes from naming a path yourself (`jit scan token.txt`), where a file is swept for vendor tokens whatever it is called.
+Keeping this generated from the real renderers, rather than hand-maintained,
+is the whole point: a mockup that silently drifts from actual output is worse
+than no example at all.
 
-Keeping this generated from the real renderer, rather than hand-maintained, is the whole point: a mockup that silently drifts from actual output is worse than no example at all.
+## The default view - `jit scan`
 
----
+The machine-wide default reports **coverage**: how many distinct secrets
+exist, how many jit protects, and the shortest path to 100%. Findings are
+grouped into what bare `jit migrate` will do (the green manifest - every
+file the command will rewrite, listed for consent) and what only you can do
+(cause-grouped problems: copies of one file collapse into one item). No
+categories, no severity labels - those live in `--full`, below.
+
+```
+jit scan — alex@Alexs-MacBook-Pro — scanned ~/ (7 files) — 1ms
+
+  YOUR SECRETS: 7 — 0 protected by jit (0%)
+  ▱▱▱▱▱▱▱▱▱▱  to 100%: one command +71% · 2 thing(s) only you can fix +28%
+
+  jit will protect these — 5 secret(s) in 4 file(s), 0% → 71%
+      → jit migrate
+        one command; it vaults the values and rewrites 4 file(s) —
+        every tool that reads them keeps working:
+        ~/.aws/credentials  default/aws_secret_access_key
+        ~/.zshrc            STRIPE_API_KEY, DB_PASSWORD
+        ~/code/webapp/.env  secret-shaped values
+        ~/token.txt         JSON Web Token (JWT)
+      these sat in plaintext until now — rotating after vaulting is
+      the gold standard · every change is reversible: jit migrate undo
+
+  only you can protect these — 2 secret(s), 71% → 100%
+    ! A production database password in 2 copies of a file  (1)
+      ~/Downloads/customer-secrets-report.txt … and 1 more
+      → rotate it now, then delete every copy
+    ! A Kubernetes Secret manifest with real values  (1)
+      ~/infra/k8s/secrets.yaml
+      → seal it (sealed-secrets/SOPS) or move it to a real secret store
+
+  full inventory: jit scan --full · ndjson for machines
+  No secret values are ever printed in full.
+```
+
+Counting note: the two report copies hold the **same** database password, so
+they are one secret of the 7, not two - the ledger counts distinct secrets,
+never findings. Low/Info sightings are not counted at all; they are jit's own
+uncertainty, listed only in `--full`.
+
+## The full inventory - `jit scan --full`
+
+The per-category inventory with severities, line numbers, and the machine
+risk level. A targeted `jit scan <path>` prints this view by default - a scan
+you aimed at one file is a request for its inventory.
 
 ```
 jit scan: risk report for alex@Alexs-MacBook-Pro
-scan time: 2026-07-25T16:37:55.518Z          duration: 1ms
+scan time: 2026-07-28T20:18:53.962Z          duration: 1ms
 
   RISK LEVEL: CRITICAL
   EXPOSURE:   100/100
-  (1 production-indicator/public-IP match(es) found)
-    - /Users/alex/code/webapp/.env
+  (2 production-indicator/public-IP match(es) found)
+    - ~/Downloads/customer-secrets-report.txt
+    - ~/exports/customer-secrets-report.txt
 
   Shell Configs          2 finding(s)
-  .env Files             4 finding(s)
-  Credential Files       5 finding(s)
-  AI Tool / MCP Configs  4 finding(s)
-  Private Keys           2 finding(s)
+  .env Files             1 finding(s)
+  Credential Files       1 finding(s)
+  AI Tool / MCP Configs  0 finding(s)
+  Private Keys           0 finding(s)
   IaC Variable Files     1 finding(s)
-  Wrappable CLI Tokens   1 finding(s)
-  SOPS Age Keys          1 finding(s)
-  Exposed Secrets        0 finding(s)
+  Wrappable CLI Tokens   0 finding(s)
+  SOPS Age Keys          0 finding(s)
+  Exposed Secrets        3 finding(s)
   ───────────────────────────────────
-  Total: 20 finding(s)
-  Already protected by jit: 2 live mount(s), served from the encrypted vault, no plaintext on disk. Not scanned.
+  Total: 8 finding(s)
 
 [Shell Configs] 2
-  • /Users/alex/.zshrc
+  • ~/.zshrc
 
-    :2  HIGH  STRIPE_API_KEY  sk_l**********
+    :1  HIGH  STRIPE_API_KEY  sk_l**********
               └ value matches Stripe Live Secret Key's known token format
 
-    :3  HIGH  DB_PASSWORD     hunt**********
+    :2  HIGH  DB_PASSWORD     hunt**********
               └ export statement assigns a value to a key name that looks like a secret
 
-[.env Files] 4
-  • /Users/alex/code/webapp/.env
+[.env Files] 1
+  • ~/code/webapp/.env
 
-    CRITICAL  contains a value matching the production-indicator pattern
+    HIGH  contains a value matching OpenAI Project API Key's known token format
 
-  • same pattern in 2 files:
+[Credential Files] 1
+  • ~/.aws/credentials
 
-    HIGH      contains "JAMF_URL", a variable name that looks like a real credential
-              - /Users/alex/code/tool-a/.env
-              - /Users/alex/code/tool-b/.env
-
-  • /Users/alex/code/api-service/.env
-
-    LOW       2 plaintext variable(s) (2 active, 0 commented out)
-
-[Credential Files] 5
-  • /Users/alex/.aws/credentials
-
-    HIGH  dev/aws_secret_access_key      fake**********
-          └ AWS secret access key found in profile "dev"
-
-    HIGH  staging/aws_secret_access_key  fake**********
-          └ AWS secret access key found in profile "staging"
-
-  • /Users/alex/.cargo/credentials.toml
-
-    HIGH  registry/token                 cio2**********
-          └ cargo registry token found for crates.io; it can publish crates as you
-
-  • /Users/alex/.config/gcloud/application_default_credentials.json
-
-    HIGH  refresh_token                  1//f**********
-          └ GCP application default credentials (authorized_user) found
-
-  • /Users/alex/.terraform.d/credentials.tfrc.json
-
-    HIGH  app.terraform.io               fake**********
-          └ Terraform Cloud API token found for host "app.terraform.io"
-
-[AI Tool / MCP Configs] 4
-  • internal-tool/GITHUB_TOKEN (same value in 2 files):
-
-    HIGH  internal-tool/GITHUB_TOKEN  ghp_**********
-          └ embedded directly in MCP server "internal-tool"'s env block
-          - /Users/alex/.cursor/mcp.json
-          - /Users/alex/code/webapp/.mcp.json
-
-  • internal-tool/CAIDO_URL (same value in 2 files):
-
-    LOW   internal-tool/CAIDO_URL     http**********
-          └ plain URL in MCP server "internal-tool"'s env block; URLs can embed tokens
-          - /Users/alex/.cursor/mcp.json
-          - /Users/alex/code/webapp/.mcp.json
-
-[Private Keys] 2
-  • /Users/alex/.ssh/id_ed25519
-
-    HIGH  no passphrase set
-
-  • /Users/alex/Downloads/old-server-access.pem
-
-    HIGH  private key found outside ~/.ssh; no passphrase set
+    HIGH  default/aws_secret_access_key  Xk92**********
+          └ AWS secret access key found in profile "default"
 
 [IaC Variable Files] 1
-  • /Users/alex/code/infra/k8s/secrets.yaml
+  • ~/infra/k8s/secrets.yaml
 
-    INFO  kubernetes Secret manifest (base64 is encoding, not encryption): detection only, no automated fix yet
+    HIGH  kubernetes Secret manifest of type kubernetes.io/basic-auth: holds a username/password pair
 
-[Wrappable CLI Tokens] 1
-  • /Users/alex/.config/gh/hosts.yml
+[Exposed Secrets] 3
+  • ~/Downloads/customer-secrets-report.txt
 
-    HIGH  oauth_token  gho_**********
-          └ GitHub CLI OAuth token in plaintext; one command moves it into the vault and keeps gh working: jit wrap gh
+    :1  CRITICAL  Database connection string with embedded credentials (scheme-less)  svc_**********
+                  └ value matches production-indicator pattern
 
-[SOPS Age Keys] 1
-  • /Users/alex/.config/sops/age/keys.txt
+  • ~/exports/customer-secrets-report.txt
 
-    :3  HIGH  age_secret_key  AGE-**********
-              └ SOPS age private key: decrypts every SOPS-encrypted secret this key guards (sops, kluctl, Flux, helm-secrets)
+    :1  CRITICAL  Database connection string with embedded credentials (scheme-less)  svc_**********
+                  └ value matches production-indicator pattern
 
-Run `jit migrate /Users/alex/.zshrc --dry-run` to see the guided fix plan for it.
+  • ~/token.txt
+
+    :1  HIGH      JSON Web Token (JWT)                                                eyJh**********
+                  └ value matches JSON Web Token (JWT)'s known token format
+
+Run `jit migrate ~/.zshrc --dry-run` to see the guided fix plan for it.
 No secret values are ever printed in full. Run `jit scan --format ndjson` for machine-readable output (same redaction rules apply).
 ```
 
-## How to read a finding block
+## How to read a finding block (`--full`)
 
-Each non-empty category opens with a bold header and its finding count (`[Credential Files] 5`). Within it, every block gets a `•`-marked header (a file path, or a pattern name for findings collapsed across files), and each finding is one aligned row: line number (when known), severity, key name, and masked value line up in columns, with the free-form reason hanging on its own `└` line beneath, where it can wrap on a narrow terminal without breaking the columns. Findings with neither a key nor a value (a plaintext `.env` file's presence, an unencrypted key) keep their reason inline next to the severity.
+Each non-empty category opens with a bold header and its finding count
+(`[Shell Configs] 2`). Within it, every block gets a `•`-marked header (a
+file path, or a pattern name for findings collapsed across files), and each
+finding is one aligned row: line number (when known), severity, key name, and
+masked value line up in columns, with the free-form reason hanging on its own
+`└` line beneath, where it can wrap on a narrow terminal without breaking the
+columns. Findings with neither a key nor a value keep their reason inline
+next to the severity.
 
 ## What made this Critical
 
-A **production-indicator match**, `/Users/alex/code/webapp/.env` contains a value matching the production-indicator pattern (a `PROD_DATABASE_URL`-shaped connection string). This is the only thing that escalated this scan to Critical; a public IP address in a visible value triggers the same escalation but isn't present in this fixture.
-
-The risk banner lists the triggering file path directly (`- /Users/alex/code/webapp/.env`) rather than just saying "see below", with dozens of findings spread across several categories on a real machine, a bare "see below" cost a full read of the report to resolve into an actual file to go fix.
+A **production-indicator match**: the copied report files contain a
+connection string whose host says `prod`. This alone escalates the `--full`
+risk level to Critical - and it is also exactly why the default view routes
+that secret to "only you can protect these" with *rotate* as the action:
+protecting a file in place does not un-expose a production credential that
+sat in plaintext.
 
 ## Why severity order matters within a category
 
-Every finding within a category is sorted worst-severity-first (file path as tiebreak), not alphabetically by path. On a real machine with dozens of findings in one category, sorting by path alone buried the findings that actually justified the top-level risk banner behind a wall of lower-severity ones that happened to sort earlier alphabetically.
+Every finding within a `--full` category is sorted worst-severity-first
+(file path as tiebreak), not alphabetically by path. On a real machine with
+dozens of findings in one category, sorting by path alone buried the findings
+that actually justified the risk level behind a wall of lower-severity ones
+that happened to sort earlier alphabetically.
 
-## Why some findings collapse into one block
-
-`/Users/alex/code/tool-a/.env` and `/Users/alex/code/tool-b/.env` both contain the exact same secret-shaped variable name (`JAMF_URL`), same severity, same explanation. Rather than repeat an identical row twice, they collapse into one block with both paths listed underneath, under its own header line (`same pattern in 2 files:`) rather than a file path. Same for the MCP `GITHUB_TOKEN`/`CAIDO_URL` findings (headers there also name the key, e.g. `internal-tool/GITHUB_TOKEN (same value in 2 files):`), embedded identically in two separate configs. Real-world dogfooding on a machine with dozens of findings turned this up constantly, the same MCP server's credentials copy-pasted into 3+ config files, the same secret-shaped variable name across 7+ unrelated `.env` files, and repeating the identical explanation once per file was the single biggest source of clutter in a dense report.
-
-A collapsed block's header line matters, not just its content: an earlier version of this rendered a collapsed block with no header at all, directly beneath the previous item's file path, a real user found this genuinely ambiguous, since it read as if that block's findings belonged to the file printed just above it, when they were actually an unrelated pattern shared by different files entirely. Every block, per-file or collapsed, now starts with its own unambiguous header line for exactly this reason.
-
-This only collapses when the match is genuinely meaningful (severity + key name + evidence + masked value all identical): two files sharing the same variable name but a *different* actual value never collapse, and one category (IaC's unescalated tier) never collapses at all, since its evidence is fixed rule-level text that says nothing about a specific file's content, two unrelated files matching the same rule aren't actually related, and collapsing them would wrongly imply they are.
-
-## What's *not* shown here, on purpose
-
-- No real value ever appears in full, everything is either a short masked preview (`sk_l**********`) or, for file-level findings like `.env`'s low-severity case, no value at all.
-- `jit scan` never writes or modifies anything, under any flag, this is exactly what got scanned, not what got "fixed." Fixing findings is a separate command, `jit migrate`, so the read-only audit tool can't be turned into a mutating one by a mistyped flag.
+Both views obey the same redaction rule: no secret value is ever printed in
+full, in any format.

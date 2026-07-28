@@ -10,10 +10,14 @@ sitting on disk. It's a separate command from jit scan, not a flag on it,
 so the read-only scanner can never be turned into a mutating one by a
 mistyped flag.
 
-You must name the file(s) and/or folder(s) to convert — jit migrate never
-sweeps your whole machine on its own. Nothing is discovered or touched
-except the targets you name, so a bare `jit migrate` with no path does
-nothing. Each target is resolved on its own:
+Bare `jit migrate` (no arguments) protects everything the machine-wide
+scan judged protectable: it runs the same scan `jit scan` runs, shows the
+full plan — every file it will rewrite and every CLI it will wrap — and
+asks for confirmation before touching anything. It is exactly the command
+the scan report's "jit will protect these" section points at.
+
+With arguments, nothing is discovered or touched except the targets you
+name. Each target is resolved on its own:
 
   A file       is routed to the right category by what it is. A project file
                (.env, *.tfvars, mcp.json/.mcp.json, .npmrc) has its secrets
@@ -44,6 +48,7 @@ jit migrate <file-or-dir>...
 ### Examples
 
 ```
+  jit migrate                     # protect everything the scan found
   jit migrate ~/proj/.env         # migrate just one file
   jit migrate ~/proj              # walk one project for .env/tfvars/mcp/npmrc
   jit migrate ~/.zshrc ~/proj/.env

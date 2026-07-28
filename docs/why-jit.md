@@ -27,25 +27,38 @@ default and keeps the plaintext out of the way the rest of the time.
 
 `jit scan` is a read-only scan of your machine. It never writes, moves, or
 "fixes" anything, so it is safe to run before you trust jit with anything else.
-In about 70ms it ranks every plaintext secret it finds by risk and gives you a
-single exposure score from 0 to 100.
+In well under a second it tells you how many secrets you have, how many jit
+already protects, and the one command that protects the rest. (`jit scan
+--full` ranks every finding by risk; `--score` gives the 0-100 exposure
+number.)
 
 ```
-jit scan: risk report for alex@Alexs-MacBook-Pro
-scan time: 2026-07-06T09:14:22.000Z          duration: 71ms
+jit scan — alex@Alexs-MacBook-Pro — scanned ~/ (7 files) — 1ms
 
-  RISK LEVEL: CRITICAL
-  EXPOSURE:   100/100
-  (1 production-indicator/public-IP match(es) found)
-    - /Users/alex/code/webapp/.env
+  YOUR SECRETS: 7 — 0 protected by jit (0%)
+  ▱▱▱▱▱▱▱▱▱▱  to 100%: one command +71% · 2 thing(s) only you can fix +28%
 
-  Shell Configs          2 finding(s)
-  .env Files             4 finding(s)
-  Credential Files       4 finding(s)
-  AI Tool / MCP Configs  4 finding(s)
-  Private Keys           2 finding(s)
-  ───────────────────────────────────
-  Total: 18 finding(s)
+  jit will protect these — 5 secret(s) in 4 file(s), 0% → 71%
+      → jit migrate
+        one command; it vaults the values and rewrites 4 file(s) —
+        every tool that reads them keeps working:
+        ~/.aws/credentials  default/aws_secret_access_key
+        ~/.zshrc            STRIPE_API_KEY, DB_PASSWORD
+        ~/code/webapp/.env  secret-shaped values
+        ~/token.txt         JSON Web Token (JWT)
+      these sat in plaintext until now — rotating after vaulting is
+      the gold standard · every change is reversible: jit migrate undo
+
+  only you can protect these — 2 secret(s), 71% → 100%
+    ! A production database password in 2 copies of a file  (1)
+      ~/Downloads/customer-secrets-report.txt … and 1 more
+      → rotate it now, then delete every copy
+    ! A Kubernetes Secret manifest with real values  (1)
+      ~/infra/k8s/secrets.yaml
+      → seal it (sealed-secrets/SOPS) or move it to a real secret store
+
+  full inventory: jit scan --full · ndjson for machines
+  No secret values are ever printed in full.
 ```
 
 No secret value is ever printed in full. Run `jit scan --score` when you only

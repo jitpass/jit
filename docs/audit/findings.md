@@ -101,8 +101,11 @@ is real.
 
 ## Risk level
 
-The report rolls findings up into a single `RISK LEVEL` for the machine,
-and each finding is individually rated. Findings that look like
+The full report (`jit scan --full`, and any targeted `jit scan <path>`)
+rolls findings up into a single `RISK LEVEL` for the machine, and each
+finding is individually rated. The default machine-wide view reports
+coverage instead - how many secrets are protected and what protects the
+rest - and never shows severity labels. Findings that look like
 *production* credentials or reference public IPs are called out - those
 are counted separately in the [NDJSON summary
 record](../reference/audit-ndjson.md) so downstream tooling can alert on

@@ -37,6 +37,9 @@ secret, same as every other audit format.
 | `evidence` | the one-line "why" shown in the human report |
 | `already_masked` | the on-disk value was already a masked/placeholder shape |
 | `archived` | the file sits under an archived/backup-looking directory (archive, backup, .trash, …); a flag to help you triage - name such a file explicitly in `jit migrate <path>` to convert it (schema 0.7.0+) |
+| `remedy` | who can act: `migrate` and `wrap` mean jit can (see `fix_command`), `manual` means only you can - rotate, delete, or seal, per `evidence` (schema 0.12.0+) |
+| `fix_command` | the exact runnable command when `remedy` is jit's; absent for `manual` (schema 0.12.0+) |
+| `cause_group` | opaque id shared by findings describing the same underlying secret - the same masked value re-found in copies of a file. Collapse on it to count *secrets* instead of findings, the way the human report does. Absent for findings with no value (schema 0.12.0+) |
 
 ## The scan summary record
 
@@ -47,6 +50,8 @@ secret, same as every other audit format.
 | `production_indicator_count`, `public_ip_count` | how many findings raised each flag |
 | `scan_duration_ms` | wall-clock scan time |
 | `unfiltered` | `true` when the run used `jit scan --unfiltered`, which turns the name/value suppression gates off (schema 0.11.0+). A deliberately noisy auditing view - do not compare its counts against a normal run's |
+| `secrets_total`, `secrets_protected`, `secrets_migratable` | the coverage ledger, in **distinct secrets**, never findings (13 copies of one dump are 3 secrets): everything jit knows about, how many are already served from the vault by live mounts, and how many of the exposed ones a bare `jit migrate` can protect. Only critical/high/medium findings count as secrets - low/info sightings are jit's own uncertainty and are not charged to the score (schema 0.12.0+) |
+| `files_scanned` | how many regular files the machine-wide walk offered to the classifiers; `0` for a targeted scan (schema 0.12.0+) |
 
 A stream is well-formed when it ends with exactly one `scan_summary`
 record; consumers can treat its absence as a truncated run.

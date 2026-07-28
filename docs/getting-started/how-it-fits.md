@@ -31,7 +31,7 @@ one-time setup per secret, the last is every day.
 
 | Step | Command | What happens |
 | --- | --- | --- |
-| **1. Find** | `jit scan` | A read-only scan ranks every plaintext secret on the machine by exposure. Never writes, never prints a real value. |
+| **1. Find** | `jit scan` | A read-only scan finds every plaintext secret and reports how many jit already protects - and the one command that protects the rest. Never writes, never prints a real value. |
 | **2. Integrate** | `jit migrate` / `jit wrap` | Move a secret into the vault and wire up how its tool will get it back. |
 | **3. Use** | `jit run` / the tool itself | Run your tools. The secret materializes only for that process, only while it runs. |
 
@@ -49,10 +49,10 @@ the tool, and it decides both how you integrate it and how you run it.
 
 ## Integrating: two entry points into the vault
 
-- **[`jit migrate <path>`](../migrate/index.md)** is the bulk mover. You name
-  a file or project, it vaults the secrets that live in files it understands
-  and wires up the correct delivery model for each. This is how most things
-  get in.
+- **[`jit migrate`](../migrate/index.md)** is the bulk mover. Bare, it
+  executes the whole machine-wide protect plan the scan showed; with a path,
+  it vaults just that file or project's secrets and wires up the correct
+  delivery model for each. This is how most things get in.
 - **[`jit wrap`](../wrap/index.md)** is the per-tool bridge for a single CLI
   that carries its own token. It either installs a small `PATH` shim (for a
   tool with no native hook, like `gh`) or, for a tool that does have one

@@ -3,7 +3,11 @@
 
 package audit
 
-import "fmt"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+)
 
 // ValueFindingParams describes a discovered key/value pair a category
 // scanner wants turned into a Finding. BaseSeverity/Evidence apply only when
@@ -39,6 +43,9 @@ func (c Config) ValueFinding(p ValueFindingParams) Finding {
 	key := p.KeyName
 	f.KeyName = &key
 	f.Confidence = p.Confidence
+
+	digest := sha256.Sum256([]byte(p.RawValue))
+	f.rawValueDigest = hex.EncodeToString(digest[:])
 
 	if IsAlreadyMasked(p.RawValue) {
 		preview := p.RawValue
