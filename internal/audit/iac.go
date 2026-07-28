@@ -370,7 +370,7 @@ func buildTfvarsFinding(cfg Config, path string) (Finding, error) {
 	// so the file's most actionable content was invisible. This is the same
 	// gap .env findings had; describeEnvHits is shared with them so the two
 	// categories word it identically.
-	tokens, shaped, err := scanTfvarsAssignments(path)
+	tokens, shaped, err := scanTfvarsAssignments(cfg, path)
 	if err != nil {
 		return Finding{}, err
 	}
@@ -431,7 +431,7 @@ var tfvarsAssignment = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*(
 // variables holding them: values matching a known vendor token format, and
 // secret-shaped variable NAMES with a non-empty value. Mirrors what
 // buildEnvFileFinding collects, so both categories can share describeEnvHits.
-func scanTfvarsAssignments(path string) ([]envTokenHit, []string, error) {
+func scanTfvarsAssignments(cfg Config, path string) ([]envTokenHit, []string, error) {
 	file, err := openFile(path)
 	if err != nil {
 		return nil, nil, err
@@ -458,7 +458,7 @@ func scanTfvarsAssignments(path string) ([]envTokenHit, []string, error) {
 			tokens = append(tokens, envTokenHit{key: key, vendor: vendor, verified: verified})
 			continue
 		}
-		if LooksLikeSecretKey(key) && !LooksLikeNonSecretName(key) && !LooksLikeNonSecretValue(raw) {
+		if LooksLikeSecretKey(key) && !cfg.suppressName(key) && !cfg.suppressValue(raw) {
 			shaped = append(shaped, key)
 		}
 	}

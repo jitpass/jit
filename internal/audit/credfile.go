@@ -394,7 +394,7 @@ func scanStreamlitSecretsFile(cfg Config, path string) ([]Finding, error) {
 			}))
 			continue
 		}
-		if LooksLikeSecretKey(key) && !LooksLikeNonSecretName(key) && !LooksLikeNonSecretValue(raw) {
+		if LooksLikeSecretKey(key) && !cfg.suppressName(key) && !cfg.suppressValue(raw) {
 			findings = append(findings, cfg.ValueFinding(ValueFindingParams{
 				FindingType:  FindingTypeCredentialFile,
 				FilePath:     path,

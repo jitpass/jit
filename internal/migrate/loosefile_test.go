@@ -243,3 +243,63 @@ func TestApplyLooseSecretFileMultipleTokens(t *testing.T) {
 		t.Errorf("variable names collide: %v", result.Variables)
 	}
 }
+
+// TestApplyLooseSecretFileMountTemplatesSecretShapedAssignments is the
+// regression test for a security-relevant bug found in review (2026-07-28).
+//
+// The mount template was built only from vendor-pattern matches, so a real
+// credential with no recognizable prefix — most of them: CrowdStrike, Datadog,
+// Heroku, every internal API — was written into the on-disk template VERBATIM.
+// jit relocated an unprotected secret from a file the user knew about into its
+// own profile directory, reported success, and `jit scan` does not look there.
+// Strictly worse than leaving the file alone.
+func TestApplyLooseSecretFileMountTemplatesSecretShapedAssignments(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, "secrets.toml")
+	writeFile(t, path, `OPENAI_API_KEY = "sk-proj-Ab3xKq9ZmPq2LrTvWn5cUd8eFg1hJk0uf4"
+db_password = "Tr0ub4dor3xKq9ZmPq2Lr"
+account = "ACME-PROD"
+port = 443
+`)
+
+	v := newTestVault(t)
+	result, err := ApplyLooseSecretFileMount(v, home, path)
+	if err != nil {
+		t.Fatalf("ApplyLooseSecretFileMount: %v", err)
+	}
+
+	tmpl, err := os.ReadFile(result.TemplatePath) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatalf("reading template: %v", err)
+	}
+	content := string(tmpl)
+
+	// The whole point: no secret survives into the template.
+	for _, secret := range []string{"Tr0ub4dor3xKq9ZmPq2Lr", "sk-proj-Ab3xKq9ZmPq2LrTvWn5cUd8eFg1hJk0uf4"} {
+		if strings.Contains(content, secret) {
+			t.Errorf("template still contains the plaintext secret %q:\n%s", secret, content)
+		}
+	}
+	// Quotes sit OUTSIDE the replaced span, so formats whose parser treats
+	// them as part of the value (.pypirc) round-trip correctly.
+	if !strings.Contains(content, `db_password = "${DB_PASSWORD}"`) {
+		t.Errorf("db_password not templated with its quotes preserved:\n%s", content)
+	}
+	// Settings are not credentials and must pass through untouched — this is
+	// what keeps the migrator from vaulting half a config file.
+	for _, keep := range []string{`account = "ACME-PROD"`, "port = 443"} {
+		if !strings.Contains(content, keep) {
+			t.Errorf("non-secret line %q was rewritten:\n%s", keep, content)
+		}
+	}
+
+	var sawDBPassword bool
+	for _, name := range result.Variables {
+		if name == "DB_PASSWORD" {
+			sawDBPassword = true
+		}
+	}
+	if !sawDBPassword {
+		t.Errorf("Variables = %v, want DB_PASSWORD among them", result.Variables)
+	}
+}

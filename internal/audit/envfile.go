@@ -187,7 +187,7 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 			// here is issuer-specific and keeps escalating regardless of the
 			// name, which is what keeps a real sk_live_ key behind a
 			// NEXT_PUBLIC_ prefix reported.
-			!(IsAmbiguousTokenFormat(vendor) && LooksLikeNonSecretName(key)) {
+			!(IsAmbiguousTokenFormat(vendor) && cfg.suppressName(key)) {
 			if !tokenMatch {
 				tokenMatch, tokenVendor, tokenVerified = true, vendor, verified
 			}
@@ -215,7 +215,7 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 		// above still run on them, so a real credential behind a public
 		// prefix is still caught.
 		if !isTemplate && m[1] == "" && rawValue != "" && LooksLikeSecretKey(key) &&
-			!LooksLikeNonSecretName(key) && !LooksLikeNonSecretValue(rawValue) {
+			!cfg.suppressName(key) && !cfg.suppressValue(rawValue) {
 			if !secretShaped {
 				secretShaped = true
 				secretShapedKey = key

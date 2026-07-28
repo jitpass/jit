@@ -63,6 +63,26 @@ reported, and reported harder:
   `.env` you copied but haven't filled in. A human-chosen password that
   merely contains such a word (`Wherever2024!`) is still reported.
 
+### Seeing what was filtered
+
+Every one of those is a judgment call, and normally you can't see it being
+made - which means you can't tell "jit found nothing" apart from "jit found
+things and decided not to mention them". `--unfiltered` turns the gates off:
+
+```sh
+jit scan --unfiltered
+jit scan --unfiltered --format ndjson > loud.ndjson   # diff against a normal run
+```
+
+Expect it to be noisy - that noise is the whole reason the filters exist.
+It's for auditing what they hide, not for daily use.
+
+One thing it deliberately does **not** turn off: rejection of filler token
+bodies (`ghp_xxxxxxxx…`, a scrubbed `hf_FIXTUREtoken…`). That check is shared
+with [`jit migrate`](../migrate/index.md), which must never vault a
+placeholder as if it were a credential, so the two would disagree about what
+is real.
+
 ## Risk level
 
 The report rolls findings up into a single `RISK LEVEL` for the machine,
