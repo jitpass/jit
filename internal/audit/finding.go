@@ -43,7 +43,18 @@ import (
 // any name rule matched — to produce name-only, judgment-call findings, and
 // its .env.bak rule duplicated what ScanEnvFiles already reports, since
 // envFileNamePattern matches ".env.bak" like any other .env-family suffix.
-const SchemaVersion = "0.10.0"
+// 0.11.0 added scan_summary's unfiltered flag (additive): true when the run
+// was made with `jit scan --unfiltered`, which turns off the name/value
+// suppression gates. Without it a saved report is ambiguous — a deliberately
+// noisy audit run and a normal risk assessment are byte-indistinguishable,
+// and consumers cannot tell which they are looking at. The same bump records
+// a semantic change consumers should know about: exposed_secret findings are
+// no longer produced only by a targeted `jit scan <path>` (as 0.9.0 stated).
+// A machine-wide walk now emits them too, for files whose NAME says they hold
+// credentials (see classifyCredentialDump) — the finding still requires a
+// vendor-format match in the content, so its meaning is unchanged, only its
+// provenance is wider.
+const SchemaVersion = "0.11.0"
 
 // ScannerName identifies this tool in the shared NDJSON envelope, matching
 // bumblebee's record shape so a receiver can co-ingest both (RFC.md §4).
@@ -179,6 +190,19 @@ type Finding struct {
 	// an ordinary actionable finding. Set centrally by Scan, not by the
 	// individual scanners.
 	Archived bool `json:"archived"`
+
+	// ClaimedValuePreviews lists MaskValue previews of values this finding's
+	// scanner PARSED but deliberately did not report — the non-secret half of
+	// a credential pair (an AWS access key ID next to its reported secret),
+	// or a value whose reporting the scanner declined on purpose (mcp-remote's
+	// short-lived access token next to its reported refresh token).
+	//
+	// In-process only, never serialized: dropRedundantExposedSecrets uses it
+	// to tell "the content sweep re-found a value this file's scanner already
+	// judged" (redundant, dropped) from "the sweep found a value the scanner
+	// never saw" (a foreign token pasted into a claimed file — a real finding
+	// that must survive).
+	ClaimedValuePreviews []string `json:"-"`
 }
 
 // ScanSummary is the single closing "scan_summary" NDJSON record for a run
@@ -200,6 +224,9 @@ type ScanSummary struct {
 	ProductionIndicatorCount int            `json:"production_indicator_count"`
 	PublicIPCount            int            `json:"public_ip_count"`
 	ScanDurationMs           int64          `json:"scan_duration_ms"`
+	// Unfiltered records that Config.Unfiltered was set for this run, so a
+	// stored report says which view it is. See Config.Unfiltered.
+	Unfiltered bool `json:"unfiltered"`
 	// JitProtectedCount is how many registered jit live mounts (FIFOs
 	// currently occupying a path jit migrated) exist on this machine.
 	// Scanners never read those paths — a pipe has no at-rest content, and
@@ -224,6 +251,25 @@ type Config struct {
 	// registry: a named pipe has no at-rest content whether jit made it or
 	// not). Empty (the default in tests) means no count is reported.
 	MountRegistryPath string
+
+	// Unfiltered turns OFF the name/value suppression gates
+	// (LooksLikeNonSecretName, LooksLikeNonSecretValue, and the
+	// documented-public JWT rule), so the report shows every secret-shaped
+	// finding jit would otherwise judge to be a setting, a path, a
+	// browser-public build variable or unfilled template filler.
+	//
+	// It exists because that filtering is normally INVISIBLE: without it a
+	// reader cannot tell "jit found nothing" apart from "jit found things and
+	// decided not to mention them". Each gate is a judgment call that trades
+	// recall for precision and can be wrong for a given setup, so an auditor
+	// needs a way to see the unfiltered view and diff the two.
+	//
+	// Deliberately does NOT disable isPlaceholderToken's rejection of filler
+	// token bodies ("ghp_xxxxxxxx…", "hf_FIXTUREtoken…"). That check lives in
+	// MatchKnownTokenPattern, which `jit migrate` shares — migrate must never
+	// vault a placeholder as though it were a credential, so the two would
+	// disagree about what is real. Value-level filler stays suppressed.
+	Unfiltered bool
 
 	// Progress, when non-nil, is called once as each category (or targeted
 	// path) is about to be scanned, with a short human noun for it
@@ -286,4 +332,15 @@ func RecordID(findingType, filePath string, keyName *string) string {
 
 func nowISO8601() string {
 	return time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+}
+
+// suppressName / suppressValue are the single gate every scanner asks before
+// dropping a secret-shaped finding, so Config.Unfiltered has one place to
+// switch off rather than a bool threaded through each call site.
+func (c Config) suppressName(key string) bool {
+	return !c.Unfiltered && LooksLikeNonSecretName(key)
+}
+
+func (c Config) suppressValue(value string) bool {
+	return !c.Unfiltered && LooksLikeNonSecretValue(value)
 }

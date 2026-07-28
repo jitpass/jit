@@ -156,6 +156,27 @@ func collapsedHeader(it renderItem) string {
 	return fmt.Sprintf("same pattern in %d files:", len(it.locations))
 }
 
+// itemArchived reports whether a render item is entirely archived. A collapsed
+// item spanning both a live and an archived copy of the same secret counts as
+// LIVE — the live copy is the actionable one, and sorting the pair down would
+// hide it behind the archived duplicate that caused the collapse.
+func itemArchived(it renderItem) bool {
+	if !it.collapsed {
+		return it.rep.Archived
+	}
+	for _, f := range it.findings {
+		if !f.Archived {
+			return false
+		}
+	}
+	for _, loc := range it.locations {
+		if !LooksArchived(loc.Path) {
+			return false
+		}
+	}
+	return true
+}
+
 func (it renderItem) sortPath() string {
 	if it.collapsed {
 		return it.locations[0].Path
@@ -232,6 +253,21 @@ func buildRenderItems(group []Finding) []renderItem {
 	}
 
 	sort.Slice(items, func(i, j int) bool {
+		// Live findings before archived ones, ahead of severity. A machine
+		// with a lot of deleted-but-not-purged secrets buries the ones the
+		// reader can act on: one real scan (2026-07-28) had ~40 findings under
+		// ~/.Trash and a handful of live ones, and the live ones sorted last.
+		//
+		// This is ordering only. Severity, confidence and the exposure score
+		// are deliberately untouched: a credential in ~/.Trash is still on
+		// disk and still works — "anything running as you can read them" is
+		// exactly as true there — so discounting its RISK would under-report a
+		// real exposure. What differs is only what the reader can do about it,
+		// which is why `jit migrate home` skips these and the report tags them
+		// [archived]. Rank follows actionability, not exposure.
+		if ai, aj := itemArchived(items[i]), itemArchived(items[j]); ai != aj {
+			return !ai
+		}
 		ri, rj := rankOf(items[i].rep.Severity), rankOf(items[j].rep.Severity)
 		if ri != rj {
 			return ri < rj
@@ -446,6 +482,11 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	} else {
 		fmt.Fprintln(w, "Run `jit migrate <path> --dry-run` to see the guided fix plan for a flagged file.")
 	}
+	// An unfiltered run is a deliberately noisy audit view, not a risk
+	// assessment — say so, or a saved report reads as the normal picture.
+	if summary.Unfiltered {
+		_, _ = color.New(color.FgYellow).Fprintln(w, "Suppression is OFF (--unfiltered): settings, paths, browser-public build variables and unfilled template values are all shown. Expect noise; this is the auditing view, not the everyday one.")
+	}
 	_, _ = color.New(color.Faint).Fprintln(w, "No secret values are ever printed in full. Run `jit scan --format ndjson` for machine-readable output (same redaction rules apply).")
 }
 
@@ -457,12 +498,33 @@ func firstFindingPath(findings []Finding) string {
 	byType := groupFindingsByType(findings)
 	for _, ft := range AllFindingTypes {
 		for _, f := range byType[ft] {
-			if f.FilePath != "" {
+			if f.FilePath != "" && hasAutoFix(f) {
 				return f.FilePath
 			}
 		}
 	}
 	return ""
+}
+
+// hasAutoFix reports whether `jit migrate <path>` can actually do something
+// with this finding, so the report's copy-pasteable trailer never hands the
+// reader a command that answers "Nothing to migrate."
+//
+// Two categories are detection-only, for different reasons:
+//
+//   - Private keys: FindFileTokens deliberately cedes key bodies to
+//     ScanPrivateKeys, so a loose-file migrate of ~/.ssh/id_rsa finds nothing
+//     to move. (This case predates the mcp-auth one below — the trailer has
+//     been offering it since the trailer existed.)
+//   - Remote-MCP OAuth tokens under ~/.mcp-auth: mcp-remote rotates and
+//     rewrites those files itself, so a mount would be fought by the tool and
+//     serve stale values. scanMCPAuthTokens' own evidence says to revoke and
+//     `rm -rf ~/.mcp-auth` instead; the trailer must not contradict it.
+func hasAutoFix(f Finding) bool {
+	if f.FindingType == FindingTypePrivateKeyRisk {
+		return false
+	}
+	return !strings.Contains(f.FilePath, string(filepath.Separator)+mcpAuthDir+string(filepath.Separator))
 }
 
 // findingIndent is the left margin every finding row sits at, one step in

@@ -6,8 +6,11 @@ package audit
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/jitpass/jit/internal/auditlog"
 )
 
 // tokenBody builds n characters of realistic token body: base62, and never
@@ -61,10 +64,31 @@ func TestMatchKnownTokenPattern(t *testing.T) {
 		{"Shopify token", "shpat_" + tokenBody(20), "Shopify Access Token", true, true},
 		{"Twilio SID", "AC" + hexBody(32), "Twilio Account SID", true, true},
 		{"SendGrid key", "SG.abcdefghij.abcdefghij", "SendGrid API Key", true, true},
-		{"Notion token", "secret_" + tokenBody(40), "Notion Internal Integration Token", true, true},
+		{"Notion token", "ntn_" + tokenBody(40), "Notion Internal Integration Token", true, true},
+		{"Notion token, legacy secret_ form", "secret_" + tokenBody(40), "Notion Internal Integration Token (legacy)", true, true},
+		{"GitHub App refresh token", "ghr_" + tokenBody(36), "GitHub App Refresh Token", true, true},
+		{"GitLab deploy token", "gldt-" + tokenBody(20), "GitLab Deploy Token", true, true},
+		{"GitLab runner token", "glrt-" + tokenBody(20), "GitLab Runner Authentication Token", true, true},
+		{"GitLab runner token, registration form", "glrtr-" + tokenBody(20), "GitLab Runner Authentication Token", true, true},
+		{"GitLab PAT longer than the legacy 20", "glpat-" + tokenBody(32), "GitLab Personal Access Token", true, true},
+		{"Google API key", "AIza" + tokenBody(35), "Google API Key", true, true},
+		{"Slack app-level token", "xapp-" + tokenBody(10), "Slack App-Level Token", true, true},
+		{"Stripe webhook signing secret", "whsec_" + tokenBody(24), "Stripe Webhook Signing Secret", true, true},
+		{"Supabase secret key", "sb_secret_" + tokenBody(20), "Supabase Secret Key", true, true},
+		{"Grafana service account token", "glsa_" + tokenBody(20), "Grafana Service Account Token", true, true},
+		{"Doppler service token", "dp.st." + tokenBody(20), "Doppler Service Token", true, true},
+		{"Vault service token", "hvs." + tokenBody(24), "HashiCorp Vault Token", true, true},
+		{"Vault batch token", "hvb." + tokenBody(24), "HashiCorp Vault Token", true, true},
+		{"age secret key", "AGE-SECRET-KEY-1" + "QWERTYUIOPASDFGHJKLZXCVBNM234567", "age Secret Key", true, true},
+		{"Anthropic admin key", "sk-ant-admin01-" + tokenBody(20), "Anthropic Admin API Key", true, true},
+		{"OpenAI service account key", "sk-svcacct-" + tokenBody(20), "OpenAI Service Account Key", true, true},
+		{"OpenAI admin key", "sk-admin-" + tokenBody(20), "OpenAI Admin API Key", true, true},
 		{"JWT", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123", "JSON Web Token (JWT)", true, true},
 		{"RSA private key header", "-----BEGIN RSA PRIVATE KEY-----", "RSA Private Key", true, true},
 		{"DB connection string with real creds", "postgres://admin:hunter2xyz@db.internal/prod", "Database connection string with embedded credentials", true, true},
+		{"DB connection string, SQLAlchemy +driver", "postgresql+asyncpg://postgres:Xk92QmPl4TzWhu@db.prod.internal/main", "Database connection string with embedded credentials", true, true},
+		{"DB connection string, mysql +driver", "mysql+pymysql://svc:S3cretPwLong@db.example.com/app", "Database connection string with embedded credentials", true, true},
+		{"DB connection string, scheme-less", "scanner_user:Dnn07HjN5s5C0tM4@scanner.cluster-abc.rds.amazonaws.com/postgres", "Database connection string with embedded credentials (scheme-less)", true, true},
 		{"unverified Cursor key", "crsr_" + tokenBody(10), "Cursor API Key", false, true},
 		{"unverified Tavily key", "tvly-" + tokenBody(10), "Tavily API Key", false, true},
 		{"plain string, no match", "just a normal value", "", false, false},
@@ -112,6 +136,93 @@ func TestMatchKnownTokenPatternDBConnectionStringPlaceholder(t *testing.T) {
 
 	if _, _, ok := MatchKnownTokenPattern("postgres://admin:hunter2xyz@db.internal/prod"); !ok {
 		t.Error("MatchKnownTokenPattern with a non-placeholder password should still match")
+	}
+}
+
+// TestMatchKnownTokenPatternSchemeLessConnString pins the scheme-less
+// connection-string pattern's deliberate limits. Without a "://" to anchor on
+// it leans entirely on shape, so it must stay narrow enough that ordinary
+// non-credential text doesn't trip it — a host:port pair and a bare hostname
+// are the shapes that would otherwise fire constantly in a real .env.
+func TestMatchKnownTokenPatternSchemeLessConnString(t *testing.T) {
+	shouldMatch := []string{
+		"scanner_user:Dnn07HjN5s5C0tM4@scanner.cluster-abc.rds.amazonaws.com/postgres",
+		"svc.account:S3cretPwLong@db.example.co.uk:5432/app",
+	}
+	for _, v := range shouldMatch {
+		if _, _, ok := MatchKnownTokenPattern(v); !ok {
+			t.Errorf("MatchKnownTokenPattern(%q) did not match, want a scheme-less connection string", v)
+		}
+	}
+
+	shouldNotMatch := []string{
+		"redis-cluster.internal.acme.com:6379", // host:port, no userinfo at all
+		"user:realpasswd1@localhost/db",        // bare host, deliberately given up
+		"user:realpasswd1@127.0.0.1/db",        // IP, deliberately given up
+		"user:short@db.acme.com/db",            // password under the 8-char floor
+		"myuser:changeme@db.acme.com/app",      // placeholder password
+		// Contact URIs share the "scheme:something@host.tld" shape. Review
+		// (2026-07-28) caught this reporting as a database credential.
+		"mailto:engineering@blockaid.io",
+		"mailto:somebody@company.co.uk",
+		"tel:pluslongnumber@carrier.example",
+	}
+	for _, v := range shouldNotMatch {
+		if vendor, _, ok := MatchKnownTokenPattern(v); ok {
+			t.Errorf("MatchKnownTokenPattern(%q) matched as %s, want no match", v, vendor)
+		}
+	}
+}
+
+// TestConnStringHumanReadableWords guards the false NEGATIVE that
+// tokenPattern.humanReadable exists to prevent. placeholderTokenWords assumes
+// a credential is opaque base62, so a literal "here"/"example" in it means
+// filler — but connection strings carry a hostname and a username, where those
+// substrings occur naturally ("db.sphere.internal" contains "here"). Without
+// the exemption, a live production credential at such a host is silently
+// dropped, which is the worst outcome this scanner has.
+func TestConnStringHumanReadableWords(t *testing.T) {
+	live := []string{
+		"postgres://svc:Xk92QmPl4TzWhu@db.sphere.internal/prod",      // "here" inside "sphere"
+		"appuser:Dnn07HjN5s5C0tM4@db.adhere-health.com/records",      // "here" inside "adhere"
+		"postgresql+asyncpg://u:Zk92QmPl4Tz@shop.example-corp.io/db", // real host that is literally "example-corp"
+	}
+	for _, v := range live {
+		if _, _, ok := MatchKnownTokenPattern(v); !ok {
+			t.Errorf("MatchKnownTokenPattern(%q) was suppressed, want a match: a real host containing a placeholder word must not hide a live credential", v)
+		}
+	}
+
+	// The run half of the check still applies to these formats: an all-x
+	// password is filler regardless of how human-readable the format is.
+	if _, _, ok := MatchKnownTokenPattern("postgres://svc:xxxxxxxxxxxx@db.internal/prod"); ok {
+		t.Error("an all-x password should still be rejected as filler")
+	}
+}
+
+// TestFindFileTokensConnStringNotDoubleReported locks in the ordering
+// contract between the two connection-string patterns: a full URL contains a
+// scheme-less-shaped span inside it, so without first-claim-wins ordering one
+// credential would be reported twice under two vendor names.
+func TestFindFileTokensConnStringNotDoubleReported(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	line := "DB_URI=postgresql+asyncpg://postgres:Xk92QmPl4TzWhu@postgres.db-prod.internal/maindb\n"
+	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tokens, err := FindFileTokens(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tokens) != 1 {
+		for _, tk := range tokens {
+			t.Logf("vendor=%q value=%q", tk.Vendor, tk.Value)
+		}
+		t.Fatalf("got %d tokens, want exactly 1", len(tokens))
+	}
+	if want := "Database connection string with embedded credentials"; tokens[0].Vendor != want {
+		t.Errorf("vendor = %q, want %q", tokens[0].Vendor, want)
 	}
 }
 
@@ -187,7 +298,53 @@ func TestFindFileTokensSkipsPlaceholders(t *testing.T) {
 	if len(tokens) != 1 {
 		t.Fatalf("FindFileTokens found %d token(s) for a real credential, want 1", len(tokens))
 	}
-	if tokens[0].Vendor != "Notion Internal Integration Token" {
-		t.Errorf("vendor = %q, want the Notion format", tokens[0].Vendor)
+	if tokens[0].Vendor != "Notion Internal Integration Token (legacy)" {
+		t.Errorf("vendor = %q, want the legacy Notion format", tokens[0].Vendor)
+	}
+}
+
+// TestEveryRecognizedFormatIsRedactedInTheAuditLog is the drift guard between
+// this package's knownTokenPatterns and internal/auditlog's secretPrefixes.
+//
+// The two lists are independent by design — auditlog is a leaf package that
+// must not depend on the scanner — but they encode the same fact, and the
+// branch that added 15 formats here updated none of them there. Nothing leaked,
+// because auditlog's entropy floor (24 chars, mixed classes) happens to catch
+// most credentials whatever their prefix. "Happens to" is the problem: a SHORT
+// token of a recognized format falls under that floor and would be written to
+// the audit log in the clear, which is the one thing that log promises never to
+// do.
+//
+// So the assertion uses a deliberately short body: it passes only when the
+// prefix itself is known to auditlog, not when entropy rescues it. Prefixes are
+// derived from the patterns themselves, so a format added here is covered
+// automatically rather than needing someone to remember this test exists.
+func TestEveryRecognizedFormatIsRedactedInTheAuditLog(t *testing.T) {
+	// A body short enough to sit under auditlog's entropy floor, so only a
+	// known prefix can trigger redaction.
+	const shortBody = "aB3xKq9Zm1"
+
+	for _, tp := range knownTokenPatterns {
+		// Private-key bodies never appear as a log argument (and FindFileTokens
+		// cedes them to ScanPrivateKeys); connection strings are matched by
+		// their scheme, not a credential prefix.
+		if strings.HasSuffix(tp.vendor, "Private Key") ||
+			strings.HasPrefix(tp.vendor, "Database connection string") {
+			continue
+		}
+		// LiteralPrefix reports nothing while the leading \b is present — it is
+		// a zero-width assertion, not a literal — so trim it first.
+		src := strings.TrimPrefix(tp.pattern.String(), `\b`)
+		prefix, _ := regexp.MustCompile(src).LiteralPrefix()
+		if len(prefix) < 3 {
+			continue // no distinctive literal to key on (e.g. "sk-" variants share a stem)
+		}
+
+		token := prefix + shortBody
+		if got := auditlog.RedactText(token); strings.Contains(got, shortBody) {
+			t.Errorf("%s: a short %q token is NOT redacted in the audit log (RedactText(%q) = %q).\n"+
+				"Add %q to secretPrefixes in internal/auditlog/auditlog.go.",
+				tp.vendor, prefix, token, got, prefix)
+		}
 	}
 }

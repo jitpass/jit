@@ -16,7 +16,7 @@ short prefix. Here's what to type for your tool, and why.
 | `gh`, `glab`, `stripe`, and other CLIs with their own login token | **`jit wrap <tool>`** once, then the tool by name | Moves the token to the vault; you keep typing the command. |
 | A project `.env`, Terraform `tfvars` | **`jit run -- <cmd>`** | The tool reads secrets from environment variables. |
 | `docker compose`, `podman`, tools that read the `.env` file itself | **`jit run --live -- <cmd>`** | jit serves the real file to that run (auto-picked for these). |
-| `gcp`, `sops`, `npm`, `netrc` | **run it** and approve the prompt, or **`jit run --with <name> -- <cmd>`** | A machine-global credential file: consent prompts on first read, or `--with` grants it explicitly. |
+| `gcp`, `sops`, `npm`, `netrc`, `pypi` | **run it** and approve the prompt, or **`jit run --with <name> -- <cmd>`** | A machine-global credential file: consent prompts on first read, or `--with` grants it explicitly. |
 | A specific named set of secrets (an MCP server, a one-off) | **`jit run --profile <name> -- <cmd>`** | Loads that profile instead of the ambient project `.env`. |
 
 ## Just run them (nothing to type)
@@ -50,7 +50,7 @@ the token is injected per call.
 `gh`, `glab`, `stripe`, `ngrok`, `doctl`, `hcloud`, `flyctl`, `vercel`,
 `railway`, `databricks`, `hf`, `supabase`, `wrangler`, `openai`, `claude`,
 `gemini`, `codex`, `sentry-cli`, `snyk`, `circleci`, `vault`, `pulumi`,
-`descope`, `okta-cli-client`.
+`descope`, `okta-cli-client`, `snow`, `jira`.
 
 Any other tool that reads its token from an environment variable can be added
 with `jit wrap add <tool> --env VAR=<vault-path>`. See
@@ -103,6 +103,7 @@ could read. Nothing gets one silently, and there are two ways to use them:
 | `sops` | your age key (`keys.txt`) | sops, kluctl, Flux, helm-secrets |
 | `npm` | global `~/.npmrc` | npm, yarn |
 | `netrc` | `~/.netrc` | curl, git, ftp, wget |
+| `pypi` | `~/.pypirc` | twine, `uv publish`, poetry |
 
 ```sh
 terraform apply                  # everyday: just run it, approve the prompt

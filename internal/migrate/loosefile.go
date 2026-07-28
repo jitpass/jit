@@ -96,6 +96,34 @@ func scanFileLines(path string) ([]string, error) {
 	return lines, nil
 }
 
+// fileEndsWithNewline reports whether path's last byte is a newline.
+//
+// scanFileLines deliberately splits with bufio.Scanner, which drops a trailing
+// empty line, so buildLooseTemplate's strings.Join cannot tell "ends with a
+// newline" from "doesn't" — and every mounted loose file was silently served
+// back one byte short. (readLines, used by the npmrc/pypirc migrators, splits
+// on "\n" and keeps that element, which is why those paths round-trip exactly
+// and this one did not.) Found by a round-trip test, 2026-07-28; predates the
+// assignment-templating work. scanFileLines' splitting is left alone because
+// FindFileTokens' per-line offsets are defined against it.
+func fileEndsWithNewline(path string) (bool, error) {
+	f, err := os.Open(path) // #nosec G304 -- explicitly-named migrate target, same trust boundary as scanFileLines
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil || info.Size() == 0 {
+		return false, err
+	}
+	buf := make([]byte, 1)
+	if _, err := f.ReadAt(buf, info.Size()-1); err != nil {
+		return false, err
+	}
+	return buf[0] == '\n', nil
+}
+
 // ClassifyLooseSecretFile decides whether path is a "pure" loose secret file:
 // a plain file whose entire meaningful content is bare secret tokens (every
 // non-blank line is nothing but one or more detected tokens, no other text).
@@ -111,14 +139,31 @@ func ClassifyLooseSecretFile(path string) (tokens []audit.FileToken, pure bool, 
 	if err != nil {
 		return nil, false, err
 	}
-	if len(tokens) == 0 {
-		return nil, false, nil
-	}
 
 	lines, err := scanFileLines(path)
 	if err != nil {
 		return tokens, false, err
 	}
+
+	// Vendor patterns alone leave real secrets behind. A value only counts as
+	// a token if some vendor stamped a recognizable prefix on it — so
+	// `db_password = "Tr0ub4dor3"` was invisible here, and the --mount path
+	// wrote it into the on-disk template VERBATIM. That is worse than not
+	// migrating: jit relocated an unprotected secret into its own profile
+	// directory, reported success, and `jit scan` doesn't look there. Found by
+	// review, 2026-07-28.
+	tokens = append(tokens, secretAssignmentTokens(lines, tokens)...)
+	if len(tokens) == 0 {
+		return nil, false, nil
+	}
+	// Line order, so the template's ${VAR} names read top-to-bottom and a
+	// re-run of the same file produces the same manifest.
+	sort.SliceStable(tokens, func(a, b int) bool {
+		if tokens[a].Line != tokens[b].Line {
+			return tokens[a].Line < tokens[b].Line
+		}
+		return tokens[a].Start < tokens[b].Start
+	})
 
 	byLine := make(map[int][]audit.FileToken, len(lines))
 	for _, tk := range tokens {
@@ -207,6 +252,117 @@ func ApplyLooseSecretFile(v *vault.Vault, profilesRoot, path string) (LooseSecre
 		BackupPath:         backupPath,
 		NamespaceMovedFrom: movedFrom,
 	}, nil
+}
+
+// looseAssignment matches a `key = value` line in the formats a loose secret
+// file actually uses — dotenv, INI, TOML. Deliberately not YAML/JSON: those
+// need real parsers to get spans right, and both already have dedicated
+// scanners (iac.go, mcpconfig.go) that understand their structure.
+var looseAssignment = regexp.MustCompile(`^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_.\-]*)\s*=\s*(.+?)\s*$`)
+
+// secretAssignmentTokens finds `key = value` lines whose KEY looks like a
+// secret and whose VALUE isn't obviously a setting, and returns them shaped as
+// FileTokens so the template builder can swap them like any vendor match.
+//
+// This is what makes the loose-file migrator complete rather than
+// vendor-pattern-limited: most real credentials carry no recognizable prefix
+// (CrowdStrike, Datadog, Heroku, and every internal API), so before this they
+// were detected by NAME in the scanner and then silently left in plaintext by
+// the migrator. The same secret-shaped-name gate the scanner uses is applied
+// here, including the LooksLikeNonSecretName/Value filters, so the two agree
+// about what counts.
+//
+// A span overlapping a vendor-pattern match is dropped: the vendor entry is
+// more specific, names the format in the manifest, and already covers those
+// bytes. Quotes around a value are kept OUT of the span so the template
+// reproduces them verbatim — which matters for formats like .pypirc whose
+// parser treats quotes as part of the value.
+func secretAssignmentTokens(lines []string, existing []audit.FileToken) []audit.FileToken {
+	covered := make(map[int][][2]int, len(existing))
+	for _, tk := range existing {
+		covered[tk.Line] = append(covered[tk.Line], [2]int{tk.Start, tk.End})
+	}
+
+	var out []audit.FileToken
+	for i, line := range lines {
+		if trimmed := strings.TrimSpace(line); trimmed == "" ||
+			strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
+			continue
+		}
+		idx := looseAssignment.FindStringSubmatchIndex(line)
+		if idx == nil {
+			continue
+		}
+		key := line[idx[2]:idx[3]]
+		start, end := idx[4], idx[5]
+		// An unquoted trailing "# ..." / "; ..." is a comment, not part of the
+		// value — dotenv, INI and TOML parsers all cut it there, so vaulting
+		// it glued onto the credential would make `jit run`/`jit export`
+		// deliver a value no server accepts, failing auth in a way that's
+		// hard to trace back to a migration. (findSecretPypircLines keeps its
+		// verbatim capture: Python's configparser genuinely preserves
+		// everything after "=", inline "comments" included.)
+		if line[start] == '"' || line[start] == '\'' {
+			// Quoted: close the span at the matching quote when only a
+			// comment (or nothing) follows it, then narrow past the pair so
+			// the template keeps the quotes.
+			q := line[start]
+			if rel := strings.IndexByte(line[start+1:end], q); rel >= 0 {
+				after := strings.TrimSpace(line[start+1+rel+1 : end])
+				if after == "" || after[0] == '#' || after[0] == ';' {
+					end = start + 1 + rel + 1
+				}
+			}
+			if end-start >= 2 && line[end-1] == q {
+				start, end = start+1, end-1
+			}
+		} else if rel := indexInlineComment(line[start:end]); rel >= 0 {
+			end = start + rel
+			for end > start && (line[end-1] == ' ' || line[end-1] == '\t') {
+				end--
+			}
+		}
+		value := line[start:end]
+		if value == "" || audit.IsAlreadyMasked(value) {
+			continue
+		}
+		if !audit.LooksLikeSecretKey(key) ||
+			audit.LooksLikeNonSecretName(key) ||
+			audit.LooksLikeNonSecretValue(value) {
+			continue
+		}
+		overlaps := false
+		for _, c := range covered[i+1] {
+			if start < c[1] && c[0] < end {
+				overlaps = true
+				break
+			}
+		}
+		if overlaps {
+			continue
+		}
+		out = append(out, audit.FileToken{
+			Line: i + 1, Start: start, End: end,
+			// Vendor doubles as the variable-name source (looseSecretName), so
+			// the key itself becomes the placeholder: db_password -> DB_PASSWORD.
+			Vendor: key,
+			Value:  value,
+		})
+	}
+	return out
+}
+
+// indexInlineComment returns the offset where an unquoted value's inline
+// comment begins — a '#' or ';' preceded by whitespace — or -1. The
+// whitespace requirement is what keeps a '#' INSIDE a value ("hunter#2")
+// intact: every parser that supports inline comments requires the separator.
+func indexInlineComment(s string) int {
+	for i := 1; i < len(s); i++ {
+		if (s[i] == '#' || s[i] == ';') && (s[i-1] == ' ' || s[i-1] == '\t') {
+			return i - 1
+		}
+	}
+	return -1
 }
 
 // nameLooseTokens assigns each detected token a stable, unique, env-style
@@ -327,6 +483,11 @@ func ApplyLooseSecretFileMount(v *vault.Vault, profilesRoot, path string) (Loose
 	}
 
 	template := buildLooseTemplate(lines, tokens, names)
+	// Restore the trailing newline scanFileLines dropped, so what the mount
+	// serves is byte-identical to what was there.
+	if endsNL, nlErr := fileEndsWithNewline(path); nlErr == nil && endsNL {
+		template = append(template, '\n')
+	}
 	templatePath := strings.TrimSuffix(profilePath, ".yaml") + ".loose.tmpl"
 	if err := os.WriteFile(templatePath, template, 0o600); err != nil {
 		return LooseSecretFileMigration{}, fmt.Errorf("writing template %s: %w", templatePath, err)

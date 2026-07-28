@@ -135,8 +135,8 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 	defer file.Close()
 
 	var active, commented int
-	var prodMatch, ipMatch, secretShaped, tokenMatch bool
-	var publicIP, secretShapedKey, tokenVendor string
+	var prodMatch, ipMatch, secretShaped, tokenMatch, entropyMatch bool
+	var publicIP, secretShapedKey, tokenVendor, entropyKey string
 	var tokenVerified bool
 	// EVERY credential in the file, not just the first one that set a flag
 	// above. The flags decide severity (one match is enough to escalate);
@@ -180,7 +180,14 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 		// file (a real token pasted into a .env.example is exactly the
 		// kind of accident worth catching) and even when commented out
 		// (still plaintext at rest).
-		if vendor, verified, ok := MatchKnownTokenPattern(rawValue); ok {
+		if vendor, verified, ok := MatchKnownTokenPattern(rawValue); ok &&
+			// A JWT is only a container format, so it proves nothing on its own
+			// when the variable holding it is one the vendor documents as
+			// public — SUPABASE_ANON_KEY is a JWT by design. Any other format
+			// here is issuer-specific and keeps escalating regardless of the
+			// name, which is what keeps a real sk_live_ key behind a
+			// NEXT_PUBLIC_ prefix reported.
+			!(IsAmbiguousTokenFormat(vendor) && cfg.suppressName(key)) {
 			if !tokenMatch {
 				tokenMatch, tokenVendor, tokenVerified = true, vendor, verified
 			}
@@ -202,12 +209,28 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 		// exactly what a template is supposed to contain) — the name alone
 		// is not evidence of anything for a template, only its value is
 		// (still covered by prodMatch/ipMatch above, which inspect values).
-		if !isTemplate && m[1] == "" && rawValue != "" && LooksLikeSecretKey(key) {
+		// LooksLikeNonSecretName excuses documented-public names (VITE_*,
+		// NEXT_PUBLIC_*, Datadog client tokens, Supabase anon keys) and
+		// path-holding variables from the NAME signal only — the value checks
+		// above still run on them, so a real credential behind a public
+		// prefix is still caught.
+		if !isTemplate && m[1] == "" && rawValue != "" && LooksLikeSecretKey(key) &&
+			!cfg.suppressName(key) && !cfg.suppressValue(rawValue) {
 			if !secretShaped {
 				secretShaped = true
 				secretShapedKey = key
 			}
 			secretShapedKeys = append(secretShapedKeys, key)
+		} else if !isTemplate && m[1] == "" && LooksLikeHighEntropySecret(key, rawValue) {
+			// Neither the name nor any vendor pattern gave this away, but the
+			// value is credential-shaped on its own. Most real credentials
+			// carry no vendor prefix (CrowdStrike, Datadog, Heroku, every
+			// internal API), so without this they were caught only when
+			// someone happened to name the variable helpfully.
+			if !entropyMatch {
+				entropyMatch = true
+				entropyKey = key
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -246,6 +269,14 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 	case secretShaped:
 		f.Severity = SeverityHigh
 		f.Evidence = fmt.Sprintf("contains %q, a variable name that looks like a real credential", secretShapedKey)
+	case entropyMatch:
+		// Ranked below the name signal and rated Medium confidence on purpose:
+		// "this value is shaped like a credential" is real evidence but weaker
+		// than a vendor prefix or a name that says so, and the wording has to
+		// admit that rather than assert more than the shape supports.
+		f.Severity = SeverityHigh
+		f.Confidence = ConfidenceMedium
+		f.Evidence = fmt.Sprintf("contains %q, whose value is a long opaque credential-shaped string (no vendor format matched, so this is a judgement about shape)", entropyKey)
 	default:
 		f.Severity = SeverityLow
 		// Lead with *why* this is a finding at all, not just the raw count —

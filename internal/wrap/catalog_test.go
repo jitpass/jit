@@ -136,6 +136,9 @@ func TestCatalogSelectorsAgainstFixtures(t *testing.T) {
 		{"circleci", 0, "circleci/cli.yml", "FIXTUREcircleciToken0123456789abcdef"},
 		{"vault", 0, "vault/vault-token", "hvs.FIXTUREvaultToken0123456789abcdef"},
 		{"okta-cli-client", 0, "okta-cli-client/okta.yaml", "FIXTUREoktaToken0123456789abcdefFIXTURE"},
+		// The first [connections.<name>] block wins, matching hcloud's
+		// contexts/token semantics — "prod" here, not "staging".
+		{"snow", 0, "snow/config.toml", "FIXTUREsnowflakePassword0123456789"},
 	}
 	for _, tc := range cases {
 		entry, ok := Lookup(tc.tool)

@@ -57,6 +57,11 @@ func TargetedScan(cfg Config, targets []string) ([]Finding, ScanSummary, error) 
 	}
 	all = dedupeFindings(all)
 
+	// Same redundancy filter Scan applies: a targeted directory scan runs the
+	// classify halves too, so a claimed file could otherwise be reported both
+	// by its own category and as an exposed_secret.
+	all = dropRedundantExposedSecrets(all)
+
 	// Same central archived tagging Scan applies (see scan.go): a targeted
 	// path can just as easily point into ~/.Trash or a timestamped backup.
 	for i := range all {

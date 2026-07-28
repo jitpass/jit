@@ -38,6 +38,7 @@ func globalMountKinds(home string) map[string][]string {
 		"sops":  migrate.SOPSAgeKeyPaths(home),
 		"npm":   {migrate.GlobalNpmrcPath(home)},
 		"netrc": {migrate.NetrcPath(home)},
+		"pypi":  {migrate.PypircPath(home)},
 	}
 }
 
@@ -135,6 +136,8 @@ func globalMountGuidanceForPath(home, mountPath string) (globalMountGuidance, bo
 		return globalMountGuidance{name: "npm", tools: "npm, yarn, pnpm"}, true
 	case migrate.NetrcPath(home):
 		return globalMountGuidance{name: "netrc", tools: "curl, git, ftp, wget"}, true
+	case migrate.PypircPath(home):
+		return globalMountGuidance{name: "pypi", tools: "twine, uv publish, poetry publish"}, true
 	}
 	for _, p := range migrate.SOPSAgeKeyPaths(home) {
 		if mountPath == p {

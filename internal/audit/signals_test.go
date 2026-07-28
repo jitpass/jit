@@ -80,3 +80,148 @@ func TestLooksLikeBareURL(t *testing.T) {
 		}
 	}
 }
+
+// TestLooksLikeNonSecretName covers the name-signal suppression added after
+// five real developer scans (2026-07-28) were dominated by browser-public
+// build variables and path-holding names. The safety property this must never
+// break: suppression is name-only, so anything the caller detects by VALUE is
+// unaffected.
+func TestLooksLikeNonSecretName(t *testing.T) {
+	cases := []struct {
+		input   string
+		want    bool
+		comment string
+	}{
+		// Documented-public build prefixes — the bundler inlines these into
+		// client JavaScript, so they are public by construction.
+		{"VITE_AUTH0_DOMAIN", true, "the real case: value was the bare hostname id.blockaid.io"},
+		{"VITE_DATADOG_CLIENT_TOKEN", true, "Datadog client tokens are the browser-facing credential by design"},
+		{"NEXT_PUBLIC_ANALYTICS_ID", true, "Next.js inlines NEXT_PUBLIC_ into the browser bundle"},
+		{"REACT_APP_DATADOG_PROXY_URL", true, "CRA public prefix; the real value was the path /logsProxy"},
+		{"EXPO_PUBLIC_API_URL", true, "Expo public prefix"},
+
+		// Vendor names documented as publicly exposable.
+		{"SUPABASE_ANON_KEY", true, "Supabase documents anon keys as safe to expose"},
+		{"STRIPE_PUBLISHABLE_KEY", true, "publishable by name"},
+		{"AUTH0_CLIENT_ID", true, "OAuth client IDs are public per RFC 6749"},
+
+		// Paths are pointers, not credentials.
+		{"CALLBACK_PRIVATE_KEY_PATH", true, "the real case: rated HIGH despite holding a filesystem path"},
+		{"FIREBLOCKS_API_PRIVATE_KEY_PATH", true, "same, from a second machine"},
+		{"GOOGLE_APPLICATION_CREDENTIALS_FILE", true, "_FILE holds a path"},
+		{"SSH_KEY_DIR", true, "_DIR holds a path"},
+
+		// The override: a public prefix must NOT excuse a secret-shaped name.
+		// NEXT_PUBLIC_STRIPE_SECRET_KEY is a misconfiguration, not a safe key.
+		{"NEXT_PUBLIC_STRIPE_SECRET_KEY", false, "SECRET is never legitimately public"},
+		{"VITE_DB_PASSWORD", false, "PASSWORD is never legitimately public"},
+		{"PUBLIC_PRIVATE_KEY", false, "PRIVATE is never legitimately public"},
+		{"AUTH0_CLIENT_SECRET", false, "the client SECRET is not public, unlike the client ID"},
+
+		// Ordinary secret names are untouched.
+		{"MONGO_PASSWORD", false, "ordinary secret name"},
+		{"OPENAI_API_KEY", false, "ordinary secret name"},
+		{"DB_URI", false, "ordinary secret name"},
+	}
+	for _, c := range cases {
+		if got := LooksLikeNonSecretName(c.input); got != c.want {
+			t.Errorf("LooksLikeNonSecretName(%q) = %v, want %v [%s]", c.input, got, c.want, c.comment)
+		}
+	}
+}
+
+// TestLooksLikeNonSecretValue covers the value-side suppression. Across eleven
+// real developer scans (2026-07-28) the same non-secret shapes were reported as
+// credentials over and over, purely because their NAMES matched
+// secretKeyMarkers. The safety line this must not cross: anything a human
+// could plausibly have chosen as a password keeps its full weight.
+func TestLooksLikeNonSecretValue(t *testing.T) {
+	cases := []struct {
+		input   string
+		want    bool
+		comment string
+	}{
+		// Feature flags and settings.
+		{"true", true, "SF_TEMP_SHOW_SECRETS=true — a boolean flag, reported as a credential"},
+		{"False", true, "WIPE_REDIS_ON_START=False"},
+		{"none", true, "explicit empty sentinel"},
+		{"6379", true, "REDIS_PORT=6379"},
+		{"0.1", true, "REACT_APP_SENTRY_TRACES_SAMPLE_RATE=0.1"},
+		{"-1", true, "a negative timeout"},
+		{"", true, "REDIS_STAGING_HOST= — an empty value is never a secret"},
+
+		// Endpoints with no credentials in them.
+		{"http://127.0.0.1:4000", true, "ANTHROPIC_BASE_URL — a local endpoint"},
+		{"https://api.hibob.com", true, "HIBOB_BASE_URL"},
+		{"redis://cache.internal:6379", true, "REDIS_URL with no userinfo; non-http scheme"},
+		{"postgresql://localhost:5432/app", true, "DATABASE_URL pointing at localhost, no credentials"},
+
+		// Unfilled template values in an otherwise real .env.
+		{"service-user-token-here", true, "HIBOB_SERVICE_USER_TOKEN, verbatim"},
+		{"your-api-key", true, "kebab filler"},
+		{"<your-token>", true, "angle-bracket convention"},
+
+		// --- Must NOT be suppressed ---
+		{"redis://:hunter2secret@cache.internal:6379", false, "userinfo present — credential-bearing"},
+		{"https://hooks.example.com/services/T00/B00/XXXXXXXXXXXXXXXXXXXXXXXX", false, "long opaque path segment — webhook URLs ARE secrets"},
+		{"Tr0ub4dor3xKq9ZmPq2Lr", false, "an ordinary password"},
+		// The discriminator that makes reusing placeholderTokenWords safe:
+		// these contain filler words but are not lowercase filler SHAPE.
+		{"Wherever2024!", false, "human-chosen password containing 'here'"},
+		{"Yourk3yIsHere2024xK", false, "human-chosen password containing 'your' and 'here'"},
+		{"example-Corp-2024-Xk9", false, "mixed case and digits — not filler shape"},
+		{"1234567890123456789", false, "too long to read as a setting"},
+	}
+	for _, c := range cases {
+		if got := LooksLikeNonSecretValue(c.input); got != c.want {
+			t.Errorf("LooksLikeNonSecretValue(%q) = %v, want %v [%s]", c.input, got, c.want, c.comment)
+		}
+	}
+}
+
+// TestLooksLikeHighEntropySecret covers the last big detection hole: most real
+// credentials carry no vendor prefix (CrowdStrike, Datadog, Heroku, Mistral,
+// every internal company API), so before this they were caught only when
+// someone named the variable helpfully.
+//
+// The narrowings matter as much as the detection — a scanner, unlike a
+// redactor, has to justify every finding to a human.
+func TestLooksLikeHighEntropySecret(t *testing.T) {
+	cases := []struct {
+		name, value string
+		want        bool
+		comment     string
+	}{
+		// The gap this closes. Both were LOW before.
+		{"cfg1", "6I1evXdj352FpyVQO8t4lgh9YHLukE0xcW7sGDSm", true, "a real CrowdStrike API secret under a meaningless name"},
+		{"FALCON", "Xk92QmPl4TzWhuCmu2qcwnu9PnWfMKNA1dTr", true, "no vendor prefix, no secret-shaped name"},
+
+		// Pure hex is deliberately given up. knownTokenPatterns already
+		// documents why: it is indistinguishable from hashes, commit SHAs and
+		// correlation IDs. That costs the CrowdStrike client ID (32 hex) and
+		// keeps its secret (base62) — the half that authenticates.
+		{"FALCON_ID", "a00c30f2f45f48b4ae3b0d0b151ac745", false, "32 hex — a dashless UUID, not distinguishable from a hash"},
+		{"BUILD_SHA", "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0", false, "a commit SHA"},
+
+		// Names that announce an opaque non-secret.
+		{"GIT_COMMIT", "9f8e7d6c5b4a3928170deadbeefcafe098765432x", false, "a commit, even when not pure hex"},
+		{"APP_VERSION", "2024.11.3-rc4-build8891-abcdefghijkl", false, "a build version string"},
+		{"REQUEST_ID", "Ab3xKq9ZmPq2LrTvWn5cUd8eFg1hJk0uf4", false, "a correlation ID"},
+		{"IMAGE_DIGEST", "Ab3xKq9ZmPq2LrTvWn5cUd8eFg1hJk0uf4", false, "a content digest"},
+
+		// Too short / not credential-shaped.
+		{"THING", "short1", false, "under the entropy floor"},
+		{"WORD", "informationtechnology", false, "letters only, no digits"},
+		{"COUNT", "123456789012345678901234", false, "digits only"},
+
+		// Already handled by the other gates; entropy must not resurrect them.
+		{"VITE_ANALYTICS", "Ab3xKq9ZmPq2LrTvWn5cUd8eFg1h", false, "browser-public build prefix"},
+		{"KEY_PATH", "Ab3xKq9ZmPq2LrTvWn5cUd8eFg1hJk", false, "a filesystem path variable"},
+		{"REDIS_URL", "redis://cache.internal.example.com:6379", false, "an endpoint with no credentials"},
+	}
+	for _, c := range cases {
+		if got := LooksLikeHighEntropySecret(c.name, c.value); got != c.want {
+			t.Errorf("LooksLikeHighEntropySecret(%q, %q) = %v, want %v [%s]", c.name, c.value, got, c.want, c.comment)
+		}
+	}
+}

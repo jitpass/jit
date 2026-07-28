@@ -24,6 +24,7 @@ var credentialClasses = map[string]bool{
 	"sops":      true,
 	"npmrc":     true,
 	"netrc":     true,
+	"pypirc":    true,
 }
 
 // RequiresConsent reports whether a secret of the given provenance class is

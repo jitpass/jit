@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/vault"
 )
@@ -241,5 +242,160 @@ func TestApplyLooseSecretFileMultipleTokens(t *testing.T) {
 	}
 	if result.Variables[0] == result.Variables[1] {
 		t.Errorf("variable names collide: %v", result.Variables)
+	}
+}
+
+// TestApplyLooseSecretFileMountTemplatesSecretShapedAssignments is the
+// regression test for a security-relevant bug found in review (2026-07-28).
+//
+// The mount template was built only from vendor-pattern matches, so a real
+// credential with no recognizable prefix — most of them: CrowdStrike, Datadog,
+// Heroku, every internal API — was written into the on-disk template VERBATIM.
+// jit relocated an unprotected secret from a file the user knew about into its
+// own profile directory, reported success, and `jit scan` does not look there.
+// Strictly worse than leaving the file alone.
+func TestApplyLooseSecretFileMountTemplatesSecretShapedAssignments(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, "secrets.toml")
+	writeFile(t, path, `OPENAI_API_KEY = "sk-proj-Ab3xKq9ZmPq2LrTvWn5cUd8eFg1hJk0uf4"
+db_password = "Tr0ub4dor3xKq9ZmPq2Lr"
+account = "ACME-PROD"
+port = 443
+`)
+
+	v := newTestVault(t)
+	result, err := ApplyLooseSecretFileMount(v, home, path)
+	if err != nil {
+		t.Fatalf("ApplyLooseSecretFileMount: %v", err)
+	}
+
+	tmpl, err := os.ReadFile(result.TemplatePath) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatalf("reading template: %v", err)
+	}
+	content := string(tmpl)
+
+	// The whole point: no secret survives into the template.
+	for _, secret := range []string{"Tr0ub4dor3xKq9ZmPq2Lr", "sk-proj-Ab3xKq9ZmPq2LrTvWn5cUd8eFg1hJk0uf4"} {
+		if strings.Contains(content, secret) {
+			t.Errorf("template still contains the plaintext secret %q:\n%s", secret, content)
+		}
+	}
+	// Quotes sit OUTSIDE the replaced span, so formats whose parser treats
+	// them as part of the value (.pypirc) round-trip correctly.
+	if !strings.Contains(content, `db_password = "${DB_PASSWORD}"`) {
+		t.Errorf("db_password not templated with its quotes preserved:\n%s", content)
+	}
+	// Settings are not credentials and must pass through untouched — this is
+	// what keeps the migrator from vaulting half a config file.
+	for _, keep := range []string{`account = "ACME-PROD"`, "port = 443"} {
+		if !strings.Contains(content, keep) {
+			t.Errorf("non-secret line %q was rewritten:\n%s", keep, content)
+		}
+	}
+
+	var sawDBPassword bool
+	for _, name := range result.Variables {
+		if name == "DB_PASSWORD" {
+			sawDBPassword = true
+		}
+	}
+	if !sawDBPassword {
+		t.Errorf("Variables = %v, want DB_PASSWORD among them", result.Variables)
+	}
+}
+
+// TestLooseSecretFileMountRoundTripsAndUndoes covers the two guarantees a
+// mounted file has to make, for the assignment-templating path specifically:
+// what the mount serves is byte-identical to what was there, and the migration
+// is reversible. Both matter more since secretAssignmentTokens landed - it
+// rewrites spans the vendor patterns never touched, so a span-arithmetic slip
+// would corrupt a working config rather than merely miss a secret.
+func TestLooseSecretFileMountRoundTripsAndUndoes(t *testing.T) {
+	const original = `# a config that mixes secrets with settings
+OPENAI_API_KEY = "sk-proj-Ab3xKq9ZmPq2LrTvWn5cUd8eFg1hJk0uf4"
+db_password="Tr0ub4dor3xKq9ZmPq2Lr"
+account = ACME-PROD
+port = 443
+timeout_seconds = 30
+`
+	home := t.TempDir()
+	path := filepath.Join(home, "app.conf")
+	writeFile(t, path, original)
+
+	v := newTestVault(t)
+	result, err := ApplyLooseSecretFileMount(v, home, path)
+	if err != nil {
+		t.Fatalf("ApplyLooseSecretFileMount: %v", err)
+	}
+
+	tmpl, err := os.ReadFile(result.TemplatePath) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatalf("reading template: %v", err)
+	}
+	values := map[string]string{}
+	for _, name := range result.Variables {
+		got, err := v.Get(result.ProfileName + "/" + name)
+		if err != nil {
+			t.Fatalf("vault get %s: %v", name, err)
+		}
+		values[name] = string(got)
+	}
+	if rendered := string(mount.FormatTemplate(tmpl, values)); rendered != original {
+		t.Errorf("round-trip is lossy.\nrendered: %q\noriginal: %q", rendered, original)
+	}
+
+	// Undo: the FIFO is retired and the original bytes come back.
+	if err := RestoreFromBackup(v, BackupRecord{OriginalPath: path, VaultPath: result.BackupPath}); err != nil {
+		t.Fatalf("RestoreFromBackup: %v", err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("Lstat after restore: %v", err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Errorf("after undo the path is %v, want a regular file", info.Mode())
+	}
+	restored, err := os.ReadFile(path) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatalf("reading restored file: %v", err)
+	}
+	if string(restored) != original {
+		t.Errorf("restored bytes differ.\ngot:  %q\nwant: %q", restored, original)
+	}
+}
+
+// TestSecretAssignmentTokensStripInlineComments guards what gets VAULTED, not
+// what gets served: the mount round-trips byte-identically either way (span
+// substitution), but `jit run`/`jit export`/`jit vault get` deliver the vault
+// entry alone — and before this, `api_password = hunter2abc # rotate
+// quarterly` vaulted "hunter2abc # rotate quarterly", a credential no server
+// accepts, failing auth in a way nothing traces back to the migration.
+// Dotenv, INI and TOML parsers all cut an unquoted value at a
+// whitespace-preceded "#"/";" — jit must agree with them.
+func TestSecretAssignmentTokensStripInlineComments(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want string
+	}{
+		{"unquoted with # comment", "api_password = Tr0ub4dor3xKq9ZmPq2Lr # rotate quarterly", "Tr0ub4dor3xKq9ZmPq2Lr"},
+		{"unquoted with ; comment", "api_password = Tr0ub4dor3xKq9ZmPq2Lr\t; legacy", "Tr0ub4dor3xKq9ZmPq2Lr"},
+		{"quoted with trailing comment", `api_password = "Tr0ub4dor3xKq9ZmPq2Lr" # note`, "Tr0ub4dor3xKq9ZmPq2Lr"},
+		// No whitespace before '#' means it is part of the value — every
+		// parser that supports inline comments requires the separator.
+		{"hash inside value", "api_password = Tr0ub4dor3#xKq9ZmPq2Lr", "Tr0ub4dor3#xKq9ZmPq2Lr"},
+		{"hash inside quotes", `api_password = "Tr0ub4dor3 #xKq9ZmPq2Lr"`, "Tr0ub4dor3 #xKq9ZmPq2Lr"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tokens := secretAssignmentTokens([]string{c.line}, nil)
+			if len(tokens) != 1 {
+				t.Fatalf("got %d tokens from %q, want 1: %+v", len(tokens), c.line, tokens)
+			}
+			if tokens[0].Value != c.want {
+				t.Errorf("value = %q, want %q", tokens[0].Value, c.want)
+			}
+		})
 	}
 }

@@ -182,6 +182,17 @@ func ApplyNpmrc(v *vault.Vault, profilesRoot, path string, global bool) (NpmrcMi
 	}
 	sort.Strings(varNames)
 
+	// Position-blind byte substitution (ApplyNetrc's own guard): a ${VAR}
+	// already in the file literally would get the real token filled into it
+	// at serve time too, so the mount would no longer round-trip the
+	// original bytes. Refuse rather than corrupt.
+	joined := strings.Join(lines, "\n")
+	for _, name := range varNames {
+		if strings.Contains(joined, "${"+name+"}") {
+			return NpmrcMigration{}, fmt.Errorf("%s already contains the literal ${%s}, refusing to migrate", path, name)
+		}
+	}
+
 	// Same merge-and-guard as ApplyEnvFile: load whatever the target
 	// profile already holds, and move to "<name>-2"/"-3" if the vault
 	// already holds another migration's value at one of these paths
@@ -268,6 +279,20 @@ func findSecretNpmrcLines(lines []string) []npmrcSecretMatch {
 			Value:   unquoteEnvValue(m[2]),
 			VarName: npmrcVarName(key),
 		})
+	}
+	// Two DISTINCT keys can sanitize to one variable name
+	// ("//reg.example.com/:_authToken" and "//reg.example.com:_authToken"
+	// both become REG_EXAMPLE_COM_AUTHTOKEN); disambiguate so each keeps its
+	// own vault entry and placeholder. A repeated key still shares a name —
+	// ApplyNpmrc's last-value-wins handles those, matching npm itself.
+	identities := make([]string, len(matches))
+	base := make([]string, len(matches))
+	for i, m := range matches {
+		identities[i] = m.Key
+		base[i] = m.VarName
+	}
+	for i, name := range assignUniqueVarNames(identities, base) {
+		matches[i].VarName = name
 	}
 	return matches
 }

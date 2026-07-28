@@ -67,7 +67,7 @@ func runScan(t *testing.T, args ...string) string {
 
 func TestScanCommandTextFormat(t *testing.T) {
 	home := withFixtureHome(t)
-	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte("export STRIPE_API_KEY=sk_test_fixture_value\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte("export STRIPE_API_KEY=sk_test_4eC39HqLyjWDarjtT1zdp7dc\n"), 0600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -79,14 +79,16 @@ func TestScanCommandTextFormat(t *testing.T) {
 	if !strings.Contains(out, "Shell Configs") {
 		t.Errorf("expected a Shell Configs section, got:\n%s", out)
 	}
-	if strings.Contains(out, "sk_test_fixture_value") {
+	// Must name the value this test actually planted, or the assertion is
+	// vacuous — it would pass for any output at all.
+	if strings.Contains(out, "sk_test_4eC39HqLyjWDarjtT1zdp7dc") {
 		t.Fatal("CLI output must never contain the raw secret value")
 	}
 }
 
 func TestScanCommandNDJSONFormat(t *testing.T) {
 	home := withFixtureHome(t)
-	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte("export STRIPE_API_KEY=sk_test_fixture_value\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte("export STRIPE_API_KEY=sk_test_4eC39HqLyjWDarjtT1zdp7dc\n"), 0600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -113,7 +115,7 @@ func TestScanCommandCleanFixture(t *testing.T) {
 
 func TestScanCommandMarkdownFormat(t *testing.T) {
 	home := withFixtureHome(t)
-	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte("export STRIPE_API_KEY=sk_test_fixture_value\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte("export STRIPE_API_KEY=sk_test_4eC39HqLyjWDarjtT1zdp7dc\n"), 0600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -132,7 +134,7 @@ func TestScanCommandMarkdownFormat(t *testing.T) {
 
 func TestScanCommandOutputToFile(t *testing.T) {
 	home := withFixtureHome(t)
-	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte("export STRIPE_API_KEY=sk_test_fixture_value\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte("export STRIPE_API_KEY=sk_test_4eC39HqLyjWDarjtT1zdp7dc\n"), 0600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 

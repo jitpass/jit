@@ -26,7 +26,7 @@ secret, same as every other audit format.
 
 | Field | Meaning |
 |---|---|
-| `finding_type` | the category (shell config, env file, credential file, …); `exposed_secret` is a vendor token or JWT found by content in a file named to `jit scan <path>` (schema 0.9.0+) |
+| `finding_type` | the category (shell config, env file, credential file, …); `exposed_secret` is a vendor token or JWT found by **content**. Schema 0.9.0+ produced it only for a file named to `jit scan <path>`; 0.11.0+ also emits it from a machine-wide walk for files whose name says they hold credentials (`*credentials*.csv`, `jwt-secret.txt`, …). A content match is still required either way |
 | `severity` | the finding's risk rating |
 | `file_path`, `line` | where (`line` may be `null` for whole-file findings) |
 | `key_name` | the variable/key name, when there is one |
@@ -46,6 +46,7 @@ secret, same as every other audit format.
 | `risk_level` | the rolled-up machine rating from the human report |
 | `production_indicator_count`, `public_ip_count` | how many findings raised each flag |
 | `scan_duration_ms` | wall-clock scan time |
+| `unfiltered` | `true` when the run used `jit scan --unfiltered`, which turns the name/value suppression gates off (schema 0.11.0+). A deliberately noisy auditing view - do not compare its counts against a normal run's |
 
 A stream is well-formed when it ends with exactly one `scan_summary`
 record; consumers can treat its absence as a truncated run.

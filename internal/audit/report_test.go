@@ -396,3 +396,60 @@ func TestReportsShowProtectedCountOnlyWhenNonZero(t *testing.T) {
 		}
 	}
 }
+
+// TestFirstFindingPathSkipsUnfixable guards the report trailer's promise: the
+// copy-pasteable `jit migrate <path>` it prints must name a file migrate can
+// actually act on. Two categories are detection-only — private keys (whose
+// bodies FindFileTokens deliberately cedes to ScanPrivateKeys) and remote-MCP
+// OAuth tokens (which mcp-remote rotates itself) — and offering either would
+// hand the reader a command that answers "Nothing to migrate."
+func TestFirstFindingPathSkipsUnfixable(t *testing.T) {
+	key := "k"
+	unfixable := []Finding{
+		{FindingType: FindingTypePrivateKeyRisk, FilePath: "/home/u/.ssh/id_ed25519", KeyName: &key},
+		{FindingType: FindingTypeCredentialFile, FilePath: "/home/u/.mcp-auth/mcp-remote-0.1.37/abc_tokens.json", KeyName: &key},
+	}
+	if got := firstFindingPath(unfixable); got != "" {
+		t.Errorf("firstFindingPath = %q, want \"\" so the trailer falls back to its <path> placeholder", got)
+	}
+
+	// A real, fixable finding is preferred even when an unfixable one sorts
+	// ahead of it.
+	mixed := append(unfixable, Finding{
+		FindingType: FindingTypeCredentialFile,
+		FilePath:    "/home/u/proj/.streamlit/secrets.toml",
+		KeyName:     &key,
+	})
+	if got := firstFindingPath(mixed); got != "/home/u/proj/.streamlit/secrets.toml" {
+		t.Errorf("firstFindingPath = %q, want the migratable file", got)
+	}
+}
+
+// TestBuildRenderItemsSortsLiveBeforeArchived covers report ordering on a
+// machine with many deleted-but-not-purged secrets: one real scan
+// (2026-07-28) had ~40 findings under ~/.Trash and a handful of live ones,
+// and the live ones — the only actionable findings — sorted last.
+//
+// Ordering only. Severity and the exposure score are untouched: a credential
+// in ~/.Trash is still on disk and still works, so discounting its risk would
+// under-report a real exposure. Rank follows actionability, not exposure.
+func TestBuildRenderItemsSortsLiveBeforeArchived(t *testing.T) {
+	key := "AWS_SECRET_ACCESS_KEY"
+	liveKey := "MONGO_PASSWORD"
+	group := []Finding{
+		// Archived, and more severe — it still sorts second.
+		{FindingType: FindingTypeEnvFilePresent, FilePath: "/home/u/.Trash/a/.env",
+			Severity: SeverityCritical, KeyName: &key, Archived: true},
+		{FindingType: FindingTypeEnvFilePresent, FilePath: "/home/u/live/.env",
+			Severity: SeverityHigh, KeyName: &liveKey},
+	}
+
+	items := buildRenderItems(group)
+	if len(items) != 2 {
+		t.Fatalf("got %d items, want 2", len(items))
+	}
+	if items[0].rep.FilePath != "/home/u/live/.env" {
+		t.Errorf("first item = %q, want the live finding — archived findings must never bury actionable ones",
+			items[0].rep.FilePath)
+	}
+}

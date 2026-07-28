@@ -365,3 +365,172 @@ func TestScanEnvFilesSkipsLiveMountFIFO(t *testing.T) {
 		t.Errorf("got %d findings, want exactly 1 (the regular .env.local, not the FIFO)", len(findings))
 	}
 }
+
+// TestScanEnvFilesPublicBuildVarsNotEscalated is the .env-file half of the
+// LooksLikeNonSecretName change. Five real developer scans (2026-07-28) each
+// carried a cluster of blockaid-platform .env files holding nothing but
+// browser-public Vite variables, and every one rated HIGH — on the strength of
+// names like VITE_AUTH0_DOMAIN, whose value was the bare hostname
+// id.blockaid.io. Vite's own docs say these are bundled into client source at
+// build time, so treating them as credentials is backwards.
+func TestScanEnvFilesPublicBuildVarsNotEscalated(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, "code", "platform"))
+	writeFile(t, filepath.Join(home, "code", "platform", ".env"), `VITE_AUTH0_DOMAIN=id.blockaid.io
+VITE_AUTH0_CLIENT_ID=Ab3xKq9ZmPq2LrTvWn5cUd8eFg1hJk0uf4
+VITE_DATADOG_CLIENT_TOKEN=pubc9f4a1b2d3e4f5061728394a5b6c7d8e9
+REACT_APP_DATADOG_PROXY_URL=/logsProxy
+`)
+	findings, err := ScanEnvFiles(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1 (the file is still reported, just not escalated)", len(findings))
+	}
+	if findings[0].Severity != SeverityLow {
+		t.Errorf("severity = %q, want %q — browser-public build vars must not read as credentials", findings[0].Severity, SeverityLow)
+	}
+}
+
+// TestScanEnvFilesPublicPrefixStillEscalatesRealSecret is the safety property
+// the suppression above must never break: the prefix excuses the NAME signal
+// only. A live credential behind a public prefix is a genuine misconfiguration
+// — the value is about to be shipped to browsers — so it has to stay loud.
+func TestScanEnvFilesPublicPrefixStillEscalatesRealSecret(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, "code", "webapp"))
+	writeFile(t, filepath.Join(home, "code", "webapp", ".env"), `NEXT_PUBLIC_STRIPE_KEY=sk_live_4eC39HqLyjWDarjtT1zdp7dcQ8Zt3Kx1
+`)
+	findings, err := ScanEnvFiles(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+	if findings[0].Severity == SeverityLow {
+		t.Error("a live Stripe key behind NEXT_PUBLIC_ must still escalate on its value")
+	}
+}
+
+// TestScanEnvFilesAnonJWTNotEscalated covers the one token format that proves
+// nothing on its own. A Supabase anon key IS a JWT, and Supabase documents it
+// as safe to expose, so the JWT pattern firing on SUPABASE_ANON_KEY was pure
+// noise — while a JWT in any ordinary variable must keep its full weight.
+func TestScanEnvFilesAnonJWTNotEscalated(t *testing.T) {
+	const jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiJ9.abc123def456"
+
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, "code", "app"))
+	writeFile(t, filepath.Join(home, "code", "app", ".env"), "SUPABASE_ANON_KEY="+jwt+"\n")
+	findings, err := ScanEnvFiles(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+	if findings[0].Severity != SeverityLow {
+		t.Errorf("severity = %q, want %q for a documented-public anon key", findings[0].Severity, SeverityLow)
+	}
+
+	other := t.TempDir()
+	mkdirAll(t, filepath.Join(other, "code", "app"))
+	writeFile(t, filepath.Join(other, "code", "app", ".env"), "SESSION_TOKEN="+jwt+"\n")
+	findings, err = ScanEnvFiles(Config{HomeDir: other})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	if len(findings) != 1 || findings[0].Severity == SeverityLow {
+		t.Errorf("a JWT in an ordinary variable must still escalate, got %+v", findings)
+	}
+}
+
+// TestScanEnvFilesUnfilteredRevealsSuppressed pins the escape hatch. The
+// name/value gates are normally invisible, so a reader cannot tell "jit found
+// nothing" apart from "jit found things and chose not to say". Config.Unfiltered
+// shows the second view, and the two must genuinely differ.
+func TestScanEnvFilesUnfilteredRevealsSuppressed(t *testing.T) {
+	write := func(home string) {
+		mkdirAll(t, filepath.Join(home, "app"))
+		writeFile(t, filepath.Join(home, "app", ".env"), `VITE_AUTH0_DOMAIN=id.blockaid.io
+CALLBACK_PRIVATE_KEY_PATH=/etc/keys/x.pem
+HIBOB_SERVICE_USER_TOKEN=service-user-token-here
+`)
+	}
+
+	quiet := t.TempDir()
+	write(quiet)
+	findings, err := ScanEnvFiles(Config{HomeDir: quiet})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	if len(findings) != 1 || findings[0].Severity != SeverityLow {
+		t.Fatalf("default scan should report the file only at Low, got %+v", findings)
+	}
+
+	loud := t.TempDir()
+	write(loud)
+	findings, err = ScanEnvFiles(Config{HomeDir: loud, Unfiltered: true})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles(unfiltered): %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+	if findings[0].Severity == SeverityLow {
+		t.Error("--unfiltered must surface the names the gates suppressed")
+	}
+	for _, want := range []string{"VITE_AUTH0_DOMAIN", "CALLBACK_PRIVATE_KEY_PATH", "HIBOB_SERVICE_USER_TOKEN"} {
+		if !strings.Contains(findings[0].Evidence, want) {
+			t.Errorf("unfiltered evidence should name %q, got %q", want, findings[0].Evidence)
+		}
+	}
+}
+
+// TestScanEnvFilesEntropyEscalatesUnnamedSecret is the .env-level half: a
+// credential with neither a vendor prefix nor a secret-shaped name used to
+// score Low, indistinguishable from a file of settings.
+func TestScanEnvFilesEntropyEscalatesUnnamedSecret(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, "svc"))
+	writeFile(t, filepath.Join(home, "svc", ".env"), "cfg1=6I1evXdj352FpyVQO8t4lgh9YHLukE0xcW7sGDSm\n")
+
+	findings, err := ScanEnvFiles(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+	if findings[0].Severity == SeverityLow {
+		t.Error("a credential-shaped value must escalate even when nothing about its NAME says secret")
+	}
+	// Medium, not High: shape alone is weaker evidence than a vendor prefix or
+	// a name that says so, and the finding should not claim more.
+	if findings[0].Confidence != ConfidenceMedium {
+		t.Errorf("confidence = %q, want %q — a judgement about shape", findings[0].Confidence, ConfidenceMedium)
+	}
+}
+
+// TestScanEnvFilesEntropyIgnoresBuildMetadata guards the other direction: a
+// .env full of SHAs, versions and ports must stay quiet, or the signal is
+// worse than not having it.
+func TestScanEnvFilesEntropyIgnoresBuildMetadata(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, "svc"))
+	writeFile(t, filepath.Join(home, "svc", ".env"), `BUILD_SHA=a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0
+GIT_COMMIT=9f8e7d6c5b4a39281706f5e4d3c2b1a098765432
+APP_VERSION=2024.11.3-rc4-build8891
+REDIS_PORT=6379
+`)
+
+	findings, err := ScanEnvFiles(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	if len(findings) != 1 || findings[0].Severity != SeverityLow {
+		t.Errorf("build metadata must not escalate, got %+v", findings)
+	}
+}
