@@ -59,8 +59,28 @@ type tokenPattern struct {
 // anchor against, and checking for ":<filler-word>@" alone is correct for both
 // forms. Note this tests the PASSWORD field, not the username — "admin:hunter2@"
 // is a real credential and stays reported, while "user:admin@" is filler.
-var connStringPlaceholderUserinfo = regexp.MustCompile(
-	`(?i):(?:pass(?:word)?|changeme|secret|admin|user(?:name)?|test|xxx+|your[_-]?password(?:_here)?)@`)
+const placeholderUserinfoAlt = `:(?:pass(?:word)?|changeme|secret|admin|user(?:name)?|test|xxx+|your[_-]?password(?:_here)?)@`
+
+var connStringPlaceholderUserinfo = regexp.MustCompile(`(?i)` + placeholderUserinfoAlt)
+
+// schemeLessConnStringExclude adds one more rejection on top of the
+// placeholder-userinfo check, for the scheme-less pattern only.
+//
+// "scheme:something@host.tld" is the shape of a contact URI as much as a
+// credential, and RE2 has no lookbehind to say "not preceded by a known
+// non-credential scheme" inside the pattern itself. Review (2026-07-28) caught
+// "CONTACT=mailto:engineering@blockaid.io" reporting as a database credential
+// — a realistic line in a real .env, and exactly the kind of false positive
+// that erodes trust in the report.
+//
+// Anchored at the start because both call sites test it against a span that
+// begins at the userinfo: MatchKnownTokenPattern passes the whole value, and
+// FindFileTokens passes the matched span, which starts at the scheme.
+// It composes with placeholderUserinfoAlt rather than replacing it: a
+// scheme-less match must clear BOTH checks, and tokenPattern carries a single
+// exclude, so the two alternatives are ORed into one regex here.
+var schemeLessConnStringExclude = regexp.MustCompile(
+	`(?i)^(?:mailto|tel|sms|callto|skype|xmpp|urn|data|geo|magnet):` + `|` + placeholderUserinfoAlt)
 
 // knownTokenPatterns is checked in order — more specific prefixes must
 // come before more generic ones they could otherwise be shadowed by (e.g.
@@ -204,7 +224,7 @@ var knownTokenPatterns = []tokenPattern{
 	{"Database connection string with embedded credentials (scheme-less)",
 		regexp.MustCompile(`\b[A-Za-z0-9._%+\-]{2,}:[^\s:@/]{8,}@[A-Za-z0-9][A-Za-z0-9.\-]*\.[A-Za-z]{2,}(?::\d+)?(?:/|\b)`),
 		true,
-		connStringPlaceholderUserinfo,
+		schemeLessConnStringExclude,
 		true},
 
 	// --- Reported (2026-07-06) but not independently verified against a

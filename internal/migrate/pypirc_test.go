@@ -199,3 +199,28 @@ func TestApplyPypircNoCredentialsErrors(t *testing.T) {
 		t.Error("ApplyPypirc should error when there is nothing to migrate")
 	}
 }
+
+// TestApplyPypircPreservesQuotesVerbatim guards a correctness bug found in
+// review (2026-07-28). .pypirc is read by Python's configparser, which does
+// NOT strip surrounding quotes — `password = "abc"` is the five-character
+// value `"abc"`. An earlier draft ran the value through unquoteEnvValue (the
+// right call for npmrc, whose ini parser does strip them), which would have
+// vaulted a value differing from the real credential at each end and served
+// it back through the mount: uploads break, and the file still looks correct.
+func TestApplyPypircPreservesQuotesVerbatim(t *testing.T) {
+	home := t.TempDir()
+	path := PypircPath(home)
+	writeFile(t, path, "[pypi]\nusername = __token__\npassword = \"Xk92QmPl4TzWhu\"\n")
+
+	v := newTestVault(t)
+	if _, err := ApplyPypirc(v, home, path); err != nil {
+		t.Fatalf("ApplyPypirc: %v", err)
+	}
+	got, err := v.Get("pypirc/PYPI_PASSWORD")
+	if err != nil {
+		t.Fatalf("vault get: %v", err)
+	}
+	if want := `"Xk92QmPl4TzWhu"`; string(got) != want {
+		t.Errorf("vaulted %q, want %q — configparser keeps the quotes, so jit must too", got, want)
+	}
+}

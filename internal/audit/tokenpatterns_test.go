@@ -158,6 +158,11 @@ func TestMatchKnownTokenPatternSchemeLessConnString(t *testing.T) {
 		"user:realpasswd1@127.0.0.1/db",        // IP, deliberately given up
 		"user:short@db.acme.com/db",            // password under the 8-char floor
 		"myuser:changeme@db.acme.com/app",      // placeholder password
+		// Contact URIs share the "scheme:something@host.tld" shape. Review
+		// (2026-07-28) caught this reporting as a database credential.
+		"mailto:engineering@blockaid.io",
+		"mailto:somebody@company.co.uk",
+		"tel:pluslongnumber@carrier.example",
 	}
 	for _, v := range shouldNotMatch {
 		if vendor, _, ok := MatchKnownTokenPattern(v); ok {
