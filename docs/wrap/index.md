@@ -96,7 +96,7 @@ gcloud storage ls               # native; the shim grants the real ADC
 The shim runs `jit run --with <name>`, so each invocation grants the mount
 to that one process (scoped, gone when it exits) and prompts a **disclosed
 Touch ID** naming the credential - a global credential is never granted
-silently. Names: `gcp`, `sops`, `npm`, `netrc`. See
+silently. Names: `gcp`, `sops`, `npm`, `netrc`, `pypi`. See
 [Delivering a secret](../getting-started/delivering-secrets.md).
 
 ## Adding a tool

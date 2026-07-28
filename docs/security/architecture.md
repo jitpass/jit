@@ -47,7 +47,7 @@ Secrets materialize at the moment of use and nowhere else:
 - Machine-global credential *files* (the gcloud ADC, a SOPS age key, the
   global `~/.npmrc`, `~/.netrc`) migrate the same way, but are never granted
   implicitly or silently. Two things can release one, and both take a live
-  human gesture: an explicit `jit run --with gcp|sops|npm|netrc`, which grants
+  human gesture: an explicit `jit run --with gcp|sops|npm|netrc|pypi`, which grants
   it to a single run's process tree behind a fresh *disclosed* Touch ID that
   names the credential (a kernel-vouched, hard gate); or, with
   [per-process consent](../service/consent.md) on (the default), a direct read
