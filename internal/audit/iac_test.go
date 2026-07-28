@@ -402,3 +402,67 @@ func TestScanIACFilesTfvarsPlainStaysInfo(t *testing.T) {
 		t.Errorf("plain tfvars grew an 'also' clause: %q", findings[0].Evidence)
 	}
 }
+
+// TestClassifyIACFileSkipsTemplateOnlyHelmSecret covers noise from a real scan
+// (2026-07-28): eight findings from the airbyte charts, each a Helm template
+// whose Secret values arrive from values.yaml at deploy time. Helm syntax is
+// not valid YAML, so the parse fails and the legacy "kind: Secret" substring
+// fallback fired — a fallback meant for hand-mangled but REAL manifests.
+func TestClassifyIACFileSkipsTemplateOnlyHelmSecret(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, "secrets.yaml")
+	writeFile(t, path, `# Create secrets only for the local deployment
+{{- if .Values.secrets }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: server-secrets
+type: Opaque
+stringData:
+  {{- range $k, $v := .Values.secrets }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}
+{{- end }}
+`)
+	if got := classifyIACFile(Config{HomeDir: home}, path, "secrets.yaml"); len(got) != 0 {
+		t.Errorf("got %d findings for a template-only Helm chart, want 0: %+v", len(got), got)
+	}
+}
+
+// TestClassifyIACFileReportsHelmChartWithLiteralSecret is the safety half:
+// templating must not become a way to hide a hardcoded credential.
+func TestClassifyIACFileReportsHelmChartWithLiteralSecret(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, "secrets.yaml")
+	writeFile(t, path, `{{- if .Values.secrets }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: server-secrets
+stringData:
+  admin_password: hunter2SuperSecret
+  {{- range $k, $v := .Values.secrets }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}
+{{- end }}
+`)
+	if got := classifyIACFile(Config{HomeDir: home}, path, "secrets.yaml"); len(got) != 1 {
+		t.Errorf("got %d findings, want 1 — a literal password among template actions must still report", len(got))
+	}
+}
+
+// TestIsTemplateOnlySecretManifestRequiresTemplating pins that the skip needs
+// BOTH conditions: an ordinary unparseable manifest with no templating at all
+// must not be excused by it.
+func TestIsTemplateOnlySecretManifestRequiresTemplating(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, "secrets.yaml")
+	writeFile(t, path, "kind: Secret\nstringData:\n  password: hunter2\n")
+	got, err := isTemplateOnlySecretManifest(path)
+	if err != nil {
+		t.Fatalf("isTemplateOnlySecretManifest: %v", err)
+	}
+	if got {
+		t.Error("a manifest with no template actions is not template-only")
+	}
+}
