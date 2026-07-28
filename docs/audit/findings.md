@@ -52,8 +52,9 @@ reported, and reported harder:
   Vite's own docs say they "should not contain sensitive information". A
   name containing `SECRET`/`PASSWORD`/`PRIVATE` overrides this:
   `NEXT_PUBLIC_STRIPE_SECRET_KEY` is a misconfiguration, not a safe key.
-- **Documented-public values**: Datadog browser client tokens, Supabase
-  `anon`/publishable keys, OAuth client IDs.
+- **Documented-public values**: Supabase `anon`/publishable keys, OAuth
+  client IDs, analytics application IDs. (Datadog browser client tokens are
+  covered too, via the build prefix they always carry.)
 - **Paths, not secrets**: `*_PATH`, `*_FILE`, `*_DIR`. `SSH_KEY_PATH`
   holds a filename; the key it points at is covered by Private Keys.
 - **Settings**: booleans, plain numbers (ports, timeouts, sample rates),

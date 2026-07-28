@@ -223,7 +223,14 @@ func findSecretPypircLines(lines []string) []pypircSecretMatch {
 		if !isPypircSecretKey(key) {
 			continue
 		}
-		value := unquoteEnvValue(m[4])
+		// Verbatim, NOT unquoteEnvValue — unlike npmrc, whose ini parser does
+		// strip surrounding quotes. .pypirc is read by Python's configparser,
+		// which does not: for it, `password = "abc"` IS the five-character
+		// value `"abc"`. Stripping the quotes here would vault a value one
+		// character different at each end from the credential the tool
+		// actually sends, and the mount would then serve that wrong value —
+		// silently breaking uploads with a "correct-looking" file.
+		value := m[4]
 		if value == "" {
 			continue // an empty password is nothing to move
 		}

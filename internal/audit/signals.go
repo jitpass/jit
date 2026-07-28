@@ -142,16 +142,24 @@ var pointerVarSuffixes = []string{"_PATH", "_PATHS", "_FILE", "_FILEPATH", "_DIR
 
 // publicVarMarkers are vendor-specific names documented as publicly
 // exposable, independent of any build-tool prefix:
-//   - Datadog client tokens: the docs state API keys "cannot be used to send
-//     data from a browser, mobile, or TV app, as they would be exposed
-//     client-side" — the client token is the credential purpose-built for
-//     that exposure.
 //   - Supabase anon / publishable keys: documented "safe to expose… in web
 //     pages and mobile apps".
 //   - OAuth client IDs are public by RFC 6749; only the client SECRET is not,
 //     and that is caught by neverPublicMarkers below.
+//   - Analytics application IDs (Datadog RUM and friends) identify an app,
+//     not a caller; the paired credential is a separate variable.
+//
+// Each entry has to EARN its place against observed data, because every one
+// is a potential false negative. "CLIENT_TOKEN" was dropped in review
+// (2026-07-28) for failing that test: every occurrence across eleven scanned
+// machines was VITE_DATADOG_CLIENT_TOKEN, already covered by the VITE_ prefix
+// above — so the marker suppressed nothing extra, while a vendor that happens
+// to call its real secret a "client token" would have been silenced by it. The
+// survivors all appear WITHOUT a public prefix in the wild (SUPABASE_ANON_KEY,
+// GOOGLE_CLIENT_ID, SPOTIFY_CLIENT_ID, BIG_QUERY_CLIENT_ID), so they do work
+// the prefix rule cannot.
 var publicVarMarkers = []string{
-	"CLIENT_TOKEN", "ANON_KEY", "PUBLISHABLE_KEY", "CLIENT_ID", "APPLICATION_ID",
+	"ANON_KEY", "PUBLISHABLE_KEY", "CLIENT_ID", "APPLICATION_ID",
 }
 
 // neverPublicMarkers override publicVarPrefixes/publicVarMarkers. A variable
