@@ -96,6 +96,34 @@ func scanFileLines(path string) ([]string, error) {
 	return lines, nil
 }
 
+// fileEndsWithNewline reports whether path's last byte is a newline.
+//
+// scanFileLines deliberately splits with bufio.Scanner, which drops a trailing
+// empty line, so buildLooseTemplate's strings.Join cannot tell "ends with a
+// newline" from "doesn't" — and every mounted loose file was silently served
+// back one byte short. (readLines, used by the npmrc/pypirc migrators, splits
+// on "\n" and keeps that element, which is why those paths round-trip exactly
+// and this one did not.) Found by a round-trip test, 2026-07-28; predates the
+// assignment-templating work. scanFileLines' splitting is left alone because
+// FindFileTokens' per-line offsets are defined against it.
+func fileEndsWithNewline(path string) (bool, error) {
+	f, err := os.Open(path) // #nosec G304 -- explicitly-named migrate target, same trust boundary as scanFileLines
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil || info.Size() == 0 {
+		return false, err
+	}
+	buf := make([]byte, 1)
+	if _, err := f.ReadAt(buf, info.Size()-1); err != nil {
+		return false, err
+	}
+	return buf[0] == '\n', nil
+}
+
 // ClassifyLooseSecretFile decides whether path is a "pure" loose secret file:
 // a plain file whose entire meaningful content is bare secret tokens (every
 // non-blank line is nothing but one or more detected tokens, no other text).
@@ -419,6 +447,11 @@ func ApplyLooseSecretFileMount(v *vault.Vault, profilesRoot, path string) (Loose
 	}
 
 	template := buildLooseTemplate(lines, tokens, names)
+	// Restore the trailing newline scanFileLines dropped, so what the mount
+	// serves is byte-identical to what was there.
+	if endsNL, nlErr := fileEndsWithNewline(path); nlErr == nil && endsNL {
+		template = append(template, '\n')
+	}
 	templatePath := strings.TrimSuffix(profilePath, ".yaml") + ".loose.tmpl"
 	if err := os.WriteFile(templatePath, template, 0o600); err != nil {
 		return LooseSecretFileMigration{}, fmt.Errorf("writing template %s: %w", templatePath, err)
