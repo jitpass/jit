@@ -6,8 +6,11 @@ package audit
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/jitpass/jit/internal/auditlog"
 )
 
 // tokenBody builds n characters of realistic token body: base62, and never
@@ -297,5 +300,51 @@ func TestFindFileTokensSkipsPlaceholders(t *testing.T) {
 	}
 	if tokens[0].Vendor != "Notion Internal Integration Token (legacy)" {
 		t.Errorf("vendor = %q, want the legacy Notion format", tokens[0].Vendor)
+	}
+}
+
+// TestEveryRecognizedFormatIsRedactedInTheAuditLog is the drift guard between
+// this package's knownTokenPatterns and internal/auditlog's secretPrefixes.
+//
+// The two lists are independent by design — auditlog is a leaf package that
+// must not depend on the scanner — but they encode the same fact, and the
+// branch that added 15 formats here updated none of them there. Nothing leaked,
+// because auditlog's entropy floor (24 chars, mixed classes) happens to catch
+// most credentials whatever their prefix. "Happens to" is the problem: a SHORT
+// token of a recognized format falls under that floor and would be written to
+// the audit log in the clear, which is the one thing that log promises never to
+// do.
+//
+// So the assertion uses a deliberately short body: it passes only when the
+// prefix itself is known to auditlog, not when entropy rescues it. Prefixes are
+// derived from the patterns themselves, so a format added here is covered
+// automatically rather than needing someone to remember this test exists.
+func TestEveryRecognizedFormatIsRedactedInTheAuditLog(t *testing.T) {
+	// A body short enough to sit under auditlog's entropy floor, so only a
+	// known prefix can trigger redaction.
+	const shortBody = "aB3xKq9Zm1"
+
+	for _, tp := range knownTokenPatterns {
+		// Private-key bodies never appear as a log argument (and FindFileTokens
+		// cedes them to ScanPrivateKeys); connection strings are matched by
+		// their scheme, not a credential prefix.
+		if strings.HasSuffix(tp.vendor, "Private Key") ||
+			strings.HasPrefix(tp.vendor, "Database connection string") {
+			continue
+		}
+		// LiteralPrefix reports nothing while the leading \b is present — it is
+		// a zero-width assertion, not a literal — so trim it first.
+		src := strings.TrimPrefix(tp.pattern.String(), `\b`)
+		prefix, _ := regexp.MustCompile(src).LiteralPrefix()
+		if len(prefix) < 3 {
+			continue // no distinctive literal to key on (e.g. "sk-" variants share a stem)
+		}
+
+		token := prefix + shortBody
+		if got := auditlog.RedactText(token); strings.Contains(got, shortBody) {
+			t.Errorf("%s: a short %q token is NOT redacted in the audit log (RedactText(%q) = %q).\n"+
+				"Add %q to secretPrefixes in internal/auditlog/auditlog.go.",
+				tp.vendor, prefix, token, got, prefix)
+		}
 	}
 }
