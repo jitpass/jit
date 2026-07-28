@@ -48,7 +48,7 @@ type category struct {
 var categories = []category{
 	{name: "shell configs", fixed: ScanShellConfigs},
 	{name: ".env files", classify: classifyEnvFile},
-	{name: "credential files", fixed: scanKnownCredentialFiles, classify: classifyProjectNpmrc},
+	{name: "credential files", fixed: scanKnownCredentialFiles, classify: classifyCredentialWalkFile},
 	{name: "MCP configs", fixed: scanClaudeDesktopMCPConfig, classify: classifyMCPFile},
 	{name: "private keys", fixed: ScanPrivateKeys},
 	{name: "IaC files", classify: classifyIACFile},

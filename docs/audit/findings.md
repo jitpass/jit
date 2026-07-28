@@ -12,7 +12,7 @@ a masked value preview, and a one-line *why* explaining what matched.
 |---|---|---|
 | **Shell Configs** | `~/.zshrc`, `~/.bashrc`, profile files - `export KEY=value` lines whose key name or value shape looks like a secret | [`jit migrate`](../migrate/shell-configs.md) |
 | **.env Files** | project `.env`-family files whose values match known token formats or secret-shaped entropy | [`jit migrate`](../migrate/env-files.md) |
-| **Credential Files** | `~/.aws/credentials`, `~/.kube/config`, `.npmrc` auth tokens, the crates.io publish token in `~/.cargo/credentials.toml`, the Terraform Cloud token file, Docker registry logins in `~/.docker/config.json`, git HTTPS logins in `~/.git-credentials`, GCP application-default credentials, `~/.netrc` passwords | [`jit migrate`](../migrate/index.md) |
+| **Credential Files** | `~/.aws/credentials`, `~/.kube/config`, `.npmrc` auth tokens, the crates.io publish token in `~/.cargo/credentials.toml`, PyPI upload tokens and private-index passwords in `~/.pypirc`, the Terraform Cloud token file, Docker registry logins in `~/.docker/config.json`, git HTTPS logins in `~/.git-credentials`, GCP application-default credentials, `~/.netrc` passwords, Streamlit's `.streamlit/secrets.toml`, and remote-MCP OAuth refresh tokens under `~/.mcp-auth` | [`jit migrate`](../migrate/index.md) - except `~/.mcp-auth`, see below |
 | **AI Tool / MCP Configs** | MCP server configs (project `mcp.json`, Claude Desktop config) with secrets in their env blocks | [`jit migrate`](../migrate/mcp.md) |
 | **Private Keys** | on-disk private key material | surfaced for your judgment |
 | **IaC Variable Files** | Terraform tfvars files, and Kubernetes Secret manifests (`*secret*.yaml` with `kind: Secret`) whose `data:` values are base64-**decoded** before judging - base64 is encoding, not encryption. Cluster-exported secrets and TLS/SSH/registry/basic-auth types escalate; SealedSecrets and fully SOPS-encrypted files are recognized as protected and skipped | tfvars: [`jit migrate`](../migrate/index.md); Secret manifests: surfaced for your judgment |
@@ -22,6 +22,45 @@ a masked value preview, and a one-line *why* explaining what matched.
 
 Detection and migration share the same extractors: when a new tool enters
 the wrap catalog, `jit scan` starts flagging its token automatically.
+
+## What jit reports but cannot fix
+
+Two things are reported for your judgment rather than with a fix command,
+and the report says so rather than offering a `jit migrate` that would do
+nothing:
+
+- **Private keys.** Key material is surfaced with its passphrase and
+  permission status; moving it is your call.
+- **Remote-MCP OAuth tokens** (`~/.mcp-auth`). `mcp-remote` rotates and
+  rewrites these files itself - access tokens last minutes, refresh tokens
+  are re-issued on every use - so a vault-backed mount would be overwritten
+  by the tool and serve values that had already rotated away. The fix is to
+  revoke at the provider and reset with `rm -rf ~/.mcp-auth`, which is
+  mcp-remote's own documented reset. Only the refresh token is reported: an
+  access token is very likely dead before you read the report.
+
+## What jit deliberately does not flag
+
+The name heuristic is broad on purpose, so these are excluded to keep the
+report worth reading. In every case the **value** is still checked
+independently - a real credential hiding behind one of these is still
+reported, and reported harder:
+
+- **Browser-public build variables**: `VITE_`, `NEXT_PUBLIC_`, `REACT_APP_`,
+  `EXPO_PUBLIC_`, `GATSBY_`, and friends. The bundler inlines these into
+  client JavaScript at build time, so they are public by construction -
+  Vite's own docs say they "should not contain sensitive information". A
+  name containing `SECRET`/`PASSWORD`/`PRIVATE` overrides this:
+  `NEXT_PUBLIC_STRIPE_SECRET_KEY` is a misconfiguration, not a safe key.
+- **Documented-public values**: Datadog browser client tokens, Supabase
+  `anon`/publishable keys, OAuth client IDs.
+- **Paths, not secrets**: `*_PATH`, `*_FILE`, `*_DIR`. `SSH_KEY_PATH`
+  holds a filename; the key it points at is covered by Private Keys.
+- **Settings**: booleans, plain numbers (ports, timeouts, sample rates),
+  and endpoint URLs carrying no credentials.
+- **Unfilled template values**: `API_TOKEN=your-token-here` in a real
+  `.env` you copied but haven't filled in. A human-chosen password that
+  merely contains such a word (`Wherever2024!`) is still reported.
 
 ## Risk level
 

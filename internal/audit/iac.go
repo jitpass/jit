@@ -458,7 +458,7 @@ func scanTfvarsAssignments(path string) ([]envTokenHit, []string, error) {
 			tokens = append(tokens, envTokenHit{key: key, vendor: vendor, verified: verified})
 			continue
 		}
-		if LooksLikeSecretKey(key) {
+		if LooksLikeSecretKey(key) && !LooksLikeNonSecretName(key) && !LooksLikeNonSecretValue(raw) {
 			shaped = append(shaped, key)
 		}
 	}

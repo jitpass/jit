@@ -47,7 +47,8 @@ then **[Install](./getting-started/install.md)** →
 - Per-credential guides: [.env files](./migrate/env-files.md) ·
   [shell configs](./migrate/shell-configs.md) · [AWS](./migrate/aws.md) ·
   [Kubernetes](./migrate/kubernetes.md) · [Terraform](./migrate/terraform.md) ·
-  [GCP](./migrate/gcp.md) · [npm](./migrate/npm.md) · [MCP / AI tools](./migrate/mcp.md)
+  [GCP](./migrate/gcp.md) · [npm](./migrate/npm.md) · [PyPI](./migrate/pypi.md) ·
+  [netrc](./migrate/netrc.md) · [SOPS](./migrate/sops.md) · [MCP / AI tools](./migrate/mcp.md)
 - [Undo, unmount, and remove](./migrate/undo-and-remove.md) - every change is reversible
 
 ## Wrap CLI tools - `jit wrap`
@@ -65,6 +66,7 @@ then **[Install](./getting-started/install.md)** →
   [snyk](./wrap/snyk.md) · [circleci](./wrap/circleci.md) ·
   [vault](./wrap/vault.md) · [pulumi](./wrap/pulumi.md) ·
   [descope](./wrap/descope.md) · [okta-cli-client](./wrap/okta-cli-client.md) ·
+  [snow](./wrap/snow.md) · [jira](./wrap/jira.md) ·
   [aws](./wrap/aws.md) · [terraform](./wrap/terraform.md) ·
   [docker](./wrap/docker.md) · [git](./wrap/git.md)
 - [Custom tools](./wrap/custom-tools.md) - wrap anything that reads an env var

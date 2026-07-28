@@ -58,6 +58,8 @@ One page per tool - requirements, verification, and per-tool gotchas:
 | [`pulumi`](./pulumi.md) | `PULUMI_ACCESS_TOKEN` | no auto-migrate (URL-keyed file); `jit vault set wrap-pulumi/PULUMI_ACCESS_TOKEN` first |
 | [`descope`](./descope.md) | `DESCOPE_MANAGEMENT_KEY` | env-only (docs export it in `~/.zshrc`); `jit vault set wrap-descope/DESCOPE_MANAGEMENT_KEY` first |
 | [`okta-cli-client`](./okta-cli-client.md) | `OKTA_CLIENT_TOKEN` | `~/.okta/okta.yaml` (`okta.client.token`) when present, else `jit vault set` first |
+| [`snow`](./snow.md) | `SNOWFLAKE_PASSWORD` | `~/.snowflake/config.toml` (first `[connections.<name>]` block's `password`) |
+| [`jira`](./jira.md) | `JIRA_API_TOKEN` | env-only (docs export it in `~/.zshrc`); `jit vault set wrap-jira/JIRA_API_TOKEN` first |
 
 ## Native-hook plugins (no shim - stronger)
 

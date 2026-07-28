@@ -31,7 +31,7 @@ disk.
   ones. `jit service status` shows whether each mount is swapped or granted,
   and for which run.
 - `jit run --with <name> <command>` grants a machine-global file-delivered
-  credential (`gcp`, `sops`, `npm`, `netrc`) to the run, behind a fresh
+  credential (`gcp`, `sops`, `npm`, `netrc`, `pypi`) to the run, behind a fresh
   disclosed Touch ID that names the credential. This is the explicit,
   hard-gated path. With per-process consent on (the default), these same
   credential mounts *also* serve real content on a **direct** read, behind a

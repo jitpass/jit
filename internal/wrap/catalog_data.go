@@ -358,6 +358,52 @@ var catalog = map[string]CatalogEntry{
 		VerifyHint: "okta-cli-client group lists",
 	},
 
+	"snow": {
+		Tool:    "snow",
+		Kind:    KindShim,
+		Doc:     "Snowflake CLI connection password",
+		EnvVars: map[string]string{"SNOWFLAKE_PASSWORD": "SNOWFLAKE_PASSWORD"},
+		Order:   []string{"SNOWFLAKE_PASSWORD"},
+		Sources: []TokenSource{
+			// config.toml nests connections as [connections.<name>], and
+			// extractTOML matches a dotted header by its first segment, so
+			// "connections/password" resolves to the FIRST connection's
+			// password — the active one for single-connection setups, the
+			// same semantics hcloud's "contexts/token" already relies on.
+			//
+			// The sibling ~/.snowflake/connections.toml is deliberately NOT
+			// listed: it puts each connection at the TOP level ([myconn]), so
+			// there is no fixed section name a static selector could address.
+			// Those setups fall back to `jit vault set` like any no-Sources
+			// entry.
+			//
+			// Snowflake itself requires this file to be 0600 and refuses to
+			// run otherwise, which is a fair signal from the vendor about how
+			// sensitive its contents are.
+			{Path: "~/.snowflake/config.toml", Format: "toml", Selector: "connections/password"},
+		},
+		VerifyHint: "snow connection test",
+	},
+	"jira": {
+		Tool:    "jira",
+		Kind:    KindShim,
+		Doc:     "Jira CLI API token",
+		EnvVars: map[string]string{"JIRA_API_TOKEN": "JIRA_API_TOKEN"}, // #nosec G101 -- env var name, not a credential
+		Order:   []string{"JIRA_API_TOKEN"},
+		// No Sources. jira-cli's own docs tell you to export JIRA_API_TOKEN
+		// from your shell config (or keep it in .netrc / the keychain) — it
+		// never writes the token to its own config file, which holds only
+		// non-secret settings (site URL, project, board). So there is nothing
+		// tool-specific to auto-migrate: a token already exported in ~/.zshrc
+		// is `jit migrate ~/.zshrc`'s territory, and wrap covers it with
+		// `jit vault set wrap-jira/JIRA_API_TOKEN` first.
+		//
+		// Worth cataloging anyway: JIRA_API_TOKEN turned up as a plaintext
+		// shell export on multiple real developer machines (2026-07-28), and
+		// without an entry `jit scan` had no wrap affordance to offer for it.
+		VerifyHint: "jira me",
+	},
+
 	"aws": {
 		Tool:           "aws",
 		Kind:           KindNative,
