@@ -156,6 +156,27 @@ func collapsedHeader(it renderItem) string {
 	return fmt.Sprintf("same pattern in %d files:", len(it.locations))
 }
 
+// itemArchived reports whether a render item is entirely archived. A collapsed
+// item spanning both a live and an archived copy of the same secret counts as
+// LIVE — the live copy is the actionable one, and sorting the pair down would
+// hide it behind the archived duplicate that caused the collapse.
+func itemArchived(it renderItem) bool {
+	if !it.collapsed {
+		return it.rep.Archived
+	}
+	for _, f := range it.findings {
+		if !f.Archived {
+			return false
+		}
+	}
+	for _, loc := range it.locations {
+		if !LooksArchived(loc.Path) {
+			return false
+		}
+	}
+	return true
+}
+
 func (it renderItem) sortPath() string {
 	if it.collapsed {
 		return it.locations[0].Path
@@ -232,6 +253,21 @@ func buildRenderItems(group []Finding) []renderItem {
 	}
 
 	sort.Slice(items, func(i, j int) bool {
+		// Live findings before archived ones, ahead of severity. A machine
+		// with a lot of deleted-but-not-purged secrets buries the ones the
+		// reader can act on: one real scan (2026-07-28) had ~40 findings under
+		// ~/.Trash and a handful of live ones, and the live ones sorted last.
+		//
+		// This is ordering only. Severity, confidence and the exposure score
+		// are deliberately untouched: a credential in ~/.Trash is still on
+		// disk and still works — "anything running as you can read them" is
+		// exactly as true there — so discounting its RISK would under-report a
+		// real exposure. What differs is only what the reader can do about it,
+		// which is why `jit migrate home` skips these and the report tags them
+		// [archived]. Rank follows actionability, not exposure.
+		if ai, aj := itemArchived(items[i]), itemArchived(items[j]); ai != aj {
+			return !ai
+		}
 		ri, rj := rankOf(items[i].rep.Severity), rankOf(items[j].rep.Severity)
 		if ri != rj {
 			return ri < rj
