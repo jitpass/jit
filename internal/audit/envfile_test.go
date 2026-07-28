@@ -365,3 +365,84 @@ func TestScanEnvFilesSkipsLiveMountFIFO(t *testing.T) {
 		t.Errorf("got %d findings, want exactly 1 (the regular .env.local, not the FIFO)", len(findings))
 	}
 }
+
+// TestScanEnvFilesPublicBuildVarsNotEscalated is the .env-file half of the
+// LooksLikeNonSecretName change. Five real developer scans (2026-07-28) each
+// carried a cluster of blockaid-platform .env files holding nothing but
+// browser-public Vite variables, and every one rated HIGH — on the strength of
+// names like VITE_AUTH0_DOMAIN, whose value was the bare hostname
+// id.blockaid.io. Vite's own docs say these are bundled into client source at
+// build time, so treating them as credentials is backwards.
+func TestScanEnvFilesPublicBuildVarsNotEscalated(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, "code", "platform"))
+	writeFile(t, filepath.Join(home, "code", "platform", ".env"), `VITE_AUTH0_DOMAIN=id.blockaid.io
+VITE_AUTH0_CLIENT_ID=Ab3xKq9ZmPq2LrTvWn5cUd8eFg1hJk0uf4
+VITE_DATADOG_CLIENT_TOKEN=pubc9f4a1b2d3e4f5061728394a5b6c7d8e9
+REACT_APP_DATADOG_PROXY_URL=/logsProxy
+`)
+	findings, err := ScanEnvFiles(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1 (the file is still reported, just not escalated)", len(findings))
+	}
+	if findings[0].Severity != SeverityLow {
+		t.Errorf("severity = %q, want %q — browser-public build vars must not read as credentials", findings[0].Severity, SeverityLow)
+	}
+}
+
+// TestScanEnvFilesPublicPrefixStillEscalatesRealSecret is the safety property
+// the suppression above must never break: the prefix excuses the NAME signal
+// only. A live credential behind a public prefix is a genuine misconfiguration
+// — the value is about to be shipped to browsers — so it has to stay loud.
+func TestScanEnvFilesPublicPrefixStillEscalatesRealSecret(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, "code", "webapp"))
+	writeFile(t, filepath.Join(home, "code", "webapp", ".env"), `NEXT_PUBLIC_STRIPE_KEY=sk_live_4eC39HqLyjWDarjtT1zdp7dcQ8Zt3Kx1
+`)
+	findings, err := ScanEnvFiles(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+	if findings[0].Severity == SeverityLow {
+		t.Error("a live Stripe key behind NEXT_PUBLIC_ must still escalate on its value")
+	}
+}
+
+// TestScanEnvFilesAnonJWTNotEscalated covers the one token format that proves
+// nothing on its own. A Supabase anon key IS a JWT, and Supabase documents it
+// as safe to expose, so the JWT pattern firing on SUPABASE_ANON_KEY was pure
+// noise — while a JWT in any ordinary variable must keep its full weight.
+func TestScanEnvFilesAnonJWTNotEscalated(t *testing.T) {
+	const jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiJ9.abc123def456"
+
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, "code", "app"))
+	writeFile(t, filepath.Join(home, "code", "app", ".env"), "SUPABASE_ANON_KEY="+jwt+"\n")
+	findings, err := ScanEnvFiles(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+	if findings[0].Severity != SeverityLow {
+		t.Errorf("severity = %q, want %q for a documented-public anon key", findings[0].Severity, SeverityLow)
+	}
+
+	other := t.TempDir()
+	mkdirAll(t, filepath.Join(other, "code", "app"))
+	writeFile(t, filepath.Join(other, "code", "app", ".env"), "SESSION_TOKEN="+jwt+"\n")
+	findings, err = ScanEnvFiles(Config{HomeDir: other})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	if len(findings) != 1 || findings[0].Severity == SeverityLow {
+		t.Errorf("a JWT in an ordinary variable must still escalate, got %+v", findings)
+	}
+}

@@ -78,7 +78,12 @@ func TestScanIntegration(t *testing.T) {
 
 	// Plant findings across several categories, including one that should
 	// escalate the whole scan to Critical.
-	writeFile(t, filepath.Join(home, ".zshrc"), "export STRIPE_API_KEY=sk_test_example\n")
+	// A realistically-shaped key, not "sk_test_example": LooksLikeNonSecretValue
+	// now (correctly) reads all-lowercase filler containing "example" as an
+	// unfilled placeholder, so the old fixture was quietly standing in for a
+	// secret with a value no vendor would ever issue — the same trap tokenBody
+	// exists to avoid in tokenpatterns_test.go.
+	writeFile(t, filepath.Join(home, ".zshrc"), "export STRIPE_API_KEY=sk_test_4eC39HqLyjWDarjtT1zdp7dc\n")
 	mkdirAll(t, filepath.Join(home, "code", "app"))
 	writeFile(t, filepath.Join(home, "code", "app", ".env"), "PROD_DATABASE_URL=postgres://admin:x@db.internal/prod\n")
 

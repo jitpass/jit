@@ -110,6 +110,7 @@ const (
 	ClassGCP       = "gcp"
 	ClassSOPS      = "sops"
 	ClassNpmrc     = "npmrc"
+	ClassPypirc    = "pypirc"
 	ClassGit       = "git"
 	ClassNetrc     = "netrc"
 	ClassKube      = "kube"

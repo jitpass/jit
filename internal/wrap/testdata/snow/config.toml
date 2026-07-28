@@ -1,0 +1,13 @@
+# Sanitized copy of ~/.snowflake/config.toml as `snow connection add` writes it.
+default_connection_name = "prod"
+
+[connections.prod]
+account = "FIXTUREORG-FIXTUREACCOUNT"
+user = "fixture_user"
+password = "FIXTUREsnowflakePassword0123456789"
+warehouse = "COMPUTE_WH"
+
+[connections.staging]
+account = "FIXTUREORG-STAGING"
+user = "fixture_user"
+password = "FIXTUREstagingPassword0123456789"

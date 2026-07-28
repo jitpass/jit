@@ -396,3 +396,31 @@ func TestReportsShowProtectedCountOnlyWhenNonZero(t *testing.T) {
 		}
 	}
 }
+
+// TestFirstFindingPathSkipsUnfixable guards the report trailer's promise: the
+// copy-pasteable `jit migrate <path>` it prints must name a file migrate can
+// actually act on. Two categories are detection-only — private keys (whose
+// bodies FindFileTokens deliberately cedes to ScanPrivateKeys) and remote-MCP
+// OAuth tokens (which mcp-remote rotates itself) — and offering either would
+// hand the reader a command that answers "Nothing to migrate."
+func TestFirstFindingPathSkipsUnfixable(t *testing.T) {
+	key := "k"
+	unfixable := []Finding{
+		{FindingType: FindingTypePrivateKeyRisk, FilePath: "/home/u/.ssh/id_ed25519", KeyName: &key},
+		{FindingType: FindingTypeCredentialFile, FilePath: "/home/u/.mcp-auth/mcp-remote-0.1.37/abc_tokens.json", KeyName: &key},
+	}
+	if got := firstFindingPath(unfixable); got != "" {
+		t.Errorf("firstFindingPath = %q, want \"\" so the trailer falls back to its <path> placeholder", got)
+	}
+
+	// A real, fixable finding is preferred even when an unfixable one sorts
+	// ahead of it.
+	mixed := append(unfixable, Finding{
+		FindingType: FindingTypeCredentialFile,
+		FilePath:    "/home/u/proj/.streamlit/secrets.toml",
+		KeyName:     &key,
+	})
+	if got := firstFindingPath(mixed); got != "/home/u/proj/.streamlit/secrets.toml" {
+		t.Errorf("firstFindingPath = %q, want the migratable file", got)
+	}
+}

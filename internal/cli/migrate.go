@@ -34,7 +34,7 @@ var (
 // Keyed by the short token a caller passes, not the display label used in
 // output — keep the two lists in this exact order so error messages and
 // --only's own help text stay in sync with printMigratePlan.
-var migrateCategories = []string{"env", "tfvars", "shell", "mcp", "aws", "kube", "terraform", "docker", "git", "gcp", "sops", "npmrc", "netrc", "loose"}
+var migrateCategories = []string{"env", "tfvars", "shell", "mcp", "aws", "kube", "terraform", "docker", "git", "gcp", "sops", "npmrc", "netrc", "pypirc", "loose"}
 
 // discovered holds one run's findings per category. runMigratePath resolves
 // each named target into one of these and hands it to applyMigrate — the
@@ -56,6 +56,7 @@ type discovered struct {
 	sopsAgeFiles      []string
 	npmrcFiles        []string
 	netrcFiles        []string
+	pypircFiles       []string
 	looseSecretFiles  []string
 	// looseEmbeddedSkipped is note-only (like tfvarsComplexOnly): files that
 	// mix a secret with other content, which neutralize can't move whole.
@@ -152,9 +153,10 @@ var migrateCmd = &cobra.Command{
 		"               like ~/.zshrc, ~/.aws/credentials, ~/.kube/config, Terraform\n" +
 		"               Cloud creds, ~/.docker/config.json, ~/.git-credentials, GCP\n" +
 		"               application-default credentials, a SOPS age key, ~/.netrc,\n" +
-		"               Claude Desktop's MCP config, the global ~/.npmrc) is routed to\n" +
-		"               that credential type's handling (credential_process, exec\n" +
-		"               plugin, credential helper, or live mount, as appropriate).\n" +
+		"               ~/.pypirc, Claude Desktop's MCP config, the global ~/.npmrc)\n" +
+		"               is routed to that credential type's handling\n" +
+		"               (credential_process, exec plugin, credential helper, or\n" +
+		"               live mount, as appropriate).\n" +
 		"  A directory  is walked for its .env/tfvars/mcp/npmrc findings only, never\n" +
 		"               the machine-wide fixed-path files (those aren't \"under\" any\n" +
 		"               project directory) — name them explicitly to convert them.\n\n" +
@@ -228,6 +230,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 	sopsAgeFiles := d.sopsAgeFiles
 	npmrcFiles := d.npmrcFiles
 	netrcFiles := d.netrcFiles
+	pypircFiles := d.pypircFiles
 	looseSecretFiles := d.looseSecretFiles
 	looseEmbeddedSkipped := d.looseEmbeddedSkipped
 
@@ -260,6 +263,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 		"sops":      &sopsAgeFiles,
 		"npmrc":     &npmrcFiles,
 		"netrc":     &netrcFiles,
+		"pypirc":    &pypircFiles,
 		"loose":     &looseSecretFiles,
 	}
 	if len(categorySlices) != len(migrateCategories) {
@@ -333,7 +337,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 	// work that's about to be aborted anyway. This same plan is what
 	// --dry-run prints too (see below) — one rendering path, so the
 	// preview you confirm against is exactly the preview --dry-run shows.
-	printMigratePlan(cmd.OutOrStdout(), home, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, looseSecretFiles)
+	printMigratePlan(cmd.OutOrStdout(), home, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, pypircFiles, looseSecretFiles)
 	printSkippedFindings(cmd.OutOrStdout(), home, len(tfvarsComplexOnly), "in Terraform variable file(s) whose secret-shaped values aren't simple one-line strings", tfvarsComplexOnly,
 		"Nothing migrate can move safely; they stay in place, and `jit scan` keeps reporting them.")
 	printSkippedFindings(cmd.OutOrStdout(), home, len(looseEmbeddedSkipped), "file(s) that mix a secret with other content", looseEmbeddedSkipped,
@@ -768,6 +772,34 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 		fmt.Fprintln(out)
 	}
 
+	if n := len(pypircFiles); n > 0 {
+		printMigrateResultCategory(out, "~/.pypirc credential(s) migrated", n)
+		for _, pypircPath := range pypircFiles {
+			summary.checkGitHistory(pypircPath)
+
+			result, err := migrate.ApplyPypirc(v, home, pypircPath)
+			if err != nil {
+				return fmt.Errorf("jit migrate: %w", err)
+			}
+			if err := mount.AddMount(registryPath, mount.Entry{MountPath: pypircPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
+				return fmt.Errorf("jit migrate: registering mount for %s: %w", pypircPath, err)
+			}
+			if err := summary.writePointerFile(pypircPath, result.ProfilePath); err != nil {
+				return fmt.Errorf("jit migrate: %w", err)
+			}
+			fmt.Fprintf(out, "  • %s -> profile %q (%d var(s)); backup: `jit vault get %s`\n",
+				displayPath(home, pypircPath), result.ProfileName, len(result.Variables), result.BackupPath)
+			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
+			// ~/.pypirc is a machine-wide mount, same as ~/.netrc and the
+			// global ~/.npmrc: usage is explicit `jit run --with pypi` intent
+			// (plan §12a), or the per-process consent prompt by default.
+			if g, ok := globalMountGuidanceForPath(home, pypircPath); ok {
+				fmt.Fprintf(out, "    %s read it with: jit run --with %s <command>\n", g.tools, g.name)
+			}
+		}
+		fmt.Fprintln(out)
+	}
+
 	// Best-effort: an unreadable marker means no nudge, never a failed
 	// migrate — everything above already succeeded.
 	if _, recorded, err := vault.LastExport(root); err == nil && !recorded {
@@ -775,7 +807,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 	}
 
 	summary.print(out)
-	reportAgentStatus(out, root, len(envFiles) > 0 || len(npmrcFiles) > 0 || len(gcpADCFiles) > 0 || len(sopsAgeFiles) > 0 || len(netrcFiles) > 0)
+	reportAgentStatus(out, root, len(envFiles) > 0 || len(npmrcFiles) > 0 || len(gcpADCFiles) > 0 || len(sopsAgeFiles) > 0 || len(netrcFiles) > 0 || len(pypircFiles) > 0)
 	// The folder-rename advisory is left to `jit status`: an explicitly named
 	// migrate target can sit under any project, so there's no single "this
 	// project" here whose rename to flag (see noteFolderRename, still used by
@@ -988,6 +1020,13 @@ func discoverFileTarget(d *discovered, home, path string) error {
 		}
 		d.netrcFiles = append(d.netrcFiles, filterToTarget(files, path)...)
 		return nil
+	case migrate.PypircPath(home):
+		files, err := migrate.DiscoverPypirc(home)
+		if err != nil {
+			return err
+		}
+		d.pypircFiles = append(d.pypircFiles, filterToTarget(files, path)...)
+		return nil
 	case migrate.ClaudeDesktopConfigPath(home):
 		// Passing path (the config file itself) as the walk root adds nothing
 		// via the walk — its name isn't one of the project mcp.json names —
@@ -1056,7 +1095,7 @@ func (d *discovered) dedupe() {
 		&d.envFiles, &d.tfvarsFiles, &d.tfvarsComplexOnly, &d.shellConfigs,
 		&d.mcpConfigs, &d.awsProfiles, &d.k8sUsers, &d.terraformHosts,
 		&d.dockerRegistries, &d.gitHosts, &d.gcpADCFiles, &d.sopsAgeFiles,
-		&d.npmrcFiles, &d.netrcFiles, &d.looseSecretFiles, &d.looseEmbeddedSkipped,
+		&d.npmrcFiles, &d.netrcFiles, &d.pypircFiles, &d.looseSecretFiles, &d.looseEmbeddedSkipped,
 	} {
 		dedupeStrings(s)
 	}
@@ -1071,7 +1110,7 @@ func (d *discovered) total() int {
 	for _, s := range [][]string{
 		d.envFiles, d.tfvarsFiles, d.shellConfigs, d.mcpConfigs, d.awsProfiles,
 		d.k8sUsers, d.terraformHosts, d.dockerRegistries, d.gitHosts,
-		d.gcpADCFiles, d.sopsAgeFiles, d.npmrcFiles, d.netrcFiles,
+		d.gcpADCFiles, d.sopsAgeFiles, d.npmrcFiles, d.netrcFiles, d.pypircFiles,
 		d.looseSecretFiles,
 	} {
 		n += len(s)

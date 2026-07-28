@@ -45,7 +45,7 @@ import (
 // item-by-item (splitMCPByScope/splitNpmrcByScope) since Claude Desktop's
 // config / the global ~/.npmrc belong in the machine-wide group while a
 // project mcp.json/.npmrc belongs with the scoped files.
-func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, looseSecretFiles []string) {
+func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, pypircFiles, looseSecretFiles []string) {
 	fmt.Fprintln(w, "jit migrate, plan")
 	fmt.Fprintln(w, "Each modified file is backed up before it's rewritten.")
 	fmt.Fprintln(w)
@@ -65,7 +65,7 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, shellConf
 	}
 
 	hasScoped := len(envFiles) > 0 || len(tfvarsFiles) > 0 || len(mcpScoped) > 0 || len(npmrcScoped) > 0 || len(looseSecretFiles) > 0
-	hasFixed := len(shellConfigs) > 0 || len(mcpFixed) > 0 || len(awsProfiles) > 0 || len(k8sUsers) > 0 || len(terraformHosts) > 0 || len(dockerRegistries) > 0 || len(gitHosts) > 0 || len(gcpADCFiles) > 0 || len(sopsAgeFiles) > 0 || len(npmrcFixed) > 0 || len(netrcFiles) > 0
+	hasFixed := len(shellConfigs) > 0 || len(mcpFixed) > 0 || len(awsProfiles) > 0 || len(k8sUsers) > 0 || len(terraformHosts) > 0 || len(dockerRegistries) > 0 || len(gitHosts) > 0 || len(gcpADCFiles) > 0 || len(sopsAgeFiles) > 0 || len(npmrcFixed) > 0 || len(netrcFiles) > 0 || len(pypircFiles) > 0
 
 	if hasScoped {
 		// The annotation callback below is handed the display-shortened path,
@@ -152,6 +152,9 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, shellConf
 		printMigratePlanCategory(w,
 			"~/.netrc password(s) → secrets move to the vault; the file keeps working via a live, auto-updating mount (login/machine lines untouched)",
 			shorten(netrcFiles))
+		printMigratePlanCategory(w,
+			"~/.pypirc credential(s) → secrets move to the vault; the file keeps working via a live, auto-updating mount (repository/username lines untouched)",
+			shorten(pypircFiles))
 
 		// --only filters by CATEGORY, not by this scoped/machine-wide
 		// split — selecting "mcp" or "npmrc" always pulls in their own
@@ -180,7 +183,7 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, shellConf
 	}
 
 	categories, total := 0, 0
-	for _, items := range [][]string{envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, looseSecretFiles} {
+	for _, items := range [][]string{envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, pypircFiles, looseSecretFiles} {
 		if len(items) > 0 {
 			categories++
 		}

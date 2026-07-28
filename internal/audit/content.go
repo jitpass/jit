@@ -152,7 +152,7 @@ func FindFileTokens(path string) ([]FileToken, error) {
 				// purpose: a more generic pattern overlapping this span (sk-
 				// under sk-proj-) is filler for the same reason and gets
 				// rejected here too.
-				if isPlaceholderToken(match) {
+				if isPlaceholderToken(match, tp.humanReadable) {
 					continue
 				}
 				claimed = append(claimed, [2]int{lo, hi})

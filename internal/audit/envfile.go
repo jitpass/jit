@@ -180,7 +180,14 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 		// file (a real token pasted into a .env.example is exactly the
 		// kind of accident worth catching) and even when commented out
 		// (still plaintext at rest).
-		if vendor, verified, ok := MatchKnownTokenPattern(rawValue); ok {
+		if vendor, verified, ok := MatchKnownTokenPattern(rawValue); ok &&
+			// A JWT is only a container format, so it proves nothing on its own
+			// when the variable holding it is one the vendor documents as
+			// public — SUPABASE_ANON_KEY is a JWT by design. Any other format
+			// here is issuer-specific and keeps escalating regardless of the
+			// name, which is what keeps a real sk_live_ key behind a
+			// NEXT_PUBLIC_ prefix reported.
+			!(IsAmbiguousTokenFormat(vendor) && LooksLikeNonSecretName(key)) {
 			if !tokenMatch {
 				tokenMatch, tokenVendor, tokenVerified = true, vendor, verified
 			}
@@ -202,7 +209,13 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 		// exactly what a template is supposed to contain) — the name alone
 		// is not evidence of anything for a template, only its value is
 		// (still covered by prodMatch/ipMatch above, which inspect values).
-		if !isTemplate && m[1] == "" && rawValue != "" && LooksLikeSecretKey(key) {
+		// LooksLikeNonSecretName excuses documented-public names (VITE_*,
+		// NEXT_PUBLIC_*, Datadog client tokens, Supabase anon keys) and
+		// path-holding variables from the NAME signal only — the value checks
+		// above still run on them, so a real credential behind a public
+		// prefix is still caught.
+		if !isTemplate && m[1] == "" && rawValue != "" && LooksLikeSecretKey(key) &&
+			!LooksLikeNonSecretName(key) && !LooksLikeNonSecretValue(rawValue) {
 			if !secretShaped {
 				secretShaped = true
 				secretShapedKey = key

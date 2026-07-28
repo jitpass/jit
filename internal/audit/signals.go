@@ -7,6 +7,7 @@ import (
 	"net"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // productionIndicatorPattern matches "prod"/"production" as a whole token,
@@ -75,6 +76,20 @@ var secretKeyMarkers = []string{
 	"URL", "CONNECTION",
 }
 
+// secretKeySegmentMarkers are markers matched as a whole delimiter-separated
+// SEGMENT of the name rather than as a bare substring. They exist because both
+// words below are short and common enough inside unrelated identifiers that
+// substring matching would be pure noise: "URI" is a substring of "SECURITY"
+// (SECURITY_MODE, SPRING_SECURITY_ENABLED), and substring "BEARER" is fine but
+// is kept here for symmetry with the field it belongs to.
+//
+// Real-world dogfooding (2026-07-28) found both gaps on developer machines:
+// "DB_URI=postgresql+asyncpg://user:<live prod password>@host/db" scored LOW
+// because secretKeyMarkers has "URL" but not "URI", and "PLATFORM_BEARER"
+// wasn't flagged at all. Splitting on non-alphanumerics also handles the
+// dotted style real config files use (config.database.url).
+var secretKeySegmentMarkers = []string{"URI", "BEARER"}
+
 // LooksLikeSecretKey reports whether a variable/key name looks like it holds
 // a secret, based on common naming conventions.
 func LooksLikeSecretKey(name string) bool {
@@ -84,7 +99,212 @@ func LooksLikeSecretKey(name string) bool {
 			return true
 		}
 	}
+	for _, segment := range strings.FieldsFunc(upper, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		for _, marker := range secretKeySegmentMarkers {
+			if segment == marker {
+				return true
+			}
+		}
+	}
 	return false
+}
+
+// publicVarPrefixes are build-tool prefixes whose entire documented purpose is
+// to mark a variable as SAFE TO SHIP TO A BROWSER. The bundler inlines these
+// into the client JavaScript at build time, so a value behind one of them is
+// public by construction — flagging it as a credential is backwards.
+//
+// Vite: "VITE_* variables should not contain sensitive information… The values
+// of these variables are bundled into your source code at build time."
+// Next.js: a NEXT_PUBLIC_ value "will be inlined into any JavaScript sent to
+// the browser."
+//
+// Real-world dogfooding (2026-07-28) found this dominating five developer
+// scans: .env files containing nothing but VITE_* analytics IDs rated HIGH, on
+// the strength of names like VITE_AUTH0_DOMAIN — whose value was the bare
+// hostname "id.blockaid.io".
+var publicVarPrefixes = []string{
+	"VITE_", "NEXT_PUBLIC_", "REACT_APP_", "PUBLIC_", "EXPO_PUBLIC_",
+	"NUXT_PUBLIC_", "GATSBY_", "VUE_APP_", "STORYBOOK_",
+}
+
+// pointerVarSuffixes name a variable that holds a FILESYSTEM PATH, not a
+// credential. "/etc/keys/callback_private.pem" is not a secret even though the
+// name around it is full of secret-shaped words — the file it points at is
+// what matters, and ScanPrivateKeys already covers that separately.
+//
+// Checked before neverPublicMarkers below, deliberately: the motivating
+// real-world case was CALLBACK_PRIVATE_KEY_PATH rating HIGH, and it contains
+// "PRIVATE". A path is a path regardless of what it points at.
+var pointerVarSuffixes = []string{"_PATH", "_PATHS", "_FILE", "_FILEPATH", "_DIR", "_FOLDER"}
+
+// publicVarMarkers are vendor-specific names documented as publicly
+// exposable, independent of any build-tool prefix:
+//   - Datadog client tokens: the docs state API keys "cannot be used to send
+//     data from a browser, mobile, or TV app, as they would be exposed
+//     client-side" — the client token is the credential purpose-built for
+//     that exposure.
+//   - Supabase anon / publishable keys: documented "safe to expose… in web
+//     pages and mobile apps".
+//   - OAuth client IDs are public by RFC 6749; only the client SECRET is not,
+//     and that is caught by neverPublicMarkers below.
+var publicVarMarkers = []string{
+	"CLIENT_TOKEN", "ANON_KEY", "PUBLISHABLE_KEY", "CLIENT_ID", "APPLICATION_ID",
+}
+
+// neverPublicMarkers override publicVarPrefixes/publicVarMarkers. A variable
+// whose name says "secret", "password" or "private" is never legitimately a
+// public browser value — NEXT_PUBLIC_STRIPE_SECRET_KEY is a misconfiguration,
+// not a safe publishable key, and must keep escalating rather than be excused
+// by its prefix.
+var neverPublicMarkers = []string{"SECRET", "PASSWORD", "PASSWD", "PRIVATE", "CREDENTIAL"}
+
+// LooksLikeNonSecretName reports whether a variable name is documented-public
+// or names a filesystem path, so a NAME-based secret heuristic should not
+// escalate on it.
+//
+// This suppresses the name signal only. Value-based detection
+// (MatchKnownTokenPattern, MatchPublicIP, IsProductionIndicator) runs
+// independently and still fires, so a real credential sitting behind a public
+// prefix — the genuinely dangerous case, a live key about to be shipped to
+// browsers — is still caught on the strength of its value.
+//
+// Deliberately NOT used by `jit migrate`, which keeps its existing
+// LooksLikeSecretKey behavior: scan being quieter than migrate is safe, while
+// the reverse (scan reporting what migrate can't fix) is the cry-wolf problem
+// envTemplateSuffixes exists to prevent.
+func LooksLikeNonSecretName(name string) bool {
+	upper := strings.ToUpper(name)
+	for _, suffix := range pointerVarSuffixes {
+		if strings.HasSuffix(upper, suffix) {
+			return true
+		}
+	}
+	for _, marker := range neverPublicMarkers {
+		if strings.Contains(upper, marker) {
+			return false
+		}
+	}
+	for _, prefix := range publicVarPrefixes {
+		if strings.HasPrefix(upper, prefix) {
+			return true
+		}
+	}
+	for _, marker := range publicVarMarkers {
+		if strings.Contains(upper, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// booleanValues are the literals configuration flags use. A credential is
+// high-entropy by definition, so a value drawn from this fixed set is a
+// setting, never a secret — no matter how alarming the variable name is.
+var booleanValues = []string{"true", "false", "yes", "no", "on", "off", "none", "null", "nil"}
+
+// numericValuePattern matches a plain decimal number: a port, a timeout, a
+// sampling rate, a retry count. Capped at numericValueMaxLen so a long digit
+// run — which could plausibly be a numeric credential — keeps its weight.
+var numericValuePattern = regexp.MustCompile(`^-?\d+(?:\.\d+)?$`)
+
+// numericValueMaxLen is where "obviously a setting" stops. 15 digits covers
+// every port, millisecond timeout, byte size and epoch timestamp a config
+// holds, while staying short of the length a numeric secret would need.
+const numericValueMaxLen = 15
+
+// schemeURLPattern matches any scheme://host URL, not just http(s) — the
+// endpoints that show up in real .env files are as often redis://, postgres://
+// or grpc:// as they are https://.
+var schemeURLPattern = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.\-]*://`)
+
+// LooksLikeNonSecretValue reports whether a VALUE is self-evidently not a
+// credential, so a secret-shaped NAME alone shouldn't escalate it.
+//
+// The name heuristic is deliberately broad (see secretKeyMarkers), which means
+// it fires on plenty of ordinary configuration. Real developer scans
+// (2026-07-28, eleven machines) showed the same shapes over and over:
+//
+//	SF_TEMP_SHOW_SECRETS=true                  a feature flag
+//	REACT_APP_SENTRY_TRACES_SAMPLE_RATE=0.1    a sampling rate
+//	REDIS_PORT=6379                            a port
+//	ANTHROPIC_BASE_URL=http://127.0.0.1:4000   a local endpoint
+//	REDIS_URL=redis://cache.internal:6379      an endpoint with no credentials
+//
+// Every one was reported as a credential on the strength of its name. None is
+// a secret, and none has a fix `jit migrate` could offer.
+//
+// A URL only counts when it carries no userinfo and no long opaque segment —
+// the same test LooksLikeBareURL applies, generalized past http(s), so a
+// webhook URL with a token in its path or a "postgres://user:pass@host" still
+// counts as secret-bearing.
+func LooksLikeNonSecretValue(v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return true
+	}
+	lower := strings.ToLower(v)
+	for _, b := range booleanValues {
+		if lower == b {
+			return true
+		}
+	}
+	if len(v) <= numericValueMaxLen && numericValuePattern.MatchString(v) {
+		return true
+	}
+	if schemeURLPattern.MatchString(v) {
+		return !strings.Contains(v, "@") && !opaqueTokenPattern.MatchString(stripURLScheme(v))
+	}
+	return isPlaceholderValue(v)
+}
+
+// angleBracketPlaceholder matches the "<your-token>" convention.
+var angleBracketPlaceholder = regexp.MustCompile(`^<[^>]+>$`)
+
+// placeholderPhrase matches lowercase kebab/snake filler text — the shape a
+// human types into a template ("service-user-token-here"). Requiring the WHOLE
+// value to be lowercase letters, digits and separators is what makes this safe
+// to pair with placeholderTokenWords: it is the discriminator between filler
+// and a real credential that merely contains one of those words. A
+// human-chosen password like "Wherever2024!" contains "here" but has uppercase
+// and punctuation, so it fails this shape and keeps its full weight — the
+// reasoning placeholderTokenWords relies on ("a random base62 credential
+// cannot contain the word 'here'") does NOT hold for human-chosen passwords,
+// so the word list alone must never gate a raw value.
+var placeholderPhrase = regexp.MustCompile(`^[a-z0-9][a-z0-9._\-]*$`)
+
+// isPlaceholderValue reports whether a value is unfilled template filler.
+//
+// A copied-but-not-filled-in .env is ordinary — the file is real (so the
+// envTemplateSuffixes check doesn't apply) while its values are not. Reported
+// as credentials they are pure noise, and `jit migrate` has nothing to move.
+// Real-world example (2026-07-28):
+//
+//	HIBOB_SERVICE_USER_TOKEN=service-user-token-here
+func isPlaceholderValue(v string) bool {
+	if angleBracketPlaceholder.MatchString(v) {
+		return true
+	}
+	if !placeholderPhrase.MatchString(v) {
+		return false
+	}
+	for _, word := range placeholderTokenWords {
+		if strings.Contains(v, word) {
+			return true
+		}
+	}
+	return false
+}
+
+// stripURLScheme drops the "scheme://" prefix before the opaque-segment test,
+// so a long scheme name can't itself look like an embedded token.
+func stripURLScheme(v string) string {
+	if i := strings.Index(v, "://"); i >= 0 {
+		return v[i+3:]
+	}
+	return v
 }
 
 // opaqueTokenPattern flags a long, opaque-looking run of characters anywhere
