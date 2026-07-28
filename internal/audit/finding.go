@@ -225,6 +225,25 @@ type Config struct {
 	// not). Empty (the default in tests) means no count is reported.
 	MountRegistryPath string
 
+	// Unfiltered turns OFF the name/value suppression gates
+	// (LooksLikeNonSecretName, LooksLikeNonSecretValue, and the
+	// documented-public JWT rule), so the report shows every secret-shaped
+	// finding jit would otherwise judge to be a setting, a path, a
+	// browser-public build variable or unfilled template filler.
+	//
+	// It exists because that filtering is normally INVISIBLE: without it a
+	// reader cannot tell "jit found nothing" apart from "jit found things and
+	// decided not to mention them". Each gate is a judgment call that trades
+	// recall for precision and can be wrong for a given setup, so an auditor
+	// needs a way to see the unfiltered view and diff the two.
+	//
+	// Deliberately does NOT disable isPlaceholderToken's rejection of filler
+	// token bodies ("ghp_xxxxxxxx…", "hf_FIXTUREtoken…"). That check lives in
+	// MatchKnownTokenPattern, which `jit migrate` shares — migrate must never
+	// vault a placeholder as though it were a credential, so the two would
+	// disagree about what is real. Value-level filler stays suppressed.
+	Unfiltered bool
+
 	// Progress, when non-nil, is called once as each category (or targeted
 	// path) is about to be scanned, with a short human noun for it
 	// ("credential files", ".env files", or a target's base name). It's a
@@ -286,4 +305,15 @@ func RecordID(findingType, filePath string, keyName *string) string {
 
 func nowISO8601() string {
 	return time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+}
+
+// suppressName / suppressValue are the single gate every scanner asks before
+// dropping a secret-shaped finding, so Config.Unfiltered has one place to
+// switch off rather than a bool threaded through each call site.
+func (c Config) suppressName(key string) bool {
+	return !c.Unfiltered && LooksLikeNonSecretName(key)
+}
+
+func (c Config) suppressValue(value string) bool {
+	return !c.Unfiltered && LooksLikeNonSecretValue(value)
 }

@@ -31,6 +31,7 @@ jit scan [path...] [flags]
       --format string   output format: "text" (default), "markdown"/"md", or "ndjson" (default "text")
   -o, --output string   write the report to this file instead of stdout
       --score           print only the exposure score (e.g. "Exposure: 92/100 (CRITICAL)") and exit
+      --unfiltered      show findings jit normally judges to be settings, paths, browser-public build variables or unfilled template values; use it to audit what the filters are hiding
 ```
 
 ### Options inherited from parent commands

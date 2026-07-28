@@ -446,3 +446,45 @@ func TestScanEnvFilesAnonJWTNotEscalated(t *testing.T) {
 		t.Errorf("a JWT in an ordinary variable must still escalate, got %+v", findings)
 	}
 }
+
+// TestScanEnvFilesUnfilteredRevealsSuppressed pins the escape hatch. The
+// name/value gates are normally invisible, so a reader cannot tell "jit found
+// nothing" apart from "jit found things and chose not to say". Config.Unfiltered
+// shows the second view, and the two must genuinely differ.
+func TestScanEnvFilesUnfilteredRevealsSuppressed(t *testing.T) {
+	write := func(home string) {
+		mkdirAll(t, filepath.Join(home, "app"))
+		writeFile(t, filepath.Join(home, "app", ".env"), `VITE_AUTH0_DOMAIN=id.blockaid.io
+CALLBACK_PRIVATE_KEY_PATH=/etc/keys/x.pem
+HIBOB_SERVICE_USER_TOKEN=service-user-token-here
+`)
+	}
+
+	quiet := t.TempDir()
+	write(quiet)
+	findings, err := ScanEnvFiles(Config{HomeDir: quiet})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	if len(findings) != 1 || findings[0].Severity != SeverityLow {
+		t.Fatalf("default scan should report the file only at Low, got %+v", findings)
+	}
+
+	loud := t.TempDir()
+	write(loud)
+	findings, err = ScanEnvFiles(Config{HomeDir: loud, Unfiltered: true})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles(unfiltered): %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+	if findings[0].Severity == SeverityLow {
+		t.Error("--unfiltered must surface the names the gates suppressed")
+	}
+	for _, want := range []string{"VITE_AUTH0_DOMAIN", "CALLBACK_PRIVATE_KEY_PATH", "HIBOB_SERVICE_USER_TOKEN"} {
+		if !strings.Contains(findings[0].Evidence, want) {
+			t.Errorf("unfiltered evidence should name %q, got %q", want, findings[0].Evidence)
+		}
+	}
+}
