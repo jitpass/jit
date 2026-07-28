@@ -111,6 +111,10 @@ func TestTargetedScanDirectoryCoversEveryDiscoveryCategory(t *testing.T) {
 	writeFile(t, filepath.Join(root, ".npmrc"), "//registry.npmjs.org/:_authToken=npm_exampletoken1234\n")
 	writeFile(t, filepath.Join(root, ".mcp.json"), `{"mcpServers":{"gh":{"env":{"GITHUB_TOKEN":"ghp_exampletokenvalue1234"}}}}`)
 	writeFile(t, filepath.Join(root, "terraform.tfvars"), "db_password = \"examplevalue123\"\n")
+	// A credential dump found by name-gate + content match, the shape a real
+	// AWS IAM key download has.
+	writeFile(t, filepath.Join(root, "acct-credentials.csv"),
+		"User name,Access key ID,Secret access key\nvic,AKIA3QK7BZWX2LMPD4TN,Xk92QmPl4TzWhuCmu2qcwnu9PnWfMKNA1dTr\n")
 
 	findings, _, err := TargetedScan(Config{HomeDir: root}, []string{root})
 	if err != nil {
@@ -125,6 +129,7 @@ func TestTargetedScanDirectoryCoversEveryDiscoveryCategory(t *testing.T) {
 		"credential files": FindingTypeCredentialFile,
 		"MCP configs":      FindingTypeMCPEmbeddedSecret,
 		"IaC files":        FindingTypeIACVariableFile,
+		"exposed secrets":  FindingTypeExposedSecret,
 	}
 	for _, c := range categories {
 		if c.classify == nil {
