@@ -102,7 +102,7 @@ Limit a run to specific categories with `--only`
 | `npmrc` | just the secret lines (`_authToken`, etc.) | a live-mounted pipe serving a template; everything else untouched | [npm](./npm.md) |
 | `netrc` | every `password` value in `~/.netrc` | a live-mounted pipe serving a template; `machine`/`login` lines and macdef scripts untouched | [netrc](./netrc.md) |
 | `pypirc` | every repository section's `password` in `~/.pypirc` | a live-mounted pipe serving a template; `[distutils]`, `repository` and `username` lines untouched | [PyPI](./pypi.md) |
-| `loose` | a bare token in a plain file you named (a JWT in `token.txt`) that matches no format above | by default (whole-file token) the value moves to the vault and the file is replaced with a git-safe pointer; retrieve with `jit vault get`. With `--mount`, or for a token mixed with other content, the file stays live at its path as a mount (a template with `${VAR}` placeholders) serving the real value to `jit run` grants and a decoy otherwise | |
+| `loose` | secrets in a plain file you named that matches no format above: a bare token (a JWT in `token.txt`), and any secret-shaped `key = value` assignment (`db_password = ...`) whose value isn't obviously a setting | by default (whole-file token) the value moves to the vault and the file is replaced with a git-safe pointer; retrieve with `jit vault get`. With `--mount`, or for a token mixed with other content, the file stays live at its path as a mount (a template with `${VAR}` placeholders) serving the real value to `jit run` grants and a decoy otherwise | |
 
 The `loose` category never appears on its own, only when you explicitly name
 such a file: `jit migrate token.txt`. It is the migrate counterpart to `jit
