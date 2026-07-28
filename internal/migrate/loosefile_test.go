@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/vault"
 )
@@ -301,5 +302,65 @@ port = 443
 	}
 	if !sawDBPassword {
 		t.Errorf("Variables = %v, want DB_PASSWORD among them", result.Variables)
+	}
+}
+
+// TestLooseSecretFileMountRoundTripsAndUndoes covers the two guarantees a
+// mounted file has to make, for the assignment-templating path specifically:
+// what the mount serves is byte-identical to what was there, and the migration
+// is reversible. Both matter more since secretAssignmentTokens landed - it
+// rewrites spans the vendor patterns never touched, so a span-arithmetic slip
+// would corrupt a working config rather than merely miss a secret.
+func TestLooseSecretFileMountRoundTripsAndUndoes(t *testing.T) {
+	const original = `# a config that mixes secrets with settings
+OPENAI_API_KEY = "sk-proj-Ab3xKq9ZmPq2LrTvWn5cUd8eFg1hJk0uf4"
+db_password="Tr0ub4dor3xKq9ZmPq2Lr"
+account = ACME-PROD
+port = 443
+timeout_seconds = 30
+`
+	home := t.TempDir()
+	path := filepath.Join(home, "app.conf")
+	writeFile(t, path, original)
+
+	v := newTestVault(t)
+	result, err := ApplyLooseSecretFileMount(v, home, path)
+	if err != nil {
+		t.Fatalf("ApplyLooseSecretFileMount: %v", err)
+	}
+
+	tmpl, err := os.ReadFile(result.TemplatePath) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatalf("reading template: %v", err)
+	}
+	values := map[string]string{}
+	for _, name := range result.Variables {
+		got, err := v.Get(result.ProfileName + "/" + name)
+		if err != nil {
+			t.Fatalf("vault get %s: %v", name, err)
+		}
+		values[name] = string(got)
+	}
+	if rendered := string(mount.FormatTemplate(tmpl, values)); rendered != original {
+		t.Errorf("round-trip is lossy.\nrendered: %q\noriginal: %q", rendered, original)
+	}
+
+	// Undo: the FIFO is retired and the original bytes come back.
+	if err := RestoreFromBackup(v, BackupRecord{OriginalPath: path, VaultPath: result.BackupPath}); err != nil {
+		t.Fatalf("RestoreFromBackup: %v", err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("Lstat after restore: %v", err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Errorf("after undo the path is %v, want a regular file", info.Mode())
+	}
+	restored, err := os.ReadFile(path) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatalf("reading restored file: %v", err)
+	}
+	if string(restored) != original {
+		t.Errorf("restored bytes differ.\ngot:  %q\nwant: %q", restored, original)
 	}
 }

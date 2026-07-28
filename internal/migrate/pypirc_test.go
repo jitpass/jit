@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/jitpass/jit/internal/mount"
 )
 
 func TestDiscoverPypircFindsCredentials(t *testing.T) {
@@ -222,5 +224,96 @@ func TestApplyPypircPreservesQuotesVerbatim(t *testing.T) {
 	}
 	if want := `"Xk92QmPl4TzWhu"`; string(got) != want {
 		t.Errorf("vaulted %q, want %q — configparser keeps the quotes, so jit must too", got, want)
+	}
+}
+
+// TestApplyPypircRoundTripsLosslessly is the guarantee that matters most for a
+// mounted credential file: what the mount serves must be byte-identical to
+// what was there before. If it isn't, `twine upload` fails against a file that
+// looks perfectly correct, which is the hardest failure mode to diagnose.
+//
+// original -> ApplyPypirc -> FormatTemplate(template, vault values) == original
+func TestApplyPypircRoundTripsLosslessly(t *testing.T) {
+	const original = `[distutils]
+index-servers =
+    pypi
+    internal
+
+[pypi]
+username = __token__
+password = pypi-AgEIcHlwaS5vcmcCJDk0YTUxZmE0
+
+# a comment, and an oddly-spaced assignment below
+[internal]
+repository = https://pypi.internal.example/simple
+username = ci-publisher
+password="Xk92QmPl4TzWhuCmu2qcwnu9PnWfMKNA"
+`
+	home := t.TempDir()
+	path := PypircPath(home)
+	writeFile(t, path, original)
+
+	v := newTestVault(t)
+	result, err := ApplyPypirc(v, home, path)
+	if err != nil {
+		t.Fatalf("ApplyPypirc: %v", err)
+	}
+
+	tmpl, err := os.ReadFile(result.TemplatePath) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatalf("reading template: %v", err)
+	}
+
+	// Rebuild the value map the agent would serve from the vault.
+	values := map[string]string{}
+	for _, name := range result.Variables {
+		got, err := v.Get(result.ProfileName + "/" + name)
+		if err != nil {
+			t.Fatalf("vault get %s: %v", name, err)
+		}
+		values[name] = string(got)
+	}
+
+	rendered := string(mount.FormatTemplate(tmpl, values))
+	if rendered != original {
+		t.Errorf("round-trip is lossy.\nrendered: %q\noriginal: %q", rendered, original)
+	}
+}
+
+// TestApplyPypircIsUndoable pins that a migration can be reversed: the FIFO is
+// replaced by a regular file holding the original bytes. An un-undoable
+// migration of a credential file is the worst outcome this package has.
+func TestApplyPypircIsUndoable(t *testing.T) {
+	const original = "[pypi]\nusername = __token__\npassword = pypi-AgEIcHlwaS5vcmcCJDk0YTUx\n"
+	home := t.TempDir()
+	path := PypircPath(home)
+	writeFile(t, path, original)
+
+	v := newTestVault(t)
+	result, err := ApplyPypirc(v, home, path)
+	if err != nil {
+		t.Fatalf("ApplyPypirc: %v", err)
+	}
+	if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeNamedPipe == 0 {
+		t.Fatalf("expected a FIFO after migrate, got %v (err=%v)", info.Mode(), err)
+	}
+
+	if err := RestoreFromBackup(v, BackupRecord{OriginalPath: path, VaultPath: result.BackupPath}); err != nil {
+		t.Fatalf("RestoreFromBackup: %v", err)
+	}
+
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("Lstat after restore: %v", err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Errorf("after undo the path is %v, want a regular file (the FIFO must be retired)", info.Mode())
+	}
+	restored, err := os.ReadFile(path) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatalf("reading restored file: %v", err)
+	}
+	if string(restored) != original {
+		t.Errorf("restored bytes differ.\ngot:  %q\nwant: %q", restored, original)
 	}
 }
