@@ -488,3 +488,49 @@ HIBOB_SERVICE_USER_TOKEN=service-user-token-here
 		}
 	}
 }
+
+// TestScanEnvFilesEntropyEscalatesUnnamedSecret is the .env-level half: a
+// credential with neither a vendor prefix nor a secret-shaped name used to
+// score Low, indistinguishable from a file of settings.
+func TestScanEnvFilesEntropyEscalatesUnnamedSecret(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, "svc"))
+	writeFile(t, filepath.Join(home, "svc", ".env"), "cfg1=6I1evXdj352FpyVQO8t4lgh9YHLukE0xcW7sGDSm\n")
+
+	findings, err := ScanEnvFiles(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+	if findings[0].Severity == SeverityLow {
+		t.Error("a credential-shaped value must escalate even when nothing about its NAME says secret")
+	}
+	// Medium, not High: shape alone is weaker evidence than a vendor prefix or
+	// a name that says so, and the finding should not claim more.
+	if findings[0].Confidence != ConfidenceMedium {
+		t.Errorf("confidence = %q, want %q — a judgement about shape", findings[0].Confidence, ConfidenceMedium)
+	}
+}
+
+// TestScanEnvFilesEntropyIgnoresBuildMetadata guards the other direction: a
+// .env full of SHAs, versions and ports must stay quiet, or the signal is
+// worse than not having it.
+func TestScanEnvFilesEntropyIgnoresBuildMetadata(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, "svc"))
+	writeFile(t, filepath.Join(home, "svc", ".env"), `BUILD_SHA=a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0
+GIT_COMMIT=9f8e7d6c5b4a39281706f5e4d3c2b1a098765432
+APP_VERSION=2024.11.3-rc4-build8891
+REDIS_PORT=6379
+`)
+
+	findings, err := ScanEnvFiles(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles: %v", err)
+	}
+	if len(findings) != 1 || findings[0].Severity != SeverityLow {
+		t.Errorf("build metadata must not escalate, got %+v", findings)
+	}
+}

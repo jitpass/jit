@@ -39,6 +39,22 @@ nothing:
   mcp-remote's own documented reset. Only the refresh token is reported: an
   access token is very likely dead before you read the report.
 
+## Values with no vendor prefix
+
+Most real credentials carry no recognizable prefix - CrowdStrike, Datadog,
+Heroku, and every internal company API issue opaque strings. Those are caught
+by a third signal: a long, credential-shaped value in a `.env` file is
+reported even when nothing about its NAME says secret, at Medium confidence
+because shape alone is weaker evidence than a vendor format.
+
+Two things are deliberately given up to keep it honest:
+
+- **Pure hex** (`a00c30f2f45f48b4ae3b0d0b151ac745`). Indistinguishable from a
+  commit SHA, an MD5, or a correlation ID - the same reason bare 32/64-char
+  hex has never been matched by the vendor patterns.
+- **Names that announce an opaque non-secret**: `BUILD_SHA`, `GIT_COMMIT`,
+  `APP_VERSION`, `REQUEST_ID`, `IMAGE_DIGEST`.
+
 ## What jit deliberately does not flag
 
 The name heuristic is broad on purpose, so these are excluded to keep the

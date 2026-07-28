@@ -178,3 +178,50 @@ func TestLooksLikeNonSecretValue(t *testing.T) {
 		}
 	}
 }
+
+// TestLooksLikeHighEntropySecret covers the last big detection hole: most real
+// credentials carry no vendor prefix (CrowdStrike, Datadog, Heroku, Mistral,
+// every internal company API), so before this they were caught only when
+// someone named the variable helpfully.
+//
+// The narrowings matter as much as the detection — a scanner, unlike a
+// redactor, has to justify every finding to a human.
+func TestLooksLikeHighEntropySecret(t *testing.T) {
+	cases := []struct {
+		name, value string
+		want        bool
+		comment     string
+	}{
+		// The gap this closes. Both were LOW before.
+		{"cfg1", "6I1evXdj352FpyVQO8t4lgh9YHLukE0xcW7sGDSm", true, "a real CrowdStrike API secret under a meaningless name"},
+		{"FALCON", "Xk92QmPl4TzWhuCmu2qcwnu9PnWfMKNA1dTr", true, "no vendor prefix, no secret-shaped name"},
+
+		// Pure hex is deliberately given up. knownTokenPatterns already
+		// documents why: it is indistinguishable from hashes, commit SHAs and
+		// correlation IDs. That costs the CrowdStrike client ID (32 hex) and
+		// keeps its secret (base62) — the half that authenticates.
+		{"FALCON_ID", "a00c30f2f45f48b4ae3b0d0b151ac745", false, "32 hex — a dashless UUID, not distinguishable from a hash"},
+		{"BUILD_SHA", "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0", false, "a commit SHA"},
+
+		// Names that announce an opaque non-secret.
+		{"GIT_COMMIT", "9f8e7d6c5b4a3928170deadbeefcafe098765432x", false, "a commit, even when not pure hex"},
+		{"APP_VERSION", "2024.11.3-rc4-build8891-abcdefghijkl", false, "a build version string"},
+		{"REQUEST_ID", "Ab3xKq9ZmPq2LrTvWn5cUd8eFg1hJk0uf4", false, "a correlation ID"},
+		{"IMAGE_DIGEST", "Ab3xKq9ZmPq2LrTvWn5cUd8eFg1hJk0uf4", false, "a content digest"},
+
+		// Too short / not credential-shaped.
+		{"THING", "short1", false, "under the entropy floor"},
+		{"WORD", "informationtechnology", false, "letters only, no digits"},
+		{"COUNT", "123456789012345678901234", false, "digits only"},
+
+		// Already handled by the other gates; entropy must not resurrect them.
+		{"VITE_ANALYTICS", "Ab3xKq9ZmPq2LrTvWn5cUd8eFg1h", false, "browser-public build prefix"},
+		{"KEY_PATH", "Ab3xKq9ZmPq2LrTvWn5cUd8eFg1hJk", false, "a filesystem path variable"},
+		{"REDIS_URL", "redis://cache.internal.example.com:6379", false, "an endpoint with no credentials"},
+	}
+	for _, c := range cases {
+		if got := LooksLikeHighEntropySecret(c.name, c.value); got != c.want {
+			t.Errorf("LooksLikeHighEntropySecret(%q, %q) = %v, want %v [%s]", c.name, c.value, got, c.want, c.comment)
+		}
+	}
+}
