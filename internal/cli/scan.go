@@ -23,6 +23,7 @@ var (
 	scanOutput     string
 	scanScore      bool
 	scanUnfiltered bool
+	scanFull       bool
 )
 
 var scanCmd = &cobra.Command{
@@ -148,7 +149,17 @@ var scanCmd = &cobra.Command{
 			home = ""
 		}
 
-		if err := writeScanReport(out, scanFormat, findings, summary, home); err != nil {
+		// The triage view is the default for a machine-wide text scan: the
+		// coverage-first, action-first summary designed in review 2026-07-28.
+		// Targeted scans (`jit scan <path>`) keep the detailed report — a
+		// scan the user aimed at one file IS a request for its inventory —
+		// as do --full, markdown, and NDJSON. --unfiltered forces the full
+		// report too: it is an audit of the suppression gates, whose extra
+		// findings bare `jit migrate` (a filtered scan) will never act on —
+		// feeding them into the coverage ledger would promise protection the
+		// recommended command can't deliver.
+		triage := (scanFormat == "" || scanFormat == "text") && len(args) == 0 && !scanFull && !scanUnfiltered
+		if err := writeScanReport(out, scanFormat, findings, summary, home, triage); err != nil {
 			if outFile != nil {
 				_ = outFile.Close()
 			}
@@ -201,11 +212,20 @@ func validateScanFormat(format string) error {
 }
 
 // writeScanReport assumes format has already been validated. home is
-// only consulted by the human format (display-only "~"-shortening, "" to
+// only consulted by the human formats (display-only "~"-shortening, "" to
 // disable); markdown/NDJSON always keep full absolute paths for machines.
-func writeScanReport(w io.Writer, format string, findings []audit.Finding, summary audit.ScanSummary, home string) error {
+func writeScanReport(w io.Writer, format string, findings []audit.Finding, summary audit.ScanSummary, home string, triage bool) error {
 	switch format {
 	case "", "text":
+		if triage {
+			cov := audit.Coverage{
+				Protected:  summary.SecretsProtected,
+				Exposed:    summary.SecretsTotal - summary.SecretsProtected,
+				Migratable: summary.SecretsMigratable,
+			}
+			audit.WriteTriageReport(w, findings, summary, home, cov)
+			return nil
+		}
 		audit.WriteHumanReport(w, findings, summary, home)
 	case "markdown", "md":
 		audit.WriteMarkdownReport(w, findings, summary)
@@ -220,5 +240,6 @@ func init() {
 	scanCmd.Flags().StringVarP(&scanOutput, "output", "o", "", "write the report to this file instead of stdout")
 	scanCmd.Flags().BoolVar(&scanUnfiltered, "unfiltered", false, "show findings jit normally judges to be settings, paths, browser-public build variables or unfilled template values; use it to audit what the filters are hiding")
 	scanCmd.Flags().BoolVar(&scanScore, "score", false, `print only the exposure score (e.g. "Exposure: 92/100 (CRITICAL)") and exit`)
+	scanCmd.Flags().BoolVar(&scanFull, "full", false, "print the full finding inventory (categories, severities, every file and line) instead of the coverage summary")
 	rootCmd.AddCommand(scanCmd)
 }

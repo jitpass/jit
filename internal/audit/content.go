@@ -158,6 +158,57 @@ func scanFileContentForTokens(cfg Config, path string) ([]Finding, error) {
 	return findings, nil
 }
 
+// isPureTokenFile reports whether path's entire meaningful content is bare
+// vendor-format tokens: every non-blank line is nothing but token spans.
+// This mirrors the vendor-token half of migrate.ClassifyLooseSecretFile's
+// purity rule (assignment spans can't make a file pure — their "key=" prefix
+// survives the blanking), and is what decides an exposed_secret's remedy:
+// a pure file is `jit migrate <path>`-able (vault-and-neutralize), while a
+// file that mixes tokens with other content is not something bare migrate
+// will touch, so promising "migrate" for it would be a command that answers
+// with a skip note (review finding, 2026-07-28).
+func isPureTokenFile(path string) bool {
+	tokens, err := FindFileTokens(path)
+	if err != nil || len(tokens) == 0 {
+		return false
+	}
+	byLine := make(map[int][]FileToken)
+	for _, tk := range tokens {
+		byLine[tk.Line] = append(byLine[tk.Line], tk)
+	}
+
+	file, err := openFile(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxContentLineSize)
+	lineNum := 0
+	for scanner.Scan() {
+		lineNum++
+		line := scanner.Text()
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		spans := byLine[lineNum]
+		if len(spans) == 0 {
+			return false
+		}
+		blanked := []byte(line)
+		for _, tk := range spans {
+			for i := tk.Start; i < tk.End && i < len(blanked); i++ {
+				blanked[i] = ' '
+			}
+		}
+		if strings.TrimSpace(string(blanked)) != "" {
+			return false
+		}
+	}
+	return true
+}
+
 // FileToken is one vendor-token/JWT match found in a file's raw text by
 // FindFileTokens: enough for a scanner to report it and for `jit migrate` to
 // extract and vault it. Line is 1-based; Start/End are byte offsets within

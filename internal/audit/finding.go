@@ -54,7 +54,19 @@ import (
 // credentials (see classifyCredentialDump) — the finding still requires a
 // vendor-format match in the content, so its meaning is unchanged, only its
 // provenance is wider.
-const SchemaVersion = "0.11.0"
+// 0.12.0 added three additive finding fields and four scan_summary fields for
+// the coverage/triage report. Per finding: `remedy` ("migrate" | "wrap" |
+// "manual") says who can act — jit or only the user; `fix_command` is the
+// exact runnable command when remedy is jit's (absent for manual);
+// `cause_group` is an opaque id shared by findings that describe the same
+// underlying secret (the same value re-found in copies of a file), so
+// consumers can collapse duplicates the way the human report does. Per
+// scan_summary: `secrets_total` / `secrets_protected` / `secrets_migratable`
+// count DISTINCT secrets (not findings — 13 copies of one dump are 3 secrets),
+// and `files_scanned` records the walk's size. Distinct-secret counts include
+// only Critical/High/Medium findings; Low/Info sightings are deliberately not
+// counted as secrets (see CountedAsSecret).
+const SchemaVersion = "0.12.0"
 
 // ScannerName identifies this tool in the shared NDJSON envelope, matching
 // bumblebee's record shape so a receiver can co-ingest both (RFC.md §4).
@@ -191,6 +203,26 @@ type Finding struct {
 	// individual scanners.
 	Archived bool `json:"archived"`
 
+	// Remedy says who can act on this finding: "migrate" and "wrap" mean jit
+	// can (FixCommand holds the exact command), "manual" means only the user
+	// can (rotate, delete, seal — the Evidence says which). Set centrally by
+	// Scan (annotateRemedies), except wrappable findings, whose scanner knows
+	// the tool name and sets both fields at construction.
+	Remedy     string `json:"remedy"`
+	FixCommand string `json:"fix_command,omitempty"`
+	// CauseGroup is an opaque id shared by findings describing the same
+	// underlying secret — the same value re-found in several files. Stable
+	// within one run only (it is salted per run; see annotateCauseGroups).
+	// Empty for findings with no value (a file-presence finding is its own
+	// cause). Consumers can collapse on it the way the human report does.
+	CauseGroup string `json:"cause_group,omitempty"`
+
+	// rawValueDigest is sha256(raw value), hex — the identity
+	// annotateCauseGroups groups on. Unexported and never serialized: it
+	// exists so two different AWS keys (identical 4-char previews) stay two
+	// secrets, without retaining or ever emitting the raw value.
+	rawValueDigest string
+
 	// ClaimedValuePreviews lists MaskValue previews of values this finding's
 	// scanner PARSED but deliberately did not report — the non-secret half of
 	// a credential pair (an AWS access key ID next to its reported secret),
@@ -227,6 +259,17 @@ type ScanSummary struct {
 	// Unfiltered records that Config.Unfiltered was set for this run, so a
 	// stored report says which view it is. See Config.Unfiltered.
 	Unfiltered bool `json:"unfiltered"`
+	// The coverage ledger, in DISTINCT secrets (not findings; see
+	// SchemaVersion 0.12.0 note): how many secrets exist on this machine as
+	// far as jit can tell (protected + counted exposed), how many are already
+	// served from the vault by live mounts, and how many of the exposed ones
+	// jit can protect with a command (remedy != "manual").
+	SecretsTotal      int `json:"secrets_total"`
+	SecretsProtected  int `json:"secrets_protected"`
+	SecretsMigratable int `json:"secrets_migratable"`
+	// FilesScanned is how many regular files the machine-wide walk offered to
+	// the classifiers (0 for a targeted scan, which walks nothing).
+	FilesScanned int `json:"files_scanned"`
 	// JitProtectedCount is how many registered jit live mounts (FIFOs
 	// currently occupying a path jit migrated) exist on this machine.
 	// Scanners never read those paths — a pipe has no at-rest content, and

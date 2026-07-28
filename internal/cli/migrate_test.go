@@ -81,15 +81,44 @@ func execMigrate(t *testing.T, args ...string) (stdout string, err error) {
 	return buf.String(), err
 }
 
-// TestMigrateBareRequiresPath: `jit migrate` with no target does nothing but
-// fail loud — the whole point of the path-only design is that migrate never
-// sweeps the machine on its own, so a missing path must error, not run.
-func TestMigrateBareRequiresPath(t *testing.T) {
-	withFixtureHome(t)
+// TestMigrateBareRunsProtectPlan: bare `jit migrate` executes the scan's
+// protect plan (2026-07-28 redesign — it is the command the scan report's
+// green section points at). Consent is preserved: the plan prints and the
+// [y/N] gate precedes any change; with EOF on stdin (execMigrate's default)
+// the run aborts having changed nothing.
+func TestMigrateBareRunsProtectPlan(t *testing.T) {
+	home := withFixtureHome(t)
 	withFixtureCwd(t)
-	if _, err := execMigrate(t); err == nil {
-		t.Error("jit migrate with no path: expected an error, got nil")
-	}
+
+	t.Run("clean home has nothing to protect", func(t *testing.T) {
+		out, err := execMigrate(t)
+		if err != nil {
+			t.Fatalf("bare jit migrate on a clean home: %v", err)
+		}
+		if !strings.Contains(out, "Nothing to protect") {
+			t.Errorf("expected the nothing-to-protect line, got:\n%s", out)
+		}
+	})
+
+	t.Run("planted secret shows plan and aborts on decline", func(t *testing.T) {
+		path := filepath.Join(home, ".zshrc")
+		if err := os.WriteFile(path, []byte("export STRIPE_API_KEY=sk_live_4eC39HqLyjWDarjtT1zdp7dc\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		out, err := execMigrate(t)
+		if err != nil {
+			t.Fatalf("bare jit migrate: %v", err)
+		}
+		if !strings.Contains(out, ".zshrc") {
+			t.Errorf("plan should name the discovered file, got:\n%s", out)
+		}
+		if !strings.Contains(out, "Aborted. Nothing was changed.") {
+			t.Errorf("EOF on the confirm prompt must abort, got:\n%s", out)
+		}
+		if data, readErr := os.ReadFile(path); readErr != nil || !strings.Contains(string(data), "sk_live_4eC39HqLyjWDarjtT1zdp7dc") {
+			t.Errorf("declined run must leave the file untouched (err=%v):\n%s", readErr, data)
+		}
+	})
 }
 
 // TestMigratePathAliasStillWorks confirms `jit migrate path <file>` keeps

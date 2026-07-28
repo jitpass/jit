@@ -11,41 +11,41 @@ anything, and never prints a real secret value in full, only a masked
 preview.
 
 ```
-jit scan: risk report for alex@Alexs-MacBook-Pro
-scan time: 2026-07-25T16:39:02.944Z          duration: 0ms
+jit scan — alex@Alexs-MacBook-Pro — scanned ~/ (7 files) — 1ms
 
-  RISK LEVEL: HIGH
-  EXPOSURE:   65/100
+  YOUR SECRETS: 7 — 0 protected by jit (0%)
+  ▱▱▱▱▱▱▱▱▱▱  to 100%: one command +71% · 2 thing(s) only you can fix +28%
 
-  Shell Configs          1 finding(s)
-  .env Files             1 finding(s)
-  Credential Files       0 finding(s)
-  AI Tool / MCP Configs  0 finding(s)
-  Private Keys           0 finding(s)
-  IaC Variable Files     0 finding(s)
-  Wrappable CLI Tokens   0 finding(s)
-  SOPS Age Keys          0 finding(s)
-  Exposed Secrets        0 finding(s)
-  ───────────────────────────────────
-  Total: 2 finding(s)
+  jit will protect these — 5 secret(s) in 4 file(s), 0% → 71%
+      → jit migrate
+        one command; it vaults the values and rewrites 4 file(s) —
+        every tool that reads them keeps working:
+        ~/.aws/credentials  default/aws_secret_access_key
+        ~/.zshrc            STRIPE_API_KEY, DB_PASSWORD
+        ~/code/webapp/.env  secret-shaped values
+        ~/token.txt         JSON Web Token (JWT)
+      these sat in plaintext until now — rotating after vaulting is
+      the gold standard · every change is reversible: jit migrate undo
 
-[Shell Configs] 1
-  • /Users/alex/.zshrc
+  only you can protect these — 2 secret(s), 71% → 100%
+    ! A production database password in 2 copies of a file  (1)
+      ~/Downloads/customer-secrets-report.txt … and 1 more
+      → rotate it now, then delete every copy
+    ! A Kubernetes Secret manifest with real values  (1)
+      ~/infra/k8s/secrets.yaml
+      → seal it (sealed-secrets/SOPS) or move it to a real secret store
 
-    :1  HIGH  AWS_SECRET_ACCESSKEY  AKIA**********
-              └ value matches AWS Access Key ID's known token format
-
-[.env Files] 1
-  • /Users/alex/code/webapp/.env
-
-    LOW  2 plaintext variable(s) (2 active, 0 commented out)
-
-Run `jit migrate /Users/alex/.zshrc --dry-run` to see the guided fix plan for it.
-No secret values are ever printed in full. Run `jit scan --format ndjson` for machine-readable output (same redaction rules apply).
+  full inventory: jit scan --full · ndjson for machines
+  No secret values are ever printed in full.
 ```
 
 With no arguments, `jit scan` scans your whole home directory, not your current
-directory. A full sample of the output is in the
+directory, and reports **coverage**: how many distinct secrets exist on the
+machine, how many jit already protects, and the shortest path to 100% - the
+green section is exactly what bare [`jit migrate`](../migrate/index.md)
+will do, and the red section is what only you can do. `jit scan --full`
+prints the finding inventory instead: every category, severity, file and
+line, rolled up into a risk level. A full sample of both views is in the
 **[example report](./example-report.md)** (synthetic data).
 
 ## Scanning specific files or folders
@@ -73,21 +73,26 @@ followed. A path that doesn't exist is an error, not a silently empty scan.
 
 | Invocation | Gets you |
 |---|---|
-| `jit scan` | the human-readable report above |
+| `jit scan` | the coverage summary above (machine-wide default) |
+| `jit scan --full` | the full finding inventory: categories, severities, every file and line, plus the machine risk level |
 | `jit scan --format markdown` | the same report as markdown, for saving or sharing |
 | `jit scan --format ndjson` | one JSON record per finding plus a closing summary, for piping into other tools ([schema](../reference/audit-ndjson.md)) |
 | `jit scan -o report.md` | write the report to a file instead of stdout |
 
 ## What happens next
 
-Each finding category maps to a fix:
+The default view already made the split: the green section is fixed by
+running bare **[`jit migrate`](../migrate/index.md)** (which also runs
+any **[`jit wrap <tool>`](../wrap/index.md)** the plan calls for), and
+the red section lists what only you can do - rotate, delete, or seal.
+Per category, in the `--full` inventory:
 
-- Most categories are fixed by **[`jit migrate`](../migrate/index.md)** -
-  it converts findings via each tool's native mechanism.
-- **Wrappable CLI Tokens** findings are fixed by
-  **[`jit wrap <tool>`](../wrap/index.md)** - audit prints the exact
-  one-command fix next to each.
-- **Private Keys** and **IaC Variable Files** are surfaced for your
+- Most categories are fixed by **`jit migrate`** - it converts findings
+  via each tool's native mechanism.
+- **Wrappable CLI Tokens** findings are fixed by **`jit wrap <tool>`** -
+  the report prints the exact one-command fix next to each, and bare
+  `jit migrate` runs them for you.
+- **Private Keys** and most **IaC Variable Files** are surfaced for your
   judgment; there's no automatic migration for them.
 
 The full category list is in **[What audit looks for](./findings.md)**.
