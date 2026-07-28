@@ -95,6 +95,8 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 		all = append(all, dropAlreadyReported(fixed, discovered[i])...)
 	}
 
+	all = dropRedundantExposedSecrets(all)
+
 	// Tag findings under archived/backup-looking directories centrally
 	// (not per scanner): `jit migrate home` skips exactly these by default,
 	// and the report renderers surface the tag so that skip is legible from
@@ -105,6 +107,47 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 
 	summary := buildScanSummary(cfg, all, countProtectedMounts(cfg.MountRegistryPath), time.Since(start))
 	return all, summary, nil
+}
+
+// dropRedundantExposedSecrets removes an exposed_secret finding for a file
+// some OTHER category already reported.
+//
+// classifyCredentialDump content-scans any walked file whose name says it
+// holds credentials, and "credential" matches ~/.aws/credentials — which
+// scanAWSCredentials already reports, properly, per profile. So every machine
+// with AWS keys got the same file twice: once as a Credential File naming the
+// field with a fix path, and once as an Exposed Secret saying only "AWS Access
+// Key ID". Regression found in review, 2026-07-28; it would have hit 8 of the
+// 12 machines this feature was built from. The same collision awaits every
+// fixed-path store whose name contains a hint word (.netrc, .pypirc,
+// credentials.json).
+//
+// The structured finding always wins: it names the profile or field, carries
+// the right fix, and is what `jit migrate` acts on. exposed_secret exists for
+// files no category claims, so a file that IS claimed has nothing to add.
+//
+// Deliberately keyed on file path, not record_id — the two findings describe
+// the same file under different types and key names, so record_id can never
+// match (see dropAlreadyReported's own note on why it is not a blanket
+// dedupe).
+func dropRedundantExposedSecrets(findings []Finding) []Finding {
+	claimed := make(map[string]bool, len(findings))
+	for _, f := range findings {
+		if f.FindingType != FindingTypeExposedSecret && f.FilePath != "" {
+			claimed[f.FilePath] = true
+		}
+	}
+	if len(claimed) == 0 {
+		return findings
+	}
+	out := make([]Finding, 0, len(findings))
+	for _, f := range findings {
+		if f.FindingType == FindingTypeExposedSecret && claimed[f.FilePath] {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // dropAlreadyReported returns walked without any finding the same category's

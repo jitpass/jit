@@ -255,3 +255,58 @@ func TestScanConcurrentWalkIsCompleteAndStable(t *testing.T) {
 		}
 	}
 }
+
+// TestDropRedundantExposedSecrets is the regression test for a duplication
+// introduced with classifyCredentialDump: "credential" is one of its filename
+// hints, so it content-scanned ~/.aws/credentials — a file scanAWSCredentials
+// already reports properly, per profile. Every machine with AWS keys got the
+// same file twice, once with a fix path and once without. It would have hit 8
+// of the 12 developer machines this feature was built from.
+func TestDropRedundantExposedSecrets(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, ".aws"))
+	// Exactly what `aws configure` writes: the AKIA id (a vendor pattern the
+	// content sweep matches) alongside the secret.
+	writeFile(t, filepath.Join(home, ".aws", "credentials"), `[default]
+aws_access_key_id = AKIA3QK7BZWX2LMPD4TN
+aws_secret_access_key = Xk92QmPl4TzWhuCmu2qcwnu9PnWfMKNA1dTr
+`)
+
+	findings, _, err := Scan(Config{HomeDir: home, RunID: "t", ScannerVersion: "t"})
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	var credential, exposed int
+	for _, f := range findings {
+		switch f.FindingType {
+		case FindingTypeCredentialFile:
+			credential++
+		case FindingTypeExposedSecret:
+			exposed++
+		}
+	}
+	if credential != 1 {
+		t.Errorf("credential_file findings = %d, want 1 (the structured one, which names the profile and has a fix)", credential)
+	}
+	if exposed != 0 {
+		t.Errorf("exposed_secret findings = %d, want 0 — the file is already claimed by a category that reports it better", exposed)
+	}
+}
+
+// TestExposedSecretSurvivesWhenUnclaimed is the other half: the whole point of
+// classifyCredentialDump is a credential dump NO category claims, so the
+// redundancy filter must not swallow it.
+func TestExposedSecretSurvivesWhenUnclaimed(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, "Downloads"))
+	writeFile(t, filepath.Join(home, "Downloads", "acct-credentials.csv"),
+		"User name,Access key ID,Secret access key\nv,AKIA3QK7BZWX2LMPD4TN,Xk92QmPl4TzWhuCmu2qcwnu9PnWfMKNA1dTr\n")
+
+	findings, _, err := Scan(Config{HomeDir: home, RunID: "t", ScannerVersion: "t"})
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if got := countByType(findings, FindingTypeExposedSecret); got != 1 {
+		t.Errorf("exposed_secret findings = %d, want 1 (nothing else claims a .csv in Downloads)", got)
+	}
+}
