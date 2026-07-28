@@ -135,8 +135,8 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 	defer file.Close()
 
 	var active, commented int
-	var prodMatch, ipMatch, secretShaped, tokenMatch bool
-	var publicIP, secretShapedKey, tokenVendor string
+	var prodMatch, ipMatch, secretShaped, tokenMatch, entropyMatch bool
+	var publicIP, secretShapedKey, tokenVendor, entropyKey string
 	var tokenVerified bool
 	// EVERY credential in the file, not just the first one that set a flag
 	// above. The flags decide severity (one match is enough to escalate);
@@ -221,6 +221,16 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 				secretShapedKey = key
 			}
 			secretShapedKeys = append(secretShapedKeys, key)
+		} else if !isTemplate && m[1] == "" && LooksLikeHighEntropySecret(key, rawValue) {
+			// Neither the name nor any vendor pattern gave this away, but the
+			// value is credential-shaped on its own. Most real credentials
+			// carry no vendor prefix (CrowdStrike, Datadog, Heroku, every
+			// internal API), so without this they were caught only when
+			// someone happened to name the variable helpfully.
+			if !entropyMatch {
+				entropyMatch = true
+				entropyKey = key
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -259,6 +269,14 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 	case secretShaped:
 		f.Severity = SeverityHigh
 		f.Evidence = fmt.Sprintf("contains %q, a variable name that looks like a real credential", secretShapedKey)
+	case entropyMatch:
+		// Ranked below the name signal and rated Medium confidence on purpose:
+		// "this value is shaped like a credential" is real evidence but weaker
+		// than a vendor prefix or a name that says so, and the wording has to
+		// admit that rather than assert more than the shape supports.
+		f.Severity = SeverityHigh
+		f.Confidence = ConfidenceMedium
+		f.Evidence = fmt.Sprintf("contains %q, whose value is a long opaque credential-shaped string (no vendor format matched, so this is a judgement about shape)", entropyKey)
 	default:
 		f.Severity = SeverityLow
 		// Lead with *why* this is a finding at all, not just the raw count —

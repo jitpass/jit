@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+
+	"github.com/jitpass/jit/internal/auditlog"
 )
 
 // productionIndicatorPattern matches "prod"/"production" as a whole token,
@@ -313,6 +315,67 @@ func stripURLScheme(v string) string {
 		return v[i+3:]
 	}
 	return v
+}
+
+// entropyExcludedNameMarkers are names whose value is legitimately a long
+// opaque string that is NOT a credential: a commit SHA, a content digest, a
+// correlation ID. They matter only for the entropy path — a name here that
+// ALSO looks secret-shaped ("BUILD_SECRET") is still caught by the name gate,
+// which runs first and independently.
+var entropyExcludedNameMarkers = []string{
+	"SHA", "COMMIT", "DIGEST", "HASH", "CHECKSUM", "REVISION", "ETAG",
+	"VERSION", "BUILD", "TRACE", "REQUEST", "CORRELATION", "UUID", "GUID",
+}
+
+// hexOnlyPattern matches a value drawn entirely from the hex alphabet.
+var hexOnlyPattern = regexp.MustCompile(`^[0-9a-fA-F]+$`)
+
+// LooksLikeHighEntropySecret reports whether a value is credential-shaped
+// enough to flag on its own, when neither its NAME nor a vendor pattern gave
+// it away.
+//
+// This closes the last big detection hole: most real credentials carry no
+// vendor prefix at all — CrowdStrike, Datadog, Heroku, Mistral, and every
+// internal company API — so before this they were caught only if someone had
+// named the variable helpfully. "FALCON_ID=a00c30f2…" and "cfg1=6I1evXdj…"
+// both scored Low.
+//
+// The entropy judgement itself is auditlog.LooksHighEntropy, reused rather
+// than reimplemented: it is already trusted for the security-critical job of
+// never letting a credential reach the audit log, and a second copy would
+// drift from it exactly as secretPrefixes drifted from knownTokenPatterns.
+//
+// Two narrowings make it safe for a scanner, which (unlike a redactor) has to
+// justify every finding to a human:
+//
+//   - Pure hex is rejected. knownTokenPatterns already documents why bare
+//     32/64-character hex is deliberately unmatched — it is "structurally
+//     identical to countless non-secret things (hashes, correlation IDs,
+//     commit SHAs)" — and that reasoning does not stop being true here. It
+//     costs the CrowdStrike client ID (32 hex) and keeps its secret (base62),
+//     which is the half that authenticates.
+//   - Names that announce an opaque non-secret are excluded, so BUILD_SHA and
+//     GIT_COMMIT don't become findings.
+//
+// Callers pair this with the existing gates; it is an ADDITIONAL signal, never
+// a suppression, so --unfiltered does not affect it.
+func LooksLikeHighEntropySecret(name, value string) bool {
+	if !auditlog.LooksHighEntropy(value) {
+		return false
+	}
+	if hexOnlyPattern.MatchString(value) {
+		return false
+	}
+	if LooksLikeNonSecretName(name) || LooksLikeNonSecretValue(value) {
+		return false
+	}
+	upper := strings.ToUpper(name)
+	for _, marker := range entropyExcludedNameMarkers {
+		if strings.Contains(upper, marker) {
+			return false
+		}
+	}
+	return true
 }
 
 // opaqueTokenPattern flags a long, opaque-looking run of characters anywhere
