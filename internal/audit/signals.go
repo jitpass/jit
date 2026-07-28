@@ -181,10 +181,15 @@ var neverPublicMarkers = []string{"SECRET", "PASSWORD", "PASSWD", "PRIVATE", "CR
 // prefix — the genuinely dangerous case, a live key about to be shipped to
 // browsers — is still caught on the strength of its value.
 //
-// Deliberately NOT used by `jit migrate`, which keeps its existing
-// LooksLikeSecretKey behavior: scan being quieter than migrate is safe, while
-// the reverse (scan reporting what migrate can't fix) is the cry-wolf problem
-// envTemplateSuffixes exists to prevent.
+// On the migrate side the usage is split, on purpose. The loose-file
+// migrator's secretAssignmentTokens DOES apply this gate (and
+// LooksLikeNonSecretValue), so scan and migrate agree about which bare
+// assignments are secrets — a value this gate suppresses there stays in the
+// on-disk template in plaintext, so broadening these lists changes what
+// migrate vaults, not just what scan reports. The structured migrators
+// (npmrc, pypirc, netrc, …) do NOT use it: their formats name their secret
+// fields explicitly, so a name heuristic has nothing to add and could only
+// suppress a field the format itself declares secret.
 func LooksLikeNonSecretName(name string) bool {
 	upper := strings.ToUpper(name)
 	for _, suffix := range pointerVarSuffixes {

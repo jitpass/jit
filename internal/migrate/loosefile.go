@@ -295,9 +295,32 @@ func secretAssignmentTokens(lines []string, existing []audit.FileToken) []audit.
 		}
 		key := line[idx[2]:idx[3]]
 		start, end := idx[4], idx[5]
-		// Narrow past a matched quote pair so the template keeps the quotes.
-		if end-start >= 2 && (line[start] == '"' || line[start] == '\'') && line[end-1] == line[start] {
-			start, end = start+1, end-1
+		// An unquoted trailing "# ..." / "; ..." is a comment, not part of the
+		// value — dotenv, INI and TOML parsers all cut it there, so vaulting
+		// it glued onto the credential would make `jit run`/`jit export`
+		// deliver a value no server accepts, failing auth in a way that's
+		// hard to trace back to a migration. (findSecretPypircLines keeps its
+		// verbatim capture: Python's configparser genuinely preserves
+		// everything after "=", inline "comments" included.)
+		if line[start] == '"' || line[start] == '\'' {
+			// Quoted: close the span at the matching quote when only a
+			// comment (or nothing) follows it, then narrow past the pair so
+			// the template keeps the quotes.
+			q := line[start]
+			if rel := strings.IndexByte(line[start+1:end], q); rel >= 0 {
+				after := strings.TrimSpace(line[start+1+rel+1 : end])
+				if after == "" || after[0] == '#' || after[0] == ';' {
+					end = start + 1 + rel + 1
+				}
+			}
+			if end-start >= 2 && line[end-1] == q {
+				start, end = start+1, end-1
+			}
+		} else if rel := indexInlineComment(line[start:end]); rel >= 0 {
+			end = start + rel
+			for end > start && (line[end-1] == ' ' || line[end-1] == '\t') {
+				end--
+			}
 		}
 		value := line[start:end]
 		if value == "" || audit.IsAlreadyMasked(value) {
@@ -327,6 +350,19 @@ func secretAssignmentTokens(lines []string, existing []audit.FileToken) []audit.
 		})
 	}
 	return out
+}
+
+// indexInlineComment returns the offset where an unquoted value's inline
+// comment begins — a '#' or ';' preceded by whitespace — or -1. The
+// whitespace requirement is what keeps a '#' INSIDE a value ("hunter#2")
+// intact: every parser that supports inline comments requires the separator.
+func indexInlineComment(s string) int {
+	for i := 1; i < len(s); i++ {
+		if (s[i] == '#' || s[i] == ';') && (s[i-1] == ' ' || s[i-1] == '\t') {
+			return i - 1
+		}
+	}
+	return -1
 }
 
 // nameLooseTokens assigns each detected token a stable, unique, env-style

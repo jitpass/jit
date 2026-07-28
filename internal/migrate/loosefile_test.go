@@ -364,3 +364,38 @@ timeout_seconds = 30
 		t.Errorf("restored bytes differ.\ngot:  %q\nwant: %q", restored, original)
 	}
 }
+
+// TestSecretAssignmentTokensStripInlineComments guards what gets VAULTED, not
+// what gets served: the mount round-trips byte-identically either way (span
+// substitution), but `jit run`/`jit export`/`jit vault get` deliver the vault
+// entry alone — and before this, `api_password = hunter2abc # rotate
+// quarterly` vaulted "hunter2abc # rotate quarterly", a credential no server
+// accepts, failing auth in a way nothing traces back to the migration.
+// Dotenv, INI and TOML parsers all cut an unquoted value at a
+// whitespace-preceded "#"/";" — jit must agree with them.
+func TestSecretAssignmentTokensStripInlineComments(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want string
+	}{
+		{"unquoted with # comment", "api_password = Tr0ub4dor3xKq9ZmPq2Lr # rotate quarterly", "Tr0ub4dor3xKq9ZmPq2Lr"},
+		{"unquoted with ; comment", "api_password = Tr0ub4dor3xKq9ZmPq2Lr\t; legacy", "Tr0ub4dor3xKq9ZmPq2Lr"},
+		{"quoted with trailing comment", `api_password = "Tr0ub4dor3xKq9ZmPq2Lr" # note`, "Tr0ub4dor3xKq9ZmPq2Lr"},
+		// No whitespace before '#' means it is part of the value — every
+		// parser that supports inline comments requires the separator.
+		{"hash inside value", "api_password = Tr0ub4dor3#xKq9ZmPq2Lr", "Tr0ub4dor3#xKq9ZmPq2Lr"},
+		{"hash inside quotes", `api_password = "Tr0ub4dor3 #xKq9ZmPq2Lr"`, "Tr0ub4dor3 #xKq9ZmPq2Lr"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tokens := secretAssignmentTokens([]string{c.line}, nil)
+			if len(tokens) != 1 {
+				t.Fatalf("got %d tokens from %q, want 1: %+v", len(tokens), c.line, tokens)
+			}
+			if tokens[0].Value != c.want {
+				t.Errorf("value = %q, want %q", tokens[0].Value, c.want)
+			}
+		})
+	}
+}

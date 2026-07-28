@@ -256,3 +256,54 @@ func TestNpmrcVarNameSanitization(t *testing.T) {
 		}
 	}
 }
+
+// TestFindSecretNpmrcLinesDisambiguatesCollidingKeys mirrors the pypirc
+// guard: "//reg.example.com/:_authToken" and "//reg.example.com:_authToken"
+// are distinct npmrc keys that both sanitize to REG_EXAMPLE_COM_AUTHTOKEN.
+// Distinct keys must keep distinct vault paths; a genuinely repeated key
+// still shares one (shell semantics, last value wins).
+func TestFindSecretNpmrcLinesDisambiguatesCollidingKeys(t *testing.T) {
+	matches := findSecretNpmrcLines([]string{
+		"//reg.example.com/:_authToken=first-token-value",
+		"//reg.example.com:_authToken=second-token-value",
+	})
+	if len(matches) != 2 {
+		t.Fatalf("got %d matches, want 2: %+v", len(matches), matches)
+	}
+	if matches[0].VarName == matches[1].VarName {
+		t.Errorf("distinct keys collapsed to one variable name %q — one token would silently overwrite the other", matches[0].VarName)
+	}
+	if matches[0].VarName != "REG_EXAMPLE_COM_AUTHTOKEN" || matches[1].VarName != "REG_EXAMPLE_COM_AUTHTOKEN_2" {
+		t.Errorf("got (%q, %q), want deterministic suffix disambiguation", matches[0].VarName, matches[1].VarName)
+	}
+
+	repeated := findSecretNpmrcLines([]string{
+		"//reg.example.com/:_authToken=old-token-value",
+		"//reg.example.com/:_authToken=new-token-value",
+	})
+	if len(repeated) != 2 || repeated[0].VarName != repeated[1].VarName {
+		t.Errorf("a repeated key must keep ONE variable name (last value wins), got %+v", repeated)
+	}
+}
+
+// TestApplyNpmrcRefusesLiteralPlaceholder is the same guard ApplyNetrc and
+// ApplyPypirc carry: FormatTemplate substitutes ${VAR} anywhere, so a file
+// already containing the literal placeholder cannot be migrated without the
+// served bytes diverging from the original.
+func TestApplyNpmrcRefusesLiteralPlaceholder(t *testing.T) {
+	home := t.TempDir()
+	path := GlobalNpmrcPath(home)
+	writeFile(t, path, "# was: //registry.npmjs.org/:_authToken=${REGISTRY_NPMJS_ORG_AUTHTOKEN}\n//registry.npmjs.org/:_authToken=npm_realTokenValue123456\n")
+
+	v := newTestVault(t)
+	_, err := ApplyNpmrc(v, home, path, true)
+	if err == nil {
+		t.Fatal("ApplyNpmrc should refuse a file already containing its own placeholder")
+	}
+	if !strings.Contains(err.Error(), "${REGISTRY_NPMJS_ORG_AUTHTOKEN}") {
+		t.Errorf("error should name the offending placeholder, got %v", err)
+	}
+	if info, statErr := os.Lstat(path); statErr != nil || !info.Mode().IsRegular() {
+		t.Errorf("refusal must leave the original file untouched, got %v (err=%v)", info, statErr)
+	}
+}

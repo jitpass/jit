@@ -125,6 +125,19 @@ func ApplyPypirc(v *vault.Vault, home, path string) (PypircMigration, error) {
 	}
 	sort.Strings(varNames)
 
+	// Position-blind byte substitution (ApplyNetrc's own guard, via
+	// locateSOPSAgeSecret): mount.FormatTemplate fills ${VAR} wherever it
+	// appears, so a placeholder already sitting in the file literally — a
+	// commented-out remnant of an undone migration, a pasted docs example —
+	// would get the real password written into it at serve time, and the
+	// mount would no longer round-trip the original bytes.
+	joined := strings.Join(lines, "\n")
+	for _, name := range varNames {
+		if strings.Contains(joined, "${"+name+"}") {
+			return PypircMigration{}, fmt.Errorf("%s already contains the literal ${%s}, refusing to migrate", path, name)
+		}
+	}
+
 	// Same merge-and-guard as ApplyEnvFile/ApplyNpmrc: move to "<name>-2" if
 	// the vault already holds another migration's value at one of these paths
 	// (GAPS.md #55).
@@ -242,6 +255,20 @@ func findSecretPypircLines(lines []string) []pypircSecretMatch {
 			VarName: pypircVarName(section, key),
 		})
 	}
+	// Two DISTINCT sections can sanitize to one variable name ([my-index]
+	// and [my_index] both become MY_INDEX_PASSWORD); disambiguate so each
+	// section keeps its own vault entry and placeholder. Repeats of one
+	// section still share a name — ApplyPypirc's last-value-wins handles
+	// those, matching the INI readers.
+	identities := make([]string, len(matches))
+	base := make([]string, len(matches))
+	for i, m := range matches {
+		identities[i] = m.Section
+		base[i] = m.VarName
+	}
+	for i, name := range assignUniqueVarNames(identities, base) {
+		matches[i].VarName = name
+	}
 	return matches
 }
 
@@ -258,7 +285,9 @@ func isPypircSecretKey(key string) bool {
 // key, e.g. section "blockaidpypi" + key "password" ->
 // "BLOCKAIDPYPI_PASSWORD". Including the section is what keeps two
 // repositories in one file from landing on the same vault path — the same
-// collision npmrcVarName avoids by folding in the registry host.
+// collision npmrcVarName avoids by folding in the registry host. Distinct
+// sections that STILL collide after sanitization ([my-index]/[my_index]) are
+// split apart by assignUniqueVarNames in findSecretPypircLines.
 func pypircVarName(section, key string) string {
 	upper := strings.ToUpper(section + "_" + key)
 	replaced := pypircVarSanitizer.ReplaceAllString(upper, "_")

@@ -104,7 +104,7 @@ func scanAWSCredentials(cfg Config) ([]Finding, error) {
 		if !ok || secret == "" {
 			continue
 		}
-		findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+		f := cfg.ValueFinding(ValueFindingParams{
 			FindingType:  FindingTypeCredentialFile,
 			FilePath:     path,
 			KeyName:      profile + "/aws_secret_access_key",
@@ -112,7 +112,17 @@ func scanAWSCredentials(cfg Config) ([]Finding, error) {
 			BaseSeverity: SeverityHigh,
 			Confidence:   ConfidenceHigh,
 			Evidence:     fmt.Sprintf("AWS secret access key found in profile %q", profile),
-		}))
+		})
+		// The access key ID is the parsed-but-unreported half of the pair:
+		// this scanner deliberately reports only the secret (the ID alone
+		// authenticates nothing), but the content sweep's AKIA/ASIA pattern
+		// matches the ID — claiming it here is what keeps the sweep's
+		// re-discovery of it deduplicated without hiding a genuinely foreign
+		// token in the same file (dropRedundantExposedSecrets).
+		if id := kv["aws_access_key_id"]; id != "" {
+			f.ClaimedValuePreviews = []string{MaskValue(id)}
+		}
+		findings = append(findings, f)
 	}
 	return findings, nil
 }
@@ -437,6 +447,13 @@ const mcpAuthTokenSuffix = "_tokens.json" // #nosec G101 -- a filename suffix, n
 // validity, and the thing an attacker would take.
 type mcpAuthTokens struct {
 	RefreshToken string `json:"refresh_token"`
+	// AccessToken is parsed only to be CLAIMED, never reported: it lives
+	// 5-60 minutes, so reporting it alongside the weeks-valid refresh token
+	// would double the findings for strictly less risk. It is typically a
+	// JWT, which the content sweep's eyJ pattern matches — claiming its
+	// preview keeps the sweep from re-reporting it out from under this
+	// scanner's deliberate downgrade (dropRedundantExposedSecrets).
+	AccessToken string `json:"access_token"`
 }
 
 // scanMCPAuthTokens reports remote-MCP OAuth tokens sitting in plaintext.
@@ -508,7 +525,7 @@ func mcpAuthTokenFindings(cfg Config, path string) []Finding {
 	if tokens.RefreshToken == "" || IsAlreadyMasked(tokens.RefreshToken) {
 		return nil
 	}
-	findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+	f := cfg.ValueFinding(ValueFindingParams{
 		FindingType:  FindingTypeCredentialFile,
 		FilePath:     path,
 		KeyName:      "refresh_token",
@@ -516,7 +533,11 @@ func mcpAuthTokenFindings(cfg Config, path string) []Finding {
 		BaseSeverity: SeverityMedium,
 		Confidence:   ConfidenceHigh,
 		Evidence:     "a remote MCP server's OAuth refresh token (typically valid for weeks) in plaintext; revoke it at the provider and reset with `rm -rf ~/.mcp-auth` — jit can't vault this one, mcp-remote rotates the file itself",
-	}))
+	})
+	if tokens.AccessToken != "" {
+		f.ClaimedValuePreviews = []string{MaskValue(tokens.AccessToken)}
+	}
+	findings = append(findings, f)
 	return findings
 }
 
@@ -643,6 +664,16 @@ func scanPypirc(cfg Config) ([]Finding, error) {
 		if repository == "" {
 			repository = "pypi"
 		}
+		// The fallback wording is per-section: only [pypi]/[testpypi] hold a
+		// PyPI token, and calling a private company index's password a "PyPI
+		// upload token" both mislabels the value and overstates its reach
+		// (it publishes to that index, not to PyPI). A value that DOES match
+		// a vendor format never sees this string — ValueFinding upgrades the
+		// evidence to name the recognized format.
+		evidence := fmt.Sprintf("package-index password found for %s in ~/.pypirc; it can publish to that index as you", repository)
+		if strings.EqualFold(repository, "pypi") || strings.EqualFold(repository, "testpypi") {
+			evidence = fmt.Sprintf("PyPI upload token found for %s; it can publish releases as you", repository)
+		}
 		findings = append(findings, cfg.ValueFinding(ValueFindingParams{
 			FindingType:  FindingTypeCredentialFile,
 			FilePath:     path,
@@ -650,7 +681,7 @@ func scanPypirc(cfg Config) ([]Finding, error) {
 			RawValue:     password,
 			BaseSeverity: SeverityHigh,
 			Confidence:   ConfidenceHigh,
-			Evidence:     fmt.Sprintf("PyPI upload token found for %s; it can publish releases as you", repository),
+			Evidence:     evidence,
 		}))
 	}
 	return findings, nil
@@ -823,7 +854,7 @@ func scanGitCredentialsFile(path string, cfg Config) ([]Finding, error) {
 		if !ok || pw == "" {
 			continue
 		}
-		findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+		f := cfg.ValueFinding(ValueFindingParams{
 			FindingType:  FindingTypeCredentialFile,
 			FilePath:     path,
 			KeyName:      u.Host,
@@ -831,7 +862,19 @@ func scanGitCredentialsFile(path string, cfg Config) ([]Finding, error) {
 			BaseSeverity: SeverityHigh,
 			Confidence:   ConfidenceHigh,
 			Evidence:     fmt.Sprintf("git HTTPS credential found for host %q in plaintext; jit wrap git moves it into the vault and keeps git push/fetch over HTTPS working", u.Host),
-		}))
+		})
+		// Claim the line's other spellings of this same credential: the
+		// content sweep's scheme-less connection-string pattern matches the
+		// "user:pass@host" span (starting right after "://"), which previews
+		// differently from the bare password reported above. Without the
+		// claim, dropRedundantExposedSecrets would treat that span as a
+		// foreign value and re-report the file (a token used AS the password
+		// is already covered — it previews identically to RawValue).
+		f.ClaimedValuePreviews = []string{MaskValue(line)}
+		if _, rest, found := strings.Cut(line, "://"); found {
+			f.ClaimedValuePreviews = append(f.ClaimedValuePreviews, MaskValue(rest))
+		}
+		findings = append(findings, f)
 	}
 	return findings, nil
 }
