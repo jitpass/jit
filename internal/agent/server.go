@@ -40,8 +40,48 @@ import (
 // who actually asked. It is a parameter rather than a constant inside the
 // fetcher because only Server knows that — and a prompt that can't say why
 // it appeared is the entire problem this plumbing exists to fix.
+// A fetcher MAY also implement Close() to release whatever it cached; see
+// closeFetcher. Whether it does or not, FetchMEK's return value must be a
+// COPY the caller owns — never a view onto state Close would destroy — since
+// Server keeps that copy as the session key long after closing the fetcher
+// that produced it.
 type MEKFetcher interface {
 	FetchMEK(reason string) ([]byte, error)
+}
+
+// closeFetcher ends a fetcher's own MEK cache once we've taken the copy we
+// need. A fetcher is built fresh per challenge and dropped immediately, but
+// "dropped" is not "gone": keychainwrap's Wrapper pins its cached MEK with
+// mlock and, before it grew a Close, never wiped it — so every unlock and
+// every disclosed prompt left a plaintext master key in this long-lived
+// process that survived the session's lock, the screen-lock wipe and the
+// sleep wipe alike, and went away only when the GC reused the page.
+//
+// Optional by design: MEKFetcher stays a one-method interface so test
+// fetchers (which hold no OS resources) don't have to implement anything,
+// and a fetcher with nothing to release simply isn't asked to.
+//
+// Optional also means silent, which is the risk: a fetcher whose Close grew a
+// return value would stop matching this assertion, the leak would come back,
+// and nothing would fail. ClosableFetcher exists so the production fetcher's
+// conformance is asserted at compile time where it is wired up.
+func closeFetcher(f MEKFetcher) {
+	if c, ok := f.(ClosableFetcher); ok {
+		c.Close()
+	}
+}
+
+// ClosableFetcher is a MEKFetcher that holds resources worth releasing as soon
+// as its MEK has been copied out — keychainwrap's *Wrapper, whose cache is
+// mlocked and must be wiped rather than left for the GC.
+//
+// Assert against it wherever a real fetcher is constructed
+// (var _ agent.ClosableFetcher = (*keychainwrap.Wrapper)(nil)): closeFetcher's
+// check is a runtime type assertion, so without a compile-time counterpart a
+// signature change would turn it into a silent no-op.
+type ClosableFetcher interface {
+	MEKFetcher
+	Close()
 }
 
 // Server is the session broker RFC.md Pillar II describes: holds the
@@ -64,6 +104,17 @@ type Server struct {
 	socketPath string
 	newFetcher func() MEKFetcher
 	ttl        time.Duration
+
+	// maxSessionAge bounds how long ONE unlock can be ridden, no matter how
+	// busy it is. ttl is an inactivity timeout and touchSession pushes it out
+	// on every use, which is right for a human at a keyboard and wrong as the
+	// only bound: nothing stopped a process from sending a cheap request every
+	// ttl-minus-a-bit forever, holding the MEK resident indefinitely on a
+	// single Touch ID from this morning. This is the ceiling that idle timer
+	// can't express — past it the session ends and the next access challenges
+	// again, however active it has been. Defaulted by NewServer; a field so
+	// tests can shorten it.
+	maxSessionAge time.Duration
 
 	// OnUnlock, if set, is called after every FRESH challenge succeeds
 	// (never for a cache hit) — outside every internal lock, and never
@@ -245,6 +296,10 @@ type Server struct {
 	freshPending bool
 	mek          []byte
 	expiry       time.Time
+	// sessionStart is when the current session's fresh challenge succeeded —
+	// the anchor maxSessionAge measures from. Unlike expiry it is never
+	// pushed forward by use; that is the whole point of it.
+	sessionStart time.Time
 	lockTimer    *time.Timer
 	// lastDenied is when a challenge most recently failed — what the
 	// denial cooldown above measures from — and lastDeniedCause is why, so
@@ -299,6 +354,14 @@ type Server struct {
 // bypasses it outright.
 const defaultDenialCooldown = 30 * time.Second
 
+// DefaultMaxSessionAge is the ceiling on a single unlock's lifetime,
+// independent of how continuously it is used. Eight hours covers a working
+// day, so someone who unlocked at the start of it is asked again once —
+// not mid-afternoon, and not never. Exported because the CLI bounds --ttl
+// by it: an inactivity timeout longer than the hard ceiling is a setting
+// that cannot mean what it says.
+const DefaultMaxSessionAge = 8 * time.Hour
+
 // defaultUseWindow collapses same-caller same-op use events. One minute
 // merges a profile resolution's burst of unwraps (all within a second)
 // into a single event while keeping separate invocations minutes apart
@@ -312,6 +375,7 @@ func NewServer(socketPath string, newFetcher func() MEKFetcher, ttl time.Duratio
 		socketPath:     socketPath,
 		newFetcher:     newFetcher,
 		ttl:            ttl,
+		maxSessionAge:  DefaultMaxSessionAge,
 		readTimeout:    10 * time.Second,
 		denialCooldown: defaultDenialCooldown,
 		useWindow:      defaultUseWindow,
@@ -491,11 +555,27 @@ func (s *Server) handle(req Request, c *caller) Response {
 	case OpUnlock:
 		// ensureUnlocked hands every caller its own MEK copy (see mekCopy);
 		// callers that only wanted the side effect wipe theirs immediately.
-		mek, err := s.ensureUnlocked(req.Op, c, "")
+		mek, fresh, err := s.ensureUnlockedFresh(s.OnUnlock, req.Op, c, "")
 		if err != nil {
 			return Response{OK: false, Error: err.Error()}
 		}
 		wipe(mek)
+		// A FRESH unlock is a human at the keyboard saying "now" — the same
+		// reason this op is exempt from the denial cooldown — so it clears
+		// consent pauses: the backoff keys on a caller's launcher, coarse
+		// enough that refusals earned by one program can pause an honest one,
+		// and this is the override that makes that tradeoff acceptable.
+		// Standing decisions are untouched: permission to be asked again is
+		// not permission to skip the asking.
+		//
+		// Gated on `fresh`, emphatically. OpUnlock against an already-open
+		// session challenges nobody and returns OK, so clearing on success
+		// alone would have handed every process on the machine a free reset:
+		// refuse, unlock, refuse, unlock — the exact flood this backoff exists
+		// to stop, with an extra syscall per round.
+		if fresh && s.Consent != nil {
+			s.Consent.ClearBackoff()
+		}
 		unlocked, remaining := s.status()
 		return Response{OK: true, Unlocked: unlocked, ExpiresInSeconds: int64(remaining.Seconds())}
 	case OpRefresh:
@@ -610,6 +690,26 @@ func (s *Server) handle(req Request, c *caller) Response {
 		}
 		return Response{OK: true, Data: wrapped}
 	case OpUnwrap:
+		// Nothing has verified req.Class yet. It is AEAD-bound into the wrap,
+		// but that binding is only checked by open() further down, so until
+		// then the class is simply a string the caller sent — and it is the
+		// string that decides which credential the consent prompt names. A
+		// caller with no vault data at all could send {Class:"aws", Data:
+		// <garbage>} and put a full Touch ID dialog on the user's screen.
+		//
+		// So when a session is live, prove the caller actually holds a wrap of
+		// that class before any prompt: the MEK is already in hand, the check
+		// costs one AEAD open, and a request that fails it never reaches a
+		// human.
+		//
+		// Against a LOCKED agent there is no MEK to check against, so this is
+		// a no-op and a garbage unwrap can still reach the unlock prompt. That
+		// path is bounded by the denial cooldown rather than by this check —
+		// and it is not made worse by garbage, since any caller that can reach
+		// the socket can ask for an unlock outright.
+		if err := s.verifyClassBinding(req.Data, req.Class, c); err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
 		// Consent is gated BEFORE ensureUnlocked, not after: ensureUnlocked
 		// records a use the moment it rides an already-unlocked session, so
 		// gating first is what keeps a DENIED unwrap out of the audit log as a
@@ -698,6 +798,42 @@ func (s *Server) mekCopy() []byte {
 	return out
 }
 
+// verifyClassBinding checks that data really is a wrap of the claimed class
+// before anything acts on that claim. It returns nil when there is no live
+// session — with no MEK there is nothing to verify against, and this must
+// never be the thing that triggers an unlock prompt.
+//
+// It peeks at the session rather than touching it, deliberately: a request
+// that fails this check must not have bought the session a fresh TTL on its
+// way to being rejected, or a caller could keep a session alive indefinitely
+// with a stream of garbage it never had the key for.
+func (s *Server) verifyClassBinding(data []byte, class string, c *caller) error {
+	mek := s.peekSession()
+	if mek == nil {
+		return nil
+	}
+	defer wipe(mek)
+	dek, err := open(mek, data, []byte(class))
+	if err != nil {
+		// A caller asking for a class it holds no wrap for is the signal this
+		// check exists to catch, so it must not vanish just because it was
+		// cheap to reject: silently dropping it would make the successful
+		// defense invisible to the one person who'd want to know it happened.
+		// Recorded as a socket-boundary rejection, not a denial — no human
+		// declined anything here, and manufacturing lines indistinguishable
+		// from a refused Touch ID is its own small attack.
+		if c != nil {
+			s.recordRejectedClass(c)
+		}
+		// Deliberately the same wording open() would produce later. The reply
+		// must not tell a caller whether it guessed a real class, only that
+		// this ciphertext and this class don't go together.
+		return fmt.Errorf("unwrapping: %w", err)
+	}
+	wipe(dek)
+	return nil
+}
+
 // forceDisclosedChallenge prompts for a fresh Touch ID with reason as its
 // exact wording — ALWAYS, even when the session is already unlocked — as a
 // standalone approval gate. Unlike ensureUnlockedNotify it never rides the
@@ -744,7 +880,13 @@ func (s *Server) discloseChallenge(reason string, c *caller) (*SessionEvent, err
 	s.pendingChallenge = pending
 	s.mu.Unlock()
 
-	mek, err := s.newFetcher().FetchMEK(reason)
+	fetcher := s.newFetcher()
+	mek, err := fetcher.FetchMEK(reason)
+	// This MEK is discarded below — a disclosed challenge is a confirmation,
+	// not an unlock — so the fetcher's cache is pure residue. Closing it here
+	// matters more than on the unlock path: every consent prompt comes through
+	// here, so this is the site that leaked a MEK copy per prompt.
+	closeFetcher(fetcher)
 
 	event := unlockEvent(OpRevealPID, c)
 	event.AuthMethod = s.authMethod()
@@ -769,9 +911,23 @@ func (s *Server) discloseChallenge(reason string, c *caller) (*SessionEvent, err
 }
 
 func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller, label string) ([]byte, error) {
+	mek, _, err := s.ensureUnlockedFresh(onFresh, op, c, label)
+	return mek, err
+}
+
+// ensureUnlockedFresh is ensureUnlockedNotify plus the one fact its callers
+// cannot otherwise recover: whether a HUMAN was actually asked, or whether
+// this rode a session that was already open.
+//
+// The distinction is load-bearing wherever an unlock is treated as a person
+// saying "yes, now" — clearing a consent pause, most of all. `jit unlock`
+// against an already-unlocked agent challenges nobody, so anything that acts
+// on OpUnlock succeeding, rather than on a fresh challenge succeeding, is
+// reachable for free by any process that can open the socket.
+func (s *Server) ensureUnlockedFresh(onFresh func(), op string, c *caller, label string) ([]byte, bool, error) {
 	if mek := s.touchSession(); mek != nil {
 		s.recordUse(op, c, label)
-		return mek, nil
+		return mek, false, nil
 	}
 
 	mek, event, err := s.challengeUnlock(op, c, label)
@@ -792,12 +948,15 @@ func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller, labe
 		s.OnSessionEvent(*event)
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	if event != nil {
+	// event != nil is exactly "a fresh challenge produced this session": a
+	// cache hit returned above without ever reaching challengeUnlock.
+	fresh := event != nil
+	if fresh {
 		s.notifyFresh(onFresh)
 	}
-	return mek, nil
+	return mek, fresh, nil
 }
 
 // notifyFresh runs a fresh-unlock callback, never re-entrantly.
@@ -913,7 +1072,11 @@ func (s *Server) challengeUnlock(op string, c *caller, label string) ([]byte, *S
 	// label is deliberately NOT part of it: it's caller-reported, and the
 	// one line a human decides by must never carry a fact the caller could
 	// have made up (see Request.Label).
-	mek, err := s.newFetcher().FetchMEK(challengeReason(op, c))
+	fetcher := s.newFetcher()
+	mek, err := fetcher.FetchMEK(challengeReason(op, c))
+	// The MEK we keep is the copy FetchMEK returned; the fetcher's own cache
+	// has served its purpose the moment we have it.
+	closeFetcher(fetcher)
 
 	s.mu.Lock()
 	s.pendingChallenge = nil
@@ -951,6 +1114,10 @@ func (s *Server) challengeUnlock(op string, c *caller, label string) ([]byte, *S
 	s.lastDenied = time.Time{}
 	s.lastDeniedCause = ""
 	s.recordEvent(*event)
+	// sessionStart is stamped only here, on a fresh challenge — the one moment
+	// a human actually authorized this session. Every later use moves expiry;
+	// none of them move this.
+	s.sessionStart = time.Now()
 	s.expiry = time.Now().Add(s.ttl)
 	s.armLockTimer()
 	s.mu.Unlock()
@@ -968,24 +1135,60 @@ func (s *Server) challengeUnlock(op string, c *caller, label string) ([]byte, *S
 // under that reading, an actively-used session would re-prompt mid-work at
 // a moment that has nothing to do with the user having stepped away, which
 // is the only thing the auto-lock exists to cover.
+// The inactivity TTL is not the only bound: maxSessionAge caps the whole
+// session from the unlock that started it, so continuous use extends a
+// session but can no longer sustain one forever (see collectIfDoneLocked).
 func (s *Server) touchSession() []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.mek == nil {
 		return nil
 	}
-	if !time.Now().Before(s.expiry) {
-		// Expired, but the idle-lock timer hasn't collected it yet — don't
-		// trust a timer to have fired to enforce the expiry.
-		wipe(s.mek)
-		unlockMemory(s.mek)
-		s.mek = nil
+	if s.collectIfDoneLocked(time.Now()) {
 		return nil
 	}
 	mek := s.mekCopy()
 	s.expiry = time.Now().Add(s.ttl)
 	s.armLockTimer()
 	return mek
+}
+
+// peekSession returns a copy of the MEK if the session is live, WITHOUT
+// extending the inactivity TTL, re-arming the lock timer, or recording a use.
+// It is for work that has to happen BEFORE we decide whether a request
+// deserves the session at all — verifying that a caller's claimed class
+// actually matches the ciphertext it sent (see OpUnwrap).
+//
+// Not extending is the point. A request that turns out to be garbage must not
+// buy the session another full TTL on its way to being rejected, or the check
+// meant to make junk requests cheap would make them useful instead.
+func (s *Server) peekSession() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.mek == nil {
+		return nil
+	}
+	if s.collectIfDoneLocked(time.Now()) {
+		return nil
+	}
+	return s.mekCopy()
+}
+
+// collectIfDoneLocked wipes the session and reports true if it is over —
+// either idle past its expiry or older than maxSessionAge. Both are checked
+// here rather than left to the lock timer because a timer that hasn't fired
+// yet is not evidence that a session is still valid, and the caller is about
+// to hand out the key. Caller must hold s.mu.
+func (s *Server) collectIfDoneLocked(now time.Time) bool {
+	aged := !s.sessionStart.IsZero() && s.maxSessionAge > 0 &&
+		!now.Before(s.sessionStart.Add(s.maxSessionAge))
+	if now.Before(s.expiry) && !aged {
+		return false
+	}
+	wipe(s.mek)
+	unlockMemory(s.mek)
+	s.mek = nil
+	return true
 }
 
 // armLockTimer (re)arms the idle auto-lock a full TTL out. Caller must
@@ -999,8 +1202,20 @@ func (s *Server) armLockTimer() {
 	if s.lockTimer != nil {
 		s.lockTimer.Stop()
 	}
-	s.lockTimer = time.AfterFunc(s.ttl, func() {
-		s.lockIfGen(fmt.Sprintf("%s idle timeout", s.ttl), gen)
+	// Whichever bound runs out first owns the timer. Arming the idle TTL
+	// unconditionally would let a session that is busy right up to its hard
+	// ceiling sit there past it until something happened to ask — collected
+	// lazily by collectIfDoneLocked, with no lock event and nothing in
+	// history to explain why the next access re-prompted.
+	delay, cause := s.ttl, fmt.Sprintf("%s idle timeout", s.ttl)
+	if !s.sessionStart.IsZero() && s.maxSessionAge > 0 {
+		if untilCap := time.Until(s.sessionStart.Add(s.maxSessionAge)); untilCap < delay {
+			delay = untilCap
+			cause = fmt.Sprintf("%s maximum session age", s.maxSessionAge)
+		}
+	}
+	s.lockTimer = time.AfterFunc(delay, func() {
+		s.lockIfGen(cause, gen)
 	})
 }
 
@@ -1054,6 +1269,7 @@ func (s *Server) lockIfGen(cause string, gen uint64) {
 		s.mek = nil
 	}
 	s.expiry = time.Time{}
+	s.sessionStart = time.Time{}
 	if s.lockTimer != nil {
 		s.lockTimer.Stop()
 		s.lockTimer = nil
@@ -1225,15 +1441,48 @@ const maxUseLabels = 8
 // actually reads). A crash loses at most the still-pending window —
 // bounded, and the durable file gets everything else.
 func (s *Server) recordUse(op string, c *caller, label string) {
+	s.recordAggregated(KindUse, op, c.command(), c, label)
+}
+
+// opClassMismatch is the op label for an unwrap rejected because the class the
+// caller claimed doesn't match the ciphertext it sent (verifyClassBinding).
+// Named in the same terse style as the other socket-boundary rejections
+// ("reject", "decode", "accept") because that is what it is.
+const opClassMismatch = "class-mismatch"
+
+// recordRejectedClass notes an unwrap turned away by verifyClassBinding.
+//
+// It collapses on the op ALONE — every caller's rejections merge into one
+// aggregate — which is the difference between an audit line and an attack.
+// The ring holds MaxSessionEvents and evicts oldest-first, so any event an
+// unauthenticated caller can mint on demand is an eviction primitive, and
+// collapsing per caller does not help when the caller is what varies:
+// useKey.by is the peer's own argv, so one fork per event buys a fresh
+// aggregate, and a few hundred execs push every real unlock and denial out of
+// `jit audit` — the attack erasing the record of itself.
+//
+// The cost is that a collapsed line names only the first caller in the window.
+// That is the right trade: the count and the fact of a flood are what an
+// investigation needs first, and per-caller attribution bought at the price of
+// an evictable history is worth nothing.
+func (s *Server) recordRejectedClass(c *caller) {
+	s.recordAggregated(KindError, opClassMismatch, "", c, "")
+}
+
+// recordAggregated is recordUse's general form. collapseBy is the second half
+// of the aggregation key: the caller's identity for ordinary uses (so one
+// tool's burst is one line), or a constant for events a caller can trigger at
+// will (so a flood is one line no matter how many identities it wears).
+func (s *Server) recordAggregated(kind, op, collapseBy string, c *caller, label string) {
 	now := time.Now()
-	key := useKey{op: op, by: c.command()}
+	key := useKey{op: op, by: collapseBy}
 
 	s.mu.Lock()
 	flushed := s.flushUsesLocked(false, now)
 	agg := s.pendingUses[key]
 	if agg == nil {
 		e := unlockEvent(op, c)
-		e.Kind = KindUse
+		e.Kind = kind
 		e.UnixTime = now.Unix()
 		agg = &useAggregate{start: now, event: *e}
 		if s.pendingUses == nil {
@@ -1321,7 +1570,7 @@ func (s *Server) history() []SessionEvent {
 func (s *Server) Quiescent() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	unlocked := s.mek != nil && time.Now().Before(s.expiry)
+	unlocked := s.mek != nil && s.remainingLocked() > 0
 	return !unlocked && s.pendingChallenge == nil
 }
 
@@ -1393,9 +1642,26 @@ func (s *Server) status() (unlocked bool, remaining time.Duration) {
 	if s.mek == nil {
 		return false, 0
 	}
-	remaining = time.Until(s.expiry)
+	remaining = s.remainingLocked()
 	if remaining <= 0 {
 		return false, 0
 	}
 	return true, remaining
+}
+
+// remainingLocked is how long this session actually has left: the idle expiry
+// or the hard ceiling, whichever comes first.
+//
+// Reporting the idle expiry alone would make `jit status` say "locks in 8h"
+// on a session that the ceiling ends in twenty minutes — the same "a setting
+// that cannot mean what it says" failure validateAgentTTL exists to prevent,
+// except here it is the readout rather than the config. Caller must hold s.mu.
+func (s *Server) remainingLocked() time.Duration {
+	remaining := time.Until(s.expiry)
+	if !s.sessionStart.IsZero() && s.maxSessionAge > 0 {
+		if untilCap := time.Until(s.sessionStart.Add(s.maxSessionAge)); untilCap < remaining {
+			remaining = untilCap
+		}
+	}
+	return remaining
 }

@@ -718,6 +718,13 @@ func authEntry(home string, e agent.SessionEvent) auditEntry {
 		if e.Op != "" {
 			pairs = append(pairs, kv{"op", e.Op})
 		}
+		// Rejections that repeat are collapsed into one event carrying how
+		// many there were (see recordRejectedClass). Without printing it, a
+		// flood of hundreds reads exactly like a single stray request — and
+		// the count is the whole reason the line is interesting.
+		if e.Count > 1 {
+			pairs = append(pairs, kv{"count", strconv.FormatInt(e.Count, 10)})
+		}
 		if e.Cause != "" {
 			pairs = append(pairs, kv{"reason", e.Cause})
 		}
