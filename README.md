@@ -59,8 +59,9 @@ echo 'source <(jit completion zsh)' >> ~/.zshrc && exec zsh
 ```sh
 jit scan                            # read-only. shows every plaintext secret. writes nothing.
 jit vault init                      # make the vault (master key in your login keychain)
-jit migrate ~/code/myapp --dry-run  # preview the fix
-jit migrate ~/code/myapp            # apply: shows plan, asks [y/N], one Touch ID
+jit migrate --dry-run               # preview the whole machine-wide fix plan
+jit migrate                         # apply it: shows plan, asks [y/N], one Touch ID
+jit migrate ~/code/myapp            # or fix just one project
 jit run -- npm run dev              # run your tool; real values injected into that process only
 ```
 
@@ -71,24 +72,29 @@ Day to day it's mostly `jit run -- <cmd>`. For CLIs that carry their own login
 token (`gh`, `glab`, `stripe`, and more) you `jit wrap gh` once and then keep
 typing `gh` as normal forever.
 
-Not sure whether something needs `jit wrap`, `jit migrate`, or nothing? You don't
-have to know. `jit scan` classifies every finding (it has a **Wrappable CLI
-Tokens** section for exactly this) and prints the exact fix command for what it
-found. Start with `scan` and follow the hint:
+Not sure whether something needs `jit wrap`, `jit migrate`, or nothing? You
+don't have to know. `jit scan` splits everything it finds into what jit will
+protect (one command - the wraps included) and what only you can fix, and
+bare `jit migrate` runs that whole plan:
 
 ```console
 $ jit scan
-  ...
-  [.env Files]
-    • ~/code/myapp/.env
-      HIGH  contains "API_KEY", a variable name that looks like a real credential
+  YOUR SECRETS: 7 — 0 protected by jit (0%)
+  ▱▱▱▱▱▱▱▱▱▱  to 100%: one command +71% · 2 things only you can fix +28%
 
-  [Wrappable CLI Tokens]
-    • ~/.config/gh/hosts.yml
-      HIGH  GitHub CLI token found: wrap it so it's injected per call
+  jit will protect these — 5 secrets in 4 files, 0% → 71%
+      → jit migrate
+        ~/.zshrc            STRIPE_API_KEY, DB_PASSWORD
+        ~/.config/gh/hosts.yml  GitHub CLI token · wraps gh
+        ...
 
-Run `jit migrate ~/code/myapp --dry-run` to see the guided fix plan for it.
+  only you can protect these — 2 secrets, 71% → 100%
+    ! A production database password in 2 copies of a file
+      → rotate it now, then delete every copy
 ```
+
+(`jit scan --full` still gives the classic per-category inventory with
+severities, including the **Wrappable CLI Tokens** section.)
 
 ## Your everyday tools
 

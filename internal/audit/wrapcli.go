@@ -62,6 +62,11 @@ func ScanWrappableCLITokens(cfg Config) ([]Finding, error) {
 			f.ValuePreview = &preview
 			f.Confidence = ConfidenceHigh
 			f.Evidence = fmt.Sprintf("%s in plaintext; one command moves it into the vault and keeps %s working: jit wrap %s", entry.Doc, tool, tool)
+			// Set here, not in annotateRemedies: only this scanner knows
+			// which catalog tool owns the file, and the command is the tool
+			// name, not the file path.
+			f.Remedy = RemedyWrap
+			f.FixCommand = "jit wrap " + tool
 			f.RecordID = RecordID(f.FindingType, f.FilePath, f.KeyName)
 			findings = append(findings, f)
 			break // first matching source is the live token; one finding per tool

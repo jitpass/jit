@@ -11,11 +11,14 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
+	"github.com/jitpass/jit/internal/agent"
+	"github.com/jitpass/jit/internal/audit"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/vault"
@@ -141,10 +144,13 @@ var migrateCmd = &cobra.Command{
 		"sitting on disk. It's a separate command from jit scan, not a flag on it,\n" +
 		"so the read-only scanner can never be turned into a mutating one by a\n" +
 		"mistyped flag.\n\n" +
-		"You must name the file(s) and/or folder(s) to convert — jit migrate never\n" +
-		"sweeps your whole machine on its own. Nothing is discovered or touched\n" +
-		"except the targets you name, so a bare `jit migrate` with no path does\n" +
-		"nothing. Each target is resolved on its own:\n\n" +
+		"Bare `jit migrate` (no arguments) protects everything the machine-wide\n" +
+		"scan judged protectable: it runs the same scan `jit scan` runs, shows the\n" +
+		"full plan — every file it will rewrite and every CLI it will wrap — and\n" +
+		"asks for confirmation before touching anything. It is exactly the command\n" +
+		"the scan report's \"jit will protect these\" section points at.\n\n" +
+		"With arguments, nothing is discovered or touched except the targets you\n" +
+		"name. Each target is resolved on its own:\n\n" +
 		"  A file       is routed to the right category by what it is. A project file\n" +
 		"               (.env, *.tfvars, mcp.json/.mcp.json, .npmrc) has its secrets\n" +
 		"               moved into a profile and the vault, the file keeps working as a\n" +
@@ -165,13 +171,14 @@ var migrateCmd = &cobra.Command{
 		"plan and asks for confirmation before touching anything, and every modified\n" +
 		"file is backed up (encrypted, into the vault) first, `jit migrate undo <path>`\n" +
 		"restores a migrated file from that backup.",
-	Example: "  jit migrate ~/proj/.env         # migrate just one file\n" +
+	Example: "  jit migrate                     # protect everything the scan found\n" +
+		"  jit migrate ~/proj/.env         # migrate just one file\n" +
 		"  jit migrate ~/proj              # walk one project for .env/tfvars/mcp/npmrc\n" +
 		"  jit migrate ~/.zshrc ~/proj/.env\n" +
 		"  jit migrate ~/proj/.env --dry-run   # preview the plan, change nothing\n" +
 		"  jit migrate ~/.aws/credentials --only aws\n" +
 		"  jit migrate undo ~/proj/.env    # restore a migrated file from its backup",
-	Args: requirePaths("jit migrate"),
+	Args: cobra.ArbitraryArgs,
 	// migrateCmd carries subcommands (path/undo/remove), and cobra defaults
 	// argument completion on any command that has subcommands to NoFileComp —
 	// which silently suppresses the shell's file completion for the bare
@@ -183,6 +190,9 @@ var migrateCmd = &cobra.Command{
 		return nil, cobra.ShellCompDirectiveDefault
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return runMigrateAll(cmd)
+		}
 		return runMigratePath(cmd, args)
 	},
 }
@@ -210,7 +220,7 @@ var migratePathCmd = &cobra.Command{
 // directory: an explicitly named target can sit under any project, so
 // deriving from the invoking cwd would produce a nonsensical profile name
 // disconnected from the secret's real home.
-func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
+func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) {
 	// Locals aliased to d's fields so the --only filter, plan, and apply
 	// loops below read exactly as they did before this function was split
 	// out. categorySlices points at these locals, and the --only nil-out
@@ -267,17 +277,17 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 		"loose":     &looseSecretFiles,
 	}
 	if len(categorySlices) != len(migrateCategories) {
-		return fmt.Errorf("jit migrate: internal error: category table (%d) out of sync with --only categories (%d)", len(categorySlices), len(migrateCategories))
+		return false, fmt.Errorf("jit migrate: internal error: category table (%d) out of sync with --only categories (%d)", len(categorySlices), len(migrateCategories))
 	}
 	for _, token := range migrateCategories {
 		if _, ok := categorySlices[token]; !ok {
-			return fmt.Errorf("jit migrate: internal error: --only category %q has no entry in the category table", token)
+			return false, fmt.Errorf("jit migrate: internal error: --only category %q has no entry in the category table", token)
 		}
 	}
 	if len(migrateOnly) > 0 {
 		selected, err := filterMigrateOnly(migrateOnly)
 		if err != nil {
-			return fmt.Errorf("jit migrate: %w", err)
+			return false, fmt.Errorf("jit migrate: %w", err)
 		}
 		for token, items := range categorySlices {
 			if !selected[token] {
@@ -306,7 +316,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 			"Nothing migrate can move safely; they stay in place, and `jit scan` keeps reporting them.")
 		printSkippedFindings(cmd.OutOrStdout(), home, len(looseEmbeddedSkipped), "file(s) that mix a secret with other content", looseEmbeddedSkipped,
 			"Re-run with --mount to protect them in place as a live mount (the non-secret content is preserved); otherwise they stay put and `jit scan` keeps reporting them.")
-		return nil
+		return false, nil
 	}
 
 	// A real, reported point of confusion: the ONLY "this is a preview"
@@ -349,21 +359,21 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 		_, _ = color.New(color.FgCyan, color.Bold).Fprint(out, "[DRY RUN]")
 		fmt.Fprintln(out, " No files were changed. Run without --dry-run to apply this plan.")
 		_, _ = color.New(color.FgYellow).Fprintln(out, "This only covers what jit migrate can act on, run `jit scan` for a complete picture, including findings it can never auto-fix, like private keys.")
-		return nil
+		return false, nil
 	}
 
 	if !migrateYes && !confirmPrompt(cmd, "Proceed? [y/N] ") {
 		fmt.Fprintln(cmd.OutOrStdout(), "Aborted. Nothing was changed.")
-		return nil
+		return false, nil
 	}
 
 	v, err := openVault()
 	if err != nil {
-		return fmt.Errorf("jit migrate: %w", err)
+		return false, fmt.Errorf("jit migrate: %w", err)
 	}
 	root, err := vaultRootDir()
 	if err != nil {
-		return fmt.Errorf("jit migrate: %w", err)
+		return false, fmt.Errorf("jit migrate: %w", err)
 	}
 	registryPath := mount.RegistryPath(root)
 
@@ -401,7 +411,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 			envProfilesRoot := filepath.Dir(envPath)
 			result, err := migrate.ApplyEnvFile(v, envProfilesRoot, envPath)
 			if err != nil {
-				return fmt.Errorf("jit migrate: %w", err)
+				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			// A backup-suffixed file (.bak/.old/.orig/.backup) never
 			// became a live mount at all (GAPS.md #34) — ApplyEnvFile
@@ -417,10 +427,10 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 				continue
 			}
 			if err := mount.AddMount(registryPath, mount.Entry{MountPath: result.EnvPath, ProfilePath: result.ProfilePath}); err != nil {
-				return fmt.Errorf("jit migrate: registering mount for %s: %w", result.EnvPath, err)
+				return false, fmt.Errorf("jit migrate: registering mount for %s: %w", result.EnvPath, err)
 			}
 			if err := summary.writePointerFile(result.EnvPath, result.ProfilePath); err != nil {
-				return fmt.Errorf("jit migrate: %w", err)
+				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			fmt.Fprintf(out, "  • %s -> profile %q (%d var(s)); backup: `jit vault get %s`\n", displayPath(home, envPath), result.ProfileName, len(result.Variables), result.BackupPath)
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
@@ -439,13 +449,13 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 				// --mount: the file becomes a live FIFO serving a template.
 				result, err := migrate.ApplyLooseSecretFileMount(v, filepath.Dir(path), path)
 				if err != nil {
-					return fmt.Errorf("jit migrate: %w", err)
+					return false, fmt.Errorf("jit migrate: %w", err)
 				}
 				if err := mount.AddMount(registryPath, mount.Entry{MountPath: path, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
-					return fmt.Errorf("jit migrate: registering mount for %s: %w", path, err)
+					return false, fmt.Errorf("jit migrate: registering mount for %s: %w", path, err)
 				}
 				if err := summary.writePointerFile(path, result.ProfilePath); err != nil {
-					return fmt.Errorf("jit migrate: %w", err)
+					return false, fmt.Errorf("jit migrate: %w", err)
 				}
 				fmt.Fprintf(out, "  • %s -> profile %q (%d secret(s)); backup: `jit vault get %s`, live mount (real value to `jit run` grants, a decoy otherwise)\n",
 					displayPath(home, path), result.ProfileName, len(result.Variables), result.BackupPath)
@@ -457,7 +467,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 			// register and nothing to reveal — retrieval is `jit vault get`.
 			result, err := migrate.ApplyLooseSecretFile(v, filepath.Dir(path), path)
 			if err != nil {
-				return fmt.Errorf("jit migrate: %w", err)
+				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			summary.backupOnlyFiles++
 			fmt.Fprintf(out, "  • %s -> profile %q (%d secret(s)); backup: `jit vault get %s`, replaced with a safe pointer file (retrieve with `jit vault get %s/%s`)\n",
@@ -480,7 +490,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 			// Same profilesRoot rule as .env above: the directory's own path.
 			result, err := migrate.ApplyTfvarsDir(v, dir, dir, tfvarsByDir[dir])
 			if err != nil {
-				return fmt.Errorf("jit migrate: %w", err)
+				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			backups := make([]string, len(result.Backups))
 			for i, b := range result.Backups {
@@ -505,7 +515,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 
 			result, err := migrate.ApplyShellConfig(v, shellPath)
 			if err != nil {
-				return fmt.Errorf("jit migrate: %w", err)
+				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			fmt.Fprintf(out, "  • %s -> profile %q (%d var(s)); backup: `jit vault get %s`, open a new shell (or `source %s`)\n",
 				displayPath(home, shellPath), result.ProfileName, len(result.Variables), result.BackupPath, displayPath(home, shellPath))
@@ -520,7 +530,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 
 			result, err := migrate.ApplyMCPConfig(v, mcpPath)
 			if err != nil {
-				return fmt.Errorf("jit migrate: %w", err)
+				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			for _, sm := range result.Servers {
 				fmt.Fprintf(out, "  • %s server %q -> profile %q (%d var(s)); backup: `jit vault get %s`\n",
@@ -538,7 +548,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 		for _, awsProfile := range awsProfiles {
 			result, err := migrate.ApplyAWSProfile(v, home, awsProfile, backups)
 			if err != nil {
-				return fmt.Errorf("jit migrate: %w", err)
+				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			backups := fmt.Sprintf("`jit vault get %s`", result.CredentialsBackup)
 			if result.ConfigBackup != "" {
@@ -556,7 +566,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 		for _, k8sUser := range k8sUsers {
 			result, err := migrate.ApplyKubeconfigUser(v, home, k8sUser, backups)
 			if err != nil {
-				return fmt.Errorf("jit migrate: %w", err)
+				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			fmt.Fprintf(out, "  • %q (%s) -> vault profile %q (%d var(s)); backup: `jit vault get %s`\n",
 				k8sUser, result.AuthType, result.VaultProfileName, len(result.Variables), result.Backup)
@@ -570,7 +580,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 		for _, tfHost := range terraformHosts {
 			result, err := migrate.ApplyTerraformHost(v, home, tfHost, backups)
 			if err != nil {
-				return fmt.Errorf("jit migrate: %w", err)
+				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			backups := fmt.Sprintf("`jit vault get %s`", result.CredentialsBackup)
 			if result.RCBackup != "" {
@@ -589,7 +599,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 		for _, dockerRegistry := range dockerRegistries {
 			result, err := migrate.ApplyDockerRegistry(v, home, dockerRegistry, backups)
 			if err != nil {
-				return fmt.Errorf("jit migrate: %w", err)
+				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			claimedDefaultStore = claimedDefaultStore || result.ClaimedDefaultStore
 			fmt.Fprintf(out, "  • %q -> vault profile %q (%d var(s)); backup: `jit vault get %s`\n",
@@ -607,7 +617,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 		rc := wrap.RcFile(home, os.Getenv("SHELL"))
 		rcChanged, err := wrap.EnsurePathLine(rc)
 		if err != nil {
-			return fmt.Errorf("jit migrate: %w", err)
+			return false, fmt.Errorf("jit migrate: %w", err)
 		}
 		if rcChanged {
 			fmt.Fprintf(out, "  Added to %s: %s\n", displayPath(home, rc), wrap.PathLine())
@@ -623,7 +633,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 		for _, gitHost := range gitHosts {
 			result, err := migrate.ApplyGitCredential(v, home, gitHost, backups)
 			if err != nil {
-				return fmt.Errorf("jit migrate: %w", err)
+				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			replacedStore = replacedStore || result.ReplacedStoreHelper
 			backupNote := fmt.Sprintf("`jit vault get %s`", result.CredentialsBackup)
@@ -644,7 +654,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 		rc := wrap.RcFile(home, os.Getenv("SHELL"))
 		rcChanged, err := wrap.EnsurePathLine(rc)
 		if err != nil {
-			return fmt.Errorf("jit migrate: %w", err)
+			return false, fmt.Errorf("jit migrate: %w", err)
 		}
 		if rcChanged {
 			fmt.Fprintf(out, "  Added to %s: %s\n", displayPath(home, rc), wrap.PathLine())
@@ -660,13 +670,13 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 
 			result, err := migrate.ApplyGCPADC(v, home, adcPath)
 			if err != nil {
-				return fmt.Errorf("jit migrate: %w", err)
+				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			if err := mount.AddMount(registryPath, mount.Entry{MountPath: adcPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
-				return fmt.Errorf("jit migrate: registering mount for %s: %w", adcPath, err)
+				return false, fmt.Errorf("jit migrate: registering mount for %s: %w", adcPath, err)
 			}
 			if err := summary.writePointerFile(adcPath, result.ProfilePath); err != nil {
-				return fmt.Errorf("jit migrate: %w", err)
+				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			fmt.Fprintf(out, "  • %s (%s) -> profile %q (%d var(s)); backup: `jit vault get %s`\n",
 				displayPath(home, adcPath), result.CredType, result.ProfileName, len(result.Variables), result.BackupPath)
@@ -688,13 +698,13 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 
 			result, err := migrate.ApplySOPSAge(v, home, keyPath)
 			if err != nil {
-				return fmt.Errorf("jit migrate: %w", err)
+				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			if err := mount.AddMount(registryPath, mount.Entry{MountPath: keyPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
-				return fmt.Errorf("jit migrate: registering mount for %s: %w", keyPath, err)
+				return false, fmt.Errorf("jit migrate: registering mount for %s: %w", keyPath, err)
 			}
 			if err := summary.writePointerFile(keyPath, result.ProfilePath); err != nil {
-				return fmt.Errorf("jit migrate: %w", err)
+				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			fmt.Fprintf(out, "  • %s -> profile %q; backup: `jit vault get %s`\n",
 				displayPath(home, keyPath), result.ProfileName, result.BackupPath)
@@ -723,13 +733,13 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 			}
 			result, err := migrate.ApplyNpmrc(v, npmrcRoot, npmrcPath, globalNpmrc)
 			if err != nil {
-				return fmt.Errorf("jit migrate: %w", err)
+				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			if err := mount.AddMount(registryPath, mount.Entry{MountPath: npmrcPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
-				return fmt.Errorf("jit migrate: registering mount for %s: %w", npmrcPath, err)
+				return false, fmt.Errorf("jit migrate: registering mount for %s: %w", npmrcPath, err)
 			}
 			if err := summary.writePointerFile(npmrcPath, result.ProfilePath); err != nil {
-				return fmt.Errorf("jit migrate: %w", err)
+				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			fmt.Fprintf(out, "  • %s -> profile %q (%d var(s)); backup: `jit vault get %s`\n",
 				displayPath(home, npmrcPath), result.ProfileName, len(result.Variables), result.BackupPath)
@@ -752,13 +762,13 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 
 			result, err := migrate.ApplyNetrc(v, home, netrcPath)
 			if err != nil {
-				return fmt.Errorf("jit migrate: %w", err)
+				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			if err := mount.AddMount(registryPath, mount.Entry{MountPath: netrcPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
-				return fmt.Errorf("jit migrate: registering mount for %s: %w", netrcPath, err)
+				return false, fmt.Errorf("jit migrate: registering mount for %s: %w", netrcPath, err)
 			}
 			if err := summary.writePointerFile(netrcPath, result.ProfilePath); err != nil {
-				return fmt.Errorf("jit migrate: %w", err)
+				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			fmt.Fprintf(out, "  • %s -> profile %q (%d var(s)); backup: `jit vault get %s`\n",
 				displayPath(home, netrcPath), result.ProfileName, len(result.Variables), result.BackupPath)
@@ -779,13 +789,13 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 
 			result, err := migrate.ApplyPypirc(v, home, pypircPath)
 			if err != nil {
-				return fmt.Errorf("jit migrate: %w", err)
+				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			if err := mount.AddMount(registryPath, mount.Entry{MountPath: pypircPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
-				return fmt.Errorf("jit migrate: registering mount for %s: %w", pypircPath, err)
+				return false, fmt.Errorf("jit migrate: registering mount for %s: %w", pypircPath, err)
 			}
 			if err := summary.writePointerFile(pypircPath, result.ProfilePath); err != nil {
-				return fmt.Errorf("jit migrate: %w", err)
+				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			fmt.Fprintf(out, "  • %s -> profile %q (%d var(s)); backup: `jit vault get %s`\n",
 				displayPath(home, pypircPath), result.ProfileName, len(result.Variables), result.BackupPath)
@@ -812,7 +822,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 	// migrate target can sit under any project, so there's no single "this
 	// project" here whose rename to flag (see noteFolderRename, still used by
 	// status).
-	return nil
+	return true, nil
 }
 
 // runMigratePath implements `jit migrate <file-or-dir>...` (and its `path`
@@ -823,6 +833,146 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) error {
 // its own, its findings merged into one discovered set, then handed to the
 // shared applyMigrate path for the plan/confirm gate, encrypted backups, and
 // undo support.
+// runMigrateAll is the bare `jit migrate`: execute the protect plan the
+// machine-wide scan computes — the exact manifest `jit scan`'s "jit will
+// protect these" section renders, from the same Remedy annotations, so the
+// report and the command can never disagree about what will happen.
+//
+// The consent story is unchanged from targeted migrate: the full plan
+// prints and a [y/N] gate precedes any change (applyMigrate's own gate).
+// Wraps run after the file migrations, automatically — the design decision
+// of 2026-07-28: the plan line is the consent, and each wrap prints its
+// undo command right after it happens. Archived findings are skipped, the
+// same as every non-explicit migrate path; Low/Info sightings are not part
+// of the plan at all (CountedAsSecret).
+func runMigrateAll(cmd *cobra.Command) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("jit migrate: %w", err)
+	}
+	cfg, err := audit.NewConfig(agent.Version())
+	if err != nil {
+		return fmt.Errorf("jit migrate: %w", err)
+	}
+	if root, rootErr := vaultRootDir(); rootErr == nil {
+		cfg.MountRegistryPath = mount.RegistryPath(root)
+	}
+
+	progress := newProgress(cmd, false)
+	defer progress.Stop()
+	cfg.Progress = func(category string) {
+		progress.Step("Scanning "+category+"…", "Scanned "+category)
+	}
+	findings, summary, err := audit.Scan(cfg)
+	if err != nil {
+		return fmt.Errorf("jit migrate: %w", err)
+	}
+
+	var files []string
+	seenFile := map[string]bool{}
+	var tools []string
+	seenTool := map[string]bool{}
+	for _, f := range findings {
+		if !audit.CountedAsSecret(f) || f.Archived {
+			continue
+		}
+		switch f.Remedy {
+		case audit.RemedyWrap:
+			tool := strings.TrimPrefix(f.FixCommand, "jit wrap ")
+			if tool != "" && !seenTool[tool] {
+				seenTool[tool] = true
+				tools = append(tools, tool)
+			}
+		case audit.RemedyMigrate:
+			if f.FilePath != "" && !seenFile[f.FilePath] {
+				seenFile[f.FilePath] = true
+				files = append(files, f.FilePath)
+			}
+		}
+	}
+	// --only scopes the FILE half of the plan (applyMigrate applies it);
+	// wraps aren't an --only category, so running them anyway would do work
+	// the user explicitly scoped out — skip them, and say so.
+	if len(migrateOnly) > 0 && len(tools) > 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "note: --only is set, skipping %s wrap(s): %s\n", pluralWord(len(tools), "CLI", "CLIs"), strings.Join(tools, ", "))
+		tools = nil
+	}
+	if len(files) == 0 && len(tools) == 0 {
+		progress.Stop()
+		fmt.Fprintln(cmd.OutOrStdout(), "Nothing to protect — the scan found no secrets jit can act on. Run `jit scan` for the full picture.")
+		return nil
+	}
+	sort.Strings(files)
+
+	d := &discovered{}
+	for _, path := range files {
+		if err := discoverFileTarget(d, home, path); err != nil {
+			// One unreadable file must not sink the whole protect run; say
+			// so and keep going — the scan will keep reporting it.
+			fmt.Fprintf(cmd.ErrOrStderr(), "skipping %s: %v\n", displayPath(home, path), err)
+		}
+	}
+	d.dedupe()
+	progress.Stop()
+
+	out := cmd.OutOrStdout()
+	if d.total() == 0 && len(tools) == 0 {
+		// Discovery routed every candidate to a skip (mixed-content files,
+		// or files that changed since the scan). No plan, no prompt, and
+		// definitely no coverage promise.
+		fmt.Fprintln(out, "Nothing bare `jit migrate` can protect right now: the flagged file(s) mix secrets with other content or need to be named explicitly. `jit scan` has the details.")
+		return nil
+	}
+
+	// The wrap half of the plan prints ABOVE applyMigrate's file plan so the
+	// one [y/N] below covers everything this run will do.
+	if len(tools) > 0 {
+		if migrateDryRun {
+			_, _ = color.New(color.FgCyan, color.Bold).Fprint(out, "[DRY RUN] ")
+		}
+		fmt.Fprintf(out, "Will also wrap %s (token into the vault, tool keeps working; each is\nreversible with `jit wrap undo <tool>`): %s\n\n",
+			pluralWord(len(tools), "CLI", "CLIs"), strings.Join(tools, ", "))
+	}
+
+	applied := true
+	if d.total() > 0 {
+		applied, err = applyMigrate(cmd, home, d)
+		if err != nil {
+			return err
+		}
+	} else if !migrateDryRun && !migrateYes && !confirmPrompt(cmd, "Proceed? [y/N] ") {
+		// Only wraps in the plan: applyMigrate never ran, so gate here.
+		fmt.Fprintln(out, "Aborted. Nothing was changed.")
+		return nil
+	}
+	if !applied && !migrateDryRun {
+		return nil // declined at the plan — wraps must not run either
+	}
+
+	for _, tool := range tools {
+		if migrateDryRun {
+			fmt.Fprintf(out, "[dry-run] would wrap %s (undo: jit wrap undo %s)\n", tool, tool)
+			continue
+		}
+		fmt.Fprintln(out)
+		if wrapErr := runCatalogWrap(cmd, tool); wrapErr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "wrapping %s failed: %v\n", tool, wrapErr)
+			continue
+		}
+		fmt.Fprintf(out, "(reversible: jit wrap undo %s)\n", tool)
+	}
+
+	// Close the loop with the number the scan report opened with — only
+	// after something actually applied; a declined or empty run must not
+	// print a coverage gain it didn't produce.
+	if applied && !migrateDryRun && summary.SecretsTotal > 0 {
+		before := summary.SecretsProtected * 100 / summary.SecretsTotal
+		after := (summary.SecretsProtected + summary.SecretsMigratable) * 100 / summary.SecretsTotal
+		fmt.Fprintf(out, "\ncoverage: %d%% → up to %d%% — run `jit scan` to see the new number\n", before, after)
+	}
+	return nil
+}
+
 func runMigratePath(cmd *cobra.Command, targets []string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -884,7 +1034,8 @@ func runMigratePath(cmd *cobra.Command, targets []string) error {
 	d.dedupe()
 
 	progress.Stop() // settle the discovery trail before the plan/prompt prints
-	return applyMigrate(cmd, home, d)
+	_, err = applyMigrate(cmd, home, d)
+	return err
 }
 
 // expandTilde turns a leading ~ or ~/ into home. A login shell expands this

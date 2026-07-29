@@ -132,8 +132,8 @@ func TestFirstRun_ProjectFindingsScopeToLocal(t *testing.T) {
 	if !strings.Contains(out, "this project") {
 		t.Errorf("project-scoped copy missing; output:\n%s", out)
 	}
-	if !strings.Contains(out, "jit migrate local") {
-		t.Errorf("should offer migrate local for a project; output:\n%s", out)
+	if !strings.Contains(out, "jit migrate .") {
+		t.Errorf("should offer `jit migrate .` for a project; output:\n%s", out)
 	}
 	if !rec.confirmCalled {
 		t.Error("did not reach the setup prompt")
@@ -153,8 +153,8 @@ func TestFirstRun_MachineWideFallback(t *testing.T) {
 	if !strings.Contains(out, "your machine") {
 		t.Errorf("machine-scoped copy missing; output:\n%s", out)
 	}
-	if !strings.Contains(out, "jit migrate home") {
-		t.Errorf("should offer migrate home for a machine-wide reveal; output:\n%s", out)
+	if !strings.Contains(out, "jit migrate") {
+		t.Errorf("should offer bare jit migrate for a machine-wide reveal; output:\n%s", out)
 	}
 	if want := []string{"/proj", "/home/u"}; !reflect.DeepEqual(rec.scanRoots, want) {
 		t.Errorf("scan order = %v, want %v", rec.scanRoots, want)
@@ -169,7 +169,7 @@ func TestFirstRun_ProjectFindingsScopedChain(t *testing.T) {
 	if !strings.Contains(out, "exposed in this project") {
 		t.Errorf("project-scoped banner missing; output:\n%s", out)
 	}
-	wantSteps := [][]string{{"vault", "init"}, {"migrate", "local"}}
+	wantSteps := [][]string{{"vault", "init"}, {"migrate", "."}}
 	if !reflect.DeepEqual(rec.steps, wantSteps) {
 		t.Errorf("guided chain = %v, want %v", rec.steps, wantSteps)
 	}
@@ -177,10 +177,10 @@ func TestFirstRun_ProjectFindingsScopedChain(t *testing.T) {
 
 func TestFirstRun_YesRunsGuidedChainInOrder(t *testing.T) {
 	d, rec := baseDeps()
-	d.scan = findingsFor(rec, "/home/u", 2) // machine-wide → migrate home
+	d.scan = findingsFor(rec, "/home/u", 2) // machine-wide → bare migrate
 	rec.confirmReturn = true
 	runFR(t, d)
-	wantSteps := [][]string{{"vault", "init"}, {"migrate", "home"}}
+	wantSteps := [][]string{{"vault", "init"}, {"migrate"}}
 	if !reflect.DeepEqual(rec.steps, wantSteps) {
 		t.Errorf("guided chain = %v, want %v", rec.steps, wantSteps)
 	}
