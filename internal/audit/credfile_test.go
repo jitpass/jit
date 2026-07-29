@@ -71,6 +71,49 @@ aws_secret_access_key = prodsecretexamplevalue
 	}
 }
 
+func TestScanAWSCredentialsTemporarySessionEvidence(t *testing.T) {
+	// A profile with an aws_expiration stamp was minted by an SSO tool
+	// (clisso et al.) that rewrites the file on each login. The evidence
+	// must say so — otherwise the user migrates, sees a clean scan, and
+	// has no way to understand why the finding returns the next morning.
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, ".aws"))
+	writeFile(t, filepath.Join(home, ".aws", "credentials"), `[live]
+aws_access_key_id = ASIALIVEEXAMPLE
+aws_secret_access_key = livesecretexamplevalue
+aws_session_token = tok123
+aws_expiration = 2999-01-01T00:00:00Z
+
+[stale]
+aws_access_key_id = ASIASTALEEXAMPLE
+aws_secret_access_key = stalesecretexamplevalue
+aws_session_token = tok456
+aws_expiration = 2020-01-01T00:00:00Z
+`)
+	findings, err := scanAWSCredentials(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("scanAWSCredentials: %v", err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("got %d findings, want 2", len(findings))
+	}
+	byKey := map[string]Finding{}
+	for _, f := range findings {
+		byKey[*f.KeyName] = f
+	}
+	live := byKey["live/aws_secret_access_key"]
+	if !strings.Contains(live.Evidence, "temporary session") || !strings.Contains(live.Evidence, "2999-01-01T00:00:00Z") {
+		t.Errorf("live evidence should name the temporary session and its expiry, got: %s", live.Evidence)
+	}
+	if !strings.Contains(live.Evidence, "rewrites this file") {
+		t.Errorf("live evidence should warn the minting tool rewrites the file, got: %s", live.Evidence)
+	}
+	stale := byKey["stale/aws_secret_access_key"]
+	if !strings.Contains(stale.Evidence, "expired at 2020-01-01T00:00:00Z") {
+		t.Errorf("stale evidence should say the token already expired, got: %s", stale.Evidence)
+	}
+}
+
 func TestScanAWSCredentialsNotPresent(t *testing.T) {
 	home := t.TempDir()
 	findings, err := scanAWSCredentials(Config{HomeDir: home})
@@ -699,4 +742,89 @@ func TestScanMCPAuthTokensQuietCases(t *testing.T) {
 			t.Errorf("malformed file should be skipped, got (%d findings, %v)", len(findings), err)
 		}
 	})
+}
+
+func TestScanClissoConfig(t *testing.T) {
+	home := t.TempDir()
+	writeFile(t, filepath.Join(home, ".clisso.yaml"), `apps:
+    prod:
+        app-id: "2181527"
+        duration: "43200"
+        provider: acme
+global:
+    output: ~/.aws/credentials
+providers:
+    acme:
+        client-id: abc123exampleclientid
+        client-secret: def456exampleclientsecret
+        subdomain: acme
+        type: onelogin
+        username: alex@example.com
+    backup:
+        base-url: https://example.oktapreview.com
+        type: okta
+        username: alex@example.com
+`)
+	findings, err := scanClissoConfig(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("scanClissoConfig: %v", err)
+	}
+	// Exactly one: the OneLogin provider's client-secret. The Okta provider
+	// keeps no secret in this file (its password goes to the OS keychain).
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1: %+v", len(findings), findings)
+	}
+	f := findings[0]
+	if *f.KeyName != "acme/client-secret" {
+		t.Errorf("KeyName = %q, want acme/client-secret", *f.KeyName)
+	}
+	if f.Severity != SeverityHigh {
+		t.Errorf("severity = %q, want %q", f.Severity, SeverityHigh)
+	}
+	// Manual, via the selfRotatingCaches table: clisso rewrites this file
+	// itself, so jit must not offer a migrate that the tool would fight.
+	annotateRemedies(findings, home)
+	f = findings[0]
+	if f.Remedy != RemedyManual {
+		t.Errorf("Remedy = %q, want %q", f.Remedy, RemedyManual)
+	}
+	if f.FixCommand != "" {
+		t.Errorf("FixCommand = %q, want empty — jit cannot fix a file clisso rewrites", f.FixCommand)
+	}
+	if !strings.Contains(f.Evidence, "long-lived") {
+		t.Errorf("evidence should say the secret is long-lived, got: %s", f.Evidence)
+	}
+	if len(f.ClaimedValuePreviews) != 1 {
+		t.Errorf("expected the client-id claimed for sweep dedup, got: %v", f.ClaimedValuePreviews)
+	}
+}
+
+func TestScanClissoConfigNotPresent(t *testing.T) {
+	home := t.TempDir()
+	findings, err := scanClissoConfig(Config{HomeDir: home})
+	if err != nil || len(findings) != 0 {
+		t.Errorf("got (%d findings, %v), want (0, nil)", len(findings), err)
+	}
+}
+
+func TestScanClissoConfigEmptySecretSkipped(t *testing.T) {
+	// clisso's initConfig creates the file empty; a provider block with a
+	// blank client-secret (or a malformed file) must produce nothing.
+	home := t.TempDir()
+	writeFile(t, filepath.Join(home, ".clisso.yaml"), `providers:
+    acme:
+        client-id: abc123
+        client-secret: ""
+        type: onelogin
+`)
+	findings, err := scanClissoConfig(Config{HomeDir: home})
+	if err != nil || len(findings) != 0 {
+		t.Errorf("blank secret: got (%d findings, %v), want (0, nil)", len(findings), err)
+	}
+
+	writeFile(t, filepath.Join(home, ".clisso.yaml"), "")
+	findings, err = scanClissoConfig(Config{HomeDir: home})
+	if err != nil || len(findings) != 0 {
+		t.Errorf("empty file: got (%d findings, %v), want (0, nil)", len(findings), err)
+	}
 }

@@ -69,8 +69,42 @@ func ScanDerivedCredentials(cfg Config) []DerivedCredential {
 			Advice: "migrating the source profile still protects the long-lived key; the session minted from it is cached by the CLI",
 		})
 	}
+	// clisso's opt-in credential_process cache (its --cache-path default):
+	// live temporary AWS credentials in AWS INI format, at a path nothing
+	// else looks in — not even ~/.aws/credentials sweeps, since the name
+	// doesn't match. Rewritten by clisso on every cached fetch, so it's
+	// derived, not a finding.
+	if isRegularFile(filepath.Join(cfg.HomeDir, ".aws", "credentials-cache")) {
+		out = append(out, DerivedCredential{
+			Path:   filepath.Join(cfg.HomeDir, ".aws", "credentials-cache"),
+			What:   "temporary AWS session credentials clisso cached for credential_process use, in plaintext",
+			Advice: "they expire on their own; delete the file to clear them now (clisso's cache-enable option keeps writing it)",
+		})
+	}
+	// clisso logs to stderr by default; this file exists only if someone
+	// turned on file logging — and at `--log-level trace` clisso writes the
+	// secret key and session token of every minted session into it. The
+	// advisory doesn't read the file to check (see countFilesIn's principle):
+	// existence of opt-in logging is the claim, the trace risk is the advice.
+	if isRegularFile(filepath.Join(cfg.HomeDir, ".clisso.log")) {
+		out = append(out, DerivedCredential{
+			Path:   filepath.Join(cfg.HomeDir, ".clisso.log"),
+			What:   "clisso's log file — at trace level it records the secret key and session token of every minted AWS session",
+			Advice: "if it was ever written at trace level, treat the sessions in it as exposed; delete the file if in doubt",
+		})
+	}
 
 	return out
+}
+
+// isRegularFile reports whether path is a regular file. Lstat, not Stat,
+// for the same reason scanGlobalNpmrc uses it: a path jit itself has
+// turned into a FIFO mount must never be opened (blocking) or reported as
+// an exposure — and a symlink pointing elsewhere isn't the file this
+// advisory is about either.
+func isRegularFile(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 // countFilesIn returns how many regular files sit directly in dir. Contents

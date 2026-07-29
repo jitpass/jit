@@ -56,6 +56,19 @@ var selfRotatingCaches = []selfRotatingCache{
 		title:  "A Gemini CLI OAuth token (rotates itself)",
 		action: "revoke at the provider if exposed; sign out and back in to reset — the CLI rewrites this file on every refresh",
 	},
+	// A variant of the class: the value (a OneLogin API client-secret)
+	// never rotates, but the file is still tool-rewritten — clisso creates
+	// it on any run and rewrites it wholesale from `clisso apps create`,
+	// `providers passwd`, and `cp`. The mount-loses logic is identical: a
+	// FIFO here would break those commands against a pipe, so the offer
+	// must never be made. The action differs from the token caches' —
+	// there is nothing to "reset", only a long-lived secret to rotate at
+	// the provider if this machine may be exposed.
+	{
+		match:  ".clisso.yaml",
+		title:  "A clisso OneLogin client-secret (clisso rewrites its config itself)",
+		action: "rotate the client-secret in OneLogin if exposed — clisso rewrites this file itself, so jit does not protect it in place",
+	},
 }
 
 // selfRotatingCacheFor returns the class entry describing path, if any.
