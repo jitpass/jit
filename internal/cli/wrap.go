@@ -58,6 +58,12 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 			tool, strings.Join(wrap.CatalogTools(), ", "), tool)
 	}
 	out := cmd.OutOrStdout()
+	// One vault for the whole wrap, not one per step: openVault builds a
+	// fresh keychainwrap.Wrapper whose master-key cache is per instance,
+	// so each extra open is another Touch ID prompt when the agent
+	// service isn't reachable. This flow opens for up to three reasons
+	// (store the token, move a config secret, back up the scrubbed file).
+	openV := memoizedVaultOpener()
 
 	// Native tools delegate to the migrate flow that already hooks their
 	// own credential mechanism — stronger than a shim (SDKs, login/logout).
@@ -85,6 +91,60 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 		return fmt.Errorf("jit wrap: %s isn't installed (not on PATH), install it first", tool)
 	}
 
+	// Capture tools mint credentials rather than carrying one, so there is
+	// no token to discover and no profile to write — just the shim that
+	// reroutes each mint into the vault (`jit <tool>-capture`).
+	if entry.Kind == wrap.KindCapture {
+		exe, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		jitBinary, err := filepath.EvalSymlinks(exe)
+		if err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		res, err := wrap.AddCapture(home, tool, jitBinary)
+		if err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		fmt.Fprintf(out, "Wrapped %s (%s):\n  shim  %s\n", tool, entry.Doc, res.ShimPath)
+		fmt.Fprintf(out, "From now on `%s get <app>` stores the minted credentials in the vault\n(profile aws-<app>, served via credential_process) instead of writing\n~/.aws/credentials; your MFA prompts appear exactly as before.\n", tool)
+
+		// The tool's own long-lived secret moves too: clisso keeps a
+		// OneLogin client-secret in ~/.clisso.yaml, and the shim serves
+		// the real value back per run — so the plaintext can leave now.
+		// Discovery first, so the vault (and its unlock prompt) is only
+		// opened when there is actually a secret to move.
+		found, err := migrate.DiscoverClissoSecrets(home)
+		if err != nil {
+			return fmt.Errorf("jit wrap: reading ~/.clisso.yaml: %w", err)
+		}
+		if len(found) > 0 {
+			v, err := openV()
+			if err != nil {
+				return fmt.Errorf("jit wrap: %w", err)
+			}
+			mig, err := migrate.ApplyClissoConfig(v, home)
+			if err != nil {
+				return fmt.Errorf("jit wrap: %w", err)
+			}
+			for _, p := range mig.Providers {
+				fmt.Fprintf(out, "Moved provider %q's client-secret into the vault (%s); %s now\nholds a pointer (original backed up encrypted, `jit migrate undo` restores it).\n",
+					p, migrate.ClissoVaultPath(p), mig.ConfigPath)
+			}
+			for _, p := range mig.Skipped {
+				fmt.Fprintf(out, "Provider %q has a name that can't map to a vault path; its client-secret\nwas left in place.\n", p)
+			}
+		}
+		if err := ensureShimOnPath(cmd, home, tool); err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		if entry.VerifyHint != "" {
+			fmt.Fprintf(out, "Check it: open a new shell and run `%s`.\n", entry.VerifyHint)
+		}
+		return nil
+	}
+
 	discovery, found, err := wrap.DiscoverToken(home, entry)
 	if err != nil {
 		return fmt.Errorf("jit wrap: %w", err)
@@ -93,7 +153,7 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 	vaultPath := entry.VaultPath(primary)
 
 	if found {
-		v, err := openVault()
+		v, err := openV()
 		if err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
@@ -140,7 +200,7 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 	// in place, and only after an encrypted byte-for-byte backup — the
 	// same order-of-operations discipline as every migrate category.
 	if found && discovery.Source != nil {
-		v, err := openVault()
+		v, err := openV()
 		if err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
@@ -294,6 +354,9 @@ var wrapListCmd = &cobra.Command{
 			kind, detail := "env", strings.Join(entry.Vars, ",")
 			if entry.IsGrant() {
 				kind, detail = "grant", "--with "+entry.With
+			}
+			if entry.IsCapture() {
+				kind, detail = "capture", "jit "+entry.Capture+"-capture"
 			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", tool, kind, detail, health)
 		}

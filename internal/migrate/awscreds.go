@@ -17,8 +17,13 @@ import (
 
 // awsCredentialKeys are the fields ApplyAWSProfile moves into the vault —
 // the AWS CLI's own static-credential trio (access key, secret key, and
-// an optional temporary session token).
-var awsCredentialKeys = []string{"aws_access_key_id", "aws_secret_access_key", "aws_session_token"}
+// an optional temporary session token), plus aws_expiration, the stamp
+// SAML/SSO minting tools (clisso, aws-okta, onelogin-aws) write next to a
+// temporary token. The stamp isn't a secret, but it must travel with the
+// token: a credential_process answer that omits Expiration is read by the
+// AWS CLI/SDKs as "never expires", which turns a 12-hour session into one
+// a long-running process caches until every call fails ExpiredToken.
+var awsCredentialKeys = []string{"aws_access_key_id", "aws_secret_access_key", "aws_session_token", "aws_expiration"}
 
 // AWSCredentialMigration describes what jit migrate did to one AWS CLI
 // profile.
@@ -78,7 +83,7 @@ func DiscoverAWSProfiles(home string) ([]string, error) {
 // irregular special case, "[profile <name>]" for every other named
 // profile; getting this wrong silently produces a config the AWS CLI
 // never applies. Both ~/.aws/credentials and ~/.aws/config are backed up
-// first (backupFile), and only the three known credential keys are
+// first (backupFile), and only the four known credential keys are
 // removed from the credentials file's target section — its section
 // header and any other content (comments, other profiles) are left
 // exactly as they were, even if the section becomes otherwise empty.
@@ -129,6 +134,7 @@ func ApplyAWSProfile(v *vault.Vault, home, profileName string, dedup ...*BackupT
 		"aws_access_key_id":     "ACCESS_KEY_ID",
 		"aws_secret_access_key": "SECRET_ACCESS_KEY",
 		"aws_session_token":     "SESSION_TOKEN",
+		"aws_expiration":        "EXPIRATION",
 	}
 	meta, err := newProvenance(vault.ClassAWS, AWSCredentialsPath(home))
 	if err != nil {
@@ -136,11 +142,16 @@ func ApplyAWSProfile(v *vault.Vault, home, profileName string, dedup ...*BackupT
 	}
 	var varNames []string
 	for _, iniKey := range awsCredentialKeys {
+		varName := varByINIKey[iniKey]
 		val, ok := kv[iniKey]
 		if !ok || val == "" {
+			// Absent this time: drop any mapping an earlier migration of
+			// this profile left behind, or credential_process would serve
+			// that run's stale session token (or expiry) next to these
+			// fresh keys.
+			delete(entries, varName)
 			continue
 		}
-		varName := varByINIKey[iniKey]
 		secretPath := vaultProfileName + "/" + varName
 		if err := v.SetWithMeta(secretPath, []byte(val), meta); err != nil {
 			return AWSCredentialMigration{}, fmt.Errorf("storing %s in vault: %w", varName, err)
@@ -388,4 +399,145 @@ func quoteIfNeeded(s string) string {
 		return s
 	}
 	return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"`
+}
+
+// AWSSession is one set of temporary credentials captured from an external
+// SSO tool's own output (clisso's --output credential_process JSON), on its
+// way into the vault without ever touching disk.
+type AWSSession struct {
+	AccessKeyID     string
+	SecretAccessKey string
+	SessionToken    string
+	Expiration      string // RFC3339, as the minting tool printed it
+}
+
+// StoreAWSSession is ApplyAWSProfile's file-less sibling: same vault
+// profile ("aws-<profileName>"), same variable names, same
+// credential_process wiring into ~/.aws/config — but the credentials
+// arrive as values captured from the minting tool's stdout instead of
+// being read out of ~/.aws/credentials. This is the storage half of the
+// clisso capture shim (docs/wrap/clisso.md): called on every `clisso get`,
+// so it must be idempotent and cheap.
+//
+// If ~/.aws/credentials still holds a plaintext section for profileName —
+// a pre-wrap leftover, which would outrank the credential_process line in
+// AWS's own resolution order and silently serve stale credentials — it is
+// backed up (encrypted, undo-indexed) and stripped. That check is what
+// closes the treadmill: nothing the capture flow writes ever re-creates
+// the section, so it is stripped at most once.
+func StoreAWSSession(v *vault.Vault, home, profileName string, s AWSSession) (AWSCredentialMigration, error) {
+	if s.AccessKeyID == "" || s.SecretAccessKey == "" {
+		return AWSCredentialMigration{}, fmt.Errorf("captured credentials are missing AccessKeyId/SecretAccessKey")
+	}
+
+	vaultProfileName := "aws-" + profileName
+	globalRoot, err := profile.GlobalRoot()
+	if err != nil {
+		return AWSCredentialMigration{}, fmt.Errorf("resolving global profile root: %w", err)
+	}
+	vaultProfilePath, err := profile.Path(globalRoot, vaultProfileName)
+	if err != nil {
+		return AWSCredentialMigration{}, err
+	}
+
+	entries := profile.Profile{}
+	switch existing, lerr := profile.LoadFile(vaultProfilePath); {
+	case lerr == nil:
+		for k, v2 := range existing {
+			entries[k] = v2
+		}
+	case errors.Is(lerr, os.ErrNotExist):
+		// no existing profile yet — start fresh
+	default:
+		return AWSCredentialMigration{}, fmt.Errorf("loading existing profile %s: %w", vaultProfilePath, lerr)
+	}
+
+	meta, err := newProvenance(vault.ClassAWS, "clisso")
+	if err != nil {
+		return AWSCredentialMigration{}, err
+	}
+	var varNames []string
+	captured := map[string]string{
+		"ACCESS_KEY_ID":     s.AccessKeyID,
+		"SECRET_ACCESS_KEY": s.SecretAccessKey,
+		"SESSION_TOKEN":     s.SessionToken,
+		"EXPIRATION":        s.Expiration,
+	}
+	// Sorted, not raw map order: two runs of the same capture must produce
+	// the same profile manifest, and Go randomizes map iteration.
+	for _, varName := range []string{"ACCESS_KEY_ID", "SECRET_ACCESS_KEY", "SESSION_TOKEN", "EXPIRATION"} {
+		val := captured[varName]
+		if val == "" {
+			// Absent this time: drop any mapping an earlier capture left,
+			// or credential_process would serve that run's stale token (or
+			// expiry) alongside these fresh keys.
+			delete(entries, varName)
+			continue
+		}
+		secretPath := vaultProfileName + "/" + varName
+		if err := v.SetWithMeta(secretPath, []byte(val), meta); err != nil {
+			return AWSCredentialMigration{}, fmt.Errorf("storing %s in vault: %w", varName, err)
+		}
+		entries[varName] = secretPath
+		varNames = append(varNames, varName)
+	}
+	sort.Strings(varNames)
+
+	if err := writeProfileManifest(vaultProfilePath, entries, nil); err != nil {
+		return AWSCredentialMigration{}, fmt.Errorf("writing profile %s: %w", vaultProfilePath, err)
+	}
+
+	// Wire (or refresh) the credential_process line. Config-file handling
+	// deliberately skips ApplyAWSProfile's backup/undo bookkeeping: this
+	// runs on every login, and an undo entry per day is churn, not safety —
+	// the line itself is idempotent and carries no secret.
+	configPath := AWSConfigPath(home)
+	configLines, _, err := parseINILines(configPath)
+	if err != nil && !os.IsNotExist(err) {
+		return AWSCredentialMigration{}, fmt.Errorf("reading %s: %w", configPath, err)
+	}
+	jitPath, err := resolveJitExecutable()
+	if err != nil {
+		return AWSCredentialMigration{}, fmt.Errorf("resolving jit's own executable path: %w", err)
+	}
+	command := fmt.Sprintf("%s aws-credential-process --profile %s", quoteIfNeeded(jitPath), quoteIfNeeded(vaultProfileName))
+	newConfigLines := upsertINIValue(configLines, awsConfigSectionName(profileName), "credential_process", command)
+	// ~/.aws may not exist yet — unlike ApplyAWSProfile, this path doesn't
+	// require a credentials file to already be there (the whole point is
+	// that one never appears).
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		return AWSCredentialMigration{}, fmt.Errorf("creating %s: %w", filepath.Dir(configPath), err)
+	}
+	if err := os.WriteFile(configPath, []byte(strings.Join(newConfigLines, "\n")), 0o600); err != nil {
+		return AWSCredentialMigration{}, fmt.Errorf("writing %s: %w", configPath, err)
+	}
+
+	// Strip a leftover plaintext section, backup first — see the doc
+	// comment for why this is what closes the treadmill.
+	credPath := AWSCredentialsPath(home)
+	credBackup := ""
+	if credLines, credSections, cerr := parseINILines(credPath); cerr == nil {
+		if kv := credSections[profileName]; kv != nil && kv["aws_secret_access_key"] != "" {
+			credBackup, err = backupSecretFile(v, credPath)
+			if err != nil {
+				return AWSCredentialMigration{}, fmt.Errorf("backing up %s: %w", credPath, err)
+			}
+			newCredLines := removeINIKeys(credLines, profileName, awsCredentialKeys)
+			if err := os.WriteFile(credPath, []byte(strings.Join(newCredLines, "\n")), 0o600); err != nil {
+				return AWSCredentialMigration{}, fmt.Errorf("writing %s: %w", credPath, err)
+			}
+		}
+	} else if !os.IsNotExist(cerr) {
+		return AWSCredentialMigration{}, fmt.Errorf("reading %s: %w", credPath, cerr)
+	}
+
+	return AWSCredentialMigration{
+		ProfileName:       profileName,
+		CredentialsPath:   credPath,
+		CredentialsBackup: credBackup,
+		ConfigPath:        configPath,
+		VaultProfileName:  vaultProfileName,
+		VaultProfilePath:  vaultProfilePath,
+		Variables:         varNames,
+	}, nil
 }

@@ -7,7 +7,8 @@ description: ~/.aws/credentials moves to the vault; credential_process serves th
 
 `~/.aws/credentials` is the classic long-lived plaintext credential file.
 `jit migrate` (category `aws`) moves each profile's access key, secret key,
-and session token into the vault and wires a `credential_process` line into
+session token, and expiration stamp (if a SAML/SSO tool minted the profile)
+into the vault and wires a `credential_process` line into
 `~/.aws/config` - after which **that file no longer holds the real value**:
 
 ```ini
@@ -39,6 +40,18 @@ of its own, downstream of the one it just fetched, and those are not jit's:
   it now.
 - **`~/.aws/sso/cache`** holds the access token and role credentials
   `aws sso login` wrote. `aws sso logout` clears them.
+- **`~/.aws/credentials-cache`** holds the temporary session credentials
+  [clisso](https://github.com/allcloud-io/clisso) caches when its
+  `cache-enable` option is on. They expire on their own; deleting the file
+  clears them now.
+- **A profile with an `aws_expiration` stamp** was minted by an SSO tool
+  (clisso, aws-okta, onelogin-aws) that rewrites `~/.aws/credentials` on
+  each login. Migrating it protects today's token — expiration included,
+  served via `Expiration` so SDKs refresh on time — but the finding
+  returns with tomorrow's login, and `jit scan` says so rather than
+  reporting a clean machine that won't stay clean. The tool's own
+  long-lived secret (for clisso: the OneLogin client-secret in
+  `~/.clisso.yaml`) is reported separately as a manual finding.
 - **Assume-role profiles are not migrated.** A profile that is just a
   `role_arn` plus a `source_profile` has no key of its own, so there is
   nothing for jit to move. Migrating the *source* profile still protects the

@@ -41,6 +41,13 @@ func TestShimArgv(t *testing.T) {
 	if !equalArgv(argv, want) {
 		t.Fatalf("grant-wrap shimArgv = %v, want %v", argv, want)
 	}
+
+	// capture-wrap: routes through the tool's capture plumbing command.
+	argv = shimArgv("clisso", "/opt/homebrew/bin/clisso", Entry{Capture: "clisso"}, []string{"get", "prod"})
+	want = []string{"jit", "clisso-capture", "--real", "/opt/homebrew/bin/clisso", "--", "get", "prod"}
+	if !equalArgv(argv, want) {
+		t.Fatalf("capture-wrap shimArgv = %v, want %v", argv, want)
+	}
 }
 
 func equalArgv(got, want []string) bool {

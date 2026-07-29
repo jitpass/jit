@@ -93,11 +93,16 @@ func ShimExec(tool string, args []string) error {
 
 // shimArgv builds the jit run invocation a shim execs into. argv[0] is
 // "jit" so the re-exec'd binary takes its normal CLI path, not shim mode.
-// A grant-wrap (entry.With set) grants a global mount; an env-wrap injects
-// a profile.
+// A grant-wrap (entry.With set) grants a global mount; a capture-wrap
+// (entry.Capture set) routes through the tool's capture plumbing command
+// (`jit <tool>-capture`, e.g. clisso-capture — the naming convention IS
+// the dispatch); an env-wrap injects a profile.
 func shimArgv(tool, realTool string, entry Entry, args []string) []string {
 	if entry.IsGrant() {
 		return append([]string{"jit", "run", "--with", entry.With, "--", realTool}, args...)
+	}
+	if entry.IsCapture() {
+		return append([]string{"jit", entry.Capture + "-capture", "--real", realTool, "--"}, args...)
 	}
 	return append([]string{"jit", "run", "--profile", ProfileName(tool), "--", realTool}, args...)
 }

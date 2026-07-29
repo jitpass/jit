@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -29,6 +30,7 @@ type awsCredentialProcessOutput struct {
 	AccessKeyId     string `json:"AccessKeyId"`
 	SecretAccessKey string `json:"SecretAccessKey"`
 	SessionToken    string `json:"SessionToken,omitempty"`
+	Expiration      string `json:"Expiration,omitempty"`
 }
 
 var awsCredentialProcessCmd = &cobra.Command{
@@ -72,7 +74,7 @@ var awsCredentialProcessCmd = &cobra.Command{
 			return fmt.Errorf("jit aws-credential-process: %w", err)
 		}
 
-		out, err := buildAWSCredentialProcessOutput(values)
+		out, err := buildAWSCredentialProcessOutput(values, time.Now())
 		if err != nil {
 			return fmt.Errorf("jit aws-credential-process: profile %q: %w", awsCredProfile, err)
 		}
@@ -89,16 +91,38 @@ var awsCredentialProcessCmd = &cobra.Command{
 // variable -> plaintext map) and builds the credential_process JSON
 // shape, split out from RunE specifically so the protocol shape is
 // testable without a real vault/Touch ID challenge (same reason
-// run.go/export.go split resolveRunPlan out of their own RunE).
-func buildAWSCredentialProcessOutput(values map[string]string) (awsCredentialProcessOutput, error) {
+// run.go/export.go split resolveRunPlan out of their own RunE). now is a
+// parameter for the same testability reason.
+//
+// A profile migrated from a temporary session (SAML/SSO minting tools
+// like clisso write an aws_expiration stamp alongside the token) carries
+// an EXPIRATION variable. It is passed through as Expiration so SDKs
+// re-fetch on time instead of caching the token as permanent — and once
+// the stamp is in the past the answer is an error naming the expiry, not
+// the dead token: every AWS call made with it would fail ExpiredToken
+// anyway, and this error is the only place the user can be told to mint
+// fresh credentials with the tool that issued them. A stamp that doesn't
+// parse as RFC3339 is passed through untouched: the SDK's own complaint
+// about it beats jit guessing, and refusing to serve live credentials
+// over a malformed timestamp would be the wrong trade.
+func buildAWSCredentialProcessOutput(values map[string]string, now time.Time) (awsCredentialProcessOutput, error) {
 	if values["ACCESS_KEY_ID"] == "" || values["SECRET_ACCESS_KEY"] == "" {
 		return awsCredentialProcessOutput{}, fmt.Errorf("missing ACCESS_KEY_ID/SECRET_ACCESS_KEY")
+	}
+	expiration := values["EXPIRATION"]
+	if expiration != "" {
+		if t, perr := time.Parse(time.RFC3339, expiration); perr == nil && !t.After(now) {
+			return awsCredentialProcessOutput{}, fmt.Errorf(
+				"temporary credentials expired at %s; mint fresh ones with the tool that issued them (for a SAML/SSO CLI, its get/login command), then retry",
+				expiration)
+		}
 	}
 	return awsCredentialProcessOutput{
 		Version:         1,
 		AccessKeyId:     values["ACCESS_KEY_ID"],
 		SecretAccessKey: values["SECRET_ACCESS_KEY"],
 		SessionToken:    values["SESSION_TOKEN"],
+		Expiration:      expiration,
 	}, nil
 }
 

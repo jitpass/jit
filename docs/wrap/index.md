@@ -75,6 +75,22 @@ see: SDKs inside your language runtime, and login/logout flows.
 | [`docker`](./docker.md) | credential helper in `~/.docker/config.json` | `docker login` / `logout`, compose and buildx pulls |
 | [`git`](./git.md) | `credential.helper` in your git config | `git push` / `fetch` over HTTPS, submodules, LFS |
 
+## Capture plugins: tools that MINT credentials
+
+An SSO CLI doesn't carry a token worth moving - it logs into an identity
+provider and mints a fresh secret on every run, which it would then write
+to a plaintext file. For these the shim captures the tool's own
+machine-readable output, in your terminal (so MFA prompts work exactly as
+before), and stores it in the vault instead:
+
+| Tool | Captured from | Served back via |
+|---|---|---|
+| [`clisso`](./clisso.md) | `clisso get`'s own `--output credential_process` JSON | `credential_process` in `~/.aws/config` - never `~/.aws/credentials` |
+
+The same wrap also vaults the tool's own long-lived secret (clisso's
+OneLogin `client-secret`), leaving a `jit://vault/` pointer in
+`~/.clisso.yaml` and serving the real config per run over a pipe.
+
 ## Not in the catalog?
 
 Any tool that reads its credential from an environment variable works even

@@ -65,6 +65,16 @@ func TestCatalogEntriesAreWellFormed(t *testing.T) {
 			if len(e.EnvVars) != 0 || len(e.Sources) != 0 {
 				t.Errorf("%s: native entry must not carry shim fields", tool)
 			}
+		case KindCapture:
+			// A capture entry's dispatch is its tool name (the shim execs
+			// `jit <tool>-capture`); it injects nothing and discovers
+			// nothing, so every shim/native field must stay empty.
+			if len(e.EnvVars) != 0 || len(e.Sources) != 0 || len(e.TokenCommand) != 0 {
+				t.Errorf("%s: capture entry must not carry shim fields", tool)
+			}
+			if e.NativeCategory != "" {
+				t.Errorf("%s: capture entry must not set NativeCategory", tool)
+			}
 		default:
 			t.Errorf("%s: unknown kind %q", tool, e.Kind)
 		}

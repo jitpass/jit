@@ -22,12 +22,16 @@ type Manifest struct {
 }
 
 // Entry describes one wrapped tool. Exactly one of Profile (an env-wrap,
-// the shim injects the profile's vars) or With (a grant-wrap, the shim
+// the shim injects the profile's vars), With (a grant-wrap, the shim
 // grants a global file-delivered mount by name — gcp/sops/npm — for tools
-// that read a machine-wide credential FILE rather than an env var) is set.
+// that read a machine-wide credential FILE rather than an env var), or
+// Capture (a capture-wrap, the shim routes through `jit <tool>-capture`
+// so the tool's freshly minted credentials land in the vault instead of a
+// plaintext file — see KindCapture) is set.
 type Entry struct {
 	Profile string    `json:"profile,omitempty"`
 	With    string    `json:"with,omitempty"`
+	Capture string    `json:"capture,omitempty"`
 	Vars    []string  `json:"vars,omitempty"` // env var names the profile injects, for `jit wrap list`
 	AddedAt time.Time `json:"added_at"`
 }
@@ -35,6 +39,9 @@ type Entry struct {
 // IsGrant reports whether e is a grant-wrap (runs `jit run --with`) rather
 // than an env-wrap (runs `jit run --profile`).
 func (e Entry) IsGrant() bool { return e.With != "" }
+
+// IsCapture reports whether e is a capture-wrap (runs `jit <tool>-capture`).
+func (e Entry) IsCapture() bool { return e.Capture != "" }
 
 // ManifestPath returns the manifest's location under home.
 func ManifestPath(home string) string {
