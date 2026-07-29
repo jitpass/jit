@@ -50,13 +50,40 @@ func WriteMarkdownReport(w io.Writer, findings []Finding, summary ScanSummary) {
 	if summary.JitProtectedCount > 0 {
 		fmt.Fprintf(w, "Already protected by jit: %d live mount(s), served from the encrypted vault, no plaintext on disk. Not scanned.\n\n", summary.JitProtectedCount)
 	}
+	// Same parity, same reason: a shared report that omits the boundary is
+	// the version most likely to be read as "jit covers all of this".
+	writeDerivedCredentialAdvisoryMarkdown(w, summary)
+
 	if summary.TotalFindings == 0 {
 		fmt.Fprintln(w, "No findings. This machine looks clean.")
 		return
 	}
 
-	byType := groupFindingsByType(findings)
+	writeMarkdownFindings(w, findings, summary, groupFindingsByType(findings))
+}
 
+// writeDerivedCredentialAdvisoryMarkdown mirrors the human report's advisory —
+// see writeDerivedCredentialAdvisory for why it exists at all. Paths are
+// rendered unshortened, matching this renderer's existing convention.
+func writeDerivedCredentialAdvisoryMarkdown(w io.Writer, summary ScanSummary) {
+	if len(summary.DerivedCredentials) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "## Outside jit's scope, found anyway")
+	fmt.Fprintln(w)
+	for _, d := range summary.DerivedCredentials {
+		fmt.Fprintf(w, "- `%s` — %s", d.Path, d.What)
+		if d.Advice != "" {
+			fmt.Fprintf(w, " (%s)", d.Advice)
+		}
+		fmt.Fprintln(w)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "jit protects credentials you stored; these were minted by the tools that used them. It does not manage, rotate or hide them.")
+	fmt.Fprintln(w)
+}
+
+func writeMarkdownFindings(w io.Writer, findings []Finding, summary ScanSummary, byType map[string][]Finding) {
 	fmt.Fprintln(w, "## Findings")
 	fmt.Fprintln(w)
 

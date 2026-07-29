@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 
@@ -66,12 +67,40 @@ func consentCaller(c *caller) consent.Caller {
 //     piece now gets its own budget, and the fixed "wants your <class>
 //     credential" tail — the half that carries the actual decision — is never
 //     what gets truncated.
-func consentReason(cc consent.Caller, class string) string {
+//
+// A request that has already been refused this session says so. Repetition is
+// the whole mechanism behind prompt fatigue: the tenth identical dialog is
+// evidence that something is asking in a loop, and a prompt that renders it
+// identically to the first leaves the user nothing to notice that with. The
+// count rides in the protected tail rather than the identity half — it is part
+// of the decision, not context for it, so it is never what truncation drops.
+func consentReason(req consent.Request) string {
+	cc, class := req.Caller, req.Credential
 	// Built tail-first, so the budget is apportioned from what the fixed part
 	// actually costs rather than from constants that have to be re-tuned every
 	// time a class name gets longer. Whatever is left over goes to the
 	// identity, which is the part that can be arbitrarily long.
 	tail := fmt.Sprintf(" wants your %s credential", class)
+	switch n := req.PriorRefusals; {
+	case n == 1:
+		tail += " (refused once)"
+	case n > 1:
+		tail += fmt.Sprintf(" (refused %d times)", n)
+	}
+	// The honesty qualifier belongs to the tail for the same reason the count
+	// does: "as best we can tell" changes what the answer means. It used to be
+	// appended by ConsentReaders AFTER truncating this whole string, which cut
+	// from the tail — so once the refusal count made the line long enough, the
+	// count was sliced mid-word and the user read a dangling "(…".
+	//
+	// Kept short on purpose. The obvious phrasing, "(identified by process
+	// scan)", costs 29 of the 90 runes and pushed the budget below what the
+	// launcher needs, silently dropping "launched by npm install" from every
+	// FIFO prompt — the weaker-identity path, where that context is worth the
+	// most.
+	if cc.Strength == consent.BestEffort {
+		tail += " (identified by scan)"
+	}
 	budget := maxReasonLen - len([]rune(tail))
 
 	var lineage string
@@ -84,7 +113,14 @@ func consentReason(cc consent.Caller, class string) string {
 
 	who := truncateHead(displayExecPath(cc.ExecPath), budget-len([]rune(lineage)))
 	if who == "" {
-		who = fmt.Sprintf("a process (pid %d)", cc.PID)
+		// The unidentified fallback is subject to the same budget as a real
+		// path. It used to be exempt, which was invisible while ConsentReaders
+		// truncated the finished line — and became an overflow the moment that
+		// truncation was removed, on exactly the callers that reach the highest
+		// refusal counts: an empty ExecPath is what makes every anonymous
+		// caller share one throttle key. macOS then clipped the dialog itself,
+		// cutting off the qualifier this ordering exists to protect.
+		who = truncateHead(fmt.Sprintf("a process (pid %d)", cc.PID), budget-len([]rune(lineage)))
 	}
 	return who + lineage + tail
 }
@@ -161,6 +197,15 @@ func truncateHead(s string, max int) string {
 // caching either as a session-long Deny would lock the credential out with no
 // recourse short of re-locking. Re-prompting the next access is the fail-safe
 // direction.
+//
+// Fail-safe for the credential, though, is not free for the human, and this
+// path deliberately does not arm the agent's unlock cooldown either (see
+// discloseChallenge). Both are defensible alone and together they left the one
+// prompt an arbitrary process can trigger on demand with no throttle at all:
+// refusing cost a modal per request, approving cost nothing, and a caller in a
+// loop could simply outlast the user. The engine's per-request backoff
+// (consent.Throttled) is what supplies the missing half — a pause rather than
+// a cached Deny, so nothing is locked out and a genuine retry still asks.
 func (s *Server) gateConsent(class string, c *caller) error {
 	if s.Consent == nil || c == nil || !consent.RequiresConsent(class) {
 		return nil
@@ -168,12 +213,20 @@ func (s *Server) gateConsent(class string, c *caller) error {
 	cc := consentCaller(c)
 	cc.DescendsFromGrant = s.descendsFromTrust(c.pid)
 	prompt := func(req consent.Request) (consent.Decision, consent.Scope, error) {
-		if err := s.forceDisclosedChallenge(consentReason(req.Caller, req.Credential), c); err != nil {
+		if err := s.forceDisclosedChallenge(consentReason(req), c); err != nil {
 			return consent.Deny, consent.Once, nil
 		}
 		return consent.Allow, consent.Session, nil
 	}
 	d, err := s.Consent.Decide(consent.Request{Credential: class, Caller: cc}, prompt)
+	// A throttled request never reached a human, so it must not be reported as
+	// though one turned it down. The engine's message says how many refusals
+	// earned the pause and how long is left — which is also what a legitimate
+	// tool's error output needs to explain itself to whoever runs it next.
+	var throttled *consent.Throttled
+	if errors.As(err, &throttled) {
+		return fmt.Errorf("consent: %w", err)
+	}
 	if err != nil || d != consent.Allow {
 		return fmt.Errorf("consent: access to your %s credential was not granted", class)
 	}
@@ -265,12 +318,11 @@ func (s *Server) ConsentReaders(cred string, holders []int32) bool {
 		cc := consentCallerForPID(h)
 		cc.DescendsFromGrant = s.descendsFromTrust(h)
 		prompt := func(req consent.Request) (consent.Decision, consent.Scope, error) {
-			// The qualifier is the honest part — this identity came from an
-			// unprivileged process scan, not a kernel-vouched socket peer — so
-			// it must not be what falls off the end of the dialog. Truncate
-			// the identity, then append.
-			reason := truncate(consentReason(req.Caller, req.Credential), maxReasonLen-len(" (identified by process scan)")) + " (identified by process scan)"
-			if err := s.forceDisclosedChallenge(reason, nil); err != nil {
+			// The "identified by process scan" qualifier is added by
+			// consentReason itself, off the caller's BestEffort strength, so
+			// it is budgeted alongside the credential name rather than
+			// appended past a truncation that would cut into it.
+			if err := s.forceDisclosedChallenge(consentReason(req), nil); err != nil {
 				// Scoped Once, not Session: see gateConsent — a transient
 				// challenge failure must not cache a session-long Deny.
 				return consent.Deny, consent.Once, nil

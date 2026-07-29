@@ -43,7 +43,10 @@ account safe.
   the high-frequency paths (native hooks, `jit run`). It identifies every
   caller from the kernel (socket peer credentials, then pid, command, and
   parent chain), never from anything the caller claims. It re-locks on the
-  TTL, on screen lock, and on sleep. The sensitive `jit vault` management
+  TTL, at a hard 8-hour ceiling measured from the unlock itself (the TTL is an
+  inactivity timeout, so without a ceiling anything touching the session every
+  few minutes could hold the key resident indefinitely), on screen lock, and on
+  sleep. The sensitive `jit vault` management
   commands bypass the session entirely and require a fresh Touch ID/passcode
   every time, so an unlocked session can't be used to read or destroy the
   vault silently.
@@ -72,6 +75,20 @@ session, not the scope. A cloned repo's config, or a script that slips a
 - **A process you give a secret to can do anything with it.** Delivery is the
   end of jit's control; that is why the decision point is the caller-naming
   prompt, before delivery.
+- **Credentials a tool mints for itself are not jit's.** After the AWS CLI uses
+  a migrated key to assume a role it caches the resulting STS session in
+  plaintext under `~/.aws/cli/cache`, and `aws sso login` writes tokens to
+  `~/.aws/sso/cache`. jit does not manage, clean or decoy them; it reports them
+  as out of scope rather than letting a clean scan imply the directory it just
+  tidied is empty.
+- **Refusing a prompt is bounded, not permanent.** A declined consent prompt
+  cannot be cached as a lasting "no" - the prompt cannot distinguish a human's
+  decline from a keychain failure - so it pauses that caller instead (about 2s,
+  8s, then 30s), and the prompt reports how many times it has already been
+  refused. This closes the asymmetry where saying no cost one dialog per
+  request and saying yes cost one dialog once, which let a caller in a loop
+  outlast the user. It is UX hardening against prompt fatigue, not a boundary:
+  the boundary is still the human answering.
 - **Process identity narrows a grant, it is never the boundary.** A run-scoped
   grant serves real content only to the authorized run's tree, checked per
   read and fail-closed. Winning an identity race yields at most what the grant

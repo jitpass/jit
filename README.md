@@ -148,7 +148,8 @@ for every tool, and how each is delivered.
 
 1. **Unlocking your vault.** The first time you use `jit` after it locks, one
    Touch ID opens the vault for the whole session (5 minutes of activity, then it
-   re-locks). You unlock once, not once per command.
+   re-locks; and never longer than 8 hours, however busy you are). You unlock
+   once, not once per command.
 2. **Handing a credential to a tool.** On top of that, the first time a given
    tool reaches for a real credential, `jit` asks before handing it over and
    names what's asking. This is what stops a program you didn't run from quietly

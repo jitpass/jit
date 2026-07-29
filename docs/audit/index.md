@@ -10,6 +10,15 @@ read-only under every flag: it never touches, encrypts, or rewrites
 anything, and never prints a real secret value in full, only a masked
 preview.
 
+It also says what it does *not* cover. Some credentials are written by other
+tools for their own use — the plaintext STS session the AWS CLI caches in
+`~/.aws/cli/cache`, the tokens `aws sso login` leaves in `~/.aws/sso/cache` —
+and jit does not manage them. Those are reported under **"Outside jit's scope,
+found anyway"**: advisory only, never findings, never counted in any total, and
+with no effect on the risk level or the coverage ledger. They are hex-named, so
+the content sweep would otherwise walk straight past them, and "no findings"
+would quietly imply that the directory jit just tidied was empty.
+
 ```
 jit scan — alex@Alexs-MacBook-Pro — scanned ~/ (7 files) — 1ms
 
@@ -78,6 +87,10 @@ followed. A path that doesn't exist is an error, not a silently empty scan.
 | `jit scan --format markdown` | the same report as markdown, for saving or sharing |
 | `jit scan --format ndjson` | one JSON record per finding plus a closing summary, for piping into other tools ([schema](../reference/audit-ndjson.md)) |
 | `jit scan -o report.md` | write the report to a file instead of stdout |
+
+The "Outside jit's scope" advisory appears in the default view, in `--full`,
+and in markdown. It is deliberately **not** in NDJSON: that schema describes
+findings jit stands behind, and this is a note to a human.
 
 ## What happens next
 

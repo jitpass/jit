@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jitpass/jit/internal/agent"
 )
 
 func TestRotateAgentLogCopiesAsideAndTruncatesInPlace(t *testing.T) {
@@ -102,6 +104,29 @@ func TestValidateAgentTTL(t *testing.T) {
 	}
 	if err := validateAgentTTL(15 * time.Minute); err != nil {
 		t.Errorf("validateAgentTTL(15m) = %v, want nil", err)
+	}
+
+	// Startup takes whatever an installed plist says. A plist written before
+	// the session ceiling existed can carry a longer TTL, and refusing to boot
+	// over it would leave the agent silently not running after an upgrade —
+	// the run path clamps instead.
+	if err := validateAgentTTL(agent.DefaultMaxSessionAge + time.Hour); err != nil {
+		t.Errorf("validateAgentTTL(%s) = %v, want nil: startup clamps a too-long TTL rather than refusing to start", agent.DefaultMaxSessionAge+time.Hour, err)
+	}
+}
+
+// The upper bound belongs where a human just typed the number — that is the
+// only moment there is someone present to be told that a longer idle timeout
+// than the session ceiling could never be reached.
+func TestValidateAgentTTLSetting(t *testing.T) {
+	if err := validateAgentTTLSetting(agent.DefaultMaxSessionAge + time.Hour); err == nil {
+		t.Error("a TTL above the hard session ceiling should be rejected when someone sets it")
+	}
+	if err := validateAgentTTLSetting(agent.DefaultMaxSessionAge); err != nil {
+		t.Errorf("validateAgentTTLSetting(%s) = %v, want nil at exactly the ceiling", agent.DefaultMaxSessionAge, err)
+	}
+	if err := validateAgentTTLSetting(0); err == nil {
+		t.Error("a non-positive TTL should still be rejected when set")
 	}
 }
 

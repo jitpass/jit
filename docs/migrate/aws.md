@@ -8,7 +8,7 @@ description: ~/.aws/credentials moves to the vault; credential_process serves th
 `~/.aws/credentials` is the classic long-lived plaintext credential file.
 `jit migrate` (category `aws`) moves each profile's access key, secret key,
 and session token into the vault and wires a `credential_process` line into
-`~/.aws/config` - after which **no file with the real value exists at all**:
+`~/.aws/config` - after which **that file no longer holds the real value**:
 
 ```ini
 [profile myprofile]
@@ -28,6 +28,29 @@ rather than a shim; nothing about how you invoke your tools changes.
   process doesn't re-prompt on every API call.
 - `jit wrap aws` routes to this same migration - there's one AWS
   mechanism, whichever command you arrive through.
+
+## What jit does not cover
+
+jit protects the credential *you* stored. The AWS CLI also mints credentials
+of its own, downstream of the one it just fetched, and those are not jit's:
+
+- **`~/.aws/cli/cache`** holds the plaintext STS session the CLI receives
+  after assuming a role. It expires on its own; deleting the directory clears
+  it now.
+- **`~/.aws/sso/cache`** holds the access token and role credentials
+  `aws sso login` wrote. `aws sso logout` clears them.
+- **Assume-role profiles are not migrated.** A profile that is just a
+  `role_arn` plus a `source_profile` has no key of its own, so there is
+  nothing for jit to move. Migrating the *source* profile still protects the
+  long-lived key the role is assumed with, which is the credential that
+  matters - but the session minted from it is cached by the CLI as above.
+
+None of this is jit working around a problem; these files are how the CLI
+works, and they will be rewritten the next time it runs. What changed is that
+jit now says so: `jit scan` reports them under "Outside jit's scope, found
+anyway" rather than walking silently past hex-named files in the directory it
+has just tidied. A clean report that quietly omitted a live session token
+would be the more dangerous output.
 
 ## Rotating keys
 

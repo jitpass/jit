@@ -30,6 +30,13 @@ import (
 	"github.com/jitpass/jit/internal/screenlock"
 )
 
+// The agent releases each fetcher's cached MEK as soon as it has copied the
+// key out, via a runtime type assertion (agent.closeFetcher). This is the
+// compile-time half: if Wrapper's Close ever changes shape, the build breaks
+// here instead of the assertion quietly failing to match and restoring a
+// plaintext master key that outlives every lock, screen-lock and sleep wipe.
+var _ agent.ClosableFetcher = (*keychainwrap.Wrapper)(nil)
+
 var agentTTL time.Duration
 
 // agentConsent turns on per-process credential consent in the running service
@@ -109,6 +116,23 @@ var agentRunCmd = &cobra.Command{
 		var logMu sync.Mutex
 		stdout := newStampedWriter(&lockedWriter{mu: &logMu, w: cmd.OutOrStdout()})
 		stderr := newStampedWriter(&lockedWriter{mu: &logMu, w: cmd.ErrOrStderr()})
+
+		// A TTL this process cannot run with at all fails loudly above; one it
+		// can merely not honor in full is clamped here and said out loud. The
+		// difference matters at startup specifically: this command is what an
+		// installed plist executes, and a plist written before the hard
+		// session ceiling existed can legitimately carry `--ttl 24h`. Refusing
+		// that would leave the agent silently not running after an upgrade,
+		// with the only symptom a line in a log nobody is watching — a worse
+		// outcome than a session that locks earlier than a stale config asked
+		// for. Setting a too-long TTL by hand is still rejected outright, at
+		// the one moment there is a person there to read the reason
+		// (validateAgentTTLSetting).
+		if agentTTL > agent.DefaultMaxSessionAge {
+			fmt.Fprintf(stderr, "jit service: --ttl %s exceeds the %s maximum session age; using %s instead (a session ends at that ceiling however actively it is used)\n",
+				agentTTL, agent.DefaultMaxSessionAge, agent.DefaultMaxSessionAge)
+			agentTTL = agent.DefaultMaxSessionAge
+		}
 
 		// Cap the log before this run's first write. The log otherwise
 		// grows for the machine's lifetime — a single watcher-loop
@@ -288,6 +312,10 @@ var serviceTTLCmd = &cobra.Command{
 		"ID prompt before it locks itself, so the next use prompts again (default\n" +
 		"5m). It is baked into the service's login item, so a change persists across\n" +
 		"logins and reboots, not just this one.\n\n" +
+		"It is an INACTIVITY timeout, so use pushes it back — and a session also ends\n" +
+		"8 hours after the unlock that started it, however busy it has been. Values\n" +
+		"above that ceiling are refused rather than accepted and quietly ignored: an\n" +
+		"idle timeout longer than the maximum session age could never be reached.\n\n" +
 		"Changing it restarts the background service, so the current session is\n" +
 		"dropped and the next vault use prompts Touch ID once. Your vault and the\n" +
 		"session history are untouched.",
@@ -309,7 +337,7 @@ var serviceTTLCmd = &cobra.Command{
 		// Validated before it reaches the plist: a zero or negative TTL bakes a
 		// service that re-prompts on every use, and the error would otherwise
 		// surface only in the service log at the next launchd start.
-		if err := validateAgentTTL(d); err != nil {
+		if err := validateAgentTTLSetting(d); err != nil {
 			return fmt.Errorf("jit service ttl: %w", err)
 		}
 		// installAgentService writes the plist with the new --ttl and reloads
@@ -391,6 +419,12 @@ var serviceConsentCmd = &cobra.Command{
 		"and remembers your answer for the session. It closes the window where any\n" +
 		"process running as you can use a migrated credential silently while your\n" +
 		"vault is unlocked.\n\n" +
+		"Saying no is meant to be cheap. A refused prompt is not remembered as a\n" +
+		"lasting \"no\" — it can't be, since a decline and a keychain failure look the\n" +
+		"same from here — so instead it pauses that caller for a few seconds, then\n" +
+		"longer if it keeps asking, and the prompt tells you how many times it has\n" +
+		"already been refused. Nothing is locked out: the next genuine attempt still\n" +
+		"asks, and an approval (or a fresh `jit unlock`) clears the pause.\n\n" +
 		"With no argument, prints whether it's on. `on`/`off` set it and restart the\n" +
 		"service; turning it OFF requires a fresh Touch ID/passcode, since disabling\n" +
 		"the guard reopens the window it closes. Use `jit run --trust -- <cmd>` to\n" +
@@ -670,8 +704,14 @@ var unlockCmd = &cobra.Command{
 	Short:   "Unlock jit's session now (prompts Touch ID if needed)",
 	Long: "Unlocks the shared session jit's background service holds, prompting Touch ID\n" +
 		"or your device passcode if it isn't already unlocked. Pre-warms it so a\n" +
-		"following jit run / vault get / export doesn't stop to prompt, and locks\n" +
-		"itself again after the session --ttl of inactivity (or `jit lock` sooner).\n\n" +
+		"following jit run / vault get / export doesn't stop to prompt. It locks\n" +
+		"itself again after the session --ttl of inactivity, at the 8-hour maximum\n" +
+		"session age whichever comes first, or on `jit lock` sooner.\n\n" +
+		"An unlock that actually prompts you also clears any consent pauses: a\n" +
+		"refused credential prompt holds that caller off for a few seconds, and you\n" +
+		"standing at the keyboard is exactly the \"now\" that refusal withheld. An\n" +
+		"unlock while the session is already open prompts nobody, so it clears\n" +
+		"nothing — otherwise any process could reset the pause by asking for one.\n\n" +
 		"If the background service isn't set up yet, this sets it up first: `unlock`\n" +
 		"is the \"get me a session\" intent, so there's nothing extra to run by hand.",
 	Args: cobra.NoArgs,
@@ -698,8 +738,9 @@ var lockCmd = &cobra.Command{
 	GroupID: groupService,
 	Short:   "Lock jit's session immediately, without waiting for the TTL",
 	Long: "Locks the shared session jit's background service holds, right now, instead\n" +
-		"of waiting out the remaining --ttl. The next vault use prompts Touch ID\n" +
-		"again, and live-mounted files serve placeholder values until then.",
+		"of waiting out whichever bound would end it first — the idle --ttl or the\n" +
+		"8-hour maximum session age. The next vault use prompts Touch ID again, and\n" +
+		"live-mounted files serve placeholder values until then.",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		c, err := agentClient()
@@ -1189,13 +1230,38 @@ func humanAgo(d time.Duration) string {
 	}
 }
 
-// validateAgentTTL rejects a --ttl the session logic can't honor: zero or
-// negative makes every touchSession see an already-expired session, so
-// EVERY operation re-prompts Touch ID — an agent that is all cost and no
+// validateAgentTTL rejects a --ttl the session logic cannot honor at all:
+// zero or negative makes every touchSession see an already-expired session,
+// so EVERY operation re-prompts Touch ID — an agent that is all cost and no
 // session, installed with no error message anywhere near the mistake.
+//
+// Deliberately NOT an opinion about the upper bound. This runs at startup,
+// against whatever an already-installed plist happens to say, and a config
+// that merely asks for more than the session ceiling can deliver is clamped
+// there instead — refusing to boot over it would turn an upgrade into a
+// silently missing agent.
 func validateAgentTTL(ttl time.Duration) error {
 	if ttl <= 0 {
 		return fmt.Errorf("--ttl must be positive, got %s (a zero or negative TTL would re-prompt Touch ID on every single use)", ttl)
+	}
+	return nil
+}
+
+// validateAgentTTLSetting is validateAgentTTL for a value a human just typed,
+// where the upper bound belongs.
+//
+// An inactivity timeout above the hard session ceiling is a number that can
+// never be reached: the session ends at the ceiling however actively it is
+// used, so `jit service ttl 720h` would report a month-long session and
+// deliver eight hours. Saying so at the moment it is typed is very different
+// from silently clamping a value someone chose on purpose — and it is the
+// only moment there is a person present to tell.
+func validateAgentTTLSetting(ttl time.Duration) error {
+	if err := validateAgentTTL(ttl); err != nil {
+		return err
+	}
+	if ttl > agent.DefaultMaxSessionAge {
+		return fmt.Errorf("--ttl must not exceed %s, got %s (a session ends at that hard ceiling no matter how actively it is used, so a longer idle timeout could never be reached)", agent.DefaultMaxSessionAge, ttl)
 	}
 	return nil
 }
@@ -1502,7 +1568,7 @@ var agentCompatRunCmd = &cobra.Command{
 }
 
 func init() {
-	agentRunCmd.Flags().DurationVar(&agentTTL, "ttl", 5*time.Minute, "how long an unlocked session stays cached before auto-locking")
+	agentRunCmd.Flags().DurationVar(&agentTTL, "ttl", 5*time.Minute, "how long an unlocked session stays cached before auto-locking (values above the 8h maximum session age are clamped to it)")
 	agentRunCmd.Flags().BoolVar(&agentConsent, "consent", true, "prompt for per-process consent (Touch ID) the first time each tool reaches for a credential (on by default; use --consent=false to disable)")
 	agentStatusCmd.Flags().StringVar(&agentStatusFormat, "format", "text", `output format: "text" (default) or "json"`)
 	agentLogCmd.Flags().IntVarP(&agentLogLines, "lines", "n", 50, "how many trailing lines to print")
@@ -1512,7 +1578,7 @@ func init() {
 	// The old plist's `agent run --ttl <d>` needs the same --ttl flag bound to
 	// the same target var; only one of the two run commands executes per
 	// process, so sharing agentTTL is safe.
-	agentCompatRunCmd.Flags().DurationVar(&agentTTL, "ttl", 5*time.Minute, "how long an unlocked session stays cached before auto-locking")
+	agentCompatRunCmd.Flags().DurationVar(&agentTTL, "ttl", 5*time.Minute, "how long an unlocked session stays cached before auto-locking (values above the 8h maximum session age are clamped to it)")
 	agentCompatCmd.AddCommand(agentCompatRunCmd)
 
 	rootCmd.AddCommand(serviceCmd, unlockCmd, lockCmd, agentCompatCmd)

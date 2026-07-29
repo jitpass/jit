@@ -131,6 +131,85 @@ func TestServerCachesMEKAcrossMultipleRequests(t *testing.T) {
 	}
 }
 
+// The sliding TTL is an inactivity timeout, and on its own it is the only
+// bound a session has — so a caller that stays just barely active never lets
+// it fire. Nothing stopped a process from sending one cheap request every
+// TTL-minus-a-bit forever, keeping the MEK resident for as long as it liked on
+// the strength of a single Touch ID from that morning. The hard ceiling is
+// what that idle timer structurally cannot express.
+func TestSessionEndsAtTheHardCeilingDespiteActivity(t *testing.T) {
+	var calls int32
+	s, socketPath, cleanup := startTestServer(t, 2*time.Second, &calls)
+	defer cleanup()
+
+	// Set before any request, so no unlock has armed a timer yet.
+	s.mu.Lock()
+	s.maxSessionAge = 300 * time.Millisecond
+	s.mu.Unlock()
+
+	c := NewClient(socketPath)
+	// Eight requests 80ms apart span ~640ms of unbroken activity: every gap is
+	// far inside the 2s TTL, so the idle timer never fires and only the
+	// ceiling can end this session.
+	for i := 0; i < 8; i++ {
+		if _, err := c.WrapKey([]byte("x")); err != nil {
+			t.Fatalf("WrapKey (call %d): %v", i, err)
+		}
+		time.Sleep(80 * time.Millisecond)
+	}
+
+	if got := atomic.LoadInt32(&calls); got < 2 {
+		t.Errorf("continuous activity across a 300ms ceiling produced %d challenge(s), want at least 2: a busy session must still end at the ceiling", got)
+	}
+}
+
+// Status has to report the bound that will actually end the session. Reporting
+// the idle expiry alone would tell someone with a long TTL that they have
+// hours left on a session the ceiling ends in minutes — the readout version of
+// the "setting that cannot mean what it says" problem validateAgentTTL exists
+// to prevent.
+func TestStatusReportsTheCeilingWhenItComesFirst(t *testing.T) {
+	var calls int32
+	s, socketPath, cleanup := startTestServer(t, time.Hour, &calls)
+	defer cleanup()
+
+	s.mu.Lock()
+	s.maxSessionAge = 2 * time.Second
+	s.mu.Unlock()
+
+	c := NewClient(socketPath)
+	if _, err := c.WrapKey([]byte("x")); err != nil {
+		t.Fatalf("WrapKey: %v", err)
+	}
+
+	unlocked, remaining := s.status()
+	if !unlocked {
+		t.Fatal("session should be unlocked")
+	}
+	if remaining > 2*time.Second {
+		t.Errorf("status reports %s remaining on a session the ceiling ends in 2s (idle TTL is 1h)", remaining)
+	}
+}
+
+// The ceiling must not shorten an ordinary session. A default-configured
+// server has hours of headroom, and a burst of activity inside it is one
+// unlock — the ceiling is a backstop, not a second timeout.
+func TestHardCeilingLeavesOrdinarySessionsAlone(t *testing.T) {
+	var calls int32
+	_, socketPath, cleanup := startTestServer(t, time.Minute, &calls)
+	defer cleanup()
+
+	c := NewClient(socketPath)
+	for i := 0; i < 5; i++ {
+		if _, err := c.WrapKey([]byte("x")); err != nil {
+			t.Fatalf("WrapKey (call %d): %v", i, err)
+		}
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("MEKFetcher called %d times well inside the ceiling, want exactly 1", got)
+	}
+}
+
 func TestServerReChallengesAfterTTLExpires(t *testing.T) {
 	var calls int32
 	_, socketPath, cleanup := startTestServer(t, 50*time.Millisecond, &calls)

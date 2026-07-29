@@ -54,8 +54,11 @@ Among the auth events, six kinds appear:
 - **unlock (status=denied)** - a prompt the human *refused* (or that failed),
   same provenance, plus the reason. A refusal also pauses automatic re-prompts
   for a short cooldown, so a retrying caller can't turn one deliberate "no"
-  into a prompt storm - during the pause, only an explicit
-  `jit unlock` will prompt again.
+  into a prompt storm - during the pause, only a *fresh* `jit unlock` (one that
+  actually challenges you) will prompt again. Consent prompts have their own,
+  separate pause: a refused credential request holds that caller and credential
+  off for about two seconds, then eight, then thirty, and the next prompt says
+  how many times it has already been refused.
 - **grant (status=approved)** - a *disclosed* prompt the human approved: a
   `jit run --with` grant of a machine-global credential, a per-process consent
   approval, or a `jit run --trust` registration. These sit on top of the
@@ -69,13 +72,23 @@ Among the auth events, six kinds appear:
   not ten). The secret names are what the calling jit process reported
   about itself - useful for audit, labeled `caller-reported` because,
   unlike everything else on these lines, they don't come from the kernel.
-- **lock** - what dropped the session: an idle timeout, the screen
-  locking, or an explicit `jit lock`.
+- **lock** - what dropped the session: an idle timeout, the maximum session age
+  (a session ends 8 hours after the unlock that opened it, however busy it has
+  been), the screen locking, or an explicit `jit lock`.
 - **error** - something the service refused or failed at its socket: a rejected
   peer (a process the kernel says isn't yours, probing the agent), a malformed
-  request, or the accept loop dying. A rejected peer carries the peer's own
+  request, an unwrap whose claimed credential class doesn't match the ciphertext
+  it sent (`op=class-mismatch` - a caller holding no vault data trying to summon
+  a prompt), or the accept loop dying. A rejected peer carries the peer's own
   provenance, and used to be logged nowhere. Filter for these with
   `jit audit --kind error`.
+
+  Repeated rejections collapse into a single line carrying a `count`, and that
+  line names the *first* caller of the window rather than each one. That is
+  deliberate and worth knowing when you read the trail forensically: keying
+  these per caller would let a flood of throwaway processes - one `fork` each -
+  push every real unlock and denial out of the history, so the record of an
+  attack would be the first thing the attack erased.
 
 The auth events survive service restarts (they're kept in
 `agent-history.jsonl` alongside the vault), and each restart appears as its own
