@@ -17,8 +17,11 @@ jit wrap aws
 
 routes to the same flow as [`jit migrate --only=aws`](../migrate/aws.md):
 the keys leave `~/.aws/credentials` for the vault, and everything fetches
-on demand through `credential_process`. After that, **no file with the
-real value exists at all**.
+on demand through `credential_process`. After that, **that file no longer
+holds the real value** - though the CLI can still cache credentials it
+mints for itself, which
+[Migrating AWS credentials](../migrate/aws.md#what-jit-does-not-cover)
+covers.
 
 The full walkthrough - what gets rewritten, rotation, the plumbing
 protocol - is on **[Migrating AWS credentials](../migrate/aws.md)**.

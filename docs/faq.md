@@ -150,16 +150,22 @@ not have yet. So the honest statement is "OS local-authentication-bound," not
 
 If the service is unlocked, yes, the same way any local process could ask it,
 which is why every prompt names the caller and the session locks aggressively
-(TTL, screen lock, sleep). If the service is locked, the master key sits in a
+(idle TTL, an 8-hour ceiling from the unlock itself, screen lock, sleep). It is
+also why refusing a prompt now throttles the caller that asked: the one thing a
+local attacker can reliably do is ask repeatedly until you approve to make it
+stop. If the service is locked, the master key sits in a
 plain Keychain item with no OS-level ACL today, so a determined local attacker
 could read it directly, bypassing the app-level challenge. This is the
 accepted Phase 1 boundary, stated plainly rather than hidden.
 
 ### Is the master key ever in memory?
 
-Yes, in the background service for the session TTL (default 5 minutes), so you
-are not prompted per command. It is page-locked (kept out of swap) and wiped
-when the session locks. jit's own CLI process holds a secret only for the
+Yes, in the background service for the session TTL (default 5 minutes, and
+never more than 8 hours from the unlock), so you are not prompted per command.
+It is page-locked (kept out of swap) and wiped when the session locks -
+including the copy the Keychain wrapper itself caches, which until v0.64.0
+survived the lock, screen-lock and sleep wipes and went away only whenever the
+garbage collector happened to reuse the page. jit's own CLI process holds a secret only for the
 instant of a single command, then `execve` replaces its whole image.
 
 ### Can a malicious repo I clone steal my cloud credentials?

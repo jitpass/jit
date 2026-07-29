@@ -43,7 +43,8 @@ description: Placeholder values, hanging reads, surprise Touch ID prompts, and s
 - **Touch ID prompts feel too frequent.** First find out what's asking -
   `jit audit` (above) names each one. If they're all legitimate,
   lengthen the [service's](../service/index.md) session window:
-  `jit service ttl 1h`.
+  `jit service ttl 1h`. The idle window can go up to 8 hours - a session ends
+  there regardless, so a longer value is refused rather than silently ignored.
 - **"different build" warning from `jit status`.** The running service is an
   older binary than the CLI you're typing - usually right after an upgrade.
   `jit upgrade` restarts the service for you, so you won't see this if you
