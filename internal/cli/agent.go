@@ -21,7 +21,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	"github.com/jitpass/jit/internal/agent"
@@ -1033,7 +1032,7 @@ func printPendingUnlock(w io.Writer, p *agent.SessionEvent) {
 	if p.LaunchedBy != "" {
 		line += fmt.Sprintf(", triggered by a command launched by %s", p.LaunchedBy)
 	}
-	_, _ = color.New(color.FgYellow).Fprintf(w, "%s\n", line)
+	_, _ = cWarn.Fprintf(w, "%s\n", line)
 	if p.By != "" {
 		home, _ := os.UserHomeDir()
 		fmt.Fprintf(w, "      %s\n", shortenCommand(home, p.By))

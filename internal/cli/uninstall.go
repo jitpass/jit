@@ -194,7 +194,7 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintln(out, "jit is uninstalled. Your vault remains at:")
 		fmt.Fprintf(out, "  %s\n", vaultRoot)
 		fmt.Fprintf(out, "  %s\n", filepath.Join(home, ".jit"))
-		fmt.Fprintln(out, "Reinstall jit any time to use it again, or `rm -rf` those paths to erase your secrets.")
+		fmt.Fprintln(out, hlCmds("Reinstall jit any time to use it again, or `rm -rf` those paths to erase your secrets."))
 	}
 	return nil
 }

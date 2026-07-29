@@ -9,8 +9,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/fatih/color"
-
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/profile"
@@ -118,13 +116,13 @@ func (s *migrateSummary) print(w io.Writer) {
 	}
 	if len(s.gitHistoryFiles) > 0 {
 		sep()
-		_, _ = color.New(color.FgYellow).Fprintf(w, "⚠ %s migrated already %s git history, jit migrate does not scrub it:\n",
+		_, _ = cWarn.Fprintf(w, "⚠ %s migrated already %s git history, jit migrate does not scrub it:\n",
 			countWord(len(s.gitHistoryFiles), "file", "files"),
 			pluralWord(len(s.gitHistoryFiles), "has", "have"))
 		for _, f := range s.gitHistoryFiles {
 			fmt.Fprintf(w, "  • %s\n", f)
 		}
-		fmt.Fprintln(w, "  Any value ever committed is still recoverable via `git log -p`/`git blame` for the life of")
+		fmt.Fprintln(w, hlCmds("  Any value ever committed is still recoverable via `git log -p`/`git blame` for the life of"))
 		fmt.Fprintln(w, "  the repository, and by anyone who already has a clone or fork. To actually remove it,")
 		fmt.Fprintln(w, "  rotate the secret and rewrite history with git-filter-repo (https://github.com/newren/")
 		fmt.Fprintln(w, "  git-filter-repo) or BFG Repo-Cleaner.")
@@ -138,7 +136,12 @@ func (s *migrateSummary) print(w io.Writer) {
 	}
 	if s.exportNudge {
 		sep()
-		_, _ = color.New(color.FgYellow).Fprintln(w, "⚠ These secrets now live only in this Mac's vault, and no passphrase-encrypted backup of it has ever been made, run `jit vault export <file>` once (`jit status` will say when it needs refreshing).")
+		// The glyph carries the state (rule 2); the sentence after it is
+		// advice, and advice in amber reads as a second warning (rule 5).
+		_, _ = cWarn.Fprint(w, "⚠ ")
+		wrapBody(w, 2, "  ", hlCmds("These secrets now live only in this Mac's vault, and no passphrase-encrypted "+
+			"backup of it has ever been made, run `jit vault export <file>` once (`jit status` will say "+
+			"when it needs refreshing)."))
 	}
 }
 
@@ -163,7 +166,7 @@ func reportAgentStatus(w io.Writer, root string, producedMount bool) {
 	agentClient := agent.NewClient(agent.SocketPath(root))
 	bold := func(format string, a ...interface{}) {
 		fmt.Fprintln(w)
-		_, _ = color.New(color.Bold).Fprintf(w, format, a...)
+		_, _ = cBold.Fprintf(w, format, a...)
 		fmt.Fprintln(w)
 	}
 	// refreshMounts tells a reachable agent about the mount(s) this run just
@@ -179,7 +182,7 @@ func reportAgentStatus(w io.Writer, root string, producedMount bool) {
 		// until something else happened to unlock again.
 		if err := agentClient.Refresh(); err != nil {
 			fmt.Fprintln(w)
-			_, _ = color.New(color.FgYellow).Fprintf(w, "Warning: could not tell the running service about the new mount(s): %v\n", err)
+			_, _ = cWarn.Fprintf(w, "Warning: could not tell the running service about the new mount(s): %v\n", err)
 			bold("Run `jit service status`, or `jit lock` then unlock again, to pick it up.")
 			return
 		}

@@ -11,8 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/fatih/color"
-
 	"github.com/jitpass/jit/internal/migrate"
 )
 
@@ -75,7 +73,7 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, shellConf
 		for _, p := range envFiles {
 			envOriginal[displayPath(home, p)] = p
 		}
-		_, _ = color.New(color.Bold).Fprintf(w, "Project files you named\n\n")
+		_, _ = cBold.Fprintf(w, "Project files you named\n\n")
 		printMigratePlanCategoryAnnotated(w,
 			pluralWord(len(envFiles), ".env file", ".env files")+" → EVERY variable moves to the vault (ordinary config too, so the file still works); the file keeps working as a live, auto-updating mount",
 			shorten(envFiles),
@@ -116,7 +114,7 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, shellConf
 		// These appear only because the caller named a machine-wide file (or
 		// its exact path) explicitly — a migrate run never reaches them on its
 		// own, so the header states plainly that the caller asked for them.
-		_, _ = color.New(color.Faint).Fprintln(w, "Machine-wide config files you named")
+		_, _ = cDim.Fprintln(w, "Machine-wide config files you named")
 		fmt.Fprintln(w)
 		printMigratePlanCategory(w,
 			pluralWord(len(shellConfigs), "shell config", "shell configs")+" → secrets move to the vault; loaded back automatically when your shell starts",
@@ -179,7 +177,7 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, shellConf
 			if len(mcpScoped) > 0 || len(npmrcScoped) > 0 {
 				caveat = " (mcp/npmrc still pull in their own always-checked file above when selected)"
 			}
-			_, _ = color.New(color.FgYellow).Fprintf(w, "  Use --only %s to leave these machine-wide files out of the plan%s.\n\n", strings.Join(onlyTokens, ","), caveat)
+			_, _ = cWarn.Fprintf(w, "  Use --only %s to leave these machine-wide files out of the plan%s.\n\n", strings.Join(onlyTokens, ","), caveat)
 		}
 	}
 
@@ -269,9 +267,9 @@ func printMigratePlanCategoryAnnotated(w io.Writer, headline string, items []str
 	}
 	name, outcome := splitHeadline(headline)
 	fmt.Fprintf(w, "[%s]", name)
-	_, _ = color.New(color.Faint).Fprintf(w, " %d\n", len(items))
+	_, _ = cDim.Fprintf(w, " %d\n", len(items))
 	if outcome != "" {
-		_, _ = color.New(color.Faint).Fprintf(w, "  → %s\n", outcome)
+		_, _ = cDim.Fprintf(w, "  → %s\n", outcome)
 	}
 	for _, item := range items {
 		note := ""

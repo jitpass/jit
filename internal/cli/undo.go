@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	"github.com/jitpass/jit/internal/agent"
@@ -137,7 +136,7 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 	if migrateDryRun {
 		// Same leading banner discipline as jit migrate (GAPS.md #32): the
 		// preview-vs-real signal comes BEFORE the plan, not only after it.
-		_, _ = color.New(color.FgCyan, color.Bold).Fprintln(out, "[DRY RUN] Preview, this run changes nothing; the plan below is what a real run would do.")
+		_, _ = cPathBold.Fprintln(out, "[DRY RUN] Preview, this run changes nothing; the plan below is what a real run would do.")
 	}
 
 	registryPath := mount.RegistryPath(root)
@@ -160,7 +159,7 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(out, "  • %s (backed up %s ago)%s\n", displayPath(home, rec.OriginalPath), humanAgo(time.Since(time.Unix(rec.UnixTS, 0))), note)
 	}
 	fmt.Fprintln(out)
-	warn := color.New(color.FgYellow)
+	warn := cWarn
 	_, _ = warn.Fprintln(out, "Each file is restored EXACTLY as backed up, edits made since are replaced")
 	_, _ = warn.Fprintln(out, "(the replaced content is snapshotted into the vault first, so this is itself")
 	_, _ = warn.Fprintln(out, "undoable), and real secret values return to disk in PLAINTEXT.")
@@ -168,7 +167,7 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 
 	if migrateDryRun {
 		fmt.Fprintln(out)
-		_, _ = color.New(color.FgCyan, color.Bold).Fprint(out, "[DRY RUN]")
+		_, _ = cPathBold.Fprint(out, "[DRY RUN]")
 		fmt.Fprintln(out, " No files were changed.")
 		return nil
 	}
@@ -286,7 +285,7 @@ func nudgeLooseRemainders(out io.Writer, v *vault.Vault, home string, recs []mig
 	sort.Strings(files)
 	fmt.Fprintln(out)
 	for _, f := range files {
-		_, _ = color.New(color.FgCyan).Fprintf(out,
+		_, _ = cPath.Fprintf(out,
 			"Its vault secret is still stored. `jit migrate remove %s` deletes that too.\n", displayPath(home, f))
 	}
 }
@@ -314,7 +313,7 @@ func runRestores(out io.Writer, home string, recs []migrate.BackupRecord, restor
 	for _, rec := range recs {
 		if err := restoreOne(rec); err != nil {
 			failures = append(failures, undoFailure{path: rec.OriginalPath, err: err})
-			_, _ = color.New(color.FgYellow).Fprintf(out, "SKIPPED %s, %v\n", displayPath(home, rec.OriginalPath), err)
+			_, _ = cWarn.Fprintf(out, "SKIPPED %s, %v\n", displayPath(home, rec.OriginalPath), err)
 			continue
 		}
 		restored++
@@ -330,7 +329,7 @@ func runRestores(out io.Writer, home string, recs []migrate.BackupRecord, restor
 		fmt.Fprint(out, hlCmds(fmt.Sprintf("Restored %s. Vault secrets and profile manifests are still there, `jit migrate remove` deletes a project's completely.\n", countWord(restored, "file", "files"))))
 	}
 	if len(failures) > 0 {
-		_, _ = color.New(color.FgYellow).Fprintf(out, "%s could NOT be restored and %s left exactly as %s:\n",
+		_, _ = cWarn.Fprintf(out, "%s could NOT be restored and %s left exactly as %s:\n",
 			countWord(len(failures), "file", "files"),
 			pluralWord(len(failures), "was", "were"),
 			pluralWord(len(failures), "it was", "they were"))

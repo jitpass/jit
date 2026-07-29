@@ -5,12 +5,12 @@ package cli
 
 import (
 	"fmt"
+	"github.com/fatih/color"
 	"io"
 	"os"
 	"regexp"
 	"strings"
 
-	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
 
@@ -161,7 +161,7 @@ func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings []
 		wrapBody(out, 0, "  ", cDim.Sprint("No profiles found under .jit/profiles/ or the global store."))
 	case len(problems) == 0:
 		_, _ = cOK.Fprintf(out, "%s ", glyphDone)
-		wrapBody(out, 2, "  ", color.New(color.FgGreen, color.Bold).Sprintf(
+		wrapBody(out, 2, "  ", cOKBold.Sprintf(
 			"%s, %s all resolve cleanly",
 			countWord(outcome.ProfilesChecked, "profile", "profiles"),
 			countWord(outcome.SecretsChecked, "secret reference", "secret references")))
