@@ -64,15 +64,16 @@ that needs attention (`✗` broken, `○` unreferenced) is found at a glance. A
 shared rule (mounts are decoy by default) is stated once in the header, not
 per row.
 
-A dashboard opens with its **verdict** — how much wants the reader's attention,
-before any detail. It answers "is there anything here for me?", which is the
-question someone runs a status command to ask; `jit scan`'s coverage percentage
-is the same instinct. The count is mechanical: one per state that renders an
-action beneath it, so the headline can never claim a different number of
-problems than the body shows.
+**The glyph column is the summary — don't build a second one above it.** A
+dashboard briefly opened with a verdict (`✗ 1 thing to fix`), on the theory
+that the first line should answer "is there anything here for me?". It didn't:
+a count names no finding, so the reader still had to scan down for the glyph it
+meant, having first been told there was something to look for. A tally that
+sends you looking is worse than no tally, and the glyphs already answer the
+question on the row that owns it. Report state where it lives.
 
 ```
-jit      ✗ 1 thing to fix · ○ 2 things to look at · 0.65.0
+jit      0.66.0
 secrets  65 stored in 15 groups
   ● Wired here          3 groups via 3 profiles (6 references), all resolve.
   ○ Unreferenced here   4 groups, 21 secrets. May belong to another project.

@@ -97,8 +97,8 @@ func TestStatusReflectsRealAgentRunningAndLocked(t *testing.T) {
 	}
 	// The in-test server runs in this same process, so its version matches
 	// this binary's — matching versions collapse to one entry rather than
-	// being printed twice, and the headline carries the verdict, not builds.
-	wantVersions := "jit      ● all clear · " + shortVersion(agent.Version())
+	// being printed twice.
+	wantVersions := "jit      " + shortVersion(agent.Version())
 	if !strings.Contains(out, wantVersions) {
 		t.Errorf("expected %q, got:\n%s", wantVersions, out)
 	}
