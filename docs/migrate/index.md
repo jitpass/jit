@@ -11,19 +11,29 @@ via that tool's own native mechanism, so everything keeps working. It's a
 separate command from `audit`, deliberately: a read-only scanner can never
 be turned into a mutating one by a mistyped flag.
 
-## Scope: you name what to convert
+## Scope: everything the scan found, or exactly what you name
 
-`jit migrate` never sweeps your machine on its own. You point it at the
-file(s) and/or folder(s) to convert, and nothing else is discovered or
-touched:
+`jit migrate` runs in one of two modes:
+
+**Bare `jit migrate`** protects everything the machine-wide scan judged
+protectable. It runs the same scan `jit scan` runs, prints the full plan -
+every file it will rewrite and every CLI it will wrap - and asks `[y/N]`
+before touching anything. It is exactly the command the scan report's
+"jit will protect these" section points at: the manifest you saw there is
+the plan you confirm here. Catalog wraps run as part of the plan, each
+printing its `jit wrap undo <tool>` line as it happens.
+
+**With arguments**, nothing is discovered or touched except the targets
+you name:
 
 ```
+jit migrate                        # protect everything the scan found
 jit migrate ~/code/myapp/.env      # one file
 jit migrate ~/code/myapp           # walk one project for .env/tfvars/mcp/npmrc
 jit migrate ~/.zshrc ~/code/myapp  # several targets at once
 ```
 
-Each target is resolved on its own:
+Each named target is resolved on its own:
 
 - **A file** is routed to the right category by what it is. A project file
   (`.env`, `*.tfvars`, `mcp.json`/`.mcp.json`, `.npmrc`) has its secrets
@@ -37,17 +47,20 @@ Each target is resolved on its own:
   findings only, never the machine-wide fixed-path files (those aren't
   "under" any project directory - name them explicitly to convert them).
 
-Targets are explicit, so nothing is skipped for looking archived or
-backup-like: naming a file is itself the decision to convert it. A missing
-path or a symlink fails loud rather than migrating the wrong thing. A bare
-`jit migrate` with no path does nothing.
+Named targets are explicit, so nothing is skipped for looking archived or
+backup-like: naming a file is itself the decision to convert it. (Bare
+`jit migrate` is the opposite: it skips archived/backup directories and
+files that mix secrets with other content, exactly as the scan report
+says it will.) A missing path or a symlink fails loud rather than
+migrating the wrong thing.
 
 !!! tip "Find what to name"
-    Run [`jit scan`](../audit/index.md) first - it lists every plaintext
-    secret on the machine, so you know exactly which files to hand to
-    `jit migrate`. `jit migrate path <file-or-dir>...` is a spelled-out
-    alias of the bare `jit migrate <file-or-dir>...` form, kept for
-    scripts and muscle memory.
+    Run [`jit scan`](../audit/index.md) first - its green section is the
+    bare `jit migrate` plan, and its red section names what only you can
+    fix. Hand specific files to `jit migrate <path>` when you want a
+    narrower run. `jit migrate path <file-or-dir>...` is a spelled-out
+    alias of the `jit migrate <file-or-dir>...` form, kept for scripts
+    and muscle memory.
 
 ## Always preview first
 

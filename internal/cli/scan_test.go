@@ -71,18 +71,37 @@ func TestScanCommandTextFormat(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
+	// The default text view is the coverage triage (2026-07-28 redesign):
+	// secrets counted, the migrate manifest, no scanner vocabulary.
 	out := runScan(t, "--format", "text")
-
-	if !strings.Contains(out, "RISK LEVEL:") {
-		t.Errorf("expected a risk level banner, got:\n%s", out)
+	if !strings.Contains(out, "YOUR SECRETS:") {
+		t.Errorf("expected the coverage ledger, got:\n%s", out)
 	}
-	if !strings.Contains(out, "Shell Configs") {
-		t.Errorf("expected a Shell Configs section, got:\n%s", out)
+	if !strings.Contains(out, "jit will protect these") || !strings.Contains(out, ".zshrc") {
+		t.Errorf("expected the migrate manifest naming the planted file, got:\n%s", out)
+	}
+	if strings.Contains(out, "RISK LEVEL:") {
+		t.Errorf("the default view must not show the inventory banner (that's --full), got:\n%s", out)
 	}
 	// Must name the value this test actually planted, or the assertion is
 	// vacuous — it would pass for any output at all.
 	if strings.Contains(out, "sk_test_4eC39HqLyjWDarjtT1zdp7dc") {
 		t.Fatal("CLI output must never contain the raw secret value")
+	}
+
+	// --full is the old detailed inventory, unchanged. The flag variable is
+	// package-level and cobra does not reset it between executions in one
+	// test process, so restore it for whoever runs next.
+	t.Cleanup(func() { scanFull = false })
+	full := runScan(t, "--format", "text", "--full")
+	if !strings.Contains(full, "RISK LEVEL:") {
+		t.Errorf("--full should show the risk level banner, got:\n%s", full)
+	}
+	if !strings.Contains(full, "Shell Configs") {
+		t.Errorf("--full should show category sections, got:\n%s", full)
+	}
+	if strings.Contains(full, "sk_test_4eC39HqLyjWDarjtT1zdp7dc") {
+		t.Fatal("--full output must never contain the raw secret value")
 	}
 }
 
@@ -108,8 +127,13 @@ func TestScanCommandNDJSONFormat(t *testing.T) {
 func TestScanCommandCleanFixture(t *testing.T) {
 	withFixtureHome(t) // empty fixture, nothing planted
 	out := runScan(t, "--format", "text")
-	if !strings.Contains(out, "RISK LEVEL: CLEAN") {
-		t.Errorf("expected a clean result on an empty fixture home, got:\n%s", out)
+	if !strings.Contains(out, "Nothing exposed") {
+		t.Errorf("expected the clean-machine line on an empty fixture home, got:\n%s", out)
+	}
+	t.Cleanup(func() { scanFull = false })
+	full := runScan(t, "--format", "text", "--full")
+	if !strings.Contains(full, "RISK LEVEL: CLEAN") {
+		t.Errorf("expected --full's clean banner on an empty fixture home, got:\n%s", full)
 	}
 }
 

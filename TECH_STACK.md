@@ -103,7 +103,7 @@ This is the one layer of the stack that is unavoidably macOS-only and unavoidabl
 
 | Package | Role |
 |---|---|
-| `github.com/fatih/color` | Color-coded risk banner and per-category counts (RFC.md:179-181). Deliberately not a full TUI framework (Bubble Tea, etc.), `jit scan`'s default output is a report, not an interactive UI, and a heavier dependency isn't earned here. |
+| `github.com/fatih/color` | Color-coded coverage ledger and report sections (risk banner and per-category counts now behind `jit scan --full`; RFC.md:179-181). Deliberately not a full TUI framework (Bubble Tea, etc.), `jit scan`'s default output is a report, not an interactive UI, and a heavier dependency isn't earned here. |
 
 ### 2.10 Native credential-helper protocol types (Pillar III, Tier 2)
 

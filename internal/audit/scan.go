@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jitpass/jit/internal/mount"
@@ -70,7 +71,7 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 	if cfg.Progress != nil {
 		cfg.Progress("home directory")
 	}
-	discovered := discoverByWalk(cfg)
+	discovered, filesWalked := discoverByWalk(cfg)
 
 	var all []Finding
 	for i, c := range categories {
@@ -104,8 +105,17 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 	for i := range all {
 		all[i].Archived = LooksArchived(all[i].FilePath)
 	}
+	// Same seam, same reason: who can act on each finding (and the id that
+	// groups copies of one secret) is set once, centrally, so every renderer
+	// and consumer reads identical answers.
+	annotateRemedies(all, cfg.HomeDir)
 
 	summary := buildScanSummary(cfg, all, countProtectedMounts(cfg.MountRegistryPath), time.Since(start))
+	summary.FilesScanned = filesWalked
+	coverage := ComputeCoverage(cfg.MountRegistryPath, all)
+	summary.SecretsTotal = coverage.Total()
+	summary.SecretsProtected = coverage.Protected
+	summary.SecretsMigratable = coverage.Migratable
 	return all, summary, nil
 }
 
@@ -236,7 +246,7 @@ var walkConcurrency = max(4, runtime.NumCPU()*2)
 // afterwards, since concurrent traversal has no inherent order; the sort is
 // stable, so several findings from one file keep the order their classifier
 // emitted them in.
-func discoverByWalk(cfg Config) [][]Finding {
+func discoverByWalk(cfg Config) ([][]Finding, int) {
 	newBuckets := func() [][]Finding { return make([][]Finding, len(categories)) }
 
 	var (
@@ -244,6 +254,7 @@ func discoverByWalk(cfg Config) [][]Finding {
 		merged = newBuckets()
 		sem    = make(chan struct{}, walkConcurrency)
 		wg     sync.WaitGroup
+		walked atomic.Int64
 	)
 	mergeInto := func(src [][]Finding) {
 		mu.Lock()
@@ -290,6 +301,7 @@ func discoverByWalk(cfg Config) [][]Finding {
 			if !e.Type().IsRegular() {
 				continue
 			}
+			walked.Add(1)
 			for i, c := range categories {
 				if c.classify != nil {
 					local[i] = append(local[i], c.classify(cfg, path, e.Name())...)
@@ -310,7 +322,7 @@ func discoverByWalk(cfg Config) [][]Finding {
 			return merged[i][a].FilePath < merged[i][b].FilePath
 		})
 	}
-	return merged
+	return merged, int(walked.Load())
 }
 
 // walkForCategory is the one-category form of discoverByWalk, backing the

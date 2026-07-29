@@ -67,8 +67,14 @@ func TargetedScan(cfg Config, targets []string) ([]Finding, ScanSummary, error) 
 	for i := range all {
 		all[i].Archived = LooksArchived(all[i].FilePath)
 	}
+	// And the same remedy/cause annotation, for the same no-drift reason.
+	annotateRemedies(all, cfg.HomeDir)
 
 	summary := buildScanSummary(cfg, all, countProtectedMounts(cfg.MountRegistryPath), time.Since(start))
+	coverage := ComputeCoverage(cfg.MountRegistryPath, all)
+	summary.SecretsTotal = coverage.Total()
+	summary.SecretsProtected = coverage.Protected
+	summary.SecretsMigratable = coverage.Migratable
 	return all, summary, nil
 }
 

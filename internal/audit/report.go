@@ -510,21 +510,15 @@ func firstFindingPath(findings []Finding) string {
 // with this finding, so the report's copy-pasteable trailer never hands the
 // reader a command that answers "Nothing to migrate."
 //
-// Two categories are detection-only, for different reasons:
-//
-//   - Private keys: FindFileTokens deliberately cedes key bodies to
-//     ScanPrivateKeys, so a loose-file migrate of ~/.ssh/id_rsa finds nothing
-//     to move. (This case predates the mcp-auth one below — the trailer has
-//     been offering it since the trailer existed.)
-//   - Remote-MCP OAuth tokens under ~/.mcp-auth: mcp-remote rotates and
-//     rewrites those files itself, so a mount would be fought by the tool and
-//     serve stale values. scanMCPAuthTokens' own evidence says to revoke and
-//     `rm -rf ~/.mcp-auth` instead; the trailer must not contradict it.
+// Delegates to the Remedy annotation (annotateRemedies), which is the single
+// source of truth for "who can act" — this function used to hardcode two
+// manual cases (private keys, ~/.mcp-auth) and silently drifted the moment
+// the remedy taxonomy added more (kubernetes Secret manifests,
+// production-flagged and mixed-content exposed secrets). Renderers only run
+// on annotated findings, so an empty Remedy here would be a caller bug; it
+// reads as "no auto fix" rather than guessing.
 func hasAutoFix(f Finding) bool {
-	if f.FindingType == FindingTypePrivateKeyRisk {
-		return false
-	}
-	return !strings.Contains(f.FilePath, string(filepath.Separator)+mcpAuthDir+string(filepath.Separator))
+	return f.Remedy == RemedyMigrate || f.Remedy == RemedyWrap
 }
 
 // findingIndent is the left margin every finding row sits at, one step in
