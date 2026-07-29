@@ -14,6 +14,7 @@ This page is the decision guide.
 | You have… | Use | Why |
 |---|---|---|
 | A CLI tool that keeps its own token in a dotfile, and you run it by name (`gh`, `aws`, `npm`, `stripe`) | **`jit wrap`** | Set up once; type the tool name normally forever |
+| An SSO CLI that *mints* credentials at login and writes them to a plaintext file (`clisso`) | **`jit wrap`** | Same setup; each login is captured into the vault instead, MFA unchanged |
 | A project `.env` of variables that your scripts read | **`jit migrate`** then **`jit run`** | The file becomes a live mount; scripts run under `jit run` |
 | A one-off command that needs a specific profile | **`jit run --profile <name>`** | No setup; name the profile for this run only |
 | A machine-wide credential *file* a tool reads (gcloud ADC, SOPS age key, global `~/.npmrc`, `~/.pypirc`) | **run it** and approve the prompt, or **`jit run --with <name>`** | Consent prompts on first read (default); `--with` is the explicit, hard-gated grant, never authorized by a repo |

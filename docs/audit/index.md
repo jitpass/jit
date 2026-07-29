@@ -12,8 +12,9 @@ preview.
 
 It also says what it does *not* cover. Some credentials are written by other
 tools for their own use — the plaintext STS session the AWS CLI caches in
-`~/.aws/cli/cache`, the tokens `aws sso login` leaves in `~/.aws/sso/cache` —
-and jit does not manage them. Those are reported under **"Outside jit's scope,
+`~/.aws/cli/cache`, the tokens `aws sso login` leaves in `~/.aws/sso/cache`,
+the session [clisso](../wrap/clisso.md) caches in `~/.aws/credentials-cache`
+and what it records in `~/.clisso.log` — and jit does not manage them. Those are reported under **"Outside jit's scope,
 found anyway"**: advisory only, never findings, never counted in any total, and
 with no effect on the risk level or the coverage ledger. They are hex-named, so
 the content sweep would otherwise walk straight past them, and "no findings"
