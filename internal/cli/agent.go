@@ -30,6 +30,13 @@ import (
 	"github.com/jitpass/jit/internal/screenlock"
 )
 
+// The agent releases each fetcher's cached MEK as soon as it has copied the
+// key out, via a runtime type assertion (agent.closeFetcher). This is the
+// compile-time half: if Wrapper's Close ever changes shape, the build breaks
+// here instead of the assertion quietly failing to match and restoring a
+// plaintext master key that outlives every lock, screen-lock and sleep wipe.
+var _ agent.ClosableFetcher = (*keychainwrap.Wrapper)(nil)
+
 var agentTTL time.Duration
 
 // agentConsent turns on per-process credential consent in the running service
@@ -109,6 +116,23 @@ var agentRunCmd = &cobra.Command{
 		var logMu sync.Mutex
 		stdout := newStampedWriter(&lockedWriter{mu: &logMu, w: cmd.OutOrStdout()})
 		stderr := newStampedWriter(&lockedWriter{mu: &logMu, w: cmd.ErrOrStderr()})
+
+		// A TTL this process cannot run with at all fails loudly above; one it
+		// can merely not honor in full is clamped here and said out loud. The
+		// difference matters at startup specifically: this command is what an
+		// installed plist executes, and a plist written before the hard
+		// session ceiling existed can legitimately carry `--ttl 24h`. Refusing
+		// that would leave the agent silently not running after an upgrade,
+		// with the only symptom a line in a log nobody is watching — a worse
+		// outcome than a session that locks earlier than a stale config asked
+		// for. Setting a too-long TTL by hand is still rejected outright, at
+		// the one moment there is a person there to read the reason
+		// (validateAgentTTLSetting).
+		if agentTTL > agent.DefaultMaxSessionAge {
+			fmt.Fprintf(stderr, "jit service: --ttl %s exceeds the %s maximum session age; using %s instead (a session ends at that ceiling however actively it is used)\n",
+				agentTTL, agent.DefaultMaxSessionAge, agent.DefaultMaxSessionAge)
+			agentTTL = agent.DefaultMaxSessionAge
+		}
 
 		// Cap the log before this run's first write. The log otherwise
 		// grows for the machine's lifetime — a single watcher-loop
@@ -309,7 +333,7 @@ var serviceTTLCmd = &cobra.Command{
 		// Validated before it reaches the plist: a zero or negative TTL bakes a
 		// service that re-prompts on every use, and the error would otherwise
 		// surface only in the service log at the next launchd start.
-		if err := validateAgentTTL(d); err != nil {
+		if err := validateAgentTTLSetting(d); err != nil {
 			return fmt.Errorf("jit service ttl: %w", err)
 		}
 		// installAgentService writes the plist with the new --ttl and reloads
@@ -1189,13 +1213,38 @@ func humanAgo(d time.Duration) string {
 	}
 }
 
-// validateAgentTTL rejects a --ttl the session logic can't honor: zero or
-// negative makes every touchSession see an already-expired session, so
-// EVERY operation re-prompts Touch ID — an agent that is all cost and no
+// validateAgentTTL rejects a --ttl the session logic cannot honor at all:
+// zero or negative makes every touchSession see an already-expired session,
+// so EVERY operation re-prompts Touch ID — an agent that is all cost and no
 // session, installed with no error message anywhere near the mistake.
+//
+// Deliberately NOT an opinion about the upper bound. This runs at startup,
+// against whatever an already-installed plist happens to say, and a config
+// that merely asks for more than the session ceiling can deliver is clamped
+// there instead — refusing to boot over it would turn an upgrade into a
+// silently missing agent.
 func validateAgentTTL(ttl time.Duration) error {
 	if ttl <= 0 {
 		return fmt.Errorf("--ttl must be positive, got %s (a zero or negative TTL would re-prompt Touch ID on every single use)", ttl)
+	}
+	return nil
+}
+
+// validateAgentTTLSetting is validateAgentTTL for a value a human just typed,
+// where the upper bound belongs.
+//
+// An inactivity timeout above the hard session ceiling is a number that can
+// never be reached: the session ends at the ceiling however actively it is
+// used, so `jit service ttl 720h` would report a month-long session and
+// deliver eight hours. Saying so at the moment it is typed is very different
+// from silently clamping a value someone chose on purpose — and it is the
+// only moment there is a person present to tell.
+func validateAgentTTLSetting(ttl time.Duration) error {
+	if err := validateAgentTTL(ttl); err != nil {
+		return err
+	}
+	if ttl > agent.DefaultMaxSessionAge {
+		return fmt.Errorf("--ttl must not exceed %s, got %s (a session ends at that hard ceiling no matter how actively it is used, so a longer idle timeout could never be reached)", agent.DefaultMaxSessionAge, ttl)
 	}
 	return nil
 }

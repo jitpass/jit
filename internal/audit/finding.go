@@ -270,6 +270,17 @@ type ScanSummary struct {
 	// FilesScanned is how many regular files the machine-wide walk offered to
 	// the classifiers (0 for a targeted scan, which walks nothing).
 	FilesScanned int `json:"files_scanned"`
+	// DerivedCredentials are the tool-written credential artifacts found
+	// alongside this scan (see DerivedCredential). Advisory only: they are
+	// never findings, never counted in any total, and never affect the risk
+	// level or coverage ledger — jit cannot act on them, and inflating the
+	// numbers with things no command can fix would make every other number
+	// less useful.
+	//
+	// In-process only, never serialized: the NDJSON schema describes findings
+	// jit stands behind, and this is a note to a human reading the report.
+	DerivedCredentials []DerivedCredential `json:"-"`
+
 	// JitProtectedCount is how many registered jit live mounts (FIFOs
 	// currently occupying a path jit migrated) exist on this machine.
 	// Scanners never read those paths — a pipe has no at-rest content, and

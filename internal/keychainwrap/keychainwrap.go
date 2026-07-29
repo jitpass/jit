@@ -78,11 +78,17 @@ const (
 // lifetime of this Wrapper value — one CLI invocation resolving a whole
 // profile (jit run/jit export) only prompts once, not once per secret.
 // Every caller still gets its own copy (see fetchMEK) so a caller's
-// defer wipe(mek) can't zero out the cache. Not wiped on process exit:
-// the process either execs (replacing the whole address space) or exits
-// normally shortly after, and Go provides no deterministic-destructor
-// hook to wipe it earlier — same caveat internal/vault's own wipe()
-// already documents.
+// defer wipe(mek) can't zero out the cache.
+//
+// A short-lived CLI process may simply drop the Wrapper: it either execs
+// (replacing the whole address space) or exits shortly after, and Go
+// provides no deterministic-destructor hook to wipe it earlier — the same
+// caveat internal/vault's own wipe() documents. A LONG-LIVED host must call
+// Close instead. internal/agent builds a fresh Wrapper per unlock and per
+// disclosed prompt and then discards it, inside a process that runs for
+// weeks; without Close, every one of those left a pinned, unzeroed MEK
+// behind that outlived the session's own lock, screen-lock and sleep wipes,
+// disappearing only whenever the GC happened to reuse the page.
 type Wrapper struct {
 	service   string
 	account   string
@@ -199,6 +205,28 @@ func (w *Wrapper) fetchMEK(reason string) ([]byte, error) {
 	out := make([]byte, len(w.mek))
 	copy(out, w.mek)
 	return out, nil
+}
+
+// Close wipes the cached MEK and releases the mlock pinning its page. It is
+// idempotent, and safe to call on a Wrapper that never fetched anything.
+//
+// Copies already handed out by fetchMEK are untouched — they belong to their
+// callers, who wipe them on their own schedule. Close only ends the Wrapper's
+// own cache, so a Wrapper that outlives its usefulness inside a long-running
+// process stops being a copy of the master key sitting in resident memory.
+// After Close a further fetch re-challenges, which is the correct behavior for
+// a value whose whole purpose is to bound how long the key is available.
+func (w *Wrapper) Close() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.mek == nil {
+		return
+	}
+	wipe(w.mek)
+	// Best-effort, mirroring the Mlock in fetchMEK: a failure here leaves a
+	// zeroed page pinned, which is harmless — the secret is already gone.
+	_ = unix.Munlock(w.mek)
+	w.mek = nil
 }
 
 // RequireUserPresence runs the local-auth challenge (and MEK fetch)

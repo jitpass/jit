@@ -20,6 +20,7 @@
 package consent
 
 import (
+	"fmt"
 	"strconv"
 	"sync"
 	"time"
@@ -94,6 +95,13 @@ type Caller struct {
 type Request struct {
 	Credential string // the vault credential name/label, e.g. "aws", "gcp"
 	Caller     Caller
+	// PriorRefusals is how many times THIS caller's request for THIS
+	// credential has already been refused in the current session. It is set
+	// by the engine before it calls the Prompter, never by the call site, and
+	// exists so the prompt can say so: the third identical dialog in a minute
+	// is a materially different question from the first, and a human who
+	// can't see that difference has only their patience to answer it with.
+	PriorRefusals int
 }
 
 // key identifies a cacheable decision. Strength is part of it, so a decision
@@ -123,6 +131,83 @@ type cached struct {
 	expires  time.Time // zero means no expiry (Always)
 }
 
+// refusal tracks consecutive non-approvals for one key, and until when the
+// engine is refusing to prompt about it again. Reset by an approval or by
+// Clear; see Throttled for why it exists.
+type refusal struct {
+	count int
+	until time.Time
+}
+
+// backoffSchedule is the pause after the 1st, 2nd, and 3rd-or-later
+// consecutive refusal of the same request. It starts short enough that a
+// human who declined by accident and immediately re-ran their command barely
+// notices, and tops out at the same 30 seconds the agent's unlock cooldown
+// uses — long enough that a loop cannot convert patience into approval.
+var backoffSchedule = []time.Duration{
+	2 * time.Second,
+	8 * time.Second,
+	30 * time.Second,
+}
+
+// refusalRetention is how long past its pause a refusal record is kept so the
+// escalation still remembers it. Long enough that no realistic retry loop
+// escapes the schedule, short enough that the map doesn't accumulate for the
+// life of a weeks-long agent process.
+const refusalRetention = time.Hour
+
+func backoffFor(refusals int) time.Duration {
+	if refusals <= 0 {
+		return 0
+	}
+	if refusals > len(backoffSchedule) {
+		refusals = len(backoffSchedule)
+	}
+	return backoffSchedule[refusals-1]
+}
+
+// Throttled is returned instead of a prompt while a request is inside its
+// post-refusal pause. Callers fail closed on it exactly as they do on any
+// other non-Allow outcome; it is a distinct type only so the message can
+// explain the wait rather than looking like a fresh refusal.
+//
+// This is what closes the asymmetry that made refusing a consent prompt
+// unaffordable. A declined prompt cannot be cached as a session-long Deny —
+// the prompter genuinely cannot tell a human's "no" from a keychain error,
+// and caching either would lock the credential out with no way back (see the
+// agent's gateConsent). So every refusal used to cost the user one full-screen
+// modal and cost the caller nothing, and a process asking in a loop produced
+// one dialog per iteration until the only way to stop them was to approve.
+// The pause makes refusing cheap without making it permanent: the credential
+// stays reachable, the next genuine attempt still prompts, and a loop gets
+// errors instead of an audience.
+//
+// The cost is real and worth stating. The key is coarse — credential plus the
+// caller's LAUNCHER, which for anything script-driven is a shared interpreter
+// or the terminal itself — so refusals earned by one program can pause an
+// honest one that happens to resolve to the same launcher. That is why the
+// pause is short, why it never becomes a cached Deny, and why an explicit
+// `jit unlock` clears it (ClearBackoff): a human at the keyboard saying "now"
+// is exactly the signal a refusal withheld, and the same override the agent's
+// unlock cooldown has always honored.
+type Throttled struct {
+	Credential string
+	Refusals   int
+	RetryAfter time.Duration
+}
+
+func (t *Throttled) Error() string {
+	return fmt.Sprintf("access to your %s credential was refused %s; not asking again for %s (run `jit unlock` to clear the pause)",
+		t.Credential, plural(t.Refusals, "time"), t.RetryAfter.Round(time.Second))
+}
+
+func plural(n int, unit string) string {
+	if n == 1 {
+		return "once"
+	}
+	return fmt.Sprintf("%d %ss", n, unit)
+}
+
 // Engine holds the session's standing decisions.
 type Engine struct {
 	mu    sync.Mutex
@@ -131,7 +216,12 @@ type Engine struct {
 	// first caller becomes the leader and prompts; the rest wait on its channel
 	// and re-read the cache it fills, so two tools reaching for the same
 	// credential at once produce one Touch ID prompt, not a stampede of them.
-	pending    map[string]chan struct{}
+	pending map[string]chan struct{}
+	// refusals is the backoff state per key. It is deliberately NOT the
+	// decision cache: a refusal is never a standing answer (lookup must still
+	// miss, so the next attempt after the pause really does re-ask), only a
+	// reason to decline to ask again just yet.
+	refusals   map[string]refusal
 	sessionTTL time.Duration
 	now        func() time.Time // injectable for tests
 }
@@ -143,6 +233,7 @@ func New(sessionTTL time.Duration) *Engine {
 	return &Engine{
 		cache:      make(map[string]cached),
 		pending:    make(map[string]chan struct{}),
+		refusals:   make(map[string]refusal),
 		sessionTTL: sessionTTL,
 		now:        time.Now,
 	}
@@ -158,21 +249,32 @@ func (e *Engine) Decide(req Request, prompt Prompter) (Decision, error) {
 
 	key := req.key()
 
-	// An unidentified caller (empty ExecPath) has no stable key to cache under
-	// or single-flight on — two such callers are indistinguishable — so it just
-	// prompts, every time, and its answer is never remembered.
-	if req.Caller.ExecPath == "" {
-		d, _, err := prompt(req)
-		if err != nil {
-			return Undecided, err
-		}
-		return d, nil
-	}
+	// An unidentified caller (empty ExecPath) has no identity to cache a
+	// decision against — two such callers are indistinguishable, so one's
+	// approval must never be spent by another — and its answer is therefore
+	// never remembered. It is NOT exempt from the queue or the backoff: both
+	// key on the credential alone in that case, grouping every anonymous
+	// caller together. Being harder to identify must not buy a caller more of
+	// the user's attention than being honest about who you are, and an
+	// exemption here would have been a free prompt generator for anyone
+	// willing to obscure their lineage.
+	cacheable := req.Caller.ExecPath != ""
 
 	for {
 		// (2) A standing decision from earlier this session.
-		if d, ok := e.lookup(key); ok {
-			return d, nil
+		if cacheable {
+			if d, ok := e.lookup(key); ok {
+				return d, nil
+			}
+		}
+
+		// Refused too recently to ask again. Checked inside the loop, after
+		// the cache miss, so waiters released by a leader whose prompt was
+		// just declined are turned away here rather than each becoming the
+		// next leader and prompting in turn — which is what made a hundred
+		// concurrent requests cost a hundred dialogs despite the single-flight.
+		if err := e.throttle(key, req.Credential); err != nil {
+			return Deny, err
 		}
 
 		// (3) Ask, and remember for the chosen scope — but only one caller per
@@ -182,9 +284,13 @@ func (e *Engine) Decide(req Request, prompt Prompter) (Decision, error) {
 			<-wait
 			continue
 		}
+		req.PriorRefusals = e.refusalCount(key)
 		d, scope, err := prompt(req)
 		if err == nil {
-			e.remember(key, d, scope)
+			if cacheable {
+				e.remember(key, d, scope)
+			}
+			e.score(key, d)
 		}
 		e.finishFlight(key)
 		if err != nil {
@@ -192,6 +298,76 @@ func (e *Engine) Decide(req Request, prompt Prompter) (Decision, error) {
 		}
 		return d, nil
 	}
+}
+
+// throttle returns a *Throttled if key is still inside its post-refusal
+// pause, and nil if it is free to prompt.
+func (e *Engine) throttle(key, credential string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	r, ok := e.refusals[key]
+	if !ok {
+		return nil
+	}
+	remaining := r.until.Sub(e.now())
+	if remaining <= 0 {
+		// The pause is over, but the COUNT is not cleared: only an approval
+		// (or a re-lock, or an explicit unlock) resets the escalation.
+		// Otherwise a caller could sit out two seconds and be back at the
+		// bottom of the schedule forever, which is a rate limit in name only.
+		//
+		// Long-dormant entries are reclaimed, though. The agent runs for
+		// weeks, and a map that only ever grows is a slow leak; an hour of
+		// silence is far longer than any flood and is not a way to game the
+		// escalation, since waiting an hour between attempts is not a flood.
+		if -remaining > refusalRetention {
+			delete(e.refusals, key)
+		}
+		return nil
+	}
+	return &Throttled{Credential: credential, Refusals: r.count, RetryAfter: remaining}
+}
+
+// ClearBackoff drops every pause without touching the standing decisions.
+//
+// This is the human override, and it is the reason the backoff is safe to key
+// as coarsely as it does. `jit unlock` is someone at the keyboard saying "now"
+// — the same gesture the agent's unlock cooldown has always exempted — so a
+// pause earned by whatever was asking in the background must not outlive it.
+// Decisions are deliberately left alone: an unlock is permission to be asked
+// again, not permission to skip the asking.
+func (e *Engine) ClearBackoff() {
+	e.mu.Lock()
+	e.refusals = make(map[string]refusal)
+	e.mu.Unlock()
+}
+
+// score updates the backoff after a completed prompt: an approval clears the
+// escalation outright, anything else extends it.
+//
+// "Anything else" includes a challenge that failed for reasons the user had
+// nothing to do with — the prompter cannot distinguish those from a decline,
+// which is the same limitation that stops a refusal being cached as a Deny.
+// The cost of conflating them here is bounded and self-correcting: a genuinely
+// broken keychain adds seconds before each retry rather than locking anything
+// out, and the first success clears it.
+func (e *Engine) score(key string, d Decision) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if d == Allow {
+		delete(e.refusals, key)
+		return
+	}
+	r := e.refusals[key]
+	r.count++
+	r.until = e.now().Add(backoffFor(r.count))
+	e.refusals[key] = r
+}
+
+func (e *Engine) refusalCount(key string) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.refusals[key].count
 }
 
 // joinFlight registers the caller against key: the first returns leader=true
@@ -253,5 +429,10 @@ func (e *Engine) remember(key string, d Decision, scope Scope) {
 func (e *Engine) Clear() {
 	e.mu.Lock()
 	e.cache = make(map[string]cached)
+	// Backoff state is session state too. A re-lock is a human coming back to
+	// the machine, and making them wait out a pause earned by whatever was
+	// asking while they were away would be the throttle punishing the wrong
+	// party.
+	e.refusals = make(map[string]refusal)
 	e.mu.Unlock()
 }
