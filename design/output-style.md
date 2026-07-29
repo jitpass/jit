@@ -64,7 +64,15 @@ that needs attention (`✗` broken, `○` unreferenced) is found at a glance. A
 shared rule (mounts are decoy by default) is stated once in the header, not
 per row.
 
+A dashboard opens with its **verdict** — how much wants the reader's attention,
+before any detail. It answers "is there anything here for me?", which is the
+question someone runs a status command to ask; `jit scan`'s coverage percentage
+is the same instinct. The count is mechanical: one per state that renders an
+action beneath it, so the headline can never claim a different number of
+problems than the body shows.
+
 ```
+jit      ✗ 1 thing to fix · ○ 2 things to look at · 0.65.0
 secrets  65 stored in 15 groups
   ● Wired here          3 groups via 3 profiles (6 references), all resolve.
   ○ Unreferenced here   4 groups, 21 secrets. May belong to another project.

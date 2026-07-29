@@ -296,8 +296,10 @@ func removeOneProject(cmd *cobra.Command, root, home, projectRoot string) error 
 	// for work that's about to be aborted (the ordering every mutating
 	// command here uses, GAPS.md #17).
 	if !migrateRemoveYes && !confirmPrompt(cmd, fmt.Sprintf(
-		"Restore %d file(s) to PLAINTEXT and permanently delete %d vault secret(s) + %d backup(s)? This can't be undone. [y/N] ",
-		len(plan.mounts)+len(plan.inPlace)+len(plan.mcpRestores)+len(plan.rewritten), len(plan.deletePaths), len(plan.backups))) {
+		"Restore %s to PLAINTEXT and permanently delete %s + %s? This can't be undone. [y/N] ",
+		countWord(len(plan.mounts)+len(plan.inPlace)+len(plan.mcpRestores)+len(plan.rewritten), "file", "files"),
+		countWord(len(plan.deletePaths), "vault secret", "vault secrets"),
+		countWord(len(plan.backups), "backup", "backups"))) {
 		fmt.Fprintln(out, "Aborted. Nothing was changed.")
 		return nil
 	}
@@ -343,14 +345,14 @@ func removeOneProject(cmd *cobra.Command, root, home, projectRoot string) error 
 		if _, err := mount.RemoveMount(registryPath, e.MountPath); err != nil {
 			return fmt.Errorf("jit migrate remove: %w", err)
 		}
-		fmt.Fprintf(out, "Restored %s (%d variable(s) written back as plaintext).\n", displayPath(home, e.MountPath), len(names))
+		fmt.Fprintf(out, "Restored %s (%s written back as plaintext).\n", displayPath(home, e.MountPath), countWord(len(names), "variable", "variables"))
 	}
 	for _, p := range plan.inPlace {
 		names, err := migrate.RestorePointerFile(v, p)
 		if err != nil {
 			return fmt.Errorf("jit migrate remove: %w", err)
 		}
-		fmt.Fprintf(out, "Restored %s (%d variable(s) written back as plaintext).\n", displayPath(home, p), len(names))
+		fmt.Fprintf(out, "Restored %s (%s written back as plaintext).\n", displayPath(home, p), countWord(len(names), "variable", "variables"))
 	}
 	// A project MCP config still launching servers through jit's wrapper
 	// gets its plaintext env blocks back BEFORE its profiles and secrets are
@@ -366,7 +368,7 @@ func removeOneProject(cmd *cobra.Command, root, home, projectRoot string) error 
 			return fmt.Errorf("jit migrate remove: %w", err)
 		}
 		for _, r := range restores {
-			fmt.Fprintf(out, "Restored server %q in %s (%d variable(s) written back as plaintext).\n", r.ServerName, displayPath(home, cfg), len(r.Variables))
+			fmt.Fprintf(out, "Restored server %q in %s (%s written back as plaintext).\n", r.ServerName, displayPath(home, cfg), countWord(len(r.Variables), "variable", "variables"))
 		}
 	}
 
@@ -459,10 +461,12 @@ func removeOneProject(cmd *cobra.Command, root, home, projectRoot string) error 
 		}
 	}
 
-	fmt.Fprintf(out, "\nRemoved jit from this project: %d file(s) restored to plaintext, %d vault secret(s) and %d backup(s) deleted, %s removed.\n",
-		len(plan.mounts)+len(plan.inPlace)+len(plan.mcpRestores)+len(plan.rewritten), len(plan.deletePaths), len(plan.backups), displayJitDirs(home, plan.jitDirs))
+	fmt.Fprintf(out, "\nRemoved jit from this project: %s restored to plaintext, %s and %s deleted, %s removed.\n",
+		countWord(len(plan.mounts)+len(plan.inPlace)+len(plan.mcpRestores)+len(plan.rewritten), "file", "files"),
+		countWord(len(plan.deletePaths), "vault secret", "vault secrets"),
+		countWord(len(plan.backups), "backup", "backups"), displayJitDirs(home, plan.jitDirs))
 	if len(plan.keptShared) > 0 {
-		fmt.Fprintf(out, "Kept %d vault secret(s) another profile still references: %s\n", len(plan.keptShared), strings.Join(plan.keptShared, ", "))
+		fmt.Fprintf(out, "Kept %s another profile still references: %s\n", countWord(len(plan.keptShared), "vault secret", "vault secrets"), strings.Join(plan.keptShared, ", "))
 	}
 	return nil
 }
@@ -525,8 +529,10 @@ func removeOneLooseFile(cmd *cobra.Command, root, home, file string) error {
 	// Confirm BEFORE auth — declining must never cost a Touch ID prompt for
 	// work about to be aborted (GAPS.md #17's ordering).
 	if !migrateRemoveYes && !confirmPrompt(cmd, fmt.Sprintf(
-		"Restore %d file(s) to PLAINTEXT and permanently delete %d vault secret(s) + %d backup(s)? This can't be undone. [y/N] ",
-		restoreCount, len(plan.deletePaths), len(plan.backups))) {
+		"Restore %s to PLAINTEXT and permanently delete %s + %s? This can't be undone. [y/N] ",
+		countWord(restoreCount, "file", "files"),
+		countWord(len(plan.deletePaths), "vault secret", "vault secrets"),
+		countWord(len(plan.backups), "backup", "backups"))) {
 		fmt.Fprintln(out, "Aborted. Nothing was changed.")
 		return nil
 	}
@@ -570,7 +576,7 @@ func removeOneLooseFile(cmd *cobra.Command, root, home, file string) error {
 				fmt.Fprintf(out, "  warning: removing template %s: %v\n", displayPath(home, e.TemplatePath), err)
 			}
 		}
-		fmt.Fprintf(out, "Restored %s (%d variable(s) written back as plaintext).\n", displayPath(home, e.MountPath), len(names))
+		fmt.Fprintf(out, "Restored %s (%s written back as plaintext).\n", displayPath(home, e.MountPath), countWord(len(names), "variable", "variables"))
 	} else if plan.isPointer {
 		if plan.restoreBackup != nil {
 			if err := migrate.RestoreFromBackup(v, *plan.restoreBackup); err != nil {
@@ -587,7 +593,7 @@ func removeOneLooseFile(cmd *cobra.Command, root, home, file string) error {
 			if err != nil {
 				return fmt.Errorf("jit migrate remove: %w", err)
 			}
-			fmt.Fprintf(out, "Restored %s (%d variable(s), reconstructed from the vault — no backup was indexed).\n", displayPath(home, plan.file), len(names))
+			fmt.Fprintf(out, "Restored %s (%s, reconstructed from the vault — no backup was indexed).\n", displayPath(home, plan.file), countWord(len(names), "variable", "variables"))
 		}
 	}
 
@@ -633,10 +639,14 @@ func removeOneLooseFile(cmd *cobra.Command, root, home, file string) error {
 		}
 	}
 
-	fmt.Fprintf(out, "\nRemoved jit from %s: %d file(s) restored to plaintext, %d vault secret(s), %d profile(s), and %d backup(s) deleted.\n",
-		displayPath(home, plan.file), restoreCount, len(plan.deletePaths), len(plan.profilePaths), len(toDrop))
+	fmt.Fprintf(out, "\nRemoved jit from %s: %s restored to plaintext, %s, %s, and %s deleted.\n",
+		displayPath(home, plan.file),
+		countWord(restoreCount, "file", "files"),
+		countWord(len(plan.deletePaths), "vault secret", "vault secrets"),
+		countWord(len(plan.profilePaths), "profile", "profiles"),
+		countWord(len(toDrop), "backup", "backups"))
 	if len(plan.keptShared) > 0 {
-		fmt.Fprintf(out, "Kept %d vault secret(s) another profile still references: %s\n", len(plan.keptShared), strings.Join(plan.keptShared, ", "))
+		fmt.Fprintf(out, "Kept %s another profile still references: %s\n", countWord(len(plan.keptShared), "vault secret", "vault secrets"), strings.Join(plan.keptShared, ", "))
 	}
 	return nil
 }
@@ -794,7 +804,7 @@ func printLooseFileRemovalPlan(out interface{ Write([]byte) (int, error) }, home
 		fmt.Fprintf(out, "  • %s\n\n", displayPath(home, plan.file))
 	}
 	if n := len(plan.profilePaths); n > 0 {
-		printMigrateResultCategory(out, "Profile(s) + their vault secrets deleted", n)
+		printMigrateResultCategory(out, pluralWord(n, "Profile + its", "Profiles + their")+" vault secrets deleted", n)
 		for _, p := range plan.profilePaths {
 			fmt.Fprintf(out, "  • %s\n", displayPath(home, p))
 		}
@@ -1155,7 +1165,7 @@ func printProjectRemovalPlan(out interface{ Write([]byte) (int, error) }, home s
 		fmt.Fprintln(out)
 	}
 	if n := len(plan.mcpRestores); n > 0 {
-		printMigrateResultCategory(out, "MCP config server(s) -> plaintext env again (current vault values)", n)
+		printMigrateResultCategory(out, pluralWord(n, "MCP config server", "MCP config servers")+" -> plaintext env again (current vault values)", n)
 		cfgs := make([]string, 0, n)
 		for cfg := range plan.mcpRestores {
 			cfgs = append(cfgs, cfg)

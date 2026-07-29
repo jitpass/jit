@@ -81,7 +81,7 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 			for _, g := range manual {
 				manualSecrets += g.secrets
 			}
-			_, _ = dim.Fprintf(w, " %d thing(s) only you can fix ", len(manual))
+			_, _ = dim.Fprintf(w, " %s only you can fix ", countWord(len(manual), "thing", "things"))
 			_, _ = yellow.Fprintf(w, "+%d%%", pctOf(manualSecrets, cov.Total()))
 		}
 	}
@@ -92,7 +92,7 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 	if len(migratable) > 0 {
 		fmt.Fprint(w, "  ")
 		_, _ = greenBold.Fprint(w, "jit will protect these")
-		_, _ = dim.Fprintf(w, " — %d secret(s) in %d file(s), ", cov.Migratable, len(migratable))
+		_, _ = dim.Fprintf(w, " — %s in %s, ", countWord(cov.Migratable, "secret", "secrets"), countWord(len(migratable), "file", "files"))
 		_, _ = greenBold.Fprintf(w, "%d%% → %d%%\n", pct, after)
 		fmt.Fprint(w, "      ")
 		_, _ = green.Fprintln(w, "→ jit migrate")
@@ -102,9 +102,9 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 				wraps++
 			}
 		}
-		intro := fmt.Sprintf("one command; it vaults the values and rewrites %d file(s)", len(migratable)-wraps)
+		intro := fmt.Sprintf("one command; it vaults the values and rewrites %s", countWord(len(migratable)-wraps, "file", "files"))
 		if wraps > 0 {
-			intro += fmt.Sprintf(" and wraps %d CLI(s)", wraps)
+			intro += " and wraps " + countWord(wraps, "CLI", "CLIs")
 		}
 		_, _ = dim.Fprintf(w, "        %s —\n        every tool that reads them keeps working:\n", intro)
 		pathW := 0
@@ -132,7 +132,7 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 		for _, g := range manual {
 			manualSecrets += g.secrets
 		}
-		_, _ = dim.Fprintf(w, " — %d secret(s), ", manualSecrets)
+		_, _ = dim.Fprintf(w, " — %s, ", countWord(manualSecrets, "secret", "secrets"))
 		_, _ = yellowBold.Fprintf(w, "%d%% → 100%%\n", after)
 		for _, g := range manual {
 			fmt.Fprint(w, "    ")
@@ -202,16 +202,23 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 		}
 	}
 	if fixtures > 0 {
-		_, _ = dim.Fprintf(w, "  %d sighting(s) are test fixtures (a *_test.go, a testdata/ file) —\n", fixtures)
+		_, _ = dim.Fprintf(w, "  %s %s test %s (a *_test.go, a testdata/ file) —\n",
+			countWord(fixtures, "sighting", "sightings"),
+			pluralWord(fixtures, "is a", "are"),
+			pluralWord(fixtures, "fixture", "fixtures"))
 		_, _ = dim.Fprintln(w, "  real credential formats with no owner to rotate; not counted")
 	}
 	if archived > 0 {
-		_, _ = dim.Fprintf(w, "  %d finding(s) sit in archived/backup folders — jit migrate skips those\n", archived)
+		_, _ = dim.Fprintf(w, "  %s %s in archived/backup folders — jit migrate skips those\n",
+			countWord(archived, "finding", "findings"),
+			pluralWord(archived, "sits", "sit"))
 		_, _ = dim.Fprintln(w, "  by default; name one explicitly (jit migrate <path>) to protect it")
 	}
 	if quiet > 0 {
-		_, _ = dim.Fprintf(w, "  jit also saw %d low-confidence sighting(s) it does not judge to be\n", quiet)
-		_, _ = dim.Fprintln(w, "  secrets — review them with jit scan --full · ndjson for machines")
+		_, _ = dim.Fprintf(w, "  jit also saw %s it does not judge to be\n",
+			countWord(quiet, "low-confidence sighting", "low-confidence sightings"))
+		_, _ = dim.Fprintf(w, "  %s — review %s with jit scan --full · ndjson for machines\n",
+			pluralWord(quiet, "a secret", "secrets"), pluralWord(quiet, "it", "them"))
 	} else {
 		_, _ = dim.Fprintln(w, "  full inventory: jit scan --full · ndjson for machines")
 	}

@@ -423,7 +423,7 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	_, _ = colorOr(riskLevelColor, summary.RiskLevel).Fprintf(w, "  RISK LEVEL: %s\n", strings.ToUpper(summary.RiskLevel))
 	_, _ = colorOr(riskLevelColor, summary.RiskLevel).Fprintf(w, "  EXPOSURE:   %d/100\n", summary.ExposureScore)
 	if matches := summary.ProductionIndicatorCount + summary.PublicIPCount; matches > 0 {
-		fmt.Fprintf(w, "  (%d production-indicator/public-IP match(es) found)\n", matches)
+		fmt.Fprintf(w, "  (%s found)\n", countWord(matches, "production-indicator/public-IP match", "production-indicator/public-IP matches"))
 		for _, path := range criticalTriggerPaths(findings) {
 			fmt.Fprintf(w, "    - %s\n", displayFilePath(home, path))
 		}
@@ -431,7 +431,7 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	fmt.Fprintln(w)
 
 	for _, ft := range AllFindingTypes {
-		line := fmt.Sprintf("  %-22s %d finding(s)", findingTypeLabels[ft], summary.FindingsByCategory[ft])
+		line := fmt.Sprintf("  %-22s %s", findingTypeLabels[ft], countWord(summary.FindingsByCategory[ft], "finding", "findings"))
 		if summary.FindingsByCategory[ft] == 0 {
 			// Dim the nothing-found rows so the categories that DO have
 			// findings are what the eye lands on — the itemized sections
@@ -442,13 +442,13 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 		}
 	}
 	fmt.Fprintf(w, "  %s\n", strings.Repeat("─", 35))
-	fmt.Fprintf(w, "  Total: %d finding(s)\n", summary.TotalFindings)
+	fmt.Fprintf(w, "  Total: %s\n", countWord(summary.TotalFindings, "finding", "findings"))
 	// Good news gets a line too: files jit already protects (live mounts,
 	// content served from the encrypted vault) are excluded from the
 	// findings above — say so, or their disappearance from the report reads
 	// as the scanner having missed them.
 	if summary.JitProtectedCount > 0 {
-		_, _ = color.New(color.FgGreen).Fprintf(w, "  Already protected by jit: %d live mount(s), served from the encrypted vault, no plaintext on disk. Not scanned.\n", summary.JitProtectedCount)
+		_, _ = color.New(color.FgGreen).Fprintf(w, "  Already protected by jit: %s, served from the encrypted vault, no plaintext on disk. Not scanned.\n", countWord(summary.JitProtectedCount, "live mount", "live mounts"))
 	}
 	fmt.Fprintln(w)
 
@@ -572,6 +572,23 @@ type columns struct {
 }
 
 func lineTag(n int) string { return fmt.Sprintf(":%d", n) }
+
+// pluralWord picks the singular or plural form for n — the package-local
+// twin of the CLI's helper of the same name, so report text says "1
+// finding" / "2 findings" instead of the "N finding(s)" form letter.
+func pluralWord(n int, singular, plural string) string {
+	if n == 1 {
+		return singular
+	}
+	return plural
+}
+
+// countWord renders "1 finding" / "12 findings" — the count and its
+// correctly inflected noun together, which is the pairing report call
+// sites actually want.
+func countWord(n int, singular, plural string) string {
+	return fmt.Sprintf("%d %s", n, pluralWord(n, singular, plural))
+}
 
 func computeColumns(group []Finding) columns {
 	c := columns{}

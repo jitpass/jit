@@ -83,7 +83,7 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintln(out, "This will remove:")
 	fmt.Fprintln(out, "  - the background service (launchd login item)")
 	if len(shims) > 0 {
-		fmt.Fprintf(out, "  - %d wrap shim(s): %v\n", len(shims), shims)
+		fmt.Fprintf(out, "  - %s: %v\n", countWord(len(shims), "wrap shim", "wrap shims"), shims)
 	}
 	if !uninstallKeepBinary {
 		fmt.Fprintf(out, "  - the jit binary at %s\n", exePath)
@@ -92,7 +92,7 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintf(out, "  - the global config at %s\n", jitConfigDir)
 		fmt.Fprintf(out, "  - THE VAULT at %s", vaultRoot)
 		if secretCount >= 0 {
-			fmt.Fprintf(out, " (%d secret(s) — this is irreversible)", secretCount)
+			fmt.Fprintf(out, " (%s — this is irreversible)", countWord(secretCount, "secret", "secrets"))
 		}
 		fmt.Fprintln(out)
 	}
@@ -107,7 +107,7 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 	if !uninstallYes {
 		prompt := "Uninstall jit? [y/N] "
 		if uninstallPurge {
-			prompt = fmt.Sprintf("Permanently delete jit AND %d secret(s)? [y/N] ", secretCount)
+			prompt = fmt.Sprintf("Permanently delete jit AND %s? [y/N] ", countWord(secretCount, "secret", "secrets"))
 		}
 		if !confirmPrompt(cmd, prompt) {
 			fmt.Fprintln(out, "Aborted, nothing was changed.")
@@ -151,7 +151,7 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 		}
 	}
 	if removedShims > 0 {
-		note("Removed %d wrap shim(s).", removedShims)
+		note("Removed %s.", countWord(removedShims, "wrap shim", "wrap shims"))
 	}
 
 	// 3. Purge (opt-in): global config, then the vault. Order matters only for

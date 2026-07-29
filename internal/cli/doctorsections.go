@@ -56,7 +56,9 @@ func agentFindings(root string) []checkFinding {
 		// only worth flagging when there are mounts that need serving.
 		if ms, mErr := gatherMountStatus(root, st); mErr == nil && ms.Registered > 0 {
 			out = append(out, checkFinding{Kind: kindService, Detail: fmt.Sprintf(
-				"the service isn't running, so %d registered mount(s) aren't being served; run `jit service restart` to start it", ms.Registered)})
+				"the service isn't running, so %s %s being served; run `jit service restart` to start it",
+				countWord(ms.Registered, "registered mount", "registered mounts"),
+				pluralWord(ms.Registered, "isn't", "aren't"))})
 		}
 	}
 	return out

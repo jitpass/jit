@@ -304,7 +304,7 @@ func TestRunRestoresContinuesPastFailureAndExitsNonZero(t *testing.T) {
 		t.Fatalf("the failure must not abort the batch, expected the other 2 restored, got %d (%v)", len(restored), restored)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "Restored 2 file(s)") {
+	if !strings.Contains(out, "Restored 2 files") {
 		t.Errorf("summary should report 2 restored, got:\n%s", out)
 	}
 	if !strings.Contains(out, "could NOT be restored") || !strings.Contains(out, "secret not found") {
@@ -318,7 +318,7 @@ func TestRunRestoresAllSucceedReturnsNil(t *testing.T) {
 	if err := runRestores(&buf, "/home/u", recs, func(migrate.BackupRecord) error { return nil }); err != nil {
 		t.Fatalf("all-success batch must return nil, got %v", err)
 	}
-	if !strings.Contains(buf.String(), "Restored 2 file(s)") {
+	if !strings.Contains(buf.String(), "Restored 2 files") {
 		t.Errorf("expected success summary, got:\n%s", buf.String())
 	}
 }

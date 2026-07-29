@@ -111,11 +111,16 @@ func (s *migrateSummary) print(w io.Writer) {
 
 	if s.backupOnlyFiles > 0 {
 		sep()
-		fmt.Fprintf(w, "%d backup-suffixed file(s) (.bak/.old/.orig/.backup) had their secrets moved to the vault but were never mounted, nothing reads a backup file live, so each was replaced with a safe pointer file instead of a FIFO.\n", s.backupOnlyFiles)
+		fmt.Fprintf(w, "%s (.bak/.old/.orig/.backup) had %s secrets moved to the vault but %s never mounted, nothing reads a backup file live, so each was replaced with a safe pointer file instead of a FIFO.\n",
+			countWord(s.backupOnlyFiles, "backup-suffixed file", "backup-suffixed files"),
+			pluralWord(s.backupOnlyFiles, "its", "their"),
+			pluralWord(s.backupOnlyFiles, "was", "were"))
 	}
 	if len(s.gitHistoryFiles) > 0 {
 		sep()
-		_, _ = color.New(color.FgYellow).Fprintf(w, "⚠ %d file(s) migrated already have git history, jit migrate does not scrub it:\n", len(s.gitHistoryFiles))
+		_, _ = color.New(color.FgYellow).Fprintf(w, "⚠ %s migrated already %s git history, jit migrate does not scrub it:\n",
+			countWord(len(s.gitHistoryFiles), "file", "files"),
+			pluralWord(len(s.gitHistoryFiles), "has", "have"))
 		for _, f := range s.gitHistoryFiles {
 			fmt.Fprintf(w, "  • %s\n", f)
 		}
@@ -126,7 +131,10 @@ func (s *migrateSummary) print(w io.Writer) {
 	}
 	if s.pointerFiles > 0 {
 		sep()
-		fmt.Fprintf(w, "%d git-safe .pointers file(s) written alongside the mount(s) above, list vault paths only, safe to open or commit.\n", s.pointerFiles)
+		fmt.Fprintf(w, "%s written alongside the %s above, %s vault paths only, safe to open or commit.\n",
+			countWord(s.pointerFiles, "git-safe .pointers file", "git-safe .pointers files"),
+			pluralWord(s.pointerFiles, "mount", "mounts"),
+			pluralWord(s.pointerFiles, "lists", "list"))
 	}
 	if s.exportNudge {
 		sep()

@@ -95,9 +95,10 @@ func TestStatusReflectsRealAgentRunningAndLocked(t *testing.T) {
 	if !strings.Contains(out, "service  ● running · unlocked") {
 		t.Errorf("expected an unlocked agent summary, got:\n%s", out)
 	}
-	// The in-test server runs in this same process, so its version/build are
-	// this binary's own — the jit line must report both sides.
-	wantVersions := "jit      " + versionBuild(agent.Version(), agent.BuildID()) + " · service " + versionBuild(agent.Version(), agent.BuildID())
+	// The in-test server runs in this same process, so its version matches
+	// this binary's — matching versions collapse to one entry rather than
+	// being printed twice, and the headline carries the verdict, not builds.
+	wantVersions := "jit      ● all clear · " + shortVersion(agent.Version())
 	if !strings.Contains(out, wantVersions) {
 		t.Errorf("expected %q, got:\n%s", wantVersions, out)
 	}
