@@ -167,6 +167,44 @@ func TestApplyAWSProfileWithSessionToken(t *testing.T) {
 	}
 }
 
+func TestApplyAWSProfileWithExpirationStamp(t *testing.T) {
+	// A temporary session minted by a SAML/SSO tool (clisso et al.) carries
+	// an aws_expiration stamp. It must travel to the vault with the token —
+	// serving the token without it makes SDKs cache it as never-expiring —
+	// and must not be left behind in the stripped file.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeAWSFixture(t, home,
+		"[prod]\naws_access_key_id = AKIA1\naws_secret_access_key = secret1\naws_session_token = tok123\naws_expiration = 2026-07-29T19:00:11Z\n",
+		"")
+
+	v := newTestVault(t)
+	result, err := ApplyAWSProfile(v, home, "prod")
+	if err != nil {
+		t.Fatalf("ApplyAWSProfile: %v", err)
+	}
+	found := false
+	for _, name := range result.Variables {
+		if name == "EXPIRATION" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Variables = %v, want it to include EXPIRATION", result.Variables)
+	}
+	got, err := v.Get("aws-prod/EXPIRATION")
+	if err != nil || string(got) != "2026-07-29T19:00:11Z" {
+		t.Errorf("EXPIRATION = (%q, %v), want (2026-07-29T19:00:11Z, nil)", got, err)
+	}
+	credRaw, err := os.ReadFile(AWSCredentialsPath(home)) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatalf("reading rewritten credentials: %v", err)
+	}
+	if strings.Contains(string(credRaw), "aws_expiration") {
+		t.Errorf("rewritten credentials file still holds aws_expiration:\n%s", credRaw)
+	}
+}
+
 func TestApplyAWSProfileWritesBackups(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
