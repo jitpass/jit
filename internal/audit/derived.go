@@ -99,7 +99,7 @@ func countFilesIn(dir string) int {
 // an assume-role profile does not have), and a false positive costs one honest
 // advisory line.
 func hasAssumeRoleProfile(path string) bool {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- a fixed filename under the scan's own HomeDir, never a caller-supplied path
 	if err != nil {
 		return false
 	}
