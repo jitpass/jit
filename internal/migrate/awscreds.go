@@ -17,8 +17,13 @@ import (
 
 // awsCredentialKeys are the fields ApplyAWSProfile moves into the vault —
 // the AWS CLI's own static-credential trio (access key, secret key, and
-// an optional temporary session token).
-var awsCredentialKeys = []string{"aws_access_key_id", "aws_secret_access_key", "aws_session_token"}
+// an optional temporary session token), plus aws_expiration, the stamp
+// SAML/SSO minting tools (clisso, aws-okta, onelogin-aws) write next to a
+// temporary token. The stamp isn't a secret, but it must travel with the
+// token: a credential_process answer that omits Expiration is read by the
+// AWS CLI/SDKs as "never expires", which turns a 12-hour session into one
+// a long-running process caches until every call fails ExpiredToken.
+var awsCredentialKeys = []string{"aws_access_key_id", "aws_secret_access_key", "aws_session_token", "aws_expiration"}
 
 // AWSCredentialMigration describes what jit migrate did to one AWS CLI
 // profile.
@@ -78,7 +83,7 @@ func DiscoverAWSProfiles(home string) ([]string, error) {
 // irregular special case, "[profile <name>]" for every other named
 // profile; getting this wrong silently produces a config the AWS CLI
 // never applies. Both ~/.aws/credentials and ~/.aws/config are backed up
-// first (backupFile), and only the three known credential keys are
+// first (backupFile), and only the four known credential keys are
 // removed from the credentials file's target section — its section
 // header and any other content (comments, other profiles) are left
 // exactly as they were, even if the section becomes otherwise empty.
@@ -129,6 +134,7 @@ func ApplyAWSProfile(v *vault.Vault, home, profileName string, dedup ...*BackupT
 		"aws_access_key_id":     "ACCESS_KEY_ID",
 		"aws_secret_access_key": "SECRET_ACCESS_KEY",
 		"aws_session_token":     "SESSION_TOKEN",
+		"aws_expiration":        "EXPIRATION",
 	}
 	meta, err := newProvenance(vault.ClassAWS, AWSCredentialsPath(home))
 	if err != nil {
