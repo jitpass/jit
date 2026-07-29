@@ -32,7 +32,8 @@ the vault is gone.
 |---|---|
 | `<project>/.env` (and layers) | a [live mount](../run/mounts.md), with a `.env.pointers` companion beside it |
 | `~/.zshrc` / `~/.bashrc` | export lines replaced with `eval "$(jit export --profile ...)"` |
-| `~/.aws/config` | gains a `credential_process` line per migrated profile |
+| `~/.aws/config` | gains a `credential_process` line per migrated profile - and one per app captured by [`jit wrap clisso`](../wrap/clisso.md) |
+| `~/.clisso.yaml` | each OneLogin provider's `client-secret` becomes a `jit://vault/` pointer; the real config is served over a pipe per run |
 | `~/.kube/config` | the user entry gains an `exec` credential-plugin block |
 | `~/.terraformrc` | gains a `credentials_helper` block |
 | `~/.gitconfig` | `credential.helper` set to `jit` (the plaintext `store` helper removed); `~/.git-credentials` has its migrated logins stripped |

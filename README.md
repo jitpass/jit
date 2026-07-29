@@ -214,8 +214,9 @@ as the last hour.
 
 `.env` files, shell exports, AWS and Terraform, kubeconfig, Docker registry
 logins, GCP ADC, `.npmrc` / `.netrc` tokens, MCP server configs, bare token
-files, and wrappable CLIs (`gh`, `stripe`, `vercel`, …). In every case the file
-keeps working and the real value comes from the vault on demand.
+files, wrappable CLIs (`gh`, `stripe`, `vercel`, …), and SSO CLIs that mint
+credentials at login (`clisso`). In every case the file keeps working and the
+real value comes from the vault on demand.
 
 The full catalog, grouped by exactly what to type for each tool, is
 **[Supported tools](./docs/tools.md)**: it tracks the code as tools are added or

@@ -68,7 +68,8 @@ then **[Install](./getting-started/install.md)** →
   [descope](./wrap/descope.md) · [okta-cli-client](./wrap/okta-cli-client.md) ·
   [snow](./wrap/snow.md) · [jira](./wrap/jira.md) ·
   [aws](./wrap/aws.md) · [terraform](./wrap/terraform.md) ·
-  [docker](./wrap/docker.md) · [git](./wrap/git.md)
+  [docker](./wrap/docker.md) · [git](./wrap/git.md) ·
+  [clisso](./wrap/clisso.md)
 - [Custom tools](./wrap/custom-tools.md) - wrap anything that reads an env var
 - [Wrap troubleshooting](./wrap/troubleshooting.md) - `wrap list`, `wrap doctor`, `wrap undo`
 

@@ -44,6 +44,14 @@ Secrets materialize at the moment of use and nowhere else:
   file) or, with `--live`, kept as a pipe that serves real values only to
   that run's own process tree. Neither writes a secret to disk, and both
   end the instant the command exits.
+- A tool that *mints* credentials rather than carrying one — an SSO CLI like
+  [clisso](../wrap/clisso.md) — is intercepted at the mint: its shim runs it
+  with the tool's own machine-readable output mode, captures the credentials
+  from that output, and stores them in the vault instead of letting the tool
+  write them to a plaintext file. The capture happens in the user's terminal,
+  where the tool's MFA prompts still work, and the tool's own config is served
+  back over a pipe for that one run, so its long-lived IdP secret is a
+  `jit://vault/` pointer at rest.
 - Machine-global credential *files* (the gcloud ADC, a SOPS age key, the
   global `~/.npmrc`, `~/.netrc`) migrate the same way, but are never granted
   implicitly or silently. Two things can release one, and both take a live
@@ -139,8 +147,9 @@ compromised user account safe. The boundaries worth knowing:
   prompt - the decision happens before delivery.
 - **Credentials a tool mints for itself are not jit's.** The concrete case:
   after the AWS CLI uses a migrated key to assume a role, it caches the
-  resulting STS session in plaintext under `~/.aws/cli/cache`, and
-  `aws sso login` writes its tokens to `~/.aws/sso/cache`. jit stores what
+  resulting STS session in plaintext under `~/.aws/cli/cache`,
+  `aws sso login` writes its tokens to `~/.aws/sso/cache`, and clisso caches
+  a session in `~/.aws/credentials-cache` when asked to. jit stores what
   *you* stored; these were minted downstream, will be minted again on the
   next run, and jit does not manage, clean or decoy them. It does now say
   they are there - `jit scan` reports them as out of scope rather than

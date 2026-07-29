@@ -12,7 +12,7 @@ a masked value preview, and a one-line *why* explaining what matched.
 |---|---|---|
 | **Shell Configs** | `~/.zshrc`, `~/.bashrc`, profile files - `export KEY=value` lines whose key name or value shape looks like a secret | [`jit migrate`](../migrate/shell-configs.md) |
 | **.env Files** | project `.env`-family files whose values match known token formats or secret-shaped entropy | [`jit migrate`](../migrate/env-files.md) |
-| **Credential Files** | `~/.aws/credentials`, `~/.kube/config`, `.npmrc` auth tokens, the crates.io publish token in `~/.cargo/credentials.toml`, PyPI upload tokens and private-index passwords in `~/.pypirc`, the Terraform Cloud token file, Docker registry logins in `~/.docker/config.json`, git HTTPS logins in `~/.git-credentials`, GCP application-default credentials, `~/.netrc` passwords, Streamlit's `.streamlit/secrets.toml`, and remote-MCP OAuth refresh tokens under `~/.mcp-auth` | [`jit migrate`](../migrate/index.md) - except `~/.mcp-auth`, see below |
+| **Credential Files** | `~/.aws/credentials`, `~/.kube/config`, `.npmrc` auth tokens, the crates.io publish token in `~/.cargo/credentials.toml`, PyPI upload tokens and private-index passwords in `~/.pypirc`, the Terraform Cloud token file, Docker registry logins in `~/.docker/config.json`, git HTTPS logins in `~/.git-credentials`, GCP application-default credentials, `~/.netrc` passwords, Streamlit's `.streamlit/secrets.toml`, remote-MCP OAuth refresh tokens under `~/.mcp-auth`, and the OneLogin API `client-secret` in clisso's `~/.clisso.yaml` | [`jit migrate`](../migrate/index.md) - except `~/.mcp-auth`, see below, and `~/.clisso.yaml`, which [`jit wrap clisso`](../wrap/clisso.md) handles |
 | **AI Tool / MCP Configs** | MCP server configs (project `mcp.json`, Claude Desktop config) with secrets in their env blocks | [`jit migrate`](../migrate/mcp.md) |
 | **Private Keys** | on-disk private key material | surfaced for your judgment |
 | **IaC Variable Files** | Terraform tfvars files, and Kubernetes Secret manifests (`*secret*.yaml` with `kind: Secret`) whose `data:` values are base64-**decoded** before judging - base64 is encoding, not encryption. Cluster-exported secrets and TLS/SSH/registry/basic-auth types escalate; SealedSecrets and fully SOPS-encrypted files are recognized as protected and skipped | tfvars: [`jit migrate`](../migrate/index.md); Secret manifests: surfaced for your judgment |
@@ -25,7 +25,8 @@ the wrap catalog, `jit scan` starts flagging its token automatically.
 
 One block of scan output is deliberately **not** in this table. Credentials
 other tools mint for themselves - the STS session the AWS CLI caches, the
-tokens `aws sso login` writes - are reported under "Outside jit's scope, found
+tokens `aws sso login` writes, the session clisso caches in
+`~/.aws/credentials-cache` - are reported under "Outside jit's scope, found
 anyway", and they never become findings: no `finding_type`, no severity, no
 place in any count. They are named so a clean report cannot be misread as an
 empty directory, not because jit intends to do anything about them. Don't go
