@@ -6,11 +6,11 @@ package cli
 import (
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/fatih/color"
-	"golang.org/x/term"
+
+	"github.com/jitpass/jit/internal/termtext"
 )
 
 // This file is jit's shared output vocabulary — the one place the house
@@ -55,21 +55,23 @@ var (
 // defaultWidth is the fallback line width when stdout isn't a terminal
 // (pipes, CI, tests) — 80 keeps column flow deterministic for tests and is
 // the conventional terminal default.
-const defaultWidth = 80
+const defaultWidth = termtext.DefaultWidth
 
-// outputWidth reports the usable column count for laying out flowed columns.
-// It reads the real terminal width when stdout is a TTY and falls back to
-// defaultWidth otherwise, so a wide terminal packs more columns while piped
-// and test output stays fixed and reproducible. Width is clamped to a floor
-// so a very narrow window still lays out sanely rather than one char wide.
-func outputWidth() int {
-	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
-		if w < 40 {
-			return 40
-		}
-		return w
-	}
-	return defaultWidth
+// outputWidth reports the usable column count for laying out this package's
+// output. A thin delegate so the CLI's dashboards and audit's scan report
+// measure the window the same way — see internal/termtext.
+func outputWidth() int { return termtext.Width() }
+
+// wrapBody writes body wrapped to the window, continuing a line the caller has
+// already started. used is how many columns are already on that line (indent
+// plus any glyph and label); cont prefixes every line after the first.
+//
+// Every prose line in this package goes through here rather than a bare
+// Fprintf. A line printed at its natural length is not "unwrapped", it is
+// wrapped by the terminal at column 0 — which drops the continuation to the
+// left of the glyph that owns it and turns one row into what reads as two.
+func wrapBody(w io.Writer, used int, cont, body string) {
+	termtext.Wrap(w, used, cont, body)
 }
 
 // hlCmds highlights the `backtick`-delimited command spans in a user-facing

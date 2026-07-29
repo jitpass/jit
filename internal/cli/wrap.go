@@ -73,7 +73,7 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
 		fmt.Fprintf(out, "%s: %s.\n", entry.Tool, entry.Doc)
-		fmt.Fprintf(out, "Running `jit %s`, no shim needed or installed.\n\n", strings.Join(d.Command, " "))
+		fmt.Fprint(out, hlCmds(fmt.Sprintf("Running `jit %s`, no shim needed or installed.\n\n", strings.Join(d.Command, " "))))
 		self, err := os.Executable()
 		if err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
@@ -170,11 +170,9 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 		// finds something anyway — a short-lived OAuth token where they
 		// vaulted a long-lived key — say so instead of just replacing it.
 		if c := migrate.InspectOriginConflict(v, vaultPath, vault.ClassWrap, origin); c != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(),
-				"jit: note — %s already held %s.\n"+
-					"    Wrapping replaces it with the token found now. The previous value is kept:\n"+
-					"    jit vault history %s\n",
-				vaultPath, c.Describe(), c.Path)
+			prose, command := c.ReplacingNote()
+			wrapBody(cmd.ErrOrStderr(), 0, "    ", prose)
+			fmt.Fprintf(cmd.ErrOrStderr(), "    %s\n", hlCmds(command))
 		}
 		if err := v.SetWithMeta(vaultPath, []byte(discovery.Value), vault.Meta{Class: vault.ClassWrap, GroupID: gid, Origin: origin}); err != nil {
 			return fmt.Errorf("jit wrap: storing %s: %w", vaultPath, err)
@@ -278,7 +276,7 @@ var wrapAddCmd = &cobra.Command{
 			fmt.Fprintf(out, "Grant-wrapped %s:\n", tool)
 			fmt.Fprintf(out, "  grants   the %q global mount (jit run --with %s)\n", wrapAddGrant, wrapAddGrant)
 			fmt.Fprintf(out, "  shim     %s\n", res.ShimPath)
-			fmt.Fprintf(cmd.ErrOrStderr(), "note: %s must be migrated first (name its file: `jit migrate <path-to-%s-file>`); each run prompts a disclosed Touch ID for the credential.\n", wrapAddGrant, wrapAddGrant)
+			fmt.Fprint(cmd.ErrOrStderr(), hlCmds(fmt.Sprintf("note: %s must be migrated first (name its file: `jit migrate <path-to-%s-file>`); each run prompts a disclosed Touch ID for the credential.\n", wrapAddGrant, wrapAddGrant)))
 			return ensureShimOnPath(cmd, home, tool)
 		}
 
@@ -292,7 +290,7 @@ var wrapAddCmd = &cobra.Command{
 		if v, vErr := openVaultReadOnly(); vErr == nil {
 			for _, name := range order {
 				if exists, exErr := v.Exists(env[name]); exErr == nil && !exists {
-					fmt.Fprintf(cmd.ErrOrStderr(), "warning: nothing stored at %s yet, `jit vault set %s` before running %s\n", env[name], env[name], tool)
+					fmt.Fprint(cmd.ErrOrStderr(), hlCmds(fmt.Sprintf("warning: nothing stored at %s yet, `jit vault set %s` before running %s\n", env[name], env[name], tool)))
 				}
 			}
 		}
@@ -341,7 +339,7 @@ var wrapListCmd = &cobra.Command{
 			return fmt.Errorf("jit wrap list: %w", err)
 		}
 		if len(manifest.Tools) == 0 {
-			fmt.Fprintln(cmd.OutOrStdout(), "No wrapped tools. `jit wrap add <tool> --env VAR=<vault-path>` wraps one.")
+			fmt.Fprintln(cmd.OutOrStdout(), hlCmds("No wrapped tools. `jit wrap add <tool> --env VAR=<vault-path>` wraps one."))
 			return nil
 		}
 
@@ -394,7 +392,7 @@ var wrapUndoCmd = &cobra.Command{
 		out := cmd.OutOrStdout()
 		fmt.Fprintf(out, "Unwrapped %s (shim removed: %v, profile removed: %v).\n", tool, res.RemovedShim, res.RemovedProfile)
 		if len(res.VaultPaths) > 0 {
-			fmt.Fprintf(out, "Vault secrets were kept: %s, `jit vault rm <path>` removes one for good.\n", strings.Join(res.VaultPaths, ", "))
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("Vault secrets were kept: %s, `jit vault rm <path>` removes one for good.\n", strings.Join(res.VaultPaths, ", "))))
 		}
 		if res.Remaining == 0 {
 			rc := wrap.RcFile(home, os.Getenv("SHELL"))

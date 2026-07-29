@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/fatih/color"
@@ -458,7 +459,7 @@ func shortVersion(v string) string {
 // pointing at the actual line.
 func printStatusHeadline(w io.Writer, r statusResult) {
 	statusLabel(w, "jit")
-	fmt.Fprintln(w, statusVersionTail(r))
+	printStatusValue(w, "%s", statusVersionTail(r))
 }
 
 func printStatusText(w io.Writer, r statusResult) {
@@ -470,25 +471,34 @@ func printStatusText(w io.Writer, r statusResult) {
 
 	if r.Vault.SecretsStored == 0 && r.Vault.BackupsStored == 0 {
 		statusLabel(w, "vault")
-		fmt.Fprintln(w, hlCmds("no secrets yet — run `jit vault init`, or `jit migrate .` to populate it."))
+		printStatusValue(w, "%s", hlCmds("no secrets yet — run `jit vault init`, or `jit migrate .` to populate it."))
 	} else {
 		statusLabel(w, "vault")
+		// The group breakdown moved up here from the secrets rollup, which
+		// used to restate the same total one section later ("57 secrets
+		// stored" then "57 stored in 13 groups"). Stated once, on the row
+		// that owns the number. A backups-only vault has no groups to
+		// report, and "0 secrets in 0 groups" reads like a broken template,
+		// so the clause is dropped rather than rendered empty.
+		stored := countWord(r.Vault.SecretsStored, "secret", "secrets")
+		if r.Vault.SecretsStored > 0 {
+			stored += " in " + countWord(r.Secrets.TotalGroups, "group", "groups")
+		}
 		if r.Vault.BackupsStored > 0 {
 			// hlCmds, like every other command mention in this report: without
 			// it the backticks printed literally, so this one line leaked its
 			// own markup while the line above rendered the same kind of
 			// command in cyan.
-			fmt.Fprintln(w, hlCmds(fmt.Sprintf("%s stored · %s kept for `jit migrate undo`",
-				countWord(r.Vault.SecretsStored, "secret", "secrets"),
-				countWord(r.Vault.BackupsStored, "file backup", "file backups"))))
+			printStatusValue(w, "%s", hlCmds(fmt.Sprintf("%s · %s kept for `jit migrate undo`",
+				stored, countWord(r.Vault.BackupsStored, "file backup", "file backups"))))
 		} else {
-			fmt.Fprintf(w, "%s stored\n", countWord(r.Vault.SecretsStored, "secret", "secrets"))
+			printStatusValue(w, "%s", stored)
 		}
 		statusLabel(w, "backup")
 		switch {
 		case !r.Vault.ExportRecorded:
 			_, _ = cRisk.Fprint(w, glyphRisk+" ")
-			fmt.Fprintln(w, "no vault export on record — the vault only decrypts on this Mac")
+			printStatusGlyphValue(w, "no vault export on record — the vault only decrypts on this Mac")
 			// Says what the export IS, in concrete terms the reader can
 			// picture. An earlier draft ("the only copy that survives losing
 			// it") left "it" pointing at either the Mac or the vault, and
@@ -496,11 +506,11 @@ func printStatusText(w io.Writer, r statusResult) {
 			printStatusAction(w, "`jit vault export <file>` — a copy you could restore on another Mac")
 		case r.Vault.ExportStale:
 			_, _ = cWarn.Fprint(w, glyphWarn+" ")
-			fmt.Fprintf(w, "secrets changed since the last export (%s)\n", time.Unix(r.Vault.ExportUnixTime, 0).Format("2006-01-02"))
+			printStatusGlyphValue(w, "secrets changed since the last export (%s)", time.Unix(r.Vault.ExportUnixTime, 0).Format("2006-01-02"))
 			printStatusAction(w, "`jit vault export <file>` — the newest secrets aren't in any backup")
 		default:
 			_, _ = cOK.Fprint(w, glyphOK+" ")
-			fmt.Fprintf(w, "export up to date (%s)\n", time.Unix(r.Vault.ExportUnixTime, 0).Format("2006-01-02"))
+			printStatusGlyphValue(w, "export up to date (%s)", time.Unix(r.Vault.ExportUnixTime, 0).Format("2006-01-02"))
 		}
 	}
 
@@ -511,23 +521,23 @@ func printStatusText(w io.Writer, r statusResult) {
 		// hung or mismatched agent. Say so rather than reporting the
 		// no-service state, which would send the reader after the wrong fix.
 		_, _ = cRisk.Fprint(w, glyphRisk+" ")
-		fmt.Fprintf(w, "unreachable — %s\n", r.Agent.Error)
+		printStatusGlyphValue(w, "unreachable — %s", r.Agent.Error)
 		printStatusAction(w, "`jit service restart` to bring it back")
 	case !r.Agent.Running && r.Agent.Installed:
 		// launchd was supposed to keep this one alive — "run install" is
 		// the wrong advice and hides that something actually failed.
 		_, _ = cRisk.Fprint(w, glyphRisk+" ")
-		fmt.Fprintln(w, installedNotRunningAdvice("the service is"))
+		printStatusGlyphValue(w, "%s", installedNotRunningAdvice("the service is"))
 	case !r.Agent.Running:
 		_, _ = cRisk.Fprint(w, glyphRisk+" ")
 		fmt.Fprint(w, "not running — run ")
 		_, _ = cPath.Fprintln(w, "jit service restart")
 	case r.Agent.Unlocked:
 		_, _ = cOK.Fprint(w, glyphOK+" ")
-		fmt.Fprintf(w, "running · unlocked (locks in %s)\n", (time.Duration(r.Agent.LocksInSeconds) * time.Second).String())
+		printStatusGlyphValue(w, "running · unlocked (locks in %s)", (time.Duration(r.Agent.LocksInSeconds) * time.Second).String())
 	default:
 		_, _ = cOK.Fprint(w, glyphOK+" ")
-		fmt.Fprintln(w, "running · locked")
+		printStatusGlyphValue(w, "running · locked")
 	}
 	if _, _, mismatched := agentBuildMismatch(r.Agent.Build); mismatched {
 		// Says what jit is (two programs, which is news to most readers),
@@ -535,8 +545,7 @@ func printStatusText(w io.Writer, r statusResult) {
 		// service status` and `jit doctor` — naming them here answered a
 		// question nobody reading a dashboard was asking, and cost the line
 		// the room it needed to explain itself.
-		printStatusWarnNote(w, "the background service is running a different build than this command")
-		printStatusNote(w, "recent changes may not take effect until they match")
+		printStatusWarnNote(w, "running a different build than this command; recent changes may not take effect until they match")
 		printStatusAction(w, "`jit service restart` — or leave it; it self-restarts once locked and idle")
 	}
 
@@ -546,7 +555,7 @@ func printStatusText(w io.Writer, r statusResult) {
 	registered := countWord(r.Mounts.Registered, "registered mount", "registered mounts")
 	switch {
 	case r.Mounts.Registered == 0:
-		_, _ = cDim.Fprintln(w, "none registered")
+		printStatusValue(w, "%s", cDim.Sprint("none registered"))
 	case r.Mounts.ServingReal:
 		granted := 0
 		for _, m := range r.Agent.Mounts {
@@ -556,15 +565,15 @@ func printStatusText(w io.Writer, r statusResult) {
 		}
 		if granted > 0 {
 			_, _ = cOK.Fprint(w, glyphOK+" ")
-			fmt.Fprintf(w, "%s · %d serving real content to an active jit run grant, the rest decoy\n", registered, granted)
+			printStatusGlyphValue(w, "%s · %d serving real content to an active jit run grant, the rest decoy", registered, granted)
 		} else {
-			fmt.Fprintf(w, "%s · unlocked, all decoy (real values flow through a jit run grant, or an approved consent prompt for a global credential file)\n", registered)
+			printStatusValue(w, "%s · unlocked, all decoy (real values flow through a jit run grant, or an approved consent prompt for a global credential file)", registered)
 		}
 	case r.Mounts.BeingServed:
 		_, _ = cWarn.Fprint(w, glyphWarn+" ")
-		fmt.Fprintf(w, "%s · serving decoy content only (service locked)\n", registered)
+		printStatusGlyphValue(w, "%s · serving decoy content only (service locked)", registered)
 	default:
-		fmt.Fprintf(w, "%s · not being served (service not running)\n", registered)
+		printStatusValue(w, "%s · not being served (service not running)", registered)
 	}
 
 	// A reader that most recently got DECOY values is the one mount fact
@@ -600,11 +609,11 @@ func printSecretsSection(w io.Writer, s statusSecrets) {
 	// with it would make a backups-only vault look wrongly empty.
 	if s.TotalSecrets == 0 && s.WiredProfiles == 0 && s.ParseFailures == 0 {
 		statusLabel(w, "secrets")
-		_, _ = cDim.Fprintln(w, "none stored yet")
+		printStatusValue(w, "%s", cDim.Sprint("none stored yet"))
 		return
 	}
 	statusLabel(w, "secrets")
-	fmt.Fprintf(w, "%d stored in %s\n", s.TotalSecrets, countWord(s.TotalGroups, "group", "groups"))
+	printStatusValue(w, "%s", cDim.Sprint("reconciled against every profile and mount"))
 
 	// Each state leads with a semantic glyph so the eye finds the one that
 	// needs attention (an amber ○ unreferenced, or a red ✗ broken) before
@@ -612,7 +621,7 @@ func printSecretsSection(w io.Writer, s statusSecrets) {
 	// for these exact states, so the rollup and the detail read as one.
 	switch {
 	case s.WiredProfiles == 0:
-		printRollupLine(w, cDim, glyphOK, "Wired here", "none (no project-local profile).")
+		printEmptyRollupLine(w, "Wired here", "none — no project-local profile")
 	case s.WiredProblems == 0:
 		// "Resolve" here means the referenced secret EXISTS — the cheap glance,
 		// existence-only. jit doctor additionally verifies each envelope reads,
@@ -628,11 +637,11 @@ func printSecretsSection(w io.Writer, s statusSecrets) {
 			countWord(s.WiredReferences, "reference", "references"), s.WiredProblems))
 	}
 
-	printRollupLine(w, cOK, glyphOK, "Managed elsewhere", fmt.Sprintf("%s (referenced only by global profiles or mounts).",
+	printRollupLine(w, cOK, glyphOK, "Managed elsewhere", fmt.Sprintf("%s · referenced only by global profiles or mounts",
 		countWord(s.ManagedElsewhereGroups, "group", "groups")))
 
 	if s.UnreferencedGroups == 0 {
-		printRollupLine(w, cDim, glyphOK, "Unreferenced here", "none.")
+		printEmptyRollupLine(w, "Unreferenced here", "none")
 	} else {
 		printRollupLine(w, cWarn, glyphWarn, "Unreferenced here", fmt.Sprintf("%s, %s. May belong to another project.",
 			countWord(s.UnreferencedGroups, "group", "groups"),
@@ -690,7 +699,32 @@ func printSecretsSection(w io.Writer, s statusSecrets) {
 // with a leading glyph for a state-bearing row — immediately after, then its
 // own newline.
 func statusLabel(w io.Writer, label string) {
-	fmt.Fprintf(w, "%-9s", label)
+	fmt.Fprintf(w, "%-*s", statusLabelWidth, label)
+}
+
+// The dashboard's two continuation columns. A value that outruns the window
+// has to resume under the value column, not at column 0 where the terminal
+// would put it; a value that leads with a glyph has to clear the glyph too,
+// or its second line reads as an unmarked row of its own.
+const (
+	statusLabelWidth = 9
+	statusGlyphWidth = statusLabelWidth + 2
+)
+
+var (
+	statusValueIndent = strings.Repeat(" ", statusLabelWidth)
+	statusGlyphIndent = strings.Repeat(" ", statusGlyphWidth)
+)
+
+// printStatusValue completes a row the caller opened with statusLabel.
+func printStatusValue(w io.Writer, format string, a ...any) {
+	wrapBody(w, statusLabelWidth, statusValueIndent, fmt.Sprintf(format, a...))
+}
+
+// printStatusGlyphValue completes a row whose value already leads with a
+// state glyph, so continuations hang past it.
+func printStatusGlyphValue(w io.Writer, format string, a ...any) {
+	wrapBody(w, statusGlyphWidth, statusGlyphIndent, fmt.Sprintf(format, a...))
 }
 
 // printRollupLine renders one Secrets-rollup row: a semantic state glyph, the
@@ -705,17 +739,24 @@ func statusLabel(w io.Writer, label string) {
 // same advice mid-sentence ("… — run jit vault export <file>"), where it read
 // as prose rather than as a thing to go type.
 func printStatusAction(w io.Writer, body string) {
-	fmt.Fprint(w, "      ")
+	fmt.Fprint(w, statusNoteIndent)
 	_, _ = cPath.Fprint(w, "→ ")
-	fmt.Fprintln(w, hlCmds(body))
+	wrapBody(w, len(statusNoteIndent)+2, statusNoteIndent+"  ", hlCmds(body))
 }
+
+// statusNoteIndent is where the arrow and the explanatory notes hang. It sits
+// left of the value column on purpose: an action belongs to the whole row
+// above it, not to the value's text.
+const statusNoteIndent = "      "
 
 // printStatusNote renders one dim explanatory line under a state line, at the
 // same indent as the action arrow — scan's habit of explaining a finding just
 // above the command that resolves it. Dim by rule 3: an explanation is
 // secondary to the state it explains.
 func printStatusNote(w io.Writer, format string, a ...any) {
-	_, _ = cDim.Fprintf(w, "      "+format+"\n", a...)
+	fmt.Fprint(w, statusNoteIndent)
+	wrapBody(w, len(statusNoteIndent), statusNoteIndent,
+		cDim.Sprintf(format, a...))
 }
 
 // printStatusWarnNote is printStatusNote for a line that carries a STATE of
@@ -724,17 +765,35 @@ func printStatusNote(w io.Writer, format string, a ...any) {
 // dim, with no glyph, directly beneath a green row reads as part of that
 // healthy row — which is exactly how the build-mismatch notice disappeared.
 func printStatusWarnNote(w io.Writer, format string, a ...any) {
-	fmt.Fprint(w, "      ")
+	fmt.Fprint(w, statusNoteIndent)
 	_, _ = cWarn.Fprintf(w, "%s ", glyphWarn)
-	fmt.Fprintf(w, format+"\n", a...)
+	wrapBody(w, len(statusNoteIndent)+2, statusNoteIndent+"  ",
+		fmt.Sprintf(format, a...))
 }
 
 func printRollupLine(w io.Writer, glyphColor *color.Color, glyph, label, body string) {
 	fmt.Fprint(w, "  ")
 	_, _ = glyphColor.Fprintf(w, "%s ", glyph)
-	fmt.Fprintf(w, "%-18s", label)
-	fmt.Fprintf(w, "  %s\n", body)
+	fmt.Fprintf(w, "%-*s", rollupLabelWidth, label)
+	fmt.Fprint(w, "  ")
+	used := 2 + 2 + rollupLabelWidth + 2
+	wrapBody(w, used, strings.Repeat(" ", used), body)
 }
+
+// printEmptyRollupLine is printRollupLine for a state with nothing in it. It
+// prints NO glyph: the glyph column means "here is a state to read", and a
+// mark of any color beside the word "none" claims there is something there.
+// The row still holds its column so the three states stay aligned.
+func printEmptyRollupLine(w io.Writer, label, body string) {
+	fmt.Fprint(w, "    ")
+	_, _ = cDim.Fprintf(w, "%-*s", rollupLabelWidth, label)
+	fmt.Fprint(w, "  ")
+	used := 4 + rollupLabelWidth + 2
+	wrapBody(w, used, strings.Repeat(" ", used), cDim.Sprint(body))
+}
+
+// rollupLabelWidth holds "Unreferenced here" plus a space of air.
+const rollupLabelWidth = 18
 
 // printSecretsDetail is the `jit status --secrets` body: the full reconciliation,
 // one block per state. The unreferenced block reuses printOrphanGroups verbatim,

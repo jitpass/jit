@@ -147,8 +147,8 @@ func TestShortenCommandKeepsTheProfileAndDropsTheChildArgs(t *testing.T) {
 	if strings.Contains(got, "/Users/menit") {
 		t.Errorf("shortened command didn't collapse $HOME to ~: %q", got)
 	}
-	if len([]rune(got)) > maxCommandLen {
-		t.Errorf("shortened command is %d chars, want <= %d: %q", len([]rune(got)), maxCommandLen, got)
+	if len([]rune(got)) > maxCommandLen() {
+		t.Errorf("shortened command is %d chars, want <= %d: %q", len([]rune(got)), maxCommandLen(), got)
 	}
 }
 

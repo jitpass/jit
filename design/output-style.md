@@ -11,7 +11,7 @@ The shared vocabulary lives in `internal/cli/style.go`. Prefer those helpers
 and `flowNames`) over hand-rolled `color.New(...)` calls so a future palette
 change happens in exactly one place.
 
-## The five rules
+## The six rules
 
 1. **One header shape: `[Name]  count`.** Every section, group, and dashboard
    label across jit is a bracketed name in default weight (not bold — the
@@ -41,6 +41,28 @@ change happens in exactly one place.
    path or command the reader can act on. No color is decorative, and the same
    fact never gets restated on every line — state a shared note (an origin, a
    decoy rule) once per group or section, dimmed.
+
+   **Cyan is the only color a command ever takes**, on every surface, always
+   via `hlCmds`. This was drift for a while and it showed: `jit scan` painted
+   its headline action green and its manual actions amber, `jit status` used
+   cyan, and ~20 sites printed the backticks literally with no color at all —
+   so the same sentence ("N kept for `jit migrate undo`") rendered three
+   different ways depending on which command you typed. Green and amber report
+   *state*; they belong on the glyph, the section header and the coverage
+   arithmetic, never on the thing you type. An action line is a cyan `→`
+   followed by default-weight prose, with cyan only on the runnable spans
+   inside it — amber across the whole line made a sentence of plain advice
+   ("rotate them now") read as a warning.
+
+6. **Nothing is wider than the window.** A line printed at its natural length
+   is not "unwrapped" — it is wrapped by the terminal, at column 0, which
+   drops a continuation to the left of the glyph that owns it and turns one
+   row into what reads as two. Every prose line goes through
+   `termtext.Wrap` with the indent that keeps it under its own column, and
+   every column budget comes from `termtext.Width()`. Paths that can't fit are
+   cut deliberately: `TruncHead` for a path (the tail names the file),
+   `TruncMid` for a command line whose two ends both carry identity,
+   `TruncTail` where the beginning is what identifies it.
 
 ## The three report shapes
 
@@ -140,6 +162,26 @@ ever mis-widths them — nothing references the symbols directly.
 Every list/report/dashboard surface is on the house style: `jit scan`,
 `jit migrate` (plan + summary), `jit status` (dashboard + `--secrets`),
 `jit vault list` / `jit vault orphans`, `jit service status`, `jit doctor`,
-`jit wrap doctor`, and the first-run flow. When adding a new command, reach
-for the `style.go` helpers rather than raw `color.New(...)` so it lands in
-the same style by default.
+`jit wrap doctor`, `jit audit`, `jit service log`, and the first-run flow.
+When adding a new command, reach for the `style.go` helpers rather than raw
+`color.New(...)` so it lands in the same style by default.
+
+### The two logs
+
+`jit audit` and `jit service log` were the last surfaces written for the
+writer rather than the reader — one logfmt or timestamped line per event, each
+repeating what the line above already said. Both now render the house style by
+default and keep their original bytes one flag away: `jit audit --format
+logfmt` and `jit service log --raw`.
+
+That escape hatch is not a courtesy, it is the condition for reformatting a
+log at all. Both views drop repeated prefixes, shorten paths, and fold runs of
+identical events into one row with a `×N` count — which is what makes them
+readable, and also exactly what would break a grep or a pasted bug report. A
+line the formatter does not recognise (a panic, a stack frame) passes through
+byte-exact: an unrecognised line in a debug log is precisely the one someone
+is looking for, and reformatting it would be the view editing evidence it
+does not understand.
+
+Folding only ever collapses **adjacent, same-minute, same-outcome** events, so
+a compressed display never reorders or thins the timeline.

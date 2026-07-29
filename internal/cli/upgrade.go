@@ -171,7 +171,7 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 		if kept, keepErr := preserveStagedBinary(staged, latest); keepErr == nil {
 			fmt.Fprintf(out, "\nThe verified %s binary is kept at %s.\n", latest, kept)
 			fmt.Fprint(out, hlCmds(fmt.Sprintf("  Finish the upgrade with: sudo mv -f %s %s && jit service restart\n", kept, exePath)))
-			fmt.Fprintln(out, "  (Or re-run `jit upgrade` from a terminal where sudo can prompt for your password.)")
+			fmt.Fprintln(out, hlCmds("  (Or re-run `jit upgrade` from a terminal where sudo can prompt for your password.)"))
 		}
 		return fmt.Errorf("jit upgrade: replacing %s: %w", exePath, err)
 	}

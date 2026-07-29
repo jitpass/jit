@@ -4,6 +4,7 @@
 package migrate
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/jitpass/jit/internal/vault"
@@ -66,6 +67,35 @@ func InspectOriginConflict(v *vault.Vault, path, incomingClass, incomingOrigin s
 		Origin:  info.Origin,
 		Updated: time.Unix(info.UpdatedUnix, 0),
 	}
+}
+
+// ReplacingNote is the whole warning, so every caller says this the same
+// way. Two flows hit it — a clisso capture and `jit wrap <tool>` — and an
+// earlier pass had them phrasing one idea two ways ("This login replaces
+// it" / "Wrapping replaces it with the token found now") for no reason a
+// reader benefits from.
+//
+// The second sentence deliberately echoes `jit vault set`'s own overwrite
+// prompt ("the current value is kept as an archived version"), because it
+// is the same promise about the same mechanism, and a user who has seen
+// one should recognize the other.
+//
+// Returns the prose as ONE unbroken line with no trailing newline — a
+// vault path plus an origin path runs past 100 columns, and hand-placed
+// breaks would be wrong at every width but the one they were guessed at.
+// The cli layer runs it through termtext.Wrap, which is where terminal
+// width is known.
+//
+// command comes back SEPARATELY, backticked for hlCmds, so the caller can
+// give it its own line. Wrapping breaks on spaces, and a recovery command
+// folded mid-phrase ("(jit / vault history …)") is one a reader has to
+// reassemble before they can run it.
+func (c OriginConflict) ReplacingNote() (prose, command string) {
+	prose = fmt.Sprintf(
+		"jit: note — %s already held %s. Replacing it now; the current value is kept "+
+			"as an archived version:",
+		c.Path, c.Describe())
+	return prose, "`jit vault history " + c.Path + "`"
 }
 
 // Describe renders the conflict as one human clause naming where the

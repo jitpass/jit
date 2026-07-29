@@ -432,7 +432,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			if err := summary.writePointerFile(result.EnvPath, result.ProfilePath); err != nil {
 				return false, fmt.Errorf("jit migrate: %w", err)
 			}
-			fmt.Fprintf(out, "  • %s -> profile %q (%s); backup: `jit vault get %s`\n", displayPath(home, envPath), result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath)
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  • %s -> profile %q (%s); backup: `jit vault get %s`\n", displayPath(home, envPath), result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath)))
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
 		}
 		fmt.Fprintln(out)
@@ -902,7 +902,7 @@ func runMigrateAll(cmd *cobra.Command) error {
 	}
 	if len(files) == 0 && len(tools) == 0 {
 		progress.Stop()
-		fmt.Fprintln(cmd.OutOrStdout(), "Nothing to protect — the scan found no secrets jit can act on. Run `jit scan` for the full picture.")
+		fmt.Fprintln(cmd.OutOrStdout(), hlCmds("Nothing to protect — the scan found no secrets jit can act on. Run `jit scan` for the full picture."))
 		return nil
 	}
 	sort.Strings(files)
@@ -923,7 +923,7 @@ func runMigrateAll(cmd *cobra.Command) error {
 		// Discovery routed every candidate to a skip (mixed-content files,
 		// or files that changed since the scan). No plan, no prompt, and
 		// definitely no coverage promise.
-		fmt.Fprintln(out, "Nothing bare `jit migrate` can protect right now: the flagged file(s) mix secrets with other content or need to be named explicitly. `jit scan` has the details.")
+		fmt.Fprintln(out, hlCmds("Nothing bare `jit migrate` can protect right now: the flagged file(s) mix secrets with other content or need to be named explicitly. `jit scan` has the details."))
 		return nil
 	}
 
@@ -971,7 +971,7 @@ func runMigrateAll(cmd *cobra.Command) error {
 	if applied && !migrateDryRun && summary.SecretsTotal > 0 {
 		before := summary.SecretsProtected * 100 / summary.SecretsTotal
 		after := (summary.SecretsProtected + summary.SecretsMigratable) * 100 / summary.SecretsTotal
-		fmt.Fprintf(out, "\ncoverage: %d%% → up to %d%% — run `jit scan` to see the new number\n", before, after)
+		fmt.Fprint(out, hlCmds(fmt.Sprintf("\ncoverage: %d%% → up to %d%% — run `jit scan` to see the new number\n", before, after)))
 	}
 	return nil
 }

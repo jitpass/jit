@@ -156,7 +156,12 @@ func runClissoCapture(real string, args []string) error {
 	captureArgs := args
 	if inv.cacheEnable {
 		captureArgs = stripClissoCacheFlag(captureArgs)
-		fmt.Fprintf(os.Stderr, "jit: dropped --cache-enable — it writes plaintext credentials to clisso's\n    cache file even in credential_process mode; the vault holds them instead.\n")
+		// Says why the flag went, and stops there. An earlier draft ended
+		// "the vault holds them instead" — a promise about a capture that
+		// hasn't happened yet and might still fail on a mistyped OTP.
+		wrapBody(os.Stderr, 0, "    ", hlCmds(
+			"jit: dropped --cache-enable — clisso writes that cache file in plaintext whatever "+
+				"the output mode. Run with an explicit `-o` if you need it."))
 	}
 	runArgs := append(append([]string{}, captureArgs...), "--output", "credential_process")
 	runArgs = append(runArgs, configArgs...)
@@ -202,10 +207,9 @@ func runClissoCapture(real string, args []string) error {
 	// ~/.aws/credentials) and a clisso app can share a name, and the
 	// capture replaces it.
 	if c := migrate.InspectOriginConflict(v, "aws-"+app+"/SECRET_ACCESS_KEY", vault.ClassAWS, migrate.ClissoConfigPath(home)); c != nil {
-		fmt.Fprintf(os.Stderr,
-			"jit: note — the vault profile aws-%s already held %s.\n"+
-				"    This login replaces it. The previous value is kept: jit vault history %s\n",
-			app, c.Describe(), c.Path)
+		prose, command := c.ReplacingNote()
+		wrapBody(os.Stderr, 0, "    ", prose)
+		fmt.Fprintf(os.Stderr, "    %s\n", hlCmds(command))
 	}
 	res, err := migrate.StoreAWSSession(v, home, app, session)
 	if err != nil {
@@ -540,12 +544,11 @@ func warnClissoCredentialProcess() {
 	if len(profiles) == 0 {
 		return
 	}
-	fmt.Fprintf(os.Stderr,
-		"jit: warning — ~/.aws/credentials now has clisso credential_process entries (%s).\n"+
-			"    That file outranks ~/.aws/config, so these shadow jit's wiring, and they run\n"+
-			"    clisso with no terminal for an MFA prompt. Remove those lines to go back to\n"+
-			"    `clisso get <app>` + jit capture.\n",
-		strings.Join(profiles, ", "))
+	wrapBody(os.Stderr, 0, "    ", hlCmds(fmt.Sprintf(
+		"jit: warning — clisso wrote credential_process entries into ~/.aws/credentials (%s). "+
+			"That file outranks ~/.aws/config, so they shadow jit's wiring and run clisso with "+
+			"no terminal for MFA. Delete those lines to restore `clisso get <app>`.",
+		strings.Join(profiles, ", "))))
 }
 
 // clissoSelectedApp reads global.selected-app from clisso's config —

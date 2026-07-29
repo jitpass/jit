@@ -286,7 +286,7 @@ func removeOneProject(cmd *cobra.Command, root, home, projectRoot string) error 
 	if len(plan.mounts) == 0 && len(plan.inPlace) == 0 && len(plan.companions) == 0 &&
 		len(plan.profileInfos) == 0 && len(plan.ownedGlobal) == 0 && len(plan.backups) == 0 &&
 		len(plan.deletePaths) == 0 && len(plan.jitDirs) == 0 {
-		fmt.Fprintf(out, "No jit artifacts found in %s, nothing to remove. (Machine-level migrations are reversed with `jit migrate undo`.)\n", displayPath(home, projectRoot))
+		fmt.Fprint(out, hlCmds(fmt.Sprintf("No jit artifacts found in %s, nothing to remove. (Machine-level migrations are reversed with `jit migrate undo`.)\n", displayPath(home, projectRoot))))
 		return nil
 	}
 

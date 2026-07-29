@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/fatih/color"
+
+	"github.com/jitpass/jit/internal/termtext"
 )
 
 // WriteTriageReport is `jit scan`'s default human output: the coverage-first,
@@ -36,6 +38,10 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 	red := color.New(color.FgRed, color.Bold)
 	yellow := color.New(color.FgYellow)
 	yellowBold := color.New(color.FgYellow, color.Bold)
+	// cmd is the house color for anything the reader can type, and for the
+	// arrow that introduces it — the same cyan `jit status` and every hlCmds
+	// call site use. See design/output-style.md, "Colour means one thing".
+	cmd := color.New(color.FgCyan)
 
 	// --- header: who, where, how much, how fast ---
 	where := "~/"
@@ -46,9 +52,10 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 	if summary.FilesScanned > 0 {
 		sizeNote = fmt.Sprintf(" (%s files)", groupDigits(summary.FilesScanned))
 	}
-	_, _ = dim.Fprintf(w, "jit scan — %s@%s — scanned %s%s — %s\n\n",
+	termtext.Wrap(w, 0, "", dim.Sprintf("jit scan — %s@%s — scanned %s%s — %s",
 		summary.Endpoint.Username, summary.Endpoint.Hostname, where, sizeNote,
-		formatDuration(summary.ScanDurationMs))
+		formatDuration(summary.ScanDurationMs)))
+	fmt.Fprintln(w)
 
 	migratable := triageGroupMigratable(findings)
 	manual := triageGroupManual(findings, home)
@@ -57,45 +64,57 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 	pct := cov.Percent()
 	after := cov.PercentAfterMigrate()
 	fmt.Fprint(w, "  ")
-	_, _ = bold.Fprintf(w, "YOUR SECRETS: %d — ", cov.Total())
-	_, _ = green.Fprintf(w, "%d protected by jit (%d%%)\n", cov.Protected, pct)
+	termtext.Wrap(w, 2, "  ",
+		bold.Sprintf("YOUR SECRETS: %d — ", cov.Total())+
+			green.Sprintf("%d protected by jit (%d%%)", cov.Protected, pct))
 	fmt.Fprint(w, "  ")
 	writeBar(w, pct)
 	if cov.Total() > 0 && (cov.Migratable > 0 || len(manual) > 0) {
-		_, _ = dim.Fprint(w, "  to 100%:")
+		// Assembled first, then wrapped: the bar is a fixed 10 columns and the
+		// clause beside it is prose, so at a narrow width the clause has to
+		// break under itself rather than push the line past the edge.
+		clause := dim.Sprint("  to 100%:")
 		if cov.Migratable > 0 {
-			_, _ = dim.Fprint(w, " one command ")
+			clause += dim.Sprint(" one command ")
 			if after == pct {
 				// 1 migratable of 200 rounds to +0%, which reads as
 				// "pointless" — it isn't.
-				_, _ = greenBold.Fprint(w, "+<1%")
+				clause += greenBold.Sprint("+<1%")
 			} else {
-				_, _ = greenBold.Fprintf(w, "+%d%%", after-pct)
+				clause += greenBold.Sprintf("+%d%%", after-pct)
 			}
 		}
 		if len(manual) > 0 {
 			if cov.Migratable > 0 {
-				_, _ = dim.Fprint(w, " ·")
+				clause += dim.Sprint(" ·")
 			}
 			manualSecrets := 0
 			for _, g := range manual {
 				manualSecrets += g.secrets
 			}
-			_, _ = dim.Fprintf(w, " %s only you can fix ", countWord(len(manual), "thing", "things"))
-			_, _ = yellow.Fprintf(w, "+%d%%", pctOf(manualSecrets, cov.Total()))
+			clause += dim.Sprintf(" %s only you can fix ", countWord(len(manual), "thing", "things"))
+			clause += yellow.Sprintf("+%d%%", pctOf(manualSecrets, cov.Total()))
 		}
+		termtext.Wrap(w, 2+coverageBarWidth, "  "+strings.Repeat(" ", coverageBarWidth), clause)
+	} else {
+		fmt.Fprintln(w)
 	}
-	fmt.Fprintln(w)
 	fmt.Fprintln(w)
 
 	// --- green: what jit will do ---
 	if len(migratable) > 0 {
 		fmt.Fprint(w, "  ")
-		_, _ = greenBold.Fprint(w, "jit will protect these")
-		_, _ = dim.Fprintf(w, " — %s in %s, ", countWord(cov.Migratable, "secret", "secrets"), countWord(len(migratable), "file", "files"))
-		_, _ = greenBold.Fprintf(w, "%d%% → %d%%\n", pct, after)
-		fmt.Fprint(w, "      ")
-		_, _ = green.Fprintln(w, "→ jit migrate")
+		termtext.Wrap(w, 2, "  ",
+			greenBold.Sprint("jit will protect these")+
+				dim.Sprintf(" — %s in %s, ", countWord(cov.Migratable, "secret", "secrets"), countWord(len(migratable), "file", "files"))+
+				greenBold.Sprintf("%d%% → %d%%", pct, after))
+		fmt.Fprint(w, triageNoteIndent)
+		// Cyan, not green: cyan is what the reader can type, on every jit
+		// surface. Green still carries this section — its header and its
+		// coverage arithmetic are green — but it reports the state of the
+		// block, and putting it on the command too made scan the one report
+		// where a runnable thing wasn't cyan.
+		_, _ = cmd.Fprintln(w, "→ jit migrate")
 		wraps := 0
 		for _, m := range migratable {
 			if m.wrapTool != "" {
@@ -106,34 +125,28 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 		if wraps > 0 {
 			intro += " and wraps " + countWord(wraps, "CLI", "CLIs")
 		}
-		_, _ = dim.Fprintf(w, "        %s —\n        every tool that reads them keeps working:\n", intro)
-		pathW := 0
-		for _, m := range migratable {
-			pathW = max(pathW, len(ShortenHome(home, m.file)))
-		}
-		for _, m := range migratable {
-			p := ShortenHome(home, m.file)
-			_, _ = dim.Fprintf(w, "        %-*s  %s", pathW, p, m.label)
-			if m.wrapTool != "" {
-				_, _ = green.Fprintf(w, " · wraps %s", m.wrapTool)
-			}
-			fmt.Fprintln(w)
-		}
-		_, _ = dim.Fprintln(w, "      these sat in plaintext until now — rotating after vaulting is")
-		_, _ = dim.Fprintln(w, "      the gold standard · every change is reversible: jit migrate undo")
+		fmt.Fprint(w, manifestIndent)
+		termtext.Wrap(w, len(manifestIndent), manifestIndent,
+			dim.Sprintf("%s — every tool that reads them keeps working:", intro))
+		writeMigrateManifest(w, migratable, home, dim, green)
+		fmt.Fprint(w, triageNoteIndent)
+		termtext.Wrap(w, len(triageNoteIndent), triageNoteIndent,
+			dim.Sprint("these sat in plaintext until now — rotating after vaulting is the "+
+				"gold standard · every change is reversible: jit migrate undo"))
 		fmt.Fprintln(w)
 	}
 
 	// --- red: what only the user can do ---
 	if len(manual) > 0 {
-		fmt.Fprint(w, "  ")
-		_, _ = red.Fprint(w, "only you can protect these")
 		manualSecrets := 0
 		for _, g := range manual {
 			manualSecrets += g.secrets
 		}
-		_, _ = dim.Fprintf(w, " — %s, ", countWord(manualSecrets, "secret", "secrets"))
-		_, _ = yellowBold.Fprintf(w, "%d%% → 100%%\n", after)
+		fmt.Fprint(w, "  ")
+		termtext.Wrap(w, 2, "  ",
+			red.Sprint("only you can protect these")+
+				dim.Sprintf(" — %s, ", countWord(manualSecrets, "secret", "secrets"))+
+				yellowBold.Sprintf("%d%% → 100%%", after))
 		for _, g := range manual {
 			fmt.Fprint(w, "    ")
 			if g.critical {
@@ -142,12 +155,23 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 				_, _ = yellowBold.Fprint(w, "!")
 			}
 			fmt.Fprint(w, " ")
-			_, _ = bold.Fprint(w, g.title)
-			_, _ = dim.Fprintf(w, "  (%d)\n", g.secrets)
-			if g.detail != "" {
-				_, _ = dim.Fprintf(w, "      %s\n", g.detail)
+			termtext.Wrap(w, 6, triageNoteIndent,
+				bold.Sprint(g.title)+dim.Sprintf("  (%d)", g.secrets))
+			// One exemplar line per file set. A merged group keeps every one
+			// of them: the sets are different files, and collapsing them to a
+			// single exemplar would hide paths the reader has to go and fix.
+			for _, d := range g.details {
+				_, _ = dim.Fprintf(w, "%s%s\n", triageNoteIndent,
+					termtext.TruncHead(d, termtext.Width()-len(triageNoteIndent)))
 			}
-			_, _ = yellow.Fprintf(w, "      → %s\n", g.action)
+			fmt.Fprint(w, triageNoteIndent)
+			// The arrow is cyan because it is the action motif; the
+			// instruction after it is default weight. Amber used to paint the
+			// whole line, which made a sentence of plain advice ("rotate them
+			// now") read as a warning state — amber's job, and it already has
+			// the "!" glyph above to do it with.
+			_, _ = cmd.Fprint(w, "→ ")
+			termtext.Wrap(w, len(triageNoteIndent)+2, triageNoteIndent+"  ", g.action)
 		}
 		fmt.Fprintln(w)
 	}
@@ -201,28 +225,94 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 			archived++
 		}
 	}
+	// Seven lines of dim prose used to close the report, explaining in full
+	// sentences what jit had DECLINED to count — at the bottom of the one
+	// view a user actually reads, after the part that asks them to act. It is
+	// one tally and one command now: the reader who wants the detail goes and
+	// gets it, and everyone else gets their attention back.
+	var notCounted []string
 	if fixtures > 0 {
-		_, _ = dim.Fprintf(w, "  %s %s test %s (a *_test.go, a testdata/ file) —\n",
-			countWord(fixtures, "sighting", "sightings"),
-			pluralWord(fixtures, "is a", "are"),
-			pluralWord(fixtures, "fixture", "fixtures"))
-		_, _ = dim.Fprintln(w, "  real credential formats with no owner to rotate; not counted")
+		notCounted = append(notCounted, countWord(fixtures, "test fixture", "test fixtures"))
 	}
 	if archived > 0 {
-		_, _ = dim.Fprintf(w, "  %s %s in archived/backup folders — jit migrate skips those\n",
-			countWord(archived, "finding", "findings"),
-			pluralWord(archived, "sits", "sit"))
-		_, _ = dim.Fprintln(w, "  by default; name one explicitly (jit migrate <path>) to protect it")
+		notCounted = append(notCounted, fmt.Sprintf("%d in archived folders", archived))
 	}
 	if quiet > 0 {
-		_, _ = dim.Fprintf(w, "  jit also saw %s it does not judge to be\n",
-			countWord(quiet, "low-confidence sighting", "low-confidence sightings"))
-		_, _ = dim.Fprintf(w, "  %s — review %s with jit scan --full · ndjson for machines\n",
-			pluralWord(quiet, "a secret", "secrets"), pluralWord(quiet, "it", "them"))
-	} else {
-		_, _ = dim.Fprintln(w, "  full inventory: jit scan --full · ndjson for machines")
+		notCounted = append(notCounted, countWord(quiet, "low-confidence sighting", "low-confidence sightings"))
 	}
+	if len(notCounted) > 0 {
+		fmt.Fprint(w, "  ")
+		termtext.Wrap(w, 2, "  ", dim.Sprintf("Not counted: %s.", strings.Join(notCounted, " · ")))
+	}
+	fmt.Fprint(w, "  ")
+	_, _ = cmd.Fprint(w, "→ ")
+	termtext.Wrap(w, 4, "    ",
+		cmd.Sprint("jit scan --full")+dim.Sprint("   the full inventory · ndjson for machines"))
+	fmt.Fprintln(w)
 	_, _ = dim.Fprintln(w, "  No secret values are ever printed in full.")
+}
+
+// The report's two hanging indents: the manifest's rows and the notes that
+// bracket them. Named so a continuation line lands under the text it
+// continues rather than at column 0.
+const (
+	manifestIndent   = "        "
+	triageNoteIndent = "      "
+)
+
+// Layout floors for the manifest's two columns. Below their sum there isn't
+// room for a path AND a label on one line, and squeezing them produces two
+// truncated columns that each say nothing — at which point stacking the label
+// under its path is strictly more readable.
+const (
+	minManifestPathCol  = 24
+	minManifestLabelCol = 18
+)
+
+// writeMigrateManifest lays out the "what jit will rewrite" table inside the
+// window. The column used to be padded to the longest path, which on a real
+// machine is a ~63-character Application Support path — every row then ran to
+// 125 columns and the terminal broke it wherever it liked, dropping the label
+// under the path and destroying the alignment the table existed for.
+//
+// Paths are cut at the FRONT (TruncHead): the tail names the file, the prefix
+// is the part every row repeats. When even the floors don't fit, the label
+// stacks under its path instead — one honest pair of lines beats two columns
+// truncated past the point of meaning.
+func writeMigrateManifest(w io.Writer, rows []triageFile, home string, dim, green *color.Color) {
+	budget := termtext.Width() - len(manifestIndent) - 2
+	if budget < minManifestPathCol+minManifestLabelCol {
+		for _, m := range rows {
+			_, _ = dim.Fprintf(w, "%s%s\n", manifestIndent,
+				termtext.TruncHead(ShortenHome(home, m.file), termtext.Width()-len(manifestIndent)))
+			_, _ = dim.Fprintf(w, "%s  %s", manifestIndent,
+				termtext.TruncTail(m.label, termtext.Width()-len(manifestIndent)-2))
+			writeWrapTool(w, m, green)
+		}
+		return
+	}
+	longestPath, widestLabel := 0, 0
+	for _, m := range rows {
+		longestPath = max(longestPath, len(ShortenHome(home, m.file)))
+		widestLabel = max(widestLabel, len(m.label))
+	}
+	// Give the path everything the labels don't need, but never more than half
+	// the budget to a label column that only wants a few words.
+	pathW := min(longestPath, max(minManifestPathCol, budget-min(widestLabel, budget/2)))
+	labelW := budget - pathW
+	for _, m := range rows {
+		p := termtext.TruncHead(ShortenHome(home, m.file), pathW)
+		_, _ = dim.Fprintf(w, "%s%-*s  %s", manifestIndent, pathW, p,
+			termtext.TruncTail(m.label, labelW))
+		writeWrapTool(w, m, green)
+	}
+}
+
+func writeWrapTool(w io.Writer, m triageFile, green *color.Color) {
+	if m.wrapTool != "" {
+		_, _ = green.Fprintf(w, " · wraps %s", m.wrapTool)
+	}
+	fmt.Fprintln(w)
 }
 
 // triageFile is one row of the migrate manifest: a file jit will rewrite (or
@@ -288,12 +378,28 @@ func triageGroupMigratable(findings []Finding) []triageFile {
 // triageManualGroup is one red-section item: a problem the user must fix,
 // possibly spanning many files (copies collapse on cause group).
 type triageManualGroup struct {
-	title    string
-	detail   string
+	title string
+	// details holds one exemplar line per distinct file set. A merged group
+	// keeps them all: each set is a different pile of files to go and fix, so
+	// collapsing to one exemplar would hide paths the reader needs.
+	details  []string
 	action   string
 	secrets  int
 	critical bool
 	sortKey  int // lower renders first
+	// files is the total number of file copies the group spans, summed across
+	// merged constituents so a merged title can state the real spread.
+	files int
+	// sample and ctx are kept so a merged group can REGENERATE its action
+	// against the combined counts. Inheriting the first constituent's wording
+	// told a reader with three exposed passwords to "rotate it now".
+	sample Finding
+	ctx    manualContext
+	// noun is the title without its copy count — the merge key. Three
+	// "An exposed database password in N copies of a file" groups differ only
+	// in N and in which files, and printing three near-identical headers with
+	// three identical actions spent nine lines saying one thing three times.
+	noun string
 }
 
 // triageCause is one distinct manual secret: every finding sharing its
@@ -389,11 +495,57 @@ func triageGroupManual(findings []Finding, home string) []triageManualGroup {
 			critical: worst.Severity == SeverityCritical,
 			sortKey:  rankOf(worst.Severity),
 			title:    manualTitle(p.causes, p.files, worst),
-			detail:   manualDetail(p.files, worst, home),
+			details:  []string{manualDetail(p.files, worst, home)},
 			action:   manualAction(worst, ctx, home),
+			noun:     manualNoun(worst),
+			files:    len(p.files),
+			sample:   worst,
+			ctx:      ctx,
 		})
 	}
 	sort.SliceStable(out, func(a, b int) bool { return out[a].sortKey < out[b].sortKey })
+	return mergeManualGroups(out, home)
+}
+
+// mergeManualGroups folds groups that name the same kind of secret AND ask for
+// the same fix into one block. It merges the header and the action, never the
+// evidence: every constituent group's exemplar line survives, so the merged
+// block points at exactly as many files as the separate ones did.
+//
+// Only same-noun, same-action groups merge, which is what keeps this safe —
+// two problems that need different fixes stay two blocks no matter how alike
+// their titles read.
+func mergeManualGroups(groups []triageManualGroup, home string) []triageManualGroup {
+	type key struct{ noun, action string }
+	at := map[key]int{}
+	var out []triageManualGroup
+	for _, g := range groups {
+		k := key{g.noun, g.action}
+		i, ok := at[k]
+		if !ok {
+			at[k] = len(out)
+			out = append(out, g)
+			continue
+		}
+		m := &out[i]
+		m.secrets += g.secrets
+		m.files += g.files
+		m.details = append(m.details, g.details...)
+		m.critical = m.critical || g.critical
+		if g.sortKey < m.sortKey {
+			m.sortKey = g.sortKey
+		}
+	}
+	for i := range out {
+		if len(out[i].details) > 1 {
+			out[i].title = fmt.Sprintf("%s — %d separate secrets in %s",
+				out[i].noun, out[i].secrets,
+				countWord(out[i].files, "file copy", "file copies"))
+			out[i].ctx.secrets = out[i].secrets
+			out[i].ctx.copies = out[i].files
+			out[i].action = manualAction(out[i].sample, out[i].ctx, home)
+		}
+	}
 	return out
 }
 
@@ -565,9 +717,13 @@ func pctOf(part, total int) int {
 	return part * 100 / total
 }
 
+// coverageBarWidth is how many columns writeBar occupies — the width the
+// clause beside it has to hang under when it wraps.
+const coverageBarWidth = 10
+
 // writeBar renders the ten-cell coverage bar.
 func writeBar(w io.Writer, pct int) {
 	filled := pct / 10
 	_, _ = color.New(color.FgGreen).Fprint(w, strings.Repeat("▰", filled))
-	_, _ = color.New(color.Faint).Fprint(w, strings.Repeat("▱", 10-filled))
+	_, _ = color.New(color.Faint).Fprint(w, strings.Repeat("▱", coverageBarWidth-filled))
 }

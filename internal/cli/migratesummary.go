@@ -217,7 +217,7 @@ func reportAgentStatus(w io.Writer, root string, producedMount bool) {
 			// Plist written but the socket hasn't answered yet (launchd still
 			// spawning). It'll be up momentarily; don't send the user off to
 			// reinstall something that's already installed.
-			fmt.Fprintln(w, "\njit's background service is starting up in the background (give `jit service status` a few seconds); it'll serve your mounts and share one unlocked session across tools.")
+			fmt.Fprintln(w, hlCmds("\njit's background service is starting up in the background (give `jit service status` a few seconds); it'll serve your mounts and share one unlocked session across tools."))
 		case producedMount:
 			// Auto-install failed outright — fall back to the original nudge.
 			bold("Run `jit service restart` to start serving the new mount(s), and so kubectl/AWS CLI/MCP hosts/new shells don't each need their own Touch ID prompt.")

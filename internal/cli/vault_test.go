@@ -622,8 +622,14 @@ func TestPrintVaultList(t *testing.T) {
 	if strings.Contains(out, "_backups/") {
 		t.Errorf("default listing must not include _backups/ entries, got:\n%s", out)
 	}
-	if !strings.Contains(out, "2 secrets stored, plus 1 encrypted file backup kept for `jit migrate undo` (list with --all).") {
-		t.Errorf("count line must summarize hidden backups and how to see them, got:\n%s", out)
+	// The footer wraps to the window, and it is a paragraph rather than an
+	// indented row, so its continuation starts at column 0 where unwrap
+	// cannot tell it from a new row. Assert the parts instead of guessing
+	// where the break lands.
+	for _, want := range []string{"2 secrets stored, plus 1 encrypted file backup", "jit migrate undo", "--all"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("count line must summarize hidden backups and how to see them, missing %q, got:\n%s", want, out)
+		}
 	}
 
 	buf.Reset()
@@ -632,15 +638,19 @@ func TestPrintVaultList(t *testing.T) {
 	if !strings.Contains(out, "_backups/Users/x/notion/.env.jit-bak-1") {
 		t.Errorf("--all must list backup entries, got:\n%s", out)
 	}
-	if !strings.Contains(out, "2 secrets stored, plus 1 encrypted file backup kept for `jit migrate undo`.") {
-		t.Errorf("--all count line must still separate secrets from backups, got:\n%s", out)
+	for _, want := range []string{"2 secrets stored, plus 1 encrypted file backup", "jit migrate undo"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("--all count line must still separate secrets from backups, missing %q, got:\n%s", want, out)
+		}
 	}
 
 	buf.Reset()
 	printVaultList(&buf, nil, backups, false, false, nil, "path")
 	out = buf.String()
-	if !strings.Contains(out, "No secrets stored yet, 1 encrypted file backup kept for `jit migrate undo` (list with --all).") {
-		t.Errorf("backups-only vault needs an honest empty state, got:\n%s", out)
+	for _, want := range []string{"No secrets stored yet, 1 encrypted file backup", "jit migrate undo", "--all"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("backups-only vault needs an honest empty state, missing %q, got:\n%s", want, out)
+		}
 	}
 
 	// Backups-only with --all: the backups list, and the closing line
@@ -651,7 +661,7 @@ func TestPrintVaultList(t *testing.T) {
 	if !strings.Contains(out, "_backups/Users/x/notion/.env.jit-bak-1") {
 		t.Errorf("backups-only --all must list backup entries, got:\n%s", out)
 	}
-	if !strings.Contains(out, "No secrets stored yet, 1 encrypted file backup kept for `jit migrate undo`.") {
+	if !strings.Contains(unwrap(out), "No secrets stored yet, 1 encrypted file backup kept for jit migrate undo.") {
 		t.Errorf("backups-only --all count line must not say '0 secrets', got:\n%s", out)
 	}
 
@@ -686,7 +696,7 @@ func TestPrintVaultListGrouped(t *testing.T) {
 		"[wiz] 1",
 		"WIZ_CLIENT_ID",
 		"_backups/Users/x/notion/.env.jit-bak-1",
-		"4 secrets stored, plus 1 encrypted file backup kept for `jit migrate undo`.",
+		"4 secrets stored, plus 1 encrypted file backup kept for jit migrate undo.",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("grouped listing missing %q, got:\n%s", want, out)
@@ -881,7 +891,7 @@ func TestVaultListEndToEndWithoutAuth(t *testing.T) {
 	if i2 < 0 || i10 < 0 || i2 > i10 {
 		t.Errorf("expected PROJECT_2 before PROJECT_10 (natural order), got:\n%s", out)
 	}
-	if !strings.Contains(out, "2 secrets stored.") {
+	if !strings.Contains(unwrap(out), "2 secrets stored.") {
 		t.Errorf("expected the closing count line, got:\n%s", out)
 	}
 
