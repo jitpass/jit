@@ -265,8 +265,10 @@ func ApplyEnvFile(v *vault.Vault, profilesRoot, envPath string) (EnvFileMigratio
 	// error lands in terminal scrollback.
 	if len(unparsed) > 0 {
 		return EnvFileMigration{}, fmt.Errorf(
-			"%s: %d line(s) could not be parsed as KEY=value (line %s), stopping before touching this file so nothing is silently dropped; fix or comment out those lines and re-run",
-			envPath, len(unparsed), joinLineNumbers(unparsed))
+			"%s: %s could not be parsed as KEY=value (%s %s), stopping before touching this file so nothing is silently dropped; fix or comment out %s and re-run",
+			envPath, countWord(len(unparsed), "line", "lines"),
+			pluralWord(len(unparsed), "line", "lines"), joinLineNumbers(unparsed),
+			pluralWord(len(unparsed), "that line", "those lines"))
 	}
 	if len(values) == 0 {
 		return EnvFileMigration{}, fmt.Errorf("%s has no active KEY=value lines to migrate", envPath)
@@ -624,6 +626,22 @@ func joinLineNumbers(nums []int) string {
 		parts[i] = fmt.Sprintf("%d", n)
 	}
 	return strings.Join(parts, ", ")
+}
+
+// pluralWord picks the singular or plural form for n — the package-local
+// twin of the CLI's helper of the same name, so a message says "1 line"
+// / "3 lines" instead of the "N line(s)" form letter.
+func pluralWord(n int, singular, plural string) string {
+	if n == 1 {
+		return singular
+	}
+	return plural
+}
+
+// countWord renders "1 line" / "3 lines" — the count and its correctly
+// inflected noun together, the pairing call sites actually want.
+func countWord(n int, singular, plural string) string {
+	return fmt.Sprintf("%d %s", n, pluralWord(n, singular, plural))
 }
 
 func unquoteEnvValue(v string) string {

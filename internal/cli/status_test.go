@@ -38,7 +38,10 @@ func TestStatusEverythingEmpty(t *testing.T) {
 		t.Fatalf("jit status: %v", err)
 	}
 	for _, want := range []string{
-		"jit      " + versionBuild(agent.Version(), agent.BuildID()) + " · service not running",
+		// The headline is the verdict, not the build: a machine with no
+		// service running has exactly one thing to fix, and says so before
+		// any of the detail.
+		"jit      ✗ 1 thing to fix · " + shortVersion(agent.Version()),
 		"vault    no secrets yet",
 		"service  ✗ not running",
 		"secrets  none stored yet",

@@ -294,7 +294,7 @@ func requestRunCompatVia(c *agent.Client, w io.Writer, runMounts, global []agent
 			fmt.Fprintf(w, "jit run: global grant for %s not applied (%v)\n", strings.Join(withNames, ", "), err)
 			return false
 		}
-		fmt.Fprintf(w, "jit run: granted this run your global %s credential(s) until it exits\n", strings.Join(withNames, ", "))
+		fmt.Fprintf(w, "jit run: granted this run your global %s %s until it exits\n", strings.Join(withNames, ", "), pluralWord(len(withNames), "credential", "credentials"))
 		return true
 	}
 	return false

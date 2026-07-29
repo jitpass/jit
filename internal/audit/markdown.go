@@ -31,7 +31,7 @@ func WriteMarkdownReport(w io.Writer, findings []Finding, summary ScanSummary) {
 	fmt.Fprintf(w, "## Risk Level: %s\n\n", riskLevelMarkdownBadge(summary.RiskLevel))
 	fmt.Fprintf(w, "**Exposure score:** %d/100\n\n", summary.ExposureScore)
 	if matches := summary.ProductionIndicatorCount + summary.PublicIPCount; matches > 0 {
-		fmt.Fprintf(w, "> %d production-indicator/public-IP match(es) found:\n", matches)
+		fmt.Fprintf(w, "> %s found:\n", countWord(matches, "production-indicator/public-IP match", "production-indicator/public-IP matches"))
 		for _, path := range criticalTriggerPaths(findings) {
 			fmt.Fprintf(w, "> - `%s`\n", path)
 		}
@@ -48,7 +48,7 @@ func WriteMarkdownReport(w io.Writer, findings []Finding, summary ScanSummary) {
 	// Parity with WriteHumanReport's protected line: excluded-but-protected
 	// files are stated, never silently absent.
 	if summary.JitProtectedCount > 0 {
-		fmt.Fprintf(w, "Already protected by jit: %d live mount(s), served from the encrypted vault, no plaintext on disk. Not scanned.\n\n", summary.JitProtectedCount)
+		fmt.Fprintf(w, "Already protected by jit: %s, served from the encrypted vault, no plaintext on disk. Not scanned.\n\n", countWord(summary.JitProtectedCount, "live mount", "live mounts"))
 	}
 	// Same parity, same reason: a shared report that omits the boundary is
 	// the version most likely to be read as "jit covers all of this".

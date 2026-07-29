@@ -142,7 +142,7 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 
 	registryPath := mount.RegistryPath(root)
 	mounted := map[string]mount.Entry{}
-	fmt.Fprintf(out, "Restoring %d file(s) from encrypted backups:\n", len(latest))
+	fmt.Fprintf(out, "Restoring %s from encrypted backups:\n", countWord(len(latest), "file", "files"))
 	for _, rec := range latest {
 		entry, found, err := mount.FindMount(registryPath, rec.OriginalPath)
 		if err != nil {
@@ -175,7 +175,7 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 
 	// Before openVault(), always: declining must never cost a Touch ID
 	// prompt for work about to be aborted (GAPS.md #17's ordering).
-	if !migrateYes && !confirmPrompt(cmd, fmt.Sprintf("Restore %d file(s), writing real secrets back to disk in PLAINTEXT? [y/N] ", len(latest))) {
+	if !migrateYes && !confirmPrompt(cmd, fmt.Sprintf("Restore %s, writing real secrets back to disk in PLAINTEXT? [y/N] ", countWord(len(latest), "file", "files"))) {
 		fmt.Fprintln(out, "Aborted. Nothing was changed.")
 		return nil
 	}
@@ -327,14 +327,18 @@ func runRestores(out io.Writer, home string, recs []migrate.BackupRecord, restor
 
 	fmt.Fprintln(out)
 	if restored > 0 {
-		fmt.Fprintf(out, "Restored %d file(s). Vault secrets and profile manifests are still there, `jit migrate remove` deletes a project's completely.\n", restored)
+		fmt.Fprintf(out, "Restored %s. Vault secrets and profile manifests are still there, `jit migrate remove` deletes a project's completely.\n", countWord(restored, "file", "files"))
 	}
 	if len(failures) > 0 {
-		_, _ = color.New(color.FgYellow).Fprintf(out, "%d file(s) could NOT be restored and were left exactly as they were:\n", len(failures))
+		_, _ = color.New(color.FgYellow).Fprintf(out, "%s could NOT be restored and %s left exactly as %s:\n",
+			countWord(len(failures), "file", "files"),
+			pluralWord(len(failures), "was", "were"),
+			pluralWord(len(failures), "it was", "they were"))
 		for _, f := range failures {
 			fmt.Fprintf(out, "  • %s: %v\n", displayPath(home, f.path), f.err)
 		}
-		return fmt.Errorf("jit migrate undo: %d of %d file(s) failed to restore", len(failures), restored+len(failures))
+		total := restored + len(failures)
+		return fmt.Errorf("jit migrate undo: %d of %s failed to restore", len(failures), countWord(total, "file", "files"))
 	}
 	return nil
 }

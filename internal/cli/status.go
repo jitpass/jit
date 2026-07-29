@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"time"
 
 	"github.com/fatih/color"
@@ -418,18 +419,114 @@ func versionBuild(version, build string) string {
 	return fmt.Sprintf("%s (build %s)", version, build)
 }
 
+// statusVerdict counts what this report is going to ask of the reader, split
+// by severity: toFix is the red states, toLookAt the amber ones.
+//
+// The counting rule is deliberately mechanical — one per state that renders an
+// action beneath it — so the headline can never claim a different number of
+// problems than the body shows. That is also why the locked-service mount row
+// isn't counted despite being amber: decoy-while-locked is jit working as
+// designed, it offers no action, and counting it would have every user reading
+// a permanent "1 to look at" for their normal resting state.
+func statusVerdict(r statusResult) (toFix, toLookAt int) {
+	hasVault := r.Vault.SecretsStored > 0 || r.Vault.BackupsStored > 0
+	switch {
+	case hasVault && !r.Vault.ExportRecorded:
+		toFix++
+	case hasVault && r.Vault.ExportStale:
+		toLookAt++
+	}
+
+	if r.Agent.Error != "" || !r.Agent.Running {
+		toFix++
+	} else if _, _, mismatched := agentBuildMismatch(r.Agent.Build); mismatched {
+		toLookAt++
+	}
+
+	if r.Secrets.WiredProblems > 0 {
+		toFix++
+	}
+	// Unreferenced-in-mixed is the same "you have orphans" fact from a
+	// different angle; only its own finding when no group-level one exists.
+	if r.Secrets.UnreferencedGroups > 0 || r.Secrets.UnreferencedInMixed > 0 {
+		toLookAt++
+	}
+	if r.Secrets.ParseFailures > 0 {
+		toLookAt++
+	}
+
+	for _, m := range r.Agent.Mounts {
+		if m.LastServe != nil && m.LastServe.Decoy {
+			toLookAt++
+			break // one finding, however many mounts it covers
+		}
+	}
+	return toFix, toLookAt
+}
+
+// statusVersionTail is the dim metadata closing the headline: release versions
+// only. The build revisions that used to lead this report are diagnostic — they
+// answer a question only someone filing a bug is asking — and they now live on
+// `jit service status` and `jit doctor`, which is where that person already is.
+func statusVersionTail(r statusResult) string {
+	cli := shortVersion(r.CLI.Version)
+	if cli == "" {
+		cli = "version unknown"
+	}
+	if r.Agent.Running && r.Agent.Version != "" && r.Agent.Version != r.CLI.Version {
+		return cli + " · service " + shortVersion(r.Agent.Version)
+	}
+	return cli
+}
+
+// goPseudoVersion matches the tail Go synthesises for a module with no release
+// tag — "-0.20260729054817-5107fa37ec1e", optionally "+dirty".
+var goPseudoVersion = regexp.MustCompile(`-(0\.)?\d{14}-[0-9a-f]{12}(\+dirty)?$`)
+
+// shortVersion reduces a version to the part a human reads. A released binary
+// carries a plain "0.65.0" and passes through untouched; one built straight
+// from a checkout gets Go's pseudo-version, and
+// "v0.65.1-0.20260729054817-5107fa37ec1e+dirty" is longer than the verdict it
+// was meant to annotate. A genuine prerelease suffix ("-rc1") is short and
+// meaningful, so only the pseudo-version tail is stripped.
+func shortVersion(v string) string {
+	return goPseudoVersion.ReplaceAllString(v, "")
+}
+
+// printStatusHeadline opens the report with its verdict: how many things want
+// the reader's attention, before any of the detail. `jit scan` leads with a
+// coverage percentage for the same reason — the first line should answer "is
+// there anything here for me?", which is the question someone runs a status
+// command to ask. This line previously held two git revisions.
+func printStatusHeadline(w io.Writer, r statusResult) {
+	toFix, toLookAt := statusVerdict(r)
+	statusLabel(w, "jit")
+	switch {
+	case toFix == 0 && toLookAt == 0:
+		_, _ = cOK.Fprint(w, glyphOK+" ")
+		fmt.Fprint(w, "all clear")
+	default:
+		if toFix > 0 {
+			_, _ = cRisk.Fprint(w, glyphRisk+" ")
+			fmt.Fprintf(w, "%s to fix", countWord(toFix, "thing", "things"))
+		}
+		if toLookAt > 0 {
+			if toFix > 0 {
+				fmt.Fprint(w, " · ")
+			}
+			_, _ = cWarn.Fprint(w, glyphWarn+" ")
+			fmt.Fprintf(w, "%s to look at", countWord(toLookAt, "thing", "things"))
+		}
+	}
+	_, _ = cDim.Fprintf(w, " · %s\n", statusVersionTail(r))
+}
+
 func printStatusText(w io.Writer, r statusResult) {
 	// The dashboard reads as aligned label/value rows (docker-style): a dim
 	// fixed-width label, then the value, with a semantic glyph leading any row
 	// that carries a state so the one needing attention is found at a glance
 	// (design/output-style.md).
-	if r.Agent.Running {
-		statusLabel(w, "jit")
-		fmt.Fprintf(w, "%s · service %s\n", versionBuild(r.CLI.Version, r.CLI.Build), versionBuild(r.Agent.Version, r.Agent.Build))
-	} else {
-		statusLabel(w, "jit")
-		fmt.Fprintf(w, "%s · service not running\n", versionBuild(r.CLI.Version, r.CLI.Build))
-	}
+	printStatusHeadline(w, r)
 
 	if r.Vault.SecretsStored == 0 && r.Vault.BackupsStored == 0 {
 		statusLabel(w, "vault")

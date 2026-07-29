@@ -352,7 +352,9 @@ func (m *mountManager) clearAllRuns() {
 		sm.mu.Unlock()
 	}
 	if grants > 0 || swaps > 0 {
-		fmt.Fprintf(m.stdout, "jit service: %d grant(s) and %d compatibility swap(s) ended (session locked)\n", grants, swaps)
+		fmt.Fprintf(m.stdout, "jit service: %s and %s ended (session locked)\n",
+			countWord(grants, "grant", "grants"),
+			countWord(swaps, "compatibility swap", "compatibility swaps"))
 	}
 }
 

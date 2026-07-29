@@ -358,7 +358,7 @@ var wrapDoctorCmd = &cobra.Command{
 			_, _ = cDim.Fprintf(out, " %s\n", c.Detail)
 		}
 		if failed > 0 {
-			return fmt.Errorf("jit wrap doctor: %d check(s) failed", failed)
+			return fmt.Errorf("jit wrap doctor: %s failed", countWord(failed, "check", "checks"))
 		}
 		return nil
 	},
