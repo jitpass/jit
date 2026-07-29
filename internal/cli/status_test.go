@@ -38,10 +38,9 @@ func TestStatusEverythingEmpty(t *testing.T) {
 		t.Fatalf("jit status: %v", err)
 	}
 	for _, want := range []string{
-		// The headline is the verdict, not the build: a machine with no
-		// service running has exactly one thing to fix, and says so before
-		// any of the detail.
-		"jit      ✗ 1 thing to fix · " + shortVersion(agent.Version()),
+		// The jit row is the version answering, nothing more — the state of
+		// each section is that section's own row to report.
+		"jit      " + shortVersion(agent.Version()),
 		"vault    no secrets yet",
 		"service  ✗ not running",
 		"secrets  none stored yet",
