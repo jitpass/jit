@@ -47,7 +47,7 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 	if summary.FilesScanned > 0 {
 		sizeNote = fmt.Sprintf(" (%s files)", groupDigits(summary.FilesScanned))
 	}
-	dim.Fprintf(w, "jit scan — %s@%s — scanned %s%s — %s\n\n",
+	_, _ = dim.Fprintf(w, "jit scan — %s@%s — scanned %s%s — %s\n\n",
 		summary.Endpoint.Username, summary.Endpoint.Hostname, where, sizeNote,
 		formatDuration(summary.ScanDurationMs))
 
@@ -58,32 +58,32 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 	pct := cov.Percent()
 	after := cov.PercentAfterMigrate()
 	fmt.Fprint(w, "  ")
-	bold.Fprintf(w, "YOUR SECRETS: %d — ", cov.Total())
-	green.Fprintf(w, "%d protected by jit (%d%%)\n", cov.Protected, pct)
+	_, _ = bold.Fprintf(w, "YOUR SECRETS: %d — ", cov.Total())
+	_, _ = green.Fprintf(w, "%d protected by jit (%d%%)\n", cov.Protected, pct)
 	fmt.Fprint(w, "  ")
 	writeBar(w, pct)
 	if cov.Total() > 0 && (cov.Migratable > 0 || len(manual) > 0) {
-		dim.Fprint(w, "  to 100%:")
+		_, _ = dim.Fprint(w, "  to 100%:")
 		if cov.Migratable > 0 {
-			dim.Fprint(w, " one command ")
+			_, _ = dim.Fprint(w, " one command ")
 			if after == pct {
 				// 1 migratable of 200 rounds to +0%, which reads as
 				// "pointless" — it isn't.
-				greenBold.Fprint(w, "+<1%")
+				_, _ = greenBold.Fprint(w, "+<1%")
 			} else {
-				greenBold.Fprintf(w, "+%d%%", after-pct)
+				_, _ = greenBold.Fprintf(w, "+%d%%", after-pct)
 			}
 		}
 		if len(manual) > 0 {
 			if cov.Migratable > 0 {
-				dim.Fprint(w, " ·")
+				_, _ = dim.Fprint(w, " ·")
 			}
 			manualSecrets := 0
 			for _, g := range manual {
 				manualSecrets += g.secrets
 			}
-			dim.Fprintf(w, " %d thing(s) only you can fix ", len(manual))
-			yellow.Fprintf(w, "+%d%%", pctOf(manualSecrets, cov.Total()))
+			_, _ = dim.Fprintf(w, " %d thing(s) only you can fix ", len(manual))
+			_, _ = yellow.Fprintf(w, "+%d%%", pctOf(manualSecrets, cov.Total()))
 		}
 	}
 	fmt.Fprintln(w)
@@ -92,11 +92,11 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 	// --- green: what jit will do ---
 	if len(migratable) > 0 {
 		fmt.Fprint(w, "  ")
-		greenBold.Fprint(w, "jit will protect these")
-		dim.Fprintf(w, " — %d secret(s) in %d file(s), ", cov.Migratable, len(migratable))
-		greenBold.Fprintf(w, "%d%% → %d%%\n", pct, after)
+		_, _ = greenBold.Fprint(w, "jit will protect these")
+		_, _ = dim.Fprintf(w, " — %d secret(s) in %d file(s), ", cov.Migratable, len(migratable))
+		_, _ = greenBold.Fprintf(w, "%d%% → %d%%\n", pct, after)
 		fmt.Fprint(w, "      ")
-		green.Fprintln(w, "→ jit migrate")
+		_, _ = green.Fprintln(w, "→ jit migrate")
 		wraps := 0
 		for _, m := range migratable {
 			if m.wrapTool != "" {
@@ -107,57 +107,57 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 		if wraps > 0 {
 			intro += fmt.Sprintf(" and wraps %d CLI(s)", wraps)
 		}
-		dim.Fprintf(w, "        %s —\n        every tool that reads them keeps working:\n", intro)
+		_, _ = dim.Fprintf(w, "        %s —\n        every tool that reads them keeps working:\n", intro)
 		pathW := 0
 		for _, m := range migratable {
 			pathW = max(pathW, len(ShortenHome(home, m.file)))
 		}
 		for _, m := range migratable {
 			p := ShortenHome(home, m.file)
-			dim.Fprintf(w, "        %-*s  %s", pathW, p, m.label)
+			_, _ = dim.Fprintf(w, "        %-*s  %s", pathW, p, m.label)
 			if m.wrapTool != "" {
-				green.Fprintf(w, " · wraps %s", m.wrapTool)
+				_, _ = green.Fprintf(w, " · wraps %s", m.wrapTool)
 			}
 			fmt.Fprintln(w)
 		}
-		dim.Fprintln(w, "      these sat in plaintext until now — rotating after vaulting is")
-		dim.Fprintln(w, "      the gold standard · every change is reversible: jit migrate undo")
+		_, _ = dim.Fprintln(w, "      these sat in plaintext until now — rotating after vaulting is")
+		_, _ = dim.Fprintln(w, "      the gold standard · every change is reversible: jit migrate undo")
 		fmt.Fprintln(w)
 	}
 
 	// --- red: what only the user can do ---
 	if len(manual) > 0 {
 		fmt.Fprint(w, "  ")
-		red.Fprint(w, "only you can protect these")
+		_, _ = red.Fprint(w, "only you can protect these")
 		manualSecrets := 0
 		for _, g := range manual {
 			manualSecrets += g.secrets
 		}
-		dim.Fprintf(w, " — %d secret(s), ", manualSecrets)
-		yellowBold.Fprintf(w, "%d%% → 100%%\n", after)
+		_, _ = dim.Fprintf(w, " — %d secret(s), ", manualSecrets)
+		_, _ = yellowBold.Fprintf(w, "%d%% → 100%%\n", after)
 		for _, g := range manual {
 			fmt.Fprint(w, "    ")
 			if g.critical {
-				red.Fprint(w, "!")
+				_, _ = red.Fprint(w, "!")
 			} else {
-				yellowBold.Fprint(w, "!")
+				_, _ = yellowBold.Fprint(w, "!")
 			}
 			fmt.Fprint(w, " ")
-			bold.Fprint(w, g.title)
-			dim.Fprintf(w, "  (%d)\n", g.secrets)
+			_, _ = bold.Fprint(w, g.title)
+			_, _ = dim.Fprintf(w, "  (%d)\n", g.secrets)
 			if g.detail != "" {
-				dim.Fprintf(w, "      %s\n", g.detail)
+				_, _ = dim.Fprintf(w, "      %s\n", g.detail)
 			}
-			yellow.Fprintf(w, "      → %s\n", g.action)
+			_, _ = yellow.Fprintf(w, "      → %s\n", g.action)
 		}
 		fmt.Fprintln(w)
 	}
 
 	if len(migratable) == 0 && len(manual) == 0 {
 		if cov.Protected > 0 {
-			green.Fprintln(w, "  Nothing exposed. Every secret jit knows about is already protected.")
+			_, _ = green.Fprintln(w, "  Nothing exposed. Every secret jit knows about is already protected.")
 		} else {
-			green.Fprintln(w, "  Nothing exposed. This machine looks clean.")
+			_, _ = green.Fprintln(w, "  Nothing exposed. This machine looks clean.")
 		}
 		fmt.Fprintln(w)
 	}
@@ -173,16 +173,16 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 		}
 	}
 	if archived > 0 {
-		dim.Fprintf(w, "  %d finding(s) sit in archived/backup folders — jit migrate skips those\n", archived)
-		dim.Fprintln(w, "  by default; name one explicitly (jit migrate <path>) to protect it")
+		_, _ = dim.Fprintf(w, "  %d finding(s) sit in archived/backup folders — jit migrate skips those\n", archived)
+		_, _ = dim.Fprintln(w, "  by default; name one explicitly (jit migrate <path>) to protect it")
 	}
 	if quiet > 0 {
-		dim.Fprintf(w, "  jit also saw %d low-confidence sighting(s) it does not judge to be\n", quiet)
-		dim.Fprintln(w, "  secrets — review them with jit scan --full · ndjson for machines")
+		_, _ = dim.Fprintf(w, "  jit also saw %d low-confidence sighting(s) it does not judge to be\n", quiet)
+		_, _ = dim.Fprintln(w, "  secrets — review them with jit scan --full · ndjson for machines")
 	} else {
-		dim.Fprintln(w, "  full inventory: jit scan --full · ndjson for machines")
+		_, _ = dim.Fprintln(w, "  full inventory: jit scan --full · ndjson for machines")
 	}
-	dim.Fprintln(w, "  No secret values are ever printed in full.")
+	_, _ = dim.Fprintln(w, "  No secret values are ever printed in full.")
 }
 
 // triageFile is one row of the migrate manifest: a file jit will rewrite (or
@@ -470,6 +470,6 @@ func pctOf(part, total int) int {
 // writeBar renders the ten-cell coverage bar.
 func writeBar(w io.Writer, pct int) {
 	filled := pct / 10
-	color.New(color.FgGreen).Fprint(w, strings.Repeat("▰", filled))
-	color.New(color.Faint).Fprint(w, strings.Repeat("▱", 10-filled))
+	_, _ = color.New(color.FgGreen).Fprint(w, strings.Repeat("▰", filled))
+	_, _ = color.New(color.Faint).Fprint(w, strings.Repeat("▱", 10-filled))
 }
