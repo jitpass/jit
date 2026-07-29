@@ -94,7 +94,13 @@ func classifyCredentialDump(cfg Config, path, name string) []Finding {
 			break
 		}
 	}
-	if !hinted {
+	// Terraform state earns the same read on a different argument. Its name
+	// carries no hint word, so nothing here would ever open it — yet it is
+	// where Terraform records every attribute it wrote, secret ones included,
+	// in plaintext by design (HashiCorp's own documentation). The gate still
+	// only decides what to READ: a state file full of ordinary resource
+	// attributes matches no vendor pattern and produces nothing.
+	if !hinted && !isTerraformState(name) {
 		return nil
 	}
 	findings, err := scanFileContentForTokens(cfg, path)
