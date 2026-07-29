@@ -245,7 +245,7 @@ func TestVaultPruneKeepsNewestBackupPerFile(t *testing.T) {
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("jit vault prune --yes: %v", err)
 	}
-	if !strings.Contains(buf.String(), "Pruned 2 stale backup(s)") {
+	if !strings.Contains(buf.String(), "Pruned 2 stale backups") {
 		t.Errorf("expected 2 stale backups pruned (a's two older), got:\n%s", buf.String())
 	}
 
@@ -325,7 +325,7 @@ func TestVaultOrphansListsAndPrunes(t *testing.T) {
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("jit vault orphans --prune: %v", err)
 	}
-	if !strings.Contains(buf.String(), "Deleted 1 orphaned secret(s)") {
+	if !strings.Contains(buf.String(), "Deleted 1 orphaned secret") {
 		t.Errorf("expected the delete count, got:\n%s", buf.String())
 	}
 	if ok, _ := v.Exists("custom_scripts-descope/DESCOPE_PROJECT_1"); ok {
@@ -354,7 +354,7 @@ func TestVaultCleanDeclinedConfirmationAborts(t *testing.T) {
 		t.Fatalf("jit vault clean (declined): %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "ALL 1 secret(s)") {
+	if !strings.Contains(out, "ALL 1 secret") {
 		t.Errorf("expected the prompt to state the count, got:\n%s", out)
 	}
 	if !strings.Contains(out, "Aborted.") {
@@ -390,7 +390,7 @@ func TestVaultCleanRemovesEverySecret(t *testing.T) {
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("jit vault clean --yes: %v", err)
 	}
-	if !strings.Contains(buf.String(), "Deleted 2 secret(s)") {
+	if !strings.Contains(buf.String(), "Deleted 2 secrets") {
 		t.Errorf("expected the count line, got:\n%s", buf.String())
 	}
 

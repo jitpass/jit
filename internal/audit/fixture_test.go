@@ -74,7 +74,7 @@ func TestFixtureNotChargedToLedger(t *testing.T) {
 	var buf bytes.Buffer
 	WriteTriageReport(&buf, findings, summary, "/Users/alex", cov)
 	out := buf.String()
-	if !strings.Contains(out, "test fixtures") {
+	if !strings.Contains(out, "test fixture") {
 		t.Errorf("report never mentions the fixture sighting:\n%s", out)
 	}
 	if strings.Contains(out, "tokenpatterns_test.go --mount") {

@@ -1018,7 +1018,7 @@ var vaultExportCmd = &cobra.Command{
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: recording export time for `jit status`: %v\n", err)
 		}
 
-		fmt.Fprintf(cmd.OutOrStdout(), "Exported %d secret(s) to %s.\n", len(paths), destPath)
+		fmt.Fprintf(cmd.OutOrStdout(), "Exported %s to %s.\n", countWord(len(paths), "secret", "secrets"), destPath)
 		return nil
 	},
 }
@@ -1076,7 +1076,7 @@ var vaultImportCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit vault import: %w", err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Restored %d secret(s) from %s.\n", n, srcPath)
+		fmt.Fprintf(cmd.OutOrStdout(), "Restored %s from %s.\n", countWord(n, "secret", "secrets"), srcPath)
 		return nil
 	},
 }
@@ -1209,7 +1209,7 @@ var vaultCleanCmd = &cobra.Command{
 			return fmt.Errorf("jit vault clean: reading the mount registry: %w", err)
 		}
 		if len(entries) > 0 {
-			return fmt.Errorf("jit vault clean: %d file(s) are still live-mounted, run `jit unmount <path>` on each first, or their real content is gone for good", len(entries))
+			return fmt.Errorf("jit vault clean: %s still live-mounted, run `jit unmount <path>` on each first, or their real content is gone for good", countWord(len(entries), "file is", "files are"))
 		}
 
 		v, err := openVaultReadOnly()
@@ -1232,17 +1232,17 @@ var vaultCleanCmd = &cobra.Command{
 		}
 		warning := ""
 		if backups > 0 {
-			warning = fmt.Sprintf(", including %d encrypted file backup(s), so `jit migrate undo` will have nothing left to restore from", backups)
+			warning = fmt.Sprintf(", including %s, so `jit migrate undo` will have nothing left to restore from", countWord(backups, "encrypted file backup", "encrypted file backups"))
 		}
 		if !vaultCleanYes && !confirmPrompt(cmd, fmt.Sprintf(
-			"Permanently delete ALL %d secret(s) from the vault%s? This can't be undone. [y/N] ", len(paths), warning)) {
+			"Permanently delete ALL %s from the vault%s? This can't be undone. [y/N] ", countWord(len(paths), "secret", "secrets"), warning)) {
 			fmt.Fprintln(cmd.OutOrStdout(), "Aborted. Nothing was deleted.")
 			return nil
 		}
 		// Fresh biometric gate before mass deletion: the [y/N] above is a
 		// footgun guard (bypassable with --yes); this fingerprint/passcode is
 		// the real gate, required whether the agent is locked or not.
-		if err := requireUserPresence(fmt.Sprintf("delete all %d secret(s) from the vault", len(paths))); err != nil {
+		if err := requireUserPresence(fmt.Sprintf("delete all %s from the vault", countWord(len(paths), "secret", "secrets"))); err != nil {
 			return fmt.Errorf("jit vault clean: %w", err)
 		}
 
@@ -1257,7 +1257,7 @@ var vaultCleanCmd = &cobra.Command{
 		if err := os.Remove(migrate.BackupIndexPath(root)); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("jit vault clean: removing the undo index: %w", err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Deleted %d secret(s). The vault itself is still set up, `jit vault set` works immediately.\n", len(paths))
+		fmt.Fprintf(cmd.OutOrStdout(), "Deleted %s. The vault itself is still set up, `jit vault set` works immediately.\n", countWord(len(paths), "secret", "secrets"))
 		return nil
 	},
 }
@@ -1323,17 +1323,17 @@ var vaultPruneCmd = &cobra.Command{
 			return nil
 		}
 
-		fmt.Fprintf(out, "Pruning %d stale backup(s), each file's newest backup is kept, so `jit migrate undo` still works:\n", len(stale))
+		fmt.Fprintf(out, "Pruning %s, each file's newest backup is kept, so `jit migrate undo` still works:\n", countWord(len(stale), "stale backup", "stale backups"))
 		for _, r := range stale {
 			fmt.Fprintf(out, "  • %s (%s, backed up %s ago)\n", r.VaultPath, displayPath(home, r.OriginalPath), humanAgo(time.Since(time.Unix(r.UnixTS, 0))))
 		}
-		if !vaultPruneYes && !confirmPrompt(cmd, fmt.Sprintf("Permanently delete %d stale backup(s)? This can't be undone. [y/N] ", len(stale))) {
+		if !vaultPruneYes && !confirmPrompt(cmd, fmt.Sprintf("Permanently delete %s? This can't be undone. [y/N] ", countWord(len(stale), "stale backup", "stale backups"))) {
 			fmt.Fprintln(out, "Aborted. Nothing was deleted.")
 			return nil
 		}
 		// Fresh biometric gate before deleting backups (bypassable [y/N]
 		// above is only a footgun guard), required locked or not.
-		if err := requireUserPresence(fmt.Sprintf("delete %d stale backup(s) from the vault", len(stale))); err != nil {
+		if err := requireUserPresence(fmt.Sprintf("delete %s from the vault", countWord(len(stale), "stale backup", "stale backups"))); err != nil {
 			return fmt.Errorf("jit vault prune: %w", err)
 		}
 
@@ -1349,7 +1349,7 @@ var vaultPruneCmd = &cobra.Command{
 		if err := migrate.DropBackupRecords(root, stale); err != nil {
 			return fmt.Errorf("jit vault prune: %w", err)
 		}
-		fmt.Fprintf(out, "Pruned %d stale backup(s). %d file(s) keep their newest backup for `jit migrate undo`.\n", len(stale), len(keep))
+		fmt.Fprintf(out, "Pruned %s. %s %s newest backup for `jit migrate undo`.\n", countWord(len(stale), "stale backup", "stale backups"), countWord(len(keep), "file", "files"), pluralWord(len(keep), "keeps its", "keep their"))
 		return nil
 	},
 }
@@ -1521,13 +1521,13 @@ var vaultOrphansCmd = &cobra.Command{
 		printOrphanGroups(out, readVault, orphans)
 
 		if !vaultOrphansPrune {
-			fmt.Fprintf(out, "\n%d orphaned secret(s), referenced by no profile jit can currently see.\n"+
-				"Run `jit vault orphans --prune` to delete them, or `jit vault rm <path>` one at a time.\n", len(orphans))
+			fmt.Fprintf(out, "\n%s, referenced by no profile jit can currently see.\n"+
+				"Run `jit vault orphans --prune` to delete %s, or `jit vault rm <path>` one at a time.\n", countWord(len(orphans), "orphaned secret", "orphaned secrets"), pluralWord(len(orphans), "it", "them"))
 			return nil
 		}
 
 		if !vaultOrphansYes && !confirmPrompt(cmd, fmt.Sprintf(
-			"Permanently delete %d orphaned secret(s)? This can't be undone. [y/N] ", len(orphans))) {
+			"Permanently delete %s? This can't be undone. [y/N] ", countWord(len(orphans), "orphaned secret", "orphaned secrets"))) {
 			fmt.Fprintln(out, "Aborted. Nothing was deleted.")
 			return nil
 		}
@@ -1535,7 +1535,7 @@ var vaultOrphansCmd = &cobra.Command{
 		// Remove only unlinks envelope files (never touches the KeyWrapper), so
 		// this explicit user-presence check is what forces a fingerprint here,
 		// locked or not. The [y/N] above is only a footgun guard (--yes skips it).
-		if err := requireUserPresence(fmt.Sprintf("delete %d orphaned secret(s) from the vault", len(orphans))); err != nil {
+		if err := requireUserPresence(fmt.Sprintf("delete %s from the vault", countWord(len(orphans), "orphaned secret", "orphaned secrets"))); err != nil {
 			return fmt.Errorf("jit vault orphans: %w", err)
 		}
 		for _, p := range orphans {
@@ -1543,7 +1543,7 @@ var vaultOrphansCmd = &cobra.Command{
 				return fmt.Errorf("jit vault orphans: deleting %s: %w", p, err)
 			}
 		}
-		fmt.Fprintf(out, "Deleted %d orphaned secret(s).\n", len(orphans))
+		fmt.Fprintf(out, "Deleted %s.\n", countWord(len(orphans), "orphaned secret", "orphaned secrets"))
 		return nil
 	},
 }
@@ -1578,7 +1578,7 @@ var vaultDeleteCmd = &cobra.Command{
 			return fmt.Errorf("jit vault delete: reading the mount registry: %w", err)
 		}
 		if len(entries) > 0 {
-			return fmt.Errorf("jit vault delete: %d file(s) are still live-mounted, run `jit unmount <path>` on each first, or their real content is gone for good", len(entries))
+			return fmt.Errorf("jit vault delete: %s still live-mounted, run `jit unmount <path>` on each first, or their real content is gone for good", countWord(len(entries), "file is", "files are"))
 		}
 
 		v, err := openVaultReadOnly()
@@ -1596,7 +1596,7 @@ var vaultDeleteCmd = &cobra.Command{
 			}
 		}
 		if !vaultDeleteYes && !confirmPrompt(cmd, fmt.Sprintf(
-			"Permanently destroy the ENTIRE vault, %d secret(s), the undo backups, and the encryption key in the macOS keychain?%s [y/N] ", len(paths), noBackup)) {
+			"Permanently destroy the ENTIRE vault, %s, the undo backups, and the encryption key in the macOS keychain?%s [y/N] ", countWord(len(paths), "secret", "secrets"), noBackup)) {
 			fmt.Fprintln(cmd.OutOrStdout(), "Aborted. Nothing was deleted.")
 			return nil
 		}

@@ -202,7 +202,7 @@ func TestMigrateRemoveLooseFileScopesToJustThatFile(t *testing.T) {
 		"token.yaml",
 		"token/JSON_WEB_TOKEN_JWT",
 		"_backups/token.txt.jit-bak-1",
-		"delete 1 vault secret(s)",
+		"delete 1 vault secret",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("plan missing %q, got:\n%s", want, out)

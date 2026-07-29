@@ -36,7 +36,7 @@ func TestMigrateSummaryPrintCollapsesRepeatedExplanations(t *testing.T) {
 			t.Errorf("expected %s listed in the collapsed git-history block, got:\n%s", f, out)
 		}
 	}
-	if !strings.Contains(out, "3 git-safe .pointers file(s)") {
+	if !strings.Contains(out, "3 git-safe .pointers files") {
 		t.Errorf("expected the pointer-file count line, got:\n%s", out)
 	}
 }
@@ -166,7 +166,7 @@ func TestMigrateLooseSecretFileDryRun(t *testing.T) {
 	if !strings.Contains(out, "loose secret file") {
 		t.Errorf("expected a loose secret file plan section, got:\n%s", out)
 	}
-	if !strings.Contains(out, "1 change(s) planned") {
+	if !strings.Contains(out, "1 change planned") {
 		t.Errorf("expected the change counter to include the loose file, got:\n%s", out)
 	}
 	if strings.Contains(out, jwt) {
@@ -223,7 +223,7 @@ func TestMigrateLooseMountDryRun(t *testing.T) {
 	if !strings.Contains(out, "stays live at its path as a mount") {
 		t.Errorf("expected mount wording under --mount, got:\n%s", out)
 	}
-	if !strings.Contains(out, "2 change(s) planned") {
+	if !strings.Contains(out, "2 changes planned") {
 		t.Errorf("expected both files planned under --mount, got:\n%s", out)
 	}
 }
@@ -542,7 +542,7 @@ func TestMigratePathRoutesShellConfigToShellCategory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit migrate ~/.zshrc --dry-run: %v", err)
 	}
-	if !strings.Contains(out, "shell config(s)") {
+	if !strings.Contains(out, "[shell config]") {
 		t.Errorf("expected the shell-config category in the plan, got:\n%s", out)
 	}
 	if !strings.Contains(out, "Machine-wide config files you named") {
@@ -573,10 +573,10 @@ func TestMigratePathDirectoryWalkExcludesMachineWide(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit migrate <dir> --dry-run: %v", err)
 	}
-	if !strings.Contains(out, ".env file(s)") {
+	if !strings.Contains(out, "[.env file]") {
 		t.Errorf("expected the .env category from the walked directory, got:\n%s", out)
 	}
-	if strings.Contains(out, "shell config(s)") {
+	if strings.Contains(out, "[shell config]") {
 		t.Errorf("a directory target must not discover machine-wide shell configs, got:\n%s", out)
 	}
 }
@@ -658,7 +658,7 @@ func TestMigratePathDedupesOverlappingTargets(t *testing.T) {
 	if got := strings.Count(out, displayPath(home, env)); got != 1 {
 		t.Errorf("expected the overlapping .env to appear exactly once, saw %d times:\n%s", got, out)
 	}
-	if !strings.Contains(out, "1 change(s) planned") {
+	if !strings.Contains(out, "1 change planned") {
 		t.Errorf("expected exactly 1 planned change after dedupe, got:\n%s", out)
 	}
 }
@@ -690,7 +690,7 @@ func TestMigrateTerraformCredentialsDiscoveryAndOnlyFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit migrate <tfrc> <env> --dry-run: %v", err)
 	}
-	if !strings.Contains(out, "app.terraform.io") || !strings.Contains(out, "Terraform Cloud host(s)") {
+	if !strings.Contains(out, "app.terraform.io") || !strings.Contains(out, "Terraform Cloud host") {
 		t.Errorf("expected the plan to include the Terraform category with its host, got:\n%s", out)
 	}
 
@@ -776,7 +776,7 @@ func TestMigrateDockerDiscoveryAndOnlyFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit migrate <docker config> <env> --dry-run: %v", err)
 	}
-	if !strings.Contains(out, "registry.example.com") || !strings.Contains(out, "Docker registry credential(s)") {
+	if !strings.Contains(out, "registry.example.com") || !strings.Contains(out, "Docker registry credential") {
 		t.Errorf("expected the plan to include the Docker category with its registry, got:\n%s", out)
 	}
 

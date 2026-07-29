@@ -82,3 +82,11 @@ func pluralWord(n int, singular, plural string) string {
 	}
 	return plural
 }
+
+// countWord renders "1 secret" / "92 secrets" — the count and its correctly
+// inflected noun together, since that pairing is what call sites actually
+// want and writing it out by hand is what produced the "92 secret(s)"
+// form-letter style the reports had drifted into.
+func countWord(n int, singular, plural string) string {
+	return fmt.Sprintf("%d %s", n, pluralWord(n, singular, plural))
+}

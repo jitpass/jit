@@ -64,11 +64,23 @@ that needs attention (`✗` broken, `○` unreferenced) is found at a glance. A
 shared rule (mounts are decoy by default) is stated once in the header, not
 per row.
 
+A dashboard opens with its **verdict** — how much wants the reader's attention,
+before any detail. It answers "is there anything here for me?", which is the
+question someone runs a status command to ask; `jit scan`'s coverage percentage
+is the same instinct. The count is mechanical: one per state that renders an
+action beneath it, so the headline can never claim a different number of
+problems than the body shows.
+
 ```
-Secrets: 65 stored in 15 group(s).
-  ● Wired here:        3 group(s) via 3 profile(s) (6 reference(s)), all resolve.
-  ○ Unreferenced here: 4 group(s), 21 secret(s). May belong to another project.
+jit      ✗ 1 thing to fix · ○ 2 things to look at · 0.65.0
+secrets  65 stored in 15 groups
+  ● Wired here          3 groups via 3 profiles (6 references), all resolve.
+  ○ Unreferenced here   4 groups, 21 secrets. May belong to another project.
 ```
+
+Counts are inflected, never `N thing(s)` — use `countWord`/`pluralWord` from
+`format.go`. The `(s)` form reads as a form letter, and a report that says
+"1 group(s)" has told the reader it isn't looking at their data.
 
 ### Tree — `jit vault list`, `jit status --secrets` groups
 A nested namespace. Deliberately the **lightest** shape — bracket headers and
@@ -83,6 +95,37 @@ members "no recorded origin") is stated once on the header.
       DESCOPE_MGMT_KEY    DESCOPE_PROJECT_1   DESCOPE_PROJECT_2   DESCOPE_PROJECT_3
       DESCOPE_PROJECT_4   DESCOPE_PROJECT_5   DESCOPE_PROJECT_6   DESCOPE_PROJECT_7
 ```
+
+## The action line: `→ do this`
+
+The one motif that crosses all three shapes. A state line says what **is**; the
+line beneath it, led by a cyan `→`, says what to **do** about it — and nothing
+else goes on that line. `jit scan` established it (`→ jit migrate` under a
+coverage finding), and the dashboard follows: advice buried mid-sentence
+("… the vault only decrypts on this Mac — run jit vault export <file>") reads
+as prose the eye skims, while the same words on their own arrow line read as a
+thing to go and type.
+
+```
+backup   ✗ no vault export on record — the vault only decrypts on this Mac
+      → jit vault export <file> — a copy you could restore on another Mac
+```
+
+Rules: at most one arrow line per state (a reader given three next steps takes
+none), commands in cyan via `hlCmds`, and any explanation goes **above** the
+arrow as dim `printStatusNote` lines, never after it — the command is the last
+thing on screen because it's the thing they act on.
+
+An explanation line is dim and bare; a line carrying a **state of its own**
+leads with a glyph instead (`printStatusWarnNote`). The distinction is load
+bearing: a warning rendered dim and glyphless directly under a green `●` row
+gets read as part of that healthy row, which is how the build-mismatch notice
+managed to hide in plain sight.
+
+Say what the reader needs, not what the program knows. Build revisions, socket
+paths and internal identifiers belong on the diagnostic surfaces (`jit doctor`,
+`jit service status`) where someone is filing a bug — on a dashboard they
+displace the words that would have explained the problem.
 
 ## Glyphs: why Unicode
 

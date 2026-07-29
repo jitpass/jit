@@ -300,7 +300,7 @@ func TestPrintMountStatusesShowsLastServe(t *testing.T) {
 		"read 2m ago by node (pid 4823) · decoy",
 		"jit run --live",
 		"● /p/real.env",
-		"real to 1 active grant(s)",
+		"real to 1 active grant",
 		"read 30s ago by an unidentified process · real (run-scoped grant)",
 		"○ /p/quiet.env",
 	} {

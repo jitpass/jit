@@ -51,6 +51,13 @@ type secretGroup struct {
 	Members []secretMember `json:"members"`
 	State   secretState    `json:"-"`
 	Mixed   bool           `json:"mixed,omitempty"`
+	// DuplicateOf names a still-referenced group holding exactly the same
+	// key names as this one, set only on unreferenced groups. It is the
+	// fingerprint of a re-migration that renamed a group (custom_scripts-wiz
+	// -> wiz) and left the original copy behind: the same keys, nothing
+	// pointing at them any more. Compared by KEY NAME only — status never
+	// decrypts, so it cannot and does not claim the values match.
+	DuplicateOf string `json:"duplicate_of,omitempty"`
 }
 
 // secretsReconciliation is the whole vault<->profile picture from cwd: every
@@ -70,6 +77,22 @@ type secretsReconciliation struct {
 	UnreferencedGroups int
 
 	UnreferencedSecrets int
+
+	// UnreferencedInMixed counts unreferenced secrets sitting inside groups
+	// whose DOMINANT state is wired or elsewhere — members the group-level
+	// bucketing above can't count without hiding an actively-used group in
+	// the unreferenced pile. `jit vault orphans` keys on individual paths, so
+	// these are exactly the secrets it would list that UnreferencedSecrets
+	// doesn't; surfacing the number keeps the two commands from appearing to
+	// disagree.
+	UnreferencedInMixed int
+
+	// DuplicateGroups/DuplicateSecrets count the unreferenced groups that
+	// carry the same key names as a group still in use — the re-migration
+	// leftovers described on secretGroup.DuplicateOf. They are a SUBSET of
+	// the Unreferenced totals, not an additional bucket.
+	DuplicateGroups  int
+	DuplicateSecrets int
 
 	// Project-local profile tallies, for the "Wired here: N groups via P
 	// profiles (R references)" line. WiredProblems counts project-local
@@ -226,8 +249,66 @@ func reconcileSecrets(root, cwd string, v *vault.Vault) (secretsReconciliation, 
 			rec.UnreferencedGroups++
 			rec.UnreferencedSecrets += len(g.Members)
 		}
+		if dominant != stateUnreferenced {
+			for _, m := range g.Members {
+				if m.State == stateUnreferenced {
+					rec.UnreferencedInMixed++
+				}
+			}
+		}
 		rec.Groups = append(rec.Groups, *g)
 	}
 
+	markDuplicateGroups(&rec)
+
 	return rec, nil
+}
+
+// keySignature fingerprints a group by its key names alone, sorted so member
+// order can't affect it. Key names, never values: status is auth-free by
+// contract (no KeyWrapper, no Touch ID), so comparing the actual secrets is
+// not available to it — and the rendering says so rather than implying the
+// copies are byte-identical.
+func keySignature(g secretGroup) string {
+	keys := make([]string, len(g.Members))
+	for i, m := range g.Members {
+		keys[i] = m.Key
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, "\x00")
+}
+
+// markDuplicateGroups links each unreferenced group to a still-referenced one
+// holding the same key names, and tallies how many there are. This is what
+// turns "35 unreferenced secrets" — an undifferentiated pile the reader has to
+// audit by hand — into "31 of them are copies of groups you're still using",
+// which is a decision they can actually make.
+//
+// A one-secret group is deliberately NOT matched: single-key groups collide on
+// generic names (API_KEY, OUTPUT_FILE) constantly, and a false "this is just a
+// leftover" on the one secret that isn't would be the expensive mistake here.
+func markDuplicateGroups(rec *secretsReconciliation) {
+	referenced := map[string]string{}
+	for _, g := range rec.Groups {
+		if g.State == stateUnreferenced || len(g.Members) < 2 {
+			continue
+		}
+		sig := keySignature(g)
+		// Groups are already sorted by name, so first-wins is deterministic
+		// and names the alphabetically-first live group.
+		if _, seen := referenced[sig]; !seen {
+			referenced[sig] = g.Name
+		}
+	}
+	for i := range rec.Groups {
+		g := &rec.Groups[i]
+		if g.State != stateUnreferenced || len(g.Members) < 2 {
+			continue
+		}
+		if live, ok := referenced[keySignature(*g)]; ok {
+			g.DuplicateOf = live
+			rec.DuplicateGroups++
+			rec.DuplicateSecrets += len(g.Members)
+		}
+	}
 }

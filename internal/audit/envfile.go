@@ -286,8 +286,8 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 		// stored here just the same. Kept terse: the reason renders on one
 		// line in the report.
 		f.Evidence = fmt.Sprintf(
-			"%d plaintext variable(s) (%d active, %d commented out)",
-			active+commented, active, commented,
+			"%s (%d active, %d commented out)",
+			countWord(active+commented, "plaintext variable", "plaintext variables"), active, commented,
 		)
 	}
 
