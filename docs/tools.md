@@ -52,6 +52,11 @@ the token is injected per call.
 `gemini`, `codex`, `sentry-cli`, `snyk`, `circleci`, `vault`, `pulumi`,
 `descope`, `okta-cli-client`, `snow`, `jira`.
 
+One tool works the other way around: `clisso` doesn't carry a token, it
+*mints* AWS credentials at every SSO login. `jit wrap clisso` captures
+each mint into the vault instead of letting it land in
+`~/.aws/credentials` — MFA prompts unchanged. See [clisso](./wrap/clisso.md).
+
 Any other tool that reads its token from an environment variable can be added
 with `jit wrap add <tool> --env VAR=<vault-path>`. See
 [custom tools](./wrap/custom-tools.md). The [wrap catalog](./wrap/index.md) has a
