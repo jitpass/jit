@@ -17,7 +17,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
@@ -226,7 +225,7 @@ func printDuplicateGroupNudge(out io.Writer, secrets []string) {
 	if len(dupes) == 0 {
 		return
 	}
-	faint := color.New(color.Faint)
+	faint := cDim
 	for _, groups := range dupes {
 		_, _ = faint.Fprintf(out, "note: %s hold the same keys — a re-migrated file? `jit vault rm` the stale copy.\n", strings.Join(groups, ", "))
 	}
@@ -297,7 +296,7 @@ func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth i
 
 	// -l listing: every leaf carries a metadata column, so it keeps its own
 	// line; the group headers still get the bold-name/dim-count treatment.
-	faint := color.New(color.Faint)
+	faint := cDim
 	leafWidth := 0
 	for _, p := range paths {
 		if !strings.Contains(p, "/") && len(p) > leafWidth {
@@ -401,21 +400,37 @@ func printSecretsByProvenance(out io.Writer, secrets []string, meta map[string]v
 		return order[i] < order[j] // stable tiebreak within one origin (distinct groups)
 	})
 
-	faint := color.New(color.Faint)
-	for _, key := range order {
+	for i, key := range order {
 		b := buckets[key]
 		label := b.label
 		if label == "" {
-			label = "(no recorded source)"
+			// No parentheses inside the brackets: "[(no recorded source)]"
+			// reads as punctuation noise, and the brackets already do the
+			// delimiting the parens were there for.
+			label = "no recorded source"
 		}
-		header := fmt.Sprintf("%s (%d)", label, len(b.paths))
+		if i > 0 {
+			fmt.Fprintln(out)
+		}
+		// Same motif as every other group header in jit (design/
+		// output-style.md rules 1 and 3): the name in default weight
+		// inside brackets, the count and any secondary fact dim after it.
+		// This axis used to print the whole header faint, which inverted
+		// the hierarchy — the origin is the primary thing on its line, and
+		// it read dimmer than the paths listed under it.
+		fmt.Fprintf(out, "[%s]", label)
 		if b.class != "" {
-			header = fmt.Sprintf("%s  %s (%d)", label, b.class, len(b.paths))
+			_, _ = cDim.Fprintf(out, " %d · %s\n", len(b.paths), b.class)
+		} else {
+			_, _ = cDim.Fprintf(out, " %d\n", len(b.paths))
 		}
-		_, _ = faint.Fprintln(out, header)
-		for _, p := range b.paths {
-			fmt.Fprintf(out, "  %s\n", p)
-		}
+		// Column flow, not one line per secret (rule 4) — the same
+		// treatment the path axis already gets. A seven-secret origin was
+		// a seven-line stack here while the identical secrets rendered as
+		// two tidy rows under `jit vault list`. Four-space members under a
+		// flush-left header is the path axis's own measure, so the two
+		// views of the same vault line up.
+		flowNames(out, b.paths, "    ")
 	}
 }
 
@@ -688,7 +703,7 @@ func printVaultGetFooter(cmd *cobra.Command, v *vault.Vault, path string) {
 	if len(parts) == 0 {
 		return
 	}
-	_, _ = color.New(color.Faint).Fprintln(cmd.ErrOrStderr(), strings.Join(parts, " · "))
+	_, _ = cDim.Fprintln(cmd.ErrOrStderr(), strings.Join(parts, " · "))
 }
 
 // secretProfileReferences returns the names of every profile manifest
@@ -1690,7 +1705,7 @@ func lockAgentAfterMEKDeletion(root string, w io.Writer) string {
 func confirmPrompt(cmd *cobra.Command, prompt string) bool {
 	out := cmd.ErrOrStderr()
 	fmt.Fprintln(out)
-	_, _ = color.New(color.Bold).Fprint(out, prompt)
+	_, _ = cBold.Fprint(out, prompt)
 	line, err := readLineUnbuffered(cmd.InOrStdin())
 	// On a terminal the user's own Return echoes the newline that closes this
 	// line. On a pipe nothing echoes, so without this the next thing printed
