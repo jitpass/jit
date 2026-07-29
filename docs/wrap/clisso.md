@@ -86,10 +86,42 @@ dead token.
 
 Every clisso invocation that isn't a plain `get` - `clisso apps`,
 `clisso providers`, `clisso status`, `clisso cp`, `--help` - and any `get`
-where you explicitly passed `-o/--output` runs the real clisso unchanged
-(config still served, `apps`/`providers`/`cp` still reconciled). The shim
-reroutes the default destination; it doesn't argue with explicit flags. A
-`-c/--config` you pass yourself is always honored over jit's served one.
+where you explicitly chose an output (`-o/--output`, `-w/--write-to-file`,
+`-s/--shell`) runs the real clisso unchanged (config still served,
+`apps`/`providers`/`cp` still reconciled). The shim reroutes the default
+destination; it doesn't argue with explicit flags. A `-c/--config` you pass
+yourself is always honored over jit's served one.
+
+## The two flags jit does not pass through
+
+- **`--cache-enable` is dropped from a captured run**, with a note saying so.
+  clisso writes its cache file (`~/.aws/credentials-cache`) whenever that
+  flag is set, *whatever* the output mode - so leaving it on would put
+  plaintext credentials back on disk while jit was capturing them. If you
+  want that file, run clisso with an explicit `-o` and jit stays out of the
+  way entirely.
+- **`clisso cp configure` gets a warning, not a block.** It writes
+  `credential_process` entries into `~/.aws/credentials`, and that file
+  outranks `~/.aws/config` - so those entries shadow jit's wiring, with a
+  command that has no terminal to show an MFA prompt on. jit names the
+  affected profiles and leaves the choice to you; deleting those lines
+  restores `clisso get <app>` + capture.
+
+## If a profile name is already taken
+
+An AWS profile can hold a key from somewhere else - a long-lived IAM key
+`jit migrate` moved out of `~/.aws/credentials` - under the same name as a
+clisso app. The capture replaces it and says so:
+
+```
+jit: note — aws-prod/SECRET_ACCESS_KEY already held a secret from
+    ~/.aws/credentials. Replacing it now; the current value is kept as an
+    archived version:
+    jit vault history aws-prod/SECRET_ACCESS_KEY
+```
+
+Nothing is lost: [`jit vault history`](../vault/index.md) has the previous
+value and `jit vault restore` puts it back.
 
 `clisso status` reads `~/.aws/credentials`, which after wrapping stays
 empty - use `jit status --secrets` to see the captured profiles instead.
