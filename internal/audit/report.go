@@ -347,6 +347,31 @@ func displayFilePath(home, path string) string {
 	return strings.ReplaceAll(ShortenHome(home, path), " ", "\\ ")
 }
 
+// writeDerivedCredentialAdvisory states what jit found but does not cover.
+//
+// It is phrased as a boundary rather than a warning, because that is what it
+// is: these files are working state a tool wrote for itself, they are supposed
+// to exist, and there is nothing here for jit to fix. The reason it gets its
+// own block instead of a footnote is that the report immediately above it has
+// just accounted for ~/.aws — and a reader who watched jit clean that
+// directory would otherwise reasonably conclude it was empty of secrets.
+func writeDerivedCredentialAdvisory(w io.Writer, summary ScanSummary, home string) {
+	if len(summary.DerivedCredentials) == 0 {
+		return
+	}
+	_, _ = color.New(color.Bold).Fprintln(w, "  Outside jit's scope, found anyway:")
+	for _, d := range summary.DerivedCredentials {
+		fmt.Fprintf(w, "    %s\n", displayFilePath(home, d.Path))
+		fmt.Fprintf(w, "      %s\n", d.What)
+		if d.Advice != "" {
+			_, _ = color.New(color.Faint).Fprintf(w, "      %s\n", d.Advice)
+		}
+	}
+	_, _ = color.New(color.Faint).Fprintln(w, "    jit protects credentials you stored; these were minted by the tools that used them.")
+	_, _ = color.New(color.Faint).Fprintln(w, "    It does not manage, rotate or hide them — see docs/security/architecture.md.")
+	fmt.Fprintln(w)
+}
+
 // archivedTag renders the per-path "[archived]" marker: the same
 // LooksArchived test `jit migrate home` uses to skip a finding by default,
 // so a reader can map an audit finding onto migrate's skip note instead of
@@ -427,10 +452,16 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	}
 	fmt.Fprintln(w)
 
+	// The advisory follows the clean line rather than replacing it: nothing
+	// jit scans for was found, which is true and worth saying — and then the
+	// one thing that would otherwise make "clean" misleading gets said too.
 	if summary.TotalFindings == 0 {
 		fmt.Fprintln(w, "No findings. This machine looks clean.")
+		fmt.Fprintln(w)
+		writeDerivedCredentialAdvisory(w, summary, home)
 		return
 	}
+	writeDerivedCredentialAdvisory(w, summary, home)
 
 	byType := groupFindingsByType(findings)
 

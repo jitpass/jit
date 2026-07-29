@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"sync/atomic"
@@ -88,6 +89,278 @@ func startConsentServer(t *testing.T, denyConsent *atomic.Bool) (*Server, string
 	go func() { _ = s.Serve(ctx); close(done) }()
 	t.Cleanup(func() { cancel(); _ = s.Close(); <-done })
 	return s, s.socketPath, &launcher
+}
+
+// A consent prompt names the credential from req.Class — a field the caller
+// sends, which nothing verifies until open() checks it against the AEAD much
+// later. That made the prompt free to summon: any process that could reach the
+// socket could claim a class it has no wrap for and put a Touch ID dialog on
+// the screen, with no vault data of any kind.
+func TestGarbageUnwrapNeverReachesTheUser(t *testing.T) {
+	key := bytes.Repeat([]byte{0x42}, 32)
+	var disclosed atomic.Int32
+	newFetcher := func() MEKFetcher {
+		return fnFetcher{fn: func(reason string) ([]byte, error) {
+			if !strings.HasPrefix(reason, "unlock the vault") {
+				disclosed.Add(1)
+			}
+			k := make([]byte, len(key))
+			copy(k, key)
+			return k, nil
+		}}
+	}
+	s := NewServer(shortSocketPath(t), newFetcher, time.Minute)
+	s.Consent = consent.New(time.Minute)
+	s.identify = func(conn net.Conn) *caller {
+		c := callerFromConn(conn)
+		if c == nil {
+			return nil
+		}
+		c.ancestors = []lineage.Process{{PID: 424242, ExecPath: "/usr/local/bin/aws"}}
+		return c
+	}
+	if err := s.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = s.Serve(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); _ = s.Close(); <-done })
+
+	c := NewClient(s.socketPath)
+	dek := bytes.Repeat([]byte{0x07}, 32)
+
+	// An ungated wrap opens the session without any disclosed prompt.
+	if _, err := c.WrapKeyLabeled(dek, "app/.env/API_KEY", "dotenv"); err != nil {
+		t.Fatalf("WrapKeyLabeled(dotenv): %v", err)
+	}
+	if n := disclosed.Load(); n != 0 {
+		t.Fatalf("session setup produced %d disclosed prompt(s), want 0", n)
+	}
+
+	// The attack: a gated class the caller has no wrap for.
+	for i := 0; i < 25; i++ {
+		if _, err := c.UnwrapKeyLabeled([]byte("not a wrap at all"), "aws/default/key", "aws"); err == nil {
+			t.Fatalf("request %d: unwrapping garbage must fail", i)
+		}
+	}
+	if n := disclosed.Load(); n != 0 {
+		t.Errorf("25 garbage requests produced %d prompt(s), want 0 — a caller with no vault data must not be able to summon one", n)
+	}
+
+	// Control: a caller that genuinely holds an aws wrap is still asked, so the
+	// check rejects impostors rather than the gate itself.
+	wrappedAWS, err := c.WrapKeyLabeled(dek, "aws/default/key", "aws")
+	if err != nil {
+		t.Fatalf("WrapKeyLabeled(aws): %v", err)
+	}
+	if _, err := c.UnwrapKeyLabeled(wrappedAWS, "aws/default/key", "aws"); err != nil {
+		t.Fatalf("a genuine aws unwrap must still work: %v", err)
+	}
+	if n := disclosed.Load(); n != 1 {
+		t.Errorf("a real aws unwrap produced %d prompt(s), want exactly 1", n)
+	}
+}
+
+// `jit unlock` clears consent pauses because a human at the keyboard saying
+// "now" is exactly what a refusal withheld. But OpUnlock against an
+// already-open session challenges NOBODY and still returns OK — so clearing on
+// success alone would hand every process on the machine a free reset, and the
+// flood the backoff exists to stop would come back with one extra syscall per
+// round. Only a FRESH challenge may clear it.
+func TestUnlockOnLiveSessionDoesNotClearTheBackoff(t *testing.T) {
+	key := bytes.Repeat([]byte{0x42}, 32)
+	var prompts atomic.Int32
+	var denyConsent atomic.Bool
+	newFetcher := func() MEKFetcher {
+		return fnFetcher{fn: func(reason string) ([]byte, error) {
+			if !strings.HasPrefix(reason, "unlock the vault") {
+				prompts.Add(1)
+				if denyConsent.Load() {
+					return nil, errConsentDeclined
+				}
+			}
+			k := make([]byte, len(key))
+			copy(k, key)
+			return k, nil
+		}}
+	}
+	s := NewServer(shortSocketPath(t), newFetcher, time.Minute)
+	s.Consent = consent.New(time.Minute)
+	s.identify = func(conn net.Conn) *caller {
+		c := callerFromConn(conn)
+		if c == nil {
+			return nil
+		}
+		c.ancestors = []lineage.Process{{PID: 424242, ExecPath: "/usr/local/bin/aws"}}
+		return c
+	}
+	if err := s.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = s.Serve(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); _ = s.Close(); <-done })
+
+	c := NewClient(s.socketPath)
+	dek := bytes.Repeat([]byte{0x07}, 32)
+	wrapped, err := c.WrapKeyLabeled(dek, "aws/default/key", "aws")
+	if err != nil {
+		t.Fatalf("WrapKeyLabeled: %v", err)
+	}
+
+	// Earn a pause: one refused consent prompt.
+	denyConsent.Store(true)
+	if _, err := c.UnwrapKeyLabeled(wrapped, "aws/default/key", "aws"); err == nil {
+		t.Fatal("expected the refused consent to deny the unwrap")
+	}
+	if got := prompts.Load(); got != 1 {
+		t.Fatalf("prompts=%d after the first refusal, want 1", got)
+	}
+
+	// The attack: unlock an already-unlocked agent, then ask again. Repeated,
+	// because one free reset per round is all the flood ever needed.
+	for i := 0; i < 10; i++ {
+		if _, _, err := c.Unlock(); err != nil {
+			t.Fatalf("Unlock (round %d): %v", i, err)
+		}
+		_, _ = c.UnwrapKeyLabeled(wrapped, "aws/default/key", "aws")
+	}
+	if got := prompts.Load(); got != 1 {
+		t.Errorf("prompts=%d after 10 unlock+retry rounds, want 1: OpUnlock on a live session must not clear the pause", got)
+	}
+
+	// The override itself must still work. A real lock means the next unlock
+	// is a fresh challenge — a human — and that clears the pause.
+	if err := c.Lock(); err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+	if _, _, err := c.Unlock(); err != nil {
+		t.Fatalf("Unlock after Lock: %v", err)
+	}
+	denyConsent.Store(false)
+	if _, err := c.UnwrapKeyLabeled(wrapped, "aws/default/key", "aws"); err != nil {
+		t.Fatalf("after a fresh unlock the request should reach the user again: %v", err)
+	}
+	if got := prompts.Load(); got != 2 {
+		t.Errorf("prompts=%d, want 2 — a fresh unlock clears the pause so the next ask reaches the user", got)
+	}
+}
+
+// Rejecting the attack silently would make the successful defense invisible to
+// the one person who'd want to know it happened — but the record has to be
+// aggregated, or the rejection becomes an eviction primitive: the ring holds
+// MaxSessionEvents oldest-first, so an event an unauthenticated caller can
+// mint on demand would let a flood erase every real unlock and denial, and
+// with them the record of the flood itself.
+func TestRejectedClassIsRecordedButCollapsed(t *testing.T) {
+	key := bytes.Repeat([]byte{0x42}, 32)
+	newFetcher := func() MEKFetcher { return &fakeFetcher{key: key} }
+	s := NewServer(shortSocketPath(t), newFetcher, time.Minute)
+	s.Consent = consent.New(time.Minute)
+	if err := s.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = s.Serve(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); _ = s.Close(); <-done })
+
+	c := NewClient(s.socketPath)
+	if _, err := c.WrapKeyLabeled(bytes.Repeat([]byte{0x07}, 32), "app/.env/K", "dotenv"); err != nil {
+		t.Fatalf("WrapKeyLabeled: %v", err)
+	}
+
+	const attempts = 50
+	for i := 0; i < attempts; i++ {
+		if _, err := c.UnwrapKeyLabeled([]byte("not a wrap at all"), "aws/default/key", "aws"); err == nil {
+			t.Fatalf("attempt %d: unwrapping garbage must fail", i)
+		}
+	}
+
+	events := s.history()
+	var mismatches int
+	var count int64
+	for _, e := range events {
+		if e.Op == opClassMismatch {
+			mismatches++
+			count += e.Count
+		}
+	}
+	if mismatches == 0 {
+		t.Error("a rejected class binding left no trace in history; the defense is invisible")
+	}
+	if mismatches > 3 {
+		t.Errorf("%d attempts produced %d separate events, want them collapsed — history must not be floodable", attempts, mismatches)
+	}
+	if count < attempts {
+		t.Errorf("collapsed events account for %d attempts, want at least %d", count, attempts)
+	}
+	if len(events) >= MaxSessionEvents {
+		t.Errorf("history reached %d events from %d junk requests: the ring is evictable by an unauthenticated caller", len(events), attempts)
+	}
+}
+
+// Collapsing per CALLER is no defense when the caller is what varies:
+// useKey.by is the peer's own argv, so one fork per event buys a fresh
+// aggregate and a few hundred execs push every real unlock and denial out of
+// the ring — the attack erasing the record of itself. Rejections therefore
+// collapse on the op alone.
+func TestRejectionsCollapseAcrossDifferentCallers(t *testing.T) {
+	key := bytes.Repeat([]byte{0x42}, 32)
+	s := NewServer(shortSocketPath(t), func() MEKFetcher { return &fakeFetcher{key: key} }, time.Minute)
+
+	// Each "caller" wears a different argv, which is all an attacker needs to
+	// mint a distinct identity.
+	for i := 0; i < 300; i++ {
+		s.recordRejectedClass(&caller{
+			pid:  int32(1000 + i),
+			self: lineage.Process{PID: int32(1000 + i), ExecPath: fmt.Sprintf("/tmp/x%d/probe", i)},
+		})
+	}
+
+	events := s.history()
+	var mismatches int
+	for _, e := range events {
+		if e.Op == opClassMismatch {
+			mismatches++
+		}
+	}
+	if mismatches != 1 {
+		t.Errorf("300 rejections from 300 distinct argvs produced %d events, want 1 — varying identity must not multiply the ring", mismatches)
+	}
+	if len(events) >= MaxSessionEvents {
+		t.Errorf("history reached %d events, want far below %d: the ring must not be evictable by an unauthenticated caller", len(events), MaxSessionEvents)
+	}
+}
+
+// A request that fails verification must not renew the session it failed
+// against, or a caller could hold the MEK resident indefinitely with a stream
+// of ciphertext it never had the key for.
+func TestFailedVerificationDoesNotExtendTheSession(t *testing.T) {
+	key := bytes.Repeat([]byte{0x42}, 32)
+	newFetcher := func() MEKFetcher { return &fakeFetcher{key: key} }
+	s := NewServer(shortSocketPath(t), newFetcher, time.Minute)
+
+	if _, err := s.WrapKeyLabeled(bytes.Repeat([]byte{0x07}, 32), "", "dotenv"); err != nil {
+		t.Fatalf("WrapKeyLabeled: %v", err)
+	}
+
+	s.mu.Lock()
+	before := s.expiry
+	s.mu.Unlock()
+
+	if err := s.verifyClassBinding([]byte("not a wrap at all"), "aws", nil); err == nil {
+		t.Fatal("verifying garbage must fail")
+	}
+
+	s.mu.Lock()
+	after := s.expiry
+	s.mu.Unlock()
+	if !after.Equal(before) {
+		t.Errorf("expiry moved from %s to %s: a rejected request must not buy the session more time", before, after)
+	}
 }
 
 func TestConsentGateAllowsDeniesAndCaches(t *testing.T) {
@@ -342,21 +615,30 @@ func TestTrustReasonStatesTheScope(t *testing.T) {
 // came from, and must not be long enough to push the credential's name out of
 // the dialog.
 func TestConsentReasonDisambiguatesAndStaysBounded(t *testing.T) {
-	standard := consentReason(consent.Caller{PID: 1, ExecPath: "/usr/local/bin/gcloud"}, "gcp")
+	standard := consentReason(consent.Request{
+		Credential: "gcp",
+		Caller:     consent.Caller{PID: 1, ExecPath: "/usr/local/bin/gcloud"},
+	})
 	if !strings.HasPrefix(standard, "gcloud wants your gcp") {
 		t.Errorf("standard tool dir reason = %q, want the bare tool name", standard)
 	}
 
-	impostor := consentReason(consent.Caller{PID: 1, ExecPath: "/tmp/evil/gcloud"}, "gcp")
+	impostor := consentReason(consent.Request{
+		Credential: "gcp",
+		Caller:     consent.Caller{PID: 1, ExecPath: "/tmp/evil/gcloud"},
+	})
 	if !strings.Contains(impostor, "/tmp/evil") {
 		t.Errorf("reason = %q, want a non-standard location shown, not rendered as a bare %q", impostor, "gcloud")
 	}
 
-	huge := consentReason(consent.Caller{
-		PID:      1,
-		ExecPath: "/tmp/" + strings.Repeat("a", 400) + "/gcloud",
-		Lineage:  "launched by " + strings.Repeat("b", 400),
-	}, "gcp")
+	huge := consentReason(consent.Request{
+		Credential: "gcp",
+		Caller: consent.Caller{
+			PID:      1,
+			ExecPath: "/tmp/" + strings.Repeat("a", 400) + "/gcloud",
+			Lineage:  "launched by " + strings.Repeat("b", 400),
+		},
+	})
 	if len([]rune(huge)) > maxReasonLen {
 		t.Errorf("reason is %d runes, want <= %d", len([]rune(huge)), maxReasonLen)
 	}
@@ -365,5 +647,112 @@ func TestConsentReasonDisambiguatesAndStaysBounded(t *testing.T) {
 	}
 	if !strings.Contains(huge, "gcloud") {
 		t.Errorf("reason = %q, want the program name kept when a long path is trimmed", huge)
+	}
+}
+
+// A repeated request has to look different from a first one — that difference
+// is the only thing distinguishing "I asked for this" from "something is
+// asking in a loop" — and saying so must never cost the credential's name its
+// place in the dialog.
+func TestConsentReasonReportsRepeatedRefusals(t *testing.T) {
+	req := consent.Request{
+		Credential: "gcp",
+		Caller:     consent.Caller{PID: 1, ExecPath: "/usr/local/bin/gcloud"},
+	}
+	if got := consentReason(req); strings.Contains(got, "refused") {
+		t.Errorf("first ask = %q, want no refusal count", got)
+	}
+
+	req.PriorRefusals = 1
+	if got := consentReason(req); !strings.Contains(got, "refused once") {
+		t.Errorf("second ask = %q, want it to report the earlier refusal", got)
+	}
+
+	req.PriorRefusals = 7
+	seventh := consentReason(req)
+	if !strings.Contains(seventh, "refused 7 times") {
+		t.Errorf("eighth ask = %q, want the refusal count", seventh)
+	}
+	if !strings.Contains(seventh, "gcp credential") {
+		t.Errorf("reason = %q, want the credential still named", seventh)
+	}
+
+	req.Caller.ExecPath = "/tmp/" + strings.Repeat("a", 400) + "/gcloud"
+	req.Caller.Lineage = "launched by " + strings.Repeat("b", 400)
+	if got := consentReason(req); len([]rune(got)) > maxReasonLen {
+		t.Errorf("reason is %d runes, want <= %d", len([]rune(got)), maxReasonLen)
+	}
+}
+
+// The FIFO path's identity is a process scan, not a kernel-vouched peer, and
+// the prompt says so. That qualifier used to be appended AFTER the whole line
+// was truncated from the tail — so as soon as a refusal count made the line
+// long enough, the count was sliced mid-word and the user read a dangling
+// "(…". Every decision-carrying part has to survive together, at every count.
+func TestBestEffortReasonKeepsEveryDecisionPart(t *testing.T) {
+	for _, n := range []int{0, 1, 3, 12, 400} {
+		req := consent.Request{
+			Credential:    "gcp",
+			PriorRefusals: n,
+			Caller: consent.Caller{
+				PID:      1,
+				ExecPath: "/usr/local/bin/gcloud",
+				Lineage:  "launched by npm install",
+				Strength: consent.BestEffort,
+			},
+		}
+		got := consentReason(req)
+
+		if len([]rune(got)) > maxReasonLen {
+			t.Errorf("n=%d: reason is %d runes, want <= %d: %q", n, len([]rune(got)), maxReasonLen, got)
+		}
+		if !strings.Contains(got, "identified by scan") {
+			t.Errorf("n=%d: reason = %q, want the best-effort qualifier intact", n, got)
+		}
+		// The launcher survives a first ask — it used to be dropped from every
+		// FIFO prompt, which is why the qualifier was shortened. Once there is
+		// a refusal count to report it yields to that, which is the right
+		// order: how many times you've already said no outranks who launched
+		// the caller.
+		if n == 0 && !strings.Contains(got, "npm install") {
+			t.Errorf("n=0: reason = %q, want the launcher kept — the scan path is where that context matters most", got)
+		}
+		if !strings.Contains(got, "gcp credential") {
+			t.Errorf("n=%d: reason = %q, want the credential named", n, got)
+		}
+		if strings.Contains(got, "(…") {
+			t.Errorf("n=%d: reason = %q, want no half-truncated parenthetical", n, got)
+		}
+		if n > 0 && !strings.Contains(got, "refused") {
+			t.Errorf("n=%d: reason = %q, want the refusal count kept", n, got)
+		}
+	}
+}
+
+// The unidentified fallback ("a process (pid N)") is the case that reaches the
+// highest refusal counts, since every anonymous caller shares one throttle key
+// — and it was the one path exempt from the length budget. macOS clips an
+// over-long reason itself, which would cut off the very qualifier the tail
+// ordering exists to protect.
+func TestUnidentifiedBestEffortReasonStaysInBudget(t *testing.T) {
+	for _, class := range []string{"gcp", "terraform"} {
+		for _, n := range []int{0, 1, 3, 12, 400} {
+			got := consentReason(consent.Request{
+				Credential:    class,
+				PriorRefusals: n,
+				Caller: consent.Caller{
+					PID:      987654,
+					ExecPath: "", // unresolvable: the fallback path
+					Lineage:  "launched by " + strings.Repeat("b", 200),
+					Strength: consent.BestEffort,
+				},
+			})
+			if len([]rune(got)) > maxReasonLen {
+				t.Errorf("class=%s n=%d: reason is %d runes, want <= %d: %q", class, n, len([]rune(got)), maxReasonLen, got)
+			}
+			if !strings.Contains(got, class+" credential") {
+				t.Errorf("class=%s n=%d: reason = %q, want the credential named", class, n, got)
+			}
+		}
 	}
 }

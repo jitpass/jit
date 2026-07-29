@@ -156,6 +156,109 @@ func TestWrapperFetchMEKReturnsIndependentCopies(t *testing.T) {
 	}
 }
 
+// Close is what stops a Wrapper leaving a plaintext master key behind inside a
+// long-lived host. internal/agent builds one per unlock and per disclosed
+// prompt and discards it, in a process that runs for weeks; before Close, each
+// of those left a pinned, unzeroed MEK that outlived the session's own lock,
+// screen-lock and sleep wipes.
+func TestCloseWipesTheCachedMEK(t *testing.T) {
+	setupWrapper := testWrapper(noChallenge)
+	cleanupTestMEK(t, setupWrapper)
+	if err := setupWrapper.EnsureMEK(); err != nil {
+		t.Fatalf("EnsureMEK: %v", err)
+	}
+
+	w := testWrapper(noChallenge)
+	if _, err := w.fetchMEK("test"); err != nil {
+		t.Fatalf("fetchMEK: %v", err)
+	}
+
+	w.mu.Lock()
+	cached := w.mek
+	w.mu.Unlock()
+	if cached == nil {
+		t.Fatal("expected the Wrapper to be holding a cached MEK before Close")
+	}
+	if bytes.Equal(cached, make([]byte, len(cached))) {
+		t.Fatal("cached MEK is already all-zero before Close; the test proves nothing")
+	}
+
+	w.Close()
+
+	// The backing array, not the field: the point is that the bytes are gone
+	// from memory, not merely unreferenced and awaiting a GC that may never
+	// come during a weeks-long process.
+	if !bytes.Equal(cached, make([]byte, len(cached))) {
+		t.Errorf("after Close the cached MEK still holds %d non-zero byte(s)", countNonZero(cached))
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.mek != nil {
+		t.Error("after Close the Wrapper still references a MEK")
+	}
+}
+
+// Close must be safe on a Wrapper that never fetched, and safe to call twice —
+// the agent closes unconditionally, including on the path where the challenge
+// failed and nothing was ever cached.
+func TestCloseIsIdempotentAndSafeWhenUnused(t *testing.T) {
+	w := testWrapper(failChallenge)
+	w.Close()
+	w.Close()
+
+	if _, err := w.fetchMEK("test"); err == nil {
+		t.Error("expected the failing challenge to still be enforced after Close")
+	}
+	w.Close()
+}
+
+// A closed Wrapper re-challenges rather than silently serving a stale key:
+// Close ends the cache, and ending a cache of a credential means the next
+// caller has to earn it again.
+func TestFetchAfterCloseChallengesAgain(t *testing.T) {
+	setupWrapper := testWrapper(noChallenge)
+	cleanupTestMEK(t, setupWrapper)
+	if err := setupWrapper.EnsureMEK(); err != nil {
+		t.Fatalf("EnsureMEK: %v", err)
+	}
+
+	var challenges int
+	w := testWrapper(func(string) error { challenges++; return nil })
+
+	if _, err := w.fetchMEK("test"); err != nil {
+		t.Fatalf("fetchMEK (1st): %v", err)
+	}
+	if _, err := w.fetchMEK("test"); err != nil {
+		t.Fatalf("fetchMEK (2nd): %v", err)
+	}
+	if challenges != 1 {
+		t.Fatalf("challenges=%d before Close, want 1 (cached)", challenges)
+	}
+
+	w.Close()
+
+	got, err := w.fetchMEK("test")
+	if err != nil {
+		t.Fatalf("fetchMEK after Close: %v", err)
+	}
+	if challenges != 2 {
+		t.Errorf("challenges=%d after Close, want 2 — a closed Wrapper must re-challenge", challenges)
+	}
+	if bytes.Equal(got, make([]byte, len(got))) {
+		t.Error("fetchMEK after Close returned all-zero bytes")
+	}
+}
+
+func countNonZero(b []byte) int {
+	n := 0
+	for _, c := range b {
+		if c != 0 {
+			n++
+		}
+	}
+	return n
+}
+
 func TestSealOpenRoundTrip(t *testing.T) {
 	key := bytes.Repeat([]byte{0x42}, 32)
 	plaintext := []byte("data encryption key material")

@@ -112,6 +112,7 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 
 	summary := buildScanSummary(cfg, all, countProtectedMounts(cfg.MountRegistryPath), time.Since(start))
 	summary.FilesScanned = filesWalked
+	summary.DerivedCredentials = ScanDerivedCredentials(cfg)
 	coverage := ComputeCoverage(cfg.MountRegistryPath, all)
 	summary.SecretsTotal = coverage.Total()
 	summary.SecretsProtected = coverage.Protected

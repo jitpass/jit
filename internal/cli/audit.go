@@ -235,8 +235,13 @@ var auditCmd = &cobra.Command{
 		"needed. Command arguments are recorded with any secret-looking value masked, so\n" +
 		"the log records that a command ran, never the secret it may have carried.\n\n" +
 		"It also records what the service refused at its socket: a rejected peer (a\n" +
-		"process the kernel says isn't yours, probing the agent), a malformed request, or\n" +
-		"the accept loop failing, each as a kind=error line with the peer's provenance.\n\n" +
+		"process the kernel says isn't yours, probing the agent), a malformed request, an\n" +
+		"unwrap whose claimed credential class doesn't match the ciphertext it sent\n" +
+		"(op=class-mismatch — a caller with no vault data trying to summon a prompt), or\n" +
+		"the accept loop failing, each as a kind=error line with the peer's provenance.\n" +
+		"Repeated rejections collapse into one line carrying a count; a collapsed line\n" +
+		"names the first caller of that window, because keying them per caller would let\n" +
+		"a flood of throwaway processes push every real event out of the history.\n\n" +
 		"Output is logfmt: one key=value line per event, newest first, so it reads and\n" +
 		"greps like a real service log. Narrow it without grep using the flags: --kind\n" +
 		"cmd,unlock,use,lock,service,error, --status ok|failed|denied, --since and --until\n" +
@@ -717,6 +722,13 @@ func authEntry(home string, e agent.SessionEvent) auditEntry {
 		pairs = append(pairs, kv{"level", "error"}, kv{"kind", "error"})
 		if e.Op != "" {
 			pairs = append(pairs, kv{"op", e.Op})
+		}
+		// Rejections that repeat are collapsed into one event carrying how
+		// many there were (see recordRejectedClass). Without printing it, a
+		// flood of hundreds reads exactly like a single stray request — and
+		// the count is the whole reason the line is interesting.
+		if e.Count > 1 {
+			pairs = append(pairs, kv{"count", strconv.FormatInt(e.Count, 10)})
 		}
 		if e.Cause != "" {
 			pairs = append(pairs, kv{"reason", e.Cause})

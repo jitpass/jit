@@ -91,6 +91,15 @@ session locks after its TTL (default 5 minutes, user-configurable with
 machine sleeps - the idle TTL is a proxy for "the user left," and those two
 events are the OS saying so outright.
 
+The TTL is an *inactivity* timeout, so use extends it - and on its own that
+is a bound a busy caller never reaches. A **hard ceiling of 8 hours** from
+the unlock itself runs alongside it: past that the session ends and the next
+access challenges again, however continuously it has been used. Without it,
+anything that could touch the session every few minutes could hold the
+master key resident indefinitely on the strength of one Touch ID from that
+morning. `--ttl` is bounded by the ceiling, because an inactivity timeout
+longer than it could never be reached.
+
 The cached session covers only the high-frequency paths (native credential
 hooks and `jit run`), and on top of it [per-process consent](../service/consent.md)
 (on by default) prompts once per tool the first time it reaches for a
@@ -103,6 +112,22 @@ machine still cannot read, dump, or destroy the vault without a live human
 gesture. Only `list`/`history` (names and version timestamps, never a value)
 are prompt-free.
 
+**Refusing has to stay cheap.** A consent prompt cannot cache a refusal as a
+lasting "no" - the prompt cannot tell a human's decline from a keychain
+failure, and treating either as permanent would lock a credential out with no
+way back. That left an asymmetry worth naming: saying no cost one full-screen
+dialog *per request* while saying yes cost one dialog *once*, so anything
+asking in a loop could simply outlast you. Consent prompts now back off per
+request after a refusal (about two seconds, then eight, then thirty), and the
+prompt says how many times that caller has already been refused. Nothing is
+locked out, the next genuine attempt still asks, and a *fresh* `jit unlock` —
+one that actually challenges you — clears the pause outright, while an unlock
+against an already-open session prompts nobody and so clears nothing. A caller
+also cannot conjure a prompt out of
+nothing: the credential class it names is verified against the ciphertext it
+sent before anyone is asked, so a process holding no vault data at all can no
+longer put a dialog on your screen.
+
 ## Deliberate limits
 
 jit narrows *where* and *when* plaintext exists; it does not make a
@@ -112,6 +137,17 @@ compromised user account safe. The boundaries worth knowing:
   delivers the real value to the target process; what that process does is
   outside jit's control. That's the point of naming callers on every
   prompt - the decision happens before delivery.
+- **Credentials a tool mints for itself are not jit's.** The concrete case:
+  after the AWS CLI uses a migrated key to assume a role, it caches the
+  resulting STS session in plaintext under `~/.aws/cli/cache`, and
+  `aws sso login` writes its tokens to `~/.aws/sso/cache`. jit stores what
+  *you* stored; these were minted downstream, will be minted again on the
+  next run, and jit does not manage, clean or decoy them. It does now say
+  they are there - `jit scan` reports them as out of scope rather than
+  walking past hex-named files in the directory it just tidied.
+  Relatedly, an assume-role profile carries no key of its own, so jit's AWS
+  discovery does not migrate it; migrating its source profile still protects
+  the long-lived key it assumes with.
 - **Git history is never rewritten.** A migrated file that was ever
   committed still has its old value in `git log -p`; `migrate` warns, and
   the fix is rotating that credential.

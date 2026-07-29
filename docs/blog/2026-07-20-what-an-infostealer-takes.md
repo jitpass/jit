@@ -179,8 +179,11 @@ above as it exists on your machine today.
 
 **What that actually stops:** the plaintext-at-rest sweep. A stealer reading
 `~/.aws/credentials` gets a `credential_process` line, not a key. Reading
-the mounted `.env` outside a reveal window gets decoys. The standing loot is
+the mounted `.env` outside a reveal window gets decoys. The long-lived loot is
 gone, so the four-second smash-and-grab comes up mostly empty.
+
+"Mostly" is doing real work in that sentence, and it took an outside reader to
+make me say why — see the fourth bullet below.
 
 **What it does *not* stop, and I won't pretend otherwise:**
 
@@ -193,6 +196,15 @@ gone, so the four-second smash-and-grab comes up mostly empty.
   change defeats a convincing `osascript` prompt. If you type your password
   into malware's dialog, that's a human-trust failure, not a storage one.
 - **Live session cookies in your browser** aren't in jit's scope at all.
+- **Credentials your tools mint for themselves.** This is the one I had to be
+  told. Move your AWS key into the vault, and the CLI can still write a
+  plaintext STS session to `~/.aws/cli/cache` the moment it assumes a role;
+  `aws sso login` writes tokens to `~/.aws/sso/cache`. Those are short-lived
+  rather than standing, which is a genuine improvement and not the same as
+  gone — and they sit in the very directory the post above describes jit
+  tidying. `jit scan` now names them as out of scope instead of walking past
+  hex-named files without comment, because a clean report that omits a live
+  session token is worse than no report.
 
 The point isn't that a vault makes you unstealable. It's that "readable by
 anything running as my user, forever, whether I'm using it or not" is a

@@ -10,7 +10,9 @@ credentials without prompting again. That is the point of the session: unlock
 once, not per command. Per-process consent adds one check on top of it, so a
 credential is never handed out completely silently: the **first time each tool
 reaches for a gated credential**, the background service prompts a fresh Touch
-ID, names who is asking, and remembers your answer for the rest of the session.
+ID, names who is asking, and remembers an approval for the rest of the session.
+(A refusal works differently, and deliberately so - see
+[Saying no, repeatedly](#saying-no-repeatedly).)
 
 Consent is **on by default**. A tool you approve once is not asked again until
 the session re-locks. The check is **per tool**: approving `terraform`'s use of
@@ -23,6 +25,9 @@ still stops for a prompt you can decline.
 #   Touch ID prompt: "terraform, launched by claude, wants your aws credential"
 # approve once, and terraform (and anything it launched) is not asked again
 # until the vault re-locks.
+#
+# asked again after you already said no, the prompt says so:
+#   "terraform, launched by claude, wants your aws credential (refused 2 times)"
 ```
 
 ## Turning it on and off
@@ -76,12 +81,32 @@ what launched it, and that attribution is trustworthy.
 `~/.npmrc`, `~/.netrc`) have no socket peer, so jit identifies the reader with
 an unprivileged process scan. That scan can be spoofed by a process running as
 you, so **treat the name on these prompts as a hint, not proof** — the prompt
-says "(identified by process scan)" to mark it. The vault crypto is unaffected
+says "(identified by scan)" to mark it. The vault crypto is unaffected
 either way, and if the reader cannot be fully identified the mount serves
 decoys rather than guess.
 
-A decision is remembered only for the session and is dropped the moment the
+An approval is remembered only for the session and is dropped the moment the
 vault re-locks, so consent never outlives the unlock it rode in on.
+
+## Saying no, repeatedly
+
+A refusal is never remembered as a standing "no". It cannot be: the prompt
+cannot tell your decline from a keychain failure, and treating either as
+permanent would lock a credential out with no way back. That left refusing
+more expensive than approving — one dialog per request against one dialog
+once — so anything asking in a loop could simply outlast you.
+
+So a refused request now **pauses** rather than being remembered: roughly two
+seconds, then eight, then thirty, per caller and credential. During a pause the
+caller gets an error and you get nothing on screen. The prompt also tells you
+how many times that caller has already been refused, because the tenth
+identical dialog means something the first one doesn't.
+
+Nothing is locked out by this. The next genuine attempt after the pause still
+asks, an approval clears the escalation, and a fresh `jit unlock` — a person at
+the keyboard — clears every pause outright. (Only a *fresh* one: `jit unlock`
+against an already-open session prompts nobody, so it deliberately clears
+nothing.)
 
 ## Pre-authorizing a whole run: `jit run --trust`
 

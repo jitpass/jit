@@ -162,6 +162,28 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 		fmt.Fprintln(w)
 	}
 
+	// --- what jit found and does not cover ---
+	//
+	// This view is the one people actually read, which makes it the one place
+	// this cannot be missing: the whole reason to say it is that "nothing
+	// exposed" is otherwise misread as "nothing left here." A user who
+	// migrated ~/.aws/credentials and saw a clean report would have no way to
+	// know a live plaintext session token was still sitting beside it.
+	//
+	// It stays under the verdict, not in it: these are not exposures jit is
+	// declining to fix, they are working files that belong to other tools.
+	// Nothing here moves a count.
+	if len(summary.DerivedCredentials) > 0 {
+		_, _ = bold.Fprintln(w, "  Outside jit's scope, found anyway:")
+		for _, d := range summary.DerivedCredentials {
+			fmt.Fprintf(w, "    %s\n", displayFilePath(home, d.Path))
+			_, _ = dim.Fprintf(w, "      %s\n", d.What)
+		}
+		_, _ = dim.Fprintln(w, "  jit protects credentials you stored; these were minted by the tools")
+		_, _ = dim.Fprintln(w, "  that used them, and jit does not manage, rotate or hide them.")
+		fmt.Fprintln(w)
+	}
+
 	// --- the honesty line: what jit saw and does not charge for ---
 	quiet := 0
 	archived := 0
