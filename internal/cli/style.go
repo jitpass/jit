@@ -61,11 +61,6 @@ var (
 	cOKBold   = color.New(color.FgGreen, color.Bold)
 )
 
-// defaultWidth is the fallback line width when stdout isn't a terminal
-// (pipes, CI, tests) — 80 keeps column flow deterministic for tests and is
-// the conventional terminal default.
-const defaultWidth = termtext.DefaultWidth
-
 // outputWidth reports the usable column count for laying out this package's
 // output. A thin delegate so the CLI's dashboards and audit's scan report
 // measure the window the same way — see internal/termtext.
