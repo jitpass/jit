@@ -110,7 +110,7 @@ func TestDoctorAllSecretsResolve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit doctor: %v", err)
 	}
-	if !strings.Contains(out, "✓ 1 profile(s), 1 secret reference(s) all resolve cleanly") {
+	if !strings.Contains(out, "✓ 1 profile, 1 secret reference all resolve cleanly") {
 		t.Errorf("expected a clean success message, got:\n%s", out)
 	}
 }
@@ -169,7 +169,7 @@ func TestDoctorSpecificProfileFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit doctor --profile aws-admin: %v", err)
 	}
-	if !strings.Contains(out, "1 profile(s)") {
+	if !strings.Contains(out, "1 profile,") {
 		t.Errorf("expected only the named profile to be checked, got:\n%s", out)
 	}
 }

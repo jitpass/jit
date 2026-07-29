@@ -851,8 +851,8 @@ var agentStatusCmd = &cobra.Command{
 		fmt.Fprintf(cmd.OutOrStdout(), "Versions: service %s; CLI %s.\n", versionBuild(st.Version, st.Build), versionBuild(agent.Version(), agent.BuildID()))
 		printSessionProvenance(cmd.OutOrStdout(), st)
 		printMountStatuses(cmd.OutOrStdout(), st.Mounts)
-		if warning := agentBuildMismatch(st.Build); warning != "" {
-			_, _ = color.New(color.FgYellow).Fprintf(cmd.OutOrStdout(), "%s\n", warning)
+		if warning := agentBuildMismatchLine(st.Build); warning != "" {
+			_, _ = cWarn.Fprintf(cmd.OutOrStdout(), "%s\n", hlCmds(warning))
 		}
 		return nil
 	},
@@ -1136,7 +1136,7 @@ func printMountStatuses(w io.Writer, mounts []agent.MountRevealStatus) {
 		if len(m.Grants) > 0 {
 			_, _ = cOK.Fprint(w, "  "+glyphOK+" ")
 			fmt.Fprint(w, path)
-			_, _ = cDim.Fprintf(w, "  real to %d active grant(s), decoy to everything else\n", len(m.Grants))
+			_, _ = cDim.Fprintf(w, "  real to %s, decoy to everything else\n", countWord(len(m.Grants), "active grant", "active grants"))
 		} else {
 			_, _ = cWarn.Fprint(w, "  "+glyphWarn+" ")
 			fmt.Fprintln(w, path)

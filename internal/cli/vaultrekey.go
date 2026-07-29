@@ -143,7 +143,7 @@ var vaultRekeyCmd = &cobra.Command{
 			return fmt.Errorf("jit vault rekey: removing marker: %w", err)
 		}
 
-		fmt.Fprintf(cmd.OutOrStdout(), "Master key rotated. %d envelope(s) re-wrapped", rewrapped)
+		fmt.Fprintf(cmd.OutOrStdout(), "Master key rotated. %s re-wrapped", countWord(rewrapped, "envelope", "envelopes"))
 		if current > 0 {
 			fmt.Fprintf(cmd.OutOrStdout(), " (%d already current from an interrupted run)", current)
 		}

@@ -5,10 +5,10 @@ description: Prebuilt binary or build from source, shell completion, and how to 
 
 # Install
 
-jit is macOS-only and needs Touch ID or a device passcode. Two ways in -
-no Homebrew tap yet (planned for the first signed release).
+jit is macOS-only and needs Touch ID or a device passcode. No Homebrew tap
+yet (planned for the first signed release).
 
-## Option A: prebuilt binary (Apple Silicon, no Go required)
+## Prebuilt binary (Apple Silicon, no Go required)
 
 ```sh
 curl -sLO https://github.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz
@@ -24,8 +24,8 @@ time with `jit service ttl <d>` (see
 [The background service](../service/index.md)).
 
 Prebuilt binaries are Apple Silicon only - we don't have Intel hardware to
-test on, and won't publish what we can't test. On an Intel Mac, use
-Option B (it builds from source, so it works on any Mac).
+test on, and won't publish what we can't test. On an Intel Mac, build from
+source instead (below) - it works on any Mac.
 
 To verify the download, `checksums.txt` on the
 [release page](https://github.com/jitpass/jit/releases/latest) has the
@@ -37,7 +37,10 @@ Developer-ID signed (release builds aren't, yet - same signing work as the
 Homebrew tap). If you already downloaded one that way, un-quarantine it
 with `xattr -d com.apple.quarantine jit`.
 
-## Option B: build from source with Go
+## Building from source (Intel Macs, contributors)
+
+Everyone else should use the prebuilt binary above. You need this path on an
+Intel Mac, or if you're working on jit itself.
 
 **1. Install Go** (1.26+), if you don't have it:
 

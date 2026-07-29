@@ -77,7 +77,7 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, shellConf
 		}
 		_, _ = color.New(color.Bold).Fprintf(w, "Project files you named\n\n")
 		printMigratePlanCategoryAnnotated(w,
-			".env file(s) → EVERY variable moves to the vault (ordinary config too, so the file still works); the file keeps working as a live, auto-updating mount",
+			pluralWord(len(envFiles), ".env file", ".env files")+" → EVERY variable moves to the vault (ordinary config too, so the file still works); the file keeps working as a live, auto-updating mount",
 			shorten(envFiles),
 			func(item string) string {
 				if migrate.IsEnvBackupOnlySuffix(filepath.Base(item)) {
@@ -91,22 +91,23 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, shellConf
 					return ""
 				}
 				if shaped == 0 {
-					return fmt.Sprintf("%d variable(s)", total)
+					return countWord(total, "variable", "variables")
 				}
-				return fmt.Sprintf("%d variable(s), %d secret-shaped", total, shaped)
+				return fmt.Sprintf("%s, %d secret-shaped", countWord(total, "variable", "variables"), shaped)
 			})
 		printMigratePlanCategory(w,
-			"Terraform tfvars file(s) → secret values move to the vault; terraform reads them back as TF_VAR_ environment variables when run through jit",
+			pluralWord(len(tfvarsFiles), "Terraform tfvars file", "Terraform tfvars files")+" → secret values move to the vault; terraform reads them back as TF_VAR_ environment variables when run through jit",
 			shorten(tfvarsFiles))
 		printMigratePlanCategory(w,
-			"MCP config(s) → secrets move to the vault; injected automatically when the server launches",
+			pluralWord(len(mcpScoped), "MCP config", "MCP configs")+" → secrets move to the vault; injected automatically when the server launches",
 			shorten(mcpScoped))
 		printMigratePlanCategory(w,
-			"npmrc file(s) → secrets move to the vault; the file keeps working via a live, auto-updating mount",
+			pluralWord(len(npmrcScoped), "npmrc file", "npmrc files")+" → secrets move to the vault; the file keeps working via a live, auto-updating mount",
 			shorten(npmrcScoped))
-		looseHeadline := "loose secret file(s) → the whole file is a bare token; it moves to the vault and the file is replaced with a git-safe pointer (retrieve with `jit vault get`)"
+		looseName := pluralWord(len(looseSecretFiles), "loose secret file", "loose secret files")
+		looseHeadline := looseName + " → the whole file is a bare token; it moves to the vault and the file is replaced with a git-safe pointer (retrieve with `jit vault get`)"
 		if migrateMount {
-			looseHeadline = "loose secret file(s) → the secret(s) move to the vault; the file stays live at its path as a mount (real value to `jit run` grants, a decoy otherwise), non-secret content preserved"
+			looseHeadline = looseName + " → the " + pluralWord(len(looseSecretFiles), "secret moves", "secrets move") + " to the vault; the file stays live at its path as a mount (real value to `jit run` grants, a decoy otherwise), non-secret content preserved"
 		}
 		printMigratePlanCategory(w, looseHeadline, shorten(looseSecretFiles))
 	}
@@ -118,42 +119,42 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, shellConf
 		_, _ = color.New(color.Faint).Fprintln(w, "Machine-wide config files you named")
 		fmt.Fprintln(w)
 		printMigratePlanCategory(w,
-			"shell config(s) → secrets move to the vault; loaded back automatically when your shell starts",
+			pluralWord(len(shellConfigs), "shell config", "shell configs")+" → secrets move to the vault; loaded back automatically when your shell starts",
 			shorten(shellConfigs))
 		printMigratePlanCategory(w,
-			"MCP config(s) → secrets move to the vault; injected automatically when the server launches",
+			pluralWord(len(mcpFixed), "MCP config", "MCP configs")+" → secrets move to the vault; injected automatically when the server launches",
 			shorten(mcpFixed))
 		// AWS/kubeconfig/Terraform/Docker items are profile/user/host/
 		// registry NAMES, not paths — nothing to shorten.
 		printMigratePlanCategory(w,
-			"AWS profile(s) in ~/.aws/credentials → secrets move to the vault; fetched automatically when the AWS CLI/SDK needs them",
+			pluralWord(len(awsProfiles), "AWS profile", "AWS profiles")+" in ~/.aws/credentials → secrets move to the vault; fetched automatically when the AWS CLI/SDK needs them",
 			awsProfiles)
 		printMigratePlanCategory(w,
-			"kubeconfig user(s) in ~/.kube/config → secrets move to the vault; fetched automatically whenever kubectl runs",
+			pluralWord(len(k8sUsers), "kubeconfig user", "kubeconfig users")+" in ~/.kube/config → secrets move to the vault; fetched automatically whenever kubectl runs",
 			k8sUsers)
 		printMigratePlanCategory(w,
-			"Terraform Cloud host(s) in ~/.terraform.d/credentials.tfrc.json → tokens move to the vault; fetched automatically whenever terraform runs",
+			pluralWord(len(terraformHosts), "Terraform Cloud host", "Terraform Cloud hosts")+" in ~/.terraform.d/credentials.tfrc.json → tokens move to the vault; fetched automatically whenever terraform runs",
 			terraformHosts)
 		printMigratePlanCategory(w,
-			"Docker registry credential(s) in ~/.docker/config.json → credentials move to the vault; fetched automatically whenever docker needs them (docker login/logout keep working)",
+			pluralWord(len(dockerRegistries), "Docker registry credential", "Docker registry credentials")+" in ~/.docker/config.json → credentials move to the vault; fetched automatically whenever docker needs them (docker login/logout keep working)",
 			dockerRegistries)
 		printMigratePlanCategory(w,
-			"git HTTPS host(s) in ~/.git-credentials → credentials move to the vault; fetched automatically whenever git pushes/fetches over HTTPS (credential.helper set to jit)",
+			pluralWord(len(gitHosts), "git HTTPS host", "git HTTPS hosts")+" in ~/.git-credentials → credentials move to the vault; fetched automatically whenever git pushes/fetches over HTTPS (credential.helper set to jit)",
 			gitHosts)
 		printMigratePlanCategory(w,
 			"GCP application-default credentials → secrets move to the vault; the file keeps working via a live, auto-updating mount",
 			shorten(gcpADCFiles))
 		printMigratePlanCategory(w,
-			"SOPS age key file(s) → the key moves to the vault; sops/kluctl keep working via a live, auto-updating mount (or sops's own SOPS_AGE_KEY_CMD hook)",
+			pluralWord(len(sopsAgeFiles), "SOPS age key file", "SOPS age key files")+" → the "+pluralWord(len(sopsAgeFiles), "key moves", "keys move")+" to the vault; sops/kluctl keep working via a live, auto-updating mount (or sops's own SOPS_AGE_KEY_CMD hook)",
 			shorten(sopsAgeFiles))
 		printMigratePlanCategory(w,
-			"npmrc file(s) → secrets move to the vault; the file keeps working via a live, auto-updating mount",
+			pluralWord(len(npmrcFixed), "npmrc file", "npmrc files")+" → secrets move to the vault; the file keeps working via a live, auto-updating mount",
 			shorten(npmrcFixed))
 		printMigratePlanCategory(w,
-			"~/.netrc password(s) → secrets move to the vault; the file keeps working via a live, auto-updating mount (login/machine lines untouched)",
+			pluralWord(len(netrcFiles), "~/.netrc password", "~/.netrc passwords")+" → secrets move to the vault; the file keeps working via a live, auto-updating mount (login/machine lines untouched)",
 			shorten(netrcFiles))
 		printMigratePlanCategory(w,
-			"~/.pypirc credential(s) → secrets move to the vault; the file keeps working via a live, auto-updating mount (repository/username lines untouched)",
+			pluralWord(len(pypircFiles), "~/.pypirc credential", "~/.pypirc credentials")+" → secrets move to the vault; the file keeps working via a live, auto-updating mount (repository/username lines untouched)",
 			shorten(pypircFiles))
 
 		// --only filters by CATEGORY, not by this scoped/machine-wide
@@ -190,7 +191,7 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, shellConf
 		total += len(items)
 	}
 	fmt.Fprintln(w, strings.Repeat("─", 44))
-	fmt.Fprintf(w, "  %d change(s) planned across %d %s\n", total, categories, pluralWord(categories, "category", "categories"))
+	fmt.Fprintf(w, "  %s planned across %s\n", countWord(total, "change", "changes"), countWord(categories, "category", "categories"))
 }
 
 // splitMCPByScope separates Claude Desktop's always-checked fixed path

@@ -129,7 +129,7 @@ var doctorCmd = &cobra.Command{
 				return fmt.Errorf("jit doctor: %w", err)
 			}
 			if len(problems) > 0 {
-				return fmt.Errorf("jit doctor: %d problem(s) found", len(problems))
+				return fmt.Errorf("jit doctor: %s found", countWord(len(problems), "problem", "problems"))
 			}
 			return nil
 		}
@@ -156,8 +156,10 @@ func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings []
 		_, _ = cDim.Fprintln(out, "No profiles found under .jit/profiles/ or the global store.")
 	case len(problems) == 0:
 		_, _ = color.New(color.FgGreen, color.Bold).Fprintf(out,
-			"%s %d profile(s), %d secret reference(s) all resolve cleanly\n",
-			glyphDone, outcome.ProfilesChecked, outcome.SecretsChecked)
+			"%s %s, %s all resolve cleanly\n",
+			glyphDone,
+			countWord(outcome.ProfilesChecked, "profile", "profiles"),
+			countWord(outcome.SecretsChecked, "secret reference", "secret references"))
 	}
 
 	// --verbose lists the individual references so a passing run can still
@@ -173,7 +175,7 @@ func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings []
 	printGlobalMountReminders(out)
 
 	if len(problems) > 0 {
-		return fmt.Errorf("jit doctor: %d problem(s) found", len(problems))
+		return fmt.Errorf("jit doctor: %s found", countWord(len(problems), "problem", "problems"))
 	}
 	return nil
 }

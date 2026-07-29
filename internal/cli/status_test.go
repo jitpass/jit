@@ -38,7 +38,10 @@ func TestStatusEverythingEmpty(t *testing.T) {
 		t.Fatalf("jit status: %v", err)
 	}
 	for _, want := range []string{
-		"jit      " + versionBuild(agent.Version(), agent.BuildID()) + " · service not running",
+		// The headline is the verdict, not the build: a machine with no
+		// service running has exactly one thing to fix, and says so before
+		// any of the detail.
+		"jit      ✗ 1 thing to fix · " + shortVersion(agent.Version()),
 		"vault    no secrets yet",
 		"service  ✗ not running",
 		"secrets  none stored yet",
@@ -60,7 +63,7 @@ func TestStatusVaultReportsSecretCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "vault    2 secret(s) stored") {
+	if !strings.Contains(out, "vault    2 secrets stored") {
 		t.Errorf("expected a secret count, got:\n%s", out)
 	}
 }
@@ -80,7 +83,9 @@ func TestStatusVaultCountExcludesBackups(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "vault    2 secret(s) stored · 2 file backup(s) kept for `jit migrate undo`") {
+	// The backticks are hlCmds markup, stripped on the way out (cyan on a
+	// terminal, plain here) — so the assertion must not contain them.
+	if !strings.Contains(out, "vault    2 secrets stored · 2 file backups kept for jit migrate undo") {
 		t.Errorf("expected backups excluded from the secret count and reported separately, got:\n%s", out)
 	}
 }
@@ -96,7 +101,7 @@ func TestStatusVaultOnlyBackups(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "vault    0 secret(s) stored · 1 file backup(s) kept for `jit migrate undo`") {
+	if !strings.Contains(out, "vault    0 secrets stored · 1 file backup kept for jit migrate undo") {
 		t.Errorf("expected a backups-only vault line, got:\n%s", out)
 	}
 	if strings.Contains(out, "no secrets yet") {
@@ -189,10 +194,10 @@ func TestStatusSecretsWiredResolveCleanly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "secrets  1 stored in 1 group(s)") {
+	if !strings.Contains(out, "secrets  1 stored in 1 group") {
 		t.Errorf("expected a stored-secret headline, got:\n%s", out)
 	}
-	if !strings.Contains(out, "Wired here") || !strings.Contains(out, "1 group(s) via 1 profile(s) (1 reference(s)), all resolve.") {
+	if !strings.Contains(out, "Wired here") || !strings.Contains(out, "1 group via 1 profile (1 reference), all resolve.") {
 		t.Errorf("expected the wired secret to resolve cleanly, got:\n%s", out)
 	}
 }
@@ -230,7 +235,7 @@ func TestStatusMountsRegisteredButAgentNotRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "mounts   1 registered · not being served (service not running)") {
+	if !strings.Contains(out, "mounts   1 registered mount · not being served (service not running)") {
 		t.Errorf("expected a not-being-served mount summary, got:\n%s", out)
 	}
 }

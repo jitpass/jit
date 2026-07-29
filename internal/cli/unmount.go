@@ -151,7 +151,7 @@ var unmountCmd = &cobra.Command{
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: removing stale pointer file for %s: %v\n", mountPath, err)
 		}
 
-		fmt.Fprintf(cmd.OutOrStdout(), "Unmounted %s (%d variable(s) written back as plaintext).\n", mountPath, len(names))
+		fmt.Fprintf(cmd.OutOrStdout(), "Unmounted %s (%s written back as plaintext).\n", mountPath, countWord(len(names), "variable", "variables"))
 		fmt.Fprintln(cmd.OutOrStdout(), "The vault secrets and profile manifest are still there, only the mount itself was reversed.")
 		return nil
 	},

@@ -94,7 +94,7 @@ ACTIVE_VAR=stillhere
 	if backup.Severity != SeverityLow {
 		t.Errorf("backup .env severity = %q, want %q", backup.Severity, SeverityLow)
 	}
-	wantEvidence := "3 plaintext variable(s) (1 active, 2 commented out)"
+	wantEvidence := "3 plaintext variables (1 active, 2 commented out)"
 	if backup.Evidence != wantEvidence {
 		t.Errorf("backup .env evidence = %q, want %q", backup.Evidence, wantEvidence)
 	}
