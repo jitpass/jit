@@ -102,7 +102,7 @@ func TestStatusReflectsRealAgentRunningAndLocked(t *testing.T) {
 	if !strings.Contains(out, wantVersions) {
 		t.Errorf("expected %q, got:\n%s", wantVersions, out)
 	}
-	if !strings.Contains(out, "mounts   1 registered mount · unlocked, all decoy (real values flow through a jit run grant, or an approved consent prompt") {
+	if !strings.Contains(unwrap(out), "mounts   1 registered mount · unlocked, all decoy (real values flow through a jit run grant, or an approved consent prompt") {
 		t.Errorf("expected mounts reported as decoy while unlocked, with real values flowing via a jit run grant or an approved consent prompt, got:\n%s", out)
 	}
 
@@ -161,7 +161,7 @@ func TestStatusDegradesWhenAgentUnreachable(t *testing.T) {
 		t.Errorf("expected the service reported as unreachable, got:\n%s", out)
 	}
 	// The sections that don't depend on the agent must still be there.
-	if !strings.Contains(out, "vault    1 secret stored") || !strings.Contains(out, "secrets  1 stored in 1 group") {
+	if !strings.Contains(out, "vault    1 secret in 1 group") || !strings.Contains(out, "secrets  reconciled") {
 		t.Errorf("expected the agent-independent sections to still render, got:\n%s", out)
 	}
 }

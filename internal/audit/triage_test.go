@@ -70,9 +70,13 @@ func TestWriteTriageReportShape(t *testing.T) {
 		"only you can protect these",
 		"in 3 copies of a file",
 		"rotate",
-		// Honesty lines: quiet sighting + archived note.
+		// The honesty tally. Seven lines of dim prose explaining what jit
+		// declined to count now collapse to one "Not counted:" line plus the
+		// command that shows them, so these assert the tally's terms.
+		"Not counted:",
 		"1 low-confidence sighting",
-		"archived/backup folders",
+		"in archived folders",
+		"→ jit scan --full",
 		"No secret values are ever printed in full.",
 	} {
 		if !strings.Contains(out, want) {

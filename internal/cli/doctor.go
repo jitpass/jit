@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
+	"strings"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -145,21 +147,24 @@ var doctorCmd = &cobra.Command{
 // global-mount reminders.
 func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings []checkFinding) error {
 	for _, f := range problems {
-		_, _ = cRisk.Fprintf(out, "%s %s\n", glyphRisk, formatFinding(f))
+		writeDoctorFinding(out, glyphRisk, cRisk, f)
 	}
 	for _, f := range warnings {
-		_, _ = cWarn.Fprintf(out, "%s %s\n", glyphWarn, formatFinding(f))
+		writeDoctorFinding(out, glyphWarn, cWarn, f)
 	}
 
+	// The verdict lines wrap like every other line here: at 44 columns the
+	// clean-bill-of-health line was the one thing still running past the edge,
+	// which is a poor look on the line that says everything is fine.
 	switch {
 	case outcome.ProfilesChecked == 0:
-		_, _ = cDim.Fprintln(out, "No profiles found under .jit/profiles/ or the global store.")
+		wrapBody(out, 0, "  ", cDim.Sprint("No profiles found under .jit/profiles/ or the global store."))
 	case len(problems) == 0:
-		_, _ = color.New(color.FgGreen, color.Bold).Fprintf(out,
-			"%s %s, %s all resolve cleanly\n",
-			glyphDone,
+		_, _ = cOK.Fprintf(out, "%s ", glyphDone)
+		wrapBody(out, 2, "  ", color.New(color.FgGreen, color.Bold).Sprintf(
+			"%s, %s all resolve cleanly",
 			countWord(outcome.ProfilesChecked, "profile", "profiles"),
-			countWord(outcome.SecretsChecked, "secret reference", "secret references"))
+			countWord(outcome.SecretsChecked, "secret reference", "secret references")))
 	}
 
 	// --verbose lists the individual references so a passing run can still
@@ -180,16 +185,87 @@ func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings []
 	return nil
 }
 
+// doctorActionRe lifts a trailing "run `cmd` …" clause out of a finding's
+// prose. Doctor's findings were single lines that ran to 190 columns with the
+// fix buried mid-sentence — exactly the shape design/output-style.md's action
+// rule exists to prevent. The commands are already backtick-delimited for
+// hlCmds, so the clause is machine-findable rather than guessed at.
+//
+// Case-insensitive on the verb: these sentences are written by a dozen
+// different call sites, and half of them start the clause after a full stop
+// with a capital "Run".
+var doctorActionRe = regexp.MustCompile("(?i)(?:[,;]| —|\\.)\\s+run (`[^`]+`.*)$")
+
+// writeDoctorFinding renders one finding: the state glyph, the bracketed kind,
+// then the prose wrapped so continuations hang under the prose rather than
+// resuming at column 0 beneath the glyph. A fix the finding names moves to its
+// own cyan arrow line, so the thing to type is the last thing on screen.
+func writeDoctorFinding(out io.Writer, glyph string, c *color.Color, f checkFinding) {
+	label := findingLabel(f)
+	_, _ = c.Fprintf(out, "%s ", glyph)
+	fmt.Fprintf(out, "%s ", label)
+	used := 2 + len(label) + 1
+	indent := strings.Repeat(" ", used)
+
+	body := formatFinding(f)
+	body = strings.TrimPrefix(body, label+" ")
+	action := ""
+	if m := doctorActionRe.FindStringSubmatch(body); m != nil {
+		action = m[1]
+		body = strings.TrimRight(body[:len(body)-len(m[0])], " ,;—.") + "."
+	}
+	wrapBody(out, used, indent, hlCmds(body))
+	if action == "" {
+		return
+	}
+	// The arrow sits two columns left of the prose it resolves, the same
+	// relationship `jit status` uses between a note and its action.
+	arrowIndent := strings.Repeat(" ", used-2)
+	fmt.Fprint(out, arrowIndent)
+	_, _ = cPath.Fprint(out, "→ ")
+	wrapBody(out, used, arrowIndent+"  ", hlCmds(action))
+}
+
+// findingLabel is the bracketed kind tag that opens a finding line.
+func findingLabel(f checkFinding) string {
+	switch f.Kind {
+	case kindParse:
+		return "[parse]"
+	case kindMissing:
+		return "[missing]"
+	case kindCorrupt:
+		return "[corrupt]"
+	case kindVaultError:
+		return "[vault error]"
+	case kindOrphan:
+		return "[orphan]"
+	case kindShadowed:
+		return "[shadowed]"
+	case kindService:
+		return "[service]"
+	case kindBackup:
+		return "[backup]"
+	case kindWrap:
+		return "[wrap]"
+	default:
+		return ""
+	}
+}
+
 // formatFinding renders one finding as a single human-readable line, tagged
 // by kind. kindMissing keeps its full remediation hint (the fix command by
-// name) — the line users act on most.
+// name) — the line users act on most. writeDoctorFinding is what breaks the
+// result across the window and lifts the fix onto its own arrow line.
 func formatFinding(f checkFinding) string {
 	switch f.Kind {
 	case kindParse:
 		return fmt.Sprintf("[parse] %s", f.Detail)
 	case kindMissing:
+		// Backticks, not escaped double quotes: hlCmds turns them into the
+		// house cyan and drops the delimiters, so this line stops being the
+		// one place doctor prints a command as quoted prose.
 		return fmt.Sprintf(
-			"[missing] profile %q: %s -> %s (not in the vault, run \"jit vault set %s\" to add it, or \"jit migrate <path>\" to convert the file it came from)",
+			"[missing] profile %q: %s -> %s (not in the vault). run `jit vault set %s` to add it, or `jit migrate <path>` to convert the file it came from",
 			f.Profile, f.Variable, f.Path, f.Path)
 	case kindCorrupt:
 		return fmt.Sprintf("[corrupt] profile %q: %s -> %s: %s", f.Profile, f.Variable, f.Path, f.Detail)

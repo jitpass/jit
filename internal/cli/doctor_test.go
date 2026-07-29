@@ -128,7 +128,7 @@ func TestDoctorMissingSecretFailsLoud(t *testing.T) {
 	if !strings.Contains(out, "AWS_ACCESS_KEY_ID") || !strings.Contains(out, "aws/s3-access-key") {
 		t.Errorf("expected the output to name the missing variable and path, got:\n%s", out)
 	}
-	if !strings.Contains(out, "not in the vault") {
+	if !strings.Contains(unwrap(out), "not in the vault") {
 		t.Errorf("expected an explicit missing-from-vault reason, got:\n%s", out)
 	}
 	if !strings.Contains(out, "jit vault set aws/s3-access-key") {

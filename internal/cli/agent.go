@@ -28,6 +28,7 @@ import (
 	"github.com/jitpass/jit/internal/consent"
 	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/screenlock"
+	"github.com/jitpass/jit/internal/termtext"
 )
 
 // The agent releases each fetcher's cached MEK as soon as it has copied the
@@ -349,7 +350,7 @@ var serviceTTLCmd = &cobra.Command{
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "Session TTL set to %s. The background service restarted, so the next vault use prompts Touch ID once.\n", d)
 		if !running {
-			fmt.Fprintln(cmd.OutOrStdout(), "It's still starting up in the background; give `jit service status` a few seconds.")
+			fmt.Fprintln(cmd.OutOrStdout(), hlCmds("It's still starting up in the background; give `jit service status` a few seconds."))
 		}
 		return nil
 	},
@@ -435,7 +436,7 @@ var serviceConsentCmd = &cobra.Command{
 			if configuredAgentConsent() {
 				fmt.Fprintln(cmd.OutOrStdout(), "Per-process credential consent is ON.")
 			} else {
-				fmt.Fprintln(cmd.OutOrStdout(), "Per-process credential consent is OFF. Turn it on with `jit service consent on`.")
+				fmt.Fprintln(cmd.OutOrStdout(), hlCmds("Per-process credential consent is OFF. Turn it on with `jit service consent on`."))
 			}
 			return nil
 		}
@@ -663,7 +664,7 @@ var agentRestartCmd = &cobra.Command{
 				return fmt.Errorf("jit service restart: %w", ierr)
 			}
 			if !waitForAgentSocket(root, 5*time.Second) {
-				fmt.Fprintln(cmd.OutOrStdout(), "Started the background service; it's still coming up, give `jit service status` a few seconds.")
+				fmt.Fprintln(cmd.OutOrStdout(), hlCmds("Started the background service; it's still coming up, give `jit service status` a few seconds."))
 				return nil
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "Started the background service. The next vault use will prompt Touch ID.")
@@ -690,7 +691,7 @@ var agentRestartCmd = &cobra.Command{
 		// process is actually answering, or status contradicts us moments
 		// later.
 		if !waitForAgentSocket(root, 5*time.Second) {
-			fmt.Fprintln(cmd.OutOrStdout(), "Restart requested, the service is still starting up in the background; give `jit service status` a few seconds.")
+			fmt.Fprintln(cmd.OutOrStdout(), hlCmds("Restart requested, the service is still starting up in the background; give `jit service status` a few seconds."))
 			return nil
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "Restarted, the service is now running the current binary. The next vault use will prompt Touch ID.")
@@ -728,7 +729,7 @@ var unlockCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit unlock: %w", notRunningHint(err))
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Unlocked, locks automatically after %s of inactivity (or `jit lock` sooner).\n", remaining.Round(time.Second))
+		fmt.Fprint(cmd.OutOrStdout(), hlCmds(fmt.Sprintf("Unlocked, locks automatically after %s of inactivity (or `jit lock` sooner).\n", remaining.Round(time.Second))))
 		return nil
 	},
 }
@@ -862,6 +863,12 @@ var agentStatusCmd = &cobra.Command{
 var agentLogLines int
 var agentLogFollow bool
 
+// agentLogRaw prints the log file's bytes exactly as written, skipping the
+// human rendering. The formatted view drops repeated prefixes and shortens
+// paths, which is what makes it readable and also what would break a grep or
+// a pasted bug report — so the untouched bytes stay one flag away.
+var agentLogRaw bool
+
 // agentLogPollInterval paces --follow's growth checks — comfortably
 // under a human's "is it live?" threshold without hammering stat.
 const agentLogPollInterval = 500 * time.Millisecond
@@ -903,7 +910,7 @@ var agentLogCmd = &cobra.Command{
 			fmt.Fprint(out, hlCmds(fmt.Sprintf("No service log yet at %s, it's written once the service runs; it starts on its own the first time you use jit, or run `jit service restart`.\n", displayLogPath(logPath))))
 			return nil
 		}
-		_, _ = out.Write(tailLines(data, agentLogLines))
+		writeAgentLogTail(out, tailLines(data, agentLogLines))
 
 		if !agentLogFollow {
 			return nil
@@ -938,12 +945,31 @@ var agentLogCmd = &cobra.Command{
 				continue
 			}
 			if _, err := f.Seek(offset, io.SeekStart); err == nil {
-				n, _ := io.Copy(out, f)
-				offset += n
+				// --follow renders each appended chunk through the same
+				// formatter as the initial tail, so a live stream and a
+				// static read look identical rather than the stream
+				// reverting to raw lines partway down the screen.
+				chunk, _ := io.ReadAll(f)
+				writeAgentLogTail(out, chunk)
+				offset += int64(len(chunk))
 			}
 			_ = f.Close()
 		}
 	},
+}
+
+// writeAgentLogTail prints a slice of the log, formatted for reading unless
+// --raw asked for the bytes as written.
+func writeAgentLogTail(out io.Writer, data []byte) {
+	if agentLogRaw {
+		_, _ = out.Write(data)
+		return
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = ""
+	}
+	writeAgentLog(out, data, home)
 }
 
 // tailLines returns the last n lines of data, newline-terminated — the
@@ -973,7 +999,12 @@ func displayLogPath(logPath string) string {
 // (`jit run --profile mcp-jamf`) in the middle of the wreckage. The full,
 // untruncated command stays in --format json, which is where a script (or a
 // human who genuinely wants the child's arguments) should be looking.
-const maxCommandLen = 72
+// It is derived from the window rather than fixed: 72 was chosen for an
+// 80-column terminal, and in a 50-column one it produces exactly the
+// double-wrapped wreckage it was added to prevent.
+func maxCommandLen() int {
+	return max(32, termtext.Width()-8)
+}
 
 // shortenCommand makes a kernel-reported command line fit a status line:
 // $HOME collapses to ~ (the same courtesy printMountStatuses already extends
@@ -984,11 +1015,7 @@ func shortenCommand(home, cmd string) string {
 	if home != "" {
 		cmd = strings.ReplaceAll(cmd, home+"/", "~/")
 	}
-	r := []rune(cmd)
-	if len(r) <= maxCommandLen {
-		return cmd
-	}
-	return string(r[:maxCommandLen-1]) + "…"
+	return termtext.TruncTail(cmd, maxCommandLen())
 }
 
 // printPendingUnlock names the Touch ID/passcode prompt that is on the
@@ -1573,6 +1600,7 @@ func init() {
 	agentStatusCmd.Flags().StringVar(&agentStatusFormat, "format", "text", `output format: "text" (default) or "json"`)
 	agentLogCmd.Flags().IntVarP(&agentLogLines, "lines", "n", 50, "how many trailing lines to print")
 	agentLogCmd.Flags().BoolVarP(&agentLogFollow, "follow", "f", false, "keep printing new lines as the service writes them (Ctrl-C to stop)")
+	agentLogCmd.Flags().BoolVar(&agentLogRaw, "raw", false, "print the log file's bytes exactly as written, without the formatted view")
 	serviceCmd.AddCommand(agentRunCmd, serviceTTLCmd, serviceConsentCmd, agentRestartCmd, agentStatusCmd, agentLogCmd)
 
 	// The old plist's `agent run --ttl <d>` needs the same --ttl flag bound to

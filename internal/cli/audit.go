@@ -262,7 +262,7 @@ var auditCmd = &cobra.Command{
 	Args:         cobra.NoArgs,
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := validateOutputFormat(auditFormat); err != nil {
+		if err := validateAuditOutputFormat(auditFormat); err != nil {
 			return fmt.Errorf("jit audit: %w", err)
 		}
 		if auditFollow && auditFormat == "json" {
@@ -325,6 +325,15 @@ type auditEntry struct {
 	labels []string // caller-reported secret names an auth event touched
 	match  string   // uncolored logfmt line, for --grep and content matching
 	line   string   // display line, may carry ANSI color
+
+	// The fields below drive the human report. They hold the same facts the
+	// logfmt line encodes, kept apart so the report can lay them out in
+	// columns instead of re-parsing its own output: subject is what happened
+	// (the command, or "session unlocked"), detail an error or note that
+	// belongs under it, and action a fix the reader can run.
+	subject string
+	detail  string
+	action  string
 }
 
 // printAuditLog merges command records and auth events into one reverse-
@@ -336,11 +345,7 @@ func printAuditLog(w io.Writer, commands []auditlog.Record, events []agent.Sessi
 	home, _ := os.UserHomeDir()
 	entries := buildEntries(home, commands, events, filter)
 	if len(entries) == 0 {
-		if filter.active() {
-			fmt.Fprintln(w, "No audit entries match those filters.")
-		} else {
-			fmt.Fprintln(w, "No audit log yet. It fills in as you run jit commands; if the service has never run, there are no unlocks to show either.")
-		}
+		printAuditEmpty(w, filter.active())
 		return
 	}
 	// Newest first. Stable so that a command and the unlock it triggered, which
@@ -350,9 +355,13 @@ func printAuditLog(w io.Writer, commands []auditlog.Record, events []agent.Sessi
 		entries = entries[:limit]
 	}
 
-	for _, e := range entries {
-		fmt.Fprintln(w, e.line)
+	if auditFormat == "logfmt" {
+		for _, e := range entries {
+			fmt.Fprintln(w, e.line)
+		}
+		return
 	}
+	printAuditReport(w, entries, filter.active())
 }
 
 // buildEntries renders every command and event that survives the filter into a
@@ -419,8 +428,13 @@ func followAuditLog(ctx context.Context, w io.Writer, root string, commands []au
 	if limit > 0 && len(entries) > limit {
 		entries = entries[len(entries)-limit:]
 	}
+	// --follow streams a timeline that has no end, so it can't precompute
+	// columns over entries it hasn't seen. It sizes them from the opening
+	// tail and holds them steady, which is what keeps a live feed's columns
+	// from jumping every time a longer command scrolls past.
+	cols := auditFollowColumns(entries)
 	for _, e := range entries {
-		fmt.Fprintln(w, e.line)
+		writeAuditFollowRow(w, e, cols)
 	}
 
 	auditPath := filepath.Join(root, auditlog.FileName)
@@ -463,7 +477,7 @@ func followAuditLog(ctx context.Context, w io.Writer, root string, commands []au
 		// two lines sharing a whole second keep their append order.
 		sort.SliceStable(fresh, func(i, j int) bool { return fresh[i].t.Before(fresh[j].t) })
 		for _, e := range fresh {
-			fmt.Fprintln(w, e.line)
+			writeAuditFollowRow(w, e, cols)
 		}
 	}
 }
@@ -642,16 +656,45 @@ func commandEntry(r auditlog.Record) auditEntry {
 	if !r.Success {
 		line = color.New(color.FgRed).Sprint(plain)
 	}
+	detail, action := splitAuditError(r.Error)
 	return auditEntry{
-		t:      t,
-		kind:   "cmd",
-		status: status,
-		user:   r.User,
-		parent: launcher(r.LaunchedBy, r.Parent),
-		match:  plain,
-		line:   line,
+		t:       t,
+		kind:    "cmd",
+		status:  status,
+		user:    r.User,
+		parent:  launcher(r.LaunchedBy, r.Parent),
+		match:   plain,
+		line:    line,
+		subject: invocation,
+		detail:  detail,
+		action:  action,
 	}
 }
+
+// auditFixRe lifts a suggested command out of an error message. jit's errors
+// end with "run `some command` to ..." by convention, which in logfmt is
+// buried mid-value inside a quoted string — on the report it becomes the
+// arrow line, the last thing on screen because it is the thing to type.
+var auditFixRe = regexp.MustCompile("(?i)(?:[,;—-]|\\.)?\\s*run `([^`]+)`")
+
+// splitAuditError separates an error into the sentence that says what went
+// wrong and the command that might fix it. The command's own prefix
+// ("jit clisso-capture: ") goes too — the row above already names it.
+func splitAuditError(err string) (detail, action string) {
+	if err == "" {
+		return "", ""
+	}
+	detail = auditCmdPrefixRe.ReplaceAllString(err, "")
+	if m := auditFixRe.FindStringSubmatchIndex(detail); m != nil {
+		action = detail[m[2]:m[3]]
+		detail = strings.TrimRight(detail[:m[0]], " ,;—-.")
+	}
+	return detail, action
+}
+
+// auditCmdPrefixRe strips the "jit <subcommand>: " an error carries so it can
+// stand alone as a message; the row it hangs under already names the command.
+var auditCmdPrefixRe = regexp.MustCompile(`^jit [a-z-]+(?: [a-z-]+)?: `)
 
 // authEntry renders one agent session event (unlock, denial, use, lock, or
 // agent start) as a logfmt line, on an absolute-time axis and surfacing the
@@ -663,6 +706,10 @@ func authEntry(home string, e agent.SessionEvent) auditEntry {
 	// kind/status mirror the logfmt tokens this line renders, so the filters
 	// test against exactly what the user greps.
 	var kind, status string
+	// subject/detail are the human report's fields; the logfmt pairs above
+	// stay the machine form. Both are built in one pass so the two views can
+	// never describe the same event differently.
+	var subject, detail string
 
 	switch e.Kind {
 	case agent.KindLock:
@@ -672,9 +719,11 @@ func authEntry(home string, e agent.SessionEvent) auditEntry {
 			cause = "unknown"
 		}
 		pairs = append(pairs, kv{"level", "info"}, kv{"kind", "lock"}, kv{"reason", cause})
+		subject = "session locked (" + cause + ")"
 	case agent.KindStart:
 		kind = "service"
 		pairs = append(pairs, kv{"level", "info"}, kv{"kind", "service"}, kv{"msg", "process started"})
+		subject = "service process started"
 		if b := strings.TrimPrefix(e.Cause, "build "); b != e.Cause {
 			pairs = append(pairs, kv{"build", b})
 		} else if e.Cause != "" {
@@ -685,6 +734,8 @@ func authEntry(home string, e agent.SessionEvent) auditEntry {
 		pairs = append(pairs,
 			kv{"level", "warn"}, kv{"kind", "unlock"}, kv{"status", "denied"},
 			kv{"method", authMethodSlug(e)})
+		subject = "unlock DENIED (" + authMethodLabel(e) + ")"
+		detail = e.Cause
 		if e.Cause != "" {
 			pairs = append(pairs, kv{"reason", e.Cause})
 		}
@@ -700,6 +751,8 @@ func authEntry(home string, e agent.SessionEvent) auditEntry {
 		pairs = append(pairs,
 			kv{"level", "info"}, kv{"kind", "grant"}, kv{"status", "approved"},
 			kv{"method", authMethodSlug(e)})
+		subject = "grant approved (" + authMethodLabel(e) + ")"
+		detail = e.Cause
 		if e.Cause != "" {
 			pairs = append(pairs, kv{"reason", e.Cause})
 		}
@@ -707,6 +760,10 @@ func authEntry(home string, e agent.SessionEvent) auditEntry {
 	case agent.KindUse:
 		kind = "use"
 		pairs = append(pairs, kv{"level", "info"}, kv{"kind", "use"}, kv{"op", agent.DescribeUse(e.Op)})
+		subject = agent.DescribeUse(e.Op)
+		if e.Count > 1 {
+			subject = fmt.Sprintf("%s ×%d", subject, e.Count)
+		}
 		if e.Count > 1 {
 			pairs = append(pairs, kv{"count", strconv.FormatInt(e.Count, 10)})
 		}
@@ -720,6 +777,11 @@ func authEntry(home string, e agent.SessionEvent) auditEntry {
 		// investigation scans for.
 		kind = "error"
 		pairs = append(pairs, kv{"level", "error"}, kv{"kind", "error"})
+		subject = "service refused a request"
+		if e.Op != "" {
+			subject = "service refused: " + e.Op
+		}
+		detail = e.Cause
 		if e.Op != "" {
 			pairs = append(pairs, kv{"op", e.Op})
 		}
@@ -740,6 +802,7 @@ func authEntry(home string, e agent.SessionEvent) auditEntry {
 		pairs = append(pairs,
 			kv{"level", "info"}, kv{"kind", "unlock"}, kv{"status", "ok"},
 			kv{"method", authMethodSlug(e)})
+		subject = "session unlocked (" + authMethodLabel(e) + ")"
 		pairs = appendAuthContext(pairs, home, e)
 	}
 
@@ -749,13 +812,29 @@ func authEntry(home string, e agent.SessionEvent) auditEntry {
 		line = lineColor.Sprint(plain)
 	}
 	return auditEntry{
-		t:      t,
-		kind:   kind,
-		status: status,
-		parent: e.LaunchedBy,
-		labels: e.Labels,
-		match:  plain,
-		line:   line,
+		t:       t,
+		kind:    kind,
+		status:  status,
+		parent:  e.LaunchedBy,
+		labels:  e.Labels,
+		match:   plain,
+		line:    line,
+		subject: subject,
+		detail:  detail,
+	}
+}
+
+// authMethodLabel names the local-auth method the way the dialog does, for
+// the human report; authMethodSlug keeps the stable token logfmt and --grep
+// match against.
+func authMethodLabel(e agent.SessionEvent) string {
+	switch authMethodSlug(e) {
+	case "touchid-or-passcode":
+		return "Touch ID"
+	case "passcode":
+		return "passcode"
+	default:
+		return authMethodSlug(e)
 	}
 }
 
@@ -809,7 +888,7 @@ func authMethodSlug(e agent.SessionEvent) string {
 }
 
 func init() {
-	auditCmd.Flags().StringVar(&auditFormat, "format", "text", `output format: "text" (default) or "json"`)
+	auditCmd.Flags().StringVar(&auditFormat, "format", "text", `output format: "text" (default), "logfmt" (one key=value line per event), or "json"`)
 	auditCmd.Flags().IntVar(&auditLimit, "limit", 50, "show at most this many recent matching entries (0 for all)")
 	auditCmd.Flags().BoolVarP(&auditFollow, "follow", "f", false, "print the matching tail, then stream new entries live (text only)")
 	auditCmd.Flags().StringSliceVar(&auditKinds, "kind", nil, "only these kinds (comma-separated): cmd, unlock, use, lock, service, error")

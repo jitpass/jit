@@ -72,6 +72,17 @@ func TestCommandEntrySurfacesFreshAuth(t *testing.T) {
 	}
 }
 
+// execAuditLogfmt runs the command in its machine form. The tests that assert
+// key=value tokens are testing the logfmt stream's CONTENT — that both sources
+// merge, that every filter narrows what it claims to — and that stream is now
+// one flag away rather than the default. Naming the format keeps those tests
+// pointed at the thing they were written to check; the default report has its
+// own tests in auditreport_test.go.
+func execAuditLogfmt(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	return execAudit(t, append([]string{"--format", "logfmt"}, args...)...)
+}
+
 func execAudit(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	// The audit flags are package-level vars cobra only overwrites when the
@@ -94,7 +105,7 @@ func TestAuditCommandTextMergesCommandsAndAuth(t *testing.T) {
 	home := withFixtureHome(t)
 	seedAuditFixtures(t, home)
 
-	out, err := execAudit(t)
+	out, err := execAuditLogfmt(t)
 	if err != nil {
 		t.Fatalf("jit audit: %v", err)
 	}
@@ -207,7 +218,7 @@ func TestAuditCommandLimitCapsEntries(t *testing.T) {
 		l.Append(auditlog.Record{UnixNano: int64(i + 1), Command: "jit status", Args: []string{"status"}, User: "alice", Success: true})
 	}
 
-	out, err := execAudit(t, "--limit", "3")
+	out, err := execAuditLogfmt(t, "--limit", "3")
 	if err != nil {
 		t.Fatalf("jit audit --limit: %v", err)
 	}
@@ -238,7 +249,7 @@ func TestAuditFilterByKind(t *testing.T) {
 	home := withFixtureHome(t)
 	seedAuditFixtures(t, home)
 
-	out, err := execAudit(t, "--kind", "unlock")
+	out, err := execAuditLogfmt(t, "--kind", "unlock")
 	if err != nil {
 		t.Fatalf("jit audit --kind: %v", err)
 	}
@@ -255,7 +266,7 @@ func TestAuditFilterByStatusDenied(t *testing.T) {
 	seedAuditFixtures(t, home)
 	seedDeniedAndError(t, home)
 
-	out, err := execAudit(t, "--status", "denied")
+	out, err := execAuditLogfmt(t, "--status", "denied")
 	if err != nil {
 		t.Fatalf("jit audit --status: %v", err)
 	}
@@ -271,7 +282,7 @@ func TestAuditFilterBySecret(t *testing.T) {
 	home := withFixtureHome(t)
 	seedAuditFixtures(t, home)
 
-	out, err := execAudit(t, "--secret", "stripe")
+	out, err := execAuditLogfmt(t, "--secret", "stripe")
 	if err != nil {
 		t.Fatalf("jit audit --secret: %v", err)
 	}
@@ -290,7 +301,7 @@ func TestAuditFilterByParent(t *testing.T) {
 	seedDeniedAndError(t, home)
 
 	// Only the error event was launched by bash; the rest are claude.
-	out, err := execAudit(t, "--parent", "bash")
+	out, err := execAuditLogfmt(t, "--parent", "bash")
 	if err != nil {
 		t.Fatalf("jit audit --parent: %v", err)
 	}
@@ -306,7 +317,7 @@ func TestAuditFilterByGrep(t *testing.T) {
 	home := withFixtureHome(t)
 	seedAuditFixtures(t, home)
 
-	out, err := execAudit(t, "--grep", "method=touchid")
+	out, err := execAuditLogfmt(t, "--grep", "method=touchid")
 	if err != nil {
 		t.Fatalf("jit audit --grep: %v", err)
 	}
@@ -324,7 +335,7 @@ func TestAuditRendersRejectedPeer(t *testing.T) {
 	home := withFixtureHome(t)
 	seedDeniedAndError(t, home)
 
-	out, err := execAudit(t)
+	out, err := execAuditLogfmt(t)
 	if err != nil {
 		t.Fatalf("jit audit: %v", err)
 	}
@@ -438,11 +449,22 @@ func TestFollowPrintsInitialTail(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	var buf bytes.Buffer
-	if err := followAuditLog(ctx, &buf, root, commands, events, auditFilter{}, 50); err != nil {
-		t.Fatalf("followAuditLog: %v", err)
+
+	// Both output shapes, because --follow renders through the same switch
+	// the static view does: the report by default, logfmt when asked. A tail
+	// that appeared in only one of them would be a blank screen in the other.
+	for _, tc := range []struct{ format, want string }{
+		{"text", "session unlocked"},
+		{"logfmt", "kind=unlock"},
+	} {
+		auditFormat = tc.format
+		var buf bytes.Buffer
+		if err := followAuditLog(ctx, &buf, root, commands, events, auditFilter{}, 50); err != nil {
+			t.Fatalf("followAuditLog(%s): %v", tc.format, err)
+		}
+		if !strings.Contains(buf.String(), tc.want) {
+			t.Errorf("--format %s printed no initial tail, want %q, got:\n%s", tc.format, tc.want, buf.String())
+		}
 	}
-	if !strings.Contains(buf.String(), "kind=unlock") {
-		t.Errorf("follow printed no initial tail, got:\n%s", buf.String())
-	}
+	auditFormat = "text"
 }

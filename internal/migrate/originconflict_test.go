@@ -107,3 +107,26 @@ func TestStoreAWSSessionRecordsAStableOrigin(t *testing.T) {
 		t.Errorf("Class = %q, want %q — internal/consent gates on that exact string", info.Class, vault.ClassAWS)
 	}
 }
+
+func TestReplacingNoteKeepsTheCommandWhole(t *testing.T) {
+	// The prose is one unbroken line for the cli layer to wrap at the real
+	// terminal width; the recovery command comes back separately so it can
+	// have its own line. Wrapping breaks on spaces, and a `jit vault
+	// history …` folded mid-phrase is one the reader has to reassemble
+	// before they can run it.
+	c := OriginConflict{Path: "aws-prod/SECRET_ACCESS_KEY", Origin: "~/.aws/credentials"}
+	prose, command := c.ReplacingNote()
+
+	if strings.Contains(prose, "\n") {
+		t.Errorf("prose must be one unwrapped line, got:\n%s", prose)
+	}
+	if strings.Contains(prose, "jit vault history") {
+		t.Errorf("the command must not be inside the wrappable prose, got:\n%s", prose)
+	}
+	if command != "`jit vault history aws-prod/SECRET_ACCESS_KEY`" {
+		t.Errorf("command = %q, want the backticked recovery command (hlCmds strips the backticks)", command)
+	}
+	if !strings.Contains(prose, "aws-prod/SECRET_ACCESS_KEY") || !strings.Contains(prose, "~/.aws/credentials") {
+		t.Errorf("prose must name both the path and where the old value came from, got:\n%s", prose)
+	}
+}

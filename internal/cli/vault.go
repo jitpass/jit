@@ -27,6 +27,7 @@ import (
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/pasteboard"
 	"github.com/jitpass/jit/internal/profile"
+	"github.com/jitpass/jit/internal/termtext"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -161,13 +162,13 @@ func printVaultList(out io.Writer, secrets, backups []string, showBackups, group
 	case len(backups) == 0:
 		fmt.Fprintf(out, "\n%d %s stored.\n", len(secrets), secretsWord)
 	case len(secrets) == 0 && showBackups:
-		fmt.Fprintf(out, "\nNo secrets stored yet, %d encrypted file %s kept for `jit migrate undo`.\n", len(backups), backupsWord)
+		writeVaultFooter(out, true, hlCmds(fmt.Sprintf("No secrets stored yet, %d encrypted file %s kept for `jit migrate undo`.", len(backups), backupsWord)))
 	case len(secrets) == 0:
-		fmt.Fprintf(out, "No secrets stored yet, %d encrypted file %s kept for `jit migrate undo` (list with --all).\n", len(backups), backupsWord)
+		writeVaultFooter(out, false, hlCmds(fmt.Sprintf("No secrets stored yet, %d encrypted file %s kept for `jit migrate undo` (list with --all).", len(backups), backupsWord)))
 	case showBackups:
-		fmt.Fprintf(out, "\n%d %s stored, plus %d encrypted file %s kept for `jit migrate undo`.\n", len(secrets), secretsWord, len(backups), backupsWord)
+		writeVaultFooter(out, true, hlCmds(fmt.Sprintf("%d %s stored, plus %d encrypted file %s kept for `jit migrate undo`.", len(secrets), secretsWord, len(backups), backupsWord)))
 	default:
-		fmt.Fprintf(out, "\n%d %s stored, plus %d encrypted file %s kept for `jit migrate undo` (list with --all).\n", len(secrets), secretsWord, len(backups), backupsWord)
+		writeVaultFooter(out, true, hlCmds(fmt.Sprintf("%d %s stored, plus %d encrypted file %s kept for `jit migrate undo` (list with --all).", len(secrets), secretsWord, len(backups), backupsWord)))
 	}
 	// Duplicate-group nudge only decorates the default terminal view — a
 	// piped/grep listing (grouped == false) and the provenance axes stay
@@ -644,6 +645,17 @@ var vaultGetCmd = &cobra.Command{
 	},
 }
 
+// writeVaultFooter prints the listing's closing count line, wrapped to the
+// window. It was the one line in `jit vault list` still emitted at its
+// natural length — 94 columns on this machine, which a 72-column window broke
+// mid-sentence.
+func writeVaultFooter(out io.Writer, leadingBlank bool, body string) {
+	if leadingBlank {
+		fmt.Fprintln(out)
+	}
+	termtext.Wrap(out, 0, "", body)
+}
+
 // printVaultGetFooter follows a successful `jit vault get` with one faint
 // metadata line: last-updated age, the profile(s) whose manifests
 // reference the secret, and the config file recorded as its source (the
@@ -952,7 +964,7 @@ var vaultRestoreCmd = &cobra.Command{
 		if err := v.Restore(args[0], vaultRestoreStamp); err != nil {
 			return fmt.Errorf("jit vault restore: %w", err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Restored %s. The value it replaced is archived, `jit vault history %s`.\n", args[0], args[0])
+		fmt.Fprint(cmd.OutOrStdout(), hlCmds(fmt.Sprintf("Restored %s. The value it replaced is archived, `jit vault history %s`.\n", args[0], args[0])))
 		return nil
 	},
 }
@@ -1015,7 +1027,7 @@ var vaultExportCmd = &cobra.Command{
 		// only feeds `jit status`'s backup nudge — a failure here must
 		// not make a successful export report as failed.
 		if err := vault.RecordExport(v.Root); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: recording export time for `jit status`: %v\n", err)
+			fmt.Fprint(cmd.ErrOrStderr(), hlCmds(fmt.Sprintf("warning: recording export time for `jit status`: %v\n", err)))
 		}
 
 		fmt.Fprintf(cmd.OutOrStdout(), "Exported %s to %s.\n", countWord(len(paths), "secret", "secrets"), destPath)
@@ -1257,7 +1269,7 @@ var vaultCleanCmd = &cobra.Command{
 		if err := os.Remove(migrate.BackupIndexPath(root)); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("jit vault clean: removing the undo index: %w", err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Deleted %s. The vault itself is still set up, `jit vault set` works immediately.\n", countWord(len(paths), "secret", "secrets"))
+		fmt.Fprint(cmd.OutOrStdout(), hlCmds(fmt.Sprintf("Deleted %s. The vault itself is still set up, `jit vault set` works immediately.\n", countWord(len(paths), "secret", "secrets"))))
 		return nil
 	},
 }
@@ -1323,7 +1335,7 @@ var vaultPruneCmd = &cobra.Command{
 			return nil
 		}
 
-		fmt.Fprintf(out, "Pruning %s, each file's newest backup is kept, so `jit migrate undo` still works:\n", countWord(len(stale), "stale backup", "stale backups"))
+		fmt.Fprint(out, hlCmds(fmt.Sprintf("Pruning %s, each file's newest backup is kept, so `jit migrate undo` still works:\n", countWord(len(stale), "stale backup", "stale backups"))))
 		for _, r := range stale {
 			fmt.Fprintf(out, "  • %s (%s, backed up %s ago)\n", r.VaultPath, displayPath(home, r.OriginalPath), humanAgo(time.Since(time.Unix(r.UnixTS, 0))))
 		}
@@ -1349,7 +1361,7 @@ var vaultPruneCmd = &cobra.Command{
 		if err := migrate.DropBackupRecords(root, stale); err != nil {
 			return fmt.Errorf("jit vault prune: %w", err)
 		}
-		fmt.Fprintf(out, "Pruned %s. %s %s newest backup for `jit migrate undo`.\n", countWord(len(stale), "stale backup", "stale backups"), countWord(len(keep), "file", "files"), pluralWord(len(keep), "keeps its", "keep their"))
+		fmt.Fprint(out, hlCmds(fmt.Sprintf("Pruned %s. %s %s newest backup for `jit migrate undo`.\n", countWord(len(stale), "stale backup", "stale backups"), countWord(len(keep), "file", "files"), pluralWord(len(keep), "keeps its", "keep their"))))
 		return nil
 	},
 }
@@ -1657,7 +1669,7 @@ func lockAgentAfterMEKDeletion(root string, w io.Writer) string {
 		return ""
 	}
 	if err := agentClient.Lock(); err != nil {
-		fmt.Fprintf(w, "warning: couldn't lock the running service's cached session, run `jit lock` before using a new vault: %v\n", err)
+		fmt.Fprint(w, hlCmds(fmt.Sprintf("warning: couldn't lock the running service's cached session, run `jit lock` before using a new vault: %v\n", err)))
 		return ""
 	}
 	return "the running service's cached session (locked)"

@@ -99,7 +99,7 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintln(out)
 	if uninstallPurge {
 		fmt.Fprintln(out, "PURGE also deletes your secrets. If you might want them back, run")
-		fmt.Fprintln(out, "`jit vault export <file>` first — there is no other copy on this Mac.")
+		fmt.Fprintln(out, hlCmds("`jit vault export <file>` first — there is no other copy on this Mac."))
 	} else {
 		fmt.Fprintf(out, "Your vault at %s is kept.\n", vaultRoot)
 	}

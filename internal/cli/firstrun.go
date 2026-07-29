@@ -113,7 +113,7 @@ func firstRun(cmd *cobra.Command, d firstRunDeps) error {
 
 	fmt.Fprintln(out, "jit can move these into an encrypted vault gated by Touch ID and rewrite")
 	fmt.Fprintln(out, "the files so your tools keep working. Every change is backed up first and")
-	fmt.Fprintln(out, "reversible with `jit migrate undo`.")
+	fmt.Fprintln(out, hlCmds("reversible with `jit migrate undo`."))
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "Set up jit and fix %s now? This runs, in order:\n", scopeWord)
 	fmt.Fprintln(out, "  1. jit vault init      (creates the vault, one Touch ID prompt)")

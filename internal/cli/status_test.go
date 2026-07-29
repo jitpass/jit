@@ -62,7 +62,7 @@ func TestStatusVaultReportsSecretCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "vault    2 secrets stored") {
+	if !strings.Contains(out, "vault    2 secrets in 2 groups") {
 		t.Errorf("expected a secret count, got:\n%s", out)
 	}
 }
@@ -84,7 +84,7 @@ func TestStatusVaultCountExcludesBackups(t *testing.T) {
 	}
 	// The backticks are hlCmds markup, stripped on the way out (cyan on a
 	// terminal, plain here) — so the assertion must not contain them.
-	if !strings.Contains(out, "vault    2 secrets stored · 2 file backups kept for jit migrate undo") {
+	if !strings.Contains(out, "vault    2 secrets in 2 groups · 2 file backups kept for jit migrate undo") {
 		t.Errorf("expected backups excluded from the secret count and reported separately, got:\n%s", out)
 	}
 }
@@ -100,7 +100,7 @@ func TestStatusVaultOnlyBackups(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "vault    0 secrets stored · 1 file backup kept for jit migrate undo") {
+	if !strings.Contains(out, "vault    0 secrets · 1 file backup kept for jit migrate undo") {
 		t.Errorf("expected a backups-only vault line, got:\n%s", out)
 	}
 	if strings.Contains(out, "no secrets yet") {
@@ -193,7 +193,9 @@ func TestStatusSecretsWiredResolveCleanly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "secrets  1 stored in 1 group") {
+	// The total moved to the vault row; the secrets section now carries only
+	// the reconciliation it is actually about.
+	if !strings.Contains(out, "vault    1 secret in 1 group") {
 		t.Errorf("expected a stored-secret headline, got:\n%s", out)
 	}
 	if !strings.Contains(out, "Wired here") || !strings.Contains(out, "1 group via 1 profile (1 reference), all resolve.") {

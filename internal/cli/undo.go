@@ -123,7 +123,7 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 	// read as "that one file" rather than "nothing to restore anywhere."
 	all := migrate.LatestBackups(recs)
 	if len(all) == 0 {
-		fmt.Fprintln(out, "No jit-written backups are recorded, nothing to restore. (Backups made by builds before `jit migrate undo` existed aren't indexed; see `jit vault list` under _backups/ for those.)")
+		fmt.Fprintln(out, hlCmds("No jit-written backups are recorded, nothing to restore. (Backups made by builds before `jit migrate undo` existed aren't indexed; see `jit vault list` under _backups/ for those.)"))
 		return nil
 	}
 	// args is non-empty (the command requires a path) and all is non-empty,
@@ -327,7 +327,7 @@ func runRestores(out io.Writer, home string, recs []migrate.BackupRecord, restor
 
 	fmt.Fprintln(out)
 	if restored > 0 {
-		fmt.Fprintf(out, "Restored %s. Vault secrets and profile manifests are still there, `jit migrate remove` deletes a project's completely.\n", countWord(restored, "file", "files"))
+		fmt.Fprint(out, hlCmds(fmt.Sprintf("Restored %s. Vault secrets and profile manifests are still there, `jit migrate remove` deletes a project's completely.\n", countWord(restored, "file", "files"))))
 	}
 	if len(failures) > 0 {
 		_, _ = color.New(color.FgYellow).Fprintf(out, "%s could NOT be restored and %s left exactly as %s:\n",

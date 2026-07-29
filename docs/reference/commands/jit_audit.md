@@ -52,7 +52,7 @@ jit audit [flags]
 
 ```
   -f, --follow          print the matching tail, then stream new entries live (text only)
-      --format string   output format: "text" (default) or "json" (default "text")
+      --format string   output format: "text" (default), "logfmt" (one key=value line per event), or "json" (default "text")
       --grep string     only entries whose rendered line matches this regular expression
       --kind strings    only these kinds (comma-separated): cmd, unlock, use, lock, service, error
       --limit int       show at most this many recent matching entries (0 for all) (default 50)
