@@ -227,7 +227,7 @@ func printDuplicateGroupNudge(out io.Writer, secrets []string) {
 	}
 	faint := cDim
 	for _, groups := range dupes {
-		_, _ = faint.Fprintf(out, "note: %s hold the same keys — a re-migrated file? `jit vault rm` the stale copy.\n", strings.Join(groups, ", "))
+		_, _ = faint.Fprint(out, hlCmds(fmt.Sprintf("note: %s hold the same keys, a re-migrated file? `jit vault rm` the stale copy.\n", strings.Join(groups, ", "))))
 	}
 }
 
@@ -944,8 +944,10 @@ var vaultHistoryCmd = &cobra.Command{
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%d  %s\n", hv.ArchiveStamp, line)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "\n%d archived %s. Restore the newest with `jit vault restore %s`, an older one with --version <stamp>.\n",
-			len(versions), pluralWord(len(versions), "version", "versions"), args[0])
+		fmt.Fprintln(cmd.OutOrStdout())
+		wrapBody(cmd.OutOrStdout(), 0, "", hlCmds(fmt.Sprintf("%d archived %s. Restore the newest with `jit vault restore %s`, "+
+			"an older one with --version <stamp>.",
+			len(versions), pluralWord(len(versions), "version", "versions"), args[0])))
 		return nil
 	},
 }

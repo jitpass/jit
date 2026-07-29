@@ -50,6 +50,15 @@ var (
 	cOK   = color.New(color.FgGreen) // healthy / done
 	cWarn = color.New(color.FgYellow)
 	cRisk = color.New(color.FgRed)
+
+	// Bold variants, for the one PRIMARY runnable or completed thing on a
+	// line (rule 3: bold is reserved for that) — the headline action a
+	// report is steering toward, the "done" line that closes a run. They
+	// live here for the same reason as the rest: a compound
+	// color.New(FgCyan, Bold) at a call site hard-codes the hue where a
+	// palette change would never find it.
+	cPathBold = color.New(color.FgCyan, color.Bold)
+	cOKBold   = color.New(color.FgGreen, color.Bold)
 )
 
 // defaultWidth is the fallback line width when stdout isn't a terminal

@@ -654,7 +654,7 @@ func commandEntry(r auditlog.Record) auditEntry {
 	plain := logfmtLine(pairs)
 	line := plain
 	if !r.Success {
-		line = color.New(color.FgRed).Sprint(plain)
+		line = cRisk.Sprint(plain)
 	}
 	detail, action := splitAuditError(r.Error)
 	return auditEntry{
@@ -740,7 +740,7 @@ func authEntry(home string, e agent.SessionEvent) auditEntry {
 			pairs = append(pairs, kv{"reason", e.Cause})
 		}
 		pairs = appendAuthContext(pairs, home, e)
-		lineColor = color.New(color.FgYellow)
+		lineColor = cWarn
 	case agent.KindApproved:
 		// The counterpart to KindDenied: a disclosed challenge — a --with
 		// grant, a per-process consent prompt, a --trust registration — that
@@ -796,7 +796,7 @@ func authEntry(home string, e agent.SessionEvent) auditEntry {
 			pairs = append(pairs, kv{"reason", e.Cause})
 		}
 		pairs = appendAuthContext(pairs, home, e)
-		lineColor = color.New(color.FgYellow)
+		lineColor = cWarn
 	default: // unlock
 		kind, status = "unlock", "ok"
 		pairs = append(pairs,

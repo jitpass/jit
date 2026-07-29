@@ -108,7 +108,9 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
 		fmt.Fprintf(out, "Wrapped %s (%s):\n  shim  %s\n", tool, entry.Doc, res.ShimPath)
-		fmt.Fprintf(out, "From now on `%s get <app>` stores the minted credentials in the vault\n(profile aws-<app>, served via credential_process) instead of writing\n~/.aws/credentials; your MFA prompts appear exactly as before.\n", tool)
+		wrapBody(out, 0, "", hlCmds(fmt.Sprintf("From now on `%s get <app>` stores the minted credentials in the vault "+
+			"(profile aws-<app>, served via credential_process) instead of writing ~/.aws/credentials; "+
+			"your MFA prompts appear exactly as before.", tool)))
 
 		// The tool's own long-lived secret moves too: clisso keeps a
 		// OneLogin client-secret in ~/.clisso.yaml, and the shim serves
@@ -129,8 +131,9 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 				return fmt.Errorf("jit wrap: %w", err)
 			}
 			for _, p := range mig.Providers {
-				fmt.Fprintf(out, "Moved provider %q's client-secret into the vault (%s); %s now\nholds a pointer (original backed up encrypted, `jit migrate undo` restores it).\n",
-					p, migrate.ClissoVaultPath(p), mig.ConfigPath)
+				wrapBody(out, 0, "", hlCmds(fmt.Sprintf("Moved provider %q's client-secret into the vault (%s); %s now holds a pointer "+
+					"(original backed up encrypted, `jit migrate undo` restores it).",
+					p, migrate.ClissoVaultPath(p), mig.ConfigPath)))
 			}
 			for _, p := range mig.Skipped {
 				fmt.Fprintf(out, "Provider %q has a name that can't map to a vault path; its client-secret\nwas left in place.\n", p)
@@ -140,7 +143,7 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
 		if entry.VerifyHint != "" {
-			fmt.Fprintf(out, "Check it: open a new shell and run `%s`.\n", entry.VerifyHint)
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("Check it: open a new shell and run `%s`.\n", entry.VerifyHint)))
 		}
 		return nil
 	}
@@ -183,8 +186,9 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 			fmt.Fprintf(out, "Exported the %s from the tool's own keyring, copied into the vault at %s.\n", entry.Doc, vaultPath)
 		}
 	} else {
-		fmt.Fprintf(out, "No %s found on this machine, store it first:\n  jit vault set %s\nthen re-run `jit wrap %s`. Installing the shim and profile now anyway.\n",
-			entry.Doc, vaultPath, tool)
+		wrapBody(out, 0, "", hlCmds(fmt.Sprintf("No %s found on this machine, store it first: `jit vault set %s`, "+
+			"then re-run `jit wrap %s`. Installing the shim and profile now anyway.",
+			entry.Doc, vaultPath, tool)))
 	}
 
 	exe, err := os.Executable()
@@ -220,15 +224,16 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 		if err := wrap.ScrubToken(home, *discovery.Source, discovery.Value); err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
-		fmt.Fprintf(out, "Scrubbed the plaintext from %s (original backed up encrypted, `jit migrate undo %s` restores it byte-for-byte).\n",
-			discovery.Source.Path, srcPath)
+		wrapBody(out, 0, "", hlCmds(fmt.Sprintf("Scrubbed the plaintext from %s (original backed up encrypted, "+
+			"`jit migrate undo %s` restores it byte-for-byte).",
+			discovery.Source.Path, srcPath)))
 	}
 
 	if err := ensureShimOnPath(cmd, home, tool); err != nil {
 		return fmt.Errorf("jit wrap: %w", err)
 	}
 	if entry.VerifyHint != "" {
-		fmt.Fprintf(out, "Check it: open a new shell and run `%s`.\n", entry.VerifyHint)
+		fmt.Fprint(out, hlCmds(fmt.Sprintf("Check it: open a new shell and run `%s`.\n", entry.VerifyHint)))
 	}
 	return nil
 }
@@ -319,7 +324,7 @@ func ensureShimOnPath(cmd *cobra.Command, home, tool string) error {
 	}
 	if changed {
 		fmt.Fprintf(out, "Added to %s: %s\n", rc, wrap.PathLine())
-		fmt.Fprintf(out, "Open a new shell (or run `%s` in this one) and %s is wrapped.\n", wrap.PathLine(), tool)
+		fmt.Fprint(out, hlCmds(fmt.Sprintf("Open a new shell (or run `%s` in this one) and %s is wrapped.\n", wrap.PathLine(), tool)))
 	} else {
 		fmt.Fprintf(out, "%s is wrapped for new shells (shim PATH line already present).\n", tool)
 	}

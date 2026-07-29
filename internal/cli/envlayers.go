@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	"github.com/jitpass/jit/internal/mount"
@@ -357,7 +356,7 @@ func resolveInjectionProfile(cmdName, cwd, explicit, mode string, w io.Writer) (
 			cmdName, strings.Join(fileNames, ", "), strings.Join(profileNames, ", "), where)
 	}
 	if missing := unmigratedSiblingLayers(dir, mode, layers); len(missing) > 0 {
-		_, _ = color.New(color.FgYellow).Fprintf(w, "%s: note: %s in %s not migrated, not merged, and injected variables shadow it for most dotenv loaders (fix: jit migrate %s)\n",
+		_, _ = cWarn.Fprintf(w, "%s: note: %s in %s not migrated, not merged, and injected variables shadow it for most dotenv loaders (fix: jit migrate %s)\n",
 			cmdName, strings.Join(missing, ", "), displayPath(home, dir), displayPath(home, dir))
 	}
 	return profile.Overlay(merged...), grantMounts, nil
