@@ -127,3 +127,47 @@ func TestClissoCaptureAppSelectedAppFallback(t *testing.T) {
 		t.Errorf("expected passthrough with no app, got (%q, %v)", app, ok)
 	}
 }
+
+func TestClissoMutatesConfig(t *testing.T) {
+	// The families whose subcommands call viper.WriteConfig in clisso —
+	// after these run, ~/.clisso.yaml may hold a fresh plaintext secret
+	// that the reconcile has to move into the vault.
+	for _, args := range [][]string{
+		{"apps", "create", "onelogin"},
+		{"providers", "create", "onelogin"},
+		{"providers", "passwd", "acme"},
+		{"cp", "add"},
+	} {
+		if !clissoMutatesConfig(args) {
+			t.Errorf("clissoMutatesConfig(%v) = false, want true", args)
+		}
+	}
+	for _, args := range [][]string{
+		{"get", "prod"},
+		{"status"},
+		{"completion", "zsh"},
+		nil,
+	} {
+		if clissoMutatesConfig(args) {
+			t.Errorf("clissoMutatesConfig(%v) = true, want false", args)
+		}
+	}
+}
+
+func TestClissoHasConfigFlag(t *testing.T) {
+	// A user-passed -c is their own arrangement; the shim must not
+	// override it with its own served config.
+	for _, args := range [][]string{
+		{"get", "-c", "/tmp/other.yaml"},
+		{"get", "--config", "/tmp/other.yaml"},
+		{"get", "--config=/tmp/other.yaml"},
+		{"get", "-c=/tmp/other.yaml"},
+	} {
+		if !clissoHasConfigFlag(args) {
+			t.Errorf("clissoHasConfigFlag(%v) = false, want true", args)
+		}
+	}
+	if clissoHasConfigFlag([]string{"get", "prod", "--cache-enable"}) {
+		t.Error("clissoHasConfigFlag matched something that isn't -c/--config")
+	}
+}

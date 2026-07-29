@@ -781,15 +781,17 @@ providers:
 	if f.Severity != SeverityHigh {
 		t.Errorf("severity = %q, want %q", f.Severity, SeverityHigh)
 	}
-	// Manual, via the selfRotatingCaches table: clisso rewrites this file
-	// itself, so jit must not offer a migrate that the tool would fight.
+	// The scanner sets the wrap remedy itself (like every wrappable
+	// finding), and annotateRemedies must respect it — the
+	// selfRotatingCaches entry for this file exists for OTHER findings,
+	// not to override this one.
 	annotateRemedies(findings, home)
 	f = findings[0]
-	if f.Remedy != RemedyManual {
-		t.Errorf("Remedy = %q, want %q", f.Remedy, RemedyManual)
+	if f.Remedy != RemedyWrap {
+		t.Errorf("Remedy = %q, want %q", f.Remedy, RemedyWrap)
 	}
-	if f.FixCommand != "" {
-		t.Errorf("FixCommand = %q, want empty — jit cannot fix a file clisso rewrites", f.FixCommand)
+	if f.FixCommand != "jit wrap clisso" {
+		t.Errorf("FixCommand = %q, want %q", f.FixCommand, "jit wrap clisso")
 	}
 	if !strings.Contains(f.Evidence, "long-lived") {
 		t.Errorf("evidence should say the secret is long-lived, got: %s", f.Evidence)
@@ -804,6 +806,23 @@ func TestScanClissoConfigNotPresent(t *testing.T) {
 	findings, err := scanClissoConfig(Config{HomeDir: home})
 	if err != nil || len(findings) != 0 {
 		t.Errorf("got (%d findings, %v), want (0, nil)", len(findings), err)
+	}
+}
+
+func TestScanClissoConfigPointerIsProtectedNotReported(t *testing.T) {
+	// After `jit wrap clisso` the file holds a jit://vault pointer, not a
+	// secret — reporting it would tell the user their protection is an
+	// exposure.
+	home := t.TempDir()
+	writeFile(t, filepath.Join(home, ".clisso.yaml"), `providers:
+    acme:
+        client-id: abc123
+        client-secret: jit://vault/wrap-clisso/acme-client-secret
+        type: onelogin
+`)
+	findings, err := scanClissoConfig(Config{HomeDir: home})
+	if err != nil || len(findings) != 0 {
+		t.Errorf("got (%d findings, %v), want (0, nil) — a pointer is protection, not plaintext", len(findings), err)
 	}
 }
 

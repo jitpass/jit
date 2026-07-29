@@ -87,6 +87,10 @@ before), and stores it in the vault instead:
 |---|---|---|
 | [`clisso`](./clisso.md) | `clisso get`'s own `--output credential_process` JSON | `credential_process` in `~/.aws/config` - never `~/.aws/credentials` |
 
+The same wrap also vaults the tool's own long-lived secret (clisso's
+OneLogin `client-secret`), leaving a `jit://vault/` pointer in
+`~/.clisso.yaml` and serving the real config per run over a pipe.
+
 ## Not in the catalog?
 
 Any tool that reads its credential from an environment variable works even
