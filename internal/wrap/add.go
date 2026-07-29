@@ -169,3 +169,39 @@ func orderedNames(env map[string]string, order []string) []string {
 	}
 	return names
 }
+
+// AddCapture installs a CAPTURE-wrap: a shim that routes the tool through
+// `jit <tool>-capture`, so credentials the tool mints are captured from its
+// own output — in the user's terminal, where the tool's MFA prompts still
+// work — and stored in the vault instead of a plaintext file. Like AddGrant
+// there is no profile: a capture-wrap injects nothing into the tool; it
+// intercepts what comes out.
+func AddCapture(home, tool, jitBinary string) (AddResult, error) {
+	if err := ValidateToolName(tool); err != nil {
+		return AddResult{}, err
+	}
+
+	manifest, err := LoadManifest(home)
+	if err != nil {
+		return AddResult{}, err
+	}
+	// Refuse to clobber a hand-written env profile for this tool that jit
+	// wrap doesn't manage — same guard Add and AddGrant apply.
+	if _, managed := manifest.Tools[tool]; !managed {
+		if profilePath, perr := profile.Path(home, ProfileName(tool)); perr == nil {
+			if _, statErr := os.Stat(profilePath); statErr == nil {
+				return AddResult{}, fmt.Errorf("profile %s already exists at %s but wasn't created by jit wrap, refusing to capture-wrap over it", ProfileName(tool), profilePath)
+			}
+		}
+	}
+
+	shimPath, err := InstallShim(home, jitBinary, tool)
+	if err != nil {
+		return AddResult{}, err
+	}
+	manifest.Tools[tool] = Entry{Capture: tool, AddedAt: time.Now().UTC()}
+	if err := manifest.Save(home); err != nil {
+		return AddResult{}, err
+	}
+	return AddResult{ShimPath: shimPath}, nil
+}

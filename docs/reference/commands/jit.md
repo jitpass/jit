@@ -22,6 +22,7 @@ jit [flags]
 
 * [jit audit](jit_audit.md)	 - Show the audit log: what jit commands ran, when, by whom, and every unlock
 * [jit aws-credential-process](jit_aws-credential-process.md)	 - Print AWS credential_process JSON for a migrated profile
+* [jit clisso-capture](jit_clisso-capture.md)	 - Run clisso, capturing minted AWS credentials into the vault
 * [jit completion](jit_completion.md)	 - Generate the autocompletion script for the specified shell
 * [jit docker-credential](jit_docker-credential.md)	 - Implement Docker's credential-helper protocol for migrated registry logins
 * [jit doctor](jit_doctor.md)	 - One-shot health check: profiles, secrets, service, backup, and wrap shims

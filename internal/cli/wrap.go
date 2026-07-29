@@ -85,6 +85,33 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 		return fmt.Errorf("jit wrap: %s isn't installed (not on PATH), install it first", tool)
 	}
 
+	// Capture tools mint credentials rather than carrying one, so there is
+	// no token to discover and no profile to write — just the shim that
+	// reroutes each mint into the vault (`jit <tool>-capture`).
+	if entry.Kind == wrap.KindCapture {
+		exe, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		jitBinary, err := filepath.EvalSymlinks(exe)
+		if err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		res, err := wrap.AddCapture(home, tool, jitBinary)
+		if err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		fmt.Fprintf(out, "Wrapped %s (%s):\n  shim  %s\n", tool, entry.Doc, res.ShimPath)
+		fmt.Fprintf(out, "From now on `%s get <app>` stores the minted credentials in the vault\n(profile aws-<app>, served via credential_process) instead of writing\n~/.aws/credentials; your MFA prompts appear exactly as before.\n", tool)
+		if err := ensureShimOnPath(cmd, home, tool); err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		if entry.VerifyHint != "" {
+			fmt.Fprintf(out, "Check it: open a new shell and run `%s`.\n", entry.VerifyHint)
+		}
+		return nil
+	}
+
 	discovery, found, err := wrap.DiscoverToken(home, entry)
 	if err != nil {
 		return fmt.Errorf("jit wrap: %w", err)
@@ -294,6 +321,9 @@ var wrapListCmd = &cobra.Command{
 			kind, detail := "env", strings.Join(entry.Vars, ",")
 			if entry.IsGrant() {
 				kind, detail = "grant", "--with "+entry.With
+			}
+			if entry.IsCapture() {
+				kind, detail = "capture", "jit "+entry.Capture+"-capture"
 			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", tool, kind, detail, health)
 		}

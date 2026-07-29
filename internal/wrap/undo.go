@@ -44,8 +44,12 @@ func Undo(home, tool string) (UndoResult, error) {
 	}
 
 	// A grant-wrap has no profile to remove — just the shim and the manifest
-	// entry. An env-wrap removes its wrap-<tool> profile too.
-	if !entry.IsGrant() {
+	// entry. Same for a capture-wrap: the vault profile its captures fill
+	// (aws-<app>) belongs to the AWS credential_process wiring, which keeps
+	// serving after the wrap is gone — unwrapping stops future captures,
+	// it doesn't unprotect what was already captured. An env-wrap removes
+	// its wrap-<tool> profile too.
+	if !entry.IsGrant() && !entry.IsCapture() {
 		res.ProfilePath, err = profile.Path(home, entry.Profile)
 		if err != nil {
 			return res, err

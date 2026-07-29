@@ -14,6 +14,17 @@ package wrap
 // reaches SDKs a shim can't); a tool that reads an env var is KindShim; a
 // tool with neither isn't in the catalog.
 var catalog = map[string]CatalogEntry{
+	"clisso": {
+		Tool: "clisso",
+		Kind: KindCapture,
+		Doc:  "temporary AWS credentials minted via OneLogin/Okta SAML",
+		// No Sources/EnvVars: clisso reads no env vars at all, and the
+		// credential worth intercepting doesn't exist until `clisso get`
+		// mints it. The shim captures that mint (see KindCapture); its
+		// long-lived OneLogin client-secret in ~/.clisso.yaml is a
+		// separate scan finding, not this wrap's subject.
+		VerifyHint: "clisso get <app>, then aws sts get-caller-identity --profile <app>",
+	},
 	"gh": {
 		Tool:    "gh",
 		Kind:    KindShim,

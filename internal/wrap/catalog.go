@@ -22,6 +22,16 @@ const (
 	// login/logout) consults it. `jit wrap <tool>` delegates to the
 	// existing migrate flow instead of installing a shim.
 	KindNative Kind = "native"
+	// KindCapture: the tool MINTS credentials (an SSO CLI logging into an
+	// IdP) rather than carrying one, and would write them to a plaintext
+	// file. The shim intercepts the mint, captures the tool's own
+	// machine-readable output in the user's terminal — where the tool's
+	// MFA prompts still work — and stores it in the vault instead. Served
+	// back by the same native hook migrate wires (aws credential_process),
+	// so no plaintext ever lands on disk. The shim execs
+	// `jit <tool>-capture`, a per-tool plumbing command; the tool name IS
+	// the dispatch, which is why this kind needs no extra catalog fields.
+	KindCapture Kind = "capture"
 )
 
 // TokenSource names one place a tool's plaintext credential lives today and

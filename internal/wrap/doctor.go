@@ -96,6 +96,14 @@ func Doctor(home, pathEnv, shell string) []DoctorCheck {
 			continue
 		}
 
+		// A capture-wrap has no profile either — its vault profiles
+		// (aws-<app>) appear per capture, so their absence before the
+		// first `clisso get` is health, not sickness.
+		if entry.IsCapture() {
+			checks = append(checks, DoctorCheck{Name: name, OK: true, Detail: "shim and real binary resolve; captures via `jit " + entry.Capture + "-capture`"})
+			continue
+		}
+
 		profilePath := filepath.Join(home, ".jit", "profiles", entry.Profile+".yaml")
 		if _, statErr := os.Stat(profilePath); statErr != nil {
 			checks = append(checks, DoctorCheck{Name: name, OK: false, Detail: "profile " + entry.Profile + " missing at " + profilePath})
