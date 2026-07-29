@@ -520,3 +520,39 @@ func TestStoreAWSSessionRejectsPartialCredentials(t *testing.T) {
 		t.Fatal("expected an error for captured credentials missing the secret key")
 	}
 }
+
+func TestStoreAWSSessionDropsStaleVariables(t *testing.T) {
+	// A capture that no longer carries a session token (or expiry) must
+	// clear the earlier capture's mapping — otherwise credential_process
+	// serves last week's token beside this run's fresh keys.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	v := newTestVault(t)
+
+	if _, err := StoreAWSSession(v, home, "prod", AWSSession{
+		AccessKeyID: "ASIA1", SecretAccessKey: "secret1", SessionToken: "tok1", Expiration: "2026-07-29T19:00:00Z",
+	}); err != nil {
+		t.Fatalf("first StoreAWSSession: %v", err)
+	}
+	res, err := StoreAWSSession(v, home, "prod", AWSSession{
+		AccessKeyID: "AKIA2", SecretAccessKey: "secret2",
+	})
+	if err != nil {
+		t.Fatalf("second StoreAWSSession: %v", err)
+	}
+	for _, name := range res.Variables {
+		if name == "SESSION_TOKEN" || name == "EXPIRATION" {
+			t.Errorf("Variables = %v, must not report %s for a capture that had none", res.Variables, name)
+		}
+	}
+	p, err := profile.LoadFile(res.VaultProfilePath)
+	if err != nil {
+		t.Fatalf("loading profile: %v", err)
+	}
+	if _, ok := p["SESSION_TOKEN"]; ok {
+		t.Error("profile still maps SESSION_TOKEN; credential_process would serve the stale token")
+	}
+	if _, ok := p["EXPIRATION"]; ok {
+		t.Error("profile still maps EXPIRATION; credential_process would serve a stale expiry")
+	}
+}

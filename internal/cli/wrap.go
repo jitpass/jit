@@ -58,6 +58,12 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 			tool, strings.Join(wrap.CatalogTools(), ", "), tool)
 	}
 	out := cmd.OutOrStdout()
+	// One vault for the whole wrap, not one per step: openVault builds a
+	// fresh keychainwrap.Wrapper whose master-key cache is per instance,
+	// so each extra open is another Touch ID prompt when the agent
+	// service isn't reachable. This flow opens for up to three reasons
+	// (store the token, move a config secret, back up the scrubbed file).
+	openV := memoizedVaultOpener()
 
 	// Native tools delegate to the migrate flow that already hooks their
 	// own credential mechanism — stronger than a shim (SDKs, login/logout).
@@ -114,7 +120,7 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 			return fmt.Errorf("jit wrap: reading ~/.clisso.yaml: %w", err)
 		}
 		if len(found) > 0 {
-			v, err := openVault()
+			v, err := openV()
 			if err != nil {
 				return fmt.Errorf("jit wrap: %w", err)
 			}
@@ -147,7 +153,7 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 	vaultPath := entry.VaultPath(primary)
 
 	if found {
-		v, err := openVault()
+		v, err := openV()
 		if err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
@@ -194,7 +200,7 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 	// in place, and only after an encrypted byte-for-byte backup — the
 	// same order-of-operations discipline as every migrate category.
 	if found && discovery.Source != nil {
-		v, err := openVault()
+		v, err := openV()
 		if err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}

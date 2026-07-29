@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
+	"github.com/jitpass/jit/internal/vault"
 )
 
 // The capture half of `jit wrap clisso` (docs/wrap/clisso.md). clisso is an
@@ -47,9 +49,11 @@ import (
 // OTP entry, MFA device menus, role selection — print to stdout too, some
 // without a trailing newline, so the filter must pass bytes through as
 // they arrive, not buffer lines). Anything that isn't a plain `get`, or
-// carries an explicit --output, passes through untouched: the user asked
-// for clisso's own behavior, and a wrapper that second-guesses explicit
-// flags is a wrapper nobody can predict.
+// carries an explicit output choice (-o/--output, -w/--write-to-file,
+// -s/--shell), passes through untouched: the user asked for clisso's own
+// behavior, and a wrapper that second-guesses explicit flags is a wrapper
+// nobody can predict. Everything jit itself prints goes to stderr, so
+// clisso's stdout stays exactly what a caller would have captured.
 
 var clissoCaptureReal string
 
@@ -76,9 +80,32 @@ var clissoCaptureCmd = &cobra.Command{
 	},
 }
 
+// vaultOpener hands out THE vault for one clisso invocation. It exists
+// because openVault builds a fresh keychainwrap.Wrapper each call, and a
+// Wrapper caches the master key per INSTANCE — so with the agent service
+// unreachable, every extra openVault is another Touch ID prompt for one
+// `clisso get`. A capture opens the vault for up to three reasons (render
+// the served config, store the session, reconcile the config); memoized,
+// that is one prompt instead of three.
+type vaultOpener func() (*vault.Vault, error)
+
+func memoizedVaultOpener() vaultOpener {
+	var (
+		once sync.Once
+		v    *vault.Vault
+		err  error
+	)
+	return func() (*vault.Vault, error) {
+		once.Do(func() { v, err = openVault() })
+		return v, err
+	}
+}
+
 func runClissoCapture(real string, args []string) error {
+	inv := parseClissoArgs(args)
 	app, capturable := clissoCaptureApp(args)
-	isGet := len(args) > 0 && args[0] == "get"
+	isGet := inv.sub == "get"
+	openV := memoizedVaultOpener()
 
 	// Any `get` needs the REAL config: after `jit wrap clisso` the on-disk
 	// ~/.clisso.yaml holds a jit://vault pointer where the OneLogin
@@ -87,15 +114,26 @@ func runClissoCapture(real string, args []string) error {
 	// a pipe, never a file. A user-passed -c is their own arrangement and
 	// is never overridden.
 	var configArgs []string
-	if isGet && !clissoHasConfigFlag(args) {
-		fifo, serving, cleanup, err := serveClissoConfig()
+	cleanup := func() {}
+	if isGet && inv.configPath == "" {
+		fifo, serving, stop, err := serveClissoConfig(openV)
 		if err != nil {
 			return fmt.Errorf("jit clisso-capture: %w", err)
 		}
 		if serving {
+			cleanup = stop
 			defer cleanup()
 			configArgs = []string{"-c", fifo}
 		}
+	}
+	// exitAfterCleanup propagates clisso's exit code. os.Exit does NOT run
+	// deferred functions, so the FIFO's temp directory has to be removed
+	// here explicitly or every failed login (a mistyped OTP is enough)
+	// leaves one behind. cleanup is idempotent, so the deferred call that
+	// never happens costs nothing.
+	exitAfterCleanup := func(code int) {
+		cleanup()
+		os.Exit(code)
 	}
 
 	if !capturable {
@@ -103,10 +141,11 @@ func runClissoCapture(real string, args []string) error {
 		// afterward — `clisso providers create onelogin` writes a fresh
 		// plaintext client-secret into the decoy, and the reconcile moves
 		// it to the vault before the prompt returns. A non-capturable get
-		// (explicit --output, or no app to name) also forks: it still
+		// (explicit output choice, or no app to name) also forks: it still
 		// needs the FIFO config alive for the child's lifetime.
-		if isGet || clissoMutatesConfig(args) {
-			return clissoPassthrough(real, append(args, configArgs...), clissoMutatesConfig(args))
+		if isGet || inv.mutatesConfig() {
+			passArgs := append(append([]string{}, args...), configArgs...)
+			return clissoPassthrough(real, passArgs, inv, exitAfterCleanup, openV)
 		}
 		// Everything else (status, completion, --help, version): exec
 		// straight through, terminal untouched. Returns only on failure.
@@ -114,7 +153,12 @@ func runClissoCapture(real string, args []string) error {
 		return syscall.Exec(real, argv, os.Environ()) // #nosec G204 -- real comes from the shim's own PATH resolution, args are the user's command line
 	}
 
-	runArgs := append(append([]string{}, args...), "--output", "credential_process")
+	captureArgs := args
+	if inv.cacheEnable {
+		captureArgs = stripClissoCacheFlag(captureArgs)
+		fmt.Fprintf(os.Stderr, "jit: dropped --cache-enable — it writes plaintext credentials to clisso's\n    cache file even in credential_process mode; the vault holds them instead.\n")
+	}
+	runArgs := append(append([]string{}, captureArgs...), "--output", "credential_process")
 	runArgs = append(runArgs, configArgs...)
 	run := exec.Command(real, runArgs...) // #nosec G204 -- same provenance as the exec above
 	run.Stdin = os.Stdin
@@ -134,7 +178,7 @@ func runClissoCapture(real string, args []string) error {
 		// wrapping noise on top.
 		var exitErr *exec.ExitError
 		if errors.As(waitErr, &exitErr) {
-			os.Exit(exitErr.ExitCode())
+			exitAfterCleanup(exitErr.ExitCode())
 		}
 		return fmt.Errorf("jit clisso-capture: %w", waitErr)
 	}
@@ -149,7 +193,7 @@ func runClissoCapture(real string, args []string) error {
 	if err != nil {
 		return fmt.Errorf("jit clisso-capture: %w", err)
 	}
-	v, err := openVault()
+	v, err := openV()
 	if err != nil {
 		return fmt.Errorf("jit clisso-capture: %w", err)
 	}
@@ -157,38 +201,114 @@ func runClissoCapture(real string, args []string) error {
 	if err != nil {
 		return fmt.Errorf("jit clisso-capture: %w", err)
 	}
-	fmt.Printf("jit: captured temporary AWS credentials for profile %q into the vault", app)
+	// Every line jit adds goes to STDERR, not stdout. clisso's stdout is
+	// its own output channel — a script doing `creds=$(clisso get prod
+	// --output credential_process)` still works through the shim only if
+	// the wrapper keeps its commentary off that stream.
+	out := os.Stderr
+	fmt.Fprintf(out, "jit: captured temporary AWS credentials for profile %q into the vault", app)
 	if session.Expiration != "" {
-		fmt.Printf(" (expire %s)", session.Expiration)
+		fmt.Fprintf(out, " (expire %s)", session.Expiration)
 	}
-	fmt.Printf(".\naws and every SDK fetch them via credential_process; nothing was written in plaintext.\n")
+	fmt.Fprintf(out, ".\naws and every SDK fetch them via credential_process; nothing was written in plaintext.\n")
 	if res.CredentialsBackup != "" {
-		fmt.Printf("Also stripped the old plaintext %q section from %s (backed up encrypted first).\n", app, res.CredentialsPath)
+		fmt.Fprintf(out, "Also stripped the old plaintext %q section from %s (backed up encrypted first).\n", app, res.CredentialsPath)
 	}
 	return nil
 }
 
-// clissoHasConfigFlag reports whether the user passed their own
-// -c/--config anywhere in args.
-func clissoHasConfigFlag(args []string) bool {
-	for _, a := range args {
-		if a == "-c" || a == "--config" || strings.HasPrefix(a, "-c=") || strings.HasPrefix(a, "--config=") {
-			return true
-		}
-	}
-	return false
+// clissoInvocation is what the shim needs to know about one clisso command
+// line. It comes from a single pass (parseClissoArgs) rather than a set of
+// independent scans, because every question here depends on the same fact:
+// where the subcommand actually is.
+type clissoInvocation struct {
+	sub         string // the subcommand ("get", "apps", …), "" if none
+	app         string // first bare argument after the subcommand
+	configPath  string // the user's own -c/--config, if any
+	explicitOut bool   // -o/--output, -w/--write-to-file, or -s/--shell
+	help        bool
+	cacheEnable bool
 }
 
-// clissoMutatesConfig reports whether args invoke one of the subcommand
+// clissoValueFlags are the flags that consume the NEXT argument — root
+// persistent flags plus `get`'s own. Skipping their values is what keeps a
+// value from being mistaken for the subcommand or the app name.
+var clissoValueFlags = map[string]bool{
+	"-c": true, "--config": true,
+	"--log-file": true, "--log-level": true,
+	"-m": true, "--mfa-device": true,
+	"-o": true, "--output": true,
+	"--cache-path":    true,
+	"-w":              true,
+	"--write-to-file": true,
+}
+
+// clissoOutputFlags are the ways a user explicitly chooses where
+// credentials go. Any of them opts the run out of capture: the user asked
+// for clisso's own behavior. clisso marks all three mutually exclusive
+// with --output, so injecting ours alongside one wouldn't just override
+// the choice — it would make clisso refuse to run at all.
+var clissoOutputFlags = map[string]bool{
+	"-o": true, "--output": true,
+	"-w": true, "--write-to-file": true,
+	"-s": true, "--shell": true,
+}
+
+// parseClissoArgs walks a clisso command line the way cobra does: global
+// flags may appear BEFORE the subcommand (`clisso --log-level debug get
+// prod` runs get, verified against the real binary), so the subcommand is
+// the first bare argument, not args[0]. Getting this wrong is not cosmetic
+// — a `get` the shim fails to recognize passes through unwrapped, and
+// clisso writes plaintext credentials to ~/.aws/credentials, which is the
+// exposure this whole wrap exists to prevent.
+func parseClissoArgs(args []string) clissoInvocation {
+	var inv clissoInvocation
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "" {
+			continue
+		}
+		if !strings.HasPrefix(a, "-") || a == "-" {
+			switch {
+			case inv.sub == "":
+				inv.sub = a
+			case inv.app == "":
+				inv.app = a
+			}
+			continue
+		}
+		name, val, hasEq := strings.Cut(a, "=")
+		switch {
+		case name == "-h" || name == "--help":
+			inv.help = true
+		case name == "-c" || name == "--config":
+			if hasEq {
+				inv.configPath = val
+			} else if i+1 < len(args) {
+				inv.configPath = args[i+1]
+			}
+		case name == "--cache-enable":
+			// A bool flag: bare means true, and only an explicit
+			// =false turns it off.
+			inv.cacheEnable = !hasEq || !strings.EqualFold(val, "false")
+		}
+		if clissoOutputFlags[name] {
+			inv.explicitOut = true
+		}
+		if !hasEq && clissoValueFlags[name] {
+			i++ // this flag's value is not the subcommand or the app
+		}
+	}
+	return inv
+}
+
+// mutatesConfig reports whether this invocation is one of the subcommand
 // families that rewrite ~/.clisso.yaml (viper.WriteConfig call sites in
-// clisso: apps, providers, cp). Family-level on purpose: `apps list`
+// clisso: apps, providers, cp). Family-level on purpose: `apps ls`
 // mutates nothing, but a reconcile after it is a cheap read that finds
 // nothing, and a family list can't drift when clisso adds `apps delete`.
-func clissoMutatesConfig(args []string) bool {
-	if len(args) == 0 {
-		return false
-	}
-	switch args[0] {
+func (inv clissoInvocation) mutatesConfig() bool {
+	switch inv.sub {
 	case "apps", "providers", "cp":
 		return true
 	}
@@ -201,24 +321,27 @@ func clissoMutatesConfig(args []string) bool {
 // its place, before the user's prompt returns. clisso's exit code is
 // propagated; the reconcile runs even after a failure (a partial write is
 // exactly when a stray secret is most likely to be left behind).
-func clissoPassthrough(real string, args []string, reconcile bool) error {
+func clissoPassthrough(real string, args []string, inv clissoInvocation, exitAfterCleanup func(int), openV vaultOpener) error {
 	run := exec.Command(real, args...) // #nosec G204 -- real comes from the shim's own PATH resolution, args are the user's command line
 	run.Stdin, run.Stdout, run.Stderr = os.Stdin, os.Stdout, os.Stderr
 	runErr := run.Run()
 
-	if reconcile {
-		if err := reconcileClissoConfig(); err != nil {
+	if inv.mutatesConfig() {
+		if err := reconcileClissoConfig(openV); err != nil {
 			// The user's clisso command already succeeded or failed on its
 			// own terms; a reconcile problem must be visible but not
 			// masquerade as clisso failing.
 			fmt.Fprintf(os.Stderr, "jit: reconciling ~/.clisso.yaml: %v\n", err)
+		}
+		if inv.sub == "cp" {
+			warnClissoCredentialProcess()
 		}
 	}
 
 	if runErr != nil {
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) {
-			os.Exit(exitErr.ExitCode())
+			exitAfterCleanup(exitErr.ExitCode())
 		}
 		return fmt.Errorf("jit clisso-capture: %w", runErr)
 	}
@@ -228,7 +351,7 @@ func clissoPassthrough(real string, args []string, reconcile bool) error {
 // reconcileClissoConfig vaults any plaintext client-secret found in
 // ~/.clisso.yaml. Discovery runs first so the vault (and its unlock
 // prompt) is only touched when there is actually something to move.
-func reconcileClissoConfig() error {
+func reconcileClissoConfig(openV vaultOpener) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -237,7 +360,7 @@ func reconcileClissoConfig() error {
 	if err != nil || len(found) == 0 {
 		return err
 	}
-	v, err := openVault()
+	v, err := openV()
 	if err != nil {
 		return err
 	}
@@ -246,7 +369,7 @@ func reconcileClissoConfig() error {
 		return err
 	}
 	for _, p := range res.Providers {
-		fmt.Printf("jit: moved provider %q's client-secret into the vault (%s); the file now holds a pointer.\n", p, migrate.ClissoVaultPath(p))
+		fmt.Fprintf(os.Stderr, "jit: moved provider %q's client-secret into the vault (%s); the file now holds a pointer.\n", p, migrate.ClissoVaultPath(p))
 	}
 	for _, p := range res.Skipped {
 		fmt.Fprintf(os.Stderr, "jit: provider %q has a name that can't map to a vault path; its client-secret was left in place.\n", p)
@@ -261,7 +384,7 @@ func reconcileClissoConfig() error {
 // goroutine re-serves on every open, so a config read more than once
 // still works; it dies with this process, which outlives clisso by only
 // the capture bookkeeping.
-func serveClissoConfig() (fifo string, serving bool, cleanup func(), err error) {
+func serveClissoConfig(openV vaultOpener) (fifo string, serving bool, cleanup func(), err error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", false, nil, err
@@ -277,7 +400,7 @@ func serveClissoConfig() (fifo string, serving bool, cleanup func(), err error) 
 	if !bytes.Contains(data, []byte("jit://vault/")) {
 		return "", false, nil, nil
 	}
-	v, err := openVault()
+	v, err := openV()
 	if err != nil {
 		return "", false, nil, err
 	}
@@ -311,14 +434,22 @@ func serveClissoConfig() (fifo string, serving bool, cleanup func(), err error) 
 	go func() {
 		_ = mount.Serve(ctx, fifo, func() []byte { return rendered }, nil, nil, nil)
 	}()
-	return fifo, true, func() { cancel(); _ = os.RemoveAll(dir) }, nil
+	// Idempotent: the caller both defers this and calls it explicitly
+	// before propagating clisso's exit code (os.Exit skips defers).
+	var once sync.Once
+	return fifo, true, func() {
+		once.Do(func() {
+			cancel()
+			_ = os.RemoveAll(dir)
+		})
+	}, nil
 }
 
 // clissoCaptureApp decides whether args are a capturable `clisso get` and,
 // if so, which app is being fetched — the name that becomes the AWS profile
 // (clisso writes credentials under the app's name, so app name == profile
-// name). Not capturable: any other subcommand, help, or an explicit
-// -o/--output (the user chose a destination; honor it).
+// name). Not capturable: any other subcommand, help, or an explicit output
+// choice (the user picked a destination; honor it).
 //
 // With no app argument clisso falls back to its config's
 // global.selected-app; the capture needs the same answer for the vault
@@ -326,52 +457,85 @@ func serveClissoConfig() (fifo string, serving bool, cleanup func(), err error) 
 // app can be determined the invocation passes through — clisso's own error
 // message beats a guess.
 func clissoCaptureApp(args []string) (app string, capturable bool) {
-	if len(args) == 0 || args[0] != "get" {
+	inv := parseClissoArgs(args)
+	if inv.sub != "get" || inv.help || inv.explicitOut {
 		return "", false
 	}
-	// clisso get's value-taking flags, both "--flag value" and "--flag=value"
-	// forms; booleans (--cache-enable, -h) need no skip.
-	valueFlags := map[string]bool{
-		"-c": true, "--config": true,
-		"--log-file": true, "--log-level": true,
-		"-m": true, "--mfa-device": true,
-		"-o": true, "--output": true,
-		"--cache-path": true,
-	}
-	configPath := ""
-	for i := 1; i < len(args); i++ {
-		a := args[i]
-		if a == "-o" || a == "--output" || strings.HasPrefix(a, "-o=") || strings.HasPrefix(a, "--output=") {
-			return "", false
-		}
-		if a == "-h" || a == "--help" {
-			return "", false
-		}
-		if strings.HasPrefix(a, "-") {
-			name, val, hasEq := strings.Cut(a, "=")
-			if name == "-c" || name == "--config" {
-				if hasEq {
-					configPath = val
-				} else if i+1 < len(args) {
-					configPath = args[i+1]
-				}
-			}
-			if !hasEq && valueFlags[name] {
-				i++ // skip the flag's value
-			}
-			continue
-		}
-		if app == "" {
-			app = a
-		}
-	}
+	app = inv.app
 	if app == "" {
-		app = clissoSelectedApp(configPath)
+		app = clissoSelectedApp(inv.configPath)
 	}
 	if app == "" {
 		return "", false
 	}
 	return app, true
+}
+
+// stripClissoCacheFlag removes --cache-enable from a captured run's args.
+// clisso writes its cache file whenever that flag is set, independent of
+// --output (processCredentials calls writeCredentialsToFile before the
+// output switch is consulted) — so leaving it on would let a captured
+// login ALSO drop plaintext credentials in ~/.aws/credentials-cache,
+// silently reopening the hole the capture closes. A bool flag with no
+// shorthand, so matching the name is the whole job.
+func stripClissoCacheFlag(args []string) []string {
+	out := make([]string, 0, len(args))
+	for _, a := range args {
+		if name, _, _ := strings.Cut(a, "="); name == "--cache-enable" {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// warnClissoCredentialProcess looks for credential_process entries in
+// ~/.aws/credentials that invoke clisso — what `clisso cp configure`
+// writes — and warns, naming the profiles.
+//
+// This matters because of AWS's own precedence: the credentials file wins
+// over the config file, so clisso's entries silently shadow the
+// `credential_process` jit wrote to ~/.aws/config. The shadowing command
+// (`clisso -o credential_process get <app>`) then runs with no terminal to
+// show an MFA prompt on. jit does not edit the file here — undoing a
+// command the user just deliberately ran would be its own surprise — it
+// says what happened and leaves the choice with them.
+func warnClissoCredentialProcess() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	path := filepath.Join(home, ".aws", "credentials")
+	data, err := os.ReadFile(path) // #nosec G304 -- fixed ~/.aws/credentials under the user's home
+	if err != nil {
+		return
+	}
+	var profiles []string
+	section := ""
+	for _, line := range strings.Split(string(data), "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "#") || strings.HasPrefix(t, ";") {
+			continue
+		}
+		if strings.HasPrefix(t, "[") && strings.HasSuffix(t, "]") {
+			section = strings.TrimSpace(t[1 : len(t)-1])
+			continue
+		}
+		k, v, ok := strings.Cut(t, "=")
+		if !ok || strings.TrimSpace(k) != "credential_process" || !strings.Contains(v, "clisso") {
+			continue
+		}
+		profiles = append(profiles, section)
+	}
+	if len(profiles) == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr,
+		"jit: warning — ~/.aws/credentials now has clisso credential_process entries (%s).\n"+
+			"    That file outranks ~/.aws/config, so these shadow jit's wiring, and they run\n"+
+			"    clisso with no terminal for an MFA prompt. Remove those lines to go back to\n"+
+			"    `clisso get <app>` + jit capture.\n",
+		strings.Join(profiles, ", "))
 }
 
 // clissoSelectedApp reads global.selected-app from clisso's config —
