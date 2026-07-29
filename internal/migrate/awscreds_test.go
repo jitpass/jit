@@ -167,6 +167,44 @@ func TestApplyAWSProfileWithSessionToken(t *testing.T) {
 	}
 }
 
+func TestApplyAWSProfileWithExpirationStamp(t *testing.T) {
+	// A temporary session minted by a SAML/SSO tool (clisso et al.) carries
+	// an aws_expiration stamp. It must travel to the vault with the token —
+	// serving the token without it makes SDKs cache it as never-expiring —
+	// and must not be left behind in the stripped file.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeAWSFixture(t, home,
+		"[prod]\naws_access_key_id = AKIA1\naws_secret_access_key = secret1\naws_session_token = tok123\naws_expiration = 2026-07-29T19:00:11Z\n",
+		"")
+
+	v := newTestVault(t)
+	result, err := ApplyAWSProfile(v, home, "prod")
+	if err != nil {
+		t.Fatalf("ApplyAWSProfile: %v", err)
+	}
+	found := false
+	for _, name := range result.Variables {
+		if name == "EXPIRATION" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Variables = %v, want it to include EXPIRATION", result.Variables)
+	}
+	got, err := v.Get("aws-prod/EXPIRATION")
+	if err != nil || string(got) != "2026-07-29T19:00:11Z" {
+		t.Errorf("EXPIRATION = (%q, %v), want (2026-07-29T19:00:11Z, nil)", got, err)
+	}
+	credRaw, err := os.ReadFile(AWSCredentialsPath(home)) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatalf("reading rewritten credentials: %v", err)
+	}
+	if strings.Contains(string(credRaw), "aws_expiration") {
+		t.Errorf("rewritten credentials file still holds aws_expiration:\n%s", credRaw)
+	}
+}
+
 func TestApplyAWSProfileWritesBackups(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -379,5 +417,142 @@ func TestApplyAWSProfileVaultProfileResolvableViaGlobalFallback(t *testing.T) {
 	}
 	if p["ACCESS_KEY_ID"] != "aws-default/ACCESS_KEY_ID" {
 		t.Errorf("profile entry = %q, want aws-default/ACCESS_KEY_ID", p["ACCESS_KEY_ID"])
+	}
+}
+
+func TestStoreAWSSessionFreshWiring(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	v := newTestVault(t)
+
+	res, err := StoreAWSSession(v, home, "prod", AWSSession{
+		AccessKeyID:     "ASIA1",
+		SecretAccessKey: "secret1",
+		SessionToken:    "tok123",
+		Expiration:      "2026-07-29T19:00:11Z",
+	})
+	if err != nil {
+		t.Fatalf("StoreAWSSession: %v", err)
+	}
+	if res.VaultProfileName != "aws-prod" {
+		t.Errorf("VaultProfileName = %q, want aws-prod", res.VaultProfileName)
+	}
+	for path, want := range map[string]string{
+		"aws-prod/ACCESS_KEY_ID":     "ASIA1",
+		"aws-prod/SECRET_ACCESS_KEY": "secret1",
+		"aws-prod/SESSION_TOKEN":     "tok123",
+		"aws-prod/EXPIRATION":        "2026-07-29T19:00:11Z",
+	} {
+		got, err := v.Get(path)
+		if err != nil || string(got) != want {
+			t.Errorf("%s = (%q, %v), want (%q, nil)", path, got, err, want)
+		}
+	}
+
+	configRaw, err := os.ReadFile(AWSConfigPath(home)) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatalf("reading config: %v", err)
+	}
+	config := string(configRaw)
+	if !strings.Contains(config, "[profile prod]") || !strings.Contains(config, "aws-credential-process --profile aws-prod") {
+		t.Errorf("config missing credential_process wiring:\n%s", config)
+	}
+	// No ~/.aws/credentials existed and none must be created — the whole
+	// point is that no plaintext file appears.
+	if _, err := os.Stat(AWSCredentialsPath(home)); !os.IsNotExist(err) {
+		t.Errorf("expected no credentials file, stat err = %v", err)
+	}
+}
+
+func TestStoreAWSSessionStripsLeftoverPlaintext(t *testing.T) {
+	// A pre-wrap ~/.aws/credentials section would outrank the
+	// credential_process line in AWS's resolution order and serve stale
+	// plaintext forever; the first capture must strip it (backed up first).
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeAWSFixture(t, home,
+		"[prod]\naws_access_key_id = OLDKEY\naws_secret_access_key = oldsecret\naws_session_token = oldtok\naws_expiration = 2026-07-29T07:00:00Z\n\n[other]\nregion = us-east-1\n",
+		"")
+	v := newTestVault(t)
+
+	res, err := StoreAWSSession(v, home, "prod", AWSSession{
+		AccessKeyID: "ASIA2", SecretAccessKey: "secret2", SessionToken: "tok2", Expiration: "2026-07-29T19:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("StoreAWSSession: %v", err)
+	}
+	if res.CredentialsBackup == "" {
+		t.Error("expected a backup recorded before stripping plaintext")
+	}
+	credRaw, err := os.ReadFile(AWSCredentialsPath(home)) // #nosec G304 -- test-controlled path
+	if err != nil {
+		t.Fatalf("reading credentials: %v", err)
+	}
+	cred := string(credRaw)
+	if strings.Contains(cred, "oldsecret") || strings.Contains(cred, "OLDKEY") {
+		t.Errorf("plaintext survived the capture:\n%s", cred)
+	}
+	if !strings.Contains(cred, "[other]") || !strings.Contains(cred, "region = us-east-1") {
+		t.Errorf("unrelated content must be preserved:\n%s", cred)
+	}
+
+	// Second capture: same wiring, nothing left to strip, no new backup.
+	res2, err := StoreAWSSession(v, home, "prod", AWSSession{
+		AccessKeyID: "ASIA3", SecretAccessKey: "secret3", SessionToken: "tok3", Expiration: "2026-07-30T07:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("second StoreAWSSession: %v", err)
+	}
+	if res2.CredentialsBackup != "" {
+		t.Errorf("second capture backed up again (%q), nothing was stripped", res2.CredentialsBackup)
+	}
+	got, err := v.Get("aws-prod/SESSION_TOKEN")
+	if err != nil || string(got) != "tok3" {
+		t.Errorf("SESSION_TOKEN after refresh = (%q, %v), want (tok3, nil)", got, err)
+	}
+}
+
+func TestStoreAWSSessionRejectsPartialCredentials(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	v := newTestVault(t)
+	if _, err := StoreAWSSession(v, home, "prod", AWSSession{AccessKeyID: "ASIA1"}); err == nil {
+		t.Fatal("expected an error for captured credentials missing the secret key")
+	}
+}
+
+func TestStoreAWSSessionDropsStaleVariables(t *testing.T) {
+	// A capture that no longer carries a session token (or expiry) must
+	// clear the earlier capture's mapping — otherwise credential_process
+	// serves last week's token beside this run's fresh keys.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	v := newTestVault(t)
+
+	if _, err := StoreAWSSession(v, home, "prod", AWSSession{
+		AccessKeyID: "ASIA1", SecretAccessKey: "secret1", SessionToken: "tok1", Expiration: "2026-07-29T19:00:00Z",
+	}); err != nil {
+		t.Fatalf("first StoreAWSSession: %v", err)
+	}
+	res, err := StoreAWSSession(v, home, "prod", AWSSession{
+		AccessKeyID: "AKIA2", SecretAccessKey: "secret2",
+	})
+	if err != nil {
+		t.Fatalf("second StoreAWSSession: %v", err)
+	}
+	for _, name := range res.Variables {
+		if name == "SESSION_TOKEN" || name == "EXPIRATION" {
+			t.Errorf("Variables = %v, must not report %s for a capture that had none", res.Variables, name)
+		}
+	}
+	p, err := profile.LoadFile(res.VaultProfilePath)
+	if err != nil {
+		t.Fatalf("loading profile: %v", err)
+	}
+	if _, ok := p["SESSION_TOKEN"]; ok {
+		t.Error("profile still maps SESSION_TOKEN; credential_process would serve the stale token")
+	}
+	if _, ok := p["EXPIRATION"]; ok {
+		t.Error("profile still maps EXPIRATION; credential_process would serve a stale expiry")
 	}
 }

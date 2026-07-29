@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -62,6 +63,7 @@ func scanKnownCredentialFiles(cfg Config) ([]Finding, error) {
 		scanGitCredentials,
 		scanGCPApplicationDefaultCredentials,
 		scanNetrc,
+		scanClissoConfig,
 	} {
 		findings, err := scan(cfg)
 		if err != nil {
@@ -111,7 +113,7 @@ func scanAWSCredentials(cfg Config) ([]Finding, error) {
 			RawValue:     secret,
 			BaseSeverity: SeverityHigh,
 			Confidence:   ConfidenceHigh,
-			Evidence:     fmt.Sprintf("AWS secret access key found in profile %q", profile),
+			Evidence:     awsProfileEvidence(profile, kv["aws_expiration"]),
 		})
 		// The access key ID is the parsed-but-unreported half of the pair:
 		// this scanner deliberately reports only the secret (the ID alone
@@ -125,6 +127,26 @@ func scanAWSCredentials(cfg Config) ([]Finding, error) {
 		findings = append(findings, f)
 	}
 	return findings, nil
+}
+
+// awsProfileEvidence phrases an AWS profile finding honestly. A profile
+// carrying an aws_expiration stamp was minted by an external SSO tool
+// (clisso, aws-okta, onelogin-aws — all write the stamp next to the token),
+// and that changes what the reader should expect: the minting tool rewrites
+// this file on its next login, so a migrated profile comes back in plaintext
+// with the next session. Saying "AWS secret access key found" for both
+// shapes would let the user migrate, watch scan come back clean, and never
+// learn why the finding returns tomorrow. An expired stamp is still named —
+// the token is dead, but the section proves live ones land here on every
+// login, which is the exposure that matters.
+func awsProfileEvidence(profile, expiration string) string {
+	if expiration == "" {
+		return fmt.Sprintf("AWS secret access key found in profile %q", profile)
+	}
+	if t, err := time.Parse(time.RFC3339, expiration); err == nil && !t.After(time.Now()) {
+		return fmt.Sprintf("AWS temporary session in profile %q expired at %s — the token is dead, but the SSO tool that minted it writes a live one here on its next login", profile, expiration)
+	}
+	return fmt.Sprintf("AWS temporary session credentials in profile %q (expire %s) — minted by an SSO tool that rewrites this file on each login, so migration protects today's token but the finding returns with tomorrow's", profile, expiration)
 }
 
 // parseINISections is a minimal hand-rolled INI parser scoped to exactly
@@ -1073,4 +1095,76 @@ func netrcPasswords(data []byte) []netrcPassword {
 		}
 	}
 	return out
+}
+
+// --- clisso (~/.clisso.yaml, YAML) ---
+
+// clissoConfigFile is the slice of clisso's config this scanner reads:
+// providers, where a OneLogin provider keeps its API client-secret in
+// plaintext. Everything else in the file (apps, global) holds no secret —
+// an Okta provider's password goes to the OS keychain, not here.
+type clissoConfigFile struct {
+	Providers map[string]struct {
+		ClientID     string `yaml:"client-id"`
+		ClientSecret string `yaml:"client-secret"`
+	} `yaml:"providers"`
+}
+
+// scanClissoConfig reports the OneLogin API client-secret in ~/.clisso.yaml
+// (clisso: SAML CLI that mints temporary AWS credentials via OneLogin/Okta).
+// Unlike the sessions it mints — which expire in hours — this secret is
+// long-lived and can start the whole chain for every configured app, which
+// makes it the highest-value credential in a clisso setup.
+//
+// The fix is `jit wrap clisso` (set here, like every wrappable finding):
+// the wrap vaults the secret, leaves a jit://vault pointer in the file,
+// and serves the real value back per run — a pointer value is therefore
+// already protected and produces no finding. What jit still never offers
+// is protecting the file IN PLACE with a mount: clisso rewrites it itself,
+// which is why ".clisso.yaml" also sits in the selfRotatingCaches table —
+// that keeps the mount offer suppressed for any OTHER secret the sweep
+// finds in this file.
+func scanClissoConfig(cfg Config) ([]Finding, error) {
+	path := filepath.Join(cfg.HomeDir, ".clisso.yaml")
+	file, err := openFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer file.Close()
+
+	var cc clissoConfigFile
+	if err := yaml.NewDecoder(file).Decode(&cc); err != nil {
+		return nil, nil // malformed/empty YAML — skip, don't fail the whole audit
+	}
+
+	var findings []Finding
+	for _, name := range slices.Sorted(maps.Keys(cc.Providers)) {
+		p := cc.Providers[name]
+		if p.ClientSecret == "" || strings.HasPrefix(p.ClientSecret, "jit://vault/") {
+			continue // absent, or already a pointer at the vaulted secret
+		}
+		f := cfg.ValueFinding(ValueFindingParams{
+			FindingType:  FindingTypeCredentialFile,
+			FilePath:     path,
+			KeyName:      name + "/client-secret",
+			RawValue:     p.ClientSecret,
+			BaseSeverity: SeverityHigh,
+			Confidence:   ConfidenceHigh,
+			Evidence:     fmt.Sprintf("clisso provider %q keeps its OneLogin API client-secret here in plaintext — long-lived, and it mints AWS sessions for every configured app; `jit wrap clisso` moves it to the vault (and captures every future login's AWS credentials too)", name),
+		})
+		f.Remedy = RemedyWrap
+		f.FixCommand = "jit wrap clisso"
+		// The client-id is the parsed-but-unreported half of the pair (it
+		// alone authenticates nothing) — claimed so the content sweep's
+		// re-discovery of it stays deduplicated, same as the AWS access
+		// key ID above.
+		if p.ClientID != "" {
+			f.ClaimedValuePreviews = []string{MaskValue(p.ClientID)}
+		}
+		findings = append(findings, f)
+	}
+	return findings, nil
 }
