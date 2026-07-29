@@ -66,7 +66,14 @@ import (
 // and `files_scanned` records the walk's size. Distinct-secret counts include
 // only Critical/High/Medium findings; Low/Info sightings are deliberately not
 // counted as secrets (see CountedAsSecret).
-const SchemaVersion = "0.12.0"
+// 0.13.0 added one additive finding field, `test_fixture`: the file is test
+// scaffolding (a *_test.go, something under testdata/ — see LooksTestFixture),
+// so the match is a real credential format written to exercise a parser rather
+// than a credential anyone owns. Such findings are still emitted in full; what
+// changes is that they no longer count toward the distinct-secret ledger, for
+// the same reason Low/Info sightings do not — a score the user cannot move by
+// doing anything real is not a score worth printing.
+const SchemaVersion = "0.13.0"
 
 // ScannerName identifies this tool in the shared NDJSON envelope, matching
 // bumblebee's record shape so a receiver can co-ingest both (RFC.md §4).
@@ -202,6 +209,15 @@ type Finding struct {
 	// an ordinary actionable finding. Set centrally by Scan, not by the
 	// individual scanners.
 	Archived bool `json:"archived"`
+
+	// TestFixture is true when FilePath is test scaffolding — a *_test.go, a
+	// file under testdata/ (LooksTestFixture). The value matched a real
+	// credential format, which is exactly what a scanner's own fixtures are
+	// written to do; what is missing is an owner. Such a finding is reported
+	// and streamed like any other, but is not charged to the coverage ledger
+	// (CountedAsSecret), because there is nothing for the user to rotate.
+	// Set centrally by Scan, not by the individual scanners.
+	TestFixture bool `json:"test_fixture"`
 
 	// Remedy says who can act on this finding: "migrate" and "wrap" mean jit
 	// can (FixCommand holds the exact command), "manual" means only the user

@@ -33,19 +33,32 @@ looking for a finding type here that will never exist.
 
 ## What jit reports but cannot fix
 
-Two things are reported for your judgment rather than with a fix command,
+Some things are reported for your judgment rather than with a fix command,
 and the report says so rather than offering a `jit migrate` that would do
 nothing:
 
 - **Private keys.** Key material is surfaced with its passphrase and
   permission status; moving it is your call.
-- **Remote-MCP OAuth tokens** (`~/.mcp-auth`). `mcp-remote` rotates and
-  rewrites these files itself - access tokens last minutes, refresh tokens
-  are re-issued on every use - so a vault-backed mount would be overwritten
-  by the tool and serve values that had already rotated away. The fix is to
-  revoke at the provider and reset with `rm -rf ~/.mcp-auth`, which is
+- **Self-rotating token caches** (`~/.mcp-auth`, `~/.gemini/oauth_creds.json`).
+  The owning tool rotates and rewrites these files itself - access tokens
+  last minutes, refresh tokens are re-issued on every use - so a vault-backed
+  mount would be overwritten by the tool and serve values that had already
+  rotated away. The fix is to revoke at the provider and let the tool
+  re-authenticate; for `~/.mcp-auth` that is `rm -rf ~/.mcp-auth`,
   mcp-remote's own documented reset. Only the refresh token is reported: an
   access token is very likely dead before you read the report.
+- **Terraform state** (`terraform.tfstate`). State records every attribute
+  Terraform wrote, secrets included, in plaintext - HashiCorp documents this.
+  Terraform writes the file itself, so there is no seam for jit to serve it
+  from the vault. The fix is to rotate what leaked, move state to an
+  encrypted remote backend, and keep secrets out of it with ephemeral values
+  (Terraform 1.10+). jit scans these files only because nothing else would:
+  the name carries no credential word, so the content sweep would walk past.
+
+Test fixtures - a `*_test.go`, anything under `testdata/` - are reported but
+never counted toward your coverage score. The value matches a real credential
+format because that is exactly what a scanner's own fixtures are written to
+do; there is simply no owner and nothing to rotate.
 
 ## Values with no vendor prefix
 

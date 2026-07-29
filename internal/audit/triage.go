@@ -6,7 +6,6 @@ package audit
 import (
 	"fmt"
 	"io"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -187,12 +186,24 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 	// --- the honesty line: what jit saw and does not charge for ---
 	quiet := 0
 	archived := 0
+	fixtures := 0
 	for _, f := range findings {
-		if !CountedAsSecret(f) {
+		switch {
+		case f.TestFixture:
+			// Counted separately from the low-confidence sightings: jit is
+			// not unsure about these, it is saying they are not the user's
+			// credentials to rotate. Lumping them under "low-confidence"
+			// would misdescribe both groups.
+			fixtures++
+		case !CountedAsSecret(f):
 			quiet++
-		} else if f.Archived && f.Remedy != RemedyManual {
+		case f.Archived && f.Remedy != RemedyManual:
 			archived++
 		}
+	}
+	if fixtures > 0 {
+		_, _ = dim.Fprintf(w, "  %d sighting(s) are test fixtures (a *_test.go, a testdata/ file) —\n", fixtures)
+		_, _ = dim.Fprintln(w, "  real credential formats with no owner to rotate; not counted")
 	}
 	if archived > 0 {
 		_, _ = dim.Fprintf(w, "  %d finding(s) sit in archived/backup folders — jit migrate skips those\n", archived)
@@ -292,6 +303,19 @@ type triageCause struct {
 // is exactly how a person describes it: "my export reports leak three
 // credentials", not thirty-nine findings.
 func triageGroupManual(findings []Finding, home string) []triageManualGroup {
+	// A file holding one production-flagged secret sets the verdict for every
+	// secret found in it: once a file is known to have carried production
+	// credentials in plaintext, "protect it in place" is the wrong sentence
+	// for anything else inside it. Collected across ALL counted findings, not
+	// just the manual ones, so the judgement does not depend on which secret
+	// in the file happened to be the sample.
+	productionFiles := map[string]bool{}
+	for _, f := range findings {
+		if CountedAsSecret(f) && f.ProductionIndicatorMatch {
+			productionFiles[f.FilePath] = true
+		}
+	}
+
 	byCause := map[string]*triageCause{}
 	var causeOrder []string
 	for _, f := range findings {
@@ -346,13 +370,20 @@ func triageGroupManual(findings []Finding, home string) []triageManualGroup {
 				worst = c.sample
 			}
 		}
+		ctx := manualContext{secrets: len(p.causes), copies: len(p.files)}
+		for _, file := range p.files {
+			if productionFiles[file] {
+				ctx.production = true
+				break
+			}
+		}
 		out = append(out, triageManualGroup{
 			secrets:  len(p.causes),
 			critical: worst.Severity == SeverityCritical,
 			sortKey:  rankOf(worst.Severity),
 			title:    manualTitle(p.causes, p.files, worst),
 			detail:   manualDetail(p.files, worst, home),
-			action:   manualAction(worst, len(p.causes) > 1, home),
+			action:   manualAction(worst, ctx, home),
 		})
 	}
 	sort.SliceStable(out, func(a, b int) bool { return out[a].sortKey < out[b].sortKey })
@@ -378,8 +409,11 @@ func manualNoun(f Finding) string {
 	switch {
 	case f.FindingType == FindingTypePrivateKeyRisk:
 		return "An at-risk private key"
-	case strings.Contains(f.FilePath, string(filepath.Separator)+mcpAuthDir+string(filepath.Separator)):
-		return "A remote-MCP OAuth token (rotates itself)"
+	case selfRotating(f):
+		c, _ := selfRotatingCacheFor(f.FilePath)
+		return c.title
+	case isTerraformState(f.FilePath):
+		return "A live credential recorded in Terraform state"
 	case f.FindingType == FindingTypeIACVariableFile:
 		return "A Kubernetes Secret manifest with real values"
 	case f.ProductionIndicatorMatch:
@@ -431,24 +465,59 @@ func manualDetail(files []string, worst Finding, home string) string {
 	return fmt.Sprintf("%s … and %d more", ShortenHome(home, first), len(files)-1)
 }
 
+// selfRotating reports whether f's file is one the owning tool rewrites for
+// itself — a mount would be fought by that tool. See selfRotatingCache.
+func selfRotating(f Finding) bool { return isSelfRotatingCache(f.FilePath) }
+
+// manualContext is what the action line needs beyond the sample finding: how
+// many secrets this problem holds, how many files they were found in, and
+// whether ANY finding in those files carried a production indicator.
+//
+// The last two exist because the action used to be decided from one sample
+// finding alone, which let a single file collect contradictory instructions.
+// A real scan (2026-07-29) printed "rotate them now, then delete every copy"
+// and "protect in place: jit migrate … --mount" for the SAME report file,
+// because one of its secrets was production-flagged and another was not.
+// Advice a user cannot follow both halves of is worse than no advice.
+type manualContext struct {
+	secrets    int
+	copies     int
+	production bool
+}
+
 // manualAction is the arrow line: the user-world verb for this problem.
-func manualAction(f Finding, plural bool, home string) string {
+//
+// Order is precedence, most specific first, and the two rules above the
+// --mount offer are what keep it honest. A secret that spread to several
+// copies cannot be fixed by mounting one of them — the other twelve stay
+// plaintext — and a file no program reads at run time gains nothing from a
+// pipe (see mountable). Both fall through to the instruction that actually
+// resolves the exposure: rotate it, then delete what leaked.
+func manualAction(f Finding, ctx manualContext, home string) string {
 	them := "it"
-	if plural {
+	if ctx.secrets > 1 {
 		them = "them"
 	}
 	switch {
 	case f.FindingType == FindingTypePrivateKeyRisk:
 		return "add a passphrase (ssh-keygen -p) or move the key somewhere safer"
-	case strings.Contains(f.FilePath, string(filepath.Separator)+mcpAuthDir+string(filepath.Separator)):
-		return "revoke at the provider if exposed; reset with rm -rf ~/.mcp-auth"
+	case selfRotating(f):
+		c, _ := selfRotatingCacheFor(f.FilePath)
+		return c.action
+	case isTerraformState(f.FilePath):
+		return "rotate " + them + " now; move state to an encrypted remote backend, and keep secrets out of it with ephemeral values (Terraform 1.10+)"
 	case f.FindingType == FindingTypeIACVariableFile:
 		return "seal it (sealed-secrets/SOPS) or move it to a real secret store"
-	case f.ProductionIndicatorMatch:
+	case ctx.production || f.ProductionIndicatorMatch:
 		return fmt.Sprintf("rotate %s now, then delete every copy", them)
+	case ctx.copies > 1:
+		return fmt.Sprintf("rotate %s now, then delete every copy", them)
+	case !mountable(f.FilePath):
+		return fmt.Sprintf("move %s out of the file, then rotate", them)
 	default:
-		// A mixed-content file bare migrate skips on purpose: offer the
-		// in-place protection that DOES exist, alongside the honest fix.
+		// A mixed-content file bare migrate skips on purpose, that a program
+		// really does read at run time: offer the in-place protection that
+		// DOES exist, alongside the honest fix.
 		return fmt.Sprintf("protect in place: jit migrate %s --mount · or move the secret out, then rotate",
 			shellSafePath(home, f.FilePath))
 	}

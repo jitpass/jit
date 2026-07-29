@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/jitpass/jit/internal/mount"
@@ -36,8 +35,12 @@ const (
 //
 //   - Private keys: FindFileTokens cedes key bodies to ScanPrivateKeys, so
 //     `jit migrate` finds nothing to move (hasAutoFix's original case).
-//   - ~/.mcp-auth: mcp-remote rotates those files itself; a mount would be
-//     fought by the tool and serve stale tokens.
+//   - Self-rotating token caches (~/.mcp-auth, ~/.gemini/oauth_creds.json):
+//     the owning tool rewrites those files itself, so a mount would be fought
+//     by the tool and serve stale tokens. See selfRotatingCache.
+//   - Terraform state: Terraform writes the file itself and there is no seam
+//     to interpose on, so the remedy is a remote encrypted backend and
+//     rotation — never a jit command.
 //   - Kubernetes Secret manifests: sealed-secrets/SOPS territory; jit's
 //     local vault is the wrong home for cluster state. (.tfvars stays
 //     migratable — scanTfvarsAssignments' own evidence offers it.)
@@ -70,7 +73,9 @@ func annotateRemedies(findings []Finding, home string) {
 		switch {
 		case f.FindingType == FindingTypePrivateKeyRisk:
 			f.Remedy = RemedyManual
-		case strings.Contains(f.FilePath, string(filepath.Separator)+mcpAuthDir+string(filepath.Separator)):
+		case isSelfRotatingCache(f.FilePath):
+			f.Remedy = RemedyManual
+		case isTerraformState(f.FilePath):
 			f.Remedy = RemedyManual
 		case f.FindingType == FindingTypeIACVariableFile &&
 			!strings.HasSuffix(f.FilePath, ".tfvars"):
@@ -145,7 +150,13 @@ func annotateCauseGroups(findings []Finding) {
 // user's coverage score would demand user work (judging them) to reach 100%.
 // What jit does not stand behind, it does not charge for. The sightings stay
 // fully visible in `jit scan --full` and NDJSON.
+//
+// Test fixtures are excluded for the neighbouring reason: the match is real,
+// but the credential is not the user's to rotate (see LooksTestFixture).
 func CountedAsSecret(f Finding) bool {
+	if f.TestFixture {
+		return false
+	}
 	switch f.Severity {
 	case SeverityCritical, SeverityHigh, SeverityMedium:
 		return true
