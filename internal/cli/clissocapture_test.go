@@ -10,8 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/iotest"
+
+	"github.com/jitpass/jit/internal/vault"
 )
 
 // clissoJSON is byte-for-byte the shape clisso's OutputCredentialProcess
@@ -138,8 +141,8 @@ func TestClissoMutatesConfig(t *testing.T) {
 		{"providers", "passwd", "acme"},
 		{"cp", "add"},
 	} {
-		if !clissoMutatesConfig(args) {
-			t.Errorf("clissoMutatesConfig(%v) = false, want true", args)
+		if !parseClissoArgs(args).mutatesConfig() {
+			t.Errorf("mutatesConfig(%v) = false, want true", args)
 		}
 	}
 	for _, args := range [][]string{
@@ -148,26 +151,143 @@ func TestClissoMutatesConfig(t *testing.T) {
 		{"completion", "zsh"},
 		nil,
 	} {
-		if clissoMutatesConfig(args) {
-			t.Errorf("clissoMutatesConfig(%v) = true, want false", args)
+		if parseClissoArgs(args).mutatesConfig() {
+			t.Errorf("mutatesConfig(%v) = true, want false", args)
 		}
 	}
 }
 
-func TestClissoHasConfigFlag(t *testing.T) {
+func TestClissoConfigPathHonorsTheUsersOwnFlag(t *testing.T) {
 	// A user-passed -c is their own arrangement; the shim must not
 	// override it with its own served config.
 	for _, args := range [][]string{
 		{"get", "-c", "/tmp/other.yaml"},
 		{"get", "--config", "/tmp/other.yaml"},
 		{"get", "--config=/tmp/other.yaml"},
-		{"get", "-c=/tmp/other.yaml"},
+		{"-c", "/tmp/other.yaml", "get", "prod"},
 	} {
-		if !clissoHasConfigFlag(args) {
-			t.Errorf("clissoHasConfigFlag(%v) = false, want true", args)
+		if got := parseClissoArgs(args).configPath; got != "/tmp/other.yaml" {
+			t.Errorf("parseClissoArgs(%v).configPath = %q, want /tmp/other.yaml", args, got)
 		}
 	}
-	if clissoHasConfigFlag([]string{"get", "prod", "--cache-enable"}) {
-		t.Error("clissoHasConfigFlag matched something that isn't -c/--config")
+	if got := parseClissoArgs([]string{"get", "prod", "--cache-enable"}).configPath; got != "" {
+		t.Errorf("configPath = %q, want empty — nothing here is -c/--config", got)
+	}
+}
+
+func TestParseClissoArgsFindsSubcommandPastGlobalFlags(t *testing.T) {
+	// cobra lets persistent flags precede the subcommand — verified against
+	// the real clisso binary (`clisso --log-level warn apps ls` works). A
+	// `get` the shim fails to recognize passes through unwrapped and clisso
+	// writes plaintext credentials, so this is the regression that matters
+	// most in this file.
+	cases := []struct {
+		name string
+		args []string
+		sub  string
+		app  string
+	}{
+		{"bare", []string{"get", "prod"}, "get", "prod"},
+		{"global flag first", []string{"--log-level", "debug", "get", "prod"}, "get", "prod"},
+		{"global equals-form first", []string{"--log-level=debug", "get", "prod"}, "get", "prod"},
+		{"config first", []string{"-c", "/tmp/x.yaml", "get", "stage"}, "get", "stage"},
+		{"two globals first", []string{"--log-file", "/tmp/l", "--log-level", "warn", "get", "prod"}, "get", "prod"},
+		{"mutating past a global", []string{"--log-level", "warn", "providers", "create"}, "providers", "create"},
+	}
+	for _, tc := range cases {
+		inv := parseClissoArgs(tc.args)
+		if inv.sub != tc.sub || inv.app != tc.app {
+			t.Errorf("%s: parseClissoArgs(%v) sub/app = (%q, %q), want (%q, %q)", tc.name, tc.args, inv.sub, inv.app, tc.sub, tc.app)
+		}
+	}
+
+	// The whole point: these are now capturable.
+	for _, args := range [][]string{
+		{"--log-level", "debug", "get", "prod"},
+		{"--log-level=debug", "get", "prod"},
+	} {
+		app, capturable := clissoCaptureApp(args)
+		if !capturable || app != "prod" {
+			t.Errorf("clissoCaptureApp(%v) = (%q, %v), want (prod, true)", args, app, capturable)
+		}
+	}
+	// And a mutating family behind a global flag still reconciles.
+	if !parseClissoArgs([]string{"--log-level", "warn", "providers", "create"}).mutatesConfig() {
+		t.Error("providers behind a global flag must still count as config-mutating")
+	}
+}
+
+func TestClissoCaptureAppEveryExplicitOutputOptsOut(t *testing.T) {
+	// clisso marks --output, --write-to-file and --shell mutually
+	// exclusive, so injecting our --output alongside one wouldn't override
+	// the user's choice — clisso would refuse to run at all.
+	for _, args := range [][]string{
+		{"get", "prod", "-o", "environment"},
+		{"get", "prod", "--output=environment"},
+		{"get", "prod", "-w", "/tmp/creds"},
+		{"get", "prod", "--write-to-file", "/tmp/creds"},
+		{"get", "prod", "-s"},
+		{"get", "prod", "--shell"},
+	} {
+		if _, capturable := clissoCaptureApp(args); capturable {
+			t.Errorf("clissoCaptureApp(%v) = capturable, want passthrough (explicit output choice)", args)
+		}
+	}
+}
+
+func TestStripClissoCacheFlag(t *testing.T) {
+	// clisso writes its cache file whenever --cache-enable is set, whatever
+	// the output mode — so a captured run must not carry the flag, or it
+	// leaves plaintext credentials in ~/.aws/credentials-cache.
+	got := stripClissoCacheFlag([]string{"get", "prod", "--cache-enable", "--cache-path", "/tmp/c"})
+	want := []string{"get", "prod", "--cache-path", "/tmp/c"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("stripClissoCacheFlag = %v, want %v", got, want)
+	}
+	if got := stripClissoCacheFlag([]string{"get", "--cache-enable=true", "prod"}); len(got) != 2 {
+		t.Errorf("equals-form not stripped: %v", got)
+	}
+	// Detection drives the strip; =false needs neither.
+	if !parseClissoArgs([]string{"get", "prod", "--cache-enable"}).cacheEnable {
+		t.Error("bare --cache-enable must read as enabled")
+	}
+	if parseClissoArgs([]string{"get", "prod", "--cache-enable=false"}).cacheEnable {
+		t.Error("--cache-enable=false must read as disabled")
+	}
+}
+
+func TestMemoizedVaultOpenerOpensOnce(t *testing.T) {
+	// Every openVault builds a fresh keychainwrap.Wrapper, and that cache
+	// is per instance — so with the agent service unreachable, each extra
+	// open is another Touch ID prompt for one `clisso get`. The capture
+	// flow asks for the vault up to three times (render the served config,
+	// store the session, reconcile); it must open once.
+	calls := 0
+	var once sync.Once
+	var v *vault.Vault
+	var err error
+	opener := vaultOpener(func() (*vault.Vault, error) {
+		once.Do(func() { calls++; v, err = &vault.Vault{}, nil })
+		return v, err
+	})
+	for i := 0; i < 3; i++ {
+		if _, oerr := opener(); oerr != nil {
+			t.Fatalf("opener: %v", oerr)
+		}
+	}
+	if calls != 1 {
+		t.Errorf("underlying open called %d times, want 1", calls)
+	}
+
+	// And the real constructor must memoize the same way: three calls,
+	// one result, identical pointer.
+	real := memoizedVaultOpener()
+	a, aErr := real()
+	b, bErr := real()
+	if a != b {
+		t.Errorf("memoizedVaultOpener returned different vaults (%p vs %p); each open is a Touch ID prompt", a, b)
+	}
+	if (aErr == nil) != (bErr == nil) {
+		t.Errorf("memoized opener disagreed with itself on error: %v vs %v", aErr, bErr)
 	}
 }

@@ -142,11 +142,16 @@ func ApplyAWSProfile(v *vault.Vault, home, profileName string, dedup ...*BackupT
 	}
 	var varNames []string
 	for _, iniKey := range awsCredentialKeys {
+		varName := varByINIKey[iniKey]
 		val, ok := kv[iniKey]
 		if !ok || val == "" {
+			// Absent this time: drop any mapping an earlier migration of
+			// this profile left behind, or credential_process would serve
+			// that run's stale session token (or expiry) next to these
+			// fresh keys.
+			delete(entries, varName)
 			continue
 		}
-		varName := varByINIKey[iniKey]
 		secretPath := vaultProfileName + "/" + varName
 		if err := v.SetWithMeta(secretPath, []byte(val), meta); err != nil {
 			return AWSCredentialMigration{}, fmt.Errorf("storing %s in vault: %w", varName, err)
@@ -452,13 +457,21 @@ func StoreAWSSession(v *vault.Vault, home, profileName string, s AWSSession) (AW
 		return AWSCredentialMigration{}, err
 	}
 	var varNames []string
-	for varName, val := range map[string]string{
+	captured := map[string]string{
 		"ACCESS_KEY_ID":     s.AccessKeyID,
 		"SECRET_ACCESS_KEY": s.SecretAccessKey,
 		"SESSION_TOKEN":     s.SessionToken,
 		"EXPIRATION":        s.Expiration,
-	} {
+	}
+	// Sorted, not raw map order: two runs of the same capture must produce
+	// the same profile manifest, and Go randomizes map iteration.
+	for _, varName := range []string{"ACCESS_KEY_ID", "SECRET_ACCESS_KEY", "SESSION_TOKEN", "EXPIRATION"} {
+		val := captured[varName]
 		if val == "" {
+			// Absent this time: drop any mapping an earlier capture left,
+			// or credential_process would serve that run's stale token (or
+			// expiry) alongside these fresh keys.
+			delete(entries, varName)
 			continue
 		}
 		secretPath := vaultProfileName + "/" + varName
