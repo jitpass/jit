@@ -194,3 +194,31 @@ func TestAdvisoryDoesNotAffectTotals(t *testing.T) {
 		t.Errorf("SecretsTotal = %d, want 0 — an advisory must not enter the coverage ledger", summary.SecretsTotal)
 	}
 }
+
+func TestDerivedCredentialsClissoCacheAndLog(t *testing.T) {
+	home := t.TempDir()
+	// clisso's --cache-path default: AWS INI format at a name no
+	// ~/.aws/credentials sweep matches.
+	writeFileIn(t, filepath.Join(home, ".aws", "credentials-cache"), "[prod]\naws_session_token = x\n")
+	// Exists only when someone turned on file logging — at trace level it
+	// holds every minted session's secret key and token.
+	writeFileIn(t, filepath.Join(home, ".clisso.log"), "level=info msg=ok\n")
+
+	got := ScanDerivedCredentials(Config{HomeDir: home})
+	if len(got) != 2 {
+		t.Fatalf("got %d advisory item(s), want 2: %+v", len(got), got)
+	}
+	var paths []string
+	for _, d := range got {
+		paths = append(paths, d.Path)
+		if d.What == "" || d.Advice == "" {
+			t.Errorf("%s: advisory missing What or Advice", d.Path)
+		}
+	}
+	joined := filepath.ToSlash(strings.Join(paths, " "))
+	for _, want := range []string{".aws/credentials-cache", ".clisso.log"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("advisory paths %v, want one covering %s", paths, want)
+		}
+	}
+}

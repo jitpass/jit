@@ -18,6 +18,11 @@ func TestSelfRotatingCacheFor(t *testing.T) {
 		// A different HOME, and a home directory copied somewhere else, are
 		// the same tool layout and must classify identically.
 		{"/backup/home/alex/.gemini/oauth_creds.json", true},
+		// clisso's config: the value never rotates, but the file is still
+		// tool-rewritten — same class, same reason a mount must not be
+		// offered. A copy under any directory classifies the same.
+		{"/Users/alex/.clisso.yaml", true},
+		{"/backup/home/alex/.clisso.yaml", true},
 		// Neighbours in the same directory are ordinary files.
 		{"/Users/alex/.gemini/google_accounts.json", false},
 		{"/Users/alex/.gemini/.env", false},
