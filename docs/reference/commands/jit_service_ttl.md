@@ -12,6 +12,11 @@ ID prompt before it locks itself, so the next use prompts again (default
 5m). It is baked into the service's login item, so a change persists across
 logins and reboots, not just this one.
 
+It is an INACTIVITY timeout, so use pushes it back — and a session also ends
+8 hours after the unlock that started it, however busy it has been. Values
+above that ceiling are refused rather than accepted and quietly ignored: an
+idle timeout longer than the maximum session age could never be reached.
+
 Changing it restarts the background service, so the current session is
 dropped and the next vault use prompts Touch ID once. Your vault and the
 session history are untouched.

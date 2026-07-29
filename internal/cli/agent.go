@@ -312,6 +312,10 @@ var serviceTTLCmd = &cobra.Command{
 		"ID prompt before it locks itself, so the next use prompts again (default\n" +
 		"5m). It is baked into the service's login item, so a change persists across\n" +
 		"logins and reboots, not just this one.\n\n" +
+		"It is an INACTIVITY timeout, so use pushes it back — and a session also ends\n" +
+		"8 hours after the unlock that started it, however busy it has been. Values\n" +
+		"above that ceiling are refused rather than accepted and quietly ignored: an\n" +
+		"idle timeout longer than the maximum session age could never be reached.\n\n" +
 		"Changing it restarts the background service, so the current session is\n" +
 		"dropped and the next vault use prompts Touch ID once. Your vault and the\n" +
 		"session history are untouched.",
@@ -415,6 +419,12 @@ var serviceConsentCmd = &cobra.Command{
 		"and remembers your answer for the session. It closes the window where any\n" +
 		"process running as you can use a migrated credential silently while your\n" +
 		"vault is unlocked.\n\n" +
+		"Saying no is meant to be cheap. A refused prompt is not remembered as a\n" +
+		"lasting \"no\" — it can't be, since a decline and a keychain failure look the\n" +
+		"same from here — so instead it pauses that caller for a few seconds, then\n" +
+		"longer if it keeps asking, and the prompt tells you how many times it has\n" +
+		"already been refused. Nothing is locked out: the next genuine attempt still\n" +
+		"asks, and an approval (or a fresh `jit unlock`) clears the pause.\n\n" +
 		"With no argument, prints whether it's on. `on`/`off` set it and restart the\n" +
 		"service; turning it OFF requires a fresh Touch ID/passcode, since disabling\n" +
 		"the guard reopens the window it closes. Use `jit run --trust -- <cmd>` to\n" +
@@ -694,8 +704,14 @@ var unlockCmd = &cobra.Command{
 	Short:   "Unlock jit's session now (prompts Touch ID if needed)",
 	Long: "Unlocks the shared session jit's background service holds, prompting Touch ID\n" +
 		"or your device passcode if it isn't already unlocked. Pre-warms it so a\n" +
-		"following jit run / vault get / export doesn't stop to prompt, and locks\n" +
-		"itself again after the session --ttl of inactivity (or `jit lock` sooner).\n\n" +
+		"following jit run / vault get / export doesn't stop to prompt. It locks\n" +
+		"itself again after the session --ttl of inactivity, at the 8-hour maximum\n" +
+		"session age whichever comes first, or on `jit lock` sooner.\n\n" +
+		"An unlock that actually prompts you also clears any consent pauses: a\n" +
+		"refused credential prompt holds that caller off for a few seconds, and you\n" +
+		"standing at the keyboard is exactly the \"now\" that refusal withheld. An\n" +
+		"unlock while the session is already open prompts nobody, so it clears\n" +
+		"nothing — otherwise any process could reset the pause by asking for one.\n\n" +
 		"If the background service isn't set up yet, this sets it up first: `unlock`\n" +
 		"is the \"get me a session\" intent, so there's nothing extra to run by hand.",
 	Args: cobra.NoArgs,
@@ -722,8 +738,9 @@ var lockCmd = &cobra.Command{
 	GroupID: groupService,
 	Short:   "Lock jit's session immediately, without waiting for the TTL",
 	Long: "Locks the shared session jit's background service holds, right now, instead\n" +
-		"of waiting out the remaining --ttl. The next vault use prompts Touch ID\n" +
-		"again, and live-mounted files serve placeholder values until then.",
+		"of waiting out whichever bound would end it first — the idle --ttl or the\n" +
+		"8-hour maximum session age. The next vault use prompts Touch ID again, and\n" +
+		"live-mounted files serve placeholder values until then.",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		c, err := agentClient()
@@ -1551,7 +1568,7 @@ var agentCompatRunCmd = &cobra.Command{
 }
 
 func init() {
-	agentRunCmd.Flags().DurationVar(&agentTTL, "ttl", 5*time.Minute, "how long an unlocked session stays cached before auto-locking")
+	agentRunCmd.Flags().DurationVar(&agentTTL, "ttl", 5*time.Minute, "how long an unlocked session stays cached before auto-locking (values above the 8h maximum session age are clamped to it)")
 	agentRunCmd.Flags().BoolVar(&agentConsent, "consent", true, "prompt for per-process consent (Touch ID) the first time each tool reaches for a credential (on by default; use --consent=false to disable)")
 	agentStatusCmd.Flags().StringVar(&agentStatusFormat, "format", "text", `output format: "text" (default) or "json"`)
 	agentLogCmd.Flags().IntVarP(&agentLogLines, "lines", "n", 50, "how many trailing lines to print")
@@ -1561,7 +1578,7 @@ func init() {
 	// The old plist's `agent run --ttl <d>` needs the same --ttl flag bound to
 	// the same target var; only one of the two run commands executes per
 	// process, so sharing agentTTL is safe.
-	agentCompatRunCmd.Flags().DurationVar(&agentTTL, "ttl", 5*time.Minute, "how long an unlocked session stays cached before auto-locking")
+	agentCompatRunCmd.Flags().DurationVar(&agentTTL, "ttl", 5*time.Minute, "how long an unlocked session stays cached before auto-locking (values above the 8h maximum session age are clamped to it)")
 	agentCompatCmd.AddCommand(agentCompatRunCmd)
 
 	rootCmd.AddCommand(serviceCmd, unlockCmd, lockCmd, agentCompatCmd)

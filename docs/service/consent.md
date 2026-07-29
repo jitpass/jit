@@ -10,7 +10,9 @@ credentials without prompting again. That is the point of the session: unlock
 once, not per command. Per-process consent adds one check on top of it, so a
 credential is never handed out completely silently: the **first time each tool
 reaches for a gated credential**, the background service prompts a fresh Touch
-ID, names who is asking, and remembers your answer for the rest of the session.
+ID, names who is asking, and remembers an approval for the rest of the session.
+(A refusal works differently, and deliberately so - see
+[Saying no, repeatedly](#saying-no-repeatedly).)
 
 Consent is **on by default**. A tool you approve once is not asked again until
 the session re-locks. The check is **per tool**: approving `terraform`'s use of
@@ -23,6 +25,9 @@ still stops for a prompt you can decline.
 #   Touch ID prompt: "terraform, launched by claude, wants your aws credential"
 # approve once, and terraform (and anything it launched) is not asked again
 # until the vault re-locks.
+#
+# asked again after you already said no, the prompt says so:
+#   "terraform, launched by claude, wants your aws credential (refused 2 times)"
 ```
 
 ## Turning it on and off
@@ -80,7 +85,7 @@ says "(identified by scan)" to mark it. The vault crypto is unaffected
 either way, and if the reader cannot be fully identified the mount serves
 decoys rather than guess.
 
-A decision is remembered only for the session and is dropped the moment the
+An approval is remembered only for the session and is dropped the moment the
 vault re-locks, so consent never outlives the unlock it rode in on.
 
 ## Saying no, repeatedly

@@ -23,6 +23,14 @@ a masked value preview, and a one-line *why* explaining what matched.
 Detection and migration share the same extractors: when a new tool enters
 the wrap catalog, `jit scan` starts flagging its token automatically.
 
+One block of scan output is deliberately **not** in this table. Credentials
+other tools mint for themselves - the STS session the AWS CLI caches, the
+tokens `aws sso login` writes - are reported under "Outside jit's scope, found
+anyway", and they never become findings: no `finding_type`, no severity, no
+place in any count. They are named so a clean report cannot be misread as an
+empty directory, not because jit intends to do anything about them. Don't go
+looking for a finding type here that will never exist.
+
 ## What jit reports but cannot fix
 
 Two things are reported for your judgment rather than with a fix command,

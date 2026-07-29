@@ -36,12 +36,18 @@ running across logins and reboots. It goes away when you remove jit itself.
 
 The service process runs indefinitely and never needs Touch ID just to exist;
 only the cached key inside it locks after the session TTL of inactivity
-(default 5 minutes), re-prompting on next use.
+(default 5 minutes), re-prompting on next use. The session itself does not run
+indefinitely: it also ends 8 hours after the unlock that opened it, however
+continuously it has been used.
 
 ## Changing the session length
 
 `jit service ttl` shows or changes how long a session stays unlocked after
-your last Touch ID prompt:
+your last Touch ID prompt. It is an *inactivity* timeout, so working keeps it
+alive - and because that alone is a bound a busy caller never reaches, a
+session also ends at a hard 8-hour ceiling from the unlock itself. Values above
+that are refused: an idle timeout longer than the ceiling could never be
+reached, so accepting one would promise a session length jit would not deliver.
 
 ```
 $ jit service ttl

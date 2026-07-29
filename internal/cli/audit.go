@@ -235,8 +235,13 @@ var auditCmd = &cobra.Command{
 		"needed. Command arguments are recorded with any secret-looking value masked, so\n" +
 		"the log records that a command ran, never the secret it may have carried.\n\n" +
 		"It also records what the service refused at its socket: a rejected peer (a\n" +
-		"process the kernel says isn't yours, probing the agent), a malformed request, or\n" +
-		"the accept loop failing, each as a kind=error line with the peer's provenance.\n\n" +
+		"process the kernel says isn't yours, probing the agent), a malformed request, an\n" +
+		"unwrap whose claimed credential class doesn't match the ciphertext it sent\n" +
+		"(op=class-mismatch — a caller with no vault data trying to summon a prompt), or\n" +
+		"the accept loop failing, each as a kind=error line with the peer's provenance.\n" +
+		"Repeated rejections collapse into one line carrying a count; a collapsed line\n" +
+		"names the first caller of that window, because keying them per caller would let\n" +
+		"a flood of throwaway processes push every real event out of the history.\n\n" +
 		"Output is logfmt: one key=value line per event, newest first, so it reads and\n" +
 		"greps like a real service log. Narrow it without grep using the flags: --kind\n" +
 		"cmd,unlock,use,lock,service,error, --status ok|failed|denied, --since and --until\n" +

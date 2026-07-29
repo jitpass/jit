@@ -127,6 +127,35 @@ func TestCleanReportStillCarriesTheAdvisory(t *testing.T) {
 	}
 }
 
+// The triage view is `jit scan`'s default output — the one people actually
+// read. An advisory that only appears behind --full is an advisory that does
+// not exist, and "Nothing exposed" is precisely the verdict it has to qualify.
+func TestTriageReportCarriesTheAdvisory(t *testing.T) {
+	summary := ScanSummary{
+		TotalFindings:      0,
+		RiskLevel:          RiskLevelLow,
+		FindingsByCategory: map[string]int{},
+		DerivedCredentials: []DerivedCredential{{
+			Path: "/Users/x/.aws/cli/cache",
+			What: "STS session credentials the AWS CLI cached for itself, in plaintext",
+		}},
+	}
+
+	var buf bytes.Buffer
+	WriteTriageReport(&buf, nil, summary, "/Users/x", Coverage{})
+	out := buf.String()
+
+	if !strings.Contains(out, "Nothing exposed") {
+		t.Error("a clean scan must still give its verdict")
+	}
+	if !strings.Contains(out, ".aws/cli/cache") {
+		t.Errorf("the default scan view omits the advisory:\n%s", out)
+	}
+	if !strings.Contains(out, "Outside jit's scope") {
+		t.Errorf("advisory is not labelled as a scope boundary:\n%s", out)
+	}
+}
+
 func TestMarkdownReportCarriesTheAdvisory(t *testing.T) {
 	summary := ScanSummary{
 		TotalFindings:      0,
