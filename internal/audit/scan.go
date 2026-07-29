@@ -104,6 +104,7 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 	// the audit side of the funnel too.
 	for i := range all {
 		all[i].Archived = LooksArchived(all[i].FilePath)
+		all[i].TestFixture = LooksTestFixture(all[i].FilePath)
 	}
 	// Same seam, same reason: who can act on each finding (and the id that
 	// groups copies of one secret) is set once, centrally, so every renderer
