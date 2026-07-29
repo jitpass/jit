@@ -43,7 +43,7 @@ func agentFindings(root string) []checkFinding {
 	}
 
 	var out []checkFinding
-	if warn := agentBuildMismatch(st.Build); warn != "" {
+	if warn := agentBuildMismatchLine(st.Build); warn != "" {
 		out = append(out, checkFinding{Kind: kindService, Detail: warn})
 	}
 

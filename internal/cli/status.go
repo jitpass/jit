@@ -82,6 +82,12 @@ type statusAgent struct {
 	// the agent isn't running or predates the field — the counterpart to
 	// statusCLI.Version, at the same release-scale zoom Build refines.
 	Version string `json:"version,omitempty"`
+	// Error is set when the socket exists but the conversation failed — a
+	// hung agent, a half-written socket, a protocol mismatch after a partial
+	// upgrade. `jit status` promises a safe, always-runnable overview, so a
+	// sick service degrades to one reported section rather than taking the
+	// vault, secrets and mounts sections down with it.
+	Error string `json:"error,omitempty"`
 }
 
 // statusSecrets reconciles the flat vault store against the profiles jit can
@@ -105,6 +111,15 @@ type statusSecrets struct {
 
 	UnreferencedGroups  int `json:"unreferenced_groups"`
 	UnreferencedSecrets int `json:"unreferenced_secrets"`
+	// UnreferencedInMixed counts unreferenced secrets inside groups bucketed
+	// as wired/elsewhere — the ones `jit vault orphans` lists but the group
+	// totals above can't, so the two commands don't look like they disagree.
+	UnreferencedInMixed int `json:"unreferenced_in_mixed,omitempty"`
+	// DuplicateGroups/DuplicateSecrets are the subset of the unreferenced
+	// totals that carry the same key names as a group still in use — the
+	// leftovers a re-migration renamed past. A subset, never an extra bucket.
+	DuplicateGroups  int `json:"duplicate_groups,omitempty"`
+	DuplicateSecrets int `json:"duplicate_secrets,omitempty"`
 
 	// ParseFailures counts visible profile manifests that wouldn't load; their
 	// references are excluded, so secrets don't get mislabeled unreferenced.
@@ -120,6 +135,9 @@ type statusSecretGroup struct {
 	State   string   `json:"state"`
 	Secrets []string `json:"secrets"`
 	Mixed   bool     `json:"mixed,omitempty"`
+	// DuplicateOf names the still-referenced group this unreferenced one
+	// mirrors key-for-key (by name — status never decrypts).
+	DuplicateOf string `json:"duplicate_of,omitempty"`
 }
 
 // stateSlug renders a secretState as the stable identifier the JSON and the
@@ -148,6 +166,9 @@ func secretsStatusFrom(rec secretsReconciliation, includeGroups bool) statusSecr
 		ManagedElsewhereGroups: rec.ElsewhereGroups,
 		UnreferencedGroups:     rec.UnreferencedGroups,
 		UnreferencedSecrets:    rec.UnreferencedSecrets,
+		UnreferencedInMixed:    rec.UnreferencedInMixed,
+		DuplicateGroups:        rec.DuplicateGroups,
+		DuplicateSecrets:       rec.DuplicateSecrets,
 		ParseFailures:          rec.ParseFailures,
 	}
 	if includeGroups {
@@ -158,10 +179,11 @@ func secretsStatusFrom(rec secretsReconciliation, includeGroups bool) statusSecr
 				keys = append(keys, m.Key)
 			}
 			s.Groups = append(s.Groups, statusSecretGroup{
-				Name:    g.Name,
-				State:   stateSlug(g.State),
-				Secrets: keys,
-				Mixed:   g.Mixed,
+				Name:        g.Name,
+				State:       stateSlug(g.State),
+				Secrets:     keys,
+				Mixed:       g.Mixed,
+				DuplicateOf: g.DuplicateOf,
 			})
 		}
 	}
@@ -199,6 +221,11 @@ var statusCmd = &cobra.Command{
 		"stored secret is wired here (a project-local profile uses it), managed elsewhere " +
 		"(referenced only by a global profile or a mount), or unreferenced (a candidate " +
 		"orphan). Add --secrets to expand it into the full per-group listing.\n\n" +
+		"An unreferenced group holding the same key names as a group still in use is " +
+		"called out as such: usually a second migration renamed the group and left the " +
+		"original copy behind, and those leftovers are usually the bulk of what " +
+		"jit vault orphans would prune. Key names are compared, never values, since " +
+		"status never decrypts.\n\n" +
 		"--format json prints a machine-readable snapshot instead of the default " +
 		"text report, in the same shape jit service status/vault list/doctor's own " +
 		"--format json use for their overlapping sections.",
@@ -298,12 +325,33 @@ func gatherVaultStatus(v *vault.Vault) (statusVault, error) {
 // like it didn't work. Shared by `jit status` and `jit service status`;
 // lives in this file (not agent.go) because status.go is deliberately
 // portable while agent.go is darwin-gated.
-func agentBuildMismatch(agentBuild string) string {
+// It returns the two build IDs rather than a finished sentence, because the
+// two audiences want different things from them: the dashboard is being read
+// by someone finding out whether anything needs doing, and a pair of git
+// revisions answers no question they have, while doctor and `jit service
+// status` are where you go to file or diagnose a bug and the revisions are
+// the whole point. ok is false when they match or either side can't tell.
+//
+// Note it can only prove the builds DIFFER, never which is newer — neither
+// side carries a timestamp. Wording built on this must stay symmetrical: "out
+// of date" would be a guess, right though it usually would be.
+func agentBuildMismatch(agentBuild string) (service, cli string, ok bool) {
 	cliBuild := agent.BuildID()
 	if agentBuild == "" || agentBuild == "unknown" || cliBuild == "unknown" || agentBuild == cliBuild {
+		return "", "", false
+	}
+	return agentBuild, cliBuild, true
+}
+
+// agentBuildMismatchLine is the flat one-sentence form, for the diagnostic
+// surfaces that render a finding as a single string rather than as a state
+// row with an action beneath it — and that do want the revisions named.
+func agentBuildMismatchLine(agentBuild string) string {
+	service, cli, ok := agentBuildMismatch(agentBuild)
+	if !ok {
 		return ""
 	}
-	return fmt.Sprintf("Heads up: the running service is a different build than this CLI (service %s, CLI %s), run `jit service restart` to move it to the current binary now (it also restarts itself once its session is locked and idle).", agentBuild, cliBuild)
+	return fmt.Sprintf("The background service is running a different build than this CLI (service %s, CLI %s) — run `jit service restart` to move it to the current binary.", service, cli)
 }
 
 // gatherAgentStatus reports the same running/unlocked state `jit service
@@ -317,7 +365,11 @@ func gatherAgentStatus(root string) (statusAgent, error) {
 		return statusAgent{Installed: agentInstalled()}, nil
 	}
 	if err != nil {
-		return statusAgent{}, err
+		// Reportable, not fatal: the rest of the report (vault, secrets,
+		// mounts) is still readable and still worth printing. Taking the
+		// whole overview down because the service is sick is exactly
+		// backwards — a sick service is when you most want to look at it.
+		return statusAgent{Installed: agentInstalled(), Error: err.Error()}, nil
 	}
 	result := statusAgent{Running: true, Installed: agentInstalled(), Unlocked: st.Unlocked, Mounts: st.Mounts, Build: st.Build, Version: st.Version}
 	if st.Unlocked {
@@ -385,20 +437,30 @@ func printStatusText(w io.Writer, r statusResult) {
 	} else {
 		statusLabel(w, "vault")
 		if r.Vault.BackupsStored > 0 {
-			fmt.Fprintf(w, "%d secret(s) stored · %d file backup(s) kept for `jit migrate undo`\n", r.Vault.SecretsStored, r.Vault.BackupsStored)
+			// hlCmds, like every other command mention in this report: without
+			// it the backticks printed literally, so this one line leaked its
+			// own markup while the line above rendered the same kind of
+			// command in cyan.
+			fmt.Fprintln(w, hlCmds(fmt.Sprintf("%s stored · %s kept for `jit migrate undo`",
+				countWord(r.Vault.SecretsStored, "secret", "secrets"),
+				countWord(r.Vault.BackupsStored, "file backup", "file backups"))))
 		} else {
-			fmt.Fprintf(w, "%d secret(s) stored\n", r.Vault.SecretsStored)
+			fmt.Fprintf(w, "%s stored\n", countWord(r.Vault.SecretsStored, "secret", "secrets"))
 		}
 		statusLabel(w, "backup")
 		switch {
 		case !r.Vault.ExportRecorded:
 			_, _ = cRisk.Fprint(w, glyphRisk+" ")
-			fmt.Fprint(w, "no vault export on record, the vault only decrypts on this Mac — run ")
-			_, _ = cPath.Fprintln(w, "jit vault export <file>")
+			fmt.Fprintln(w, "no vault export on record — the vault only decrypts on this Mac")
+			// Says what the export IS, in concrete terms the reader can
+			// picture. An earlier draft ("the only copy that survives losing
+			// it") left "it" pointing at either the Mac or the vault, and
+			// made the reader work out what an export even is.
+			printStatusAction(w, "`jit vault export <file>` — a copy you could restore on another Mac")
 		case r.Vault.ExportStale:
 			_, _ = cWarn.Fprint(w, glyphWarn+" ")
-			fmt.Fprintf(w, "secrets changed since the last export (%s) — run ", time.Unix(r.Vault.ExportUnixTime, 0).Format("2006-01-02"))
-			_, _ = cPath.Fprintln(w, "jit vault export <file>")
+			fmt.Fprintf(w, "secrets changed since the last export (%s)\n", time.Unix(r.Vault.ExportUnixTime, 0).Format("2006-01-02"))
+			printStatusAction(w, "`jit vault export <file>` — the newest secrets aren't in any backup")
 		default:
 			_, _ = cOK.Fprint(w, glyphOK+" ")
 			fmt.Fprintf(w, "export up to date (%s)\n", time.Unix(r.Vault.ExportUnixTime, 0).Format("2006-01-02"))
@@ -407,6 +469,13 @@ func printStatusText(w io.Writer, r statusResult) {
 
 	statusLabel(w, "service")
 	switch {
+	case r.Agent.Error != "":
+		// The socket answered with something other than "not running" — a
+		// hung or mismatched agent. Say so rather than reporting the
+		// no-service state, which would send the reader after the wrong fix.
+		_, _ = cRisk.Fprint(w, glyphRisk+" ")
+		fmt.Fprintf(w, "unreachable — %s\n", r.Agent.Error)
+		printStatusAction(w, "`jit service restart` to bring it back")
 	case !r.Agent.Running && r.Agent.Installed:
 		// launchd was supposed to keep this one alive — "run install" is
 		// the wrong advice and hides that something actually failed.
@@ -423,13 +492,21 @@ func printStatusText(w io.Writer, r statusResult) {
 		_, _ = cOK.Fprint(w, glyphOK+" ")
 		fmt.Fprintln(w, "running · locked")
 	}
-	if warning := agentBuildMismatch(r.Agent.Build); warning != "" {
-		_, _ = color.New(color.FgYellow).Fprintf(w, "  %s\n", warning)
+	if _, _, mismatched := agentBuildMismatch(r.Agent.Build); mismatched {
+		// Says what jit is (two programs, which is news to most readers),
+		// then the consequence, then the fix. The revisions live in `jit
+		// service status` and `jit doctor` — naming them here answered a
+		// question nobody reading a dashboard was asking, and cost the line
+		// the room it needed to explain itself.
+		printStatusWarnNote(w, "the background service is running a different build than this command")
+		printStatusNote(w, "recent changes may not take effect until they match")
+		printStatusAction(w, "`jit service restart` — or leave it; it self-restarts once locked and idle")
 	}
 
 	printSecretsSection(w, r.Secrets)
 
 	statusLabel(w, "mounts")
+	registered := countWord(r.Mounts.Registered, "registered mount", "registered mounts")
 	switch {
 	case r.Mounts.Registered == 0:
 		_, _ = cDim.Fprintln(w, "none registered")
@@ -442,15 +519,15 @@ func printStatusText(w io.Writer, r statusResult) {
 		}
 		if granted > 0 {
 			_, _ = cOK.Fprint(w, glyphOK+" ")
-			fmt.Fprintf(w, "%d registered · %d serving real content to an active jit run grant, the rest decoy\n", r.Mounts.Registered, granted)
+			fmt.Fprintf(w, "%s · %d serving real content to an active jit run grant, the rest decoy\n", registered, granted)
 		} else {
-			fmt.Fprintf(w, "%d registered · unlocked, all decoy (real values flow through a jit run grant, or an approved consent prompt for a global credential file)\n", r.Mounts.Registered)
+			fmt.Fprintf(w, "%s · unlocked, all decoy (real values flow through a jit run grant, or an approved consent prompt for a global credential file)\n", registered)
 		}
 	case r.Mounts.BeingServed:
 		_, _ = cWarn.Fprint(w, glyphWarn+" ")
-		fmt.Fprintf(w, "%d registered · serving decoy content only (service locked)\n", r.Mounts.Registered)
+		fmt.Fprintf(w, "%s · serving decoy content only (service locked)\n", registered)
 	default:
-		fmt.Fprintf(w, "%d registered · not being served (service not running)\n", r.Mounts.Registered)
+		fmt.Fprintf(w, "%s · not being served (service not running)\n", registered)
 	}
 
 	// A reader that most recently got DECOY values is the one mount fact
@@ -465,7 +542,9 @@ func printStatusText(w io.Writer, r statusResult) {
 		}
 	}
 	if decoyReads > 0 {
-		_, _ = color.New(color.FgYellow).Fprintf(w, "  Heads up: %d mount(s) most recently served decoy values to a reader, run `jit service status` to see which reader, when.\n", decoyReads)
+		printStatusWarnNote(w, "%s most recently served decoy values to a reader.",
+			countWord(decoyReads, "mount", "mounts"))
+		printStatusAction(w, "`jit service status` to see which reader, and when")
 	}
 }
 
@@ -488,7 +567,7 @@ func printSecretsSection(w io.Writer, s statusSecrets) {
 		return
 	}
 	statusLabel(w, "secrets")
-	fmt.Fprintf(w, "%d stored in %d group(s)\n", s.TotalSecrets, s.TotalGroups)
+	fmt.Fprintf(w, "%d stored in %s\n", s.TotalSecrets, countWord(s.TotalGroups, "group", "groups"))
 
 	// Each state leads with a semantic glyph so the eye finds the one that
 	// needs attention (an amber ○ unreferenced, or a red ✗ broken) before
@@ -501,26 +580,68 @@ func printSecretsSection(w io.Writer, s statusSecrets) {
 		// "Resolve" here means the referenced secret EXISTS — the cheap glance,
 		// existence-only. jit doctor additionally verifies each envelope reads,
 		// so point there rather than imply an integrity check this didn't run.
-		printRollupLine(w, cOK, glyphOK, "Wired here", fmt.Sprintf("%d group(s) via %d profile(s) (%d reference(s)), all resolve.",
-			s.WiredGroups, s.WiredProfiles, s.WiredReferences))
+		printRollupLine(w, cOK, glyphOK, "Wired here", fmt.Sprintf("%s via %s (%s), all resolve.",
+			countWord(s.WiredGroups, "group", "groups"),
+			countWord(s.WiredProfiles, "profile", "profiles"),
+			countWord(s.WiredReferences, "reference", "references")))
 	default:
-		printRollupLine(w, cRisk, glyphRisk, "Wired here", fmt.Sprintf("%d group(s) via %d profile(s) (%d reference(s)), %d broken — run `jit doctor` for details.",
-			s.WiredGroups, s.WiredProfiles, s.WiredReferences, s.WiredProblems))
+		printRollupLine(w, cRisk, glyphRisk, "Wired here", fmt.Sprintf("%s via %s (%s), %d broken — run `jit doctor` for details.",
+			countWord(s.WiredGroups, "group", "groups"),
+			countWord(s.WiredProfiles, "profile", "profiles"),
+			countWord(s.WiredReferences, "reference", "references"), s.WiredProblems))
 	}
 
-	printRollupLine(w, cOK, glyphOK, "Managed elsewhere", fmt.Sprintf("%d group(s) (referenced only by global profiles or mounts).",
-		s.ManagedElsewhereGroups))
+	printRollupLine(w, cOK, glyphOK, "Managed elsewhere", fmt.Sprintf("%s (referenced only by global profiles or mounts).",
+		countWord(s.ManagedElsewhereGroups, "group", "groups")))
 
 	if s.UnreferencedGroups == 0 {
 		printRollupLine(w, cDim, glyphOK, "Unreferenced here", "none.")
 	} else {
-		printRollupLine(w, cWarn, glyphWarn, "Unreferenced here", fmt.Sprintf("%d group(s), %d secret(s). May belong to another project.",
-			s.UnreferencedGroups, s.UnreferencedSecrets))
-		fmt.Fprintf(w, "    %-20s Run `jit status --secrets` to inspect, `jit vault orphans` to prune.\n", "")
+		printRollupLine(w, cWarn, glyphWarn, "Unreferenced here", fmt.Sprintf("%s, %s. May belong to another project.",
+			countWord(s.UnreferencedGroups, "group", "groups"),
+			countWord(s.UnreferencedSecrets, "secret", "secrets")))
+		// The single most useful thing to say about a pile of orphans is
+		// which of them are already accounted for elsewhere. Without this the
+		// reader has to diff the group listings by eye before they can safely
+		// prune anything, so most people never prune at all.
+		if s.DuplicateGroups > 0 {
+			// Three phrasings, because the difference matters to the reader:
+			// "3 of them" says part of this pile is accounted for, "all 3"
+			// says the whole pile is, and the lone-group case gets a singular
+			// verb rather than the "all 1" this first shipped as.
+			subject, verb := fmt.Sprintf("%d of them", s.DuplicateGroups), "have"
+			switch {
+			case s.UnreferencedGroups == 1:
+				subject, verb = "it", "has"
+			case s.DuplicateGroups == s.UnreferencedGroups:
+				subject = fmt.Sprintf("all %d", s.DuplicateGroups)
+			}
+			// Plain words, deliberately: an earlier draft called this "the
+			// fingerprint of a re-migration", which is the author's vocabulary
+			// rather than the reader's. Say what probably happened instead.
+			printStatusNote(w, "%s (%s) %s the same key names as a group still in use.", subject,
+				countWord(s.DuplicateSecrets, "secret", "secrets"), verb)
+			printStatusNote(w, "Usually a second migration renamed the group; jit compared names, not values.")
+		}
+		printStatusAction(w, "`jit status --secrets` to inspect · `jit vault orphans --prune` to delete")
+	}
+
+	// Stated whatever the group totals say, including when they say "none":
+	// this is exactly the case where `jit vault orphans` reports secrets the
+	// rollup above doesn't, and an unexplained mismatch between two jit
+	// commands costs more trust than the number is worth.
+	if s.UnreferencedInMixed > 0 {
+		printStatusNote(w, "%s inside groups counted above as in use %s unreferenced too;",
+			countWord(s.UnreferencedInMixed, "secret", "secrets"),
+			pluralWord(s.UnreferencedInMixed, "is", "are"))
+		printStatusNote(w, "jit vault orphans lists those as well.")
 	}
 
 	if s.ParseFailures > 0 {
-		_, _ = color.New(color.FgYellow).Fprintf(w, "  Heads up: %d profile manifest(s) couldn't be read and were skipped; run `jit doctor` to see which.\n", s.ParseFailures)
+		printStatusWarnNote(w, "%s couldn't be read and %s skipped.",
+			countWord(s.ParseFailures, "profile manifest", "profile manifests"),
+			pluralWord(s.ParseFailures, "was", "were"))
+		printStatusAction(w, "`jit doctor` to see which")
 	}
 }
 
@@ -540,6 +661,37 @@ func statusLabel(w io.Writer, label string) {
 // (green healthy, amber needs-a-look, red broken); the body stays default
 // weight so the glyph column, not a wall of colored text, is what the eye
 // scans down. The label pad matches the continuation indent above.
+// printStatusAction renders one runnable next step in `jit scan`'s action
+// shape: an indented arrow, then the step with its `backtick`-delimited
+// commands in the house cyan. Scan established that a state line says what IS
+// and the arrow line beneath says what to DO; the dashboard used to bury the
+// same advice mid-sentence ("… — run jit vault export <file>"), where it read
+// as prose rather than as a thing to go type.
+func printStatusAction(w io.Writer, body string) {
+	fmt.Fprint(w, "      ")
+	_, _ = cPath.Fprint(w, "→ ")
+	fmt.Fprintln(w, hlCmds(body))
+}
+
+// printStatusNote renders one dim explanatory line under a state line, at the
+// same indent as the action arrow — scan's habit of explaining a finding just
+// above the command that resolves it. Dim by rule 3: an explanation is
+// secondary to the state it explains.
+func printStatusNote(w io.Writer, format string, a ...any) {
+	_, _ = cDim.Fprintf(w, "      "+format+"\n", a...)
+}
+
+// printStatusWarnNote is printStatusNote for a line that carries a STATE of
+// its own rather than explaining one: it leads with the amber warn glyph and
+// stays default weight. The distinction matters because a warning rendered
+// dim, with no glyph, directly beneath a green row reads as part of that
+// healthy row — which is exactly how the build-mismatch notice disappeared.
+func printStatusWarnNote(w io.Writer, format string, a ...any) {
+	fmt.Fprint(w, "      ")
+	_, _ = cWarn.Fprintf(w, "%s ", glyphWarn)
+	fmt.Fprintf(w, format+"\n", a...)
+}
+
 func printRollupLine(w io.Writer, glyphColor *color.Color, glyph, label, body string) {
 	fmt.Fprint(w, "  ")
 	_, _ = glyphColor.Fprintf(w, "%s ", glyph)
@@ -583,6 +735,21 @@ func printSecretsDetail(w io.Writer, rec secretsReconciliation, v *vault.Vault) 
 		_, _ = cDim.Fprintln(w, "  none")
 		return
 	}
+	// Name the mirrored pairs once, above the listing, rather than tagging
+	// every group row: rule 5 (state a shared fact once per section) and the
+	// same instinct printOrphanGroups already applies to a shared origin.
+	var mirrors []string
+	for _, g := range unref {
+		if g.DuplicateOf != "" {
+			mirrors = append(mirrors, g.Name+" = "+g.DuplicateOf)
+		}
+	}
+	if len(mirrors) > 0 {
+		_, _ = cDim.Fprintf(w, "  %d mirror a group still in use, key for key (names, not values):\n", len(mirrors))
+		flowNames(w, mirrors, "      ")
+		fmt.Fprintln(w)
+	}
+
 	var paths []string
 	for _, g := range unref {
 		for _, m := range g.Members {

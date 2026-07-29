@@ -8,6 +8,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,7 +101,7 @@ func TestStatusReflectsRealAgentRunningAndLocked(t *testing.T) {
 	if !strings.Contains(out, wantVersions) {
 		t.Errorf("expected %q, got:\n%s", wantVersions, out)
 	}
-	if !strings.Contains(out, "mounts   1 registered · unlocked, all decoy (real values flow through a jit run grant, or an approved consent prompt") {
+	if !strings.Contains(out, "mounts   1 registered mount · unlocked, all decoy (real values flow through a jit run grant, or an approved consent prompt") {
 		t.Errorf("expected mounts reported as decoy while unlocked, with real values flowing via a jit run grant or an approved consent prompt, got:\n%s", out)
 	}
 
@@ -114,7 +115,52 @@ func TestStatusReflectsRealAgentRunningAndLocked(t *testing.T) {
 	if !strings.Contains(out, "service  ● running · locked") {
 		t.Errorf("expected a locked agent summary, got:\n%s", out)
 	}
-	if !strings.Contains(out, "mounts   ○ 1 registered · serving decoy content only (service locked") {
+	if !strings.Contains(out, "mounts   ○ 1 registered mount · serving decoy content only (service locked") {
 		t.Errorf("expected mounts to be reported as still served (decoy-only) while locked, not fully unserved, GAPS.md #35, got:\n%s", out)
+	}
+}
+
+// TestStatusDegradesWhenAgentUnreachable drives status against a socket that
+// accepts a connection and then hangs up without replying — a hung agent, a
+// half-written socket, a protocol mismatch mid-upgrade. That is NOT the
+// "not running" case (nothing answers at all), so it used to abort the whole
+// command with an error, taking the vault, secrets and mount sections down
+// with it. A sick service is precisely when the overview is worth reading,
+// so it degrades to one reported section instead.
+func TestStatusDegradesWhenAgentUnreachable(t *testing.T) {
+	home := shortFixtureHome(t)
+	withFixtureCwd(t)
+
+	root := filepath.Join(home, "Library", "Application Support", "jitpass")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	ln, err := net.Listen("unix", agent.SocketPath(root))
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close() // accept, then say nothing
+		}
+	}()
+
+	plantVaultSecret(t, home, "aws/key1")
+
+	out, err := execStatus(t)
+	if err != nil {
+		t.Fatalf("jit status must survive an unreachable agent, got: %v", err)
+	}
+	if !strings.Contains(out, "service  ✗ unreachable") {
+		t.Errorf("expected the service reported as unreachable, got:\n%s", out)
+	}
+	// The sections that don't depend on the agent must still be there.
+	if !strings.Contains(out, "vault    1 secret stored") || !strings.Contains(out, "secrets  1 stored in 1 group") {
+		t.Errorf("expected the agent-independent sections to still render, got:\n%s", out)
 	}
 }

@@ -8,6 +8,8 @@ Rolls up what previously took several separate commands to piece together, is th
 
 The Secrets section reconciles the vault against the profiles jit can see: every stored secret is wired here (a project-local profile uses it), managed elsewhere (referenced only by a global profile or a mount), or unreferenced (a candidate orphan). Add --secrets to expand it into the full per-group listing.
 
+An unreferenced group holding the same key names as a group still in use is called out as such: usually a second migration renamed the group and left the original copy behind, and those leftovers are usually the bulk of what jit vault orphans would prune. Key names are compared, never values, since status never decrypts.
+
 --format json prints a machine-readable snapshot instead of the default text report, in the same shape jit service status/vault list/doctor's own --format json use for their overlapping sections.
 
 ```
