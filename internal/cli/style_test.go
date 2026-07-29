@@ -12,8 +12,8 @@ import (
 // TestFlowNamesPacksColumns confirms the column-flow helper lays several
 // names onto one row (the whole point — a long list becomes a few tidy rows,
 // not one item per line) and pads every name but the last in a row so they
-// align. Width is the non-terminal fallback (defaultWidth) here, which keeps
-// the layout deterministic.
+// align. Width is the non-terminal fallback (termtext.DefaultWidth) here,
+// which keeps the layout deterministic.
 func TestFlowNamesPacksColumns(t *testing.T) {
 	var buf bytes.Buffer
 	names := []string{"AAA", "BBB", "CCC", "DDD", "EEE"}
