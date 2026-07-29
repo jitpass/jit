@@ -741,7 +741,12 @@ func TestPrintVaultListLong(t *testing.T) {
 
 // TestPrintSecretsByProvenance pins --by origin: secrets bucket under their
 // source file (with class + count), a distinct file makes a distinct bucket,
-// and provenance-less secrets collect under "(no recorded source)" last.
+// and provenance-less secrets collect under "no recorded source" last.
+//
+// The header is the house `[Name] count · extra` motif and members flow into
+// columns (design/output-style.md rules 1, 3 and 4) — this axis used to print
+// a faint "path  class (n)" header over a one-per-line stack, so the same
+// vault rendered two different ways depending on the --by flag.
 func TestPrintSecretsByProvenance(t *testing.T) {
 	secrets := []string{"jamf/CLIENT_ID", "jamf/CLIENT_SECRET", "mcp-x/TOKEN", "legacy/OLD"}
 	meta := map[string]vault.SecretInfo{
@@ -756,21 +761,30 @@ func TestPrintSecretsByProvenance(t *testing.T) {
 	out := buf.String()
 
 	for _, want := range []string{
-		"~/scripts/jamf/.env  dotenv (2)",
-		"  jamf/CLIENT_ID",
-		"  jamf/CLIENT_SECRET",
-		"~/.mcp.json  mcp (1)",
-		"  mcp-x/TOKEN",
-		"(no recorded source) (1)",
-		"  legacy/OLD",
+		"[~/scripts/jamf/.env] 2 · dotenv",
+		"jamf/CLIENT_ID",
+		"jamf/CLIENT_SECRET",
+		"[~/.mcp.json] 1 · mcp",
+		"mcp-x/TOKEN",
+		"[no recorded source] 1",
+		"legacy/OLD",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("--by origin output missing %q, got:\n%s", want, out)
 		}
 	}
+	// Brackets already delimit the label, so the old parenthesized phrase
+	// would now read as "[(no recorded source)]".
+	if strings.Contains(out, "[(no recorded source)]") {
+		t.Errorf("label must not keep its own parentheses inside the brackets, got:\n%s", out)
+	}
 	// The unknown bucket sorts last.
-	if idx := strings.Index(out, "(no recorded source)"); idx >= 0 && idx < strings.Index(out, "~/.mcp.json") {
-		t.Errorf("(no recorded source) must sort after real origins, got:\n%s", out)
+	if idx := strings.Index(out, "no recorded source"); idx >= 0 && idx < strings.Index(out, "~/.mcp.json") {
+		t.Errorf("no recorded source must sort after real origins, got:\n%s", out)
+	}
+	// Two secrets from one origin share a row rather than stacking.
+	if !strings.Contains(out, "jamf/CLIENT_ID") || !strings.Contains(out, "jamf/CLIENT_SECRET") {
+		t.Errorf("both members must appear, got:\n%s", out)
 	}
 }
 
