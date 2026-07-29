@@ -7,6 +7,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/jitpass/jit/internal/migrate"
+	"github.com/jitpass/jit/internal/mount"
 )
 
 // The capture half of `jit wrap clisso` (docs/wrap/clisso.md). clisso is an
@@ -76,14 +78,45 @@ var clissoCaptureCmd = &cobra.Command{
 
 func runClissoCapture(real string, args []string) error {
 	app, capturable := clissoCaptureApp(args)
+	isGet := len(args) > 0 && args[0] == "get"
+
+	// Any `get` needs the REAL config: after `jit wrap clisso` the on-disk
+	// ~/.clisso.yaml holds a jit://vault pointer where the OneLogin
+	// client-secret was, and clisso would send that pointer to the IdP.
+	// The rendered config is served over a FIFO passed via -c — memory and
+	// a pipe, never a file. A user-passed -c is their own arrangement and
+	// is never overridden.
+	var configArgs []string
+	if isGet && !clissoHasConfigFlag(args) {
+		fifo, serving, cleanup, err := serveClissoConfig()
+		if err != nil {
+			return fmt.Errorf("jit clisso-capture: %w", err)
+		}
+		if serving {
+			defer cleanup()
+			configArgs = []string{"-c", fifo}
+		}
+	}
+
 	if !capturable {
-		// Not a mint: exec straight through, terminal untouched. Returns
-		// only on failure.
+		// Config-mutating families fork+wait so the file can be reconciled
+		// afterward — `clisso providers create onelogin` writes a fresh
+		// plaintext client-secret into the decoy, and the reconcile moves
+		// it to the vault before the prompt returns. A non-capturable get
+		// (explicit --output, or no app to name) also forks: it still
+		// needs the FIFO config alive for the child's lifetime.
+		if isGet || clissoMutatesConfig(args) {
+			return clissoPassthrough(real, append(args, configArgs...), clissoMutatesConfig(args))
+		}
+		// Everything else (status, completion, --help, version): exec
+		// straight through, terminal untouched. Returns only on failure.
 		argv := append([]string{filepath.Base(real)}, args...)
 		return syscall.Exec(real, argv, os.Environ()) // #nosec G204 -- real comes from the shim's own PATH resolution, args are the user's command line
 	}
 
-	run := exec.Command(real, append(append([]string{}, args...), "--output", "credential_process")...) // #nosec G204 -- same provenance as the exec above
+	runArgs := append(append([]string{}, args...), "--output", "credential_process")
+	runArgs = append(runArgs, configArgs...)
+	run := exec.Command(real, runArgs...) // #nosec G204 -- same provenance as the exec above
 	run.Stdin = os.Stdin
 	run.Stderr = os.Stderr
 	stdout, err := run.StdoutPipe()
@@ -133,6 +166,152 @@ func runClissoCapture(real string, args []string) error {
 		fmt.Printf("Also stripped the old plaintext %q section from %s (backed up encrypted first).\n", app, res.CredentialsPath)
 	}
 	return nil
+}
+
+// clissoHasConfigFlag reports whether the user passed their own
+// -c/--config anywhere in args.
+func clissoHasConfigFlag(args []string) bool {
+	for _, a := range args {
+		if a == "-c" || a == "--config" || strings.HasPrefix(a, "-c=") || strings.HasPrefix(a, "--config=") {
+			return true
+		}
+	}
+	return false
+}
+
+// clissoMutatesConfig reports whether args invoke one of the subcommand
+// families that rewrite ~/.clisso.yaml (viper.WriteConfig call sites in
+// clisso: apps, providers, cp). Family-level on purpose: `apps list`
+// mutates nothing, but a reconcile after it is a cheap read that finds
+// nothing, and a family list can't drift when clisso adds `apps delete`.
+func clissoMutatesConfig(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "apps", "providers", "cp":
+		return true
+	}
+	return false
+}
+
+// clissoPassthrough runs the real clisso with inherited stdio, then — for
+// config-mutating families — reconciles ~/.clisso.yaml: any plaintext
+// client-secret the run just wrote moves to the vault and a pointer takes
+// its place, before the user's prompt returns. clisso's exit code is
+// propagated; the reconcile runs even after a failure (a partial write is
+// exactly when a stray secret is most likely to be left behind).
+func clissoPassthrough(real string, args []string, reconcile bool) error {
+	run := exec.Command(real, args...) // #nosec G204 -- real comes from the shim's own PATH resolution, args are the user's command line
+	run.Stdin, run.Stdout, run.Stderr = os.Stdin, os.Stdout, os.Stderr
+	runErr := run.Run()
+
+	if reconcile {
+		if err := reconcileClissoConfig(); err != nil {
+			// The user's clisso command already succeeded or failed on its
+			// own terms; a reconcile problem must be visible but not
+			// masquerade as clisso failing.
+			fmt.Fprintf(os.Stderr, "jit: reconciling ~/.clisso.yaml: %v\n", err)
+		}
+	}
+
+	if runErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			os.Exit(exitErr.ExitCode())
+		}
+		return fmt.Errorf("jit clisso-capture: %w", runErr)
+	}
+	return nil
+}
+
+// reconcileClissoConfig vaults any plaintext client-secret found in
+// ~/.clisso.yaml. Discovery runs first so the vault (and its unlock
+// prompt) is only touched when there is actually something to move.
+func reconcileClissoConfig() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	found, err := migrate.DiscoverClissoSecrets(home)
+	if err != nil || len(found) == 0 {
+		return err
+	}
+	v, err := openVault()
+	if err != nil {
+		return err
+	}
+	res, err := migrate.ApplyClissoConfig(v, home)
+	if err != nil {
+		return err
+	}
+	for _, p := range res.Providers {
+		fmt.Printf("jit: moved provider %q's client-secret into the vault (%s); the file now holds a pointer.\n", p, migrate.ClissoVaultPath(p))
+	}
+	for _, p := range res.Skipped {
+		fmt.Fprintf(os.Stderr, "jit: provider %q has a name that can't map to a vault path; its client-secret was left in place.\n", p)
+	}
+	return nil
+}
+
+// serveClissoConfig renders ~/.clisso.yaml with its jit://vault pointers
+// resolved and serves the result over a FIFO for clisso to read via -c.
+// serving is false when the config holds no pointers (never wrapped, or
+// missing) — then clisso reads its own file as always. The writer
+// goroutine re-serves on every open, so a config read more than once
+// still works; it dies with this process, which outlives clisso by only
+// the capture bookkeeping.
+func serveClissoConfig() (fifo string, serving bool, cleanup func(), err error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", false, nil, err
+	}
+	data, err := os.ReadFile(migrate.ClissoConfigPath(home)) // #nosec G304 -- fixed ~/.clisso.yaml under the user's home
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil, nil
+		}
+		return "", false, nil, err
+	}
+	// Cheap gate before any vault (and unlock prompt) involvement.
+	if !bytes.Contains(data, []byte("jit://vault/")) {
+		return "", false, nil, nil
+	}
+	v, err := openVault()
+	if err != nil {
+		return "", false, nil, err
+	}
+	rendered, resolved, err := migrate.RenderClissoConfig(v, data)
+	if err != nil {
+		return "", false, nil, err
+	}
+	if !resolved {
+		return "", false, nil, nil
+	}
+
+	dir, err := os.MkdirTemp("", "jit-clisso-*")
+	if err != nil {
+		return "", false, nil, err
+	}
+	// The extension matters: clisso's -c hands the path to viper, which
+	// picks its parser from the file extension.
+	fifo = filepath.Join(dir, "config.yaml")
+	if err := mount.CreateFIFO(fifo); err != nil {
+		_ = os.RemoveAll(dir)
+		return "", false, nil, err
+	}
+	// mount.Serve, not a hand-rolled open/write/close loop: with a reader
+	// still holding the pipe, an immediate re-open writes a SECOND copy
+	// into the same reader, and viper parses the concatenation as
+	// duplicate YAML keys and panics ("mapping key "apps" already
+	// defined") — reproduced against the real clisso binary. Serve's
+	// default path swaps in a fresh pipe object per cycle, which is
+	// precisely the isolation that prevents it.
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		_ = mount.Serve(ctx, fifo, func() []byte { return rendered }, nil, nil, nil)
+	}()
+	return fifo, true, func() { cancel(); _ = os.RemoveAll(dir) }, nil
 }
 
 // clissoCaptureApp decides whether args are a capturable `clisso get` and,

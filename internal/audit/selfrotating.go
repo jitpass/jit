@@ -60,14 +60,17 @@ var selfRotatingCaches = []selfRotatingCache{
 	// never rotates, but the file is still tool-rewritten — clisso creates
 	// it on any run and rewrites it wholesale from `clisso apps create`,
 	// `providers passwd`, and `cp`. The mount-loses logic is identical: a
-	// FIFO here would break those commands against a pipe, so the offer
-	// must never be made. The action differs from the token caches' —
-	// there is nothing to "reset", only a long-lived secret to rotate at
-	// the provider if this machine may be exposed.
+	// FIFO here would break those commands against a pipe, so the mount
+	// offer must never be made. The protection that DOES exist is
+	// `jit wrap clisso` — the capture shim serves the real config per run
+	// and reconciles the file after clisso's own writes, which a static
+	// mount could never do. scanClissoConfig points the client-secret
+	// finding there itself; this entry keeps the mount offer suppressed
+	// for any OTHER secret the sweep finds in this file.
 	{
 		match:  ".clisso.yaml",
-		title:  "A clisso OneLogin client-secret (clisso rewrites its config itself)",
-		action: "rotate the client-secret in OneLogin if exposed — clisso rewrites this file itself, so jit does not protect it in place",
+		title:  "A secret in clisso's config (clisso rewrites this file itself)",
+		action: "`jit wrap clisso` vaults the client-secret; anything else here, move out and rotate — jit never mounts a file clisso rewrites",
 	},
 }
 

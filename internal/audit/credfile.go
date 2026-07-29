@@ -1116,10 +1116,14 @@ type clissoConfigFile struct {
 // long-lived and can start the whole chain for every configured app, which
 // makes it the highest-value credential in a clisso setup.
 //
-// Remedy comes from the selfRotatingCaches table (a ".clisso.yaml" entry),
-// which is what keeps annotateRemedies and the report's action line in
-// agreement: clisso rewrites this file itself, so jit must never offer to
-// protect it in place — see that table for the full reasoning.
+// The fix is `jit wrap clisso` (set here, like every wrappable finding):
+// the wrap vaults the secret, leaves a jit://vault pointer in the file,
+// and serves the real value back per run — a pointer value is therefore
+// already protected and produces no finding. What jit still never offers
+// is protecting the file IN PLACE with a mount: clisso rewrites it itself,
+// which is why ".clisso.yaml" also sits in the selfRotatingCaches table —
+// that keeps the mount offer suppressed for any OTHER secret the sweep
+// finds in this file.
 func scanClissoConfig(cfg Config) ([]Finding, error) {
 	path := filepath.Join(cfg.HomeDir, ".clisso.yaml")
 	file, err := openFile(path)
@@ -1139,8 +1143,8 @@ func scanClissoConfig(cfg Config) ([]Finding, error) {
 	var findings []Finding
 	for _, name := range slices.Sorted(maps.Keys(cc.Providers)) {
 		p := cc.Providers[name]
-		if p.ClientSecret == "" {
-			continue
+		if p.ClientSecret == "" || strings.HasPrefix(p.ClientSecret, "jit://vault/") {
+			continue // absent, or already a pointer at the vaulted secret
 		}
 		f := cfg.ValueFinding(ValueFindingParams{
 			FindingType:  FindingTypeCredentialFile,
@@ -1149,8 +1153,10 @@ func scanClissoConfig(cfg Config) ([]Finding, error) {
 			RawValue:     p.ClientSecret,
 			BaseSeverity: SeverityHigh,
 			Confidence:   ConfidenceHigh,
-			Evidence:     fmt.Sprintf("clisso provider %q keeps its OneLogin API client-secret here in plaintext — long-lived, and it mints AWS sessions for every configured app; jit does not migrate this file (clisso rewrites it itself), so if this machine may be exposed, rotate the credential in OneLogin", name),
+			Evidence:     fmt.Sprintf("clisso provider %q keeps its OneLogin API client-secret here in plaintext — long-lived, and it mints AWS sessions for every configured app; `jit wrap clisso` moves it to the vault (and captures every future login's AWS credentials too)", name),
 		})
+		f.Remedy = RemedyWrap
+		f.FixCommand = "jit wrap clisso"
 		// The client-id is the parsed-but-unreported half of the pair (it
 		// alone authenticates nothing) — claimed so the content sweep's
 		// re-discovery of it stays deduplicated, same as the AWS access

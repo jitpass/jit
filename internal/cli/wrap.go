@@ -103,6 +103,33 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 		}
 		fmt.Fprintf(out, "Wrapped %s (%s):\n  shim  %s\n", tool, entry.Doc, res.ShimPath)
 		fmt.Fprintf(out, "From now on `%s get <app>` stores the minted credentials in the vault\n(profile aws-<app>, served via credential_process) instead of writing\n~/.aws/credentials; your MFA prompts appear exactly as before.\n", tool)
+
+		// The tool's own long-lived secret moves too: clisso keeps a
+		// OneLogin client-secret in ~/.clisso.yaml, and the shim serves
+		// the real value back per run — so the plaintext can leave now.
+		// Discovery first, so the vault (and its unlock prompt) is only
+		// opened when there is actually a secret to move.
+		found, err := migrate.DiscoverClissoSecrets(home)
+		if err != nil {
+			return fmt.Errorf("jit wrap: reading ~/.clisso.yaml: %w", err)
+		}
+		if len(found) > 0 {
+			v, err := openVault()
+			if err != nil {
+				return fmt.Errorf("jit wrap: %w", err)
+			}
+			mig, err := migrate.ApplyClissoConfig(v, home)
+			if err != nil {
+				return fmt.Errorf("jit wrap: %w", err)
+			}
+			for _, p := range mig.Providers {
+				fmt.Fprintf(out, "Moved provider %q's client-secret into the vault (%s); %s now\nholds a pointer (original backed up encrypted, `jit migrate undo` restores it).\n",
+					p, migrate.ClissoVaultPath(p), mig.ConfigPath)
+			}
+			for _, p := range mig.Skipped {
+				fmt.Fprintf(out, "Provider %q has a name that can't map to a vault path; its client-secret\nwas left in place.\n", p)
+			}
+		}
 		if err := ensureShimOnPath(cmd, home, tool); err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
