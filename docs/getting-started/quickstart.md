@@ -164,6 +164,11 @@ command keeps working exactly as you type it:
 jit wrap gh
 ```
 
+An SSO CLI is the same command for the opposite problem: `clisso` carries no
+token, it *mints* AWS credentials at every login and writes them to
+`~/.aws/credentials` in plaintext. `jit wrap clisso` captures each login into
+the vault instead, MFA prompts unchanged.
+
 See **[Wrap](../wrap/index.md)** for the full catalog.
 
 ---
