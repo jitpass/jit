@@ -452,7 +452,17 @@ func StoreAWSSession(v *vault.Vault, home, profileName string, s AWSSession) (AW
 		return AWSCredentialMigration{}, fmt.Errorf("loading existing profile %s: %w", vaultProfilePath, lerr)
 	}
 
-	meta, err := newProvenance(vault.ClassAWS, "clisso")
+	// Origin is clisso's config, not a bare "clisso": normalizeOrigin
+	// turns any non-empty string into a PATH, so a label would be stored
+	// as <cwd>/clisso — a different, meaningless value for every directory
+	// the user happens to run `clisso get` from. The config is the real,
+	// stable thing these credentials derive from, and it groups them
+	// honestly under `jit vault list --by origin`.
+	//
+	// The class stays ClassAWS deliberately: internal/consent gates on
+	// that exact string, so a captured session must carry it or
+	// per-process consent would quietly stop protecting it.
+	meta, err := newProvenance(vault.ClassAWS, ClissoConfigPath(home))
 	if err != nil {
 		return AWSCredentialMigration{}, err
 	}

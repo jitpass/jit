@@ -197,6 +197,16 @@ func runClissoCapture(real string, args []string) error {
 	if err != nil {
 		return fmt.Errorf("jit clisso-capture: %w", err)
 	}
+	// Warn BEFORE the write: an AWS profile that already holds a key from
+	// somewhere else (a static IAM key `jit migrate` moved out of
+	// ~/.aws/credentials) and a clisso app can share a name, and the
+	// capture replaces it.
+	if c := migrate.InspectOriginConflict(v, "aws-"+app+"/SECRET_ACCESS_KEY", vault.ClassAWS, migrate.ClissoConfigPath(home)); c != nil {
+		fmt.Fprintf(os.Stderr,
+			"jit: note — the vault profile aws-%s already held %s.\n"+
+				"    This login replaces it. The previous value is kept: jit vault history %s\n",
+			app, c.Describe(), c.Path)
+	}
 	res, err := migrate.StoreAWSSession(v, home, app, session)
 	if err != nil {
 		return fmt.Errorf("jit clisso-capture: %w", err)

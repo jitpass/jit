@@ -165,6 +165,17 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 		if discovery.Source != nil {
 			origin = discovery.Source.Path // already ~-form (see wrap.ExpandHome)
 		}
+		// The docs tell users to `jit vault set wrap-<tool>/VAR` by hand
+		// for tools with nothing discoverable on disk. If discovery later
+		// finds something anyway — a short-lived OAuth token where they
+		// vaulted a long-lived key — say so instead of just replacing it.
+		if c := migrate.InspectOriginConflict(v, vaultPath, vault.ClassWrap, origin); c != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"jit: note — %s already held %s.\n"+
+					"    Wrapping replaces it with the token found now. The previous value is kept:\n"+
+					"    jit vault history %s\n",
+				vaultPath, c.Describe(), c.Path)
+		}
 		if err := v.SetWithMeta(vaultPath, []byte(discovery.Value), vault.Meta{Class: vault.ClassWrap, GroupID: gid, Origin: origin}); err != nil {
 			return fmt.Errorf("jit wrap: storing %s: %w", vaultPath, err)
 		}
