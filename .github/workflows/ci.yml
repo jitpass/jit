@@ -82,4 +82,8 @@ jobs:
           # Pin the goreleaser MAJOR, not "latest", so CI's config check and
           # snapshot build track the same v2 the release job uses.
           version: "~> v2"
-          args: release --snapshot --clean --skip=publish,sign
+          # notarize and homebrew are skipped explicitly, not just left to
+          # their `enabled`/`skip_upload` env gates: CI must never post a
+          # snapshot to Apple's notary service or to the tap, even if the
+          # signing secrets are one day exposed to this job.
+          args: release --snapshot --clean --skip=publish,sign,notarize,homebrew

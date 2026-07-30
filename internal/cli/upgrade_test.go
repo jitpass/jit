@@ -19,6 +19,28 @@ import (
 	"testing"
 )
 
+func TestBrewManaged(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/opt/homebrew/Caskroom/jitpass/0.69.0/jit", true},
+		{"/usr/local/Caskroom/jitpass/0.69.0/jit", true},        // Intel-default prefix
+		{"/opt/homebrew/Cellar/jitpass/0.69.0/bin/jit", true},   // formula shape, just in case
+		{"/home/linuxbrew/.linuxbrew/Cellar/jitpass/jit", true}, // custom prefix still has the segment
+		{"/usr/local/bin/jit", false},                           // plain install, brew prefix but no Caskroom
+		{"/opt/homebrew/bin/jit", false},                        // the symlink itself — callers pass the resolved path
+		{"/Users/dev/go/bin/jit", false},                        // go install
+		{"/Users/dev/src/Caskroom-notes/jit", false},            // segment match, not substring match
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := brewManaged(c.path); got != c.want {
+			t.Errorf("brewManaged(%q) = %v, want %v", c.path, got, c.want)
+		}
+	}
+}
+
 func TestVersionNewer(t *testing.T) {
 	cases := []struct {
 		latest, current string

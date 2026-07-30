@@ -65,6 +65,20 @@ func upgradeLatestPageURL() string {
 	return fmt.Sprintf("https://github.com/%s/%s/releases/latest", upgradeRepoOwner, upgradeRepoName)
 }
 
+// brewManaged reports whether a resolved binary path lives inside a Homebrew
+// install tree. Casks unpack under a `Caskroom` directory and formulas under
+// `Cellar`, wherever the prefix is (/opt/homebrew, /usr/local, or custom), so
+// the path segments are the marker — not a hardcoded prefix, and no shelling
+// out to `brew` for a question the path already answers.
+func brewManaged(resolvedPath string) bool {
+	for _, seg := range strings.Split(resolvedPath, string(filepath.Separator)) {
+		if seg == "Caskroom" || seg == "Cellar" {
+			return true
+		}
+	}
+	return false
+}
+
 var upgradeForce bool
 
 var upgradeCmd = &cobra.Command{
@@ -77,6 +91,8 @@ var upgradeCmd = &cobra.Command{
 		"Replaces the binary `jit` actually runs from (whatever `which jit` resolves to).\n" +
 		"If that path isn't writable (e.g. /usr/local/bin), you'll be prompted for sudo\n" +
 		"just for the move. Your vault and secrets are never touched.\n\n" +
+		"A Homebrew-installed jit is not self-replaced — Homebrew owns that copy, so\n" +
+		"this command points you at `brew upgrade --cask jitpass` instead.\n\n" +
 		"Only the published darwin/arm64 release is fetched this way; on any other\n" +
 		"platform, build from source with `go install github.com/jitpass/jit/cmd/jit@latest`.",
 	Args:    cobra.NoArgs,
@@ -100,6 +116,16 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 	}
 	if resolved, rerr := filepath.EvalSymlinks(exePath); rerr == nil {
 		exePath = resolved
+	}
+
+	// A Homebrew-managed binary must be upgraded by Homebrew. Renaming over
+	// the Caskroom copy would leave brew's manifest describing a version
+	// that's no longer on disk, and a later `brew upgrade`/`uninstall` acts
+	// on stale state. The check runs on the *resolved* path on purpose:
+	// what's on PATH (`/opt/homebrew/bin/jit`) is itself the symlink the
+	// EvalSymlinks above deliberately follows into the Caskroom.
+	if brewManaged(exePath) {
+		return fmt.Errorf("jit upgrade: this jit is managed by Homebrew (%s); upgrade it with: brew upgrade --cask jitpass", exePath)
 	}
 
 	client := &http.Client{Timeout: 60 * time.Second}

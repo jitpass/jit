@@ -67,8 +67,10 @@ session, not the scope. A cloned repo's config, or a script that slips a
 
 - **Local-auth-bound, not hardware-enforced (today).** The Touch ID gate is an
   application-level LocalAuthentication challenge, not an OS-enforced Keychain
-  ACL or a Secure Enclave binding, because a real ACL needs an Apple Developer
-  ID signing identity the project does not have yet. A determined attacker with
+  ACL or a Secure Enclave binding, because a real ACL needs a
+  provisioning-profile-authorized entitlement that macOS will only honor
+  inside an `.app` bundle — a bare CLI binary has nowhere to carry it, signed
+  or not (see `spike/secure-enclave/FINDINGS.md`). A determined attacker with
   local code execution could read the plain Keychain item directly while the
   vault is locked, and could ask the service while it is unlocked. This is the
   accepted Phase 1 boundary.
@@ -102,8 +104,9 @@ session, not the scope. A cloned repo's config, or a script that slips a
 
 - Source is public on GitHub under the **PolyForm Perimeter License 1.0.0**
   (source-available, not open source); it can be built from source with Go.
-- Builds are **ad-hoc signed** today (Developer ID and notarization pending),
-  so a dev build's first run shows a one-time Keychain permission prompt.
+- Release builds are **Developer-ID signed and notarized** (`Meni Tasa,
+  CZC6BH93GJ`); dev builds from source are ad-hoc signed, so a dev build's
+  first run shows a one-time Keychain permission prompt.
 - No network calls, no telemetry, no auto-update. The vault leaves the machine
   only through an explicit passphrase-encrypted export the user runs.
 
