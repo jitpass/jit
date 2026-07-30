@@ -5,10 +5,23 @@ description: Prebuilt binary or build from source, shell completion, and how to 
 
 # Install
 
-jit is macOS-only and needs Touch ID or a device passcode. No Homebrew tap
-yet (planned for the first signed release).
+jit is macOS-only and needs Touch ID or a device passcode.
+
+## Homebrew (recommended)
+
+```sh
+brew install --cask jitpass/tap/jitpass
+```
+
+The cask installs the `jit` binary. Releases are signed with a Developer ID
+(`Meni Tasa, CZC6BH93GJ`) and notarized by Apple, so there is no Gatekeeper
+prompt to click through. Upgrade with `brew upgrade --cask jitpass` — a
+brew-installed jit belongs to brew, and `jit upgrade` will tell you so rather
+than fight it over the same file.
 
 ## Prebuilt binary (Apple Silicon, no Go required)
+
+The same signed binary the cask installs, fetched by hand:
 
 ```sh
 curl -sLO https://github.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz
@@ -31,11 +44,12 @@ To verify the download, `checksums.txt` on the
 [release page](https://github.com/jitpass/jit/releases/latest) has the
 SHA-256s: `shasum -a 256 --check checksums.txt --ignore-missing`.
 
-Use `curl`, not the browser: browser downloads get macOS's quarantine
-attribute, and Gatekeeper blocks quarantined binaries that aren't
-Developer-ID signed (release builds aren't, yet - same signing work as the
-Homebrew tap). If you already downloaded one that way, un-quarantine it
-with `xattr -d com.apple.quarantine jit`.
+Release binaries are Developer-ID signed and notarized, so a quarantined
+download (browser, or Homebrew's own quarantine on cask installs) passes
+Gatekeeper on its own — no `xattr` workarounds. Note the binary isn't
+*stapled* (Apple only staples app bundles and installers, not bare
+executables), so the very first launch of a quarantined copy asks Apple's
+servers for the notarization ticket — one network round-trip, once.
 
 ## Building from source (Intel Macs, contributors)
 
@@ -66,9 +80,10 @@ cd jit
 go install ./cmd/jit
 ```
 
-> Dev builds are ad-hoc signed, so macOS shows a one-time keychain permission
-> dialog per rebuild ("jit wants to use your confidential information…").
-> That's expected, not a bug. A stably-signed release build asks once, ever.
+> Dev builds (unlike releases) are ad-hoc signed, so macOS shows a one-time
+> keychain permission dialog per rebuild ("jit wants to use your confidential
+> information…"). That's expected, not a bug. A release build, carrying its
+> stable Developer ID signature, asks once, ever.
 
 ## Shell completion
 
@@ -135,7 +150,13 @@ install locations.
 
 ## Upgrading
 
-Once you're on **v0.41.0 or newer**, upgrading is one command:
+Installed through Homebrew? Homebrew owns that copy:
+
+```sh
+brew upgrade --cask jitpass
+```
+
+For manual installs on **v0.41.0 or newer**, upgrading is one command:
 
 ```sh
 jit upgrade

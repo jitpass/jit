@@ -23,12 +23,45 @@ builds:
     ldflags:
       - -s -w -X github.com/jitpass/jit/internal/agent.version={{.Version}}
 
-# TODO (blocked on a real paid Developer ID Application certificate — see
-# TECH_STACK.md §5 and the deferred item on task #4/#6): code signing via
-# `codesign` and notarization via `xcrun notarytool` need to run here, most
-# commonly as a goreleaser `before`/`after` hook or a dedicated signing step,
-# gated on an APPLE_SIGNING_IDENTITY-style secret that doesn't exist yet.
-# Until then, CI's snapshot job runs with `--skip=sign` deliberately.
+# Developer ID signing + notarization. This is the `notarize.macos`
+# (cross-platform, Anchore quill) path, which is OSS — deliberately NOT
+# `macos_native`, which is Pro-only and only handles .app bundles and .pkgs.
+# jit ships a bare Mach-O, which is exactly what the quill path covers.
+#
+# Two consequences of signing a bare binary rather than a bundle, both fine
+# for a CLI but worth knowing:
+#   - It cannot be stapled (`xcrun stapler` needs a bundle/dmg/pkg), so
+#     Gatekeeper fetches the notarization ticket online on first run.
+#   - The provisioning-profile-gated entitlements stay out of reach; that's
+#     the Secure Enclave wall documented in spike/secure-enclave/FINDINGS.md,
+#     and notarizing the CLI does not move it.
+#
+# `enabled` is gated on the secrets existing so that forks, PR builds, and
+# `--snapshot` all keep working untouched — no secrets means no signing,
+# not a failed release.
+notarize:
+  macos:
+    - enabled: '{{ isEnvSet "MACOS_SIGN_P12" }}'
+      ids: [jit-arm64]
+      sign:
+        # Base64-encoded Developer ID Application .p12. quill requires the
+        # full certificate chain to be present at signing time or Apple
+        # rejects the submission with a signature-validity error, so the .p12
+        # carries the G2 intermediate and Apple Root CA alongside the leaf.
+        certificate: "{{.Env.MACOS_SIGN_P12}}"
+        password: "{{.Env.MACOS_SIGN_PASSWORD}}"
+      notarize:
+        # Must be a *Team* App Store Connect API key with at least the
+        # Developer role. Individual/Personal keys cannot call notarytool at
+        # all (Apple Developer Forums 133063), which fails late and opaquely.
+        issuer_id: "{{.Env.MACOS_NOTARY_ISSUER_ID}}"
+        key_id: "{{.Env.MACOS_NOTARY_KEY_ID}}"
+        key: "{{.Env.MACOS_NOTARY_KEY}}"
+        # Wait for Apple's verdict rather than firing and forgetting: a
+        # release that publishes an un-notarized binary is worse than a
+        # release that fails loudly.
+        wait: true
+        timeout: 30m
 
 archives:
   - id: jit-archive
@@ -52,9 +85,33 @@ release:
   # name and notes and just upload the artifacts.
   mode: keep-existing
 
-# Homebrew tap publishing (homebrew_casks → jitpass/homebrew-tap) is
-# deliberately absent until releases are signed with a Developer ID
-# certificate and notarized — we don't want to promote an install path for
-# unsigned binaries. When signing lands, restore the `homebrew_casks` block
-# (git history has a working version: cask `jitpass`, binaries [jit],
-# HOMEBREW_TAP_GITHUB_TOKEN for the push).
+# Requires the jitpass/homebrew-tap repo and a token with write access to it,
+# supplied via HOMEBREW_TAP_GITHUB_TOKEN in CI.
+# `homebrew_casks`, not the older `brews` — brews is deprecated as of
+# goreleaser v2.10 (it hackily used Formulas to install precompiled binaries;
+# casks are the correct mechanism for that, per goreleaser.com/deprecations#brews).
+homebrew_casks:
+  - name: jitpass
+    repository:
+      owner: jitpass
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    # The archive's binary is `jit`; without this the cask defaults to
+    # linking a binary named after the cask (jitpass) and install breaks.
+    binaries: [jit]
+    homepage: "https://github.com/jitpass/jit"
+    description: "Local-first developer secret runtime"
+    # PolyForm Perimeter 1.0.0 — homebrew_casks has no `license:` field
+    # (unlike the deprecated `brews`/Formula schema); license lives in
+    # LICENSE instead.
+    # Don't fail the whole release if the tap token secret goes missing —
+    # binaries still publish, only the cask push is skipped.
+    skip_upload: '{{ if eq (envOrDefault "HOMEBREW_TAP_GITHUB_TOKEN" "") "" }}true{{ else }}false{{ end }}'
+    # No `xattr -dr com.apple.quarantine` post-install hook here, deliberately.
+    # The pre-signing version of this block needed one because ad-hoc-signed
+    # binaries died on first run under Homebrew's cask quarantine; now that
+    # releases carry a Developer ID signature and a notarization ticket,
+    # Gatekeeper clears them on its own. Stripping quarantine would throw away
+    # the check we just paid for — and Apple has signalled it may close that
+    # bypass without notice.

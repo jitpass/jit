@@ -141,10 +141,13 @@ Crypto primitives are in [TECH_STACK.md](../TECH_STACK.md).
 The master key is in the macOS login Keychain, and every use requires a Touch
 ID or device-passcode challenge. Be precise about the guarantee: today that is
 an **application-level** local-auth gate (LocalAuthentication), not a
-hardware-enforced Keychain ACL or a Secure Enclave binding. A real
-OS-enforced ACL needs an Apple Developer ID signing identity the project does
-not have yet. So the honest statement is "OS local-authentication-bound," not
-"cryptographically enforced against local code execution."
+hardware-enforced Keychain ACL or a Secure Enclave binding. A real OS-enforced
+ACL needs an entitlement macOS only grants through a provisioning profile,
+and a provisioning profile can only be embedded in an `.app` bundle — never a
+bare CLI binary like jit (releases are Developer-ID signed, and that alone
+doesn't unlock it; see `spike/secure-enclave/FINDINGS.md`). So the honest
+statement is "OS local-authentication-bound," not "cryptographically enforced
+against local code execution."
 
 ### So can an attacker who already runs code as me read my secrets?
 
@@ -220,9 +223,11 @@ before delivery, not after.
 ### How is it distributed and signed?
 
 The code is public on GitHub under the PolyForm Perimeter License 1.0.0
-(source-available, not open source). Builds are ad-hoc signed today (a real Developer ID and notarization
-are pending), so the first run of a dev build shows a one-time macOS Keychain
-permission prompt. You can also build from source with Go.
+(source-available, not open source). Release builds are signed with a
+Developer ID (`Meni Tasa, CZC6BH93GJ`) and notarized by Apple; install them
+with `brew install --cask jitpass/tap/jitpass` or from the release tarball.
+You can also build from source with Go — dev builds are ad-hoc signed, so
+their first run shows a one-time macOS Keychain permission prompt.
 
 ### Where can I report a security issue?
 
