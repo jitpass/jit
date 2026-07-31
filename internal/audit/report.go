@@ -600,7 +600,7 @@ func computeColumns(group []Finding) columns {
 		c.sevW = max(c.sevW, len(strings.ToUpper(f.Severity)))
 		if f.KeyName != nil {
 			c.hasKey = true
-			c.keyW = max(c.keyW, len(*f.KeyName))
+			c.keyW = max(c.keyW, len(sanitizeDisplayPtr(f.KeyName)))
 		}
 		if f.ValuePreview != nil {
 			c.hasValue = true
@@ -681,27 +681,23 @@ func (c columns) writeFindingRow(w io.Writer, f Finding, showLine bool) {
 
 	if !c.hasKey && !c.hasValue {
 		if f.Evidence != "" {
-			fmt.Fprintf(w, "  %s", f.Evidence)
+			fmt.Fprintf(w, "  %s", sanitizeDisplay(f.Evidence))
 		}
 		fmt.Fprintln(w)
 		return
 	}
 
 	if c.hasKey {
-		key := ""
-		if f.KeyName != nil {
-			key = *f.KeyName
-		}
-		fmt.Fprintf(w, "  %-*s", c.keyW, key)
+		fmt.Fprintf(w, "  %-*s", c.keyW, sanitizeDisplayPtr(f.KeyName))
 	}
 	if c.hasValue && f.ValuePreview != nil {
-		fmt.Fprintf(w, "  %s", *f.ValuePreview)
+		fmt.Fprintf(w, "  %s", sanitizeDisplayPtr(f.ValuePreview))
 	}
 	fmt.Fprintln(w)
 
 	if f.Evidence != "" {
 		indent := strings.Repeat(" ", c.reasonIndent())
 		_, _ = color.New(color.Faint).Fprintf(w, "%s└ ", indent)
-		fmt.Fprintln(w, f.Evidence)
+		fmt.Fprintln(w, sanitizeDisplay(f.Evidence))
 	}
 }

@@ -74,7 +74,7 @@ func isJitPointerContent(path string) bool {
 	if err != nil || !info.Mode().IsRegular() {
 		return false
 	}
-	f, err := os.Open(path) // #nosec G304 -- discovered path, confirmed a regular file just above
+	f, err := openFile(path)
 	if err != nil {
 		return false
 	}

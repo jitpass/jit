@@ -107,7 +107,7 @@ func inspectPrivateKeyFile(cfg Config, path string, inSSHDir bool) (*Finding, er
 		return nil, nil
 	}
 
-	content, err := os.ReadFile(path) // #nosec G304 -- path comes from our own os.ReadDir of a fixed, known directory, never external input
+	content, err := readFile(path)
 	if err != nil {
 		return nil, nil
 	}

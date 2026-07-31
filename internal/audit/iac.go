@@ -240,7 +240,13 @@ func inspectK8sSecretFile(path string) (k8sSecretInspection, bool, error) {
 	var insp k8sSecretInspection
 	flagged := false
 
-	dec := yaml.NewDecoder(file)
+	// Bounded: a manifest is a text file a human wrote, and an unbounded
+	// yaml.Decoder over a walked path is a memory amplifier — a 32 MB
+	// secrets.yaml took 188 MB of RSS and was still going after minutes,
+	// against an advertised whole-scan budget of milliseconds, multiplied by
+	// the walk's 2xNumCPU classifier goroutines. content.go already caps its
+	// own sweep the same way; this one simply never did.
+	dec := yaml.NewDecoder(io.LimitReader(file, maxStructuredParseSize))
 	sawDoc := false
 	for {
 		// Decode into a Node first, then into the typed struct: a
