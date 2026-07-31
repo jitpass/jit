@@ -13,8 +13,21 @@ permissions:
 # CGO_ENABLED=1 (required by internal/secureenclave, TECH_STACK.md §2.3) needs a
 # real macOS toolchain — this can't run on Linux runners.
 jobs:
+  # The publish is gated on the full CI pipeline running against THIS tag's
+  # commit. Nothing before this ran a single test on the release path: a tag
+  # pushed at a commit whose CI was red — or a workflow_dispatch re-run of an
+  # old tag — went straight to a Developer-ID-signed, notarized binary and a
+  # cask push. jit ships `jit upgrade`, so the blast radius of one bad release
+  # is every installed copy.
+  test:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   goreleaser:
+    needs: test
     runs-on: macos-latest
+    timeout-minutes: 60 # notarize waits on Apple's verdict (.goreleaser.yml: timeout 30m)
     steps:
       - uses: actions/checkout@v4
         with:

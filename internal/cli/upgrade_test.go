@@ -235,6 +235,113 @@ func TestReplaceBinaryWritableDir(t *testing.T) {
 	}
 }
 
+// TestCopyFileRefusesToFollowASymlinkAtTheDestination pins the inner half of
+// the symlink/TOCTOU fix, at the syscall that does the work. The bug: the
+// staged copy was opened O_CREATE|O_TRUNC with no O_NOFOLLOW, so a symlink
+// sitting at the destination was FOLLOWED — the write landed on the link's
+// target, and the os.Rename that followed moved a symlink onto `jit`, leaving
+// the binary on everyone's PATH pointing wherever whoever planted it chose.
+// /usr/local/bin is group-writable on plenty of Macs, which is what makes that
+// a real position to be in rather than a theoretical one.
+//
+// Tested at copyFile rather than through replaceBinary because this is the
+// deterministic half: replaceBinary's destination name is random by design, so
+// nothing can plant a link there to be followed (that half is
+// TestReplaceBinaryIgnoresAPlantedFileAtTheOldFixedName, below).
+func TestCopyFileRefusesToFollowASymlinkAtTheDestination(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "staged")
+	if err := os.WriteFile(src, []byte("NEW-BINARY"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// What an attacker would aim the link at: anything they want written with
+	// jit's privileges, or replaced by an executable they control.
+	canary := filepath.Join(dir, "canary")
+	if err := os.WriteFile(canary, []byte("ORIGINAL"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dir, "planted")
+	if err := os.Symlink(canary, dst); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	if err := copyFile(src, dst, 0o755); err == nil {
+		t.Error("copyFile followed a symlink at its destination; an upgrade would write through a planted link")
+	}
+	// The refusal has to be a refusal, not a partial write.
+	got, err := os.ReadFile(canary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "ORIGINAL" {
+		t.Errorf("the symlink's target was modified to %q; the write went through the link", got)
+	}
+	// And the link itself must still be a link — not replaced by a regular
+	// file, which would mean the open created through it.
+	fi, err := os.Lstat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Error("the planted symlink was replaced by a regular file, so the open did not refuse it")
+	}
+}
+
+// TestReplaceBinaryIgnoresAPlantedFileAtTheOldFixedName pins the outer half:
+// the staged path must not be predictable. It used to be a fixed
+// ".jit-upgrade.new" in the install directory, so an attacker did not need to
+// win a race — the name was known in advance and could be pre-created at
+// leisure. os.CreateTemp's random name plus its implied O_EXCL is the fix.
+//
+// The old name is planted here as a symlink to a canary. A regression that
+// reintroduces any fixed staging name lands on it; the random name cannot.
+func TestReplaceBinaryIgnoresAPlantedFileAtTheOldFixedName(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "jit")
+	if err := os.WriteFile(target, []byte("OLD"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	staged := filepath.Join(t.TempDir(), "new")
+	if err := os.WriteFile(staged, []byte("NEW-BINARY"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	canary := filepath.Join(t.TempDir(), "canary")
+	if err := os.WriteFile(canary, []byte("ORIGINAL"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	planted := filepath.Join(dir, ".jit-upgrade.new") // the pre-fix staging name
+	if err := os.Symlink(canary, planted); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	if _, err := replaceBinary(target, staged); err != nil {
+		t.Fatalf("replaceBinary: %v", err)
+	}
+
+	if got, err := os.ReadFile(canary); err != nil || string(got) != "ORIGINAL" {
+		t.Errorf("the planted link's target reads %q (err %v), want it untouched — replaceBinary staged through a predictable name", got, err)
+	}
+	// The upgrade itself must still have happened, through a path of its own.
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "NEW-BINARY" {
+		t.Errorf("target holds %q, want the new binary", got)
+	}
+	// And `jit` must be a real file, never the link that was moved onto it in
+	// the bug this test exists for.
+	fi, err := os.Lstat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		t.Error("the installed jit is a symlink; a staged link was renamed onto the binary on everyone's PATH")
+	}
+}
+
 func writeTar(t *testing.T, tw *tar.Writer, name, body string) {
 	t.Helper()
 	if err := tw.WriteHeader(&tar.Header{
@@ -247,6 +354,43 @@ func writeTar(t *testing.T, tw *tar.Writer, name, body string) {
 	}
 	if _, err := tw.Write([]byte(body)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestSignatureRequirementFormIsInline is the half of the signature check that
+// must be assertable on ANY machine.
+//
+// TestVerifyStagedSignature below validates the requirement form the honest
+// way — against a real Developer ID signature — but it can only do that if the
+// machine happens to have one, and it skips when it does not. A CI runner
+// generally does not, so the check that matters most is precisely the one most
+// likely to be silently absent exactly where nobody is watching.
+//
+// The trap, restated because it is the entire point: codesign's -R reads its
+// argument as a FILE PATH unless the string starts with "=". Drop that byte and
+// codesign reports "invalid requirement specification" for every binary it is
+// given, genuine releases included — verifyStagedSignature turns that into "the
+// downloaded binary is not a signature-verified jit release" and NOBODY can
+// ever upgrade again. The failure is silent in the safe direction, which is
+// what makes it survivable long enough to ship.
+//
+// This asserts the form alone: no codesign, no signed binary, no environment.
+func TestSignatureRequirementFormIsInline(t *testing.T) {
+	req := signatureRequirement(upgradeTeamID)
+
+	if !strings.HasPrefix(req, "=") {
+		t.Errorf("signatureRequirement() = %q, which does not start with \"=\" — codesign -R will read it as a file path, "+
+			"fail to parse it, and reject every binary including genuine releases, so no upgrade can ever succeed", req)
+	}
+	// The team ID has to actually be in there, or the requirement would accept
+	// any Apple-anchored signature — every notarized app on the internet.
+	if !strings.Contains(req, upgradeTeamID) {
+		t.Errorf("signatureRequirement() = %q, which does not name team %s; the requirement would accept any Apple-anchored code", req, upgradeTeamID)
+	}
+	// And it must be anchored to Apple at all, or it degrades to "signed by
+	// someone claiming this OU".
+	if !strings.Contains(req, "anchor apple") {
+		t.Errorf("signatureRequirement() = %q, which is not anchored to Apple", req)
 	}
 }
 
