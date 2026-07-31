@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -148,39 +149,55 @@ func DiscoverPointerArtifacts(root string) (companions, inPlace []string, err er
 	return companions, inPlace, nil
 }
 
-// DropBackupRecords rewrites the undo index without drop's records,
-// matched by VaultPath — unique per record, since backupSecretFile bumps
-// its timestamp until the vault path is free. Deleting the corresponding
-// _backups/ vault entries is the caller's job (it holds the authed vault;
-// this only edits bookkeeping).
+// DropBackupRecords rewrites the undo index without drop's records, matched by
+// backupRecordKey (see it for why VaultPath alone was wrong). Deleting the
+// corresponding _backups/ vault entries is the caller's job (it holds the
+// authed vault; this only edits bookkeeping).
 func DropBackupRecords(root string, drop []BackupRecord) error {
 	if len(drop) == 0 {
 		return nil
 	}
 	path := BackupIndexPath(root)
-	idx, err := loadBackupIndex(path)
-	if err != nil {
-		return err
-	}
-	dropSet := make(map[string]bool, len(drop))
-	for _, r := range drop {
-		dropSet[r.VaultPath] = true
-	}
-	kept := idx.Backups[:0:0]
-	for _, r := range idx.Backups {
-		if !dropSet[r.VaultPath] {
-			kept = append(kept, r)
+	return vault.WithFileLock(path, func() error {
+		idx, err := loadBackupIndex(path)
+		if err != nil {
+			return err
 		}
-	}
-	if len(kept) == 0 {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("removing emptied undo index: %w", err)
+		dropSet := make(map[string]bool, len(drop))
+		for _, r := range drop {
+			dropSet[backupRecordKey(r)] = true
 		}
-		return nil
-	}
-	data, err := yaml.Marshal(backupIndexFile{Backups: kept})
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o600)
+		kept := idx.Backups[:0:0]
+		for _, r := range idx.Backups {
+			if !dropSet[backupRecordKey(r)] {
+				kept = append(kept, r)
+			}
+		}
+		if len(kept) == 0 {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("removing emptied undo index: %w", err)
+			}
+			return nil
+		}
+		data, err := yaml.Marshal(backupIndexFile{Backups: kept})
+		if err != nil {
+			return err
+		}
+		return vault.AtomicWriteFile(path, data)
+	})
+}
+
+// backupRecordKey identifies one record for set membership.
+//
+// This used to be VaultPath alone, described as unique per record — true for a
+// backup, false for a created-file record, which RecordCreatedFile writes with
+// no VaultPath at all (there are no bytes to store; the undo is a deletion).
+// Every such record therefore keyed on the empty string, so dropping ONE of
+// them dropped ALL of them: `jit migrate remove` on an AWS project silently
+// discarded the RemoveOnRestore record for, say, ~/.terraformrc, and a later
+// `jit migrate undo` then left that jit-written file behind permanently.
+//
+// The full triple is unique for both kinds and costs nothing.
+func backupRecordKey(r BackupRecord) string {
+	return r.VaultPath + "\x00" + r.OriginalPath + "\x00" + strconv.FormatInt(r.UnixTS, 10)
 }
