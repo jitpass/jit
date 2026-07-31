@@ -106,18 +106,47 @@ Counts are inflected, never `N thing(s)` — use `countWord`/`pluralWord` from
 "1 group(s)" has told the reader it isn't looking at their data.
 
 ### Tree — `jit vault list`, `jit status --secrets` groups
-A nested namespace. Deliberately the **lightest** shape — bracket headers and
-rules would be far too heavy across dozens of groups. A **bold** group name, a
-**dim** count, and members flowed into columns. A shared per-group note (all
-members "no recorded origin") is stated once on the header.
+A nested namespace. Deliberately the **lightest** shape: no rules, no glyphs
+on member rows, no per-item severity — across dozens of groups that weight
+would bury the names it is supposed to present. The `[Name]` header from rule
+1, a **dim** count, and members flowed into columns. A shared per-group note
+(all members "no recorded origin") is stated once on the header.
+
+This section used to say brackets were "far too heavy" here and showed a bare
+bold name. That was written before rule 1, which chose one header motif for
+the whole tool over a per-shape judgement, and the code followed rule 1. Read
+across fifteen groups the brackets earn it: they delimit a name that can
+itself contain dashes and dots (`npmrc-jitpass-playground`), which bold alone
+does not.
+
+```
+[descope] 12
+    DESCOPE_MGMT_KEY    DESCOPE_PROJECT_1   DESCOPE_PROJECT_2   DESCOPE_PROJECT_3
+    DESCOPE_PROJECT_4   DESCOPE_PROJECT_5   DESCOPE_PROJECT_6   DESCOPE_PROJECT_7
+
+[wiz] 5
+    WIZ_API_ENDPOINT   WIZ_AUDIENCE   WIZ_AUTH_URL   WIZ_CLIENT_ID
+    WIZ_CLIENT_SECRET
+```
+
+Under `jit status --secrets` the same groups sit beneath a state line, and the
+shared note rides the header:
 
 ```
 ○ Unreferenced here  4 groups · 21 secrets · may belong to another project
 
-  custom_scripts-descope 12 · no recorded origin
+  [custom_scripts-descope] 12 · no recorded origin
       DESCOPE_MGMT_KEY    DESCOPE_PROJECT_1   DESCOPE_PROJECT_2   DESCOPE_PROJECT_3
-      DESCOPE_PROJECT_4   DESCOPE_PROJECT_5   DESCOPE_PROJECT_6   DESCOPE_PROJECT_7
 ```
+
+**Column flow is capped, and the cap is the point.** `flowNames` lays out to
+at most `maxFlowWidth` (88) columns and `maxFlowCols` (4), whatever the
+terminal offers. Rule 6 is a ceiling, not a target: flowed to the full width
+of a 190-column window the same list became a six-or-more-column wall that
+scanned worse than the stack it replaced. Column widths are per group, not
+global — one 39-character name (`REGISTRY_INTERNAL_EXAMPLE_COM_AUTHTOKEN`)
+would otherwise widen every column in the listing and drop the whole page to
+two.
 
 ## The action line: `→ do this`
 
