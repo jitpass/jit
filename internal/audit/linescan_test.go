@@ -4,6 +4,7 @@
 package audit
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -128,4 +129,53 @@ func firstBytes(lines []string) []string {
 		out = append(out, l)
 	}
 	return out
+}
+
+// An unreadable fixed-path store must not take the whole report down with it.
+//
+// Before this, scan.go returned on the first fixed-scanner error, and several
+// fixed scanners error on ordinary conditions — a root-owned ~/.aws/credentials
+// left behind by a `sudo` run is the common one. The result was that `jit scan`
+// printed nothing at all for the entire machine, so the live key sitting in an
+// unrelated project went unmentioned because of a permissions bit two
+// directories away.
+func TestUnreadableFixedStoreDoesNotAbortScan(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root: chmod 000 does not deny root, so the failure can't be staged")
+	}
+	home := t.TempDir()
+
+	mkdirAll(t, filepath.Join(home, ".aws"))
+	awsPath := filepath.Join(home, ".aws", "credentials")
+	writeFile(t, awsPath, "[default]\naws_access_key_id = AKIAIOSFODNN7EXAMPLE\n")
+	if err := os.Chmod(awsPath, 0); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	// Restore before TempDir cleanup, which cannot remove an unreadable file.
+	t.Cleanup(func() { _ = os.Chmod(awsPath, 0o600) })
+
+	mkdirAll(t, filepath.Join(home, "proj"))
+	envPath := filepath.Join(home, "proj", ".env")
+	writeFile(t, envPath, "STRIPE_KEY=sk_live_"+strings.Repeat("x", 24)+"\n")
+
+	findings, summary, err := Scan(Config{HomeDir: home, RunID: "test", ScannerVersion: "test"})
+	if err != nil {
+		t.Fatalf("one unreadable file aborted the whole scan: %v", err)
+	}
+
+	var reported bool
+	for _, f := range findings {
+		if f.FilePath == envPath {
+			reported = true
+		}
+	}
+	if !reported {
+		t.Errorf("the readable project secret went unreported because another category failed: %s absent from %d findings", envPath, len(findings))
+	}
+
+	// And the gap has to be visible: a partial scan that reports like a
+	// complete one is the failure this change exists to avoid, not a fix for it.
+	if len(summary.DegradedScanners) == 0 {
+		t.Error("scan completed with an unreadable credential store but recorded no degraded scanner, so the report would read as a clean all-clear")
+	}
 }
