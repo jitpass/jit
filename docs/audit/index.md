@@ -86,7 +86,7 @@ followed. A path that doesn't exist is an error, not a silently empty scan.
 | `jit scan` | the coverage summary above (machine-wide default) |
 | `jit scan --full` | the full finding inventory: categories, severities, every file and line, plus the machine risk level |
 | `jit scan --format markdown` | the same report as markdown, for saving or sharing |
-| `jit scan --format ndjson` | one JSON record per finding plus a closing summary, for piping into other tools ([schema](../reference/audit-ndjson.md)) |
+| `jit scan --format ndjson` | one JSON record per finding plus a closing summary, for piping into other tools ([schema](../reference/scan-ndjson.md)) |
 | `jit scan -o report.md` | write the report to a file instead of stdout |
 
 The "Outside jit's scope" advisory appears in the default view, in `--full`,

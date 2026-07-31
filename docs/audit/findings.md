@@ -130,5 +130,5 @@ coverage instead - how many secrets are protected and what protects the
 rest - and never shows severity labels. Findings that look like
 *production* credentials or reference public IPs are called out - those
 are counted separately in the [NDJSON summary
-record](../reference/audit-ndjson.md) so downstream tooling can alert on
+record](../reference/scan-ndjson.md) so downstream tooling can alert on
 them specifically.
