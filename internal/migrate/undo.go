@@ -52,6 +52,25 @@ type BackupRecord struct {
 	// existed, restored at the historical 0600 (see restoreMode). Stored as
 	// an octal STRING because YAML would read a bare 0644 as decimal 644.
 	Mode string `yaml:"mode,omitempty"`
+	// Snapshot marks a record RestoreFromBackup took of whatever occupied the
+	// path immediately BEFORE it restored over it — the safety net that makes
+	// an undo itself undoable. It is never an undo TARGET.
+	//
+	// Without the distinction, `jit migrate undo` was not idempotent, and the
+	// second run silently re-applied the migration. LatestBackups picks the
+	// newest record per path; a restore's own snapshot is by construction the
+	// newest; and its content is the MIGRATED file. So the sequence was:
+	// undo once (correct, pre-migration content restored), undo again (the
+	// snapshot wins, and the credential-stripped file comes back) — reported
+	// as a successful restore of a backup "taken 3 seconds ago", with the
+	// pristine backup now unreachable from undo forever. For a RemoveOnRestore
+	// path it was worse: the second undo RE-CREATED the file jit had made, with
+	// its dangling credential_process line.
+	//
+	// Snapshots stay in the index and in the vault deliberately — they are how
+	// an edit made after migration is recovered by hand via `jit vault get` —
+	// they simply never answer "what did this file look like before jit".
+	Snapshot bool `yaml:"snapshot,omitempty"`
 }
 
 // defaultRestoreMode is what a restore uses when a BackupRecord carries no
@@ -187,9 +206,17 @@ func loadBackupIndex(path string) (backupIndexFile, error) {
 // sorted by path for deterministic output. A timestamp tie is broken by
 // later position in recs — append order is chronological, so the later
 // record is the newer backup even within the same second.
+//
+// Snapshot records are excluded: they capture jit-era state taken on the way
+// INTO a restore, not what a file looked like before jit touched it, and
+// letting one win is what made a second `jit migrate undo` re-apply the
+// migration it had just reversed. See BackupRecord.Snapshot.
 func LatestBackups(recs []BackupRecord) []BackupRecord {
 	latest := make(map[string]BackupRecord, len(recs))
 	for _, r := range recs {
+		if r.Snapshot {
+			continue
+		}
 		if cur, ok := latest[r.OriginalPath]; !ok || r.UnixTS >= cur.UnixTS {
 			latest[r.OriginalPath] = r
 		}
@@ -254,7 +281,7 @@ func RestoreFromBackup(v *vault.Vault, rec BackupRecord) error {
 	// is success, not an error — undo is idempotent.
 	if rec.RemoveOnRestore {
 		if info, statErr := os.Lstat(rec.OriginalPath); statErr == nil && info.Mode().IsRegular() {
-			if _, err := backupSecretFile(v, rec.OriginalPath); err != nil {
+			if _, err := snapshotSecretFile(v, rec.OriginalPath); err != nil {
 				return fmt.Errorf("snapshotting current %s before removing it: %w", rec.OriginalPath, err)
 			}
 		}
@@ -270,7 +297,7 @@ func RestoreFromBackup(v *vault.Vault, rec BackupRecord) error {
 	}
 
 	if info, statErr := os.Lstat(rec.OriginalPath); statErr == nil && info.Mode().IsRegular() {
-		if _, err := backupSecretFile(v, rec.OriginalPath); err != nil {
+		if _, err := snapshotSecretFile(v, rec.OriginalPath); err != nil {
 			return fmt.Errorf("snapshotting current %s before restoring over it: %w", rec.OriginalPath, err)
 		}
 	}
