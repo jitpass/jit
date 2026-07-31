@@ -24,8 +24,9 @@ Repeated rejections collapse into one line carrying a count; a collapsed line
 names the first caller of that window, because keying them per caller would let
 a flood of throwaway processes push every real event out of the history.
 
-Output is logfmt: one key=value line per event, newest first, so it reads and
-greps like a real service log. Narrow it without grep using the flags: --kind
+Output is a grouped text timeline, newest first. --format logfmt prints one
+key=value line per event instead, so it reads and greps like a real service
+log. Narrow either without grep using the flags: --kind
 cmd,unlock,use,lock,service,error, --status ok|failed|denied, --since and --until
 (an age like 2h/3d or a date), --parent (the launching ancestor, e.g. claude),
 --secret (a secret name an unlock touched), --user, and --grep (a regexp over the

@@ -42,7 +42,7 @@ file is backed up (encrypted, into the vault) first, `jit migrate undo <path>`
 restores a migrated file from that backup.
 
 ```
-jit migrate <file-or-dir>...
+jit migrate <file-or-dir>... [flags]
 ```
 
 ### Examples
@@ -60,10 +60,10 @@ jit migrate <file-or-dir>...
 ### Options
 
 ```
-      --dry-run         preview the plan without changing anything
-      --mount jit run   for a loose secret file, keep it live at its path as a mount (real value to jit run grants, a decoy otherwise) instead of replacing it with a pointer; also required to protect a file that mixes a secret with other content
-      --only strings    scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,docker,git,gcp,sops,npmrc,netrc,pypirc,loose (default: all)
-  -y, --yes             skip the confirmation prompt and migrate immediately
+      --dry-run        preview the plan without changing anything
+      --mount          for a loose secret file, keep it live at its path as a mount (real value to jit run grants, a decoy otherwise) instead of replacing it with a pointer; also required to protect a file that mixes a secret with other content
+      --only strings   scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,docker,git,gcp,sops,npmrc,netrc,pypirc,loose (default: all)
+  -y, --yes            skip the confirmation prompt and proceed immediately
 ```
 
 ### Options inherited from parent commands

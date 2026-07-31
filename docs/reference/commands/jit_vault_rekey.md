@@ -24,7 +24,7 @@ jit vault rekey [flags]
 ### Options
 
 ```
-      --yes   skip the confirmation prompt
+  -y, --yes   skip the confirmation prompt
 ```
 
 ### Options inherited from parent commands

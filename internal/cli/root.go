@@ -263,6 +263,26 @@ var quietFlag bool
 // best-effort posture the recorder itself keeps internally.
 var recordInvocation func(cmd *cobra.Command, err error, elapsed time.Duration)
 
+// ExitError carries a specific process exit status out of a command whose
+// non-zero exit is a RESULT rather than a failure — `jit scan --fail-on high`
+// finding critical secrets is the gate working, not the scan breaking. Scripts
+// and CI need to tell those apart: a bad flag or an unreadable vault must not
+// look identical to "secrets were found". Everything that is genuinely an
+// error keeps the plain exit 1.
+//
+// Msg, when set, is printed to stderr in place of the wrapped error's text.
+type ExitError struct {
+	Code int
+	Msg  string
+}
+
+func (e *ExitError) Error() string {
+	if e.Msg != "" {
+		return e.Msg
+	}
+	return fmt.Sprintf("exit status %d", e.Code)
+}
+
 // Execute runs the root command. Called from cmd/jit/main.go.
 //
 // ExecuteC (not Execute) so the audit log can record WHICH command actually

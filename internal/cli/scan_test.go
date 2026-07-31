@@ -5,6 +5,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,8 +48,15 @@ func withFixtureHome(t *testing.T) string {
 // every test to remember to pass every flag explicitly forever.
 func execScan(t *testing.T, args ...string) (stdout string, err error) {
 	t.Helper()
+	// Every scan flag, not just the two that caused a leak once: the point of
+	// centralizing this is that adding a flag never requires remembering to
+	// reset it in each test again.
 	scanFormat = "text"
 	scanOutput = ""
+	scanScore = false
+	scanUnfiltered = false
+	scanFull = false
+	scanFailOn = ""
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetArgs(append([]string{"scan"}, args...))
@@ -235,5 +243,96 @@ func TestScanCommandScansNamedFile(t *testing.T) {
 	}
 	if strings.Contains(out, jwt) {
 		t.Fatal("CLI output must never contain the raw token value")
+	}
+}
+
+// TestScanFailOnDefaultAlwaysExitsZero pins the contract that matters most for
+// backward compatibility: without --fail-on, a scan that finds critical
+// secrets still exits 0. Anyone who already runs `jit scan` in a script must
+// not start failing because the gate was added.
+func TestScanFailOnDefaultAlwaysExitsZero(t *testing.T) {
+	withFixtureHome(t)
+	dir := t.TempDir()
+	env := filepath.Join(dir, ".env")
+	if err := os.WriteFile(env, []byte("STRIPE_LIVE=sk_live_4eC39HqLyjWDarjtT1zdp7dc\n"), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := execScan(t, dir); err != nil {
+		t.Fatalf("a scan with findings and no --fail-on must exit 0, got: %v", err)
+	}
+}
+
+// TestScanFailOnTripsWithExitCode2: a tripped gate is a RESULT, so it carries
+// exit 2 rather than the plain 1 a broken command returns — CI has to be able
+// to tell "secrets found" from "the scan itself failed".
+func TestScanFailOnTripsWithExitCode2(t *testing.T) {
+	withFixtureHome(t)
+	dir := t.TempDir()
+	env := filepath.Join(dir, ".env")
+	if err := os.WriteFile(env, []byte("STRIPE_LIVE=sk_live_4eC39HqLyjWDarjtT1zdp7dc\n"), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	_, err := execScan(t, dir, "--fail-on", "any")
+	if err == nil {
+		t.Fatal("expected --fail-on any to trip on a scan with findings, got nil")
+	}
+	var exitErr *ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected an *ExitError so main() can set the status, got %T: %v", err, err)
+	}
+	if exitErr.Code != 2 {
+		t.Errorf("expected exit code 2, got %d", exitErr.Code)
+	}
+}
+
+// TestScanFailOnCleanScanPasses: the gate must not fire on a clean machine,
+// otherwise it can never be left switched on in CI.
+func TestScanFailOnCleanScanPasses(t *testing.T) {
+	withFixtureHome(t)
+	if _, err := execScan(t, t.TempDir(), "--fail-on", "any"); err != nil {
+		t.Fatalf("a clean scan must pass --fail-on any, got: %v", err)
+	}
+}
+
+// TestScanFailOnRespectsThreshold: a threshold ABOVE the scan's risk level
+// passes. Without this the flag would collapse into a single "any findings"
+// switch and the level vocabulary would be decorative.
+func TestScanFailOnRespectsThreshold(t *testing.T) {
+	withFixtureHome(t)
+	dir := t.TempDir()
+	env := filepath.Join(dir, ".env")
+	// A single test key: enough to be a finding, not enough to reach CRITICAL.
+	if err := os.WriteFile(env, []byte("STRIPE_KEY=sk_test_4eC39HqLyjWDarjtT1zdp7dc\n"), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	out, err := execScan(t, dir, "--score", "--fail-on", "critical")
+	if err != nil {
+		t.Fatalf("--fail-on critical must not trip below CRITICAL (score line: %q), got: %v", out, err)
+	}
+	if !strings.Contains(out, "Exposure:") {
+		t.Errorf("expected the score line to print, got: %q", out)
+	}
+}
+
+// TestScanFailOnRejectsBadThreshold: a typo'd threshold is a usage error
+// (exit 1), never a silently-disabled gate, and never mistaken for a trip.
+// "clean" is rejected too — as a threshold it would read "fail when clean".
+func TestScanFailOnRejectsBadThreshold(t *testing.T) {
+	withFixtureHome(t)
+	for _, level := range []string{"bogus", "clean", ""} {
+		if level == "" {
+			continue // empty means "flag unused", covered above
+		}
+		_, err := execScan(t, t.TempDir(), "--fail-on", level)
+		if err == nil {
+			t.Fatalf("--fail-on %q must be rejected, got nil", level)
+		}
+		var exitErr *ExitError
+		if errors.As(err, &exitErr) {
+			t.Errorf("--fail-on %q is a usage error (exit 1), not a gate trip (exit 2)", level)
+		}
+		if !strings.Contains(err.Error(), "--fail-on") {
+			t.Errorf("expected the error to name the flag, got: %v", err)
+		}
 	}
 }

@@ -32,10 +32,13 @@ import (
 
 var (
 	vaultSetStdin      bool
-	vaultSetForce      bool
+	vaultSetYes        bool
+	vaultSetForce      bool // pre-0.70 synonym for --yes, still accepted
 	vaultGetCopy       bool
-	vaultGetJSON       bool
-	vaultRmForce       bool
+	vaultGetFormat     string
+	vaultGetJSON       bool // pre-0.70 synonym for --format json, still accepted
+	vaultRmYes         bool
+	vaultRmForce       bool // pre-0.70 synonym for --yes, still accepted
 	vaultListFormat    string
 	vaultListAll       bool
 	vaultListLong      bool
@@ -135,7 +138,7 @@ func splitBackupPaths(paths []string) (secrets, backups []string) {
 // meta, when non-nil (`-l` on a terminal), carries each secret's header
 // info so the grouped view can annotate every line with its class and
 // last-updated age; nil keeps the plain, unannotated listing.
-func printVaultList(out io.Writer, secrets, backups []string, showBackups, grouped bool, meta map[string]vault.SecretInfo, axis string) {
+func printVaultList(out io.Writer, secrets, backups []string, showBackups, grouped, long bool, meta map[string]vault.SecretInfo, axis string) {
 	if len(secrets) == 0 && len(backups) == 0 {
 		fmt.Fprintln(out, hlCmds("No secrets stored yet. Run `jit vault set <path>` to add one, or `jit migrate .` to move existing secrets in."))
 		return
@@ -144,7 +147,7 @@ func printVaultList(out io.Writer, secrets, backups []string, showBackups, group
 	case grouped && (axis == "origin" || axis == "group"):
 		printSecretsByProvenance(out, secrets, meta, axis)
 	case grouped:
-		printGroupedSecrets(out, secrets, meta)
+		printGroupedSecrets(out, secrets, meta, long)
 	default:
 		for _, p := range secrets {
 			fmt.Fprintln(out, p)
@@ -238,8 +241,8 @@ func printDuplicateGroupNudge(out io.Writer, secrets []string) {
 // as before — one `descope/ (n)` header with its keys indented — so the common
 // case is unchanged. Relies on List's naturally-sorted input keeping every
 // path that shares a prefix contiguous.
-func printGroupedSecrets(out io.Writer, secrets []string, meta map[string]vault.SecretInfo) {
-	printSecretTree(out, secrets, "", 0, meta)
+func printGroupedSecrets(out io.Writer, secrets []string, meta map[string]vault.SecretInfo, long bool) {
+	printSecretTree(out, secrets, "", 0, meta, long)
 }
 
 // printSecretTree renders one level of the tree: paths are already stripped of
@@ -249,13 +252,13 @@ func printGroupedSecrets(out io.Writer, secrets []string, meta map[string]vault.
 // subtree recurses one level deeper; a leaf prints at the current indent,
 // -l-annotated when meta is set. Direct leaves at this level align their
 // metadata column to the widest of them.
-func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth int, meta map[string]vault.SecretInfo) {
+func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth int, meta map[string]vault.SecretInfo, long bool) {
 	indent := strings.Repeat("  ", depth)
 
 	// Plain listing (no -l): this level's own keys flow into aligned columns
 	// (house style — a 12-key group is three tidy rows, not a twelve-line
 	// stack), then each child segment recurses under a bold name + dim count.
-	if meta == nil {
+	if !long {
 		var leaves []string
 		for _, p := range paths {
 			if !strings.Contains(p, "/") {
@@ -282,12 +285,13 @@ func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth i
 			if depth == 0 && wrote {
 				fmt.Fprintln(out)
 			}
-			printSecretGroupHeader(out, indent, paths[i][:slash], j-i)
+			printSecretGroupHeader(out, indent, paths[i][:slash], j-i,
+				sharedGroupNote(paths[i:j], ancestorPath, meta))
 			sub := make([]string, j-i)
 			for k := i; k < j; k++ {
 				sub[k-i] = paths[k][len(seg):]
 			}
-			printSecretTree(out, sub, ancestorPath+seg, depth+1, meta)
+			printSecretTree(out, sub, ancestorPath+seg, depth+1, meta, long)
 			wrote = true
 			i = j
 		}
@@ -322,12 +326,13 @@ func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth i
 		if depth == 0 && wrote {
 			fmt.Fprintln(out)
 		}
-		printSecretGroupHeader(out, indent, paths[i][:slash], j-i)
+		printSecretGroupHeader(out, indent, paths[i][:slash], j-i,
+			sharedGroupNote(paths[i:j], ancestorPath, meta))
 		sub := make([]string, j-i)
 		for k := i; k < j; k++ {
 			sub[k-i] = paths[k][len(seg):]
 		}
-		printSecretTree(out, sub, ancestorPath+seg, depth+1, meta)
+		printSecretTree(out, sub, ancestorPath+seg, depth+1, meta, long)
 		wrote = true
 		i = j
 	}
@@ -337,9 +342,54 @@ func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth i
 // header shape every jit section/group uses: a `[segment]` name (default
 // weight — the brackets delimit it, no bold) and a dim count, at the given
 // indent. The tree's indentation shows the nesting.
-func printSecretGroupHeader(out io.Writer, indent, name string, n int) {
+func printSecretGroupHeader(out io.Writer, indent, name string, n int, note string) {
 	fmt.Fprintf(out, "%s[%s]", indent, name)
+	if note != "" {
+		_, _ = cDim.Fprintf(out, " %d · %s\n", n, note)
+		return
+	}
 	_, _ = cDim.Fprintf(out, " %d\n", n)
+}
+
+// sharedGroupNote is the Tree shape's per-group note: one fact every member
+// of the group shares, stated once on the header instead of repeated down the
+// column (design/output-style.md — "a shared per-group note is stated once on
+// the header"). Empty when the members disagree, because a note that only
+// holds for some of them is worse than none.
+//
+// What it reports: the provenance class, when every member carries the same
+// one ("dotenv", "aws", "wrap"). That answers "what kind of secrets are
+// these?" without -l, and it varies between groups, which is what makes it
+// worth a column.
+//
+// It deliberately does NOT report the absence of provenance. An early cut
+// printed "no recorded origin" whenever a group had none, and on a real
+// vault that was 8 of 13 headers carrying the same non-fact — the
+// restated-on-every-line noise rule 5 exists to prevent. Absence shows up
+// where it is actionable: as "unknown" per secret under -l, and grouped
+// under `--by origin`.
+//
+// paths are relative to ancestorPath (what printSecretTree has consumed so
+// far), so the two rejoin to the real vault path meta is keyed by.
+func sharedGroupNote(paths []string, ancestorPath string, meta map[string]vault.SecretInfo) string {
+	if len(meta) == 0 || len(paths) == 0 {
+		return ""
+	}
+	class := ""
+	for i, rel := range paths {
+		info, ok := meta[ancestorPath+rel]
+		if !ok {
+			return "" // a member we know nothing about: claim nothing
+		}
+		if i == 0 {
+			class = info.Class
+			continue
+		}
+		if info.Class != class {
+			return "" // members disagree
+		}
+	}
+	return class
 }
 
 // validateListBy guards the --by axis. "path" is the default first-segment
@@ -537,7 +587,10 @@ var vaultSetCmd = &cobra.Command{
 		"prompts for it with hidden input. Use --stdin for scripts. Passing the value\n" +
 		"as a bare argument works but lands in shell history, prefer the prompt or --stdin.\n\n" +
 		"Requires a fresh Touch ID/passcode on every run, never the cached service\n" +
-		"session, so writing a secret always takes a live human gesture.",
+		"session, so writing a secret always takes a live human gesture.\n\n" +
+		"Overwriting an existing secret asks first; -y/--yes skips that question,\n" +
+		"as it does on every other jit command. `-f`/`--force` is still accepted as\n" +
+		"a synonym for it.",
 	Args:              cobra.RangeArgs(1, 2),
 	ValidArgsFunction: completeVaultPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -560,7 +613,7 @@ var vaultSetCmd = &cobra.Command{
 			return fmt.Errorf("jit vault set: %w", err)
 		}
 
-		if !vaultSetForce {
+		if !vaultSetYes && !vaultSetForce {
 			exists, err := v.Exists(path)
 			if err != nil {
 				return fmt.Errorf("jit vault set: %w", err)
@@ -604,8 +657,14 @@ var vaultGetCmd = &cobra.Command{
 	// reasoning as vault list's SilenceUsage.
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if vaultGetCopy && vaultGetJSON {
-			return fmt.Errorf("jit vault get: --copy and --json are mutually exclusive (one hides the value, the other prints it)")
+		if err := validateOutputFormat(vaultGetFormat); err != nil {
+			return fmt.Errorf("jit vault get: %w", err)
+		}
+		// --json is the pre-0.70 spelling of --format json; either one asks
+		// for the same object.
+		wantJSON := vaultGetFormat == "json" || vaultGetJSON
+		if vaultGetCopy && wantJSON {
+			return fmt.Errorf("jit vault get: --copy and --format json are mutually exclusive (one hides the value, the other prints it)")
 		}
 		// Fresh auth on every read, never the cached service session: printing
 		// a decrypted secret always costs a fingerprint/passcode, locked or
@@ -622,7 +681,7 @@ var vaultGetCmd = &cobra.Command{
 			return fmt.Errorf("jit vault get: %w", err)
 		}
 
-		if vaultGetJSON {
+		if wantJSON {
 			// Info reads only the envelope header — no decryption, no second
 			// prompt (the one Get already cost is enough). Best-effort: the
 			// value is in hand, so a header hiccup drops metadata, never the
@@ -799,7 +858,13 @@ var vaultListCmd = &cobra.Command{
 		// provenance — a JSON snapshot always, -l or --by only when grouped
 		// (a piped listing stays byte-clean for grep, so annotation there
 		// would just be noise no one asked to parse).
-		needMeta := vaultListFormat == "json" || (grouped && (vaultListLong || axis != "path"))
+		// The grouped terminal view now always wants provenance: the Tree
+		// shape states a shared per-group note on the header
+		// (design/output-style.md), and it can only know a group shares one
+		// class or has no recorded origin by reading the envelopes. Info is
+		// metadata-only — no KeyWrapper, so no decryption and no Touch ID —
+		// which is what makes this affordable on every list.
+		needMeta := vaultListFormat == "json" || grouped
 		var meta map[string]vault.SecretInfo
 		if needMeta {
 			meta = make(map[string]vault.SecretInfo, len(secrets))
@@ -831,7 +896,7 @@ var vaultListCmd = &cobra.Command{
 			return writeJSON(cmd.OutOrStdout(), out)
 		}
 
-		printVaultList(cmd.OutOrStdout(), secrets, backups, vaultListAll, grouped, meta, axis)
+		printVaultList(cmd.OutOrStdout(), secrets, backups, vaultListAll, grouped, vaultListLong, meta, axis)
 		return nil
 	},
 }
@@ -842,11 +907,14 @@ var vaultRmCmd = &cobra.Command{
 	Long: "Permanently deletes the secret at <path>. Beyond the [y/N] confirmation,\n" +
 		"a fresh Touch ID/passcode is required (never the cached service session),\n" +
 		"so a process running as you can't delete a secret without a live human\n" +
-		"gesture even while the vault is unlocked.",
+		"gesture even while the vault is unlocked.\n\n" +
+		"-y/--yes skips the typed confirmation (never the fingerprint), matching\n" +
+		"every other jit command. `-f`/`--force` is still accepted as a synonym,\n" +
+		"so the `rm -f` reflex keeps working.",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeVaultPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if !vaultRmForce && !confirmPrompt(cmd, fmt.Sprintf("Permanently delete %s from the vault? This can't be undone. [y/N] ", args[0])) {
+		if !vaultRmYes && !vaultRmForce && !confirmPrompt(cmd, fmt.Sprintf("Permanently delete %s from the vault? This can't be undone. [y/N] ", args[0])) {
 			fmt.Fprintln(cmd.OutOrStdout(), "Aborted.")
 			return nil
 		}
@@ -1352,17 +1420,22 @@ var vaultPruneCmd = &cobra.Command{
 			return nil
 		}
 
-		fmt.Fprint(out, hlCmds(fmt.Sprintf("Pruning %s, each file's newest backup is kept, so `jit migrate undo` still works:\n", countWord(len(stale), "stale backup", "stale backups"))))
+		fmt.Fprint(out, hlCmds(fmt.Sprintf("Pruning %s, each file's newest backup is kept, so `jit migrate undo` still works:\n", countWord(len(stale), "stale file backup", "stale file backups"))))
 		for _, r := range stale {
 			fmt.Fprintf(out, "  • %s (%s, backed up %s ago)\n", r.VaultPath, displayPath(home, r.OriginalPath), humanAgo(time.Since(time.Unix(r.UnixTS, 0))))
 		}
-		if !vaultPruneYes && !confirmPrompt(cmd, fmt.Sprintf("Permanently delete %s? This can't be undone. [y/N] ", countWord(len(stale), "stale backup", "stale backups"))) {
+		// Both this and `jit vault orphans --prune` are destructive vault
+		// cleanups, and the word "prune" alone doesn't say which objects go.
+		// Each confirmation therefore names its own object class AND
+		// disclaims the other's, so the two can never be confused at the
+		// one moment that matters.
+		if !vaultPruneYes && !confirmPrompt(cmd, fmt.Sprintf("Permanently delete %s? Your stored secrets are not touched. This can't be undone. [y/N] ", countWord(len(stale), "stale file backup", "stale file backups"))) {
 			fmt.Fprintln(out, "Aborted. Nothing was deleted.")
 			return nil
 		}
 		// Fresh biometric gate before deleting backups (bypassable [y/N]
 		// above is only a footgun guard), required locked or not.
-		if err := requireUserPresence(fmt.Sprintf("delete %s from the vault", countWord(len(stale), "stale backup", "stale backups"))); err != nil {
+		if err := requireUserPresence(fmt.Sprintf("delete %s (not secrets) from the vault", countWord(len(stale), "stale file backup", "stale file backups"))); err != nil {
 			return fmt.Errorf("jit vault prune: %w", err)
 		}
 
@@ -1378,14 +1451,15 @@ var vaultPruneCmd = &cobra.Command{
 		if err := migrate.DropBackupRecords(root, stale); err != nil {
 			return fmt.Errorf("jit vault prune: %w", err)
 		}
-		fmt.Fprint(out, hlCmds(fmt.Sprintf("Pruned %s. %s %s newest backup for `jit migrate undo`.\n", countWord(len(stale), "stale backup", "stale backups"), countWord(len(keep), "file", "files"), pluralWord(len(keep), "keeps its", "keep their"))))
+		fmt.Fprint(out, hlCmds(fmt.Sprintf("Pruned %s. %s %s newest backup for `jit migrate undo`.\n", countWord(len(stale), "stale file backup", "stale file backups"), countWord(len(keep), "file", "files"), pluralWord(len(keep), "keeps its", "keep their"))))
 		return nil
 	},
 }
 
 var (
-	vaultOrphansPrune bool
-	vaultOrphansYes   bool
+	vaultOrphansPrune  bool
+	vaultOrphansYes    bool
+	vaultOrphansFormat string
 )
 
 // collectReferencedPaths gathers every vault path referenced by a profile jit
@@ -1514,6 +1588,9 @@ var vaultOrphansCmd = &cobra.Command{
 	Args:         cobra.NoArgs,
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateOutputFormat(vaultOrphansFormat); err != nil {
+			return fmt.Errorf("jit vault orphans: %w", err)
+		}
 		out := cmd.OutOrStdout()
 		root, err := vaultRootDir()
 		if err != nil {
@@ -1541,13 +1618,43 @@ var vaultOrphansCmd = &cobra.Command{
 				orphans = append(orphans, p)
 			}
 		}
-		if len(orphans) == 0 {
-			fmt.Fprintln(out, "No orphaned secrets: every stored secret is referenced by a profile jit can see.")
-			return nil
-		}
 		sort.Strings(orphans)
 
-		printOrphanGroups(out, readVault, orphans)
+		// --format json before the prose: this is the shape a scripted vault
+		// hygiene check consumes, and it carries the same per-secret origin
+		// the text view shows, so a script never has to `get` each one to
+		// decide whether it is safe to prune. Reporting only — --prune still
+		// takes its own confirmation and fingerprint below.
+		if vaultOrphansFormat == "json" {
+			type orphanRecord struct {
+				Path   string `json:"path"`
+				Origin string `json:"origin"`
+			}
+			records := make([]orphanRecord, 0, len(orphans))
+			for _, p := range orphans {
+				records = append(records, orphanRecord{Path: p, Origin: orphanOrigin(readVault, p)})
+			}
+			if err := writeJSON(out, struct {
+				Count   int            `json:"count"`
+				Orphans []orphanRecord `json:"orphans"`
+			}{Count: len(records), Orphans: records}); err != nil {
+				return fmt.Errorf("jit vault orphans: %w", err)
+			}
+			if !vaultOrphansPrune {
+				return nil
+			}
+		}
+
+		if len(orphans) == 0 {
+			if vaultOrphansFormat != "json" {
+				fmt.Fprintln(out, "No orphaned secrets: every stored secret is referenced by a profile jit can see.")
+			}
+			return nil
+		}
+
+		if vaultOrphansFormat != "json" {
+			printOrphanGroups(out, readVault, orphans)
+		}
 
 		if !vaultOrphansPrune {
 			fmt.Fprintf(out, "\n%s, referenced by no profile jit can currently see.\n"+
@@ -1555,8 +1662,10 @@ var vaultOrphansCmd = &cobra.Command{
 			return nil
 		}
 
+		// Names the object class and disclaims the other prune's — see the
+		// matching comment in `jit vault prune`.
 		if !vaultOrphansYes && !confirmPrompt(cmd, fmt.Sprintf(
-			"Permanently delete %s? This can't be undone. [y/N] ", countWord(len(orphans), "orphaned secret", "orphaned secrets"))) {
+			"Permanently delete %s? This removes stored secret values, not `jit migrate`'s file backups. This can't be undone. [y/N] ", countWord(len(orphans), "orphaned secret", "orphaned secrets"))) {
 			fmt.Fprintln(out, "Aborted. Nothing was deleted.")
 			return nil
 		}
@@ -1572,7 +1681,14 @@ var vaultOrphansCmd = &cobra.Command{
 				return fmt.Errorf("jit vault orphans: deleting %s: %w", p, err)
 			}
 		}
-		fmt.Fprintf(out, "Deleted %s.\n", countWord(len(orphans), "orphaned secret", "orphaned secrets"))
+		// In --format json the listing above is the machine output, so this
+		// human confirmation goes to stderr rather than trailing a
+		// non-JSON line onto a stdout a script is parsing.
+		done := out
+		if vaultOrphansFormat == "json" {
+			done = cmd.ErrOrStderr()
+		}
+		fmt.Fprintf(done, "Deleted %s.\n", countWord(len(orphans), "orphaned secret", "orphaned secrets"))
 		return nil
 	},
 }
@@ -1940,10 +2056,23 @@ func openVault() (*vault.Vault, error) {
 
 func init() {
 	vaultSetCmd.Flags().BoolVar(&vaultSetStdin, "stdin", false, "read the secret value from stdin instead of prompting")
-	vaultSetCmd.Flags().BoolVarP(&vaultSetForce, "force", "f", false, "overwrite an existing secret without confirmation")
+	// -y/--yes is canonical across every jit command that skips a [y/N]
+	// prompt; --force stays registered (hidden) so the pre-0.70 spelling and
+	// the `rm -f` reflex keep working rather than erroring. --force is
+	// reserved for overriding a precondition that makes a command a no-op
+	// (`jit upgrade --force`), not for answering a question.
+	vaultSetCmd.Flags().BoolVarP(&vaultSetYes, "yes", "y", false, "overwrite an existing secret without confirmation")
+	vaultSetCmd.Flags().BoolVarP(&vaultSetForce, "force", "f", false, "synonym for --yes")
+	_ = vaultSetCmd.Flags().MarkHidden("force")
 	vaultGetCmd.Flags().BoolVarP(&vaultGetCopy, "copy", "c", false, "copy the value to the clipboard instead of printing it")
-	vaultGetCmd.Flags().BoolVar(&vaultGetJSON, "json", false, "print an object with the value plus provenance (class/group/origin) and timestamps")
-	vaultRmCmd.Flags().BoolVarP(&vaultRmForce, "force", "f", false, "delete without confirmation")
+	// --format matches the other seven commands that emit a JSON snapshot;
+	// --json stays registered (hidden) as the pre-0.70 spelling.
+	vaultGetCmd.Flags().StringVar(&vaultGetFormat, "format", "text", `output format: "text" (default, the bare value) or "json" (the value plus provenance and timestamps)`)
+	vaultGetCmd.Flags().BoolVar(&vaultGetJSON, "json", false, "synonym for --format json")
+	_ = vaultGetCmd.Flags().MarkHidden("json")
+	vaultRmCmd.Flags().BoolVarP(&vaultRmYes, "yes", "y", false, "skip the confirmation prompt")
+	vaultRmCmd.Flags().BoolVarP(&vaultRmForce, "force", "f", false, "synonym for --yes")
+	_ = vaultRmCmd.Flags().MarkHidden("force")
 	vaultListCmd.Flags().StringVar(&vaultListFormat, "format", "text", `output format: "text" (default) or "json"`)
 	vaultListCmd.Flags().BoolVar(&vaultListAll, "all", false, "also list jit migrate's encrypted file backups (_backups/...)")
 	vaultListCmd.Flags().BoolVarP(&vaultListLong, "long", "l", false, "show each secret's class and last-updated age (terminal output only)")
@@ -1956,6 +2085,7 @@ func init() {
 	vaultPruneCmd.Flags().BoolVarP(&vaultPruneYes, "yes", "y", false, "skip the confirmation prompt")
 	vaultOrphansCmd.Flags().BoolVar(&vaultOrphansPrune, "prune", false, "delete the orphaned secrets (default: only list them)")
 	vaultOrphansCmd.Flags().BoolVarP(&vaultOrphansYes, "yes", "y", false, "with --prune, skip the confirmation prompt")
+	vaultOrphansCmd.Flags().StringVar(&vaultOrphansFormat, "format", "text", `output format: "text" (default) or "json" (each orphan with its recorded origin)`)
 	vaultDeleteCmd.Flags().BoolVarP(&vaultDeleteYes, "yes", "y", false, "skip the confirmation prompt")
 	vaultHistoryCmd.Flags().StringVar(&vaultHistoryFormat, "format", "text", `output format: "text" (default) or "json"`)
 	vaultRestoreCmd.Flags().Int64Var(&vaultRestoreStamp, "version", 0, "which archived version to restore, by its stamp from jit vault history (default: the newest)")

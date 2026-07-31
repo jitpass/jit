@@ -6,6 +6,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -38,6 +39,13 @@ func main() {
 
 	if err := cli.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		// A command whose non-zero exit is a RESULT (jit scan --fail-on
+		// tripping) carries its own status, so CI can tell "secrets found"
+		// apart from "the scan itself broke". Everything else is exit 1.
+		var exitErr *cli.ExitError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.Code)
+		}
 		os.Exit(1)
 	}
 }

@@ -11,6 +11,10 @@ as a bare argument works but lands in shell history, prefer the prompt or --stdi
 Requires a fresh Touch ID/passcode on every run, never the cached service
 session, so writing a secret always takes a live human gesture.
 
+Overwriting an existing secret asks first; -y/--yes skips that question,
+as it does on every other jit command. `-f`/`--force` is still accepted as
+a synonym for it.
+
 ```
 jit vault set <path> [value] [flags]
 ```
@@ -18,8 +22,8 @@ jit vault set <path> [value] [flags]
 ### Options
 
 ```
-  -f, --force   overwrite an existing secret without confirmation
       --stdin   read the secret value from stdin instead of prompting
+  -y, --yes     overwrite an existing secret without confirmation
 ```
 
 ### Options inherited from parent commands

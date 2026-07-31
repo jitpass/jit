@@ -415,10 +415,10 @@ var serviceConsentCmd = &cobra.Command{
 	Short: "Show or set per-process credential consent",
 	Long: "Per-process credential consent (on by default): the background service\n" +
 		"prompts a fresh Touch ID the first time each tool reaches for a credential\n" +
-		"(AWS, git, docker, kube, gcloud/sops/npm/netrc keys), naming who is asking,\n" +
-		"and remembers your answer for the session. It closes the window where any\n" +
-		"process running as you can use a migrated credential silently while your\n" +
-		"vault is unlocked.\n\n" +
+		"(AWS, git, docker, kube, gcloud/sops/npm/netrc/pypi keys), naming who is\n" +
+		"asking, and remembers your answer for the session. It closes the window\n" +
+		"where any process running as you can use a migrated credential silently\n" +
+		"while your vault is unlocked.\n\n" +
 		"Saying no is meant to be cheap. A refused prompt is not remembered as a\n" +
 		"lasting \"no\" — it can't be, since a decline and a keychain failure look the\n" +
 		"same from here — so instead it pauses that caller for a few seconds, then\n" +

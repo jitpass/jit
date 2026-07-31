@@ -245,8 +245,11 @@ func TestVaultPruneKeepsNewestBackupPerFile(t *testing.T) {
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("jit vault prune --yes: %v", err)
 	}
-	if !strings.Contains(buf.String(), "Pruned 2 stale backups") {
-		t.Errorf("expected 2 stale backups pruned (a's two older), got:\n%s", buf.String())
+	// "file backups", not just "backups": the wording deliberately names the
+	// object class so this can't be confused with `jit vault orphans --prune`,
+	// which deletes secret values instead.
+	if !strings.Contains(buf.String(), "Pruned 2 stale file backups") {
+		t.Errorf("expected 2 stale file backups pruned (a's two older), got:\n%s", buf.String())
 	}
 
 	ro := &vault.Vault{Root: root, RecipientID: "test-device"}
@@ -617,7 +620,7 @@ func TestPrintVaultList(t *testing.T) {
 	backups := []string{"_backups/Users/x/notion/.env.jit-bak-1"}
 
 	var buf bytes.Buffer
-	printVaultList(&buf, secrets, backups, false, false, nil, "path")
+	printVaultList(&buf, secrets, backups, false, false, false, nil, "path")
 	out := buf.String()
 	if strings.Contains(out, "_backups/") {
 		t.Errorf("default listing must not include _backups/ entries, got:\n%s", out)
@@ -633,7 +636,7 @@ func TestPrintVaultList(t *testing.T) {
 	}
 
 	buf.Reset()
-	printVaultList(&buf, secrets, backups, true, false, nil, "path")
+	printVaultList(&buf, secrets, backups, true, false, false, nil, "path")
 	out = buf.String()
 	if !strings.Contains(out, "_backups/Users/x/notion/.env.jit-bak-1") {
 		t.Errorf("--all must list backup entries, got:\n%s", out)
@@ -645,7 +648,7 @@ func TestPrintVaultList(t *testing.T) {
 	}
 
 	buf.Reset()
-	printVaultList(&buf, nil, backups, false, false, nil, "path")
+	printVaultList(&buf, nil, backups, false, false, false, nil, "path")
 	out = buf.String()
 	for _, want := range []string{"No secrets stored yet, 1 encrypted file backup", "jit migrate undo", "--all"} {
 		if !strings.Contains(out, want) {
@@ -656,7 +659,7 @@ func TestPrintVaultList(t *testing.T) {
 	// Backups-only with --all: the backups list, and the closing line
 	// still says "No secrets" rather than the old "0 secret(s)".
 	buf.Reset()
-	printVaultList(&buf, nil, backups, true, false, nil, "path")
+	printVaultList(&buf, nil, backups, true, false, false, nil, "path")
 	out = buf.String()
 	if !strings.Contains(out, "_backups/Users/x/notion/.env.jit-bak-1") {
 		t.Errorf("backups-only --all must list backup entries, got:\n%s", out)
@@ -666,7 +669,7 @@ func TestPrintVaultList(t *testing.T) {
 	}
 
 	buf.Reset()
-	printVaultList(&buf, nil, nil, false, false, nil, "path")
+	printVaultList(&buf, nil, nil, false, false, false, nil, "path")
 	if !strings.Contains(buf.String(), "No secrets stored yet. Run jit vault set <path>") {
 		t.Errorf("empty vault keeps the standard empty state, got:\n%s", buf.String())
 	}
@@ -686,7 +689,7 @@ func TestPrintVaultListGrouped(t *testing.T) {
 	backups := []string{"_backups/Users/x/notion/.env.jit-bak-1"}
 
 	var buf bytes.Buffer
-	printVaultList(&buf, secrets, backups, true, true, nil, "path")
+	printVaultList(&buf, secrets, backups, true, true, false, nil, "path")
 	out := buf.String()
 	for _, want := range []string{
 		"[descope] 2",
@@ -722,7 +725,7 @@ func TestPrintVaultListLong(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	printVaultList(&buf, secrets, nil, false, true, meta, "path")
+	printVaultList(&buf, secrets, nil, false, true, true, meta, "path")
 	out := buf.String()
 
 	if !strings.Contains(out, "dotenv · updated") {
@@ -799,7 +802,7 @@ func TestPrintGroupedSecretsNests(t *testing.T) {
 		"flat/ONLY",
 	}
 	var buf bytes.Buffer
-	printGroupedSecrets(&buf, secrets, nil)
+	printGroupedSecrets(&buf, secrets, nil, false)
 	out := buf.String()
 
 	for _, want := range []string{

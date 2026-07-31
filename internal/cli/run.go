@@ -61,9 +61,9 @@ var runCmd = &cobra.Command{
 		"putting `read_as_file: true` in its .jit/config.yaml, instead of --live\n" +
 		"on every run.\n\n" +
 		"--with names a global, file-delivered credential to grant this run:\n" +
-		"gcp (gcloud ADC), sops, npm (~/.npmrc), or netrc (~/.netrc), for a tool\n" +
-		"that reads a machine-wide credential file, e.g. `jit run --with gcp\n" +
-		"terraform apply`.\n" +
+		"gcp (gcloud ADC), sops, npm (~/.npmrc), netrc (~/.netrc), or pypi\n" +
+		"(~/.pypirc), for a tool that reads a machine-wide credential file,\n" +
+		"e.g. `jit run --with gcp terraform apply`.\n" +
 		"It takes explicit intent by design: a global credential is never\n" +
 		"granted by a project's config, only by a --with you type.\n\n" +
 		"The -- separating jit's own flags from the command is optional, jit stops\n" +
@@ -349,7 +349,11 @@ func init() {
 	_ = runCmd.RegisterFlagCompletionFunc("profile", completeProfileNames)
 	runCmd.Flags().StringVar(&runMode, "mode", "", "also merge .env.<mode> and .env.<mode>.local layers (e.g. production)")
 	runCmd.Flags().BoolVar(&runLive, "live", false, "keep the live mount and grant this run real file reads, for tools that read values from the .env file itself (docker compose env_file); default swaps in a compatibility file")
-	runCmd.Flags().StringArrayVar(&runWith, "with", nil, "also grant this run a global file-delivered mount by name (gcp, sops, npm, netrc) - for tools that read a machine-wide credential file, e.g. `jit run --with gcp gcloud storage ls` (repeatable)")
+	// No backquotes in this usage string: cobra's UnquoteUsage treats a
+	// backquoted span as the flag's VALUE PLACEHOLDER, so an example command
+	// in backticks renders as "--with jit run --with gcp gcloud storage ls"
+	// and pads the whole help block out to its width.
+	runCmd.Flags().StringArrayVar(&runWith, "with", nil, "also grant this run a global file-delivered mount by name (gcp, sops, npm, netrc, pypi) - for tools that read a machine-wide credential file, e.g. jit run --with gcp gcloud storage ls (repeatable)")
 	runCmd.Flags().BoolVar(&runTrust, "trust", false, "pre-authorize this run's whole process tree for any credential, so per-process consent prompts don't fire under it")
 	_ = runCmd.RegisterFlagCompletionFunc("with", completeGlobalMountNames)
 	// Stop parsing jit's own flags at the first non-flag argument, so the

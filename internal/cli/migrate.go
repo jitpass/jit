@@ -1337,10 +1337,20 @@ func init() {
 	// Persistent so the flags work on both `jit migrate <path>` and its
 	// `path` alias subcommand (and undo/remove, which read the same vars).
 	migrateCmd.PersistentFlags().BoolVar(&migrateDryRun, "dry-run", false, "preview the plan without changing anything")
-	migrateCmd.PersistentFlags().BoolVarP(&migrateYes, "yes", "y", false, "skip the confirmation prompt and migrate immediately")
+	// Wording stays verb-neutral: this persistent flag is also what
+	// `jit migrate undo` inherits, where "migrate immediately" was simply
+	// the wrong verb for a restore.
+	migrateCmd.PersistentFlags().BoolVarP(&migrateYes, "yes", "y", false, "skip the confirmation prompt and proceed immediately")
 	migrateCmd.PersistentFlags().StringSliceVar(&migrateOnly, "only", nil, "scope a run to just these comma-separated categories: "+strings.Join(migrateCategories, ",")+" (default: all)")
 	_ = migrateCmd.RegisterFlagCompletionFunc("only", completeMigrateCategories)
-	migrateCmd.PersistentFlags().BoolVar(&migrateMount, "mount", false, "for a loose secret file, keep it live at its path as a mount (real value to `jit run` grants, a decoy otherwise) instead of replacing it with a pointer; also required to protect a file that mixes a secret with other content")
+	// --mount is local rather than persistent: only the migrate/path form
+	// reads it, so inheriting it advertised a no-op flag on undo and remove.
+	// No backquotes in the usage string either: cobra reads a backquoted span
+	// as the flag's value placeholder, which made this bool render as
+	// "--mount jit run".
+	const mountUsage = "for a loose secret file, keep it live at its path as a mount (real value to jit run grants, a decoy otherwise) instead of replacing it with a pointer; also required to protect a file that mixes a secret with other content"
+	migrateCmd.Flags().BoolVar(&migrateMount, "mount", false, mountUsage)
+	migratePathCmd.Flags().BoolVar(&migrateMount, "mount", false, mountUsage)
 
 	migrateCmd.AddCommand(migratePathCmd)
 	rootCmd.AddCommand(migrateCmd)
