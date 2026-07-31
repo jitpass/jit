@@ -57,6 +57,27 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 		formatDuration(summary.ScanDurationMs)))
 	fmt.Fprintln(w)
 
+	// A partial scan must never be able to look like a complete one. This sits
+	// ABOVE the ledger, not in a footnote, because it changes what every number
+	// below it means: "0 secrets" from a run that could not read ~/.aws
+	// is not the same claim as "0 secrets", and the difference is exactly the
+	// one a user reading a clean report will not think to ask about.
+	if len(summary.DegradedScanners) > 0 {
+		fmt.Fprint(w, "  ")
+		noun := "categories"
+		if len(summary.DegradedScanners) == 1 {
+			noun = "category"
+		}
+		termtext.Wrap(w, 2, "  ", yellowBold.Sprintf("INCOMPLETE SCAN — %d %s could not be read.", len(summary.DegradedScanners), noun))
+		for _, d := range summary.DegradedScanners {
+			fmt.Fprint(w, "      ")
+			termtext.Wrap(w, 6, "      ", yellow.Sprintf("%s: %s", d.Scanner, d.Error))
+		}
+		fmt.Fprint(w, "  ")
+		termtext.Wrap(w, 2, "  ", dim.Sprint("Counts below cover everything else; secrets in the unread categories are not included."))
+		fmt.Fprintln(w)
+	}
+
 	migratable := triageGroupMigratable(findings)
 	manual := triageGroupManual(findings, home)
 

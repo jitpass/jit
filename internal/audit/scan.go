@@ -74,6 +74,16 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 	discovered, filesWalked := discoverByWalk(cfg)
 
 	var all []Finding
+	// A category that fails must not take the report down with it. This loop
+	// used to return on the first error, and several fixed-path scanners error
+	// on entirely ordinary conditions — a root-owned ~/.aws/credentials left
+	// behind by a `sudo` run, an unreadable ~/.kube/config — so one such file
+	// meant `jit scan` printed nothing at all, for the whole machine, and the
+	// user learned nothing about the secrets it HAD already found. Collect the
+	// failures, keep scanning, and report them alongside the findings: a
+	// partial answer plus an honest note about the gap beats no answer, and it
+	// is what this package's own doc comment already promised.
+	var degraded []ScannerFailure
 	for i, c := range categories {
 		// Every category reports, including the pure-discovery ones whose work
 		// the walk above already did (their step settles instantly). The trail
@@ -89,8 +99,12 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 			var ferr error
 			fixed, ferr = c.fixed(cfg)
 			if ferr != nil {
-				return all, ScanSummary{}, ferr
+				degraded = append(degraded, ScannerFailure{Scanner: c.name, Error: ferr.Error()})
 			}
+			// Kept even on error: a scanner that failed partway still found
+			// whatever it found before that, and those are real credentials
+			// sitting in real files. Discarding them would repeat the mistake
+			// this whole change exists to undo, one level down.
 			all = append(all, fixed...)
 		}
 		all = append(all, dropAlreadyReported(fixed, discovered[i])...)
@@ -113,6 +127,7 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 
 	summary := buildScanSummary(cfg, all, countProtectedMounts(cfg.MountRegistryPath), time.Since(start))
 	summary.FilesScanned = filesWalked
+	summary.DegradedScanners = degraded
 	summary.DerivedCredentials = ScanDerivedCredentials(cfg)
 	coverage := ComputeCoverage(cfg.MountRegistryPath, all)
 	summary.SecretsTotal = coverage.Total()

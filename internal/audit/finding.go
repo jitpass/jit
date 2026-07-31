@@ -73,7 +73,13 @@ import (
 // changes is that they no longer count toward the distinct-secret ledger, for
 // the same reason Low/Info sightings do not — a score the user cannot move by
 // doing anything real is not a score worth printing.
-const SchemaVersion = "0.13.0"
+// 0.14.0 added one additive SUMMARY field, `degraded_scanners`: the categories
+// that could not complete this run, with their reasons. Before it, a single
+// unreadable fixed-path file (a root-owned ~/.aws/credentials left by a sudo
+// run) aborted the entire scan, so nothing was reported anywhere; now the rest
+// of the scan finishes and this field is what keeps the gap from reading as an
+// all-clear. Absent on a clean run.
+const SchemaVersion = "0.14.0"
 
 // ScannerName identifies this tool in the shared NDJSON envelope, matching
 // bumblebee's record shape so a receiver can co-ingest both (RFC.md §4).
@@ -297,6 +303,15 @@ type ScanSummary struct {
 	// jit stands behind, and this is a note to a human reading the report.
 	DerivedCredentials []DerivedCredential `json:"-"`
 
+	// DegradedScanners names every category that could not finish, and why.
+	//
+	// Serialized, unlike DerivedCredentials, because this one changes what the
+	// rest of the record MEANS: a total of zero from a scan with a degraded
+	// scanner is "we could not look there", not "there is nothing there", and a
+	// machine consumer that cannot tell those apart will read the second when
+	// the first is true. Empty (omitted) on a clean run, which is the norm.
+	DegradedScanners []ScannerFailure `json:"degraded_scanners,omitempty"`
+
 	// JitProtectedCount is how many registered jit live mounts (FIFOs
 	// currently occupying a path jit migrated) exist on this machine.
 	// Scanners never read those paths — a pipe has no at-rest content, and
@@ -304,6 +319,14 @@ type ScanSummary struct {
 	// so this count is what keeps the skip visible instead of silent: the
 	// files ARE there, they're just already protected.
 	JitProtectedCount int `json:"jit_protected_count"`
+}
+
+// ScannerFailure is one category that could not complete, and the reason.
+// Scanner is the category's own display name (the same string Config.Progress
+// is given), so a user can match it against the trail of what was looked at.
+type ScannerFailure struct {
+	Scanner string `json:"scanner"`
+	Error   string `json:"error"`
 }
 
 // Config carries per-run context shared by every category scanner: where to
