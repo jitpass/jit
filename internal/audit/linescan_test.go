@@ -179,3 +179,50 @@ func TestUnreadableFixedStoreDoesNotAbortScan(t *testing.T) {
 		t.Error("scan completed with an unreadable credential store but recorded no degraded scanner, so the report would read as a clean all-clear")
 	}
 }
+
+// One unreadable credential store must not stop the ELEVEN others in its
+// category from being scanned.
+//
+// scanKnownCredentialFiles ran its sub-scanners in a loop and returned on the
+// first error, so a chmod-000 ~/.aws/credentials meant kubeconfig, npmrc,
+// cargo, pypirc, MCP tokens, Terraform, Docker, git, GCP, netrc and clisso
+// were never looked at at all — the same abort-on-first-failure bug Scan's own
+// loop had, one layer down and eleven scanners wide.
+func TestUnreadableCredentialStoreDoesNotSkipTheOthers(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root: chmod 000 does not deny root")
+	}
+	home := t.TempDir()
+
+	mkdirAll(t, filepath.Join(home, ".aws"))
+	awsPath := filepath.Join(home, ".aws", "credentials")
+	writeFile(t, awsPath, "[default]\naws_access_key_id = AKIAIOSFODNN7EXAMPLE\n")
+	if err := os.Chmod(awsPath, 0); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(awsPath, 0o600) })
+
+	// A LATER sub-scanner in the same category, with a finding to produce.
+	mkdirAll(t, filepath.Join(home, ".kube"))
+	writeFile(t, filepath.Join(home, ".kube", "config"),
+		"apiVersion: v1\nusers:\n- name: prod\n  user:\n    token: sha256~fixture-token-value\n")
+
+	findings, summary, err := Scan(Config{HomeDir: home, RunID: "test", ScannerVersion: "test"})
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	var sawKube bool
+	for _, f := range findings {
+		if strings.Contains(f.FilePath, ".kube") {
+			sawKube = true
+		}
+	}
+	if !sawKube {
+		t.Errorf("the kubeconfig token went unreported because an EARLIER scanner in the same "+
+			"category could not read its file; %d findings total", len(findings))
+	}
+	if len(summary.DegradedScanners) == 0 {
+		t.Error("the unreadable store was not recorded as a degraded scanner")
+	}
+}
