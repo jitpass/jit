@@ -218,3 +218,44 @@ func TestApplyKubeconfigUserCleanUserErrors(t *testing.T) {
 		t.Fatal("expected an error migrating a user with no migratable credentials")
 	}
 }
+
+// A user entry with BOTH a token and a client cert/key pair must have all
+// three vaulted — the rewrite deletes all three regardless.
+//
+// The early return on token meant the cert and key were removed from
+// ~/.kube/config having never been stored anywhere: gone from the live file,
+// absent from the vault, unmentioned in the plan, and recoverable only by
+// digging the whole-file backup out by hand.
+func TestKubeconfigUserSecretsKeepsEveryCredentialPresent(t *testing.T) {
+	userMap := map[string]interface{}{
+		"token":                   "sha256~fixture-token",
+		"client-certificate-data": "Y2VydA==",
+		"client-key-data":         "a2V5",
+	}
+	authType, secrets := kubeconfigUserSecrets(userMap)
+
+	for _, key := range []string{"TOKEN", "CLIENT_CERTIFICATE_DATA", "CLIENT_KEY_DATA"} {
+		if secrets[key] == "" {
+			t.Errorf("%s was not vaulted, but the rewrite deletes its kubeconfig field: it would be destroyed", key)
+		}
+	}
+	if authType != "token+client-cert" {
+		t.Errorf("AuthType = %q, want token+client-cert so the plan names what it took", authType)
+	}
+}
+
+// The single-kind cases must be unchanged.
+func TestKubeconfigUserSecretsSingleKinds(t *testing.T) {
+	authType, secrets := kubeconfigUserSecrets(map[string]interface{}{"token": "t"})
+	if authType != "token" || secrets["TOKEN"] != "t" || len(secrets) != 1 {
+		t.Errorf("token-only = (%q, %v), want token with just TOKEN", authType, secrets)
+	}
+
+	authType, secrets = kubeconfigUserSecrets(map[string]interface{}{
+		"client-certificate-data": "Y2VydA==",
+		"client-key-data":         "a2V5",
+	})
+	if authType != "client-cert" || secrets["CLIENT_CERTIFICATE_DATA"] != "Y2VydA==" || secrets["CLIENT_KEY_DATA"] != "a2V5" {
+		t.Errorf("cert-only = (%q, %v), want client-cert with the pair", authType, secrets)
+	}
+}
