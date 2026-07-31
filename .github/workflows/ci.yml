@@ -4,12 +4,32 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Callable so release.yml can gate a tag's publish on this exact pipeline
+  # rather than on a green tick someone remembered to look at.
+  workflow_call:
+  # govulncheck reads a database that changes without any commit of ours, so
+  # a repo that goes a fortnight without a push would otherwise learn about a
+  # new CVE in its dependencies from a user.
+  schedule:
+    - cron: "0 6 * * 1"
+
+# Read-only by default: nothing in this workflow writes to the repo, and the
+# release workflow (which does) declares its own.
+permissions:
+  contents: read
+
+# A second push to a PR supersedes the first. macOS runners bill at 10x, so a
+# superseded run is not just slow, it is the most expensive kind of waste here.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 # CGO_ENABLED=1 (required by internal/secureenclave, TECH_STACK.md §2.3) needs a
 # real macOS toolchain — this can't run on Linux runners.
 jobs:
   build-and-test:
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -20,28 +40,89 @@ jobs:
       - name: Build
         run: go build -v ./...
 
+      - name: gofmt
+        # Scoped to the module's own trees: spike/*/ are separate modules of
+        # throwaway experiments, deliberately not held to this.
+        run: |
+          unformatted=$(gofmt -l ./cmd ./internal)
+          if [ -n "$unformatted" ]; then
+            echo "$unformatted"
+            echo "::error::gofmt: the files above need formatting"
+            exit 1
+          fi
+
       - name: Vet
         run: go vet ./...
 
+      # TECH_STACK.md §6 commits to checksum verification on every build, and
+      # to a go.mod nobody has to remember to tidy.
+      - name: Module integrity
+        run: |
+          go mod verify
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      # -timeout well under Go's 10m default: this suite blocks on FIFOs, unix
+      # sockets and open(2), so a hang is a real failure mode, and the default
+      # spends ten minutes of a 10x-billed runner to tell you about it with a
+      # goroutine dump. Two minutes and the same dump is the same information,
+      # sooner.
       - name: Test
-        run: go test -race -v ./...
+        run: go test -race -timeout 2m -coverprofile=cover.out -coverpkg=./... ./...
+
+      # Reported, not gated: a threshold invites tests written to move a
+      # number. A visible total invites noticing when it drops.
+      - name: Coverage
+        run: go tool cover -func=cover.out | tail -1
+
+      # The step above already replays every fuzz target's seed corpus (that is
+      # just what `go test` does with an F function), which is the part that
+      # catches a regression against a known-hostile input. This step is the
+      # other part: actually exploring. Short on purpose — a PR gate is not
+      # where a fuzzer earns its keep, it is where a cheap sweep catches the
+      # obvious. The scheduled Monday run is the same 30s, which over a year is
+      # a great deal more coverage than nothing.
+      #
+      # A crasher found here fails the step with the reproducing input inline in
+      # the log. It also lands in testdata/fuzz/, which this workspace throws
+      # away — so copy it out of the log into the repo to turn it into a seed.
+      - name: Fuzz the scan parsers
+        run: |
+          for target in FuzzScanEnvFile FuzzScanShellConfigFile FuzzScanMCPConfigFile; do
+            echo "::group::$target"
+            go test -run "^${target}$" -fuzz "^${target}$" -fuzztime=30s ./internal/audit/
+            echo "::endgroup::"
+          done
 
       # The command reference under docs/reference/commands/ is generated
       # from the cobra tree; a change to any command's help text must land
       # with its regenerated pages (run `go run ./cmd/jit docs-gen`).
+      #
+      # --porcelain, not `git diff`: docs-gen writes a NEW page for a new
+      # command, and a new file is untracked, which `git diff` does not see at
+      # all. That check passed happily on a missing page.
       - name: Command reference is current
         run: |
           go run ./cmd/jit docs-gen
-          git diff --exit-code docs/reference/commands
+          drift=$(git status --porcelain -- docs/reference/commands)
+          if [ -n "$drift" ]; then
+            echo "$drift"
+            echo "::error::stale command reference — run 'go run ./cmd/jit docs-gen' and commit the result"
+            exit 1
+          fi
 
       - name: Install staticcheck
-        run: go install honnef.co/go/tools/cmd/staticcheck@latest
+        # Pinned for the same reason gosec is, below: a floating @latest lets an
+        # upstream release change CI results under a commit that touched none of it.
+        run: go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
 
       - name: staticcheck
         run: staticcheck ./...
 
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        # Pinned: the TOOL is pinned, the vulnerability database it queries is
+        # not — so this keeps finding new CVEs without the binary changing under us.
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
 
       - name: govulncheck
         run: govulncheck ./...
@@ -58,6 +139,7 @@ jobs:
 
   goreleaser-check:
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -87,3 +169,18 @@ jobs:
           # snapshot to Apple's notary service or to the tap, even if the
           # signing secrets are one day exposed to this job.
           args: release --snapshot --clean --skip=publish,sign,notarize,homebrew
+
+      # The snapshot was built and thrown away; nothing had ever confirmed it
+      # RUNS. A CGO link fault or a broken -X version ldflag produces a binary
+      # that builds cleanly and dies on first launch — which, unchecked here,
+      # is something a user finds out about after it has been signed and
+      # notarized.
+      - name: Snapshot binary runs
+        run: |
+          bin=$(find dist -type f -name jit -perm +111 | head -1)
+          if [ -z "$bin" ]; then
+            echo "::error::no jit binary found under dist/"
+            exit 1
+          fi
+          "$bin" --version
+          "$bin" --help > /dev/null
