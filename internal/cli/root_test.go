@@ -16,14 +16,15 @@ import (
 // help/completion, undoing the grouped root help this package sets up.
 // Cobra's own built-in help/completion commands are deliberate exceptions
 // (they may or may not be registered yet depending on whether an earlier
-// test ran Execute), and so is `version`: it's a meta command about the
+// test ran Execute — `__complete`, the hidden one that backs the shell
+// completion protocol, arrives with them), and so is `version`: it's a meta command about the
 // binary rather than a thing you do to your secrets, and none of the four
 // groups is where someone would look for it. Grouping it under "Additional
 // Commands" next to help/completion is the intended placement, not an
 // oversight — see newVersionCmd.
 func TestEveryTopLevelCommandHasGroupID(t *testing.T) {
 	for _, c := range rootCmd.Commands() {
-		if c.Name() == "help" || c.Name() == "completion" || c.Name() == "version" {
+		if c.Name() == "help" || c.Name() == "completion" || c.Name() == "__complete" || c.Name() == "version" {
 			continue
 		}
 		if c.GroupID == "" {
