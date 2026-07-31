@@ -96,8 +96,9 @@ then **[Install](./getting-started/install.md)** →
 ## Reference
 
 - [Command reference](./reference/commands/jit.md) - every command and flag (generated, never drifts)
+- [CLI conventions](./reference/conventions.md) - global flags, `--format`, `--yes`, and exit codes
 - [File locations](./reference/file-locations.md) · [Environment variables](./reference/environment-variables.md)
-- [Audit NDJSON output](./reference/audit-ndjson.md) · [Plumbing protocols](./reference/plumbing.md)
+- [Scan NDJSON output](./reference/scan-ndjson.md) · [Plumbing protocols](./reference/plumbing.md)
 
 ## Security
 

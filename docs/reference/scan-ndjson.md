@@ -1,14 +1,14 @@
 ---
-title: Audit NDJSON output
+title: Scan NDJSON output
 description: The machine-readable schema behind jit scan --format ndjson.
 ---
 
-# Audit NDJSON output
+# Scan NDJSON output
 
 `jit scan --format ndjson` emits newline-delimited JSON: one **finding**
 record per finding, then a single closing **scan summary** record. Values
 are always masked previews - the NDJSON stream never contains a full
-secret, same as every other audit format.
+secret, same as every other scan format.
 
 ## Envelope fields (both record types)
 
@@ -18,7 +18,7 @@ secret, same as every other audit format.
 | `record_id` | unique per finding (`null` on the summary - `run_id` is already unique per run) |
 | `schema_version` | schema version of this record shape |
 | `scanner_name` / `scanner_version` | producer identification |
-| `run_id` | shared by every record of one audit run |
+| `run_id` | shared by every record of one scan run |
 | `scan_time` | ISO 8601 |
 | `endpoint` | the scanned machine (host/user identification) |
 
