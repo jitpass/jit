@@ -15,7 +15,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -246,4 +248,74 @@ func writeTar(t *testing.T, tw *tar.Writer, name, body string) {
 	if _, err := tw.Write([]byte(body)); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// verifyStagedSignature must refuse anything that isn't a genuine, intact,
+// our-team-signed release — and it must ACCEPT a real Developer ID signature,
+// which is the half that fails closed into "nobody can ever upgrade".
+//
+// The inline-requirement syntax is the trap: codesign's -R reads its argument
+// as a FILE path unless it starts with "=", so the natural-looking string
+// produces "invalid requirement specification" and rejects every binary,
+// genuine ones included. That failure is indistinguishable from a real
+// rejection at the call site, so it is pinned here rather than discovered by a
+// user whose upgrade stopped working.
+func TestVerifyStagedSignature(t *testing.T) {
+	if _, err := os.Stat("/usr/bin/codesign"); err != nil {
+		t.Skip("codesign unavailable")
+	}
+	ctx := context.Background()
+
+	// An ad-hoc/linker-signed binary — what `go build` produces — is not a
+	// Developer ID release and must be refused.
+	local, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	if err := verifyStagedSignature(ctx, local); err == nil {
+		t.Error("an ad-hoc signed binary passed signature verification; the upgrade path would install an unsigned build")
+	}
+
+	// A nonexistent path must also fail rather than pass vacuously.
+	if err := verifyStagedSignature(ctx, filepath.Join(t.TempDir(), "absent")); err == nil {
+		t.Error("a missing file passed signature verification")
+	}
+
+	// The positive half: the requirement FORM has to match a real Developer ID
+	// signature. Checked against whatever Developer-ID-signed code this machine
+	// happens to have, substituting that binary's own team, since jit's own
+	// signed release isn't available in a test.
+	signed, team := findDeveloperIDSigned(t)
+	if signed == "" {
+		t.Skip("no Developer ID signed binary available to validate the requirement form")
+	}
+	req := signatureRequirement(team)
+	out, err := exec.CommandContext(ctx, "/usr/bin/codesign", "--verify", "--strict", "-R", req, signed).CombinedOutput()
+	if err != nil {
+		t.Fatalf("the requirement form jit uses rejected a genuine Developer ID signature (%s, team %s): %v\n%s\n"+
+			"every jit upgrade would fail closed with this form", signed, team, err, out)
+	}
+}
+
+// findDeveloperIDSigned returns a Developer-ID-signed path on this machine and
+// its team ID, or "" when there is none to test against.
+func findDeveloperIDSigned(t *testing.T) (path, team string) {
+	t.Helper()
+	candidates, _ := filepath.Glob("/Applications/*.app")
+	for _, c := range candidates {
+		out, err := exec.Command("/usr/bin/codesign", "-dv", "--verbose=4", c).CombinedOutput()
+		if err != nil {
+			continue
+		}
+		text := string(out)
+		if !strings.Contains(text, "Authority=Developer ID Application") {
+			continue
+		}
+		for _, line := range strings.Split(text, "\n") {
+			if id, ok := strings.CutPrefix(strings.TrimSpace(line), "TeamIdentifier="); ok && id != "not set" && id != "" {
+				return c, id
+			}
+		}
+	}
+	return "", ""
 }
