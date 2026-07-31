@@ -133,10 +133,17 @@ func TestMountNeverHangsRegardlessOfLockState(t *testing.T) {
 	}
 }
 
-// readMountOnceWithTimeout is readMountOnce, but fails loud on a timeout
+// readMountOnceWithTimeout reads a mount to EOF, failing loud on a timeout
 // instead of hanging the test suite forever — the whole point of
 // TestMountNeverHangsRegardlessOfLockState is to catch exactly the hang
 // this guards against.
+//
+// It is the only mount reader in this package, deliberately: the unbounded
+// variant that used to sit beside it was reached for by the two e2e reads in
+// rungrant_e2e_test.go, and a FIFO with no writer parks os.Open in the kernel
+// with nothing to interrupt it. Every read of a pipe jit is supposed to be
+// serving gets a deadline, so a mount that stops being served is reported as
+// that, on the line that read it.
 func readMountOnceWithTimeout(t *testing.T, path string, timeout time.Duration) []byte {
 	t.Helper()
 	type result struct {
@@ -179,20 +186,6 @@ func waitForMountServing(t *testing.T, m *mountManager, path string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("mount never started serving")
-}
-
-func readMountOnce(t *testing.T, path string) []byte {
-	t.Helper()
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatalf("opening mount for read: %v", err)
-	}
-	defer f.Close()
-	data, err := io.ReadAll(f)
-	if err != nil {
-		t.Fatalf("reading mount: %v", err)
-	}
-	return data
 }
 
 func writeYAML(t *testing.T, path string, v any) {

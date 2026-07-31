@@ -24,6 +24,7 @@ package pasteboard
 /*
 #cgo CFLAGS: -x objective-c -fobjc-arc
 #cgo LDFLAGS: -framework AppKit
+#include <stdlib.h>
 #include "pasteboard.h"
 */
 import "C"
@@ -41,28 +42,75 @@ var ErrNotUTF8 = errors.New("value is not valid UTF-8")
 // and returns the pasteboard changeCount identifying this write — the
 // handle ClearIfUnchanged later keys on.
 func WriteConcealed(value []byte) (changeCount int64, err error) {
-	var p *C.char
-	if len(value) > 0 {
-		p = (*C.char)(unsafe.Pointer(&value[0]))
-	}
-	n := C.pb_write_concealed(p, C.int(len(value)))
-	if n < 0 {
-		return 0, ErrNotUTF8
-	}
-	return int64(n), nil
+	return writeConcealed("", value)
 }
 
 // ChangeCount returns the general pasteboard's current changeCount — for
 // a caller that filled the pasteboard some other way (pbcopy) and still
 // wants ClearIfUnchanged's contract.
 func ChangeCount() int64 {
-	return int64(C.pb_change_count())
+	return changeCount("")
 }
 
 // ClearIfUnchanged clears the pasteboard if its changeCount still equals
 // changeCount, reporting whether it did. False means someone copied
 // something newer, which must be left alone — clearing the user's OWN
 // later copy would turn hygiene into data loss.
-func ClearIfUnchanged(changeCount int64) bool {
-	return C.pb_clear_if_unchanged(C.long(changeCount)) == 1
+func ClearIfUnchanged(count int64) bool {
+	return clearIfUnchanged("", count)
+}
+
+// The three below are the exported functions with the pasteboard named
+// instead of assumed — the seam the package test drives the real
+// write/count/clear behavior through against a private scratch board.
+//
+// It exists for the same reason internal/screenlock's watch() takes its
+// notification name: a test against the GENERAL pasteboard would clear
+// whatever the person running the suite had just copied, and
+// clearIfUnchanged would then be destroying their data rather than jit's
+// secret. Named pasteboards have identical changeCount semantics and no
+// connection to the clipboard. An empty name means the general pasteboard,
+// so production behavior is unchanged and untouched by any of this.
+
+func writeConcealed(name string, value []byte) (int64, error) {
+	cname := C.CString(name)
+	defer C.free(unsafe.Pointer(cname))
+	var p *C.char
+	if len(value) > 0 {
+		p = (*C.char)(unsafe.Pointer(&value[0]))
+	}
+	n := C.pb_write_concealed(cname, p, C.int(len(value)))
+	if n < 0 {
+		return 0, ErrNotUTF8
+	}
+	return int64(n), nil
+}
+
+func changeCount(name string) int64 {
+	cname := C.CString(name)
+	defer C.free(unsafe.Pointer(cname))
+	return int64(C.pb_change_count(cname))
+}
+
+func clearIfUnchanged(name string, count int64) bool {
+	cname := C.CString(name)
+	defer C.free(unsafe.Pointer(cname))
+	return C.pb_clear_if_unchanged(cname, C.long(count)) == 1
+}
+
+// concealedType is the marker whose PRESENCE tells a clipboard manager not to
+// record this entry (nspasteboard.org). It duplicates the literal
+// pb_write_concealed declares, deliberately: the test asserts this spelling is
+// on the board, so the two drifting apart is a failure rather than a silently
+// ineffective marker.
+const concealedType = "org.nspasteboard.ConcealedType"
+
+// hasType reports whether the named pasteboard declares t. TEST-ONLY — see
+// pb_has_type in pasteboard.h. Reports type presence only, never contents.
+func hasType(name, t string) bool {
+	cname := C.CString(name)
+	defer C.free(unsafe.Pointer(cname))
+	ctype := C.CString(t)
+	defer C.free(unsafe.Pointer(ctype))
+	return C.pb_has_type(cname, ctype) == 1
 }

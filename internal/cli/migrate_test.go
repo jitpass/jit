@@ -72,6 +72,7 @@ func execMigrate(t *testing.T, args ...string) (stdout string, err error) {
 	migrateDryRun = false
 	migrateYes = false
 	migrateOnly = nil
+	migrateMount = false // omitted once, and --mount leaking out of one test made the next one plan a mount it never asked for
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)                 // confirmation prompts go to stderr, capture both streams in order
