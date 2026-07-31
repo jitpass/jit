@@ -40,15 +40,19 @@ func sanitizeSecretPath(vaultDir, path string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("secret path must not be empty")
 	}
-	if strings.Contains(path, "..") {
-		return "", fmt.Errorf("secret path %q must not contain \"..\"", path)
-	}
 	if !secretPathPattern.MatchString(path) {
 		return "", fmt.Errorf("secret path %q must be slash-separated segments of letters, digits, '.', '_', '-' (e.g. \"stripe/dev-key\")", path)
 	}
+	// Traversal is a property of a SEGMENT, not of the string. This used to
+	// reject any path merely containing "..", which turned an ordinary name
+	// like "db..old/key" into an accusation of path traversal — a confusing
+	// error for something harmless. ".." and "." are refused as whole segments,
+	// which is the actual hazard (and the regexp above already forbids a
+	// leading slash, so the joined path cannot escape either way — the
+	// post-Join prefix check below is the third layer).
 	for _, seg := range strings.Split(path, "/") {
-		if seg == "." {
-			return "", fmt.Errorf("secret path %q must not contain \".\" segments", path)
+		if seg == "." || seg == ".." {
+			return "", fmt.Errorf("secret path %q must not contain %q segments", path, seg)
 		}
 	}
 	// _history/ is the version-history tree (history.go), written only by

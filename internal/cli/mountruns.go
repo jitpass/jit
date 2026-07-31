@@ -172,7 +172,7 @@ func (m *mountManager) revealForPID(mounts []agent.RunMount, pid int32) error {
 	// goroutine forever, wedging every future swap. The window between
 	// registerRun and here is covered by the lazy prune either way.
 	if isNew {
-		m.watchRunPID(att.pid)
+		m.watchRunPID(att.pid, att.startMicro)
 	}
 	return nil
 }
@@ -278,6 +278,27 @@ func (m *mountManager) mountSwapHeldByAnyLocked(path string) bool {
 // path hold no locks, so they restore inline (false) for prompt teardown.
 // Grant deregistration (the registry delete above) is always synchronous, so
 // the gate stops authorizing the instant this returns regardless.
+// runLiveWithSameStart reports whether the attachment currently registered
+// under pid belongs to a process that is still running with the fork-time it
+// was attached at — i.e. the pid has been reused and this incarnation is NOT
+// the one an exit event was about. Deliberately not folded into onRunExit:
+// that path also serves the hard-cap expiry, which must tear a run down while
+// it is very much alive.
+func (m *mountManager) runLiveWithSameStart(pid int32) bool {
+	m.runsMu.Lock()
+	att, ok := m.runs[pid]
+	var want int64
+	if ok {
+		want = att.startMicro
+	}
+	m.runsMu.Unlock()
+	if !ok {
+		return false
+	}
+	start, live := m.grantStart(pid)
+	return live && start == want
+}
+
 func (m *mountManager) onRunExit(pid int32, why string, restoreAsync bool) {
 	m.runsMu.Lock()
 	att, ok := m.runs[pid]
@@ -457,13 +478,17 @@ func (m *mountManager) grantRootsForPath(path string) []grantRoot {
 // and log clarity — pruneStaleRuns' per-status liveness check is what
 // teardown CORRECTNESS rests on — so every failure here degrades to that
 // lazy path instead of failing the attachment.
-func (m *mountManager) watchRunPID(pid int32) {
+func (m *mountManager) watchRunPID(pid int32, startMicro int64) {
 	m.watchMu.Lock()
 	defer m.watchMu.Unlock()
 	if m.grantWatched == nil {
-		m.grantWatched = map[int32]bool{}
+		m.grantWatched = map[runWatchKey]bool{}
 	}
-	if m.grantWatched[pid] {
+	// Keyed by (pid, fork-time), the same discriminator pruneStaleRuns and the
+	// grant verdict cache already use. Keyed on the pid alone, a RECYCLED pid
+	// found its predecessor's entry still present and returned here without
+	// arming a watch at all, so the new run got no event-driven teardown.
+	if m.grantWatched[runWatchKey{pid: pid, startMicro: startMicro}] {
 		return
 	}
 	if m.grantKq == 0 {
@@ -495,7 +520,14 @@ func (m *mountManager) watchRunPID(pid int32) {
 		m.onRunExit(pid, "process already exited", false)
 		return
 	}
-	m.grantWatched[pid] = true
+	m.grantWatched[runWatchKey{pid: pid, startMicro: startMicro}] = true
+}
+
+// runWatchKey identifies one process incarnation. A pid alone does not: the
+// kernel reuses them, and on a busy machine quickly.
+type runWatchKey struct {
+	pid        int32
+	startMicro int64
 }
 
 func (m *mountManager) runWatchLoop(kq int) {
@@ -514,8 +546,22 @@ func (m *mountManager) runWatchLoop(kq int) {
 			}
 			pid := int32(ev.Ident) // #nosec G115 -- kqueue's Ident carries the pid we registered, always in int32 range
 			m.watchMu.Lock()
-			delete(m.grantWatched, pid)
+			for k := range m.grantWatched {
+				if k.pid == pid {
+					delete(m.grantWatched, k)
+				}
+			}
 			m.watchMu.Unlock()
+			// A queued NOTE_EXIT names only a pid, and the pid may already
+			// have been reused by a NEW run that attached in the meantime.
+			// Tearing down on the old event would drop that run's grant and
+			// restore its swapped mounts mid-flight. Fail-closed, so this only
+			// ever cost availability — but a `jit run` losing its credentials
+			// because an unrelated process happened to exit is still a bug.
+			// pruneStaleRuns remains the correctness backstop either way.
+			if m.runLiveWithSameStart(pid) {
+				continue
+			}
 			m.onRunExit(pid, "process exited", false)
 		}
 	}

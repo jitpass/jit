@@ -183,7 +183,12 @@ func withSopsAgeKeyCmd(env, withNames []string) []string {
 	if err != nil || exe == "" {
 		exe = "jit" // fall back to a PATH lookup, as the command's own docs show
 	}
-	return append(env, fmt.Sprintf("SOPS_AGE_KEY_CMD=%s sops-age-key", exe))
+	// Quoted: sops runs this through `sh -c`, so an unquoted path containing a
+	// space (jit installed under "~/My Tools/") splits into two words and every
+	// decrypt in the run fails. migrate's own helper-script writers
+	// (gitcreds.go, dockercreds.go) already quote jit's path for exactly this;
+	// this was the one call site that didn't.
+	return append(env, fmt.Sprintf("SOPS_AGE_KEY_CMD=%s sops-age-key", shellQuote(exe)))
 }
 
 // requestRunCompat makes this run's mounts compatible with the command

@@ -119,7 +119,7 @@ type mountManager struct {
 	// must never contend with the serve-path's m.mu.
 	watchMu      sync.Mutex
 	grantKq      int
-	grantWatched map[int32]bool
+	grantWatched map[runWatchKey]bool
 
 	// The unified run engine (mountruns.go): runs is the single registry of
 	// jit-run attachments, in either mode (grant or swap), keyed by pid.
