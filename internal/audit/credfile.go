@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/url"
@@ -33,15 +34,15 @@ import (
 // the file — encoding, not encryption, the same gap as a base64 Secret
 // manifest.
 func ScanCredentialFiles(cfg Config) ([]Finding, error) {
-	fixed, err := scanKnownCredentialFiles(cfg)
-	if err != nil {
-		return fixed, err
-	}
-	walked, err := walkForCategory(cfg, classifyCredentialWalkFile)
+	// The fixed half's failure does not cancel the walked half: they look in
+	// different places, and an unreadable ~/.aws/credentials says nothing about
+	// whether a project .npmrc is worth finding.
+	fixed, fixedErr := scanKnownCredentialFiles(cfg)
+	walked, walkErr := walkForCategory(cfg, classifyCredentialWalkFile)
 	// Same fixed-then-walked composition Scan performs, dedupe included, so
 	// this standalone entry point and a machine-wide scan can't report a
 	// different number of findings for the same home directory.
-	return append(fixed, dropAlreadyReported(fixed, walked)...), err
+	return append(fixed, dropAlreadyReported(fixed, walked)...), errors.Join(fixedErr, walkErr)
 }
 
 // scanKnownCredentialFiles is this category's fixed half (see categories):
@@ -50,6 +51,7 @@ func ScanCredentialFiles(cfg Config) ([]Finding, error) {
 // anywhere — is classifyProjectNpmrc's job.
 func scanKnownCredentialFiles(cfg Config) ([]Finding, error) {
 	var all []Finding
+	var errs []error
 	for _, scan := range []func(Config) ([]Finding, error){
 		scanAWSCredentials,
 		scanKubeconfig,
@@ -66,11 +68,18 @@ func scanKnownCredentialFiles(cfg Config) ([]Finding, error) {
 	} {
 		findings, err := scan(cfg)
 		if err != nil {
-			return all, err
+			// Collected, not returned: this loop used to stop at the first
+			// failure, so a single unreadable ~/.aws/credentials meant
+			// kubeconfig, npmrc, cargo, pypirc, MCP tokens, Terraform, Docker,
+			// git, GCP, netrc and clisso were never looked at — eleven
+			// credential stores silently unscanned because of one permission
+			// bit. Scan's own loop was fixed the same way and for the same
+			// reason; this is that fix one layer down.
+			errs = append(errs, err)
 		}
 		all = append(all, findings...)
 	}
-	return all, nil
+	return all, errors.Join(errs...)
 }
 
 // --- AWS credentials (~/.aws/credentials, INI format) ---

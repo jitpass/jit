@@ -68,10 +68,15 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 		if len(summary.DegradedScanners) == 1 {
 			noun = "category"
 		}
-		termtext.Wrap(w, 2, "  ", yellowBold.Sprintf("INCOMPLETE SCAN — %d %s could not be read.", len(summary.DegradedScanners), noun))
+		termtext.Wrap(w, 2, "  ", yellowBold.Sprintf("INCOMPLETE SCAN — %d %s could not be read", len(summary.DegradedScanners), noun))
 		for _, d := range summary.DegradedScanners {
-			fmt.Fprint(w, "      ")
-			termtext.Wrap(w, 6, "      ", yellow.Sprintf("%s: %s", d.Scanner, d.Error))
+			fmt.Fprint(w, triageNoteIndent)
+			// Home shortened, and an em-dash rather than a colon separator:
+			// the underlying error is already of the form "open <path>: reason",
+			// so a colon here stacked three deep on one line. Both are what the
+			// rest of this report does with a path.
+			termtext.Wrap(w, len(triageNoteIndent), triageNoteIndent,
+				yellow.Sprintf("%s — %s", d.Scanner, oneLine(shortenHomeInText(home, d.Error))))
 		}
 		fmt.Fprint(w, "  ")
 		termtext.Wrap(w, 2, "  ", dim.Sprint("Counts below cover everything else; secrets in the unread categories are not included."))

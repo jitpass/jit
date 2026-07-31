@@ -3,7 +3,10 @@
 
 package audit
 
-import "strings"
+import (
+	"path/filepath"
+	"strings"
+)
 
 // sanitizeDisplay replaces control characters with U+FFFD so a scanned file
 // cannot write its own output into jit's report.
@@ -52,4 +55,41 @@ func sanitizeDisplayPtr(s *string) string {
 		return ""
 	}
 	return sanitizeDisplay(*s)
+}
+
+// shortenHomeInText replaces the home directory wherever it appears INSIDE a
+// longer string, which ShortenHome deliberately does not: that one answers
+// "render this path", and takes a string that IS a path.
+//
+// The case here is an error message with a path embedded in the middle of it —
+// "open /Users/alex/.aws/credentials: permission denied" — where the absolute
+// path is both the longest and least interesting part, and long enough to wrap
+// the line three ways. Every other path in this report is home-shortened; a
+// degraded-scanner line should not be the exception.
+func shortenHomeInText(home, text string) string {
+	if home == "" {
+		return text
+	}
+	return strings.ReplaceAll(text, home+string(filepath.Separator), "~"+string(filepath.Separator))
+}
+
+// oneLine flattens a multi-error into a single wrappable line, separating the
+// parts with "; ".
+//
+// A category whose sub-scanners failed more than once reports them as an
+// errors.Join, whose Error() separates with newlines. Those would break out of
+// the indented, wrapped block the renderer just set up and leave the
+// continuation hanging at column 0 — the report wraps its own lines, and an
+// error string does not get to decide where they end. Joining on a bare space
+// is not enough either: "permission denied open ~/.kube/config" reads as one
+// run-on sentence with no boundary between the two failures.
+func oneLine(s string) string {
+	parts := strings.Split(s, "\n")
+	out := parts[:0]
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, "; ")
 }
