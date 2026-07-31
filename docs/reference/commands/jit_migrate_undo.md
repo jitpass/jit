@@ -54,11 +54,10 @@ jit migrate undo <path>...
 ### Options inherited from parent commands
 
 ```
-      --dry-run         preview the plan without changing anything
-      --mount jit run   for a loose secret file, keep it live at its path as a mount (real value to jit run grants, a decoy otherwise) instead of replacing it with a pointer; also required to protect a file that mixes a secret with other content
-      --only strings    scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,docker,git,gcp,sops,npmrc,netrc,pypirc,loose (default: all)
-      --quiet           suppress the progress spinner/status trail (results still print)
-  -y, --yes             skip the confirmation prompt and migrate immediately
+      --dry-run        preview the plan without changing anything
+      --only strings   scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,docker,git,gcp,sops,npmrc,netrc,pypirc,loose (default: all)
+      --quiet          suppress the progress spinner/status trail (results still print)
+  -y, --yes            skip the confirmation prompt and proceed immediately
 ```
 
 ### SEE ALSO

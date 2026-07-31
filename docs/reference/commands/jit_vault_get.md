@@ -27,8 +27,8 @@ jit vault get <path> [flags]
 ### Options
 
 ```
-  -c, --copy   copy the value to the clipboard instead of printing it
-      --json   print an object with the value plus provenance (class/group/origin) and timestamps
+  -c, --copy            copy the value to the clipboard instead of printing it
+      --format string   output format: "text" (default, the bare value) or "json" (the value plus provenance and timestamps) (default "text")
 ```
 
 ### Options inherited from parent commands

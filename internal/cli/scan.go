@@ -24,7 +24,59 @@ var (
 	scanScore      bool
 	scanUnfiltered bool
 	scanFull       bool
+	scanFailOn     string
 )
+
+// riskRank orders the aggregate RISK LEVEL vocabulary so --fail-on can ask
+// "at or above". Kept local to the flag: it is a CLI comparison, not a
+// property of the finding schema.
+var riskRank = map[string]int{
+	audit.RiskLevelClean:    0,
+	audit.RiskLevelLow:      1,
+	audit.RiskLevelMedium:   2,
+	audit.RiskLevelHigh:     3,
+	audit.RiskLevelCritical: 4,
+}
+
+// failOnThreshold resolves a --fail-on value to the rank at or above which the
+// scan should exit non-zero. "any" means "anything that isn't clean", which is
+// the threshold a pre-commit hook usually wants. "clean" is rejected rather
+// than accepted as a synonym for "any": it would read as "fail when clean".
+func failOnThreshold(level string) (int, error) {
+	if level == "any" {
+		return riskRank[audit.RiskLevelLow], nil
+	}
+	rank, ok := riskRank[level]
+	if !ok || level == audit.RiskLevelClean {
+		return 0, fmt.Errorf("--fail-on %q: expected one of critical, high, medium, low, any", level)
+	}
+	return rank, nil
+}
+
+// failOnResult returns the ExitError for a scan whose risk level reached the
+// --fail-on threshold, or nil when it didn't (or the flag wasn't used).
+func failOnResult(level, riskLevel string, score int) error {
+	if level == "" {
+		return nil
+	}
+	threshold, err := failOnThreshold(level)
+	if err != nil {
+		return fmt.Errorf("jit scan: %w", err)
+	}
+	if riskRank[riskLevel] < threshold {
+		return nil
+	}
+	return &ExitError{
+		Code: scanFailOnExitCode,
+		Msg: fmt.Sprintf("jit scan: risk level %s at or above --fail-on %s (exposure %d/100) — exit %d",
+			strings.ToUpper(riskLevel), level, score, scanFailOnExitCode),
+	}
+}
+
+// scanFailOnExitCode is deliberately not 1: exit 1 is "the command failed",
+// and a tripped threshold must be distinguishable from a scan that couldn't
+// run at all.
+const scanFailOnExitCode = 2
 
 var scanCmd = &cobra.Command{
 	Use:     "scan [path...]",
@@ -57,7 +109,18 @@ var scanCmd = &cobra.Command{
 		"  4. Clamp into the band of the scan's RISK LEVEL, so the number and the " +
 		"label can never disagree: clean 0, low 10-39, medium 40-64, high 65-84, " +
 		"critical 85-100.\n\n" +
-		"Run with --score to print just the score line and exit.",
+		"Run with --score to print just the score line and exit.\n\n" +
+		"Exit status\n\n" +
+		"By default jit scan always exits 0: finding secrets is its job, not an " +
+		"error, and a read-only report shouldn't fail a shell. To use it as a " +
+		"GATE (a pre-commit hook, a CI step), give it a threshold with --fail-on " +
+		"<level>: the scan exits 2 when its RISK LEVEL is at or above that " +
+		"level, e.g. `jit scan --fail-on high`. --fail-on any trips on anything " +
+		"that isn't clean.\n\n" +
+		"The status is 2, never 1, so a tripped gate is distinguishable from the " +
+		"scan itself failing (a bad flag, an unreadable path), which stays 1. " +
+		"The report is always written in full first — the gate never costs you " +
+		"the findings that explain it. --fail-on works with --score too.",
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Validate before touching the filesystem or doing any scanning —
@@ -65,6 +128,13 @@ var scanCmd = &cobra.Command{
 		// vice versa) behind the wrong error.
 		if err := validateScanFormat(scanFormat); err != nil {
 			return fmt.Errorf("jit scan: %w", err)
+		}
+		// Validate --fail-on up front too: a typo'd threshold must fail
+		// before the scan runs, not after several minutes of walking $HOME.
+		if scanFailOn != "" {
+			if _, err := failOnThreshold(scanFailOn); err != nil {
+				return fmt.Errorf("jit scan: %w", err)
+			}
 		}
 
 		cfg, err := audit.NewConfig(agent.Version())
@@ -123,7 +193,9 @@ var scanCmd = &cobra.Command{
 			// don't apply here — this is for scripts, badges, and a quick
 			// "how bad is it" without the full dump.
 			fmt.Fprintf(cmd.OutOrStdout(), "Exposure: %d/100 (%s)\n", summary.ExposureScore, strings.ToUpper(summary.RiskLevel))
-			return nil
+			// --score is the shape a CI badge step uses, so it honours
+			// --fail-on too; the score still prints before the gate trips.
+			return failOnResult(scanFailOn, summary.RiskLevel, summary.ExposureScore)
 		}
 
 		out := cmd.OutOrStdout()
@@ -175,7 +247,9 @@ var scanCmd = &cobra.Command{
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Report written to %s\n", scanOutput)
 		}
-		return nil
+		// Last, so the full report is always written and flushed first: the
+		// gate tripping must never cost the user the findings that explain it.
+		return failOnResult(scanFailOn, summary.RiskLevel, summary.ExposureScore)
 	},
 }
 
@@ -241,5 +315,9 @@ func init() {
 	scanCmd.Flags().BoolVar(&scanUnfiltered, "unfiltered", false, "show findings jit normally judges to be settings, paths, browser-public build variables or unfilled template values; use it to audit what the filters are hiding")
 	scanCmd.Flags().BoolVar(&scanScore, "score", false, `print only the exposure score (e.g. "Exposure: 92/100 (CRITICAL)") and exit`)
 	scanCmd.Flags().BoolVar(&scanFull, "full", false, "print the full finding inventory (categories, severities, every file and line) instead of the coverage summary")
+	scanCmd.Flags().StringVar(&scanFailOn, "fail-on", "", "exit 2 when the scan's risk level is at or above this: critical, high, medium, low, or any (default: always exit 0)")
+	_ = scanCmd.RegisterFlagCompletionFunc("fail-on", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+		return []string{audit.RiskLevelCritical, audit.RiskLevelHigh, audit.RiskLevelMedium, audit.RiskLevelLow, "any"}, cobra.ShellCompDirectiveNoFileComp
+	})
 	rootCmd.AddCommand(scanCmd)
 }

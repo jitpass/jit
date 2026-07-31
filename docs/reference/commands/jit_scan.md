@@ -21,6 +21,12 @@ jit reports a 0-100 exposure score (EXPOSURE:) next to the categorical RISK LEVE
 
 Run with --score to print just the score line and exit.
 
+Exit status
+
+By default jit scan always exits 0: finding secrets is its job, not an error, and a read-only report shouldn't fail a shell. To use it as a GATE (a pre-commit hook, a CI step), give it a threshold with --fail-on <level>: the scan exits 2 when its RISK LEVEL is at or above that level, e.g. `jit scan --fail-on high`. --fail-on any trips on anything that isn't clean.
+
+The status is 2, never 1, so a tripped gate is distinguishable from the scan itself failing (a bad flag, an unreadable path), which stays 1. The report is always written in full first — the gate never costs you the findings that explain it. --fail-on works with --score too.
+
 ```
 jit scan [path...] [flags]
 ```
@@ -28,11 +34,12 @@ jit scan [path...] [flags]
 ### Options
 
 ```
-      --format string   output format: "text" (default), "markdown"/"md", or "ndjson" (default "text")
-      --full            print the full finding inventory (categories, severities, every file and line) instead of the coverage summary
-  -o, --output string   write the report to this file instead of stdout
-      --score           print only the exposure score (e.g. "Exposure: 92/100 (CRITICAL)") and exit
-      --unfiltered      show findings jit normally judges to be settings, paths, browser-public build variables or unfilled template values; use it to audit what the filters are hiding
+      --fail-on string   exit 2 when the scan's risk level is at or above this: critical, high, medium, low, or any (default: always exit 0)
+      --format string    output format: "text" (default), "markdown"/"md", or "ndjson" (default "text")
+      --full             print the full finding inventory (categories, severities, every file and line) instead of the coverage summary
+  -o, --output string    write the report to this file instead of stdout
+      --score            print only the exposure score (e.g. "Exposure: 92/100 (CRITICAL)") and exit
+      --unfiltered       show findings jit normally judges to be settings, paths, browser-public build variables or unfilled template values; use it to audit what the filters are hiding
 ```
 
 ### Options inherited from parent commands

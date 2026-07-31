@@ -9,6 +9,10 @@ a fresh Touch ID/passcode is required (never the cached service session),
 so a process running as you can't delete a secret without a live human
 gesture even while the vault is unlocked.
 
+-y/--yes skips the typed confirmation (never the fingerprint), matching
+every other jit command. `-f`/`--force` is still accepted as a synonym,
+so the `rm -f` reflex keeps working.
+
 ```
 jit vault rm <path> [flags]
 ```
@@ -16,7 +20,7 @@ jit vault rm <path> [flags]
 ### Options
 
 ```
-  -f, --force   delete without confirmation
+  -y, --yes   skip the confirmation prompt
 ```
 
 ### Options inherited from parent commands

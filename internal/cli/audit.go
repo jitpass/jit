@@ -242,8 +242,9 @@ var auditCmd = &cobra.Command{
 		"Repeated rejections collapse into one line carrying a count; a collapsed line\n" +
 		"names the first caller of that window, because keying them per caller would let\n" +
 		"a flood of throwaway processes push every real event out of the history.\n\n" +
-		"Output is logfmt: one key=value line per event, newest first, so it reads and\n" +
-		"greps like a real service log. Narrow it without grep using the flags: --kind\n" +
+		"Output is a grouped text timeline, newest first. --format logfmt prints one\n" +
+		"key=value line per event instead, so it reads and greps like a real service\n" +
+		"log. Narrow either without grep using the flags: --kind\n" +
 		"cmd,unlock,use,lock,service,error, --status ok|failed|denied, --since and --until\n" +
 		"(an age like 2h/3d or a date), --parent (the launching ancestor, e.g. claude),\n" +
 		"--secret (a secret name an unlock touched), --user, and --grep (a regexp over the\n" +

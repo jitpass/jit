@@ -162,6 +162,6 @@ func lockAgent() {
 }
 
 func init() {
-	vaultRekeyCmd.Flags().BoolVar(&vaultRekeyYes, "yes", false, "skip the confirmation prompt")
+	vaultRekeyCmd.Flags().BoolVarP(&vaultRekeyYes, "yes", "y", false, "skip the confirmation prompt")
 	vaultCmd.AddCommand(vaultRekeyCmd)
 }

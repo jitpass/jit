@@ -6,10 +6,10 @@ Show or set per-process credential consent
 
 Per-process credential consent (on by default): the background service
 prompts a fresh Touch ID the first time each tool reaches for a credential
-(AWS, git, docker, kube, gcloud/sops/npm/netrc keys), naming who is asking,
-and remembers your answer for the session. It closes the window where any
-process running as you can use a migrated credential silently while your
-vault is unlocked.
+(AWS, git, docker, kube, gcloud/sops/npm/netrc/pypi keys), naming who is
+asking, and remembers your answer for the session. It closes the window
+where any process running as you can use a migrated credential silently
+while your vault is unlocked.
 
 Saying no is meant to be cheap. A refused prompt is not remembered as a
 lasting "no" — it can't be, since a decline and a keychain failure look the

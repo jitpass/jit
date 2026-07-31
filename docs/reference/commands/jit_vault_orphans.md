@@ -23,8 +23,9 @@ jit vault orphans [flags]
 ### Options
 
 ```
-      --prune   delete the orphaned secrets (default: only list them)
-  -y, --yes     with --prune, skip the confirmation prompt
+      --format string   output format: "text" (default) or "json" (each orphan with its recorded origin) (default "text")
+      --prune           delete the orphaned secrets (default: only list them)
+  -y, --yes             with --prune, skip the confirmation prompt
 ```
 
 ### Options inherited from parent commands
