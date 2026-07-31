@@ -299,6 +299,17 @@ var vaultPathUnsafeChars = regexp.MustCompile(`[^A-Za-z0-9_.\-/]+`)
 // collision-free and non-overwriting the same way backupFile's sibling
 // file naming did.
 func backupSecretFile(v *vault.Vault, path string) (string, error) {
+	return backupSecretFileAs(v, path, false)
+}
+
+// snapshotSecretFile is backupSecretFile for the copy RestoreFromBackup takes
+// of whatever it is about to overwrite. Same storage, flagged so it can never
+// become an undo target — see BackupRecord.Snapshot.
+func snapshotSecretFile(v *vault.Vault, path string) (string, error) {
+	return backupSecretFileAs(v, path, true)
+}
+
+func backupSecretFileAs(v *vault.Vault, path string, snapshot bool) (string, error) {
 	data, err := os.ReadFile(path) // #nosec G304 -- same fixed/discovered path as readLines above
 	if err != nil {
 		return "", err
@@ -340,7 +351,7 @@ func backupSecretFile(v *vault.Vault, path string) (string, error) {
 	// file back as it was, not at jit's 0600 default — see BackupRecord.Mode.
 	// A stat failure is not fatal: an unrecorded mode just means the historic
 	// 0600 restore, which is what every pre-existing backup gets anyway.
-	rec := BackupRecord{OriginalPath: absPath, VaultPath: vaultPath, UnixTS: ts}
+	rec := BackupRecord{OriginalPath: absPath, VaultPath: vaultPath, UnixTS: ts, Snapshot: snapshot}
 	if info, statErr := os.Stat(path); statErr == nil {
 		rec.Mode = strconv.FormatUint(uint64(info.Mode().Perm()), 8)
 	}

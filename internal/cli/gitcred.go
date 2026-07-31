@@ -145,16 +145,33 @@ var gitCredentialCmd = &cobra.Command{
 // buildDockerCredentialOutput). Returns ok=false when there's no password,
 // the one field git actually needs.
 func buildGitCredentialOutput(values map[string]string) (string, bool) {
-	password := values["PASSWORD"]
+	// git's helper protocol is newline-delimited key=value, so a value
+	// containing a newline would inject further attributes into the response —
+	// a stored password of "x\nquit=1" makes git abandon the credential search,
+	// and "x\nurl=..." rewrites the context it thinks it is authenticating to.
+	// The value is the user's own secret rather than an attacker's, so this is
+	// hygiene rather than a live hole, but a protocol writer should never be
+	// able to emit a frame it did not intend.
+	password := singleLine(values["PASSWORD"])
 	if password == "" {
 		return "", false
 	}
 	var b strings.Builder
-	if username := values["USERNAME"]; username != "" {
+	if username := singleLine(values["USERNAME"]); username != "" {
 		fmt.Fprintf(&b, "username=%s\n", username)
 	}
 	fmt.Fprintf(&b, "password=%s\n", password)
 	return b.String(), true
+}
+
+// singleLine truncates at the first CR or LF: git's protocol has no escaping,
+// so the only safe rendering of a multi-line value is to stop where the frame
+// would have ended anyway.
+func singleLine(s string) string {
+	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 func init() {

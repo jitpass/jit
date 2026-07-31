@@ -4,7 +4,6 @@
 package audit
 
 import (
-	"bufio"
 	"os"
 	"path/filepath"
 	"strings"
@@ -133,13 +132,13 @@ func countFilesIn(dir string) int {
 // an assume-role profile does not have), and a false positive costs one honest
 // advisory line.
 func hasAssumeRoleProfile(path string) bool {
-	f, err := os.Open(path) // #nosec G304 -- a fixed filename under the scan's own HomeDir, never a caller-supplied path
+	f, err := openFile(path)
 	if err != nil {
 		return false
 	}
 	defer f.Close()
 
-	sc := bufio.NewScanner(f)
+	sc := newLineScanner(f)
 	// A hand-edited config has short lines, but a machine-generated or
 	// corrupt one can exceed the default 64KB token and stop the scan early.
 	// Raising the cap keeps a long line from quietly ending the search before

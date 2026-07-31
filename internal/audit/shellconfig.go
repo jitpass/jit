@@ -4,7 +4,6 @@
 package audit
 
 import (
-	"bufio"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -69,7 +68,7 @@ func scanShellConfigFile(cfg Config, path string) ([]Finding, error) {
 	defer f.Close()
 
 	var findings []Finding
-	scanner := bufio.NewScanner(f)
+	scanner := newLineScanner(f)
 	lineNum := 0
 	for scanner.Scan() {
 		lineNum++
@@ -104,7 +103,7 @@ func scanShellConfigFile(cfg Config, path string) ([]Finding, error) {
 			Evidence:     "export statement assigns a value to a key name that looks like a secret",
 		}))
 	}
-	return findings, scanner.Err()
+	return findings, lineScanErr(scanner)
 }
 
 // unquote strips a single layer of matching surrounding quotes, if present,

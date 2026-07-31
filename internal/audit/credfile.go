@@ -4,10 +4,10 @@
 package audit
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/url"
@@ -34,15 +34,15 @@ import (
 // the file — encoding, not encryption, the same gap as a base64 Secret
 // manifest.
 func ScanCredentialFiles(cfg Config) ([]Finding, error) {
-	fixed, err := scanKnownCredentialFiles(cfg)
-	if err != nil {
-		return fixed, err
-	}
-	walked, err := walkForCategory(cfg, classifyCredentialWalkFile)
+	// The fixed half's failure does not cancel the walked half: they look in
+	// different places, and an unreadable ~/.aws/credentials says nothing about
+	// whether a project .npmrc is worth finding.
+	fixed, fixedErr := scanKnownCredentialFiles(cfg)
+	walked, walkErr := walkForCategory(cfg, classifyCredentialWalkFile)
 	// Same fixed-then-walked composition Scan performs, dedupe included, so
 	// this standalone entry point and a machine-wide scan can't report a
 	// different number of findings for the same home directory.
-	return append(fixed, dropAlreadyReported(fixed, walked)...), err
+	return append(fixed, dropAlreadyReported(fixed, walked)...), errors.Join(fixedErr, walkErr)
 }
 
 // scanKnownCredentialFiles is this category's fixed half (see categories):
@@ -51,6 +51,7 @@ func ScanCredentialFiles(cfg Config) ([]Finding, error) {
 // anywhere — is classifyProjectNpmrc's job.
 func scanKnownCredentialFiles(cfg Config) ([]Finding, error) {
 	var all []Finding
+	var errs []error
 	for _, scan := range []func(Config) ([]Finding, error){
 		scanAWSCredentials,
 		scanKubeconfig,
@@ -67,11 +68,18 @@ func scanKnownCredentialFiles(cfg Config) ([]Finding, error) {
 	} {
 		findings, err := scan(cfg)
 		if err != nil {
-			return all, err
+			// Collected, not returned: this loop used to stop at the first
+			// failure, so a single unreadable ~/.aws/credentials meant
+			// kubeconfig, npmrc, cargo, pypirc, MCP tokens, Terraform, Docker,
+			// git, GCP, netrc and clisso were never looked at — eleven
+			// credential stores silently unscanned because of one permission
+			// bit. Scan's own loop was fixed the same way and for the same
+			// reason; this is that fix one layer down.
+			errs = append(errs, err)
 		}
 		all = append(all, findings...)
 	}
-	return all, nil
+	return all, errors.Join(errs...)
 }
 
 // --- AWS credentials (~/.aws/credentials, INI format) ---
@@ -157,7 +165,7 @@ func awsProfileEvidence(profile, expiration string) string {
 func parseINISections(r *os.File) (map[string]map[string]string, error) {
 	sections := map[string]map[string]string{}
 	currentSection := ""
-	scanner := bufio.NewScanner(r)
+	scanner := newLineScanner(r)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
@@ -181,7 +189,7 @@ func parseINISections(r *os.File) (map[string]map[string]string, error) {
 		value := strings.TrimSpace(line[idx+1:])
 		sections[currentSection][key] = value
 	}
-	return sections, scanner.Err()
+	return sections, lineScanErr(scanner)
 }
 
 // --- kubeconfig (~/.kube/config, YAML) ---
@@ -282,7 +290,7 @@ func scanNpmrcFile(path string, cfg Config) ([]Finding, error) {
 	defer file.Close()
 
 	var findings []Finding
-	scanner := bufio.NewScanner(file)
+	scanner := newLineScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
@@ -308,7 +316,7 @@ func scanNpmrcFile(path string, cfg Config) ([]Finding, error) {
 			Evidence:     "npm registry credential found in .npmrc",
 		}))
 	}
-	return findings, scanner.Err()
+	return findings, lineScanErr(scanner)
 }
 
 // --- Streamlit (.streamlit/secrets.toml, TOML) ---
@@ -386,7 +394,7 @@ func scanStreamlitSecretsFile(cfg Config, path string) ([]Finding, error) {
 	defer file.Close()
 
 	var findings []Finding
-	scanner := bufio.NewScanner(file)
+	scanner := newLineScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if trimmed := strings.TrimSpace(line); trimmed == "" || strings.HasPrefix(trimmed, "#") {
@@ -438,7 +446,7 @@ func scanStreamlitSecretsFile(cfg Config, path string) ([]Finding, error) {
 			}))
 		}
 	}
-	return findings, scanner.Err()
+	return findings, lineScanErr(scanner)
 }
 
 // --- Remote MCP OAuth tokens (~/.mcp-auth/**/<hash>_tokens.json, JSON) ---
@@ -534,7 +542,7 @@ func scanMCPAuthTokens(cfg Config) ([]Finding, error) {
 }
 
 func mcpAuthTokenFindings(cfg Config, path string) []Finding {
-	data, err := os.ReadFile(path) // #nosec G304 -- path is built from cfg.HomeDir and a fixed directory name
+	data, err := readFile(path)
 	if err != nil {
 		return nil
 	}
@@ -854,7 +862,7 @@ func scanGitCredentialsFile(path string, cfg Config) ([]Finding, error) {
 	if !info.Mode().IsRegular() {
 		return nil, nil
 	}
-	data, err := os.ReadFile(path) // #nosec G304 -- fixed git-credentials path under the audited home, not external input
+	data, err := readFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -975,7 +983,7 @@ func scanNetrc(cfg Config) ([]Finding, error) {
 	if !info.Mode().IsRegular() {
 		return nil, nil
 	}
-	data, err := os.ReadFile(path) // #nosec G304 -- fixed ~/.netrc path under the audited home, not external input
+	data, err := readFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil

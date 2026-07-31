@@ -255,14 +255,51 @@ func hasMigratableAuth(userEntry map[string]interface{}) bool {
 // kubeconfigUserSecrets extracts userMap's migratable credential(s),
 // returning which auth type was found ("token" or "client-cert") and the
 // variable-name -> value pairs to store in the vault.
+// Every credential the user entry actually carries is vaulted, not just the
+// first kind found.
+//
+// This used to return the moment it saw a token, while the rewrite below
+// unconditionally deletes token, client-certificate-data AND client-key-data.
+// A user entry holding both (legal kubeconfig, and what several cluster
+// bootstrappers produce) therefore had its client certificate and key removed
+// from ~/.kube/config having never been stored anywhere — recoverable only
+// from the encrypted whole-file backup, and never mentioned in the plan.
+//
+// Vaulting all of them costs nothing and loses nothing: the exec helper
+// (buildK8sExecCredentialOutput) already emits whichever fields are present,
+// so a token-plus-cert entry keeps working exactly as before while the cert
+// and key survive the migration.
 func kubeconfigUserSecrets(userMap map[string]interface{}) (authType string, secrets map[string]string) {
-	if token, ok := userMap["token"].(string); ok && token != "" {
-		return "token", map[string]string{"TOKEN": token}
-	}
+	secrets = map[string]string{}
+	token, _ := userMap["token"].(string)
 	cert, _ := userMap["client-certificate-data"].(string)
 	key, _ := userMap["client-key-data"].(string)
-	return "client-cert", map[string]string{
-		"CLIENT_CERTIFICATE_DATA": cert,
-		"CLIENT_KEY_DATA":         key,
+
+	if token != "" {
+		secrets["TOKEN"] = token
 	}
+	// The pair is stored together or not at all: half of it authenticates
+	// nothing, and a lone half in the vault would make the helper's
+	// "complete pair" check fail in a way that reads like corruption.
+	if cert != "" && key != "" {
+		secrets["CLIENT_CERTIFICATE_DATA"] = cert
+		secrets["CLIENT_KEY_DATA"] = key
+	}
+
+	switch {
+	case token != "" && cert != "" && key != "":
+		authType = "token+client-cert"
+	case token != "":
+		authType = "token"
+	default:
+		authType = "client-cert"
+		// Preserved for the caller's own validation path: an incomplete pair
+		// reaches here only when the entry was judged migratable on other
+		// grounds, and writing what is there keeps the failure legible.
+		if len(secrets) == 0 {
+			secrets["CLIENT_CERTIFICATE_DATA"] = cert
+			secrets["CLIENT_KEY_DATA"] = key
+		}
+	}
+	return authType, secrets
 }

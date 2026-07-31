@@ -149,20 +149,20 @@ func writeFindingDetailMarkdown(w io.Writer, f Finding, showLine bool) {
 	fmt.Fprintf(w, "  - **%s**%s", strings.ToUpper(f.Severity), lineTag)
 	if f.KeyName == nil && f.ValuePreview == nil {
 		if f.Evidence != "" {
-			fmt.Fprintf(w, " %s", f.Evidence)
+			fmt.Fprintf(w, " %s", sanitizeDisplay(f.Evidence))
 		}
 		fmt.Fprintln(w)
 		return
 	}
 	if f.KeyName != nil {
-		fmt.Fprintf(w, " `%s`", *f.KeyName)
+		fmt.Fprintf(w, " `%s`", sanitizeDisplayPtr(f.KeyName))
 	}
 	if f.ValuePreview != nil {
-		fmt.Fprintf(w, " `%s`", *f.ValuePreview)
+		fmt.Fprintf(w, " `%s`", sanitizeDisplayPtr(f.ValuePreview))
 	}
 	fmt.Fprintln(w)
 	if f.Evidence != "" {
-		fmt.Fprintf(w, "    - %s\n", f.Evidence)
+		fmt.Fprintf(w, "    - %s\n", sanitizeDisplay(f.Evidence))
 	}
 }
 

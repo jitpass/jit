@@ -5,9 +5,13 @@ Download the latest release, verify it, and swap this binary + service onto it
 ### Synopsis
 
 Upgrades jit in place: fetches the latest published release, verifies its
-SHA-256 against the release's checksums.txt, replaces the running jit binary,
-and restarts the background service so it's immediately on the new build (no
-waiting for the stale-binary poll).
+SHA-256 against the release's checksums.txt AND its Developer ID signature,
+replaces the running jit binary, and restarts the background service so it's
+immediately on the new build (no waiting for the stale-binary poll).
+
+Both checks must pass. The checksum proves the download wasn't corrupted;
+the signature proves it came from us, since checksums.txt is served from the
+same place as the archive. Neither can be skipped.
 
 Replaces the binary `jit` actually runs from (whatever `which jit` resolves to).
 If that path isn't writable (e.g. /usr/local/bin), you'll be prompted for sudo

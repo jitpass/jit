@@ -22,6 +22,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -85,9 +86,12 @@ var upgradeCmd = &cobra.Command{
 	Use:   "upgrade",
 	Short: "Download the latest release, verify it, and swap this binary + service onto it",
 	Long: "Upgrades jit in place: fetches the latest published release, verifies its\n" +
-		"SHA-256 against the release's checksums.txt, replaces the running jit binary,\n" +
-		"and restarts the background service so it's immediately on the new build (no\n" +
-		"waiting for the stale-binary poll).\n\n" +
+		"SHA-256 against the release's checksums.txt AND its Developer ID signature,\n" +
+		"replaces the running jit binary, and restarts the background service so it's\n" +
+		"immediately on the new build (no waiting for the stale-binary poll).\n\n" +
+		"Both checks must pass. The checksum proves the download wasn't corrupted;\n" +
+		"the signature proves it came from us, since checksums.txt is served from the\n" +
+		"same place as the archive. Neither can be skipped.\n\n" +
 		"Replaces the binary `jit` actually runs from (whatever `which jit` resolves to).\n" +
 		"If that path isn't writable (e.g. /usr/local/bin), you'll be prompted for sudo\n" +
 		"just for the move. Your vault and secrets are never touched.\n\n" +
@@ -183,6 +187,13 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 	if err := extractBinaryFromTarGz(archivePath, "jit", staged); err != nil {
 		return fmt.Errorf("jit upgrade: extracting jit from %s: %w", asset, err)
 	}
+
+	fmt.Fprintf(out, "Verifying signature ... ")
+	if err := verifyStagedSignature(ctx, staged); err != nil {
+		fmt.Fprintln(out, "FAILED")
+		return fmt.Errorf("jit upgrade: %w", err)
+	}
+	fmt.Fprintln(out, "ok")
 
 	usedSudo, err := replaceBinary(exePath, staged)
 	if err != nil {
@@ -393,8 +404,34 @@ func extractBinaryFromTarGz(archivePath, name, dest string) error {
 func replaceBinary(target, staged string) (usedSudo bool, err error) {
 	dir := filepath.Dir(target)
 	if dirWritable(dir) {
-		tmp := filepath.Join(dir, ".jit-upgrade.new")
+		// os.CreateTemp, not a fixed ".jit-upgrade.new": the old fixed name in
+		// a possibly group-writable install dir (/usr/local/bin is group-
+		// writable on plenty of Macs) was a predictable path someone else could
+		// pre-create as a symlink. copyFile's O_CREATE|O_TRUNC followed it, and
+		// the os.Rename below then moved THAT SYMLINK onto `jit` — leaving the
+		// binary on everyone's PATH pointing wherever the attacker chose. A
+		// random name plus O_EXCL (CreateTemp implies it) means the create fails
+		// rather than adopts anything already sitting there, and two concurrent
+		// upgrades can no longer interleave through one shared path.
+		f, err := os.CreateTemp(dir, ".jit-upgrade-*")
+		if err != nil {
+			return false, err
+		}
+		tmp := f.Name()
+		_ = f.Close()
+		defer func() {
+			if err != nil {
+				_ = os.Remove(tmp)
+			}
+		}()
 		if err := copyFile(staged, tmp, 0o755); err != nil {
+			return false, err
+		}
+		// Explicit chmod: os.CreateTemp already made the file (at 0600), and
+		// the mode passed to an O_CREATE open is only applied when the open
+		// CREATES the file — so the 0755 above is silently ignored here and the
+		// installed binary would land without its exec bit.
+		if err := os.Chmod(tmp, 0o755); err != nil { // #nosec G302 -- an executable being installed onto PATH
 			return false, err
 		}
 		if err := os.Rename(tmp, target); err != nil {
@@ -500,7 +537,12 @@ func copyFile(src, dst string, mode os.FileMode) error {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode) // #nosec G304 -- dst is jit's own staged path in the install dir
+	// O_NOFOLLOW: dst is either a fresh os.CreateTemp file (so nothing can
+	// legitimately be a symlink there) or jit's own keep-a-copy path. Refusing
+	// to follow a final-element symlink means a planted one fails the open
+	// instead of redirecting an executable write, the same rule
+	// RestoreFromBackup applies to a restored secret.
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY|syscall.O_NOFOLLOW, mode) // #nosec G304 -- dst is jit's own staged path in the install dir
 	if err != nil {
 		return err
 	}
@@ -592,4 +634,63 @@ func sortedKeys(m map[string]string) []string {
 func init() {
 	upgradeCmd.Flags().BoolVar(&upgradeForce, "force", false, "reinstall the latest release even if it matches the current version")
 	rootCmd.AddCommand(upgradeCmd)
+}
+
+// upgradeTeamID is the Apple Developer Team ID every published jit release is
+// signed with (TECH_STACK.md §5). Hardcoded on purpose, exactly like
+// upgradeRepoOwner/upgradeRepoName above: this command installs jitpass/jit's
+// own releases and nothing else, so the identity it should accept is a
+// constant, not something read from the artifact it is trying to authenticate.
+const upgradeTeamID = "CZC6BH93GJ"
+
+// verifyStagedSignature refuses to install a binary that isn't a genuine,
+// intact, Developer-ID-signed jit release.
+//
+// Until this existed, the entire trust chain for replacing jit's own
+// executable was "GitHub served it over TLS". checksums.txt is fetched from
+// the same origin as the archive, so anything able to serve one could serve a
+// matching other — the SHA-256 check proves the download wasn't corrupted in
+// transit, not that it came from us. Meanwhile releases have been signed with
+// a Developer ID and notarized since 2026-07-30, so the stronger anchor was
+// already paid for and simply never checked. A self-updater is the highest
+// value target a CLI has; it should be the last thing to trust its transport.
+//
+// `codesign --verify` covers both halves at once: the signature must validate
+// against the embedded code directory (so a modified binary fails even with a
+// valid-looking signature), and -R checks it is OUR team's Developer ID rather
+// than merely somebody's. --strict declines the leniencies codesign otherwise
+// grants older bundles.
+//
+// Fails closed: an unsigned artifact, a missing codesign, or an unreadable
+// result all abort the upgrade with the running binary untouched. There is
+// deliberately no override flag — a switch that turns off signature checking
+// on a security tool's self-updater is the thing an attacker asks the user to
+// pass.
+// signatureRequirement builds the codesign requirement for a team.
+//
+// The leading "=" is codesign's marker for an INLINE requirement; without it,
+// -R treats the argument as a path to a requirements FILE and fails with
+// "invalid requirement specification". Because verification fails closed, that
+// typo would not be a weakened check — it would reject every binary including
+// genuine ones, turning `jit upgrade` into a command that can never succeed.
+// Its own function so a test can exercise the exact string production uses,
+// rather than a copy that agrees with itself.
+func signatureRequirement(teamID string) string {
+	return fmt.Sprintf("=anchor apple generic and certificate leaf[subject.OU] = %q", teamID)
+}
+
+func verifyStagedSignature(ctx context.Context, staged string) error {
+	req := signatureRequirement(upgradeTeamID)
+	cmd := exec.CommandContext(ctx, "/usr/bin/codesign", "--verify", "--strict", "-R", req, staged) // #nosec G204 -- fixed system binary; the only variable is jit's own staged temp path
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	detail := strings.TrimSpace(string(output))
+	if detail == "" {
+		detail = err.Error()
+	}
+	return fmt.Errorf("the downloaded binary is not a signature-verified jit release (%s); "+
+		"refusing to install it. Download it yourself from %s if you believe this is wrong",
+		detail, upgradeLatestPageURL())
 }

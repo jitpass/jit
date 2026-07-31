@@ -6,6 +6,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -642,6 +643,18 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 		replacedStore := false
 		for _, gitHost := range gitHosts {
 			result, err := migrate.ApplyGitCredential(v, home, gitHost, backups)
+			// A host jit's host-level model can't represent is SKIPPED, not
+			// fatal: aborting here would take the whole migrate run down (every
+			// other category included) over one host, and migrating it anyway
+			// would delete the account that wasn't vaulted. Said out loud —
+			// a credential silently left behind is how a user ends up believing
+			// they are protected when they are not.
+			if errors.Is(err, migrate.ErrGitMultipleAccounts) {
+				fmt.Fprintf(out, "  • %q SKIPPED — %v\n", gitHost, err)
+				fmt.Fprintln(out, "    Its credentials are untouched and still work. Vault them by hand with"+
+					" `jit vault set` if you want them protected before multi-account support lands.")
+				continue
+			}
 			if err != nil {
 				return false, fmt.Errorf("jit migrate: %w", err)
 			}

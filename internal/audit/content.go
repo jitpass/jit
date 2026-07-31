@@ -4,7 +4,6 @@
 package audit
 
 import (
-	"bufio"
 	"bytes"
 	"io"
 	"path/filepath"
@@ -189,8 +188,7 @@ func isPureTokenFile(path string) bool {
 	}
 	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxContentLineSize)
+	scanner := newLineScanner(file)
 	lineNum := 0
 	for scanner.Scan() {
 		lineNum++
@@ -264,8 +262,7 @@ func FindFileTokens(path string) ([]FileToken, error) {
 	}
 
 	var tokens []FileToken
-	scanner := bufio.NewScanner(io.MultiReader(bytes.NewReader(head[:n]), file))
-	scanner.Buffer(make([]byte, 0, 64*1024), maxContentLineSize)
+	scanner := newLineScanner(io.MultiReader(bytes.NewReader(head[:n]), file))
 	lineNum := 0
 	for scanner.Scan() {
 		lineNum++
