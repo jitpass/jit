@@ -186,11 +186,18 @@ func TestRestoreFromBackupRoundTripsShellConfig(t *testing.T) {
 	}
 }
 
-// TestRestoreFromBackupSnapshotsCurrentStateFirst: an undo must itself be
-// undoable — whatever regular-file content is being overwritten gets
-// captured as a new (now latest) backup record before the restore, so a
-// second undo round-trips back to the pre-undo state instead of anything
-// being destroyed outright.
+// TestRestoreFromBackupSnapshotsCurrentStateFirst: whatever regular-file
+// content an undo is about to overwrite is captured into the vault first, so
+// nothing is ever destroyed outright — the guarantee `jit migrate undo`'s own
+// documentation makes.
+//
+// This test used to assert the snapshot became the next undo TARGET, i.e. that
+// a second undo round-tripped back to the migrated state. That is the toggle
+// behaviour that made `jit migrate undo` non-idempotent: the command restores
+// "from their encrypted pre-migration backups", and a snapshot of the migrated
+// file is not one of those. Both halves are now asserted separately — the
+// snapshot is stored and recoverable, and it never answers "what did this file
+// look like before jit".
 func TestRestoreFromBackupSnapshotsCurrentStateFirst(t *testing.T) {
 	v := newTestVault(t)
 	home := t.TempDir()
@@ -211,17 +218,43 @@ func TestRestoreFromBackupSnapshotsCurrentStateFirst(t *testing.T) {
 		t.Fatalf("RestoreFromBackup (undo): %v", err)
 	}
 
-	// The latest record must now be the pre-restore snapshot: restoring
-	// again round-trips back to the migrated state.
+	// The migrated state must have been snapshotted into the vault before it
+	// was overwritten — "nothing is ever simply destroyed", per the command's
+	// own documentation. It is recoverable by hand with `jit vault get`.
+	recs, err := LoadBackupRecords(v.Root)
+	if err != nil {
+		t.Fatalf("LoadBackupRecords: %v", err)
+	}
+	var snapshot *BackupRecord
+	for i := range recs {
+		if recs[i].OriginalPath == rcPath && recs[i].Snapshot {
+			snapshot = &recs[i]
+		}
+	}
+	if snapshot == nil {
+		t.Fatalf("no pre-restore snapshot recorded for %s: the overwritten state was destroyed", rcPath)
+	}
+	stored, err := v.Get(snapshot.VaultPath)
+	if err != nil {
+		t.Fatalf("snapshot %s is recorded but not in the vault: %v", snapshot.VaultPath, err)
+	}
+	if string(stored) != string(migrated) {
+		t.Errorf("snapshot holds %q, want the migrated state %q", stored, migrated)
+	}
+
+	// But it is NOT an undo target: a second undo restores the same
+	// pre-migration content, it does not toggle the migration back on. The
+	// command restores "from their encrypted pre-migration backups"; a
+	// snapshot of the migrated file is not one of those.
 	if err := RestoreFromBackup(v, latestFor(t, v.Root, rcPath)); err != nil {
-		t.Fatalf("RestoreFromBackup (redo): %v", err)
+		t.Fatalf("RestoreFromBackup (second undo): %v", err)
 	}
 	after, err := os.ReadFile(rcPath)
 	if err != nil {
-		t.Fatalf("reading redone rc: %v", err)
+		t.Fatalf("reading rc after second undo: %v", err)
 	}
-	if string(after) != string(migrated) {
-		t.Errorf("after undo+undo = %q, want the migrated state %q back, the pre-restore snapshot must be the newest record", after, migrated)
+	if string(after) != original {
+		t.Errorf("second undo = %q, want the pre-migration content %q (undo must be idempotent, not a toggle)", after, original)
 	}
 }
 
@@ -369,4 +402,105 @@ func latestFor(t *testing.T, root, path string) BackupRecord {
 	}
 	t.Fatalf("no backup record for %s", path)
 	return BackupRecord{}
+}
+
+// `jit migrate undo` must be idempotent: running it twice has to leave the
+// file in the same restored state, not put the migration back.
+//
+// It did put it back. RestoreFromBackup snapshots whatever occupies the path
+// before overwriting it (so an undo is itself undoable), and that snapshot
+// went into the same index with a newer timestamp — so LatestBackups, which
+// picks the newest record per path, chose the snapshot of the MIGRATED file on
+// the second run. The user got the credential-stripped file back, reported as a
+// successful restore of a backup "taken 3 seconds ago", with the pristine
+// backup now permanently unreachable from undo.
+func TestUndoIsIdempotent(t *testing.T) {
+	v := newTestVault(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials")
+	const original = "[default]\naws_secret_access_key = ORIGINAL\n"
+	writeFile(t, path, original)
+
+	if _, err := backupSecretFile(v, path); err != nil {
+		t.Fatalf("backupSecretFile: %v", err)
+	}
+	// Stand in for the migration's own rewrite.
+	writeFile(t, path, "[default]\ncredential_process = jit aws-credential-process\n")
+
+	restore := func(pass int) {
+		t.Helper()
+		recs, err := LoadBackupRecords(v.Root)
+		if err != nil {
+			t.Fatalf("pass %d: LoadBackupRecords: %v", pass, err)
+		}
+		for _, rec := range LatestBackups(recs) {
+			if rec.OriginalPath != path {
+				continue
+			}
+			if err := RestoreFromBackup(v, rec); err != nil {
+				t.Fatalf("pass %d: RestoreFromBackup: %v", pass, err)
+			}
+			return
+		}
+		t.Fatalf("pass %d: no undo target for %s", pass, path)
+	}
+
+	restore(1)
+	got, err := os.ReadFile(path) // #nosec G304 -- test path
+	if err != nil {
+		t.Fatalf("reading after first undo: %v", err)
+	}
+	if string(got) != original {
+		t.Fatalf("first undo restored %q, want the pre-migration content", got)
+	}
+
+	restore(2)
+	got, err = os.ReadFile(path) // #nosec G304 -- test path
+	if err != nil {
+		t.Fatalf("reading after second undo: %v", err)
+	}
+	if string(got) != original {
+		t.Fatalf("second undo re-applied the migration: file is now %q, want %q still", got, original)
+	}
+}
+
+// The same, for a file migration CREATED: undo removes it, and a second undo
+// must leave it removed rather than writing it back.
+//
+// This was the worse half of the same bug — the second undo re-created
+// ~/.aws/config complete with the credential_process line pointing at jit,
+// for credentials that had just been un-vaulted.
+func TestUndoIsIdempotentForCreatedFiles(t *testing.T) {
+	v := newTestVault(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config")
+	writeFile(t, path, "[default]\ncredential_process = jit aws-credential-process\n")
+
+	if err := RecordCreatedFile(v.Root, path); err != nil {
+		t.Fatalf("RecordCreatedFile: %v", err)
+	}
+
+	for pass := 1; pass <= 2; pass++ {
+		recs, err := LoadBackupRecords(v.Root)
+		if err != nil {
+			t.Fatalf("pass %d: LoadBackupRecords: %v", pass, err)
+		}
+		var done bool
+		for _, rec := range LatestBackups(recs) {
+			if rec.OriginalPath != path {
+				continue
+			}
+			if err := RestoreFromBackup(v, rec); err != nil {
+				t.Fatalf("pass %d: RestoreFromBackup: %v", pass, err)
+			}
+			done = true
+		}
+		if !done {
+			t.Fatalf("pass %d: no undo target for %s", pass, path)
+		}
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("after undo pass %d the jit-created file is back (stat err %v); "+
+				"undo re-created a config with a dangling credential_process line", pass, err)
+		}
+	}
 }
