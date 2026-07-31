@@ -4,6 +4,7 @@
 package migrate
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -163,8 +164,12 @@ func TestApplyGitCredential(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyGitCredential: %v", err)
 	}
-	if !mig.ReplacedStoreHelper {
-		t.Error("expected ReplacedStoreHelper=true when a store helper was configured")
+	// ghe.example.com is still in the plaintext store, so `store` must STAY:
+	// removing it is machine-wide while migration is per-host, and dropping it
+	// here would leave that host's credential simultaneously on disk in
+	// plaintext and unreadable by git.
+	if mig.ReplacedStoreHelper {
+		t.Error("store helper was removed while another host's credential still needed it")
 	}
 
 	// The credential is in the vault.
@@ -172,13 +177,14 @@ func TestApplyGitCredential(t *testing.T) {
 		t.Errorf("vaulted PASSWORD = (%q, %v), want ghp_fixture", got, err)
 	}
 
-	// credential.helper is now jit, and the store helper is gone.
+	// jit is installed as a helper; store is still there for the host that
+	// has not been migrated yet. Git tries helpers in order, so both work.
 	helpers, err := gitCredentialHelpers(gitGlobalConfigPath(home))
 	if err != nil {
 		t.Fatalf("gitCredentialHelpers: %v", err)
 	}
-	if strings.Join(helpers, ",") != "jit" {
-		t.Errorf("credential.helper = %v, want just [jit] (store replaced)", helpers)
+	if strings.Join(helpers, ",") != "store,jit" {
+		t.Errorf("credential.helper = %v, want [store jit] while ghe.example.com is unmigrated", helpers)
 	}
 
 	// The migrated host is gone from the store; the other host stays.
@@ -195,9 +201,16 @@ func TestApplyGitCredential(t *testing.T) {
 		t.Errorf("helper not written: %v", err)
 	}
 
-	// Migrating the second host is idempotent on the helper (no duplicate jit).
-	if _, err := ApplyGitCredential(v, home, "ghe.example.com", backups); err != nil {
+	// Migrating the second host drains the store, so NOW the store helper goes
+	// — the intended end state, reached by observing that nothing is left for
+	// it to serve rather than by assuming it. Also idempotent on jit itself
+	// (no duplicate entry).
+	second, err := ApplyGitCredential(v, home, "ghe.example.com", backups)
+	if err != nil {
 		t.Fatalf("ApplyGitCredential (second host): %v", err)
+	}
+	if !second.ReplacedStoreHelper {
+		t.Error("store helper should be removed once the last plaintext credential is migrated")
 	}
 	helpers, _ = gitCredentialHelpers(gitGlobalConfigPath(home))
 	if strings.Join(helpers, ",") != "jit" {
@@ -231,5 +244,51 @@ func TestWriteGitHelper(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "git-credential \"$@\"") {
 		t.Errorf("helper script doesn't dispatch to `jit git-credential`:\n%s", data)
+	}
+}
+
+// Two accounts on one host must never be migrated: the strip is host-level and
+// removes both, while only the first is vaulted.
+//
+// The failure this prevents is silent and total for the second account — no
+// vault copy, no line in the plan, nothing but the encrypted whole-file backup
+// between the user and a lost token. Two GitHub logins (work and personal) is
+// an ordinary setup, not an exotic one.
+func TestApplyGitCredentialRefusesMultipleAccountsPerHost(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	v := newTestVault(t)
+
+	writeFile(t, filepath.Join(home, ".gitconfig"), "[credential]\n\thelper = store\n")
+	original := strings.Join([]string{
+		"https://work-account:ghp_work@github.com",
+		"https://personal-account:ghp_personal@github.com",
+		"",
+	}, "\n")
+	writeGitCredentialsFile(t, home, original)
+
+	_, err := ApplyGitCredential(v, home, "github.com", NewBackupTracker())
+	if !errors.Is(err, ErrGitMultipleAccounts) {
+		t.Fatalf("ApplyGitCredential err = %v, want ErrGitMultipleAccounts", err)
+	}
+
+	// Nothing may have been touched: not the store, not the vault, not the
+	// git config. A refusal that half-applied would be worse than the bug.
+	after, readErr := os.ReadFile(GitCredentialsPath(home)) // #nosec G304 -- test path
+	if readErr != nil {
+		t.Fatalf("reading store: %v", readErr)
+	}
+	if string(after) != original {
+		t.Errorf("refused migration still rewrote the credential store:\ngot  %q\nwant %q", after, original)
+	}
+	if exists, _ := v.Exists("git-github.com/PASSWORD"); exists {
+		t.Error("refused migration still wrote a credential to the vault")
+	}
+	helpers, _ := gitCredentialHelpers(gitGlobalConfigPath(home))
+	if strings.Join(helpers, ",") != "store" {
+		t.Errorf("refused migration still rewrote credential.helper = %v, want just [store]", helpers)
 	}
 }

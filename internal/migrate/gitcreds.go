@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/jitpass/jit/internal/profile"
@@ -58,6 +59,38 @@ type GitCredential struct {
 	Path     string
 	Username string
 	Password string
+}
+
+// ErrGitMultipleAccounts reports a host carrying more than one account in
+// git's plaintext store — two GitHub logins (work and personal) being the
+// ordinary case.
+//
+// jit's git support is host-level throughout: one vault profile per host
+// ("git-<host>"), holding one USERNAME/PASSWORD pair, and a helper that
+// answers per host. That model cannot represent two accounts, and the rewrite
+// that follows a migration strips EVERY line for the host. So migrating such a
+// host vaulted the first account and deleted the second — no vault copy, no
+// mention in the plan, nothing but the encrypted whole-file backup standing
+// between the user and a lost token.
+//
+// Refused rather than half-done. Supporting multiple accounts properly means
+// per-account profiles and a helper that matches on the username git supplies,
+// which is a feature, not something to infer inside a rewrite that is already
+// deleting the evidence.
+var ErrGitMultipleAccounts = errors.New("git host has multiple accounts, which jit's host-level credential model cannot represent")
+
+// quoteAll renders names for an error message, keeping an empty username
+// legible rather than printing a bare comma.
+func quoteAll(names []string) []string {
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if n == "" {
+			out = append(out, "(no username)")
+			continue
+		}
+		out = append(out, strconv.Quote(n))
+	}
+	return out
 }
 
 // ParseGitCredentialInput reads the key=value lines git writes to a helper's
@@ -410,7 +443,7 @@ func gitCredentialHelpers(cfgPath string) ([]string, error) {
 // in place, since git tries helpers in order and a secure store has nothing
 // in ~/.git-credentials to migrate anyway. Idempotent. Reports whether it
 // removed a store helper and whether jit was already installed.
-func configureGitHelper(cfgPath string) (replacedStore, alreadyInstalled bool, err error) {
+func configureGitHelper(cfgPath string, drained bool) (replacedStore, alreadyInstalled bool, err error) {
 	helpers, err := gitCredentialHelpers(cfgPath)
 	if err != nil {
 		return false, false, err
@@ -424,7 +457,20 @@ func configureGitHelper(cfgPath string) (replacedStore, alreadyInstalled bool, e
 			hasStore = true
 		}
 	}
-	if hasStore {
+	// The `store` helper is only removed once nothing is left for it to serve.
+	//
+	// Removing it is a MACHINE-WIDE action while migration is per-host, so an
+	// unconditional unset broke every credential this run did not migrate: the
+	// line stayed in ~/.git-credentials, but with no store helper configured
+	// git stopped consulting the file, so the credential was simultaneously
+	// still on disk in plaintext AND unusable. A host jit skips (see
+	// ErrGitMultipleAccounts) is exactly that case.
+	//
+	// Checked after this host's own strip, so on a run that migrates
+	// everything the last host still drains the file and clears the helper —
+	// the intended end state is reached, just by observation instead of
+	// assumption.
+	if hasStore && drained {
 		// value regex ^store$ so an unrelated "storefoo" is never touched.
 		_, code, err := runGitConfig(cfgPath, "--unset-all", "credential.helper", `^store$`)
 		if err != nil {
@@ -445,9 +491,37 @@ func configureGitHelper(cfgPath string) (replacedStore, alreadyInstalled bool, e
 	return replacedStore, hasJit, nil
 }
 
-// stripHostFromGitCredentials rewrites a git-credentials store file with
-// every line for host removed, keeping the rest byte-for-byte. Host-level,
-// matching the migration's keying.
+// gitCredentialStoresEmpty reports whether git's plaintext stores hold no
+// credentials any more — the condition under which the `store` helper has
+// nothing left to serve and can be removed. A missing file counts as empty; a
+// file that cannot be parsed counts as NOT empty, so an unreadable store never
+// talks jit into disabling the helper that reads it.
+func gitCredentialStoresEmpty(home string) (bool, error) {
+	for _, path := range []string{GitCredentialsPath(home), GitCredentialsXDGPath(home)} {
+		creds, err := parseGitCredentialsFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return false, fmt.Errorf("reading %s: %w", path, err)
+		}
+		if len(creds) > 0 {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// stripHostFromGitCredentials rewrites a git-credentials store file with every
+// line for host removed. Host-level, matching the migration's keying — which
+// is exactly why ApplyGitCredential refuses a host with more than one account
+// before ever reaching here (ErrGitMultipleAccounts): this removes them all,
+// and only one of them was vaulted.
+//
+// Not byte-for-byte, despite an earlier claim in this comment: kept lines are
+// trimmed and rejoined with "\n", so blank lines, trailing whitespace and CRLF
+// line endings do not survive. Harmless for a file whose every meaningful line
+// is a URL, and stated here rather than promised away.
 func stripHostFromGitCredentials(path, host string) error {
 	data, err := os.ReadFile(path) // #nosec G304 -- fixed ~/.git-credentials path, not external input
 	if err != nil {
@@ -492,6 +566,7 @@ func ApplyGitCredential(v *vault.Vault, home, host string, dedup ...*BackupTrack
 
 	var found *GitCredential
 	var credPath string
+	var accounts []string
 	for _, path := range []string{GitCredentialsPath(home), GitCredentialsXDGPath(home)} {
 		creds, err := parseGitCredentialsFile(path)
 		if err != nil {
@@ -501,10 +576,17 @@ func ApplyGitCredential(v *vault.Vault, home, host string, dedup ...*BackupTrack
 			return GitMigration{}, fmt.Errorf("reading %s: %w", path, err)
 		}
 		for i := range creds {
-			if creds[i].Host == host {
+			if creds[i].Host != host {
+				continue
+			}
+			// EVERY account for this host, not just the first. The strip below
+			// is host-level and removes them all, so counting only the first
+			// was how a second account's token got deleted from the plaintext
+			// store having never been vaulted — see ErrGitMultipleAccounts.
+			accounts = append(accounts, creds[i].Username)
+			if found == nil {
 				c := creds[i]
 				found, credPath = &c, path
-				break
 			}
 		}
 		if found != nil {
@@ -513,6 +595,10 @@ func ApplyGitCredential(v *vault.Vault, home, host string, dedup ...*BackupTrack
 	}
 	if found == nil {
 		return GitMigration{}, fmt.Errorf("host %q not found (or has no plaintext credential) in git's credential store", host)
+	}
+	if len(accounts) > 1 {
+		return GitMigration{}, fmt.Errorf("%w: %s has %d accounts (%s) in %s",
+			ErrGitMultipleAccounts, host, len(accounts), strings.Join(quoteAll(accounts), ", "), credPath)
 	}
 
 	cfgPath := gitGlobalConfigPath(home)
@@ -551,7 +637,18 @@ func ApplyGitCredential(v *vault.Vault, home, host string, dedup ...*BackupTrack
 		return GitMigration{}, err
 	}
 
-	replacedStore, _, err := configureGitHelper(cfgPath)
+	// Strip first, then configure: whether git still needs its `store` helper
+	// is a question about what remains in the file, so it can only be answered
+	// after this host's own lines are gone.
+	if err := stripHostFromGitCredentials(credPath, host); err != nil {
+		return GitMigration{}, fmt.Errorf("rewriting %s: %w", credPath, err)
+	}
+	drained, err := gitCredentialStoresEmpty(home)
+	if err != nil {
+		return GitMigration{}, err
+	}
+
+	replacedStore, _, err := configureGitHelper(cfgPath, drained)
 	if err != nil {
 		return GitMigration{}, err
 	}
@@ -565,10 +662,6 @@ func ApplyGitCredential(v *vault.Vault, home, host string, dedup ...*BackupTrack
 			return GitMigration{}, fmt.Errorf("recording created %s in the undo index: %w", cfgPath, err)
 		}
 		tracker.markCreated(cfgPath)
-	}
-
-	if err := stripHostFromGitCredentials(credPath, host); err != nil {
-		return GitMigration{}, fmt.Errorf("rewriting %s: %w", credPath, err)
 	}
 
 	return GitMigration{
