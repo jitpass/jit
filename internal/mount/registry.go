@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/jitpass/jit/internal/vault"
 )
 
 // Entry is one active mount jit migrate has created and jit agent should
@@ -45,18 +47,24 @@ func RegistryPath(root string) string {
 // existing entry for the same MountPath (re-running jit migrate on an
 // already-mounted file updates its record rather than duplicating it).
 func AddMount(registryPath string, entry Entry) error {
-	reg, err := loadRegistry(registryPath)
-	if err != nil {
-		return err
-	}
-	filtered := reg.Mounts[:0]
-	for _, m := range reg.Mounts {
-		if m.MountPath != entry.MountPath {
-			filtered = append(filtered, m)
+	// Load and save inside one lock: two `jit migrate` runs (or a migrate and
+	// a `jit unmount`) that interleave their read-modify-write otherwise lose
+	// one of the two updates outright, silently unregistering a mount whose
+	// FIFO is still sitting on disk.
+	return vault.WithFileLock(registryPath, func() error {
+		reg, err := loadRegistry(registryPath)
+		if err != nil {
+			return err
 		}
-	}
-	reg.Mounts = append(filtered, entry)
-	return saveRegistry(registryPath, reg)
+		filtered := reg.Mounts[:0]
+		for _, m := range reg.Mounts {
+			if m.MountPath != entry.MountPath {
+				filtered = append(filtered, m)
+			}
+		}
+		reg.Mounts = append(filtered, entry)
+		return saveRegistry(registryPath, reg)
+	})
 }
 
 // LoadRegistry returns every mount recorded at registryPath. A missing
@@ -88,24 +96,27 @@ func FindMount(registryPath, mountPath string) (Entry, bool, error) {
 // stop tracking a mount it's just reversed. Returns false (not an error)
 // if no entry for mountPath existed.
 func RemoveMount(registryPath, mountPath string) (bool, error) {
-	reg, err := loadRegistry(registryPath)
-	if err != nil {
-		return false, err
-	}
-	filtered := reg.Mounts[:0]
-	found := false
-	for _, m := range reg.Mounts {
-		if m.MountPath == mountPath {
-			found = true
-			continue
+	var found bool
+	err := vault.WithFileLock(registryPath, func() error {
+		reg, lErr := loadRegistry(registryPath)
+		if lErr != nil {
+			return lErr
 		}
-		filtered = append(filtered, m)
-	}
-	if !found {
-		return false, nil
-	}
-	reg.Mounts = filtered
-	return true, saveRegistry(registryPath, reg)
+		filtered := reg.Mounts[:0]
+		for _, m := range reg.Mounts {
+			if m.MountPath == mountPath {
+				found = true
+				continue
+			}
+			filtered = append(filtered, m)
+		}
+		if !found {
+			return nil
+		}
+		reg.Mounts = filtered
+		return saveRegistry(registryPath, reg)
+	})
+	return found, err
 }
 
 func loadRegistry(path string) (registryFile, error) {
@@ -123,13 +134,24 @@ func loadRegistry(path string) (registryFile, error) {
 	return reg, nil
 }
 
+// saveRegistry writes the registry atomically.
+//
+// os.WriteFile (O_CREATE|O_TRUNC) was actively dangerous here: the truncate
+// lands first, so a reader arriving in that window saw an EMPTY file — and an
+// empty registry unmarshals to zero mounts with no error at all, which is
+// indistinguishable from "nothing is mounted". The agent re-reads this file on
+// every OpRefresh, and `jit migrate` rewrites it eight times in one run while
+// signalling exactly that refresh, so the window was entered routinely. A
+// refresh that landed in it left every mount without a writer, which does not
+// merely stop serving: it hangs every reader in open() forever.
+//
+// AtomicWriteFile's rename means a reader now sees the old registry or the new
+// one and never a partial state. WithFileLock (in the callers) is what stops
+// two concurrent updates losing one of them.
 func saveRegistry(path string, reg registryFile) error {
 	data, err := yaml.Marshal(reg)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o600)
+	return vault.AtomicWriteFile(path, data)
 }

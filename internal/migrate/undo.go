@@ -117,21 +117,31 @@ func BackupIndexPath(root string) string {
 // builds before this index existed are still in the vault under
 // _backups/, just not indexed — recoverable by hand via `jit vault
 // get`, invisible to `jit migrate undo`.)
+// Locked and atomic, because this one file is what makes every backup
+// reachable. os.WriteFile truncates first, so a crash or a full disk mid-write
+// left the index empty or half-parsed — and an index that fails to parse takes
+// `jit migrate undo` down for EVERY recorded file, not just the one being
+// written. The lock covers the load-append-save cycle: this is called once per
+// backed-up file (fifteen call sites, a dozen files in a single
+// `jit migrate home`), so overlapping runs dropping one record apiece is not a
+// hypothetical. A dropped record does not lose the backup itself — it stays in
+// the vault under _backups/ — but it becomes invisible to undo and recoverable
+// only by hand through `jit vault get`, for a file whose plaintext credential
+// jit has just rewritten.
 func appendBackupRecord(root string, rec BackupRecord) error {
 	path := BackupIndexPath(root)
-	idx, err := loadBackupIndex(path)
-	if err != nil {
-		return err
-	}
-	idx.Backups = append(idx.Backups, rec)
-	data, err := yaml.Marshal(idx)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o600)
+	return vault.WithFileLock(path, func() error {
+		idx, err := loadBackupIndex(path)
+		if err != nil {
+			return err
+		}
+		idx.Backups = append(idx.Backups, rec)
+		data, err := yaml.Marshal(idx)
+		if err != nil {
+			return err
+		}
+		return vault.AtomicWriteFile(path, data)
+	})
 }
 
 // RecordCreatedFile appends a RemoveOnRestore record for a file migration
