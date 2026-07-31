@@ -4,7 +4,6 @@
 package audit
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -69,7 +68,7 @@ func scanAgeKeyFile(cfg Config, path string) ([]Finding, error) {
 	var findings []Finding
 	keyIndex := 0
 	lineNo := 0
-	scanner := bufio.NewScanner(file)
+	scanner := newLineScanner(file)
 	for scanner.Scan() {
 		lineNo++
 		line := strings.TrimSpace(scanner.Text())
@@ -93,7 +92,7 @@ func scanAgeKeyFile(cfg Config, path string) ([]Finding, error) {
 			Evidence:     "SOPS age private key: decrypts every SOPS-encrypted secret this key guards (sops, kluctl, Flux, helm-secrets)",
 		}))
 	}
-	if err := scanner.Err(); err != nil {
+	if err := lineScanErr(scanner); err != nil {
 		return nil, err
 	}
 	return findings, nil

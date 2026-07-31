@@ -4,7 +4,6 @@
 package audit
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -80,7 +79,7 @@ func isJitPointerContent(path string) bool {
 		return false
 	}
 	defer f.Close()
-	scanner := bufio.NewScanner(f)
+	scanner := newLineScanner(f)
 	if !scanner.Scan() {
 		return false
 	}
@@ -150,7 +149,7 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 	var tokenHits []envTokenHit
 	var secretShapedKeys []string
 
-	scanner := bufio.NewScanner(file)
+	scanner := newLineScanner(file)
 	for scanner.Scan() {
 		m := envLinePattern.FindStringSubmatch(scanner.Text())
 		if m == nil {
@@ -233,7 +232,7 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 			}
 		}
 	}
-	if err := scanner.Err(); err != nil {
+	if err := lineScanErr(scanner); err != nil {
 		return Finding{}, false, err
 	}
 

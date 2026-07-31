@@ -4,7 +4,6 @@
 package audit
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
@@ -157,7 +156,7 @@ func awsProfileEvidence(profile, expiration string) string {
 func parseINISections(r *os.File) (map[string]map[string]string, error) {
 	sections := map[string]map[string]string{}
 	currentSection := ""
-	scanner := bufio.NewScanner(r)
+	scanner := newLineScanner(r)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
@@ -181,7 +180,7 @@ func parseINISections(r *os.File) (map[string]map[string]string, error) {
 		value := strings.TrimSpace(line[idx+1:])
 		sections[currentSection][key] = value
 	}
-	return sections, scanner.Err()
+	return sections, lineScanErr(scanner)
 }
 
 // --- kubeconfig (~/.kube/config, YAML) ---
@@ -282,7 +281,7 @@ func scanNpmrcFile(path string, cfg Config) ([]Finding, error) {
 	defer file.Close()
 
 	var findings []Finding
-	scanner := bufio.NewScanner(file)
+	scanner := newLineScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
@@ -308,7 +307,7 @@ func scanNpmrcFile(path string, cfg Config) ([]Finding, error) {
 			Evidence:     "npm registry credential found in .npmrc",
 		}))
 	}
-	return findings, scanner.Err()
+	return findings, lineScanErr(scanner)
 }
 
 // --- Streamlit (.streamlit/secrets.toml, TOML) ---
@@ -386,7 +385,7 @@ func scanStreamlitSecretsFile(cfg Config, path string) ([]Finding, error) {
 	defer file.Close()
 
 	var findings []Finding
-	scanner := bufio.NewScanner(file)
+	scanner := newLineScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if trimmed := strings.TrimSpace(line); trimmed == "" || strings.HasPrefix(trimmed, "#") {
@@ -438,7 +437,7 @@ func scanStreamlitSecretsFile(cfg Config, path string) ([]Finding, error) {
 			}))
 		}
 	}
-	return findings, scanner.Err()
+	return findings, lineScanErr(scanner)
 }
 
 // --- Remote MCP OAuth tokens (~/.mcp-auth/**/<hash>_tokens.json, JSON) ---
