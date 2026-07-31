@@ -129,10 +129,7 @@ func TestRunScopedGrantEndToEnd(t *testing.T) {
 
 	// (2) an out-of-tree sibling (spawned by the TEST, not the granted sh)
 	// gets decoys at the same moment the grant is live.
-	sibling, err := exec.Command("/bin/cat", mountPath).Output()
-	if err != nil {
-		t.Fatalf("sibling cat: %v", err)
-	}
+	sibling := readMountFromSiblingProcess(t, mountPath, 5*time.Second)
 	if bytes.Contains(sibling, []byte("sk_live_REAL_SECRET")) {
 		t.Fatalf("out-of-tree reader got the real secret: %q", sibling)
 	}
@@ -148,10 +145,38 @@ func TestRunScopedGrantEndToEnd(t *testing.T) {
 		st, err := client.Status()
 		return err == nil && len(st.Mounts) == 1 && len(st.Mounts[0].Grants) == 0
 	})
-	after := readMountOnce(t, mountPath)
+	after := readMountOnceWithTimeout(t, mountPath, 5*time.Second)
 	if bytes.Contains(after, []byte("sk_live_REAL_SECRET")) {
 		t.Fatalf("read after target exit got the real secret: %q", after)
 	}
+}
+
+// readMountFromSiblingProcess reads the mount from a process OUTSIDE the
+// granted tree. A separate process is the whole assertion — the grant is
+// keyed on process ancestry, so an in-process read
+// (readMountOnceWithTimeout) sits in the test binary, whose own tree is not
+// the granted one but is also not what a real out-of-tree reader looks like.
+//
+// The deadline is not politeness. This read used to be a bare
+// exec.Command(...).Output(), which waits on the child with no bound of its
+// own while the child parks in open(2) on a pipe nothing is writing to. That
+// is not a failing test, it is a hung one: a repeat run of this package left
+// it parked until the test binary died on its own 10-minute alarm and printed
+// a goroutine dump in place of the one line naming the read that never
+// resolved. CommandContext kills the child at the deadline so the failure
+// arrives as a sentence.
+func readMountFromSiblingProcess(t *testing.T, path string, timeout time.Duration) []byte {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "/bin/cat", path).Output()
+	if ctx.Err() != nil {
+		t.Fatalf("an out-of-tree read of %s did not resolve within %s, nothing is serving the mount", path, timeout)
+	}
+	if err != nil {
+		t.Fatalf("sibling cat: %v", err)
+	}
+	return out
 }
 
 // waitFor polls cond up to a deadline — the e2e assertions above cross
@@ -289,7 +314,7 @@ func TestRunScopedSwapEndToEnd(t *testing.T) {
 		info, err := os.Lstat(mountPath)
 		return err == nil && info.Mode()&os.ModeNamedPipe != 0
 	})
-	after := readMountOnce(t, mountPath)
+	after := readMountOnceWithTimeout(t, mountPath, 5*time.Second)
 	if bytes.Contains(after, []byte("sk_live_REAL_SECRET")) {
 		t.Fatalf("restored mount served the real secret while hidden: %q", after)
 	}
