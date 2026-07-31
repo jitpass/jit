@@ -4,7 +4,6 @@
 package audit
 
 import (
-	"bufio"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -122,7 +121,7 @@ func isTemplateOnlySecretManifest(path string) (bool, error) {
 	defer file.Close()
 
 	sawTemplate, inDataBlock := false, false
-	scanner := bufio.NewScanner(file)
+	scanner := newLineScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
@@ -159,7 +158,7 @@ func isTemplateOnlySecretManifest(path string) (bool, error) {
 			return false, nil
 		}
 	}
-	if err := scanner.Err(); err != nil {
+	if err := lineScanErr(scanner); err != nil {
 		return false, err
 	}
 	return sawTemplate, nil
@@ -185,13 +184,13 @@ func fileContainsSubstring(path, substr string) (bool, error) {
 		return false, err
 	}
 	defer file.Close()
-	scanner := bufio.NewScanner(file)
+	scanner := newLineScanner(file)
 	for scanner.Scan() {
 		if strings.Contains(scanner.Text(), substr) {
 			return true, nil
 		}
 	}
-	return false, scanner.Err()
+	return false, lineScanErr(scanner)
 }
 
 // k8sSecretDoc is the subset of a Kubernetes Secret manifest the scanner
@@ -517,7 +516,7 @@ func scanTfvarsAssignments(cfg Config, path string) ([]envTokenHit, []string, er
 
 	var tokens []envTokenHit
 	var shaped []string
-	scanner := bufio.NewScanner(file)
+	scanner := newLineScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(strings.TrimSpace(line), "#") || strings.HasPrefix(strings.TrimSpace(line), "//") {
@@ -539,7 +538,7 @@ func scanTfvarsAssignments(cfg Config, path string) ([]envTokenHit, []string, er
 			shaped = append(shaped, key)
 		}
 	}
-	if err := scanner.Err(); err != nil {
+	if err := lineScanErr(scanner); err != nil {
 		return nil, nil, err
 	}
 	return tokens, shaped, nil
@@ -587,7 +586,7 @@ func scanLinesForSignals(path string) (prodMatch, ipMatch bool, publicIP string,
 	}
 	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
+	scanner := newLineScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if IsAlreadyMasked(strings.TrimSpace(line)) {
@@ -601,7 +600,7 @@ func scanLinesForSignals(path string) (prodMatch, ipMatch bool, publicIP string,
 			publicIP = ip
 		}
 	}
-	if err := scanner.Err(); err != nil {
+	if err := lineScanErr(scanner); err != nil {
 		return false, false, "", err
 	}
 	return prodMatch, ipMatch, publicIP, nil
