@@ -53,6 +53,7 @@ secret, same as every other audit format.
 | `unfiltered` | `true` when the run used `jit scan --unfiltered`, which turns the name/value suppression gates off (schema 0.11.0+). A deliberately noisy auditing view - do not compare its counts against a normal run's |
 | `secrets_total`, `secrets_protected`, `secrets_migratable` | the coverage ledger, in **distinct secrets**, never findings (13 copies of one dump are 3 secrets): everything jit knows about, how many are already served from the vault by live mounts, and how many of the exposed ones a bare `jit migrate` can protect. Only critical/high/medium findings count as secrets - low/info sightings are jit's own uncertainty, and `test_fixture` findings have no owner to rotate; neither is charged to the score (schema 0.12.0+, fixtures 0.13.0+) |
 | `files_scanned` | how many regular files the machine-wide walk offered to the classifiers; `0` for a targeted scan (schema 0.12.0+) |
+| `degraded_scanners` | categories that could not complete, each `{scanner, error}` - e.g. a root-owned `~/.aws/credentials` left by a `sudo` run. **Absent on a clean run.** When present it changes what every count above it means: a `secrets_total` of `0` from a run with a degraded scanner is "we could not look there", not "there is nothing there" (schema 0.14.0+) |
 
 A stream is well-formed when it ends with exactly one `scan_summary`
 record; consumers can treat its absence as a truncated run.

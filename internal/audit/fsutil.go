@@ -4,9 +4,12 @@
 package audit
 
 import (
+	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // noiseDirs are directory names never descended into during a home-directory
@@ -164,5 +167,69 @@ func walkHomeDir(root string, fn func(path string, d fs.DirEntry) error) error {
 // arbitrary user-supplied project directory) has one obvious place to add
 // real containment (os.Root, Go 1.24+) instead of copy-pasting a suppression.
 func openFile(path string) (*os.File, error) {
-	return os.Open(path) // #nosec G304 -- see package-level justification above
+	// O_NOFOLLOW | O_NONBLOCK + a regular-file check on the OPEN DESCRIPTOR.
+	// walkHomeDir already applies the equivalent rule to everything it hands a
+	// scanner, but the fixed-path scanners (~/.aws/credentials, ~/.kube/config,
+	// ~/.zshrc, …) are checked outside that walk, and several reached this
+	// function with no guard of their own:
+	//
+	//   - A FIFO at one of those paths hung `jit scan` in open(2) forever, with
+	//     no output and nothing to indicate why. jit's own migrate creates FIFOs
+	//     for a living, so this is jit's shape of file. O_NONBLOCK makes the
+	//     open return instead of waiting for a writer; the IsRegular check then
+	//     rejects it. (O_NONBLOCK is inert for reads on a regular file.)
+	//   - A symlink pointing outside the scanned tree was followed and its
+	//     target read, then REPORTED AT THE LINK'S PATH — a finding naming a
+	//     file whose content lives somewhere else entirely, and a silent
+	//     widening of the scan's scope past $HOME.
+	//
+	// Checked through the descriptor rather than an Lstat beforehand, so the
+	// answer describes the file actually opened rather than one that may have
+	// been swapped in between the two calls.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) // #nosec G304 -- see package-level justification above
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+	return f, nil
 }
+
+// maxReadFileSize bounds readFile, matching the ceiling content.go's own sweep
+// already applies (maxContentScanSize). A credential lives in a text config
+// file, never in a multi-megabyte blob.
+const maxReadFileSize = maxContentScanSize
+
+// readFile is openFile's whole-file counterpart: same regular-file and
+// no-symlink guarantees, plus a size cap.
+//
+// The direct os.ReadFile calls it replaces had neither. That is how the
+// private-key scanner came to follow a symlink out of ~/Downloads and report
+// someone else's key file under the link's name, and how a scanner pointed at
+// a FIFO would hang.
+func readFile(path string) ([]byte, error) {
+	f, err := openFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return io.ReadAll(io.LimitReader(f, maxReadFileSize))
+}
+
+// maxStructuredParseSize bounds the input handed to a YAML/JSON decoder.
+//
+// Unlike a line scanner, a structured decoder allocates a representation of
+// whatever it is fed, so an oversized document is a memory amplifier rather
+// than merely slow work: a 32 MB secrets.yaml drove 188 MB of resident memory
+// and was still parsing minutes later, against a scan budget measured in
+// milliseconds — and discoverByWalk runs classifiers on 2xNumCPU goroutines,
+// so it multiplies. Deliberately the same ceiling as maxContentScanSize: a
+// config file holding a credential is a text file someone wrote by hand.
+const maxStructuredParseSize = maxContentScanSize

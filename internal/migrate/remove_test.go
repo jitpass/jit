@@ -4,9 +4,11 @@
 package migrate
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -103,5 +105,87 @@ func TestDropBackupRecords(t *testing.T) {
 	}
 	if _, err := os.Stat(BackupIndexPath(root)); !os.IsNotExist(err) {
 		t.Errorf("undo index should be gone once its last record is dropped (stat err: %v)", err)
+	}
+}
+
+// Dropping one created-file record must not take the others with it.
+//
+// RecordCreatedFile writes a record with no VaultPath (there are no bytes to
+// store — the undo is a deletion), and the drop-set used to key on VaultPath
+// alone. Every created-file record therefore keyed on the empty string, so
+// `jit migrate remove` on an AWS project silently discarded the
+// RemoveOnRestore record for an unrelated file like ~/.terraformrc, and a
+// later `jit migrate undo` left that jit-written file behind permanently.
+func TestDropBackupRecordsKeepsOtherCreatedFileRecords(t *testing.T) {
+	root := t.TempDir()
+	if err := RecordCreatedFile(root, "/home/u/.aws/config"); err != nil {
+		t.Fatalf("RecordCreatedFile(aws): %v", err)
+	}
+	if err := RecordCreatedFile(root, "/home/u/.terraformrc"); err != nil {
+		t.Fatalf("RecordCreatedFile(terraform): %v", err)
+	}
+	recs, err := LoadBackupRecords(root)
+	if err != nil {
+		t.Fatalf("LoadBackupRecords: %v", err)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("setup wrote %d records, want 2", len(recs))
+	}
+
+	var awsRec BackupRecord
+	for _, r := range recs {
+		if r.OriginalPath == "/home/u/.aws/config" {
+			awsRec = r
+		}
+	}
+	if err := DropBackupRecords(root, []BackupRecord{awsRec}); err != nil {
+		t.Fatalf("DropBackupRecords: %v", err)
+	}
+
+	left, err := LoadBackupRecords(root)
+	if err != nil {
+		t.Fatalf("LoadBackupRecords after drop: %v", err)
+	}
+	if len(left) != 1 || left[0].OriginalPath != "/home/u/.terraformrc" {
+		t.Fatalf("dropping the AWS created-file record also dropped unrelated ones: %v "+
+			"(undo can no longer remove the jit-written ~/.terraformrc)", left)
+	}
+}
+
+// Concurrent appends must not lose records: the index is what makes every
+// backup reachable, and a dropped record leaves the plaintext file jit just
+// rewrote recoverable only by hand through `jit vault get`.
+func TestAppendBackupRecordSurvivesConcurrentWriters(t *testing.T) {
+	root := t.TempDir()
+	const writers = 12
+
+	var wg sync.WaitGroup
+	errs := make(chan error, writers)
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs <- appendBackupRecord(root, BackupRecord{
+				OriginalPath: fmt.Sprintf("/proj/%d/.env", i),
+				VaultPath:    fmt.Sprintf("_backups/%d", i),
+				UnixTS:       int64(i + 1),
+			})
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("appendBackupRecord: %v", err)
+		}
+	}
+
+	recs, err := LoadBackupRecords(root)
+	if err != nil {
+		t.Fatalf("LoadBackupRecords: %v", err)
+	}
+	if len(recs) != writers {
+		t.Fatalf("got %d records from %d concurrent appends: overlapping "+
+			"read-modify-write lost %d backup(s)", len(recs), writers, writers-len(recs))
 	}
 }
