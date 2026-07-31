@@ -371,7 +371,7 @@ func triageGroupMigratable(findings []Finding) []triageFile {
 		}
 		key := ""
 		if f.KeyName != nil {
-			key = *f.KeyName
+			key = sanitizeDisplay(*f.KeyName)
 		}
 		if key != "" && !a.seen[key] {
 			a.seen[key] = true

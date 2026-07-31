@@ -533,7 +533,7 @@ func scanMCPAuthTokens(cfg Config) ([]Finding, error) {
 }
 
 func mcpAuthTokenFindings(cfg Config, path string) []Finding {
-	data, err := os.ReadFile(path) // #nosec G304 -- path is built from cfg.HomeDir and a fixed directory name
+	data, err := readFile(path)
 	if err != nil {
 		return nil
 	}
@@ -853,7 +853,7 @@ func scanGitCredentialsFile(path string, cfg Config) ([]Finding, error) {
 	if !info.Mode().IsRegular() {
 		return nil, nil
 	}
-	data, err := os.ReadFile(path) // #nosec G304 -- fixed git-credentials path under the audited home, not external input
+	data, err := readFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -974,7 +974,7 @@ func scanNetrc(cfg Config) ([]Finding, error) {
 	if !info.Mode().IsRegular() {
 		return nil, nil
 	}
-	data, err := os.ReadFile(path) // #nosec G304 -- fixed ~/.netrc path under the audited home, not external input
+	data, err := readFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil

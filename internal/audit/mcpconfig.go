@@ -6,6 +6,7 @@ package audit
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -102,7 +103,10 @@ func scanMCPConfigFile(cfg Config, path string) ([]Finding, error) {
 	defer file.Close()
 
 	var mc mcpConfigFile
-	if err := json.NewDecoder(file).Decode(&mc); err != nil {
+	// Bounded for the same reason inspectK8sSecretFile's decoder is: this runs
+	// on any walked mcp.json, and json.Decoder will happily build whatever the
+	// file describes.
+	if err := json.NewDecoder(io.LimitReader(file, maxStructuredParseSize)).Decode(&mc); err != nil {
 		return nil, nil // malformed JSON — not our job to validate it, just skip
 	}
 
