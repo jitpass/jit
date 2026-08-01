@@ -423,6 +423,20 @@ var wrapDoctorCmd = &cobra.Command{
 		}
 		checks := wrap.Doctor(home, os.Getenv("PATH"), os.Getenv("SHELL"))
 		out := cmd.OutOrStdout()
+
+		// The name column is measured, not fixed at 12: "tool terraform" is
+		// 14 characters, so the old %-12s ran its own rows together while the
+		// shorter ones above stayed aligned — a column that only lines up for
+		// short values isn't a column (rule 4).
+		nameW := 0
+		for _, c := range checks {
+			if n := len(c.Name); n > nameW {
+				nameW = n
+			}
+		}
+		used := 2 + nameW + 1
+		indent := strings.Repeat(" ", used)
+
 		failed := 0
 		for _, c := range checks {
 			if c.OK {
@@ -431,8 +445,16 @@ var wrapDoctorCmd = &cobra.Command{
 				_, _ = cRisk.Fprintf(out, "%s ", glyphRisk)
 				failed++
 			}
-			_, _ = cBold.Fprintf(out, "%-12s", c.Name)
-			_, _ = cDim.Fprintf(out, " %s\n", c.Detail)
+			_, _ = cBold.Fprintf(out, "%-*s ", nameW, c.Name)
+			// hlCmds, and NOT dim. wrap.Doctor authors its details with
+			// `backtick`-delimited commands like every other jit message, but
+			// this was the one renderer that printed them raw — so the same
+			// string rendered as literal grey backticks here and as cyan
+			// commands inside `jit doctor`'s rollup, which is precisely the
+			// drift rule 5 exists to stop. The style guard missed it because
+			// the strings are authored in internal/wrap and reach the printer
+			// through a variable.
+			wrapBody(out, used, indent, hlCmds(shortHome(c.Detail)))
 		}
 		if failed > 0 {
 			return fmt.Errorf("jit wrap doctor: %s failed", countWord(failed, "check", "checks"))

@@ -15,6 +15,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ErrNotFound reports that a profile name resolved to no manifest in any
+// scope — as opposed to a manifest that exists and won't parse. The two are
+// entirely different problems (a typo'd name versus broken YAML) with
+// entirely different fixes, and a caller that renders them the same way
+// sends the reader after the wrong one. `jit doctor` classifies its findings
+// on this: errors.Is(err, ErrNotFound) is [not found], anything else from a
+// load is [parse].
+//
+// The wording is the tail of the sentence LoadWithScope already produced
+// ("profile %q not found (checked …)"), so wrapping it there left every
+// existing message byte-for-byte unchanged.
+var ErrNotFound = errors.New("not found")
+
 // ProfilesDir is where profile manifests live, relative to a project root
 // (RFC.md Pillar IV's own example: ".jit/profiles/aws-admin.yaml") — a
 // project-scoped location, deliberately separate from the vault's
@@ -130,7 +143,11 @@ func LoadWithScope(root, name string) (Profile, Scope, string, error) {
 			tried = append(tried, globalPath)
 		}
 	}
-	return nil, "", "", fmt.Errorf("profile %q not found (checked %s)", name, strings.Join(tried, ", "))
+	// Phrased so the sentinel supplies the words it already read as: the
+	// rendered message stays byte-identical to the one every `--profile`
+	// consumer has always printed, and only its machine-readable identity
+	// changes.
+	return nil, "", "", fmt.Errorf("profile %q %w (checked %s)", name, ErrNotFound, strings.Join(tried, ", "))
 }
 
 // LoadFile reads and parses a profile manifest at an absolute path

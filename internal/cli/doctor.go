@@ -5,12 +5,11 @@ package cli
 
 import (
 	"fmt"
-	"github.com/fatih/color"
 	"io"
 	"os"
-	"regexp"
 	"strings"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
 
@@ -56,16 +55,23 @@ var doctorCmd = &cobra.Command{
 		"By default it checks every profile visible from the current directory: both\n" +
 		"project-local ones under .jit/profiles/ and the home-rooted global ones\n" +
 		"jit migrate writes for shell-config/MCP/AWS/kubeconfig/npmrc secrets,\n" +
-		"the same set `jit status --secrets` reconciles. It also folds in the health checks\n" +
-		"that used to take `jit status` and `jit wrap doctor` to see: the background\n" +
-		"service, your vault backup, and any wrapped-tool shims.\n\n" +
-		"It exits non-zero only when a profile's secret is missing, corrupt, or\n" +
-		"unparseable. Everything else it reports is an advisory warning, never a\n" +
-		"failure: an orphaned secret (with --orphans), a profile name shadowed\n" +
-		"across scopes, a stopped service, a stale or missing vault backup, a broken\n" +
-		"shim. Use --profile to narrow the run to a single profile (the system-\n" +
-		"health sections are skipped then), --verbose to list every reference it\n" +
-		"cleared, and --format json for a machine-readable snapshot.",
+		"plus the profile behind every registered mount — which may live in a project\n" +
+		"tree this directory never walks into, yet is being served right now. That is\n" +
+		"the same set `jit status --secrets` and `jit vault orphans` reconcile. It also\n" +
+		"folds in the health checks that used to take `jit status` and `jit wrap doctor`\n" +
+		"to see: the background service, your vault backup, and any wrapped-tool shims.\n\n" +
+		"It exits non-zero when a secret this setup depends on cannot be read: a\n" +
+		"profile's secret missing, corrupt, or unparseable, or the whole vault\n" +
+		"unreadable because this Mac's master key is gone from the keychain or a\n" +
+		"master-key rotation never finished. Everything else it reports is an\n" +
+		"advisory warning, never a failure: an orphaned secret (with --orphans), a\n" +
+		"profile name shadowed across scopes, a mount whose profile won't load, a\n" +
+		"stopped service, a stale or missing vault backup, a broken shim.\n\n" +
+		"Use --profile to narrow the run to a single profile. The service, backup and\n" +
+		"shim sections are skipped then; the whole-vault key checks are not, because\n" +
+		"with no master key no profile resolves and saying otherwise would be false.\n" +
+		"--verbose lists every reference it cleared, and --format json prints a\n" +
+		"machine-readable snapshot.",
 	Args: cobra.NoArgs,
 	// A "problems found" exit is a normal, expected outcome here, not a
 	// usage mistake — cobra's default of dumping the usage string to
@@ -96,6 +102,7 @@ var doctorCmd = &cobra.Command{
 		// truncated secret from a healthy one would be missing the failure
 		// most likely to look like a jit bug at runtime.
 		outcome, err := runProfileCheck(cwd, v, checkOptions{
+			Root:      root,
 			Profile:   doctorProfile,
 			Integrity: true,
 			Orphans:   doctorOrphans,
@@ -103,6 +110,12 @@ var doctorCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit doctor: %w", err)
 		}
+
+		// Whole-vault integrity runs on EVERY invocation, --profile included:
+		// a missing master key or an unfinished rekey makes the named
+		// profile's secrets just as unreadable as everyone else's, so
+		// "resolves cleanly" would be false. See gatherVaultIntegrityFindings.
+		outcome.Findings = append(outcome.Findings, gatherVaultIntegrityFindings(root, v)...)
 
 		// The absorbed system-health sections run on the full sweep only. A
 		// --profile run is a narrow "does THIS profile resolve" query; folding
@@ -141,17 +154,24 @@ var doctorCmd = &cobra.Command{
 }
 
 // renderDoctorText prints the human report and returns the non-zero-exit
-// error when there are hard problems. Order is: problems (red, the reason
-// you ran this), then warnings (yellow, advisory), then the profile summary
-// line, then — under --verbose — the per-reference detail, then the standing
-// global-mount reminders.
+// error when there are hard problems.
+//
+// The layout is design/output-style.md's REPORT shape — a `[Category] count`
+// header, then its items — not the dashboard shape that document used to file
+// doctor under. Doctor's data is a findings list, the same shape `jit scan`
+// and `jit migrate` carry; `jit status` is the dashboard. Grouping is what
+// finally lets rule 5 hold here: twelve missing references in one profile used
+// to repeat the identical remediation sentence twelve times, and now state it
+// once under the group that shares it.
+//
+// Grouping also fixes the column. Each finding previously indented its own
+// continuation and arrow by its own label width, so `[missing]`, `[mount]` and
+// `[rekey]` lines hung at three different depths down the same report. Under a
+// header the label is out of the item line entirely and every item, wrap and
+// arrow sits at one fixed indent.
 func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings []checkFinding) error {
-	for _, f := range problems {
-		writeDoctorFinding(out, glyphRisk, cRisk, f)
-	}
-	for _, f := range warnings {
-		writeDoctorFinding(out, glyphWarn, cWarn, f)
-	}
+	wrote := writeFindingGroups(out, glyphRisk, cRisk, problems, false)
+	wrote = writeFindingGroups(out, glyphWarn, cWarn, warnings, wrote)
 
 	// The verdict lines wrap like every other line here: at 44 columns the
 	// clean-bill-of-health line was the one thing still running past the edge,
@@ -160,20 +180,38 @@ func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings []
 	case outcome.ProfilesChecked == 0:
 		wrapBody(out, 0, "  ", cDim.Sprint("No profiles found under .jit/profiles/ or the global store."))
 	case len(problems) == 0:
+		if wrote {
+			fmt.Fprintln(out)
+		}
 		_, _ = cOK.Fprintf(out, "%s ", glyphDone)
-		wrapBody(out, 2, "  ", cOKBold.Sprintf(
-			"%s, %s all resolve cleanly",
+		// Scoped deliberately to the references, and carrying the warning
+		// count when there is one. Unqualified "all resolve cleanly" printed
+		// directly beneath a [mount] or [backup] warning read as a global
+		// all-clear contradicting the lines above it — the summary is only
+		// ever speaking for the secret references it actually checked.
+		summary := fmt.Sprintf("%s, %s resolve cleanly",
 			countWord(outcome.ProfilesChecked, "profile", "profiles"),
-			countWord(outcome.SecretsChecked, "secret reference", "secret references")))
+			countWord(outcome.SecretsChecked, "secret reference", "secret references"))
+		if len(warnings) > 0 {
+			summary += fmt.Sprintf(" · %s above", countWord(len(warnings), "warning", "warnings"))
+		}
+		wrapBody(out, 2, "  ", cOKBold.Sprint(summary))
 	}
 
 	// --verbose lists the individual references so a passing run can still
 	// answer "did it actually see my profile?" — a bare count can't.
 	if doctorVerbose && len(outcome.OKRefs) > 0 {
-		_, _ = cBold.Fprintln(out, "\nChecked")
+		// Same `[Name]  count` header as every finding group, so the report
+		// has one header shape rather than a bare bold word here and
+		// bracketed tags above it (rule 1).
+		fmt.Fprintln(out)
+		_, _ = cBold.Fprint(out, "[checked]")
+		_, _ = cDim.Fprintf(out, "  %d\n", len(outcome.OKRefs))
+		body := strings.Repeat(" ", findingIndent)
 		for _, r := range outcome.OKRefs {
-			_, _ = cOK.Fprintf(out, "  %s ", glyphDone)
-			fmt.Fprintf(out, "%s (%s): %s → %s\n", r.Profile, r.Scope, r.Variable, r.Path)
+			_, _ = cOK.Fprintf(out, "  %s ", glyphOK)
+			wrapBody(out, findingIndent, body,
+				fmt.Sprintf("%s: %s → %s", profileRef(checkFinding{Profile: r.Profile, Scope: r.Scope}), r.Variable, r.Path))
 		}
 	}
 
@@ -185,52 +223,125 @@ func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings []
 	return nil
 }
 
-// doctorActionRe lifts a trailing "run `cmd` …" clause out of a finding's
-// prose. Doctor's findings were single lines that ran to 190 columns with the
-// fix buried mid-sentence — exactly the shape design/output-style.md's action
-// rule exists to prevent. The commands are already backtick-delimited for
-// hlCmds, so the clause is machine-findable rather than guessed at.
-//
-// Case-insensitive on the verb: these sentences are written by a dozen
-// different call sites, and half of them start the clause after a full stop
-// with a capital "Run".
-var doctorActionRe = regexp.MustCompile("(?i)(?:[,;]| —|\\.)\\s+run (`[^`]+`.*)$")
+// The report's two fixed columns. Items hang under their `[Category]` header
+// at findingIndent; an action arrow sits two columns left of the prose it
+// resolves, the same relationship `jit status` uses. Both are constants
+// precisely because they used to be arithmetic on the label's own width,
+// which is how one report grew three different left edges.
+const (
+	findingIndent = 4
+	findingArrow  = findingIndent - 2
+)
 
-// writeDoctorFinding renders one finding: the state glyph, the bracketed kind,
-// then the prose wrapped so continuations hang under the prose rather than
-// resuming at column 0 beneath the glyph. A fix the finding names moves to its
-// own cyan arrow line, so the thing to type is the last thing on screen.
-func writeDoctorFinding(out io.Writer, glyph string, c *color.Color, f checkFinding) {
-	label := findingLabel(f)
-	_, _ = c.Fprintf(out, "%s ", glyph)
-	fmt.Fprintf(out, "%s ", label)
-	used := 2 + len(label) + 1
-	indent := strings.Repeat(" ", used)
+// writeFindingGroups renders findings grouped by kind, each group under a
+// `[Category] count` header (rule 1), in the order the kinds were first seen
+// so the most important finding a run produced still leads.
+// precededBy is whether anything has already been printed, so groups are
+// separated by a blank line without the report opening on one.
+func writeFindingGroups(out io.Writer, glyph string, c *color.Color, findings []checkFinding, precededBy bool) bool {
+	if len(findings) == 0 {
+		return precededBy
+	}
+	var order []checkKind
+	groups := map[checkKind][]checkFinding{}
+	for _, f := range findings {
+		if _, ok := groups[f.Kind]; !ok {
+			order = append(order, f.Kind)
+		}
+		groups[f.Kind] = append(groups[f.Kind], f)
+	}
 
-	body := formatFinding(f)
-	body = strings.TrimPrefix(body, label+" ")
-	action := ""
-	if m := doctorActionRe.FindStringSubmatch(body); m != nil {
-		action = m[1]
-		body = strings.TrimRight(body[:len(body)-len(m[0])], " ,;—.") + "."
+	body := strings.Repeat(" ", findingIndent)
+	arrow := strings.Repeat(" ", findingArrow)
+	for _, kind := range order {
+		group := groups[kind]
+		if precededBy {
+			fmt.Fprintln(out)
+		}
+		precededBy = true
+		_, _ = cBold.Fprint(out, findingLabel(checkFinding{Kind: kind}))
+		// A count only earns its place when there is more than one to count:
+		// "[rekey] 1" invites the reader to compare a number against nothing.
+		if len(group) > 1 {
+			_, _ = cDim.Fprintf(out, "  %d", len(group))
+		}
+		fmt.Fprintln(out)
+
+		// A single action shared by the whole group is stated once, after the
+		// items. Twenty orphans carry twenty identical "jit vault orphans
+		// --prune" strings; printing all twenty is the exact restatement
+		// rule 5 forbids, and it buries the one line that matters.
+		//
+		// When the actions differ only by the path they name, the group falls
+		// back to the templated form: five missing secrets would otherwise
+		// alternate ✗/→ ten lines deep, restating one command shape five
+		// times, when every path involved is already on the line above.
+		shared := sharedAction(group)
+		if shared == "" && len(group) > 1 {
+			shared = templateAction(kind)
+		}
+		for _, f := range group {
+			_, _ = c.Fprintf(out, "  %s ", glyph)
+			wrapBody(out, findingIndent, body, hlCmds(formatFinding(f)))
+			if shared == "" && f.Action != "" {
+				writeActionLine(out, arrow, f.Action)
+			}
+		}
+		if shared != "" {
+			writeActionLine(out, arrow, shared)
+		}
 	}
-	wrapBody(out, used, indent, hlCmds(body))
-	if action == "" {
-		return
-	}
-	// The arrow sits two columns left of the prose it resolves, the same
-	// relationship `jit status` uses between a note and its action.
-	arrowIndent := strings.Repeat(" ", used-2)
-	fmt.Fprint(out, arrowIndent)
-	_, _ = cPath.Fprint(out, "→ ")
-	wrapBody(out, used, arrowIndent+"  ", hlCmds(action))
+	return true
 }
 
-// findingLabel is the bracketed kind tag that opens a finding line.
+// writeActionLine prints one cyan-arrow next step, and nothing else on the
+// line (design/output-style.md, "The action line").
+func writeActionLine(out io.Writer, arrow, action string) {
+	fmt.Fprint(out, arrow)
+	_, _ = cPath.Fprint(out, "→ ")
+	wrapBody(out, findingIndent, arrow+"  ", hlCmds(action))
+}
+
+// templateAction is the group-level form of an action whose per-finding
+// version differs only by the path it names — the placeholder stands in for
+// the paths already listed immediately above. Empty for kinds whose findings
+// can need genuinely different next steps (a [service] group can hold both a
+// build mismatch and a stopped service), which keeps their per-item arrows.
+func templateAction(kind checkKind) string {
+	switch kind {
+	case kindMissing:
+		return "`jit vault set <path>` for each, or `jit migrate <path>` to convert the files they came from"
+	case kindCorrupt:
+		return "`jit vault history <path>` to see earlier versions, or `jit vault set <path>` to replace"
+	default:
+		return ""
+	}
+}
+
+// sharedAction returns the action every finding in a group carries, or "" when
+// they differ (or any lacks one) — in which case each states its own.
+func sharedAction(group []checkFinding) string {
+	first := group[0].Action
+	if first == "" || len(group) == 1 {
+		return first
+	}
+	for _, f := range group[1:] {
+		if f.Action != first {
+			return ""
+		}
+	}
+	return first
+}
+
+// findingLabel is the bracketed kind tag. It heads a GROUP now rather than
+// each line — twenty orphans get one `[orphan]  20`, not the tag twenty times
+// (rule 1's header shape, and rule 5's state-it-once).
 func findingLabel(f checkFinding) string {
 	switch f.Kind {
 	case kindParse:
 		return "[parse]"
+	case kindNotFound:
+		return "[not found]"
 	case kindMissing:
 		return "[missing]"
 	case kindCorrupt:
@@ -247,46 +358,57 @@ func findingLabel(f checkFinding) string {
 		return "[backup]"
 	case kindWrap:
 		return "[wrap]"
+	case kindMount:
+		return "[mount]"
+	case kindVaultKey:
+		return "[vault key]"
+	case kindRekey:
+		return "[rekey]"
 	default:
 		return ""
 	}
 }
 
-// formatFinding renders one finding as a single human-readable line, tagged
-// by kind. kindMissing keeps its full remediation hint (the fix command by
-// name) — the line users act on most. writeDoctorFinding is what breaks the
-// result across the window and lifts the fix onto its own arrow line.
+// formatFinding renders one finding's BODY — no kind tag, since the group
+// header above it carries that, and no remediation, since the action line
+// below it carries that. What's left is purely what IS wrong, which is the
+// whole job of a state line.
+//
+// Absolute paths go through shortHome: these details embed manifest and mount
+// paths mid-sentence, and a 90-character /Users/... prefix pushed the part
+// that identifies the file off the first line (rule 6).
 func formatFinding(f checkFinding) string {
 	switch f.Kind {
-	case kindParse:
-		return fmt.Sprintf("[parse] %s", f.Detail)
+	case kindParse, kindNotFound, kindService, kindBackup, kindWrap, kindMount, kindVaultKey, kindRekey:
+		return shortHome(f.Detail)
 	case kindMissing:
-		// Backticks, not escaped double quotes: hlCmds turns them into the
-		// house cyan and drops the delimiters, so this line stops being the
-		// one place doctor prints a command as quoted prose.
-		return fmt.Sprintf(
-			"[missing] profile %q: %s -> %s (not in the vault). run `jit vault set %s` to add it, or `jit migrate <path>` to convert the file it came from",
-			f.Profile, f.Variable, f.Path, f.Path)
+		return fmt.Sprintf("%s: %s → %s, not in the vault", profileRef(f), f.Variable, f.Path)
 	case kindCorrupt:
-		return fmt.Sprintf("[corrupt] profile %q: %s -> %s: %s", f.Profile, f.Variable, f.Path, f.Detail)
+		return fmt.Sprintf("%s: %s → %s: %s", profileRef(f), f.Variable, f.Path, shortHome(f.Detail))
 	case kindVaultError:
 		if f.Profile == "" {
-			return fmt.Sprintf("[vault error] %s", f.Detail)
+			return shortHome(f.Detail)
 		}
-		return fmt.Sprintf("[vault error] profile %q: checking %s (%s): %s", f.Profile, f.Variable, f.Path, f.Detail)
+		return fmt.Sprintf("%s: %s → %s: %s", profileRef(f), f.Variable, f.Path, shortHome(f.Detail))
 	case kindOrphan:
-		return fmt.Sprintf("[orphan] %s (%s)", f.Path, f.Detail)
+		return fmt.Sprintf("%s — %s", f.Path, f.Detail)
 	case kindShadowed:
-		return fmt.Sprintf("[shadowed] profile %q: %s", f.Profile, f.Detail)
-	case kindService:
-		return fmt.Sprintf("[service] %s", f.Detail)
-	case kindBackup:
-		return fmt.Sprintf("[backup] %s", f.Detail)
-	case kindWrap:
-		return fmt.Sprintf("[wrap] %s", f.Detail)
+		return fmt.Sprintf("%s: %s", profileRef(f), f.Detail)
 	default:
-		return f.Detail
+		return shortHome(f.Detail)
 	}
+}
+
+// profileRef names the profile a finding belongs to, with its scope. The
+// scope used to be dead weight on the line (project vs global rarely changes
+// what you do) and is now load-bearing: a "mount" scope says the manifest
+// lives somewhere the current directory can't see, which is the difference
+// between an actionable finding and a mystery.
+func profileRef(f checkFinding) string {
+	if f.Scope == "" {
+		return fmt.Sprintf("profile %q", f.Profile)
+	}
+	return fmt.Sprintf("profile %q (%s)", f.Profile, f.Scope)
 }
 
 func init() {

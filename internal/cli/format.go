@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -71,6 +72,30 @@ func writeJSON(w io.Writer, v any) error {
 // instead of two copies that could drift.
 func displayPath(home, path string) string {
 	return audit.ShortenHome(home, path)
+}
+
+// shortPath is displayPath for the callers that don't already hold the home
+// directory — the diagnostic surfaces, which print absolute paths that a
+// report has no business spending 40 columns on. A home that can't be
+// resolved simply leaves the path alone.
+func shortPath(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	return displayPath(home, path)
+}
+
+// shortHome collapses the home directory anywhere inside already-rendered
+// text — for the wrapped errors that embed an absolute path mid-sentence,
+// where displayPath's path-shaped input doesn't apply. Display only, and only
+// on text jit itself composed.
+func shortHome(s string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, home, "~")
 }
 
 // pluralWord returns singular when n is 1, plural otherwise — for the

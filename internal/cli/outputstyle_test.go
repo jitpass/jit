@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -73,6 +74,55 @@ func TestNoHandRolledColors(t *testing.T) {
 				"change stays one edit.\n    %s",
 				filepath.Base(file), i+1, strings.TrimSpace(line))
 		}
+	}
+}
+
+// TestDoctorsRenderNoLiteralBackticks is the guard the two lints above
+// structurally cannot be: it checks rendered OUTPUT, not source.
+//
+// `jit wrap doctor` printed literal backticks in dim grey for as long as it
+// existed, while `jit doctor` rendered the very same strings — wrap.Doctor's
+// Detail fields — as cyan commands. One string, two appearances, depending on
+// which command you typed: exactly the drift rule 5 names. Neither lint saw
+// it, and neither could have. TestNoUnroutedCommandBackticks scans this
+// package for print calls containing a backtick LITERAL, but the literals
+// live in internal/wrap and reached the printer through a variable
+// (`c.Detail`); TestNoHandRolledColors is about hues, not markup.
+//
+// So this asserts the property the lints are proxies for, on both surfaces at
+// once: a rendered report never shows the reader a backtick. hlCmds strips
+// them; anything that skips hlCmds leaves them in.
+func TestDoctorsRenderNoLiteralBackticks(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+
+	// A fixture broken in several ways at once, so both reports have plenty
+	// of command-bearing findings to render.
+	writeFixtureProfile(t, cwd, "app", "APP_KEY: app/key\n") // secret absent -> [missing]
+	if err := os.MkdirAll(filepath.Join(home, ".jit"), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".jit", "wrap.json"),
+		[]byte(`{"tools":{"kubectl":{"profile":"wrap-kubectl"}}}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"jit doctor", []string{"doctor"}},
+		{"jit wrap doctor", []string{"wrap", "doctor"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			rootCmd.SetOut(&buf)
+			rootCmd.SetArgs(tc.args)
+			_ = rootCmd.Execute() // a failing health check is the point; the exit code isn't
+			if got := buf.String(); strings.Contains(got, "`") {
+				t.Errorf("%s rendered a literal backtick — a command that skipped hlCmds.\n%s", tc.name, got)
+			}
+		})
 	}
 }
 
