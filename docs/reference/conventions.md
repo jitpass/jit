@@ -99,8 +99,8 @@ secrets without a live human gesture.
 | Code | Meaning |
 |---|---|
 | `0` | Success. Also a `jit scan` that found secrets, unless you asked for a gate (see below). |
-| `1` | The command failed: a bad flag, a path that does not exist, an unreadable vault, a profile whose secret is missing or corrupt (`jit doctor`), a file that could not be restored (`jit migrate undo`). |
-| `2` | `jit scan --fail-on` only: the scan ran fine and its risk level reached your threshold. |
+| `1` | The command itself could not run: a bad flag, a path that does not exist, an unreadable vault root, a file that could not be restored (`jit migrate undo`). |
+| `2` | The findings code, shared by `jit scan --fail-on` (the scan ran fine and its risk level reached your threshold) and `jit doctor` (something the setup depends on is broken; see below). |
 | `127` | A wrap shim could not exec the real tool. Loud on purpose, never a silent unwrapped run. |
 
 `jit scan` exits `0` by default even when it finds critical secrets, because a
@@ -115,10 +115,17 @@ The status is `2` rather than `1` so a tripped gate is distinguishable from the
 scan itself breaking. The report is always written in full first, so the gate
 never costs you the findings that explain it.
 
-`jit doctor` exits non-zero only when a profile's secret is missing, corrupt, or
-unreadable. Everything else it reports (an orphaned secret, a stopped service, a
-stale backup, a broken shim) is an advisory warning and stays `0`, so you can
-run it on every shell start without it failing your prompt.
+`jit doctor` exits `2` when something the setup depends on is actually broken: a
+secret missing, corrupt, or unparseable; the whole vault unreadable because this
+Mac's master key is gone from the keychain or a master-key rotation never
+finished; or a wrapped tool's install damaged (so it now runs unwrapped or not
+at all). Everything else it reports (an orphaned secret, a stopped service, a
+stale backup, a shim complaint that is only true of the shell you happen to be
+in) is an advisory warning and stays `0`, so you can run it on every shell start
+without it failing your prompt; `--strict` makes those advisories count too.
+Exit `1` is reserved for doctor itself failing to run (a bad flag, an unreadable
+vault root), which a pipeline needs to tell apart from a genuinely broken
+machine.
 
 ## In CI or a script
 

@@ -55,11 +55,12 @@ notarize:
       # shipped release builds, hang "In Progress" for hours), which held
       # releases hostage for days. With no `notarize:` block here, goreleaser
       # signs with the Developer ID cert above and skips notarization entirely
-      # -- a fast, Apple-queue-free release. The cask strips quarantine on
-      # install (see homebrew_casks hooks) so brew/browser users still run
-      # cleanly without a notarization ticket. Re-add a `notarize:` block (with
-      # the MACOS_NOTARY_* env in release.yml, still wired) once Apple's notary
-      # is dependable again.
+      # -- a fast, Apple-queue-free release. Distribution leads with the signed
+      # release tarball (curl) + `jit upgrade`, both quarantine-free, so users
+      # run cleanly without a notarization ticket; there is no Homebrew cask
+      # (see the removed homebrew_casks block below). Re-add a `notarize:` block
+      # (with the MACOS_NOTARY_* env in release.yml, still wired) once Apple's
+      # notary is dependable again.
 
 archives:
   - id: jit-archive
