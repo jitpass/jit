@@ -57,19 +57,19 @@ notarize:
         issuer_id: "{{.Env.MACOS_NOTARY_ISSUER_ID}}"
         key_id: "{{.Env.MACOS_NOTARY_KEY_ID}}"
         key: "{{.Env.MACOS_NOTARY_KEY}}"
-        # Wait for Apple's verdict rather than firing and forgetting: a
-        # release that publishes an un-notarized binary is worse than a
-        # release that fails loudly.
-        wait: true
-        # Keep this at or below 18m. quill ties the App Store Connect JWT
-        # lifetime to this value (TokenLifetime = timeout + 2m), and Apple
-        # rejects any token whose lifetime exceeds ~20 minutes with a bare
-        # "401 Unauthorized". The earlier bump to 60m minted a 62-minute token
-        # and silently broke every release's notarization auth. 15m gives a
-        # 17-minute token (safely under the cap) and is well more than a single
-        # signed CLI binary needs to notarize. If Apple's queue genuinely
-        # outlasts this, the fix is a token-refreshing client (notarytool), not
-        # a longer timeout, which only re-breaks auth.
+        # Submit and DON'T block on Apple's verdict. jit ships a bare Mach-O,
+        # which can't be stapled, so Gatekeeper fetches the notarization ticket
+        # online on first run regardless of whether we waited at publish time.
+        # Waiting only couples the release to Apple's queue (observed 40m+ for a
+        # freshly-activated account) while buying nothing a bare CLI can use.
+        # The submission still uploads and is scanned; once Apple accepts, the
+        # online ticket is live and Gatekeeper clears it. Verify a release's
+        # submission reached "Accepted" out of band (quill submission list).
+        wait: false
+        # Only bounds the upload now (no polling loop). Kept <=18m so the JWT
+        # lifetime (TokenLifetime = timeout + 2m) stays under Apple's ~20m token
+        # cap -- the 60m value here once minted a 62-minute token and silently
+        # 401'd every release. Do not raise past 18m even though we no longer wait.
         timeout: 15m
 
 archives:
