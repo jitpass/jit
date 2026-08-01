@@ -902,19 +902,32 @@ var vaultListCmd = &cobra.Command{
 }
 
 var vaultRmCmd = &cobra.Command{
-	Use:   "rm <path>",
-	Short: "Delete a secret",
-	Long: "Permanently deletes the secret at <path>. Beyond the [y/N] confirmation,\n" +
-		"a fresh Touch ID/passcode is required (never the cached service session),\n" +
-		"so a process running as you can't delete a secret without a live human\n" +
-		"gesture even while the vault is unlocked.\n\n" +
+	Use:   "rm <path>...",
+	Short: "Delete one or more secrets",
+	Long: "Permanently deletes the secret at each <path>. Beyond the [y/N]\n" +
+		"confirmation, a fresh Touch ID/passcode is required (never the cached\n" +
+		"service session), so a process running as you can't delete a secret\n" +
+		"without a live human gesture even while the vault is unlocked.\n\n" +
+		"Multiple paths delete in one call under a SINGLE gesture, so cleaning up\n" +
+		"a batch (a test run, a decommissioned project) is one approval, not one\n" +
+		"per secret. Missing paths are reported but don't stop the rest; the\n" +
+		"command exits non-zero if any path couldn't be removed.\n\n" +
 		"-y/--yes skips the typed confirmation (never the fingerprint), matching\n" +
 		"every other jit command. `-f`/`--force` is still accepted as a synonym,\n" +
 		"so the `rm -f` reflex keeps working.",
-	Args:              cobra.ExactArgs(1),
+	Args:              cobra.MinimumNArgs(1),
 	ValidArgsFunction: completeVaultPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if !vaultRmYes && !vaultRmForce && !confirmPrompt(cmd, fmt.Sprintf("Permanently delete %s from the vault? This can't be undone. [y/N] ", args[0])) {
+		var confirmQ, presence string
+		if len(args) == 1 {
+			confirmQ = fmt.Sprintf("Permanently delete %s from the vault? This can't be undone. [y/N] ", args[0])
+			presence = fmt.Sprintf("delete the secret %q from the vault", args[0])
+		} else {
+			confirmQ = fmt.Sprintf("Permanently delete these %d secrets from the vault? This can't be undone:\n  %s\n[y/N] ",
+				len(args), strings.Join(args, "\n  "))
+			presence = fmt.Sprintf("delete %d secrets from the vault", len(args))
+		}
+		if !vaultRmYes && !vaultRmForce && !confirmPrompt(cmd, confirmQ) {
 			fmt.Fprintln(cmd.OutOrStdout(), "Aborted.")
 			return nil
 		}
@@ -923,8 +936,11 @@ var vaultRmCmd = &cobra.Command{
 		// deletes envelope files (never touches the KeyWrapper), so an
 		// explicit user-presence check is what forces a fingerprint/passcode
 		// here, whether the agent is locked or not. The [y/N] above is a
-		// footgun guard (bypassable with --force); this is the real gate.
-		if err := requireUserPresence(fmt.Sprintf("delete the secret %q from the vault", args[0])); err != nil {
+		// footgun guard (bypassable with --force); this is the real gate. One
+		// gesture covers the whole batch: user-presence proves a human is here
+		// for THIS command, and deleting N of their own secrets needs no finer
+		// per-secret proof than deleting one.
+		if err := requireUserPresence(presence); err != nil {
 			return fmt.Errorf("jit vault rm: %w", err)
 		}
 
@@ -932,13 +948,23 @@ var vaultRmCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit vault rm: %w", err)
 		}
-		if err := v.Remove(args[0]); err != nil {
-			if errors.Is(err, vault.ErrNotFound) {
-				return fmt.Errorf("jit vault rm: no secret stored at %q", args[0])
+		out := cmd.OutOrStdout()
+		var failed int
+		for _, path := range args {
+			if err := v.Remove(path); err != nil {
+				failed++
+				if errors.Is(err, vault.ErrNotFound) {
+					fmt.Fprintf(cmd.ErrOrStderr(), "jit vault rm: no secret stored at %q\n", path)
+				} else {
+					fmt.Fprintf(cmd.ErrOrStderr(), "jit vault rm: %s: %v\n", path, err)
+				}
+				continue
 			}
-			return fmt.Errorf("jit vault rm: %w", err)
+			fmt.Fprintf(out, "Removed %s\n", path)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Removed %s\n", args[0])
+		if failed > 0 {
+			return fmt.Errorf("jit vault rm: %d of %d %s could not be removed", failed, len(args), pluralWord(len(args), "secret", "secrets"))
+		}
 		return nil
 	},
 }

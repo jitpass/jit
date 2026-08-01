@@ -286,6 +286,79 @@ func TestVaultPruneKeepsNewestBackupPerFile(t *testing.T) {
 	}
 }
 
+// TestVaultRmMultipleOneGesture: `vault rm a b c` deletes every named secret
+// under a SINGLE user-presence gate. The one-gesture-for-the-batch property is
+// what lets a script (a test teardown, a decommissioned project) clean up N
+// secrets for one approval instead of N; the count is asserted directly.
+func TestVaultRmMultipleOneGesture(t *testing.T) {
+	withFixtureHome(t)
+	prev := requireUserPresence
+	var gestures int
+	requireUserPresence = func(string) error { gestures++; return nil }
+	t.Cleanup(func() { requireUserPresence = prev; vaultRmYes = false })
+
+	root := seedFixtureVault(t, "e2e/a")
+	v := &vault.Vault{Root: root, KeyWrapper: newFakeKeyWrapper(), RecipientID: "test-device"}
+	for _, p := range []string{"e2e/b", "e2e/c"} {
+		if err := v.Set(p, []byte("val")); err != nil {
+			t.Fatalf("seeding %s: %v", p, err)
+		}
+	}
+
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"vault", "rm", "-y", "e2e/a", "e2e/b", "e2e/c"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("jit vault rm (multi): %v", err)
+	}
+	if gestures != 1 {
+		t.Errorf("user-presence gestures = %d, want 1 for the whole batch", gestures)
+	}
+	ro := &vault.Vault{Root: root, RecipientID: "test-device"}
+	paths, err := ro.List()
+	if err != nil {
+		t.Fatalf("List after rm: %v", err)
+	}
+	if len(paths) != 0 {
+		t.Errorf("vault still holds %v after rm of all, want empty", paths)
+	}
+}
+
+// TestVaultRmMultipleReportsMissing: a missing path is reported and the command
+// exits non-zero, but every path that DOES exist is still removed — best-effort,
+// so one stale name can't strand the rest of a cleanup.
+func TestVaultRmMultipleReportsMissing(t *testing.T) {
+	withFixtureHome(t)
+	stubUserPresence(t)
+	t.Cleanup(func() { vaultRmYes = false })
+
+	root := seedFixtureVault(t, "e2e/a")
+	v := &vault.Vault{Root: root, KeyWrapper: newFakeKeyWrapper(), RecipientID: "test-device"}
+	if err := v.Set("e2e/b", []byte("val")); err != nil {
+		t.Fatalf("seeding e2e/b: %v", err)
+	}
+
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"vault", "rm", "-y", "e2e/a", "e2e/missing", "e2e/b"})
+	if err := rootCmd.Execute(); err == nil {
+		t.Errorf("expected a non-zero error when a path is missing, got nil")
+	}
+	if !strings.Contains(buf.String(), "no secret stored at") {
+		t.Errorf("missing-path report absent, got:\n%s", buf.String())
+	}
+	ro := &vault.Vault{Root: root, RecipientID: "test-device"}
+	paths, err := ro.List()
+	if err != nil {
+		t.Fatalf("List after rm: %v", err)
+	}
+	if len(paths) != 0 {
+		t.Errorf("existing paths not removed: %v", paths)
+	}
+}
+
 // TestVaultOrphansListsAndPrunes: a secret no profile references is listed by
 // `jit vault orphans` and deleted by `--prune`, while a secret a profile does
 // reference is spared by both — even one with no recorded origin, since the
