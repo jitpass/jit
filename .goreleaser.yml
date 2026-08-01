@@ -83,37 +83,9 @@ release:
   # name and notes and just upload the artifacts.
   mode: keep-existing
 
-# Requires the jitpass/homebrew-tap repo and a token with write access to it,
-# supplied via HOMEBREW_TAP_GITHUB_TOKEN in CI.
-# `homebrew_casks`, not the older `brews` — brews is deprecated as of
-# goreleaser v2.10 (it hackily used Formulas to install precompiled binaries;
-# casks are the correct mechanism for that, per goreleaser.com/deprecations#brews).
-homebrew_casks:
-  - name: jitpass
-    repository:
-      owner: jitpass
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    directory: Casks
-    # The archive's binary is `jit`; without this the cask defaults to
-    # linking a binary named after the cask (jitpass) and install breaks.
-    binaries: [jit]
-    homepage: "https://github.com/jitpass/jit"
-    description: "Local-first developer secret runtime"
-    # PolyForm Perimeter 1.0.0 — homebrew_casks has no `license:` field
-    # (unlike the deprecated `brews`/Formula schema); license lives in
-    # LICENSE instead.
-    # Don't fail the whole release if the tap token secret goes missing —
-    # binaries still publish, only the cask push is skipped.
-    skip_upload: '{{ if eq (envOrDefault "HOMEBREW_TAP_GITHUB_TOKEN" "") "" }}true{{ else }}false{{ end }}'
-    # Strip the quarantine attribute on install. Releases are Developer ID
-    # signed but not notarized (notarization dropped, see the notarize section),
-    # so a quarantined cask binary would be Gatekeeper-blocked on first run. The
-    # Developer ID signature still provides identity; this just skips the
-    # notarization-ticket check that Homebrew's quarantine would otherwise force.
-    hooks:
-      post:
-        install: |
-          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/jit"]
-          end
+# No Homebrew cask, on purpose. At this stage distribution leads with the
+# signed release tarball (curl) + `jit upgrade`; a cask forces the whole
+# quarantine/notarization dance (Homebrew quarantines cask downloads, so an
+# un-notarized binary needs an xattr strip -- a poor look for a security tool),
+# for little benefit while the user base is small. Re-add a `homebrew_casks`
+# block once notarization is reliable and there's demand for `brew install`.

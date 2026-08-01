@@ -34,27 +34,18 @@ the time.
 ## Install
 
 ```sh
-brew install --cask jitpass/tap/jitpass
-```
-
-Releases are signed with a Developer ID and notarized by Apple, so there's no
-Gatekeeper prompt to click through. Apple Silicon only — on an Intel Mac,
-build from source with `go install github.com/jitpass/jit/cmd/jit@latest`.
-
-Prefer not to use Homebrew? The same signed binary, by hand:
-
-```sh
-curl -sLO https://github.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz
-tar -xzf jitpass_darwin_arm64.tar.gz jit
+curl -sL https://github.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz | tar -xz jit
 sudo mv jit /usr/local/bin/
 ```
 
-**Upgrading:**
+Apple Silicon only — on an Intel Mac, build from source with
+`go install github.com/jitpass/jit/cmd/jit@latest`.
 
-```sh
-brew upgrade --cask jitpass   # brew installs
-jit upgrade                   # manual installs: verified self-update — checksum-checked swap, restarts the service. Your vault is untouched.
-```
+Binaries are signed with a Developer ID. Installing with `curl` (or `go
+install`) sets no quarantine flag, so jit runs without a Gatekeeper prompt.
+
+**Upgrading:** `jit upgrade` — a verified self-update (checksum-checked swap,
+restarts the service). Your vault is untouched.
 
 Recommended: turn on shell completion, so `jit <TAB>` completes subcommands,
 flags, vault paths, and wrappable tool names:
