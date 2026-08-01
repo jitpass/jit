@@ -61,13 +61,16 @@ notarize:
         # release that publishes an un-notarized binary is worse than a
         # release that fails loudly.
         wait: true
-        # 60m, not 30m: v0.69.0's release died on "timeout waiting for
-        # notarize submission response" after 30m10s, losing the release to a
-        # ten-second overshoot. Apple's queue time is theirs, not ours, and it
-        # varies by tens of minutes under load. The runner's own job limit is
-        # 6h, so a longer wait costs nothing when Apple is quick and saves the
-        # release when it isn't.
-        timeout: 60m
+        # Keep this at or below 18m. quill ties the App Store Connect JWT
+        # lifetime to this value (TokenLifetime = timeout + 2m), and Apple
+        # rejects any token whose lifetime exceeds ~20 minutes with a bare
+        # "401 Unauthorized". The earlier bump to 60m minted a 62-minute token
+        # and silently broke every release's notarization auth. 15m gives a
+        # 17-minute token (safely under the cap) and is well more than a single
+        # signed CLI binary needs to notarize. If Apple's queue genuinely
+        # outlasts this, the fix is a token-refreshing client (notarytool), not
+        # a longer timeout, which only re-breaks auth.
+        timeout: 15m
 
 archives:
   - id: jit-archive
