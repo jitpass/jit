@@ -385,6 +385,24 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 	}
 	registryPath := mount.RegistryPath(root)
 
+	// producedMount records whether this run registered ANY live mount, so the
+	// closing reportAgentStatus knows to send the running service the Refresh
+	// that makes it serve them NOW rather than only after the next lock/unlock
+	// cycle (until then a read against an unserved FIFO just hangs). It is set
+	// at this one addMount choke point instead of recomputed downstream from a
+	// per-category length list: that list silently omitted the loose-secret
+	// --mount path, so a `jit migrate <bare-token> --mount` mount sat unserved
+	// until a manual `jit service restart`. A choke-point flag can't drift as
+	// new mount categories are added.
+	producedMount := false
+	addMount := func(e mount.Entry) error {
+		if err := mount.AddMount(registryPath, e); err != nil {
+			return err
+		}
+		producedMount = true
+		return nil
+	}
+
 	out := cmd.OutOrStdout()
 	summary := &migrateSummary{home: home}
 
@@ -434,7 +452,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 				noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
 				continue
 			}
-			if err := mount.AddMount(registryPath, mount.Entry{MountPath: result.EnvPath, ProfilePath: result.ProfilePath}); err != nil {
+			if err := addMount(mount.Entry{MountPath: result.EnvPath, ProfilePath: result.ProfilePath}); err != nil {
 				return false, fmt.Errorf("jit migrate: registering mount for %s: %w", result.EnvPath, err)
 			}
 			if err := summary.writePointerFile(result.EnvPath, result.ProfilePath); err != nil {
@@ -459,7 +477,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 				if err != nil {
 					return false, fmt.Errorf("jit migrate: %w", err)
 				}
-				if err := mount.AddMount(registryPath, mount.Entry{MountPath: path, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
+				if err := addMount(mount.Entry{MountPath: path, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
 					return false, fmt.Errorf("jit migrate: registering mount for %s: %w", path, err)
 				}
 				if err := summary.writePointerFile(path, result.ProfilePath); err != nil {
@@ -695,7 +713,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			if err != nil {
 				return false, fmt.Errorf("jit migrate: %w", err)
 			}
-			if err := mount.AddMount(registryPath, mount.Entry{MountPath: adcPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
+			if err := addMount(mount.Entry{MountPath: adcPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
 				return false, fmt.Errorf("jit migrate: registering mount for %s: %w", adcPath, err)
 			}
 			if err := summary.writePointerFile(adcPath, result.ProfilePath); err != nil {
@@ -723,7 +741,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			if err != nil {
 				return false, fmt.Errorf("jit migrate: %w", err)
 			}
-			if err := mount.AddMount(registryPath, mount.Entry{MountPath: keyPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
+			if err := addMount(mount.Entry{MountPath: keyPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
 				return false, fmt.Errorf("jit migrate: registering mount for %s: %w", keyPath, err)
 			}
 			if err := summary.writePointerFile(keyPath, result.ProfilePath); err != nil {
@@ -758,7 +776,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			if err != nil {
 				return false, fmt.Errorf("jit migrate: %w", err)
 			}
-			if err := mount.AddMount(registryPath, mount.Entry{MountPath: npmrcPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
+			if err := addMount(mount.Entry{MountPath: npmrcPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
 				return false, fmt.Errorf("jit migrate: registering mount for %s: %w", npmrcPath, err)
 			}
 			if err := summary.writePointerFile(npmrcPath, result.ProfilePath); err != nil {
@@ -787,7 +805,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			if err != nil {
 				return false, fmt.Errorf("jit migrate: %w", err)
 			}
-			if err := mount.AddMount(registryPath, mount.Entry{MountPath: netrcPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
+			if err := addMount(mount.Entry{MountPath: netrcPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
 				return false, fmt.Errorf("jit migrate: registering mount for %s: %w", netrcPath, err)
 			}
 			if err := summary.writePointerFile(netrcPath, result.ProfilePath); err != nil {
@@ -814,7 +832,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			if err != nil {
 				return false, fmt.Errorf("jit migrate: %w", err)
 			}
-			if err := mount.AddMount(registryPath, mount.Entry{MountPath: pypircPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
+			if err := addMount(mount.Entry{MountPath: pypircPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
 				return false, fmt.Errorf("jit migrate: registering mount for %s: %w", pypircPath, err)
 			}
 			if err := summary.writePointerFile(pypircPath, result.ProfilePath); err != nil {
@@ -840,7 +858,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 	}
 
 	summary.print(out)
-	reportAgentStatus(out, root, len(envFiles) > 0 || len(npmrcFiles) > 0 || len(gcpADCFiles) > 0 || len(sopsAgeFiles) > 0 || len(netrcFiles) > 0 || len(pypircFiles) > 0)
+	reportAgentStatus(out, root, producedMount)
 	// The folder-rename advisory is left to `jit status`: an explicitly named
 	// migrate target can sit under any project, so there's no single "this
 	// project" here whose rename to flag (see noteFolderRename, still used by
