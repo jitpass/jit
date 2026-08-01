@@ -296,7 +296,7 @@ func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings []
 				pluralWord(len(outcome.OKChecks), "passes", "pass")))
 		}
 	case outcome.ProfilesChecked == 0:
-		wrapBody(out, 0, "  ", cDim.Sprint("No profiles found under .jit/profiles/ or the global store."))
+		writeNoProfilesLine(out, outcome.Cwd)
 	case len(problems) == 0:
 		if wrote {
 			fmt.Fprintln(out)
@@ -337,8 +337,36 @@ func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings []
 		}
 	}
 
-	printGlobalMountReminders(out)
+	// The standing global-mount reminders belong to the FULL sweep. A
+	// --profile run documents itself as skipping the system sections and then
+	// printed this block anyway; a --wrap run never looked at mounts at all.
+	if doctorProfile == "" && !outcome.WrapOnly {
+		printGlobalMountReminders(out)
+	}
 	return nil
+}
+
+// writeNoProfilesLine closes a run that found nothing to check.
+//
+// "No profiles found" alone is the worst-shaped output a DIAGNOSTIC command
+// can produce: it reports a clean exit over a search that never happened, and
+// the commonest way to reach it is standing in a subdirectory of your own
+// project. Profiles resolve from cwd exactly, never by walking up (`jit run`
+// and `jit export` behave the same, so this is not doctor's rule to change) —
+// but doctor can at least notice the project root sitting above and say so,
+// instead of letting "nothing here" read as "nothing wrong".
+func writeNoProfilesLine(out io.Writer, cwd string) {
+	if cwd != "" {
+		if root, ok := findProjectRoot(cwd); ok && root != cwd {
+			wrapBody(out, 0, "  ", cDim.Sprintf(
+				"No profiles here. This directory sits inside %s, which is the project root — profiles resolve from the current directory, not from an enclosing one.",
+				shortPath(root)))
+			_, _ = cPath.Fprint(out, "→ ")
+			wrapBody(out, 2, "  ", hlCmds(fmt.Sprintf("`cd %s` and re-run", shortPath(root))))
+			return
+		}
+	}
+	wrapBody(out, 0, "  ", cDim.Sprint("No profiles found under .jit/profiles/ or the global store."))
 }
 
 // versionBuildSignature renders the tool line's value, dropping whichever
@@ -478,6 +506,8 @@ func findingLabel(f checkFinding) string {
 		return "[corrupt]"
 	case kindVaultError:
 		return "[vault error]"
+	case kindBadPath:
+		return "[bad path]"
 	case kindOrphan:
 		return "[orphan]"
 	case kindShadowed:
@@ -499,6 +529,8 @@ func findingLabel(f checkFinding) string {
 		return "[vault key]"
 	case kindRekey:
 		return "[rekey]"
+	case kindAudit:
+		return "[audit]"
 	default:
 		return ""
 	}
@@ -514,12 +546,14 @@ func findingLabel(f checkFinding) string {
 // that identifies the file off the first line (rule 6).
 func formatFinding(f checkFinding) string {
 	switch f.Kind {
-	case kindParse, kindNotFound, kindService, kindBackup, kindWrap, kindWrapEnv, kindMount, kindVaultKey, kindRekey:
+	case kindParse, kindNotFound, kindService, kindBackup, kindWrap, kindWrapEnv, kindMount, kindVaultKey, kindRekey, kindAudit:
 		return shortHome(f.Detail)
 	case kindMissing:
 		return fmt.Sprintf("%s: %s → %s, not in the vault", profileRef(f), f.Variable, f.Path)
 	case kindCorrupt:
 		return fmt.Sprintf("%s: %s → %s: %s", profileRef(f), f.Variable, f.Path, shortHome(f.Detail))
+	case kindBadPath:
+		return fmt.Sprintf("%s: %s → %s", profileRef(f), f.Variable, shortHome(f.Detail))
 	case kindVaultError:
 		if f.Profile == "" {
 			return shortHome(f.Detail)
@@ -550,7 +584,7 @@ func init() {
 	doctorCmd.Flags().StringVar(&doctorProfile, "profile", "", "check only this profile, and skip the service/backup/wrap health sections")
 	_ = doctorCmd.RegisterFlagCompletionFunc("profile", completeProfileNames)
 	doctorCmd.Flags().StringVar(&doctorFormat, "format", "text", `output format: "text" (default) or "json"`)
-	doctorCmd.Flags().BoolVar(&doctorVerbose, "verbose", false, "on success, list every variable→path reference that was checked")
+	doctorCmd.Flags().BoolVar(&doctorVerbose, "verbose", false, "also list every check that passed, not just the ones that failed")
 	doctorCmd.Flags().BoolVar(&doctorOrphans, "orphans", false, "also warn about vault secrets no profile references (advisory, never a failure)")
 	doctorCmd.Flags().BoolVar(&doctorWrap, "wrap", false, "check only the wrapped-tool shims, without opening the vault (replaces `jit wrap doctor`)")
 	doctorCmd.Flags().BoolVar(&doctorStrict, "strict", false, "exit non-zero on advisory warnings too, for a pipeline that wants them to gate")

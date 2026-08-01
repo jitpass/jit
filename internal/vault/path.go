@@ -4,6 +4,7 @@
 package vault
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,30 @@ import (
 // admitting ".." or an absolute path, since this becomes part of a real
 // filesystem path below the vault root.
 var secretPathPattern = regexp.MustCompile(`^[A-Za-z0-9_.\-]+(/[A-Za-z0-9_.\-]+)*$`)
+
+// ErrInvalidPath marks every rejection in sanitizeSecretPath as "the PATH you
+// asked for is not a legal secret path" — a caller's own input, fixable by
+// editing it — as opposed to the store being unreadable. The two arrive at a
+// caller through the same return and used to be indistinguishable, so `jit
+// doctor` filed a typo'd path in a profile manifest under [vault error], the
+// kind it documents as "an unexpected error while checking the vault (a
+// permissions problem on the store, say)". A CI check paging on vault_error
+// for storage health got woken by a typo.
+var ErrInvalidPath = errors.New("invalid secret path")
+
+// invalidPathError carries ErrInvalidPath's identity without its words. A
+// plain fmt.Errorf("…: %w", ErrInvalidPath) would append "invalid secret
+// path" to messages that already say precisely what is wrong and have been
+// user-visible for a long time; Unwrap gives errors.Is the same answer while
+// Error() stays byte-identical to what these call sites always returned.
+type invalidPathError struct{ msg string }
+
+func (e *invalidPathError) Error() string { return e.msg }
+func (e *invalidPathError) Unwrap() error { return ErrInvalidPath }
+
+func invalidPath(format string, a ...any) error {
+	return &invalidPathError{msg: fmt.Sprintf(format, a...)}
+}
 
 // sanitizeSecretPath validates a user-supplied secret path and returns the
 // absolute file path it maps to under vaultDir. Rejecting anything outside
@@ -36,12 +61,15 @@ var secretPathPattern = regexp.MustCompile(`^[A-Za-z0-9_.\-]+(/[A-Za-z0-9_.\-]+)
 // of "a/./b") and letter-case variants of an existing entry (the default
 // macOS filesystem is case-insensitive, so "stripe/dev-key" opens
 // Dev-Key.enc while the AAD says otherwise — see rejectCaseVariant).
+//
+// Every rejection here wraps ErrInvalidPath, so a caller can tell a bad path
+// from a bad store.
 func sanitizeSecretPath(vaultDir, path string) (string, error) {
 	if path == "" {
-		return "", fmt.Errorf("secret path must not be empty")
+		return "", invalidPath("secret path must not be empty")
 	}
 	if !secretPathPattern.MatchString(path) {
-		return "", fmt.Errorf("secret path %q must be slash-separated segments of letters, digits, '.', '_', '-' (e.g. \"stripe/dev-key\")", path)
+		return "", invalidPath("secret path %q must be slash-separated segments of letters, digits, '.', '_', '-' (e.g. \"stripe/dev-key\")", path)
 	}
 	// Traversal is a property of a SEGMENT, not of the string. This used to
 	// reject any path merely containing "..", which turned an ordinary name
@@ -52,7 +80,7 @@ func sanitizeSecretPath(vaultDir, path string) (string, error) {
 	// post-Join prefix check below is the third layer).
 	for _, seg := range strings.Split(path, "/") {
 		if seg == "." || seg == ".." {
-			return "", fmt.Errorf("secret path %q must not contain %q segments", path, seg)
+			return "", invalidPath("secret path %q must not contain %q segments", path, seg)
 		}
 	}
 	// _history/ is the version-history tree (history.go), written only by
@@ -62,13 +90,13 @@ func sanitizeSecretPath(vaultDir, path string) (string, error) {
 	// would rename it over the real secret. EqualFold, not ==: on the
 	// default case-insensitive macOS filesystem, "_History" IS "_history".
 	if first := strings.SplitN(path, "/", 2)[0]; strings.EqualFold(first, historyDirName) {
-		return "", fmt.Errorf("secret path %q is reserved for jit's own version history (%s/)", path, historyDirName)
+		return "", invalidPath("secret path %q is reserved for jit's own version history (%s/)", path, historyDirName)
 	}
 
 	full := filepath.Join(vaultDir, path+".enc")
 	cleanVaultDir := filepath.Clean(vaultDir)
 	if full != cleanVaultDir && !strings.HasPrefix(full, cleanVaultDir+string(filepath.Separator)) {
-		return "", fmt.Errorf("secret path %q escapes the vault directory", path)
+		return "", invalidPath("secret path %q escapes the vault directory", path)
 	}
 	if err := rejectCaseVariant(vaultDir, path); err != nil {
 		return "", err
@@ -113,7 +141,7 @@ func rejectCaseVariant(vaultDir, path string) error {
 		}
 		if variant != "" {
 			stored := strings.Join(append(append([]string{}, segs[:i]...), strings.TrimSuffix(variant, ".enc")), "/")
-			return fmt.Errorf("secret path %q differs from stored %q only by letter case; use the stored spelling (case-variant paths collide on case-insensitive filesystems, so the vault never allows two)", path, stored)
+			return invalidPath("secret path %q differs from stored %q only by letter case; use the stored spelling (case-variant paths collide on case-insensitive filesystems, so the vault never allows two)", path, stored)
 		}
 		return nil // nothing at this level: new subtree, nothing below to collide with
 	}

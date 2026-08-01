@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/pflag"
 
+	"github.com/jitpass/jit/internal/auditlog"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/vault"
 )
@@ -676,6 +677,101 @@ func TestDoctorWrapNeverOpensTheVault(t *testing.T) {
 	}
 	if strings.Contains(out, "No profiles found") {
 		t.Errorf("a --wrap run swept no profiles and must not report on them, got:\n%s", out)
+	}
+}
+
+// TestDoctorFromSubdirectoryNamesTheProjectRoot: profiles resolve from cwd
+// exactly, never from an enclosing directory (`jit run` and `jit export`
+// behave the same, so that is not doctor's rule to change). But a DIAGNOSTIC
+// command reporting a clean exit over a search that never happened is the
+// worst shape of output there is, and standing one directory deep in your own
+// project is the commonest way to reach it.
+func TestDoctorFromSubdirectoryNamesTheProjectRoot(t *testing.T) {
+	withFixtureHome(t)
+	root := withFixtureCwd(t)
+	writeFixtureProfile(t, root, "app", "APP_KEY: app/key\n")
+	deep := filepath.Join(root, "src", "deep")
+	if err := os.MkdirAll(deep, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.Chdir(deep); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+
+	out, err := execDoctor(t)
+	if err != nil {
+		t.Fatalf("jit doctor: %v", err)
+	}
+	// EvalSymlinks because on macOS t.TempDir() hands back /var/... while
+	// os.Getwd() resolves it to /private/var/..., and unwrap because a temp
+	// path is long enough that the action line breaks between "cd" and the
+	// directory — a naive Contains misses on both counts.
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	joined := unwrap(out)
+	if !strings.Contains(joined, "project root") {
+		t.Errorf("expected the nearest project root to be named, got:\n%s", out)
+	}
+	if !strings.Contains(joined, "cd "+realRoot) {
+		t.Errorf("expected an action naming where to re-run it, got:\n%s", out)
+	}
+	if strings.Contains(out, "No profiles found under") {
+		t.Errorf("the bare no-profiles line must not stand in for the subdirectory case, got:\n%s", out)
+	}
+}
+
+// TestDoctorMalformedPathIsNotAVaultError: an absolute path or a ".."
+// segment in a manifest is a manifest bug, fixed by editing the YAML. It used
+// to arrive as kind "vault_error", which the code documents as "a permissions
+// problem on the store, say" — so a CI check paging on storage health got
+// woken by a typo.
+func TestDoctorMalformedPathIsNotAVaultError(t *testing.T) {
+	withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	writeFixtureProfile(t, cwd, "evil", "ESCAPE: ../../../../etc/passwd\nABS: /etc/passwd\n")
+
+	out, err := execDoctor(t, "--format", "json")
+	if err == nil {
+		t.Fatal("expected a non-zero exit for unusable paths")
+	}
+	var result doctorResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("unmarshaling output %q: %v", out, err)
+	}
+	if len(result.Problems) != 2 {
+		t.Fatalf("expected both bad paths reported, got %+v", result.Problems)
+	}
+	for _, p := range result.Problems {
+		if p.Kind != kindBadPath {
+			t.Errorf("expected kind %q, got %q for %s", kindBadPath, p.Kind, p.Variable)
+		}
+	}
+}
+
+// TestDoctorReportsAnUnwritableAuditLog: auditlog.Append swallows its write
+// failures by design, so a trail that has stopped recording is invisible.
+// auditlog.FileName was exported "so a reader (jit audit) and doctor can name
+// it" long before doctor ever did.
+func TestDoctorReportsAnUnwritableAuditLog(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	writeFixtureProfile(t, cwd, "app", "APP_KEY: app/key\n")
+	plantVaultSecret(t, home, "app/key")
+
+	logPath := filepath.Join(home, "Library", "Application Support", "jitpass", auditlog.FileName)
+	if err := os.WriteFile(logPath, []byte("{}\n"), 0o400); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(logPath, 0o600) })
+
+	out, err := execDoctor(t)
+	if err != nil {
+		t.Fatalf("a quiet audit trail is advisory and must not fail the run: %v", err)
+	}
+	if !strings.Contains(out, "[audit]") {
+		t.Errorf("expected an [audit] warning for an unwritable log, got:\n%s", out)
 	}
 }
 

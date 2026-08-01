@@ -43,6 +43,13 @@ const (
 	// permissions problem on the store, say) — neither cleanly present nor
 	// cleanly absent.
 	kindVaultError checkKind = "vault_error"
+	// kindBadPath: the profile names something that isn't a legal secret path
+	// at all (an absolute path, a ".." segment, stray whitespace). A manifest
+	// bug, fixed by editing the YAML — nothing to do with the vault's health,
+	// which is where it used to be filed. profile.LoadFile validates variable
+	// NAMES strictly and never validated path SHAPE, so these only ever
+	// surfaced when Exists() rejected them, wearing the wrong kind.
+	kindBadPath checkKind = "bad_path"
 	// kindOrphan: a vault secret that no profile references. Advisory only
 	// (see warning): dead weight and audit surface worth surfacing, never a
 	// reason to fail the run.
@@ -92,6 +99,11 @@ const (
 	// errRekeyInProgress), so a doctor that reported a clean bill of health
 	// left the user to discover the state from the next command that failed.
 	kindRekey checkKind = "rekey"
+	// kindAudit: the audit trail has stopped recording. Advisory — no secret
+	// is at risk and no command is blocked — but for a tool whose job is
+	// custody of secrets, losing the record of what touched them silently is
+	// worth one line.
+	kindAudit checkKind = "audit"
 )
 
 // warning reports whether a finding of this kind is advisory (does not fail
@@ -107,7 +119,7 @@ const (
 // one process and must never fail a CI run.
 func (k checkKind) warning() bool {
 	switch k {
-	case kindOrphan, kindShadowed, kindService, kindBackup, kindMount, kindWrapEnv:
+	case kindOrphan, kindShadowed, kindService, kindBackup, kindMount, kindWrapEnv, kindAudit:
 		return true
 	default:
 		return false
@@ -185,6 +197,9 @@ type checkOutcome struct {
 	// which only ever reported failures, could not.
 	OKChecks []string
 	Findings []checkFinding
+	// Cwd is where the profile sweep looked, retained so a zero-profile run
+	// can say something more useful than "nothing here".
+	Cwd string
 	// WrapOnly marks a run that never swept profiles at all (`jit doctor
 	// --wrap`). Without it the report closed on "No profiles found under
 	// .jit/profiles/ or the global store" — a true statement about a search
@@ -225,7 +240,7 @@ func (o checkOutcome) Warnings() []checkFinding {
 // the vault's KeyWrapper (Exists/Verify/List are all auth-free), so it is
 // safe to run as often as jit status does.
 func runProfileCheck(cwd string, v *vault.Vault, opts checkOptions) (checkOutcome, error) {
-	var out checkOutcome
+	out := checkOutcome{Cwd: cwd}
 
 	// scope is a plain string, not profile.Scope: a mount's manifest is
 	// reached through the registry rather than through a scope lookup, so
@@ -345,7 +360,7 @@ func runProfileCheck(cwd string, v *vault.Vault, opts checkOptions) (checkOutcom
 
 			status := checkSecret(v, secretPath, opts.Integrity, cache)
 			switch status.kind {
-			case kindCorrupt, kindMissing, kindVaultError:
+			case kindCorrupt, kindMissing, kindVaultError, kindBadPath:
 				out.Findings = append(out.Findings, checkFinding{
 					Kind:     status.kind,
 					Profile:  e.name,
@@ -493,7 +508,7 @@ func mountCheckTargets(root string, seen map[string]bool) (targets []mountTarget
 
 // secretStatus is one path's verdict, cached across profiles that share it.
 type secretStatus struct {
-	kind   checkKind // kindMissing, kindCorrupt, kindVaultError, or "" for OK
+	kind   checkKind // kindMissing/kindCorrupt/kindVaultError/kindBadPath, or "" for OK
 	detail string
 }
 
@@ -507,6 +522,8 @@ func checkSecret(v *vault.Vault, secretPath string, integrity bool, cache map[st
 	var s secretStatus
 	exists, err := v.Exists(secretPath)
 	switch {
+	case errors.Is(err, vault.ErrInvalidPath):
+		s = secretStatus{kind: kindBadPath, detail: err.Error()}
 	case err != nil:
 		s = secretStatus{kind: kindVaultError, detail: err.Error()}
 	case !exists:

@@ -57,7 +57,7 @@ jit doctor [flags]
       --orphans                also warn about vault secrets no profile references (advisory, never a failure)
       --profile string         check only this profile, and skip the service/backup/wrap health sections
       --strict                 exit non-zero on advisory warnings too, for a pipeline that wants them to gate
-      --verbose                on success, list every variable→path reference that was checked
+      --verbose                also list every check that passed, not just the ones that failed
       --wrap jit wrap doctor   check only the wrapped-tool shims, without opening the vault (replaces jit wrap doctor)
 ```
 

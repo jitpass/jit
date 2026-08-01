@@ -60,7 +60,8 @@ surfaced as advisory warnings.
 
 It exits **2** when something this setup depends on is actually broken:
 
-- a profile's own secret is **missing**, **corrupt**, or **unparseable**
+- a profile's own secret is **missing**, **corrupt**, or **unparseable**, or
+  names something that isn't a legal vault path at all (**bad path**)
 - this Mac's **master key is gone** from the keychain, so the whole vault is
   undecryptable — every envelope stays structurally intact, which is exactly
   why nothing else notices
@@ -76,6 +77,8 @@ Everything else it reports is a warning, never a failure:
 - a profile name **shadowed** across scopes (the same name in both project and
   global; the project copy wins and the global one is ignored)
 - a registered **mount** whose profile manifest won't load
+- the **audit trail** has stopped recording (writes are swallowed by design,
+  so nothing else would ever tell you)
 - a stopped service, or a stale or missing vault backup
 - a shim complaint that is only true of the shell you are in (the shim dir
   absent from *this* `PATH`) — a CI job that doesn't put it there is not a
