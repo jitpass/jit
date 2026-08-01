@@ -202,8 +202,8 @@ jit is a local, per-developer tool by design, and it is still early. Here is
 what is landing next:
 
 - **Keys in the Secure Enclave.** Hardware-backed, OS-level enforcement of the
-  Touch ID gate. The blocker isn't signing (releases are Developer-ID signed
-  and notarized) but packaging: the entitlement it needs can only live in an
+  Touch ID gate. The blocker isn't signing (releases are Developer-ID signed)
+  but packaging: the entitlement it needs can only live in an
   `.app`-bundled agent, which is its own piece of work.
 - **More platforms.** jit goes deep on macOS first; Linux and beyond are on the
   roadmap.

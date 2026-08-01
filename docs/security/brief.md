@@ -104,9 +104,10 @@ session, not the scope. A cloned repo's config, or a script that slips a
 
 - Source is public on GitHub under the **PolyForm Perimeter License 1.0.0**
   (source-available, not open source); it can be built from source with Go.
-- Release builds are **Developer-ID signed and notarized** (`Meni Tasa,
-  CZC6BH93GJ`); dev builds from source are ad-hoc signed, so a dev build's
-  first run shows a one-time Keychain permission prompt.
+- Release builds are **Developer-ID signed** (`Meni Tasa, CZC6BH93GJ`); the
+  `curl` install is quarantine-free, so Gatekeeper clears it without a prompt.
+  Dev builds from source are ad-hoc signed, so a dev build's first run shows a
+  one-time Keychain permission prompt.
 - No network calls, no telemetry, no auto-update. The vault leaves the machine
   only through an explicit passphrase-encrypted export the user runs.
 
