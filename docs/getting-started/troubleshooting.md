@@ -52,7 +52,7 @@ description: Placeholder values, hanging reads, surprise Touch ID prompts, and s
   current binary now (it also switches on its own within a few seconds once
   idle). See [Upgrading](./install.md#upgrading).
 - **A wrapped tool stopped authenticating.** See
-  [Wrap troubleshooting](../wrap/troubleshooting.md) - `jit wrap doctor`
+  [Wrap troubleshooting](../wrap/troubleshooting.md) - `jit doctor --wrap`
   checks every shim, PATH entry, and profile.
 - **Shell completion isn't working.** See the diagnosis notes under
   [Install → Shell completion](./install.md#shell-completion).

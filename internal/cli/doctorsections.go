@@ -41,12 +41,12 @@ var interactiveTTY = func() bool {
 // problems rather than restating status's full snapshot. Best-effort per
 // section: a section that can't run reports that as its own finding rather
 // than failing the whole command.
-func gatherSystemFindings(root string, v *vault.Vault) []checkFinding {
+func gatherSystemFindings(root string, v *vault.Vault) ([]checkFinding, []string) {
 	var findings []checkFinding
 	findings = append(findings, agentFindings(root)...)
 	findings = append(findings, backupFindings(v)...)
-	findings = append(findings, wrapFindings()...)
-	return findings
+	wrapped, wrapOK := wrapFindings()
+	return append(findings, wrapped...), wrapOK
 }
 
 // gatherVaultIntegrityFindings reports the two whole-vault states that make
@@ -209,20 +209,35 @@ func backupFindings(v *vault.Vault) []checkFinding {
 	return nil
 }
 
-// wrapFindings folds `jit wrap doctor`'s per-tool checks into the rollup,
-// emitting one finding per FAILED check (a missing shim, a shim pointing at a
-// moved binary, a profile gone). A user who never ran `jit wrap add` has no
-// shims and gets nothing (wrap.Doctor reports that as an OK check).
-func wrapFindings() []checkFinding {
+// wrapFindings is now the ONLY place wrap's per-tool checks are turned into a
+// verdict — `jit wrap doctor` renders through here too rather than keeping a
+// second copy that could disagree with this one (and did).
+//
+// It returns findings for the failures and a plain summary line per passing
+// check, the latter only surfaced under --verbose. Positive confirmation was
+// the one thing the standalone command offered that the rollup didn't: right
+// after `jit wrap add`, "shim, real binary, and profile all resolve" is the
+// answer you came for, and doctor could only ever say nothing.
+//
+// A failure's severity comes from the check (wrap.DoctorCheck.Environmental),
+// not from which command is rendering it.
+func wrapFindings() ([]checkFinding, []string) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return []checkFinding{{Kind: kindWrap, Detail: fmt.Sprintf("could not check wrap shims: %v", err)}}
+		return []checkFinding{{Kind: kindWrap, Detail: fmt.Sprintf("could not check wrap shims: %v", err)}}, nil
 	}
 	var out []checkFinding
+	var ok []string
 	for _, c := range wrap.Doctor(home, os.Getenv("PATH"), os.Getenv("SHELL")) {
-		if !c.OK {
-			out = append(out, checkFinding{Kind: kindWrap, Detail: fmt.Sprintf("%s: %s", c.Name, c.Detail)})
+		if c.OK {
+			ok = append(ok, fmt.Sprintf("%s: %s", c.Name, c.Detail))
+			continue
 		}
+		kind := kindWrap
+		if c.Environmental {
+			kind = kindWrapEnv
+		}
+		out = append(out, checkFinding{Kind: kind, Detail: fmt.Sprintf("%s: %s", c.Name, c.Detail)})
 	}
-	return out
+	return out, ok
 }

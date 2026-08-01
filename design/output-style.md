@@ -69,7 +69,7 @@ change happens in exactly one place.
 One vocabulary, three layouts — each fits the shape of its data. What they
 share is the palette, the glyphs, the dim-secondary rule, and column flow.
 
-### Report — `jit scan`, `jit migrate`, `jit doctor`, `jit wrap doctor`
+### Report — `jit scan`, `jit migrate`, `jit doctor`
 A findings/plan list. Strong **bold `[Category]`** header with a dim count,
 then the items. A findings report should feel heavier than a status line, so
 this is where a leading `✗` earns real weight. No rule under the header.
@@ -80,10 +80,10 @@ this is where a leading `✗` earns real weight. No rule under the header.
     HIGH  contains "JAMF_URL", a variable name that looks like a credential
 ```
 
-The two doctors were filed under Dashboard here for a long time, and rendered
-as neither: a flat list of `[kind] prose` lines with no headers, each indenting
+`jit doctor` was filed under Dashboard here for a long time, and rendered as
+neither: a flat list of `[kind] prose` lines with no headers, each indenting
 its own continuation and action by its own label width, so one report had three
-different left edges. They are findings lists — the same shape `jit scan`
+different left edges. It is a findings list — the same shape `jit scan`
 carries — and `jit status` is the dashboard. Grouping by kind is what lets
 rule 5 hold: twelve missing references used to repeat one remediation sentence
 twelve times, and now state it once under the group that shares it.
@@ -209,7 +209,7 @@ ever mis-widths them — nothing references the symbols directly.
 Every list/report/dashboard surface is on the house style: `jit scan`,
 `jit migrate` (plan + summary), `jit status` (dashboard + `--secrets`),
 `jit vault list` / `jit vault orphans`, `jit service status`, `jit doctor`,
-`jit wrap doctor`, `jit audit`, `jit service log`, and the first-run flow.
+`jit audit`, `jit service log`, and the first-run flow.
 When adding a new command, reach for the `style.go` helpers rather than raw
 `color.New(...)` so it lands in the same style by default.
 

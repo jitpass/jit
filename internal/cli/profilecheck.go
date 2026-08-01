@@ -53,18 +53,27 @@ const (
 	// taking effect" confusion. Advisory: nothing is broken, but the user
 	// should know one file is dead weight in this directory.
 	kindShadowed checkKind = "shadowed"
-	// kindService/kindBackup/kindWrap are the absorbed system-health sections
-	// (mega-doctor). All three are advisory: a stopped agent, an unrecorded
-	// or stale export, and a broken/misplaced wrap shim each break something
-	// worth surfacing, but none of them makes a profile's secret unresolvable
-	// — doctor's non-zero exit stays reserved for that. (The dedicated `jit
-	// wrap doctor` still exits non-zero on a shim failure; here it is one ⚠
-	// line among the rollup, and folding an environmental "shim dir not on
-	// PATH in THIS shell" check into doctor's exit code would fail CI runs
-	// that legitimately don't put it there.)
+	// kindService/kindBackup are absorbed system-health sections, both
+	// advisory: a stopped agent and an unrecorded export each break something
+	// worth surfacing, but neither makes a secret unresolvable.
 	kindService checkKind = "service"
 	kindBackup  checkKind = "backup"
-	kindWrap    checkKind = "wrap"
+	// kindWrap is a wrapped-tool installation that is actually damaged — a
+	// missing shim dir, a symlink pointing at nothing, a vanished profile, an
+	// rc file that lost its PATH line. A hard problem: the tool it wraps runs
+	// unwrapped or not at all, and that is breakage, not a nudge. This is the
+	// verdict `jit wrap doctor` always gave; `jit doctor` used to disagree
+	// with it, and now doesn't.
+	kindWrap checkKind = "wrap"
+	// kindWrapEnv is a wrap check that failed for a reason true of THIS
+	// process rather than of the installation: the shim dir absent from the
+	// PATH this run was handed, or the real tool missing from it. A new login
+	// shell may well disagree, and a CI job that legitimately doesn't put the
+	// shim dir on PATH must not fail for it — which is exactly the reasoning
+	// that used to justify `jit wrap doctor` and `jit doctor` disagreeing on
+	// every wrap failure. The distinction belongs on the check, not on which
+	// command rendered it.
+	kindWrapEnv checkKind = "wrap_env"
 	// kindMount: a registered mount's profile manifest won't load, so jit is
 	// serving (or failing to serve) a file whose variable list it can't read.
 	// Advisory: the mount is broken, but nothing about the profiles the user
@@ -91,11 +100,14 @@ const (
 // unparseable, or — the two kinds added with the vault-integrity checks —
 // unreadable because the master key is gone or a rekey never finished.
 // Everything else (an extra secret, a shadowed profile, a stopped agent, a
-// stale backup, a broken wrap shim, a mount whose manifest vanished) is
-// advisory.
+// stale backup, a mount whose manifest vanished) is advisory.
+//
+// Note kindWrap is NOT advisory and kindWrapEnv is: a damaged shim
+// installation is real breakage, while "not on PATH in THIS shell" is true of
+// one process and must never fail a CI run.
 func (k checkKind) warning() bool {
 	switch k {
-	case kindOrphan, kindShadowed, kindService, kindBackup, kindWrap, kindMount:
+	case kindOrphan, kindShadowed, kindService, kindBackup, kindMount, kindWrapEnv:
 		return true
 	default:
 		return false
@@ -166,7 +178,19 @@ type checkOutcome struct {
 	ProfilesChecked int
 	SecretsChecked  int
 	OKRefs          []checkedRef
-	Findings        []checkFinding
+	// OKChecks are the non-reference checks that PASSED, as rendered lines —
+	// today the wrap shims. Surfaced only under --verbose, and the reason the
+	// standalone `jit wrap doctor` is no longer needed: confirming a shim
+	// installation is healthy was the one thing it could say that the rollup,
+	// which only ever reported failures, could not.
+	OKChecks []string
+	Findings []checkFinding
+	// WrapOnly marks a run that never swept profiles at all (`jit doctor
+	// --wrap`). Without it the report closed on "No profiles found under
+	// .jit/profiles/ or the global store" — a true statement about a search
+	// that never happened, and exactly the kind of line that sends someone
+	// looking for a second problem they don't have.
+	WrapOnly bool
 }
 
 // Problems returns the hard findings — everything a warning() kind is not —

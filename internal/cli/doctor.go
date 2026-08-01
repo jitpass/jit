@@ -18,6 +18,7 @@ var (
 	doctorFormat  string
 	doctorVerbose bool
 	doctorOrphans bool
+	doctorWrap    bool
 )
 
 // doctorResult is jit doctor's --format json shape. Problems and Warnings
@@ -25,10 +26,13 @@ var (
 // change from the old flat []string, made deliberately (GAPS.md #22 chose
 // strings; leveling doctor up reverses that): a CI health check can now
 // filter on {kind, profile, variable, path} instead of regexing an English
-// sentence back apart. ok reflects hard Problems only — a missing/corrupt/
-// unparseable profile secret. Every other finding (orphan, shadowed profile,
-// agent/backup/wrap health) is a Warning and never flips ok, so a pipeline
-// that only cares whether its profiles resolve keeps passing.
+// sentence back apart. ok reflects hard Problems only: a secret that cannot
+// be read (missing, corrupt, unparseable, or the whole vault locked out of
+// its master key) and a wrapped-tool installation that is actually damaged.
+// Everything else — an orphan, a shadowed profile, a stopped agent, a stale
+// backup, a mount whose manifest vanished, a shim dir absent from THIS
+// shell's PATH — is a Warning and never flips ok, so a pipeline that only
+// cares whether its secrets resolve keeps passing.
 //
 // --verbose affects the TEXT report only (it lists each clean reference);
 // the JSON shape is stable regardless, so a consumer never has to strip an
@@ -58,19 +62,25 @@ var doctorCmd = &cobra.Command{
 		"plus the profile behind every registered mount — which may live in a project\n" +
 		"tree this directory never walks into, yet is being served right now. That is\n" +
 		"the same set `jit status --secrets` and `jit vault orphans` reconcile. It also\n" +
-		"folds in the health checks that used to take `jit status` and `jit wrap doctor`\n" +
-		"to see: the background service, your vault backup, and any wrapped-tool shims.\n\n" +
-		"It exits non-zero when a secret this setup depends on cannot be read: a\n" +
-		"profile's secret missing, corrupt, or unparseable, or the whole vault\n" +
-		"unreadable because this Mac's master key is gone from the keychain or a\n" +
-		"master-key rotation never finished. Everything else it reports is an\n" +
-		"advisory warning, never a failure: an orphaned secret (with --orphans), a\n" +
+		"folds in the health checks that used to take `jit status` and the retired\n" +
+		"`jit wrap doctor` to see: the background service, your vault backup, and\n" +
+		"every wrapped tool's shim, PATH entry and profile.\n\n" +
+		"It exits non-zero when something this setup depends on is actually broken:\n" +
+		"a secret missing, corrupt, or unparseable; the whole vault unreadable\n" +
+		"because this Mac's master key is gone from the keychain or a master-key\n" +
+		"rotation never finished; or a wrapped tool's installation damaged, which\n" +
+		"means that tool now runs unwrapped or not at all. Everything else it\n" +
+		"reports is an advisory warning: an orphaned secret (with --orphans), a\n" +
 		"profile name shadowed across scopes, a mount whose profile won't load, a\n" +
-		"stopped service, a stale or missing vault backup, a broken shim.\n\n" +
+		"stopped service, a stale or missing vault backup, and any shim complaint\n" +
+		"that is only true of the shell you happen to be in — a CI job that doesn't\n" +
+		"put the shim dir on PATH is not a broken machine.\n\n" +
 		"Use --profile to narrow the run to a single profile. The service, backup and\n" +
 		"shim sections are skipped then; the whole-vault key checks are not, because\n" +
 		"with no master key no profile resolves and saying otherwise would be false.\n" +
-		"--verbose lists every reference it cleared, and --format json prints a\n" +
+		"Use --wrap for the shim check on its own — it never opens the vault, so it\n" +
+		"still works when the vault is the thing that's broken. --verbose lists every\n" +
+		"check that passed, not just the ones that failed, and --format json prints a\n" +
 		"machine-readable snapshot.",
 	Args: cobra.NoArgs,
 	// A "problems found" exit is a normal, expected outcome here, not a
@@ -82,6 +92,21 @@ var doctorCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := validateOutputFormat(doctorFormat); err != nil {
 			return fmt.Errorf("jit doctor: %w", err)
+		}
+
+		var outcome checkOutcome
+
+		// --wrap is the shim-only run that used to be `jit wrap doctor`. It
+		// never opens the vault — not as an optimisation, but because the
+		// state you most often want it in is one where the vault itself is
+		// the problem, and a shim check that can't run until the vault opens
+		// is no use debugging a shim.
+		if doctorWrap {
+			findings, okChecks := wrapFindings()
+			outcome.Findings = findings
+			outcome.OKChecks = okChecks
+			outcome.WrapOnly = true
+			return renderDoctorOutcome(cmd, outcome)
 		}
 
 		cwd, err := os.Getwd()
@@ -101,7 +126,7 @@ var doctorCmd = &cobra.Command{
 		// plaintext) and cheap, and a "doctor" that couldn't tell a
 		// truncated secret from a healthy one would be missing the failure
 		// most likely to look like a jit bug at runtime.
-		outcome, err := runProfileCheck(cwd, v, checkOptions{
+		outcome, err = runProfileCheck(cwd, v, checkOptions{
 			Root:      root,
 			Profile:   doctorProfile,
 			Integrity: true,
@@ -121,36 +146,44 @@ var doctorCmd = &cobra.Command{
 		// --profile run is a narrow "does THIS profile resolve" query; folding
 		// agent/backup/wrap warnings into it would be surprising noise.
 		if doctorProfile == "" {
-			outcome.Findings = append(outcome.Findings, gatherSystemFindings(root, v)...)
+			systemFindings, wrapOK := gatherSystemFindings(root, v)
+			outcome.Findings = append(outcome.Findings, systemFindings...)
+			outcome.OKChecks = wrapOK
 		}
 
-		problems := outcome.Problems()
-		warnings := outcome.Warnings()
-
-		if doctorFormat == "json" {
-			if problems == nil {
-				problems = []checkFinding{}
-			}
-			if warnings == nil {
-				warnings = []checkFinding{}
-			}
-			if err := writeJSON(cmd.OutOrStdout(), doctorResult{
-				ProfilesChecked: outcome.ProfilesChecked,
-				SecretsChecked:  outcome.SecretsChecked,
-				OK:              len(problems) == 0,
-				Problems:        problems,
-				Warnings:        warnings,
-			}); err != nil {
-				return fmt.Errorf("jit doctor: %w", err)
-			}
-			if len(problems) > 0 {
-				return fmt.Errorf("jit doctor: %s found", countWord(len(problems), "problem", "problems"))
-			}
-			return nil
-		}
-
-		return renderDoctorText(cmd.OutOrStdout(), outcome, problems, warnings)
+		return renderDoctorOutcome(cmd, outcome)
 	},
+}
+
+// renderDoctorOutcome is the single exit path both the full run and the
+// --wrap run take, so the two can't drift in exit code or JSON shape.
+func renderDoctorOutcome(cmd *cobra.Command, outcome checkOutcome) error {
+	problems := outcome.Problems()
+	warnings := outcome.Warnings()
+
+	if doctorFormat == "json" {
+		if problems == nil {
+			problems = []checkFinding{}
+		}
+		if warnings == nil {
+			warnings = []checkFinding{}
+		}
+		if err := writeJSON(cmd.OutOrStdout(), doctorResult{
+			ProfilesChecked: outcome.ProfilesChecked,
+			SecretsChecked:  outcome.SecretsChecked,
+			OK:              len(problems) == 0,
+			Problems:        problems,
+			Warnings:        warnings,
+		}); err != nil {
+			return fmt.Errorf("jit doctor: %w", err)
+		}
+		if len(problems) > 0 {
+			return fmt.Errorf("jit doctor: %s found", countWord(len(problems), "problem", "problems"))
+		}
+		return nil
+	}
+
+	return renderDoctorText(cmd.OutOrStdout(), outcome, problems, warnings)
 }
 
 // renderDoctorText prints the human report and returns the non-zero-exit
@@ -177,6 +210,16 @@ func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings []
 	// clean-bill-of-health line was the one thing still running past the edge,
 	// which is a poor look on the line that says everything is fine.
 	switch {
+	case outcome.WrapOnly:
+		// A --wrap run has nothing to say about profiles. When it also has
+		// nothing to say about shims, say THAT rather than printing an empty
+		// report and leaving the reader to guess whether it ran.
+		if len(problems)+len(warnings) == 0 {
+			_, _ = cOK.Fprintf(out, "%s ", glyphDone)
+			wrapBody(out, 2, "  ", cOKBold.Sprintf("%s %s",
+				countWord(len(outcome.OKChecks), "wrap check", "wrap checks"),
+				pluralWord(len(outcome.OKChecks), "passes", "pass")))
+		}
 	case outcome.ProfilesChecked == 0:
 		wrapBody(out, 0, "  ", cDim.Sprint("No profiles found under .jit/profiles/ or the global store."))
 	case len(problems) == 0:
@@ -200,18 +243,22 @@ func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings []
 
 	// --verbose lists the individual references so a passing run can still
 	// answer "did it actually see my profile?" — a bare count can't.
-	if doctorVerbose && len(outcome.OKRefs) > 0 {
+	if passing := len(outcome.OKRefs) + len(outcome.OKChecks); doctorVerbose && passing > 0 {
 		// Same `[Name]  count` header as every finding group, so the report
 		// has one header shape rather than a bare bold word here and
 		// bracketed tags above it (rule 1).
 		fmt.Fprintln(out)
 		_, _ = cBold.Fprint(out, "[checked]")
-		_, _ = cDim.Fprintf(out, "  %d\n", len(outcome.OKRefs))
+		_, _ = cDim.Fprintf(out, "  %d\n", passing)
 		body := strings.Repeat(" ", findingIndent)
 		for _, r := range outcome.OKRefs {
 			_, _ = cOK.Fprintf(out, "  %s ", glyphOK)
 			wrapBody(out, findingIndent, body,
 				fmt.Sprintf("%s: %s → %s", profileRef(checkFinding{Profile: r.Profile, Scope: r.Scope}), r.Variable, r.Path))
+		}
+		for _, c := range outcome.OKChecks {
+			_, _ = cOK.Fprintf(out, "  %s ", glyphOK)
+			wrapBody(out, findingIndent, body, hlCmds(shortHome(c)))
 		}
 	}
 
@@ -358,6 +405,11 @@ func findingLabel(f checkFinding) string {
 		return "[backup]"
 	case kindWrap:
 		return "[wrap]"
+	case kindWrapEnv:
+		// Names why it isn't a failure, on the header, so the reader doesn't
+		// have to infer it from the glyph — and so two wrap groups in one
+		// report are distinguishable rather than the same word twice.
+		return "[wrap: this shell]"
 	case kindMount:
 		return "[mount]"
 	case kindVaultKey:
@@ -379,7 +431,7 @@ func findingLabel(f checkFinding) string {
 // that identifies the file off the first line (rule 6).
 func formatFinding(f checkFinding) string {
 	switch f.Kind {
-	case kindParse, kindNotFound, kindService, kindBackup, kindWrap, kindMount, kindVaultKey, kindRekey:
+	case kindParse, kindNotFound, kindService, kindBackup, kindWrap, kindWrapEnv, kindMount, kindVaultKey, kindRekey:
 		return shortHome(f.Detail)
 	case kindMissing:
 		return fmt.Sprintf("%s: %s → %s, not in the vault", profileRef(f), f.Variable, f.Path)
@@ -417,5 +469,8 @@ func init() {
 	doctorCmd.Flags().StringVar(&doctorFormat, "format", "text", `output format: "text" (default) or "json"`)
 	doctorCmd.Flags().BoolVar(&doctorVerbose, "verbose", false, "on success, list every variable→path reference that was checked")
 	doctorCmd.Flags().BoolVar(&doctorOrphans, "orphans", false, "also warn about vault secrets no profile references (advisory, never a failure)")
+	doctorCmd.Flags().BoolVar(&doctorWrap, "wrap", false, "check only the wrapped-tool shims, without opening the vault (replaces `jit wrap doctor`)")
+	doctorCmd.MarkFlagsMutuallyExclusive("wrap", "profile")
+	doctorCmd.MarkFlagsMutuallyExclusive("wrap", "orphans")
 	rootCmd.AddCommand(doctorCmd)
 }

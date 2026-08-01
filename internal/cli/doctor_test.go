@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/pflag"
+
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/vault"
 )
@@ -111,6 +113,12 @@ func execDoctor(t *testing.T, args ...string) (stdout string, err error) {
 	doctorFormat = "text"
 	doctorVerbose = false
 	doctorOrphans = false
+	doctorWrap = false
+	// Cobra remembers which flags were SET across Execute calls in the same
+	// process, and MarkFlagsMutuallyExclusive checks Changed, not the value —
+	// so without this a test that passed --wrap makes every later test that
+	// passes --profile fail on an exclusivity error it never triggered.
+	doctorCmd.Flags().Visit(func(f *pflag.Flag) { f.Changed = false })
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetArgs(append([]string{"doctor"}, args...))
@@ -635,6 +643,41 @@ func TestDoctorJSONCarriesStructuredAction(t *testing.T) {
 	// The detail is now purely what IS wrong; the fix lives in Action.
 	if strings.Contains(result.Problems[0].Detail, "jit vault set") {
 		t.Errorf("the remediation must not be duplicated into detail, got %q", result.Problems[0].Detail)
+	}
+}
+
+// TestDoctorWrapNeverOpensTheVault: --wrap replaces `jit wrap doctor`, and
+// the state you most often want a shim check in is one where the vault itself
+// is broken. A vault root that can't even be read must not stop it.
+func TestDoctorWrapNeverOpensTheVault(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	// A file where the vault directory belongs: any attempt to open or list
+	// the vault from here fails.
+	root := filepath.Join(home, "Library", "Application Support", "jitpass")
+	if err := os.MkdirAll(filepath.Dir(root), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(root, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := execDoctor(t, "--wrap")
+	if err != nil {
+		t.Fatalf("--wrap must not need the vault: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "No profiles found") {
+		t.Errorf("a --wrap run swept no profiles and must not report on them, got:\n%s", out)
+	}
+}
+
+// TestDoctorWrapRejectsProfileFlag: the two narrow the run in incompatible
+// directions, and silently honouring one would be worse than refusing.
+func TestDoctorWrapRejectsProfileFlag(t *testing.T) {
+	withFixtureHome(t)
+	withFixtureCwd(t)
+	if _, err := execDoctor(t, "--wrap", "--profile", "app"); err == nil {
+		t.Fatal("expected --wrap and --profile to be mutually exclusive")
 	}
 }
 
