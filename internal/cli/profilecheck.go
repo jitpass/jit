@@ -4,9 +4,13 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
+	"strings"
 
+	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/vault"
 )
@@ -23,6 +27,11 @@ const (
 	// kindParse: the profile manifest itself won't load (bad YAML, empty,
 	// an entry with no path). No secret was ever reached.
 	kindParse checkKind = "parse"
+	// kindNotFound: the named profile resolved to no manifest in any scope.
+	// Split out of kindParse because the two are different problems with
+	// different fixes — a typo'd --profile versus broken YAML — and a
+	// consumer filtering on "parse" could not tell them apart.
+	kindNotFound checkKind = "not_found"
 	// kindMissing: a referenced secret path isn't in the vault at all.
 	kindMissing checkKind = "missing"
 	// kindCorrupt: the secret file exists but its envelope won't parse or is
@@ -56,16 +65,37 @@ const (
 	kindService checkKind = "service"
 	kindBackup  checkKind = "backup"
 	kindWrap    checkKind = "wrap"
+	// kindMount: a registered mount's profile manifest won't load, so jit is
+	// serving (or failing to serve) a file whose variable list it can't read.
+	// Advisory: the mount is broken, but nothing about the profiles the user
+	// asked about is, and the registry can outlive a project directory
+	// legitimately (see reconcileSecrets, which tolerates the same state).
+	kindMount checkKind = "mount"
+	// kindVaultKey: the vault holds secrets but this Mac's master key is gone
+	// from the keychain. Every envelope still passes Verify — structure and
+	// recipient are intact — and not one of them can be decrypted. A hard
+	// problem, and the one doctor was most conspicuously blind to: the
+	// keychain item is the single thing standing between a healthy-looking
+	// vault and a total loss.
+	kindVaultKey checkKind = "vault_key"
+	// kindRekey: a master-key rotation is in progress or was interrupted.
+	// While the marker exists every vault WRITE is refused (see
+	// errRekeyInProgress), so a doctor that reported a clean bill of health
+	// left the user to discover the state from the next command that failed.
+	kindRekey checkKind = "rekey"
 )
 
 // warning reports whether a finding of this kind is advisory (does not fail
-// the run or flip ok=false) rather than a hard problem. Only a profile's own
-// secret being missing, corrupt, or unparseable is a hard problem; everything
-// else — an extra secret, a shadowed profile, a stopped agent, a stale
-// backup, a broken wrap shim — is advisory.
+// the run or flip ok=false) rather than a hard problem. A hard problem means
+// a secret this setup depends on cannot be read: missing, corrupt,
+// unparseable, or — the two kinds added with the vault-integrity checks —
+// unreadable because the master key is gone or a rekey never finished.
+// Everything else (an extra secret, a shadowed profile, a stopped agent, a
+// stale backup, a broken wrap shim, a mount whose manifest vanished) is
+// advisory.
 func (k checkKind) warning() bool {
 	switch k {
-	case kindOrphan, kindShadowed, kindService, kindBackup, kindWrap:
+	case kindOrphan, kindShadowed, kindService, kindBackup, kindWrap, kindMount:
 		return true
 	default:
 		return false
@@ -83,6 +113,18 @@ type checkFinding struct {
 	Variable string    `json:"variable,omitempty"`
 	Path     string    `json:"path,omitempty"`
 	Detail   string    `json:"detail"`
+	// Action is what to DO about the finding — one runnable step, with its
+	// commands `backtick`-delimited for hlCmds, and nothing else on it
+	// (design/output-style.md, "The action line"). Empty when the finding
+	// names no single next step.
+	//
+	// It is authored here rather than derived. The renderer used to recover
+	// this clause from Detail with a regexp — reverse-engineering prose the
+	// same package had just generated — and the seams showed: the split left
+	// dangling subordinate clauses ("→ jit vault export <file> so losing it
+	// isn't losing every secret"), and a JSON consumer got an English
+	// sentence with markup in it instead of a field.
+	Action string `json:"action,omitempty"`
 }
 
 // checkedRef is one variable→path reference that resolved cleanly, retained
@@ -98,6 +140,10 @@ type checkedRef struct {
 // checkOptions tunes runProfileCheck. The zero value is the cheapest, safest
 // pass: every visible profile, existence checks only, no orphan sweep.
 type checkOptions struct {
+	// Root is jit's config directory, needed only to read the mount
+	// registry. Empty skips the mount sweep entirely, which is what a
+	// caller that genuinely only wants cwd-visible profiles should pass.
+	Root string
 	// Profile limits the run to a single named profile; "" checks every
 	// profile visible from cwd (project-local and global), the same set
 	// jit status --secrets reconciles.
@@ -157,9 +203,13 @@ func (o checkOutcome) Warnings() []checkFinding {
 func runProfileCheck(cwd string, v *vault.Vault, opts checkOptions) (checkOutcome, error) {
 	var out checkOutcome
 
+	// scope is a plain string, not profile.Scope: a mount's manifest is
+	// reached through the registry rather than through a scope lookup, so
+	// scopeMount is a fourth value the profile package has no reason to know
+	// about.
 	type entry struct {
 		name  string
-		scope profile.Scope
+		scope string
 		prof  profile.Profile
 	}
 	var entries []entry
@@ -173,13 +223,18 @@ func runProfileCheck(cwd string, v *vault.Vault, opts checkOptions) (checkOutcom
 		p, scope, _, err := profile.LoadWithScope(cwd, opts.Profile)
 		out.ProfilesChecked = 1
 		if err != nil {
-			// A named profile that won't load (not found, bad YAML) is a
-			// parse finding, not a fatal error: doctor's job is to report,
-			// and a script asked to check one profile still wants the verdict.
-			out.Findings = append(out.Findings, checkFinding{Kind: kindParse, Profile: opts.Profile, Detail: err.Error()})
+			// A named profile that won't load is a finding, not a fatal
+			// error: doctor's job is to report, and a script asked to check
+			// one profile still wants the verdict. Not-found and won't-parse
+			// are separated so the reader is sent after the right fix.
+			kind := kindParse
+			if errors.Is(err, profile.ErrNotFound) {
+				kind = kindNotFound
+			}
+			out.Findings = append(out.Findings, checkFinding{Kind: kind, Profile: opts.Profile, Detail: err.Error()})
 			return out, nil
 		}
-		entries = append(entries, entry{name: opts.Profile, scope: scope, prof: p})
+		entries = append(entries, entry{name: opts.Profile, scope: string(scope), prof: p})
 	} else {
 		infos, err := profile.ListAll(cwd)
 		if err != nil {
@@ -197,6 +252,12 @@ func runProfileCheck(cwd string, v *vault.Vault, opts checkOptions) (checkOutcom
 			}
 		}
 
+		// seen keys the manifests already accounted for by PATH, so the mount
+		// sweep below can add the ones nothing else reaches without
+		// double-counting the (very common) mount that points straight at a
+		// global profile ListAll already returned.
+		seen := map[string]bool{}
+
 		for _, info := range infos {
 			if info.Scope == profile.ScopeGlobal && projectNames[info.Name] {
 				out.Findings = append(out.Findings, checkFinding{
@@ -204,15 +265,38 @@ func runProfileCheck(cwd string, v *vault.Vault, opts checkOptions) (checkOutcom
 					Profile: info.Name,
 					Scope:   string(profile.ScopeGlobal),
 					Detail:  "also defined as a project profile, which wins; this global copy is ignored here",
+					// No action line: nothing is broken, and the right fix
+					// (delete one, rename one, or leave it) depends on which
+					// copy the user actually meant. Inventing a command here
+					// would be advice, not a next step.
 				})
 			}
+			seen[filepath.Clean(info.Path)] = true
 			p, err := profile.LoadFile(info.Path)
 			if err != nil {
 				parseFailed = true
 				out.Findings = append(out.Findings, checkFinding{Kind: kindParse, Profile: info.Name, Scope: string(info.Scope), Detail: err.Error()})
 				continue
 			}
-			entries = append(entries, entry{name: info.Name, scope: info.Scope, prof: p})
+			entries = append(entries, entry{name: info.Name, scope: string(info.Scope), prof: p})
+		}
+
+		// A registered mount's profile is a first-class check target, not a
+		// bystander. Its manifest can live in a project tree cwd will never
+		// walk into, yet the agent is actively serving from it, so leaving it
+		// out was wrong twice over: a secret only that profile referenced got
+		// reported as an orphan (while `jit vault orphans` and `jit status`,
+		// which both DO read the registry, correctly called it in use), and a
+		// mount whose secret had gone missing was invisible — doctor printed
+		// "all resolve cleanly" over a mount that could serve nothing.
+		mountEntries, mountFindings, mountParseFailed := mountCheckTargets(opts.Root, seen)
+		out.Findings = append(out.Findings, mountFindings...)
+		if mountParseFailed {
+			parseFailed = true
+		}
+		for _, me := range mountEntries {
+			out.ProfilesChecked++
+			entries = append(entries, entry{name: me.name, scope: scopeMount, prof: me.prof})
 		}
 	}
 
@@ -241,15 +325,16 @@ func runProfileCheck(cwd string, v *vault.Vault, opts checkOptions) (checkOutcom
 				out.Findings = append(out.Findings, checkFinding{
 					Kind:     status.kind,
 					Profile:  e.name,
-					Scope:    string(e.scope),
+					Scope:    e.scope,
 					Variable: varName,
 					Path:     secretPath,
 					Detail:   status.detail,
+					Action:   secretAction(status.kind, secretPath),
 				})
 			default:
 				out.OKRefs = append(out.OKRefs, checkedRef{
 					Profile:  e.name,
-					Scope:    string(e.scope),
+					Scope:    e.scope,
 					Variable: varName,
 					Path:     secretPath,
 				})
@@ -277,12 +362,109 @@ func runProfileCheck(cwd string, v *vault.Vault, opts checkOptions) (checkOutcom
 					Kind:   kindOrphan,
 					Path:   p,
 					Detail: "in the vault but referenced by no profile",
+					// Identical for every orphan, which is exactly why the
+					// renderer states a group's shared action once rather
+					// than repeating it under each of twenty lines.
+					Action: "`jit vault orphans --prune` to delete, or `jit vault list` to inspect first",
 				})
 			}
 		}
 	}
 
 	return out, nil
+}
+
+// secretAction is the one runnable step for a broken secret reference.
+// Missing and corrupt want different fixes: one is "put a value there", the
+// other is "the value there is unreadable, restore or replace it".
+// kindVaultError names a malformed path or an unreadable store — neither has
+// a single command behind it, so it gets no action line rather than a guess.
+func secretAction(kind checkKind, secretPath string) string {
+	switch kind {
+	case kindMissing:
+		return fmt.Sprintf("`jit vault set %s`, or `jit migrate <path>` to convert the file it came from", secretPath)
+	case kindCorrupt:
+		return fmt.Sprintf("`jit vault history %s` to see earlier versions, or `jit vault set %s` to replace it", secretPath, secretPath)
+	default:
+		return ""
+	}
+}
+
+// scopeMount labels a finding whose profile was reached through the mount
+// registry rather than through cwd's project/global scopes — so a report can
+// say WHERE a broken reference came from, which for a manifest sitting in
+// some other project's tree is the whole difference between an actionable
+// finding and a mystery.
+const scopeMount = "mount"
+
+// mountTarget is one registered mount's loaded profile.
+type mountTarget struct {
+	name string
+	prof profile.Profile
+}
+
+// mountCheckTargets loads the profile behind every registered mount that
+// `seen` doesn't already cover, keyed by cleaned manifest path.
+//
+// Both failure modes are reported rather than swallowed. A machine that has
+// never mounted anything has no registry FILE, and mount.LoadRegistry returns
+// no error for that (see loadRegistry) — so an error here always means the
+// file is there and unreadable or malformed, which leaves the agent unable to
+// tell what it is meant to serve. A registry entry whose manifest won't load
+// is the same shape of problem one level down: the state `reconcileSecrets`
+// deliberately tolerates because `jit status` must never fail, which is
+// precisely why reporting it falls to doctor.
+//
+// parseFailed comes back separately so the caller can suppress the orphan
+// sweep: a mount profile we couldn't read contributes none of its references,
+// and calling its secrets orphaned would be the same lie an unreadable
+// project manifest would tell.
+func mountCheckTargets(root string, seen map[string]bool) (targets []mountTarget, findings []checkFinding, parseFailed bool) {
+	if root == "" {
+		return nil, nil, false
+	}
+	entries, err := mount.LoadRegistry(mount.RegistryPath(root))
+	if err != nil {
+		return nil, []checkFinding{{
+			Kind:   kindMount,
+			Scope:  scopeMount,
+			Detail: fmt.Sprintf("the mount registry won't load, so jit can't tell which files it is meant to serve: %v", err),
+			Action: "`jit unmount --all` and re-run `jit migrate` to rebuild it",
+		}}, true
+	}
+	for _, e := range entries {
+		clean := filepath.Clean(e.ProfilePath)
+		if seen[clean] {
+			continue
+		}
+		seen[clean] = true
+		p, err := profile.LoadFile(e.ProfilePath)
+		if err != nil {
+			parseFailed = true
+			// The error already names the manifest path in full, so the
+			// detail says only which MOUNT is affected — repeating the same
+			// long path twice in one finding was the single worst line in
+			// the report (rule 5: state a shared fact once).
+			findings = append(findings, checkFinding{
+				Kind:   kindMount,
+				Scope:  scopeMount,
+				Path:   e.MountPath,
+				Detail: fmt.Sprintf("the mount at %s can't be served: %s", shortPath(e.MountPath), shortHome(err.Error())),
+				// shortPath in the ACTION too, not just the detail: "~" is
+				// what a shell expands, so the command stays runnable
+				// verbatim while fitting the window (rule 6). An unshortened
+				// path here pushed the one runnable thing on screen onto
+				// three wrapped lines.
+				Action: "fix the manifest, or `jit unmount " + shortPath(e.MountPath) + "` to stop tracking it",
+			})
+			continue
+		}
+		// The manifest's own filename is the only name a registry entry
+		// carries — there is no separate profile name in the registry.
+		name := strings.TrimSuffix(filepath.Base(clean), filepath.Ext(clean))
+		targets = append(targets, mountTarget{name: name, prof: p})
+	}
+	return targets, findings, parseFailed
 }
 
 // secretStatus is one path's verdict, cached across profiles that share it.

@@ -43,21 +43,36 @@ environment variable:
 
 ```
 $ jit doctor
-✓ 2 profile(s), 5 secret reference(s) all resolve cleanly
+✓ 2 profiles, 5 secret references all resolve cleanly
 ```
 
-On the default full run it also folds in the health checks that used to take
-[`jit status`](../reference/commands/jit_status.md) and
-[`jit wrap doctor`](../wrap/troubleshooting.md) to see: the background service,
-your vault backup, and any wrapped-tool shims. These are surfaced as advisory
-warnings.
+It checks project-local profiles, the home-rooted global ones, **and the
+profile behind every registered mount** — that last set may live in a project
+tree the current directory never walks into, yet jit is serving it right now,
+so a broken reference there is just as real. This is the same set
+[`jit status`](../reference/commands/jit_status.md) and `jit vault orphans`
+reconcile.
 
-It exits non-zero **only** when a profile's own secret is missing, corrupt, or
-unparseable. Everything else it reports is a warning, never a failure:
+On the default full run it also folds in the health checks that used to take
+`jit status` and [`jit wrap doctor`](../wrap/troubleshooting.md) to see: the
+background service, your vault backup, and any wrapped-tool shims. These are
+surfaced as advisory warnings.
+
+It exits non-zero when a secret this setup depends on **cannot be read**:
+
+- a profile's own secret is **missing**, **corrupt**, or **unparseable**
+- this Mac's **master key is gone** from the keychain, so the whole vault is
+  undecryptable — every envelope stays structurally intact, which is exactly
+  why nothing else notices
+- a **master-key rotation** is in progress or was interrupted, which blocks
+  every command that writes to the vault
+
+Everything else it reports is a warning, never a failure:
 
 - an **orphaned** secret in the vault that no profile references (`--orphans`)
 - a profile name **shadowed** across scopes (the same name in both project and
   global; the project copy wins and the global one is ignored)
+- a registered **mount** whose profile manifest won't load
 - a stopped service, a stale or missing vault backup, a broken shim
 
 It never decrypts a secret or triggers Touch ID (existence and envelope
@@ -65,7 +80,8 @@ structure are both plaintext on disk), so it is safe to run often. Useful
 flags:
 
 - `--profile <name>` narrows the run to a single profile and skips the
-  service/backup/wrap sections.
+  service/backup/wrap sections. The whole-vault key checks still run: with no
+  master key, no profile resolves, and reporting otherwise would be false.
 - `--verbose` lists every variable-to-path reference it cleared.
 - `--format json` prints a machine-readable snapshot: `ok` plus structured
   `problems` and `warnings` arrays (each entry carries `kind`, `profile`,

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -74,6 +75,36 @@ func writeVaultEnc(t *testing.T, home, path, content string) {
 	}
 }
 
+// registerFixtureMount records a mount in the registry the way jit migrate
+// does, so the mount-registry sweep is exercised through the real writer
+// rather than a hand-rolled YAML file.
+func registerFixtureMount(t *testing.T, home, mountPath, profilePath string) {
+	t.Helper()
+	root := filepath.Join(home, "Library", "Application Support", "jitpass")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := mount.AddMount(mount.RegistryPath(root), mount.Entry{
+		MountPath:   mountPath,
+		ProfilePath: profilePath,
+	}); err != nil {
+		t.Fatalf("AddMount: %v", err)
+	}
+}
+
+// writeProfileAt writes a manifest at an arbitrary absolute path — for the
+// mount case, whose profile deliberately lives outside both cwd and the
+// global store.
+func writeProfileAt(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
 func execDoctor(t *testing.T, args ...string) (stdout string, err error) {
 	t.Helper()
 	doctorProfile = ""
@@ -110,7 +141,11 @@ func TestDoctorAllSecretsResolve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit doctor: %v", err)
 	}
-	if !strings.Contains(out, "✓ 1 profile, 1 secret reference all resolve cleanly") {
+	// "all resolve cleanly" lost its "all": the summary speaks only for the
+	// secret references it checked, and printing an unqualified all-clear
+	// directly beneath a [backup] or [mount] warning contradicted the lines
+	// above it.
+	if !strings.Contains(out, "✓ 1 profile, 1 secret reference resolve cleanly") {
 		t.Errorf("expected a clean success message, got:\n%s", out)
 	}
 }
@@ -342,7 +377,7 @@ func TestDoctorVerboseListsEachReference(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit doctor --verbose: %v", err)
 	}
-	if !strings.Contains(out, "Checked") || !strings.Contains(out, "AWS_ACCESS_KEY_ID → aws/s3-access-key") {
+	if !strings.Contains(out, "[checked]") || !strings.Contains(out, "AWS_ACCESS_KEY_ID → aws/s3-access-key") {
 		t.Errorf("expected a per-reference listing under --verbose, got:\n%s", out)
 	}
 }
@@ -382,6 +417,224 @@ func TestDoctorBackupWarningOnFullRun(t *testing.T) {
 	}
 	if !strings.Contains(out, "[backup]") || !strings.Contains(out, "vault export") {
 		t.Errorf("expected a [backup] warning on a populated, never-exported vault, got:\n%s", out)
+	}
+}
+
+// TestDoctorChecksMountRegistryProfiles is the false NEGATIVE half of the
+// mount-registry gap, and the worse half: a registered mount's profile
+// referenced a secret that had gone from the vault, and doctor printed
+// "all resolve cleanly" and exited 0 while the mount could serve nothing.
+// The manifest deliberately lives outside both cwd and the global store,
+// which is exactly why the old cwd-only sweep never saw it.
+func TestDoctorChecksMountRegistryProfiles(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	elsewhere := filepath.Join(t.TempDir(), "other-project", ".jit", "profiles", "npmrc.yaml")
+	writeProfileAt(t, elsewhere, "NPM_TOKEN: npm/token\n")
+	registerFixtureMount(t, home, filepath.Join(home, ".npmrc"), elsewhere)
+	// npm/token deliberately not planted: the mount points at a secret that
+	// isn't there.
+
+	out, err := execDoctor(t)
+	if err == nil {
+		t.Fatal("expected a non-zero exit: a registered mount references a missing secret")
+	}
+	if !strings.Contains(out, "NPM_TOKEN") || !strings.Contains(out, "npm/token") {
+		t.Errorf("expected the mount profile's broken reference to be named, got:\n%s", out)
+	}
+}
+
+// TestDoctorMountReferencedSecretIsNotAnOrphan is the false POSITIVE half.
+// `jit vault orphans` and `jit status` both read the mount registry and
+// correctly called this secret in use; doctor alone did not, and reported a
+// live mount's credential as dead weight — the kind of disagreement between
+// two jit commands that costs more trust than the number is worth.
+func TestDoctorMountReferencedSecretIsNotAnOrphan(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	writeFixtureProfile(t, cwd, "app", "APP_KEY: app/key\n")
+	plantVaultSecret(t, home, "app/key")
+
+	elsewhere := filepath.Join(t.TempDir(), "other-project", ".jit", "profiles", "npmrc.yaml")
+	writeProfileAt(t, elsewhere, "NPM_TOKEN: npm/token\n")
+	registerFixtureMount(t, home, filepath.Join(home, ".npmrc"), elsewhere)
+	plantVaultSecret(t, home, "npm/token") // referenced ONLY by the mount
+
+	out, err := execDoctor(t, "--orphans")
+	if err != nil {
+		t.Fatalf("jit doctor --orphans: %v", err)
+	}
+	if strings.Contains(out, "npm/token") {
+		t.Errorf("a secret a registered mount references must never be called an orphan, got:\n%s", out)
+	}
+}
+
+// TestDoctorUnloadableMountProfileIsAdvisory: a registry entry whose manifest
+// won't load is a broken mount worth reporting, but it is not a statement
+// about the profiles the user asked about — and the registry can outlive a
+// project directory legitimately. Advisory, so it must not fail the run. It
+// must also suppress the orphan sweep: that profile's references are now
+// unknown, so calling its secrets orphaned would be the same lie an
+// unreadable project manifest would tell.
+func TestDoctorUnloadableMountProfileIsAdvisory(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	writeFixtureProfile(t, cwd, "app", "APP_KEY: app/key\n")
+	plantVaultSecret(t, home, "app/key")
+
+	elsewhere := filepath.Join(t.TempDir(), "other-project", ".jit", "profiles", "npmrc.yaml")
+	writeProfileAt(t, elsewhere, "[not valid yaml")
+	registerFixtureMount(t, home, filepath.Join(home, ".npmrc"), elsewhere)
+	plantVaultSecret(t, home, "npm/token")
+
+	out, err := execDoctor(t, "--orphans")
+	if err != nil {
+		t.Fatalf("an unloadable mount profile is advisory and must not fail the run: %v", err)
+	}
+	if !strings.Contains(out, "[mount]") {
+		t.Errorf("expected a [mount] warning naming the broken mount, got:\n%s", out)
+	}
+	if strings.Contains(out, "[orphan]") {
+		t.Errorf("the orphan sweep must be suppressed when a mount manifest is unreadable, got:\n%s", out)
+	}
+}
+
+// TestDoctorCorruptMountRegistryIsReported: mount.LoadRegistry returns no
+// error for a MISSING registry, so an error from it always means the file
+// exists and is malformed — the agent can no longer tell what it is meant to
+// serve. Reported, not swallowed.
+func TestDoctorCorruptMountRegistryIsReported(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	writeFixtureProfile(t, cwd, "app", "APP_KEY: app/key\n")
+	plantVaultSecret(t, home, "app/key")
+
+	root := filepath.Join(home, "Library", "Application Support", "jitpass")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(mount.RegistryPath(root), []byte("[not valid yaml"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := execDoctor(t)
+	if err != nil {
+		t.Fatalf("a corrupt registry is advisory and must not fail the run: %v", err)
+	}
+	if !strings.Contains(out, "[mount]") || !strings.Contains(out, "registry") {
+		t.Errorf("expected a [mount] warning about the unreadable registry, got:\n%s", out)
+	}
+}
+
+// TestDoctorMountProfileNotDoubleCounted: the common case is a mount pointing
+// straight at a global profile ListAll already returned. Checking it twice
+// would inflate both counts and print every finding about it twice.
+func TestDoctorMountProfileNotDoubleCounted(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	writeFixtureProfile(t, home, "npmrc", "NPM_TOKEN: npm/token\n")
+	plantVaultSecret(t, home, "npm/token")
+	registerFixtureMount(t, home, filepath.Join(home, ".npmrc"),
+		filepath.Join(home, ".jit", "profiles", "npmrc.yaml"))
+
+	out, err := execDoctor(t, "--format", "json")
+	if err != nil {
+		t.Fatalf("jit doctor --format json: %v", err)
+	}
+	var result doctorResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("unmarshaling output %q: %v", out, err)
+	}
+	if result.ProfilesChecked != 1 || result.SecretsChecked != 1 {
+		t.Errorf("a mount pointing at an already-visible profile must be counted once, got %+v", result)
+	}
+}
+
+// TestDoctorProfileNotFoundIsItsOwnKind: a typo'd --profile and broken YAML
+// are different problems with different fixes. They used to share the kind
+// "parse", so a JSON consumer could not tell them apart.
+func TestDoctorProfileNotFoundIsItsOwnKind(t *testing.T) {
+	withFixtureHome(t)
+	withFixtureCwd(t)
+
+	out, err := execDoctor(t, "--profile", "nope", "--format", "json")
+	if err == nil {
+		t.Fatal("expected a non-zero exit for an unknown profile")
+	}
+	var result doctorResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("unmarshaling output %q: %v", out, err)
+	}
+	if len(result.Problems) != 1 || result.Problems[0].Kind != kindNotFound {
+		t.Errorf("expected one not_found problem, got %+v", result.Problems)
+	}
+}
+
+// TestDoctorGroupsFindingsUnderOneHeader pins the report shape: findings of
+// one kind sit under a single `[kind]  count` header, and the kind tag appears
+// exactly once no matter how many findings share it. Before grouping, five
+// missing secrets meant five `[missing]` tags and five copies of the same
+// remediation sentence.
+func TestDoctorGroupsFindingsUnderOneHeader(t *testing.T) {
+	withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	writeFixtureProfile(t, cwd, "app", "A_KEY: a/one\nB_KEY: b/two\nC_KEY: c/three\n")
+
+	out, _ := execDoctor(t)
+	if got := strings.Count(out, "[missing]"); got != 1 {
+		t.Errorf("expected the kind tag exactly once as a group header, saw it %d times:\n%s", got, out)
+	}
+	if !strings.Contains(out, "[missing]  3") {
+		t.Errorf("expected a dim count beside the header, got:\n%s", out)
+	}
+	// One arrow for the group, not one per finding.
+	if got := strings.Count(out, "→ jit vault set"); got != 1 {
+		t.Errorf("expected the shared action stated once, saw it %d times:\n%s", got, out)
+	}
+}
+
+// TestDoctorSingleFindingHasNoCount: "[rekey] 1" invites the reader to compare
+// a number against nothing, so a group of one prints no count — and keeps its
+// path-specific action rather than the group template.
+func TestDoctorSingleFindingHasNoCount(t *testing.T) {
+	withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	writeFixtureProfile(t, cwd, "app", "A_KEY: a/one\n")
+
+	out, _ := execDoctor(t)
+	if strings.Contains(out, "[missing]  1") {
+		t.Errorf("a single finding must not print a count, got:\n%s", out)
+	}
+	if !strings.Contains(out, "→ jit vault set a/one") {
+		t.Errorf("a lone finding keeps its path-specific action, got:\n%s", out)
+	}
+}
+
+// TestDoctorJSONCarriesStructuredAction: the fix used to be a clause buried in
+// an English sentence that a regexp recovered at render time. It is a field
+// now, so a consumer can act on it without parsing prose.
+func TestDoctorJSONCarriesStructuredAction(t *testing.T) {
+	withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	writeFixtureProfile(t, cwd, "app", "A_KEY: a/one\n")
+
+	out, err := execDoctor(t, "--format", "json")
+	if err == nil {
+		t.Fatal("expected a non-zero exit for a missing secret")
+	}
+	var result doctorResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("unmarshaling output %q: %v", out, err)
+	}
+	if len(result.Problems) != 1 {
+		t.Fatalf("expected one problem, got %+v", result.Problems)
+	}
+	if !strings.Contains(result.Problems[0].Action, "jit vault set a/one") {
+		t.Errorf("expected a structured action naming the fix, got %q", result.Problems[0].Action)
+	}
+	// The detail is now purely what IS wrong; the fix lives in Action.
+	if strings.Contains(result.Problems[0].Detail, "jit vault set") {
+		t.Errorf("the remediation must not be duplicated into detail, got %q", result.Problems[0].Detail)
 	}
 }
 

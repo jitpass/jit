@@ -69,7 +69,7 @@ change happens in exactly one place.
 One vocabulary, three layouts — each fits the shape of its data. What they
 share is the palette, the glyphs, the dim-secondary rule, and column flow.
 
-### Report — `jit scan`, `jit migrate`
+### Report — `jit scan`, `jit migrate`, `jit doctor`, `jit wrap doctor`
 A findings/plan list. Strong **bold `[Category]`** header with a dim count,
 then the items. A findings report should feel heavier than a status line, so
 this is where a leading `✗` earns real weight. No rule under the header.
@@ -80,7 +80,25 @@ this is where a leading `✗` earns real weight. No rule under the header.
     HIGH  contains "JAMF_URL", a variable name that looks like a credential
 ```
 
-### Dashboard — `jit status`, `jit service status`, `jit doctor`
+The two doctors were filed under Dashboard here for a long time, and rendered
+as neither: a flat list of `[kind] prose` lines with no headers, each indenting
+its own continuation and action by its own label width, so one report had three
+different left edges. They are findings lists — the same shape `jit scan`
+carries — and `jit status` is the dashboard. Grouping by kind is what lets
+rule 5 hold: twelve missing references used to repeat one remediation sentence
+twelve times, and now state it once under the group that shares it.
+
+```
+[missing]  2
+  ✗ profile "app" (project): DB_URL → db/url, not in the vault
+  ✗ profile "app" (project): STRIPE_KEY → stripe/dev-key, not in the vault
+  → jit vault set <path> for each, or jit migrate <path> to convert the files
+```
+
+A group's count is printed only when there is more than one to count — `[rekey] 1`
+invites the reader to compare a number against nothing.
+
+### Dashboard — `jit status`, `jit service status`
 Aligned label/value rows. Each state-bearing row leads with a glyph so the one
 that needs attention (`✗` broken, `○` unreferenced) is found at a glance. A
 shared rule (mounts are decoy by default) is stated once in the header, not
