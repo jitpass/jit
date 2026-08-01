@@ -1,4 +1,4 @@
-# jitpass - just-in-time credentials
+# jitpass - just-in-time passwords
 
 **Just-in-time credentials for your dev machine.**
 
