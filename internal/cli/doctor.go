@@ -205,9 +205,22 @@ func renderDoctorOutcome(cmd *cobra.Command, outcome checkOutcome) error {
 	// service is deliberately not a failure by default — most runs are a
 	// human glancing at their own machine — but a pipeline that wants the
 	// backup nudge to gate a deploy had no way to say so.
+	//
+	// kindWrapEnv is the one exception, and excluding it is the whole reason
+	// that kind exists. It describes THIS PROCESS's environment, not the
+	// setup: "the shim dir isn't on PATH in this shell" is true of every CI
+	// runner that doesn't put it there, and promoting it here would make
+	// `--strict` fail for the runner's own PATH — precisely the failure the
+	// environmental/damaged split was introduced to prevent. A flag asking
+	// "hold me to a higher standard" must not start reporting facts about
+	// the machine it happens to be running on as defects.
 	failing := len(problems)
 	if doctorStrict {
-		failing += len(warnings)
+		for _, w := range warnings {
+			if w.Kind != kindWrapEnv {
+				failing++
+			}
+		}
 	}
 
 	if doctorFormat == "json" {
