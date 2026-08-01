@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"golang.org/x/term"
 
 	"github.com/jitpass/jit/internal/agent"
+	"github.com/jitpass/jit/internal/auditlog"
 	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/vault"
 	"github.com/jitpass/jit/internal/wrap"
@@ -84,8 +86,51 @@ func gatherSystemFindings(root string, v *vault.Vault) ([]checkFinding, []string
 	var findings []checkFinding
 	findings = append(findings, agentFindings(root)...)
 	findings = append(findings, backupFindings(v)...)
+	findings = append(findings, auditLogFindings(root)...)
 	wrapped, wrapOK := wrapFindings()
 	return append(findings, wrapped...), wrapOK
+}
+
+// auditLogFindings reports an audit trail that has stopped recording.
+//
+// auditlog.Append deliberately swallows its write failures — "the audit trail
+// is a nicety and a full disk must never make the command that was about to
+// be recorded fail after it already ran" — which is the right call at write
+// time and leaves nobody to notice. For a tool whose whole job is custody of
+// secrets, silently losing the record of what touched them is worth a line.
+// auditlog.FileName has been exported "so a reader (jit audit) and doctor can
+// name it" since the logger was written; this is doctor finally doing so.
+//
+// Advisory: the trail going quiet breaks no secret and blocks no command.
+func auditLogFindings(root string) []checkFinding {
+	path := filepath.Join(root, auditlog.FileName)
+	info, err := os.Stat(path)
+	if err != nil {
+		// No log yet is the normal state on a fresh machine — the first
+		// recorded command creates it. Anything else (an unreadable config
+		// root) is already reported by the sections above.
+		return nil
+	}
+	if info.IsDir() {
+		return []checkFinding{{
+			Kind:   kindAudit,
+			Detail: fmt.Sprintf("%s is a directory, so no command is being recorded", shortPath(path)),
+			Action: "remove it — the next jit command recreates the log",
+		}}
+	}
+	// Openable for append is the exact question Append asks, so ask it the
+	// same way rather than inferring from the mode bits: O_APPEND on an
+	// existing file creates nothing and writes nothing.
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600) // #nosec G304 -- jit's own log under its own config root
+	if err != nil {
+		return []checkFinding{{
+			Kind:   kindAudit,
+			Detail: fmt.Sprintf("the audit log at %s can't be written, so commands are going unrecorded: %v", shortPath(path), shortHome(err.Error())),
+			Action: fmt.Sprintf("`chmod u+w %s`, or remove it to start a fresh trail", shortPath(path)),
+		}}
+	}
+	_ = f.Close()
+	return nil
 }
 
 // gatherVaultIntegrityFindings reports the two whole-vault states that make
