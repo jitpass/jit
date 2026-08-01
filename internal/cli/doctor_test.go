@@ -828,6 +828,41 @@ func TestDoctorStrictPromotesWarnings(t *testing.T) {
 	}
 }
 
+// TestStrictDoesNotGateOnTheRunnersOwnPath: --strict must not promote
+// kindWrapEnv. Excluding it is the entire reason that kind was split out —
+// "the shim dir isn't on PATH in this shell" is true of every CI runner that
+// doesn't put it there, so promoting it would make --strict fail for the
+// runner's own environment, which is the failure the split prevents.
+func TestStrictDoesNotGateOnTheRunnersOwnPath(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	if err := os.MkdirAll(filepath.Join(home, ".jit"), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// A tool wrapped and fully installed, so the only complaint left is that
+	// this process's PATH doesn't include the shim dir.
+	if err := os.WriteFile(filepath.Join(home, ".jit", "wrap.json"),
+		[]byte(`{"tools":{}}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("SHELL", "/bin/zsh")
+
+	findings, _ := wrapFindings()
+	envOnly := len(findings) > 0
+	for _, f := range findings {
+		if f.Kind != kindWrapEnv {
+			envOnly = false
+		}
+	}
+	if !envOnly {
+		t.Skipf("fixture produced non-environmental findings, nothing to assert: %+v", findings)
+	}
+	if _, err := execDoctor(t, "--wrap", "--strict"); err != nil {
+		t.Errorf("--strict must not fail on an environmental-only finding: %v", err)
+	}
+}
+
 // TestDoctorJSONIdentifiesTheBinary: output-style.md nominates doctor as the
 // surface someone is on when filing a bug, and a report that can't say which
 // build produced it is a report you can't act on.
