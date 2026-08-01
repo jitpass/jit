@@ -32,5 +32,5 @@ lifetime - it is never exported to your shell or written anywhere.
 | Variable | Role |
 |---|---|
 | `JIT_SHIM_GUARD_<TOOL>` | set by a running [shim](../wrap/index.md) so a tool that re-invokes itself doesn't loop through the shim twice; never set it yourself |
-| `PATH` | `~/.jit/shims` must precede the real tools' directories for wrapping to take effect - `jit wrap doctor` verifies this |
+| `PATH` | `~/.jit/shims` must precede the real tools' directories for wrapping to take effect - `jit doctor --wrap` verifies this |
 | `SHELL` | used when wiring shell-specific integration |

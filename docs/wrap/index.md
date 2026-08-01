@@ -126,5 +126,5 @@ PRs welcome - if your CLI reads a token from an env var, it belongs here.
 
 ## Something off?
 
-`jit wrap list`, `jit wrap doctor`, and `jit wrap undo` are covered in
+`jit wrap list`, `jit doctor --wrap`, and `jit wrap undo` are covered in
 **[Wrap troubleshooting](./troubleshooting.md)**.

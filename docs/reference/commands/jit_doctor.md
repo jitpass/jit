@@ -18,21 +18,27 @@ jit migrate writes for shell-config/MCP/AWS/kubeconfig/npmrc secrets,
 plus the profile behind every registered mount — which may live in a project
 tree this directory never walks into, yet is being served right now. That is
 the same set `jit status --secrets` and `jit vault orphans` reconcile. It also
-folds in the health checks that used to take `jit status` and `jit wrap doctor`
-to see: the background service, your vault backup, and any wrapped-tool shims.
+folds in the health checks that used to take `jit status` and the retired
+`jit wrap doctor` to see: the background service, your vault backup, and
+every wrapped tool's shim, PATH entry and profile.
 
-It exits non-zero when a secret this setup depends on cannot be read: a
-profile's secret missing, corrupt, or unparseable, or the whole vault
-unreadable because this Mac's master key is gone from the keychain or a
-master-key rotation never finished. Everything else it reports is an
-advisory warning, never a failure: an orphaned secret (with --orphans), a
+It exits non-zero when something this setup depends on is actually broken:
+a secret missing, corrupt, or unparseable; the whole vault unreadable
+because this Mac's master key is gone from the keychain or a master-key
+rotation never finished; or a wrapped tool's installation damaged, which
+means that tool now runs unwrapped or not at all. Everything else it
+reports is an advisory warning: an orphaned secret (with --orphans), a
 profile name shadowed across scopes, a mount whose profile won't load, a
-stopped service, a stale or missing vault backup, a broken shim.
+stopped service, a stale or missing vault backup, and any shim complaint
+that is only true of the shell you happen to be in — a CI job that doesn't
+put the shim dir on PATH is not a broken machine.
 
 Use --profile to narrow the run to a single profile. The service, backup and
 shim sections are skipped then; the whole-vault key checks are not, because
 with no master key no profile resolves and saying otherwise would be false.
---verbose lists every reference it cleared, and --format json prints a
+Use --wrap for the shim check on its own — it never opens the vault, so it
+still works when the vault is the thing that's broken. --verbose lists every
+check that passed, not just the ones that failed, and --format json prints a
 machine-readable snapshot.
 
 ```
@@ -42,10 +48,11 @@ jit doctor [flags]
 ### Options
 
 ```
-      --format string    output format: "text" (default) or "json" (default "text")
-      --orphans          also warn about vault secrets no profile references (advisory, never a failure)
-      --profile string   check only this profile, and skip the service/backup/wrap health sections
-      --verbose          on success, list every variable→path reference that was checked
+      --format string          output format: "text" (default) or "json" (default "text")
+      --orphans                also warn about vault secrets no profile references (advisory, never a failure)
+      --profile string         check only this profile, and skip the service/backup/wrap health sections
+      --verbose                on success, list every variable→path reference that was checked
+      --wrap jit wrap doctor   check only the wrapped-tool shims, without opening the vault (replaces jit wrap doctor)
 ```
 
 ### Options inherited from parent commands

@@ -10,19 +10,38 @@ description: jit wrap list, doctor, and undo - diagnosing shims, PATH order, and
 Shows every wrapped tool with its shim health and PATH position - whether
 the shim actually wins when you type the command.
 
-## Diagnose: `jit wrap doctor`
+## Diagnose: `jit doctor --wrap`
 
 Verifies, for every wrapped tool: the shim exists in `~/.jit/shims/`,
 that directory precedes the real binary's location on PATH, and the
-`wrap-<tool>` profile's vault paths all resolve
-(like [`jit doctor`](../run/profiles.md#checking-a-profiles-health-jit-doctor),
-but wrap-specific).
+`wrap-<tool>` profile's vault paths all resolve.
+
+It never opens the vault, so it still works when the vault is the thing
+that's broken. Add `--verbose` to list the checks that passed as well as the
+ones that failed — right after `jit wrap add`, "shim, real binary, and
+profile all resolve" is usually the answer you want.
+
+A plain [`jit doctor`](../run/profiles.md#checking-a-profiles-health-jit-doctor)
+includes these checks too, alongside everything else; `--wrap` just narrows
+the run.
+
+!!! note "`jit wrap doctor` is retired"
+
+    It still works and still does the right thing, but it prints a
+    deprecation notice and will be removed. It existed as a second command
+    only because severity used to live on the command rather than the check:
+    it exited non-zero for every failed check while `jit doctor` treated all
+    of them as advisory, so the same facts got two verdicts depending on
+    which one you typed. Severity now lives on the check — a damaged shim
+    installation fails the run, while "the shim dir isn't on PATH in *this*
+    shell" stays advisory, because a CI job that doesn't put it there is not
+    a broken machine.
 
 ## Common symptoms
 
 - **The tool says it's unauthenticated.** Usually PATH order: something
   put the real binary's directory ahead of `~/.jit/shims/`, so the shim
-  never runs. `jit wrap doctor` names the offender. Also check nothing
+  never runs. `jit doctor --wrap` names the offender. Also check nothing
   exports the tool's env var in your shell - a live export overrides the
   shim's injection.
 - **"command not found" or exit 127 from a wrapped tool.** The shim

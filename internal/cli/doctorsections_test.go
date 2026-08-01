@@ -154,6 +154,61 @@ func TestAgentFindingsSurfaceUnreachableError(t *testing.T) {
 	}
 }
 
+// TestWrapSeverityIsPerCheckNotPerCommand is the whole reason `jit wrap
+// doctor` could be retired. The two commands used to disagree on identical
+// facts — every failed check exited non-zero there and was advisory here —
+// and the reasoning behind that split (a CI job that doesn't put the shim dir
+// on PATH must not fail) was right about ONE check and wrong about the rest.
+// Severity belongs on the check.
+func TestWrapSeverityIsPerCheckNotPerCommand(t *testing.T) {
+	home := withFixtureHome(t)
+	if err := os.MkdirAll(filepath.Join(home, ".jit"), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".jit", "wrap.json"),
+		[]byte(`{"tools":{"kubectl":{"profile":"wrap-kubectl"}}}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("PATH", "/usr/bin") // shim dir absent -> the environmental case
+
+	findings, _ := wrapFindings()
+	var broken, environmental int
+	for _, f := range findings {
+		switch f.Kind {
+		case kindWrap:
+			broken++
+		case kindWrapEnv:
+			environmental++
+		default:
+			t.Errorf("unexpected kind %q from wrapFindings", f.Kind)
+		}
+	}
+	if broken == 0 {
+		t.Error("a missing shim dir and symlink are damage, and must be hard problems")
+	}
+	if environmental == 0 {
+		t.Error("shim dir absent from THIS PATH must stay advisory, or CI fails for its own environment")
+	}
+	if kindWrap.warning() {
+		t.Error("a damaged wrap installation must fail the run")
+	}
+	if !kindWrapEnv.warning() {
+		t.Error("an environmental wrap complaint must never fail the run")
+	}
+}
+
+// TestWrapFindingsReportPassingChecks: positive confirmation was the one
+// thing the standalone command could say that the rollup couldn't. --verbose
+// surfaces these, which is what makes `jit doctor --wrap` a full replacement.
+func TestWrapFindingsReportPassingChecks(t *testing.T) {
+	withFixtureHome(t) // no wrap.json at all
+	_, ok := wrapFindings()
+	if len(ok) == 0 {
+		t.Error("expected at least one passing check to report on a machine with no wrapped tools")
+	}
+}
+
 // TestAgentFindingsInstalledNotRunning confirms the unreachable case above
 // didn't swallow the ordinary crashed/mid-restart one.
 func TestAgentFindingsInstalledNotRunning(t *testing.T) {

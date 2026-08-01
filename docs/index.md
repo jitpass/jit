@@ -71,7 +71,7 @@ then **[Install](./getting-started/install.md)** →
   [docker](./wrap/docker.md) · [git](./wrap/git.md) ·
   [clisso](./wrap/clisso.md)
 - [Custom tools](./wrap/custom-tools.md) - wrap anything that reads an env var
-- [Wrap troubleshooting](./wrap/troubleshooting.md) - `wrap list`, `wrap doctor`, `wrap undo`
+- [Wrap troubleshooting](./wrap/troubleshooting.md) - `wrap list`, `doctor --wrap`, `wrap undo`
 
 ## Use secrets - `jit run` & profiles
 

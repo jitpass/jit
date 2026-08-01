@@ -13,12 +13,34 @@ import (
 	"strings"
 )
 
-// DoctorCheck is one health verdict for `jit wrap doctor` — machine-shaped
-// so the CLI owns all formatting, matching jit doctor's own split.
+// DoctorCheck is one health verdict — machine-shaped so the CLI owns all
+// formatting, matching jit doctor's own split.
 type DoctorCheck struct {
 	Name   string
 	OK     bool
 	Detail string
+	// Environmental distinguishes a failure that is true of THIS run from one
+	// that is true of the installation. Only meaningful when OK is false.
+	//
+	// It exists because severity belonged on the check and was living on the
+	// COMMAND instead: `jit wrap doctor` exited non-zero for every failure
+	// while `jit doctor` treated every one as advisory, so the same five
+	// facts were "5 checks failed" in one command and warnings in the other.
+	// The reasoning behind that split — that "shim dir not on PATH in THIS
+	// shell" must not fail a CI run which legitimately doesn't put it there —
+	// was right, and is what this field encodes. It just isn't a property of
+	// which command you typed.
+	//
+	// Environmental: the shim dir is absent from the PATH this process was
+	// handed, or the real tool isn't on it. Both describe one process's
+	// environment; a new login shell may well disagree.
+	//
+	// Broken (everything else): an unreadable manifest, a missing or
+	// world-readable shim dir, a missing symlink, a symlink pointing at a
+	// non-executable, a vanished profile, and the rc file missing its PATH
+	// line — that last one is persistent damage, not a property of this
+	// shell, since without it no FUTURE shell gets the shims either.
+	Environmental bool
 }
 
 // Doctor verifies the whole wrap installation: the shim dir's permissions,
@@ -56,7 +78,7 @@ func Doctor(home, pathEnv, shell string) []DoctorCheck {
 	if onPath {
 		checks = append(checks, DoctorCheck{Name: "PATH", OK: true, Detail: "shim dir is on PATH in this shell"})
 	} else {
-		checks = append(checks, DoctorCheck{Name: "PATH", OK: false, Detail: "shim dir not on PATH in this shell, open a new shell or `" + PathLine() + "`"})
+		checks = append(checks, DoctorCheck{Name: "PATH", OK: false, Environmental: true, Detail: "shim dir not on PATH in this shell, open a new shell or `" + PathLine() + "`"})
 	}
 
 	rc := RcFile(home, shell)
@@ -84,7 +106,10 @@ func Doctor(home, pathEnv, shell string) []DoctorCheck {
 		}
 
 		if _, lookErr := lookPathSkipping(pathEnv, tool, dir); lookErr != nil {
-			checks = append(checks, DoctorCheck{Name: name, OK: false, Detail: "real " + tool + " not found on PATH beyond the shim dir, is it still installed?"})
+			// Environmental: this is a statement about the PATH this process
+			// was handed. The tool may simply be absent from a CI runner's
+			// slim PATH while being perfectly installed for the user.
+			checks = append(checks, DoctorCheck{Name: name, OK: false, Environmental: true, Detail: "real " + tool + " not found on PATH beyond the shim dir, is it still installed?"})
 			continue
 		}
 
