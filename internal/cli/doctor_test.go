@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/jitpass/jit/internal/auditlog"
+	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/vault"
 )
@@ -123,6 +124,13 @@ func execDoctor(t *testing.T, args ...string) (stdout string, err error) {
 	origSig := binarySignature
 	binarySignature = func() string { return "signed TESTTEAM" }
 	t.Cleanup(func() { binarySignature = origSig })
+	// The real one reads this machine's PRODUCTION keychain, so a command-level
+	// doctor test would otherwise assert whatever MEK the runner happens to
+	// hold (present on a dev Mac, absent on CI). Default it to present here;
+	// the unit tests in doctorsections_test.go stub each presence explicitly.
+	origMEK := vaultMasterKeyPresence
+	vaultMasterKeyPresence = func() keychainwrap.MEKPresence { return keychainwrap.MEKPresent }
+	t.Cleanup(func() { vaultMasterKeyPresence = origMEK })
 	// Cobra remembers which flags were SET across Execute calls in the same
 	// process, and MarkFlagsMutuallyExclusive checks Changed, not the value —
 	// so without this a test that passed --wrap makes every later test that
