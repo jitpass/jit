@@ -21,6 +21,14 @@ KWResult kw_ensure_mek(const char *service, const char *account, int keySize);
 // never called (or the item was deleted out-of-band).
 KWResult kw_fetch_mek(const char *service, const char *account, unsigned char **key, int *key_len);
 
+// kw_mek_present reports whether the MEK item exists WITHOUT reading its
+// bytes, so it never raises the login keychain's per-signature access dialog
+// (that dialog guards the item's data, not its presence). Returns 1 if the
+// item is present, 0 if it is genuinely absent (errSecItemNotFound), and -1
+// for any other status. Lets `jit doctor` run its master-key probe on a
+// non-interactive run instead of skipping it to avoid a possible hang.
+int kw_mek_present(const char *service, const char *account);
+
 // kw_delete_mek removes the stored item. Used by tests for cleanup; not
 // expected to be part of normal CLI operation.
 KWResult kw_delete_mek(const char *service, const char *account);

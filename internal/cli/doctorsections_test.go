@@ -9,25 +9,20 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/vault"
 )
 
-// stubKeychain replaces the two package vars gatherVaultIntegrityFindings
-// reaches the outside world through. Both MUST be stubbed in any test that
-// exercises the master-key probe: the real vaultHasMasterKey reads the
-// PRODUCTION keychain, so an un-stubbed test asserts whatever the machine
-// running it happens to hold (true on a developer's Mac, false on a CI
-// runner), and the real interactiveTTY is false under `go test`, which would
-// skip the probe entirely and make the test pass vacuously.
-func stubKeychain(t *testing.T, hasKey, interactive bool) {
+// stubKeychain replaces the package var gatherVaultIntegrityFindings reaches
+// the keychain through. It MUST be stubbed in any test that exercises the
+// master-key probe: the real vaultMasterKeyPresence reads the PRODUCTION
+// keychain, so an un-stubbed test would assert whatever the machine running it
+// happens to hold (present on a developer's Mac, absent on a CI runner).
+func stubKeychain(t *testing.T, presence keychainwrap.MEKPresence) {
 	t.Helper()
-	origKey, origTTY := vaultHasMasterKey, interactiveTTY
-	vaultHasMasterKey = func() bool { return hasKey }
-	interactiveTTY = func() bool { return interactive }
-	t.Cleanup(func() {
-		vaultHasMasterKey = origKey
-		interactiveTTY = origTTY
-	})
+	orig := vaultMasterKeyPresence
+	vaultMasterKeyPresence = func() keychainwrap.MEKPresence { return presence }
+	t.Cleanup(func() { vaultMasterKeyPresence = orig })
 }
 
 // fixtureVault builds the read-only Vault the integrity checks take, rooted
@@ -48,7 +43,7 @@ func fixtureRoot(home string) string {
 func TestVaultKeyMissingIsAHardProblem(t *testing.T) {
 	home := withFixtureHome(t)
 	plantVaultSecret(t, home, "aws/s3-access-key")
-	stubKeychain(t, false, true)
+	stubKeychain(t, keychainwrap.MEKAbsent)
 
 	findings := gatherVaultIntegrityFindings(fixtureRoot(home), fixtureVault(home))
 	if len(findings) != 1 || findings[0].Kind != kindVaultKey {
@@ -66,7 +61,7 @@ func TestVaultKeyMissingIsAHardProblem(t *testing.T) {
 func TestVaultKeyPresentIsSilent(t *testing.T) {
 	home := withFixtureHome(t)
 	plantVaultSecret(t, home, "aws/s3-access-key")
-	stubKeychain(t, true, true)
+	stubKeychain(t, keychainwrap.MEKPresent)
 
 	if findings := gatherVaultIntegrityFindings(fixtureRoot(home), fixtureVault(home)); len(findings) != 0 {
 		t.Errorf("a healthy vault must be silent, got %+v", findings)
@@ -78,35 +73,42 @@ func TestVaultKeyPresentIsSilent(t *testing.T) {
 // already reports it; doctor must not call it a problem.
 func TestVaultKeyEmptyVaultIsSilent(t *testing.T) {
 	home := withFixtureHome(t)
-	stubKeychain(t, false, true)
+	stubKeychain(t, keychainwrap.MEKAbsent)
 
 	if findings := gatherVaultIntegrityFindings(fixtureRoot(home), fixtureVault(home)); len(findings) != 0 {
 		t.Errorf("an empty vault with no key must be silent, got %+v", findings)
 	}
 }
 
-// TestVaultKeyProbeSkippedWhenNotInteractive locks in the deliberate gate:
-// reading a keychain item can raise the OS's own "allow access" dialog when
-// the requesting binary's signature changed (a re-signed jit build does
-// exactly that), so a piped or CI `jit doctor` must never risk blocking on a
-// prompt nobody is there to dismiss. firstrun.go gates the same call on the
-// same test for the same reason.
-func TestVaultKeyProbeSkippedWhenNotInteractive(t *testing.T) {
+// TestVaultKeyMissingIsDetectedNonInteractively is the behavior the probe
+// rework restored. Because MEKPresence reads only the item's presence and
+// never prompts, doctor no longer skips the master-key check on a
+// non-interactive run (a piped `jit doctor --format json`, a CI job) to avoid
+// a possible dialog: a key that is genuinely gone is caught in every context,
+// not just for a human at a TTY. There is no interactivity input any more —
+// a stubbed MEKAbsent stands for "the real no-prompt probe found it gone".
+func TestVaultKeyMissingIsDetectedNonInteractively(t *testing.T) {
 	home := withFixtureHome(t)
 	plantVaultSecret(t, home, "aws/s3-access-key")
-
-	probed := false
-	origKey, origTTY := vaultHasMasterKey, interactiveTTY
-	vaultHasMasterKey = func() bool { probed = true; return false }
-	interactiveTTY = func() bool { return false }
-	t.Cleanup(func() { vaultHasMasterKey, interactiveTTY = origKey, origTTY })
+	stubKeychain(t, keychainwrap.MEKAbsent)
 
 	findings := gatherVaultIntegrityFindings(fixtureRoot(home), fixtureVault(home))
-	if probed {
-		t.Error("the keychain must not be read on a non-interactive run")
+	if len(findings) != 1 || findings[0].Kind != kindVaultKey {
+		t.Fatalf("a genuinely missing key must be reported in every context, got %+v", findings)
 	}
-	if len(findings) != 0 {
-		t.Errorf("expected no findings when the probe is skipped, got %+v", findings)
+}
+
+// TestVaultKeyIndeterminateIsSilent: when presence can't be established
+// without interaction (a keychain error, or a query MEKPresence refused rather
+// than prompt), doctor reports neither present nor gone. Silence beats a false
+// "your master key is missing" alarm over a vault that is actually fine.
+func TestVaultKeyIndeterminateIsSilent(t *testing.T) {
+	home := withFixtureHome(t)
+	plantVaultSecret(t, home, "aws/s3-access-key")
+	stubKeychain(t, keychainwrap.MEKIndeterminate)
+
+	if findings := gatherVaultIntegrityFindings(fixtureRoot(home), fixtureVault(home)); len(findings) != 0 {
+		t.Errorf("an indeterminate probe must stay silent, not raise a false alarm, got %+v", findings)
 	}
 }
 
@@ -117,7 +119,7 @@ func TestVaultKeyProbeSkippedWhenNotInteractive(t *testing.T) {
 func TestRekeyInProgressIsAHardProblem(t *testing.T) {
 	home := withFixtureHome(t)
 	root := fixtureRoot(home)
-	stubKeychain(t, true, true)
+	stubKeychain(t, keychainwrap.MEKPresent)
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}

@@ -11,8 +11,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"golang.org/x/term"
-
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/auditlog"
 	"github.com/jitpass/jit/internal/keychainwrap"
@@ -56,20 +54,16 @@ var binarySignature = func() string {
 	return "signed " + upgradeTeamID
 }
 
-// vaultHasMasterKey probes the keychain for this Mac's master encryption key
-// without a challenge and without caching anything (keychainwrap.HasMEK). A
-// package var so tests can stub it: the real one reads the PRODUCTION
-// keychain, so left un-stubbed it would answer from whatever the machine
-// running the test suite happens to hold — true on a developer's Mac, false
-// on a CI runner, and the test would be asserting the environment rather than
-// the code.
-var vaultHasMasterKey = func() bool { return keychainwrap.New().HasMEK() }
-
-// interactiveTTY reports whether a human is on the other end. Stubbed in
-// tests for the same reason as vaultHasMasterKey.
-var interactiveTTY = func() bool {
-	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
-}
+// vaultMasterKeyPresence probes the keychain for this Mac's master encryption
+// key WITHOUT reading its bytes and WITHOUT prompting
+// (keychainwrap.MEKPresence), so the check is safe on a non-interactive run: a
+// piped or CI `jit doctor --format json` gets the same master-key verdict a
+// human at a TTY would, instead of skipping the probe to avoid hanging on the
+// login keychain's per-signature access dialog. A package var so tests can
+// stub it: the real one reads the PRODUCTION keychain, so left un-stubbed it
+// would answer from whatever the machine running the test suite happens to
+// hold, and the test would be asserting the environment rather than the code.
+var vaultMasterKeyPresence = func() keychainwrap.MEKPresence { return keychainwrap.New().MEKPresence() }
 
 // gatherSystemFindings runs the absorbed mega-doctor sections — agent, backup,
 // and wrap-shim health — and returns them as advisory checkFindings (warnings,
@@ -173,18 +167,17 @@ func gatherVaultIntegrityFindings(root string, v *vault.Vault) []checkFinding {
 		return out
 	}
 
-	// Deliberately gated on a human being present. HasMEK itself never
-	// challenges, but reading a keychain item CAN raise the OS's own
-	// "allow access to your keychain" dialog when the requesting binary's
-	// signature differs from the one that stored the item — precisely what a
-	// re-signed jit build triggers. internal/cli/firstrun.go gates the same
-	// call on the same test for the same reason. A piped or CI `jit doctor`
-	// must never block on a dialog nobody is there to dismiss, so it skips
-	// the probe rather than risk hanging the run.
-	if !interactiveTTY() {
-		return out
-	}
-	if !vaultHasMasterKey() {
+	// The probe reads only the key item's presence, never its bytes, and
+	// refuses any UI (keychainwrap.MEKPresence), so unlike the old data-reading
+	// check it can't raise the login keychain's per-signature "allow access"
+	// dialog a re-signed build triggers. That means it no longer has to skip
+	// itself on a non-interactive run to avoid hanging: a piped or CI
+	// `jit doctor --format json` now reports the same master-key verdict a
+	// human would. MEKAbsent is the genuine total-loss state this section
+	// exists to catch; MEKIndeterminate (a keychain error, or a query that
+	// would have required interaction) is reported as neither present nor gone,
+	// so doctor stays silent rather than raise a false alarm.
+	if vaultMasterKeyPresence() == keychainwrap.MEKAbsent {
 		out = append(out, checkFinding{
 			Kind: kindVaultKey,
 			Detail: fmt.Sprintf(

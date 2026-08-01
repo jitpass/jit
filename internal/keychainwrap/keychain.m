@@ -157,6 +157,36 @@ KWResult kw_fetch_mek(const char *service, const char *account, unsigned char **
     return r;
 }
 
+int kw_mek_present(const char *service, const char *account) {
+    @autoreleasepool {
+        NSString *svc = [NSString stringWithUTF8String:service];
+        NSString *acct = [NSString stringWithUTF8String:account];
+
+        // Existence only: kSecReturnData is deliberately absent, so this reads
+        // the item's METADATA, never its protected bytes. The login keychain's
+        // per-code-signature "allow access" ACL dialog that kw_fetch_mek can
+        // raise guards the item's DATA, not its presence, so a metadata-only
+        // query never triggers it — which is the whole point here: `jit doctor`
+        // could not run its master-key probe on a non-interactive run precisely
+        // because the data-reading check might block on that dialog, and this
+        // one cannot. (kSecReturnData omitted is load-bearing; do not add it.)
+        NSDictionary *query = @{
+            (id)kSecClass: (id)kSecClassGenericPassword,
+            (id)kSecAttrService: svc,
+            (id)kSecAttrAccount: acct,
+            (id)kSecMatchLimit: (id)kSecMatchLimitOne,
+        };
+        OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, NULL);
+        if (status == errSecSuccess) {
+            return 1; // present
+        }
+        if (status == errSecItemNotFound) {
+            return 0; // genuinely absent — the finding jit doctor exists to raise
+        }
+        return -1; // indeterminate (e.g. errSecInteractionNotAllowed): don't guess
+    }
+}
+
 KWResult kw_delete_mek(const char *service, const char *account) {
     KWResult r = {0, NULL};
     @autoreleasepool {

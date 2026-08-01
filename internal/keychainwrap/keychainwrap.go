@@ -134,6 +134,44 @@ func (w *Wrapper) EnsureMEK() error {
 	return goErr(C.kw_ensure_mek(cService, cAccount, C.int(mekSize)))
 }
 
+// MEKPresence is the result of a no-prompt master-key existence check
+// (Wrapper.MEKPresence). Unlike HasMEK it distinguishes a key that is
+// genuinely gone from one whose presence could not be established without
+// interaction, so a caller (jit doctor) can report the first and stay silent
+// on the second rather than guessing.
+type MEKPresence int
+
+const (
+	// MEKIndeterminate: presence couldn't be established without a prompt (a
+	// keychain error, or interaction that kSecUseAuthenticationUIFail refused).
+	// The zero value, so an unset result is never mistaken for "absent".
+	MEKIndeterminate MEKPresence = iota
+	// MEKPresent: the master-key item exists.
+	MEKPresent
+	// MEKAbsent: the item is genuinely gone (errSecItemNotFound) — with a
+	// vault full of secrets, the total-loss state jit doctor exists to catch.
+	MEKAbsent
+)
+
+// MEKPresence checks whether this wrapper's keychain item exists WITHOUT
+// reading its bytes or prompting (see kw_mek_present), so it is safe to call
+// on a non-interactive run where no one could dismiss a keychain dialog.
+func (w *Wrapper) MEKPresence() MEKPresence {
+	cService := C.CString(w.service)
+	defer C.free(unsafe.Pointer(cService))
+	cAccount := C.CString(w.account)
+	defer C.free(unsafe.Pointer(cAccount))
+
+	switch int(C.kw_mek_present(cService, cAccount)) {
+	case 1:
+		return MEKPresent
+	case 0:
+		return MEKAbsent
+	default:
+		return MEKIndeterminate
+	}
+}
+
 // WrapKey implements vault.KeyWrapper.
 func (w *Wrapper) WrapKey(dek []byte) ([]byte, error) {
 	return w.WrapKeyLabeled(dek, "", "")
