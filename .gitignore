@@ -34,8 +34,11 @@ go.work.sum
 # macOS Finder metadata
 .DS_Store
 
-# Local Claude Code tooling config — not project source, machine/session-specific
-.claude/
+# Local Claude Code tooling config — machine/session-specific bits only.
+# The project QA agents (.claude/agents/) and skills (.claude/skills/) ARE
+# project source and are tracked; only local settings and worktrees are ignored.
+.claude/settings.local.json
+.claude/worktrees/
 
 # Spike binaries and throwaway run output (source + FINDINGS.md are kept, compiled
 # artifacts and logs are not) — matches the extensionless Mach-O binaries each
