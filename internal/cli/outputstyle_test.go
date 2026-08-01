@@ -80,11 +80,12 @@ func TestNoHandRolledColors(t *testing.T) {
 // TestDoctorsRenderNoLiteralBackticks is the guard the two lints above
 // structurally cannot be: it checks rendered OUTPUT, not source.
 //
-// `jit wrap doctor` printed literal backticks in dim grey for as long as it
-// existed, while `jit doctor` rendered the very same strings — wrap.Doctor's
-// Detail fields — as cyan commands. One string, two appearances, depending on
-// which command you typed: exactly the drift rule 5 names. Neither lint saw
-// it, and neither could have. TestNoUnroutedCommandBackticks scans this
+// The retired `jit wrap doctor` printed literal backticks in dim grey for as
+// long as it existed, while `jit doctor` rendered the very same strings —
+// wrap.Doctor's Detail fields, which both surfaces still share — as cyan
+// commands. One string, two appearances, depending on which command you
+// typed: exactly the drift rule 5 names. Neither lint saw it, and neither
+// could have. TestNoUnroutedCommandBackticks scans this
 // package for print calls containing a backtick LITERAL, but the literals
 // live in internal/wrap and reached the printer through a variable
 // (`c.Detail`); TestNoHandRolledColors is about hues, not markup.
@@ -112,7 +113,7 @@ func TestDoctorsRenderNoLiteralBackticks(t *testing.T) {
 		args []string
 	}{
 		{"jit doctor", []string{"doctor"}},
-		{"jit wrap doctor", []string{"wrap", "doctor"}},
+		{"jit doctor --wrap", []string{"doctor", "--wrap"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
