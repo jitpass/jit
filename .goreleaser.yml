@@ -50,27 +50,16 @@ notarize:
         # carries the G2 intermediate and Apple Root CA alongside the leaf.
         certificate: "{{.Env.MACOS_SIGN_P12}}"
         password: "{{.Env.MACOS_SIGN_PASSWORD}}"
-      notarize:
-        # Must be a *Team* App Store Connect API key with at least the
-        # Developer role. Individual/Personal keys cannot call notarytool at
-        # all (Apple Developer Forums 133063), which fails late and opaquely.
-        issuer_id: "{{.Env.MACOS_NOTARY_ISSUER_ID}}"
-        key_id: "{{.Env.MACOS_NOTARY_KEY_ID}}"
-        key: "{{.Env.MACOS_NOTARY_KEY}}"
-        # Submit and DON'T block on Apple's verdict. jit ships a bare Mach-O,
-        # which can't be stapled, so Gatekeeper fetches the notarization ticket
-        # online on first run regardless of whether we waited at publish time.
-        # Waiting only couples the release to Apple's queue (observed 40m+ for a
-        # freshly-activated account) while buying nothing a bare CLI can use.
-        # The submission still uploads and is scanned; once Apple accepts, the
-        # online ticket is live and Gatekeeper clears it. Verify a release's
-        # submission reached "Accepted" out of band (quill submission list).
-        wait: false
-        # Only bounds the upload now (no polling loop). Kept <=18m so the JWT
-        # lifetime (TokenLifetime = timeout + 2m) stays under Apple's ~20m token
-        # cap -- the 60m value here once minted a 62-minute token and silently
-        # 401'd every release. Do not raise past 18m even though we no longer wait.
-        timeout: 15m
+      # Notarization intentionally dropped for now. This account's notary
+      # service is unreliable (1 of 9 submissions Accepted; the rest, including
+      # shipped release builds, hang "In Progress" for hours), which held
+      # releases hostage for days. With no `notarize:` block here, goreleaser
+      # signs with the Developer ID cert above and skips notarization entirely
+      # -- a fast, Apple-queue-free release. The cask strips quarantine on
+      # install (see homebrew_casks hooks) so brew/browser users still run
+      # cleanly without a notarization ticket. Re-add a `notarize:` block (with
+      # the MACOS_NOTARY_* env in release.yml, still wired) once Apple's notary
+      # is dependable again.
 
 archives:
   - id: jit-archive
@@ -117,10 +106,14 @@ homebrew_casks:
     # Don't fail the whole release if the tap token secret goes missing —
     # binaries still publish, only the cask push is skipped.
     skip_upload: '{{ if eq (envOrDefault "HOMEBREW_TAP_GITHUB_TOKEN" "") "" }}true{{ else }}false{{ end }}'
-    # No `xattr -dr com.apple.quarantine` post-install hook here, deliberately.
-    # The pre-signing version of this block needed one because ad-hoc-signed
-    # binaries died on first run under Homebrew's cask quarantine; now that
-    # releases carry a Developer ID signature and a notarization ticket,
-    # Gatekeeper clears them on its own. Stripping quarantine would throw away
-    # the check we just paid for — and Apple has signalled it may close that
-    # bypass without notice.
+    # Strip the quarantine attribute on install. Releases are Developer ID
+    # signed but not notarized (notarization dropped, see the notarize section),
+    # so a quarantined cask binary would be Gatekeeper-blocked on first run. The
+    # Developer ID signature still provides identity; this just skips the
+    # notarization-ticket check that Homebrew's quarantine would otherwise force.
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/jit"]
+          end
