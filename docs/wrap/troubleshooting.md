@@ -25,17 +25,17 @@ A plain [`jit doctor`](../run/profiles.md#checking-a-profiles-health-jit-doctor)
 includes these checks too, alongside everything else; `--wrap` just narrows
 the run.
 
-!!! note "`jit wrap doctor` is retired"
+!!! note "`jit wrap doctor` has been removed"
 
-    It still works and still does the right thing, but it prints a
-    deprecation notice and will be removed. It existed as a second command
-    only because severity used to live on the command rather than the check:
-    it exited non-zero for every failed check while `jit doctor` treated all
-    of them as advisory, so the same facts got two verdicts depending on
-    which one you typed. Severity now lives on the check — a damaged shim
-    installation fails the run, while "the shim dir isn't on PATH in *this*
-    shell" stays advisory, because a CI job that doesn't put it there is not
-    a broken machine.
+    Typing it points you here rather than failing obscurely. It existed as a
+    second command only because severity used to live on the command rather
+    than the check: it exited non-zero for every failed check while
+    `jit doctor` treated all of them as advisory, so the same facts got two
+    verdicts depending on which one you typed. Severity now lives on the
+    check — a damaged shim installation fails the run, while "the shim dir
+    isn't on PATH in *this* shell" stays advisory, because a CI job that
+    doesn't put it there is not a broken machine. With that settled, a second
+    command had nothing left to offer.
 
 ## Common symptoms
 

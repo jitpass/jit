@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -42,6 +43,14 @@ var wrapCmd = &cobra.Command{
 		}
 		if len(args) > 1 {
 			return fmt.Errorf("jit wrap: one tool at a time, `jit wrap %s`", args[0])
+		}
+		// `jit wrap doctor` was a real subcommand until it was folded into
+		// `jit doctor --wrap`. Deleting it without this would drop the old
+		// spelling through to the catalog lookup below, which answers
+		// `"doctor" isn't in the catalog … jit wrap add doctor` — advice to
+		// wrap a tool named "doctor", which is worse than no answer at all.
+		if args[0] == "doctor" {
+			return errors.New("jit wrap doctor has moved: run `jit doctor --wrap` for the shim checks, or `jit doctor` for the full health report")
 		}
 		return runCatalogWrap(cmd, args[0])
 	},
@@ -413,31 +422,6 @@ var wrapUndoCmd = &cobra.Command{
 	},
 }
 
-// wrapDoctorCmd is retired: `jit doctor --wrap` is the shim check now, and
-// `jit doctor` alone is the health command. This survives only so the muscle
-// memory and any script written against v0.68.1 keep working — it is HIDDEN,
-// so it is gone from `jit wrap --help` and from the generated reference, and
-// it holds no logic of its own.
-//
-// Two commands both called "doctor" gave different verdicts on identical
-// facts: this one exited non-zero for every failed check while `jit doctor`
-// treated all of them as advisory, so a broken shim was "1 check failed" here
-// and a warning there. The fix was not to pick a side but to move severity
-// onto the check itself (wrap.DoctorCheck.Environmental) and render both
-// through one path — at which point a second command earns nothing.
-var wrapDoctorCmd = &cobra.Command{
-	Use:    "doctor",
-	Short:  "Deprecated: use `jit doctor --wrap`",
-	Hidden: true,
-	Args:   cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		_, _ = cDim.Fprintln(cmd.ErrOrStderr(),
-			"jit wrap doctor is deprecated and will be removed; run "+cPath.Sprint("jit doctor --wrap")+" instead.")
-		findings, okChecks := wrapFindings()
-		return renderDoctorOutcome(cmd, checkOutcome{Findings: findings, OKChecks: okChecks, WrapOnly: true})
-	},
-}
-
 // parseWrapEnv turns repeated --env VAR=<vault-path> flags into the map +
 // order wrap.Add wants. Order is the flags' own order, which becomes the
 // profile manifest's variable order.
@@ -509,6 +493,6 @@ func init() {
 	wrapAddCmd.Flags().StringArrayVar(&wrapAddEnv, "env", nil, "environment variable to inject, as VAR=<vault-path> (repeatable)")
 	wrapAddCmd.Flags().StringVar(&wrapAddGrant, "grant", "", "grant a global file-delivered mount by name (gcp, sops, npm, netrc, pypi) instead of injecting an env var - for tools that read a credential file")
 	_ = wrapAddCmd.RegisterFlagCompletionFunc("grant", completeGlobalMountNames)
-	wrapCmd.AddCommand(wrapAddCmd, wrapListCmd, wrapUndoCmd, wrapDoctorCmd)
+	wrapCmd.AddCommand(wrapAddCmd, wrapListCmd, wrapUndoCmd)
 	rootCmd.AddCommand(wrapCmd)
 }

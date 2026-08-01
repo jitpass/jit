@@ -671,6 +671,31 @@ func TestDoctorWrapNeverOpensTheVault(t *testing.T) {
 	}
 }
 
+// TestWrapDoctorRedirects: `jit wrap doctor` is gone as a subcommand, so the
+// old spelling falls through to `jit wrap <tool>`'s catalog lookup — which
+// would answer `"doctor" isn't in the catalog … jit wrap add doctor`, advice
+// to wrap a tool named "doctor". Deleting a command is only safe if the words
+// people still type lead somewhere true.
+func TestWrapDoctorRedirects(t *testing.T) {
+	withFixtureHome(t)
+	withFixtureCwd(t)
+
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"wrap", "doctor"})
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected jit wrap doctor to fail with a redirect")
+	}
+	if !strings.Contains(err.Error(), "jit doctor --wrap") {
+		t.Errorf("expected the error to name the replacement, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "catalog") {
+		t.Errorf("the old spelling must not fall through to the catalog lookup, got: %v", err)
+	}
+}
+
 // TestDoctorWrapRejectsProfileFlag: the two narrow the run in incompatible
 // directions, and silently honouring one would be worse than refusing.
 func TestDoctorWrapRejectsProfileFlag(t *testing.T) {
