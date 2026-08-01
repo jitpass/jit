@@ -55,13 +55,26 @@ func failOnThreshold(level string) (int, error) {
 
 // failOnResult returns the ExitError for a scan whose risk level reached the
 // --fail-on threshold, or nil when it didn't (or the flag wasn't used).
-func failOnResult(level, riskLevel string, score int) error {
+func failOnResult(level, riskLevel string, score, degraded int) error {
 	if level == "" {
 		return nil
 	}
 	threshold, err := failOnThreshold(level)
 	if err != nil {
 		return fmt.Errorf("jit scan: %w", err)
+	}
+	// A degraded scan couldn't read one or more categories, so it cannot
+	// certify the machine is below the threshold: a partial scan must never
+	// pass a gate a complete one might have failed (audit/triage.go makes the
+	// same promise to the human reader with its INCOMPLETE SCAN banner). Trip
+	// on the incompleteness itself, whatever risk the readable categories
+	// produced, so a CI gate can't read a can't-be-sure as all-clear.
+	if degraded > 0 {
+		return &ExitError{
+			Code: scanFailOnExitCode,
+			Msg: fmt.Sprintf("jit scan: an incomplete scan cannot pass --fail-on %s: %s could not be read (exit %d)",
+				level, countWord(degraded, "category", "categories"), scanFailOnExitCode),
+		}
 	}
 	if riskRank[riskLevel] < threshold {
 		return nil
@@ -195,7 +208,7 @@ var scanCmd = &cobra.Command{
 			fmt.Fprintf(cmd.OutOrStdout(), "Exposure: %d/100 (%s)\n", summary.ExposureScore, strings.ToUpper(summary.RiskLevel))
 			// --score is the shape a CI badge step uses, so it honours
 			// --fail-on too; the score still prints before the gate trips.
-			return failOnResult(scanFailOn, summary.RiskLevel, summary.ExposureScore)
+			return failOnResult(scanFailOn, summary.RiskLevel, summary.ExposureScore, len(summary.DegradedScanners))
 		}
 
 		out := cmd.OutOrStdout()
@@ -249,7 +262,7 @@ var scanCmd = &cobra.Command{
 		}
 		// Last, so the full report is always written and flushed first: the
 		// gate tripping must never cost the user the findings that explain it.
-		return failOnResult(scanFailOn, summary.RiskLevel, summary.ExposureScore)
+		return failOnResult(scanFailOn, summary.RiskLevel, summary.ExposureScore, len(summary.DegradedScanners))
 	},
 }
 

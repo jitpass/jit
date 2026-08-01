@@ -314,6 +314,41 @@ func TestScanFailOnRespectsThreshold(t *testing.T) {
 	}
 }
 
+// TestFailOnResultIncompleteScanTrips: a scan that couldn't read a category
+// (DegradedScanners > 0) must not pass a --fail-on gate even when the readable
+// categories came back clean — a partial scan cannot certify the machine is
+// below the threshold, and a CI gate reading exit 0 would treat an incomplete
+// scan as all-clear. The trip is on the incompleteness itself; without a gate
+// (--fail-on unused) a degraded scan is still not an error.
+func TestFailOnResultIncompleteScanTrips(t *testing.T) {
+	tripped := func(err error) bool {
+		var exitErr *ExitError
+		return errors.As(err, &exitErr) && exitErr.Code == scanFailOnExitCode
+	}
+
+	// Degraded + clean risk + a gate: must trip on the incompleteness.
+	if err := failOnResult("any", "clean", 0, 1); !tripped(err) {
+		t.Errorf("an incomplete scan must trip --fail-on any even when clean, got: %v", err)
+	}
+	// Degraded + a threshold the readable findings didn't reach: still trips.
+	if err := failOnResult("critical", "low", 10, 2); !tripped(err) {
+		t.Errorf("an incomplete scan must trip regardless of the readable risk level, got: %v", err)
+	}
+	// The message names incompleteness, not a risk level, so the operator
+	// knows why the gate fired.
+	if err := failOnResult("any", "clean", 0, 1); err == nil || !strings.Contains(err.Error(), "incomplete") {
+		t.Errorf("the trip message should explain the scan was incomplete, got: %v", err)
+	}
+	// A complete clean scan under a gate still passes (regression guard).
+	if err := failOnResult("any", "clean", 0, 0); err != nil {
+		t.Errorf("a complete clean scan must still pass --fail-on any, got: %v", err)
+	}
+	// No gate: a degraded scan is a report, not a failure.
+	if err := failOnResult("", "clean", 0, 3); err != nil {
+		t.Errorf("without --fail-on, a degraded scan must not error, got: %v", err)
+	}
+}
+
 // TestScanFailOnRejectsBadThreshold: a typo'd threshold is a usage error
 // (exit 1), never a silently-disabled gate, and never mistaken for a trip.
 // "clean" is rejected too — as a threshold it would read "fail when clean".
