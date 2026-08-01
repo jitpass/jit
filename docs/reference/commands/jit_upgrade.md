@@ -17,8 +17,10 @@ Replaces the binary `jit` actually runs from (whatever `which jit` resolves to).
 If that path isn't writable (e.g. /usr/local/bin), you'll be prompted for sudo
 just for the move. Your vault and secrets are never touched.
 
-A Homebrew-installed jit is not self-replaced — Homebrew owns that copy, so
-this command points you at `brew upgrade --cask jitpass` instead.
+A jit installed by the retired Homebrew cask is not self-replaced, since
+Homebrew owns that copy. The cask is no longer published, so uninstall it
+(`brew uninstall --cask jitpass`) and reinstall from the release tarball to
+switch to a self-upgrading build (see the install guide).
 
 Only the published darwin/arm64 release is fetched this way; on any other
 platform, build from source with `go install github.com/jitpass/jit/cmd/jit@latest`.
