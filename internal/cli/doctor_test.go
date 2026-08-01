@@ -6,6 +6,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,6 +115,13 @@ func execDoctor(t *testing.T, args ...string) (stdout string, err error) {
 	doctorVerbose = false
 	doctorOrphans = false
 	doctorWrap = false
+	doctorStrict = false
+	// The real one spawns codesign against the test binary on every single
+	// invocation — ~30ms each, for an answer ("unsigned") that is a property
+	// of `go test`, not of anything under test.
+	origSig := binarySignature
+	binarySignature = func() string { return "signed TESTTEAM" }
+	t.Cleanup(func() { binarySignature = origSig })
 	// Cobra remembers which flags were SET across Execute calls in the same
 	// process, and MarkFlagsMutuallyExclusive checks Changed, not the value —
 	// so without this a test that passed --wrap makes every later test that
@@ -668,6 +676,81 @@ func TestDoctorWrapNeverOpensTheVault(t *testing.T) {
 	}
 	if strings.Contains(out, "No profiles found") {
 		t.Errorf("a --wrap run swept no profiles and must not report on them, got:\n%s", out)
+	}
+}
+
+// TestDoctorProblemsExitTwo pins the house exit convention `jit scan
+// --fail-on` established: exit 1 means the command failed, so a health check
+// that FOUND something has to be distinguishable from one that could not run.
+func TestDoctorProblemsExitTwo(t *testing.T) {
+	withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	writeFixtureProfile(t, cwd, "app", "A_KEY: a/one\n")
+
+	_, err := execDoctor(t)
+	var exitErr *ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected an ExitError carrying a status, got %T: %v", err, err)
+	}
+	if exitErr.Code != doctorProblemsExitCode {
+		t.Errorf("expected exit %d for findings, got %d", doctorProblemsExitCode, exitErr.Code)
+	}
+}
+
+// TestDoctorRunFailureExitsOne is the other half: a doctor that could not run
+// must NOT look like a doctor that found something.
+func TestDoctorRunFailureExitsOne(t *testing.T) {
+	withFixtureHome(t)
+	withFixtureCwd(t)
+
+	_, err := execDoctor(t, "--format", "yaml")
+	if err == nil {
+		t.Fatal("expected an error for an unknown --format")
+	}
+	var exitErr *ExitError
+	if errors.As(err, &exitErr) {
+		t.Errorf("a usage failure must not carry the findings exit code, got %d", exitErr.Code)
+	}
+}
+
+// TestDoctorStrictPromotesWarnings: a stale backup is deliberately advisory
+// for a human glancing at their own machine, and deliberately gate-able for a
+// pipeline that wants it to block a deploy.
+func TestDoctorStrictPromotesWarnings(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	writeFixtureProfile(t, cwd, "app", "APP_KEY: app/key\n")
+	plantVaultSecret(t, home, "app/key") // populated vault, never exported -> [backup] warning
+
+	if _, err := execDoctor(t); err != nil {
+		t.Fatalf("a warning must not fail the run by default: %v", err)
+	}
+	_, err := execDoctor(t, "--strict")
+	var exitErr *ExitError
+	if !errors.As(err, &exitErr) || exitErr.Code != doctorProblemsExitCode {
+		t.Errorf("expected --strict to turn the warning into exit %d, got %v", doctorProblemsExitCode, err)
+	}
+}
+
+// TestDoctorJSONIdentifiesTheBinary: output-style.md nominates doctor as the
+// surface someone is on when filing a bug, and a report that can't say which
+// build produced it is a report you can't act on.
+func TestDoctorJSONIdentifiesTheBinary(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	writeFixtureProfile(t, cwd, "app", "APP_KEY: app/key\n")
+	plantVaultSecret(t, home, "app/key")
+
+	out, _ := execDoctor(t, "--format", "json")
+	var result doctorResult
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("unmarshaling output %q: %v", out, err)
+	}
+	if result.SchemaVersion != doctorSchemaVersion {
+		t.Errorf("expected schema_version %d, got %d", doctorSchemaVersion, result.SchemaVersion)
+	}
+	if result.Tool.Signature == "" {
+		t.Error("expected the report to state the running binary's signing verdict")
 	}
 }
 

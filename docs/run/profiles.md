@@ -58,7 +58,7 @@ On the default full run it also folds in the health checks that used to take
 background service, your vault backup, and any wrapped-tool shims. These are
 surfaced as advisory warnings.
 
-It exits non-zero when a secret this setup depends on **cannot be read**:
+It exits **2** when something this setup depends on is actually broken:
 
 - a profile's own secret is **missing**, **corrupt**, or **unparseable**
 - this Mac's **master key is gone** from the keychain, so the whole vault is
@@ -91,7 +91,26 @@ flags:
 - `--wrap` runs only the wrapped-tool checks, and never opens the vault — so
   it still works when the vault is what's broken. Replaces `jit wrap doctor`.
 - `--verbose` lists every check that passed, not just the ones that failed.
-- `--format json` prints a machine-readable snapshot: `ok` plus structured
-  `problems` and `warnings` arrays (each entry carries `kind`, `profile`,
-  `variable`, `path`, and `detail`), and it still exits non-zero on a problem,
-  so it works as a CI health check.
+- `--strict` makes the advisory warnings count toward the exit code too, for
+  a pipeline that wants a stale backup to gate a deploy.
+- `--format json` prints a machine-readable snapshot: `schema_version`, a
+  `tool` block naming the binary that produced it (version, build, and whether
+  it satisfies jit's release-signing requirement), `ok`, and structured
+  `problems`/`warnings` arrays — each entry carrying `kind`, `profile`,
+  `variable`, `path`, `detail`, and an `action` you can act on without parsing
+  prose.
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | nothing broken |
+| `1` | **doctor itself** couldn't run — a bad flag, an unreadable vault root |
+| `2` | findings: something is broken (or, with `--strict`, warned about) |
+
+Exit 2 is the findings code, the same convention
+[`jit scan --fail-on`](../reference/commands/jit_scan.md) uses. The split
+matters for CI: exit 1 has to mean "the check is broken", or a pipeline
+can't tell a genuinely unhealthy machine from a doctor that never ran.
+In JSON mode a findings run still prints its full snapshot; an exit-1 run
+prints none, which is itself the signal.
