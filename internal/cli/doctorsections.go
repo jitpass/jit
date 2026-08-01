@@ -4,16 +4,55 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"time"
 
 	"golang.org/x/term"
 
+	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/vault"
 	"github.com/jitpass/jit/internal/wrap"
 )
+
+// runningTool identifies the binary producing this report: release version,
+// VCS revision, and whether it satisfies jit's own release-signing
+// requirement. design/output-style.md puts build revisions on the diagnostic
+// surfaces "where someone is filing a bug", and doctor was carrying none of
+// them — a pasted report could not be tied to a release at all.
+func runningTool() doctorTool {
+	return doctorTool{
+		Version:   shortVersion(agent.Version()),
+		Build:     agent.BuildID(),
+		Signature: binarySignature(),
+	}
+}
+
+// binarySignature runs the SAME requirement check `jit upgrade` gates on
+// (verifyStagedSignature), against this process's own executable. A package
+// var so tests don't spawn codesign per doctor invocation.
+//
+// Worth reporting because that check fails CLOSED: a jit whose signature
+// doesn't satisfy the requirement can never self-upgrade, and the error it
+// gives names the downloaded file rather than the installed one — so the
+// cause is invisible exactly when it matters.
+var binarySignature = func() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// #nosec G204 -- fixed system binary; the only variable is our own path
+	if err := exec.CommandContext(ctx, "/usr/bin/codesign",
+		"--verify", "--strict", "-R", signatureRequirement(upgradeTeamID), exe).Run(); err != nil {
+		return "unsigned or not a jit release build"
+	}
+	return "signed " + upgradeTeamID
+}
 
 // vaultHasMasterKey probes the keychain for this Mac's master encryption key
 // without a challenge and without caching anything (keychainwrap.HasMEK). A

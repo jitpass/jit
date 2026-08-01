@@ -19,6 +19,7 @@ var (
 	doctorVerbose bool
 	doctorOrphans bool
 	doctorWrap    bool
+	doctorStrict  bool
 )
 
 // doctorResult is jit doctor's --format json shape. Problems and Warnings
@@ -38,11 +39,36 @@ var (
 // the JSON shape is stable regardless, so a consumer never has to strip an
 // unexpected field back out.
 type doctorResult struct {
+	// SchemaVersion is what lets this shape change later without silently
+	// breaking a consumer. It was missing while the doc comment above was
+	// promising stability, which is a promise nothing could keep: the only
+	// way to keep it was never to add a field, and this commit adds three.
+	SchemaVersion   int            `json:"schema_version"`
+	Tool            doctorTool     `json:"tool"`
 	ProfilesChecked int            `json:"profiles_checked"`
 	SecretsChecked  int            `json:"secrets_checked"`
 	OK              bool           `json:"ok"`
 	Problems        []checkFinding `json:"problems"`
 	Warnings        []checkFinding `json:"warnings"`
+}
+
+// doctorSchemaVersion is bumped when a field is removed or its meaning
+// changes — not when one is added, which an existing consumer ignores.
+const doctorSchemaVersion = 1
+
+// doctorTool identifies the binary that produced the report. A pasted doctor
+// output could not previously be tied to a release at all, on the one surface
+// design/output-style.md explicitly nominates for the person filing a bug.
+type doctorTool struct {
+	Version string `json:"version,omitempty"`
+	Build   string `json:"build,omitempty"`
+	// Signature is the running binary's code-signing verdict against jit's
+	// own release requirement — the SAME check `jit upgrade` runs before it
+	// will install anything (verifyStagedSignature). That check fails closed,
+	// so a binary that doesn't satisfy it is permanently locked out of
+	// self-upgrade with an error naming the symptom rather than the cause.
+	// Reporting it here is how that becomes diagnosable.
+	Signature string `json:"signature,omitempty"`
 }
 
 var doctorCmd = &cobra.Command{
@@ -65,8 +91,8 @@ var doctorCmd = &cobra.Command{
 		"folds in the health checks that used to take `jit status` and the retired\n" +
 		"`jit wrap doctor` to see: the background service, your vault backup, and\n" +
 		"every wrapped tool's shim, PATH entry and profile.\n\n" +
-		"It exits non-zero when something this setup depends on is actually broken:\n" +
-		"a secret missing, corrupt, or unparseable; the whole vault unreadable\n" +
+		"It exits 2 when something this setup depends on is actually broken: a\n" +
+		"secret missing, corrupt, or unparseable; the whole vault unreadable\n" +
 		"because this Mac's master key is gone from the keychain or a master-key\n" +
 		"rotation never finished; or a wrapped tool's installation damaged, which\n" +
 		"means that tool now runs unwrapped or not at all. Everything else it\n" +
@@ -74,7 +100,11 @@ var doctorCmd = &cobra.Command{
 		"profile name shadowed across scopes, a mount whose profile won't load, a\n" +
 		"stopped service, a stale or missing vault backup, and any shim complaint\n" +
 		"that is only true of the shell you happen to be in — a CI job that doesn't\n" +
-		"put the shim dir on PATH is not a broken machine.\n\n" +
+		"put the shim dir on PATH is not a broken machine. --strict makes those\n" +
+		"count too.\n\n" +
+		"Exit 2 is the FINDINGS code, matching `jit scan --fail-on`; exit 1 means\n" +
+		"doctor itself couldn't run (a bad flag, an unreadable vault root), which a\n" +
+		"pipeline needs to tell apart from a machine that is genuinely broken.\n\n" +
 		"Use --profile to narrow the run to a single profile. The service, backup and\n" +
 		"shim sections are skipped then; the whole-vault key checks are not, because\n" +
 		"with no master key no profile resolves and saying otherwise would be false.\n" +
@@ -155,11 +185,30 @@ var doctorCmd = &cobra.Command{
 	},
 }
 
+// doctorProblemsExitCode is deliberately not 1, matching `jit scan --fail-on`
+// (scanFailOnExitCode) and for the same reason its comment gives: exit 1 is
+// "the command failed", and a health check that FOUND something must be
+// distinguishable from one that could not run at all. Until now both were 1,
+// so `jit doctor --format json` answered a bad --format, an unreadable vault
+// root and a genuinely broken machine with the same status — and on the first
+// two it printed no JSON either, leaving a consumer with an exit code it
+// could not interpret and nothing to parse.
+const doctorProblemsExitCode = 2
+
 // renderDoctorOutcome is the single exit path both the full run and the
 // --wrap run take, so the two can't drift in exit code or JSON shape.
 func renderDoctorOutcome(cmd *cobra.Command, outcome checkOutcome) error {
 	problems := outcome.Problems()
 	warnings := outcome.Warnings()
+
+	// --strict makes advisory findings count. A stale backup or a stopped
+	// service is deliberately not a failure by default — most runs are a
+	// human glancing at their own machine — but a pipeline that wants the
+	// backup nudge to gate a deploy had no way to say so.
+	failing := len(problems)
+	if doctorStrict {
+		failing += len(warnings)
+	}
 
 	if doctorFormat == "json" {
 		if problems == nil {
@@ -169,21 +218,42 @@ func renderDoctorOutcome(cmd *cobra.Command, outcome checkOutcome) error {
 			warnings = []checkFinding{}
 		}
 		if err := writeJSON(cmd.OutOrStdout(), doctorResult{
+			SchemaVersion:   doctorSchemaVersion,
+			Tool:            runningTool(),
 			ProfilesChecked: outcome.ProfilesChecked,
 			SecretsChecked:  outcome.SecretsChecked,
-			OK:              len(problems) == 0,
-			Problems:        problems,
-			Warnings:        warnings,
+			// ok stays keyed to hard problems whatever --strict does to the
+			// exit code: the field answers "is anything broken", and a flag
+			// about pipeline strictness must not change what a fact means.
+			OK:       len(problems) == 0,
+			Problems: problems,
+			Warnings: warnings,
 		}); err != nil {
 			return fmt.Errorf("jit doctor: %w", err)
 		}
-		if len(problems) > 0 {
-			return fmt.Errorf("jit doctor: %s found", countWord(len(problems), "problem", "problems"))
-		}
-		return nil
+		return doctorExit(failing)
 	}
 
-	return renderDoctorText(cmd.OutOrStdout(), outcome, problems, warnings)
+	if err := renderDoctorText(cmd.OutOrStdout(), outcome, problems, warnings); err != nil {
+		return err
+	}
+	return doctorExit(failing)
+}
+
+// doctorExit turns a finding count into the result-carrying exit.
+func doctorExit(failing int) error {
+	if failing == 0 {
+		return nil
+	}
+	noun := "problem"
+	if doctorStrict {
+		noun = "finding"
+	}
+	return &ExitError{
+		Code: doctorProblemsExitCode,
+		Msg: fmt.Sprintf("jit doctor: %s found — exit %d",
+			countWord(failing, noun, noun+"s"), doctorProblemsExitCode),
+	}
 }
 
 // renderDoctorText prints the human report and returns the non-zero-exit
@@ -203,7 +273,12 @@ func renderDoctorOutcome(cmd *cobra.Command, outcome checkOutcome) error {
 // header the label is out of the item line entirely and every item, wrap and
 // arrow sits at one fixed indent.
 func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings []checkFinding) error {
-	wrote := writeFindingGroups(out, glyphRisk, cRisk, problems, false)
+	// The identifying line first, so a pasted report says which binary
+	// produced it. Dim: it is context for the findings, never a finding.
+	tool := runningTool()
+	_, _ = cDim.Fprintf(out, "jit %s\n", versionBuildSignature(tool))
+
+	wrote := writeFindingGroups(out, glyphRisk, cRisk, problems, true)
 	wrote = writeFindingGroups(out, glyphWarn, cWarn, warnings, wrote)
 
 	// The verdict lines wrap like every other line here: at 44 columns the
@@ -263,11 +338,19 @@ func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings []
 	}
 
 	printGlobalMountReminders(out)
-
-	if len(problems) > 0 {
-		return fmt.Errorf("jit doctor: %s found", countWord(len(problems), "problem", "problems"))
-	}
 	return nil
+}
+
+// versionBuildSignature renders the tool line's value, dropping whichever
+// halves this build can't actually state rather than printing "unknown" as
+// if it were a fact — the same discipline versionBuild() applies for the
+// agent, extended with the signing verdict.
+func versionBuildSignature(t doctorTool) string {
+	parts := []string{versionBuild(t.Version, t.Build)}
+	if t.Signature != "" {
+		parts = append(parts, t.Signature)
+	}
+	return strings.Join(parts, " · ")
 }
 
 // The report's two fixed columns. Items hang under their `[Category]` header
@@ -470,6 +553,7 @@ func init() {
 	doctorCmd.Flags().BoolVar(&doctorVerbose, "verbose", false, "on success, list every variable→path reference that was checked")
 	doctorCmd.Flags().BoolVar(&doctorOrphans, "orphans", false, "also warn about vault secrets no profile references (advisory, never a failure)")
 	doctorCmd.Flags().BoolVar(&doctorWrap, "wrap", false, "check only the wrapped-tool shims, without opening the vault (replaces `jit wrap doctor`)")
+	doctorCmd.Flags().BoolVar(&doctorStrict, "strict", false, "exit non-zero on advisory warnings too, for a pipeline that wants them to gate")
 	doctorCmd.MarkFlagsMutuallyExclusive("wrap", "profile")
 	doctorCmd.MarkFlagsMutuallyExclusive("wrap", "orphans")
 	rootCmd.AddCommand(doctorCmd)

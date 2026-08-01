@@ -22,8 +22,8 @@ folds in the health checks that used to take `jit status` and the retired
 `jit wrap doctor` to see: the background service, your vault backup, and
 every wrapped tool's shim, PATH entry and profile.
 
-It exits non-zero when something this setup depends on is actually broken:
-a secret missing, corrupt, or unparseable; the whole vault unreadable
+It exits 2 when something this setup depends on is actually broken: a
+secret missing, corrupt, or unparseable; the whole vault unreadable
 because this Mac's master key is gone from the keychain or a master-key
 rotation never finished; or a wrapped tool's installation damaged, which
 means that tool now runs unwrapped or not at all. Everything else it
@@ -31,7 +31,12 @@ reports is an advisory warning: an orphaned secret (with --orphans), a
 profile name shadowed across scopes, a mount whose profile won't load, a
 stopped service, a stale or missing vault backup, and any shim complaint
 that is only true of the shell you happen to be in — a CI job that doesn't
-put the shim dir on PATH is not a broken machine.
+put the shim dir on PATH is not a broken machine. --strict makes those
+count too.
+
+Exit 2 is the FINDINGS code, matching `jit scan --fail-on`; exit 1 means
+doctor itself couldn't run (a bad flag, an unreadable vault root), which a
+pipeline needs to tell apart from a machine that is genuinely broken.
 
 Use --profile to narrow the run to a single profile. The service, backup and
 shim sections are skipped then; the whole-vault key checks are not, because
@@ -51,6 +56,7 @@ jit doctor [flags]
       --format string          output format: "text" (default) or "json" (default "text")
       --orphans                also warn about vault secrets no profile references (advisory, never a failure)
       --profile string         check only this profile, and skip the service/backup/wrap health sections
+      --strict                 exit non-zero on advisory warnings too, for a pipeline that wants them to gate
       --verbose                on success, list every variable→path reference that was checked
       --wrap jit wrap doctor   check only the wrapped-tool shims, without opening the vault (replaces jit wrap doctor)
 ```
