@@ -400,6 +400,40 @@ func TestReportsShowProtectedCountOnlyWhenNonZero(t *testing.T) {
 	}
 }
 
+// TestReportsShowIncompleteScanBanner pins parity with the triage view: a
+// partial scan must never be able to look like a complete one in ANY
+// renderer. The banner sits above the counts because it changes what they
+// mean — "0 findings" from a run that could not read ~/.aws is not the
+// same claim as "0 findings".
+func TestReportsShowIncompleteScanBanner(t *testing.T) {
+	degraded := buildScanSummary(Config{}, nil, 0, 0)
+	degraded.DegradedScanners = []ScannerFailure{
+		{Scanner: "credential files", Error: "open /Users/alex/.aws/credentials: permission denied"},
+	}
+
+	var human, md bytes.Buffer
+	WriteHumanReport(&human, nil, degraded, "")
+	WriteMarkdownReport(&md, nil, degraded)
+	for name, out := range map[string]string{"human": human.String(), "markdown": md.String()} {
+		if !strings.Contains(out, "INCOMPLETE SCAN") {
+			t.Errorf("%s report missing the incomplete-scan banner:\n%s", name, out)
+		}
+		if !strings.Contains(out, "permission denied") {
+			t.Errorf("%s report missing the degraded scanner's reason:\n%s", name, out)
+		}
+	}
+
+	complete := buildScanSummary(Config{}, nil, 0, 0)
+	var humanOK, mdOK bytes.Buffer
+	WriteHumanReport(&humanOK, nil, complete, "")
+	WriteMarkdownReport(&mdOK, nil, complete)
+	for name, out := range map[string]string{"human": humanOK.String(), "markdown": mdOK.String()} {
+		if strings.Contains(out, "INCOMPLETE") {
+			t.Errorf("%s report shows an incomplete-scan banner on a complete run:\n%s", name, out)
+		}
+	}
+}
+
 // TestFirstFindingPathSkipsUnfixable guards the report trailer's promise: the
 // copy-pasteable `jit migrate <path>` it prints must name a file migrate can
 // actually act on. hasAutoFix now delegates to the Remedy annotation (the
