@@ -611,16 +611,33 @@ func TestTrustReasonStatesTheScope(t *testing.T) {
 	}
 }
 
-// A consent prompt must not let a program's own filename disguise where it
-// came from, and must not be long enough to push the credential's name out of
-// the dialog.
+// A consent prompt leads with the ask ("use your <class> credential"), must
+// not let a program's own filename disguise where it came from, and must not
+// be long enough for macOS to clip the dialog.
 func TestConsentReasonDisambiguatesAndStaysBounded(t *testing.T) {
 	standard := consentReason(consent.Request{
 		Credential: "gcp",
 		Caller:     consent.Caller{PID: 1, ExecPath: "/usr/local/bin/gcloud"},
 	})
-	if !strings.HasPrefix(standard, "gcloud wants your gcp") {
-		t.Errorf("standard tool dir reason = %q, want the bare tool name", standard)
+	if !strings.HasPrefix(standard, "use your gcp credential for gcloud") {
+		t.Errorf("standard tool dir reason = %q, want the ask first, then the bare tool name", standard)
+	}
+
+	// Legitimate install trees put the binary in a versioned or vendored
+	// subdirectory — spelling those paths out is the wall of text that made
+	// the prompt unreadable, so they render by name alone too.
+	for _, tc := range []struct{ path, name string }{
+		{"/opt/homebrew/Caskroom/claude-code/2.1.212/claude", "claude"},
+		{"/Library/Developer/CommandLineTools/usr/libexec/git-core/git-remote-http", "git-remote-http"},
+		{"/usr/libexec/git-core/git-remote-http", "git-remote-http"},
+	} {
+		got := consentReason(consent.Request{
+			Credential: "git",
+			Caller:     consent.Caller{PID: 1, ExecPath: tc.path},
+		})
+		if want := "use your git credential for " + tc.name; got != want {
+			t.Errorf("reason for %s = %q, want %q", tc.path, got, want)
+		}
 	}
 
 	impostor := consentReason(consent.Request{
@@ -636,14 +653,14 @@ func TestConsentReasonDisambiguatesAndStaysBounded(t *testing.T) {
 		Caller: consent.Caller{
 			PID:      1,
 			ExecPath: "/tmp/" + strings.Repeat("a", 400) + "/gcloud",
-			Lineage:  "launched by " + strings.Repeat("b", 400),
+			Lineage:  strings.Repeat("b", 400),
 		},
 	})
 	if len([]rune(huge)) > maxReasonLen {
 		t.Errorf("reason is %d runes, want <= %d", len([]rune(huge)), maxReasonLen)
 	}
-	if !strings.HasSuffix(huge, "wants your gcp credential") {
-		t.Errorf("reason = %q, want the credential name intact at the end", huge)
+	if !strings.HasPrefix(huge, "use your gcp credential") {
+		t.Errorf("reason = %q, want the credential name intact at the start", huge)
 	}
 	if !strings.Contains(huge, "gcloud") {
 		t.Errorf("reason = %q, want the program name kept when a long path is trimmed", huge)
@@ -697,7 +714,7 @@ func TestBestEffortReasonKeepsEveryDecisionPart(t *testing.T) {
 			Caller: consent.Caller{
 				PID:      1,
 				ExecPath: "/usr/local/bin/gcloud",
-				Lineage:  "launched by npm install",
+				Lineage:  "npm install",
 				Strength: consent.BestEffort,
 			},
 		}
@@ -743,7 +760,7 @@ func TestUnidentifiedBestEffortReasonStaysInBudget(t *testing.T) {
 				Caller: consent.Caller{
 					PID:      987654,
 					ExecPath: "", // unresolvable: the fallback path
-					Lineage:  "launched by " + strings.Repeat("b", 200),
+					Lineage:  strings.Repeat("b", 200),
 					Strength: consent.BestEffort,
 				},
 			})

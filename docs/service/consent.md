@@ -22,12 +22,12 @@ still stops for a prompt you can decline.
 
 ```console
 # the first time terraform reaches for your AWS keys this session:
-#   Touch ID prompt: "terraform, launched by claude, wants your aws credential"
+#   Touch ID prompt: "use your aws credential for terraform, via claude"
 # approve once, and terraform (and anything it launched) is not asked again
 # until the vault re-locks.
 #
 # asked again after you already said no, the prompt says so:
-#   "terraform, launched by claude, wants your aws credential (refused 2 times)"
+#   "use your aws credential (refused 2 times) for terraform, via claude"
 ```
 
 ## Turning it on and off

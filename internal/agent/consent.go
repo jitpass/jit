@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/jitpass/jit/internal/consent"
 	"github.com/jitpass/jit/internal/lineage"
@@ -52,60 +53,64 @@ func consentCaller(c *caller) consent.Caller {
 // AEAD-bound into the wrap, so a caller cannot lie about it) — nothing
 // caller-reported ever reaches this prompt, unlike Request.Label.
 //
-// Kernel-derived is not the same as attacker-independent, though, and this
-// prompt has to survive both differences:
+// The decision-carrying half comes FIRST: macOS opens the sentence with "jit
+// is trying to", and "use your <class> credential" is the verb phrase that
+// completes it. The caller follows as a "for ..." clause. Two reasons, both
+// learned from screenshots of the real dialog:
 //
-//   - The BASENAME is chosen by whoever wrote the file. A process running from
-//     /tmp/x/gcloud is honestly reported by the kernel as exactly that, and
-//     rendering it as a bare "gcloud" turns the kernel's honesty into the
-//     attacker's disguise. So an executable outside the standard tool
-//     directories shows where it actually lives (see displayExecPath).
-//   - The LENGTH is chosen by the same person. challengeReason has always
-//     capped its output because macOS renders the reason as one sentence in a
-//     small modal; this one didn't, so a long enough filename could push the
-//     part that names the credential out of the dialog entirely. Each variable
-//     piece now gets its own budget, and the fixed "wants your <class>
-//     credential" tail — the half that carries the actual decision — is never
-//     what gets truncated.
+//   - READING ORDER. The old shape led with the identity and ended with the
+//     credential, so the eye hit a truncated path ("…mebrew/Caskroom/
+//     claude-code/2.1.212/claude") before the one word that mattered — and
+//     the sentence "jit is trying to <path> … wants" didn't even parse. A
+//     prompt that buries its ask trains the user to stop reading, which is
+//     the exact failure mode consent exists to prevent.
+//   - LENGTH is chosen by whoever wrote the caller's filename. challengeReason
+//     has always capped its output because macOS renders the reason as one
+//     sentence in a small modal. With the fixed part first, the budget is
+//     spent on the ask before any attacker-lengthened path gets a say, so no
+//     filename can push the credential's name out of the dialog. (The
+//     BASENAME is chosen by the same person — see displayExecPath for why an
+//     oddly-located tool still shows where it lives.)
 //
 // A request that has already been refused this session says so. Repetition is
 // the whole mechanism behind prompt fatigue: the tenth identical dialog is
 // evidence that something is asking in a loop, and a prompt that renders it
 // identically to the first leaves the user nothing to notice that with. The
-// count rides in the protected tail rather than the identity half — it is part
+// count rides in the protected head rather than the identity half — it is part
 // of the decision, not context for it, so it is never what truncation drops.
 func consentReason(req consent.Request) string {
 	cc, class := req.Caller, req.Credential
-	// Built tail-first, so the budget is apportioned from what the fixed part
+	// Built head-first, so the budget is apportioned from what the fixed part
 	// actually costs rather than from constants that have to be re-tuned every
 	// time a class name gets longer. Whatever is left over goes to the
 	// identity, which is the part that can be arbitrarily long.
-	tail := fmt.Sprintf(" wants your %s credential", class)
+	head := fmt.Sprintf("use your %s credential", class)
 	switch n := req.PriorRefusals; {
 	case n == 1:
-		tail += " (refused once)"
+		head += " (refused once)"
 	case n > 1:
-		tail += fmt.Sprintf(" (refused %d times)", n)
+		head += fmt.Sprintf(" (refused %d times)", n)
 	}
-	// The honesty qualifier belongs to the tail for the same reason the count
-	// does: "as best we can tell" changes what the answer means. It used to be
-	// appended by ConsentReaders AFTER truncating this whole string, which cut
-	// from the tail — so once the refusal count made the line long enough, the
-	// count was sliced mid-word and the user read a dangling "(…".
+	// The honesty qualifier belongs to the protected head for the same reason
+	// the count does: "as best we can tell" changes what the answer means. It
+	// used to be appended by ConsentReaders AFTER truncating this whole
+	// string — so once the refusal count made the line long enough, the count
+	// was sliced mid-word and the user read a dangling "(…".
 	//
 	// Kept short on purpose. The obvious phrasing, "(identified by process
 	// scan)", costs 29 of the 90 runes and pushed the budget below what the
-	// launcher needs, silently dropping "launched by npm install" from every
-	// FIFO prompt — the weaker-identity path, where that context is worth the
+	// launcher needs, silently dropping "via npm install" from every FIFO
+	// prompt — the weaker-identity path, where that context is worth the
 	// most.
 	if cc.Strength == consent.BestEffort {
-		tail += " (identified by scan)"
+		head += " (identified by scan)"
 	}
-	budget := maxReasonLen - len([]rune(tail))
+	head += " for "
+	budget := maxReasonLen - len([]rune(head))
 
 	var lineage string
 	if cc.Lineage != "" {
-		lineage = ", " + truncate(cc.Lineage, maxConsentLineageLen) + ","
+		lineage = ", via " + truncate(cc.Lineage, maxConsentLineageLen)
 	}
 	if n := len([]rune(lineage)); n > budget-minConsentWhoLen {
 		lineage = "" // a pathological launcher is dropped, never the caller
@@ -122,15 +127,15 @@ func consentReason(req consent.Request) string {
 		// cutting off the qualifier this ordering exists to protect.
 		who = truncateHead(fmt.Sprintf("a process (pid %d)", cc.PID), budget-len([]rune(lineage)))
 	}
-	return who + lineage + tail
+	return head + who + lineage
 }
 
 const (
-	// maxConsentLineageLen bounds the launcher half ("launched by npm
-	// install"), and minConsentWhoLen is the room reserved for the caller
-	// itself no matter what: the launcher is context, the caller is the
-	// subject of the sentence, so the launcher is what gets dropped when they
-	// can't both fit.
+	// maxConsentLineageLen bounds the launcher half ("via npm install"), and
+	// minConsentWhoLen is the room reserved for the caller itself no matter
+	// what: the launcher is context, the caller is the subject of the
+	// sentence, so the launcher is what gets dropped when they can't both
+	// fit.
 	maxConsentLineageLen = 24
 	minConsentWhoLen     = 12
 )
@@ -154,6 +159,24 @@ var standardToolDirs = map[string]bool{
 	"/opt/homebrew/sbin": true,
 }
 
+// standardToolTrees extends the same judgment to whole install trees:
+// locations whose layout puts the real binary in a versioned or vendored
+// subdirectory, so the exact parent dir can't be enumerated. A Homebrew cask
+// runs from /opt/homebrew/Caskroom/<name>/<version>/, git's plumbing from a
+// libexec/git-core deep under the CLT or a Cellar keg — and spelling those
+// paths out ("…mebrew/Caskroom/claude-code/2.1.212/claude") is what turned
+// the prompt into a wall the user stopped reading. /System, /usr/libexec and
+// /Library/Developer are SIP-protected; /opt/homebrew carries exactly the
+// trust its bin/ already had in standardToolDirs, since anyone who can write
+// Caskroom can write bin.
+var standardToolTrees = []string{
+	"/System/",
+	"/usr/libexec/",
+	"/Library/Developer/",
+	"/Library/Apple/",
+	"/opt/homebrew/",
+}
+
 func displayExecPath(execPath string) string {
 	base := filepath.Base(execPath)
 	if execPath == "" || base == "." || base == "/" || base == string(filepath.Separator) {
@@ -161,6 +184,11 @@ func displayExecPath(execPath string) string {
 	}
 	if standardToolDirs[filepath.Dir(execPath)] {
 		return base
+	}
+	for _, tree := range standardToolTrees {
+		if strings.HasPrefix(execPath, tree) {
+			return base
+		}
 	}
 	return execPath
 }
