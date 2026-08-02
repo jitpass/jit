@@ -102,7 +102,7 @@ func TestScanCommandTextFormat(t *testing.T) {
 	// test process, so restore it for whoever runs next.
 	t.Cleanup(func() { scanFull = false })
 	full := runScan(t, "--format", "text", "--full")
-	if !strings.Contains(full, "RISK LEVEL:") {
+	if !strings.Contains(full, "— exposure") {
 		t.Errorf("--full should show the risk level banner, got:\n%s", full)
 	}
 	if !strings.Contains(full, "Shell Configs") {
@@ -140,7 +140,7 @@ func TestScanCommandCleanFixture(t *testing.T) {
 	}
 	t.Cleanup(func() { scanFull = false })
 	full := runScan(t, "--format", "text", "--full")
-	if !strings.Contains(full, "RISK LEVEL: CLEAN") {
+	if !strings.Contains(full, "CLEAN — exposure 0/100") {
 		t.Errorf("expected --full's clean banner on an empty fixture home, got:\n%s", full)
 	}
 }

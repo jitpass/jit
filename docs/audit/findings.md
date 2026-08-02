@@ -109,11 +109,15 @@ things and decided not to mention them". `--unfiltered` turns the gates off:
 
 ```sh
 jit scan --unfiltered
-jit scan --unfiltered --format ndjson > loud.ndjson   # diff against a normal run
+jit scan --unfiltered --format ndjson > loud.ndjson
 ```
 
 Expect it to be noisy - that noise is the whole reason the filters exist.
-It's for auditing what they hide, not for daily use.
+It's for auditing what they hide, not for daily use. You don't need to diff
+two runs to see the gates' work: every finding the everyday scan would hide
+or downgrade is tagged `[unfiltered]` in the report (and carries
+`unfiltered_only`/`unfiltered_reason` in NDJSON, schema 0.15.0+), with a
+`└ shown by --unfiltered: …` line naming the exact rule that hid it.
 
 One thing it deliberately does **not** turn off: rejection of filler token
 bodies (`ghp_xxxxxxxx…`, a scrubbed `hf_FIXTUREtoken…`). That check is shared
@@ -124,7 +128,8 @@ is real.
 ## Risk level
 
 The full report (`jit scan --full`, and any targeted `jit scan <path>`)
-rolls findings up into a single `RISK LEVEL` for the machine, and each
+rolls findings up into a single risk level for the machine (the report's
+`✗ CRITICAL — exposure 100/100` banner), and each
 finding is individually rated. The default machine-wide view reports
 coverage instead - how many secrets are protected and what protects the
 rest - and never shows severity labels. Findings that look like

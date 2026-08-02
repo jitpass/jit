@@ -434,8 +434,17 @@ func scanStreamlitSecretsFile(cfg Config, path string) ([]Finding, error) {
 			}))
 			continue
 		}
-		if LooksLikeSecretKey(key) && !cfg.suppressName(key) && !cfg.suppressValue(raw) {
-			findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+		if LooksLikeSecretKey(key) {
+			suppress, unfReason := cfg.nameGate(key)
+			if suppress {
+				continue
+			}
+			if unfReason == "" {
+				if suppress, unfReason = cfg.valueGate(raw); suppress {
+					continue
+				}
+			}
+			f := cfg.ValueFinding(ValueFindingParams{
 				FindingType:  FindingTypeCredentialFile,
 				FilePath:     path,
 				KeyName:      key,
@@ -443,7 +452,12 @@ func scanStreamlitSecretsFile(cfg Config, path string) ([]Finding, error) {
 				BaseSeverity: SeverityHigh,
 				Confidence:   ConfidenceMedium,
 				Evidence:     "Streamlit secrets file holds a key name that looks like a real credential",
-			}))
+			})
+			if unfReason != "" {
+				f.UnfilteredOnly = true
+				f.UnfilteredReason = unfReason
+			}
+			findings = append(findings, f)
 		}
 	}
 	return findings, lineScanErr(scanner)

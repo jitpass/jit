@@ -77,22 +77,28 @@ func scanShellConfigFile(cfg Config, path string) ([]Finding, error) {
 			continue
 		}
 		key := m[1]
-		// LooksLikeNonSecretName drops path-holding exports (SSH_KEY_PATH,
+		if !LooksLikeSecretKey(key) {
+			continue
+		}
+		// The name gate drops path-holding exports (SSH_KEY_PATH,
 		// CREDENTIALS_FILE) and documented-public names, which the name
 		// heuristic alone reads as credentials.
-		if !LooksLikeSecretKey(key) || cfg.suppressName(key) {
+		suppress, unfReason := cfg.nameGate(key)
+		if suppress {
 			continue
 		}
 		rawValue := unquote(m[2])
-		// ...and LooksLikeNonSecretValue drops the ones the name can't settle:
+		// ...and the value gate drops the ones the name can't settle:
 		// `export ANTHROPIC_BASE_URL=http://127.0.0.1:4000` is an endpoint, not
 		// a credential, however much "URL" looks like one to the name gate.
-		if cfg.suppressValue(rawValue) {
-			continue
+		if unfReason == "" {
+			if suppress, unfReason = cfg.valueGate(rawValue); suppress {
+				continue
+			}
 		}
 		line := lineNum // capture per-iteration value, not the loop variable's address
 
-		findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+		f := cfg.ValueFinding(ValueFindingParams{
 			FindingType:  FindingTypeShellConfigSecret,
 			FilePath:     path,
 			Line:         &line,
@@ -101,7 +107,12 @@ func scanShellConfigFile(cfg Config, path string) ([]Finding, error) {
 			BaseSeverity: SeverityHigh, // RFC.md §4 risk table: "any shell-config plaintext export" -> High
 			Confidence:   ConfidenceHigh,
 			Evidence:     "export statement assigns a value to a key name that looks like a secret",
-		}))
+		})
+		if unfReason != "" {
+			f.UnfilteredOnly = true
+			f.UnfilteredReason = unfReason
+		}
+		findings = append(findings, f)
 	}
 	return findings, lineScanErr(scanner)
 }

@@ -41,6 +41,8 @@ secret, same as every other scan format.
 | `fix_command` | the exact runnable command when `remedy` is jit's; absent for `manual` (schema 0.12.0+) |
 | `cause_group` | opaque id shared by findings describing the same underlying secret - the same masked value re-found in copies of a file. Collapse on it to count *secrets* instead of findings, the way the human report does. Absent for findings with no value (schema 0.12.0+) |
 | `test_fixture` | the file is test scaffolding (a `*_test.go`, something under `testdata/`): the value matches a real credential format because that is what a scanner's fixtures are written to do, but nobody owns it and there is nothing to rotate. Reported in full, never counted toward the secret ledger (schema 0.13.0+) |
+| `unfiltered_only` | this finding exists - or carries this severity - only because the run used `--unfiltered`; the everyday scan's suppression gates would hide or downgrade it. Absent on every normal run (schema 0.15.0+) |
+| `unfiltered_reason` | the gate rule that fired, verbatim ("the name matched the browser-public build-variable rule (VITE_*)"), present exactly when `unfiltered_only` is (schema 0.15.0+) |
 
 ## The scan summary record
 

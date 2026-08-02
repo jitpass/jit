@@ -4,6 +4,7 @@
 package audit
 
 import (
+	"fmt"
 	"net"
 	"regexp"
 	"strings"
@@ -190,29 +191,37 @@ var neverPublicMarkers = []string{"SECRET", "PASSWORD", "PASSWD", "PRIVATE", "CR
 // (npmrc, pypirc, netrc, …) do NOT use it: their formats name their secret
 // fields explicitly, so a name heuristic has nothing to add and could only
 // suppress a field the format itself declares secret.
-func LooksLikeNonSecretName(name string) bool {
+func LooksLikeNonSecretName(name string) bool { return NonSecretNameReason(name) != "" }
+
+// NonSecretNameReason is LooksLikeNonSecretName with its verdict explained:
+// it returns WHY the name signal is suppressed, or "" when it isn't. The
+// non-empty reasons are short clauses the --unfiltered report prints
+// verbatim ("shown by --unfiltered: <reason>"), naming the rule that fired
+// so a reader auditing the gates can judge each one instead of taking the
+// filtering on faith — which is the whole point of that flag.
+func NonSecretNameReason(name string) string {
 	upper := strings.ToUpper(name)
 	for _, suffix := range pointerVarSuffixes {
 		if strings.HasSuffix(upper, suffix) {
-			return true
+			return fmt.Sprintf("the name holds a filesystem path (*%s)", suffix)
 		}
 	}
 	for _, marker := range neverPublicMarkers {
 		if strings.Contains(upper, marker) {
-			return false
+			return ""
 		}
 	}
 	for _, prefix := range publicVarPrefixes {
 		if strings.HasPrefix(upper, prefix) {
-			return true
+			return fmt.Sprintf("the name matched the browser-public build-variable rule (%s*)", prefix)
 		}
 	}
 	for _, marker := range publicVarMarkers {
 		if strings.Contains(upper, marker) {
-			return true
+			return fmt.Sprintf("the name matched the documented-public rule (%s)", marker)
 		}
 	}
-	return false
+	return ""
 }
 
 // booleanValues are the literals configuration flags use. A credential is
@@ -255,24 +264,36 @@ var schemeURLPattern = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.\-]*://`)
 // the same test LooksLikeBareURL applies, generalized past http(s), so a
 // webhook URL with a token in its path or a "postgres://user:pass@host" still
 // counts as secret-bearing.
-func LooksLikeNonSecretValue(v string) bool {
+func LooksLikeNonSecretValue(v string) bool { return NonSecretValueReason(v) != "" }
+
+// NonSecretValueReason is LooksLikeNonSecretValue with its verdict explained
+// — the value-gate twin of NonSecretNameReason, with the same contract: ""
+// means the value keeps its weight, anything else is the clause the
+// --unfiltered report prints for the finding this gate would have dropped.
+func NonSecretValueReason(v string) string {
 	v = strings.TrimSpace(v)
 	if v == "" {
-		return true
+		return "the value is empty"
 	}
 	lower := strings.ToLower(v)
 	for _, b := range booleanValues {
 		if lower == b {
-			return true
+			return "the value is a boolean or null setting"
 		}
 	}
 	if len(v) <= numericValueMaxLen && numericValuePattern.MatchString(v) {
-		return true
+		return "the value is a plain number"
 	}
 	if schemeURLPattern.MatchString(v) {
-		return !strings.Contains(v, "@") && !opaqueTokenPattern.MatchString(stripURLScheme(v))
+		if !strings.Contains(v, "@") && !opaqueTokenPattern.MatchString(stripURLScheme(v)) {
+			return "the value is a bare URL with no embedded token"
+		}
+		return ""
 	}
-	return isPlaceholderValue(v)
+	if isPlaceholderValue(v) {
+		return "the value is unfilled template filler"
+	}
+	return ""
 }
 
 // angleBracketPlaceholder matches the "<your-token>" convention.
