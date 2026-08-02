@@ -28,11 +28,14 @@ const maxDecodedSecretValueBytes = 64 * 1024
 // Covers Terraform's terraform.tfvars/*.auto.tfvars convention and
 // Kubernetes/Helm-style Secret manifests — the latter added after
 // real-world review (2026-07-06, see ROADMAP.md) showed it's far more
-// common in practice than .tfvars alone. The Terraform half now has an
-// automated fix (jit migrate's tfvars category, internal/migrate/
-// tfvars.go) and its advisory says so; the Kubernetes half stays
-// detection-only, since that file's consumer is a cluster or CI pipeline
-// no local rewrite can serve.
+// common in practice than .tfvars alone. Both halves now have automated
+// fixes: jit migrate's tfvars category (internal/migrate/tfvars.go) and its
+// k8s-secret category (internal/migrate/k8ssecret.go), which turns a parsed
+// Secret manifest into a live FIFO mount serving rejectable decoys — the
+// "consumer is a cluster no local rewrite can serve" objection dissolved
+// once the mount could hand kubectl the real manifest inside a `jit run`
+// grant and an always-invalid-base64 decoy outside one. Only the legacy
+// unparseable-YAML fallback (buildLegacyK8sFinding) remains manual-remedy.
 //
 // The Kubernetes half parses the manifest properly (2026-07-18) instead of
 // line-scanning it, because the two behave completely differently under the
@@ -413,7 +416,7 @@ func buildK8sSecretFinding(cfg Config, path string, insp k8sSecretInspection) Fi
 		f.Evidence = "kubernetes Secret manifest only partially SOPS-encrypted: some values are still plaintext"
 	default:
 		f.Severity = SeverityInfo
-		f.Evidence = "kubernetes Secret manifest (base64 is encoding, not encryption): detection only, no automated fix yet"
+		f.Evidence = "kubernetes Secret manifest (base64 is encoding, not encryption): `jit migrate` can move its values into the vault"
 	}
 
 	f.RecordID = RecordID(f.FindingType, f.FilePath, nil)

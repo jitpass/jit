@@ -55,7 +55,7 @@ jit migrate undo <path>...
 
 ```
       --dry-run        preview the plan without changing anything
-      --only strings   scope a run to just these comma-separated categories: env,tfvars,shell,mcp,aws,kube,terraform,docker,git,gcp,sops,npmrc,netrc,pypirc,loose (default: all)
+      --only strings   scope a run to just these comma-separated categories: env,tfvars,k8s-secret,shell,mcp,aws,kube,terraform,docker,git,gcp,sops,npmrc,netrc,pypirc,loose (default: all)
       --quiet          suppress the progress spinner/status trail (results still print)
   -y, --yes            skip the confirmation prompt and proceed immediately
 ```

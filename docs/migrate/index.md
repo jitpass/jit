@@ -107,6 +107,7 @@ Limit a run to specific categories with `--only`
 | `mcp` | one secret per server's env-block value | the server's `command` rewritten to launch via `jit run` | [MCP / AI tools](./mcp.md) |
 | `aws` | the profile's access key/secret/session token | a `credential_process` line in `~/.aws/config`; no file with the real value at all | [AWS](./aws.md) |
 | `kube` | the user's bearer token or cert/key pair | an `exec` block calling jit (client-go's exec-plugin protocol) | [Kubernetes](./kubernetes.md) |
+| `k8s-secret` | one secret per `data:`/`stringData:` value, stored as the base64 string the manifest carries | a live-mounted pipe serving the manifest with placeholders; `jit run -- kubectl apply` gets real values, anything else gets decoys that are never valid base64, so an apply outside jit fails loudly | [Kubernetes Secret manifests](./kubernetes-secret-manifests.md) |
 | `terraform` | each host's API token | a `credentials_helper` wired into `~/.terraformrc` | [Terraform](./terraform.md) |
 | `docker` | each registry's username + password/token | a credential helper wired into `~/.docker/config.json`; `docker login`/`logout` keep working | [Docker](./docker.md) |
 | `git` | each host's username + password/token | `credential.helper` set to jit (the plaintext `store` helper replaced); `git push`/`fetch` over HTTPS keep working | [git](./git.md) |

@@ -100,6 +100,35 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 		return fmt.Errorf("jit wrap: %s isn't installed (not on PATH), install it first", tool)
 	}
 
+	// Run-grant tools carry no token and read no credential file jit could
+	// scrub — the k8s-secret migration owns the vaulting. The wrap is just
+	// the shim that puts every invocation inside a `jit run` grant.
+	if entry.Kind == wrap.KindRunGrant {
+		exe, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		jitBinary, err := filepath.EvalSymlinks(exe)
+		if err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		res, err := wrap.AddRunGrant(home, tool, jitBinary)
+		if err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		fmt.Fprintf(out, "Wrapped %s (%s):\n  shim  %s\n", tool, entry.Doc, res.ShimPath)
+		wrapBody(out, 0, "", hlCmds(fmt.Sprintf("From now on `%s` runs inside a jit run grant: a Secret manifest migrated with "+
+			"`jit migrate <secret.yaml>` serves %s the real manifest, while anything not "+
+			"launched through jit reads decoys kubectl rejects.", tool, tool)))
+		if err := ensureShimOnPath(cmd, home, tool); err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		if entry.VerifyHint != "" {
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("Check it: open a new shell and run `%s`.\n", entry.VerifyHint)))
+		}
+		return nil
+	}
+
 	// Capture tools mint credentials rather than carrying one, so there is
 	// no token to discover and no profile to write — just the shim that
 	// reroutes each mint into the vault (`jit <tool>-capture`).
@@ -380,6 +409,9 @@ var wrapListCmd = &cobra.Command{
 			}
 			if entry.IsCapture() {
 				kind, detail = "capture", "jit "+entry.Capture+"-capture"
+			}
+			if entry.IsRunGrant() {
+				kind, detail = "run-grant", "project mounts at the tool's cwd"
 			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", tool, kind, detail, health)
 		}

@@ -47,9 +47,11 @@ func Undo(home, tool string) (UndoResult, error) {
 	// entry. Same for a capture-wrap: the vault profile its captures fill
 	// (aws-<app>) belongs to the AWS credential_process wiring, which keeps
 	// serving after the wrap is gone — unwrapping stops future captures,
-	// it doesn't unprotect what was already captured. An env-wrap removes
-	// its wrap-<tool> profile too.
-	if !entry.IsGrant() && !entry.IsCapture() {
+	// it doesn't unprotect what was already captured. A run-grant-wrap has
+	// no profile either: the manifest mount it grants belongs to the
+	// k8s-secret migration, which keeps serving (decoys by default) after
+	// the wrap is gone. An env-wrap removes its wrap-<tool> profile too.
+	if !entry.IsGrant() && !entry.IsCapture() && !entry.IsRunGrant() {
 		res.ProfilePath, err = profile.Path(home, entry.Profile)
 		if err != nil {
 			return res, err

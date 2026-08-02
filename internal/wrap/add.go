@@ -170,6 +170,42 @@ func orderedNames(env map[string]string, order []string) []string {
 	return names
 }
 
+// AddRunGrant installs a RUN-GRANT-wrap: a shim that re-execs the tool
+// through a bare `jit run --grant-only`, so a tool that reads a project
+// file served as a decoy mount (kubectl applying a migrated Secret
+// manifest) gets the real content when typed by its native name. Like
+// AddGrant and AddCapture there is no profile: which mounts apply is
+// decided per invocation from the tool's working directory.
+func AddRunGrant(home, tool, jitBinary string) (AddResult, error) {
+	if err := ValidateToolName(tool); err != nil {
+		return AddResult{}, err
+	}
+
+	manifest, err := LoadManifest(home)
+	if err != nil {
+		return AddResult{}, err
+	}
+	// Refuse to clobber a hand-written env profile for this tool that jit
+	// wrap doesn't manage — same guard Add, AddGrant and AddCapture apply.
+	if _, managed := manifest.Tools[tool]; !managed {
+		if profilePath, perr := profile.Path(home, ProfileName(tool)); perr == nil {
+			if _, statErr := os.Stat(profilePath); statErr == nil {
+				return AddResult{}, fmt.Errorf("profile %s already exists at %s but wasn't created by jit wrap, refusing to run-grant-wrap over it", ProfileName(tool), profilePath)
+			}
+		}
+	}
+
+	shimPath, err := InstallShim(home, jitBinary, tool)
+	if err != nil {
+		return AddResult{}, err
+	}
+	manifest.Tools[tool] = Entry{RunGrant: true, AddedAt: time.Now().UTC()}
+	if err := manifest.Save(home); err != nil {
+		return AddResult{}, err
+	}
+	return AddResult{ShimPath: shimPath}, nil
+}
+
 // AddCapture installs a CAPTURE-wrap: a shim that routes the tool through
 // `jit <tool>-capture`, so credentials the tool mints are captured from its
 // own output — in the user's terminal, where the tool's MFA prompts still

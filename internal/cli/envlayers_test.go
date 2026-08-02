@@ -418,3 +418,35 @@ func TestProjectTemplateMounts(t *testing.T) {
 		t.Errorf("projectTemplateMounts = %v, want just the project .npmrc (not .env, not the global ~/.npmrc)", got)
 	}
 }
+
+// TestProjectTemplateMountsDescendsIntoSubdirs: a template mount BELOW cwd
+// (the standard repo layout — ~/proj/k8s/secret.yaml with the run launched
+// from ~/proj) is granted too; the upward-only walk served that run decoys
+// (found dogfooding terraform's file() from a project root, 2026-08-02).
+// A run from $HOME itself must NOT sweep in every project's mounts.
+func TestProjectTemplateMountsDescendsIntoSubdirs(t *testing.T) {
+	home := withFixtureHome(t)
+	root, err := vaultRootDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	proj := filepath.Join(home, "code", "app")
+	manifest := filepath.Join(proj, "k8s", "secret.yaml")
+	if err := os.MkdirAll(filepath.Dir(manifest), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	reg := mount.RegistryPath(root)
+	if err := mount.AddMount(reg, mount.Entry{MountPath: manifest, ProfilePath: "p", TemplatePath: "t"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := projectTemplateMounts(proj); len(got) != 1 || got[0] != manifest {
+		t.Errorf("projectTemplateMounts(project root) = %v, want the subdir manifest mount", got)
+	}
+	if got := projectTemplateMounts(home); len(got) != 0 {
+		t.Errorf("projectTemplateMounts($HOME) = %v, want none (a run from ~ must not sweep in every project's mounts)", got)
+	}
+}

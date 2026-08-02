@@ -37,7 +37,7 @@ var (
 // Keyed by the short token a caller passes, not the display label used in
 // output — keep the two lists in this exact order so error messages and
 // --only's own help text stay in sync with printMigratePlan.
-var migrateCategories = []string{"env", "tfvars", "shell", "mcp", "aws", "kube", "terraform", "docker", "git", "gcp", "sops", "npmrc", "netrc", "pypirc", "loose"}
+var migrateCategories = []string{"env", "tfvars", "k8s-secret", "shell", "mcp", "aws", "kube", "terraform", "docker", "git", "gcp", "sops", "npmrc", "netrc", "pypirc", "loose"}
 
 // discovered holds one run's findings per category. runMigratePath resolves
 // each named target into one of these and hands it to applyMigrate — the
@@ -48,19 +48,25 @@ type discovered struct {
 	envFiles          []string
 	tfvarsFiles       []string
 	tfvarsComplexOnly []string
-	shellConfigs      []string
-	mcpConfigs        []string
-	awsProfiles       []string
-	k8sUsers          []string
-	terraformHosts    []string
-	dockerRegistries  []string
-	gitHosts          []string
-	gcpADCFiles       []string
-	sopsAgeFiles      []string
-	npmrcFiles        []string
-	netrcFiles        []string
-	pypircFiles       []string
-	looseSecretFiles  []string
+	k8sManifests      []string
+	// k8sManifestsComplexOnly is note-only (like tfvarsComplexOnly):
+	// recognized Secret manifests migrate must refuse to rewrite (block
+	// scalars, data: mixed with stringData:), surfaced so the plan can say
+	// "seen, nothing movable" instead of staying silent.
+	k8sManifestsComplexOnly []string
+	shellConfigs            []string
+	mcpConfigs              []string
+	awsProfiles             []string
+	k8sUsers                []string
+	terraformHosts          []string
+	dockerRegistries        []string
+	gitHosts                []string
+	gcpADCFiles             []string
+	sopsAgeFiles            []string
+	npmrcFiles              []string
+	netrcFiles              []string
+	pypircFiles             []string
+	looseSecretFiles        []string
 	// looseEmbeddedSkipped is note-only (like tfvarsComplexOnly): files that
 	// mix a secret with other content, which neutralize can't move whole.
 	// Populated only without --mount; with --mount they migrate as templates
@@ -236,6 +242,8 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 	envFiles := d.envFiles
 	tfvarsFiles := d.tfvarsFiles
 	tfvarsComplexOnly := d.tfvarsComplexOnly
+	k8sManifests := d.k8sManifests
+	k8sManifestsComplexOnly := d.k8sManifestsComplexOnly
 	shellConfigs := d.shellConfigs
 	mcpConfigs := d.mcpConfigs
 	awsProfiles := d.awsProfiles
@@ -267,21 +275,22 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 	// migrated even when the user explicitly excluded it. Fail loud
 	// instead, on every run, before anything is filtered or mutated.
 	categorySlices := map[string]*[]string{
-		"env":       &envFiles,
-		"tfvars":    &tfvarsFiles,
-		"shell":     &shellConfigs,
-		"mcp":       &mcpConfigs,
-		"aws":       &awsProfiles,
-		"kube":      &k8sUsers,
-		"terraform": &terraformHosts,
-		"docker":    &dockerRegistries,
-		"git":       &gitHosts,
-		"gcp":       &gcpADCFiles,
-		"sops":      &sopsAgeFiles,
-		"npmrc":     &npmrcFiles,
-		"netrc":     &netrcFiles,
-		"pypirc":    &pypircFiles,
-		"loose":     &looseSecretFiles,
+		"env":        &envFiles,
+		"tfvars":     &tfvarsFiles,
+		"k8s-secret": &k8sManifests,
+		"shell":      &shellConfigs,
+		"mcp":        &mcpConfigs,
+		"aws":        &awsProfiles,
+		"kube":       &k8sUsers,
+		"terraform":  &terraformHosts,
+		"docker":     &dockerRegistries,
+		"git":        &gitHosts,
+		"gcp":        &gcpADCFiles,
+		"sops":       &sopsAgeFiles,
+		"npmrc":      &npmrcFiles,
+		"netrc":      &netrcFiles,
+		"pypirc":     &pypircFiles,
+		"loose":      &looseSecretFiles,
 	}
 	if len(categorySlices) != len(migrateCategories) {
 		return false, fmt.Errorf("jit migrate: internal error: category table (%d) out of sync with --only categories (%d)", len(categorySlices), len(migrateCategories))
@@ -304,6 +313,9 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 		if !selected["tfvars"] {
 			tfvarsComplexOnly = nil // note-only companion of the tfvars category, scoped with it
 		}
+		if !selected["k8s-secret"] {
+			k8sManifestsComplexOnly = nil // note-only companion, scoped with its category
+		}
 	}
 
 	total := 0
@@ -321,6 +333,8 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 		}
 		printSkippedFindings(cmd.OutOrStdout(), home, len(tfvarsComplexOnly), "in Terraform "+pluralWord(len(tfvarsComplexOnly), "variable file", "variable files")+" whose secret-shaped values aren't simple one-line strings", tfvarsComplexOnly,
 			"Nothing migrate can move safely; they stay in place, and `jit scan` keeps reporting them.")
+		printSkippedFindings(cmd.OutOrStdout(), home, len(k8sManifestsComplexOnly), "in "+pluralWord(len(k8sManifestsComplexOnly), "Kubernetes Secret manifest", "Kubernetes Secret manifests")+" migrate can't rewrite provably right", k8sManifestsComplexOnly,
+			"They stay in place and `jit scan` keeps reporting them. Common causes: a templated manifest (Helm `{{ }}`) that isn't valid YAML, multi-line block-scalar values, or data: mixed with stringData: in one document.")
 		printSkippedFindings(cmd.OutOrStdout(), home, len(looseEmbeddedSkipped), pluralWord(len(looseEmbeddedSkipped), "file that mixes", "files that mix")+" a secret with other content", looseEmbeddedSkipped,
 			"Re-run with --mount to protect them in place as a live mount (the non-secret content is preserved); otherwise they stay put and `jit scan` keeps reporting them.")
 		return false, nil
@@ -354,9 +368,11 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 	// work that's about to be aborted anyway. This same plan is what
 	// --dry-run prints too (see below) — one rendering path, so the
 	// preview you confirm against is exactly the preview --dry-run shows.
-	printMigratePlan(cmd.OutOrStdout(), home, envFiles, tfvarsFiles, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, pypircFiles, looseSecretFiles)
+	printMigratePlan(cmd.OutOrStdout(), home, envFiles, tfvarsFiles, k8sManifests, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, pypircFiles, looseSecretFiles)
 	printSkippedFindings(cmd.OutOrStdout(), home, len(tfvarsComplexOnly), "in Terraform "+pluralWord(len(tfvarsComplexOnly), "variable file", "variable files")+" whose secret-shaped values aren't simple one-line strings", tfvarsComplexOnly,
 		"Nothing migrate can move safely; they stay in place, and `jit scan` keeps reporting them.")
+	printSkippedFindings(cmd.OutOrStdout(), home, len(k8sManifestsComplexOnly), "in "+pluralWord(len(k8sManifestsComplexOnly), "Kubernetes Secret manifest", "Kubernetes Secret manifests")+" migrate can't rewrite provably right", k8sManifestsComplexOnly,
+		"They stay in place and `jit scan` keeps reporting them. Common causes: a templated manifest (Helm `{{ }}`) that isn't valid YAML, multi-line block-scalar values, or data: mixed with stringData: in one document.")
 	printSkippedFindings(cmd.OutOrStdout(), home, len(looseEmbeddedSkipped), pluralWord(len(looseEmbeddedSkipped), "file that mixes", "files that mix")+" a secret with other content", looseEmbeddedSkipped,
 		"Re-run with --mount to protect them in place as a live mount (the non-secret content is preserved); otherwise they stay put and `jit scan` keeps reporting them.")
 
@@ -533,6 +549,34 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 					strings.Join(result.SkippedComplex, ", "))
 			}
 			fmt.Fprintf(out, "    run terraform through jit from that directory: jit run --profile %s -- terraform apply\n", result.ProfileName)
+		}
+		fmt.Fprintln(out)
+	}
+
+	if n := len(k8sManifests); n > 0 {
+		printMigrateResultCategory(out, pluralWord(n, "Kubernetes Secret manifest", "Kubernetes Secret manifests")+" migrated", n)
+		for _, path := range k8sManifests {
+			summary.checkGitHistory(path)
+			// profilesRoot is the manifest's OWN directory, the same rule as
+			// .env and loose files: an explicitly named manifest can sit under
+			// any project, so its profile lives alongside it.
+			result, err := migrate.ApplyK8sSecretManifest(v, filepath.Dir(path), path)
+			if err != nil {
+				return false, fmt.Errorf("jit migrate: %w", err)
+			}
+			if err := addMount(mount.Entry{MountPath: path, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
+				return false, fmt.Errorf("jit migrate: registering mount for %s: %w", path, err)
+			}
+			if err := summary.writePointerFile(path, result.ProfilePath); err != nil {
+				return false, fmt.Errorf("jit migrate: %w", err)
+			}
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  • %s -> profile %q (%s); backup: `jit vault get %s`, live mount (real manifest to `jit run` grants, rejectable decoys otherwise)\n",
+				displayPath(home, path), result.ProfileName, countWord(len(result.Variables), "secret", "secrets"), result.BackupPath)))
+			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
+			if result.ConvertedStringData {
+				_, _ = cWarn.Fprintf(out, "    note: stringData: rewritten as data:; the applied Secret is identical, and decoys are never valid base64\n")
+			}
+			fmt.Fprintf(out, "    apply through jit: jit run -- kubectl apply -f %s\n", displayPath(home, path))
 		}
 		fmt.Fprintln(out)
 	}
@@ -1110,6 +1154,12 @@ func discoverDirTarget(d *discovered, home, dir string) error {
 	}
 	d.tfvarsFiles = append(d.tfvarsFiles, tf...)
 	d.tfvarsComplexOnly = append(d.tfvarsComplexOnly, tfc...)
+	k8s, k8sc, err := migrate.DiscoverK8sSecretManifests(dir)
+	if err != nil {
+		return err
+	}
+	d.k8sManifests = append(d.k8sManifests, k8s...)
+	d.k8sManifestsComplexOnly = append(d.k8sManifestsComplexOnly, k8sc...)
 	mcps, err := migrate.DiscoverMCPConfigs(home, dir, false)
 	if err != nil {
 		return err
@@ -1234,8 +1284,18 @@ func discoverFileTarget(d *discovered, home, path string) error {
 	// Not a fixed machine-wide path — treat it as a project file (.env/tfvars/
 	// mcp/npmrc by name).
 	before := d.total()
+	beforeK8sComplex := len(d.k8sManifestsComplexOnly)
 	if err := discoverDirTarget(d, home, path); err != nil {
 		return err
+	}
+	// A Secret manifest the k8s migrator RECOGNIZED but refused (block
+	// scalars, mixed data:/stringData:) must not fall through to loose-secret
+	// detection: the loose --mount template would turn a stringData: value
+	// into a plaintext decoy that `kubectl apply` silently ships to a real
+	// cluster — the exact failure the k8s category's rejectable-decoy rule
+	// exists to prevent. The refusal note is the outcome.
+	if len(d.k8sManifestsComplexOnly) > beforeK8sComplex {
+		return nil
 	}
 	// If no structured category claimed this explicitly-named file, fall back
 	// to loose-secret detection: a file whose whole content is bare token(s)
@@ -1284,7 +1344,8 @@ func filterToTarget(items []string, target string) []string {
 // once, and applyMigrate assumes a unique set.
 func (d *discovered) dedupe() {
 	for _, s := range []*[]string{
-		&d.envFiles, &d.tfvarsFiles, &d.tfvarsComplexOnly, &d.shellConfigs,
+		&d.envFiles, &d.tfvarsFiles, &d.tfvarsComplexOnly,
+		&d.k8sManifests, &d.k8sManifestsComplexOnly, &d.shellConfigs,
 		&d.mcpConfigs, &d.awsProfiles, &d.k8sUsers, &d.terraformHosts,
 		&d.dockerRegistries, &d.gitHosts, &d.gcpADCFiles, &d.sopsAgeFiles,
 		&d.npmrcFiles, &d.netrcFiles, &d.pypircFiles, &d.looseSecretFiles, &d.looseEmbeddedSkipped,
@@ -1300,7 +1361,7 @@ func (d *discovered) dedupe() {
 func (d *discovered) total() int {
 	n := 0
 	for _, s := range [][]string{
-		d.envFiles, d.tfvarsFiles, d.shellConfigs, d.mcpConfigs, d.awsProfiles,
+		d.envFiles, d.tfvarsFiles, d.k8sManifests, d.shellConfigs, d.mcpConfigs, d.awsProfiles,
 		d.k8sUsers, d.terraformHosts, d.dockerRegistries, d.gitHosts,
 		d.gcpADCFiles, d.sopsAgeFiles, d.npmrcFiles, d.netrcFiles, d.pypircFiles,
 		d.looseSecretFiles,

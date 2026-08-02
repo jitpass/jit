@@ -120,6 +120,10 @@ const (
 	// that matches none of the structured formats above. Origin is the file
 	// path; the whole file was the secret.
 	ClassLooseFile = "loose_file" // #nosec G101 -- provenance class label, not a credential
+	// ClassK8sSecret is a value migrated out of a Kubernetes Secret
+	// manifest's data:/stringData: block (distinct from ClassKube, which is
+	// a kubeconfig credential). Origin is the manifest path.
+	ClassK8sSecret = "k8s_secret" // #nosec G101 -- provenance class label, not a credential
 )
 
 // envelopeAAD is the additional authenticated data a version-2+ payload is

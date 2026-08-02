@@ -129,6 +129,14 @@ func Doctor(home, pathEnv, shell string) []DoctorCheck {
 			continue
 		}
 
+		// A run-grant-wrap has no profile and no named mount — which
+		// project mounts apply is decided per invocation from the tool's
+		// cwd, so the shim + real binary resolving is all doctor can check.
+		if entry.IsRunGrant() {
+			checks = append(checks, DoctorCheck{Name: name, OK: true, Detail: "shim and real binary resolve; grants project mounts via `jit run --grant-only`"})
+			continue
+		}
+
 		profilePath := filepath.Join(home, ".jit", "profiles", entry.Profile+".yaml")
 		if _, statErr := os.Stat(profilePath); statErr != nil {
 			checks = append(checks, DoctorCheck{Name: name, OK: false, Detail: "profile " + entry.Profile + " missing at " + profilePath})

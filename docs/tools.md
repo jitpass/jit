@@ -31,7 +31,9 @@ own. You run them exactly as before:
 - **git**: `git push` / `fetch` over HTTPS, submodules, LFS. [git](./migrate/git.md)
 - **Docker**: `docker login` / `logout`, and compose/buildx registry pulls.
   [docker](./migrate/docker.md)
-- **kubectl**: and any kubeconfig-based client. [kubernetes](./migrate/kubernetes.md)
+- **kubectl**: and any kubeconfig-based client. [kubernetes](./migrate/kubernetes.md);
+  Secret manifests on disk are their own surface, see
+  [Kubernetes Secret manifests](./migrate/kubernetes-secret-manifests.md)
 - **Shell exports**: your `~/.zshrc` vars, in every new shell. [shell configs](./migrate/shell-configs.md)
 - **MCP servers**: the server launches through jit automatically. [MCP / AI tools](./migrate/mcp.md)
 

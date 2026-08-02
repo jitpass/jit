@@ -159,30 +159,47 @@ func dirEnvLayers(entries []mount.Entry, dir, mode string) []envLayer {
 	return layers
 }
 
-// projectTemplateMounts returns the PROJECT-local template mounts (npmrc
-// and the like — non-empty TemplatePath) at or above cwd but strictly below
-// $HOME, walking git/direnv style. These are file-delivered secrets a tool
-// reads from the file itself, so a run grants them (never swaps — an inert
-// file would starve the tool). Machine-global mounts are deliberately
-// excluded: they are granted only by an explicit `--with`, never because a
-// run walked into a directory. Exclusion is by KNOWN global path
-// (globalMountPaths), not by directory position — a `~/.npmrc` sits directly
-// at $HOME (so the walk's `d != home` bound already skips it), but the gcloud
-// ADC and sops keys live in $HOME SUBDIRECTORIES the walk visits, so they
-// must be filtered out explicitly or a run launched under ~/.config/gcloud
-// would grant the global ADC with no disclosed challenge. Best-effort: a
-// registry read failure yields nothing, and jit run proceeds without the grant.
+// projectTemplateMounts returns the PROJECT-local template mounts (npmrc,
+// Kubernetes Secret manifests and the like — non-empty TemplatePath) that
+// belong to the project a run launches from: at or above cwd (walking
+// git/direnv style) and, when cwd itself sits strictly below $HOME, also
+// anywhere BELOW cwd. The downward half exists for the standard repo
+// layout: a manifest migrated at ~/proj/k8s/secret.yaml must be granted to
+// `jit run -- kubectl apply -f k8s/secret.yaml` launched from ~/proj — the
+// upward-only walk served that run decoys, which fails safe but breaks the
+// documented promise (found dogfooding terraform's file() from a project
+// root, 2026-08-02). The descent never applies to cwd == $HOME (a run from
+// ~ must not sweep in every project's mounts on the machine), and these are
+// file-delivered secrets a tool reads from the file itself, so a run grants
+// them (never swaps — an inert file would starve the tool).
+//
+// Machine-global mounts are deliberately excluded: they are granted only by
+// an explicit `--with`, never because a run walked into (or above) a
+// directory. Exclusion is by KNOWN global path (globalMountPaths), not by
+// directory position — a `~/.npmrc` sits directly at $HOME (so the walk's
+// `d != home` bound already skips it), but the gcloud ADC and sops keys
+// live in $HOME SUBDIRECTORIES the walk visits, so they must be filtered
+// out explicitly or a run launched under ~/.config/gcloud would grant the
+// global ADC with no disclosed challenge. Best-effort: a registry read
+// failure yields nothing, and jit run proceeds without the grant.
 func projectTemplateMounts(cwd string) []string {
 	entries, home, err := loadMountRegistry()
 	if err != nil {
 		return nil
 	}
 	global := globalMountPaths(home)
+	seen := map[string]bool{}
 	var out []string
+	add := func(path string) {
+		if !seen[path] {
+			seen[path] = true
+			out = append(out, path)
+		}
+	}
 	for d := cwd; d != home; {
 		for _, e := range entries {
 			if e.TemplatePath != "" && filepath.Dir(e.MountPath) == d && !global[e.MountPath] {
-				out = append(out, e.MountPath)
+				add(e.MountPath)
 			}
 		}
 		parent := filepath.Dir(d)
@@ -190,6 +207,14 @@ func projectTemplateMounts(cwd string) []string {
 			break
 		}
 		d = parent
+	}
+	if cwd != home && strings.HasPrefix(cwd, home+string(filepath.Separator)) {
+		prefix := cwd + string(filepath.Separator)
+		for _, e := range entries {
+			if e.TemplatePath != "" && strings.HasPrefix(e.MountPath, prefix) && !global[e.MountPath] {
+				add(e.MountPath)
+			}
+		}
 	}
 	return out
 }
@@ -269,16 +294,20 @@ func unmigratedSiblingLayers(dir, mode string, merged []envLayer) []string {
 //     to disambiguate. --mode without any layers is also a hard error.
 //
 // injectionProfileForRun wraps resolveInjectionProfile with jit run's one
-// tolerance: a run that carries global --with grants and named neither
-// --profile nor --mode may inject NOTHING and exist purely to grant a global
-// mount (a grant-wrapped `gcloud` typed in a non-project directory is exactly
-// this). For that case a missing project profile is not an error: the run
-// proceeds with an empty injection profile. An explicit --profile or --mode
-// that fails to resolve still errors, and a run with no --with still requires
-// a profile as before.
-func injectionProfileForRun(cwd, explicit, mode string, hasWith bool, w io.Writer) (profile.Profile, []string, error) {
+// tolerance: a run that named neither --profile nor --mode and carries
+// either global --with grants or --grant-only may inject NOTHING and exist
+// purely to grant mounts. The two cases sharing the tolerance: a
+// grant-wrapped `gcloud` typed in a non-project directory (--with), and a
+// run-grant-wrapped `kubectl` typed anywhere at all (--grant-only, which
+// still grants whatever project template mounts apply at cwd via
+// requestRunCompat — that path never depended on the injection profile).
+// For those a missing project profile is not an error: the run proceeds
+// with an empty injection profile. An explicit --profile or --mode that
+// fails to resolve still errors, and a plain run still requires a profile
+// as before.
+func injectionProfileForRun(cwd, explicit, mode string, grantsOnly bool, w io.Writer) (profile.Profile, []string, error) {
 	p, grantMounts, err := resolveInjectionProfile("jit run", cwd, explicit, mode, w)
-	if err != nil && hasWith && explicit == "" && mode == "" {
+	if err != nil && grantsOnly && explicit == "" && mode == "" {
 		return profile.Profile{}, nil, nil
 	}
 	return p, grantMounts, err

@@ -78,7 +78,15 @@ func annotateRemedies(findings []Finding, home string) {
 		case isTerraformState(f.FilePath):
 			f.Remedy = RemedyManual
 		case f.FindingType == FindingTypeIACVariableFile &&
-			!strings.HasSuffix(f.FilePath, ".tfvars"):
+			!strings.HasSuffix(f.FilePath, ".tfvars") &&
+			f.Confidence != ConfidenceHigh:
+			// Only the LEGACY Kubernetes finding (a "kind: Secret" file that
+			// wouldn't parse as YAML, line-scanned at ConfidenceMedium) stays
+			// manual: migrate needs a parseable manifest. A structurally
+			// parsed Secret manifest (ConfidenceHigh, buildK8sSecretFinding)
+			// falls through to RemedyMigrate — `jit migrate <path>` either
+			// converts it to a rejectable-decoy mount or explains exactly why
+			// it refused (block scalars, mixed data:/stringData:).
 			f.Remedy = RemedyManual
 		case f.FindingType == FindingTypeExposedSecret &&
 			(f.ProductionIndicatorMatch || !isPure(f.FilePath)):

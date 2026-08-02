@@ -67,8 +67,8 @@ data:
 	if len(findings) != 1 {
 		t.Fatalf("got %d findings, want 1", len(findings))
 	}
-	if !strings.Contains(findings[0].Evidence, "detection only") {
-		t.Errorf("evidence = %q, want the k8s detection-only advisory", findings[0].Evidence)
+	if !strings.Contains(findings[0].Evidence, "`jit migrate` can move its values") {
+		t.Errorf("evidence = %q, want the k8s migrate advisory", findings[0].Evidence)
 	}
 }
 
