@@ -455,7 +455,7 @@ func buildTfvarsFinding(cfg Config, path string) (Finding, error) {
 	// so the file's most actionable content was invisible. This is the same
 	// gap .env findings had; describeEnvHits is shared with them so the two
 	// categories word it identically.
-	tokens, shaped, err := scanTfvarsAssignments(cfg, path)
+	tokens, shaped, shapedUnfReason, err := scanTfvarsAssignments(cfg, path)
 	if err != nil {
 		return Finding{}, err
 	}
@@ -493,13 +493,27 @@ func buildTfvarsFinding(cfg Config, path string) (Finding, error) {
 	case len(shaped) > 0:
 		f.Severity = SeverityHigh
 		leadKey = shaped[0]
-		f.Evidence = fmt.Sprintf("contains %q, a variable name that looks like a real credential", leadKey)
+		if shapedUnfReason != "" {
+			// Every shaped key here survived on --unfiltered alone: say so
+			// instead of asserting the names look like real credentials —
+			// the gate concluded the opposite, and the finding's whole job
+			// in this view is to show what the gate hid and why.
+			f.UnfilteredOnly = true
+			f.UnfilteredReason = shapedUnfReason
+			f.Evidence = shapedNamesEvidence(shaped)
+		} else {
+			f.Evidence = fmt.Sprintf("contains %q, a variable name that looks like a real credential", leadKey)
+		}
 	default:
 		f.Severity = SeverityInfo
 		f.Evidence = "terraform variable file: `jit migrate` can move its secret values into the vault"
 	}
-	if rest := describeEnvHits(tokens, shaped, leadVendor, leadKey); rest != "" {
-		f.Evidence += "; also " + rest
+	// An UnfilteredOnly evidence line already names the whole shaped set
+	// (shapedNamesEvidence), so the "; also …" append would restate it.
+	if !f.UnfilteredOnly {
+		if rest := describeEnvHits(tokens, shaped, leadVendor, leadKey); rest != "" {
+			f.Evidence += "; also " + rest
+		}
 	}
 
 	f.RecordID = RecordID(f.FindingType, f.FilePath, nil)
@@ -516,15 +530,19 @@ var tfvarsAssignment = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*(
 // variables holding them: values matching a known vendor token format, and
 // secret-shaped variable NAMES with a non-empty value. Mirrors what
 // buildEnvFileFinding collects, so both categories can share describeEnvHits.
-func scanTfvarsAssignments(cfg Config, path string) ([]envTokenHit, []string, error) {
+//
+// shapedUnfReason is non-empty only when EVERY shaped key survived on
+// --unfiltered alone (it holds the first key's gate reason) — the caller
+// tags the finding UnfilteredOnly in that case, since a normal scan would
+// have reported the file without the name-signal escalation.
+func scanTfvarsAssignments(cfg Config, path string) (tokens []envTokenHit, shaped []string, shapedUnfReason string, err error) {
 	file, err := openFile(path)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	defer file.Close()
 
-	var tokens []envTokenHit
-	var shaped []string
+	normalShaped := false
 	scanner := newLineScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -543,14 +561,31 @@ func scanTfvarsAssignments(cfg Config, path string) ([]envTokenHit, []string, er
 			tokens = append(tokens, envTokenHit{key: key, vendor: vendor, verified: verified})
 			continue
 		}
-		if LooksLikeSecretKey(key) && !cfg.suppressName(key) && !cfg.suppressValue(raw) {
+		if LooksLikeSecretKey(key) {
+			suppress, unfReason := cfg.nameGate(key)
+			if suppress {
+				continue
+			}
+			if unfReason == "" {
+				if suppress, unfReason = cfg.valueGate(raw); suppress {
+					continue
+				}
+			}
 			shaped = append(shaped, key)
+			if unfReason == "" {
+				normalShaped = true
+			} else if shapedUnfReason == "" {
+				shapedUnfReason = unfReason
+			}
 		}
 	}
 	if err := lineScanErr(scanner); err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
-	return tokens, shaped, nil
+	if normalShaped {
+		shapedUnfReason = ""
+	}
+	return tokens, shaped, shapedUnfReason, nil
 }
 
 // buildLegacyK8sFinding is the pre-structured-parse fallback for a file

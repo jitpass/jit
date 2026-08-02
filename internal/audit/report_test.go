@@ -38,7 +38,7 @@ func TestWriteHumanReportNeverLeaksRawValue(t *testing.T) {
 	}
 	for _, want := range []string{
 		"alex@Alexs-MacBook-Pro",
-		"RISK LEVEL: CRITICAL",
+		"✗ CRITICAL — exposure",
 		"Shell Configs",
 		"/Users/alex/.zshrc",
 		":12",
@@ -85,7 +85,9 @@ func TestWriteHumanReportTagsArchivedFindings(t *testing.T) {
 	if strings.Contains(out, active.FilePath+" [archived]") {
 		t.Errorf("expected the active path to carry no tag, got:\n%s", out)
 	}
-	if !strings.Contains(out, "name such a file explicitly to convert it") {
+	// A short phrase from the legend's head: the tail can land on a wrapped
+	// continuation line, so a longer substring would break on window width.
+	if !strings.Contains(out, "lives under an archived/backup-looking folder") {
 		t.Errorf("expected the [archived] legend explaining how to convert a named archived file, got:\n%s", out)
 	}
 
@@ -308,7 +310,7 @@ func TestWriteHumanReportCleanScan(t *testing.T) {
 	var buf bytes.Buffer
 	WriteHumanReport(&buf, nil, summary, "")
 	out := buf.String()
-	if !strings.Contains(out, "RISK LEVEL: CLEAN") {
+	if !strings.Contains(out, "● CLEAN — exposure 0/100") {
 		t.Errorf("expected CLEAN risk level in output, got:\n%s", out)
 	}
 	if !strings.Contains(out, "looks clean") {
@@ -381,17 +383,18 @@ func TestReportsShowProtectedCountOnlyWhenNonZero(t *testing.T) {
 	var human, md bytes.Buffer
 	WriteHumanReport(&human, nil, withCount, "")
 	WriteMarkdownReport(&md, nil, withCount)
-	for name, out := range map[string]string{"human": human.String(), "markdown": md.String()} {
-		if !strings.Contains(out, "Already protected by jit: 3") {
-			t.Errorf("%s report missing the protected-by-jit line:\n%s", name, out)
-		}
+	if !strings.Contains(human.String(), "3 live mounts already protected") {
+		t.Errorf("human report missing the protected-by-jit line:\n%s", human.String())
+	}
+	if !strings.Contains(md.String(), "Already protected by jit: 3") {
+		t.Errorf("markdown report missing the protected-by-jit line:\n%s", md.String())
 	}
 
 	var humanZero, mdZero bytes.Buffer
 	WriteHumanReport(&humanZero, nil, base, "")
 	WriteMarkdownReport(&mdZero, nil, base)
 	for name, out := range map[string]string{"human": humanZero.String(), "markdown": mdZero.String()} {
-		if strings.Contains(out, "Already protected") {
+		if strings.Contains(out, "lready protected") {
 			t.Errorf("%s report shows a protected line at zero count:\n%s", name, out)
 		}
 	}

@@ -79,7 +79,14 @@ import (
 // run) aborted the entire scan, so nothing was reported anywhere; now the rest
 // of the scan finishes and this field is what keeps the gap from reading as an
 // all-clear. Absent on a clean run.
-const SchemaVersion = "0.14.0"
+// 0.15.0 added two additive finding fields, `unfiltered_only` and
+// `unfiltered_reason`: set only under Config.Unfiltered, on findings the
+// everyday scan's suppression gates would have dropped (or reported at a
+// lower severity), with the reason naming the gate rule that fired. Before
+// them an unfiltered report was indistinguishable from a normal one
+// finding-by-finding, which defeated the flag's stated purpose of auditing
+// what the filters hide. Absent (false/"") on every normal run.
+const SchemaVersion = "0.15.0"
 
 // ScannerName identifies this tool in the shared NDJSON envelope, matching
 // bumblebee's record shape so a receiver can co-ingest both (RFC.md §4).
@@ -238,6 +245,18 @@ type Finding struct {
 	// Empty for findings with no value (a file-presence finding is its own
 	// cause). Consumers can collapse on it the way the human report does.
 	CauseGroup string `json:"cause_group,omitempty"`
+
+	// UnfilteredOnly marks a finding that exists — or carries this severity —
+	// only because Config.Unfiltered turned the suppression gates off. The
+	// everyday scan either drops it entirely (shell/cred/tfvars name-gated
+	// findings) or reports the file without this escalation (a .env whose
+	// only secret-shaped names are gate-suppressed). UnfilteredReason is the
+	// gate rule that fired, worded by NonSecretNameReason/NonSecretValueReason
+	// for the report to print verbatim. Both are zero on every normal run,
+	// which is what lets a reader diff the two views inside ONE report
+	// instead of running the scan twice.
+	UnfilteredOnly   bool   `json:"unfiltered_only,omitempty"`
+	UnfilteredReason string `json:"unfiltered_reason,omitempty"`
 
 	// rawValueDigest is sha256(raw value), hex — the identity
 	// annotateCauseGroups groups on. Unexported and never serialized: it
@@ -427,13 +446,33 @@ func nowISO8601() string {
 	return time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 }
 
-// suppressName / suppressValue are the single gate every scanner asks before
+// nameGate / valueGate are the single gate every scanner asks before
 // dropping a secret-shaped finding, so Config.Unfiltered has one place to
 // switch off rather than a bool threaded through each call site.
-func (c Config) suppressName(key string) bool {
-	return !c.Unfiltered && LooksLikeNonSecretName(key)
+//
+// suppress answers "drop it?" exactly as the old boolean gates did. reason
+// is non-empty only in the one remaining combination: the gate WOULD have
+// dropped it but Unfiltered kept it alive — the caller stamps it onto
+// Finding.UnfilteredOnly/UnfilteredReason so the report can mark the
+// finding as gate-suppressed instead of presenting it as a normal one.
+func (c Config) nameGate(key string) (suppress bool, reason string) {
+	r := NonSecretNameReason(key)
+	if r == "" {
+		return false, ""
+	}
+	if c.Unfiltered {
+		return false, r
+	}
+	return true, ""
 }
 
-func (c Config) suppressValue(value string) bool {
-	return !c.Unfiltered && LooksLikeNonSecretValue(value)
+func (c Config) valueGate(value string) (suppress bool, reason string) {
+	r := NonSecretValueReason(value)
+	if r == "" {
+		return false, ""
+	}
+	if c.Unfiltered {
+		return false, r
+	}
+	return true, ""
 }

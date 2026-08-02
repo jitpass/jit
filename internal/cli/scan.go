@@ -110,8 +110,9 @@ var scanCmd = &cobra.Command{
 		"would miss. Named paths never pull in the fixed machine-wide credential " +
 		"stores (~/.aws, ~/.ssh, …); symlinks are not followed.\n\n" +
 		"Exposure score\n\n" +
-		"jit reports a 0-100 exposure score (EXPOSURE:) next to the categorical " +
-		"RISK LEVEL. It is computed entirely locally and deterministically:\n\n" +
+		"jit reports a 0-100 exposure score next to the categorical risk level " +
+		"(the report's `✗ CRITICAL — exposure 85/100` banner). It is computed " +
+		"entirely locally and deterministically:\n\n" +
 		"  1. Sum a severity-weighted load over all findings: critical 30, high " +
 		"15, medium 6, low 2, info 0. (info is detection-only, not an at-rest " +
 		"secret, so it adds nothing.)\n" +
@@ -119,7 +120,7 @@ var scanCmd = &cobra.Command{
 		"\"prod\"/\"production\" token) or a public IP address, the same signals " +
 		"that escalate the whole scan to CRITICAL.\n" +
 		"  3. Cap the total at 100.\n" +
-		"  4. Clamp into the band of the scan's RISK LEVEL, so the number and the " +
+		"  4. Clamp into the band of the scan's risk level, so the number and the " +
 		"label can never disagree: clean 0, low 10-39, medium 40-64, high 65-84, " +
 		"critical 85-100.\n\n" +
 		"Run with --score to print just the score line and exit.\n\n" +
@@ -127,7 +128,7 @@ var scanCmd = &cobra.Command{
 		"By default jit scan always exits 0: finding secrets is its job, not an " +
 		"error, and a read-only report shouldn't fail a shell. To use it as a " +
 		"GATE (a pre-commit hook, a CI step), give it a threshold with --fail-on " +
-		"<level>: the scan exits 2 when its RISK LEVEL is at or above that " +
+		"<level>: the scan exits 2 when its risk level is at or above that " +
 		"level, e.g. `jit scan --fail-on high`. --fail-on any trips on anything " +
 		"that isn't clean.\n\n" +
 		"The status is 2, never 1, so a tripped gate is distinguishable from the " +
@@ -325,7 +326,7 @@ func writeScanReport(w io.Writer, format string, findings []audit.Finding, summa
 func init() {
 	scanCmd.Flags().StringVar(&scanFormat, "format", "text", `output format: "text" (default), "markdown"/"md", or "ndjson"`)
 	scanCmd.Flags().StringVarP(&scanOutput, "output", "o", "", "write the report to this file instead of stdout")
-	scanCmd.Flags().BoolVar(&scanUnfiltered, "unfiltered", false, "show findings jit normally judges to be settings, paths, browser-public build variables or unfilled template values; use it to audit what the filters are hiding")
+	scanCmd.Flags().BoolVar(&scanUnfiltered, "unfiltered", false, "show findings jit normally judges to be settings, paths, browser-public build variables or unfilled template values; each is tagged [unfiltered] with the rule that hid it, so one run audits what the filters are hiding")
 	scanCmd.Flags().BoolVar(&scanScore, "score", false, `print only the exposure score (e.g. "Exposure: 92/100 (CRITICAL)") and exit`)
 	scanCmd.Flags().BoolVar(&scanFull, "full", false, "print the full finding inventory (categories, severities, every file and line) instead of the coverage summary")
 	scanCmd.Flags().StringVar(&scanFailOn, "fail-on", "", "exit 2 when the scan's risk level is at or above this: critical, high, medium, low, or any (default: always exit 0)")

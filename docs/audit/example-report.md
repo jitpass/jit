@@ -24,31 +24,30 @@ file the command will rewrite, listed for consent) and what only you can do
 categories, no severity labels - those live in `--full`, below.
 
 ```
-jit scan — alex@Alexs-MacBook-Pro — scanned ~/ (7 files) — 1ms
+jit scan — alex@Alexs-MacBook-Pro — scanned ~/ (7 files) — 3ms
 
   YOUR SECRETS: 7 — 0 protected by jit (0%)
-  ▱▱▱▱▱▱▱▱▱▱  to 100%: one command +71% · 2 thing(s) only you can fix +28%
+  ▱▱▱▱▱▱▱▱▱▱  to 100%: one command +85% · 1 thing only you can fix +14%
 
-  jit will protect these — 5 secret(s) in 4 file(s), 0% → 71%
+  jit will protect these — 6 secrets in 5 files, 0% → 85%
       → jit migrate
-        one command; it vaults the values and rewrites 4 file(s) —
-        every tool that reads them keeps working:
-        ~/.aws/credentials  default/aws_secret_access_key
-        ~/.zshrc            STRIPE_API_KEY, DB_PASSWORD
-        ~/code/webapp/.env  secret-shaped values
-        ~/token.txt         JSON Web Token (JWT)
-      these sat in plaintext until now — rotating after vaulting is
-      the gold standard · every change is reversible: jit migrate undo
+        one command; it vaults the values and rewrites 5 files — every tool that
+        reads them keeps working:
+        ~/.aws/credentials        default/aws_secret_access_key
+        ~/.zshrc                  STRIPE_API_KEY, DB_PASSWORD
+        ~/code/webapp/.env        secret-shaped values
+        ~/infra/k8s/secrets.yaml  secret-shaped values
+        ~/token.txt               JSON Web Token (JWT)
+      these sat in plaintext until now — rotating after vaulting is the gold
+      standard · every change is reversible: jit migrate undo
 
-  only you can protect these — 2 secret(s), 71% → 100%
+  only you can protect these — 1 secret, 85% → 100%
     ! A production database password in 2 copies of a file  (1)
       ~/Downloads/customer-secrets-report.txt … and 1 more
       → rotate it now, then delete every copy
-    ! A Kubernetes Secret manifest with real values  (1)
-      ~/infra/k8s/secrets.yaml
-      → seal it (sealed-secrets/SOPS) or move it to a real secret store
 
-  full inventory: jit scan --full · ndjson for machines
+  → jit scan --full   the full inventory · ndjson for machines
+
   No secret values are ever printed in full.
 ```
 
@@ -64,26 +63,24 @@ risk level. A targeted `jit scan <path>` prints this view by default - a scan
 you aimed at one file is a request for its inventory.
 
 ```
-jit scan: risk report for alex@Alexs-MacBook-Pro
-scan time: 2026-07-28T20:18:53.962Z          duration: 1ms
+jit scan — alex@Alexs-MacBook-Pro — scanned ~/ (7 files) — full inventory — 1ms
 
-  RISK LEVEL: CRITICAL
-  EXPOSURE:   100/100
-  (2 production-indicator/public-IP match(es) found)
-    - ~/Downloads/customer-secrets-report.txt
-    - ~/exports/customer-secrets-report.txt
+  ✗ CRITICAL — exposure 100/100
+    2 production-indicator/public-IP matches — each file itemized in its
+    category below
+    e.g. ~/Downloads/customer-secrets-report.txt … and 1 more
 
-  Shell Configs          2 finding(s)
-  .env Files             1 finding(s)
-  Credential Files       1 finding(s)
-  AI Tool / MCP Configs  0 finding(s)
-  Private Keys           0 finding(s)
-  IaC Variable Files     1 finding(s)
-  Wrappable CLI Tokens   0 finding(s)
-  SOPS Age Keys          0 finding(s)
-  Exposed Secrets        3 finding(s)
-  ───────────────────────────────────
-  Total: 8 finding(s)
+  Shell Configs          2
+  .env Files             1
+  Credential Files       1
+  AI Tool / MCP Configs  0
+  Private Keys           0
+  IaC Variable Files     1
+  Wrappable CLI Tokens   0
+  SOPS Age Keys          0
+  Exposed Secrets        3
+  ────────────────────────
+  Total                  8
 
 [Shell Configs] 2
   • ~/.zshrc
@@ -92,7 +89,8 @@ scan time: 2026-07-28T20:18:53.962Z          duration: 1ms
               └ value matches Stripe Live Secret Key's known token format
 
     :2  HIGH  DB_PASSWORD     hunt**********
-              └ export statement assigns a value to a key name that looks like a secret
+              └ export statement assigns a value to a key name that looks like a
+                secret
 
 [.env Files] 1
   • ~/code/webapp/.env
@@ -108,7 +106,8 @@ scan time: 2026-07-28T20:18:53.962Z          duration: 1ms
 [IaC Variable Files] 1
   • ~/infra/k8s/secrets.yaml
 
-    HIGH  kubernetes Secret manifest of type kubernetes.io/basic-auth: holds a username/password pair
+    HIGH  kubernetes Secret manifest of type kubernetes.io/basic-auth: holds a
+          username/password pair
 
 [Exposed Secrets] 3
   • ~/Downloads/customer-secrets-report.txt
@@ -124,16 +123,25 @@ scan time: 2026-07-28T20:18:53.962Z          duration: 1ms
   • ~/token.txt
 
     :1  HIGH      JSON Web Token (JWT)                                                eyJh**********
-                  └ value matches JSON Web Token (JWT)'s known token format
+                  └ value matches its known token format
 
-Run `jit migrate ~/.zshrc --dry-run` to see the guided fix plan for it.
-No secret values are ever printed in full. Run `jit scan --format ndjson` for machine-readable output (same redaction rules apply).
+
+  → jit migrate ~/.zshrc --dry-run   the guided fix plan for the first flagged
+    file
+  No secret values are ever printed in full · jit scan --format ndjson for
+  machines, same redaction
 ```
+
+Under `--unfiltered`, the same view adds an amber `○ suppression off` notice
+at the top, tags each finding the everyday gates would have hidden with
+`[unfiltered]`, and explains the rule that hid it on a
+`└ shown by --unfiltered: …` line — so one report answers what the filters
+are hiding, instead of needing a diff of two runs.
 
 ## How to read a finding block (`--full`)
 
-Each non-empty category opens with a bold header and its finding count
-(`[Shell Configs] 2`). Within it, every block gets a `•`-marked header (a
+Each non-empty category opens with a bracketed header and its dim finding
+count (`[Shell Configs] 2`). Within it, every block gets a `•`-marked header (a
 file path, or a pattern name for findings collapsed across files), and each
 finding is one aligned row: line number (when known), severity, key name, and
 masked value line up in columns, with the free-form reason hanging on its own

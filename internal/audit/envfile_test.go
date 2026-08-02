@@ -482,10 +482,44 @@ HIBOB_SERVICE_USER_TOKEN=service-user-token-here
 	if findings[0].Severity == SeverityLow {
 		t.Error("--unfiltered must surface the names the gates suppressed")
 	}
-	for _, want := range []string{"VITE_AUTH0_DOMAIN", "CALLBACK_PRIVATE_KEY_PATH", "HIBOB_SERVICE_USER_TOKEN"} {
-		if !strings.Contains(findings[0].Evidence, want) {
-			t.Errorf("unfiltered evidence should name %q, got %q", want, findings[0].Evidence)
-		}
+	// The escalation exists only because the gates are off, and the finding
+	// must SAY so — the honest evidence counts the suppressed names rather
+	// than asserting they look like real credentials (the gate concluded
+	// the opposite), and the tag + reason are what let the report mark it.
+	if !findings[0].UnfilteredOnly {
+		t.Error("a gate-suppressed escalation must be tagged UnfilteredOnly")
+	}
+	if findings[0].UnfilteredReason == "" {
+		t.Error("an UnfilteredOnly finding must carry the gate rule that fired")
+	}
+	if want := `contains "VITE_AUTH0_DOMAIN" and 2 more secret-shaped names`; findings[0].Evidence != want {
+		t.Errorf("unfiltered evidence = %q, want %q", findings[0].Evidence, want)
+	}
+}
+
+// TestScanEnvFilesMixedGatesKeepNormalLead pins the lead choice: a file
+// holding one genuinely secret-shaped name next to gate-suppressed ones is a
+// NORMAL finding (no UnfilteredOnly tag), led by the key the everyday scan
+// would report — never by the suppressed half.
+func TestScanEnvFilesMixedGatesKeepNormalLead(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, "app"))
+	writeFile(t, filepath.Join(home, "app", ".env"), `VITE_AUTH0_DOMAIN=id.blockaid.io
+DESCOPE_MGMT_KEY=K2aP9vQ7wX4mR8nT1bZ6
+`)
+
+	findings, err := ScanEnvFiles(Config{HomeDir: home, Unfiltered: true})
+	if err != nil {
+		t.Fatalf("ScanEnvFiles(unfiltered): %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+	if findings[0].UnfilteredOnly {
+		t.Error("a finding the everyday scan would also report must not be tagged UnfilteredOnly")
+	}
+	if !strings.Contains(findings[0].Evidence, `"DESCOPE_MGMT_KEY"`) {
+		t.Errorf("the normal key must lead the evidence, got %q", findings[0].Evidence)
 	}
 }
 

@@ -137,6 +137,13 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 	var prodMatch, ipMatch, secretShaped, tokenMatch, entropyMatch bool
 	var publicIP, secretShapedKey, tokenVendor, entropyKey string
 	var tokenVerified bool
+	// The unfiltered bookkeeping: whether any secret-shaped key passed the
+	// REAL gates (normalShaped, with the first such key as the honest lead),
+	// and the first gate reason for a key that survived on --unfiltered
+	// alone. When every shaped key is gate-suppressed, the finding is tagged
+	// UnfilteredOnly instead of claiming the names look like credentials.
+	var normalShaped bool
+	var normalShapedKey, shapedUnfReason string
 	// EVERY credential in the file, not just the first one that set a flag
 	// above. The flags decide severity (one match is enough to escalate);
 	// these decide what the report actually names. A real .env holding a
@@ -179,18 +186,27 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 		// file (a real token pasted into a .env.example is exactly the
 		// kind of accident worth catching) and even when commented out
 		// (still plaintext at rest).
-		if vendor, verified, ok := MatchKnownTokenPattern(rawValue); ok &&
+		if vendor, verified, ok := MatchKnownTokenPattern(rawValue); ok {
 			// A JWT is only a container format, so it proves nothing on its own
 			// when the variable holding it is one the vendor documents as
 			// public — SUPABASE_ANON_KEY is a JWT by design. Any other format
 			// here is issuer-specific and keeps escalating regardless of the
 			// name, which is what keeps a real sk_live_ key behind a
 			// NEXT_PUBLIC_ prefix reported.
-			!(IsAmbiguousTokenFormat(vendor) && cfg.suppressName(key)) {
-			if !tokenMatch {
-				tokenMatch, tokenVendor, tokenVerified = true, vendor, verified
+			ambiguousDrop := false
+			unfReason := ""
+			if IsAmbiguousTokenFormat(vendor) {
+				if r := NonSecretNameReason(key); r != "" {
+					if cfg.Unfiltered {
+						unfReason = "a JWT is a container format, not proof of a secret, and " + r
+					} else {
+						ambiguousDrop = true
+					}
+				}
 			}
-			tokenHits = append(tokenHits, envTokenHit{key: key, vendor: vendor, verified: verified})
+			if !ambiguousDrop {
+				tokenHits = append(tokenHits, envTokenHit{key: key, vendor: vendor, verified: verified, unfilteredReason: unfReason})
+			}
 		}
 		// Only active (uncommented) variables count toward this, only for
 		// real files (not templates — see below), and rawValue being
@@ -213,13 +229,25 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 		// path-holding variables from the NAME signal only — the value checks
 		// above still run on them, so a real credential behind a public
 		// prefix is still caught.
-		if !isTemplate && m[1] == "" && rawValue != "" && LooksLikeSecretKey(key) &&
-			!cfg.suppressName(key) && !cfg.suppressValue(rawValue) {
-			if !secretShaped {
-				secretShaped = true
-				secretShapedKey = key
+		if !isTemplate && m[1] == "" && rawValue != "" && LooksLikeSecretKey(key) {
+			suppress, unfReason := cfg.nameGate(key)
+			if !suppress && unfReason == "" {
+				suppress, unfReason = cfg.valueGate(rawValue)
 			}
-			secretShapedKeys = append(secretShapedKeys, key)
+			// A gate-suppressed key skips the entropy branch below on purpose:
+			// LooksLikeHighEntropySecret applies the same two gates internally
+			// and would return false for it anyway.
+			if !suppress {
+				secretShaped = true
+				secretShapedKeys = append(secretShapedKeys, key)
+				if unfReason == "" {
+					if !normalShaped {
+						normalShaped, normalShapedKey = true, key
+					}
+				} else if shapedUnfReason == "" {
+					shapedUnfReason = unfReason
+				}
+			}
 		} else if !isTemplate && m[1] == "" && LooksLikeHighEntropySecret(key, rawValue) {
 			// Neither the name nor any vendor pattern gave this away, but the
 			// value is credential-shaped on its own. Most real credentials
@@ -234,6 +262,28 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 	}
 	if err := lineScanErr(scanner); err != nil {
 		return Finding{}, false, err
+	}
+
+	// Lead selection prefers evidence the everyday gates would keep, so a
+	// file mixing normal and gate-suppressed hits is never led (or tagged)
+	// by the suppressed half.
+	var tokenUnfReason string
+	if len(tokenHits) > 0 {
+		lead := tokenHits[0]
+		for _, h := range tokenHits {
+			if h.unfilteredReason == "" {
+				lead = h
+				break
+			}
+		}
+		tokenMatch, tokenVendor, tokenVerified = true, lead.vendor, lead.verified
+		tokenUnfReason = lead.unfilteredReason
+	}
+	if secretShaped {
+		secretShapedKey = secretShapedKeys[0]
+		if normalShaped {
+			secretShapedKey = normalShapedKey
+		}
 	}
 
 	if isTemplate && !prodMatch && !ipMatch && !tokenMatch {
@@ -258,6 +308,13 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 		f.Evidence = "contains a public IP address in a visible value"
 	case tokenMatch:
 		f.Severity = SeverityHigh
+		if tokenUnfReason != "" {
+			// Every token hit was the ambiguous-format-in-a-public-name case:
+			// the value evidence is real (it IS a JWT), but the everyday scan
+			// drops it, and this view's job is to say so.
+			f.UnfilteredOnly = true
+			f.UnfilteredReason = tokenUnfReason
+		}
 		if tokenVerified {
 			f.Confidence = ConfidenceHigh
 			f.Evidence = fmt.Sprintf("contains a value matching %s's known token format", tokenVendor)
@@ -267,7 +324,17 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 		}
 	case secretShaped:
 		f.Severity = SeverityHigh
-		f.Evidence = fmt.Sprintf("contains %q, a variable name that looks like a real credential", secretShapedKey)
+		if !normalShaped {
+			// Every shaped key here survived on --unfiltered alone: count them
+			// honestly instead of asserting the names look like credentials —
+			// the gate concluded the opposite, and UnfilteredReason names the
+			// rule that did.
+			f.UnfilteredOnly = true
+			f.UnfilteredReason = shapedUnfReason
+			f.Evidence = shapedNamesEvidence(secretShapedKeys)
+		} else {
+			f.Evidence = fmt.Sprintf("contains %q, a variable name that looks like a real credential", secretShapedKey)
+		}
 	case entropyMatch:
 		// Ranked below the name signal and rated Medium confidence on purpose:
 		// "this value is shaped like a credential" is real evidence but weaker
@@ -297,8 +364,13 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 	// leading sentence stays exactly as it was; the default (Low) branch
 	// means nothing matched at all, so there is never anything to append to
 	// it.
-	if rest := describeEnvHits(tokenHits, secretShapedKeys, tokenVendor, secretShapedKey); rest != "" {
-		f.Evidence += "; also " + rest
+	// A shapedNamesEvidence lead already counts every shaped key, so the
+	// "; also" append would restate it. Token-led findings keep the append
+	// even when tagged: their extra hits are new information.
+	if !(f.UnfilteredOnly && !tokenMatch) {
+		if rest := describeEnvHits(tokenHits, secretShapedKeys, tokenVendor, secretShapedKey); rest != "" {
+			f.Evidence += "; also " + rest
+		}
 	}
 
 	// If this .env-family file IS a wrappable CLI's own token Source (gemini's
@@ -316,11 +388,27 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 }
 
 // envTokenHit is one variable in a .env whose VALUE matched a known vendor
-// token pattern — the vendor plus the variable that held it.
+// token pattern — the vendor plus the variable that held it. unfilteredReason
+// is non-empty when the hit survives only under Config.Unfiltered (the
+// ambiguous-format-in-a-documented-public-name case).
 type envTokenHit struct {
-	key      string
-	vendor   string
-	verified bool
+	key              string
+	vendor           string
+	verified         bool
+	unfilteredReason string
+}
+
+// shapedNamesEvidence words the lead sentence for an UnfilteredOnly finding
+// whose only signal is gate-suppressed names: it counts them as
+// "secret-shaped" rather than asserting they look like real credentials —
+// the gate concluded the opposite, and the finding's UnfilteredReason says
+// which rule did.
+func shapedNamesEvidence(keys []string) string {
+	if len(keys) == 1 {
+		return fmt.Sprintf("contains %q, a secret-shaped name", keys[0])
+	}
+	return fmt.Sprintf("contains %q and %s", keys[0],
+		countWord(len(keys)-1, "more secret-shaped name", "more secret-shaped names"))
 }
 
 // maxNamedEnvHits caps how many credentials describeEnvHits names before it
