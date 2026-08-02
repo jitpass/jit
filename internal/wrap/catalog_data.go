@@ -439,4 +439,17 @@ var catalog = map[string]CatalogEntry{
 		Doc:            "git HTTPS credentials, served via a credential helper; git push/fetch over HTTPS keeps working",
 		NativeCategory: "git",
 	},
+
+	// kubectl's AUTH is already a native hook (the kubeconfig exec plugin the
+	// kube migrate category wires) — this wrap is about the other kubectl
+	// surface: `kubectl apply -f` on a Secret manifest the k8s-secret
+	// category serves as a rejectable-decoy mount. The shim makes bare
+	// kubectl run inside a `jit run` grant so the mount hands it the real
+	// manifest; everything else about kubectl is untouched.
+	"kubectl": {
+		Tool:       "kubectl",
+		Kind:       KindRunGrant,
+		Doc:        "applies migrated Secret manifests through a jit run grant; kubectl auth already uses the exec plugin",
+		VerifyHint: "kubectl apply --dry-run=client -f <your migrated secret.yaml>",
+	},
 }

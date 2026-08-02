@@ -58,6 +58,7 @@ jit run [--profile <name>] [--mode <mode>] [--] <command> [args...] [flags]
 ### Options
 
 ```
+      --grant-only         don't require an injection profile: inject the project's profile if one resolves, otherwise nothing, and still grant this run the project's live mounts (what a run-grant wrap shim uses)
       --live               keep the live mount and grant this run real file reads, for tools that read values from the .env file itself (docker compose env_file); default swaps in a compatibility file
       --mode string        also merge .env.<mode> and .env.<mode>.local layers (e.g. production)
       --profile string     profile to inject verbatim (default: merge this project's migrated .env layers)

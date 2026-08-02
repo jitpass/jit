@@ -29,11 +29,19 @@ type Manifest struct {
 // so the tool's freshly minted credentials land in the vault instead of a
 // plaintext file — see KindCapture) is set.
 type Entry struct {
-	Profile string    `json:"profile,omitempty"`
-	With    string    `json:"with,omitempty"`
-	Capture string    `json:"capture,omitempty"`
-	Vars    []string  `json:"vars,omitempty"` // env var names the profile injects, for `jit wrap list`
-	AddedAt time.Time `json:"added_at"`
+	Profile string `json:"profile,omitempty"`
+	With    string `json:"with,omitempty"`
+	Capture string `json:"capture,omitempty"`
+	// RunGrant marks a run-grant-wrap: the shim re-execs through a bare
+	// `jit run --grant-only` so the tool's whole process tree is
+	// grant-authorized for the project's template mounts (a Kubernetes
+	// Secret manifest served as a rejectable-decoy FIFO). No profile, no
+	// env var, no global mount name: which mounts apply is decided per
+	// invocation from the tool's working directory, exactly as if the user
+	// had typed `jit run -- <tool> ...` themselves.
+	RunGrant bool      `json:"run_grant,omitempty"`
+	Vars     []string  `json:"vars,omitempty"` // env var names the profile injects, for `jit wrap list`
+	AddedAt  time.Time `json:"added_at"`
 }
 
 // IsGrant reports whether e is a grant-wrap (runs `jit run --with`) rather
@@ -42,6 +50,10 @@ func (e Entry) IsGrant() bool { return e.With != "" }
 
 // IsCapture reports whether e is a capture-wrap (runs `jit <tool>-capture`).
 func (e Entry) IsCapture() bool { return e.Capture != "" }
+
+// IsRunGrant reports whether e is a run-grant-wrap (runs `jit run
+// --grant-only`, no profile and no named mount).
+func (e Entry) IsRunGrant() bool { return e.RunGrant }
 
 // ManifestPath returns the manifest's location under home.
 func ManifestPath(home string) string {

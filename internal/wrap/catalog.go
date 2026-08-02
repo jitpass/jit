@@ -32,6 +32,15 @@ const (
 	// `jit <tool>-capture`, a per-tool plumbing command; the tool name IS
 	// the dispatch, which is why this kind needs no extra catalog fields.
 	KindCapture Kind = "capture"
+	// KindRunGrant: the tool reads a project FILE jit serves as a live
+	// decoy mount (a Kubernetes Secret manifest migrated by the k8s-secret
+	// category). The shim re-execs through a bare `jit run --grant-only`
+	// so the tool's whole process tree is grant-authorized and the mount
+	// serves it the real content; outside the shim (or with no agent /
+	// locked vault) the tool reads decoys that fail loudly. No token, no
+	// profile, no scrub: the manifest migration owns the vaulting; the
+	// wrap only removes the need to type `jit run --` before the tool.
+	KindRunGrant Kind = "rungrant"
 )
 
 // TokenSource names one place a tool's plaintext credential lives today and

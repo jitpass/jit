@@ -510,9 +510,15 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	// the friction point. A copy-pasteable command bridges that gap.
 	if example := firstFindingPath(findings); example != "" {
 		fmt.Fprintf(w, "Run `jit migrate %s --dry-run` to see the guided fix plan for it.\n", displayFilePath(home, example))
-	} else {
+	} else if len(findings) == 0 {
 		fmt.Fprintln(w, "Run `jit migrate <path> --dry-run` to see the guided fix plan for a flagged file.")
 	}
+	// Findings with no auto-fixable member get NO migrate trailer at all:
+	// hasAutoFix's contract is that the copy-pasteable command never answers
+	// "Nothing to migrate", and the literal `<path>` fallback did exactly
+	// that for a report whose only findings are manual-remedy (a Helm
+	// template flagged by the legacy line scan) — found by adversarial QA,
+	// 2026-08-02. Each manual finding's own evidence line says what to do.
 	// An unfiltered run is a deliberately noisy audit view, not a risk
 	// assessment — say so, or a saved report reads as the normal picture.
 	if summary.Unfiltered {

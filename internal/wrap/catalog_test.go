@@ -75,6 +75,16 @@ func TestCatalogEntriesAreWellFormed(t *testing.T) {
 			if e.NativeCategory != "" {
 				t.Errorf("%s: capture entry must not set NativeCategory", tool)
 			}
+		case KindRunGrant:
+			// A run-grant entry carries no token and names no mount — the
+			// shim just re-execs through `jit run --grant-only`, so every
+			// shim/native field must stay empty.
+			if len(e.EnvVars) != 0 || len(e.Sources) != 0 || len(e.TokenCommand) != 0 {
+				t.Errorf("%s: run-grant entry must not carry shim fields", tool)
+			}
+			if e.NativeCategory != "" {
+				t.Errorf("%s: run-grant entry must not set NativeCategory", tool)
+			}
 		default:
 			t.Errorf("%s: unknown kind %q", tool, e.Kind)
 		}

@@ -24,11 +24,12 @@ import (
 )
 
 var (
-	runProfile string
-	runMode    string
-	runLive    bool
-	runWith    []string
-	runTrust   bool
+	runProfile   string
+	runMode      string
+	runLive      bool
+	runWith      []string
+	runTrust     bool
+	runGrantOnly bool
 )
 
 var runCmd = &cobra.Command{
@@ -91,7 +92,7 @@ var runCmd = &cobra.Command{
 
 		// Announce lines go to stderr, not stdout: stdout belongs
 		// entirely to the target command.
-		p, grantMounts, err := injectionProfileForRun(cwd, runProfile, runMode, len(runWith) > 0, cmd.ErrOrStderr())
+		p, grantMounts, err := injectionProfileForRun(cwd, runProfile, runMode, len(runWith) > 0 || runGrantOnly, cmd.ErrOrStderr())
 		if err != nil {
 			return fmt.Errorf("jit run: %w", err)
 		}
@@ -355,6 +356,7 @@ func init() {
 	// and pads the whole help block out to its width.
 	runCmd.Flags().StringArrayVar(&runWith, "with", nil, "also grant this run a global file-delivered mount by name (gcp, sops, npm, netrc, pypi) - for tools that read a machine-wide credential file, e.g. jit run --with gcp gcloud storage ls (repeatable)")
 	runCmd.Flags().BoolVar(&runTrust, "trust", false, "pre-authorize this run's whole process tree for any credential, so per-process consent prompts don't fire under it")
+	runCmd.Flags().BoolVar(&runGrantOnly, "grant-only", false, "don't require an injection profile: inject the project's profile if one resolves, otherwise nothing, and still grant this run the project's live mounts (what a run-grant wrap shim uses)")
 	_ = runCmd.RegisterFlagCompletionFunc("with", completeGlobalMountNames)
 	// Stop parsing jit's own flags at the first non-flag argument, so the
 	// target command's flags (`npm start --port 3000`) pass straight

@@ -104,6 +104,13 @@ func shimArgv(tool, realTool string, entry Entry, args []string) []string {
 	if entry.IsCapture() {
 		return append([]string{"jit", entry.Capture + "-capture", "--real", realTool, "--"}, args...)
 	}
+	if entry.IsRunGrant() {
+		// A run-grant-wrap injects nothing by name: --grant-only makes
+		// `jit run` best-effort about the injection profile (a wrapped
+		// kubectl must keep working in any directory) while still granting
+		// whatever project template mounts apply at the tool's cwd.
+		return append([]string{"jit", "run", "--grant-only", "--", realTool}, args...)
+	}
 	return append([]string{"jit", "run", "--profile", ProfileName(tool), "--", realTool}, args...)
 }
 

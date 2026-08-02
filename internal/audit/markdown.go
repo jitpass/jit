@@ -106,7 +106,15 @@ func writeMarkdownFindings(w io.Writer, findings []Finding, summary ScanSummary,
 	if anyArchived(findings) {
 		fmt.Fprintln(w, "[archived] findings live under an archived/backup-looking directory: name such a file explicitly to convert it, e.g. `jit migrate <path>`.")
 	}
-	fmt.Fprintln(w, "Run `jit migrate <path> --dry-run` to see the guided fix plan for a flagged file.")
+	// Same contract as WriteHumanReport's trailer: name a real auto-fixable
+	// path, keep the generic pointer for a clean report, and print nothing
+	// when every finding is manual-remedy (a `jit migrate <path>` example
+	// would answer "Nothing to migrate").
+	if example := firstFindingPath(findings); example != "" {
+		fmt.Fprintf(w, "Run `jit migrate %s --dry-run` to see the guided fix plan for it.\n", example)
+	} else if len(findings) == 0 {
+		fmt.Fprintln(w, "Run `jit migrate <path> --dry-run` to see the guided fix plan for a flagged file.")
+	}
 	if summary.Unfiltered {
 		fmt.Fprintln(w, "**Suppression is OFF (`--unfiltered`)**: settings, paths, browser-public build variables and unfilled template values are all shown. Expect noise; this is the auditing view, not the everyday one.")
 		fmt.Fprintln(w)

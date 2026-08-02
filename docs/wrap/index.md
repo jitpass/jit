@@ -87,6 +87,18 @@ before), and stores it in the vault instead:
 |---|---|---|
 | [`clisso`](./clisso.md) | `clisso get`'s own `--output credential_process` JSON | `credential_process` in `~/.aws/config` - never `~/.aws/credentials` |
 
+## Run-grant plugins: tools that read a jit-mounted project file
+
+A tool that reads a project file jit serves as a decoy mount (a
+[migrated Kubernetes Secret manifest](../migrate/kubernetes-secret-manifests.md))
+needs to run inside a `jit run` grant to see the real content. The shim
+makes that automatic - no token is moved and nothing is injected; the
+wrap only removes the need to type `jit run --` first:
+
+| Tool | Grants | Outside the grant |
+|---|---|---|
+| [`kubectl`](./kubectl.md) | the project's mounted Secret manifests at the tool's cwd | decoy `data:` values, never valid base64 - `kubectl apply` fails loudly |
+
 The same wrap also vaults the tool's own long-lived secret (clisso's
 OneLogin `client-secret`), leaving a `jit://vault/` pointer in
 `~/.clisso.yaml` and serving the real config per run over a pipe.
