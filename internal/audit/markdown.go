@@ -30,6 +30,18 @@ func WriteMarkdownReport(w io.Writer, findings []Finding, summary ScanSummary) {
 
 	fmt.Fprintf(w, "## Risk Level: %s\n\n", riskLevelMarkdownBadge(summary.RiskLevel))
 	fmt.Fprintf(w, "**Exposure score:** %d/100\n\n", summary.ExposureScore)
+	// Parity with WriteHumanReport's incomplete-scan banner, ahead of every
+	// count for the same reason: a saved report whose numbers exclude an
+	// unread category must say so before the numbers, not in a footnote.
+	if len(summary.DegradedScanners) > 0 {
+		fmt.Fprintf(w, "> **INCOMPLETE SCAN** — %s could not be read:\n", countWord(len(summary.DegradedScanners), "category", "categories"))
+		for _, d := range summary.DegradedScanners {
+			fmt.Fprintf(w, "> - %s — %s\n", d.Scanner, oneLine(d.Error))
+		}
+		fmt.Fprintln(w, ">")
+		fmt.Fprintln(w, "> Counts below cover everything else; secrets in the unread categories are not included.")
+		fmt.Fprintln(w)
+	}
 	if matches := summary.ProductionIndicatorCount + summary.PublicIPCount; matches > 0 {
 		fmt.Fprintf(w, "> %s found:\n", countWord(matches, "production-indicator/public-IP match", "production-indicator/public-IP matches"))
 		for _, path := range criticalTriggerPaths(findings) {

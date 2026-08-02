@@ -481,6 +481,28 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	}
 	fmt.Fprintln(w)
 
+	// A partial scan must never be able to look like a complete one — the
+	// same banner the triage view carries, in the same position, for the
+	// same reason: it changes what every count below it means, and "0
+	// findings" from a run that could not read a category is not the claim
+	// a reader of a full inventory will think to question.
+	if len(summary.DegradedScanners) > 0 {
+		yellowBold := color.New(color.FgYellow, color.Bold)
+		noun := "categories"
+		if len(summary.DegradedScanners) == 1 {
+			noun = "category"
+		}
+		fmt.Fprint(w, "  ")
+		termtext.Wrap(w, 2, "  ", yellowBold.Sprintf("INCOMPLETE SCAN — %d %s could not be read", len(summary.DegradedScanners), noun))
+		for _, d := range summary.DegradedScanners {
+			fmt.Fprint(w, "    ")
+			termtext.Wrap(w, 4, "    ", yellow.Sprintf("%s — %s", d.Scanner, oneLine(shortenHomeInText(home, d.Error))))
+		}
+		fmt.Fprint(w, "  ")
+		termtext.Wrap(w, 2, "  ", dim.Sprint("Counts below cover everything else; secrets in the unread categories are not included."))
+		fmt.Fprintln(w)
+	}
+
 	riskC := colorOr(riskLevelColor, summary.RiskLevel)
 	riskGlyph := reportGlyphRisk
 	switch summary.RiskLevel {
