@@ -50,11 +50,13 @@ jobs:
           fi
 
           # Inspect only the commits this push/PR introduces, never existing
-          # history: with no usable base we check just the new tip.
+          # history: with no usable base we check just the new tip. Skip merge
+          # commits — a GitHub-created merge carries the web-flow identity, not a
+          # human author, so it isn't ours to police.
           if [ -z "$base" ] || [ "$base" = "$ZERO" ]; then
-            commits=$(git rev-parse "$head")
+            commits=$(git rev-list --no-merges -1 "$head")
           else
-            commits=$(git rev-list "$base..$head")
+            commits=$(git rev-list --no-merges "$base..$head")
           fi
           [ -z "$commits" ] && { echo "OK: no new commits to check"; exit 0; }
 
