@@ -1,0 +1,70 @@
+# Every commit that reaches main must be authored and committed by an approved
+# project identity. A commit made from the wrong account or with a mistyped
+# email fails CI before it can merge, keeping main's authorship consistent.
+name: Authorship Guard
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Pure git/shell — no repo writes, no secrets.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Deliberately ubuntu, not macOS: this check touches no CGo and no toolchain,
+  # so there is no reason to pay the 10x macOS-runner rate the main CI must.
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # fetch-depth: 0 so the base..head range below actually has both endpoints.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require approved commit authorship
+        env:
+          # A push carries before/after; a PR carries base/head.
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          ZERO=0000000000000000000000000000000000000000
+
+          # Approved author/committer emails for this project. Keep in sync with
+          # the repository ruleset that enforces the same identity server-side.
+          allow='^menitasa@users\.noreply\.github\.com$'
+
+          if [ -n "${PR_HEAD:-}" ]; then
+            base="$PR_BASE"; head="$PR_HEAD"
+          else
+            base="$BEFORE"; head="$AFTER"
+          fi
+
+          # Inspect only the commits this push/PR introduces, never existing
+          # history: with no usable base we check just the new tip.
+          if [ -z "$base" ] || [ "$base" = "$ZERO" ]; then
+            commits=$(git rev-parse "$head")
+          else
+            commits=$(git rev-list "$base..$head")
+          fi
+          [ -z "$commits" ] && { echo "OK: no new commits to check"; exit 0; }
+
+          violations=$(git log --no-walk --format='%H %ae %ce' $commits \
+            | awk -v a="$allow" '$2 !~ a || $3 !~ a { print "  "$1"  author <"$2">  committer <"$3">" }')
+
+          if [ -n "$violations" ]; then
+            echo "::error::Commit(s) use an unapproved author/committer email and must not merge:"
+            echo "$violations"
+            echo "Re-author with your approved project identity and re-push."
+            exit 1
+          fi
+          echo "OK: all commits use an approved identity"
