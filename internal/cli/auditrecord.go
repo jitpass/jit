@@ -82,7 +82,7 @@ func recordAuditEvent(cmd *cobra.Command, cmdErr error, elapsed time.Duration) {
 	rec := auditlog.Record{
 		UnixNano:   time.Now().UnixNano(),
 		Command:    cmdPath,
-		Args:       sanitizeInvocationArgs(cmdPath, os.Args[1:]),
+		Args:       sanitizeInvocationArgs(cmdPath, os.Args[1:], cmd.Flags().Args(), cmdErr == nil),
 		UID:        os.Getuid(),
 		PID:        os.Getpid(),
 		PPID:       os.Getppid(),
@@ -123,20 +123,36 @@ func resolveInvoker() (parent, launchedBy string) {
 // sanitizeInvocationArgs redacts the recorded arguments. auditlog.Redact
 // handles credential-shaped tokens generically; on top of that, for commands
 // whose grammar puts a raw secret in a known position, that position is masked
-// unconditionally so a low-entropy secret can't slip through.
-func sanitizeInvocationArgs(cmdPath string, rawArgs []string) []string {
+// so a low-entropy secret can't slip through. positionals is the command's
+// parsed positional arguments (cobra's Flags().Args()) and parsedOK reports
+// whether flag parsing succeeded — together they tell a value that was passed
+// on the command line from one that wasn't.
+func sanitizeInvocationArgs(cmdPath string, rawArgs, positionals []string, parsedOK bool) []string {
 	args := auditlog.Redact(rawArgs)
-	if secretValueCommands[cmdPath] {
-		// Mask the last non-flag token: `jit vault set <path> <value>`, the
-		// value is the only thing it can be, and Redact may have left a weak
-		// one untouched.
-		for i := len(args) - 1; i >= 0; i-- {
-			if strings.HasPrefix(args[i], "-") {
-				continue
-			}
-			args[i] = "<redacted>"
-			break
+	if !secretValueCommands[cmdPath] {
+		return args
+	}
+	// Skip the value mask ONLY when we are certain no value was on the command
+	// line: a clean parse that yielded exactly the one <path> positional (the
+	// value came from the prompt or --stdin). Then masking the last token would
+	// redact the secret's PATH — a non-secret the log should keep.
+	//
+	// On a parse ERROR the positional count is unreliable — cobra returns none
+	// even when a value is present (`jit vault set --stdim path secret`, a
+	// mistyped flag) — so we must NOT infer "no value" from an empty slice, or a
+	// weak value would be logged in the clear. Fall back to masking in every
+	// case but the confirmed single-positional one.
+	if parsedOK && len(positionals) == 1 {
+		return args
+	}
+	// Mask the last non-flag token: where a value is present it is the value,
+	// the only thing it can be, and Redact may have left a weak one alone.
+	for i := len(args) - 1; i >= 0; i-- {
+		if strings.HasPrefix(args[i], "-") {
+			continue
 		}
+		args[i] = "<redacted>"
+		break
 	}
 	return args
 }

@@ -7,8 +7,8 @@ Show the audit log: what jit commands ran, when, by whom, and every unlock
 jit audit prints the application audit trail, most recent first: one line for
 every jit command that ran (what, when, which user and parent process, and
 whether it succeeded), interleaved with every local-auth event the service saw
-(each unlock and each DECLINED prompt, with how you were asked, what triggered
-it, and the secret names each one touched).
+(each unlock, each APPROVED disclosed grant, and each DECLINED prompt, with how
+you were asked, what triggered it, and the secret names each one touched).
 
 Together they answer "what happened on this machine, and who did it": the
 command lines are the actions, the auth lines are the approvals those actions
@@ -27,7 +27,8 @@ a flood of throwaway processes push every real event out of the history.
 Output is a grouped text timeline, newest first. --format logfmt prints one
 key=value line per event instead, so it reads and greps like a real service
 log. Narrow either without grep using the flags: --kind
-cmd,unlock,use,lock,service,error, --status ok|failed|denied, --since and --until
+cmd,unlock,use,grant,lock,service,error, --status ok|failed|denied|approved,
+--since and --until
 (an age like 2h/3d or a date), --parent (the launching ancestor, e.g. claude),
 --secret (a secret name an unlock touched), --user, and --grep (a regexp over the
 line). --limit caps how many of the newest MATCHING entries print. Add --follow
@@ -55,12 +56,12 @@ jit audit [flags]
   -f, --follow          print the matching tail, then stream new entries live (text only)
       --format string   output format: "text" (default), "logfmt" (one key=value line per event), or "json" (default "text")
       --grep string     only entries whose rendered line matches this regular expression
-      --kind strings    only these kinds (comma-separated): cmd, unlock, use, lock, service, error
+      --kind strings    only these kinds (comma-separated): cmd, unlock, use, grant, lock, service, error
       --limit int       show at most this many recent matching entries (0 for all) (default 50)
       --parent string   only entries whose launched-by ancestor contains this (e.g. claude)
       --secret string   only auth events that touched a secret whose name contains this
       --since string    only entries at or after this time: an age (2h, 90m, 3d) or a date ("2026-07-23" or "2026-07-23 09:00")
-      --status string   only this status: ok, failed, or denied
+      --status string   only this status: ok, failed, denied, or approved
       --until string    only entries at or before this time (same forms as --since)
       --user string     only commands this user ran (auth events carry no user)
 ```

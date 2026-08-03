@@ -145,6 +145,47 @@ func TestAuditReportKeepsTheSecretsAnUnlockTouched(t *testing.T) {
 	}
 }
 
+// Two uses that fold into one ×N row can have touched DIFFERENT secrets; the
+// collapsed row must name all of them, not just the first's.
+func TestAuditReportUnionsLabelsAcrossCollapsedRows(t *testing.T) {
+	base := time.Date(2026, 7, 29, 19, 50, 30, 0, time.Local)
+	use := func(at time.Time, labels []string) auditEntry {
+		return auditEntry{t: at, kind: "use", subject: "credential served", parent: "claude", labels: labels}
+	}
+	out := renderReport([]auditEntry{
+		use(base, []string{"stripe/live-key"}),
+		use(base.Add(-time.Second), []string{"aws/deploy-role"}),
+	})
+	if !strings.Contains(out, "×2") {
+		t.Fatalf("expected the two uses to collapse into one row:\n%s", out)
+	}
+	for _, want := range []string{"stripe/live-key", "aws/deploy-role"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("collapsed row dropped the secret %q:\n%s", want, out)
+		}
+	}
+}
+
+// The header counts failed commands and denied unlocks separately, because
+// they are separate statuses the reader can filter on — lumping denials into
+// "failed" made the header disagree with the --status failed it points at.
+func TestAuditReportHeaderSeparatesFailedFromDenied(t *testing.T) {
+	now := time.Now()
+	out := renderReport([]auditEntry{
+		reportEntry(now, "jit vault get x", "claude", "failed"),
+		{t: now.Add(-time.Minute), kind: "unlock", status: "denied", subject: "unlock DENIED (Touch ID)"},
+	})
+	if !strings.Contains(out, "1 failed") || !strings.Contains(out, "1 denied") {
+		t.Errorf("header should count the failure and the denial separately:\n%s", out)
+	}
+	if strings.Contains(out, "2 failed") {
+		t.Errorf("the denial was lumped into 'failed':\n%s", out)
+	}
+	if !strings.Contains(out, "--status denied") {
+		t.Errorf("footer should offer --status denied when a denial is present:\n%s", out)
+	}
+}
+
 func TestAuditReportMarksALockAsAStateNotAFailure(t *testing.T) {
 	e := auditEntry{t: time.Now(), kind: "lock", subject: "session locked (5m0s idle timeout)"}
 	out := renderReport([]auditEntry{e})

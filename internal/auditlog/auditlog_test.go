@@ -125,6 +125,52 @@ func TestRedactMasksSecretLookingTokens(t *testing.T) {
 			in:   []string{"AKIAIOSFODNN7EXAMPLE"},
 			want: []string{redactToken},
 		},
+		{
+			// A bare base64 token ending in '=' padding must not be misread as
+			// KEY=VALUE (name=the token, value="=") and slip through unmasked.
+			name: "padded base64 bare is masked, not misread as KEY=VALUE",
+			in:   []string{"SGVsbG9Xb3JsZERlYWRiZWVmMDAxMjM0NQ=="},
+			want: []string{redactToken},
+		},
+		{
+			// A base64 credential containing '/' must be masked when it is a
+			// flag or env value; the path-shy whole-arg test used to wave it
+			// through as if the '/' made it a file path.
+			name: "flag value base64 containing slash is masked",
+			in:   []string{"--token=aB3xKq9ZmQpLrStUvWxYz012+ab/cdEF"},
+			want: []string{"--token=" + redactToken},
+		},
+		{
+			name: "env value base64 containing slash is masked",
+			in:   []string{"AWS_SECRET=aB3xKq9ZmQpLrStUvWxYz012+ab/cdEF"},
+			want: []string{"AWS_SECRET=" + redactToken},
+		},
+		{
+			// The path-safety the '/' masking must not cost: an absolute path
+			// given as a flag value stays legible.
+			name: "absolute path as a flag value survives",
+			in:   []string{"--config=/etc/app/config.yaml"},
+			want: []string{"--config=/etc/app/config.yaml"},
+		},
+		{
+			name: "deep alnum path as a bare positional survives",
+			in:   []string{"scan", "/Users/me/project7/config8/data9zzzzzz"},
+			want: []string{"scan", "/Users/me/project7/config8/data9zzzzzz"},
+		},
+		{
+			// A long env-var/flag name must not stop the value from being
+			// masked: the value split, not the name's shape, decides.
+			name: "long key name still masks a prefixed value",
+			in:   []string{"MY_VERY_LONG_ENVIRONMENT_VARIABLE_NAME_XYZ=ghp_16charsAtLeastxxxxxxxxxxxxxxxxxx"},
+			want: []string{"MY_VERY_LONG_ENVIRONMENT_VARIABLE_NAME_XYZ=" + redactToken},
+		},
+		{
+			// A legible key=value whose value is not a secret is left intact —
+			// the whole-arg fallback must not over-mask an ordinary assignment.
+			name: "ordinary key=value survives with its name",
+			in:   []string{"commit=a1b2c3d4e5f6a7b8c9d0"},
+			want: []string{"commit=a1b2c3d4e5f6a7b8c9d0"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
