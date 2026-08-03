@@ -61,14 +61,17 @@ type auditFilter struct {
 // actually renders, so `--kind command` and `--kind start` do what a reader
 // means rather than silently matching nothing.
 var auditKindAliases = map[string]string{
-	"cmd":     "cmd",
-	"command": "cmd",
-	"unlock":  "unlock",
-	"use":     "use",
-	"lock":    "lock",
-	"service": "service",
-	"start":   "service",
-	"error":   "error",
+	"cmd":      "cmd",
+	"command":  "cmd",
+	"unlock":   "unlock",
+	"use":      "use",
+	"lock":     "lock",
+	"service":  "service",
+	"start":    "service",
+	"error":    "error",
+	"grant":    "grant",
+	"approve":  "grant",
+	"approved": "grant",
 }
 
 // compileAuditFilter turns the raw flags into an auditFilter, rejecting an
@@ -87,7 +90,7 @@ func compileAuditFilter() (auditFilter, error) {
 				}
 				canon, ok := auditKindAliases[k]
 				if !ok {
-					return f, fmt.Errorf("unknown --kind %q: choose from cmd, unlock, use, lock, service, error (denials are --status denied)", k)
+					return f, fmt.Errorf("unknown --kind %q: choose from cmd, unlock, use, grant, lock, service, error (denials are --status denied)", k)
 				}
 				f.kinds[canon] = true
 			}
@@ -96,10 +99,10 @@ func compileAuditFilter() (auditFilter, error) {
 	if auditStatus != "" {
 		s := strings.ToLower(auditStatus)
 		switch s {
-		case "ok", "failed", "denied":
+		case "ok", "failed", "denied", "approved":
 			f.status = s
 		default:
-			return f, fmt.Errorf("unknown --status %q: choose from ok, failed, denied", auditStatus)
+			return f, fmt.Errorf("unknown --status %q: choose from ok, failed, denied, approved", auditStatus)
 		}
 	}
 	var err error
@@ -185,6 +188,12 @@ func parseAuditTime(s string) (time.Time, error) {
 		return time.Time{}, nil
 	}
 	if d, ok := parseFlexDuration(s); ok {
+		// A duration here is read as "that long ago"; a negative one would
+		// resolve into the future and silently match nothing. Reject it with a
+		// message that names the fix rather than leaving an empty result.
+		if d < 0 {
+			return time.Time{}, fmt.Errorf("a duration here means %q ago; drop the leading '-'", strings.TrimPrefix(s, "-"))
+		}
 		return time.Now().Add(-d), nil
 	}
 	for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02 15:04", "2006-01-02", time.RFC3339} {
@@ -228,8 +237,8 @@ var auditCmd = &cobra.Command{
 	Long: "jit audit prints the application audit trail, most recent first: one line for\n" +
 		"every jit command that ran (what, when, which user and parent process, and\n" +
 		"whether it succeeded), interleaved with every local-auth event the service saw\n" +
-		"(each unlock and each DECLINED prompt, with how you were asked, what triggered\n" +
-		"it, and the secret names each one touched).\n\n" +
+		"(each unlock, each APPROVED disclosed grant, and each DECLINED prompt, with how\n" +
+		"you were asked, what triggered it, and the secret names each one touched).\n\n" +
 		"Together they answer \"what happened on this machine, and who did it\": the\n" +
 		"command lines are the actions, the auth lines are the approvals those actions\n" +
 		"needed. Command arguments are recorded with any secret-looking value masked, so\n" +
@@ -245,7 +254,8 @@ var auditCmd = &cobra.Command{
 		"Output is a grouped text timeline, newest first. --format logfmt prints one\n" +
 		"key=value line per event instead, so it reads and greps like a real service\n" +
 		"log. Narrow either without grep using the flags: --kind\n" +
-		"cmd,unlock,use,lock,service,error, --status ok|failed|denied, --since and --until\n" +
+		"cmd,unlock,use,grant,lock,service,error, --status ok|failed|denied|approved,\n" +
+		"--since and --until\n" +
 		"(an age like 2h/3d or a date), --parent (the launching ancestor, e.g. claude),\n" +
 		"--secret (a secret name an unlock touched), --user, and --grep (a regexp over the\n" +
 		"line). --limit caps how many of the newest MATCHING entries print. Add --follow\n" +
@@ -286,16 +296,19 @@ var auditCmd = &cobra.Command{
 		// --limit means "the newest N that MATCH" rather than "matches within
 		// the newest N" — the former is what a reader narrowing with a filter
 		// actually wants.
+		// --follow reads the files itself, starting the stream from the exact
+		// offset its initial tail consumed, so it never double-reads nor skips
+		// a line across the load; it does not share this snapshot.
+		if auditFollow {
+			return followAuditLog(cmd.Context(), cmd.OutOrStdout(), root, filter, auditLimit)
+		}
+
 		commands := auditlog.New(root, io.Discard).Load(0)
 		events := newHistoryLog(root, io.Discard).load(1 << 30)
 
 		if auditFormat == "json" {
 			keptCmds, keptEvents := filterSources(commands, events, filter, auditLimit)
 			return writeJSON(cmd.OutOrStdout(), auditJSON{Commands: keptCmds, AuthEvents: keptEvents})
-		}
-
-		if auditFollow {
-			return followAuditLog(cmd.Context(), cmd.OutOrStdout(), root, commands, events, filter, auditLimit)
 		}
 
 		printAuditLog(cmd.OutOrStdout(), commands, events, filter, auditLimit)
@@ -319,7 +332,7 @@ type auditJSON struct {
 // --follow re-reads), line is the display form that may carry ANSI color.
 type auditEntry struct {
 	t      time.Time
-	kind   string   // logfmt kind token: cmd | unlock | use | lock | service | error
+	kind   string   // logfmt kind token: cmd | unlock | use | grant | lock | service | error
 	status string   // ok | failed | denied, where the kind carries one; else ""
 	user   string   // command records only (auth events are all this machine's user)
 	parent string   // the ancestor that explains the call (launched-by)
@@ -388,24 +401,52 @@ func buildEntries(home string, commands []auditlog.Record, events []agent.Sessio
 // against the rendered entry so text and json narrow identically.
 func filterSources(commands []auditlog.Record, events []agent.SessionEvent, filter auditFilter, limit int) ([]auditlog.Record, []agent.SessionEvent) {
 	home, _ := os.UserHomeDir()
-	keptCmds := []auditlog.Record{}
-	for _, r := range commands {
+	// Choose the newest `limit` over the MERGED timeline — exactly the set the
+	// text and logfmt views show — rather than the newest `limit` of each
+	// source independently, which would return up to 2*limit rows and a
+	// different set than text for the same flags.
+	type ref struct {
+		t     time.Time
+		isCmd bool
+		idx   int
+	}
+	var refs []ref
+	for i, r := range commands {
 		if filter.keep(commandEntry(r)) {
+			refs = append(refs, ref{t: time.Unix(0, r.UnixNano), isCmd: true, idx: i})
+		}
+	}
+	for i, ev := range events {
+		if filter.keep(authEntry(home, ev)) {
+			refs = append(refs, ref{t: time.Unix(ev.UnixTime, 0), isCmd: false, idx: i})
+		}
+	}
+	// Newest first — same stable order buildEntries+sort uses (commands appended
+	// before events, so a tie keeps that order) — then cap the merged stream.
+	sort.SliceStable(refs, func(i, j int) bool { return refs[i].t.After(refs[j].t) })
+	if limit > 0 && len(refs) > limit {
+		refs = refs[:limit]
+	}
+	cmdSel, evtSel := map[int]bool{}, map[int]bool{}
+	for _, r := range refs {
+		if r.isCmd {
+			cmdSel[r.idx] = true
+		} else {
+			evtSel[r.idx] = true
+		}
+	}
+	// Restore each array to its native oldest-first order. Never nil, so the
+	// JSON renders [] not null.
+	keptCmds := []auditlog.Record{}
+	for i, r := range commands {
+		if cmdSel[i] {
 			keptCmds = append(keptCmds, r)
 		}
 	}
 	keptEvents := []agent.SessionEvent{}
-	for _, ev := range events {
-		if filter.keep(authEntry(home, ev)) {
+	for i, ev := range events {
+		if evtSel[i] {
 			keptEvents = append(keptEvents, ev)
-		}
-	}
-	if limit > 0 {
-		if len(keptCmds) > limit {
-			keptCmds = keptCmds[len(keptCmds)-limit:]
-		}
-		if len(keptEvents) > limit {
-			keptEvents = keptEvents[len(keptEvents)-limit:]
 		}
 	}
 	return keptCmds, keptEvents
@@ -421,8 +462,18 @@ const auditFollowPollInterval = 500 * time.Millisecond
 // (newest-first), the follow stream is chronological — the initial tail oldest-
 // first and each new line after it — so a live watch reads like `tail -f`
 // rather than scrolling backwards. Ends on ctrl-C / SIGTERM.
-func followAuditLog(ctx context.Context, w io.Writer, root string, commands []auditlog.Record, events []agent.SessionEvent, filter auditFilter, limit int) error {
+func followAuditLog(ctx context.Context, w io.Writer, root string, filter auditFilter, limit int) error {
 	home, _ := os.UserHomeDir()
+
+	auditPath := filepath.Join(root, auditlog.FileName)
+	histPath := filepath.Join(root, historyFileName)
+	// Read each file once for the opening tail, keeping the exact byte offset
+	// that read consumed, and begin the live stream from precisely there. Using
+	// the same read to produce both the tail and the follow offset (rather than
+	// a later stat) closes the window in which a line appended between the two
+	// is neither shown in the tail nor picked up as new.
+	offA, commands := readNewCommands(auditPath, 0)
+	offH, events := readNewEvents(histPath, 0)
 
 	entries := buildEntries(home, commands, events, filter)
 	sort.SliceStable(entries, func(i, j int) bool { return entries[i].t.Before(entries[j].t) })
@@ -437,13 +488,6 @@ func followAuditLog(ctx context.Context, w io.Writer, root string, commands []au
 	for _, e := range entries {
 		writeAuditFollowRow(w, e, cols)
 	}
-
-	auditPath := filepath.Join(root, auditlog.FileName)
-	histPath := filepath.Join(root, historyFileName)
-	// Start following from the current end of each file, so the tail just
-	// printed is not immediately reprinted as "new".
-	offA := fileSize(auditPath)
-	offH := fileSize(histPath)
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -481,17 +525,6 @@ func followAuditLog(ctx context.Context, w io.Writer, root string, commands []au
 			writeAuditFollowRow(w, e, cols)
 		}
 	}
-}
-
-// fileSize is a stat that reads 0 for a file that isn't there yet (the service
-// may not have run, or no command has been recorded), so a follow can start
-// before either log exists and pick them up when they appear.
-func fileSize(path string) int64 {
-	fi, err := os.Stat(path)
-	if err != nil {
-		return 0
-	}
-	return fi.Size()
 }
 
 // readNewCommands returns command records appended to path since off and the
@@ -597,11 +630,17 @@ func logfmtValue(v string) string {
 	if v == "" {
 		return `""`
 	}
-	if !strings.ContainsAny(v, " \t\"=") {
+	if !strings.ContainsAny(v, " \t\r\n\"=") {
 		return v
 	}
 	v = strings.ReplaceAll(v, `\`, `\\`)
 	v = strings.ReplaceAll(v, `"`, `\"`)
+	// Escape newlines and carriage returns to their two-character forms so one
+	// event never splits across physical lines — the whole promise of "one
+	// key=value line per event". Done after the backslash pass above so the
+	// backslash this inserts is not itself doubled.
+	v = strings.ReplaceAll(v, "\r", `\r`)
+	v = strings.ReplaceAll(v, "\n", `\n`)
 	return `"` + v + `"`
 }
 
@@ -892,10 +931,10 @@ func init() {
 	auditCmd.Flags().StringVar(&auditFormat, "format", "text", `output format: "text" (default), "logfmt" (one key=value line per event), or "json"`)
 	auditCmd.Flags().IntVar(&auditLimit, "limit", 50, "show at most this many recent matching entries (0 for all)")
 	auditCmd.Flags().BoolVarP(&auditFollow, "follow", "f", false, "print the matching tail, then stream new entries live (text only)")
-	auditCmd.Flags().StringSliceVar(&auditKinds, "kind", nil, "only these kinds (comma-separated): cmd, unlock, use, lock, service, error")
+	auditCmd.Flags().StringSliceVar(&auditKinds, "kind", nil, "only these kinds (comma-separated): cmd, unlock, use, grant, lock, service, error")
 	auditCmd.Flags().StringVar(&auditSince, "since", "", `only entries at or after this time: an age (2h, 90m, 3d) or a date ("2026-07-23" or "2026-07-23 09:00")`)
 	auditCmd.Flags().StringVar(&auditUntil, "until", "", "only entries at or before this time (same forms as --since)")
-	auditCmd.Flags().StringVar(&auditStatus, "status", "", "only this status: ok, failed, or denied")
+	auditCmd.Flags().StringVar(&auditStatus, "status", "", "only this status: ok, failed, denied, or approved")
 	auditCmd.Flags().StringVar(&auditUser, "user", "", "only commands this user ran (auth events carry no user)")
 	auditCmd.Flags().StringVar(&auditParent, "parent", "", "only entries whose launched-by ancestor contains this (e.g. claude)")
 	auditCmd.Flags().StringVar(&auditSecret, "secret", "", "only auth events that touched a secret whose name contains this")

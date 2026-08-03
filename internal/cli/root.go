@@ -292,10 +292,36 @@ func (e *ExitError) Error() string {
 // the question an audit trail exists to answer, and the failures are often the
 // interesting half.
 func Execute() error {
-	start := time.Now()
+	invocationStart = time.Now()
 	cmd, err := rootCmd.ExecuteC()
-	if recordInvocation != nil {
-		recordInvocation(cmd, err, time.Since(start))
+	// Skip when the command already recorded itself — only `jit run` does, just
+	// before syscall.Exec replaces this process (see recordRunInvocation), and a
+	// second line here on the rare path where exec returns would double-count it.
+	if recordInvocation != nil && !invocationRecorded {
+		recordInvocation(cmd, err, time.Since(invocationStart))
 	}
 	return err
+}
+
+// invocationStart is when Execute began. Shared with the one command that must
+// record itself before Execute regains control — `jit run`, which ends in
+// syscall.Exec and never returns.
+var invocationStart time.Time
+
+// invocationRecorded is set once a command has written its own audit line, so
+// Execute does not record it a second time.
+var invocationRecorded bool
+
+// recordRunInvocation writes `jit run`'s audit line just before syscall.Exec
+// replaces this process, since a successful run never returns to Execute to be
+// recorded there. It records success with the elapsed time up to the hand-off;
+// the rare syscall.Exec that then fails (the binary was already resolved and
+// found executable) is the one case this marks success though exec did not
+// start — a deliberate trade for recording the flagship command at all.
+func recordRunInvocation(cmd *cobra.Command) {
+	if recordInvocation == nil || invocationRecorded {
+		return
+	}
+	invocationRecorded = true
+	recordInvocation(cmd, nil, time.Since(invocationStart))
 }

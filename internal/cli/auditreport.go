@@ -71,9 +71,15 @@ func printAuditReport(w io.Writer, entries []auditEntry, filtered bool) {
 	fmt.Fprintln(w)
 	fmt.Fprint(w, "  ")
 	_, _ = cPath.Fprint(w, "→ ")
-	termtext.Wrap(w, 4, "    ",
-		cPath.Sprint("jit audit --status failed")+
-			cDim.Sprint("   only what went wrong · --format logfmt for the machine form"))
+	// Point at the most useful next filter. When any unlock was refused, name
+	// --status denied too, since it is now a distinct count in the header above.
+	hint := cPath.Sprint("jit audit --status failed") +
+		cDim.Sprint("   only what went wrong")
+	if _, denied := auditOutcomeCounts(entries); denied > 0 {
+		hint += cDim.Sprint(" · ") + cPath.Sprint("--status denied") + cDim.Sprint(" for refusals")
+	}
+	hint += cDim.Sprint(" · --format logfmt for the machine form")
+	termtext.Wrap(w, 4, "    ", hint)
 }
 
 func printAuditEmpty(w io.Writer, filtered bool) {
@@ -88,12 +94,10 @@ func printAuditEmpty(w io.Writer, filtered bool) {
 // what span, and how many of them failed. The logfmt view had no summary at
 // all, so "did anything go wrong today?" meant reading every line.
 func writeAuditHeader(w io.Writer, entries []auditEntry) {
-	failed := 0
-	for _, e := range entries {
-		if e.status == "failed" || e.status == "denied" {
-			failed++
-		}
-	}
+	// Count the two bad outcomes separately: they are distinct statuses a reader
+	// can filter on (--status failed vs --status denied), so collapsing them
+	// into one "failed" made the header disagree with the filter it points at.
+	failed, denied := auditOutcomeCounts(entries)
 	// Entries are newest-first.
 	newest, oldest := entries[0].t, entries[len(entries)-1].t
 	span := fmt.Sprintf("%s–%s", oldest.Format("15:04"), newest.Format("15:04"))
@@ -104,8 +108,25 @@ func writeAuditHeader(w io.Writer, entries []auditEntry) {
 	if failed > 0 {
 		head += fmt.Sprintf(" · %d failed", failed)
 	}
+	if denied > 0 {
+		head += fmt.Sprintf(" · %d denied", denied)
+	}
 	_, _ = cDim.Fprintln(w, head)
 	fmt.Fprintln(w)
+}
+
+// auditOutcomeCounts tallies failed commands and denied unlocks — the two
+// statuses the header calls out and the footer offers a filter for.
+func auditOutcomeCounts(entries []auditEntry) (failed, denied int) {
+	for _, e := range entries {
+		switch e.status {
+		case "failed":
+			failed++
+		case "denied":
+			denied++
+		}
+	}
+	return failed, denied
 }
 
 func sameDay(a, b time.Time) bool {
@@ -146,10 +167,33 @@ func groupAuditEntries(entries []auditEntry) []auditGroup {
 				p.status == e.status && p.kind == e.kind &&
 				p.t.Format("2006-01-02 15:04") == e.t.Format("2006-01-02 15:04") {
 				out[n-1].count++
+				// Fold in this event's secret names too: the rows share a
+				// subject but can have touched DIFFERENT secrets, and the
+				// labels are the one fact that answers "what did that ×N
+				// actually reach". Keeping only the first row's understated it.
+				out[n-1].e.labels = unionLabels(out[n-1].e.labels, e.labels)
 				continue
 			}
 		}
 		out = append(out, auditGroup{e: e, count: 1})
+	}
+	return out
+}
+
+// unionLabels returns the secret names in a followed by any in b not already
+// present, order-preserving and deduped. It never aliases either input, so
+// folding into a group can't mutate the backing entry's slice.
+func unionLabels(a, b []string) []string {
+	if len(b) == 0 {
+		return a
+	}
+	seen := make(map[string]bool, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, l := range append(append([]string{}, a...), b...) {
+		if !seen[l] {
+			seen[l] = true
+			out = append(out, l)
+		}
 	}
 	return out
 }

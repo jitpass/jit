@@ -170,6 +170,14 @@ func (l *Logger) Load(max int) []Record {
 // cutting on a line boundary. Temp-file + rename, so a crash mid-trim leaves
 // the original intact rather than a half-written log. Cheap to call before
 // each append; a stat that shows the file is small returns immediately.
+//
+// The mutex serializes trim and append within one process, but every jit CLI
+// invocation is a separate process with its own Logger, so a trim in one can
+// rename the file out from under an append fd another already opened, and that
+// one record is lost to the orphaned inode. The window only opens once the
+// file is over maxBytes, and this trail is best-effort by contract (a lost
+// bookkeeping line must never fail the command that ran), so it is left as a
+// known, bounded gap rather than paid for with cross-process file locking.
 func (l *Logger) Trim() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -337,13 +345,25 @@ func Redact(args []string) []string {
 }
 
 func redactArg(a string) string {
-	// KEY=VALUE or --flag=VALUE: mask the value, keep the name.
+	// KEY=VALUE or --flag=VALUE: mask the value, keep the name legible.
 	if eq := strings.IndexByte(a, '='); eq > 0 {
 		name, val := a[:eq], a[eq+1:]
-		if val != "" && looksSecret(val) {
-			return name + "=" + redactToken
+		// A base64 token that merely ends in '=' padding ("AAAA…==") is not a
+		// KEY=VALUE — everything after its first '=' is just more '='. Only a
+		// value with real content past the padding is a genuine assignment; a
+		// padding-only tail falls through to the whole-argument test below so
+		// such a token can't slip past by being mis-split.
+		if strings.Trim(val, "=") != "" {
+			// The value half is a value, not a positional path, so it is judged
+			// by looksSecretToken — which still refuses a leading-slash path
+			// (its whole-token match drops the '/') but does not wave through a
+			// base64 credential just because it contains '/' or '+', the way
+			// the path-shy looksSecret does for a bare argument.
+			if looksSecretToken(val) {
+				return name + "=" + redactToken
+			}
+			return a
 		}
-		return a
 	}
 	if looksSecret(a) {
 		return redactToken

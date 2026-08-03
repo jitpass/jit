@@ -35,8 +35,8 @@ is not authenticating one, and jit doesn't pretend otherwise (see
   triggered it while it's still up - it answers immediately instead of
   waiting for the prompt to resolve.
 - `jit audit` prints the durable audit log: every jit command that ran,
-  interleaved with every unlock, denial, use, and lock the service has seen
-  and what caused each. It's logfmt, newest first, so it greps like a real
+  interleaved with every unlock, grant, denial, use, and lock the service has
+  seen and what caused each. It's logfmt, newest first, so it greps like a real
   service log:
 
   ```
