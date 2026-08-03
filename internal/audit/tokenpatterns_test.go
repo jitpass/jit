@@ -324,6 +324,20 @@ func TestEveryRecognizedFormatIsRedactedInTheAuditLog(t *testing.T) {
 	// known prefix can trigger redaction.
 	const shortBody = "aB3xKq9Zm1"
 
+	// shortPrefixCoverage classifies the formats whose regex carries no literal
+	// prefix >=3 chars for the short-token assertion below to key on. Each is
+	// paired with the concrete token(s) that MUST still redact — via a real
+	// short prefix auditlog lists explicitly, or (Twilio) a body long enough for
+	// the entropy floor to catch. A NEW short-prefix format is absent from this
+	// map and so FAILS the test until it is consciously classified here; that is
+	// the drift alarm the old silent `continue` swallowed, which let a whole
+	// branch add formats with no coverage check.
+	shortPrefixCoverage := map[string][]string{
+		"AWS Access Key ID":     {"AKIA" + shortBody, "ASIA" + shortBody},                     // AKIA/ASIA are in secretPrefixes
+		"HashiCorp Vault Token": {"hvs." + shortBody, "hvb." + shortBody, "hvr." + shortBody}, // hvs./hvb./hvr. are in secretPrefixes
+		"Twilio Account SID":    {"AC" + hexBody(32)},                                         // no usable prefix; the 34-char SID trips the entropy floor (built at runtime so the source carries no literal SID)
+	}
+
 	for _, tp := range knownTokenPatterns {
 		// Private-key bodies never appear as a log argument (and FindFileTokens
 		// cedes them to ScanPrivateKeys); connection strings are matched by
@@ -337,7 +351,25 @@ func TestEveryRecognizedFormatIsRedactedInTheAuditLog(t *testing.T) {
 		src := strings.TrimPrefix(tp.pattern.String(), `\b`)
 		prefix, _ := regexp.MustCompile(src).LiteralPrefix()
 		if len(prefix) < 3 {
-			continue // no distinctive literal to key on (e.g. "sk-" variants share a stem)
+			// No distinctive literal to key on (e.g. AWS's AKIA|ASIA alternation
+			// leaves no common prefix). Assert the format's explicit coverage
+			// instead, and fail loudly if the format is new and unclassified.
+			tokens, ok := shortPrefixCoverage[tp.vendor]
+			if !ok {
+				t.Errorf("%s: regex %q has no literal prefix >=3 chars for the drift guard to key on, "+
+					"and it is not classified in shortPrefixCoverage. Either add its real prefix to "+
+					"secretPrefixes in internal/auditlog/auditlog.go and list a covering token here, or "+
+					"(if only the entropy floor covers it) add a long representative token here.",
+					tp.vendor, tp.pattern.String())
+				continue
+			}
+			for _, token := range tokens {
+				if auditlog.RedactText(token) == token {
+					t.Errorf("%s: covering token %q is NOT redacted in the audit log — its auditlog coverage has regressed.",
+						tp.vendor, token)
+				}
+			}
+			continue
 		}
 
 		token := prefix + shortBody
