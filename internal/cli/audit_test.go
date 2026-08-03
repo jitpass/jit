@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -444,8 +443,6 @@ func TestFollowPrintsInitialTail(t *testing.T) {
 	home := withFixtureHome(t)
 	seedAuditFixtures(t, home)
 	root := filepath.Join(home, "Library", "Application Support", "jitpass")
-	commands := auditlog.New(root, io.Discard).Load(0)
-	events := newHistoryLog(root, io.Discard).load(1 << 30)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -459,7 +456,7 @@ func TestFollowPrintsInitialTail(t *testing.T) {
 	} {
 		auditFormat = tc.format
 		var buf bytes.Buffer
-		if err := followAuditLog(ctx, &buf, root, commands, events, auditFilter{}, 50); err != nil {
+		if err := followAuditLog(ctx, &buf, root, auditFilter{}, 50); err != nil {
 			t.Fatalf("followAuditLog(%s): %v", tc.format, err)
 		}
 		if !strings.Contains(buf.String(), tc.want) {

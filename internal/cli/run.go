@@ -155,6 +155,11 @@ var runCmd = &cobra.Command{
 			}
 		}
 
+		// Record the invocation now: syscall.Exec replaces this process's image
+		// entirely and never returns on success, so Execute never regains
+		// control to record `jit run` the way it records every other command.
+		recordRunInvocation(cmd)
+
 		// syscall.Exec never returns on success — it replaces this
 		// process's image entirely — so an error here always means it
 		// failed to start, never that the target already ran.
