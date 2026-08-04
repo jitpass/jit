@@ -123,6 +123,16 @@ func scanTargetFile(cfg Config, path string) []Finding {
 			findings = append(findings, fs...)
 		}
 	}
+	// A named history file routes to its own scanner rather than the generic
+	// sweep below: the sweep would match the same tokens but knows nothing of
+	// the format, so it would report line numbers inside zsh's metadata and
+	// pay the full pattern cost on every timestamp.
+	if isShellHistoryName(name) {
+		structured = true
+		if fs, err := scanShellHistoryFile(cfg, path); err == nil {
+			findings = append(findings, fs...)
+		}
+	}
 	if envFileNamePattern.MatchString(name) {
 		structured = true
 		findings = append(findings, classifyEnvFile(cfg, path, name)...)
