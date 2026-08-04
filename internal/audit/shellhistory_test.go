@@ -424,6 +424,39 @@ func TestHistoryTimestampDoesNotDefeatThePrefilter(t *testing.T) {
 	}
 }
 
+// A NAMED history file jit cannot read must degrade the scan, never report
+// clean. The machine-wide route always did; the targeted route used to drop
+// the error, so `jit scan ~/.zsh_history` on an unreadable file printed
+// "CLEAN — exposure 0/100" and exited 0.
+func TestTargetedScanReportsAnUnreadableHistoryFile(t *testing.T) {
+	home := t.TempDir()
+	path := writeHistory(t, home, ".zsh_history", ": 1782826756:0;export HF=hf_abcdefghijklmnopqrstuvwx")
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Skip("cannot make a file unreadable here")
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+
+	findings, failures := scanTargetFile(Config{HomeDir: home}, path)
+	if len(findings) != 0 {
+		t.Errorf("got findings from an unreadable file: %+v", findings)
+	}
+	if len(failures) == 0 {
+		t.Fatal("an unreadable named history file reported no failure; the scan would render as CLEAN")
+	}
+	if failures[0].Scanner != "shell history" {
+		t.Errorf("failure scanner = %q, want \"shell history\"", failures[0].Scanner)
+	}
+
+	// And it must reach the summary, which is what the report renders from.
+	_, summary, err := TargetedScan(Config{HomeDir: home}, []string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.DegradedScanners) == 0 {
+		t.Error("TargetedScan summary has no degraded scanners for an unreadable target")
+	}
+}
+
 // A history file past the sanity bound must be REPORTED, never silently
 // skipped: history is the file most likely to grow past any ceiling, and
 // "produced no findings" would read as "clean".
@@ -664,7 +697,10 @@ func TestTargetedScanRoutesNamedHistoryFile(t *testing.T) {
 		": 1782826755:0;cd ~/work",
 		": 1782826756:0;export HF=hf_abcdefghijklmnopqrstuvwx",
 	)
-	findings := scanTargetFile(Config{HomeDir: home}, path)
+	findings, failures := scanTargetFile(Config{HomeDir: home}, path)
+	if len(failures) != 0 {
+		t.Errorf("readable file reported failures: %+v", failures)
+	}
 	if len(findings) != 1 {
 		t.Fatalf("got %d findings, want 1: %+v", len(findings), findings)
 	}

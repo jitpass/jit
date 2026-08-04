@@ -6,7 +6,6 @@
 package cli
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -166,21 +165,31 @@ var errExitClean = fmt.Errorf("no credential found")
 // anything beyond a small bound is not a command line and is not worth
 // scanning at the prompt.
 func guardCheckStdin(r io.Reader) ([]string, error) {
-	const maxCheckInput = 1 << 20
-	scanner := bufio.NewScanner(io.LimitReader(r, maxCheckInput))
-	scanner.Buffer(make([]byte, 0, 64*1024), maxCheckInput)
+	// 4 MiB, not 1: the cap exists to bound memory on absurd input, and a
+	// pasted command line carrying a credential can genuinely run to a few
+	// megabytes (a base64 blob, a heredoc). Anything past the cap is not
+	// scanned, and the hook reads that as "clean" and saves the line — so the
+	// bound is set well above any real command rather than at a round number.
+	const maxCheckInput = 4 << 20
+	// Read and split by hand rather than with bufio.Scanner. Scanner fails the
+	// whole read with "token too long" on a single line past its buffer, and
+	// the hook treats any failure as "clean" — so pasting a 3 MB command that
+	// happened to carry a credential got it recorded, with a raw Go error on
+	// stderr. Truncating at the bound instead still checks the first megabyte,
+	// which is where a credential in a pasted blob will be.
+	data, err := io.ReadAll(io.LimitReader(r, maxCheckInput))
+	if err != nil {
+		return nil, err
+	}
 	seen := map[string]bool{}
 	var vendors []string
-	for scanner.Scan() {
-		for _, tk := range audit.HistoryLineTokens(scanner.Text()) {
+	for _, line := range strings.Split(string(data), "\n") {
+		for _, tk := range audit.HistoryLineTokens(strings.TrimSuffix(line, "\r")) {
 			if !seen[tk.Vendor] {
 				seen[tk.Vendor] = true
 				vendors = append(vendors, tk.Vendor)
 			}
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
 	}
 	sort.Strings(vendors)
 	return vendors, nil

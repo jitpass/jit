@@ -363,13 +363,30 @@ func isAllDigits(s string) bool {
 //
 //   - "-----BEGIN": the private-key header patterns, which contain no long
 //     alphanumeric run at all.
+//
+//     KNOWN GAP: admitting these currently buys nothing. matchLineTokens
+//     skips every "… Private Key" vendor (ceded to ScanPrivateKeys), and
+//     ScanPrivateKeys only walks key FILES — it never sees a history line. So
+//     key material typed at the prompt is admitted here, costs the caller a
+//     full pattern pass (and, in internal/guard, a process fork), and is then
+//     always reported clean. The condition stays because closing the gap
+//     means reporting these, not because it is currently doing anything;
+//     removing it would have to be undone. Closing it needs a decision this
+//     comment cannot make: the matched span is the HEADER, not the key body,
+//     so redacting it would destroy the line without moving a secret.
+//
 //   - "@": both connection-string patterns, whose match is anchored on the
 //     "user:pass@" userinfo and whose password may be short.
+//
 //   - "eyJ": the JWT pattern, whose segments are "+"-quantified rather than
-//     "{10,}" — "eyJa.b." is a legal match for it with no long run anywhere.
+//     "{10,}" — "eyJa.b.c" is a legal match for it with no long run anywhere.
+//     (An earlier revision of this comment said "eyJa.b."; that one is NOT a
+//     match, since the pattern's trailing \b needs the third segment. The
+//     literal is still checked rather than assumed, for the reason below.)
 //     Every REAL JWT carries a base64 header far longer than the threshold, but
 //     "no real credential is that short" is the reasoning that produces silent
 //     misses, so the literal is checked instead of assumed.
+//
 //   - a run of 10+ [A-Za-z0-9_-]: every vendor-prefix pattern. Ten is set by
 //     the shortest possible match among them — SendGrid's
 //     "SG.xxxxxxxxxx.yyyyyyyyyy" has dot-separated segments of exactly 10, and

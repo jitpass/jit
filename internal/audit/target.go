@@ -4,6 +4,7 @@
 package audit
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -35,6 +36,15 @@ func TargetedScan(cfg Config, targets []string) ([]Finding, ScanSummary, error) 
 	start := time.Now()
 
 	var all []Finding
+	// Read failures on a NAMED file are reported, never swallowed. The
+	// machine-wide scan has always surfaced these as degraded scanners; the
+	// targeted path used to drop them, so `jit scan ~/.zsh_history` on a file
+	// it could not open (permissions, or past the size bound) printed
+	// "CLEAN — exposure 0/100" and exited 0. That is the exact failure the
+	// size-bound comment in shellhistory.go exists to prevent, arriving by the
+	// other door: "we could not look" must never render as "there is nothing
+	// there".
+	var degraded []ScannerFailure
 	for _, target := range targets {
 		info, err := os.Lstat(target)
 		if err != nil {
@@ -52,7 +62,9 @@ func TargetedScan(cfg Config, targets []string) ([]Finding, ScanSummary, error) 
 			if cfg.Progress != nil {
 				cfg.Progress(filepath.Base(target))
 			}
-			all = append(all, scanTargetFile(cfg, target)...)
+			fs, failures := scanTargetFile(cfg, target)
+			all = append(all, fs...)
+			degraded = append(degraded, failures...)
 		}
 	}
 	all = dedupeFindings(all)
@@ -74,6 +86,7 @@ func TargetedScan(cfg Config, targets []string) ([]Finding, ScanSummary, error) 
 	annotateRemedies(all, cfg.HomeDir)
 
 	summary := buildScanSummary(cfg, all, countProtectedMounts(cfg.MountRegistryPath), time.Since(start))
+	summary.DegradedScanners = degraded
 	coverage := ComputeCoverage(cfg.MountRegistryPath, all)
 	summary.SecretsTotal = coverage.Total()
 	summary.SecretsProtected = coverage.Protected
@@ -112,15 +125,26 @@ func scanTargetDir(cfg Config, dir string) []Finding {
 // structured category claims the file does the generic vendor-token sweep run
 // — otherwise a `.env` would be reported twice, once structured and once by
 // the sweep.
-func scanTargetFile(cfg Config, path string) []Finding {
+func scanTargetFile(cfg Config, path string) ([]Finding, []ScannerFailure) {
 	name := filepath.Base(path)
 	var findings []Finding
+	var failures []ScannerFailure
 	structured := false
+	// note records a scanner that could not read this file, so the summary can
+	// say so instead of reporting a clean scan of a file nobody read.
+	note := func(scanner string, err error) {
+		failures = append(failures, ScannerFailure{
+			Scanner: scanner,
+			Error:   fmt.Sprintf("%s: %v", ShortenHome(cfg.HomeDir, path), err),
+		})
+	}
 
 	if isShellConfigName(name) {
 		structured = true
 		if fs, err := scanShellConfigFile(cfg, path); err == nil {
 			findings = append(findings, fs...)
+		} else {
+			note("shell config", err)
 		}
 	}
 	// A named history file routes to its own scanner rather than the generic
@@ -131,6 +155,8 @@ func scanTargetFile(cfg Config, path string) []Finding {
 		structured = true
 		if fs, err := scanShellHistoryFile(cfg, path); err == nil {
 			findings = append(findings, fs...)
+		} else {
+			note("shell history", err)
 		}
 	}
 	if envFileNamePattern.MatchString(name) {
@@ -149,6 +175,8 @@ func scanTargetFile(cfg Config, path string) []Finding {
 		structured = true
 		if fs, err := scanNpmrcFile(path, cfg); err == nil {
 			findings = append(findings, fs...)
+		} else {
+			note("npmrc", err)
 		}
 	}
 	if isTFVars, isK8s := iacNameGates(name); isTFVars || isK8s {
@@ -168,9 +196,11 @@ func scanTargetFile(cfg Config, path string) []Finding {
 	if !structured {
 		if fs, err := scanFileContentForTokens(cfg, path); err == nil {
 			findings = append(findings, fs...)
+		} else {
+			note("exposed secrets", err)
 		}
 	}
-	return findings
+	return findings, failures
 }
 
 // dedupeFindings removes findings sharing a record_id, preserving first-seen

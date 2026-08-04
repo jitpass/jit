@@ -121,23 +121,43 @@ func readShellHistory(path string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s is not a regular file", path)
 	}
+	if err := refuseMultiplyLinked(info, path); err != nil {
+		return nil, err
+	}
 	if info.Size() > maxHistoryRedactSize {
 		return nil, fmt.Errorf("%s is %d bytes, above the %d-byte bound; not touched", path, info.Size(), int64(maxHistoryRedactSize))
 	}
 	return os.ReadFile(path) // #nosec G304 -- explicitly-named migrate target, same trust boundary as every Apply* path
 }
 
+// refuseMultiplyLinked rejects a hard-linked history file. Shared by the
+// preview and the apply so the two agree: the check used to live only in
+// ApplyShellHistory, so `--dry-run` printed a confident plan ("1 change
+// planned") for a file the real run then refused — and --dry-run's banner
+// promises "the plan below is what a real run would do".
+func refuseMultiplyLinked(info os.FileInfo, path string) error {
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || st.Nlink <= 1 {
+		return nil
+	}
+	return fmt.Errorf("%s has %d hard links; redacting it would leave every credential readable through the other name(s) while jit reported success — break the link (cp then mv) and re-run", path, st.Nlink)
+}
+
 // PreviewShellHistory reports how many distinct credential values and total
 // occurrences path holds — the plan/discovery number, from the same collect
-// call ApplyShellHistory acts on, so preview and reality cannot disagree.
-// ok=false means the file is missing or unreadable, not "clean".
-func PreviewShellHistory(path string) (secrets, occurrences int, ok bool) {
+// call ApplyShellHistory acts on, so preview and reality cannot disagree
+// (including the refusals: symlink, hard link, size bound).
+//
+// The error is returned rather than folded into an ok flag so the caller can
+// say WHY nothing will happen. "Nothing to migrate" for a file the user named
+// and jit deliberately refused is indistinguishable from "this file is clean".
+func PreviewShellHistory(path string) (secrets, occurrences int, err error) {
 	data, err := readShellHistory(path)
 	if err != nil {
-		return 0, 0, false
+		return 0, 0, err
 	}
 	occ, distinct := collectHistoryTokens(data)
-	return len(distinct), len(occ), true
+	return len(distinct), len(occ), nil
 }
 
 // historyProfileName names the profile after the history file itself
@@ -242,8 +262,8 @@ func ApplyShellHistory(v *vault.Vault, path string) (ShellHistoryMigration, erro
 	if !info.Mode().IsRegular() {
 		return ShellHistoryMigration{}, fmt.Errorf("%s is not a regular file", path)
 	}
-	if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Nlink > 1 {
-		return ShellHistoryMigration{}, fmt.Errorf("%s has %d hard links; redacting it would leave every credential readable through the other name(s) while jit reported success — break the link (cp then mv) and re-run", path, st.Nlink)
+	if err := refuseMultiplyLinked(info, path); err != nil {
+		return ShellHistoryMigration{}, err
 	}
 	if info.Size() > maxHistoryRedactSize {
 		return ShellHistoryMigration{}, fmt.Errorf("%s is %d bytes, above the %d-byte bound; not touched", path, info.Size(), int64(maxHistoryRedactSize))

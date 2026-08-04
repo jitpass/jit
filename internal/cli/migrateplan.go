@@ -145,8 +145,8 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, k8sManife
 			pluralWord(len(historyFiles), "shell history file", "shell history files")+" → recorded credentials move to the vault, every occurrence is redacted in place; your commands stay, the secrets don't (rotation still recommended)",
 			shorten(historyFiles),
 			func(item string) string {
-				secrets, occ, ok := migrate.PreviewShellHistory(historyOriginal[item])
-				if !ok || secrets == 0 {
+				secrets, occ, err := migrate.PreviewShellHistory(historyOriginal[item])
+				if err != nil || secrets == 0 {
 					return ""
 				}
 				if occ == secrets {
