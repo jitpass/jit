@@ -67,6 +67,8 @@ Caller identity — peercred, then pid command line and parent chain — **expla
 
 **Scan and fix are separate commands, on purpose.** `internal/audit` (`jit scan`) is read-only in *every* mode — no flag makes it write. `internal/migrate` (`jit migrate`) is the guided fix path and reuses audit's results. Keep that boundary; it's a stated guarantee, not an accident of layering.
 
+**Prevention is a third mode, not an injection tier.** `internal/guard` (`jit guard`) installs shell hooks that stop a credential being *recorded* in the first place — today one: a zsh `zshaddhistory` hook that keeps credential-carrying commands out of `$HISTFILE` while leaving them usable in the session. It delivers no secret, so it appears in no tier above. Two rules govern it: it must **fail open** (a hook that eats history or hangs the prompt is worse than one that misses a token), and its cheap in-shell admit test must never reject a line the real check would match — the same obligation `historyLineMayHoldToken` carries in `internal/audit`, transplanted to zsh, and enforced by tests that drive the shipped hook through a real `zsh`.
+
 ### The CGo seam
 
 Three darwin-only packages are the entire non-pure-Go surface, and the first place a security reviewer looks: `internal/keychainwrap`, `internal/lineage` (libproc, FIFO reader identification — audit logging only, never a gate, because a fast-closing reader can evade it), and `internal/secureenclave`.

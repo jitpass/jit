@@ -55,12 +55,15 @@ so it takes effect right away.
 Consent only prompts for a real machine or tool credential. It gates these
 provenance classes:
 
-`aws` · `terraform` · `docker` · `git` · `kube` · `gcp` · `sops` · `npmrc` · `netrc`
+`aws` · `terraform` · `docker` · `git` · `kube` · `gcp` · `sops` · `npmrc` · `netrc` · `pypirc`
 
 It does **not** prompt for a project's own secrets or anything you already ran
 deliberately: `.env` files, shell exports, MCP configs, `tfvars`, manually
-stored secrets, bare token files, or a wrapped CLI's own token (where the
-[shim](../wrap/index.md) already makes the call explicit). Those are delivered
+stored secrets, bare token files, credentials redacted out of your
+[shell history](../migrate/shell-history.md) (nothing reads those back at run
+time - they are quarantined in the vault, retrieved by hand with `jit vault
+get`), Kubernetes Secret manifest values, or a wrapped CLI's own token (where
+the [shim](../wrap/index.md) already makes the call explicit). Those are delivered
 through a `jit run` you launched or a shim you installed, so the intent is
 already established.
 

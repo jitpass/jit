@@ -119,6 +119,10 @@ docker login ghcr.io                 # still works; the helper stores to the vau
 jit migrate ~/.zshrc                 # leaves a one-line hook; new shells just have the vars
 ./deploy.sh                          # scripts that read those vars work unchanged
 
+# Tokens you once typed at the prompt, now sitting in your shell history
+jit migrate ~/.zsh_history           # each one moves to the vault; your commands stay, the secrets don't
+jit guard history                    # and stop the next one being recorded at all (zsh)
+
 # A CLI that carries its own token (gh, stripe, glab)
 jit wrap gh                          # one time
 gh pr list                           # token injected per call, forever
@@ -214,9 +218,10 @@ as the last hour.
 
 `.env` files, shell exports, AWS and Terraform, kubeconfig, Docker registry
 logins, GCP ADC, `.npmrc` / `.netrc` tokens, MCP server configs, bare token
-files, wrappable CLIs (`gh`, `stripe`, `vercel`, …), and SSO CLIs that mint
-credentials at login (`clisso`). In every case the file keeps working and the
-real value comes from the vault on demand.
+files, credentials recorded in your shell history, wrappable CLIs (`gh`,
+`stripe`, `vercel`, …), and SSO CLIs that mint credentials at login
+(`clisso`). In every case the file keeps working and the real value comes
+from the vault on demand.
 
 The full catalog, grouped by exactly what to type for each tool, is
 **[Supported tools](./docs/tools.md)**: it tracks the code as tools are added or

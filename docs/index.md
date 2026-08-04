@@ -45,11 +45,16 @@ then **[Install](./getting-started/install.md)** →
 
 - [Migrating a project or a single file](./migrate/index.md) - name what to convert, dry runs, safety model, and loose secret files (a bare token in `token.txt`)
 - Per-credential guides: [.env files](./migrate/env-files.md) ·
-  [shell configs](./migrate/shell-configs.md) · [AWS](./migrate/aws.md) ·
+  [shell configs](./migrate/shell-configs.md) ·
+  [shell history](./migrate/shell-history.md) · [AWS](./migrate/aws.md) ·
   [Kubernetes](./migrate/kubernetes.md) · [Terraform](./migrate/terraform.md) ·
   [GCP](./migrate/gcp.md) · [npm](./migrate/npm.md) · [PyPI](./migrate/pypi.md) ·
   [netrc](./migrate/netrc.md) · [SOPS](./migrate/sops.md) · [MCP / AI tools](./migrate/mcp.md)
 - [Undo, unmount, and remove](./migrate/undo-and-remove.md) - every change is reversible
+
+## Stop them being recorded - `jit guard`
+
+- [Shell history guard](./migrate/shell-history.md#stopping-the-next-one) - a zsh hook that keeps credential-carrying commands out of your history file in the first place
 
 ## Wrap CLI tools - `jit wrap`
 
