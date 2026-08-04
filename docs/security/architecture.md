@@ -141,6 +141,17 @@ longer put a dialog on your screen.
 jit narrows *where* and *when* plaintext exists; it does not make a
 compromised user account safe. The boundaries worth knowing:
 
+- **Redacting shell history is cleanup, not rotation.** `jit migrate
+  <historyfile>` removes a recorded credential from the file, but the value
+  already sat there in plaintext - very likely in a Time Machine snapshot and
+  possibly in a dotfiles repo. Rotate it. And because zsh and bash hold
+  history in memory and rewrite the file on exit, a shell that was already
+  open can bring a redacted line back until it reloads (`fc -R`) or closes.
+- **The history guard fails open, by design.** If jit is missing, errors, or
+  takes more than two seconds, `jit guard history` lets the command be
+  recorded rather than eating it. It also does nothing for shells that were
+  already running when it was installed, and nothing at all outside zsh -
+  bash has no pre-write hook to attach to.
 - **A process you give a secret to can do anything with it.** Injection
   delivers the real value to the target process; what that process does is
   outside jit's control. That's the point of naming callers on every

@@ -43,6 +43,13 @@ own), its dedicated vault secret is unshared and has no further use once the
 file is back, so undo ends by pointing you at the one command that clears it
 too: `jit migrate remove <file>` (below).
 
+!!! note "Shell history"
+    Undo restores a redacted history file byte-for-byte, like any other
+    category. `jit migrate remove` does **not** cover history: the vaulted
+    credentials stay, which is usually what you want, since they are now the
+    only copy of a value you may still need to rotate. Delete them by hand
+    with `jit vault rm zsh_history/<VAR>` once you have.
+
 ## `jit migrate remove <file-or-dir>...` - the full exit from a project
 
 Removes jit completely from a project you name: every file back to

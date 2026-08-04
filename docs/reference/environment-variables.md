@@ -34,3 +34,6 @@ lifetime - it is never exported to your shell or written anywhere.
 | `JIT_SHIM_GUARD_<TOOL>` | set by a running [shim](../wrap/index.md) so a tool that re-invokes itself doesn't loop through the shim twice; never set it yourself |
 | `PATH` | `~/.jit/shims` must precede the real tools' directories for wrapping to take effect - `jit doctor --wrap` verifies this |
 | `SHELL` | used when wiring shell-specific integration |
+| `ZDOTDIR` | when set, [`jit guard history`](../migrate/shell-history.md) writes its source line to `$ZDOTDIR/.zshrc` instead of `~/.zshrc` - the file your zsh actually reads |
+| `HISTFILE` | consulted by `jit scan` and `jit migrate` to find a relocated shell history file. Note zsh and bash keep this as an ordinary shell parameter, **not** an exported one, so jit usually cannot see it: name the file explicitly (`jit migrate ~/.cache/zsh/history`, which is routed by name) or `export HISTFILE` if you want the machine-wide scan to reach it |
+| `JIT_GUARD_BIN` | overrides which `jit` binary the installed history-guard hook invokes; exists for jit's own tests, not for daily use |

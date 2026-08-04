@@ -5,12 +5,16 @@ description: The commands other tools invoke - aws-credential-process, k8s-exec-
 
 # Plumbing protocols
 
-Five commands exist to be invoked by *other tools' configuration*, not by
-hand - `jit --help` groups them separately and shell tab-completion omits
-them entirely, for exactly that reason. Each
-implements the consuming tool's documented credential-plugin protocol, and
-each fetch requires the vault to be unlocked (the
-[service](../service/index.md)'s session, or a Touch ID prompt).
+Seven commands exist to be invoked by *other tools' configuration* - or, in
+the last case, by jit's own shell hook - rather than by hand. `jit --help`
+groups them separately and shell tab-completion omits them entirely, for
+exactly that reason.
+
+The first six implement the consuming tool's documented credential-plugin
+protocol, and each fetch requires the vault to be unlocked (the
+[service](../service/index.md)'s session, or a Touch ID prompt). The
+seventh, `jit guard check`, is the odd one out: it reads no secret, needs
+no unlock, and exists only to answer a yes/no question for the shell hook.
 
 ## `jit aws-credential-process --profile <name>`
 
@@ -66,6 +70,34 @@ removes it. Keys on host alone, matching git's default
 (`credential.useHttpPath=false`). Invoked through the `git-credential-jit`
 script [the git migration](../migrate/git.md) writes, with
 `credential.helper` set to `jit` in your git config.
+
+## `jit guard check`
+
+Reads a shell command line on **stdin** and reports whether it carries a
+value matching a known vendor credential format: exit 0 with the format
+names on stdout, exit 1 and silence when it doesn't. It never prints the
+value, stores nothing, and needs no vault - the whole job is a yes/no.
+
+Invoked by the [`jit guard history`](../migrate/shell-history.md) hook
+(`~/.jit/guard.zsh`) for each command line that passes the hook's own cheap
+in-shell test, which settles ordinary commands in ~15µs without forking
+anything (measured: 14% of lines on a real history reach this command, at
+~33ms each). Stdin rather than an argument is the point, not a style choice: an
+argument would put the credential into this process's `ps` output, readable
+by every other process running as you, which is precisely the exposure the
+guard exists to prevent.
+
+Everything else about the guard IS audited: `jit guard history` and
+`--remove` are recorded like any command, and when bare `jit migrate`
+installs the guard as part of its plan, that lands in the trail too, as
+`jit guard history (by jit migrate)` — so a hook you find in your `~/.zshrc`
+can always be traced to the run that put it there.
+
+`jit guard check` alone is excluded from the [application audit log](./commands/jit_audit.md),
+alone among the plumbing commands - it runs at the interactive prompt, where
+an audit append would be latency on your keystrokes, and a timestamped
+record of *when* you typed credential-shaped commands is not what a trail of
+secret access is for.
 
 [`credential_process`]: https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sourcing-external.html
 [credential-helper protocol]: https://docs.docker.com/reference/cli/docker/login/#credential-helper-protocol

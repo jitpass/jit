@@ -124,6 +124,13 @@ const (
 	// manifest's data:/stringData: block (distinct from ClassKube, which is
 	// a kubeconfig credential). Origin is the manifest path.
 	ClassK8sSecret = "k8s_secret" // #nosec G101 -- provenance class label, not a credential
+	// ClassShellHistory is a credential redacted out of a shell history file
+	// by `jit migrate` (distinct from ClassShell, which is an export line
+	// moved out of a shell rc file). Origin is the history file path. These
+	// are quarantine as much as storage: the value was typed at a prompt and
+	// recorded, so the durable fix is rotation — the vault copy exists so the
+	// redaction is reversible and the token recoverable until then.
+	ClassShellHistory = "shell_history" // #nosec G101 -- provenance class label, not a credential
 )
 
 // envelopeAAD is the additional authenticated data a version-2+ payload is

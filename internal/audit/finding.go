@@ -86,7 +86,28 @@ import (
 // them an unfiltered report was indistinguishable from a normal one
 // finding-by-finding, which defeated the flag's stated purpose of auditing
 // what the filters hide. Absent (false/"") on every normal run.
-const SchemaVersion = "0.15.0"
+// 0.16.0 added the shell_history_secret finding type and its
+// findings_by_category key (additive, same shape as 0.3.0/0.6.0/0.9.0's type
+// bumps): a vendor-format credential recorded in a shell history file
+// (~/.zsh_history, ~/.bash_history, $HISTFILE, fish). The same bump records a
+// semantic note for consumers computing their own coverage: an ordinary
+// history finding carries remedy "migrate" (`jit migrate <historyfile>`
+// redacts each occurrence in place and vaults the value), but one flagged
+// with a production indicator carries remedy "manual" — and a cause_group
+// with a MANUAL history finding in it is never counted in
+// secrets_migratable, even when another finding in the same group carries
+// remedy "migrate". That history line is a live plaintext copy the
+// recommended command will not touch, so protecting the other copy does not
+// protect the secret (see ComputeCoverage).
+//
+// The same bump changes cause_group IDENTITY for every finding type, not just
+// the new one: the group id is now the digest of the full value alone, where
+// it previously mixed in key_name (see annotateCauseGroups for why — one
+// token under two scanners' names was scoring as two secrets). Group ids were
+// already documented as stable only within a run, so nothing is broken, but a
+// consumer diffing groups across versions will see every id move rather than
+// only the history ones.
+const SchemaVersion = "0.16.0"
 
 // ScannerName identifies this tool in the shared NDJSON envelope, matching
 // bumblebee's record shape so a receiver can co-ingest both (RFC.md §4).
@@ -114,6 +135,12 @@ const (
 	FindingTypeWrappableCLIToken = "wrappable_cli_token" // #nosec G101 -- enum label, not a credential
 	FindingTypeSOPSAgeKey        = "sops_age_key"        // #nosec G101 -- enum label, not a credential
 	FindingTypeExposedSecret     = "exposed_secret"      // #nosec G101 -- enum label, not a credential
+	// A credential typed at the shell and recorded in a history file. Fixed by
+	// `jit migrate <historyfile>`, which vaults the value and redacts every
+	// occurrence in place — except when the credential carries a production
+	// indicator, where rotation is the remedy and no command substitutes for
+	// it. See annotateRemedies.
+	FindingTypeShellHistorySecret = "shell_history_secret" // #nosec G101 -- enum label, not a credential
 )
 
 // AllFindingTypes lists every finding_type in the fixed order used for
@@ -131,6 +158,7 @@ var AllFindingTypes = []string{
 	FindingTypeWrappableCLIToken,
 	FindingTypeSOPSAgeKey,
 	FindingTypeExposedSecret,
+	FindingTypeShellHistorySecret,
 }
 
 // Severity levels for an individual finding.

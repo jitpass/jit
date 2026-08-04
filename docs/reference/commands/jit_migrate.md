@@ -24,13 +24,16 @@ name. Each target is resolved on its own:
                moved into a profile and the vault, the file keeps working as a
                live mount (a git-safe <file>.pointers companion is written
                alongside). A machine-wide file at a known path (a shell config
-               like ~/.zshrc, ~/.aws/credentials, ~/.kube/config, Terraform
-               Cloud creds, ~/.docker/config.json, ~/.git-credentials, GCP
+               like ~/.zshrc, a shell history file like ~/.zsh_history,
+               ~/.aws/credentials, ~/.kube/config, Terraform Cloud creds,
+               ~/.docker/config.json, ~/.git-credentials, GCP
                application-default credentials, a SOPS age key, ~/.netrc,
                ~/.pypirc, Claude Desktop's MCP config, the global ~/.npmrc)
                is routed to that credential type's handling
-               (credential_process, exec plugin, credential helper, or
-               live mount, as appropriate).
+               (credential_process, exec plugin, credential helper, live
+               mount, or in-place redaction for a history file, where each
+               recorded credential moves to the vault and the line keeps
+               its shape, minus the secret).
   A directory  is walked for its .env/tfvars/mcp/npmrc findings only, never
                the machine-wide fixed-path files (those aren't "under" any
                project directory) — name them explicitly to convert them.
@@ -62,7 +65,7 @@ jit migrate <file-or-dir>... [flags]
 ```
       --dry-run        preview the plan without changing anything
       --mount          for a loose secret file, keep it live at its path as a mount (real value to jit run grants, a decoy otherwise) instead of replacing it with a pointer; also required to protect a file that mixes a secret with other content
-      --only strings   scope a run to just these comma-separated categories: env,tfvars,k8s-secret,shell,mcp,aws,kube,terraform,docker,git,gcp,sops,npmrc,netrc,pypirc,loose (default: all)
+      --only strings   scope a run to just these comma-separated categories: env,tfvars,k8s-secret,shell,history,mcp,aws,kube,terraform,docker,git,gcp,sops,npmrc,netrc,pypirc,loose (default: all)
   -y, --yes            skip the confirmation prompt and proceed immediately
 ```
 

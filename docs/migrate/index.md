@@ -23,6 +23,13 @@ before touching anything. It is exactly the command the scan report's
 the plan you confirm here. Catalog wraps run as part of the plan, each
 printing its `jit wrap undo <tool>` line as it happens.
 
+If the scan found a credential in your shell history, the plan also offers
+the [history guard](./shell-history.md#stopping-the-next-one) - a zsh hook
+that keeps future credential-carrying commands out of the file entirely.
+It is announced above the plan, so the same `[y/N]` covers it, and it is
+offered only when that finding exists, only on zsh, and only if it is not
+already installed. Reverse it with `jit guard history --remove`.
+
 **With arguments**, nothing is discovered or touched except the targets
 you name:
 
@@ -38,8 +45,8 @@ Each named target is resolved on its own:
 - **A file** is routed to the right category by what it is. A project file
   (`.env`, `*.tfvars`, `mcp.json`/`.mcp.json`, `.npmrc`) has its secrets
   moved into a profile and the vault, and the file keeps working. A
-  machine-wide file at a known path - a shell config like `~/.zshrc`,
-  `~/.aws/credentials`, `~/.kube/config`, the Terraform Cloud token file,
+  machine-wide file at a known path - a shell config like `~/.zshrc`, a shell
+  history file like `~/.zsh_history`, `~/.aws/credentials`, `~/.kube/config`, the Terraform Cloud token file,
   `~/.docker/config.json`, `~/.git-credentials`, GCP application-default
   credentials, the SOPS age key, `~/.netrc`, `~/.pypirc`, Claude Desktop's MCP config,
   the global `~/.npmrc` - is routed to that credential type's handling.
@@ -104,6 +111,7 @@ Limit a run to specific categories with `--only`
 | `env` | one secret per variable | a live-mounted named pipe, plus a git-safe `.env.pointers` companion | [.env files](./env-files.md) |
 | `tfvars` | one secret per variable, stored as `TF_VAR_<name>` | the secret lines deleted; terraform reads them back as `TF_VAR_` env vars via `jit run` | [Terraform tfvars](./tfvars.md) |
 | `shell` | one secret per `export KEY=value` line | the export line replaced with `eval "$(jit export --profile ...)"` | [Shell configs](./shell-configs.md) |
+| `history` | one secret per distinct credential recorded in a shell history file (`~/.zsh_history`, `~/.bash_history`, `$HISTFILE`, fish) | every occurrence of the value replaced in place by a `<jit:redacted:VAR>` marker naming the vault entry; the command line itself, and every other byte of the file, untouched | [Shell history](./shell-history.md) |
 | `mcp` | one secret per server's env-block value | the server's `command` rewritten to launch via `jit run` | [MCP / AI tools](./mcp.md) |
 | `aws` | the profile's access key/secret/session token | a `credential_process` line in `~/.aws/config`; no file with the real value at all | [AWS](./aws.md) |
 | `kube` | the user's bearer token or cert/key pair | an `exec` block calling jit (client-go's exec-plugin protocol) | [Kubernetes](./kubernetes.md) |

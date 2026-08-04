@@ -33,6 +33,22 @@ var auditExcludedCommands = map[string]bool{
 	"docs-gen":         true,
 }
 
+// auditExcludedPaths excludes by full command path, for a name too generic to
+// key on ("check" could belong to any future command).
+//
+// `jit guard check` is the shell history guard's classification helper: the
+// zsh hook forks it for every command line that passes its cheap admit test,
+// so it runs constantly at the interactive prompt. Recording it would be
+// wrong twice over. It is on the critical path of the user's keystrokes, and
+// an audit append (open, lock, write) is real latency there. And it does not
+// belong in the trail on its own terms: it hands out nothing, stores nothing,
+// and reads a line the user is in the middle of typing — logging it would
+// build a timestamped record of WHEN someone typed credential-shaped
+// commands, which is not what an audit log of secret access is for.
+var auditExcludedPaths = map[string]bool{
+	"jit guard check": true,
+}
+
 // secretValueCommands take a raw secret value as their final positional
 // argument (`jit vault set <path> <value>`). auditlog.Redact already masks
 // anything credential-SHAPED, but a weak secret ("hunter2") isn't, so for
@@ -54,7 +70,7 @@ func recordAuditEvent(cmd *cobra.Command, cmdErr error, elapsed time.Duration) {
 	if cmd == nil {
 		return
 	}
-	if auditExcludedCommands[cmd.Name()] {
+	if auditExcludedCommands[cmd.Name()] || auditExcludedPaths[cmd.CommandPath()] {
 		return
 	}
 	// A command that only printed its help never touched the user's secrets,
@@ -103,6 +119,46 @@ func recordAuditEvent(cmd *cobra.Command, cmdErr error, elapsed time.Duration) {
 	logger := auditlog.New(root, os.Stderr)
 	logger.Trim()
 	logger.Append(rec)
+}
+
+// recordSideEffect appends an audit record for a persistent change a command
+// made BEYOND its own name — work the user consented to as part of a plan
+// rather than by typing that command.
+//
+// The trail is meant to answer "what has jit done to this machine", and the
+// per-invocation record answers it only for commands whose name IS the change.
+// Bare `jit migrate` can install the shell history guard, which writes a hook
+// and a line into the user's ~/.zshrc that then runs on every command they
+// type. Recorded as only `cmd="jit migrate"`, that persistent change would be
+// invisible: someone auditing later would see a migration and have no way to
+// learn where the hook in their rc file came from.
+//
+// cmdPath is the command the change is equivalent to (so `jit audit --grep
+// guard` finds it), and args render the line, including who really did it.
+// Failures are swallowed exactly as recordAuditEvent's are: an audit trail is
+// a nicety, and nothing about recording a change may make the change itself
+// appear to have failed.
+func recordSideEffect(cmdPath string, args []string, byCommand string) {
+	root, err := vaultRootDir()
+	if err != nil {
+		return
+	}
+	rec := auditlog.Record{
+		UnixNano: time.Now().UnixNano(),
+		Command:  cmdPath,
+		Args:     append(args, "(by "+byCommand+")"),
+		UID:      os.Getuid(),
+		PID:      os.Getpid(),
+		PPID:     os.Getppid(),
+		Success:  true,
+	}
+	if u, uerr := user.Current(); uerr == nil {
+		rec.User = u.Username
+	} else {
+		rec.User = strconv.Itoa(rec.UID)
+	}
+	rec.Parent, rec.LaunchedBy = resolveInvoker()
+	auditlog.New(root, os.Stderr).Append(rec)
 }
 
 // resolveInvoker names this jit process's parent and the nearest ancestor that

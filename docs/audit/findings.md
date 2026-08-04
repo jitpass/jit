@@ -19,6 +19,7 @@ a masked value preview, and a one-line *why* explaining what matched.
 | **Wrappable CLI Tokens** | plaintext tokens in the config files of CLIs the [wrap catalog](../wrap/index.md) knows how to fix (`gh`, `stripe`, `ngrok`, …) | [`jit wrap <tool>`](../wrap/index.md) - audit prints the exact command |
 | **SOPS Age Keys** | the age private key file (`keys.txt`) that decrypts every SOPS-encrypted secret it guards - sops, kluctl, Flux, helm-secrets | [`jit migrate`](../migrate/sops.md) |
 | **Exposed Secrets** | a known vendor token or JWT found by **content**, whatever the file is called (`token.txt`, a random dump). Produced two ways: any file you name to `jit scan <path>`, and - on a whole-machine scan - files whose own NAME says they hold credentials (`*credentials*.csv` as downloaded from the AWS console, `jwt-secret.txt`, `api_key.json`). The name only decides what gets read; a finding still needs a vendor-format match in the content, so a crypto researcher's `tokens.csv` produces nothing | [`jit migrate <path>`](../migrate/index.md): the whole file vault-and-neutralizes to a pointer; a token embedded in a larger file needs `--mount` to protect it in place as a live mount |
+| **Shell History** | vendor-format credentials recorded in `~/.zsh_history`, `~/.bash_history`, `~/.sh_history`, `~/.history`, fish history, and whatever `$HISTFILE` points at. This is the surface every other category misses by construction: a credential gets here by being **typed**, so it is never in a file whose name or location announces it. A password written as a shell expansion (`postgres://app:$PGPASSWORD@…`) is not a finding - nothing is exposed by it | [`jit migrate <historyfile>`](../migrate/shell-history.md): each credential moves to the vault and every occurrence is redacted in place, command lines intact. A production-flagged one stays manual (rotate). [`jit guard history`](../migrate/shell-history.md#stopping-the-next-one) stops the next one being recorded |
 
 Detection and migration share the same extractors: when a new tool enters
 the wrap catalog, `jit scan` starts flagging its token automatically.
@@ -55,6 +56,39 @@ nothing:
   encrypted remote backend, and keep secrets out of it with ephemeral values
   (Terraform 1.10+). jit scans these files only because nothing else would:
   the name carries no credential word, so the content sweep would walk past.
+- **Production-flagged credentials in shell history.** An ordinary history
+  credential is migratable: `jit migrate ~/.zsh_history` vaults each value
+  and redacts every occurrence in place, leaving a `<jit:redacted:VAR>`
+  marker where the secret was (the command line itself survives; `jit vault
+  get` recovers the value; `jit migrate undo` restores the file whole). A
+  credential carrying a production indicator stays in this manual bucket:
+  clearing the recorded copy does not un-expose a production credential, so
+  rotation is the fix and the report refuses to offer a command as if it
+  were. Two truths hold either way, and the migrate output repeats them -
+  the value has already been written to disk (history files get backed up by
+  Time Machine and committed to dotfile repos as a matter of routine), and
+  zsh and bash hold history in memory and rewrite the file on exit, so a
+  line redacted while another session is open can come back. Run `fc -R` in
+  each open zsh (`history -r` in bash) or close them, then re-run `jit scan`
+  to confirm; a re-run of migrate re-redacts a resurrected line into the
+  same vault entry.
+
+  Private key material typed at the prompt is reported here too, as
+  **critical**, and is the one history finding `jit migrate` will not redact:
+  jit matches the `-----BEGIN` header, so removing it would leave the key body
+  behind and make the file look clean. Regenerate the key instead.
+
+  Prevention exists too: `jit guard history` installs a zsh hook that checks
+  each command for a known credential format before zsh writes it to the
+  history file - a flagged command stays usable in that session (up-arrow
+  works) but is never recorded, so the next pasted token has nothing to be
+  found in.
+
+  A secret found in a *production-flagged* history line **and** in a file
+  `jit migrate` can protect is counted once, and is not counted as
+  migratable: vaulting the config copy leaves that history copy readable, so
+  your coverage moves when you rotate, not when you migrate. The migrate is
+  still worth running, and the report says so.
 
 Test fixtures - a `*_test.go`, anything under `testdata/` - are reported but
 never counted toward your coverage score. The value matches a real credential
@@ -100,6 +134,12 @@ reported, and reported harder:
 - **Unfilled template values**: `API_TOKEN=your-token-here` in a real
   `.env` you copied but haven't filled in. A human-chosen password that
   merely contains such a word (`Wherever2024!`) is still reported.
+- **Shell expansions in a connection string**: the password in
+  `postgres://app:$PGPASSWORD@db/app` (or `${VAR}`, `$(op read …)`, a
+  backtick) is a reference, not a value - the secret lives wherever the
+  expansion reads it from. This matters most in shell history, where writing
+  it that way is how you avoid the exposure in the first place. A literal
+  password in the same shape is still reported.
 
 ### Seeing what was filtered
 
