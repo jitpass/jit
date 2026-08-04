@@ -23,6 +23,13 @@ before touching anything. It is exactly the command the scan report's
 the plan you confirm here. Catalog wraps run as part of the plan, each
 printing its `jit wrap undo <tool>` line as it happens.
 
+If the scan found a credential in your shell history, the plan also offers
+the [history guard](./shell-history.md#stopping-the-next-one) - a zsh hook
+that keeps future credential-carrying commands out of the file entirely.
+It is announced above the plan, so the same `[y/N]` covers it, and it is
+offered only when that finding exists, only on zsh, and only if it is not
+already installed. Reverse it with `jit guard history --remove`.
+
 **With arguments**, nothing is discovered or touched except the targets
 you name:
 

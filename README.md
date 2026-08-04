@@ -122,6 +122,7 @@ jit migrate ~/.zshrc                 # leaves a one-line hook; new shells just h
 # Tokens you once typed at the prompt, now sitting in your shell history
 jit migrate ~/.zsh_history           # each one moves to the vault; your commands stay, the secrets don't
 jit guard history                    # and stop the next one being recorded at all (zsh)
+                                     # (bare `jit migrate` offers this too, in the plan it asks you to confirm)
 
 # A CLI that carries its own token (gh, stripe, glab)
 jit wrap gh                          # one time
