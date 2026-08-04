@@ -73,6 +73,11 @@ nothing:
   to confirm; a re-run of migrate re-redacts a resurrected line into the
   same vault entry.
 
+  Private key material typed at the prompt is reported here too, as
+  **critical**, and is the one history finding `jit migrate` will not redact:
+  jit matches the `-----BEGIN` header, so removing it would leave the key body
+  behind and make the file look clean. Regenerate the key instead.
+
   Prevention exists too: `jit guard history` installs a zsh hook that checks
   each command for a known credential format before zsh writes it to the
   history file - a flagged command stays usable in that session (up-arrow

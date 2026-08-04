@@ -73,6 +73,10 @@ type discovered struct {
 	// Populated only without --mount; with --mount they migrate as templates
 	// and land in looseSecretFiles instead.
 	looseEmbeddedSkipped []string
+	// historyKeyOnlyFiles is note-only, like looseEmbeddedSkipped: history
+	// files whose only finding is private-key material, which migrate reports
+	// and refuses to redact (see migrate.HasOnlyPrivateKeyMaterial).
+	historyKeyOnly []string
 }
 
 // noteNamespaceMove explains a claimNamespace bump (GAPS.md #55) directly
@@ -263,6 +267,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 	pypircFiles := d.pypircFiles
 	looseSecretFiles := d.looseSecretFiles
 	looseEmbeddedSkipped := d.looseEmbeddedSkipped
+	historyKeyOnly := d.historyKeyOnly
 
 	// --only scopes a run to just the named categories (GAPS.md #21) —
 	// validated against migrateCategories BEFORE anything else, including
@@ -343,6 +348,8 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			"They stay in place and `jit scan` keeps reporting them. Common causes: a templated manifest (Helm `{{ }}`) that isn't valid YAML, multi-line block-scalar values, or data: mixed with stringData: in one document.")
 		printSkippedFindings(cmd.OutOrStdout(), home, len(looseEmbeddedSkipped), pluralWord(len(looseEmbeddedSkipped), "file that mixes", "files that mix")+" a secret with other content", looseEmbeddedSkipped,
 			"Re-run with --mount to protect them in place as a live mount (the non-secret content is preserved); otherwise they stay put and `jit scan` keeps reporting them.")
+		printSkippedFindings(cmd.OutOrStdout(), home, len(historyKeyOnly), "in "+pluralWord(len(historyKeyOnly), "a history file", "history files")+" holding private key material", historyKeyOnly,
+			"jit only matched the -----BEGIN line; the key body is on the lines around it, so redacting would leave the key behind and make the file look clean. Regenerate the key, then delete those lines by hand.")
 		return false, nil
 	}
 
@@ -381,6 +388,8 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 		"They stay in place and `jit scan` keeps reporting them. Common causes: a templated manifest (Helm `{{ }}`) that isn't valid YAML, multi-line block-scalar values, or data: mixed with stringData: in one document.")
 	printSkippedFindings(cmd.OutOrStdout(), home, len(looseEmbeddedSkipped), pluralWord(len(looseEmbeddedSkipped), "file that mixes", "files that mix")+" a secret with other content", looseEmbeddedSkipped,
 		"Re-run with --mount to protect them in place as a live mount (the non-secret content is preserved); otherwise they stay put and `jit scan` keeps reporting them.")
+	printSkippedFindings(cmd.OutOrStdout(), home, len(historyKeyOnly), "in "+pluralWord(len(historyKeyOnly), "a history file", "history files")+" holding private key material", historyKeyOnly,
+		"jit only matched the -----BEGIN line; the key body is on the lines around it, so redacting would leave the key behind and make the file look clean. Regenerate the key, then delete those lines by hand.")
 
 	if migrateDryRun {
 		out := cmd.OutOrStdout()
@@ -614,6 +623,12 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			fmt.Fprint(out, hlCmds(fmt.Sprintf("  • %s -> profile %q (%s, %s redacted in place); backup: `jit vault get %s`\n",
 				displayPath(home, path), result.ProfileName, countWord(len(result.Variables), "secret", "secrets"),
 				countWord(result.Occurrences, "occurrence", "occurrences"), result.BackupPath)))
+			// A file can hold both. Never let a successful token redaction
+			// imply the file is now clean when key material was deliberately
+			// left in it.
+			if migrate.HasPrivateKeyMaterial(path) {
+				_, _ = cWarn.Fprintf(out, "    note: private key material is STILL in this file — jit matched only the -----BEGIN line, so redacting it would leave the key body behind. Regenerate the key and delete those lines by hand.\n")
+			}
 		}
 		// Two truths the redaction itself cannot deliver, said at the moment
 		// of action. Rotation: clearing the recorded copy does not un-expose
@@ -1237,8 +1252,14 @@ func discoverFileTarget(d *discovered, home, path string) error {
 			// there" when the truth is "jit refused, and here is why".
 			return err
 		}
-		if secrets > 0 {
+		switch {
+		case secrets > 0:
 			d.historyFiles = append(d.historyFiles, path)
+		case migrate.HasOnlyPrivateKeyMaterial(path):
+			// Flagged by `jit scan`, deliberately not redactable — say so
+			// rather than reporting "nothing to migrate" at a file the report
+			// just called CRITICAL.
+			d.historyKeyOnly = append(d.historyKeyOnly, path)
 		}
 		return nil
 	}
@@ -1447,6 +1468,7 @@ func (d *discovered) dedupe() {
 		&d.historyFiles, &d.mcpConfigs, &d.awsProfiles, &d.k8sUsers, &d.terraformHosts,
 		&d.dockerRegistries, &d.gitHosts, &d.gcpADCFiles, &d.sopsAgeFiles,
 		&d.npmrcFiles, &d.netrcFiles, &d.pypircFiles, &d.looseSecretFiles, &d.looseEmbeddedSkipped,
+		&d.historyKeyOnly,
 	} {
 		dedupeStrings(s)
 	}

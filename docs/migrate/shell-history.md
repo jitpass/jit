@@ -77,6 +77,23 @@ commands are preserved rather than overwritten; and if a credential jit has
 not vaulted appears in that window, the run refuses and writes nothing rather
 than half-redacting the file.
 
+## Private keys are reported, never redacted
+
+If you paste a private key at the prompt - a heredoc into `deploy_key`, an
+`ssh-add` from a here-string - the key lands in your history like anything
+else. `jit scan` reports that as **critical**, and `jit guard history` blocks
+it from being recorded in the first place.
+
+`jit migrate` deliberately will not touch it, and says so rather than
+quietly doing nothing. What jit matches is the `-----BEGIN … KEY-----`
+header; the key body is on the lines around it. Redacting the header would
+leave the key sitting in the file while making the file look cleaned, which
+is worse than leaving it alone visibly. There is also nothing useful to
+vault: a header is public knowledge.
+
+The remedy is the one no command can perform for you - regenerate the key,
+replace it wherever it is authorized, then delete those lines by hand.
+
 ## What jit refuses to do
 
 - **A symlinked history file.** The rewrite lands via rename, which replaces

@@ -846,3 +846,60 @@ func TestTriageCountsOrdinaryHistoryCopiesAsMigratable(t *testing.T) {
 		}
 	}
 }
+
+// Private key material typed at the prompt used to be invisible: the history
+// matcher ceded "… Private Key" vendors to ScanPrivateKeys, which only walks
+// key FILES and never sees a history line. The prefilter admitted the line,
+// the guard forked for it, and the answer was always "clean".
+func TestScanShellHistoryFindsPrivateKeyMaterial(t *testing.T) {
+	home := t.TempDir()
+	writeHistory(t, home, ".zsh_history",
+		": 1782826755:0;git status",
+		`: 1782826756:0;cat > deploy_key <<'EOF'`,
+		": 1782826757:0;-----BEGIN OPENSSH PRIVATE KEY-----",
+	)
+	findings, err := ScanShellHistories(Config{HomeDir: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1: %+v", len(findings), findings)
+	}
+	f := findings[0]
+	if f.FindingType != FindingTypeShellHistorySecret {
+		t.Errorf("finding type = %q", f.FindingType)
+	}
+	if f.Severity != SeverityCritical {
+		t.Errorf("severity = %q, want critical (a key cannot be rotated at a provider)", f.Severity)
+	}
+	if f.Remedy != RemedyManual {
+		t.Errorf("remedy = %q, want manual: redacting the header would leave the key body behind", f.Remedy)
+	}
+	if f.FixCommand != "" {
+		t.Errorf("offered a fix command for private key material: %q", f.FixCommand)
+	}
+	// No value preview: the header is public knowledge, and hashing it would
+	// fold every key of that type on the machine into one cause group.
+	if f.ValuePreview != nil {
+		t.Errorf("private-key finding carries a value preview: %v", f.ValuePreview)
+	}
+	if f.CauseGroup != "" {
+		t.Errorf("private-key finding got a cause group keyed on a shared header: %q", f.CauseGroup)
+	}
+}
+
+// The guard's whole job is prevention, and blocking a pasted key from ever
+// reaching the file involves no rewrite — so unlike migrate, it must fire.
+func TestHistoryLineTokensReportsPrivateKeyHeaders(t *testing.T) {
+	line := `: 1782826756:0;echo "-----BEGIN OPENSSH PRIVATE KEY-----" >> deploy_key`
+	toks := HistoryLineTokens(line)
+	if len(toks) == 0 {
+		t.Fatal("no token: the guard would let a pasted private key be recorded")
+	}
+	if !IsPrivateKeyVendor(toks[0].Vendor) {
+		t.Errorf("vendor = %q, want a private-key vendor", toks[0].Vendor)
+	}
+	if line[toks[0].Start:toks[0].End] != toks[0].Value {
+		t.Error("span does not address the raw line")
+	}
+}

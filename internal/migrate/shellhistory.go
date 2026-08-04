@@ -93,6 +93,16 @@ func collectHistoryTokens(data []byte) (occ []historyOccurrence, distinct []audi
 		}
 		line := string(data[lineStart:lineEnd])
 		for _, tk := range audit.HistoryLineTokens(line) {
+			// Private-key material is detected (jit scan reports it, and the
+			// guard blocks it being recorded) but never redacted: the match is
+			// the "-----BEGIN … KEY-----" header, so splicing it out would
+			// leave the base64 body in the file while making the file look
+			// cleaned, and would file a public header in the vault as a
+			// secret. Regenerating the key is the remedy, and no rewrite
+			// substitutes for it. See audit.IsPrivateKeyVendor.
+			if audit.IsPrivateKeyVendor(tk.Vendor) {
+				continue
+			}
 			occ = append(occ, historyOccurrence{start: lineStart + tk.Start, end: lineStart + tk.End, value: tk.Value})
 			if !seen[tk.Value] {
 				seen[tk.Value] = true
@@ -158,6 +168,44 @@ func PreviewShellHistory(path string) (secrets, occurrences int, err error) {
 	}
 	occ, distinct := collectHistoryTokens(data)
 	return len(distinct), len(occ), nil
+}
+
+// HasOnlyPrivateKeyMaterial reports whether path holds private-key material
+// and nothing migrate can redact.
+//
+// It exists so `jit migrate <historyfile>` can say why it is doing nothing to
+// a file `jit scan` just flagged CRITICAL. Without it the two commands
+// contradict each other in the user's hands: the report says key material is
+// in your history, and the fix command it points at answers "nothing to
+// migrate", which reads as jit losing the finding rather than declining to
+// half-fix it.
+func HasOnlyPrivateKeyMaterial(path string) bool {
+	data, err := readShellHistory(path)
+	if err != nil {
+		return false
+	}
+	occ, _ := collectHistoryTokens(data) // private keys are excluded from these
+	return len(occ) == 0 && HasPrivateKeyMaterial(path)
+}
+
+// HasPrivateKeyMaterial reports whether path holds private-key material,
+// whatever else it holds. Checked again AFTER a redaction so the result can
+// say the key is still there: a file with both a token and a key comes back
+// from migrate with the token gone, and without this the run would report a
+// clean-sounding success over a key it deliberately left in place.
+func HasPrivateKeyMaterial(path string) bool {
+	data, err := readShellHistory(path)
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		for _, tk := range audit.HistoryLineTokens(line) {
+			if audit.IsPrivateKeyVendor(tk.Vendor) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // historyProfileName names the profile after the history file itself
