@@ -5,8 +5,12 @@ package cli
 
 import (
 	"errors"
+	"io"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/jitpass/jit/internal/auditlog"
 )
 
 func TestGuardCheckStdinFindsVendors(t *testing.T) {
@@ -75,5 +79,41 @@ func TestGuardCheckIsNotAuditLogged(t *testing.T) {
 	// removing a guard changes the machine and belongs in the trail.
 	if auditExcludedPaths[guardHistoryCmd.CommandPath()] || auditExcludedCommands[guardHistoryCmd.Name()] {
 		t.Error("jit guard history must stay in the audit trail")
+	}
+}
+
+// A guard installed as part of bare `jit migrate` is a persistent change to
+// the user's ~/.zshrc that they agreed to as one line in a plan. Recorded as
+// only "jit migrate", it would be invisible to anyone later asking where the
+// hook in their rc file came from.
+func TestGuardInstallBySideEffectIsAudited(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root, err := vaultRootDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	recordSideEffect("jit guard history", []string{"guard", "history"}, "jit migrate")
+
+	recs := auditlog.New(root, io.Discard).Load(0)
+	if len(recs) != 1 {
+		t.Fatalf("got %d audit records, want 1", len(recs))
+	}
+	r := recs[0]
+	if r.Command != "jit guard history" {
+		t.Errorf("command = %q, want the equivalent command so --grep finds it", r.Command)
+	}
+	if !r.Success {
+		t.Error("record marked failed")
+	}
+	// The rendered line must name who really did it: the user did not type
+	// this command.
+	joined := strings.Join(r.Args, " ")
+	if !strings.Contains(joined, "by jit migrate") {
+		t.Errorf("args = %q, want them to name the command that did it", joined)
 	}
 }
