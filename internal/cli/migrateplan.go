@@ -43,7 +43,7 @@ import (
 // item-by-item (splitMCPByScope/splitNpmrcByScope) since Claude Desktop's
 // config / the global ~/.npmrc belong in the machine-wide group while a
 // project mcp.json/.npmrc belongs with the scoped files.
-func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, k8sManifests, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, pypircFiles, looseSecretFiles []string) {
+func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, k8sManifests, shellConfigs, historyFiles, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, pypircFiles, looseSecretFiles []string) {
 	fmt.Fprintln(w, "jit migrate, plan")
 	fmt.Fprintln(w, "Each modified file is backed up before it's rewritten.")
 	fmt.Fprintln(w)
@@ -63,7 +63,7 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, k8sManife
 	}
 
 	hasScoped := len(envFiles) > 0 || len(tfvarsFiles) > 0 || len(k8sManifests) > 0 || len(mcpScoped) > 0 || len(npmrcScoped) > 0 || len(looseSecretFiles) > 0
-	hasFixed := len(shellConfigs) > 0 || len(mcpFixed) > 0 || len(awsProfiles) > 0 || len(k8sUsers) > 0 || len(terraformHosts) > 0 || len(dockerRegistries) > 0 || len(gitHosts) > 0 || len(gcpADCFiles) > 0 || len(sopsAgeFiles) > 0 || len(npmrcFixed) > 0 || len(netrcFiles) > 0 || len(pypircFiles) > 0
+	hasFixed := len(shellConfigs) > 0 || len(historyFiles) > 0 || len(mcpFixed) > 0 || len(awsProfiles) > 0 || len(k8sUsers) > 0 || len(terraformHosts) > 0 || len(dockerRegistries) > 0 || len(gitHosts) > 0 || len(gcpADCFiles) > 0 || len(sopsAgeFiles) > 0 || len(npmrcFixed) > 0 || len(netrcFiles) > 0 || len(pypircFiles) > 0
 
 	if hasScoped {
 		// The annotation callback below is handed the display-shortened path,
@@ -137,6 +137,23 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, k8sManife
 		printMigratePlanCategory(w,
 			pluralWord(len(shellConfigs), "shell config", "shell configs")+" → secrets move to the vault; loaded back automatically when your shell starts",
 			shorten(shellConfigs))
+		historyOriginal := make(map[string]string, len(historyFiles))
+		for _, p := range historyFiles {
+			historyOriginal[displayPath(home, p)] = p
+		}
+		printMigratePlanCategoryAnnotated(w,
+			pluralWord(len(historyFiles), "shell history file", "shell history files")+" → recorded credentials move to the vault, every occurrence is redacted in place; your commands stay, the secrets don't (rotation still recommended)",
+			shorten(historyFiles),
+			func(item string) string {
+				secrets, occ, err := migrate.PreviewShellHistory(historyOriginal[item])
+				if err != nil || secrets == 0 {
+					return ""
+				}
+				if occ == secrets {
+					return countWord(secrets, "secret", "secrets")
+				}
+				return fmt.Sprintf("%s across %s", countWord(secrets, "secret", "secrets"), countWord(occ, "occurrence", "occurrences"))
+			})
 		printMigratePlanCategory(w,
 			pluralWord(len(mcpFixed), "MCP config", "MCP configs")+" → secrets move to the vault; injected automatically when the server launches",
 			shorten(mcpFixed))
@@ -200,7 +217,7 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, k8sManife
 	}
 
 	categories, total := 0, 0
-	for _, items := range [][]string{envFiles, tfvarsFiles, k8sManifests, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, pypircFiles, looseSecretFiles} {
+	for _, items := range [][]string{envFiles, tfvarsFiles, k8sManifests, shellConfigs, historyFiles, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, pypircFiles, looseSecretFiles} {
 		if len(items) > 0 {
 			categories++
 		}

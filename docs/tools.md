@@ -154,6 +154,13 @@ A bare token in a plain file (a JWT in `token.txt`) is handled by
 git-safe pointer, or with `--mount` it stays live at its path. See the
 [migrate guide](./migrate/index.md).
 
+A credential you once **typed** - and so is sitting in `~/.zsh_history` - is
+handled by `jit migrate ~/.zsh_history`: each value moves to the vault and
+every occurrence is redacted in place, leaving your command lines readable.
+There is nothing to run afterwards; the point is that nothing is there to
+find. `jit guard history` then keeps the next one from being recorded at all.
+See [shell history](./migrate/shell-history.md).
+
 The source-of-truth lists are the generated
 [command reference](./reference/commands/jit.md), the
 [wrap catalog](./wrap/index.md), and the [migrate categories](./migrate/index.md).

@@ -15,6 +15,7 @@ description: Where the vault, profiles, shims, and rewritten config files live o
 | `<project>/.jit/profiles/` | project profile manifests - names and vault paths only, safe to commit |
 | `<project>/.jit/config.yaml` | optional per-project settings, currently `read_as_file: true` to pin [`jit run`](../run/index.md) to live mode - safe to commit |
 | `~/.jit/shims/` | PATH shims installed by [`jit wrap`](../wrap/index.md) |
+| `~/.jit/guard.zsh` | the zsh history-guard hook installed by [`jit guard history`](./commands/jit_guard_history.md); `~/.zshrc` gains one line sourcing it |
 | `~/Library/LaunchAgents/com.jitpass.agent.plist` | the launchd login item for the [background service](../service/index.md) |
 | the `jit` binary itself | wherever you installed it (`which jit`) - e.g. `/usr/local/bin/jit` |
 
@@ -40,6 +41,7 @@ the vault is gone.
 | `.npmrc` (project or `~`) | a live mount serving a template; non-secret lines untouched |
 | `mcp.json` / Claude Desktop config | server `command` wrapped in `jit run` |
 | per-tool CLI configs (`~/.config/gh/hosts.yml`, …) | token scrubbed by `jit wrap` - full list per tool in the [wrap catalog](../wrap/index.md) |
+| `~/.zsh_history` / `~/.bash_history` / `$HISTFILE` / fish history | each recorded credential replaced in place by a `<jit:redacted:VAR>` marker naming the vault entry that now holds it; every other byte, your commands included, untouched |
 
 Every rewrite is preceded by an encrypted byte-exact backup into the vault
 ([`jit migrate undo`](../migrate/undo-and-remove.md) restores it).

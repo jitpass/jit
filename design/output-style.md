@@ -209,7 +209,7 @@ ever mis-widths them — nothing references the symbols directly.
 Every list/report/dashboard surface is on the house style: `jit scan`,
 `jit migrate` (plan + summary), `jit status` (dashboard + `--secrets`),
 `jit vault list` / `jit vault orphans`, `jit service status`, `jit doctor`,
-`jit audit`, `jit service log`, and the first-run flow.
+`jit audit`, `jit service log`, `jit guard history`, and the first-run flow.
 When adding a new command, reach for the `style.go` helpers rather than raw
 `color.New(...)` so it lands in the same style by default.
 

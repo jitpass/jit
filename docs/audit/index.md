@@ -106,6 +106,12 @@ Per category, in the `--full` inventory:
 - **Wrappable CLI Tokens** findings are fixed by **`jit wrap <tool>`** -
   the report prints the exact one-command fix next to each, and bare
   `jit migrate` runs them for you.
+- **Shell History** findings are fixed by **`jit migrate <historyfile>`**,
+  which vaults each credential and redacts every occurrence in place. One
+  exception: a history credential carrying a production indicator stays in
+  the red section, because clearing the recorded copy does not un-expose a
+  production secret - rotation does. `jit guard history` keeps the next one
+  from being recorded at all.
 - **Private Keys** and most **IaC Variable Files** are surfaced for your
   judgment; there's no automatic migration for them.
 

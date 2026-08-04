@@ -19,6 +19,7 @@ import (
 
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/audit"
+	"github.com/jitpass/jit/internal/guard"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/vault"
@@ -37,7 +38,7 @@ var (
 // Keyed by the short token a caller passes, not the display label used in
 // output — keep the two lists in this exact order so error messages and
 // --only's own help text stay in sync with printMigratePlan.
-var migrateCategories = []string{"env", "tfvars", "k8s-secret", "shell", "mcp", "aws", "kube", "terraform", "docker", "git", "gcp", "sops", "npmrc", "netrc", "pypirc", "loose"}
+var migrateCategories = []string{"env", "tfvars", "k8s-secret", "shell", "history", "mcp", "aws", "kube", "terraform", "docker", "git", "gcp", "sops", "npmrc", "netrc", "pypirc", "loose"}
 
 // discovered holds one run's findings per category. runMigratePath resolves
 // each named target into one of these and hands it to applyMigrate — the
@@ -55,6 +56,7 @@ type discovered struct {
 	// "seen, nothing movable" instead of staying silent.
 	k8sManifestsComplexOnly []string
 	shellConfigs            []string
+	historyFiles            []string
 	mcpConfigs              []string
 	awsProfiles             []string
 	k8sUsers                []string
@@ -72,6 +74,10 @@ type discovered struct {
 	// Populated only without --mount; with --mount they migrate as templates
 	// and land in looseSecretFiles instead.
 	looseEmbeddedSkipped []string
+	// historyKeyOnlyFiles is note-only, like looseEmbeddedSkipped: history
+	// files whose only finding is private-key material, which migrate reports
+	// and refuses to redact (see migrate.HasOnlyPrivateKeyMaterial).
+	historyKeyOnly []string
 }
 
 // noteNamespaceMove explains a claimNamespace bump (GAPS.md #55) directly
@@ -169,13 +175,16 @@ var migrateCmd = &cobra.Command{
 		"               moved into a profile and the vault, the file keeps working as a\n" +
 		"               live mount (a git-safe <file>.pointers companion is written\n" +
 		"               alongside). A machine-wide file at a known path (a shell config\n" +
-		"               like ~/.zshrc, ~/.aws/credentials, ~/.kube/config, Terraform\n" +
-		"               Cloud creds, ~/.docker/config.json, ~/.git-credentials, GCP\n" +
+		"               like ~/.zshrc, a shell history file like ~/.zsh_history,\n" +
+		"               ~/.aws/credentials, ~/.kube/config, Terraform Cloud creds,\n" +
+		"               ~/.docker/config.json, ~/.git-credentials, GCP\n" +
 		"               application-default credentials, a SOPS age key, ~/.netrc,\n" +
 		"               ~/.pypirc, Claude Desktop's MCP config, the global ~/.npmrc)\n" +
 		"               is routed to that credential type's handling\n" +
-		"               (credential_process, exec plugin, credential helper, or\n" +
-		"               live mount, as appropriate).\n" +
+		"               (credential_process, exec plugin, credential helper, live\n" +
+		"               mount, or in-place redaction for a history file, where each\n" +
+		"               recorded credential moves to the vault and the line keeps\n" +
+		"               its shape, minus the secret).\n" +
 		"  A directory  is walked for its .env/tfvars/mcp/npmrc findings only, never\n" +
 		"               the machine-wide fixed-path files (those aren't \"under\" any\n" +
 		"               project directory) — name them explicitly to convert them.\n\n" +
@@ -245,6 +254,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 	k8sManifests := d.k8sManifests
 	k8sManifestsComplexOnly := d.k8sManifestsComplexOnly
 	shellConfigs := d.shellConfigs
+	historyFiles := d.historyFiles
 	mcpConfigs := d.mcpConfigs
 	awsProfiles := d.awsProfiles
 	k8sUsers := d.k8sUsers
@@ -258,6 +268,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 	pypircFiles := d.pypircFiles
 	looseSecretFiles := d.looseSecretFiles
 	looseEmbeddedSkipped := d.looseEmbeddedSkipped
+	historyKeyOnly := d.historyKeyOnly
 
 	// --only scopes a run to just the named categories (GAPS.md #21) —
 	// validated against migrateCategories BEFORE anything else, including
@@ -279,6 +290,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 		"tfvars":     &tfvarsFiles,
 		"k8s-secret": &k8sManifests,
 		"shell":      &shellConfigs,
+		"history":    &historyFiles,
 		"mcp":        &mcpConfigs,
 		"aws":        &awsProfiles,
 		"kube":       &k8sUsers,
@@ -337,6 +349,8 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			"They stay in place and `jit scan` keeps reporting them. Common causes: a templated manifest (Helm `{{ }}`) that isn't valid YAML, multi-line block-scalar values, or data: mixed with stringData: in one document.")
 		printSkippedFindings(cmd.OutOrStdout(), home, len(looseEmbeddedSkipped), pluralWord(len(looseEmbeddedSkipped), "file that mixes", "files that mix")+" a secret with other content", looseEmbeddedSkipped,
 			"Re-run with --mount to protect them in place as a live mount (the non-secret content is preserved); otherwise they stay put and `jit scan` keeps reporting them.")
+		printSkippedFindings(cmd.OutOrStdout(), home, len(historyKeyOnly), "in "+pluralWord(len(historyKeyOnly), "a history file", "history files")+" holding private key material", historyKeyOnly,
+			"jit only matched the -----BEGIN line; the key body is on the lines around it, so redacting would leave the key behind and make the file look clean. Regenerate the key, then delete those lines by hand.")
 		return false, nil
 	}
 
@@ -368,13 +382,15 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 	// work that's about to be aborted anyway. This same plan is what
 	// --dry-run prints too (see below) — one rendering path, so the
 	// preview you confirm against is exactly the preview --dry-run shows.
-	printMigratePlan(cmd.OutOrStdout(), home, envFiles, tfvarsFiles, k8sManifests, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, pypircFiles, looseSecretFiles)
+	printMigratePlan(cmd.OutOrStdout(), home, envFiles, tfvarsFiles, k8sManifests, shellConfigs, historyFiles, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, pypircFiles, looseSecretFiles)
 	printSkippedFindings(cmd.OutOrStdout(), home, len(tfvarsComplexOnly), "in Terraform "+pluralWord(len(tfvarsComplexOnly), "variable file", "variable files")+" whose secret-shaped values aren't simple one-line strings", tfvarsComplexOnly,
 		"Nothing migrate can move safely; they stay in place, and `jit scan` keeps reporting them.")
 	printSkippedFindings(cmd.OutOrStdout(), home, len(k8sManifestsComplexOnly), "in "+pluralWord(len(k8sManifestsComplexOnly), "Kubernetes Secret manifest", "Kubernetes Secret manifests")+" migrate can't rewrite provably right", k8sManifestsComplexOnly,
 		"They stay in place and `jit scan` keeps reporting them. Common causes: a templated manifest (Helm `{{ }}`) that isn't valid YAML, multi-line block-scalar values, or data: mixed with stringData: in one document.")
 	printSkippedFindings(cmd.OutOrStdout(), home, len(looseEmbeddedSkipped), pluralWord(len(looseEmbeddedSkipped), "file that mixes", "files that mix")+" a secret with other content", looseEmbeddedSkipped,
 		"Re-run with --mount to protect them in place as a live mount (the non-secret content is preserved); otherwise they stay put and `jit scan` keeps reporting them.")
+	printSkippedFindings(cmd.OutOrStdout(), home, len(historyKeyOnly), "in "+pluralWord(len(historyKeyOnly), "a history file", "history files")+" holding private key material", historyKeyOnly,
+		"jit only matched the -----BEGIN line; the key body is on the lines around it, so redacting would leave the key behind and make the file look clean. Regenerate the key, then delete those lines by hand.")
 
 	if migrateDryRun {
 		out := cmd.OutOrStdout()
@@ -593,6 +609,41 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			fmt.Fprint(out, hlCmds(fmt.Sprintf("  • %s -> profile %q (%s); backup: `jit vault get %s`, open a new shell (or `source %s`)\n",
 				displayPath(home, shellPath), result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath, displayPath(home, shellPath))))
 		}
+		fmt.Fprintln(out)
+	}
+
+	if n := len(historyFiles); n > 0 {
+		printMigrateResultCategory(out, pluralWord(n, "shell history file", "shell history files")+" redacted", n)
+		for _, path := range historyFiles {
+			summary.checkGitHistory(path)
+
+			result, err := migrate.ApplyShellHistory(v, path)
+			if err != nil {
+				return false, fmt.Errorf("jit migrate: %w", err)
+			}
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  • %s -> profile %q (%s, %s redacted in place); backup: `jit vault get %s`\n",
+				displayPath(home, path), result.ProfileName, countWord(len(result.Variables), "secret", "secrets"),
+				countWord(result.Occurrences, "occurrence", "occurrences"), result.BackupPath)))
+			// A file can hold both. Never let a successful token redaction
+			// imply the file is now clean when key material was deliberately
+			// left in it.
+			if migrate.HasPrivateKeyMaterial(path) {
+				_, _ = cWarn.Fprintf(out, "    note: private key material is STILL in this file — jit matched only the -----BEGIN line, so redacting it would leave the key body behind. Regenerate the key and delete those lines by hand.\n")
+			}
+		}
+		// Two truths the redaction itself cannot deliver, said at the moment
+		// of action. Rotation: clearing the recorded copy does not un-expose
+		// a value that already sat in plaintext (and history files reach Time
+		// Machine and dotfile repos as a matter of routine). Resurrection:
+		// zsh's default setup holds history in memory and rewrites the file
+		// on exit, so a shell that was open during this run can bring the
+		// redacted lines back — re-running migrate re-redacts them into the
+		// same vault entries, but reloading or closing those shells is what
+		// makes it stick.
+		wrapBody(out, 0, "    ", cWarn.Sprint("    rotate these at their provider: redaction clears the recorded copy, it does not un-expose it"))
+		wrapBody(out, 0, "    ", hlCmds("    Shells open right now rewrite history when they exit, which can bring a "+
+			"redacted line back. Run `fc -R` in each open zsh (bash: `history -r`) or close them, then re-run `jit scan` to confirm."))
+		wrapBody(out, 0, "    ", hlCmds("    To stop future secrets reaching the file at all: `jit guard history` (zsh)."))
 		fmt.Fprintln(out)
 	}
 
@@ -982,7 +1033,25 @@ func runMigrateAll(cmd *cobra.Command) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "note: --only is set, skipping %s %s: %s\n", pluralWord(len(tools), "CLI", "CLIs"), pluralWord(len(tools), "wrap", "wraps"), strings.Join(tools, ", "))
 		tools = nil
 	}
-	if len(files) == 0 && len(tools) == 0 {
+	// The guard is offered only when this scan found a credential in history:
+	// bare `jit migrate` is "do what the scan found", and installing a shell
+	// hook for a problem the user does not have would be work nobody asked
+	// for. Skipped when --only is set, for the same reason wraps are — the
+	// user scoped this run. Skipped when it is already installed, and when
+	// the login shell is not zsh, since the hook is zsh syntax and would sit
+	// in a file that shell never reads.
+	offerGuard := false
+	for _, f := range findings {
+		if f.FindingType == audit.FindingTypeShellHistorySecret && audit.CountedAsSecret(f) && !f.Archived {
+			offerGuard = true
+			break
+		}
+	}
+	if offerGuard && (len(migrateOnly) > 0 || guard.Installed(home) || filepath.Base(os.Getenv("SHELL")) != "zsh") {
+		offerGuard = false
+	}
+
+	if len(files) == 0 && len(tools) == 0 && !offerGuard {
 		progress.Stop()
 		fmt.Fprintln(cmd.OutOrStdout(), hlCmds("Nothing to protect — the scan found no secrets jit can act on. Run `jit scan` for the full picture."))
 		return nil
@@ -1001,10 +1070,17 @@ func runMigrateAll(cmd *cobra.Command) error {
 	progress.Stop()
 
 	out := cmd.OutOrStdout()
-	if d.total() == 0 && len(tools) == 0 {
+	if d.total() == 0 && len(tools) == 0 && !offerGuard {
 		// Discovery routed every candidate to a skip (mixed-content files,
 		// or files that changed since the scan). No plan, no prompt, and
 		// definitely no coverage promise.
+		//
+		// The guard keeps this branch open when it is still on offer, because
+		// that combination is exactly when it matters most: the scan found a
+		// credential in history and discovery could not clean the file (it is
+		// hard-linked, or changed under us), so preventing the NEXT one is the
+		// only protection left to give. Returning here would have offered it
+		// in the plan and then silently not installed it.
 		fmt.Fprintln(out, hlCmds("Nothing bare `jit migrate` can protect right now: the flagged file(s) mix secrets with other content or need to be named explicitly. `jit scan` has the details."))
 		return nil
 	}
@@ -1019,6 +1095,26 @@ func runMigrateAll(cmd *cobra.Command) error {
 			pluralWord(len(tools), "CLI", "CLIs"), strings.Join(tools, ", "))))
 	}
 
+	// Announced ABOVE applyMigrate's plan, like the wraps, so the single
+	// [y/N] below is the consent for it too. Stated as an outcome rather than
+	// a command name: a reader who has never seen `jit guard history` cannot
+	// guess what it does, and a line they cannot evaluate is one they should
+	// not be agreeing to.
+	if offerGuard {
+		if migrateDryRun {
+			_, _ = cPathBold.Fprint(out, "[DRY RUN] ")
+		}
+		used := 0
+		if migrateDryRun {
+			used = len("[DRY RUN] ")
+		}
+		wrapBody(out, used, "", hlCmds("Will also install the shell history guard, so this cannot happen again: a "+
+			"zsh hook keeps a command carrying a credential out of your history file, "+
+			"while leaving it usable in that session (reversible with "+
+			"`jit guard history --remove`)."))
+		fmt.Fprintln(out)
+	}
+
 	applied := true
 	if d.total() > 0 {
 		applied, err = applyMigrate(cmd, home, d)
@@ -1031,7 +1127,30 @@ func runMigrateAll(cmd *cobra.Command) error {
 		return nil
 	}
 	if !applied && !migrateDryRun {
-		return nil // declined at the plan — wraps must not run either
+		return nil // declined at the plan — wraps and the guard must not run either
+	}
+
+	if offerGuard {
+		switch {
+		case migrateDryRun:
+			fmt.Fprintln(out, "[dry-run] would install the shell history guard (undo: jit guard history --remove)")
+		default:
+			if _, guardErr := guard.Install(home); guardErr != nil {
+				// One failed hook must not fail a migrate that already moved
+				// real secrets into the vault.
+				fmt.Fprintf(cmd.ErrOrStderr(), "installing the history guard failed: %v\n", guardErr)
+			} else {
+				// The hook runs on every command the user types from now on,
+				// and they agreed to it as one line in a plan. The trail has
+				// to say where it came from.
+				recordSideEffect("jit guard history", []string{"guard", "history"}, "jit migrate")
+				fmt.Fprintln(out)
+				_, _ = cOK.Fprintf(out, "%s ", glyphDone)
+				wrapBody(out, 2, "  ", hlCmds(fmt.Sprintf("history guard installed (%s, sourced from %s). New shells pick it up; "+
+					"run `source ~/.jit/guard.zsh` in ones already open. Reverse with `jit guard history --remove`.",
+					displayPath(home, guard.HookPath(home)), displayPath(home, guard.RcPath(home)))))
+			}
+		}
 	}
 
 	for _, tool := range tools {
@@ -1050,7 +1169,13 @@ func runMigrateAll(cmd *cobra.Command) error {
 	// Close the loop with the number the scan report opened with — only
 	// after something actually applied; a declined or empty run must not
 	// print a coverage gain it didn't produce.
-	if applied && !migrateDryRun && summary.SecretsTotal > 0 {
+	//
+	// d.total() is part of that test, not just `applied`: a run whose files
+	// were all skipped by discovery never calls applyMigrate at all, so
+	// `applied` stays at its initial true and the projection would promise a
+	// jump ("0% → up to 100%") for work that provably did not happen. That
+	// path is reachable now that the guard can be the only thing a run does.
+	if applied && !migrateDryRun && d.total() > 0 && summary.SecretsTotal > 0 {
 		before := summary.SecretsProtected * 100 / summary.SecretsTotal
 		after := (summary.SecretsProtected + summary.SecretsMigratable) * 100 / summary.SecretsTotal
 		fmt.Fprint(out, hlCmds(fmt.Sprintf("\ncoverage: %d%% → up to %d%% — run `jit scan` to see the new number\n", before, after)))
@@ -1184,6 +1309,35 @@ func discoverDirTarget(d *discovered, home, dir string) error {
 // including the global ~/.npmrc, whose global profile rooting applyMigrate
 // re-derives from the path itself.
 func discoverFileTarget(d *discovered, home, path string) error {
+	// Shell history: routed by NAME (the fixed defaults plus a custom
+	// $HISTFILE), and NEVER allowed to fall through to the generic
+	// categories — loose-secret classification reads a zsh extended_history
+	// line as "embedded" content and would offer --mount, turning the
+	// shell's own record into a FIFO no shell can append to. Routing is
+	// unconditional; whether the file holds anything is the preview's call
+	// (an explicitly named clean history lands in the ordinary "nothing to
+	// migrate" report).
+	if isHistoryTarget(home, path) {
+		secrets, _, err := migrate.PreviewShellHistory(path)
+		if err != nil {
+			// Fail loud with the reason rather than reporting "nothing to
+			// migrate". A history file jit will not touch — hard-linked,
+			// unreadable, past the size bound — is a file the user explicitly
+			// named, and silently doing nothing reads as "there was nothing
+			// there" when the truth is "jit refused, and here is why".
+			return err
+		}
+		switch {
+		case secrets > 0:
+			d.historyFiles = append(d.historyFiles, path)
+		case migrate.HasOnlyPrivateKeyMaterial(path):
+			// Flagged by `jit scan`, deliberately not redactable — say so
+			// rather than reporting "nothing to migrate" at a file the report
+			// just called CRITICAL.
+			d.historyKeyOnly = append(d.historyKeyOnly, path)
+		}
+		return nil
+	}
 	// Shell configs: five fixed names under $HOME, each keyed by path.
 	for _, p := range migrate.ShellConfigPaths(home) {
 		if path == p {
@@ -1324,6 +1478,46 @@ func discoverFileTarget(d *discovered, home, path string) error {
 	return nil
 }
 
+// isHistoryTarget reports whether an explicitly named path is a shell history
+// file `jit migrate` routes to redaction: one of the fixed names audit's
+// scanner owns (audit.IsShellHistoryPath), the exact file $HISTFILE points at,
+// or any name that reads as a history file.
+//
+// That last rule is looser than anything audit's machine-wide sweep allows,
+// and deliberately so — the two commands are answering different questions
+// under different risks:
+//
+//   - $HISTFILE alone is not enough, because neither zsh nor bash EXPORTS it.
+//     It is an ordinary shell parameter, so a child process sees it only if
+//     the user went out of their way to export it. For the very user this
+//     rule exists for, the one who moved their history to ~/.cache/zsh/history,
+//     os.Getenv returns "" and the fixed-name list matches nothing.
+//   - Falling through is not a harmless miss here. Discovery would hand the
+//     file to loose-secret classification, which reads a history file as
+//     "a secret embedded in other content" and offers --mount: that turns the
+//     shell's own append-only record into a FIFO, which no shell can append
+//     to. Guessing wrong in the other direction merely redacts a credential
+//     out of a file the user named and asked jit to fix, with a vault backup
+//     and `jit migrate undo` behind it.
+//
+// audit's sweep rejects name-guessing because it visits every file on the
+// machine unbidden. Here the user has typed the path.
+func isHistoryTarget(home, path string) bool {
+	if audit.IsShellHistoryPath(path) {
+		return true
+	}
+	if hf := os.Getenv("HISTFILE"); hf != "" {
+		hf = expandTilde(hf, home)
+		if abs, err := filepath.Abs(hf); err == nil {
+			hf = abs
+		}
+		if path == hf {
+			return true
+		}
+	}
+	return strings.Contains(strings.ToLower(filepath.Base(path)), "history")
+}
+
 // filterToTarget keeps only the entries equal to target, narrowing a
 // category's whole-$HOME discovery down to the single file the caller named
 // (the path-keyed fixed categories whose Discover* returns every candidate
@@ -1346,9 +1540,10 @@ func (d *discovered) dedupe() {
 	for _, s := range []*[]string{
 		&d.envFiles, &d.tfvarsFiles, &d.tfvarsComplexOnly,
 		&d.k8sManifests, &d.k8sManifestsComplexOnly, &d.shellConfigs,
-		&d.mcpConfigs, &d.awsProfiles, &d.k8sUsers, &d.terraformHosts,
+		&d.historyFiles, &d.mcpConfigs, &d.awsProfiles, &d.k8sUsers, &d.terraformHosts,
 		&d.dockerRegistries, &d.gitHosts, &d.gcpADCFiles, &d.sopsAgeFiles,
 		&d.npmrcFiles, &d.netrcFiles, &d.pypircFiles, &d.looseSecretFiles, &d.looseEmbeddedSkipped,
+		&d.historyKeyOnly,
 	} {
 		dedupeStrings(s)
 	}
@@ -1361,7 +1556,7 @@ func (d *discovered) dedupe() {
 func (d *discovered) total() int {
 	n := 0
 	for _, s := range [][]string{
-		d.envFiles, d.tfvarsFiles, d.k8sManifests, d.shellConfigs, d.mcpConfigs, d.awsProfiles,
+		d.envFiles, d.tfvarsFiles, d.k8sManifests, d.shellConfigs, d.historyFiles, d.mcpConfigs, d.awsProfiles,
 		d.k8sUsers, d.terraformHosts, d.dockerRegistries, d.gitHosts,
 		d.gcpADCFiles, d.sopsAgeFiles, d.npmrcFiles, d.netrcFiles, d.pypircFiles,
 		d.looseSecretFiles,

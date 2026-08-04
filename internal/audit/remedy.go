@@ -53,6 +53,15 @@ const (
 //     those (neutralizing would destroy the non-secret content), so calling
 //     them "migrate" would promise coverage the recommended command doesn't
 //     deliver. The evidence-side remedy is --mount or moving the secret out.
+//   - A PRODUCTION-flagged credential in shell history: `jit migrate` can
+//     redact a history file in place (ApplyShellHistory), so an ordinary
+//     history finding falls through to RemedyMigrate like any other file
+//     jit can rewrite. The production case stays manual for the same reason
+//     the production exposed_secret case does: clearing the recorded copy
+//     does not un-expose a production credential, and offering a migrate
+//     command as THE fix would dress the wound without treating it. The
+//     migrate result output carries the rotation advice for the ordinary
+//     case; for production, rotation IS the remedy and the report says so.
 func annotateRemedies(findings []Finding, home string) {
 	// Purity is per file and can involve a re-read; cache it, since copies
 	// of one dump produce many findings for the same path.
@@ -87,6 +96,8 @@ func annotateRemedies(findings []Finding, home string) {
 			// falls through to RemedyMigrate — `jit migrate <path>` either
 			// converts it to a rejectable-decoy mount or explains exactly why
 			// it refused (block scalars, mixed data:/stringData:).
+			f.Remedy = RemedyManual
+		case f.FindingType == FindingTypeShellHistorySecret && f.ProductionIndicatorMatch:
 			f.Remedy = RemedyManual
 		case f.FindingType == FindingTypeExposedSecret &&
 			(f.ProductionIndicatorMatch || !isPure(f.FilePath)):
@@ -127,6 +138,18 @@ func shellSafePath(home, path string) string {
 //
 // A finding with no value gets no group — with nothing to compare, claiming
 // two file-presence findings share a cause would be invented knowledge.
+//
+// The key name is mixed in ONLY on the preview fallback. When the full value's
+// digest is available it stands alone, because two findings holding the same
+// secret ARE one secret however differently their scanners chose to name it —
+// which is the whole definition this function exists to implement. Including
+// the key alongside the digest quietly broke that across scanners: one GitHub
+// token in ~/.mcp.json (key "internal-tool/GITHUB_TOKEN") and in
+// ~/.zsh_history (key "GitHub Personal Access Token") scored as TWO secrets,
+// so a machine with one token reported "YOUR SECRETS: 2" and charged the user
+// twice for rotating it once. On the fallback path the key is still needed:
+// a 4-character preview is the constant vendor prefix for most formats, so
+// "ghp_****" alone would fold together every GitHub token on the machine.
 func annotateCauseGroups(findings []Finding) {
 	salt := make([]byte, 16)
 	_, _ = rand.Read(salt) // a zeroed salt degrades stability guarantees, never correctness
@@ -137,16 +160,14 @@ func annotateCauseGroups(findings []Finding) {
 			if f.ValuePreview == nil || *f.ValuePreview == "" {
 				continue
 			}
-			identity = "preview:" + *f.ValuePreview
-		}
-		key := ""
-		if f.KeyName != nil {
-			key = *f.KeyName
+			key := ""
+			if f.KeyName != nil {
+				key = *f.KeyName
+			}
+			identity = "preview:" + key + "\x00" + *f.ValuePreview
 		}
 		h := sha256.New()
 		h.Write(salt)
-		h.Write([]byte(key))
-		h.Write([]byte{0})
 		h.Write([]byte(identity))
 		f.CauseGroup = hex.EncodeToString(h.Sum(nil)[:8])
 	}
@@ -193,6 +214,23 @@ func (c Coverage) Percent() int {
 	return c.Protected * 100 / c.Total()
 }
 
+// manualRemainder is how many counted secrets are left once every jit-runnable
+// remedy has run: the size of the "only you can protect these" bucket, in the
+// same distinct-secret unit as the rest of the ledger.
+//
+// Derived from the ledger rather than counted off the rendered groups, so the
+// two halves of the report's arithmetic cannot disagree. Summing the groups'
+// own badges double-counted any secret found in BOTH a migratable file and a
+// manual one — it was charged once to Migratable and again to the manual
+// total, so "one command +75% · 2 things only you can fix +40%" could add past
+// 100%. Rare before shell history existed (a secret rarely sat in a migratable
+// file and a manual one at once) and routine after it, since a token pasted at
+// the shell is usually also in the config file it was pasted into.
+//
+// By construction Percent + PercentAfterMigrate's gain + this remainder's share
+// is exactly 100: Protected + Migratable + (Exposed - Migratable) == Total.
+func (c Coverage) manualRemainder() int { return c.Exposed - c.Migratable }
+
 // PercentAfterMigrate projects the score after every jit-runnable remedy is
 // applied — the number the report prints next to the command it recommends.
 func (c Coverage) PercentAfterMigrate() int {
@@ -229,6 +267,18 @@ func ComputeCoverage(registryPath string, findings []Finding) Coverage {
 	// skips archived/backup directories, so counting them would promise a
 	// coverage gain the recommended command doesn't deliver.
 	migratable := map[string]bool{}
+	// A cause group with a MANUAL history copy is never migratable, whatever
+	// its other findings say. The two-pass rule above exists because migrate
+	// protects the LIVE copy of a secret that also sits in a backup — but a
+	// history line is itself a live plaintext copy, and the manual-remedy
+	// case (a production-flagged credential, see annotateRemedies) is the one
+	// copy bare `jit migrate` will not touch. Vaulting the .mcp.json that
+	// holds the same token leaves it readable in ~/.zsh_history, so counting
+	// the group as migratable would promise a coverage gain the recommended
+	// command does not deliver. An ORDINARY history finding carries
+	// RemedyMigrate now that ApplyShellHistory redacts in place, so it marks
+	// its group migratable through the same rule as everything else.
+	manualHistory := map[string]bool{}
 	for _, f := range findings {
 		if !CountedAsSecret(f) {
 			continue
@@ -241,12 +291,15 @@ func ComputeCoverage(registryPath string, findings []Finding) Coverage {
 			migratable[key] = false
 			c.Exposed++
 		}
+		if f.FindingType == FindingTypeShellHistorySecret && f.Remedy == RemedyManual {
+			manualHistory[key] = true
+		}
 		if f.Remedy != RemedyManual && !f.Archived {
 			migratable[key] = true
 		}
 	}
-	for _, ok := range migratable {
-		if ok {
+	for key, ok := range migratable {
+		if ok && !manualHistory[key] {
 			c.Migratable++
 		}
 	}
