@@ -628,6 +628,9 @@ func manualNoun(f Finding) string {
 		// than only in the dim path line below: "An exposed GitHub token" and
 		// "A GitHub token in shell history" call for different actions, and
 		// the reader decides what to do from this line.
+		if f.KeyName != nil && IsPrivateKeyVendor(*f.KeyName) {
+			return fmt.Sprintf("%s material typed at the shell", strings.TrimSuffix(*f.KeyName, " Private Key")+" private key")
+		}
 		if k := shortSecretLabel(f.KeyName); k != "" {
 			return fmt.Sprintf("A %s in shell history", k)
 		}
@@ -732,6 +735,11 @@ func manualAction(f Finding, ctx manualContext, home string) string {
 		return "rotate " + them + " now; move state to an encrypted remote backend, and keep secrets out of it with ephemeral values (Terraform 1.10+)"
 	case f.FindingType == FindingTypeIACVariableFile:
 		return "seal it (sealed-secrets/SOPS) or move it to a real secret store"
+	case f.FindingType == FindingTypeShellHistorySecret && f.KeyName != nil && IsPrivateKeyVendor(*f.KeyName):
+		// A key is not a token: there is no provider to rotate it at, and the
+		// line jit matched is the header, so the body is still on the lines
+		// around it. Deleting is the user's job here, not jit's.
+		return "regenerate the key and replace it wherever it is authorized, then delete those lines by hand"
 	case f.FindingType == FindingTypeShellHistorySecret:
 		// Above the production branch on purpose. A production credential in
 		// history still needs the history instruction, not "delete every

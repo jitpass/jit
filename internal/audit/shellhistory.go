@@ -207,6 +207,10 @@ func scanShellHistoryFile(cfg Config, path string) ([]Finding, error) {
 	for _, vendor := range order {
 		h := byVendor[vendor]
 		ln := h.line
+		if IsPrivateKeyVendor(vendor) {
+			findings = append(findings, cfg.privateKeyInHistoryFinding(path, vendor, ln, h.count))
+			continue
+		}
 		f := cfg.ValueFinding(ValueFindingParams{
 			FindingType:  FindingTypeShellHistorySecret,
 			FilePath:     path,
@@ -229,6 +233,36 @@ func scanShellHistoryFile(cfg Config, path string) ([]Finding, error) {
 		findings = append(findings, f)
 	}
 	return findings, lineScanErr(scanner)
+}
+
+// privateKeyInHistoryFinding builds the finding for key material typed at the
+// prompt. Deliberately NOT a ValueFinding: the matched text is the
+// "-----BEGIN … KEY-----" header, which is public knowledge, so a masked
+// "value preview" of it would be theatre — and worse, every key of a given
+// type shares that header byte-for-byte, so hashing it as a value would fold
+// every private key on the machine into one cause group and one "secret".
+//
+// Critical rather than High: unlike a token, a private key cannot be rotated
+// by clicking a button in a dashboard, and whatever it authorizes (a
+// production host, a signing identity) it authorizes until someone
+// regenerates and redistributes it.
+func (c Config) privateKeyInHistoryFinding(path, vendor string, line, count int) Finding {
+	f := c.baseFinding()
+	f.FindingType = FindingTypeShellHistorySecret
+	f.FilePath = path
+	f.Line = &line
+	f.KeyName = &vendor
+	f.Severity = SeverityCritical
+	f.Confidence = ConfidenceHigh
+	f.Evidence = "private key material was typed at the shell and recorded in history; the key body is on the surrounding lines"
+	if count > 1 {
+		f.Evidence = fmt.Sprintf("%s (%d occurrences, the first at line %d)", f.Evidence, count, line)
+	}
+	// Manual, and set here rather than left to annotateRemedies' default:
+	// there is no command for this one. See IsPrivateKeyVendor.
+	f.Remedy = RemedyManual
+	f.RecordID = RecordID(f.FindingType, f.FilePath, f.KeyName)
+	return f
 }
 
 // historyCommand strips a history file's own metadata from a line and returns
@@ -419,7 +453,20 @@ const historyTokenRunLen = 10
 // matchLineTokens returns every vendor-format match in one line, with the same
 // first-claim-wins overlap resolution and placeholder rejection FindFileTokens
 // applies, so a value reported here means exactly what it means there.
-// Private-key bodies are ceded to ScanPrivateKeys for the same reason.
+//
+// Private-key headers are INCLUDED here, unlike in FindFileTokens. That looks
+// like an inconsistency and is the opposite: FindFileTokens cedes them to
+// ScanPrivateKeys, which inspects the key FILE (passphrase, permissions) and
+// reports it far better than a raw match could — but ScanPrivateKeys walks
+// files, and no file holds a history line. Ceding here ceded to nobody, so a
+// key pasted at the prompt was admitted by the prefilter, cost a full pattern
+// pass (and a process fork in internal/guard), and was then always reported
+// clean.
+//
+// What a match means here is narrower than for any other vendor, and callers
+// must respect it: the pattern is the "-----BEGIN … KEY-----" HEADER, not the
+// key body. It is conclusive evidence that key material was typed, and it is
+// NOT the secret. See IsPrivateKeyVendor.
 func matchLineTokens(line string) []FileToken {
 	var claimed [][2]int
 	overlaps := func(lo, hi int) bool {
@@ -432,9 +479,6 @@ func matchLineTokens(line string) []FileToken {
 	}
 	var out []FileToken
 	for _, tp := range knownTokenPatterns {
-		if strings.HasSuffix(tp.vendor, "Private Key") {
-			continue
-		}
 		for _, loc := range tp.pattern.FindAllStringIndex(line, -1) {
 			lo, hi := loc[0], loc[1]
 			if overlaps(lo, hi) {
@@ -458,6 +502,22 @@ func matchLineTokens(line string) []FileToken {
 		}
 	}
 	return out
+}
+
+// IsPrivateKeyVendor reports whether a vendor label from HistoryLineTokens
+// names private-key material rather than an ordinary credential.
+//
+// The distinction decides what a caller may DO with the match, so it is
+// exported rather than left to a string check at each call site. Every other
+// vendor's match IS the secret, so `jit migrate` vaults it and splices it out.
+// A private-key match is only the header line: splicing that out would leave
+// the base64 body sitting in the file while making the file look cleaned, and
+// would store a header — public knowledge — in the vault as if it were a
+// credential. So this material is REPORTED (jit scan, and internal/guard
+// blocks it before it is ever written) and never redacted; the remedy is to
+// regenerate the key, which no command of jit's can do.
+func IsPrivateKeyVendor(vendor string) bool {
+	return strings.HasSuffix(vendor, "Private Key")
 }
 
 // IsShellHistoryPath reports whether path is one of the history files this
