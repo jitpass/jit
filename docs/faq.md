@@ -209,9 +209,29 @@ machine-readable output under the same redaction rules.
 
 ### What about secrets already committed to git?
 
-jit never rewrites history. A file that was committed still has its old value
-in `git log -p`. `migrate` warns you, and the correct fix is rotating that
-credential, jit cannot un-leak it.
+jit never rewrites *git* history. A file that was committed still has its old
+value in `git log -p`. `migrate` warns you, and the correct fix is rotating
+that credential, jit cannot un-leak it.
+
+(It does rewrite *shell* history - see below - which is a different file and
+a different question.)
+
+### What about credentials sitting in my shell history?
+
+`jit scan` finds them (`~/.zsh_history`, `~/.bash_history`, `$HISTFILE`, fish)
+and `jit migrate ~/.zsh_history` moves each value into the vault, replacing
+every occurrence in the file with a `<jit:redacted:VAR>` marker. Your command
+lines stay readable; only the secret's bytes change, and `jit migrate undo`
+puts the file back.
+
+Rotation is still the real fix: the value was on disk in plaintext, and
+history files reach Time Machine and dotfile repos routinely. Redaction stops
+it being found again from here on.
+
+To stop the next one being recorded at all, `jit guard history` installs a zsh
+hook that keeps credential-carrying commands out of the file while leaving
+them usable in the session. Details in
+[shell history](./migrate/shell-history.md).
 
 ### Once a secret reaches a process, what stops that process from leaking it?
 

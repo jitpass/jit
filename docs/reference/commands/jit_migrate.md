@@ -31,9 +31,9 @@ name. Each target is resolved on its own:
                ~/.pypirc, Claude Desktop's MCP config, the global ~/.npmrc)
                is routed to that credential type's handling
                (credential_process, exec plugin, credential helper, live
-               mount, or — for history — in-place redaction: each recorded
-               credential moves to the vault and the line keeps its shape,
-               minus the secret).
+               mount, or in-place redaction for a history file, where each
+               recorded credential moves to the vault and the line keeps
+               its shape, minus the secret).
   A directory  is walked for its .env/tfvars/mcp/npmrc findings only, never
                the machine-wide fixed-path files (those aren't "under" any
                project directory) — name them explicitly to convert them.
