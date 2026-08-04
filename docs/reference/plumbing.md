@@ -87,7 +87,13 @@ argument would put the credential into this process's `ps` output, readable
 by every other process running as you, which is precisely the exposure the
 guard exists to prevent.
 
-Also excluded from the [application audit log](./commands/jit_audit.md),
+Everything else about the guard IS audited: `jit guard history` and
+`--remove` are recorded like any command, and when bare `jit migrate`
+installs the guard as part of its plan, that lands in the trail too, as
+`jit guard history (by jit migrate)` — so a hook you find in your `~/.zshrc`
+can always be traced to the run that put it there.
+
+`jit guard check` alone is excluded from the [application audit log](./commands/jit_audit.md),
 alone among the plumbing commands - it runs at the interactive prompt, where
 an audit append would be latency on your keystrokes, and a timestamped
 record of *when* you typed credential-shaped commands is not what a trail of

@@ -1070,10 +1070,17 @@ func runMigrateAll(cmd *cobra.Command) error {
 	progress.Stop()
 
 	out := cmd.OutOrStdout()
-	if d.total() == 0 && len(tools) == 0 {
+	if d.total() == 0 && len(tools) == 0 && !offerGuard {
 		// Discovery routed every candidate to a skip (mixed-content files,
 		// or files that changed since the scan). No plan, no prompt, and
 		// definitely no coverage promise.
+		//
+		// The guard keeps this branch open when it is still on offer, because
+		// that combination is exactly when it matters most: the scan found a
+		// credential in history and discovery could not clean the file (it is
+		// hard-linked, or changed under us), so preventing the NEXT one is the
+		// only protection left to give. Returning here would have offered it
+		// in the plan and then silently not installed it.
 		fmt.Fprintln(out, hlCmds("Nothing bare `jit migrate` can protect right now: the flagged file(s) mix secrets with other content or need to be named explicitly. `jit scan` has the details."))
 		return nil
 	}
@@ -1133,10 +1140,15 @@ func runMigrateAll(cmd *cobra.Command) error {
 				// real secrets into the vault.
 				fmt.Fprintf(cmd.ErrOrStderr(), "installing the history guard failed: %v\n", guardErr)
 			} else {
+				// The hook runs on every command the user types from now on,
+				// and they agreed to it as one line in a plan. The trail has
+				// to say where it came from.
+				recordSideEffect("jit guard history", []string{"guard", "history"}, "jit migrate")
 				fmt.Fprintln(out)
-				fmt.Fprint(out, hlCmds(fmt.Sprintf("%s history guard installed (%s, sourced from %s). New shells pick it up; "+
-					"run `source ~/.jit/guard.zsh` in ones already open. Reverse with `jit guard history --remove`.\n",
-					glyphDone, displayPath(home, guard.HookPath(home)), displayPath(home, guard.RcPath(home)))))
+				_, _ = cOK.Fprintf(out, "%s ", glyphDone)
+				wrapBody(out, 2, "  ", hlCmds(fmt.Sprintf("history guard installed (%s, sourced from %s). New shells pick it up; "+
+					"run `source ~/.jit/guard.zsh` in ones already open. Reverse with `jit guard history --remove`.",
+					displayPath(home, guard.HookPath(home)), displayPath(home, guard.RcPath(home)))))
 			}
 		}
 	}
@@ -1157,7 +1169,13 @@ func runMigrateAll(cmd *cobra.Command) error {
 	// Close the loop with the number the scan report opened with — only
 	// after something actually applied; a declined or empty run must not
 	// print a coverage gain it didn't produce.
-	if applied && !migrateDryRun && summary.SecretsTotal > 0 {
+	//
+	// d.total() is part of that test, not just `applied`: a run whose files
+	// were all skipped by discovery never calls applyMigrate at all, so
+	// `applied` stays at its initial true and the projection would promise a
+	// jump ("0% → up to 100%") for work that provably did not happen. That
+	// path is reachable now that the guard can be the only thing a run does.
+	if applied && !migrateDryRun && d.total() > 0 && summary.SecretsTotal > 0 {
 		before := summary.SecretsProtected * 100 / summary.SecretsTotal
 		after := (summary.SecretsProtected + summary.SecretsMigratable) * 100 / summary.SecretsTotal
 		fmt.Fprint(out, hlCmds(fmt.Sprintf("\ncoverage: %d%% → up to %d%% — run `jit scan` to see the new number\n", before, after)))
