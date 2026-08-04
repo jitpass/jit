@@ -73,6 +73,12 @@ nothing:
   to confirm; a re-run of migrate re-redacts a resurrected line into the
   same vault entry.
 
+  Prevention exists too: `jit guard history` installs a zsh hook that checks
+  each command for a known credential format before zsh writes it to the
+  history file - a flagged command stays usable in that session (up-arrow
+  works) but is never recorded, so the next pasted token has nothing to be
+  found in.
+
   A secret found in a *production-flagged* history line **and** in a file
   `jit migrate` can protect is counted once, and is not counted as
   migratable: vaulting the config copy leaves that history copy readable, so

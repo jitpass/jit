@@ -627,6 +627,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 		fmt.Fprint(out, hlCmds("    rotate these at their provider — redaction clears the recorded copy, it does not un-expose it\n"))
 		fmt.Fprint(out, hlCmds("    shells that are open now rewrite history on exit: run `fc -R` in each open zsh (bash: `history -r`)\n"+
 			"    or close them, then `jit scan` to confirm nothing came back\n"))
+		fmt.Fprint(out, hlCmds("    keep future secrets out of history entirely: `jit guard history` (zsh)\n"))
 		fmt.Fprintln(out)
 	}
 
