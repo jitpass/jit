@@ -19,6 +19,7 @@ import (
 
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/audit"
+	"github.com/jitpass/jit/internal/guard"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/vault"
@@ -1032,7 +1033,25 @@ func runMigrateAll(cmd *cobra.Command) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "note: --only is set, skipping %s %s: %s\n", pluralWord(len(tools), "CLI", "CLIs"), pluralWord(len(tools), "wrap", "wraps"), strings.Join(tools, ", "))
 		tools = nil
 	}
-	if len(files) == 0 && len(tools) == 0 {
+	// The guard is offered only when this scan found a credential in history:
+	// bare `jit migrate` is "do what the scan found", and installing a shell
+	// hook for a problem the user does not have would be work nobody asked
+	// for. Skipped when --only is set, for the same reason wraps are — the
+	// user scoped this run. Skipped when it is already installed, and when
+	// the login shell is not zsh, since the hook is zsh syntax and would sit
+	// in a file that shell never reads.
+	offerGuard := false
+	for _, f := range findings {
+		if f.FindingType == audit.FindingTypeShellHistorySecret && audit.CountedAsSecret(f) && !f.Archived {
+			offerGuard = true
+			break
+		}
+	}
+	if offerGuard && (len(migrateOnly) > 0 || guard.Installed(home) || filepath.Base(os.Getenv("SHELL")) != "zsh") {
+		offerGuard = false
+	}
+
+	if len(files) == 0 && len(tools) == 0 && !offerGuard {
 		progress.Stop()
 		fmt.Fprintln(cmd.OutOrStdout(), hlCmds("Nothing to protect — the scan found no secrets jit can act on. Run `jit scan` for the full picture."))
 		return nil
@@ -1069,6 +1088,26 @@ func runMigrateAll(cmd *cobra.Command) error {
 			pluralWord(len(tools), "CLI", "CLIs"), strings.Join(tools, ", "))))
 	}
 
+	// Announced ABOVE applyMigrate's plan, like the wraps, so the single
+	// [y/N] below is the consent for it too. Stated as an outcome rather than
+	// a command name: a reader who has never seen `jit guard history` cannot
+	// guess what it does, and a line they cannot evaluate is one they should
+	// not be agreeing to.
+	if offerGuard {
+		if migrateDryRun {
+			_, _ = cPathBold.Fprint(out, "[DRY RUN] ")
+		}
+		used := 0
+		if migrateDryRun {
+			used = len("[DRY RUN] ")
+		}
+		wrapBody(out, used, "", hlCmds("Will also install the shell history guard, so this cannot happen again: a "+
+			"zsh hook keeps a command carrying a credential out of your history file, "+
+			"while leaving it usable in that session (reversible with "+
+			"`jit guard history --remove`)."))
+		fmt.Fprintln(out)
+	}
+
 	applied := true
 	if d.total() > 0 {
 		applied, err = applyMigrate(cmd, home, d)
@@ -1081,7 +1120,25 @@ func runMigrateAll(cmd *cobra.Command) error {
 		return nil
 	}
 	if !applied && !migrateDryRun {
-		return nil // declined at the plan — wraps must not run either
+		return nil // declined at the plan — wraps and the guard must not run either
+	}
+
+	if offerGuard {
+		switch {
+		case migrateDryRun:
+			fmt.Fprintln(out, "[dry-run] would install the shell history guard (undo: jit guard history --remove)")
+		default:
+			if _, guardErr := guard.Install(home); guardErr != nil {
+				// One failed hook must not fail a migrate that already moved
+				// real secrets into the vault.
+				fmt.Fprintf(cmd.ErrOrStderr(), "installing the history guard failed: %v\n", guardErr)
+			} else {
+				fmt.Fprintln(out)
+				fmt.Fprint(out, hlCmds(fmt.Sprintf("%s history guard installed (%s, sourced from %s). New shells pick it up; "+
+					"run `source ~/.jit/guard.zsh` in ones already open. Reverse with `jit guard history --remove`.\n",
+					glyphDone, displayPath(home, guard.HookPath(home)), displayPath(home, guard.RcPath(home)))))
+			}
+		}
 	}
 
 	for _, tool := range tools {

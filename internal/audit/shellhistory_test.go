@@ -903,3 +903,50 @@ func TestHistoryLineTokensReportsPrivateKeyHeaders(t *testing.T) {
 		t.Error("span does not address the raw line")
 	}
 }
+
+// The prevention offer belongs where the user LEARNS they have this problem.
+// It used to appear only after a real migrate, which meant the people with
+// the most to gain — anyone whose history is still clean — never saw it.
+func TestScanReportOffersTheGuardOnlyWhenHistoryIsInvolved(t *testing.T) {
+	home := t.TempDir()
+	key := "GITHUB_TOKEN"
+	preview := "ghp_**********"
+	line := 2
+	histFinding := Finding{
+		FindingType:  FindingTypeShellHistorySecret,
+		FilePath:     filepath.Join(home, ".zsh_history"),
+		KeyName:      &key,
+		ValuePreview: &preview,
+		Line:         &line,
+		Severity:     SeverityHigh,
+		Remedy:       RemedyMigrate,
+		FixCommand:   "jit migrate ~/.zsh_history",
+		RecordID:     "r1",
+	}
+	render := func(fs []Finding) string {
+		cov := ComputeCoverage("", fs)
+		var buf strings.Builder
+		WriteTriageReport(&buf, fs, ScanSummary{
+			SecretsTotal: cov.Total(), SecretsProtected: cov.Protected, SecretsMigratable: cov.Migratable,
+		}, home, cov)
+		return buf.String()
+	}
+
+	out := render([]Finding{histFinding})
+	if !strings.Contains(out, "jit guard history") {
+		t.Errorf("history finding did not offer the guard:\n%s", out)
+	}
+	// The offer must explain itself, not just name a command nobody can guess.
+	if !strings.Contains(out, "history file") {
+		t.Errorf("the guard offer has no explainer:\n%s", out)
+	}
+
+	// A machine with no history finding must not be nagged about it.
+	envFinding := histFinding
+	envFinding.FindingType = FindingTypeShellConfigSecret
+	envFinding.FilePath = filepath.Join(home, ".zshrc")
+	envFinding.RecordID = "r2"
+	if out := render([]Finding{envFinding}); strings.Contains(out, "jit guard") {
+		t.Errorf("offered the guard with no history finding:\n%s", out)
+	}
+}
