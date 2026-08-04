@@ -53,13 +53,15 @@ const (
 //     those (neutralizing would destroy the non-secret content), so calling
 //     them "migrate" would promise coverage the recommended command doesn't
 //     deliver. The evidence-side remedy is --mount or moving the secret out.
-//   - A credential in shell history: there is no mount, no credential_process
-//     and no rewrite for a history file. It is an append-only record of what
-//     was typed, not a config a program reads at run time, so every mechanism
-//     jit has is inapplicable by construction. Without this case the finding
-//     would fall through to the default below and `jit scan` would print
-//     "jit migrate ~/.zsh_history" — a command that cannot work, offered by
-//     the report whose whole job is to be trustworthy about what jit can fix.
+//   - A PRODUCTION-flagged credential in shell history: `jit migrate` can
+//     redact a history file in place (ApplyShellHistory), so an ordinary
+//     history finding falls through to RemedyMigrate like any other file
+//     jit can rewrite. The production case stays manual for the same reason
+//     the production exposed_secret case does: clearing the recorded copy
+//     does not un-expose a production credential, and offering a migrate
+//     command as THE fix would dress the wound without treating it. The
+//     migrate result output carries the rotation advice for the ordinary
+//     case; for production, rotation IS the remedy and the report says so.
 func annotateRemedies(findings []Finding, home string) {
 	// Purity is per file and can involve a re-read; cache it, since copies
 	// of one dump produce many findings for the same path.
@@ -95,7 +97,7 @@ func annotateRemedies(findings []Finding, home string) {
 			// converts it to a rejectable-decoy mount or explains exactly why
 			// it refused (block scalars, mixed data:/stringData:).
 			f.Remedy = RemedyManual
-		case f.FindingType == FindingTypeShellHistorySecret:
+		case f.FindingType == FindingTypeShellHistorySecret && f.ProductionIndicatorMatch:
 			f.Remedy = RemedyManual
 		case f.FindingType == FindingTypeExposedSecret &&
 			(f.ProductionIndicatorMatch || !isPure(f.FilePath)):
@@ -265,15 +267,18 @@ func ComputeCoverage(registryPath string, findings []Finding) Coverage {
 	// skips archived/backup directories, so counting them would promise a
 	// coverage gain the recommended command doesn't deliver.
 	migratable := map[string]bool{}
-	// A cause group with a shell-history copy is never migratable, whatever
+	// A cause group with a MANUAL history copy is never migratable, whatever
 	// its other findings say. The two-pass rule above exists because migrate
 	// protects the LIVE copy of a secret that also sits in a backup — but a
-	// history line is itself a live plaintext copy, and it is the one copy no
-	// jit mechanism rewrites. Vaulting the .mcp.json that holds the same token
-	// leaves it readable in ~/.zsh_history, so counting the group as
-	// migratable would promise a coverage gain `jit migrate` does not deliver.
-	// That is the same test every other rule in this function applies.
-	inHistory := map[string]bool{}
+	// history line is itself a live plaintext copy, and the manual-remedy
+	// case (a production-flagged credential, see annotateRemedies) is the one
+	// copy bare `jit migrate` will not touch. Vaulting the .mcp.json that
+	// holds the same token leaves it readable in ~/.zsh_history, so counting
+	// the group as migratable would promise a coverage gain the recommended
+	// command does not deliver. An ORDINARY history finding carries
+	// RemedyMigrate now that ApplyShellHistory redacts in place, so it marks
+	// its group migratable through the same rule as everything else.
+	manualHistory := map[string]bool{}
 	for _, f := range findings {
 		if !CountedAsSecret(f) {
 			continue
@@ -286,15 +291,15 @@ func ComputeCoverage(registryPath string, findings []Finding) Coverage {
 			migratable[key] = false
 			c.Exposed++
 		}
-		if f.FindingType == FindingTypeShellHistorySecret {
-			inHistory[key] = true
+		if f.FindingType == FindingTypeShellHistorySecret && f.Remedy == RemedyManual {
+			manualHistory[key] = true
 		}
 		if f.Remedy != RemedyManual && !f.Archived {
 			migratable[key] = true
 		}
 	}
 	for key, ok := range migratable {
-		if ok && !inHistory[key] {
+		if ok && !manualHistory[key] {
 			c.Migratable++
 		}
 	}

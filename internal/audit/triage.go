@@ -126,14 +126,17 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 	// --- green: what jit will do ---
 	if len(migratable) > 0 {
 		fmt.Fprint(w, "  ")
-		// A migratable file whose every secret ALSO exists somewhere jit cannot
-		// rewrite — in practice, a token that was pasted at the shell and so is
-		// in both the config file and the history — gains no coverage: the
-		// plaintext copy survives the migrate. The work is still worth doing,
-		// so the block stays, but printing "0 secrets in 1 file, 0% → 0%" over
-		// a real recommendation reads as a broken report rather than as the
-		// honest statement it is. Name the files, drop the arithmetic, and say
-		// why below.
+		// A migratable file whose every secret ALSO exists somewhere the
+		// recommended command will not rewrite — in practice, a
+		// production-flagged token pasted at the shell, so it sits in both the
+		// config file and a history line whose remedy is manual rotation —
+		// gains no coverage: that plaintext copy survives the migrate. (An
+		// ordinary history copy migrates now, via in-place redaction, so it no
+		// longer pins its group here.) The work is still worth doing, so the
+		// block stays, but printing "0 secrets in 1 file, 0% → 0%" over a real
+		// recommendation reads as a broken report rather than as the honest
+		// statement it is. Name the files, drop the arithmetic, and say why
+		// below.
 		header := greenBold.Sprint("jit will protect these")
 		if cov.Migratable == 0 {
 			header += dim.Sprintf(" — %s", countWord(len(migratable), "file", "files"))
@@ -167,7 +170,7 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 		note := "these sat in plaintext until now — rotating after vaulting is the " +
 			"gold standard · every change is reversible: jit migrate undo"
 		if cov.Migratable == 0 {
-			note = "every secret here also sits somewhere jit cannot rewrite, so the score " +
+			note = "every secret here also sits somewhere this migrate will not rewrite, so the score " +
 				"moves only once you rotate — protecting the file is still worth doing · " +
 				"every change is reversible: jit migrate undo"
 		}

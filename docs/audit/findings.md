@@ -56,21 +56,28 @@ nothing:
   encrypted remote backend, and keep secrets out of it with ephemeral values
   (Terraform 1.10+). jit scans these files only because nothing else would:
   the name carries no credential word, so the content sweep would walk past.
-- **Credentials in shell history.** There is no mount, no
-  `credential_process` and no rewrite for a history file: it is an
-  append-only record of what you typed, not a config a program reads at run
-  time, so every mechanism jit has is inapplicable. Rotation is the fix, and
-  removing the line is cleanup - the value has already been written to disk,
-  and history files get backed up by Time Machine and committed to dotfile
-  repos as a matter of routine. Delete the line with every other shell
-  closed: zsh and bash hold history in memory and rewrite the file on exit,
-  so a line removed while another session is open comes back.
+- **Production-flagged credentials in shell history.** An ordinary history
+  credential is migratable: `jit migrate ~/.zsh_history` vaults each value
+  and redacts every occurrence in place, leaving a `<jit:redacted:VAR>`
+  marker where the secret was (the command line itself survives; `jit vault
+  get` recovers the value; `jit migrate undo` restores the file whole). A
+  credential carrying a production indicator stays in this manual bucket:
+  clearing the recorded copy does not un-expose a production credential, so
+  rotation is the fix and the report refuses to offer a command as if it
+  were. Two truths hold either way, and the migrate output repeats them -
+  the value has already been written to disk (history files get backed up by
+  Time Machine and committed to dotfile repos as a matter of routine), and
+  zsh and bash hold history in memory and rewrite the file on exit, so a
+  line redacted while another session is open can come back. Run `fc -R` in
+  each open zsh (`history -r` in bash) or close them, then re-run `jit scan`
+  to confirm; a re-run of migrate re-redacts a resurrected line into the
+  same vault entry.
 
-  A secret found in history **and** in a file `jit migrate` can protect is
-  counted once, and is not counted as migratable: vaulting the config copy
-  leaves the history copy readable, so your coverage moves when you rotate,
-  not when you migrate. The migrate is still worth running, and the report
-  says so.
+  A secret found in a *production-flagged* history line **and** in a file
+  `jit migrate` can protect is counted once, and is not counted as
+  migratable: vaulting the config copy leaves that history copy readable, so
+  your coverage moves when you rotate, not when you migrate. The migrate is
+  still worth running, and the report says so.
 
 Test fixtures - a `*_test.go`, anything under `testdata/` - are reported but
 never counted toward your coverage score. The value matches a real credential

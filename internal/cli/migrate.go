@@ -37,7 +37,7 @@ var (
 // Keyed by the short token a caller passes, not the display label used in
 // output — keep the two lists in this exact order so error messages and
 // --only's own help text stay in sync with printMigratePlan.
-var migrateCategories = []string{"env", "tfvars", "k8s-secret", "shell", "mcp", "aws", "kube", "terraform", "docker", "git", "gcp", "sops", "npmrc", "netrc", "pypirc", "loose"}
+var migrateCategories = []string{"env", "tfvars", "k8s-secret", "shell", "history", "mcp", "aws", "kube", "terraform", "docker", "git", "gcp", "sops", "npmrc", "netrc", "pypirc", "loose"}
 
 // discovered holds one run's findings per category. runMigratePath resolves
 // each named target into one of these and hands it to applyMigrate — the
@@ -55,6 +55,7 @@ type discovered struct {
 	// "seen, nothing movable" instead of staying silent.
 	k8sManifestsComplexOnly []string
 	shellConfigs            []string
+	historyFiles            []string
 	mcpConfigs              []string
 	awsProfiles             []string
 	k8sUsers                []string
@@ -169,13 +170,16 @@ var migrateCmd = &cobra.Command{
 		"               moved into a profile and the vault, the file keeps working as a\n" +
 		"               live mount (a git-safe <file>.pointers companion is written\n" +
 		"               alongside). A machine-wide file at a known path (a shell config\n" +
-		"               like ~/.zshrc, ~/.aws/credentials, ~/.kube/config, Terraform\n" +
-		"               Cloud creds, ~/.docker/config.json, ~/.git-credentials, GCP\n" +
+		"               like ~/.zshrc, a shell history file like ~/.zsh_history,\n" +
+		"               ~/.aws/credentials, ~/.kube/config, Terraform Cloud creds,\n" +
+		"               ~/.docker/config.json, ~/.git-credentials, GCP\n" +
 		"               application-default credentials, a SOPS age key, ~/.netrc,\n" +
 		"               ~/.pypirc, Claude Desktop's MCP config, the global ~/.npmrc)\n" +
 		"               is routed to that credential type's handling\n" +
-		"               (credential_process, exec plugin, credential helper, or\n" +
-		"               live mount, as appropriate).\n" +
+		"               (credential_process, exec plugin, credential helper, live\n" +
+		"               mount, or — for history — in-place redaction: each recorded\n" +
+		"               credential moves to the vault and the line keeps its shape,\n" +
+		"               minus the secret).\n" +
 		"  A directory  is walked for its .env/tfvars/mcp/npmrc findings only, never\n" +
 		"               the machine-wide fixed-path files (those aren't \"under\" any\n" +
 		"               project directory) — name them explicitly to convert them.\n\n" +
@@ -245,6 +249,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 	k8sManifests := d.k8sManifests
 	k8sManifestsComplexOnly := d.k8sManifestsComplexOnly
 	shellConfigs := d.shellConfigs
+	historyFiles := d.historyFiles
 	mcpConfigs := d.mcpConfigs
 	awsProfiles := d.awsProfiles
 	k8sUsers := d.k8sUsers
@@ -279,6 +284,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 		"tfvars":     &tfvarsFiles,
 		"k8s-secret": &k8sManifests,
 		"shell":      &shellConfigs,
+		"history":    &historyFiles,
 		"mcp":        &mcpConfigs,
 		"aws":        &awsProfiles,
 		"kube":       &k8sUsers,
@@ -368,7 +374,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 	// work that's about to be aborted anyway. This same plan is what
 	// --dry-run prints too (see below) — one rendering path, so the
 	// preview you confirm against is exactly the preview --dry-run shows.
-	printMigratePlan(cmd.OutOrStdout(), home, envFiles, tfvarsFiles, k8sManifests, shellConfigs, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, pypircFiles, looseSecretFiles)
+	printMigratePlan(cmd.OutOrStdout(), home, envFiles, tfvarsFiles, k8sManifests, shellConfigs, historyFiles, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, pypircFiles, looseSecretFiles)
 	printSkippedFindings(cmd.OutOrStdout(), home, len(tfvarsComplexOnly), "in Terraform "+pluralWord(len(tfvarsComplexOnly), "variable file", "variable files")+" whose secret-shaped values aren't simple one-line strings", tfvarsComplexOnly,
 		"Nothing migrate can move safely; they stay in place, and `jit scan` keeps reporting them.")
 	printSkippedFindings(cmd.OutOrStdout(), home, len(k8sManifestsComplexOnly), "in "+pluralWord(len(k8sManifestsComplexOnly), "Kubernetes Secret manifest", "Kubernetes Secret manifests")+" migrate can't rewrite provably right", k8sManifestsComplexOnly,
@@ -593,6 +599,34 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			fmt.Fprint(out, hlCmds(fmt.Sprintf("  • %s -> profile %q (%s); backup: `jit vault get %s`, open a new shell (or `source %s`)\n",
 				displayPath(home, shellPath), result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath, displayPath(home, shellPath))))
 		}
+		fmt.Fprintln(out)
+	}
+
+	if n := len(historyFiles); n > 0 {
+		printMigrateResultCategory(out, pluralWord(n, "shell history file", "shell history files")+" redacted", n)
+		for _, path := range historyFiles {
+			summary.checkGitHistory(path)
+
+			result, err := migrate.ApplyShellHistory(v, path)
+			if err != nil {
+				return false, fmt.Errorf("jit migrate: %w", err)
+			}
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  • %s -> profile %q (%s, %s redacted in place); backup: `jit vault get %s`\n",
+				displayPath(home, path), result.ProfileName, countWord(len(result.Variables), "secret", "secrets"),
+				countWord(result.Occurrences, "occurrence", "occurrences"), result.BackupPath)))
+		}
+		// Two truths the redaction itself cannot deliver, said at the moment
+		// of action. Rotation: clearing the recorded copy does not un-expose
+		// a value that already sat in plaintext (and history files reach Time
+		// Machine and dotfile repos as a matter of routine). Resurrection:
+		// zsh's default setup holds history in memory and rewrites the file
+		// on exit, so a shell that was open during this run can bring the
+		// redacted lines back — re-running migrate re-redacts them into the
+		// same vault entries, but reloading or closing those shells is what
+		// makes it stick.
+		fmt.Fprint(out, hlCmds("    rotate these at their provider — redaction clears the recorded copy, it does not un-expose it\n"))
+		fmt.Fprint(out, hlCmds("    shells that are open now rewrite history on exit: run `fc -R` in each open zsh (bash: `history -r`)\n"+
+			"    or close them, then `jit scan` to confirm nothing came back\n"))
 		fmt.Fprintln(out)
 	}
 
@@ -1184,6 +1218,20 @@ func discoverDirTarget(d *discovered, home, dir string) error {
 // including the global ~/.npmrc, whose global profile rooting applyMigrate
 // re-derives from the path itself.
 func discoverFileTarget(d *discovered, home, path string) error {
+	// Shell history: routed by NAME (the fixed defaults plus a custom
+	// $HISTFILE), and NEVER allowed to fall through to the generic
+	// categories — loose-secret classification reads a zsh extended_history
+	// line as "embedded" content and would offer --mount, turning the
+	// shell's own record into a FIFO no shell can append to. Routing is
+	// unconditional; whether the file holds anything is the preview's call
+	// (an explicitly named clean history lands in the ordinary "nothing to
+	// migrate" report).
+	if isHistoryTarget(home, path) {
+		if secrets, _, ok := migrate.PreviewShellHistory(path); ok && secrets > 0 {
+			d.historyFiles = append(d.historyFiles, path)
+		}
+		return nil
+	}
 	// Shell configs: five fixed names under $HOME, each keyed by path.
 	for _, p := range migrate.ShellConfigPaths(home) {
 		if path == p {
@@ -1324,6 +1372,25 @@ func discoverFileTarget(d *discovered, home, path string) error {
 	return nil
 }
 
+// isHistoryTarget reports whether path is a shell history file `jit migrate`
+// routes to redaction: one of the fixed history names audit's scanner owns
+// (audit.IsShellHistoryPath), or the exact file a custom $HISTFILE points at —
+// a user who moved their history has not thereby stopped having one, and the
+// name they chose can match nothing on the fixed list.
+func isHistoryTarget(home, path string) bool {
+	if audit.IsShellHistoryPath(path) {
+		return true
+	}
+	if hf := os.Getenv("HISTFILE"); hf != "" {
+		hf = expandTilde(hf, home)
+		if abs, err := filepath.Abs(hf); err == nil {
+			hf = abs
+		}
+		return path == hf
+	}
+	return false
+}
+
 // filterToTarget keeps only the entries equal to target, narrowing a
 // category's whole-$HOME discovery down to the single file the caller named
 // (the path-keyed fixed categories whose Discover* returns every candidate
@@ -1346,7 +1413,7 @@ func (d *discovered) dedupe() {
 	for _, s := range []*[]string{
 		&d.envFiles, &d.tfvarsFiles, &d.tfvarsComplexOnly,
 		&d.k8sManifests, &d.k8sManifestsComplexOnly, &d.shellConfigs,
-		&d.mcpConfigs, &d.awsProfiles, &d.k8sUsers, &d.terraformHosts,
+		&d.historyFiles, &d.mcpConfigs, &d.awsProfiles, &d.k8sUsers, &d.terraformHosts,
 		&d.dockerRegistries, &d.gitHosts, &d.gcpADCFiles, &d.sopsAgeFiles,
 		&d.npmrcFiles, &d.netrcFiles, &d.pypircFiles, &d.looseSecretFiles, &d.looseEmbeddedSkipped,
 	} {
@@ -1361,7 +1428,7 @@ func (d *discovered) dedupe() {
 func (d *discovered) total() int {
 	n := 0
 	for _, s := range [][]string{
-		d.envFiles, d.tfvarsFiles, d.k8sManifests, d.shellConfigs, d.mcpConfigs, d.awsProfiles,
+		d.envFiles, d.tfvarsFiles, d.k8sManifests, d.shellConfigs, d.historyFiles, d.mcpConfigs, d.awsProfiles,
 		d.k8sUsers, d.terraformHosts, d.dockerRegistries, d.gitHosts,
 		d.gcpADCFiles, d.sopsAgeFiles, d.npmrcFiles, d.netrcFiles, d.pypircFiles,
 		d.looseSecretFiles,
