@@ -86,19 +86,28 @@ const shellExpansionUserinfoAlt = ":(?:" +
 	"`[^`]*`" + // `command substitution`
 	")@"
 
-// angleBracketUserinfoAlt rejects any candidate span carrying an angle
-// bracket. RFC 3986 forbids bare "<" and ">" anywhere in a URI (they must be
-// percent-encoded), so a span containing one is not a connection string —
-// it is a placeholder. Two things write that shape and neither is a live
-// credential: every README's fill-me-in form ("postgres://user:<password>@
-// host"), and jit migrate's own history redaction marker
-// ("<jit:redacted:VAR>"). The second is the load-bearing one — without this
-// exclusion, scan re-flagged the exact line migrate just cleaned, forever,
-// as a database credential. A bare "[<>]" (not an anchored ":<...>@" form)
-// because the password character class already excludes "<": the pattern's
-// match can START inside the marker ("redacted:VAR>@host"), so only a test
-// the partial span still fails is safe.
-const angleBracketUserinfoAlt = `[<>]`
+// angleBracketUserinfoAlt rejects the two bracketed shapes that are never a
+// live credential: the fill-me-in placeholder every README ships
+// ("postgres://user:<password>@host"), and jit migrate's own history
+// redaction marker ("<jit:redacted:VAR>"). The second is load-bearing —
+// without it, `jit scan` re-flagged the exact line `jit migrate` had just
+// cleaned, forever, as a database credential.
+//
+// Both alternatives are ANCHORED rather than a blanket "[<>]" test. Rejecting
+// any span containing an angle bracket is tempting, since RFC 3986 forbids
+// bare "<" and ">" in a URI at all — but these patterns run over shell
+// COMMAND LINES, not URIs, and people paste unencoded passwords into them. A
+// blanket test silently drops "psql postgres://app:pa<ss>word@db/app", which
+// is a real exposed credential, and a false negative on a live secret is the
+// one error this scanner treats as strictly worse than an extra finding.
+//
+// The marker alternative matches on "redacted:<NAME>" rather than the full
+// "<jit:redacted:" prefix, deliberately: the connection-string pattern's own
+// match can START part-way inside the marker (at "redacted:VAR>@host…", the
+// preceding "jit:" having supplied the userinfo colon), so an alternative
+// anchored on the opening bracket would never see it. Any match that spans
+// the marker at all contains this much of it.
+const angleBracketUserinfoAlt = `redacted:[A-Za-z0-9_]*>` + `|` + `:<[^>@]*>@`
 
 var connStringPlaceholderUserinfo = regexp.MustCompile(
 	`(?i)` + placeholderUserinfoAlt + `|` + shellExpansionUserinfoAlt + `|` + angleBracketUserinfoAlt)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -21,10 +22,16 @@ import (
 //
 // What makes this cheap to do correctly is that the detection already exists:
 // knownTokenPatterns and the vendor-format machinery behind exposed_secret
-// answer "is this a credential" identically here. What is NEW is the source,
-// the parsing, and the remedy — and the remedy is the part that had to be
-// thought about, because `jit migrate` genuinely cannot help (see
-// annotateRemedies).
+// answer "is this a credential" identically here. What is NEW is the source
+// and the parsing.
+//
+// The remedy is the part that had to be thought about. `jit migrate
+// <historyfile>` redacts each occurrence in place (internal/migrate/
+// shellhistory.go shares this file's detection through HistoryLineTokens), so
+// an ordinary finding is migratable — but redaction is cleanup, not the fix:
+// the value already sat on disk in plaintext. A production-flagged credential
+// therefore stays manual, because for that one no command substitutes for
+// rotation. See annotateRemedies.
 
 // historyFileNames are the history files checked relative to HomeDir. The
 // list is deliberately small and fixed: these are the defaults for the shells
@@ -297,6 +304,15 @@ func HistoryLineTokens(line string) []FileToken {
 		toks[i].Start += off
 		toks[i].End += off
 	}
+	// Sorted by position, because matchLineTokens returns matches in
+	// knownTokenPatterns' DECLARATION order, not the order they appear in the
+	// line — it runs each pattern over the whole line in turn. A caller that
+	// reasonably reads "every match in this line" as "in reading order" gets
+	// silently wrong behavior otherwise, and migrate's redaction splice, which
+	// copies data[prev:span.start] forward, gets a descending pair and panics
+	// on the slice bounds. A line holding an AWS key before a GitHub token
+	// does exactly that, since GitHub's pattern is declared first.
+	sort.Slice(toks, func(a, b int) bool { return toks[a].Start < toks[b].Start })
 	return toks
 }
 
@@ -320,8 +336,18 @@ func isAllDigits(s string) bool {
 // Running all ~55 patterns over every line measures ~1.8 MB/s, and a machine
 // whose entire `jit scan` takes 0.20s would have spent 1.1s more on a 2 MB
 // history and 2.5s more on a 4.7 MB one — a 6x to 13x slowdown for one file.
-// This test measures ~130x faster than the pattern loop and admits ~5% of real
-// command lines, which puts the added cost back into the noise.
+// This test measures ~130x faster than the pattern loop, which puts the added
+// cost back into the noise.
+//
+// It admits 14% of lines on a real 592-line history (measured 2026-08-04), not
+// the ~5% an earlier revision of this comment claimed. The gap is the two
+// broadest conditions: "@" takes every `ssh user@host` and every email
+// address, and a 10-character run of token-body characters takes ordinary
+// words like "kubectl", "deployments" and "docker-compose". That is fine for
+// a scan, where the alternative is running every pattern anyway — but the
+// number is load-bearing for internal/guard, which forks a process per
+// admitted line at the interactive prompt, so it is stated here rather than
+// estimated there.
 //
 // Two alternatives were measured and rejected. A single combined alternation
 // over every pattern ran 3x SLOWER than the individual patterns, because Go's

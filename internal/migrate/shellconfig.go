@@ -309,11 +309,34 @@ func snapshotSecretFile(v *vault.Vault, path string) (string, error) {
 	return backupSecretFileAs(v, path, true)
 }
 
+// backupSecretBytes is backupSecretFile for a caller that already holds the
+// exact bytes it is about to replace, and must back up THOSE rather than
+// whatever a fresh read would return.
+//
+// The shell-history redactor needs this: it re-reads the file immediately
+// before splicing (a shell can append while the vault work waits on Touch ID),
+// so a backup taken by re-reading the path would be a different, slightly
+// older snapshot. Any command appended between the two reads would then
+// survive into the redacted file but be missing from the backup, and
+// `jit migrate undo` would silently roll it away — breaking the byte-for-byte
+// promise in the one direction that loses the user's data.
+func backupSecretBytes(v *vault.Vault, path string, data []byte) (string, error) {
+	return storeSecretBackup(v, path, data, false)
+}
+
 func backupSecretFileAs(v *vault.Vault, path string, snapshot bool) (string, error) {
 	data, err := os.ReadFile(path) // #nosec G304 -- same fixed/discovered path as readLines above
 	if err != nil {
 		return "", err
 	}
+	return storeSecretBackup(v, path, data, snapshot)
+}
+
+// storeSecretBackup encrypts data into the vault's _backups/ namespace under a
+// path derived from the original file, and records it in the undo index. The
+// shared tail of backupSecretFileAs and backupSecretBytes, which differ only
+// in where the bytes came from.
+func storeSecretBackup(v *vault.Vault, path string, data []byte, snapshot bool) (string, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return "", fmt.Errorf("resolving %s: %w", path, err)

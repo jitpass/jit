@@ -160,7 +160,14 @@ func historyProfileName(path string) string {
 // value. A previous run's entry holding this same value is reused — that is
 // what makes a re-run after shell-exit resurrection idempotent instead of
 // minting GITHUB_PERSONAL_ACCESS_TOKEN_2 for the token it already vaulted.
-// An entry whose secret was since deleted from the vault is a free slot.
+// A manifest entry whose secret is GONE from the vault is a free slot.
+//
+// An entry that exists but cannot be READ is deliberately NOT a free slot.
+// Treating every Get error as "vacant" would make a torn .enc file, an AEAD
+// failure, or a mid-run session drop hand this name to a different token,
+// and the Set that follows would overwrite ciphertext that might still have
+// been recoverable — destroying a secret while reporting success. Skipping to
+// the next name costs nothing but a suffix.
 func claimHistoryVarName(v *vault.Vault, entries profile.Profile, used map[string]bool, base, value string) string {
 	for i := 1; ; i++ {
 		name := base
@@ -170,17 +177,21 @@ func claimHistoryVarName(v *vault.Vault, entries profile.Profile, used map[strin
 		if used[name] {
 			continue
 		}
-		secretPath, exists := entries[name]
-		if !exists {
+		secretPath, claimed := entries[name]
+		if !claimed {
 			used[name] = true
 			return name
 		}
-		cur, err := v.Get(secretPath)
-		if err != nil || string(cur) == value {
-			used[name] = true
+		// The manifest names it; is anything actually stored there?
+		if exists, err := v.Exists(secretPath); err == nil && !exists {
+			used[name] = true // a stale manifest entry, nothing to lose
 			return name
 		}
-		// Taken by a different live value: never clobber it, try the next.
+		if cur, err := v.Get(secretPath); err == nil && string(cur) == value {
+			used[name] = true // already ours: the idempotent re-run path
+			return name
+		}
+		// Held by a different value, or unreadable. Either way, never clobber.
 	}
 }
 
@@ -210,11 +221,16 @@ func lockShellHistory(f *os.File) {
 // history altered with nothing recoverable. The rewrite is atomic (temp file
 // + rename in the same directory) and preserves the file's permission bits.
 //
-// A symlinked history file is refused rather than followed: renaming over the
-// link would silently replace it with a regular file and leave the link's
-// target — typically a dotfiles working copy — still holding every credential
-// while the scan reads clean. The caller names the target instead (and its
-// git history is its own exposure; checkGitHistory warns there).
+// A symlinked or multiply-linked history file is refused rather than
+// rewritten, for one reason in two shapes: the rewrite lands via rename, which
+// replaces the PATH, so any other name for the old content keeps every
+// credential. For a symlink, the link's target — typically a dotfiles working
+// copy — stays fully exposed while jit reports success; for a hard link, the
+// other link does. Either way `jit scan` then reads clean, because it only
+// knows the history file's own name, which is the precise shape of silent
+// exposure this package must never produce. The caller resolves the link and
+// names the real file (and a dotfiles repo's git history is its own exposure;
+// checkGitHistory warns there).
 func ApplyShellHistory(v *vault.Vault, path string) (ShellHistoryMigration, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -225,6 +241,9 @@ func ApplyShellHistory(v *vault.Vault, path string) (ShellHistoryMigration, erro
 	}
 	if !info.Mode().IsRegular() {
 		return ShellHistoryMigration{}, fmt.Errorf("%s is not a regular file", path)
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Nlink > 1 {
+		return ShellHistoryMigration{}, fmt.Errorf("%s has %d hard links; redacting it would leave every credential readable through the other name(s) while jit reported success — break the link (cp then mv) and re-run", path, st.Nlink)
 	}
 	if info.Size() > maxHistoryRedactSize {
 		return ShellHistoryMigration{}, fmt.Errorf("%s is %d bytes, above the %d-byte bound; not touched", path, info.Size(), int64(maxHistoryRedactSize))
@@ -292,23 +311,35 @@ func ApplyShellHistory(v *vault.Vault, path string) (ShellHistoryMigration, erro
 		return ShellHistoryMigration{}, fmt.Errorf("writing profile %s: %w", profilePath, err)
 	}
 
-	backupPath, err := backupSecretFile(v, path)
+	// Re-read before splicing, and splice what is there NOW rather than the
+	// bytes read at the top. The vault work above is not instantaneous — it
+	// can include a Touch ID prompt, which is a human rather than a syscall —
+	// and a shell configured with INC_APPEND_HISTORY or SHARE_HISTORY (the
+	// common oh-my-zsh setup) appends on every command the whole time it
+	// waits. Renaming a buffer built from the ORIGINAL bytes over the file
+	// would silently discard every command typed in that window, and a
+	// default-configured zsh EXITING mid-run rewrites the file wholesale,
+	// which is worse. Splicing current content makes both cases correct
+	// instead of lossy; a value that appeared since is refused loudly rather
+	// than written back in plaintext (see redactCurrentContent).
+	current, redacted, occCount, err := redactCurrentContent(f, path, nameOf)
+	if err != nil {
+		return ShellHistoryMigration{}, err
+	}
+
+	// Back up the bytes actually being replaced, not a separately-read
+	// snapshot. backupSecretFile does its own os.ReadFile, which would take a
+	// picture at a slightly different instant than the re-read above — so any
+	// command appended in between would live in the redacted file but be
+	// absent from the backup, and `jit migrate undo` would silently roll it
+	// away. Backing up exactly what the rename replaces makes undo's
+	// "byte-for-byte" promise true.
+	backupPath, err := backupSecretBytes(v, path, current)
 	if err != nil {
 		return ShellHistoryMigration{}, fmt.Errorf("backing up %s: %w", path, err)
 	}
 
-	// Splice: copy every byte outside the credential spans untouched.
-	var out bytes.Buffer
-	out.Grow(len(data))
-	prev := 0
-	for _, o := range occ {
-		out.Write(data[prev:o.start])
-		out.WriteString(historyRedactedPrefix + nameOf[o.value] + historyRedactedSuffix)
-		prev = o.end
-	}
-	out.Write(data[prev:])
-
-	if err := replaceShellHistory(path, out.Bytes(), info.Mode().Perm()); err != nil {
+	if err := replaceShellHistory(path, redacted, info.Mode().Perm()); err != nil {
 		return ShellHistoryMigration{}, err
 	}
 
@@ -317,9 +348,66 @@ func ApplyShellHistory(v *vault.Vault, path string) (ShellHistoryMigration, erro
 		ProfileName: profileName,
 		ProfilePath: profilePath,
 		Variables:   varNames,
-		Occurrences: len(occ),
+		Occurrences: occCount,
 		BackupPath:  backupPath,
 	}, nil
+}
+
+// redactCurrentContent re-reads f from the start and returns both the bytes
+// it found (what the caller must back up, since those are the bytes about to
+// be replaced) and a copy with every credential span replaced by its marker,
+// plus how many spans were replaced. nameOf maps a credential value to the
+// vault variable already holding it.
+//
+// A value present now that is NOT in nameOf is refused: it appeared after the
+// vault writes, so writing the file back would either leave it in plaintext
+// (if left alone) or destroy it with a marker naming a variable that holds
+// nothing. Failing here costs the user a re-run and loses nothing — the file
+// has not been touched yet, and everything found on the first pass is already
+// in the vault, so the re-run redacts both.
+func redactCurrentContent(f *os.File, path string, nameOf map[string]string) (current, redacted []byte, occurrences int, err error) {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, nil, 0, fmt.Errorf("re-reading %s: %w", path, err)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("re-reading %s: %w", path, err)
+	}
+	if info.Size() > maxHistoryRedactSize {
+		return nil, nil, 0, fmt.Errorf("%s grew past the %d-byte bound while jit was redacting it; nothing was written", path, int64(maxHistoryRedactSize))
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("re-reading %s: %w", path, err)
+	}
+
+	occ, distinct := collectHistoryTokens(data)
+	for _, tk := range distinct {
+		if _, ok := nameOf[tk.Value]; !ok {
+			return nil, nil, 0, fmt.Errorf("%s gained a %s while jit was redacting it (a shell wrote to the file); nothing was written — re-run to cover it too",
+				path, tk.Vendor)
+		}
+	}
+
+	var out bytes.Buffer
+	out.Grow(len(data))
+	prev := 0
+	for _, o := range occ {
+		// Belt and braces on the ordering audit.HistoryLineTokens guarantees.
+		// This loop copies data[prev:o.start] forward, so a span that starts
+		// behind the previous one's end is a panic on the slice bounds — in
+		// the middle of rewriting the user's history file. An ordering
+		// regression upstream must degrade to a loud, safe error here rather
+		// than a stack trace, and never to a silently mangled file.
+		if o.start < prev || o.end > len(data) {
+			return nil, nil, 0, fmt.Errorf("internal error: credential spans for %s are out of order (%d-%d after %d); nothing was written", path, o.start, o.end, prev)
+		}
+		out.Write(data[prev:o.start])
+		out.WriteString(historyRedactedPrefix + nameOf[o.value] + historyRedactedSuffix)
+		prev = o.end
+	}
+	out.Write(data[prev:])
+	return data, out.Bytes(), len(occ), nil
 }
 
 // replaceShellHistory writes content atomically over path — temp file in the
@@ -346,6 +434,17 @@ func replaceShellHistory(path string, content []byte, perm os.FileMode) error {
 			return fmt.Errorf("setting permissions on %s: %w", tmpName, err)
 		}
 	}
+	// Sync before the rename, matching vault.AtomicWriteFile: the rename is
+	// atomic with respect to other processes, but not with respect to power
+	// loss. Without this, APFS can order the metadata ahead of the data and
+	// leave a truncated or zero-length history file after a crash — and this
+	// is the one file in the migration the user cannot reconstruct. (The
+	// encrypted backup makes it recoverable, but "recoverable from the vault"
+	// is not what an atomic replace should mean.)
+	if err := tmp.Sync(); err != nil {
+		cleanup()
+		return fmt.Errorf("syncing %s: %w", tmpName, err)
+	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("closing %s: %w", tmpName, err)
@@ -353,6 +452,12 @@ func replaceShellHistory(path string, content []byte, perm os.FileMode) error {
 	if err := os.Rename(tmpName, path); err != nil {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("replacing %s: %w", path, err)
+	}
+	// Best-effort directory sync so the rename itself survives power loss,
+	// the same durability tail vault.syncDir provides.
+	if d, err := os.Open(dir); err == nil { // #nosec G304 -- the history file's own parent directory
+		_ = d.Sync()
+		_ = d.Close()
 	}
 	return nil
 }

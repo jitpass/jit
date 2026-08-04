@@ -33,6 +33,22 @@ var auditExcludedCommands = map[string]bool{
 	"docs-gen":         true,
 }
 
+// auditExcludedPaths excludes by full command path, for a name too generic to
+// key on ("check" could belong to any future command).
+//
+// `jit guard check` is the shell history guard's classification helper: the
+// zsh hook forks it for every command line that passes its cheap admit test,
+// so it runs constantly at the interactive prompt. Recording it would be
+// wrong twice over. It is on the critical path of the user's keystrokes, and
+// an audit append (open, lock, write) is real latency there. And it does not
+// belong in the trail on its own terms: it hands out nothing, stores nothing,
+// and reads a line the user is in the middle of typing — logging it would
+// build a timestamped record of WHEN someone typed credential-shaped
+// commands, which is not what an audit log of secret access is for.
+var auditExcludedPaths = map[string]bool{
+	"jit guard check": true,
+}
+
 // secretValueCommands take a raw secret value as their final positional
 // argument (`jit vault set <path> <value>`). auditlog.Redact already masks
 // anything credential-SHAPED, but a weak secret ("hunter2") isn't, so for
@@ -54,7 +70,7 @@ func recordAuditEvent(cmd *cobra.Command, cmdErr error, elapsed time.Duration) {
 	if cmd == nil {
 		return
 	}
-	if auditExcludedCommands[cmd.Name()] {
+	if auditExcludedCommands[cmd.Name()] || auditExcludedPaths[cmd.CommandPath()] {
 		return
 	}
 	// A command that only printed its help never touched the user's secrets,

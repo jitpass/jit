@@ -96,16 +96,21 @@ var scanCmd = &cobra.Command{
 	GroupID: groupWorkflow,
 	Short:   "Scan for plaintext secrets exposed on this machine (read-only)",
 	Long: "jit scan scans shell configs, .env files, credential files, MCP/AI-tool " +
-		"configs, private keys, and IaC variable files for " +
+		"configs, private keys, IaC variable files, and shell history for " +
 		"plaintext secrets. Default behavior is strictly read-only: it never " +
 		"touches, encrypts, or rewrites a single file on disk. No real secret " +
 		"value is ever printed, only a masked preview.\n\n" +
+		"Shell history is the surface the others miss by construction: a " +
+		"credential gets there by being typed, so it never sits in a file whose " +
+		"name announces it. ~/.zsh_history, ~/.bash_history, ~/.sh_history, " +
+		"~/.history, fish history and $HISTFILE are all swept.\n\n" +
 		"Scanning specific paths\n\n" +
 		"Pass one or more files or directories to scan only those, instead of the " +
 		"whole machine: `jit scan ./project token.txt`. A directory is walked with " +
 		"the same name-based rules as the full scan. A file you name explicitly is " +
-		"classified regardless of its name — a shell/env/MCP/IaC file is routed to " +
-		"its scanner, and anything else is swept for known vendor tokens and JWTs, " +
+		"classified regardless of its name — a shell/env/MCP/IaC/history file is " +
+		"routed to its own scanner (so a named history file still reports line " +
+		"numbers), and anything else is swept for known vendor tokens and JWTs, " +
 		"so `jit scan token.txt` catches a bare token the full scan's naming rules " +
 		"would miss. Named paths never pull in the fixed machine-wide credential " +
 		"stores (~/.aws, ~/.ssh, …); symlinks are not followed.\n\n" +

@@ -99,6 +99,14 @@ import (
 // remedy "migrate". That history line is a live plaintext copy the
 // recommended command will not touch, so protecting the other copy does not
 // protect the secret (see ComputeCoverage).
+//
+// The same bump changes cause_group IDENTITY for every finding type, not just
+// the new one: the group id is now the digest of the full value alone, where
+// it previously mixed in key_name (see annotateCauseGroups for why — one
+// token under two scanners' names was scoring as two secrets). Group ids were
+// already documented as stable only within a run, so nothing is broken, but a
+// consumer diffing groups across versions will see every id move rather than
+// only the history ones.
 const SchemaVersion = "0.16.0"
 
 // ScannerName identifies this tool in the shared NDJSON envelope, matching
@@ -127,9 +135,11 @@ const (
 	FindingTypeWrappableCLIToken = "wrappable_cli_token" // #nosec G101 -- enum label, not a credential
 	FindingTypeSOPSAgeKey        = "sops_age_key"        // #nosec G101 -- enum label, not a credential
 	FindingTypeExposedSecret     = "exposed_secret"      // #nosec G101 -- enum label, not a credential
-	// A credential typed at the shell and recorded in a history file. Unlike
-	// every other type here, jit has no mechanism that can fix it in place —
-	// see annotateRemedies.
+	// A credential typed at the shell and recorded in a history file. Fixed by
+	// `jit migrate <historyfile>`, which vaults the value and redacts every
+	// occurrence in place — except when the credential carries a production
+	// indicator, where rotation is the remedy and no command substitutes for
+	// it. See annotateRemedies.
 	FindingTypeShellHistorySecret = "shell_history_secret" // #nosec G101 -- enum label, not a credential
 )
 

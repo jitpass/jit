@@ -62,3 +62,18 @@ func TestGuardCheckCommandContract(t *testing.T) {
 		t.Error("clean run must silence cobra's usage/error printing")
 	}
 }
+
+// The hook forks `jit guard check` constantly at the interactive prompt, so
+// it must never reach the application audit log: an append there is latency
+// on the user's keystrokes, and a timestamped record of when they typed
+// credential-shaped commands is not what a secret-access trail is for.
+func TestGuardCheckIsNotAuditLogged(t *testing.T) {
+	if !auditExcludedPaths[guardCheckCmd.CommandPath()] {
+		t.Errorf("%q is not audit-excluded; the guard hook would write a record per command line", guardCheckCmd.CommandPath())
+	}
+	// The visible half of the command tree stays audited: installing or
+	// removing a guard changes the machine and belongs in the trail.
+	if auditExcludedPaths[guardHistoryCmd.CommandPath()] || auditExcludedCommands[guardHistoryCmd.Name()] {
+		t.Error("jit guard history must stay in the audit trail")
+	}
+}
