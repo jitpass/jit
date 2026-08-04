@@ -79,6 +79,7 @@ jit scan — alex@Alexs-MacBook-Pro — scanned ~/ (7 files) — full inventory 
   Wrappable CLI Tokens   0
   SOPS Age Keys          0
   Exposed Secrets        3
+  Shell History          0
   ────────────────────────
   Total                  8
 

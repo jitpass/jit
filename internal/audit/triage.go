@@ -114,12 +114,8 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 			if cov.Migratable > 0 {
 				clause += dim.Sprint(" ·")
 			}
-			manualSecrets := 0
-			for _, g := range manual {
-				manualSecrets += g.secrets
-			}
 			clause += dim.Sprintf(" %s only you can fix ", countWord(len(manual), "thing", "things"))
-			clause += yellow.Sprintf("+%d%%", pctOf(manualSecrets, cov.Total()))
+			clause += yellow.Sprintf("+%d%%", pctOf(cov.manualRemainder(), cov.Total()))
 		}
 		termtext.Wrap(w, 2+coverageBarWidth, "  "+strings.Repeat(" ", coverageBarWidth), clause)
 	} else {
@@ -130,10 +126,22 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 	// --- green: what jit will do ---
 	if len(migratable) > 0 {
 		fmt.Fprint(w, "  ")
-		termtext.Wrap(w, 2, "  ",
-			greenBold.Sprint("jit will protect these")+
-				dim.Sprintf(" — %s in %s, ", countWord(cov.Migratable, "secret", "secrets"), countWord(len(migratable), "file", "files"))+
-				greenBold.Sprintf("%d%% → %d%%", pct, after))
+		// A migratable file whose every secret ALSO exists somewhere jit cannot
+		// rewrite — in practice, a token that was pasted at the shell and so is
+		// in both the config file and the history — gains no coverage: the
+		// plaintext copy survives the migrate. The work is still worth doing,
+		// so the block stays, but printing "0 secrets in 1 file, 0% → 0%" over
+		// a real recommendation reads as a broken report rather than as the
+		// honest statement it is. Name the files, drop the arithmetic, and say
+		// why below.
+		header := greenBold.Sprint("jit will protect these")
+		if cov.Migratable == 0 {
+			header += dim.Sprintf(" — %s", countWord(len(migratable), "file", "files"))
+		} else {
+			header += dim.Sprintf(" — %s in %s, ", countWord(cov.Migratable, "secret", "secrets"), countWord(len(migratable), "file", "files")) +
+				greenBold.Sprintf("%d%% → %d%%", pct, after)
+		}
+		termtext.Wrap(w, 2, "  ", header)
 		fmt.Fprint(w, triageNoteIndent)
 		// Cyan, not green: cyan is what the reader can type, on every jit
 		// surface. Green still carries this section — its header and its
@@ -156,22 +164,23 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 			dim.Sprintf("%s — every tool that reads them keeps working:", intro))
 		writeMigrateManifest(w, migratable, home, dim, green)
 		fmt.Fprint(w, triageNoteIndent)
-		termtext.Wrap(w, len(triageNoteIndent), triageNoteIndent,
-			dim.Sprint("these sat in plaintext until now — rotating after vaulting is the "+
-				"gold standard · every change is reversible: jit migrate undo"))
+		note := "these sat in plaintext until now — rotating after vaulting is the " +
+			"gold standard · every change is reversible: jit migrate undo"
+		if cov.Migratable == 0 {
+			note = "every secret here also sits somewhere jit cannot rewrite, so the score " +
+				"moves only once you rotate — protecting the file is still worth doing · " +
+				"every change is reversible: jit migrate undo"
+		}
+		termtext.Wrap(w, len(triageNoteIndent), triageNoteIndent, dim.Sprint(note))
 		fmt.Fprintln(w)
 	}
 
 	// --- red: what only the user can do ---
 	if len(manual) > 0 {
-		manualSecrets := 0
-		for _, g := range manual {
-			manualSecrets += g.secrets
-		}
 		fmt.Fprint(w, "  ")
 		termtext.Wrap(w, 2, "  ",
 			red.Sprint("only you can protect these")+
-				dim.Sprintf(" — %s, ", countWord(manualSecrets, "secret", "secrets"))+
+				dim.Sprintf(" — %s, ", countWord(cov.manualRemainder(), "secret", "secrets"))+
 				yellowBold.Sprintf("%d%% → 100%%", after))
 		for _, g := range manual {
 			fmt.Fprint(w, "    ")
@@ -579,6 +588,16 @@ func mergeManualGroups(groups []triageManualGroup, home string) []triageManualGr
 // it spans copies, how wide it spread. It never says "finding" or a
 // severity word — the noun is the secret, the number is the file spread.
 func manualTitle(causes []*triageCause, files []string, worst Finding) string {
+	// History is titled by WHERE, not by how many files it spread to. Two
+	// history files are ~/.zsh_history and ~/.bash_history, which are two
+	// shells' records of the same habit — calling that "2 copies of a file"
+	// describes a duplicated config, which is not what happened.
+	if IsShellHistoryPath(worst.FilePath) {
+		if len(causes) > 1 {
+			return fmt.Sprintf("%d credentials in shell history", len(causes))
+		}
+		return manualNoun(worst)
+	}
 	noun := manualNoun(worst)
 	if len(causes) > 1 {
 		noun = fmt.Sprintf("%d credentials", len(causes))
@@ -601,6 +620,15 @@ func manualNoun(f Finding) string {
 		return "A live credential recorded in Terraform state"
 	case f.FindingType == FindingTypeIACVariableFile:
 		return "A Kubernetes Secret manifest with real values"
+	case f.FindingType == FindingTypeShellHistorySecret:
+		// The location IS the problem here, so it belongs in the title rather
+		// than only in the dim path line below: "An exposed GitHub token" and
+		// "A GitHub token in shell history" call for different actions, and
+		// the reader decides what to do from this line.
+		if k := shortSecretLabel(f.KeyName); k != "" {
+			return fmt.Sprintf("A %s in shell history", k)
+		}
+		return "A credential in shell history"
 	case f.ProductionIndicatorMatch:
 		if k := shortSecretLabel(f.KeyName); k != "" {
 			return fmt.Sprintf("A production %s", k)
@@ -644,10 +672,18 @@ func manualDetail(files []string, worst Finding, home string) string {
 	if first == "" {
 		first = files[0]
 	}
-	if len(files) == 1 {
-		return ShortenHome(home, first)
+	shown := ShortenHome(home, first)
+	// A history file is thousands of lines long and the fix is to find one of
+	// them, so the line number is not a detail — it is the whole address. No
+	// other manual finding needs it, because "~/.gemini/oauth_creds.json" is
+	// already the location.
+	if IsShellHistoryPath(first) && worst.Line != nil {
+		shown = fmt.Sprintf("%s:%d", shown, *worst.Line)
 	}
-	return fmt.Sprintf("%s … and %d more", ShortenHome(home, first), len(files)-1)
+	if len(files) == 1 {
+		return shown
+	}
+	return fmt.Sprintf("%s … and %d more", shown, len(files)-1)
 }
 
 // selfRotating reports whether f's file is one the owning tool rewrites for
@@ -693,6 +729,28 @@ func manualAction(f Finding, ctx manualContext, home string) string {
 		return "rotate " + them + " now; move state to an encrypted remote backend, and keep secrets out of it with ephemeral values (Terraform 1.10+)"
 	case f.FindingType == FindingTypeIACVariableFile:
 		return "seal it (sealed-secrets/SOPS) or move it to a real secret store"
+	case f.FindingType == FindingTypeShellHistorySecret:
+		// Above the production branch on purpose. A production credential in
+		// history still needs the history instruction, not "delete every
+		// copy": there is one copy, deleting it is the easy half, and the
+		// half that actually resolves the exposure is the rotation.
+		//
+		// Rotation leads because it is the fix. The secret has already been
+		// written to disk in plaintext, and history files are backed up by
+		// Time Machine and committed to dotfile repos as a matter of routine,
+		// so removing the line does not un-expose anything that has already
+		// left. The closing clause is the part users get wrong: zsh and bash
+		// hold history in memory and rewrite the file on exit, so a line
+		// deleted while another shell is open comes back.
+		lines, file := "the line", "this file"
+		if ctx.secrets > 1 {
+			lines = "the lines"
+		}
+		if ctx.copies > 1 {
+			file = "these files"
+		}
+		return fmt.Sprintf("rotate %s at the provider now, then remove %s — your shell rewrites %s on exit, so close other shells first",
+			them, lines, file)
 	case ctx.production || f.ProductionIndicatorMatch:
 		return fmt.Sprintf("rotate %s now, then delete every copy", them)
 	case ctx.copies > 1:

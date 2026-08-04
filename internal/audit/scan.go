@@ -56,6 +56,10 @@ var categories = []category{
 	{name: "wrappable CLI tokens", fixed: ScanWrappableCLITokens},
 	{name: "SOPS age keys", fixed: ScanSOPSAgeKeys},
 	{name: "exposed secrets", classify: classifyCredentialDump},
+	// Fixed-path only: history files live at known locations, and a walk that
+	// claimed them by name would also claim every "*_history" file a tool
+	// happens to write.
+	{name: "shell history", fixed: ScanShellHistories},
 }
 
 // Scan runs every category and returns the individual findings plus the

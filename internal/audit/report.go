@@ -53,15 +53,16 @@ func highlightCmds(s string) string {
 // enum labels, not credential material — see finding.go's justification for
 // the same gosec G101 pattern-match false positive.
 var findingTypeLabels = map[string]string{ // #nosec G101 -- enum label keys, not credentials
-	FindingTypeShellConfigSecret: "Shell Configs",
-	FindingTypeEnvFilePresent:    ".env Files",
-	FindingTypeCredentialFile:    "Credential Files",
-	FindingTypeMCPEmbeddedSecret: "AI Tool / MCP Configs",
-	FindingTypePrivateKeyRisk:    "Private Keys",
-	FindingTypeIACVariableFile:   "IaC Variable Files",
-	FindingTypeWrappableCLIToken: "Wrappable CLI Tokens",
-	FindingTypeSOPSAgeKey:        "SOPS Age Keys",
-	FindingTypeExposedSecret:     "Exposed Secrets",
+	FindingTypeShellConfigSecret:  "Shell Configs",
+	FindingTypeEnvFilePresent:     ".env Files",
+	FindingTypeCredentialFile:     "Credential Files",
+	FindingTypeMCPEmbeddedSecret:  "AI Tool / MCP Configs",
+	FindingTypePrivateKeyRisk:     "Private Keys",
+	FindingTypeIACVariableFile:    "IaC Variable Files",
+	FindingTypeWrappableCLIToken:  "Wrappable CLI Tokens",
+	FindingTypeSOPSAgeKey:         "SOPS Age Keys",
+	FindingTypeExposedSecret:      "Exposed Secrets",
+	FindingTypeShellHistorySecret: "Shell History",
 }
 
 var riskLevelColor = map[string]*color.Color{

@@ -1,0 +1,655 @@
+// Copyright 2026 Meni Tasa
+// SPDX-License-Identifier: LicenseRef-PolyForm-Perimeter-1.0.0
+
+package audit
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func writeHistory(t *testing.T, dir, name string, lines ...string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestScanShellHistoryFindsTypedCredentials(t *testing.T) {
+	home := t.TempDir()
+	writeHistory(t, home, ".zsh_history",
+		": 1782826755:0;cd ~/work",
+		": 1782826756:0;export GITHUB_TOKEN=ghp_"+"A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
+		": 1782826757:0;git status",
+	)
+	cfg := Config{HomeDir: home}
+	findings, err := ScanShellHistories(cfg)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1: %+v", len(findings), findings)
+	}
+	f := findings[0]
+	if f.FindingType != FindingTypeShellHistorySecret {
+		t.Errorf("finding type = %q", f.FindingType)
+	}
+	if f.Line == nil || *f.Line != 2 {
+		t.Errorf("line = %v, want 2 (the physical line to delete)", f.Line)
+	}
+	if f.Severity != SeverityHigh {
+		t.Errorf("severity = %q, want high", f.Severity)
+	}
+	if f.ValuePreview == nil || strings.Contains(*f.ValuePreview, "O5p6Q7r8") {
+		t.Errorf("value preview leaks the token: %v", f.ValuePreview)
+	}
+}
+
+// The scan must never print, store, or echo back the command that was typed.
+// A history line is far more likely than a config line to carry unrelated
+// private context alongside the credential.
+func TestScanShellHistoryNeverEchoesTheCommand(t *testing.T) {
+	home := t.TempDir()
+	writeHistory(t, home, ".zsh_history",
+		": 1782826756:0;curl -H 'Authorization: Bearer ghp_"+"A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8' https://internal.example.com/patients/12345",
+	)
+	findings, err := ScanShellHistories(Config{HomeDir: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+	blob := fmt.Sprintf("%+v", findings[0])
+	for _, leak := range []string{"patients", "12345", "internal.example.com", "curl"} {
+		if strings.Contains(blob, leak) {
+			t.Errorf("finding carries command context %q: %s", leak, blob)
+		}
+	}
+}
+
+func TestScanShellHistoryCoversEveryShell(t *testing.T) {
+	home := t.TempDir()
+	writeHistory(t, home, ".bash_history",
+		"#1782826755",
+		"export STRIPE_KEY=sk_live_"+"51H8xQ2KZvMnPq7RtY4wU6iO9pL3kJ5hG2f",
+	)
+	writeHistory(t, home, filepath.Join(".local", "share", "fish", "fish_history"),
+		"- cmd: export HF=hf_abcdefghijklmnopqrstuvwx",
+		"  when: 1782826755",
+	)
+	findings, err := ScanShellHistories(Config{HomeDir: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("got %d findings, want 2 (bash + fish): %+v", len(findings), findings)
+	}
+	// bash's "#<epoch>" line is metadata, so the credential is on line 2.
+	for _, f := range findings {
+		if strings.HasSuffix(f.FilePath, ".bash_history") && (f.Line == nil || *f.Line != 2) {
+			t.Errorf("bash line = %v, want 2", f.Line)
+		}
+	}
+}
+
+func TestScanShellHistoryHonorsHISTFILE(t *testing.T) {
+	home := t.TempDir()
+	custom := writeHistory(t, home, filepath.Join(".cache", "zsh", "history"),
+		": 1782826756:0;export HF=hf_abcdefghijklmnopqrstuvwx",
+	)
+	t.Setenv("HISTFILE", custom)
+	findings, err := ScanShellHistories(Config{HomeDir: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("a relocated history went unscanned: %d findings", len(findings))
+	}
+}
+
+// Real history is dense with things that look like credentials and are not.
+func TestScanShellHistoryQuietOnNearMisses(t *testing.T) {
+	lines := []string{
+		"git checkout 4f9c2b1e8a3d5f7091b2c4d6e8f0a2b4c6d8e0f2",
+		"docker pull ubuntu@sha256:9b8d3f7a2c1e4b5d6f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6",
+		"openssl rand -hex 32",
+		"curl -H \"Authorization: Bearer $GITHUB_TOKEN\" https://api.github.com/user",
+		"export AWS_PROFILE=production",
+		"export ANTHROPIC_API_KEY=$(op read op://Private/anthropic/credential)",
+		"aws sts assume-role --role-arn arn:aws:iam::123456789012:role/DeployRole",
+		"ssh-keygen -t ed25519 -C \"me@example.com\"",
+		"npm i --registry https://registry.npmjs.org/ some-package@1.2.3",
+		"echo 550e8400-e29b-41d4-a716-446655440000",
+		"terraform apply -var=\"db_password=$TF_VAR_db_password\"",
+		"grep -rn \"ghp_\" .",
+		"export PATH=/opt/homebrew/bin:$PATH",
+		"shasum -a 256 dist/jit_darwin_arm64.tar.gz",
+		"docker login ghcr.io -u menitasa --password-stdin < token.txt",
+		"git remote set-url origin https://github.com/jitpass/jit.git",
+		"rg -n 'password' --glob '!node_modules'",
+		"az login --service-principal -u 00000000-0000-0000-0000-000000000000 -p $AZ_SECRET",
+	}
+	home := t.TempDir()
+	hist := make([]string, 0, len(lines))
+	for i, l := range lines {
+		hist = append(hist, fmt.Sprintf(": 17828267%02d:0;%s", i, l))
+	}
+	writeHistory(t, home, ".zsh_history", hist...)
+
+	findings, err := ScanShellHistories(Config{HomeDir: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range findings {
+		t.Errorf("false positive: %s at line %v (%s)", *f.KeyName, f.Line, f.Evidence)
+	}
+}
+
+// A password that is a shell expansion exposes nothing: the secret lives
+// wherever the expansion reads it from. This is the dominant form in history.
+func TestConnectionStringIgnoresShellExpansion(t *testing.T) {
+	interpolated := []string{
+		`psql "postgres://app:$PGPASSWORD@db.internal:5432/app"`,
+		`psql "postgres://app:${PGPASSWORD}@db.internal:5432/app"`,
+		`mongosh "mongodb://admin:$(op read op://vault/mongo/pw)@cluster0.example.com"`,
+		"redis-cli -u \"redis://default:`cat /run/pw`@cache.internal:6379\"",
+		`export DATABASE_URL="postgresql+asyncpg://svc:${DB_PASS}@rds.internal/app"`,
+		`amqps://guest:$RABBIT_PW@rabbit.internal:5671`,
+		`curl "https://user:$API_PASS@api.internal/v1/health"`,
+	}
+	for _, line := range interpolated {
+		if got := matchLineTokens(line); len(got) > 0 {
+			t.Errorf("reported an interpolated password as a credential: %q -> %q", line, got[0].Value)
+		}
+	}
+
+	// ...while a literal password in the same shape is still a real finding.
+	literal := []string{
+		`psql "postgres://app:s3cr3tPassw0rd@db.internal:5432/app"`,
+		`export DATABASE_URL="postgresql://svc:hunter2xyz@rds.internal/app"`,
+	}
+	for _, line := range literal {
+		if got := matchLineTokens(line); len(got) == 0 {
+			t.Errorf("missed a real embedded credential: %q", line)
+		}
+	}
+}
+
+// The prefilter is an optimization, so its only real obligation is that it
+// never hides a match. Extend `samples` when a pattern is added to
+// knownTokenPatterns.
+func TestHistoryPrefilterNeverDropsAMatch(t *testing.T) {
+	samples := []string{
+		"ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
+		"gith" + "ub_pat_11ABCDEFG0abcdefghijkl_MNOPQRST",
+		"glpa" + "t-AbCdEfGhIjKlMnOpQrSt",
+		"AKIA" + "IOSFODNN7EXAMPLZ",
+		"ASIA" + "IOSFODNN7EXAMPLZ",
+		"dop_" + "v1_0123456789abcdef0123456789abcdef0123456789abcdef",
+		"npm_" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
+		"pypi" + "-AgEIcHlwaS5vcmcCJDAwMDAwMDAwLTAwMDA",
+		"sk-a" + "nt-api03-AbCdEfGhIjKlMnOpQrStUv",
+		"sk-a" + "nt-adminAbCdEfGhIjKlMnOpQrStUv",
+		"sk-p" + "roj-AbCdEfGhIjKlMnOpQrStUv",
+		"sk-s" + "vcacct-AbCdEfGhIjKlMnOpQrStUv",
+		"sk-a" + "dmin-AbCdEfGhIjKlMnOpQrStUv",
+		"sk-A" + "bCdEfGhIjKlMnOpQrStUv",
+		"hf_a" + "bcdefghijklmnopqrstuvwx",
+		"sk_l" + "ive_51H8xQ2KZvMnPq7RtY4wU6iO9",
+		"sk_t" + "est_51H8xQ2KZvMnPq7RtY4wU6iO9",
+		"rk_l" + "ive_51H8xQ2KZvMnPq7RtY4wU6iO9",
+		"xoxb" + "-1234567890-AbCdEfGhIj",
+		"xoxp" + "-1234567890-AbCdEfGhIj",
+		"xapp" + "-1-A012345678-AbCdEfGhIj",
+		"xwfp" + "-1-A012345678-AbCdEfGhIj",
+		"shpa" + "t_abcdefghijklmnopqrstuvwx",
+		"AC01" + "23456789abcdef0123456789abcdef",
+		"SG.AbCdEfGhIj.KlMnOpQrStUv",
+		"ntn_" + "abcdefghijklmnopqrstuvwx",
+		"secr" + "et_0123456789abcdefghijklmnopqrstuvwxyzABCD",
+		"AIza" + "SyC1234567890abcdefghijklmnopqrstuv",
+		"whse" + "c_AbCdEfGhIjKlMnOpQrStUvWx",
+		"sb_s" + "ecret_AbCdEfGhIjKlMnOpQrStUv",
+		"glsa" + "_AbCdEfGhIjKlMnOpQrStUv_abcdef12",
+		"dp.st.AbCdEfGhIjKlMnOpQrStUv",
+		"hvs." + "AbCdEfGhIjKlMnOpQrStUvWxYz01",
+		"AGE-SECRET-KEY-1ABCDEFGHIJKLMNOPQRSTU",
+		"eyJh" + "bGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.AbCdEfGhIj",
+		"eyJa.b.c",
+		"postgres://app:s3cr3tPassw0rd@db.internal:5432/app",
+		"scanner_user:hunter2x@db.example.com/postgres",
+		"-----BEGIN OPENSSH PRIVATE KEY-----",
+		"-----BEGIN RSA PRIVATE KEY-----",
+	}
+	for _, s := range samples {
+		matched := false
+		for _, tp := range knownTokenPatterns {
+			if tp.pattern.MatchString(s) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			t.Errorf("sample matches no pattern at all, so it cannot guard the prefilter: %q", s)
+			continue
+		}
+		if !historyLineMayHoldToken(s) {
+			t.Errorf("PREFILTER DROPS A REAL MATCH: %q", s)
+		}
+	}
+}
+
+// Every pattern in the list must be represented above, or a pattern added
+// later could silently sit behind a prefilter that rejects it.
+func TestHistoryPrefilterGuardsEveryPattern(t *testing.T) {
+	samples := []string{
+		"ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", "gith" + "ub_pat_11ABCDEFG0abcdefghijkl_MNOPQRST",
+		"gho_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", "ghs_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
+		"ghu_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", "ghr_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
+		"glpa" + "t-AbCdEfGhIjKlMnOpQrSt", "gldt" + "-AbCdEfGhIjKlMnOpQrSt", "glrt" + "-AbCdEfGhIjKlMnOpQrSt",
+		"glrt" + "r-AbCdEfGhIjKlMnOpQrSt", "glcb" + "t-AbCdEfGhIjKlMnOpQrSt", "glpt" + "t-AbCdEfGhIjKlMnOpQrSt",
+		"gloa" + "s-AbCdEfGhIjKlMnOpQrSt", "glag" + "ent-AbCdEfGhIjKlMnOpQrSt", "glft" + "-AbCdEfGhIjKlMnOpQrSt",
+		"AKIA" + "IOSFODNN7EXAMPLZ", "dop_" + "v1_0123456789abcdef0123456789abcdef0123456789abcdef",
+		"npm_" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789", "pypi" + "-AgEIcHlwaS5vcmcCJDAwMDAwMDAwLTAwMDA",
+		"sk-a" + "nt-api03-AbCdEfGhIjKlMnOpQrStUv", "sk-a" + "nt-adminAbCdEfGhIjKlMnOpQrStUv",
+		"sk-p" + "roj-AbCdEfGhIjKlMnOpQrStUv", "sk-s" + "vcacct-AbCdEfGhIjKlMnOpQrStUv",
+		"sk-a" + "dmin-AbCdEfGhIjKlMnOpQrStUv", "sk-A" + "bCdEfGhIjKlMnOpQrStUv",
+		"hf_a" + "bcdefghijklmnopqrstuvwx", "sk_l" + "ive_51H8xQ2KZvMnPq7RtY4wU6iO9",
+		"sk_t" + "est_51H8xQ2KZvMnPq7RtY4wU6iO9", "rk_l" + "ive_51H8xQ2KZvMnPq7RtY4wU6iO9",
+		"xoxb" + "-1234567890-AbCdEfGhIj", "xoxp" + "-1234567890-AbCdEfGhIj",
+		"shpa" + "t_abcdefghijklmnopqrstuvwx", "AC01" + "23456789abcdef0123456789abcdef",
+		"SG.AbCdEfGhIj.KlMnOpQrStUv", "ntn_" + "abcdefghijklmnopqrstuvwx",
+		"secr" + "et_0123456789abcdefghijklmnopqrstuvwxyzABCD",
+		"AIza" + "SyC1234567890abcdefghijklmnopqrstuv", "xapp" + "-1-A012345678-AbCdEfGhIj",
+		"xwfp" + "-1-A012345678-AbCdEfGhIj", "whse" + "c_AbCdEfGhIjKlMnOpQrStUvWx",
+		"sb_s" + "ecret_AbCdEfGhIjKlMnOpQrStUv", "glsa" + "_AbCdEfGhIjKlMnOpQrStUv_abcdef12",
+		"dp.st.AbCdEfGhIjKlMnOpQrStUv", "hvs." + "AbCdEfGhIjKlMnOpQrStUvWxYz01",
+		"hvb." + "AbCdEfGhIjKlMnOpQrStUvWxYz01", "hvr." + "AbCdEfGhIjKlMnOpQrStUvWxYz01",
+		"AGE-SECRET-KEY-1ABCDEFGHIJKLMNOPQRSTU",
+		"AGE-SECRET-KEY-PQ-1ABCDEFGHIJKLMNOPQRSTU",
+		"eyJh" + "bGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.AbCdEfGhIj",
+		"-----BEGIN RSA PRIVATE KEY-----", "-----BEGIN OPENSSH PRIVATE KEY-----",
+		"-----BEGIN EC PRIVATE KEY-----", "-----BEGIN PRIVATE KEY-----",
+		"postgres://app:s3cr3tPassw0rd@db.internal:5432/app",
+		"scanner_user:hunter2x@db.example.com/postgres",
+		"crsr" + "_AbCdEfGhIjKl", "tvly" + "-AbCdEfGhIjKl",
+		"xoxa" + "-1234567890-AbCdEfGhIj", "xoxr" + "-1234567890-AbCdEfGhIj",
+		"eyJa.b.c", // degenerate JWT: legal for the pattern, no long run
+	}
+	covered := map[string]bool{}
+	for _, s := range samples {
+		if !historyLineMayHoldToken(s) {
+			t.Errorf("PREFILTER DROPS A REAL MATCH: %q", s)
+		}
+		for _, tp := range knownTokenPatterns {
+			if tp.pattern.MatchString(s) {
+				covered[tp.vendor] = true
+			}
+		}
+	}
+	for _, tp := range knownTokenPatterns {
+		if !covered[tp.vendor] {
+			t.Errorf("pattern %q has no sample guarding the prefilter; add one", tp.vendor)
+		}
+	}
+}
+
+func TestHistoryCommandTextStripsMetadata(t *testing.T) {
+	cases := []struct {
+		in     string
+		want   string
+		isText bool
+	}{
+		{": 1782826755:0;git status", "git status", true},
+		{": 1782826755:12;go test ./...", "go test ./...", true},
+		{"git status", "git status", true},
+		{"#1782826755", "", false},
+		{"#!/bin/sh", "#!/bin/sh", true},
+		{"# a real comment", "# a real comment", true},
+		{"- cmd: git status", "git status", true},
+		{"  when: 1782826755", "", false},
+		{"  paths:", "", false},
+		{": not-a-timestamp;x", ": not-a-timestamp;x", true},
+		{"echo ': 1:0;fake'", "echo ': 1:0;fake'", true},
+	}
+	for _, c := range cases {
+		got, ok := historyCommandText(c.in)
+		if ok != c.isText || (ok && got != c.want) {
+			t.Errorf("historyCommandText(%q) = (%q, %v), want (%q, %v)", c.in, got, ok, c.want, c.isText)
+		}
+	}
+}
+
+// The zsh timestamp prefix must never reach the patterns: it is 10 digits on
+// every single line, which is exactly the shape the prefilter keys on.
+func TestHistoryTimestampDoesNotDefeatThePrefilter(t *testing.T) {
+	raw := ": 1782826755:0;git status"
+	if !historyLineMayHoldToken(raw) {
+		t.Fatal("precondition: the raw line should look like a candidate")
+	}
+	cmd, ok := historyCommandText(raw)
+	if !ok {
+		t.Fatal("timestamped line should still carry a command")
+	}
+	if historyLineMayHoldToken(cmd) {
+		t.Errorf("prefilter still admits %q after parsing; the timestamp is leaking through", cmd)
+	}
+}
+
+// A history file past the sanity bound must be REPORTED, never silently
+// skipped: history is the file most likely to grow past any ceiling, and
+// "produced no findings" would read as "clean".
+func TestScanShellHistoryReportsOversizeRatherThanSkipping(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".zsh_history")
+	f, err := os.Create(path) // #nosec G304 -- test fixture in t.TempDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(maxHistoryScanSize + 1); err != nil {
+		f.Close()
+		t.Skipf("cannot create a sparse file this large here: %v", err)
+	}
+	f.Close()
+
+	_, err = ScanShellHistories(Config{HomeDir: home})
+	if err == nil {
+		t.Fatal("an oversize history was skipped silently; it must surface as a degraded scanner")
+	}
+	if !strings.Contains(err.Error(), "not read") {
+		t.Errorf("error does not say the file went unread: %v", err)
+	}
+}
+
+func TestShellHistoryRemedyIsManualNotMigrate(t *testing.T) {
+	home := t.TempDir()
+	findings := []Finding{{
+		FindingType: FindingTypeShellHistorySecret,
+		FilePath:    filepath.Join(home, ".zsh_history"),
+		Severity:    SeverityHigh,
+	}}
+	annotateRemedies(findings, home)
+	if findings[0].Remedy != RemedyManual {
+		t.Errorf("remedy = %q, want %q", findings[0].Remedy, RemedyManual)
+	}
+	if findings[0].FixCommand != "" {
+		t.Errorf("a history finding must not offer a fix command, got %q", findings[0].FixCommand)
+	}
+	if strings.Contains(findings[0].FixCommand, "migrate") {
+		t.Error("scan offered `jit migrate` for a history file, which cannot work")
+	}
+}
+
+// A token in BOTH a migratable config and history is one secret that jit
+// cannot fully protect: vaulting the config leaves the history line readable.
+func TestCoverageDoesNotClaimHistorySecretsAsMigratable(t *testing.T) {
+	shared := "cause-abc"
+	findings := []Finding{
+		{
+			FindingType: FindingTypeMCPEmbeddedSecret,
+			FilePath:    "/home/u/.mcp.json",
+			Severity:    SeverityHigh,
+			Remedy:      RemedyMigrate,
+			CauseGroup:  shared,
+			RecordID:    "r1",
+		},
+		{
+			FindingType: FindingTypeShellHistorySecret,
+			FilePath:    "/home/u/.zsh_history",
+			Severity:    SeverityHigh,
+			Remedy:      RemedyManual,
+			CauseGroup:  shared,
+			RecordID:    "r2",
+		},
+	}
+	cov := ComputeCoverage("", findings)
+	if cov.Exposed != 1 {
+		t.Errorf("Exposed = %d, want 1 (one secret in two places)", cov.Exposed)
+	}
+	if cov.Migratable != 0 {
+		t.Errorf("Migratable = %d, want 0: migrate cannot rewrite the history copy", cov.Migratable)
+	}
+	if got := cov.manualRemainder(); got != 1 {
+		t.Errorf("manualRemainder = %d, want 1", got)
+	}
+}
+
+// One secret found by two scanners that name it differently is still one
+// secret. Before cause groups keyed on the value alone, a token in ~/.mcp.json
+// ("internal-tool/GITHUB_TOKEN") and in history ("GitHub Personal Access
+// Token") reported as two, so "YOUR SECRETS" over-counted by one per pasted
+// token — which shell history makes the common case rather than a corner one.
+func TestCauseGroupMergesAcrossScannerKeyNames(t *testing.T) {
+	cfg := Config{HomeDir: "/home/u"}
+	token := "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+	findings := []Finding{
+		cfg.ValueFinding(ValueFindingParams{
+			FindingType: FindingTypeMCPEmbeddedSecret,
+			FilePath:    "/home/u/.mcp.json",
+			KeyName:     "internal-tool/GITHUB_TOKEN",
+			RawValue:    token,
+		}),
+		cfg.ValueFinding(ValueFindingParams{
+			FindingType: FindingTypeShellHistorySecret,
+			FilePath:    "/home/u/.zsh_history",
+			KeyName:     "GitHub Personal Access Token",
+			RawValue:    token,
+		}),
+	}
+	annotateCauseGroups(findings)
+	if findings[0].CauseGroup != findings[1].CauseGroup {
+		t.Errorf("one token under two key names produced two cause groups: %q vs %q",
+			findings[0].CauseGroup, findings[1].CauseGroup)
+	}
+
+	// ...but two DIFFERENT tokens must stay apart, even sharing a preview
+	// (every GitHub token previews as "ghp_**********").
+	other := cfg.ValueFinding(ValueFindingParams{
+		FindingType: FindingTypeShellHistorySecret,
+		FilePath:    "/home/u/.zsh_history",
+		KeyName:     "GitHub Personal Access Token",
+		RawValue:    "ghp_" + "Z9y8X7w6V5u4T3s2R1q0P9o8N7m6L5k4J3i2",
+	})
+	pair := []Finding{findings[0], other}
+	annotateCauseGroups(pair)
+	if pair[0].CauseGroup == pair[1].CauseGroup {
+		t.Error("two different tokens collapsed into one cause group")
+	}
+}
+
+// The report's two percentage claims must never sum past 100.
+func TestCoveragePercentagesAlwaysSumTo100(t *testing.T) {
+	cases := []Coverage{
+		{Protected: 0, Exposed: 8, Migratable: 6},
+		{Protected: 3, Exposed: 9, Migratable: 0},
+		{Protected: 5, Exposed: 0, Migratable: 0},
+		{Protected: 1, Exposed: 1, Migratable: 1},
+		{Protected: 0, Exposed: 1, Migratable: 0},
+		{Protected: 12, Exposed: 37, Migratable: 20},
+	}
+	for _, c := range cases {
+		if c.Total() == 0 {
+			continue
+		}
+		gain := c.PercentAfterMigrate() - c.Percent()
+		remainder := pctOf(c.manualRemainder(), c.Total())
+		if sum := c.Percent() + gain + remainder; sum > 100 {
+			t.Errorf("%+v: %d%% + %d%% + %d%% = %d%%, over 100", c, c.Percent(), gain, remainder, sum)
+		}
+	}
+}
+
+func TestShellHistoryTriageCopy(t *testing.T) {
+	home := "/home/u"
+	line := 4821
+	vendor := "GitHub Personal Access Token"
+	f := Finding{
+		FindingType: FindingTypeShellHistorySecret,
+		FilePath:    filepath.Join(home, ".zsh_history"),
+		Line:        &line,
+		KeyName:     &vendor,
+		Severity:    SeverityHigh,
+		Remedy:      RemedyManual,
+		CauseGroup:  "g1",
+	}
+	if got := manualNoun(f); got != "A GitHub Personal Access Token in shell history" {
+		t.Errorf("noun = %q", got)
+	}
+	if got := manualDetail([]string{f.FilePath}, f, home); got != "~/.zsh_history:4821" {
+		t.Errorf("detail = %q, want the line number", got)
+	}
+	action := manualAction(f, manualContext{secrets: 1, copies: 1}, home)
+	if strings.Contains(action, "jit migrate") {
+		t.Errorf("action offers a jit command that cannot work: %q", action)
+	}
+	for _, want := range []string{"rotate it", "close other shells first"} {
+		if !strings.Contains(action, want) {
+			t.Errorf("action %q is missing %q", action, want)
+		}
+	}
+	plural := manualAction(f, manualContext{secrets: 2, copies: 1}, home)
+	if !strings.Contains(plural, "rotate them") || !strings.Contains(plural, "the lines") {
+		t.Errorf("plural action reads wrong: %q", plural)
+	}
+}
+
+// A production-flagged history secret still gets the history instruction:
+// "delete every copy" is wrong advice for a file with one copy.
+func TestShellHistoryActionBeatsTheProductionBranch(t *testing.T) {
+	vendor := "GitHub Personal Access Token"
+	f := Finding{
+		FindingType:              FindingTypeShellHistorySecret,
+		FilePath:                 "/home/u/.zsh_history",
+		KeyName:                  &vendor,
+		ProductionIndicatorMatch: true,
+		Severity:                 SeverityCritical,
+	}
+	action := manualAction(f, manualContext{secrets: 1, copies: 1, production: true}, "/home/u")
+	if !strings.Contains(action, "close other shells first") {
+		t.Errorf("production branch swallowed the history advice: %q", action)
+	}
+}
+
+func TestShellHistoryIsInEveryTypeList(t *testing.T) {
+	found := false
+	for _, ft := range AllFindingTypes {
+		if ft == FindingTypeShellHistorySecret {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("FindingTypeShellHistorySecret missing from AllFindingTypes")
+	}
+	if findingTypeLabels[FindingTypeShellHistorySecret] == "" {
+		t.Error("FindingTypeShellHistorySecret has no report label")
+	}
+}
+
+func TestTargetedScanRoutesNamedHistoryFile(t *testing.T) {
+	home := t.TempDir()
+	path := writeHistory(t, home, ".zsh_history",
+		": 1782826755:0;cd ~/work",
+		": 1782826756:0;export HF=hf_abcdefghijklmnopqrstuvwx",
+	)
+	findings := scanTargetFile(Config{HomeDir: home}, path)
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1: %+v", len(findings), findings)
+	}
+	if findings[0].FindingType != FindingTypeShellHistorySecret {
+		t.Errorf("named history file was scanned as %q, not by its own scanner", findings[0].FindingType)
+	}
+	if findings[0].Line == nil || *findings[0].Line != 2 {
+		t.Errorf("line = %v, want 2", findings[0].Line)
+	}
+}
+
+// One vendor is reported once per file, with the count in the evidence.
+func TestScanShellHistoryCollapsesRepeatVendors(t *testing.T) {
+	home := t.TempDir()
+	writeHistory(t, home, ".zsh_history",
+		": 1782826755:0;export A=hf_abcdefghijklmnopqrstuvwx",
+		": 1782826756:0;git status",
+		": 1782826757:0;export B=hf_zyxwvutsrqponmlkjihgfed",
+	)
+	findings, err := ScanShellHistories(Config{HomeDir: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1 collapsed by vendor", len(findings))
+	}
+	if findings[0].Line == nil || *findings[0].Line != 1 {
+		t.Errorf("line = %v, want the first occurrence", findings[0].Line)
+	}
+	if !strings.Contains(findings[0].Evidence, "2 occurrences") {
+		t.Errorf("evidence hides the repeat count: %q", findings[0].Evidence)
+	}
+}
+
+// Scan is read-only in every mode.
+func TestScanShellHistoryDoesNotModifyTheFile(t *testing.T) {
+	home := t.TempDir()
+	path := writeHistory(t, home, ".zsh_history",
+		": 1782826756:0;export GITHUB_TOKEN=ghp_"+"A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
+	)
+	before, err := os.ReadFile(path) // #nosec G304 -- test fixture in t.TempDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ScanShellHistories(Config{HomeDir: home}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(path) // #nosec G304 -- test fixture in t.TempDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Error("jit scan modified a history file; scan is read-only in every mode")
+	}
+}
+
+// When every migratable secret also sits in history, migrate gains no
+// coverage. The block must still recommend the work without printing
+// "0 secrets in 1 file, 0% → 0%", which reads as a broken report.
+func TestTriageZeroGainBlockStaysHonest(t *testing.T) {
+	home := t.TempDir()
+	token := "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+	if err := os.WriteFile(filepath.Join(home, ".mcp.json"),
+		[]byte(`{"mcpServers":{"t":{"env":{"GITHUB_TOKEN":"`+token+`"}}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeHistory(t, home, ".zsh_history", ": 1782826801:0;export GITHUB_TOKEN="+token)
+
+	findings, summary, err := Scan(Config{HomeDir: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.SecretsTotal != 1 {
+		t.Errorf("SecretsTotal = %d, want 1 (one token in two places)", summary.SecretsTotal)
+	}
+	if summary.SecretsMigratable != 0 {
+		t.Errorf("SecretsMigratable = %d, want 0: the history copy survives migrate", summary.SecretsMigratable)
+	}
+
+	var buf strings.Builder
+	WriteTriageReport(&buf, findings, summary, home, ComputeCoverage("", findings))
+	out := buf.String()
+	if strings.Contains(out, "0 secrets in") || strings.Contains(out, "0% → 0%") {
+		t.Errorf("zero-gain block still prints broken arithmetic:\n%s", out)
+	}
+	if !strings.Contains(out, "jit migrate") {
+		t.Errorf("zero-gain block dropped the recommendation entirely:\n%s", out)
+	}
+	if !strings.Contains(out, "cannot rewrite") {
+		t.Errorf("zero-gain block does not explain why the score is unmoved:\n%s", out)
+	}
+}
