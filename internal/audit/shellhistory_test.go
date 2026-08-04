@@ -392,6 +392,22 @@ func TestHistoryLineTokensSkipsMetadataAndMarkers(t *testing.T) {
 	}
 }
 
+// The marker and placeholder exclusions must not cost a real credential. A
+// password containing an angle bracket is unusual but legal and gets pasted
+// unencoded at a shell prompt all the time; a blanket "reject any span with
+// a bracket" rule silently dropped it, which is a false negative on a live
+// secret — the one error this scanner weighs as worse than an extra finding.
+func TestAngleBracketExclusionKeepsRealPasswords(t *testing.T) {
+	for _, line := range []string{
+		"psql postgres://app:pa<ss>word@db.example.com/app",
+		"psql postgres://app:secret<1@db.example.com/app",
+	} {
+		if toks := HistoryLineTokens(line); len(toks) == 0 {
+			t.Errorf("HistoryLineTokens(%q) found nothing; a real credential was suppressed", line)
+		}
+	}
+}
+
 // The zsh timestamp prefix must never reach the patterns: it is 10 digits on
 // every single line, which is exactly the shape the prefilter keys on.
 func TestHistoryTimestampDoesNotDefeatThePrefilter(t *testing.T) {

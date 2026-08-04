@@ -20,8 +20,9 @@
 // which is what made the gap visible in practice. Sharing one discovery
 // call per scope is what makes that structurally impossible now.
 //
-// Real mutation covers nine finding types (GAPS.md #7, #8, and both of
-// #16's halves — Terraform and GCP — are closed):
+// Real mutation covers every finding type below (GAPS.md #7, #8, and both of
+// #16's halves — Terraform and GCP — are closed). The list has grown well past
+// the original nine; treat it as the inventory, not the count:
 //
 //   - .env files (apply.go/unmount.go), scoped to the chosen root (cwd for
 //     jit migrate local, $HOME for jit migrate home), converted into a
@@ -36,6 +37,14 @@
 //     at a fixed home path either way. Secret-shaped export lines move
 //     into the vault, replaced with a single `eval "$(jit export
 //     --profile ...)"` call; the original file is backed up first.
+//   - Shell history (shellhistory.go): ~/.zsh_history and friends, only ever
+//     by explicit name. The one category that neither mounts nor rewires a
+//     consumer, because nothing READS a history file for a credential — each
+//     recorded value moves to the vault and its every occurrence is spliced
+//     out in place, leaving a <jit:redacted:VAR> marker. Detection is shared
+//     with the scanner through audit.HistoryLineTokens, so the two cannot
+//     disagree; the splice re-reads the file immediately before writing,
+//     since a shell can append while the vault work waits on Touch ID.
 //   - MCP configs (mcpconfig.go): Claude Desktop's global config, always
 //     checked, plus mcp.json/.mcp.json under the chosen root. A server's
 //     env-block secrets move into the vault; its command is rewritten to

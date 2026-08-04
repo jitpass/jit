@@ -4,6 +4,7 @@
 package migrate
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -122,6 +123,49 @@ func TestApplyShellHistoryEndToEnd(t *testing.T) {
 	}
 }
 
+// Two vendors on one line, in the reverse of their declaration order in
+// knownTokenPatterns (GitHub is declared before AWS). audit.HistoryLineTokens
+// runs each pattern over the whole line in turn, so without a sort the spans
+// come back descending and the splice's data[prev:start] panics — after the
+// vault writes and the backup, on every retry, so the file could never be
+// redacted. Regression test for that blocker.
+func TestApplyShellHistoryMultipleVendorsOnOneLine(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, ".zsh_history")
+	awsKey := "AKIA" + "2E0ZQXV7MNBC4RTY"
+	original := ": 1782826755:0;export AWS_ACCESS_KEY_ID=" + awsKey + " GITHUB_TOKEN=" + histGHToken + "\n"
+	writeFile(t, path, original)
+
+	v := newTestVault(t)
+	result, err := ApplyShellHistory(v, path)
+	if err != nil {
+		t.Fatalf("ApplyShellHistory: %v", err)
+	}
+	if len(result.Variables) != 2 || result.Occurrences != 2 {
+		t.Fatalf("got %d variables / %d occurrences, want 2 and 2", len(result.Variables), result.Occurrences)
+	}
+	content, err := os.ReadFile(path) // #nosec G304 -- test-controlled path under t.TempDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(content), awsKey) || strings.Contains(string(content), histGHToken) {
+		t.Fatalf("a credential survived redaction:\n%s", content)
+	}
+	// Both markers land in the right places: the line still reads as the
+	// command it was, with each variable name where its own value stood.
+	restored := string(content)
+	for _, v := range result.Variables {
+		marker := historyRedactedPrefix + v + historyRedactedSuffix
+		if !strings.Contains(restored, marker) {
+			t.Errorf("marker %q missing from:\n%s", marker, restored)
+		}
+	}
+	if !strings.HasPrefix(restored, ": 1782826755:0;export AWS_ACCESS_KEY_ID=") {
+		t.Errorf("the command line was mangled:\n%s", restored)
+	}
+}
+
 func TestApplyShellHistoryFishFormat(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -228,6 +272,115 @@ func TestApplyShellHistoryRefusesSymlink(t *testing.T) {
 	content, err := os.ReadFile(target) // #nosec G304 -- test-controlled path under t.TempDir()
 	if err != nil || !strings.Contains(string(content), histGHToken) {
 		t.Error("the link target was modified")
+	}
+}
+
+// The vault work between the read and the rename is not instantaneous (a
+// Touch ID prompt is a human), and a shell with INC_APPEND_HISTORY appends
+// throughout. Splicing the ORIGINAL bytes over the file would silently eat
+// every command typed in that window; splicing CURRENT content preserves it.
+func TestRedactCurrentContentPreservesConcurrentAppends(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".zsh_history")
+	writeFile(t, path, zshHistoryFixture())
+
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := io.ReadAll(f); err != nil { // the first pass, as ApplyShellHistory does it
+		t.Fatal(err)
+	}
+
+	// Another shell appends while jit is busy with the vault.
+	appended := ": 1782826761:0;npm run build\n: 1782826762:0;git push\n"
+	af, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := af.WriteString(appended); err != nil {
+		t.Fatal(err)
+	}
+	af.Close()
+
+	nameOf := map[string]string{histGHToken: "GITHUB_PERSONAL_ACCESS_TOKEN"}
+	current, out, occ, err := redactCurrentContent(f, path, nameOf)
+	if err != nil {
+		t.Fatalf("redactCurrentContent: %v", err)
+	}
+	// The bytes handed back for backup must be exactly what is on disk right
+	// now — that is what makes `jit migrate undo` byte-for-byte after an
+	// append during the run.
+	onDisk, err := os.ReadFile(path) // #nosec G304 -- test-controlled path under t.TempDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(current) != string(onDisk) {
+		t.Error("the bytes returned for backup are not the file's current content")
+	}
+	if occ != 2 {
+		t.Errorf("occurrences = %d, want 2", occ)
+	}
+	if !strings.Contains(string(out), "npm run build") || !strings.Contains(string(out), "git push") {
+		t.Error("commands appended during the run were dropped")
+	}
+	if strings.Contains(string(out), histGHToken) {
+		t.Error("the token survived redaction")
+	}
+}
+
+// A credential that appears only AFTER the vault writes has no vault entry to
+// point a marker at. Writing anyway would either leave it in plaintext or
+// destroy it behind a marker naming nothing, so the run refuses and the file
+// is left untouched — a re-run covers both.
+func TestRedactCurrentContentRefusesAValueItNeverVaulted(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".zsh_history")
+	writeFile(t, path, zshHistoryFixture()+": 1782826761:0;echo "+histGHToken2+"\n")
+
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	nameOf := map[string]string{histGHToken: "GITHUB_PERSONAL_ACCESS_TOKEN"}
+	if _, _, _, err := redactCurrentContent(f, path, nameOf); err == nil {
+		t.Fatal("want a refusal for a credential that was never vaulted")
+	}
+	content, err := os.ReadFile(path) // #nosec G304 -- test-controlled path under t.TempDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), histGHToken2) {
+		t.Error("the file was modified despite the refusal")
+	}
+}
+
+// A hard-linked history file is refused: the rename replaces the path, so the
+// other link would keep every credential while jit reported success and scan
+// (which only knows the history file's own name) read clean.
+func TestApplyShellHistoryRefusesHardLink(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, ".zsh_history")
+	writeFile(t, path, zshHistoryFixture())
+	other := filepath.Join(home, "dotfiles-copy")
+	if err := os.Link(path, other); err != nil {
+		t.Skipf("cannot hard link here: %v", err)
+	}
+
+	v := newTestVault(t)
+	if _, err := ApplyShellHistory(v, path); err == nil || !strings.Contains(err.Error(), "hard link") {
+		t.Fatalf("want a hard-link refusal, got %v", err)
+	}
+	content, err := os.ReadFile(other) // #nosec G304 -- test-controlled path under t.TempDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), histGHToken) {
+		t.Error("the other link's content changed")
 	}
 }
 

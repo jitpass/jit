@@ -36,18 +36,25 @@ var guardHistoryCmd = &cobra.Command{
 	Short: "Keep typed credentials out of your shell history file (zsh)",
 	Long: "jit guard history installs a zsh hook that checks every command line for a\n" +
 		"known credential format before zsh writes it to the history file. A command\n" +
-		"carrying one stays on the SESSION's history list — up-arrow keeps working —\n" +
-		"but is never written to $HISTFILE, so it cannot end up in Time Machine\n" +
-		"backups or a dotfiles repo, and `jit scan` never has to find it.\n\n" +
-		"The check is two-stage so it costs nothing at the prompt: a pure-zsh test\n" +
-		"(the same admit conditions jit scan's history prefilter uses) passes ~95%\n" +
-		"of commands untouched, and only a line that could hold a credential runs\n" +
-		"the real vendor patterns via jit itself — over stdin, never argv, so the\n" +
-		"value never appears in ps output. If jit is missing or errors, the hook\n" +
-		"fails OPEN and the line saves normally: eating history would be worse.\n\n" +
+		"carrying one stays on the SESSION's history list, so up-arrow keeps working,\n" +
+		"but is never written to $HISTFILE. It cannot end up in a Time Machine backup\n" +
+		"or a dotfiles repo, and `jit scan` never has to find it.\n\n" +
+		"The check is two-stage, so most commands cost nothing measurable: a\n" +
+		"pure-zsh test (the same admit conditions jit scan's history prefilter\n" +
+		"uses) settles a line in about 15 microseconds without launching anything.\n" +
+		"Only a line that could hold a credential runs the real vendor patterns via\n" +
+		"jit itself, which costs about 33 milliseconds. On a real 592-command\n" +
+		"history that second path takes 14% of lines, mostly because any address\n" +
+		"with an @ and any ten-character word qualify.\n\n" +
+		"That check reads the line over stdin, never argv, so the value never\n" +
+		"appears in ps output. It is also bounded: if jit is missing, errors, or\n" +
+		"takes longer than two seconds, the hook fails OPEN and the line saves\n" +
+		"normally. Silently eating your history would be a worse bug than missing\n" +
+		"a token, and a hook that can hang is a hook that can freeze your shell.\n\n" +
 		"zsh only, deliberately: zsh is macOS's default shell and the only one with\n" +
 		"a clean pre-write hook (zshaddhistory). What it installs: ~/.jit/guard.zsh\n" +
-		"plus one source line in ~/.zshrc; --remove reverses both exactly.",
+		"plus one source line in ~/.zshrc (or $ZDOTDIR/.zshrc when that is set);\n" +
+		"--remove reverses both exactly.",
 	Example: "  jit guard history            # install the hook\n" +
 		"  jit guard history --remove   # remove it",
 	Args: cobra.NoArgs,
@@ -57,17 +64,36 @@ var guardHistoryCmd = &cobra.Command{
 			return fmt.Errorf("jit guard history: %w", err)
 		}
 		out := cmd.OutOrStdout()
+		// Every prose line goes through wrapBody at the indent that owns it
+		// (design/output-style.md rule 6): hard-wrapping at a source-file
+		// width leaves the terminal to break these at column 0 in a narrow
+		// window, which drops each continuation to the left of the glyph it
+		// belongs under.
 		if guardHistoryRemove {
-			changed, err := guard.Remove(home)
+			changed, rcEdited, err := guard.Remove(home)
 			if err != nil {
 				return fmt.Errorf("jit guard history: %w", err)
 			}
 			if !changed {
-				fmt.Fprintln(out, "The history guard is not installed; nothing to remove.")
+				wrapBody(out, 0, "", "The history guard is not installed, nothing to remove.")
 				return nil
 			}
-			fmt.Fprintf(out, "%s history guard removed: %s deleted, the source line taken out of ~/.zshrc.\n", glyphDone, displayPath(home, guard.HookPath(home)))
-			fmt.Fprintln(out, "  Open shells keep their loaded hook until they exit.")
+			_, _ = cOK.Fprintf(out, "%s ", glyphDone)
+			if rcEdited {
+				wrapBody(out, 2, "  ", fmt.Sprintf("history guard removed: %s deleted, the source line taken out of %s.",
+					displayPath(home, guard.HookPath(home)), displayPath(home, guard.RcPath(home))))
+			} else {
+				// Say only what happened. The rc file was left alone because it
+				// never carried jit's own line — the user sources the hook their
+				// own way, and rewriting someone's hand-edited rc on the strength
+				// of a guess is not this command's job. Worth naming, because an
+				// unguarded hand-written source line now points at a deleted file
+				// and will error in every new shell.
+				wrapBody(out, 2, "  ", fmt.Sprintf("history guard removed: %s deleted.", displayPath(home, guard.HookPath(home))))
+				wrapBody(out, 0, "  ", cWarn.Sprintf("  %s sources the hook by a line jit did not write, so it was left alone. Remove it by hand, or new shells will report a missing file.",
+					displayPath(home, guard.RcPath(home))))
+			}
+			wrapBody(out, 0, "  ", cDim.Sprint("  Shells that are already open keep the hook they loaded until they exit."))
 			return nil
 		}
 
@@ -76,25 +102,37 @@ var guardHistoryCmd = &cobra.Command{
 			return fmt.Errorf("jit guard history: %w", err)
 		}
 		if !changed {
-			fmt.Fprintf(out, "%s history guard already installed (%s, sourced from ~/.zshrc). Nothing to do.\n", glyphDone, displayPath(home, guard.HookPath(home)))
+			_, _ = cOK.Fprintf(out, "%s ", glyphDone)
+			wrapBody(out, 2, "  ", fmt.Sprintf("history guard already installed (%s, sourced from %s). Nothing to do.",
+				displayPath(home, guard.HookPath(home)), displayPath(home, guard.RcPath(home))))
 			return nil
 		}
-		fmt.Fprintf(out, "%s history guard installed for zsh\n", glyphDone)
+		_, _ = cOK.Fprintf(out, "%s ", glyphDone)
+		wrapBody(out, 2, "  ", "history guard installed for zsh")
 		fmt.Fprintf(out, "  hook: %s\n", displayPath(home, guard.HookPath(home)))
-		fmt.Fprintf(out, "  ~/.zshrc now sources it: %s\n", guard.RcLine())
-		fmt.Fprint(out, hlCmds("  activate it in shells that are already open: `source ~/.jit/guard.zsh`\n"))
-		fmt.Fprintln(out, "  From then on, a command carrying a recognized credential stays usable in that")
-		fmt.Fprintln(out, "  session (up-arrow works) but is never written to your history file.")
+		_, _ = cDim.Fprintf(out, "  %s now sources it: %s\n", displayPath(home, guard.RcPath(home)), guard.RcLine())
+		wrapBody(out, 0, "  ", cDim.Sprint("  From now on, a command carrying a recognized credential stays usable in "+
+			"that session (up-arrow works) but is never written to your history file."))
+		fmt.Fprintln(out)
+		_, _ = cPath.Fprint(out, "→ ")
+		wrapBody(out, 2, "  ", hlCmds("`source ~/.jit/guard.zsh`   to activate it in shells that are already open"))
 		return nil
 	},
 }
 
 // guardCheckCmd is the hook's plumbing half: it reads command line(s) from
 // stdin and reports whether any carries a value matching a known vendor
-// credential format. Exit 0 with the vendor names on stdout when found,
-// exit 1 silently when clean. Stdin rather than an argument, always — the
-// whole point is that the credential must not become another process's
-// visible argv. Never prints the value, never logs.
+// credential format. Exit 0 with the vendor names on stdout when found, exit
+// 1 when clean. Stdin rather than an argument, always — the whole point is
+// that the credential must not become another process's visible argv. It
+// never prints the value and never writes it anywhere.
+//
+// "Clean" is quiet on STDOUT, which is what the hook reads, but not silent
+// overall: cmd/jit/main.go prints every returned error to stderr, so a clean
+// line emits "no credential found" there. The hook discards its stderr, so
+// this is invisible in use; it is documented rather than suppressed because
+// the alternative (an exit path that bypasses main's error printing) would
+// make this one command's failure handling differ from every other.
 var guardCheckCmd = &cobra.Command{
 	Use:    "check",
 	Hidden: true,

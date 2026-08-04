@@ -15,13 +15,20 @@
 //   - A pure-zsh admit test, the same four conditions as audit's
 //     historyLineMayHoldToken ("-----BEGIN", "@", "eyJ", or a 10+ run of
 //     token-body characters), decides in-process whether a line could
-//     possibly hold a credential. ~95% of real command lines fail it and
-//     pay nothing — no fork, no jit involvement at all.
+//     possibly hold a credential. It costs ~15µs and no fork at all.
 //   - Only an admitted line forks `jit guard check`, which runs the real
 //     knownTokenPatterns over it. The command line travels via STDIN,
 //     never argv: an argv would put the credential into `ps` output for
 //     every same-user process to read, which is exactly the class of
 //     exposure jit exists to prevent.
+//
+// Measured on a real 592-line history (2026-08-04): 14% of command lines are
+// admitted, each costing ~33ms — not the ~5% an earlier revision of audit's
+// prefilter comment estimated. "@" admits every `ssh user@host` and email
+// address, and the 10-character run admits ordinary words like "kubectl".
+// Both numbers are stated plainly here and in `jit guard history --help`
+// rather than rounded into "free", because a claim about latency at someone's
+// prompt should be one they can check.
 //
 // On a confirmed credential the hook returns 2: zsh keeps the command on
 // the SESSION's internal history list (up-arrow still works, the user's
@@ -70,6 +77,12 @@ func RcLine() string {
 	return rcLine
 }
 
+// RcPath returns the rc file Install writes into, so the CLI names the file it
+// actually touched rather than assuming ~/.zshrc (see zshrcPath on ZDOTDIR).
+func RcPath(home string) string {
+	return zshrcPath(home)
+}
+
 // hookScript is the zshaddhistory hook Install writes. Fixed content,
 // rewritten on every Install, so upgrading jit and re-running
 // `jit guard history` refreshes the hook.
@@ -94,12 +107,52 @@ _jit_history_guard() {
         $line != *[A-Za-z0-9_-](#c10,)* ]]; then
     return 0
   fi
-  local jit_bin vendors
+  local jit_bin vendors out rc
   jit_bin=${JIT_GUARD_BIN:-$(command -v jit)} || return 0
-  # Stdin, never argv: an argv puts the credential into ps(1) output.
-  vendors=$(print -r -- "$line" | "$jit_bin" guard check 2>/dev/null)
-  if (( $? == 0 )); then
-    print -ru2 -- "jit: ${vendors:-a credential} detected — command kept in this session's history only, not written to ${HISTFILE:-the history file} (jit guard history --remove to turn this off)"
+
+  # Run the precise check with a deadline, because a hung check would hang the
+  # PROMPT. The realistic cause is not a jit bug: jit ships a bare Mach-O that
+  # cannot be stapled, so Gatekeeper fetches the notarization ticket online the
+  # first time a newly upgraded binary runs, and on a slow or captive network
+  # that first exec can take seconds. Failing open after the deadline costs one
+  # unguarded history line; blocking would cost the user their shell.
+  #
+  # zselect (zsh/zselect) is the timer: it waits in hundredths of a second
+  # without forking, where a sleep-based poll would fork per tick on the hot
+  # path. (No backticks anywhere in this script: it is a Go raw string.)
+  # If the module is unavailable the check simply runs synchronously — the
+  # pre-existing behavior, still correct, just without the deadline.
+  out=${TMPDIR:-/tmp}/.jit-guard.$$.$RANDOM
+  if zmodload -F zsh/zselect b:zselect 2>/dev/null; then
+    # no_monitor/no_notify keep job-control chatter ("[1] 12345", "done")
+    # off the user's terminal; local_options confines both to this function.
+    setopt local_options no_monitor no_notify
+    print -r -- "$line" | "$jit_bin" guard check >| "$out" 2>/dev/null &
+    local pid=$!
+    local waited=0
+    while (( waited < 200 )); do        # 200 x 10ms = 2s ceiling
+      kill -0 $pid 2>/dev/null || break
+      zselect -t 1                      # 1 = one hundredth of a second
+      (( waited++ ))
+    done
+    if kill -0 $pid 2>/dev/null; then
+      kill -9 $pid 2>/dev/null
+      wait $pid 2>/dev/null
+      command rm -f "$out"
+      return 0                          # deadline hit: fail open
+    fi
+    wait $pid 2>/dev/null
+    rc=$?
+    vendors=$(<"$out")
+    command rm -f "$out"
+  else
+    # Stdin, never argv: an argv puts the credential into ps(1) output.
+    vendors=$(print -r -- "$line" | "$jit_bin" guard check 2>/dev/null)
+    rc=$?
+  fi
+
+  if (( rc == 0 )); then
+    print -ru2 -- "jit: ${vendors:-a credential} detected, kept in this session's history only and not written to ${HISTFILE:-the history file} (jit guard history --remove turns this off)"
     return 2
   fi
   return 0
@@ -158,45 +211,59 @@ func Install(home string) (changed bool, err error) {
 }
 
 // Remove deletes the hook file and removes exactly the comment+source pair
-// Install writes, leaving every other byte of ~/.zshrc alone. A missing
-// file or an rc without the pair reports false without error, so removal
-// is safe to attempt unconditionally.
-func Remove(home string) (changed bool, err error) {
+// Install writes, leaving every other byte of the rc file alone. A missing
+// file or an rc without the pair reports false without error, so removal is
+// safe to attempt unconditionally.
+//
+// rcEdited reports whether the rc file itself was changed, separately from
+// changed (which covers the hook file too). The caller needs the distinction
+// to describe what happened truthfully: a user who hand-wrote their own
+// source line — which Install would have left alone, since it only checks
+// whether the path is mentioned at all — gets the hook file deleted but
+// their line kept, and saying "the source line was taken out of ~/.zshrc"
+// there would be a lie about their config. It also matters because a
+// hand-written line without the `[ -f ]` guard errors on every new shell
+// once the hook file is gone, which is exactly what the caller must warn
+// about.
+func Remove(home string) (changed, rcEdited bool, err error) {
 	if err := os.Remove(HookPath(home)); err == nil {
 		changed = true
 	} else if !os.IsNotExist(err) {
-		return false, fmt.Errorf("removing %s: %w", HookPath(home), err)
+		return false, false, fmt.Errorf("removing %s: %w", HookPath(home), err)
 	}
 
 	rcPath := zshrcPath(home)
 	data, err := os.ReadFile(rcPath) // #nosec G304 -- fixed path under the user's own home
 	if err != nil {
 		if os.IsNotExist(err) {
-			return changed, nil
+			return changed, false, nil
 		}
-		return changed, fmt.Errorf("reading %s: %w", rcPath, err)
+		return changed, false, fmt.Errorf("reading %s: %w", rcPath, err)
 	}
 	lines := strings.Split(string(data), "\n")
 	kept := lines[:0]
 	removed := false
 	for _, l := range lines {
-		if l == rcComment || l == rcLine {
+		// Trimmed comparison, matching wrap's RemovePathLine: an editor or a
+		// dotfile formatter that re-indented the block must not strand it.
+		trimmed := strings.TrimSpace(l)
+		if trimmed == rcComment || trimmed == rcLine {
 			removed = true
 			continue
 		}
 		kept = append(kept, l)
 	}
 	if !removed {
-		return changed, nil
+		return changed, false, nil
 	}
 	mode := os.FileMode(0o644)
 	if info, statErr := os.Stat(rcPath); statErr == nil {
 		mode = info.Mode()
 	}
 	if err := os.WriteFile(rcPath, []byte(strings.Join(kept, "\n")), mode); err != nil { // #nosec G703 G306 -- rcPath is the user's own shell rc file; removing the guard's source line is the point of --remove
-		return changed, fmt.Errorf("writing %s: %w", rcPath, err)
+		return changed, false, fmt.Errorf("writing %s: %w", rcPath, err)
 	}
-	return true, nil
+	return true, true, nil
 }
 
 // Installed reports whether the guard is fully in place: the hook file
@@ -212,6 +279,18 @@ func Installed(home string) bool {
 	return strings.Contains(string(data), hookRelPath)
 }
 
+// zshrcPath is the .zshrc zsh will actually read: $ZDOTDIR/.zshrc when that
+// is set, otherwise $HOME/.zshrc.
+//
+// Honoring ZDOTDIR is not a nicety. A user who sets it (~/.config/zsh is the
+// common tidy-home layout) would otherwise get a success message, a hook file
+// on disk, an Installed() that reports true — and a hook zsh never sources.
+// A security feature that silently does nothing while confirming that it does
+// is the worst possible shape, so the one line that prevents it is worth more
+// than the config knob it supports.
 func zshrcPath(home string) string {
+	if zdotdir := os.Getenv("ZDOTDIR"); zdotdir != "" {
+		return filepath.Join(zdotdir, ".zshrc")
+	}
 	return filepath.Join(home, ".zshrc")
 }

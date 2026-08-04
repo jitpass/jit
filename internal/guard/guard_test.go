@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestInstallRemoveRoundTrip(t *testing.T) {
@@ -60,12 +61,12 @@ func TestInstallRemoveRoundTrip(t *testing.T) {
 	}
 
 	// Remove takes out exactly what Install added.
-	changed, err = Remove(home)
+	changed, rcEdited, err := Remove(home)
 	if err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
-	if !changed {
-		t.Error("Remove must report changed")
+	if !changed || !rcEdited {
+		t.Errorf("Remove = (%v, %v), want both true", changed, rcEdited)
 	}
 	if Installed(home) {
 		t.Error("Installed() = true after Remove")
@@ -79,9 +80,9 @@ func TestInstallRemoveRoundTrip(t *testing.T) {
 	}
 
 	// Removing again is a safe no-op.
-	changed, err = Remove(home)
-	if err != nil || changed {
-		t.Errorf("second Remove = (%v, %v), want (false, nil)", changed, err)
+	changed, rcEdited, err = Remove(home)
+	if err != nil || changed || rcEdited {
+		t.Errorf("second Remove = (%v, %v, %v), want (false, false, nil)", changed, rcEdited, err)
 	}
 }
 
@@ -207,6 +208,65 @@ func TestHookAdmitTestNeverDropsAMatch(t *testing.T) {
 		_, _, ran := runHook(t, line, 1)
 		if !ran {
 			t.Errorf("admit test dropped %q; the zsh prefilter is narrower than audit's", line)
+		}
+	}
+}
+
+// A hung check must not hang the prompt. The realistic cause is Gatekeeper's
+// online notarization fetch on the first exec of a freshly upgraded binary,
+// which no jit-side fix can make fast — so the hook has a deadline and fails
+// open past it.
+func TestHookFailsOpenWhenTheCheckHangs(t *testing.T) {
+	zsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("no zsh on this machine")
+	}
+	dir := t.TempDir()
+	hookPath := filepath.Join(dir, "guard.zsh")
+	if err := os.WriteFile(hookPath, []byte(HookScript()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A "jit" that never answers. If the hook waits for it, this test hangs
+	// until the package timeout rather than failing politely — which is
+	// exactly the user-visible symptom being guarded against.
+	stub := filepath.Join(dir, "jit-hangs")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\ncat > /dev/null\nsleep 30\n"), 0o700); err != nil { // #nosec G306 -- an executable test stub
+		t.Fatal(err)
+	}
+
+	line := "curl -H 'Authorization: token ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'"
+	script := `source ` + hookPath + `; _jit_history_guard "$1"$'\n'; print "rc=$?"`
+	cmd := exec.Command(zsh, "-fc", script, "zsh", line) // #nosec G204 -- test-controlled zsh invocation
+	cmd.Env = append(os.Environ(), "JIT_GUARD_BIN="+stub)
+	var outBuf, errBuf strings.Builder
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+
+	start := time.Now()
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("zsh run: %v\nstderr: %s", err, errBuf.String())
+	}
+	elapsed := time.Since(start)
+
+	if !strings.Contains(outBuf.String(), "rc=0") {
+		t.Errorf("hook returned %q, want rc=0 (fail open on a hung check)", strings.TrimSpace(outBuf.String()))
+	}
+	if elapsed > 10*time.Second {
+		t.Errorf("hook blocked for %v; the deadline did not fire", elapsed)
+	}
+	// Job-control chatter would land in the user's terminal on every guarded
+	// command, which is its own bug.
+	if strings.Contains(errBuf.String(), "suspended") || strings.Contains(errBuf.String(), "[1]") {
+		t.Errorf("job-control noise leaked to stderr: %q", errBuf.String())
+	}
+	// The temp file holding the check's OUTPUT (never the command line) must
+	// not survive the timeout.
+	entries, err := os.ReadDir(os.TempDir())
+	if err == nil {
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), ".jit-guard.") {
+				t.Errorf("left a stray temp file behind: %s", e.Name())
+			}
 		}
 	}
 }

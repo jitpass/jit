@@ -177,9 +177,9 @@ var migrateCmd = &cobra.Command{
 		"               ~/.pypirc, Claude Desktop's MCP config, the global ~/.npmrc)\n" +
 		"               is routed to that credential type's handling\n" +
 		"               (credential_process, exec plugin, credential helper, live\n" +
-		"               mount, or — for history — in-place redaction: each recorded\n" +
-		"               credential moves to the vault and the line keeps its shape,\n" +
-		"               minus the secret).\n" +
+		"               mount, or in-place redaction for a history file, where each\n" +
+		"               recorded credential moves to the vault and the line keeps\n" +
+		"               its shape, minus the secret).\n" +
 		"  A directory  is walked for its .env/tfvars/mcp/npmrc findings only, never\n" +
 		"               the machine-wide fixed-path files (those aren't \"under\" any\n" +
 		"               project directory) — name them explicitly to convert them.\n\n" +
@@ -624,10 +624,10 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 		// redacted lines back — re-running migrate re-redacts them into the
 		// same vault entries, but reloading or closing those shells is what
 		// makes it stick.
-		fmt.Fprint(out, hlCmds("    rotate these at their provider — redaction clears the recorded copy, it does not un-expose it\n"))
-		fmt.Fprint(out, hlCmds("    shells that are open now rewrite history on exit: run `fc -R` in each open zsh (bash: `history -r`)\n"+
-			"    or close them, then `jit scan` to confirm nothing came back\n"))
-		fmt.Fprint(out, hlCmds("    keep future secrets out of history entirely: `jit guard history` (zsh)\n"))
+		wrapBody(out, 0, "    ", cWarn.Sprint("    rotate these at their provider: redaction clears the recorded copy, it does not un-expose it"))
+		wrapBody(out, 0, "    ", hlCmds("    Shells open right now rewrite history when they exit, which can bring a "+
+			"redacted line back. Run `fc -R` in each open zsh (bash: `history -r`) or close them, then re-run `jit scan` to confirm."))
+		wrapBody(out, 0, "    ", hlCmds("    To stop future secrets reaching the file at all: `jit guard history` (zsh)."))
 		fmt.Fprintln(out)
 	}
 
@@ -1373,11 +1373,30 @@ func discoverFileTarget(d *discovered, home, path string) error {
 	return nil
 }
 
-// isHistoryTarget reports whether path is a shell history file `jit migrate`
-// routes to redaction: one of the fixed history names audit's scanner owns
-// (audit.IsShellHistoryPath), or the exact file a custom $HISTFILE points at —
-// a user who moved their history has not thereby stopped having one, and the
-// name they chose can match nothing on the fixed list.
+// isHistoryTarget reports whether an explicitly named path is a shell history
+// file `jit migrate` routes to redaction: one of the fixed names audit's
+// scanner owns (audit.IsShellHistoryPath), the exact file $HISTFILE points at,
+// or any name that reads as a history file.
+//
+// That last rule is looser than anything audit's machine-wide sweep allows,
+// and deliberately so — the two commands are answering different questions
+// under different risks:
+//
+//   - $HISTFILE alone is not enough, because neither zsh nor bash EXPORTS it.
+//     It is an ordinary shell parameter, so a child process sees it only if
+//     the user went out of their way to export it. For the very user this
+//     rule exists for, the one who moved their history to ~/.cache/zsh/history,
+//     os.Getenv returns "" and the fixed-name list matches nothing.
+//   - Falling through is not a harmless miss here. Discovery would hand the
+//     file to loose-secret classification, which reads a history file as
+//     "a secret embedded in other content" and offers --mount: that turns the
+//     shell's own append-only record into a FIFO, which no shell can append
+//     to. Guessing wrong in the other direction merely redacts a credential
+//     out of a file the user named and asked jit to fix, with a vault backup
+//     and `jit migrate undo` behind it.
+//
+// audit's sweep rejects name-guessing because it visits every file on the
+// machine unbidden. Here the user has typed the path.
 func isHistoryTarget(home, path string) bool {
 	if audit.IsShellHistoryPath(path) {
 		return true
@@ -1387,9 +1406,11 @@ func isHistoryTarget(home, path string) bool {
 		if abs, err := filepath.Abs(hf); err == nil {
 			hf = abs
 		}
-		return path == hf
+		if path == hf {
+			return true
+		}
 	}
-	return false
+	return strings.Contains(strings.ToLower(filepath.Base(path)), "history")
 }
 
 // filterToTarget keeps only the entries equal to target, narrowing a
