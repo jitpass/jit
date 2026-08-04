@@ -108,9 +108,11 @@ command must never produce.
 
 ## Stopping the next one
 
-Cleaning up is second best. `jit guard history` installs a zsh hook that
-keeps credential-carrying commands out of the history file in the first
-place:
+Cleaning up is second best. jit offers the guard in two places rather than
+making you find it: `jit scan` names it under any shell-history finding, and
+bare `jit migrate` includes it in the plan it asks you to confirm (only when
+the scan actually found a credential in your history, only on zsh, and only
+if it is not already installed). You can also install it directly:
 
 ```sh
 jit guard history            # install (writes ~/.jit/guard.zsh + one ~/.zshrc line)

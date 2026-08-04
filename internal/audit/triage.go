@@ -175,6 +175,7 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 				"every change is reversible: jit migrate undo"
 		}
 		termtext.Wrap(w, len(triageNoteIndent), triageNoteIndent, dim.Sprint(note))
+		writeHistoryGuardOffer(w, findings, cmd, dim)
 		fmt.Fprintln(w)
 	}
 
@@ -585,6 +586,37 @@ func mergeManualGroups(groups []triageManualGroup, home string) []triageManualGr
 		}
 	}
 	return out
+}
+
+// writeHistoryGuardOffer adds the prevention line when this scan found a
+// credential in shell history.
+//
+// It sits here, in the report, because this is the moment the user learns
+// they have this problem at all. The offer used to live only in `jit migrate`'s
+// post-run output, which inverted who heard it: you were told how to stop the
+// NEXT credential reaching your history only after one already had, and only
+// if you ran the fix. Anyone whose history was clean — the people with the
+// most to gain from never starting — never learned the command existed.
+//
+// One line, with what it does rather than just its name: "jit guard history"
+// means nothing to someone seeing it for the first time, and a command whose
+// effect a reader cannot guess is one they will not run.
+func writeHistoryGuardOffer(w io.Writer, findings []Finding, cmd, dim *color.Color) {
+	found := false
+	for _, f := range findings {
+		if f.FindingType == FindingTypeShellHistorySecret && CountedAsSecret(f) && !f.Archived {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return
+	}
+	fmt.Fprint(w, triageNoteIndent)
+	_, _ = cmd.Fprint(w, "jit guard history")
+	termtext.Wrap(w, len(triageNoteIndent)+len("jit guard history"), triageNoteIndent,
+		dim.Sprint("   stops the next one being recorded: a zsh hook keeps a command "+
+			"carrying a credential out of your history file, while leaving it usable in that session"))
 }
 
 // manualTitle names the problem in the user's terms: what it is and, when
