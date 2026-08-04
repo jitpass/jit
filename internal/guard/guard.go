@@ -16,11 +16,21 @@
 //     historyLineMayHoldToken ("-----BEGIN", "@", "eyJ", or a 10+ run of
 //     token-body characters), decides in-process whether a line could
 //     possibly hold a credential. It costs ~15µs and no fork at all.
+//     One of those four is currently inert: a "-----BEGIN" line is admitted
+//     and forked for, but `jit guard check` never matches private-key
+//     material, because audit cedes those patterns to a file scanner that
+//     never sees history. See historyLineMayHoldToken's KNOWN GAP note. The
+//     guard therefore does NOT stop a pasted private key from reaching the
+//     history file, and this package should not claim otherwise.
 //   - Only an admitted line forks `jit guard check`, which runs the real
-//     knownTokenPatterns over it. The command line travels via STDIN,
-//     never argv: an argv would put the credential into `ps` output for
-//     every same-user process to read, which is exactly the class of
-//     exposure jit exists to prevent.
+//     knownTokenPatterns over it. The command line travels via STDIN, never
+//     argv: an argv would put the credential into `ps` output for every
+//     same-user process to read, which is exactly the class of exposure jit
+//     exists to prevent. The binary is resolved with `command -v jit` and
+//     there is deliberately NO env-var override — one would be a single
+//     variable that both disables the guard and redirects every admitted
+//     command line into an attacker's binary, set from the same rc file the
+//     hook is sourced from.
 //
 // Measured on a real 592-line history (2026-08-04): 14% of command lines are
 // admitted, each costing ~33ms — not the ~5% an earlier revision of audit's
@@ -99,16 +109,21 @@ const hookScript = `# jit history guard — keeps typed credentials out of your 
 
 _jit_history_guard() {
   emulate -L zsh
-  setopt extended_glob
   local line=${1%$'\n'}
   # Cheap admit test, mirroring jit scan's own prefilter: only a line that
   # could possibly hold a credential pays for the precise check below.
-  if [[ $line != *-----BEGIN* && $line != *@* && $line != *eyJ* && \
-        $line != *[A-Za-z0-9_-](#c10,)* ]]; then
+  #
+  # The run test uses =~ (an ERE) rather than zsh's own (#c10,) glob repeat.
+  # That glob needs extended_glob AT PARSE TIME, which is when this file is
+  # sourced — so a user with sh_glob or emulate sh set before the source line
+  # got "parse error near (", the function never defined, and a guard that
+  # silently protected nothing. emulate -L zsh above only fixes the runtime.
+  if [[ $line != *-----BEGIN* && $line != *@* && $line != *eyJ* ]] &&
+     ! [[ $line =~ "[A-Za-z0-9_-]{10,}" ]]; then
     return 0
   fi
   local jit_bin vendors out rc
-  jit_bin=${JIT_GUARD_BIN:-$(command -v jit)} || return 0
+  jit_bin=$(command -v jit) || return 0
 
   # Run the precise check with a deadline, because a hung check would hang the
   # PROMPT. The realistic cause is not a jit bug: jit ships a bare Mach-O that
@@ -122,8 +137,20 @@ _jit_history_guard() {
   # path. (No backticks anywhere in this script: it is a Go raw string.)
   # If the module is unavailable the check simply runs synchronously — the
   # pre-existing behavior, still correct, just without the deadline.
+  # The deadline path needs a writable temp file for the check's OUTPUT (the
+  # format names — never the command line, which travels by pipe). Probe it
+  # rather than assume: an unwritable, read-only or nonexistent TMPDIR made
+  # both redirects fail, which printed raw zsh errors at the user's prompt on
+  # every admitted line and then failed open anyway. If the probe fails, run
+  # synchronously instead — no deadline, but silent and correct.
+  # zsh/files provides BUILTIN rm, so cleanup does not depend on an external
+  # rm being resolvable: under an unusual or restricted PATH the external one
+  # is not found, the temp file is never deleted, and every admitted command
+  # leaves one behind. Falls back to whatever rm is on PATH if the module is
+  # unavailable, and is silenced either way.
+  zmodload -F zsh/files b:rm 2>/dev/null
   out=${TMPDIR:-/tmp}/.jit-guard.$$.$RANDOM
-  if zmodload -F zsh/zselect b:zselect 2>/dev/null; then
+  if zmodload -F zsh/zselect b:zselect 2>/dev/null && : >| "$out" 2>/dev/null; then
     # no_monitor/no_notify keep job-control chatter ("[1] 12345", "done")
     # off the user's terminal; local_options confines both to this function.
     setopt local_options no_monitor no_notify
@@ -138,13 +165,13 @@ _jit_history_guard() {
     if kill -0 $pid 2>/dev/null; then
       kill -9 $pid 2>/dev/null
       wait $pid 2>/dev/null
-      command rm -f "$out"
+      rm -f "$out" 2>/dev/null
       return 0                          # deadline hit: fail open
     fi
     wait $pid 2>/dev/null
     rc=$?
     vendors=$(<"$out")
-    command rm -f "$out"
+    rm -f "$out" 2>/dev/null
   else
     # Stdin, never argv: an argv puts the credential into ps(1) output.
     vendors=$(print -r -- "$line" | "$jit_bin" guard check 2>/dev/null)
@@ -192,7 +219,7 @@ func Install(home string) (changed bool, err error) {
 	if err != nil && !os.IsNotExist(err) {
 		return changed, fmt.Errorf("reading %s: %w", rcPath, err)
 	}
-	if strings.Contains(string(data), hookRelPath) {
+	if rcSourcesHook(string(data)) {
 		return changed, nil
 	}
 	block := rcComment + "\n" + rcLine + "\n"
@@ -267,7 +294,7 @@ func Remove(home string) (changed, rcEdited bool, err error) {
 }
 
 // Installed reports whether the guard is fully in place: the hook file
-// exists and ~/.zshrc sources it.
+// exists and the rc file actually sources it.
 func Installed(home string) bool {
 	if _, err := os.Stat(HookPath(home)); err != nil {
 		return false
@@ -276,7 +303,32 @@ func Installed(home string) bool {
 	if err != nil {
 		return false
 	}
-	return strings.Contains(string(data), hookRelPath)
+	return rcSourcesHook(string(data))
+}
+
+// rcSourcesHook reports whether rc content contains a LIVE line sourcing the
+// hook — one zsh will actually execute.
+//
+// A plain strings.Contains over the whole file is what this replaces, and it
+// was wrong in the way that matters most: it counted a COMMENTED-OUT line.
+// Someone who disables the guard by putting a # in front of jit's line (the
+// obvious way to turn it off temporarily) then got "history guard installed,
+// ~/.zshrc now sources it" from a run that had changed nothing, a subsequent
+// "already installed. Nothing to do.", and a hook zsh never loads. A security
+// feature reporting success while protecting nothing is the one outcome this
+// package must never produce, so the test is what the shell would do: a line
+// whose first non-blank character is # does not count.
+func rcSourcesHook(content string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.Contains(trimmed, hookRelPath) {
+			return true
+		}
+	}
+	return false
 }
 
 // zshrcPath is the .zshrc zsh will actually read: $ZDOTDIR/.zshrc when that

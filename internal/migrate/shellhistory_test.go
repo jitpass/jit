@@ -109,8 +109,8 @@ func TestApplyShellHistoryEndToEnd(t *testing.T) {
 	}
 
 	// The redacted file reads clean — no re-flag, no redaction loop.
-	if secrets, occ, ok := PreviewShellHistory(path); !ok || secrets != 0 || occ != 0 {
-		t.Errorf("redacted file still previews (%d secrets, %d occurrences, ok=%v)", secrets, occ, ok)
+	if secrets, occ, err := PreviewShellHistory(path); err != nil || secrets != 0 || occ != 0 {
+		t.Errorf("redacted file still previews (%d secrets, %d occurrences, err=%v)", secrets, occ, err)
 	}
 
 	// The pre-redaction bytes are recoverable from the encrypted backup.
@@ -401,11 +401,11 @@ func TestPreviewShellHistoryCounts(t *testing.T) {
 	path := filepath.Join(home, ".zsh_history")
 	writeFile(t, path, zshHistoryFixture())
 
-	secrets, occurrences, ok := PreviewShellHistory(path)
-	if !ok || secrets != 1 || occurrences != 2 {
-		t.Errorf("PreviewShellHistory = (%d, %d, %v), want (1, 2, true)", secrets, occurrences, ok)
+	secrets, occurrences, err := PreviewShellHistory(path)
+	if err != nil || secrets != 1 || occurrences != 2 {
+		t.Errorf("PreviewShellHistory = (%d, %d, %v), want (1, 2, nil)", secrets, occurrences, err)
 	}
-	if _, _, ok := PreviewShellHistory(filepath.Join(home, "missing")); ok {
-		t.Error("a missing file must not preview ok")
+	if _, _, err := PreviewShellHistory(filepath.Join(home, "missing")); err == nil {
+		t.Error("a missing file must report an error, not a clean preview")
 	}
 }

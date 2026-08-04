@@ -1228,7 +1228,16 @@ func discoverFileTarget(d *discovered, home, path string) error {
 	// (an explicitly named clean history lands in the ordinary "nothing to
 	// migrate" report).
 	if isHistoryTarget(home, path) {
-		if secrets, _, ok := migrate.PreviewShellHistory(path); ok && secrets > 0 {
+		secrets, _, err := migrate.PreviewShellHistory(path)
+		if err != nil {
+			// Fail loud with the reason rather than reporting "nothing to
+			// migrate". A history file jit will not touch — hard-linked,
+			// unreadable, past the size bound — is a file the user explicitly
+			// named, and silently doing nothing reads as "there was nothing
+			// there" when the truth is "jit refused, and here is why".
+			return err
+		}
+		if secrets > 0 {
 			d.historyFiles = append(d.historyFiles, path)
 		}
 		return nil

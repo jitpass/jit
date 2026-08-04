@@ -116,7 +116,13 @@ func runHook(t *testing.T, line string, stubExit int) (rc int, stderr string, st
 		t.Fatal(err)
 	}
 	marker := filepath.Join(dir, "stub-ran")
-	stub := filepath.Join(dir, "jit-stub")
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The stub is named "jit" and reached through PATH: the hook resolves the
+	// binary with `command -v jit` and has no env-var override to abuse.
+	stub := filepath.Join(bin, "jit")
 	stubBody := "#!/bin/sh\n" +
 		"cat > /dev/null\n" + // drain stdin like the real check does
 		"touch " + marker + "\n"
@@ -129,14 +135,16 @@ func runHook(t *testing.T, line string, stubExit int) (rc int, stderr string, st
 	if err := os.WriteFile(stub, []byte(stubBody), 0o700); err != nil { // #nosec G306 -- a test stub that must be executable
 		t.Fatal(err)
 	}
-	stubPath := stub
+	// The stubs are /bin/sh scripts that call cat, so the real system
+	// directories must stay on PATH; only "jit" itself is controlled here.
+	pathEnv := bin + ":/usr/bin:/bin"
 	if stubExit == 127 {
-		stubPath = filepath.Join(dir, "does-not-exist")
+		pathEnv = "/usr/bin:/bin" // nothing named jit anywhere on PATH
 	}
 
 	script := `source ` + hookPath + `; _jit_history_guard "$1"$'\n'; print "rc=$?"`
 	cmd := exec.Command(zsh, "-fc", script, "zsh", line) // #nosec G204 -- test-controlled zsh invocation
-	cmd.Env = append(os.Environ(), "JIT_GUARD_BIN="+stubPath)
+	cmd.Env = append(os.Environ(), "PATH="+pathEnv)
 	var outBuf, errBuf strings.Builder
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
@@ -229,7 +237,11 @@ func TestHookFailsOpenWhenTheCheckHangs(t *testing.T) {
 	// A "jit" that never answers. If the hook waits for it, this test hangs
 	// until the package timeout rather than failing politely — which is
 	// exactly the user-visible symptom being guarded against.
-	stub := filepath.Join(dir, "jit-hangs")
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stub := filepath.Join(bin, "jit")
 	if err := os.WriteFile(stub, []byte("#!/bin/sh\ncat > /dev/null\nsleep 30\n"), 0o700); err != nil { // #nosec G306 -- an executable test stub
 		t.Fatal(err)
 	}
@@ -237,7 +249,7 @@ func TestHookFailsOpenWhenTheCheckHangs(t *testing.T) {
 	line := "curl -H 'Authorization: token ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'"
 	script := `source ` + hookPath + `; _jit_history_guard "$1"$'\n'; print "rc=$?"`
 	cmd := exec.Command(zsh, "-fc", script, "zsh", line) // #nosec G204 -- test-controlled zsh invocation
-	cmd.Env = append(os.Environ(), "JIT_GUARD_BIN="+stub)
+	cmd.Env = append(os.Environ(), "PATH="+bin+":/usr/bin:/bin")
 	var outBuf, errBuf strings.Builder
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
