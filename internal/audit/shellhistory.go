@@ -178,7 +178,7 @@ func scanShellHistoryFile(cfg Config, path string) ([]Finding, error) {
 	lineNum := 0
 	for scanner.Scan() {
 		lineNum++
-		cmd, ok := historyCommandText(scanner.Text())
+		cmd, _, ok := historyCommand(scanner.Text())
 		if !ok {
 			continue
 		}
@@ -224,8 +224,12 @@ func scanShellHistoryFile(cfg Config, path string) ([]Finding, error) {
 	return findings, lineScanErr(scanner)
 }
 
-// historyCommandText strips a history file's own metadata from a line and
-// returns the command text, plus whether the line carries a command at all.
+// historyCommand strips a history file's own metadata from a line and returns
+// the command text, the byte offset where that text begins in the raw line,
+// and whether the line carries a command at all. The offset is what lets
+// HistoryLineTokens hand `jit migrate` spans into the RAW line — a redaction
+// that spliced at command-relative offsets would land 15 bytes early on every
+// zsh extended_history line and cut the timestamp instead of the credential.
 //
 // This is not cosmetic. Every zsh extended_history line begins with a 10-digit
 // epoch timestamp, and a scanner that treats the raw line as flat text both
@@ -245,34 +249,55 @@ func scanShellHistoryFile(cfg Config, path string) ([]Finding, error) {
 // command text, which is correct for this scanner (a credential token cannot
 // span a line break) and keeps the reported line number pointing at the
 // physical line a user has to go and delete.
-func historyCommandText(line string) (string, bool) {
+func historyCommand(line string) (cmd string, offset int, ok bool) {
 	// zsh extended history: ": <epoch>:<elapsed>;<command>"
-	if rest, ok := strings.CutPrefix(line, ": "); ok {
+	if rest, restOK := strings.CutPrefix(line, ": "); restOK {
 		if semi := strings.IndexByte(rest, ';'); semi >= 0 {
 			meta := rest[:semi]
 			if colon := strings.IndexByte(meta, ':'); colon > 0 &&
 				isAllDigits(meta[:colon]) && isAllDigits(meta[colon+1:]) {
-				return rest[semi+1:], true
+				return rest[semi+1:], len(": ") + semi + 1, true
 			}
 		}
 	}
 	// fish: "- cmd: <command>", with indented "  when:"/"  paths:" metadata.
-	if rest, ok := strings.CutPrefix(line, "- cmd: "); ok {
-		return rest, true
+	if rest, restOK := strings.CutPrefix(line, "- cmd: "); restOK {
+		return rest, len("- cmd: "), true
 	}
 	if strings.HasPrefix(line, "  ") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "when:") || strings.HasPrefix(trimmed, "paths:") ||
 			strings.HasPrefix(trimmed, "- ") {
-			return "", false
+			return "", 0, false
 		}
 	}
 	// bash with HISTTIMEFORMAT writes "#<epoch>" on its own line. Only an
 	// all-digit body is metadata; "#!/bin/sh" and a real "# note" are not.
-	if rest, ok := strings.CutPrefix(line, "#"); ok && rest != "" && isAllDigits(rest) {
-		return "", false
+	if rest, restOK := strings.CutPrefix(line, "#"); restOK && rest != "" && isAllDigits(rest) {
+		return "", 0, false
 	}
-	return line, true
+	return line, 0, true
+}
+
+// HistoryLineTokens returns every vendor-format credential in one raw history
+// line, with Start/End as byte offsets into that raw line — metadata included —
+// rather than into the extracted command text. It is the detection half `jit
+// migrate`'s history redaction shares with this scanner: a span returned here
+// is exactly what scanShellHistoryFile would report, relocated so a caller
+// holding the original file bytes can splice the credential out without
+// re-implementing the format parsing. Detection stays in this read-only
+// package so scan and migrate can never disagree about what counts.
+func HistoryLineTokens(line string) []FileToken {
+	cmd, off, ok := historyCommand(line)
+	if !ok || !historyLineMayHoldToken(cmd) {
+		return nil
+	}
+	toks := matchLineTokens(cmd)
+	for i := range toks {
+		toks[i].Start += off
+		toks[i].End += off
+	}
+	return toks
 }
 
 func isAllDigits(s string) bool {
@@ -393,9 +418,13 @@ func matchLineTokens(line string) []FileToken {
 }
 
 // IsShellHistoryPath reports whether path is one of the history files this
-// scanner owns. Used by the report and coverage layers, which have to treat a
-// credential sitting in history differently from one in a config file: it is
-// a live plaintext copy that no `jit migrate` mechanism can rewrite.
+// scanner owns. Used by the report and coverage layers, which treat a
+// credential sitting in history differently from one in a config file (the
+// title names the location, the detail line carries the line number), and by
+// `jit migrate`'s routing — an explicitly named history file goes to
+// in-place redaction (migrate.ApplyShellHistory), never to the generic
+// loose-secret categories, whose whole-file semantics would destroy the
+// shell's own record.
 func IsShellHistoryPath(path string) bool {
 	return isShellHistoryName(filepath.Base(path))
 }

@@ -303,7 +303,7 @@ func TestHistoryPrefilterGuardsEveryPattern(t *testing.T) {
 	}
 }
 
-func TestHistoryCommandTextStripsMetadata(t *testing.T) {
+func TestHistoryCommandStripsMetadata(t *testing.T) {
 	cases := []struct {
 		in     string
 		want   string
@@ -322,9 +322,72 @@ func TestHistoryCommandTextStripsMetadata(t *testing.T) {
 		{"echo ': 1:0;fake'", "echo ': 1:0;fake'", true},
 	}
 	for _, c := range cases {
-		got, ok := historyCommandText(c.in)
+		got, off, ok := historyCommand(c.in)
 		if ok != c.isText || (ok && got != c.want) {
-			t.Errorf("historyCommandText(%q) = (%q, %v), want (%q, %v)", c.in, got, ok, c.want, c.isText)
+			t.Errorf("historyCommand(%q) = (%q, %v), want (%q, %v)", c.in, got, ok, c.want, c.isText)
+		}
+		// The offset must relocate the command back into the raw line exactly:
+		// it is what migrate's redaction splices with, so an off-by-one here is
+		// a corrupted history file there.
+		if ok && c.in[off:off+len(got)] != got {
+			t.Errorf("historyCommand(%q) offset %d does not point at the command text", c.in, off)
+		}
+	}
+}
+
+// HistoryLineTokens must return spans addressed into the RAW line, so a caller
+// splicing file bytes cuts the credential and only the credential — on a zsh
+// extended_history line a command-relative span would land inside the
+// timestamp prefix instead.
+func TestHistoryLineTokensSpansAddressTheRawLine(t *testing.T) {
+	// Exactly 36 base62 chars after the prefix, mixed so isPlaceholderToken
+	// never rejects it.
+	token := "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+	cases := []string{
+		": 1782826755:0;git clone https://x:" + token + "@github.com/o/r.git",
+		"- cmd: curl -H 'Authorization: token " + token + "' https://api.github.com",
+		"export GITHUB_TOKEN=" + token,
+	}
+	for _, line := range cases {
+		toks := HistoryLineTokens(line)
+		if len(toks) == 0 {
+			t.Errorf("HistoryLineTokens(%q) found nothing", line)
+			continue
+		}
+		found := false
+		for _, tk := range toks {
+			if line[tk.Start:tk.End] == tk.Value {
+				if tk.Value == token {
+					found = true
+				}
+				continue
+			}
+			t.Errorf("span [%d:%d) of %q yields %q, want %q", tk.Start, tk.End, line, line[tk.Start:tk.End], tk.Value)
+		}
+		if !found {
+			t.Errorf("HistoryLineTokens(%q) never matched the planted token", line)
+		}
+	}
+}
+
+// Metadata-only lines must yield nothing, and a redaction marker must never
+// re-detect as a credential — or migrate would loop and scan would re-flag
+// the file it just cleaned.
+func TestHistoryLineTokensSkipsMetadataAndMarkers(t *testing.T) {
+	for _, line := range []string{
+		"  when: 1782826755",
+		"#1782826755",
+		": 1782826755:0;curl -H 'Authorization: token <jit:redacted:GITHUB_PERSONAL_ACCESS_TOKEN>'",
+		// The marker in userinfo position — the shape that actually re-matched
+		// (as a scheme-less DB connection string) before the bracket-
+		// placeholder exclusion existed.
+		": 1782826756:0;git clone https://x:<jit:redacted:GITHUB_PERSONAL_ACCESS_TOKEN>@github.com/o/r.git",
+		"psql postgres://app:<jit:redacted:DATABASE_PASSWORD>@db.internal:5432/app",
+		// And the README placeholder convention the same exclusion covers.
+		"psql postgres://app:<password>@db.internal:5432/app",
+	} {
+		if toks := HistoryLineTokens(line); len(toks) != 0 {
+			t.Errorf("HistoryLineTokens(%q) = %d tokens, want none", line, len(toks))
 		}
 	}
 }
@@ -336,7 +399,7 @@ func TestHistoryTimestampDoesNotDefeatThePrefilter(t *testing.T) {
 	if !historyLineMayHoldToken(raw) {
 		t.Fatal("precondition: the raw line should look like a candidate")
 	}
-	cmd, ok := historyCommandText(raw)
+	cmd, _, ok := historyCommand(raw)
 	if !ok {
 		t.Fatal("timestamped line should still carry a command")
 	}
@@ -370,28 +433,45 @@ func TestScanShellHistoryReportsOversizeRatherThanSkipping(t *testing.T) {
 	}
 }
 
-func TestShellHistoryRemedyIsManualNotMigrate(t *testing.T) {
+// An ordinary history finding is migratable — `jit migrate <historyfile>`
+// redacts each occurrence in place — but a production-flagged one stays
+// manual: clearing the recorded copy does not un-expose a production
+// credential, and offering a command as THE fix would overstate it.
+func TestShellHistoryRemedySplitsOnProductionFlag(t *testing.T) {
 	home := t.TempDir()
-	findings := []Finding{{
-		FindingType: FindingTypeShellHistorySecret,
-		FilePath:    filepath.Join(home, ".zsh_history"),
-		Severity:    SeverityHigh,
-	}}
+	findings := []Finding{
+		{
+			FindingType: FindingTypeShellHistorySecret,
+			FilePath:    filepath.Join(home, ".zsh_history"),
+			Severity:    SeverityHigh,
+		},
+		{
+			FindingType:              FindingTypeShellHistorySecret,
+			FilePath:                 filepath.Join(home, ".bash_history"),
+			Severity:                 SeverityHigh,
+			ProductionIndicatorMatch: true,
+		},
+	}
 	annotateRemedies(findings, home)
-	if findings[0].Remedy != RemedyManual {
-		t.Errorf("remedy = %q, want %q", findings[0].Remedy, RemedyManual)
+	if findings[0].Remedy != RemedyMigrate {
+		t.Errorf("ordinary history remedy = %q, want %q", findings[0].Remedy, RemedyMigrate)
 	}
-	if findings[0].FixCommand != "" {
-		t.Errorf("a history finding must not offer a fix command, got %q", findings[0].FixCommand)
+	if !strings.Contains(findings[0].FixCommand, "migrate") {
+		t.Errorf("ordinary history finding must offer the migrate command, got %q", findings[0].FixCommand)
 	}
-	if strings.Contains(findings[0].FixCommand, "migrate") {
-		t.Error("scan offered `jit migrate` for a history file, which cannot work")
+	if findings[1].Remedy != RemedyManual {
+		t.Errorf("production history remedy = %q, want %q", findings[1].Remedy, RemedyManual)
+	}
+	if findings[1].FixCommand != "" {
+		t.Errorf("a production history finding must not offer a fix command, got %q", findings[1].FixCommand)
 	}
 }
 
-// A token in BOTH a migratable config and history is one secret that jit
-// cannot fully protect: vaulting the config leaves the history line readable.
-func TestCoverageDoesNotClaimHistorySecretsAsMigratable(t *testing.T) {
+// A token in BOTH a migratable config and a MANUAL (production-flagged)
+// history line is one secret the recommended command cannot fully protect:
+// vaulting the config leaves that history line readable. An ordinary history
+// copy no longer pins its group — redaction rewrites it like any other file.
+func TestCoverageDoesNotClaimManualHistorySecretsAsMigratable(t *testing.T) {
 	shared := "cause-abc"
 	findings := []Finding{
 		{
@@ -416,10 +496,18 @@ func TestCoverageDoesNotClaimHistorySecretsAsMigratable(t *testing.T) {
 		t.Errorf("Exposed = %d, want 1 (one secret in two places)", cov.Exposed)
 	}
 	if cov.Migratable != 0 {
-		t.Errorf("Migratable = %d, want 0: migrate cannot rewrite the history copy", cov.Migratable)
+		t.Errorf("Migratable = %d, want 0: the recommended command will not rewrite the manual history copy", cov.Migratable)
 	}
 	if got := cov.manualRemainder(); got != 1 {
 		t.Errorf("manualRemainder = %d, want 1", got)
+	}
+
+	// Flip the history copy to the ordinary migratable remedy: the same
+	// group now counts, because bare `jit migrate` redacts that copy too.
+	findings[1].Remedy = RemedyMigrate
+	cov = ComputeCoverage("", findings)
+	if cov.Migratable != 1 {
+		t.Errorf("Migratable = %d, want 1 once the history copy is redactable", cov.Migratable)
 	}
 }
 
@@ -617,10 +705,71 @@ func TestScanShellHistoryDoesNotModifyTheFile(t *testing.T) {
 	}
 }
 
-// When every migratable secret also sits in history, migrate gains no
-// coverage. The block must still recommend the work without printing
-// "0 secrets in 1 file, 0% → 0%", which reads as a broken report.
+// When every migratable secret also sits in a MANUAL history copy (a
+// production-flagged credential — an ordinary history copy is redactable now
+// and gains coverage like any other file), migrate gains no score. The block
+// must still recommend the work without printing "0 secrets in 1 file,
+// 0% → 0%", which reads as a broken report. Findings are hand-built: the
+// state needs a production-flagged history line sharing its exact value with
+// a migratable config copy, which real scanners produce only for span-sized
+// values (a conn string with "prod" in its userinfo) — the rendering under
+// that state is what this test pins, and the coverage arithmetic behind it
+// is unit-tested in TestCoverageDoesNotClaimManualHistorySecretsAsMigratable.
 func TestTriageZeroGainBlockStaysHonest(t *testing.T) {
+	home := t.TempDir()
+	key := "t/DATABASE_URL"
+	vendor := "Database connection string with embedded credentials"
+	preview := "post**********"
+	line := 3
+	findings := []Finding{
+		{
+			FindingType:  FindingTypeMCPEmbeddedSecret,
+			FilePath:     filepath.Join(home, ".mcp.json"),
+			KeyName:      &key,
+			ValuePreview: &preview,
+			Severity:     SeverityHigh,
+			Remedy:       RemedyMigrate,
+			FixCommand:   "jit migrate ~/.mcp.json",
+			CauseGroup:   "cause-shared",
+			RecordID:     "r1",
+		},
+		{
+			FindingType:              FindingTypeShellHistorySecret,
+			FilePath:                 filepath.Join(home, ".zsh_history"),
+			KeyName:                  &vendor,
+			ValuePreview:             &preview,
+			Line:                     &line,
+			Severity:                 SeverityHigh,
+			ProductionIndicatorMatch: true,
+			Remedy:                   RemedyManual,
+			CauseGroup:               "cause-shared",
+			RecordID:                 "r2",
+		},
+	}
+	cov := ComputeCoverage("", findings)
+	if cov.Total() != 1 || cov.Migratable != 0 {
+		t.Fatalf("precondition: cov = %+v, want one secret, none migratable", cov)
+	}
+	summary := ScanSummary{SecretsTotal: cov.Total(), SecretsProtected: cov.Protected, SecretsMigratable: cov.Migratable}
+
+	var buf strings.Builder
+	WriteTriageReport(&buf, findings, summary, home, cov)
+	out := buf.String()
+	if strings.Contains(out, "0 secrets in") || strings.Contains(out, "0% → 0%") {
+		t.Errorf("zero-gain block still prints broken arithmetic:\n%s", out)
+	}
+	if !strings.Contains(out, "jit migrate") {
+		t.Errorf("zero-gain block dropped the recommendation entirely:\n%s", out)
+	}
+	if !strings.Contains(out, "will not rewrite") {
+		t.Errorf("zero-gain block does not explain why the score is unmoved:\n%s", out)
+	}
+}
+
+// The flip side of the zero-gain case: an ORDINARY (non-production) token in
+// both a config file and history is fully protectable now — the history copy
+// is redactable, so the group counts and the report promises the gain.
+func TestTriageCountsOrdinaryHistoryCopiesAsMigratable(t *testing.T) {
 	home := t.TempDir()
 	token := "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
 	if err := os.WriteFile(filepath.Join(home, ".mcp.json"),
@@ -636,20 +785,12 @@ func TestTriageZeroGainBlockStaysHonest(t *testing.T) {
 	if summary.SecretsTotal != 1 {
 		t.Errorf("SecretsTotal = %d, want 1 (one token in two places)", summary.SecretsTotal)
 	}
-	if summary.SecretsMigratable != 0 {
-		t.Errorf("SecretsMigratable = %d, want 0: the history copy survives migrate", summary.SecretsMigratable)
+	if summary.SecretsMigratable != 1 {
+		t.Errorf("SecretsMigratable = %d, want 1: both copies are rewritable", summary.SecretsMigratable)
 	}
-
-	var buf strings.Builder
-	WriteTriageReport(&buf, findings, summary, home, ComputeCoverage("", findings))
-	out := buf.String()
-	if strings.Contains(out, "0 secrets in") || strings.Contains(out, "0% → 0%") {
-		t.Errorf("zero-gain block still prints broken arithmetic:\n%s", out)
-	}
-	if !strings.Contains(out, "jit migrate") {
-		t.Errorf("zero-gain block dropped the recommendation entirely:\n%s", out)
-	}
-	if !strings.Contains(out, "cannot rewrite") {
-		t.Errorf("zero-gain block does not explain why the score is unmoved:\n%s", out)
+	for _, f := range findings {
+		if f.FindingType == FindingTypeShellHistorySecret && !strings.Contains(f.FixCommand, "migrate") {
+			t.Errorf("history finding's FixCommand = %q, want the migrate command", f.FixCommand)
+		}
 	}
 }

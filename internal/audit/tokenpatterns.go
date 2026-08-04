@@ -86,8 +86,22 @@ const shellExpansionUserinfoAlt = ":(?:" +
 	"`[^`]*`" + // `command substitution`
 	")@"
 
+// angleBracketUserinfoAlt rejects any candidate span carrying an angle
+// bracket. RFC 3986 forbids bare "<" and ">" anywhere in a URI (they must be
+// percent-encoded), so a span containing one is not a connection string —
+// it is a placeholder. Two things write that shape and neither is a live
+// credential: every README's fill-me-in form ("postgres://user:<password>@
+// host"), and jit migrate's own history redaction marker
+// ("<jit:redacted:VAR>"). The second is the load-bearing one — without this
+// exclusion, scan re-flagged the exact line migrate just cleaned, forever,
+// as a database credential. A bare "[<>]" (not an anchored ":<...>@" form)
+// because the password character class already excludes "<": the pattern's
+// match can START inside the marker ("redacted:VAR>@host"), so only a test
+// the partial span still fails is safe.
+const angleBracketUserinfoAlt = `[<>]`
+
 var connStringPlaceholderUserinfo = regexp.MustCompile(
-	`(?i)` + placeholderUserinfoAlt + `|` + shellExpansionUserinfoAlt)
+	`(?i)` + placeholderUserinfoAlt + `|` + shellExpansionUserinfoAlt + `|` + angleBracketUserinfoAlt)
 
 // schemeLessConnStringExclude adds one more rejection on top of the
 // placeholder-userinfo check, for the scheme-less pattern only.
@@ -107,7 +121,7 @@ var connStringPlaceholderUserinfo = regexp.MustCompile(
 // exclude, so the two alternatives are ORed into one regex here.
 var schemeLessConnStringExclude = regexp.MustCompile(
 	`(?i)^(?:mailto|tel|sms|callto|skype|xmpp|urn|data|geo|magnet):` + `|` +
-		placeholderUserinfoAlt + `|` + shellExpansionUserinfoAlt)
+		placeholderUserinfoAlt + `|` + shellExpansionUserinfoAlt + `|` + angleBracketUserinfoAlt)
 
 // knownTokenPatterns is checked in order — more specific prefixes must
 // come before more generic ones they could otherwise be shadowed by (e.g.

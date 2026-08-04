@@ -90,11 +90,14 @@ import (
 // findings_by_category key (additive, same shape as 0.3.0/0.6.0/0.9.0's type
 // bumps): a vendor-format credential recorded in a shell history file
 // (~/.zsh_history, ~/.bash_history, $HISTFILE, fish). The same bump records a
-// semantic change to an EXISTING field that consumers computing their own
-// coverage need to know about: a cause_group with a shell-history finding in
-// it is never counted in secrets_migratable, even when another finding in the
-// same group carries remedy "migrate". A history line is a live plaintext copy
-// that no jit mechanism rewrites, so protecting the other copy does not
+// semantic note for consumers computing their own coverage: an ordinary
+// history finding carries remedy "migrate" (`jit migrate <historyfile>`
+// redacts each occurrence in place and vaults the value), but one flagged
+// with a production indicator carries remedy "manual" — and a cause_group
+// with a MANUAL history finding in it is never counted in
+// secrets_migratable, even when another finding in the same group carries
+// remedy "migrate". That history line is a live plaintext copy the
+// recommended command will not touch, so protecting the other copy does not
 // protect the secret (see ComputeCoverage).
 const SchemaVersion = "0.16.0"
 
