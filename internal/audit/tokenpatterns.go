@@ -109,8 +109,39 @@ const shellExpansionUserinfoAlt = ":(?:" +
 // the marker at all contains this much of it.
 const angleBracketUserinfoAlt = `redacted:[A-Za-z0-9_]*>` + `|` + `:<[^>@]*>@`
 
+// tinyUserinfoAlt rejects a userinfo whose username AND password are both one
+// or two characters: "postgres://u:p@prod.db.co/db". That is filler by SIZE
+// rather than by vocabulary, which is the case placeholderUserinfoAlt's word
+// list structurally cannot reach — an illustrative example picks short
+// stand-ins precisely because they are obviously not real.
+//
+// Found by dogfooding (2026-08-05) on a line that is worth quoting, because
+// the file class it belongs to is a permanent hazard for THIS project: a
+// comment inside a Jamf extension attribute whose whole job is scanning Macs
+// for exposed credentials, documenting its own masking behavior.
+//
+//	#     DB_URL=postgres://u:p@prod.db.co/db  →  DB_URL=[prod.db.co]
+//
+// A security tool's own source is dense with secret-SHAPED text, and jit will
+// keep meeting it in exactly the directories its users care most about.
+//
+// BOTH fields must be tiny, unlike every other alternative here, which tests
+// the password alone. That is what keeps the false-negative risk acceptable
+// under this scanner's stated priority (a missed live secret is strictly
+// worse than an extra finding): "admin:hu@host" stays reported, and only a
+// userinfo too small to be a credential on either side is dropped. A real
+// password beginning with one or two characters and then an "@"
+// ("u:ab@cdef@host") is the one shape given up, and it needs a
+// single-character USERNAME alongside it to be missed.
+//
+// Not added to schemeLessConnStringExclude: that pattern already floors its
+// password at 8 characters, so a tiny userinfo can never match it, and a dead
+// alternative there would read as a rule someone must maintain.
+const tinyUserinfoAlt = `(?:^|/)[^:@/\s]{1,2}:[^:@/\s]{1,2}@`
+
 var connStringPlaceholderUserinfo = regexp.MustCompile(
-	`(?i)` + placeholderUserinfoAlt + `|` + shellExpansionUserinfoAlt + `|` + angleBracketUserinfoAlt)
+	`(?i)` + placeholderUserinfoAlt + `|` + shellExpansionUserinfoAlt + `|` +
+		angleBracketUserinfoAlt + `|` + tinyUserinfoAlt)
 
 // schemeLessConnStringExclude adds one more rejection on top of the
 // placeholder-userinfo check, for the scheme-less pattern only.
