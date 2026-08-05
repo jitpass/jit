@@ -182,9 +182,23 @@ func readMountFromSiblingProcess(t *testing.T, path string, timeout time.Duratio
 // waitFor polls cond up to a deadline — the e2e assertions above cross
 // real process and goroutine boundaries, so "immediately" means "within a
 // beat", never "on the very next line".
+// waitForBudget is a safety net, not an assertion about speed: a passing
+// wait returns the moment its condition holds, so the ceiling costs nothing
+// except on a genuine failure.
+//
+// It was 5s, which a loaded CI runner could not always meet. The restore this
+// file waits on is driven by a kqueue NOTE_EXIT watch (see mountruns.go) and
+// completes on an async goroutine, so the chain is process-death delivery,
+// then the restore, then recreating the FIFO. Measured: 3 of 6 CI runs failed
+// on "the FIFO to be restored after the run exits" with identical code that
+// passed 10 consecutive local runs under -race, and the same job passed on
+// other runs — timing, not logic. 30s keeps a hung restore a fast, clear
+// failure while giving a slow runner room.
+const waitForBudget = 30 * time.Second
+
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(waitForBudget)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
