@@ -14,6 +14,8 @@ import (
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/auditlog"
 	"github.com/jitpass/jit/internal/keychainwrap"
+	"github.com/jitpass/jit/internal/migrate"
+	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/vault"
 	"github.com/jitpass/jit/internal/wrap"
 )
@@ -76,11 +78,12 @@ var vaultMasterKeyPresence = func() keychainwrap.MEKPresence { return keychainwr
 // problems rather than restating status's full snapshot. Best-effort per
 // section: a section that can't run reports that as its own finding rather
 // than failing the whole command.
-func gatherSystemFindings(root string, v *vault.Vault) ([]checkFinding, []string) {
+func gatherSystemFindings(root, cwd string, v *vault.Vault) ([]checkFinding, []string) {
 	var findings []checkFinding
 	findings = append(findings, agentFindings(root)...)
 	findings = append(findings, backupFindings(v)...)
 	findings = append(findings, auditLogFindings(root)...)
+	findings = append(findings, mcpFindings(cwd)...)
 	wrapped, wrapOK := wrapFindings()
 	return append(findings, wrapped...), wrapOK
 }
@@ -109,7 +112,7 @@ func auditLogFindings(root string) []checkFinding {
 		return []checkFinding{{
 			Kind:   kindAudit,
 			Detail: fmt.Sprintf("%s is a directory, so no command is being recorded", shortPath(path)),
-			Action: "remove it — the next jit command recreates the log",
+			Action: "remove it, and the next jit command recreates the log",
 		}}
 	}
 	// Openable for append is the exact question Append asks, so ask it the
@@ -125,6 +128,98 @@ func auditLogFindings(root string) []checkFinding {
 	}
 	_ = f.Close()
 	return nil
+}
+
+// mcpFindings reports MCP server entries jit itself rewrote that can no
+// longer launch. It is the only doctor section whose subject is jit's own
+// past output, and it exists because that output is uniquely un-selfchecking:
+// `jit migrate` pins an absolute jit path and a profile name into a config
+// file owned by another application, then never looks at either again. When
+// one goes stale the MCP host says "server failed" and nothing connects that
+// to jit, because no jit command ran.
+//
+// One finding per broken server, reporting the most fundamental failure
+// rather than every failure: an entry whose jit binary is gone will also
+// "fail" a profile check, and two lines about one dead server is noise.
+//
+// Best-effort throughout — an unreadable home, an unresolvable profile root,
+// or a malformed config yields no findings rather than a failed doctor run.
+func mcpFindings(cwd string) []checkFinding {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	entries, err := migrate.DiscoverWrappedMCPEntries(home, cwd, true)
+	if err != nil || len(entries) == 0 {
+		return nil
+	}
+	globalRoot, err := profile.GlobalRoot()
+	if err != nil {
+		return nil
+	}
+
+	var findings []checkFinding
+	for _, e := range entries {
+		label := fmt.Sprintf("MCP server %q in %s", e.ServerName, shortPath(e.ConfigPath))
+
+		if !executableFile(e.JitPath) {
+			findings = append(findings, checkFinding{
+				Kind:    kindMCP,
+				Profile: e.ProfileName,
+				Path:    e.ConfigPath,
+				Detail: fmt.Sprintf("%s launches jit at %s, which isn't there, so the host can't start this server at all",
+					label, shortHome(e.JitPath)),
+				Action: fmt.Sprintf("`jit migrate %s` to rewrite it against this jit", shortPath(e.ConfigPath)),
+			})
+			continue
+		}
+
+		manifest, perr := profile.Path(globalRoot, e.ProfileName)
+		if perr != nil || !regularFile(manifest) {
+			findings = append(findings, checkFinding{
+				Kind:    kindMCP,
+				Profile: e.ProfileName,
+				Path:    e.ConfigPath,
+				Detail: fmt.Sprintf("%s names profile %s, which no longer exists, so the server starts with none of its secrets",
+					label, e.ProfileName),
+				Action: fmt.Sprintf("`jit migrate undo %s` to restore the original entry, or re-migrate it", shortPath(e.ConfigPath)),
+			})
+			continue
+		}
+
+		// Only an ABSOLUTE wrapped command is checked. A bare "uv"/"npx"
+		// resolves against the PATH the MCP HOST hands the server, which is
+		// not this process's PATH and not knowable from here — the same
+		// reasoning that makes kindWrapEnv advisory rather than a problem.
+		// Guessing would produce a hard failure on a perfectly good entry.
+		if filepath.IsAbs(e.Command) && !executableFile(e.Command) {
+			findings = append(findings, checkFinding{
+				Kind:    kindMCP,
+				Profile: e.ProfileName,
+				Path:    e.ConfigPath,
+				Detail: fmt.Sprintf("%s wraps %s, which isn't there, so jit resolves its secrets and then has nothing to exec",
+					label, shortHome(e.Command)),
+				Action: "fix the command path in that config, or remove the server entry",
+			})
+		}
+	}
+	return findings
+}
+
+// executableFile reports whether path is a regular file with an execute bit.
+// Both halves matter: a directory at the path and a non-executable file both
+// fail exec with errors the MCP host renders as the same opaque failure.
+func executableFile(path string) bool {
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
+}
+
+func regularFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 // gatherVaultIntegrityFindings reports the two whole-vault states that make
@@ -148,7 +243,7 @@ func gatherVaultIntegrityFindings(root string, v *vault.Vault) []checkFinding {
 	if rekeyInProgress(root) {
 		out = append(out, checkFinding{
 			Kind:   kindRekey,
-			Detail: "a master-key rotation is in progress, or was interrupted — every command that writes to the vault will refuse until it finishes.",
+			Detail: "a master-key rotation is in progress, or was interrupted, so every command that writes to the vault will refuse until it finishes.",
 			Action: "`jit vault rekey` to finish it",
 		})
 	}
@@ -181,7 +276,7 @@ func gatherVaultIntegrityFindings(root string, v *vault.Vault) []checkFinding {
 		out = append(out, checkFinding{
 			Kind: kindVaultKey,
 			Detail: fmt.Sprintf(
-				"the vault holds %s but this Mac's master key is missing from the keychain, so none of them can be decrypted. Every envelope is structurally intact — only the key is gone.",
+				"the vault holds %s but this Mac's master key is missing from the keychain, so none of them can be decrypted. Every envelope is structurally intact; only the key is gone.",
 				countWord(len(paths), "secret", "secrets")),
 			Action: "`jit vault import <file>` from a `jit vault export` backup",
 		})
@@ -230,13 +325,13 @@ func agentFindingsFrom(root string, st statusAgent) []checkFinding {
 	case !st.Running && st.Installed:
 		out = append(out, checkFinding{
 			Kind:   kindService,
-			Detail: "the service is installed but not running — it may have crashed, or be mid-restart.",
+			Detail: "the service is installed but not running; it may have crashed, or be mid-restart.",
 			// installedNotRunningAdvice packs the restart, what it recovers,
 			// and the log command into one sentence, which is three next
 			// steps on one line. The action line takes at most one (rule:
 			// "a reader given three next steps takes none"); the log command
 			// follows as its own finding-level note rather than riding along.
-			Action: "`jit service restart` — reloads it, recovering even one launchd has dropped. `jit service log` shows recent output",
+			Action: "`jit service restart` reloads it, recovering even one launchd has dropped. `jit service log` shows recent output",
 		})
 	case !st.Running:
 		// Not installed and not running is fine on its own — you just haven't
@@ -270,17 +365,17 @@ func backupFindings(v *vault.Vault) []checkFinding {
 	case !vs.ExportRecorded:
 		return []checkFinding{{
 			Kind:   kindBackup,
-			Detail: "no vault export on record — the vault only decrypts on this Mac.",
+			Detail: "no vault export on record, so the vault only decrypts on this Mac.",
 			// Matches the wording `jit status` uses for the same state, so
 			// the two surfaces read as one tool.
-			Action: "`jit vault export <file>` — a copy you could restore on another Mac",
+			Action: "`jit vault export <file>` makes a copy you could restore on another Mac",
 		}}
 	case vs.ExportStale:
 		return []checkFinding{{
 			Kind: kindBackup,
 			Detail: fmt.Sprintf("secrets have changed since the last vault export (%s).",
 				time.Unix(vs.ExportUnixTime, 0).Format("2006-01-02")),
-			Action: "`jit vault export <file>` — the newest secrets aren't in any backup",
+			Action: "`jit vault export <file>`, because the newest secrets aren't in any backup",
 		}}
 	}
 	return nil

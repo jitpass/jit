@@ -104,7 +104,33 @@ const (
 	// custody of secrets, losing the record of what touched them silently is
 	// worth one line.
 	kindAudit checkKind = "audit"
+	// kindMCP: an MCP server entry jit itself rewrote can no longer launch —
+	// the jit binary it names is gone, or the profile it names is. A hard
+	// problem for the same reason kindWrap is: the server it wraps doesn't
+	// run, and an MCP host reports that as nothing more than "server failed."
+	//
+	// This is the one check whose subject is jit's own past output. The
+	// rewrite pins an absolute path (see WrappedMCPEntry.JitPath) and then
+	// nobody looks at it again, so the breakage arrives with no command run
+	// and no error printed — from `jit upgrade` relocating the binary, a
+	// Homebrew-to-manual switch, or a workspace copied between machines.
+	kindMCP checkKind = "mcp"
 )
+
+// allCheckKinds enumerates every kind above, for the completeness tests that
+// walk it. It exists because a kind is declared in one file and rendered in
+// another: kindMCP shipped with no case in findingLabel, so its group header
+// rendered as a bare count with no name, and every unit test passed because
+// each asserted on the finding it built rather than on how it displayed.
+// A switch with a "" default cannot fail loudly, so the enumeration has to.
+//
+// Add new kinds here.
+var allCheckKinds = []checkKind{
+	kindParse, kindNotFound, kindMissing, kindCorrupt, kindVaultError,
+	kindBadPath, kindOrphan, kindShadowed, kindService, kindBackup,
+	kindWrap, kindWrapEnv, kindMount, kindVaultKey, kindRekey, kindAudit,
+	kindMCP,
+}
 
 // warning reports whether a finding of this kind is advisory (does not fail
 // the run or flip ok=false) rather than a hard problem. A hard problem means

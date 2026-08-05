@@ -64,23 +64,32 @@ func invalidPath(format string, a ...any) error {
 //
 // Every rejection here wraps ErrInvalidPath, so a caller can tell a bad path
 // from a bad store.
-func sanitizeSecretPath(vaultDir, path string) (string, error) {
+// ValidatePath reports whether path is a legal secret path, using only the
+// checks that need nothing from the filesystem: shape, traversal segments,
+// and the reserved history namespace.
+//
+// Split out of sanitizeSecretPath so a caller can reject a bad path BEFORE
+// doing anything expensive or irreversible with it. `jit vault rm` is the
+// motivating one: it used to prompt for a fingerprint and only then discover
+// the path was malformed, demanding an approval for an operation it was
+// always going to refuse.
+func ValidatePath(path string) error {
 	if path == "" {
-		return "", invalidPath("secret path must not be empty")
+		return invalidPath("secret path must not be empty")
 	}
 	if !secretPathPattern.MatchString(path) {
-		return "", invalidPath("secret path %q must be slash-separated segments of letters, digits, '.', '_', '-' (e.g. \"stripe/dev-key\")", path)
+		return invalidPath("secret path %q must be slash-separated segments of letters, digits, '.', '_', '-' (e.g. \"stripe/dev-key\")", path)
 	}
 	// Traversal is a property of a SEGMENT, not of the string. This used to
 	// reject any path merely containing "..", which turned an ordinary name
 	// like "db..old/key" into an accusation of path traversal — a confusing
-	// error for something harmless. ".." and "." are refused as whole segments,
-	// which is the actual hazard (and the regexp above already forbids a
-	// leading slash, so the joined path cannot escape either way — the
-	// post-Join prefix check below is the third layer).
+	// error for something harmless. ".." and "." are refused as whole
+	// segments, which is the actual hazard (and the regexp above already
+	// forbids a leading slash, so the joined path cannot escape either way —
+	// sanitizeSecretPath's post-Join prefix check is the third layer).
 	for _, seg := range strings.Split(path, "/") {
 		if seg == "." || seg == ".." {
-			return "", invalidPath("secret path %q must not contain %q segments", path, seg)
+			return invalidPath("secret path %q must not contain %q segments", path, seg)
 		}
 	}
 	// _history/ is the version-history tree (history.go), written only by
@@ -90,9 +99,29 @@ func sanitizeSecretPath(vaultDir, path string) (string, error) {
 	// would rename it over the real secret. EqualFold, not ==: on the
 	// default case-insensitive macOS filesystem, "_History" IS "_history".
 	if first := strings.SplitN(path, "/", 2)[0]; strings.EqualFold(first, historyDirName) {
-		return "", invalidPath("secret path %q is reserved for jit's own version history (%s/)", path, historyDirName)
+		return invalidPath("secret path %q is reserved for jit's own version history (%s/)", path, historyDirName)
 	}
+	return nil
+}
 
+func sanitizeSecretPath(vaultDir, path string) (string, error) {
+	if err := ValidatePath(path); err != nil {
+		return "", err
+	}
+	// Traversal is a property of a SEGMENT, not of the string. This used to
+	// reject any path merely containing "..", which turned an ordinary name
+	// like "db..old/key" into an accusation of path traversal — a confusing
+	// error for something harmless. ".." and "." are refused as whole segments,
+	// which is the actual hazard (and the regexp above already forbids a
+	// leading slash, so the joined path cannot escape either way — the
+	// post-Join prefix check below is the third layer).
+
+	// _history/ is the version-history tree (history.go), written only by
+	// the archive machinery itself — unlike _backups/, which jit migrate
+	// legitimately writes through Set. A user secret planted there would
+	// read as an archived version of whatever path it names, and Restore
+	// would rename it over the real secret. EqualFold, not ==: on the
+	// default case-insensitive macOS filesystem, "_History" IS "_history".
 	full := filepath.Join(vaultDir, path+".enc")
 	cleanVaultDir := filepath.Clean(vaultDir)
 	if full != cleanVaultDir && !strings.HasPrefix(full, cleanVaultDir+string(filepath.Separator)) {

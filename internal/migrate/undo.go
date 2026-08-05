@@ -71,6 +71,20 @@ type BackupRecord struct {
 	// an edit made after migration is recovered by hand via `jit vault get` —
 	// they simply never answer "what did this file look like before jit".
 	Snapshot bool `yaml:"snapshot,omitempty"`
+	// RestoreWith names other files that MUST be restored in the same run as
+	// this one, because restoring this file alone puts back a reference to
+	// content the other file no longer holds.
+	//
+	// One migration needs it today: an MCP server that read its credentials
+	// via `--env-file`. Migrating it strips the flag AND turns the .env into a
+	// pointer file. Undoing only the config puts `--env-file` back, aimed at a
+	// file that now contains "KEY=jit://vault/..." lines — so the server
+	// starts, and every credential it holds is a literal placeholder string.
+	// That is worse than either half alone, and it is silent.
+	//
+	// Empty on every record written before this existed, which restores
+	// exactly as it used to.
+	RestoreWith []string `yaml:"restore_with,omitempty"`
 }
 
 // defaultRestoreMode is what a restore uses when a BackupRecord carries no
