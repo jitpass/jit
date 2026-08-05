@@ -107,7 +107,31 @@ import (
 // already documented as stable only within a run, so nothing is broken, but a
 // consumer diffing groups across versions will see every id move rather than
 // only the history ones.
-const SchemaVersion = "0.16.0"
+// 0.17.0 changes WHERE mcp_embedded_secret findings come from, without
+// changing the record shape. The MCP scanner used to read a server entry's
+// env block and nothing else; it now also reports a credential passed by
+// `--env-file`, one baked into `args` (including `docker run -e`), and a
+// remote server's `headers` or `url`. ~/.claude.json (Claude Code's own
+// store, including its nested projects.<dir>.mcpServers) is a new source of
+// findings entirely. No field was added or removed, but a consumer will see
+// this finding type in situations it never appeared in before, which is the
+// same kind of change 0.11.0 recorded for exposed_secret.
+//
+// Two shapes worth knowing for anything parsing key_name: the args/headers/
+// url findings spell it "<server>/args[2]", "<server>/header:Authorization"
+// and "<server>/url", and the --env-file finding carries the bare server
+// name with the file named in `evidence`. The three jit cannot fix (args,
+// headers, url) carry remedy "manual" — the MCP host makes that request or
+// builds that command line itself, so there is nothing for jit to inject
+// into.
+//
+// The same bump lowers severity on one existing shape: a short, low-entropy
+// plain setting in an env block ("CRAWL4AI_LANG=en") now reports Low rather
+// than High. Everything in an env block is credential-shaped by construction
+// only when a human wrote the file; ~/.claude.json is written by a tool and
+// carries ordinary settings in the same block. Production-indicator and
+// public-IP escalations still override it.
+const SchemaVersion = "0.17.0"
 
 // ScannerName identifies this tool in the shared NDJSON envelope, matching
 // bumblebee's record shape so a receiver can co-ingest both (RFC.md §4).
