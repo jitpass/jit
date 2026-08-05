@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -624,5 +625,203 @@ func TestDiscoverMCPConfigsAndWrappedEntriesSelectDifferentFiles(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].ConfigPath != wrappedOnly {
 		t.Errorf("DiscoverWrappedMCPEntries = %+v, want only %s", entries, wrappedOnly)
+	}
+}
+
+func TestApplyMCPConfigMigratesEnvFileServer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	envPath := filepath.Join(home, "secrets.env")
+	writeFile(t, envPath, "OKTA_ORG_URL=https://x.okta.com\nOKTA_TOKEN=00tGx7Kw2LpQ4vRs9XmZb3\n")
+	path := filepath.Join(home, ".mcp.json")
+	writeFile(t, path, `{"mcpServers":{"okta":{
+		"command":"uv",
+		"args":["run","--env-file","`+envPath+`","--directory","/srv","okta-mcp-server"],
+		"alwaysAllow":["list_users"]}}}`)
+
+	v := newTestVault(t)
+	result, err := ApplyMCPConfig(v, path)
+	if err != nil {
+		t.Fatalf("ApplyMCPConfig: %v", err)
+	}
+	if len(result.Servers) != 1 {
+		t.Fatalf("Servers = %+v, want the --env-file server migrated", result.Servers)
+	}
+	sm := result.Servers[0]
+	if len(sm.EnvFiles) != 1 || sm.EnvFiles[0] != envPath {
+		t.Errorf("EnvFiles = %v, want [%s]", sm.EnvFiles, envPath)
+	}
+
+	// Both variables reached the vault under the server's own profile.
+	for _, name := range []string{"OKTA_ORG_URL", "OKTA_TOKEN"} {
+		if _, err := v.Get("mcp-okta/" + name); err != nil {
+			t.Errorf("v.Get(mcp-okta/%s): %v", name, err)
+		}
+	}
+
+	// The flag goes with the file: leaving it would point uv at the pointer
+	// file and set every credential to a literal "jit://vault/..." string.
+	_, _, servers, err := loadMCPFile(path)
+	if err != nil {
+		t.Fatalf("loadMCPFile: %v", err)
+	}
+	var args []string
+	if err := json.Unmarshal(servers["okta"]["args"], &args); err != nil {
+		t.Fatalf("args: %v", err)
+	}
+	for i, a := range args {
+		if a == "--env-file" || strings.HasPrefix(a, "--env-file=") {
+			t.Errorf("args still carry --env-file at %d: %v", i, args)
+		}
+	}
+	want := []string{"run", "--profile", "mcp-okta", "--", "uv", "run", "--directory", "/srv", "okta-mcp-server"}
+	if !slices.Equal(args, want) {
+		t.Errorf("args = %v, want %v", args, want)
+	}
+	if _, ok := servers["okta"]["alwaysAllow"]; !ok {
+		t.Error("an unknown field was dropped from the rewritten entry")
+	}
+
+	// The source file is neutralized, not left in plaintext.
+	body, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("reading %s: %v", envPath, err)
+	}
+	if strings.Contains(string(body), "00tGx7Kw2LpQ4vRs9XmZb3") {
+		t.Error("the credential is still on disk in the --env-file target")
+	}
+	if !strings.Contains(string(body), "jit://vault/mcp-okta/OKTA_TOKEN") {
+		t.Errorf("target was not replaced with a pointer file:\n%s", body)
+	}
+}
+
+// A name in both places must resolve to the env block: the host sets that on
+// the child process directly, and silently preferring the file would change
+// what the server sees.
+func TestApplyMCPConfigEnvBlockWinsOverEnvFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	envPath := filepath.Join(home, "s.env")
+	writeFile(t, envPath, "TOKEN=from-the-file\n")
+	path := filepath.Join(home, ".mcp.json")
+	writeFile(t, path, `{"mcpServers":{"srv":{"command":"uv",
+		"args":["run","--env-file","`+envPath+`","srv"],
+		"env":{"TOKEN":"from-the-block"}}}}`)
+
+	v := newTestVault(t)
+	if _, err := ApplyMCPConfig(v, path); err != nil {
+		t.Fatalf("ApplyMCPConfig: %v", err)
+	}
+	got, err := v.Get("mcp-srv/TOKEN")
+	if err != nil {
+		t.Fatalf("v.Get: %v", err)
+	}
+	if string(got) != "from-the-block" {
+		t.Errorf("TOKEN = %q, want the env block's value", got)
+	}
+}
+
+// The same hard stop ApplyEnvFile takes, for the same reason: the next step
+// rewrites this file, so a silently dropped line is a variable the server
+// loses with nothing saying why.
+func TestApplyMCPConfigEnvFileUnparsedLineStops(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	envPath := filepath.Join(home, "s.env")
+	writeFile(t, envPath, "GOOD=1\nthis is not a KEY=value line at all &&&\n")
+	path := filepath.Join(home, ".mcp.json")
+	writeFile(t, path, `{"mcpServers":{"srv":{"command":"uv","args":["run","--env-file","`+envPath+`","srv"]}}}`)
+
+	v := newTestVault(t)
+	_, err := ApplyMCPConfig(v, path)
+	if err == nil {
+		t.Fatal("ApplyMCPConfig succeeded on an unparseable --env-file target, want a hard stop")
+	}
+	if !strings.Contains(err.Error(), "could not be parsed") {
+		t.Errorf("error = %v, want it to name the parse failure", err)
+	}
+	// Nothing was touched: the stop happens before any rewrite.
+	body, _ := os.ReadFile(envPath)
+	if !strings.Contains(string(body), "GOOD=1") {
+		t.Error("the source file was modified despite the hard stop")
+	}
+}
+
+// A pointer at a file that isn't there is not migratable: there is nothing to
+// read, and stripping the flag would remove something the user still needs
+// once they fix the path.
+func TestDiscoverMCPConfigsSkipsDanglingEnvFile(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	writeFile(t, filepath.Join(cwd, ".mcp.json"),
+		`{"mcpServers":{"srv":{"command":"uv","args":["run","--env-file","/nonexistent/x.env","srv"]}}}`)
+
+	found, err := DiscoverMCPConfigs(home, cwd, false)
+	if err != nil {
+		t.Fatalf("DiscoverMCPConfigs: %v", err)
+	}
+	if len(found) != 0 {
+		t.Errorf("found = %v, want none: the target doesn't exist", found)
+	}
+}
+
+func TestMCPEnvFilePreviewNamesTheSecondFile(t *testing.T) {
+	home := t.TempDir()
+	envPath := filepath.Join(home, "s.env")
+	writeFile(t, envPath, "TOKEN=x\n")
+	path := filepath.Join(home, ".mcp.json")
+	writeFile(t, path, `{"mcpServers":{"srv":{"command":"uv","args":["run","--env-file","`+envPath+`","srv"]}}}`)
+
+	got := MCPEnvFilePreview(path)
+	if len(got) != 1 || got[0] != envPath {
+		t.Errorf("MCPEnvFilePreview = %v, want [%s]", got, envPath)
+	}
+}
+
+// Undoing the config alone would re-add --env-file aimed at a pointer file.
+func TestApplyMCPConfigLinksEnvFileForUndo(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	envPath := filepath.Join(home, "s.env")
+	writeFile(t, envPath, "TOKEN=00tGx7Kw2LpQ4vRs9XmZb3\n")
+	path := filepath.Join(home, ".mcp.json")
+	writeFile(t, path, `{"mcpServers":{"srv":{"command":"uv","args":["run","--env-file","`+envPath+`","srv"]}}}`)
+
+	v := newTestVault(t)
+	if _, err := ApplyMCPConfig(v, path); err != nil {
+		t.Fatalf("ApplyMCPConfig: %v", err)
+	}
+	records, err := LoadBackupRecords(v.Root)
+	if err != nil {
+		t.Fatalf("LoadBackupRecords: %v", err)
+	}
+	var linked []string
+	for _, r := range records {
+		if r.OriginalPath == path {
+			linked = r.RestoreWith
+		}
+	}
+	if len(linked) != 1 || linked[0] != envPath {
+		t.Errorf("RestoreWith = %v, want [%s]: undo must bring both files back together", linked, envPath)
+	}
+}
+
+func TestStripEnvFileArgs(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"separate", []string{"run", "--env-file", "a.env", "srv"}, []string{"run", "srv"}},
+		{"joined", []string{"run", "--env-file=a.env", "srv"}, []string{"run", "srv"}},
+		{"trailing with no value", []string{"run", "--env-file"}, []string{"run"}},
+		{"repeated", []string{"--env-file", "a", "--env-file=b", "srv"}, []string{"srv"}},
+		{"untouched", []string{"run", "--directory", "/srv", "srv"}, []string{"run", "--directory", "/srv", "srv"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := stripEnvFileArgs(tc.in); !slices.Equal(got, tc.want) {
+				t.Errorf("stripEnvFileArgs(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
 	}
 }

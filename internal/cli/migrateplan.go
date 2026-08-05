@@ -62,6 +62,13 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, k8sManife
 		return out
 	}
 
+	// shorten() rewrites each path for display, so the annotate callbacks
+	// need a way back to the real one — same shape as envOriginal below.
+	mcpOriginal := make(map[string]string, len(mcpConfigs))
+	for _, p := range mcpConfigs {
+		mcpOriginal[shorten([]string{p})[0]] = p
+	}
+
 	hasScoped := len(envFiles) > 0 || len(tfvarsFiles) > 0 || len(k8sManifests) > 0 || len(mcpScoped) > 0 || len(npmrcScoped) > 0 || len(looseSecretFiles) > 0
 	hasFixed := len(shellConfigs) > 0 || len(historyFiles) > 0 || len(mcpFixed) > 0 || len(awsProfiles) > 0 || len(k8sUsers) > 0 || len(terraformHosts) > 0 || len(dockerRegistries) > 0 || len(gitHosts) > 0 || len(gcpADCFiles) > 0 || len(sopsAgeFiles) > 0 || len(npmrcFixed) > 0 || len(netrcFiles) > 0 || len(pypircFiles) > 0
 
@@ -114,9 +121,22 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, k8sManife
 				}
 				return note
 			})
-		printMigratePlanCategory(w,
+		printMigratePlanCategoryAnnotated(w,
 			pluralWord(len(mcpScoped), "MCP config", "MCP configs")+" → secrets move to the vault; injected automatically when the server launches",
-			shorten(mcpScoped))
+			shorten(mcpScoped), func(item string) string {
+				// The user named a config file; this names the OTHER file on
+				// disk the run will rewrite into a pointer. Without it the
+				// plan said "1 change" for a run that touches two files.
+				targets := migrate.MCPEnvFilePreview(mcpOriginal[item])
+				if len(targets) == 0 {
+					return ""
+				}
+				short := make([]string, 0, len(targets))
+				for _, t := range targets {
+					short = append(short, shortHome(t))
+				}
+				return "also rewrites " + strings.Join(short, ", ")
+			})
 		printMigratePlanCategory(w,
 			pluralWord(len(npmrcScoped), "npmrc file", "npmrc files")+" → secrets move to the vault; the file keeps working via a live, auto-updating mount",
 			shorten(npmrcScoped))
@@ -154,9 +174,22 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, k8sManife
 				}
 				return fmt.Sprintf("%s across %s", countWord(secrets, "secret", "secrets"), countWord(occ, "occurrence", "occurrences"))
 			})
-		printMigratePlanCategory(w,
+		printMigratePlanCategoryAnnotated(w,
 			pluralWord(len(mcpFixed), "MCP config", "MCP configs")+" → secrets move to the vault; injected automatically when the server launches",
-			shorten(mcpFixed))
+			shorten(mcpFixed), func(item string) string {
+				// The user named a config file; this names the OTHER file on
+				// disk the run will rewrite into a pointer. Without it the
+				// plan said "1 change" for a run that touches two files.
+				targets := migrate.MCPEnvFilePreview(mcpOriginal[item])
+				if len(targets) == 0 {
+					return ""
+				}
+				short := make([]string, 0, len(targets))
+				for _, t := range targets {
+					short = append(short, shortHome(t))
+				}
+				return "also rewrites " + strings.Join(short, ", ")
+			})
 		// AWS/kubeconfig/Terraform/Docker items are profile/user/host/
 		// registry NAMES, not paths — nothing to shorten.
 		printMigratePlanCategory(w,

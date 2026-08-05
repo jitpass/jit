@@ -425,7 +425,18 @@ func scanMCPServerArgs(cfg Config, path, serverName string, entry mcpServerEntry
 // resolves to a real file is strong evidence the guess was right, and
 // scanMCPEnvFilePointers reports nothing for a path it cannot stat.
 func mcpEnvFileArgs(configPath string, entry mcpServerEntry) []string {
-	base := entry.Cwd
+	return MCPEnvFileArgs(configPath, entry.Cwd, entry.Args)
+}
+
+// MCPEnvFileArgs is mcpEnvFileArgs over primitives, exported for
+// internal/migrate.
+//
+// Shared rather than reimplemented on purpose: scan decides what to REPORT
+// from this and migrate decides what to FIX from it, so any drift between
+// the two spellings produces a finding whose offered fix silently skips it —
+// which is the exact failure this whole feature exists to remove.
+func MCPEnvFileArgs(configPath, cwd string, args []string) []string {
+	base := cwd
 	if base == "" {
 		base = filepath.Dir(configPath)
 	}
@@ -439,10 +450,10 @@ func mcpEnvFileArgs(configPath string, entry mcpServerEntry) []string {
 		}
 		paths = append(paths, filepath.Clean(p))
 	}
-	for i, arg := range entry.Args {
+	for i, arg := range args {
 		switch {
-		case arg == "--env-file" && i+1 < len(entry.Args):
-			add(entry.Args[i+1])
+		case arg == "--env-file" && i+1 < len(args):
+			add(args[i+1])
 		case strings.HasPrefix(arg, "--env-file="):
 			add(strings.TrimPrefix(arg, "--env-file="))
 		}
@@ -466,11 +477,11 @@ func mcpEnvFileArgs(configPath string, entry mcpServerEntry) []string {
 // the total. What this adds is the LINK, plus first-sight coverage for a
 // target the name gate drops.
 //
-// RemedyManual for now: `jit migrate <config>` does not yet rewrite an
-// --env-file server (DiscoverMCPConfigs gates on a non-empty env block), so
-// promising it would be a fix hint that silently does nothing. Flip this to
-// the default RemedyMigrate in the same change that teaches migrate the
-// shape.
+// Fixable, unlike the header/url/args findings above: `jit migrate <config>`
+// absorbs the file into the server's profile, drops the --env-file flag, and
+// leaves a pointer file behind. So this one takes annotateRemedies' default
+// (RemedyMigrate) rather than setting RemedyManual, and the report's fix hint
+// names a command that actually does something.
 func scanMCPEnvFilePointers(cfg Config, path, serverName string, entry mcpServerEntry) []Finding {
 	var findings []Finding
 	for _, target := range mcpEnvFileArgs(path, entry) {
@@ -508,7 +519,6 @@ func scanMCPEnvFilePointers(cfg Config, path, serverName string, entry mcpServer
 		f.PublicIPMatch = sub.PublicIPMatch
 		f.Evidence = fmt.Sprintf("reads credentials from %s; that file %s",
 			ShortenHome(cfg.HomeDir, target), sub.Evidence)
-		f.Remedy = RemedyManual
 		f.RecordID = RecordID(f.FindingType, f.FilePath, f.KeyName)
 		findings = append(findings, f)
 	}

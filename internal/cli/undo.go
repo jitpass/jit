@@ -380,8 +380,45 @@ func selectBackups(latest []migrate.BackupRecord, args []string) ([]migrate.Back
 			return nil, fmt.Errorf("no recorded backup for %s, run `jit migrate undo ~ --dry-run` (or name a broader directory) to see every restorable file", abs)
 		}
 	}
+	out = expandRestoreWith(latest, out, seen)
 	sort.Slice(out, func(i, j int) bool { return out[i].OriginalPath < out[j].OriginalPath })
 	return out, nil
+}
+
+// expandRestoreWith pulls in the files a selected record says must come back
+// with it (BackupRecord.RestoreWith), so naming one file cannot produce a
+// half-restored state.
+//
+// The case it exists for: `jit migrate undo <.mcp.json>` on a server that had
+// been reading `--env-file secrets.env`. Restoring the config re-adds the flag,
+// and without this the .env stays a pointer file, so the server comes back
+// launching against "KEY=jit://vault/..." literals. The user asked to undo a
+// migration and got a config that looks right and a server that cannot work.
+//
+// Transitive by construction (a pulled-in record's own RestoreWith is walked
+// too), and cycle-safe via the shared seen set. A linked path with no record
+// left in the index — its backup pruned, say — is skipped silently: undo
+// already reports per-file failures for everything it was asked to restore,
+// and there is nothing to put back.
+func expandRestoreWith(latest, selected []migrate.BackupRecord, seen map[string]bool) []migrate.BackupRecord {
+	byPath := make(map[string]migrate.BackupRecord, len(latest))
+	for _, r := range latest {
+		byPath[r.OriginalPath] = r
+	}
+	for i := 0; i < len(selected); i++ {
+		for _, linked := range selected[i].RestoreWith {
+			if seen[linked] {
+				continue
+			}
+			rec, ok := byPath[linked]
+			if !ok {
+				continue
+			}
+			seen[linked] = true
+			selected = append(selected, rec)
+		}
+	}
+	return selected
 }
 
 func init() {
