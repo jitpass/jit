@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"time"
 )
 
@@ -18,6 +19,13 @@ import (
 // Reachable(), which costs a second dial per command just to learn what
 // the real call was about to report anyway.
 var ErrNotRunning = errors.New("agent is not running")
+
+// ErrPromptUnanswered is a bounded-wait client giving up on a call that was
+// almost certainly sitting behind a human-in-the-loop prompt (session unlock,
+// per-process consent) that no human was there to answer. Only a client
+// configured via WithResponseTimeout returns it; the default client waits out
+// the challenge's own ceiling instead.
+var ErrPromptUnanswered = errors.New("approval prompt not answered")
 
 // dialTimeout bounds only "is an agent even listening" — fast, since a
 // closed/nonexistent socket fails near-instantly either way.
@@ -45,14 +53,42 @@ const (
 // an already-unlocked agent's session instead of prompting for their own
 // independent Touch ID challenge.
 type Client struct {
-	socketPath string
-	dialRetry  time.Duration
-	waitNotify func()
+	socketPath  string
+	dialRetry   time.Duration
+	waitNotify  func()
+	respTimeout time.Duration
+	// bounded records that respTimeout was deliberately shortened below the
+	// challenge ceiling (WithResponseTimeout), which changes what a timeout
+	// MEANS: not a stuck agent, but a prompt nobody was present to answer.
+	bounded bool
 }
 
 // NewClient returns a Client for the agent socket at socketPath.
 func NewClient(socketPath string) *Client {
-	return &Client{socketPath: socketPath}
+	return &Client{socketPath: socketPath, respTimeout: responseTimeout}
+}
+
+// WithResponseTimeout lowers how long a call may sit unanswered before the
+// client gives up, and marks the resulting timeout as ErrPromptUnanswered.
+//
+// It exists for launches where no human can see (or answer) an approval
+// prompt: an MCP host starting a jit-wrapped server at login, a launchd job,
+// a shim invoked from a script. The default 130s clears the Touch ID
+// challenge ceiling on purpose — right when someone is at the keyboard, and
+// exactly wrong headless, where it reads as a silent hang that an MCP host's
+// own ~30s startup timeout then kills mid-handshake with no explanation. A
+// bounded client fails first, with a message that names the actual problem.
+//
+// The server-side challenge is NOT cancelled by the client giving up; it
+// runs to its own ceiling. That is deliberate: approving the dialog after
+// this client has exited still unlocks the session, so the very next
+// launch succeeds without prompting again.
+func (c *Client) WithResponseTimeout(d time.Duration) *Client {
+	if d > 0 && d < responseTimeout {
+		c.respTimeout = d
+		c.bounded = true
+	}
+	return c
 }
 
 // waitNotifyDelay is how long a single RPC may sit unanswered before we
@@ -135,7 +171,7 @@ func (c *Client) call(req Request) (Response, error) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	if err := conn.SetDeadline(time.Now().Add(responseTimeout)); err != nil {
+	if err := conn.SetDeadline(time.Now().Add(c.respTimeout)); err != nil {
 		return Response{}, fmt.Errorf("setting deadline: %w", err)
 	}
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
@@ -152,6 +188,11 @@ func (c *Client) call(req Request) (Response, error) {
 	}
 	var resp Response
 	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		if c.bounded && errors.Is(err, os.ErrDeadlineExceeded) {
+			return Response{}, fmt.Errorf(
+				"%w within %s: the service is most likely waiting on a Touch ID/consent prompt, and this launch has no terminal for anyone to see it from. Run `jit unlock` in a terminal (or approve the prompt still on screen), then relaunch",
+				ErrPromptUnanswered, c.respTimeout)
+		}
 		return Response{}, fmt.Errorf("reading response: %w", err)
 	}
 	if !resp.OK {

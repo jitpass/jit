@@ -299,14 +299,21 @@ var vaultPathUnsafeChars = regexp.MustCompile(`[^A-Za-z0-9_.\-/]+`)
 // collision-free and non-overwriting the same way backupFile's sibling
 // file naming did.
 func backupSecretFile(v *vault.Vault, path string) (string, error) {
-	return backupSecretFileAs(v, path, false)
+	return backupSecretFileAs(v, path, false, nil)
+}
+
+// backupSecretFileLinking is backupSecretFile for a migration that rewrites
+// more than one file and whose undo is only correct if they come back
+// together — see BackupRecord.RestoreWith.
+func backupSecretFileLinking(v *vault.Vault, path string, restoreWith []string) (string, error) {
+	return backupSecretFileAs(v, path, false, restoreWith)
 }
 
 // snapshotSecretFile is backupSecretFile for the copy RestoreFromBackup takes
 // of whatever it is about to overwrite. Same storage, flagged so it can never
 // become an undo target — see BackupRecord.Snapshot.
 func snapshotSecretFile(v *vault.Vault, path string) (string, error) {
-	return backupSecretFileAs(v, path, true)
+	return backupSecretFileAs(v, path, true, nil)
 }
 
 // backupSecretBytes is backupSecretFile for a caller that already holds the
@@ -321,22 +328,22 @@ func snapshotSecretFile(v *vault.Vault, path string) (string, error) {
 // `jit migrate undo` would silently roll it away — breaking the byte-for-byte
 // promise in the one direction that loses the user's data.
 func backupSecretBytes(v *vault.Vault, path string, data []byte) (string, error) {
-	return storeSecretBackup(v, path, data, false)
+	return storeSecretBackup(v, path, data, false, nil)
 }
 
-func backupSecretFileAs(v *vault.Vault, path string, snapshot bool) (string, error) {
+func backupSecretFileAs(v *vault.Vault, path string, snapshot bool, restoreWith []string) (string, error) {
 	data, err := os.ReadFile(path) // #nosec G304 -- same fixed/discovered path as readLines above
 	if err != nil {
 		return "", err
 	}
-	return storeSecretBackup(v, path, data, snapshot)
+	return storeSecretBackup(v, path, data, snapshot, restoreWith)
 }
 
 // storeSecretBackup encrypts data into the vault's _backups/ namespace under a
 // path derived from the original file, and records it in the undo index. The
 // shared tail of backupSecretFileAs and backupSecretBytes, which differ only
 // in where the bytes came from.
-func storeSecretBackup(v *vault.Vault, path string, data []byte, snapshot bool) (string, error) {
+func storeSecretBackup(v *vault.Vault, path string, data []byte, snapshot bool, restoreWith []string) (string, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return "", fmt.Errorf("resolving %s: %w", path, err)
@@ -374,7 +381,7 @@ func storeSecretBackup(v *vault.Vault, path string, data []byte, snapshot bool) 
 	// file back as it was, not at jit's 0600 default — see BackupRecord.Mode.
 	// A stat failure is not fatal: an unrecorded mode just means the historic
 	// 0600 restore, which is what every pre-existing backup gets anyway.
-	rec := BackupRecord{OriginalPath: absPath, VaultPath: vaultPath, UnixTS: ts, Snapshot: snapshot}
+	rec := BackupRecord{OriginalPath: absPath, VaultPath: vaultPath, UnixTS: ts, Snapshot: snapshot, RestoreWith: restoreWith}
 	if info, statErr := os.Stat(path); statErr == nil {
 		rec.Mode = strconv.FormatUint(uint64(info.Mode().Perm()), 8)
 	}

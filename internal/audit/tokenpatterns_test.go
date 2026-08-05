@@ -380,3 +380,34 @@ func TestEveryRecognizedFormatIsRedactedInTheAuditLog(t *testing.T) {
 		}
 	}
 }
+
+// TestMatchKnownTokenPatternTinyUserinfo pins tinyUserinfoAlt: a userinfo too
+// small on BOTH sides to be a credential is documentation, not a secret. The
+// first case is verbatim from the line that found this (a secrets-scanner's
+// own comment documenting its masking), which is the file class this scanner
+// will keep meeting.
+func TestMatchKnownTokenPatternTinyUserinfo(t *testing.T) {
+	filler := []string{
+		"postgres://u:p@prod.db.co/db",
+		"mysql://a:b@host.example.com/app",
+		"mongodb://ab:cd@localhost/dbname",
+	}
+	for _, v := range filler {
+		if _, _, ok := MatchKnownTokenPattern(v); ok {
+			t.Errorf("MatchKnownTokenPattern(%q) matched, want excluded: a 1-2 char user AND password is filler", v)
+		}
+	}
+
+	// Only BOTH sides being tiny is filler. A short username in front of a
+	// real password is an ordinary credential and must survive, which is the
+	// whole reason this alternative tests two fields instead of one.
+	live := []string{
+		"postgres://u:hunter2xyz@prod.db.co/db",
+		"postgres://admin:hu7@prod.db.co/db",
+	}
+	for _, v := range live {
+		if _, _, ok := MatchKnownTokenPattern(v); !ok {
+			t.Errorf("MatchKnownTokenPattern(%q) was suppressed, want a match: only a tiny userinfo on both sides is filler", v)
+		}
+	}
+}

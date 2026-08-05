@@ -179,3 +179,18 @@ func TestReloadAgentServiceRetriesThroughBootoutRace(t *testing.T) {
 		t.Errorf("a non-race error must not be retried, got %d attempts", bootstraps)
 	}
 }
+
+// The shortened unlock wait is for LAUNCHES, which something else may be
+// timing out. It briefly applied to every command, and `jit migrate` run from
+// a script that captured its output gave up mid-migration after 20s with its
+// owner sitting right there. Only jit run opts in.
+func TestBoundedPromptWaitIsScopedToRun(t *testing.T) {
+	if boundedPromptWait {
+		t.Error("boundedPromptWait defaults to true; every non-launch command must keep the full window")
+	}
+	t.Cleanup(func() { boundedPromptWait = false })
+	boundedPromptWait = true
+	if !boundedPromptWait {
+		t.Error("jit run must be able to opt in")
+	}
+}
