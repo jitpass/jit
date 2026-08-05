@@ -76,6 +76,19 @@ func ClaudeDesktopConfigPath(home string) string {
 // internal/cli's runMigrate). Only returns files with at least one server
 // that actually has a non-empty env block to migrate.
 func DiscoverMCPConfigs(home, cwd string, includeClaudeDesktop bool) ([]string, error) {
+	return discoverMCPConfigFiles(home, cwd, includeClaudeDesktop, hasNonEmptyEnv)
+}
+
+// discoverMCPConfigFiles is DiscoverMCPConfigs' walk with the "is this file
+// interesting" test left to the caller. Two callers want the same file set
+// under two different questions — "has something to migrate" (an env block)
+// and "has something jit already wrote" (a run --profile wrapper, see
+// DiscoverWrappedMCPEntries) — and the part worth sharing is not the
+// predicate but the walk: which directories are pruned, which filenames
+// count, and that the fixed Claude Desktop path is probed separately because
+// no home walk reaches ~/Library. Those three facts drifting between two
+// copies is exactly the failure SkipNoiseDir's doc comment describes.
+func discoverMCPConfigFiles(home, cwd string, includeClaudeDesktop bool, accept func(mcpServerRaw) bool) ([]string, error) {
 	var found []string
 	seen := map[string]bool{}
 
@@ -89,7 +102,7 @@ func DiscoverMCPConfigs(home, cwd string, includeClaudeDesktop bool) ([]string, 
 			return // malformed/unreadable, skip, matches audit's own tolerance
 		}
 		for _, entry := range servers {
-			if hasNonEmptyEnv(entry) {
+			if accept(entry) {
 				found = append(found, path)
 				return
 			}
@@ -464,6 +477,83 @@ func WrappedMCPProfiles(path string) map[string]bool {
 		}
 	}
 	return wrapped
+}
+
+// WrappedMCPEntry is one server entry that jit itself rewrote to launch
+// through `jit run --profile`. It carries the three things that entry
+// depends on and that nothing revalidates after the rewrite: the absolute
+// jit binary it invokes, the profile it names, and the command it wraps.
+type WrappedMCPEntry struct {
+	ConfigPath string
+	ServerName string
+	// JitPath is the entry's "command" — migrateMCPServer deliberately
+	// writes jit's own resolved executable path rather than a bare "jit",
+	// since a GUI-launched MCP host's PATH often doesn't match a shell's.
+	// That is the right call and it is also why this can go stale: the
+	// path is pinned at migration time and survives jit moving.
+	JitPath     string
+	ProfileName string
+	// Command is the wrapped tool — args[4], the first token after the
+	// "--" separator. Empty for an entry that wrapped a bare env block
+	// with no command of its own.
+	Command string
+}
+
+// DiscoverWrappedMCPEntries returns every server entry under cwd (plus, when
+// includeClaudeDesktop, the fixed Claude Desktop config) that currently
+// launches through jit's wrapper.
+//
+// This exists for `jit doctor`. A migrated entry hard-codes an absolute path
+// to the jit binary and a profile name, and nothing ever checks either again:
+// move the binary, switch install methods, or copy a workspace between
+// machines, and every wrapped server fails to launch with the host reporting
+// only "server failed" — a silent failure of jit's own rewrite, in a file the
+// user has no reason to re-read. Dogfooding found exactly this: two entries
+// pointing at /usr/local/bin/jit on a machine whose jit lives in ~/.local/bin.
+func DiscoverWrappedMCPEntries(home, cwd string, includeClaudeDesktop bool) ([]WrappedMCPEntry, error) {
+	paths, err := discoverMCPConfigFiles(home, cwd, includeClaudeDesktop, func(entry mcpServerRaw) bool {
+		return mcpWrapperProfile(entry) != ""
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var entries []WrappedMCPEntry
+	for _, path := range paths {
+		_, _, servers, err := loadMCPFile(path)
+		if err != nil {
+			continue // discovery already tolerated it; don't fail the check on it
+		}
+		names := make([]string, 0, len(servers))
+		for name := range servers {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+
+		for _, name := range names {
+			entry := servers[name]
+			profileName := mcpWrapperProfile(entry)
+			if profileName == "" {
+				continue
+			}
+			var command string
+			_ = json.Unmarshal(entry["command"], &command) // "" for a malformed/absent command, which the caller reports
+			var args []string
+			_ = json.Unmarshal(entry["args"], &args) // shape already validated by mcpWrapperProfile
+			var wrapped string
+			if len(args) > 4 {
+				wrapped = args[4]
+			}
+			entries = append(entries, WrappedMCPEntry{
+				ConfigPath:  path,
+				ServerName:  name,
+				JitPath:     command,
+				ProfileName: profileName,
+				Command:     wrapped,
+			})
+		}
+	}
+	return entries, nil
 }
 
 // MCPServerRestore describes one server entry UnwrapMCPConfig rewrote back

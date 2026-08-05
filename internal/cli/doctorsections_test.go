@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/jitpass/jit/internal/keychainwrap"
+	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -217,5 +218,135 @@ func TestAgentFindingsInstalledNotRunning(t *testing.T) {
 	findings := agentFindingsFrom(t.TempDir(), statusAgent{Installed: true})
 	if len(findings) != 1 || !strings.Contains(findings[0].Detail, "may have crashed") {
 		t.Errorf("expected the installed-but-not-running advice, got %+v", findings)
+	}
+}
+
+// mcpTestSetup builds a HOME with a global profile store and a project cwd
+// holding one jit-wrapped .mcp.json, returning cwd. Both mcpFindings' own
+// os.UserHomeDir and profile.GlobalRoot read $HOME, so setting it is what
+// keeps the check off the developer's real machine.
+func mcpTestSetup(t *testing.T, entry string) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cwd := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cwd, ".mcp.json"),
+		[]byte(`{"mcpServers":{"srv":`+entry+`}}`), 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+	return cwd
+}
+
+func mcpTestJitBinary(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "jit")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil { // #nosec G306 -- a fake executable, by design
+		t.Fatalf("writing fake jit: %v", err)
+	}
+	return path
+}
+
+func mcpTestProfile(t *testing.T, name string) {
+	t.Helper()
+	root, err := profile.GlobalRoot()
+	if err != nil {
+		t.Fatalf("GlobalRoot: %v", err)
+	}
+	path, err := profile.Path(root, name)
+	if err != nil {
+		t.Fatalf("Path: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("API_KEY: "+name+"/API_KEY\n"), 0o600); err != nil {
+		t.Fatalf("writing manifest: %v", err)
+	}
+}
+
+func TestMCPFindingsReportsVanishedJitBinary(t *testing.T) {
+	cwd := mcpTestSetup(t, `{"command":"/nonexistent/bin/jit","args":["run","--profile","mcp-srv","--","uv","run","srv"]}`)
+	mcpTestProfile(t, "mcp-srv")
+
+	findings := mcpFindings(cwd)
+	if len(findings) != 1 {
+		t.Fatalf("findings = %+v, want exactly one", findings)
+	}
+	if findings[0].Kind != kindMCP {
+		t.Errorf("kind = %q, want %q", findings[0].Kind, kindMCP)
+	}
+	if findings[0].Kind.warning() {
+		t.Error("a server that cannot launch is a hard problem, not a warning")
+	}
+	if !strings.Contains(findings[0].Detail, "/nonexistent/bin/jit") {
+		t.Errorf("detail %q must name the missing binary", findings[0].Detail)
+	}
+}
+
+func TestMCPFindingsHealthyEntryIsSilent(t *testing.T) {
+	jit := mcpTestJitBinary(t)
+	cwd := mcpTestSetup(t, `{"command":"`+jit+`","args":["run","--profile","mcp-srv","--","uv","run","srv"]}`)
+	mcpTestProfile(t, "mcp-srv")
+
+	if findings := mcpFindings(cwd); len(findings) != 0 {
+		t.Errorf("findings = %+v, want none for a healthy entry", findings)
+	}
+}
+
+func TestMCPFindingsReportsVanishedProfile(t *testing.T) {
+	jit := mcpTestJitBinary(t)
+	cwd := mcpTestSetup(t, `{"command":"`+jit+`","args":["run","--profile","mcp-gone","--","uv","run","srv"]}`)
+
+	findings := mcpFindings(cwd)
+	if len(findings) != 1 {
+		t.Fatalf("findings = %+v, want exactly one", findings)
+	}
+	if !strings.Contains(findings[0].Detail, "mcp-gone") {
+		t.Errorf("detail %q must name the missing profile", findings[0].Detail)
+	}
+}
+
+// A vanished binary also implies a broken run; reporting both would put two
+// lines on screen for one dead server.
+func TestMCPFindingsReportsOneProblemPerServer(t *testing.T) {
+	cwd := mcpTestSetup(t, `{"command":"/nonexistent/bin/jit","args":["run","--profile","mcp-gone","--","/nonexistent/uv"]}`)
+
+	if findings := mcpFindings(cwd); len(findings) != 1 {
+		t.Fatalf("findings = %+v, want exactly one for a single broken server", findings)
+	}
+}
+
+// A bare "uv"/"npx" resolves against the PATH the MCP HOST gives the server,
+// which this process cannot see. Reporting it would fail a healthy entry.
+func TestMCPFindingsIgnoresBareWrappedCommand(t *testing.T) {
+	jit := mcpTestJitBinary(t)
+	cwd := mcpTestSetup(t, `{"command":"`+jit+`","args":["run","--profile","mcp-srv","--","definitely-not-on-path","serve"]}`)
+	mcpTestProfile(t, "mcp-srv")
+
+	if findings := mcpFindings(cwd); len(findings) != 0 {
+		t.Errorf("findings = %+v, want none: a bare command is PATH-dependent", findings)
+	}
+}
+
+func TestMCPFindingsReportsVanishedAbsoluteCommand(t *testing.T) {
+	jit := mcpTestJitBinary(t)
+	cwd := mcpTestSetup(t, `{"command":"`+jit+`","args":["run","--profile","mcp-srv","--","/nonexistent/caido-mcp-server","serve"]}`)
+	mcpTestProfile(t, "mcp-srv")
+
+	findings := mcpFindings(cwd)
+	if len(findings) != 1 {
+		t.Fatalf("findings = %+v, want exactly one", findings)
+	}
+	if !strings.Contains(findings[0].Detail, "/nonexistent/caido-mcp-server") {
+		t.Errorf("detail %q must name the missing command", findings[0].Detail)
+	}
+}
+
+// An unwrapped server is migrate's business, not doctor's.
+func TestMCPFindingsIgnoresUnwrappedServers(t *testing.T) {
+	cwd := mcpTestSetup(t, `{"command":"npx","args":["-y","srv"],"env":{"API_KEY":"abc"}}`)
+
+	if findings := mcpFindings(cwd); len(findings) != 0 {
+		t.Errorf("findings = %+v, want none: nothing here is jit's", findings)
 	}
 }
