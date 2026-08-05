@@ -232,11 +232,21 @@ type Finding struct {
 	ScanTime       string   `json:"scan_time"`
 	Endpoint       Endpoint `json:"endpoint"`
 
-	FindingType              string  `json:"finding_type"`
-	Severity                 string  `json:"severity"`
-	FilePath                 string  `json:"file_path"`
-	Line                     *int    `json:"line"`
-	KeyName                  *string `json:"key_name"`
+	FindingType string  `json:"finding_type"`
+	Severity    string  `json:"severity"`
+	FilePath    string  `json:"file_path"`
+	Line        *int    `json:"line"`
+	KeyName     *string `json:"key_name"`
+	// EndLine closes a finding that spans lines — today only a PEM key block
+	// pasted into shell history, where Line alone names the header and leaves
+	// the reader guessing how far the block runs.
+	//
+	// Deliberately NOT serialized. The NDJSON envelope is the documented
+	// schema in RFC.md §4, and adding a field to it is a schema version bump
+	// and a contract with every consumer; this exists to let the human-facing
+	// report print a range it already knows. Give it a json tag and a version
+	// when a consumer actually asks for it, not before.
+	EndLine                  *int    `json:"-"`
 	ValuePreview             *string `json:"value_preview"`
 	ProductionIndicatorMatch bool    `json:"production_indicator_match"`
 	PublicIPMatch            *string `json:"public_ip_match"`
