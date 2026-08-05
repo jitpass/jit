@@ -174,6 +174,7 @@ func scanShellHistoryFile(cfg Config, path string) ([]Finding, error) {
 
 	type hit struct {
 		line   int
+		end    int // last line of a key block; 0 when it was never closed
 		value  string
 		vendor string
 		count  int
@@ -181,25 +182,42 @@ func scanShellHistoryFile(cfg Config, path string) ([]Finding, error) {
 	order := []string{}
 	byVendor := map[string]*hit{}
 
+	// openKey is the key block whose END marker has not been seen yet. A key
+	// is the one credential shape that spans lines, and the report needs both
+	// ends of it: "delete those lines by hand" is unfollowable if the reader
+	// is told only where the block starts.
+	var openKey *hit
+
 	scanner := newLineScanner(f)
 	lineNum := 0
 	for scanner.Scan() {
+		raw := scanner.Text()
 		lineNum++
-		cmd, _, ok := historyCommand(scanner.Text())
-		if !ok {
-			continue
-		}
-		if !historyLineMayHoldToken(cmd) {
-			continue
-		}
-		for _, tk := range matchLineTokens(cmd) {
-			h, seen := byVendor[tk.Vendor]
-			if !seen {
-				h = &hit{line: lineNum, value: tk.Value, vendor: tk.Vendor}
-				byVendor[tk.Vendor] = h
-				order = append(order, tk.Vendor)
+		// Nested rather than the two early `continue`s this replaced: the END
+		// marker has to be tested against every RAW line, and the body of a
+		// pasted key is not a history entry at all, so historyCommand rejects
+		// exactly the lines the closing marker lives on.
+		if cmd, _, ok := historyCommand(raw); ok && historyLineMayHoldToken(cmd) {
+			for _, tk := range matchLineTokens(cmd) {
+				h, seen := byVendor[tk.Vendor]
+				if !seen {
+					h = &hit{line: lineNum, value: tk.Value, vendor: tk.Vendor}
+					byVendor[tk.Vendor] = h
+					order = append(order, tk.Vendor)
+					if IsPrivateKeyVendor(tk.Vendor) {
+						openKey = h
+					}
+				}
+				h.count++
 			}
-			h.count++
+		}
+		// Tested AFTER the line's own tokens, and against the same raw line,
+		// so a key pasted as ONE history entry closes on the line it opened:
+		// its BEGIN and END markers are both in that single line, and a block
+		// that starts and ends at 2866 is the truthful answer there.
+		if openKey != nil && isKeyBlockEnd(raw) {
+			openKey.end = lineNum
+			openKey = nil
 		}
 	}
 
@@ -208,7 +226,7 @@ func scanShellHistoryFile(cfg Config, path string) ([]Finding, error) {
 		h := byVendor[vendor]
 		ln := h.line
 		if IsPrivateKeyVendor(vendor) {
-			findings = append(findings, cfg.privateKeyInHistoryFinding(path, vendor, ln, h.count))
+			findings = append(findings, cfg.privateKeyInHistoryFinding(path, vendor, ln, h.end, h.count))
 			continue
 		}
 		f := cfg.ValueFinding(ValueFindingParams{
@@ -246,11 +264,19 @@ func scanShellHistoryFile(cfg Config, path string) ([]Finding, error) {
 // by clicking a button in a dashboard, and whatever it authorizes (a
 // production host, a signing identity) it authorizes until someone
 // regenerates and redistributes it.
-func (c Config) privateKeyInHistoryFinding(path, vendor string, line, count int) Finding {
+func (c Config) privateKeyInHistoryFinding(path, vendor string, line, end, count int) Finding {
 	f := c.baseFinding()
 	f.FindingType = FindingTypeShellHistorySecret
 	f.FilePath = path
 	f.Line = &line
+	// Set whenever the block CLOSED, including when it closed on the line it
+	// opened — a key pasted as one history entry is a one-line block, and
+	// "line 2866 through line 2866" is a known extent, not a missing one.
+	// Only an unclosed block (end 0) leaves this nil, because there the file
+	// genuinely does not say how far the key runs.
+	if end >= line {
+		f.EndLine = &end
+	}
 	f.KeyName = &vendor
 	f.Severity = SeverityCritical
 	f.Confidence = ConfidenceHigh
@@ -518,6 +544,25 @@ func matchLineTokens(line string) []FileToken {
 // regenerate the key, which no command of jit's can do.
 func IsPrivateKeyVendor(vendor string) bool {
 	return strings.HasSuffix(vendor, "Private Key")
+}
+
+// isKeyBlockEnd reports whether a raw history line carries the closing marker
+// of a PEM key block.
+//
+// Substring rather than a regexp, and matched on "END" plus "PRIVATE KEY"
+// separately, because the two markers are not always adjacent on the line
+// being tested: a key pasted as one history entry has the whole body sitting
+// between them. What this must NOT do is bound the distance between them or
+// insist on the surrounding dashes — a quoted paste, a heredoc, and a
+// `ssh-keygen -f /dev/stdout` capture all punctuate the marker differently,
+// and a missed END costs the reader the end of the range while a false one
+// costs a range that stops early.
+func isKeyBlockEnd(line string) bool {
+	i := strings.Index(line, "END")
+	if i < 0 {
+		return false
+	}
+	return strings.Contains(line[i:], "PRIVATE KEY")
 }
 
 // IsShellHistoryPath reports whether path is one of the history files this
