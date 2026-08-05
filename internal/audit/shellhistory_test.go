@@ -6,6 +6,7 @@ package audit
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -656,6 +657,223 @@ func TestShellHistoryTriageCopy(t *testing.T) {
 	plural := manualAction(f, manualContext{secrets: 2, copies: 1}, home)
 	if !strings.Contains(plural, "rotate them") || !strings.Contains(plural, "the lines") {
 		t.Errorf("plural action reads wrong: %q", plural)
+	}
+}
+
+// The address in a history detail line is a coordinate, not a filename, and a
+// reader who cannot open it reads it as text to search for — which finds
+// nothing and looks like a false positive. Every history problem that carries
+// a line number must also carry a way to reach it.
+func TestShellHistoryViewHint(t *testing.T) {
+	home := "/home/u"
+	line := 4821
+	token := "GitHub Personal Access Token"
+	key := "OpenSSH Private Key"
+	base := Finding{
+		FindingType: FindingTypeShellHistorySecret,
+		FilePath:    filepath.Join(home, ".zsh_history"),
+		Line:        &line,
+		Severity:    SeverityHigh,
+		Remedy:      RemedyManual,
+	}
+
+	tf := base
+	tf.KeyName = &token
+	hint := manualViewHint(tf, home)
+	if hint != "to see that line: sed -n '4821p' ~/.zsh_history" {
+		t.Errorf("token hint = %q", hint)
+	}
+
+	// The key case is addressed by a self-locating grep instead: zsh trims
+	// $HISTFILE and shifts every line number below the cut, and a stale
+	// `sed -n` prints an unrelated command with no error at all.
+	// A key block whose extent is known is addressed as a span, and the hint
+	// shows those exact lines: the reader's next move is to delete them, and
+	// checking what you are about to remove is reasonable.
+	end := 4826
+	kf := base
+	kf.KeyName = &key
+	kf.EndLine = &end
+	kf.Severity = SeverityCritical
+	kh := manualViewHint(kf, home)
+	if kh != "to see them: sed -n '4821,4826p' ~/.zsh_history" {
+		t.Errorf("key hint = %q", kh)
+	}
+
+	// Without an end line there is no honest span to print, so it degrades to
+	// locating the markers rather than inventing a window — a guessed range
+	// either stops mid-key or prints unrelated history.
+	open := kf
+	open.EndLine = nil
+	oh := manualViewHint(open, home)
+	if strings.Contains(oh, "sed") {
+		t.Errorf("unclosed key block got a range it does not have: %q", oh)
+	}
+	if !strings.Contains(oh, "grep") || !strings.Contains(oh, "PRIVATE KEY") {
+		t.Errorf("fallback does not locate the key: %q", oh)
+	}
+	// -o carries the fallback's whole safety property. Without it grep prints
+	// the matching LINE, which for a key pasted as one history entry is the
+	// key — and the fallback is precisely the case where jit does not know
+	// what it is about to print.
+	if !strings.Contains(oh, "-no") {
+		t.Errorf("fallback would print the matching line, not the marker: %q", oh)
+	}
+	if strings.Contains(oh, ".*") {
+		t.Errorf("fallback pattern can span into the key body: %q", oh)
+	}
+	// Both forms have to survive a 60-column terminal unwrapped, or they get
+	// copied in halves. 8 columns of indent, then the hint.
+	for _, h := range []string{kh, oh} {
+		if n := 8 + len(h); n > 60 {
+			t.Errorf("hint wraps at 60 columns (%d): %q", n, h)
+		}
+	}
+
+	// Nothing else gets a hint: a plain path is already openable, and the red
+	// section does not hand out commands it has no reason to.
+	other := Finding{
+		FindingType: FindingTypePrivateKeyRisk,
+		FilePath:    filepath.Join(home, ".ssh", "id_rsa"),
+		Remedy:      RemedyManual,
+	}
+	if got := manualViewHint(other, home); got != "" {
+		t.Errorf("non-history finding got a hint: %q", got)
+	}
+	// A history finding with no line number has no address to explain.
+	noline := tf
+	noline.Line = nil
+	if got := manualViewHint(noline, home); got != "" {
+		t.Errorf("line-less history finding got a hint: %q", got)
+	}
+}
+
+// What the hint prints is a property of a shell, not of a Go string, so drive
+// the scanner over each shape a key reaches history in and then RUN the hint
+// it produces. Two obligations, and which one applies depends on whether jit
+// knows the block's extent:
+//
+//   - a closed block is addressed as a span and shows those lines, key body
+//     included — the deliberate choice (2026-08-05) that the reader gets to
+//     see what they are about to delete;
+//   - anything else falls back to locating markers, and there the output must
+//     hold no key material, because jit does not know how far the block runs
+//     and a command that guesses would print whatever it happened to cover.
+func TestShellHistoryViewHintRuns(t *testing.T) {
+	const body = "b3BlbnNzaC1rZXktdjEAAAAABG5vbmVTECRETBODY"
+	dir := t.TempDir()
+
+	for _, c := range []struct {
+		name    string
+		lines   []string
+		wantEnd int  // 0 when the finding should carry no range
+		shows   bool // whether the hint is allowed to print the body
+	}{
+		// The header is line 2 in each case; writeHistory adds no preamble.
+		{"multi-line paste", []string{
+			": 1:0;cat > k <<EOF",
+			"-----BEGIN OPENSSH PRIVATE KEY-----",
+			body,
+			"-----END OPENSSH PRIVATE KEY-----",
+		}, 4, true},
+		// BEGIN and END share the line, so the block opens and closes at 2.
+		// That is a known extent, so it shows the line — which for this shape
+		// is the whole key, exactly as the multi-line case is.
+		{"single-entry paste", []string{
+			": 1:0;true",
+			`: 2:0;echo "-----BEGIN OPENSSH PRIVATE KEY-----` + body + `-----END OPENSSH PRIVATE KEY-----" > k`,
+		}, 2, true},
+		{"truncated block", []string{
+			": 1:0;ssh-keygen -t rsa",
+			"-----BEGIN RSA PRIVATE KEY-----",
+			body,
+		}, 0, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			path := writeHistory(t, dir, strings.ReplaceAll(c.name, " ", "_"), c.lines...)
+			findings, err := scanShellHistoryFile(Config{}, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var key *Finding
+			for i := range findings {
+				if findings[i].KeyName != nil && IsPrivateKeyVendor(*findings[i].KeyName) {
+					key = &findings[i]
+				}
+			}
+			if key == nil {
+				t.Fatalf("no private key finding from %v", c.lines)
+			}
+			switch {
+			case c.wantEnd == 0 && key.EndLine != nil:
+				t.Fatalf("EndLine = %d, want none", *key.EndLine)
+			case c.wantEnd != 0 && key.EndLine == nil:
+				t.Fatalf("EndLine = none, want %d", c.wantEnd)
+			case c.wantEnd != 0 && *key.EndLine != c.wantEnd:
+				t.Fatalf("EndLine = %d, want %d", *key.EndLine, c.wantEnd)
+			}
+
+			hint := manualViewHint(*key, dir)
+			var cmd string
+			var ok bool
+			for _, lead := range []string{"to see them: ", "to see it: ", "to find it: "} {
+				if cmd, ok = strings.CutPrefix(hint, lead); ok {
+					break
+				}
+			}
+			if !ok {
+				t.Fatalf("hint is no longer a runnable command: %q", hint)
+			}
+			// The hint shortens $HOME, which is not this test's temp dir.
+			cmd = strings.Replace(cmd, ShortenHome(dir, path), path, 1)
+			out, err := exec.Command("sh", "-c", cmd).Output()
+			if err != nil {
+				t.Fatalf("hint command failed: %v (%q)", err, cmd)
+			}
+			got := string(out)
+			if leaked := strings.Contains(got, body); leaked != c.shows {
+				t.Errorf("hint printed key material = %v, want %v\ncommand: %s\noutput:\n%s",
+					leaked, c.shows, cmd, got)
+			}
+			if c.shows && !strings.Contains(got, "BEGIN") {
+				t.Errorf("range hint missed the start of the block:\n%s", got)
+			}
+		})
+	}
+}
+
+// A merged group keeps one hint per address, for the same reason it keeps one
+// detail line per address: a single hint would send the reader to whichever
+// line happened to sort first.
+func TestShellHistoryViewHintSurvivesMerge(t *testing.T) {
+	home := "/home/u"
+	l1, l2 := 12, 900
+	vendor := "GitHub Personal Access Token"
+	mk := func(path string, line *int) Finding {
+		return Finding{
+			FindingType: FindingTypeShellHistorySecret,
+			FilePath:    filepath.Join(home, path),
+			Line:        line,
+			KeyName:     &vendor,
+			Severity:    SeverityHigh,
+			Remedy:      RemedyManual,
+			CauseGroup:  path,
+		}
+	}
+	groups := triageGroupManual([]Finding{mk(".zsh_history", &l1), mk(".bash_history", &l2)}, home)
+
+	var hints []string
+	for _, g := range groups {
+		if len(g.hints) != len(g.details) {
+			t.Fatalf("hints (%d) and details (%d) fell out of step", len(g.hints), len(g.details))
+		}
+		hints = append(hints, g.hints...)
+	}
+	joined := strings.Join(hints, "\n")
+	for _, want := range []string{"12p", "900p", "~/.zsh_history", "~/.bash_history"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("merged hints lost %q:\n%s", want, joined)
+		}
 	}
 }
 
