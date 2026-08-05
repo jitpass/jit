@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/consent"
@@ -1316,8 +1317,30 @@ func agentClient() (*agent.Client, error) {
 		c = c.WithDialRetry(agentRestartGrace)
 	}
 	c = c.WithWaitNotifier(announceTouchIDWait)
+	// A launch with no terminal on stderr is one where nobody can see the
+	// wait notice below, let alone the OS prompt behind it — an MCP host
+	// starting a wrapped server at login, a launchd job, a shim inside a
+	// script. There the default 130s (sized to clear the Touch ID ceiling
+	// for someone AT the keyboard) is a silent hang that the MCP host's own
+	// ~30s startup timeout kills mid-handshake first, blaming the server.
+	// Bounded, jit fails before the host does, and the message that lands in
+	// the host's captured-stderr log names the real problem and the fix.
+	//
+	// stderr, not stdin/stdout: those are pipes in an ordinary terminal
+	// pipeline (`jit run ... | grep`) where the user IS present and the full
+	// wait is right. stderr-is-a-TTY is precisely "a human can see jit's
+	// explanation of the pause."
+	if !term.IsTerminal(int(os.Stderr.Fd())) {
+		c = c.WithResponseTimeout(headlessPromptWait)
+	}
 	return c, nil
 }
+
+// headlessPromptWait bounds how long a terminal-less launch waits on a
+// human-in-the-loop prompt. Under Claude Code's default 30s MCP startup
+// timeout with room to spare, so the host reports jit's own message from the
+// server log instead of killing jit mid-handshake and blaming the server.
+const headlessPromptWait = 20 * time.Second
 
 // announceTouchIDWait is the wait notifier every CLI agent client carries: it
 // prints one line to stderr when a request has been blocked long enough to

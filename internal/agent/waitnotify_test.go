@@ -5,7 +5,9 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -74,5 +76,62 @@ func TestWaitNotifierStaysSilentOnAPromptFreeCall(t *testing.T) {
 	time.Sleep(waitNotifyDelay + 100*time.Millisecond)
 	if got := atomic.LoadInt32(&fired); got != 0 {
 		t.Fatalf("wait notifier fired %d times on a fast call, want 0", got)
+	}
+}
+
+// A bounded client giving up on a stalled call must say what the stall almost
+// certainly was — a prompt nobody answered — and be errors.Is-matchable so a
+// caller can rewrite it. The notifier still fires first, so a captured-stderr
+// log shows the explanation and THEN the failure, in that order.
+func TestBoundedClientGivesUpWithPromptUnanswered(t *testing.T) {
+	socketPath := replyAfter(t, 2*time.Second) // "stuck behind a prompt"
+
+	var notified int32
+	c := NewClient(socketPath).
+		WithWaitNotifier(func() { atomic.AddInt32(&notified, 1) }).
+		WithResponseTimeout(600 * time.Millisecond)
+
+	start := time.Now()
+	_, _, err := c.Unlock()
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("Unlock succeeded against a server that never answered in time")
+	}
+	if !errors.Is(err, ErrPromptUnanswered) {
+		t.Errorf("err = %v, want errors.Is(_, ErrPromptUnanswered)", err)
+	}
+	if !strings.Contains(err.Error(), "jit unlock") {
+		t.Errorf("err = %v, want the actionable `jit unlock` hint in the message", err)
+	}
+	if elapsed >= 2*time.Second {
+		t.Errorf("gave up after %v, want well before the server's 2s reply", elapsed)
+	}
+	if atomic.LoadInt32(&notified) != 1 {
+		t.Errorf("wait notifier fired %d times, want 1 (the log needs the explanation before the failure)", notified)
+	}
+}
+
+// A reply that lands inside the bound is a normal call: no error, no
+// ErrPromptUnanswered, nothing different from the unbounded client.
+func TestBoundedClientStillWaitsOutAQuickPrompt(t *testing.T) {
+	socketPath := replyAfter(t, 200*time.Millisecond)
+	c := NewClient(socketPath).WithResponseTimeout(2 * time.Second)
+	if _, _, err := c.Unlock(); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+}
+
+// WithResponseTimeout may only LOWER the wait. A value at or above the
+// default would relabel a genuine anomaly (the 130s ceiling blowing) as
+// "prompt unanswered", which is a different problem with a different fix.
+func TestWithResponseTimeoutOnlyLowers(t *testing.T) {
+	c := NewClient("ignored").WithResponseTimeout(responseTimeout + time.Minute)
+	if c.bounded || c.respTimeout != responseTimeout {
+		t.Errorf("respTimeout/bounded = %v/%v, want the default kept", c.respTimeout, c.bounded)
+	}
+	c = NewClient("ignored").WithResponseTimeout(0)
+	if c.bounded {
+		t.Error("a zero timeout must be a no-op, not an instant give-up")
 	}
 }
