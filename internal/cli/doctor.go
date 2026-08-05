@@ -544,6 +544,8 @@ func findingLabel(f checkFinding) string {
 		return "[rekey]"
 	case kindAudit:
 		return "[audit]"
+	case kindMCP:
+		return "[mcp]"
 	default:
 		return ""
 	}
@@ -559,7 +561,7 @@ func findingLabel(f checkFinding) string {
 // that identifies the file off the first line (rule 6).
 func formatFinding(f checkFinding) string {
 	switch f.Kind {
-	case kindParse, kindNotFound, kindService, kindBackup, kindWrap, kindWrapEnv, kindMount, kindVaultKey, kindRekey, kindAudit:
+	case kindParse, kindNotFound, kindService, kindBackup, kindWrap, kindWrapEnv, kindMount, kindVaultKey, kindRekey, kindAudit, kindMCP:
 		return shortHome(f.Detail)
 	case kindMissing:
 		return fmt.Sprintf("%s: %s → %s, not in the vault", profileRef(f), f.Variable, f.Path)

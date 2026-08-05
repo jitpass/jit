@@ -117,6 +117,21 @@ const (
 	kindMCP checkKind = "mcp"
 )
 
+// allCheckKinds enumerates every kind above, for the completeness tests that
+// walk it. It exists because a kind is declared in one file and rendered in
+// another: kindMCP shipped with no case in findingLabel, so its group header
+// rendered as a bare count with no name, and every unit test passed because
+// each asserted on the finding it built rather than on how it displayed.
+// A switch with a "" default cannot fail loudly, so the enumeration has to.
+//
+// Add new kinds here.
+var allCheckKinds = []checkKind{
+	kindParse, kindNotFound, kindMissing, kindCorrupt, kindVaultError,
+	kindBadPath, kindOrphan, kindShadowed, kindService, kindBackup,
+	kindWrap, kindWrapEnv, kindMount, kindVaultKey, kindRekey, kindAudit,
+	kindMCP,
+}
+
 // warning reports whether a finding of this kind is advisory (does not fail
 // the run or flip ok=false) rather than a hard problem. A hard problem means
 // a secret this setup depends on cannot be read: missing, corrupt,
