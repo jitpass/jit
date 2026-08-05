@@ -945,3 +945,33 @@ func TestDoctorProfileFlagSkipsSystemSections(t *testing.T) {
 		t.Errorf("expected no system-health warnings under --profile, got:\n%s", out)
 	}
 }
+
+// TestEveryCheckKindHasALabel is the test that would have caught kindMCP
+// shipping without one. A kind is declared in profilecheck.go and rendered in
+// doctor.go, findingLabel's default arm returns "" rather than failing, and a
+// group header with no name renders as a bare count -- visible only to someone
+// running the command, which no unit test asserting on checkFinding values
+// ever does.
+func TestEveryCheckKindHasALabel(t *testing.T) {
+	for _, k := range allCheckKinds {
+		label := findingLabel(checkFinding{Kind: k})
+		if label == "" {
+			t.Errorf("checkKind %q has no findingLabel: its doctor group renders as a bare count", k)
+			continue
+		}
+		if !strings.HasPrefix(label, "[") || !strings.HasSuffix(label, "]") {
+			t.Errorf("findingLabel(%q) = %q, want the bracketed `[category]` header shape", k, label)
+		}
+	}
+}
+
+// Every kind must also render a body, or its finding prints as an empty line
+// under a correct header.
+func TestEveryCheckKindFormatsABody(t *testing.T) {
+	for _, k := range allCheckKinds {
+		f := checkFinding{Kind: k, Detail: "something is wrong", Profile: "p", Variable: "V", Path: "p/V"}
+		if formatFinding(f) == "" {
+			t.Errorf("checkKind %q formats to an empty body", k)
+		}
+	}
+}
