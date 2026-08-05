@@ -918,10 +918,29 @@ var vaultRmCmd = &cobra.Command{
 	Args:              cobra.MinimumNArgs(1),
 	ValidArgsFunction: completeVaultPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Validate BEFORE the confirmation and the biometric gate. Remove
+		// validates each path itself, but that runs after both, so a
+		// malformed path made jit demand a fingerprint to delete something it
+		// was always going to refuse. Hit for real by a shell-quoting slip
+		// that passed seventeen paths as one argument: the prompt appeared,
+		// asked for a password, and the command then failed on the argument
+		// it had just been authorized to act on. Needless prompts are how
+		// users learn to approve without reading.
+		for _, path := range args {
+			if err := vault.ValidatePath(path); err != nil {
+				return fmt.Errorf("jit vault rm: %w", err)
+			}
+		}
+
 		var confirmQ, presence string
 		if len(args) == 1 {
 			confirmQ = fmt.Sprintf("Permanently delete %s from the vault? This can't be undone. [y/N] ", args[0])
-			presence = fmt.Sprintf("delete the secret %q from the vault", args[0])
+			// Bounded: this string is rendered verbatim into a macOS
+			// authentication dialog, which neither wraps nor scrolls
+			// usefully. A long path pushed the actual question off the
+			// visible area, leaving a wall of text over an OK button --
+			// the exact shape of a prompt people approve without reading.
+			presence = fmt.Sprintf("delete the secret %q from the vault", promptEllipsis(args[0], 60))
 		} else {
 			confirmQ = fmt.Sprintf("Permanently delete these %d secrets from the vault? This can't be undone:\n  %s\n[y/N] ",
 				len(args), strings.Join(args, "\n  "))
@@ -967,6 +986,18 @@ var vaultRmCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+// promptEllipsis shortens s for display inside a macOS authentication
+// dialog, keeping the head and tail (a secret path's profile and variable
+// name are the identifying halves; the middle is the least informative part
+// to lose).
+func promptEllipsis(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	keep := (max - 1) / 2
+	return s[:keep] + "…" + s[len(s)-keep:]
 }
 
 // vaultHistoryResult is jit vault history's --format json shape: one row

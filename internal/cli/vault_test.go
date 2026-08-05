@@ -1096,3 +1096,40 @@ func TestConfirmPromptDecline(t *testing.T) {
 		}
 	}
 }
+
+// A malformed path must be rejected before the confirmation and the
+// biometric gate. It used to reach vault.Remove, which validates -- but only
+// after jit had already demanded a fingerprint for an operation it was always
+// going to refuse.
+func TestVaultRmRejectsBadPathBeforePrompting(t *testing.T) {
+	cmd := vaultRmCmd
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	err := cmd.RunE(cmd, []string{"not a valid path!! with spaces"})
+	if err == nil {
+		t.Fatal("RunE succeeded on a malformed secret path, want a validation error")
+	}
+	if !strings.Contains(err.Error(), "must be slash-separated") {
+		t.Errorf("error = %v, want the path-shape rejection", err)
+	}
+	// No prompt, no gate: the run never got far enough to write anything.
+	if out.Len() != 0 {
+		t.Errorf("output = %q, want nothing printed before the rejection", out.String())
+	}
+}
+
+func TestPromptEllipsis(t *testing.T) {
+	if got := promptEllipsis("short/path", 60); got != "short/path" {
+		t.Errorf("promptEllipsis kept-as-is = %q, want the input unchanged", got)
+	}
+	long := strings.Repeat("a", 40) + "/" + strings.Repeat("b", 40)
+	got := promptEllipsis(long, 30)
+	if len([]rune(got)) > 30 {
+		t.Errorf("promptEllipsis(%d chars) = %d runes, want <= 30", len(long), len([]rune(got)))
+	}
+	// Head and tail survive: they are the identifying halves of a secret path.
+	if !strings.HasPrefix(got, "aaa") || !strings.HasSuffix(got, "bbb") {
+		t.Errorf("promptEllipsis = %q, want the head and tail kept", got)
+	}
+}
