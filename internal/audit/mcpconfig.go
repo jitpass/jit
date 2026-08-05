@@ -492,6 +492,13 @@ func scanMCPEnvFilePointers(cfg Config, path, serverName string, entry mcpServer
 			// belongs.
 			continue
 		}
+		// An already-migrated target holds vault PATHS, not values. classifyEnvFile
+		// guards its own scan with this; reaching buildEnvFileFinding directly
+		// skipped it, and a neutralized file reported as "1 plaintext variable" —
+		// noise, and it aimed the fix hint at a file with nothing left to move.
+		if isJitPointerContent(target) {
+			continue
+		}
 
 		// Classified by the env-file scanner itself, not by a second opinion
 		// built here. FindFileTokens was the obvious probe and is the wrong

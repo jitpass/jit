@@ -1317,8 +1317,8 @@ func agentClient() (*agent.Client, error) {
 		c = c.WithDialRetry(agentRestartGrace)
 	}
 	c = c.WithWaitNotifier(announceTouchIDWait)
-	// A launch with no terminal on stderr is one where nobody can see the
-	// wait notice below, let alone the OS prompt behind it — an MCP host
+	// A LAUNCH with no terminal on stderr is one where nobody can see the
+	// wait notice above, let alone the OS prompt behind it — an MCP host
 	// starting a wrapped server at login, a launchd job, a shim inside a
 	// script. There the default 130s (sized to clear the Touch ID ceiling
 	// for someone AT the keyboard) is a silent hang that the MCP host's own
@@ -1330,11 +1330,20 @@ func agentClient() (*agent.Client, error) {
 	// pipeline (`jit run ... | grep`) where the user IS present and the full
 	// wait is right. stderr-is-a-TTY is precisely "a human can see jit's
 	// explanation of the pause."
-	if !term.IsTerminal(int(os.Stderr.Fd())) {
+	if boundedPromptWait && !term.IsTerminal(int(os.Stderr.Fd())) {
 		c = c.WithResponseTimeout(headlessPromptWait)
 	}
 	return c, nil
 }
+
+// boundedPromptWait scopes the shortened wait above to `jit run`, which sets
+// it before touching the vault. Only a LAUNCH has something else timing it
+// out; every other command is one a human typed and is waiting on, and
+// bounding those broke a real workflow: `jit migrate` invoked from a script
+// that captured its output gave up mid-migration after 20s, on a machine
+// whose owner was sitting right there. A package var because cobra runs one
+// command per process, matching how this package carries its other flags.
+var boundedPromptWait bool
 
 // headlessPromptWait bounds how long a terminal-less launch waits on a
 // human-in-the-loop prompt. Under Claude Code's default 30s MCP startup

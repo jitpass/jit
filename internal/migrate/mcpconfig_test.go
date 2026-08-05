@@ -825,3 +825,102 @@ func TestStripEnvFileArgs(t *testing.T) {
 		})
 	}
 }
+
+// Two servers reading ONE --env-file. Neutralizing inside the per-server loop
+// made the first server vault the real values and rewrite the file to a
+// pointer, after which the second parsed that pointer and stored
+// "jit://vault/mcp-alpha/TOKEN" as its own credential -- silently, so its
+// server would have received that string as a token.
+func TestApplyMCPConfigSharedEnvFileGivesBothServersTheRealValue(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	envPath := filepath.Join(home, "common.env")
+	const real = "00tGx7Kw2LpQ4vRs9XmZb3NcJdF6Yh1Wq8"
+	writeFile(t, envPath, "SHARED_TOKEN="+real+"\n")
+	path := filepath.Join(home, ".mcp.json")
+	writeFile(t, path, `{"mcpServers":{
+		"alpha":{"command":"uv","args":["run","--env-file","`+envPath+`","alpha"]},
+		"beta":{"command":"uv","args":["run","--env-file","`+envPath+`","beta"]}}}`)
+
+	v := newTestVault(t)
+	if _, err := ApplyMCPConfig(v, path); err != nil {
+		t.Fatalf("ApplyMCPConfig: %v", err)
+	}
+	for _, profileName := range []string{"mcp-alpha", "mcp-beta"} {
+		got, err := v.Get(profileName + "/SHARED_TOKEN")
+		if err != nil {
+			t.Fatalf("v.Get(%s/SHARED_TOKEN): %v", profileName, err)
+		}
+		if string(got) != real {
+			t.Errorf("%s/SHARED_TOKEN = %q, want the real value, not a pointer", profileName, got)
+		}
+	}
+	// One file, one rewrite, however many servers read it.
+	body, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("reading %s: %v", envPath, err)
+	}
+	if strings.Count(string(body), "SHARED_TOKEN=") != 1 {
+		t.Errorf("pointer file names SHARED_TOKEN more than once:\n%s", body)
+	}
+	if strings.Contains(string(body), real) {
+		t.Error("the credential is still on disk")
+	}
+}
+
+// A target another config already converted holds vault paths, not values.
+// Migrating it again would store "jit://vault/..." as a credential.
+func TestApplyMCPConfigSkipsAnAlreadyNeutralizedEnvFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	envPath := filepath.Join(home, "done.env")
+	writeFile(t, envPath, "# jit pointer file, no secret values here, only vault paths.\nTOKEN=jit://vault/mcp-other/TOKEN\n")
+	path := filepath.Join(home, ".mcp.json")
+	writeFile(t, path, `{"mcpServers":{"srv":{"command":"uv","args":["run","--env-file","`+envPath+`","srv"]}}}`)
+
+	if got := migratableEnvFiles(path, mcpServerRaw{
+		"args": json.RawMessage(`["run","--env-file","` + envPath + `","srv"]`),
+	}); len(got) != 0 {
+		t.Errorf("migratableEnvFiles = %v, want none: the target is already a pointer file", got)
+	}
+
+	v := newTestVault(t)
+	if _, err := ApplyMCPConfig(v, path); err == nil {
+		t.Error("ApplyMCPConfig succeeded, want it to find nothing to migrate")
+	}
+	if _, err := v.Get("mcp-srv/TOKEN"); err == nil {
+		t.Error("a pointer line was stored as a credential")
+	}
+}
+
+// The hard stop must land before ANY file is touched, not partway through the
+// server loop, so one bad file cannot leave a config half-migrated.
+func TestApplyMCPConfigUnparsedEnvFileLeavesEverythingUntouched(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	goodPath := filepath.Join(home, "good.env")
+	badPath := filepath.Join(home, "bad.env")
+	writeFile(t, goodPath, "GOOD_TOKEN=00tGx7Kw2LpQ4vRs9XmZb3\n")
+	writeFile(t, badPath, "this is not a KEY=value line at all &&&\n")
+	path := filepath.Join(home, ".mcp.json")
+	// "alpha" sorts first and would migrate cleanly; "beta" carries the bad
+	// file. Alphabetical order is what makes this a regression test.
+	writeFile(t, path, `{"mcpServers":{
+		"alpha":{"command":"uv","args":["run","--env-file","`+goodPath+`","alpha"]},
+		"beta":{"command":"uv","args":["run","--env-file","`+badPath+`","beta"]}}}`)
+
+	v := newTestVault(t)
+	if _, err := ApplyMCPConfig(v, path); err == nil {
+		t.Fatal("ApplyMCPConfig succeeded despite an unparseable --env-file target")
+	}
+	body, err := os.ReadFile(goodPath)
+	if err != nil {
+		t.Fatalf("reading %s: %v", goodPath, err)
+	}
+	if !strings.Contains(string(body), "GOOD_TOKEN=00tGx7Kw2LpQ4vRs9XmZb3") {
+		t.Errorf("a healthy server's env file was rewritten before the run failed:\n%s", body)
+	}
+	if _, err := v.Get("mcp-alpha/GOOD_TOKEN"); err == nil {
+		t.Error("a secret was vaulted before the run failed on another server")
+	}
+}

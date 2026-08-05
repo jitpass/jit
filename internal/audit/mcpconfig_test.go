@@ -335,3 +335,25 @@ func TestScanMCPConfigsClaudeCodeStore(t *testing.T) {
 		t.Errorf("a project-scoped server went unscanned; got %v", slices.Sorted(maps.Keys(keys)))
 	}
 }
+
+// A jit pointer file holds vault PATHS, not values. classifyEnvFile guards
+// its own scan with isJitPointerContent; reaching buildEnvFileFinding directly
+// skipped that, and a neutralized file was reported as "1 plaintext variable"
+// -- noise, aimed at a file with nothing left to move.
+func TestScanMCPConfigsIgnoresANeutralizedEnvFile(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "proj")
+	mkdirAll(t, dir)
+	writeFile(t, filepath.Join(dir, "creds.env"),
+		"# jit pointer file, no secret values here, only vault paths.\nTOKEN=jit://vault/mcp-srv/TOKEN\n")
+	writeFile(t, filepath.Join(dir, ".mcp.json"),
+		`{"mcpServers":{"srv":{"command":"uv","args":["run","--env-file","./creds.env","srv"]}}}`)
+
+	findings, err := ScanMCPConfigs(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("ScanMCPConfigs: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("findings = %+v, want none: the target is already neutralized", findings)
+	}
+}
