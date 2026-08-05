@@ -112,7 +112,7 @@ func auditLogFindings(root string) []checkFinding {
 		return []checkFinding{{
 			Kind:   kindAudit,
 			Detail: fmt.Sprintf("%s is a directory, so no command is being recorded", shortPath(path)),
-			Action: "remove it — the next jit command recreates the log",
+			Action: "remove it, and the next jit command recreates the log",
 		}}
 	}
 	// Openable for append is the exact question Append asks, so ask it the
@@ -243,7 +243,7 @@ func gatherVaultIntegrityFindings(root string, v *vault.Vault) []checkFinding {
 	if rekeyInProgress(root) {
 		out = append(out, checkFinding{
 			Kind:   kindRekey,
-			Detail: "a master-key rotation is in progress, or was interrupted — every command that writes to the vault will refuse until it finishes.",
+			Detail: "a master-key rotation is in progress, or was interrupted, so every command that writes to the vault will refuse until it finishes.",
 			Action: "`jit vault rekey` to finish it",
 		})
 	}
@@ -276,7 +276,7 @@ func gatherVaultIntegrityFindings(root string, v *vault.Vault) []checkFinding {
 		out = append(out, checkFinding{
 			Kind: kindVaultKey,
 			Detail: fmt.Sprintf(
-				"the vault holds %s but this Mac's master key is missing from the keychain, so none of them can be decrypted. Every envelope is structurally intact — only the key is gone.",
+				"the vault holds %s but this Mac's master key is missing from the keychain, so none of them can be decrypted. Every envelope is structurally intact; only the key is gone.",
 				countWord(len(paths), "secret", "secrets")),
 			Action: "`jit vault import <file>` from a `jit vault export` backup",
 		})
@@ -325,13 +325,13 @@ func agentFindingsFrom(root string, st statusAgent) []checkFinding {
 	case !st.Running && st.Installed:
 		out = append(out, checkFinding{
 			Kind:   kindService,
-			Detail: "the service is installed but not running — it may have crashed, or be mid-restart.",
+			Detail: "the service is installed but not running; it may have crashed, or be mid-restart.",
 			// installedNotRunningAdvice packs the restart, what it recovers,
 			// and the log command into one sentence, which is three next
 			// steps on one line. The action line takes at most one (rule:
 			// "a reader given three next steps takes none"); the log command
 			// follows as its own finding-level note rather than riding along.
-			Action: "`jit service restart` — reloads it, recovering even one launchd has dropped. `jit service log` shows recent output",
+			Action: "`jit service restart` reloads it, recovering even one launchd has dropped. `jit service log` shows recent output",
 		})
 	case !st.Running:
 		// Not installed and not running is fine on its own — you just haven't
@@ -365,17 +365,17 @@ func backupFindings(v *vault.Vault) []checkFinding {
 	case !vs.ExportRecorded:
 		return []checkFinding{{
 			Kind:   kindBackup,
-			Detail: "no vault export on record — the vault only decrypts on this Mac.",
+			Detail: "no vault export on record, so the vault only decrypts on this Mac.",
 			// Matches the wording `jit status` uses for the same state, so
 			// the two surfaces read as one tool.
-			Action: "`jit vault export <file>` — a copy you could restore on another Mac",
+			Action: "`jit vault export <file>` makes a copy you could restore on another Mac",
 		}}
 	case vs.ExportStale:
 		return []checkFinding{{
 			Kind: kindBackup,
 			Detail: fmt.Sprintf("secrets have changed since the last vault export (%s).",
 				time.Unix(vs.ExportUnixTime, 0).Format("2006-01-02")),
-			Action: "`jit vault export <file>` — the newest secrets aren't in any backup",
+			Action: "`jit vault export <file>`, because the newest secrets aren't in any backup",
 		}}
 	}
 	return nil
