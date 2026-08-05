@@ -85,6 +85,12 @@ var runCmd = &cobra.Command{
 		return nil
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// This is a LAUNCH: something else (an MCP host's startup timeout,
+		// a supervisor) may be timing it out, so a terminal-less run gives up
+		// on an unanswerable prompt rather than hanging past it. See
+		// boundedPromptWait; every other jit command keeps the full window.
+		boundedPromptWait = true
+
 		cwd, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("jit run: %w", err)

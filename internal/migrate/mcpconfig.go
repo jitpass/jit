@@ -230,14 +230,26 @@ func ApplyMCPConfig(v *vault.Vault, path string) (MCPConfigMigration, error) {
 	}
 	sort.Strings(names)
 
+	// Every --env-file target is read ONCE, before any of them is rewritten.
+	// Neutralizing inside the per-server loop was a silent corruption when two
+	// servers shared one file: the first vaulted the real values and replaced
+	// the file with a pointer, and the second then parsed that pointer and
+	// stored "jit://vault/mcp-alpha/TOKEN" as its own credential. Reading up
+	// front also moves the unparseable-line hard stop ahead of every mutation.
+	envCache, err := readMCPEnvFiles(path, servers, names)
+	if err != nil {
+		return MCPConfigMigration{}, err
+	}
+
 	result := MCPConfigMigration{FilePath: path}
+	pointers := newEnvFilePointerSet()
 	for _, name := range names {
 		entry := servers[name]
 		if !hasMigratableCredentials(path, entry) {
 			continue
 		}
 
-		serverMigration, err := migrateMCPServer(v, home, jitPath, path, name, entry)
+		serverMigration, err := migrateMCPServer(v, home, jitPath, path, name, entry, envCache, pointers)
 		if err != nil {
 			return MCPConfigMigration{}, fmt.Errorf("%s: server %q: %w", path, name, err)
 		}
@@ -245,6 +257,13 @@ func ApplyMCPConfig(v *vault.Vault, path string) (MCPConfigMigration, error) {
 	}
 	if len(result.Servers) == 0 {
 		return MCPConfigMigration{}, fmt.Errorf("%s has no server with secrets to migrate", path)
+	}
+
+	// Now that every value is in the vault and every manifest is written, the
+	// source files can be neutralized -- once each, whatever number of servers
+	// read them.
+	if err := pointers.replaceAll(v); err != nil {
+		return MCPConfigMigration{}, err
 	}
 
 	serversJSON, err := marshalJSONNoEscape(servers, "")
@@ -285,7 +304,7 @@ func ApplyMCPConfig(v *vault.Vault, path string) (MCPConfigMigration, error) {
 // config file being migrated — MCP profile namespaces are claimed per
 // source file (claimMCPNamespace, GAPS.md #56), so a same-named server in
 // a different config can never silently overwrite this one's secrets.
-func migrateMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, serverName string, entry mcpServerRaw) (MCPServerMigration, error) {
+func migrateMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, serverName string, entry mcpServerRaw, envCache map[string]*mcpEnvFile, pointers *envFilePointerSet) (MCPServerMigration, error) {
 	// Absent, not merely empty: with the widened discovery gate a server can
 	// reach here carrying an --env-file and no env block at all, and
 	// json.Unmarshal(nil, ...) fails with "unexpected end of JSON input".
@@ -296,33 +315,23 @@ func migrateMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, serverNam
 		}
 	}
 
-	// Absorb every --env-file this server reads into the same profile. The
-	// env BLOCK wins a name collision: it is set by the host on the child
-	// process, which is the more explicit and more local of the two, and
-	// silently preferring the file would change what the server sees.
+	// Absorb every --env-file this server reads into the same profile, from
+	// the up-front cache (see readMCPEnvFiles). The env BLOCK wins a name
+	// collision: it is set by the host on the child process, which is the
+	// more explicit and more local of the two, and silently preferring the
+	// file would change what the server sees.
 	envFiles := migratableEnvFiles(sourcePath, entry)
 	fileVars := map[string][]string{}
 	for _, target := range envFiles {
-		values, names, unparsed, perr := parseEnvFile(target)
-		if perr != nil {
-			return MCPServerMigration{}, fmt.Errorf("parsing %s: %w", target, perr)
+		cached, ok := envCache[target]
+		if !ok {
+			continue
 		}
-		// ApplyEnvFile's hard stop, for the same reason: the next steps
-		// rewrite this file, so "I silently dropped what I could not parse"
-		// turns straight into a variable the server loses with nothing
-		// saying why.
-		if len(unparsed) > 0 {
-			return MCPServerMigration{}, fmt.Errorf(
-				"%s: %s could not be parsed as KEY=value (%s %s), stopping before touching this server so nothing is silently dropped; fix or comment out %s and re-run",
-				target, countWord(len(unparsed), "line", "lines"),
-				pluralWord(len(unparsed), "line", "lines"), joinLineNumbers(unparsed),
-				pluralWord(len(unparsed), "that line", "those lines"))
-		}
-		for _, name := range names {
+		for _, name := range cached.order {
 			if _, taken := env[name]; taken {
 				continue
 			}
-			env[name] = values[name]
+			env[name] = cached.values[name]
 			fileVars[target] = append(fileVars[target], name)
 		}
 	}
@@ -361,28 +370,11 @@ func migrateMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, serverNam
 		return MCPServerMigration{}, fmt.Errorf("recording profile source %s: %w", profilePath, err)
 	}
 
-	// Only now, with every value in the vault and the manifest on disk, is
-	// it safe to touch the source files -- the same ordering ApplyEnvFile and
-	// ApplyShellConfig use, so a failure partway through never leaves the
-	// plaintext gone with nothing usable in its place.
-	//
-	// Replaced with a pointer rather than left as a live mount: the rewritten
-	// entry no longer passes --env-file, so nothing reads this path for this
-	// server any more, and a FIFO nobody opens is just a dead pipe. A pointer
-	// file is readable, git-safe, and says where the values went. A project
-	// that wants the file live can migrate it in its own right.
+	// Record where this server's copy of each file variable landed. The file
+	// itself is rewritten later, once, by ApplyMCPConfig -- see the pointer
+	// set's own doc comment for why not here.
 	for _, target := range envFiles {
-		names := fileVars[target]
-		vars := make(profile.Profile, len(names))
-		for _, name := range names {
-			vars[name] = entries[name]
-		}
-		if _, err := backupSecretFile(v, target); err != nil {
-			return MCPServerMigration{}, fmt.Errorf("backing up %s: %w", target, err)
-		}
-		if err := ReplaceWithPointerFile(target, vars, names); err != nil {
-			return MCPServerMigration{}, err
-		}
+		pointers.record(target, fileVars[target], entries)
 	}
 
 	var command string
@@ -845,9 +837,23 @@ func migratableEnvFiles(configPath string, entry mcpServerRaw) []string {
 	}
 	var found []string
 	for _, target := range audit.MCPEnvFileArgs(configPath, cwd, args) {
-		if info, err := os.Stat(target); err == nil && info.Mode().IsRegular() {
-			found = append(found, target)
+		info, err := os.Stat(target)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
 		}
+		// An already-neutralized target holds vault PATHS, not values.
+		// Migrating it again would store "jit://vault/mcp-alpha/TOKEN" as this
+		// server's credential. readMCPEnvFiles stops that happening within one
+		// config; this covers a file a DIFFERENT config already converted.
+		//
+		// Skipped rather than resolved back to the existing vault paths: the
+		// values are already protected, and re-pointing a second server at
+		// another profile's secrets is a sharing decision jit should not make
+		// silently. Such a server keeps its --env-file and is left alone.
+		if LooksLikePointerContent(target) {
+			continue
+		}
+		found = append(found, target)
 	}
 	return found
 }
@@ -899,4 +905,109 @@ func resolveJitExecutable() (string, error) {
 		return "", err
 	}
 	return filepath.EvalSymlinks(exe)
+}
+
+// mcpEnvFile is one --env-file target read before anything was rewritten:
+// its parsed values, and its variable names in source-file order.
+type mcpEnvFile struct {
+	values map[string]string
+	order  []string
+}
+
+// readMCPEnvFiles reads every distinct --env-file target named by any server
+// in servers, ONCE, before any of them is rewritten.
+//
+// Reading per-server was a silent corruption when two servers shared a file
+// (a realistic shape: one .env, several servers). The first server vaulted
+// the real values and replaced the file with a pointer; the second then
+// parsed that pointer and stored "jit://vault/mcp-alpha/TOKEN" as its own
+// credential, so its server would receive that string as a token. Nothing
+// reported a problem.
+//
+// It also puts the unparseable-line hard stop ahead of EVERY mutation rather
+// than partway through the server loop, so a config with one bad file leaves
+// nothing half-migrated.
+func readMCPEnvFiles(configPath string, servers map[string]mcpServerRaw, names []string) (map[string]*mcpEnvFile, error) {
+	cache := map[string]*mcpEnvFile{}
+	for _, name := range names {
+		for _, target := range migratableEnvFiles(configPath, servers[name]) {
+			if _, done := cache[target]; done {
+				continue
+			}
+			values, order, unparsed, err := parseEnvFile(target)
+			if err != nil {
+				return nil, fmt.Errorf("parsing %s: %w", target, err)
+			}
+			// ApplyEnvFile's hard stop, for its reason: this file is about to
+			// be rewritten, so "I silently dropped what I could not parse"
+			// turns straight into a variable the server loses with nothing
+			// saying why.
+			if len(unparsed) > 0 {
+				return nil, fmt.Errorf(
+					"%s: %s could not be parsed as KEY=value (%s %s), stopping before touching anything so nothing is silently dropped; fix or comment out %s and re-run",
+					target, countWord(len(unparsed), "line", "lines"),
+					pluralWord(len(unparsed), "line", "lines"), joinLineNumbers(unparsed),
+					pluralWord(len(unparsed), "that line", "those lines"))
+			}
+			cache[target] = &mcpEnvFile{values: values, order: order}
+		}
+	}
+	return cache, nil
+}
+
+// envFilePointerSet accumulates which vault path each --env-file variable
+// ended up at, so every target can be replaced with a pointer file exactly
+// once after all servers are migrated.
+//
+// One file, one rewrite, whatever number of servers read it. A variable
+// claimed by two servers keeps the FIRST server's vault path (servers are
+// migrated in sorted order, so that is deterministic): the pointer file is a
+// human-readable note about where the values went, and naming one real
+// location beats naming none.
+type envFilePointerSet struct {
+	vars  map[string]profile.Profile
+	order map[string][]string
+	paths []string
+}
+
+func newEnvFilePointerSet() *envFilePointerSet {
+	return &envFilePointerSet{vars: map[string]profile.Profile{}, order: map[string][]string{}}
+}
+
+// record notes that names from target were stored at the vault paths in
+// entries. Variables already recorded for target are left as they were.
+func (s *envFilePointerSet) record(target string, names []string, entries profile.Profile) {
+	if _, seen := s.vars[target]; !seen {
+		s.vars[target] = profile.Profile{}
+		s.paths = append(s.paths, target)
+	}
+	for _, name := range names {
+		if _, taken := s.vars[target][name]; taken {
+			continue
+		}
+		s.vars[target][name] = entries[name]
+		s.order[target] = append(s.order[target], name)
+	}
+}
+
+// replaceAll backs up each recorded target and replaces it with a pointer
+// file. Called only after every vault write and profile manifest has landed,
+// the same ordering ApplyEnvFile and ApplyShellConfig use: a failure partway
+// through never leaves the plaintext gone with nothing usable in its place.
+//
+// A pointer rather than a live mount, because the rewritten entries no longer
+// pass --env-file: nothing reads this path for these servers any more, and a
+// FIFO nobody opens is just a dead pipe. A pointer file is readable, git-safe,
+// and says where the values went. A project that wants the file live can
+// migrate it in its own right.
+func (s *envFilePointerSet) replaceAll(v *vault.Vault) error {
+	for _, target := range s.paths {
+		if _, err := backupSecretFile(v, target); err != nil {
+			return fmt.Errorf("backing up %s: %w", target, err)
+		}
+		if err := ReplaceWithPointerFile(target, s.vars[target], s.order[target]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
