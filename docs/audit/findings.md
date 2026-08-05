@@ -13,7 +13,7 @@ a masked value preview, and a one-line *why* explaining what matched.
 | **Shell Configs** | `~/.zshrc`, `~/.bashrc`, profile files - `export KEY=value` lines whose key name or value shape looks like a secret | [`jit migrate`](../migrate/shell-configs.md) |
 | **.env Files** | project `.env`-family files whose values match known token formats or secret-shaped entropy | [`jit migrate`](../migrate/env-files.md) |
 | **Credential Files** | `~/.aws/credentials`, `~/.kube/config`, `.npmrc` auth tokens, the crates.io publish token in `~/.cargo/credentials.toml`, PyPI upload tokens and private-index passwords in `~/.pypirc`, the Terraform Cloud token file, Docker registry logins in `~/.docker/config.json`, git HTTPS logins in `~/.git-credentials`, GCP application-default credentials, `~/.netrc` passwords, Streamlit's `.streamlit/secrets.toml`, remote-MCP OAuth refresh tokens under `~/.mcp-auth`, and the OneLogin API `client-secret` in clisso's `~/.clisso.yaml` | [`jit migrate`](../migrate/index.md) - except `~/.mcp-auth`, see below, and `~/.clisso.yaml`, which [`jit wrap clisso`](../wrap/clisso.md) handles |
-| **AI Tool / MCP Configs** | MCP server configs (project `mcp.json`, Claude Desktop config) with secrets in their env blocks | [`jit migrate`](../migrate/mcp.md) |
+| **AI Tool / MCP Configs** | MCP server configs (project `mcp.json`, Claude Desktop config, Claude Code's `~/.claude.json` including its per-project servers) and every way a server entry carries a credential: the `env` block, a plaintext file named by `--env-file`, a token baked into `args` (including `docker run -e KEY=value`), and a remote server's `headers` or `url` | [`jit migrate`](../migrate/mcp.md) for env blocks and `--env-file` targets; args/headers/url are surfaced for your judgment, see below |
 | **Private Keys** | on-disk private key material | surfaced for your judgment |
 | **IaC Variable Files** | Terraform tfvars files, and Kubernetes Secret manifests (`*secret*.yaml` with `kind: Secret`) whose `data:` values are base64-**decoded** before judging - base64 is encoding, not encryption. Cluster-exported secrets and TLS/SSH/registry/basic-auth types escalate; SealedSecrets and fully SOPS-encrypted files are recognized as protected and skipped | tfvars: [`jit migrate`](../migrate/index.md); Secret manifests: surfaced for your judgment |
 | **Wrappable CLI Tokens** | plaintext tokens in the config files of CLIs the [wrap catalog](../wrap/index.md) knows how to fix (`gh`, `stripe`, `ngrok`, …) | [`jit wrap <tool>`](../wrap/index.md) - audit prints the exact command |
@@ -49,6 +49,15 @@ nothing:
   re-authenticate; for `~/.mcp-auth` that is `rm -rf ~/.mcp-auth`,
   mcp-remote's own documented reset. Only the refresh token is reported: an
   access token is very likely dead before you read the report.
+- **Credentials a remote MCP server sends itself.** A `type: http`/`sse`
+  server entry with an `Authorization` header, or a token in its `url`, is
+  reported but not migratable: the MCP *host* makes that HTTP request, so
+  there is no process for jit to inject into and no rewrite that would help.
+  The same goes for a token baked into a server's `args`, where it is also
+  visible to `ps` for every process running as you: pulling one argument out
+  of a command line has no safe general rule (the flag may be positional,
+  repeated, or required). Move the token to the provider's OAuth flow where
+  one exists, or rotate it out of the file.
 - **Terraform state** (`terraform.tfstate`). State records every attribute
   Terraform wrote, secrets included, in plaintext - HashiCorp documents this.
   Terraform writes the file itself, so there is no seam for jit to serve it
