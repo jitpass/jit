@@ -203,6 +203,23 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 				_, _ = dim.Fprintf(w, "%s%s\n", triageNoteIndent,
 					termtext.TruncHead(d, termtext.Width()-len(triageNoteIndent)))
 			}
+			// The viewing hint sits with the address it explains and ABOVE the
+			// arrow, per design/output-style.md: an explanation never follows
+			// the action line, because the action is meant to be the last
+			// thing on screen. Reading order comes out as the reader's own
+			// order anyway — here is the coordinate, here is how to reach it,
+			// here is what to do once you have.
+			//
+			// Dim and glyphless, matching the address line it follows. A glyph
+			// would claim this line carries a state of its own, which is the
+			// distinction printStatusWarnNote exists to keep.
+			for _, h := range g.hints {
+				if h == "" {
+					continue
+				}
+				fmt.Fprint(w, triageNoteIndent)
+				termtext.Wrap(w, len(triageNoteIndent), triageNoteIndent+"  ", dim.Sprint(h))
+			}
 			fmt.Fprint(w, triageNoteIndent)
 			// The arrow is cyan because it is the action motif; the
 			// instruction after it is default weight. Amber used to paint the
@@ -421,7 +438,13 @@ type triageManualGroup struct {
 	// details holds one exemplar line per distinct file set. A merged group
 	// keeps them all: each set is a different pile of files to go and fix, so
 	// collapsing to one exemplar would hide paths the reader needs.
-	details  []string
+	details []string
+	// hints holds the optional "how do I look at that?" line for each entry in
+	// details, same index, "" where a problem needs none. Parallel to details
+	// for the reason details is a slice at all: a hint names one exact address,
+	// so a merged group keeping two addresses must keep both hints or send the
+	// reader to a line that is not the one under discussion.
+	hints    []string
 	action   string
 	secrets  int
 	critical bool
@@ -535,6 +558,7 @@ func triageGroupManual(findings []Finding, home string) []triageManualGroup {
 			sortKey:  rankOf(worst.Severity),
 			title:    manualTitle(p.causes, p.files, worst),
 			details:  []string{manualDetail(p.files, worst, home)},
+			hints:    []string{manualViewHint(worst, home)},
 			action:   manualAction(worst, ctx, home),
 			noun:     manualNoun(worst),
 			files:    len(p.files),
@@ -570,6 +594,7 @@ func mergeManualGroups(groups []triageManualGroup, home string) []triageManualGr
 		m.secrets += g.secrets
 		m.files += g.files
 		m.details = append(m.details, g.details...)
+		m.hints = append(m.hints, g.hints...)
 		m.critical = m.critical || g.critical
 		if g.sortKey < m.sortKey {
 			m.sortKey = g.sortKey
@@ -717,11 +742,101 @@ func manualDetail(files []string, worst Finding, home string) string {
 	// already the location.
 	if IsShellHistoryPath(first) && worst.Line != nil {
 		shown = fmt.Sprintf("%s:%d", shown, *worst.Line)
+		// A key block is an extent, not a point, and the instruction below is
+		// to delete it. Naming both ends turns the address into the answer —
+		// but a block that opened and closed on one line is a point, and
+		// "2866-2866" would be a stutter that reads as a bug.
+		if worst.EndLine != nil && *worst.EndLine != *worst.Line {
+			shown = fmt.Sprintf("%s-%d", shown, *worst.EndLine)
+		}
 	}
 	if len(files) == 1 {
 		return shown
 	}
 	return fmt.Sprintf("%s … and %d more", shown, len(files)-1)
+}
+
+// manualViewHint returns the dim line, printed under the address line and
+// above the action, that shows the reader how to LOOK at that address — or ""
+// for problems that need no such line. It stays dim rather than cyan, command
+// and all, matching the "jit migrate undo" mention in the green section's
+// note: cyan marks the thing the report is asking you to run, and neither of
+// those is that.
+//
+// Only shell history gets one, and only because only shell history is
+// addressed by line number: "~/.gemini/oauth_creds.json" is a file you open,
+// while "~/.zsh_history:2866" is a coordinate inside 3,000 lines that a reader
+// has no obvious way to reach. A user hit exactly this (2026-08-05), read the
+// ":2866" as text to search for, ran `grep 2866`, found nothing, and concluded
+// the finding was a false positive. An address the report will not help you
+// open is an address that reads as wrong.
+//
+// This is deliberately in tension with manualDetail's rule that the red
+// section describes rather than asking the user to run things on these exact
+// paths. That rule is about FIXES — jit does not offer to repair what only the
+// user can repair. Reading is not fixing, and the instruction directly above
+// ("delete those lines by hand") is unfollowable without it.
+//
+// The private-key case gets a self-locating grep rather than the line number,
+// because the line number is the one part of this report with a shelf life:
+// zsh trims $HISTFILE to $SAVEHIST and rewrites it, dropping lines off the top
+// and shifting every number below. A stale `sed -n '2866p'` prints an
+// unrelated command with no error, which is worse than no hint — it looks like
+// proof the finding was wrong. Grepping the header re-derives the address at
+// the moment the user reads it. Printing that header leaks nothing: it is a
+// constant, which is the same reason privateKeyInHistoryFinding refuses to
+// treat it as a value.
+//
+// Tokens get no equivalent anchor on purpose. The only text that would locate
+// a token line is the token, and a hint that greps for a secret prints the
+// secret — so they keep the line number, where a stale hit shows a command
+// that plainly holds no credential rather than a convincing wrong answer.
+func manualViewHint(f Finding, home string) string {
+	if f.FindingType != FindingTypeShellHistorySecret || f.Line == nil {
+		return ""
+	}
+	path := shellSafePath(home, f.FilePath)
+	// A closed key block gets the range printed, because the reader's next
+	// move is to inspect those exact lines before deleting them, and checking
+	// what you are about to remove from your own history is a reasonable thing
+	// to want. This command's output IS the key — an explicit product
+	// decision (2026-08-05), taken knowing it puts key material in the
+	// terminal's scrollback. It stays consistent with the report's "no secret
+	// values are ever printed in full" footer only in the narrow sense that
+	// jit prints a command and the reader chooses to run it.
+	if f.KeyName != nil && IsPrivateKeyVendor(*f.KeyName) && f.EndLine != nil {
+		// Singular form for a one-line block, both because "'2866,2866p'" is
+		// noise and because the sentence above it says "line", not "lines".
+		if *f.EndLine == *f.Line {
+			return fmt.Sprintf("to see it: sed -n '%dp' %s", *f.Line, path)
+		}
+		return fmt.Sprintf("to see them: sed -n '%d,%dp' %s", *f.Line, *f.EndLine, path)
+	}
+	// No range means the block never closed in this file, so there is no
+	// honest span to print — sed would need an end line invented for it, and
+	// a guessed window either stops mid-key or dumps unrelated history. Fall
+	// back to locating the markers.
+	if f.KeyName != nil && IsPrivateKeyVendor(*f.KeyName) {
+		// -n for the address, -o because the whole safety property lives in
+		// that flag: without it grep prints the matching LINE, and a key
+		// pasted as one history entry is a line that holds the entire key.
+		// With it the output is the literal "PRIVATE KEY" and nothing else,
+		// whatever the line contains.
+		//
+		// The pattern is that bare literal rather than an anchored BEGIN
+		// header, which buys three things at once. It is short enough to stay
+		// unwrapped at 60 columns. It matches the END marker too, so the
+		// reader gets the RANGE to delete from one command instead of the
+		// header alone. And it needs no vendor alternation — RSA, OPENSSH,
+		// ECDSA and EC headers all contain it.
+		//
+		// Two shapes read correctly out of the same output: the same line
+		// number twice means the key sits on one line, and a single hit means
+		// the block was truncated (header pasted, END never recorded, or the
+		// file trimmed between them).
+		return fmt.Sprintf("to find it: grep -no 'PRIVATE KEY' %s", path)
+	}
+	return fmt.Sprintf("to see that line: sed -n '%dp' %s", *f.Line, path)
 }
 
 // selfRotating reports whether f's file is one the owning tool rewrites for
