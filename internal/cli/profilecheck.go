@@ -104,6 +104,17 @@ const (
 	// custody of secrets, losing the record of what touched them silently is
 	// worth one line.
 	kindAudit checkKind = "audit"
+	// kindMCP: an MCP server entry jit itself rewrote can no longer launch —
+	// the jit binary it names is gone, or the profile it names is. A hard
+	// problem for the same reason kindWrap is: the server it wraps doesn't
+	// run, and an MCP host reports that as nothing more than "server failed."
+	//
+	// This is the one check whose subject is jit's own past output. The
+	// rewrite pins an absolute path (see WrappedMCPEntry.JitPath) and then
+	// nobody looks at it again, so the breakage arrives with no command run
+	// and no error printed — from `jit upgrade` relocating the binary, a
+	// Homebrew-to-manual switch, or a workspace copied between machines.
+	kindMCP checkKind = "mcp"
 )
 
 // warning reports whether a finding of this kind is advisory (does not fail

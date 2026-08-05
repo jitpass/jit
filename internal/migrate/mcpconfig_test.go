@@ -551,3 +551,78 @@ func TestRemoveOwnedProfileDeletesManifestAndSidecar(t *testing.T) {
 		t.Errorf("second RemoveOwnedProfile must be idempotent, got %v", err)
 	}
 }
+
+func TestDiscoverWrappedMCPEntriesReportsWrapperFields(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	path := filepath.Join(cwd, ".mcp.json")
+	writeFile(t, path, `{"mcpServers":{
+		"wrapped":{"command":"/opt/jit","args":["run","--profile","mcp-wrapped","--","uv","run","srv"]},
+		"plain":{"command":"npx","args":["-y","srv"],"env":{"API_KEY":"abc"}}
+	}}`)
+
+	entries, err := DiscoverWrappedMCPEntries(home, cwd, false)
+	if err != nil {
+		t.Fatalf("DiscoverWrappedMCPEntries: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %+v, want exactly the wrapped server", entries)
+	}
+	got := entries[0]
+	want := WrappedMCPEntry{
+		ConfigPath:  path,
+		ServerName:  "wrapped",
+		JitPath:     "/opt/jit",
+		ProfileName: "mcp-wrapped",
+		Command:     "uv",
+	}
+	if got != want {
+		t.Errorf("entry = %+v, want %+v", got, want)
+	}
+}
+
+// A wrapper with nothing after the "--" is legal (migrateMCPServer writes it
+// for a server that had an env block and no command of its own), and must
+// report an empty Command rather than panicking on args[4].
+func TestDiscoverWrappedMCPEntriesEmptyWrappedCommand(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	writeFile(t, filepath.Join(cwd, ".mcp.json"),
+		`{"mcpServers":{"bare":{"command":"/opt/jit","args":["run","--profile","mcp-bare","--"]}}}`)
+
+	entries, err := DiscoverWrappedMCPEntries(home, cwd, false)
+	if err != nil {
+		t.Fatalf("DiscoverWrappedMCPEntries: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Command != "" {
+		t.Fatalf("entries = %+v, want one entry with an empty Command", entries)
+	}
+}
+
+// The migrate-side discovery predicate and this one must not bleed into each
+// other: a file with only wrapped servers has nothing left to migrate, and a
+// file with only plaintext env blocks has nothing wrapped to check.
+func TestDiscoverMCPConfigsAndWrappedEntriesSelectDifferentFiles(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	wrappedOnly := filepath.Join(cwd, ".mcp.json")
+	writeFile(t, wrappedOnly, `{"mcpServers":{"w":{"command":"/opt/jit","args":["run","--profile","p","--","srv"]}}}`)
+	plainOnly := filepath.Join(cwd, "mcp.json")
+	writeFile(t, plainOnly, `{"mcpServers":{"p":{"command":"npx","args":["srv"],"env":{"K":"v"}}}}`)
+
+	migratable, err := DiscoverMCPConfigs(home, cwd, false)
+	if err != nil {
+		t.Fatalf("DiscoverMCPConfigs: %v", err)
+	}
+	if len(migratable) != 1 || migratable[0] != plainOnly {
+		t.Errorf("DiscoverMCPConfigs = %v, want only %s", migratable, plainOnly)
+	}
+
+	entries, err := DiscoverWrappedMCPEntries(home, cwd, false)
+	if err != nil {
+		t.Fatalf("DiscoverWrappedMCPEntries: %v", err)
+	}
+	if len(entries) != 1 || entries[0].ConfigPath != wrappedOnly {
+		t.Errorf("DiscoverWrappedMCPEntries = %+v, want only %s", entries, wrappedOnly)
+	}
+}

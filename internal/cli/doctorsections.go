@@ -14,6 +14,8 @@ import (
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/auditlog"
 	"github.com/jitpass/jit/internal/keychainwrap"
+	"github.com/jitpass/jit/internal/migrate"
+	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/vault"
 	"github.com/jitpass/jit/internal/wrap"
 )
@@ -76,11 +78,12 @@ var vaultMasterKeyPresence = func() keychainwrap.MEKPresence { return keychainwr
 // problems rather than restating status's full snapshot. Best-effort per
 // section: a section that can't run reports that as its own finding rather
 // than failing the whole command.
-func gatherSystemFindings(root string, v *vault.Vault) ([]checkFinding, []string) {
+func gatherSystemFindings(root, cwd string, v *vault.Vault) ([]checkFinding, []string) {
 	var findings []checkFinding
 	findings = append(findings, agentFindings(root)...)
 	findings = append(findings, backupFindings(v)...)
 	findings = append(findings, auditLogFindings(root)...)
+	findings = append(findings, mcpFindings(cwd)...)
 	wrapped, wrapOK := wrapFindings()
 	return append(findings, wrapped...), wrapOK
 }
@@ -125,6 +128,98 @@ func auditLogFindings(root string) []checkFinding {
 	}
 	_ = f.Close()
 	return nil
+}
+
+// mcpFindings reports MCP server entries jit itself rewrote that can no
+// longer launch. It is the only doctor section whose subject is jit's own
+// past output, and it exists because that output is uniquely un-selfchecking:
+// `jit migrate` pins an absolute jit path and a profile name into a config
+// file owned by another application, then never looks at either again. When
+// one goes stale the MCP host says "server failed" and nothing connects that
+// to jit, because no jit command ran.
+//
+// One finding per broken server, reporting the most fundamental failure
+// rather than every failure: an entry whose jit binary is gone will also
+// "fail" a profile check, and two lines about one dead server is noise.
+//
+// Best-effort throughout — an unreadable home, an unresolvable profile root,
+// or a malformed config yields no findings rather than a failed doctor run.
+func mcpFindings(cwd string) []checkFinding {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	entries, err := migrate.DiscoverWrappedMCPEntries(home, cwd, true)
+	if err != nil || len(entries) == 0 {
+		return nil
+	}
+	globalRoot, err := profile.GlobalRoot()
+	if err != nil {
+		return nil
+	}
+
+	var findings []checkFinding
+	for _, e := range entries {
+		label := fmt.Sprintf("MCP server %q in %s", e.ServerName, shortPath(e.ConfigPath))
+
+		if !executableFile(e.JitPath) {
+			findings = append(findings, checkFinding{
+				Kind:    kindMCP,
+				Profile: e.ProfileName,
+				Path:    e.ConfigPath,
+				Detail: fmt.Sprintf("%s launches jit at %s, which isn't there, so the host can't start this server at all",
+					label, shortHome(e.JitPath)),
+				Action: fmt.Sprintf("`jit migrate %s` to rewrite it against this jit", shortPath(e.ConfigPath)),
+			})
+			continue
+		}
+
+		manifest, perr := profile.Path(globalRoot, e.ProfileName)
+		if perr != nil || !regularFile(manifest) {
+			findings = append(findings, checkFinding{
+				Kind:    kindMCP,
+				Profile: e.ProfileName,
+				Path:    e.ConfigPath,
+				Detail: fmt.Sprintf("%s names profile %s, which no longer exists, so the server starts with none of its secrets",
+					label, e.ProfileName),
+				Action: fmt.Sprintf("`jit migrate undo %s` to restore the original entry, or re-migrate it", shortPath(e.ConfigPath)),
+			})
+			continue
+		}
+
+		// Only an ABSOLUTE wrapped command is checked. A bare "uv"/"npx"
+		// resolves against the PATH the MCP HOST hands the server, which is
+		// not this process's PATH and not knowable from here — the same
+		// reasoning that makes kindWrapEnv advisory rather than a problem.
+		// Guessing would produce a hard failure on a perfectly good entry.
+		if filepath.IsAbs(e.Command) && !executableFile(e.Command) {
+			findings = append(findings, checkFinding{
+				Kind:    kindMCP,
+				Profile: e.ProfileName,
+				Path:    e.ConfigPath,
+				Detail: fmt.Sprintf("%s wraps %s, which isn't there, so jit resolves its secrets and then has nothing to exec",
+					label, shortHome(e.Command)),
+				Action: "fix the command path in that config, or remove the server entry",
+			})
+		}
+	}
+	return findings
+}
+
+// executableFile reports whether path is a regular file with an execute bit.
+// Both halves matter: a directory at the path and a non-executable file both
+// fail exec with errors the MCP host renders as the same opaque failure.
+func executableFile(path string) bool {
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
+}
+
+func regularFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 // gatherVaultIntegrityFindings reports the two whole-vault states that make

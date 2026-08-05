@@ -176,7 +176,7 @@ var doctorCmd = &cobra.Command{
 		// --profile run is a narrow "does THIS profile resolve" query; folding
 		// agent/backup/wrap warnings into it would be surprising noise.
 		if doctorProfile == "" {
-			systemFindings, wrapOK := gatherSystemFindings(root, v)
+			systemFindings, wrapOK := gatherSystemFindings(root, cwd, v)
 			outcome.Findings = append(outcome.Findings, systemFindings...)
 			outcome.OKChecks = wrapOK
 		}
