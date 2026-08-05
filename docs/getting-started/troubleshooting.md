@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: Placeholder values, hanging reads, surprise Touch ID prompts, and stale-service warnings.
+description: Placeholder values, hanging reads, surprise Touch ID prompts, MCP servers that fail to start, and stale-service warnings.
 ---
 
 # Troubleshooting
@@ -40,6 +40,19 @@ description: Placeholder values, hanging reads, surprise Touch ID prompts, and s
   A common surprise: opening an editor. If your project's `.mcp.json` wraps
   an MCP server in `jit run --profile ...`, then starting that editor starts
   a secret-injecting process, which prompts if the session has lapsed.
+- **An MCP server fails to start, and its log mentions an approval prompt.**
+  The server launched with the session locked and no terminal for anyone to
+  see the prompt from, so jit gave up after 20 seconds rather than hang past
+  the host's own startup timeout. Run `jit unlock`, then restart the server
+  (usually: restart the editor). Approving the prompt late works too - the
+  challenge outlives the launch that asked for it, so the next start needs
+  no prompt at all. Doing `jit unlock` before opening the editor avoids it
+  entirely.
+- **An MCP server fails to start and nothing else explains why.** Run
+  `jit doctor`: an `[mcp]` finding means the entry jit wrote no longer works
+  - the jit binary it names has moved, or its profile is gone. Hosts report
+  only "server failed", so this is the only place the two get connected. See
+  [MCP configs](../migrate/mcp.md#checking-a-migrated-config).
 - **Touch ID prompts feel too frequent.** First find out what's asking -
   `jit audit` (above) names each one. If they're all legitimate,
   lengthen the [service's](../service/index.md) session window:
