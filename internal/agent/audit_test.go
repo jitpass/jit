@@ -67,8 +67,8 @@ func TestServerRecordsDeniedChallengeWithProvenance(t *testing.T) {
 
 // TestServerDenialCooldownPausesAutomaticRePrompts pins the prompt-storm
 // fix: after a declined challenge, automatic callers must be refused
-// without a fresh prompt for the cooldown window; an explicit `jit agent
-// unlock` bypasses it; and a successful unlock clears it entirely.
+// without a fresh prompt for the cooldown window; an explicit `jit unlock`
+// bypasses it; and a successful unlock clears it entirely.
 func TestServerDenialCooldownPausesAutomaticRePrompts(t *testing.T) {
 	var calls int32
 	failing := int32(1)
@@ -93,7 +93,9 @@ func TestServerDenialCooldownPausesAutomaticRePrompts(t *testing.T) {
 	if err == nil {
 		t.Fatal("a retry inside the denial cooldown succeeded")
 	}
-	if !strings.Contains(err.Error(), "paused") || !strings.Contains(err.Error(), "jit agent unlock") {
+	// `jit unlock`, the top-level command — the hint used to name `jit agent
+	// unlock`, a dead deprecated alias that prints help and unlocks nothing.
+	if !strings.Contains(err.Error(), "paused") || !strings.Contains(err.Error(), "`jit unlock`") {
 		t.Errorf("cooldown error = %q, want it to say re-prompts are paused and name the override", err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 1 {

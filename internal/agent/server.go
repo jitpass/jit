@@ -1052,7 +1052,12 @@ func (s *Server) challengeUnlock(op string, c *caller, label string) ([]byte, *S
 		// A zero lastDenied (nothing ever declined, or cleared by the last
 		// successful unlock) makes sinceDenied enormous, so it never trips.
 		if sinceDenied := time.Since(lastDenied); sinceDenied < cooldown {
-			return nil, nil, fmt.Errorf("an unlock attempt failed %s ago (%s), automatic re-prompts are paused for another %s (run `jit agent unlock` to try again now)",
+			// `jit unlock`, the top-level command. This used to say `jit agent
+			// unlock`, which the agent→service rename left behind as a
+			// deprecated alias that prints help and unlocks nothing — a dead
+			// instruction at the exact moment the user is locked out and
+			// following instructions.
+			return nil, nil, fmt.Errorf("an unlock attempt failed %s ago (%s), automatic re-prompts are paused for another %s (run `jit unlock` to try again now)",
 				sinceDenied.Round(time.Second), lastCause, (cooldown - sinceDenied).Round(time.Second))
 		}
 	}
