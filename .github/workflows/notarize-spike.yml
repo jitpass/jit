@@ -1,0 +1,66 @@
+name: Notarize Spike
+
+# Manual probe of Apple's notary service for this account — NOT a release.
+# Runs spike/notarize-e2e against the same secrets release.yml uses, so a
+# green run here means the real release path would have notarized too.
+#
+#   gh workflow run notarize-spike.yml                     # full end-to-end
+#   gh workflow run notarize-spike.yml -f mode=history     # just list recent
+#                                                          # submissions/verdicts
+#
+# Exit-code meanings (from run.sh): 0 accepted + Gatekeeper pass,
+# 1 invalid artifact, 2 stuck In Progress (the known account condition),
+# 3 accepted but Gatekeeper rejected the quarantined copy.
+# Re-add .goreleaser.yml's notarize block + the Homebrew cask only after the
+# acceptance criteria in spike/notarize-e2e/FINDINGS.md are met.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "submit = full end-to-end; history = no new submission"
+        default: submit
+        type: choice
+        options: [submit, history]
+      timeout:
+        description: "bounded wait for Apple's verdict"
+        default: 15m
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: spike/notarize-e2e/go.mod
+
+      - name: Require signing + notary secrets
+        env:
+          P12: ${{ secrets.MACOS_SIGN_P12 }}
+          KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+        run: |
+          if [ -z "$P12" ] || [ -z "$KEY" ]; then
+            echo "MACOS_SIGN_P12 / MACOS_NOTARY_* secrets are not set — nothing to probe." >&2
+            exit 1
+          fi
+
+      - name: Install quill (pinned — same signer the release path embeds)
+        run: |
+          curl -sSfL https://get.anchore.io/quill | sh -s -- -b "$RUNNER_TEMP/bin" v0.7.1
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Run the probe
+        env:
+          MODE: ${{ inputs.mode }}
+          NOTARY_TIMEOUT: ${{ inputs.timeout }}
+          QUILL_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          QUILL_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+          NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+        run: zsh spike/notarize-e2e/run.sh
