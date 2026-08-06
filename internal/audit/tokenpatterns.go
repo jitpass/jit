@@ -390,6 +390,83 @@ func isPlaceholderToken(match string, humanReadable bool) bool {
 // FORMAT rather than a specific vendor's credential.
 const jwtVendor = "JSON Web Token (JWT)"
 
+// minAnchorLen is the shortest prefix worth printing as a locator. Below it
+// the grep matches so much unrelated text that its output stops being an
+// address — "sk" would hit every English word containing it.
+const minAnchorLen = 3
+
+// TokenAnchorFor returns a literal string present in every value the named
+// vendor pattern matches — "github_pat_" for a fine-grained PAT, "eyJ" for a
+// JWT — or "" when the pattern offers no fixed prefix.
+//
+// This is what lets `jit scan` print a "to see them:" locator without printing
+// the credential, and the safety property is the whole point: the anchor is a
+// CONSTANT the vendor bakes into the format (the secret-prefixing convention
+// this file opens with), never a fragment of the matched value. `grep -no
+// eyJ` reports which lines hold JWTs; a grep for the token itself would put
+// the token in the terminal and in the reader's shell history.
+//
+// An alternation like "(?:AKIA|ASIA)" has no single prefix and yields "" —
+// callers print no hint rather than an anchor that would miss half the
+// matches. Deriving this from the pattern rather than hand-maintaining a
+// second table is deliberate: a table would drift silently the first time a
+// pattern's prefix changed, and a wrong anchor greps to nothing, which reads
+// to the user as the finding having been a false positive.
+func TokenAnchorFor(vendor string) string {
+	for _, p := range knownTokenPatterns {
+		if p.vendor == vendor {
+			return literalPrefix(p.pattern.String())
+		}
+	}
+	return ""
+}
+
+// literalPrefix returns the fixed leading characters every value the pattern
+// matches must begin with.
+//
+// regexp's own parser decides this, not a scan of the source text. A
+// hand-rolled walk that stops at the first non-literal rune gets quantifiers
+// wrong, and one pattern in the table above is exactly that shape:
+// `glrtr?-…` matches both "glrt-" and "glrtr-", so the honest prefix is
+// "glrt" — the walk returned "glrtr" and produced a locator that finds
+// nothing against a real glrt- runner token. That is the precise failure
+// TokenAnchorFor exists to prevent, so the parse has to be right rather than
+// approximately right.
+//
+// LiteralPrefix reports "" when the program opens with a zero-width
+// assertion, so the \b comes off first. Its second return (whether the prefix
+// IS the whole match) is deliberately ignored: a partial prefix is exactly
+// what an anchor is.
+func literalPrefix(src string) string {
+	re, err := regexp.Compile(strings.TrimPrefix(src, `\b`))
+	if err != nil {
+		return ""
+	}
+	pre, _ := re.LiteralPrefix()
+	// Then the grep- and shell-safety filter: the anchor is printed inside
+	// single quotes and handed to grep, so it may carry nothing that either
+	// would reinterpret.
+	var b strings.Builder
+	for _, r := range pre {
+		if !isAnchorRune(r) {
+			break
+		}
+		b.WriteRune(r)
+	}
+	if b.Len() < minAnchorLen {
+		return ""
+	}
+	return b.String()
+}
+
+// isAnchorRune reports whether r is a literal in regex source AND safe to sit
+// inside the single quotes the hint wraps it in — no quote, backslash or shell
+// metacharacter can reach the command line through here.
+func isAnchorRune(r rune) bool {
+	return r == '_' || r == '-' ||
+		(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+}
+
 // IsAmbiguousTokenFormat reports whether a vendor name identifies a format
 // that does not, on its own, prove the value is secret.
 //

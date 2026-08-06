@@ -183,6 +183,18 @@ var scanCmd = &cobra.Command{
 
 		machineScan := scanFormat == "ndjson" || scanFormat == "markdown" || scanFormat == "md" || scanOutput != ""
 		progress := newProgress(cmd, machineScan)
+		// The trail is scaffolding for this view, not part of the result: the
+		// triage report is a page the reader works down, and sixteen settled
+		// "✓ Scanned …" lines pushed its top off a short window. They still
+		// animate while the scan runs — a ten-second home walk must not look
+		// hung — and collapse to one line the moment it finishes.
+		//
+		// --full keeps its trail. That view IS an inventory by category, so
+		// the per-category lines above it read as a table of contents rather
+		// than as noise.
+		if !scanFull {
+			progress.Collapse()
+		}
 		cfg.Progress = func(category string) {
 			progress.Step("Scanning "+category+"…", "Scanned "+category)
 		}
@@ -202,7 +214,8 @@ var scanCmd = &cobra.Command{
 		// Stop before any result is written — the trail lives on stderr, but
 		// the spinner's in-place line must be settled before stdout output (or
 		// the confirm-free score line) begins.
-		progress.Stop()
+		progress.StopCollapsed(fmt.Sprintf("%s scanned",
+			countWord(progress.Steps(), "category", "categories")))
 		if err != nil {
 			return fmt.Errorf("jit scan: %w", err)
 		}

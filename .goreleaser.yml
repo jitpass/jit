@@ -36,9 +36,14 @@ builds:
 #     the Secure Enclave wall documented in spike/secure-enclave/FINDINGS.md,
 #     and notarizing the CLI does not move it.
 #
-# `enabled` is gated on the secrets existing so that forks, PR builds, and
-# `--snapshot` all keep working untouched — no secrets means no signing,
-# not a failed release.
+# `enabled` is gated on the secret existing so that forks, PR builds and
+# `--snapshot` keep working untouched. Note what that gate does NOT do: an
+# unset (or empty — isEnvSet is `ok && s != ""`) value makes the notary pipe
+# Skip rather than fail, so on its own it would publish an unsigned binary.
+# release.yml's "Require Developer ID signing secrets" preflight is what
+# forbids that, and it is the enforcement point for CLAUDE.md's never-ship-
+# unsigned rule. Forks and PR builds never reach it: they run --snapshot, and
+# ci.yml passes --skip=publish,sign,notarize.
 notarize:
   macos:
     - enabled: '{{ isEnvSet "MACOS_SIGN_P12" }}'
@@ -83,6 +88,13 @@ release:
   # the workflow to backfill assets onto a hand-written release), keep its
   # name and notes and just upload the artifacts.
   mode: keep-existing
+  # A re-run must be idempotent. The asset names carry no version (deliberate —
+  # /releases/latest/download/ has to stay an evergreen URL), so a second run
+  # onto a release that already holds them would otherwise fail mid-upload and
+  # could leave a checksums.txt that does not match the published tarball. Every
+  # `jit upgrade` then dies on the hash comparison, because those are two
+  # independent fetches of "latest".
+  replace_existing_artifacts: true
 
 # No Homebrew cask, on purpose. At this stage distribution leads with the
 # signed release tarball (curl) + `jit upgrade`; a cask forces the whole

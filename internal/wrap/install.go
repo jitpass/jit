@@ -9,13 +9,32 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 )
+
+// shimDirRel is the shim directory's path relative to home, and the ONE place
+// it is spelled. ShimDir joins it, PathLine renders it into the rc export, and
+// RcMentionsShimDir looks for it -- the three had it typed independently, which
+// made this the sort of constant that owns nothing: change it and EnsurePathLine
+// appends a second export line on every run while Doctor keeps calling the rc
+// file healthy, because the writer moved and the two detectors did not. The
+// user-visible end of that is docker and git credential helpers written to a
+// directory not on PATH, so both tools fall back to their plaintext stores with
+// no error from either.
+const shimDirRel = ".jit/shims"
 
 // ShimDir returns the directory wrap installs its shims into. Fixed under
 // home (like the global profile store) because a shim must resolve no
 // matter what directory the wrapped tool is invoked from.
 func ShimDir(home string) string {
-	return filepath.Join(home, ".jit", "shims")
+	return filepath.Join(home, filepath.FromSlash(shimDirRel))
+}
+
+// RcMentionsShimDir reports whether an rc file already refers to the shim
+// directory. The single detector, so a caller cannot look for a path the writer
+// no longer writes.
+func RcMentionsShimDir(rc string) bool {
+	return strings.Contains(rc, shimDirRel)
 }
 
 // ProfileName returns the profile a wrapped tool's shim injects —
@@ -35,6 +54,24 @@ var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.\-]+$`)
 func ValidateToolName(tool string) error {
 	if !toolNamePattern.MatchString(tool) {
 		return fmt.Errorf("tool name %q must contain only letters, digits, '.', '_', '-'", tool)
+	}
+	// "." and ".." satisfy the pattern -- it admits '.' as an ordinary
+	// character -- so they reached filepath.Join(ShimDir(home), tool) and
+	// resolved to the shim dir itself and to ~/.jit. Nothing was destroyed,
+	// because InstallShim and RemoveShim both refuse a path that is not a
+	// symlink, but the refusal is downstream luck rather than validation, and
+	// it reports the wrong thing ("not a jit shim" for a name that should never
+	// have been accepted). The test that covered this skipped both names with a
+	// comment calling them "pattern-legal", which described the bug.
+	//
+	// A leading '-' is rejected for a different reason: the shim's name becomes
+	// an argument to whatever the user types next, and a file named "-n" on
+	// PATH is a flag waiting to be mistaken for one.
+	if tool == "." || tool == ".." {
+		return fmt.Errorf("refusing to wrap %q, which names a directory rather than a tool", tool)
+	}
+	if strings.HasPrefix(tool, "-") {
+		return fmt.Errorf("refusing to wrap %q, a name starting with '-' reads as a flag wherever it is used", tool)
 	}
 	if tool == "jit" {
 		return fmt.Errorf("refusing to wrap %q, a shim named jit would shadow jit itself", tool)

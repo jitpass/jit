@@ -10,8 +10,14 @@
 //
 // This package owns the shim lifecycle (install, manifest bookkeeping,
 // undo) and the shim-mode exec path; it deliberately reuses internal/profile
-// for manifests and leaves vault access to jit run. The catalog of known
-// tools (which env var, where the plaintext token lives today) is M2 of the
-// plan and doesn't exist yet — M1 wraps tools the user describes by hand
-// via `jit wrap add`.
+// for manifests and leaves vault access to jit run.
+//
+// The catalog of known tools (which env var, where the plaintext token lives
+// today) SHIPPED: see catalog.go for the four Kinds -- KindShim, KindNative,
+// KindCapture, KindRunGrant -- and catalog_data.go for the entries, bound to
+// docs/wrap/ by plugins_doc_test.go. `jit wrap add` still wraps a tool the
+// user describes by hand. This paragraph said the catalog "is M2 of the plan
+// and doesn't exist yet" until 2026-08-06, which told a newcomer following
+// CLAUDE.md's "read the doc.go before the code" that the feature they were
+// about to modify had not been built.
 package wrap

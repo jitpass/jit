@@ -4,6 +4,7 @@
 package profile
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -348,5 +349,44 @@ MiXed123: misc/three
 	}
 	if len(p) != 4 {
 		t.Fatalf("got %d entries, want 4", len(p))
+	}
+}
+
+// A broken GLOBAL manifest must say it is broken, not that the profile does not
+// exist. ErrNotFound's doc makes that distinction the reason the sentinel exists
+// ("a typo'd name versus broken YAML… entirely different fixes"), and the
+// project branch honoured it while the global branch discarded its error — so a
+// malformed ~/.jit/profiles/<name>.yaml reported "not found (checked <that very
+// path>)" and sent the user looking for a file that was right there.
+//
+// GlobalRoot is os.UserHomeDir, so $HOME is the seam. The project root is a
+// different directory, which is what forces resolution into the global branch.
+func TestMalformedGlobalManifestIsNotReportedAsNotFound(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+	t.Setenv("HOME", home)
+
+	globalPath, err := Path(home, "broken")
+	if err != nil {
+		t.Fatalf("Path: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(globalPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(globalPath, []byte("this: [is not: valid yaml\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, _, _, err = LoadWithScope(project, "broken")
+	if err == nil {
+		t.Fatal("a malformed global manifest loaded without error")
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Errorf("a malformed manifest must not report as ErrNotFound — the file is right there: %v", err)
+	}
+
+	// The same call still reports a genuinely absent profile as ErrNotFound.
+	if _, _, _, err := LoadWithScope(project, "absent"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("an absent profile must still be ErrNotFound, got %v", err)
 	}
 }

@@ -26,8 +26,10 @@ import (
 // 0.6.0 added the sops_age_key finding type and its findings_by_category
 // key (additive, same shape as 0.3.0's wrappable_cli_token bump).
 // 0.7.0 added the finding's archived flag (additive): true when the file
-// lives under an archived/backup-looking directory, which `jit migrate
-// home` skips by default (--include-archived includes them).
+// lives under an archived/backup-looking directory, which the `jit migrate`
+// sweep walks past. (This read "--include-archived includes them" until
+// 2026-08-06; no such flag was ever built. Naming the path explicitly is
+// what reaches them: `jit migrate <path>`.)
 // 0.8.0 removed scan_summary's synthetic_finding_count and
 // synthetic_playground_paths along with the jitpass playground feature they
 // described (0.5.0); consumers that read them should treat them as absent.
@@ -309,10 +311,13 @@ type Finding struct {
 	AlreadyMasked            bool    `json:"already_masked"`
 	// Archived is true when FilePath sits under an archived/backup-looking
 	// directory (LooksArchived) — the same test `jit migrate home` uses to
-	// skip a finding unless --include-archived, so a consumer (or the
-	// report renderers) can tell "migrate will skip this one" apart from
-	// an ordinary actionable finding. Set centrally by Scan, not by the
-	// individual scanners.
+	// skip a finding, so a consumer (or the report renderers) can tell
+	// "migrate will skip this one" apart from an ordinary actionable
+	// finding. Set centrally by Scan, not by the individual scanners.
+	//
+	// The skip has no override flag; `jit migrate <path>` is how a caller
+	// reaches these deliberately, one project at a time. See
+	// internal/migrate's doc.go for why the sweep declines to.
 	Archived bool `json:"archived"`
 
 	// TestFixture is true when FilePath is test scaffolding — a *_test.go, a

@@ -50,6 +50,8 @@ type Tracker struct {
 	suffix   string // optional trailing text, e.g. a "12/47" counter
 	frame    int
 	active   bool // an animated step is currently on screen (needs settling)
+	collapse bool // settled steps are erased rather than kept (see Collapse)
+	steps    int  // how many steps have run, for a collapsed summary
 	stopCh   chan struct{}
 	doneCh   chan struct{}
 }
@@ -81,6 +83,7 @@ func (t *Tracker) Step(running, done string) {
 	t.doneText = done
 	t.suffix = ""
 	t.frame = 0
+	t.steps++
 
 	if t.animate {
 		t.active = true
@@ -129,11 +132,67 @@ func (t *Tracker) Stop() {
 	t.mu.Unlock()
 }
 
+// Collapse makes settled steps TRANSIENT: each finished step is erased rather
+// than left on screen, and StopCollapsed replaces the whole trail with a
+// single line.
+//
+// For a caller whose trail is scaffolding rather than result. `jit scan` walks
+// sixteen categories, so the default mode left sixteen "✓ Scanned …" lines
+// above a report that then had to fight them for the window — on a 40-row
+// terminal, nearly half the screen spent restating what the command had just
+// been asked to do. The steps still animate while they run, which is the part
+// that earns its keep (a home scan takes ten seconds and must not look hung);
+// only their residue goes.
+//
+// Opt-in, and only meaningful in animate mode: `jit migrate` and `vault rekey`
+// keep their trails because there the settled lines are a record of what was
+// changed, not scaffolding. A dumb terminal cannot erase, so it is unaffected
+// and keeps its one-line-per-step feedback.
+func (t *Tracker) Collapse() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.collapse = true
+}
+
+// Steps reports how many steps have been started, so a caller can name the
+// count in its collapsed summary without tracking it separately.
+func (t *Tracker) Steps() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.steps
+}
+
+// StopCollapsed stops the tracker and, in collapse mode, prints the one line
+// that stands in for the erased trail. Outside collapse mode (or on a dumb
+// terminal, which kept its per-step lines) it is exactly Stop, so a caller
+// never has to branch on the mode.
+func (t *Tracker) StopCollapsed(summary string) {
+	t.Stop()
+	if !t.enabled || !t.animate || summary == "" {
+		return
+	}
+	t.mu.Lock()
+	collapse := t.collapse
+	t.mu.Unlock()
+	if !collapse {
+		return
+	}
+	fmt.Fprintf(t.w, "%s %s\n", style.OK.Sprint(style.GlyphDone), summary)
+}
+
 // settleLocked promotes the active animated step to its persistent "✓ <done>"
 // line. A no-op unless an animated step is on screen (plain and disabled modes
 // never set active), so it's safe to call from Step and Stop unconditionally.
 func (t *Tracker) settleLocked() {
 	if !t.active {
+		return
+	}
+	if t.collapse {
+		// Erase the line and leave the cursor at column 0 — the next step
+		// paints over nothing, and Stop leaves the terminal clean for the
+		// report that follows.
+		fmt.Fprint(t.w, "\r\033[K")
+		t.active = false
 		return
 	}
 	check := style.OK.Sprint(style.GlyphDone)

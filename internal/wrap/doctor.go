@@ -10,7 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
+
+	"github.com/jitpass/jit/internal/profile"
 )
 
 // DoctorCheck is one health verdict — machine-shaped so the CLI owns all
@@ -82,7 +83,7 @@ func Doctor(home, pathEnv, shell string) []DoctorCheck {
 	}
 
 	rc := RcFile(home, shell)
-	if data, readErr := os.ReadFile(rc); readErr == nil && strings.Contains(string(data), ".jit/shims") { // #nosec G304 -- the user's own rc file
+	if data, readErr := os.ReadFile(rc); readErr == nil && RcMentionsShimDir(string(data)) { // #nosec G304 -- the user's own rc file
 		checks = append(checks, DoctorCheck{Name: "rc file", OK: true, Detail: rc + " has the shim PATH line"})
 	} else {
 		checks = append(checks, DoctorCheck{Name: "rc file", OK: false, Detail: rc + " missing the shim PATH line, re-run `jit wrap add` for any tool"})
@@ -137,7 +138,17 @@ func Doctor(home, pathEnv, shell string) []DoctorCheck {
 			continue
 		}
 
-		profilePath := filepath.Join(home, ".jit", "profiles", entry.Profile+".yaml")
+		// profile.Path owns this layout, and every other call site in the repo
+		// goes through it (add.go, undo.go, and 18 more). Hand-joining it here
+		// meant a change to ProfilesDir or the extension would make `jit wrap
+		// doctor` report EVERY wrapped tool's profile as missing — a fully red
+		// report over a healthy install, which is the worst direction for a
+		// diagnostic to fail in.
+		profilePath, perr := profile.Path(home, entry.Profile)
+		if perr != nil {
+			checks = append(checks, DoctorCheck{Name: name, OK: false, Detail: "profile " + entry.Profile + " has an unusable name: " + perr.Error()})
+			continue
+		}
 		if _, statErr := os.Stat(profilePath); statErr != nil {
 			checks = append(checks, DoctorCheck{Name: name, OK: false, Detail: "profile " + entry.Profile + " missing at " + profilePath})
 			continue
