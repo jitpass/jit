@@ -192,9 +192,24 @@ func readMountFromSiblingProcess(t *testing.T, path string, timeout time.Duratio
 // then the restore, then recreating the FIFO. Measured: 3 of 6 CI runs failed
 // on "the FIFO to be restored after the run exits" with identical code that
 // passed 10 consecutive local runs under -race, and the same job passed on
-// other runs — timing, not logic. 30s keeps a hung restore a fast, clear
-// failure while giving a slow runner room.
-const waitForBudget = 30 * time.Second
+// other runs — timing, not logic.
+//
+// 30s was still not enough, and the second round of evidence is more
+// specific: on a 4-CPU macOS VM running `go test -race ./...` — four package
+// binaries competing for four cores — this wait failed at its 30s ceiling
+// twice in a row, while the SAME commit passed with packages serialised
+// (-p 1), passed running the test alone, and passed on CI. Re-run with the
+// ceiling at 150s it passed, with the package taking 65s: the restore lands
+// somewhere past 30s, it does not hang. The chain is slow under contention
+// for understandable reasons — the race detector, plus lineageScanMinGap and
+// grantVerdictTTL at 2s each (mountmanager.go, mountgrants.go) — not because
+// anything is stuck.
+//
+// So the ceiling goes where a slow machine cannot reach it. This costs
+// nothing on a healthy run, per the first paragraph; it only means a genuine
+// hang takes two minutes to report instead of thirty seconds, which is the
+// right trade for a wait that has now cost two debugging sessions.
+const waitForBudget = 120 * time.Second
 
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
