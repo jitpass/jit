@@ -36,6 +36,7 @@ RFC §1 names "malicious dependency lifecycle scripts (`npm postinstall`)" as a 
 
 | Package | Role |
 |---|---|
+| `github.com/spf13/pflag` | Cobra's own flag library, promoted to a direct `require` because the code names it directly -- `internal/cli/doctor_test.go` builds a `*pflag.FlagSet` to drive a command's flags without going through cobra's parse. Not a new supply-chain edge: cobra already depends on it. |
 | `github.com/spf13/cobra` | Subcommand routing (`jit scan/migrate/run/export/doctor/status`, plus vault CRUD grouped under `jit vault {init,set,get,list,rm,share,revoke}`), flag parsing, `--help` generation. Industry-standard for exactly this shape of CLI (`kubectl`, `gh`, `docker`, `hugo`). |
 | `golang.org/x/term` | Hidden-input password prompt (`jit vault set stripe/dev-key` with no value arg reads from a non-echoing terminal read, not shell history) and TTY detection (to decide human-readable vs. machine output when `--format` isn't passed). |
 
@@ -84,7 +85,7 @@ This is the one layer of the stack that is unavoidably macOS-only and unavoidabl
 | Package | Role |
 |---|---|
 | `net` (stdlib) | Unix domain socket for the TTL-scoped MEK cache (RFC.md:111). |
-| `golang.org/x/sys/unix` | Socket file permissions (`0600`, owner-only), and peer-credential verification (`LOCAL_PEERCRED` on Darwin) so the agent can confirm a connecting process belongs to the same UID before releasing anything from the cache. The FIFO mount itself ended up gated a different way (decoy-by-default, `internal/mount.RevealState`), `spike/fifo-reader-identify/FINDINGS.md` found the peer-credential approach here doesn't carry over to a named pipe the way it does for this socket. |
+| `golang.org/x/sys/unix` | Socket file permissions (`0600`, owner-only), and peer-credential verification (`LOCAL_PEERCRED` on Darwin) so the agent can confirm a connecting process belongs to the same UID before releasing anything from the cache. The FIFO mount itself ended up gated a different way (decoy-by-default, with the real value released only to a grant's process tree -- the grant lives in `internal/cli` mountgrants, and `internal/mount/doc.go` owns the reasoning; there is no `internal/mount.RevealState`, and no reveal-hook wiring at all). `spike/fifo-reader-identify/FINDINGS.md` found the peer-credential approach here doesn't carry over to a named pipe the way it does for this socket. |
 
 ### 2.7 Named-pipe injection (Pillar III, Tiers 3–4)
 
@@ -97,7 +98,7 @@ This is the one layer of the stack that is unavoidably macOS-only and unavoidabl
 
 | Package | Role |
 |---|---|
-| `github.com/mitchellh/go-ps` | Cross-platform process listing with parent-PID resolution; on Darwin it's pure Go over `sysctl(KERN_PROC)`, no CGo needed for this one, unlike §2.3. Matches the three OS-native mechanisms the RFC names (`sysctl`, `/proc`, `ToolHelp32`) without hand-rolling each. |
+| `github.com/mitchellh/go-ps` | Considered and NOT adopted. Process lineage shipped as `internal/lineage`, hand-written CGo against libproc(3) -- so it is the opposite of what this row anticipated ("no CGo needed for this one"), and it makes lineage one of the four CGo/darwin-only packages, not one of three. See `internal/lineage/doc.go`. |
 
 ### 2.9 Terminal UX, `jit scan` human-readable report
 
@@ -231,6 +232,6 @@ Vault/keychain access to `LocalAuthentication`/`Security.framework` is a direct 
 | `github.com/keybase/go-keychain` | Keychain / Secure Enclave access | `internal/keychainwrap` bridges `Security.framework`/`LocalAuthentication` directly via CGo instead, see §2.3's own reasoning. |
 | `github.com/awnumar/memguard` | Locked, zeroed secret buffers | `spike/memguard/FINDINGS.md` validated it works, but `internal/vault/crypto.go`'s `wipe()` (a plain zero-in-place loop) was judged enough for this first cut, its own doc comment names `memguard` as the real hardening to grow into, not yet done. |
 | `k8s.io/client-go/pkg/apis/clientauthentication` | `ExecCredential` type (Tier 2) | Pulls in the full k8s API machinery's transitive dependency tree for one ~5-field JSON type, see §2.10, which now hand-rolls it instead, the same call already made for AWS's `credential_process` shape. |
-| `github.com/mitchellh/go-ps` | Process lineage (Phase 2, §2.8) | Phase 2 isn't built yet at all, correctly out of a Phase 1 `go.mod`, kept here only as a forward pointer to §2.8. |
+| `github.com/mitchellh/go-ps` | Process lineage (§2.8) | Shipped as `internal/lineage` via CGo/libproc instead, so the dependency was never needed. Sits alongside the `go-keychain` row for the same reason: the OS API was reached directly. |
 
 Phase 2 additions (`filippo.io/age`, `github.com/hashicorp/go-retryablehttp`) are likewise deliberately excluded from the Phase 1 build to keep the shipped binary's dependency graph matched to what Phase 1 actually uses.
