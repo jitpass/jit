@@ -192,6 +192,15 @@ A findings/plan list. Strong **bold `[Category]`** header with a plain count,
 then the items. A findings report should feel heavier than a status line, so
 this is where a leading `✗` earns real weight. No rule under the header.
 
+**`jit scan`'s default view carries no severity word at all**, and that is a
+decision rather than an omission. The ladder above governs `--full`, the
+markdown export and NDJSON; the triage view deliberately shows no scanner
+vocabulary — no categories, no severity labels, no finding counts as headline
+numbers — because it is the funnel, not the inventory. Severity still decides
+the ORDER items appear in, so the ladder is doing its work without spending a
+column on a word the reader cannot act on. The `!` is amber, or red when the
+group is critical, and that is the whole severity signal in that view.
+
 ```
 [.env Files] 13
   • ~/proj/.env
