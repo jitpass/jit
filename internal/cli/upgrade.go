@@ -495,11 +495,20 @@ func sudoCommand(args ...string) *exec.Cmd {
 }
 
 // restartServiceOntoCurrentBinary points the launchd service at the binary
-// now on disk. If the login item exists it's reloaded (bootout+bootstrap,
-// re-exec'ing the new binary at the same path); if it's missing entirely
-// (never installed, or currently a foreground `jit service run`), it's
-// created. Shares installAgentService/reloadAgentService with `jit service
+// now on disk. Three cases: no login item (never installed, or currently a
+// foreground `jit service run`) creates one; a login item naming a DIFFERENT
+// binary is rewritten to name this one; and the ordinary case — a login item
+// already naming this path, which an in-place upgrade has just replaced the
+// contents of — is reloaded (bootout+bootstrap re-execs the new binary at the
+// same path). Shares installAgentService/reloadAgentService with `jit service
 // restart` so the two can't drift.
+//
+// The middle case is why this is not just a reload. Upgrading swaps the
+// binary at ONE path, and the plist may name another: a second install
+// elsewhere on PATH, or a hand-built binary someone pointed the service at.
+// Reloading then re-execs the old file and leaves the user upgraded in every
+// way except the service that holds their key — while this function's whole
+// contract is that it "points the service at the binary now on disk."
 func restartServiceOntoCurrentBinary() error {
 	plistPath, err := agentPlistPath()
 	if err != nil {
@@ -507,14 +516,28 @@ func restartServiceOntoCurrentBinary() error {
 	}
 	if _, statErr := os.Stat(plistPath); errors.Is(statErr, os.ErrNotExist) {
 		// No plist to preserve a setting from, so install with the defaults
-		// (default TTL, consent on). An existing plist takes the reload branch
-		// below, which keeps whatever consent state it already has baked in.
+		// (default TTL, consent on). An existing plist takes a branch below,
+		// which keeps whatever TTL and consent state it already has baked in.
 		if _, _, ierr := installAgentService(agentInstallDefaultTTL, true); ierr != nil {
 			return ierr
 		}
 		return nil
 	} else if statErr != nil {
 		return statErr
+	}
+	plistData, err := os.ReadFile(plistPath) // #nosec G304 -- jit's own launchd plist under the user's LaunchAgents dir
+	if err != nil {
+		return err
+	}
+	if agentPlistNeedsRepoint(plistData) {
+		ttl := agentInstallDefaultTTL
+		if d, ok := configuredAgentTTL(); ok {
+			ttl = d
+		}
+		if _, _, ierr := installAgentService(ttl, configuredAgentConsent()); ierr != nil {
+			return ierr
+		}
+		return nil
 	}
 	if out, err := reloadAgentService(plistPath); err != nil {
 		return fmt.Errorf("%w (%s)", err, strings.TrimSpace(string(out)))
