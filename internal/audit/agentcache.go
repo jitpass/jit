@@ -659,3 +659,44 @@ func AgentCopyBreakdown(home string, files []string) string {
 	}
 	return fmt.Sprintf("%s: %s", countWord(len(files), "copy", "copies"), strings.Join(parts, ", "))
 }
+
+// WalkAgentCaches calls fn for every regular file in every AI agent cache
+// present under home, applying the same root list and skip rules the
+// cross-reference uses.
+//
+// Exported for internal/migrate, whose cleanup sweep must visit exactly the
+// files this package reports on. The two once-drifting lists that SkipNoiseDir
+// exists to prevent are the precedent: "which files are an agent's cache" gets
+// one definition, here, or scan and migrate will disagree about what they are
+// looking at.
+func WalkAgentCaches(home string, fn func(path string, d fs.DirEntry) error) error {
+	for _, root := range agentCacheRoots {
+		dir := filepath.Join(home, root.dir)
+		if info, err := os.Lstat(dir); err != nil || !info.IsDir() {
+			continue
+		}
+		skip := map[string]bool{}
+		for _, s := range root.skip {
+			skip[filepath.Join(dir, s)] = true
+		}
+		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if d.IsDir() {
+				if skip[path] || (path != dir && SkipNoiseDir(dir, path, d.Name())) {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !d.Type().IsRegular() {
+				return nil
+			}
+			return fn(path, d)
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
