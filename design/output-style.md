@@ -6,10 +6,14 @@ tool. The instincts are borrowed from `gh` and `docker`: structure comes from
 state so the eye finds it before the words; **color is strictly semantic**,
 never decorative.
 
-The shared vocabulary lives in `internal/cli/style.go`. Prefer those helpers
-(`cBold`, `cPath`, `cOK`, `cWarn`, `cRisk`, the `glyph*` constants, and
-`flowNames`) over hand-rolled `color.New(...)` calls so a future palette
-change happens in exactly one place.
+Every ink and every glyph is defined in **`internal/style`**, one package
+below `cli`, `audit` and `ui` so all three share it (`internal/cli` imports
+`internal/audit`, so the vocabulary could not live in `cli`).
+`internal/cli/style.go` re-exports it under short local names — `cBold`,
+`cPath`, `cOK`, `cWarn`, `cRisk`, `cWarnBold`, `cPathBold`, `cOKBold`, the
+`glyph*` constants, `flowNames`. Never build a colour or type a glyph literal
+at a call site: `TestPaletteIsCentralised` fails on it, and the point of the
+seam is that a repaint is one edit.
 
 ## The whole palette
 
@@ -24,8 +28,8 @@ whitespace or wording, not a new color.
 | green + bold | `cOKBold` | the one headline good state on the line | `jit will protect these`, the coverage arithmetic `62% → 81%`, `+19%` | more than once per line |
 | amber | `cWarn` | needs a look, nothing is broken | `○` glyphs, "unreferenced", decoy notes, the manual-remainder `+18%` | a sentence of plain advice — that reads as a warning state it isn't |
 | amber + bold | — | an amber state marker that must be found first | the `!` leading a non-critical manual group, `INCOMPLETE SCAN`, `81% → 100%` | body prose |
-| red | `cRisk` | a real problem the reader must act on | `✗`, `CRITICAL`, the `!` on a critical group | anything the reader can't do something about |
-| red + bold | — | the section header naming what only the user can fix | `only you can protect these` | individual items inside it |
+| red | `cRisk` | a real problem the reader must act on | `✗`, `HIGH`, the `!` on a critical group | anything the reader can't do something about |
+| red + bold | `cRiskBold` (`style.RiskBold`) | the section header naming what only the user can fix, and `CRITICAL` | `only you can protect these` | individual items inside a red-bold section |
 | cyan | `cPath` / `cPathBold` | **something you can type or open** | every command, always via `hlCmds`; the `→` that introduces one; runnable spans inside a sentence | a path the report is merely describing (that's plain) |
 | **bold** | `cBold` | the single primary thing on this line | a group name, a manual-group title, `YOUR SECRETS: 80` | two things on one line — then neither is primary |
 | plain | *(no helper — just `fmt`)* | everything else, primary or secondary | body prose, action sentences after the `→`, manifest paths, counts, origins, timestamps, hints, footers | — |
@@ -73,11 +77,33 @@ Severity words in the full report (`CRITICAL`, `HIGH`, …) are colored text,
 not glyphs, and the markdown export uses emoji circles — a different format
 with different constraints, not the terminal vocabulary.
 
-**Known drift, awaiting a decision:** `⚠` appears twice in `migratesummary.go`
-where `!` or `○` belongs; severity/risk `Low` renders cyan, which the palette
-reserves for what the reader can type; severity `Info` renders `FgWhite`, a
-seventh ink. All three are marked in the source and allow-listed by name in
-`TestPaletteIsCentralised`, so they cannot multiply while they wait.
+## The severity ladder
+
+Severity is told apart by what its ink MEANS and by the word — never by how
+yellow it is.
+
+| Rung | Ink | Reads as |
+|---|---|---|
+| `CRITICAL` | red bold | a live credential, act now |
+| `HIGH` | red | almost certainly a credential |
+| `MEDIUM` | amber | secret-shaped, unconfirmed |
+| `LOW` | plain | a broad match, probably fine |
+| `INFO` | plain | context only, jit makes no claim |
+
+The `[critical]`/`[high]`/`[medium]`/`[low]` risk tags use the same ladder, so
+a tag and a severity label of the same name are the same ink. `[clean]` is
+green bold.
+
+This ladder used to run red-bold / amber-bold / amber / cyan / white. On a
+real terminal that is **three different yellows** — bold amber renders as
+bright yellow, which most themes draw as orange — plus a cyan the palette
+reserves for what the reader can type, plus a seventh ink. Encoding degree as
+shades of one hue also breaks the rule the palette rests on: amber means
+"needs a look", and it cannot also mean "needs a look, but more".
+
+Amber now appears in exactly two weights tool-wide: **plain amber reports a
+state** (the `○` glyph, `MEDIUM`, a percentage), **bold amber is a marker the
+eye must find first** (the `!` on a findings item). Nothing else is yellow.
 
 ## Keep it short
 

@@ -84,14 +84,13 @@ func TestNoHandRolledColors(t *testing.T) {
 // packages — and the sites the grep nearly missed were the ones rendering the
 // report a user actually reads.
 //
-// Four known-drift lines in internal/audit/report.go are allowed by name until
-// their preview decision lands: severity/risk Low in cyan (cyan is reserved
-// for what the reader can type) and Info in FgWhite (a seventh ink). They are
-// listed rather than pattern-matched so they cannot quietly multiply.
+// internal/style is the only file allowed to build a color. The four drift
+// lines this guard once allow-listed in internal/audit/report.go (severity
+// Low in cyan, Info in FgWhite) are gone — the severity ladder spends the
+// semantic inks now — so the allowance is gone with them.
 func TestPaletteIsCentralised(t *testing.T) {
 	allowed := map[string]int{
-		filepath.Join("..", "audit", "report.go"): 4,
-		filepath.Join("..", "style", "style.go"):  100, // the definitions
+		filepath.Join("..", "style", "style.go"): 100, // the definitions
 	}
 	found := map[string]int{}
 	err := filepath.WalkDir("..", func(path string, d os.DirEntry, err error) error {

@@ -35,6 +35,7 @@ const (
 	glyphRisk   = style.GlyphRisk
 	glyphDone   = style.GlyphDone
 	glyphAction = style.GlyphAction
+	glyphMark   = style.GlyphMark
 	glyphRule   = style.GlyphRule
 	glyphLock   = style.GlyphLock
 )
@@ -54,6 +55,7 @@ var (
 	// report is steering toward, the "done" line that closes a run.
 	cPathBold = style.PathBold
 	cOKBold   = style.OKBold
+	cWarnBold = style.WarnBold
 )
 
 // outputWidth reports the usable column count for laying out this package's

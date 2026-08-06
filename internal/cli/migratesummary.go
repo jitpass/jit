@@ -116,9 +116,14 @@ func (s *migrateSummary) print(w io.Writer) {
 	}
 	if len(s.gitHistoryFiles) > 0 {
 		sep()
-		_, _ = cWarn.Fprintf(w, "⚠ %s migrated already %s git history, jit migrate does not scrub it:\n",
+		// Amber bold on the marker only, plain on the sentence: the "!" is
+		// the state (rule 2), and a line of prose painted amber reads as a
+		// second warning (rule 5). Same shape as the findings marks in
+		// jit scan, which is where a reader has already met it.
+		_, _ = cWarnBold.Fprintf(w, "%s ", glyphMark)
+		wrapBody(w, 2, "  ", fmt.Sprintf("%s migrated already %s git history, jit migrate does not scrub it:",
 			countWord(len(s.gitHistoryFiles), "file", "files"),
-			pluralWord(len(s.gitHistoryFiles), "has", "have"))
+			pluralWord(len(s.gitHistoryFiles), "has", "have")))
 		for _, f := range s.gitHistoryFiles {
 			fmt.Fprintf(w, "  • %s\n", f)
 		}
@@ -138,7 +143,7 @@ func (s *migrateSummary) print(w io.Writer) {
 		sep()
 		// The glyph carries the state (rule 2); the sentence after it is
 		// advice, and advice in amber reads as a second warning (rule 5).
-		_, _ = cWarn.Fprint(w, "⚠ ")
+		_, _ = cWarnBold.Fprintf(w, "%s ", glyphMark)
 		wrapBody(w, 2, "  ", hlCmds("These secrets now live only in this Mac's vault, and no passphrase-encrypted "+
 			"backup of it has ever been made, run `jit vault export <file>` once (`jit status` will say "+
 			"when it needs refreshing)."))
