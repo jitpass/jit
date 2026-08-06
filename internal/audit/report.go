@@ -595,15 +595,22 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 
 	byType := groupFindingsByType(findings)
 
-	// Each non-empty category renders as its own block: a bold header, a rule
-	// beneath it, and a trailing blank line. Dense reports used to run several
-	// categories together separated by a single blank line, so where one
-	// category's findings ended and the next began was easy to lose — the rule
-	// bold header gives every section an unmistakable start. No rule beneath
-	// it: the weight of the bold header plus the blank line before the next
-	// one already separates sections (house style — whitespace and weight
-	// over box-rules, see design/output-style.md). The count in the header
-	// matches jit migrate's `[name] (N)` so both reports read the same way.
+	// Each non-empty category renders as its own block: a bracketed name in
+	// DEFAULT weight, a plain count, and a trailing blank line. Dense reports
+	// used to run several categories together separated by a single blank line,
+	// so where one category's findings ended and the next began was easy to
+	// lose; the brackets plus the blank line before the next one are what give
+	// every section an unmistakable start (house style — whitespace over
+	// box-rules, and the brackets delimit better than bold would: rule 1 in
+	// design/output-style.md). No rule beneath the header.
+	//
+	// This comment said "a bold header, a rule beneath it" until 2026-08-06,
+	// contradicted itself four lines later with "No rule beneath it", and
+	// described a `[name] (N)` count format that exists nowhere. The code below
+	// was always right and always rule-1 compliant; the prose had drifted, in
+	// four places that cited each other (internal/cli/style.go,
+	// migrateplan.go twice, and design/output-style.md's own Report section,
+	// which disagreed with its own rule 1).
 	for _, ft := range AllFindingTypes {
 		group := byType[ft]
 		if len(group) == 0 {

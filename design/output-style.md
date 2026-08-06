@@ -188,8 +188,11 @@ One vocabulary, three layouts — each fits the shape of its data. What they
 share is the palette, the glyphs, the plain-secondary rule, and column flow.
 
 ### Report — `jit scan`, `jit migrate`, `jit doctor`
-A findings/plan list. Strong **bold `[Category]`** header with a plain count,
-then the items. A findings report should feel heavier than a status line, so
+A findings/plan list. A `[Category]` header in default weight with a plain
+count — rule 1, same as everywhere else — then the items. (This section read
+"Strong **bold** `[Category]`" until 2026-08-06, contradicting rule 1 above and
+the code in both `internal/audit/report.go` and `internal/cli/migrateplan.go`,
+which have always printed it plain.) A findings report should feel heavier than a status line, so
 this is where a leading `✗` earns real weight. No rule under the header.
 
 **`jit scan`'s default view carries no severity word at all**, and that is a
