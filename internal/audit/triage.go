@@ -556,9 +556,9 @@ func triageGroupManual(findings []Finding, home string) []triageManualGroup {
 			secrets:  len(p.causes),
 			critical: worst.Severity == SeverityCritical,
 			sortKey:  rankOf(worst.Severity),
-			title:    manualTitle(p.causes, p.files, worst),
+			title:    manualTitle(p.causes, p.files, worst, home),
 			details:  []string{manualDetail(p.files, worst, home)},
-			hints:    []string{manualViewHint(worst, home)},
+			hints:    []string{manualGroupHint(worst, p.files, home)},
 			action:   manualAction(worst, ctx, home),
 			noun:     manualNoun(worst),
 			files:    len(p.files),
@@ -602,9 +602,28 @@ func mergeManualGroups(groups []triageManualGroup, home string) []triageManualGr
 	}
 	for i := range out {
 		if len(out[i].details) > 1 {
-			out[i].title = fmt.Sprintf("%s — %d separate secrets in %s",
-				out[i].noun, out[i].secrets,
-				countWord(out[i].files, "file copy", "file copies"))
+			// A merged group of cached copies keeps the agent in its title.
+			// The generic "N separate secrets in M file copies" wording is
+			// wrong for these twice over: the copies are not copies of a
+			// file, and dropping the agent loses the one fact that explains
+			// how the credential got there.
+			if out[i].sample.FindingType == FindingTypeAgentCachedSecret {
+				agent := AgentLabelForPath(home, out[i].sample.FilePath)
+				if agent == "" {
+					agent = "an AI agent"
+				}
+				// Pluralised on the key name itself: the title counts
+				// secrets, so "2 DATABASE_URL" reads as a typo.
+				label := shortSecretLabel(out[i].sample.KeyName)
+				if out[i].secrets > 1 && !strings.HasSuffix(label, "s") {
+					label += "s"
+				}
+				out[i].title = fmt.Sprintf("%d %s, copied by %s", out[i].secrets, label, agent)
+			} else {
+				out[i].title = fmt.Sprintf("%s — %d separate secrets in %s",
+					out[i].noun, out[i].secrets,
+					countWord(out[i].files, "file copy", "file copies"))
+			}
 			out[i].ctx.secrets = out[i].secrets
 			out[i].ctx.copies = out[i].files
 			out[i].action = manualAction(out[i].sample, out[i].ctx, home)
@@ -647,7 +666,7 @@ func writeHistoryGuardOffer(w io.Writer, findings []Finding, cmd *color.Color) {
 // manualTitle names the problem in the user's terms: what it is and, when
 // it spans copies, how wide it spread. It never says "finding" or a
 // severity word — the noun is the secret, the number is the file spread.
-func manualTitle(causes []*triageCause, files []string, worst Finding) string {
+func manualTitle(causes []*triageCause, files []string, worst Finding, home string) string {
 	// History is titled by WHERE, not by how many files it spread to. Two
 	// history files are ~/.zsh_history and ~/.bash_history, which are two
 	// shells' records of the same habit — calling that "2 copies of a file"
@@ -657,6 +676,21 @@ func manualTitle(causes []*triageCause, files []string, worst Finding) string {
 			return fmt.Sprintf("%d credentials in shell history", len(causes))
 		}
 		return manualNoun(worst)
+	}
+	// An agent cache copy is titled by WHO copied it, not by how many files it
+	// spread to. "in 9 copies of a file" describes a duplicated config; what
+	// happened here is that one agent kept nine snapshots of one credential,
+	// and naming the agent is what makes the finding actionable. The count
+	// moves to the evidence line, where the breakdown by cache area lives.
+	if worst.FindingType == FindingTypeAgentCachedSecret {
+		noun := manualNoun(worst)
+		if len(causes) > 1 {
+			noun = fmt.Sprintf("%d credentials", len(causes))
+		}
+		if agent := AgentLabelForPath(home, worst.FilePath); agent != "" {
+			return fmt.Sprintf("%s, copied by %s", noun, agent)
+		}
+		return noun + ", copied by an AI agent"
 	}
 	noun := manualNoun(worst)
 	if len(causes) > 1 {
@@ -735,6 +769,13 @@ func manualDetail(files []string, worst Finding, home string) string {
 	if first == "" {
 		first = files[0]
 	}
+	// For a cached copy the address the reader needs is the file the
+	// credential LIVES in, never the copy: the copies are named by content
+	// hash (93eb694cdfee2a45@v2), which is an address nobody can act on, and
+	// the origin is the file they recognise and can go and fix.
+	if worst.FindingType == FindingTypeAgentCachedSecret && worst.originPath != "" {
+		return ShortenHome(home, worst.originPath)
+	}
 	shown := ShortenHome(home, first)
 	// A history file is thousands of lines long and the fix is to find one of
 	// them, so the line number is not a detail — it is the whole address. No
@@ -754,6 +795,20 @@ func manualDetail(files []string, worst Finding, home string) string {
 		return shown
 	}
 	return fmt.Sprintf("%s … and %d more", shown, len(files)-1)
+}
+
+// manualGroupHint is the evidence line under a group's address. It defers to
+// manualViewHint for everything except a cached copy, which needs a different
+// kind of line: not "how do I look at that address" but "where did the copies
+// actually land", because the address shown is the origin and the copies are
+// the thing being reported.
+func manualGroupHint(worst Finding, files []string, home string) string {
+	if worst.FindingType == FindingTypeAgentCachedSecret {
+		if b := AgentCopyBreakdown(home, files); b != "" {
+			return style.GlyphBranch + " " + b
+		}
+	}
+	return manualViewHint(worst, home)
 }
 
 // manualViewHint returns the line, printed under the address line and
@@ -882,6 +937,16 @@ func manualAction(f Finding, ctx manualContext, home string) string {
 		return "rotate " + them + " now; move state to an encrypted remote backend, and keep secrets out of it with ephemeral values (Terraform 1.10+)"
 	case f.FindingType == FindingTypeIACVariableFile:
 		return "seal it (sealed-secrets/SOPS) or move it to a real secret store"
+	case f.FindingType == FindingTypeAgentCachedSecret:
+		// Rotation leads, and the second clause is the part that surprises
+		// people: `jit migrate` rewrites the file the credential lives in and
+		// does not touch the agent's copies, so a reader who runs it and
+		// re-scans would otherwise think jit had lost the finding.
+		above := "the file above"
+		if ctx.copies > 0 && ctx.secrets > 1 {
+			above = "the files above"
+		}
+		return fmt.Sprintf("rotate %s now; jit migrate cleans %s, not these copies", them, above)
 	case f.FindingType == FindingTypeShellHistorySecret && f.KeyName != nil && IsPrivateKeyVendor(*f.KeyName):
 		// A key is not a token: there is no provider to rotate it at, and the
 		// line jit matched is the header, so the body is still on the lines

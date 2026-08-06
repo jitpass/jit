@@ -65,6 +65,7 @@ var findingTypeLabels = map[string]string{ // #nosec G101 -- enum label keys, no
 	FindingTypeSOPSAgeKey:         "SOPS Age Keys",
 	FindingTypeExposedSecret:      "Exposed Secrets",
 	FindingTypeShellHistorySecret: "Shell History",
+	FindingTypeAgentCachedSecret:  "AI Agent Caches",
 }
 
 // The severity ladder spends the semantic inks rather than shades of one

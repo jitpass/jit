@@ -154,6 +154,12 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 	// sk_live_ key) went unmentioned and the user had no way to know the
 	// scan had seen it. See describeEnvHits.
 	var tokenHits []envTokenHit
+	// The values this scanner judges to be real credentials, kept so the
+	// file-level finding can still hand them to crossReferenceAgentCaches as
+	// search needles. Never reported and never serialized — see
+	// Finding.claimedRawValues.
+	var claimedRaw []claimedValue
+	claim := func(k, v string) { claimedRaw = append(claimedRaw, claimedValue{Key: k, Value: v}) }
 	var secretShapedKeys []string
 
 	scanner := newLineScanner(file)
@@ -206,6 +212,7 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 			}
 			if !ambiguousDrop {
 				tokenHits = append(tokenHits, envTokenHit{key: key, vendor: vendor, verified: verified, unfilteredReason: unfReason})
+				claim(key, rawValue)
 			}
 		}
 		// Only active (uncommented) variables count toward this, only for
@@ -240,6 +247,7 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 			if !suppress {
 				secretShaped = true
 				secretShapedKeys = append(secretShapedKeys, key)
+				claim(key, rawValue)
 				if unfReason == "" {
 					if !normalShaped {
 						normalShaped, normalShapedKey = true, key
@@ -257,6 +265,7 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 			if !entropyMatch {
 				entropyMatch = true
 				entropyKey = key
+				claim(key, rawValue)
 			}
 		}
 	}
@@ -293,6 +302,7 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 	f := cfg.baseFinding()
 	f.FindingType = FindingTypeEnvFilePresent
 	f.FilePath = path
+	f.claimedRawValues = claimedRaw
 	f.Confidence = ConfidenceHigh
 	f.ProductionIndicatorMatch = prodMatch
 	if ipMatch {

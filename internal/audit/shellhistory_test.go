@@ -541,7 +541,7 @@ func TestCoverageDoesNotClaimManualHistorySecretsAsMigratable(t *testing.T) {
 			RecordID:    "r2",
 		},
 	}
-	cov := ComputeCoverage("", findings)
+	cov := ComputeCoverage("", "", findings)
 	if cov.Exposed != 1 {
 		t.Errorf("Exposed = %d, want 1 (one secret in two places)", cov.Exposed)
 	}
@@ -555,7 +555,7 @@ func TestCoverageDoesNotClaimManualHistorySecretsAsMigratable(t *testing.T) {
 	// Flip the history copy to the ordinary migratable remedy: the same
 	// group now counts, because bare `jit migrate` redacts that copy too.
 	findings[1].Remedy = RemedyMigrate
-	cov = ComputeCoverage("", findings)
+	cov = ComputeCoverage("", "", findings)
 	if cov.Migratable != 1 {
 		t.Errorf("Migratable = %d, want 1 once the history copy is redactable", cov.Migratable)
 	}
@@ -1016,7 +1016,7 @@ func TestTriageZeroGainBlockStaysHonest(t *testing.T) {
 			RecordID:                 "r2",
 		},
 	}
-	cov := ComputeCoverage("", findings)
+	cov := ComputeCoverage("", "", findings)
 	if cov.Total() != 1 || cov.Migratable != 0 {
 		t.Fatalf("precondition: cov = %+v, want one secret, none migratable", cov)
 	}
@@ -1142,7 +1142,7 @@ func TestScanReportOffersTheGuardOnlyWhenHistoryIsInvolved(t *testing.T) {
 		RecordID:     "r1",
 	}
 	render := func(fs []Finding) string {
-		cov := ComputeCoverage("", fs)
+		cov := ComputeCoverage("", "", fs)
 		var buf strings.Builder
 		WriteTriageReport(&buf, fs, ScanSummary{
 			SecretsTotal: cov.Total(), SecretsProtected: cov.Protected, SecretsMigratable: cov.Migratable,

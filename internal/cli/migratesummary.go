@@ -60,6 +60,9 @@ type migrateSummary struct {
 	// "stale" here is a tautology and nagging on it every run would teach
 	// people to skip the whole summary. `jit status` owns staleness.
 	exportNudge bool
+	// agentCleanup is what the post-migration sweep removed from AI agent
+	// caches, and what it deliberately left alone. Empty on a run that
+	// vaulted nothing an agent had copied, which is the common case.
 }
 
 // checkGitHistory records path if it has ever been committed (RFC.md

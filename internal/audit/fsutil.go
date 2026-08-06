@@ -89,6 +89,15 @@ var noiseRelativePaths = []string{
 	filepath.Join(".local", "share", "uv"),          // uv-managed Python installs
 	filepath.Join(".local", "share", "virtualenvs"), // pipenv
 	filepath.Join(".ollama", "models"),              // model blobs
+	// AI agent trees that are vendored, binary, or both. The rest of
+	// ~/.claude is deliberately NOT skipped — file-history/, paste-cache/,
+	// shell-snapshots/ and projects/ are where an agent keeps copies of the
+	// user's own credentials, which is the whole subject of agentcache.go.
+	// These three are a marketplace checkout, a bundled browser, and decoded
+	// screenshots: large, third-party or binary, and never the user's to fix.
+	filepath.Join(".claude", "plugins"),
+	filepath.Join(".claude", "chrome"),
+	filepath.Join(".claude", "image-cache"),
 }
 
 // SkipNoiseDir reports whether a discovery walk under root should skip the

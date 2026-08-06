@@ -44,7 +44,7 @@ func TestReportRendersNoControlCharactersFromScannedFiles(t *testing.T) {
 		"human":    func(b *bytes.Buffer) { WriteHumanReport(b, findings, summary, "") },
 		"markdown": func(b *bytes.Buffer) { WriteMarkdownReport(b, findings, summary) },
 		"triage": func(b *bytes.Buffer) {
-			WriteTriageReport(b, findings, summary, "", ComputeCoverage("", findings))
+			WriteTriageReport(b, findings, summary, "", ComputeCoverage("", "", findings))
 		},
 	}
 	for name, render := range renderers {

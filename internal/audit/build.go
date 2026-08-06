@@ -57,6 +57,10 @@ func (c Config) ValueFinding(p ValueFindingParams) Finding {
 		return f
 	}
 
+	// Retained in the clear for this run only, and only past the masked-value
+	// return above. See Finding.rawValue for why a digest cannot do this job.
+	f.rawValue = p.RawValue
+
 	preview := MaskValue(p.RawValue)
 	f.ValuePreview = &preview
 
