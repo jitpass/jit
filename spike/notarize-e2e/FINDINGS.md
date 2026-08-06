@@ -38,10 +38,17 @@ goreleaser/quill path mints one JWT of `timeout + 2m` lifetime, which is the
 On **Accepted**, the part brew actually depends on is verified explicitly:
 jit ships a bare Mach-O, which cannot be stapled, and Homebrew quarantines
 cask downloads — so a cask user's first run depends on Gatekeeper fetching
-the notarization ticket online. The probe simulates that user: it sets
-`com.apple.quarantine` on the signed binary, asks `spctl --assess` for a
-verdict (expecting `Notarized Developer ID`), and executes the quarantined
-copy.
+the notarization ticket online. The probe simulates that user A/B: it
+quarantines both the notarized binary and an unnotarized (ad-hoc-signed)
+control, and executes each. The control must be blocked (SIGKILL, rc=137) or
+the environment isn't discriminating and the leg reports inconclusive.
+
+Measured quirk (2026-08-06): `spctl --assess --type execute` is **not** a
+usable oracle for a bare CLI — it prints "rejected (the code is valid but
+does not seem to be an app)" even for a notarized binary whose quarantined
+copy Gatekeeper happily executes, because spctl's execute policy only
+approves `.app`s. The probe prints spctl output as evidence but gates on the
+execution A/B.
 
 Two ways to run it:
 
@@ -56,9 +63,9 @@ Two ways to run it:
 
 Exit codes: `0` Accepted + Gatekeeper pass · `1` Invalid (artifact verdict,
 log dumped) · `2` stuck In Progress past the timeout (the known condition) ·
-`3` Accepted but Gatekeeper rejected the quarantined copy — a state that
+`3` Accepted but Gatekeeper blocked the quarantined copy — a state that
 would break brew users even with notarization nominally "working", hence its
-own code.
+own code · `4` Gatekeeper leg inconclusive (the control ran too; use CI).
 
 ## Acceptance criteria (gate for un-reverting)
 
@@ -88,9 +95,17 @@ the `timeout: 15m` JWT lesson from `77cc73f`), and the `homebrew_casks` block
 | 2026-07-30 → 08-01 | baseline (pre-spike) | 7 ids in support case | never (>2 days) | In Progress | n/a | — |
 | 2026-08-01 | manual probe (pre-spike) | — | ~40min | Accepted | not checked | — |
 | 2026-08-01 | v0.70.1 release build | — | never | In Progress | rejected (quarantined copy blocked) | — |
+| 2026-08-06 | history mode | — | — | **ALL 9 prior submissions now Accepted** (backlog cleared, incl. the 7 support-case ids and v0.70.1's) | — | 0 |
+| 2026-08-06 | local run 1 | f54867e5 | seconds (21s incl. build+sign) | Accepted | not reached (script bug: `status` is read-only in zsh, fixed) | 1 |
+| 2026-08-06 | local run 2 | 5e558fbf | seconds (23s total) | Accepted | exec OK but old spctl-string gate failed → A/B redesign | 3 |
+| 2026-08-06 | local run 3 | 5b4bbf71 | seconds (54s total) | Accepted | control blocked rc=137, notarized copy ran | **0** |
 | _fill in per run_ | | | | | | |
 
-**Verdict: pending** — the spike is built but blocked on Apple resolving the
-account-side condition (or the agreements step completing). Do not
-re-litigate the tooling: signing, auth, and the JWT timeout are all known
-good.
+**Verdict as of 2026-08-06: the account-side condition has cleared.** The
+entire submission backlog is Accepted, and fresh submissions reach a verdict
+in *seconds* — comfortably inside quill's ~18m JWT ceiling, so `wait: true`
+is viable again. The quarantined-unstapled Gatekeeper leg passes (online
+ticket fetch works for a bare Mach-O). Gate progress: **1 of 3** consecutive
+green runs, day 1 of 2 — run the workflow again on a later day (twice) before
+un-reverting. Do not re-litigate the tooling: signing, auth, and the JWT
+timeout are all known good.

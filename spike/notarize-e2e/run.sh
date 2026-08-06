@@ -26,8 +26,10 @@
 #   0  Accepted, and the quarantined binary passed Gatekeeper
 #   1  Invalid — Apple returned a verdict against the artifact (log dumped)
 #   2  stuck In Progress past NOTARY_TIMEOUT — the known account condition
-#   3  Accepted, but Gatekeeper rejected the quarantined binary
+#   3  Accepted, but Gatekeeper blocked the quarantined notarized binary
 #      (would break brew-cask users even with notarization "working")
+#   4  Gatekeeper leg inconclusive — this environment also ran the
+#      unnotarized control, so it cannot discriminate (rely on a CI run)
 
 set -u
 cd "$(dirname "$0")"
@@ -61,6 +63,9 @@ fi
 # --- build + sign ---------------------------------------------------------
 say "building hello Mach-O"
 go build -o "$WORK/hello" . || exit 65
+# Keep an unnotarized control (only the linker's ad-hoc signature): the
+# Gatekeeper leg below is only meaningful if this copy gets blocked.
+cp "$WORK/hello" "$WORK/control"
 
 say "signing with quill (same path goreleaser's notarize.macos uses)"
 quill sign "$WORK/hello" || { say "quill sign failed"; exit 65; }
@@ -78,10 +83,10 @@ submit_out="$WORK/submit.json"
 print ""
 
 sub_id=$(grep -o '"id" *: *"[^"]*"' "$submit_out" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
-status=$(grep -o '"status" *: *"[^"]*"' "$submit_out" | tail -1 | sed 's/.*"\([^"]*\)"$/\1/')
-say "submission ${sub_id:-<no id>} → status: ${status:-<none>}"
+verdict=$(grep -o '"status" *: *"[^"]*"' "$submit_out" | tail -1 | sed 's/.*"\([^"]*\)"$/\1/')
+say "submission ${sub_id:-<no id>} → status: ${verdict:-<none>}"
 
-case "${status:-}" in
+case "${verdict:-}" in
   Accepted) ;;
   Invalid|Rejected)
     say "verdict against the artifact — notary log follows"
@@ -100,21 +105,34 @@ say "Accepted — fetching notary log"
 # --- the brew-decisive check ---------------------------------------------
 # jit ships a bare Mach-O, which cannot be stapled, so a Homebrew-cask user
 # (whose download brew quarantines) depends on Gatekeeper fetching the ticket
-# online. Simulate exactly that: quarantine the signed binary, then (a) ask
-# Gatekeeper's verdict and (b) actually execute it.
+# online. Simulate exactly that user, A/B: quarantine both the notarized
+# binary and the unnotarized control, and execute each. The control MUST be
+# blocked (SIGKILL) or the environment isn't discriminating and the leg
+# proves nothing. spctl output is printed as evidence only: its `execute`
+# policy approves only .apps, so a bare CLI gets "rejected (the code is valid
+# but does not seem to be an app)" even when notarized — measured 2026-08-06.
 say "Gatekeeper check on a quarantined, unstapled copy"
+spctl --status || true
+qtag="0083;$(printf '%x' "$(date +%s)");notarize-e2e-spike;"
 cp "$WORK/hello" "$WORK/hello-quarantined"
-xattr -w com.apple.quarantine "0083;$(printf '%x' "$(date +%s)");notarize-e2e-spike;" \
-  "$WORK/hello-quarantined"
+xattr -w com.apple.quarantine "$qtag" "$WORK/hello-quarantined"
+xattr -w com.apple.quarantine "$qtag" "$WORK/control"
 
-spctl_out=$(spctl --assess --type execute -vv "$WORK/hello-quarantined" 2>&1)
-print -r -- "$spctl_out"
-run_out=$("$WORK/hello-quarantined" 2>&1)
-print -r -- "exec: $run_out"
+spctl --assess --type execute -vv "$WORK/hello-quarantined" 2>&1 || true
 
-if [[ "$spctl_out" == *"Notarized Developer ID"* && "$run_out" == *"hello"* ]]; then
-  say "PASS — ticket found online; quarantined binary runs. Safe to re-add notarize + cask once this is consistent."
+ctl_out=$("$WORK/control" 2>&1); ctl_rc=$?
+run_out=$("$WORK/hello-quarantined" 2>&1); run_rc=$?
+print -r -- "control (ad-hoc, quarantined):   rc=$ctl_rc"
+print -r -- "notarized, quarantined:          rc=$run_rc  $run_out"
+
+if (( ctl_rc == 0 )); then
+  say "INCONCLUSIVE — the unnotarized control ran too; this environment cannot discriminate (Gatekeeper off?)"
+  exit 4
+fi
+if (( run_rc == 0 )) && [[ "$run_out" == *"hello"* ]]; then
+  say "PASS — Gatekeeper blocks the control but runs the notarized copy: the online ticket fetch works."
+  say "Safe to re-add notarize + the cask once this is consistent (see FINDINGS.md gate)."
   exit 0
 fi
-say "Accepted by notary, but Gatekeeper did NOT clear the quarantined copy"
+say "Accepted by notary, but Gatekeeper blocked the quarantined notarized copy (rc=$run_rc)"
 exit 3
