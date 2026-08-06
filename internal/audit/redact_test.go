@@ -3,7 +3,11 @@
 
 package audit
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/jitpass/jit/internal/auditlog"
+)
 
 func TestMaskValue(t *testing.T) {
 	cases := []struct {
@@ -50,5 +54,24 @@ func TestIsAlreadyMasked(t *testing.T) {
 		if got != c.want {
 			t.Errorf("IsAlreadyMasked(%q) = %v, want %v", c.input, got, c.want)
 		}
+	}
+}
+
+// TestJitsOwnRedactionMarkIsRecognised links two lists that describe the same
+// thing from opposite ends and were connected only by both spelling
+// "<redacted>" by hand.
+//
+// commonMaskedPlaceholders is a list of markers FOREIGN tools leave behind, so
+// it is deliberately not built from auditlog.RedactToken — the overlap is a
+// coincidence, not a contract, and coupling them would make jit's own log
+// format govern what it recognises in other people's files. What IS a
+// contract: jit must never re-flag a value it masked itself. If the audit
+// log's placeholder ever changes, `jit scan` would start reporting jit's own
+// redaction marks as exposed secrets, and this is what notices.
+func TestJitsOwnRedactionMarkIsRecognised(t *testing.T) {
+	if !IsAlreadyMasked(auditlog.RedactToken) {
+		t.Errorf("jit's own redaction placeholder %q is not recognised as masked; "+
+			"jit scan would report its own audit-log redactions as exposed secrets",
+			auditlog.RedactToken)
 	}
 }

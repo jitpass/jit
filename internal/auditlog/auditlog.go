@@ -204,10 +204,15 @@ func (l *Logger) Trim() {
 	}
 }
 
-// redactToken is the fixed placeholder a masked secret becomes. Fixed (not
+// RedactToken is the fixed placeholder a masked secret becomes. Fixed (not
 // length-preserving stars) so the log never leaks even the length of what was
 // masked.
-const redactToken = "<redacted>"
+//
+// Exported because internal/cli masks one more argument this package cannot
+// see (the trailing value of a `jit vault set`-shaped command, auditrecord.go)
+// and was retyping the literal to do it. Two producers of one placeholder, and
+// a divergence puts a real value in the log looking like a mask.
+const RedactToken = "<redacted>"
 
 // secretPrefixes are the well-known "this is unambiguously a live credential"
 // leaders. A token starting with one is masked whole regardless of length or
@@ -307,7 +312,7 @@ func looksSecret(arg string) bool {
 func RedactText(s string) string {
 	return tokenAlphabet.ReplaceAllStringFunc(s, func(tok string) string {
 		if looksSecretToken(tok) {
-			return redactToken
+			return RedactToken
 		}
 		return tok
 	})
@@ -360,13 +365,13 @@ func redactArg(a string) string {
 			// base64 credential just because it contains '/' or '+', the way
 			// the path-shy looksSecret does for a bare argument.
 			if looksSecretToken(val) {
-				return name + "=" + redactToken
+				return name + "=" + RedactToken
 			}
 			return a
 		}
 	}
 	if looksSecret(a) {
-		return redactToken
+		return RedactToken
 	}
 	return a
 }

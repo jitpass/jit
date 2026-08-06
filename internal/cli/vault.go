@@ -1062,7 +1062,7 @@ var vaultHistoryCmd = &cobra.Command{
 		}
 		for _, hv := range versions {
 			when := time.Unix(0, hv.ArchiveStamp)
-			line := fmt.Sprintf("archived %s ago (%s)", humanAgo(time.Since(when)), when.Format("2006-01-02 15:04:05"))
+			line := fmt.Sprintf("archived %s ago (%s)", humanAgo(time.Since(when)), when.Format(auditTimeLayout))
 			if hv.UpdatedUnix > 0 {
 				line += fmt.Sprintf(", value from %s", time.Unix(hv.UpdatedUnix, 0).Format("2006-01-02"))
 			}

@@ -196,12 +196,12 @@ func parseAuditTime(s string) (time.Time, error) {
 		}
 		return time.Now().Add(-d), nil
 	}
-	for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02 15:04", "2006-01-02", time.RFC3339} {
+	for _, layout := range []string{auditTimeLayout, "2006-01-02 15:04", "2006-01-02", time.RFC3339} {
 		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
 			return t, nil
 		}
 	}
-	return time.Time{}, fmt.Errorf("not a duration (like 2h, 90m, 3d) or a date (like 2006-01-02 or \"2006-01-02 15:04:05\")")
+	return time.Time{}, fmt.Errorf("not a duration (like 2h, 90m, 3d) or a date (like 2006-01-02 or %q)", auditTimeLayout)
 }
 
 // parseFlexDuration extends time.ParseDuration with day and week suffixes,
