@@ -5,6 +5,7 @@ package audit
 
 import (
 	"bytes"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
@@ -41,13 +42,93 @@ var commonDumpDirs = []string{"Desktop", "Downloads"}
 // Downloads is not worth reading in full just to check for a PEM header.
 const maxKeyFileSize = 1 << 20 // 1 MiB
 
+// looksLikePrivateKey reports whether content holds an actual private key,
+// rather than merely mentioning one.
+//
+// A bare `bytes.Contains` on the header was the whole test, and it flagged
+// every file that so much as NAMES a PEM header: documentation, test fixtures,
+// a scanner's own pattern list. jit reported its own
+// internal/audit/tokenpatterns.go as "private key found outside ~/.ssh", which
+// is the kind of finding that teaches a user to stop believing the report —
+// and this category is one where a false positive is expensive, since the
+// advice attached to it is to go delete the file.
+//
+// A header alone is not a key. A key has a BODY. Two ways of establishing one,
+// because either alone has a real gap:
+//
+//   - encoding/pem, which parses the block properly and so handles the
+//     RFC 1421 header lines (Proc-Type/DEK-Info) that an encrypted traditional
+//     RSA key carries between its BEGIN line and its base64 — a naive
+//     "next line must be base64" test reports those as not-a-key.
+//   - a base64 run immediately after the header, for a key embedded in
+//     another format, where the newlines are escape sequences rather than
+//     real ones (`"-----BEGIN PRIVATE KEY-----\nMIIEv..."`, the shape a GCP
+//     service-account JSON uses). pem.Decode rejects those outright.
+//
+// Erring toward detection deliberately: a missed key is worse than a spurious
+// one, so anything with a plausible body is reported.
 func looksLikePrivateKey(content []byte) bool {
+	for rest := content; ; {
+		block, remainder := pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if strings.Contains(block.Type, "PRIVATE KEY") {
+			return true
+		}
+		if len(remainder) >= len(rest) {
+			break // no forward progress; refuse to spin
+		}
+		rest = remainder
+	}
+
 	for _, header := range privateKeyPEMHeaders {
-		if bytes.Contains(content, []byte(header)) {
+		idx := bytes.Index(content, []byte(header))
+		if idx < 0 {
+			continue
+		}
+		if hasEncodedKeyBody(content[idx+len(header):]) {
 			return true
 		}
 	}
 	return false
+}
+
+// minEncodedKeyBody is how many base64 characters must follow a PEM header
+// before it counts as a key body. The shortest real key's base64 runs to
+// hundreds of characters, so this is far below anything genuine while still
+// well above what punctuation-separated source code produces — the string
+// after the header in a Go pattern list is a backtick, i.e. a run of zero.
+const minEncodedKeyBody = 32
+
+// hasEncodedKeyBody reports whether a base64 run of at least minEncodedKeyBody
+// characters begins where a PEM body would, after any real or ESCAPED newline
+// (`\n` as two characters is how a key embedded in JSON carries its line
+// breaks). Only the immediate position is considered: scanning ahead for
+// base64 anywhere later in the file would re-admit the false positives this
+// exists to remove, since a long identifier elsewhere in a source file would
+// qualify.
+func hasEncodedKeyBody(after []byte) bool {
+	for len(after) > 0 {
+		switch {
+		case after[0] == '\n' || after[0] == '\r' || after[0] == ' ' || after[0] == '\t':
+			after = after[1:]
+		case len(after) >= 2 && after[0] == '\\' && (after[1] == 'n' || after[1] == 'r'):
+			after = after[2:]
+		default:
+			run := 0
+			for run < len(after) && isBase64Byte(after[run]) {
+				run++
+			}
+			return run >= minEncodedKeyBody
+		}
+	}
+	return false
+}
+
+func isBase64Byte(b byte) bool {
+	return b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z' || b >= '0' && b <= '9' ||
+		b == '+' || b == '/' || b == '='
 }
 
 // ScanPrivateKeys implements RFC.md §4 category 5.
