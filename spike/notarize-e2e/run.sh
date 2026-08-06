@@ -77,14 +77,18 @@ ditto -c -k "$WORK/hello" "$WORK/hello.zip"
 
 say "submitting (timeout ${NOTARY_TIMEOUT})"
 submit_out="$WORK/submit.json"
+t_submit=$(date +%s)
 "${notary[@]}" submit "$WORK/hello.zip" "${auth[@]}" \
   --wait --timeout "${NOTARY_TIMEOUT}" --output-format json \
   | tee "$submit_out"
+t_verdict=$(date +%s)
 print ""
 
 sub_id=$(grep -o '"id" *: *"[^"]*"' "$submit_out" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
 verdict=$(grep -o '"status" *: *"[^"]*"' "$submit_out" | tail -1 | sed 's/.*"\([^"]*\)"$/\1/')
-say "submission ${sub_id:-<no id>} → status: ${verdict:-<none>}"
+# upload + Apple's queue + scan, together: the number FINDINGS.md's gate
+# criterion 2 is about (must sit well inside quill's ~18m JWT ceiling).
+say "submission ${sub_id:-<no id>} → status: ${verdict:-<none>} after $((t_verdict - t_submit))s"
 
 case "${verdict:-}" in
   Accepted) ;;
