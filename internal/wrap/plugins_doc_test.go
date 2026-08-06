@@ -6,6 +6,7 @@ package wrap
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -58,6 +59,54 @@ func TestPluginsDocListsEveryCatalogTool(t *testing.T) {
 			if _, err := os.Stat(filepath.Join("..", "..", "docs", "wrap", tool+".md")); err == nil {
 				t.Errorf("catalog tool %q must NOT also have a docs/wrap/%s.md — that filename is the exact CLAUDE.md collision docFileOverride exists to avoid", tool, tool)
 			}
+		}
+	}
+}
+
+// docRowTool matches a catalog table row's first cell in docs/wrap/index.md:
+// a backticked tool name linked to its own page, e.g.
+//
+//	| [`gh`](./gh.md) | `GH_TOKEN` | ... |
+//
+// Anchored at the line start so prose elsewhere in the page — which mentions
+// plenty of tool names jit does not wrap — cannot be mistaken for a row.
+var docRowTool = regexp.MustCompile(`(?m)^\| \[` + "`" + `([^` + "`" + `]+)` + "`" + `\]\(\./([^)]+)\.md\)`)
+
+// TestPluginsDocListsNoUncatalogedTool is the direction
+// TestPluginsDocListsEveryCatalogTool's comment claims and does not check.
+// That test iterates CatalogTools(), so it only ever proves catalog ⊆ docs; a
+// docs/wrap/ row for a tool that was REMOVED from the catalog passes it
+// silently, leaving a public page promising `jit wrap <tool>` for a tool the
+// binary answers "unknown tool" to.
+//
+// Also pins each row's link to the stem docFileStem resolves to, so a row can
+// never point at docs/wrap/claude.md — the filename whose mere existence turns
+// a docs page into directory-scoped CLAUDE.md project instructions, per
+// docFileOverride above.
+func TestPluginsDocListsNoUncatalogedTool(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "wrap", "index.md"))
+	if err != nil {
+		t.Fatalf("docs/wrap/index.md must exist and list every catalog tool: %v", err)
+	}
+
+	known := make(map[string]bool, len(CatalogTools()))
+	for _, tool := range CatalogTools() {
+		known[tool] = true
+	}
+
+	rows := docRowTool.FindAllStringSubmatch(string(data), -1)
+	if len(rows) == 0 {
+		t.Fatal("no catalog table rows matched in docs/wrap/index.md — the table format changed and this guard is no longer reading it")
+	}
+	for _, row := range rows {
+		tool, stem := row[1], row[2]
+		if !known[tool] {
+			t.Errorf("docs/wrap/index.md lists %q, which is not in the catalog; "+
+				"the page promises `jit wrap %s` for a tool the binary rejects", tool, tool)
+			continue
+		}
+		if want := docFileStem(tool); stem != want {
+			t.Errorf("docs/wrap/index.md links %q to ./%s.md, want ./%s.md", tool, stem, want)
 		}
 	}
 }
