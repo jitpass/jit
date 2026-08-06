@@ -96,7 +96,7 @@ type vaultSecretJSON struct {
 
 // vaultGetResult is `jit vault get --json`'s object: the decrypted value plus
 // the envelope's plaintext provenance (class/group/origin) and timestamps —
-// the structured form of the faint footer, so a script gets the source kind
+// the structured form of the footer, so a script gets the source kind
 // as a first-class field instead of parsing decoration or joining to the
 // prunable backup ledger. Empty provenance fields are omitted (a v1/v2 secret
 // written before provenance existed), never rendered as a guess.
@@ -128,7 +128,7 @@ func splitBackupPaths(paths []string) (secrets, backups []string) {
 
 // printVaultList renders jit vault list's text output. Piped (grouped
 // false), secrets stay one full path per line, grep/pipe-friendly with no
-// decoration; on a terminal (grouped true) they collapse under a faint
+// decoration; on a terminal (grouped true) they collapse under a
 // per-group header — first path segment plus a count — with the remainder
 // indented, which is what keeps a 50-secret listing scannable. Backups are
 // collapsed into the closing count line unless showBackups (--all) lists
@@ -180,7 +180,7 @@ func printVaultList(out io.Writer, secrets, backups []string, showBackups, group
 	}
 }
 
-// printDuplicateGroupNudge emits one faint hint when two or more top-level
+// printDuplicateGroupNudge emits one hint when two or more top-level
 // groups hold an identical set of key names — the "wiz/ and
 // custom_scripts-wiz/ are the same five WIZ_ keys" case, a common sign of an
 // accidentally re-migrated file. Conservative on purpose: it fires only for
@@ -228,9 +228,8 @@ func printDuplicateGroupNudge(out io.Writer, secrets []string) {
 	if len(dupes) == 0 {
 		return
 	}
-	faint := cDim
 	for _, groups := range dupes {
-		_, _ = faint.Fprint(out, hlCmds(fmt.Sprintf("note: %s hold the same keys, a re-migrated file? `jit vault rm` the stale copy.\n", strings.Join(groups, ", "))))
+		fmt.Fprint(out, hlCmds(fmt.Sprintf("note: %s hold the same keys, a re-migrated file? `jit vault rm` the stale copy.\n", strings.Join(groups, ", "))))
 	}
 }
 
@@ -248,7 +247,7 @@ func printGroupedSecrets(out io.Writer, secrets []string, meta map[string]vault.
 // printSecretTree renders one level of the tree: paths are already stripped of
 // the ancestor prefix, ancestorPath (the full vault prefix consumed so far)
 // rebuilds each leaf's real path for the -l metadata lookup, and depth drives
-// the indent. A segment with children becomes a faint "seg/ (n)" header whose
+// the indent. A segment with children becomes a "seg/ (n)" header whose
 // subtree recurses one level deeper; a leaf prints at the current indent,
 // -l-annotated when meta is set. Direct leaves at this level align their
 // metadata column to the widest of them.
@@ -257,7 +256,7 @@ func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth i
 
 	// Plain listing (no -l): this level's own keys flow into aligned columns
 	// (house style — a 12-key group is three tidy rows, not a twelve-line
-	// stack), then each child segment recurses under a bold name + dim count.
+	// stack), then each child segment recurses under a bold name + plain count.
 	if !long {
 		var leaves []string
 		for _, p := range paths {
@@ -299,8 +298,7 @@ func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth i
 	}
 
 	// -l listing: every leaf carries a metadata column, so it keeps its own
-	// line; the group headers still get the bold-name/dim-count treatment.
-	faint := cDim
+	// line; the group headers still get the bold-name/plain-count treatment.
 	leafWidth := 0
 	for _, p := range paths {
 		if !strings.Contains(p, "/") && len(p) > leafWidth {
@@ -313,7 +311,7 @@ func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth i
 		if slash < 0 {
 			key := paths[i]
 			fmt.Fprintf(out, "%s  %-*s  ", indent, leafWidth, key)
-			_, _ = faint.Fprintln(out, secretMetaSuffix(meta[ancestorPath+key]))
+			fmt.Fprintln(out, secretMetaSuffix(meta[ancestorPath+key]))
 			wrote = true
 			i++
 			continue
@@ -340,15 +338,15 @@ func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth i
 
 // printSecretGroupHeader renders a vault-tree segment header in the one house
 // header shape every jit section/group uses: a `[segment]` name (default
-// weight — the brackets delimit it, no bold) and a dim count, at the given
+// weight — the brackets delimit it, no bold) and a plain count, at the given
 // indent. The tree's indentation shows the nesting.
 func printSecretGroupHeader(out io.Writer, indent, name string, n int, note string) {
 	fmt.Fprintf(out, "%s[%s]", indent, name)
 	if note != "" {
-		_, _ = cDim.Fprintf(out, " %d · %s\n", n, note)
+		_, _ = fmt.Fprintf(out, " %d · %s\n", n, note)
 		return
 	}
-	_, _ = cDim.Fprintf(out, " %d\n", n)
+	_, _ = fmt.Fprintf(out, " %d\n", n)
 }
 
 // sharedGroupNote is the Tree shape's per-group note: one fact every member
@@ -409,7 +407,7 @@ func validateListBy(by string) error {
 // durable group id (finer — one bucket per import batch, e.g. per MCP server,
 // even when several share a file). Each bucket is headed by its human label
 // (the origin path) and class; secrets with no recorded provenance collect
-// under a faint "(no recorded source)" so a pre-provenance vault still lists
+// under a "(no recorded source)" so a pre-provenance vault still lists
 // cleanly. Buckets sort by label, the unknown bucket always last.
 func printSecretsByProvenance(out io.Writer, secrets []string, meta map[string]vault.SecretInfo, axis string) {
 	type bucket struct {
@@ -464,15 +462,16 @@ func printSecretsByProvenance(out io.Writer, secrets []string, meta map[string]v
 		}
 		// Same motif as every other group header in jit (design/
 		// output-style.md rules 1 and 3): the name in default weight
-		// inside brackets, the count and any secondary fact dim after it.
+		// inside brackets, the count and any secondary fact plain after it.
 		// This axis used to print the whole header faint, which inverted
 		// the hierarchy — the origin is the primary thing on its line, and
-		// it read dimmer than the paths listed under it.
+		// it read weaker than the paths listed under it. (Faint is gone
+		// tool-wide now; the ordering rule it broke still stands.)
 		fmt.Fprintf(out, "[%s]", label)
 		if b.class != "" {
-			_, _ = cDim.Fprintf(out, " %d · %s\n", len(b.paths), b.class)
+			_, _ = fmt.Fprintf(out, " %d · %s\n", len(b.paths), b.class)
 		} else {
-			_, _ = cDim.Fprintf(out, " %d\n", len(b.paths))
+			_, _ = fmt.Fprintf(out, " %d\n", len(b.paths))
 		}
 		// Column flow, not one line per secret (rule 4) — the same
 		// treatment the path axis already gets. A seven-secret origin was
@@ -484,7 +483,7 @@ func printSecretsByProvenance(out io.Writer, secrets []string, meta map[string]v
 	}
 }
 
-// secretMetaSuffix is the faint `-l` annotation for one secret: its class
+// secretMetaSuffix is the `-l` annotation for one secret: its class
 // (or "unknown" for a v1/v2 secret written before provenance existed), how
 // long ago the value was last updated when the envelope records it, and a
 // gentle "likely config" when the key name looks non-secret (OUTPUT_FILE,
@@ -642,7 +641,7 @@ var vaultGetCmd = &cobra.Command{
 	Long: "Prints the decrypted value to stdout, where it lands in your terminal\n" +
 		"scrollback and any output capture (tmux, script, CI logs). Prefer\n" +
 		"--copy to send it straight to the clipboard instead.\n\n" +
-		"On a terminal, one faint metadata line follows on stderr: when the\n" +
+		"On a terminal, one metadata line follows on stderr: when the\n" +
 		"secret was last updated, which profiles reference it, and the config\n" +
 		"file its migration recorded as the source. Piped or redirected output\n" +
 		"receives the value only, never the footer.\n\n" +
@@ -730,7 +729,7 @@ func writeVaultFooter(out io.Writer, leadingBlank bool, body string) {
 	termtext.Wrap(out, 0, "", body)
 }
 
-// printVaultGetFooter follows a successful `jit vault get` with one faint
+// printVaultGetFooter follows a successful `jit vault get` with one
 // metadata line: last-updated age, the profile(s) whose manifests
 // reference the secret, and the config file recorded as its source (the
 // .source sidecar MCP migrations write — other migrations don't record
@@ -762,7 +761,7 @@ func printVaultGetFooter(cmd *cobra.Command, v *vault.Vault, path string) {
 	if len(parts) == 0 {
 		return
 	}
-	_, _ = cDim.Fprintln(cmd.ErrOrStderr(), strings.Join(parts, " · "))
+	_, _ = fmt.Fprintln(cmd.ErrOrStderr(), strings.Join(parts, " · "))
 }
 
 // secretProfileReferences returns the names of every profile manifest
@@ -808,7 +807,7 @@ var vaultListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List stored secret paths (names only, never values)",
 	Long: "Lists every secret path currently stored, never a value. On a terminal,\n" +
-		"secrets are grouped under a faint header per first path segment with a\n" +
+		"secrets are grouped under a header per first path segment with a\n" +
 		"count; piped or redirected, output stays one full path per line, so it\n" +
 		"feeds grep and scripts unchanged. The encrypted file backups jit migrate\n" +
 		"keeps for `jit migrate undo` are summarized in the count line rather than\n" +
@@ -1589,7 +1588,7 @@ func printOrphanGroups(out io.Writer, v *vault.Vault, orphans []string) {
 				uniform = false
 			}
 		}
-		// Header: bold group name, dim count. When every secret shares the
+		// Header: bold group name, plain count. When every secret shares the
 		// same origin (the common pre-provenance case — all "no recorded
 		// origin"), state it ONCE on the header instead of tacking the same
 		// parenthetical onto all N lines, and flow the names into columns.
@@ -1597,14 +1596,14 @@ func printOrphanGroups(out io.Writer, v *vault.Vault, orphans []string) {
 		// keeping, so fall back to one name-plus-origin line each.
 		fmt.Fprintf(out, "  [%s]", prefix)
 		if uniform {
-			_, _ = cDim.Fprintf(out, " %d · %s\n", len(members), origins[0])
+			_, _ = fmt.Fprintf(out, " %d · %s\n", len(members), origins[0])
 			flowNames(out, names, "      ")
 			continue
 		}
-		_, _ = cDim.Fprintf(out, " %d\n", len(members))
+		_, _ = fmt.Fprintf(out, " %d\n", len(members))
 		for i, name := range names {
 			fmt.Fprintf(out, "      %s", name)
-			_, _ = cDim.Fprintf(out, "  %s\n", origins[i])
+			_, _ = fmt.Fprintf(out, "  %s\n", origins[i])
 		}
 	}
 }

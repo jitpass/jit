@@ -92,7 +92,7 @@ var guardHistoryCmd = &cobra.Command{
 				wrapBody(out, 0, "  ", cWarn.Sprintf("  %s sources the hook by a line jit did not write, so it was left alone. Remove it by hand, or new shells will report a missing file.",
 					displayPath(home, guard.RcPath(home))))
 			}
-			wrapBody(out, 0, "  ", cDim.Sprint("  Shells that are already open keep the hook they loaded until they exit."))
+			wrapBody(out, 0, "  ", "  Shells that are already open keep the hook they loaded until they exit.")
 			return nil
 		}
 
@@ -109,11 +109,11 @@ var guardHistoryCmd = &cobra.Command{
 		_, _ = cOK.Fprintf(out, "%s ", glyphDone)
 		wrapBody(out, 2, "  ", "history guard installed for zsh")
 		fmt.Fprintf(out, "  hook: %s\n", displayPath(home, guard.HookPath(home)))
-		_, _ = cDim.Fprintf(out, "  %s now sources it: %s\n", displayPath(home, guard.RcPath(home)), guard.RcLine())
-		wrapBody(out, 0, "  ", cDim.Sprint("  From now on, a command carrying a recognized credential stays usable in "+
-			"that session (up-arrow works) but is never written to your history file."))
+		_, _ = fmt.Fprintf(out, "  %s now sources it: %s\n", displayPath(home, guard.RcPath(home)), guard.RcLine())
+		wrapBody(out, 0, "  ", "  From now on, a command carrying a recognized credential stays usable in "+
+			"that session (up-arrow works) but is never written to your history file.")
 		fmt.Fprintln(out)
-		_, _ = cPath.Fprint(out, "→ ")
+		_, _ = cPath.Fprint(out, glyphAction+" ")
 		wrapBody(out, 2, "  ", hlCmds("`source ~/.jit/guard.zsh`   to activate it in shells that are already open"))
 		return nil
 	},
