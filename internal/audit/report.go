@@ -480,10 +480,23 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	}
 	sizeNote := ""
 	if summary.FilesScanned > 0 {
-		sizeNote = fmt.Sprintf(" (%s files)", groupDigits(summary.FilesScanned))
+		// Inflected and digit-grouped, the same composition the triage header
+		// uses: countWord would inflect but print a bare 25872.
+		sizeNote = fmt.Sprintf(" · %s %s", groupDigits(summary.FilesScanned),
+			pluralWord(summary.FilesScanned, "file", "files"))
 	}
-	termtext.Wrap(w, 0, "", fmt.Sprintf("jit scan — %s@%s — scanned %s%s — full inventory — %s",
-		who, host, where, sizeNote, formatDuration(summary.ScanDurationMs)))
+	// "jit scan --full  ~/ · 25,872 files · 12.2s" — the same header shape the
+	// triage view carries, because these are two views of one command and a
+	// reader moving between them should not have to re-learn the top of the
+	// page. It was an em-dash chain carrying user@host and a mid-line "full
+	// inventory": a second header shape in a tool that has one, spending its
+	// most prominent line on the reader's own username and hostname. Both are
+	// things the program knows and the reader already does, and `jit doctor`
+	// plus NDJSON's endpoint block are where machine identity earns its place.
+	// The command name carries "--full", so the words don't have to.
+	head := style.Bold.Sprint("jit scan --full") + "  " + where + sizeNote +
+		" · " + formatDuration(summary.ScanDurationMs)
+	termtext.Wrap(w, 0, "", head)
 
 	// The unfiltered notice sits ABOVE the numbers, not in a footnote: like
 	// the triage view's incomplete-scan banner, it changes what every count
@@ -664,10 +677,18 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 				"   the guided fix plan for the first flagged file")
 	}
 	fmt.Fprint(w, "  ")
-	termtext.Wrap(w, 2, "  ",
-		"No secret values are ever printed in full · "+
-			cmd.Sprint("jit scan --format ndjson")+
-			" for machines, same redaction")
+	// The way back. The triage view points here with "→ jit scan --full  the
+	// full inventory · ndjson for machines"; without the reverse link a reader
+	// who lands in the inventory first has no pointer to the view that tells
+	// them what to DO, and that view is the one the product leads with.
+	fmt.Fprintln(w)
+	fmt.Fprint(w, "  ")
+	_, _ = cmd.Fprint(w, style.GlyphAction+" ")
+	termtext.Wrap(w, 4, "    ",
+		cmd.Sprint("jit scan")+"   the action-first view · "+
+			cmd.Sprint("--format ndjson")+" for machines")
+	fmt.Fprint(w, "  ")
+	termtext.Wrap(w, 2, "  ", "No secret values are ever printed in full.")
 }
 
 // anyUnfilteredOnly reports whether any finding carries the [unfiltered]
