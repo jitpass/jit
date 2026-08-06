@@ -84,6 +84,31 @@ release:
   github:
     owner: jitpass
     name: jit
+  # Published as a DRAFT, then undrafted by release.yml only after the
+  # artifact it actually produced has been verified against the very
+  # requirement `jit upgrade` enforces on the user's machine.
+  #
+  # The two halves of the signing story are written by different tools: quill
+  # (Anchore's reimplementation of Apple code signing, via the notarize.macos
+  # path above) PRODUCES the signature, and Apple's own `codesign --verify
+  # --strict -R` CONSUMES it in verifyStagedSignature. Nothing compared them.
+  # The preflight in release.yml proves a secret was PRESENT; it cannot prove
+  # the bytes quill emitted satisfy the requirement, and no test can — the
+  # positive half of TestVerifyStagedSignature validates the requirement's
+  # form against an arbitrary Apple-signed .app BUNDLE and skips outright on
+  # a machine with none, which is the CI case.
+  #
+  # Draft is what makes the check safe rather than merely informative:
+  # /releases/latest EXCLUDES drafts, and `jit upgrade` resolves exactly that
+  # URL. So a release that fails verification is never the one any installed
+  # copy can see, and the fix is to delete a draft rather than to race a bad
+  # binary that is already live.
+  #
+  # Note the interaction with keep-existing below: this governs releases this
+  # workflow CREATES. Re-running against a tag whose release is already
+  # published leaves it published — the gate protects first publication, not
+  # a release someone already undrafted by hand.
+  draft: true
   # keep-existing: when a release for the tag already exists (e.g. re-running
   # the workflow to backfill assets onto a hand-written release), keep its
   # name and notes and just upload the artifacts.
