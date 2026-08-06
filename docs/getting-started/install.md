@@ -30,9 +30,16 @@ To verify the download, `checksums.txt` on the
 [release page](https://github.com/jitpass/jit/releases/latest) has the
 SHA-256s: `shasum -a 256 --check checksums.txt --ignore-missing`.
 
-Release binaries are signed with a Developer ID (`Meni Tasa, CZC6BH93GJ`), so
-you can confirm their provenance with
-`codesign -dv --verbose=2 $(command -v jit)`. The `curl` install above is
+Release binaries are signed with a Developer ID (`Meni Tasa, CZC6BH93GJ`). To
+confirm that signature, run `jit doctor` and read its `jit` line: it reports
+`signed CZC6BH93GJ` using the same check `jit upgrade` runs before it will
+install anything, so it cannot disagree with what jit itself enforces.
+
+Note that `codesign -dv` *displays* a signature without validating it — a
+tampered binary still prints the right `Authority` line. If you would rather
+check before running the binary at all, `codesign --verify --strict
+$(command -v jit)` verifies its integrity and prints nothing on success. The
+`curl` install above is
 **quarantine-free**: macOS only sets the quarantine flag on downloads made by a
 browser or other quarantine-aware app, not by `curl`, so the binary runs
 without a Gatekeeper prompt. (Releases are not notarized, so a download made by

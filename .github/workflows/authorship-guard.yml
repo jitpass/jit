@@ -24,7 +24,7 @@ jobs:
     timeout-minutes: 5
     steps:
       # fetch-depth: 0 so the base..head range below actually has both endpoints.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 

@@ -4,7 +4,14 @@ project_name: jitpass
 
 before:
   hooks:
-    - go mod tidy
+    # download, NOT tidy. `go mod tidy` MUTATES go.mod/go.sum inside the
+    # release build, so the artifact that gets Developer ID signed is built
+    # from a module graph that differs from the reviewed, committed one — and
+    # silently, since nothing reads the result. It was also redundant: ci.yml
+    # already runs `go mod verify && go mod tidy` and fails the build on any
+    # drift, and release.yml gates the publish on that whole pipeline.
+    # `go mod download` pre-fetches the same dependencies and changes nothing.
+    - go mod download
 
 builds:
   # Apple Silicon only, on purpose: we have no Intel hardware to test a
