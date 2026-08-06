@@ -376,7 +376,7 @@ func writeTar(t *testing.T, tw *tar.Writer, name, body string) {
 //
 // This asserts the form alone: no codesign, no signed binary, no environment.
 func TestSignatureRequirementFormIsInline(t *testing.T) {
-	req := signatureRequirement(upgradeTeamID)
+	req := signatureRequirement(upgradeTeamIDs[0])
 
 	if !strings.HasPrefix(req, "=") {
 		t.Errorf("signatureRequirement() = %q, which does not start with \"=\" — codesign -R will read it as a file path, "+
@@ -384,13 +384,134 @@ func TestSignatureRequirementFormIsInline(t *testing.T) {
 	}
 	// The team ID has to actually be in there, or the requirement would accept
 	// any Apple-anchored signature — every notarized app on the internet.
-	if !strings.Contains(req, upgradeTeamID) {
-		t.Errorf("signatureRequirement() = %q, which does not name team %s; the requirement would accept any Apple-anchored code", req, upgradeTeamID)
+	if !strings.Contains(req, upgradeTeamIDs[0]) {
+		t.Errorf("signatureRequirement() = %q, which does not name team %s; the requirement would accept any Apple-anchored code", req, upgradeTeamIDs[0])
 	}
 	// And it must be anchored to Apple at all, or it degrades to "signed by
 	// someone claiming this OU".
 	if !strings.Contains(req, "anchor apple") {
 		t.Errorf("signatureRequirement() = %q, which is not anchored to Apple", req)
+	}
+	// The two marker OIDs are what make this a DEVELOPER ID requirement rather
+	// than "any Apple-anchored code carrying our OU". Without them an Apple
+	// Development certificate from the same team satisfies it — the
+	// wrong-identity-from-the-keychain accident the check exists to catch,
+	// which yields a binary undistributable in the field while looking correct
+	// at signing time.
+	for _, oid := range []string{
+		"certificate 1[field.1.2.840.113635.100.6.2.6] exists",     // Developer ID intermediate CA
+		"certificate leaf[field.1.2.840.113635.100.6.1.13] exists", // Developer ID Application leaf
+	} {
+		if !strings.Contains(req, oid) {
+			t.Errorf("signatureRequirement() = %q, missing the Developer ID marker %q; "+
+				"an Apple Development cert from the same team would satisfy it", req, oid)
+		}
+	}
+}
+
+// TestUpgradeTeamIDsHasACurrentTeam guards the ordering contract the rest of
+// the release path leans on: upgradeTeamIDs[0] is the team releases are
+// CURRENTLY signed with — what doctor reports and what release.yml's
+// post-publish gate asserts on — while later entries are accepted but not
+// expected, so a certificate migration can ship a successor-accepting release
+// BEFORE the switch.
+//
+// Emptying the list would make verifyStagedSignature's loop run zero times and
+// fall straight through to its error, turning `jit upgrade` into a command
+// that can never succeed on any binary.
+func TestUpgradeTeamIDsHasACurrentTeam(t *testing.T) {
+	if len(upgradeTeamIDs) == 0 {
+		t.Fatal("upgradeTeamIDs is empty; verifyStagedSignature would reject every release including genuine ones")
+	}
+	for _, team := range upgradeTeamIDs {
+		if team == "" {
+			t.Error("upgradeTeamIDs contains an empty team ID, which would build a requirement matching an absent OU")
+		}
+	}
+}
+
+// TestVerifyStagedSignatureAcceptsASuccessorTeam proves the migration
+// mechanism upgradeTeamIDs exists for: a binary signed by a team that is NOT
+// the current one, but IS on the accepted list, must install.
+//
+// This is the property that makes a certificate re-issue survivable. The code
+// that rejects a release lives in the already-installed binary, so the
+// successor has to be accepted by a version shipped BEFORE the switch — if
+// this path did not work, adding a successor would be a no-op and every
+// installed copy would reject every release signed with the new identity,
+// permanently, with no release able to fix it.
+//
+// Uses whatever Developer ID-signed code the machine has, standing in for a
+// successor-signed jit; the first entry is deliberately a team that matches
+// nothing, so a pass means the loop genuinely reached the second.
+func TestVerifyStagedSignatureAcceptsASuccessorTeam(t *testing.T) {
+	if _, err := os.Stat("/usr/bin/codesign"); err != nil {
+		t.Skip("codesign unavailable")
+	}
+	signed, team := findDeveloperIDSigned(t)
+	if signed == "" {
+		t.Skip("no Developer ID signed binary available to stand in for a successor-signed release")
+	}
+
+	original := upgradeTeamIDs
+	t.Cleanup(func() { upgradeTeamIDs = original })
+
+	upgradeTeamIDs = []string{"NOTOURTEAM", team}
+	if err := verifyStagedSignature(context.Background(), signed); err != nil {
+		t.Errorf("a binary signed by the second accepted team was rejected: %v; "+
+			"adding a successor Team ID would be a no-op and a certificate migration "+
+			"could never ship", err)
+	}
+
+	// And the list must still be a whitelist, not a formality: with neither
+	// entry matching, the same binary has to be refused.
+	upgradeTeamIDs = []string{"NOTOURTEAM", "ALSONOTOURS"}
+	if err := verifyStagedSignature(context.Background(), signed); err == nil {
+		t.Error("a binary signed by NO accepted team passed; the team list is not being enforced")
+	}
+}
+
+// TestDeveloperIDMarkersDiscriminate exercises the marker OIDs ON THEIR OWN,
+// against a signature every macOS machine has. /bin/ls is signed by Apple's
+// own "Software Signing" authority: genuinely Apple-anchored, and NOT a
+// Developer ID.
+//
+// Isolating them is the whole point. Testing the FULL requirement against any
+// real binary proves nothing about the markers, because the OU clause already
+// rejects everything not signed by our team — so such a test passes
+// identically whether the markers are present or absent, which is how a
+// requirement that had silently lost them would still look guarded.
+//
+// Structured as a pair on the same binary: the anchor alone must ACCEPT it
+// (otherwise the rejection below could be caused by anything at all), and the
+// anchor plus markers must REJECT it. That difference is attributable to the
+// markers and nothing else, and it never skips for want of a Developer
+// ID-signed app — unlike both halves of TestVerifyStagedSignature.
+func TestDeveloperIDMarkersDiscriminate(t *testing.T) {
+	const appleSigned = "/bin/ls"
+	if _, err := os.Stat("/usr/bin/codesign"); err != nil {
+		t.Skip("codesign unavailable")
+	}
+	if _, err := os.Stat(appleSigned); err != nil {
+		t.Skip(appleSigned + " unavailable")
+	}
+	ctx := context.Background()
+	verify := func(req string) error {
+		return exec.CommandContext(ctx, "/usr/bin/codesign",
+			"--verify", "--strict", "-R", req, appleSigned).Run()
+	}
+
+	// The control. Without it the assertion below could pass because the
+	// binary is unsigned, missing, or fails for some unrelated reason.
+	if err := verify("=" + appleAnchor); err != nil {
+		t.Skipf("%s does not satisfy a bare Apple anchor on this machine (%v); the comparison below would be meaningless", appleSigned, err)
+	}
+
+	if err := verify("=" + appleAnchor + " and " + developerIDMarkers); err == nil {
+		t.Errorf("%s satisfies the Apple anchor PLUS the Developer ID markers, but it is signed "+
+			"by Apple's Software Signing authority, not a Developer ID. The markers are not "+
+			"discriminating, so an Apple Development certificate from our own team would "+
+			"satisfy signatureRequirement too — the wrong-identity accident it exists to catch", appleSigned)
 	}
 }
 
