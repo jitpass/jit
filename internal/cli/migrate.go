@@ -383,7 +383,30 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 	// work that's about to be aborted anyway. This same plan is what
 	// --dry-run prints too (see below) — one rendering path, so the
 	// preview you confirm against is exactly the preview --dry-run shows.
-	printMigratePlan(cmd.OutOrStdout(), home, envFiles, tfvarsFiles, k8sManifests, shellConfigs, historyFiles, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, pypircFiles, looseSecretFiles)
+	// Rebuilt from the locals rather than passed as d: the --only nil-out above
+	// clears the LOCALS, so d still holds every category and would print a plan
+	// wider than the run about to happen. Named fields, so the transposition the
+	// old seventeen-argument call invited is now a compile error.
+	planned := discovered{
+		envFiles:         envFiles,
+		tfvarsFiles:      tfvarsFiles,
+		k8sManifests:     k8sManifests,
+		shellConfigs:     shellConfigs,
+		historyFiles:     historyFiles,
+		mcpConfigs:       mcpConfigs,
+		awsProfiles:      awsProfiles,
+		k8sUsers:         k8sUsers,
+		terraformHosts:   terraformHosts,
+		dockerRegistries: dockerRegistries,
+		gitHosts:         gitHosts,
+		gcpADCFiles:      gcpADCFiles,
+		sopsAgeFiles:     sopsAgeFiles,
+		npmrcFiles:       npmrcFiles,
+		netrcFiles:       netrcFiles,
+		pypircFiles:      pypircFiles,
+		looseSecretFiles: looseSecretFiles,
+	}
+	printMigratePlan(cmd.OutOrStdout(), home, &planned)
 	printSkippedFindings(cmd.OutOrStdout(), home, len(tfvarsComplexOnly), "in Terraform "+pluralWord(len(tfvarsComplexOnly), "variable file", "variable files")+" whose secret-shaped values aren't simple one-line strings", tfvarsComplexOnly,
 		"Nothing migrate can move safely; they stay in place, and `jit scan` keeps reporting them.")
 	printSkippedFindings(cmd.OutOrStdout(), home, len(k8sManifestsComplexOnly), "in "+pluralWord(len(k8sManifestsComplexOnly), "Kubernetes Secret manifest", "Kubernetes Secret manifests")+" migrate can't rewrite provably right", k8sManifestsComplexOnly,
