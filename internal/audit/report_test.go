@@ -41,7 +41,7 @@ func TestWriteHumanReportNeverLeaksRawValue(t *testing.T) {
 		// own username and hostname — dropped 2026-08-06 so this view shares
 		// the triage header's shape. Machine identity lives in `jit doctor`
 		// and NDJSON's endpoint block, which is where it earns its place.
-		"jit scan --full",
+		"jit scan",
 		"✗ CRITICAL — exposure",
 		"Shell Configs",
 		"/Users/alex/.zshrc",
