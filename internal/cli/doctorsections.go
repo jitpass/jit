@@ -41,6 +41,13 @@ func runningTool() doctorTool {
 // doesn't satisfy the requirement can never self-upgrade, and the error it
 // gives names the downloaded file rather than the installed one — so the
 // cause is invisible exactly when it matters.
+// Reports WHICH accepted team signed it, not merely that some accepted team
+// did. The distinction matters once upgradeTeamIDs holds a successor during a
+// certificate migration: "signed <current>" and "signed <successor>" are
+// different facts about a binary, and release.yml's post-publish gate asserts
+// on the current one specifically — so a release accidentally signed with the
+// outgoing identity fails that gate instead of passing as "signed, close
+// enough".
 var binarySignature = func() string {
 	exe, err := os.Executable()
 	if err != nil {
@@ -48,12 +55,14 @@ var binarySignature = func() string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	// #nosec G204 -- fixed system binary; the only variable is our own path
-	if err := exec.CommandContext(ctx, "/usr/bin/codesign",
-		"--verify", "--strict", "-R", signatureRequirement(upgradeTeamID), exe).Run(); err != nil {
-		return "unsigned or not a jit release build"
+	for _, team := range upgradeTeamIDs {
+		// #nosec G204 -- fixed system binary; the only variable is our own path
+		if err := exec.CommandContext(ctx, "/usr/bin/codesign",
+			"--verify", "--strict", "-R", signatureRequirement(team), exe).Run(); err == nil {
+			return "signed " + team
+		}
 	}
-	return "signed " + upgradeTeamID
+	return "unsigned or not a jit release build"
 }
 
 // vaultMasterKeyPresence probes the keychain for this Mac's master encryption
