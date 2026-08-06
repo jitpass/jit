@@ -172,10 +172,21 @@ func backoffFor(refusals int) time.Duration {
 // explain the wait rather than looking like a fresh refusal.
 //
 // This is what closes the asymmetry that made refusing a consent prompt
-// unaffordable. A declined prompt cannot be cached as a session-long Deny —
-// the prompter genuinely cannot tell a human's "no" from a keychain error,
-// and caching either would lock the credential out with no way back (see the
-// agent's gateConsent). So every refusal used to cost the user one full-screen
+// unaffordable. A declined prompt must not become a session-long Deny — the
+// prompter genuinely cannot tell a human's "no" from a keychain error, and
+// caching either would lock the credential out with no way back.
+//
+// Note precisely WHERE that guarantee lives, because it is not in this engine.
+// remember caches whatever scope the prompter asks for, Deny included, and
+// that is deliberate: a tool that was denied and keeps reading should not earn
+// a fresh dialog per read (TestDenyIsCachedForTheSession pins the capability).
+// What supplies the guarantee is the SHIPPED prompter — the agent's
+// gateConsent returns consent.Once on a failed challenge, so a refusal there is
+// never cached and the pause below is what the next attempt meets instead. Any
+// new Prompter owes the same choice; an exported func type cannot be made to.
+// TestRefusedConsentPausesRatherThanStandingDeny holds that end of it.
+//
+// So every refusal used to cost the user one full-screen
 // modal and cost the caller nothing, and a process asking in a loop produced
 // one dialog per iteration until the only way to stop them was to approve.
 // The pause makes refusing cheap without making it permanent: the credential
