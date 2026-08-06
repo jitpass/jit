@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -132,5 +133,25 @@ func TestAgentBinaryPathResolvesSymlinks(t *testing.T) {
 	}
 	if got != want {
 		t.Errorf("EvalSymlinks(%q) = %q, want %q", link, got, want)
+	}
+}
+
+// TestBothServicePathsRepoint is a source-level guard, in the spirit of
+// outputstyle_test.go: two commands move the service onto a new binary —
+// `jit service restart` and `jit upgrade` — and both were written as a bare
+// reload that silently kept the service on whatever binary the plist named.
+// The bug was fixed in one place first; this makes sure a future edit cannot
+// quietly restore the bare-reload version in either.
+func TestBothServicePathsRepoint(t *testing.T) {
+	for _, file := range []string{"agent.go", "upgrade.go"} {
+		data, err := os.ReadFile(file) // #nosec G304 -- this package's own sources
+		if err != nil {
+			t.Fatalf("reading %s: %v", file, err)
+		}
+		if !strings.Contains(string(data), "agentPlistNeedsRepoint(") {
+			t.Errorf("%s no longer checks agentPlistNeedsRepoint. A plain "+
+				"reloadAgentService leaves the service running whatever binary the "+
+				"plist names, which is the exact bug both call sites exist to avoid.", file)
+		}
 	}
 }
