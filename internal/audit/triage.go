@@ -51,11 +51,22 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 	}
 	sizeNote := ""
 	if summary.FilesScanned > 0 {
-		sizeNote = fmt.Sprintf(" (%s files)", groupDigits(summary.FilesScanned))
+		sizeNote = fmt.Sprintf(" · %s files", groupDigits(summary.FilesScanned))
 	}
-	termtext.Wrap(w, 0, "", fmt.Sprintf("jit scan — %s@%s — scanned %s%s — %s",
-		summary.Endpoint.Username, summary.Endpoint.Hostname, where, sizeNote,
-		formatDuration(summary.ScanDurationMs)))
+	// "jit scan  ~/ · 25,130 files · 11.7s" — the command, then what it
+	// covered, in the "·" separator the rest of the report uses for a run of
+	// facts. It was an em-dash chain carrying user@host, which is a fourth
+	// header shape in a tool that has one, and which spent its most prominent
+	// line telling the reader their own username and hostname. Both are things
+	// the program knows and the reader already does; the diagnostic surfaces
+	// (`jit doctor`, NDJSON's endpoint block) are where machine identity earns
+	// its place.
+	head := style.Bold.Sprint("jit scan") + "  " + where
+	if sizeNote != "" {
+		head += sizeNote
+	}
+	head += " · " + formatDuration(summary.ScanDurationMs)
+	termtext.Wrap(w, 0, "", head)
 	fmt.Fprintln(w)
 
 	// A partial scan must never be able to look like a complete one. This sits
@@ -86,6 +97,13 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 
 	migratable := triageGroupMigratable(findings)
 	manual := triageGroupManual(findings, home)
+	// Built once, here, because the ledger COUNTS it and the section below
+	// RENDERS it. Counting len(manual) — the problems — while displaying the
+	// action groups they fold into promised "13 things only you can fix" over
+	// a section showing eight blocks: the same "a number naming nothing the
+	// reader can find" bug the archived group was added to fix, in the other
+	// unit. Whatever the bar says the reader must be able to count on screen.
+	actions := groupManualByAction(manual, home)
 
 	// --- the coverage ledger ---
 	pct := cov.Percent()
@@ -115,7 +133,21 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 			if cov.Migratable > 0 {
 				clause += " ·"
 			}
-			clause += fmt.Sprintf(" %s only you can fix ", countWord(len(manual), "thing", "things"))
+			// SECRETS, the same unit and the same number as the red header
+			// below — not "N things".
+			//
+			// The pile was being counted three ways at once: the bar said
+			// "13 things" (problems), the header said "32 secrets", and each
+			// item carried a "(N)" badge. Fixing the badge and the header left
+			// two units still disagreeing, and switching the bar to count
+			// action groups only moved the disagreement — the reader would see
+			// "8 things" over a section holding thirteen "!" items, both
+			// countable on screen and neither matching. One denominator ends
+			// it: the bar and the header are now the same sentence about the
+			// same number, and the grouping below is organisation rather than
+			// a third tally.
+			clause += fmt.Sprintf(" %s only you can fix ",
+				countWord(cov.manualRemainder(), "secret", "secrets"))
 			// The remainder is what's LEFT of 100 after the migrate, never its
 			// own division. manualRemainder/Total is the same quantity in
 			// exact arithmetic, but printed it is a third independent floor:
@@ -184,7 +216,10 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 			fmt.Sprintf("%s — every tool that reads them keeps working:", intro))
 		writeMigrateManifest(w, migratable, home, green)
 		fmt.Fprint(w, triageNoteIndent)
-		note := "these sat in plaintext until now — rotating after vaulting is the " +
+		// Present tense: they still ARE in plaintext. "Sat … until now" told
+		// the reader the scan had changed something, and the whole point of
+		// this block is that nothing has changed yet and one command would.
+		note := "these are in plaintext now — rotating after vaulting is the " +
 			"gold standard · every change is reversible: jit migrate undo"
 		if cov.Migratable == 0 {
 			note = "every secret here also sits somewhere this migrate will not rewrite, so the score " +
@@ -203,7 +238,7 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 			red.Sprint("only you can protect these")+
 				fmt.Sprintf(" — %s, ", countWord(cov.manualRemainder(), "secret", "secrets"))+
 				yellowBold.Sprintf("%d%% → 100%%", after))
-		for _, ag := range groupManualByAction(manual, home) {
+		for _, ag := range actions {
 			fmt.Fprintln(w)
 			fmt.Fprint(w, "    ")
 			// Rule 1's header shape, and the count only when there is more
@@ -828,9 +863,12 @@ func mergeManualGroups(groups []triageManualGroup, home string) []triageManualGr
 				}
 				out[i].title = fmt.Sprintf("%d %s, copied by %s", out[i].secrets, label, agent)
 			} else {
-				out[i].title = fmt.Sprintf("%s — %d separate secrets in %s",
+				// Same grammar as manualTitle's multi-file form: "N secrets in
+				// M files". "N separate secrets in M file copies" said the
+				// same thing in different words two lines apart.
+				out[i].title = fmt.Sprintf("%s — %d secrets in %s",
 					out[i].noun, out[i].secrets,
-					countWord(out[i].files, "file copy", "file copies"))
+					countWord(out[i].files, "file", "files"))
 			}
 			out[i].ctx.secrets = out[i].secrets
 			out[i].ctx.copies = out[i].files
@@ -905,7 +943,13 @@ func manualTitle(causes []*triageCause, files []string, worst Finding, home stri
 		noun = fmt.Sprintf("%d credentials", len(causes))
 	}
 	if len(files) > 1 {
-		return fmt.Sprintf("%s in %d copies of a file", noun, len(files))
+		// "in N files", not "in N copies of a file". The old phrasing read as
+		// one file duplicated N times, which is a different fact from N
+		// distinct files each holding the credential — and it was one of three
+		// grammars the section used for the same relationship (the other two
+		// being "— N separate secrets in M file copies" and a bare noun).
+		// One shape, so two items can be compared at a glance.
+		return fmt.Sprintf("%s in %d files", noun, len(files))
 	}
 	return noun
 }
@@ -961,8 +1005,31 @@ func shortSecretLabel(key *string) string {
 	case strings.Contains(k, "JSON Web Token"):
 		return "JWT"
 	default:
+		return humanizeCompoundKey(k)
+	}
+}
+
+// humanizeCompoundKey turns a nested config address into words.
+//
+// MCP and plugin scanners report a key by its path inside the file —
+// "jamf/JAMF_PRO_CLIENT_ID", "Snowflake/header:Authorization" — which is the
+// scanner's addressing scheme, not language. Dropped into a title slot it
+// reads as a leaked internal identifier ("An exposed Snowflake/header:
+// Authorization"), and a report that looks like it is printing its own
+// variable names is a report the reader trusts less.
+//
+// Separators become spaces, and a vendor prefix the tail already names is
+// dropped: "jamf/JAMF_PRO_CLIENT_ID" is one fact, not two.
+func humanizeCompoundKey(k string) string {
+	head, tail, found := strings.Cut(k, "/")
+	if !found || head == "" || tail == "" {
 		return k
 	}
+	tail = strings.TrimSpace(strings.ReplaceAll(tail, ":", " "))
+	if strings.Contains(strings.ToLower(tail), strings.ToLower(head)) {
+		return tail
+	}
+	return head + " " + tail
 }
 
 // manualDetail is the second line: where, compressed — one exemplar

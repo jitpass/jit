@@ -21,6 +21,70 @@ const (
 	histGHToken2 = "ghp_" + "Z9y8X7w6V5u4T3s2R1q0P9o8N7m6L5k4J3i2"
 )
 
+// Redaction must not move a single line.
+//
+// `jit scan` prints line-addressed advice for credentials in shell history —
+// "to see them: sed -n '2866,2872p' ~/.zsh_history" — and a user may well run
+// `jit migrate` between reading that and acting on it. If redaction changed
+// the line count, every address below the first edit would silently shift and
+// that sed would print an unrelated block with no error, which reads as proof
+// the finding was wrong.
+//
+// The property holds because redactCurrentContent is a byte-span substitution
+// (copy up to the span, write the affixed name, resume after it), spans come
+// from per-line tokenisation so none contains a newline, and neither affix has
+// one. That is three separate things any future change could break
+// independently, none of which the compiler checks — hence the test.
+func TestRedactionPreservesLineNumbers(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".zsh_history")
+	lines := []string{
+		": 1782826755:0;cd ~/work",
+		": 1782826756:0;export A=" + histGHToken,
+		": 1782826757:0;git status",
+		": 1782826758:0;export B=" + histGHToken2,
+		": 1782826759:0;make test",
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path) // #nosec G304 -- test-controlled path under t.TempDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	nameOf := map[string]string{histGHToken: "TOKEN_A", histGHToken2: "TOKEN_B"}
+	current, out, occ, err := redactCurrentContent(f, path, nameOf)
+	if err != nil {
+		t.Fatalf("redactCurrentContent: %v", err)
+	}
+	if occ != 2 {
+		t.Fatalf("redacted %d occurrences, want 2", occ)
+	}
+	before := strings.Split(string(current), "\n")
+	after := strings.Split(string(out), "\n")
+	if len(before) != len(after) {
+		t.Fatalf("line count moved: %d → %d\n%s", len(before), len(after), out)
+	}
+	// Not just the total — every unaffected line must still be at its own
+	// index, which is the part a reader's sed address actually depends on.
+	for _, i := range []int{0, 2, 4} {
+		if before[i] != after[i] {
+			t.Errorf("line %d moved or changed:\n  before %q\n  after  %q", i+1, before[i], after[i])
+		}
+	}
+	// And the edited lines are still single lines holding no credential.
+	for _, i := range []int{1, 3} {
+		if strings.Contains(after[i], "ghp_") {
+			t.Errorf("line %d still holds the token: %q", i+1, after[i])
+		}
+		if !strings.Contains(after[i], "<jit:redacted:") {
+			t.Errorf("line %d was not redacted: %q", i+1, after[i])
+		}
+	}
+}
+
 // zshHistoryFixture is a zsh extended_history file: every line timestamped,
 // the GitHub token typed twice (two occurrences, one distinct value).
 func zshHistoryFixture() string {
