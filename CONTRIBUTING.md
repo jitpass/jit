@@ -104,8 +104,9 @@ of it: malformed entries fail `TestCatalogEntriesAreWellFormed`, and an
 undocumented tool fails the wrap-docs drift guard. In the PR, link the
 tool's own docs for where it stores its credential and which env var it
 reads (that's what review checks - see
-[docs/internal/WRAP-PLAN.md](./docs/internal/WRAP-PLAN.md) §3.2 for how the
-shim-vs-native kind is chosen).
+`WRAP-PLAN.md` §3.2 for how the shim-vs-native kind is chosen — that one
+lives in the private planning repo alongside the RFC, so ask in the issue and
+we'll quote the relevant part).
 
 ## Scope
 

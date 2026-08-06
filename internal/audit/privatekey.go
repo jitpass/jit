@@ -31,7 +31,7 @@ var privateKeyPEMHeaders = []string{
 
 // commonDumpDirs are non-~/.ssh locations checked for stray private keys.
 // Deliberately narrow (not a full home-directory walk) — the scan-breadth
-// decision made before task #5 started (ROADMAP.md) — since RFC.md §4
+// decision made before the private-key scanner was written — since RFC.md §4
 // category 5 is scoped to "keys outside expected directories," and these
 // are where real-world review showed stray keys actually accumulate.
 var commonDumpDirs = []string{"Desktop", "Downloads"}

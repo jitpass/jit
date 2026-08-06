@@ -11,9 +11,15 @@ below `cli`, `audit` and `ui` so all three share it (`internal/cli` imports
 `internal/audit`, so the vocabulary could not live in `cli`).
 `internal/cli/style.go` re-exports it under short local names — `cBold`,
 `cPath`, `cOK`, `cWarn`, `cRisk`, `cWarnBold`, `cPathBold`, `cOKBold`, the
-`glyph*` constants, `flowNames`. Never build a colour or type a glyph literal
-at a call site: `TestPaletteIsCentralised` fails on it, and the point of the
-seam is that a repaint is one edit.
+`glyph*` constants, `flowNames`. Never build a colour at a call site:
+`TestPaletteIsCentralised` and `TestNoHandRolledColors` both fail on it, and
+the point of the seam is that a repaint is one edit.
+
+Typing a glyph literal at a call site is the same mistake, and is currently
+enforced only by convention — no test catches it, and ~100 emitted strings do
+it (mostly `→` and `"  • "`). Treat the rule as binding and the enforcement as
+missing; this paragraph claimed `TestPaletteIsCentralised` covered glyphs, and
+it never has.
 
 ## The whole palette
 
