@@ -32,13 +32,28 @@ jobs:
     # Apple's verdict and cited a `timeout: 30m` that no longer exists.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      # Actions are pinned to full commit SHAs, not tags. A tag is mutable and
+      # repointable by its owner, so `@v4` in THIS job — the one job in the
+      # repo that holds MACOS_SIGN_P12 and the Developer ID private key — is a
+      # standing grant of that key to whoever controls the tag. ci.yml already
+      # pins its three Go tools to exact patch versions for a weaker reason
+      # (reproducible results); the actions themselves floated.
+      #
+      # The trailing comment is the human-readable version. To bump one,
+      # resolve the new tag to its SHA rather than editing the comment.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
+          # The signed build must not restore a build cache written by an
+          # unrelated main-branch run. The release is the one build in the repo
+          # where "where did these object files come from" has a security
+          # answer, and a cache hit makes it unauditable for no real saving on
+          # a job that runs a handful of times a month.
+          cache: false
 
       # Never ship unsigned (CLAUDE.md), enforced BEFORE the build rather than
       # on the user's machine after download.
@@ -67,7 +82,7 @@ jobs:
             exit 1
           fi
 
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
         with:
           distribution: goreleaser
           # Pin the goreleaser MAJOR, not "latest": a future v3 with breaking
@@ -102,12 +117,17 @@ jobs:
       # Deliberately the binary from the TARBALL, not from dist/'s build
       # directory: the tarball is the artifact users receive, and it is the
       # one whose bytes could differ. And deliberately `jit doctor` rather than
-      # a hand-written codesign line — doctor's binarySignature() calls
-      # signatureRequirement(upgradeTeamID), the same function
+      # a hand-written codesign line — doctor's binarySignature() builds its
+      # requirement with signatureRequirement(), the same function
       # verifyStagedSignature uses, so this check cannot drift from the client
       # it is standing in for. A hand-rolled requirement string here would be
       # a second copy free to disagree with production, which is the whole
       # class of bug being closed.
+      #
+      # The expected value names upgradeTeamIDs[0] specifically, not "any
+      # accepted team": during a certificate migration the list also accepts a
+      # successor, and a release accidentally signed with the outgoing identity
+      # must fail here rather than pass as "signed, close enough".
       - name: Verify the released binary satisfies jit upgrade's own requirement
         run: |
           set -euo pipefail
