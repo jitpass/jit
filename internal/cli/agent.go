@@ -1154,11 +1154,11 @@ func printSessionProvenance(w io.Writer, st agent.Status) {
 		if cause == "" {
 			cause = "unknown cause"
 		}
-		fmt.Fprintf(w, "  • %s, %s\n", sessionWhen("locked", l.UnixTime), cause)
+		fmt.Fprintf(w, "  "+glyphBullet+" %s, %s\n", sessionWhen("locked", l.UnixTime), cause)
 	}
 
 	u := st.LastUnlock
-	line := fmt.Sprintf("  • %s", sessionWhen("unlocked", u.UnixTime))
+	line := fmt.Sprintf("  "+glyphBullet+" %s", sessionWhen("unlocked", u.UnixTime))
 	if u.LaunchedBy != "" {
 		// The half that answers "why now" — and the half nobody could get at
 		// before, since a process's parent is gone from every log jit keeps.
