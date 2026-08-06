@@ -308,8 +308,8 @@ func printMigratePlanCategory(w io.Writer, headline string, items []string) {
 // "→ outcome" clause. The two used to render jammed together inside one set
 // of brackets — `[loose secret file(s) → the whole file is a bare token; it
 // moves to the vault and …] (1)` — which was a wall of text hard to scan.
-// Split, the name anchors a bold header and the outcome drops to its own
-// line, matching how scan renders a bold [Category] over its detail.
+// Split, the name anchors the bracketed header and the outcome drops to its
+// own line, matching how scan renders a [Category] over its detail.
 func splitHeadline(headline string) (name, outcome string) {
 	if i := strings.Index(headline, " → "); i >= 0 {
 		return headline[:i], headline[i+len(" → "):]
@@ -325,8 +325,9 @@ func splitHeadline(headline string) (name, outcome string) {
 // category headline's "the file keeps working as a live mount" promise
 // silently not applying to every item it covers.
 //
-// The block mirrors jit scan's [Category] layout: a bold `[name] (count)`
-// header, a rule, then the "→ outcome" description on its own
+// The block mirrors jit scan's [Category] layout: a `[name]` header in default
+// weight with a plain count (rule 1 — not bold, and no parens around the
+// count), no rule, then the "→ outcome" description on its own
 // line above the file bullets — one consistent report shape across the app,
 // and far easier on the eyes than the old one-line bracketed headline.
 func printMigratePlanCategoryAnnotated(w io.Writer, headline string, items []string, annotate func(string) string) {
