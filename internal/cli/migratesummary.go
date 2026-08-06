@@ -128,7 +128,7 @@ func (s *migrateSummary) print(w io.Writer) {
 			countWord(len(s.gitHistoryFiles), "file", "files"),
 			pluralWord(len(s.gitHistoryFiles), "has", "have")))
 		for _, f := range s.gitHistoryFiles {
-			fmt.Fprintf(w, "  • %s\n", f)
+			fmt.Fprintf(w, "  "+glyphBullet+" %s\n", f)
 		}
 		fmt.Fprintln(w, hlCmds("  Any value ever committed is still recoverable via `git log -p`/`git blame` for the life of"))
 		fmt.Fprintln(w, "  the repository, and by anyone who already has a clone or fork. To actually remove it,")

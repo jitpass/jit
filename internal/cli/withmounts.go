@@ -160,7 +160,7 @@ func printGlobalMountReminders(w io.Writer) {
 	var lines []string
 	for _, e := range entries {
 		if g, ok := globalMountGuidanceForPath(home, e.MountPath); ok {
-			lines = append(lines, "  • "+g.usageLine())
+			lines = append(lines, "  "+glyphBullet+" "+g.usageLine())
 		}
 	}
 	if len(lines) == 0 {

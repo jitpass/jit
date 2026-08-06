@@ -864,7 +864,7 @@ func writeRenderItemText(w io.Writer, item renderItem, home string, cols columns
 		// Same "• " marker as a file path: both kinds of header anchor a
 		// block, and a category mixing marked files with unmarked collapsed
 		// headers read as if only some blocks were "real".
-		fmt.Fprintf(w, "  • %s", collapsedHeader(item))
+		fmt.Fprintf(w, "  "+style.GlyphBullet+" %s", collapsedHeader(item))
 		writeItemTags(w, false, unfiltered)
 		fmt.Fprint(w, "\n\n")
 		cols.writeFindingRow(w, item.rep, false)
@@ -893,7 +893,7 @@ func writeRenderItemText(w io.Writer, item renderItem, home string, cols columns
 	// edge to edge.
 	archived := LooksArchived(item.rep.FilePath)
 	avail := termtext.Width() - 4 - itemTagsWidth(archived, unfiltered)
-	fmt.Fprintf(w, "  • %s", termtext.TruncHead(displayFilePath(home, item.rep.FilePath), avail))
+	fmt.Fprintf(w, "  "+style.GlyphBullet+" %s", termtext.TruncHead(displayFilePath(home, item.rep.FilePath), avail))
 	writeItemTags(w, archived, unfiltered)
 	fmt.Fprint(w, "\n\n")
 	for _, f := range item.findings {
@@ -957,7 +957,7 @@ func (c columns) writeFindingRow(w io.Writer, f Finding, showLine bool) {
 	fmt.Fprintln(w)
 
 	if ev := displayEvidence(f); ev != "" {
-		fmt.Fprintf(w, "%s└ ", indent)
+		fmt.Fprintf(w, "%s"+style.GlyphBranch+" ", indent)
 		termtext.Wrap(w, c.reasonIndent()+2, indent+"  ", highlightCmds(ev))
 	}
 	c.writeUnfilteredNote(w, f, indent)
@@ -970,6 +970,6 @@ func (c columns) writeUnfilteredNote(w io.Writer, f Finding, indent string) {
 	if !f.UnfilteredOnly || f.UnfilteredReason == "" {
 		return
 	}
-	fmt.Fprintf(w, "%s└ ", indent)
+	fmt.Fprintf(w, "%s"+style.GlyphBranch+" ", indent)
 	termtext.Wrap(w, c.reasonIndent()+2, indent+"  ", "shown by --unfiltered: "+sanitizeDisplay(f.UnfilteredReason))
 }

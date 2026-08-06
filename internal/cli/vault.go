@@ -1478,7 +1478,7 @@ var vaultPruneCmd = &cobra.Command{
 
 		fmt.Fprint(out, hlCmds(fmt.Sprintf("Pruning %s, each file's newest backup is kept, so `jit migrate undo` still works:\n", countWord(len(stale), "stale file backup", "stale file backups"))))
 		for _, r := range stale {
-			fmt.Fprintf(out, "  • %s (%s, backed up %s ago)\n", r.VaultPath, displayPath(home, r.OriginalPath), humanAgo(time.Since(time.Unix(r.UnixTS, 0))))
+			fmt.Fprintf(out, "  "+glyphBullet+" %s (%s, backed up %s ago)\n", r.VaultPath, displayPath(home, r.OriginalPath), humanAgo(time.Since(time.Unix(r.UnixTS, 0))))
 		}
 		// Both this and `jit vault orphans --prune` are destructive vault
 		// cleanups, and the word "prune" alone doesn't say which objects go.

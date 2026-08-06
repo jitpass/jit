@@ -196,7 +196,7 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 			header += fmt.Sprintf(" — %s", countWord(len(migratable), "file", "files"))
 		} else {
 			header += fmt.Sprintf(" — %s in %s, ", countWord(cov.Migratable, "secret", "secrets"), countWord(len(migratable), "file", "files")) +
-				greenBold.Sprintf("%d%% → %d%%", pct, after)
+				greenBold.Sprintf("%d%% "+style.GlyphAction+" %d%%", pct, after)
 		}
 		termtext.Wrap(w, 2, "  ", header)
 		fmt.Fprint(w, triageNoteIndent)
@@ -242,7 +242,7 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 		termtext.Wrap(w, 2, "  ",
 			red.Sprint("only you can protect these")+
 				fmt.Sprintf(" — %s, ", countWord(cov.manualRemainder(), "secret", "secrets"))+
-				yellowBold.Sprintf("%d%% → 100%%", after))
+				yellowBold.Sprintf("%d%% "+style.GlyphAction+" 100%%", after))
 		for _, ag := range actions {
 			fmt.Fprintln(w)
 			fmt.Fprint(w, "    ")

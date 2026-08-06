@@ -195,7 +195,7 @@ func renderAgentSkips(w io.Writer, c migrate.AgentCacheCleanup) {
 		}
 		fmt.Fprintf(w, "    %-14s %s\n", agent, s.Reason)
 	}
-	fmt.Fprintln(w, "    → delete those files yourself, or re-run after any live session ends")
+	fmt.Fprintln(w, "    "+glyphAction+" delete those files yourself, or re-run after any live session ends")
 }
 
 // editsByAgentArea buckets edits as agent -> area -> count.

@@ -153,10 +153,10 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 			note = ", live mount: stops being served, unregistered"
 		}
 		if rec.RemoveOnRestore {
-			fmt.Fprintf(out, "  • %s (created by migration, will be removed)%s\n", displayPath(home, rec.OriginalPath), note)
+			fmt.Fprintf(out, "  "+glyphBullet+" %s (created by migration, will be removed)%s\n", displayPath(home, rec.OriginalPath), note)
 			continue
 		}
-		fmt.Fprintf(out, "  • %s (backed up %s ago)%s\n", displayPath(home, rec.OriginalPath), humanAgo(time.Since(time.Unix(rec.UnixTS, 0))), note)
+		fmt.Fprintf(out, "  "+glyphBullet+" %s (backed up %s ago)%s\n", displayPath(home, rec.OriginalPath), humanAgo(time.Since(time.Unix(rec.UnixTS, 0))), note)
 	}
 	fmt.Fprintln(out)
 	warn := cWarn
@@ -334,7 +334,7 @@ func runRestores(out io.Writer, home string, recs []migrate.BackupRecord, restor
 			pluralWord(len(failures), "was", "were"),
 			pluralWord(len(failures), "it was", "they were"))
 		for _, f := range failures {
-			fmt.Fprintf(out, "  • %s: %v\n", displayPath(home, f.path), f.err)
+			fmt.Fprintf(out, "  "+glyphBullet+" %s: %v\n", displayPath(home, f.path), f.err)
 		}
 		total := restored + len(failures)
 		return fmt.Errorf("jit migrate undo: %d of %s failed to restore", len(failures), countWord(total, "file", "files"))
