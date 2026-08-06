@@ -208,3 +208,65 @@ func TestCleanAgentCachesSkipsVendoredSubtrees(t *testing.T) {
 		t.Errorf("rewrote %d file(s) under a skipped subtree", len(got.Edited))
 	}
 }
+
+// The whole-vault collector must return every real secret and skip jit's own
+// bookkeeping namespaces, or a _backups/ entry (a whole encrypted file) would
+// become a redaction needle.
+func TestCollectVaultSecretsSkipsBookkeeping(t *testing.T) {
+	v := newTestVault(t)
+	if err := v.Set("project/STRIPE_KEY", []byte(cacheKey)); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Set("_backups/some-file-1699999999", []byte("STRIPE_KEY="+cacheKey+"\nlots of other file content\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := CollectVaultSecrets(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("collected %d secrets, want 1 (the _backups entry must be skipped): %+v", len(got), got)
+	}
+	if got[0].Value != cacheKey || got[0].Var != "STRIPE_KEY" {
+		t.Errorf("collected %+v, want the project secret named STRIPE_KEY", got[0])
+	}
+}
+
+// The breadcrumb is a count and a time, nothing else — and it round-trips,
+// clears on a zero count, and is absent when nothing pends.
+func TestCacheBreadcrumbRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	if _, ok := ReadCacheBreadcrumb(root); ok {
+		t.Fatal("a fresh root should have no breadcrumb")
+	}
+	WriteCacheBreadcrumb(root, 3, 1700000000000000000)
+	c, ok := ReadCacheBreadcrumb(root)
+	if !ok || c.Count != 3 {
+		t.Fatalf("read %+v ok=%v, want count 3", c, ok)
+	}
+	// A zero count clears rather than persisting a meaningless note.
+	WriteCacheBreadcrumb(root, 0, 1700000000000000001)
+	if _, ok := ReadCacheBreadcrumb(root); ok {
+		t.Error("a zero count should clear the breadcrumb")
+	}
+	// And it stores no path/value — the whole file is two numbers.
+	WriteCacheBreadcrumb(root, 1, 1700000000000000002)
+	data, _ := os.ReadFile(filepath.Join(root, cacheBreadcrumbName))
+	if bytesContainsAny(data, []string{"/", "sk_", "STRIPE", ".claude"}) {
+		t.Errorf("breadcrumb leaked more than a count+time: %s", data)
+	}
+	ClearCacheBreadcrumb(root)
+	if _, ok := ReadCacheBreadcrumb(root); ok {
+		t.Error("ClearCacheBreadcrumb should remove the note")
+	}
+}
+
+func bytesContainsAny(b []byte, subs []string) bool {
+	for _, s := range subs {
+		if strings.Contains(string(b), s) {
+			return true
+		}
+	}
+	return false
+}

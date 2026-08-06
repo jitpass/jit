@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jitpass/jit/internal/agent"
+	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/vault"
 )
@@ -285,8 +286,31 @@ var statusCmd = &cobra.Command{
 			printSecretsDetail(cmd.OutOrStdout(), rec, v)
 		}
 		noteFolderRename(cmd.OutOrStdout(), cwd)
+		notePendingCacheCleanup(cmd.OutOrStdout(), root)
 		return nil
 	},
+}
+
+// notePendingCacheCleanup nudges when an earlier `jit migrate` left copies in
+// a live AI-agent session it could not safely rewrite. That copy is the one
+// case nothing else will resurface: the migrated origin is now a jit://vault
+// pointer, so `jit scan` has no value to find and a future `jit migrate`
+// vaults nothing new. The reminder to run `jit migrate caches` once the
+// session ends is the whole reason the breadcrumb exists (see
+// internal/migrate/cachebreadcrumb.go). Reads only a count and a time, never a
+// path or a value, and stays silent — the common case — when nothing pends.
+func notePendingCacheCleanup(w io.Writer, root string) {
+	crumb, ok := migrate.ReadCacheBreadcrumb(root)
+	if !ok {
+		return
+	}
+	fmt.Fprintln(w)
+	_, _ = cWarnBold.Fprintf(w, "%s ", glyphMark)
+	wrapBody(w, 2, "  ", hlCmds(fmt.Sprintf(
+		"A recent migrate left %s in a live AI-agent session it couldn't rewrite. "+
+			"Once that session has ended, run `jit migrate caches` to clear %s.",
+		countWord(crumb.Count, "credential copy", "credential copies"),
+		pluralWord(crumb.Count, "it", "them"))))
 }
 
 // gatherVaultStatus reports how many secrets are stored, never their

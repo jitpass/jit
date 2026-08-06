@@ -219,6 +219,14 @@ func (s *substrIndex) findAll(data []byte) (first map[int]int, count map[int]int
 //   - Not one of jit's own jit://vault/ pointers. Those are not secrets,
 //     they are what a migrated file holds INSTEAD of a secret — and they are
 //     designed to be copied around, so they match everywhere.
+//
+// EligibleNeedle reports whether a confirmed credential is distinctive enough
+// to search agent caches for by exact match. Exported so internal/migrate's
+// cleanup sweep applies the identical bar the scanner does — a value too short
+// or word-shaped to be a good scan needle is just as bad a redaction needle,
+// and the two must not drift.
+func EligibleNeedle(v string) bool { return eligibleNeedle(v) }
+
 func eligibleNeedle(v string) bool {
 	if len(v) < 12 {
 		return false
@@ -386,6 +394,16 @@ func headOf(data []byte) []byte {
 	return data
 }
 
+// ReadCacheFileGuarded reads path through the no-follow, no-FIFO-hang,
+// regular-file-only, size-bounded guards every scanner in this package uses.
+// Exported so internal/migrate's cleanup sweep reads agent cache files with
+// exactly the same protection the scan side does — the write side must not
+// re-open by bare path and reintroduce the open(2)-on-a-FIFO hang that
+// readAgentCacheFile's own comment documents.
+func ReadCacheFileGuarded(path string) ([]byte, error) {
+	return readAgentCacheFile(path)
+}
+
 // readAgentCacheFile reads a cache file through the same openFile guards every
 // scanner uses (no symlink follow, no blocking on a FIFO, regular files only).
 //
@@ -461,10 +479,16 @@ func (c Config) agentCachedSecretFinding(path, agent string, pin cacheNeedle, da
 	if count > 1 {
 		f.Evidence = fmt.Sprintf("%s (%d occurrences in this file)", f.Evidence, count)
 	}
-	// Manual, and set here rather than left to annotateRemedies: `jit migrate`
-	// rewrites the file a credential LIVES in, and these copies are not that
-	// file. Until it cleans them, calling this migratable would promise a
-	// coverage gain the recommended command does not deliver.
+	// Manual as a SCAN verdict, and deliberately so, even though `jit migrate`
+	// (its automatic sweep) and `jit migrate caches` (the whole-vault sweep)
+	// now do clean these. The finding exists precisely for the copy those
+	// sweeps could not reach in the moment: an agent that was mid-write, a
+	// binary store jit will not rewrite, or a secret not yet in the vault at
+	// scan time. A scan cannot know which copies a future migrate will get, so
+	// it reports the honest present-tense fact — this copy is here now, and
+	// only you can be sure it is gone — and leaves the coverage projection to
+	// the migrate command that is actually about to act. Set here rather than
+	// left to annotateRemedies so the whole finding type carries one answer.
 	f.Remedy = RemedyManual
 	f.RecordID = RecordID(f.FindingType, f.FilePath, f.KeyName)
 	return f

@@ -5,9 +5,12 @@ package migrate
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -71,6 +74,19 @@ type AgentCacheEdit struct {
 	BackupPath  string
 }
 
+// SkipKind classifies why a copy was left in place, because the three reasons
+// call for different follow-ups: a live file is TRANSIENT (re-running once the
+// session ends will get it), while a binary store or a hard-linked file is a
+// standing condition re-running cannot fix. Only the transient case is worth a
+// later nudge.
+type SkipKind string
+
+const (
+	SkipLive     SkipKind = "live"     // an agent was writing the file; re-run later
+	SkipBinary   SkipKind = "binary"   // a store a length-changing edit would corrupt
+	SkipHardLink SkipKind = "hardlink" // rewriting one name would leave the other exposed
+)
+
 // AgentCacheSkip is one cache file jit found a credential in and deliberately
 // did not touch, with the reason in the user's terms.
 type AgentCacheSkip struct {
@@ -78,6 +94,19 @@ type AgentCacheSkip struct {
 	Agent  string
 	Area   string
 	Reason string
+	Kind   SkipKind
+}
+
+// LiveSkips counts the copies left only because a session was live — the ones
+// a later `jit migrate caches` will still be able to reach.
+func (c AgentCacheCleanup) LiveSkips() int {
+	n := 0
+	for _, s := range c.Skipped {
+		if s.Kind == SkipLive {
+			n++
+		}
+	}
+	return n
 }
 
 // AgentCacheCleanup is the result of one sweep.
@@ -112,13 +141,17 @@ func eligibleAgentNeedles(secrets []AgentCacheSecret) []AgentCacheSecret {
 	var out []AgentCacheSecret
 	seen := map[string]bool{}
 	for _, s := range secrets {
-		if len(s.Value) < 12 || seen[s.Value] {
+		if seen[s.Value] {
 			continue
 		}
-		if strings.Contains(s.Value, historyRedactedPrefix) {
-			continue
-		}
-		if strings.ContainsAny(s.Value, " \t\r\n") {
+		// A marker jit itself wrote must never become a needle (see below), and
+		// otherwise the bar is audit's own: the exact predicate the scanner
+		// uses to decide a value is distinctive enough to hunt copies of, so a
+		// redaction needle and a scan needle can never disagree about what is
+		// worth searching for. That rules out the short, all-lowercase,
+		// all-digit and whitespace-bearing values a naive floor would admit and
+		// then match all over 300 MB of prose.
+		if strings.Contains(s.Value, historyRedactedPrefix) || !audit.EligibleNeedle(s.Value) {
 			continue
 		}
 		seen[s.Value] = true
@@ -156,12 +189,13 @@ func sweepAgentCaches(v *vault.Vault, home string, secrets []AgentCacheSecret, a
 		return out, nil
 	}
 
-	note := func(path, reason string) {
+	note := func(path, reason string, kind SkipKind) {
 		out.Skipped = append(out.Skipped, AgentCacheSkip{
 			Path:   path,
 			Agent:  audit.AgentLabelForPath(home, path),
 			Area:   audit.AgentCacheArea(home, path),
 			Reason: reason,
+			Kind:   kind,
 		})
 	}
 
@@ -170,12 +204,19 @@ func sweepAgentCaches(v *vault.Vault, home string, secrets []AgentCacheSecret, a
 		if err != nil {
 			return nil
 		}
-		if info.Size() > maxAgentCacheEditSize {
-			return nil // too big to hold a credential we can act on; audit reports it
-		}
-		data, err := os.ReadFile(path) // #nosec G304 -- a path from audit's own agent-cache walk
+		// Read through audit's guarded open, never os.ReadFile(path): a FIFO
+		// swapped into ~/.claude between the dirent and the read would hang
+		// jit migrate in open(2) forever, after Touch ID, with the vault
+		// unlocked and the migration half-applied. ~/.claude is written by a
+		// third-party tool running arbitrary code, so this is not a
+		// theoretical adversary. The guard also enforces the size bound on the
+		// opened descriptor, where a pre-open stat bounds nothing.
+		data, err := audit.ReadCacheFileGuarded(path)
 		if err != nil {
 			return nil
+		}
+		if len(data) > maxAgentCacheEditSize {
+			return nil // too big to hold a credential we can act on; audit reports it
 		}
 		spans := agentNeedleSpans(data, needles)
 		if len(spans) == 0 {
@@ -187,11 +228,11 @@ func sweepAgentCaches(v *vault.Vault, home string, secrets []AgentCacheSecret, a
 			head = head[:512]
 		}
 		if bytes.IndexByte(head, 0) >= 0 {
-			note(path, "a binary store; rewriting it would corrupt the file")
+			note(path, "a binary store; rewriting it would corrupt the file", SkipBinary)
 			return nil
 		}
 		if err := refuseMultiplyLinked(info, path); err != nil {
-			note(path, "it has more than one hard link, so rewriting one name would leave the credential readable through the other")
+			note(path, "it has more than one hard link, so rewriting one name would leave the credential readable through the other", SkipHardLink)
 			return nil
 		}
 		if !apply {
@@ -214,7 +255,7 @@ func sweepAgentCaches(v *vault.Vault, home string, secrets []AgentCacheSecret, a
 		// reader identification explains and audits, it never decides.
 		after, err := os.Lstat(path)
 		if err != nil || after.Size() != info.Size() || !after.ModTime().Equal(info.ModTime()) {
-			note(path, "the agent wrote to it while jit was working; left alone")
+			note(path, "the agent wrote to it while jit was working; left alone", SkipLive)
 			return nil
 		}
 
@@ -294,4 +335,98 @@ func spliceAgentSpans(data []byte, spans []agentSpan) []byte {
 	}
 	out.Write(data[prev:])
 	return out.Bytes()
+}
+
+// --- Naming an agent's snapshot of a file ---
+
+// SnapshotOriginHash is the name Claude Code gives its snapshot of the file at
+// path: the first 16 hex characters of sha256 over the ABSOLUTE PATH, which
+// the on-disk entry then suffixes with "@v1", "@v2", … per session.
+//
+// Established by measurement (2026-08-06), not from documentation: every one
+// of the 1,224 file-history entries on the development machine is explained by
+// this rule, cross-referenced against the file paths named in each session's
+// own transcript, and a forward prediction for a file created that day found
+// its snapshots exactly where the rule said they would be.
+//
+// Two things follow, and both matter.
+//
+// The name encodes the PATH, never the content — so rewriting a snapshot to
+// remove a credential cannot invalidate its name. That was the open question
+// behind "should jit delete these instead of editing them", and the answer is
+// that the premise was wrong: there is no name-to-content relationship to
+// break, nothing on disk records a checksum, and a redacted snapshot is
+// structurally indistinguishable from an untouched one. Redaction keeps the
+// agent's undo history intact, where deletion would remove a step of it.
+//
+// And it runs backwards. Given a file the user is migrating, jit can compute
+// the name its snapshots would have and go straight to them, instead of
+// reading every file in a 300 MB tree.
+func SnapshotOriginHash(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	sum := sha256.Sum256([]byte(abs))
+	return hex.EncodeToString(sum[:])[:16]
+}
+
+// SnapshotsOf returns every agent snapshot of the file at path, across all
+// sessions — the fast path SnapshotOriginHash makes possible.
+func SnapshotsOf(home, path string) []string {
+	prefix := SnapshotOriginHash(path)
+	var out []string
+	_ = audit.WalkAgentCaches(home, func(p string, d fs.DirEntry) error {
+		name := d.Name()
+		if strings.HasPrefix(name, prefix) &&
+			(len(name) == len(prefix) || strings.HasPrefix(name[len(prefix):], "@v")) {
+			out = append(out, p)
+		}
+		return nil
+	})
+	sort.Strings(out)
+	return out
+}
+
+// CollectVaultSecrets reads every credential currently in the vault and turns
+// it into a needle for the cache sweep — the input to a whole-vault
+// `jit migrate caches` run, as opposed to the this-run values `jit migrate`
+// collects through vault.Vault.OnSet.
+//
+// This is the only path that reaches a copy the per-run sweep cannot: a
+// secret migrated before the sweep existed, one whose live-session transcript
+// was skipped and is now a pointer nothing can search for, a wrap-captured
+// token vaulted after the run's file sweep had already finished. It holds all
+// of the vault's plaintext at once, which is exactly why it belongs behind an
+// explicit command with its own fresh-auth prompt and not on the automatic
+// path — the authentication is consent for decrypting everything, and the
+// caller (jit migrate caches) makes that the stated purpose.
+//
+// _backups/ and _history/ are jit's own bookkeeping, never a credential the
+// user typed; List already omits _history, and this omits _backups so a
+// whole-file backup never becomes a needle (the marker naming it would point
+// at a prunable bookkeeping entry, not a variable).
+func CollectVaultSecrets(v *vault.Vault) ([]AgentCacheSecret, error) {
+	paths, err := v.List()
+	if err != nil {
+		return nil, err
+	}
+	var out []AgentCacheSecret
+	for _, p := range paths {
+		if strings.HasPrefix(p, "_backups/") || strings.HasPrefix(p, "_history/") {
+			continue
+		}
+		val, err := v.Get(p)
+		if err != nil {
+			// One unreadable entry (a torn envelope, a since-removed secret)
+			// must not sink a whole-vault sweep; skip it and clean the rest.
+			continue
+		}
+		name := p
+		if i := strings.LastIndex(name, "/"); i >= 0 {
+			name = name[i+1:]
+		}
+		out = append(out, AgentCacheSecret{Value: string(val), Var: name})
+	}
+	return out, nil
 }
