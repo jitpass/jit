@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -410,6 +411,36 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 	v, err := openVault()
 	if err != nil {
 		return false, fmt.Errorf("jit migrate: %w", err)
+	}
+	// Record every credential this run vaults, so the agent-cache sweep below
+	// knows exactly what to hunt copies of. Observing the vault is what keeps
+	// this out of the nineteen Apply* signatures, none of which returns a
+	// plaintext value and none of which should start (see vault.Vault.OnSet).
+	//
+	// Scope is deliberately this run's values and nothing else: the
+	// authentication the user just gave authorised moving THESE secrets.
+	var vaultedSecrets []migrate.AgentCacheSecret
+	seenVaulted := map[string]bool{}
+	v.OnSet = func(secretPath string, value []byte) {
+		// The vault's own encrypted backups are written through Set too
+		// (storeSecretBackup), and the sweep below backs up every file it
+		// rewrites — so without this guard the collector would ingest whole
+		// plaintext cache files as new needles, mid-sweep. A _backups/ entry
+		// is never a credential the user typed; it is jit's copy of a whole
+		// file, and its last path segment is a timestamp, not a variable name.
+		if strings.HasPrefix(secretPath, "_backups/") {
+			return
+		}
+		val := string(value)
+		if seenVaulted[val] {
+			return // a rotation re-sets the same value; one needle is enough
+		}
+		seenVaulted[val] = true
+		name := secretPath
+		if i := strings.LastIndex(name, "/"); i >= 0 {
+			name = name[i+1:]
+		}
+		vaultedSecrets = append(vaultedSecrets, migrate.AgentCacheSecret{Value: val, Var: name})
 	}
 	root, err := vaultRootDir()
 	if err != nil {
@@ -952,7 +983,37 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 		summary.exportNudge = true
 	}
 
+	// The credential is not gone from the machine until the agent's copies of
+	// it are gone too. Runs last, after every file migration: its needles are
+	// the values those migrations just vaulted, and a copy removed before the
+	// original was safely stored would be the wrong order to fail in.
+	// Detach the collector before the sweep: CleanAgentCaches backs up every
+	// file it rewrites through this same vault, and those writes must not feed
+	// back into the needle set (nor matter after collection is done).
+	v.OnSet = nil
+	cleanup, cleanErr := migrate.CleanAgentCaches(v, home, vaultedSecrets)
+
 	summary.print(out)
+	// Rendered after the file summary, through the same helper `jit migrate
+	// caches` uses, so the two commands describe an identical outcome. Printed
+	// (not stored on the summary) because it writes files the plan named and a
+	// [y/N] approved — the result must always be visible, and the partial
+	// result on error most of all: the edits already made are real and
+	// undoable, so hiding them would strand the user. Never fatal.
+	if len(cleanup.Edited) > 0 || len(cleanup.Skipped) > 0 {
+		fmt.Fprintln(out)
+		renderAgentCleanupResult(out, home, cleanup)
+	}
+	if cleanErr != nil {
+		fmt.Fprintf(out, "jit: could not finish clearing AI agent caches: %v\n", cleanErr)
+	}
+	// Remember any copy left ONLY because a session was live: that is the one
+	// case a later `jit migrate caches` can still reach (the origin is now a
+	// pointer, so scan and a future migrate cannot). Binary/hard-link skips
+	// are standing conditions re-running won't fix, so they don't set a
+	// reminder — the one-time output already named them. A run with no live
+	// skips clears any stale crumb.
+	migrate.WriteCacheBreadcrumb(root, cleanup.LiveSkips(), time.Now().UnixNano())
 	reportAgentStatus(out, root, producedMount)
 	// The folder-rename advisory is left to `jit status`: an explicitly named
 	// migrate target can sit under any project, so there's no single "this
@@ -1153,6 +1214,7 @@ func runMigrateAll(cmd *cobra.Command) error {
 		}
 	}
 
+	wrapped := 0
 	for _, tool := range tools {
 		if migrateDryRun {
 			fmt.Fprintf(out, "[dry-run] would wrap %s (undo: jit wrap undo %s)\n", tool, tool)
@@ -1164,6 +1226,16 @@ func runMigrateAll(cmd *cobra.Command) error {
 			continue
 		}
 		fmt.Fprintf(out, "(reversible: jit wrap undo %s)\n", tool)
+		wrapped++
+	}
+	// The per-run cache sweep above hunted the values the FILE migrations
+	// vaulted; a wrap vaults its token afterwards, through its own vault
+	// handle, so those tokens are not in that sweep. Rather than thread the
+	// collector through the wrap path, point the user at the whole-vault
+	// command that reads every secret (these included) back from the vault
+	// and cleans their copies. Not a silent gap: the nudge is the disclosure.
+	if wrapped > 0 && !migrateDryRun {
+		fmt.Fprintln(out, hlCmds("\nWrapped tokens may also sit in AI agent caches, run `jit migrate caches` to clear those copies too."))
 	}
 
 	// Close the loop with the number the scan report opened with — only

@@ -131,7 +131,29 @@ import (
 // only when a human wrote the file; ~/.claude.json is written by a tool and
 // carries ordinary settings in the same block. Production-indicator and
 // public-IP escalations still override it.
-const SchemaVersion = "0.17.0"
+// 0.18.0 adds finding type agent_cached_secret: a verbatim copy of a
+// credential, found in an AI coding agent's local cache (Claude Code's
+// file-history and paste-cache, agent transcripts, and the equivalent
+// directories for other agents).
+//
+// It is the first finding type produced by CORROBORATION rather than
+// detection. Every other type answers "does this file contain something
+// credential-shaped"; this one answers "is a secret I already confirmed
+// elsewhere in this same run also sitting here, byte for byte". A consumer
+// should read it accordingly: there is no pattern behind it and no
+// confidence judgment to second-guess, but it can never appear alone —
+// it always shares a cause_group with the finding that identified the
+// value, and that sibling names the credential's real home.
+//
+// Two consequences worth knowing. The finding does not add a secret to the
+// ledger: it is the same secret in another place, so coverage counts it
+// once through the shared cause_group. And it carries remedy "manual"
+// today, which makes its whole cause group non-migratable — `jit migrate`
+// rewrites the file the credential lives in and does not yet clean these
+// copies, so claiming otherwise would promise a coverage gain the
+// recommended command does not deliver (the rule shell_history_secret
+// already follows for its production case).
+const SchemaVersion = "0.18.0"
 
 // ScannerName identifies this tool in the shared NDJSON envelope, matching
 // bumblebee's record shape so a receiver can co-ingest both (RFC.md §4).
@@ -165,6 +187,13 @@ const (
 	// indicator, where rotation is the remedy and no command substitutes for
 	// it. See annotateRemedies.
 	FindingTypeShellHistorySecret = "shell_history_secret" // #nosec G101 -- enum label, not a credential
+	// A verbatim copy of a credential jit found elsewhere on this machine,
+	// sitting in an AI coding agent's local cache — a transcript, a pasted
+	// blob, or the agent's own copy of a file it edited. Never discovered by
+	// pattern: this finding exists only because the SAME value was confirmed
+	// in a structured store in the same run, which is what makes it a fact
+	// rather than a guess. See agentcache.go.
+	FindingTypeAgentCachedSecret = "agent_cached_secret" // #nosec G101 -- enum label, not a credential
 )
 
 // AllFindingTypes lists every finding_type in the fixed order used for
@@ -183,6 +212,7 @@ var AllFindingTypes = []string{
 	FindingTypeSOPSAgeKey,
 	FindingTypeExposedSecret,
 	FindingTypeShellHistorySecret,
+	FindingTypeAgentCachedSecret,
 }
 
 // Severity levels for an individual finding.
@@ -326,6 +356,26 @@ type Finding struct {
 	// secrets, without retaining or ever emitting the raw value.
 	rawValueDigest string
 
+	// rawValue is the credential itself, in the clear, for the length of one
+	// scan. It is the needle crossReferenceAgentCaches searches AI agent
+	// caches for, and there is no substitute: finding a verbatim copy of a
+	// secret requires the secret. A digest cannot search a file it has not
+	// already parsed, and parsing 300 MB of agent transcripts with the vendor
+	// patterns is the 100-second, 2,000-false-positive path this field exists
+	// to avoid (see agentcache.go).
+	//
+	// Unexported, like rawValueDigest, so encoding/json cannot reach it —
+	// that is the whole guarantee, and it is why the field is here rather
+	// than in a parallel structure some future caller might marshal. Nothing
+	// new reaches memory that was not already there: every scanner reads
+	// these values off disk to judge them. What is new is that they outlive
+	// their scanner, for the length of the run.
+	//
+	// Set only on the unmasked path in ValueFinding: an already-masked value
+	// ("ghp_****") is not a credential, and searching for it would match the
+	// mask rather than the secret.
+	rawValue string
+
 	// ClaimedValuePreviews lists MaskValue previews of values this finding's
 	// scanner PARSED but deliberately did not report — the non-secret half of
 	// a credential pair (an AWS access key ID next to its reported secret),
@@ -338,6 +388,39 @@ type Finding struct {
 	// never saw" (a foreign token pasted into a claimed file — a real finding
 	// that must survive).
 	ClaimedValuePreviews []string `json:"-"`
+
+	// claimedRawValues is ClaimedValuePreviews' unmasked counterpart, under
+	// the same never-serialized rule as rawValue: the credentials a scanner
+	// parsed and judged real but reported only at FILE level.
+	//
+	// It exists for one category, and that category is the important one.
+	// env_file_present is a single finding per .env — the file is the
+	// problem, and listing each variable would report one leak five times —
+	// so no per-variable ValueFinding is built and .env files contributed no
+	// needle at all to crossReferenceAgentCaches. That left the scanner blind
+	// to its own headline case: a live Stripe key in ~/project/.env, copied
+	// nine times into an agent's file cache, found by neither half.
+	//
+	// The variable name rides along because a copy has to be able to say WHAT
+	// it is a copy of: "STRIPE_API_KEY, also in Claude Code's file cache" is
+	// the finding; the same sentence without the name is a riddle.
+	claimedRawValues []claimedValue
+
+	// originPath is set only on agent_cached_secret: the file the copied
+	// credential actually lives in. It is what lets ComputeCoverage tie a
+	// copy back to the secret it duplicates when no cause_group can — a
+	// file-level origin (env_file_present) carries no value digest, so its
+	// copies would otherwise look like brand-new secrets and inflate the
+	// ledger this finding type was designed not to touch.
+	originPath string
+}
+
+// claimedValue is one credential a file-level scanner parsed and judged real
+// without reporting it individually. Never serialized; see
+// Finding.claimedRawValues.
+type claimedValue struct {
+	Key   string
+	Value string
 }
 
 // ScanSummary is the single closing "scan_summary" NDJSON record for a run

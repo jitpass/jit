@@ -118,7 +118,7 @@ func TestComputeCoverageOrderIndependent(t *testing.T) {
 	}
 	for i, findings := range both {
 		annotateCauseGroups(findings)
-		c := ComputeCoverage("", findings)
+		c := ComputeCoverage("", "", findings)
 		if c.Exposed != 2 || c.Migratable != 1 {
 			t.Errorf("order %d: Exposed/Migratable = %d/%d, want 2/1 (archived+live pair is migratable, archived-only is not)", i, c.Exposed, c.Migratable)
 		}
@@ -146,7 +146,7 @@ func TestComputeCoverage(t *testing.T) {
 		{RecordID: "f", Severity: SeverityInfo, Remedy: RemedyManual},
 	}
 	annotateCauseGroups(findings)
-	c := ComputeCoverage("", findings)
+	c := ComputeCoverage("", "", findings)
 
 	if c.Exposed != 3 {
 		t.Errorf("Exposed = %d, want 3 (two copies collapse; Low/Info not counted)", c.Exposed)

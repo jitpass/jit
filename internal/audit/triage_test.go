@@ -38,7 +38,7 @@ func triageFixture() ([]Finding, ScanSummary, Coverage) {
 			ValuePreview: str("xk92**********"), Archived: true},
 	}
 	annotateRemedies(findings, "/Users/alex")
-	cov := ComputeCoverage("", findings)
+	cov := ComputeCoverage("", "", findings)
 	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "mbp"}}, findings, 0, 2300)
 	summary.FilesScanned = 47312
 	return findings, summary, cov
@@ -114,7 +114,7 @@ func TestWriteTriageReportNeverLeaksRawValue(t *testing.T) {
 		FilePath: "/Users/alex/creds.txt", KeyName: &key, ValuePreview: &preview,
 	}}
 	annotateRemedies(findings, "/Users/alex")
-	cov := ComputeCoverage("", findings)
+	cov := ComputeCoverage("", "", findings)
 	summary := buildScanSummary(Config{}, findings, 0, 0)
 
 	var buf bytes.Buffer

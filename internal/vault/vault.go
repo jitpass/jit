@@ -30,6 +30,22 @@ type Vault struct {
 	Root        string
 	KeyWrapper  KeyWrapper
 	RecipientID string
+
+	// OnSet, when non-nil, is called with every secret this Vault stores,
+	// after the write succeeds. It exists so a caller can act on the set of
+	// credentials IT just vaulted without every writer having to hand them
+	// back: `jit migrate` uses it to find and remove the copies AI agents
+	// keep of the values it has just moved (internal/migrate/agentcache.go),
+	// and there are nineteen Apply* paths that would otherwise each have to
+	// grow a plaintext return value.
+	//
+	// The value is the caller's own plaintext, on its way into the vault, so
+	// this observes rather than discloses: nothing reaches the callback that
+	// the caller did not already hold. It is deliberately NOT a general
+	// audit hook — `jit audit` records vault activity through the agent, at
+	// the trust boundary, where a callback in the writer's own process would
+	// prove nothing.
+	OnSet func(path string, value []byte)
 }
 
 func (v *Vault) vaultDir() string {
@@ -171,7 +187,15 @@ func (v *Vault) SetWithMeta(path string, value []byte, meta Meta) error {
 		return fmt.Errorf("encoding envelope: %w", err)
 	}
 
-	return AtomicWriteFile(dest, data)
+	if err := AtomicWriteFile(dest, data); err != nil {
+		return err
+	}
+	// After the write succeeds, never before: a caller acting on "what did I
+	// just vault" must not be told about a secret that failed to land.
+	if v.OnSet != nil {
+		v.OnSet(path, value)
+	}
+	return nil
 }
 
 // readEnvelope reads and parses the envelope stored at path without
