@@ -86,3 +86,59 @@ jobs:
           MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
           MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
           MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+
+      # The signature the release actually carries, checked by the code that
+      # will judge it — not by the code that wrote it.
+      #
+      # The preflight above proves a signing secret was PRESENT. It cannot
+      # prove the result satisfies `codesign --verify --strict -R`, because
+      # quill writes the signature and Apple's codesign is what
+      # verifyStagedSignature runs against it on every user's machine. Until
+      # now the first machine to ever make that comparison was a user's, after
+      # download — and the failure mode is the worst one this repo has: a
+      # rejected signature traps every installed copy out of `jit upgrade`,
+      # with an error naming the downloaded file rather than the cause.
+      #
+      # Deliberately the binary from the TARBALL, not from dist/'s build
+      # directory: the tarball is the artifact users receive, and it is the
+      # one whose bytes could differ. And deliberately `jit doctor` rather than
+      # a hand-written codesign line — doctor's binarySignature() calls
+      # signatureRequirement(upgradeTeamID), the same function
+      # verifyStagedSignature uses, so this check cannot drift from the client
+      # it is standing in for. A hand-rolled requirement string here would be
+      # a second copy free to disagree with production, which is the whole
+      # class of bug being closed.
+      - name: Verify the released binary satisfies jit upgrade's own requirement
+        run: |
+          set -euo pipefail
+          archive=$(find dist -type f -name 'jitpass_darwin_arm64.tar.gz' | head -1)
+          if [ -z "$archive" ]; then
+            echo "::error::no release tarball found under dist/"
+            exit 1
+          fi
+          workdir=$(mktemp -d)
+          tar -xzf "$archive" -C "$workdir"
+          bin="$workdir/jit"
+          if [ ! -x "$bin" ]; then
+            echo "::error::the release tarball contains no executable jit"
+            exit 1
+          fi
+          # doctor exits non-zero when it finds unrelated problems (no vault
+          # and no profiles on a fresh runner), so its verdict is not the
+          # signal — the tool.signature field is. Capture, then assert.
+          report=$("$bin" doctor --format json 2>/dev/null || true)
+          got=$(printf '%s' "$report" | jq -r '.tool.signature // ""')
+          want="signed CZC6BH93GJ"
+          if [ "$got" != "$want" ]; then
+            echo "::error::the published binary reports signature '$got', want '$want' — jit upgrade would refuse this release on every installed copy. The release stays a DRAFT and is not reachable via /releases/latest."
+            exit 1
+          fi
+          echo "verified: $got"
+
+      # Only now does the release become the one `jit upgrade` can see.
+      # Anything that failed above leaves a draft: invisible to
+      # /releases/latest, and deletable without ever having reached a user.
+      - name: Publish the verified release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ github.ref_name }}" --draft=false
