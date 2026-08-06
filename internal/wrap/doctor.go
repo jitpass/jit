@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/jitpass/jit/internal/profile"
 )
@@ -84,7 +83,7 @@ func Doctor(home, pathEnv, shell string) []DoctorCheck {
 	}
 
 	rc := RcFile(home, shell)
-	if data, readErr := os.ReadFile(rc); readErr == nil && strings.Contains(string(data), ".jit/shims") { // #nosec G304 -- the user's own rc file
+	if data, readErr := os.ReadFile(rc); readErr == nil && RcMentionsShimDir(string(data)) { // #nosec G304 -- the user's own rc file
 		checks = append(checks, DoctorCheck{Name: "rc file", OK: true, Detail: rc + " has the shim PATH line"})
 	} else {
 		checks = append(checks, DoctorCheck{Name: "rc file", OK: false, Detail: rc + " missing the shim PATH line, re-run `jit wrap add` for any tool"})

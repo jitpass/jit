@@ -9,13 +9,32 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 )
+
+// shimDirRel is the shim directory's path relative to home, and the ONE place
+// it is spelled. ShimDir joins it, PathLine renders it into the rc export, and
+// RcMentionsShimDir looks for it -- the three had it typed independently, which
+// made this the sort of constant that owns nothing: change it and EnsurePathLine
+// appends a second export line on every run while Doctor keeps calling the rc
+// file healthy, because the writer moved and the two detectors did not. The
+// user-visible end of that is docker and git credential helpers written to a
+// directory not on PATH, so both tools fall back to their plaintext stores with
+// no error from either.
+const shimDirRel = ".jit/shims"
 
 // ShimDir returns the directory wrap installs its shims into. Fixed under
 // home (like the global profile store) because a shim must resolve no
 // matter what directory the wrapped tool is invoked from.
 func ShimDir(home string) string {
-	return filepath.Join(home, ".jit", "shims")
+	return filepath.Join(home, filepath.FromSlash(shimDirRel))
+}
+
+// RcMentionsShimDir reports whether an rc file already refers to the shim
+// directory. The single detector, so a caller cannot look for a path the writer
+// no longer writes.
+func RcMentionsShimDir(rc string) bool {
+	return strings.Contains(rc, shimDirRel)
 }
 
 // ProfileName returns the profile a wrapped tool's shim injects —
