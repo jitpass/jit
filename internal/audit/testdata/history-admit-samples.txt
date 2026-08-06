@@ -1,0 +1,75 @@
+# Command lines that MUST survive the cheap admit test in BOTH implementations:
+# internal/audit's historyLineMayHoldToken, and the zsh hook internal/guard
+# ships. One corpus, read by both tests, so neither can be narrowed alone.
+#
+# Every entry must match at least one knownTokenPatterns entry, and every
+# pattern must be represented here. TestHistoryPrefilterGuardsEveryPattern
+# enforces the second half. Add a line when a pattern is added.
+#
+# A "|" is a SPLIT MARKER, removed on load. It sits where the Go source used
+# to concatenate ("AKIA" + "IOSFODNN7EXAMPLZ") and exists for the same reason:
+# GitHub push protection matches a contiguous vendor token here and rejects
+# the push outright. "|" appears in no token charset, so it is unambiguous.
+#
+# Blank lines and # comments are ignored.
+ghp_|A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8
+gith|ub_pat_11ABCDEFG0abcdefghijkl_MNOPQRST
+glpa|t-AbCdEfGhIjKlMnOpQrSt
+AKIA|IOSFODNN7EXAMPLZ
+ASIA|IOSFODNN7EXAMPLZ
+dop_|v1_0123456789abcdef0123456789abcdef0123456789abcdef
+npm_|AbCdEfGhIjKlMnOpQrStUvWxYz0123456789
+pypi|-AgEIcHlwaS5vcmcCJDAwMDAwMDAwLTAwMDA
+sk-a|nt-api03-AbCdEfGhIjKlMnOpQrStUv
+sk-a|nt-adminAbCdEfGhIjKlMnOpQrStUv
+sk-p|roj-AbCdEfGhIjKlMnOpQrStUv
+sk-s|vcacct-AbCdEfGhIjKlMnOpQrStUv
+sk-a|dmin-AbCdEfGhIjKlMnOpQrStUv
+sk-A|bCdEfGhIjKlMnOpQrStUv
+hf_a|bcdefghijklmnopqrstuvwx
+sk_l|ive_51H8xQ2KZvMnPq7RtY4wU6iO9
+sk_t|est_51H8xQ2KZvMnPq7RtY4wU6iO9
+rk_l|ive_51H8xQ2KZvMnPq7RtY4wU6iO9
+xoxb|-1234567890-AbCdEfGhIj
+xoxp|-1234567890-AbCdEfGhIj
+xapp|-1-A012345678-AbCdEfGhIj
+xwfp|-1-A012345678-AbCdEfGhIj
+shpa|t_abcdefghijklmnopqrstuvwx
+AC01|23456789abcdef0123456789abcdef
+SG.AbCdEfGhIj.KlMnOpQrStUv
+ntn_|abcdefghijklmnopqrstuvwx
+secr|et_0123456789abcdefghijklmnopqrstuvwxyzABCD
+AIza|SyC1234567890abcdefghijklmnopqrstuv
+whse|c_AbCdEfGhIjKlMnOpQrStUvWx
+sb_s|ecret_AbCdEfGhIjKlMnOpQrStUv
+glsa|_AbCdEfGhIjKlMnOpQrStUv_abcdef12
+dp.st.AbCdEfGhIjKlMnOpQrStUv
+hvs.|AbCdEfGhIjKlMnOpQrStUvWxYz01
+AGE-SECRET-KEY-1ABCDEFGHIJKLMNOPQRSTU
+eyJh|bGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.AbCdEfGhIj
+eyJa.b.c
+postgres://app:s3cr3tPassw0rd@db.internal:5432/app
+scanner_user:hunter2x@db.example.com/postgres
+-----BEGIN OPENSSH PRIVATE KEY-----
+-----BEGIN RSA PRIVATE KEY-----
+gho_|A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8
+ghs_|A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8
+ghu_|A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8
+ghr_|A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8
+gldt|-AbCdEfGhIjKlMnOpQrSt
+glrt|-AbCdEfGhIjKlMnOpQrSt
+glrt|r-AbCdEfGhIjKlMnOpQrSt
+glcb|t-AbCdEfGhIjKlMnOpQrSt
+glpt|t-AbCdEfGhIjKlMnOpQrSt
+gloa|s-AbCdEfGhIjKlMnOpQrSt
+glag|ent-AbCdEfGhIjKlMnOpQrSt
+glft|-AbCdEfGhIjKlMnOpQrSt
+hvb.|AbCdEfGhIjKlMnOpQrStUvWxYz01
+hvr.|AbCdEfGhIjKlMnOpQrStUvWxYz01
+AGE-SECRET-KEY-PQ-1ABCDEFGHIJKLMNOPQRSTU
+-----BEGIN EC PRIVATE KEY-----
+-----BEGIN PRIVATE KEY-----
+crsr|_AbCdEfGhIjKl
+tvly|-AbCdEfGhIjKl
+xoxa|-1234567890-AbCdEfGhIj
+xoxr|-1234567890-AbCdEfGhIj
