@@ -485,7 +485,7 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 		sizeNote = fmt.Sprintf(" · %s %s", groupDigits(summary.FilesScanned),
 			pluralWord(summary.FilesScanned, "file", "files"))
 	}
-	// "jit scan --full  ~/ · 25,872 files · 12.2s" — the same header shape the
+	// "jit scan  ~/ · 25,872 files · 12.2s" — byte-for-byte the shape the
 	// triage view carries, because these are two views of one command and a
 	// reader moving between them should not have to re-learn the top of the
 	// page. It was an em-dash chain carrying user@host and a mid-line "full
@@ -493,8 +493,12 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	// most prominent line on the reader's own username and hostname. Both are
 	// things the program knows and the reader already does, and `jit doctor`
 	// plus NDJSON's endpoint block are where machine identity earns its place.
-	// The command name carries "--full", so the words don't have to.
-	head := style.Bold.Sprint("jit scan --full") + "  " + where + sizeNote +
+	//
+	// "jit scan" and not "jit scan --full", even though this is the inventory:
+	// this function ALSO renders a targeted `jit scan <path>`, which reaches no
+	// --full flag. Naming the flag here told those readers they had passed
+	// something they hadn't. The view identifies itself by its shape.
+	head := style.Bold.Sprint("jit scan") + "  " + where + sizeNote +
 		" · " + formatDuration(summary.ScanDurationMs)
 	termtext.Wrap(w, 0, "", head)
 
