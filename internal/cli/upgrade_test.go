@@ -404,7 +404,13 @@ func TestSignatureRequirementFormIsInline(t *testing.T) {
 // genuine ones included. That failure is indistinguishable from a real
 // rejection at the call site, so it is pinned here rather than discovered by a
 // user whose upgrade stopped working.
-func TestVerifyStagedSignature(t *testing.T) {
+// The two halves are separate tests on purpose. They used to share one, and
+// the positive half's t.Skip — reached on any machine with no Developer
+// ID-signed app in /Applications, which is the CI case — marks the WHOLE test
+// SKIP in Go, taking the already-executed negative half's result with it. So
+// the half that guards "the upgrade path installs an unsigned build" reported
+// no result at all exactly where nobody is watching.
+func TestVerifyStagedSignatureRefusesUnsignedAndMissing(t *testing.T) {
 	if _, err := os.Stat("/usr/bin/codesign"); err != nil {
 		t.Skip("codesign unavailable")
 	}
@@ -424,17 +430,28 @@ func TestVerifyStagedSignature(t *testing.T) {
 	if err := verifyStagedSignature(ctx, filepath.Join(t.TempDir(), "absent")); err == nil {
 		t.Error("a missing file passed signature verification")
 	}
+}
 
-	// The positive half: the requirement FORM has to match a real Developer ID
-	// signature. Checked against whatever Developer-ID-signed code this machine
-	// happens to have, substituting that binary's own team, since jit's own
-	// signed release isn't available in a test.
+// The positive half: the requirement FORM has to match a real Developer ID
+// signature, which is the direction that fails closed into "nobody can ever
+// upgrade". Checked against whatever Developer-ID-signed code this machine
+// happens to have, substituting that binary's own team, since jit's own signed
+// release isn't available in a test.
+//
+// Skipping here now costs only this assertion. It remains a machine-dependent
+// check, and the durable fix is pipeline-side: nothing in CI or the release
+// workflow ever compares what goreleaser/quill PRODUCES against the codesign
+// requirement verifyStagedSignature ENFORCES.
+func TestVerifyStagedSignatureAcceptsARealDeveloperIDSignature(t *testing.T) {
+	if _, err := os.Stat("/usr/bin/codesign"); err != nil {
+		t.Skip("codesign unavailable")
+	}
 	signed, team := findDeveloperIDSigned(t)
 	if signed == "" {
 		t.Skip("no Developer ID signed binary available to validate the requirement form")
 	}
 	req := signatureRequirement(team)
-	out, err := exec.CommandContext(ctx, "/usr/bin/codesign", "--verify", "--strict", "-R", req, signed).CombinedOutput()
+	out, err := exec.CommandContext(context.Background(), "/usr/bin/codesign", "--verify", "--strict", "-R", req, signed).CombinedOutput()
 	if err != nil {
 		t.Fatalf("the requirement form jit uses rejected a genuine Developer ID signature (%s, team %s): %v\n%s\n"+
 			"every jit upgrade would fail closed with this form", signed, team, err, out)
