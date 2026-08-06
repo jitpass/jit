@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/jitpass/jit/internal/pointerfile"
 )
 
 // AI coding agents keep local copies of the files and text they work on, and
@@ -256,7 +258,7 @@ func eligibleNeedle(v string) bool {
 // pointerValuePrefix is what a migrated file holds where the credential was.
 // Duplicated from internal/migrate rather than imported: this package is the
 // read-only scanner and must not depend on the package that writes.
-const pointerValuePrefix = "jit://vault/"
+const pointerValuePrefix = pointerfile.ValuePrefix
 
 // crossReferenceAgentCaches searches every present AI agent cache for verbatim
 // copies of the credentials findings already confirmed, and returns one

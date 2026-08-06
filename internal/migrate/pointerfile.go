@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jitpass/jit/internal/pointerfile"
 	"github.com/jitpass/jit/internal/profile"
 )
 
@@ -18,7 +19,7 @@ import (
 // WritePointerFile/ReplaceWithPointerFile write and the content-based
 // detection LooksLikePointerContent uses derive from this one constant, so
 // they can never drift.
-const pointerFileHeaderPrefix = "# jit pointer file"
+const pointerFileHeaderPrefix = pointerfile.Header
 
 // PointerFilePath returns the git-safe, human-readable companion file
 // jit migrate writes alongside a live-mounted .env/.npmrc at mountPath
@@ -27,7 +28,7 @@ const pointerFileHeaderPrefix = "# jit pointer file"
 // mount itself has (GAPS.md #6). Safe to commit to git for the same
 // reason a profile manifest is: it holds vault paths, never values.
 func PointerFilePath(mountPath string) string {
-	return mountPath + ".pointers"
+	return pointerfile.CompanionPath(mountPath)
 }
 
 // WritePointerFile writes a plain, regular file at PointerFilePath(mountPath)
@@ -114,7 +115,7 @@ func pointerFileContent(vars profile.Profile, order []string) []byte {
 	b.WriteString("# Real values reach a tool through `jit run` (the live mount serves them\n")
 	b.WriteString("# to that run), or `jit export`/`jit vault get`, never from this file. Safe to commit.\n")
 	for _, name := range names {
-		fmt.Fprintf(&b, "%s=jit://vault/%s\n", name, vars[name])
+		fmt.Fprintf(&b, "%s=%s\n", name, pointerfile.Value(vars[name]))
 	}
 	return []byte(b.String())
 }

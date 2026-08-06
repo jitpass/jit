@@ -12,6 +12,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/jitpass/jit/internal/pointerfile"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -50,7 +51,7 @@ func ClissoVaultPath(provider string) string {
 	return "wrap-clisso/" + provider + "-client-secret"
 }
 
-const clissoPointerPrefix = "jit://vault/"
+const clissoPointerPrefix = pointerfile.ValuePrefix
 
 // ClissoConfigMigration reports what ApplyClissoConfig moved.
 type ClissoConfigMigration struct {
