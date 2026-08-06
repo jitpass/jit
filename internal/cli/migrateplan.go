@@ -152,7 +152,7 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, k8sManife
 		// These appear only because the caller named a machine-wide file (or
 		// its exact path) explicitly — a migrate run never reaches them on its
 		// own, so the header states plainly that the caller asked for them.
-		_, _ = cDim.Fprintln(w, "Machine-wide config files you named")
+		_, _ = fmt.Fprintln(w, "Machine-wide config files you named")
 		fmt.Fprintln(w)
 		printMigratePlanCategory(w,
 			pluralWord(len(shellConfigs), "shell config", "shell configs")+" → secrets move to the vault; loaded back automatically when your shell starts",
@@ -256,7 +256,7 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, k8sManife
 		}
 		total += len(items)
 	}
-	fmt.Fprintln(w, strings.Repeat("─", 44))
+	fmt.Fprintln(w, strings.Repeat(glyphRule, 44))
 	fmt.Fprintf(w, "  %s planned across %s\n", countWord(total, "change", "changes"), countWord(categories, "category", "categories"))
 }
 
@@ -326,7 +326,7 @@ func splitHeadline(headline string) (name, outcome string) {
 // silently not applying to every item it covers.
 //
 // The block mirrors jit scan's [Category] layout: a bold `[name] (count)`
-// header, a faint rule, then the "→ outcome" description on its own faint
+// header, a rule, then the "→ outcome" description on its own
 // line above the file bullets — one consistent report shape across the app,
 // and far easier on the eyes than the old one-line bracketed headline.
 func printMigratePlanCategoryAnnotated(w io.Writer, headline string, items []string, annotate func(string) string) {
@@ -335,9 +335,9 @@ func printMigratePlanCategoryAnnotated(w io.Writer, headline string, items []str
 	}
 	name, outcome := splitHeadline(headline)
 	fmt.Fprintf(w, "[%s]", name)
-	_, _ = cDim.Fprintf(w, " %d\n", len(items))
+	_, _ = fmt.Fprintf(w, " %d\n", len(items))
 	if outcome != "" {
-		_, _ = cDim.Fprintf(w, "  → %s\n", outcome)
+		_, _ = fmt.Fprintf(w, "  → %s\n", outcome)
 	}
 	for _, item := range items {
 		note := ""
