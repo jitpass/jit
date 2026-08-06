@@ -27,7 +27,10 @@ jobs:
   goreleaser:
     needs: test
     runs-on: macos-latest
-    timeout-minutes: 60 # notarize waits on Apple's verdict (.goreleaser.yml: timeout 30m)
+    # Sized for a signed, NON-notarized build (notarization is intentionally
+    # dropped — see .goreleaser.yml). The old value was budgeted for waiting on
+    # Apple's verdict and cited a `timeout: 30m` that no longer exists.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,6 +39,33 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+
+      # Never ship unsigned (CLAUDE.md), enforced BEFORE the build rather than
+      # on the user's machine after download.
+      #
+      # goreleaser's signing gate is `enabled: {{ isEnvSet "MACOS_SIGN_P12" }}`,
+      # and two facts about it make an absent secret dangerous rather than
+      # merely inconvenient: isEnvSet is `ok && s != ""`, so the empty string
+      # Actions substitutes for a missing secret reads as unset; and the notary
+      # pipe answers a false `enabled` with pipe.Skip, not an error. So a
+      # deleted, renamed, emptied or fork-scoped secret does not fail the
+      # release — it publishes a tarball holding an unsigned Mach-O, silently,
+      # which every `jit upgrade` then refuses (verifyStagedSignature fails
+      # closed, deliberately with no override).
+      #
+      # The config comments used to present that as policy, for a reason that
+      # does not hold: forks and PR builds are protected by `--snapshot` and by
+      # ci.yml passing --skip=publish,sign,notarize, not by this gate. Nothing
+      # needs an unsigned PUBLISH to work.
+      - name: Require Developer ID signing secrets
+        env:
+          P12: ${{ secrets.MACOS_SIGN_P12 }}
+          PW: ${{ secrets.MACOS_SIGN_PASSWORD }}
+        run: |
+          if [ -z "$P12" ] || [ -z "$PW" ]; then
+            echo "::error::refusing to publish without Developer ID signing secrets — an unsigned release traps every user out of 'jit upgrade' until a signed one replaces it"
+            exit 1
+          fi
 
       - uses: goreleaser/goreleaser-action@v6
         with:
@@ -46,8 +76,9 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Developer ID signing. The config keys off MACOS_SIGN_P12 being set,
-          # so a repo without these secrets still releases — just unsigned.
+          # Developer ID signing. The config keys off MACOS_SIGN_P12 being set;
+          # the preflight above is what makes an unset value fail the release
+          # rather than quietly publish an unsigned binary.
           MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
           MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
           # Notarization is currently disabled (.goreleaser.yml has no notarize

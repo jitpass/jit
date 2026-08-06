@@ -15,10 +15,11 @@ func TestValidateToolName(t *testing.T) {
 			t.Errorf("ValidateToolName(%q) = %v, want nil", ok, err)
 		}
 	}
-	for _, bad := range []string{"jit", "a/b", "", "..", "a b", "-"} {
-		if bad == ".." || bad == "-" {
-			continue // pattern-legal; kept here as documentation that only the path-unsafe and jit cases must fail
-		}
+	// ".." and "-" used to be skipped here with a comment calling them
+	// "pattern-legal", which was true and was the bug: ".." resolved to ~/.jit
+	// under filepath.Join, and a leading "-" puts a flag-shaped name on PATH.
+	// They are rejected now, so the table has no exceptions.
+	for _, bad := range []string{"jit", "a/b", "", ".", "..", "a b", "-", "-n"} {
 		if err := ValidateToolName(bad); err == nil {
 			t.Errorf("ValidateToolName(%q) = nil, want error", bad)
 		}

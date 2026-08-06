@@ -20,9 +20,17 @@ import (
 // is strictly semantic, never decorative.
 //
 // Three report shapes share this vocabulary rather than one rigid layout:
-//   - report   (jit scan, jit migrate): a bold [Category] over its items,
-//   - dashboard (jit status, jit doctor): aligned label/value rows,
-//   - tree     (jit vault list): light bold-name/plain-count group headers.
+//   - report    (jit scan, jit migrate, jit doctor): a [Category] in default
+//     weight with a plain count, over its items,
+//   - dashboard (jit status): aligned label/value rows,
+//   - tree      (jit vault list): [name] plain-count group headers.
+//
+// Corrected 2026-08-06 on three counts, each of which this file had outlived:
+// the report header is not bold (rule 1 — the brackets delimit it); jit doctor
+// is a REPORT, a findings list, not a dashboard, which design/output-style.md
+// and CLAUDE.md both retract explicitly and doctor.go already renders
+// correctly; and tree's headers follow rule 1 too, not the pre-rule-1
+// "bold-name" shape described here.
 // Each fits the shape of its data; what they share is the palette, the
 // glyphs, the plain-secondary rule, and the column flow below.
 

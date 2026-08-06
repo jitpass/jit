@@ -18,6 +18,7 @@ import (
 	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/vault"
+	"github.com/jitpass/jit/internal/wrap"
 )
 
 // withFixtureCwd chdirs into a fresh temp directory for the duration of the
@@ -847,24 +848,49 @@ func TestStrictDoesNotGateOnTheRunnersOwnPath(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(home, ".jit"), 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	// A tool wrapped and fully installed, so the only complaint left is that
+	// A tool wrapped and FULLY installed, so the only complaint left is that
 	// this process's PATH doesn't include the shim dir.
+	//
+	// The fixture used to be `{"tools":{}}`, which meant Doctor had nothing to
+	// check, wrapFindings() came back empty, envOnly was false, and the test
+	// skipped -- every run, on every machine. Its one assertion had never
+	// executed, and the skip message it printed ("non-environmental findings")
+	// was itself wrong, since the slice was empty.
+	//
+	// A run-grant entry is what makes "fully installed" cheap: it needs no
+	// profile manifest, so shim + real binary resolving is all Doctor asks. The
+	// rc file has to carry the PATH line too -- without it Doctor reports rc
+	// damage, which is deliberately NOT environmental (no future shell gets the
+	// shims either), and one such finding would take the skip again.
+	shimDir := filepath.Join(home, ".jit", "shims")
+	if err := os.MkdirAll(shimDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.Symlink("/usr/bin/true", filepath.Join(shimDir, "true")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(home, ".jit", "wrap.json"),
-		[]byte(`{"tools":{}}`), 0o600); err != nil {
+		[]byte(`{"tools":{"true":{"run_grant":true}}}`), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte(wrap.PathLine()+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile .zshrc: %v", err)
+	}
+	// Real /usr/bin/true resolves beyond the shim dir; the shim dir itself is
+	// absent, which is the environmental finding under test.
 	t.Setenv("PATH", "/usr/bin:/bin")
 	t.Setenv("SHELL", "/bin/zsh")
 
 	findings, _ := wrapFindings()
-	envOnly := len(findings) > 0
+	// t.Fatal, not t.Skip. A fixture that stops producing the finding this test
+	// is about is a broken fixture, and must say so rather than pass.
+	if len(findings) == 0 {
+		t.Fatal("fixture produced no wrap findings — it must yield exactly the environmental PATH one")
+	}
 	for _, f := range findings {
 		if f.Kind != kindWrapEnv {
-			envOnly = false
+			t.Fatalf("fixture produced a non-environmental finding, so --strict would legitimately gate on it: %+v", f)
 		}
-	}
-	if !envOnly {
-		t.Skipf("fixture produced non-environmental findings, nothing to assert: %+v", findings)
 	}
 	if _, err := execDoctor(t, "--wrap", "--strict"); err != nil {
 		t.Errorf("--strict must not fail on an environmental-only finding: %v", err)

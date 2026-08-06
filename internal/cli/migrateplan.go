@@ -43,7 +43,15 @@ import (
 // item-by-item (splitMCPByScope/splitNpmrcByScope) since Claude Desktop's
 // config / the global ~/.npmrc belong in the machine-wide group while a
 // project mcp.json/.npmrc belongs with the scoped files.
-func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, k8sManifests, shellConfigs, historyFiles, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, pypircFiles, looseSecretFiles []string) {
+// printMigratePlan renders the "what jit will rewrite" plan.
+//
+// It takes *discovered rather than the seventeen positional []string it used
+// to, and that is a correctness change, not tidying: every argument had the
+// same type, so transposing any two compiled, ran, and mislabelled the plan --
+// showing the user one category's files under another category's heading, on
+// the screen whose whole job is to obtain informed consent before rewriting
+// them. Named fields make the same mistake a compile error.
+func printMigratePlan(w io.Writer, home string, d *discovered) {
 	fmt.Fprintln(w, "jit migrate, plan")
 	fmt.Fprintln(w, "Each modified file is backed up before it's rewritten.")
 	fmt.Fprintln(w)
@@ -51,8 +59,8 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, k8sManife
 	// Split by scope BEFORE display-shortening — the split compares against
 	// full fixed paths (Claude Desktop's config, the global ~/.npmrc), and a
 	// "~"-shortened copy would never match them.
-	mcpScoped, mcpFixed := splitMCPByScope(home, mcpConfigs)
-	npmrcScoped, npmrcFixed := splitNpmrcByScope(home, npmrcFiles)
+	mcpScoped, mcpFixed := splitMCPByScope(home, d.mcpConfigs)
+	npmrcScoped, npmrcFixed := splitNpmrcByScope(home, d.npmrcFiles)
 
 	shorten := func(items []string) []string {
 		out := make([]string, len(items))
@@ -64,26 +72,26 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, k8sManife
 
 	// shorten() rewrites each path for display, so the annotate callbacks
 	// need a way back to the real one — same shape as envOriginal below.
-	mcpOriginal := make(map[string]string, len(mcpConfigs))
-	for _, p := range mcpConfigs {
+	mcpOriginal := make(map[string]string, len(d.mcpConfigs))
+	for _, p := range d.mcpConfigs {
 		mcpOriginal[shorten([]string{p})[0]] = p
 	}
 
-	hasScoped := len(envFiles) > 0 || len(tfvarsFiles) > 0 || len(k8sManifests) > 0 || len(mcpScoped) > 0 || len(npmrcScoped) > 0 || len(looseSecretFiles) > 0
-	hasFixed := len(shellConfigs) > 0 || len(historyFiles) > 0 || len(mcpFixed) > 0 || len(awsProfiles) > 0 || len(k8sUsers) > 0 || len(terraformHosts) > 0 || len(dockerRegistries) > 0 || len(gitHosts) > 0 || len(gcpADCFiles) > 0 || len(sopsAgeFiles) > 0 || len(npmrcFixed) > 0 || len(netrcFiles) > 0 || len(pypircFiles) > 0
+	hasScoped := len(d.envFiles) > 0 || len(d.tfvarsFiles) > 0 || len(d.k8sManifests) > 0 || len(mcpScoped) > 0 || len(npmrcScoped) > 0 || len(d.looseSecretFiles) > 0
+	hasFixed := len(d.shellConfigs) > 0 || len(d.historyFiles) > 0 || len(mcpFixed) > 0 || len(d.awsProfiles) > 0 || len(d.k8sUsers) > 0 || len(d.terraformHosts) > 0 || len(d.dockerRegistries) > 0 || len(d.gitHosts) > 0 || len(d.gcpADCFiles) > 0 || len(d.sopsAgeFiles) > 0 || len(npmrcFixed) > 0 || len(d.netrcFiles) > 0 || len(d.pypircFiles) > 0
 
 	if hasScoped {
 		// The annotation callback below is handed the display-shortened path,
 		// which can't be opened; keep the mapping back to the real one so each
 		// .env can be counted.
-		envOriginal := make(map[string]string, len(envFiles))
-		for _, p := range envFiles {
+		envOriginal := make(map[string]string, len(d.envFiles))
+		for _, p := range d.envFiles {
 			envOriginal[displayPath(home, p)] = p
 		}
 		_, _ = cBold.Fprintf(w, "Project files you named\n\n")
 		printMigratePlanCategoryAnnotated(w,
-			pluralWord(len(envFiles), ".env file", ".env files")+" → EVERY variable moves to the vault (ordinary config too, so the file still works); the file keeps working as a live, auto-updating mount",
-			shorten(envFiles),
+			pluralWord(len(d.envFiles), ".env file", ".env files")+" → EVERY variable moves to the vault (ordinary config too, so the file still works); the file keeps working as a live, auto-updating mount",
+			shorten(d.envFiles),
 			func(item string) string {
 				if migrate.IsEnvBackupOnlySuffix(filepath.Base(item)) {
 					return "backup-suffixed, replaced with a safe pointer file instead, never mounted"
@@ -101,15 +109,15 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, k8sManife
 				return fmt.Sprintf("%s, %d secret-shaped", countWord(total, "variable", "variables"), shaped)
 			})
 		printMigratePlanCategory(w,
-			pluralWord(len(tfvarsFiles), "Terraform tfvars file", "Terraform tfvars files")+" → secret values move to the vault; terraform reads them back as TF_VAR_ environment variables when run through jit",
-			shorten(tfvarsFiles))
-		k8sOriginal := make(map[string]string, len(k8sManifests))
-		for _, p := range k8sManifests {
+			pluralWord(len(d.tfvarsFiles), "Terraform tfvars file", "Terraform tfvars files")+" → secret values move to the vault; terraform reads them back as TF_VAR_ environment variables when run through jit",
+			shorten(d.tfvarsFiles))
+		k8sOriginal := make(map[string]string, len(d.k8sManifests))
+		for _, p := range d.k8sManifests {
 			k8sOriginal[displayPath(home, p)] = p
 		}
 		printMigratePlanCategoryAnnotated(w,
-			pluralWord(len(k8sManifests), "Kubernetes Secret manifest", "Kubernetes Secret manifests")+" → secret values move to the vault; the manifest stays at its path as a live mount: `jit run -- kubectl apply` gets real values, anything else gets decoys kubectl rejects",
-			shorten(k8sManifests),
+			pluralWord(len(d.k8sManifests), "Kubernetes Secret manifest", "Kubernetes Secret manifests")+" → secret values move to the vault; the manifest stays at its path as a live mount: `jit run -- kubectl apply` gets real values, anything else gets decoys kubectl rejects",
+			shorten(d.k8sManifests),
 			func(item string) string {
 				secrets, converts, ok := migrate.K8sManifestPreview(k8sOriginal[item])
 				if !ok {
@@ -140,12 +148,12 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, k8sManife
 		printMigratePlanCategory(w,
 			pluralWord(len(npmrcScoped), "npmrc file", "npmrc files")+" → secrets move to the vault; the file keeps working via a live, auto-updating mount",
 			shorten(npmrcScoped))
-		looseName := pluralWord(len(looseSecretFiles), "loose secret file", "loose secret files")
+		looseName := pluralWord(len(d.looseSecretFiles), "loose secret file", "loose secret files")
 		looseHeadline := looseName + " → the whole file is a bare token; it moves to the vault and the file is replaced with a git-safe pointer (retrieve with `jit vault get`)"
 		if migrateMount {
-			looseHeadline = looseName + " → the " + pluralWord(len(looseSecretFiles), "secret moves", "secrets move") + " to the vault; the file stays live at its path as a mount (real value to `jit run` grants, a decoy otherwise), non-secret content preserved"
+			looseHeadline = looseName + " → the " + pluralWord(len(d.looseSecretFiles), "secret moves", "secrets move") + " to the vault; the file stays live at its path as a mount (real value to `jit run` grants, a decoy otherwise), non-secret content preserved"
 		}
-		printMigratePlanCategory(w, looseHeadline, shorten(looseSecretFiles))
+		printMigratePlanCategory(w, looseHeadline, shorten(d.looseSecretFiles))
 	}
 
 	if hasFixed {
@@ -155,15 +163,15 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, k8sManife
 		_, _ = fmt.Fprintln(w, "Machine-wide config files you named")
 		fmt.Fprintln(w)
 		printMigratePlanCategory(w,
-			pluralWord(len(shellConfigs), "shell config", "shell configs")+" → secrets move to the vault; loaded back automatically when your shell starts",
-			shorten(shellConfigs))
-		historyOriginal := make(map[string]string, len(historyFiles))
-		for _, p := range historyFiles {
+			pluralWord(len(d.shellConfigs), "shell config", "shell configs")+" → secrets move to the vault; loaded back automatically when your shell starts",
+			shorten(d.shellConfigs))
+		historyOriginal := make(map[string]string, len(d.historyFiles))
+		for _, p := range d.historyFiles {
 			historyOriginal[displayPath(home, p)] = p
 		}
 		printMigratePlanCategoryAnnotated(w,
-			pluralWord(len(historyFiles), "shell history file", "shell history files")+" → recorded credentials move to the vault, every occurrence is redacted in place; your commands stay, the secrets don't (rotation still recommended)",
-			shorten(historyFiles),
+			pluralWord(len(d.historyFiles), "shell history file", "shell history files")+" → recorded credentials move to the vault, every occurrence is redacted in place; your commands stay, the secrets don't (rotation still recommended)",
+			shorten(d.historyFiles),
 			func(item string) string {
 				secrets, occ, err := migrate.PreviewShellHistory(historyOriginal[item])
 				if err != nil || secrets == 0 {
@@ -193,35 +201,35 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, k8sManife
 		// AWS/kubeconfig/Terraform/Docker items are profile/user/host/
 		// registry NAMES, not paths — nothing to shorten.
 		printMigratePlanCategory(w,
-			pluralWord(len(awsProfiles), "AWS profile", "AWS profiles")+" in ~/.aws/credentials → secrets move to the vault; fetched automatically when the AWS CLI/SDK needs them",
-			awsProfiles)
+			pluralWord(len(d.awsProfiles), "AWS profile", "AWS profiles")+" in ~/.aws/credentials → secrets move to the vault; fetched automatically when the AWS CLI/SDK needs them",
+			d.awsProfiles)
 		printMigratePlanCategory(w,
-			pluralWord(len(k8sUsers), "kubeconfig user", "kubeconfig users")+" in ~/.kube/config → secrets move to the vault; fetched automatically whenever kubectl runs",
-			k8sUsers)
+			pluralWord(len(d.k8sUsers), "kubeconfig user", "kubeconfig users")+" in ~/.kube/config → secrets move to the vault; fetched automatically whenever kubectl runs",
+			d.k8sUsers)
 		printMigratePlanCategory(w,
-			pluralWord(len(terraformHosts), "Terraform Cloud host", "Terraform Cloud hosts")+" in ~/.terraform.d/credentials.tfrc.json → tokens move to the vault; fetched automatically whenever terraform runs",
-			terraformHosts)
+			pluralWord(len(d.terraformHosts), "Terraform Cloud host", "Terraform Cloud hosts")+" in ~/.terraform.d/credentials.tfrc.json → tokens move to the vault; fetched automatically whenever terraform runs",
+			d.terraformHosts)
 		printMigratePlanCategory(w,
-			pluralWord(len(dockerRegistries), "Docker registry credential", "Docker registry credentials")+" in ~/.docker/config.json → credentials move to the vault; fetched automatically whenever docker needs them (docker login/logout keep working)",
-			dockerRegistries)
+			pluralWord(len(d.dockerRegistries), "Docker registry credential", "Docker registry credentials")+" in ~/.docker/config.json → credentials move to the vault; fetched automatically whenever docker needs them (docker login/logout keep working)",
+			d.dockerRegistries)
 		printMigratePlanCategory(w,
-			pluralWord(len(gitHosts), "git HTTPS host", "git HTTPS hosts")+" in ~/.git-credentials → credentials move to the vault; fetched automatically whenever git pushes/fetches over HTTPS (credential.helper set to jit)",
-			gitHosts)
+			pluralWord(len(d.gitHosts), "git HTTPS host", "git HTTPS hosts")+" in ~/.git-credentials → credentials move to the vault; fetched automatically whenever git pushes/fetches over HTTPS (credential.helper set to jit)",
+			d.gitHosts)
 		printMigratePlanCategory(w,
 			"GCP application-default credentials → secrets move to the vault; the file keeps working via a live, auto-updating mount",
-			shorten(gcpADCFiles))
+			shorten(d.gcpADCFiles))
 		printMigratePlanCategory(w,
-			pluralWord(len(sopsAgeFiles), "SOPS age key file", "SOPS age key files")+" → the "+pluralWord(len(sopsAgeFiles), "key moves", "keys move")+" to the vault; sops/kluctl keep working via a live, auto-updating mount (or sops's own SOPS_AGE_KEY_CMD hook)",
-			shorten(sopsAgeFiles))
+			pluralWord(len(d.sopsAgeFiles), "SOPS age key file", "SOPS age key files")+" → the "+pluralWord(len(d.sopsAgeFiles), "key moves", "keys move")+" to the vault; sops/kluctl keep working via a live, auto-updating mount (or sops's own SOPS_AGE_KEY_CMD hook)",
+			shorten(d.sopsAgeFiles))
 		printMigratePlanCategory(w,
 			pluralWord(len(npmrcFixed), "npmrc file", "npmrc files")+" → secrets move to the vault; the file keeps working via a live, auto-updating mount",
 			shorten(npmrcFixed))
 		printMigratePlanCategory(w,
-			pluralWord(len(netrcFiles), "~/.netrc password", "~/.netrc passwords")+" → secrets move to the vault; the file keeps working via a live, auto-updating mount (login/machine lines untouched)",
-			shorten(netrcFiles))
+			pluralWord(len(d.netrcFiles), "~/.netrc password", "~/.netrc passwords")+" → secrets move to the vault; the file keeps working via a live, auto-updating mount (login/machine lines untouched)",
+			shorten(d.netrcFiles))
 		printMigratePlanCategory(w,
-			pluralWord(len(pypircFiles), "~/.pypirc credential", "~/.pypirc credentials")+" → secrets move to the vault; the file keeps working via a live, auto-updating mount (repository/username lines untouched)",
-			shorten(pypircFiles))
+			pluralWord(len(d.pypircFiles), "~/.pypirc credential", "~/.pypirc credentials")+" → secrets move to the vault; the file keeps working via a live, auto-updating mount (repository/username lines untouched)",
+			shorten(d.pypircFiles))
 
 		// --only filters by CATEGORY, not by this scoped/machine-wide
 		// split — selecting "mcp" or "npmrc" always pulls in their own
@@ -234,10 +242,10 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, k8sManife
 		// bug, caught by a user testing `--only mcp` and still seeing
 		// Claude Desktop's config in the plan).
 		var onlyTokens []string
-		if len(envFiles) > 0 {
+		if len(d.envFiles) > 0 {
 			onlyTokens = append(onlyTokens, "env")
 		}
-		if len(tfvarsFiles) > 0 {
+		if len(d.tfvarsFiles) > 0 {
 			onlyTokens = append(onlyTokens, "tfvars")
 		}
 		if len(onlyTokens) > 0 {
@@ -250,7 +258,7 @@ func printMigratePlan(w io.Writer, home string, envFiles, tfvarsFiles, k8sManife
 	}
 
 	categories, total := 0, 0
-	for _, items := range [][]string{envFiles, tfvarsFiles, k8sManifests, shellConfigs, historyFiles, mcpConfigs, awsProfiles, k8sUsers, terraformHosts, dockerRegistries, gitHosts, gcpADCFiles, sopsAgeFiles, npmrcFiles, netrcFiles, pypircFiles, looseSecretFiles} {
+	for _, items := range [][]string{d.envFiles, d.tfvarsFiles, d.k8sManifests, d.shellConfigs, d.historyFiles, d.mcpConfigs, d.awsProfiles, d.k8sUsers, d.terraformHosts, d.dockerRegistries, d.gitHosts, d.gcpADCFiles, d.sopsAgeFiles, d.npmrcFiles, d.netrcFiles, d.pypircFiles, d.looseSecretFiles} {
 		if len(items) > 0 {
 			categories++
 		}
@@ -308,8 +316,8 @@ func printMigratePlanCategory(w io.Writer, headline string, items []string) {
 // "→ outcome" clause. The two used to render jammed together inside one set
 // of brackets — `[loose secret file(s) → the whole file is a bare token; it
 // moves to the vault and …] (1)` — which was a wall of text hard to scan.
-// Split, the name anchors a bold header and the outcome drops to its own
-// line, matching how scan renders a bold [Category] over its detail.
+// Split, the name anchors the bracketed header and the outcome drops to its
+// own line, matching how scan renders a [Category] over its detail.
 func splitHeadline(headline string) (name, outcome string) {
 	if i := strings.Index(headline, " → "); i >= 0 {
 		return headline[:i], headline[i+len(" → "):]
@@ -325,8 +333,9 @@ func splitHeadline(headline string) (name, outcome string) {
 // category headline's "the file keeps working as a live mount" promise
 // silently not applying to every item it covers.
 //
-// The block mirrors jit scan's [Category] layout: a bold `[name] (count)`
-// header, a rule, then the "→ outcome" description on its own
+// The block mirrors jit scan's [Category] layout: a `[name]` header in default
+// weight with a plain count (rule 1 — not bold, and no parens around the
+// count), no rule, then the "→ outcome" description on its own
 // line above the file bullets — one consistent report shape across the app,
 // and far easier on the eyes than the old one-line bracketed headline.
 func printMigratePlanCategoryAnnotated(w io.Writer, headline string, items []string, annotate func(string) string) {

@@ -138,6 +138,102 @@ func TestScanMCPConfigsBareURLGetsLowerSeverity(t *testing.T) {
 	}
 }
 
+// A documented-public NAME is de-escalated out of the counted set, and the
+// same name holding a real credential is not.
+//
+// Both halves matter and they pull against each other, which is why they are
+// one test. Observed on a real machine: an MCP config reported
+// GOOGLE_CLOUD_PROJECT and JAMF_PRO_CLIENT_ID as exposed secrets and told the
+// reader to "rotate it now" — a project id is in every gcloud command and an
+// OAuth client id is public by RFC 6749, so neither has anything to rotate,
+// and one item a reader knows is wrong discredits the rest of the report.
+// The fix must not become a hiding place, so the second half parks a live
+// token behind the same names.
+func TestScanMCPConfigsPublicNamesDeEscalateButValuesStillFire(t *testing.T) {
+	home := t.TempDir()
+	writeFile(t, filepath.Join(home, ".mcp.json"), `{
+  "mcpServers": {
+    "gws": {
+      "env": {
+        "GOOGLE_CLOUD_PROJECT": "my-proj-12345",
+        "JAMF_PRO_CLIENT_ID": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        "GOOGLE_CLIENT_SECRET": "GOCSPX-aBcDeFgHiJkLmNoPqRsTuVwX"
+      }
+    }
+  }
+}
+`)
+	findings, err := ScanMCPConfigs(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("ScanMCPConfigs: %v", err)
+	}
+	byKey := map[string]Finding{}
+	for _, f := range findings {
+		byKey[*f.KeyName] = f
+	}
+	for _, k := range []string{"gws/GOOGLE_CLOUD_PROJECT", "gws/JAMF_PRO_CLIENT_ID"} {
+		f, ok := byKey[k]
+		if !ok {
+			t.Fatalf("%s went missing entirely — de-escalate, never suppress", k)
+		}
+		if CountedAsSecret(f) {
+			t.Errorf("%s is counted as a secret (severity %s); the report would tell the reader to rotate an identifier", k, f.Severity)
+		}
+	}
+	// The real secret beside them is untouched.
+	if s := byKey["gws/GOOGLE_CLIENT_SECRET"]; !CountedAsSecret(s) {
+		t.Errorf("GOOGLE_CLIENT_SECRET was de-escalated too (severity %s)", s.Severity)
+	}
+
+	// Second half: the same public names, now holding live credentials. The
+	// name signal is suppressed; the VALUE signal must still fire, or this
+	// allowlist has become somewhere to hide a key.
+	home2 := t.TempDir()
+	writeFile(t, filepath.Join(home2, ".mcp.json"), `{
+  "mcpServers": {
+    "evil": {
+      "env": {
+        "GOOGLE_CLOUD_PROJECT": "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
+        "MY_CLIENT_ID": "postgres://admin:hunter2xyz@prod-db.internal/app"
+      }
+    }
+  }
+}
+`)
+	hidden, err := ScanMCPConfigs(Config{HomeDir: home2})
+	if err != nil {
+		t.Fatalf("ScanMCPConfigs: %v", err)
+	}
+	if len(hidden) != 2 {
+		t.Fatalf("got %d findings, want 2", len(hidden))
+	}
+	for _, f := range hidden {
+		if !CountedAsSecret(f) {
+			t.Errorf("%s hid a real credential behind a public name (severity %s)", *f.KeyName, f.Severity)
+		}
+	}
+}
+
+// The public-name list has to be read against neverPublicMarkers, not on its
+// own: a marker that swallows a name those do not rescue is a false negative
+// with nothing behind it. TOKEN is deliberately absent from neverPublicMarkers,
+// so a bare "PROJECT" marker would quietly excuse PROJECT_TOKEN.
+func TestPublicVarMarkersDoNotSwallowTokenNames(t *testing.T) {
+	for _, name := range []string{
+		"PROJECT_TOKEN", "CLIENT_TOKEN", "PROJECT_API_KEY", "CLOUD_PROJECT_TOKEN",
+	} {
+		if LooksLikeNonSecretName(name) {
+			t.Errorf("%s is treated as documented-public: %s", name, NonSecretNameReason(name))
+		}
+	}
+	// …while the identifiers themselves still are.
+	for _, name := range []string{"GOOGLE_CLOUD_PROJECT", "GCP_PROJECT_ID", "JAMF_PRO_CLIENT_ID"} {
+		if !LooksLikeNonSecretName(name) {
+			t.Errorf("%s is not recognised as an identifier", name)
+		}
+	}
+}
+
 func TestScanMCPConfigsNoneFound(t *testing.T) {
 	home := t.TempDir()
 	findings, err := ScanMCPConfigs(Config{HomeDir: home})

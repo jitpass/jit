@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -604,7 +605,11 @@ func TestCauseGroupMergesAcrossScannerKeyNames(t *testing.T) {
 	}
 }
 
-// The report's two percentage claims must never sum past 100.
+// The report's three percentage claims must sum to EXACTLY 100 — the ledger
+// line ("54% ... one command +12% ... only you can fix +34%") and the red
+// header's "→ 100%" are read together, so 99 is as wrong as 101. This used to
+// assert only the upper bound, which let three independent integer floors
+// print a sum of 99 on a real machine (50/11/32 of 93).
 func TestCoveragePercentagesAlwaysSumTo100(t *testing.T) {
 	cases := []Coverage{
 		{Protected: 0, Exposed: 8, Migratable: 6},
@@ -614,14 +619,30 @@ func TestCoveragePercentagesAlwaysSumTo100(t *testing.T) {
 		{Protected: 0, Exposed: 1, Migratable: 0},
 		{Protected: 12, Exposed: 37, Migratable: 20},
 	}
+	// Deliberately NOT asserted as pct + (after-pct) + (100-after) == 100.
+	// That identity holds for any two integers whatever Percent and
+	// PercentAfterMigrate return, so the test could not fail and would stay
+	// green against the very bug it is named for — a revert of the render to
+	// three independent divisions. The real claim is about the rendered line,
+	// and TestLedgerPercentagesSumTo100InTheRender is where it is made.
+	//
+	// What is left here is the arithmetic these cases still usefully cover:
+	// no division by zero, and no term outside 0..100.
 	for _, c := range cases {
 		if c.Total() == 0 {
 			continue
 		}
-		gain := c.PercentAfterMigrate() - c.Percent()
-		remainder := pctOf(c.manualRemainder(), c.Total())
-		if sum := c.Percent() + gain + remainder; sum > 100 {
-			t.Errorf("%+v: %d%% + %d%% + %d%% = %d%%, over 100", c, c.Percent(), gain, remainder, sum)
+		for name, v := range map[string]int{
+			"Percent":             c.Percent(),
+			"PercentAfterMigrate": c.PercentAfterMigrate(),
+			"remainder":           100 - c.PercentAfterMigrate(),
+		} {
+			if v < 0 || v > 100 {
+				t.Errorf("%+v: %s = %d%%, outside 0..100", c, name, v)
+			}
+		}
+		if c.PercentAfterMigrate() < c.Percent() {
+			t.Errorf("%+v: migrating lowered coverage, %d%% → %d%%", c, c.Percent(), c.PercentAfterMigrate())
 		}
 	}
 }
@@ -645,7 +666,7 @@ func TestShellHistoryTriageCopy(t *testing.T) {
 	if got := manualDetail([]string{f.FilePath}, f, home); got != "~/.zsh_history:4821" {
 		t.Errorf("detail = %q, want the line number", got)
 	}
-	action := manualAction(f, manualContext{secrets: 1, copies: 1}, home)
+	_, action := manualAction(f, manualContext{secrets: 1, copies: 1}, home)
 	if strings.Contains(action, "jit migrate") {
 		t.Errorf("action offers a jit command that cannot work: %q", action)
 	}
@@ -654,7 +675,7 @@ func TestShellHistoryTriageCopy(t *testing.T) {
 			t.Errorf("action %q is missing %q", action, want)
 		}
 	}
-	plural := manualAction(f, manualContext{secrets: 2, copies: 1}, home)
+	_, plural := manualAction(f, manualContext{secrets: 2, copies: 1}, home)
 	if !strings.Contains(plural, "rotate them") || !strings.Contains(plural, "the lines") {
 		t.Errorf("plural action reads wrong: %q", plural)
 	}
@@ -679,7 +700,7 @@ func TestShellHistoryViewHint(t *testing.T) {
 
 	tf := base
 	tf.KeyName = &token
-	hint := manualViewHint(tf, home)
+	hint := manualViewHint(tf, home, false)
 	if hint != "to see that line: sed -n '4821p' ~/.zsh_history" {
 		t.Errorf("token hint = %q", hint)
 	}
@@ -695,7 +716,7 @@ func TestShellHistoryViewHint(t *testing.T) {
 	kf.KeyName = &key
 	kf.EndLine = &end
 	kf.Severity = SeverityCritical
-	kh := manualViewHint(kf, home)
+	kh := manualViewHint(kf, home, false)
 	if kh != "to see them: sed -n '4821,4826p' ~/.zsh_history" {
 		t.Errorf("key hint = %q", kh)
 	}
@@ -705,7 +726,7 @@ func TestShellHistoryViewHint(t *testing.T) {
 	// either stops mid-key or prints unrelated history.
 	open := kf
 	open.EndLine = nil
-	oh := manualViewHint(open, home)
+	oh := manualViewHint(open, home, false)
 	if strings.Contains(oh, "sed") {
 		t.Errorf("unclosed key block got a range it does not have: %q", oh)
 	}
@@ -716,7 +737,9 @@ func TestShellHistoryViewHint(t *testing.T) {
 	// the matching LINE, which for a key pasted as one history entry is the
 	// key — and the fallback is precisely the case where jit does not know
 	// what it is about to print.
-	if !strings.Contains(oh, "-no") {
+	// -o carries the safety property; -F keeps the marker a literal rather
+	// than a pattern.
+	if !strings.Contains(oh, "grep -Fno") {
 		t.Errorf("fallback would print the matching line, not the marker: %q", oh)
 	}
 	if strings.Contains(oh, ".*") {
@@ -730,21 +753,185 @@ func TestShellHistoryViewHint(t *testing.T) {
 		}
 	}
 
-	// Nothing else gets a hint: a plain path is already openable, and the red
-	// section does not hand out commands it has no reason to.
+	// A finding with no anchor still gets nothing. There is no key name here,
+	// so there is no constant to grep for, and the alternative — `sed` on a
+	// line of an arbitrary file — would print the credential.
 	other := Finding{
 		FindingType: FindingTypePrivateKeyRisk,
 		FilePath:    filepath.Join(home, ".ssh", "id_rsa"),
 		Remedy:      RemedyManual,
 	}
-	if got := manualViewHint(other, home); got != "" {
-		t.Errorf("non-history finding got a hint: %q", got)
+	if got := manualViewHint(other, home, false); got != "" {
+		t.Errorf("anchorless finding got a hint: %q", got)
 	}
-	// A history finding with no line number has no address to explain.
+	// A history finding with no line number has no line to explain, but it
+	// still has a vendor prefix, and that locates it without printing it.
+	// This returned "" until the hint was generalised beyond line addresses.
 	noline := tf
 	noline.Line = nil
-	if got := manualViewHint(noline, home); got != "" {
-		t.Errorf("line-less history finding got a hint: %q", got)
+	// Singular, because this call says the problem is one secret.
+	if got := manualViewHint(noline, home, false); got != "to see it: grep -Fno 'ghp_' ~/.zsh_history" {
+		t.Errorf("line-less history finding = %q", got)
+	}
+	if got := manualViewHint(noline, home, true); !strings.HasPrefix(got, "to see them:") {
+		t.Errorf("plural form = %q", got)
+	}
+}
+
+// A hint may never print the credential, and the only way to guarantee that is
+// for the pattern to be a constant. Drives every vendor jit knows.
+func TestViewAnchorsAreConstantsNotValues(t *testing.T) {
+	if got := TokenAnchorFor("GitHub Fine-Grained Personal Access Token"); got != "github_pat_" {
+		t.Errorf("PAT anchor = %q", got)
+	}
+	if got := TokenAnchorFor(jwtVendor); got != "eyJ" {
+		t.Errorf("JWT anchor = %q", got)
+	}
+	// An alternation has no single prefix; half the matches would be missed,
+	// so it yields nothing rather than a locator that lies by omission.
+	if got := TokenAnchorFor("AWS Access Key ID"); got != "" {
+		t.Errorf("alternation should offer no anchor, got %q", got)
+	}
+	if got := TokenAnchorFor("no such vendor"); got != "" {
+		t.Errorf("unknown vendor = %q", got)
+	}
+	for _, p := range knownTokenPatterns {
+		a := TokenAnchorFor(p.vendor)
+		if a == "" {
+			continue
+		}
+		if len(a) < minAnchorLen {
+			t.Errorf("%s: anchor %q shorter than minAnchorLen", p.vendor, a)
+		}
+		// Nothing that could escape the single quotes it is printed inside.
+		if strings.ContainsAny(a, "'\"\\$`; ") {
+			t.Errorf("%s: anchor %q is not shell-safe", p.vendor, a)
+		}
+		// Every vendor, not just the sampled ones: the anchor must be a
+		// prefix of what the regexp engine ITSELF reports the pattern's
+		// literal prefix to be. A hand-rolled scan of the source text passes
+		// the two checks above and still gets quantifiers wrong — `glrtr?-`
+		// yielded "glrtr", which no glrt- token contains — so this is the
+		// assertion that catches that whole class.
+		stdlib, _ := regexp.MustCompile(
+			strings.TrimPrefix(p.pattern.String(), `\b`)).LiteralPrefix()
+		if !strings.HasPrefix(stdlib, a) {
+			t.Errorf("%s: anchor %q is not a prefix of the pattern's real literal prefix %q",
+				p.vendor, a, stdlib)
+		}
+	}
+
+	// End to end on real credential shapes: the pattern must match the sample
+	// AND the sample must contain the anchor, which together are the whole
+	// claim — that greping the anchor finds the line the scanner flagged.
+	samples := map[string]string{
+		"GitHub Fine-Grained Personal Access Token": "github_pat_11ABCDEFG0abcdefghijklmnop",
+		"GitHub Personal Access Token":              "ghp_" + strings.Repeat("A1b2", 9),
+		"Anthropic Claude API Key":                  "sk-ant-api03-" + strings.Repeat("x", 24),
+		"npm Publishing Token":                      "npm_" + strings.Repeat("z", 36),
+		jwtVendor:                                   "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.dBjftJeZ4CVPmB92K",
+		// The quantifier case, and the reason this test exists in this shape:
+		// the pattern is `glrtr?-`, so a real token may be glrt- OR glrtr-.
+		// An anchor of "glrtr" matches the sample's pattern and appears
+		// nowhere in the sample itself.
+		"GitLab Runner Authentication Token": "glrt-" + strings.Repeat("A1b2c", 5),
+	}
+	for vendor, sample := range samples {
+		a := TokenAnchorFor(vendor)
+		if a == "" {
+			t.Errorf("%s: no anchor", vendor)
+			continue
+		}
+		if !strings.Contains(sample, a) {
+			t.Errorf("%s: sample %q does not contain anchor %q", vendor, sample, a)
+		}
+		var matched bool
+		for _, p := range knownTokenPatterns {
+			if p.vendor == vendor {
+				matched = p.pattern.MatchString(sample)
+				break
+			}
+		}
+		if !matched {
+			t.Errorf("%s: sample %q does not match its own pattern — fix the sample", vendor, sample)
+		}
+	}
+}
+
+// A file-level finding names no key, so its anchor is recovered from the
+// vendor sentence in Evidence. Nesting is the trap: two GitHub names share a
+// prefix of words but not a prefix of tokens.
+func TestAnchorFromEvidencePrefersLongestVendor(t *testing.T) {
+	fine := "contains a value matching GitHub Fine-Grained Personal Access Token's known token format"
+	if got := anchorFromEvidence(fine); got != "github_pat_" {
+		t.Errorf("fine-grained evidence = %q, want github_pat_", got)
+	}
+	plain := "contains a value matching GitHub Personal Access Token's known token format"
+	if got := anchorFromEvidence(plain); got != "ghp_" {
+		t.Errorf("classic PAT evidence = %q, want ghp_", got)
+	}
+	if got := anchorFromEvidence("looks secret-shaped"); got != "" {
+		t.Errorf("unrecognised evidence = %q, want no anchor", got)
+	}
+	if got := anchorFromEvidence(""); got != "" {
+		t.Errorf("empty evidence = %q", got)
+	}
+}
+
+// The whole safety claim, executed: run the command the report prints against
+// a file holding a real-shaped credential, and require that the credential is
+// not in the output. A hint that echoes the secret would put it in the
+// terminal and in the reader's own shell history.
+func TestViewHintCommandNeverPrintsTheCredential(t *testing.T) {
+	secret := "github_pat_11ABCDEFG0abcdefghijklmnop"
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	if err := os.WriteFile(path, []byte("OLD_TOKEN="+secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := Finding{
+		FindingType: FindingTypeEnvFilePresent,
+		FilePath:    path,
+		Severity:    SeverityHigh,
+		Remedy:      RemedyManual,
+		Evidence:    "contains a value matching GitHub Fine-Grained Personal Access Token's known token format",
+	}
+	hint := manualViewHint(f, "", false)
+	_, cmdline, found := strings.Cut(hint, ": ")
+	if !found || cmdline == "" {
+		t.Fatalf("no runnable hint: %q", hint)
+	}
+	out, err := exec.Command("sh", "-c", cmdline).CombinedOutput()
+	if err != nil {
+		t.Fatalf("hint %q failed: %v (%s)", cmdline, err, out)
+	}
+	if strings.Contains(string(out), secret) {
+		t.Errorf("hint printed the credential:\n%s", out)
+	}
+	// It still has to locate it, or the reader concludes the finding was wrong.
+	if !strings.Contains(string(out), "github_pat_") {
+		t.Errorf("hint located nothing:\n%s", out)
+	}
+}
+
+// identTail decides whether a scanner's key is text in the file or a label for
+// a shape. Getting this wrong in the permissive direction prints a grep that
+// matches nothing, which reads to the user as the finding being wrong.
+func TestIdentTailRejectsVendorLabels(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"OKTA_KEY_ID", "OKTA_KEY_ID"},
+		{"jamf/JAMF_PRO_CLIENT_ID", "JAMF_PRO_CLIENT_ID"},
+		{"docker-desktop/client-key-data", "client-key-data"},
+		{"Snowflake/header:Authorization", "Authorization"},
+		{"JSON Web Token (JWT)", ""},
+		{"Notion Internal Integration Token", ""},
+		{"ab", ""},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := identTail(c.in); got != c.want {
+			t.Errorf("identTail(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 
@@ -813,7 +1000,7 @@ func TestShellHistoryViewHintRuns(t *testing.T) {
 				t.Fatalf("EndLine = %d, want %d", *key.EndLine, c.wantEnd)
 			}
 
-			hint := manualViewHint(*key, dir)
+			hint := manualViewHint(*key, dir, false)
 			var cmd string
 			var ok bool
 			for _, lead := range []string{"to see them: ", "to see it: ", "to find it: "} {
@@ -888,7 +1075,7 @@ func TestShellHistoryActionBeatsTheProductionBranch(t *testing.T) {
 		ProductionIndicatorMatch: true,
 		Severity:                 SeverityCritical,
 	}
-	action := manualAction(f, manualContext{secrets: 1, copies: 1, production: true}, "/home/u")
+	_, action := manualAction(f, manualContext{secrets: 1, copies: 1, production: true}, "/home/u")
 	if !strings.Contains(action, "close other shells first") {
 		t.Errorf("production branch swallowed the history advice: %q", action)
 	}

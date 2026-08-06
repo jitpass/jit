@@ -161,8 +161,19 @@ var pointerVarSuffixes = []string{"_PATH", "_PATHS", "_FILE", "_FILEPATH", "_DIR
 // survivors all appear WITHOUT a public prefix in the wild (SUPABASE_ANON_KEY,
 // GOOGLE_CLIENT_ID, SPOTIFY_CLIENT_ID, BIG_QUERY_CLIENT_ID), so they do work
 // the prefix rule cannot.
+//   - Cloud project identifiers: a GCP project id is in every gcloud
+//     invocation, every console URL and every IAM policy document. It names
+//     which project, and grants nothing. Observed on a real machine reported
+//     as an exposed secret with "rotate it now" — advice with no referent,
+//     since there is nothing about a project id to rotate.
+//
+// Narrow forms only, and the reason is worth stating: a bare "PROJECT" would
+// also swallow PROJECT_TOKEN, and TOKEN is deliberately absent from
+// neverPublicMarkers below, so nothing would catch it. Every widening of this
+// list has to be checked against that list, not just read on its own.
 var publicVarMarkers = []string{
 	"ANON_KEY", "PUBLISHABLE_KEY", "CLIENT_ID", "APPLICATION_ID",
+	"CLOUD_PROJECT", "PROJECT_ID",
 }
 
 // neverPublicMarkers override publicVarPrefixes/publicVarMarkers. A variable
@@ -217,7 +228,17 @@ func NonSecretNameReason(name string) string {
 		}
 	}
 	for _, marker := range publicVarMarkers {
-		if strings.Contains(upper, marker) {
+		// Suffix, not Contains. These markers name what a variable IS, and
+		// that is only true when the marker ends the name: SUPABASE_ANON_KEY
+		// is an anon key, CLOUD_PROJECT_TOKEN is a token that happens to
+		// mention a project. Contains excused the second, and nothing behind
+		// this would have caught it — TOKEN is deliberately absent from
+		// neverPublicMarkers, so the suppression was final.
+		//
+		// Erring toward NOT suppressing is the safe direction here: a missed
+		// suppression is a false positive the reader dismisses, a wrong one
+		// is a credential the report never mentions.
+		if strings.HasSuffix(upper, marker) {
 			return fmt.Sprintf("the name matched the documented-public rule (%s)", marker)
 		}
 	}

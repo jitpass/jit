@@ -1,7 +1,17 @@
-# Per-process credential consent (proposal)
+# Per-process credential consent
 
-**Status:** proposal, unbuilt. Captures the threat model and a feasible design
-so it can be picked up later.
+**Status: SHIPPED.** `internal/consent` is the engine (`Engine`, `Prompter`,
+`Decision`, `Scope`, plus `policy.go`'s gated-class set); `internal/agent`'s
+`gateConsent` and `ConsentReaders` are the two call sites; `jit run --trust`
+exists. `docs/security/architecture.md` documents the shipped behaviour and is
+accurate -- prefer it for how the feature works today, and read this file for
+the threat model it was built against.
+
+This said "proposal, unbuilt ... so it can be picked up later" until
+2026-08-06, long after it was built. Three sections below described the design
+as proposed rather than as delivered, and the notes on each say where the
+shipped answer differs -- an implementer following the original text would have
+built the wrong thing or rebuilt something that exists.
 
 Today a `jit run --with <name>` (or a `--grant` shim) reveals a machine-global
 credential to the **whole process tree** of the run, after one disclosed Touch
@@ -70,7 +80,15 @@ For these, on first access jit can pause and prompt, naming the process and its
 launcher: *"`node .../node_modules/foo/postinstall.js` (launched by your `npm
 install`) wants your `gcp` credential: allow / deny / always for this run?"*
 
-### Does not work as-is: FIFO file mounts (no socket, no caller PID)
+### FIFO file mounts (no socket, no caller PID) -- SOLVED DIFFERENTLY
+
+> **Shipped:** mounts ARE gated, without the redesign this section calls for.
+> `internal/consent` added a `Strength` axis (`Hard` / `BestEffort`) that this
+> proposal did not anticipate: the mount serve path identifies the reader
+> best-effort via libproc and gates on that, and Strength never decides an
+> allow or a deny -- a weak identity is not grounds to refuse -- it only
+> partitions the decision cache. No FUSE layer was needed. See
+> `docs/security/architecture.md` and `internal/consent/consent.go`.
 
 `gcp`, `npm`, and `netrc` are served through a named pipe. A plain file read
 carries no caller identity (`caller.go` notes: "no socket, therefore no peer
@@ -94,13 +112,25 @@ not over-sold.
 Prompting per process is the safe default for a run whose tree you do not fully
 trust. When you *do* trust the whole tree, opt out:
 
-    jit run --trust <name> -- <cmd>    # grant the whole tree, no per-process prompts
+    jit run --trust -- <cmd>           # grant the whole tree, no per-process prompts
+
+> **Shipped as a BOOLEAN**, not a flag taking a credential name: `--trust`
+> pre-authorizes the run's whole process tree for any credential. See
+> `internal/cli/run.go`.
 
 This is essentially today's grant behavior, made explicit. The existing
 `jit wrap add <tool> --grant <name>` shim is the durable, per-tool form of the
 same trust decision ("gcloud runs are always trusted for gcp").
 
-## Design questions to resolve
+## Design questions -- RESOLVED IN CODE
+
+> Both of the first two were answered and are load-bearing; they are kept here
+> for the reasoning, not as open work. Prompt fatigue: `Request.key` keys the
+> cache on credential plus the caller's launcher, with a single-flight so
+> concurrent first accesses produce one prompt, and a refusal earns a bounded
+> backoff (`Throttled`) rather than a cached deny. Caller identity: the
+> launcher's executable path, with the `Strength` axis above for how much it
+> can be trusted. `docs/security/architecture.md` documents both.
 
 - **Prompt fatigue.** SDKs and tools call repeatedly. A prompt per call is
   unusable. Cache a decision at least for the run, keyed by (caller identity,

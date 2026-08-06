@@ -224,6 +224,24 @@ func scanMCPConfigFile(cfg Config, path string) ([]Finding, error) {
 				// match, so a short value that names prod cannot hide here.
 				severity, confidence = SeverityLow, ConfidenceLow
 				evidence = fmt.Sprintf("a short plain setting in MCP server %q's env block, not credential-shaped", serverName)
+			} else if reason := NonSecretNameReason(envKey); reason != "" {
+				// A name the package already knows is documented-public, or
+				// that holds a filesystem path. The "everything in an env
+				// block is a credential" rule never consulted this list, so
+				// an MCP config reported GOOGLE_CLOUD_PROJECT and
+				// JAMF_PRO_CLIENT_ID as exposed secrets and told the reader to
+				// rotate them — a GCP project id appears in every gcloud
+				// command and an OAuth client id is public by RFC 6749, so
+				// neither has anything to rotate. An item a reader knows is
+				// wrong costs the other ninety-two their credibility.
+				//
+				// De-escalated like the two branches around it, never
+				// suppressed: ValueFinding still escalates on a
+				// production-indicator, public-IP or known-token-pattern
+				// match, so a real credential parked behind a public-looking
+				// name is still caught on the strength of its value.
+				severity, confidence = SeverityLow, ConfidenceLow
+				evidence = fmt.Sprintf("%s (MCP server %q)", reason, serverName)
 			} else if LooksLikeBareURL(envValue) {
 				// A plain URL with no embedded credentials is often just a
 				// service endpoint (e.g. CAIDO_URL pointing at a local

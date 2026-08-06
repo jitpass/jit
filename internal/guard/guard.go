@@ -51,8 +51,10 @@
 // zsh-only by decision, like the platform itself: zsh is macOS's default
 // shell and the only one of the three with a pre-write hook this clean
 // (bash has no equivalent seam; fish grew fish_should_add_to_history only
-// recently). The install therefore always targets ~/.zshrc, not
-// wrap.RcFile's $SHELL dispatch — the hook is zsh syntax and belongs
+// recently). The install therefore targets the .zshrc zsh will actually
+// read — $ZDOTDIR/.zshrc when that is set, else ~/.zshrc; see zshrcPath,
+// which explains why assuming ~/.zshrc was a silent no-op — not
+// wrap.RcFile's $SHELL dispatch, since the hook is zsh syntax and belongs
 // nowhere else.
 package guard
 
