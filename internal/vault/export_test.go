@@ -198,11 +198,20 @@ func TestWipeValuesZeroesEveryEntry(t *testing.T) {
 		"a": bytes.Repeat([]byte{0xAA}, 8),
 		"b": bytes.Repeat([]byte{0xBB}, 8),
 	}
+	// Hold the slices BEFORE the call. Re-reading through m would prove
+	// nothing about the property: wipeValues has to scrub in place, because
+	// what it protects is exported plaintext still resident in the backing
+	// array (export.go defer-calls it over the decrypted maps in Export,
+	// Import and VerifyExportPassphrase). An implementation doing
+	// `m[k] = make([]byte, len(v))` hands a range loop over m fresh zeroed
+	// slices and passes while every secret stays live in memory; a delete-based
+	// one makes the loop body never execute at all. Both used to pass here.
+	a, b := m["a"], m["b"]
 	wipeValues(m)
-	for k, v := range m {
-		for i, b := range v {
-			if b != 0 {
-				t.Errorf("m[%q][%d] = %#x, want 0", k, i, b)
+	for name, held := range map[string][]byte{"a": a, "b": b} {
+		for i, byteVal := range held {
+			if byteVal != 0 {
+				t.Errorf("m[%q][%d] = %#x, want 0 — the plaintext is still in the backing array", name, i, byteVal)
 			}
 		}
 	}
