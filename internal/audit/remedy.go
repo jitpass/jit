@@ -279,7 +279,31 @@ func ComputeCoverage(registryPath string, findings []Finding) Coverage {
 	// RemedyMigrate now that ApplyShellHistory redacts in place, so it marks
 	// its group migratable through the same rule as everything else.
 	manualHistory := map[string]bool{}
+	// Files whose credentials have an uncleaned copy in an AI agent's cache.
+	// Keyed by the ORIGIN path rather than by cause group because the most
+	// common origin — env_file_present — is a file-level finding with no
+	// value digest, so its copies share no group with it and the group-level
+	// rules below cannot see them.
+	//
+	// Collected in its own pass, before the tally below reads it: the
+	// cross-reference phase appends its findings after every category, so a
+	// single-pass version had the map still empty at the moment each origin
+	// was judged and silently marked everything migratable.
+	hasAgentCopy := map[string]bool{}
 	for _, f := range findings {
+		if f.FindingType == FindingTypeAgentCachedSecret && f.originPath != "" {
+			hasAgentCopy[f.originPath] = true
+		}
+	}
+	for _, f := range findings {
+		// A copy is never a NEW secret — it is the same secret in another
+		// place, and the finding that named it is already counted. Left in
+		// the tally it would double-charge the user for one credential, and
+		// for a file-level origin it would charge once per copy: a .env with
+		// three secrets and nine cached copies scored as twelve.
+		if f.FindingType == FindingTypeAgentCachedSecret {
+			continue
+		}
 		if !CountedAsSecret(f) {
 			continue
 		}
@@ -294,7 +318,13 @@ func ComputeCoverage(registryPath string, findings []Finding) Coverage {
 		if f.FindingType == FindingTypeShellHistorySecret && f.Remedy == RemedyManual {
 			manualHistory[key] = true
 		}
-		if f.Remedy != RemedyManual && !f.Archived {
+		// An uncleaned agent copy makes the whole group non-migratable, by the
+		// same rule a manual history finding does: `jit migrate` rewrites the
+		// file the credential lives in, and the agent's copy is not that file.
+		// Vaulting the .env while file-history/ keeps the plaintext is not
+		// protection, so promising the coverage gain would be a lie the
+		// recommended command cannot make true.
+		if f.Remedy != RemedyManual && !f.Archived && !hasAgentCopy[f.FilePath] {
 			migratable[key] = true
 		}
 	}

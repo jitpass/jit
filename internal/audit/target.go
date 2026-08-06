@@ -78,10 +78,7 @@ func TargetedScan(cfg Config, targets []string) ([]Finding, ScanSummary, error) 
 	// targeted path can just as easily point into ~/.Trash or a timestamped
 	// backup, and `jit scan ./internal` is if anything the MORE likely way to
 	// be handed a repository full of test fixtures.
-	for i := range all {
-		all[i].Archived = LooksArchived(all[i].FilePath)
-		all[i].TestFixture = LooksTestFixture(all[i].FilePath)
-	}
+	tagArchivedAndFixtures(all)
 	// And the same remedy/cause annotation, for the same no-drift reason.
 	annotateRemedies(all, cfg.HomeDir)
 
