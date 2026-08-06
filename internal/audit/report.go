@@ -202,14 +202,24 @@ type renderItem struct {
 // of whatever item preceded it.
 func collapsedHeader(it renderItem) string {
 	if it.rep.KeyName != nil {
-		return fmt.Sprintf("%s (same value in %d files):", *it.rep.KeyName, len(it.locations))
+		// Same value-presence gate as the anonymous arm below: this wording
+		// predates the session but carried the identical overclaim for
+		// nil-preview findings.
+		if it.rep.ValuePreview != nil {
+			return fmt.Sprintf("%s (same value in %d files):", *it.rep.KeyName, len(it.locations))
+		}
+		return fmt.Sprintf("%s (same pattern in %d files):", *it.rep.KeyName, len(it.locations))
 	}
-	// Also "value", not "pattern": collapse requires the same masked value
-	// (see renderItem), so this arm differs only in having no vendor name to
-	// lead with. "same pattern" claimed LESS than what is known and left the
-	// reader to wonder whether these were N distinct credentials — the
-	// distinction that decides whether rotating one fixes all N.
-	return fmt.Sprintf("the same value in %d files:", len(it.locations))
+	// "value" only when a value was actually captured: the dedup key
+	// (findingDedupKey) compares ValuePreview, but two findings with NIL
+	// previews collapse on severity+key+evidence alone — and for those,
+	// claiming "the same value" asserts something the scanner never saw,
+	// wrongly deciding the rotate-one-fixes-all question in the reader's
+	// head. Review finding, 2026-08-06.
+	if it.rep.ValuePreview != nil {
+		return fmt.Sprintf("the same value in %d files:", len(it.locations))
+	}
+	return fmt.Sprintf("same pattern in %d files:", len(it.locations))
 }
 
 // itemArchived reports whether a render item is entirely archived. A collapsed

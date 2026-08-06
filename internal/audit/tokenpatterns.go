@@ -444,9 +444,41 @@ func TokenPatternERE(vendor string) string {
 		if strings.Contains(ere, "(?") || strings.ContainsAny(ere, "'\n") || strings.HasPrefix(ere, "-") {
 			return ""
 		}
+		// Letter escapes beyond \b do not survive: in a POSIX bracket
+		// expression a backslash is a LITERAL, so the DB patterns' [^/@\s:]
+		// silently becomes "not /, @, backslash, the letter s, or :" — a
+		// class that stops excluding whitespace and starts excluding "s",
+		// and the emitted hint provably matches nothing (found in review by
+		// running it). A hint that greps to nothing reads as proof the
+		// finding was wrong, which is the exact failure this whole line
+		// exists to prevent, so those vendors get no hint rather than a dead
+		// one. (\b itself is a GNU extension, not POSIX — kept because
+		// /usr/bin/grep on macOS, the only supported platform, honours it;
+		// TestTokenPatternEREsMatchLikeTheScanner runs the real binary.)
+		if hasUntranslatableEscape(ere) {
+			return ""
+		}
 		return ere
 	}
 	return ""
+}
+
+// hasUntranslatableEscape reports whether ere carries a backslash escape that
+// means something different to POSIX/BSD grep than it did to Go's regexp:
+// any \<letter-or-digit> except \b. Escaped punctuation (\., \+, \-) is a
+// literal in both engines and passes.
+func hasUntranslatableEscape(ere string) bool {
+	for i := 0; i+1 < len(ere); i++ {
+		if ere[i] != '\\' {
+			continue
+		}
+		c := ere[i+1]
+		if (c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') && c != 'b' {
+			return true
+		}
+		i++ // skip the escaped character either way
+	}
+	return false
 }
 
 func TokenAnchorFor(vendor string) string {
