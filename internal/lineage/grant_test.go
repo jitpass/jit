@@ -7,7 +7,12 @@ package lineage
 
 import (
 	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
+	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // The gate-logic tests live with mountManager (internal/cli), against
@@ -53,5 +58,107 @@ func TestFIFOHoldersNoHoldersOnUntouchedPath(t *testing.T) {
 	}
 	if len(holders) != 0 {
 		t.Errorf("holders = %v for a path nothing holds, want none", holders)
+	}
+}
+
+// TestFIFOHoldersSeesARealHolderAndExcludesSelf is the positive half of the
+// primitive the Tier 3-4 real-vs-decoy gate reads (internal/cli/mountgrants.go
+// calls this for real; the gate-logic tests there fake it through
+// grantHoldersFn, so this file is the only place the kernel walk itself is
+// observed).
+//
+// The one test that existed pointed at a path nothing holds, so pids was
+// always nil and the whole positive contract went unenforced — a stub
+// `return nil, true` passed it. What that stub would do in production is
+// serve decoy content to a legitimately granted reader forever, since a
+// holder set that never contains anyone can never contain the grant's tree.
+//
+// The writer side is opened by the TEST process on purpose. That is not a
+// convenience: it reproduces the exact condition FIFOHolders documents as its
+// reason for excluding the caller — "the agent holds the write side of its own
+// mount at scan time". A self-exclusion regression would put the agent's own
+// pid in the holder set of every mount it serves.
+func TestFIFOHoldersSeesARealHolderAndExcludesSelf(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mount.fifo")
+	if err := unix.Mkfifo(path, 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+
+	// A real FIFO that exists but nobody has opened — distinct from the
+	// nonexistent path above, and the state every mount is in between serves.
+	holders, ok := FIFOHolders(path)
+	if !ok {
+		t.Skip("holder enumeration reported structural uncertainty on this machine; the gate would fail closed")
+	}
+	if len(holders) != 0 {
+		t.Fatalf("holders = %v on a FIFO nobody has opened, want none", holders)
+	}
+
+	cmd := exec.Command("cat", path)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting holder: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+	holder := int32(cmd.Process.Pid) // #nosec G115 -- a pid always fits int32 on darwin
+
+	// cat blocks in open() until a writer appears, and a blocked open holds no
+	// fd yet. Connect the write end so its open completes and it genuinely
+	// holds the read fd — same rendezvous TestPathHeldOpenSeesRealHolder...
+	// relies on.
+	opened := make(chan *os.File, 1)
+	openErr := make(chan error, 1)
+	go func() {
+		f, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			openErr <- err
+			return
+		}
+		opened <- f
+	}()
+	var w *os.File
+	select {
+	case w = <-opened:
+	case err := <-openErr:
+		t.Fatalf("opening for write: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the holder to connect")
+	}
+	defer func() { _ = w.Close() }()
+
+	// Both opens return at the rendezvous, but "returned" and "visible in the
+	// fd table proc_pidfdinfo reports" are not the same instant. Poll rather
+	// than assert once: this guards a security gate, and a flaky test on one
+	// is worse than a slow one. Self-exclusion is checked on every pass, since
+	// a violation there is not timing-dependent.
+	deadline := time.Now().Add(5 * time.Second)
+	self := int32(os.Getpid()) // #nosec G115 -- a pid always fits int32 on darwin
+	var sawHolder, lastOK bool
+	var last []int32
+	for time.Now().Before(deadline) {
+		last, lastOK = FIFOHolders(path)
+		if !lastOK {
+			t.Skip("holder enumeration reported structural uncertainty mid-test; the gate would fail closed")
+		}
+		for _, p := range last {
+			if p == self {
+				t.Fatalf("FIFOHolders returned the calling process (pid %d) while it held the write side; "+
+					"the agent would appear as a holder of every mount it serves", self)
+			}
+			if p == holder {
+				sawHolder = true
+			}
+		}
+		if sawHolder {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !sawHolder {
+		t.Errorf("FIFOHolders = %v, missing pid %d (cat) which provably holds the FIFO's read end; "+
+			"a missed holder means a granted reader is served decoys", last, holder)
 	}
 }
