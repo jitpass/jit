@@ -44,8 +44,31 @@ func TestEnsureMEKIdempotent(t *testing.T) {
 	if err := w.EnsureMEK(); err != nil {
 		t.Fatalf("EnsureMEK (first call): %v", err)
 	}
+
+	// The KEY has to be unchanged, not merely the error nil. This test checked
+	// only `err != nil` twice and read the key never — so replacing
+	// kw_ensure_mek's `existsStatus == errSecSuccess` early return with the
+	// delete-then-add shape setMEK uses would report success from both calls
+	// while silently re-minting the MEK, at which point every wrapped DEK in
+	// the vault is permanently undecryptable. That is the whole consequence of
+	// this function, and nothing observed it.
+	//
+	// Read back through FRESH wrappers: fetchMEK memoizes in w.mek, so two
+	// fetches on one wrapper would compare a cached value against itself and
+	// pass vacuously. Same reasoning PromoteStagedRekeyMEK's verification uses.
+	before, err := testWrapper(noChallenge).fetchMEK("")
+	if err != nil {
+		t.Fatalf("fetching the MEK: %v", err)
+	}
 	if err := w.EnsureMEK(); err != nil {
 		t.Fatalf("EnsureMEK (second call, should be a no-op): %v", err)
+	}
+	after, err := testWrapper(noChallenge).fetchMEK("")
+	if err != nil {
+		t.Fatalf("fetching the MEK again: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("a second EnsureMEK re-minted the master key — every DEK already wrapped under the old one is now undecryptable")
 	}
 }
 
