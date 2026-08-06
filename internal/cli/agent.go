@@ -532,6 +532,60 @@ func plistStringValues(data []byte) []string {
 // drift on the default.
 const agentInstallDefaultTTL = 5 * time.Minute
 
+// agentBinaryPath is the path launchd should re-exec: this binary, with the
+// /usr/local/bin install symlink (or any shim) resolved. launchd runs this
+// exact path at every login, so a path that later moves out from under it
+// leaves the service pointing at nothing.
+func agentBinaryPath() (string, error) {
+	exePath, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(exePath)
+}
+
+// plistProgramPath returns the binary an installed plist actually runs — the
+// first ProgramArguments entry. It reads that array specifically rather than
+// taking the document's first <string>, which is the Label.
+//
+// This exists because `jit service restart` used to reload whatever plist was
+// on disk and then report "the service is now running the current binary",
+// which is only true if the plist happens to name that binary. It was found
+// false in the field (2026-08-06): the plist pointed at a build in a temp
+// directory, restart claimed success, and `jit service status` contradicted it
+// on the very next command — while still advising the restart that could not
+// fix it.
+func plistProgramPath(data []byte) (string, bool) {
+	const key = "<key>ProgramArguments</key>"
+	i := strings.Index(string(data), key)
+	if i < 0 {
+		return "", false
+	}
+	values := plistStringValues(data[i+len(key):])
+	if len(values) == 0 {
+		return "", false
+	}
+	return values[0], true
+}
+
+// agentPlistNeedsRepoint reports whether the installed plist runs a different
+// binary than this process, i.e. whether reloading it would leave the service
+// on the old build. Any uncertainty (unreadable plist, unresolvable
+// executable) answers false: reloading in place is what restart did for its
+// whole life, so an unknown state keeps the old behaviour rather than
+// rewriting a plist on a guess.
+func agentPlistNeedsRepoint(data []byte) bool {
+	installed, ok := plistProgramPath(data)
+	if !ok {
+		return false
+	}
+	want, err := agentBinaryPath()
+	if err != nil {
+		return false
+	}
+	return installed != want
+}
+
 // installAgentService writes the launchd LaunchAgent plist that runs
 // `jit service run --ttl <ttl>` and (re)loads it, returning the plist path and
 // whether the socket answered within a short wait. It is the shared core of
@@ -543,14 +597,7 @@ const agentInstallDefaultTTL = 5 * time.Minute
 // sets itself up on first use, and the plist is a low-privilege, fully
 // reversible user LaunchAgent.
 func installAgentService(ttl time.Duration, consent bool) (plistPath string, running bool, err error) {
-	exePath, err := os.Executable()
-	if err != nil {
-		return "", false, err
-	}
-	// Resolve the /usr/local/bin install symlink (or any shim) to the real
-	// binary: launchd re-execs this exact path at every login, and a path that
-	// later moves out from under it would leave the service pointing at nothing.
-	exePath, err = filepath.EvalSymlinks(exePath)
+	exePath, err := agentBinaryPath()
 	if err != nil {
 		return "", false, err
 	}
@@ -649,6 +696,10 @@ var agentRestartCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit service restart: %w", err)
 		}
+		plistData, readErr := os.ReadFile(plistPath) // #nosec G304 -- jit's own launchd plist under the user's LaunchAgents dir
+		if readErr != nil && !os.IsNotExist(readErr) {
+			return fmt.Errorf("jit service restart: %w", readErr)
+		}
 		if _, statErr := os.Stat(plistPath); os.IsNotExist(statErr) {
 			// No login item yet (never started, or uninstalled). Rather than
 			// dead-end, create it: restart is the single "get the service
@@ -680,6 +731,27 @@ var agentRestartCmd = &cobra.Command{
 		// bootstrapped and otherwise dead-ended on "Could not find service" —
 		// and it needs no fragile parsing of launchctl's undocumented,
 		// localizable error text to decide which state we're in.
+		// A plist naming a DIFFERENT binary is the case a plain reload cannot
+		// fix, and the case where the success line below would otherwise lie.
+		// Rewrite it — preserving the TTL and consent the user configured —
+		// so "running the current binary" is a statement about what happened
+		// rather than a hope. This is the command `jit service status` sends
+		// people to when it reports a version mismatch; it has to be able to
+		// resolve one.
+		if agentPlistNeedsRepoint(plistData) {
+			ttl := agentInstallDefaultTTL
+			if d, ok := configuredAgentTTL(); ok {
+				ttl = d
+			}
+			if _, running, ierr := installAgentService(ttl, configuredAgentConsent()); ierr != nil {
+				return fmt.Errorf("jit service restart: %w", ierr)
+			} else if !running {
+				fmt.Fprintln(cmd.OutOrStdout(), hlCmds("Restart requested, the service is still starting up in the background; give `jit service status` a few seconds."))
+				return nil
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "Restarted, the service is now running the current binary. The next vault use will prompt Touch ID.")
+			return nil
+		}
 		if out, err := reloadAgentService(plistPath); err != nil {
 			return fmt.Errorf("jit service restart: reloading the launchd service failed: %w (%s); `jit service log` shows recent output", err, strings.TrimSpace(string(out)))
 		}
