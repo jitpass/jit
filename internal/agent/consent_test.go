@@ -773,3 +773,41 @@ func TestUnidentifiedBestEffortReasonStaysInBudget(t *testing.T) {
 		}
 	}
 }
+
+// A refused consent challenge must leave the credential REACHABLE: it earns a
+// pause, never a standing Deny. The whole guarantee is one argument —
+// gateConsent's prompter returns consent.Once on a failed challenge — and it
+// lived in production code no test named, so changing it to consent.Session
+// broke nothing and locked the credential out for the rest of the session.
+//
+// The discriminator needs no clock. With Once, the second attempt misses the
+// decision cache and meets the post-refusal throttle, so a *consent.Throttled
+// surfaces. With Session it would hit a cached Deny and never reach the
+// throttle at all — a plain "not granted" error. Asserting on Throttled is
+// therefore asserting on the scope.
+func TestRefusedConsentPausesRatherThanStandingDeny(t *testing.T) {
+	var deny atomic.Bool
+	deny.Store(true)
+	s, _, _ := startConsentServer(t, &deny)
+
+	// "aws" rather than vault.ClassAWS: consent mirrors the class strings by
+	// value on purpose (it does not import vault), and neither does this test.
+	const class = "aws"
+	c := &caller{
+		pid:       424242,
+		self:      lineage.Process{PID: 424242, ExecPath: "/usr/local/bin/aws"},
+		ancestors: []lineage.Process{{PID: 424243, ExecPath: "/usr/local/bin/aws"}},
+	}
+
+	if err := s.gateConsent(class, c); err == nil {
+		t.Fatal("a declined challenge granted access")
+	}
+	err := s.gateConsent(class, c)
+	if err == nil {
+		t.Fatal("second attempt granted access after a refusal")
+	}
+	var throttled *consent.Throttled
+	if !errors.As(err, &throttled) {
+		t.Errorf("after a refusal the next attempt must be PAUSED, not answered from a cached Deny; got %v", err)
+	}
+}
