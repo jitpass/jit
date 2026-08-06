@@ -183,18 +183,20 @@ var scanCmd = &cobra.Command{
 
 		machineScan := scanFormat == "ndjson" || scanFormat == "markdown" || scanFormat == "md" || scanOutput != ""
 		progress := newProgress(cmd, machineScan)
-		// The trail is scaffolding for this view, not part of the result: the
-		// triage report is a page the reader works down, and sixteen settled
+		// The trail is scaffolding for either view, not part of the result: a
+		// scan report is a page the reader works down, and sixteen settled
 		// "✓ Scanned …" lines pushed its top off a short window. They still
 		// animate while the scan runs — a ten-second home walk must not look
 		// hung — and collapse to one line the moment it finishes.
 		//
-		// --full keeps its trail. That view IS an inventory by category, so
-		// the per-category lines above it read as a table of contents rather
-		// than as noise.
-		if !scanFull {
-			progress.Collapse()
-		}
+		// --full used to keep its trail, on the reasoning that per-category
+		// lines above an inventory read as a table of contents. They don't:
+		// the actual table of contents is the category count table three lines
+		// below the header, which carries the same sixteen names AND their
+		// counts. So the trail was sixteen lines of duplication at the top of
+		// the longest view in the tool, and it was the largest remaining
+		// difference between the two views of one command.
+		progress.Collapse()
 		cfg.Progress = func(category string) {
 			progress.Step("Scanning "+category+"…", "Scanned "+category)
 		}
