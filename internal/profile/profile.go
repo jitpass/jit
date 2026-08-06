@@ -137,8 +137,20 @@ func LoadWithScope(root, name string) (Profile, Scope, string, error) {
 	tried := []string{path}
 	if home, herr := GlobalRoot(); herr == nil && home != root {
 		if globalPath, perr := Path(home, name); perr == nil {
-			if gp, gerr := LoadFile(globalPath); gerr == nil {
+			gp, gerr := LoadFile(globalPath)
+			if gerr == nil {
 				return gp, ScopeGlobal, globalPath, nil
+			}
+			// Surface a real failure instead of folding it into ErrNotFound —
+			// the same rule the project branch above applies, and the whole
+			// point of the sentinel per ErrNotFound's doc: a typo'd name and
+			// broken YAML are different problems with different fixes. This
+			// branch used to discard gerr, so a malformed or unparseable
+			// ~/.jit/profiles/<name>.yaml reported `profile "x" not found
+			// (checked …)` and sent the user hunting for a file sitting right
+			// there, named in the message.
+			if !errors.Is(gerr, os.ErrNotExist) {
+				return nil, "", "", gerr
 			}
 			tried = append(tried, globalPath)
 		}
