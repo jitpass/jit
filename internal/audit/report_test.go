@@ -37,7 +37,11 @@ func TestWriteHumanReportNeverLeaksRawValue(t *testing.T) {
 		t.Fatal("human report must never contain the raw secret value")
 	}
 	for _, want := range []string{
-		"alex@Alexs-MacBook-Pro",
+		// The header carries the COMMAND and what it covered, not the reader's
+		// own username and hostname — dropped 2026-08-06 so this view shares
+		// the triage header's shape. Machine identity lives in `jit doctor`
+		// and NDJSON's endpoint block, which is where it earns its place.
+		"jit scan",
 		"✗ CRITICAL — exposure",
 		"Shell Configs",
 		"/Users/alex/.zshrc",
@@ -45,7 +49,10 @@ func TestWriteHumanReportNeverLeaksRawValue(t *testing.T) {
 		"CRITICAL  AWS_SECRET_ACCESS_KEY",
 		preview,
 		"key name matches production-indicator pattern",
-		"jit scan --format ndjson",
+		"--format ndjson",
+		// The way back to the action-first view. Without it a reader who lands
+		// in the inventory has no pointer to the view the product leads with.
+		"the action-first view",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("report output missing expected substring %q\n--- full output ---\n%s", want, out)

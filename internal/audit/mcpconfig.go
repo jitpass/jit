@@ -338,7 +338,7 @@ func scanMCPServerHeaders(cfg Config, path, serverName string, entry mcpServerEn
 		}
 		evidence := fmt.Sprintf("sent as the %q header by MCP server %q; jit can't inject into a header the host itself sends", header, serverName)
 		if tokenOK {
-			evidence = fmt.Sprintf("%s's %q header carries a %s; jit can't inject into a header the host itself sends", serverName, header, vendor)
+			evidence = fmt.Sprintf("%s %q header carries a %s; jit can't inject into a header the host itself sends", possessive(serverName), header, vendor)
 		}
 		f := withContextEvidence(cfg.ValueFinding(ValueFindingParams{
 			FindingType:  FindingTypeMCPEmbeddedSecret,
