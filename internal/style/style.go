@@ -84,6 +84,18 @@ var (
 // readability problem again. TestNoFaintText enforces this repo-wide.
 const Plain = ""
 
+// PlainColor is Plain as a *color.Color, for the handful of places that pick
+// an ink out of a map or take one as a parameter and so need "no styling" to
+// be a value rather than the absence of a call. It emits no escape bytes at
+// all — not an empty ESC[m, which would reset any attribute around it.
+var PlainColor = newPlain()
+
+func newPlain() *color.Color {
+	c := color.New()
+	c.DisableColor()
+	return c
+}
+
 // The glyphs. Unicode by deliberate choice: jit is darwin-only and its
 // terminals (SF Mono / Menlo) render these single-width. If one ever
 // mis-widths, this block is the only place to swap it for ASCII — no

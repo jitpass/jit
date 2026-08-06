@@ -67,37 +67,42 @@ var findingTypeLabels = map[string]string{ // #nosec G101 -- enum label keys, no
 	FindingTypeShellHistorySecret: "Shell History",
 }
 
-// KNOWN DRIFT, awaiting a preview decision: Low is cyan, which the house
-// style reserves for something the reader can type. A severity is a state.
-// Left as-is here so this refactor changes no bytes; see the note in
-// design/output-style.md.
+// The severity ladder spends the semantic inks rather than shades of one
+// hue, so a rung is told apart by what its ink MEANS and by the word, never
+// by how yellow it is. It used to run red-bold / amber-bold / amber / cyan,
+// which read on a real terminal as three different yellows (bold amber
+// renders as bright yellow, i.e. orange, in most themes) plus a cyan that
+// the palette reserves for things the reader can type.
+//
+//	CRITICAL  red bold  a live credential, act now
+//	HIGH      red       almost certainly a credential
+//	MEDIUM    amber     secret-shaped, unconfirmed
+//	LOW       plain     a broad match, probably fine
+//	INFO      plain     context only, jit makes no claim
 var riskLevelColor = map[string]*color.Color{
 	RiskLevelCritical: style.RiskBold,
-	RiskLevelHigh:     style.WarnBold,
+	RiskLevelHigh:     style.Risk,
 	RiskLevelMedium:   style.Warn,
-	RiskLevelLow:      color.New(color.FgCyan),
+	RiskLevelLow:      style.PlainColor,
 	RiskLevelClean:    style.OKBold,
 }
 
-// High and Medium were both plain FgYellow — visually indistinguishable
-// in a [high]/[medium] tag. Bold on High matches riskLevelColor's own
-// High/Medium weight split two lines above, so the two maps agree.
-// Same drift as riskLevelColor on Low, plus Info in FgWhite — a seventh ink
-// the palette does not have, and one that means "default" only on a dark
-// terminal. Both await the same preview decision.
+// The same ladder as riskLevelColor, so a [high] tag and a HIGH severity
+// label are the same red. Info used to be FgWhite — a seventh ink, and one
+// that only equals "default" on a dark terminal.
 var severityColor = map[string]*color.Color{
-	SeverityCritical: style.Risk,
-	SeverityHigh:     style.WarnBold,
+	SeverityCritical: style.RiskBold,
+	SeverityHigh:     style.Risk,
 	SeverityMedium:   style.Warn,
-	SeverityLow:      color.New(color.FgCyan),
-	SeverityInfo:     color.New(color.FgWhite),
+	SeverityLow:      style.PlainColor,
+	SeverityInfo:     style.PlainColor,
 }
 
 func colorOr(m map[string]*color.Color, key string) *color.Color {
 	if c, ok := m[key]; ok {
 		return c
 	}
-	return color.New(color.FgWhite)
+	return style.PlainColor
 }
 
 // severityRank orders findings worst-first within a category. An unknown
