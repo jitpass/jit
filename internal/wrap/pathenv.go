@@ -15,7 +15,9 @@ import (
 // why the line is there — the same courtesy migrate's shell rewrite pays.
 const (
 	pathLineComment = "# jit wrap: keep the shim directory first on PATH so wrapped CLIs resolve to jit"
-	pathLine        = `export PATH="$HOME/.jit/shims:$PATH"`
+	// Built from shimDirRel rather than typed, so the line written and the
+	// path looked for cannot drift apart.
+	pathLine = `export PATH="$HOME/` + shimDirRel + `:$PATH"`
 )
 
 // PathLine returns the export line EnsurePathLine writes, for callers that
@@ -48,7 +50,7 @@ func EnsurePathLine(rcPath string) (changed bool, err error) {
 	if err != nil && !os.IsNotExist(err) {
 		return false, fmt.Errorf("reading %s: %w", rcPath, err)
 	}
-	if strings.Contains(string(data), ".jit/shims") {
+	if RcMentionsShimDir(string(data)) {
 		return false, nil
 	}
 	block := pathLineComment + "\n" + pathLine + "\n"
