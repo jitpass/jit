@@ -411,3 +411,37 @@ func TestMatchKnownTokenPatternTinyUserinfo(t *testing.T) {
 		}
 	}
 }
+
+// TestTokenPatternERE pins the three refusals that keep the pattern-based
+// locate hint runnable and safe, plus the (?: translation that makes the AWS
+// pattern — an alternation with no literal prefix, hint-less under the anchor
+// scheme — greppable at all.
+func TestTokenPatternERE(t *testing.T) {
+	// The motivating vendor: no literal prefix, so the anchor scheme gave it
+	// no hint. The ERE must be the full pattern with (?: opened up.
+	if got := TokenPatternERE("AWS Access Key ID"); got != `\b(AKIA|ASIA)[A-Z0-9]{16}\b` {
+		t.Errorf("AWS ERE = %q", got)
+	}
+	// A dash-leading pattern would parse as grep OPTIONS, not a pattern:
+	// `grep -nE '-----BEGIN…'` is an options error at best, and those
+	// findings have their own dedicated hints (viewHintByLine).
+	if got := TokenPatternERE("OpenSSH Private Key"); got != "" {
+		t.Errorf("dash-leading pattern must be refused, got %q — it lands in grep's option position", got)
+	}
+	if got := TokenPatternERE("No Such Vendor"); got != "" {
+		t.Errorf("unknown vendor = %q, want empty", got)
+	}
+	// Every accepted pattern must actually be single-quotable: no quote, no
+	// newline, no (?-construct beyond the one that was translated, and no
+	// leading dash. Driven over the whole catalogue so a new vendor cannot
+	// ship a hint that breaks the shell line it is printed into.
+	for _, p := range knownTokenPatterns {
+		ere := TokenPatternERE(p.vendor)
+		if ere == "" {
+			continue
+		}
+		if strings.ContainsAny(ere, "'\n") || strings.Contains(ere, "(?") || strings.HasPrefix(ere, "-") {
+			t.Errorf("vendor %q produced an ERE unsafe for a single-quoted grep: %q", p.vendor, ere)
+		}
+	}
+}
