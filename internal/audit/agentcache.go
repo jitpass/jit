@@ -546,3 +546,83 @@ func ScanAgentStores(cfg Config) ([]Finding, error) {
 	}
 	return findings, nil
 }
+
+// --- Naming an agent cache for the report ---
+
+// agentCacheAreas maps a cache subtree to what it HOLDS, in the reader's
+// terms rather than the agent's. "file-history" is a directory name; "edit
+// history" is what a person has to be told in order to understand why their
+// Stripe key is in it. Longest prefix wins, so the single-file entries below
+// beat the directory they sit in.
+var agentCacheAreas = []struct{ suffix, label string }{
+	{filepath.Join(".claude", "file-history"), "edit history"},
+	{filepath.Join(".claude", "projects"), "transcripts"},
+	{filepath.Join(".claude", "paste-cache"), "pasted text"},
+	{filepath.Join(".claude", "shell-snapshots"), "shell snapshots"},
+	{filepath.Join(".claude", "backups"), "backups"},
+	{filepath.Join(".claude", "history.jsonl"), "prompt history"},
+}
+
+// AgentCacheArea names what an agent cache path holds, or "" for a path that
+// is not in one. Exported for the report layer, which describes a group of
+// copies by WHERE they sit rather than by listing hash-named files nobody can
+// read.
+func AgentCacheArea(home, path string) string {
+	rel := strings.TrimPrefix(strings.TrimPrefix(path, home), string(filepath.Separator))
+	best := ""
+	for _, a := range agentCacheAreas {
+		if (rel == a.suffix || strings.HasPrefix(rel, a.suffix+string(filepath.Separator))) &&
+			len(a.suffix) > len(best) {
+			best = a.suffix
+		}
+	}
+	for _, a := range agentCacheAreas {
+		if a.suffix == best {
+			return a.label
+		}
+	}
+	return ""
+}
+
+// AgentLabelForPath names the agent whose cache path sits in, or "".
+func AgentLabelForPath(home, path string) string {
+	rel := strings.TrimPrefix(strings.TrimPrefix(path, home), string(filepath.Separator))
+	label, best := "", ""
+	for _, r := range agentCacheRoots {
+		if (rel == r.dir || strings.HasPrefix(rel, r.dir+string(filepath.Separator))) &&
+			len(r.dir) > len(best) {
+			best, label = r.dir, r.label
+		}
+	}
+	return label
+}
+
+// AgentCopyBreakdown summarises where a group's copies live: "9 copies: 4 in
+// edit history, 5 in transcripts".
+//
+// Counting by AREA rather than listing files is the whole point. The files
+// are named by content hash (93eb694cdfee2a45@v2), so a list of them tells a
+// reader nothing they can act on, while "4 in edit history" tells them the
+// agent kept their file when they changed it.
+func AgentCopyBreakdown(home string, files []string) string {
+	counts := map[string]int{}
+	var order []string
+	for _, f := range files {
+		area := AgentCacheArea(home, f)
+		if area == "" {
+			area = "its cache"
+		}
+		if counts[area] == 0 {
+			order = append(order, area)
+		}
+		counts[area]++
+	}
+	if len(order) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(order))
+	for _, a := range order {
+		parts = append(parts, fmt.Sprintf("%d in %s", counts[a], a))
+	}
+	return fmt.Sprintf("%s: %s", countWord(len(files), "copy", "copies"), strings.Join(parts, ", "))
+}
