@@ -30,25 +30,7 @@ const (
 // color for something the reader can run) and drops the backticks — the
 // audit-package twin of internal/cli's hlCmds, for the same reason as the
 // glyphs above. When color is off the spans pass through as clean text.
-func highlightCmds(s string) string {
-	cmd := style.Path
-	var b strings.Builder
-	for {
-		i := strings.IndexByte(s, '`')
-		if i < 0 {
-			b.WriteString(s)
-			return b.String()
-		}
-		j := strings.IndexByte(s[i+1:], '`')
-		if j < 0 {
-			b.WriteString(s)
-			return b.String()
-		}
-		b.WriteString(s[:i])
-		b.WriteString(cmd.Sprint(s[i+1 : i+1+j]))
-		s = s[i+1+j+1:]
-	}
-}
+func highlightCmds(s string) string { return style.HighlightCommands(s) }
 
 // findingTypeLabels are human-readable section headers, in AllFindingTypes
 // order, matching docs/audit/example-report.md's preview format. Keys are
