@@ -1518,7 +1518,16 @@ func discoverFileTarget(d *discovered, home, path string) error {
 		}
 		d.pypircFiles = append(d.pypircFiles, filterToTarget(files, path)...)
 		return nil
-	case migrate.ClaudeDesktopConfigPath(home):
+	}
+	// The fixed MCP configs are a LIST (Claude Desktop's file plus
+	// ~/.claude.json), so they're matched against audit's list rather than
+	// being one more case above — a fixed path audit scans but this switch
+	// doesn't know about is a finding `jit migrate <path>` answers "nothing
+	// to do" on, with zero errors anywhere. That was ~/.claude.json.
+	for _, fixed := range audit.FixedMCPConfigPaths(home) {
+		if path != fixed {
+			continue
+		}
 		// Passing path (the config file itself) as the walk root adds nothing
 		// via the walk — its name isn't one of the project mcp.json names —
 		// while includeClaudeDesktop=true is what actually pulls it in; the
