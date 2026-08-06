@@ -51,7 +51,12 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 	}
 	sizeNote := ""
 	if summary.FilesScanned > 0 {
-		sizeNote = fmt.Sprintf(" · %s files", groupDigits(summary.FilesScanned))
+		// Inflected, and grouped: "1 file", "25,130 files". countWord would
+		// give the inflection but print a bare 25130 — the digit grouping is
+		// what makes the walk size read as a credibility number rather than a
+		// wall — so the two are composed rather than one chosen.
+		sizeNote = fmt.Sprintf(" · %s %s", groupDigits(summary.FilesScanned),
+			pluralWord(summary.FilesScanned, "file", "files"))
 	}
 	// "jit scan  ~/ · 25,130 files · 11.7s" — the command, then what it
 	// covered, in the "·" separator the rest of the report uses for a run of
