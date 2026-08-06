@@ -55,6 +55,24 @@ func ValidateToolName(tool string) error {
 	if !toolNamePattern.MatchString(tool) {
 		return fmt.Errorf("tool name %q must contain only letters, digits, '.', '_', '-'", tool)
 	}
+	// "." and ".." satisfy the pattern -- it admits '.' as an ordinary
+	// character -- so they reached filepath.Join(ShimDir(home), tool) and
+	// resolved to the shim dir itself and to ~/.jit. Nothing was destroyed,
+	// because InstallShim and RemoveShim both refuse a path that is not a
+	// symlink, but the refusal is downstream luck rather than validation, and
+	// it reports the wrong thing ("not a jit shim" for a name that should never
+	// have been accepted). The test that covered this skipped both names with a
+	// comment calling them "pattern-legal", which described the bug.
+	//
+	// A leading '-' is rejected for a different reason: the shim's name becomes
+	// an argument to whatever the user types next, and a file named "-n" on
+	// PATH is a flag waiting to be mistaken for one.
+	if tool == "." || tool == ".." {
+		return fmt.Errorf("refusing to wrap %q, which names a directory rather than a tool", tool)
+	}
+	if strings.HasPrefix(tool, "-") {
+		return fmt.Errorf("refusing to wrap %q, a name starting with '-' reads as a flag wherever it is used", tool)
+	}
 	if tool == "jit" {
 		return fmt.Errorf("refusing to wrap %q, a shim named jit would shadow jit itself", tool)
 	}
