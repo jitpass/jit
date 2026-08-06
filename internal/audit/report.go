@@ -474,10 +474,7 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	if host == "" {
 		host = "unknown"
 	}
-	where := "~/"
-	if home == "" {
-		where = "scan targets"
-	}
+	where := scanScopeLabel(summary, home)
 	sizeNote := ""
 	if summary.FilesScanned > 0 {
 		// Inflected and digit-grouped, the same composition the triage header
@@ -704,6 +701,35 @@ func anyUnfilteredOnly(findings []Finding) bool {
 		}
 	}
 	return false
+}
+
+// scanScopeLabel names what this scan actually looked at. "~/" is the
+// machine-wide scan's truthful label; a targeted run names its targets — it
+// used to print "~/" for those too, so `jit scan token.txt` opened by claiming
+// a whole-home scan had happened. Two targets are listed outright; more
+// truncate to a count, per the house rule (truncate variable content rather
+// than wrap the header).
+func scanScopeLabel(summary ScanSummary, home string) string {
+	if len(summary.Targets) == 0 {
+		if home == "" {
+			return "scan targets"
+		}
+		return "~/"
+	}
+	shown := summary.Targets
+	more := 0
+	if len(shown) > 2 {
+		shown, more = shown[:2], len(shown)-2
+	}
+	parts := make([]string, 0, len(shown))
+	for _, t := range shown {
+		parts = append(parts, displayFilePath(home, t))
+	}
+	label := strings.Join(parts, ", ")
+	if more > 0 {
+		label += fmt.Sprintf(" +%d more", more)
+	}
+	return label
 }
 
 // heavyCategoryCount is where a summary-table count gets bold: a

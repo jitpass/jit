@@ -498,3 +498,30 @@ func TestBuildRenderItemsSortsLiveBeforeArchived(t *testing.T) {
 			items[0].rep.FilePath)
 	}
 }
+
+// TestScanScopeLabelNamesTheTargets is the regression test for the header
+// claiming "~/" regardless of what was scanned: `jit scan token.txt` opened
+// with "jit scan  ~/", overstating what was checked and understating where
+// the findings came from — on the first line of the report.
+func TestScanScopeLabelNamesTheTargets(t *testing.T) {
+	home := "/Users/x"
+	cases := []struct {
+		name    string
+		targets []string
+		want    string
+	}{
+		{"machine-wide", nil, "~/"},
+		{"one file", []string{"/Users/x/proj/.env"}, "~/proj/.env"},
+		{"two files", []string{"/Users/x/a", "/Users/x/b"}, "~/a, ~/b"},
+		{"many files truncate", []string{"/Users/x/a", "/Users/x/b", "/Users/x/c", "/Users/x/d"}, "~/a, ~/b +2 more"},
+		{"outside home stays absolute", []string{"/srv/app/.env"}, "/srv/app/.env"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := scanScopeLabel(ScanSummary{Targets: c.targets}, home)
+			if got != c.want {
+				t.Errorf("scanScopeLabel(%v) = %q, want %q", c.targets, got, c.want)
+			}
+		})
+	}
+}
