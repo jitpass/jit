@@ -99,6 +99,17 @@ func annotateRemedies(findings []Finding, home string) {
 			f.Remedy = RemedyManual
 		case f.FindingType == FindingTypeShellHistorySecret && f.ProductionIndicatorMatch:
 			f.Remedy = RemedyManual
+		case AgentLabelForPath(home, f.FilePath) != "":
+			// Anything inside an AI agent's own directory is manual, whatever
+			// found it. The agent-store sweep emits ordinary exposed_secret
+			// findings, and a pasted credential is usually a BARE token, which
+			// isPureTokenFile then judges migratable — so `jit scan` was about
+			// to recommend `jit migrate ~/.claude/paste-cache/50440ea9.txt`,
+			// which would neutralize a file inside Claude Code's private state
+			// into a jit pointer and name a vault secret after a cache blob.
+			// The credential's home is the file it came from; its copy here is
+			// something to delete, not to relocate.
+			f.Remedy = RemedyManual
 		case f.FindingType == FindingTypeExposedSecret &&
 			(f.ProductionIndicatorMatch || !isPure(f.FilePath)):
 			f.Remedy = RemedyManual
@@ -254,7 +265,7 @@ func (c Coverage) PercentAfterMigrate() int {
 // Exposed dedupes by cause group (same key + masked value = one secret) so
 // copies of a file don't inflate the denominator; a counted finding with no
 // value preview stands for one secret of its own.
-func ComputeCoverage(registryPath string, findings []Finding) Coverage {
+func ComputeCoverage(home, registryPath string, findings []Finding) Coverage {
 	var c Coverage
 	c.Protected = countProtectedSecrets(registryPath)
 
@@ -295,6 +306,23 @@ func ComputeCoverage(registryPath string, findings []Finding) Coverage {
 			hasAgentCopy[f.originPath] = true
 		}
 	}
+	// Values a FILE-LEVEL finding already stands for. env_file_present has no
+	// digest of its own, so a second finding holding the same credential shares
+	// no cause_group with it and would be tallied as a separate secret.
+	//
+	// The case that makes this real: a Stripe key in ~/proj/.env that the user
+	// once pasted into a prompt. The .env is one counted secret; the agent-store
+	// sweep finds the same value in ~/.claude/paste-cache and counts a second.
+	// One credential, "YOUR SECRETS: 2" — the exact double-count the cached-copy
+	// findings were designed to avoid, arriving through the sweep's door instead.
+	claimedBy := map[string]string{}
+	for _, f := range findings {
+		for _, cv := range f.claimedRawValues {
+			if _, seen := claimedBy[cv.Value]; !seen {
+				claimedBy[cv.Value] = f.FilePath
+			}
+		}
+	}
 	for _, f := range findings {
 		// A copy is never a NEW secret — it is the same secret in another
 		// place, and the finding that named it is already counted. Left in
@@ -305,6 +333,17 @@ func ComputeCoverage(registryPath string, findings []Finding) Coverage {
 			continue
 		}
 		if !CountedAsSecret(f) {
+			continue
+		}
+		// The same secret a file-level finding already stands for, found again
+		// somewhere else. Counted once, at its origin. When the duplicate sits
+		// in an AI agent's directory it also makes the origin non-migratable,
+		// for the reason a cached copy does: `jit migrate` rewrites the .env
+		// and cannot reach into the agent's cache.
+		if origin, dup := claimedBy[f.rawValue]; dup && f.rawValue != "" && origin != f.FilePath {
+			if AgentLabelForPath(home, f.FilePath) != "" {
+				hasAgentCopy[origin] = true
+			}
 			continue
 		}
 		key := f.CauseGroup

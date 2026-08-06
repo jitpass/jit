@@ -4,6 +4,8 @@
 package audit
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -257,5 +259,92 @@ func TestOversizeAgentCacheFileIsReportedNotSkipped(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("an unread over-size cache file must appear in degraded_scanners, got %+v", summary.DegradedScanners)
+	}
+}
+
+// The plaintext credential retained on Finding for the length of a scan must
+// never be able to reach an output stream. Unexported fields are invisible to
+// encoding/json by construction, so this asserts the property rather than the
+// implementation: if anyone ever "helpfully" exports rawValue, this fails.
+func TestRawValueNeverSerialises(t *testing.T) {
+	f := Config{HomeDir: "/h", RunID: "r", ScannerVersion: "t"}.ValueFinding(ValueFindingParams{
+		FindingType: FindingTypeExposedSecret,
+		FilePath:    "/h/project/.env",
+		KeyName:     "STRIPE_KEY",
+		RawValue:    realKey,
+		Confidence:  ConfidenceHigh,
+	})
+	f.claimedRawValues = []claimedValue{{Key: "OTHER", Value: realKey}}
+	f.originPath = "/h/project/.env"
+
+	blob, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(blob, []byte(realKey)) {
+		t.Fatalf("the raw credential reached serialised output:\n%s", blob)
+	}
+}
+
+// A finding type with no label renders as a blank row and a "[] 47" section
+// header on every `jit scan --full`. Caught in review after shipping exactly
+// that for agent_cached_secret.
+func TestEveryFindingTypeHasAReportLabel(t *testing.T) {
+	for _, ft := range AllFindingTypes {
+		if findingTypeLabels[ft] == "" {
+			t.Errorf("finding type %q has no entry in findingTypeLabels, so the report prints a nameless row", ft)
+		}
+	}
+}
+
+// One credential, in a .env the user once pasted into a prompt. The .env
+// finding is file-level and carries no digest, so the sweep's own finding in
+// paste-cache shares no cause group with it and used to be tallied as a
+// second, separate secret.
+func TestPastedCopyOfAnEnvSecretIsNotASecondSecret(t *testing.T) {
+	pasted := t.TempDir()
+	writeTree(t, filepath.Join(pasted, "project", ".env"), "STRIPE_KEY="+realKey+"\n")
+	writeTree(t, filepath.Join(pasted, ".claude", "paste-cache", "abc.txt"), realKey+"\n")
+
+	plain := t.TempDir()
+	writeTree(t, filepath.Join(plain, "project", ".env"), "STRIPE_KEY="+realKey+"\n")
+
+	_, pastedSummary, err := Scan(Config{HomeDir: pasted, RunID: "r", ScannerVersion: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, plainSummary, err := Scan(Config{HomeDir: plain, RunID: "r", ScannerVersion: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pastedSummary.SecretsTotal != plainSummary.SecretsTotal {
+		t.Errorf("secrets_total %d with a pasted copy vs %d without: one credential, counted twice",
+			pastedSummary.SecretsTotal, plainSummary.SecretsTotal)
+	}
+}
+
+// Nothing inside an agent's own directory is jit migrate's to rewrite. A
+// pasted credential is usually a bare token, which the pure-token rule would
+// otherwise judge migratable.
+func TestAgentCacheFindingsAreNeverOfferedToMigrate(t *testing.T) {
+	home := t.TempDir()
+	writeTree(t, filepath.Join(home, "project", ".env"), "STRIPE_KEY="+realKey+"\n")
+	writeTree(t, filepath.Join(home, ".claude", "paste-cache", "abc.txt"), realKey+"\n")
+
+	findings, _, err := Scan(Config{HomeDir: home, RunID: "r", ScannerVersion: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range findings {
+		if AgentLabelForPath(home, f.FilePath) == "" {
+			continue
+		}
+		if f.Remedy != RemedyManual {
+			t.Errorf("%s: remedy %q, want %q — jit must not offer to rewrite an agent's own cache",
+				f.FilePath, f.Remedy, RemedyManual)
+		}
+		if f.FixCommand != "" {
+			t.Errorf("%s: fix_command %q should be empty", f.FilePath, f.FixCommand)
+		}
 	}
 }
