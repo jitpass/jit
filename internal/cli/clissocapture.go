@@ -24,6 +24,7 @@ import (
 
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
+	"github.com/jitpass/jit/internal/pointerfile"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -411,7 +412,7 @@ func serveClissoConfig(openV vaultOpener) (fifo string, serving bool, cleanup fu
 		return "", false, nil, err
 	}
 	// Cheap gate before any vault (and unlock prompt) involvement.
-	if !bytes.Contains(data, []byte("jit://vault/")) {
+	if !bytes.Contains(data, []byte(pointerfile.ValuePrefix)) {
 		return "", false, nil, nil
 	}
 	v, err := openV()

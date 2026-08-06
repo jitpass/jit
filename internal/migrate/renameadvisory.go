@@ -8,12 +8,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/jitpass/jit/internal/pointerfile"
 )
 
 // pointerVaultPrefix is the token every pointer-file line puts before a
 // secret's vault path (pointerfile.go writes "VAR=jit://vault/<ns>/<VAR>").
 // The namespace is the single path segment right after it.
-const pointerVaultPrefix = "jit://vault/"
+const pointerVaultPrefix = pointerfile.ValuePrefix
 
 // DetectRenamedRootProject reports whether the project at root was migrated
 // under a different folder name than root's current basename — the common
@@ -50,8 +52,8 @@ func DetectRenamedRootProject(root string) (oldName, newName string, ok bool) {
 			continue
 		}
 		name := e.Name()
-		envName := strings.TrimSuffix(name, ".pointers")
-		if envName == name { // no .pointers suffix
+		envName, isCompanion := pointerfile.TrimCompanionSuffix(name)
+		if !isCompanion {
 			continue
 		}
 		if !envFileNamePattern.MatchString(envName) {
