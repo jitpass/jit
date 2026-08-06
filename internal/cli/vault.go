@@ -117,7 +117,7 @@ type vaultGetResult struct {
 func splitBackupPaths(paths []string) (secrets, backups []string) {
 	secrets, backups = []string{}, []string{}
 	for _, p := range paths {
-		if strings.HasPrefix(p, "_backups/") {
+		if vault.IsBackupPath(p) {
 			backups = append(backups, p)
 			continue
 		}
@@ -1379,7 +1379,7 @@ var vaultCleanCmd = &cobra.Command{
 		}
 		backups := 0
 		for _, p := range paths {
-			if strings.HasPrefix(p, "_backups/") {
+			if vault.IsBackupPath(p) {
 				backups++
 			}
 		}
@@ -1428,7 +1428,7 @@ var vaultPruneYes bool
 var vaultPruneCmd = &cobra.Command{
 	Use:   "prune",
 	Short: "Delete stale encrypted file backups, keeping each file's newest",
-	Long: "jit migrate backs a file up into the vault (under _backups/...) every time\n" +
+	Long: "jit migrate backs a file up into the vault (under " + vault.BackupPathPrefix + "...) every time\n" +
 		"it rewrites one, and `jit migrate undo` snapshots the pre-undo state too, so\n" +
 		"repeated migrate/undo cycles accumulate backups indefinitely, nothing\n" +
 		"expires them automatically, on purpose (a recovery snapshot silently aging\n" +
@@ -2130,7 +2130,7 @@ func init() {
 	vaultRmCmd.Flags().BoolVarP(&vaultRmForce, "force", "f", false, "synonym for --yes")
 	_ = vaultRmCmd.Flags().MarkHidden("force")
 	vaultListCmd.Flags().StringVar(&vaultListFormat, "format", "text", `output format: "text" (default) or "json"`)
-	vaultListCmd.Flags().BoolVar(&vaultListAll, "all", false, "also list jit migrate's encrypted file backups (_backups/...)")
+	vaultListCmd.Flags().BoolVar(&vaultListAll, "all", false, "also list jit migrate's encrypted file backups ("+vault.BackupPathPrefix+"...)")
 	vaultListCmd.Flags().BoolVarP(&vaultListLong, "long", "l", false, "show each secret's class and last-updated age (terminal output only)")
 	vaultListCmd.Flags().StringVar(&vaultListBy, "by", "path", `group secrets by: "path" (default), "origin" (source file), or "group" (import batch)`)
 	vaultExportCmd.Flags().BoolVar(&vaultExportStdin, "stdin", false, "read the passphrase from stdin instead of prompting (no confirmation double-entry)")

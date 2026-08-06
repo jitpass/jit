@@ -451,7 +451,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 		// plaintext cache files as new needles, mid-sweep. A _backups/ entry
 		// is never a credential the user typed; it is jit's copy of a whole
 		// file, and its last path segment is a timestamp, not a variable name.
-		if strings.HasPrefix(secretPath, "_backups/") {
+		if vault.IsBackupPath(secretPath) {
 			return
 		}
 		val := string(value)

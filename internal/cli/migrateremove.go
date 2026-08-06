@@ -683,7 +683,7 @@ func buildLooseFileRemovalPlan(root, home, file string, rv *vault.Vault) (looseF
 			return plan, fmt.Errorf("listing vault for origin match: %w", err)
 		}
 		for _, p := range paths {
-			if strings.HasPrefix(p, "_backups/") {
+			if vault.IsBackupPath(p) {
 				continue
 			}
 			info, err := rv.Info(p)
@@ -947,7 +947,7 @@ func buildProjectRemovalPlan(root, home, cwd string, rv *vault.Vault) (projectRe
 		for _, p := range paths {
 			// _backups/ entries are raw file snapshots handled by their own
 			// records below, never project secrets — skip them.
-			if deleteSet[p] || strings.HasPrefix(p, "_backups/") {
+			if deleteSet[p] || vault.IsBackupPath(p) {
 				continue
 			}
 			info, err := rv.Info(p)

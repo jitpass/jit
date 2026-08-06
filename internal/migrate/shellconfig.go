@@ -397,5 +397,5 @@ func storeSecretBackup(v *vault.Vault, path string, data []byte, snapshot bool, 
 // what a given backup belongs to.
 func backupVaultPath(absPath string, unixTS int64) string {
 	safe := vaultPathUnsafeChars.ReplaceAllString(strings.TrimPrefix(absPath, string(filepath.Separator)), "_")
-	return fmt.Sprintf("_backups/%s.jit-bak-%d", safe, unixTS)
+	return fmt.Sprintf("%s%s.jit-bak-%d", vault.BackupPathPrefix, safe, unixTS)
 }
