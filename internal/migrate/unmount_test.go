@@ -6,6 +6,8 @@ package migrate
 import (
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -33,8 +35,13 @@ func TestUnmountEnvFileReversesApplyEnvFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UnmountEnvFile: %v", err)
 	}
+	// Elementwise, not just the count: these are the names the CLI echoes back
+	// to the user as what it just unmounted, so ["X","Y"] passed a length-only
+	// check while telling them the wrong thing.
 	wantNames := []string{"API_KEY", "DATABASE_URL"}
-	if len(names) != len(wantNames) {
+	got := append([]string(nil), names...)
+	sort.Strings(got)
+	if !slices.Equal(got, wantNames) {
 		t.Fatalf("names = %v, want %v", names, wantNames)
 	}
 

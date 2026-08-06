@@ -1100,8 +1100,12 @@ func TestServerPassesAPerOpReasonToTheChallenge(t *testing.T) {
 	if _, err := c.WrapKey([]byte("x")); err != nil {
 		t.Fatalf("WrapKey: %v", err)
 	}
+	// Inverted: this branch is taken when unwrapping ARBITRARY BYTES
+	// SUCCEEDED, and it used to log that they had failed. An AEAD that opens
+	// garbage is the envelope-integrity break, and it produced a reassuring
+	// line in a passing test.
 	if _, err := c.UnwrapKey([]byte("not-a-real-ciphertext")); err == nil {
-		t.Log("UnwrapKey on garbage failed as expected; only the challenge that preceded it matters here")
+		t.Error("UnwrapKey opened arbitrary bytes — the AEAD auth tag is not being checked")
 	}
 
 	fetcher.mu.Lock()
