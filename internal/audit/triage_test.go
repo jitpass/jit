@@ -55,8 +55,10 @@ func TestWriteTriageReportShape(t *testing.T) {
 	out := buf.String()
 
 	for _, want := range []string{
-		// Header: who, where, how much.
-		"alex@mbp", "scanned ~/ (47,312 files)",
+		// Header: the command, then what it covered. No user@host — machine
+		// identity belongs on the diagnostic surfaces, not on the report's
+		// most prominent line.
+		"jit scan", "~/ · 47,312 files",
 		// The ledger: 1 dump secret + env + wrap = 3 counted (archived and
 		// Low excluded from migratable/counted respectively: exposed=4
 		// including archived).
@@ -71,7 +73,9 @@ func TestWriteTriageReportShape(t *testing.T) {
 		// Red section: the three copies collapse to one problem, with the
 		// user-world action.
 		"only you can protect these",
-		"in 3 copies of a file",
+		// One grammar for the file spread, tool-wide: "in N files", never
+		// "in N copies of a file" (which reads as one file duplicated).
+		"in 3 files",
 		"rotate",
 		// The honesty tally. Seven lines of dim prose explaining what jit
 		// declined to count now collapse to one "Not counted:" line plus the
