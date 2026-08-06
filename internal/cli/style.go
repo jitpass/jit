@@ -8,8 +8,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/fatih/color"
-
+	"github.com/jitpass/jit/internal/style"
 	"github.com/jitpass/jit/internal/termtext"
 )
 
@@ -23,42 +22,38 @@ import (
 // Three report shapes share this vocabulary rather than one rigid layout:
 //   - report   (jit scan, jit migrate): a bold [Category] over its items,
 //   - dashboard (jit status, jit doctor): aligned label/value rows,
-//   - tree     (jit vault list): light bold-name/dim-count group headers.
+//   - tree     (jit vault list): light bold-name/plain-count group headers.
 // Each fits the shape of its data; what they share is the palette, the
-// glyphs, the dim-secondary rule, and the column flow below.
+// glyphs, the plain-secondary rule, and the column flow below.
 
-// Status glyphs. Unicode by deliberate choice: jit already prints ✓ and •,
-// and its darwin-only terminals (SF Mono / Menlo) render these single-width.
-// If a terminal ever mis-widths them, this is the single block to swap for
-// ASCII ("+", "!", "x", "-") — nothing else references the symbols directly.
+// Status glyphs, re-exported from internal/style under this package's
+// lowercase names so the ~200 existing call sites keep reading as they do.
+// internal/style is where a symbol actually changes.
 const (
-	glyphOK   = "●" // green: healthy / running / wired
-	glyphWarn = "○" // amber: needs a look / unreferenced / decoy
-	glyphRisk = "✗" // red: a real problem the reader must act on
-	glyphDone = "✓" // green: an action completed
+	glyphOK     = style.GlyphOK
+	glyphWarn   = style.GlyphWarn
+	glyphRisk   = style.GlyphRisk
+	glyphDone   = style.GlyphDone
+	glyphAction = style.GlyphAction
+	glyphRule   = style.GlyphRule
+	glyphLock   = style.GlyphLock
 )
 
-// Semantic colors, named by MEANING not by hue, so a call site says what it
-// intends and a future palette change happens here. faint = secondary,
-// bold = the one primary thing on a line, cyan = a path or command the
-// reader can act on. fatih/color already no-ops these when the writer isn't
-// a terminal, so piped/test output stays byte-clean automatically.
+// The palette, re-exported from internal/style under this package's short
+// names. The definitions — and the rules for when each ink applies, including
+// why there is no dim/faint — live there.
 var (
-	cDim  = color.New(color.Faint)
-	cBold = color.New(color.Bold)
-	cPath = color.New(color.FgCyan)  // a path or a runnable command
-	cOK   = color.New(color.FgGreen) // healthy / done
-	cWarn = color.New(color.FgYellow)
-	cRisk = color.New(color.FgRed)
+	cBold = style.Bold
+	cPath = style.Path // a path or a runnable command
+	cOK   = style.OK   // healthy / done
+	cWarn = style.Warn
+	cRisk = style.Risk
 
 	// Bold variants, for the one PRIMARY runnable or completed thing on a
 	// line (rule 3: bold is reserved for that) — the headline action a
-	// report is steering toward, the "done" line that closes a run. They
-	// live here for the same reason as the rest: a compound
-	// color.New(FgCyan, Bold) at a call site hard-codes the hue where a
-	// palette change would never find it.
-	cPathBold = color.New(color.FgCyan, color.Bold)
-	cOKBold   = color.New(color.FgGreen, color.Bold)
+	// report is steering toward, the "done" line that closes a run.
+	cPathBold = style.PathBold
+	cOKBold   = style.OKBold
 )
 
 // outputWidth reports the usable column count for laying out this package's

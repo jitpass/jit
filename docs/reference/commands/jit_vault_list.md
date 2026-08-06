@@ -5,7 +5,7 @@ List stored secret paths (names only, never values)
 ### Synopsis
 
 Lists every secret path currently stored, never a value. On a terminal,
-secrets are grouped under a faint header per first path segment with a
+secrets are grouped under a header per first path segment with a
 count; piped or redirected, output stays one full path per line, so it
 feeds grep and scripts unchanged. The encrypted file backups jit migrate
 keeps for `jit migrate undo` are summarized in the count line rather than

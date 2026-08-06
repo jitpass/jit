@@ -54,7 +54,7 @@ func TestNoUnroutedCommandBackticks(t *testing.T) {
 }
 
 // TestNoHandRolledColors pins the palette seam: every colour decision goes
-// through the semantic helpers in style.go (cDim, cBold, cPath, cOK, cWarn,
+// through the semantic helpers in style.go (cBold, cPath, cOK, cWarn,
 // cRisk, cPathBold, cOKBold), so changing a hue is a one-file edit and a
 // call site says what it MEANS rather than which hue it picked.
 //
@@ -70,10 +70,124 @@ func TestNoHandRolledColors(t *testing.T) {
 				continue
 			}
 			t.Errorf("%s:%d builds a color by hand. Use a semantic helper from style.go "+
-				"(cDim, cBold, cPath, cOK, cWarn, cRisk, cPathBold, cOKBold) so a palette "+
+				"(cBold, cPath, cOK, cWarn, cRisk, cPathBold, cOKBold) so a palette "+
 				"change stays one edit.\n    %s",
 				filepath.Base(file), i+1, strings.TrimSpace(line))
 		}
+	}
+}
+
+// TestPaletteIsCentralised keeps every ink in internal/style. The dim removal
+// on 2026-08-06 is the case for this: the house style claimed one vocabulary,
+// but internal/audit and internal/ui had quietly grown their own color.New
+// calls, so a one-line palette change became a twelve-site hunt across three
+// packages — and the sites the grep nearly missed were the ones rendering the
+// report a user actually reads.
+//
+// Four known-drift lines in internal/audit/report.go are allowed by name until
+// their preview decision lands: severity/risk Low in cyan (cyan is reserved
+// for what the reader can type) and Info in FgWhite (a seventh ink). They are
+// listed rather than pattern-matched so they cannot quietly multiply.
+func TestPaletteIsCentralised(t *testing.T) {
+	allowed := map[string]int{
+		filepath.Join("..", "audit", "report.go"): 4,
+		filepath.Join("..", "style", "style.go"):  100, // the definitions
+	}
+	found := map[string]int{}
+	err := filepath.WalkDir("..", func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == "spike" || d.Name() == "testdata" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		data, readErr := os.ReadFile(path) // #nosec G304 -- walking the repo's own sources
+		if readErr != nil {
+			return readErr
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			if !strings.Contains(line, "color.New(") {
+				continue
+			}
+			found[path]++
+			if found[path] <= allowed[path] {
+				continue
+			}
+			t.Errorf("%s:%d builds a color by hand. Add it to internal/style and use "+
+				"the semantic name, so a palette change stays one edit.\n    %s",
+				path, i+1, strings.TrimSpace(line))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking internal: %v", err)
+	}
+	if found[filepath.Join("..", "style", "style.go")] == 0 {
+		t.Fatal("no colors found in internal/style — the guard would pass vacuously")
+	}
+}
+
+// TestNoFaintText keeps dim/faint text out of the whole binary, not just this
+// package. jit rendered everything secondary with ESC[2m until 2026-08-06,
+// which most terminals draw at around half opacity: on a dark theme that made
+// the majority of a scan report — every manifest path, every address in the
+// manual section, every count in `jit status` — genuinely hard to read.
+// Secondary text is now written plain and inherits the terminal's own
+// foreground; hierarchy comes from bold and semantic colour.
+//
+// The guard is repo-wide because the faint constructors were never centralised
+// the way the hues are: internal/audit and internal/ui each built their own,
+// so a style.go-only rule would have missed two thirds of them. It covers test
+// files too — a test that asserts a faint escape is a test that would hold the
+// old style in place.
+func TestNoFaintText(t *testing.T) {
+	roots := []string{"..", filepath.Join("..", "..", "cmd")}
+	// The needle is assembled rather than written out so this file, which has
+	// to name the thing it bans, does not trip its own check.
+	needles := []string{"color." + "Faint", "\\x1b[2m", "\\033[2m", "\\e[2m"}
+	checked := 0
+	for _, root := range roots {
+		err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if d.Name() == "spike" || d.Name() == "testdata" {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(path, ".go") || filepath.Base(path) == "outputstyle_test.go" {
+				return nil
+			}
+			data, readErr := os.ReadFile(path) // #nosec G304 -- walking the repo's own sources
+			if readErr != nil {
+				return readErr
+			}
+			checked++
+			for i, line := range strings.Split(string(data), "\n") {
+				for _, needle := range needles {
+					if strings.Contains(line, needle) {
+						t.Errorf("%s:%d renders dim/faint text (%s). Secondary text is written "+
+							"plain — see the palette table in design/output-style.md.\n    %s",
+							path, i+1, needle, strings.TrimSpace(line))
+					}
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walking %s: %v", root, err)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no source files walked — the guard would pass vacuously")
 	}
 }
 

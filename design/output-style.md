@@ -7,15 +7,105 @@ state so the eye finds it before the words; **color is strictly semantic**,
 never decorative.
 
 The shared vocabulary lives in `internal/cli/style.go`. Prefer those helpers
-(`cDim`, `cBold`, `cPath`, `cOK`, `cWarn`, `cRisk`, the `glyph*` constants,
-and `flowNames`) over hand-rolled `color.New(...)` calls so a future palette
+(`cBold`, `cPath`, `cOK`, `cWarn`, `cRisk`, the `glyph*` constants, and
+`flowNames`) over hand-rolled `color.New(...)` calls so a future palette
 change happens in exactly one place.
+
+## The whole palette
+
+Six inks and one attribute. There is nothing else — no blue, no magenta, no
+background colors, no 256-color or truecolor values, and **no dim/faint**.
+If a line needs to stand apart and none of these fits, the answer is
+whitespace or wording, not a new color.
+
+| Ink | Helper | Means | Use it on | Never on |
+|---|---|---|---|---|
+| green | `cOK` | this is fine / this is done | `●` and `✓` glyphs, "N protected by jit (62%)", the filled `▰` of the coverage bar, "· wraps docker" | a command; a heading that isn't reporting good state |
+| green + bold | `cOKBold` | the one headline good state on the line | `jit will protect these`, the coverage arithmetic `62% → 81%`, `+19%` | more than once per line |
+| amber | `cWarn` | needs a look, nothing is broken | `○` glyphs, "unreferenced", decoy notes, the manual-remainder `+18%` | a sentence of plain advice — that reads as a warning state it isn't |
+| amber + bold | — | an amber state marker that must be found first | the `!` leading a non-critical manual group, `INCOMPLETE SCAN`, `81% → 100%` | body prose |
+| red | `cRisk` | a real problem the reader must act on | `✗`, `CRITICAL`, the `!` on a critical group | anything the reader can't do something about |
+| red + bold | — | the section header naming what only the user can fix | `only you can protect these` | individual items inside it |
+| cyan | `cPath` / `cPathBold` | **something you can type or open** | every command, always via `hlCmds`; the `→` that introduces one; runnable spans inside a sentence | a path the report is merely describing (that's plain) |
+| **bold** | `cBold` | the single primary thing on this line | a group name, a manual-group title, `YOUR SECRETS: 80` | two things on one line — then neither is primary |
+| plain | *(no helper — just `fmt`)* | everything else, primary or secondary | body prose, action sentences after the `→`, manifest paths, counts, origins, timestamps, hints, footers | — |
+
+**Secondary text is plain, not dim.** jit rendered everything secondary with
+`ESC[2m` until 2026-08-06. Most terminals draw that at roughly half opacity,
+and because secondary is the *majority* of a report — all 14 manifest paths,
+every address in the manual section, every count in `jit status` — the effect
+was a tool whose main surface had to be squinted at on a dark theme. Hierarchy
+now comes from bold and from semantic color; secondary text simply doesn't
+take either, and recedes by contrast with the lines that do.
+
+Do not reintroduce faint for one line. It only functions as a level of
+hierarchy if it is applied consistently, and applied consistently it is the
+readability problem again. `TestNoFaintText` in `internal/cli/outputstyle_test.go`
+enforces this across `internal/` and `cmd/`, tests included.
+
+## The whole glyph set
+
+Every symbol jit draws, and the one ink each takes. A glyph in the wrong ink
+is a line that lies at a glance, so the pairing is part of the definition.
+
+| Glyph | Const | Ink | Appears on | Not for |
+|---|---|---|---|---|
+| `●` | `GlyphOK` | green | a row whose state is healthy: running, wired, serving real to a grant | anything the reader must act on |
+| `○` | `GlyphWarn` | amber | a row whose state needs a look: unreferenced, decoy, locked session | a findings-list item — that's `!` |
+| `✗` | `GlyphRisk` | red | a row whose state is a real problem: failed check, critical finding | a problem the reader can't fix |
+| `✓` | `GlyphDone` | green | an action that completed (`✓ Scanned .env files`) | a state that merely *is* healthy — that's `●` |
+| `!` | `GlyphMark` | amber bold, red bold when critical | an **item** in a findings list the reader must fix themselves | a dashboard row |
+| `→` | `GlyphAction` | cyan | the one thing to type, on its own line, last in its block | more than once per state |
+| `→` | *(inline)* | plain | "maps to" inside prose: `AWS_KEY → ~/.aws/credentials`, `62% → 81%` | starting a line — that reads as the action arrow |
+| `•` | `GlyphBullet` | plain | a list item with no state of its own | anything colored — color would claim a state |
+| `└` | `GlyphBranch` | plain | evidence hanging off the item above: the matched rule, why a gate kept it | a tree of paths — `vault list` indents instead |
+| `▰ ▱` | `GlyphBarFilled` / `GlyphBarEmpty` | green / plain | the ten-cell coverage bar, one cell per 10% | any other progress — nothing else has a denominator |
+| `─` | `GlyphRule` | plain | the single subtotal line under a numeric table | section dividers, borders, boxes |
+| `🔐` | `GlyphLock` | plain | the stderr line announcing a blocking Touch ID prompt | anything else; this is the only emoji jit prints |
+| braille | `SpinnerFrames` | plain | a step still running, replaced by `✓ <text>` when it settles | a step that finished |
+
+The state glyphs (`●○✗✓`) answer *what is this line's condition*. `!` answers
+*is this mine to fix*. A line with no state gets no glyph — adding one to make
+it "look consistent" is what let a real warning hide under a green `●` row
+once, read as part of it.
+
+Severity words in the full report (`CRITICAL`, `HIGH`, …) are colored text,
+not glyphs, and the markdown export uses emoji circles — a different format
+with different constraints, not the terminal vocabulary.
+
+**Known drift, awaiting a decision:** `⚠` appears twice in `migratesummary.go`
+where `!` or `○` belongs; severity/risk `Low` renders cyan, which the palette
+reserves for what the reader can type; severity `Info` renders `FgWhite`, a
+seventh ink. All three are marked in the source and allow-listed by name in
+`TestPaletteIsCentralised`, so they cannot multiply while they wait.
+
+## Keep it short
+
+A terminal line the reader has to track across 100 columns is a line they
+skim, and jit's reports are read at the moment someone is deciding whether to
+act. Length is a design constraint here, not a style preference.
+
+- **One clause per line.** If a note needs "and" plus a subordinate clause, it
+  is two facts — print the one that changes what the reader does and drop the
+  other.
+- **Aim for 72 characters** of natural length on any prose string, so it still
+  fits after its indent on an 80-column window without wrapping. Wrapping is
+  the safety net (`termtext.Wrap`), not the plan.
+- **Variable-length content gets truncated, not wrapped**, so a row stays one
+  row: `TruncHead` for a path (the tail names the file), `TruncMid` for a
+  command line whose two ends both carry identity, `TruncTail` where the
+  beginning identifies it.
+- **Explain once.** A fact that is true of every item in a group is stated on
+  the group header, never repeated per line.
+- The place this is hardest is the note under an action. Those earn their
+  length only when they change the decision ("every change is reversible")
+  — anything else is a sentence the reader pays for and doesn't use.
 
 ## The six rules
 
 1. **One header shape: `[Name]  count`.** Every section, group, and dashboard
    label across jit is a bracketed name in default weight (not bold — the
-   brackets delimit it, and they read better than bold), followed by a dim
+   brackets delimit it, and they read better than bold), followed by a plain
    count where there's something to count. `[Exposed Secrets] 1`,
    `[custom_scripts-descope] 12`, `[vault]`, `● [Wired here]` — all the same
    motif, so the whole tool looks like one tool. Structure comes from this
@@ -30,9 +120,11 @@ change happens in exactly one place.
    - `✗` red — a real problem the reader must act on
    - `✓` green — an action completed (`✓ Scanned ...`)
 3. **Hierarchy by weight.** Bold is the one primary thing on a line (a group
-   name, a flagged path). Body text is default weight. Everything secondary —
-   counts, origins, timestamps, explanations — is dim. Never a third color to
-   mean "less important"; that is what dim is for.
+   name, a flagged path). Everything else — body text and everything secondary
+   alike: counts, origins, timestamps, explanations — is plain, and recedes
+   because the primary thing is bold, not because it was dimmed. Never reach
+   for a color to mean "less important"; color here means state, and a
+   secondary line that took one would be claiming a state it doesn't have.
 4. **Align columns with space.** Like `docker ps`, values line up in
    whitespace columns with tabular figures, never box borders. Long lists of
    bare names flow into aligned columns (`flowNames`) instead of one item per
@@ -40,7 +132,7 @@ change happens in exactly one place.
 5. **Color means one thing.** Green = ok, amber = warn, red = risk, cyan = a
    path or command the reader can act on. No color is decorative, and the same
    fact never gets restated on every line — state a shared note (an origin, a
-   decoy rule) once per group or section, dimmed.
+   decoy rule) once per group or section.
 
    **Cyan is the only color a command ever takes**, on every surface, always
    via `hlCmds`. This was drift for a while and it showed: `jit scan` painted
@@ -67,10 +159,10 @@ change happens in exactly one place.
 ## The three report shapes
 
 One vocabulary, three layouts — each fits the shape of its data. What they
-share is the palette, the glyphs, the dim-secondary rule, and column flow.
+share is the palette, the glyphs, the plain-secondary rule, and column flow.
 
 ### Report — `jit scan`, `jit migrate`, `jit doctor`
-A findings/plan list. Strong **bold `[Category]`** header with a dim count,
+A findings/plan list. Strong **bold `[Category]`** header with a plain count,
 then the items. A findings report should feel heavier than a status line, so
 this is where a leading `✗` earns real weight. No rule under the header.
 
@@ -127,7 +219,7 @@ Counts are inflected, never `N thing(s)` — use `countWord`/`pluralWord` from
 A nested namespace. Deliberately the **lightest** shape: no rules, no glyphs
 on member rows, no per-item severity — across dozens of groups that weight
 would bury the names it is supposed to present. The `[Name]` header from rule
-1, a **dim** count, and members flowed into columns. A shared per-group note
+1, a plain count, and members flowed into columns. A shared per-group note
 (all members "no recorded origin") is stated once on the header.
 
 This section used to say brackets were "far too heavy" here and showed a bare
@@ -183,12 +275,12 @@ backup   ✗ no vault export on record — the vault only decrypts on this Mac
 
 Rules: at most one arrow line per state (a reader given three next steps takes
 none), commands in cyan via `hlCmds`, and any explanation goes **above** the
-arrow as dim `printStatusNote` lines, never after it — the command is the last
-thing on screen because it's the thing they act on.
+arrow as plain `printStatusNote` lines, never after it — the command is the
+last thing on screen because it's the thing they act on.
 
-An explanation line is dim and bare; a line carrying a **state of its own**
+An explanation line is plain and bare; a line carrying a **state of its own**
 leads with a glyph instead (`printStatusWarnNote`). The distinction is load
-bearing: a warning rendered dim and glyphless directly under a green `●` row
+bearing: a warning rendered glyphless directly under a green `●` row
 gets read as part of that healthy row, which is how the build-mismatch notice
 managed to hide in plain sight.
 

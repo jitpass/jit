@@ -68,7 +68,7 @@ func writeAgentLog(w io.Writer, data []byte, home string) {
 				fmt.Fprintln(w)
 			}
 			day = e.date
-			_, _ = cDim.Fprintf(w, "  %s\n", e.date)
+			_, _ = fmt.Fprintf(w, "  %s\n", e.date)
 		}
 		writeAgentLogEntry(w, e)
 	}
@@ -150,7 +150,7 @@ func writeAgentLogEntry(w io.Writer, e logEntry) {
 
 	glyph, c := agentLogGlyph(e.detail)
 	fmt.Fprint(w, strings.Repeat(" ", logRowIndent))
-	_, _ = cDim.Fprintf(w, "%s ", e.clock) // HH:MM — seconds live in --raw
+	_, _ = fmt.Fprintf(w, "%s ", e.clock) // HH:MM — seconds live in --raw
 	_, _ = c.Fprintf(w, "%s ", glyph)
 	termtext.Wrap(w, len(logBodyIndent), logBodyIndent, body)
 }

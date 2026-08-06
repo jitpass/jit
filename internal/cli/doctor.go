@@ -289,7 +289,7 @@ func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings []
 	// The identifying line first, so a pasted report says which binary
 	// produced it. Dim: it is context for the findings, never a finding.
 	tool := runningTool()
-	_, _ = cDim.Fprintf(out, "jit %s\n", versionBuildSignature(tool))
+	_, _ = fmt.Fprintf(out, "jit %s\n", versionBuildSignature(tool))
 
 	wrote := writeFindingGroups(out, glyphRisk, cRisk, problems, true)
 	wrote = writeFindingGroups(out, glyphWarn, cWarn, warnings, wrote)
@@ -337,7 +337,7 @@ func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings []
 		// bracketed tags above it (rule 1).
 		fmt.Fprintln(out)
 		_, _ = cBold.Fprint(out, "[checked]")
-		_, _ = cDim.Fprintf(out, "  %d\n", passing)
+		_, _ = fmt.Fprintf(out, "  %d\n", passing)
 		body := strings.Repeat(" ", findingIndent)
 		for _, r := range outcome.OKRefs {
 			_, _ = cOK.Fprintf(out, "  %s ", glyphOK)
@@ -371,15 +371,15 @@ func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings []
 func writeNoProfilesLine(out io.Writer, cwd string) {
 	if cwd != "" {
 		if root, ok := findProjectRoot(cwd); ok && root != cwd {
-			wrapBody(out, 0, "  ", cDim.Sprintf(
+			wrapBody(out, 0, "  ", fmt.Sprintf(
 				"No profiles here. This directory sits inside %s, which is the project root — profiles resolve from the current directory, not from an enclosing one.",
 				shortPath(root)))
-			_, _ = cPath.Fprint(out, "→ ")
+			_, _ = cPath.Fprint(out, glyphAction+" ")
 			wrapBody(out, 2, "  ", hlCmds(fmt.Sprintf("`cd %s` and re-run", shortPath(root))))
 			return
 		}
 	}
-	wrapBody(out, 0, "  ", cDim.Sprint("No profiles found under .jit/profiles/ or the global store."))
+	wrapBody(out, 0, "  ", "No profiles found under .jit/profiles/ or the global store.")
 }
 
 // versionBuildSignature renders the tool line's value, dropping whichever
@@ -434,7 +434,7 @@ func writeFindingGroups(out io.Writer, glyph string, c *color.Color, findings []
 		// A count only earns its place when there is more than one to count:
 		// "[rekey] 1" invites the reader to compare a number against nothing.
 		if len(group) > 1 {
-			_, _ = cDim.Fprintf(out, "  %d", len(group))
+			_, _ = fmt.Fprintf(out, "  %d", len(group))
 		}
 		fmt.Fprintln(out)
 
@@ -469,7 +469,7 @@ func writeFindingGroups(out io.Writer, glyph string, c *color.Color, findings []
 // line (design/output-style.md, "The action line").
 func writeActionLine(out io.Writer, arrow, action string) {
 	fmt.Fprint(out, arrow)
-	_, _ = cPath.Fprint(out, "→ ")
+	_, _ = cPath.Fprint(out, glyphAction+" ")
 	wrapBody(out, findingIndent, arrow+"  ", hlCmds(action))
 }
 

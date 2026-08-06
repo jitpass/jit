@@ -463,7 +463,7 @@ func printStatusHeadline(w io.Writer, r statusResult) {
 }
 
 func printStatusText(w io.Writer, r statusResult) {
-	// The dashboard reads as aligned label/value rows (docker-style): a dim
+	// The dashboard reads as aligned label/value rows (docker-style): a plain
 	// fixed-width label, then the value, with a semantic glyph leading any row
 	// that carries a state so the one needing attention is found at a glance
 	// (design/output-style.md).
@@ -555,7 +555,7 @@ func printStatusText(w io.Writer, r statusResult) {
 	registered := countWord(r.Mounts.Registered, "registered mount", "registered mounts")
 	switch {
 	case r.Mounts.Registered == 0:
-		printStatusValue(w, "%s", cDim.Sprint("none registered"))
+		printStatusValue(w, "%s", "none registered")
 	case r.Mounts.ServingReal:
 		granted := 0
 		for _, m := range r.Agent.Mounts {
@@ -609,11 +609,11 @@ func printSecretsSection(w io.Writer, s statusSecrets) {
 	// with it would make a backups-only vault look wrongly empty.
 	if s.TotalSecrets == 0 && s.WiredProfiles == 0 && s.ParseFailures == 0 {
 		statusLabel(w, "secrets")
-		printStatusValue(w, "%s", cDim.Sprint("none stored yet"))
+		printStatusValue(w, "%s", "none stored yet")
 		return
 	}
 	statusLabel(w, "secrets")
-	printStatusValue(w, "%s", cDim.Sprint("reconciled against every profile and mount"))
+	printStatusValue(w, "%s", "reconciled against every profile and mount")
 
 	// Each state leads with a semantic glyph so the eye finds the one that
 	// needs attention (an amber ○ unreferenced, or a red ✗ broken) before
@@ -693,9 +693,9 @@ func printSecretsSection(w io.Writer, s statusSecrets) {
 
 // statusLabel prints one dashboard row's label (jit, vault, backup, service,
 // secrets, mounts) in plain default weight, padded to a fixed width so the
-// values line up in a column docker-style. No brackets, no bold or faint:
-// faint was an unreadable dark grey, and the user preferred a plain word to
-// both bold and the older bracket delimiter. The caller prints the value —
+// values line up in a column docker-style. No brackets, no bold: faint was
+// an unreadable dark grey here long before it was removed tool-wide, and the
+// user preferred a plain word to both bold and the older bracket delimiter. The caller prints the value —
 // with a leading glyph for a state-bearing row — immediately after, then its
 // own newline.
 func statusLabel(w io.Writer, label string) {
@@ -740,7 +740,7 @@ func printStatusGlyphValue(w io.Writer, format string, a ...any) {
 // as prose rather than as a thing to go type.
 func printStatusAction(w io.Writer, body string) {
 	fmt.Fprint(w, statusNoteIndent)
-	_, _ = cPath.Fprint(w, "→ ")
+	_, _ = cPath.Fprint(w, glyphAction+" ")
 	wrapBody(w, len(statusNoteIndent)+2, statusNoteIndent+"  ", hlCmds(body))
 }
 
@@ -749,20 +749,21 @@ func printStatusAction(w io.Writer, body string) {
 // above it, not to the value's text.
 const statusNoteIndent = "      "
 
-// printStatusNote renders one dim explanatory line under a state line, at the
+// printStatusNote renders one explanatory line under a state line, at the
 // same indent as the action arrow — scan's habit of explaining a finding just
-// above the command that resolves it. Dim by rule 3: an explanation is
-// secondary to the state it explains.
+// above the command that resolves it. Plain by rule 3: an explanation is
+// secondary to the state it explains, and secondary text takes no colour and
+// no weight.
 func printStatusNote(w io.Writer, format string, a ...any) {
 	fmt.Fprint(w, statusNoteIndent)
 	wrapBody(w, len(statusNoteIndent), statusNoteIndent,
-		cDim.Sprintf(format, a...))
+		fmt.Sprintf(format, a...))
 }
 
 // printStatusWarnNote is printStatusNote for a line that carries a STATE of
 // its own rather than explaining one: it leads with the amber warn glyph and
 // stays default weight. The distinction matters because a warning rendered
-// dim, with no glyph, directly beneath a green row reads as part of that
+// with no glyph, directly beneath a green row reads as part of that
 // healthy row — which is exactly how the build-mismatch notice disappeared.
 func printStatusWarnNote(w io.Writer, format string, a ...any) {
 	fmt.Fprint(w, statusNoteIndent)
@@ -786,10 +787,10 @@ func printRollupLine(w io.Writer, glyphColor *color.Color, glyph, label, body st
 // The row still holds its column so the three states stay aligned.
 func printEmptyRollupLine(w io.Writer, label, body string) {
 	fmt.Fprint(w, "    ")
-	_, _ = cDim.Fprintf(w, "%-*s", rollupLabelWidth, label)
+	_, _ = fmt.Fprintf(w, "%-*s", rollupLabelWidth, label)
 	fmt.Fprint(w, "  ")
 	used := 4 + rollupLabelWidth + 2
-	wrapBody(w, used, strings.Repeat(" ", used), cDim.Sprint(body))
+	wrapBody(w, used, strings.Repeat(" ", used), body)
 }
 
 // rollupLabelWidth holds "Unreferenced here" plus a space of air.
@@ -814,7 +815,7 @@ func printSecretsDetail(w io.Writer, rec secretsReconciliation, v *vault.Vault) 
 		}
 	}
 
-	// Section headers follow the house style: a title with a dim one-line
+	// Section headers follow the house style: a title with a plain one-line
 	// summary, then the groups, then a blank line — whitespace does the
 	// separating, no rules (see design/output-style.md).
 	printSecretsStateHeader(w, glyphOK, "Wired here",
@@ -828,7 +829,7 @@ func printSecretsDetail(w io.Writer, rec secretsReconciliation, v *vault.Vault) 
 	printSecretsStateHeader(w, glyphWarn, "Unreferenced here",
 		fmt.Sprintf("%d %s · %d %s · may belong to another project", len(unref), pluralWord(len(unref), "group", "groups"), rec.UnreferencedSecrets, pluralWord(rec.UnreferencedSecrets, "secret", "secrets")))
 	if len(unref) == 0 {
-		_, _ = cDim.Fprintln(w, "  none")
+		_, _ = fmt.Fprintln(w, "  none")
 		return
 	}
 	// Name the mirrored pairs once, above the listing, rather than tagging
@@ -841,7 +842,7 @@ func printSecretsDetail(w io.Writer, rec secretsReconciliation, v *vault.Vault) 
 		}
 	}
 	if len(mirrors) > 0 {
-		_, _ = cDim.Fprintf(w, "  %d mirror a group still in use, key for key (names, not values):\n", len(mirrors))
+		_, _ = fmt.Fprintf(w, "  %d mirror a group still in use, key for key (names, not values):\n", len(mirrors))
 		flowNames(w, mirrors, "      ")
 		fmt.Fprintln(w)
 	}
@@ -853,22 +854,22 @@ func printSecretsDetail(w io.Writer, rec secretsReconciliation, v *vault.Vault) 
 		}
 	}
 	printOrphanGroups(w, v, paths)
-	_, _ = cDim.Fprint(w, "  Inspect with ")
+	_, _ = fmt.Fprint(w, "  Inspect with ")
 	_, _ = cPath.Fprint(w, "jit vault list")
-	_, _ = cDim.Fprint(w, ", prune with ")
+	_, _ = fmt.Fprint(w, ", prune with ")
 	_, _ = cPath.Fprint(w, "jit vault orphans --prune")
 	fmt.Fprintln(w)
 }
 
 // printSecretsStateHeader renders one --secrets state block header: a blank
-// line, a colored state glyph, the state name, and a dim one-line summary.
+// line, a colored state glyph, the state name, and a plain one-line summary.
 // This is the dashboard-family header — light, no [brackets], no rule —
 // matching how the top status rollup names each state.
 func printSecretsStateHeader(w io.Writer, glyph, name, summary string) {
 	fmt.Fprintln(w)
 	_, _ = cWarnOrOK(glyph).Fprintf(w, "%s ", glyph)
 	fmt.Fprint(w, name)
-	_, _ = cDim.Fprintf(w, "  %s\n", summary)
+	_, _ = fmt.Fprintf(w, "  %s\n", summary)
 }
 
 // cWarnOrOK picks the glyph's semantic color so the state reads at a glance:
@@ -888,12 +889,12 @@ func cWarnOrOK(glyph string) *color.Color {
 // three tidy rows, not a fourteen-line stack (GAPS.md readability).
 func printGroupsWithKeys(w io.Writer, groups []secretGroup) {
 	if len(groups) == 0 {
-		_, _ = cDim.Fprintln(w, "  none")
+		_, _ = fmt.Fprintln(w, "  none")
 		return
 	}
 	for _, g := range groups {
 		fmt.Fprintf(w, "  [%s]", g.Name)
-		_, _ = cDim.Fprintf(w, " %d", len(g.Members))
+		_, _ = fmt.Fprintf(w, " %d", len(g.Members))
 		if g.Mixed {
 			_, _ = cWarn.Fprint(w, "  mixed states")
 		}
