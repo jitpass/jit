@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -135,7 +136,7 @@ const maxAgentCacheFileSize = 64 << 20
 // slice lookup. Deliberately not Aho-Corasick — that is the textbook answer
 // and it would be a new dependency or ~200 lines of trie for a needle set
 // measured in dozens, where this measures fast enough to disappear into the
-// walk (see TestAgentCacheScanCost).
+// walk (+0.4s over a 306 MB tree, measured 2026-08-06).
 type substrIndex struct {
 	needles []string
 	byFirst [256][]int
@@ -171,7 +172,12 @@ func (s *substrIndex) findAll(data []byte) (first map[int]int, count map[int]int
 			if len(data)-i < len(n) {
 				continue
 			}
-			if !bytes.Equal(data[i:i+len(n)], []byte(n)) {
+			// string(...) == n rather than bytes.Equal(..., []byte(n)): the
+			// []byte(n) conversion allocates on every candidate position, and
+			// a needle starting with a common byte ("s" for sk_live_, "e" for
+			// eyJ) hits millions of positions across a 300 MB tree. The string
+			// comparison form is guaranteed allocation-free.
+			if string(data[i:i+len(n)]) != n {
 				continue
 			}
 			if _, seen := first[idx]; !seen {
@@ -338,7 +344,7 @@ func crossReferenceAgentCaches(cfg Config, findings []Finding) ([]Finding, []Sca
 			}
 			if info.Size() > maxAgentCacheFileSize {
 				failures = append(failures, ScannerFailure{
-					Scanner: "agent caches",
+					Scanner: "AI agent stores",
 					Error: fmt.Sprintf("%s is %d bytes, above the %d-byte bound; not read",
 						ShortenHome(cfg.HomeDir, path), info.Size(), int64(maxAgentCacheFileSize)),
 				})
@@ -355,7 +361,14 @@ func crossReferenceAgentCaches(cfg Config, findings []Finding) ([]Finding, []Sca
 			// Binary content has no meaningful line number; an offset into a
 			// SQLite page would be a coordinate the reader cannot use.
 			textual := !bytes.Contains(headOf(data), []byte{0})
-			for idx, at := range first {
+			// Iterated over pins, not over the map: Go randomises map order,
+			// and scan.go's contract is that findings come out in a stable
+			// order so NDJSON is byte-comparable across runs.
+			for idx := range pins {
+				at, hit := first[idx]
+				if !hit {
+					continue
+				}
 				out = append(out, cfg.agentCachedSecretFinding(
 					path, root.label, pins[idx], data, at, count[idx], textual))
 			}
@@ -375,13 +388,33 @@ func headOf(data []byte) []byte {
 
 // readAgentCacheFile reads a cache file through the same openFile guards every
 // scanner uses (no symlink follow, no blocking on a FIFO, regular files only).
+//
+// Read from the DESCRIPTOR openFile validated, never by re-opening the path.
+// An earlier version called os.ReadFile(f.Name()), which checked one inode and
+// then read whatever the path pointed at a moment later: a FIFO swapped in
+// between the two opens blocks the whole scan in open(2) forever (jit creates
+// FIFOs for a living, so this is jit's own shape of file), a symlink swapped
+// in is followed straight past the walk's guards, and the size bound checked
+// against the earlier stat stops bounding anything. That is precisely the race
+// openFile's doc comment exists to close, reintroduced one layer up.
+//
+// The limit is maxAgentCacheFileSize+1 so a file that GREW past the bound
+// after its stat is still caught by the caller rather than read unbounded —
+// transcripts are appended to while the scan runs.
 func readAgentCacheFile(path string) ([]byte, error) {
 	f, err := openFile(path)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	return os.ReadFile(f.Name()) // #nosec G304 -- path came from our own walk and was just validated by openFile
+	data, err := io.ReadAll(io.LimitReader(f, maxAgentCacheFileSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxAgentCacheFileSize {
+		return nil, fmt.Errorf("%s grew past the %d-byte bound while being read", path, int64(maxAgentCacheFileSize))
+	}
+	return data, nil
 }
 
 // agentCachedSecretFinding builds the finding for one credential found in one
@@ -424,7 +457,7 @@ func (c Config) agentCachedSecretFinding(path, agent string, pin cacheNeedle, da
 	}
 
 	where := ShortenHome(c.HomeDir, origin.FilePath)
-	f.Evidence = fmt.Sprintf("%s kept a verbatim copy of the credential in %s", agent, where)
+	f.Evidence = fmt.Sprintf("a verbatim copy of the credential from %s, kept by %s", where, agent)
 	if count > 1 {
 		f.Evidence = fmt.Sprintf("%s (%d occurrences in this file)", f.Evidence, count)
 	}

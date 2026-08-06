@@ -151,7 +151,7 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 	summary.FilesScanned = filesWalked
 	summary.DegradedScanners = degraded
 	summary.DerivedCredentials = ScanDerivedCredentials(cfg)
-	coverage := ComputeCoverage(cfg.MountRegistryPath, all)
+	coverage := ComputeCoverage(cfg.HomeDir, cfg.MountRegistryPath, all)
 	summary.SecretsTotal = coverage.Total()
 	summary.SecretsProtected = coverage.Protected
 	summary.SecretsMigratable = coverage.Migratable

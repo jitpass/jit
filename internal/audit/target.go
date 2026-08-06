@@ -84,7 +84,7 @@ func TargetedScan(cfg Config, targets []string) ([]Finding, ScanSummary, error) 
 
 	summary := buildScanSummary(cfg, all, countProtectedMounts(cfg.MountRegistryPath), time.Since(start))
 	summary.DegradedScanners = degraded
-	coverage := ComputeCoverage(cfg.MountRegistryPath, all)
+	coverage := ComputeCoverage(cfg.HomeDir, cfg.MountRegistryPath, all)
 	summary.SecretsTotal = coverage.Total()
 	summary.SecretsProtected = coverage.Protected
 	summary.SecretsMigratable = coverage.Migratable
