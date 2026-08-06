@@ -186,52 +186,42 @@ func TestConnectionStringIgnoresShellExpansion(t *testing.T) {
 	}
 }
 
-// The prefilter is an optimization, so its only real obligation is that it
-// never hides a match. Extend `samples` when a pattern is added to
-// knownTokenPatterns.
-func TestHistoryPrefilterNeverDropsAMatch(t *testing.T) {
-	samples := []string{
-		"ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
-		"gith" + "ub_pat_11ABCDEFG0abcdefghijkl_MNOPQRST",
-		"glpa" + "t-AbCdEfGhIjKlMnOpQrSt",
-		"AKIA" + "IOSFODNN7EXAMPLZ",
-		"ASIA" + "IOSFODNN7EXAMPLZ",
-		"dop_" + "v1_0123456789abcdef0123456789abcdef0123456789abcdef",
-		"npm_" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
-		"pypi" + "-AgEIcHlwaS5vcmcCJDAwMDAwMDAwLTAwMDA",
-		"sk-a" + "nt-api03-AbCdEfGhIjKlMnOpQrStUv",
-		"sk-a" + "nt-adminAbCdEfGhIjKlMnOpQrStUv",
-		"sk-p" + "roj-AbCdEfGhIjKlMnOpQrStUv",
-		"sk-s" + "vcacct-AbCdEfGhIjKlMnOpQrStUv",
-		"sk-a" + "dmin-AbCdEfGhIjKlMnOpQrStUv",
-		"sk-A" + "bCdEfGhIjKlMnOpQrStUv",
-		"hf_a" + "bcdefghijklmnopqrstuvwx",
-		"sk_l" + "ive_51H8xQ2KZvMnPq7RtY4wU6iO9",
-		"sk_t" + "est_51H8xQ2KZvMnPq7RtY4wU6iO9",
-		"rk_l" + "ive_51H8xQ2KZvMnPq7RtY4wU6iO9",
-		"xoxb" + "-1234567890-AbCdEfGhIj",
-		"xoxp" + "-1234567890-AbCdEfGhIj",
-		"xapp" + "-1-A012345678-AbCdEfGhIj",
-		"xwfp" + "-1-A012345678-AbCdEfGhIj",
-		"shpa" + "t_abcdefghijklmnopqrstuvwx",
-		"AC01" + "23456789abcdef0123456789abcdef",
-		"SG.AbCdEfGhIj.KlMnOpQrStUv",
-		"ntn_" + "abcdefghijklmnopqrstuvwx",
-		"secr" + "et_0123456789abcdefghijklmnopqrstuvwxyzABCD",
-		"AIza" + "SyC1234567890abcdefghijklmnopqrstuv",
-		"whse" + "c_AbCdEfGhIjKlMnOpQrStUvWx",
-		"sb_s" + "ecret_AbCdEfGhIjKlMnOpQrStUv",
-		"glsa" + "_AbCdEfGhIjKlMnOpQrStUv_abcdef12",
-		"dp.st.AbCdEfGhIjKlMnOpQrStUv",
-		"hvs." + "AbCdEfGhIjKlMnOpQrStUvWxYz01",
-		"AGE-SECRET-KEY-1ABCDEFGHIJKLMNOPQRSTU",
-		"eyJh" + "bGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.AbCdEfGhIj",
-		"eyJa.b.c",
-		"postgres://app:s3cr3tPassw0rd@db.internal:5432/app",
-		"scanner_user:hunter2x@db.example.com/postgres",
-		"-----BEGIN OPENSSH PRIVATE KEY-----",
-		"-----BEGIN RSA PRIVATE KEY-----",
+// historyAdmitSamples loads the corpus shared with internal/guard, whose own
+// admit test reads this same file. Keeping it on disk rather than in a Go
+// slice is what makes "both implementations are checked against the same
+// lines" true by construction instead of by somebody remembering.
+//
+// "|" is a split marker (see the file's header): it sits where a contiguous
+// vendor token would otherwise trip GitHub push protection.
+func historyAdmitSamples(t *testing.T) []string {
+	t.Helper()
+	return loadAdmitSamples(t, filepath.Join("testdata", "history-admit-samples.txt"))
+}
+
+func loadAdmitSamples(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the shared admit corpus: %v", err)
 	}
+	var samples []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		samples = append(samples, strings.ReplaceAll(line, "|", ""))
+	}
+	if len(samples) == 0 {
+		t.Fatalf("%s yielded no samples; both admit tests would pass vacuously", path)
+	}
+	return samples
+}
+
+// The prefilter is an optimization, so its only real obligation is that it
+// never hides a match. Extend the corpus file when a pattern is added.
+func TestHistoryPrefilterNeverDropsAMatch(t *testing.T) {
+	samples := historyAdmitSamples(t)
 	for _, s := range samples {
 		matched := false
 		for _, tp := range knownTokenPatterns {
@@ -253,40 +243,7 @@ func TestHistoryPrefilterNeverDropsAMatch(t *testing.T) {
 // Every pattern in the list must be represented above, or a pattern added
 // later could silently sit behind a prefilter that rejects it.
 func TestHistoryPrefilterGuardsEveryPattern(t *testing.T) {
-	samples := []string{
-		"ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", "gith" + "ub_pat_11ABCDEFG0abcdefghijkl_MNOPQRST",
-		"gho_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", "ghs_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
-		"ghu_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", "ghr_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
-		"glpa" + "t-AbCdEfGhIjKlMnOpQrSt", "gldt" + "-AbCdEfGhIjKlMnOpQrSt", "glrt" + "-AbCdEfGhIjKlMnOpQrSt",
-		"glrt" + "r-AbCdEfGhIjKlMnOpQrSt", "glcb" + "t-AbCdEfGhIjKlMnOpQrSt", "glpt" + "t-AbCdEfGhIjKlMnOpQrSt",
-		"gloa" + "s-AbCdEfGhIjKlMnOpQrSt", "glag" + "ent-AbCdEfGhIjKlMnOpQrSt", "glft" + "-AbCdEfGhIjKlMnOpQrSt",
-		"AKIA" + "IOSFODNN7EXAMPLZ", "dop_" + "v1_0123456789abcdef0123456789abcdef0123456789abcdef",
-		"npm_" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789", "pypi" + "-AgEIcHlwaS5vcmcCJDAwMDAwMDAwLTAwMDA",
-		"sk-a" + "nt-api03-AbCdEfGhIjKlMnOpQrStUv", "sk-a" + "nt-adminAbCdEfGhIjKlMnOpQrStUv",
-		"sk-p" + "roj-AbCdEfGhIjKlMnOpQrStUv", "sk-s" + "vcacct-AbCdEfGhIjKlMnOpQrStUv",
-		"sk-a" + "dmin-AbCdEfGhIjKlMnOpQrStUv", "sk-A" + "bCdEfGhIjKlMnOpQrStUv",
-		"hf_a" + "bcdefghijklmnopqrstuvwx", "sk_l" + "ive_51H8xQ2KZvMnPq7RtY4wU6iO9",
-		"sk_t" + "est_51H8xQ2KZvMnPq7RtY4wU6iO9", "rk_l" + "ive_51H8xQ2KZvMnPq7RtY4wU6iO9",
-		"xoxb" + "-1234567890-AbCdEfGhIj", "xoxp" + "-1234567890-AbCdEfGhIj",
-		"shpa" + "t_abcdefghijklmnopqrstuvwx", "AC01" + "23456789abcdef0123456789abcdef",
-		"SG.AbCdEfGhIj.KlMnOpQrStUv", "ntn_" + "abcdefghijklmnopqrstuvwx",
-		"secr" + "et_0123456789abcdefghijklmnopqrstuvwxyzABCD",
-		"AIza" + "SyC1234567890abcdefghijklmnopqrstuv", "xapp" + "-1-A012345678-AbCdEfGhIj",
-		"xwfp" + "-1-A012345678-AbCdEfGhIj", "whse" + "c_AbCdEfGhIjKlMnOpQrStUvWx",
-		"sb_s" + "ecret_AbCdEfGhIjKlMnOpQrStUv", "glsa" + "_AbCdEfGhIjKlMnOpQrStUv_abcdef12",
-		"dp.st.AbCdEfGhIjKlMnOpQrStUv", "hvs." + "AbCdEfGhIjKlMnOpQrStUvWxYz01",
-		"hvb." + "AbCdEfGhIjKlMnOpQrStUvWxYz01", "hvr." + "AbCdEfGhIjKlMnOpQrStUvWxYz01",
-		"AGE-SECRET-KEY-1ABCDEFGHIJKLMNOPQRSTU",
-		"AGE-SECRET-KEY-PQ-1ABCDEFGHIJKLMNOPQRSTU",
-		"eyJh" + "bGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.AbCdEfGhIj",
-		"-----BEGIN RSA PRIVATE KEY-----", "-----BEGIN OPENSSH PRIVATE KEY-----",
-		"-----BEGIN EC PRIVATE KEY-----", "-----BEGIN PRIVATE KEY-----",
-		"postgres://app:s3cr3tPassw0rd@db.internal:5432/app",
-		"scanner_user:hunter2x@db.example.com/postgres",
-		"crsr" + "_AbCdEfGhIjKl", "tvly" + "-AbCdEfGhIjKl",
-		"xoxa" + "-1234567890-AbCdEfGhIj", "xoxr" + "-1234567890-AbCdEfGhIj",
-		"eyJa.b.c", // degenerate JWT: legal for the pattern, no long run
-	}
+	samples := historyAdmitSamples(t)
 	covered := map[string]bool{}
 	for _, s := range samples {
 		if !historyLineMayHoldToken(s) {
@@ -1353,5 +1310,59 @@ func TestScanReportOffersTheGuardOnlyWhenHistoryIsInvolved(t *testing.T) {
 	envFinding.RecordID = "r2"
 	if out := render([]Finding{envFinding}); strings.Contains(out, "jit guard") {
 		t.Errorf("offered the guard with no history finding:\n%s", out)
+	}
+}
+
+// TestHistoryAdmitRunClassMatchesTheByteTest pins the two representations of
+// "a token-body character" against each other across every byte value.
+//
+// historyLineMayHoldToken hand-rolls the test as a byte comparison, on purpose:
+// it runs per character over whole history files and a regexp there would cost
+// the optimization its reason to exist. HistoryAdmitSpec.RunClass states the
+// same set as an ERE bracket expression, because internal/guard's zsh hook has
+// a regexp engine and no way to call a Go function. Two spellings of one set,
+// and nothing compared them.
+func TestHistoryAdmitRunClassMatchesTheByteTest(t *testing.T) {
+	class := regexp.MustCompile("^" + HistoryAdmitRule().RunClass + "$")
+	for b := 0; b < 256; b++ {
+		c := byte(b)
+		// The byte test, as historyLineMayHoldToken spells it.
+		inByteTest := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' ||
+			c >= '0' && c <= '9' || c == '_' || c == '-'
+		inClass := class.Match([]byte{c})
+		if inByteTest != inClass {
+			t.Errorf("byte %q: byte test says %v, RunClass %q says %v",
+				c, inByteTest, HistoryAdmitRule().RunClass, inClass)
+		}
+	}
+}
+
+// The spec is what internal/guard renders its zsh from, so an empty or absurd
+// value there disarms the shipped hook rather than failing anything here.
+func TestHistoryAdmitRuleIsUsable(t *testing.T) {
+	spec := HistoryAdmitRule()
+	if len(spec.Literals) == 0 {
+		t.Error("no admit literals; the zsh hook's literal clause would be empty")
+	}
+	for _, lit := range spec.Literals {
+		if lit == "" {
+			t.Error("an empty admit literal matches every line, admitting everything")
+		}
+	}
+	if spec.RunLen < 1 {
+		t.Errorf("RunLen = %d; a run test that admits everything is not a prefilter", spec.RunLen)
+	}
+	if spec.RunClass == "" {
+		t.Error("no RunClass; the rendered ERE would be malformed and the hook would fail to parse")
+	}
+	// The Go implementation must actually agree with the advertised RunLen:
+	// a run one shorter must not admit, a run of exactly RunLen must.
+	short := strings.Repeat("a", spec.RunLen-1)
+	exact := strings.Repeat("a", spec.RunLen)
+	if historyLineMayHoldToken(short) {
+		t.Errorf("a %d-character run admits, but RunLen advertises %d", len(short), spec.RunLen)
+	}
+	if !historyLineMayHoldToken(exact) {
+		t.Errorf("a %d-character run does not admit, but RunLen advertises %d", len(exact), spec.RunLen)
 	}
 }
