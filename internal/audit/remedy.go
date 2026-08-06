@@ -7,9 +7,9 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"os"
 	"strings"
+	"unicode"
 
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/profile"
@@ -122,15 +122,85 @@ func annotateRemedies(findings []Finding, home string) {
 }
 
 // shellSafePath renders a path for a copy-pasteable command. The pretty
-// "~/"-shortened form is used when it pastes cleanly; a path with shell-
-// significant characters is quoted ABSOLUTE instead, because "~" inside
-// quotes does not expand ("jit migrate \"~/My Project/.env\"" would look
-// for a literal ~ directory).
+// "~/"-shortened form is used when it pastes cleanly, and a path that needs
+// quoting keeps it anyway by putting the tilde OUTSIDE the quotes:
+// ~/'Documents/we$ird/.env'.
+//
+// That is not the same construction as "~/Documents/…", which is what the
+// earlier "quote it ABSOLUTE instead" rule was guarding against: a tilde
+// INSIDE quotes is literal, so `jit migrate "~/My Project/.env"` really does
+// look for a directory named "~". A tilde outside them expands, because the
+// shell ends the tilde-prefix at the first unquoted "/" and treats only the
+// remainder as quoted text. Checked against sh, bash and zsh — including a
+// $HOME that itself contains a metacharacter, which stays safe because the
+// result of tilde expansion is itself treated as quoted.
+//
+// It is worth the extra branch because the hint this feeds is the one line in
+// the report that WRAPS rather than truncating (a path cut at the front still
+// identifies the file; a command cut anywhere is no longer a command). Path
+// length is therefore the only lever on wrapping, and "~/" is worth about 30
+// columns. It also keeps the report's one visual invariant — every path reads
+// "~/…" — instead of leaving a single absolute outlier.
+//
+// A path OUTSIDE $HOME that needs quoting is still rendered quoted-absolute,
+// and that residue is deliberate: there is no home prefix to shorten against.
+//
+// What comes out of here is pasted into a shell by a human, and it is also
+// Finding.FixCommand — the NDJSON field a consumer may hand straight to sh.
+// Scan walks whatever repos the user has checked out, so a filename is not
+// jit's to trust: it is the one part of a jit command line that an outsider
+// can choose.
 func shellSafePath(home, path string) string {
-	if strings.ContainsAny(path, " \t'\"\\$&();|<>*?[]#") {
-		return fmt.Sprintf("%q", path)
+	short := ShortenHome(home, path)
+	if shellBarePath(path) {
+		return short
 	}
-	return ShortenHome(home, path)
+	if rest, under := strings.CutPrefix(short, "~/"); under {
+		return "~/" + shellQuote(rest)
+	}
+	return shellQuote(path)
+}
+
+// shellBarePath reports whether path can be printed with no quoting at all.
+//
+// An ALLOWLIST, and that inversion is the fix: this was a
+// ContainsAny(" \t'\"\\$&();|<>*?[]#") denylist, which read as thorough and
+// left out a backtick and a newline. `~/x`+"`id`"+`.env` therefore printed
+// bare, and `x$(id).env` — matching on the parens — was handed to %q, which
+// is GO quoting: "x$(id).env" keeps command substitution live inside those
+// double quotes. Either one runs a stranger's command when the reader pastes
+// the line jit told them to paste. A denylist of shell metacharacters is a
+// list of things someone has to remember; the safe set is short, closed, and
+// checkable by eye.
+//
+// Runes above ASCII pass: a multi-byte UTF-8 encoding contains no byte that
+// is an ASCII metacharacter, so "~/Résumé/.env" is safe bare and keeps the
+// pretty form. "~" is in the set because tilde expansion only fires at the
+// START of a word, and a path here is always absolute or already "~/"-rooted
+// — which keeps Emacs backups (".env~") off the quoted path, common enough in
+// a home directory to matter.
+func shellBarePath(path string) bool {
+	if path == "" {
+		return false
+	}
+	for _, r := range path {
+		switch {
+		case r > unicode.MaxASCII:
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case strings.ContainsRune("._/-+:@,~", r):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// shellQuote wraps s in single quotes, which is the only shell quoting with no
+// interior expansion of any kind: no $, no backtick, no backslash escape. The
+// one character that cannot appear inside is the quote itself, and the
+// ...'\”... idiom closes the string, emits an escaped quote, and reopens.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // annotateCauseGroups gives findings that describe the same underlying

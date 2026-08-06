@@ -5,7 +5,9 @@ package audit
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jitpass/jit/internal/mount"
@@ -211,4 +213,125 @@ func TestCountProtectedSecrets(t *testing.T) {
 	}
 	_ = os.Remove(live)
 	_ = os.Remove(orphan)
+}
+
+// A path is the one part of a jit command line an outsider can choose: scan
+// walks whatever repos the user has checked out, and the output is both pasted
+// into a shell by hand and published as NDJSON fix_command. So the property is
+// not "looks tidy", it is that no filename can make the shell do a second
+// thing — and the cases below are the ones the previous denylist let through.
+func TestShellSafePathCannotExecuteAFilename(t *testing.T) {
+	const home = "/Users/me"
+
+	// Ordinary paths keep the pretty ~/ form, unquoted. This is the common
+	// case and the reason quoting is conditional at all.
+	bare := []struct{ path, want string }{
+		{"/Users/me/.zsh_history", "~/.zsh_history"},
+		{"/Users/me/proj/.env", "~/proj/.env"},
+		{"/Users/me/.config/gh/hosts.yml", "~/.config/gh/hosts.yml"},
+		{"/etc/ssl/private.pem", "/etc/ssl/private.pem"},
+		// Non-ASCII carries no ASCII metacharacter, so it stays pretty.
+		{"/Users/me/Résumé/.env", "~/Résumé/.env"},
+		// Tilde expansion fires only at the start of a word; an Emacs backup
+		// is common enough in a home directory to be worth not quoting.
+		{"/Users/me/proj/.env~", "~/proj/.env~"},
+	}
+	for _, c := range bare {
+		if got := shellSafePath(home, c.path); got != c.want {
+			t.Errorf("shellSafePath(%q) = %q, want %q", c.path, got, c.want)
+		}
+	}
+
+	// Anything else is single-quoted ABSOLUTE — absolute because "~" does not
+	// expand inside quotes, single because nothing expands inside them.
+	// Anything else is single-quoted, with the tilde left OUTSIDE the quotes so
+	// the pretty form survives — the shell ends the tilde-prefix at the first
+	// unquoted "/". A path outside $HOME has no prefix to keep and goes
+	// quoted-absolute.
+	quoted := []struct{ path, want string }{
+		{"/Users/me/My Project/.env", `~/'My Project/.env'`},
+		{"/Users/me/x$(id).env", `~/'x$(id).env'`},
+		{"/Users/me/back`id`tick.env", "~/'back`id`tick.env'"},
+		{"/Users/me/$HOME.env", `~/'$HOME.env'`},
+		{"/Users/me/two\nlines.env", "~/'two\nlines.env'"},
+		{"/Users/me/it's.env", `~/'it'\''s.env'`},
+		{"/Users/me/a;rm -rf ~.env", `~/'a;rm -rf ~.env'`},
+		{"/Users/me/glob*.env", `~/'glob*.env'`},
+		// Outside $HOME: the deliberate residue.
+		{"/opt/shared/keys (2 copies)/id_rsa", `'/opt/shared/keys (2 copies)/id_rsa'`},
+	}
+	for _, c := range quoted {
+		if got := shellSafePath(home, c.path); got != c.want {
+			t.Errorf("shellSafePath(%q) = %q, want %q", c.path, got, c.want)
+		}
+	}
+}
+
+// The claim above, checked by a real shell rather than by inspection: sh must
+// see exactly one argument, byte-identical to the filename, for every path.
+// Guards against the failure that made this a finding — %q looked like quoting
+// and left $(...) and `...` live inside its double quotes.
+func TestShellSafePathSurvivesARealShell(t *testing.T) {
+	for _, path := range []string{
+		"/Users/me/.zsh_history",
+		"/Users/me/My Project/.env",
+		"/Users/me/x$(exit 7).env",
+		"/Users/me/back`exit 7`tick.env",
+		"/Users/me/$HOME.env",
+		"/Users/me/it's.env",
+		"/Users/me/a;echo pwned.env",
+		"/Users/me/glob*.env",
+		"/Users/me/Résumé/.env",
+		"/Users/me/.env~",
+	} {
+		// printf %s with one directive prints its FIRST argument only, so a
+		// path that split into two words, or that ran a command, shows up as
+		// output that differs from the input.
+		script := "printf '%s' " + shellSafePath("", path)
+		out, err := exec.Command("/bin/sh", "-c", script).Output()
+		if err != nil {
+			t.Errorf("%q: sh -c %q: %v", path, script, err)
+			continue
+		}
+		if string(out) != path {
+			t.Errorf("%q: sh saw %q (script: %s)", path, out, script)
+		}
+	}
+}
+
+// The tilde form's whole claim is about what a SHELL does with it, so it is
+// checked by running one: sh must resolve ~/'we$ird…' to the real file on disk.
+// Asserting the string would prove only that we can concatenate.
+func TestShellSafePathTildeFormResolvesInARealShell(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "Documents", "we$ird dir")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	file := filepath.Join(dir, ".env")
+	writeFile(t, file, "ghp_placeholder\n")
+
+	rendered := shellSafePath(home, file)
+	if !strings.HasPrefix(rendered, "~/") {
+		t.Fatalf("a path under $HOME must keep the ~/ form, got %q", rendered)
+	}
+	for _, sh := range []string{"/bin/sh", "/bin/zsh"} {
+		// printf %s with one directive prints its first argument only, so a
+		// tilde that failed to expand, or a remainder that got re-parsed,
+		// shows up as output that differs from the real path.
+		cmd := exec.Command(sh, "-c", "printf '%s' "+rendered)
+		cmd.Env = append(os.Environ(), "HOME="+home)
+		out, err := cmd.Output()
+		if err != nil {
+			t.Errorf("%s: %v (rendered: %s)", sh, err, rendered)
+			continue
+		}
+		if string(out) != file {
+			t.Errorf("%s resolved %s to %q, want %q", sh, rendered, out, file)
+		}
+		// And the file it names is really there — the point of the hint.
+		if _, err := os.Stat(string(out)); err != nil {
+			t.Errorf("%s: resolved path does not exist: %v", sh, err)
+		}
+	}
 }
