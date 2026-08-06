@@ -104,11 +104,19 @@
 //     regenerating the whole file from the vault. Backed up first, and
 //     gets the same .pointers companion .env does.
 //
-// archived.go's LooksArchived/FilterArchived is jit migrate home's only
-// safety net over its wider discovery (GAPS.md #26): a live-mounted pipe
-// in a project nobody revisits is worse than leaving it plaintext, since
-// nothing will ever serve it again. jit migrate local never applies
-// this — an explicit cd into an old project isn't an implicit sweep.
+// Skipping archived projects is jit migrate home's only safety net over its
+// wider discovery (GAPS.md #26): a live-mounted pipe in a project nobody
+// revisits is worse than leaving it plaintext, since nothing will ever serve
+// it again. jit migrate local never applies this — an explicit cd into an old
+// project isn't an implicit sweep.
+//
+// The skip itself lives in internal/cli's runMigrateAll, as a direct
+// Finding.Archived check on the scan it already has, and the flag is
+// audit.LooksArchived's. This package briefly carried a LooksArchived /
+// FilterArchived pair of its own that nothing ever called; it was deleted
+// 2026-08-06 along with the comment promising an --include-archived override
+// that was never built. `jit scan` now names archived findings and offers
+// `jit migrate <path>`, which does reach them — only the sweep walks past.
 //
 // Shell-config, MCP, AWS, kubeconfig, and Terraform profiles all live in a
 // home-rooted global store (profile.GlobalRoot), not the project-relative
