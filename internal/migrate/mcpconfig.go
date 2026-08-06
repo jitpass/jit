@@ -60,6 +60,12 @@ type MCPConfigMigration struct {
 	FilePath   string
 	BackupPath string
 	Servers    []MCPServerMigration
+	// SkippedProjects names ~/.claude.json project blocks that could not be
+	// parsed and were left untouched — still holding whatever plaintext
+	// `jit scan` flagged. Callers MUST surface these: a silent skip recreates
+	// the finding-with-no-fix-path gap this file's projects support exists to
+	// close, one level down. (Review finding, 2026-08-06.)
+	SkippedProjects []string
 }
 
 // ClaudeDesktopConfigPath is Claude Desktop's fixed config location. Retained
@@ -175,7 +181,7 @@ func discoverMCPConfigFiles(home, cwd string, includeClaudeDesktop bool, accept 
 // failing, since a plan must still render for a file apply will fail on for
 // its own reasons.
 func MCPEnvFilePreview(path string) []string {
-	_, blocks, err := loadMCPFile(path)
+	_, blocks, _, err := loadMCPFile(path)
 	if err != nil {
 		return nil
 	}
@@ -213,7 +219,7 @@ func MCPEnvFilePreview(path string) []string {
 // write and profile manifest write happens before path itself is
 // rewritten, and path is backed up first.
 func ApplyMCPConfig(v *vault.Vault, path string) (MCPConfigMigration, error) {
-	topLevel, blocks, err := loadMCPFile(path)
+	topLevel, blocks, skippedProjects, err := loadMCPFile(path)
 	if err != nil {
 		return MCPConfigMigration{}, fmt.Errorf("reading %s: %w", path, err)
 	}
@@ -251,7 +257,7 @@ func ApplyMCPConfig(v *vault.Vault, path string) (MCPConfigMigration, error) {
 		}
 	}
 
-	result := MCPConfigMigration{FilePath: path}
+	result := MCPConfigMigration{FilePath: path, SkippedProjects: skippedProjects}
 	pointers := newEnvFilePointerSet()
 	for _, b := range blocks {
 		names := make([]string, 0, len(b.servers))
@@ -610,7 +616,7 @@ func mcpWrapperProfile(entry mcpServerRaw) string {
 // error: planning must stay tolerant of a config the user deleted or
 // hand-edited since migration.
 func WrappedMCPProfiles(path string) map[string]bool {
-	_, blocks, err := loadMCPFile(path)
+	_, blocks, _, err := loadMCPFile(path)
 	if err != nil {
 		return nil
 	}
@@ -666,7 +672,7 @@ func DiscoverWrappedMCPEntries(home, cwd string, includeClaudeDesktop bool) ([]W
 
 	var entries []WrappedMCPEntry
 	for _, path := range paths {
-		_, blocks, err := loadMCPFile(path)
+		_, blocks, _, err := loadMCPFile(path)
 		if err != nil {
 			continue // discovery already tolerated it; don't fail the check on it
 		}
@@ -733,7 +739,7 @@ type MCPServerRestore struct {
 // empty result with a nil error means nothing in the file was jit's, and
 // the file wasn't rewritten at all.
 func UnwrapMCPConfig(v *vault.Vault, path string, owned map[string]string) ([]MCPServerRestore, error) {
-	topLevel, blocks, err := loadMCPFile(path)
+	topLevel, blocks, _, err := loadMCPFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
@@ -835,7 +841,7 @@ func UnwrapMCPConfig(v *vault.Vault, path string, owned map[string]string) ([]MC
 // block it sits in (discovery's accept predicates). Same-named servers in
 // different projects are distinct entries, so none is lost to a map collision.
 func parseMCPServers(path string) ([]mcpServerRaw, error) {
-	_, blocks, err := loadMCPFile(path)
+	_, blocks, _, err := loadMCPFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -909,31 +915,32 @@ func mcpSourceFile(scope string) string {
 // Blocks come back in a stable order — top-level first, then projects sorted
 // by directory — so a rewrite is deterministic and two runs over an unchanged
 // file produce identical bytes.
-func loadMCPFile(path string) (topLevel map[string]json.RawMessage, blocks []mcpBlock, err error) {
+func loadMCPFile(path string) (topLevel map[string]json.RawMessage, blocks []mcpBlock, skipped []string, err error) {
 	data, err := os.ReadFile(path) // #nosec G304 -- path comes from DiscoverMCPConfigs' own fixed/cwd-scoped walk, never external input
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := json.Unmarshal(data, &topLevel); err != nil {
-		return nil, nil, fmt.Errorf("parsing %s: %w", path, err)
+		return nil, nil, nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
 
 	if key, servers, err := decodeServersBlock(topLevel, path, ""); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	} else if key != "" {
 		blocks = append(blocks, mcpBlock{serversKey: key, servers: servers})
 	}
 
 	raw, ok := topLevel[mcpProjectsKey]
 	if !ok {
-		return topLevel, blocks, nil
+		return topLevel, blocks, nil, nil
 	}
 	var projects map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &projects); err != nil {
 		// A malformed projects block must not cost us the top-level one: the
 		// rest of the file is still migratable, and this half is an extension
-		// only one application writes.
-		return topLevel, blocks, nil
+		// only one application writes. But it IS reported as skipped, for the
+		// reason each per-project skip is below.
+		return topLevel, blocks, []string{mcpProjectsKey + " (unparseable)"}, nil
 	}
 	dirs := make([]string, 0, len(projects))
 	for dir := range projects {
@@ -941,17 +948,37 @@ func loadMCPFile(path string) (topLevel map[string]json.RawMessage, blocks []mcp
 	}
 	sort.Strings(dirs)
 	for _, dir := range dirs {
+		// An empty-string key would build a block whose projectDir is "" —
+		// which storeMCPBlocks treats as THE TOP-LEVEL block, so its rewrite
+		// would clobber the real top-level servers while the project's own
+		// plaintext stayed put, and mcpSourceScope would collide with the
+		// top-level namespace scope. No real store has one; a hand-mangled
+		// file must degrade to skipped-and-reported, not to a clobber.
+		// (Review finding, 2026-08-06.)
+		if dir == "" {
+			skipped = append(skipped, `projects[""]`)
+			continue
+		}
 		var project map[string]json.RawMessage
 		if err := json.Unmarshal(projects[dir], &project); err != nil {
+			// A block that fails to parse still holds whatever plaintext
+			// `jit scan` flagged, and silently walking past it recreates the
+			// finding-with-no-fix-path gap one level down. Recorded so the
+			// caller can SAY a block was left behind.
+			skipped = append(skipped, dir)
 			continue
 		}
 		key, servers, err := decodeServersBlock(project, path, dir)
-		if err != nil || key == "" {
+		if err != nil {
+			skipped = append(skipped, dir)
 			continue
+		}
+		if key == "" {
+			continue // a project with no servers block has nothing to migrate — normal, not skipped
 		}
 		blocks = append(blocks, mcpBlock{projectDir: dir, serversKey: key, servers: servers})
 	}
-	return topLevel, blocks, nil
+	return topLevel, blocks, skipped, nil
 }
 
 // decodeServersBlock pulls the servers map out of one JSON object, trying both
@@ -981,9 +1008,12 @@ func decodeServersBlock(obj map[string]json.RawMessage, path, projectDir string)
 // A project block is written by decoding that project's object into raw fields
 // and replacing ONLY its servers key, so the many other per-project fields
 // ~/.claude.json carries (history, allowedTools, and whatever the application
-// adds next) survive untouched. The "projects" object is re-marshalled only
-// when a project block actually changed, so a file with none comes out with
-// that half byte-identical.
+// adds next) survive untouched. The "projects" object is re-marshalled
+// whenever the file holds any project block — every value passes through
+// RawMessage unchanged, but key ORDER is not preserved (Go maps marshal
+// alphabetically). Accepted: JSON object order carries no meaning, and the
+// owning application rewrites this file constantly itself. A file with no
+// project blocks comes out with that half byte-identical.
 func storeMCPBlocks(topLevel map[string]json.RawMessage, blocks []mcpBlock) error {
 	var projects map[string]json.RawMessage
 	projectsTouched := false
