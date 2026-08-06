@@ -550,12 +550,14 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	countW := len(fmt.Sprintf("%d", summary.TotalFindings))
 	for _, ft := range AllFindingTypes {
 		n := summary.FindingsByCategory[ft]
+		// A nothing-found row used to be dimmed here, so the categories that
+		// DO have findings were what the eye landed on. The faint attribute
+		// was removed on 2026-08-06 (TestNoFaintText now fails the build if it
+		// returns), which left an `n == 0` arm byte-identical to default and a
+		// comment describing styling that no longer happens. Zero rows are
+		// plain, like every other unremarkable row; the itemized sections
+		// below still skip empty categories entirely.
 		switch {
-		case n == 0:
-			// Dim the nothing-found rows so the categories that DO have
-			// findings are what the eye lands on — the itemized sections
-			// below already skip empty categories entirely.
-			fmt.Fprintf(w, "  %-22s %*d\n", findingTypeLabels[ft], countW, n)
 		case n >= heavyCategoryCount:
 			fmt.Fprintf(w, "  %-22s ", findingTypeLabels[ft])
 			_, _ = style.Bold.Fprintf(w, "%*d\n", countW, n)

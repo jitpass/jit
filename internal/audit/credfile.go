@@ -264,7 +264,7 @@ func scanGlobalNpmrc(cfg Config) ([]Finding, error) {
 }
 
 // classifyProjectNpmrc is the credential category's discovery half: a .npmrc
-// can live in any project, so it's found by the shared walk (task #22) rather
+// can live in any project, so it's found by the shared walk rather
 // than by only checking cwd.
 //
 // It deliberately does NOT skip the global ~/.npmrc that scanGlobalNpmrc also

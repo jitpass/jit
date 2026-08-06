@@ -80,7 +80,7 @@ func open(key, sealed, aad []byte) ([]byte, error) {
 // once it's no longer needed. Not a guarantee against a GC-moved copy or a
 // swapped page; real in-memory hardening (mlock, memguard) is out of scope
 // for this first cut of the vault — see spike/memguard/ for the validated
-// mechanism this can grow into once jit-agent (task #9) exists.
+// mechanism this can grow into now that internal/agent exists.
 func wipe(b []byte) {
 	for i := range b {
 		b[i] = 0

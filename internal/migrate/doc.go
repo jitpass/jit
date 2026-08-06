@@ -27,7 +27,7 @@
 //   - .env files (apply.go/unmount.go), scoped to the chosen root (cwd for
 //     jit migrate local, $HOME for jit migrate home), converted into a
 //     profile + vault secrets + a live-mounted pipe (RFC.md Pillar III
-//     Tier 3, task #10) that jit unmount can reverse. A git-safe,
+//     Tier 3) that jit unmount can reverse. A git-safe,
 //     IDE-peekable <file>.pointers companion (pointerfile.go, GAPS.md #26)
 //     is written alongside it — see that file's own doc comment for why,
 //     including the just-in-time interception scheme that was considered
