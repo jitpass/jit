@@ -569,7 +569,7 @@ func ScanAgentStores(cfg Config) ([]Finding, error) {
 			return
 		}
 		for i := range fs {
-			fs[i].Evidence = fmt.Sprintf("%s (found in %s's local store)", fs[i].Evidence, label)
+			fs[i].Evidence = fmt.Sprintf("%s (found in %s local store)", fs[i].Evidence, possessive(label))
 		}
 		findings = append(findings, fs...)
 	}

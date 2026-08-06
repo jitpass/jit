@@ -327,7 +327,7 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 		}
 		if tokenVerified {
 			f.Confidence = ConfidenceHigh
-			f.Evidence = fmt.Sprintf("contains a value matching %s's known token format", tokenVendor)
+			f.Evidence = fmt.Sprintf("contains a value matching %s known token format", possessive(tokenVendor))
 		} else {
 			f.Confidence = ConfidenceMedium
 			f.Evidence = fmt.Sprintf("contains a value that looks like it may be a %s (pattern not independently verified)", tokenVendor)

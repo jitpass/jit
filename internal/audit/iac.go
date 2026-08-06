@@ -486,7 +486,7 @@ func buildTfvarsFinding(cfg Config, path string) (Finding, error) {
 		leadVendor, leadKey = tokens[0].vendor, tokens[0].key
 		if tokens[0].verified {
 			f.Confidence = ConfidenceHigh
-			f.Evidence = fmt.Sprintf("contains a value matching %s's known token format", leadVendor)
+			f.Evidence = fmt.Sprintf("contains a value matching %s known token format", possessive(leadVendor))
 		} else {
 			f.Evidence = fmt.Sprintf("contains a value that looks like it may be a %s (pattern not independently verified)", leadVendor)
 		}

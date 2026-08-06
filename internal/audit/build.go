@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 )
 
 // ValueFindingParams describes a discovered key/value pair a category
@@ -35,6 +36,19 @@ type ValueFindingParams struct {
 //   - Otherwise the value is masked (MaskValue) and checked for a
 //     production-indicator or public-IP match, which escalates severity to
 //     Critical unconditionally.
+//
+// possessive renders name's possessive form. A name already ending in "s"
+// takes a bare apostrophe, which is what stops the evidence line reading
+// "Database connection string with embedded credentials's known token format"
+// — a real string this package printed dozens of times in one report, because
+// every site built the possessive with a hand-written "%s's".
+func possessive(name string) string {
+	if strings.HasSuffix(name, "s") || strings.HasSuffix(name, "S") {
+		return name + "'"
+	}
+	return name + "'s"
+}
+
 func (c Config) ValueFinding(p ValueFindingParams) Finding {
 	f := c.baseFinding()
 	f.FindingType = p.FindingType
@@ -93,7 +107,7 @@ func (c Config) ValueFinding(p ValueFindingParams) Finding {
 		f.Severity = SeverityHigh
 		if verified {
 			f.Confidence = ConfidenceHigh
-			f.Evidence = fmt.Sprintf("value matches %s's known token format", vendor)
+			f.Evidence = fmt.Sprintf("value matches %s known token format", possessive(vendor))
 		} else {
 			f.Confidence = ConfidenceMedium
 			f.Evidence = fmt.Sprintf("value looks like it may be a %s (pattern not independently verified)", vendor)
