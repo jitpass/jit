@@ -60,7 +60,7 @@ against:
 | Command | On a terminal | Piped or redirected |
 |---|---|---|
 | `jit vault list` | Grouped under a header per path segment, with counts, flowed into columns | One full secret path per line, then a blank line and a two-line count summary |
-| `jit vault get` | The value on stdout, plus a faint metadata line on **stderr** (last updated, referencing profiles, source file) | The value only, nothing on stderr |
+| `jit vault get` | The value on stdout, plus a metadata line on **stderr** (last updated, referencing profiles, source file) | The value only, nothing on stderr |
 | `jit vault list -l` | Annotates each secret with its class and age | Not rendered (terminal only) |
 
 So `jit vault get path > file` writes just the value, with no flag needed.

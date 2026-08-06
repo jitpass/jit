@@ -31,7 +31,7 @@ to overwrite an existing path, `--stdin` to pipe the value in);
 `jit vault get <path>` decrypts and prints one (`--copy` sends it to the
 clipboard instead - marked so clipboard managers skip it, and auto-cleared
 after 45 seconds unless you've copied something else by then); on a
-terminal, a faint footer line follows on stderr with when the secret was
+terminal, a footer line follows on stderr with when the secret was
 last updated and which profile uses it - piped output gets the value only.
 `jit vault list` shows what's stored - names and paths only, never values.
 On a terminal, entries group under a header per prefix:

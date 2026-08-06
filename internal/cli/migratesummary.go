@@ -26,10 +26,10 @@ import (
 // the plan itself uses (printMigratePlanCategoryAnnotated) — the past-tense
 // mutation log visually matches the future-tense plan directly above it,
 // instead of reading like a different tool's output. Kept in lockstep with
-// the plan header on purpose: a bold name, a dim count, no rule.
+// the plan header on purpose: a bold name, a plain count, no rule.
 func printMigrateResultCategory(w io.Writer, label string, n int) {
 	fmt.Fprintf(w, "[%s]", label)
-	_, _ = cDim.Fprintf(w, " %d\n", n)
+	_, _ = fmt.Fprintf(w, " %d\n", n)
 }
 
 // migrateSummary collects everything that used to print inline, once per

@@ -1143,7 +1143,7 @@ func printMountStatuses(w io.Writer, mounts []agent.MountRevealStatus) {
 	// default), ● real-to-a-grant.
 	fmt.Fprint(w, "\n")
 	_, _ = cBold.Fprint(w, "Mounts:")
-	_, _ = cDim.Fprintf(w, " %d · decoy by default; real values flow through a jit run grant, or an approved consent prompt for a global credential file\n", len(sorted))
+	_, _ = fmt.Fprintf(w, " %d · decoy by default; real values flow through a jit run grant, or an approved consent prompt for a global credential file\n", len(sorted))
 	decoyReads := 0
 	for _, m := range sorted {
 		path := displayPath(home, m.Path)
@@ -1153,24 +1153,24 @@ func printMountStatuses(w io.Writer, mounts []agent.MountRevealStatus) {
 		if m.Swapped {
 			_, _ = cOK.Fprint(w, "  "+glyphOK+" ")
 			fmt.Fprint(w, path)
-			_, _ = cDim.Fprintln(w, "  compatibility file (real values are in the run's environment; the file is inert)")
+			_, _ = fmt.Fprintln(w, "  compatibility file (real values are in the run's environment; the file is inert)")
 			for _, g := range m.Grants {
 				cmd := grantCommand(g)
-				_, _ = cDim.Fprintf(w, "      swapped for jit run pid %d (%s) since %s ago, decoy mount returns when it exits\n", g.PID, cmd, humanAgo(time.Since(time.Unix(g.SinceUnix, 0))))
+				_, _ = fmt.Fprintf(w, "      swapped for jit run pid %d (%s) since %s ago, decoy mount returns when it exits\n", g.PID, cmd, humanAgo(time.Since(time.Unix(g.SinceUnix, 0))))
 			}
 			continue
 		}
 		if len(m.Grants) > 0 {
 			_, _ = cOK.Fprint(w, "  "+glyphOK+" ")
 			fmt.Fprint(w, path)
-			_, _ = cDim.Fprintf(w, "  real to %s, decoy to everything else\n", countWord(len(m.Grants), "active grant", "active grants"))
+			_, _ = fmt.Fprintf(w, "  real to %s, decoy to everything else\n", countWord(len(m.Grants), "active grant", "active grants"))
 		} else {
 			_, _ = cWarn.Fprint(w, "  "+glyphWarn+" ")
 			fmt.Fprintln(w, path)
 		}
 		for _, g := range m.Grants {
 			cmd := grantCommand(g)
-			_, _ = cDim.Fprintf(w, "      serving real values to jit run pid %d (%s) since %s ago, until it exits\n", g.PID, cmd, humanAgo(time.Since(time.Unix(g.SinceUnix, 0))))
+			_, _ = fmt.Fprintf(w, "      serving real values to jit run pid %d (%s) since %s ago, until it exits\n", g.PID, cmd, humanAgo(time.Since(time.Unix(g.SinceUnix, 0))))
 		}
 		if ls := m.LastServe; ls != nil {
 			reader := describeReader(ls)
@@ -1178,11 +1178,11 @@ func printMountStatuses(w io.Writer, mounts []agent.MountRevealStatus) {
 			switch {
 			case ls.Decoy:
 				decoyReads++
-				_, _ = cDim.Fprintf(w, "      read %s ago by %s · decoy\n", ago, reader)
+				_, _ = fmt.Fprintf(w, "      read %s ago by %s · decoy\n", ago, reader)
 			case ls.GrantServed:
-				_, _ = cDim.Fprintf(w, "      read %s ago by %s · real (run-scoped grant)\n", ago, reader)
+				_, _ = fmt.Fprintf(w, "      read %s ago by %s · real (run-scoped grant)\n", ago, reader)
 			default:
-				_, _ = cDim.Fprintf(w, "      read %s ago by %s · real\n", ago, reader)
+				_, _ = fmt.Fprintf(w, "      read %s ago by %s · real\n", ago, reader)
 			}
 			if m.ReadsLastMinute >= readStormThreshold {
 				_, _ = cWarn.Fprintf(w, "      read %d times in the last minute, usually an editor or file watcher re-reading it in a loop; excluding this file from it stops the churn\n", m.ReadsLastMinute)
@@ -1360,7 +1360,7 @@ const headlessPromptWait = 20 * time.Second
 // documents. stderr, so it never corrupts a --format json payload on stdout;
 // json/status commands don't challenge, so it won't fire for them anyway.
 func announceTouchIDWait() {
-	fmt.Fprintln(os.Stderr, "🔐 Touch ID required: approve the prompt on your Mac to continue...")
+	fmt.Fprintln(os.Stderr, glyphLock+" Touch ID required: approve the prompt on your Mac to continue...")
 }
 
 // notRunningHint rewrites a Client call's dial failure into the actionable

@@ -141,7 +141,7 @@ are hiding, instead of needing a diff of two runs.
 
 ## How to read a finding block (`--full`)
 
-Each non-empty category opens with a bracketed header and its dim finding
+Each non-empty category opens with a bracketed header and its finding
 count (`[Shell Configs] 2`). Within it, every block gets a `•`-marked header (a
 file path, or a pattern name for findings collapsed across files), and each
 finding is one aligned row: line number (when known), severity, key name, and

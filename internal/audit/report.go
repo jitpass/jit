@@ -12,16 +12,18 @@ import (
 
 	"github.com/fatih/color"
 
+	"github.com/jitpass/jit/internal/style"
 	"github.com/jitpass/jit/internal/termtext"
 )
 
-// Report glyphs. audit renders its own reports and cannot import
-// internal/cli, so these mirror the glyph* constants in cli/style.go — the
-// designated single ASCII-swap point; change the two blocks together.
+// Report glyphs, aliased from internal/style — the single ASCII-swap point
+// both this package and internal/cli now share. They used to be a hand-copied
+// mirror of cli/style.go's block with a "change the two together" comment,
+// which is the kind of instruction that holds right up until it doesn't.
 const (
-	reportGlyphOK   = "●"
-	reportGlyphWarn = "○"
-	reportGlyphRisk = "✗"
+	reportGlyphOK   = style.GlyphOK
+	reportGlyphWarn = style.GlyphWarn
+	reportGlyphRisk = style.GlyphRisk
 )
 
 // highlightCmds renders `backtick`-delimited command spans cyan (the house
@@ -29,7 +31,7 @@ const (
 // audit-package twin of internal/cli's hlCmds, for the same reason as the
 // glyphs above. When color is off the spans pass through as clean text.
 func highlightCmds(s string) string {
-	cmd := color.New(color.FgCyan)
+	cmd := style.Path
 	var b strings.Builder
 	for {
 		i := strings.IndexByte(s, '`')
@@ -65,21 +67,28 @@ var findingTypeLabels = map[string]string{ // #nosec G101 -- enum label keys, no
 	FindingTypeShellHistorySecret: "Shell History",
 }
 
+// KNOWN DRIFT, awaiting a preview decision: Low is cyan, which the house
+// style reserves for something the reader can type. A severity is a state.
+// Left as-is here so this refactor changes no bytes; see the note in
+// design/output-style.md.
 var riskLevelColor = map[string]*color.Color{
-	RiskLevelCritical: color.New(color.FgRed, color.Bold),
-	RiskLevelHigh:     color.New(color.FgYellow, color.Bold),
-	RiskLevelMedium:   color.New(color.FgYellow),
+	RiskLevelCritical: style.RiskBold,
+	RiskLevelHigh:     style.WarnBold,
+	RiskLevelMedium:   style.Warn,
 	RiskLevelLow:      color.New(color.FgCyan),
-	RiskLevelClean:    color.New(color.FgGreen, color.Bold),
+	RiskLevelClean:    style.OKBold,
 }
 
 // High and Medium were both plain FgYellow — visually indistinguishable
 // in a [high]/[medium] tag. Bold on High matches riskLevelColor's own
 // High/Medium weight split two lines above, so the two maps agree.
+// Same drift as riskLevelColor on Low, plus Info in FgWhite — a seventh ink
+// the palette does not have, and one that means "default" only on a dark
+// terminal. Both await the same preview decision.
 var severityColor = map[string]*color.Color{
-	SeverityCritical: color.New(color.FgRed),
-	SeverityHigh:     color.New(color.FgYellow, color.Bold),
-	SeverityMedium:   color.New(color.FgYellow),
+	SeverityCritical: style.Risk,
+	SeverityHigh:     style.WarnBold,
+	SeverityMedium:   style.Warn,
 	SeverityLow:      color.New(color.FgCyan),
 	SeverityInfo:     color.New(color.FgWhite),
 }
@@ -395,16 +404,16 @@ func writeDerivedCredentialAdvisory(w io.Writer, summary ScanSummary, home strin
 	if len(summary.DerivedCredentials) == 0 {
 		return
 	}
-	_, _ = color.New(color.Bold).Fprintln(w, "  Outside jit's scope, found anyway:")
+	_, _ = style.Bold.Fprintln(w, "  Outside jit's scope, found anyway:")
 	for _, d := range summary.DerivedCredentials {
 		fmt.Fprintf(w, "    %s\n", displayFilePath(home, d.Path))
 		fmt.Fprintf(w, "      %s\n", d.What)
 		if d.Advice != "" {
-			_, _ = color.New(color.Faint).Fprintf(w, "      %s\n", d.Advice)
+			fmt.Fprintf(w, "      %s\n", d.Advice)
 		}
 	}
-	_, _ = color.New(color.Faint).Fprintln(w, "    jit protects credentials you stored; these were minted by the tools that used them.")
-	_, _ = color.New(color.Faint).Fprintln(w, "    It does not manage, rotate or hide them — see docs/security/architecture.md.")
+	fmt.Fprintln(w, "    jit protects credentials you stored; these were minted by the tools that used them.")
+	fmt.Fprintln(w, "    It does not manage, rotate or hide them — see docs/security/architecture.md.")
 	fmt.Fprintln(w)
 }
 
@@ -435,7 +444,7 @@ func anyArchived(findings []Finding) bool {
 
 // WriteHumanReport renders the full-inventory scan report (RFC.md §4):
 // `jit scan --full`, `--unfiltered`, and every targeted `jit scan <path>`.
-// The house-style sibling of WriteTriageReport — same dim header voice, same
+// The house-style sibling of WriteTriageReport — same header voice, same
 // glyph/arrow motifs (design/output-style.md) — keeping what this view is
 // for: exact categories, severities, files and lines. Never a real secret
 // value — only Finding.ValuePreview, which is already masked by the time it
@@ -447,10 +456,9 @@ func anyArchived(findings []Finding) bool {
 // reading $HOME at render time keeps the output a pure function of its
 // arguments — the same reason scanners take Config.HomeDir.
 func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home string) {
-	dim := color.New(color.Faint)
-	yellow := color.New(color.FgYellow)
-	green := color.New(color.FgGreen)
-	cmd := color.New(color.FgCyan)
+	yellow := style.Warn
+	green := style.OK
+	cmd := style.Path
 
 	who := summary.Endpoint.Username
 	if who == "" {
@@ -468,7 +476,7 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	if summary.FilesScanned > 0 {
 		sizeNote = fmt.Sprintf(" (%s files)", groupDigits(summary.FilesScanned))
 	}
-	termtext.Wrap(w, 0, "", dim.Sprintf("jit scan — %s@%s — scanned %s%s — full inventory — %s",
+	termtext.Wrap(w, 0, "", fmt.Sprintf("jit scan — %s@%s — scanned %s%s — full inventory — %s",
 		who, host, where, sizeNote, formatDuration(summary.ScanDurationMs)))
 
 	// The unfiltered notice sits ABOVE the numbers, not in a footnote: like
@@ -478,7 +486,7 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	if summary.Unfiltered {
 		_, _ = yellow.Fprint(w, reportGlyphWarn)
 		fmt.Fprint(w, " ")
-		termtext.Wrap(w, 2, "  ", "suppression off "+dim.Sprint("(--unfiltered) — settings, paths, browser-public build variables and template filler are all shown; the everyday view hides these"))
+		termtext.Wrap(w, 2, "  ", "suppression off "+"(--unfiltered) — settings, paths, browser-public build variables and template filler are all shown; the everyday view hides these")
 	}
 	fmt.Fprintln(w)
 
@@ -488,7 +496,7 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	// findings" from a run that could not read a category is not the claim
 	// a reader of a full inventory will think to question.
 	if len(summary.DegradedScanners) > 0 {
-		yellowBold := color.New(color.FgYellow, color.Bold)
+		yellowBold := style.WarnBold
 		noun := "categories"
 		if len(summary.DegradedScanners) == 1 {
 			noun = "category"
@@ -500,7 +508,7 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 			termtext.Wrap(w, 4, "    ", yellow.Sprintf("%s — %s", d.Scanner, oneLine(shortenHomeInText(home, d.Error))))
 		}
 		fmt.Fprint(w, "  ")
-		termtext.Wrap(w, 2, "  ", dim.Sprint("Counts below cover everything else; secrets in the unread categories are not included."))
+		termtext.Wrap(w, 2, "  ", "Counts below cover everything else; secrets in the unread categories are not included.")
 		fmt.Fprintln(w)
 	}
 
@@ -517,7 +525,7 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	fmt.Fprintf(w, " — exposure %d/100\n", summary.ExposureScore)
 	if matches := summary.ProductionIndicatorCount + summary.PublicIPCount; matches > 0 {
 		fmt.Fprint(w, "    ")
-		termtext.Wrap(w, 4, "    ", dim.Sprintf("%s — each file itemized in its category below",
+		termtext.Wrap(w, 4, "    ", fmt.Sprintf("%s — each file itemized in its category below",
 			countWord(matches, "production-indicator/public-IP match", "production-indicator/public-IP matches")))
 		// One exemplar, not the list: every trigger path reappears in its
 		// category with line numbers, and thirteen near-identical paths
@@ -529,7 +537,7 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 				suffix = fmt.Sprintf(" … and %d more", len(paths)-1)
 			}
 			avail := termtext.Width() - 4 - len(prefix) - termtext.VisibleWidth(suffix)
-			_, _ = dim.Fprintf(w, "    %s%s%s\n", prefix, termtext.TruncHead(displayFilePath(home, paths[0]), avail), suffix)
+			fmt.Fprintf(w, "    %s%s%s\n", prefix, termtext.TruncHead(displayFilePath(home, paths[0]), avail), suffix)
 		}
 	}
 	fmt.Fprintln(w)
@@ -542,15 +550,15 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 			// Dim the nothing-found rows so the categories that DO have
 			// findings are what the eye lands on — the itemized sections
 			// below already skip empty categories entirely.
-			_, _ = dim.Fprintf(w, "  %-22s %*d\n", findingTypeLabels[ft], countW, n)
+			fmt.Fprintf(w, "  %-22s %*d\n", findingTypeLabels[ft], countW, n)
 		case n >= heavyCategoryCount:
 			fmt.Fprintf(w, "  %-22s ", findingTypeLabels[ft])
-			_, _ = color.New(color.Bold).Fprintf(w, "%*d\n", countW, n)
+			_, _ = style.Bold.Fprintf(w, "%*d\n", countW, n)
 		default:
 			fmt.Fprintf(w, "  %-22s %*d\n", findingTypeLabels[ft], countW, n)
 		}
 	}
-	fmt.Fprintf(w, "  %s\n", strings.Repeat("─", 23+countW))
+	fmt.Fprintf(w, "  %s\n", strings.Repeat(style.GlyphRule, 23+countW))
 	fmt.Fprintf(w, "  %-22s %*d\n", "Total", countW, summary.TotalFindings)
 	// Good news gets a line too: files jit already protects (live mounts,
 	// content served from the encrypted vault) are excluded from the
@@ -562,7 +570,7 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 		fmt.Fprint(w, " ")
 		termtext.Wrap(w, 4, "    ",
 			fmt.Sprintf("%s already protected ", countWord(summary.JitProtectedCount, "live mount", "live mounts"))+
-				dim.Sprint("— served from the encrypted vault, no plaintext on disk (not scanned)"))
+				"— served from the encrypted vault, no plaintext on disk (not scanned)")
 	}
 	fmt.Fprintln(w)
 
@@ -597,7 +605,7 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 		}
 
 		fmt.Fprintf(w, "[%s]", findingTypeLabels[ft])
-		_, _ = color.New(color.Faint).Fprintf(w, " %d\n", summary.FindingsByCategory[ft])
+		fmt.Fprintf(w, " %d\n", summary.FindingsByCategory[ft])
 		cols := computeColumns(group)
 		for _, item := range buildRenderItems(group) {
 			writeRenderItemText(w, item, home, cols)
@@ -614,11 +622,11 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	// report; this line only decodes the per-finding marker.)
 	if anyArchived(findings) {
 		_, _ = yellow.Fprint(w, "[archived]")
-		termtext.Wrap(w, 10, "  ", dim.Sprint(" lives under an archived/backup-looking folder — name such a file explicitly to convert it"))
+		termtext.Wrap(w, 10, "  ", " lives under an archived/backup-looking folder — name such a file explicitly to convert it")
 	}
 	if anyUnfilteredOnly(findings) {
 		_, _ = yellow.Fprint(w, "[unfiltered]")
-		termtext.Wrap(w, 12, "  ", dim.Sprint(" reported only because suppression is off — the everyday scan hides or downgrades it"))
+		termtext.Wrap(w, 12, "  ", " reported only because suppression is off — the everyday scan hides or downgrades it")
 	}
 	// The report's only prior "next step" pointed at an output-format
 	// flag, not remediation — a first-time reader of a HIGH/CRITICAL
@@ -639,14 +647,14 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	if example := firstFindingPath(findings); example != "" {
 		fmt.Fprint(w, "  ")
 		termtext.Wrap(w, 2, "    ",
-			cmd.Sprintf("→ jit migrate %s --dry-run", displayFilePath(home, example))+
-				dim.Sprint("   the guided fix plan for the first flagged file"))
+			cmd.Sprintf(style.GlyphAction+" jit migrate %s --dry-run", displayFilePath(home, example))+
+				"   the guided fix plan for the first flagged file")
 	}
 	fmt.Fprint(w, "  ")
 	termtext.Wrap(w, 2, "  ",
-		dim.Sprint("No secret values are ever printed in full · ")+
+		"No secret values are ever printed in full · "+
 			cmd.Sprint("jit scan --format ndjson")+
-			dim.Sprint(" for machines, same redaction"))
+			" for machines, same redaction")
 }
 
 // anyUnfilteredOnly reports whether any finding carries the [unfiltered]
@@ -785,7 +793,7 @@ func itemUnfilteredOnly(it renderItem) bool {
 // [unfiltered]) the trailer legends decode, and returns their display width
 // so the caller can budget the path truncation around them.
 func writeItemTags(w io.Writer, archived, unfiltered bool) {
-	yellow := color.New(color.FgYellow)
+	yellow := style.Warn
 	if archived {
 		_, _ = yellow.Fprint(w, " [archived]")
 	}
@@ -813,7 +821,6 @@ func itemTagsWidth(archived, unfiltered bool) int {
 // same file, when it was actually an unrelated pattern shared by different
 // files — then the shared finding and the file list.
 func writeRenderItemText(w io.Writer, item renderItem, home string, cols columns) {
-	dim := color.New(color.Faint)
 	unfiltered := itemUnfilteredOnly(item)
 	if item.collapsed {
 		// Same "• " marker as a file path: both kinds of header anchor a
@@ -823,7 +830,7 @@ func writeRenderItemText(w io.Writer, item renderItem, home string, cols columns
 		writeItemTags(w, false, unfiltered)
 		fmt.Fprint(w, "\n\n")
 		cols.writeFindingRow(w, item.rep, false)
-		// The location list is dim: it locates the shared pattern the row
+		// The location list is secondary: it locates the shared pattern the row
 		// above already explained, secondary by the house rule.
 		locIndent := strings.Repeat(" ", cols.reasonIndent())
 		for _, loc := range item.locations {
@@ -833,7 +840,7 @@ func writeRenderItemText(w io.Writer, item renderItem, home string, cols columns
 			}
 			archived := LooksArchived(loc.Path)
 			avail := termtext.Width() - len(locIndent) - 2 - itemTagsWidth(archived, false)
-			_, _ = dim.Fprintf(w, "%s- %s", locIndent, termtext.TruncHead(entry, avail))
+			fmt.Fprintf(w, "%s- %s", locIndent, termtext.TruncHead(entry, avail))
 			writeItemTags(w, archived, false)
 			fmt.Fprintln(w)
 		}
@@ -879,7 +886,6 @@ func displayEvidence(f Finding) string {
 // A finding with neither key nor value has nothing to columnize but its
 // severity, so its reason stays inline rather than dangling under an empty row.
 func (c columns) writeFindingRow(w io.Writer, f Finding, showLine bool) {
-	dim := color.New(color.Faint)
 	fmt.Fprint(w, findingIndent)
 	if c.hasLine {
 		lt := ""
@@ -913,8 +919,8 @@ func (c columns) writeFindingRow(w io.Writer, f Finding, showLine bool) {
 	fmt.Fprintln(w)
 
 	if ev := displayEvidence(f); ev != "" {
-		_, _ = dim.Fprintf(w, "%s└ ", indent)
-		termtext.Wrap(w, c.reasonIndent()+2, indent+"  ", dim.Sprint(highlightCmds(ev)))
+		fmt.Fprintf(w, "%s└ ", indent)
+		termtext.Wrap(w, c.reasonIndent()+2, indent+"  ", highlightCmds(ev))
 	}
 	c.writeUnfilteredNote(w, f, indent)
 }
@@ -926,7 +932,6 @@ func (c columns) writeUnfilteredNote(w io.Writer, f Finding, indent string) {
 	if !f.UnfilteredOnly || f.UnfilteredReason == "" {
 		return
 	}
-	dim := color.New(color.Faint)
-	_, _ = dim.Fprintf(w, "%s└ ", indent)
-	termtext.Wrap(w, c.reasonIndent()+2, indent+"  ", dim.Sprint("shown by --unfiltered: "+sanitizeDisplay(f.UnfilteredReason)))
+	fmt.Fprintf(w, "%s└ ", indent)
+	termtext.Wrap(w, c.reasonIndent()+2, indent+"  ", "shown by --unfiltered: "+sanitizeDisplay(f.UnfilteredReason))
 }

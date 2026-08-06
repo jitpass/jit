@@ -63,22 +63,22 @@ func printAuditReport(w io.Writer, entries []auditEntry, filtered bool) {
 				fmt.Fprintln(w)
 			}
 			day = d
-			_, _ = cDim.Fprintf(w, "  %s\n", auditDayLabel(g.e.t))
+			_, _ = fmt.Fprintf(w, "  %s\n", auditDayLabel(g.e.t))
 		}
 		writeAuditRow(w, g, cols)
 	}
 
 	fmt.Fprintln(w)
 	fmt.Fprint(w, "  ")
-	_, _ = cPath.Fprint(w, "→ ")
+	_, _ = cPath.Fprint(w, glyphAction+" ")
 	// Point at the most useful next filter. When any unlock was refused, name
 	// --status denied too, since it is now a distinct count in the header above.
 	hint := cPath.Sprint("jit audit --status failed") +
-		cDim.Sprint("   only what went wrong")
+		"   only what went wrong"
 	if _, denied := auditOutcomeCounts(entries); denied > 0 {
-		hint += cDim.Sprint(" · ") + cPath.Sprint("--status denied") + cDim.Sprint(" for refusals")
+		hint += " · " + cPath.Sprint("--status denied") + " for refusals"
 	}
-	hint += cDim.Sprint(" · --format logfmt for the machine form")
+	hint += " · --format logfmt for the machine form"
 	termtext.Wrap(w, 4, "    ", hint)
 }
 
@@ -111,7 +111,7 @@ func writeAuditHeader(w io.Writer, entries []auditEntry) {
 	if denied > 0 {
 		head += fmt.Sprintf(" · %d denied", denied)
 	}
-	_, _ = cDim.Fprintln(w, head)
+	_, _ = fmt.Fprintln(w, head)
 	fmt.Fprintln(w)
 }
 
@@ -263,18 +263,18 @@ func writeAuditRow(w io.Writer, g auditGroup, cols auditCols) {
 	stacked := cols.stacked
 
 	fmt.Fprint(w, strings.Repeat(" ", auditRowIndent))
-	_, _ = cDim.Fprintf(w, "%s ", g.e.t.Format("15:04"))
+	_, _ = fmt.Fprintf(w, "%s ", g.e.t.Format("15:04"))
 	_, _ = c.Fprintf(w, "%s ", glyph)
 
 	if stacked {
 		fmt.Fprintln(w, termtext.TruncMid(g.e.subject, termtext.Width()-auditRowLead))
 		if parent != "" || repeat != "" {
-			_, _ = cDim.Fprintf(w, "%s%s\n", auditHangIndent,
+			_, _ = fmt.Fprintf(w, "%s%s\n", auditHangIndent,
 				strings.TrimSpace(repeat+" "+parent))
 		}
 	} else {
 		fmt.Fprintf(w, "%-*s", cols.subject, termtext.TruncMid(g.e.subject, cols.subject))
-		_, _ = cDim.Fprintf(w, "  %3s  %s\n", repeat, parent)
+		_, _ = fmt.Fprintf(w, "  %3s  %s\n", repeat, parent)
 	}
 
 	// The secret names an unlock or a use touched: the one detail that
@@ -282,7 +282,7 @@ func writeAuditRow(w io.Writer, g auditGroup, cols auditCols) {
 	if len(g.e.labels) > 0 {
 		fmt.Fprint(w, auditHangIndent)
 		termtext.Wrap(w, auditRowLead, auditHangIndent,
-			cDim.Sprint(strings.Join(g.e.labels, ", ")))
+			strings.Join(g.e.labels, ", "))
 	}
 	if g.e.detail != "" {
 		fmt.Fprint(w, auditHangIndent)
@@ -290,7 +290,7 @@ func writeAuditRow(w io.Writer, g auditGroup, cols auditCols) {
 	}
 	if g.e.action != "" {
 		fmt.Fprint(w, auditHangIndent)
-		_, _ = cPath.Fprint(w, "→ ")
+		_, _ = cPath.Fprint(w, glyphAction+" ")
 		termtext.Wrap(w, auditRowLead+2, auditHangIndent+"  ", cPath.Sprint(g.e.action))
 	}
 }

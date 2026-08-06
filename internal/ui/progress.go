@@ -13,13 +13,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fatih/color"
+	"github.com/jitpass/jit/internal/style"
 )
 
 // spinnerFrames is a braille cycle — the same one most modern CLIs use. It
 // reads as motion at ~11fps and every frame is a single fixed-width rune, so
-// the in-place redraw never changes the line's length.
-var spinnerFrames = []rune{'⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'}
+// the in-place redraw never changes the line's length. Defined in
+// internal/style with the rest of the tool's glyphs.
+var spinnerFrames = style.SpinnerFrames
 
 const spinnerInterval = 90 * time.Millisecond
 
@@ -135,7 +136,7 @@ func (t *Tracker) settleLocked() {
 	if !t.active {
 		return
 	}
-	check := color.New(color.FgGreen).Sprint("✓")
+	check := style.OK.Sprint(style.GlyphDone)
 	fmt.Fprintf(t.w, "\r\033[K%s %s\n", check, t.doneText)
 	t.active = false
 }
@@ -144,7 +145,7 @@ func (t *Tracker) settleLocked() {
 // column 0 and \033[K clears to end-of-line, so a shorter frame never leaves
 // tail characters from the previous one.
 func (t *Tracker) renderLocked() {
-	frame := color.New(color.Faint).Sprint(string(spinnerFrames[t.frame]))
+	frame := string(spinnerFrames[t.frame])
 	line := t.running
 	if t.suffix != "" {
 		line += " " + t.suffix
