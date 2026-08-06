@@ -412,6 +412,43 @@ const minAnchorLen = 3
 // second table is deliberate: a table would drift silently the first time a
 // pattern's prefix changed, and a wrong anchor greps to nothing, which reads
 // to the user as the finding having been a false positive.
+// TokenPatternERE returns vendor's full pattern as a POSIX-ERE-compatible
+// string safe to embed in a single-quoted `grep -nE '…'` command, or "" when
+// the pattern cannot be carried over faithfully.
+//
+// It exists for the locate hint: the anchor-based hint needs a literal prefix,
+// so the vendors whose patterns open with an alternation or a word boundary —
+// AWS's (AKIA|ASIA), SendGrid's SG., Vault's hv[sbr]., Doppler's dp.st. — got
+// no hint at all, and those are exactly the credentials a reader most wants to
+// find in a big file. The full pattern also buys back what the anchor trade
+// gave up: grep matches the same spans the scanner did, boundaries included.
+//
+// Two transformations, both checked rather than assumed:
+//   - "(?:" becomes "(": POSIX ERE has no non-capturing groups, and a capture
+//     group matches identically for grep's purposes.
+//   - Any other "(?" construct (lookarounds, flags) does not survive
+//     translation, so the pattern is refused and the caller falls back.
+//
+// A single quote in the pattern would break the shell quoting; no vendor
+// pattern carries one, and the check makes that a property rather than a hope.
+func TokenPatternERE(vendor string) string {
+	for _, p := range knownTokenPatterns {
+		if p.vendor != vendor {
+			continue
+		}
+		ere := strings.ReplaceAll(p.pattern.String(), "(?:", "(")
+		// A leading "-" would parse as grep OPTIONS, not a pattern — the
+		// private-key headers all start with one. Refused rather than solved
+		// with -e, because those findings have their own dedicated hints
+		// (viewHintByLine) and a second path to them here would be untested.
+		if strings.Contains(ere, "(?") || strings.ContainsAny(ere, "'\n") || strings.HasPrefix(ere, "-") {
+			return ""
+		}
+		return ere
+	}
+	return ""
+}
+
 func TokenAnchorFor(vendor string) string {
 	for _, p := range knownTokenPatterns {
 		if p.vendor == vendor {
