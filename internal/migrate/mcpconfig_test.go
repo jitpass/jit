@@ -662,7 +662,7 @@ func TestApplyMCPConfigMigratesEnvFileServer(t *testing.T) {
 
 	// The flag goes with the file: leaving it would point uv at the pointer
 	// file and set every credential to a literal "jit://vault/..." string.
-	_, blocks, err := loadMCPFile(path)
+	_, blocks, _, err := loadMCPFile(path)
 	if err != nil {
 		t.Fatalf("loadMCPFile: %v", err)
 	}
@@ -1153,5 +1153,75 @@ func TestUnwrapMCPConfigRestoresClaudeCodeProjects(t *testing.T) {
 	}
 	if string(top["numStartups"]) != "42" {
 		t.Errorf("numStartups = %s after round trip, want 42", top["numStartups"])
+	}
+}
+
+// TestClaudeCodeStoreDegradesSafelyOnMangledProjects pins the two review
+// findings on the projects support (2026-08-06): an empty-string project key
+// must not alias the TOP-LEVEL block (its rewrite would clobber real
+// top-level servers while the project's own plaintext stayed put), and an
+// unparseable project block must be REPORTED, not silently walked past —
+// silence recreates the finding-with-no-fix-path gap one level down.
+func TestClaudeCodeStoreDegradesSafelyOnMangledProjects(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, ".claude.json")
+	writeFile(t, path, `{
+	  "mcpServers": {"top": {"command": "node", "args": ["t.js"], "env": {"TOP_TOKEN": "top-secret-1"}}},
+	  "projects": {
+	    "": {"mcpServers": {"evil": {"command": "node", "env": {"X": "clobber-me"}}}},
+	    "/Users/x/broken": {"mcpServers": "not an object"},
+	    "/Users/x/fine": {"mcpServers": {"ok": {"command": "node", "env": {"K": "fine-secret"}}}}
+	  }
+	}`)
+	v := newTestVault(t)
+
+	result, err := ApplyMCPConfig(v, path)
+	if err != nil {
+		t.Fatalf("ApplyMCPConfig: %v", err)
+	}
+
+	// Both mangled blocks are reported, in a stable order.
+	if len(result.SkippedProjects) != 2 {
+		t.Fatalf("SkippedProjects = %v, want the empty-key and broken blocks", result.SkippedProjects)
+	}
+
+	// The real blocks migrated: the top-level server and the healthy project.
+	migrated := map[string]bool{}
+	for _, sm := range result.Servers {
+		migrated[sm.ServerName] = true
+	}
+	if !migrated["top"] || !migrated["ok"] || len(migrated) != 2 {
+		t.Errorf("migrated %v, want exactly top and ok", migrated)
+	}
+
+	data, _ := os.ReadFile(path)
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
+		t.Fatalf("rewritten file: %v", err)
+	}
+	// The top-level block was rewritten to launch through jit — NOT replaced
+	// by the empty-key project's servers, which is what projectDir=="" used
+	// to do to it.
+	var topServers map[string]mcpServerRaw
+	if err := json.Unmarshal(top["mcpServers"], &topServers); err != nil {
+		t.Fatal(err)
+	}
+	if _, clobbered := topServers["evil"]; clobbered {
+		t.Error(`the projects[""] block clobbered the top-level servers`)
+	}
+	if p := mcpWrapperProfile(topServers["top"]); p == "" {
+		t.Error("the real top-level server was not migrated")
+	}
+	// The mangled blocks' own bytes are untouched.
+	var projects map[string]json.RawMessage
+	if err := json.Unmarshal(top["projects"], &projects); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(projects[""]), "clobber-me") {
+		t.Error(`projects[""] was modified; a skipped block must be left byte-exact`)
+	}
+	if !strings.Contains(string(projects["/Users/x/broken"]), "not an object") {
+		t.Error("the unparseable block was modified")
 	}
 }

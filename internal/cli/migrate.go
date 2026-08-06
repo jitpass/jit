@@ -715,6 +715,14 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 					displayPath(home, mcpPath), sm.ServerName, sm.ProfileName, countWord(len(sm.Variables), "var", "vars"), result.BackupPath)))
 				noteNamespaceMove(out, sm.NamespaceMovedFrom, sm.ProfileName)
 			}
+			// A project block that could not be parsed still holds whatever
+			// `jit scan` flagged. Saying nothing here would report success
+			// over a file that is still partly exposed — the exact
+			// zero-errors dead end the projects support exists to close.
+			for _, dir := range result.SkippedProjects {
+				fmt.Fprintf(out, "  %s project block %s couldn't be parsed and was left unchanged — its servers are NOT migrated; fix the JSON and re-run\n",
+					glyphWarn, dir)
+			}
 		}
 		fmt.Fprintf(out, "  Restart the %s above to pick up the change.\n", pluralWord(n, "MCP host", "MCP hosts"))
 		fmt.Fprintln(out)
