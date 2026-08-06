@@ -43,12 +43,16 @@ func TestNoUnroutedCommandBackticks(t *testing.T) {
 			if !strings.Contains(line, "`") || !printCall.MatchString(line) {
 				continue
 			}
-			if strings.Contains(line, "hlCmds") {
+			// hlCmds in internal/cli, highlightCmds in internal/audit; both
+			// now delegate to style.HighlightCommands.
+			if strings.Contains(line, "hlCmds") || strings.Contains(line, "highlightCmds") ||
+				strings.Contains(line, "HighlightCommands") {
 				continue
 			}
-			t.Errorf("%s:%d writes a `backticked` command without hlCmds, so it renders "+
-				"literal and uncolored. Wrap the message: hlCmds(fmt.Sprintf(...)).\n    %s",
-				filepath.Base(file), i+1, strings.TrimSpace(line))
+			t.Errorf("%s:%d writes a `backticked` command without routing it through the "+
+				"command highlighter, so it renders literal and uncolored. Wrap the message "+
+				"(hlCmds in internal/cli, highlightCmds in internal/audit).\n    %s",
+				filepath.ToSlash(file), i+1, strings.TrimSpace(line))
 		}
 	}
 }
@@ -240,23 +244,44 @@ func TestDoctorsRenderNoLiteralBackticks(t *testing.T) {
 	}
 }
 
-// styleCheckedFiles lists this package's own non-test sources, minus
-// style.go — which is where the palette is allowed to be built, and the one
-// file both checks above exist to protect.
+// styleCheckedFiles lists the non-test sources the two checks above police,
+// across EVERY package that prints to the terminal — not just this one.
+//
+// It used to be os.ReadDir("."), i.e. internal/cli alone, while
+// TestPaletteIsCentralised and TestNoFaintText correctly walk "..". So rule 5
+// of design/output-style.md — "cyan is the only colour a command ever takes,
+// on every surface" — went unenforced in audit, migrate, ui and wrap,
+// including the scan report, which is the largest user-facing surface jit has.
+//
+// internal/cli/style.go and internal/style are where the palette is allowed to
+// be built, and are the files these checks exist to protect.
 func styleCheckedFiles(t *testing.T) []string {
 	t.Helper()
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatalf("reading package dir: %v", err)
-	}
 	var files []string
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".go") ||
-			strings.HasSuffix(name, "_test.go") || name == "style.go" {
-			continue
+	err := filepath.WalkDir("..", func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
 		}
-		files = append(files, name)
+		name := d.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			return nil
+		}
+		// The palette's own definitions, and cli's re-export of them.
+		if name == "style.go" {
+			return nil
+		}
+		// markdown.go writes a MARKDOWN report to a file, not styled output to
+		// a terminal. Its backticks are markdown's own code-span syntax and
+		// must render literally; routing them through the highlighter would
+		// strip them and colour a document nobody views in a terminal.
+		if name == "markdown.go" {
+			return nil
+		}
+		files = append(files, path)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking the tree: %v", err)
 	}
 	if len(files) == 0 {
 		t.Fatal("no source files found to check — the guard would pass vacuously")
