@@ -60,6 +60,11 @@ var categories = []category{
 	// claimed them by name would also claim every "*_history" file a tool
 	// happens to write.
 	{name: "shell history", fixed: ScanShellHistories},
+	// Fixed-path only, and for the same reason shell history is: these files
+	// are reached by knowing where they are. "providers.json" and
+	// "hosts.json" carry no hint word, so the walk's name gate would never
+	// open either.
+	{name: "AI agent stores", fixed: ScanAgentStores},
 }
 
 // Scan runs every category and returns the individual findings plus the
@@ -114,16 +119,29 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 		all = append(all, dropAlreadyReported(fixed, discovered[i])...)
 	}
 
-	all = dropRedundantExposedSecrets(all)
-
 	// Tag findings under archived/backup-looking directories centrally
 	// (not per scanner): `jit migrate home` skips exactly these by default,
 	// and the report renderers surface the tag so that skip is legible from
 	// the audit side of the funnel too.
-	for i := range all {
-		all[i].Archived = LooksArchived(all[i].FilePath)
-		all[i].TestFixture = LooksTestFixture(all[i].FilePath)
-	}
+	//
+	// Done HERE, before the agent-cache cross-reference rather than after it,
+	// because that phase gates its needles on CountedAsSecret and
+	// CountedAsSecret reads TestFixture. With the tagging left downstream
+	// every fixture still looked like a real secret at needle-selection time,
+	// and the first run on a real machine duly reported 51 copies of jit's
+	// own tokenpatterns_test.go data as though they were the user's.
+	tagArchivedAndFixtures(all)
+
+	// Runs after every category, and must: its needles are the values those
+	// categories just confirmed, so there is nothing to search for until they
+	// have all reported. See agentcache.go for why the search runs in this
+	// direction rather than pointing the vendor patterns at the agent trees.
+	cached, cacheFailures := crossReferenceAgentCaches(cfg, all)
+	tagArchivedAndFixtures(cached)
+	all = append(all, cached...)
+	degraded = append(degraded, cacheFailures...)
+
+	all = dropRedundantExposedSecrets(all)
 	// Same seam, same reason: who can act on each finding (and the id that
 	// groups copies of one secret) is set once, centrally, so every renderer
 	// and consumer reads identical answers.
@@ -138,6 +156,17 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 	summary.SecretsProtected = coverage.Protected
 	summary.SecretsMigratable = coverage.Migratable
 	return all, summary, nil
+}
+
+// tagArchivedAndFixtures stamps the two path-derived tags every finding
+// carries, in one place so the machine-wide scan, the targeted scan, and the
+// agent-cache cross-reference cannot disagree about what counts as archived
+// or as somebody's test data.
+func tagArchivedAndFixtures(findings []Finding) {
+	for i := range findings {
+		findings[i].Archived = LooksArchived(findings[i].FilePath)
+		findings[i].TestFixture = LooksTestFixture(findings[i].FilePath)
+	}
 }
 
 // dropRedundantExposedSecrets removes an exposed_secret finding for a file
