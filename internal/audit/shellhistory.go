@@ -493,7 +493,7 @@ const (
 	historyAdmitJWTLiteral   = "eyJ"
 	// historyTokenRunClass must stay in step with the byte test in
 	// historyLineMayHoldToken; a test compares them across every byte value.
-	historyTokenRunClass = "[A-Za-z0-9_-]"
+	historyTokenRunClass = "[A-Za-z0-9_-]" // #nosec G101 -- a character class, not a credential
 )
 
 func historyLineMayHoldToken(line string) bool {
