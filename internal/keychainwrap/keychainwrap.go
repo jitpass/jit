@@ -286,11 +286,6 @@ func (w *Wrapper) RequireUserPresence(reason string) error {
 	return nil
 }
 
-// deleteMEK removes the stored MEK for this Wrapper's service/account.
-// Test-only cleanup helper — normal CLI operation never deletes the MEK
-// (that would orphan every existing secret), and it's a method (not a
-// free function keyed on the shared production constants) precisely so a
-// test can only ever delete the identifier its own Wrapper was built with.
 // DeleteMEK permanently removes this wrapper's keychain-stored MEK — the
 // key protecting every secret in the vault. Exactly one caller exists on
 // purpose: `jit vault delete`, behind its own explicit confirmation.
@@ -304,6 +299,11 @@ func (w *Wrapper) DeleteMEK() error {
 	return w.deleteMEK()
 }
 
+// deleteMEK removes the stored MEK for this Wrapper's service/account.
+// Test-only cleanup helper — normal CLI operation never deletes the MEK
+// (that would orphan every existing secret), and it's a method (not a
+// free function keyed on the shared production constants) precisely so a
+// test can only ever delete the identifier its own Wrapper was built with.
 func (w *Wrapper) deleteMEK() error {
 	cService := C.CString(w.service)
 	defer C.free(unsafe.Pointer(cService))

@@ -103,12 +103,12 @@ func TestRedactMasksSecretLookingTokens(t *testing.T) {
 		{
 			name: "known prefix, bare",
 			in:   []string{"vault", "set", "stripe/live", "sk_FAKEfixture_notARealKeyXYZ0123"},
-			want: []string{"vault", "set", "stripe/live", redactToken},
+			want: []string{"vault", "set", "stripe/live", RedactToken},
 		},
 		{
 			name: "flag=value with secret value",
 			in:   []string{"--token=ghp_16charsAtLeastxxxxxxxxxxxxxxxxxx"},
-			want: []string{"--token=" + redactToken},
+			want: []string{"--token=" + RedactToken},
 		},
 		{
 			name: "vault label and flags survive",
@@ -123,14 +123,14 @@ func TestRedactMasksSecretLookingTokens(t *testing.T) {
 		{
 			name: "high-entropy opaque token masked",
 			in:   []string{"AKIAIOSFODNN7EXAMPLE"},
-			want: []string{redactToken},
+			want: []string{RedactToken},
 		},
 		{
 			// A bare base64 token ending in '=' padding must not be misread as
 			// KEY=VALUE (name=the token, value="=") and slip through unmasked.
 			name: "padded base64 bare is masked, not misread as KEY=VALUE",
 			in:   []string{"SGVsbG9Xb3JsZERlYWRiZWVmMDAxMjM0NQ=="},
-			want: []string{redactToken},
+			want: []string{RedactToken},
 		},
 		{
 			// A base64 credential containing '/' must be masked when it is a
@@ -138,12 +138,12 @@ func TestRedactMasksSecretLookingTokens(t *testing.T) {
 			// through as if the '/' made it a file path.
 			name: "flag value base64 containing slash is masked",
 			in:   []string{"--token=aB3xKq9ZmQpLrStUvWxYz012+ab/cdEF"},
-			want: []string{"--token=" + redactToken},
+			want: []string{"--token=" + RedactToken},
 		},
 		{
 			name: "env value base64 containing slash is masked",
 			in:   []string{"AWS_SECRET=aB3xKq9ZmQpLrStUvWxYz012+ab/cdEF"},
-			want: []string{"AWS_SECRET=" + redactToken},
+			want: []string{"AWS_SECRET=" + RedactToken},
 		},
 		{
 			// The path-safety the '/' masking must not cost: an absolute path
@@ -162,7 +162,7 @@ func TestRedactMasksSecretLookingTokens(t *testing.T) {
 			// masked: the value split, not the name's shape, decides.
 			name: "long key name still masks a prefixed value",
 			in:   []string{"MY_VERY_LONG_ENVIRONMENT_VARIABLE_NAME_XYZ=ghp_16charsAtLeastxxxxxxxxxxxxxxxxxx"},
-			want: []string{"MY_VERY_LONG_ENVIRONMENT_VARIABLE_NAME_XYZ=" + redactToken},
+			want: []string{"MY_VERY_LONG_ENVIRONMENT_VARIABLE_NAME_XYZ=" + RedactToken},
 		},
 		{
 			// A legible key=value whose value is not a secret is left intact —
@@ -212,7 +212,7 @@ func TestRedactTextMasksPunctuationWrappedSecrets(t *testing.T) {
 		if strings.Contains(got, secret) {
 			t.Errorf("RedactText(%q) leaked the secret: %q", in, got)
 		}
-		if !strings.Contains(got, redactToken) {
+		if !strings.Contains(got, RedactToken) {
 			t.Errorf("RedactText(%q) did not insert the mask: %q", in, got)
 		}
 	}

@@ -38,7 +38,7 @@ import (
 const (
 	// historyDirName lives directly under vault/ alongside the secrets it
 	// shadows and _backups/.
-	historyDirName = "_history"
+	historyDirName = HistoryNamespace
 	// HistoryKeep bounds versions kept per secret. Five covers "the last
 	// few rotations" without ever letting a set-in-a-loop script grow the
 	// vault without bound.
@@ -68,7 +68,7 @@ func (v *Vault) historyDir(path string) string {
 // _backups/ entries are deliberately never archived: they're already the
 // safety copy of something else, and history-of-backups is pure bloat.
 func (v *Vault) archiveVersion(path string, data []byte, stamp int64) error {
-	if strings.HasPrefix(path, "_backups/") {
+	if IsBackupPath(path) {
 		return nil
 	}
 	dest := filepath.Join(v.historyDir(path), fmt.Sprintf("%d.enc", stamp))

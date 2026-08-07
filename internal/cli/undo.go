@@ -53,7 +53,7 @@ var migrateUndoCmd = &cobra.Command{
 		"To see every restorable file first, run `jit migrate undo <dir> --dry-run`\n" +
 		"(e.g. your $HOME). Backups made by jit builds before this command existed\n" +
 		"aren't in its index, restore those by hand: `jit vault list` (look under\n" +
-		"_backups/) + `jit vault get <path>`.",
+		vault.BackupPathPrefix + ") + `jit vault get <path>`.",
 	Example: "  jit migrate undo ~/proj/.env    # restore one migrated file\n" +
 		"  jit migrate undo ~/proj         # restore everything migrated under a project\n" +
 		"  jit migrate undo ~/proj --dry-run",
@@ -122,7 +122,7 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 	// read as "that one file" rather than "nothing to restore anywhere."
 	all := migrate.LatestBackups(recs)
 	if len(all) == 0 {
-		fmt.Fprintln(out, hlCmds("No jit-written backups are recorded, nothing to restore. (Backups made by builds before `jit migrate undo` existed aren't indexed; see `jit vault list` under _backups/ for those.)"))
+		fmt.Fprintln(out, hlCmds("No jit-written backups are recorded, nothing to restore. (Backups made by builds before `jit migrate undo` existed aren't indexed; see `jit vault list` under "+vault.BackupPathPrefix+" for those.)"))
 		return nil
 	}
 	// args is non-empty (the command requires a path) and all is non-empty,
@@ -264,7 +264,7 @@ func nudgeLooseRemainders(out io.Writer, v *vault.Vault, home string, recs []mig
 	}
 	remaining := map[string]bool{}
 	for _, p := range paths {
-		if strings.HasPrefix(p, "_backups/") {
+		if vault.IsBackupPath(p) {
 			continue
 		}
 		info, err := v.Info(p)

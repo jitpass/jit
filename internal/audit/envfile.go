@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/jitpass/jit/internal/pointerfile"
 	"github.com/jitpass/jit/internal/wrap"
 )
 
@@ -50,7 +51,7 @@ func isEnvTemplateFile(name string) bool {
 // .env secret — confirmed as the same underlying pattern bug that made
 // `jit migrate` re-discover and destroy its own `.pointers` files on a
 // second run (a real, reported incident — GAPS.md #30).
-const jitPointerFileSuffix = ".pointers"
+const jitPointerFileSuffix = pointerfile.CompanionSuffix
 
 func isJitPointerFile(name string) bool {
 	return strings.HasSuffix(name, jitPointerFileSuffix)
@@ -60,7 +61,7 @@ func isJitPointerFile(name string) bool {
 // same name (small independent copy, matching this package's convention of
 // not importing internal/migrate). It's the start of a jit pointer file's
 // first line.
-const pointerFileHeaderPrefix = "# jit pointer file"
+const pointerFileHeaderPrefix = pointerfile.Header
 
 // isJitPointerContent recognizes a jit pointer file by CONTENT, not name —
 // the case isJitPointerFile's suffix check misses: a backup-suffixed .env

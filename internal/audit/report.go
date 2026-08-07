@@ -30,25 +30,7 @@ const (
 // color for something the reader can run) and drops the backticks — the
 // audit-package twin of internal/cli's hlCmds, for the same reason as the
 // glyphs above. When color is off the spans pass through as clean text.
-func highlightCmds(s string) string {
-	cmd := style.Path
-	var b strings.Builder
-	for {
-		i := strings.IndexByte(s, '`')
-		if i < 0 {
-			b.WriteString(s)
-			return b.String()
-		}
-		j := strings.IndexByte(s[i+1:], '`')
-		if j < 0 {
-			b.WriteString(s)
-			return b.String()
-		}
-		b.WriteString(s[:i])
-		b.WriteString(cmd.Sprint(s[i+1 : i+1+j]))
-		s = s[i+1+j+1:]
-	}
-}
+func highlightCmds(s string) string { return style.HighlightCommands(s) }
 
 // findingTypeLabels are human-readable section headers, in AllFindingTypes
 // order, matching docs/audit/example-report.md's preview format. Keys are
@@ -568,12 +550,14 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	countW := len(fmt.Sprintf("%d", summary.TotalFindings))
 	for _, ft := range AllFindingTypes {
 		n := summary.FindingsByCategory[ft]
+		// A nothing-found row used to be dimmed here, so the categories that
+		// DO have findings were what the eye landed on. The faint attribute
+		// was removed on 2026-08-06 (TestNoFaintText now fails the build if it
+		// returns), which left an `n == 0` arm byte-identical to default and a
+		// comment describing styling that no longer happens. Zero rows are
+		// plain, like every other unremarkable row; the itemized sections
+		// below still skip empty categories entirely.
 		switch {
-		case n == 0:
-			// Dim the nothing-found rows so the categories that DO have
-			// findings are what the eye lands on — the itemized sections
-			// below already skip empty categories entirely.
-			fmt.Fprintf(w, "  %-22s %*d\n", findingTypeLabels[ft], countW, n)
 		case n >= heavyCategoryCount:
 			fmt.Fprintf(w, "  %-22s ", findingTypeLabels[ft])
 			_, _ = style.Bold.Fprintf(w, "%*d\n", countW, n)

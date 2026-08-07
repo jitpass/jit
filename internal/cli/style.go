@@ -90,24 +90,7 @@ func wrapBody(w io.Writer, used int, cont, body string) {
 // removed and the line reads as clean plain text. Use it on directive lines
 // ("run `jit x` to …"), not on every incidental mention, so cyan stays a
 // signal rather than noise.
-func hlCmds(s string) string {
-	var b strings.Builder
-	for {
-		i := strings.IndexByte(s, '`')
-		if i < 0 {
-			b.WriteString(s)
-			return b.String()
-		}
-		j := strings.IndexByte(s[i+1:], '`')
-		if j < 0 {
-			b.WriteString(s)
-			return b.String()
-		}
-		b.WriteString(s[:i])
-		b.WriteString(cPath.Sprint(s[i+1 : i+1+j]))
-		s = s[i+1+j+1:]
-	}
-}
+func hlCmds(s string) string { return style.HighlightCommands(s) }
 
 // maxFlowWidth caps how wide flowNames lays out, and maxFlowCols how many
 // columns, regardless of how wide the terminal is. Flowing to the full width

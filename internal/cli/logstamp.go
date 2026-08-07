@@ -42,7 +42,7 @@ func (s *stampedWriter) Write(p []byte) (int, error) {
 	rest := p
 	for len(rest) > 0 {
 		if !s.midline {
-			buf.WriteString(time.Now().Format("2006-01-02 15:04:05 "))
+			buf.WriteString(time.Now().Format(auditTimeLayout + " "))
 			s.midline = true
 		}
 		i := bytes.IndexByte(rest, '\n')

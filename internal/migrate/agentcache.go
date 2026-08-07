@@ -413,7 +413,7 @@ func CollectVaultSecrets(v *vault.Vault) ([]AgentCacheSecret, error) {
 	}
 	var out []AgentCacheSecret
 	for _, p := range paths {
-		if strings.HasPrefix(p, "_backups/") || strings.HasPrefix(p, "_history/") {
+		if vault.IsReservedPath(p) {
 			continue
 		}
 		val, err := v.Get(p)

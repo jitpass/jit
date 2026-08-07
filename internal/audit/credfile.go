@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/jitpass/jit/internal/pointerfile"
 )
 
 // ScanCredentialFiles implements RFC.md §4 category 3: known credential
@@ -262,7 +264,7 @@ func scanGlobalNpmrc(cfg Config) ([]Finding, error) {
 }
 
 // classifyProjectNpmrc is the credential category's discovery half: a .npmrc
-// can live in any project, so it's found by the shared walk (task #22) rather
+// can live in any project, so it's found by the shared walk rather
 // than by only checking cwd.
 //
 // It deliberately does NOT skip the global ~/.npmrc that scanGlobalNpmrc also
@@ -1165,7 +1167,7 @@ func scanClissoConfig(cfg Config) ([]Finding, error) {
 	var findings []Finding
 	for _, name := range slices.Sorted(maps.Keys(cc.Providers)) {
 		p := cc.Providers[name]
-		if p.ClientSecret == "" || strings.HasPrefix(p.ClientSecret, "jit://vault/") {
+		if p.ClientSecret == "" || pointerfile.IsValue(p.ClientSecret) {
 			continue // absent, or already a pointer at the vaulted secret
 		}
 		f := cfg.ValueFinding(ValueFindingParams{

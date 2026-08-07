@@ -15,6 +15,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/jitpass/jit/internal/mount"
+	"github.com/jitpass/jit/internal/pointerfile"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -28,10 +29,10 @@ import (
 
 // pointerFileHeader is the first line WritePointerFile/ReplaceWithPointerFile
 // emit — IsPointerFile's detection anchor. Keep the two in sync.
-const pointerFileHeader = "# jit pointer file"
+const pointerFileHeader = pointerfile.Header
 
 // pointerValuePrefix is the value scheme every pointer line uses.
-const pointerValuePrefix = "jit://vault/"
+const pointerValuePrefix = pointerfile.ValuePrefix
 
 // IsPointerFile reports whether path is a regular file jit itself wrote in
 // the pointer format (never a live mount's FIFO — those are checked by
