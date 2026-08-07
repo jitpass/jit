@@ -141,18 +141,47 @@ jobs:
       # successor, and a release accidentally signed with the outgoing identity
       # must fail here rather than pass as "signed, close enough".
       - name: Verify the released binary satisfies jit upgrade's own requirement
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          archive=$(find dist -type f -name 'jitpass_darwin_arm64.tar.gz' | head -1)
-          if [ -z "$archive" ]; then
-            echo "::error::no release tarball found under dist/"
+          # DOWNLOAD what GitHub actually published — do not verify dist/.
+          #
+          # This step used to read the locally built tarball, which is not
+          # necessarily the artifact users get. Found the hard way on
+          # v0.80.0: the first run's cask push failed (archived tap repo), the
+          # re-run rebuilt the tarball and pushed a cask carrying the
+          # REBUILD's checksum, but GitHub kept the first run's assets —
+          # replace_existing_artifacts did not replace them. Both binaries
+          # were valid and notarized, so a dist/-based check passed happily
+          # while `brew install` died on a checksum mismatch. Verifying the
+          # local copy is exactly the mistake this whole gate exists to
+          # prevent, one level up.
+          #
+          # `gh release download` reaches a DRAFT release with this token,
+          # which is what makes verify-then-undraft possible at all.
+          workdir=$(mktemp -d)
+          gh release download "${{ github.ref_name }}" \
+            --pattern 'jitpass_darwin_arm64.tar.gz' --pattern 'checksums.txt' \
+            --dir "$workdir" --clobber
+          archive="$workdir/jitpass_darwin_arm64.tar.gz"
+
+          # The published asset must match the published checksums.txt.
+          # `jit upgrade` fetches those two INDEPENDENTLY from
+          # /releases/latest, so a release whose own manifest disagrees with
+          # its own tarball breaks every self-update — and that is precisely
+          # the state the v0.80.0 re-run left behind.
+          actual=$(shasum -a 256 "$archive" | cut -d' ' -f1)
+          claimed=$(grep 'jitpass_darwin_arm64.tar.gz' "$workdir/checksums.txt" | cut -d' ' -f1)
+          if [ "$actual" != "$claimed" ]; then
+            echo "::error::the published tarball's SHA-256 ($actual) does not match checksums.txt ($claimed). Every 'jit upgrade' and 'brew install' would fail on the hash comparison. This usually means a re-run rebuilt the artifacts while GitHub kept the earlier upload — delete the release's assets and re-run. The release stays a DRAFT."
             exit 1
           fi
-          workdir=$(mktemp -d)
+
           tar -xzf "$archive" -C "$workdir"
           bin="$workdir/jit"
           if [ ! -x "$bin" ]; then
-            echo "::error::the release tarball contains no executable jit"
+            echo "::error::the published release tarball contains no executable jit"
             exit 1
           fi
           # doctor exits non-zero when it finds unrelated problems (no vault
