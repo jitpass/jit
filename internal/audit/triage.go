@@ -268,7 +268,13 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 			// now") read as a warning state — amber's job, and it already has
 			// the "!" glyph above to do it with.
 			_, _ = cmd.Fprint(w, style.GlyphAction+" ")
-			termtext.Wrap(w, len(triageNoteIndent)+2, triageNoteIndent+"  ", ag.action)
+			// One line, truncated, never wrapped. A many-path `jit migrate`
+			// command used to wrap to five lines, and a wrapped command is the
+			// worst of both: too long to read as a line, and no longer
+			// copy-pasteable as one either. Head-kept truncation shows the
+			// command and its first targets; the full file list is the report
+			// above, which is where the reader just came from.
+			fmt.Fprintln(w, termtext.TruncTail(ag.action, max(20, termtext.Width()-len(triageNoteIndent)-2)))
 		}
 		fmt.Fprintln(w)
 	}
@@ -439,16 +445,20 @@ const maxManifestPathCol = 56
 // 125 columns and the terminal broke it wherever it liked, dropping the label
 // under the path and destroying the alignment the table existed for.
 //
-// Paths are cut at the FRONT (TruncHead): the tail names the file, the prefix
-// is the part every row repeats. When even the floors don't fit, the label
-// stacks under its path instead — one honest pair of lines beats two columns
-// truncated past the point of meaning.
+// Paths are cut in the MIDDLE (TruncMid): the tail names the file, and the
+// HEAD is what distinguishes two paths sharing a long tail. They used to be
+// cut at the front, and on a real machine two different okta-mcp-server/.env
+// manifests — one live, one under backup_2025/ — shared a 65-character tail,
+// so at this column width both rows rendered IDENTICALLY on the screen asking
+// the reader to approve rewriting them. When even the floors don't fit, the
+// label stacks under its path instead — one honest pair of lines beats two
+// columns truncated past the point of meaning.
 func writeMigrateManifest(w io.Writer, rows []triageFile, home string, green *color.Color) {
 	budget := termtext.Width() - len(manifestIndent) - 2
 	if budget < minManifestPathCol+minManifestLabelCol {
 		for _, m := range rows {
 			fmt.Fprintf(w, "%s%s\n", manifestIndent,
-				termtext.TruncHead(ShortenHome(home, m.file), termtext.Width()-len(manifestIndent)))
+				termtext.TruncMid(ShortenHome(home, m.file), termtext.Width()-len(manifestIndent)))
 			fmt.Fprintf(w, "%s  %s", manifestIndent,
 				termtext.TruncTail(m.label, termtext.Width()-len(manifestIndent)-2))
 			writeWrapTool(w, m, green)
@@ -473,7 +483,7 @@ func writeMigrateManifest(w io.Writer, rows []triageFile, home string, green *co
 	pathW = min(pathW, max(minManifestPathCol, maxManifestPathCol))
 	labelW := budget - pathW
 	for _, m := range rows {
-		p := termtext.TruncHead(ShortenHome(home, m.file), pathW)
+		p := termtext.TruncMid(ShortenHome(home, m.file), pathW)
 		fmt.Fprintf(w, "%s%-*s  %s", manifestIndent, pathW, p,
 			termtext.TruncTail(m.label, labelW))
 		writeWrapTool(w, m, green)
@@ -1240,8 +1250,24 @@ func viewHintByLine(f Finding, home string) string {
 // "" when no constant is available — an unanchored finding keeps the behaviour
 // this had before it was generalised, which is to say no hint.
 func viewHintByAnchor(f Finding, home string, plural bool) string {
+	if f.FilePath == "" {
+		return ""
+	}
+	// The full-pattern form is preferred when the vendor's pattern survives
+	// translation to a grep ERE (TokenPatternERE): it matches exactly the
+	// spans the scanner matched, prints LINE NUMBERS and nothing else — no
+	// value, not even the anchor — and it covers the vendors an anchor cannot
+	// (AWS, SendGrid, Vault, Doppler open with alternations or boundaries and
+	// used to get no hint at all).
+	if ere := patternEREFor(f); ere != "" {
+		lead := "lines"
+		if !plural {
+			lead = "line"
+		}
+		return fmt.Sprintf("%s: grep -nE '%s' %s | cut -d: -f1", lead, ere, shellSafePath(home, f.FilePath))
+	}
 	a := anchorFor(f)
-	if a == "" || f.FilePath == "" {
+	if a == "" {
 		return ""
 	}
 	// Singular when the problem is one secret, matching the care the line-
@@ -1256,6 +1282,30 @@ func viewHintByAnchor(f Finding, home string, plural bool) string {
 	// identLike between them admit only letters, digits, "_", "-" and ".".
 	// The PATH's quoting is shellSafePath's responsibility, not this line's.
 	return fmt.Sprintf("%s: grep -Fno '%s' %s", lead, a, shellSafePath(home, f.FilePath))
+}
+
+// patternEREFor resolves the finding's vendor — named directly in KeyName, or
+// recovered from Evidence the same way anchorFromEvidence does — to a
+// grep-safe full pattern, "" when there is none.
+func patternEREFor(f Finding) string {
+	if f.KeyName != nil && *f.KeyName != "" {
+		if ere := TokenPatternERE(*f.KeyName); ere != "" {
+			return ere
+		}
+	}
+	if f.Evidence == "" {
+		return ""
+	}
+	best := ""
+	for _, p := range knownTokenPatterns {
+		if len(p.vendor) > len(best) && strings.Contains(f.Evidence, p.vendor) {
+			best = p.vendor
+		}
+	}
+	if best == "" {
+		return ""
+	}
+	return TokenPatternERE(best)
 }
 
 // anchorFor picks the constant to grep for, most specific first. It returns a

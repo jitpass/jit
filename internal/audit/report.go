@@ -184,7 +184,22 @@ type renderItem struct {
 // of whatever item preceded it.
 func collapsedHeader(it renderItem) string {
 	if it.rep.KeyName != nil {
-		return fmt.Sprintf("%s (same value in %d files):", *it.rep.KeyName, len(it.locations))
+		// Same value-presence gate as the anonymous arm below: this wording
+		// predates the session but carried the identical overclaim for
+		// nil-preview findings.
+		if it.rep.ValuePreview != nil {
+			return fmt.Sprintf("%s (same value in %d files):", *it.rep.KeyName, len(it.locations))
+		}
+		return fmt.Sprintf("%s (same pattern in %d files):", *it.rep.KeyName, len(it.locations))
+	}
+	// "value" only when a value was actually captured: the dedup key
+	// (findingDedupKey) compares ValuePreview, but two findings with NIL
+	// previews collapse on severity+key+evidence alone — and for those,
+	// claiming "the same value" asserts something the scanner never saw,
+	// wrongly deciding the rotate-one-fixes-all question in the reader's
+	// head. Review finding, 2026-08-06.
+	if it.rep.ValuePreview != nil {
+		return fmt.Sprintf("the same value in %d files:", len(it.locations))
 	}
 	return fmt.Sprintf("same pattern in %d files:", len(it.locations))
 }
@@ -765,6 +780,15 @@ const findingIndent = "    "
 // under the key, where it can wrap without breaking the alignment of the
 // fields above it. Widths are computed once per category and shared by every
 // row so they line up.
+// maxKeyColumnWidth caps the vendor/key column. It used to pad to the longest
+// name in the group, so one "Database connection string with embedded
+// credentials (scheme-less)" pushed every neighbouring row's value ~68 columns
+// right and opened a gulf of whitespace the eye could not carry a row across —
+// the same failure maxManifestPathCol fixed for the triage table. 34 fits
+// every common vendor name whole; the rare longer one is truncated, and its
+// full name is still in the evidence line below.
+const maxKeyColumnWidth = 34
+
 type columns struct {
 	lineW, sevW, keyW int
 	hasLine, hasKey   bool
@@ -800,7 +824,7 @@ func computeColumns(group []Finding) columns {
 		c.sevW = max(c.sevW, len(strings.ToUpper(f.Severity)))
 		if f.KeyName != nil {
 			c.hasKey = true
-			c.keyW = max(c.keyW, len(sanitizeDisplayPtr(f.KeyName)))
+			c.keyW = max(c.keyW, min(len(sanitizeDisplayPtr(f.KeyName)), maxKeyColumnWidth))
 		}
 		if f.ValuePreview != nil {
 			c.hasValue = true
@@ -959,7 +983,11 @@ func (c columns) writeFindingRow(w io.Writer, f Finding, showLine bool) {
 	}
 
 	if c.hasKey {
-		fmt.Fprintf(w, "  %-*s", c.keyW, sanitizeDisplayPtr(f.KeyName))
+		// Truncated to the capped column, padded by VISIBLE width: "…" is
+		// three bytes and one column, so %-*s (which pads bytes) would put
+		// every truncated row two columns out of line.
+		key := termtext.TruncTail(sanitizeDisplayPtr(f.KeyName), c.keyW)
+		fmt.Fprintf(w, "  %s%s", key, strings.Repeat(" ", max(0, c.keyW-termtext.VisibleWidth(key))))
 	}
 	if c.hasValue && f.ValuePreview != nil {
 		fmt.Fprintf(w, "  %s", sanitizeDisplayPtr(f.ValuePreview))

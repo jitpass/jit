@@ -525,3 +525,32 @@ func TestScanScopeLabelNamesTheTargets(t *testing.T) {
 		})
 	}
 }
+
+// TestCollapsedHeaderClaimsOnlyWhatWasSeen: the collapse key
+// (findingDedupKey) compares ValuePreview, but two findings with NIL previews
+// collapse on severity+key+evidence alone. For those, "same value in N files"
+// asserts something the scanner never captured — and it is the claim that
+// decides, in the reader's head, whether rotating one credential fixes all N.
+// Review finding, 2026-08-06.
+func TestCollapsedHeaderClaimsOnlyWhatWasSeen(t *testing.T) {
+	key := "GitHub Personal Access Token"
+	preview := "ghp_**********"
+	locs := []findingLocation{{Path: "/a"}, {Path: "/b"}}
+
+	withValue := renderItem{collapsed: true, rep: Finding{KeyName: &key, ValuePreview: &preview}, locations: locs}
+	if got := collapsedHeader(withValue); !strings.Contains(got, "same value") {
+		t.Errorf("captured-value item = %q, want a same-value claim", got)
+	}
+	noValue := renderItem{collapsed: true, rep: Finding{KeyName: &key}, locations: locs}
+	if got := collapsedHeader(noValue); strings.Contains(got, "value") {
+		t.Errorf("nil-preview item = %q; it claims a value the scanner never saw", got)
+	}
+	anonymous := renderItem{collapsed: true, rep: Finding{}, locations: locs}
+	if got := collapsedHeader(anonymous); strings.Contains(got, "value") {
+		t.Errorf("anonymous nil-preview item = %q; same overclaim", got)
+	}
+	anonWithValue := renderItem{collapsed: true, rep: Finding{ValuePreview: &preview}, locations: locs}
+	if got := collapsedHeader(anonWithValue); !strings.Contains(got, "same value") {
+		t.Errorf("anonymous captured-value item = %q, want a same-value claim", got)
+	}
+}

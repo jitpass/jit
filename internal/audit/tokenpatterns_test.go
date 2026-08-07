@@ -5,6 +5,7 @@ package audit
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -409,5 +410,99 @@ func TestMatchKnownTokenPatternTinyUserinfo(t *testing.T) {
 		if _, _, ok := MatchKnownTokenPattern(v); !ok {
 			t.Errorf("MatchKnownTokenPattern(%q) was suppressed, want a match: only a tiny userinfo on both sides is filler", v)
 		}
+	}
+}
+
+// TestTokenPatternERE pins the three refusals that keep the pattern-based
+// locate hint runnable and safe, plus the (?: translation that makes the AWS
+// pattern — an alternation with no literal prefix, hint-less under the anchor
+// scheme — greppable at all.
+func TestTokenPatternERE(t *testing.T) {
+	// The motivating vendor: no literal prefix, so the anchor scheme gave it
+	// no hint. The ERE must be the full pattern with (?: opened up.
+	if got := TokenPatternERE("AWS Access Key ID"); got != `\b(AKIA|ASIA)[A-Z0-9]{16}\b` {
+		t.Errorf("AWS ERE = %q", got)
+	}
+	// A dash-leading pattern would parse as grep OPTIONS, not a pattern:
+	// `grep -nE '-----BEGIN…'` is an options error at best, and those
+	// findings have their own dedicated hints (viewHintByLine).
+	if got := TokenPatternERE("OpenSSH Private Key"); got != "" {
+		t.Errorf("dash-leading pattern must be refused, got %q — it lands in grep's option position", got)
+	}
+	if got := TokenPatternERE("No Such Vendor"); got != "" {
+		t.Errorf("unknown vendor = %q, want empty", got)
+	}
+	// Every accepted pattern must actually be single-quotable: no quote, no
+	// newline, no (?-construct beyond the one that was translated, and no
+	// leading dash. Driven over the whole catalogue so a new vendor cannot
+	// ship a hint that breaks the shell line it is printed into.
+	for _, p := range knownTokenPatterns {
+		ere := TokenPatternERE(p.vendor)
+		if ere == "" {
+			continue
+		}
+		if strings.ContainsAny(ere, "'\n") || strings.Contains(ere, "(?") || strings.HasPrefix(ere, "-") {
+			t.Errorf("vendor %q produced an ERE unsafe for a single-quoted grep: %q", p.vendor, ere)
+		}
+	}
+}
+
+// TestTokenPatternEREsMatchLikeTheScanner is the agreement check between the
+// two engines the hint straddles: every ERE this package will print in a
+// `grep -nE` command must make the REAL /usr/bin/grep — the binary the hint's
+// reader runs — match the same sample the Go pattern matched. Driven off the
+// shared admit corpus, so every vendor represented there is exercised.
+//
+// This is the test that would have caught the \s bug: the DB connection-string
+// patterns survived the quoting checks, but in a POSIX bracket expression
+// their [^/@\s:] stops excluding whitespace and starts excluding the letter
+// "s", so the emitted hint provably matched nothing — found in review by
+// running the printed command.
+func TestTokenPatternEREsMatchLikeTheScanner(t *testing.T) {
+	grep, err := exec.LookPath("/usr/bin/grep")
+	if err != nil {
+		t.Skip("/usr/bin/grep unavailable")
+	}
+	// Inline rather than the shared admit corpus: that corpus lives on a
+	// branch of its own at the time of writing, and this test must not
+	// couple two in-flight branches. The set covers every vendor family the
+	// ERE path emits hints for, including the alternation-led ones the
+	// anchor scheme could not serve.
+	samples := []string{
+		"AKIA" + "IOSFODNN7EXAMPLZ",
+		"ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
+		"gith" + "ub_pat_11ABCDEFG0abcdefghijkl_MNOPQRST",
+		"xoxb" + "-1234567890-AbCdEfGhIj",
+		"sk_l" + "ive_51H8xQ2KZvMnPq7RtY4wU6iO9",
+		"SG.AbCdEfGhIj.KlMnOpQrStUv",
+		"dp.st.AbCdEfGhIjKlMnOpQrStUv",
+		"hvs." + "AbCdEfGhIjKlMnOpQrStUvWxYz01",
+		"npm_" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
+		"AIza" + "SyC1234567890abcdefghijklmnopqrstuv",
+		"eyJh" + "bGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.AbCdEfGhIj",
+		"postgres://app:s3cr3tPassw0rd@db.internal:5432/app",
+		"scanner_user:hunter2x@db.example.com/postgres",
+	}
+	tested := 0
+	for _, sample := range samples {
+		for _, p := range knownTokenPatterns {
+			if !p.pattern.MatchString(sample) {
+				continue
+			}
+			ere := TokenPatternERE(p.vendor)
+			if ere == "" {
+				continue // refused patterns emit no hint, nothing to agree on
+			}
+			tested++
+			cmd := exec.Command(grep, "-qE", ere)
+			cmd.Stdin = strings.NewReader(sample + "\n")
+			if err := cmd.Run(); err != nil {
+				t.Errorf("vendor %q: Go matches %q but `grep -E '%s'` does not (%v); "+
+					"the printed hint would output nothing and read as a false positive", p.vendor, sample, ere, err)
+			}
+		}
+	}
+	if tested == 0 {
+		t.Fatal("no (sample, vendor) pair exercised — the agreement check is vacuous")
 	}
 }
