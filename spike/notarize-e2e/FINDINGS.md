@@ -61,11 +61,19 @@ Two ways to run it:
   `QUILL_SIGN_PASSWORD`, `NOTARY_ISSUER_ID`, `NOTARY_KEY_ID`, `NOTARY_KEY`
   and run `zsh spike/notarize-e2e/run.sh` (needs `quill` on PATH).
 
-Exit codes: `0` Accepted + Gatekeeper pass · `1` Invalid (artifact verdict,
-log dumped) · `2` stuck In Progress past the timeout (the known condition) ·
-`3` Accepted but Gatekeeper blocked the quarantined copy — a state that
-would break brew users even with notarization nominally "working", hence its
-own code · `4` Gatekeeper leg inconclusive (the control ran too; use CI).
+Exit codes: `0` Accepted, with the Gatekeeper leg passed or untestable ·
+`1` Invalid (artifact verdict, log dumped) · `2` stuck In Progress past the
+timeout (the known condition) · `3` Accepted but a discriminating
+environment blocked the quarantined copy — a state that would break brew
+users even with notarization nominally "working", hence its own code.
+
+Division of authority, measured 2026-08-07: **CI is authoritative for the
+notary + release-secrets path; only a real Mac can judge the Gatekeeper
+leg.** GitHub's macOS runners do not enforce Gatekeeper on exec — the
+quarantined *unnotarized* control runs there too — so the probe downgrades
+the A/B to a warning when the control isn't blocked. On a real Mac
+(2026-08-06, assessments enabled) the leg discriminates cleanly: control
+SIGKILLed rc=137, notarized copy runs.
 
 ## Acceptance criteria (gate for un-reverting)
 
@@ -99,6 +107,8 @@ the `timeout: 15m` JWT lesson from `77cc73f`), and the `homebrew_casks` block
 | 2026-08-06 | local run 1 | f54867e5 | seconds (21s incl. build+sign) | Accepted | not reached (script bug: `status` is read-only in zsh, fixed) | 1 |
 | 2026-08-06 | local run 2 | 5e558fbf | seconds (23s total) | Accepted | exec OK but old spctl-string gate failed → A/B redesign | 3 |
 | 2026-08-06 | local run 3 | 5b4bbf71 | seconds (54s total) | Accepted | control blocked rc=137, notarized copy ran | **0** |
+| 2026-08-06 | 3 timed submissions | fe43e109, 3f22a7b4, 5554688c | 20s / 20s / 19s | Accepted | — | 0 |
+| 2026-08-07 | CI run 1 (day 2) | c8fc0d9c | **18s** | Accepted | inconclusive: runner doesn't enforce GK on exec → probe fix | 4→job red |
 | _fill in per run_ | | | | | | |
 
 **Verdict as of 2026-08-06: the account-side condition has cleared.** The
