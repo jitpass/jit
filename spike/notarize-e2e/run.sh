@@ -23,13 +23,15 @@
 #                         account's recent submissions and their statuses
 #
 # Exit codes (the workflow and FINDINGS.md key off these):
-#   0  Accepted, and the quarantined binary passed Gatekeeper
+#   0  Accepted; the Gatekeeper leg passed, or was inconclusive because the
+#      environment doesn't enforce Gatekeeper on exec (measured 2026-08-07:
+#      GitHub's macOS runners run the unnotarized control too, so only a
+#      real Mac can judge that leg — it passed locally 2026-08-06)
 #   1  Invalid — Apple returned a verdict against the artifact (log dumped)
 #   2  stuck In Progress past NOTARY_TIMEOUT — the known account condition
-#   3  Accepted, but Gatekeeper blocked the quarantined notarized binary
-#      (would break brew-cask users even with notarization "working")
-#   4  Gatekeeper leg inconclusive — this environment also ran the
-#      unnotarized control, so it cannot discriminate (rely on a CI run)
+#   3  Accepted, but a discriminating environment (one that DID block the
+#      control) blocked the quarantined notarized binary too — would break
+#      brew-cask users even with notarization "working"
 
 set -u
 cd "$(dirname "$0")"
@@ -130,8 +132,11 @@ print -r -- "control (ad-hoc, quarantined):   rc=$ctl_rc"
 print -r -- "notarized, quarantined:          rc=$run_rc  $run_out"
 
 if (( ctl_rc == 0 )); then
-  say "INCONCLUSIVE — the unnotarized control ran too; this environment cannot discriminate (Gatekeeper off?)"
-  exit 4
+  say "WARN — the unnotarized control ran too: this environment does not"
+  say "enforce Gatekeeper on exec (GitHub macOS runners behave this way), so"
+  say "the Gatekeeper leg proves nothing here. The notary verdict above"
+  say "stands as this run's result; judge the Gatekeeper leg on a real Mac."
+  exit 0
 fi
 if (( run_rc == 0 )) && [[ "$run_out" == *"hello"* ]]; then
   say "PASS — Gatekeeper blocks the control but runs the notarized copy: the online ticket fetch works."
