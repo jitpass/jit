@@ -113,8 +113,15 @@ func TestTargetedScanDirectoryCoversEveryDiscoveryCategory(t *testing.T) {
 	writeFile(t, filepath.Join(root, "terraform.tfvars"), "db_password = \"examplevalue123\"\n")
 	// A credential dump found by name-gate + content match, the shape a real
 	// AWS IAM key download has.
+	//
+	// The key ID is split so the literal "AKIA…" never appears contiguously in
+	// this source file: GitHub push protection matches it as an Amazon AWS
+	// Access Key ID and rejects any push carrying this blob, which it did.
+	// Same trick guard_test.go uses on its Slack token. The value assembled at
+	// runtime is unchanged, so the fixture still exercises jit's real AWS
+	// pattern — do not "tidy" this back into one string.
 	writeFile(t, filepath.Join(root, "acct-credentials.csv"),
-		"User name,Access key ID,Secret access key\nvic,AKIA3QK7BZWX2LMPD4TN,Xk92QmPl4TzWhuCmu2qcwnu9PnWfMKNA1dTr\n")
+		"User name,Access key ID,Secret access key\nvic,"+"AKIA"+"3QK7BZWX2LMPD4TN,Xk92QmPl4TzWhuCmu2qcwnu9PnWfMKNA1dTr\n")
 
 	findings, _, err := TargetedScan(Config{HomeDir: root}, []string{root})
 	if err != nil {
@@ -187,8 +194,14 @@ func TestTargetedScanSkipsSymlink(t *testing.T) {
 func TestTargetedScanNamedPrivateKey(t *testing.T) {
 	dir := t.TempDir()
 	keyPath := filepath.Join(dir, "backup_key")
-	// A minimal unencrypted PEM header is enough for looksLikePrivateKey.
-	writeFile(t, keyPath, "-----BEGIN OPENSSH PRIVATE KEY-----\nabc123\n-----END OPENSSH PRIVATE KEY-----\n")
+	// A REAL key. This fixture used to be a PEM header wrapped around the
+	// six bytes "abc123", which is not valid base64 and decodes to nothing —
+	// it passed only because looksLikePrivateKey was a bare substring match on
+	// the header, the same weakness that had jit reporting its own
+	// tokenpatterns.go as a stray private key. Now that a body is required, a
+	// stub fixture would be testing the stub; the property this test is about
+	// ("caught by CONTENT even under an unremarkable name") needs real content.
+	writeFile(t, keyPath, string(generateUnencryptedKeyPEM(t)))
 
 	findings, _, err := TargetedScan(Config{HomeDir: dir}, []string{keyPath})
 	if err != nil {

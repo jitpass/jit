@@ -4,6 +4,7 @@
 package audit
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/pem"
@@ -160,5 +161,82 @@ func TestScanPrivateKeysNoSSHDir(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("got %d findings, want 0", len(findings))
+	}
+}
+
+// TestLooksLikePrivateKeyNeedsABody is the regression test for jit reporting
+// its OWN source as a stray private key.
+//
+// looksLikePrivateKey was `bytes.Contains(content, header)`, so any file that
+// NAMES a PEM header matched: documentation, test fixtures, and — the case
+// actually observed — internal/audit/tokenpatterns.go, whose whole job is to
+// list those headers as patterns. `jit scan internal/audit/tokenpatterns.go`
+// reported "HIGH  private key found outside ~/.ssh" against the detector's own
+// pattern list.
+//
+// A false positive is expensive in this category specifically: the remedy
+// attached to it is to go delete the file.
+func TestLooksLikePrivateKeyNeedsABody(t *testing.T) {
+	realKey := generateUnencryptedKeyPEM(t)
+
+	cases := []struct {
+		name string
+		in   []byte
+		want bool
+	}{
+		{"a real key", realKey, true},
+		{"a real encrypted key", generateEncryptedKeyPEM(t), true},
+		// The exact shape jit flagged in its own tree: the header appears as a
+		// regexp literal, with source code — not base64 — after it.
+		{
+			"a scanner's own pattern list",
+			[]byte("{\"RSA Private Key\", regexp.MustCompile(`-----BEGIN RSA PRIVATE KEY-----`), true, nil, false},\n"),
+			false,
+		},
+		{
+			"prose naming the header",
+			[]byte("Files beginning with -----BEGIN OPENSSH PRIVATE KEY----- are refused by the uploader.\n"),
+			false,
+		},
+		{
+			"a markdown code fence with an elided body",
+			[]byte("```\n-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n```\n"),
+			false,
+		},
+		// A key embedded in JSON carries ESCAPED newlines, which pem.Decode
+		// rejects outright — the shape a GCP service-account file uses. Still a
+		// real credential, so it must still be found.
+		{
+			"a key embedded in JSON with escaped newlines",
+			[]byte(`{"type":"service_account","private_key":"-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ\n-----END PRIVATE KEY-----\n"}`),
+			true,
+		},
+		{"a public key", []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI test@host\n"), false},
+		{"empty", nil, false},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := looksLikePrivateKey(c.in); got != c.want {
+				t.Errorf("looksLikePrivateKey() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// And the file itself, so the check is against the real thing rather than my
+// paraphrase of it — a rewrite of tokenpatterns.go that reintroduces the shape
+// must fail here.
+func TestJitsOwnPatternListIsNotAPrivateKey(t *testing.T) {
+	content, err := os.ReadFile("tokenpatterns.go")
+	if err != nil {
+		t.Fatalf("reading tokenpatterns.go: %v", err)
+	}
+	if !bytes.Contains(content, []byte("-----BEGIN")) {
+		t.Skip("tokenpatterns.go no longer lists PEM headers; this guard has nothing to check")
+	}
+	if looksLikePrivateKey(content) {
+		t.Error("jit reports its own token-pattern list as a private key; " +
+			"a scanner that flags its own source teaches users to disbelieve the report")
 	}
 }
