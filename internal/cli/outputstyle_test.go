@@ -5,6 +5,8 @@ package cli
 
 import (
 	"bytes"
+	"go/scanner"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -296,4 +298,69 @@ func readLines(t *testing.T, path string) []string {
 		t.Fatalf("reading %s: %v", path, err)
 	}
 	return strings.Split(string(data), "\n")
+}
+
+// glyphLiterals are the house glyphs (internal/style) that must reach output
+// through their constants, never typed at a call site. GlyphMark ("!") is
+// absent deliberately: it is ordinary punctuation, and a check for it would
+// flag every exclamation mark in every message.
+var glyphLiterals = []string{"●", "○", "✗", "✓", "→", "•", "└", "─", "🔐", "▰", "▱"}
+
+// TestNoGlyphLiterals is the enforcement design/output-style.md rule 5 claimed
+// and never had: it said TestPaletteIsCentralised fails on a glyph literal at
+// a call site, while that test checks color.New( only — and ~100 emitted
+// strings typed glyphs directly when this was written (41 arrows, 49 bullets,
+// the rest scattered across 18 files). Like the colour checks, the point of
+// the seam is that a vocabulary change happens in exactly one place.
+//
+// String literals only, via the real Go tokenizer: a glyph in a COMMENT is
+// prose describing the output and entirely fine. Walks every package (the
+// scan report lives in internal/audit), with three exemptions: test files
+// (fixtures should carry the literal, or expectation and production move
+// together), style.go files (the definitions and cli's re-exports), and
+// markdown.go (a markdown document written to disk, not terminal output).
+func TestNoGlyphLiterals(t *testing.T) {
+	var checked int
+	err := filepath.WalkDir("..", func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") ||
+			name == "style.go" || name == "markdown.go" {
+			return nil
+		}
+		src, readErr := os.ReadFile(path) // #nosec G304 -- jit's own source tree
+		if readErr != nil {
+			return nil
+		}
+		checked++
+		fset := token.NewFileSet()
+		tf := fset.AddFile(path, fset.Base(), len(src))
+		var sc scanner.Scanner
+		sc.Init(tf, src, nil, 0)
+		for {
+			pos, tok, lit := sc.Scan()
+			if tok == token.EOF {
+				break
+			}
+			if tok != token.STRING {
+				continue
+			}
+			for _, g := range glyphLiterals {
+				if strings.Contains(lit, g) {
+					t.Errorf("%s:%d types the glyph %q in a string literal; use the style.Glyph* "+
+						"constant (or internal/cli's glyph* re-export) so a vocabulary change stays one edit.\n    %s",
+						filepath.ToSlash(path), fset.Position(pos).Line, g, lit)
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking the tree: %v", err)
+	}
+	if checked == 0 {
+		t.Fatal("no source files checked — the guard would pass vacuously")
+	}
 }

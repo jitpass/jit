@@ -43,6 +43,8 @@ const (
 	glyphRisk   = style.GlyphRisk
 	glyphDone   = style.GlyphDone
 	glyphAction = style.GlyphAction
+	glyphBullet = style.GlyphBullet
+	glyphBranch = style.GlyphBranch
 	glyphMark   = style.GlyphMark
 	glyphRule   = style.GlyphRule
 	glyphLock   = style.GlyphLock

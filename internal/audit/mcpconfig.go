@@ -25,6 +25,13 @@ var mcpConfigFileNames = map[string]bool{
 	"claude_desktop_config.json": true,
 }
 
+// IsMCPConfigFileName reports whether name is one of the filenames the MCP
+// scanner recognizes. Exported for the same reason FixedMCPConfigPaths is:
+// internal/migrate's discovery must recognize exactly the set audit scans, or
+// a finding has no fix path — and migrate kept a hand-mirrored copy of this
+// map behind a comment saying so, which is a contract by reminder.
+func IsMCPConfigFileName(name string) bool { return mcpConfigFileNames[name] }
+
 // mcpConfigFile covers both "mcpServers" (Claude Desktop, Cursor) and
 // "servers" (VS Code's MCP schema) top-level keys, since this is a
 // fast-moving ecosystem and tools haven't converged on one key name.

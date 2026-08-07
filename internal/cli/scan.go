@@ -116,7 +116,7 @@ var scanCmd = &cobra.Command{
 		"stores (~/.aws, ~/.ssh, …); symlinks are not followed.\n\n" +
 		"Exposure score\n\n" +
 		"jit reports a 0-100 exposure score next to the categorical risk level " +
-		"(the report's `✗ CRITICAL — exposure 85/100` banner). It is computed " +
+		"(the report's `" + glyphRisk + " CRITICAL — exposure 85/100` banner). It is computed " +
 		"entirely locally and deterministically:\n\n" +
 		"  1. Sum a severity-weighted load over all findings: critical 30, high " +
 		"15, medium 6, low 2, info 0. (info is detection-only, not an at-rest " +

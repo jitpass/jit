@@ -798,36 +798,36 @@ func printLooseFileRemovalPlan(out interface{ Write([]byte) (int, error) }, home
 	switch {
 	case plan.isMount:
 		printMigrateResultCategory(out, "Live mount -> plain file again (current vault values)", 1)
-		fmt.Fprintf(out, "  • %s\n\n", displayPath(home, plan.file))
+		fmt.Fprintf(out, "  "+glyphBullet+" %s\n\n", displayPath(home, plan.file))
 	case plan.isPointer:
 		printMigrateResultCategory(out, "Pointer file -> plain file again (pre-migration backup)", 1)
-		fmt.Fprintf(out, "  • %s\n\n", displayPath(home, plan.file))
+		fmt.Fprintf(out, "  "+glyphBullet+" %s\n\n", displayPath(home, plan.file))
 	}
 	if n := len(plan.profilePaths); n > 0 {
 		printMigrateResultCategory(out, pluralWord(n, "Profile + its", "Profiles + their")+" vault secrets deleted", n)
 		for _, p := range plan.profilePaths {
-			fmt.Fprintf(out, "  • %s\n", displayPath(home, p))
+			fmt.Fprintf(out, "  "+glyphBullet+" %s\n", displayPath(home, p))
 		}
 		fmt.Fprintln(out)
 	}
 	if n := len(plan.deletePaths); n > 0 {
 		printMigrateResultCategory(out, "Vault secrets deleted", n)
 		for _, p := range plan.deletePaths {
-			fmt.Fprintf(out, "  • %s\n", p)
+			fmt.Fprintf(out, "  "+glyphBullet+" %s\n", p)
 		}
 		fmt.Fprintln(out)
 	}
 	if n := len(plan.keptShared); n > 0 {
 		printMigrateResultCategory(out, "Vault secrets KEPT (another profile still references them)", n)
 		for _, p := range plan.keptShared {
-			fmt.Fprintf(out, "  • %s\n", p)
+			fmt.Fprintf(out, "  "+glyphBullet+" %s\n", p)
 		}
 		fmt.Fprintln(out)
 	}
 	if n := len(plan.backups); n > 0 {
 		printMigrateResultCategory(out, "Encrypted file backups deleted", n)
 		for _, rec := range plan.backups {
-			fmt.Fprintf(out, "  • %s\n", rec.VaultPath)
+			fmt.Fprintf(out, "  "+glyphBullet+" %s\n", rec.VaultPath)
 		}
 		fmt.Fprintln(out)
 	}
@@ -1143,14 +1143,14 @@ func printProjectRemovalPlan(out interface{ Write([]byte) (int, error) }, home s
 	if n := len(plan.mounts); n > 0 {
 		printMigrateResultCategory(out, "Live mounts -> plain files again (current vault values)", n)
 		for _, e := range plan.mounts {
-			fmt.Fprintf(out, "  • %s\n", displayPath(home, e.MountPath))
+			fmt.Fprintf(out, "  "+glyphBullet+" %s\n", displayPath(home, e.MountPath))
 		}
 		fmt.Fprintln(out)
 	}
 	if n := len(plan.inPlace); n > 0 {
 		printMigrateResultCategory(out, "Pointer files -> plain files again (current vault values)", n)
 		for _, p := range plan.inPlace {
-			fmt.Fprintf(out, "  • %s\n", displayPath(home, p))
+			fmt.Fprintf(out, "  "+glyphBullet+" %s\n", displayPath(home, p))
 		}
 		fmt.Fprintln(out)
 	}
@@ -1160,7 +1160,7 @@ func printProjectRemovalPlan(out interface{ Write([]byte) (int, error) }, home s
 		// run `jit vault set` on one of these since migrating.
 		printMigrateResultCategory(out, "Rewritten files -> restored from their pre-migration backup", n)
 		for _, rec := range plan.rewritten {
-			fmt.Fprintf(out, "  • %s\n", displayPath(home, rec.OriginalPath))
+			fmt.Fprintf(out, "  "+glyphBullet+" %s\n", displayPath(home, rec.OriginalPath))
 		}
 		fmt.Fprintln(out)
 	}
@@ -1177,35 +1177,35 @@ func printProjectRemovalPlan(out interface{ Write([]byte) (int, error) }, home s
 				names = append(names, name)
 			}
 			sort.Strings(names)
-			fmt.Fprintf(out, "  • %s (profile %s)\n", displayPath(home, cfg), strings.Join(names, ", "))
+			fmt.Fprintf(out, "  "+glyphBullet+" %s (profile %s)\n", displayPath(home, cfg), strings.Join(names, ", "))
 		}
 		fmt.Fprintln(out)
 	}
 	if n := len(plan.profileInfos); n > 0 {
 		printMigrateResultCategory(out, "Profiles + their vault secrets deleted", n)
 		for _, info := range plan.profileInfos {
-			fmt.Fprintf(out, "  • %q (%s)\n", info.Name, displayPath(home, info.Path))
+			fmt.Fprintf(out, "  "+glyphBullet+" %q (%s)\n", info.Name, displayPath(home, info.Path))
 		}
 		fmt.Fprintln(out)
 	}
 	if n := len(plan.orphanSecrets); n > 0 {
 		printMigrateResultCategory(out, "Orphaned vault secrets deleted (no profile; matched by origin in this project)", n)
 		for _, p := range plan.orphanSecrets {
-			fmt.Fprintf(out, "  • %s\n", p)
+			fmt.Fprintf(out, "  "+glyphBullet+" %s\n", p)
 		}
 		fmt.Fprintln(out)
 	}
 	if n := len(plan.keptShared); n > 0 {
 		printMigrateResultCategory(out, "Vault secrets KEPT (another profile still references them)", n)
 		for _, p := range plan.keptShared {
-			fmt.Fprintf(out, "  • %s\n", p)
+			fmt.Fprintf(out, "  "+glyphBullet+" %s\n", p)
 		}
 		fmt.Fprintln(out)
 	}
 	if n := len(plan.backups); n > 0 {
 		printMigrateResultCategory(out, "Encrypted file backups deleted (jit migrate undo loses these)", n)
 		for _, rec := range plan.backups {
-			fmt.Fprintf(out, "  • %s\n", rec.VaultPath)
+			fmt.Fprintf(out, "  "+glyphBullet+" %s\n", rec.VaultPath)
 		}
 		fmt.Fprintln(out)
 	}
