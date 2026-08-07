@@ -6,7 +6,7 @@
 // variable names to vault secret paths, decoupled from the vault tree
 // itself. jit doctor (internal/cli/doctor.go) is the first consumer —
 // it loads profiles from this package and checks each referenced path
-// actually exists in the vault. See task #8.
+// actually exists in the vault.
 //
 // Load(root, name) also falls back to GlobalRoot() (os.UserHomeDir()) when
 // a profile isn't found relative to root — for secrets not tied to one

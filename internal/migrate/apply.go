@@ -14,6 +14,7 @@ import (
 
 	"github.com/jitpass/jit/internal/audit"
 	"github.com/jitpass/jit/internal/mount"
+	"github.com/jitpass/jit/internal/pointerfile"
 	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/vault"
 )
@@ -85,7 +86,7 @@ func IsEnvBackupOnlySuffix(name string) bool {
 // Must be checked before envTemplateSuffixes — these are jit's own
 // artifacts, not user-authored templates, and folding them into that
 // map would misdescribe why they're skipped.
-const jitPointerFileSuffix = ".pointers"
+const jitPointerFileSuffix = pointerfile.CompanionSuffix
 const jitBackupMarker = ".jit-bak-"
 
 func isJitGeneratedEnvArtifact(name string) bool {

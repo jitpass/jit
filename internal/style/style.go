@@ -27,7 +27,11 @@
 // design/output-style.md. Keep the two in step.
 package style
 
-import "github.com/fatih/color"
+import (
+	"strings"
+
+	"github.com/fatih/color"
+)
 
 // The palette: six inks and one attribute, and nothing else. No blue, no
 // magenta, no backgrounds, no 256-color or truecolor.
@@ -152,3 +156,37 @@ const (
 // by "GlyphDone <text>" when it settles. Plain, so a transient frame never
 // competes with the report it precedes.
 var SpinnerFrames = []rune{'⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'}
+
+// HighlightCommands renders `backtick`-delimited command spans in Path (cyan,
+// the house colour for something the reader can type or open) and drops the
+// backticks. When colour is off — piped output, TERM=dumb, tests — Path.Sprint
+// returns the text unchanged, so the backticks are simply removed and the line
+// reads as clean plain text.
+//
+// Use it on directive lines ("run `jit x` to …"), not on every incidental
+// mention, so cyan stays a signal rather than noise.
+//
+// It lives here because it existed TWICE, character for character apart from
+// the name of the colour variable: internal/cli's hlCmds and internal/audit's
+// highlightCmds, the latter's own comment calling itself "the audit-package
+// twin". Both packages already import this one, which owns Path — so the
+// duplication bought nothing, and design/output-style.md's "always via hlCmds"
+// could not be true while there were two of them.
+func HighlightCommands(s string) string {
+	var b strings.Builder
+	for {
+		i := strings.IndexByte(s, '`')
+		if i < 0 {
+			b.WriteString(s)
+			return b.String()
+		}
+		j := strings.IndexByte(s[i+1:], '`')
+		if j < 0 {
+			b.WriteString(s)
+			return b.String()
+		}
+		b.WriteString(s[:i])
+		b.WriteString(Path.Sprint(s[i+1 : i+1+j]))
+		s = s[i+1+j+1:]
+	}
+}

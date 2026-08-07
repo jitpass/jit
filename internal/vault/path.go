@@ -43,27 +43,6 @@ func invalidPath(format string, a ...any) error {
 	return &invalidPathError{msg: fmt.Sprintf(format, a...)}
 }
 
-// sanitizeSecretPath validates a user-supplied secret path and returns the
-// absolute file path it maps to under vaultDir. Rejecting anything outside
-// secretPathPattern up front, then re-checking the resulting path still
-// falls under vaultDir after filepath.Clean, is deliberate defense in
-// depth: the regexp should already make traversal impossible, but a
-// filesystem path derived from user input is exactly the kind of place a
-// single missed edge case turns into a real path-traversal bug.
-//
-// Beyond traversal, the path must map to its file WITHOUT normalization:
-// a v2 payload's AAD is bound to the path exactly as given (envelopeAAD),
-// so any input the filesystem resolves to a different name than the AAD
-// records decrypts never — and fails with the "corrupted/tampered" error,
-// the one message that makes a user fear a healthy vault is gone. Two
-// real cases are rejected here for exactly that reason: "." segments
-// (collapsed by filepath.Join, so "a/./b" stored at a/b.enc with an AAD
-// of "a/./b") and letter-case variants of an existing entry (the default
-// macOS filesystem is case-insensitive, so "stripe/dev-key" opens
-// Dev-Key.enc while the AAD says otherwise — see rejectCaseVariant).
-//
-// Every rejection here wraps ErrInvalidPath, so a caller can tell a bad path
-// from a bad store.
 // ValidatePath reports whether path is a legal secret path, using only the
 // checks that need nothing from the filesystem: shape, traversal segments,
 // and the reserved history namespace.
@@ -104,6 +83,27 @@ func ValidatePath(path string) error {
 	return nil
 }
 
+// sanitizeSecretPath validates a user-supplied secret path and returns the
+// absolute file path it maps to under vaultDir. Rejecting anything outside
+// secretPathPattern up front, then re-checking the resulting path still
+// falls under vaultDir after filepath.Clean, is deliberate defense in
+// depth: the regexp should already make traversal impossible, but a
+// filesystem path derived from user input is exactly the kind of place a
+// single missed edge case turns into a real path-traversal bug.
+//
+// Beyond traversal, the path must map to its file WITHOUT normalization:
+// a v2 payload's AAD is bound to the path exactly as given (envelopeAAD),
+// so any input the filesystem resolves to a different name than the AAD
+// records decrypts never — and fails with the "corrupted/tampered" error,
+// the one message that makes a user fear a healthy vault is gone. Two
+// real cases are rejected here for exactly that reason: "." segments
+// (collapsed by filepath.Join, so "a/./b" stored at a/b.enc with an AAD
+// of "a/./b") and letter-case variants of an existing entry (the default
+// macOS filesystem is case-insensitive, so "stripe/dev-key" opens
+// Dev-Key.enc while the AAD says otherwise — see rejectCaseVariant).
+//
+// Every rejection here wraps ErrInvalidPath, so a caller can tell a bad path
+// from a bad store.
 func sanitizeSecretPath(vaultDir, path string) (string, error) {
 	if err := ValidatePath(path); err != nil {
 		return "", err

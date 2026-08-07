@@ -207,7 +207,7 @@ func sanitizeInvocationArgs(cmdPath string, rawArgs, positionals []string, parse
 		if strings.HasPrefix(args[i], "-") {
 			continue
 		}
-		args[i] = "<redacted>"
+		args[i] = auditlog.RedactToken
 		break
 	}
 	return args
