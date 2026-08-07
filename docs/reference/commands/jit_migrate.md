@@ -28,7 +28,8 @@ name. Each target is resolved on its own:
                ~/.aws/credentials, ~/.kube/config, Terraform Cloud creds,
                ~/.docker/config.json, ~/.git-credentials, GCP
                application-default credentials, a SOPS age key, ~/.netrc,
-               ~/.pypirc, Claude Desktop's MCP config, the global ~/.npmrc)
+               ~/.pypirc, Claude Desktop's MCP config, Claude Code's
+               ~/.claude.json, the global ~/.npmrc)
                is routed to that credential type's handling
                (credential_process, exec plugin, credential helper, live
                mount, or in-place redaction for a history file, where each

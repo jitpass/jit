@@ -105,7 +105,7 @@ var noiseRelativePaths = []string{
 // noiseDirs plus the root-relative noiseRelativePaths. Exported for
 // internal/migrate, whose Discover* walks must skip exactly the same
 // directories this package's walk does — the two lists once drifted apart,
-// which let `jit migrate home` discover (and offer to rewrite) fixture
+// which let `jit migrate ~` discover (and offer to rewrite) fixture
 // files audit deliberately excludes: bundled .env files under
 // .vscode/extensions, .venv site-packages, everything under ~/Library.
 func SkipNoiseDir(root, path, name string) bool {

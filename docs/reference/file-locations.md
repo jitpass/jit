@@ -39,7 +39,7 @@ the vault is gone.
 | `~/.terraformrc` | gains a `credentials_helper` block |
 | `~/.gitconfig` | `credential.helper` set to `jit` (the plaintext `store` helper removed); `~/.git-credentials` has its migrated logins stripped |
 | `.npmrc` (project or `~`) | a live mount serving a template; non-secret lines untouched |
-| `mcp.json` / Claude Desktop config | server `command` wrapped in `jit run` |
+| `mcp.json` / Claude Desktop config / `~/.claude.json` | server `command` wrapped in `jit run` |
 | per-tool CLI configs (`~/.config/gh/hosts.yml`, …) | token scrubbed by `jit wrap` - full list per tool in the [wrap catalog](../wrap/index.md) |
 | `~/.zsh_history` / `~/.bash_history` / `$HISTFILE` / fish history | each recorded credential replaced in place by a `<jit:redacted:VAR>` marker naming the vault entry that now holds it; every other byte, your commands included, untouched |
 

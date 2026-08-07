@@ -92,6 +92,37 @@ need once the path is fixed.
 - Claude Desktop's config and `~/.claude.json` are machine-wide - name them
   explicitly to convert them; a project `.mcp.json` is picked up when you
   name that project's directory.
+
+### Claude Code's `~/.claude.json`
+
+That file is Claude Code's whole application state, and it holds MCP servers
+in two places: the ordinary top-level `mcpServers` block, and a `projects`
+map keying a **second set of server definitions by project directory**.
+`jit migrate ~/.claude.json` converts both.
+
+Three things worth knowing:
+
+- **Each project block gets its own profile namespace.** Two projects
+  routinely define a server under the same name (`github`, `postgres`), with
+  different tokens. Those land in `mcp-github` and `mcp-github-2` rather than
+  one overwriting the other's vault value, and each project's rewritten entry
+  names the profile holding *its* credential. `jit status --secrets` shows
+  which is which.
+- **The rest of the file is left alone.** Only the servers blocks are
+  rewritten; everything Claude Code keeps around them - startup counts,
+  per-project `allowedTools`, conversation history - survives byte-for-byte.
+- **A project block jit cannot parse is reported, not skipped.** It stays
+  untouched and migrate says so:
+
+  ```
+  ○ project block /Users/you/proj couldn't be parsed and was left unchanged
+  ```
+
+  Its servers are *not* migrated, so whatever `jit scan` flagged there is
+  still in plaintext. Fix the JSON and re-run.
+
+Restart Claude Code afterwards - a running MCP server keeps the environment
+it started with.
 - Rotating: `jit vault set` on the paths shown by
   `jit status --secrets`; restart the MCP server (usually: restart
   the editor) to pick up the new value.
