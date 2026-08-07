@@ -661,12 +661,29 @@ func init() {
 	rootCmd.AddCommand(upgradeCmd)
 }
 
-// upgradeTeamID is the Apple Developer Team ID every published jit release is
-// signed with (TECH_STACK.md §5). Hardcoded on purpose, exactly like
-// upgradeRepoOwner/upgradeRepoName above: this command installs jitpass/jit's
-// own releases and nothing else, so the identity it should accept is a
-// constant, not something read from the artifact it is trying to authenticate.
-const upgradeTeamID = "CZC6BH93GJ"
+// upgradeTeamIDs are the Apple Developer Team IDs a published jit release may
+// be signed with (TECH_STACK.md §5), most current first. Hardcoded on purpose,
+// exactly like upgradeRepoOwner/upgradeRepoName above: this command installs
+// jitpass/jit's own releases and nothing else, so the identity it accepts is a
+// constant, not something read from the artifact it is authenticating.
+//
+// A LIST rather than a single constant, because this is the one setting in the
+// repo whose mistake is unrecoverable. The code that rejects a release lives in
+// the ALREADY-INSTALLED binary, so if the certificate is ever re-issued under a
+// different Team ID, every copy in the field rejects every future release
+// forever and no new release can fix it — the fix would have to arrive through
+// the channel it just closed. (The signing identity has already changed once;
+// a stale Z8ADLGGPY6 is still in the keychain.)
+//
+// So a Team ID migration is: add the successor here, ship and let that release
+// propagate, and only THEN switch the signing certificate. Removing the old ID
+// is a separate, later change — once nothing worth upgrading is still running a
+// binary that predates the addition.
+//
+// upgradeTeamIDs[0] is the team releases are CURRENTLY signed with, and is what
+// doctor reports and what release.yml's post-publish gate asserts on; the rest
+// are accepted but not expected.
+var upgradeTeamIDs = []string{"CZC6BH93GJ"}
 
 // verifyStagedSignature refuses to install a binary that isn't a genuine,
 // intact, Developer-ID-signed jit release.
@@ -691,7 +708,8 @@ const upgradeTeamID = "CZC6BH93GJ"
 // deliberately no override flag — a switch that turns off signature checking
 // on a security tool's self-updater is the thing an attacker asks the user to
 // pass.
-// signatureRequirement builds the codesign requirement for a team.
+
+// signatureRequirement builds the codesign requirement for one team.
 //
 // The leading "=" is codesign's marker for an INLINE requirement; without it,
 // -R treats the argument as a path to a requirements FILE and fails with
@@ -700,20 +718,70 @@ const upgradeTeamID = "CZC6BH93GJ"
 // genuine ones, turning `jit upgrade` into a command that can never succeed.
 // Its own function so a test can exercise the exact string production uses,
 // rather than a copy that agrees with itself.
+//
+// The two OID clauses are what make this a DEVELOPER ID requirement rather
+// than merely "Apple-anchored code carrying our OU":
+//
+//	1.2.840.113635.100.6.2.6  Developer ID intermediate CA marker
+//	1.2.840.113635.100.6.1.13 Developer ID Application leaf marker
+//
+// Without them an Apple DEVELOPMENT certificate from the same team satisfies
+// the requirement — which is precisely the wrong-identity-out-of-the-keychain
+// accident this check exists to catch, and produces a binary that is
+// undistributable in the field while looking correct here. Verified both
+// directions against real signatures: a genuine Developer ID application still
+// passes, and Apple-signed non-Developer-ID code (/bin/ls, "Software Signing")
+// passes `anchor apple generic` alone but fails once these clauses are added.
 func signatureRequirement(teamID string) string {
-	return fmt.Sprintf("=anchor apple generic and certificate leaf[subject.OU] = %q", teamID)
+	return fmt.Sprintf("=%s and %s and certificate leaf[subject.OU] = %q",
+		appleAnchor, developerIDMarkers, teamID)
 }
 
+// appleAnchor and developerIDMarkers are the two halves of the requirement
+// that are not about WHICH team signed the binary. Named separately so a test
+// can exercise the markers on their own: against any real binary, the OU
+// clause alone already rejects everything not signed by us, so a requirement
+// tested only as a whole passes identically with the markers present or
+// absent — the markers' contribution is invisible unless it is isolated.
+const (
+	appleAnchor = "anchor apple generic"
+	// The Developer ID marker OIDs: the intermediate CA marker on the chain's
+	// certificate 1, and the Developer ID Application marker on the leaf.
+	// Without both, an Apple DEVELOPMENT certificate from the same team
+	// satisfies the requirement — the wrong-identity-from-the-keychain
+	// accident this check exists to catch, which produces a binary that is
+	// undistributable in the field while looking correct at signing time.
+	developerIDMarkers = "certificate 1[field.1.2.840.113635.100.6.2.6] exists" +
+		" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
+)
+
+// verifyStagedSignature refuses to install a binary that isn't a genuine,
+// intact, Developer-ID-signed jit release. See the requirement above and the
+// trust-chain note below it.
+//
+// Tries each accepted team in turn rather than building one requirement with
+// an `or` branch: the string handed to codesign is then always the exact shape
+// TestSignatureRequirementFormIsInline pins, and a successor Team ID cannot
+// change the parse of the clause protecting the current one. Two invocations
+// of codesign in the worst case is not a cost worth optimising against that.
 func verifyStagedSignature(ctx context.Context, staged string) error {
-	req := signatureRequirement(upgradeTeamID)
-	cmd := exec.CommandContext(ctx, "/usr/bin/codesign", "--verify", "--strict", "-R", req, staged) // #nosec G204 -- fixed system binary; the only variable is jit's own staged temp path
-	output, err := cmd.CombinedOutput()
-	if err == nil {
-		return nil
-	}
-	detail := strings.TrimSpace(string(output))
-	if detail == "" {
-		detail = err.Error()
+	var detail string
+	for _, team := range upgradeTeamIDs {
+		req := signatureRequirement(team)
+		cmd := exec.CommandContext(ctx, "/usr/bin/codesign", "--verify", "--strict", "-R", req, staged) // #nosec G204 -- fixed system binary; the only variable is jit's own staged temp path
+		output, err := cmd.CombinedOutput()
+		if err == nil {
+			return nil
+		}
+		// Report the FIRST team's rejection: upgradeTeamIDs[0] is what
+		// releases are currently signed with, so its failure is the one that
+		// describes what actually went wrong.
+		if detail == "" {
+			detail = strings.TrimSpace(string(output))
+			if detail == "" {
+				detail = err.Error()
+			}
+		}
 	}
 	return fmt.Errorf("the downloaded binary is not a signature-verified jit release (%s); "+
 		"refusing to install it. Download it yourself from %s if you believe this is wrong",
