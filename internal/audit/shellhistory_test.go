@@ -726,11 +726,16 @@ func TestShellHistoryViewHint(t *testing.T) {
 	// This returned "" until the hint was generalised beyond line addresses.
 	noline := tf
 	noline.Line = nil
+	// The FULL pattern, not the anchor prefix: it matches exactly the spans
+	// the scanner matched, and its output is line numbers and nothing else —
+	// not even the anchor text the -Fno form printed. The anchor form remains
+	// only for vendors whose pattern cannot survive translation to a grep ERE
+	// (TokenPatternERE).
 	// Singular, because this call says the problem is one secret.
-	if got := manualViewHint(noline, home, false); got != "to see it: grep -Fno 'ghp_' ~/.zsh_history" {
+	if got := manualViewHint(noline, home, false); got != `line: grep -nE '\bghp_[A-Za-z0-9]{36}\b' ~/.zsh_history | cut -d: -f1` {
 		t.Errorf("line-less history finding = %q", got)
 	}
-	if got := manualViewHint(noline, home, true); !strings.HasPrefix(got, "to see them:") {
+	if got := manualViewHint(noline, home, true); !strings.HasPrefix(got, "lines:") {
 		t.Errorf("plural form = %q", got)
 	}
 }
@@ -865,9 +870,13 @@ func TestViewHintCommandNeverPrintsTheCredential(t *testing.T) {
 	if strings.Contains(string(out), secret) {
 		t.Errorf("hint printed the credential:\n%s", out)
 	}
-	// It still has to locate it, or the reader concludes the finding was wrong.
-	if !strings.Contains(string(out), "github_pat_") {
-		t.Errorf("hint located nothing:\n%s", out)
+	// The pattern-based hint's output is line numbers and NOTHING else — a
+	// stronger property than the anchor form this test was written against,
+	// which printed the anchor text per match. It still has to locate the
+	// credential, or the reader concludes the finding was wrong: the .env
+	// fixture's token sits on line 1, and that is the whole output.
+	if got := strings.TrimSpace(string(out)); got != "1" {
+		t.Errorf("hint output = %q, want the credential's line number and nothing else", got)
 	}
 }
 
