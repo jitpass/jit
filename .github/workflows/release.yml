@@ -27,10 +27,12 @@ jobs:
   goreleaser:
     needs: test
     runs-on: macos-latest
-    # Sized for a signed, NON-notarized build (notarization is intentionally
-    # dropped — see .goreleaser.yml). The old value was budgeted for waiting on
-    # Apple's verdict and cited a `timeout: 30m` that no longer exists.
-    timeout-minutes: 20
+    # Budget: build + sign + notarize wait (15m cap in .goreleaser.yml; healthy
+    # verdicts arrive in ~20s per spike/notarize-e2e/FINDINGS.md) + the staged
+    # verification steps. A run that actually spends the full notarize wait is
+    # Apple regressing, and the job failing at this ceiling is the correct
+    # loud outcome.
+    timeout-minutes: 40
     steps:
       # Actions are pinned to full commit SHAs, not tags. A tag is mutable and
       # repointable by its owner, so `@v4` in THIS job — the one job in the
@@ -72,13 +74,20 @@ jobs:
       # does not hold: forks and PR builds are protected by `--snapshot` and by
       # ci.yml passing --skip=publish,sign,notarize, not by this gate. Nothing
       # needs an unsigned PUBLISH to work.
-      - name: Require Developer ID signing secrets
+      - name: Require Developer ID signing and notary secrets
         env:
           P12: ${{ secrets.MACOS_SIGN_P12 }}
           PW: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          NK: ${{ secrets.MACOS_NOTARY_KEY }}
+          NKID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          NISS: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
         run: |
           if [ -z "$P12" ] || [ -z "$PW" ]; then
             echo "::error::refusing to publish without Developer ID signing secrets — an unsigned release traps every user out of 'jit upgrade' until a signed one replaces it"
+            exit 1
+          fi
+          if [ -z "$NK" ] || [ -z "$NKID" ] || [ -z "$NISS" ]; then
+            echo "::error::refusing to publish without notary secrets — quill would fail mid-release anyway (wait: true); fix the MACOS_NOTARY_* secrets instead of shipping un-notarized"
             exit 1
           fi
 
@@ -96,11 +105,14 @@ jobs:
           # rather than quietly publish an unsigned binary.
           MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
           MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
-          # Notarization is currently disabled (.goreleaser.yml has no notarize
-          # block); these stay wired so re-enabling is a config-only change.
+          # Notarization (re-enabled 2026-08-07 behind the spike/notarize-e2e
+          # gate; wait: true, 15m cap — see .goreleaser.yml for both stories).
           MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
           MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
           MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          # Cask push to jitpass/homebrew-tap; absent secret skips only the
+          # cask, per `skip_upload` in the homebrew_casks block.
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
       # The signature the release actually carries, checked by the code that
       # will judge it — not by the code that wrote it.
