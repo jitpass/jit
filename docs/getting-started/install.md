@@ -9,6 +9,14 @@ jit is macOS-only and needs Touch ID or a device passcode.
 
 ## Install (Apple Silicon, no Go required)
 
+With Homebrew:
+
+```sh
+brew install jitpass/tap/jitpass
+```
+
+Or download the release directly:
+
 ```sh
 curl -sLO https://github.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz
 tar -xzf jitpass_darwin_arm64.tar.gz jit
@@ -38,13 +46,13 @@ install anything, so it cannot disagree with what jit itself enforces.
 Note that `codesign -dv` *displays* a signature without validating it — a
 tampered binary still prints the right `Authority` line. If you would rather
 check before running the binary at all, `codesign --verify --strict
-$(command -v jit)` verifies its integrity and prints nothing on success. The
-`curl` install above is
-**quarantine-free**: macOS only sets the quarantine flag on downloads made by a
-browser or other quarantine-aware app, not by `curl`, so the binary runs
-without a Gatekeeper prompt. (Releases are not notarized, so a download made by
-a *browser* would be quarantined and Gatekeeper would block it. Use the `curl`
-line above, or `jit upgrade`; both avoid quarantine entirely.)
+$(command -v jit)` verifies its integrity and prints nothing on success. Releases are also **notarized** by Apple, so every route runs
+without a Gatekeeper prompt — including ones that quarantine. Homebrew
+quarantines its downloads and Gatekeeper clears them against the notarization
+ticket, which it fetches online the first time a new version runs (jit ships a
+bare Mach-O, and those cannot be stapled). The `curl` install sets no
+quarantine flag at all, since macOS only sets it for downloads made by a
+browser or other quarantine-aware app.
 
 ## Building from source (Intel Macs, contributors)
 

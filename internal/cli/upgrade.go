@@ -95,9 +95,9 @@ var upgradeCmd = &cobra.Command{
 		"Replaces the binary `jit` actually runs from (whatever `which jit` resolves to).\n" +
 		"If that path isn't writable (e.g. /usr/local/bin), you'll be prompted for sudo\n" +
 		"just for the move. Your vault and secrets are never touched.\n\n" +
-		"A jit installed by the retired Homebrew cask is not self-replaced, since\n" +
-		"Homebrew owns that copy. The cask is no longer published, so uninstall it\n" +
-		"(`brew uninstall --cask jitpass`) and reinstall from the release tarball to\n" +
+		"A jit installed by Homebrew is not self-replaced, since Homebrew owns that\n" +
+		"copy — run `brew upgrade jitpass` instead. Reinstall from the release\n" +
+		"tarball if you would rather this command manage it, so\n" +
 		"switch to a self-upgrading build (see the install guide).\n\n" +
 		"Only the published darwin/arm64 release is fetched this way; on any other\n" +
 		"platform, build from source with `go install github.com/jitpass/jit/cmd/jit@latest`.",
@@ -131,7 +131,7 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 	// what's on PATH (`/opt/homebrew/bin/jit`) is itself the symlink the
 	// EvalSymlinks above deliberately follows into the Caskroom.
 	if brewManaged(exePath) {
-		return fmt.Errorf("jit upgrade: this jit is managed by Homebrew (%s), so it can't self-replace; the Homebrew cask is retired, so run `brew uninstall --cask jitpass` and reinstall from the release tarball (https://github.com/%s/%s/releases/latest) to get a self-upgrading build", exePath, upgradeRepoOwner, upgradeRepoName)
+		return fmt.Errorf("jit upgrade: this jit is managed by Homebrew (%s), so it can't self-replace — run `brew upgrade jitpass` instead, or reinstall from the release tarball (https://github.com/%s/%s/releases/latest) if you want this command to manage it", exePath, upgradeRepoOwner, upgradeRepoName)
 	}
 
 	client := &http.Client{Timeout: 60 * time.Second}
