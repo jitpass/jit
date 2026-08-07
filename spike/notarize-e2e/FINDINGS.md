@@ -109,13 +109,20 @@ the `timeout: 15m` JWT lesson from `77cc73f`), and the `homebrew_casks` block
 | 2026-08-06 | local run 3 | 5b4bbf71 | seconds (54s total) | Accepted | control blocked rc=137, notarized copy ran | **0** |
 | 2026-08-06 | 3 timed submissions | fe43e109, 3f22a7b4, 5554688c | 20s / 20s / 19s | Accepted | — | 0 |
 | 2026-08-07 | CI run 1 (day 2) | c8fc0d9c | **18s** | Accepted | inconclusive: runner doesn't enforce GK on exec → probe fix | 4→job red |
+| 2026-08-07 | CI gate run 2 | b7d0f454 | **19s** | Accepted | untestable on runner (by design post-fix) | **0** |
+| 2026-08-07 | CI gate run 3 | 4cdacb1b | **18s** | Accepted | untestable on runner (by design post-fix) | **0** |
 | _fill in per run_ | | | | | | |
 
-**Verdict as of 2026-08-06: the account-side condition has cleared.** The
-entire submission backlog is Accepted, and fresh submissions reach a verdict
-in *seconds* — comfortably inside quill's ~18m JWT ceiling, so `wait: true`
-is viable again. The quarantined-unstapled Gatekeeper leg passes (online
-ticket fetch works for a bare Mach-O). Gate progress: **1 of 3** consecutive
-green runs, day 1 of 2 — run the workflow again on a later day (twice) before
-un-reverting. Do not re-litigate the tooling: signing, auth, and the JWT
-timeout are all known good.
+**Verdict 2026-08-07: GATE MET — notarization and the Homebrew cask are
+re-enabled.** Three consecutive green runs across two days (local 08-06 with
+the full Gatekeeper A/B pass; CI 08-07 twice through the release secrets),
+every verdict in 18-54s — the account-side stuck-forever condition is gone
+and turnaround sits ~45x inside quill's ~18m JWT ceiling, so `wait: true` is
+back. The un-revert rode in the same change that recorded this verdict:
+`notarize:` block (wait: true, timeout: 15m) and `homebrew_casks` without
+the quarantine-strip. If a future release hangs at notarize again, run
+`gh workflow run notarize-spike.yml` before touching the release config.
+
+Historical note, day-1-only readers: 2026-08-06 alone showed the same
+all-green picture that Aug 1 briefly did before regressing the same day —
+the second day of evidence is what made this verdict safe to act on.
