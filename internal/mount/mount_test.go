@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -589,9 +590,21 @@ func TestServeCallsOnReaderConnectedBeforeWriting(t *testing.T) {
 		t.Fatalf("CreateFIFO: %v", err)
 	}
 
-	var calls int
-	onReaderConnected := func() { calls++ }
-	content := func() []byte { return []byte("A=1\n") }
+	// A COUNT cannot witness an ordering claim: `calls != 2` holds just as
+	// well with the hook moved below the write, which is precisely the
+	// regression this test exists to catch. Record the sequence instead.
+	// provideContent is the proxy for "about to write" — Serve cannot write a
+	// byte it has not asked for yet — so "connected" preceding "content" in
+	// every cycle is the property, not merely that both happened.
+	var mu sync.Mutex
+	var events []string
+	record := func(what string) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, what)
+	}
+	onReaderConnected := func() { record("connected") }
+	content := func() []byte { record("content"); return []byte("A=1\n") }
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -608,8 +621,15 @@ func TestServeCallsOnReaderConnectedBeforeWriting(t *testing.T) {
 		t.Fatal("Serve did not exit within 5s of cancellation")
 	}
 
-	if calls != 2 {
-		t.Errorf("onReaderConnected called %d times, want 2 (once per reader cycle)", calls)
+	mu.Lock()
+	got := strings.Join(events, ",")
+	mu.Unlock()
+	const want = "connected,content,connected,content"
+	if got != want {
+		t.Errorf("callback sequence = %q, want %q; onReaderConnected must fire "+
+			"strictly before Serve asks for content, once per reader cycle, or a "+
+			"reader blocked on read() can receive data before the decoy gate has "+
+			"decided what to serve", got, want)
 	}
 }
 

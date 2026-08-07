@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -987,6 +988,51 @@ func TestEveryCheckKindHasALabel(t *testing.T) {
 		}
 		if !strings.HasPrefix(label, "[") || !strings.HasSuffix(label, "]") {
 			t.Errorf("findingLabel(%q) = %q, want the bracketed `[category]` header shape", k, label)
+		}
+	}
+}
+
+// checkKindDecl matches a kind as declared in profilecheck.go's const block,
+// e.g. `kindMCP checkKind = "mcp"`.
+var checkKindDecl = regexp.MustCompile(`(?m)^\s*kind[A-Za-z0-9]+\s+checkKind\s*=\s*"([a-z_0-9]+)"`)
+
+// TestAllCheckKindsListsEveryDeclaredKind is the guard the two tests above
+// depend on and cannot provide. Both walk allCheckKinds, so they prove "every
+// kind someone remembered to register renders" — a kind declared without a
+// line added to the slice is invisible to both, which is precisely how kindMCP
+// shipped with no findingLabel in the first place. allCheckKinds' own comment
+// records that incident; the enumeration it introduced is still typed by hand.
+//
+// Both directions: a stale entry names a kind nothing can produce, and the
+// completeness tests would then assert a label for a value doctor never emits.
+func TestAllCheckKindsListsEveryDeclaredKind(t *testing.T) {
+	const src = "profilecheck.go"
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("reading %s: %v", src, err)
+	}
+
+	matches := checkKindDecl.FindAllStringSubmatch(string(data), -1)
+	if len(matches) < 15 {
+		t.Fatalf("found only %d checkKind constants in %s — the guard would pass vacuously; fix checkKindDecl", len(matches), src)
+	}
+
+	listed := make(map[string]bool, len(allCheckKinds))
+	for _, k := range allCheckKinds {
+		listed[string(k)] = true
+	}
+	declared := make(map[string]bool, len(matches))
+	for _, m := range matches {
+		declared[m[1]] = true
+		if !listed[m[1]] {
+			t.Errorf("checkKind %q is declared in %s but missing from allCheckKinds; "+
+				"neither TestEveryCheckKindHasALabel nor TestEveryCheckKindFormatsABody "+
+				"can see it, which is how kindMCP shipped unlabeled", m[1], src)
+		}
+	}
+	for _, k := range allCheckKinds {
+		if !declared[string(k)] {
+			t.Errorf("allCheckKinds lists %q, which no checkKind constant in %s declares", k, src)
 		}
 	}
 }

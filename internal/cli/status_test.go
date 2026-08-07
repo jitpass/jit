@@ -52,6 +52,36 @@ func TestStatusEverythingEmpty(t *testing.T) {
 	}
 }
 
+// TestShortVersion pins goPseudoVersion against literal inputs, because the
+// two places the status row is asserted — status_test.go's "jit " + …
+// expectation above and status_agent_test.go's wantVersions — both BUILD the
+// expected string by calling shortVersion, the production expression under
+// test. Both sides of those comparisons move together, so a broken regexp
+// keeps them green while `jit status` prints a build-system artifact nobody
+// reads. Those two lines were shortVersion's only appearances in any test.
+func TestShortVersion(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		// A released binary carries a plain version and must pass through.
+		{"v0.67.0", "v0.67.0"},
+		{"0.67.0", "0.67.0"},
+		// Go's pseudo-version tail for a checkout with a preceding tag…
+		{"v0.67.0-0.20260801120000-abcdef123456", "v0.67.0"},
+		// …and the +dirty variant a modified tree produces.
+		{"v0.67.0-0.20260801120000-abcdef123456+dirty", "v0.67.0"},
+		// The untagged shape, where the "0." group is absent.
+		{"v0.0.0-20260801120000-abcdef123456", "v0.0.0"},
+		// A genuine prerelease suffix is short and meaningful: keep it.
+		{"v0.67.0-rc1", "v0.67.0-rc1"},
+		// Only the TAIL is a pseudo-version; the same shape mid-string is not.
+		{"v0.67.0-0.20260801120000-abcdef123456-rc1", "v0.67.0-0.20260801120000-abcdef123456-rc1"},
+		{"", ""},
+	} {
+		if got := shortVersion(tc.in); got != tc.want {
+			t.Errorf("shortVersion(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestStatusVaultReportsSecretCount(t *testing.T) {
 	home := withFixtureHome(t)
 	withFixtureCwd(t)

@@ -130,8 +130,11 @@ func TestOverlappingNeedlesSpliceLongestFirst(t *testing.T) {
 }
 
 // The rewrite lands by rename, which replaces the path. An agent still
-// holding the old descriptor would keep appending to an unlinked inode.
-func TestCleanAgentCachesSkipsAFileWrittenUnderIt(t *testing.T) {
+// holding the old descriptor would keep appending to an unlinked inode —
+// hence the live-writer check this test's fixture approaches but, as written,
+// deliberately does not trigger (see the assertions below). Named for what it
+// actually establishes rather than for the skip it never provokes.
+func TestCleanAgentCachesKeepsContentAppendedBeforeTheSweep(t *testing.T) {
 	home := t.TempDir()
 	path := filepath.Join(home, ".claude", "projects", "p", "live.jsonl")
 	writeCacheTree(t, path, `{"text":"`+cacheKey+`"}`+"\n")
@@ -155,13 +158,33 @@ func TestCleanAgentCachesSkipsAFileWrittenUnderIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The append happened before the sweep read the file, so this run should
-	// succeed; what must hold either way is that nothing appended is lost.
-	if strings.Contains(readCacheFile(t, path), cacheKey) && len(got.Edited) > 0 {
-		t.Error("reported an edit but the credential is still there")
+	// The append happens BEFORE the sweep, so the live-writer check (which
+	// compares a stat taken during the walk against one taken just before the
+	// rename) must not fire: this run has to succeed outright. The mid-sweep
+	// race the check actually guards sits between jit's read and its rename
+	// and is not reproducible deterministically from outside the package, so
+	// what is pinned here is the surrounding contract — the sweep edits the
+	// file, the credential goes, and nothing written before it started is lost.
+	//
+	// The assertion used to be `credential still present && len(Edited) > 0`,
+	// a conjunction no implementation can fail: a no-op sweep leaves Edited
+	// empty (second clause false) and a working one removes the credential
+	// (first clause false). Skipped — the record this test is named for — was
+	// never inspected at all.
+	after := readCacheFile(t, path)
+	if strings.Contains(after, cacheKey) {
+		t.Errorf("the credential survived the sweep: %q", after)
 	}
-	if !strings.Contains(readCacheFile(t, path), "later") {
+	if !strings.Contains(after, "later") {
 		t.Error("content appended before the sweep was lost")
+	}
+	if len(got.Edited) != 1 {
+		t.Errorf("Edited = %+v, want exactly one edit", got.Edited)
+	}
+	if len(got.Skipped) != 0 {
+		t.Errorf("Skipped = %+v, want none; the append preceded the sweep, so the "+
+			"live-writer check must not fire — a stale stat comparison would "+
+			"make every already-appended file permanently unsweepable", got.Skipped)
 	}
 }
 
