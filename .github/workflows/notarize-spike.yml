@@ -8,9 +8,11 @@ name: Notarize Spike
 #   gh workflow run notarize-spike.yml -f mode=history     # just list recent
 #                                                          # submissions/verdicts
 #
-# Exit-code meanings (from run.sh): 0 accepted + Gatekeeper pass,
-# 1 invalid artifact, 2 stuck In Progress (the known account condition),
-# 3 accepted but Gatekeeper rejected the quarantined copy.
+# Exit-code meanings (from run.sh): 0 accepted (Gatekeeper leg passed or
+# is untestable here — GitHub runners don't enforce Gatekeeper on exec, so
+# that leg is only judged on a real Mac), 1 invalid artifact, 2 stuck
+# In Progress (the known account condition), 3 a discriminating environment
+# blocked the quarantined notarized copy.
 # Re-add .goreleaser.yml's notarize block + the Homebrew cask only after the
 # acceptance criteria in spike/notarize-e2e/FINDINGS.md are met.
 on:
