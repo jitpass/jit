@@ -452,9 +452,54 @@ func isAllDigits(s string) bool {
 //     "SG.xxxxxxxxxx.yyyyyyyyyy" has dot-separated segments of exactly 10, and
 //     Slack's "xoxb-" plus 10 body characters is a 15-long run. "." is
 //     deliberately NOT part of a run, or every dotted hostname would qualify.
+//
+// HistoryAdmitSpec is the admit test stated as DATA, so a second
+// implementation can be built from it rather than retyped beside it.
+//
+// internal/guard transplants this exact test into a zsh `zshaddhistory` hook,
+// and carried its own copy of all three literals plus the run length — the
+// length as a bare 10 inside an ERE in a Go raw string. Both copies were
+// correct and nothing held them together. The failure that shape produces is
+// silent and one-directional: add a vendor pattern whose shortest match is an
+// 8-character run (or lower RunLen to 8, which such a pattern requires) and
+// TestHistoryPrefilterNeverDropsAMatch forces the Go constant down and keeps
+// passing, while the shipped zsh hook still rejects at 10 — so
+// `jit guard history` quietly stops protecting that vendor, and the guard's
+// designed failure mode is to return 0 and let the line save normally.
+type HistoryAdmitSpec struct {
+	// Literals admit a line outright when present as a substring.
+	Literals []string
+	// RunLen is the shortest run of RunClass characters that admits a line.
+	RunLen int
+	// RunClass is the run character set as an ERE bracket expression, for an
+	// implementation that has a regexp engine and no reason to hand-roll the
+	// byte test. TestHistoryAdmitRunClassMatchesTheByteTest pins it against
+	// the Go implementation below, byte for byte.
+	RunClass string
+}
+
+// HistoryAdmitRule returns the spec both implementations must satisfy.
+func HistoryAdmitRule() HistoryAdmitSpec {
+	return HistoryAdmitSpec{
+		Literals: []string{historyAdmitBeginLiteral, historyAdmitAtLiteral, historyAdmitJWTLiteral},
+		RunLen:   historyTokenRunLen,
+		RunClass: historyTokenRunClass,
+	}
+}
+
+const (
+	historyAdmitBeginLiteral = "-----BEGIN"
+	historyAdmitAtLiteral    = "@"
+	historyAdmitJWTLiteral   = "eyJ"
+	// historyTokenRunClass must stay in step with the byte test in
+	// historyLineMayHoldToken; a test compares them across every byte value.
+	historyTokenRunClass = "[A-Za-z0-9_-]" // #nosec G101 -- a character class, not a credential
+)
+
 func historyLineMayHoldToken(line string) bool {
-	if strings.Contains(line, "-----BEGIN") || strings.IndexByte(line, '@') >= 0 ||
-		strings.Contains(line, "eyJ") {
+	if strings.Contains(line, historyAdmitBeginLiteral) ||
+		strings.Contains(line, historyAdmitAtLiteral) ||
+		strings.Contains(line, historyAdmitJWTLiteral) {
 		return true
 	}
 	run := 0

@@ -62,7 +62,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+
+	"github.com/jitpass/jit/internal/audit"
 )
 
 // HookRelPath is the hook's path relative to home, kept next to wrap's
@@ -120,8 +123,8 @@ _jit_history_guard() {
   # sourced — so a user with sh_glob or emulate sh set before the source line
   # got "parse error near (", the function never defined, and a guard that
   # silently protected nothing. emulate -L zsh above only fixes the runtime.
-  if [[ $line != *-----BEGIN* && $line != *@* && $line != *eyJ* ]] &&
-     ! [[ $line =~ "[A-Za-z0-9_-]{10,}" ]]; then
+  if [[ @@LITERAL_CLAUSES@@ ]] &&
+     ! [[ $line =~ "@@RUN_CLASS@@{@@RUN_LEN@@,}" ]]; then
     return 0
   fi
   local jit_bin vendors out rc
@@ -193,8 +196,26 @@ add-zsh-hook zshaddhistory _jit_history_guard
 
 // HookScript returns the hook's content, for tests that drive it through a
 // real zsh.
+// The admit test is RENDERED from internal/audit's spec rather than written
+// out here, so the hook cannot drift from the scanner it stands in for. See
+// audit.HistoryAdmitSpec for the failure that duplication produced: both
+// copies correct, nothing holding them together, and a vendor pattern with a
+// shorter shortest-match silently unprotected in the shell while every Go
+// test stays green.
+//
+// Placeholder substitution rather than fmt.Sprintf: the script legitimately
+// contains "%" (`${1%$'\n'}`), which a format string would misread.
 func HookScript() string {
-	return hookScript
+	spec := audit.HistoryAdmitRule()
+	clauses := make([]string, 0, len(spec.Literals))
+	for _, lit := range spec.Literals {
+		clauses = append(clauses, "$line != *"+lit+"*")
+	}
+	return strings.NewReplacer(
+		"@@LITERAL_CLAUSES@@", strings.Join(clauses, " && "),
+		"@@RUN_CLASS@@", spec.RunClass,
+		"@@RUN_LEN@@", strconv.Itoa(spec.RunLen),
+	).Replace(hookScript)
 }
 
 // Install writes the hook file and makes sure ~/.zshrc sources it.
@@ -209,8 +230,8 @@ func Install(home string) (changed bool, err error) {
 	if readErr != nil && !os.IsNotExist(readErr) {
 		return false, fmt.Errorf("reading %s: %w", hookPath, readErr)
 	}
-	if string(existing) != hookScript {
-		if err := os.WriteFile(hookPath, []byte(hookScript), 0o600); err != nil {
+	if string(existing) != HookScript() {
+		if err := os.WriteFile(hookPath, []byte(HookScript()), 0o600); err != nil {
 			return false, fmt.Errorf("writing %s: %w", hookPath, err)
 		}
 		changed = true

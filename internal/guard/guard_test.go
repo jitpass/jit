@@ -7,9 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jitpass/jit/internal/audit"
 )
 
 func TestInstallRemoveRoundTrip(t *testing.T) {
@@ -123,9 +126,26 @@ func runHook(t *testing.T, line string, stubExit int) (rc int, stderr string, st
 	// The stub is named "jit" and reached through PATH: the hook resolves the
 	// binary with `command -v jit` and has no env-var override to abuse.
 	stub := filepath.Join(bin, "jit")
+	// The marker is touched FIRST, before stdin is drained.
+	//
+	// It used to be touched after, and that made `stubRan` mean "the check was
+	// forked AND finished within the hook's 2s deadline" while every caller
+	// read it as "the admit test let the line through". Those diverge under
+	// load: the hook forks the check, waits 200x10ms, and on timeout does
+	// `kill -9` and fails open (see guard.go). On a loaded machine — the
+	// full suite under -race, on a 4-CPU VM — forking /bin/sh plus cat can
+	// exceed 2s, the stub is killed before it ever reaches touch, and
+	// TestHookBlocksCredentialLines fails with "the admit test wrongly
+	// rejected a credential line" about an admit test that did its job. That
+	// is the intermittent failure on the open-findings list, and the
+	// misdiagnosis was in the assertion, not in the hook.
+	//
+	// Touching first makes stubRan mean exactly "the check was forked", which
+	// is what every caller wants to know. A deadline hit now shows up as the
+	// rc assertion failing instead, which is the truthful place for it.
 	stubBody := "#!/bin/sh\n" +
-		"cat > /dev/null\n" + // drain stdin like the real check does
-		"touch " + marker + "\n"
+		"touch " + marker + "\n" +
+		"cat > /dev/null\n" // drain stdin like the real check does
 	switch stubExit {
 	case 0:
 		stubBody += "echo 'GitHub Personal Access Token'\nexit 0\n"
@@ -168,10 +188,20 @@ func TestHookBlocksCredentialLines(t *testing.T) {
 	line := "curl -H 'Authorization: token ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'"
 	rc, stderr, ran := runHook(t, line, 0)
 	if !ran {
-		t.Fatal("the stub check never ran; the admit test wrongly rejected a credential line")
+		// Two causes, and the message used to assert the first one only, which
+		// is what made the intermittent failure on the open-findings list read
+		// as an admit-test bug. Admit parity is covered exhaustively and
+		// separately by TestHookAdmitTestNeverDropsAMatch, so under parallel
+		// load the second cause is by far the likelier of the two.
+		t.Fatal("the stub check did not run. Either the admit test wrongly rejected a credential " +
+			"line, or the hook's 2s deadline killed the check before the stub got to run at all " +
+			"(fork storm under parallel -race load). Re-run this test alone to tell them apart: " +
+			"if it passes in isolation it was the deadline, which is the hook behaving correctly")
 	}
 	if rc != 2 {
-		t.Errorf("rc = %d, want 2 (keep in session memory, never write the file)", rc)
+		t.Errorf("rc = %d, want 2 (keep in session memory, never write the file). "+
+			"rc=0 with the stub confirmed to have run means the hook's 2s deadline fired and it "+
+			"failed open — correct behaviour under load, not a detection failure", rc)
 	}
 	if !strings.Contains(stderr, "GitHub Personal Access Token") {
 		t.Errorf("notice does not name the vendor: %q", stderr)
@@ -201,21 +231,54 @@ func TestHookNeverForksForOrdinaryCommands(t *testing.T) {
 	}
 }
 
-// Admit parity with audit's historyLineMayHoldToken: one sample per admitting
-// condition must reach the check. The Go prefilter's completeness against
-// every vendor pattern is enforced in internal/audit
-// (TestHistoryPrefilterNeverDropsAMatch); this pins the zsh transplant to the
-// same four conditions.
+// admitCorpus loads the SAME file internal/audit's own admit tests read, so
+// the two implementations of this test cannot be narrowed independently.
+//
+// "|" is a split marker (see the file's header): it sits where a contiguous
+// vendor token would otherwise trip GitHub push protection.
+func admitCorpus(t *testing.T) []string {
+	t.Helper()
+	path := filepath.Join("..", "audit", "testdata", "history-admit-samples.txt")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the shared admit corpus: %v", err)
+	}
+	var samples []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		samples = append(samples, strings.ReplaceAll(line, "|", ""))
+	}
+	if len(samples) == 0 {
+		t.Fatal("the shared admit corpus yielded no samples; this test would pass vacuously")
+	}
+	return samples
+}
+
+// TestHookAdmitTestNeverDropsAMatch is the zsh transplant of the obligation
+// CLAUDE.md, guard.go and shellhistory.go all state: the cheap in-shell admit
+// test must never reject a line the real check would match.
+//
+// It used to check FOUR hand-written lines, one per admitting condition, while
+// internal/audit checked its Go prefilter against every entry in
+// knownTokenPatterns. That asymmetry is the whole bug: a vendor pattern whose
+// shortest match is an 8-character run forces audit's constant down, audit's
+// exhaustive test keeps passing, and the shipped zsh hook still rejects at 10 —
+// so `jit guard history` silently stops protecting that vendor, and the
+// guard's designed failure mode is silence.
+//
+// Now both read one corpus file. Driven through a REAL zsh against the
+// SHIPPED hook, which is the only way this proves anything about the thing
+// users actually run.
 func TestHookAdmitTestNeverDropsAMatch(t *testing.T) {
-	for _, line := range []string{
-		"cat id_rsa | head -1  # -----BEGIN OPENSSH PRIVATE KEY-----",
-		"psql postgres://app:pw@db/app",                          // "@"
-		"echo eyJa.b.c",                                          // degenerate JWT, no long run
-		"export TOKEN=xoxb" + "-1234567890-AbCdEfGhIjKlMnOpQrSt", // 10+ run
-	} {
+	for _, sample := range admitCorpus(t) {
+		line := "export TOKEN=" + sample
 		_, _, ran := runHook(t, line, 1)
 		if !ran {
-			t.Errorf("admit test dropped %q; the zsh prefilter is narrower than audit's", line)
+			t.Errorf("the zsh admit test dropped %q; it is narrower than audit's prefilter, "+
+				"so jit guard history silently stops protecting this format", sample)
 		}
 	}
 }
@@ -288,5 +351,41 @@ func TestHookFailsOpenWithoutJit(t *testing.T) {
 	rc, _, _ := runHook(t, line, 127)
 	if rc != 0 {
 		t.Errorf("rc = %d, want 0: with jit missing the hook must fail open and save the line", rc)
+	}
+}
+
+// TestHookScriptRendersFromTheSpec is the linkage itself. The admit test used
+// to be typed out in the zsh source beside audit's Go copy — both correct,
+// nothing holding them together. These assertions fail if the hook stops
+// tracking audit.HistoryAdmitRule(), which is the state that made the drift
+// possible in the first place.
+func TestHookScriptRendersFromTheSpec(t *testing.T) {
+	spec := audit.HistoryAdmitRule()
+	script := HookScript()
+
+	if strings.Contains(script, "@@") {
+		t.Errorf("an unsubstituted placeholder survived into the shipped hook:\n%s", script)
+	}
+	for _, lit := range spec.Literals {
+		if !strings.Contains(script, "$line != *"+lit+"*") {
+			t.Errorf("the hook has no clause for admit literal %q, so a line carrying it is dropped in the shell", lit)
+		}
+	}
+	if want := spec.RunClass + "{" + strconv.Itoa(spec.RunLen) + ",}"; !strings.Contains(script, want) {
+		t.Errorf("the hook's run test is not %q; it has stopped tracking the spec, "+
+			"which is how a lowered RunLen leaves the shell hook rejecting what the scanner matches", want)
+	}
+}
+
+// A literal is interpolated into a zsh GLOB pattern (`$line != *LIT*`), so a
+// glob metacharacter in one silently changes what the clause matches — and in
+// the admitting direction that means dropping lines. Cheap to check, and the
+// alternative (quoting) would change the existing clauses' text.
+func TestAdmitLiteralsAreGlobSafe(t *testing.T) {
+	for _, lit := range audit.HistoryAdmitRule().Literals {
+		if strings.ContainsAny(lit, `*?[]()|^~#`) {
+			t.Errorf("admit literal %q carries a zsh glob metacharacter; interpolated bare into "+
+				"`$line != *%s*` it would not match literally", lit, lit)
+		}
 	}
 }
