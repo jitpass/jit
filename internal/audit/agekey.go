@@ -34,7 +34,7 @@ func ScanSOPSAgeKeys(cfg Config) ([]Finding, error) {
 	var findings []Finding
 	for _, rel := range ageKeyRelativePaths {
 		path := filepath.Join(append([]string{cfg.HomeDir}, rel...)...)
-		// Lstat + IsRegular, not a bare open: `jit migrate home` can turn
+		// Lstat + IsRegular, not a bare open: `jit migrate ~` can turn
 		// this file into a live template mount, and opening that FIFO
 		// would block the scan forever with no agent writing — the same
 		// guard scanGCPApplicationDefaultCredentials applies, needed here

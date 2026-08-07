@@ -231,7 +231,7 @@ func netrcVarName(machine string, existing []netrcPasswordMatch) string {
 // `password` line to migrate — or an empty slice otherwise. A single
 // fixed path, like SOPS's keys.txt: `.netrc` is a machine-wide credential
 // store with no project directory to root a scan in, so this is checked
-// only from jit migrate home's wholeHome branch, mirroring
+// only from a home-wide run's wholeHome branch, mirroring
 // DiscoverSOPSAge/DiscoverGCPADC exactly.
 func DiscoverNetrc(home string) ([]string, error) {
 	path := NetrcPath(home)

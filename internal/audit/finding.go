@@ -310,7 +310,7 @@ type Finding struct {
 	Evidence                 string  `json:"evidence"`
 	AlreadyMasked            bool    `json:"already_masked"`
 	// Archived is true when FilePath sits under an archived/backup-looking
-	// directory (LooksArchived) — the same test `jit migrate home` uses to
+	// directory (LooksArchived) — the same test `jit migrate ~` uses to
 	// skip a finding, so a consumer (or the report renderers) can tell
 	// "migrate will skip this one" apart from an ordinary actionable
 	// finding. Set centrally by Scan, not by the individual scanners.

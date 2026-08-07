@@ -149,7 +149,7 @@ func (c *tfrcCredentials) marshalWithout(host string) ([]byte, error) {
 // file jit can't parse is also one it could never safely rewrite, so
 // there's genuinely nothing to offer (same reasoning as audit's own
 // malformed-file tolerance), and one bad file must not kill a whole
-// `jit migrate home` sweep.
+// a home-wide `jit migrate ~` sweep.
 func DiscoverTerraformHosts(home string) ([]string, error) {
 	creds, err := parseTerraformCredentials(TerraformCredentialsPath(home))
 	if err != nil {
