@@ -228,6 +228,15 @@ func TestDiscoverEnvFilesSkipsOwnBackupFiles(t *testing.T) {
 		t.Fatalf("ApplyEnvFile: %v", err)
 	}
 
+	// ApplyEnvFile's backup goes to the VAULT, under "_backups/<name>.jit-bak-<ts>"
+	// (shellconfig.go) — deliberately, since a plaintext sibling would itself
+	// be an unencrypted copy of the credential. So no ".env.jit-bak-<ts>" ever
+	// appeared in root, and this test — named for exactly that file — never
+	// exercised the jitBackupMarker half of isJitGeneratedEnvArtifact at all;
+	// it passed on the .pointers half alone, which the test above already
+	// covers. Write the artifact by hand so the marker check is observed.
+	writeFile(t, filepath.Join(root, ".env.jit-bak-1"), "A=1\n")
+
 	found, err := DiscoverEnvFiles(root)
 	if err != nil {
 		t.Fatalf("DiscoverEnvFiles: %v", err)
