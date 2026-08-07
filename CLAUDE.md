@@ -39,9 +39,14 @@ CI fails on drift, and checks with `git status --porcelain` rather than `git dif
 Release-config changes:
 
 ```sh
-goreleaser check
-goreleaser release --snapshot --clean --skip=publish,sign,notarize,homebrew
+goreleaser check                                                              # needs goreleaser >= v2.13: the cask's `binaries:` field
+goreleaser release --snapshot --clean --skip=publish,sign,notarize,homebrew   # homebrew skipped: a snapshot must never touch the tap
 ```
+
+`release.yml` pins the goreleaser MAJOR (`~> v2`), so CI always has a new
+enough one; a local `goreleaser check` on v2.12.5 or older rejects the cask
+block with "field binaries not found in type config.HomebrewCask" — that is
+the tool being old, not the config being wrong.
 
 ## Architecture
 
@@ -102,10 +107,11 @@ Caller identity — peercred, then pid command line and parent chain — **expla
 
 ## Release
 
-Releases are Developer ID signed through goreleaser (`.goreleaser.yml`) and **not notarized** — notarization was intentionally dropped because this account's notary service is unreliable (1 of 9 submissions Accepted; the rest hang "In Progress" for hours), which held releases hostage for days. `spike/notarize-e2e/FINDINGS.md` owns the numeric gate for re-enabling it; don't re-add notarization ahead of that gate. `release.yml` gates a tag's publish on the full CI pipeline, called as a reusable workflow with `needs:`, so the gate is real rather than advisory.
+Releases are Developer ID signed **and notarized** through goreleaser (`.goreleaser.yml`), with `wait: true` so the verdict is in before publishing. Notarization was switched off for a stretch — this account's notary hung 8 of 9 submissions "In Progress" for hours and held releases hostage for days — and came back in v0.80.0 once `spike/notarize-e2e/FINDINGS.md`'s numeric gate was met (three consecutive Accepted across two days). Don't re-litigate it as broken; do read that FINDINGS before changing the notarize block. `release.yml` gates a tag's publish on the full CI pipeline, called as a reusable workflow with `needs:`, so the gate is real rather than advisory.
 
-Distribution is the signed release tarball (curl) + `jit upgrade`. **There is no Homebrew cask** — `upgrade.go` tells a Caskroom-resolved copy to reinstall from the tarball. Three things to know before touching this path:
+Distribution is Homebrew (`brew install jitpass/tap/jitpass`, cask in `jitpass/homebrew-tap`) plus the signed release tarball (curl) + `jit upgrade` — `upgrade.go` tells a Caskroom-resolved copy to reinstall from the tarball rather than deferring to `brew upgrade`. Four things to know before touching this path:
 
 - **Never ship unsigned**, and know where that is enforced. `verifyStagedSignature` in `internal/cli/upgrade.go` fails closed with deliberately no override; `release.yml`'s "Require Developer ID signing secrets" preflight is what stops an unsigned artifact being published in the first place. Without it, goreleaser's `isEnvSet` gate treats an empty secret as unset and the notary pipe answers with `Skip`, not an error — so a missing secret publishes unsigned, silently. An unsigned release is recoverable (a signed one replaces it, since `jit upgrade` targets `/releases/latest`).
 - **The Team ID is the unrecoverable one, and it is now a LIST.** `upgradeTeamIDs` (`upgrade.go`) holds every accepted Apple Team ID, most current first; `verifyStagedSignature` tries each. The trap it defuses: the rejecting code lives in the ALREADY-INSTALLED binary, so a certificate re-issued under a new Team ID would have every copy in the field reject every future release forever, with no release able to fix it. The migration is therefore: add the successor here, ship, let it propagate, and only THEN switch certificates — removing the old ID is a separate, much later change. `upgradeTeamIDs[0]` is what `jit doctor` reports and what the release workflow asserts on, so a release accidentally signed with an outgoing identity fails the gate rather than passing as "signed, close enough". `signatureRequirement` also carries Apple's Developer-ID marker OIDs, so an Apple *Development* cert from the same team no longer satisfies it.
-- jit ships a **bare Mach-O, which cannot be stapled**. With notarization off there is no ticket to fetch, so Gatekeeper has nothing to evaluate on the curl path (no quarantine bit is set either) — which is why the tarball is the channel and why re-adding a cask would force the quarantine/xattr dance.
+- jit ships a **bare Mach-O, which cannot be stapled** (`xcrun stapler` needs a bundle/dmg/pkg), so Gatekeeper fetches the notarization ticket ONLINE on first run. That is what makes the cask viable without an `xattr -dr com.apple.quarantine` hook: Homebrew quarantines its downloads, and the online ticket clears them. Do not add that hook back — it discards the check notarization pays for, and Apple has signalled it may close the bypass. The curl path sets no quarantine bit at all, so it never consults the ticket.
+- **Verify what was PUBLISHED, not what was built.** `release.yml` publishes a draft, downloads the release's own assets, checks the tarball against the published `checksums.txt` and the binary against `jit upgrade`'s own requirement, and only then undrafts. The checksum half exists because of a real v0.80.0 incident: a re-run rebuilt the tarball and pushed a cask carrying the rebuild's hash while GitHub kept the first run's assets (`replace_existing_artifacts` did not replace them), so `brew install` died on a mismatch that a `dist/`-based check could never see. `jit upgrade` fetches the archive and `checksums.txt` independently, so a release whose manifest disagrees with its own tarball breaks every self-update.
