@@ -63,9 +63,25 @@ func TestIdentifyFIFOReaderFindsRealReader(t *testing.T) {
 	}
 	defer f.Close()
 
-	pid, execPath, ok := IdentifyFIFOReader(path)
+	// Poll rather than probe once: the write-open returning means cat's
+	// read-open COMPLETED, but "completed" and "visible in the fd table
+	// proc_pidfdinfo reports" are not the same instant, and under parallel
+	// CI load the gap is real — this test failed single-shot on a loaded
+	// macOS runner (2026-08-07) with the reader provably connected. Same
+	// rendezvous-vs-fd-table reasoning as TestFIFOHoldersSeesARealHolder.
+	var pid int32
+	var execPath string
+	var ok bool
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		pid, execPath, ok = IdentifyFIFOReader(path)
+		if ok || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	if !ok {
-		t.Fatal("IdentifyFIFOReader did not find the connected reader")
+		t.Fatal("IdentifyFIFOReader did not find the connected reader within 5s")
 	}
 	if pid != int32(cmd.Process.Pid) {
 		t.Errorf("identified pid = %d, want %d (the real reader)", pid, cmd.Process.Pid)
