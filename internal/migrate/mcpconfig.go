@@ -60,13 +60,17 @@ type MCPConfigMigration struct {
 	FilePath   string
 	BackupPath string
 	Servers    []MCPServerMigration
+	// SkippedProjects names ~/.claude.json project blocks that could not be
+	// parsed and were left untouched — still holding whatever plaintext
+	// `jit scan` flagged. Callers MUST surface these: a silent skip recreates
+	// the finding-with-no-fix-path gap this file's projects support exists to
+	// close, one level down. (Review finding, 2026-08-06.)
+	SkippedProjects []string
 }
 
-// ClaudeDesktopConfigPath is exported (alongside AWSCredentialsPath,
-// KubeconfigPath, GlobalNpmrcPath) so internal/cli can tell this one
-// always-checked fixed path apart from a project-scoped mcp.json/.mcp.json
-// finding in the same DiscoverMCPConfigs result — needed to group a
-// migrate plan into "scoped to this run" vs "machine-wide" sections.
+// ClaudeDesktopConfigPath is Claude Desktop's fixed config location. Retained
+// for callers that need THIS one path; scope decisions in internal/cli go
+// through audit.FixedMCPConfigPaths, which also carries ~/.claude.json.
 func ClaudeDesktopConfigPath(home string) string {
 	return filepath.Join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json")
 }
@@ -75,12 +79,15 @@ func ClaudeDesktopConfigPath(home string) string {
 // project-scoped mcp.json/.mcp.json files under cwd — NOT a home-wide
 // walk, matching DiscoverEnvFiles' own deliberately narrower blast radius
 // for real (non-dry-run) mutation — plus, when includeClaudeDesktop is
-// true, the fixed Claude Desktop path (a single well-known global file
-// that lives under $HOME regardless of which project cwd is, so
-// `jit migrate local` never includes it — only a `home` run does; see
-// internal/cli's runMigrate). Only returns files with at least one server
-// that has something to migrate — a non-empty env block, or an --env-file
-// naming a readable file (hasMigratableCredentials).
+// true, audit.FixedMCPConfigPaths' fixed locations (Claude Desktop's config
+// and ~/.claude.json, files that live under $HOME regardless of which
+// project cwd is, so `jit migrate local` never includes them — only a
+// `home` run does; see internal/cli's runMigrate). This used to claim to
+// mirror audit's discovery while knowing only the Desktop path, which left
+// every ~/.claude.json finding without a fix path. Only returns files with
+// at least one server that has something to migrate — a non-empty env
+// block, or an --env-file naming a readable file
+// (hasMigratableCredentials).
 func DiscoverMCPConfigs(home, cwd string, includeClaudeDesktop bool) ([]string, error) {
 	return discoverMCPConfigFiles(home, cwd, includeClaudeDesktop, hasMigratableCredentials)
 }
@@ -116,9 +123,13 @@ func discoverMCPConfigFiles(home, cwd string, includeClaudeDesktop bool, accept 
 	}
 
 	if includeClaudeDesktop {
-		claudePath := ClaudeDesktopConfigPath(home)
-		if _, err := os.Stat(claudePath); err == nil {
-			check(claudePath)
+		// audit.FixedMCPConfigPaths, not a local copy: every path audit scans
+		// at a fixed location needs a fix path here, or its findings are dead
+		// ends (the ~/.claude.json gap — see that function's comment).
+		for _, fixed := range audit.FixedMCPConfigPaths(home) {
+			if _, err := os.Stat(fixed); err == nil {
+				check(fixed)
+			}
 		}
 	}
 
@@ -170,23 +181,24 @@ func discoverMCPConfigFiles(home, cwd string, includeClaudeDesktop bool, accept 
 // failing, since a plan must still render for a file apply will fail on for
 // its own reasons.
 func MCPEnvFilePreview(path string) []string {
-	_, _, servers, err := loadMCPFile(path)
+	_, blocks, _, err := loadMCPFile(path)
 	if err != nil {
 		return nil
 	}
-	names := make([]string, 0, len(servers))
-	for name := range servers {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
 	var found []string
 	seen := map[string]bool{}
-	for _, name := range names {
-		for _, target := range migratableEnvFiles(path, servers[name]) {
-			if !seen[target] {
-				seen[target] = true
-				found = append(found, target)
+	for _, b := range blocks {
+		names := make([]string, 0, len(b.servers))
+		for name := range b.servers {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			for _, target := range migratableEnvFiles(path, b.servers[name]) {
+				if !seen[target] {
+					seen[target] = true
+					found = append(found, target)
+				}
 			}
 		}
 	}
@@ -207,11 +219,11 @@ func MCPEnvFilePreview(path string) []string {
 // write and profile manifest write happens before path itself is
 // rewritten, and path is backed up first.
 func ApplyMCPConfig(v *vault.Vault, path string) (MCPConfigMigration, error) {
-	topLevel, serversKey, servers, err := loadMCPFile(path)
+	topLevel, blocks, skippedProjects, err := loadMCPFile(path)
 	if err != nil {
 		return MCPConfigMigration{}, fmt.Errorf("reading %s: %w", path, err)
 	}
-	if serversKey == "" {
+	if len(blocks) == 0 {
 		return MCPConfigMigration{}, fmt.Errorf("%s has no mcpServers/servers block", path)
 	}
 
@@ -224,36 +236,53 @@ func ApplyMCPConfig(v *vault.Vault, path string) (MCPConfigMigration, error) {
 		return MCPConfigMigration{}, fmt.Errorf("resolving global profile root: %w", err)
 	}
 
-	names := make([]string, 0, len(servers))
-	for name := range servers {
-		names = append(names, name)
+	// Every --env-file target is read ONCE, across every block, before any of
+	// them is rewritten. Neutralizing inside the per-server loop was a silent
+	// corruption when two servers shared one file: the first vaulted the real
+	// values and replaced the file with a pointer, and the second then parsed
+	// that pointer and stored "jit://vault/mcp-alpha/TOKEN" as its own
+	// credential. Two servers in DIFFERENT blocks sharing one file is the same
+	// hazard, which is why the cache spans blocks rather than being rebuilt
+	// per block. Reading up front also moves the unparseable-line hard stop
+	// ahead of every mutation.
+	envCache := map[string]*mcpEnvFile{}
+	for _, b := range blocks {
+		names := make([]string, 0, len(b.servers))
+		for name := range b.servers {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		if err := readMCPEnvFilesInto(envCache, path, b.servers, names); err != nil {
+			return MCPConfigMigration{}, err
+		}
 	}
-	sort.Strings(names)
 
-	// Every --env-file target is read ONCE, before any of them is rewritten.
-	// Neutralizing inside the per-server loop was a silent corruption when two
-	// servers shared one file: the first vaulted the real values and replaced
-	// the file with a pointer, and the second then parsed that pointer and
-	// stored "jit://vault/mcp-alpha/TOKEN" as its own credential. Reading up
-	// front also moves the unparseable-line hard stop ahead of every mutation.
-	envCache, err := readMCPEnvFiles(path, servers, names)
-	if err != nil {
-		return MCPConfigMigration{}, err
-	}
-
-	result := MCPConfigMigration{FilePath: path}
+	result := MCPConfigMigration{FilePath: path, SkippedProjects: skippedProjects}
 	pointers := newEnvFilePointerSet()
-	for _, name := range names {
-		entry := servers[name]
-		if !hasMigratableCredentials(path, entry) {
-			continue
+	for _, b := range blocks {
+		names := make([]string, 0, len(b.servers))
+		for name := range b.servers {
+			names = append(names, name)
 		}
-
-		serverMigration, err := migrateMCPServer(v, home, jitPath, path, name, entry, envCache, pointers)
-		if err != nil {
-			return MCPConfigMigration{}, fmt.Errorf("%s: server %q: %w", path, name, err)
+		sort.Strings(names)
+		// The namespace scope is the BLOCK, not the file: two projects inside
+		// ~/.claude.json routinely define the same server name ("github",
+		// "postgres"), and a file-scoped claim would hand the second one the
+		// first one's namespace — at which point it overwrites the first
+		// project's vault values and nothing anywhere errors. See
+		// mcpSourceScope.
+		scope := mcpSourceScope(path, b.projectDir)
+		for _, name := range names {
+			entry := b.servers[name]
+			if !hasMigratableCredentials(path, entry) {
+				continue
+			}
+			serverMigration, err := migrateMCPServer(v, home, jitPath, path, scope, name, entry, envCache, pointers)
+			if err != nil {
+				return MCPConfigMigration{}, fmt.Errorf("%s: server %q: %w", scope, name, err)
+			}
+			result.Servers = append(result.Servers, serverMigration)
 		}
-		result.Servers = append(result.Servers, serverMigration)
 	}
 	if len(result.Servers) == 0 {
 		return MCPConfigMigration{}, fmt.Errorf("%s has no server with secrets to migrate", path)
@@ -266,11 +295,9 @@ func ApplyMCPConfig(v *vault.Vault, path string) (MCPConfigMigration, error) {
 		return MCPConfigMigration{}, err
 	}
 
-	serversJSON, err := marshalJSONNoEscape(servers, "")
-	if err != nil {
+	if err := storeMCPBlocks(topLevel, blocks); err != nil {
 		return MCPConfigMigration{}, err
 	}
-	topLevel[serversKey] = serversJSON
 
 	// Linked, so `jit migrate undo <config>` brings the absorbed .env files
 	// back in the same run. Restoring the config alone re-adds --env-file
@@ -304,7 +331,7 @@ func ApplyMCPConfig(v *vault.Vault, path string) (MCPConfigMigration, error) {
 // config file being migrated — MCP profile namespaces are claimed per
 // source file (claimMCPNamespace, GAPS.md #56), so a same-named server in
 // a different config can never silently overwrite this one's secrets.
-func migrateMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, serverName string, entry mcpServerRaw, envCache map[string]*mcpEnvFile, pointers *envFilePointerSet) (MCPServerMigration, error) {
+func migrateMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, sourceScope, serverName string, entry mcpServerRaw, envCache map[string]*mcpEnvFile, pointers *envFilePointerSet) (MCPServerMigration, error) {
 	// Absent, not merely empty: with the widened discovery gate a server can
 	// reach here carrying an --env-file and no env block at all, and
 	// json.Unmarshal(nil, ...) fails with "unexpected end of JSON input".
@@ -336,7 +363,7 @@ func migrateMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, serverNam
 		}
 	}
 
-	profileName, profilePath, entries, movedFrom, err := claimMCPNamespace(v, globalRoot, "mcp-"+sanitizeProfileName(serverName), sourcePath, env)
+	profileName, profilePath, entries, movedFrom, err := claimMCPNamespace(v, globalRoot, "mcp-"+sanitizeProfileName(serverName), sourceScope, env)
 	if err != nil {
 		return MCPServerMigration{}, err
 	}
@@ -366,7 +393,7 @@ func migrateMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, serverNam
 	// legacy-shaped (unstamped) profile, which the next run treats with the
 	// cautious legacy rules rather than trusting a stamp for content that
 	// never landed.
-	if err := os.WriteFile(profileSourceSidecarPath(profilePath), []byte(sourcePath+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(profileSourceSidecarPath(profilePath), []byte(sourceScope+"\n"), 0o600); err != nil {
 		return MCPServerMigration{}, fmt.Errorf("recording profile source %s: %w", profilePath, err)
 	}
 
@@ -457,6 +484,13 @@ func profileSourceSidecarPath(profilePath string) string {
 //
 // A vault path that exists without being claimed by the candidate's
 // manifest is foreign regardless (claimNamespace's own rule).
+//
+// sourcePath is the block-scoped source (mcpSourceScope) — the config file
+// path, suffixed "#<projectDir>" for a server inside ~/.claude.json's
+// projects map. Scoping the claim to the BLOCK is what lets two projects
+// define the same server name without the second silently overwriting the
+// first's vault values; for a top-level server the scope IS the path, so
+// every sidecar written before project blocks existed still compares equal.
 func claimMCPNamespace(v *vault.Vault, globalRoot, base, sourcePath string, env map[string]string) (name, profilePath string, entries profile.Profile, movedFrom string, err error) {
 	for i := 1; i <= maxNamespaceCandidates; i++ {
 		name = base
@@ -534,12 +568,17 @@ func claimMCPNamespace(v *vault.Vault, globalRoot, base, sourcePath string, env 
 // project stranded that profile and its vault secrets forever (a real E2E
 // finding: `jit status` reported dangling references right after a
 // "removed jit from this project" success).
+// The sidecar may record a block-scoped source ("path#projectDir", written for
+// a server inside ~/.claude.json's projects map — see mcpSourceScope); every
+// caller of THIS function wants the file, so the scope is stripped here. The
+// scoped form is compared only inside claimMCPNamespace, which reads the
+// sidecar raw.
 func ProfileOwnerConfig(profilePath string) string {
 	data, err := os.ReadFile(profileSourceSidecarPath(profilePath)) // #nosec G304 -- a fixed-suffix sibling of jit's own profile manifest
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(data))
+	return mcpSourceFile(strings.TrimSpace(string(data)))
 }
 
 // RemoveOwnedProfile deletes a global-store profile manifest together with
@@ -577,14 +616,16 @@ func mcpWrapperProfile(entry mcpServerRaw) string {
 // error: planning must stay tolerant of a config the user deleted or
 // hand-edited since migration.
 func WrappedMCPProfiles(path string) map[string]bool {
-	_, _, servers, err := loadMCPFile(path)
+	_, blocks, _, err := loadMCPFile(path)
 	if err != nil {
 		return nil
 	}
 	wrapped := map[string]bool{}
-	for _, entry := range servers {
-		if name := mcpWrapperProfile(entry); name != "" {
-			wrapped[name] = true
+	for _, b := range blocks {
+		for _, entry := range b.servers {
+			if name := mcpWrapperProfile(entry); name != "" {
+				wrapped[name] = true
+			}
 		}
 	}
 	return wrapped
@@ -631,18 +672,30 @@ func DiscoverWrappedMCPEntries(home, cwd string, includeClaudeDesktop bool) ([]W
 
 	var entries []WrappedMCPEntry
 	for _, path := range paths {
-		_, _, servers, err := loadMCPFile(path)
+		_, blocks, _, err := loadMCPFile(path)
 		if err != nil {
 			continue // discovery already tolerated it; don't fail the check on it
 		}
-		names := make([]string, 0, len(servers))
-		for name := range servers {
-			names = append(names, name)
+		var flat []struct {
+			name  string
+			entry mcpServerRaw
 		}
-		sort.Strings(names)
+		for _, b := range blocks {
+			names := make([]string, 0, len(b.servers))
+			for name := range b.servers {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				flat = append(flat, struct {
+					name  string
+					entry mcpServerRaw
+				}{name, b.servers[name]})
+			}
+		}
 
-		for _, name := range names {
-			entry := servers[name]
+		for _, it := range flat {
+			name, entry := it.name, it.entry
 			profileName := mcpWrapperProfile(entry)
 			if profileName == "" {
 				continue
@@ -686,23 +739,38 @@ type MCPServerRestore struct {
 // empty result with a nil error means nothing in the file was jit's, and
 // the file wasn't rewritten at all.
 func UnwrapMCPConfig(v *vault.Vault, path string, owned map[string]string) ([]MCPServerRestore, error) {
-	topLevel, serversKey, servers, err := loadMCPFile(path)
+	topLevel, blocks, _, err := loadMCPFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
-	if serversKey == "" {
+	if len(blocks) == 0 {
 		return nil, nil
 	}
 
-	names := make([]string, 0, len(servers))
-	for name := range servers {
-		names = append(names, name)
+	// Flattened across blocks: `owned` maps profile name -> manifest path, and
+	// a profile name is claimed once per SCOPE (see mcpSourceScope), so a
+	// same-named server in a second project carries a different (bumped)
+	// profile name and cannot be confused with the first's. Mutating an entry
+	// mutates the block's own map, which storeMCPBlocks writes back.
+	type flatEntry struct {
+		name  string
+		entry mcpServerRaw
 	}
-	sort.Strings(names)
+	var flat []flatEntry
+	for _, b := range blocks {
+		names := make([]string, 0, len(b.servers))
+		for name := range b.servers {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			flat = append(flat, flatEntry{name, b.servers[name]})
+		}
+	}
 
 	var restored []MCPServerRestore
-	for _, name := range names {
-		entry := servers[name]
+	for _, it := range flat {
+		name, entry := it.name, it.entry
 		profileName := mcpWrapperProfile(entry)
 		manifestPath, ok := owned[profileName]
 		if profileName == "" || !ok {
@@ -755,11 +823,9 @@ func UnwrapMCPConfig(v *vault.Vault, path string, owned map[string]string) ([]MC
 		return nil, nil
 	}
 
-	serversJSON, err := marshalJSONNoEscape(servers, "")
-	if err != nil {
+	if err := storeMCPBlocks(topLevel, blocks); err != nil {
 		return nil, err
 	}
-	topLevel[serversKey] = serversJSON
 	out, err := marshalJSONNoEscape(topLevel, "  ")
 	if err != nil {
 		return nil, err
@@ -770,37 +836,225 @@ func UnwrapMCPConfig(v *vault.Vault, path string, owned map[string]string) ([]MC
 	return restored, nil
 }
 
-func parseMCPServers(path string) (map[string]mcpServerRaw, error) {
-	_, _, servers, err := loadMCPFile(path)
-	return servers, err
+// parseMCPServers flattens every block's servers into one list, for callers
+// that ask "does anything in this file need attention" without caring which
+// block it sits in (discovery's accept predicates). Same-named servers in
+// different projects are distinct entries, so none is lost to a map collision.
+func parseMCPServers(path string) ([]mcpServerRaw, error) {
+	_, blocks, _, err := loadMCPFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var out []mcpServerRaw
+	for _, b := range blocks {
+		for _, entry := range b.servers {
+			out = append(out, entry)
+		}
+	}
+	return out, nil
+}
+
+// mcpProjectsKey is Claude Code's own per-project store in ~/.claude.json: a
+// second set of server definitions keyed by project DIRECTORY, alongside the
+// ordinary top-level block. internal/audit has parsed it since MCP scanning
+// existed (mcpconfig.go's Projects field), which is why `jit scan` reports a
+// credential there — migrate could not, so the finding had no fix path at all.
+const mcpProjectsKey = "projects"
+
+// mcpBlock is one addressable set of server definitions inside a config file:
+// the top-level mcpServers/servers block, or one project's block inside
+// ~/.claude.json's "projects" map.
+//
+// It exists because a config file stopped being "the servers block" the moment
+// ~/.claude.json came into scope. Every read and both rewrites used to assume
+// one flat map, so a project-scoped server was invisible to all of them.
+type mcpBlock struct {
+	// projectDir is "" for the top-level block, or the project directory this
+	// block belongs to. It is also what scopes the profile namespace — see
+	// mcpSourceScope.
+	projectDir string
+	serversKey string // "mcpServers", or "servers" for VS Code's schema
+	servers    map[string]mcpServerRaw
+}
+
+// mcpSourceScope identifies WHICH block a migrated server came from, for
+// namespace claiming and the .source ownership sidecar.
+//
+// This is load-bearing, not cosmetic. claimMCPNamespace bumps mcp-<server> to
+// mcp-<server>-2 only when the sidecar names a DIFFERENT source, and two
+// projects in ~/.claude.json defining the same server name — "github",
+// "postgres", entirely normal — resolve to the same FILE. Without the scope
+// the second migration reuses the first's namespace, sees its own env keys
+// already recorded there, and overwrites the first project's vault values with
+// its own. Silently, and with the first project's credential gone.
+//
+// The scope is deliberately NOT the provenance Origin: that stays the real
+// file path, because Origin is what a human reads in `jit vault list --by
+// origin`.
+func mcpSourceScope(path, projectDir string) string {
+	if projectDir == "" {
+		return path
+	}
+	return path + "#" + projectDir
+}
+
+// mcpSourceFile strips the block scope back to the config file, for callers
+// asking "which file owns this profile" rather than "which block".
+func mcpSourceFile(scope string) string {
+	if i := strings.IndexByte(scope, '#'); i >= 0 {
+		return scope[:i]
+	}
+	return scope
 }
 
 // loadMCPFile decodes path's top level into raw JSON fields (preserving
-// anything besides the servers block untouched) and its "mcpServers" (or
-// "servers", VS Code's schema) block into per-server raw fields.
-func loadMCPFile(path string) (topLevel map[string]json.RawMessage, serversKey string, servers map[string]mcpServerRaw, err error) {
+// anything besides the servers blocks untouched) and every server block it
+// holds: the top-level "mcpServers" (or "servers", VS Code's schema) plus one
+// per entry in "projects".
+//
+// Blocks come back in a stable order — top-level first, then projects sorted
+// by directory — so a rewrite is deterministic and two runs over an unchanged
+// file produce identical bytes.
+func loadMCPFile(path string) (topLevel map[string]json.RawMessage, blocks []mcpBlock, skipped []string, err error) {
 	data, err := os.ReadFile(path) // #nosec G304 -- path comes from DiscoverMCPConfigs' own fixed/cwd-scoped walk, never external input
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, nil, err
 	}
-
 	if err := json.Unmarshal(data, &topLevel); err != nil {
-		return nil, "", nil, fmt.Errorf("parsing %s: %w", path, err)
+		return nil, nil, nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
 
-	serversKey = "mcpServers"
-	raw, ok := topLevel[serversKey]
+	if key, servers, err := decodeServersBlock(topLevel, path, ""); err != nil {
+		return nil, nil, nil, err
+	} else if key != "" {
+		blocks = append(blocks, mcpBlock{serversKey: key, servers: servers})
+	}
+
+	raw, ok := topLevel[mcpProjectsKey]
 	if !ok {
-		serversKey = "servers"
-		raw, ok = topLevel[serversKey]
+		return topLevel, blocks, nil, nil
+	}
+	var projects map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &projects); err != nil {
+		// A malformed projects block must not cost us the top-level one: the
+		// rest of the file is still migratable, and this half is an extension
+		// only one application writes. But it IS reported as skipped, for the
+		// reason each per-project skip is below.
+		return topLevel, blocks, []string{mcpProjectsKey + " (unparseable)"}, nil
+	}
+	dirs := make([]string, 0, len(projects))
+	for dir := range projects {
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+	for _, dir := range dirs {
+		// An empty-string key would build a block whose projectDir is "" —
+		// which storeMCPBlocks treats as THE TOP-LEVEL block, so its rewrite
+		// would clobber the real top-level servers while the project's own
+		// plaintext stayed put, and mcpSourceScope would collide with the
+		// top-level namespace scope. No real store has one; a hand-mangled
+		// file must degrade to skipped-and-reported, not to a clobber.
+		// (Review finding, 2026-08-06.)
+		if dir == "" {
+			skipped = append(skipped, `projects[""]`)
+			continue
+		}
+		var project map[string]json.RawMessage
+		if err := json.Unmarshal(projects[dir], &project); err != nil {
+			// A block that fails to parse still holds whatever plaintext
+			// `jit scan` flagged, and silently walking past it recreates the
+			// finding-with-no-fix-path gap one level down. Recorded so the
+			// caller can SAY a block was left behind.
+			skipped = append(skipped, dir)
+			continue
+		}
+		key, servers, err := decodeServersBlock(project, path, dir)
+		if err != nil {
+			skipped = append(skipped, dir)
+			continue
+		}
+		if key == "" {
+			continue // a project with no servers block has nothing to migrate — normal, not skipped
+		}
+		blocks = append(blocks, mcpBlock{projectDir: dir, serversKey: key, servers: servers})
+	}
+	return topLevel, blocks, skipped, nil
+}
+
+// decodeServersBlock pulls the servers map out of one JSON object, trying both
+// spellings the ecosystem uses. Returns key == "" when the object has neither.
+func decodeServersBlock(obj map[string]json.RawMessage, path, projectDir string) (key string, servers map[string]mcpServerRaw, err error) {
+	key = "mcpServers"
+	raw, ok := obj[key]
+	if !ok {
+		key = "servers"
+		raw, ok = obj[key]
 	}
 	if !ok {
-		return topLevel, "", nil, nil
+		return "", nil, nil
 	}
 	if err := json.Unmarshal(raw, &servers); err != nil {
-		return nil, "", nil, fmt.Errorf("parsing %s: %s block: %w", path, serversKey, err)
+		where := path
+		if projectDir != "" {
+			where = mcpSourceScope(path, projectDir)
+		}
+		return "", nil, fmt.Errorf("parsing %s: %s block: %w", where, key, err)
 	}
-	return topLevel, serversKey, servers, nil
+	return key, servers, nil
+}
+
+// storeMCPBlocks writes every block back into topLevel, in place.
+//
+// A project block is written by decoding that project's object into raw fields
+// and replacing ONLY its servers key, so the many other per-project fields
+// ~/.claude.json carries (history, allowedTools, and whatever the application
+// adds next) survive untouched. The "projects" object is re-marshalled
+// whenever the file holds any project block — every value passes through
+// RawMessage unchanged, but key ORDER is not preserved (Go maps marshal
+// alphabetically). Accepted: JSON object order carries no meaning, and the
+// owning application rewrites this file constantly itself. A file with no
+// project blocks comes out with that half byte-identical.
+func storeMCPBlocks(topLevel map[string]json.RawMessage, blocks []mcpBlock) error {
+	var projects map[string]json.RawMessage
+	projectsTouched := false
+	for _, b := range blocks {
+		serversJSON, err := marshalJSONNoEscape(b.servers, "")
+		if err != nil {
+			return err
+		}
+		if b.projectDir == "" {
+			topLevel[b.serversKey] = serversJSON
+			continue
+		}
+		if projects == nil {
+			raw, ok := topLevel[mcpProjectsKey]
+			if !ok {
+				return fmt.Errorf("internal: project block %q with no projects object", b.projectDir)
+			}
+			if err := json.Unmarshal(raw, &projects); err != nil {
+				return fmt.Errorf("re-reading the projects block: %w", err)
+			}
+		}
+		var project map[string]json.RawMessage
+		if err := json.Unmarshal(projects[b.projectDir], &project); err != nil {
+			return fmt.Errorf("re-reading project %s: %w", b.projectDir, err)
+		}
+		project[b.serversKey] = serversJSON
+		projectJSON, err := marshalJSONNoEscape(project, "")
+		if err != nil {
+			return err
+		}
+		projects[b.projectDir] = projectJSON
+		projectsTouched = true
+	}
+	if projectsTouched {
+		projectsJSON, err := marshalJSONNoEscape(projects, "")
+		if err != nil {
+			return err
+		}
+		topLevel[mcpProjectsKey] = projectsJSON
+	}
+	return nil
 }
 
 // hasMigratableCredentials reports whether a server entry has anything
@@ -927,8 +1181,7 @@ type mcpEnvFile struct {
 // It also puts the unparseable-line hard stop ahead of EVERY mutation rather
 // than partway through the server loop, so a config with one bad file leaves
 // nothing half-migrated.
-func readMCPEnvFiles(configPath string, servers map[string]mcpServerRaw, names []string) (map[string]*mcpEnvFile, error) {
-	cache := map[string]*mcpEnvFile{}
+func readMCPEnvFilesInto(cache map[string]*mcpEnvFile, configPath string, servers map[string]mcpServerRaw, names []string) error {
 	for _, name := range names {
 		for _, target := range migratableEnvFiles(configPath, servers[name]) {
 			if _, done := cache[target]; done {
@@ -936,14 +1189,14 @@ func readMCPEnvFiles(configPath string, servers map[string]mcpServerRaw, names [
 			}
 			values, order, unparsed, err := parseEnvFile(target)
 			if err != nil {
-				return nil, fmt.Errorf("parsing %s: %w", target, err)
+				return fmt.Errorf("parsing %s: %w", target, err)
 			}
 			// ApplyEnvFile's hard stop, for its reason: this file is about to
 			// be rewritten, so "I silently dropped what I could not parse"
 			// turns straight into a variable the server loses with nothing
 			// saying why.
 			if len(unparsed) > 0 {
-				return nil, fmt.Errorf(
+				return fmt.Errorf(
 					"%s: %s could not be parsed as KEY=value (%s %s), stopping before touching anything so nothing is silently dropped; fix or comment out %s and re-run",
 					target, countWord(len(unparsed), "line", "lines"),
 					pluralWord(len(unparsed), "line", "lines"), joinLineNumbers(unparsed),
@@ -952,7 +1205,7 @@ func readMCPEnvFiles(configPath string, servers map[string]mcpServerRaw, names [
 			cache[target] = &mcpEnvFile{values: values, order: order}
 		}
 	}
-	return cache, nil
+	return nil
 }
 
 // envFilePointerSet accumulates which vault path each --env-file variable

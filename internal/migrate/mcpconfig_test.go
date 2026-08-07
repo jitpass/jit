@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 
@@ -661,10 +662,14 @@ func TestApplyMCPConfigMigratesEnvFileServer(t *testing.T) {
 
 	// The flag goes with the file: leaving it would point uv at the pointer
 	// file and set every credential to a literal "jit://vault/..." string.
-	_, _, servers, err := loadMCPFile(path)
+	_, blocks, _, err := loadMCPFile(path)
 	if err != nil {
 		t.Fatalf("loadMCPFile: %v", err)
 	}
+	if len(blocks) != 1 {
+		t.Fatalf("blocks = %d, want 1", len(blocks))
+	}
+	servers := blocks[0].servers
 	var args []string
 	if err := json.Unmarshal(servers["okta"]["args"], &args); err != nil {
 		t.Fatalf("args: %v", err)
@@ -922,5 +927,301 @@ func TestApplyMCPConfigUnparsedEnvFileLeavesEverythingUntouched(t *testing.T) {
 	}
 	if _, err := v.Get("mcp-alpha/GOOD_TOKEN"); err == nil {
 		t.Error("a secret was vaulted before the run failed on another server")
+	}
+}
+
+// claudeCodeStoreFixture is the shape of a real ~/.claude.json: application
+// state (numprompts, history) around a top-level mcpServers block AND a
+// projects map keying a second set of server definitions by project directory
+// — each project carrying its own non-MCP state that a rewrite must not touch.
+// Both projects deliberately define a server named "github": that is the
+// collision that used to overwrite vault values (see the overwrite test).
+const claudeCodeStoreFixture = `{
+  "numStartups": 42,
+  "mcpServers": {
+    "jira": {"command": "node", "args": ["jira.js"], "env": {"JIRA_TOKEN": "jira-secret-1"}}
+  },
+  "projects": {
+    "/Users/x/proj-a": {
+      "allowedTools": ["Bash"],
+      "history": ["do the thing"],
+      "mcpServers": {
+        "github": {"command": "node", "args": ["gh.js"], "env": {"GITHUB_TOKEN": "gh-secret-a"}}
+      }
+    },
+    "/Users/x/proj-b": {
+      "allowedTools": [],
+      "mcpServers": {
+        "github": {"command": "node", "args": ["gh.js"], "env": {"GITHUB_TOKEN": "gh-secret-b"}}
+      }
+    }
+  }
+}`
+
+// TestApplyMCPConfigMigratesClaudeCodeProjects is the fix-path half of the
+// ~/.claude.json gap: audit has scanned this file's projects map since MCP
+// scanning existed, so its findings were real — and migrate's rewriter only
+// knew the top-level block, so `jit migrate ~/.claude.json` either said
+// "nothing to do" or, wired naively, would have rewritten only part of a file
+// holding live credentials.
+func TestApplyMCPConfigMigratesClaudeCodeProjects(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, ".claude.json")
+	writeFile(t, path, claudeCodeStoreFixture)
+	v := newTestVault(t)
+
+	result, err := ApplyMCPConfig(v, path)
+	if err != nil {
+		t.Fatalf("ApplyMCPConfig: %v", err)
+	}
+	if len(result.Servers) != 3 {
+		t.Fatalf("migrated %d servers, want 3 (top-level jira + one github per project): %+v", len(result.Servers), result.Servers)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+
+	// Every credential is out of the file...
+	for _, secret := range []string{"jira-secret-1", "gh-secret-a", "gh-secret-b"} {
+		if strings.Contains(body, secret) {
+			t.Errorf("credential %q still in the rewritten file", secret)
+		}
+	}
+	// ...while the application state around the blocks survives, top-level and
+	// per-project alike. This is the "teach the rewriter Projects first"
+	// pitfall: a rewriter that round-trips only the servers key would drop
+	// numStartups/allowedTools/history and corrupt Claude Code's own store.
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
+		t.Fatalf("rewritten file is not valid JSON: %v", err)
+	}
+	if string(top["numStartups"]) != "42" {
+		t.Errorf("numStartups = %s, want 42 (top-level state must survive)", top["numStartups"])
+	}
+	var projects map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(top["projects"], &projects); err != nil {
+		t.Fatalf("projects block: %v", err)
+	}
+	if got := string(projects["/Users/x/proj-a"]["history"]); !strings.Contains(got, "do the thing") {
+		t.Errorf("proj-a history = %s; per-project state must survive a rewrite", got)
+	}
+	if got := string(projects["/Users/x/proj-b"]["allowedTools"]); got != "[]" {
+		t.Errorf("proj-b allowedTools = %s, want []", got)
+	}
+	// And each project's server now launches through jit.
+	for _, dir := range []string{"/Users/x/proj-a", "/Users/x/proj-b"} {
+		var servers map[string]mcpServerRaw
+		if err := json.Unmarshal(projects[dir]["mcpServers"], &servers); err != nil {
+			t.Fatalf("%s mcpServers: %v", dir, err)
+		}
+		if p := mcpWrapperProfile(servers["github"]); p == "" {
+			t.Errorf("%s's github server was not rewritten to launch through jit", dir)
+		}
+	}
+}
+
+// TestClaudeCodeProjectsSameServerNameKeepsBothCredentials pins the overwrite
+// hazard scoping exists for. The namespace base is "mcp-"+server, and
+// claimMCPNamespace bumps to -2 only when the .source sidecar names a
+// DIFFERENT source. Two projects in one ~/.claude.json defining the same
+// server name resolve to the same FILE — so before block scoping, the second
+// project reused the first's namespace, saw its own env key already recorded
+// there, and OVERWROTE the first project's vault value. Silently: the file
+// rewrite succeeded, and the first project's server now resolved the second's
+// credential.
+func TestClaudeCodeProjectsSameServerNameKeepsBothCredentials(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, ".claude.json")
+	writeFile(t, path, claudeCodeStoreFixture)
+	v := newTestVault(t)
+
+	if _, err := ApplyMCPConfig(v, path); err != nil {
+		t.Fatalf("ApplyMCPConfig: %v", err)
+	}
+
+	// BOTH secrets must be in the vault, under distinct namespaces.
+	var found []string
+	for _, ns := range []string{"mcp-github", "mcp-github-2"} {
+		got, err := v.Get(ns + "/GITHUB_TOKEN")
+		if err != nil {
+			continue
+		}
+		found = append(found, string(got))
+	}
+	sort.Strings(found)
+	if len(found) != 2 || found[0] != "gh-secret-a" || found[1] != "gh-secret-b" {
+		t.Fatalf("vault holds %v, want both gh-secret-a and gh-secret-b under distinct namespaces; "+
+			"a shared namespace means the second project overwrote the first's credential", found)
+	}
+
+	// And each project's rewritten entry names the namespace holding ITS value.
+	data, _ := os.ReadFile(path)
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
+		t.Fatal(err)
+	}
+	var projects map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(top["projects"], &projects); err != nil {
+		t.Fatal(err)
+	}
+	profiles := map[string]string{}
+	for dir := range projects {
+		var servers map[string]mcpServerRaw
+		if err := json.Unmarshal(projects[dir]["mcpServers"], &servers); err != nil {
+			t.Fatal(err)
+		}
+		profiles[dir] = mcpWrapperProfile(servers["github"])
+	}
+	if profiles["/Users/x/proj-a"] == profiles["/Users/x/proj-b"] {
+		t.Errorf("both projects launch through profile %q; they must be distinct or they resolve one credential", profiles["/Users/x/proj-a"])
+	}
+	for dir, prof := range profiles {
+		wantSecret := "gh-secret-a"
+		if dir == "/Users/x/proj-b" {
+			wantSecret = "gh-secret-b"
+		}
+		got, err := v.Get(prof + "/GITHUB_TOKEN")
+		if err != nil {
+			t.Errorf("%s's profile %q resolves nothing: %v", dir, prof, err)
+			continue
+		}
+		if string(got) != wantSecret {
+			t.Errorf("%s resolves %q, want %q — the projects swapped or shared credentials", dir, got, wantSecret)
+		}
+	}
+}
+
+// TestUnwrapMCPConfigRestoresClaudeCodeProjects closes the loop the handoff
+// insisted on: migrating ~/.claude.json is only safe if undo/remove
+// understands project blocks too, or the migration is un-undoable — worse
+// than the dead end it replaces.
+func TestUnwrapMCPConfigRestoresClaudeCodeProjects(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, ".claude.json")
+	writeFile(t, path, claudeCodeStoreFixture)
+	v := newTestVault(t)
+
+	if _, err := ApplyMCPConfig(v, path); err != nil {
+		t.Fatalf("ApplyMCPConfig: %v", err)
+	}
+
+	// remove's real flow: every profile whose sidecar names this config.
+	owned := map[string]string{}
+	globalRoot, err := profile.GlobalRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"mcp-jira", "mcp-github", "mcp-github-2"} {
+		p, err := profile.Path(globalRoot, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ProfileOwnerConfig(p) != path {
+			t.Fatalf("profile %s's owner = %q, want %q (ProfileOwnerConfig must strip the block scope)", name, ProfileOwnerConfig(p), path)
+		}
+		owned[name] = p
+	}
+
+	restored, err := UnwrapMCPConfig(v, path, owned)
+	if err != nil {
+		t.Fatalf("UnwrapMCPConfig: %v", err)
+	}
+	if len(restored) != 3 {
+		t.Fatalf("restored %d servers, want 3: %+v", len(restored), restored)
+	}
+
+	data, _ := os.ReadFile(path)
+	body := string(data)
+	for _, secret := range []string{"jira-secret-1", "gh-secret-a", "gh-secret-b"} {
+		if !strings.Contains(body, secret) {
+			t.Errorf("credential %q not restored to the file", secret)
+		}
+	}
+	if strings.Contains(body, "--profile") {
+		t.Error("a jit wrapper survived the unwrap")
+	}
+	// Application state still intact after the round trip.
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
+		t.Fatalf("restored file is not valid JSON: %v", err)
+	}
+	if string(top["numStartups"]) != "42" {
+		t.Errorf("numStartups = %s after round trip, want 42", top["numStartups"])
+	}
+}
+
+// TestClaudeCodeStoreDegradesSafelyOnMangledProjects pins the two review
+// findings on the projects support (2026-08-06): an empty-string project key
+// must not alias the TOP-LEVEL block (its rewrite would clobber real
+// top-level servers while the project's own plaintext stayed put), and an
+// unparseable project block must be REPORTED, not silently walked past —
+// silence recreates the finding-with-no-fix-path gap one level down.
+func TestClaudeCodeStoreDegradesSafelyOnMangledProjects(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, ".claude.json")
+	writeFile(t, path, `{
+	  "mcpServers": {"top": {"command": "node", "args": ["t.js"], "env": {"TOP_TOKEN": "top-secret-1"}}},
+	  "projects": {
+	    "": {"mcpServers": {"evil": {"command": "node", "env": {"X": "clobber-me"}}}},
+	    "/Users/x/broken": {"mcpServers": "not an object"},
+	    "/Users/x/fine": {"mcpServers": {"ok": {"command": "node", "env": {"K": "fine-secret"}}}}
+	  }
+	}`)
+	v := newTestVault(t)
+
+	result, err := ApplyMCPConfig(v, path)
+	if err != nil {
+		t.Fatalf("ApplyMCPConfig: %v", err)
+	}
+
+	// Both mangled blocks are reported, in a stable order.
+	if len(result.SkippedProjects) != 2 {
+		t.Fatalf("SkippedProjects = %v, want the empty-key and broken blocks", result.SkippedProjects)
+	}
+
+	// The real blocks migrated: the top-level server and the healthy project.
+	migrated := map[string]bool{}
+	for _, sm := range result.Servers {
+		migrated[sm.ServerName] = true
+	}
+	if !migrated["top"] || !migrated["ok"] || len(migrated) != 2 {
+		t.Errorf("migrated %v, want exactly top and ok", migrated)
+	}
+
+	data, _ := os.ReadFile(path)
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
+		t.Fatalf("rewritten file: %v", err)
+	}
+	// The top-level block was rewritten to launch through jit — NOT replaced
+	// by the empty-key project's servers, which is what projectDir=="" used
+	// to do to it.
+	var topServers map[string]mcpServerRaw
+	if err := json.Unmarshal(top["mcpServers"], &topServers); err != nil {
+		t.Fatal(err)
+	}
+	if _, clobbered := topServers["evil"]; clobbered {
+		t.Error(`the projects[""] block clobbered the top-level servers`)
+	}
+	if p := mcpWrapperProfile(topServers["top"]); p == "" {
+		t.Error("the real top-level server was not migrated")
+	}
+	// The mangled blocks' own bytes are untouched.
+	var projects map[string]json.RawMessage
+	if err := json.Unmarshal(top["projects"], &projects); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(projects[""]), "clobber-me") {
+		t.Error(`projects[""] was modified; a skipped block must be left byte-exact`)
+	}
+	if !strings.Contains(string(projects["/Users/x/broken"]), "not an object") {
+		t.Error("the unparseable block was modified")
 	}
 }

@@ -715,6 +715,14 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 					displayPath(home, mcpPath), sm.ServerName, sm.ProfileName, countWord(len(sm.Variables), "var", "vars"), result.BackupPath)))
 				noteNamespaceMove(out, sm.NamespaceMovedFrom, sm.ProfileName)
 			}
+			// A project block that could not be parsed still holds whatever
+			// `jit scan` flagged. Saying nothing here would report success
+			// over a file that is still partly exposed — the exact
+			// zero-errors dead end the projects support exists to close.
+			for _, dir := range result.SkippedProjects {
+				fmt.Fprintf(out, "  %s project block %s couldn't be parsed and was left unchanged — its servers are NOT migrated; fix the JSON and re-run\n",
+					glyphWarn, dir)
+			}
 		}
 		fmt.Fprintf(out, "  Restart the %s above to pick up the change.\n", pluralWord(n, "MCP host", "MCP hosts"))
 		fmt.Fprintln(out)
@@ -1518,7 +1526,16 @@ func discoverFileTarget(d *discovered, home, path string) error {
 		}
 		d.pypircFiles = append(d.pypircFiles, filterToTarget(files, path)...)
 		return nil
-	case migrate.ClaudeDesktopConfigPath(home):
+	}
+	// The fixed MCP configs are a LIST (Claude Desktop's file plus
+	// ~/.claude.json), so they're matched against audit's list rather than
+	// being one more case above — a fixed path audit scans but this switch
+	// doesn't know about is a finding `jit migrate <path>` answers "nothing
+	// to do" on, with zero errors anywhere. That was ~/.claude.json.
+	for _, fixed := range audit.FixedMCPConfigPaths(home) {
+		if path != fixed {
+			continue
+		}
 		// Passing path (the config file itself) as the walk root adds nothing
 		// via the walk — its name isn't one of the project mcp.json names —
 		// while includeClaudeDesktop=true is what actually pulls it in; the

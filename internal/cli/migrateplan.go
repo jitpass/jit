@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/jitpass/jit/internal/audit"
 	"github.com/jitpass/jit/internal/migrate"
 )
 
@@ -274,9 +275,12 @@ func printMigratePlan(w io.Writer, home string, d *discovered) {
 // printMigratePlan can render them in different sections instead of
 // implying both belong in the same section of the plan.
 func splitMCPByScope(home string, mcpConfigs []string) (scoped, fixed []string) {
-	claudePath := migrate.ClaudeDesktopConfigPath(home)
+	fixedPaths := map[string]bool{}
+	for _, p := range audit.FixedMCPConfigPaths(home) {
+		fixedPaths[p] = true
+	}
 	for _, path := range mcpConfigs {
-		if path == claudePath {
+		if fixedPaths[path] {
 			fixed = append(fixed, path)
 		} else {
 			scoped = append(scoped, path)

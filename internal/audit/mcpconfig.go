@@ -134,6 +134,18 @@ func scanClaudeDesktopMCPConfig(cfg Config) ([]Finding, error) {
 // mcpServers block, not an MCP config by name. Dogfooding found a real one
 // holding a server with an env block, unscanned.
 func fixedMCPConfigPaths(home string) []string {
+	return FixedMCPConfigPaths(home)
+}
+
+// FixedMCPConfigPaths is the exported form, because this list is a CONTRACT
+// with internal/migrate: every path scanned here produces findings whose only
+// fix path is `jit migrate`, so a path this returns and migrate's discovery
+// does not know about is a finding the user cannot act on. That was
+// ~/.claude.json for a long time — scan reported a CRITICAL/HIGH MCP secret in
+// it, `jit migrate` walked past it, and `jit migrate ~/.claude.json` said
+// there was nothing to do, with zero errors anywhere. migrate now iterates
+// THIS list rather than keeping its own copy of one entry.
+func FixedMCPConfigPaths(home string) []string {
 	return []string{
 		filepath.Join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json"),
 		filepath.Join(home, ".claude.json"),
