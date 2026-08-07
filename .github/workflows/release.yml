@@ -174,3 +174,42 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release edit "${{ github.ref_name }}" --draft=false
+
+      # The draft gate has one hole, and the cask is it: goreleaser's
+      # cask.Pipe pushes to the tap during the goreleaser step — before the
+      # verify step above — and it carries no Release.Draft gate (checked in
+      # goreleaser v2 source: publish order is release, then brew/cask "last"
+      # because they need the release URL, drafted or not). A verify failure
+      # therefore leaves the release correctly frozen as an invisible draft
+      # while the tap keeps pointing every `brew install` at
+      # /releases/download/<tag>/ assets that 404 for the public,
+      # permanently. Undo the cask push, loudly, whenever anything after the
+      # goreleaser step fails. Guards: no tap token means no cask was pushed;
+      # and the revert only fires when the tap's HEAD is exactly this tag's
+      # cask commit (message names the tag, sole file is the cask), so a
+      # failure before the cask push reverts nothing of someone else's.
+      - name: Roll back the cask on a failed publish
+        if: failure()
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "no tap token — no cask was pushed, nothing to roll back"
+            exit 0
+          fi
+          tap=$(mktemp -d)
+          git clone --quiet --depth 2 \
+            "https://x-access-token:${TAP_TOKEN}@github.com/jitpass/homebrew-tap.git" "$tap"
+          cd "$tap"
+          subject=$(git log -1 --format=%s)
+          files=$(git log -1 --format= --name-only)
+          if [ "$files" = "Casks/jitpass.rb" ] && \
+             printf '%s' "$subject" | grep -qF "${{ github.ref_name }}"; then
+            git -c user.name=jit-release -c user.email=jit-release@users.noreply.github.com \
+              revert --no-edit HEAD
+            git push --quiet origin HEAD
+            echo "::warning::reverted the tap's cask commit ('$subject') — it pointed at this failed release's draft-only assets"
+          else
+            echo "tap HEAD ('$subject') is not this run's cask commit — nothing to roll back"
+          fi
