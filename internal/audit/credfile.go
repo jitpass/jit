@@ -250,7 +250,7 @@ var npmrcLinePattern = regexp.MustCompile(`^\s*([^=\s]+)\s*=\s*(.*?)\s*$`)
 
 func scanGlobalNpmrc(cfg Config) ([]Finding, error) {
 	globalPath := filepath.Join(cfg.HomeDir, ".npmrc")
-	// Lstat + IsRegular, not a bare Stat: `jit migrate home` can turn the
+	// Lstat + IsRegular, not a bare Stat: `jit migrate ~` can turn the
 	// global ~/.npmrc itself into a live template mount, and opening that
 	// FIFO would block the scan with no agent writing (or read decoy
 	// content and report jit's own protection as an exposed credential) —
@@ -929,7 +929,7 @@ func scanGitCredentialsFile(path string, cfg Config) ([]Finding, error) {
 
 func scanGCPApplicationDefaultCredentials(cfg Config) ([]Finding, error) {
 	path := filepath.Join(cfg.HomeDir, ".config", "gcloud", "application_default_credentials.json")
-	// Lstat + IsRegular, not a bare open: `jit migrate home` can turn this
+	// Lstat + IsRegular, not a bare open: `jit migrate ~` can turn this
 	// file itself into a live template mount, and opening that FIFO would
 	// block the scan forever with no agent writing (or read decoy/real
 	// mount content and report jit's own protection as an exposed
@@ -984,7 +984,7 @@ func scanGCPApplicationDefaultCredentials(cfg Config) ([]Finding, error) {
 func scanNetrc(cfg Config) ([]Finding, error) {
 	path := filepath.Join(cfg.HomeDir, ".netrc")
 	// Lstat + IsRegular, the same FIFO guard scanNpmrc/scanGCP apply: `jit
-	// migrate home` can turn ~/.netrc itself into a live template mount, and
+	// migrate ~` can turn ~/.netrc itself into a live template mount, and
 	// reading that FIFO would block the scan with no agent writing (or read
 	// decoy content and report jit's own protection as an exposed
 	// credential). This is a fixed path checked outside walkHomeDir's own

@@ -15,11 +15,12 @@ below `cli`, `audit` and `ui` so all three share it (`internal/cli` imports
 `TestPaletteIsCentralised` and `TestNoHandRolledColors` both fail on it, and
 the point of the seam is that a repaint is one edit.
 
-Typing a glyph literal at a call site is the same mistake, and is currently
-enforced only by convention — no test catches it, and ~100 emitted strings do
-it (mostly `→` and `"  • "`). Treat the rule as binding and the enforcement as
-missing; this paragraph claimed `TestPaletteIsCentralised` covered glyphs, and
-it never has.
+Typing a glyph literal at a call site is the same mistake, and `TestNoGlyphLiterals`
+fails on it. It tokenizes with `go/scanner`, so a glyph in a COMMENT is prose and
+stays free; `_test.go` files, `style.go` and `markdown.go` (a markdown document,
+not terminal output) are exempt, and `GlyphMark` (`!`) is excluded as ordinary
+punctuation. This paragraph long claimed `TestPaletteIsCentralised` covered
+glyphs, which it never did — the check now exists for real.
 
 ## The whole palette
 
@@ -124,9 +125,14 @@ act. Length is a design constraint here, not a style preference.
   fits after its indent on an 80-column window without wrapping. Wrapping is
   the safety net (`termtext.Wrap`), not the plan.
 - **Variable-length content gets truncated, not wrapped**, so a row stays one
-  row: `TruncHead` for a path (the tail names the file), `TruncMid` for a
-  command line whose two ends both carry identity, `TruncTail` where the
-  beginning identifies it.
+  row. Pick the cut by asking WHICH END CARRIES IDENTITY, not by the kind of
+  value: `TruncMid` where both ends do (a path in a table whose rows share a
+  long tail — two `okta-mcp-server/.env` manifests, one under `backup_2025/`,
+  rendered identically under head-truncation on the screen asking you to
+  approve rewriting them), `TruncTail` where the beginning does (the `→`
+  action command: head-kept, because a wrapped command is neither readable nor
+  copy-pasteable), `TruncHead` where only the tail does (a lone path, where
+  the prefix is what every row repeats).
 - **Explain once.** A fact that is true of every item in a group is stated on
   the group header, never repeated per line.
 - The place this is hardest is the note under an action. Those earn their
@@ -184,9 +190,9 @@ act. Length is a design constraint here, not a style preference.
    row into what reads as two. Every prose line goes through
    `termtext.Wrap` with the indent that keeps it under its own column, and
    every column budget comes from `termtext.Width()`. Paths that can't fit are
-   cut deliberately: `TruncHead` for a path (the tail names the file),
-   `TruncMid` for a command line whose two ends both carry identity,
-   `TruncTail` where the beginning is what identifies it.
+   cut deliberately, by which end carries identity — see the truncation rule
+   above: `TruncMid` when both ends do, `TruncTail` when the head does,
+   `TruncHead` when only the tail does.
 
 ## The three report shapes
 

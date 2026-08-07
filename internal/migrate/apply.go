@@ -69,7 +69,7 @@ func IsEnvBackupOnlySuffix(name string) bool {
 // started writing its own backup too (GAPS.md #32), a backup file
 // itself (`.env.jit-bak-<ts>`). Both are jit's own artifacts, never
 // user-authored `.env` content. A real, reported incident (GAPS.md #30):
-// running `jit migrate local` a second time re-discovered a `.pointers`
+// running a project-scoped `jit migrate` a second time re-discovered a `.pointers`
 // file from the first run as a "new .env finding," parsed its
 // `KEY=jit://vault/...` lines as if they were real secrets, and
 // converted the file itself into a live-mounted FIFO — destroying the
@@ -126,7 +126,7 @@ func goModCacheDir() string {
 
 // skipDiscoveryDir is the shared per-directory gate every Discover* walk in
 // this package uses: audit.SkipNoiseDir's shared noise list (so `jit
-// migrate home --dry-run` and `jit scan` can never disagree about which
+// migrate ~ --dry-run` and `jit scan` can never disagree about which
 // directories exist — this package once kept its own shorter copy, which
 // let migrate discover fixture .env files under .venv and .vscode/
 // extensions that audit deliberately excludes), plus migrateExtraNoiseDirs
@@ -134,11 +134,11 @@ func goModCacheDir() string {
 // checksum-verified copies of PUBLIC module source — a `.env` there is some
 // dependency's test fixture, never this machine's secret, and rewriting it
 // would corrupt the cache (`go mod verify` starts failing) on a tree the go
-// tool treats as immutable. A real `jit migrate home` plan on this repo's
+// tool treats as immutable. A real `jit migrate ~` plan on this repo's
 // own dev machine included gotenv's .env fixtures — exactly the rewrite
 // this exists to prevent. The absolute-path cache check stays even though
 // the shared list covers ~/go/pkg/mod relative to $HOME, because a `jit
-// migrate local` walk is rooted at cwd (and $GOMODCACHE can point anywhere).
+// migrate <dir>` walk is rooted at that dir (and $GOMODCACHE can point anywhere).
 func skipDiscoveryDir(root, path, name string) bool {
 	if audit.SkipNoiseDir(root, path, name) || migrateExtraNoiseDirs[name] {
 		return true
@@ -191,7 +191,7 @@ func DiscoverEnvFiles(root string) ([]string, error) {
 			// abort the whole scan. This is routine under a real $HOME:
 			// ~/.Trash and various macOS-TCC-protected app-sandbox
 			// directories under ~/Library return EPERM without Full Disk
-			// Access, and jit migrate home walks all of $HOME (GAPS.md
+			// Access, and jit migrate ~ walks all of $HOME (GAPS.md
 			// #26). SkipDir tells WalkDir not to descend further into
 			// whatever this path was; every other branch keeps going.
 			if path == root {

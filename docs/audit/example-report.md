@@ -113,17 +113,17 @@ jit scan — alex@Alexs-MacBook-Pro — scanned ~/ (7 files) — full inventory 
 [Exposed Secrets] 3
   • ~/Downloads/customer-secrets-report.txt
 
-    :1  CRITICAL  Database connection string with embedded credentials (scheme-less)  svc_**********
+    :1  CRITICAL  Database connection string with e…  svc_**********
                   └ value matches production-indicator pattern
 
   • ~/exports/customer-secrets-report.txt
 
-    :1  CRITICAL  Database connection string with embedded credentials (scheme-less)  svc_**********
+    :1  CRITICAL  Database connection string with e…  svc_**********
                   └ value matches production-indicator pattern
 
   • ~/token.txt
 
-    :1  HIGH      JSON Web Token (JWT)                                                eyJh**********
+    :1  HIGH      JSON Web Token (JWT)                eyJh**********
                   └ value matches its known token format
 
 

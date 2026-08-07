@@ -54,7 +54,7 @@ func GlobalNpmrcPath(home string) string {
 // matching DiscoverEnvFiles/DiscoverMCPConfigs' deliberately narrower
 // blast radius for real (non-dry-run) mutation — plus, when includeGlobal
 // is true, the global ~/.npmrc (a single well-known path under $HOME
-// regardless of which project cwd is, so `jit migrate local` never
+// regardless of which project cwd is, so a project-scoped `jit migrate` never
 // includes it — only a `home` run does; see internal/cli's runMigrate).
 func DiscoverNpmrcFiles(home, cwd string, includeGlobal bool) ([]string, error) {
 	var found []string

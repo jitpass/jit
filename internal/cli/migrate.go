@@ -180,7 +180,8 @@ var migrateCmd = &cobra.Command{
 		"               ~/.aws/credentials, ~/.kube/config, Terraform Cloud creds,\n" +
 		"               ~/.docker/config.json, ~/.git-credentials, GCP\n" +
 		"               application-default credentials, a SOPS age key, ~/.netrc,\n" +
-		"               ~/.pypirc, Claude Desktop's MCP config, the global ~/.npmrc)\n" +
+		"               ~/.pypirc, Claude Desktop's MCP config, Claude Code's\n" +
+		"               ~/.claude.json, the global ~/.npmrc)\n" +
 		"               is routed to that credential type's handling\n" +
 		"               (credential_process, exec plugin, credential helper, live\n" +
 		"               mount, or in-place redaction for a history file, where each\n" +
@@ -720,8 +721,8 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			// over a file that is still partly exposed — the exact
 			// zero-errors dead end the projects support exists to close.
 			for _, dir := range result.SkippedProjects {
-				fmt.Fprintf(out, "  %s project block %s couldn't be parsed and was left unchanged — its servers are NOT migrated; fix the JSON and re-run\n",
-					glyphWarn, dir)
+				fmt.Fprintf(out, "  %s project block %s couldn't be parsed, left unchanged\n", glyphWarn, dir)
+				wrapBody(out, 4, "    ", "its servers are NOT migrated; fix the JSON and re-run")
 			}
 		}
 		fmt.Fprintf(out, "  Restart the %s above to pick up the change.\n", pluralWord(n, "MCP host", "MCP hosts"))

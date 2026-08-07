@@ -311,7 +311,7 @@ func buildRenderItems(group []Finding) []renderItem {
 		// disk and still works — "anything running as you can read them" is
 		// exactly as true there — so discounting its RISK would under-report a
 		// real exposure. What differs is only what the reader can do about it,
-		// which is why `jit migrate home` skips these and the report tags them
+		// which is why `jit migrate ~` skips these and the report tags them
 		// [archived]. Rank follows actionability, not exposure.
 		if ai, aj := itemArchived(items[i]), itemArchived(items[j]); ai != aj {
 			return !ai
@@ -421,7 +421,7 @@ func writeDerivedCredentialAdvisory(w io.Writer, summary ScanSummary, home strin
 }
 
 // archivedTag renders the per-path "[archived]" marker: the same
-// LooksArchived test `jit migrate home` uses to skip a finding by default,
+// LooksArchived test `jit migrate ~` uses to skip a finding by default,
 // so a reader can map an audit finding onto migrate's skip note instead of
 // wondering why the fix plan dropped it (a real, reported confusion: audit
 // showed a finding under ~/Documents/archive/, the dry-run showed only a

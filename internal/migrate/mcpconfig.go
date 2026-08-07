@@ -74,7 +74,7 @@ func ClaudeDesktopConfigPath(home string) string {
 // for real (non-dry-run) mutation — plus, when includeClaudeDesktop is
 // true, audit.FixedMCPConfigPaths' fixed locations (Claude Desktop's config
 // and ~/.claude.json, files that live under $HOME regardless of which
-// project cwd is, so `jit migrate local` never includes them — only a
+// project cwd is, so a project-scoped run never includes them — only a
 // `home` run does; see internal/cli's runMigrate). This used to claim to
 // mirror audit's discovery while knowing only the Desktop path, which left
 // every ~/.claude.json finding without a fix path. Only returns files with
