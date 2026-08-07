@@ -62,7 +62,7 @@ var unmountCmd = &cobra.Command{
 			home, _ := os.UserHomeDir()
 			lines := make([]string, 0, len(entries))
 			for _, e := range entries {
-				lines = append(lines, "  • "+displayPath(home, e.MountPath))
+				lines = append(lines, "  "+glyphBullet+" "+displayPath(home, e.MountPath))
 			}
 			return fmt.Errorf("jit unmount: no mount registered at %s, currently mounted:\n%s", mountPath, strings.Join(lines, "\n"))
 		}

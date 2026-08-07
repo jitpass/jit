@@ -342,7 +342,7 @@ func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings []
 		for _, r := range outcome.OKRefs {
 			_, _ = cOK.Fprintf(out, "  %s ", glyphOK)
 			wrapBody(out, findingIndent, body,
-				fmt.Sprintf("%s: %s → %s", profileRef(checkFinding{Profile: r.Profile, Scope: r.Scope}), r.Variable, r.Path))
+				fmt.Sprintf("%s: %s "+glyphAction+" %s", profileRef(checkFinding{Profile: r.Profile, Scope: r.Scope}), r.Variable, r.Path))
 		}
 		for _, c := range outcome.OKChecks {
 			_, _ = cOK.Fprintf(out, "  %s ", glyphOK)
@@ -564,16 +564,16 @@ func formatFinding(f checkFinding) string {
 	case kindParse, kindNotFound, kindService, kindBackup, kindWrap, kindWrapEnv, kindMount, kindVaultKey, kindRekey, kindAudit, kindMCP:
 		return shortHome(f.Detail)
 	case kindMissing:
-		return fmt.Sprintf("%s: %s → %s, not in the vault", profileRef(f), f.Variable, f.Path)
+		return fmt.Sprintf("%s: %s "+glyphAction+" %s, not in the vault", profileRef(f), f.Variable, f.Path)
 	case kindCorrupt:
-		return fmt.Sprintf("%s: %s → %s: %s", profileRef(f), f.Variable, f.Path, shortHome(f.Detail))
+		return fmt.Sprintf("%s: %s "+glyphAction+" %s: %s", profileRef(f), f.Variable, f.Path, shortHome(f.Detail))
 	case kindBadPath:
-		return fmt.Sprintf("%s: %s → %s", profileRef(f), f.Variable, shortHome(f.Detail))
+		return fmt.Sprintf("%s: %s "+glyphAction+" %s", profileRef(f), f.Variable, shortHome(f.Detail))
 	case kindVaultError:
 		if f.Profile == "" {
 			return shortHome(f.Detail)
 		}
-		return fmt.Sprintf("%s: %s → %s: %s", profileRef(f), f.Variable, f.Path, shortHome(f.Detail))
+		return fmt.Sprintf("%s: %s "+glyphAction+" %s: %s", profileRef(f), f.Variable, f.Path, shortHome(f.Detail))
 	case kindOrphan:
 		return fmt.Sprintf("%s — %s", f.Path, f.Detail)
 	case kindShadowed:

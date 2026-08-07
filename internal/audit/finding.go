@@ -450,6 +450,14 @@ type ScanSummary struct {
 	// Unfiltered records that Config.Unfiltered was set for this run, so a
 	// stored report says which view it is. See Config.Unfiltered.
 	Unfiltered bool `json:"unfiltered"`
+	// Targets are the paths a targeted `jit scan <path>...` was pointed at,
+	// empty for the machine-wide scan. Carried so the report header can say
+	// what was actually scanned: it used to print "~/" regardless, so
+	// `jit scan token.txt` opened by claiming a whole-home scan had happened —
+	// wrong in both directions (overstating what was checked, understating
+	// where the findings came from). Additive, so no schema bump (the same
+	// rule doctorSchemaVersion states).
+	Targets []string `json:"targets,omitempty"`
 	// The coverage ledger, in DISTINCT secrets (not findings; see
 	// SchemaVersion 0.12.0 note): how many secrets exist on this machine as
 	// far as jit can tell (protected + counted exposed), how many are already

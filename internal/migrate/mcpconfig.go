@@ -20,13 +20,6 @@ import (
 	"github.com/jitpass/jit/internal/vault"
 )
 
-// mcpConfigFileNames mirrors internal/audit/mcpconfig.go's own list.
-var mcpConfigFileNames = map[string]bool{
-	"mcp.json":                   true,
-	".mcp.json":                  true,
-	"claude_desktop_config.json": true,
-}
-
 var mcpProfileNameSanitizer = regexp.MustCompile(`[^A-Za-z0-9_.\-]+`)
 
 // mcpServerRaw is one server entry decoded as raw JSON fields, so
@@ -155,7 +148,7 @@ func discoverMCPConfigFiles(home, cwd string, includeClaudeDesktop bool, accept 
 		if !d.Type().IsRegular() {
 			return nil
 		}
-		if mcpConfigFileNames[d.Name()] {
+		if audit.IsMCPConfigFileName(d.Name()) {
 			check(path)
 		}
 		return nil

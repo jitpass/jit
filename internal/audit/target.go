@@ -83,6 +83,7 @@ func TargetedScan(cfg Config, targets []string) ([]Finding, ScanSummary, error) 
 	annotateRemedies(all, cfg.HomeDir)
 
 	summary := buildScanSummary(cfg, all, countProtectedMounts(cfg.MountRegistryPath), time.Since(start))
+	summary.Targets = targets
 	summary.DegradedScanners = degraded
 	coverage := ComputeCoverage(cfg.HomeDir, cfg.MountRegistryPath, all)
 	summary.SecretsTotal = coverage.Total()

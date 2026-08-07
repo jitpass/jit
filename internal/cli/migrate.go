@@ -533,7 +533,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			// pointer file), and nothing to reveal.
 			if !result.Mounted {
 				summary.backupOnlyFiles++
-				fmt.Fprint(out, hlCmds(fmt.Sprintf("  • %s -> profile %q (%s); backup: `jit vault get %s`, replaced with a safe pointer file (never mounted; nothing reads a backup file live)\n",
+				fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`, replaced with a safe pointer file (never mounted; nothing reads a backup file live)\n",
 					displayPath(home, envPath), result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath)))
 				noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
 				continue
@@ -544,7 +544,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			if err := summary.writePointerFile(result.EnvPath, result.ProfilePath); err != nil {
 				return false, fmt.Errorf("jit migrate: %w", err)
 			}
-			fmt.Fprint(out, hlCmds(fmt.Sprintf("  • %s -> profile %q (%s); backup: `jit vault get %s`\n", displayPath(home, envPath), result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath)))
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`\n", displayPath(home, envPath), result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath)))
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
 		}
 		fmt.Fprintln(out)
@@ -569,7 +569,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 				if err := summary.writePointerFile(path, result.ProfilePath); err != nil {
 					return false, fmt.Errorf("jit migrate: %w", err)
 				}
-				fmt.Fprint(out, hlCmds(fmt.Sprintf("  • %s -> profile %q (%s); backup: `jit vault get %s`, live mount (real value to `jit run` grants, a decoy otherwise)\n",
+				fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`, live mount (real value to `jit run` grants, a decoy otherwise)\n",
 					displayPath(home, path), result.ProfileName, countWord(len(result.Variables), "secret", "secrets"), result.BackupPath)))
 				noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
 				continue
@@ -582,7 +582,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			summary.backupOnlyFiles++
-			fmt.Fprint(out, hlCmds(fmt.Sprintf("  • %s -> profile %q (%s); backup: `jit vault get %s`, replaced with a safe pointer file (retrieve with `jit vault get %s/%s`)\n",
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`, replaced with a safe pointer file (retrieve with `jit vault get %s/%s`)\n",
 				displayPath(home, path), result.ProfileName, countWord(len(result.Variables), "secret", "secrets"), result.BackupPath, result.ProfileName, result.Variables[0])))
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
 		}
@@ -608,7 +608,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			for i, b := range result.Backups {
 				backups[i] = fmt.Sprintf("`jit vault get %s`", b)
 			}
-			fmt.Fprintf(out, "  • %s (%s) -> profile %q (%s); %s: %s\n",
+			fmt.Fprintf(out, "  "+glyphBullet+" %s (%s) -> profile %q (%s); %s: %s\n",
 				displayPath(home, dir), countWord(len(result.Files), "file", "files"), result.ProfileName,
 				countWord(len(result.Variables), "var", "vars"), pluralWord(len(result.Backups), "backup", "backups"), strings.Join(backups, ", "))
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
@@ -640,7 +640,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			if err := summary.writePointerFile(path, result.ProfilePath); err != nil {
 				return false, fmt.Errorf("jit migrate: %w", err)
 			}
-			fmt.Fprint(out, hlCmds(fmt.Sprintf("  • %s -> profile %q (%s); backup: `jit vault get %s`, live mount (real manifest to `jit run` grants, rejectable decoys otherwise)\n",
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`, live mount (real manifest to `jit run` grants, rejectable decoys otherwise)\n",
 				displayPath(home, path), result.ProfileName, countWord(len(result.Variables), "secret", "secrets"), result.BackupPath)))
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
 			if result.ConvertedStringData {
@@ -660,7 +660,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			if err != nil {
 				return false, fmt.Errorf("jit migrate: %w", err)
 			}
-			fmt.Fprint(out, hlCmds(fmt.Sprintf("  • %s -> profile %q (%s); backup: `jit vault get %s`, open a new shell (or `source %s`)\n",
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`, open a new shell (or `source %s`)\n",
 				displayPath(home, shellPath), result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath, displayPath(home, shellPath))))
 		}
 		fmt.Fprintln(out)
@@ -675,7 +675,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			if err != nil {
 				return false, fmt.Errorf("jit migrate: %w", err)
 			}
-			fmt.Fprint(out, hlCmds(fmt.Sprintf("  • %s -> profile %q (%s, %s redacted in place); backup: `jit vault get %s`\n",
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s, %s redacted in place); backup: `jit vault get %s`\n",
 				displayPath(home, path), result.ProfileName, countWord(len(result.Variables), "secret", "secrets"),
 				countWord(result.Occurrences, "occurrence", "occurrences"), result.BackupPath)))
 			// A file can hold both. Never let a successful token redaction
@@ -711,7 +711,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			for _, sm := range result.Servers {
-				fmt.Fprint(out, hlCmds(fmt.Sprintf("  • %s server %q -> profile %q (%s); backup: `jit vault get %s`\n",
+				fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s server %q -> profile %q (%s); backup: `jit vault get %s`\n",
 					displayPath(home, mcpPath), sm.ServerName, sm.ProfileName, countWord(len(sm.Variables), "var", "vars"), result.BackupPath)))
 				noteNamespaceMove(out, sm.NamespaceMovedFrom, sm.ProfileName)
 			}
@@ -740,7 +740,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			if result.ConfigBackup != "" {
 				backups += fmt.Sprintf(", `jit vault get %s`", result.ConfigBackup)
 			}
-			fmt.Fprintf(out, "  • %q -> vault profile %q (%s); backups: %s\n",
+			fmt.Fprintf(out, "  "+glyphBullet+" %q -> vault profile %q (%s); backups: %s\n",
 				awsProfile, result.VaultProfileName, countWord(len(result.Variables), "var", "vars"), backups)
 		}
 		fmt.Fprintln(out)
@@ -754,7 +754,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			if err != nil {
 				return false, fmt.Errorf("jit migrate: %w", err)
 			}
-			fmt.Fprint(out, hlCmds(fmt.Sprintf("  • %q (%s) -> vault profile %q (%s); backup: `jit vault get %s`\n",
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %q (%s) -> vault profile %q (%s); backup: `jit vault get %s`\n",
 				k8sUser, result.AuthType, result.VaultProfileName, countWord(len(result.Variables), "var", "vars"), result.Backup)))
 		}
 		fmt.Fprintln(out)
@@ -772,7 +772,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			if result.RCBackup != "" {
 				backups += fmt.Sprintf(", `jit vault get %s`", result.RCBackup)
 			}
-			fmt.Fprintf(out, "  • %q -> vault profile %q (%s); backups: %s\n",
+			fmt.Fprintf(out, "  "+glyphBullet+" %q -> vault profile %q (%s); backups: %s\n",
 				tfHost, result.VaultProfileName, countWord(len(result.Variables), "var", "vars"), backups)
 		}
 		fmt.Fprintln(out)
@@ -788,7 +788,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			claimedDefaultStore = claimedDefaultStore || result.ClaimedDefaultStore
-			fmt.Fprint(out, hlCmds(fmt.Sprintf("  • %q -> vault profile %q (%s); backup: `jit vault get %s`\n",
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %q -> vault profile %q (%s); backup: `jit vault get %s`\n",
 				dockerRegistry, result.VaultProfileName, countWord(len(result.Variables), "var", "vars"), result.ConfigBackup)))
 		}
 		if claimedDefaultStore {
@@ -825,7 +825,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			// a credential silently left behind is how a user ends up believing
 			// they are protected when they are not.
 			if errors.Is(err, migrate.ErrGitMultipleAccounts) {
-				fmt.Fprintf(out, "  • %q SKIPPED — %v\n", gitHost, err)
+				fmt.Fprintf(out, "  "+glyphBullet+" %q SKIPPED — %v\n", gitHost, err)
 				fmt.Fprintln(out, "    Its credentials are untouched and still work. Vault them by hand with"+
 					" `jit vault set` if you want them protected before multi-account support lands.")
 				continue
@@ -838,7 +838,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			if result.ConfigBackup != "" {
 				backupNote += fmt.Sprintf(", `jit vault get %s`", result.ConfigBackup)
 			}
-			fmt.Fprintf(out, "  • %q -> vault profile %q (%s); backups: %s\n",
+			fmt.Fprintf(out, "  "+glyphBullet+" %q -> vault profile %q (%s); backups: %s\n",
 				gitHost, result.VaultProfileName, countWord(len(result.Variables), "var", "vars"), backupNote)
 		}
 		if replacedStore {
@@ -876,7 +876,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			if err := summary.writePointerFile(adcPath, result.ProfilePath); err != nil {
 				return false, fmt.Errorf("jit migrate: %w", err)
 			}
-			fmt.Fprint(out, hlCmds(fmt.Sprintf("  • %s (%s) -> profile %q (%s); backup: `jit vault get %s`\n",
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s (%s) -> profile %q (%s); backup: `jit vault get %s`\n",
 				displayPath(home, adcPath), result.CredType, result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath)))
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
 			// A machine-global mount: usage is explicit `jit run --with` intent
@@ -904,7 +904,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			if err := summary.writePointerFile(keyPath, result.ProfilePath); err != nil {
 				return false, fmt.Errorf("jit migrate: %w", err)
 			}
-			fmt.Fprint(out, hlCmds(fmt.Sprintf("  • %s -> profile %q; backup: `jit vault get %s`\n",
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q; backup: `jit vault get %s`\n",
 				displayPath(home, keyPath), result.ProfileName, result.BackupPath)))
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
 			// Two consumption paths, user's pick: the live mount serves the
@@ -939,7 +939,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			if err := summary.writePointerFile(npmrcPath, result.ProfilePath); err != nil {
 				return false, fmt.Errorf("jit migrate: %w", err)
 			}
-			fmt.Fprint(out, hlCmds(fmt.Sprintf("  • %s -> profile %q (%s); backup: `jit vault get %s`\n",
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`\n",
 				displayPath(home, npmrcPath), result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath)))
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
 			if npmrcPath == migrate.GlobalNpmrcPath(home) {
@@ -968,7 +968,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			if err := summary.writePointerFile(netrcPath, result.ProfilePath); err != nil {
 				return false, fmt.Errorf("jit migrate: %w", err)
 			}
-			fmt.Fprint(out, hlCmds(fmt.Sprintf("  • %s -> profile %q (%s); backup: `jit vault get %s`\n",
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`\n",
 				displayPath(home, netrcPath), result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath)))
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
 			// ~/.netrc is a machine-wide mount, same as the global ~/.npmrc:
@@ -995,7 +995,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			if err := summary.writePointerFile(pypircPath, result.ProfilePath); err != nil {
 				return false, fmt.Errorf("jit migrate: %w", err)
 			}
-			fmt.Fprint(out, hlCmds(fmt.Sprintf("  • %s -> profile %q (%s); backup: `jit vault get %s`\n",
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`\n",
 				displayPath(home, pypircPath), result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath)))
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
 			// ~/.pypirc is a machine-wide mount, same as ~/.netrc and the
@@ -1281,7 +1281,7 @@ func runMigrateAll(cmd *cobra.Command) error {
 	if applied && !migrateDryRun && d.total() > 0 && summary.SecretsTotal > 0 {
 		before := summary.SecretsProtected * 100 / summary.SecretsTotal
 		after := (summary.SecretsProtected + summary.SecretsMigratable) * 100 / summary.SecretsTotal
-		fmt.Fprint(out, hlCmds(fmt.Sprintf("\ncoverage: %d%% → up to %d%% — run `jit scan` to see the new number\n", before, after)))
+		fmt.Fprint(out, hlCmds(fmt.Sprintf("\ncoverage: %d%% "+glyphAction+" up to %d%% — run `jit scan` to see the new number\n", before, after)))
 	}
 	return nil
 }
