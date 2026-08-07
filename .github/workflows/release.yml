@@ -32,13 +32,28 @@ jobs:
     # Apple's verdict and cited a `timeout: 30m` that no longer exists.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      # Actions are pinned to full commit SHAs, not tags. A tag is mutable and
+      # repointable by its owner, so `@v4` in THIS job — the one job in the
+      # repo that holds MACOS_SIGN_P12 and the Developer ID private key — is a
+      # standing grant of that key to whoever controls the tag. ci.yml already
+      # pins its three Go tools to exact patch versions for a weaker reason
+      # (reproducible results); the actions themselves floated.
+      #
+      # The trailing comment is the human-readable version. To bump one,
+      # resolve the new tag to its SHA rather than editing the comment.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
+          # The signed build must not restore a build cache written by an
+          # unrelated main-branch run. The release is the one build in the repo
+          # where "where did these object files come from" has a security
+          # answer, and a cache hit makes it unauditable for no real saving on
+          # a job that runs a handful of times a month.
+          cache: false
 
       # Never ship unsigned (CLAUDE.md), enforced BEFORE the build rather than
       # on the user's machine after download.
@@ -67,7 +82,7 @@ jobs:
             exit 1
           fi
 
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
         with:
           distribution: goreleaser
           # Pin the goreleaser MAJOR, not "latest": a future v3 with breaking
@@ -86,3 +101,64 @@ jobs:
           MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
           MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
           MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+
+      # The signature the release actually carries, checked by the code that
+      # will judge it — not by the code that wrote it.
+      #
+      # The preflight above proves a signing secret was PRESENT. It cannot
+      # prove the result satisfies `codesign --verify --strict -R`, because
+      # quill writes the signature and Apple's codesign is what
+      # verifyStagedSignature runs against it on every user's machine. Until
+      # now the first machine to ever make that comparison was a user's, after
+      # download — and the failure mode is the worst one this repo has: a
+      # rejected signature traps every installed copy out of `jit upgrade`,
+      # with an error naming the downloaded file rather than the cause.
+      #
+      # Deliberately the binary from the TARBALL, not from dist/'s build
+      # directory: the tarball is the artifact users receive, and it is the
+      # one whose bytes could differ. And deliberately `jit doctor` rather than
+      # a hand-written codesign line — doctor's binarySignature() builds its
+      # requirement with signatureRequirement(), the same function
+      # verifyStagedSignature uses, so this check cannot drift from the client
+      # it is standing in for. A hand-rolled requirement string here would be
+      # a second copy free to disagree with production, which is the whole
+      # class of bug being closed.
+      #
+      # The expected value names upgradeTeamIDs[0] specifically, not "any
+      # accepted team": during a certificate migration the list also accepts a
+      # successor, and a release accidentally signed with the outgoing identity
+      # must fail here rather than pass as "signed, close enough".
+      - name: Verify the released binary satisfies jit upgrade's own requirement
+        run: |
+          set -euo pipefail
+          archive=$(find dist -type f -name 'jitpass_darwin_arm64.tar.gz' | head -1)
+          if [ -z "$archive" ]; then
+            echo "::error::no release tarball found under dist/"
+            exit 1
+          fi
+          workdir=$(mktemp -d)
+          tar -xzf "$archive" -C "$workdir"
+          bin="$workdir/jit"
+          if [ ! -x "$bin" ]; then
+            echo "::error::the release tarball contains no executable jit"
+            exit 1
+          fi
+          # doctor exits non-zero when it finds unrelated problems (no vault
+          # and no profiles on a fresh runner), so its verdict is not the
+          # signal — the tool.signature field is. Capture, then assert.
+          report=$("$bin" doctor --format json 2>/dev/null || true)
+          got=$(printf '%s' "$report" | jq -r '.tool.signature // ""')
+          want="signed CZC6BH93GJ"
+          if [ "$got" != "$want" ]; then
+            echo "::error::the published binary reports signature '$got', want '$want' — jit upgrade would refuse this release on every installed copy. The release stays a DRAFT and is not reachable via /releases/latest."
+            exit 1
+          fi
+          echo "verified: $got"
+
+      # Only now does the release become the one `jit upgrade` can see.
+      # Anything that failed above leaves a draft: invisible to
+      # /releases/latest, and deletable without ever having reached a user.
+      - name: Publish the verified release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ github.ref_name }}" --draft=false

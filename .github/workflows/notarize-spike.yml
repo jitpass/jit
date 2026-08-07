@@ -33,9 +33,9 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: spike/notarize-e2e/go.mod
 
@@ -49,9 +49,24 @@ jobs:
             exit 1
           fi
 
-      - name: Install quill (pinned — same signer the release path embeds)
+      # Fetch the pinned release asset and check its digest, rather than piping
+      # an installer script straight into sh. get.anchore.io/quill is an
+      # unpinned, mutable endpoint, and this job then hands the process it
+      # installs both the Developer ID .p12 and the notary .p8 — so whoever can
+      # change that URL's contents can take the signing key. The version was
+      # already pinned; what was not pinned was the code doing the installing.
+      - name: Install quill (pinned by digest — same signer the release path embeds)
+        env:
+          QUILL_VERSION: "0.7.1"
+          QUILL_SHA256: "086cfb3fc69a305d55d9aa5131bed7739d706bbd8bab78c18d011e7260111e96"
         run: |
-          curl -sSfL https://get.anchore.io/quill | sh -s -- -b "$RUNNER_TEMP/bin" v0.7.1
+          set -euo pipefail
+          archive="$RUNNER_TEMP/quill.tar.gz"
+          curl -sSfL -o "$archive" \
+            "https://github.com/anchore/quill/releases/download/v${QUILL_VERSION}/quill_${QUILL_VERSION}_darwin_arm64.tar.gz"
+          echo "${QUILL_SHA256}  ${archive}" | shasum -a 256 --check -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/bin" quill
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
       - name: Run the probe
