@@ -120,7 +120,7 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 	}
 
 	// Tag findings under archived/backup-looking directories centrally
-	// (not per scanner): `jit migrate home` skips exactly these by default,
+	// (not per scanner): `jit migrate ~` skips exactly these by default,
 	// and the report renderers surface the tag so that skip is legible from
 	// the audit side of the funnel too.
 	//

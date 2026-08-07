@@ -18,7 +18,7 @@
 // a real incident (GAPS.md #30). Change the header wording in the writer and
 // audit stops recognising its own output, so `jit scan` reports every
 // already-migrated file as an exposed secret — the re-discovery incident where
-// a second `jit migrate local` run parsed a `.pointers` companion's
+// a second project-scoped `jit migrate` run parsed a `.pointers` companion's
 // `KEY=jit://vault/...` lines as if they were real credentials and converted
 // the git-safe companion itself into a live mount.
 //

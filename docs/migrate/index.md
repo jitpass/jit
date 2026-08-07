@@ -49,7 +49,7 @@ Each named target is resolved on its own:
   history file like `~/.zsh_history`, `~/.aws/credentials`, `~/.kube/config`, the Terraform Cloud token file,
   `~/.docker/config.json`, `~/.git-credentials`, GCP application-default
   credentials, the SOPS age key, `~/.netrc`, `~/.pypirc`, Claude Desktop's MCP config,
-  the global `~/.npmrc` - is routed to that credential type's handling.
+  Claude Code's `~/.claude.json`, the global `~/.npmrc` - is routed to that credential type's handling.
 - **A directory** is walked for its `.env`/tfvars/`mcp.json`/`.npmrc`
   findings only, never the machine-wide fixed-path files (those aren't
   "under" any project directory - name them explicitly to convert them).

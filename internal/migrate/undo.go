@@ -156,7 +156,7 @@ func BackupIndexPath(root string) string {
 // `jit migrate undo` down for EVERY recorded file, not just the one being
 // written. The lock covers the load-append-save cycle: this is called once per
 // backed-up file (fifteen call sites, a dozen files in a single
-// `jit migrate home`), so overlapping runs dropping one record apiece is not a
+// `jit migrate ~`), so overlapping runs dropping one record apiece is not a
 // hypothetical. A dropped record does not lose the backup itself — it stays in
 // the vault under _backups/ — but it becomes invisible to undo and recoverable
 // only by hand through `jit vault get`, for a file whose plaintext credential

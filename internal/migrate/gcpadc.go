@@ -101,7 +101,7 @@ func GCPADCPath(home string) string {
 // "not migratable" while Apply treats it as fail-loud is what makes
 // Apply's own error path unreachable through the CLI — a file this
 // function can't handle is never discovered in the first place, so a
-// whole `jit migrate home` run can't abort mid-way (after earlier
+// whole a home-wide `jit migrate ~` run can't abort mid-way (after earlier
 // categories already mutated the machine) on a file only Apply turns out
 // to choke on.
 //

@@ -13,7 +13,7 @@ import (
 // rather than actively worked on. The canonical list lives here, not in
 // internal/migrate (which consumes it via LooksArchived), because both
 // sides of the audit→migrate funnel need it and migrate already imports
-// audit: `jit migrate home` skips these findings by default (GAPS.md #26),
+// audit: `jit migrate ~` skips these findings by default (GAPS.md #26),
 // and the audit report tags them so that skip never reads as migrate
 // having lost a finding the audit just showed.
 var archivedDirNames = map[string]bool{

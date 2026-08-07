@@ -238,7 +238,7 @@ func parseGitCredentialsFile(path string) ([]GitCredential, error) {
 // ~/.git-credentials or its XDG twin, deduplicated by host (host-level
 // keying) and sorted for determinism. Missing files yield nothing rather
 // than an error, so a home without git's plaintext store contributes nothing
-// to a `jit migrate home` sweep (same tolerance as DiscoverDockerRegistries).
+// to a a home-wide `jit migrate ~` sweep (same tolerance as DiscoverDockerRegistries).
 func DiscoverGitCredentials(home string) ([]GitCredential, error) {
 	seen := map[string]GitCredential{}
 	for _, path := range []string{GitCredentialsPath(home), GitCredentialsXDGPath(home)} {

@@ -49,7 +49,7 @@ mechanism, so nothing about your workflow changes:
 | --- | --- | --- |
 | `.env` files | `DATABASE_URL=...` in a project `.env` | [Live-mounted file](../run/mounts.md): decoy values by default, real ones only to a `jit run` grant's process tree |
 | Shell config exports | `export STRIPE_KEY=...` in `~/.zshrc` | An [`eval "$(jit export ...)"` line](../migrate/shell-configs.md) in the config |
-| MCP server configs | project `mcp.json`, Claude Desktop config | The server command [wrapped in `jit run`](../migrate/mcp.md) |
+| MCP server configs | project `mcp.json`, Claude Desktop config, Claude Code's `~/.claude.json` | The server command [wrapped in `jit run`](../migrate/mcp.md) |
 | AWS credentials | `~/.aws/credentials` | [`credential_process`](../migrate/aws.md) in `~/.aws/config`: the CLI and SDKs fetch on demand, no file at all |
 | kubeconfig | client keys/tokens in `~/.kube/config` | A kubectl [`exec` credential plugin](../migrate/kubernetes.md) |
 | Terraform Cloud token | `~/.terraform.d/credentials.tfrc.json` | A [`credentials_helper`](../migrate/terraform.md); `terraform login`/`logout` keep working |

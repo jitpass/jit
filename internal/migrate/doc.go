@@ -7,8 +7,8 @@
 // combination (see internal/audit/doc.go and RFC.md's read-only note in
 // §4).
 //
-// jit migrate local (.env/MCP/npmrc scoped to the current directory
-// tree) and jit migrate home (the same three, scoped to anywhere under
+// jit migrate <dir> (.env/MCP/npmrc scoped to that directory
+// tree) and jit migrate ~ (the same three, scoped to anywhere under
 // $HOME) both call this package's own Discover* functions directly for
 // --dry-run's preview AND a real run's actual discovery — the same call,
 // just a different root (cwd vs home) passed to it. This is deliberate
@@ -25,7 +25,7 @@
 // the original nine; treat it as the inventory, not the count:
 //
 //   - .env files (apply.go/unmount.go), scoped to the chosen root (cwd for
-//     jit migrate local, $HOME for jit migrate home), converted into a
+//     a named directory, $HOME when that is the named path), converted into a
 //     profile + vault secrets + a live-mounted pipe (RFC.md Pillar III
 //     Tier 3) that jit unmount can reverse. A git-safe,
 //     IDE-peekable <file>.pointers companion (pointerfile.go, GAPS.md #26)
@@ -104,10 +104,10 @@
 //     regenerating the whole file from the vault. Backed up first, and
 //     gets the same .pointers companion .env does.
 //
-// Skipping archived projects is jit migrate home's only safety net over its
+// Skipping archived projects is a home-wide run's only safety net over its
 // wider discovery (GAPS.md #26): a live-mounted pipe in a project nobody
 // revisits is worse than leaving it plaintext, since nothing will ever serve
-// it again. jit migrate local never applies this — an explicit cd into an old
+// it again. A narrower named directory never applies this — naming an old
 // project isn't an implicit sweep.
 //
 // The skip itself lives in internal/cli's runMigrateAll, as a direct
@@ -134,7 +134,7 @@
 // profile name/location disconnected from the project the secret
 // actually came from (a real bug caught while building GAPS.md #26, via
 // tracing deriveProfileName's own relative-path logic, not a failing
-// test). jit migrate local is unaffected: every file it discovers
+// test). A narrower named directory is unaffected: every file it discovers
 // genuinely is under cwd already.
 //
 // A migrated .env/npmrc becomes a decoy-by-default live mount (GAPS.md #2):
