@@ -334,6 +334,32 @@ func TestArchivedNoteOffersDeletion(t *testing.T) {
 	}
 }
 
+// A source example renders in the footer's uncounted tally, in its own
+// bucket — neither charged to YOUR SECRETS nor lumped under low-confidence,
+// which would misdescribe it (jit is not unsure; it is saying the value
+// documents a shape).
+func TestSourceExampleInFooterBucket(t *testing.T) {
+	vendor := "Database connection string with embedded credentials"
+	ln := 100
+	findings := []Finding{{
+		RecordID: "e", FindingType: FindingTypeExposedSecret,
+		Severity: SeverityHigh, Remedy: RemedyManual, SourceExample: true,
+		FilePath: "/Users/alex/code/scanner/patterns.go", Line: &ln, KeyName: &vendor,
+		Evidence: "value matches a known vendor credential format",
+	}}
+	annotateCauseGroups(findings)
+
+	var buf bytes.Buffer
+	WriteTriageReport(&buf, findings, ScanSummary{}, "/Users/alex", ComputeCoverage("/Users/alex", "", findings))
+	out := buf.String()
+	if !strings.Contains(out, "1 source example") {
+		t.Errorf("footer missing the source-example bucket:\n%s", out)
+	}
+	if strings.Contains(out, "patterns.go") {
+		t.Errorf("an uncounted source example must not render as a finding:\n%s", out)
+	}
+}
+
 // Nine JWTs in nine paste-cache files printed the identical grep hint nine
 // times — one instruction stuttered. Hints identical up to path collapse to
 // one grep over all the files; hints that genuinely differ keep the

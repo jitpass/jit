@@ -263,8 +263,11 @@ func annotateCauseGroups(findings []Finding) {
 //
 // Test fixtures are excluded for the neighbouring reason: the match is real,
 // but the credential is not the user's to rotate (see LooksTestFixture).
+// Source examples are the third face of the same rule: a credential-shaped
+// value in a comment documents a shape, it does not store a secret
+// (Finding.SourceExample).
 func CountedAsSecret(f Finding) bool {
-	if f.TestFixture {
+	if f.TestFixture || f.SourceExample {
 		return false
 	}
 	switch f.Severity {
