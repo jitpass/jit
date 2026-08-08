@@ -18,10 +18,16 @@ brew install jitpass/tap/jitpass
 Or download the release directly:
 
 ```sh
-curl -sLO https://github.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz
+curl -sLO https://dl.jitpass.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz
 tar -xzf jitpass_darwin_arm64.tar.gz jit
 sudo mv jit /usr/local/bin/
 ```
+
+> `dl.jitpass.com` counts the download (client type, version, country -
+> never an IP) and redirects to the GitHub release asset; the bytes always
+> come from GitHub. The plain
+> `github.com/jitpass/jit/releases/latest/download/...` URL works identically
+> if you prefer.
 
 > **Already installed from the tarball and switching to Homebrew?** Remove the
 > old copy afterwards: `sudo rm /usr/local/bin/jit`. `brew install` doesn't
@@ -193,7 +199,7 @@ restart` just makes that happen *now*.
 the newest version:
 
 ```sh
-curl -sLO https://github.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz
+curl -sLO https://dl.jitpass.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz
 tar -xzf jitpass_darwin_arm64.tar.gz jit
 sudo mv jit /usr/local/bin/                        # 1. reinstall the binary
 jit service restart                                # 2. (optional) switch the running service over now

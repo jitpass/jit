@@ -40,7 +40,7 @@ brew install jitpass/tap/jitpass
 Or without Homebrew:
 
 ```sh
-curl -sL https://github.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz | tar -xz jit
+curl -sL https://dl.jitpass.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz | tar -xz jit
 sudo mv jit /usr/local/bin/
 ```
 
