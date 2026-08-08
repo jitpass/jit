@@ -1,12 +1,16 @@
-# spike config — local `wrangler dev` needs none of the account fields.
-# Deployment (later, not this spike) adds: the dl.jitpass.com route and the
-# [[analytics_engine_datasets]] binding below, uncommented.
+# Local `wrangler dev` ignores the account-side fields; `wrangler deploy`
+# uses all of them. The custom domain creates the dl.jitpass.com DNS record
+# on the zone automatically at deploy time.
 name = "jit-dl-redirect"
 main = "worker.js"
 compatibility_date = "2026-08-01"
 
-# Deployed-only: aggregated download stats, queryable with SQL from the
-# Cloudflare dashboard/API. Free tier is fine at this volume.
-# [[analytics_engine_datasets]]
-# binding = "DL_STATS"
-# dataset = "jit_downloads"
+routes = [
+  { pattern = "dl.jitpass.com", custom_domain = true }
+]
+
+# Aggregated download stats, queryable with SQL from the dashboard/API.
+# Free tier is ample at this volume. No local emulation — deploy-verified.
+[[analytics_engine_datasets]]
+binding = "DL_STATS"
+dataset = "jit_downloads"

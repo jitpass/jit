@@ -44,6 +44,22 @@ GitHub, never proxies a body.
   unmeasured. The redirect host must never become load-bearing for
   `verifyStagedSignature`'s chain.
 
+## Deployed 2026-08-08 — live verification
+
+The Worker is LIVE at `dl.jitpass.com` (account `d48d87db…`, free plan — all
+of Workers, the custom domain, and Analytics Engine fit the free tier). The
+full suite re-run against the live edge: **11/11** — 302s exact for all four
+client classes on both routes, allowlist 404s hold, HEAD redirects, and the
+tarball fetched through the live edge hash-matches v0.81.0's published
+checksums.txt (`bea735b7…`). Analytics Engine dataset `jit_downloads` was
+created in the dashboard (Enable is account-wide and one-time; deploying the
+binding before the dataset existed made every request 500 — create the
+dataset first, or expect that until the first successful write).
+
+NOTHING POINTS AT IT YET: the cask still says github.com. The remaining
+production step is the cask `url` swap in `.goreleaser.yml`, shipped with a
+release. Rollback at any time is re-pointing the cask at github.com.
+
 ## What production needs that the spike does not
 
 - A Cloudflare account + zone for jitpass.com; route `dl.jitpass.com/*` to
