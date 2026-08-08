@@ -1,0 +1,16 @@
+# Local `wrangler dev` ignores the account-side fields; `wrangler deploy`
+# uses all of them. The custom domain creates the dl.jitpass.com DNS record
+# on the zone automatically at deploy time.
+name = "jit-dl-redirect"
+main = "worker.js"
+compatibility_date = "2026-08-01"
+
+routes = [
+  { pattern = "dl.jitpass.com", custom_domain = true }
+]
+
+# Aggregated download stats, queryable with SQL from the dashboard/API.
+# Free tier is ample at this volume. No local emulation — deploy-verified.
+[[analytics_engine_datasets]]
+binding = "DL_STATS"
+dataset = "jit_downloads"
