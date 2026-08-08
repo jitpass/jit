@@ -36,9 +36,18 @@ GitHub, never proxies a body.
 - **Redirect, never proxy.** The worst failure mode must be "download fails
   loudly", never "different bytes served". A body-proxying worker would put
   us in the serving path for real; a 302 keeps GitHub as the only origin.
-- **Log dimensions, not identities.** No IP, no full UA string. The privacy
-  story has to survive being read aloud in a security review: "we count
-  downloads by client type and country".
+- **Log dimensions, not identities.** No IP, no full UA string, no city (at
+  this volume a city+timestamp row is nearly a person). The privacy story has
+  to survive being read aloud in a security review: "we count downloads by
+  client type, platform, and country". What IS kept, all aggregate — blob
+  order is the query contract: client, tag, asset, country, macOS version,
+  arch, Homebrew version (the three platform facts parsed out of brew's UA,
+  which is then dropped), ASN org (separates CI/datacenter pulls from
+  residential — the bot filter GitHub's counter can't give), colo. arch is
+  the sleeper: x86_64 rows are the first real measure of Intel demand for
+  the arm64-only decision. If uniques ever matter, the documented option is
+  a daily-salted IP hash — count distinct machines per day with no way to
+  recover an address; not built until volume justifies it.
 - **`jit upgrade` stays pointed at GitHub.** Instrument acquisition (the cask
   URL) only; the security-critical self-update path remains unmodified and
   unmeasured. The redirect host must never become load-bearing for
