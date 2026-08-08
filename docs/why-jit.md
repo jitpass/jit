@@ -25,8 +25,9 @@ default and keeps the plaintext out of the way the rest of the time.
 
 ## 1. See what is already exposed
 
-`jit scan` is a read-only scan of your machine. It never writes, moves, or
-"fixes" anything, so it is safe to run before you trust jit with anything else.
+`jit scan` is a read-only scan of your machine. It never rewrites, moves, or
+"fixes" a file it scans, so it is safe to run before you trust jit with
+anything else.
 In well under a second it tells you how many secrets you have, how many jit
 already protects, and the one command that protects the rest. (`jit scan
 --full` ranks every finding by risk; `--score` gives the 0-100 exposure

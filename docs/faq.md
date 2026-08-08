@@ -203,9 +203,16 @@ yourself (an Argon2id-derived key, machine-independent by design).
 
 ### Is `jit scan` safe to run on a sensitive machine?
 
-Yes. It is strictly read-only, never writes anything, and never prints a real
-value (every preview is masked). Use `jit scan --format ndjson` for
-machine-readable output under the same redaction rules.
+Yes. It never touches, encrypts or rewrites a single file it scans, and never
+prints a real value (every preview is masked). Use `jit scan --format ndjson`
+for machine-readable output under the same redaction rules.
+
+To be exact about "writes nothing": the scan itself writes nothing, and the
+guard test in `internal/audit` enforces that. The command around it appends a
+line to jit's own application audit log under
+`~/Library/Application Support/jitpass/`, the same as every other jit
+invocation, and `--output` writes the report file you asked for. Nothing in
+your home directory is read-modify-written by a scan.
 
 ### What about secrets already committed to git?
 

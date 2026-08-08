@@ -74,7 +74,7 @@ echo 'source <(jit completion zsh)' >> ~/.zshrc && exec zsh
 ## How you actually use it
 
 ```sh
-jit scan                            # read-only. shows every plaintext secret. writes nothing.
+jit scan                            # read-only. changes no file it scans, prints no real value.
 jit vault init                      # make the vault (master key in your login keychain)
 jit migrate --dry-run               # preview the whole machine-wide fix plan
 jit migrate                         # apply it: shows plan, asks [y/N], one Touch ID
