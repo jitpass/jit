@@ -56,6 +56,16 @@ created in the dashboard (Enable is account-wide and one-time; deploying the
 binding before the dataset existed made every request 500 — create the
 dataset first, or expect that until the first successful write).
 
+That 500 episode set the Worker's fail-open rule, the same one
+`internal/guard` lives by: the stats write is wrapped in try/catch so
+measurement can never again break delivery. The remaining failure domain is
+Cloudflare itself (Worker down / zone gone): brew and the README curl line
+fail LOUDLY (no wrong bytes possible — the Worker never serves a body), and
+recovery needs no release: hand-edit `Casks/jitpass.rb` in the tap back to
+github.com and push, minutes not days. `jit upgrade` is outside the failure
+domain entirely — it never touches this host — and the docs keep the plain
+github.com URL as the stated curl alternative.
+
 NOTHING POINTS AT IT YET: the cask still says github.com. The remaining
 production step is the cask `url` swap in `.goreleaser.yml`, shipped with a
 release. Rollback at any time is re-pointing the cask at github.com.

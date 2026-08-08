@@ -77,14 +77,23 @@ export default {
     // Always console.log (visible in `wrangler tail` / dev); additionally
     // write an Analytics Engine row when the binding exists (deployed only —
     // AE has no local emulation worth trusting).
-    console.log(`dl client=${client} tag=${tag} asset=${asset} country=${country} colo=${colo}`);
-    if (env.DL_STATS) {
-      // blobs: dimensions to group by; doubles: the count. No IP, ever.
-      env.DL_STATS.writeDataPoint({
-        blobs: [client, tag, asset, country],
-        doubles: [1],
-        indexes: [client],
-      });
+    //
+    // FAIL OPEN, same rule internal/guard lives by: measurement must never
+    // break delivery. Before the dataset existed, writeDataPoint threw and
+    // every download 500'd — counting took the redirect down. Nothing in
+    // this block may prevent the 302.
+    try {
+      console.log(`dl client=${client} tag=${tag} asset=${asset} country=${country} colo=${colo}`);
+      if (env.DL_STATS) {
+        // blobs: dimensions to group by; doubles: the count. No IP, ever.
+        env.DL_STATS.writeDataPoint({
+          blobs: [client, tag, asset, country],
+          doubles: [1],
+          indexes: [client],
+        });
+      }
+    } catch (e) {
+      // swallowed deliberately: a lost data point over a lost download
     }
 
     return Response.redirect(dest, 302);
