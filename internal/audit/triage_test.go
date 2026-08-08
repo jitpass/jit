@@ -334,6 +334,40 @@ func TestArchivedNoteOffersDeletion(t *testing.T) {
 	}
 }
 
+// A GCP service-account key must never be handed the SSH advice: it cannot
+// take a passphrase, and deleting the file does not revoke it. A real scan
+// (2026-08-07) told the user to run ssh-keygen -p on two IAM keys in
+// ~/Downloads — this pins the whole rendered corrective: noun, group header,
+// action, and the IAM note.
+func TestGCPServiceAccountKeyAdvice(t *testing.T) {
+	name := "Google Cloud service-account key"
+	findings := []Finding{{
+		RecordID: "k", FindingType: FindingTypePrivateKeyRisk,
+		KeyKind: keyKindGCPServiceAccount, KeyName: &name,
+		Severity: SeverityHigh, Remedy: RemedyManual,
+		FilePath: "/Users/alex/Downloads/security-504007-7b1189f6fcd9.json",
+		Evidence: "private key found outside ~/.ssh",
+	}}
+	annotateCauseGroups(findings)
+
+	var buf bytes.Buffer
+	WriteTriageReport(&buf, findings, ScanSummary{}, "/Users/alex", ComputeCoverage("/Users/alex", "", findings))
+	flat := strings.Join(strings.Fields(buf.String()), " ")
+	for _, want := range []string{
+		"An exposed Google Cloud service-account key",
+		"[rotate in IAM, then delete the file]",
+		"rotate the key in IAM, then delete this file",
+		"only deleting the key in IAM does",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("report missing %q:\n%s", want, buf.String())
+		}
+	}
+	if strings.Contains(flat, "ssh-keygen") {
+		t.Errorf("report offers ssh-keygen for a service-account key:\n%s", buf.String())
+	}
+}
+
 // The rendered arrow line must carry the archived command WHOLE. TruncTail
 // used to apply here, and its ellipsis ate half the targets of a real scan's
 // six-path command (2026-08-07) — the pre-render action string was complete,
