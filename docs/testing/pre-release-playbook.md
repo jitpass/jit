@@ -182,9 +182,9 @@ Work each surface as a user. Hermetic if you prefer, or reuse the playground.
 - **Hunt:** anything leaking to the parent shell; `--live` vs default behavior as documented.
 
 ### wrap
-- **Exercise:** `wrap add --env`, `--grant`; run the tool through the shim; `wrap list`/`doctor`/`undo`.
+- **Exercise:** `wrap add --env`, `--grant`; run the tool through the shim; `wrap list`/`jit doctor --wrap`/`wrap undo`.
 - **Expect:** shim injects JIT into that one process; `undo` removes shim+profile+PATH line, keeps vault.
-- **Hunt:** honest `wrap doctor` (PATH/real-binary checks); catalog tool discovery.
+- **Hunt:** honest `jit doctor --wrap` (PATH/real-binary checks); catalog tool discovery.
 
 ### clisso / aws credential_process
 - **Exercise:** `clisso-capture` (real clisso, or a fake emitting the credential_process JSON);

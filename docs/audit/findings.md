@@ -14,7 +14,7 @@ a masked value preview, and a one-line *why* explaining what matched.
 | **.env Files** | project `.env`-family files whose values match known token formats or secret-shaped entropy | [`jit migrate`](../migrate/env-files.md) |
 | **Credential Files** | `~/.aws/credentials`, `~/.kube/config`, `.npmrc` auth tokens, the crates.io publish token in `~/.cargo/credentials.toml`, PyPI upload tokens and private-index passwords in `~/.pypirc`, the Terraform Cloud token file, Docker registry logins in `~/.docker/config.json`, git HTTPS logins in `~/.git-credentials`, GCP application-default credentials, `~/.netrc` passwords, Streamlit's `.streamlit/secrets.toml`, remote-MCP OAuth refresh tokens under `~/.mcp-auth`, and the OneLogin API `client-secret` in clisso's `~/.clisso.yaml` | [`jit migrate`](../migrate/index.md) - except `~/.mcp-auth`, see below, and `~/.clisso.yaml`, which [`jit wrap clisso`](../wrap/clisso.md) handles |
 | **AI Tool / MCP Configs** | MCP server configs (project `mcp.json`, Claude Desktop config, Claude Code's `~/.claude.json` including its per-project servers) and every way a server entry carries a credential: the `env` block, a plaintext file named by `--env-file`, a token baked into `args` (including `docker run -e KEY=value`), and a remote server's `headers` or `url` | [`jit migrate`](../migrate/mcp.md) for env blocks and `--env-file` targets; args/headers/url are surfaced for your judgment, see below |
-| **Private Keys** | on-disk private key material. A PEM header alone is not enough - a key needs a **body**, established either by parsing the block (so an encrypted RSA key's `Proc-Type`/`DEK-Info` lines still count) or by a base64 run right after the header (the escaped-newline shape a GCP service-account JSON uses). So a file that merely *names* `-----BEGIN … PRIVATE KEY-----` - documentation, a test fixture, a scanner's own pattern list - is not flagged | surfaced for your judgment |
+| **Private Keys** | on-disk private key material. A PEM header alone is not enough - a key needs a **body**, established either by parsing the block (so an encrypted RSA key's `Proc-Type`/`DEK-Info` lines still count) or by a base64 run right after the header (the escaped-newline shape a GCP service-account JSON uses). So a file that merely *names* `-----BEGIN … PRIVATE KEY-----` - documentation, a test fixture, a scanner's own pattern list - is not flagged | surfaced for your judgment; a Google Cloud service-account key gets a definite instruction instead, see below |
 | **IaC Variable Files** | Terraform tfvars files, and Kubernetes Secret manifests (`*secret*.yaml` with `kind: Secret`) whose `data:` values are base64-**decoded** before judging - base64 is encoding, not encryption. Cluster-exported secrets and TLS/SSH/registry/basic-auth types escalate; SealedSecrets and fully SOPS-encrypted files are recognized as protected and skipped | tfvars: [`jit migrate`](../migrate/index.md); Secret manifests: surfaced for your judgment |
 | **Wrappable CLI Tokens** | plaintext tokens in the config files of CLIs the [wrap catalog](../wrap/index.md) knows how to fix (`gh`, `stripe`, `ngrok`, …) | [`jit wrap <tool>`](../wrap/index.md) - audit prints the exact command |
 | **SOPS Age Keys** | the age private key file (`keys.txt`) that decrypts every SOPS-encrypted secret it guards - sops, kluctl, Flux, helm-secrets | [`jit migrate`](../migrate/sops.md) |
@@ -40,7 +40,10 @@ and the report says so rather than offering a `jit migrate` that would do
 nothing:
 
 - **Private keys.** Key material is surfaced with its passphrase and
-  permission status; moving it is your call.
+  permission status; moving it is your call. The exception is a Google Cloud
+  service-account key, which the report names as what it is and files under
+  "rotate in IAM, then delete the file": it has no passphrase to add, and
+  deleting the file does not revoke it - only deleting the key in IAM does.
 - **Self-rotating token caches** (`~/.mcp-auth`, `~/.gemini/oauth_creds.json`).
   The owning tool rotates and rewrites these files itself - access tokens
   last minutes, refresh tokens are re-issued on every use - so a vault-backed
@@ -103,6 +106,17 @@ Test fixtures - a `*_test.go`, anything under `testdata/` - are reported but
 never counted toward your coverage score. The value matches a real credential
 format because that is exactly what a scanner's own fixtures are written to
 do; there is simply no owner and nothing to rotate.
+
+Source examples are the same rule's third face: a vendor-format match on a
+comment line of a source-code file - a scanner's own pattern list, a doc
+comment arguing about credential shapes by example - documents a shape rather
+than storing a secret. The footer counts them ("N source examples") instead
+of charging them to the score. The accepted miss: a commented-out *real*
+credential in source lands in the same bucket, which is why the bucket is
+named rather than silently dropped - it stays visible in `jit scan --full`.
+Shell scripts are deliberately outside this rule; a commented-out
+`# export TOKEN=…` is exactly the shape a real leak takes, so it stays
+counted.
 
 ## Values with no vendor prefix
 
