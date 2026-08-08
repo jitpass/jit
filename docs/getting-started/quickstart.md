@@ -36,15 +36,15 @@ only a masked preview.
 
 ```
 $ jit scan
-jit scan — alex@Alexs-MacBook-Pro — scanned ~/ (7 files) — 1ms
+jit scan  ~/ · 7 files · 1ms
 
   YOUR SECRETS: 7 — 0 protected by jit (0%)
-  ▱▱▱▱▱▱▱▱▱▱  to 100%: one command +71% · 2 thing(s) only you can fix +28%
+  ▱▱▱▱▱▱▱▱▱▱  to 100%: one command +71% · 2 secrets only you can fix +29%
 
-  jit will protect these — 5 secret(s) in 4 file(s), 0% → 71%
+  jit will protect these — 5 secrets in 4 files, 0% → 71%
       → jit migrate
-        one command; it vaults the values and rewrites 4 file(s) —
-        every tool that reads them keeps working:
+        one command; it vaults the values and rewrites 4 files — every tool that
+        reads them keeps working:
   ...
 ```
 

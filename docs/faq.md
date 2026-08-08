@@ -244,7 +244,8 @@ before delivery, not after.
 
 The code is public on GitHub under the PolyForm Perimeter License 1.0.0
 (source-available, not open source). Release builds are signed with a
-Developer ID (`Meni Tasa, CZC6BH93GJ`); install them from the release tarball.
+Developer ID (`Meni Tasa, CZC6BH93GJ`) and notarized; install with
+`brew install jitpass/tap/jitpass`, or from the release tarball.
 The `curl` one-liner in the [install guide](./getting-started/install.md) is
 quarantine-free, so there's no Gatekeeper prompt. You can also build from
 source with Go; dev builds are ad-hoc signed, so their first run shows a
