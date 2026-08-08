@@ -195,41 +195,90 @@ func TestManualGroupsAccountForEveryManualSecret(t *testing.T) {
 }
 
 // One arrow per group is only honest if that arrow covers the whole group.
-// The archived block's action names paths, so a block listing two archived
-// files must name both — regenerating from the worst item alone printed one
-// path under two items, and running it would have fixed one and left the
-// other, having just shown the reader both.
-func TestArchivedActionNamesEveryFileInItsGroup(t *testing.T) {
-	mk := func(id, path string) Finding {
+// Regenerating the archived command from the worst item alone printed one
+// path under two items; naming every path was honest but grew unreadable
+// (six ~70-char paths on one line, 2026-08-07). The command is now the
+// deepest archived directory when naming it rediscovers every file, and the
+// full path list — never truncated — when it would not.
+func TestArchivedActionCoversItsWholeGroup(t *testing.T) {
+	mk := func(id, ftype, path string) Finding {
 		return Finding{
-			RecordID: id, FindingType: FindingTypeEnvFilePresent,
+			RecordID: id, FindingType: ftype,
 			Severity: SeverityHigh, Remedy: RemedyMigrate, Archived: true,
 			FilePath: path, Evidence: "secret-shaped",
 		}
 	}
-	findings := []Finding{
-		mk("a", "/Users/alex/Documents/archive/one/.env"),
-		mk("b", "/Users/alex/Documents/archive/two/.env"),
-	}
-	annotateCauseGroups(findings)
-	groups := groupManualByAction(triageGroupManual(findings, "/Users/alex"), "/Users/alex")
-
-	var archived *triageActionGroup
-	for i := range groups {
-		if groups[i].kind == kindArchived {
-			archived = &groups[i]
+	archivedAction := func(t *testing.T, findings []Finding) string {
+		t.Helper()
+		annotateCauseGroups(findings)
+		groups := groupManualByAction(triageGroupManual(findings, "/Users/alex"), "/Users/alex")
+		for i := range groups {
+			if groups[i].kind == kindArchived {
+				return groups[i].action
+			}
 		}
-	}
-	if archived == nil {
 		t.Fatalf("no archived group: %+v", groups)
+		return ""
 	}
-	if len(archived.items) != 2 {
-		t.Fatalf("archived group has %d items, want 2", len(archived.items))
-	}
-	for _, want := range []string{"archive/one/.env", "archive/two/.env"} {
-		if !strings.Contains(archived.action, want) {
-			t.Errorf("action %q does not name %q", archived.action, want)
+
+	t.Run("one archived parent covers the group", func(t *testing.T) {
+		action := archivedAction(t, []Finding{
+			mk("a", FindingTypeEnvFilePresent, "/Users/alex/Documents/archive/one/.env"),
+			mk("b", FindingTypeEnvFilePresent, "/Users/alex/Documents/archive/two/.env"),
+		})
+		if want := "jit migrate ~/Documents/archive"; action != want {
+			t.Errorf("action = %q, want %q", action, want)
 		}
+	})
+
+	t.Run("two archives fall back to full paths", func(t *testing.T) {
+		// The common ancestor is ~/Documents, which is NOT archived —
+		// naming it would sweep live projects the reader never consented to.
+		action := archivedAction(t, []Finding{
+			mk("a", FindingTypeEnvFilePresent, "/Users/alex/Documents/archive/one/.env"),
+			mk("b", FindingTypeEnvFilePresent, "/Users/alex/Documents/backups/two/.env"),
+		})
+		for _, want := range []string{"archive/one/.env", "backups/two/.env"} {
+			if !strings.Contains(action, want) {
+				t.Errorf("action %q does not name %q", action, want)
+			}
+		}
+	})
+
+	t.Run("a non-dir-discoverable file falls back to full paths", func(t *testing.T) {
+		// A loose token file is reached only by its explicit path — the dir
+		// walk finds project files, so the shortened command would silently
+		// drop it.
+		action := archivedAction(t, []Finding{
+			mk("a", FindingTypeEnvFilePresent, "/Users/alex/Documents/archive/one/.env"),
+			mk("b", FindingTypeExposedSecret, "/Users/alex/Documents/archive/two/token.txt"),
+		})
+		for _, want := range []string{"archive/one/.env", "archive/two/token.txt"} {
+			if !strings.Contains(action, want) {
+				t.Errorf("action %q does not name %q", action, want)
+			}
+		}
+	})
+}
+
+// The rendered arrow line must carry the archived command WHOLE. TruncTail
+// used to apply here, and its ellipsis ate half the targets of a real scan's
+// six-path command (2026-08-07) — the pre-render action string was complete,
+// so only a rendered-output assertion can hold the line.
+func TestArchivedCommandRendersUntruncated(t *testing.T) {
+	long := "/Users/alex/Documents/archive/a-project-directory-name-well-past-eighty-columns-of-terminal/deeper-still/.env"
+	findings := []Finding{{
+		RecordID: "a", FindingType: FindingTypeEnvFilePresent,
+		Severity: SeverityHigh, Remedy: RemedyMigrate, Archived: true,
+		FilePath: long, Evidence: "secret-shaped",
+	}}
+	annotateCauseGroups(findings)
+
+	var buf bytes.Buffer
+	WriteTriageReport(&buf, findings, ScanSummary{}, "/Users/alex", ComputeCoverage("/Users/alex", "", findings))
+	want := "jit migrate ~/Documents/archive/a-project-directory-name-well-past-eighty-columns-of-terminal/deeper-still/.env"
+	if !strings.Contains(buf.String(), want) {
+		t.Errorf("rendered report cut the archived command; want it whole:\n%s", buf.String())
 	}
 }
 
