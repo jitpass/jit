@@ -37,6 +37,17 @@ function classifyUA(ua) {
   return "other";
 }
 
+// Pull the aggregate platform facts out of Homebrew's UA without storing the
+// UA itself: "Homebrew/4.6.19 (Macintosh; arm64 Mac OS X 15.5)". arch is the
+// one that matters — jit is arm64-only by decision, and x86_64 rows here are
+// the first real measure of Intel demand. Non-brew UAs yield "" (curl's UA
+// says nothing about the OS).
+function platformFromUA(ua) {
+  const m = /Homebrew\/([\d.]+) \(Macintosh; (\w+) Mac OS X ([\d.]+)\)/.exec(ua || "");
+  if (!m) return { brewVersion: "", arch: "", os: "" };
+  return { brewVersion: m[1], arch: m[2], os: m[3] };
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -70,9 +81,15 @@ export default {
       ? `https://github.com/${OWNER}/${REPO}/releases/latest/download/${asset}`
       : `https://github.com/${OWNER}/${REPO}/releases/download/${tag}/${asset}`;
 
-    const client = classifyUA(request.headers.get("user-agent") || "");
+    const ua = request.headers.get("user-agent") || "";
+    const client = classifyUA(ua);
+    const { brewVersion, arch, os } = platformFromUA(ua);
     const country = (request.cf && request.cf.country) || "??";
     const colo = (request.cf && request.cf.colo) || "??";
+    // ASN org separates datacenter/CI pulls (GitHub Actions, AWS, ...) from
+    // residential ISPs — the bot filter GitHub's own counter can never give.
+    // An org name is an aggregate fact about a network, not about a person.
+    const asnOrg = (request.cf && request.cf.asOrganization) || "";
 
     // Always console.log (visible in `wrangler tail` / dev); additionally
     // write an Analytics Engine row when the binding exists (deployed only —
@@ -83,11 +100,14 @@ export default {
     // every download 500'd — counting took the redirect down. Nothing in
     // this block may prevent the 302.
     try {
-      console.log(`dl client=${client} tag=${tag} asset=${asset} country=${country} colo=${colo}`);
+      console.log(`dl client=${client} tag=${tag} asset=${asset} country=${country} colo=${colo} arch=${arch} os=${os} asn=${asnOrg}`);
       if (env.DL_STATS) {
-        // blobs: dimensions to group by; doubles: the count. No IP, ever.
+        // blobs: dimensions to group by; doubles: the count. No IP, no full
+        // UA, no city — aggregate facts only. Blob order is the query
+        // contract: 1=client 2=tag 3=asset 4=country 5=os 6=arch
+        // 7=brewVersion 8=asnOrg 9=colo.
         env.DL_STATS.writeDataPoint({
-          blobs: [client, tag, asset, country],
+          blobs: [client, tag, asset, country, os, arch, brewVersion, asnOrg, colo],
           doubles: [1],
           indexes: [client],
         });
