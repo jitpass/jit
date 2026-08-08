@@ -1,0 +1,12 @@
+# spike config — local `wrangler dev` needs none of the account fields.
+# Deployment (later, not this spike) adds: the dl.jitpass.com route and the
+# [[analytics_engine_datasets]] binding below, uncommented.
+name = "jit-dl-redirect"
+main = "worker.js"
+compatibility_date = "2026-08-01"
+
+# Deployed-only: aggregated download stats, queryable with SQL from the
+# Cloudflare dashboard/API. Free tier is fine at this volume.
+# [[analytics_engine_datasets]]
+# binding = "DL_STATS"
+# dataset = "jit_downloads"
