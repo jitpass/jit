@@ -268,13 +268,21 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 			// now") read as a warning state — amber's job, and it already has
 			// the "!" glyph above to do it with.
 			_, _ = cmd.Fprint(w, style.GlyphAction+" ")
-			// One line, truncated, never wrapped. A many-path `jit migrate`
-			// command used to wrap to five lines, and a wrapped command is the
-			// worst of both: too long to read as a line, and no longer
-			// copy-pasteable as one either. Head-kept truncation shows the
-			// command and its first targets; the full file list is the report
-			// above, which is where the reader just came from.
-			fmt.Fprintln(w, termtext.TruncTail(ag.action, max(20, termtext.Width()-len(triageNoteIndent)-2)))
+			// One line either way, but which kind of line decides the cut. A
+			// sentence action ("rotate them now, …") truncates, never wraps:
+			// it restates the group header, so its tail is expendable. A
+			// COMMAND is the opposite — cut anywhere it stops being a
+			// command, and a real scan (2026-08-07) shipped an archived-group
+			// `jit migrate …` whose ellipsis ate half its targets. The
+			// archived action is the one command on these arrows, so it
+			// prints whole as ONE logical line; the parent-directory form
+			// keeps it short, and the explicit-path fallback soft-wraps in
+			// the terminal while still pasting as a single command.
+			if ag.kind == kindArchived {
+				fmt.Fprintln(w, ag.action)
+			} else {
+				fmt.Fprintln(w, termtext.TruncTail(ag.action, max(20, termtext.Width()-len(triageNoteIndent)-2)))
+			}
 		}
 		fmt.Fprintln(w)
 	}
@@ -665,23 +673,36 @@ func groupManualByAction(groups []triageManualGroup, home string) []triageAction
 		// would print one path for a block listing several, and a reader who
 		// ran it would fix that file and silently leave the rest — having been
 		// shown them and given a command that appeared to cover them.
-		// runMigratePath takes several targets, so name them all; the line
-		// wraps, which is what a command is allowed to do.
+		//
+		// Naming every file is honest but unreadable: a real scan (2026-08-07)
+		// printed six ~70-char paths on the arrow line. When one directory
+		// covers the whole group AND naming it would rediscover every file
+		// (`jit migrate <dir>` walks project files only), the command is that
+		// directory — the shortest line that keeps the promise. The directory
+		// must itself look archived, so the shortening can never widen the
+		// command past the boundary the reader consented to: ~/Documents is
+		// not a thing this line may name because two archives sit under it.
+		// Anything else falls back to the full path list, printed whole.
 		if b.kind == kindArchived {
 			seen := map[string]bool{}
-			var paths []string
+			var raw, paths []string
+			discoverable := true
 			for _, it := range b.items {
 				if it.sample.FilePath == "" {
 					continue
 				}
-				p := shellSafePath(home, it.sample.FilePath)
-				if seen[p] {
+				discoverable = discoverable && dirDiscoverable(it.sample)
+				if seen[it.sample.FilePath] {
 					continue
 				}
-				seen[p] = true
-				paths = append(paths, p)
+				seen[it.sample.FilePath] = true
+				raw = append(raw, it.sample.FilePath)
+				paths = append(paths, shellSafePath(home, it.sample.FilePath))
 			}
-			if len(paths) > 0 {
+			switch dir := commonDir(raw); {
+			case discoverable && len(raw) > 1 && dir != "" && LooksArchived(dir):
+				b.action = "jit migrate " + shellSafePath(home, dir)
+			case len(paths) > 0:
 				b.action = "jit migrate " + strings.Join(paths, " ")
 			}
 		}
