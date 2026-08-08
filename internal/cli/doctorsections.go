@@ -93,8 +93,84 @@ func gatherSystemFindings(root, cwd string, v *vault.Vault) ([]checkFinding, []s
 	findings = append(findings, backupFindings(v)...)
 	findings = append(findings, auditLogFindings(root)...)
 	findings = append(findings, mcpFindings(cwd)...)
+	findings = append(findings, installFindings()...)
 	wrapped, wrapOK := wrapFindings()
 	return append(findings, wrapped...), wrapOK
+}
+
+// jitInstall is one jit binary reachable on PATH: the name shells would use,
+// and the file it actually runs.
+type jitInstall struct {
+	path     string
+	resolved string
+}
+
+// jitInstallsOnPath returns every DISTINCT jit binary reachable on pathEnv,
+// in PATH order — one entry per resolved file, named by the first PATH hit
+// that reaches it, so /opt/homebrew/bin/jit and the Caskroom copy behind it
+// count once. The first entry is the jit shells actually run.
+func jitInstallsOnPath(pathEnv string) []jitInstall {
+	var out []jitInstall
+	seen := map[string]bool{}
+	for _, dir := range filepath.SplitList(pathEnv) {
+		if dir == "" {
+			continue
+		}
+		candidate := filepath.Join(dir, "jit")
+		if !executableFile(candidate) {
+			continue
+		}
+		resolved, err := filepath.EvalSymlinks(candidate)
+		if err != nil || seen[resolved] {
+			continue
+		}
+		seen[resolved] = true
+		out = append(out, jitInstall{path: candidate, resolved: resolved})
+	}
+	return out
+}
+
+// installFindings warns when more than one jit install is on PATH — the
+// state every pre-Homebrew user reaches by `brew install`ing over a tarball
+// jit at /usr/local/bin. Observed in the field the day the cask shipped:
+// brew prints "successfully installed", `which jit` still answers the old
+// copy, and from then on `brew upgrade` refreshes a binary that never runs.
+// PATH-order gathering here, classification in installFindingsFrom so every
+// branch is testable without staging binaries on the real PATH.
+func installFindings() []checkFinding {
+	return installFindingsFrom(jitInstallsOnPath(os.Getenv("PATH")))
+}
+
+func installFindingsFrom(installs []jitInstall) []checkFinding {
+	if len(installs) < 2 {
+		return nil
+	}
+	winner := installs[0]
+	var out []checkFinding
+	for _, extra := range installs[1:] {
+		f := checkFinding{
+			Kind: kindInstall,
+			Path: extra.path,
+			Detail: fmt.Sprintf("a second jit at %s; shells run %s, and upgrading one never upgrades the other",
+				extra.path, winner.path),
+		}
+		// The one next step keeps the copy shells already run — doctor
+		// restores consistency, it doesn't pick a package manager. The
+		// either-or on the brew case is deliberate: the user who JUST ran
+		// `brew install` over a tarball jit most likely wants the opposite
+		// resolution, and telling only half the story sends them in circles.
+		switch {
+		case brewManaged(extra.resolved):
+			f.Action = fmt.Sprintf("`brew uninstall jitpass` to keep %s, or `sudo rm %s` to switch to the Homebrew copy",
+				winner.path, winner.path)
+		case brewManaged(winner.resolved):
+			f.Action = fmt.Sprintf("`sudo rm %s` to keep the Homebrew copy in charge", extra.path)
+		default:
+			f.Action = fmt.Sprintf("`sudo rm %s` to keep %s", extra.path, winner.path)
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // auditLogFindings reports an audit trail that has stopped recording.
@@ -222,7 +298,7 @@ func executableFile(path string) bool {
 	if path == "" {
 		return false
 	}
-	info, err := os.Stat(path)
+	info, err := os.Stat(path) // #nosec G703 -- stat-only probe (MCP entries, PATH candidates); no content is read
 	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
 }
 

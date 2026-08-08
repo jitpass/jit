@@ -96,9 +96,8 @@ var upgradeCmd = &cobra.Command{
 		"If that path isn't writable (e.g. /usr/local/bin), you'll be prompted for sudo\n" +
 		"just for the move. Your vault and secrets are never touched.\n\n" +
 		"A jit installed by Homebrew is not self-replaced, since Homebrew owns that\n" +
-		"copy — run `brew upgrade jitpass` instead. Reinstall from the release\n" +
-		"tarball if you would rather this command manage it, so\n" +
-		"switch to a self-upgrading build (see the install guide).\n\n" +
+		"copy; run `brew upgrade jitpass` instead. If you'd rather this command\n" +
+		"manage it, reinstall from the release tarball (see the install guide).\n\n" +
 		"Only the published darwin/arm64 release is fetched this way; on any other\n" +
 		"platform, build from source with `go install github.com/jitpass/jit/cmd/jit@latest`.",
 	Args:    cobra.NoArgs,
@@ -132,6 +131,19 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 	// EvalSymlinks above deliberately follows into the Caskroom.
 	if brewManaged(exePath) {
 		return fmt.Errorf("jit upgrade: this jit is managed by Homebrew (%s), so it can't self-replace — run `brew upgrade jitpass` instead, or reinstall from the release tarball (https://github.com/%s/%s/releases/latest) if you want this command to manage it", exePath, upgradeRepoOwner, upgradeRepoName)
+	}
+
+	// The refusal above covers a brew-managed copy asked to self-update; the
+	// silent inverse is worse. A pre-Homebrew tarball jit shadowing a fresh
+	// `brew install` self-updates without complaint, and the user now has
+	// two copies on separate upgrade tracks with `brew upgrade` refreshing
+	// the one shells never run. Say so before proceeding, once per extra
+	// copy; the upgrade itself is still fine.
+	for _, other := range jitInstallsOnPath(os.Getenv("PATH")) {
+		if other.resolved == exePath {
+			continue
+		}
+		fmt.Fprint(out, hlCmds(fmt.Sprintf("Note: another jit is installed at %s; this upgrade won't touch it. `jit doctor` shows which copy your shell runs\n", other.path)))
 	}
 
 	client := &http.Client{Timeout: 60 * time.Second}

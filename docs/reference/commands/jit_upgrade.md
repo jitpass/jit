@@ -18,9 +18,8 @@ If that path isn't writable (e.g. /usr/local/bin), you'll be prompted for sudo
 just for the move. Your vault and secrets are never touched.
 
 A jit installed by Homebrew is not self-replaced, since Homebrew owns that
-copy — run `brew upgrade jitpass` instead. Reinstall from the release
-tarball if you would rather this command manage it, so
-switch to a self-upgrading build (see the install guide).
+copy; run `brew upgrade jitpass` instead. If you'd rather this command
+manage it, reinstall from the release tarball (see the install guide).
 
 Only the published darwin/arm64 release is fetched this way; on any other
 platform, build from source with `go install github.com/jitpass/jit/cmd/jit@latest`.
