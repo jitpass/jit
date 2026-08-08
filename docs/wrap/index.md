@@ -14,7 +14,7 @@ in `ngrok.yml`. Those files are each tool's own territory, which
 jit wrap gh                # discover the token, vault it, scrub the file
 gh pr list                 # works exactly as before - token injected per call
 jit wrap list              # what's wrapped, shim health, PATH position
-jit wrap undo gh           # restore the original file byte-for-byte
+jit wrap undo gh           # take the shim back off PATH
 ```
 
 Under the hood it installs a PATH shim named after the tool (in
@@ -27,6 +27,13 @@ miss - at about 25 ms overhead per call with an unlocked service.
 
 [`jit scan`](../audit/index.md) flags the tokens worth wrapping and
 prints the one-command fix next to each.
+
+Unwrapping is two steps, because two things changed. `jit wrap undo <tool>`
+removes the shim and the `wrap-<tool>` profile; the tool's config file was
+scrubbed by `jit wrap`, so putting the token back in it is
+[`jit migrate undo`](../migrate/undo-and-remove.md) on that file. Run only
+the first and the tool stays logged out. See
+[troubleshooting](./troubleshooting.md#unwrap-jit-wrap-undo-tool).
 
 ## Shim-based plugins
 
