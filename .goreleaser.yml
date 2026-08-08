@@ -166,6 +166,18 @@ homebrew_casks:
     binaries: [jit]
     homepage: "https://github.com/jitpass/jit"
     description: "Local-first developer secret runtime"
+    # Downloads route through dl.jitpass.com — a Cloudflare Worker that logs
+    # ONE aggregate line (client class, tag, asset, country; never an IP) and
+    # 302s to the exact GitHub release asset. GitHub stays the only origin
+    # serving bytes, so the sha256 below still pins GitHub's artifact, and
+    # `jit upgrade` keeps fetching from github.com directly — the redirect
+    # host must never become load-bearing for the signature/checksum chain.
+    # `verified:` tells brew audit the differing domain is ours. Provenance,
+    # live verification (11/11), and rollback (re-point here at github.com)
+    # are in spike/dl-redirect/FINDINGS.md.
+    url:
+      template: "https://dl.jitpass.com/jitpass/jit/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+      verified: "dl.jitpass.com/"
     # PolyForm Perimeter 1.0.0 — homebrew_casks has no `license:` field
     # (unlike the deprecated `brews`/Formula schema); license lives in
     # LICENSE instead.
