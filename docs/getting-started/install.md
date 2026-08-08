@@ -23,6 +23,12 @@ tar -xzf jitpass_darwin_arm64.tar.gz jit
 sudo mv jit /usr/local/bin/
 ```
 
+> **Already installed from the tarball and switching to Homebrew?** Remove the
+> old copy afterwards: `sudo rm /usr/local/bin/jit`. `brew install` doesn't
+> replace it, it adds a second jit, and PATH order then silently decides which
+> one your shell runs while each upgrades on its own track. `jit doctor` flags
+> this state and names both copies.
+
 That's the install done - continue with the **[Quickstart](./quickstart.md)**.
 The background service that lets you unlock once per session (instead of once per
 command) sets itself up automatically the first time you run `jit migrate` or
@@ -153,7 +159,10 @@ install locations.
 
 ## Upgrading
 
-On **v0.41.0 or newer**, upgrading is one command:
+Installed with Homebrew? It's `brew upgrade jitpass`; a Homebrew-managed jit
+declines to self-update and says so.
+
+Otherwise, on **v0.41.0 or newer**, upgrading is one command:
 
 ```sh
 jit upgrade

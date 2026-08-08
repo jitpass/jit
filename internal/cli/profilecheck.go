@@ -115,6 +115,15 @@ const (
 	// and no error printed — from `jit upgrade` relocating the binary, a
 	// Homebrew-to-manual switch, or a workspace copied between machines.
 	kindMCP checkKind = "mcp"
+	// kindInstall: more than one distinct jit binary is reachable on PATH —
+	// the state every pre-Homebrew user lands in by running `brew install`
+	// over a tarball install at /usr/local/bin. Nothing shared breaks (vault,
+	// keychain and profiles are per-user, not per-binary), which is exactly
+	// why nobody notices: PATH order silently picks which copy runs, and the
+	// two upgrade on separate tracks — `brew upgrade` refreshing a binary
+	// shells never execute is the observed field shape. Advisory: no secret
+	// is unreadable, but the user should know which jit they are actually on.
+	kindInstall checkKind = "install"
 )
 
 // allCheckKinds enumerates every kind above, for the completeness tests that
@@ -129,7 +138,7 @@ var allCheckKinds = []checkKind{
 	kindParse, kindNotFound, kindMissing, kindCorrupt, kindVaultError,
 	kindBadPath, kindOrphan, kindShadowed, kindService, kindBackup,
 	kindWrap, kindWrapEnv, kindMount, kindVaultKey, kindRekey, kindAudit,
-	kindMCP,
+	kindMCP, kindInstall,
 }
 
 // warning reports whether a finding of this kind is advisory (does not fail
@@ -145,7 +154,7 @@ var allCheckKinds = []checkKind{
 // one process and must never fail a CI run.
 func (k checkKind) warning() bool {
 	switch k {
-	case kindOrphan, kindShadowed, kindService, kindBackup, kindMount, kindWrapEnv, kindAudit:
+	case kindOrphan, kindShadowed, kindService, kindBackup, kindMount, kindWrapEnv, kindAudit, kindInstall:
 		return true
 	default:
 		return false

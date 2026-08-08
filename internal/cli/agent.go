@@ -535,13 +535,16 @@ const agentInstallDefaultTTL = 5 * time.Minute
 // agentBinaryPath is the path launchd should re-exec: this binary, with the
 // /usr/local/bin install symlink (or any shim) resolved. launchd runs this
 // exact path at every login, so a path that later moves out from under it
-// leaves the service pointing at nothing.
+// leaves the service pointing at nothing — which is exactly why a
+// Homebrew-managed jit keeps the bin symlink rather than resolving through
+// it into the version-numbered Caskroom copy `brew upgrade` deletes (see
+// stableBinaryPath).
 func agentBinaryPath() (string, error) {
 	exePath, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
-	return filepath.EvalSymlinks(exePath)
+	return stableBinaryPath(exePath)
 }
 
 // plistProgramPath returns the binary an installed plist actually runs — the
@@ -665,15 +668,63 @@ func installAgentService(ttl time.Duration, consent bool) (plistPath string, run
 // unlock, or notRunningHint's advice) rather than failing the user's real
 // command because a background convenience didn't take. Returns whether it just
 // installed the service, and whether the service is answering now.
+//
+// One exception to "installed means leave it alone": a plist whose program
+// binary is no longer on disk. That service can never come back by itself —
+// launchd has nothing to exec at next login, and the stale-binary
+// self-retire deliberately doesn't fire on a vanished file (agentbinary.go).
+// In the field this is what `brew upgrade` left behind before
+// stableBinaryPath: a plist recording the version-numbered Caskroom path the
+// upgrade then deleted. Repoint it at this binary, preserving the plist's
+// configured TTL and consent — but only when no agent is answering, because
+// an agent still running from a deleted binary keeps serving its session,
+// and booting it out would trade a live session for a repair that works just
+// as well once that agent is gone.
 func ensureAgentInstalled() (didInstall, running bool) {
 	if agentInstalled() {
-		return false, false
+		if !agentPlistOrphaned() {
+			return false, false
+		}
+		root, err := vaultRootDir()
+		if err != nil || agent.NewClient(agent.SocketPath(root)).Reachable() {
+			return false, false
+		}
+		ttl := agentInstallDefaultTTL
+		if configured, ok := configuredAgentTTL(); ok {
+			ttl = configured
+		}
+		_, running, err := installAgentService(ttl, configuredAgentConsent())
+		if err != nil {
+			return false, false
+		}
+		return true, running
 	}
 	_, running, err := installAgentService(agentInstallDefaultTTL, true)
 	if err != nil {
 		return false, false
 	}
 	return true, running
+}
+
+// agentPlistOrphaned reports whether the installed plist names a program
+// binary that no longer exists on disk. Only a definite "not there" counts —
+// an unreadable plist or a stat error that isn't NotExist answers false, so
+// uncertainty never triggers a reinstall.
+func agentPlistOrphaned() bool {
+	plistPath, err := agentPlistPath()
+	if err != nil {
+		return false
+	}
+	data, err := os.ReadFile(plistPath) // #nosec G304 -- jit's own launchd plist under the user's LaunchAgents dir
+	if err != nil {
+		return false
+	}
+	program, ok := plistProgramPath(data)
+	if !ok {
+		return false
+	}
+	_, err = os.Stat(program) // #nosec G703 -- stat-only existence probe of the binary named by jit's own plist
+	return os.IsNotExist(err)
 }
 
 var agentRestartCmd = &cobra.Command{

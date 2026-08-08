@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -108,7 +107,7 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 		if err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
-		jitBinary, err := filepath.EvalSymlinks(exe)
+		jitBinary, err := stableBinaryPath(exe)
 		if err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
@@ -137,7 +136,7 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 		if err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
-		jitBinary, err := filepath.EvalSymlinks(exe)
+		jitBinary, err := stableBinaryPath(exe)
 		if err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
@@ -233,7 +232,7 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 	if err != nil {
 		return fmt.Errorf("jit wrap: %w", err)
 	}
-	jitBinary, err := filepath.EvalSymlinks(exe)
+	jitBinary, err := stableBinaryPath(exe)
 	if err != nil {
 		return fmt.Errorf("jit wrap: %w", err)
 	}
@@ -305,7 +304,7 @@ var wrapAddCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit wrap add: %w", err)
 		}
-		jitBinary, err := filepath.EvalSymlinks(exe)
+		jitBinary, err := stableBinaryPath(exe)
 		if err != nil {
 			return fmt.Errorf("jit wrap add: %w", err)
 		}
