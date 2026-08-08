@@ -1005,6 +1005,11 @@ func manualTitle(causes []*triageCause, files []string, worst Finding, home stri
 // manualNoun is the one-line "what is this" for a single manual secret.
 func manualNoun(f Finding) string {
 	switch {
+	case f.FindingType == FindingTypePrivateKeyRisk && f.KeyKind == keyKindGCPServiceAccount:
+		// Named for what it is, not the bucket it was found by: "at-risk
+		// private key" plus passphrase advice sent a real user toward
+		// ssh-keygen -p for a key that cannot take a passphrase (2026-08-07).
+		return "An exposed Google Cloud service-account key"
 	case f.FindingType == FindingTypePrivateKeyRisk:
 		return "An at-risk private key"
 	case selfRotating(f):
@@ -1452,6 +1457,7 @@ type manualContext struct {
 // under the group, printed once for all of it.
 const (
 	kindTrash          = "empty the trash"
+	kindIAMKey         = "rotate in IAM, then delete the file"
 	kindArchived       = "name the file — the sweep skips archived folders"
 	kindPassphrase     = "add a passphrase"
 	kindSelfRotating   = "sign out and back in"
@@ -1484,6 +1490,14 @@ func manualAction(f Finding, ctx manualContext, home string) (kind, action strin
 		// directories, so whatever else is true of the secret, the instruction
 		// has to name the file explicitly or it will not run.
 		return kindArchived, fmt.Sprintf("jit migrate %s", shellSafePath(home, f.FilePath))
+	case f.FindingType == FindingTypePrivateKeyRisk && f.KeyKind == keyKindGCPServiceAccount:
+		// Not the passphrase advice below: a service-account key has no
+		// passphrase to add, and the only revocation lives at the provider.
+		files := "this file"
+		if ctx.secrets > 1 {
+			files = "these files"
+		}
+		return kindIAMKey, "rotate the key in IAM, then delete " + files
 	case f.FindingType == FindingTypePrivateKeyRisk:
 		return kindPassphrase, "add a passphrase (ssh-keygen -p) or move the key somewhere safer"
 	case selfRotating(f):
@@ -1565,6 +1579,8 @@ func actionNote(kind string) string {
 			archivedDeletionNote
 	case kindTrash:
 		return "this file is already on its way out — migrating it would preserve what deletion is about to fix"
+	case kindIAMKey:
+		return "deleting the file does not revoke the key — only deleting the key in IAM does"
 	}
 	return ""
 }
