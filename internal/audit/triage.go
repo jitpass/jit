@@ -6,6 +6,7 @@ package audit
 import (
 	"fmt"
 	"io"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -606,6 +607,10 @@ type triageManualGroup struct {
 	// in N and in which files, and printing three near-identical headers with
 	// three identical actions spent nine lines saying one thing three times.
 	noun string
+	// hintSamples is one constituent sample per entry in hints, same index,
+	// kept by the merge so collapsePatternHints can regenerate a combined
+	// hint instead of parsing the strings it would be folding.
+	hintSamples []Finding
 }
 
 // triageActionGroup is one block of the red section: every problem that ends
@@ -878,6 +883,7 @@ func mergeManualGroups(groups []triageManualGroup, home string) []triageManualGr
 		i, ok := at[k]
 		if !ok {
 			at[k] = len(out)
+			g.hintSamples = []Finding{g.sample}
 			out = append(out, g)
 			continue
 		}
@@ -886,6 +892,7 @@ func mergeManualGroups(groups []triageManualGroup, home string) []triageManualGr
 		m.files += g.files
 		m.details = append(m.details, g.details...)
 		m.hints = append(m.hints, g.hints...)
+		m.hintSamples = append(m.hintSamples, g.sample)
 		m.critical = m.critical || g.critical
 		if g.sortKey < m.sortKey {
 			m.sortKey = g.sortKey
@@ -923,7 +930,79 @@ func mergeManualGroups(groups []triageManualGroup, home string) []triageManualGr
 			out[i].kind, out[i].action = manualAction(out[i].sample, out[i].ctx, home)
 		}
 	}
+	for i := range out {
+		collapsePatternHints(&out[i], home)
+	}
 	return out
+}
+
+// collapsePatternHints replaces a merged group's per-file view hints with ONE
+// hint covering every file, when they are the same command differing only in
+// path. A real scan (2026-08-07) printed the identical JWT grep nine times
+// under one group, once per paste-cache file — nine lines reading as one
+// instruction stuttered. The keep-every-hint rule mergeManualGroups documents
+// is about hints that DIFFER (each names an address the reader must reach);
+// hints identical up to path carry one instruction, and a single grep over
+// all the files runs it in one paste.
+//
+// Regenerated from the constituents' samples, never parsed out of the hint
+// strings — and only for the full-pattern grep form: line-addressed history
+// hints and agent-copy breakdowns each name coordinates that a shared
+// command cannot stand for.
+func collapsePatternHints(m *triageManualGroup, home string) {
+	if len(m.hints) < 2 || len(m.hintSamples) != len(m.hints) {
+		return
+	}
+	ere := patternEREFor(m.hintSamples[0])
+	if ere == "" {
+		return
+	}
+	seen := map[string]bool{}
+	var paths []string
+	for _, s := range m.hintSamples {
+		if s.FilePath == "" || patternEREFor(s) != ere ||
+			s.FindingType == FindingTypeShellHistorySecret ||
+			s.FindingType == FindingTypeAgentCachedSecret {
+			return
+		}
+		if !seen[s.FilePath] {
+			seen[s.FilePath] = true
+			paths = append(paths, s.FilePath)
+		}
+	}
+	if len(paths) < 2 {
+		return
+	}
+	// -f1,2 rather than the single-file form's -f1: multi-file grep prefixes
+	// each hit with its path, so fields one and two are path:line — the
+	// content field stays cut off, which is the property the whole hint
+	// exists to keep.
+	m.hints = []string{fmt.Sprintf("lines: grep -nE '%s' %s | cut -d: -f1,2",
+		ere, combinedPathExpr(paths, home))}
+}
+
+// combinedPathExpr renders several paths as one shell word when a glob can
+// honestly stand for them — same directory, same extension, nothing needing
+// quotes — and falls back to listing each path. The glob may match files
+// beyond the group's; grep finding nothing extra in them is harmless, and
+// "~/.claude/paste-cache/*.txt" reads where nine hash-named paths do not.
+func combinedPathExpr(paths []string, home string) string {
+	dir, ext := filepath.Dir(paths[0]), filepath.Ext(paths[0])
+	glob := ext != ""
+	for _, p := range paths[1:] {
+		if filepath.Dir(p) != dir || filepath.Ext(p) != ext {
+			glob = false
+			break
+		}
+	}
+	if glob && shellBarePath(dir) {
+		return ShortenHome(home, dir) + "/*" + ext
+	}
+	quoted := make([]string, len(paths))
+	for i, p := range paths {
+		quoted[i] = shellSafePath(home, p)
+	}
+	return strings.Join(quoted, " ")
 }
 
 // writeHistoryGuardOffer adds the prevention line when this scan found a

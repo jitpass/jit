@@ -334,6 +334,72 @@ func TestArchivedNoteOffersDeletion(t *testing.T) {
 	}
 }
 
+// Nine JWTs in nine paste-cache files printed the identical grep hint nine
+// times — one instruction stuttered. Hints identical up to path collapse to
+// one grep over all the files; hints that genuinely differ keep the
+// keep-every-hint rule.
+func TestIdenticalPatternHintsCollapse(t *testing.T) {
+	jwt := "JSON Web Token (JWT)"
+	mk := func(id, path string) Finding {
+		return Finding{
+			RecordID: id, FindingType: FindingTypeExposedSecret,
+			Severity: SeverityHigh, Remedy: RemedyManual, FilePath: path,
+			KeyName: &jwt, Evidence: "value matches a known vendor credential format",
+		}
+	}
+
+	t.Run("same directory and extension collapse to a glob", func(t *testing.T) {
+		findings := []Finding{
+			mk("a", "/Users/alex/.claude/paste-cache/44b238b43bfc1875.txt"),
+			mk("b", "/Users/alex/.claude/paste-cache/b644a758e6f952fe.txt"),
+			mk("c", "/Users/alex/.claude/paste-cache/100c53a2bedb7481.txt"),
+		}
+		annotateCauseGroups(findings)
+		groups := triageGroupManual(findings, "/Users/alex")
+		g := findGroupByNoun(t, groups, "An exposed JWT")
+		if len(g.hints) != 1 {
+			t.Fatalf("got %d hints, want 1 collapsed: %q", len(g.hints), g.hints)
+		}
+		for _, want := range []string{"grep -nE", "~/.claude/paste-cache/*.txt", "cut -d: -f1,2"} {
+			if !strings.Contains(g.hints[0], want) {
+				t.Errorf("collapsed hint %q missing %q", g.hints[0], want)
+			}
+		}
+		if len(g.details) != 3 {
+			t.Errorf("details must survive the hint collapse untouched, got %d, want 3", len(g.details))
+		}
+	})
+
+	t.Run("different directories still collapse, naming each path", func(t *testing.T) {
+		findings := []Finding{
+			mk("a", "/Users/alex/notes/one.txt"),
+			mk("b", "/Users/alex/dumps/two.txt"),
+		}
+		annotateCauseGroups(findings)
+		groups := triageGroupManual(findings, "/Users/alex")
+		g := findGroupByNoun(t, groups, "An exposed JWT")
+		if len(g.hints) != 1 {
+			t.Fatalf("got %d hints, want 1 collapsed: %q", len(g.hints), g.hints)
+		}
+		for _, want := range []string{"~/notes/one.txt", "~/dumps/two.txt"} {
+			if !strings.Contains(g.hints[0], want) {
+				t.Errorf("collapsed hint %q missing %q", g.hints[0], want)
+			}
+		}
+	})
+}
+
+func findGroupByNoun(t *testing.T, groups []triageManualGroup, noun string) triageManualGroup {
+	t.Helper()
+	for _, g := range groups {
+		if g.noun == noun {
+			return g
+		}
+	}
+	t.Fatalf("no group with noun %q: %+v", noun, groups)
+	return triageManualGroup{}
+}
+
 // A GCP service-account key must never be handed the SSH advice: it cannot
 // take a passphrase, and deleting the file does not revoke it. A real scan
 // (2026-08-07) told the user to run ssh-keygen -p on two IAM keys in
