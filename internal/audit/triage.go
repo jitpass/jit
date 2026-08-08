@@ -258,8 +258,14 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 				writeManualItem(w, g, bold, red, yellowBold)
 			}
 			if ag.note != "" {
-				fmt.Fprint(w, triageNoteIndent)
-				termtext.Wrap(w, len(triageNoteIndent), triageNoteIndent, ag.note)
+				// A note may carry several facts, one per \n-separated line,
+				// each wrapped on its own — flowing them into one paragraph
+				// would glue "…still vaults it" to "already protected…" mid-
+				// line, and the one-fact-per-line rule is the house style's.
+				for _, fact := range strings.Split(ag.note, "\n") {
+					fmt.Fprint(w, triageNoteIndent)
+					termtext.Wrap(w, len(triageNoteIndent), triageNoteIndent, fact)
+				}
 			}
 			fmt.Fprint(w, triageNoteIndent)
 			// The arrow is cyan because it is the action motif; the
@@ -702,6 +708,12 @@ func groupManualByAction(groups []triageManualGroup, home string) []triageAction
 			switch dir := commonDir(raw); {
 			case discoverable && len(raw) > 1 && dir != "" && LooksArchived(dir):
 				b.action = "jit migrate " + shellSafePath(home, dir)
+				// The note's first line must describe the command actually
+				// printed: "naming a file" under a folder command reads as a
+				// mismatch, and the folder form has its own fact to state —
+				// the walk inside an explicit target skips nothing.
+				b.note = "bare jit migrate walks past archive/ and backups/ on purpose — these are counted above, and naming this folder explicitly migrates everything findable inside it\n" +
+					archivedDeletionNote
 			case len(paths) > 0:
 				b.action = "jit migrate " + strings.Join(paths, " ")
 			}
@@ -1439,6 +1451,7 @@ type manualContext struct {
 // are read as a list — the sentence that explains the fix is the arrow line
 // under the group, printed once for all of it.
 const (
+	kindTrash          = "empty the trash"
 	kindArchived       = "name the file — the sweep skips archived folders"
 	kindPassphrase     = "add a passphrase"
 	kindSelfRotating   = "sign out and back in"
@@ -1458,8 +1471,15 @@ func manualAction(f Finding, ctx manualContext, home string) (kind, action strin
 		them = "them"
 	}
 	switch {
+	case inTrash(f.FilePath):
+		// Above archived, which would otherwise swallow it (every trash path
+		// looks archived). Trash is the one archived-looking place where even
+		// migrate-by-name is the wrong offer: the user already decided this
+		// file should not exist, and vaulting it would preserve what deletion
+		// is about to fix. Finishing the deletion IS the remedy.
+		return kindTrash, "empty the Trash, then rotate anything it held"
 	case f.Archived:
-		// First, because archived is a property of WHERE the file is and it
+		// Next, because archived is a property of WHERE the file is and it
 		// overrides every remedy below: bare `jit migrate` walks past these
 		// directories, so whatever else is true of the secret, the instruction
 		// has to name the file explicitly or it will not run.
@@ -1536,10 +1556,23 @@ func actionNote(kind string) string {
 	case kindProtectInPlace:
 		return "or move the secret out of the file, then rotate it"
 	case kindArchived:
-		return "bare jit migrate walks past archive/, backups/ and .trash/ on purpose — these are counted above, and naming a file explicitly still vaults it"
+		// Two facts on two lines (the renderer splits on \n): what the sweep
+		// does and why the group exists, then the remedy migrate cannot offer
+		// — for a copy whose live sibling is already protected, deletion
+		// beats vaulting a stale secret, and only the note can say so
+		// because scan never deletes anything.
+		return "bare jit migrate walks past archive/ and backups/ on purpose — these are counted above, and naming a file explicitly still vaults it\n" +
+			archivedDeletionNote
+	case kindTrash:
+		return "this file is already on its way out — migrating it would preserve what deletion is about to fix"
 	}
 	return ""
 }
+
+// archivedDeletionNote is the second line of the archived group's note, kept
+// identical between the file-list and folder forms of the group so the two
+// cannot drift apart in wording.
+const archivedDeletionNote = "already protected the live copy? deleting the archived one is the cleaner fix"
 
 func formatDuration(ms int64) string {
 	if ms >= 1000 {
