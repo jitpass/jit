@@ -302,7 +302,18 @@ type Finding struct {
 	// and a contract with every consumer; this exists to let the human-facing
 	// report print a range it already knows. Give it a json tag and a version
 	// when a consumer actually asks for it, not before.
-	EndLine                  *int    `json:"-"`
+	EndLine *int `json:"-"`
+	// KeyKind says WHAT kind of key a private-key finding covers, when the
+	// sniffer can tell — today only the GCP service-account JSON shape. The
+	// advice attached to the finding depends on it: "add a passphrase" is
+	// impossible to follow for a service-account key, which can only be
+	// revoked where it was issued. Empty means "an SSH-shaped key", the
+	// default the advice was written for.
+	//
+	// Deliberately NOT serialized, on EndLine's contract: key_name already
+	// carries the human name of the kind for NDJSON consumers, so this
+	// stays a rendering input until a consumer asks for more.
+	KeyKind                  string  `json:"-"`
 	ValuePreview             *string `json:"value_preview"`
 	ProductionIndicatorMatch bool    `json:"production_indicator_match"`
 	PublicIPMatch            *string `json:"public_ip_match"`
