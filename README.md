@@ -97,7 +97,7 @@ bare `jit migrate` runs that whole plan:
 ```console
 $ jit scan
   YOUR SECRETS: 7 — 0 protected by jit (0%)
-  ▱▱▱▱▱▱▱▱▱▱  to 100%: one command +71% · 2 things only you can fix +28%
+  ▱▱▱▱▱▱▱▱▱▱  to 100%: one command +71% · 2 secrets only you can fix +29%
 
   jit will protect these — 5 secrets in 4 files, 0% → 71%
       → jit migrate
@@ -106,7 +106,9 @@ $ jit scan
         ...
 
   only you can protect these — 2 secrets, 71% → 100%
-    ! A production database password in 2 copies of a file
+
+    [rotate, then delete every copy]
+    ! A production database password in 2 files
       → rotate it now, then delete every copy
 ```
 

@@ -98,10 +98,12 @@ var doctorCmd = &cobra.Command{
 		"means that tool now runs unwrapped or not at all. Everything else it\n" +
 		"reports is an advisory warning: an orphaned secret (with --orphans), a\n" +
 		"profile name shadowed across scopes, a mount whose profile won't load, a\n" +
-		"stopped service, a stale or missing vault backup, and any shim complaint\n" +
-		"that is only true of the shell you happen to be in — a CI job that doesn't\n" +
-		"put the shim dir on PATH is not a broken machine. --strict makes those\n" +
-		"count too.\n\n" +
+		"stopped service, a stale or missing vault backup, more than one jit\n" +
+		"installed on PATH (a Homebrew copy and a tarball copy each answering to\n" +
+		"the name, with which copy runs decided by PATH order), and any shim\n" +
+		"complaint that is only true of the shell you happen to be in — a CI job\n" +
+		"that doesn't put the shim dir on PATH is not a broken machine. --strict\n" +
+		"makes those count too.\n\n" +
 		"Exit 2 is the FINDINGS code, matching `jit scan --fail-on`; exit 1 means\n" +
 		"doctor itself couldn't run (a bad flag, an unreadable vault root), which a\n" +
 		"pipeline needs to tell apart from a machine that is genuinely broken.\n\n" +

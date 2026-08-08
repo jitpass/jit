@@ -29,10 +29,12 @@ rotation never finished; or a wrapped tool's installation damaged, which
 means that tool now runs unwrapped or not at all. Everything else it
 reports is an advisory warning: an orphaned secret (with --orphans), a
 profile name shadowed across scopes, a mount whose profile won't load, a
-stopped service, a stale or missing vault backup, and any shim complaint
-that is only true of the shell you happen to be in — a CI job that doesn't
-put the shim dir on PATH is not a broken machine. --strict makes those
-count too.
+stopped service, a stale or missing vault backup, more than one jit
+installed on PATH (a Homebrew copy and a tarball copy each answering to
+the name, with which copy runs decided by PATH order), and any shim
+complaint that is only true of the shell you happen to be in — a CI job
+that doesn't put the shim dir on PATH is not a broken machine. --strict
+makes those count too.
 
 Exit 2 is the FINDINGS code, matching `jit scan --fail-on`; exit 1 means
 doctor itself couldn't run (a bad flag, an unreadable vault root), which a
