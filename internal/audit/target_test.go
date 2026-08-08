@@ -235,6 +235,88 @@ func TestScanFileContentForTokensSpecificWins(t *testing.T) {
 	}
 }
 
+// A vendor match on a COMMENT line of source code documents a shape rather
+// than storing a secret: found and shown, but tagged SourceExample and not
+// charged to the ledger. The same value in real code stays counted, and a
+// comment example must never shadow a real credential further down the file
+// through the per-vendor collapse.
+func TestScanFileContentForTokensSourceExample(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Run("comment-only match is a source example", func(t *testing.T) {
+		p := filepath.Join(dir, "tokendoc.go")
+		writeFile(t, p, "package x\n\n// e.g. psql postgres://app:Re4lLook1ngPw@db/app\n")
+		findings, err := scanFileContentForTokens(Config{HomeDir: dir}, p)
+		if err != nil {
+			t.Fatalf("scanFileContentForTokens: %v", err)
+		}
+		if len(findings) != 1 {
+			t.Fatalf("got %d findings, want 1: %+v", len(findings), findings)
+		}
+		if !findings[0].SourceExample {
+			t.Error("comment-line match not tagged SourceExample")
+		}
+		if CountedAsSecret(findings[0]) {
+			t.Error("source example charged to the ledger")
+		}
+	})
+
+	t.Run("a real credential outranks the example above it", func(t *testing.T) {
+		p := filepath.Join(dir, "tokencode.go")
+		writeFile(t, p, "package x\n\n// e.g. psql postgres://app:Re4lLook1ngPw@db/app\nvar dsn = \"postgres://app:An0therRe4lPw@db/app\"\n")
+		findings, err := scanFileContentForTokens(Config{HomeDir: dir}, p)
+		if err != nil {
+			t.Fatalf("scanFileContentForTokens: %v", err)
+		}
+		if len(findings) != 1 {
+			t.Fatalf("got %d findings, want 1 (per-vendor collapse): %+v", len(findings), findings)
+		}
+		if findings[0].SourceExample {
+			t.Error("the non-comment occurrence must win the per-vendor collapse")
+		}
+		if findings[0].Line == nil || *findings[0].Line != 4 {
+			t.Errorf("Line = %v, want 4 (the code line, not the comment)", findings[0].Line)
+		}
+	})
+
+	t.Run("comment context is ignored outside source files", func(t *testing.T) {
+		p := filepath.Join(dir, "creds.txt")
+		writeFile(t, p, "# postgres://app:Re4lLook1ngPw@db/app\n")
+		findings, err := scanFileContentForTokens(Config{HomeDir: dir}, p)
+		if err != nil {
+			t.Fatalf("scanFileContentForTokens: %v", err)
+		}
+		if len(findings) != 1 || findings[0].SourceExample {
+			t.Errorf("a .txt line is not source; got %+v", findings)
+		}
+	})
+}
+
+// And the file itself, mirroring TestJitsOwnPatternListIsNotAPrivateKey: the
+// pattern list argues about credential shapes by example in its doc comments,
+// and a real scan (2026-08-07) charged the user an exposed database password
+// for it. Every match in it must stay uncharged, whatever examples a rewrite
+// adds.
+func TestJitsOwnPatternListIsNotCharged(t *testing.T) {
+	findings, err := scanFileContentForTokens(Config{HomeDir: "/"}, "tokenpatterns.go")
+	if err != nil {
+		t.Fatalf("scanFileContentForTokens: %v", err)
+	}
+	for _, f := range findings {
+		if CountedAsSecret(f) {
+			line, vendor := 0, "?"
+			if f.Line != nil {
+				line = *f.Line
+			}
+			if f.KeyName != nil {
+				vendor = *f.KeyName
+			}
+			t.Errorf("tokenpatterns.go:%d (%s) counts toward the ledger; "+
+				"a scanner that charges the user for its own source teaches them to disbelieve the report", line, vendor)
+		}
+	}
+}
+
 // TestScanFileContentForTokensClean: an ordinary text file yields nothing.
 func TestScanFileContentForTokensClean(t *testing.T) {
 	dir := t.TempDir()

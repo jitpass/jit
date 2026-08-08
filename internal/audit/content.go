@@ -133,23 +133,29 @@ func scanFileContentForTokens(cfg Config, path string) ([]Finding, error) {
 		return nil, err
 	}
 
+	exampleLines := sourceExampleLines(path, tokens)
+
 	var findings []Finding
-	seenVendor := map[string]bool{} // one finding per (file, vendor): see below
+	byVendor := map[string]int{} // index into findings; one per (file, vendor): see below
 	for _, tk := range tokens {
 		// One finding per (file, vendor). record_id is
 		// finding_type+file_path+key_name and key_name is the vendor, so a
 		// second occurrence of the same vendor in the same file would collide
 		// on record_id anyway; collapsing here keeps the report from listing
 		// structurally identical duplicates. The first occurrence's line
-		// number is the one reported.
-		if seenVendor[tk.Vendor] {
-			continue
+		// number is the one reported — EXCEPT when that line was a source
+		// comment and a later one is not: the collapse must not let a
+		// documentation example shadow a real credential further down the
+		// same file, uncounting both.
+		if i, ok := byVendor[tk.Vendor]; ok {
+			if !findings[i].SourceExample || exampleLines[tk.Line] {
+				continue
+			}
 		}
-		seenVendor[tk.Vendor] = true
 
 		ln := tk.Line
 		vendor := tk.Vendor
-		findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+		f := cfg.ValueFinding(ValueFindingParams{
 			FindingType:  FindingTypeExposedSecret,
 			FilePath:     path,
 			Line:         &ln,
@@ -158,9 +164,74 @@ func scanFileContentForTokens(cfg Config, path string) ([]Finding, error) {
 			BaseSeverity: SeverityHigh,
 			Confidence:   ConfidenceHigh,
 			Evidence:     "value matches a known vendor credential format",
-		}))
+		})
+		f.SourceExample = exampleLines[ln]
+		if i, ok := byVendor[tk.Vendor]; ok {
+			findings[i] = f
+		} else {
+			byVendor[tk.Vendor] = len(findings)
+			findings = append(findings, f)
+		}
 	}
 	return findings, nil
+}
+
+// sourceCodeExts are the extensions sourceExampleLines will judge comment
+// context in. Shell scripts are deliberately absent: a commented-out
+// `# export TOKEN=...` in someone's setup script is exactly the shape a REAL
+// leaked credential takes, while a comment in compiled-language source is
+// overwhelmingly a documentation example.
+var sourceCodeExts = map[string]bool{
+	".go": true, ".rs": true, ".py": true, ".rb": true, ".js": true,
+	".jsx": true, ".ts": true, ".tsx": true, ".java": true, ".kt": true,
+	".swift": true, ".c": true, ".h": true, ".cc": true, ".cpp": true,
+	".hpp": true, ".cs": true, ".php": true, ".scala": true, ".lua": true,
+	".sql": true, ".m": true, ".mm": true,
+}
+
+// sourceCommentLeads are the line-leading markers that make a source line a
+// comment. Line-leading ONLY, on purpose: searching for "//" anywhere before
+// the match would classify every `postgres://user:pass@host` string literal
+// as a comment — the scheme separator IS the marker. A trailing comment
+// holding a credential therefore stays counted, which errs the right way.
+var sourceCommentLeads = []string{"//", "/*", "*", "#", "--"}
+
+// sourceExampleLines returns the token-holding lines of a source-code file
+// whose match sits in a comment (see Finding.SourceExample), nil for
+// non-source files. One extra pass over a file the sweep has already read
+// once; bounded by the same line scanner.
+func sourceExampleLines(path string, tokens []FileToken) map[int]bool {
+	if len(tokens) == 0 || !sourceCodeExts[strings.ToLower(filepath.Ext(path))] {
+		return nil
+	}
+	want := map[int]bool{}
+	for _, tk := range tokens {
+		want[tk.Line] = true
+	}
+
+	file, err := openFile(path)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+
+	example := map[int]bool{}
+	scanner := newLineScanner(file)
+	lineNum := 0
+	for scanner.Scan() {
+		lineNum++
+		if !want[lineNum] {
+			continue
+		}
+		trimmed := strings.TrimSpace(scanner.Text())
+		for _, lead := range sourceCommentLeads {
+			if strings.HasPrefix(trimmed, lead) {
+				example[lineNum] = true
+				break
+			}
+		}
+	}
+	return example
 }
 
 // isPureTokenFile reports whether path's entire meaningful content is bare

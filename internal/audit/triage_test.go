@@ -195,11 +195,120 @@ func TestManualGroupsAccountForEveryManualSecret(t *testing.T) {
 }
 
 // One arrow per group is only honest if that arrow covers the whole group.
-// The archived block's action names paths, so a block listing two archived
-// files must name both — regenerating from the worst item alone printed one
-// path under two items, and running it would have fixed one and left the
-// other, having just shown the reader both.
-func TestArchivedActionNamesEveryFileInItsGroup(t *testing.T) {
+// Regenerating the archived command from the worst item alone printed one
+// path under two items; naming every path was honest but grew unreadable
+// (six ~70-char paths on one line, 2026-08-07). The command is now the
+// deepest archived directory when naming it rediscovers every file, and the
+// full path list — never truncated — when it would not.
+func TestArchivedActionCoversItsWholeGroup(t *testing.T) {
+	mk := func(id, ftype, path string) Finding {
+		return Finding{
+			RecordID: id, FindingType: ftype,
+			Severity: SeverityHigh, Remedy: RemedyMigrate, Archived: true,
+			FilePath: path, Evidence: "secret-shaped",
+		}
+	}
+	archivedAction := func(t *testing.T, findings []Finding) string {
+		t.Helper()
+		annotateCauseGroups(findings)
+		groups := groupManualByAction(triageGroupManual(findings, "/Users/alex"), "/Users/alex")
+		for i := range groups {
+			if groups[i].kind == kindArchived {
+				return groups[i].action
+			}
+		}
+		t.Fatalf("no archived group: %+v", groups)
+		return ""
+	}
+
+	t.Run("one archived parent covers the group", func(t *testing.T) {
+		action := archivedAction(t, []Finding{
+			mk("a", FindingTypeEnvFilePresent, "/Users/alex/Documents/archive/one/.env"),
+			mk("b", FindingTypeEnvFilePresent, "/Users/alex/Documents/archive/two/.env"),
+		})
+		if want := "jit migrate ~/Documents/archive"; action != want {
+			t.Errorf("action = %q, want %q", action, want)
+		}
+	})
+
+	t.Run("two archives fall back to full paths", func(t *testing.T) {
+		// The common ancestor is ~/Documents, which is NOT archived —
+		// naming it would sweep live projects the reader never consented to.
+		action := archivedAction(t, []Finding{
+			mk("a", FindingTypeEnvFilePresent, "/Users/alex/Documents/archive/one/.env"),
+			mk("b", FindingTypeEnvFilePresent, "/Users/alex/Documents/backups/two/.env"),
+		})
+		for _, want := range []string{"archive/one/.env", "backups/two/.env"} {
+			if !strings.Contains(action, want) {
+				t.Errorf("action %q does not name %q", action, want)
+			}
+		}
+	})
+
+	t.Run("a non-dir-discoverable file falls back to full paths", func(t *testing.T) {
+		// A loose token file is reached only by its explicit path — the dir
+		// walk finds project files, so the shortened command would silently
+		// drop it.
+		action := archivedAction(t, []Finding{
+			mk("a", FindingTypeEnvFilePresent, "/Users/alex/Documents/archive/one/.env"),
+			mk("b", FindingTypeExposedSecret, "/Users/alex/Documents/archive/two/token.txt"),
+		})
+		for _, want := range []string{"archive/one/.env", "archive/two/token.txt"} {
+			if !strings.Contains(action, want) {
+				t.Errorf("action %q does not name %q", action, want)
+			}
+		}
+	})
+}
+
+// Trash is the one archived-looking place where even migrate-by-name is the
+// wrong offer: the user already decided the file should not exist, so the
+// remedy is finishing the deletion, not vaulting. Every trash path also
+// LooksArchived, so this pins the ordering that keeps the archived branch
+// from swallowing it.
+func TestTrashFindingsGetTheirOwnGroup(t *testing.T) {
+	mk := func(id, path string) Finding {
+		return Finding{
+			RecordID: id, FindingType: FindingTypeEnvFilePresent,
+			Severity: SeverityHigh, Remedy: RemedyMigrate, Archived: true,
+			FilePath: path, Evidence: "secret-shaped",
+		}
+	}
+	findings := []Finding{
+		mk("t", "/Users/alex/.Trash/old-project/.env"),
+		mk("a", "/Users/alex/Documents/archive/one/.env"),
+	}
+	annotateCauseGroups(findings)
+	groups := groupManualByAction(triageGroupManual(findings, "/Users/alex"), "/Users/alex")
+
+	var trash, archived *triageActionGroup
+	for i := range groups {
+		switch groups[i].kind {
+		case kindTrash:
+			trash = &groups[i]
+		case kindArchived:
+			archived = &groups[i]
+		}
+	}
+	if trash == nil || archived == nil {
+		t.Fatalf("want one trash and one archived group, got: %+v", groups)
+	}
+	if want := "empty the Trash, then rotate anything it held"; trash.action != want {
+		t.Errorf("trash action = %q, want %q", trash.action, want)
+	}
+	if strings.Contains(archived.action, ".Trash") {
+		t.Errorf("archived action %q reaches into the Trash; migrate must not be offered there", archived.action)
+	}
+	if strings.Contains(archived.note, ".trash") {
+		t.Errorf("archived note %q still claims to cover .trash — that group exists now", archived.note)
+	}
+}
+
+// The archived note carries two facts on two lines: the sweep's behaviour and
+// the deletion alternative migrate cannot offer. Rendered, not just stored —
+// the renderer splits on \n, and flowing the facts into one wrapped paragraph
+// would glue them mid-line.
+func TestArchivedNoteOffersDeletion(t *testing.T) {
 	mk := func(id, path string) Finding {
 		return Finding{
 			RecordID: id, FindingType: FindingTypeEnvFilePresent,
@@ -212,24 +321,163 @@ func TestArchivedActionNamesEveryFileInItsGroup(t *testing.T) {
 		mk("b", "/Users/alex/Documents/archive/two/.env"),
 	}
 	annotateCauseGroups(findings)
-	groups := groupManualByAction(triageGroupManual(findings, "/Users/alex"), "/Users/alex")
 
-	var archived *triageActionGroup
-	for i := range groups {
-		if groups[i].kind == kindArchived {
-			archived = &groups[i]
+	var buf bytes.Buffer
+	WriteTriageReport(&buf, findings, ScanSummary{}, "/Users/alex", ComputeCoverage("/Users/alex", "", findings))
+	// The note wraps at terminal width, so match against the report with its
+	// line breaks flattened back to spaces.
+	flat := strings.Join(strings.Fields(buf.String()), " ")
+	for _, want := range []string{archivedDeletionNote, "naming this folder"} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("rendered archived note missing %q:\n%s", want, buf.String())
 		}
 	}
-	if archived == nil {
-		t.Fatalf("no archived group: %+v", groups)
+}
+
+// A source example renders in the footer's uncounted tally, in its own
+// bucket — neither charged to YOUR SECRETS nor lumped under low-confidence,
+// which would misdescribe it (jit is not unsure; it is saying the value
+// documents a shape).
+func TestSourceExampleInFooterBucket(t *testing.T) {
+	vendor := "Database connection string with embedded credentials"
+	ln := 100
+	findings := []Finding{{
+		RecordID: "e", FindingType: FindingTypeExposedSecret,
+		Severity: SeverityHigh, Remedy: RemedyManual, SourceExample: true,
+		FilePath: "/Users/alex/code/scanner/patterns.go", Line: &ln, KeyName: &vendor,
+		Evidence: "value matches a known vendor credential format",
+	}}
+	annotateCauseGroups(findings)
+
+	var buf bytes.Buffer
+	WriteTriageReport(&buf, findings, ScanSummary{}, "/Users/alex", ComputeCoverage("/Users/alex", "", findings))
+	out := buf.String()
+	if !strings.Contains(out, "1 source example") {
+		t.Errorf("footer missing the source-example bucket:\n%s", out)
 	}
-	if len(archived.items) != 2 {
-		t.Fatalf("archived group has %d items, want 2", len(archived.items))
+	if strings.Contains(out, "patterns.go") {
+		t.Errorf("an uncounted source example must not render as a finding:\n%s", out)
 	}
-	for _, want := range []string{"archive/one/.env", "archive/two/.env"} {
-		if !strings.Contains(archived.action, want) {
-			t.Errorf("action %q does not name %q", archived.action, want)
+}
+
+// Nine JWTs in nine paste-cache files printed the identical grep hint nine
+// times — one instruction stuttered. Hints identical up to path collapse to
+// one grep over all the files; hints that genuinely differ keep the
+// keep-every-hint rule.
+func TestIdenticalPatternHintsCollapse(t *testing.T) {
+	jwt := "JSON Web Token (JWT)"
+	mk := func(id, path string) Finding {
+		return Finding{
+			RecordID: id, FindingType: FindingTypeExposedSecret,
+			Severity: SeverityHigh, Remedy: RemedyManual, FilePath: path,
+			KeyName: &jwt, Evidence: "value matches a known vendor credential format",
 		}
+	}
+
+	t.Run("same directory and extension collapse to a glob", func(t *testing.T) {
+		findings := []Finding{
+			mk("a", "/Users/alex/.claude/paste-cache/44b238b43bfc1875.txt"),
+			mk("b", "/Users/alex/.claude/paste-cache/b644a758e6f952fe.txt"),
+			mk("c", "/Users/alex/.claude/paste-cache/100c53a2bedb7481.txt"),
+		}
+		annotateCauseGroups(findings)
+		groups := triageGroupManual(findings, "/Users/alex")
+		g := findGroupByNoun(t, groups, "An exposed JWT")
+		if len(g.hints) != 1 {
+			t.Fatalf("got %d hints, want 1 collapsed: %q", len(g.hints), g.hints)
+		}
+		for _, want := range []string{"grep -nE", "~/.claude/paste-cache/*.txt", "cut -d: -f1,2"} {
+			if !strings.Contains(g.hints[0], want) {
+				t.Errorf("collapsed hint %q missing %q", g.hints[0], want)
+			}
+		}
+		if len(g.details) != 3 {
+			t.Errorf("details must survive the hint collapse untouched, got %d, want 3", len(g.details))
+		}
+	})
+
+	t.Run("different directories still collapse, naming each path", func(t *testing.T) {
+		findings := []Finding{
+			mk("a", "/Users/alex/notes/one.txt"),
+			mk("b", "/Users/alex/dumps/two.txt"),
+		}
+		annotateCauseGroups(findings)
+		groups := triageGroupManual(findings, "/Users/alex")
+		g := findGroupByNoun(t, groups, "An exposed JWT")
+		if len(g.hints) != 1 {
+			t.Fatalf("got %d hints, want 1 collapsed: %q", len(g.hints), g.hints)
+		}
+		for _, want := range []string{"~/notes/one.txt", "~/dumps/two.txt"} {
+			if !strings.Contains(g.hints[0], want) {
+				t.Errorf("collapsed hint %q missing %q", g.hints[0], want)
+			}
+		}
+	})
+}
+
+func findGroupByNoun(t *testing.T, groups []triageManualGroup, noun string) triageManualGroup {
+	t.Helper()
+	for _, g := range groups {
+		if g.noun == noun {
+			return g
+		}
+	}
+	t.Fatalf("no group with noun %q: %+v", noun, groups)
+	return triageManualGroup{}
+}
+
+// A GCP service-account key must never be handed the SSH advice: it cannot
+// take a passphrase, and deleting the file does not revoke it. A real scan
+// (2026-08-07) told the user to run ssh-keygen -p on two IAM keys in
+// ~/Downloads — this pins the whole rendered corrective: noun, group header,
+// action, and the IAM note.
+func TestGCPServiceAccountKeyAdvice(t *testing.T) {
+	name := "Google Cloud service-account key"
+	findings := []Finding{{
+		RecordID: "k", FindingType: FindingTypePrivateKeyRisk,
+		KeyKind: keyKindGCPServiceAccount, KeyName: &name,
+		Severity: SeverityHigh, Remedy: RemedyManual,
+		FilePath: "/Users/alex/Downloads/security-504007-7b1189f6fcd9.json",
+		Evidence: "private key found outside ~/.ssh",
+	}}
+	annotateCauseGroups(findings)
+
+	var buf bytes.Buffer
+	WriteTriageReport(&buf, findings, ScanSummary{}, "/Users/alex", ComputeCoverage("/Users/alex", "", findings))
+	flat := strings.Join(strings.Fields(buf.String()), " ")
+	for _, want := range []string{
+		"An exposed Google Cloud service-account key",
+		"[rotate in IAM, then delete the file]",
+		"rotate the key in IAM, then delete this file",
+		"only deleting the key in IAM does",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("report missing %q:\n%s", want, buf.String())
+		}
+	}
+	if strings.Contains(flat, "ssh-keygen") {
+		t.Errorf("report offers ssh-keygen for a service-account key:\n%s", buf.String())
+	}
+}
+
+// The rendered arrow line must carry the archived command WHOLE. TruncTail
+// used to apply here, and its ellipsis ate half the targets of a real scan's
+// six-path command (2026-08-07) — the pre-render action string was complete,
+// so only a rendered-output assertion can hold the line.
+func TestArchivedCommandRendersUntruncated(t *testing.T) {
+	long := "/Users/alex/Documents/archive/a-project-directory-name-well-past-eighty-columns-of-terminal/deeper-still/.env"
+	findings := []Finding{{
+		RecordID: "a", FindingType: FindingTypeEnvFilePresent,
+		Severity: SeverityHigh, Remedy: RemedyMigrate, Archived: true,
+		FilePath: long, Evidence: "secret-shaped",
+	}}
+	annotateCauseGroups(findings)
+
+	var buf bytes.Buffer
+	WriteTriageReport(&buf, findings, ScanSummary{}, "/Users/alex", ComputeCoverage("/Users/alex", "", findings))
+	want := "jit migrate ~/Documents/archive/a-project-directory-name-well-past-eighty-columns-of-terminal/deeper-still/.env"
+	if !strings.Contains(buf.String(), want) {
+		t.Errorf("rendered report cut the archived command; want it whole:\n%s", buf.String())
 	}
 }
 

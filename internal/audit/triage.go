@@ -6,6 +6,7 @@ package audit
 import (
 	"fmt"
 	"io"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -258,8 +259,14 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 				writeManualItem(w, g, bold, red, yellowBold)
 			}
 			if ag.note != "" {
-				fmt.Fprint(w, triageNoteIndent)
-				termtext.Wrap(w, len(triageNoteIndent), triageNoteIndent, ag.note)
+				// A note may carry several facts, one per \n-separated line,
+				// each wrapped on its own — flowing them into one paragraph
+				// would glue "…still vaults it" to "already protected…" mid-
+				// line, and the one-fact-per-line rule is the house style's.
+				for _, fact := range strings.Split(ag.note, "\n") {
+					fmt.Fprint(w, triageNoteIndent)
+					termtext.Wrap(w, len(triageNoteIndent), triageNoteIndent, fact)
+				}
 			}
 			fmt.Fprint(w, triageNoteIndent)
 			// The arrow is cyan because it is the action motif; the
@@ -268,13 +275,21 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 			// now") read as a warning state — amber's job, and it already has
 			// the "!" glyph above to do it with.
 			_, _ = cmd.Fprint(w, style.GlyphAction+" ")
-			// One line, truncated, never wrapped. A many-path `jit migrate`
-			// command used to wrap to five lines, and a wrapped command is the
-			// worst of both: too long to read as a line, and no longer
-			// copy-pasteable as one either. Head-kept truncation shows the
-			// command and its first targets; the full file list is the report
-			// above, which is where the reader just came from.
-			fmt.Fprintln(w, termtext.TruncTail(ag.action, max(20, termtext.Width()-len(triageNoteIndent)-2)))
+			// One line either way, but which kind of line decides the cut. A
+			// sentence action ("rotate them now, …") truncates, never wraps:
+			// it restates the group header, so its tail is expendable. A
+			// COMMAND is the opposite — cut anywhere it stops being a
+			// command, and a real scan (2026-08-07) shipped an archived-group
+			// `jit migrate …` whose ellipsis ate half its targets. The
+			// archived action is the one command on these arrows, so it
+			// prints whole as ONE logical line; the parent-directory form
+			// keeps it short, and the explicit-path fallback soft-wraps in
+			// the terminal while still pasting as a single command.
+			if ag.kind == kindArchived {
+				fmt.Fprintln(w, ag.action)
+			} else {
+				fmt.Fprintln(w, termtext.TruncTail(ag.action, max(20, termtext.Width()-len(triageNoteIndent)-2)))
+			}
 		}
 		fmt.Fprintln(w)
 	}
@@ -373,6 +388,7 @@ func writeTriageFooter(w io.Writer, findings []Finding, summary ScanSummary, hom
 	// a line here claiming otherwise would contradict it.
 	quiet := 0
 	fixtures := 0
+	examples := 0
 	for _, f := range findings {
 		switch {
 		case f.TestFixture:
@@ -381,6 +397,10 @@ func writeTriageFooter(w io.Writer, findings []Finding, summary ScanSummary, hom
 			// credentials to rotate. Lumping them under "low-confidence"
 			// would misdescribe both groups.
 			fixtures++
+		case f.SourceExample:
+			// Separate for the same reason: jit matched the value and is
+			// saying it documents a shape rather than storing a secret.
+			examples++
 		case !CountedAsSecret(f):
 			quiet++
 		}
@@ -393,6 +413,9 @@ func writeTriageFooter(w io.Writer, findings []Finding, summary ScanSummary, hom
 	var notCounted []string
 	if fixtures > 0 {
 		notCounted = append(notCounted, countWord(fixtures, "test fixture", "test fixtures"))
+	}
+	if examples > 0 {
+		notCounted = append(notCounted, countWord(examples, "source example", "source examples"))
 	}
 	if quiet > 0 {
 		notCounted = append(notCounted, countWord(quiet, "low-confidence sighting", "low-confidence sightings"))
@@ -592,6 +615,10 @@ type triageManualGroup struct {
 	// in N and in which files, and printing three near-identical headers with
 	// three identical actions spent nine lines saying one thing three times.
 	noun string
+	// hintSamples is one constituent sample per entry in hints, same index,
+	// kept by the merge so collapsePatternHints can regenerate a combined
+	// hint instead of parsing the strings it would be folding.
+	hintSamples []Finding
 }
 
 // triageActionGroup is one block of the red section: every problem that ends
@@ -665,23 +692,42 @@ func groupManualByAction(groups []triageManualGroup, home string) []triageAction
 		// would print one path for a block listing several, and a reader who
 		// ran it would fix that file and silently leave the rest — having been
 		// shown them and given a command that appeared to cover them.
-		// runMigratePath takes several targets, so name them all; the line
-		// wraps, which is what a command is allowed to do.
+		//
+		// Naming every file is honest but unreadable: a real scan (2026-08-07)
+		// printed six ~70-char paths on the arrow line. When one directory
+		// covers the whole group AND naming it would rediscover every file
+		// (`jit migrate <dir>` walks project files only), the command is that
+		// directory — the shortest line that keeps the promise. The directory
+		// must itself look archived, so the shortening can never widen the
+		// command past the boundary the reader consented to: ~/Documents is
+		// not a thing this line may name because two archives sit under it.
+		// Anything else falls back to the full path list, printed whole.
 		if b.kind == kindArchived {
 			seen := map[string]bool{}
-			var paths []string
+			var raw, paths []string
+			discoverable := true
 			for _, it := range b.items {
 				if it.sample.FilePath == "" {
 					continue
 				}
-				p := shellSafePath(home, it.sample.FilePath)
-				if seen[p] {
+				discoverable = discoverable && dirDiscoverable(it.sample)
+				if seen[it.sample.FilePath] {
 					continue
 				}
-				seen[p] = true
-				paths = append(paths, p)
+				seen[it.sample.FilePath] = true
+				raw = append(raw, it.sample.FilePath)
+				paths = append(paths, shellSafePath(home, it.sample.FilePath))
 			}
-			if len(paths) > 0 {
+			switch dir := commonDir(raw); {
+			case discoverable && len(raw) > 1 && dir != "" && LooksArchived(dir):
+				b.action = "jit migrate " + shellSafePath(home, dir)
+				// The note's first line must describe the command actually
+				// printed: "naming a file" under a folder command reads as a
+				// mismatch, and the folder form has its own fact to state —
+				// the walk inside an explicit target skips nothing.
+				b.note = "bare jit migrate walks past archive/ and backups/ on purpose — these are counted above, and naming this folder explicitly migrates everything findable inside it\n" +
+					archivedDeletionNote
+			case len(paths) > 0:
 				b.action = "jit migrate " + strings.Join(paths, " ")
 			}
 		}
@@ -845,6 +891,7 @@ func mergeManualGroups(groups []triageManualGroup, home string) []triageManualGr
 		i, ok := at[k]
 		if !ok {
 			at[k] = len(out)
+			g.hintSamples = []Finding{g.sample}
 			out = append(out, g)
 			continue
 		}
@@ -853,6 +900,7 @@ func mergeManualGroups(groups []triageManualGroup, home string) []triageManualGr
 		m.files += g.files
 		m.details = append(m.details, g.details...)
 		m.hints = append(m.hints, g.hints...)
+		m.hintSamples = append(m.hintSamples, g.sample)
 		m.critical = m.critical || g.critical
 		if g.sortKey < m.sortKey {
 			m.sortKey = g.sortKey
@@ -890,7 +938,79 @@ func mergeManualGroups(groups []triageManualGroup, home string) []triageManualGr
 			out[i].kind, out[i].action = manualAction(out[i].sample, out[i].ctx, home)
 		}
 	}
+	for i := range out {
+		collapsePatternHints(&out[i], home)
+	}
 	return out
+}
+
+// collapsePatternHints replaces a merged group's per-file view hints with ONE
+// hint covering every file, when they are the same command differing only in
+// path. A real scan (2026-08-07) printed the identical JWT grep nine times
+// under one group, once per paste-cache file — nine lines reading as one
+// instruction stuttered. The keep-every-hint rule mergeManualGroups documents
+// is about hints that DIFFER (each names an address the reader must reach);
+// hints identical up to path carry one instruction, and a single grep over
+// all the files runs it in one paste.
+//
+// Regenerated from the constituents' samples, never parsed out of the hint
+// strings — and only for the full-pattern grep form: line-addressed history
+// hints and agent-copy breakdowns each name coordinates that a shared
+// command cannot stand for.
+func collapsePatternHints(m *triageManualGroup, home string) {
+	if len(m.hints) < 2 || len(m.hintSamples) != len(m.hints) {
+		return
+	}
+	ere := patternEREFor(m.hintSamples[0])
+	if ere == "" {
+		return
+	}
+	seen := map[string]bool{}
+	var paths []string
+	for _, s := range m.hintSamples {
+		if s.FilePath == "" || patternEREFor(s) != ere ||
+			s.FindingType == FindingTypeShellHistorySecret ||
+			s.FindingType == FindingTypeAgentCachedSecret {
+			return
+		}
+		if !seen[s.FilePath] {
+			seen[s.FilePath] = true
+			paths = append(paths, s.FilePath)
+		}
+	}
+	if len(paths) < 2 {
+		return
+	}
+	// -f1,2 rather than the single-file form's -f1: multi-file grep prefixes
+	// each hit with its path, so fields one and two are path:line — the
+	// content field stays cut off, which is the property the whole hint
+	// exists to keep.
+	m.hints = []string{fmt.Sprintf("lines: grep -nE '%s' %s | cut -d: -f1,2",
+		ere, combinedPathExpr(paths, home))}
+}
+
+// combinedPathExpr renders several paths as one shell word when a glob can
+// honestly stand for them — same directory, same extension, nothing needing
+// quotes — and falls back to listing each path. The glob may match files
+// beyond the group's; grep finding nothing extra in them is harmless, and
+// "~/.claude/paste-cache/*.txt" reads where nine hash-named paths do not.
+func combinedPathExpr(paths []string, home string) string {
+	dir, ext := filepath.Dir(paths[0]), filepath.Ext(paths[0])
+	glob := ext != ""
+	for _, p := range paths[1:] {
+		if filepath.Dir(p) != dir || filepath.Ext(p) != ext {
+			glob = false
+			break
+		}
+	}
+	if glob && shellBarePath(dir) {
+		return ShortenHome(home, dir) + "/*" + ext
+	}
+	quoted := make([]string, len(paths))
+	for i, p := range paths {
+		quoted[i] = shellSafePath(home, p)
+	}
+	return strings.Join(quoted, " ")
 }
 
 // writeHistoryGuardOffer adds the prevention line when this scan found a
@@ -972,6 +1092,11 @@ func manualTitle(causes []*triageCause, files []string, worst Finding, home stri
 // manualNoun is the one-line "what is this" for a single manual secret.
 func manualNoun(f Finding) string {
 	switch {
+	case f.FindingType == FindingTypePrivateKeyRisk && f.KeyKind == keyKindGCPServiceAccount:
+		// Named for what it is, not the bucket it was found by: "at-risk
+		// private key" plus passphrase advice sent a real user toward
+		// ssh-keygen -p for a key that cannot take a passphrase (2026-08-07).
+		return "An exposed Google Cloud service-account key"
 	case f.FindingType == FindingTypePrivateKeyRisk:
 		return "An at-risk private key"
 	case selfRotating(f):
@@ -1418,6 +1543,8 @@ type manualContext struct {
 // are read as a list — the sentence that explains the fix is the arrow line
 // under the group, printed once for all of it.
 const (
+	kindTrash          = "empty the trash"
+	kindIAMKey         = "rotate in IAM, then delete the file"
 	kindArchived       = "name the file — the sweep skips archived folders"
 	kindPassphrase     = "add a passphrase"
 	kindSelfRotating   = "sign out and back in"
@@ -1437,12 +1564,27 @@ func manualAction(f Finding, ctx manualContext, home string) (kind, action strin
 		them = "them"
 	}
 	switch {
+	case inTrash(f.FilePath):
+		// Above archived, which would otherwise swallow it (every trash path
+		// looks archived). Trash is the one archived-looking place where even
+		// migrate-by-name is the wrong offer: the user already decided this
+		// file should not exist, and vaulting it would preserve what deletion
+		// is about to fix. Finishing the deletion IS the remedy.
+		return kindTrash, "empty the Trash, then rotate anything it held"
 	case f.Archived:
-		// First, because archived is a property of WHERE the file is and it
+		// Next, because archived is a property of WHERE the file is and it
 		// overrides every remedy below: bare `jit migrate` walks past these
 		// directories, so whatever else is true of the secret, the instruction
 		// has to name the file explicitly or it will not run.
 		return kindArchived, fmt.Sprintf("jit migrate %s", shellSafePath(home, f.FilePath))
+	case f.FindingType == FindingTypePrivateKeyRisk && f.KeyKind == keyKindGCPServiceAccount:
+		// Not the passphrase advice below: a service-account key has no
+		// passphrase to add, and the only revocation lives at the provider.
+		files := "this file"
+		if ctx.secrets > 1 {
+			files = "these files"
+		}
+		return kindIAMKey, "rotate the key in IAM, then delete " + files
 	case f.FindingType == FindingTypePrivateKeyRisk:
 		return kindPassphrase, "add a passphrase (ssh-keygen -p) or move the key somewhere safer"
 	case selfRotating(f):
@@ -1515,10 +1657,25 @@ func actionNote(kind string) string {
 	case kindProtectInPlace:
 		return "or move the secret out of the file, then rotate it"
 	case kindArchived:
-		return "bare jit migrate walks past archive/, backups/ and .trash/ on purpose — these are counted above, and naming a file explicitly still vaults it"
+		// Two facts on two lines (the renderer splits on \n): what the sweep
+		// does and why the group exists, then the remedy migrate cannot offer
+		// — for a copy whose live sibling is already protected, deletion
+		// beats vaulting a stale secret, and only the note can say so
+		// because scan never deletes anything.
+		return "bare jit migrate walks past archive/ and backups/ on purpose — these are counted above, and naming a file explicitly still vaults it\n" +
+			archivedDeletionNote
+	case kindTrash:
+		return "this file is already on its way out — migrating it would preserve what deletion is about to fix"
+	case kindIAMKey:
+		return "deleting the file does not revoke the key — only deleting the key in IAM does"
 	}
 	return ""
 }
+
+// archivedDeletionNote is the second line of the archived group's note, kept
+// identical between the file-list and folder forms of the group so the two
+// cannot drift apart in wording.
+const archivedDeletionNote = "already protected the live copy? deleting the archived one is the cleaner fix"
 
 func formatDuration(ms int64) string {
 	if ms >= 1000 {
