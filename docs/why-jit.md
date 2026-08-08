@@ -33,31 +33,36 @@ already protects, and the one command that protects the rest. (`jit scan
 number.)
 
 ```
-jit scan — alex@Alexs-MacBook-Pro — scanned ~/ (7 files) — 1ms
+jit scan  ~/ · 7 files · 1ms
 
   YOUR SECRETS: 7 — 0 protected by jit (0%)
-  ▱▱▱▱▱▱▱▱▱▱  to 100%: one command +71% · 2 thing(s) only you can fix +28%
+  ▱▱▱▱▱▱▱▱▱▱  to 100%: one command +71% · 2 secrets only you can fix +29%
 
-  jit will protect these — 5 secret(s) in 4 file(s), 0% → 71%
+  jit will protect these — 5 secrets in 4 files, 0% → 71%
       → jit migrate
-        one command; it vaults the values and rewrites 4 file(s) —
-        every tool that reads them keeps working:
+        one command; it vaults the values and rewrites 4 files — every tool that
+        reads them keeps working:
         ~/.aws/credentials  default/aws_secret_access_key
         ~/.zshrc            STRIPE_API_KEY, DB_PASSWORD
         ~/code/webapp/.env  secret-shaped values
         ~/token.txt         JSON Web Token (JWT)
-      these sat in plaintext until now — rotating after vaulting is
-      the gold standard · every change is reversible: jit migrate undo
+      these are in plaintext now — rotating after vaulting is the gold standard
+      · every change is reversible: jit migrate undo
 
-  only you can protect these — 2 secret(s), 71% → 100%
-    ! A production database password in 2 copies of a file  (1)
+  only you can protect these — 2 secrets, 71% → 100%
+
+    [rotate, then delete every copy]
+    ! A production database password in 2 files
       ~/Downloads/customer-secrets-report.txt … and 1 more
       → rotate it now, then delete every copy
-    ! A Kubernetes Secret manifest with real values  (1)
+
+    [seal it]
+    ! A Kubernetes Secret manifest with real values
       ~/infra/k8s/secrets.yaml
       → seal it (sealed-secrets/SOPS) or move it to a real secret store
 
-  full inventory: jit scan --full · ndjson for machines
+  → jit scan --full   the full inventory · ndjson for machines
+
   No secret values are ever printed in full.
 ```
 
