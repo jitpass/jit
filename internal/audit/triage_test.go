@@ -261,6 +261,79 @@ func TestArchivedActionCoversItsWholeGroup(t *testing.T) {
 	})
 }
 
+// Trash is the one archived-looking place where even migrate-by-name is the
+// wrong offer: the user already decided the file should not exist, so the
+// remedy is finishing the deletion, not vaulting. Every trash path also
+// LooksArchived, so this pins the ordering that keeps the archived branch
+// from swallowing it.
+func TestTrashFindingsGetTheirOwnGroup(t *testing.T) {
+	mk := func(id, path string) Finding {
+		return Finding{
+			RecordID: id, FindingType: FindingTypeEnvFilePresent,
+			Severity: SeverityHigh, Remedy: RemedyMigrate, Archived: true,
+			FilePath: path, Evidence: "secret-shaped",
+		}
+	}
+	findings := []Finding{
+		mk("t", "/Users/alex/.Trash/old-project/.env"),
+		mk("a", "/Users/alex/Documents/archive/one/.env"),
+	}
+	annotateCauseGroups(findings)
+	groups := groupManualByAction(triageGroupManual(findings, "/Users/alex"), "/Users/alex")
+
+	var trash, archived *triageActionGroup
+	for i := range groups {
+		switch groups[i].kind {
+		case kindTrash:
+			trash = &groups[i]
+		case kindArchived:
+			archived = &groups[i]
+		}
+	}
+	if trash == nil || archived == nil {
+		t.Fatalf("want one trash and one archived group, got: %+v", groups)
+	}
+	if want := "empty the Trash, then rotate anything it held"; trash.action != want {
+		t.Errorf("trash action = %q, want %q", trash.action, want)
+	}
+	if strings.Contains(archived.action, ".Trash") {
+		t.Errorf("archived action %q reaches into the Trash; migrate must not be offered there", archived.action)
+	}
+	if strings.Contains(archived.note, ".trash") {
+		t.Errorf("archived note %q still claims to cover .trash — that group exists now", archived.note)
+	}
+}
+
+// The archived note carries two facts on two lines: the sweep's behaviour and
+// the deletion alternative migrate cannot offer. Rendered, not just stored —
+// the renderer splits on \n, and flowing the facts into one wrapped paragraph
+// would glue them mid-line.
+func TestArchivedNoteOffersDeletion(t *testing.T) {
+	mk := func(id, path string) Finding {
+		return Finding{
+			RecordID: id, FindingType: FindingTypeEnvFilePresent,
+			Severity: SeverityHigh, Remedy: RemedyMigrate, Archived: true,
+			FilePath: path, Evidence: "secret-shaped",
+		}
+	}
+	findings := []Finding{
+		mk("a", "/Users/alex/Documents/archive/one/.env"),
+		mk("b", "/Users/alex/Documents/archive/two/.env"),
+	}
+	annotateCauseGroups(findings)
+
+	var buf bytes.Buffer
+	WriteTriageReport(&buf, findings, ScanSummary{}, "/Users/alex", ComputeCoverage("/Users/alex", "", findings))
+	// The note wraps at terminal width, so match against the report with its
+	// line breaks flattened back to spaces.
+	flat := strings.Join(strings.Fields(buf.String()), " ")
+	for _, want := range []string{archivedDeletionNote, "naming this folder"} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("rendered archived note missing %q:\n%s", want, buf.String())
+		}
+	}
+}
+
 // The rendered arrow line must carry the archived command WHOLE. TruncTail
 // used to apply here, and its ellipsis ate half the targets of a real scan's
 // six-path command (2026-08-07) — the pre-render action string was complete,
