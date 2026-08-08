@@ -5,6 +5,7 @@ package audit
 
 import (
 	"bytes"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -14,6 +15,10 @@ import (
 
 	"golang.org/x/crypto/ssh"
 )
+
+// keyKindGCPServiceAccount marks a Finding whose file is a Google Cloud
+// service-account key, for Finding.KeyKind.
+const keyKindGCPServiceAccount = "gcp_service_account"
 
 // privateKeyPEMHeaders identify a private key by content, not filename —
 // real-world review (2026-07-06) showed public CA certificate bundles
@@ -204,17 +209,24 @@ func inspectPrivateKeyFile(cfg Config, path string, inSSHDir bool) (*Finding, er
 		issues = append(issues, fmt.Sprintf("loose file permissions (mode %o, should be 0600 or stricter)", info.Mode().Perm()))
 	}
 
-	_, parseErr := ssh.ParseRawPrivateKey(content)
-	var passphraseErr *ssh.PassphraseMissingError
-	switch {
-	case parseErr == nil:
-		// Parsed successfully with no passphrase supplied at all — unencrypted.
-		issues = append(issues, "no passphrase set")
-	case errors.As(parseErr, &passphraseErr):
-		// Encrypted — this is the good case, not an issue.
-	default:
-		// Unparseable for some other reason (corrupt, unsupported format) —
-		// don't claim anything about passphrase status either way.
+	isGCPSA := isGCPServiceAccountKey(content)
+	if !isGCPSA {
+		// The passphrase probe is an SSH question, and asking it of a
+		// service-account key can only mislead: the JSON envelope never
+		// parses, and the key has no passphrase to add anyway — its only
+		// protection is revocation at the provider.
+		_, parseErr := ssh.ParseRawPrivateKey(content)
+		var passphraseErr *ssh.PassphraseMissingError
+		switch {
+		case parseErr == nil:
+			// Parsed successfully with no passphrase supplied at all — unencrypted.
+			issues = append(issues, "no passphrase set")
+		case errors.As(parseErr, &passphraseErr):
+			// Encrypted — this is the good case, not an issue.
+		default:
+			// Unparseable for some other reason (corrupt, unsupported format) —
+			// don't claim anything about passphrase status either way.
+		}
 	}
 
 	if len(issues) == 0 {
@@ -227,6 +239,30 @@ func inspectPrivateKeyFile(cfg Config, path string, inSSHDir bool) (*Finding, er
 	f.Severity = SeverityHigh // RFC.md §4 risk table: all three trigger conditions here map to High
 	f.Confidence = ConfidenceHigh
 	f.Evidence = strings.Join(issues, "; ")
+	if isGCPSA {
+		f.KeyKind = keyKindGCPServiceAccount
+		name := "Google Cloud service-account key"
+		f.KeyName = &name
+	}
 	f.RecordID = RecordID(f.FindingType, f.FilePath, nil)
 	return &f, nil
+}
+
+// isGCPServiceAccountKey reports whether content is a Google Cloud
+// service-account key file: the JSON envelope `gcloud iam service-accounts
+// keys create` writes, with the PEM key embedded under "private_key". The
+// shape is already FOUND by looksLikePrivateKey's escaped-newline path; this
+// tells the report which key it found, because the advice differs — a
+// passphrase cannot be added to one of these, and deleting the file does not
+// revoke it (a real scan, 2026-08-07, told the user "add a passphrase
+// (ssh-keygen -p)" for two of them in ~/Downloads).
+func isGCPServiceAccountKey(content []byte) bool {
+	var sa struct {
+		Type       string `json:"type"`
+		PrivateKey string `json:"private_key"`
+	}
+	if json.Unmarshal(content, &sa) != nil {
+		return false
+	}
+	return sa.Type == "service_account" && strings.Contains(sa.PrivateKey, "PRIVATE KEY")
 }

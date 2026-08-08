@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
@@ -221,6 +222,66 @@ func TestLooksLikePrivateKeyNeedsABody(t *testing.T) {
 				t.Errorf("looksLikePrivateKey() = %v, want %v", got, c.want)
 			}
 		})
+	}
+}
+
+// A GCP service-account key is found like any stray key, but must be NAMED as
+// what it is — the SSH advice attached to the plain kind ("add a passphrase")
+// is impossible to follow for one, and the report needs KeyKind to say so.
+// The evidence must also stay silent about passphrases: the scanner never
+// established anything about one, and a real scan (2026-08-07) showed the
+// claim being invented downstream.
+func TestScanPrivateKeysGCPServiceAccountKey(t *testing.T) {
+	home := t.TempDir()
+	downloads := filepath.Join(home, "Downloads")
+	mkdirAll(t, downloads)
+
+	content := []byte(`{"type":"service_account","project_id":"security-504007",` +
+		`"private_key":"-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ\n-----END PRIVATE KEY-----\n",` +
+		`"client_email":"svc@security-504007.iam.gserviceaccount.com"}`)
+	if err := os.WriteFile(filepath.Join(downloads, "security-504007-7b1189f6fcd9.json"), content, 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	findings, err := ScanPrivateKeys(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("ScanPrivateKeys: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1: %+v", len(findings), findings)
+	}
+	f := findings[0]
+	if f.KeyKind != keyKindGCPServiceAccount {
+		t.Errorf("KeyKind = %q, want %q", f.KeyKind, keyKindGCPServiceAccount)
+	}
+	if f.KeyName == nil || *f.KeyName != "Google Cloud service-account key" {
+		t.Errorf("KeyName = %v, want the kind's human name", f.KeyName)
+	}
+	if strings.Contains(f.Evidence, "passphrase") {
+		t.Errorf("evidence claims passphrase status for a service-account key: %q", f.Evidence)
+	}
+}
+
+// The plain SSH kind keeps an empty KeyKind — it is the default every
+// existing advice string was written for.
+func TestScanPrivateKeysSSHKeyHasNoKeyKind(t *testing.T) {
+	home := t.TempDir()
+	downloads := filepath.Join(home, "Downloads")
+	mkdirAll(t, downloads)
+
+	if err := os.WriteFile(filepath.Join(downloads, "stray_key"), generateUnencryptedKeyPEM(t), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	findings, err := ScanPrivateKeys(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("ScanPrivateKeys: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1: %+v", len(findings), findings)
+	}
+	if f := findings[0]; f.KeyKind != "" || f.KeyName != nil {
+		t.Errorf("KeyKind = %q, KeyName = %v; want empty for an SSH-shaped key", f.KeyKind, f.KeyName)
 	}
 }
 
