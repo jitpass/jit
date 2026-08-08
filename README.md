@@ -47,6 +47,11 @@ sudo mv jit /usr/local/bin/
 Apple Silicon only — on an Intel Mac, build from source with
 `go install github.com/jitpass/jit/cmd/jit@latest`.
 
+Pick one route. If you installed from the tarball before and are switching to
+Homebrew, remove the old copy after the `brew install` (`sudo rm
+/usr/local/bin/jit`); otherwise two jits sit on PATH upgrading separately, and
+`jit doctor` will flag it.
+
 Releases are signed with a Developer ID and notarized by Apple, so both paths
 run without a Gatekeeper prompt: Homebrew quarantines its downloads and
 Gatekeeper clears them against the notarization ticket, while `curl` (and `go
