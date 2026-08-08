@@ -302,7 +302,18 @@ type Finding struct {
 	// and a contract with every consumer; this exists to let the human-facing
 	// report print a range it already knows. Give it a json tag and a version
 	// when a consumer actually asks for it, not before.
-	EndLine                  *int    `json:"-"`
+	EndLine *int `json:"-"`
+	// KeyKind says WHAT kind of key a private-key finding covers, when the
+	// sniffer can tell — today only the GCP service-account JSON shape. The
+	// advice attached to the finding depends on it: "add a passphrase" is
+	// impossible to follow for a service-account key, which can only be
+	// revoked where it was issued. Empty means "an SSH-shaped key", the
+	// default the advice was written for.
+	//
+	// Deliberately NOT serialized, on EndLine's contract: key_name already
+	// carries the human name of the kind for NDJSON consumers, so this
+	// stays a rendering input until a consumer asks for more.
+	KeyKind                  string  `json:"-"`
 	ValuePreview             *string `json:"value_preview"`
 	ProductionIndicatorMatch bool    `json:"production_indicator_match"`
 	PublicIPMatch            *string `json:"public_ip_match"`
@@ -328,6 +339,22 @@ type Finding struct {
 	// (CountedAsSecret), because there is nothing for the user to rotate.
 	// Set centrally by Scan, not by the individual scanners.
 	TestFixture bool `json:"test_fixture"`
+
+	// SourceExample is true when the matched value sits on a comment line of
+	// a source-code file: a documentation example, not a stored credential.
+	// The canonical case is jit's own tokenpatterns.go, whose doc comments
+	// argue about credential shapes BY EXAMPLE and which a real scan
+	// (2026-08-07) reported as an exposed database password — a scanner that
+	// flags its own source teaches users to disbelieve the report. Like a
+	// fixture, the finding stays visible in --full and NDJSON but is not
+	// charged to the coverage ledger. The accepted miss: a commented-out
+	// REAL credential in source is indistinguishable from an example and
+	// lands here too, which is why the footer names the bucket instead of
+	// silently dropping it.
+	//
+	// Set by the content sweep at construction (it alone has the line text),
+	// not by tagArchivedAndFixtures. Not serialized, on EndLine's contract.
+	SourceExample bool `json:"-"`
 
 	// Remedy says who can act on this finding: "migrate" and "wrap" mean jit
 	// can (FixCommand holds the exact command), "manual" means only the user
