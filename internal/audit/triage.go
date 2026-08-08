@@ -388,6 +388,7 @@ func writeTriageFooter(w io.Writer, findings []Finding, summary ScanSummary, hom
 	// a line here claiming otherwise would contradict it.
 	quiet := 0
 	fixtures := 0
+	examples := 0
 	for _, f := range findings {
 		switch {
 		case f.TestFixture:
@@ -396,6 +397,10 @@ func writeTriageFooter(w io.Writer, findings []Finding, summary ScanSummary, hom
 			// credentials to rotate. Lumping them under "low-confidence"
 			// would misdescribe both groups.
 			fixtures++
+		case f.SourceExample:
+			// Separate for the same reason: jit matched the value and is
+			// saying it documents a shape rather than storing a secret.
+			examples++
 		case !CountedAsSecret(f):
 			quiet++
 		}
@@ -408,6 +413,9 @@ func writeTriageFooter(w io.Writer, findings []Finding, summary ScanSummary, hom
 	var notCounted []string
 	if fixtures > 0 {
 		notCounted = append(notCounted, countWord(fixtures, "test fixture", "test fixtures"))
+	}
+	if examples > 0 {
+		notCounted = append(notCounted, countWord(examples, "source example", "source examples"))
 	}
 	if quiet > 0 {
 		notCounted = append(notCounted, countWord(quiet, "low-confidence sighting", "low-confidence sightings"))
