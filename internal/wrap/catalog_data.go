@@ -349,8 +349,8 @@ var catalog = map[string]CatalogEntry{
 		Doc:     "Kiro CLI API key",
 		EnvVars: map[string]string{"KIRO_API_KEY": "KIRO_API_KEY"},
 		Order:   []string{"KIRO_API_KEY"},
-		// No Sources. Kiro's interactive login is subscription OAuth (AWS
-		// Builder ID / Identity Center) and stores no API key; KIRO_API_KEY
+		// No Sources. Kiro's interactive login is subscription OAuth (a
+		// browser sign-in) and stores no API key; KIRO_API_KEY
 		// is the CLI's documented headless credential, minted in the Kiro
 		// dashboard (kiro.dev/docs/cli/headless, checked 2026-08-09 — note
 		// API keys are only available on paid plans). Wrap needs

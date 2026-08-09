@@ -40,9 +40,9 @@ jit wrap undo kiro-cli
 
 ## Notes
 
-- **The interactive subscription login is left alone.** Signing in with
-  AWS Builder ID / Identity Center stores an OAuth session, not an API
-  key - the wrap is for the headless/API-key path (scripts, CI).
+- **The interactive subscription login is left alone.** The browser
+  sign-in stores an OAuth session, not an API key - the wrap is for the
+  headless/API-key path (scripts, CI).
 - API keys are generated in the Kiro dashboard and are only available on
   paid plans; if your subscription is admin-managed, API key generation
   has to be enabled by the administrator first.

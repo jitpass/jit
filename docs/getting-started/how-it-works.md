@@ -72,8 +72,9 @@ That's an MCP server your editor started, wanting the secrets in your
 
 The same provenance is kept afterwards: `jit service status` shows who
 unlocked the current session, and `jit audit` lists every unlock,
-every prompt that was declined, every lock, and what the open session was
-used for in between. Who the caller is comes from the kernel (its
+every prompt that was declined, every lock, what the open session was
+used for in between, and every read of a live-mounted credential file -
+decoy or real, and by which process. Who the caller is comes from the kernel (its
 pid on the socket, then its command line and parent chain), never from
 anything the caller says about itself. It is used to *explain* and to
 *audit*, never to decide. More in **[Provenance](../service/provenance.md)**
