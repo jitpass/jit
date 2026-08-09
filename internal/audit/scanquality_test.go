@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -457,5 +459,60 @@ func TestFolderGroupedListing(t *testing.T) {
 	iArch := strings.Index(out, "~/Documents/archive/old/")
 	if !(iWork < iDown && iDown < iArch) {
 		t.Errorf("folders not relevance-ordered (work=%d downloads=%d archive=%d):\n%s", iWork, iDown, iArch, out)
+	}
+}
+
+// TestMCPFindingCarriesALine is the tier-2 guard for structured findings: an
+// mcp_embedded_secret is placed at the line its key sits on, so the report
+// shows "mcp.json:N" instead of a grep locator. The JSON parser threw the
+// offset away; mcpFindingLine re-derives it from the raw text.
+func TestMCPFindingCarriesALine(t *testing.T) {
+	raw := []byte(`{
+  "mcpServers": {
+    "snowflake": {
+      "url": "https://x",
+      "headers": {
+        "Authorization": "Bearer sk-abc"
+      }
+    }
+  }
+}`)
+	name := "snowflake/header:Authorization"
+	f := Finding{KeyName: &name, rawValue: "Bearer sk-abc"}
+	if got := mcpFindingLine(raw, f); got != 6 {
+		t.Errorf("value anchor: line = %d, want 6", got)
+	}
+	// With no usable value (JSON-escaped in the real file), fall back to the
+	// key — same line here, one above in pretty JSON, never a value.
+	f2 := Finding{KeyName: &name}
+	if got := mcpFindingLine(raw, f2); got != 6 {
+		t.Errorf("key fallback: line = %d, want 6", got)
+	}
+	// An args index is not a real JSON key, so it stays lineless rather than
+	// matching something unrelated.
+	argName := "snowflake/args[2]"
+	if got := mcpFindingLine(raw, Finding{KeyName: &argName}); got != 0 {
+		t.Errorf("args index should not match a key: line = %d, want 0", got)
+	}
+}
+
+// TestEnvFindingCarriesALine is the tier-2 guard for env files: the file-level
+// finding points at the variable that drove it, in the severity switch's
+// priority order.
+func TestEnvFindingCarriesALine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	// Line 1 a plain setting, line 2 a secret-shaped name, line 3 a prod key.
+	body := "REGION=us-east-1\nAPI_KEY=abcdefghijklmnop\nPROD_DATABASE_URL=postgres://u:p@h/d\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	f, found, err := buildEnvFileFinding(Config{HomeDir: dir}, path, false)
+	if err != nil || !found {
+		t.Fatalf("buildEnvFileFinding: found=%v err=%v", found, err)
+	}
+	// Production indicator wins the priority, so the line is the prod var's (3).
+	if f.Line == nil || *f.Line != 3 {
+		t.Errorf("line = %v, want 3 (the production-indicator variable)", f.Line)
 	}
 }
