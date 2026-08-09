@@ -25,11 +25,24 @@ instance_type = "t3.micro"
 	if findings[0].Severity != SeverityInfo {
 		t.Errorf("severity = %q, want %q", findings[0].Severity, SeverityInfo)
 	}
-	// The Terraform half of this category has an automated fix (jit
-	// migrate's tfvars category) and the advisory must say so, unlike the
-	// Kubernetes half's detection-only text.
-	if !strings.Contains(findings[0].Evidence, "jit migrate") {
-		t.Errorf("evidence = %q, want it to point at jit migrate", findings[0].Evidence)
+	// This assertion used to demand the opposite — that the advisory name
+	// `jit migrate`, because the Terraform half of the category has an
+	// automated fix. It does, but not for THIS file: a tfvars holding only
+	// region/instance_type has nothing secret-shaped, so migrate answers
+	// "Nothing to migrate" on it (reproduced 2026-08-09). Promising the
+	// command here made `jit scan` and `jit migrate` contradict each other
+	// about one path, so the advisory now describes the file and offers no
+	// command.
+	if strings.Contains(findings[0].Evidence, "jit migrate") {
+		t.Errorf("evidence = %q, want no jit migrate promise on a tfvars with nothing to migrate", findings[0].Evidence)
+	}
+	// The promise also has to stay out of the machine-readable half: a
+	// runnable fix_command that does nothing is the same lie in NDJSON.
+	if findings[0].Remedy != RemedyManual {
+		t.Errorf("remedy = %q, want %q so no fix_command is emitted", findings[0].Remedy, RemedyManual)
+	}
+	if findings[0].FixCommand != "" {
+		t.Errorf("fix_command = %q, want empty", findings[0].FixCommand)
 	}
 }
 

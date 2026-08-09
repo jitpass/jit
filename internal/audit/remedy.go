@@ -375,8 +375,8 @@ func ComputeCoverage(home, registryPath string, findings []Finding) Coverage {
 	// was judged and silently marked everything migratable.
 	hasAgentCopy := map[string]bool{}
 	for _, f := range findings {
-		if f.FindingType == FindingTypeAgentCachedSecret && f.originPath != "" {
-			hasAgentCopy[f.originPath] = true
+		if f.FindingType == FindingTypeAgentCachedSecret && f.OriginPath != "" {
+			hasAgentCopy[f.OriginPath] = true
 		}
 	}
 	// Values a FILE-LEVEL finding already stands for. env_file_present has no
@@ -396,6 +396,25 @@ func ComputeCoverage(home, registryPath string, findings []Finding) Coverage {
 			}
 		}
 	}
+	// Files that already carry a counted finding of their own, so a finding
+	// that merely POINTS at one of them adds no secret to the ledger. Today
+	// that is an MCP config naming a credential file with --env-file: it is
+	// worth reporting (it says which server consumes the flagged file) but it
+	// is a link, not a second credential.
+	//
+	// Own-origin findings only (originPath == ""), so one reference can never
+	// vouch for another. Pre-pass for the same reason hasAgentCopy has one:
+	// the tally below reads it while judging each finding, and findings
+	// arrive grouped by category rather than in dependency order.
+	countedOrigin := map[string]bool{}
+	for _, f := range findings {
+		if f.FindingType == FindingTypeAgentCachedSecret || f.OriginPath != "" {
+			continue
+		}
+		if CountedAsSecret(f) {
+			countedOrigin[f.FilePath] = true
+		}
+	}
 	for _, f := range findings {
 		// A copy is never a NEW secret — it is the same secret in another
 		// place, and the finding that named it is already counted. Left in
@@ -406,6 +425,11 @@ func ComputeCoverage(home, registryPath string, findings []Finding) Coverage {
 			continue
 		}
 		if !CountedAsSecret(f) {
+			continue
+		}
+		// A pointer at a credential that is counted where it lives. Reported,
+		// never tallied — see countedOrigin above.
+		if f.OriginPath != "" && countedOrigin[f.OriginPath] {
 			continue
 		}
 		// The same secret a file-level finding already stands for, found again

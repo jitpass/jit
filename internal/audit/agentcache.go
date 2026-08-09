@@ -467,7 +467,7 @@ func (c Config) agentCachedSecretFinding(path, agent string, pin cacheNeedle, da
 	// finding (env_file_present) carries no digest of its own, and its several
 	// claimed values are several different secrets.
 	f.rawValue = pin.value
-	f.originPath = origin.FilePath
+	f.OriginPath = origin.FilePath
 	digest := sha256.Sum256([]byte(pin.value))
 	f.rawValueDigest = hex.EncodeToString(digest[:])
 
