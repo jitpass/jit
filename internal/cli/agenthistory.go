@@ -58,13 +58,21 @@ func newHistoryLog(root string, stderr io.Writer) *historyLog {
 // of session events (they used to be double-written as prose into agent.log,
 // which carried a much larger 5MB cap): `jit audit` now reads only here, so
 // the depth that was effectively in agent.log lives here instead.
+//
+// Mount serves (KindServe) are the one kind that could plausibly test this,
+// since a file watcher re-reads a mount without limit. They can't, because
+// they are collapsed over serveAuditWindow before they are written: one mount
+// pinned by one looping reader costs ~24 events a day at the absolute worst,
+// so even that pathological case retains a year rather than evicting the
+// unlocks. That bound is the whole reason serveAuditor exists — see its file.
 const historyMaxBytes = 2 * 1024 * 1024
 
-// append writes one event as a JSON line. Open-per-append on purpose:
-// events are a handful per day, and never holding an fd means a trim (or a
-// curious user truncating the file by hand) can't strand writes behind a
-// stale offset. Failures are logged and swallowed — durable history is a
-// nicety, and a full disk must never make an unlock fail.
+// append writes one event as a JSON line. Open-per-append on purpose: events
+// arrive at human pace (unlocks, grants, and mount serves already collapsed
+// to at most one per mount/reader per serveAuditWindow), and never holding an
+// fd means a trim (or a curious user truncating the file by hand) can't
+// strand writes behind a stale offset. Failures are logged and swallowed —
+// durable history is a nicety, and a full disk must never make an unlock fail.
 func (h *historyLog) append(e agent.SessionEvent) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
