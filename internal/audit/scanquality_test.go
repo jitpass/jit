@@ -179,3 +179,95 @@ func TestLedgerExclusionsAreAllReadableFromTheRecord(t *testing.T) {
 		t.Errorf("source_example did not round-trip: %s", raw)
 	}
 }
+
+// TestAssignedCredentialNameNamesTheVariable covers the case the feature was
+// built for: a live release-publishing token and a test vector share a vendor,
+// so they share a title, and only the name beside the value tells them apart.
+func TestAssignedCredentialNameNamesTheVariable(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		line string
+		want string
+	}{{
+		name: "the credential's own variable, not the flag next to it",
+		line: `gh secret set HOMEBREW_TAP_GITHUB_TOKEN -R jitpass/jit --body "github_pat_x`,
+		want: "HOMEBREW_TAP_GITHUB_TOKEN",
+	}, {
+		name: "an env assignment",
+		line: `OKTA_KEY_ID=abcdefghijklmnop`,
+		want: "OKTA_KEY_ID",
+	}, {
+		name: "a json field",
+		line: `{"id_token":"eyJhbGciOi`,
+		want: "id_token",
+	}, {
+		name: "nothing to say about a bare value on its own line",
+		line: `eyJhbGciOi`,
+		want: "",
+	}, {
+		name: "no credential-shaped name in reach",
+		line: `curl -H "Accept: application/json" https://api.example.com/ eyJhbGciOi`,
+		want: "",
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			at := strings.LastIndexAny(tc.line, "\"= ") + 1
+			if tc.want == "" && at <= 0 {
+				at = len(tc.line)
+			}
+			if got := assignedCredentialName(tc.line, at); got != tc.want {
+				t.Errorf("assignedCredentialName(%q, %d) = %q, want %q", tc.line, at, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAssignedCredentialNameNeverPrintsAValue is the guard behind the report's
+// closing promise that no secret value is ever printed in full. The line next
+// to a credential routinely holds another one, and a password matching no
+// vendor pattern would be leaked by the very feature meant to explain the
+// leak. Every case here is a string that satisfies LooksLikeSecretKey and must
+// still be refused.
+func TestAssignedCredentialNameNeverPrintsAValue(t *testing.T) {
+	for _, tc := range []struct{ name, line string }{
+		{"an undifferentiated lowercase run is a value, not a label",
+			`psql "postgres://app:mysecretpassword@db/x" eyJhbGciOi`},
+		{"a known credential format never names another credential",
+			`echo ghp_0123456789abcdefghijklmnopqrstuvwxyz eyJhbGciOi`},
+		{"a long opaque run is not a label however it reads",
+			`TOKENSECRETKEYPASSWORDTOKENSECRETKEYPASSWORDTOKENSECRETKEY eyJhbGciOi`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			at := strings.LastIndex(tc.line, "eyJhbGciOi")
+			got := assignedCredentialName(tc.line, at)
+			if got != "" {
+				t.Errorf("printed %q, which is a value rather than a name, from %q", got, tc.line)
+			}
+		})
+	}
+}
+
+// TestAssignedNameIsDroppedWhenConstituentsDisagree keeps a merged block from
+// attributing one credential's name to another: two different variables folded
+// into one item have no single name to show.
+func TestAssignedNameIsDroppedWhenConstituentsDisagree(t *testing.T) {
+	const home = "/Users/alex"
+	vendor := "JSON Web Token (JWT)"
+	mk := func(id, path, name string) Finding {
+		return Finding{
+			RecordID: id, FindingType: FindingTypeExposedSecret,
+			KeyName: &vendor, Severity: SeverityHigh, Remedy: RemedyManual,
+			FilePath: path, AssignedName: name, Evidence: "vendor format",
+		}
+	}
+	out := renderTriage(t, []Finding{
+		mk("a", home+"/one.txt", "SERVICE_A_TOKEN"),
+		mk("b", home+"/two.txt", "SERVICE_B_TOKEN"),
+	}, home)
+
+	if strings.Contains(out, "SERVICE_A_TOKEN") && strings.Contains(out, "SERVICE_B_TOKEN") {
+		return // rendered as separate items, each correctly named
+	}
+	if strings.Contains(out, "assigned to") {
+		t.Errorf("a merged item claims one constituent's name for both:\n%s", out)
+	}
+}
