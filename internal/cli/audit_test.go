@@ -49,6 +49,170 @@ func seedAuditFixtures(t *testing.T, home string) {
 	})
 }
 
+// seedServeFixtures plants the two mount-read outcomes: a decoy handed to a
+// process nobody granted anything to, and the real value handed to a tool
+// inside a grant.
+func seedServeFixtures(t *testing.T, home string) {
+	t.Helper()
+	root := filepath.Join(home, "Library", "Application Support", "jitpass")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	h := newHistoryLog(root, nil)
+	h.append(agent.SessionEvent{
+		UnixTime: 5000, Kind: agent.KindServe, Op: agent.OpServeDecoy,
+		By: "/usr/local/bin/node", ByPID: 48213, LaunchedBy: "Code",
+		Labels: []string{"gcp"}, Count: 34,
+		Cause: "no jit run grant or consent approval covered the reader",
+	})
+	h.append(agent.SessionEvent{
+		UnixTime: 5100, Kind: agent.KindServe, Op: agent.OpServeReal,
+		By: "/opt/homebrew/bin/terraform", ByPID: 48044, LaunchedBy: "claude",
+		Labels: []string{"aws"}, Count: 1,
+		Cause: "authorized by a jit run grant",
+	})
+}
+
+// A decoy read is the honeytoken-shaped signal the mount design produces on
+// every read and, before this, discarded: it must render as its own kind, name
+// the reader and its launcher, and say why that reader got a fake.
+func TestAuditRendersDecoyServe(t *testing.T) {
+	home := withFixtureHome(t)
+	seedServeFixtures(t, home)
+
+	out, err := execAuditLogfmt(t)
+	if err != nil {
+		t.Fatalf("jit audit: %v", err)
+	}
+	for _, want := range []string{
+		"kind=serve", "status=decoy", "mount=gcp", "count=34",
+		"reader_pid=48213", "parent=Code",
+		`reason="no jit run grant or consent approval covered the reader"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("decoy serve line missing %q, got:\n%s", want, out)
+		}
+	}
+}
+
+// The counterpart fact a grant approval can never supply: the credential was
+// not just authorized, it was actually read, by this program.
+func TestAuditRendersRealServe(t *testing.T) {
+	home := withFixtureHome(t)
+	seedServeFixtures(t, home)
+
+	out, err := execAuditLogfmt(t, "--status", "real")
+	if err != nil {
+		t.Fatalf("jit audit --status real: %v", err)
+	}
+	if !strings.Contains(out, "status=real") || !strings.Contains(out, "mount=aws") {
+		t.Errorf("--status real dropped the real serve, got:\n%s", out)
+	}
+	if strings.Contains(out, "status=decoy") {
+		t.Errorf("--status real leaked a decoy serve, got:\n%s", out)
+	}
+}
+
+// --status decoy is the tripwire query. It must narrow to decoy serves and
+// nothing else, including excluding the real serves of the same kind.
+func TestAuditFilterByStatusDecoy(t *testing.T) {
+	home := withFixtureHome(t)
+	seedAuditFixtures(t, home)
+	seedServeFixtures(t, home)
+
+	out, err := execAuditLogfmt(t, "--status", "decoy")
+	if err != nil {
+		t.Fatalf("jit audit --status decoy: %v", err)
+	}
+	if !strings.Contains(out, "status=decoy") {
+		t.Errorf("--status decoy dropped the decoy serve, got:\n%s", out)
+	}
+	for _, unwanted := range []string{"status=real", "kind=cmd", "kind=unlock"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("--status decoy leaked %q, got:\n%s", unwanted, out)
+		}
+	}
+}
+
+func TestAuditFilterByKindServe(t *testing.T) {
+	home := withFixtureHome(t)
+	seedAuditFixtures(t, home)
+	seedServeFixtures(t, home)
+
+	out, err := execAuditLogfmt(t, "--kind", "serve")
+	if err != nil {
+		t.Fatalf("jit audit --kind serve: %v", err)
+	}
+	if n := strings.Count(out, "kind=serve"); n != 2 {
+		t.Errorf("--kind serve showed %d serve lines, want 2, got:\n%s", n, out)
+	}
+	if strings.Contains(out, "kind=cmd") {
+		t.Errorf("--kind serve leaked a command line, got:\n%s", out)
+	}
+}
+
+// --parent is what makes this worth having: "what did the things Claude
+// launched actually read". It must reach serve events, not only auth ones.
+func TestAuditFilterByParentReachesServes(t *testing.T) {
+	home := withFixtureHome(t)
+	seedServeFixtures(t, home)
+
+	out, err := execAuditLogfmt(t, "--parent", "Code")
+	if err != nil {
+		t.Fatalf("jit audit --parent: %v", err)
+	}
+	if !strings.Contains(out, "status=decoy") {
+		t.Errorf("--parent Code dropped the serve Code's process caused, got:\n%s", out)
+	}
+	if strings.Contains(out, "status=real") {
+		t.Errorf("--parent Code leaked a claude-launched serve, got:\n%s", out)
+	}
+}
+
+// A carried-over reader identity is an inference (identifyReader's doctrine:
+// the scan is rate-limited and races a fast-closing reader). Neither view may
+// present it as certainty.
+func TestAuditMarksAnInferredReaderAsLikely(t *testing.T) {
+	e := authEntry("/Users/alice", agent.SessionEvent{
+		UnixTime: 6000, Kind: agent.KindServe, Op: agent.OpServeDecoy,
+		By: "/usr/local/bin/node", ByPID: 999, ByLikely: true, Labels: []string{"gcp"},
+	})
+	if !strings.Contains(e.subject, "likely") {
+		t.Errorf("report subject = %q, want it to mark the identity as an inference", e.subject)
+	}
+	if !strings.Contains(e.match, "reader_likely=true") {
+		t.Errorf("logfmt line = %q, want reader_likely=true", e.match)
+	}
+}
+
+// A fast-closing reader legitimately evades the scan, so "we don't know" is a
+// normal outcome and must read as an admission rather than as a name.
+func TestAuditServeWithoutAnIdentifiedReader(t *testing.T) {
+	e := authEntry("/Users/alice", agent.SessionEvent{
+		UnixTime: 6000, Kind: agent.KindServe, Op: agent.OpServeDecoy, Labels: []string{"gcp"},
+	})
+	if !strings.Contains(e.subject, "unidentified") {
+		t.Errorf("report subject = %q, want it to admit the reader wasn't identified", e.subject)
+	}
+	if strings.Contains(e.match, "reader=") {
+		t.Errorf("logfmt line claimed a reader it never had: %q", e.match)
+	}
+}
+
+// The header counts decoy ROWS, not the collapsed count each row carries: one
+// looping watcher would otherwise report thousands and read like a breach.
+func TestAuditHeaderCountsDecoyRowsNotReads(t *testing.T) {
+	var buf bytes.Buffer
+	entries := []auditEntry{
+		{t: time.Unix(5000, 0), kind: "serve", status: "decoy", subject: "decoy served to node ×34"},
+		{t: time.Unix(4000, 0), kind: "serve", status: "real", subject: "real value served to terraform"},
+	}
+	writeAuditHeader(&buf, entries)
+	if got := buf.String(); !strings.Contains(got, "1 decoy read") {
+		t.Errorf("header = %q, want it to count 1 decoy row (not 34 reads)", got)
+	}
+}
+
 // TestCommandEntrySurfacesFreshAuth: a command that forced its own fresh
 // Touch ID/passcode (jit migrate undo/remove set Record.Auth) must show that
 // in the audit line, so the trail proves a plaintext-restoring or

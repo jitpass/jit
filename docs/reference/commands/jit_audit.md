@@ -24,10 +24,20 @@ Repeated rejections collapse into one line carrying a count; a collapsed line
 names the first caller of that window, because keying them per caller would let
 a flood of throwaway processes push every real event out of the history.
 
+Mount reads are here too, as kind=serve: every time a reader opened a live
+mount, whether it got the decoy (--status decoy) or the real value (--status
+real), why, and — best-effort, from the kernel — which program read it and what
+launched that program. A decoy read is jit working as designed, and it is also
+the one signal that names a process reading a credential file it has no business
+in. Same-mount, same-reader, same-verdict reads inside a short window collapse
+into one line carrying a count, because a file watcher re-reads a mount
+continuously and an uncollapsed read would push every unlock out of the log.
+
 Output is a grouped text timeline, newest first. --format logfmt prints one
 key=value line per event instead, so it reads and greps like a real service
 log. Narrow either without grep using the flags: --kind
-cmd,unlock,use,grant,lock,service,error, --status ok|failed|denied|approved,
+cmd,unlock,use,grant,serve,lock,service,error, --status
+ok|failed|denied|approved|decoy|real,
 --since and --until
 (an age like 2h/3d or a date), --parent (the launching ancestor, e.g. claude),
 --secret (a secret name an unlock touched), --user, and --grep (a regexp over the
@@ -56,12 +66,12 @@ jit audit [flags]
   -f, --follow          print the matching tail, then stream new entries live (text only)
       --format string   output format: "text" (default), "logfmt" (one key=value line per event), or "json" (default "text")
       --grep string     only entries whose rendered line matches this regular expression
-      --kind strings    only these kinds (comma-separated): cmd, unlock, use, grant, lock, service, error
+      --kind strings    only these kinds (comma-separated): cmd, unlock, use, grant, serve, lock, service, error
       --limit int       show at most this many recent matching entries (0 for all) (default 50)
       --parent string   only entries whose launched-by ancestor contains this (e.g. claude)
       --secret string   only auth events that touched a secret whose name contains this
       --since string    only entries at or after this time: an age (2h, 90m, 3d) or a date ("2026-07-23" or "2026-07-23 09:00")
-      --status string   only this status: ok, failed, denied, or approved
+      --status string   only this status: ok, failed, denied, approved, decoy, or real
       --until string    only entries at or before this time (same forms as --since)
       --user string     only commands this user ran (auth events carry no user)
 ```

@@ -102,6 +102,12 @@ type mountManager struct {
 	stdout     io.Writer
 	stderr     io.Writer
 
+	// serveAudit turns mount reads into durable `jit audit` events, collapsed
+	// so a watcher loop can't evict the trail it is being written to. Zero
+	// value (no emit) is inert, so every test that constructs a bare
+	// mountManager keeps working and pays nothing.
+	serveAudit serveAuditor
+
 	mu     sync.Mutex
 	wg     sync.WaitGroup
 	served map[string]*servedMount
@@ -174,11 +180,13 @@ type readerIdentity struct {
 }
 
 // serveRecord is one completed content decision: what a connected reader
-// was served, when, and (best-effort) by whom. Kept as each mount's
-// single most recent event — enough for `jit service status` to answer
-// "why did my app get decoys" without a log spelunk, and the natural
-// first cut of RFC.md §5's anomaly-signal scope without building any of
-// its persistence.
+// was served, when, and (best-effort) by whom. Two consumers, deliberately
+// different in lifetime: each mount keeps its single most recent record so
+// `jit service status` can answer "why did my app get decoys" about right
+// now, and every record is also handed to serveAuditor, which collapses
+// them into the durable `jit audit` trail (RFC.md §5's anomaly signal).
+// The in-memory one answers "what is happening"; the durable one answers
+// "what happened last Tuesday", and neither substitutes for the other.
 type serveRecord struct {
 	at     time.Time
 	decoy  bool
@@ -886,4 +894,7 @@ func (m *mountManager) shutdown() {
 		sm.cancel()
 	}
 	m.wg.Wait()
+	// After wg.Wait, so the last in-flight serve's event is already recorded
+	// and gets written by this flush rather than being dropped.
+	m.serveAudit.stopFlusher()
 }
