@@ -8,6 +8,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 // maxContentScanSize bounds how large a file the generic content sweep will
@@ -166,6 +167,7 @@ func scanFileContentForTokens(cfg Config, path string) ([]Finding, error) {
 			Evidence:     "value matches a known vendor credential format",
 		})
 		f.SourceExample = exampleLines[ln]
+		f.AssignedName = tk.AssignedName
 		if i, ok := byVendor[tk.Vendor]; ok {
 			findings[i] = f
 		} else {
@@ -296,6 +298,11 @@ type FileToken struct {
 	Vendor   string
 	Verified bool
 	Value    string
+	// AssignedName is the name this value was assigned to on its line, when
+	// the line offers one that is unmistakably a label rather than a payload
+	// (see assignedCredentialName). "" is the common case and means only that
+	// nothing safe to print was found — never that the value is less real.
+	AssignedName string
 }
 
 // FindFileTokens sweeps path's raw text for values matching a known vendor
@@ -377,12 +384,13 @@ func FindFileTokens(path string) ([]FileToken, error) {
 				}
 				claimed = append(claimed, [2]int{lo, hi})
 				tokens = append(tokens, FileToken{
-					Line:     lineNum,
-					Start:    lo,
-					End:      hi,
-					Vendor:   tp.vendor,
-					Verified: tp.verified,
-					Value:    match,
+					Line:         lineNum,
+					Start:        lo,
+					End:          hi,
+					Vendor:       tp.vendor,
+					Verified:     tp.verified,
+					Value:        match,
+					AssignedName: assignedCredentialName(line, lo),
 				})
 			}
 		}
@@ -391,4 +399,88 @@ func FindFileTokens(path string) ([]FileToken, error) {
 	// I/O error) returns what we found so far rather than failing the run —
 	// partial detection beats none.
 	return tokens, nil
+}
+
+// credentialNameLead caps how far back along a line assignedCredentialName
+// looks. A credential's own name sits within a few words of it; anything
+// further is unrelated text that happens to share the line, and in a
+// one-line JSON transcript the whole rest of the session shares the line.
+const credentialNameLead = 120
+
+// assignedCredentialName returns the name a credential on this line was
+// assigned to — "HOMEBREW_TAP_GITHUB_TOKEN" for
+// `gh secret set HOMEBREW_TAP_GITHUB_TOKEN -R jitpass/jit --body "github_pat_…"` —
+// or "" when the line offers none.
+//
+// Why this exists: a report that says "An exposed GitHub Fine-Grained
+// Personal Access Token in 2 files" describes the PATTERN that matched, and
+// every finding of that vendor reads identically. A real scan (2026-08-09)
+// buried a live Homebrew-tap token — the credential that decides what
+// `brew install` delivers — as the fourth of six such lines, indistinguishable
+// from this repository's own test vectors. What told them apart was the name
+// beside the value, which jit had already read and thrown away.
+//
+// It reports a NAME, never surrounding text. The report's closing promise is
+// that no secret value is ever printed in full, and a line next to a
+// credential routinely holds another one — a password matching no vendor
+// pattern would be leaked by the very feature meant to explain the leak. A
+// name that satisfies every rule below is a label, not a payload.
+//
+// The rules, each one closing a way a value could pass as a name:
+//
+//   - Nearest first, scanning back from the match, so the name that wins is
+//     the one beside the credential rather than one earlier on the line.
+//   - LooksLikeSecretKey, the same predicate the .env and MCP scanners use to
+//     decide a variable name looks like a credential's. It is what rejects
+//     "body" in `--body "github_pat_…"` and accepts the token name three
+//     words earlier.
+//   - An underscore, a hyphen, or an interior capital. Names are written
+//     API_KEY, api-key or apiKey; a bare lowercase run like
+//     "mysecretpassword" satisfies LooksLikeSecretKey on the word "secret"
+//     alone and is exactly the shape of the thing this must not print.
+//   - Not itself a known credential format, so a value whose own text passes
+//     the rules above is still refused.
+func assignedCredentialName(line string, matchStart int) string {
+	if matchStart <= 0 || matchStart > len(line) {
+		return ""
+	}
+	before := line[:matchStart]
+	if len(before) > credentialNameLead {
+		before = before[len(before)-credentialNameLead:]
+	}
+	words := strings.FieldsFunc(before, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != '-' && r != '.'
+	})
+	for i := len(words) - 1; i >= 0; i-- {
+		w := strings.Trim(words[i], "-._")
+		if len(w) < minAnchorLen || len(w) > maxCredentialNameLen {
+			continue
+		}
+		if !LooksLikeSecretKey(w) || !writtenLikeAName(w) {
+			continue
+		}
+		if _, _, matched := MatchKnownTokenPattern(w); matched {
+			continue
+		}
+		return w
+	}
+	return ""
+}
+
+// maxCredentialNameLen is the longest run still readable as a label. Real
+// names are short; a long one is a value that happened to satisfy the rules.
+const maxCredentialNameLen = 48
+
+// writtenLikeAName reports whether s is punctuated or cased the way people
+// write identifiers, rather than being one undifferentiated lowercase run.
+func writtenLikeAName(s string) bool {
+	if strings.ContainsAny(s, "_-.") {
+		return true
+	}
+	for _, r := range s {
+		if unicode.IsUpper(r) {
+			return true
+		}
+	}
+	return false
 }

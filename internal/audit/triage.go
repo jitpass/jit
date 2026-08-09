@@ -346,6 +346,15 @@ func writeManualItem(w io.Writer, g triageManualGroup, bold, red, yellowBold *co
 	// in 18 copies of a file  (2)" counted the same thing twice in one line
 	// and left the reader deciding which number meant files.
 	termtext.Wrap(w, 6, triageNoteIndent, bold.Sprint(g.title))
+	// What the credential was called where jit found it, when the line said
+	// so unambiguously (assignedCredentialName). It sits with the title
+	// rather than with an address because it answers "what is this", not
+	// "where is it": a title naming only the vendor reads identically for a
+	// live release-publishing token and for a test vector, which is how a
+	// real scan (2026-08-09) buried the former among the latter.
+	if g.assignedName != "" {
+		fmt.Fprintf(w, "%s%s assigned to %s\n", triageNoteIndent, style.GlyphBranch, g.assignedName)
+	}
 	// One exemplar line per file set. A merged group keeps every one of them:
 	// the sets are different files, and collapsing them to a single exemplar
 	// would hide paths the reader has to go and fix.
@@ -641,6 +650,10 @@ type triageManualGroup struct {
 	// files is the total number of file copies the group spans, summed across
 	// merged constituents so a merged title can state the real spread.
 	files int
+	// assignedName is the variable or setting this credential was assigned to
+	// where jit found it, when every constituent agrees on one. It is what
+	// distinguishes two findings that share a vendor, and so share a title.
+	assignedName string
 	// sample and ctx are kept so a merged group can REGENERATE its action
 	// against the combined counts. Inheriting the first constituent's wording
 	// told a reader with three exposed passwords to "rotate it now".
@@ -794,6 +807,17 @@ type triageCause struct {
 	files    []string
 	seenFile map[string]bool
 	sample   Finding
+	// assignedName is the variable this credential was assigned to, taken
+	// from ANY finding in the cause rather than from sample.
+	//
+	// A cause is one credential in several places, and the places do not
+	// agree about how much they reveal: a token pasted into a prompt is bare
+	// in the paste cache and named in the transcript of the command it was
+	// pasted into. sample is chosen by severity, so keying the name off it
+	// loses the name whenever the worst sighting happens to be the bare one —
+	// which is what hid a live Homebrew-tap token behind a title identical to
+	// this repository's own test vectors (2026-08-09).
+	assignedName string
 }
 
 // causeKey is a finding's identity for grouping: its cause group, or its
@@ -865,6 +889,9 @@ func triageGroupManual(findings []Finding, home string) []triageManualGroup {
 			c.seenFile[f.FilePath] = true
 			c.files = append(c.files, f.FilePath)
 		}
+		if c.assignedName == "" {
+			c.assignedName = f.AssignedName
+		}
 		if rankOf(f.Severity) < rankOf(c.sample.Severity) {
 			c.sample = f
 		}
@@ -908,22 +935,43 @@ func triageGroupManual(findings []Finding, home string) []triageManualGroup {
 		}
 		kind, action := manualAction(worst, ctx, home)
 		out = append(out, triageManualGroup{
-			secrets:  len(p.causes),
-			critical: worst.Severity == SeverityCritical,
-			sortKey:  rankOf(worst.Severity),
-			title:    manualTitle(p.causes, p.files, worst, home),
-			details:  []string{manualDetail(p.files, worst, home)},
-			hints:    []string{manualGroupHint(worst, p.files, home, p.causes)},
-			kind:     kind,
-			action:   action,
-			noun:     manualNoun(worst),
-			files:    len(p.files),
-			sample:   worst,
-			ctx:      ctx,
+			secrets:      len(p.causes),
+			critical:     worst.Severity == SeverityCritical,
+			sortKey:      rankOf(worst.Severity),
+			title:        manualTitle(p.causes, p.files, worst, home),
+			details:      []string{manualDetail(p.files, worst, home)},
+			hints:        []string{manualGroupHint(worst, p.files, home, p.causes)},
+			kind:         kind,
+			action:       action,
+			noun:         manualNoun(worst),
+			files:        len(p.files),
+			assignedName: groupAssignedName(worst, p.causes),
+			sample:       worst,
+			ctx:          ctx,
 		})
 	}
 	sort.SliceStable(out, func(a, b int) bool { return out[a].sortKey < out[b].sortKey })
 	return mergeManualGroups(out, home)
+}
+
+// groupAssignedName is the name to show for a problem: the worst finding's
+// when it has one, otherwise the first any of its causes offers.
+//
+// The fallback is the point. A credential is frequently bare where it lives
+// and named where it was used — a token pasted into a prompt has no name in
+// the paste cache, while the transcript of the command it was pasted INTO
+// records one. The causes here are all the same credential (that is what a
+// cause group means), so a name found on any of them names all of them.
+func groupAssignedName(worst Finding, causes []*triageCause) string {
+	if worst.AssignedName != "" {
+		return worst.AssignedName
+	}
+	for _, c := range causes {
+		if c.assignedName != "" {
+			return c.assignedName
+		}
+	}
+	return ""
 }
 
 // mergeManualGroups folds groups that name the same kind of secret AND ask for
@@ -968,6 +1016,12 @@ func mergeManualGroups(groups []triageManualGroup, home string) []triageManualGr
 		m.hints = append(m.hints, g.hints...)
 		m.hintSamples = append(m.hintSamples, g.sample)
 		m.critical = m.critical || g.critical
+		// Two constituents that name different variables have no single name
+		// to show, and showing one of them would attribute the other's
+		// credential to it.
+		if m.assignedName != g.assignedName {
+			m.assignedName = ""
+		}
 		if g.sortKey < m.sortKey {
 			m.sortKey = g.sortKey
 		}

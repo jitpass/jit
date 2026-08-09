@@ -40,7 +40,7 @@ func agentFindings(f []Finding) []Finding {
 
 func TestSubstrIndexFindAll(t *testing.T) {
 	idx := newSubstrIndex([]string{"alpha", "beta", "aardvark"})
-	first, count := idx.findAll([]byte("xx alpha yy beta zz alpha"))
+	first, count, _ := idx.findAll([]byte("xx alpha yy beta zz alpha"))
 
 	if got, want := first[0], 3; got != want {
 		t.Errorf("first offset of alpha = %d, want %d", got, want)
@@ -60,7 +60,7 @@ func TestSubstrIndexFindAll(t *testing.T) {
 // the bounds check would silently drop the last credential in a file.
 func TestSubstrIndexMatchesAtBufferEnd(t *testing.T) {
 	idx := newSubstrIndex([]string{"tail"})
-	first, _ := idx.findAll([]byte("head tail"))
+	first, _, _ := idx.findAll([]byte("head tail"))
 	if got, ok := first[0]; !ok || got != 5 {
 		t.Errorf("first[tail] = %d (present=%v), want 5", got, ok)
 	}

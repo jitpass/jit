@@ -162,11 +162,20 @@ func newSubstrIndex(needles []string) *substrIndex {
 // findAll reports, for each needle present in data, the offset of its first
 // occurrence and how many times it occurs. A needle absent from data is
 // absent from both maps.
-func (s *substrIndex) findAll(data []byte) (first map[int]int, count map[int]int) {
+// name maps a needle to the variable it was assigned to, taken from the first
+// occurrence in this file that offers one — NOT necessarily the first
+// occurrence. A credential pasted into a prompt and later used in a command
+// appears twice in one transcript: bare the first time, named the second. The
+// bare sighting is the one `first` records, so keying the name off it threw
+// away the only thing that identified the credential (measured 2026-08-09 on
+// a live Homebrew-tap token). The extraction runs only on a confirmed match
+// and reads a bounded prefix, so it costs nothing on the scanning path.
+func (s *substrIndex) findAll(data []byte) (first map[int]int, count map[int]int, name map[int]string) {
 	first = map[int]int{}
 	count = map[int]int{}
+	name = map[int]string{}
 	if len(s.needles) == 0 {
-		return first, count
+		return first, count, name
 	}
 	for i := 0; i < len(data); i++ {
 		for _, idx := range s.byFirst[data[i]] {
@@ -185,10 +194,19 @@ func (s *substrIndex) findAll(data []byte) (first map[int]int, count map[int]int
 			if _, seen := first[idx]; !seen {
 				first[idx] = i
 			}
+			if name[idx] == "" {
+				lo := bytes.LastIndexByte(data[:i], '\n') + 1
+				if i-lo > credentialNameLead {
+					lo = i - credentialNameLead
+				}
+				if n := assignedCredentialName(string(data[lo:i]), i-lo); n != "" {
+					name[idx] = n
+				}
+			}
 			count[idx]++
 		}
 	}
-	return first, count
+	return first, count, name
 }
 
 // eligibleNeedle reports whether a confirmed credential value is distinctive
@@ -364,7 +382,7 @@ func crossReferenceAgentCaches(cfg Config, findings []Finding) ([]Finding, []Sca
 			if rerr != nil {
 				return nil // unreadable — skip, never fail the scan
 			}
-			first, count := index.findAll(data)
+			first, count, named := index.findAll(data)
 			if len(first) == 0 {
 				return nil
 			}
@@ -379,8 +397,10 @@ func crossReferenceAgentCaches(cfg Config, findings []Finding) ([]Finding, []Sca
 				if !hit {
 					continue
 				}
-				out = append(out, cfg.agentCachedSecretFinding(
-					path, root.label, pins[idx], data, at, count[idx], textual))
+				f := cfg.agentCachedSecretFinding(
+					path, root.label, pins[idx], data, at, count[idx], textual)
+				f.AssignedName = named[idx]
+				out = append(out, f)
 			}
 			return nil
 		})

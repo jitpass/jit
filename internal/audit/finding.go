@@ -414,6 +414,19 @@ type Finding struct {
 	// reason; this is its twin.
 	SourceExample bool `json:"source_example"`
 
+	// AssignedName is the variable or setting name this credential was
+	// assigned to where jit found it, when the line offered one that is
+	// unmistakably a label (see assignedCredentialName). It is what tells two
+	// findings of the same vendor apart: "An exposed GitHub Fine-Grained
+	// Personal Access Token" describes the pattern that matched and reads
+	// identically for a live release-publishing token and for a test vector.
+	//
+	// Deliberately NOT serialized, on EndLine's contract: it is a rendering
+	// input the report uses to make a title specific, and no consumer has
+	// asked for it. It changes no count, so unlike source_example its absence
+	// leaves nothing about the record stream unreproducible.
+	AssignedName string `json:"-"`
+
 	// Remedy says who can act on this finding: "migrate" and "wrap" mean jit
 	// can (FixCommand holds the exact command), "manual" means only the user
 	// can (rotate, delete, seal — the Evidence says which). Set centrally by
