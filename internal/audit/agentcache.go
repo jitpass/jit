@@ -162,11 +162,20 @@ func newSubstrIndex(needles []string) *substrIndex {
 // findAll reports, for each needle present in data, the offset of its first
 // occurrence and how many times it occurs. A needle absent from data is
 // absent from both maps.
-func (s *substrIndex) findAll(data []byte) (first map[int]int, count map[int]int) {
+// name maps a needle to the variable it was assigned to, taken from the first
+// occurrence in this file that offers one — NOT necessarily the first
+// occurrence. A credential pasted into a prompt and later used in a command
+// appears twice in one transcript: bare the first time, named the second. The
+// bare sighting is the one `first` records, so keying the name off it threw
+// away the only thing that identified the credential (measured 2026-08-09 on
+// a live Homebrew-tap token). The extraction runs only on a confirmed match
+// and reads a bounded prefix, so it costs nothing on the scanning path.
+func (s *substrIndex) findAll(data []byte) (first map[int]int, count map[int]int, name map[int]string) {
 	first = map[int]int{}
 	count = map[int]int{}
+	name = map[int]string{}
 	if len(s.needles) == 0 {
-		return first, count
+		return first, count, name
 	}
 	for i := 0; i < len(data); i++ {
 		for _, idx := range s.byFirst[data[i]] {
@@ -185,10 +194,30 @@ func (s *substrIndex) findAll(data []byte) (first map[int]int, count map[int]int
 			if _, seen := first[idx]; !seen {
 				first[idx] = i
 			}
+			if name[idx] == "" {
+				// Clamp to the 120-byte window BEFORE scanning for the line
+				// start, not after. LastIndexByte over data[:i] would walk
+				// backward to the previous newline across the whole file, and
+				// an agent transcript is routinely one JSON line of many
+				// megabytes with no newline to find — O(file) per occurrence,
+				// for every needle, on the exact input the comment above names.
+				// Searching only the clamped window bounds the scan to match
+				// the bounded allocation the doc promises.
+				lo := i - credentialNameLead
+				if lo < 0 {
+					lo = 0
+				}
+				if nl := bytes.LastIndexByte(data[lo:i], '\n'); nl >= 0 {
+					lo += nl + 1
+				}
+				if nm := assignedCredentialName(string(data[lo:i]), i-lo); nm != "" {
+					name[idx] = nm
+				}
+			}
 			count[idx]++
 		}
 	}
-	return first, count
+	return first, count, name
 }
 
 // eligibleNeedle reports whether a confirmed credential value is distinctive
@@ -364,7 +393,7 @@ func crossReferenceAgentCaches(cfg Config, findings []Finding) ([]Finding, []Sca
 			if rerr != nil {
 				return nil // unreadable — skip, never fail the scan
 			}
-			first, count := index.findAll(data)
+			first, count, named := index.findAll(data)
 			if len(first) == 0 {
 				return nil
 			}
@@ -379,8 +408,10 @@ func crossReferenceAgentCaches(cfg Config, findings []Finding) ([]Finding, []Sca
 				if !hit {
 					continue
 				}
-				out = append(out, cfg.agentCachedSecretFinding(
-					path, root.label, pins[idx], data, at, count[idx], textual))
+				f := cfg.agentCachedSecretFinding(
+					path, root.label, pins[idx], data, at, count[idx], textual)
+				f.AssignedName = named[idx]
+				out = append(out, f)
 			}
 			return nil
 		})
@@ -467,7 +498,7 @@ func (c Config) agentCachedSecretFinding(path, agent string, pin cacheNeedle, da
 	// finding (env_file_present) carries no digest of its own, and its several
 	// claimed values are several different secrets.
 	f.rawValue = pin.value
-	f.originPath = origin.FilePath
+	f.OriginPath = origin.FilePath
 	digest := sha256.Sum256([]byte(pin.value))
 	f.rawValueDigest = hex.EncodeToString(digest[:])
 

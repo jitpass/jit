@@ -330,3 +330,42 @@ func TestStatusNeverTouchesKeyWrapper(t *testing.T) {
 		t.Fatalf("jit status with no vault/agent/profiles set up: %v", err)
 	}
 }
+
+// TestAgentMissingBinaryLine covers the failure the build comparison beside
+// it structurally cannot see: a service whose binary was MOVED rather than
+// replaced reports the same build and version as the CLI while being unable
+// to read the keychain at all, because macOS validates a caller's code
+// signature against an on-disk file that no longer exists.
+func TestAgentMissingBinaryLine(t *testing.T) {
+	t.Run("a deleted binary is named, with the fix", func(t *testing.T) {
+		gone := filepath.Join(t.TempDir(), "jit")
+		line := agentMissingBinaryLine(gone)
+		if line == "" {
+			t.Fatalf("no finding for a service running a binary that does not exist (%s)", gone)
+		}
+		if !strings.Contains(line, gone) {
+			t.Errorf("finding does not name the path: %q", line)
+		}
+		if !strings.Contains(line, "jit service restart") {
+			t.Errorf("finding does not name the fix: %q", line)
+		}
+	})
+
+	t.Run("a binary that exists is silent", func(t *testing.T) {
+		here := filepath.Join(t.TempDir(), "jit")
+		if err := os.WriteFile(here, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if line := agentMissingBinaryLine(here); line != "" {
+			t.Errorf("reported a healthy service: %q", line)
+		}
+	})
+
+	t.Run("an unknown path is silent, not a warning", func(t *testing.T) {
+		// An agent predating the field reports "". Unknown must not render as
+		// missing, or every user on an older service sees a false alarm.
+		if line := agentMissingBinaryLine(""); line != "" {
+			t.Errorf("treated an unknown path as missing: %q", line)
+		}
+	})
+}

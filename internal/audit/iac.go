@@ -505,8 +505,32 @@ func buildTfvarsFinding(cfg Config, path string) (Finding, error) {
 			f.Evidence = fmt.Sprintf("contains %q, a variable name that looks like a real credential", leadKey)
 		}
 	default:
+		// A tfvars with no production indicator, no public IP, no
+		// vendor-format value and no secret-shaped name. The advisory stays —
+		// tfvars auto-loads on every plan/apply, so "you have one, it is
+		// clean today" is worth one Info line — but it may not promise a fix
+		// it cannot perform.
+		//
+		// It used to read "terraform variable file: `jit migrate` can move
+		// its secret values into the vault", about a file that has none, and
+		// remedy.go's default arm then stamped it RemedyMigrate with a
+		// runnable FixCommand. So `jit scan` reported a file whose own
+		// recommended command answered "Nothing to migrate" — reproduced
+		// 2026-08-09 against jitpass-playground's already-migrated tfvars.
+		// Two commands disagreeing about one file is worse than either being
+		// wrong alone.
+		//
+		// RemedyManual is set here rather than left to remedy.go, using the
+		// same "the scanner knew better" seam the wrappables use: it is what
+		// keeps FixCommand empty. Migrate's tfvars gate is
+		// audit.LooksLikeSecretKey (internal/migrate/tfvars.go's
+		// parseTfvarsLines) — the same predicate scanTfvarsAssignments used
+		// for `shaped` above, plus conditions of its own — so "nothing
+		// shaped" implies "nothing migratable", and this arm cannot be
+		// reached for a file migrate could act on.
 		f.Severity = SeverityInfo
-		f.Evidence = "terraform variable file: `jit migrate` can move its secret values into the vault"
+		f.Remedy = RemedyManual
+		f.Evidence = "terraform variable file: it auto-loads on every plan/apply, and holds no secret-shaped values right now"
 	}
 	// An UnfilteredOnly evidence line already names the whole shaped set
 	// (shapedNamesEvidence), so the "; also …" append would restate it.

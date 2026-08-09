@@ -162,9 +162,17 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 	var claimedRaw []claimedValue
 	claim := func(k, v string) { claimedRaw = append(claimedRaw, claimedValue{Key: k, Value: v}) }
 	var secretShapedKeys []string
+	// The line each category's FIRST driving hit sat on, so the file-level
+	// finding can point a reader at the variable that made it a finding rather
+	// than at a grep that re-locates it (tier 2). File-level by nature — the
+	// whole .env is the problem — so this is "start here", the lead credential's
+	// line, chosen after the loop in the same priority the severity switch uses.
+	var prodLine, ipLine, tokenLine, shapedLine, entropyLine int
+	lineNum := 0
 
 	scanner := newLineScanner(file)
 	for scanner.Scan() {
+		lineNum++
 		m := envLinePattern.FindStringSubmatch(scanner.Text())
 		if m == nil {
 			continue
@@ -181,10 +189,14 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 			continue // per RFC.md §4: already-masked values are never evaluated for these signals
 		}
 		if IsProductionIndicator(key) || IsProductionIndicator(rawValue) {
+			if !prodMatch {
+				prodLine = lineNum
+			}
 			prodMatch = true
 		}
 		if ip, ok := MatchPublicIP(rawValue); ok && !ipMatch {
 			ipMatch = true
+			ipLine = lineNum
 			publicIP = ip
 		}
 		// Checked regardless of template/comment status, same as
@@ -212,6 +224,9 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 				}
 			}
 			if !ambiguousDrop {
+				if tokenLine == 0 {
+					tokenLine = lineNum
+				}
 				tokenHits = append(tokenHits, envTokenHit{key: key, vendor: vendor, verified: verified, unfilteredReason: unfReason})
 				claim(key, rawValue)
 			}
@@ -237,7 +252,13 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 		// path-holding variables from the NAME signal only — the value checks
 		// above still run on them, so a real credential behind a public
 		// prefix is still caught.
-		if !isTemplate && m[1] == "" && rawValue != "" && LooksLikeSecretKey(key) {
+		// A secret-shaped NAME whose VALUE is only a reference (API_KEY=${X},
+		// TOKEN=$GH_TOKEN) exposes nothing at rest — the secret lives where the
+		// expansion reads it, and if that is a plaintext file jit reports it
+		// there. The name signal below is about the name; this is about the
+		// value, and a reference is not a credential. Same rule the header and
+		// connection-string scanners apply.
+		if !isTemplate && m[1] == "" && rawValue != "" && LooksLikeSecretKey(key) && !LooksLikeUnresolvedReference(rawValue) {
 			suppress, unfReason := cfg.nameGate(key)
 			if !suppress && unfReason == "" {
 				suppress, unfReason = cfg.valueGate(rawValue)
@@ -246,6 +267,9 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 			// LooksLikeHighEntropySecret applies the same two gates internally
 			// and would return false for it anyway.
 			if !suppress {
+				if !secretShaped {
+					shapedLine = lineNum
+				}
 				secretShaped = true
 				secretShapedKeys = append(secretShapedKeys, key)
 				claim(key, rawValue)
@@ -265,6 +289,7 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 			// someone happened to name the variable helpfully.
 			if !entropyMatch {
 				entropyMatch = true
+				entropyLine = lineNum
 				entropyKey = key
 				claim(key, rawValue)
 			}
@@ -308,6 +333,23 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 	f.ProductionIndicatorMatch = prodMatch
 	if ipMatch {
 		f.PublicIPMatch = &publicIP
+	}
+
+	// Point at the variable that drove the finding, in the same priority the
+	// severity switch below resolves. File-level by nature, so this is a
+	// "start here" line, not the only one; the default (a file of ordinary
+	// plaintext vars with no lead credential) stays lineless.
+	switch {
+	case prodMatch && prodLine > 0:
+		f.Line = &prodLine
+	case ipMatch && ipLine > 0:
+		f.Line = &ipLine
+	case tokenMatch && tokenLine > 0:
+		f.Line = &tokenLine
+	case secretShaped && shapedLine > 0:
+		f.Line = &shapedLine
+	case entropyMatch && entropyLine > 0:
+		f.Line = &entropyLine
 	}
 
 	switch {

@@ -451,3 +451,46 @@ func LooksLikeBareURL(v string) bool {
 	}
 	return !opaqueTokenPattern.MatchString(v)
 }
+
+// unresolvedReferenceValue matches a value that holds NO secret at rest
+// because it is entirely a reference the runtime resolves elsewhere: a shell
+// expansion (${VAR}, $VAR, $(cmd), `cmd`) or a fill-me-in placeholder
+// (<your-token>), optionally behind one auth-scheme word ("Bearer ${PAT}",
+// "token $GH_TOKEN").
+//
+// The reasoning is shellExpansionUserinfoAlt's, generalised past connection
+// strings: the credential lives wherever the expansion reads it from, which is
+// usually the right place, and if that source is a plaintext .env jit reports
+// THAT file on its own. See LooksLikeUnresolvedReference.
+var unresolvedReferenceValue = regexp.MustCompile(
+	`^(?:[A-Za-z][A-Za-z0-9_-]*\s+)?` + // optional auth scheme: "Bearer ", "token "
+		`(?:` +
+		`\$\{[^}]*\}` + `|` + // ${VAR}
+		`\$[A-Za-z_][A-Za-z0-9_]*` + `|` + // $VAR
+		`\$\([^)]*\)` + `|` + // $(command)
+		"`[^`]*`" + `|` + // `command`
+		`<[^>]*>` + // <placeholder>
+		`)$`)
+
+// LooksLikeUnresolvedReference reports whether v exposes no secret because it
+// is only a reference to one — an env expansion or a template placeholder.
+//
+// This is jit's premise made precise: it finds secrets sitting in plaintext at
+// REST, and a reference is not one. It exists because the MCP header scanner
+// flagged `Authorization: Bearer ${SNOWFLAKE_PAT_TOKEN}` — a value with no
+// secret in it — purely because the header is NAMED "Authorization" (reported
+// by a user, 2026-08-09). A header name is a signal that a value is likely a
+// credential; it is not itself a credential, and a value the runtime resolves
+// elsewhere is not exposed here.
+//
+// Hard exclusion, not a --unfiltered gate: like isPlaceholderToken, a
+// reference is not a judgment call about a real secret, it is the absence of
+// one. A trimmed empty string is not a reference (an empty value is handled by
+// the callers' own empty checks).
+func LooksLikeUnresolvedReference(v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return false
+	}
+	return unresolvedReferenceValue.MatchString(v)
+}

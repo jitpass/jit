@@ -1146,12 +1146,94 @@ func sanitizeProfileName(name string) string {
 // needed because a GUI-launched MCP host's PATH often doesn't match an
 // interactive shell's, so a bare "jit" in the rewritten command could
 // fail to launch even though it works fine from a terminal.
-func resolveJitExecutable() (string, error) {
+//
+// The absolute path it writes outlives the process that wrote it, which is
+// the whole point and also the trap: whatever binary ran `jit migrate` is
+// named in the MCP host's config permanently. Running the migration from a
+// build output, an un-installed download, or a mounted disk image therefore
+// wired a host to a path that was about to disappear — measured 2026-08-09,
+// when a migration run from a temporary build directory pointed Claude
+// Desktop's server at a binary in /private/tmp. The host then fails to launch
+// that server forever, with nothing saying why.
+//
+// So a volatile path is never written. When the running binary is durable it
+// is used as-is; when it is not, the migration REFUSES and names the path,
+// rather than writing a command guaranteed to break.
+//
+// It deliberately does NOT fall back to `exec.LookPath("jit")`. An earlier
+// version did, on the reasoning that an installed jit on PATH is "what the
+// shell means by jit" — but LookPath has no way to confirm the binary it
+// finds is even the same VERSION as the one that just wrote these profiles,
+// so it could silently point the host at an older jit that cannot parse them
+// (raised in review, 2026-08-09). Substituting a binary the user did not
+// invoke is a worse failure than refusing: refusing is one clear message and
+// one `jit upgrade`; the substitution is a wrong binary wired in silently.
+// The person running a temporary jit can re-run the installed one directly.
+// resolveJitExecutable is a package var, not a plain func, for ONE reason:
+// the test binary is itself volatile (go test builds it under $TMPDIR /
+// /var/folders), so realResolveJitExecutable correctly refuses when called
+// from it — which would break every migrate-category test that records jit's
+// path (AWS credential_process, kubeconfig, docker/git helpers, terraform,
+// MCP). A shared test init swaps this for a stub returning a stable path;
+// production always runs the real one. The two unit tests that exercise the
+// refusal call realResolveJitExecutable directly, so the real logic stays
+// covered.
+var resolveJitExecutable = realResolveJitExecutable
+
+func realResolveJitExecutable() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
-	return filepath.EvalSymlinks(exe)
+	resolved, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		return "", err
+	}
+	if volatileExecutablePath(resolved) {
+		return "", fmt.Errorf("this jit is running from a temporary or removable location (%s); "+
+			"an MCP config records jit's absolute path, so migrating now would point the host at a binary that is about to disappear — "+
+			"install jit to a permanent location (Homebrew, or move the release binary onto your PATH) and re-run from there", resolved)
+	}
+	return resolved, nil
+}
+
+// volatileExecutableRoots are directory trees a jit binary should not be run
+// from for a migration that records its path: the per-user and system temp
+// directories (a `go build`/`go run` output lands under TempDir), mounted
+// volumes (the "ran it straight out of the downloaded disk image" case), and
+// ~/Downloads (the un-installed release tarball, run in place before the
+// install step moves it onto PATH — the literal shape of jit's own download).
+//
+// Deliberately a location test rather than a writability or ownership test.
+// The question is not whether the file can be modified, it is whether the
+// PATH will still resolve to a jit binary next week, and only the location
+// answers that.
+//
+// ~/Downloads is added rather than a bare "Downloads" match so a project
+// directory literally named Downloads elsewhere is not swept in. A jit truly
+// installed onto a secondary /Volumes disk is the one legitimate case this
+// refuses; that is rare, the refusal explains itself, and it is the correct
+// side to err on against the far commoner run-from-DMG.
+func volatileExecutableRoots() []string {
+	roots := []string{os.TempDir(), "/tmp", "/private/tmp", "/var/folders", "/private/var/folders", "/Volumes"}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		roots = append(roots, filepath.Join(home, "Downloads"))
+	}
+	return roots
+}
+
+// volatileExecutablePath reports whether p sits inside one of those trees.
+func volatileExecutablePath(p string) bool {
+	for _, root := range volatileExecutableRoots() {
+		root = filepath.Clean(root)
+		if root == "" || root == "." || root == string(filepath.Separator) {
+			continue
+		}
+		if p == root || strings.HasPrefix(p, root+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // mcpEnvFile is one --env-file target read before anything was rewritten:

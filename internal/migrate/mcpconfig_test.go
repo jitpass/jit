@@ -1225,3 +1225,61 @@ func TestClaudeCodeStoreDegradesSafelyOnMangledProjects(t *testing.T) {
 		t.Error("the unparseable block was modified")
 	}
 }
+
+// TestVolatileExecutablePath pins the location test behind resolveJitExecutable.
+func TestVolatileExecutablePath(t *testing.T) {
+	volatile := []string{
+		"/tmp/jit",
+		"/private/tmp/build/jit",
+		"/var/folders/xy/T/go-build123/b001/exe/jit",
+		"/Volumes/jit-0.82.0/jit",
+	}
+	// The un-installed release tarball, run in place from ~/Downloads before
+	// the install step moves it onto PATH — jit's own download shape.
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		volatile = append(volatile, filepath.Join(home, "Downloads", "jit"))
+	}
+	for _, p := range volatile {
+		if !volatileExecutablePath(p) {
+			t.Errorf("%q was treated as a durable install location", p)
+		}
+	}
+	durable := []string{
+		"/usr/local/bin/jit",
+		"/opt/homebrew/bin/jit",
+		"/opt/homebrew/Caskroom/jitpass/0.82.0/jit",
+		"/Users/alex/go/bin/jit",
+	}
+	for _, p := range durable {
+		if volatileExecutablePath(p) {
+			t.Errorf("%q was treated as temporary", p)
+		}
+	}
+	// A prefix must not match across a name boundary: /tmpfoo is not /tmp.
+	if volatileExecutablePath("/tmpfoo/jit") {
+		t.Error("/tmpfoo/jit matched the /tmp root on a bare string prefix")
+	}
+}
+
+// TestResolveJitExecutableNeverReturnsAVolatilePath is the guard that matters:
+// the path this returns is written into an MCP host's config and outlives the
+// process, so it must name a binary that will still exist.
+//
+// The test binary itself runs from /var/folders, so this exercises the
+// fallback for free — os.Executable() is volatile here by construction.
+func TestResolveJitExecutableNeverReturnsAVolatilePath(t *testing.T) {
+	got, err := realResolveJitExecutable()
+	if err != nil {
+		// Refusing is the correct outcome when nothing durable exists, and
+		// the message has to say why rather than surfacing a bare failure.
+		for _, want := range []string{"temporary or removable location", "install jit"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("refusal does not explain itself (%q missing): %v", want, err)
+			}
+		}
+		return
+	}
+	if volatileExecutablePath(got) {
+		t.Errorf("returned %q, which is inside a directory whose contents disappear", got)
+	}
+}
