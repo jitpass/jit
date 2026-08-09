@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -1146,12 +1147,71 @@ func sanitizeProfileName(name string) string {
 // needed because a GUI-launched MCP host's PATH often doesn't match an
 // interactive shell's, so a bare "jit" in the rewritten command could
 // fail to launch even though it works fine from a terminal.
+//
+// The absolute path it writes outlives the process that wrote it, which is
+// the whole point and also the trap: whatever binary ran `jit migrate` is
+// named in the MCP host's config permanently. Running the migration from a
+// build output, an un-installed download, or a mounted disk image therefore
+// wired a host to a path that was about to disappear — measured 2026-08-09,
+// when a migration run from a temporary build directory pointed Claude
+// Desktop's server at a binary in /private/tmp. The host then fails to launch
+// that server forever, with nothing saying why.
+//
+// So a volatile path is never written. A jit that is properly installed
+// somewhere on PATH is preferred over the running binary in that case, and
+// when neither is durable the migration REFUSES rather than writing a
+// command that is guaranteed to break. Failing here costs the user one
+// `jit upgrade`; failing silently costs them a working MCP server and a long
+// hunt.
 func resolveJitExecutable() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
-	return filepath.EvalSymlinks(exe)
+	resolved, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		return "", err
+	}
+	if !volatileExecutablePath(resolved) {
+		return resolved, nil
+	}
+	// The running binary is somewhere temporary. An installed one on PATH is
+	// the honest answer: it is what the user's shell means by "jit", and it
+	// will still be there tomorrow.
+	if onPath, lookErr := exec.LookPath("jit"); lookErr == nil {
+		if stable, symErr := filepath.EvalSymlinks(onPath); symErr == nil && !volatileExecutablePath(stable) {
+			return stable, nil
+		}
+	}
+	return "", fmt.Errorf("this jit is running from a temporary location (%s) and no installed jit was found on PATH; "+
+		"an MCP config records jit's absolute path, so migrating now would point the host at a binary that is about to disappear — "+
+		"install jit first, then re-run", resolved)
+}
+
+// volatileExecutableRoots are directory trees whose contents are expected to
+// disappear: the per-user and system temp directories, and mounted volumes
+// (the "ran it straight out of the downloaded disk image" case).
+//
+// Deliberately a location test rather than a writability or ownership test.
+// The question is not whether the file can be modified, it is whether the
+// PATH will still resolve to a jit binary next week, and only the location
+// answers that.
+func volatileExecutableRoots() []string {
+	return []string{os.TempDir(), "/tmp", "/private/tmp", "/var/folders", "/private/var/folders", "/Volumes"}
+}
+
+// volatileExecutablePath reports whether p sits inside one of those trees.
+func volatileExecutablePath(p string) bool {
+	for _, root := range volatileExecutableRoots() {
+		root = filepath.Clean(root)
+		if root == "" || root == "." || root == string(filepath.Separator) {
+			continue
+		}
+		if p == root || strings.HasPrefix(p, root+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // mcpEnvFile is one --env-file target read before anything was rewritten:

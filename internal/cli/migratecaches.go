@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -173,9 +174,68 @@ func renderAgentCleanupResult(w io.Writer, home string, c migrate.AgentCacheClea
 		for _, agent := range sortedAgents(c.Edited) {
 			fmt.Fprintf(w, "    %-14s %s\n", agent, agentAreaBreakdown(editsByAgentArea(c.Edited), agent))
 		}
-		fmt.Fprintln(w, hlCmds("    each replaced by a `<jit:redacted:VAR>` marker; `jit migrate undo` restores the file"))
+		// Naming the files, because undo cannot find them on its own. These
+		// are separate paths from the one the user migrated, and
+		// `jit migrate undo <that file>` restores only what it is pointed at
+		// (selectBackups is deliberately explicit — see GAPS.md #21/#25). The
+		// old wording, "`jit migrate undo` restores the file", read as a
+		// promise that undoing the migration reversed this too; it does not,
+		// and a real run left ten redacted spans in a transcript after an undo
+		// the user reasonably believed was complete (measured 2026-08-09).
+		fmt.Fprintln(w, hlCmds("    each replaced by a `<jit:redacted:VAR>` marker"))
+		fmt.Fprintln(w, "    these are separate files: undoing the migrated file does not restore them")
+		fmt.Fprint(w, "    "+cPath.Sprint(glyphAction)+" ")
+		fmt.Fprintln(w, cPath.Sprint(agentCleanupUndoCommand(home, c.Edited)))
 	}
 	renderAgentSkips(w, c)
+}
+
+// maxNamedCleanupPaths is how many paths the undo command spells out before
+// it collapses to the agent directories holding them. Past a handful the line
+// stops being something a reader can check and becomes something they paste
+// blind.
+const maxNamedCleanupPaths = 3
+
+// agentCleanupUndoCommand is the exact command that restores the files this
+// sweep rewrote — the thing the old one-liner assumed the reader could
+// derive, and could not: these paths are hash-named files inside an agent's
+// private cache, and nothing else in the report names them.
+func agentCleanupUndoCommand(home string, edits []migrate.AgentCacheEdit) string {
+	seen := map[string]bool{}
+	var paths []string
+	for _, e := range edits {
+		if e.Path == "" || seen[e.Path] {
+			continue
+		}
+		seen[e.Path] = true
+		paths = append(paths, displayPath(home, e.Path))
+	}
+	sort.Strings(paths)
+	if len(paths) > maxNamedCleanupPaths {
+		paths = agentDirsOf(paths)
+	}
+	return "jit migrate undo " + strings.Join(paths, " ")
+}
+
+// agentDirsOf reduces display paths to the distinct "~/<agent dir>" roots
+// holding them, so a long list still names everything without printing
+// everything. `jit migrate undo` walks a directory argument, so the shorter
+// command restores the same set.
+func agentDirsOf(paths []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range paths {
+		root := p
+		if parts := strings.SplitN(p, "/", 3); len(parts) >= 2 {
+			root = parts[0] + "/" + parts[1]
+		}
+		if !seen[root] {
+			seen[root] = true
+			out = append(out, root)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // renderAgentSkips prints the copies jit found but deliberately did not touch,

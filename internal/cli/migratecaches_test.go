@@ -66,3 +66,53 @@ func TestRenderAgentCleanupPlan(t *testing.T) {
 		t.Errorf("plan must not claim work was done:\n%s", out)
 	}
 }
+
+// TestAgentCleanupUndoCommandNamesTheFiles pins the fix for a real gap: the
+// sweep rewrites files OUTSIDE the path the user migrated, and
+// `jit migrate undo <that path>` restores only what it is pointed at. The old
+// line read "`jit migrate undo` restores the file", which a reader reasonably
+// took as covering these; it did not, and ten redacted spans survived an undo
+// the user believed was complete.
+func TestAgentCleanupUndoCommandNamesTheFiles(t *testing.T) {
+	const home = "/Users/alex"
+
+	t.Run("a few files are named outright", func(t *testing.T) {
+		cmd := agentCleanupUndoCommand(home, []migrate.AgentCacheEdit{
+			{Path: home + "/.claude/projects/p/a.jsonl"},
+			{Path: home + "/.claude/history.jsonl"},
+		})
+		for _, want := range []string{"jit migrate undo", "~/.claude/history.jsonl", "~/.claude/projects/p/a.jsonl"} {
+			if !strings.Contains(cmd, want) {
+				t.Errorf("command %q missing %q", cmd, want)
+			}
+		}
+	})
+
+	t.Run("many files collapse to the agent directories, still covering them", func(t *testing.T) {
+		var edits []migrate.AgentCacheEdit
+		for _, n := range []string{"a", "b", "c", "d", "e"} {
+			edits = append(edits, migrate.AgentCacheEdit{Path: home + "/.claude/projects/p/" + n + ".jsonl"})
+		}
+		edits = append(edits, migrate.AgentCacheEdit{Path: home + "/.cursor/cache/x.json"})
+		cmd := agentCleanupUndoCommand(home, edits)
+		for _, want := range []string{"~/.claude", "~/.cursor"} {
+			if !strings.Contains(cmd, want) {
+				t.Errorf("command %q does not cover %q", cmd, want)
+			}
+		}
+		// The point of collapsing is brevity; a per-file list defeats it.
+		if strings.Contains(cmd, "a.jsonl") {
+			t.Errorf("command still enumerates every file: %q", cmd)
+		}
+	})
+
+	t.Run("duplicate paths are named once", func(t *testing.T) {
+		cmd := agentCleanupUndoCommand(home, []migrate.AgentCacheEdit{
+			{Path: home + "/.claude/history.jsonl"},
+			{Path: home + "/.claude/history.jsonl"},
+		})
+		if strings.Count(cmd, "history.jsonl") != 1 {
+			t.Errorf("path repeated: %q", cmd)
+		}
+	})
+}
