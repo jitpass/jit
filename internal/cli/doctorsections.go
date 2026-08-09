@@ -391,6 +391,12 @@ func agentFindingsFrom(root string, st statusAgent) []checkFinding {
 	if warn := agentBuildMismatchLine(st.Build); warn != "" {
 		out = append(out, checkFinding{Kind: kindService, Detail: warn})
 	}
+	// Checked separately from the build mismatch above, and reported even
+	// when that one already fired: they are different failures with the same
+	// fix, and this one takes the vault down completely.
+	if warn := agentMissingBinaryLine(st.ExecutablePath); warn != "" {
+		out = append(out, checkFinding{Kind: kindService, Detail: warn})
+	}
 
 	switch {
 	case st.Error != "":

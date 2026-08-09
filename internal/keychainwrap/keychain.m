@@ -116,6 +116,31 @@ KWResult kw_ensure_mek(const char *service, const char *account, int keySize) {
     return r;
 }
 
+// kwPOSIXENOENT is how macOS reports "the calling process's executable is
+// gone" from a keychain lookup. Security.framework maps POSIX errno values
+// into OSStatus as kPOSIXErrorBase + errno (kPOSIXErrorBase is 100000), so
+// ENOENT arrives as 100002 rather than as any errSec* constant.
+//
+// It reaches us for one reason, and it is not "the item is missing": macOS
+// validates the caller's code signature against its on-disk binary before
+// honouring a keychain ACL, and if that file has been deleted there is
+// nothing to read. The long-running service is the process this happens to —
+// a jit upgrade that MOVES the binary (the tarball at /usr/local/bin/jit
+// giving way to a Homebrew cask at /opt/homebrew/bin/jit) leaves the running
+// service holding a path that no longer exists, and every vault write then
+// fails.
+//
+// Grouped with errSecAuthFailed because the user-visible cause and the fix
+// are identical — the binary underneath a running process is not the one the
+// keychain approved. Only the flavour differs: errSecAuthFailed is a binary
+// REPLACED in place, this is one REMOVED. Reported as a bare number until
+// 2026-08-09, when a real machine hit it during exactly the tarball-to-cask
+// move the 0.82.0 release introduced.
+//
+// Spelled out rather than including <MacTypes.h> for kPOSIXErrorBase: one
+// constant used once, and the arithmetic is the documentation.
+static const OSStatus kwPOSIXENOENT = 100000 + 2;
+
 KWResult kw_fetch_mek(const char *service, const char *account, unsigned char **key, int *key_len) {
     KWResult r = {0, NULL};
     @autoreleasepool {
@@ -140,8 +165,8 @@ KWResult kw_fetch_mek(const char *service, const char *account, unsigned char **
             // message naming the actual fix.
             if (status == errSecItemNotFound) {
                 r.error_message = dupNSString(@"no master key stored in the keychain — was \"jit vault init\" run?");
-            } else if (status == errSecAuthFailed) {
-                r.error_message = dupNSString([NSString stringWithFormat:@"macOS denied this process access to the master key (OSStatus=%d) — the jit binary usually changed since this process started (or its keychain approval was declined); restart it on the current binary (`jit agent install` for the agent) and approve the keychain dialog", (int)status]);
+            } else if (status == errSecAuthFailed || status == kwPOSIXENOENT) {
+                r.error_message = dupNSString([NSString stringWithFormat:@"macOS denied this process access to the master key (OSStatus=%d) — the jit binary this process is running usually changed or was removed since it started (or its keychain approval was declined); run `jit service restart` and approve the keychain dialog", (int)status]);
             } else {
                 r.error_message = dupNSString([NSString stringWithFormat:@"reading the master key from the keychain failed, OSStatus=%d", (int)status]);
             }

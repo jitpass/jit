@@ -534,6 +534,17 @@ func (s *Server) handleConn(conn net.Conn) {
 	_ = json.NewEncoder(conn).Encode(resp)
 }
 
+// currentExecutablePath is this process's own binary path, "" when the OS
+// declines to say. Best-effort by design: it feeds a diagnostic, and a
+// status call must never fail because the answer was unavailable.
+func currentExecutablePath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return exe
+}
+
 func (s *Server) handle(req Request, c *caller) Response {
 	switch req.Op {
 	case OpStatus:
@@ -543,7 +554,7 @@ func (s *Server) handle(req Request, c *caller) Response {
 			mounts = s.OnMountStatus()
 		}
 		lastUnlock, lastLock := s.provenance()
-		return Response{OK: true, Unlocked: unlocked, ExpiresInSeconds: int64(remaining.Seconds()), Mounts: mounts, LastUnlock: lastUnlock, LastLock: lastLock, PendingUnlock: s.pendingUnlock(), Build: BuildID(), Version: Version()}
+		return Response{OK: true, Unlocked: unlocked, ExpiresInSeconds: int64(remaining.Seconds()), Mounts: mounts, LastUnlock: lastUnlock, LastLock: lastLock, PendingUnlock: s.pendingUnlock(), Build: BuildID(), Version: Version(), ExecutablePath: currentExecutablePath()}
 	case OpHistory:
 		// Deliberately no ensureUnlocked: reading which prompts have already
 		// happened must never itself cause one. An agent you can't ask "why do
