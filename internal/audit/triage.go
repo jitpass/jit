@@ -1775,7 +1775,7 @@ const (
 	kindSelfRotating   = "sign out and back in"
 	kindTerraformState = "get secrets out of Terraform state"
 	kindSeal           = "seal it"
-	kindAgentCopies    = "rotate — jit migrate will not reach these copies"
+	kindAgentCopies    = "rotate — an agent kept its own copies"
 	kindKeyByHand      = "delete by hand"
 	kindHistoryLine    = "rotate, then clear the line"
 	kindRotateDelete   = "rotate, then delete every copy"
@@ -1841,15 +1841,22 @@ func manualAction(f Finding, ctx manualContext, home string) (kind, action strin
 	case f.FindingType == FindingTypeIACVariableFile:
 		return kindSeal, "seal it (sealed-secrets/SOPS) or move it to a real secret store"
 	case f.FindingType == FindingTypeAgentCachedSecret:
-		// Rotation leads, and the second clause is the part that surprises
-		// people: `jit migrate` rewrites the file the credential lives in and
-		// does not touch the agent's copies, so a reader who runs it and
-		// re-scans would otherwise think jit had lost the finding.
+		// Rotation leads because it is the fix: the credential sat in an
+		// agent's cache in plaintext, and clearing a copy does not un-expose
+		// what was already readable.
+		//
+		// The second clause used to say `jit migrate` "cleans the file above,
+		// not these copies". That was false, and had been for as long as
+		// migrate called CleanAgentCaches: migrating the origin vaults the
+		// value AND replaces every cached copy of it with a
+		// <jit:redacted:VAR> marker. A real run cleared ten of them while the
+		// scan was still promising it would not (measured 2026-08-09) — the
+		// same shape of scan-contradicts-migrate the tfvars advisory had.
 		above := "the file above"
 		if ctx.copies > 0 && ctx.secrets > 1 {
 			above = "the files above"
 		}
-		return kindAgentCopies, fmt.Sprintf("rotate %s now; jit migrate cleans %s, not these copies", them, above)
+		return kindAgentCopies, fmt.Sprintf("rotate %s now — migrating %s clears these copies too", them, above)
 	case f.FindingType == FindingTypeShellHistorySecret && f.KeyName != nil && IsPrivateKeyVendor(*f.KeyName):
 		// A key is not a token: there is no provider to rotate it at, and the
 		// line jit matched is the header, so the body is still on the lines
