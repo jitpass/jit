@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -1157,13 +1156,31 @@ func sanitizeProfileName(name string) string {
 // Desktop's server at a binary in /private/tmp. The host then fails to launch
 // that server forever, with nothing saying why.
 //
-// So a volatile path is never written. A jit that is properly installed
-// somewhere on PATH is preferred over the running binary in that case, and
-// when neither is durable the migration REFUSES rather than writing a
-// command that is guaranteed to break. Failing here costs the user one
-// `jit upgrade`; failing silently costs them a working MCP server and a long
-// hunt.
-func resolveJitExecutable() (string, error) {
+// So a volatile path is never written. When the running binary is durable it
+// is used as-is; when it is not, the migration REFUSES and names the path,
+// rather than writing a command guaranteed to break.
+//
+// It deliberately does NOT fall back to `exec.LookPath("jit")`. An earlier
+// version did, on the reasoning that an installed jit on PATH is "what the
+// shell means by jit" — but LookPath has no way to confirm the binary it
+// finds is even the same VERSION as the one that just wrote these profiles,
+// so it could silently point the host at an older jit that cannot parse them
+// (raised in review, 2026-08-09). Substituting a binary the user did not
+// invoke is a worse failure than refusing: refusing is one clear message and
+// one `jit upgrade`; the substitution is a wrong binary wired in silently.
+// The person running a temporary jit can re-run the installed one directly.
+// resolveJitExecutable is a package var, not a plain func, for ONE reason:
+// the test binary is itself volatile (go test builds it under $TMPDIR /
+// /var/folders), so realResolveJitExecutable correctly refuses when called
+// from it — which would break every migrate-category test that records jit's
+// path (AWS credential_process, kubeconfig, docker/git helpers, terraform,
+// MCP). A shared test init swaps this for a stub returning a stable path;
+// production always runs the real one. The two unit tests that exercise the
+// refusal call realResolveJitExecutable directly, so the real logic stays
+// covered.
+var resolveJitExecutable = realResolveJitExecutable
+
+func realResolveJitExecutable() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
@@ -1172,32 +1189,37 @@ func resolveJitExecutable() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !volatileExecutablePath(resolved) {
-		return resolved, nil
+	if volatileExecutablePath(resolved) {
+		return "", fmt.Errorf("this jit is running from a temporary or removable location (%s); "+
+			"an MCP config records jit's absolute path, so migrating now would point the host at a binary that is about to disappear — "+
+			"install jit to a permanent location (Homebrew, or move the release binary onto your PATH) and re-run from there", resolved)
 	}
-	// The running binary is somewhere temporary. An installed one on PATH is
-	// the honest answer: it is what the user's shell means by "jit", and it
-	// will still be there tomorrow.
-	if onPath, lookErr := exec.LookPath("jit"); lookErr == nil {
-		if stable, symErr := filepath.EvalSymlinks(onPath); symErr == nil && !volatileExecutablePath(stable) {
-			return stable, nil
-		}
-	}
-	return "", fmt.Errorf("this jit is running from a temporary location (%s) and no installed jit was found on PATH; "+
-		"an MCP config records jit's absolute path, so migrating now would point the host at a binary that is about to disappear — "+
-		"install jit first, then re-run", resolved)
+	return resolved, nil
 }
 
-// volatileExecutableRoots are directory trees whose contents are expected to
-// disappear: the per-user and system temp directories, and mounted volumes
-// (the "ran it straight out of the downloaded disk image" case).
+// volatileExecutableRoots are directory trees a jit binary should not be run
+// from for a migration that records its path: the per-user and system temp
+// directories (a `go build`/`go run` output lands under TempDir), mounted
+// volumes (the "ran it straight out of the downloaded disk image" case), and
+// ~/Downloads (the un-installed release tarball, run in place before the
+// install step moves it onto PATH — the literal shape of jit's own download).
 //
 // Deliberately a location test rather than a writability or ownership test.
 // The question is not whether the file can be modified, it is whether the
 // PATH will still resolve to a jit binary next week, and only the location
 // answers that.
+//
+// ~/Downloads is added rather than a bare "Downloads" match so a project
+// directory literally named Downloads elsewhere is not swept in. A jit truly
+// installed onto a secondary /Volumes disk is the one legitimate case this
+// refuses; that is rare, the refusal explains itself, and it is the correct
+// side to err on against the far commoner run-from-DMG.
 func volatileExecutableRoots() []string {
-	return []string{os.TempDir(), "/tmp", "/private/tmp", "/var/folders", "/private/var/folders", "/Volumes"}
+	roots := []string{os.TempDir(), "/tmp", "/private/tmp", "/var/folders", "/private/var/folders", "/Volumes"}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		roots = append(roots, filepath.Join(home, "Downloads"))
+	}
+	return roots
 }
 
 // volatileExecutablePath reports whether p sits inside one of those trees.

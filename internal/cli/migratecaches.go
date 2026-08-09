@@ -226,8 +226,17 @@ func agentDirsOf(paths []string) []string {
 	var out []string
 	for _, p := range paths {
 		root := p
-		if parts := strings.SplitN(p, "/", 3); len(parts) >= 2 {
-			root = parts[0] + "/" + parts[1]
+		// Only collapse a "~/<agent>/…" display path to "~/<agent>". An
+		// ABSOLUTE path (displayPath returns one unchanged when it is not
+		// under home — a symlinked or overridden HOME) begins with "/", so
+		// SplitN would take its first two components and yield "/Users",
+		// turning the printed command into `jit migrate undo /Users` — a
+		// paste-ready command aimed at a whole tree. Leave any non-"~/" path
+		// whole; a handful of full paths beats one dangerous short one.
+		if strings.HasPrefix(p, "~/") {
+			if parts := strings.SplitN(p, "/", 3); len(parts) >= 2 {
+				root = parts[0] + "/" + parts[1]
+			}
 		}
 		if !seen[root] {
 			seen[root] = true

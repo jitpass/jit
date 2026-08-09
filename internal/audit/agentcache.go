@@ -195,12 +195,23 @@ func (s *substrIndex) findAll(data []byte) (first map[int]int, count map[int]int
 				first[idx] = i
 			}
 			if name[idx] == "" {
-				lo := bytes.LastIndexByte(data[:i], '\n') + 1
-				if i-lo > credentialNameLead {
-					lo = i - credentialNameLead
+				// Clamp to the 120-byte window BEFORE scanning for the line
+				// start, not after. LastIndexByte over data[:i] would walk
+				// backward to the previous newline across the whole file, and
+				// an agent transcript is routinely one JSON line of many
+				// megabytes with no newline to find — O(file) per occurrence,
+				// for every needle, on the exact input the comment above names.
+				// Searching only the clamped window bounds the scan to match
+				// the bounded allocation the doc promises.
+				lo := i - credentialNameLead
+				if lo < 0 {
+					lo = 0
 				}
-				if n := assignedCredentialName(string(data[lo:i]), i-lo); n != "" {
-					name[idx] = n
+				if nl := bytes.LastIndexByte(data[lo:i], '\n'); nl >= 0 {
+					lo += nl + 1
+				}
+				if nm := assignedCredentialName(string(data[lo:i]), i-lo); nm != "" {
+					name[idx] = nm
 				}
 			}
 			count[idx]++
