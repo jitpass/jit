@@ -71,19 +71,24 @@ type serveAuditor struct {
 // Chosen against the two failure modes, not for a round number. Too short and
 // a watcher loop still floods the trail: at readLogMinGap's 30s a single
 // looping mount would mint 2,880 events a day, enough to evict a week of real
-// unlocks. Too long and `jit audit --follow` stops being a live view of what
-// is reading your credentials, which is most of the point of recording it.
-// Two minutes keeps a looping mount to ~720 events/day worst case while still
-// surfacing a read well inside the time it takes to notice something is off.
-const serveAuditWindow = 2 * time.Minute
+// unlocks. Too long and the trail stops being a live view of what is reading
+// your credentials. An hour holds a looping mount to ~24 events/day — noise a
+// year of history absorbs without evicting anything — and the latency cost
+// lands only on the SECOND read and later: the first read of a fresh
+// (mount, reader, verdict) opens a new aggregate, and an aggregate is written
+// as soon as its window closes, so a lone decoy probe still surfaces, once,
+// about an hour after it happened. What the width actually buys is that the
+// 3,599 reads behind it become a count instead of a line each.
+const serveAuditWindow = time.Hour
 
 // serveAuditFlushInterval paces the background flush. An aggregate is written
 // when its window closes even if nothing reads the mount again — without this
 // a single decoy read on an otherwise idle machine would sit unwritten until
 // the next lock or shutdown, which is precisely the read most worth seeing
-// promptly. Deliberately finer than serveAuditWindow so an aggregate is never
-// held much past it.
-const serveAuditFlushInterval = 15 * time.Second
+// promptly. A minute of slack against an hour-wide window is nothing, and a
+// once-a-minute wake is what a long-lived launchd service can afford to
+// spend on bookkeeping.
+const serveAuditFlushInterval = time.Minute
 
 // maxPendingServes bounds the pending map. The ordinary key space is small
 // (mounts × live readers), but a burst of short-lived readers each get their
