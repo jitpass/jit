@@ -427,6 +427,15 @@ type Finding struct {
 	// leaves nothing about the record stream unreproducible.
 	AssignedName string `json:"-"`
 
+	// Occurrences is how many times this finding's vendor format appears in
+	// this file. One finding covers all of them (record_id is
+	// type+path+key_name, so a second would collide), and the reader still
+	// needs to know whether the line named below is the only one.
+	//
+	// Not serialized, on EndLine's contract: a rendering input that changes no
+	// count. Zero means "not counted", not "one".
+	Occurrences int `json:"-"`
+
 	// Remedy says who can act on this finding: "migrate" and "wrap" mean jit
 	// can (FixCommand holds the exact command), "manual" means only the user
 	// can (rotate, delete, seal — the Evidence says which). Set centrally by
