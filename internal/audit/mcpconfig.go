@@ -234,6 +234,13 @@ func scanMCPConfigFile(cfg Config, path string) ([]Finding, error) {
 			if envValue == "" {
 				continue
 			}
+			// A value that is only a reference (FOO=${BAR}, TOKEN=$GH_TOKEN)
+			// holds no secret here — the runtime resolves it elsewhere, and if
+			// that source is a plaintext file jit reports it there. Same rule
+			// the header and connection-string scanners apply.
+			if LooksLikeUnresolvedReference(envValue) {
+				continue
+			}
 
 			severity, confidence, evidence := SeverityHigh, ConfidenceHigh,
 				fmt.Sprintf("embedded directly in MCP server %q's env block", serverName)
@@ -425,6 +432,14 @@ func scanMCPServerHeaders(cfg Config, path, serverName string, entry mcpServerEn
 		named := mcpCredentialHeaderNames[strings.ToLower(strings.TrimSpace(header))]
 		vendor, _, tokenOK := MatchKnownTokenPattern(value)
 		if !named && !tokenOK {
+			continue
+		}
+		// A header whose value is only a reference — "Bearer ${PAT}",
+		// "token $GH" — exposes no secret at rest, whatever the header is
+		// named. jit finds secrets, not headers: the name is a signal, not
+		// the finding. (Reported 2026-08-09 on a Snowflake Authorization
+		// header carrying ${SNOWFLAKE_PAT_TOKEN}.)
+		if LooksLikeUnresolvedReference(value) {
 			continue
 		}
 		evidence := fmt.Sprintf("sent as the %q header by MCP server %q; jit can't inject into a header the host itself sends", header, serverName)

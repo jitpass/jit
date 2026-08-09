@@ -516,3 +516,57 @@ func TestEnvFindingCarriesALine(t *testing.T) {
 		t.Errorf("line = %v, want 3 (the production-indicator variable)", f.Line)
 	}
 }
+
+// TestUnresolvedReferenceIsNotASecret pins jit's premise for the header/env
+// scanners: a value that only REFERENCES a secret (a shell expansion, a
+// placeholder) is not a secret at rest, however the header is named. A real
+// token — even an opaque one behind "Bearer " — still is.
+func TestUnresolvedReferenceIsNotASecret(t *testing.T) {
+	refs := []string{
+		"${SNOWFLAKE_PAT_TOKEN}",
+		"Bearer ${SNOWFLAKE_PAT_TOKEN}",
+		"$GH_TOKEN",
+		"token $GH_TOKEN",
+		"$(op read op://vault/item/token)",
+		"`cat ~/.token`",
+		"<your-token-here>",
+		"Bearer <PASTE_TOKEN>",
+	}
+	for _, v := range refs {
+		if !LooksLikeUnresolvedReference(v) {
+			t.Errorf("%q should be a reference, not a secret", v)
+		}
+	}
+	secrets := []string{
+		"Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc",
+		"ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+		"Bearer 8f3a9c2b1d4e6f7a0b9c8d7e6f5a4b3c2d1e0f9a",
+		"sk-proj-abcdefghijklmnopqrstuvwxyz",
+		"", // empty is handled by callers, not a reference
+		"Bearer",
+	}
+	for _, v := range secrets {
+		if LooksLikeUnresolvedReference(v) {
+			t.Errorf("%q was wrongly treated as a mere reference", v)
+		}
+	}
+}
+
+// TestRealHeaderTokenStillFlagged is the other-direction guard: dropping
+// references must not blind the header scanner to a genuine opaque token.
+func TestRealHeaderTokenStillFlagged(t *testing.T) {
+	entry := mcpServerEntry{Headers: map[string]string{
+		"Authorization": "Bearer ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+	}}
+	got := scanMCPServerHeaders(Config{}, "/x/mcp.json", "srv", entry)
+	if len(got) != 1 {
+		t.Fatalf("a real token in an Authorization header must be flagged, got %d findings", len(got))
+	}
+	// And the reference form produces nothing.
+	ref := mcpServerEntry{Headers: map[string]string{
+		"Authorization": "Bearer ${SNOWFLAKE_PAT_TOKEN}",
+	}}
+	if got := scanMCPServerHeaders(Config{}, "/x/mcp.json", "srv", ref); len(got) != 0 {
+		t.Errorf("a ${...} reference must not be flagged, got %d findings", len(got))
+	}
+}

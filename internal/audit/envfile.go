@@ -252,7 +252,13 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 		// path-holding variables from the NAME signal only — the value checks
 		// above still run on them, so a real credential behind a public
 		// prefix is still caught.
-		if !isTemplate && m[1] == "" && rawValue != "" && LooksLikeSecretKey(key) {
+		// A secret-shaped NAME whose VALUE is only a reference (API_KEY=${X},
+		// TOKEN=$GH_TOKEN) exposes nothing at rest — the secret lives where the
+		// expansion reads it, and if that is a plaintext file jit reports it
+		// there. The name signal below is about the name; this is about the
+		// value, and a reference is not a credential. Same rule the header and
+		// connection-string scanners apply.
+		if !isTemplate && m[1] == "" && rawValue != "" && LooksLikeSecretKey(key) && !LooksLikeUnresolvedReference(rawValue) {
 			suppress, unfReason := cfg.nameGate(key)
 			if !suppress && unfReason == "" {
 				suppress, unfReason = cfg.valueGate(rawValue)
