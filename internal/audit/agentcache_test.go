@@ -115,8 +115,8 @@ func TestCrossReferenceFindsEnvSecretCopiedIntoAgentCache(t *testing.T) {
 		if f.Remedy != RemedyManual {
 			t.Errorf("remedy = %q, want %q — jit migrate does not clean these yet", f.Remedy, RemedyManual)
 		}
-		if f.originPath != filepath.Join(home, "project", ".env") {
-			t.Errorf("originPath = %q, want the .env it was copied from", f.originPath)
+		if f.OriginPath != filepath.Join(home, "project", ".env") {
+			t.Errorf("OriginPath = %q, want the .env it was copied from", f.OriginPath)
 		}
 		if f.ValuePreview == nil || strings.Contains(*f.ValuePreview, "bWpKmT") {
 			t.Errorf("value_preview %v must be masked, never the credential", f.ValuePreview)
@@ -275,7 +275,7 @@ func TestRawValueNeverSerialises(t *testing.T) {
 		Confidence:  ConfidenceHigh,
 	})
 	f.claimedRawValues = []claimedValue{{Key: "OTHER", Value: realKey}}
-	f.originPath = "/h/project/.env"
+	f.OriginPath = "/h/project/.env"
 
 	blob, err := json.Marshal(f)
 	if err != nil {

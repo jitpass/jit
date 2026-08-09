@@ -563,6 +563,19 @@ func scanMCPEnvFilePointers(cfg Config, path, serverName string, entry mcpServer
 		f.PublicIPMatch = sub.PublicIPMatch
 		f.Evidence = fmt.Sprintf("reads credentials from %s; that file %s",
 			ShortenHome(cfg.HomeDir, target), sub.Evidence)
+		// Where the credential actually lives, so the ledger can tell this
+		// LINK apart from a secret of its own. The comment above says this
+		// finding "deliberately does NOT re-report the target's contents ...
+		// that would count one exposure twice" — true of the contents, but
+		// the finding itself was still tallied, so a --env-file target that
+		// ScanEnvFiles also reports scored two secrets for one credential
+		// (measured 2026-08-09: both okta-mcp-server references, beside the
+		// .env they name). ComputeCoverage now skips a reference whose origin
+		// is counted, which leaves the other half of this function's stated
+		// purpose intact: a target the .env name gate drops has no finding of
+		// its own, so its reference stays counted and the credential is still
+		// visible exactly once.
+		f.OriginPath = target
 		f.RecordID = RecordID(f.FindingType, f.FilePath, f.KeyName)
 		findings = append(findings, f)
 	}

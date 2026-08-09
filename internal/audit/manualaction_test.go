@@ -79,8 +79,15 @@ func TestManualActionCopiesBeatMount(t *testing.T) {
 	if strings.Contains(groups[0].action, "--mount") {
 		t.Errorf("offered to mount one of three copies: %q", groups[0].action)
 	}
-	if !strings.Contains(groups[0].action, "every copy") {
-		t.Errorf("action = %q, want it to name every copy", groups[0].action)
+	// The action must still be about the copies rather than about one of
+	// them, and must lead with rotation — the wording moved off "then delete
+	// every copy" (which restated the group header verbatim) onto the fact
+	// the header cannot carry: deleting them does not undo the exposure.
+	if !strings.Contains(groups[0].action, "copies") {
+		t.Errorf("action = %q, want it to speak about the copies", groups[0].action)
+	}
+	if !strings.HasPrefix(groups[0].action, "rotate") {
+		t.Errorf("action = %q, want rotation to lead", groups[0].action)
 	}
 }
 

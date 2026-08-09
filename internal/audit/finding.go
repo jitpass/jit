@@ -155,7 +155,55 @@ import (
 // copies, so claiming otherwise would promise a coverage gain the
 // recommended command does not deliver (the rule shell_history_secret
 // already follows for its production case).
-const SchemaVersion = "0.18.0"
+// 0.19.0 adds one additive finding field and records two semantic changes to
+// the coverage ledger.
+//
+// Two fields, both about making the ledger auditable from the stream.
+//
+// `source_example`: the vendor match sits on a comment line of a source-code
+// file, so it documents a shape rather than storing a credential. It has
+// always existed in-process and has always been one of the exclusions behind
+// secrets_total — it simply was not serialized, which left a consumer unable
+// to reproduce the ledger. The gap was known and documented rather than
+// closed.
+//
+// `origin_path`: the file a finding's credential actually lives in, when the
+// finding is not that file (an agent's cached copy, an MCP config's
+// --env-file link). A path, never a value, and evidence already named it in
+// prose. Without it a consumer could not apply the rule the tally applies and
+// counted every link as its own secret.
+//
+// What a consumer can now reproduce: exclude test_fixture, source_example and
+// low/info severities; drop agent_cached_secret; drop any finding whose
+// origin_path names a file that itself carries a counted finding; then count
+// distinct cause_group (falling back to record_id when empty).
+//
+// What still will NOT reconcile, and why: one further dedupe compares RAW
+// VALUES a file-level scanner parsed but reported only at file level — the
+// .env that "claims" a credential the content sweep then re-finds in a paste
+// cache. Reproducing it needs the values themselves, and those are
+// deliberately never serialized (Finding.rawValue's contract). On the machine
+// this bump was measured against it accounts for a difference of one. A
+// consumer recomputing coverage should therefore expect to land at or
+// slightly above secrets_total, never below.
+//
+// First semantic change: an mcp_embedded_secret produced by a server's
+// `--env-file` pointer no longer adds to secrets_total WHEN the file it names
+// carries a counted finding of its own. That finding is a link — it says
+// which server consumes a flagged credential file — and the credential is
+// counted where it lives. It was tallied as a second secret, so a config
+// naming a reported .env scored two for one credential (measured 2026-08-09).
+// A pointer at a target the .env name gate drops is still counted, which is
+// the first-sight coverage the finding was added for; nothing becomes
+// invisible.
+//
+// Second semantic change: a terraform.tfvars holding no production indicator,
+// no public IP, no vendor-format value and no secret-shaped name now carries
+// remedy "manual" with no fix_command, and evidence that describes the file
+// instead of promising a migration. It previously carried remedy "migrate"
+// and a runnable fix_command that answered "Nothing to migrate" on the very
+// path it named.
+const SchemaVersion = "0.19.0"
 
 // ScannerName identifies this tool in the shared NDJSON envelope, matching
 // bumblebee's record shape so a receiver can co-ingest both (RFC.md §4).
@@ -353,8 +401,18 @@ type Finding struct {
 	// silently dropping it.
 	//
 	// Set by the content sweep at construction (it alone has the line text),
-	// not by tagArchivedAndFixtures. Not serialized, on EndLine's contract.
-	SourceExample bool `json:"-"`
+	// not by tagArchivedAndFixtures.
+	//
+	// Serialized since 0.19.0. It was withheld on EndLine's contract ("give
+	// it a json tag when a consumer actually asks"), but this field is not a
+	// rendering convenience — it is one of the three exclusions that decide
+	// secrets_total, and the other two (test_fixture, and severity for the
+	// low/info sightings) are both readable from the record. Withholding just
+	// this one left the ledger unreproducible from the stream, which
+	// docs/reference/scan-ndjson.md documented as a known divergence rather
+	// than fixing. test_fixture was serialized in 0.13.0 for exactly this
+	// reason; this is its twin.
+	SourceExample bool `json:"source_example"`
 
 	// Remedy says who can act on this finding: "migrate" and "wrap" mean jit
 	// can (FixCommand holds the exact command), "manual" means only the user
@@ -438,13 +496,25 @@ type Finding struct {
 	// the finding; the same sentence without the name is a riddle.
 	claimedRawValues []claimedValue
 
-	// originPath is set only on agent_cached_secret: the file the copied
-	// credential actually lives in. It is what lets ComputeCoverage tie a
-	// copy back to the secret it duplicates when no cause_group can — a
-	// file-level origin (env_file_present) carries no value digest, so its
-	// copies would otherwise look like brand-new secrets and inflate the
-	// ledger this finding type was designed not to touch.
-	originPath string
+	// OriginPath is the file the credential this finding describes actually
+	// lives in, when this finding is not that file. It is what lets
+	// ComputeCoverage tie a finding back to the secret it stands in for when
+	// no cause_group can — a file-level origin (env_file_present) carries no
+	// value digest, so anything pointing at it would otherwise look like a
+	// brand-new secret and inflate the ledger.
+	//
+	// Two producers, both meaning "counted elsewhere, not here":
+	//   - agent_cached_secret, where it names the file the copy came from;
+	//   - mcp_embedded_secret's --env-file link, where it names the
+	//     credential file the server reads (scanMCPEnvFilePointers).
+	// In both cases the finding is still reported in full; only the tally
+	// skips it, and only when the origin is itself counted.
+	//
+	// Serialized since 0.19.0, and safe to be: it is a path, never a value,
+	// and `evidence` already names it in prose for both producers. Without
+	// it in the stream a consumer could not apply the rule the ledger
+	// applies, so a recomputed total counted every link as its own secret.
+	OriginPath string `json:"origin_path,omitempty"`
 }
 
 // claimedValue is one credential a file-level scanner parsed and judged real
