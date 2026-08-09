@@ -160,6 +160,36 @@ const (
 	// greppable line in the same trail as every unlock. Enriched with the
 	// peer's provenance (By/ByPID/LaunchedBy) when the kernel still names it.
 	KindError = "error"
+	// KindServe marks one mount read reaching its content decision: a reader
+	// opened a live mount and got either the decoy or the real value. Op is
+	// OpServeDecoy or OpServeReal, Cause says WHY that verdict, Labels names
+	// the credential, and By/ByPID/LaunchedBy carry internal/lineage's
+	// best-effort answer to who read it.
+	//
+	// The decoy half is the point: a process with no business reading a
+	// credential file, quietly handed a fake one, is a honeytoken-shaped
+	// signal — and until this existed jit produced that signal on every
+	// single read and then discarded it, keeping only the newest one per
+	// mount, in memory, gone at the next service restart. The real half
+	// closes the other end of the same question: a KindApproved event
+	// proves a grant was AUTHORIZED, never that the credential was actually
+	// read, and those are different facts on the day one matters.
+	//
+	// Necessarily collapsed before it is ever written (see the CLI's
+	// serveAuditor): the serve path runs once per reader rendezvous and a
+	// file-watcher loop re-reads a mount continuously, so an uncollapsed
+	// serve event would be an eviction primitive against this very ring —
+	// the same hazard recordRejectedClass defends against, arrived at from
+	// the other direction.
+	KindServe = "serve"
+)
+
+// The Op values a KindServe event carries: which content the reader got.
+// They are the serve's outcome, so `jit audit` renders them on the status
+// axis (--status decoy / --status real) rather than inventing a new one.
+const (
+	OpServeDecoy = "decoy"
+	OpServeReal  = "real"
 )
 
 // Response answers a Request.
@@ -267,6 +297,14 @@ type SessionEvent struct {
 	// (see challengeReason); this is the investigative version.
 	By    string `json:"by,omitempty"`
 	ByPID int32  `json:"by_pid,omitempty"`
+	// ByLikely marks By/ByPID as an identity carried over from an earlier
+	// scan rather than observed for THIS event — true on a mount serve whose
+	// lineage scan raced the reader's open but found the same process still
+	// alive and still holding the mount (internal/cli's identifyReader). It
+	// means "almost certainly this process" and must never be rendered as
+	// certainty; an audit trail that lies is worse than one that admits it
+	// doesn't know.
+	ByLikely bool `json:"by_likely,omitempty"`
 	// LaunchedBy is the nearest ancestor that explains the call — "claude",
 	// "Code" — with the shells that merely relayed it skipped. Empty when a
 	// human ran jit at a prompt themselves, because then there is nothing to
@@ -326,6 +364,13 @@ type MountRevealStatus struct {
 	// record was a line in the agent's own log file. Nil when nothing has
 	// read the mount since the agent process started (this is in-memory
 	// state, not persisted).
+	//
+	// Deliberately still only the LATEST, and still not persisted: this
+	// answers "what is happening to this mount right now", which is the
+	// question `jit service status` is open to answer. Every serve is ALSO
+	// recorded durably as a KindServe event (collapsed — see the CLI's
+	// serveAuditor), and that is what answers "what happened last Tuesday".
+	// Neither substitutes for the other, so don't collapse them into one.
 	LastServe *MountServeEvent `json:"last_serve,omitempty"`
 	// Grants are the run-scoped reveal grants currently active on this
 	// mount (usually zero or one): each names the jit-run target whose

@@ -72,6 +72,9 @@ var auditKindAliases = map[string]string{
 	"grant":    "grant",
 	"approve":  "grant",
 	"approved": "grant",
+	"serve":    "serve",
+	"read":     "serve",
+	"mount":    "serve",
 }
 
 // compileAuditFilter turns the raw flags into an auditFilter, rejecting an
@@ -90,7 +93,7 @@ func compileAuditFilter() (auditFilter, error) {
 				}
 				canon, ok := auditKindAliases[k]
 				if !ok {
-					return f, fmt.Errorf("unknown --kind %q: choose from cmd, unlock, use, grant, lock, service, error (denials are --status denied)", k)
+					return f, fmt.Errorf("unknown --kind %q: choose from cmd, unlock, use, grant, serve, lock, service, error (denials are --status denied)", k)
 				}
 				f.kinds[canon] = true
 			}
@@ -99,10 +102,14 @@ func compileAuditFilter() (auditFilter, error) {
 	if auditStatus != "" {
 		s := strings.ToLower(auditStatus)
 		switch s {
-		case "ok", "failed", "denied", "approved":
+		// decoy/real are a mount serve's outcome, so they belong on this axis
+		// rather than on a flag of their own: --status decoy is the tripwire
+		// query ("what read a credential file and got a fake"), --status real
+		// its counterpart ("what actually received the value").
+		case "ok", "failed", "denied", "approved", "decoy", "real":
 			f.status = s
 		default:
-			return f, fmt.Errorf("unknown --status %q: choose from ok, failed, denied, approved", auditStatus)
+			return f, fmt.Errorf("unknown --status %q: choose from ok, failed, denied, approved, decoy, real", auditStatus)
 		}
 	}
 	var err error
@@ -251,10 +258,19 @@ var auditCmd = &cobra.Command{
 		"Repeated rejections collapse into one line carrying a count; a collapsed line\n" +
 		"names the first caller of that window, because keying them per caller would let\n" +
 		"a flood of throwaway processes push every real event out of the history.\n\n" +
+		"Mount reads are here too, as kind=serve: every time a reader opened a live\n" +
+		"mount, whether it got the decoy (--status decoy) or the real value (--status\n" +
+		"real), why, and — best-effort, from the kernel — which program read it and what\n" +
+		"launched that program. A decoy read is jit working as designed, and it is also\n" +
+		"the one signal that names a process reading a credential file it has no business\n" +
+		"in. Same-mount, same-reader, same-verdict reads inside a short window collapse\n" +
+		"into one line carrying a count, because a file watcher re-reads a mount\n" +
+		"continuously and an uncollapsed read would push every unlock out of the log.\n\n" +
 		"Output is a grouped text timeline, newest first. --format logfmt prints one\n" +
 		"key=value line per event instead, so it reads and greps like a real service\n" +
 		"log. Narrow either without grep using the flags: --kind\n" +
-		"cmd,unlock,use,grant,lock,service,error, --status ok|failed|denied|approved,\n" +
+		"cmd,unlock,use,grant,serve,lock,service,error, --status\n" +
+		"ok|failed|denied|approved|decoy|real,\n" +
 		"--since and --until\n" +
 		"(an age like 2h/3d or a date), --parent (the launching ancestor, e.g. claude),\n" +
 		"--secret (a secret name an unlock touched), --user, and --grep (a regexp over the\n" +
@@ -808,6 +824,60 @@ func authEntry(home string, e agent.SessionEvent) auditEntry {
 			pairs = append(pairs, kv{"count", strconv.FormatInt(e.Count, 10)})
 		}
 		pairs = appendAuthContext(pairs, home, e)
+	case agent.KindServe:
+		// One mount read, collapsed. status carries the verdict (decoy | real)
+		// rather than a new axis, because that IS the serve's outcome and
+		// --status is where a reader already looks for one. The decoy rows are
+		// the tripwire — amber, and counted in the header — while the real ones
+		// answer the question a grant approval never could: not "was this
+		// authorized" but "was it actually read".
+		kind = "serve"
+		status = agent.OpServeDecoy
+		if e.Op == agent.OpServeReal {
+			status = agent.OpServeReal
+		}
+		level := "info"
+		if status == agent.OpServeDecoy {
+			level = "warn"
+			lineColor = cWarn
+		}
+		reader := serveReaderName(e)
+		if status == agent.OpServeDecoy {
+			subject = "decoy served to " + reader
+		} else {
+			subject = "real value served to " + reader
+		}
+		if e.Count > 1 {
+			subject = fmt.Sprintf("%s ×%d", subject, e.Count)
+		}
+		pairs = append(pairs,
+			kv{"level", level}, kv{"kind", "serve"}, kv{"status", status})
+		if len(e.Labels) > 0 {
+			pairs = append(pairs, kv{"mount", strings.Join(e.Labels, ", ")})
+		}
+		if e.Count > 1 {
+			pairs = append(pairs, kv{"count", strconv.FormatInt(e.Count, 10)})
+		}
+		if e.By != "" {
+			pairs = append(pairs, kv{"reader", shortenCommand(home, e.By)})
+		}
+		if e.ByPID != 0 {
+			pairs = append(pairs, kv{"reader_pid", strconv.FormatInt(int64(e.ByPID), 10)})
+		}
+		// The inference marker travels with the identity it qualifies, in both
+		// views: a carried-over reader is "almost certainly" this process, and
+		// a trail that renders that as certainty is worse than one that says
+		// less (identifyReader's own doctrine).
+		if e.ByLikely {
+			pairs = append(pairs, kv{"reader_likely", "true"})
+		}
+		if e.LaunchedBy != "" {
+			pairs = append(pairs, kv{"parent", e.LaunchedBy})
+		}
+		detail = e.Cause
+		if e.Cause != "" {
+			pairs = append(pairs, kv{"reason", e.Cause})
+		}
 	case agent.KindError:
 		// A socket-boundary failure the service refused or hit: a rejected
 		// peer, a malformed request, the accept loop dying. op names which and
@@ -862,6 +932,25 @@ func authEntry(home string, e agent.SessionEvent) auditEntry {
 		subject: subject,
 		detail:  detail,
 	}
+}
+
+// serveReaderName names who read a mount, for the human report's subject.
+//
+// Three honest states, never four: the program's own name when lineage saw it
+// open the mount, the same name marked "likely" when the identity is carried
+// over from an earlier scan of that mount, and an explicit admission when the
+// scan missed it outright. A fast-closing reader legitimately evades the scan
+// (which is exactly why lineage is audit-only and gates nothing), so the third
+// case is normal rather than exceptional and must read that way.
+func serveReaderName(e agent.SessionEvent) string {
+	if e.By == "" {
+		return "an unidentified reader"
+	}
+	name := filepath.Base(e.By)
+	if e.ByLikely {
+		return name + " (likely)"
+	}
+	return name
 }
 
 // authMethodLabel names the local-auth method the way the dialog does, for
@@ -931,10 +1020,10 @@ func init() {
 	auditCmd.Flags().StringVar(&auditFormat, "format", "text", `output format: "text" (default), "logfmt" (one key=value line per event), or "json"`)
 	auditCmd.Flags().IntVar(&auditLimit, "limit", 50, "show at most this many recent matching entries (0 for all)")
 	auditCmd.Flags().BoolVarP(&auditFollow, "follow", "f", false, "print the matching tail, then stream new entries live (text only)")
-	auditCmd.Flags().StringSliceVar(&auditKinds, "kind", nil, "only these kinds (comma-separated): cmd, unlock, use, grant, lock, service, error")
+	auditCmd.Flags().StringSliceVar(&auditKinds, "kind", nil, "only these kinds (comma-separated): cmd, unlock, use, grant, serve, lock, service, error")
 	auditCmd.Flags().StringVar(&auditSince, "since", "", `only entries at or after this time: an age (2h, 90m, 3d) or a date ("2026-07-23" or "2026-07-23 09:00")`)
 	auditCmd.Flags().StringVar(&auditUntil, "until", "", "only entries at or before this time (same forms as --since)")
-	auditCmd.Flags().StringVar(&auditStatus, "status", "", "only this status: ok, failed, denied, or approved")
+	auditCmd.Flags().StringVar(&auditStatus, "status", "", "only this status: ok, failed, denied, approved, decoy, or real")
 	auditCmd.Flags().StringVar(&auditUser, "user", "", "only commands this user ran (auth events carry no user)")
 	auditCmd.Flags().StringVar(&auditParent, "parent", "", "only entries whose launched-by ancestor contains this (e.g. claude)")
 	auditCmd.Flags().StringVar(&auditSecret, "secret", "", "only auth events that touched a secret whose name contains this")

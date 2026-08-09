@@ -78,6 +78,9 @@ func printAuditReport(w io.Writer, entries []auditEntry, filtered bool) {
 	if _, denied := auditOutcomeCounts(entries); denied > 0 {
 		hint += " · " + cPath.Sprint("--status denied") + " for refusals"
 	}
+	if auditDecoyRows(entries) > 0 {
+		hint += " · " + cPath.Sprint("--status decoy") + " for reads that got decoys"
+	}
 	hint += " · --format logfmt for the machine form"
 	termtext.Wrap(w, 4, "    ", hint)
 }
@@ -111,6 +114,13 @@ func writeAuditHeader(w io.Writer, entries []auditEntry) {
 	if denied > 0 {
 		head += fmt.Sprintf(" · %d denied", denied)
 	}
+	// Decoy reads are counted in ROWS, not in the collapsed Count each row
+	// carries: the header's job is "how much of what follows is this", and a
+	// single looping watcher would otherwise report thousands and read like a
+	// breach.
+	if decoy := auditDecoyRows(entries); decoy > 0 {
+		head += fmt.Sprintf(" · %s", countWord(decoy, "decoy read", "decoy reads"))
+	}
 	_, _ = fmt.Fprintln(w, head)
 	fmt.Fprintln(w)
 }
@@ -127,6 +137,18 @@ func auditOutcomeCounts(entries []auditEntry) (failed, denied int) {
 		}
 	}
 	return failed, denied
+}
+
+// auditDecoyRows counts serve events that handed over a decoy — the rows the
+// header calls out and the footer offers a filter for.
+func auditDecoyRows(entries []auditEntry) int {
+	n := 0
+	for _, e := range entries {
+		if e.kind == "serve" && e.status == "decoy" {
+			n++
+		}
+	}
+	return n
 }
 
 func sameDay(a, b time.Time) bool {
@@ -305,6 +327,12 @@ func auditGlyph(e auditEntry) (string, *color.Color) {
 	case e.status == "denied":
 		return glyphWarn, cWarn
 	case e.kind == "lock":
+		return glyphWarn, cWarn
+	// A decoy serve is jit working exactly as designed, so it is not a risk —
+	// but it is the row a reader is scanning for, and internal/style already
+	// assigns amber ○ to "decoy". A real serve is glyphOK's documented
+	// "serving real", which falls through below.
+	case e.status == "decoy":
 		return glyphWarn, cWarn
 	default:
 		return glyphOK, cOK

@@ -634,6 +634,13 @@ func printStatusText(w io.Writer, r statusResult) {
 	// tool, an editor) or exactly the "my dev server is failing and
 	// nothing says why" case — and only the user can tell which, so say
 	// it happened and point at the command with the who/when detail.
+	//
+	// That command is `jit audit --status decoy`, not `jit service status`:
+	// this note is driven by each mount's in-memory LastServe, which holds
+	// only the newest read and is empty after a restart, whereas the audit
+	// trail has every collapsed serve, the reader, and the REASON — so the
+	// question the note provokes is now fully answerable, and answerable
+	// about yesterday.
 	decoyReads := 0
 	for _, m := range r.Agent.Mounts {
 		if m.LastServe != nil && m.LastServe.Decoy {
@@ -643,7 +650,7 @@ func printStatusText(w io.Writer, r statusResult) {
 	if decoyReads > 0 {
 		printStatusWarnNote(w, "%s most recently served decoy values to a reader.",
 			countWord(decoyReads, "mount", "mounts"))
-		printStatusAction(w, "`jit service status` to see which reader, and when")
+		printStatusAction(w, "`jit audit --status decoy` to see which reader, when, and why")
 	}
 }
 
