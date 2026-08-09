@@ -1234,6 +1234,11 @@ func TestVolatileExecutablePath(t *testing.T) {
 		"/var/folders/xy/T/go-build123/b001/exe/jit",
 		"/Volumes/jit-0.82.0/jit",
 	}
+	// The un-installed release tarball, run in place from ~/Downloads before
+	// the install step moves it onto PATH — jit's own download shape.
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		volatile = append(volatile, filepath.Join(home, "Downloads", "jit"))
+	}
 	for _, p := range volatile {
 		if !volatileExecutablePath(p) {
 			t.Errorf("%q was treated as a durable install location", p)
@@ -1263,11 +1268,11 @@ func TestVolatileExecutablePath(t *testing.T) {
 // The test binary itself runs from /var/folders, so this exercises the
 // fallback for free — os.Executable() is volatile here by construction.
 func TestResolveJitExecutableNeverReturnsAVolatilePath(t *testing.T) {
-	got, err := resolveJitExecutable()
+	got, err := realResolveJitExecutable()
 	if err != nil {
 		// Refusing is the correct outcome when nothing durable exists, and
 		// the message has to say why rather than surfacing a bare failure.
-		for _, want := range []string{"temporary location", "install jit first"} {
+		for _, want := range []string{"temporary or removable location", "install jit"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("refusal does not explain itself (%q missing): %v", want, err)
 			}

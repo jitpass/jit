@@ -19,6 +19,17 @@ import (
 	"github.com/jitpass/jit/internal/vault"
 )
 
+// The test binary is built under a volatile directory ($TMPDIR / /var/folders),
+// so realResolveJitExecutable rightly refuses to record its path. Every
+// migrate category that writes jit's path (AWS credential_process, kubeconfig,
+// docker/git helpers, terraform, MCP) would then fail in tests for a reason
+// that never occurs in production. Pin a stable, durable-looking path for the
+// whole package's tests; the refusal logic itself is covered directly by
+// realResolveJitExecutable in mcpconfig_test.go.
+func init() {
+	resolveJitExecutable = func() (string, error) { return "/usr/local/bin/jit", nil }
+}
+
 // fakeKeyWrapper is a deterministic, fixed-key vault.KeyWrapper for tests.
 type fakeKeyWrapper struct{ key []byte }
 

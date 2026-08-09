@@ -6,6 +6,7 @@ package audit
 import (
 	"bytes"
 	"encoding/json"
+	"math/rand"
 	"strings"
 	"testing"
 )
@@ -183,37 +184,68 @@ func TestLedgerExclusionsAreAllReadableFromTheRecord(t *testing.T) {
 // TestAssignedCredentialNameNamesTheVariable covers the case the feature was
 // built for: a live release-publishing token and a test vector share a vendor,
 // so they share a title, and only the name beside the value tells them apart.
+// atMarker locates the credential inside a test line by a caller-chosen
+// substring, so the offset handed to assignedCredentialName is the REAL start
+// of the matched value — not an approximation. The first draft of these tests
+// computed the offset with strings.LastIndexAny(line, "\"= "), which lands
+// wherever the last quote/equals/space happens to be rather than where the
+// value begins, so it exercised inputs no scanner ever produces; that is how
+// a leaking extractor passed its own guard (found in review 2026-08-09).
+func atMarker(t *testing.T, line, marker string) int {
+	t.Helper()
+	i := strings.Index(line, marker)
+	if i < 0 {
+		t.Fatalf("marker %q not in %q", marker, line)
+	}
+	return i
+}
+
 func TestAssignedCredentialNameNamesTheVariable(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		line string
-		want string
-	}{{
-		name: "the credential's own variable, not the flag next to it",
-		line: `gh secret set HOMEBREW_TAP_GITHUB_TOKEN -R jitpass/jit --body "github_pat_x`,
-		want: "HOMEBREW_TAP_GITHUB_TOKEN",
+	// marker is where the credential value starts; the offset is derived from
+	// it, never guessed.
+	for _, tc := range []struct{ name, line, marker, want string }{{
+		name:   "gh secret set names its positional, not the --body flag",
+		line:   `gh secret set HOMEBREW_TAP_GITHUB_TOKEN -R jitpass/jit --body "github_pat_x"`,
+		marker: "github_pat_x",
+		want:   "HOMEBREW_TAP_GITHUB_TOKEN",
 	}, {
-		name: "an env assignment",
-		line: `OKTA_KEY_ID=abcdefghijklmnop`,
-		want: "OKTA_KEY_ID",
+		name:   "gh secret set inside a JSON-escaped transcript line",
+		line:   `{"display":"gh secret set HOMEBREW_TAP_GITHUB_TOKEN -R x --body \"github_pat_x\""}`,
+		marker: "github_pat_x",
+		want:   "HOMEBREW_TAP_GITHUB_TOKEN",
 	}, {
-		name: "a json field",
-		line: `{"id_token":"eyJhbGciOi`,
-		want: "id_token",
+		name:   "an env assignment",
+		line:   `OKTA_KEY_ID=abcdefghijklmnop`,
+		marker: "abcdefghijklmnop",
+		want:   "OKTA_KEY_ID",
 	}, {
-		name: "nothing to say about a bare value on its own line",
-		line: `eyJhbGciOi`,
-		want: "",
+		name:   "a json field",
+		line:   `{"id_token":"eyJhbGciOi"}`,
+		marker: "eyJhbGciOi",
+		want:   "id_token",
 	}, {
-		name: "no credential-shaped name in reach",
-		line: `curl -H "Accept: application/json" https://api.example.com/ eyJhbGciOi`,
-		want: "",
+		name:   "a yaml key",
+		line:   `    client-key-data: LS0tLS1CRUdJTg==`,
+		marker: "LS0tLS1",
+		want:   "client-key-data",
+	}, {
+		name:   "a json field inside an escaped transcript",
+		line:   `{"text":"config \"id_token\":\"eyJhbGciOi\""}`,
+		marker: "eyJhbGciOi",
+		want:   "id_token",
+	}, {
+		name:   "nothing to say about a bare value on its own line",
+		line:   `eyJhbGciOi`,
+		marker: "eyJhbGciOi",
+		want:   "",
+	}, {
+		name:   "no credential-shaped name in reach",
+		line:   `curl -H "Accept: application/json" https://api.example.com/ eyJhbGciOi`,
+		marker: "eyJhbGciOi",
+		want:   "",
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
-			at := strings.LastIndexAny(tc.line, "\"= ") + 1
-			if tc.want == "" && at <= 0 {
-				at = len(tc.line)
-			}
+			at := atMarker(t, tc.line, tc.marker)
 			if got := assignedCredentialName(tc.line, at); got != tc.want {
 				t.Errorf("assignedCredentialName(%q, %d) = %q, want %q", tc.line, at, got, tc.want)
 			}
@@ -222,27 +254,60 @@ func TestAssignedCredentialNameNamesTheVariable(t *testing.T) {
 }
 
 // TestAssignedCredentialNameNeverPrintsAValue is the guard behind the report's
-// closing promise that no secret value is ever printed in full. The line next
-// to a credential routinely holds another one, and a password matching no
-// vendor pattern would be leaked by the very feature meant to explain the
-// leak. Every case here is a string that satisfies LooksLikeSecretKey and must
-// still be refused.
+// closing promise that no secret value is ever printed in full. It is the
+// corpus an adversarial review (2026-08-09) used to walk credential material
+// out of the proximity-based first draft: a password from a curl -u line, one
+// from a JSON blob, a fragment of an AWS secret key. Every case pairs a real
+// credential (matchStart) with adjacent text engineered to satisfy
+// LooksLikeSecretKey/writtenLikeAName — the extractor must print nothing.
 func TestAssignedCredentialNameNeverPrintsAValue(t *testing.T) {
+	const tok = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
 	for _, tc := range []struct{ name, line string }{
-		{"an undifferentiated lowercase run is a value, not a label",
-			`psql "postgres://app:mysecretpassword@db/x" eyJhbGciOi`},
-		{"a known credential format never names another credential",
-			`echo ghp_0123456789abcdefghijklmnopqrstuvwxyz eyJhbGciOi`},
-		{"a long opaque run is not a label however it reads",
-			`TOKENSECRETKEYPASSWORDTOKENSECRETKEYPASSWORDTOKENSECRETKEY eyJhbGciOi`},
+		{"curl -u userinfo password",
+			`curl -u admin:S3cret-Passw0rd https://api.example.com/x?t=` + tok},
+		{"a password in a connection string",
+			`psql "postgres://app:Tr0ub4dor-Pass@db/x" ` + tok},
+		{"a password field beside a token field",
+			`{"password":"Hunter2-Pass","token":"` + tok + `"}`},
+		{"a base64 secret split on + and /",
+			`export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY ` + tok},
+		{"an Authorization header value",
+			`-H "Authorization: Bearer Sekr3t-Val" ` + tok},
+		{"an undifferentiated lowercase run",
+			`psql "postgres://app:mysecretpassword@db/x" ` + tok},
+		{"a long opaque run that reads like markers",
+			`TOKENSECRETKEYPASSWORDTOKENSECRETKEYPASSWORDTOKENSECRETKEY ` + tok},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			at := strings.LastIndex(tc.line, "eyJhbGciOi")
+			at := strings.Index(tc.line, tok)
 			got := assignedCredentialName(tc.line, at)
-			if got != "" {
-				t.Errorf("printed %q, which is a value rather than a name, from %q", got, tc.line)
+			if got != "" && strings.Contains(tc.line[:at], got) {
+				t.Errorf("printed %q, a fragment of the preceding text, from %q", got, tc.line)
 			}
 		})
+	}
+}
+
+// TestAssignedCredentialNameNeverLeaksRandomBlobs is the property form of the
+// guard: a high-entropy value adjacent to a credential must never be printed,
+// whatever bytes it happens to contain. The proximity draft leaked 111 of
+// 20,000 such blobs (one in full, because it contained "sKEY"); the structural
+// extractor must leak none. Seeded, so a failure reproduces exactly.
+func TestAssignedCredentialNameNeverLeaksRandomBlobs(t *testing.T) {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	const tok = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+	rng := rand.New(rand.NewSource(1))
+	for n := 0; n < 20000; n++ {
+		b := make([]byte, 44)
+		for i := range b {
+			b[i] = alphabet[rng.Intn(len(alphabet))]
+		}
+		blob := string(b)
+		line := "some output " + blob + " then " + tok
+		at := strings.Index(line, tok)
+		if got := assignedCredentialName(line, at); got != "" && strings.Contains(blob, got) {
+			t.Fatalf("leaked %q from random blob %q", got, blob)
+		}
 	}
 }
 
@@ -269,5 +334,128 @@ func TestAssignedNameIsDroppedWhenConstituentsDisagree(t *testing.T) {
 	}
 	if strings.Contains(out, "assigned to") {
 		t.Errorf("a merged item claims one constituent's name for both:\n%s", out)
+	}
+}
+
+// TestLineHintNotClaimedForAMultiFileGroup guards the coordinate-vs-address
+// mismatch: f.Line is the worst finding's line in ITS file, so a cause group
+// spanning several files must not print "at line N" (wrong for every file but
+// one). It falls back to the self-identifying grep instead.
+func TestLineHintNotClaimedForAMultiFileGroup(t *testing.T) {
+	const home = "/Users/alex"
+	vendor := "JSON Web Token (JWT)"
+	ln1, ln2 := 12, 3740
+	mk := func(id, path string, line int) Finding {
+		l := line
+		return Finding{
+			RecordID: id, FindingType: FindingTypeExposedSecret,
+			KeyName: &vendor, Severity: SeverityHigh, Remedy: RemedyManual,
+			FilePath: path, Line: &l, Occurrences: 1, Evidence: "vendor format",
+		}
+	}
+	// One credential (shared cause group) in two files.
+	a := mk("x", home+"/proj/.env", ln1)
+	b := mk("x", home+"/backup/.env.bak", ln2)
+	cg := "sharedcause"
+	a.CauseGroup, b.CauseGroup = cg, cg
+	out := renderTriage(t, []Finding{a, b}, home)
+
+	// Each file carries its OWN line, attached to its own name — no bare
+	// "at line N" that a reader could read as applying to the wrong file.
+	if !strings.Contains(out, ".env:12") || !strings.Contains(out, ".env.bak:3740") {
+		t.Errorf("each file must show its own line:\n%s", out)
+	}
+	if strings.Contains(out, "grep") {
+		t.Errorf("a grep hint survived for a finding whose lines are known:\n%s", out)
+	}
+	// A single-file finding gets the compact one-liner form.
+	solo := renderTriage(t, []Finding{mk("y", home+"/only.env", 5)}, home)
+	if !strings.Contains(solo, "~/only.env:5") {
+		t.Errorf("single-file finding lost its coordinate:\n%s", solo)
+	}
+}
+
+// TestCoordinateHintsAreNotCollapsedIntoAGrep guards the other regression:
+// three secrets that each know their own line must keep those lines, not be
+// folded into one group-wide grep that names none of them.
+func TestCoordinateHintsAreNotCollapsedIntoAGrep(t *testing.T) {
+	const home = "/Users/alex"
+	vendor := "JSON Web Token (JWT)"
+	mk := func(id, path string, line int) Finding {
+		l := line
+		return Finding{
+			RecordID: id, FindingType: FindingTypeExposedSecret,
+			KeyName: &vendor, Severity: SeverityHigh, Remedy: RemedyManual,
+			ProductionIndicatorMatch: true,
+			FilePath:                 path, Line: &l, Occurrences: 1, Evidence: "vendor format",
+		}
+	}
+	out := renderTriage(t, []Finding{
+		mk("a", home+"/Downloads/a.json", 10),
+		mk("b", home+"/Downloads/b.json", 20),
+		mk("c", home+"/Downloads/c.json", 30),
+	}, home)
+
+	// Every distinct coordinate survives, attached to its own file; no
+	// group-wide glob grep replaces them.
+	for _, want := range []string{"a.json:10", "b.json:20", "c.json:30"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("coordinate %q folded away:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "*.json") || strings.Contains(out, "grep") {
+		t.Errorf("distinct coordinates were collapsed into a grep:\n%s", out)
+	}
+}
+
+// TestFolderGroupedListing pins the tier-1 addressing: a multi-file secret is
+// listed grouped by folder (folder header once, files beneath with lines),
+// relevance-ordered so an ordinary location leads and archived/Downloads sink,
+// with no grep for findings whose lines are known.
+func TestFolderGroupedListing(t *testing.T) {
+	const home = "/Users/alex"
+	vendor := "JSON Web Token (JWT)"
+	mk := func(id, path string, line int) Finding {
+		l := line
+		return Finding{
+			RecordID: id, FindingType: FindingTypeExposedSecret,
+			KeyName: &vendor, Severity: SeverityHigh, Remedy: RemedyManual,
+			ProductionIndicatorMatch: true,
+			FilePath:                 path, Line: &l, Occurrences: 1, Evidence: "x",
+		}
+	}
+	// One secret (shared cause) in: a working dir, an archived tree, ~/Downloads.
+	cg := "cg1"
+	fs := []Finding{
+		mk("s", home+"/work/reports/out.html", 40),
+		mk("s", home+"/Documents/archive/old/out.html", 41),
+		mk("s", home+"/Downloads/out.html", 42),
+	}
+	for i := range fs {
+		fs[i].CauseGroup = cg
+	}
+	out := renderTriage(t, fs, home)
+
+	// Folder headers present, each file under its folder with its line.
+	for _, want := range []string{
+		"~/work/reports/", "out.html:40",
+		"~/Documents/archive/old/", "out.html:41",
+		"~/Downloads/", "out.html:42",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("listing missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "grep") || strings.Contains(out, "… and") {
+		t.Errorf("a grep or an elision survived a fully-located finding:\n%s", out)
+	}
+	// Relevance order: the working dir's header precedes the archived one, and
+	// the archived one precedes... actually Downloads(1) sorts before archive(2),
+	// so order is work(0) < Downloads(1) < archive(2).
+	iWork := strings.Index(out, "~/work/reports/")
+	iDown := strings.Index(out, "~/Downloads/")
+	iArch := strings.Index(out, "~/Documents/archive/old/")
+	if !(iWork < iDown && iDown < iArch) {
+		t.Errorf("folders not relevance-ordered (work=%d downloads=%d archive=%d):\n%s", iWork, iDown, iArch, out)
 	}
 }
