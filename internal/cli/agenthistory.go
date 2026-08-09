@@ -62,8 +62,8 @@ func newHistoryLog(root string, stderr io.Writer) *historyLog {
 // Mount serves (KindServe) are the one kind that could plausibly test this,
 // since a file watcher re-reads a mount without limit. They can't, because
 // they are collapsed over serveAuditWindow before they are written: one mount
-// pinned by one looping reader costs ~720 events a day at the absolute worst,
-// so even that pathological case retains a fortnight rather than evicting the
+// pinned by one looping reader costs ~24 events a day at the absolute worst,
+// so even that pathological case retains a year rather than evicting the
 // unlocks. That bound is the whole reason serveAuditor exists — see its file.
 const historyMaxBytes = 2 * 1024 * 1024
 
