@@ -216,6 +216,14 @@ var agentRunCmd = &cobra.Command{
 			hist.append(e)
 			fmt.Fprintf(stderr, "jit service: %s\n", e.Cause)
 		}
+		// Mount reads join the same trail: which reader got a decoy, which got
+		// the real value, and why. Collapsed by the auditor before they reach
+		// here — a watcher loop must not be able to evict the history it is
+		// being written into — and started only now that there is somewhere
+		// durable to put them.
+		mounts.serveAudit.emit = hist.append
+		mounts.serveAudit.labelFn = mounts.serveAuditLabel
+		mounts.serveAudit.start()
 
 		if err := server.Listen(); err != nil {
 			return fmt.Errorf("jit service run: %w", err)

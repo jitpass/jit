@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "lastUsedProvider": "anthropic",
+  "providers": {
+    "anthropic": {
+      "settings": {
+        "provider": "anthropic",
+        "apiKey": "sk-ant-FIXTUREclineToken0123456789abcdefFIXTURE",
+        "model": "claude-sonnet-5"
+      },
+      "updatedAt": "2026-08-09T12:00:00.000Z",
+      "tokenSource": "manual"
+    }
+  }
+}

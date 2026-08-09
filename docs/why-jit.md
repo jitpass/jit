@@ -128,7 +128,9 @@ The caller identity comes from the kernel (its process id on the socket, then
 its command line and parent chain), never from anything the caller says about
 itself, so it cannot be faked. It is used to explain and to audit, never to
 decide. `jit service status` shows who unlocked the current session;
-`jit audit` lists every unlock, every declined prompt, and every lock.
+`jit audit` lists every unlock, every declined prompt, every lock, and
+every read of a live-mounted credential file - including which process
+read it and whether it got the real value or a decoy.
 
 **Why it matters:** this is 2026. The AI agents and MCP servers in your editor
 run with your full permissions and can read every secret you own. jit puts a

@@ -28,6 +28,62 @@ func execWrap(t *testing.T, args ...string) (stdout string, err error) {
 	return buf.String(), err
 }
 
+// putToolOnPath plants an executable stub named tool in a temp dir and
+// prepends that dir to PATH, so the wrap flow's is-it-installed check
+// passes without the real tool.
+func putToolOnPath(t *testing.T, tool string) {
+	t.Helper()
+	dir := t.TempDir()
+	stub := filepath.Join(dir, tool)
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { // #nosec G306 -- a test stub must be executable
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// A no-source tool whose secret is ALREADY in the vault must not be told to
+// "store it first" — the docs for every such tool say to `jit vault set`
+// before wrapping, so that message told a user who had just followed the
+// instructions that they hadn't (observed on a real wrap 2026-08-09). The
+// check must also never prompt: it runs on a bare read-only Vault, one
+// os.Stat, no agent.
+func TestWrapUsesTheSecretAlreadyInTheVault(t *testing.T) {
+	home := withFixtureHome(t)
+	putToolOnPath(t, "openai")
+	plantVaultSecret(t, home, "wrap-openai/OPENAI_API_KEY")
+
+	out, err := execWrap(t, "openai")
+	if err != nil {
+		t.Fatalf("jit wrap openai: %v", err)
+	}
+	if strings.Contains(out, "store it first") {
+		t.Errorf("wrap told the user to store a secret the vault already holds:\n%s", out)
+	}
+	if !strings.Contains(out, "already in the vault at wrap-openai/OPENAI_API_KEY") {
+		t.Errorf("wrap didn't acknowledge the existing secret:\n%s", out)
+	}
+	if !strings.Contains(out, "Wrapped openai") {
+		t.Errorf("wrap didn't install the shim:\n%s", out)
+	}
+}
+
+// With nothing on disk AND nothing in the vault, the store-it-first guidance
+// is exactly right and must stay.
+func TestWrapStillAsksWhenNothingIsVaulted(t *testing.T) {
+	withFixtureHome(t)
+	putToolOnPath(t, "openai")
+
+	out, err := execWrap(t, "openai")
+	if err != nil {
+		t.Fatalf("jit wrap openai: %v", err)
+	}
+	// Two substrings, not one: wrapBody may line-wrap between the command
+	// and its argument at narrow test widths.
+	if !strings.Contains(out, "store it first") || !strings.Contains(out, "wrap-openai/OPENAI_API_KEY") {
+		t.Errorf("empty-vault wrap lost the store-it-first guidance:\n%s", out)
+	}
+}
+
 func TestWrapAddListUndoRoundTrip(t *testing.T) {
 	home := withFixtureHome(t)
 

@@ -35,8 +35,8 @@ is not authenticating one, and jit doesn't pretend otherwise (see
   triggered it while it's still up - it answers immediately instead of
   waiting for the prompt to resolve.
 - `jit audit` prints the durable audit log: every jit command that ran,
-  interleaved with every unlock, grant, denial, use, and lock the service has
-  seen and what caused each. It's logfmt, newest first, so it greps like a real
+  interleaved with every unlock, grant, denial, use, mount read (decoy or
+  real), and lock the service has seen and what caused each. It's logfmt, newest first, so it greps like a real
   service log:
 
   ```
@@ -47,7 +47,7 @@ is not authenticating one, and jit doesn't pretend otherwise (see
   time=2026-07-22 13:18:02 level=warn kind=unlock status=denied method=touchid-or-passcode reason="local authentication failed: the user canceled" cmd="~/some-script.sh" parent=Code
   ```
 
-Among the auth events, six kinds appear:
+Among the auth events, seven kinds appear:
 
 - **unlock (status=ok)** - a Touch ID/passcode prompt the human approved, with
   the command that triggered it and what launched that command.
@@ -72,6 +72,19 @@ Among the auth events, six kinds appear:
   not ten). The secret names are what the calling jit process reported
   about itself - useful for audit, labeled `caller-reported` because,
   unlike everything else on these lines, they don't come from the kernel.
+- **serve** - a reader opened a live mount, and what it got: the decoy
+  (`status=decoy`) or the real value (`status=real`), why that verdict, and -
+  best-effort, from the kernel - which program read it and what launched that
+  program. A decoy read is jit working as designed, and it is also the one
+  signal that names a process reading a credential file it has no business in;
+  filter for those with `jit audit --status decoy`. The real half answers what
+  a grant approval alone can't: not "was this authorized" but "was it actually
+  read". Same-mount, same-reader, same-verdict reads inside a window collapse
+  into one line carrying a `count` - a dev server's file watcher re-reads a
+  mount continuously, and uncollapsed it would push every unlock out of the
+  history, the same erasure the error kind's collapsing prevents. An identity
+  carried over from a just-missed scan is marked `reader_likely` and rendered
+  "(likely)", never as certainty.
 - **lock** - what dropped the session: an idle timeout, the maximum session age
   (a session ends 8 hours after the unlock that opened it, however busy it has
   been), the screen locking, or an explicit `jit lock`.

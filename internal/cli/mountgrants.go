@@ -171,14 +171,35 @@ func (m *mountManager) serveContent(path string, sm *servedMount) []byte {
 		}
 	}
 
+	now := time.Now()
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
 	content, decoy := sm.decoy, true
 	if sm.real != nil && authorized {
 		content, decoy = sm.real, false
 	}
-	sm.lastServe = &serveRecord{at: time.Now(), decoy: decoy, reader: sm.pendingReader, grantServed: !decoy && grantServed}
+	rec := serveRecord{at: now, decoy: decoy, reader: sm.pendingReader, grantServed: !decoy && grantServed}
+	sm.lastServe = &rec
+	hadReal, resolveErr := sm.real != nil, sm.lastResolveErr
+	sm.mu.Unlock()
+
+	// Durable audit, outside sm.mu on purpose: the auditor takes its own lock
+	// and a finished aggregate is appended to a file, neither of which belongs
+	// on a mount's critical section — every reader of every mount waits behind
+	// it. The auditor collapses before writing, so this call is a map lookup
+	// and a counter increment on all but one read in a window.
+	m.serveAudit.record(now, path, serveReason(decoy, grantServed, hadReal, resolveErr), rec)
 	return content
+}
+
+// serveAuditLabel names the credential a mount holds the way the user would,
+// so `jit audit --secret gcp` finds reads of the gcp mount. Falls back to the
+// display path, which is what a project .env has instead of a name — an
+// unnamed mount must still be identifiable in the trail.
+func (m *mountManager) serveAuditLabel(path string) string {
+	if cred, ok := m.credentialMount(path); ok {
+		return cred
+	}
+	return displayPath(m.home, path)
 }
 
 // consentVerdict caches serveContent's best-effort consent decision for one
