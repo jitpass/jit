@@ -4,6 +4,7 @@
 package audit
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -188,11 +189,19 @@ func scanMCPConfigFile(cfg Config, path string) ([]Finding, error) {
 	}
 	defer file.Close()
 
+	// Read the bounded bytes once and decode from them, rather than streaming
+	// straight into the decoder: the raw text is what mcpFindingLine needs to
+	// place each finding at a line number. json.Decoder discards byte offsets,
+	// so a structured mcp finding carried no line and the report fell back to
+	// a `grep -Fno` locator — the coordinate jit could have known all along
+	// (tier 2, 2026-08-09). Bounded for the reason inspectK8sSecretFile's
+	// decoder is: this runs on any walked mcp.json.
+	raw, err := io.ReadAll(io.LimitReader(file, maxStructuredParseSize))
+	if err != nil {
+		return nil, nil // unreadable mid-stream — skip, never fail the scan
+	}
 	var mc mcpConfigFile
-	// Bounded for the same reason inspectK8sSecretFile's decoder is: this runs
-	// on any walked mcp.json, and json.Decoder will happily build whatever the
-	// file describes.
-	if err := json.NewDecoder(io.LimitReader(file, maxStructuredParseSize)).Decode(&mc); err != nil {
+	if err := json.Unmarshal(raw, &mc); err != nil {
 		return nil, nil // malformed JSON — not our job to validate it, just skip
 	}
 
@@ -290,7 +299,70 @@ func scanMCPConfigFile(cfg Config, path string) ([]Finding, error) {
 		findings = append(findings, scanMCPServerArgs(cfg, path, serverName, entry)...)
 		findings = append(findings, scanMCPEnvFilePointers(cfg, path, serverName, entry)...)
 	}
+	// Place each finding at a line, now that the whole set is built. An
+	// --env-file pointer is left alone: its credential lives in the .env it
+	// names (OriginPath), not on any line of this config, so a line here would
+	// point at the wrong file.
+	for i := range findings {
+		if findings[i].OriginPath != "" {
+			continue
+		}
+		if ln := mcpFindingLine(raw, findings[i]); ln > 0 {
+			findings[i].Line = &ln
+		}
+	}
 	return findings, nil
+}
+
+// mcpFindingLine returns the 1-based line in the raw config where a finding's
+// credential sits, or 0 when it cannot be placed.
+//
+// JSON parsing threw the offsets away, so this re-finds the location in the
+// text. The value is the exact anchor — it points at the credential itself —
+// and is tried first; a JSON-escaped value (\n, \uXXXX, \") will not match the
+// parsed form, so the fall-back is the finding's JSON KEY, which appears
+// literally in the source and sits on the credential's line (compact JSON) or
+// one line above it (pretty-printed) — close enough to send a reader to the
+// right place, and never a value.
+func mcpFindingLine(raw []byte, f Finding) int {
+	if f.rawValue != "" {
+		if ln := lineContaining(raw, []byte(f.rawValue)); ln > 0 {
+			return ln
+		}
+	}
+	if f.KeyName == nil {
+		return 0
+	}
+	// KeyName is "server/ENVKEY", "server/header:Name", "server/url", or
+	// "server/args[N]". The JSON key to look for is the part a reader would
+	// see quoted in the file.
+	tail := *f.KeyName
+	if i := strings.LastIndex(tail, "/"); i >= 0 {
+		tail = tail[i+1:]
+	}
+	tail = strings.TrimPrefix(tail, "header:")
+	if tail == "" {
+		return 0
+	}
+	// "url" is a real JSON key, so it locates. An args index ("args[2]") is
+	// not a key, so searching for the quoted form finds nothing and the
+	// finding stays lineless rather than pointing somewhere wrong — the
+	// intended outcome, no special case needed.
+	return lineContaining(raw, []byte("\""+tail+"\""))
+}
+
+// lineContaining returns the 1-based line of the first occurrence of needle in
+// raw, or 0 if absent. Never prints needle — it is used to locate, and the
+// caller stores only the line number.
+func lineContaining(raw []byte, needle []byte) int {
+	if len(needle) == 0 {
+		return 0
+	}
+	i := bytes.Index(raw, needle)
+	if i < 0 {
+		return 0
+	}
+	return 1 + bytes.Count(raw[:i], []byte{'\n'})
 }
 
 // withContextEvidence restores a scanner's own evidence over the generic
