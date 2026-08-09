@@ -85,6 +85,11 @@ type statusAgent struct {
 	// the agent isn't running or predates the field — the counterpart to
 	// statusCLI.Version, at the same release-scale zoom Build refines.
 	Version string `json:"version,omitempty"`
+	// ExecutablePath is the running service process's own binary path, empty
+	// when the agent predates the field. See agent.Response.ExecutablePath:
+	// a service whose binary has been DELETED reports a build and version
+	// identical to the CLI's while being unable to read the keychain at all.
+	ExecutablePath string `json:"executable_path,omitempty"`
 	// Error is set when the socket exists but the conversation failed — a
 	// hung agent, a half-written socket, a protocol mismatch after a partial
 	// upgrade. `jit status` promises a safe, always-runnable overview, so a
@@ -380,6 +385,30 @@ func agentBuildMismatchLine(agentBuild string) string {
 	return fmt.Sprintf("The background service is running a different build than this CLI (service %s, CLI %s) — run `jit service restart` to move it to the current binary.", service, cli)
 }
 
+// agentMissingBinaryLine reports a running service whose own executable is no
+// longer on disk.
+//
+// The build comparison above cannot see this one. An upgrade that MOVES the
+// binary — the release tarball at /usr/local/bin/jit giving way to the
+// Homebrew cask at /opt/homebrew/bin/jit — leaves both sides reporting the
+// same version while launchd's KeepAlive holds a process whose executable has
+// been unlinked. macOS validates a caller's code signature against that file
+// before honouring a keychain ACL, so every unlock then fails with a POSIX
+// ENOENT and nothing in the report said why (measured on a real machine
+// 2026-08-09, during exactly the tarball-to-cask move 0.82.0 introduced).
+//
+// Silent when the path is empty (an agent older than the field) rather than
+// guessing: unknown is not the same as missing.
+func agentMissingBinaryLine(exePath string) string {
+	if exePath == "" {
+		return ""
+	}
+	if _, err := os.Stat(exePath); err == nil || !os.IsNotExist(err) {
+		return ""
+	}
+	return fmt.Sprintf("The background service is running a binary that no longer exists (%s) — an upgrade moved or removed it. Every vault unlock will fail until you run `jit service restart`.", exePath)
+}
+
 // gatherAgentStatus reports the same running/unlocked state `jit service
 // status` does.
 func gatherAgentStatus(root string) (statusAgent, error) {
@@ -397,7 +426,7 @@ func gatherAgentStatus(root string) (statusAgent, error) {
 		// backwards — a sick service is when you most want to look at it.
 		return statusAgent{Installed: agentInstalled(), Error: err.Error()}, nil
 	}
-	result := statusAgent{Running: true, Installed: agentInstalled(), Unlocked: st.Unlocked, Mounts: st.Mounts, Build: st.Build, Version: st.Version}
+	result := statusAgent{Running: true, Installed: agentInstalled(), Unlocked: st.Unlocked, Mounts: st.Mounts, Build: st.Build, Version: st.Version, ExecutablePath: st.ExecutablePath}
 	if st.Unlocked {
 		result.LocksInSeconds = int64(st.Remaining.Round(time.Second).Seconds())
 	}

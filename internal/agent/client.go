@@ -374,6 +374,11 @@ type Status struct {
 	// Version is the agent process's own Version() — the release-scale
 	// counterpart to Build. Empty when the agent predates the field.
 	Version string
+	// ExecutablePath is the agent process's own binary path. See
+	// Response.ExecutablePath: it answers the question Build and Version
+	// cannot, which is whether that binary still exists. Empty when the
+	// agent predates the field.
+	ExecutablePath string
 }
 
 // History asks for every unlock and lock the agent knows of, newest first
@@ -399,13 +404,14 @@ func (c *Client) Status() (Status, error) {
 		return Status{}, err
 	}
 	return Status{
-		Unlocked:      resp.Unlocked,
-		Remaining:     time.Duration(resp.ExpiresInSeconds) * time.Second,
-		Mounts:        resp.Mounts,
-		LastUnlock:    resp.LastUnlock,
-		LastLock:      resp.LastLock,
-		PendingUnlock: resp.PendingUnlock,
-		Build:         resp.Build,
-		Version:       resp.Version,
+		Unlocked:       resp.Unlocked,
+		Remaining:      time.Duration(resp.ExpiresInSeconds) * time.Second,
+		Mounts:         resp.Mounts,
+		LastUnlock:     resp.LastUnlock,
+		LastLock:       resp.LastLock,
+		PendingUnlock:  resp.PendingUnlock,
+		Build:          resp.Build,
+		Version:        resp.Version,
+		ExecutablePath: resp.ExecutablePath,
 	}, nil
 }

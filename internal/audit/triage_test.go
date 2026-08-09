@@ -448,7 +448,11 @@ func TestGCPServiceAccountKeyAdvice(t *testing.T) {
 	for _, want := range []string{
 		"An exposed Google Cloud service-account key",
 		"[rotate in IAM, then delete the file]",
-		"rotate the key in IAM, then delete this file",
+		// Names WHERE in the console to go. The old wording ("rotate the key
+		// in IAM, then delete this file") was the group header above it in
+		// different words, with the note between them already carrying the
+		// fact that deleting does not revoke.
+		"rotate it under IAM's Service Accounts, then delete this file",
 		"only deleting the key in IAM does",
 	} {
 		if !strings.Contains(flat, want) {

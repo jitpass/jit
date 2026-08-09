@@ -40,7 +40,7 @@ func agentFindings(f []Finding) []Finding {
 
 func TestSubstrIndexFindAll(t *testing.T) {
 	idx := newSubstrIndex([]string{"alpha", "beta", "aardvark"})
-	first, count := idx.findAll([]byte("xx alpha yy beta zz alpha"))
+	first, count, _ := idx.findAll([]byte("xx alpha yy beta zz alpha"))
 
 	if got, want := first[0], 3; got != want {
 		t.Errorf("first offset of alpha = %d, want %d", got, want)
@@ -60,7 +60,7 @@ func TestSubstrIndexFindAll(t *testing.T) {
 // the bounds check would silently drop the last credential in a file.
 func TestSubstrIndexMatchesAtBufferEnd(t *testing.T) {
 	idx := newSubstrIndex([]string{"tail"})
-	first, _ := idx.findAll([]byte("head tail"))
+	first, _, _ := idx.findAll([]byte("head tail"))
 	if got, ok := first[0]; !ok || got != 5 {
 		t.Errorf("first[tail] = %d (present=%v), want 5", got, ok)
 	}
@@ -115,8 +115,8 @@ func TestCrossReferenceFindsEnvSecretCopiedIntoAgentCache(t *testing.T) {
 		if f.Remedy != RemedyManual {
 			t.Errorf("remedy = %q, want %q — jit migrate does not clean these yet", f.Remedy, RemedyManual)
 		}
-		if f.originPath != filepath.Join(home, "project", ".env") {
-			t.Errorf("originPath = %q, want the .env it was copied from", f.originPath)
+		if f.OriginPath != filepath.Join(home, "project", ".env") {
+			t.Errorf("OriginPath = %q, want the .env it was copied from", f.OriginPath)
 		}
 		if f.ValuePreview == nil || strings.Contains(*f.ValuePreview, "bWpKmT") {
 			t.Errorf("value_preview %v must be masked, never the credential", f.ValuePreview)
@@ -275,7 +275,7 @@ func TestRawValueNeverSerialises(t *testing.T) {
 		Confidence:  ConfidenceHigh,
 	})
 	f.claimedRawValues = []claimedValue{{Key: "OTHER", Value: realKey}}
-	f.originPath = "/h/project/.env"
+	f.OriginPath = "/h/project/.env"
 
 	blob, err := json.Marshal(f)
 	if err != nil {

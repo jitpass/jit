@@ -256,7 +256,7 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 			}
 			termtext.Wrap(w, 4, "    ", hdr)
 			for _, g := range ag.items {
-				writeManualItem(w, g, bold, red, yellowBold)
+				writeManualItem(w, g, home, bold, red, yellowBold)
 			}
 			if ag.note != "" {
 				// A note may carry several facts, one per \n-separated line,
@@ -280,15 +280,48 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 			// it restates the group header, so its tail is expendable. A
 			// COMMAND is the opposite — cut anywhere it stops being a
 			// command, and a real scan (2026-08-07) shipped an archived-group
-			// `jit migrate …` whose ellipsis ate half its targets. The
-			// archived action is the one command on these arrows, so it
-			// prints whole as ONE logical line; the parent-directory form
-			// keeps it short, and the explicit-path fallback soft-wraps in
-			// the terminal while still pasting as a single command.
-			if ag.kind == kindArchived {
-				fmt.Fprintln(w, ag.action)
+			// `jit migrate …` whose ellipsis ate half its targets. A command
+			// prints whole as ONE logical line: the archived group's
+			// parent-directory form keeps it short, and any explicit-path
+			// form soft-wraps in the terminal while still pasting as a
+			// single command.
+			//
+			// Keyed on the ACTION, not on the kind. The 2026-08-07 fix asked
+			// `ag.kind == kindArchived` and asserted archived was the only
+			// command on these arrows; kindProtectInPlace returns
+			// `jit migrate <path> --mount` and was already sitting in the
+			// truncating branch, so at 80 columns its path was cut
+			// mid-component and the --mount flag vanished silently — a
+			// command that reads as complete and does something else. Asking
+			// the string removes the chance to add a third command-shaped
+			// kind and forget again.
+			if isCommandAction(ag.action) {
+				// Cyan, like every other command jit prints — the migrate
+				// trailer, the --full footer, `jit scan` in the way-back
+				// link. These group arrows printed theirs in default weight,
+				// so the one command in a block was the only uncoloured
+				// command in the report (spotted by a reader, 2026-08-09).
+				// The rule the surrounding comment states is about ADVICE:
+				// painting a sentence made it read as a warning state. A
+				// command is not a sentence, and cyan is its ink.
+				_, _ = cmd.Fprintln(w, ag.action)
 			} else {
-				fmt.Fprintln(w, termtext.TruncTail(ag.action, max(20, termtext.Width()-len(triageNoteIndent)-2)))
+				// Prose WRAPS now; it used to truncate. The justification for
+				// cutting it was that "it restates the group header, so its
+				// tail is expendable" — true of the three arrows that did
+				// restate their header, and those have been rewritten to
+				// carry the fact the header cannot. Nothing on this line is
+				// expendable any more, and truncation was silently eating the
+				// additive half of the two arrows that never restated
+				// anything: "…replace it wherever it is authorized, then
+				// delet…" and "…sign out and back in to reset — the …", both
+				// cut at 80 columns (measured 2026-08-09).
+				//
+				// Wrapping rather than shortening the sentences, because a
+				// short sentence is a property of today's strings and this is
+				// a property of the renderer: the next arrow written one word
+				// too long would lose its meaning the same silent way.
+				termtext.Wrap(w, len(triageNoteIndent)+2, triageNoteIndent+"  ", ag.action)
 			}
 		}
 		fmt.Fprintln(w)
@@ -308,7 +341,7 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 // writeManualItem prints one problem inside an action group: the marked title,
 // the address, the evidence, and how to look at it. No arrow — the instruction
 // belongs to the group, not the item.
-func writeManualItem(w io.Writer, g triageManualGroup, bold, red, yellowBold *color.Color) {
+func writeManualItem(w io.Writer, g triageManualGroup, home string, bold, red, yellowBold *color.Color) {
 	fmt.Fprint(w, "    ")
 	if g.critical {
 		_, _ = red.Fprint(w, style.GlyphMark)
@@ -321,12 +354,49 @@ func writeManualItem(w io.Writer, g triageManualGroup, bold, red, yellowBold *co
 	// in 18 copies of a file  (2)" counted the same thing twice in one line
 	// and left the reader deciding which number meant files.
 	termtext.Wrap(w, 6, triageNoteIndent, bold.Sprint(g.title))
+	// What the credential was called where jit found it, when the line said
+	// so unambiguously (assignedCredentialName). It sits with the title
+	// rather than with an address because it answers "what is this", not
+	// "where is it": a title naming only the vendor reads identically for a
+	// live release-publishing token and for a test vector, which is how a
+	// real scan (2026-08-09) buried the former among the latter.
+	if g.assignedName != "" {
+		fmt.Fprintf(w, "%s%s assigned to %s\n", triageNoteIndent, style.GlyphBranch, g.assignedName)
+	}
+	// The addresses. When jit recorded a line for the files (content and
+	// shell-history findings), list every one grouped by folder, each as
+	// "name:line" — a reader sees where the copies are and at which line
+	// without running a grep. writeManualFileListing handles that and returns
+	// true; the old exemplar/hint path below stands in for the findings that
+	// still carry no line (structured mcp/env/private-key, until the tier-2
+	// scanner work) and for agent caches, whose copies are hash-named and
+	// addressed by their origin instead.
+	if writeManualFileListing(w, g, home) {
+		return
+	}
 	// One exemplar line per file set. A merged group keeps every one of them:
-	// the sets are different files, and collapsing them to a single exemplar
-	// would hide paths the reader has to go and fix.
-	for _, d := range g.details {
+	// the sets are different files, and collapsing to one exemplar would hide
+	// paths the reader has to go and fix.
+	//
+	// Two hint shapes, told apart by count rather than by index arithmetic.
+	// Normally hints are PARALLEL to details — one per address, same index —
+	// and each address must be followed by ITS OWN hint. collapsePatternHints
+	// instead folds a whole group into ONE grep covering every file, and that
+	// single hint belongs after ALL the addresses, not paired with the first.
+	collapsed := len(g.hints) == 1 && len(g.details) > 1
+	for i, d := range g.details {
 		fmt.Fprintf(w, "%s%s\n", triageNoteIndent,
 			termtext.TruncHead(d, termtext.Width()-len(triageNoteIndent)))
+		if !collapsed && i < len(g.hints) {
+			writeManualHint(w, g.hints[i])
+		}
+	}
+	if collapsed {
+		writeManualHint(w, g.hints[0])
+	} else {
+		for i := len(g.details); i < len(g.hints); i++ {
+			writeManualHint(w, g.hints[i])
+		}
 	}
 	// The viewing hint sits with the address it explains and ABOVE the arrow,
 	// per design/output-style.md: an explanation never follows the action
@@ -342,12 +412,128 @@ func writeManualItem(w io.Writer, g triageManualGroup, bold, red, yellowBold *co
 	// at the front still identifies the file; a command cut anywhere is no
 	// longer a command, and "…mcp_servers/okta-mcp-server/.env" is not
 	// something a reader can paste.
-	for _, h := range g.hints {
-		if h == "" {
-			continue
+}
+
+// writeManualHint prints one evidence line under the address it explains.
+func writeManualHint(w io.Writer, h string) {
+	if h == "" {
+		return
+	}
+	fmt.Fprint(w, triageNoteIndent)
+	termtext.Wrap(w, len(triageNoteIndent), triageNoteIndent+"  ", h)
+}
+
+// writeManualFileListing prints the group's files grouped by folder, each as
+// "name:line", and reports whether it did. It handles the findings jit has a
+// coordinate for; it declines (returns false) for agent caches — whose copies
+// are hash-named and belong under their origin, handled by the old path — and
+// for findings with no line recorded at all, so those keep the "how to view"
+// grep until the tier-2 scanner work gives them a line.
+//
+// Why folder-grouping: a widely-copied secret sits in files whose NAMES are
+// near-identical (developer_secrets_<timestamp>.html) and whose FOLDERS are
+// what differ. The flat, left-truncated exemplar list this replaces showed
+// the identical tail and cut the folder — the one part that told the copies
+// apart (2026-08-09). Naming each folder once, with its files beneath,
+// answers "where are they, are they together" at a glance.
+//
+// Folders are relevance-ordered: an ordinary location first, then ~/Downloads,
+// then archived/backup trees. A credential's likely home should lead; a
+// derived copy should not sit at the top just because its path sorts first,
+// which is what alphabetical order did. No stronger claim than that ordering
+// is made — jit does not assert a file is "just a copy".
+func writeManualFileListing(w io.Writer, g triageManualGroup, home string) bool {
+	if g.sample.FindingType == FindingTypeAgentCachedSecret || len(g.fileLine) == 0 {
+		return false
+	}
+	seen := map[string]bool{}
+	var files []string
+	for _, f := range g.fileList {
+		if f != "" && !seen[f] {
+			seen[f] = true
+			files = append(files, f)
 		}
-		fmt.Fprint(w, triageNoteIndent)
-		termtext.Wrap(w, len(triageNoteIndent), triageNoteIndent+"  ", h)
+	}
+	if len(files) == 0 {
+		return false
+	}
+
+	// A single file needs no folder header — the compact one-liner the reader
+	// already liked (~/.gemini/oauth_creds.json:5).
+	if len(files) == 1 {
+		fmt.Fprintf(w, "%s%s\n", triageNoteIndent,
+			termtext.TruncHead(fileAddr(home, files[0], g.fileLine, g.fileEnd), termtext.Width()-len(triageNoteIndent)))
+		return true
+	}
+
+	byDir := map[string][]string{}
+	for _, f := range files {
+		d := filepath.Dir(f)
+		byDir[d] = append(byDir[d], f)
+	}
+	dirs := make([]string, 0, len(byDir))
+	for d := range byDir {
+		dirs = append(dirs, d)
+	}
+	sort.SliceStable(dirs, func(a, b int) bool {
+		ra, rb := dirRelevance(home, dirs[a]), dirRelevance(home, dirs[b])
+		if ra != rb {
+			return ra < rb
+		}
+		return dirs[a] < dirs[b]
+	})
+
+	const fileIndent = "        " // one step past the folder header
+	for _, d := range dirs {
+		header := ShortenHome(home, d) + "/"
+		fmt.Fprintf(w, "%s%s\n", triageNoteIndent,
+			termtext.TruncHead(header, termtext.Width()-len(triageNoteIndent)))
+		names := byDir[d]
+		sort.Strings(names)
+		for _, f := range names {
+			line := filepath.Base(f)
+			if ln, ok := g.fileLine[f]; ok {
+				line = fmt.Sprintf("%s:%d", line, ln)
+				if e, ok := g.fileEnd[f]; ok {
+					line = fmt.Sprintf("%s-%d", line, e)
+				}
+			}
+			fmt.Fprintf(w, "%s%s\n", fileIndent,
+				termtext.TruncHead(line, termtext.Width()-len(fileIndent)))
+		}
+	}
+	return true
+}
+
+// fileAddr renders one file as "path:line" (or "path:line-end" for a block),
+// falling back to the bare path when no line was recorded.
+func fileAddr(home, path string, fileLine, fileEnd map[string]int) string {
+	s := ShortenHome(home, path)
+	ln, ok := fileLine[path]
+	if !ok {
+		return s
+	}
+	s = fmt.Sprintf("%s:%d", s, ln)
+	if e, ok := fileEnd[path]; ok {
+		s = fmt.Sprintf("%s-%d", s, e)
+	}
+	return s
+}
+
+// dirRelevance ranks a directory for listing order: lower sorts first. An
+// ordinary working location leads; a download, then an archived/backup tree,
+// sink — a copy in one of those is less likely to be the credential's home.
+// Deliberately coarse and signal-based (LooksArchived, a ~/Downloads prefix),
+// never a claim that a file IS only a copy.
+func dirRelevance(home, dir string) int {
+	switch {
+	case LooksArchived(dir):
+		return 2
+	case home != "" && (dir == filepath.Join(home, "Downloads") ||
+		strings.HasPrefix(dir, filepath.Join(home, "Downloads")+string(filepath.Separator))):
+		return 1
+	default:
+		return 0
 	}
 }
 
@@ -532,10 +718,20 @@ type triageFile struct {
 // into one manifest row per file. The label is the key names the scanners
 // reported, deduplicated, capped at two — the row is consent ("what will
 // this command touch"), not the inventory.
+//
+// A file that only POINTS at a credential is labelled by what it reads
+// instead. An MCP config reaching a .env with --env-file was labelled with
+// its server name, so the row read as "a secret called okta-mcp-server lives
+// here" — the exact misreading that made a user open the file, find nothing,
+// and ask why jit had flagged it (2026-08-09). The row has to stay: jit
+// migrate really does rewrite that config, and consent means listing every
+// file the command touches. Only the label was wrong.
 func triageGroupMigratable(findings []Finding) []triageFile {
 	type agg struct {
 		keys     []string
 		seen     map[string]bool
+		reads    []string
+		seenRead map[string]bool
 		wrapTool string
 	}
 	byFile := map[string]*agg{}
@@ -546,12 +742,23 @@ func triageGroupMigratable(findings []Finding) []triageFile {
 		}
 		a, ok := byFile[f.FilePath]
 		if !ok {
-			a = &agg{seen: map[string]bool{}}
+			a = &agg{seen: map[string]bool{}, seenRead: map[string]bool{}}
 			byFile[f.FilePath] = a
 			order = append(order, f.FilePath)
 		}
 		if f.Remedy == RemedyWrap {
 			a.wrapTool = strings.TrimPrefix(f.FixCommand, "jit wrap ")
+		}
+		if f.OriginPath != "" {
+			// Named by the last two components: the manifest column is narrow,
+			// and "okta-mcp-server/.env" identifies the target beside the row
+			// that lists it in full directly below.
+			r := shortTailPath(f.OriginPath)
+			if r != "" && !a.seenRead[r] {
+				a.seenRead[r] = true
+				a.reads = append(a.reads, r)
+			}
+			continue
 		}
 		key := ""
 		if f.KeyName != nil {
@@ -567,6 +774,17 @@ func triageGroupMigratable(findings []Finding) []triageFile {
 	for _, file := range order {
 		a := byFile[file]
 		label := "secret-shaped values"
+		// Only when the file holds nothing of its own. A config carrying both
+		// an embedded secret and a pointer is labelled by the secret — that is
+		// the thing in it.
+		if len(a.keys) == 0 && len(a.reads) > 0 {
+			if len(a.reads) == 1 {
+				out = append(out, triageFile{file: file, label: "reads " + a.reads[0], wrapTool: a.wrapTool})
+			} else {
+				out = append(out, triageFile{file: file, label: fmt.Sprintf("reads %d credential files", len(a.reads)), wrapTool: a.wrapTool})
+			}
+			continue
+		}
 		switch {
 		case len(a.keys) == 1:
 			label = a.keys[0]
@@ -580,8 +798,34 @@ func triageGroupMigratable(findings []Finding) []triageFile {
 	return out
 }
 
+// shortTailPath names a file by its last two components — "okta/.env" — for
+// a column too narrow for the whole path. The full path is always available
+// elsewhere in the report; this is an identifier, not an address.
+func shortTailPath(p string) string {
+	p = filepath.ToSlash(p)
+	parts := strings.Split(strings.TrimSuffix(p, "/"), "/")
+	if len(parts) >= 2 {
+		return parts[len(parts)-2] + "/" + parts[len(parts)-1]
+	}
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	return ""
+}
+
 // triageManualGroup is one red-section item: a problem the user must fix,
 // possibly spanning many files (copies collapse on cause group).
+// constituents returns every finding this group stands for: the samples
+// mergeManualGroups accumulated when it folded groups together, or the lone
+// sample when nothing was folded. Callers that build a command covering the
+// whole group must use this rather than `sample`, which is one exemplar.
+func (g triageManualGroup) constituents() []Finding {
+	if len(g.hintSamples) > 0 {
+		return g.hintSamples
+	}
+	return []Finding{g.sample}
+}
+
 type triageManualGroup struct {
 	title string
 	// details holds one exemplar line per distinct file set. A merged group
@@ -605,6 +849,10 @@ type triageManualGroup struct {
 	// files is the total number of file copies the group spans, summed across
 	// merged constituents so a merged title can state the real spread.
 	files int
+	// assignedName is the variable or setting this credential was assigned to
+	// where jit found it, when every constituent agrees on one. It is what
+	// distinguishes two findings that share a vendor, and so share a title.
+	assignedName string
 	// sample and ctx are kept so a merged group can REGENERATE its action
 	// against the combined counts. Inheriting the first constituent's wording
 	// told a reader with three exposed passwords to "rotate it now".
@@ -619,6 +867,52 @@ type triageManualGroup struct {
 	// kept by the merge so collapsePatternHints can regenerate a combined
 	// hint instead of parsing the strings it would be folding.
 	hintSamples []Finding
+	// fileList is every distinct file this group's secret(s) sit in, and
+	// fileLine/fileEnd the line (and closing line, for a key block) each holds
+	// it on. writeManualItem lists them grouped by folder, with "name:line"
+	// where the line is known, so a reader sees where the copies are and at
+	// which line without a grep. Empty fileLine means no coordinate was
+	// recorded (a structured mcp/env finding) — the file is still listed, just
+	// without a line, and the old "how to view" hint stands in until the
+	// tier-2 scanner work gives those findings a line too.
+	fileList []string
+	fileLine map[string]int
+	fileEnd  map[string]int
+}
+
+// distinctFileCount counts unique paths in a file list — the number the
+// report must show beside a listing built from the same deduplicated set, so
+// "in N files" always equals the paths a reader can count beneath it.
+func distinctFileCount(files []string) int {
+	seen := map[string]bool{}
+	for _, f := range files {
+		if f != "" {
+			seen[f] = true
+		}
+	}
+	return len(seen)
+}
+
+// mergeCauseLines unions the per-file line maps of a problem's causes. When
+// two causes put different secrets in one file at different lines, the first
+// wins — the file is one place to go, and the block's job is to point there,
+// not to enumerate every secret in it (the count on the header already does).
+func mergeCauseLines(causes []*triageCause) (line, end map[string]int) {
+	line = map[string]int{}
+	end = map[string]int{}
+	for _, c := range causes {
+		for p, ln := range c.fileLine {
+			if _, ok := line[p]; !ok {
+				line[p] = ln
+			}
+		}
+		for p, e := range c.fileEnd {
+			if _, ok := end[p]; !ok {
+				end[p] = e
+			}
+		}
+	}
+	return line, end
 }
 
 // triageActionGroup is one block of the red section: every problem that ends
@@ -672,7 +966,12 @@ func groupManualByAction(groups []triageManualGroup, home string) []triageAction
 	}
 	for i := range out {
 		b := &out[i]
-		if len(b.items) == 1 {
+		// One item is not the same as one finding. mergeManualGroups folds
+		// same-noun archived findings into a single item carrying every
+		// constituent, so a group of six files can arrive here as one item —
+		// and skipping on the item count alone left its action as whichever
+		// file happened to build it, naming one path for a block listing six.
+		if len(b.items) == 1 && len(b.items[0].constituents()) == 1 {
 			continue
 		}
 		worst := b.items[0]
@@ -685,7 +984,16 @@ func groupManualByAction(groups []triageManualGroup, home string) []triageAction
 			ctx.copies += it.ctx.copies
 			ctx.production = ctx.production || it.ctx.production
 		}
-		_, b.action = manualAction(worst.sample, ctx, home)
+		// Both the label and the arrow are regenerated from the block's real
+		// totals, and TOGETHER: the kind is the "[…]" header, the action is
+		// the arrow, and manualAction derives them from the same worst+ctx, so
+		// taking one and keeping the first item's other let a merged block
+		// print a header naming one remedy over an arrow naming another (the
+		// invariant at mergeManualGroups is that a problem is never filed under
+		// one remedy and told to do a different one). The widened guard above
+		// newly routes merged single-item blocks through here, so this has to
+		// hold for them too.
+		b.kind, b.action = manualAction(worst.sample, ctx, home)
 		// One arrow per group is the rule, and for a group whose action NAMES
 		// a path that rule has a sharp edge: the archived block's command is
 		// `jit migrate <file>`, so regenerating it from the worst item alone
@@ -706,17 +1014,28 @@ func groupManualByAction(groups []triageManualGroup, home string) []triageAction
 			seen := map[string]bool{}
 			var raw, paths []string
 			discoverable := true
+			// Every constituent finding, not one exemplar per item.
+			// mergeManualGroups folds archived findings that share a noun into
+			// ONE item (they share a fix, and six identical "! An exposed
+			// credential" lines were the cost of not folding them), so
+			// iterating b.items alone would see a single sample and build a
+			// command naming one of the six files while the block listed all
+			// six — the exact "shown them and given a command that appeared to
+			// cover them" failure the shortening below exists to prevent.
+			// hintSamples is where the merge keeps them.
 			for _, it := range b.items {
-				if it.sample.FilePath == "" {
-					continue
+				for _, s := range it.constituents() {
+					if s.FilePath == "" {
+						continue
+					}
+					discoverable = discoverable && dirDiscoverable(s)
+					if seen[s.FilePath] {
+						continue
+					}
+					seen[s.FilePath] = true
+					raw = append(raw, s.FilePath)
+					paths = append(paths, shellSafePath(home, s.FilePath))
 				}
-				discoverable = discoverable && dirDiscoverable(it.sample)
-				if seen[it.sample.FilePath] {
-					continue
-				}
-				seen[it.sample.FilePath] = true
-				raw = append(raw, it.sample.FilePath)
-				paths = append(paths, shellSafePath(home, it.sample.FilePath))
 			}
 			switch dir := commonDir(raw); {
 			case discoverable && len(raw) > 1 && dir != "" && LooksArchived(dir):
@@ -742,6 +1061,25 @@ type triageCause struct {
 	files    []string
 	seenFile map[string]bool
 	sample   Finding
+	// fileLine records the line each file holds this secret on (path -> line),
+	// and fileEnd its closing line for a block that spans several (a PEM key in
+	// shell history). Absent when the finding carries no coordinate — a
+	// structured mcp/env/private-key finding, which has a file but not a line
+	// until the tier-2 scanner work records one. The report lists a file as
+	// "name:line" when its line is known and bare otherwise.
+	fileLine map[string]int
+	fileEnd  map[string]int
+	// assignedName is the variable this credential was assigned to, taken
+	// from ANY finding in the cause rather than from sample.
+	//
+	// A cause is one credential in several places, and the places do not
+	// agree about how much they reveal: a token pasted into a prompt is bare
+	// in the paste cache and named in the transcript of the command it was
+	// pasted into. sample is chosen by severity, so keying the name off it
+	// loses the name whenever the worst sighting happens to be the bare one —
+	// which is what hid a live Homebrew-tap token behind a title identical to
+	// this repository's own test vectors (2026-08-09).
+	assignedName string
 }
 
 // causeKey is a finding's identity for grouping: its cause group, or its
@@ -813,6 +1151,25 @@ func triageGroupManual(findings []Finding, home string) []triageManualGroup {
 			c.seenFile[f.FilePath] = true
 			c.files = append(c.files, f.FilePath)
 		}
+		if f.Line != nil {
+			if c.fileLine == nil {
+				c.fileLine = map[string]int{}
+			}
+			// First coordinate seen for a file wins; a file holding the same
+			// value twice is one address to go to, not two.
+			if _, ok := c.fileLine[f.FilePath]; !ok {
+				c.fileLine[f.FilePath] = *f.Line
+				if f.EndLine != nil && *f.EndLine != *f.Line {
+					if c.fileEnd == nil {
+						c.fileEnd = map[string]int{}
+					}
+					c.fileEnd[f.FilePath] = *f.EndLine
+				}
+			}
+		}
+		if c.assignedName == "" {
+			c.assignedName = f.AssignedName
+		}
 		if rankOf(f.Severity) < rankOf(c.sample.Severity) {
 			c.sample = f
 		}
@@ -855,23 +1212,48 @@ func triageGroupManual(findings []Finding, home string) []triageManualGroup {
 			}
 		}
 		kind, action := manualAction(worst, ctx, home)
+		fileLine, fileEnd := mergeCauseLines(p.causes)
 		out = append(out, triageManualGroup{
-			secrets:  len(p.causes),
-			critical: worst.Severity == SeverityCritical,
-			sortKey:  rankOf(worst.Severity),
-			title:    manualTitle(p.causes, p.files, worst, home),
-			details:  []string{manualDetail(p.files, worst, home)},
-			hints:    []string{manualGroupHint(worst, p.files, home, p.causes)},
-			kind:     kind,
-			action:   action,
-			noun:     manualNoun(worst),
-			files:    len(p.files),
-			sample:   worst,
-			ctx:      ctx,
+			secrets:      len(p.causes),
+			critical:     worst.Severity == SeverityCritical,
+			sortKey:      rankOf(worst.Severity),
+			title:        manualTitle(p.causes, p.files, worst, home),
+			details:      []string{manualDetail(p.files, worst, home)},
+			hints:        []string{manualGroupHint(worst, p.files, home, p.causes)},
+			kind:         kind,
+			action:       action,
+			noun:         manualNoun(worst),
+			files:        len(p.files),
+			fileList:     append([]string(nil), p.files...),
+			fileLine:     fileLine,
+			fileEnd:      fileEnd,
+			assignedName: groupAssignedName(worst, p.causes),
+			sample:       worst,
+			ctx:          ctx,
 		})
 	}
 	sort.SliceStable(out, func(a, b int) bool { return out[a].sortKey < out[b].sortKey })
 	return mergeManualGroups(out, home)
+}
+
+// groupAssignedName is the name to show for a problem: the worst finding's
+// when it has one, otherwise the first any of its causes offers.
+//
+// The fallback is the point. A credential is frequently bare where it lives
+// and named where it was used — a token pasted into a prompt has no name in
+// the paste cache, while the transcript of the command it was pasted INTO
+// records one. The causes here are all the same credential (that is what a
+// cause group means), so a name found on any of them names all of them.
+func groupAssignedName(worst Finding, causes []*triageCause) string {
+	if worst.AssignedName != "" {
+		return worst.AssignedName
+	}
+	for _, c := range causes {
+		if c.assignedName != "" {
+			return c.assignedName
+		}
+	}
+	return ""
 }
 
 // mergeManualGroups folds groups that name the same kind of secret AND ask for
@@ -882,12 +1264,26 @@ func triageGroupManual(findings []Finding, home string) []triageManualGroup {
 // Only same-noun, same-action groups merge, which is what keeps this safe —
 // two problems that need different fixes stay two blocks no matter how alike
 // their titles read.
+//
+// The archived kind is keyed on its KIND rather than its action, because its
+// action names the individual file (`jit migrate <path>`) and so is unique by
+// construction. Keyed on the action, six byte-identical findings — same
+// finding type, same nil key name, same severity, same remedy — rendered as
+// six consecutive "! An exposed credential" lines differing only in the
+// address beneath them (measured 2026-08-09 on six archived .env files).
+// They already share one fix: groupManualByAction shortens the whole block to
+// a single `jit migrate <common parent>` a few steps later, so merging here
+// is not a claim about them, it is the same claim arriving in time to be
+// rendered once.
 func mergeManualGroups(groups []triageManualGroup, home string) []triageManualGroup {
 	type key struct{ noun, action string }
 	at := map[key]int{}
 	var out []triageManualGroup
 	for _, g := range groups {
 		k := key{g.noun, g.action}
+		if g.kind == kindArchived {
+			k = key{g.noun, kindArchived}
+		}
 		i, ok := at[k]
 		if !ok {
 			at[k] = len(out)
@@ -901,7 +1297,30 @@ func mergeManualGroups(groups []triageManualGroup, home string) []triageManualGr
 		m.details = append(m.details, g.details...)
 		m.hints = append(m.hints, g.hints...)
 		m.hintSamples = append(m.hintSamples, g.sample)
+		m.fileList = append(m.fileList, g.fileList...)
+		if m.fileLine == nil {
+			m.fileLine = map[string]int{}
+		}
+		for p, ln := range g.fileLine {
+			if _, ok := m.fileLine[p]; !ok {
+				m.fileLine[p] = ln
+			}
+		}
+		if len(g.fileEnd) > 0 && m.fileEnd == nil {
+			m.fileEnd = map[string]int{}
+		}
+		for p, e := range g.fileEnd {
+			if _, ok := m.fileEnd[p]; !ok {
+				m.fileEnd[p] = e
+			}
+		}
 		m.critical = m.critical || g.critical
+		// Two constituents that name different variables have no single name
+		// to show, and showing one of them would attribute the other's
+		// credential to it.
+		if m.assignedName != g.assignedName {
+			m.assignedName = ""
+		}
 		if g.sortKey < m.sortKey {
 			m.sortKey = g.sortKey
 		}
@@ -929,12 +1348,19 @@ func mergeManualGroups(groups []triageManualGroup, home string) []triageManualGr
 				// Same grammar as manualTitle's multi-file form: "N secrets in
 				// M files". "N separate secrets in M file copies" said the
 				// same thing in different words two lines apart.
+				//
+				// The file count is DISTINCT files, taken from the same
+				// deduplicated fileList the listing renders — not out[i].files,
+				// which sums each constituent's count and so counts a file
+				// shared by two secrets twice. That made the header say "21
+				// files" over a listing of 15 (2026-08-09): a reader counts the
+				// paths, gets a smaller number, and stops trusting the report.
 				out[i].title = fmt.Sprintf("%s — %d secrets in %s",
 					out[i].noun, out[i].secrets,
-					countWord(out[i].files, "file", "files"))
+					countWord(distinctFileCount(out[i].fileList), "file", "files"))
 			}
 			out[i].ctx.secrets = out[i].secrets
-			out[i].ctx.copies = out[i].files
+			out[i].ctx.copies = distinctFileCount(out[i].fileList)
 			out[i].kind, out[i].action = manualAction(out[i].sample, out[i].ctx, home)
 		}
 	}
@@ -973,6 +1399,16 @@ func collapsePatternHints(m *triageManualGroup, home string) {
 			s.FindingType == FindingTypeAgentCachedSecret {
 			return
 		}
+		// A sample that knows its own line renders as "at line N" now
+		// (viewHintByAnchor), which is a precise coordinate this file offers.
+		// Folding several of those into one grep over *.json throws the
+		// coordinates away and undoes the very change that added them —
+		// measured against three JWTs at lines 10/20/30 (2026-08-09). The
+		// grep form is the fallback for findings with NO line; collapse only
+		// applies to those.
+		if s.Line != nil {
+			return
+		}
 		if !seen[s.FilePath] {
 			seen[s.FilePath] = true
 			paths = append(paths, s.FilePath)
@@ -987,6 +1423,15 @@ func collapsePatternHints(m *triageManualGroup, home string) {
 	// exists to keep.
 	m.hints = []string{fmt.Sprintf("lines: grep -nE '%s' %s | cut -d: -f1,2",
 		ere, combinedPathExpr(paths, home))}
+
+	// The ADDRESSES above this hint deliberately do not collapse with it,
+	// even though nine ~/.claude/paste-cache/<16 hex>.txt lines over a single
+	// glob read badly (measured 2026-08-09). A glob is a search convenience,
+	// where combinedPathExpr can accept over-matching because "grep finding
+	// nothing extra in them is harmless" — an address is a claim. Rewriting
+	// nine addresses to ~/Downloads/*.json would assert jit found something
+	// in every .json in that directory, including files it never opened. The
+	// hash names are unhelpful; naming files that are not findings is worse.
 }
 
 // combinedPathExpr renders several paths as one shell word when a glob can
@@ -1188,8 +1633,8 @@ func manualDetail(files []string, worst Finding, home string) string {
 	// credential LIVES in, never the copy: the copies are named by content
 	// hash (93eb694cdfee2a45@v2), which is an address nobody can act on, and
 	// the origin is the file they recognise and can go and fix.
-	if worst.FindingType == FindingTypeAgentCachedSecret && worst.originPath != "" {
-		return ShortenHome(home, worst.originPath)
+	if worst.FindingType == FindingTypeAgentCachedSecret && worst.OriginPath != "" {
+		return ShortenHome(home, worst.OriginPath)
 	}
 	shown := ShortenHome(home, first)
 	// A history file is thousands of lines long and the fix is to find one of
@@ -1209,7 +1654,11 @@ func manualDetail(files []string, worst Finding, home string) string {
 	if len(files) == 1 {
 		return shown
 	}
-	return fmt.Sprintf("%s … and %d more", shown, len(files)-1)
+	// "… and 1 more" never said more WHAT. Beside a group header that counts
+	// both secrets and files ("An exposed JWT — 9 secrets in 21 files"), a
+	// bare "1 more" reads as plausibly either, and a reader asked (2026-08-09).
+	// The noun costs five columns and removes the question.
+	return fmt.Sprintf("%s … and %s", shown, countWord(len(files)-1, "more file", "more files"))
 }
 
 // manualGroupHint is the evidence line under a group's address. It defers to
@@ -1223,7 +1672,7 @@ func manualGroupHint(worst Finding, files []string, home string, causes []*triag
 			return style.GlyphBranch + " " + b
 		}
 	}
-	return manualViewHint(worst, home, anchorCoversSeveral(worst, causes))
+	return manualViewHint(worst, home, anchorCoversSeveral(worst, causes), len(files) > 1)
 }
 
 // anchorCoversSeveral reports whether the hint's single anchor really stands
@@ -1297,11 +1746,11 @@ func anchorCoversSeveral(worst Finding, causes []*triageCause) bool {
 // finding they discount. That is not hypothetical — a GCP project ID reported
 // as an exposed secret is the kind of item that costs the whole report its
 // credibility, and the fastest way to settle it is to look.
-func manualViewHint(f Finding, home string, plural bool) string {
+func manualViewHint(f Finding, home string, plural, multiFile bool) string {
 	if f.FindingType == FindingTypeShellHistorySecret && f.Line != nil {
 		return viewHintByLine(f, home)
 	}
-	return viewHintByAnchor(f, home, plural)
+	return viewHintByAnchor(f, home, plural, multiFile)
 }
 
 // viewHintByLine addresses a credential recorded in shell history, where the
@@ -1374,16 +1823,39 @@ func viewHintByLine(f Finding, home string) string {
 //
 // "" when no constant is available — an unanchored finding keeps the behaviour
 // this had before it was generalised, which is to say no hint.
-func viewHintByAnchor(f Finding, home string, plural bool) string {
+func viewHintByAnchor(f Finding, home string, plural, multiFile bool) string {
 	if f.FilePath == "" {
 		return ""
 	}
-	// The full-pattern form is preferred when the vendor's pattern survives
-	// translation to a grep ERE (TokenPatternERE): it matches exactly the
-	// spans the scanner matched, prints LINE NUMBERS and nothing else — no
-	// value, not even the anchor — and it covers the vendors an anchor cannot
-	// (AWS, SendGrid, Vault, Doppler open with alternations or boundaries and
-	// used to get no hint at all).
+	// jit already knows where it looked. When it has a line number AND the
+	// address above names exactly one file, saying so beats shipping a command
+	// to go and rediscover it: the grep form's output is a column of bare
+	// integers with nothing naming them, and two readers in a row ran it and
+	// asked what the numbers meant (2026-08-09). For ~/.gemini/oauth_creds.json
+	// the record carried "line": 5 the whole time.
+	//
+	// Gated on multiFile because f.Line is the coordinate in the WORST
+	// finding's file, and a cause group can span several: one credential in
+	// ~/proj/.env:12 and its copy in ~/backup/.env.bak:3740 renders one detail
+	// line ("~/proj/.env … and 1 more file") over which "at line 12" is wrong
+	// for the backup — a reader who opens it there finds nothing, the exact
+	// greps-to-nothing failure the anchor forms below are built to avoid. A
+	// multi-file group falls through to the self-identifying grep, which names
+	// its own path and so cannot mislead about which file a number belongs to.
+	//
+	// The count rides along because "at line 3740" alone would imply the only
+	// one — that file held six.
+	if f.Line != nil && !multiFile {
+		switch {
+		case f.Occurrences > 1:
+			return fmt.Sprintf("at line %d, and %d more in this file", *f.Line, f.Occurrences-1)
+		default:
+			return fmt.Sprintf("at line %d", *f.Line)
+		}
+	}
+	// No line: a file-level finding, or one whose scanner never recorded a
+	// coordinate. The pattern grep is the honest fallback — it prints line
+	// numbers and nothing else, not even the anchor.
 	if ere := patternEREFor(f); ere != "" {
 		lead := "lines"
 		if !plural {
@@ -1550,13 +2022,28 @@ const (
 	kindSelfRotating   = "sign out and back in"
 	kindTerraformState = "get secrets out of Terraform state"
 	kindSeal           = "seal it"
-	kindAgentCopies    = "rotate — jit migrate will not reach these copies"
+	kindAgentCopies    = "rotate — an agent kept its own copies"
 	kindKeyByHand      = "delete by hand"
 	kindHistoryLine    = "rotate, then clear the line"
 	kindRotateDelete   = "rotate, then delete every copy"
 	kindMoveOut        = "move it out, then rotate"
 	kindProtectInPlace = "protect in place"
 )
+
+// isCommandAction reports whether an arrow line is a command to run rather
+// than a sentence of advice. The two are cut differently — a sentence
+// truncates, a command must print whole (see the arrow renderer) — and this
+// is the one place that decides which.
+//
+// Asks the string rather than the kind on purpose. Every command jit puts on
+// an arrow is one of its own subcommands, so the prefix is the honest test,
+// and it cannot fall out of step with manualAction the way an enumerated list
+// of kinds did: kindProtectInPlace returned `jit migrate <path> --mount` for
+// months while the renderer believed kindArchived was the only command, and
+// silently truncated the flag off.
+func isCommandAction(action string) bool {
+	return strings.HasPrefix(action, "jit ")
+}
 
 func manualAction(f Finding, ctx manualContext, home string) (kind, action string) {
 	them := "it"
@@ -1584,7 +2071,13 @@ func manualAction(f Finding, ctx manualContext, home string) (kind, action strin
 		if ctx.secrets > 1 {
 			files = "these files"
 		}
-		return kindIAMKey, "rotate the key in IAM, then delete " + files
+		// The arrow says where to go, not what the header already said. It
+		// used to read "rotate the key in IAM, then delete these files",
+		// which is the group header ("rotate in IAM, then delete the file")
+		// in different words six lines below it — and the note between them
+		// already carries the fact that makes this kind different. Naming the
+		// console is the one thing neither line said.
+		return kindIAMKey, "rotate it under IAM's Service Accounts, then delete " + files
 	case f.FindingType == FindingTypePrivateKeyRisk:
 		return kindPassphrase, "add a passphrase (ssh-keygen -p) or move the key somewhere safer"
 	case selfRotating(f):
@@ -1595,15 +2088,22 @@ func manualAction(f Finding, ctx manualContext, home string) (kind, action strin
 	case f.FindingType == FindingTypeIACVariableFile:
 		return kindSeal, "seal it (sealed-secrets/SOPS) or move it to a real secret store"
 	case f.FindingType == FindingTypeAgentCachedSecret:
-		// Rotation leads, and the second clause is the part that surprises
-		// people: `jit migrate` rewrites the file the credential lives in and
-		// does not touch the agent's copies, so a reader who runs it and
-		// re-scans would otherwise think jit had lost the finding.
+		// Rotation leads because it is the fix: the credential sat in an
+		// agent's cache in plaintext, and clearing a copy does not un-expose
+		// what was already readable.
+		//
+		// The second clause used to say `jit migrate` "cleans the file above,
+		// not these copies". That was false, and had been for as long as
+		// migrate called CleanAgentCaches: migrating the origin vaults the
+		// value AND replaces every cached copy of it with a
+		// <jit:redacted:VAR> marker. A real run cleared ten of them while the
+		// scan was still promising it would not (measured 2026-08-09) — the
+		// same shape of scan-contradicts-migrate the tfvars advisory had.
 		above := "the file above"
 		if ctx.copies > 0 && ctx.secrets > 1 {
 			above = "the files above"
 		}
-		return kindAgentCopies, fmt.Sprintf("rotate %s now; jit migrate cleans %s, not these copies", them, above)
+		return kindAgentCopies, fmt.Sprintf("rotate %s now — migrating %s clears these copies too", them, above)
 	case f.FindingType == FindingTypeShellHistorySecret && f.KeyName != nil && IsPrivateKeyVendor(*f.KeyName):
 		// A key is not a token: there is no provider to rotate it at, and the
 		// line jit matched is the header, so the body is still on the lines
@@ -1632,11 +2132,19 @@ func manualAction(f Finding, ctx manualContext, home string) (kind, action strin
 		return kindHistoryLine, fmt.Sprintf("rotate %s at the provider now, then remove %s — your shell rewrites %s on exit, so close other shells first",
 			them, lines, file)
 	case ctx.production || f.ProductionIndicatorMatch:
-		return kindRotateDelete, fmt.Sprintf("rotate %s now, then delete every copy", them)
+		// Rotation FIRST and on its own clause, because the deletion is the
+		// part people do and mistake for the fix. The arrow used to read
+		// "rotate them now, then delete every copy" — the group header
+		// verbatim, plus "now". What the header cannot say is why deleting
+		// alone is not enough.
+		return kindRotateDelete, fmt.Sprintf("rotate %s at the provider — deleting the copies undoes nothing", them)
 	case ctx.copies > 1:
-		return kindRotateDelete, fmt.Sprintf("rotate %s now, then delete every copy", them)
+		return kindRotateDelete, fmt.Sprintf("rotate %s at the provider — deleting the copies undoes nothing", them)
 	case !mountable(f.FilePath):
-		return kindMoveOut, fmt.Sprintf("move %s out of the file, then rotate", them)
+		// Says why this is "move out" rather than the mount offered two
+		// branches down: nothing reads this file at run time, so there is no
+		// consumer for a pipe to serve.
+		return kindMoveOut, fmt.Sprintf("move %s out, then rotate — no program reads this file at run time", them)
 	default:
 		// A mixed-content file bare migrate skips on purpose, that a program
 		// really does read at run time: offer the in-place protection that

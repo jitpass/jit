@@ -657,7 +657,7 @@ func TestShellHistoryViewHint(t *testing.T) {
 
 	tf := base
 	tf.KeyName = &token
-	hint := manualViewHint(tf, home, false)
+	hint := manualViewHint(tf, home, false, false)
 	if hint != "to see that line: sed -n '4821p' ~/.zsh_history" {
 		t.Errorf("token hint = %q", hint)
 	}
@@ -673,7 +673,7 @@ func TestShellHistoryViewHint(t *testing.T) {
 	kf.KeyName = &key
 	kf.EndLine = &end
 	kf.Severity = SeverityCritical
-	kh := manualViewHint(kf, home, false)
+	kh := manualViewHint(kf, home, false, false)
 	if kh != "to see them: sed -n '4821,4826p' ~/.zsh_history" {
 		t.Errorf("key hint = %q", kh)
 	}
@@ -683,7 +683,7 @@ func TestShellHistoryViewHint(t *testing.T) {
 	// either stops mid-key or prints unrelated history.
 	open := kf
 	open.EndLine = nil
-	oh := manualViewHint(open, home, false)
+	oh := manualViewHint(open, home, false, false)
 	if strings.Contains(oh, "sed") {
 		t.Errorf("unclosed key block got a range it does not have: %q", oh)
 	}
@@ -718,7 +718,7 @@ func TestShellHistoryViewHint(t *testing.T) {
 		FilePath:    filepath.Join(home, ".ssh", "id_rsa"),
 		Remedy:      RemedyManual,
 	}
-	if got := manualViewHint(other, home, false); got != "" {
+	if got := manualViewHint(other, home, false, false); got != "" {
 		t.Errorf("anchorless finding got a hint: %q", got)
 	}
 	// A history finding with no line number has no line to explain, but it
@@ -732,10 +732,10 @@ func TestShellHistoryViewHint(t *testing.T) {
 	// only for vendors whose pattern cannot survive translation to a grep ERE
 	// (TokenPatternERE).
 	// Singular, because this call says the problem is one secret.
-	if got := manualViewHint(noline, home, false); got != `line: grep -nE '\bghp_[A-Za-z0-9]{36}\b' ~/.zsh_history | cut -d: -f1` {
+	if got := manualViewHint(noline, home, false, false); got != `line: grep -nE '\bghp_[A-Za-z0-9]{36}\b' ~/.zsh_history | cut -d: -f1` {
 		t.Errorf("line-less history finding = %q", got)
 	}
-	if got := manualViewHint(noline, home, true); !strings.HasPrefix(got, "lines:") {
+	if got := manualViewHint(noline, home, true, false); !strings.HasPrefix(got, "lines:") {
 		t.Errorf("plural form = %q", got)
 	}
 }
@@ -858,7 +858,7 @@ func TestViewHintCommandNeverPrintsTheCredential(t *testing.T) {
 		Remedy:      RemedyManual,
 		Evidence:    "contains a value matching GitHub Fine-Grained Personal Access Token's known token format",
 	}
-	hint := manualViewHint(f, "", false)
+	hint := manualViewHint(f, "", false, false)
 	_, cmdline, found := strings.Cut(hint, ": ")
 	if !found || cmdline == "" {
 		t.Fatalf("no runnable hint: %q", hint)
@@ -966,7 +966,7 @@ func TestShellHistoryViewHintRuns(t *testing.T) {
 				t.Fatalf("EndLine = %d, want %d", *key.EndLine, c.wantEnd)
 			}
 
-			hint := manualViewHint(*key, dir, false)
+			hint := manualViewHint(*key, dir, false, false)
 			var cmd string
 			var ok bool
 			for _, lead := range []string{"to see them: ", "to see it: ", "to find it: "} {

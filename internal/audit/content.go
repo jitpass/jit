@@ -7,7 +7,9 @@ import (
 	"bytes"
 	"io"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"unicode"
 )
 
 // maxContentScanSize bounds how large a file the generic content sweep will
@@ -135,6 +137,14 @@ func scanFileContentForTokens(cfg Config, path string) ([]Finding, error) {
 
 	exampleLines := sourceExampleLines(path, tokens)
 
+	// How many times each vendor's format appears in this file. One finding is
+	// emitted per (file, vendor), so without this the report can name the
+	// first sighting but not say whether it is the only one.
+	occurrences := map[string]int{}
+	for _, tk := range tokens {
+		occurrences[tk.Vendor]++
+	}
+
 	var findings []Finding
 	byVendor := map[string]int{} // index into findings; one per (file, vendor): see below
 	for _, tk := range tokens {
@@ -166,6 +176,8 @@ func scanFileContentForTokens(cfg Config, path string) ([]Finding, error) {
 			Evidence:     "value matches a known vendor credential format",
 		})
 		f.SourceExample = exampleLines[ln]
+		f.AssignedName = tk.AssignedName
+		f.Occurrences = occurrences[tk.Vendor]
 		if i, ok := byVendor[tk.Vendor]; ok {
 			findings[i] = f
 		} else {
@@ -296,6 +308,11 @@ type FileToken struct {
 	Vendor   string
 	Verified bool
 	Value    string
+	// AssignedName is the name this value was assigned to on its line, when
+	// the line offers one that is unmistakably a label rather than a payload
+	// (see assignedCredentialName). "" is the common case and means only that
+	// nothing safe to print was found — never that the value is less real.
+	AssignedName string
 }
 
 // FindFileTokens sweeps path's raw text for values matching a known vendor
@@ -377,12 +394,13 @@ func FindFileTokens(path string) ([]FileToken, error) {
 				}
 				claimed = append(claimed, [2]int{lo, hi})
 				tokens = append(tokens, FileToken{
-					Line:     lineNum,
-					Start:    lo,
-					End:      hi,
-					Vendor:   tp.vendor,
-					Verified: tp.verified,
-					Value:    match,
+					Line:         lineNum,
+					Start:        lo,
+					End:          hi,
+					Vendor:       tp.vendor,
+					Verified:     tp.verified,
+					Value:        match,
+					AssignedName: assignedCredentialName(line, lo),
 				})
 			}
 		}
@@ -391,4 +409,168 @@ func FindFileTokens(path string) ([]FileToken, error) {
 	// I/O error) returns what we found so far rather than failing the run —
 	// partial detection beats none.
 	return tokens, nil
+}
+
+// credentialNameLead caps how far back along a line assignedCredentialName
+// looks. A credential's own name sits within a few words of it; anything
+// further is unrelated text that happens to share the line, and in a
+// one-line JSON transcript the whole rest of the session shares the line.
+const credentialNameLead = 120
+
+// assignedCredentialName returns the name a credential on this line was
+// assigned to — "HOMEBREW_TAP_GITHUB_TOKEN" for
+// `gh secret set HOMEBREW_TAP_GITHUB_TOKEN -R jitpass/jit --body "github_pat_…"` —
+// or "" when the line offers none.
+//
+// Why this exists: a report that says "An exposed GitHub Fine-Grained
+// Personal Access Token in 2 files" describes the PATTERN that matched, and
+// every finding of that vendor reads identically. A real scan (2026-08-09)
+// buried a live Homebrew-tap token — the credential that decides what
+// `brew install` delivers — as the fourth of six such lines, indistinguishable
+// from this repository's own test vectors. What told them apart was the name
+// beside the value, which jit had already read and thrown away.
+//
+// It reports a NAME, never surrounding text. The report's closing promise is
+// that no secret value is ever printed in full, and a line next to a
+// credential routinely holds another one — a password matching no vendor
+// pattern would be leaked by the very feature meant to explain the leak.
+//
+// The first draft of this asked the wrong question. It collected every
+// word within 120 bytes and tested each against a stack of gates, on the
+// theory that a gate stack could tell a label from a payload. It cannot:
+// LooksLikeSecretKey is a substring test for KEY/SECRET/TOKEN/PASS/…, which
+// random high-entropy values hit constantly, and writtenLikeAName passes on
+// a single hyphen or capital. An adversarial review (2026-08-09) walked out
+// "S3cret-Passw0rd" from a curl -u line, a password from a JSON blob, and a
+// fragment of an AWS secret key; a seeded corpus leaked 111 of 20,000 random
+// base64 blobs, one in full. The gates were never the defence — the candidate
+// set was, and it was wide open.
+//
+// So the candidate set is now STRUCTURAL: a value can only be named from a
+// position where the file's own grammar says a name belongs, never from
+// proximity. Two such positions, and only two:
+//
+//   - An assignment whose right-hand side IS the matched credential:
+//     NAME=<cred>, "NAME":"<cred>", NAME: <cred>. The name is the single
+//     token immediately left of the separator, with surrounding quotes
+//     (including JSON-escaped \") and spaces stepped over. Not "a nearby
+//     word" — the one word the syntax binds to this value.
+//   - `gh secret set <NAME>`: a literal command grammar whose next positional
+//     is a secret NAME by the tool's own definition. This is what recovers
+//     HOMEBREW_TAP_GITHUB_TOKEN, which sits words away from the value and so
+//     is unreachable by adjacency — and reachable here without reopening the
+//     proximity hole, because the anchor is a fixed command prefix, not a
+//     distance.
+//
+// The four gates below stay, as defence in depth on whichever candidate a
+// position yields: at least minAnchorLen and at most maxCredentialNameLen,
+// LooksLikeSecretKey, writtenLikeAName, and not itself a known token format.
+// With the candidate set closed they are belt-and-braces, but a value can no
+// longer reach them from a position it has no syntactic right to occupy.
+func assignedCredentialName(line string, matchStart int) string {
+	if matchStart <= 0 || matchStart > len(line) {
+		return ""
+	}
+	if n := adjacentAssignmentName(line, matchStart); n != "" {
+		return n
+	}
+	before := line[:matchStart]
+	if len(before) > credentialNameLead {
+		before = before[len(before)-credentialNameLead:]
+	}
+	if m := ghSecretSetName.FindAllStringSubmatch(before, -1); len(m) > 0 {
+		return vetCredentialName(m[len(m)-1][1])
+	}
+	return ""
+}
+
+// ghSecretSetName captures the NAME argument of a `gh secret set NAME` (or
+// `gh variable set NAME`) invocation — the one positional GitHub's CLI
+// defines as a secret's name. Bounded to the command grammar, not a window,
+// so it reopens none of the proximity hole the adjacency rule closes.
+var ghSecretSetName = regexp.MustCompile(`\bgh\s+(?:secret|variable)\s+set\s+([A-Za-z0-9_.\-]+)`)
+
+// nameByte reports whether c can appear in an identifier this extracts.
+func nameByte(c byte) bool {
+	return c == '_' || c == '-' || c == '.' ||
+		(c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
+// adjacentAssignmentName returns the identifier the matched value is directly
+// assigned to on this line — the token immediately left of the '=' or ':'
+// whose right-hand side begins at matchStart — or "".
+//
+// Walks left from the value over one optional opening quote (bare or
+// backslash-escaped, for JSON transcripts) and any spaces, requires a '=' or
+// ':' separator, then over one optional closing quote and spaces reads the
+// identifier run. Anything else — a space, a flag, a URL scheme's own colon
+// with no name before it — yields "", which is the correct answer: the value
+// is not being assigned to a name here.
+func adjacentAssignmentName(line string, matchStart int) string {
+	i := matchStart - 1
+	skipSpace := func() {
+		for i >= 0 && (line[i] == ' ' || line[i] == '\t') {
+			i--
+		}
+	}
+	skipQuote := func() {
+		if i >= 0 && (line[i] == '"' || line[i] == '\'') {
+			i--
+			if i >= 0 && line[i] == '\\' { // JSON-escaped \" in a transcript
+				i--
+			}
+		}
+	}
+	skipSpace()
+	skipQuote()
+	skipSpace()
+	if i < 0 || (line[i] != '=' && line[i] != ':') {
+		return ""
+	}
+	i--
+	skipSpace()
+	skipQuote()
+	end := i + 1
+	for i >= 0 && nameByte(line[i]) {
+		i--
+	}
+	if i+1 >= end {
+		return ""
+	}
+	return vetCredentialName(line[i+1 : end])
+}
+
+// vetCredentialName applies the defence-in-depth gates to one candidate a
+// structural position yielded, returning it cleaned or "". See
+// assignedCredentialName for why these are no longer the primary defence.
+func vetCredentialName(w string) string {
+	w = strings.Trim(w, "-._")
+	if len(w) < minAnchorLen || len(w) > maxCredentialNameLen {
+		return ""
+	}
+	if !LooksLikeSecretKey(w) || !writtenLikeAName(w) {
+		return ""
+	}
+	if _, _, matched := MatchKnownTokenPattern(w); matched {
+		return ""
+	}
+	return w
+}
+
+// maxCredentialNameLen is the longest run still readable as a label. Real
+// names are short; a long one is a value that happened to satisfy the rules.
+const maxCredentialNameLen = 48
+
+// writtenLikeAName reports whether s is punctuated or cased the way people
+// write identifiers, rather than being one undifferentiated lowercase run.
+func writtenLikeAName(s string) bool {
+	if strings.ContainsAny(s, "_-.") {
+		return true
+	}
+	for _, r := range s {
+		if unicode.IsUpper(r) {
+			return true
+		}
+	}
+	return false
 }
