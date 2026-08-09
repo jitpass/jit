@@ -105,6 +105,57 @@ func TestScanWrappableCLITokensSkipsEnvFamilySources(t *testing.T) {
 	}
 }
 
+// Cline's providers.json sits in BOTH scanners' territory: ScanAgentStores
+// sweeps it with the vendor patterns (an sk-ant- key matches) and
+// ScanWrappableCLITokens extracts from it by catalog selector. The whole
+// scan must report the key once, as the wrap finding — the sweep's
+// exposed_secret duplicate for the same file+value falls to
+// dropRedundantExposedSecrets, exactly the seam codex's auth.json has
+// composed through since both scanners existed. This test pins that the
+// NEW overlap rides the same rails rather than assuming it.
+func TestScanWrappableCLITokensAndAgentStoreSweepDontDoubleReport(t *testing.T) {
+	home := t.TempDir()
+	// A value the Anthropic vendor pattern genuinely matches, so the
+	// collision is real, not hypothetical.
+	key := "sk-ant-api03-FIXTUREclineOverlap0123456789abcdefFIXTURE"
+	writeWrapFixture(t, home, ".cline/settings/providers.json",
+		`{
+  "version": 1,
+  "providers": {
+    "anthropic": {
+      "settings": {
+        "provider": "anthropic",
+        "apiKey": "`+key+`",
+        "model": "claude-sonnet-5"
+      }
+    }
+  }
+}
+`)
+
+	all, _, err := Scan(Config{HomeDir: home, ScannerVersion: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(home, ".cline/settings/providers.json")
+	var got []Finding
+	for _, f := range all {
+		if f.FilePath == target {
+			got = append(got, f)
+		}
+	}
+	if len(got) != 1 {
+		t.Fatalf("cline's providers.json reported %d times across the scan, want 1: %+v", len(got), got)
+	}
+	if got[0].FindingType != FindingTypeWrappableCLIToken {
+		t.Errorf("the surviving finding is %s, want the actionable %s",
+			got[0].FindingType, FindingTypeWrappableCLIToken)
+	}
+	if !strings.Contains(got[0].Evidence, "jit wrap cline") {
+		t.Errorf("surviving finding doesn't name the fix; evidence = %q", got[0].Evidence)
+	}
+}
+
 func TestScanWrappableCLITokensOneFindingPerTool(t *testing.T) {
 	home := t.TempDir()
 	// ngrok's v3 and v2 selectors both match this file; only the first
