@@ -101,7 +101,7 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 		fmt.Fprintln(w)
 	}
 
-	migratable := triageGroupMigratable(findings)
+	migratable := triageGroupMigratable(findings, home)
 	manual := triageGroupManual(findings, home)
 	// Built once, here, because the ledger COUNTS it and the section below
 	// RENDERS it. Counting len(manual) — the problems — while displaying the
@@ -296,7 +296,15 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 			// the string removes the chance to add a third command-shaped
 			// kind and forget again.
 			if isCommandAction(ag.action) {
-				fmt.Fprintln(w, ag.action)
+				// Cyan, like every other command jit prints — the migrate
+				// trailer, the --full footer, `jit scan` in the way-back
+				// link. These group arrows printed theirs in default weight,
+				// so the one command in a block was the only uncoloured
+				// command in the report (spotted by a reader, 2026-08-09).
+				// The rule the surrounding comment states is about ADVICE:
+				// painting a sentence made it read as a warning state. A
+				// command is not a sentence, and cyan is its ink.
+				_, _ = cmd.Fprintln(w, ag.action)
 			} else {
 				// Prose WRAPS now; it used to truncate. The justification for
 				// cutting it was that "it restates the group header, so its
@@ -358,9 +366,25 @@ func writeManualItem(w io.Writer, g triageManualGroup, bold, red, yellowBold *co
 	// One exemplar line per file set. A merged group keeps every one of them:
 	// the sets are different files, and collapsing them to a single exemplar
 	// would hide paths the reader has to go and fix.
-	for _, d := range g.details {
+	//
+	// Each address is followed by ITS OWN hint, not by all the addresses and
+	// then all the hints. The two slices are parallel by construction, and
+	// printing them as separate blocks was survivable only while every hint
+	// named its own path ("grep -nE … ~/.claude/history.jsonl"). Once a hint
+	// became "at line 166", a block of three addresses over a block of three
+	// line numbers left no way to tell which belonged to which (2026-08-09).
+	for i, d := range g.details {
 		fmt.Fprintf(w, "%s%s\n", triageNoteIndent,
 			termtext.TruncHead(d, termtext.Width()-len(triageNoteIndent)))
+		if i < len(g.hints) {
+			writeManualHint(w, g.hints[i])
+		}
+	}
+	// Any hint with no address of its own — a collapsed pattern grep covering
+	// the whole set (collapsePatternHints) leaves one hint against several
+	// details, and it belongs after all of them.
+	for i := len(g.details); i < len(g.hints); i++ {
+		writeManualHint(w, g.hints[i])
 	}
 	// The viewing hint sits with the address it explains and ABOVE the arrow,
 	// per design/output-style.md: an explanation never follows the action
@@ -376,13 +400,15 @@ func writeManualItem(w io.Writer, g triageManualGroup, bold, red, yellowBold *co
 	// at the front still identifies the file; a command cut anywhere is no
 	// longer a command, and "…mcp_servers/okta-mcp-server/.env" is not
 	// something a reader can paste.
-	for _, h := range g.hints {
-		if h == "" {
-			continue
-		}
-		fmt.Fprint(w, triageNoteIndent)
-		termtext.Wrap(w, len(triageNoteIndent), triageNoteIndent+"  ", h)
+}
+
+// writeManualHint prints one evidence line under the address it explains.
+func writeManualHint(w io.Writer, h string) {
+	if h == "" {
+		return
 	}
+	fmt.Fprint(w, triageNoteIndent)
+	termtext.Wrap(w, len(triageNoteIndent), triageNoteIndent+"  ", h)
 }
 
 // writeTriageFooter closes the report: what jit found outside its scope, what
@@ -566,10 +592,20 @@ type triageFile struct {
 // into one manifest row per file. The label is the key names the scanners
 // reported, deduplicated, capped at two — the row is consent ("what will
 // this command touch"), not the inventory.
-func triageGroupMigratable(findings []Finding) []triageFile {
+//
+// A file that only POINTS at a credential is labelled by what it reads
+// instead. An MCP config reaching a .env with --env-file was labelled with
+// its server name, so the row read as "a secret called okta-mcp-server lives
+// here" — the exact misreading that made a user open the file, find nothing,
+// and ask why jit had flagged it (2026-08-09). The row has to stay: jit
+// migrate really does rewrite that config, and consent means listing every
+// file the command touches. Only the label was wrong.
+func triageGroupMigratable(findings []Finding, home string) []triageFile {
 	type agg struct {
 		keys     []string
 		seen     map[string]bool
+		reads    []string
+		seenRead map[string]bool
 		wrapTool string
 	}
 	byFile := map[string]*agg{}
@@ -580,12 +616,23 @@ func triageGroupMigratable(findings []Finding) []triageFile {
 		}
 		a, ok := byFile[f.FilePath]
 		if !ok {
-			a = &agg{seen: map[string]bool{}}
+			a = &agg{seen: map[string]bool{}, seenRead: map[string]bool{}}
 			byFile[f.FilePath] = a
 			order = append(order, f.FilePath)
 		}
 		if f.Remedy == RemedyWrap {
 			a.wrapTool = strings.TrimPrefix(f.FixCommand, "jit wrap ")
+		}
+		if f.OriginPath != "" {
+			// Named by the last two components: the manifest column is narrow,
+			// and "okta-mcp-server/.env" identifies the target beside the row
+			// that lists it in full directly below.
+			r := shortTailPath(f.OriginPath)
+			if r != "" && !a.seenRead[r] {
+				a.seenRead[r] = true
+				a.reads = append(a.reads, r)
+			}
+			continue
 		}
 		key := ""
 		if f.KeyName != nil {
@@ -601,6 +648,17 @@ func triageGroupMigratable(findings []Finding) []triageFile {
 	for _, file := range order {
 		a := byFile[file]
 		label := "secret-shaped values"
+		// Only when the file holds nothing of its own. A config carrying both
+		// an embedded secret and a pointer is labelled by the secret — that is
+		// the thing in it.
+		if len(a.keys) == 0 && len(a.reads) > 0 {
+			if len(a.reads) == 1 {
+				out = append(out, triageFile{file: file, label: "reads " + a.reads[0], wrapTool: a.wrapTool})
+			} else {
+				out = append(out, triageFile{file: file, label: fmt.Sprintf("reads %d credential files", len(a.reads)), wrapTool: a.wrapTool})
+			}
+			continue
+		}
 		switch {
 		case len(a.keys) == 1:
 			label = a.keys[0]
@@ -612,6 +670,21 @@ func triageGroupMigratable(findings []Finding) []triageFile {
 		out = append(out, triageFile{file: file, label: label, wrapTool: a.wrapTool})
 	}
 	return out
+}
+
+// shortTailPath names a file by its last two components — "okta/.env" — for
+// a column too narrow for the whole path. The full path is always available
+// elsewhere in the report; this is an identifier, not an address.
+func shortTailPath(p string) string {
+	p = filepath.ToSlash(p)
+	parts := strings.Split(strings.TrimSuffix(p, "/"), "/")
+	if len(parts) >= 2 {
+		return parts[len(parts)-2] + "/" + parts[len(parts)-1]
+	}
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	return ""
 }
 
 // triageManualGroup is one red-section item: a problem the user must fix,
@@ -1338,7 +1411,11 @@ func manualDetail(files []string, worst Finding, home string) string {
 	if len(files) == 1 {
 		return shown
 	}
-	return fmt.Sprintf("%s … and %d more", shown, len(files)-1)
+	// "… and 1 more" never said more WHAT. Beside a group header that counts
+	// both secrets and files ("An exposed JWT — 9 secrets in 21 files"), a
+	// bare "1 more" reads as plausibly either, and a reader asked (2026-08-09).
+	// The noun costs five columns and removes the question.
+	return fmt.Sprintf("%s … and %s", shown, countWord(len(files)-1, "more file", "more files"))
 }
 
 // manualGroupHint is the evidence line under a group's address. It defers to
@@ -1513,6 +1590,25 @@ func viewHintByAnchor(f Finding, home string, plural bool) string {
 	// value, not even the anchor — and it covers the vendors an anchor cannot
 	// (AWS, SendGrid, Vault, Doppler open with alternations or boundaries and
 	// used to get no hint at all).
+	// jit already knows where it looked. When it has a line number, saying so
+	// beats shipping a command to go and rediscover it: the grep form's output
+	// is a column of bare integers with nothing naming them, and two readers
+	// in a row ran it and asked what the numbers meant (2026-08-09). For
+	// ~/.gemini/oauth_creds.json the record carried "line": 5 the whole time.
+	//
+	// The count comes with it, because "at line 3740" alone would imply the
+	// only one — that file held six.
+	if f.Line != nil {
+		switch {
+		case f.Occurrences > 1:
+			return fmt.Sprintf("at line %d, and %d more in this file", *f.Line, f.Occurrences-1)
+		default:
+			return fmt.Sprintf("at line %d", *f.Line)
+		}
+	}
+	// No line: a file-level finding, or one whose scanner never recorded a
+	// coordinate. The pattern grep is the honest fallback — it prints line
+	// numbers and nothing else, not even the anchor.
 	if ere := patternEREFor(f); ere != "" {
 		lead := "lines"
 		if !plural {

@@ -136,6 +136,14 @@ func scanFileContentForTokens(cfg Config, path string) ([]Finding, error) {
 
 	exampleLines := sourceExampleLines(path, tokens)
 
+	// How many times each vendor's format appears in this file. One finding is
+	// emitted per (file, vendor), so without this the report can name the
+	// first sighting but not say whether it is the only one.
+	occurrences := map[string]int{}
+	for _, tk := range tokens {
+		occurrences[tk.Vendor]++
+	}
+
 	var findings []Finding
 	byVendor := map[string]int{} // index into findings; one per (file, vendor): see below
 	for _, tk := range tokens {
@@ -168,6 +176,7 @@ func scanFileContentForTokens(cfg Config, path string) ([]Finding, error) {
 		})
 		f.SourceExample = exampleLines[ln]
 		f.AssignedName = tk.AssignedName
+		f.Occurrences = occurrences[tk.Vendor]
 		if i, ok := byVendor[tk.Vendor]; ok {
 			findings[i] = f
 		} else {
