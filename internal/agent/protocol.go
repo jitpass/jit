@@ -216,6 +216,25 @@ type Response struct {
 	// an agent older than this field, which callers must render as
 	// unknown, not as a match.
 	Version string `json:"version,omitempty"`
+	// ExecutablePath is the serving agent process's own os.Executable(), set
+	// on "status" beside Build and Version, and answering the question
+	// neither of them can: WHERE the running service's binary is.
+	//
+	// Build and Version compare what the service IS against what the CLI is,
+	// which catches an agent left behind by a rebuild. It cannot catch an
+	// agent whose binary MOVED at the same version — and that is the case
+	// that breaks the vault outright. A jit install migrating from the
+	// release tarball (/usr/local/bin/jit) to the Homebrew cask
+	// (/opt/homebrew/bin/jit) leaves launchd's KeepAlive holding a process
+	// whose executable has been deleted; macOS then cannot validate its code
+	// signature against the on-disk file, and every keychain read fails with
+	// a POSIX ENOENT (see internal/keychainwrap's kwPOSIXENOENT). Both
+	// builds report 0.82.0, so the existing mismatch check stays silent
+	// while nothing can be unlocked (measured on a real machine 2026-08-09).
+	//
+	// Empty when talking to an agent older than this field, which callers
+	// must render as unknown rather than as agreement.
+	ExecutablePath string `json:"executable_path,omitempty"`
 }
 
 // SessionEvent is one transition of the agent's session — an unlock or a
