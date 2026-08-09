@@ -222,6 +222,14 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 		} else {
 			fmt.Fprintf(out, "Exported the %s from the tool's own keyring, copied into the vault at %s.\n", entry.Doc, vaultPath)
 		}
+	} else if wrapSecretAlreadyVaulted(vaultPath) {
+		// Nothing on disk to discover, but the vault already holds the
+		// secret — the docs for every no-source tool say to `jit vault set`
+		// it first, so this is the EXPECTED state for those, and "store it
+		// first" here told a user who had just followed the instructions
+		// that they hadn't (a real run surfaced it: set, wrap, and the wrap
+		// answered as if the set never happened).
+		fmt.Fprintf(out, "Using the %s already in the vault at %s.\n", entry.Doc, vaultPath)
 	} else {
 		wrapBody(out, 0, "", hlCmds(fmt.Sprintf("No %s found on this machine, store it first: `jit vault set %s`, "+
 			"then re-run `jit wrap %s`. Installing the shim and profile now anyway.",
@@ -273,6 +281,21 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 		fmt.Fprint(out, hlCmds(fmt.Sprintf("Check it: open a new shell and run `%s`.\n", entry.VerifyHint)))
 	}
 	return nil
+}
+
+// wrapSecretAlreadyVaulted reports whether the vault already stores a secret
+// at path — on a bare read-only Vault, deliberately: Exists is one os.Stat,
+// so this check never dials the agent, never prompts, and never writes the
+// device-id file as a side effect (the same never-mutate-on-read reasoning
+// `jit vault list` documents). Any error reads as "not stored", which falls
+// back to the store-it-first message — the pre-check behavior.
+func wrapSecretAlreadyVaulted(path string) bool {
+	root, err := vaultRootDir()
+	if err != nil {
+		return false
+	}
+	stored, err := (&vault.Vault{Root: root}).Exists(path)
+	return err == nil && stored
 }
 
 var wrapAddEnv []string
