@@ -58,6 +58,11 @@ One page per tool - requirements, verification, and per-tool gotchas:
 | [`claude`](./claude-code.md) | `ANTHROPIC_API_KEY` | nowhere standard - `jit vault set wrap-claude/ANTHROPIC_API_KEY` first |
 | [`gemini`](./gemini.md) | `GEMINI_API_KEY` | `~/.gemini/.env` (or `~/.env` as a fallback) |
 | [`codex`](./codex.md) | `CODEX_API_KEY` | `~/.codex/auth.json`'s `OPENAI_API_KEY` field (API-key logins only) |
+| [`cursor-agent`](./cursor-agent.md) | `CURSOR_API_KEY` | nowhere standard - `jit vault set wrap-cursor-agent/CURSOR_API_KEY` first |
+| [`copilot`](./copilot.md) | `COPILOT_GITHUB_TOKEN` | nowhere standard (login stores OAuth, not the PAT) - `jit vault set wrap-copilot/COPILOT_GITHUB_TOKEN` first |
+| [`cline`](./cline.md) | `ANTHROPIC_API_KEY` | `~/.cline/settings/providers.json` (the Anthropic provider's `apiKey`) |
+| [`opencode`](./opencode.md) | `ANTHROPIC_API_KEY` | `~/.local/share/opencode/auth.json` (the `anthropic` entry's `key`; OAuth logins untouched) |
+| [`kiro-cli`](./kiro-cli.md) | `KIRO_API_KEY` | nowhere standard (login is subscription OAuth) - `jit vault set wrap-kiro-cli/KIRO_API_KEY` first |
 | [`sentry-cli`](./sentry-cli.md) | `SENTRY_AUTH_TOKEN` | `~/.sentryclirc` (the `[auth] token`) |
 | [`snyk`](./snyk.md) | `SNYK_TOKEN` | `~/.config/configstore/snyk.json` (the `api` field) |
 | [`circleci`](./circleci.md) | `CIRCLECI_CLI_TOKEN` | `~/.circleci/cli.yml` |

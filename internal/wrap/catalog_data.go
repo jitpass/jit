@@ -259,6 +259,104 @@ var catalog = map[string]CatalogEntry{
 		},
 		VerifyHint: `codex exec "say hi"`,
 	},
+	"cursor-agent": {
+		Tool:    "cursor-agent",
+		Kind:    KindShim,
+		Doc:     "Cursor CLI API key",
+		EnvVars: map[string]string{"CURSOR_API_KEY": "CURSOR_API_KEY"},
+		Order:   []string{"CURSOR_API_KEY"},
+		// No Sources. `agent login` (browser OAuth) stores a session, not an
+		// API key; the API key this wraps comes from the Cursor dashboard and
+		// lives wherever the user exported it — migrate's territory if that's
+		// a shell rc. CURSOR_API_KEY is the CLI's documented env credential
+		// for automation (checked against cursor.com/docs/cli 2026-08-09).
+		// Note the install script symlinks the SAME binary as both `agent`
+		// (primary) and `cursor-agent` (legacy); this entry shims the
+		// unambiguous name. A user who types `agent` can wrap that name by
+		// hand with `jit wrap add` — the catalog doesn't claim a name that
+		// generic. Wrap needs `jit vault set wrap-cursor-agent/CURSOR_API_KEY`
+		// first.
+		VerifyHint: "cursor-agent status",
+	},
+	"copilot": {
+		Tool:    "copilot",
+		Kind:    KindShim,
+		Doc:     "GitHub PAT for Copilot CLI",
+		EnvVars: map[string]string{"COPILOT_GITHUB_TOKEN": "COPILOT_GITHUB_TOKEN"}, // #nosec G101 -- env var name, not a credential
+		Order:   []string{"COPILOT_GITHUB_TOKEN"},
+		// No Sources. The interactive `/login` stores an OAuth session, not
+		// the PAT; a PAT (fine-grained, "Copilot Requests" permission) lives
+		// wherever the user exported it. The shim injects
+		// COPILOT_GITHUB_TOKEN, deliberately NOT GH_TOKEN or GITHUB_TOKEN
+		// even though copilot reads all three (in that precedence order, per
+		// docs.github.com, checked 2026-08-09): copilot runs the user's
+		// commands as children, and GH_TOKEN/GITHUB_TOKEN in that inherited
+		// environment would authenticate gh and every git credential flow in
+		// every child — the same blast-radius reasoning as codex's
+		// CODEX_API_KEY. COPILOT_GITHUB_TOKEN is read by copilot alone.
+		// Wrap needs `jit vault set wrap-copilot/COPILOT_GITHUB_TOKEN` first.
+		VerifyHint: `copilot -p "say hi"`,
+	},
+	"cline": {
+		Tool:    "cline",
+		Kind:    KindShim,
+		Doc:     "Anthropic API key for the Cline CLI",
+		EnvVars: map[string]string{"ANTHROPIC_API_KEY": "ANTHROPIC_API_KEY"},
+		Order:   []string{"ANTHROPIC_API_KEY"},
+		Sources: []TokenSource{
+			// Verified by running the tool, 2026-08-09: `cline auth -p
+			// anthropic -k <key>` writes exactly this nested shape, and with
+			// the file's key absent cline sends ANTHROPIC_API_KEY from the
+			// environment to the API (observed on the wire via the invalid-key
+			// rejection). Scrubbing removes the "apiKey" line; the pretty-
+			// printed JSON stays valid and the provider entry survives.
+			//
+			// Cline is multi-provider: this covers the Anthropic API-key
+			// setup (`-P anthropic`). The default hosted "cline" provider
+			// signs in with OAuth and stores no API key here — nothing to
+			// wrap. And like the claude entry, the injected variable is
+			// inherited by the child processes cline itself spawns; unlike
+			// codex there is no scoped per-tool variable to prefer.
+			{Path: "~/.cline/settings/providers.json", Format: "json", Selector: "providers/anthropic/settings/apiKey"},
+		},
+		VerifyHint: `cline -P anthropic "say hi"`,
+	},
+	"opencode": {
+		Tool:    "opencode",
+		Kind:    KindShim,
+		Doc:     "Anthropic API key for OpenCode",
+		EnvVars: map[string]string{"ANTHROPIC_API_KEY": "ANTHROPIC_API_KEY"},
+		Order:   []string{"ANTHROPIC_API_KEY"},
+		Sources: []TokenSource{
+			// Verified by running the tool, 2026-08-09: `/connect`-stored
+			// credentials land in auth.json keyed by provider — {"anthropic":
+			// {"type": "api", "key": ...}} — written pretty-printed (observed
+			// by making `opencode auth logout` rewrite the file), so the
+			// line-oriented scrub removes only the "key" line and every OTHER
+			// provider's credential in the same file survives. With the file
+			// entry gone, opencode reads ANTHROPIC_API_KEY from the
+			// environment (observed on the wire via the invalid-key
+			// rejection). An OAuth (Claude subscription) login stores no
+			// "key" field, so there is nothing to extract and it is never
+			// touched — codex's exact stance.
+			{Path: "~/.local/share/opencode/auth.json", Format: "json", Selector: "anthropic/key"},
+		},
+		VerifyHint: `opencode run "say hi"`,
+	},
+	"kiro-cli": {
+		Tool:    "kiro-cli",
+		Kind:    KindShim,
+		Doc:     "Kiro CLI API key",
+		EnvVars: map[string]string{"KIRO_API_KEY": "KIRO_API_KEY"},
+		Order:   []string{"KIRO_API_KEY"},
+		// No Sources. Kiro's interactive login is subscription OAuth (AWS
+		// Builder ID / Identity Center) and stores no API key; KIRO_API_KEY
+		// is the CLI's documented headless credential, minted in the Kiro
+		// dashboard (kiro.dev/docs/cli/headless, checked 2026-08-09 — note
+		// API keys are only available on paid plans). Wrap needs
+		// `jit vault set wrap-kiro-cli/KIRO_API_KEY` first.
+		VerifyHint: `kiro-cli chat --no-interactive "say hi"`,
+	},
 	"sentry-cli": {
 		Tool:    "sentry-cli",
 		Kind:    KindShim,
