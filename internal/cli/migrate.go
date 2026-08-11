@@ -94,6 +94,26 @@ func noteNamespaceMove(w io.Writer, movedFrom, profileName string) {
 	_, _ = cWarn.Fprintf(w, "    note: vault namespace %q already holds a different migration's secrets, this file's secrets live under %q instead\n", movedFrom, profileName)
 }
 
+// noteRewrap says a server entry was already launching through jit, so this
+// migration REPLACED that wrapper instead of adding one — and, when the entry
+// had been wrapped more than once, that the nesting an older jit produced is
+// now gone.
+//
+// Plain prose rather than amber, on noteFolderRename's reasoning: nothing is
+// broken and there is nothing to do, and painting that yellow makes it read
+// as the warning it explicitly is not. It is still worth a line, because the
+// alternative is a migration that silently rewrites a launch command the user
+// already had working.
+func noteRewrap(w io.Writer, rewrappedFrom []string) {
+	switch len(rewrappedFrom) {
+	case 0:
+	case 1:
+		fmt.Fprintln(w, "    note: replaced the wrapper an earlier migration left here")
+	default:
+		fmt.Fprintf(w, "    note: collapsed %d nested wrappers into one\n", len(rewrappedFrom))
+	}
+}
+
 // noteFolderRename warns, when a project's folder has been renamed since its
 // .env was migrated, that the vault still labels this project's secrets under
 // the OLD folder name. Purely informational: the secrets keep working (the
@@ -715,6 +735,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 				fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s server %q -> profile %q (%s); backup: `jit vault get %s`\n",
 					displayPath(home, mcpPath), sm.ServerName, sm.ProfileName, countWord(len(sm.Variables), "var", "vars"), result.BackupPath)))
 				noteNamespaceMove(out, sm.NamespaceMovedFrom, sm.ProfileName)
+				noteRewrap(out, sm.RewrappedFrom)
 			}
 			// A project block that could not be parsed still holds whatever
 			// `jit scan` flagged. Saying nothing here would report success

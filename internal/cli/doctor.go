@@ -550,6 +550,13 @@ func findingLabel(f checkFinding) string {
 		return "[mcp]"
 	case kindInstall:
 		return "[install]"
+	case kindJitPath:
+		return "[jit path]"
+	case kindJitPathUpgrade:
+		// Names why it isn't a failure on the header, exactly as
+		// "[wrap: this shell]" does: nothing is broken yet, and an amber
+		// group with no qualifier reads as one that is.
+		return "[jit path: after the next upgrade]"
 	default:
 		return ""
 	}
@@ -565,7 +572,7 @@ func findingLabel(f checkFinding) string {
 // that identifies the file off the first line (rule 6).
 func formatFinding(f checkFinding) string {
 	switch f.Kind {
-	case kindParse, kindNotFound, kindService, kindBackup, kindWrap, kindWrapEnv, kindMount, kindVaultKey, kindRekey, kindAudit, kindMCP, kindInstall:
+	case kindParse, kindNotFound, kindService, kindBackup, kindWrap, kindWrapEnv, kindMount, kindVaultKey, kindRekey, kindAudit, kindMCP, kindInstall, kindJitPath, kindJitPathUpgrade:
 		return shortHome(f.Detail)
 	case kindMissing:
 		return fmt.Sprintf("%s: %s "+glyphAction+" %s, not in the vault", profileRef(f), f.Variable, f.Path)

@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/jitpass/jit/internal/agent"
@@ -16,6 +18,7 @@ import (
 	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/profile"
+	"github.com/jitpass/jit/internal/selfpath"
 	"github.com/jitpass/jit/internal/vault"
 	"github.com/jitpass/jit/internal/wrap"
 )
@@ -93,6 +96,9 @@ func gatherSystemFindings(root, cwd string, v *vault.Vault) ([]checkFinding, []s
 	findings = append(findings, backupFindings(v)...)
 	findings = append(findings, auditLogFindings(root)...)
 	findings = append(findings, mcpFindings(cwd)...)
+	if home, err := os.UserHomeDir(); err == nil {
+		findings = append(findings, jitPathFindings(home)...)
+	}
 	findings = append(findings, installFindings()...)
 	wrapped, wrapOK := wrapFindings()
 	return append(findings, wrapped...), wrapOK
@@ -259,6 +265,20 @@ func mcpFindings(cwd string) []checkFinding {
 			continue
 		}
 
+		// Still working, but pinned to a directory `brew upgrade` removes.
+		// Reported here rather than left to the missing-binary branch above
+		// because that branch only fires AFTER the upgrade, by which point
+		// the host has already been failing to start this server.
+		if selfpath.VersionedBrew(e.JitPath) {
+			findings = append(findings, checkFinding{
+				Kind:    kindJitPathUpgrade,
+				Profile: e.ProfileName,
+				Path:    e.ConfigPath,
+				Detail:  fmt.Sprintf("%s launches a version-pinned jit", label),
+				Action:  fmt.Sprintf("`jit migrate %s` to rewrite it against this jit", shortPath(e.ConfigPath)),
+			})
+		}
+
 		manifest, perr := profile.Path(globalRoot, e.ProfileName)
 		if perr != nil || !regularFile(manifest) {
 			findings = append(findings, checkFinding{
@@ -286,6 +306,97 @@ func mcpFindings(cwd string) []checkFinding {
 					label, shortHome(e.Command)),
 				Action: "fix the command path in that config, or remove the server entry",
 			})
+		}
+	}
+	return findings
+}
+
+// jitPathArtifact is one thing `jit migrate` rewrote to call back into jit,
+// paired with how to find the recorded path inside it and what to re-run to
+// refresh it.
+type jitPathArtifact struct {
+	// Label names the artifact the way the user thinks of it, since the file
+	// itself is sometimes an implementation detail they never chose (the
+	// helper scripts under ~/.jit/shims).
+	Label string
+	Path  string
+	// Key is the token whose line carries the recorded path. Anchoring to it
+	// rather than scanning the whole file keeps an unrelated /usr/bin/jit
+	// mentioned in a comment from being reported as a broken artifact.
+	Key    string
+	Action string
+}
+
+// jitPathArtifacts enumerates every non-MCP artifact that records jit's
+// absolute path. MCP configs are deliberately absent: mcpFindings already
+// checks theirs, and it can say which SERVER broke, which is the more useful
+// sentence there.
+func jitPathArtifacts(home string) []jitPathArtifact {
+	return []jitPathArtifact{
+		{"~/.kube/config", migrate.KubeconfigPath(home), "command:", "`jit migrate " + shortPath(migrate.KubeconfigPath(home)) + "`"},
+		{"~/.aws/config", migrate.AWSConfigPath(home), "credential_process", "`jit migrate --only aws`"},
+		{"the docker credential helper", migrate.DockerHelperPath(home), "exec ", "`jit migrate --only docker`"},
+		{"the git credential helper", migrate.GitHelperPath(home), "exec ", "`jit migrate --only git`"},
+		{"the terraform credentials helper", migrate.TerraformHelperPath(home), "exec ", "`jit migrate --only terraform`"},
+	}
+}
+
+// recordedJitPath matches an absolute path ending in the jit binary, with the
+// surrounding quoting the writers apply (shell single quotes, YAML/JSON double
+// quotes) left outside the capture.
+var recordedJitPath = regexp.MustCompile(`(/[^\s"']*/jit)\b`)
+
+// jitPathFindings checks every recorded jit path OUTSIDE MCP configs.
+//
+// It exists because that check was written once, for MCP, and never extended
+// to the five other artifacts `jit migrate` pins the same path into. On a
+// Homebrew install every one of them recorded the version-numbered Caskroom
+// copy until internal/selfpath landed, so a single `brew upgrade` could break
+// kubectl, the AWS credential_process and three credential helpers at once —
+// while doctor reported every secret reference resolving cleanly, because
+// resolving a reference and being able to EXEC the binary that resolves it
+// are different questions and only the first was being asked.
+//
+// Best-effort per artifact: an unreadable or absent file yields nothing
+// rather than a failed run. A file jit never wrote has no matching line and
+// so is silently uninteresting, which is what makes it safe to probe all five
+// unconditionally.
+func jitPathFindings(home string) []checkFinding {
+	var findings []checkFinding
+	for _, a := range jitPathArtifacts(home) {
+		data, err := os.ReadFile(a.Path) // #nosec G304 -- fixed, jit-owned artifact locations
+		if err != nil {
+			continue
+		}
+		seen := map[string]bool{}
+		for _, line := range strings.Split(string(data), "\n") {
+			if !strings.Contains(line, a.Key) {
+				continue
+			}
+			m := recordedJitPath.FindStringSubmatch(line)
+			if m == nil || seen[m[1]] {
+				continue
+			}
+			seen[m[1]] = true
+			recorded := m[1]
+
+			switch {
+			case !executableFile(recorded):
+				findings = append(findings, checkFinding{
+					Kind: kindJitPath,
+					Path: a.Path,
+					Detail: fmt.Sprintf("%s runs jit from %s, which isn't there",
+						a.Label, shortHome(recorded)),
+					Action: a.Action,
+				})
+			case selfpath.VersionedBrew(recorded):
+				findings = append(findings, checkFinding{
+					Kind:   kindJitPathUpgrade,
+					Path:   a.Path,
+					Detail: fmt.Sprintf("%s runs a version-pinned jit", a.Label),
+					Action: a.Action,
+				})
+			}
 		}
 	}
 	return findings
