@@ -124,6 +124,30 @@ const (
 	// shells never execute is the observed field shape. Advisory: no secret
 	// is unreadable, but the user should know which jit they are actually on.
 	kindInstall checkKind = "install"
+	// kindJitPath: an artifact `jit migrate` rewrote records an absolute jit
+	// path that will not keep working — the binary is already gone, or it is
+	// a version-numbered Homebrew copy the next upgrade deletes.
+	//
+	// Sibling of kindMCP, split off because MCP was the only recorded path
+	// anyone checked. `jit migrate` pins jit's path into a kubeconfig exec, an
+	// AWS credential_process, and the docker/git/terraform helper scripts by
+	// exactly the same mechanism, and none of them was ever revalidated: the
+	// failure surfaces as kubectl or terraform reporting a missing binary,
+	// with nothing naming jit as the cause.
+	//
+	// A hard problem: the artifact is broken now, exactly like kindMCP.
+	kindJitPath checkKind = "jit_path"
+	// kindJitPathUpgrade: the same recorded path, still working, but pinned
+	// to a version-numbered Homebrew directory the next `brew upgrade`
+	// deletes. Reported before it breaks, which is the only useful time —
+	// afterwards the user is mid-task on a tool that just stopped working,
+	// with nothing pointing at jit.
+	//
+	// A separate kind from kindJitPath, not a flag on the finding, because
+	// advisory-ness is a property of the kind here (see warning) and the two
+	// states want different words on the group header. Same split, same
+	// reason, as kindWrap and kindWrapEnv.
+	kindJitPathUpgrade checkKind = "jit_path_upgrade"
 )
 
 // allCheckKinds enumerates every kind above, for the completeness tests that
@@ -138,7 +162,7 @@ var allCheckKinds = []checkKind{
 	kindParse, kindNotFound, kindMissing, kindCorrupt, kindVaultError,
 	kindBadPath, kindOrphan, kindShadowed, kindService, kindBackup,
 	kindWrap, kindWrapEnv, kindMount, kindVaultKey, kindRekey, kindAudit,
-	kindMCP, kindInstall,
+	kindMCP, kindInstall, kindJitPath, kindJitPathUpgrade,
 }
 
 // warning reports whether a finding of this kind is advisory (does not fail
@@ -154,7 +178,7 @@ var allCheckKinds = []checkKind{
 // one process and must never fail a CI run.
 func (k checkKind) warning() bool {
 	switch k {
-	case kindOrphan, kindShadowed, kindService, kindBackup, kindMount, kindWrapEnv, kindAudit, kindInstall:
+	case kindOrphan, kindShadowed, kindService, kindBackup, kindMount, kindWrapEnv, kindAudit, kindInstall, kindJitPathUpgrade:
 		return true
 	default:
 		return false

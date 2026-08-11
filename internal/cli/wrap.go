@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jitpass/jit/internal/migrate"
+	"github.com/jitpass/jit/internal/selfpath"
 	"github.com/jitpass/jit/internal/vault"
 	"github.com/jitpass/jit/internal/wrap"
 )
@@ -107,7 +108,7 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 		if err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
-		jitBinary, err := stableBinaryPath(exe)
+		jitBinary, err := selfpath.Stable(exe)
 		if err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
@@ -136,7 +137,7 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 		if err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
-		jitBinary, err := stableBinaryPath(exe)
+		jitBinary, err := selfpath.Stable(exe)
 		if err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
@@ -240,7 +241,7 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 	if err != nil {
 		return fmt.Errorf("jit wrap: %w", err)
 	}
-	jitBinary, err := stableBinaryPath(exe)
+	jitBinary, err := selfpath.Stable(exe)
 	if err != nil {
 		return fmt.Errorf("jit wrap: %w", err)
 	}
@@ -327,7 +328,7 @@ var wrapAddCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit wrap add: %w", err)
 		}
-		jitBinary, err := stableBinaryPath(exe)
+		jitBinary, err := selfpath.Stable(exe)
 		if err != nil {
 			return fmt.Errorf("jit wrap add: %w", err)
 		}
