@@ -17,6 +17,7 @@ import (
 	"github.com/jitpass/jit/internal/audit"
 	"github.com/jitpass/jit/internal/inject"
 	"github.com/jitpass/jit/internal/profile"
+	"github.com/jitpass/jit/internal/selfpath"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -44,6 +45,13 @@ type MCPServerMigration struct {
 	// replaced with pointer files. Callers must surface these: the user
 	// named a config file, and a second file on disk was rewritten.
 	EnvFiles []string
+	// RewrappedFrom names the profiles of jit wrappers this entry ALREADY
+	// carried, outermost first, which were peeled off before it was wrapped
+	// again — empty in the common first-migration case. Non-empty means the
+	// entry was migrated once before, so the report should say the wrapper
+	// was replaced rather than added, and their variables were carried into
+	// ProfileName so unwrapping dropped nothing.
+	RewrappedFrom []string
 }
 
 // MCPConfigMigration describes what jit migrate did to one MCP config
@@ -335,6 +343,24 @@ func migrateMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, sourceSco
 		}
 	}
 
+	// The command and args are read BEFORE anything is claimed or written,
+	// because an entry jit already migrated has to be recognized first: its
+	// real command is buried under a wrapper, and the profile that wrapper
+	// names is the namespace this migration should reuse.
+	var command string
+	if craw, ok := entry["command"]; ok {
+		if err := json.Unmarshal(craw, &command); err != nil {
+			return MCPServerMigration{}, fmt.Errorf("command is not a string")
+		}
+	}
+	var args []string
+	if araw, ok := entry["args"]; ok {
+		if err := json.Unmarshal(araw, &args); err != nil {
+			return MCPServerMigration{}, fmt.Errorf("args is not a string array")
+		}
+	}
+	command, args, rewrappedFrom := unwrapJitWrappers(command, args)
+
 	// Absorb every --env-file this server reads into the same profile, from
 	// the up-front cache (see readMCPEnvFiles). The env BLOCK wins a name
 	// collision: it is set by the host on the child process, which is the
@@ -356,9 +382,36 @@ func migrateMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, sourceSco
 		}
 	}
 
-	profileName, profilePath, entries, movedFrom, err := claimMCPNamespace(v, globalRoot, "mcp-"+sanitizeProfileName(serverName), sourceScope, env)
+	// An entry jit already wrapped names the namespace it belongs in, so that
+	// is the base to claim: a re-migration lands back on the same profile and
+	// simply refreshes it, instead of bumping to a spurious base-2 every time
+	// the file is migrated again. claimMCPNamespace still bumps when that
+	// profile turns out to belong to a DIFFERENT config file, which is the
+	// case the suffix exists for.
+	base := "mcp-" + sanitizeProfileName(serverName)
+	if len(rewrappedFrom) > 0 {
+		base = rewrappedFrom[0]
+	}
+
+	profileName, profilePath, entries, movedFrom, err := claimMCPNamespace(v, globalRoot, base, sourceScope, env)
 	if err != nil {
 		return MCPServerMigration{}, err
+	}
+
+	// Landing anywhere other than the profile the old wrapper named means
+	// unwrapping would drop whatever that profile injected, so carry its
+	// variables across. Lowest precedence: a value present in the env block
+	// or an --env-file is the one the user edited most recently.
+	if len(rewrappedFrom) > 0 && profileName != rewrappedFrom[0] {
+		carried, cerr := priorProfileValues(v, globalRoot, rewrappedFrom)
+		if cerr != nil {
+			return MCPServerMigration{}, cerr
+		}
+		for name, value := range carried {
+			if _, taken := env[name]; !taken {
+				env[name] = value
+			}
+		}
 	}
 
 	varNames := make([]string, 0, len(env))
@@ -397,19 +450,6 @@ func migrateMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, sourceSco
 		pointers.record(target, fileVars[target], entries)
 	}
 
-	var command string
-	if craw, ok := entry["command"]; ok {
-		if err := json.Unmarshal(craw, &command); err != nil {
-			return MCPServerMigration{}, fmt.Errorf("command is not a string")
-		}
-	}
-	var args []string
-	if araw, ok := entry["args"]; ok {
-		if err := json.Unmarshal(araw, &args); err != nil {
-			return MCPServerMigration{}, fmt.Errorf("args is not a string array")
-		}
-	}
-
 	// The flag goes with the file. Leaving it would point the launcher at a
 	// pointer file whose "KEY=jit://vault/..." lines it would happily set as
 	// literal values, which is worse than either outcome on its own: the
@@ -444,6 +484,7 @@ func migrateMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, sourceSco
 		Variables:          varNames,
 		NamespaceMovedFrom: movedFrom,
 		EnvFiles:           envFiles,
+		RewrappedFrom:      rewrappedFrom,
 	}, nil
 }
 
@@ -585,6 +626,94 @@ func RemoveOwnedProfile(profilePath string) error {
 		return err
 	}
 	return nil
+}
+
+// isJitCommand reports whether a server entry's command is jit itself.
+//
+// The base name is the whole test, deliberately. The path can be any of the
+// install shapes (/opt/homebrew/bin/jit, a Caskroom copy, ~/.local/bin/jit),
+// it can be one this jit would no longer write, and it can name a binary that
+// no longer exists — a stale wrapper is precisely the case that has to be
+// recognized, so probing the filesystem would answer the wrong question.
+func isJitCommand(command string) bool {
+	return command != "" && filepath.Base(command) == "jit"
+}
+
+// unwrapJitWrappers peels every `jit run --profile <name> --` layer off a
+// server entry, returning the real command underneath, its args, and the
+// profile names peeled off (outermost first).
+//
+// This exists because re-migrating an already-migrated entry used to NEST:
+// the second run treated jit's own wrapper as the command to wrap, producing
+// `jit run --profile p2 -- /old/path/jit run --profile p1 -- realtool`. Found
+// in the field on 2026-08-11, in a config whose entry had been migrated once
+// and then had a stray env var added back. The nesting is not just ugly —
+// the inner path is a jit binary nobody revalidates, so it long outlives the
+// install that wrote it, and `jit doctor` reports the inner layer as a broken
+// wrapper forever. It also matters that this loops rather than peeling one
+// layer: an entry nested by the old code heals completely the next time it is
+// migrated, which is what makes doctor's "→ jit migrate <file>" a real fix.
+//
+// Unlike mcpWrapperProfile, which reads args alone, this insists the command
+// is jit. `uv run --profile x -- y` has the same argument shape and is not
+// jit's wrapper; peeling it would silently rewrite an unrelated launcher.
+func unwrapJitWrappers(command string, args []string) (string, []string, []string) {
+	var profiles []string
+	for isJitCommand(command) && len(args) >= 4 &&
+		args[0] == "run" && args[1] == "--profile" && args[3] == "--" {
+		profiles = append(profiles, args[2])
+		rest := args[4:]
+		command = ""
+		if len(rest) > 0 {
+			command, rest = rest[0], rest[1:]
+		}
+		args = rest
+	}
+	return command, args, profiles
+}
+
+// priorProfileValues reads the variables held by profiles a wrapper was
+// peeled off, so re-wrapping under a different namespace carries them
+// forward instead of dropping them.
+//
+// It is needed only when the entry lands in a DIFFERENT profile than the one
+// it named — a same-named server owned by another config file, where
+// claimMCPNamespace correctly bumps to base-2. Landing back on the same
+// profile needs nothing: claimMCPNamespace already seeds entries from that
+// manifest.
+//
+// Outermost wins a collision, matching the peel order: it was the last
+// migration to set the value. A profile whose manifest is gone contributes
+// nothing (there is nothing to carry), but a manifest that exists with a
+// value that cannot be read is an ERROR rather than a skip — dropping it
+// would leave the server starting without a credential it has always had,
+// which is a runtime failure with no trace back to this rewrite.
+func priorProfileValues(v *vault.Vault, globalRoot string, profiles []string) (map[string]string, error) {
+	values := map[string]string{}
+	for _, name := range profiles {
+		profilePath, err := profile.Path(globalRoot, name)
+		if err != nil {
+			return nil, err
+		}
+		entries, err := profile.LoadFile(profilePath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("loading profile %s this entry already used: %w", name, err)
+		}
+		for varName, secretPath := range entries {
+			if _, taken := values[varName]; taken {
+				continue
+			}
+			value, err := v.Get(secretPath)
+			if err != nil {
+				return nil, fmt.Errorf("reading %s, which this entry's existing wrapper injects: %w", secretPath, err)
+			}
+			values[varName] = string(value)
+		}
+	}
+	return values, nil
 }
 
 // mcpWrapperProfile extracts the profile name from a server entry whose
@@ -1141,100 +1270,29 @@ func sanitizeProfileName(name string) string {
 	return mcpProfileNameSanitizer.ReplaceAllString(name, "-")
 }
 
-// resolveJitExecutable returns jit's own resolved binary path, mirroring
-// internal/cli/agent.go's install logic (os.Executable + EvalSymlinks) —
-// needed because a GUI-launched MCP host's PATH often doesn't match an
-// interactive shell's, so a bare "jit" in the rewritten command could
-// fail to launch even though it works fine from a terminal.
+// resolveJitExecutable returns the jit binary path a migrated config should
+// record — needed because a GUI-launched MCP host's PATH often doesn't match
+// an interactive shell's, so a bare "jit" in the rewritten command could fail
+// to launch even though it works fine from a terminal.
 //
-// The absolute path it writes outlives the process that wrote it, which is
-// the whole point and also the trap: whatever binary ran `jit migrate` is
-// named in the MCP host's config permanently. Running the migration from a
-// build output, an un-installed download, or a mounted disk image therefore
-// wired a host to a path that was about to disappear — measured 2026-08-09,
-// when a migration run from a temporary build directory pointed Claude
-// Desktop's server at a binary in /private/tmp. The host then fails to launch
-// that server forever, with nothing saying why.
+// The judgement itself lives in internal/selfpath, shared with the launchd
+// plist and the wrap shims, which record durable references for exactly the
+// same reason. It used to live here as a plain os.Executable + EvalSymlinks,
+// and the two halves disagreed in the field: cli resolved a Homebrew install
+// back onto /opt/homebrew/bin/jit while migrate, on the same machine, wrote
+// the version-numbered /opt/homebrew/Caskroom/jitpass/<v>/jit that the next
+// `brew upgrade` deletes — into a kubeconfig, an MCP config, and every other
+// artifact below. See selfpath's package comment for both failure modes and
+// why refusing beats recording a path that is already doomed.
 //
-// So a volatile path is never written. When the running binary is durable it
-// is used as-is; when it is not, the migration REFUSES and names the path,
-// rather than writing a command guaranteed to break.
-//
-// It deliberately does NOT fall back to `exec.LookPath("jit")`. An earlier
-// version did, on the reasoning that an installed jit on PATH is "what the
-// shell means by jit" — but LookPath has no way to confirm the binary it
-// finds is even the same VERSION as the one that just wrote these profiles,
-// so it could silently point the host at an older jit that cannot parse them
-// (raised in review, 2026-08-09). Substituting a binary the user did not
-// invoke is a worse failure than refusing: refusing is one clear message and
-// one `jit upgrade`; the substitution is a wrong binary wired in silently.
-// The person running a temporary jit can re-run the installed one directly.
 // resolveJitExecutable is a package var, not a plain func, for ONE reason:
 // the test binary is itself volatile (go test builds it under $TMPDIR /
-// /var/folders), so realResolveJitExecutable correctly refuses when called
-// from it — which would break every migrate-category test that records jit's
-// path (AWS credential_process, kubeconfig, docker/git helpers, terraform,
-// MCP). A shared test init swaps this for a stub returning a stable path;
-// production always runs the real one. The two unit tests that exercise the
-// refusal call realResolveJitExecutable directly, so the real logic stays
-// covered.
-var resolveJitExecutable = realResolveJitExecutable
-
-func realResolveJitExecutable() (string, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return "", err
-	}
-	resolved, err := filepath.EvalSymlinks(exe)
-	if err != nil {
-		return "", err
-	}
-	if volatileExecutablePath(resolved) {
-		return "", fmt.Errorf("this jit is running from a temporary or removable location (%s); "+
-			"an MCP config records jit's absolute path, so migrating now would point the host at a binary that is about to disappear — "+
-			"install jit to a permanent location (Homebrew, or move the release binary onto your PATH) and re-run from there", resolved)
-	}
-	return resolved, nil
-}
-
-// volatileExecutableRoots are directory trees a jit binary should not be run
-// from for a migration that records its path: the per-user and system temp
-// directories (a `go build`/`go run` output lands under TempDir), mounted
-// volumes (the "ran it straight out of the downloaded disk image" case), and
-// ~/Downloads (the un-installed release tarball, run in place before the
-// install step moves it onto PATH — the literal shape of jit's own download).
-//
-// Deliberately a location test rather than a writability or ownership test.
-// The question is not whether the file can be modified, it is whether the
-// PATH will still resolve to a jit binary next week, and only the location
-// answers that.
-//
-// ~/Downloads is added rather than a bare "Downloads" match so a project
-// directory literally named Downloads elsewhere is not swept in. A jit truly
-// installed onto a secondary /Volumes disk is the one legitimate case this
-// refuses; that is rare, the refusal explains itself, and it is the correct
-// side to err on against the far commoner run-from-DMG.
-func volatileExecutableRoots() []string {
-	roots := []string{os.TempDir(), "/tmp", "/private/tmp", "/var/folders", "/private/var/folders", "/Volumes"}
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		roots = append(roots, filepath.Join(home, "Downloads"))
-	}
-	return roots
-}
-
-// volatileExecutablePath reports whether p sits inside one of those trees.
-func volatileExecutablePath(p string) bool {
-	for _, root := range volatileExecutableRoots() {
-		root = filepath.Clean(root)
-		if root == "" || root == "." || root == string(filepath.Separator) {
-			continue
-		}
-		if p == root || strings.HasPrefix(p, root+string(filepath.Separator)) {
-			return true
-		}
-	}
-	return false
-}
+// /var/folders), so selfpath.Durable correctly refuses when called from it —
+// which would break every migrate-category test that records jit's path (AWS
+// credential_process, kubeconfig, docker/git helpers, terraform, MCP). A
+// shared test init swaps this for a stub returning a stable path; production
+// always runs the real one. selfpath's own tests cover the refusal.
+var resolveJitExecutable = selfpath.Durable
 
 // mcpEnvFile is one --env-file target read before anything was rewritten:
 // its parsed values, and its variable names in source-file order.

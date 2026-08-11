@@ -28,6 +28,7 @@ import (
 	"github.com/jitpass/jit/internal/consent"
 	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/screenlock"
+	"github.com/jitpass/jit/internal/selfpath"
 	"github.com/jitpass/jit/internal/termtext"
 )
 
@@ -546,13 +547,13 @@ const agentInstallDefaultTTL = 5 * time.Minute
 // leaves the service pointing at nothing — which is exactly why a
 // Homebrew-managed jit keeps the bin symlink rather than resolving through
 // it into the version-numbered Caskroom copy `brew upgrade` deletes (see
-// stableBinaryPath).
+// selfpath.Stable).
 func agentBinaryPath() (string, error) {
 	exePath, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
-	return stableBinaryPath(exePath)
+	return selfpath.Stable(exePath)
 }
 
 // plistProgramPath returns the binary an installed plist actually runs — the
