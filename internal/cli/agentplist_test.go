@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // plistFor builds a plist in the shape installAgentService writes, so these
@@ -153,5 +154,43 @@ func TestBothServicePathsRepoint(t *testing.T) {
 				"reloadAgentService leaves the service running whatever binary the "+
 				"plist names, which is the exact bug both call sites exist to avoid.", file)
 		}
+	}
+}
+
+// TestAgentPlistOrphaned pins the self-heal trigger in ensureAgentInstalled:
+// only a plist whose program binary is definitely gone counts as orphaned —
+// a healthy plist and a missing plist both answer false.
+func TestAgentPlistOrphaned(t *testing.T) {
+	home := shortFixtureHome(t)
+
+	if agentPlistOrphaned() {
+		t.Fatal("agentPlistOrphaned = true with no plist installed; want false")
+	}
+
+	dir := filepath.Join(home, "Library", "LaunchAgents")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	plistPath := filepath.Join(dir, agentPlistLabel+".plist")
+
+	present := filepath.Join(home, "jit")
+	if err := os.WriteFile(present, []byte("#!/bin/sh\n"), 0o755); err != nil { // #nosec G306 -- a fake executable in a test fixture
+		t.Fatalf("WriteFile: %v", err)
+	}
+	plist := fmt.Sprintf(agentPlistTemplate, agentPlistLabel, present, (5 * time.Minute).String(), "", "/x/agent.log", "/x/agent.log")
+	if err := os.WriteFile(plistPath, []byte(plist), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if agentPlistOrphaned() {
+		t.Error("agentPlistOrphaned = true for a plist whose binary exists; want false")
+	}
+
+	gone := filepath.Join(home, "Caskroom", "jitpass", "0.80.1", "jit")
+	plist = fmt.Sprintf(agentPlistTemplate, agentPlistLabel, gone, (5 * time.Minute).String(), "", "/x/agent.log", "/x/agent.log")
+	if err := os.WriteFile(plistPath, []byte(plist), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if !agentPlistOrphaned() {
+		t.Error("agentPlistOrphaned = false for a plist whose binary is gone; want true")
 	}
 }

@@ -48,9 +48,12 @@
 //   - MCP configs (mcpconfig.go): Claude Desktop's global config, always
 //     checked, plus mcp.json/.mcp.json under the chosen root. A server's
 //     env-block secrets move into the vault; its command is rewritten to
-//     launch via `jit run` instead, using jit's own resolved executable
-//     path rather than a bare "jit" (a GUI-launched host's PATH often
-//     doesn't match an interactive shell's). Backed up first too.
+//     launch via `jit run` instead, using jit's own absolute path rather
+//     than a bare "jit" (a GUI-launched host's PATH often doesn't match an
+//     interactive shell's). Which absolute path is internal/selfpath's
+//     call, shared with every other category here and with the launchd
+//     plist: a durable name, never the version-numbered Homebrew copy the
+//     next upgrade deletes. Backed up first too.
 //   - AWS credentials (awscreds.go, RFC.md Pillar III Tier 2): a profile's
 //     static keys move into the vault; ~/.aws/config gets a
 //     credential_process line (under the correct "[default]" vs
