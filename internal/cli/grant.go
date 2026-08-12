@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -479,10 +480,14 @@ func resolveGrantSecrets(root string) func(profiles []string, projectRoot string
 // with whether a live process currently carries the name. Reads the two
 // JSONL files directly and scans the process table once — no agent RPC, no
 // prompt, no state mutation (completeVaultPaths' discipline).
-func completeGrantProcessNames(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+// recentCallerNames is the last-seen time of every program that asked jit for
+// a secret in the past 24h, read straight from the two JSONL trails — no
+// agent RPC, no prompt, no state mutation. Shared by the --process and --pid
+// completions so both mean the same thing by "a caller jit has seen".
+func recentCallerNames() (map[string]time.Time, error) {
 	root, err := vaultRootDir()
 	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
+		return nil, err
 	}
 	cutoff := time.Now().Add(-24 * time.Hour)
 	last := map[string]time.Time{}
@@ -502,8 +507,21 @@ func completeGrantProcessNames(cmd *cobra.Command, args []string, toComplete str
 	for _, e := range newHistoryLog(root, io.Discard).load(4096) {
 		note(e.LaunchedBy, time.Unix(e.UnixTime, 0))
 	}
-	if len(last) == 0 {
+	return last, nil
+}
+
+func completeGrantProcessNames(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	last, err := recentCallerNames()
+	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	if len(last) == 0 {
+		// The sibling of the two completions this file already fixed, missed
+		// because it only shows up on a machine that has not used jit yet —
+		// exactly the machine that needs telling.
+		return cobra.AppendActiveHelp(nil,
+				"no recent callers recorded - name any running program, or use --pid"),
+			cobra.ShellCompDirectiveNoFileComp
 	}
 
 	running := map[string]int32{}
@@ -527,6 +545,43 @@ func completeGrantProcessNames(cmd *cobra.Command, args []string, toComplete str
 			desc += " · not running"
 		}
 		out = append(out, n+"\t"+desc)
+	}
+	return out, cobra.ShellCompDirectiveNoFileComp
+}
+
+// completeGrantPIDs offers the visible processes for --pid, the flag that
+// exists precisely because --process was ambiguous — so answering it with
+// filenames left the disambiguation with no way to see the two candidates it
+// is meant to choose between. Same process table --process annotates from.
+func completeGrantPIDs(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	// Never the whole process table: a bare list of every visible pid runs to
+	// several hundred rows of system daemons, which is a worse answer than the
+	// filenames this replaced. The candidates are the processes a grant could
+	// plausibly name — a --process already on the line, else the programs that
+	// have actually asked jit for a secret.
+	want := func(string) bool { return false }
+	if grantProcess != "" {
+		want = func(name string) bool { return name == grantProcess }
+	} else if last, err := recentCallerNames(); err == nil && len(last) > 0 {
+		want = func(name string) bool { _, ok := last[name]; return ok }
+	}
+	var out []string
+	for _, p := range lineage.VisibleProcesses() {
+		name := p.Name()
+		if name == "" || name == "jit" || !want(name) {
+			continue
+		}
+		pid := strconv.FormatInt(int64(p.PID), 10)
+		if !strings.HasPrefix(pid, toComplete) {
+			continue
+		}
+		out = append(out, pid+"\t"+name)
+	}
+	if len(out) == 0 {
+		if grantProcess != "" {
+			return cobra.AppendActiveHelp(nil, "nothing named "+grantProcess+" is running"), cobra.ShellCompDirectiveNoFileComp
+		}
+		return cobra.AppendActiveHelp(nil, "name --process first, and --pid narrows it to one of its pids"), cobra.ShellCompDirectiveNoFileComp
 	}
 	return out, cobra.ShellCompDirectiveNoFileComp
 }
@@ -608,9 +663,14 @@ func init() {
 	_ = grantCmd.RegisterFlagCompletionFunc("process", completeGrantProcessNames)
 	_ = grantCmd.RegisterFlagCompletionFunc("profile", completeProfileNames)
 	_ = grantCmd.RegisterFlagCompletionFunc("for", completeGrantFor)
+	_ = grantCmd.RegisterFlagCompletionFunc("pid", completeGrantPIDs)
 	grantCmd.ValidArgsFunction = completeGrantCreateEntry
 
 	grantListCmd.Flags().StringVar(&grantListFormat, "format", "text", "output format: text or json")
+	// After the flag exists, not before: RegisterFlagCompletionFunc fails on
+	// an unknown flag and every call site discards that error, so an early
+	// registration is a completion that silently never fires.
+	_ = grantListCmd.RegisterFlagCompletionFunc("format", completeOutputFormat)
 	grantExtendCmd.Flags().StringVar(&grantExtendFor, "for", "", "new lifetime from now (45m, 8h, 3d - max 7d)")
 	_ = grantExtendCmd.RegisterFlagCompletionFunc("for", completeGrantFor)
 

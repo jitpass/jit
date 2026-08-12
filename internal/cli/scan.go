@@ -353,5 +353,14 @@ func init() {
 	_ = scanCmd.RegisterFlagCompletionFunc("fail-on", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 		return []string{audit.RiskLevelCritical, audit.RiskLevelHigh, audit.RiskLevelMedium, audit.RiskLevelLow, "any"}, cobra.ShellCompDirectiveNoFileComp
 	})
+	// Not the shared completeOutputFormat: scan reports a list of findings,
+	// so its vocabulary is markdown/ndjson rather than one JSON snapshot
+	// (validateScanFormat, which TestScanFormatCompletionMatchesValidator
+	// pins this to). "md" is accepted as an alias but not offered — two
+	// spellings of one format read as two formats.
+	_ = scanCmd.RegisterFlagCompletionFunc("format", completeValues(
+		"text\thuman-readable (default)",
+		"markdown\ta report to paste into a document",
+		"ndjson\tone JSON finding per line"))
 	rootCmd.AddCommand(scanCmd)
 }

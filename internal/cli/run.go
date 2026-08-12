@@ -356,6 +356,20 @@ func resolveRunPlan(v *vault.Vault, p profile.Profile, args []string) (binary st
 	return binary, args, inject.MergeEnv(os.Environ(), values), nil
 }
 
+// completeRunEntry adds the shape of a run to the bare command's TAB, which
+// otherwise showed a directory listing and nothing about --profile or the --
+// separator. Unlike `jit grant` and `jit audit`, the flags are NOT offered as
+// candidates: run's positional is a real program, so keeping cobra's Default
+// directive keeps that file completion alive, and active help rides along
+// above it (it is a compadd -x line in zsh, not a candidate). Position 1
+// onwards belongs to the target command's own arguments.
+func completeRunEntry(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) != 0 || toComplete != "" {
+		return nil, cobra.ShellCompDirectiveDefault
+	}
+	return cobra.AppendActiveHelp(nil, "jit run [--profile <name>] -- <command>"), cobra.ShellCompDirectiveDefault
+}
+
 func init() {
 	runCmd.Flags().StringVar(&runProfile, "profile", "", "profile to inject verbatim (default: merge this project's migrated .env layers)")
 	_ = runCmd.RegisterFlagCompletionFunc("profile", completeProfileNames)
@@ -369,6 +383,8 @@ func init() {
 	runCmd.Flags().BoolVar(&runTrust, "trust", false, "pre-authorize this run's whole process tree for any credential, so per-process consent prompts don't fire under it")
 	runCmd.Flags().BoolVar(&runGrantOnly, "grant-only", false, "don't require an injection profile: inject the project's profile if one resolves, otherwise nothing, and still grant this run the project's live mounts (what a run-grant wrap shim uses)")
 	_ = runCmd.RegisterFlagCompletionFunc("with", completeGlobalMountNames)
+	_ = runCmd.RegisterFlagCompletionFunc("mode", completeEnvModes)
+	runCmd.ValidArgsFunction = completeRunEntry
 	// Stop parsing jit's own flags at the first non-flag argument, so the
 	// target command's flags (`npm start --port 3000`) pass straight
 	// through without needing a -- separator. jit's flags come before the

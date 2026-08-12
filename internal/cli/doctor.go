@@ -372,7 +372,9 @@ func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings []
 // instead of letting "nothing here" read as "nothing wrong".
 func writeNoProfilesLine(out io.Writer, cwd string) {
 	if cwd != "" {
-		if root, ok := findProjectRoot(cwd); ok && root != cwd {
+		// findEnclosingProjectRoot, not findProjectRoot: ~/.jit is the
+		// machine-level store, and "cd ~ and re-run" would resolve nothing.
+		if root, ok := findEnclosingProjectRoot(cwd); ok {
 			wrapBody(out, 0, "  ", fmt.Sprintf(
 				"No profiles here. This directory sits inside %s, which is the project root — profiles resolve from the current directory, not from an enclosing one.",
 				shortPath(root)))
@@ -616,5 +618,6 @@ func init() {
 	doctorCmd.Flags().BoolVar(&doctorStrict, "strict", false, "exit non-zero on advisory warnings too, for a pipeline that wants them to gate")
 	doctorCmd.MarkFlagsMutuallyExclusive("wrap", "profile")
 	doctorCmd.MarkFlagsMutuallyExclusive("wrap", "orphans")
+	_ = doctorCmd.RegisterFlagCompletionFunc("format", completeOutputFormat)
 	rootCmd.AddCommand(doctorCmd)
 }

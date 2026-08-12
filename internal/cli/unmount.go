@@ -31,7 +31,7 @@ var unmountCmd = &cobra.Command{
 		"If jit's background service is running, this stops serving just this one mount first, so\n" +
 		"nothing races the file being replaced, every other mount keeps being\n" +
 		"served undisturbed.",
-	Args:              cobra.ExactArgs(1),
+	Args:              requireArgs(1, 1, "a mounted path (see `jit status`)"),
 	ValidArgsFunction: completeMountPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		mountPath, err := filepath.Abs(args[0])

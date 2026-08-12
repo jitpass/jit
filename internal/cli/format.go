@@ -45,13 +45,19 @@ func newProgress(cmd *cobra.Command, machineMode bool) *ui.Tracker {
 // list of findings, not one snapshot; keep that command's flag as-is
 // rather than folding it into this smaller vocabulary.
 func validateOutputFormat(format string) error {
-	switch format {
-	case "", "text", "json":
-		return nil
-	default:
-		return fmt.Errorf(`unknown --format %q (want "text" or "json")`, format)
+	for _, f := range outputFormats {
+		if format == "" || format == f {
+			return nil
+		}
 	}
+	return fmt.Errorf(`unknown --format %q (want "text" or "json")`, format)
 }
+
+// outputFormats is the vocabulary validateOutputFormat accepts AND the one
+// completeOutputFormat offers, in one place: a --format that the command
+// takes but tab never mentions is the same drift the palette and the history
+// admit rule are centralised to prevent.
+var outputFormats = []string{"text", "json"}
 
 // writeJSON encodes v as indented JSON, terminated by a newline (Encode's
 // own behavior) — readable directly by a human piping through `jq` or

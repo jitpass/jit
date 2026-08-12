@@ -1769,6 +1769,19 @@ func init() {
 	agentLogCmd.Flags().IntVarP(&agentLogLines, "lines", "n", 50, "how many trailing lines to print")
 	agentLogCmd.Flags().BoolVarP(&agentLogFollow, "follow", "f", false, "keep printing new lines as the service writes them (Ctrl-C to stop)")
 	agentLogCmd.Flags().BoolVar(&agentLogRaw, "raw", false, "print the log file's bytes exactly as written, without the formatted view")
+
+	// Fixed value sets: --format, a count, a duration and an on/off word all
+	// answered TAB with the user's filenames. The TTL ceiling comes from the
+	// same constant the server clamps to, so the hint cannot outlive it.
+	_ = agentStatusCmd.RegisterFlagCompletionFunc("format", completeOutputFormat)
+	_ = agentLogCmd.RegisterFlagCompletionFunc("lines", completeCounts(20, 50, 200, 1000))
+	ttlComp := completeDurations(humanAgo(agent.DefaultMaxSessionAge), "1m", "5m", "30m", "1h", "8h")
+	_ = agentRunCmd.RegisterFlagCompletionFunc("ttl", ttlComp)
+	serviceTTLCmd.ValidArgsFunction = firstArgOnly(ttlComp)
+	serviceConsentCmd.ValidArgsFunction = firstArgOnly(completeValues(
+		"on\tprompt once per process for each secret (default)",
+		"off\tno per-process prompt; the session unlock is the only gate"))
+
 	serviceCmd.AddCommand(agentRunCmd, serviceTTLCmd, serviceConsentCmd, agentRestartCmd, agentStatusCmd, agentLogCmd)
 
 	// The old plist's `agent run --ttl <d>` needs the same --ttl flag bound to

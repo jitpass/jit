@@ -67,9 +67,15 @@ func loadMountRegistry() (entries []mount.Entry, home string, err error) {
 // argument for either command, so offering arbitrary filesystem paths
 // would only mislead.
 func completeMountPaths(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	// `jit unmount` is ExactArgs(1), so there is no second mount to offer;
+	// without this the same list came back for a position the command would
+	// then reject (completeVaultPaths' guard, which this lacked).
+	if len(args) != 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
 	entries, _, err := loadMountRegistry()
 	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
+		return cobra.AppendActiveHelp(nil, "jit could not read its mount registry - jit doctor checks it"), cobra.ShellCompDirectiveNoFileComp
 	}
 	var out []string
 	for _, e := range entries {
@@ -78,6 +84,11 @@ func completeMountPaths(cmd *cobra.Command, args []string, toComplete string) ([
 		}
 	}
 	sort.Strings(out)
+	if len(out) == 0 && toComplete == "" {
+		// The command's own runtime error already says this (unmount.go); a
+		// tab that returned nothing said it only after you had typed a path.
+		return cobra.AppendActiveHelp(nil, "nothing is currently mounted"), cobra.ShellCompDirectiveNoFileComp
+	}
 	return out, cobra.ShellCompDirectiveNoFileComp
 }
 
@@ -127,6 +138,45 @@ func validateEnvMode(mode string) error {
 		return fmt.Errorf("--mode %q must be a plain suffix like production or development", mode)
 	}
 	return nil
+}
+
+// completeEnvModes offers the modes this project actually has a layer for,
+// read from the mount registry rather than guessed: the flag's help says
+// ".env.<mode>", and tab answering that with a directory listing was the only
+// clue a user got about which modes exist. Mode names are free-form (a layer
+// can be added at any time), so the list is common ground, not a closed set,
+// and the active help says so.
+func completeEnvModes(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	help := "any mode name works: jit merges .env.<mode> and .env.<mode>.local"
+	cwd, err := os.Getwd()
+	if err != nil {
+		return cobra.AppendActiveHelp(nil, help), cobra.ShellCompDirectiveNoFileComp
+	}
+	entries, _, err := loadMountRegistry()
+	if err != nil {
+		return cobra.AppendActiveHelp(nil, help), cobra.ShellCompDirectiveNoFileComp
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, e := range entries {
+		if filepath.Dir(e.MountPath) != cwd {
+			continue
+		}
+		name := filepath.Base(e.MountPath)
+		mode := strings.TrimSuffix(strings.TrimPrefix(name, ".env."), ".local")
+		// ".env" and ".env.local" are the chain's own layers, always merged;
+		// "local" is not a mode (validateEnvMode rejects it by name).
+		if name == ".env" || mode == "" || mode == "local" || seen[mode] {
+			continue
+		}
+		if !strings.HasPrefix(mode, toComplete) {
+			continue
+		}
+		seen[mode] = true
+		out = append(out, mode+"\t"+name+" is mounted here")
+	}
+	sort.Strings(out)
+	return cobra.AppendActiveHelp(out, help), cobra.ShellCompDirectiveNoFileComp
 }
 
 // dirEnvLayers returns dir's mergeable layers from the registry entries, in
@@ -448,6 +498,15 @@ func resolveSingleProjectProfile(cmdName, cwd string, w io.Writer) (profile.Prof
 	}
 	switch len(names) {
 	case 0:
+		// Standing in a subdirectory of your own project is the commonest way
+		// to reach this, and "migrate this project with `jit migrate .`" is
+		// actively wrong advice there: it would build a SECOND profile set
+		// below the real one. doctor already noticed the root sitting above
+		// (writeNoProfilesLine); profiles still resolve from cwd exactly, but
+		// the error can name the directory that has them.
+		if root, ok := findEnclosingProjectRoot(cwd); ok {
+			return nil, "", fmt.Errorf("no profile here; profiles resolve from this directory, not an enclosing one, `cd %s` and re-run", shortPath(root))
+		}
 		return nil, "", fmt.Errorf("no profile given and none defined in %s/, migrate this project with `jit migrate .`, or name one with --profile (see: jit status --secrets)", profile.ProfilesDir)
 	case 1:
 		fmt.Fprintf(w, "%s: using profile %q\n", cmdName, names[0])
