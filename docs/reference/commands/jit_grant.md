@@ -6,7 +6,7 @@ Pre-approve a running process to use profiles unattended
 
 Create a process grant: with one Touch ID now, allow a process that is
 already running (and everything it launches) to use the named profiles'
-secrets without further prompts, until the grant expires — including while
+secrets without further prompts, until the grant expires - including while
 the screen is locked or you are away.
 
 The grant is anchored to the live process you name, not to its name: a new
