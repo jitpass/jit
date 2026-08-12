@@ -72,6 +72,8 @@ var auditKindAliases = map[string]string{
 	"grant":    "grant",
 	"approve":  "grant",
 	"approved": "grant",
+	"revoked":  "grant",
+	"ended":    "grant",
 	"serve":    "serve",
 	"read":     "serve",
 	"mount":    "serve",
@@ -878,6 +880,24 @@ func authEntry(home string, e agent.SessionEvent) auditEntry {
 		if e.Cause != "" {
 			pairs = append(pairs, kv{"reason", e.Cause})
 		}
+	case agent.KindGrantEnd:
+		// A process grant ending — expiry, revoke, or its root process
+		// exiting. Same kind token as the approval that created it, so
+		// `--kind grant` shows a grant's whole life; status carries which
+		// ending it was. Op is the grant id, Labels the covered vault paths.
+		kind, status = "grant", "ended"
+		pairs = append(pairs, kv{"level", "info"}, kv{"kind", "grant"}, kv{"status", "ended"})
+		subject = "grant ended"
+		if e.Cause != "" {
+			subject = e.Cause
+		}
+		if e.Op != "" {
+			pairs = append(pairs, kv{"grant", e.Op})
+		}
+		if e.Cause != "" {
+			pairs = append(pairs, kv{"reason", e.Cause})
+		}
+		pairs = appendAuthContext(pairs, home, e)
 	case agent.KindError:
 		// A socket-boundary failure the service refused or hit: a rejected
 		// peer, a malformed request, the accept loop dying. op names which and

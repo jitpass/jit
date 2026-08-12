@@ -68,6 +68,24 @@ type Request struct {
 	// the agent gate consent on it without a caller being able to lie its way
 	// around the gate. Empty for legacy (v1/v2) secrets with no provenance.
 	Class string `json:"class,omitempty"`
+	// GrantProfiles ("grant_create") names the profiles a process grant should
+	// cover. NAMES only, deliberately: the agent resolves them to concrete
+	// secrets itself (Server.OnResolveGrant, through jit's own profile store
+	// and vault envelopes), so the Touch ID prompt and the granted secret set
+	// derive from the same agent-resolved facts — a caller cannot name one
+	// profile on the prompt and smuggle a different secret set into the grant,
+	// the same reasoning that moved reveal_pid's wording to OnDescribeGrant.
+	GrantProfiles []string `json:"grant_profiles,omitempty"`
+	// ProjectRoot ("grant_create") is the directory whose project profiles
+	// should shadow the global ones during that resolution — the caller's cwd,
+	// exactly the layering `jit run` applies. Empty means global-only.
+	ProjectRoot string `json:"project_root,omitempty"`
+	// GrantID ("grant_revoke"/"grant_extend") names the grant to act on.
+	GrantID string `json:"grant_id,omitempty"`
+	// TTLSeconds ("grant_create"/"grant_extend") is the requested lifetime.
+	// The server clamps and validates; a client cannot mint a longer grant
+	// than MaxGrantTTL by inflating this field.
+	TTLSeconds int64 `json:"ttl_seconds,omitempty"`
 }
 
 // RunMount is one mount's requested run-scoped treatment in a reveal_pid
@@ -108,6 +126,18 @@ const (
 	// so a recycled pid can't inherit a dead run's trust; the grant is dropped
 	// on the next re-lock.
 	OpTrust = "trust"
+	// OpGrantCreate creates a process grant (`jit grant`): after one disclosed
+	// challenge, TargetPID's process tree may unwrap the covered profiles'
+	// secrets until the grant expires — without further prompts, and across
+	// re-locks (the one authorization state that deliberately survives them;
+	// see Server's grant fields). OpGrantExtend re-prompts for more time on an
+	// existing grant; OpGrantRevoke ends one with no prompt at all (reducing
+	// access is always free); OpGrantList reads the current set, prompt-free
+	// for the same reason OpHistory is.
+	OpGrantCreate = "grant_create"
+	OpGrantList   = "grant_list"
+	OpGrantRevoke = "grant_revoke"
+	OpGrantExtend = "grant_extend"
 )
 
 // SessionEvent.Kind values.
@@ -182,6 +212,17 @@ const (
 	// the same hazard recordRejectedClass defends against, arrived at from
 	// the other direction.
 	KindServe = "serve"
+	// KindGrantEnd marks a process grant ending, with Cause naming which way:
+	// "expired" (its TTL ran out), "revoked" (jit grant revoke, with the
+	// revoker's provenance on By/LaunchedBy), or "process exited" (the root
+	// process the grant was anchored to is gone). Its creation needs no kind
+	// of its own — a grant is born as a KindApproved event, like every other
+	// disclosed challenge — but its END is the moment unattended access
+	// stopped, and a trail that records when standing access began and not
+	// when it ceased can't answer "was the grant still live at the time?",
+	// which is the first question an incident asks. Labels carries the
+	// covered vault paths; Op carries the grant id.
+	KindGrantEnd = "grant_end"
 )
 
 // The Op values a KindServe event carries: which content the reader got.
@@ -191,6 +232,14 @@ const (
 	OpServeDecoy = "decoy"
 	OpServeReal  = "real"
 )
+
+// OpGrantUse is the Op a KindUse event carries when the unwrap was answered
+// from a process grant's DEK cache instead of the session — the audit
+// distinction between "rode an unlock you gave moments ago" and "rode a
+// standing grant you gave this morning". Exported like the serve ops above:
+// it is part of the trail's vocabulary, and the CLI renderer must name it
+// without restating the string.
+const OpGrantUse = "grant_use"
 
 // Response answers a Request.
 type Response struct {
@@ -265,6 +314,39 @@ type Response struct {
 	// Empty when talking to an agent older than this field, which callers
 	// must render as unknown rather than as agreement.
 	ExecutablePath string `json:"executable_path,omitempty"`
+	// Grants answers "grant_list" (and "grant_create"/"grant_extend" echo the
+	// affected grant back the same way, so a client can render the result
+	// without a second round trip). Empty on every other Op. In-memory state:
+	// a process grant never survives the agent process, by design.
+	Grants []GrantStatus `json:"grants,omitempty"`
+}
+
+// GrantStatus is one process grant as the agent reports it — deliberately
+// plain strings/ints like every other wire type here. Name and Command are
+// kernel-derived at grant creation (internal/lineage), never caller-reported,
+// matching MountGrantStatus's convention.
+type GrantStatus struct {
+	ID  string `json:"id"`
+	PID int32  `json:"pid"`
+	// Name is the root process's display name ("claude"); Command its full
+	// invocation for a wide terminal.
+	Name    string `json:"name,omitempty"`
+	Command string `json:"command,omitempty"`
+	// Profiles are the profile names the grant was created from; Secrets the
+	// concrete vault paths it actually covers (resolved at creation — a later
+	// profile edit never widens a standing grant).
+	Profiles []string `json:"profiles"`
+	Secrets  []string `json:"secrets"`
+	// CreatedUnix/ExpiresUnix bound the grant's life; Serves counts unwraps
+	// served under it and LastServeUnix stamps the newest (zero when unused).
+	CreatedUnix   int64 `json:"created_unix"`
+	ExpiresUnix   int64 `json:"expires_unix"`
+	Serves        int64 `json:"serves,omitempty"`
+	LastServeUnix int64 `json:"last_serve_unix,omitempty"`
+	// RootAlive reports whether the anchored process (pid + fork time) still
+	// exists at the time of the status read. A dead root is pruned lazily, so
+	// a listing can catch one mid-flight; render it as ending, not live.
+	RootAlive bool `json:"root_alive"`
 }
 
 // SessionEvent is one transition of the agent's session — an unlock or a

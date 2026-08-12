@@ -120,6 +120,20 @@ machine still cannot read, dump, or destroy the vault without a live human
 gesture. Only `list`/`history` (names and version timestamps, never a value)
 are prompt-free.
 
+**One state deliberately survives a re-lock:** a
+[process grant](../service/grants.md). Everything else the service holds -
+the session key, consent decisions, `--trust` roots, run attachments - drops
+the moment the session ends, because those all ride an approval whose scope
+was "this session". A grant's approval said something different, out loud:
+*unattended, until a deadline*, for named secrets and one live process tree
+(anchored by pid and kernel fork-time, so a recycled pid inherits nothing).
+It is strictly narrower than the session it stands in for: never the master
+key, only the covered secrets' data keys, in service memory only, ended by
+its deadline, its process exiting, a restart, or an unauthenticated
+`jit grant revoke`. The decision point is unchanged - a human on a disclosed
+prompt - it just happens before the absence instead of during it, and every
+serve under it is a distinct [`jit audit`](../service/provenance.md) event.
+
 **Refusing has to stay cheap.** A consent prompt cannot cache a refusal as a
 lasting "no" - the prompt cannot tell a human's decline from a keychain
 failure, and treating either as permanent would lock a credential out with no

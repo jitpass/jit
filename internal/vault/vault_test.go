@@ -717,3 +717,31 @@ func TestVaultVerify(t *testing.T) {
 		t.Errorf("Verify on a missing secret = %v, want ErrNotFound", err)
 	}
 }
+
+func TestWrappedDEKReadsWithoutDecrypting(t *testing.T) {
+	v := newTestVault(t)
+	if err := v.SetWithMeta("jamf/api-pass", []byte("hunter2"), Meta{Class: ClassMCP}); err != nil {
+		t.Fatalf("SetWithMeta: %v", err)
+	}
+
+	wrapped, class, err := v.WrappedDEK("jamf/api-pass")
+	if err != nil {
+		t.Fatalf("WrappedDEK: %v", err)
+	}
+	if class != ClassMCP {
+		t.Errorf("class = %q, want %q", class, ClassMCP)
+	}
+	// The bytes must be exactly what Get would unwrap: the DEK inside must
+	// open under the same wrapper the vault wrote with.
+	dek, err := v.KeyWrapper.UnwrapKey(wrapped)
+	if err != nil {
+		t.Fatalf("returned wrapped DEK does not unwrap: %v", err)
+	}
+	if len(dek) != dekSize {
+		t.Errorf("unwrapped DEK is %d bytes, want %d", len(dek), dekSize)
+	}
+
+	if _, _, err := v.WrappedDEK("nope/missing"); err != ErrNotFound {
+		t.Errorf("WrappedDEK on missing secret = %v, want ErrNotFound", err)
+	}
+}

@@ -234,6 +234,8 @@ func DescribeUse(op string) string {
 		return "extended the session"
 	case opServeMounts:
 		return "served mounted files"
+	case OpGrantUse:
+		return "read a secret via grant"
 	default:
 		return op
 	}
