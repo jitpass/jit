@@ -233,7 +233,7 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 				"every change is reversible: jit migrate undo"
 		}
 		termtext.Wrap(w, len(triageNoteIndent), triageNoteIndent, note)
-		writeHistoryGuardOffer(w, findings, cmd)
+		writeHistoryGuardOffer(w, findings, summary, cmd, false)
 		fmt.Fprintln(w)
 	}
 
@@ -333,6 +333,9 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 		} else {
 			_, _ = green.Fprintln(w, "  Nothing exposed. This machine looks clean.")
 		}
+		// Clean is exactly when prevention is the only thing left to offer,
+		// and it was the one outcome that offered nothing.
+		writeHistoryGuardOffer(w, findings, summary, cmd, true)
 		fmt.Fprintln(w)
 	}
 	writeTriageFooter(w, findings, summary, home, bold, cmd)
@@ -1471,7 +1474,17 @@ func combinedPathExpr(paths []string, home string) string {
 // One line, with what it does rather than just its name: "jit guard history"
 // means nothing to someone seeing it for the first time, and a command whose
 // effect a reader cannot guess is one they will not run.
-func writeHistoryGuardOffer(w io.Writer, findings []Finding, cmd *color.Color) {
+// asPrevention is set by the CLEAN call sites, and is the other half of what
+// the comment above describes. Moving the offer out of `jit migrate` fixed
+// where it appeared but kept requiring a finding, so a clean history — the
+// case with the most to gain from never starting — still never heard it. It
+// stays off elsewhere: beside a .zshrc finding the reader's problem is the
+// config file, and a history tip there is a second subject in one breath.
+//
+// A targeted scan never gets it either way. `jit scan ~/proj` did not look at
+// the shell history, and recommending a fix for something a run never examined
+// is how a report starts being read as boilerplate.
+func writeHistoryGuardOffer(w io.Writer, findings []Finding, summary ScanSummary, cmd *color.Color, asPrevention bool) {
 	found := false
 	for _, f := range findings {
 		if f.FindingType == FindingTypeShellHistorySecret && CountedAsSecret(f) && !f.Archived {
@@ -1479,14 +1492,28 @@ func writeHistoryGuardOffer(w io.Writer, findings []Finding, cmd *color.Color) {
 			break
 		}
 	}
-	if !found {
+	machineWide := len(summary.Targets) == 0
+	if !found && !(asPrevention && machineWide) {
 		return
 	}
-	fmt.Fprint(w, triageNoteIndent)
+	effect := "   keeps the next typed credential out of your history file: a zsh hook " +
+		"holds a command carrying one back from $HISTFILE, while leaving it usable in that session"
+	if found {
+		effect = "   stops the next one being recorded: a zsh hook keeps a command " +
+			"carrying a credential out of your history file, while leaving it usable in that session"
+	}
+	// Indent follows what the line hangs off. Inside the migrate block it is a
+	// note under that group's header (triageNoteIndent); on a clean report it
+	// is the only thing under a sentence at the report's own indent, and
+	// dropping it four columns further in made it read as a sub-note of
+	// nothing.
+	indent := triageNoteIndent
+	if !found {
+		indent = "  "
+	}
+	fmt.Fprint(w, indent)
 	_, _ = cmd.Fprint(w, "jit guard history")
-	termtext.Wrap(w, len(triageNoteIndent)+len("jit guard history"), triageNoteIndent,
-		"   stops the next one being recorded: a zsh hook keeps a command "+
-			"carrying a credential out of your history file, while leaving it usable in that session")
+	termtext.Wrap(w, len(indent)+len("jit guard history"), indent, effect)
 }
 
 // manualTitle names the problem in the user's terms: what it is and, when

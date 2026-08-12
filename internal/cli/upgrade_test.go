@@ -101,8 +101,15 @@ func TestExtractBinaryFromTarGz(t *testing.T) {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
-	// A decoy entry before the real one, to prove we walk by name not position.
+	// Decoy entries before the real one, to prove we walk by name not
+	// position. The completions/ pair is what the release archive actually
+	// carries now (the cask installs them from there), and their basenames sit
+	// one character away from the binary's: an extractor matching loosely
+	// would hand verifyStagedSignature a shell script and break every
+	// self-update in the field.
 	writeTar(t, tw, "LICENSE", "not the binary")
+	writeTar(t, tw, "completions/_jit", "#compdef jit")
+	writeTar(t, tw, "completions/jit.bash", "# bash completion for jit")
 	writeTar(t, tw, "jit", "#!binary-bytes")
 	if err := tw.Close(); err != nil {
 		t.Fatal(err)

@@ -227,6 +227,62 @@ func requirePaths(name string) cobra.PositionalArgs {
 	}
 }
 
+// silenceFileCompletionForNoArgCommands stops a command that accepts NO
+// arguments from offering the user's filenames on TAB. Cobra hands a command
+// with no ValidArgsFunction straight to shell file completion, and it never
+// consults Args to do it — so `jit unlock <TAB>` listed the current
+// directory, on 29 commands, for a position where any value at all is an
+// error. Declaring cobra.NoArgs does not change this; only a completion
+// function does.
+//
+// A no-arg command is detected by ASKING its own validator rather than by
+// comparing function pointers: one that accepts zero arguments and rejects
+// one is, by its own definition, a command that takes none. That keeps this
+// working for jit's own validators (requireArgs, requirePaths) as well as
+// cobra's, and a command that sets its own ValidArgsFunction is left alone —
+// active help on a bare `jit audit` is deliberate and belongs to that
+// command. TestNoArgCommandsDoNotFileComplete pins the outcome so a new
+// command cannot quietly reintroduce it.
+func silenceFileCompletionForNoArgCommands(root *cobra.Command) {
+	for _, c := range root.Commands() {
+		silenceFileCompletionForNoArgCommands(c)
+		if c.ValidArgsFunction != nil || len(c.ValidArgs) > 0 || c.Args == nil {
+			continue
+		}
+		if c.Args(c, []string{}) == nil && c.Args(c, []string{"unexpected"}) != nil {
+			c.ValidArgsFunction = cobra.NoFileCompletions
+		}
+	}
+}
+
+// requireArgs is ExactArgs/RangeArgs/MinimumNArgs with the missing ARGUMENT
+// named instead of counted, for the commands whose argument is not a
+// filesystem path (requirePaths' case) and not a grant id (requireGrantID's).
+// Ten commands still answered a bare invocation with cobra's stock
+// "accepts 1 arg(s), received 0" — including `jit vault set`, which is what
+// `jit vault list`'s own empty state tells a new user to run, so the
+// counting message was reachable from the product's own on-ramp.
+//
+// SilenceUsage is global (see rootCmd), and cobra applies it to argument
+// validation too, so these errors arrive with no usage block behind them:
+// naming the missing thing is the only chance the message gets.
+//
+// The command's own name comes from cobra rather than a literal, and a
+// too-many-arguments error quotes the command's own UseLine, so neither can
+// drift from the command it describes. max < 0 means unbounded.
+func requireArgs(min, max int, missing string) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		if len(args) < min {
+			return fmt.Errorf("%s: expects %s", cmd.CommandPath(), missing)
+		}
+		if max >= 0 && len(args) > max {
+			return fmt.Errorf("%s: too many arguments, the shape is `%s`",
+				cmd.CommandPath(), strings.TrimSuffix(cmd.UseLine(), " [flags]"))
+		}
+		return nil
+	}
+}
+
 // newVersionCmd makes `jit version` a synonym for `jit --version`. Cobra
 // gives a Version-bearing command the --version/-v FLAG only, so `jit
 // version` — the first thing many people type, and what `git`/`docker`/`go`
@@ -293,6 +349,7 @@ func (e *ExitError) Error() string {
 // interesting half.
 func Execute() error {
 	invocationStart = time.Now()
+	silenceFileCompletionForNoArgCommands(rootCmd)
 	cmd, err := rootCmd.ExecuteC()
 	// Skip when the command already recorded itself — only `jit run` does, just
 	// before syscall.Exec replaces this process (see recordRunInvocation), and a

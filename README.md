@@ -64,12 +64,15 @@ install anything.
 self-update (Developer-ID signature and checksum both checked before the
 swap, restarts the service). Either way your vault is untouched.
 
-Recommended: turn on shell completion, so `jit <TAB>` completes subcommands,
-flags, vault paths, and wrappable tool names:
+Homebrew installs shell completion with the binary, so `jit <TAB>` completes
+subcommands, flags, vault paths, and wrappable tool names out of the box.
+Installed from the tarball or from source, add it yourself:
 
 ```sh
 echo 'source <(jit completion zsh)' >> ~/.zshrc && exec zsh
 ```
+
+Either way, `jit doctor` tells you if completion isn't reaching your shell.
 
 ## How you actually use it
 

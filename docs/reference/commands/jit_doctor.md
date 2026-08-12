@@ -52,6 +52,15 @@ machine-readable snapshot.
 jit doctor [flags]
 ```
 
+### Examples
+
+```
+  jit doctor
+  jit doctor --verbose --orphans   # also what passed, and unreferenced secrets
+  jit doctor --wrap                # only the shims, no vault access
+  jit doctor --strict              # advisory warnings gate too, for CI
+```
+
 ### Options
 
 ```

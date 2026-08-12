@@ -266,6 +266,24 @@ func findProjectRoot(start string) (string, bool) {
 	}
 }
 
+// findEnclosingProjectRoot is findProjectRoot with the home directory ruled
+// out. ~/.jit is jit's MACHINE-level store — the guard hook, the global
+// profiles, the shims — not a project, which is why `jit migrate remove`
+// refuses to be pointed at home. Any advice built on "there is a .jit above
+// you" therefore has to exclude it, or standing anywhere in your home
+// directory produces "cd ~ and re-run", which resolves no profile and does
+// not create one either.
+func findEnclosingProjectRoot(cwd string) (string, bool) {
+	root, ok := findProjectRoot(cwd)
+	if !ok || root == cwd {
+		return "", false
+	}
+	if home, err := os.UserHomeDir(); err == nil && root == home {
+		return "", false
+	}
+	return root, true
+}
+
 // removeOneProject plans, confirms, freshly authenticates, and applies the
 // removal of a single project rooted at projectRoot.
 func removeOneProject(cmd *cobra.Command, root, home, projectRoot string) error {

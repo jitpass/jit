@@ -33,6 +33,15 @@ The status is 2, never 1, so a tripped gate is distinguishable from the scan its
 jit scan [path...] [flags]
 ```
 
+### Examples
+
+```
+  jit scan                       # the whole machine, read-only
+  jit scan ~/proj                # just this folder
+  jit scan token.txt             # a file no name rule would flag
+  jit scan --full                # every finding, not the triage view
+```
+
 ### Options
 
 ```
