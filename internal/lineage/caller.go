@@ -7,6 +7,7 @@ package lineage
 
 import (
 	"encoding/binary"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -213,6 +214,51 @@ func isRelay(name string) bool {
 		return true
 	}
 	return false
+}
+
+// VisibleProcesses describes every process the kernel will let this user
+// read, this process excluded. "Visible" already means same-user in practice:
+// another user's processes fail Describe's kernel reads (EPERM), which is the
+// boundary jit's threat model wants. One pass over the process table, so a
+// caller annotating many names (the --process completion) pays the scan once.
+// Resolution and DISPLAY only, per this package's doctrine: nothing here may
+// gate.
+func VisibleProcesses() []Process {
+	pids, err := listAllPIDs()
+	if err != nil {
+		return nil
+	}
+	self := int32(os.Getpid()) // #nosec G115 -- darwin pids fit int32; same conversion IdentifyFIFOReader has always done
+	out := make([]Process, 0, len(pids))
+	for _, pid := range pids {
+		if pid == self || pid <= 0 {
+			continue
+		}
+		p, ok := Describe(pid)
+		if !ok {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// ProcessesNamed returns every currently-visible process whose display Name()
+// is name — how `jit grant --process <name>` resolves a typed name to the
+// live process a grant will anchor to. The grant's gate is the fork-time
+// stamp and ancestry walk taken from the pid afterwards, never this name
+// match itself.
+func ProcessesNamed(name string) []Process {
+	if name == "" {
+		return nil
+	}
+	var out []Process
+	for _, p := range VisibleProcesses() {
+		if p.Name() == name {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // procArgs reads pid's argv from the kernel via sysctl kern.procargs2,
