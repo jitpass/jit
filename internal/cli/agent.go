@@ -168,6 +168,11 @@ var agentRunCmd = &cobra.Command{
 		server.OnDescribeGrant = mounts.describeGrant
 		server.OnStopMount = mounts.stopMount
 		server.OnMountStatus = mounts.mountRevealStatuses
+		// Process grants (design/process-grants.md): the service resolves a
+		// grant's profile names to concrete secrets itself, through the same
+		// stores `jit run` reads — see resolveGrantSecrets for why that
+		// agent-side resolution is what makes the grant prompt trustworthy.
+		server.OnResolveGrant = resolveGrantSecrets(root)
 		// Best-effort "how were you asked" for the audit trail: probe once per
 		// fresh challenge whether Touch ID is currently usable, so a denial or
 		// unlock records "Touch ID or device passcode" on a Mac with biometry

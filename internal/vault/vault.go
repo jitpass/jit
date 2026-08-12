@@ -277,6 +277,33 @@ func (v *Vault) Get(path string) ([]byte, error) {
 	return plaintext, nil
 }
 
+// WrappedDEK returns the wrapped data key this device would use to open the
+// secret at path, plus its AAD-bound class — WITHOUT decrypting anything or
+// touching the KeyWrapper, so it never prompts. It is the read the agent's
+// process-grant resolution needs (design/process-grants.md): grant creation
+// pre-unwraps exactly these bytes under the challenge's MEK, and the serve
+// path later recognizes the same bytes arriving in an ordinary unwrap. Same
+// version and recipient rules as Get, verbatim: a grant must never resolve an
+// envelope Get would refuse.
+func (v *Vault) WrappedDEK(path string) (wrapped []byte, class string, err error) {
+	env, err := v.readEnvelope(path)
+	if err != nil {
+		return nil, "", err
+	}
+	if env.Version > envelopeVersion {
+		return nil, "", fmt.Errorf("secret %s has envelope version %d, newer than this jit understands (max %d), upgrade jit to read it", path, env.Version, envelopeVersion)
+	}
+	wrappedHex, err := env.wrappedDEKFor(v.RecipientID, path)
+	if err != nil {
+		return nil, "", err
+	}
+	wrapped, err = hex.DecodeString(wrappedHex)
+	if err != nil {
+		return nil, "", fmt.Errorf("corrupt envelope %s: invalid recipient encoding: %w", path, err)
+	}
+	return wrapped, env.Class, nil
+}
+
 // SecretInfo describes a stored secret without decrypting it — everything
 // the envelope says in plaintext. CreatedUnix/UpdatedUnix are zero for
 // version-1 envelopes, which predate the metadata; callers must render

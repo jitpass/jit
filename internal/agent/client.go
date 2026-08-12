@@ -318,6 +318,59 @@ func (c *Client) GrantGlobalForPID(mounts []RunMount, pid int32) error {
 	return err
 }
 
+// GrantCreate asks the agent to create a process grant: after one disclosed
+// challenge (agent-worded, like every prompt), pid's process tree may unwrap
+// the named profiles' secrets until now+ttl, unattended, across re-locks.
+// The client sends profile NAMES and its project root only — the agent
+// resolves them to concrete secrets itself, so the prompt and the granted
+// set cannot disagree (see Server.OnResolveGrant). Returns the created
+// grant's status for rendering.
+func (c *Client) GrantCreate(pid int32, profiles []string, projectRoot string, ttl time.Duration) (GrantStatus, error) {
+	resp, err := c.call(Request{
+		Op:            OpGrantCreate,
+		TargetPID:     pid,
+		GrantProfiles: profiles,
+		ProjectRoot:   projectRoot,
+		TTLSeconds:    int64(ttl / time.Second),
+	})
+	if err != nil {
+		return GrantStatus{}, err
+	}
+	if len(resp.Grants) != 1 {
+		return GrantStatus{}, fmt.Errorf("agent: grant created but not reported back")
+	}
+	return resp.Grants[0], nil
+}
+
+// GrantList reads the live process grants — prompt-free, like History.
+func (c *Client) GrantList() ([]GrantStatus, error) {
+	resp, err := c.call(Request{Op: OpGrantList})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Grants, nil
+}
+
+// GrantRevoke ends a grant now. No challenge, by design: reducing access is
+// always free, and the kill switch must be the easiest thing in the feature.
+func (c *Client) GrantRevoke(id string) error {
+	_, err := c.call(Request{Op: OpGrantRevoke, GrantID: id})
+	return err
+}
+
+// GrantExtend moves a grant's deadline to now+ttl, behind a fresh disclosed
+// challenge — more time is a new decision.
+func (c *Client) GrantExtend(id string, ttl time.Duration) (GrantStatus, error) {
+	resp, err := c.call(Request{Op: OpGrantExtend, GrantID: id, TTLSeconds: int64(ttl / time.Second)})
+	if err != nil {
+		return GrantStatus{}, err
+	}
+	if len(resp.Grants) != 1 {
+		return GrantStatus{}, fmt.Errorf("agent: grant extended but not reported back")
+	}
+	return resp.Grants[0], nil
+}
+
 // RunMounts labels each of paths with a single mode — the common shape when
 // every mount in a group shares one treatment (all grants, or all swaps).
 // One helper so the paths->[]RunMount transform lives in exactly one place.
