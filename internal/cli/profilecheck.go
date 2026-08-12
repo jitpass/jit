@@ -124,6 +124,17 @@ const (
 	// shells never execute is the observed field shape. Advisory: no secret
 	// is unreadable, but the user should know which jit they are actually on.
 	kindInstall checkKind = "install"
+	// kindCompletion: this shell has no jit tab-completion loaded, so the
+	// arguments only jit knows — a vault path, a live grant id, a profile
+	// name, the kinds `jit audit --kind` takes — cannot be completed at all.
+	//
+	// Advisory, and easy to dismiss as cosmetic, except for how a user
+	// arrives here: a Homebrew CASK installs the binary and nothing else, so
+	// every cask install before completions shipped in the archive had this,
+	// and a tarball install still does. The remedy is one line in a shell rc
+	// that the README calls optional, which means the people who never read
+	// it are exactly the people who never learn the flags exist.
+	kindCompletion checkKind = "completion"
 	// kindJitPath: an artifact `jit migrate` rewrote records an absolute jit
 	// path that will not keep working — the binary is already gone, or it is
 	// a version-numbered Homebrew copy the next upgrade deletes.
@@ -162,7 +173,7 @@ var allCheckKinds = []checkKind{
 	kindParse, kindNotFound, kindMissing, kindCorrupt, kindVaultError,
 	kindBadPath, kindOrphan, kindShadowed, kindService, kindBackup,
 	kindWrap, kindWrapEnv, kindMount, kindVaultKey, kindRekey, kindAudit,
-	kindMCP, kindInstall, kindJitPath, kindJitPathUpgrade,
+	kindMCP, kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion,
 }
 
 // warning reports whether a finding of this kind is advisory (does not fail
@@ -178,7 +189,7 @@ var allCheckKinds = []checkKind{
 // one process and must never fail a CI run.
 func (k checkKind) warning() bool {
 	switch k {
-	case kindOrphan, kindShadowed, kindService, kindBackup, kindMount, kindWrapEnv, kindAudit, kindInstall, kindJitPathUpgrade:
+	case kindOrphan, kindShadowed, kindService, kindBackup, kindMount, kindWrapEnv, kindAudit, kindInstall, kindJitPathUpgrade, kindCompletion:
 		return true
 	default:
 		return false

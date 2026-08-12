@@ -31,7 +31,8 @@ var unmountCmd = &cobra.Command{
 		"If jit's background service is running, this stops serving just this one mount first, so\n" +
 		"nothing races the file being replaced, every other mount keeps being\n" +
 		"served undisturbed.",
-	Args:              cobra.ExactArgs(1),
+	Example:           "  jit unmount ~/proj/.env",
+	Args:              requireArgs(1, 1, "a mounted path (see `jit status`)"),
 	ValidArgsFunction: completeMountPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		mountPath, err := filepath.Abs(args[0])
@@ -57,7 +58,9 @@ var unmountCmd = &cobra.Command{
 			// plain local file; reading it costs nothing and needs no auth.
 			entries, listErr := mount.LoadRegistry(registryPath)
 			if listErr != nil || len(entries) == 0 {
-				return fmt.Errorf("jit unmount: no mount registered at %s (nothing is currently mounted)", mountPath)
+				// The non-empty case below lists what IS mounted, so only this
+				// branch left the reader with nowhere to look.
+				return fmt.Errorf("jit unmount: no mount registered at %s, nothing is currently mounted (see `jit status`)", mountPath)
 			}
 			home, _ := os.UserHomeDir()
 			lines := make([]string, 0, len(entries))

@@ -153,8 +153,14 @@ func TestDoctorNoProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit doctor: %v", err)
 	}
-	if !strings.Contains(out, "No profiles found") {
-		t.Errorf("expected a no-profiles message, got:\n%s", out)
+	// A fresh machine has nothing wrong with it, so this reports as a bracketed
+	// advisory section with a next step, not as the bare "No profiles found"
+	// sentence writeNoProfilesLine's own comment calls the worst shape a
+	// diagnostic can produce.
+	for _, want := range []string{"[profiles]", "nothing to check yet", "jit scan"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected the no-profiles section to contain %q, got:\n%s", want, out)
+		}
 	}
 }
 

@@ -12,6 +12,24 @@ before:
     # drift, and release.yml gates the publish on that whole pipeline.
     # `go mod download` pre-fetches the same dependencies and changes nothing.
     - go mod download
+    # Shell completions, generated from the binary that is about to ship and
+    # carried INSIDE the archive, because that is the only place a Homebrew
+    # cask can install them from (homebrew_casks.completions below points at
+    # these paths). A cask's `binaries` stanza symlinks the executable and
+    # nothing else, so before this, `brew install jitpass/tap/jitpass` left a
+    # machine with no completion at all: the whole `jit <TAB>` surface was
+    # unreachable unless the user found the optional line in README.md.
+    # Formula-installed tools (_gh, _kubectl) get this for free; a cask has to
+    # ask.
+    #
+    # Generated here rather than with `generate_completions_from_executable`,
+    # which would have the release runner EXECUTE the freshly built
+    # darwin/arm64 binary; `go run` needs no signed, notarized artifact to
+    # exist yet and produces the same text.
+    - sh -c "mkdir -p completions"
+    - sh -c "go run ./cmd/jit completion zsh > completions/_jit"
+    - sh -c "go run ./cmd/jit completion bash > completions/jit.bash"
+    - sh -c "go run ./cmd/jit completion fish > completions/jit.fish"
 
 builds:
   # Apple Silicon only, on purpose: we have no Intel hardware to test a
@@ -101,6 +119,15 @@ archives:
     # and `jit --version` still carry the version.
     name_template: >-
       {{ .ProjectName }}_{{ .Os }}_{{ .Arch }}
+    # Naming `files` at all replaces goreleaser's defaults, so the two files
+    # the default set would have carried are listed again explicitly — a
+    # tarball that silently lost its LICENSE would be a licensing problem, not
+    # a packaging one.
+    files:
+      - LICENSE*
+      - README*
+      - src: completions/*
+        dst: completions
 
 checksum:
   name_template: "checksums.txt"
@@ -164,6 +191,16 @@ homebrew_casks:
     # The archive's binary is `jit`; without this the cask defaults to
     # linking a binary named after the cask (jitpass) and install breaks.
     binaries: [jit]
+    # Installed from the archive into Homebrew's own completion directories,
+    # which are already on zsh's fpath — the same place _gh and _kubectl land.
+    # Without this the cask installs a binary whose entire tab-completion
+    # surface (grant's create shape, audit's filters, every vault path) is
+    # inert, and `jit doctor`'s [completion] check is what notices when a
+    # tarball install has the same gap.
+    completions:
+      zsh: completions/_jit
+      bash: completions/jit.bash
+      fish: completions/jit.fish
     homepage: "https://github.com/jitpass/jit"
     description: "Local-first developer secret runtime"
     # Downloads route through dl.jitpass.com — a Cloudflare Worker that logs

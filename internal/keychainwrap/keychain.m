@@ -164,7 +164,11 @@ KWResult kw_fetch_mek(const char *service, const char *account, unsigned char **
             // reported as "key not found"). Access-denied gets its own
             // message naming the actual fix.
             if (status == errSecItemNotFound) {
-                r.error_message = dupNSString(@"no master key stored in the keychain — was \"jit vault init\" run?");
+                // States the remedy rather than asking the reader a rhetorical
+                // question: this was the only "was X run?" phrasing in jit,
+                // next to three siblings that all name the command. The
+                // backticks are what the CLI's error printer renders cyan.
+                r.error_message = dupNSString(@"no master key stored in the keychain, run `jit vault init` first");
             } else if (status == errSecAuthFailed || status == kwPOSIXENOENT) {
                 r.error_message = dupNSString([NSString stringWithFormat:@"macOS denied this process access to the master key (OSStatus=%d) — the jit binary this process is running usually changed or was removed since it started (or its keychain approval was declined); run `jit service restart` and approve the keychain dialog", (int)status]);
             } else {

@@ -554,3 +554,36 @@ func TestCollapsedHeaderClaimsOnlyWhatWasSeen(t *testing.T) {
 		t.Errorf("anonymous captured-value item = %q, want a same-value claim", got)
 	}
 }
+
+// Every scan outcome closes on something to do except one: a clean report over
+// a NAMED path said "clean" about a folder, returned before both trailers, and
+// left the reader believing the claim covered the machine. `jit --help` opens
+// with "Start with `jit scan`", so this is where a tidy first-time user lands.
+func TestCleanReportsEndOnAnAction(t *testing.T) {
+	targeted := buildScanSummary(Config{}, nil, 0, 0)
+	targeted.Targets = []string{"/tmp/tidy-folder"}
+	var buf bytes.Buffer
+	WriteHumanReport(&buf, nil, targeted, "")
+	out := buf.String()
+	if strings.Contains(out, "this machine looks clean") {
+		t.Errorf("a targeted scan claims the whole machine is clean:\n%s", out)
+	}
+	if !strings.Contains(out, "scan the whole machine") {
+		t.Errorf("clean targeted report has no next step:\n%s", out)
+	}
+
+	// Machine-wide and clean: nothing to fix, so prevention is the only thing
+	// left to offer, and it was withheld from exactly these users.
+	buf.Reset()
+	WriteHumanReport(&buf, nil, buildScanSummary(Config{}, nil, 0, 0), "")
+	if out := buf.String(); !strings.Contains(out, "jit guard history") {
+		t.Errorf("clean machine-wide report offers no prevention:\n%s", out)
+	}
+
+	// A targeted scan never offers the history guard: it did not look there.
+	buf.Reset()
+	WriteHumanReport(&buf, nil, targeted, "")
+	if out := buf.String(); strings.Contains(out, "jit guard history") {
+		t.Errorf("targeted scan offers a fix for something it never examined:\n%s", out)
+	}
+}

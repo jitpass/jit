@@ -87,7 +87,10 @@ func printAuditReport(w io.Writer, entries []auditEntry, filtered bool) {
 
 func printAuditEmpty(w io.Writer, filtered bool) {
 	if filtered {
-		fmt.Fprintln(w, "No audit entries match those filters.")
+		// The populated report ends on a next filter and the never-run branch
+		// explains itself; this was the only audit shape with no way forward,
+		// and it is the one reached by guessing at a filter.
+		fmt.Fprintln(w, hlCmds("No audit entries match those filters. `jit audit` shows the unfiltered log."))
 		return
 	}
 	fmt.Fprintln(w, hlCmds("No audit log yet. It fills in as you run jit commands; if the service has never run, there are no unlocks to show either."))

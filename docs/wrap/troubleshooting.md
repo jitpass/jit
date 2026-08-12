@@ -52,6 +52,13 @@ the run.
   the prompt names the tool and its caller. With the
   [service running](../service/index.md), it's once per session window, and
   each call costs ~25 ms after that.
+- **Tab-completing a wrapped tool.** Most CLIs' completion scripts re-run
+  the tool itself on every `<TAB>` (`gh __complete ...`), which lands on the
+  shim. With the session unlocked that takes the normal injected path, so
+  completions that need the credential (`kubectl <TAB>` listing pods) work;
+  with it locked, the real tool runs *uninjected* and just offers fewer
+  suggestions. A keystroke never raises a Touch ID prompt - if completing
+  needs the credential, unlock first (`jit unlock`).
 - **The tool re-wrote its config file** (a re-`login`, a token rotation
   command). The new token is on disk in plaintext again; re-run
   `jit wrap <tool>` to vault it. [`jit scan`](../audit/index.md) will

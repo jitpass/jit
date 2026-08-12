@@ -60,6 +60,16 @@ that command is now `jit scan`. For the service's raw operational output
 jit audit [flags]
 ```
 
+### Examples
+
+```
+  jit audit                                  # the recent log
+  jit audit --kind use --since 2h            # what read a secret, lately
+  jit audit --status denied                  # refused prompts
+  jit audit --parent claude --kind serve     # what one tool's tree read
+  jit audit --follow                         # stream new entries live
+```
+
 ### Options
 
 ```

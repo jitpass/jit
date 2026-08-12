@@ -42,10 +42,58 @@ func ShimInvocation() (tool string, ok bool) {
 	return tool, true
 }
 
+// CompletionInvocation reports whether this shim invocation is the SHELL
+// asking the tool to complete a command line, rather than the user running
+// the tool. Cobra-family CLIs (most of the catalog: gh, kubectl, docker,
+// stripe, …) are re-executed by their own completion scripts as
+// `<tool> __complete <args…>` on every TAB press; Python argcomplete tools
+// signal the same thing with the _ARGCOMPLETE environment variable. Both
+// markers mean the real tool, once exec'd, will answer a metadata query and
+// exit — never do its real work.
+//
+// The test is deliberately these two exact markers and nothing looser
+// (COMP_LINE alone, say, which does not by itself put a tool into completion
+// mode): anything matched here may be exec'd WITHOUT credential injection,
+// so a false positive would silently unwrap a real run — the exact failure
+// ShimExec's contract exists to prevent.
+func CompletionInvocation(args []string) bool {
+	if len(args) > 0 && (args[0] == "__complete" || args[0] == "__completeNoDesc") {
+		return true
+	}
+	return os.Getenv("_ARGCOMPLETE") != ""
+}
+
+// ShimExecReal replaces this process with the real tool directly — no
+// injection, no jit run. It exists for exactly one caller: a completion
+// invocation (CompletionInvocation) arriving while the session is locked,
+// where the wrapped path's cost is a Touch ID prompt raised by a TAB press.
+// Training the user to approve prompts they didn't intend undermines the
+// decision point the whole product rests on, and a completion query is
+// best-effort by nature — every CLI degrades to fewer suggestions when it
+// can't reach its backend. main.go makes the locked/unlocked call (the shim
+// hot path stays stdlib-only, see the header comment); unlocked completions
+// still take ShimExec, so completions that genuinely need a credential
+// (kubectl asking its API server) keep working whenever answering is silent.
+func ShimExecReal(tool string, args []string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	realTool, err := lookPathSkipping(os.Getenv("PATH"), tool, ShimDir(home))
+	if err != nil {
+		return fmt.Errorf("real %q not found in PATH beyond the shim directory, `jit wrap undo %s` removes the shim", tool, tool)
+	}
+	return syscall.Exec(realTool, append([]string{tool}, args...), os.Environ()) // #nosec G204 -- realTool resolves the user's own PATH for the tool the shim is named after; args are the shell's completion request
+}
+
 // ShimExec replaces this process with
 // `jit run --profile wrap-<tool> -- <real-tool> <args...>`. It returns only
 // on failure; the caller prints the error and exits 127 — loudly, never
-// silently degrading to an unwrapped run (docs/internal/WRAP-PLAN.md §3.1).
+// silently degrading to an unwrapped run. The one deliberate exception is a
+// locked-session completion query, which main.go routes to ShimExecReal
+// BEFORE calling this: that invariant guards the tool's real work from
+// confusing credential-less failures, and a completion is not the tool's
+// real work.
 func ShimExec(tool string, args []string) error {
 	// Belt-and-braces recursion guard: even if real-binary resolution is
 	// somehow defeated (the PATH skip below is the primary defense), the

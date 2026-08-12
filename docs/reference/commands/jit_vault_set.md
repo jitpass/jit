@@ -19,6 +19,14 @@ a synonym for it.
 jit vault set <path> [value] [flags]
 ```
 
+### Examples
+
+```
+  jit vault set stripe/dev-key                  # prompts, nothing echoed
+  jit vault set stripe/dev-key sk_test_123     # lands in shell history
+  pbpaste | jit vault set stripe/dev-key --stdin
+```
+
 ### Options
 
 ```

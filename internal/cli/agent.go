@@ -1444,6 +1444,22 @@ const agentRestartGrace = 2 * time.Second
 // would just dial the socket twice per command. When the service is
 // installed, the client rides out launchd's respawn gap (see
 // agentRestartGrace) instead of misreporting a restarting agent as absent.
+// SessionUnlocked reports whether the service is up with an unlocked session,
+// prompt-free and without the restart-grace dial retry agentClient adds —
+// main.go asks this on a shim's completion invocation to decide between the
+// wrapped path and wrap.ShimExecReal, and a TAB press cannot wait out a
+// restart gap the way a typed command can. Any failure to answer is "locked":
+// the caller's fallback (complete unwrapped) is the one that can never raise
+// a prompt, so uncertainty must land there.
+func SessionUnlocked() bool {
+	root, err := vaultRootDir()
+	if err != nil {
+		return false
+	}
+	st, err := agent.NewClient(agent.SocketPath(root)).Status()
+	return err == nil && st.Unlocked
+}
+
 func agentClient() (*agent.Client, error) {
 	root, err := vaultRootDir()
 	if err != nil {
@@ -1769,6 +1785,19 @@ func init() {
 	agentLogCmd.Flags().IntVarP(&agentLogLines, "lines", "n", 50, "how many trailing lines to print")
 	agentLogCmd.Flags().BoolVarP(&agentLogFollow, "follow", "f", false, "keep printing new lines as the service writes them (Ctrl-C to stop)")
 	agentLogCmd.Flags().BoolVar(&agentLogRaw, "raw", false, "print the log file's bytes exactly as written, without the formatted view")
+
+	// Fixed value sets: --format, a count, a duration and an on/off word all
+	// answered TAB with the user's filenames. The TTL ceiling comes from the
+	// same constant the server clamps to, so the hint cannot outlive it.
+	_ = agentStatusCmd.RegisterFlagCompletionFunc("format", completeOutputFormat)
+	_ = agentLogCmd.RegisterFlagCompletionFunc("lines", completeCounts(20, 50, 200, 1000))
+	ttlComp := completeDurations(humanAgo(agent.DefaultMaxSessionAge), "1m", "5m", "30m", "1h", "8h")
+	_ = agentRunCmd.RegisterFlagCompletionFunc("ttl", ttlComp)
+	serviceTTLCmd.ValidArgsFunction = firstArgOnly(ttlComp)
+	serviceConsentCmd.ValidArgsFunction = firstArgOnly(completeValues(
+		"on\tprompt once per process for each secret (default)",
+		"off\tno per-process prompt; the session unlock is the only gate"))
+
 	serviceCmd.AddCommand(agentRunCmd, serviceTTLCmd, serviceConsentCmd, agentRestartCmd, agentStatusCmd, agentLogCmd)
 
 	// The old plist's `agent run --ttl <d>` needs the same --ttl flag bound to

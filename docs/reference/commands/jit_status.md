@@ -16,6 +16,14 @@ An unreferenced group holding the same key names as a group still in use is call
 jit status [flags]
 ```
 
+### Examples
+
+```
+  jit status
+  jit status --secrets     # per-group vault/profile reconciliation
+  jit status --format json
+```
+
 ### Options
 
 ```

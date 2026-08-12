@@ -140,6 +140,13 @@ var scanCmd = &cobra.Command{
 		"scan itself failing (a bad flag, an unreadable path), which stays 1. " +
 		"The report is always written in full first — the gate never costs you " +
 		"the findings that explain it. --fail-on works with --score too.",
+	// The pathless form is the one to start with, and the Use line's
+	// "[path...]" cannot say that a named path is scanned MORE closely (it
+	// bypasses the name gate and sweeps contents).
+	Example: "  jit scan                       # the whole machine, read-only\n" +
+		"  jit scan ~/proj                # just this folder\n" +
+		"  jit scan token.txt             # a file no name rule would flag\n" +
+		"  jit scan --full                # every finding, not the triage view",
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Validate before touching the filesystem or doing any scanning —
@@ -353,5 +360,14 @@ func init() {
 	_ = scanCmd.RegisterFlagCompletionFunc("fail-on", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 		return []string{audit.RiskLevelCritical, audit.RiskLevelHigh, audit.RiskLevelMedium, audit.RiskLevelLow, "any"}, cobra.ShellCompDirectiveNoFileComp
 	})
+	// Not the shared completeOutputFormat: scan reports a list of findings,
+	// so its vocabulary is markdown/ndjson rather than one JSON snapshot
+	// (validateScanFormat, which TestScanFormatCompletionMatchesValidator
+	// pins this to). "md" is accepted as an alias but not offered — two
+	// spellings of one format read as two formats.
+	_ = scanCmd.RegisterFlagCompletionFunc("format", completeValues(
+		"text\thuman-readable (default)",
+		"markdown\ta report to paste into a document",
+		"ndjson\tone JSON finding per line"))
 	rootCmd.AddCommand(scanCmd)
 }

@@ -130,3 +130,57 @@ func TestLookPathSkippingIgnoresNonExecutablesAndDirs(t *testing.T) {
 		t.Fatal("expected an error, no executable gh exists on this PATH")
 	}
 }
+
+// A completion invocation may be exec'd WITHOUT credential injection, so the
+// classifier errs narrow: only the two markers that make the real tool itself
+// enter completion mode. Anything looser would silently unwrap a real run.
+func TestCompletionInvocation(t *testing.T) {
+	t.Setenv("_ARGCOMPLETE", "")
+	os.Unsetenv("_ARGCOMPLETE")
+	cases := map[string]struct {
+		args []string
+		want bool
+	}{
+		"cobra completion":         {[]string{"__complete", "pr", "cre"}, true},
+		"cobra no-desc completion": {[]string{"__completeNoDesc", "get", "po"}, true},
+		"a real run":               {[]string{"pr", "create"}, false},
+		"no args":                  {nil, false},
+		"marker not first":         {[]string{"run", "__complete"}, false},
+		// `gh completion zsh` GENERATES a script; it is a real, user-typed
+		// command and must stay wrapped.
+		"the completion subcommand": {[]string{"completion", "zsh"}, false},
+	}
+	for name, tc := range cases {
+		if got := CompletionInvocation(tc.args); got != tc.want {
+			t.Errorf("%s: CompletionInvocation(%v) = %v, want %v", name, tc.args, got, tc.want)
+		}
+	}
+
+	// argcomplete tools signal completion mode via env, with a real-looking argv.
+	t.Setenv("_ARGCOMPLETE", "1")
+	if !CompletionInvocation([]string{"s3", "ls"}) {
+		t.Error("_ARGCOMPLETE set: the real tool will answer a completion query, so this is one")
+	}
+}
+
+// ShimExecReal resolves through the same skip-the-shim-dir lookup as the
+// wrapped path, so its failure mode (and message) match ShimExec's.
+func TestShimExecRealFailsLoudlyWhenOnlyTheShimExists(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	shimDir := ShimDir(home)
+	if err := os.MkdirAll(shimDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shimDir, "ghost-tool"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shimDir)
+	err := ShimExecReal("ghost-tool", []string{"__complete", ""})
+	if err == nil {
+		t.Fatal("ShimExecReal found a real tool where only the shim exists")
+	}
+	if !strings.Contains(err.Error(), "jit wrap undo ghost-tool") {
+		t.Errorf("error %q does not name the way out", err)
+	}
+}

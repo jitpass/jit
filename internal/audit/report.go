@@ -599,9 +599,28 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	if summary.TotalFindings == 0 {
 		fmt.Fprint(w, "  ")
 		_, _ = green.Fprint(w, reportGlyphOK)
-		fmt.Fprintln(w, " No findings — this machine looks clean.")
+		// "this machine" is only true of a machine-wide run: a targeted scan
+		// looked at what it was given and nothing else.
+		if len(summary.Targets) > 0 {
+			fmt.Fprintln(w, " No findings here.")
+		} else {
+			fmt.Fprintln(w, " No findings — this machine looks clean.")
+		}
 		fmt.Fprintln(w)
 		writeDerivedCredentialAdvisory(w, summary, home)
+		// The one report shape that ended on nothing to do. Every other scan
+		// outcome closes on an action: findings point at `jit migrate`, a clean
+		// machine-wide triage points at the full inventory. A clean targeted
+		// scan said "clean" about a folder and left the reader believing it had
+		// been said about the machine.
+		if len(summary.Targets) > 0 {
+			fmt.Fprint(w, "  ")
+			_, _ = cmd.Fprint(w, style.GlyphAction+" ")
+			termtext.Wrap(w, 4, "    ",
+				cmd.Sprint("jit scan")+"   scan the whole machine, not just what you named")
+		} else {
+			writeHistoryGuardOffer(w, findings, summary, cmd, true)
+		}
 		return
 	}
 	writeDerivedCredentialAdvisory(w, summary, home)
