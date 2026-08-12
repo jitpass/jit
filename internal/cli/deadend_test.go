@@ -172,3 +172,14 @@ func TestSecretsDetailCollapsesWhenThereIsNothingToReconcile(t *testing.T) {
 		t.Errorf("empty reconciliation = %q, want one line and a next step", out)
 	}
 }
+
+// The completion probe must land on "locked" for every state it cannot
+// verify: the caller's fallback is the one path that can never raise a
+// prompt, so uncertainty has to resolve there. (The unlocked half needs a
+// live agent and is exercised by the agent package's own session tests.)
+func TestSessionUnlockedIsFalseWithoutAService(t *testing.T) {
+	withFixtureHome(t) // no socket under this root
+	if SessionUnlocked() {
+		t.Error("SessionUnlocked() = true with no service socket, want false")
+	}
+}

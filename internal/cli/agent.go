@@ -1444,6 +1444,22 @@ const agentRestartGrace = 2 * time.Second
 // would just dial the socket twice per command. When the service is
 // installed, the client rides out launchd's respawn gap (see
 // agentRestartGrace) instead of misreporting a restarting agent as absent.
+// SessionUnlocked reports whether the service is up with an unlocked session,
+// prompt-free and without the restart-grace dial retry agentClient adds —
+// main.go asks this on a shim's completion invocation to decide between the
+// wrapped path and wrap.ShimExecReal, and a TAB press cannot wait out a
+// restart gap the way a typed command can. Any failure to answer is "locked":
+// the caller's fallback (complete unwrapped) is the one that can never raise
+// a prompt, so uncertainty must land there.
+func SessionUnlocked() bool {
+	root, err := vaultRootDir()
+	if err != nil {
+		return false
+	}
+	st, err := agent.NewClient(agent.SocketPath(root)).Status()
+	return err == nil && st.Unlocked
+}
+
 func agentClient() (*agent.Client, error) {
 	root, err := vaultRootDir()
 	if err != nil {
