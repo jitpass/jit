@@ -184,6 +184,54 @@ func TestGrantListRendering(t *testing.T) {
 	}
 }
 
+// Double-tab on the bare command must surface the CREATE path next to the
+// subcommands, and an id completion with nothing to offer must say why and
+// what to do - both were real user reports: create was invisible at the
+// moment of discovery, and `extend <Tab>` with no grants was dead silence.
+func TestGrantCompletionSurfacesCreatePath(t *testing.T) {
+	comps, _ := completeGrantCreateEntry(nil, nil, "")
+	joined := strings.Join(comps, "\n")
+	if !strings.Contains(joined, "--process\t") {
+		t.Errorf("bare-command completion does not offer --process:\n%s", joined)
+	}
+	if !strings.Contains(joined, grantCreateUsage) {
+		t.Errorf("bare-command completion lacks the create usage line:\n%s", joined)
+	}
+	if got, _ := completeGrantCreateEntry(nil, []string{"list"}, ""); got != nil {
+		t.Errorf("completion after an argument = %v, want nothing", got)
+	}
+}
+
+func TestGrantForCompletionSaysFreeForm(t *testing.T) {
+	comps, _ := completeGrantFor(nil, nil, "")
+	joined := strings.Join(comps, "\n")
+	if !strings.Contains(joined, "7d") {
+		t.Errorf("--for completion omits the 7d maximum:\n%s", joined)
+	}
+	if !strings.Contains(joined, "any duration up to 7d") {
+		t.Errorf("--for completion reads as a closed list, missing the free-form hint:\n%s", joined)
+	}
+}
+
+func TestGrantIDCompletionExplainsAnUnreachableService(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // no service socket under this root
+	comps, _ := completeGrantIDs(nil, nil, "")
+	joined := strings.Join(comps, "\n")
+	if !strings.Contains(joined, "service is not running") {
+		t.Errorf("id completion with no service = %q, want an active-help explanation", joined)
+	}
+}
+
+// A bare `jit grant` is discovery, not a forgotten flag: the error must show
+// the whole create shape, not just the first missing piece.
+func TestBareGrantErrorShowsTheWholeShape(t *testing.T) {
+	grantProcess, grantPIDFlag, grantProfileNames, grantFor = "", 0, nil, ""
+	err := runGrantCreate(io.Discard)
+	if err == nil || !strings.Contains(err.Error(), grantCreateUsage) {
+		t.Errorf("bare grant error = %v, want it to quote %q", err, grantCreateUsage)
+	}
+}
+
 func TestGrantClockAxes(t *testing.T) {
 	now := time.Now()
 	if now.Hour() >= 22 { // near midnight the "same day" fixture isn't; skip the ambiguity
