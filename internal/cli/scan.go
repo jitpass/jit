@@ -140,6 +140,13 @@ var scanCmd = &cobra.Command{
 		"scan itself failing (a bad flag, an unreadable path), which stays 1. " +
 		"The report is always written in full first — the gate never costs you " +
 		"the findings that explain it. --fail-on works with --score too.",
+	// The pathless form is the one to start with, and the Use line's
+	// "[path...]" cannot say that a named path is scanned MORE closely (it
+	// bypasses the name gate and sweeps contents).
+	Example: "  jit scan                       # the whole machine, read-only\n" +
+		"  jit scan ~/proj                # just this folder\n" +
+		"  jit scan token.txt             # a file no name rule would flag\n" +
+		"  jit scan --full                # every finding, not the triage view",
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Validate before touching the filesystem or doing any scanning —

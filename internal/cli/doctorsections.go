@@ -100,6 +100,7 @@ func gatherSystemFindings(root, cwd string, v *vault.Vault) ([]checkFinding, []s
 		findings = append(findings, jitPathFindings(home)...)
 	}
 	findings = append(findings, installFindings()...)
+	findings = append(findings, completionFindings()...)
 	wrapped, wrapOK := wrapFindings()
 	return append(findings, wrapped...), wrapOK
 }

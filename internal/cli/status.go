@@ -80,7 +80,12 @@ type statusAgent struct {
 	Unlocked       bool                      `json:"unlocked"`
 	LocksInSeconds int64                     `json:"locks_in_seconds,omitempty"`
 	Mounts         []agent.MountRevealStatus `json:"mounts"`
-	Build          string                    `json:"build,omitempty"`
+	// Grants are the live process grants, best-effort: an older service that
+	// predates grant_list simply reports none. Carried here because `jit
+	// grant` was reachable from nowhere but itself — no scan, migrate, wrap or
+	// doctor output mentioned it, so a shipped feature was documentation-only.
+	Grants []agent.GrantStatus `json:"grants,omitempty"`
+	Build  string              `json:"build,omitempty"`
 	// Version is the running service PROCESS's release version, empty when
 	// the agent isn't running or predates the field — the counterpart to
 	// statusCLI.Version, at the same release-scale zoom Build refines.
@@ -237,6 +242,9 @@ var statusCmd = &cobra.Command{
 		"--format json prints a machine-readable snapshot instead of the default " +
 		"text report, in the same shape jit service status/vault list/doctor's own " +
 		"--format json use for their overlapping sections.",
+	Example: "  jit status\n" +
+		"  jit status --secrets     # per-group vault/profile reconciliation\n" +
+		"  jit status --format json",
 	Args: cobra.NoArgs,
 	// See doctor.go's SilenceUsage comment — a --format json snapshot must
 	// never have cobra's usage text appended to it on a RunE error.
@@ -427,6 +435,13 @@ func gatherAgentStatus(root string) (statusAgent, error) {
 		return statusAgent{Installed: agentInstalled(), Error: err.Error()}, nil
 	}
 	result := statusAgent{Running: true, Installed: agentInstalled(), Unlocked: st.Unlocked, Mounts: st.Mounts, Build: st.Build, Version: st.Version, ExecutablePath: st.ExecutablePath}
+	// Best-effort and deliberately unreported on failure: grant_list is
+	// prompt-free and instant, but a service older than the op answers with an
+	// error, and "your service is too old to list grants" is not what someone
+	// running `jit status` asked about.
+	if grants, err := client.GrantList(); err == nil {
+		result.Grants = grants
+	}
 	if st.Unlocked {
 		result.LocksInSeconds = int64(st.Remaining.Round(time.Second).Seconds())
 	}
@@ -652,6 +667,48 @@ func printStatusText(w io.Writer, r statusResult) {
 			countWord(decoyReads, "mount", "mounts"))
 		printStatusAction(w, "`jit audit --status decoy` to see which reader, when, and why")
 	}
+
+	printGrantsSection(w, r)
+}
+
+// printGrantsSection reports the live process grants, and is where `jit grant`
+// becomes discoverable at all: outside its own command the string appeared in
+// exactly one user-visible place, an error you only reach by having already
+// run `jit grant revoke`. `jit guard history` is offered by the scan report
+// and `jit wrap add` by migrate; this is grant's equivalent on-ramp.
+//
+// The create shape is offered only when there is something to grant. On a
+// machine with no secrets it would be advice for a feature the reader cannot
+// use yet, and the dashboard's job is to report state, not to advertise.
+func printGrantsSection(w io.Writer, r statusResult) {
+	statusLabel(w, "grants")
+	switch {
+	case !r.Agent.Running:
+		printStatusValue(w, "%s", "none — the service is not running")
+		return
+	case len(r.Agent.Grants) == 0:
+		printStatusValue(w, "%s", "none active")
+		if r.Vault.SecretsStored > 0 {
+			printStatusAction(w, "`"+grantCreateUsage+"` pre-approves a running program")
+		}
+		return
+	}
+	names := make([]string, 0, len(r.Agent.Grants))
+	soonest := int64(0)
+	for _, g := range r.Agent.Grants {
+		name := g.Name
+		if name == "" {
+			name = fmt.Sprintf("pid %d", g.PID)
+		}
+		names = append(names, name)
+		if soonest == 0 || g.ExpiresUnix < soonest {
+			soonest = g.ExpiresUnix
+		}
+	}
+	_, _ = cOK.Fprint(w, glyphOK+" ")
+	printStatusGlyphValue(w, "%s · %s · next expires %s",
+		countWord(len(r.Agent.Grants), "active grant", "active grants"),
+		strings.Join(names, ", "), grantClock(soonest))
 }
 
 // printSecretsSection renders the vault<->profile reconciliation rollup: how
@@ -873,6 +930,18 @@ func printSecretsDetail(w io.Writer, rec secretsReconciliation, v *vault.Vault) 
 		default:
 			unref = append(unref, g)
 		}
+	}
+
+	// Nothing to reconcile is one fact, not three empty sections. On a fresh
+	// machine this printed nine lines — three headers reading "0 groups" and
+	// three "none" bodies — to say that jit has never stored a secret, and the
+	// rollup line above already carries the vault's state.
+	if len(wired) == 0 && len(elsewhere) == 0 && len(unref) == 0 {
+		wrapBody(w, 0, "  ", "No secrets to reconcile yet.")
+		fmt.Fprint(w, "  ")
+		_, _ = cPath.Fprint(w, glyphAction+" ")
+		wrapBody(w, 4, "    ", hlCmds("`jit scan`   find what is worth protecting first"))
+		return
 	}
 
 	// Section headers follow the house style: a title with a plain one-line

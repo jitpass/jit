@@ -114,6 +114,10 @@ var doctorCmd = &cobra.Command{
 		"still works when the vault is the thing that's broken. --verbose lists every\n" +
 		"check that passed, not just the ones that failed, and --format json prints a\n" +
 		"machine-readable snapshot.",
+	Example: "  jit doctor\n" +
+		"  jit doctor --verbose --orphans   # also what passed, and unreferenced secrets\n" +
+		"  jit doctor --wrap                # only the shims, no vault access\n" +
+		"  jit doctor --strict              # advisory warnings gate too, for CI",
 	Args: cobra.NoArgs,
 	// A "problems found" exit is a normal, expected outcome here, not a
 	// usage mistake — cobra's default of dumping the usage string to
@@ -375,15 +379,34 @@ func writeNoProfilesLine(out io.Writer, cwd string) {
 		// findEnclosingProjectRoot, not findProjectRoot: ~/.jit is the
 		// machine-level store, and "cd ~ and re-run" would resolve nothing.
 		if root, ok := findEnclosingProjectRoot(cwd); ok {
-			wrapBody(out, 0, "  ", fmt.Sprintf(
-				"No profiles here. This directory sits inside %s, which is the project root — profiles resolve from the current directory, not from an enclosing one.",
+			// Both branches render as the same bracketed section. This one used
+			// to be a bare, unindented sentence sitting under the previous
+			// section's findings, so a report with an [install] group above it
+			// read as if the profile line belonged to that group.
+			fmt.Fprintln(out, cBold.Sprint("[profiles]"))
+			fmt.Fprint(out, "  ")
+			_, _ = cWarn.Fprint(out, glyphWarn+" ")
+			wrapBody(out, 4, "    ", fmt.Sprintf(
+				"no profiles here; they resolve from this directory, not from %s, which is the project root above you",
 				shortPath(root)))
+			fmt.Fprint(out, "  ")
 			_, _ = cPath.Fprint(out, glyphAction+" ")
-			wrapBody(out, 2, "  ", hlCmds(fmt.Sprintf("`cd %s` and re-run", shortPath(root))))
+			wrapBody(out, 4, "    ", hlCmds(fmt.Sprintf("`cd %s` and re-run", shortPath(root))))
 			return
 		}
 	}
-	wrapBody(out, 0, "  ", "No profiles found under .jit/profiles/ or the global store.")
+	// The other half of this function's own complaint. With no enclosing
+	// project to name, doctor still closed on the bare sentence — unbracketed,
+	// unindented, no glyph, no action, exit 0 — which is the shape the comment
+	// above calls the worst a diagnostic can produce. A fresh machine has
+	// nothing wrong with it and one obvious next step.
+	fmt.Fprintln(out, cBold.Sprint("[profiles]"))
+	fmt.Fprint(out, "  ")
+	_, _ = cWarn.Fprint(out, glyphWarn+" ")
+	wrapBody(out, 4, "    ", "nothing to check yet: no .jit/profiles/ here, and no global store")
+	fmt.Fprint(out, "  ")
+	_, _ = cPath.Fprint(out, glyphAction+" ")
+	wrapBody(out, 4, "    ", hlCmds("`jit scan`   find what is worth protecting first"))
 }
 
 // versionBuildSignature renders the tool line's value, dropping whichever
@@ -552,6 +575,8 @@ func findingLabel(f checkFinding) string {
 		return "[mcp]"
 	case kindInstall:
 		return "[install]"
+	case kindCompletion:
+		return "[completion]"
 	case kindJitPath:
 		return "[jit path]"
 	case kindJitPathUpgrade:
@@ -574,7 +599,7 @@ func findingLabel(f checkFinding) string {
 // that identifies the file off the first line (rule 6).
 func formatFinding(f checkFinding) string {
 	switch f.Kind {
-	case kindParse, kindNotFound, kindService, kindBackup, kindWrap, kindWrapEnv, kindMount, kindVaultKey, kindRekey, kindAudit, kindMCP, kindInstall, kindJitPath, kindJitPathUpgrade:
+	case kindParse, kindNotFound, kindService, kindBackup, kindWrap, kindWrapEnv, kindMount, kindVaultKey, kindRekey, kindAudit, kindMCP, kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion:
 		return shortHome(f.Detail)
 	case kindMissing:
 		return fmt.Sprintf("%s: %s "+glyphAction+" %s, not in the vault", profileRef(f), f.Variable, f.Path)

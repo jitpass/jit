@@ -369,6 +369,13 @@ var auditCmd = &cobra.Command{
 		"readily as for the last hour. To scan for plaintext secrets on disk instead,\n" +
 		"that command is now `jit scan`. For the service's raw operational output\n" +
 		"(startup, mount notes, panics) rather than the event trail, see `jit service log`.",
+	// Eleven filters and no example composing any of them: the flags are
+	// documented one by one, and what this command is FOR is the combination.
+	Example: "  jit audit                                  # the recent log\n" +
+		"  jit audit --kind use --since 2h            # what read a secret, lately\n" +
+		"  jit audit --status denied                  # refused prompts\n" +
+		"  jit audit --parent claude --kind serve     # what one tool's tree read\n" +
+		"  jit audit --follow                         # stream new entries live",
 	Args:         cobra.NoArgs,
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {

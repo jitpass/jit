@@ -22,6 +22,13 @@ so the `rm -f` reflex keeps working.
 jit vault rm <path>... [flags]
 ```
 
+### Examples
+
+```
+  jit vault rm stripe/dev-key
+  jit vault rm old-proj/API_KEY old-proj/DB_URL   # one approval, both gone
+```
+
 ### Options
 
 ```

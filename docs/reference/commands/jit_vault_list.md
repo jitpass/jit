@@ -20,6 +20,14 @@ provenance, for grouping in a script without a `get` per secret.
 jit vault list [flags]
 ```
 
+### Examples
+
+```
+  jit vault list
+  jit vault list -l --by origin     # what each came from, with ages
+  jit vault list --format json | jq -r '.path'
+```
+
 ### Options
 
 ```
