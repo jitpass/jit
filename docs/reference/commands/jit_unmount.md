@@ -17,6 +17,12 @@ served undisturbed.
 jit unmount <path> [flags]
 ```
 
+### Examples
+
+```
+  jit unmount ~/proj/.env
+```
+
 ### Options
 
 ```

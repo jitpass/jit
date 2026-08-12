@@ -38,7 +38,10 @@ func main() {
 	}
 
 	if err := cli.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		// cli.FormatError, not the bare error: a remedy printed as "run `jit
+		// service restart`" is the one line the reader is meant to act on, and
+		// it was the only place in jit that showed its own backticks.
+		fmt.Fprintln(os.Stderr, cli.FormatError(err))
 		// A command whose non-zero exit is a RESULT (jit scan --fail-on
 		// tripping) carries its own status, so CI can tell "secrets found"
 		// apart from "the scan itself broke". Everything else is exit 1.

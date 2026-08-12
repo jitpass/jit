@@ -24,6 +24,14 @@ already-unlocked machine.
 jit vault get <path> [flags]
 ```
 
+### Examples
+
+```
+  jit vault get stripe/dev-key
+  jit vault get stripe/dev-key --copy     # to the clipboard, not the screen
+  jit vault get stripe/dev-key --format json
+```
+
 ### Options
 
 ```

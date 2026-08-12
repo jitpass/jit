@@ -94,6 +94,20 @@ func wrapBody(w io.Writer, used int, cont, body string) {
 // signal rather than noise.
 func hlCmds(s string) string { return style.HighlightCommands(s) }
 
+// FormatError renders an error the way this package renders every other line
+// it prints. Errors return through main.go, which printed them raw, so the
+// whole error surface showed its backticks literally — "run `jit service
+// restart`" — with no color at all. That is the drift output-style rule 5
+// names, and it applied to essentially every remedy jit offers at the moment
+// the user most needs to read one. One place to fix, since every command's
+// error arrives here.
+func FormatError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return hlCmds(err.Error())
+}
+
 // maxFlowWidth caps how wide flowNames lays out, and maxFlowCols how many
 // columns, regardless of how wide the terminal is. Flowing to the full width
 // of a very wide window produced a dense six-or-more-column wall that was

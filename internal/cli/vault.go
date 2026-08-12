@@ -591,6 +591,11 @@ var vaultSetCmd = &cobra.Command{
 		"Overwriting an existing secret asks first; -y/--yes skips that question,\n" +
 		"as it does on every other jit command. `-f`/`--force` is still accepted as\n" +
 		"a synonym for it.",
+	// The Use line cannot show that omitting [value] prompts, or that --stdin
+	// is the scripted form; three shapes in three lines can.
+	Example: "  jit vault set stripe/dev-key                  # prompts, nothing echoed\n" +
+		"  jit vault set stripe/dev-key sk_test_123     # lands in shell history\n" +
+		"  pbpaste | jit vault set stripe/dev-key --stdin",
 	Args:              requireArgs(1, 2, "a secret path; its value is prompted if you omit it"),
 	ValidArgsFunction: completeVaultPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -651,6 +656,9 @@ var vaultGetCmd = &cobra.Command{
 		"Requires a fresh Touch ID/passcode on every run, never the cached service\n" +
 		"session, so a decrypted secret can never be read silently, even on an\n" +
 		"already-unlocked machine.",
+	Example: "  jit vault get stripe/dev-key\n" +
+		"  jit vault get stripe/dev-key --copy     # to the clipboard, not the screen\n" +
+		"  jit vault get stripe/dev-key --format json",
 	Args:              requireArgs(1, 1, "a secret path (see `jit vault list`)"),
 	ValidArgsFunction: completeVaultPaths,
 	// A --json error must not be buried under cobra usage text — same
@@ -676,7 +684,9 @@ var vaultGetCmd = &cobra.Command{
 		value, err := v.Get(args[0])
 		if err != nil {
 			if errors.Is(err, vault.ErrNotFound) {
-				return fmt.Errorf("jit vault get: no secret stored at %q", args[0])
+				// The likeliest cause is a half-remembered path, and the
+				// listing that would settle it is one command away.
+				return fmt.Errorf("jit vault get: no secret stored at %q (see `jit vault list`)", args[0])
 			}
 			return fmt.Errorf("jit vault get: %w", err)
 		}
@@ -817,6 +827,9 @@ var vaultListCmd = &cobra.Command{
 		"(--by group by the finer import-batch id); -l annotates each with its\n" +
 		"class and age. --format json prints an object per secret carrying that\n" +
 		"provenance, for grouping in a script without a `get` per secret.",
+	Example: "  jit vault list\n" +
+		"  jit vault list -l --by origin     # what each came from, with ages\n" +
+		"  jit vault list --format json | jq -r '.path'",
 	Args: cobra.NoArgs,
 	// See doctor.go's SilenceUsage comment — the same "don't corrupt a
 	// --format json snapshot with usage text on a RunE error" reasoning
@@ -915,6 +928,8 @@ var vaultRmCmd = &cobra.Command{
 		"-y/--yes skips the typed confirmation (never the fingerprint), matching\n" +
 		"every other jit command. `-f`/`--force` is still accepted as a synonym,\n" +
 		"so the `rm -f` reflex keeps working.",
+	Example: "  jit vault rm stripe/dev-key\n" +
+		"  jit vault rm old-proj/API_KEY old-proj/DB_URL   # one approval, both gone",
 	Args:              requireArgs(1, -1, "at least one secret path (see `jit vault list`)"),
 	ValidArgsFunction: completeVaultPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -1042,7 +1057,7 @@ var vaultHistoryCmd = &cobra.Command{
 			return fmt.Errorf("jit vault history: %w", err)
 		}
 		if !exists {
-			return fmt.Errorf("jit vault history: no secret stored at %q", args[0])
+			return fmt.Errorf("jit vault history: no secret stored at %q (see `jit vault list`)", args[0])
 		}
 		versions, err := v.HistoryVersions(args[0])
 		if err != nil {
