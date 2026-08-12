@@ -47,7 +47,7 @@ is not authenticating one, and jit doesn't pretend otherwise (see
   time=2026-07-22 13:18:02 level=warn kind=unlock status=denied method=touchid-or-passcode reason="local authentication failed: the user canceled" cmd="~/some-script.sh" parent=Code
   ```
 
-Among the auth events, seven kinds appear:
+Among the auth events, eight kinds appear:
 
 - **unlock (status=ok)** - a Touch ID/passcode prompt the human approved, with
   the command that triggered it and what launched that command.
@@ -61,17 +61,28 @@ Among the auth events, seven kinds appear:
   how many times it has already been refused.
 - **grant (status=approved)** - a *disclosed* prompt the human approved: a
   `jit run --with` grant of a machine-global credential, a per-process consent
-  approval, or a `jit run --trust` registration. These sit on top of the
-  session rather than opening one, so they are their own kind rather than an
-  unlock, and `reason` is the exact sentence that was on the dialog. Without
+  approval, a `jit run --trust` registration, or a
+  [process grant](./grants.md)'s creation or extension. These sit on top of
+  the session rather than opening one, so they are their own kind rather than
+  an unlock, and `reason` is the exact sentence that was on the dialog. Without
   this entry the trail could show every prompt you *refused* and none that you
   allowed, which is the wrong half to be able to prove.
+- **grant (status=ended)** - a [process grant](./grants.md) ending, with the
+  reason (`expired`, `revoked` - carrying the revoker's provenance - or the
+  anchored process exiting), the grant id, and the vault paths it covered.
+  Recorded because a standing approval's *end* is the fact an investigation
+  needs: "was the grant still live at the time?" is unanswerable from a trail
+  that only records beginnings. `--kind grant` shows a grant's whole life.
 - **use** - what flowed through the already-open session *between* the
   prompts: reads, stores, and grants that rode the cached unlock,
   collapsed per caller (a profile resolve's burst of reads is one entry,
   not ten). The secret names are what the calling jit process reported
   about itself - useful for audit, labeled `caller-reported` because,
   unlike everything else on these lines, they don't come from the kernel.
+  A read served by a live process grant instead of the session renders as
+  its own op, `read a secret via grant`, with the covered path named by the
+  service itself rather than caller-reported - so unattended serves are
+  never mistaken for session activity.
 - **serve** - a reader opened a live mount, and what it got: the decoy
   (`status=decoy`) or the real value (`status=real`), why that verdict, and -
   best-effort, from the kernel - which program read it and what launched that

@@ -96,6 +96,7 @@ then **[Install](./getting-started/install.md)** →
 
 - [Unlock once, not per command](./service/index.md) - always-on, TTL, lock/unlock
 - [Per-process credential consent](./service/consent.md) - a Touch ID the first time each tool reaches for a credential, naming who is asking
+- [Process grants](./service/grants.md) - pre-approve a running tool to work unattended for a bounded time, revocable and fully audited
 - [Provenance](./service/provenance.md) - why every prompt names its caller, `status` and `audit`
 
 ## Reference
