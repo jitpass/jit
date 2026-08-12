@@ -226,6 +226,30 @@ type Server struct {
 	trustMu    sync.Mutex
 	trustRoots map[int32]int64
 
+	// grants are the live process grants (design/process-grants.md, grant.go):
+	// scoped DEK caches a disclosed challenge pre-authorized for one process
+	// tree until an absolute deadline. Guarded by grantMu for trustMu's exact
+	// reason (descent checks walk sysctls). Deliberately NOT dropped on
+	// re-lock — surviving the screen lock is the feature the human approved in
+	// so many words — which makes this the one carve-out from "a re-lock
+	// clears every authorization state"; it earns that by being strictly
+	// narrower than the session it stands in for (named secrets, one tree, an
+	// absolute deadline, revocable, and never the MEK). Memory-only: a grant
+	// never survives the agent process.
+	grantMu sync.Mutex
+	grants  map[string]*processGrant
+
+	// OnResolveGrant, if set, resolves grant_create's profile NAMES to the
+	// concrete secrets they cover — vault path, wrapped DEK bytes, AAD-bound
+	// class — through jit's own profile store and vault envelopes (the CLI
+	// layer wires it; Server never imports internal/vault or internal/profile).
+	// It is OnDescribeGrant's reasoning applied to scope instead of wording:
+	// because the agent resolves the names itself, the prompt and the granted
+	// set derive from the same facts, and a caller cannot put one profile on
+	// the prompt and a different secret set in the grant. Nil disables
+	// grant_create entirely.
+	OnResolveGrant func(profiles []string, projectRoot string) ([]GrantSecret, error)
+
 	// AuthMethodFn, if set, returns a best-effort description of how the local
 	// auth challenge asked the user ("Touch ID or device passcode" vs. "device
 	// passcode"), stamped onto the unlock/denied event a fresh challenge
@@ -700,7 +724,37 @@ func (s *Server) handle(req Request, c *caller) Response {
 			return Response{OK: false, Error: err.Error()}
 		}
 		return Response{OK: true, Data: wrapped}
+	case OpGrantCreate:
+		return s.createGrant(req, c)
+	case OpGrantList:
+		// Deliberately no ensureUnlocked, OpHistory's reasoning: reading what
+		// standing access exists must never itself cost an authentication.
+		return Response{OK: true, Grants: s.listGrants()}
+	case OpGrantRevoke:
+		if req.GrantID == "" {
+			return Response{OK: false, Error: "grant_revoke: missing grant_id"}
+		}
+		return s.revokeGrant(req.GrantID, c)
+	case OpGrantExtend:
+		if req.GrantID == "" {
+			return Response{OK: false, Error: "grant_extend: missing grant_id"}
+		}
+		return s.extendGrant(req, c)
 	case OpUnwrap:
+		// A live process grant answers first: the human already approved this
+		// exact tree reaching these exact secrets (one disclosed challenge,
+		// bounded by a deadline), so a covered unwrap needs no session, no
+		// consent gate, and no class re-verification — the class was
+		// AEAD-verified against these same wrapped bytes when the grant was
+		// created, and the DEK below is keyed to the bytes themselves, so a
+		// caller lying about Class now changes nothing it receives. Recorded
+		// as its own use op (grant_use): riding a standing grant and riding a
+		// minutes-old unlock are different facts in an audit. Any miss falls
+		// through to the ordinary path unchanged.
+		if dek, path, ok := s.grantUnwrap(c, req.Data); ok {
+			s.recordAggregated(KindUse, OpGrantUse, c.command(), c, path)
+			return Response{OK: true, Data: dek}
+		}
 		// Nothing has verified req.Class yet. It is AEAD-bound into the wrap,
 		// but that binding is only checked by open() further down, so until
 		// then the class is simply a string the caller sent — and it is the
@@ -868,7 +922,8 @@ func (s *Server) verifyClassBinding(data []byte, class string, c *caller) error 
 // user refused and none for any they accepted, so the trail could prove what
 // you blocked and never what you allowed.
 func (s *Server) forceDisclosedChallenge(reason string, c *caller) error {
-	event, err := s.discloseChallenge(reason, c)
+	event, mek, err := s.discloseChallengeOp(reason, OpRevealPID, c)
+	wipe(mek)
 	// Outside challengeMu — see ensureUnlockedNotify for what happens when a
 	// callback runs under it.
 	if s.OnSessionEvent != nil {
@@ -877,15 +932,25 @@ func (s *Server) forceDisclosedChallenge(reason string, c *caller) error {
 	return err
 }
 
-// discloseChallenge is forceDisclosedChallenge's serialized half: it holds
-// challengeMu across the prompt (so a disclosed challenge queues behind an
-// in-flight one rather than stacking a second dialog) and returns the event
-// for the caller to notify on, outside the lock. The event is never nil.
-func (s *Server) discloseChallenge(reason string, c *caller) (*SessionEvent, error) {
+// discloseChallengeOp is the serialized half every disclosed challenge shares:
+// it holds challengeMu across the prompt (so a disclosed challenge queues
+// behind an in-flight one rather than stacking a second dialog) and returns
+// the event for the caller to notify on, outside the lock. The event is never
+// nil; op stamps it, so a grant creation's approval and a reveal's approval
+// stay distinguishable in history.
+//
+// On approval it also returns the challenge's MEK instead of discarding it.
+// Session state is still never touched — a disclosed challenge remains a
+// confirmation, not an unlock — but grant creation needs the key for exactly
+// as long as it takes to unwrap the covered DEKs (grant.go), and fetching it
+// twice would mean two prompts for one decision. Callers that only wanted the
+// confirmation wipe it immediately (forceDisclosedChallenge); every caller
+// must wipe it. Nil on any failure.
+func (s *Server) discloseChallengeOp(reason, op string, c *caller) (*SessionEvent, []byte, error) {
 	s.challengeMu.Lock()
 	defer s.challengeMu.Unlock()
 
-	pending := unlockEvent(OpRevealPID, c)
+	pending := unlockEvent(op, c)
 	pending.Cause = reason
 	s.mu.Lock()
 	s.pendingChallenge = pending
@@ -893,13 +958,13 @@ func (s *Server) discloseChallenge(reason string, c *caller) (*SessionEvent, err
 
 	fetcher := s.newFetcher()
 	mek, err := fetcher.FetchMEK(reason)
-	// This MEK is discarded below — a disclosed challenge is a confirmation,
-	// not an unlock — so the fetcher's cache is pure residue. Closing it here
-	// matters more than on the unlock path: every consent prompt comes through
-	// here, so this is the site that leaked a MEK copy per prompt.
+	// The fetcher's own cache is pure residue once FetchMEK has returned its
+	// copy. Closing it here matters more than on the unlock path: every
+	// consent prompt comes through here, so this is the site that leaked a
+	// MEK copy per prompt.
 	closeFetcher(fetcher)
 
-	event := unlockEvent(OpRevealPID, c)
+	event := unlockEvent(op, c)
 	event.AuthMethod = s.authMethod()
 	if err != nil {
 		event.Kind = KindDenied
@@ -915,10 +980,9 @@ func (s *Server) discloseChallenge(reason string, c *caller) (*SessionEvent, err
 	s.mu.Unlock()
 
 	if err != nil {
-		return event, fmt.Errorf("disclosed grant declined: %w", err)
+		return event, nil, fmt.Errorf("disclosed grant declined: %w", err)
 	}
-	wipe(mek)
-	return event, nil
+	return event, mek, nil
 }
 
 func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller, label string) ([]byte, error) {
@@ -1301,6 +1365,14 @@ func (s *Server) lockIfGen(cause string, gen uint64) {
 	// Consent decisions ride the unlock session: clear them when it ends, so a
 	// re-lock forces a fresh prompt rather than honoring an approval you gave
 	// before you stepped away. Cheap and idempotent when there's nothing to drop.
+	//
+	// Process grants (s.grants) are deliberately NOT cleared here — the single
+	// carve-out from "a re-lock drops every authorization state". Surviving the
+	// screen lock is the feature: the human's disclosed challenge approved
+	// "unattended, until <deadline>" in so many words, for named secrets and
+	// one process tree, and a grant that died with the lock would just be a
+	// session. They end by their own deadline, their root exiting, or an
+	// explicit revoke (grant.go).
 	if s.Consent != nil {
 		s.Consent.Clear()
 	}
