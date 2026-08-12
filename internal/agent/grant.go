@@ -135,11 +135,6 @@ const (
 	grantEndExited  = "process exited"
 )
 
-// opGrantUse labels a KindUse event served from a grant's DEK cache instead
-// of the session — the audit distinction between "rode an unlock you gave
-// moments ago" and "rode a standing grant you gave this morning".
-const opGrantUse = "grant_use"
-
 // newGrantID mints a short, non-guessable grant id ("g-3f9a2c81"). Random
 // rather than sequential so an id never encodes how many grants exist, and
 // short enough to type into `jit grant revoke`.

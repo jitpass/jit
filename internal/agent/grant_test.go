@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -388,6 +389,69 @@ func TestFormatGrantTTL(t *testing.T) {
 			t.Errorf("formatGrantTTL(%s) = %q, want %q", tc.d, got, tc.want)
 		}
 	}
+}
+
+// TestGrantEventsReachTheDurableSink pins the audit contract: every stage of
+// a grant's life must reach OnSessionEvent, because that callback IS the
+// durable trail — the CLI wires it straight to agent-history.jsonl, which is
+// the only thing `jit audit` reads. An event that stays in the in-memory ring
+// but never fires the sink would render fine in tests that read history()
+// and still be invisible to the one command users audit with.
+func TestGrantEventsReachTheDurableSink(t *testing.T) {
+	s, socketPath, cleanup := startTestServer(t, time.Minute, nil)
+	defer cleanup()
+
+	var mu sync.Mutex
+	var sunk []SessionEvent
+	s.OnSessionEvent = func(e SessionEvent) {
+		mu.Lock()
+		sunk = append(sunk, e)
+		mu.Unlock()
+	}
+
+	dek := bytes.Repeat([]byte{0x07}, 32)
+	sec := sealGrantSecret(t, "jamf/api-pass", "mcp", dek)
+	wireGrantResolver(s, sec)
+
+	c := NewClient(socketPath)
+	st, err := c.GrantCreate(int32(os.Getpid()), []string{"jamf"}, "", time.Hour) // #nosec G115 -- test pid
+	if err != nil {
+		t.Fatalf("GrantCreate: %v", err)
+	}
+	if _, err := c.UnwrapKeyLabeled(sec.Wrapped, "jamf/api-pass", "mcp"); err != nil {
+		t.Fatalf("UnwrapKeyLabeled: %v", err)
+	}
+	// A serve pends in the collapse window; a history read is one of the
+	// moments that must flush it to the sink.
+	_ = s.history()
+	if err := c.GrantRevoke(st.ID); err != nil {
+		t.Fatalf("GrantRevoke: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	find := func(want string, match func(SessionEvent) bool) {
+		t.Helper()
+		for _, e := range sunk {
+			if match(e) {
+				return
+			}
+		}
+		var kinds []string
+		for _, e := range sunk {
+			kinds = append(kinds, fmt.Sprintf("%s/%s(%s)", e.Kind, e.Op, e.Cause))
+		}
+		t.Errorf("sink never received %s; got: %s", want, strings.Join(kinds, ", "))
+	}
+	find("the creation approval (KindApproved, op grant_create, unattended wording)", func(e SessionEvent) bool {
+		return e.Kind == KindApproved && e.Op == OpGrantCreate && strings.Contains(e.Cause, "unattended for")
+	})
+	find("the grant serve (KindUse, op grant_use, path in labels)", func(e SessionEvent) bool {
+		return e.Kind == KindUse && e.Op == OpGrantUse && containsString(e.Labels, "jamf/api-pass")
+	})
+	find("the ending (KindGrantEnd, revoked, paths in labels)", func(e SessionEvent) bool {
+		return e.Kind == KindGrantEnd && strings.Contains(e.Cause, grantEndRevoked) && containsString(e.Labels, "jamf/api-pass")
+	})
 }
 
 // assertGrantEndEvent asserts history carries a KindGrantEnd whose cause

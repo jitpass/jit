@@ -233,6 +233,14 @@ const (
 	OpServeReal  = "real"
 )
 
+// OpGrantUse is the Op a KindUse event carries when the unwrap was answered
+// from a process grant's DEK cache instead of the session — the audit
+// distinction between "rode an unlock you gave moments ago" and "rode a
+// standing grant you gave this morning". Exported like the serve ops above:
+// it is part of the trail's vocabulary, and the CLI renderer must name it
+// without restating the string.
+const OpGrantUse = "grant_use"
+
 // Response answers a Request.
 type Response struct {
 	OK    bool   `json:"ok"`

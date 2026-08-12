@@ -752,7 +752,7 @@ func (s *Server) handle(req Request, c *caller) Response {
 		// minutes-old unlock are different facts in an audit. Any miss falls
 		// through to the ordinary path unchanged.
 		if dek, path, ok := s.grantUnwrap(c, req.Data); ok {
-			s.recordAggregated(KindUse, opGrantUse, c.command(), c, path)
+			s.recordAggregated(KindUse, OpGrantUse, c.command(), c, path)
 			return Response{OK: true, Data: dek}
 		}
 		// Nothing has verified req.Class yet. It is AEAD-bound into the wrap,

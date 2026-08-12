@@ -73,6 +73,86 @@ func seedServeFixtures(t *testing.T, home string) {
 	})
 }
 
+// seedGrantFixtures plants a process grant's whole life in the durable trail,
+// exactly as the agent emits it (grant.go): the disclosed approval that
+// created it, a collapsed grant-served use, and the ending.
+func seedGrantFixtures(t *testing.T, home string) {
+	t.Helper()
+	root := filepath.Join(home, "Library", "Application Support", "jitpass")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	h := newHistoryLog(root, nil)
+	h.append(agent.SessionEvent{
+		UnixTime: 7000, Kind: agent.KindApproved, Op: agent.OpGrantCreate,
+		By: "jit grant --process claude --profile jamf --for 8h", ByPID: 4242,
+		Cause:      "let claude use 2 secrets (jamf) unattended for 8h",
+		AuthMethod: "Touch ID or device passcode",
+	})
+	h.append(agent.SessionEvent{
+		UnixTime: 7100, Kind: agent.KindUse, Op: agent.OpGrantUse,
+		By: "jit run --profile jamf -- terraform plan", ByPID: 4300, LaunchedBy: "claude",
+		Labels: []string{"jamf/api-user", "jamf/api-pass"}, Count: 2,
+	})
+	h.append(agent.SessionEvent{
+		UnixTime: 7200, Kind: agent.KindGrantEnd, Op: "g-1234abcd",
+		Cause:  "claude's grant expired",
+		Labels: []string{"jamf/api-user", "jamf/api-pass"},
+	})
+}
+
+// TestAuditCapturesGrantLifecycle drives the REAL command over a grant's
+// whole recorded life: the approval and the ending must both surface under
+// --kind grant (one filter shows a grant's full story), and the grant-served
+// use must render distinguishably from an ordinary session use. This is the
+// contract that makes the feature auditable at all — a standing, unattended
+// credential channel whose serves or endings vanished from `jit audit` would
+// be exactly the "trust feature that becomes an incident write-up" the
+// design doc warns about.
+func TestAuditCapturesGrantLifecycle(t *testing.T) {
+	home := withFixtureHome(t)
+	seedGrantFixtures(t, home)
+
+	out, err := execAuditLogfmt(t, "--kind", "grant")
+	if err != nil {
+		t.Fatalf("jit audit --kind grant: %v", err)
+	}
+	for _, want := range []string{
+		"status=approved",
+		`reason="let claude use 2 secrets (jamf) unattended for 8h"`,
+		"status=ended",
+		"grant=g-1234abcd",
+		`reason="claude's grant expired"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("--kind grant missing %q, got:\n%s", want, out)
+		}
+	}
+
+	out, err = execAuditLogfmt(t, "--kind", "use")
+	if err != nil {
+		t.Fatalf("jit audit --kind use: %v", err)
+	}
+	for _, want := range []string{
+		`op="read a secret via grant"`, // OpGrantUse through agent.DescribeUse — not an ordinary session use
+		"count=2",
+		"parent=claude",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("--kind use missing %q for the grant-served use, got:\n%s", want, out)
+		}
+	}
+
+	// The secret filter must reach a grant serve's labels like any other use.
+	out, err = execAuditLogfmt(t, "--secret", "jamf/api-pass")
+	if err != nil {
+		t.Fatalf("jit audit --secret: %v", err)
+	}
+	if !strings.Contains(out, `op="read a secret via grant"`) || !strings.Contains(out, "status=ended") {
+		t.Errorf("--secret jamf/api-pass should match both the grant serve and the ending, got:\n%s", out)
+	}
+}
+
 // A decoy read is the honeytoken-shaped signal the mount design produces on
 // every read and, before this, discarded: it must render as its own kind, name
 // the reader and its launcher, and say why that reader got a fake.
