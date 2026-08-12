@@ -970,5 +970,6 @@ func printGroupsWithKeys(w io.Writer, groups []secretGroup) {
 func init() {
 	statusCmd.Flags().StringVar(&statusFormat, "format", "text", `output format: "text" (default) or "json"`)
 	statusCmd.Flags().BoolVar(&statusSecretsDetail, "secrets", false, "expand the Secrets section into a full per-group reconciliation")
+	_ = statusCmd.RegisterFlagCompletionFunc("format", completeOutputFormat)
 	rootCmd.AddCommand(statusCmd)
 }

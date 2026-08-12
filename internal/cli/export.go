@@ -102,5 +102,20 @@ func init() {
 	exportCmd.Flags().StringVar(&exportProfile, "profile", "", "profile to export verbatim (default: merge this project's migrated .env layers)")
 	_ = exportCmd.RegisterFlagCompletionFunc("profile", completeProfileNames)
 	exportCmd.Flags().StringVar(&exportMode, "mode", "", "also merge .env.<mode> and .env.<mode>.local layers (e.g. production)")
+	_ = exportCmd.RegisterFlagCompletionFunc("mode", completeEnvModes)
+	// export takes no arguments, so silenceFileCompletionForNoArgCommands
+	// would stop the file listing on its own; naming the two flags and the
+	// eval form is what makes the bare TAB useful rather than merely quiet.
+	exportCmd.ValidArgsFunction = func(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
+		if len(args) != 0 {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		comps := []string{
+			"--profile\texport this profile verbatim, instead of the project layers",
+			"--mode\talso merge .env.<mode> and .env.<mode>.local",
+		}
+		comps = cobra.AppendActiveHelp(comps, `load them into this shell: eval "$(jit export)"`)
+		return comps, cobra.ShellCompDirectiveNoFileComp
+	}
 	rootCmd.AddCommand(exportCmd)
 }

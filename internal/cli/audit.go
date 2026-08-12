@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -79,6 +80,92 @@ var auditKindAliases = map[string]string{
 	"mount":    "serve",
 }
 
+// auditStatuses is every value --status accepts, in the order tab offers
+// them. decoy/real are a mount serve's outcome, so they belong on this axis
+// rather than on a flag of their own: --status decoy is the tripwire query
+// ("what read a credential file and got a fake"), --status real its
+// counterpart ("what actually received the value"). One slice, so the check,
+// the error message and the completion cannot drift apart.
+var auditStatuses = []string{"ok", "failed", "denied", "approved", "decoy", "real"}
+
+// auditKindHelp is the kind vocabulary as tab offers it: the canonical tokens
+// of auditKindAliases (the forgiving spellings are accepted but not offered,
+// they would read as eight more kinds), each with what it records.
+// TestAuditKindCompletionCoversEveryKind pins it to the alias map.
+var auditKindHelp = []string{
+	"cmd\ta jit command that ran",
+	"unlock\ta session unlock (Touch ID, passcode, or the service)",
+	"use\ta secret handed to a process",
+	"grant\ta process grant approved, extended, revoked or ended",
+	"serve\ta live mount read, decoy or real",
+	"lock\tthe session locked",
+	"service\tthe background service started or stopped",
+	"error\ta rejected peer, or a failure jit recorded",
+}
+
+// completeAuditKinds offers the kinds --kind accepts. Denials are reached
+// with --status denied rather than a kind of their own, which the flag's own
+// error says too, so the active help says it here as well.
+func completeAuditKinds(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	comps := cobra.AppendActiveHelp(filterValues(auditKindHelp, toComplete),
+		"comma-separate to combine; denials are --status denied")
+	return comps, cobra.ShellCompDirectiveNoFileComp
+}
+
+// completeAuditStatuses offers --status from the same slice compileAuditFilter
+// validates against.
+func completeAuditStatuses(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	desc := map[string]string{
+		"ok":       "the operation succeeded",
+		"failed":   "it errored",
+		"denied":   "the Touch ID or consent prompt was refused",
+		"approved": "the prompt was approved",
+		"decoy":    "a mount read got the fake value",
+		"real":     "a mount read got the real value",
+	}
+	values := make([]string, 0, len(auditStatuses))
+	for _, s := range auditStatuses {
+		values = append(values, s+"\t"+desc[s])
+	}
+	return filterValues(values, toComplete), cobra.ShellCompDirectiveNoFileComp
+}
+
+// completeAuditTimes offers common ages for --since/--until. parseAuditTime
+// also takes absolute dates, so a bare list of ages would misrepresent the
+// grammar as closed — hence the active help, as with --for on a grant.
+func completeAuditTimes(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	return completeValuesWithHelp(
+		`an age (90m, 2h, 3d) or a date ("2026-08-12", "2026-08-12 09:00")`,
+		"1h", "6h", "24h", "3d", "7d")(cmd, args, toComplete)
+}
+
+// completeAuditEntry rides the bare command's positional completion, which
+// cobra otherwise answers with the user's filenames. `jit audit` takes no
+// arguments at all: everything that makes it the one filterable surface is a
+// flag, and none of them was discoverable at the moment someone double-taps
+// to find out. Same shape as completeGrantCreateEntry.
+func completeAuditEntry(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	comps := []string{
+		"--kind\tonly these kinds: " + strings.Join(auditCanonicalKinds(), ", "),
+		"--since\tonly entries after an age or a date",
+		"--status\tonly this status: " + strings.Join(auditStatuses, ", "),
+		"--secret\tonly events that touched a secret whose name contains this",
+		"--follow\tprint the matching tail, then stream new entries live",
+	}
+	comps = cobra.AppendActiveHelp(comps, "audit takes filters, not arguments: jit audit --kind use --since 2h")
+	return comps, cobra.ShellCompDirectiveNoFileComp
+}
+
+// auditCanonicalKinds is the kind tokens in auditKindHelp's order, for the
+// one-line summaries that name them inside a description.
+func auditCanonicalKinds() []string {
+	out := make([]string, 0, len(auditKindHelp))
+	for _, k := range auditKindHelp {
+		out = append(out, k[:strings.IndexByte(k, '\t')])
+	}
+	return out
+}
+
 // compileAuditFilter turns the raw flags into an auditFilter, rejecting an
 // unknown --kind or an unparseable --since/--until/--grep with a message that
 // names what was expected. Denials are reached with --status denied, not a
@@ -103,16 +190,10 @@ func compileAuditFilter() (auditFilter, error) {
 	}
 	if auditStatus != "" {
 		s := strings.ToLower(auditStatus)
-		switch s {
-		// decoy/real are a mount serve's outcome, so they belong on this axis
-		// rather than on a flag of their own: --status decoy is the tripwire
-		// query ("what read a credential file and got a fake"), --status real
-		// its counterpart ("what actually received the value").
-		case "ok", "failed", "denied", "approved", "decoy", "real":
-			f.status = s
-		default:
-			return f, fmt.Errorf("unknown --status %q: choose from ok, failed, denied, approved, decoy, real", auditStatus)
+		if !slices.Contains(auditStatuses, s) {
+			return f, fmt.Errorf("unknown --status %q: choose from %s", auditStatus, strings.Join(auditStatuses, ", "))
 		}
+		f.status = s
 	}
 	var err error
 	if f.since, err = parseAuditTime(auditSince); err != nil {
@@ -1048,5 +1129,23 @@ func init() {
 	auditCmd.Flags().StringVar(&auditParent, "parent", "", "only entries whose launched-by ancestor contains this (e.g. claude)")
 	auditCmd.Flags().StringVar(&auditSecret, "secret", "", "only auth events that touched a secret whose name contains this")
 	auditCmd.Flags().StringVar(&auditGrep, "grep", "", "only entries whose rendered line matches this regular expression")
+
+	// `jit audit` is the one filterable surface, and every filter is a flag:
+	// tab offered a directory listing for all eleven of them, and nothing at
+	// all for the bare command. See completeAuditEntry.
+	auditCmd.ValidArgsFunction = completeAuditEntry
+	_ = auditCmd.RegisterFlagCompletionFunc("format", completeValues(
+		"text\thuman-readable (default)",
+		"logfmt\tone key=value line per event",
+		"json\tone JSON object per event"))
+	_ = auditCmd.RegisterFlagCompletionFunc("kind", completeAuditKinds)
+	_ = auditCmd.RegisterFlagCompletionFunc("status", completeAuditStatuses)
+	_ = auditCmd.RegisterFlagCompletionFunc("since", completeAuditTimes)
+	_ = auditCmd.RegisterFlagCompletionFunc("until", completeAuditTimes)
+	// --parent matches the launched-by chain, which is exactly the set
+	// `jit grant --process` already computes from the same two logs.
+	_ = auditCmd.RegisterFlagCompletionFunc("parent", completeGrantProcessNames)
+	_ = auditCmd.RegisterFlagCompletionFunc("secret", completeVaultPaths)
+	_ = auditCmd.RegisterFlagCompletionFunc("limit", completeCounts(20, 50, 200, 0))
 	rootCmd.AddCommand(auditCmd)
 }

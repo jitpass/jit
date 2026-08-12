@@ -93,6 +93,13 @@ func completeMigrateUndoPaths(cmd *cobra.Command, args []string, toComplete stri
 		add(r.OriginalPath, "restore this migrated file")
 		add(filepath.Dir(r.OriginalPath), "restore everything migrated under here")
 	}
+	// With no backups recorded, the Default directive above hands the user a
+	// plain file listing — every one of which undo would refuse. Saying so
+	// costs one line and keeps file completion (the delimiter zsh draws after
+	// active help separates the two).
+	if len(out) == 0 && toComplete == "" {
+		return cobra.AppendActiveHelp(nil, "no jit-written backups are recorded, so there is nothing to restore"), cobra.ShellCompDirectiveDefault
+	}
 	return out, cobra.ShellCompDirectiveDefault
 }
 

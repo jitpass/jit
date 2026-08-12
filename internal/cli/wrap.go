@@ -302,6 +302,13 @@ func wrapSecretAlreadyVaulted(path string) bool {
 var wrapAddEnv []string
 var wrapAddGrant string
 
+// wrapAddUsage is the one-line shape of a wrap, quoted wherever a user lands
+// without it: `jit wrap list` with nothing wrapped, an empty `wrap undo`
+// completion, the tool-name position that has no flag yet. Same role
+// grantCreateUsage plays for `jit grant`, and the same reason — three places
+// were spelling this out separately.
+const wrapAddUsage = "jit wrap add <tool> --env VAR=<vault-path>"
+
 var wrapAddCmd = &cobra.Command{
 	Use:   "add <tool> --env VAR=<vault-path> [--env ...] | --grant <name>",
 	Short: "Wrap a tool by hand: a shim on PATH that injects a profile or grants a global mount",
@@ -313,7 +320,7 @@ var wrapAddCmd = &cobra.Command{
 	Example: "  jit vault set wrap-gh/GH_TOKEN\n" +
 		"  jit wrap add gh --env GH_TOKEN=wrap-gh/GH_TOKEN\n" +
 		"  jit wrap add gcloud --grant gcp",
-	Args:              cobra.ExactArgs(1),
+	Args:              requireArgs(1, 1, "a tool to wrap, e.g. `jit wrap add gh --env GH_TOKEN=wrap-gh/GH_TOKEN`"),
 	ValidArgsFunction: completeWrapCatalog,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		tool := args[0]
@@ -395,6 +402,11 @@ func ensureShimOnPath(cmd *cobra.Command, home, tool string) error {
 var wrapListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "Show wrapped tools and their shim health",
+	// Every sibling leaf declares this; without it cobra's legacyArgs accepts
+	// anything, so `jit wrap list bogus` printed the normal report and exited
+	// 0 — the silent-typo failure that root.go's own arg validator exists to
+	// prevent for `jit <typo>`.
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -405,7 +417,7 @@ var wrapListCmd = &cobra.Command{
 			return fmt.Errorf("jit wrap list: %w", err)
 		}
 		if len(manifest.Tools) == 0 {
-			fmt.Fprintln(cmd.OutOrStdout(), hlCmds("No wrapped tools. `jit wrap add <tool> --env VAR=<vault-path>` wraps one."))
+			fmt.Fprintln(cmd.OutOrStdout(), hlCmds("No wrapped tools. `"+wrapAddUsage+"` wraps one."))
 			return nil
 		}
 
@@ -445,7 +457,7 @@ var wrapListCmd = &cobra.Command{
 var wrapUndoCmd = &cobra.Command{
 	Use:               "undo <tool>",
 	Short:             "Unwrap a tool: remove its shim and wrap profile",
-	Args:              cobra.ExactArgs(1),
+	Args:              requireArgs(1, 1, "a wrapped tool (see `jit wrap list`)"),
 	ValidArgsFunction: completeWrappedTools,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		tool := args[0]
@@ -514,6 +526,19 @@ func sortedTools(m wrap.Manifest) []string {
 // only unwrapped ones: re-running `wrap add` on an already-wrapped tool is
 // how you change its env/grant, so hiding it would remove a real workflow.
 func completeWrapCatalog(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	// Position 2 re-offered the whole catalog for an ExactArgs(1) command,
+	// and it is where the REQUIRED flag belongs instead: `jit wrap add gh`
+	// alone is not a valid command, yet neither --env nor --grant ever
+	// appeared on tab. Same shape as completeGrantCreateEntry: the flag as a
+	// candidate, the whole line as active help.
+	if len(args) != 0 {
+		comps := []string{
+			"--env\tinject VAR=<vault-path> into the tool (repeatable)",
+			"--grant\tgrant a global file mount instead: " + knownWithNames(globalMountKinds(homeForWrapCompletion())),
+		}
+		comps = cobra.AppendActiveHelp(comps, "one of the two is required: "+wrapAddUsage)
+		return comps, cobra.ShellCompDirectiveNoFileComp
+	}
 	var out []string
 	for _, tool := range wrap.CatalogTools() {
 		if strings.HasPrefix(tool, toComplete) {
@@ -523,23 +548,67 @@ func completeWrapCatalog(cmd *cobra.Command, args []string, toComplete string) (
 	return out, cobra.ShellCompDirectiveNoFileComp
 }
 
+// completeWrapEnvAssignment completes --env's VAR=<vault-path> pairing. The
+// variable name is the tool's own and unguessable, so before the "=" all this
+// can do is say the shape; after it, the vault paths are exactly the valid
+// right-hand sides, and completing them keeps a typo out of a shim that would
+// then fail at run time with a missing secret.
+func completeWrapEnvAssignment(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	name, value, ok := strings.Cut(toComplete, "=")
+	if !ok {
+		return cobra.AppendActiveHelp(nil, "VAR=<vault-path>, e.g. GH_TOKEN=wrap-gh/GH_TOKEN"), cobra.ShellCompDirectiveNoFileComp
+	}
+	paths, _ := completeVaultPaths(cmd, nil, value)
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if strings.HasPrefix(p, "_activeHelp_") {
+			continue
+		}
+		out = append(out, name+"="+p)
+	}
+	if len(out) == 0 {
+		return cobra.AppendActiveHelp(nil, "no stored secret matches; `jit vault set "+name+"` stores one"), cobra.ShellCompDirectiveNoFileComp
+	}
+	return out, cobra.ShellCompDirectiveNoFileComp
+}
+
+// homeForWrapCompletion resolves $HOME for a completion path, where an error
+// must degrade to a usable list rather than fail: globalMountKinds only uses
+// it to build paths for names it always returns.
+func homeForWrapCompletion() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home
+}
+
 // completeWrappedTools offers only the tools CURRENTLY wrapped, for `jit
 // wrap undo <tool>` — undo can only act on those, so completing from the
 // full catalog (as add does) would offer names undo would just reject.
 func completeWrappedTools(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	// ExactArgs(1): nothing to offer past the tool name (see
+	// completeWrapCatalog, which had the same gap).
+	if len(args) != 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 	m, err := wrap.LoadManifest(home)
 	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
+		return cobra.AppendActiveHelp(nil, "jit could not read its wrap manifest - jit doctor --wrap checks it"), cobra.ShellCompDirectiveNoFileComp
 	}
 	var out []string
 	for _, tool := range sortedTools(m) {
 		if strings.HasPrefix(tool, toComplete) {
 			out = append(out, tool)
 		}
+	}
+	if len(out) == 0 && toComplete == "" {
+		// `jit wrap list` already says exactly this; undo's tab said nothing.
+		return cobra.AppendActiveHelp(nil, "no wrapped tools - "+wrapAddUsage), cobra.ShellCompDirectiveNoFileComp
 	}
 	return out, cobra.ShellCompDirectiveNoFileComp
 }
@@ -548,6 +617,9 @@ func init() {
 	wrapAddCmd.Flags().StringArrayVar(&wrapAddEnv, "env", nil, "environment variable to inject, as VAR=<vault-path> (repeatable)")
 	wrapAddCmd.Flags().StringVar(&wrapAddGrant, "grant", "", "grant a global file-delivered mount by name (gcp, sops, npm, netrc, pypi) instead of injecting an env var - for tools that read a credential file")
 	_ = wrapAddCmd.RegisterFlagCompletionFunc("grant", completeGlobalMountNames)
+	// --env's value is VAR=<vault-path>: two halves the shell cannot guess,
+	// and it was offering filenames for both.
+	_ = wrapAddCmd.RegisterFlagCompletionFunc("env", completeWrapEnvAssignment)
 	wrapCmd.AddCommand(wrapAddCmd, wrapListCmd, wrapUndoCmd)
 	rootCmd.AddCommand(wrapCmd)
 }

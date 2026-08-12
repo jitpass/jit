@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -590,7 +591,7 @@ var vaultSetCmd = &cobra.Command{
 		"Overwriting an existing secret asks first; -y/--yes skips that question,\n" +
 		"as it does on every other jit command. `-f`/`--force` is still accepted as\n" +
 		"a synonym for it.",
-	Args:              cobra.RangeArgs(1, 2),
+	Args:              requireArgs(1, 2, "a secret path; its value is prompted if you omit it"),
 	ValidArgsFunction: completeVaultPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		path := args[0]
@@ -650,7 +651,7 @@ var vaultGetCmd = &cobra.Command{
 		"Requires a fresh Touch ID/passcode on every run, never the cached service\n" +
 		"session, so a decrypted secret can never be read silently, even on an\n" +
 		"already-unlocked machine.",
-	Args:              cobra.ExactArgs(1),
+	Args:              requireArgs(1, 1, "a secret path (see `jit vault list`)"),
 	ValidArgsFunction: completeVaultPaths,
 	// A --json error must not be buried under cobra usage text — same
 	// reasoning as vault list's SilenceUsage.
@@ -914,7 +915,7 @@ var vaultRmCmd = &cobra.Command{
 		"-y/--yes skips the typed confirmation (never the fingerprint), matching\n" +
 		"every other jit command. `-f`/`--force` is still accepted as a synonym,\n" +
 		"so the `rm -f` reflex keeps working.",
-	Args:              cobra.MinimumNArgs(1),
+	Args:              requireArgs(1, -1, "at least one secret path (see `jit vault list`)"),
 	ValidArgsFunction: completeVaultPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Validate BEFORE the confirmation and the biometric gate. Remove
@@ -1020,7 +1021,7 @@ var vaultHistoryCmd = &cobra.Command{
 		"archived version (the newest " + fmt.Sprint(vault.HistoryKeep) + " are kept). This lists them, never\n" +
 		"decrypting anything, so it never prompts. `jit vault restore` brings one\n" +
 		"back; `jit vault rm` deletes them along with the secret.",
-	Args:              cobra.ExactArgs(1),
+	Args:              requireArgs(1, 1, "a secret path (see `jit vault list`)"),
 	ValidArgsFunction: completeVaultPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := validateOutputFormat(vaultHistoryFormat); err != nil {
@@ -1086,7 +1087,7 @@ var vaultRestoreCmd = &cobra.Command{
 		"Restoring moves the archived encrypted file back into place byte-for-byte;\n" +
 		"nothing is decrypted, but a fresh Touch ID/passcode approval is required,\n" +
 		"changing what a secret resolves to must never happen silently.",
-	Args:              cobra.ExactArgs(1),
+	Args:              requireArgs(1, 1, "a secret path (see `jit vault list`)"),
 	ValidArgsFunction: completeVaultPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Fresh auth, same reasoning as `jit migrate remove` (GAPS.md #60):
@@ -1124,7 +1125,7 @@ var vaultExportCmd = &cobra.Command{
 		"--stdin reads the passphrase from stdin (one line, no confirmation\n" +
 		"double-entry) instead of the default hidden prompt, for scripting, e.g.\n" +
 		"piping one in from a password manager's own CLI.",
-	Args: cobra.ExactArgs(1),
+	Args: requireArgs(1, 1, "a file to write the backup to"),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		destPath := args[0]
 
@@ -1184,7 +1185,7 @@ var vaultImportCmd = &cobra.Command{
 		"any existing secret at the same path. Confirms first unless --yes, the\n" +
 		"passphrase prompt only comes after that, so declining never costs a\n" +
 		"wasted attempt at typing it.",
-	Args: cobra.ExactArgs(1),
+	Args: requireArgs(1, 1, "a `jit vault export` file to read"),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		srcPath := args[0]
 
@@ -1993,26 +1994,81 @@ func pbcopy(value []byte) error {
 // _backups/ entries are filtered out for the same reason vault list
 // hides them by default: they're jit's own bookkeeping, and completing
 // them into a get/rm invocation is never what the user is reaching for.
-func completeVaultPaths(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-	if len(args) != 0 {
-		// Only the first positional is a secret path (set's second is
-		// the value) — never offer path or file completions past it.
-		return nil, cobra.ShellCompDirectiveNoFileComp
+// completeArchivedVersions offers --version's archived stamps for the secret
+// already named on the line. The flag's own help says "by its stamp from jit
+// vault history", which made tab the natural place to ask — and it answered
+// with filenames. Reads history headers only, never decrypting, so it stays
+// prompt-free like completeVaultPaths.
+func completeArchivedVersions(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) == 0 {
+		return cobra.AppendActiveHelp(nil, "name the secret first, then its version"), cobra.ShellCompDirectiveNoFileComp
 	}
 	root, err := vaultRootDir()
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	paths, err := (&vault.Vault{Root: root}).List()
+	versions, err := (&vault.Vault{Root: root}).HistoryVersions(args[0])
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
+	if len(versions) == 0 {
+		return cobra.AppendActiveHelp(nil, "no archived versions yet; history is kept from the first overwrite on"), cobra.ShellCompDirectiveNoFileComp
+	}
+	out := make([]string, 0, len(versions))
+	for _, hv := range versions {
+		stamp := strconv.FormatInt(hv.ArchiveStamp, 10)
+		if !strings.HasPrefix(stamp, toComplete) {
+			continue
+		}
+		desc := "archived version"
+		if hv.UpdatedUnix > 0 {
+			desc = "stored " + humanAgo(time.Since(time.Unix(hv.UpdatedUnix, 0))) + " ago"
+		}
+		out = append(out, stamp+"\t"+desc)
+	}
+	return out, cobra.ShellCompDirectiveNoFileComp
+}
+
+func completeVaultPaths(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	// A trailing "..." in the Use line is this CLI's convention for a
+	// repeatable positional (`rm <path>...`), and it decides whether there is
+	// a second path to complete. Guarding on len(args) alone was written for
+	// `set`, whose second positional is the VALUE — but it also silenced
+	// `vault rm`'s documented multi-path form, the one the help text calls
+	// "one approval, not one per secret", from its second path onwards.
+	repeatable := strings.HasSuffix(cmd.Use, "...")
+	if len(args) != 0 && !repeatable {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	root, err := vaultRootDir()
+	if err != nil {
+		return cobra.AppendActiveHelp(nil, "jit cannot locate its vault directory"), cobra.ShellCompDirectiveNoFileComp
+	}
+	paths, err := (&vault.Vault{Root: root}).List()
+	if err != nil {
+		return cobra.AppendActiveHelp(nil, "the vault could not be read - jit doctor checks it"), cobra.ShellCompDirectiveNoFileComp
+	}
 	secrets, _ := splitBackupPaths(paths)
+	// Already-named paths drop out of a repeatable command's later positions,
+	// the discipline completeMigrateCategories applies to --only.
+	chosen := map[string]bool{}
+	for _, a := range args {
+		chosen[a] = true
+	}
 	matches := []string{}
 	for _, p := range secrets {
-		if strings.HasPrefix(p, toComplete) {
+		if strings.HasPrefix(p, toComplete) && !chosen[p] {
 			matches = append(matches, p)
 		}
+	}
+	// An empty vault completed to nothing at all: no candidates, no reason,
+	// no way forward — the defect `jit grant extend` had. `vault list` says
+	// this in a full sentence (printVaultList); active help has a one-line
+	// budget, so it names the route a new user actually takes.
+	if len(matches) == 0 && len(args) == 0 && toComplete == "" {
+		return cobra.AppendActiveHelp(nil,
+				"no secrets stored yet - jit migrate <path> moves existing ones in"),
+			cobra.ShellCompDirectiveNoFileComp
 	}
 	return matches, cobra.ShellCompDirectiveNoFileComp
 }
@@ -2145,6 +2201,21 @@ func init() {
 	vaultDeleteCmd.Flags().BoolVarP(&vaultDeleteYes, "yes", "y", false, "skip the confirmation prompt")
 	vaultHistoryCmd.Flags().StringVar(&vaultHistoryFormat, "format", "text", `output format: "text" (default) or "json"`)
 	vaultRestoreCmd.Flags().Int64Var(&vaultRestoreStamp, "version", 0, "which archived version to restore, by its stamp from jit vault history (default: the newest)")
+
+	// Fixed value sets, none of which tab knew: every one of these --format
+	// flags offered the user's filenames instead.
+	_ = vaultGetCmd.RegisterFlagCompletionFunc("format", completeValues(
+		"text\tthe bare value (default)",
+		"json\tthe value plus provenance and timestamps"))
+	_ = vaultListCmd.RegisterFlagCompletionFunc("format", completeOutputFormat)
+	_ = vaultHistoryCmd.RegisterFlagCompletionFunc("format", completeOutputFormat)
+	_ = vaultOrphansCmd.RegisterFlagCompletionFunc("format", completeOutputFormat)
+	_ = vaultListCmd.RegisterFlagCompletionFunc("by", completeValues(
+		"path\tgroup by secret path (default)",
+		"origin\tgroup by the file each secret came from",
+		"group\tgroup by import batch"))
+	_ = vaultRestoreCmd.RegisterFlagCompletionFunc("version", completeArchivedVersions)
+
 	vaultCmd.AddCommand(vaultInitCmd, vaultSetCmd, vaultGetCmd, vaultListCmd, vaultHistoryCmd, vaultRestoreCmd, vaultRmCmd, vaultCleanCmd, vaultPruneCmd, vaultOrphansCmd, vaultDeleteCmd, vaultExportCmd, vaultImportCmd)
 	rootCmd.AddCommand(vaultCmd)
 }
