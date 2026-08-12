@@ -65,6 +65,13 @@ jit grant revoke g-7f3a2c81
 jit grant extend g-7f3a2c81 --for 24h
 ```
 
+`jit status` carries the same fact as a one-line `grants` row (who, and the
+next expiry), so an open grant is visible on the dashboard you already check
+rather than only behind its own subcommand. Tab completion knows grants too:
+`jit grant revoke <TAB>` offers the live ids with their programs and
+expiries, and `--process <TAB>` offers the programs that recently asked jit
+for a secret, marked running or not.
+
 ## The audit trail tells the whole story
 
 A standing, unattended credential channel is only acceptable if you can read

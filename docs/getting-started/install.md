@@ -102,24 +102,40 @@ go install ./cmd/jit
 
 ## Shell completion
 
+**Installed with Homebrew, completion is already set up** - the cask installs
+`_jit` (plus the bash and fish scripts) into Homebrew's own completion
+directories, the same place `gh` and `kubectl` put theirs. Open a new shell
+and `jit <TAB>` works. The rest of this section is for tarball and
+from-source installs, or for diagnosing a setup where it isn't loading -
+`jit doctor` reports a `[completion]` finding with the exact line to add
+when your shell has no jit completion reaching it.
+
 `jit <TAB>` completes subcommands, flags, and their descriptions. With
 completion installed it also fills in the *arguments only jit knows*, so you
 never have to remember or retype an exact path or name:
 
 | Type this | `<TAB>` offers |
 | --- | --- |
-| `jit vault get`/`set`/`rm` | secret paths stored in your vault |
+| `jit vault get`/`set`/`rm` | secret paths stored in your vault (`rm` keeps offering across several) |
+| `jit vault restore <path> --version` | that secret's archived version stamps, with ages |
 | `jit migrate undo` | files with a restorable backup, plus each one's parent directory |
 | `jit unmount` | your live-mounted file paths |
 | any `--profile` flag | profile names visible from the current directory |
-| `jit wrap add` | every tool jit knows how to wrap |
+| `jit grant` | the create shape; `--process` offers programs that recently asked for a secret |
+| `jit grant revoke`/`extend` | your live grant ids, each with its program and expiry |
+| `jit wrap add` | every tool jit knows how to wrap, then the required `--env`/`--grant` |
 | `jit wrap undo` | the tools you've currently wrapped |
-| `--with` / `--grant` | global mount names (`gcp`, `sops`, `npm`, `netrc`) |
+| `--with` / `--grant` | global mount names (`gcp`, `sops`, `npm`, `netrc`, `pypi`) |
+| `jit audit` | its filters; `--kind`, `--status`, `--since` and `--format` complete their values |
+| any `--format` flag | that command's output formats |
 | `jit migrate --only` | migration categories, one comma-separated value at a time |
 
-Every one of these is read from a plain file listing, the mount registry, or
-a manifest - never by decrypting a secret - so completing an argument never
-triggers a Touch ID prompt mid-keystroke.
+Every one of these is read from a plain file listing, the mount registry, a
+manifest, or a prompt-free service query - never by decrypting a secret - so
+completing an argument never triggers a Touch ID prompt mid-keystroke. Where
+there is nothing to offer yet (an empty vault, no profiles here, no live
+grants), `<TAB>` prints a one-line hint naming the command that changes that
+instead of going silent.
 
 **zsh** (macOS default):
 
