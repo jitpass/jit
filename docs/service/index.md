@@ -20,7 +20,11 @@ The shared session covers the high-frequency paths - native credential
 hooks (`aws`, `kubectl`) and `jit run`. On top of it,
 [per-process consent](./consent.md) (on by default) still prompts a Touch ID
 the first time each tool reaches for a real credential, naming who is asking,
-so an unlocked session is never a blank cheque. It deliberately does **not**
+so an unlocked session is never a blank cheque. And for the opposite
+situation - work that must keep running while you are *away* from the
+keyboard - a [process grant](./grants.md) lets you pre-approve one running
+tool for named profiles and a bounded time, with one Touch ID given while
+you are still there. It deliberately does **not**
 cover the sensitive [`jit vault`](../vault/index.md) management commands
 (`get`/`set`/`rm`/`import`/`restore`/`clean`/`prune`/`delete`/`export`):
 those always require a fresh Touch ID/passcode on every run, unlocked or

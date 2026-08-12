@@ -207,6 +207,29 @@ Kicking off something that needs several credentials at once? `jit run --trust
 -- terraform apply` approves that whole run's tools in one gesture. Full details:
 [per-process consent](./docs/service/consent.md).
 
+## Leaving the keyboard? Approve the work before you go
+
+Both gates assume a human is there to answer. An AI agent working overnight, a
+long build, a scheduled job: the screen locks, the session drops, and the run
+stalls on a prompt nobody will see. A **process grant** moves your decision
+earlier instead of removing it - one Touch ID, given while you're still there,
+that names exactly what you're signing:
+
+```console
+$ jit grant --process claude --profile jamf --for 8h
+  Touch ID  ->  let claude use 2 secrets (jamf) unattended for 8h
+✓ granted g-7f3a2c81   claude -> jamf   until 17:42
+```
+
+For the next 8 hours, that running process (and what it launches) gets those
+secrets with no prompts - through screen lock and all. It's a live process
+being named, not a name being trusted: a new program calling itself `claude`
+tomorrow inherits nothing, and the grant ends at its deadline, when the process
+exits, or the moment you type `jit grant revoke` (which needs no fingerprint -
+taking access away is always free). Every serve lands in the audit trail as its
+own event, so the morning after you can read exactly what your agent touched
+while you slept. Full details: [process grants](./docs/service/grants.md).
+
 ## The audit trail: what happened, and who did it
 
 Every jit command and every unlock lands in a durable log you read back with
@@ -273,6 +296,7 @@ The docs live under **[docs/](./docs/index.md)**, organized by task:
 - **[How it works](./docs/getting-started/how-it-works.md)**: the vault, the service, mounts, and shims in one page
 - **[FAQ](./docs/faq.md)**: developer and security questions, answered bluntly
 - **[Per-process consent](./docs/service/consent.md)**: what the per-tool prompts do, and how to tune or turn them off
+- **[Process grants](./docs/service/grants.md)**: pre-approve a running tool to work unattended for a bounded, revocable, audited window
 - **[Audit trail](./docs/reference/commands/jit_audit.md)**: read back every command, unlock, and refusal, filterable and followable
 - **[Command reference](./docs/reference/commands/jit.md)**: every command and flag, generated from the CLI
 - **[Security architecture](./docs/security/architecture.md)**: the threat model and the honest limits
