@@ -6,6 +6,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -45,7 +46,7 @@ var grantCmd = &cobra.Command{
 	Short:   "Pre-approve a running process to use profiles unattended",
 	Long: `Create a process grant: with one Touch ID now, allow a process that is
 already running (and everything it launches) to use the named profiles'
-secrets without further prompts, until the grant expires — including while
+secrets without further prompts, until the grant expires - including while
 the screen is locked or you are away.
 
 The grant is anchored to the live process you name, not to its name: a new
@@ -132,12 +133,25 @@ func requireGrantID(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// grantCreateUsage is the one-line shape of a create, quoted wherever a user
+// lands without it: the bare command, an empty completion, a missing flag.
+const grantCreateUsage = "jit grant --process <name> --profile <profile> --for <duration>"
+
 func runGrantCreate(out io.Writer) error {
+	// A bare `jit grant` is someone discovering the command, not someone who
+	// forgot one flag: answer with the whole shape, not the first missing
+	// piece of it.
+	if grantProcess == "" && grantPIDFlag == 0 && len(grantProfileNames) == 0 && grantFor == "" {
+		return fmt.Errorf("create a grant with %s\n(list / revoke / extend manage existing grants - see `jit grant --help`)", grantCreateUsage)
+	}
+	if grantProcess == "" && grantPIDFlag == 0 {
+		return fmt.Errorf("--process is required (the running program to grant to; tab-completes from recent callers)")
+	}
 	if len(grantProfileNames) == 0 {
 		return fmt.Errorf("--profile is required (repeat it for several: --profile jamf --profile aws-ci)")
 	}
 	if grantFor == "" {
-		return fmt.Errorf("--for is required (how long the grant lasts, like 45m, 8h, 3d — max %s)", formatFlexDuration(agent.MaxGrantTTL))
+		return fmt.Errorf("--for is required (how long the grant lasts, like 45m, 8h, 3d - max %s)", formatFlexDuration(agent.MaxGrantTTL))
 	}
 	ttl, err := parseGrantFor(grantFor)
 	if err != nil {
@@ -200,7 +214,7 @@ func resolveGrantTarget() (lineage.Process, error) {
 	procs := lineage.ProcessesNamed(grantProcess)
 	switch len(procs) {
 	case 0:
-		return lineage.Process{}, fmt.Errorf("nothing named %q is running — a grant anchors to a live process, start it first", grantProcess)
+		return lineage.Process{}, fmt.Errorf("nothing named %q is running - a grant anchors to a live process, start it first", grantProcess)
 	case 1:
 		return procs[0], nil
 	}
@@ -529,20 +543,54 @@ func grantAgo(d time.Duration) string {
 	}
 }
 
+// completeGrantCreateEntry rides the parent command's positional completion:
+// cobra offers the subcommands (list/revoke/extend) on its own, and without
+// this the CREATE form - the whole point of the command - was invisible at
+// exactly the moment a user double-tabs to discover it. Offering the
+// --process flag as a candidate plus an active-help line puts the create
+// shape on the same screen as the subcommands.
+func completeGrantCreateEntry(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) > 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	comps := []string{"--process\tcreate: grant a running program (then --profile, --for)"}
+	comps = cobra.AppendActiveHelp(comps, "create a grant: "+grantCreateUsage)
+	return comps, cobra.ShellCompDirectiveNoFileComp
+}
+
+// completeGrantFor offers --for values: common picks up to the 7d cap, with
+// an active-help line saying the grammar is free-form - a fixed list alone
+// read as "these four are the only options", which a real user reported.
+func completeGrantFor(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	comps := []string{"1h", "8h", "24h", "3d", "7d"}
+	comps = cobra.AppendActiveHelp(comps,
+		fmt.Sprintf("any duration up to %s works: 45m, 12h, 5d, ...", formatFlexDuration(agent.MaxGrantTTL)))
+	return comps, cobra.ShellCompDirectiveNoFileComp
+}
+
 // completeGrantIDs offers live grant ids for revoke/extend. It does ask the
-// service (grant_list is prompt-free and instant); an unreachable service
-// completes to nothing rather than an error mid-keystroke.
+// service (grant_list is prompt-free and instant); an unreachable service or
+// an empty grant set completes to an active-help line naming the way forward
+// rather than to dead silence - a tab that produces nothing, explains
+// nothing, and leaves the user stuck was a real report.
 func completeGrantIDs(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	if len(args) > 0 {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 	ac, err := agentClient()
 	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
+		return cobra.AppendActiveHelp(nil, "the jit service is not reachable"), cobra.ShellCompDirectiveNoFileComp
 	}
 	grants, err := ac.GrantList()
 	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
+		msg := "could not list grants (is the service on an older jit?)"
+		if errors.Is(err, agent.ErrNotRunning) {
+			msg = "the jit service is not running"
+		}
+		return cobra.AppendActiveHelp(nil, msg), cobra.ShellCompDirectiveNoFileComp
+	}
+	if len(grants) == 0 {
+		return cobra.AppendActiveHelp(nil, "no active grants - create one: "+grantCreateUsage), cobra.ShellCompDirectiveNoFileComp
 	}
 	out := make([]string, 0, len(grants))
 	for _, g := range grants {
@@ -559,11 +607,12 @@ func init() {
 	grantCmd.Flags().StringVar(&grantFor, "for", "", "how long the grant lasts (45m, 8h, 3d - max 7d)")
 	_ = grantCmd.RegisterFlagCompletionFunc("process", completeGrantProcessNames)
 	_ = grantCmd.RegisterFlagCompletionFunc("profile", completeProfileNames)
-	_ = grantCmd.RegisterFlagCompletionFunc("for", cobra.FixedCompletions([]string{"1h", "8h", "24h", "3d"}, cobra.ShellCompDirectiveNoFileComp))
+	_ = grantCmd.RegisterFlagCompletionFunc("for", completeGrantFor)
+	grantCmd.ValidArgsFunction = completeGrantCreateEntry
 
 	grantListCmd.Flags().StringVar(&grantListFormat, "format", "text", "output format: text or json")
 	grantExtendCmd.Flags().StringVar(&grantExtendFor, "for", "", "new lifetime from now (45m, 8h, 3d - max 7d)")
-	_ = grantExtendCmd.RegisterFlagCompletionFunc("for", cobra.FixedCompletions([]string{"1h", "8h", "24h", "3d"}, cobra.ShellCompDirectiveNoFileComp))
+	_ = grantExtendCmd.RegisterFlagCompletionFunc("for", completeGrantFor)
 
 	grantCmd.AddCommand(grantListCmd, grantRevokeCmd, grantExtendCmd)
 	rootCmd.AddCommand(grantCmd)
