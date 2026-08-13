@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -357,6 +358,118 @@ func TestSameFileFindingsCopiedThenEdited(t *testing.T) {
 		"mcp-caido-2": caido, "mcp-okta-mcp-server": okta,
 	}); len(fs) != 0 {
 		t.Errorf("servers from one config file are siblings, not copies, got %+v", fs)
+	}
+}
+
+// TestRemedyScopeWithheldWhenItWouldTakeAProtectedGroup reproduces the
+// incident this guard exists for. `jit migrate remove <file>` resolves up
+// to the .jit project owning the file and un-migrates EVERYTHING under it.
+// On a real vault, retiring the stale mcp-caido-2 meant naming
+// ~/Desktop/Share/ai_security_workspace/.mcp.json — whose project also
+// owned okta-mcp-server, the copy holding an OKTA_PRIVATE_KEY its twin
+// lacked, which the SAME report had just refused to nominate for removal.
+// Running the caido remedy deleted it. The remedy must now be withheld.
+func TestRemedyScopeWithheldWhenItWouldTakeAProtectedGroup(t *testing.T) {
+	home := withFixtureHome(t)
+	ws := filepath.Join(home, "Share", "ai_security_workspace")
+	nested := filepath.Join(ws, "ai_tooling", "mcp_servers", "okta-mcp-server")
+	if err := os.MkdirAll(filepath.Join(ws, ".jit"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rel := func(p string) string { return "~" + strings.TrimPrefix(p, home) }
+
+	// The caido pair: identical values, so it would normally get a pick.
+	caidoOld := dupTestGroup("mcp-caido", "~/Documents/ai_security_workspace/.mcp.json",
+		true, []string{"mcp-caido"}, map[string]string{"CAIDO_URL": "u"})
+	caidoNew := dupTestGroup("mcp-caido-2", rel(filepath.Join(ws, ".mcp.json")),
+		true, []string{"mcp-caido-2"}, map[string]string{"CAIDO_URL": "u"})
+	// The okta pair, under the SAME project: one copy holds a key the other
+	// lacks, so it gets no pick — and must not be collateral damage.
+	oktaWide := dupTestGroup("okta-mcp-server", rel(filepath.Join(nested, ".env")),
+		true, []string{"okta-mcp-server"}, map[string]string{
+			"OKTA_CLIENT_ID": "id", "OKTA_ORG_URL": "url", "OKTA_PRIVATE_KEY": "pem",
+		})
+	oktaNarrow := dupTestGroup("okta-mcp-server-2", "~/Documents/ai_security_workspace/ai_tooling/mcp_servers/okta-mcp-server/.env",
+		true, []string{"okta-mcp-server-2"}, map[string]string{
+			"OKTA_CLIENT_ID": "id", "OKTA_ORG_URL": "url",
+		})
+
+	fs := sameFileFindings(map[string]*dupGroup{
+		"mcp-caido": caidoOld, "mcp-caido-2": caidoNew,
+		"okta-mcp-server": oktaWide, "okta-mcp-server-2": oktaNarrow,
+	})
+	var caido *dupFinding
+	for i := range fs {
+		if fs[i].Groups[0] == "mcp-caido" {
+			caido = &fs[i]
+		}
+	}
+	if caido == nil {
+		t.Fatalf("expected a caido finding, got %+v", fs)
+	}
+	if caido.RemoveCommand != "" || caido.Prunable {
+		t.Errorf("remedy must be withheld when its project scope covers a protected group, got %+v", caido)
+	}
+	if caido.RemoveGroup != "mcp-caido-2" {
+		t.Errorf("the stale copy is still named, only the command goes, got %q", caido.RemoveGroup)
+	}
+	if caido.RemoveBlockedBy != "okta-mcp-server" {
+		t.Errorf("the blocking GROUP must be named, got %q", caido.RemoveBlockedBy)
+	}
+	if !slices.Contains(caido.AlsoRemoves, "okta-mcp-server") {
+		t.Errorf("AlsoRemoves must list the group the command would take, got %v", caido.AlsoRemoves)
+	}
+
+	// Rendering says why, and offers no command to run.
+	var buf bytes.Buffer
+	printDupFinding(&buf, *caido)
+	out := buf.String()
+	if !strings.Contains(out, "no safe one-command fix") || !strings.Contains(out, "okta-mcp-server") {
+		t.Errorf("report must explain the withheld remedy, got:\n%s", out)
+	}
+	// The prose may NAME the command while explaining; what must never
+	// appear is the runnable directive line with a path to copy.
+	if strings.Contains(out, glyphAction+" jit migrate remove") {
+		t.Errorf("no runnable migrate remove line may be offered, got:\n%s", out)
+	}
+}
+
+// TestRemedyNamesWhatElseItTakes: when the project scope is safe, the
+// remedy still has to say what else goes with it and that the files come
+// back as plaintext — neither is conveyed by the command name.
+func TestRemedyNamesWhatElseItTakes(t *testing.T) {
+	home := withFixtureHome(t)
+	ws := filepath.Join(home, "proj")
+	if err := os.MkdirAll(filepath.Join(ws, ".jit"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rel := func(p string) string { return "~" + strings.TrimPrefix(p, home) }
+
+	a := dupTestGroup("app", "~/Documents/proj/.env", true, []string{"app"},
+		map[string]string{"API_KEY": "k"})
+	b := dupTestGroup("app-2", rel(filepath.Join(ws, ".env")), true, []string{"app-2"},
+		map[string]string{"API_KEY": "k"})
+	// An unrelated group under the same project, in no finding of its own.
+	side := dupTestGroup("sidecar", rel(filepath.Join(ws, "sub", ".env")), true, nil,
+		map[string]string{"OTHER": "v"})
+
+	fs := sameFileFindings(map[string]*dupGroup{"app": a, "app-2": b, "sidecar": side})
+	if len(fs) != 1 {
+		t.Fatalf("want one finding, got %+v", fs)
+	}
+	if !slices.Contains(fs[0].AlsoRemoves, "sidecar") {
+		t.Errorf("AlsoRemoves must name the co-located group, got %v", fs[0].AlsoRemoves)
+	}
+	var buf bytes.Buffer
+	printDupFinding(&buf, fs[0])
+	out := buf.String()
+	for _, want := range []string{"jit migrate remove", "also holds sidecar", "return to plaintext"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("remedy missing %q, got:\n%s", want, out)
+		}
 	}
 }
 
