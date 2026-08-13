@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/profile"
 )
@@ -20,6 +21,13 @@ type secretReference struct {
 	ProfileName string
 	Scope       profile.Scope
 	MountPath   string // the mounted file this profile feeds, "" when none
+	// OwnerConfig is the config file the referencing profile records as its
+	// source (migrate.ProfileOwnerConfig). It is the ONLY provenance a
+	// pre-provenance (v1/v2) secret has: those envelopes carry no Origin
+	// field at all, so anything keying on Origin alone is blind to every
+	// secret migrated before provenance shipped. `jit vault get`'s
+	// "migrated from" footer has always read this rather than Origin.
+	OwnerConfig string
 }
 
 // referencesForPaths maps each requested vault path to whatever jit can see
@@ -36,7 +44,8 @@ func referencesForPaths(root, cwd string, paths []string) map[string][]secretRef
 		wanted[p] = true
 	}
 	refs := map[string][]secretReference{}
-	seen := map[string]bool{} // profile file path -> already consumed
+	seen := map[string]bool{}    // profile file path -> already consumed
+	owner := map[string]string{} // profile file path -> its recorded source config
 	add := func(profilePath, name string, scope profile.Scope, mountPath string) {
 		if seen[profilePath] {
 			// A mount whose profile was already listed still needs its
@@ -61,10 +70,16 @@ func referencesForPaths(root, cwd string, paths []string) map[string][]secretRef
 		if err != nil {
 			return
 		}
+		src, ok := owner[profilePath]
+		if !ok {
+			src = migrate.ProfileOwnerConfig(profilePath)
+			owner[profilePath] = src
+		}
 		for _, vaultPath := range entries {
 			if wanted[vaultPath] {
 				refs[vaultPath] = append(refs[vaultPath], secretReference{
 					ProfileName: name, Scope: scope, MountPath: mountPath,
+					OwnerConfig: src,
 				})
 			}
 		}

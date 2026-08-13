@@ -844,23 +844,55 @@ func TestGroupHeaderProvenance(t *testing.T) {
 	printVaultList(&buf, secrets, nil, false, true, false, meta, "path")
 	out := buf.String()
 
-	if !strings.Contains(out, "[jamf] 2 · dotenv · from /x/scripts/jamf/.env · 3d ago") {
+	// Aligned layout (option A): every top-level name is padded to the
+	// widest, so the count+class column and then the origin start at the
+	// same screen column on every row. The facts are the same; only their
+	// placement is shared.
+	if !strings.Contains(out, "[jamf]") || !strings.Contains(out, "2 · dotenv") ||
+		!strings.Contains(out, "/x/scripts/jamf/.env · 3d ago") {
 		t.Errorf("uniform-origin group must carry origin + newest age on its header, got:\n%s", out)
 	}
-	if !strings.Contains(out, "[manual-grp] 2 · manual · set directly · 1h ago") {
+	if !strings.Contains(out, "set directly · 1h ago") {
 		t.Errorf("uniformly manual group must read \"set directly\", got:\n%s", out)
 	}
+	// The alignment itself: the widest label here is "[manual-grp]" (12),
+	// so every header's second column starts at the same offset.
+	var starts []int
 	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "[mixed]") && strings.Contains(line, "from ") {
+		if !strings.HasPrefix(line, "[") {
+			continue
+		}
+		idx := strings.Index(line, "] ")
+		if idx < 0 {
+			continue
+		}
+		// column offset of the first non-space after the label
+		off := idx + 2
+		for off < len(line) && line[off] == ' ' {
+			off++
+		}
+		starts = append(starts, off)
+	}
+	if len(starts) < 2 {
+		t.Fatalf("expected several top-level headers, got:\n%s", out)
+	}
+	for _, s := range starts[1:] {
+		if s != starts[0] {
+			t.Errorf("top-level headers must share one column grid, offsets %v, got:\n%s", starts, out)
+			break
+		}
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "[mixed]") && strings.Contains(line, "/x/") {
 			t.Errorf("mixed-origin group must not claim an origin, got line:\n%s", line)
 		}
 		// The nested [sub] header must not restate what [nested] already
 		// carries.
-		if strings.Contains(line, "[sub]") && (strings.Contains(line, "from ") || strings.Contains(line, "ago")) {
+		if strings.Contains(line, "[sub]") && (strings.Contains(line, "/x/") || strings.Contains(line, "ago")) {
 			t.Errorf("nested header must not restate provenance, got line:\n%s", line)
 		}
 	}
-	if !strings.Contains(out, "[nested] 1 · mcp · from /x/n/.mcp.json") {
+	if !strings.Contains(out, "/x/n/.mcp.json") {
 		t.Errorf("top-level header of a nested group carries the provenance, got:\n%s", out)
 	}
 

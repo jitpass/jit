@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jitpass/jit/internal/vault"
+	"github.com/jitpass/jit/internal/wrap"
 )
 
 // jit vault duplicates is the answer to "which of these look-alike groups
@@ -53,12 +54,32 @@ import (
 // a per-key digest of its decrypted values.
 type dupGroup struct {
 	name         string
-	keys         []string          // sorted key names
-	origin       string            // uniform recorded origin, "" when absent/mixed
-	originExists bool              // stat of origin, false when origin == ""
-	profiles     []string          // referencing profile names (deduped)
-	mountPath    string            // a mount serving this group's profile, "" when none
-	hashes       map[string]string // key -> value digest
+	keys         []string // sorted key names
+	origin       string   // uniform recorded origin, "" when absent/mixed
+	originExists bool     // stat of origin, false when origin == ""
+	profiles     []string // referencing profile names (deduped)
+	mountPath    string   // a mount serving this group's profile, "" when none
+	// ownerConfig is the source file the referencing PROFILE records, the
+	// fallback provenance for a pre-provenance secret whose envelope has no
+	// Origin. See sourceFile.
+	ownerConfig string
+	hashes      map[string]string // key -> value digest
+}
+
+// sourceFile is the group's best evidence of which file it came from: the
+// envelope's recorded Origin, or — for a PRE-PROVENANCE secret, whose
+// envelope has no Origin field at all — the source config the referencing
+// profile records. Without the fallback every secret migrated before
+// provenance shipped is invisible to duplicate detection, which is exactly
+// how a real vault's clearest duplicate went unreported: the older copy
+// (`mcp-caido`) predated provenance and was skipped, so its newer twin
+// (`mcp-caido-2`) had nothing to pair with and both landed in the
+// shared-credentials bucket as "keep all".
+func (g *dupGroup) sourceFile() string {
+	if g.origin != "" {
+		return g.origin
+	}
+	return g.ownerConfig
 }
 
 // dupFinding is one same-file verdict: two or more groups holding the same
@@ -83,6 +104,11 @@ type dupFinding struct {
 	Prunable bool `json:"prunable"`
 	// RemovePaths are the stale copy's vault paths, what --prune deletes.
 	RemovePaths []string `json:"remove_paths,omitempty"`
+	// ExtraKeys are keys present in some copies but not all: the same file
+	// migrated twice and edited since. Their presence blocks any removal
+	// pick, because retiring a copy holding a key the others lack would
+	// silently drop that secret.
+	ExtraKeys []string `json:"extra_keys,omitempty"`
 }
 
 // sharedFinding is one shared-credential verdict: the same value stored
@@ -103,9 +129,9 @@ var (
 var vaultDuplicatesCmd = &cobra.Command{
 	Use:   "duplicates",
 	Short: "Report groups that hold the same secrets, and which are safe to retire",
-	Long: "Compares every stored secret's decrypted value in memory (one unlock, no\n" +
-		"value ever printed or written) and reports two things `jit vault list`\n" +
-		"cannot know from names alone:\n\n" +
+	Long: "Compares every stored secret's decrypted value in memory (no value is ever\n" +
+		"printed or written) and reports two things `jit vault list` cannot know\n" +
+		"from names alone:\n\n" +
 		"  " + "Duplicated groups: the same key names migrated from the same file, or\n" +
 		"  from two copies of it (a re-migrated project, a copied workspace tree).\n" +
 		"  When the values still match, the report names the copy that looks stale\n" +
@@ -127,7 +153,12 @@ var vaultDuplicatesCmd = &cobra.Command{
 		"and drops its profile — deleting just the secrets would leave a mount\n" +
 		"serving a file nothing can fill), a copy a profile still names is a\n" +
 		"per-path `jit vault rm` decision, and diverged or shared copies are never\n" +
-		"jit's call at all. --prune always reports what it left behind and why.",
+		"jit's call at all. --prune always reports what it left behind and why.\n\n" +
+		"Reading every value means unlocking the vault and, for each credential\n" +
+		"CLASS the per-process consent gate covers (aws, kube, git, shell_history,\n" +
+		"...), approving that class once. A vault holding two gated classes\n" +
+		"therefore asks about three times, not once: the unlock plus one per class.\n" +
+		"`jit service consent off` removes the per-class half.",
 	Example: "  jit vault duplicates\n" +
 		"  jit vault duplicates --prune\n" +
 		"  jit vault duplicates --format json",
@@ -302,6 +333,9 @@ func gatherDupGroups(v *vault.Vault, root, cwd string, secrets []string) (map[st
 			if r.MountPath != "" && g.mountPath == "" {
 				g.mountPath = r.MountPath
 			}
+			if r.OwnerConfig != "" && g.ownerConfig == "" {
+				g.ownerConfig = r.OwnerConfig
+			}
 		}
 
 		value, err := v.Get(p)
@@ -312,11 +346,21 @@ func gatherDupGroups(v *vault.Vault, root, cwd string, secrets []string) (map[st
 		g.hashes[key] = fmt.Sprintf("%x", sum)
 		compared++
 	}
+	home, _ := os.UserHomeDir()
 	for _, g := range groups {
 		sort.Strings(g.keys)
 		sort.Strings(g.profiles)
-		if g.origin != "" {
-			_, statErr := os.Stat(g.origin)
+		if g.sourceFile() != "" {
+			// Origin is stored ALREADY tilde-shortened ("~/proj/.env", see
+			// newProvenance), so it must be expanded before it can be
+			// stat'ed. Statting it raw always failed, which made
+			// originExists permanently false: the `jit migrate remove`
+			// branch below became dead code and every live duplicate was
+			// routed to `jit vault rm` instead — the precise advice this
+			// command exists to stop giving. Caught end to end on a real
+			// vault, not by a unit test, because the tests supplied
+			// absolute origins that no real migration ever writes.
+			_, statErr := os.Stat(wrap.ExpandHome(home, g.sourceFile()))
 			g.originExists = statErr == nil
 		}
 	}
@@ -331,67 +375,173 @@ func gatherDupGroups(v *vault.Vault, root, cwd string, secrets []string) (map[st
 // claimNamespace "-2" fork is the later arrival). No pick at all when
 // values differ.
 func sameFileFindings(groups map[string]*dupGroup) []dupFinding {
-	byEvidence := map[string][]*dupGroup{}
+	// Cluster on the origin TAIL only. Requiring an identical key set as
+	// well was too strict for the most ordinary real shape: copy a
+	// workspace, then edit one copy. A real vault had
+	// .../okta-mcp-server/.env migrated from two trees where one copy had
+	// since gained OKTA_PRIVATE_KEY — same file, four identical values, and
+	// the exact-set rule paired neither.
+	byTail := map[string][]*dupGroup{}
+	var tails []string
 	for _, g := range groups {
-		if g.origin == "" || len(g.keys) == 0 {
+		if g.sourceFile() == "" || len(g.keys) == 0 {
 			continue
 		}
-		sig := strings.Join(g.keys, "\x00") + "\x00\x00" + originTail(g.origin)
-		byEvidence[sig] = append(byEvidence[sig], g)
+		t := originTail(g.sourceFile())
+		if _, ok := byTail[t]; !ok {
+			tails = append(tails, t)
+		}
+		byTail[t] = append(byTail[t], g)
 	}
+	sort.Strings(tails)
+
 	var findings []dupFinding
-	for _, cluster := range byEvidence {
+	for _, tail := range tails {
+		cluster := byTail[tail]
 		if len(cluster) < 2 {
 			continue
 		}
-		sort.Slice(cluster, func(i, j int) bool { return cluster[i].name < cluster[j].name })
-		f := dupFinding{Keys: cluster[0].keys, SameOrigin: true, ValuesMatch: true}
-		for _, g := range cluster {
-			f.Groups = append(f.Groups, g.name)
-			f.Origins = append(f.Origins, g.origin)
-			if g.origin != cluster[0].origin {
-				f.SameOrigin = false
+		// One .mcp.json yields one profile PER SERVER, so a shared tail
+		// alone is not duplication: mcp-caido-2 and mcp-okta-mcp-server
+		// both come from ai_security_workspace/.mcp.json and share no key
+		// at all. Groups pair only when their keys actually overlap and
+		// every shared value matches (relatedGroups).
+		//
+		// Widest first, so a subset attaches to its superset rather than
+		// seeding its own finding.
+		sort.Slice(cluster, func(i, j int) bool {
+			if len(cluster[i].keys) != len(cluster[j].keys) {
+				return len(cluster[i].keys) > len(cluster[j].keys)
 			}
-			for _, k := range f.Keys {
-				if g.hashes[k] == "" || g.hashes[k] != cluster[0].hashes[k] {
-					f.ValuesMatch = false
+			return cluster[i].name < cluster[j].name
+		})
+		var buckets [][]*dupGroup
+		for _, g := range cluster {
+			placed := false
+			for i := range buckets {
+				if relatedGroups(buckets[i][0], g) {
+					buckets[i] = append(buckets[i], g)
+					placed = true
+					break
 				}
 			}
-		}
-		if f.ValuesMatch {
-			pick := pickRemoval(cluster)
-			f.RemoveGroup = pick.name
-			f.RemovePaths = groupSecretPaths(pick)
-			switch {
-			case pick.origin != "" && pick.originExists:
-				// The file is still there, so retiring this copy means
-				// un-migrating it: restore its plaintext, deregister its
-				// mount, drop its profile. That is `jit migrate remove`'s
-				// whole job — --prune must not reimplement it, and must
-				// not delete the secrets out from under a mount that is
-				// still serving the file.
-				f.RemoveCommand = "jit migrate remove " + shortPath(pick.origin)
-			case len(pick.profiles) == 0:
-				f.RemoveCommand = "jit vault duplicates --prune"
-				f.Prunable = true
-			default:
-				// Origin gone but a profile still names these paths:
-				// deleting them leaves that manifest pointing at holes.
-				// Worth doing, but as a decision the user makes per path.
-				f.RemoveCommand = "jit vault rm " + strings.Join(f.RemovePaths, " ")
+			if !placed {
+				buckets = append(buckets, []*dupGroup{g})
 			}
 		}
-		findings = append(findings, f)
+		for _, bucket := range buckets {
+			if len(bucket) < 2 {
+				continue
+			}
+			findings = append(findings, buildDupFinding(bucket))
+		}
 	}
 	sort.Slice(findings, func(i, j int) bool { return findings[i].Groups[0] < findings[j].Groups[0] })
 	return findings
+}
+
+// relatedGroups reports whether b looks like a descendant of the same file
+// as a: their keys overlap substantially (b's keys are a subset of a's, or
+// they share at least half of the wider set). Sharing an origin tail alone
+// is not enough — one .mcp.json produces one profile PER SERVER, and those
+// siblings share the tail while holding disjoint keys.
+//
+// Value equality is deliberately NOT a gate here. It is the VERDICT
+// (ValuesMatch), not the evidence of common ancestry: two copies of one
+// file whose values have since diverged are still copies, and are exactly
+// what the user most needs told about. Gating on it made diverged copies
+// vanish from the report entirely.
+func relatedGroups(a, b *dupGroup) bool {
+	shared := 0
+	for _, k := range b.keys {
+		if _, ok := a.hashes[k]; ok {
+			shared++
+		}
+	}
+	if shared == 0 {
+		return false
+	}
+	wider := len(a.keys)
+	if len(b.keys) > wider {
+		wider = len(b.keys)
+	}
+	return shared == len(b.keys) || shared == len(a.keys) || shared*2 >= wider
+}
+
+// buildDupFinding turns one bucket of related groups into a finding. Keys
+// are the SHARED set; a copy that has since gained or lost a key is still
+// the same file's descendant, but it gets no removal pick, because retiring
+// a copy holding a key the survivor lacks would silently drop that secret.
+func buildDupFinding(bucket []*dupGroup) dupFinding {
+	sort.Slice(bucket, func(i, j int) bool { return bucket[i].name < bucket[j].name })
+	sharedKeys := append([]string(nil), bucket[0].keys...)
+	for _, g := range bucket[1:] {
+		var keep []string
+		for _, k := range sharedKeys {
+			if _, ok := g.hashes[k]; ok {
+				keep = append(keep, k)
+			}
+		}
+		sharedKeys = keep
+	}
+	sort.Strings(sharedKeys)
+
+	f := dupFinding{Keys: sharedKeys, SameOrigin: true, ValuesMatch: true}
+	sameKeySet := true
+	for _, g := range bucket {
+		f.Groups = append(f.Groups, g.name)
+		f.Origins = append(f.Origins, g.sourceFile())
+		if g.sourceFile() != bucket[0].sourceFile() {
+			f.SameOrigin = false
+		}
+		if len(g.keys) != len(sharedKeys) {
+			sameKeySet = false
+			f.ExtraKeys = append(f.ExtraKeys, extraKeys(g, sharedKeys)...)
+		}
+		for _, k := range sharedKeys {
+			if g.hashes[k] == "" || g.hashes[k] != bucket[0].hashes[k] {
+				f.ValuesMatch = false
+			}
+		}
+	}
+	sort.Strings(f.ExtraKeys)
+	f.ExtraKeys = slices.Compact(f.ExtraKeys)
+	if !f.ValuesMatch || !sameKeySet {
+		// Diverged in value, or one copy carries a key the others don't:
+		// either way jit must not nominate a copy to delete.
+		return f
+	}
+	pick := pickRemoval(bucket)
+	f.RemoveGroup = pick.name
+	f.RemovePaths = groupSecretPaths(pick)
+	switch {
+	case pick.sourceFile() != "" && pick.originExists:
+		f.RemoveCommand = "jit migrate remove " + shortPath(pick.sourceFile())
+	case len(pick.profiles) == 0:
+		f.RemoveCommand = "jit vault duplicates --prune"
+		f.Prunable = true
+	default:
+		f.RemoveCommand = "jit vault rm " + strings.Join(f.RemovePaths, " ")
+	}
+	return f
+}
+
+// extraKeys are g's keys outside the shared set.
+func extraKeys(g *dupGroup, shared []string) []string {
+	var extra []string
+	for _, k := range g.keys {
+		if !slices.Contains(shared, k) {
+			extra = append(extra, k)
+		}
+	}
+	return extra
 }
 
 // pickRemoval chooses which copy of a matching cluster the report suggests
 // retiring. It is a suggestion, printed under a caveat — never acted on.
 func pickRemoval(cluster []*dupGroup) *dupGroup {
 	for _, g := range cluster {
-		if g.origin != "" && !g.originExists {
+		if g.sourceFile() != "" && !g.originExists {
 			return g
 		}
 	}
@@ -479,9 +629,17 @@ func sharedCredentialFindings(groups map[string]*dupGroup, consumed []dupFinding
 func printDuplicatesReport(out io.Writer, findings []dupFinding, shared []sharedFinding, compared int) {
 	if len(findings) == 0 && len(shared) == 0 {
 		fmt.Fprintf(out, "No duplicates: every group's keys, origins and values are distinct.\n")
-		fmt.Fprintf(out, "%d %s compared under one unlock; values never left memory.\n",
+		fmt.Fprintf(out, "%d %s compared in memory; no value was printed or written.\n",
 			compared, pluralWord(compared, "secret", "secrets"))
 		return
+	}
+	// The zero-findings header still prints when there ARE shared
+	// credentials: without it the report opens on "[shared credentials]"
+	// and there is no way to tell whether duplicates were checked and none
+	// found, or the check never ran.
+	if len(findings) == 0 {
+		_, _ = cBold.Fprintf(out, "[duplicates]")
+		fmt.Fprintf(out, " none across %d stored %s\n", compared, pluralWord(compared, "secret", "secrets"))
 	}
 	if len(findings) > 0 {
 		_, _ = cBold.Fprintf(out, "[duplicates]")
@@ -518,7 +676,7 @@ func printDuplicatesReport(out io.Writer, findings []dupFinding, shared []shared
 		fmt.Fprint(out, hlCmds(fmt.Sprintf("%s can be deleted here (origin file gone, referenced by nothing): `jit vault duplicates --prune`\n",
 			countWord(prunable, "finding", "findings"))))
 	}
-	fmt.Fprintf(out, "%d %s compared under one unlock; values never left memory.\n",
+	fmt.Fprintf(out, "%d %s compared in memory; no value was printed or written.\n",
 		compared, pluralWord(compared, "secret", "secrets"))
 }
 
@@ -528,6 +686,8 @@ func printDupFinding(out io.Writer, f dupFinding) {
 	switch {
 	case f.SameOrigin:
 		fmt.Fprintln(out, ": one file, migrated more than once")
+	case len(f.ExtraKeys) > 0:
+		fmt.Fprintln(out, ": one file, migrated twice and edited since")
 	case f.ValuesMatch:
 		fmt.Fprintln(out, ": one file, migrated from two copies")
 	default:
@@ -541,8 +701,11 @@ func printDupFinding(out io.Writer, f dupFinding) {
 	if !f.ValuesMatch {
 		match = "values DIFFER"
 	}
-	fmt.Fprintf(out, "  %s same %d %s (%s), %s\n", glyphBranch, len(f.Keys), keysLabel,
+	fmt.Fprintf(out, "  %s %d shared %s (%s), %s\n", glyphBranch, len(f.Keys), keysLabel,
 		truncateList(f.Keys, 3), match)
+	if len(f.ExtraKeys) > 0 {
+		fmt.Fprintf(out, "  %s not in every copy: %s\n", glyphBranch, truncateList(f.ExtraKeys, 3))
+	}
 	wide := 0
 	for _, g := range f.Groups {
 		if len(g) > wide {
@@ -555,6 +718,8 @@ func printDupFinding(out io.Writer, f dupFinding) {
 	switch {
 	case !f.ValuesMatch:
 		fmt.Fprintln(out, "  the copies no longer agree; compare the files before retiring either")
+	case len(f.ExtraKeys) > 0:
+		fmt.Fprintln(out, "  one copy holds keys the other doesn't; retiring either would lose them")
 	case f.RemoveCommand != "":
 		fmt.Fprintf(out, "  keep the copy your tools read; %s looks stale, retire it with:\n", f.RemoveGroup)
 		_, _ = cPath.Fprintf(out, "  %s %s\n", glyphAction, f.RemoveCommand)

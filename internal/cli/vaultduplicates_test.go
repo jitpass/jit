@@ -163,7 +163,7 @@ func TestPrintDuplicatesReport(t *testing.T) {
 	for _, want := range []string{
 		"[duplicates] 1 finding across 118 stored secrets",
 		"mcp-caido, mcp-caido-2: one file, migrated from two copies",
-		"same 1 key (CAIDO_URL), identical values",
+		"1 shared key (CAIDO_URL), identical values",
 		"from /u/Documents/ws/.mcp.json",
 		"mcp-caido-2 looks stale, retire it with:",
 		"jit migrate remove /u/Desktop/ws/.mcp.json",
@@ -171,7 +171,7 @@ func TestPrintDuplicatesReport(t *testing.T) {
 		"JAMF_CLIENT_ID",
 		"shared by 2 profiles",
 		"removing any copy breaks its tool; when rotating, update every copy",
-		"118 secrets compared under one unlock; values never left memory.",
+		"118 secrets compared in memory; no value was printed or written.",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("report missing %q, got:\n%s", want, out)
@@ -200,6 +200,163 @@ func TestPrintDuplicatesReport(t *testing.T) {
 	printDuplicatesReport(&buf, nil, nil, 42)
 	if !strings.Contains(buf.String(), "No duplicates") || !strings.Contains(buf.String(), "42 secrets compared") {
 		t.Errorf("empty state wrong, got:\n%s", buf.String())
+	}
+}
+
+// TestGatherDupGroupsExpandsTildeOrigins pins the form real migrations
+// write. Origin is stored ALREADY tilde-shortened ("~/proj/.env"), so
+// statting it raw always failed and originExists was permanently false:
+// the `jit migrate remove` remedy became dead code and every live
+// duplicate was routed to `jit vault rm`, the precise advice this command
+// exists to stop giving. The earlier tests missed it by supplying absolute
+// origins no migration ever records.
+func TestGatherDupGroupsExpandsTildeOrigins(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := t.TempDir()
+	root, err := vaultRootDir()
+	if err != nil {
+		t.Fatalf("vaultRootDir: %v", err)
+	}
+	v := &vault.Vault{Root: root, KeyWrapper: newFakeKeyWrapper(), RecipientID: "test-device"}
+
+	// A real file under the fixture home, recorded the way migrate records
+	// it: relative to home, with a leading "~/".
+	if err := os.MkdirAll(filepath.Join(home, "proj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	livePath := filepath.Join(home, "proj", ".env")
+	if err := os.WriteFile(livePath, []byte("A=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.SetWithMeta("live/A", []byte("secret-value"),
+		vault.Meta{Class: vault.ClassDotenv, Origin: "~/proj/.env"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.SetWithMeta("gone/A", []byte("secret-value"),
+		vault.Meta{Class: vault.ClassDotenv, Origin: "~/deleted/.env"}); err != nil {
+		t.Fatal(err)
+	}
+
+	groups, _, err := gatherDupGroups(v, root, cwd, []string{"live/A", "gone/A"})
+	if err != nil {
+		t.Fatalf("gatherDupGroups: %v", err)
+	}
+	if g := groups["live"]; g == nil || !g.originExists {
+		t.Errorf("a tilde origin whose file EXISTS must stat true, got %+v", g)
+	}
+	if g := groups["gone"]; g == nil || g.originExists {
+		t.Errorf("a tilde origin whose file is gone must stat false, got %+v", g)
+	}
+
+	// End to end: the live copy must be routed to migrate remove, never rm.
+	groups["live"].keys = []string{"A"}
+	groups["gone"].keys = []string{"A"}
+	groups["gone"].origin = "~/proj/.env" // same tail, so they cluster
+	groups["gone"].originExists = false
+	fs := sameFileFindings(groups)
+	if len(fs) != 1 {
+		t.Fatalf("want one finding, got %+v", fs)
+	}
+	if fs[0].RemoveGroup != "gone" {
+		t.Errorf("the copy whose file is gone must be the pick, got %+v", fs[0])
+	}
+	// And with the live one picked instead, the remedy must be migrate remove.
+	groups["gone"].originExists = true
+	fs = sameFileFindings(groups)
+	if len(fs) != 1 || !strings.HasPrefix(fs[0].RemoveCommand, "jit migrate remove ") {
+		t.Errorf("a copy whose file exists must route to migrate remove, got %+v", fs)
+	}
+}
+
+// TestSameFileFindingsUsesProfileSourceForPreProvenance is the miss that
+// made v0.92.0 useless on the vault it was built for. A pre-provenance
+// (v1/v2) envelope carries NO Origin, so keying on Origin alone skipped the
+// older copy entirely, its newer twin had nothing to pair with, and both
+// landed in "shared credentials, keep all" — the report calling a real
+// duplicate a credential to keep. The referencing profile's recorded source
+// is the evidence that does exist for those secrets, and is what
+// `jit vault get`'s own "migrated from" footer has always shown.
+func TestSameFileFindingsUsesProfileSourceForPreProvenance(t *testing.T) {
+	// The older copy: no Origin at all, only a profile-recorded source.
+	old := dupTestGroup("mcp-caido", "", true, []string{"mcp-caido"}, map[string]string{"CAIDO_URL": "v1"})
+	old.ownerConfig = "~/Documents/ai_security_workspace/.mcp.json"
+	// The newer twin, migrated after provenance shipped.
+	newer := dupTestGroup("mcp-caido-2", "~/Desktop/Share/ai_security_workspace/.mcp.json",
+		true, []string{"mcp-caido-2"}, map[string]string{"CAIDO_URL": "v1"})
+
+	groups := map[string]*dupGroup{"mcp-caido": old, "mcp-caido-2": newer}
+	fs := sameFileFindings(groups)
+	if len(fs) != 1 {
+		t.Fatalf("a pre-provenance copy must still pair with its twin, got %+v", fs)
+	}
+	if strings.Join(fs[0].Groups, ",") != "mcp-caido,mcp-caido-2" {
+		t.Errorf("groups = %v", fs[0].Groups)
+	}
+	// Its origin column must show the profile-recorded source, not blank.
+	if fs[0].Origins[0] != "~/Documents/ai_security_workspace/.mcp.json" {
+		t.Errorf("origins = %v, want the profile source for the pre-provenance copy", fs[0].Origins)
+	}
+	if !fs[0].ValuesMatch {
+		t.Errorf("identical values must still compare equal, got %+v", fs[0])
+	}
+
+	// And it must be excluded from the shared-credentials bucket, which is
+	// where it wrongly showed up before.
+	shared := sharedCredentialFindings(groups, fs)
+	for _, f := range shared {
+		for _, g := range f.Groups {
+			if g == "mcp-caido" || g == "mcp-caido-2" {
+				t.Errorf("a paired duplicate must not also read as a shared credential: %+v", shared)
+			}
+		}
+	}
+}
+
+// TestSameFileFindingsCopiedThenEdited covers the ordinary real shape an
+// exact-key-set rule missed: a workspace copied and migrated from both
+// trees, then edited so one copy carries a key the other lacks. On a real
+// vault that was .../okta-mcp-server/.env in two trees, one of which had
+// gained OKTA_PRIVATE_KEY — same file, four identical values, and neither
+// copy reported. It must pair, must say which keys are not in every copy,
+// and must offer NO removal pick: retiring either would drop a secret.
+func TestSameFileFindingsCopiedThenEdited(t *testing.T) {
+	wide := dupTestGroup("okta-mcp-server", "~/Desktop/Share/ws/mcp_servers/okta-mcp-server/.env",
+		true, []string{"okta-mcp-server"}, map[string]string{
+			"OKTA_CLIENT_ID": "id", "OKTA_KEY_ID": "kid", "OKTA_ORG_URL": "url",
+			"OKTA_SCOPES": "scopes", "OKTA_PRIVATE_KEY": "pem",
+		})
+	narrow := dupTestGroup("okta-mcp-server-2", "~/Documents/ws/mcp_servers/okta-mcp-server/.env",
+		true, []string{"okta-mcp-server-2"}, map[string]string{
+			"OKTA_CLIENT_ID": "id", "OKTA_KEY_ID": "kid", "OKTA_ORG_URL": "url",
+			"OKTA_SCOPES": "scopes",
+		})
+	fs := sameFileFindings(map[string]*dupGroup{
+		"okta-mcp-server": wide, "okta-mcp-server-2": narrow,
+	})
+	if len(fs) != 1 {
+		t.Fatalf("a copied-then-edited pair must still report, got %+v", fs)
+	}
+	f := fs[0]
+	if len(f.Keys) != 4 {
+		t.Errorf("Keys must be the SHARED set, got %v", f.Keys)
+	}
+	if strings.Join(f.ExtraKeys, ",") != "OKTA_PRIVATE_KEY" {
+		t.Errorf("ExtraKeys = %v, want the key only one copy holds", f.ExtraKeys)
+	}
+	if f.RemoveGroup != "" || f.RemoveCommand != "" || f.Prunable {
+		t.Errorf("no removal pick when a copy holds keys the other lacks, got %+v", f)
+	}
+
+	// Siblings from ONE file (one .mcp.json, one profile per server) share
+	// the origin tail but no keys: they must never pair.
+	caido := dupTestGroup("mcp-caido-2", "~/Documents/ws/.mcp.json", true, nil,
+		map[string]string{"CAIDO_URL": "u"})
+	okta := dupTestGroup("mcp-okta-mcp-server", "~/Documents/ws/.mcp.json", true, nil,
+		map[string]string{"OKTA_ORG_URL": "o", "OKTA_SCOPES": "s"})
+	if fs = sameFileFindings(map[string]*dupGroup{
+		"mcp-caido-2": caido, "mcp-okta-mcp-server": okta,
+	}); len(fs) != 0 {
+		t.Errorf("servers from one config file are siblings, not copies, got %+v", fs)
 	}
 }
 
