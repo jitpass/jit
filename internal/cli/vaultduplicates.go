@@ -246,12 +246,13 @@ func pruneDuplicates(cmd *cobra.Command, v *vault.Vault, findings []dupFinding) 
 		out = cmd.ErrOrStderr() // stdout already carries the machine output
 	}
 	var paths []string
-	var left []dupFinding
+	var left, prunable []dupFinding
 	prunableGroups := 0
 	for _, f := range findings {
 		if f.Prunable {
 			paths = append(paths, f.RemovePaths...)
 			prunableGroups++
+			prunable = append(prunable, f)
 			continue
 		}
 		// EVERY finding --prune did not delete is accounted for. An earlier
@@ -262,19 +263,32 @@ func pruneDuplicates(cmd *cobra.Command, v *vault.Vault, findings []dupFinding) 
 		// "handled the rest", which is the opposite of the truth.
 		left = append(left, f)
 	}
-	reportLeft := func() {
-		if len(left) == 0 {
+	// declined is true on the abort path, where the prunable findings were
+	// not deleted either and so belong in the tally. Leaving them out said
+	// "2 findings left alone" after aborting a run that left 3 — and the
+	// omitted one was the only one that HAD been safe to delete.
+	reportLeft := func(declined bool) {
+		all := left
+		if declined {
+			all = append(append([]dupFinding{}, prunable...), left...)
+		}
+		if len(all) == 0 {
 			return
 		}
 		fmt.Fprintf(out, "\nLeft alone, %s %s not safe to delete here:\n",
-			countWord(len(left), "finding", "findings"),
-			pluralWord(len(left), "is", "are"))
-		for _, f := range left {
+			countWord(len(all), "finding", "findings"),
+			pluralWord(len(all), "is", "are"))
+		for _, f := range all {
 			label := strings.Join(f.Groups, ", ")
 			switch {
+			case f.Prunable:
+				fmt.Fprintf(out, "  %s %s: you declined the deletion\n", glyphBranch, label)
 			case f.RemoveBlockedBy != "":
-				fmt.Fprintf(out, "  %s %s: no safe one-command fix, it would take %s too\n",
-					glyphBranch, label, f.RemoveBlockedBy)
+				// Names the command, because this trailer (unlike the report
+				// above) prints none — "it would take X too" had no
+				// antecedent for a reader who ran only --prune.
+				fmt.Fprintf(out, "  %s %s: retiring %s needs jit migrate remove, which would take %s too\n",
+					glyphBranch, label, f.RemoveGroup, f.RemoveBlockedBy)
 			case !f.ValuesMatch:
 				fmt.Fprintf(out, "  %s %s: copies have diverged, compare them first\n", glyphBranch, label)
 			case len(f.ExtraKeys) > 0:
@@ -289,7 +303,7 @@ func pruneDuplicates(cmd *cobra.Command, v *vault.Vault, findings []dupFinding) 
 	}
 	if len(paths) == 0 {
 		fmt.Fprintln(out, "\nNothing to prune: no duplicate's stale copy is both file-less and unreferenced.")
-		reportLeft()
+		reportLeft(false)
 		return nil
 	}
 	fmt.Fprintf(out, "\nPruning %s from %s whose origin file is gone and which nothing references:\n",
@@ -305,7 +319,7 @@ func pruneDuplicates(cmd *cobra.Command, v *vault.Vault, findings []dupFinding) 
 		"Permanently delete %s? This removes duplicated secret values, not `jit migrate`'s file backups. This can't be undone. [y/N] ",
 		countWord(len(paths), "duplicated secret", "duplicated secrets"))) {
 		fmt.Fprintln(out, "Aborted. Nothing was deleted.")
-		reportLeft()
+		reportLeft(true)
 		return nil
 	}
 	// Fresh biometric gate, same idiom as rm/orphans/prune: Remove only
@@ -321,7 +335,7 @@ func pruneDuplicates(cmd *cobra.Command, v *vault.Vault, findings []dupFinding) 
 		}
 	}
 	fmt.Fprintf(out, "Deleted %s.\n", countWord(len(paths), "duplicated secret", "duplicated secrets"))
-	reportLeft()
+	reportLeft(false)
 	return nil
 }
 
@@ -843,8 +857,13 @@ func printDuplicatesReport(out io.Writer, findings []dupFinding, shared []shared
 		// carries is real but belongs where a rotation happens, not here.
 		_, _ = cBold.Fprintf(out, "[shared credentials]")
 		if !vaultDuplicatesShared {
-			fmt.Fprintf(out, " %d · one credential in several tools each, nothing to fix\n", len(shared))
-			fmt.Fprint(out, hlCmds("  `jit vault duplicates --shared` to list them\n"))
+			fmt.Fprintf(out, " %d · %s in several tools, nothing to fix\n",
+				len(shared), pluralWord(len(shared), "one credential", "credentials each"))
+			// Naming the cost: expanding means running this command again,
+			// which unlocks the vault and re-approves each gated credential
+			// class. Cheap-looking hints that cost three Touch ID prompts
+			// are how a reader learns to distrust the hint.
+			fmt.Fprint(out, hlCmds("  `jit vault duplicates --shared` lists them (re-reads the vault)\n"))
 		} else {
 			fmt.Fprintf(out, " %d · same value in independent tools, keep all\n", len(shared))
 			for _, f := range shared {

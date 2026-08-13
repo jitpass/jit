@@ -58,13 +58,16 @@ then reports:
   copies and there is nothing to fix, so they collapse to a count:
 
   ```
-  [shared credentials] 4 · one credential in several tools each, nothing to fix
-    jit vault duplicates --shared to list them
+  [shared credentials] 4 · credentials each in several tools, nothing to fix
+    jit vault duplicates --shared lists them (re-reads the vault)
   ```
 
   `--shared` expands them, naming every place a rotation would have to
-  reach. They stay out of the default view because this command's question
-  is "what can I safely delete", and the answer for these is "nothing".
+  reach - every holder, including any group also reported as a duplicate
+  above, since a rotation that misses one leaves a live copy stale. They
+  stay out of the default view because this command's question is "what can
+  I safely delete", and the answer for these is "nothing". Expanding costs
+  another run, so it re-reads the vault and re-prompts per credential class.
 
 ### Why it asks for Touch ID more than once
 
@@ -90,10 +93,15 @@ reporting a clean sweep:
 ```
 Deleted 2 duplicated secrets.
 
-Left alone, 2 findings need a command only you should run:
-  └ mcp-caido-2: jit migrate remove ~/Desktop/Share/ai_security_workspace/.mcp.json
-  └ a, b: copies have diverged, compare them first
+Left alone, 3 findings are not safe to delete here:
+  └ jamf, jamf-2: copies have diverged, compare them first
+  └ mcp-caido, mcp-caido-2: retiring mcp-caido-2 needs jit migrate remove, which would take okta-mcp-server too
+  └ okta-mcp-server, okta-mcp-server-2: one copy holds keys the other lacks
 ```
+
+Every finding it did not delete is listed with its own reason, including
+the ones that have no command to offer. A cleanup that mentions some of
+what it skipped reads as though it handled the rest.
 
 A copy whose file still exists has to be un-migrated by `jit migrate
 remove`, which restores the plaintext, deregisters the mount and drops the
