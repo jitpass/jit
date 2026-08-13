@@ -4,9 +4,9 @@ Report groups that hold the same secrets, and which are safe to retire
 
 ### Synopsis
 
-Compares every stored secret's decrypted value in memory (one unlock, no
-value ever printed or written) and reports two things `jit vault list`
-cannot know from names alone:
+Compares every stored secret's decrypted value in memory (no value is ever
+printed or written) and reports two things `jit vault list` cannot know
+from names alone:
 
   Duplicated groups: the same key names migrated from the same file, or
   from two copies of it (a re-migrated project, a copied workspace tree).
@@ -32,6 +32,12 @@ and drops its profile — deleting just the secrets would leave a mount
 serving a file nothing can fill), a copy a profile still names is a
 per-path `jit vault rm` decision, and diverged or shared copies are never
 jit's call at all. --prune always reports what it left behind and why.
+
+Reading every value means unlocking the vault and, for each credential
+CLASS the per-process consent gate covers (aws, kube, git, shell_history,
+...), approving that class once. A vault holding two gated classes
+therefore asks about three times, not once: the unlock plus one per class.
+`jit service consent off` removes the per-class half.
 
 ```
 jit vault duplicates [flags]

@@ -163,7 +163,7 @@ func TestPrintDuplicatesReport(t *testing.T) {
 	for _, want := range []string{
 		"[duplicates] 1 finding across 118 stored secrets",
 		"mcp-caido, mcp-caido-2: one file, migrated from two copies",
-		"same 1 key (CAIDO_URL), identical values",
+		"1 shared key (CAIDO_URL), identical values",
 		"from /u/Documents/ws/.mcp.json",
 		"mcp-caido-2 looks stale, retire it with:",
 		"jit migrate remove /u/Desktop/ws/.mcp.json",
@@ -171,7 +171,7 @@ func TestPrintDuplicatesReport(t *testing.T) {
 		"JAMF_CLIENT_ID",
 		"shared by 2 profiles",
 		"removing any copy breaks its tool; when rotating, update every copy",
-		"118 secrets compared under one unlock; values never left memory.",
+		"118 secrets compared in memory; no value was printed or written.",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("report missing %q, got:\n%s", want, out)
@@ -309,6 +309,54 @@ func TestSameFileFindingsUsesProfileSourceForPreProvenance(t *testing.T) {
 				t.Errorf("a paired duplicate must not also read as a shared credential: %+v", shared)
 			}
 		}
+	}
+}
+
+// TestSameFileFindingsCopiedThenEdited covers the ordinary real shape an
+// exact-key-set rule missed: a workspace copied and migrated from both
+// trees, then edited so one copy carries a key the other lacks. On a real
+// vault that was .../okta-mcp-server/.env in two trees, one of which had
+// gained OKTA_PRIVATE_KEY — same file, four identical values, and neither
+// copy reported. It must pair, must say which keys are not in every copy,
+// and must offer NO removal pick: retiring either would drop a secret.
+func TestSameFileFindingsCopiedThenEdited(t *testing.T) {
+	wide := dupTestGroup("okta-mcp-server", "~/Desktop/Share/ws/mcp_servers/okta-mcp-server/.env",
+		true, []string{"okta-mcp-server"}, map[string]string{
+			"OKTA_CLIENT_ID": "id", "OKTA_KEY_ID": "kid", "OKTA_ORG_URL": "url",
+			"OKTA_SCOPES": "scopes", "OKTA_PRIVATE_KEY": "pem",
+		})
+	narrow := dupTestGroup("okta-mcp-server-2", "~/Documents/ws/mcp_servers/okta-mcp-server/.env",
+		true, []string{"okta-mcp-server-2"}, map[string]string{
+			"OKTA_CLIENT_ID": "id", "OKTA_KEY_ID": "kid", "OKTA_ORG_URL": "url",
+			"OKTA_SCOPES": "scopes",
+		})
+	fs := sameFileFindings(map[string]*dupGroup{
+		"okta-mcp-server": wide, "okta-mcp-server-2": narrow,
+	})
+	if len(fs) != 1 {
+		t.Fatalf("a copied-then-edited pair must still report, got %+v", fs)
+	}
+	f := fs[0]
+	if len(f.Keys) != 4 {
+		t.Errorf("Keys must be the SHARED set, got %v", f.Keys)
+	}
+	if strings.Join(f.ExtraKeys, ",") != "OKTA_PRIVATE_KEY" {
+		t.Errorf("ExtraKeys = %v, want the key only one copy holds", f.ExtraKeys)
+	}
+	if f.RemoveGroup != "" || f.RemoveCommand != "" || f.Prunable {
+		t.Errorf("no removal pick when a copy holds keys the other lacks, got %+v", f)
+	}
+
+	// Siblings from ONE file (one .mcp.json, one profile per server) share
+	// the origin tail but no keys: they must never pair.
+	caido := dupTestGroup("mcp-caido-2", "~/Documents/ws/.mcp.json", true, nil,
+		map[string]string{"CAIDO_URL": "u"})
+	okta := dupTestGroup("mcp-okta-mcp-server", "~/Documents/ws/.mcp.json", true, nil,
+		map[string]string{"OKTA_ORG_URL": "o", "OKTA_SCOPES": "s"})
+	if fs = sameFileFindings(map[string]*dupGroup{
+		"mcp-caido-2": caido, "mcp-okta-mcp-server": okta,
+	}); len(fs) != 0 {
+		t.Errorf("servers from one config file are siblings, not copies, got %+v", fs)
 	}
 }
 

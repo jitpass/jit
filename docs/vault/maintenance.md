@@ -26,8 +26,8 @@ in progress.
 
 Answers "which of these look-alike groups can I safely delete?" - the
 question a listing can't, because it takes comparing the actual values.
-Under one unlock it decrypts every stored secret in memory (nothing is
-printed or written), then reports:
+It decrypts every stored secret in memory (nothing is printed or written),
+then reports:
 
 - **Duplicated groups**: the same key names migrated from the same file, or
   from two copies of it (a re-migrated project, a copied workspace tree).
@@ -50,6 +50,17 @@ printed or written), then reports:
   example one API client used by five export scripts. These are *not* stale
   copies - removing any breaks its tool - and the report lists every place
   a rotation has to reach.
+
+### Why it asks for Touch ID more than once
+
+Comparing values means reading every secret, so this command unlocks the
+vault **and** trips the
+[per-process consent gate](../service/consent.md) once for each credential
+*class* it touches (`aws`, `kube`, `git`, `shell_history`, and the rest -
+`dotenv`, `mcp` and `manual` are not gated). A vault holding two gated
+classes therefore prompts about three times: the unlock, plus one approval
+per class. That is the consent feature doing its job, not a retry loop.
+`jit service consent off` removes the per-class half.
 
 ### `--prune`
 
