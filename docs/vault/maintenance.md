@@ -37,7 +37,7 @@ then reports:
 
   | The stale copy's origin file | Command | What it does |
   |---|---|---|
-  | still there | [`jit migrate remove <file>`](../migrate/undo-and-remove.md) | un-migrates that one file: **writes its values back as plaintext**, then deletes its profile, its secrets and its backups. Delete the file or folder yourself afterwards if you don't want it. |
+  | still there | [`jit migrate remove <file>`](../migrate/undo-and-remove.md) | un-migrates the **whole project** that owns the file, not just this copy: **writes its values back as plaintext**, then deletes its profiles, their secrets and their backups. Delete the files or folder yourself afterwards if you don't want them. |
   | already gone, nothing references it | `jit vault duplicates --prune` | deletes those secrets for you (see below) |
   | gone, but a profile still names it | `jit vault rm <paths>` | deletes exactly those secrets, leaving you to fix the profile |
 
@@ -46,6 +46,13 @@ then reports:
   cannot break a tool that shares the credential. Copies that have diverged
   (same ancestry, different values now) are reported without a removal pick:
   which copy is right is your call.
+
+  Because `migrate remove` is scoped to the whole project, the report names
+  the other groups a remedy would take with it, and **withholds the remedy
+  entirely** when one of them is a copy the report itself declined to
+  nominate (for example one holding a key its twin lacks). Without that
+  guard, following one finding's advice could execute what another finding
+  had just forbidden.
 - **Shared credentials**: the same value stored by independent files, for
   example one API client used by five export scripts. These are *not* stale
   copies - removing any breaks its tool - and the report lists every place
