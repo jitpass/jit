@@ -250,6 +250,44 @@ func TestGrantCompletionSurfacesCreatePath(t *testing.T) {
 	}
 }
 
+// Once a create flag is on the line, tabbing again must offer the NEXT flag
+// the create form needs, never re-offer one already given - a real user
+// report: `jit grant --process bash <Tab>` suggested --process again.
+func TestGrantCompletionWalksTheCreateFlagsInOrder(t *testing.T) {
+	defer func() { grantProcess = ""; grantPIDFlag = 0; grantProfileNames = nil; grantFor = "" }()
+
+	grantProcess = "bash"
+	comps, _ := completeGrantCreateEntry(nil, nil, "")
+	joined := strings.Join(comps, "\n")
+	if strings.Contains(joined, "--process") {
+		t.Errorf("--process already typed but offered again:\n%s", joined)
+	}
+	if !strings.Contains(joined, "--profile\t") {
+		t.Errorf("after --process the next offer must be --profile:\n%s", joined)
+	}
+
+	grantProfileNames = []string{"jamf"}
+	comps, _ = completeGrantCreateEntry(nil, nil, "")
+	joined = strings.Join(comps, "\n")
+	if !strings.Contains(joined, "--for\t") {
+		t.Errorf("after --process and --profile the next offer must be --for:\n%s", joined)
+	}
+
+	grantFor = "8h"
+	comps, _ = completeGrantCreateEntry(nil, nil, "")
+	joined = strings.Join(comps, "\n")
+	if strings.Contains(joined, "--") {
+		t.Errorf("complete create line must offer no more flags:\n%s", joined)
+	}
+
+	grantProcess, grantPIDFlag = "", 4242
+	comps, _ = completeGrantCreateEntry(nil, nil, "")
+	joined = strings.Join(comps, "\n")
+	if strings.Contains(joined, "--process") {
+		t.Errorf("--pid anchors the grant too, must not push --process:\n%s", joined)
+	}
+}
+
 func TestGrantForCompletionSaysFreeForm(t *testing.T) {
 	comps, _ := completeGrantFor(nil, nil, "")
 	joined := strings.Join(comps, "\n")
