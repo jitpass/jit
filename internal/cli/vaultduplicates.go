@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -104,11 +105,25 @@ type dupFinding struct {
 	Prunable bool `json:"prunable"`
 	// RemovePaths are the stale copy's vault paths, what --prune deletes.
 	RemovePaths []string `json:"remove_paths,omitempty"`
+	// DifferKeys are the shared keys whose values do NOT agree across the
+	// copies. "values DIFFER" alone left the reader unable to judge whether
+	// two groups are really one file's descendants; naming them says what
+	// to compare, and how much of the overlap actually diverged.
+	DifferKeys []string `json:"differ_keys,omitempty"`
 	// ExtraKeys are keys present in some copies but not all: the same file
 	// migrated twice and edited since. Their presence blocks any removal
 	// pick, because retiring a copy holding a key the others lack would
 	// silently drop that secret.
 	ExtraKeys []string `json:"extra_keys,omitempty"`
+	// AlsoRemoves names the OTHER vault groups the RemoveCommand would take
+	// with it. `jit migrate remove` is scoped to the project that owns the
+	// file, not to this finding, so naming one file un-migrates every
+	// profile under that project root.
+	AlsoRemoves []string `json:"also_removes,omitempty"`
+	// RemoveBlockedBy is set when the RemoveCommand's project scope covers a
+	// group belonging to a finding this report deliberately refused to
+	// nominate for removal. The remedy is then withheld entirely.
+	RemoveBlockedBy string `json:"remove_blocked_by,omitempty"`
 }
 
 // sharedFinding is one shared-credential verdict: the same value stored
@@ -437,7 +452,103 @@ func sameFileFindings(groups map[string]*dupGroup) []dupFinding {
 		}
 	}
 	sort.Slice(findings, func(i, j int) bool { return findings[i].Groups[0] < findings[j].Groups[0] })
+	annotateRemoveScope(findings, groups)
 	return findings
+}
+
+// annotateRemoveScope is the guard for the hazard that a per-finding remedy
+// cannot see on its own: `jit migrate remove <file>` resolves UP to the
+// .jit project that owns the file and un-migrates EVERYTHING under it, not
+// just this finding's copy.
+//
+// That turned one finding's safe advice into another finding's forbidden
+// action on a real vault. Retiring the stale `mcp-caido-2` meant naming
+// ~/Desktop/Share/ai_security_workspace/.mcp.json, whose project also owned
+// `okta-mcp-server` — the copy holding an OKTA_PRIVATE_KEY its twin lacks,
+// which this same report had just refused to nominate for removal because
+// retiring it would lose that key. Running the caido remedy deleted it.
+//
+// So: every migrate-remove remedy now names the other groups it would take
+// with it, and is WITHHELD outright when one of them belongs to a finding
+// that has no removal pick.
+func annotateRemoveScope(findings []dupFinding, groups map[string]*dupGroup) {
+	home, _ := os.UserHomeDir()
+	// Groups this report has deliberately declined to nominate: diverged
+	// values, or copies holding keys the others lack.
+	protected := map[string]bool{} // groups no finding would nominate
+	for _, f := range findings {
+		if f.RemoveGroup != "" {
+			continue
+		}
+		for _, g := range f.Groups {
+			protected[g] = true
+		}
+	}
+	for i := range findings {
+		f := &findings[i]
+		if !strings.HasPrefix(f.RemoveCommand, "jit migrate remove ") {
+			continue
+		}
+		pick := groups[f.RemoveGroup]
+		if pick == nil {
+			continue
+		}
+		root := migrateRemoveRoot(pick.sourceFile(), home)
+		if root == "" {
+			continue
+		}
+		var also []string
+		blocked := ""
+		for name, g := range groups {
+			if name == f.RemoveGroup || g.sourceFile() == "" {
+				continue
+			}
+			if !underRoot(g.sourceFile(), root, home) {
+				continue
+			}
+			also = append(also, name)
+			if protected[name] && blocked == "" {
+				blocked = name
+			}
+		}
+		sort.Strings(also)
+		f.AlsoRemoves = also
+		if blocked != "" {
+			// RemoveGroup survives: it still names the copy that looks
+			// stale, which the withheld-remedy message has to say. Only
+			// the COMMAND goes, because there isn't a safe one.
+			f.RemoveBlockedBy = blocked
+			f.RemoveCommand = ""
+			f.RemovePaths = nil
+			f.Prunable = false
+		}
+	}
+}
+
+// migrateRemoveRoot is the directory `jit migrate remove <origin>` would
+// actually operate on: the nearest ancestor of origin holding a .jit
+// project directory. Falls back to the file's own directory when no
+// project is found (already removed, or never one), and never walks past
+// $HOME.
+func migrateRemoveRoot(origin, home string) string {
+	abs := wrap.ExpandHome(home, origin)
+	dir := filepath.Dir(abs)
+	for d := dir; d != "" && d != "/" && d != home; d = filepath.Dir(d) {
+		if fi, err := os.Stat(filepath.Join(d, ".jit")); err == nil && fi.IsDir() {
+			return d
+		}
+		if parent := filepath.Dir(d); parent == d {
+			break
+		}
+	}
+	return dir
+}
+
+// underRoot reports whether a group's source file lives inside root.
+func underRoot(origin, root, home string) bool {
+	abs := wrap.ExpandHome(home, origin)
+	rel, err := filepath.Rel(root, abs)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // relatedGroups reports whether b looks like a descendant of the same file
@@ -452,13 +563,29 @@ func sameFileFindings(groups map[string]*dupGroup) []dupFinding {
 // what the user most needs told about. Gating on it made diverged copies
 // vanish from the report entirely.
 func relatedGroups(a, b *dupGroup) bool {
-	shared := 0
+	shared, agreeing := 0, 0
 	for _, k := range b.keys {
-		if _, ok := a.hashes[k]; ok {
-			shared++
+		ha, ok := a.hashes[k]
+		if !ok {
+			continue
+		}
+		shared++
+		if ha != "" && ha == b.hashes[k] {
+			agreeing++
 		}
 	}
 	if shared == 0 {
+		return false
+	}
+	// Two DIFFERENT files that merely share an origin tail need at least
+	// one identical value to be called copies of each other. A tail like
+	// "jamf/.env" is generic — a real vault had one under
+	// ai_security_workspace and another under Repos/Security, unrelated
+	// projects that happened to name a directory the same thing. When the
+	// origin path is IDENTICAL the file is provably the same one, so no
+	// value evidence is needed (a re-migration fork may have rotated
+	// everything since).
+	if a.sourceFile() != b.sourceFile() && agreeing == 0 {
 		return false
 	}
 	wider := len(a.keys)
@@ -501,11 +628,15 @@ func buildDupFinding(bucket []*dupGroup) dupFinding {
 		for _, k := range sharedKeys {
 			if g.hashes[k] == "" || g.hashes[k] != bucket[0].hashes[k] {
 				f.ValuesMatch = false
+				if !slices.Contains(f.DifferKeys, k) {
+					f.DifferKeys = append(f.DifferKeys, k)
+				}
 			}
 		}
 	}
 	sort.Strings(f.ExtraKeys)
 	f.ExtraKeys = slices.Compact(f.ExtraKeys)
+	sort.Strings(f.DifferKeys)
 	if !f.ValuesMatch || !sameKeySet {
 		// Diverged in value, or one copy carries a key the others don't:
 		// either way jit must not nominate a copy to delete.
@@ -699,7 +830,8 @@ func printDupFinding(out io.Writer, f dupFinding) {
 	}
 	match := "identical values"
 	if !f.ValuesMatch {
-		match = "values DIFFER"
+		match = fmt.Sprintf("%d of %d differ: %s",
+			len(f.DifferKeys), len(f.Keys), truncateList(f.DifferKeys, 3))
 	}
 	fmt.Fprintf(out, "  %s %d shared %s (%s), %s\n", glyphBranch, len(f.Keys), keysLabel,
 		truncateList(f.Keys, 3), match)
@@ -716,6 +848,14 @@ func printDupFinding(out io.Writer, f dupFinding) {
 		fmt.Fprintf(out, "  %s %-*s  from %s\n", glyphBranch, wide, g, shortPath(f.Origins[i]))
 	}
 	switch {
+	case f.RemoveBlockedBy != "":
+		// The only command that could retire this copy would also take a
+		// group this report just refused to nominate. Withheld, and said
+		// out loud: a remedy that silently does more than it claims is
+		// worse than no remedy.
+		fmt.Fprintf(out, "  no safe one-command fix: retiring %s needs jit migrate remove,\n", f.RemoveGroup)
+		fmt.Fprintf(out, "  which un-migrates that whole project, taking %s with it\n", f.RemoveBlockedBy)
+		fmt.Fprintln(out, "  and that copy holds keys no other copy has")
 	case !f.ValuesMatch:
 		fmt.Fprintln(out, "  the copies no longer agree; compare the files before retiring either")
 	case len(f.ExtraKeys) > 0:
@@ -723,6 +863,16 @@ func printDupFinding(out io.Writer, f dupFinding) {
 	case f.RemoveCommand != "":
 		fmt.Fprintf(out, "  keep the copy your tools read; %s looks stale, retire it with:\n", f.RemoveGroup)
 		_, _ = cPath.Fprintf(out, "  %s %s\n", glyphAction, f.RemoveCommand)
+		if strings.HasPrefix(f.RemoveCommand, "jit migrate remove ") {
+			// Two consequences the command name does not convey: it is
+			// scoped to the whole project, and it un-migrates rather than
+			// deletes, so the files come back as PLAINTEXT.
+			if len(f.AlsoRemoves) > 0 {
+				fmt.Fprintf(out, "    that project also holds %s, which go with it\n",
+					truncateList(f.AlsoRemoves, 3))
+			}
+			fmt.Fprintln(out, "    its files return to plaintext on disk; delete them after")
+		}
 	}
 }
 
