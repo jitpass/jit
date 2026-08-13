@@ -660,16 +660,27 @@ func grantAgo(d time.Duration) string {
 // completeGrantCreateEntry rides the parent command's positional completion:
 // cobra offers the subcommands (list/revoke/extend) on its own, and without
 // this the CREATE form - the whole point of the command - was invisible at
-// exactly the moment a user double-tabs to discover it. Offering the
-// --process flag as a candidate plus an active-help line puts the create
-// shape on the same screen as the subcommands.
+// exactly the moment a user double-tabs to discover it. It offers the FIRST
+// flag the create form still lacks, in the order the usage line reads
+// (--process, --profile, --for): cobra has already parsed the typed flags
+// into the bound vars by the time this runs, so a tab after `--process bash`
+// walks forward to --profile instead of re-offering what is on the line.
 func completeGrantCreateEntry(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	if len(args) > 0 {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	comps := []string{"--process\tcreate: grant a program by name, future sessions included (then --profile, --for)"}
-	comps = cobra.AppendActiveHelp(comps, "create a grant: "+grantCreateUsage)
-	return comps, cobra.ShellCompDirectiveNoFileComp
+	switch {
+	case grantProcess == "" && grantPIDFlag == 0:
+		comps := []string{"--process\tcreate: grant a program by name, future sessions included (then --profile, --for)"}
+		comps = cobra.AppendActiveHelp(comps, "create a grant: "+grantCreateUsage)
+		return comps, cobra.ShellCompDirectiveNoFileComp
+	case len(grantProfileNames) == 0:
+		return []string{"--profile\tprofile whose secrets the grant covers (repeatable)"}, cobra.ShellCompDirectiveNoFileComp
+	case grantFor == "":
+		return []string{"--for\thow long the grant lasts (45m, 8h, 3d - max 7d)"}, cobra.ShellCompDirectiveNoFileComp
+	default:
+		return cobra.AppendActiveHelp(nil, "all set - press enter to create the grant"), cobra.ShellCompDirectiveNoFileComp
+	}
 }
 
 // completeGrantFor offers --for values: common picks up to the 7d cap, with
