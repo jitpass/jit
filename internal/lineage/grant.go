@@ -132,7 +132,11 @@ func AncestryNamedWithin(pid, root int32, name string) bool {
 	nameSeen := false
 	for depth := 0; depth < grantAncestryCap; depth++ {
 		if !nameSeen {
-			if p, ok := Describe(cur); ok && p.Name() == name {
+			// MatchesName, not Name(): a self-updated tool's exec path is
+			// unreadable (binary replaced under the running process) and its
+			// kernel name honestly empty — see MatchesName for why argv is
+			// acceptable in this walk and nowhere else.
+			if p, ok := Describe(cur); ok && p.MatchesName(name) {
 				nameSeen = true
 			}
 		}

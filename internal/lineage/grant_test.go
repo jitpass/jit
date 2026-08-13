@@ -86,6 +86,28 @@ func TestAncestryNamedWithinRealTree(t *testing.T) {
 	}
 }
 
+// TestMatchesNameFallsBackToArgv pins the one place argv may name a process:
+// the tree-grant filter walk, where a self-updated tool (binary replaced
+// under the running process, exec path unreadable, Name() honestly empty)
+// must still count as itself — found live, when the longest-running claude
+// on the machine stopped matching its own grant.
+func TestMatchesNameFallsBackToArgv(t *testing.T) {
+	updated := Process{PID: 42, Argv: []string{"claude", "--resume"}}
+	if updated.Name() != "" {
+		t.Fatalf("fixture broken: expected an empty kernel name, got %q", updated.Name())
+	}
+	if !updated.MatchesName("claude") {
+		t.Error("a process with no exec path but argv[0]=claude must match claude")
+	}
+	if updated.MatchesName("gh") || updated.MatchesName("") {
+		t.Error("argv fallback must not match a different or empty name")
+	}
+	normal := Process{PID: 43, ExecPath: "/opt/tools/gh", Argv: []string{"gh", "pr"}}
+	if !normal.MatchesName("gh") || normal.MatchesName("pr") {
+		t.Error("a kernel-named process must match by that name only")
+	}
+}
+
 // TestSessionRootIsAProperAncestor pins the anchor derivation: the session
 // root must be a real, describable ancestor of the caller, strictly above
 // it, and never launchd itself.
