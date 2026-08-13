@@ -199,6 +199,16 @@ func runGrantCreate(out io.Writer) error {
 	if err != nil {
 		return notRunningHint(err)
 	}
+	// A service older than tree grants ignores the unknown grant_name field
+	// and mints an EXACT grant anchored at the terminal — every process under
+	// it, no name filter: strictly wider than what the human just approved.
+	// The reply betrays it (no Anchor on a tree request), and reducing access
+	// is free, so revoke before reporting anything. The window is real but
+	// short: the service swaps itself onto a replaced binary within seconds.
+	if target.name != "" && st.Anchor == "" {
+		_ = ac.GrantRevoke(st.ID)
+		return fmt.Errorf("the running service predates tree grants and granted the whole terminal instead; revoked it - run `jit service restart` and retry")
+	}
 	printGrantCreated(out, st)
 	return nil
 }
