@@ -145,13 +145,13 @@ func completeAuditTimes(cmd *cobra.Command, args []string, toComplete string) ([
 // flag, and none of them was discoverable at the moment someone double-taps
 // to find out. Same shape as completeGrantCreateEntry.
 func completeAuditEntry(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-	comps := []string{
+	comps := dropTypedFlags(cmd, []string{
 		"--kind\tonly these kinds: " + strings.Join(auditCanonicalKinds(), ", "),
 		"--since\tonly entries after an age or a date",
 		"--status\tonly this status: " + strings.Join(auditStatuses, ", "),
 		"--secret\tonly events that touched a secret whose name contains this",
 		"--follow\tprint the matching tail, then stream new entries live",
-	}
+	})
 	comps = cobra.AppendActiveHelp(comps, "audit takes filters, not arguments: jit audit --kind use --since 2h")
 	return comps, cobra.ShellCompDirectiveNoFileComp
 }

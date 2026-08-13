@@ -37,3 +37,6 @@ lifetime - it is never exported to your shell or written anywhere.
 | `ZDOTDIR` | when set, [`jit guard history`](../migrate/shell-history.md) writes its source line to `$ZDOTDIR/.zshrc` instead of `~/.zshrc` - the file your zsh actually reads |
 | `HISTFILE` | consulted by `jit scan` and `jit migrate` to find a relocated shell history file. Note zsh and bash keep this as an ordinary shell parameter, **not** an exported one, so jit usually cannot see it: name the file explicitly (`jit migrate ~/.cache/zsh/history`, which is routed by name) or `export HISTFILE` if you want the machine-wide scan to reach it |
 | `JIT_GUARD_BIN` | overrides which `jit` binary the installed history-guard hook invokes; exists for jit's own tests, not for daily use |
+| `JIT_PAGER` | the pager for jit's long reports (`jit audit`, `jit scan`), checked before `$PAGER`. Set it to `cat` or the empty string to never page, whatever `$PAGER` says |
+| `PAGER` | the fallback when `$JIT_PAGER` is unset; `less` if neither is. Same `cat`/empty escape hatch. See [CLI conventions](./conventions.md#long-reports-page-like-git) |
+| `LESS` | if you export your own, jit passes it through untouched. Only when it is unset does jit run bare `less` with `LESS=FRX` (quit inline when the report fits one screen, keep colour, stay in scrollback) |

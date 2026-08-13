@@ -220,18 +220,23 @@ that names exactly what you're signing:
 
 ```console
 $ jit grant --process claude --profile jamf --for 8h
-  Touch ID  ->  let claude use 2 secrets (jamf) unattended for 8h
+  Touch ID  ->  let claude under iTerm2 use 2 secrets (jamf) unattended for 8h
 ✓ granted g-7f3a2c81   claude -> jamf   until 17:42
+  └ covers claude under iTerm2: 1 running now, any started before 17:42
 ```
 
-For the next 8 hours, that running process (and what it launches) gets those
-secrets with no prompts - through screen lock and all. It's a live process
-being named, not a name being trusted: a new program calling itself `claude`
-tomorrow inherits nothing, and the grant ends at its deadline, when the process
-exits, or the moment you type `jit grant revoke` (which needs no fingerprint -
-taking access away is always free). Every serve lands in the audit trail as its
-own event, so the morning after you can read exactly what your agent touched
-while you slept. Full details: [process grants](./docs/service/grants.md).
+For the next 8 hours, every `claude` under **the terminal you typed that in**
+(and what it launches) gets those secrets with no prompts - through screen lock
+and all, including sessions you start later: a new tab, the next `claude`, a
+script that fires at 3am. It's your terminal being named, not a name being
+trusted: a program calling itself `claude` somewhere else on the machine
+doesn't descend from that tree and inherits nothing. The grant ends at its
+deadline, when you quit that terminal, or the moment you type `jit grant
+revoke` (which needs no fingerprint - taking access away is always free). Want
+one exact process instead, gone when it exits? `--pid`. Every serve lands in
+the audit trail as its own event, so the morning after you can read exactly
+what your agent touched while you slept. Full details:
+[process grants](./docs/service/grants.md).
 
 ## The audit trail: what happened, and who did it
 

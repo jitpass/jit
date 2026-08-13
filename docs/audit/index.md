@@ -94,6 +94,12 @@ followed. A path that doesn't exist is an error, not a silently empty scan.
 | `jit scan --format ndjson` | one JSON record per finding plus a closing summary, for piping into other tools ([schema](../reference/scan-ndjson.md)) |
 | `jit scan -o report.md` | write the report to a file instead of stdout |
 
+A machine-wide report runs past one screen, so on a terminal it pages through
+your pager (`$JIT_PAGER`, then `$PAGER`, then `less`) the moment the report
+starts - the progress trail above it stays visible while the scan runs.
+`--no-pager` prints straight through, and piping or `-o` never pages at all
+([CLI conventions](../reference/conventions.md#long-reports-page-like-git)).
+
 The "Outside jit's scope" advisory appears in the default view, in `--full`,
 and in markdown. It is deliberately **not** in NDJSON: that schema describes
 findings jit stands behind, and this is a note to a human.

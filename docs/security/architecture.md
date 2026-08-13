@@ -125,11 +125,19 @@ are prompt-free.
 the session key, consent decisions, `--trust` roots, run attachments - drops
 the moment the session ends, because those all ride an approval whose scope
 was "this session". A grant's approval said something different, out loud:
-*unattended, until a deadline*, for named secrets and one live process tree
-(anchored by pid and kernel fork-time, so a recycled pid inherits nothing).
-It is strictly narrower than the session it stands in for: never the master
-key, only the covered secrets' data keys, in service memory only, ended by
-its deadline, its process exiting, a restart, or an unauthenticated
+*unattended, until a deadline*, for named secrets and one live process tree.
+`--process NAME` anchors that tree at the terminal it was typed in (pinned by
+pid and kernel fork-time, so a recycled pid inherits nothing) and serves only
+callers whose ancestry passes through both that terminal and a process named
+NAME - membership is evaluated per read against the live tree, so a session
+started later inside the same terminal is covered and a same-named process
+outside it never is. Only the terminal half is a kernel fact; the name half
+is self-reported (exec path, or argv when a self-updating tool has replaced
+its own binary) and carries no security weight, because it can only narrow
+what the approved tree already admits. `--pid` anchors one exact process
+instead. It is strictly narrower than the session it stands in for: never the
+master key, only the covered secrets' data keys, in service memory only, ended by
+its deadline, its anchor exiting, a restart, or an unauthenticated
 `jit grant revoke`. The decision point is unchanged - a human on a disclosed
 prompt - it just happens before the absence instead of during it, and every
 serve under it is a distinct [`jit audit`](../service/provenance.md) event.

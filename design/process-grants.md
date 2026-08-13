@@ -94,6 +94,31 @@ Consequences, all deliberate:
 `--pid` keeps the original exact-one-process semantics, now annotated in
 completion with each candidate's cwd and age (the seven-identical-rows fix).
 
+### Two things the first live create taught us
+
+**The name half must accept argv, or a self-updating tool loses its own
+grant.** Claude Code updates by REPLACING its on-disk binary; afterwards the
+kernel reports no exec path for the still-running process, `Process.Name()`
+is honestly empty, and the longest-running claude on the machine stops
+matching the grant made for it: every serve fails closed. `MatchesName`
+therefore accepts argv[0]'s base name, in exactly two places: the filter walk
+and the creation-time count that feeds "2 running now" (they must agree, or
+the confirmation lies about scope). Prompts and every display surface keep
+using `Name()`, which never trusts argv. This is consistent with the doctrine
+above rather than an exception to it: condition 1 already carried no security
+weight, and a process that is already inside the human-approved tree gains
+only routing the perimeter contains.
+
+**A service older than tree grants would silently widen the scope.** It
+ignores the unknown `grant_name` field and mints an EXACT grant anchored at
+the terminal: every process under it, no filter, strictly wider than what
+the human just approved. The reply betrays the skew (no `Anchor` on a tree
+request), so the CLI revokes the grant on the spot and names the fix
+(`jit service restart`). Reducing access is free, so this happens before
+anything is reported. The window is short (the service swaps onto a replaced
+binary within seconds), but "wider than the prompt said" is never acceptable,
+however briefly.
+
 ## Mechanics: a scoped DEK cache, not a weaker vault
 
 The enabling fact: the agent is a DEK-unwrapping oracle. `OpUnwrap` receives

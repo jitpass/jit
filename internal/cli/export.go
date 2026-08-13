@@ -106,14 +106,14 @@ func init() {
 	// export takes no arguments, so silenceFileCompletionForNoArgCommands
 	// would stop the file listing on its own; naming the two flags and the
 	// eval form is what makes the bare TAB useful rather than merely quiet.
-	exportCmd.ValidArgsFunction = func(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
+	exportCmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
 		if len(args) != 0 {
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
-		comps := []string{
+		comps := dropTypedFlags(cmd, []string{
 			"--profile\texport this profile verbatim, instead of the project layers",
 			"--mode\talso merge .env.<mode> and .env.<mode>.local",
-		}
+		})
 		comps = cobra.AppendActiveHelp(comps, `load them into this shell: eval "$(jit export)"`)
 		return comps, cobra.ShellCompDirectiveNoFileComp
 	}
