@@ -1,6 +1,6 @@
 ---
 title: Process grants
-description: Pre-approve a running tool to use profiles unattended for a bounded time - one Touch ID now, no prompts while you are away, everything on the audit trail.
+description: Pre-approve a tool to use profiles unattended for a bounded time - one Touch ID now, no prompts while you are away, everything on the audit trail.
 ---
 
 # Process grants - approve now, run unattended
@@ -13,9 +13,9 @@ job: the session drops, the next credential read stops on a prompt nobody
 will answer.
 
 A **process grant** moves your decision earlier instead of removing it. While
-you are at the keyboard, one disclosed Touch ID approves that a specific
-**running process** (and everything it launches) may use the secrets of one
-or more profiles until a deadline you set:
+you are at the keyboard, one disclosed Touch ID approves that a program (and
+everything it launches) may use the secrets of one or more profiles until a
+deadline you set:
 
 ```sh
 jit grant --process claude --profile jamf --profile aws-ci --for 8h
@@ -23,20 +23,40 @@ jit grant --process claude --profile jamf --profile aws-ci --for 8h
 
 The prompt says exactly what you are signing:
 
-> jit is trying to **let claude use 3 secrets (jamf, aws-ci) unattended for 8h**.
+> jit is trying to **let claude under iTerm2 use 3 secrets (jamf, aws-ci) unattended for 8h**.
 
-From then until it expires, credential reads from that process tree succeed
-with no prompts - including while the screen is locked. Everything else
-keeps today's behavior: other processes still prompt, other secrets still
-prompt, and the vault's management commands still take a fresh gesture.
+From then until it expires, credential reads from claude sessions in this
+terminal succeed with no prompts - including while the screen is locked,
+and **including sessions you start later inside the window**: a new tab, a
+scheduled script, the next `claude` you launch. Everything else keeps
+today's behavior: other processes still prompt, other secrets still prompt,
+and the vault's management commands still take a fresh gesture.
 
 ## What a grant anchors to
 
-A grant names a process that **exists right now** - resolved to a live pid
-(and its kernel fork-time stamp), never stored as a name pattern. A new
-process that calls itself `claude` tomorrow inherits nothing. If two
-processes share the name, jit lists them and makes you pick with `--pid`;
-it never guesses.
+`--process NAME` is scoped to **the terminal you type it in**. The anchor is
+the terminal app itself (iTerm2, Terminal, a tmux server, an IDE's terminal,
+an SSH connection) - verified through kernel process ancestry, pinned by pid
+and fork time. A credential read is served only when the asking process sits
+under that exact terminal AND its chain passes through a process named NAME.
+Two consequences worth spelling out:
+
+- **Future sessions are covered.** Membership is checked per read against
+  the live process tree, not against a list frozen at creation - so you can
+  grant before the program even starts (the confirmation says "none running
+  yet"), and an automation that fires in ten minutes inside that terminal
+  or tmux just works.
+- **The name alone never decides.** A process elsewhere on the machine that
+  renames itself `claude` inherits nothing: it does not descend from your
+  terminal, and no process can fake its place in the kernel's tree. The
+  boundary is the terminal you physically granted from; the name only
+  narrows what is served inside it. The flip side: a claude under a
+  *different* app (say VS Code's terminal) is a different tree - grant
+  there too if you want it covered.
+
+`--pid` grants one exact running process instead (and dies when it exits);
+its tab completion annotates each candidate with its working directory and
+age so same-named processes are tellable apart.
 
 The covered secrets are resolved from the profiles **at creation time**, by
 the service itself, through the same project-then-global profile lookup
@@ -49,7 +69,8 @@ covers.
 Whichever comes first, and each ending lands in `jit audit`:
 
 - **its deadline** - `--for` takes `45m`, `8h`, `3d`, capped at 7 days;
-- **the process exiting** - the grant dies with the tree it named;
+- **its anchor exiting** - quitting the terminal app ends a `--process`
+  grant; a `--pid` grant dies with the process it named;
 - **`jit grant revoke <id>`** - immediate, and deliberately needs no
   authentication: reducing access is always free, so the kill switch is the
   easiest command in the feature;
@@ -80,7 +101,7 @@ back everything it did. Each stage is a durable
 
 ```
 $ jit audit --kind grant
-time=... kind=grant status=approved reason="let claude use 2 secrets (jamf) unattended for 8h"
+time=... kind=grant status=approved reason="let claude under iTerm2 use 2 secrets (jamf) unattended for 8h"
 time=... kind=grant status=ended grant=g-7f3a2c81 reason="claude's grant expired"
 $ jit audit --kind use
 time=... kind=use op="read a secret via grant" count=2 parent=claude secrets="jamf/api-user, jamf/api-pass"
