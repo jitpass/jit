@@ -713,18 +713,28 @@ func groupSecretPaths(g *dupGroup) []string {
 // writing to the same output path is not a shared credential, and
 // reporting it would bury the ones that are.
 func sharedCredentialFindings(groups map[string]*dupGroup, consumed []dupFinding) []sharedFinding {
-	inFinding := map[string]bool{}
+	// Group sets already told as same-file findings, so a shared entry that
+	// merely restates one can be suppressed at EMIT time. It must not be
+	// suppressed at COUNT time: a value held by both a consumed group and
+	// others belongs to all of them, and dropping the consumed holders
+	// under-reports where a rotation has to reach.
+	//
+	// That was a real wrong answer. Once jamf/jamf-2 became a same-file
+	// finding, JAMF_CLIENT_ID went from "shared by 6 profiles" to "shared
+	// by 4" on the same vault — the two copies that also hold it silently
+	// vanished from the rotation list, which is the one thing this section
+	// exists to get right.
+	consumedSets := make([]map[string]bool, 0, len(consumed))
 	for _, f := range consumed {
+		set := make(map[string]bool, len(f.Groups))
 		for _, g := range f.Groups {
-			inFinding[g] = true
+			set[g] = true
 		}
+		consumedSets = append(consumedSets, set)
 	}
-	// (key, digest) -> group names sharing it.
+	// (key, digest) -> group names sharing it, over EVERY group.
 	sharing := map[string][]string{}
 	for _, g := range groups {
-		if inFinding[g.name] {
-			continue
-		}
 		for k, h := range g.hashes {
 			if h == "" || looksLikeConfig(k) {
 				continue
@@ -749,6 +759,9 @@ func sharedCredentialFindings(groups map[string]*dupGroup, consumed []dupFinding
 			continue
 		}
 		sort.Strings(names)
+		if restatesFinding(names, consumedSets) {
+			continue // the same-file finding above already covers exactly these
+		}
 		setKey := strings.Join(names, "\x00")
 		f := byGroupSet[setKey]
 		if f == nil {
@@ -766,6 +779,27 @@ func sharedCredentialFindings(groups map[string]*dupGroup, consumed []dupFinding
 		findings = append(findings, *f)
 	}
 	return findings
+}
+
+// restatesFinding reports whether every group sharing a value is already
+// contained in ONE same-file finding — in which case the shared-credentials
+// entry would just repeat it. A set spanning a finding AND other groups is
+// NOT a restatement: those other holders are exactly what a rotation would
+// otherwise miss.
+func restatesFinding(names []string, consumedSets []map[string]bool) bool {
+	for _, set := range consumedSets {
+		all := true
+		for _, n := range names {
+			if !set[n] {
+				all = false
+				break
+			}
+		}
+		if all {
+			return true
+		}
+	}
+	return false
 }
 
 // printDuplicatesReport renders the text report: a findings section in the

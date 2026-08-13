@@ -150,15 +150,27 @@ func TestSharedCredentialFindings(t *testing.T) {
 		t.Errorf("keys = %v, config-named keys must not count", fs[0].Keys)
 	}
 
-	// Groups consumed by a same-file finding don't re-report as shared.
+	// A shared entry covering EXACTLY one same-file finding's groups is a
+	// restatement and is suppressed.
 	consumed := []dupFinding{{Groups: []string{"jamf", "jamf-2"}}}
+	only := map[string]*dupGroup{
+		"jamf":   groups["jamf"],
+		"jamf-2": groups["jamf-2"],
+	}
+	if fs = sharedCredentialFindings(only, consumed); len(fs) != 0 {
+		t.Errorf("a shared entry that only restates a finding must be suppressed, got %+v", fs)
+	}
+
+	// But a value held by a consumed group AND others must still list ALL
+	// holders. Dropping the consumed ones under-reported where a rotation
+	// has to reach: on a real vault JAMF_CLIENT_ID went from "shared by 6
+	// profiles" to "shared by 4" the moment jamf/jamf-2 became a finding.
 	fs = sharedCredentialFindings(groups, consumed)
-	for _, f := range fs {
-		for _, g := range f.Groups {
-			if g == "jamf" || g == "jamf-2" {
-				t.Errorf("consumed group %s re-reported as shared: %+v", g, fs)
-			}
-		}
+	if len(fs) != 1 {
+		t.Fatalf("want one finding spanning the finding and the others, got %+v", fs)
+	}
+	if strings.Join(fs[0].Groups, ",") != "export-c,jamf,jamf-2" {
+		t.Errorf("every holder must be listed for rotation, got %v", fs[0].Groups)
 	}
 }
 
