@@ -18,7 +18,7 @@ func reportEntry(t time.Time, subject, parent, status string) auditEntry {
 
 func renderReport(entries []auditEntry) string {
 	var buf bytes.Buffer
-	printAuditReport(&buf, entries, false)
+	printAuditReport(&buf, entries, false, auditScaleOf(entries))
 	return buf.String()
 }
 
@@ -199,8 +199,8 @@ func TestAuditReportMarksALockAsAStateNotAFailure(t *testing.T) {
 
 func TestAuditReportEmptyStates(t *testing.T) {
 	var filtered, fresh bytes.Buffer
-	printAuditReport(&filtered, nil, true)
-	printAuditReport(&fresh, nil, false)
+	printAuditReport(&filtered, nil, true, auditScale{})
+	printAuditReport(&fresh, nil, false, auditScale{})
 	if !strings.Contains(filtered.String(), "match those filters") {
 		t.Errorf("filtered empty state: %q", filtered.String())
 	}
@@ -235,5 +235,62 @@ func TestAuditReportRowsFitTheWindow(t *testing.T) {
 		if n := len([]rune(line)); n > 80 {
 			t.Errorf("row is %d columns, want <= 80: %q", n, line)
 		}
+	}
+}
+
+// A capped report must say so. The header describes the full match set (its
+// count, span, and outcome tallies), never the printed page alone — a header
+// that reported 50 events over one afternoon against a --since 3d query read
+// as "the older history was deleted".
+func TestAuditReportCappedHeaderSpeaksForTheFullMatchSet(t *testing.T) {
+	base := time.Date(2026, 8, 12, 17, 0, 0, 0, time.Local)
+	full := []auditEntry{
+		reportEntry(base, "jit status", "iTerm", "ok"),
+		reportEntry(base.Add(-time.Hour), "jit run -- true", "claude", "failed"),
+		{t: base.Add(-2 * time.Hour), kind: "serve", status: "decoy", subject: "decoy served to node"},
+		reportEntry(base.Add(-72*time.Hour), "jit vault list", "iTerm", "ok"),
+	}
+	scale := auditScaleOf(full)
+
+	var buf bytes.Buffer
+	printAuditReport(&buf, full[:2], false, scale)
+	out := buf.String()
+
+	if !strings.Contains(out, "2 of 4 events") {
+		t.Errorf("capped header must count shown-of-matched:\n%s", out)
+	}
+	// The span covers the whole match set (multi-day), not the printed page's
+	// single afternoon.
+	if !strings.Contains(out, " – ") {
+		t.Errorf("capped header must span the full match set's days:\n%s", out)
+	}
+	// The failed command is on the page, the decoy row is not — both still
+	// belong to the header's tallies.
+	if !strings.Contains(out, "1 failed") || !strings.Contains(out, "1 decoy read") {
+		t.Errorf("header tallies must cover rows the cap cut:\n%s", out)
+	}
+	// And the way out is named: the trailer leads with --limit 0 and carries
+	// the full count, plus the decoy filter the cut row earns.
+	if !strings.Contains(out, "--limit 0") || !strings.Contains(out, "all 4 events") {
+		t.Errorf("capped trailer must point at --limit 0:\n%s", out)
+	}
+	if !strings.Contains(out, "--status decoy") {
+		t.Errorf("a decoy the cap cut must still earn its filter hint:\n%s", out)
+	}
+}
+
+// An uncapped report keeps today's exact shape: a plain count, no
+// shown-of-matched, no --limit hint.
+func TestAuditReportUncappedHeaderUnchanged(t *testing.T) {
+	now := time.Now()
+	out := renderReport([]auditEntry{
+		reportEntry(now, "jit status", "iTerm", "ok"),
+		reportEntry(now.Add(-time.Minute), "jit vault list", "iTerm", "ok"),
+	})
+	if !strings.Contains(out, "2 events") || strings.Contains(out, " of ") {
+		t.Errorf("uncapped header must stay a plain count:\n%s", out)
+	}
+	if strings.Contains(out, "--limit") {
+		t.Errorf("uncapped trailer must not hint at --limit:\n%s", out)
 	}
 }

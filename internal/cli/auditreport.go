@@ -46,13 +46,15 @@ const (
 var auditHangIndent = strings.Repeat(" ", auditRowLead)
 
 // printAuditReport renders the merged trail as the human report. Entries
-// arrive newest-first and already filtered and limited.
-func printAuditReport(w io.Writer, entries []auditEntry, filtered bool) {
+// arrive newest-first and already filtered and limited; scale describes the
+// full match set they were cut from, so the header and footer can speak for
+// the whole query even when --limit capped what prints.
+func printAuditReport(w io.Writer, entries []auditEntry, filtered bool, scale auditScale) {
 	if len(entries) == 0 {
 		printAuditEmpty(w, filtered)
 		return
 	}
-	writeAuditHeader(w, entries)
+	writeAuditHeader(w, entries, scale)
 	groups := groupAuditEntries(entries)
 	cols := auditColumns(groups)
 
@@ -71,14 +73,25 @@ func printAuditReport(w io.Writer, entries []auditEntry, filtered bool) {
 	fmt.Fprintln(w)
 	fmt.Fprint(w, "  ")
 	_, _ = cPath.Fprint(w, glyphAction+" ")
-	// Point at the most useful next filter. When any unlock was refused, name
-	// --status denied too, since it is now a distinct count in the header above.
-	hint := cPath.Sprint("jit audit --status failed") +
-		"   only what went wrong"
-	if _, denied := auditOutcomeCounts(entries); denied > 0 {
+	// Point at the most useful next step. When --limit cut the view, that is
+	// seeing the rest — a capped report once read as "history deleted" to a
+	// reader who asked for three days and got one afternoon back. Otherwise
+	// lead with the sharpest filter. Either way the conditional hints are
+	// judged against the FULL match set, so a denial or decoy that --limit
+	// pushed off the page still earns its filter a mention.
+	var hint string
+	if scale.total > len(entries) {
+		hint = cPath.Sprint("jit audit --limit 0") +
+			fmt.Sprintf("   all %d events", scale.total) +
+			" · " + cPath.Sprint("--status failed") + " for what went wrong"
+	} else {
+		hint = cPath.Sprint("jit audit --status failed") +
+			"   only what went wrong"
+	}
+	if scale.denied > 0 {
 		hint += " · " + cPath.Sprint("--status denied") + " for refusals"
 	}
-	if auditDecoyRows(entries) > 0 {
+	if scale.decoy > 0 {
 		hint += " · " + cPath.Sprint("--status decoy") + " for reads that got decoys"
 	}
 	hint += " · --format logfmt for the machine form"
@@ -96,33 +109,61 @@ func printAuditEmpty(w io.Writer, filtered bool) {
 	fmt.Fprintln(w, hlCmds("No audit log yet. It fills in as you run jit commands; if the service has never run, there are no unlocks to show either."))
 }
 
-// writeAuditHeader states the scale of what follows: how many events, over
-// what span, and how many of them failed. The logfmt view had no summary at
-// all, so "did anything go wrong today?" meant reading every line.
-func writeAuditHeader(w io.Writer, entries []auditEntry) {
+// auditScale describes the FULL match set a report was drawn from, measured
+// before --limit cut it down to a page. The header renders these numbers, not
+// the printed slice's: a header that tallied only the visible rows described
+// its own page while appearing to describe the query — `--since 3d` answered
+// with one afternoon's span and no hint that 164 matches were cut, which a
+// reasonable reader took as "the older history is gone".
+type auditScale struct {
+	total          int
+	oldest, newest time.Time
+	failed, denied int
+	decoy          int
+}
+
+// auditScaleOf measures the full match set. Entries arrive newest-first.
+func auditScaleOf(entries []auditEntry) auditScale {
+	s := auditScale{total: len(entries)}
+	if s.total == 0 {
+		return s
+	}
+	s.newest, s.oldest = entries[0].t, entries[len(entries)-1].t
+	s.failed, s.denied = auditOutcomeCounts(entries)
+	s.decoy = auditDecoyRows(entries)
+	return s
+}
+
+// writeAuditHeader states the scale of what the query MATCHED: how many
+// events, over what span, and how many of them failed — with a "50 of 214"
+// count when --limit means the rows below are only the newest page of it.
+// The logfmt view had no summary at all, so "did anything go wrong today?"
+// meant reading every line.
+func writeAuditHeader(w io.Writer, entries []auditEntry, scale auditScale) {
+	count := countWord(scale.total, "event", "events")
+	if scale.total > len(entries) {
+		count = fmt.Sprintf("%d of %d events", len(entries), scale.total)
+	}
+	span := fmt.Sprintf("%s–%s", scale.oldest.Format("15:04"), scale.newest.Format("15:04"))
+	if !sameDay(scale.oldest, scale.newest) {
+		span = fmt.Sprintf("%s – %s", auditDayLabel(scale.oldest), auditDayLabel(scale.newest))
+	}
+	head := fmt.Sprintf("jit audit — %s · %s", count, span)
 	// Count the two bad outcomes separately: they are distinct statuses a reader
 	// can filter on (--status failed vs --status denied), so collapsing them
 	// into one "failed" made the header disagree with the filter it points at.
-	failed, denied := auditOutcomeCounts(entries)
-	// Entries are newest-first.
-	newest, oldest := entries[0].t, entries[len(entries)-1].t
-	span := fmt.Sprintf("%s–%s", oldest.Format("15:04"), newest.Format("15:04"))
-	if !sameDay(oldest, newest) {
-		span = fmt.Sprintf("%s – %s", auditDayLabel(oldest), auditDayLabel(newest))
+	if scale.failed > 0 {
+		head += fmt.Sprintf(" · %d failed", scale.failed)
 	}
-	head := fmt.Sprintf("jit audit — %s · %s", countWord(len(entries), "event", "events"), span)
-	if failed > 0 {
-		head += fmt.Sprintf(" · %d failed", failed)
-	}
-	if denied > 0 {
-		head += fmt.Sprintf(" · %d denied", denied)
+	if scale.denied > 0 {
+		head += fmt.Sprintf(" · %d denied", scale.denied)
 	}
 	// Decoy reads are counted in ROWS, not in the collapsed Count each row
 	// carries: the header's job is "how much of what follows is this", and a
 	// single looping watcher would otherwise report thousands and read like a
 	// breach.
-	if decoy := auditDecoyRows(entries); decoy > 0 {
-		head += fmt.Sprintf(" · %s", countWord(decoy, "decoy read", "decoy reads"))
+	if scale.decoy > 0 {
+		head += fmt.Sprintf(" · %s", countWord(scale.decoy, "decoy read", "decoy reads"))
 	}
 	_, _ = fmt.Fprintln(w, head)
 	fmt.Fprintln(w)

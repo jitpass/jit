@@ -78,6 +78,7 @@ jit audit [flags]
       --grep string     only entries whose rendered line matches this regular expression
       --kind strings    only these kinds (comma-separated): cmd, unlock, use, grant, serve, lock, service, error
       --limit int       show at most this many recent matching entries (0 for all) (default 50)
+      --no-pager        print straight to the terminal instead of paging through $PAGER
       --parent string   only entries whose launched-by ancestor contains this (e.g. claude)
       --secret string   only auth events that touched a secret whose name contains this
       --since string    only entries at or after this time: an age (2h, 90m, 3d) or a date ("2026-07-23" or "2026-07-23 09:00")

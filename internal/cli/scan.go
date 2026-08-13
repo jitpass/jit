@@ -239,7 +239,7 @@ var scanCmd = &cobra.Command{
 			return failOnResult(scanFailOn, summary.RiskLevel, summary.ExposureScore, len(summary.DegradedScanners))
 		}
 
-		out := cmd.OutOrStdout()
+		var out io.Writer
 		home, _ := os.UserHomeDir() // display-only "~"-shortening; "" (no shortening) if unresolvable
 		var outFile *os.File
 		if scanOutput != "" {
@@ -260,6 +260,13 @@ var scanCmd = &cobra.Command{
 			// later, often by a tool that can't expand "~" — keep the
 			// absolute file:line locations a terminal reader doesn't need.
 			home = ""
+		} else {
+			// On a terminal, page the report: a machine-wide scan runs well
+			// past one screen. Lazy spawn (see pageableOutput) keeps the
+			// progress trail above visible while the scan itself runs.
+			var donePaging func()
+			out, donePaging = pageableOutput(cmd)
+			defer donePaging()
 		}
 
 		// The triage view is the default for a machine-wide text scan: the
@@ -357,6 +364,7 @@ func init() {
 	scanCmd.Flags().BoolVar(&scanScore, "score", false, `print only the exposure score (e.g. "Exposure: 92/100 (CRITICAL)") and exit`)
 	scanCmd.Flags().BoolVar(&scanFull, "full", false, "print the full finding inventory (categories, severities, every file and line) instead of the coverage summary")
 	scanCmd.Flags().StringVar(&scanFailOn, "fail-on", "", "exit 2 when the scan's risk level is at or above this: critical, high, medium, low, or any (default: always exit 0)")
+	registerPagerFlag(scanCmd)
 	_ = scanCmd.RegisterFlagCompletionFunc("fail-on", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 		return []string{audit.RiskLevelCritical, audit.RiskLevelHigh, audit.RiskLevelMedium, audit.RiskLevelLow, "any"}, cobra.ShellCompDirectiveNoFileComp
 	})

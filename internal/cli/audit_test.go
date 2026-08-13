@@ -287,7 +287,7 @@ func TestAuditHeaderCountsDecoyRowsNotReads(t *testing.T) {
 		{t: time.Unix(5000, 0), kind: "serve", status: "decoy", subject: "decoy served to node ×34"},
 		{t: time.Unix(4000, 0), kind: "serve", status: "real", subject: "real value served to terraform"},
 	}
-	writeAuditHeader(&buf, entries)
+	writeAuditHeader(&buf, entries, auditScaleOf(entries))
 	if got := buf.String(); !strings.Contains(got, "1 decoy read") {
 		t.Errorf("header = %q, want it to count 1 decoy row (not 34 reads)", got)
 	}

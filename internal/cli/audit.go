@@ -412,12 +412,17 @@ var auditCmd = &cobra.Command{
 		commands := auditlog.New(root, io.Discard).Load(0)
 		events := newHistoryLog(root, io.Discard).load(1 << 30)
 
+		// Page the snapshot views on a terminal. --follow stays direct: it
+		// streams live, and a pager buffering an endless tail shows nothing.
+		out, donePaging := pageableOutput(cmd)
+		defer donePaging()
+
 		if auditFormat == "json" {
 			keptCmds, keptEvents := filterSources(commands, events, filter, auditLimit)
-			return writeJSON(cmd.OutOrStdout(), auditJSON{Commands: keptCmds, AuthEvents: keptEvents})
+			return writeJSON(out, auditJSON{Commands: keptCmds, AuthEvents: keptEvents})
 		}
 
-		printAuditLog(cmd.OutOrStdout(), commands, events, filter, auditLimit)
+		printAuditLog(out, commands, events, filter, auditLimit)
 		return nil
 	},
 }
@@ -471,6 +476,9 @@ func printAuditLog(w io.Writer, commands []auditlog.Record, events []agent.Sessi
 	// Newest first. Stable so that a command and the unlock it triggered, which
 	// can share a whole-second timestamp, keep the order they were appended in.
 	sort.SliceStable(entries, func(i, j int) bool { return entries[i].t.After(entries[j].t) })
+	// Measure the whole match set BEFORE the limit cuts it: the header
+	// describes what the query matched, the cap only decides what prints.
+	scale := auditScaleOf(entries)
 	if limit > 0 && len(entries) > limit {
 		entries = entries[:limit]
 	}
@@ -481,7 +489,7 @@ func printAuditLog(w io.Writer, commands []auditlog.Record, events []agent.Sessi
 		}
 		return
 	}
-	printAuditReport(w, entries, filter.active())
+	printAuditReport(w, entries, filter.active(), scale)
 }
 
 // buildEntries renders every command and event that survives the filter into a
@@ -1136,6 +1144,7 @@ func init() {
 	auditCmd.Flags().StringVar(&auditParent, "parent", "", "only entries whose launched-by ancestor contains this (e.g. claude)")
 	auditCmd.Flags().StringVar(&auditSecret, "secret", "", "only auth events that touched a secret whose name contains this")
 	auditCmd.Flags().StringVar(&auditGrep, "grep", "", "only entries whose rendered line matches this regular expression")
+	registerPagerFlag(auditCmd)
 
 	// `jit audit` is the one filterable surface, and every filter is a flag:
 	// tab offered a directory listing for all eleven of them, and nothing at
