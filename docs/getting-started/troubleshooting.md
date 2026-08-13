@@ -64,6 +64,16 @@ description: Placeholder values, hanging reads, surprise Touch ID prompts, MCP s
   upgraded that way; otherwise run `jit service restart` to move it onto the
   current binary now (it also switches on its own within a few seconds once
   idle). See [Upgrading](./install.md#upgrading).
+- **`jit grant --process` says the service predates tree grants.** The running
+  service is an older binary that would have granted your whole terminal
+  instead of only the named program - wider than the prompt you approved. jit
+  revokes that grant on the spot rather than leaving it standing; run
+  `jit service restart` and create it again. Same cause as the "different
+  build" warning above.
+- **A grant covers your tool but a mounted file still prompts.** Grants cover
+  pull-at-use delivery, not FIFO mounts, which keep their own
+  [consent gating](../service/consent.md). See
+  [the honest limits](../service/grants.md#the-honest-limits).
 - **A wrapped tool stopped authenticating.** See
   [Wrap troubleshooting](../wrap/troubleshooting.md) - `jit doctor --wrap`
   checks every shim, PATH entry, and profile.

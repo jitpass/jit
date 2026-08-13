@@ -125,3 +125,26 @@ The session events above are read only through `jit audit` now; they are no
 longer duplicated into the service's own log. That log, `jit service log` (and
 `-f` to follow it), is the raw operational record behind the daemon: startup,
 per-mount reader lineage, and the prose detail of any serve error.
+
+## Reading a long trail
+
+The report shows the newest 50 matching entries by default, and its header
+counts the **whole match set**, not the page:
+
+```
+jit audit — 50 of 214 events · Mon 10 Aug – Today
+```
+
+So `--since 3d` reports three days' span and three days' failure counts even
+when the cap cut the rows below it - a header that tallied only what printed
+read as "the older history was deleted". The trailer's first hint is the way
+out, `jit audit --limit 0`, with the full count next to it; `--limit N` picks
+any other page size. Failed, denied and decoy tallies are measured before the
+cap too, so a refusal the cap pushed off the page still earns its filter a
+mention.
+
+Long reports page through your pager on a terminal (`$JIT_PAGER`, then
+`$PAGER`, then `less`), so `--limit 0` is readable rather than a wall of
+scrollback. `--no-pager` prints straight through, `--follow` never pages, and
+piped output is unchanged. See
+[CLI conventions](../reference/conventions.md#long-reports-page-like-git).

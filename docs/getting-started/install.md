@@ -121,7 +121,7 @@ never have to remember or retype an exact path or name:
 | `jit migrate undo` | files with a restorable backup, plus each one's parent directory |
 | `jit unmount` | your live-mounted file paths |
 | any `--profile` flag | profile names visible from the current directory |
-| `jit grant` | the create shape; `--process` offers programs that recently asked for a secret |
+| `jit grant` | the create shape one flag at a time: `--process` (programs that recently asked for a secret) or `--pid`, then `--profile`, then `--for` |
 | `jit grant revoke`/`extend` | your live grant ids, each with its program and expiry |
 | `jit wrap add` | every tool jit knows how to wrap, then the required `--env`/`--grant` |
 | `jit wrap undo` | the tools you've currently wrapped |
@@ -136,6 +136,12 @@ completing an argument never triggers a Touch ID prompt mid-keystroke. Where
 there is nothing to offer yet (an empty vault, no profiles here, no live
 grants), `<TAB>` prints a one-line hint naming the command that changes that
 instead of going silent.
+
+Where a command's flags are the thing to complete - `jit grant`, `jit wrap
+add`, `jit audit`, `jit export` - `<TAB>` accounts for what you've already
+typed: a flag on the line is not offered again (a repeatable one like `--env`
+still is), and the commands that build up a single request walk their flags in
+order, ending with "press enter" once the line is valid.
 
 **zsh** (macOS default):
 
