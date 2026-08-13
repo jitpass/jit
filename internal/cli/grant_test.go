@@ -171,16 +171,64 @@ func TestGrantListRendering(t *testing.T) {
 			ExpiresUnix: time.Now().Add(6 * time.Hour).Unix(), Serves: 4, RootAlive: true},
 		{ID: "g-2c91aa00", Name: "terraform", Profiles: []string{"aws-ci"}, Secrets: []string{"c"},
 			ExpiresUnix: time.Now().Add(24 * time.Hour).Unix(), RootAlive: false},
+		{ID: "g-55e01b2d", Name: "claude", Anchor: "iTerm2", Profiles: []string{"jamf"}, Secrets: []string{"a"},
+			ExpiresUnix: time.Now().Add(time.Hour).Unix(), RootAlive: false},
 	}
 	renderGrantRows(&b, grants)
 	out := b.String()
-	for _, want := range []string{"[Grants] 2", "g-7f3a2c81", "4 serves", "process exited, ending", "unused"} {
+	// The dead-anchor wording depends on the grant's shape: an exact grant's
+	// root is the process itself ("process exited"), a tree grant's is the
+	// terminal it hangs under ("terminal closed").
+	for _, want := range []string{"[Grants] 3", "g-7f3a2c81", "4 serves", "process exited, ending", "terminal closed, ending", "unused"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("grant list output missing %q:\n%s", want, out)
 		}
 	}
 	if strings.Contains(out, "\t") {
 		t.Error("grant list uses tabs; columns are whitespace-padded in the house style")
+	}
+}
+
+// TestResolveGrantTargetTreeMode: --process anchors to this session's root
+// with the name as the filter — no live match required, no disambiguation —
+// while --pid stays the exact-one-process mode.
+func TestResolveGrantTargetTreeMode(t *testing.T) {
+	grantPIDFlag, grantProcess = 0, "claude"
+	defer func() { grantProcess = "" }()
+	target, err := resolveGrantTarget()
+	if err != nil {
+		t.Skipf("no session root above this test process (bare runner): %v", err)
+	}
+	if target.name != "claude" {
+		t.Errorf("tree target name = %q, want claude", target.name)
+	}
+	self := int32(os.Getpid()) // #nosec G115 -- test pid
+	if target.anchor.PID <= 1 || target.anchor.PID == self {
+		t.Errorf("tree anchor pid = %d, want a proper ancestor of the CLI", target.anchor.PID)
+	}
+}
+
+// TestGrantCreatedShowsTreeScope: a tree grant's confirmation must state its
+// perimeter (name under anchor) and the granting-ahead fact when nothing
+// matches yet; an exact grant's must not carry a scope line at all.
+func TestGrantCreatedShowsTreeScope(t *testing.T) {
+	var b strings.Builder
+	printGrantCreated(&b, agent.GrantStatus{ID: "g-1", Name: "claude", Anchor: "iTerm2",
+		PID: 999999998, Profiles: []string{"jamf"}, Secrets: []string{"jamf/api"},
+		ExpiresUnix: time.Now().Add(time.Hour).Unix()})
+	out := b.String()
+	if !strings.Contains(out, "covers claude under iTerm2") {
+		t.Errorf("tree confirmation lacks the scope line:\n%s", out)
+	}
+	if !strings.Contains(out, "none running yet") {
+		t.Errorf("tree confirmation with no live match must say it grants ahead:\n%s", out)
+	}
+	b.Reset()
+	printGrantCreated(&b, agent.GrantStatus{ID: "g-2", Name: "claude", PID: 123,
+		Profiles: []string{"jamf"}, Secrets: []string{"jamf/api"},
+		ExpiresUnix: time.Now().Add(time.Hour).Unix()})
+	if strings.Contains(b.String(), "covers") {
+		t.Errorf("exact-grant confirmation must not carry a tree scope line:\n%s", b.String())
 	}
 }
 

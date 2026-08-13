@@ -106,6 +106,90 @@ func AncestryContainsPID(pid, root int32) bool {
 	return false
 }
 
+// AncestryNamedWithin walks pid's parent chain toward launchd and reports
+// whether the chain passes through a process whose display Name() is name at
+// or below root, and then reaches root itself. It is AncestryContainsPID
+// with one extra condition, and the same fail-closed posture: any unreadable
+// link, cycle, or cap overrun answers false.
+//
+// This is the serve gate for a tree-scoped process grant ("claude under
+// iTerm2"). The two conditions carry very different weight, and the design
+// leans on the strong one: reaching root is a kernel fact no process can
+// arrange for itself, while the name is self-chosen (argv/exec path) and
+// trivially claimed. The name therefore only NARROWS which descendants of
+// the human-approved root are served — a process outside root's tree gains
+// nothing by renaming itself, and a hostile process already inside the tree
+// was already inside the perimeter the human approved. The decision is the
+// disclosed challenge bound to root at creation; this walk only routes to it.
+func AncestryNamedWithin(pid, root int32, name string) bool {
+	// root <= 1 answers false outright: everything descends from launchd, so
+	// a launchd-rooted walk would let the self-chosen name decide alone —
+	// creation refuses to mint such a grant, and this is the serve-side belt.
+	if pid <= 0 || root <= 1 || name == "" {
+		return false
+	}
+	cur := pid
+	nameSeen := false
+	for depth := 0; depth < grantAncestryCap; depth++ {
+		if !nameSeen {
+			if p, ok := Describe(cur); ok && p.Name() == name {
+				nameSeen = true
+			}
+		}
+		if cur == root {
+			return nameSeen
+		}
+		if cur <= 1 {
+			return false
+		}
+		kp, err := unix.SysctlKinfoProc("kern.proc.pid", int(cur))
+		if err != nil {
+			return false
+		}
+		ppid := int32(kp.Eproc.Ppid)
+		if ppid == cur {
+			return false // self-parent: impossible, but never loop on it
+		}
+		cur = ppid
+	}
+	return false
+}
+
+// SessionRoot returns the topmost ancestor of pid below launchd — the
+// terminal app, tmux server, or SSH connection that owns pid's session —
+// which is what a tree-scoped grant anchors to. ok is false when pid has no
+// such ancestor to speak of: it is launchd's own child (a daemon has no
+// session), or the chain was unreadable from the first hop. A chain that
+// becomes unreadable partway returns the topmost ancestor that could be
+// read: a narrower anchor is the safe direction, never a wider one.
+func SessionRoot(pid int32) (Process, bool) {
+	if pid <= 0 {
+		return Process{}, false
+	}
+	top := int32(0) // topmost ancestor read so far, strictly above pid
+	cur := pid
+	for depth := 0; depth < grantAncestryCap; depth++ {
+		kp, err := unix.SysctlKinfoProc("kern.proc.pid", int(cur))
+		if err != nil {
+			break // unreadable from here up: top is the narrowest safe anchor
+		}
+		ppid := int32(kp.Eproc.Ppid)
+		if ppid <= 1 || ppid == cur {
+			break // cur is launchd's child: the session root (or the cycle guard fired)
+		}
+		top = ppid
+		cur = ppid
+	}
+	if top == 0 {
+		return Process{}, false
+	}
+	p, ok := Describe(top)
+	if !ok {
+		return Process{}, false
+	}
+	return p, true
+}
+
 // ProcessStartTime returns pid's fork-time stamp in microseconds since the
 // epoch, ok=false when the process is gone or unreadable. The stamp is
 // stable across execve (spike-verified through a double exec), which is

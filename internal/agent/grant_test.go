@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jitpass/jit/internal/lineage"
 )
 
 // grantTestMEK matches fakeFetcher's key so tests can pre-seal wrapped DEKs
@@ -51,7 +53,7 @@ func TestGrantServesAcrossLockWithoutPrompting(t *testing.T) {
 	wireGrantResolver(s, sec)
 
 	c := NewClient(socketPath)
-	st, err := c.GrantCreate(int32(os.Getpid()), []string{"jamf"}, "", time.Hour) // #nosec G115 -- test pid
+	st, err := c.GrantCreate(int32(os.Getpid()), "", []string{"jamf"}, "", time.Hour) // #nosec G115 -- test pid
 	if err != nil {
 		t.Fatalf("GrantCreate: %v", err)
 	}
@@ -100,6 +102,107 @@ func TestGrantServesAcrossLockWithoutPrompting(t *testing.T) {
 	}
 }
 
+// TestTreeGrantServesByNameUnderAnchor pins the tree-scoped shape: a grant
+// anchored at the caller's parent with the caller's own name as the filter
+// must serve — the caller here stands in for "a claude started at any point
+// inside the window", since creation records no pid set to check against.
+func TestTreeGrantServesByNameUnderAnchor(t *testing.T) {
+	var calls int32
+	s, socketPath, cleanup := startTestServer(t, time.Minute, &calls)
+	defer cleanup()
+
+	dek := bytes.Repeat([]byte{0x07}, 32)
+	sec := sealGrantSecret(t, "jamf/api-pass", "mcp", dek)
+	wireGrantResolver(s, sec)
+
+	ownName := ""
+	if p, ok := lineage.Describe(int32(os.Getpid())); ok { // #nosec G115 -- test pid
+		ownName = p.Name()
+	}
+	if ownName == "" {
+		t.Fatal("Describe(self) yields no name")
+	}
+
+	c := NewClient(socketPath)
+	st, err := c.GrantCreate(int32(os.Getppid()), ownName, []string{"jamf"}, "", time.Hour) // #nosec G115 -- test ppid
+	if err != nil {
+		t.Fatalf("GrantCreate (tree): %v", err)
+	}
+	if st.Anchor == "" {
+		t.Error("tree grant reports no Anchor; the list cannot say what it hangs under")
+	}
+	if st.Name != ownName {
+		t.Errorf("tree grant Name = %q, want the filter %q", st.Name, ownName)
+	}
+
+	got, err := c.UnwrapKeyLabeled(sec.Wrapped, "jamf/api-pass", "mcp")
+	if err != nil {
+		t.Fatalf("UnwrapKeyLabeled under tree grant: %v", err)
+	}
+	if !bytes.Equal(got, dek) {
+		t.Errorf("tree grant served %x, want %x", got, dek)
+	}
+	if gotCalls := atomic.LoadInt32(&calls); gotCalls != 1 {
+		t.Errorf("tree-grant serve challenged the human (%d fetches, want 1)", gotCalls)
+	}
+}
+
+// TestTreeGrantNameMissFallsThrough: same anchor, a name the caller's chain
+// does not carry — the grant must not serve, and the request rides the
+// ordinary challenge path instead.
+func TestTreeGrantNameMissFallsThrough(t *testing.T) {
+	var calls int32
+	s, socketPath, cleanup := startTestServer(t, time.Minute, &calls)
+	defer cleanup()
+
+	dek := bytes.Repeat([]byte{0x07}, 32)
+	sec := sealGrantSecret(t, "jamf/api-pass", "mcp", dek)
+	wireGrantResolver(s, sec)
+
+	c := NewClient(socketPath)
+	if _, err := c.GrantCreate(int32(os.Getppid()), "sleep", []string{"jamf"}, "", time.Hour); err != nil { // #nosec G115 -- test ppid
+		t.Fatalf("GrantCreate (tree, granting ahead of any sleep): %v", err)
+	}
+	if _, err := c.UnwrapKeyLabeled(sec.Wrapped, "jamf/api-pass", "mcp"); err != nil {
+		t.Fatalf("UnwrapKeyLabeled: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Errorf("caller not named sleep was served by the tree grant (%d fetches, want 2)", got)
+	}
+}
+
+// TestTreeGrantAnchorMustBeCallersOwnAncestor: anchoring under a pid the
+// creator does not descend from must fail before any prompt, and launchd is
+// never a session root.
+func TestTreeGrantAnchorMustBeCallersOwnAncestor(t *testing.T) {
+	var calls int32
+	s, socketPath, cleanup := startTestServer(t, time.Minute, &calls)
+	defer cleanup()
+	sec := sealGrantSecret(t, "jamf/api-pass", "mcp", bytes.Repeat([]byte{0x07}, 32))
+	wireGrantResolver(s, sec)
+
+	// A child is inside OUR tree, but we are not inside ITS tree.
+	child := exec.Command("sleep", "60")
+	if err := child.Start(); err != nil {
+		t.Fatalf("starting child: %v", err)
+	}
+	defer func() {
+		_ = child.Process.Kill()
+		_, _ = child.Process.Wait()
+	}()
+
+	c := NewClient(socketPath)
+	if _, err := c.GrantCreate(int32(child.Process.Pid), "sleep", []string{"jamf"}, "", time.Hour); err == nil || !strings.Contains(err.Error(), "ancestor") { // #nosec G115 -- test pid
+		t.Errorf("tree grant anchored under a non-ancestor = %v, want an ancestry refusal", err)
+	}
+	if _, err := c.GrantCreate(1, "sleep", []string{"jamf"}, "", time.Hour); err == nil || !strings.Contains(err.Error(), "launchd") {
+		t.Errorf("tree grant anchored under launchd = %v, want a launchd refusal", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Errorf("refused tree grants reached the prompt %d times, want 0", got)
+	}
+}
+
 func TestGrantMissFallsThroughToOrdinaryUnlock(t *testing.T) {
 	var calls int32
 	s, socketPath, cleanup := startTestServer(t, time.Minute, &calls)
@@ -110,7 +213,7 @@ func TestGrantMissFallsThroughToOrdinaryUnlock(t *testing.T) {
 	wireGrantResolver(s, covered)
 
 	c := NewClient(socketPath)
-	if _, err := c.GrantCreate(int32(os.Getpid()), []string{"jamf"}, "", time.Hour); err != nil { // #nosec G115 -- test pid
+	if _, err := c.GrantCreate(int32(os.Getpid()), "", []string{"jamf"}, "", time.Hour); err != nil { // #nosec G115 -- test pid
 		t.Fatalf("GrantCreate: %v", err)
 	}
 
@@ -150,7 +253,7 @@ func TestGrantDoesNotServeAForeignProcessTree(t *testing.T) {
 	}()
 
 	c := NewClient(socketPath)
-	if _, err := c.GrantCreate(int32(child.Process.Pid), []string{"jamf"}, "", time.Hour); err != nil { // #nosec G115 -- test pid
+	if _, err := c.GrantCreate(int32(child.Process.Pid), "", []string{"jamf"}, "", time.Hour); err != nil { // #nosec G115 -- test pid
 		t.Fatalf("GrantCreate: %v", err)
 	}
 
@@ -187,7 +290,7 @@ func TestGrantEndsWhenRootExits(t *testing.T) {
 	pid := int32(child.Process.Pid) // #nosec G115 -- test pid
 
 	c := NewClient(socketPath)
-	if _, err := c.GrantCreate(pid, []string{"jamf"}, "", time.Hour); err != nil {
+	if _, err := c.GrantCreate(pid, "", []string{"jamf"}, "", time.Hour); err != nil {
 		t.Fatalf("GrantCreate: %v", err)
 	}
 	_ = child.Process.Kill()
@@ -213,7 +316,7 @@ func TestGrantExpiryEndsTheGrant(t *testing.T) {
 	wireGrantResolver(s, sec)
 
 	c := NewClient(socketPath)
-	st, err := c.GrantCreate(int32(os.Getpid()), []string{"jamf"}, "", time.Hour) // #nosec G115 -- test pid
+	st, err := c.GrantCreate(int32(os.Getpid()), "", []string{"jamf"}, "", time.Hour) // #nosec G115 -- test pid
 	if err != nil {
 		t.Fatalf("GrantCreate: %v", err)
 	}
@@ -250,7 +353,7 @@ func TestGrantRevokeIsImmediateAndUnauthenticated(t *testing.T) {
 	wireGrantResolver(s, sec)
 
 	c := NewClient(socketPath)
-	st, err := c.GrantCreate(int32(os.Getpid()), []string{"jamf"}, "", time.Hour) // #nosec G115 -- test pid
+	st, err := c.GrantCreate(int32(os.Getpid()), "", []string{"jamf"}, "", time.Hour) // #nosec G115 -- test pid
 	if err != nil {
 		t.Fatalf("GrantCreate: %v", err)
 	}
@@ -282,7 +385,7 @@ func TestGrantExtendReprompts(t *testing.T) {
 	wireGrantResolver(s, sec)
 
 	c := NewClient(socketPath)
-	st, err := c.GrantCreate(int32(os.Getpid()), []string{"jamf"}, "", time.Hour) // #nosec G115 -- test pid
+	st, err := c.GrantCreate(int32(os.Getpid()), "", []string{"jamf"}, "", time.Hour) // #nosec G115 -- test pid
 	if err != nil {
 		t.Fatalf("GrantCreate: %v", err)
 	}
@@ -313,7 +416,7 @@ func TestGrantCreateFailsClosedOnClassMismatch(t *testing.T) {
 	wireGrantResolver(s, good, GrantSecret{Path: "aws/key", Wrapped: wrapped, Class: "docker"})
 
 	c := NewClient(socketPath)
-	_, err = c.GrantCreate(int32(os.Getpid()), []string{"jamf", "aws"}, "", time.Hour) // #nosec G115 -- test pid
+	_, err = c.GrantCreate(int32(os.Getpid()), "", []string{"jamf", "aws"}, "", time.Hour) // #nosec G115 -- test pid
 	if err == nil || !strings.Contains(err.Error(), "no grant created") {
 		t.Fatalf("GrantCreate with a lying class = %v, want a no-grant-created failure", err)
 	}
@@ -356,15 +459,21 @@ func TestGrantCreateValidatesBeforePrompting(t *testing.T) {
 }
 
 func TestGrantCreateReasonWording(t *testing.T) {
-	got := grantCreateReason("claude", []string{"jamf", "aws-ci"}, 3, 8*time.Hour)
+	got := grantCreateReason("claude", "", []string{"jamf", "aws-ci"}, 3, 8*time.Hour)
 	want := "let claude use 3 secrets (jamf, aws-ci) unattended for 8h"
 	if got != want {
 		t.Errorf("grantCreateReason = %q, want %q", got, want)
 	}
-	if r := grantCreateReason("", []string{"p"}, 1, time.Minute); !strings.Contains(r, "this process") {
+	// The tree-scoped shape must name both halves of the perimeter: the
+	// filter name AND the anchor the human is hanging it under.
+	tree := grantCreateReason("claude", "iTerm2", []string{"jamf"}, 1, time.Hour)
+	if want := "let claude under iTerm2 use 1 secret (jamf) unattended for 1h"; tree != want {
+		t.Errorf("tree grantCreateReason = %q, want %q", tree, want)
+	}
+	if r := grantCreateReason("", "", []string{"p"}, 1, time.Minute); !strings.Contains(r, "this process") {
 		t.Errorf("nameless reason = %q, want a 'this process' fallback", r)
 	}
-	long := grantCreateReason(strings.Repeat("x", 100), []string{strings.Repeat("y", 100)}, 12, 3*24*time.Hour)
+	long := grantCreateReason(strings.Repeat("x", 100), strings.Repeat("z", 100), []string{strings.Repeat("y", 100)}, 12, 3*24*time.Hour)
 	if len([]rune(long)) > maxReasonLen {
 		t.Errorf("reason is %d runes, must fit the %d-rune prompt budget", len([]rune(long)), maxReasonLen)
 	}
@@ -414,7 +523,7 @@ func TestGrantEventsReachTheDurableSink(t *testing.T) {
 	wireGrantResolver(s, sec)
 
 	c := NewClient(socketPath)
-	st, err := c.GrantCreate(int32(os.Getpid()), []string{"jamf"}, "", time.Hour) // #nosec G115 -- test pid
+	st, err := c.GrantCreate(int32(os.Getpid()), "", []string{"jamf"}, "", time.Hour) // #nosec G115 -- test pid
 	if err != nil {
 		t.Fatalf("GrantCreate: %v", err)
 	}
