@@ -155,8 +155,8 @@ func TestTailLines(t *testing.T) {
 	if got := tailLines(nil, 5); got != nil {
 		t.Errorf("tailLines(nil) = %q, want nil", got)
 	}
-	if got := tailLines(data, 0); got != nil {
-		t.Errorf("tailLines(n=0) = %q, want nil", got)
+	if got := string(tailLines(data, 0)); got != "one\ntwo\nthree\n" {
+		t.Errorf("tailLines(n=0) = %q, want the whole file: 0 means everything, as in `jit audit --limit 0`", got)
 	}
 	// A file without a trailing newline still yields newline-terminated output.
 	if got := string(tailLines([]byte("one\ntwo"), 1)); got != "two\n" {
@@ -193,6 +193,14 @@ func TestAgentLogCommandPrintsTail(t *testing.T) {
 	}
 	if out != "2026-07-16 10:00:01 line two\n2026-07-16 10:00:02 line three\n" {
 		t.Errorf("jit agent log -n 2 = %q, want exactly the last two lines", out)
+	}
+
+	out, err = execAgentLog(t, "-n", "0")
+	if err != nil {
+		t.Fatalf("jit agent log -n 0: %v", err)
+	}
+	if out != content {
+		t.Errorf("jit agent log -n 0 = %q, want the whole file", out)
 	}
 }
 
