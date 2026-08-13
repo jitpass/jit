@@ -81,12 +81,27 @@ func TestSameFileFindings(t *testing.T) {
 		t.Errorf("a still-referenced copy must never be prunable: %+v", fs[0])
 	}
 
-	// Diverged values -> reported, but no removal pick: which copy is right
-	// is the user's call.
+	// Two DIFFERENT files whose only shared key disagrees are not evidenced
+	// copies at all: the matching tail is the sole link, and it is generic.
+	// See TestGenericTailNeedsValueEvidence.
 	groups["mcp-caido-2"] = dupTestGroup("mcp-caido-2", "/u/Desktop/ws/.mcp.json", true, []string{"mcp-caido-2"}, map[string]string{"CAIDO_URL": "v2"})
+	if fs = sameFileFindings(groups); len(fs) != 0 {
+		t.Errorf("no agreeing value across different files must not pair, got %+v", fs)
+	}
+
+	// Diverged values under ONE identical origin path -> still reported
+	// (the path proves it is one file), but no removal pick: which copy is
+	// right is the user's call.
+	groups = map[string]*dupGroup{
+		"fork":   dupTestGroup("fork", "/u/scripts/.env", true, []string{"fork"}, map[string]string{"A": "v1", "B": "same"}),
+		"fork-2": dupTestGroup("fork-2", "/u/scripts/.env", true, []string{"fork-2"}, map[string]string{"A": "v2", "B": "same"}),
+	}
 	fs = sameFileFindings(groups)
 	if len(fs) != 1 || fs[0].ValuesMatch || fs[0].RemoveCommand != "" || fs[0].RemoveGroup != "" {
 		t.Errorf("diverged finding = %+v, want values_match=false and no removal pick", fs)
+	}
+	if strings.Join(fs[0].DifferKeys, ",") != "A" {
+		t.Errorf("DifferKeys = %v, want only the key that disagrees", fs[0].DifferKeys)
 	}
 
 	// Same key set from UNRELATED files (different tails) is not a
@@ -358,6 +373,48 @@ func TestSameFileFindingsCopiedThenEdited(t *testing.T) {
 		"mcp-caido-2": caido, "mcp-okta-mcp-server": okta,
 	}); len(fs) != 0 {
 		t.Errorf("servers from one config file are siblings, not copies, got %+v", fs)
+	}
+}
+
+// TestGenericTailNeedsValueEvidence: an origin tail like "jamf/.env" is
+// generic, and a real vault had one under ai_security_workspace and another
+// under Repos/Security — unrelated projects that happened to name a
+// directory the same thing. Two DIFFERENT files therefore need at least one
+// identical value before the report calls them copies. The SAME file
+// migrated twice needs no such evidence, since its identity is proven by
+// the path.
+func TestGenericTailNeedsValueEvidence(t *testing.T) {
+	// Different files, generic tail, nothing agreeing -> not a pair.
+	a := dupTestGroup("jamf", "~/Documents/ws/custom_scripts/jamf/.env", true, nil,
+		map[string]string{"JAMF_CLIENT_ID": "one", "JAMF_URL": "two"})
+	b := dupTestGroup("jamf-2", "~/Repos/Security/jamf/.env", true, nil,
+		map[string]string{"JAMF_CLIENT_ID": "three", "JAMF_URL": "four"})
+	if fs := sameFileFindings(map[string]*dupGroup{"jamf": a, "jamf-2": b}); len(fs) != 0 {
+		t.Errorf("unrelated projects sharing a generic tail must not pair, got %+v", fs)
+	}
+
+	// One value in common is enough evidence of shared ancestry.
+	b.hashes["JAMF_URL"] = a.hashes["JAMF_URL"]
+	fs := sameFileFindings(map[string]*dupGroup{"jamf": a, "jamf-2": b})
+	if len(fs) != 1 {
+		t.Fatalf("a shared value is evidence of ancestry, got %+v", fs)
+	}
+	// And the report says WHICH values diverged, not just that some did.
+	if strings.Join(fs[0].DifferKeys, ",") != "JAMF_CLIENT_ID" {
+		t.Errorf("DifferKeys = %v, want the one key that disagrees", fs[0].DifferKeys)
+	}
+	var buf bytes.Buffer
+	printDupFinding(&buf, fs[0])
+	if !strings.Contains(buf.String(), "1 of 2 differ: JAMF_CLIENT_ID") {
+		t.Errorf("report must quantify and name the divergence, got:\n%s", buf.String())
+	}
+
+	// The SAME file migrated twice pairs even with everything rotated: the
+	// path proves identity, so no value evidence is required.
+	c := dupTestGroup("wiz", "~/scripts/.env", true, nil, map[string]string{"A": "old"})
+	d := dupTestGroup("wiz-2", "~/scripts/.env", true, nil, map[string]string{"A": "new"})
+	if fs = sameFileFindings(map[string]*dupGroup{"wiz": c, "wiz-2": d}); len(fs) != 1 {
+		t.Errorf("one identical origin path is proof enough, got %+v", fs)
 	}
 }
 

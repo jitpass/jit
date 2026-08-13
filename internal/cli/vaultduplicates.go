@@ -105,6 +105,11 @@ type dupFinding struct {
 	Prunable bool `json:"prunable"`
 	// RemovePaths are the stale copy's vault paths, what --prune deletes.
 	RemovePaths []string `json:"remove_paths,omitempty"`
+	// DifferKeys are the shared keys whose values do NOT agree across the
+	// copies. "values DIFFER" alone left the reader unable to judge whether
+	// two groups are really one file's descendants; naming them says what
+	// to compare, and how much of the overlap actually diverged.
+	DifferKeys []string `json:"differ_keys,omitempty"`
 	// ExtraKeys are keys present in some copies but not all: the same file
 	// migrated twice and edited since. Their presence blocks any removal
 	// pick, because retiring a copy holding a key the others lack would
@@ -558,13 +563,29 @@ func underRoot(origin, root, home string) bool {
 // what the user most needs told about. Gating on it made diverged copies
 // vanish from the report entirely.
 func relatedGroups(a, b *dupGroup) bool {
-	shared := 0
+	shared, agreeing := 0, 0
 	for _, k := range b.keys {
-		if _, ok := a.hashes[k]; ok {
-			shared++
+		ha, ok := a.hashes[k]
+		if !ok {
+			continue
+		}
+		shared++
+		if ha != "" && ha == b.hashes[k] {
+			agreeing++
 		}
 	}
 	if shared == 0 {
+		return false
+	}
+	// Two DIFFERENT files that merely share an origin tail need at least
+	// one identical value to be called copies of each other. A tail like
+	// "jamf/.env" is generic — a real vault had one under
+	// ai_security_workspace and another under Repos/Security, unrelated
+	// projects that happened to name a directory the same thing. When the
+	// origin path is IDENTICAL the file is provably the same one, so no
+	// value evidence is needed (a re-migration fork may have rotated
+	// everything since).
+	if a.sourceFile() != b.sourceFile() && agreeing == 0 {
 		return false
 	}
 	wider := len(a.keys)
@@ -607,11 +628,15 @@ func buildDupFinding(bucket []*dupGroup) dupFinding {
 		for _, k := range sharedKeys {
 			if g.hashes[k] == "" || g.hashes[k] != bucket[0].hashes[k] {
 				f.ValuesMatch = false
+				if !slices.Contains(f.DifferKeys, k) {
+					f.DifferKeys = append(f.DifferKeys, k)
+				}
 			}
 		}
 	}
 	sort.Strings(f.ExtraKeys)
 	f.ExtraKeys = slices.Compact(f.ExtraKeys)
+	sort.Strings(f.DifferKeys)
 	if !f.ValuesMatch || !sameKeySet {
 		// Diverged in value, or one copy carries a key the others don't:
 		// either way jit must not nominate a copy to delete.
@@ -805,7 +830,8 @@ func printDupFinding(out io.Writer, f dupFinding) {
 	}
 	match := "identical values"
 	if !f.ValuesMatch {
-		match = "values DIFFER"
+		match = fmt.Sprintf("%d of %d differ: %s",
+			len(f.DifferKeys), len(f.Keys), truncateList(f.DifferKeys, 3))
 	}
 	fmt.Fprintf(out, "  %s %d shared %s (%s), %s\n", glyphBranch, len(f.Keys), keysLabel,
 		truncateList(f.Keys, 3), match)
