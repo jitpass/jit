@@ -183,10 +183,8 @@ func TestPrintDuplicatesReport(t *testing.T) {
 		"from /u/Documents/ws/.mcp.json",
 		"mcp-caido-2 looks stale, retire it with:",
 		"jit migrate remove /u/Desktop/ws/.mcp.json",
-		"[shared credentials] 1 · same value in independent tools, keep all",
-		"JAMF_CLIENT_ID",
-		"shared by 2 profiles",
-		"removing any copy breaks its tool; when rotating, update every copy",
+		"[shared credentials] 1 · one credential in several tools each, nothing to fix",
+		"jit vault duplicates --shared",
 		"118 secrets compared in memory; no value was printed or written.",
 	} {
 		if !strings.Contains(out, want) {
@@ -196,6 +194,30 @@ func TestPrintDuplicatesReport(t *testing.T) {
 	if strings.Contains(out, "vault rm") {
 		t.Errorf("a live-mounted copy must route to migrate remove, never rm, got:\n%s", out)
 	}
+
+	// A report whose only question is "what can I delete" must not spend a
+	// dozen lines on groups that are fine: the shared section collapses to
+	// a count unless --shared asks for it.
+	if strings.Contains(out, "shared by 2 profiles") {
+		t.Errorf("shared credentials must collapse by default, got:\n%s", out)
+	}
+	vaultDuplicatesShared = true
+	defer func() { vaultDuplicatesShared = false }()
+	buf.Reset()
+	printDuplicatesReport(&buf, nil, []sharedFinding{{
+		Keys: []string{"JAMF_CLIENT_ID"}, Groups: []string{"jamf", "jamf-2"},
+	}}, 118)
+	for _, want := range []string{
+		"same value in independent tools, keep all",
+		"shared by 2 profiles",
+		"jamf, jamf-2",
+		"when rotating, update every copy",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("--shared must list them, missing %q, got:\n%s", want, buf.String())
+		}
+	}
+	vaultDuplicatesShared = false
 
 	// Diverged: caveat instead of a remedy.
 	buf.Reset()
