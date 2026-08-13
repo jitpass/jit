@@ -689,7 +689,7 @@ func printGrantsSection(w io.Writer, r statusResult) {
 	case len(r.Agent.Grants) == 0:
 		printStatusValue(w, "%s", "none active")
 		if r.Vault.SecretsStored > 0 {
-			printStatusAction(w, "`"+grantCreateUsage+"` pre-approves a running program")
+			printStatusAction(w, "`"+grantCreateUsage+"` pre-approves a program to work unattended")
 		}
 		return
 	}

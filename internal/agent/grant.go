@@ -37,6 +37,15 @@ import (
 // afterwards only routes to a decision the human already made — the same
 // footing as `jit run --trust`, narrowed from "everything, this session" to
 // "these secrets, until this deadline".
+//
+// A TREE-SCOPED grant (nameFilter set) anchors the same way, one level up:
+// the root is the creating human's own session root (their terminal app or
+// tmux server, agent-verified as the caller's real ancestor), and the filter
+// name narrows which of its descendants are served — including descendants
+// started AFTER creation, which is the shape's whole point ("any claude I
+// start from this terminal in the next hour"). The name is the weak half and
+// is never the gate: it can only shrink what the kernel-verified tree
+// admits, and the prompt names both halves.
 
 // MaxGrantTTL caps a grant's lifetime, creation and extension alike. A week
 // is deliberately generous (a machine left working over a long weekend) while
@@ -76,7 +85,15 @@ type processGrant struct {
 	rootStart int64 // fork-time stamp — the anti-pid-recycling anchor
 	name      string
 	command   string
-	profiles  []string
+	// nameFilter, when set, makes this a tree-scoped grant: rootPID is the
+	// caller's session root (terminal app, tmux server) and only descendants
+	// whose ancestry passes through a process with this display name are
+	// served — including ones started after creation. anchorName is that
+	// root's display name, for status and the prompt. Both empty on an
+	// exact-process grant.
+	nameFilter string
+	anchorName string
+	profiles   []string
 	// deks maps hex(sha256(wrapped bytes)) -> the covered secret. Keyed on
 	// the wrapped bytes themselves so the serve path needs no vault access
 	// at all: the client already sends exactly those bytes on every unwrap.
@@ -105,6 +122,7 @@ func (g *processGrant) status(rootAlive bool) GrantStatus {
 		PID:         g.rootPID,
 		Name:        g.name,
 		Command:     g.command,
+		Anchor:      g.anchorName,
 		Profiles:    append([]string(nil), g.profiles...),
 		Secrets:     g.secretPaths(),
 		CreatedUnix: g.created.Unix(),
@@ -188,6 +206,23 @@ func (s *Server) createGrant(req Request, c *caller) Response {
 		return Response{OK: false, Error: fmt.Sprintf("grant_create: process %d cannot be anchored (already exiting?)", req.TargetPID)}
 	}
 
+	// Tree mode: the anchor must be the CALLER's own ancestor, and never
+	// launchd. A grant may only ever be hung under a session the requesting
+	// human is actually inside — without the ancestry check, any same-user
+	// process could anchor a name-filtered grant under someone else's
+	// terminal tree; without the launchd check, "anchored under pid 1" would
+	// be a machine-wide name grant, the exact shape tree grants exist to
+	// refuse (everything descends from launchd, so the tree would gate
+	// nothing and the name would decide alone).
+	if req.GrantName != "" {
+		if req.TargetPID == 1 {
+			return Response{OK: false, Error: "grant_create: launchd is not a session root - a tree grant anchors under your own terminal"}
+		}
+		if !lineage.AncestryContainsPID(c.pid, req.TargetPID) {
+			return Response{OK: false, Error: fmt.Sprintf("grant_create: pid %d is not an ancestor of the requesting process - a tree grant anchors to your own session root", req.TargetPID)}
+		}
+	}
+
 	// Resolution happens BEFORE the prompt (same ordering as OnCanGrant): an
 	// unresolvable profile fails without burning a Touch ID, and the human
 	// approves the whole named set or none of it.
@@ -199,7 +234,15 @@ func (s *Server) createGrant(req Request, c *caller) Response {
 		return Response{OK: false, Error: "grant_create: the named profiles resolve to no secrets"}
 	}
 
-	reason := grantCreateReason(target.Name(), req.GrantProfiles, len(secrets), ttl)
+	// For a tree grant the covered name is the human's own typed word (they
+	// are describing their intent, not a process describing itself) and the
+	// anchor rendering stays kernel-derived from the verified pid — so every
+	// prompt fact is still either human-typed-about-self or kernel-vouched.
+	who, under := target.Name(), ""
+	if req.GrantName != "" {
+		who, under = req.GrantName, target.Name()
+	}
+	reason := grantCreateReason(who, under, req.GrantProfiles, len(secrets), ttl)
 	event, mek, err := s.discloseChallengeOp(reason, OpGrantCreate, c)
 	if s.OnSessionEvent != nil {
 		s.OnSessionEvent(*event)
@@ -214,15 +257,17 @@ func (s *Server) createGrant(req Request, c *caller) Response {
 		return Response{OK: false, Error: err.Error()}
 	}
 	g := &processGrant{
-		id:        id,
-		rootPID:   req.TargetPID,
-		rootStart: rootStart,
-		name:      target.Name(),
-		command:   target.Command(),
-		profiles:  append([]string(nil), req.GrantProfiles...),
-		deks:      make(map[string]grantSecret, len(secrets)),
-		created:   time.Now(),
-		expires:   time.Now().Add(ttl),
+		id:         id,
+		rootPID:    req.TargetPID,
+		rootStart:  rootStart,
+		name:       who,
+		command:    target.Command(),
+		nameFilter: req.GrantName,
+		anchorName: under,
+		profiles:   append([]string(nil), req.GrantProfiles...),
+		deks:       make(map[string]grantSecret, len(secrets)),
+		created:    time.Now(),
+		expires:    time.Now().Add(ttl),
 	}
 	for _, sec := range secrets {
 		dek, err := open(mek, sec.Wrapped, []byte(sec.Class))
@@ -257,16 +302,30 @@ func (s *Server) createGrant(req Request, c *caller) Response {
 }
 
 // grantCreateReason words the creation prompt. Everything in it is
-// agent-derived or abort-verified: the name comes from the kernel via the
-// target pid, the count and duration ARE the grant's scope, and the profile
-// names were resolved by the agent itself to exactly the secrets being
-// granted (OnResolveGrant), never echoed from free text. The scope statement
-// ("unattended, until ...") is the half that must never be the truncated
-// half, same budget discipline as trustReason.
-func grantCreateReason(name string, profiles []string, count int, ttl time.Duration) string {
-	who := truncate(name, maxTrustWhoLen)
+// agent-derived, human-typed-about-self, or abort-verified: an exact grant's
+// name comes from the kernel via the target pid, a tree grant's name is the
+// creating human's own word with the anchor (under) kernel-derived from the
+// verified session root, the count and duration ARE the grant's scope, and
+// the profile names were resolved by the agent itself to exactly the secrets
+// being granted (OnResolveGrant), never echoed from free text. The scope
+// statement ("unattended, until ...") is the half that must never be the
+// truncated half, same budget discipline as trustReason.
+func grantCreateReason(name, under string, profiles []string, count int, ttl time.Duration) string {
+	// A tree grant's who-clause carries two names ("claude under iTerm2"),
+	// so its budgets shrink: 11 runes per name and 16 for the profiles is
+	// what keeps the whole sentence — including a worst-case "167h59m" TTL —
+	// inside maxReasonLen, checked by TestGrantCreateReasonWording's
+	// worst-case fixture.
+	whoBudget, profBudget := maxTrustWhoLen, 20
+	if under != "" {
+		whoBudget, profBudget = 11, 16
+	}
+	who := truncate(name, whoBudget)
 	if who == "" {
 		who = "this process"
+	}
+	if under != "" {
+		who += " under " + truncate(under, whoBudget)
 	}
 	noun := "secrets"
 	if count == 1 {
@@ -278,7 +337,7 @@ func grantCreateReason(name string, profiles []string, count int, ttl time.Durat
 	// never be the half a long tool name pushes off the prompt. The outer
 	// truncate is a belt only.
 	return truncate(fmt.Sprintf("let %s use %d %s (%s) unattended for %s",
-		who, count, noun, truncate(strings.Join(profiles, ", "), 20), formatGrantTTL(ttl)), maxReasonLen)
+		who, count, noun, truncate(strings.Join(profiles, ", "), profBudget), formatGrantTTL(ttl)), maxReasonLen)
 }
 
 // formatGrantTTL renders a duration the way a human typed it: "8h", "45m",
@@ -321,14 +380,15 @@ func (s *Server) grantUnwrap(c *caller, wrapped []byte) (dek []byte, path string
 	// descent OUTSIDE grantMu — AncestryContainsPID walks sysctls, and list/
 	// revoke must not queue behind it (trustRoots' exact discipline).
 	type candidate struct {
-		id        string
-		rootPID   int32
-		rootStart int64
+		id         string
+		rootPID    int32
+		rootStart  int64
+		nameFilter string
 	}
 	var cands []candidate
 	for _, g := range s.grants {
 		if _, covered := g.deks[digest]; covered {
-			cands = append(cands, candidate{id: g.id, rootPID: g.rootPID, rootStart: g.rootStart})
+			cands = append(cands, candidate{id: g.id, rootPID: g.rootPID, rootStart: g.rootStart, nameFilter: g.nameFilter})
 		}
 	}
 	s.grantMu.Unlock()
@@ -343,7 +403,14 @@ func (s *Server) grantUnwrap(c *caller, wrapped []byte) (dek []byte, path string
 			s.endGrant(cand.id, grantEndExited)
 			continue
 		}
-		if !lineage.AncestryContainsPID(c.pid, cand.rootPID) {
+		// Tree grants add the name condition to the same fail-closed walk:
+		// the caller's chain must pass through the filter name at or below
+		// the root it then reaches. Exact grants keep the bare descent test.
+		if cand.nameFilter != "" {
+			if !lineage.AncestryNamedWithin(c.pid, cand.rootPID, cand.nameFilter) {
+				continue
+			}
+		} else if !lineage.AncestryContainsPID(c.pid, cand.rootPID) {
 			continue
 		}
 		s.grantMu.Lock()
@@ -424,11 +491,11 @@ func (s *Server) extendGrant(req Request, c *caller) Response {
 	}
 	s.grantMu.Lock()
 	g := s.grants[req.GrantID]
-	var name string
+	var name, under string
 	var count int
 	var profiles []string
 	if g != nil {
-		name, count, profiles = g.name, len(g.deks), g.profiles
+		name, under, count, profiles = g.name, g.anchorName, len(g.deks), g.profiles
 	}
 	s.grantMu.Unlock()
 	if g == nil {
@@ -437,7 +504,7 @@ func (s *Server) extendGrant(req Request, c *caller) Response {
 
 	// grantCreateReason already words the full scope; re-lead it as an
 	// extension so the prompt says what is actually happening.
-	reason := truncate("extend: "+grantCreateReason(name, profiles, count, ttl), maxReasonLen)
+	reason := truncate("extend: "+grantCreateReason(name, under, profiles, count, ttl), maxReasonLen)
 	event, mek, err := s.discloseChallengeOp(reason, OpGrantExtend, c)
 	if s.OnSessionEvent != nil {
 		s.OnSessionEvent(*event)

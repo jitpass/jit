@@ -321,14 +321,18 @@ func (c *Client) GrantGlobalForPID(mounts []RunMount, pid int32) error {
 // GrantCreate asks the agent to create a process grant: after one disclosed
 // challenge (agent-worded, like every prompt), pid's process tree may unwrap
 // the named profiles' secrets until now+ttl, unattended, across re-locks.
-// The client sends profile NAMES and its project root only — the agent
-// resolves them to concrete secrets itself, so the prompt and the granted
-// set cannot disagree (see Server.OnResolveGrant). Returns the created
-// grant's status for rendering.
-func (c *Client) GrantCreate(pid int32, profiles []string, projectRoot string, ttl time.Duration) (GrantStatus, error) {
+// With name set the grant is tree-scoped: pid must be the caller's own
+// session root (the agent verifies the ancestry) and name narrows which of
+// its descendants — current and future — are served. The client sends
+// profile NAMES and its project root only — the agent resolves them to
+// concrete secrets itself, so the prompt and the granted set cannot disagree
+// (see Server.OnResolveGrant). Returns the created grant's status for
+// rendering.
+func (c *Client) GrantCreate(pid int32, name string, profiles []string, projectRoot string, ttl time.Duration) (GrantStatus, error) {
 	resp, err := c.call(Request{
 		Op:            OpGrantCreate,
 		TargetPID:     pid,
+		GrantName:     name,
 		GrantProfiles: profiles,
 		ProjectRoot:   projectRoot,
 		TTLSeconds:    int64(ttl / time.Second),

@@ -26,6 +26,10 @@ static int get_pid_path(pid_t pid, char *buf, uint32_t bufsize) {
 	return proc_pidpath(pid, buf, bufsize);
 }
 
+static int get_pid_cwd(pid_t pid, struct proc_vnodepathinfo *out) {
+	return proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, out, sizeof(*out));
+}
+
 static int is_vnode_type(uint32_t fdtype) {
 	return fdtype == PROX_FDTYPE_VNODE;
 }
@@ -224,6 +228,23 @@ func vnodeInfo(pid, fd int32) (path string, vtype int32, err error) {
 	path = C.GoString(&info.pvip.vip_path[0])
 	vtype = int32(info.pvip.vip_vi.vi_type)
 	return path, vtype, nil
+}
+
+// ProcessCWD returns pid's current working directory, or "" if unavailable
+// (the process exited, is another user's, or the kernel has no vnode path
+// for it). Display only, pidExecPath's exact posture: it annotates the
+// `jit grant --pid` completion so seven identical "claude" rows become
+// tellable apart by the project each one sits in — it never gates.
+func ProcessCWD(pid int32) string {
+	if pid <= 0 {
+		return ""
+	}
+	var info C.struct_proc_vnodepathinfo
+	n := C.get_pid_cwd(C.pid_t(pid), &info)
+	if n <= 0 {
+		return ""
+	}
+	return C.GoString(&info.pvi_cdir.vip_path[0])
 }
 
 // pidExecPath returns pid's executable path, or "" if unavailable — purely

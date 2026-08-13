@@ -37,6 +37,97 @@ func TestAncestryContainsPIDRealTree(t *testing.T) {
 	}
 }
 
+// TestAncestryNamedWithinRealTree pins the tree-grant serve gate to the live
+// process tree: the name must appear on the chain at or below the root the
+// chain then reaches, and either condition failing answers false.
+func TestAncestryNamedWithinRealTree(t *testing.T) {
+	self := int32(os.Getpid())
+	parent := int32(os.Getppid())
+	ownName := ""
+	if p, ok := Describe(self); ok {
+		ownName = p.Name()
+	}
+	if ownName == "" {
+		t.Fatal("Describe(self) yields no name; the fixture below is meaningless")
+	}
+
+	if !AncestryNamedWithin(self, parent, ownName) {
+		t.Errorf("self (named %q) under its parent must be served", ownName)
+	}
+	if AncestryNamedWithin(self, parent, "no-such-name-zz9") {
+		t.Error("a name absent from the chain must not be served")
+	}
+	if AncestryNamedWithin(parent, self, ownName) {
+		t.Error("a caller outside the root's tree must not be served, whatever the name")
+	}
+
+	// A child named sleep: the name sits BELOW the caller-to-root walk's
+	// start, i.e. the child itself carries it.
+	child := exec.Command("sleep", "60")
+	if err := child.Start(); err != nil {
+		t.Fatalf("starting child: %v", err)
+	}
+	defer func() {
+		_ = child.Process.Kill()
+		_, _ = child.Process.Wait()
+	}()
+	childPID := int32(child.Process.Pid) // #nosec G115 -- a pid always fits int32 on darwin
+	if !AncestryNamedWithin(childPID, self, "sleep") {
+		t.Error("a child named sleep under this test must be served")
+	}
+	if AncestryNamedWithin(childPID, self, "claude") {
+		t.Error("the child's chain carries no claude; it must not be served")
+	}
+
+	// launchd may never be the root: everything descends from pid 1, so the
+	// walk answering true there would let the name decide alone.
+	if AncestryNamedWithin(childPID, 1, "sleep") {
+		t.Error("a launchd-rooted walk must always answer false")
+	}
+}
+
+// TestMatchesNameFallsBackToArgv pins the one place argv may name a process:
+// the tree-grant filter walk, where a self-updated tool (binary replaced
+// under the running process, exec path unreadable, Name() honestly empty)
+// must still count as itself — found live, when the longest-running claude
+// on the machine stopped matching its own grant.
+func TestMatchesNameFallsBackToArgv(t *testing.T) {
+	updated := Process{PID: 42, Argv: []string{"claude", "--resume"}}
+	if updated.Name() != "" {
+		t.Fatalf("fixture broken: expected an empty kernel name, got %q", updated.Name())
+	}
+	if !updated.MatchesName("claude") {
+		t.Error("a process with no exec path but argv[0]=claude must match claude")
+	}
+	if updated.MatchesName("gh") || updated.MatchesName("") {
+		t.Error("argv fallback must not match a different or empty name")
+	}
+	normal := Process{PID: 43, ExecPath: "/opt/tools/gh", Argv: []string{"gh", "pr"}}
+	if !normal.MatchesName("gh") || normal.MatchesName("pr") {
+		t.Error("a kernel-named process must match by that name only")
+	}
+}
+
+// TestSessionRootIsAProperAncestor pins the anchor derivation: the session
+// root must be a real, describable ancestor of the caller, strictly above
+// it, and never launchd itself.
+func TestSessionRootIsAProperAncestor(t *testing.T) {
+	self := int32(os.Getpid())
+	root, ok := SessionRoot(self)
+	if !ok {
+		t.Skip("this test process is launchd's own child (bare CI runner); no session root to derive")
+	}
+	if root.PID == self || root.PID <= 1 {
+		t.Fatalf("SessionRoot(self) = pid %d, want a proper ancestor above self and above launchd", root.PID)
+	}
+	if !AncestryContainsPID(self, root.PID) {
+		t.Errorf("SessionRoot returned pid %d which is not an ancestor of the caller", root.PID)
+	}
+	if _, ok := SessionRoot(0); ok {
+		t.Error("SessionRoot(0) must fail")
+	}
+}
+
 func TestProcessStartTimeSelfStableAndDeadPIDFails(t *testing.T) {
 	first, ok := ProcessStartTime(int32(os.Getpid()))
 	if !ok || first == 0 {

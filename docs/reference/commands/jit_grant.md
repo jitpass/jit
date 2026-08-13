@@ -1,18 +1,23 @@
 ## jit grant
 
-Pre-approve a running process to use profiles unattended
+Pre-approve a program to use profiles unattended
 
 ### Synopsis
 
-Create a process grant: with one Touch ID now, allow a process that is
-already running (and everything it launches) to use the named profiles'
-secrets without further prompts, until the grant expires - including while
-the screen is locked or you are away.
+Create a process grant: with one Touch ID now, allow a program (and
+everything it launches) to use the named profiles' secrets without further
+prompts, until the grant expires - including while the screen is locked or
+you are away.
 
-The grant is anchored to the live process you name, not to its name: a new
-process called the same thing tomorrow inherits nothing. It covers exactly
-the secrets the named profiles resolve to at creation time, ends at its
-deadline (or when the process exits, or on 'jit grant revoke'), and every
+--process NAME is scoped to the terminal you type it in: every NAME under
+this terminal - running now or started later, in any tab - is covered
+until the deadline. The anchor is the terminal app itself, verified
+through kernel ancestry, so a same-named process elsewhere on the machine
+inherits nothing, and the grant ends early if the terminal app quits.
+--pid grants one exact running process instead, and ends when it exits.
+
+A grant covers exactly the secrets the named profiles resolve to at
+creation time, ends at its deadline (or on 'jit grant revoke'), and every
 serve under it is recorded in 'jit audit'.
 
 Grants live in the service's memory: they survive screen lock by design,
@@ -25,10 +30,11 @@ jit grant --process NAME --profile NAME --for DURATION [flags]
 ### Examples
 
 ```
-  # let the running claude session use the jamf profile for 8 hours
+  # let claude use the jamf profile for 8 hours - current sessions and
+  # any started from this terminal within the window
   jit grant --process claude --profile jamf --for 8h
 
-  # several profiles in one grant, anchored by pid when the name is ambiguous
+  # several profiles, for one exact running process only
   jit grant --pid 4211 --profile jamf --profile aws-ci --for 1d
 
   # see, shorten, or end what is open
@@ -41,8 +47,8 @@ jit grant --process NAME --profile NAME --for DURATION [flags]
 
 ```
       --for string            how long the grant lasts (45m, 8h, 3d - max 7d)
-      --pid int32             running process the grant anchors to, by pid (when --process is ambiguous)
-      --process string        running program the grant anchors to, by name (tab-completes from recent callers)
+      --pid int32             one exact running process to grant instead (ends when it exits)
+      --process string        program to cover, by name: every one under this terminal, running or started later
       --profile stringArray   profile whose secrets the grant covers (repeatable)
 ```
 
