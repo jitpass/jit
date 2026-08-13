@@ -80,6 +80,17 @@ type Request struct {
 	// should shadow the global ones during that resolution — the caller's cwd,
 	// exactly the layering `jit run` applies. Empty means global-only.
 	ProjectRoot string `json:"project_root,omitempty"`
+	// GrantName ("grant_create") switches the grant from exact-process to
+	// tree-scoped: TargetPID is then the SESSION ROOT to anchor under (the
+	// caller's own terminal app or tmux server — the agent verifies it is
+	// genuinely the caller's ancestor), and the grant serves any process at
+	// or below that root whose ancestry passes through a process with this
+	// display name — including ones started after creation, which is the
+	// point. The name is the human's own typed word about their intent and
+	// only ever NARROWS the kernel-verified tree (lineage.AncestryNamedWithin);
+	// it never widens anything, so the "identity never decides" doctrine
+	// holds. Empty means the exact-process grant TargetPID has always meant.
+	GrantName string `json:"grant_name,omitempty"`
 	// GrantID ("grant_revoke"/"grant_extend") names the grant to act on.
 	GrantID string `json:"grant_id,omitempty"`
 	// TTLSeconds ("grant_create"/"grant_extend") is the requested lifetime.
@@ -130,7 +141,9 @@ const (
 	// challenge, TargetPID's process tree may unwrap the covered profiles'
 	// secrets until the grant expires — without further prompts, and across
 	// re-locks (the one authorization state that deliberately survives them;
-	// see Server's grant fields). OpGrantExtend re-prompts for more time on an
+	// see Server's grant fields). With GrantName set the tree is the caller's
+	// own session root and the name narrows it — the shape that also covers
+	// processes started after creation. OpGrantExtend re-prompts for more time on an
 	// existing grant; OpGrantRevoke ends one with no prompt at all (reducing
 	// access is always free); OpGrantList reads the current set, prompt-free
 	// for the same reason OpHistory is.
@@ -328,10 +341,16 @@ type Response struct {
 type GrantStatus struct {
 	ID  string `json:"id"`
 	PID int32  `json:"pid"`
-	// Name is the root process's display name ("claude"); Command its full
-	// invocation for a wide terminal.
+	// Name is what the grant covers: the root process's display name for an
+	// exact-process grant ("claude"), or the name filter for a tree-scoped
+	// one (also "claude" — the list reads the same either way). Command is
+	// the root's full invocation for a wide terminal.
 	Name    string `json:"name,omitempty"`
 	Command string `json:"command,omitempty"`
+	// Anchor is set on tree-scoped grants only: the display name of the
+	// session root the grant is anchored under ("iTerm2", "tmux_server"),
+	// whose pid is PID. Empty means an exact-process grant.
+	Anchor string `json:"anchor,omitempty"`
 	// Profiles are the profile names the grant was created from; Secrets the
 	// concrete vault paths it actually covers (resolved at creation — a later
 	// profile edit never widens a standing grant).

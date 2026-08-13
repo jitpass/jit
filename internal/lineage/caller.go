@@ -64,6 +64,32 @@ func (p Process) Name() string {
 	return filepath.Base(p.ExecPath)
 }
 
+// MatchesName reports whether this process should count as name for a tree
+// grant's filter walk (AncestryNamedWithin) and its creation-time count:
+// the kernel-derived display Name, or — when that is empty or different —
+// the base name of argv[0].
+//
+// Accepting argv here is a deliberate, documented step past Name()'s
+// doctrine, taken because of a real failure: Claude Code self-updates by
+// REPLACING its on-disk binary, after which the kernel reports no exec path
+// for the still-running process, Name() is honestly empty, and every serve
+// through the longest-running claude on the machine fails closed. The grant
+// filter is the half of the gate that only ever NARROWS a kernel-verified
+// tree bounded by a human-approved deadline — a process inside that tree
+// claiming a name via argv gains routing the human's perimeter already
+// contains, and a process outside it gains nothing whatever it claims. The
+// prompt and every display surface keep using Name(), which never trusts
+// argv.
+func (p Process) MatchesName(name string) bool {
+	if name == "" {
+		return false
+	}
+	if p.Name() == name {
+		return true
+	}
+	return len(p.Argv) > 0 && filepath.Base(p.Argv[0]) == name
+}
+
 // isVersionLike reports whether a path component is nothing but a version
 // ("2.1.209", "v3", "1.0.0-rc2") — a name that identifies a release, never a
 // program.
@@ -254,7 +280,10 @@ func ProcessesNamed(name string) []Process {
 	}
 	var out []Process
 	for _, p := range VisibleProcesses() {
-		if p.Name() == name {
+		// MatchesName so this listing agrees with the tree-grant serve walk:
+		// a grant confirmation that counts "1 running now" while the serve
+		// path would match two is a report that lies about scope.
+		if p.MatchesName(name) {
 			out = append(out, p)
 		}
 	}
