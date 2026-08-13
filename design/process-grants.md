@@ -1,6 +1,7 @@
 # Process grants: pre-approved unattended access
 
-**Status: proposal, being built on branch `process-grants`.**
+**Status: shipped (v0.86.0); tree-scoped `--process` grants added later —
+see "Tree-scoped grants" below.**
 
 Today every credential serve ultimately rides a session the human opened with
 Touch ID, and the session dies on idle, on an 8h ceiling, on screen lock, on
@@ -36,13 +37,62 @@ A grant is `(root process, secret set, expiry)`:
   `maxGrantTTL = 7d`. Checked at serve time against the record, never baked
   into key material, so revoke and expiry act immediately.
 
-A grant is **not** a policy. It cannot match future processes, it does not
+A grant is **not** a policy. It is never a bare name-pattern, it does not
 survive the agent process (v1), and it never covers secrets outside its
 resolved set. Identity still never decides anything the human did not
 explicitly approve: the doctrine "caller identity explains and audits, never
 decides" is preserved because the *decision* is the disclosed Touch ID at
 creation, bound to a kernel-vouched pid; descent-from-root afterwards is the
 same fail-closed mechanism `--trust` already relies on.
+
+## Tree-scoped grants: covering future processes without a name gate
+
+The exact-pid shape above answered "this running claude" but not the real
+workflow: "every claude I start from this terminal in the next hour", or a
+script that will run in ten minutes. Its UX also collapsed when seven
+processes shared a name (pick a pid from identical rows) and when the target
+was not yet running.
+
+`jit grant --process NAME` is therefore **tree-scoped**: the anchor is the
+creating human's own **session root** — the topmost ancestor below launchd
+of the shell the command is typed in (`lineage.SessionRoot`): the terminal
+app, the tmux server, the IDE process, the SSH connection. Serving requires
+BOTH (`lineage.AncestryNamedWithin`, fail-closed like every walk):
+
+1. the requester's ancestry passes through a process whose display name is
+   NAME, at or below the root, and
+2. the chain then reaches the root itself (same pid + fork-time pin as
+   every anchor).
+
+Condition 2 is a kernel fact no process can arrange for itself; condition 1
+is self-chosen (argv/exec path) and deliberately carries **no security
+weight** — it only NARROWS what the tree admits. A process elsewhere on the
+machine gains nothing by renaming itself claude; a hostile process already
+inside the terminal tree was already inside the human-approved perimeter.
+"Any future NAME anywhere, machine-wide" was considered and rejected: it
+would make the spoofable half the only gate.
+
+Consequences, all deliberate:
+
+- Future processes ARE covered: membership is evaluated per serve against
+  the live tree, never against a pid list frozen at creation. Granting
+  before the target starts is valid ("none running yet" on the
+  confirmation), which is the automation story — grant, walk away, the
+  script fires inside the window.
+- The prompt names both halves: *"let claude under iTerm2 use 1 secret
+  (jamf) unattended for 1h"*. The name is the human's own typed word (their
+  intent, not a process describing itself); the anchor rendering is
+  kernel-derived from the verified root.
+- The agent refuses an anchor that is not the CALLER's own ancestor, and
+  refuses pid 1 outright — "anchored under launchd" would be the machine-
+  wide name grant this design exists to avoid.
+- The grant dies with the terminal app (anchor exit == root exit), at its
+  deadline, or on revoke — whichever is first.
+- Per-anchor is the honest boundary: a claude under VS Code's terminal is
+  a different tree than iTerm2's; each session grants its own.
+
+`--pid` keeps the original exact-one-process semantics, now annotated in
+completion with each candidate's cwd and age (the seven-identical-rows fix).
 
 ## Mechanics: a scoped DEK cache, not a weaker vault
 
@@ -116,11 +166,10 @@ is a new decision); shortening via `revoke` + re-create, or a later
     jit grant revoke <id>
     jit grant extend <id> --for <dur>
 
-- `--process` resolves the name against the **currently running** processes
-  (libproc listing, same-user only, `lineage.Process.Name()` normalization).
-  Ambiguity (two claudes) is an error listing candidates with pids; `--pid`
-  disambiguates. Nothing running under that name is an error, not a stored
-  pattern.
+- `--process` is tree-scoped (see "Tree-scoped grants" above): anchored to
+  the session root of the terminal it is typed in, covering the name's
+  current and future processes under it. No ambiguity error, no
+  must-be-running requirement. `--pid` is the exact-one-process mode.
 - `--profile` repeats; each resolves through the normal project-then-global
   chain. `--for` accepts the `jit audit --since` duration grammar (`45m`,
   `8h`, `3d`), capped at 7d.
