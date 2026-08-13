@@ -55,6 +55,33 @@ func filterValues(values []string, toComplete string) []string {
 	return out
 }
 
+// dropTypedFlags removes the "--flag\tdescription" candidates whose flag is
+// already on the line - tabbing after `jit audit --status ok` re-offered
+// --status, the same class of bug as grant's create walk. A repeatable flag
+// (slice/array) stays: typing it again is legitimate. Cobra has parsed the
+// typed flags by the time a ValidArgsFunction runs, so Changed is
+// authoritative. The unordered filter offers (audit, export) share this;
+// the ordered create walks (grant, wrap add) encode their order by hand.
+func dropTypedFlags(cmd *cobra.Command, comps []string) []string {
+	if cmd == nil {
+		return comps
+	}
+	out := make([]string, 0, len(comps))
+	for _, c := range comps {
+		name := c
+		if i := strings.IndexByte(name, '\t'); i >= 0 {
+			name = name[:i]
+		}
+		f := cmd.Flags().Lookup(strings.TrimPrefix(name, "--"))
+		if f != nil && f.Changed &&
+			!strings.Contains(f.Value.Type(), "Slice") && !strings.Contains(f.Value.Type(), "Array") {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
 // firstArgOnly restricts a value completion to the FIRST positional, for the
 // commands that take at most one (`service ttl`, `service consent`). Past it
 // there is nothing to offer, and cobra's fallback is file completion for a
