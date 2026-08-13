@@ -28,7 +28,8 @@ jit service log [flags]
 
 ```
   -f, --follow      keep printing new lines as the service writes them (Ctrl-C to stop)
-  -n, --lines int   how many trailing lines to print (default 50)
+  -n, --lines int   how many trailing lines to print (0 for the whole file) (default 50)
+      --no-pager    print straight to the terminal instead of paging through $PAGER
       --raw         print the log file's bytes exactly as written, without the formatted view
 ```
 
