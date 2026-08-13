@@ -74,6 +74,27 @@ summary does not match), but a loop over every line will see it. Use
 jit vault list --format json | jq -r '.secrets[].path'
 ```
 
+## Long reports page like git
+
+`jit audit` and `jit scan` can run well past one screen, so on a terminal they
+page their report through your pager: `$JIT_PAGER` if set, then `$PAGER`, then
+`less`. Colour and the real terminal width survive into it, because only the
+report's output stream is redirected, never the process's stdout.
+
+| To do this | Use |
+|---|---|
+| Read a long report | nothing - it pages by itself on a terminal |
+| Print straight through, this once | `--no-pager` |
+| Never page, anywhere | `export JIT_PAGER=cat` (or `PAGER=cat`, or either set empty) |
+| Use your own pager settings | export `LESS` yourself; jit passes it through and only defaults to `LESS=FRX` when it is unset |
+
+Paging engages **only** when stdout is a real terminal. Piped or redirected
+output is byte-identical to what it was before paging existed, so
+`jit audit --format logfmt | grep denied` and `jit scan -o report.md` need no
+flag. `jit audit --follow` never pages either: it streams live, and a pager
+buffering an endless tail would show nothing. A `$PAGER` that names a program
+you don't have prints a warning on stderr and the report anyway.
+
 ## Confirmation flags
 
 Anything destructive asks first. One flag skips the question, everywhere:

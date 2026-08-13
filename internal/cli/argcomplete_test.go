@@ -274,6 +274,75 @@ func TestWrapAddCompletionSurfacesTheRequiredFlag(t *testing.T) {
 	}
 }
 
+// A flag already typed must move the offer forward, never repeat: --grant
+// and --env exclude each other, and only --env is repeatable. Same class as
+// the grant report (`--process bash <Tab>` offered --process again).
+func TestWrapAddCompletionWalksForwardFromTypedFlags(t *testing.T) {
+	withFixtureHome(t)
+	t.Cleanup(func() {
+		wrapAddEnv, wrapAddGrant = nil, ""
+		wrapAddCmd.Flags().Lookup("env").Changed = false
+		wrapAddCmd.Flags().Lookup("grant").Changed = false
+	})
+
+	out := completeThrough(t, "wrap", "add", "gh", "--env", "GH_TOKEN=wrap-gh/GH_TOKEN", "")
+	if strings.Contains(out, "--grant") {
+		t.Errorf("--env excludes --grant, yet it is still offered:\n%s", out)
+	}
+	if !strings.Contains(out, "--env\t") {
+		t.Errorf("--env is repeatable and must stay on offer:\n%s", out)
+	}
+
+	wrapAddEnv = nil
+	out = completeThrough(t, "wrap", "add", "gcloud", "--grant", "gcp", "")
+	if strings.Contains(out, "--env") || strings.Contains(out, "--grant\t") {
+		t.Errorf("`wrap add gcloud --grant gcp` is complete, no more flags belong on offer:\n%s", out)
+	}
+}
+
+// A filter already on the line must drop out of the bare-command offer;
+// --kind stays because it is repeatable.
+func TestAuditCompletionDropsTypedFilters(t *testing.T) {
+	withFixtureHome(t)
+	// Other tests run `jit audit` with filters through the same rootCmd, and
+	// a flag's Changed survives Execute - a fresh process per TAB in real
+	// life, so only this suite needs the reset.
+	for _, name := range []string{"status", "kind", "since", "secret", "follow"} {
+		auditCmd.Flags().Lookup(name).Changed = false
+	}
+	t.Cleanup(func() {
+		auditStatus = ""
+		auditKinds = nil
+		auditCmd.Flags().Lookup("status").Changed = false
+		auditCmd.Flags().Lookup("kind").Changed = false
+	})
+	out := completeThrough(t, "audit", "--status", "ok", "--kind", "use", "")
+	if strings.Contains(out, "--status\t") {
+		t.Errorf("--status already typed but offered again:\n%s", out)
+	}
+	if !strings.Contains(out, "--kind\t") {
+		t.Errorf("--kind is repeatable and must stay on offer:\n%s", out)
+	}
+	if !strings.Contains(out, "--since\t") {
+		t.Errorf("untyped filters must stay on offer:\n%s", out)
+	}
+}
+
+func TestExportCompletionDropsTypedFlags(t *testing.T) {
+	withFixtureHome(t)
+	t.Cleanup(func() {
+		exportProfile = ""
+		exportCmd.Flags().Lookup("profile").Changed = false
+	})
+	out := completeThrough(t, "export", "--profile", "dev", "")
+	if strings.Contains(out, "--profile\t") {
+		t.Errorf("--profile already typed but offered again:\n%s", out)
+	}
+	if !strings.Contains(out, "--mode\t") {
+		t.Errorf("--mode must stay on offer:\n%s", out)
+	}
+}
+
 // The bare command must show the filters that are the whole point of it.
 func TestAuditCompletionSurfacesItsFilters(t *testing.T) {
 	withFixtureHome(t)

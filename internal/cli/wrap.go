@@ -530,14 +530,25 @@ func completeWrapCatalog(cmd *cobra.Command, args []string, toComplete string) (
 	// and it is where the REQUIRED flag belongs instead: `jit wrap add gh`
 	// alone is not a valid command, yet neither --env nor --grant ever
 	// appeared on tab. Same shape as completeGrantCreateEntry: the flag as a
-	// candidate, the whole line as active help.
+	// candidate, the whole line as active help - and like there, a flag
+	// already on the line moves the offer forward instead of repeating.
+	// --env and --grant are mutually exclusive, --env alone is repeatable.
 	if len(args) != 0 {
-		comps := []string{
-			"--env\tinject VAR=<vault-path> into the tool (repeatable)",
-			"--grant\tgrant a global file mount instead: " + knownWithNames(globalMountKinds(homeForWrapCompletion())),
+		switch {
+		case wrapAddGrant != "":
+			return cobra.AppendActiveHelp(nil, "all set - press enter to wrap"), cobra.ShellCompDirectiveNoFileComp
+		case len(wrapAddEnv) > 0:
+			comps := []string{"--env\tinject another VAR=<vault-path> (repeatable)"}
+			comps = cobra.AppendActiveHelp(comps, "press enter to wrap, or add another --env")
+			return comps, cobra.ShellCompDirectiveNoFileComp
+		default:
+			comps := []string{
+				"--env\tinject VAR=<vault-path> into the tool (repeatable)",
+				"--grant\tgrant a global file mount instead: " + knownWithNames(globalMountKinds(homeForWrapCompletion())),
+			}
+			comps = cobra.AppendActiveHelp(comps, "one of the two is required: "+wrapAddUsage)
+			return comps, cobra.ShellCompDirectiveNoFileComp
 		}
-		comps = cobra.AppendActiveHelp(comps, "one of the two is required: "+wrapAddUsage)
-		return comps, cobra.ShellCompDirectiveNoFileComp
 	}
 	var out []string
 	for _, tool := range wrap.CatalogTools() {
