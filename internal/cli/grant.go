@@ -510,7 +510,11 @@ func resolveGrantSecrets(root string) func(profiles []string, projectRoot string
 				seen[secretPath] = true
 				wrapped, class, err := v.WrappedDEK(secretPath)
 				if err != nil {
-					return nil, fmt.Errorf("profile %s: %w", name, err)
+					// Name the entry, not just the profile: "profile x: secret
+					// not found" leaves the user diffing fourteen manifest
+					// lines against `jit vault list` by hand (a real dead end,
+					// hit on the first live tree-grant create).
+					return nil, fmt.Errorf("profile %s: %s: %w (the profile names it, the vault does not have it - `jit vault list` shows what is stored)", name, secretPath, err)
 				}
 				out = append(out, agent.GrantSecret{Path: secretPath, Wrapped: wrapped, Class: class})
 			}
