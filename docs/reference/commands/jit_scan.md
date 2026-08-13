@@ -48,6 +48,7 @@ jit scan [path...] [flags]
       --fail-on string   exit 2 when the scan's risk level is at or above this: critical, high, medium, low, or any (default: always exit 0)
       --format string    output format: "text" (default), "markdown"/"md", or "ndjson" (default "text")
       --full             print the full finding inventory (categories, severities, every file and line) instead of the coverage summary
+      --no-pager         print straight to the terminal instead of paging through $PAGER
   -o, --output string    write the report to this file instead of stdout
       --score            print only the exposure score (e.g. "Exposure: 92/100 (CRITICAL)") and exit
       --unfiltered       show findings jit normally judges to be settings, paths, browser-public build variables or unfilled template values; each is tagged [unfiltered] with the rule that hid it, so one run audits what the filters are hiding
