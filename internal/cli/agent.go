@@ -1047,6 +1047,13 @@ var agentLogCmd = &cobra.Command{
 			fmt.Fprint(out, hlCmds(fmt.Sprintf("No service log yet at %s, it's written once the service runs; it starts on its own the first time you use jit, or run `jit service restart`.\n", displayLogPath(logPath))))
 			return nil
 		}
+		if !agentLogFollow {
+			// A static read pages like `jit audit` does; --follow keeps the
+			// terminal, since a poll loop must never sit behind a pager.
+			var donePaging func()
+			out, donePaging = pageableOutput(cmd)
+			defer donePaging()
+		}
 		writeAgentLogTail(out, tailLines(data, agentLogLines))
 
 		if !agentLogFollow {
@@ -1110,14 +1117,15 @@ func writeAgentLogTail(out io.Writer, data []byte) {
 }
 
 // tailLines returns the last n lines of data, newline-terminated — the
-// whole file when it has fewer.
+// whole file when it has fewer, or when n is 0: `-n 0` means everything,
+// the same convention `jit audit --limit 0` teaches.
 func tailLines(data []byte, n int) []byte {
 	trimmed := bytes.TrimSuffix(data, []byte("\n"))
-	if n <= 0 || len(trimmed) == 0 {
+	if len(trimmed) == 0 {
 		return nil
 	}
 	lines := bytes.Split(trimmed, []byte("\n"))
-	if len(lines) > n {
+	if n > 0 && len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
 	return append(bytes.Join(lines, []byte("\n")), '\n')
@@ -1782,7 +1790,8 @@ func init() {
 	agentRunCmd.Flags().DurationVar(&agentTTL, "ttl", 5*time.Minute, "how long an unlocked session stays cached before auto-locking (values above the 8h maximum session age are clamped to it)")
 	agentRunCmd.Flags().BoolVar(&agentConsent, "consent", true, "prompt for per-process consent (Touch ID) the first time each tool reaches for a credential (on by default; use --consent=false to disable)")
 	agentStatusCmd.Flags().StringVar(&agentStatusFormat, "format", "text", `output format: "text" (default) or "json"`)
-	agentLogCmd.Flags().IntVarP(&agentLogLines, "lines", "n", 50, "how many trailing lines to print")
+	agentLogCmd.Flags().IntVarP(&agentLogLines, "lines", "n", 50, "how many trailing lines to print (0 for the whole file)")
+	registerPagerFlag(agentLogCmd)
 	agentLogCmd.Flags().BoolVarP(&agentLogFollow, "follow", "f", false, "keep printing new lines as the service writes them (Ctrl-C to stop)")
 	agentLogCmd.Flags().BoolVar(&agentLogRaw, "raw", false, "print the log file's bytes exactly as written, without the formatted view")
 
