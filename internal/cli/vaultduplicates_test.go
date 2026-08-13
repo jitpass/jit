@@ -150,15 +150,27 @@ func TestSharedCredentialFindings(t *testing.T) {
 		t.Errorf("keys = %v, config-named keys must not count", fs[0].Keys)
 	}
 
-	// Groups consumed by a same-file finding don't re-report as shared.
+	// A shared entry covering EXACTLY one same-file finding's groups is a
+	// restatement and is suppressed.
 	consumed := []dupFinding{{Groups: []string{"jamf", "jamf-2"}}}
+	only := map[string]*dupGroup{
+		"jamf":   groups["jamf"],
+		"jamf-2": groups["jamf-2"],
+	}
+	if fs = sharedCredentialFindings(only, consumed); len(fs) != 0 {
+		t.Errorf("a shared entry that only restates a finding must be suppressed, got %+v", fs)
+	}
+
+	// But a value held by a consumed group AND others must still list ALL
+	// holders. Dropping the consumed ones under-reported where a rotation
+	// has to reach: on a real vault JAMF_CLIENT_ID went from "shared by 6
+	// profiles" to "shared by 4" the moment jamf/jamf-2 became a finding.
 	fs = sharedCredentialFindings(groups, consumed)
-	for _, f := range fs {
-		for _, g := range f.Groups {
-			if g == "jamf" || g == "jamf-2" {
-				t.Errorf("consumed group %s re-reported as shared: %+v", g, fs)
-			}
-		}
+	if len(fs) != 1 {
+		t.Fatalf("want one finding spanning the finding and the others, got %+v", fs)
+	}
+	if strings.Join(fs[0].Groups, ",") != "export-c,jamf,jamf-2" {
+		t.Errorf("every holder must be listed for rotation, got %v", fs[0].Groups)
 	}
 }
 
@@ -183,10 +195,8 @@ func TestPrintDuplicatesReport(t *testing.T) {
 		"from /u/Documents/ws/.mcp.json",
 		"mcp-caido-2 looks stale, retire it with:",
 		"jit migrate remove /u/Desktop/ws/.mcp.json",
-		"[shared credentials] 1 · same value in independent tools, keep all",
-		"JAMF_CLIENT_ID",
-		"shared by 2 profiles",
-		"removing any copy breaks its tool; when rotating, update every copy",
+		"[shared credentials] 1 · one credential in several tools, nothing to fix",
+		"jit vault duplicates --shared",
 		"118 secrets compared in memory; no value was printed or written.",
 	} {
 		if !strings.Contains(out, want) {
@@ -196,6 +206,30 @@ func TestPrintDuplicatesReport(t *testing.T) {
 	if strings.Contains(out, "vault rm") {
 		t.Errorf("a live-mounted copy must route to migrate remove, never rm, got:\n%s", out)
 	}
+
+	// A report whose only question is "what can I delete" must not spend a
+	// dozen lines on groups that are fine: the shared section collapses to
+	// a count unless --shared asks for it.
+	if strings.Contains(out, "shared by 2 profiles") {
+		t.Errorf("shared credentials must collapse by default, got:\n%s", out)
+	}
+	vaultDuplicatesShared = true
+	defer func() { vaultDuplicatesShared = false }()
+	buf.Reset()
+	printDuplicatesReport(&buf, nil, []sharedFinding{{
+		Keys: []string{"JAMF_CLIENT_ID"}, Groups: []string{"jamf", "jamf-2"},
+	}}, 118)
+	for _, want := range []string{
+		"same value in independent tools, keep all",
+		"shared by 2 profiles",
+		"jamf, jamf-2",
+		"when rotating, update every copy",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("--shared must list them, missing %q, got:\n%s", want, buf.String())
+		}
+	}
+	vaultDuplicatesShared = false
 
 	// Diverged: caveat instead of a remedy.
 	buf.Reset()
@@ -564,6 +598,14 @@ func TestPruneDuplicatesOnlyTouchesTheSafeShape(t *testing.T) {
 		{ // diverged: never jit's call
 			Groups: []string{"a", "b"}, ValuesMatch: false,
 		},
+		{ // remedy withheld because its project scope covers another finding
+			Groups: []string{"caido", "caido-2"}, RemoveGroup: "caido-2", ValuesMatch: true,
+			RemoveBlockedBy: "okta",
+		},
+		{ // a copy holds keys the others lack
+			Groups: []string{"okta", "okta-2"}, ValuesMatch: true,
+			ExtraKeys: []string{"OKTA_PRIVATE_KEY"},
+		},
 	}
 
 	// Declining the confirmation must delete nothing.
@@ -591,12 +633,16 @@ func TestPruneDuplicatesOnlyTouchesTheSafeShape(t *testing.T) {
 			t.Errorf("prune plan must not list %s, got:\n%s", unsafe, out)
 		}
 	}
-	// And it accounts for what it left behind, with each command.
+	// And it accounts for EVERY finding it did not delete, each with its
+	// own reason — including the two shapes that have no command at all.
 	for _, want := range []string{
-		"Left alone, 3 findings need a command only you should run:",
+		"Left alone, 6 findings are not safe to delete here:",
+		"keep, dead: you declined the deletion",
 		"jit migrate remove /x/live/.env",
 		"jit vault rm wired/KEY",
 		"copies have diverged, compare them first",
+		"which would take okta too",
+		"one copy holds keys the other lacks",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("prune must report what it skipped (%q), got:\n%s", want, out)
@@ -609,7 +655,7 @@ func TestPruneDuplicatesOnlyTouchesTheSafeShape(t *testing.T) {
 		t.Fatalf("pruneDuplicates (nothing prunable): %v", err)
 	}
 	if !strings.Contains(buf.String(), "Nothing to prune") ||
-		!strings.Contains(buf.String(), "Left alone, 3 findings") {
+		!strings.Contains(buf.String(), "Left alone, 5 findings") {
 		t.Errorf("empty prune must explain, got:\n%s", buf.String())
 	}
 }
