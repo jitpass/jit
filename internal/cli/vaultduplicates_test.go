@@ -203,6 +203,115 @@ func TestPrintDuplicatesReport(t *testing.T) {
 	}
 }
 
+// TestGatherDupGroupsExpandsTildeOrigins pins the form real migrations
+// write. Origin is stored ALREADY tilde-shortened ("~/proj/.env"), so
+// statting it raw always failed and originExists was permanently false:
+// the `jit migrate remove` remedy became dead code and every live
+// duplicate was routed to `jit vault rm`, the precise advice this command
+// exists to stop giving. The earlier tests missed it by supplying absolute
+// origins no migration ever records.
+func TestGatherDupGroupsExpandsTildeOrigins(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := t.TempDir()
+	root, err := vaultRootDir()
+	if err != nil {
+		t.Fatalf("vaultRootDir: %v", err)
+	}
+	v := &vault.Vault{Root: root, KeyWrapper: newFakeKeyWrapper(), RecipientID: "test-device"}
+
+	// A real file under the fixture home, recorded the way migrate records
+	// it: relative to home, with a leading "~/".
+	if err := os.MkdirAll(filepath.Join(home, "proj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	livePath := filepath.Join(home, "proj", ".env")
+	if err := os.WriteFile(livePath, []byte("A=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.SetWithMeta("live/A", []byte("secret-value"),
+		vault.Meta{Class: vault.ClassDotenv, Origin: "~/proj/.env"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.SetWithMeta("gone/A", []byte("secret-value"),
+		vault.Meta{Class: vault.ClassDotenv, Origin: "~/deleted/.env"}); err != nil {
+		t.Fatal(err)
+	}
+
+	groups, _, err := gatherDupGroups(v, root, cwd, []string{"live/A", "gone/A"})
+	if err != nil {
+		t.Fatalf("gatherDupGroups: %v", err)
+	}
+	if g := groups["live"]; g == nil || !g.originExists {
+		t.Errorf("a tilde origin whose file EXISTS must stat true, got %+v", g)
+	}
+	if g := groups["gone"]; g == nil || g.originExists {
+		t.Errorf("a tilde origin whose file is gone must stat false, got %+v", g)
+	}
+
+	// End to end: the live copy must be routed to migrate remove, never rm.
+	groups["live"].keys = []string{"A"}
+	groups["gone"].keys = []string{"A"}
+	groups["gone"].origin = "~/proj/.env" // same tail, so they cluster
+	groups["gone"].originExists = false
+	fs := sameFileFindings(groups)
+	if len(fs) != 1 {
+		t.Fatalf("want one finding, got %+v", fs)
+	}
+	if fs[0].RemoveGroup != "gone" {
+		t.Errorf("the copy whose file is gone must be the pick, got %+v", fs[0])
+	}
+	// And with the live one picked instead, the remedy must be migrate remove.
+	groups["gone"].originExists = true
+	fs = sameFileFindings(groups)
+	if len(fs) != 1 || !strings.HasPrefix(fs[0].RemoveCommand, "jit migrate remove ") {
+		t.Errorf("a copy whose file exists must route to migrate remove, got %+v", fs)
+	}
+}
+
+// TestSameFileFindingsUsesProfileSourceForPreProvenance is the miss that
+// made v0.92.0 useless on the vault it was built for. A pre-provenance
+// (v1/v2) envelope carries NO Origin, so keying on Origin alone skipped the
+// older copy entirely, its newer twin had nothing to pair with, and both
+// landed in "shared credentials, keep all" — the report calling a real
+// duplicate a credential to keep. The referencing profile's recorded source
+// is the evidence that does exist for those secrets, and is what
+// `jit vault get`'s own "migrated from" footer has always shown.
+func TestSameFileFindingsUsesProfileSourceForPreProvenance(t *testing.T) {
+	// The older copy: no Origin at all, only a profile-recorded source.
+	old := dupTestGroup("mcp-caido", "", true, []string{"mcp-caido"}, map[string]string{"CAIDO_URL": "v1"})
+	old.ownerConfig = "~/Documents/ai_security_workspace/.mcp.json"
+	// The newer twin, migrated after provenance shipped.
+	newer := dupTestGroup("mcp-caido-2", "~/Desktop/Share/ai_security_workspace/.mcp.json",
+		true, []string{"mcp-caido-2"}, map[string]string{"CAIDO_URL": "v1"})
+
+	groups := map[string]*dupGroup{"mcp-caido": old, "mcp-caido-2": newer}
+	fs := sameFileFindings(groups)
+	if len(fs) != 1 {
+		t.Fatalf("a pre-provenance copy must still pair with its twin, got %+v", fs)
+	}
+	if strings.Join(fs[0].Groups, ",") != "mcp-caido,mcp-caido-2" {
+		t.Errorf("groups = %v", fs[0].Groups)
+	}
+	// Its origin column must show the profile-recorded source, not blank.
+	if fs[0].Origins[0] != "~/Documents/ai_security_workspace/.mcp.json" {
+		t.Errorf("origins = %v, want the profile source for the pre-provenance copy", fs[0].Origins)
+	}
+	if !fs[0].ValuesMatch {
+		t.Errorf("identical values must still compare equal, got %+v", fs[0])
+	}
+
+	// And it must be excluded from the shared-credentials bucket, which is
+	// where it wrongly showed up before.
+	shared := sharedCredentialFindings(groups, fs)
+	for _, f := range shared {
+		for _, g := range f.Groups {
+			if g == "mcp-caido" || g == "mcp-caido-2" {
+				t.Errorf("a paired duplicate must not also read as a shared credential: %+v", shared)
+			}
+		}
+	}
+}
+
 // TestPruneDuplicatesOnlyTouchesTheSafeShape is the guard that matters:
 // --prune must delete ONLY a stale copy whose origin file is gone and which
 // nothing references, must leave every other shape alone, and must say so

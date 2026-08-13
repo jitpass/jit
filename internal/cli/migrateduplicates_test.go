@@ -66,3 +66,39 @@ func TestNoteDuplicateValues(t *testing.T) {
 		t.Errorf("nil index must print nothing, got:\n%s", buf.String())
 	}
 }
+
+// TestNoteDuplicateValuesIndexBuiltAfterTheWrite reproduces the ordering
+// migrate actually uses: the index is built LAZILY, i.e. after the file's
+// secrets are already stored, so the copy's own freshly-written path is in
+// the index alongside the original's. A digest->one-path index let the
+// new path win the slot and the note went silent on a real duplicate;
+// caught by migrating a copied folder on a real machine, where
+// "ws-copy/CAIDO_URL" sorts before "ws/CAIDO_URL".
+func TestNoteDuplicateValuesIndexBuiltAfterTheWrite(t *testing.T) {
+	withFixtureHome(t)
+	root, err := vaultRootDir()
+	if err != nil {
+		t.Fatalf("vaultRootDir: %v", err)
+	}
+	v := &vault.Vault{Root: root, KeyWrapper: newFakeKeyWrapper(), RecipientID: "test-device"}
+
+	// Both copies exist BEFORE the index is built, and the newer profile's
+	// path sorts first — exactly the shape that used to mask the duplicate.
+	if err := v.Set("ws/CAIDO_URL", []byte("http://127.0.0.1:8080")); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Set("ws-copy/CAIDO_URL", []byte("http://127.0.0.1:8080")); err != nil {
+		t.Fatal(err)
+	}
+	idx := buildVaultValueIndex(v)
+
+	var buf bytes.Buffer
+	noteDuplicateValues(&buf, v, idx, "ws-copy", []string{"CAIDO_URL"})
+	out := buf.String()
+	if !strings.Contains(out, "1 value is already stored under ws") {
+		t.Errorf("the older copy must be named even though the new path sorts first, got:\n%s", out)
+	}
+	if strings.Contains(out, "ws-copy") {
+		t.Errorf("the migrating profile must never name itself, got:\n%s", out)
+	}
+}
