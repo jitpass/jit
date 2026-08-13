@@ -252,25 +252,37 @@ func pruneDuplicates(cmd *cobra.Command, v *vault.Vault, findings []dupFinding) 
 			prunableGroups++
 			continue
 		}
-		if f.RemoveCommand != "" || !f.ValuesMatch {
-			left = append(left, f)
-		}
+		// EVERY finding --prune did not delete is accounted for. An earlier
+		// cut listed only those with a command or diverged values, which
+		// silently dropped the two shapes that have neither: a remedy
+		// withheld by its project scope, and a copy holding keys the others
+		// lack. A cleanup that lists 1 of 3 skipped findings reads as
+		// "handled the rest", which is the opposite of the truth.
+		left = append(left, f)
 	}
 	reportLeft := func() {
 		if len(left) == 0 {
 			return
 		}
-		fmt.Fprintf(out, "\nLeft alone, %s %s a command only you should run:\n",
+		fmt.Fprintf(out, "\nLeft alone, %s %s not safe to delete here:\n",
 			countWord(len(left), "finding", "findings"),
-			pluralWord(len(left), "needs", "need"))
+			pluralWord(len(left), "is", "are"))
 		for _, f := range left {
-			if !f.ValuesMatch {
-				fmt.Fprintf(out, "  %s %s: copies have diverged, compare them first\n",
-					glyphBranch, strings.Join(f.Groups, ", "))
-				continue
+			label := strings.Join(f.Groups, ", ")
+			switch {
+			case f.RemoveBlockedBy != "":
+				fmt.Fprintf(out, "  %s %s: no safe one-command fix, it would take %s too\n",
+					glyphBranch, label, f.RemoveBlockedBy)
+			case !f.ValuesMatch:
+				fmt.Fprintf(out, "  %s %s: copies have diverged, compare them first\n", glyphBranch, label)
+			case len(f.ExtraKeys) > 0:
+				fmt.Fprintf(out, "  %s %s: one copy holds keys the other lacks\n", glyphBranch, label)
+			case f.RemoveCommand != "":
+				fmt.Fprintf(out, "  %s %s: ", glyphBranch, f.RemoveGroup)
+				_, _ = cPath.Fprintln(out, f.RemoveCommand)
+			default:
+				fmt.Fprintf(out, "  %s %s: no removal pick\n", glyphBranch, label)
 			}
-			fmt.Fprintf(out, "  %s %s: ", glyphBranch, f.RemoveGroup)
-			_, _ = cPath.Fprintln(out, f.RemoveCommand)
 		}
 	}
 	if len(paths) == 0 {
