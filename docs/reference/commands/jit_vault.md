@@ -30,6 +30,7 @@ jit vault
 * [jit](jit.md)	 - Local-first developer secret runtime
 * [jit vault clean](jit_vault_clean.md)	 - Delete every secret in the vault (the vault itself stays set up)
 * [jit vault delete](jit_vault_delete.md)	 - Permanently destroy the whole vault, including its encryption key
+* [jit vault duplicates](jit_vault_duplicates.md)	 - Report groups that hold the same secrets, and which are safe to retire
 * [jit vault export](jit_vault_export.md)	 - Export every secret to a passphrase-encrypted local backup file
 * [jit vault get](jit_vault_get.md)	 - Decrypt and print a secret
 * [jit vault history](jit_vault_history.md)	 - List a secret's archived previous versions

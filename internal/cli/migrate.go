@@ -522,6 +522,12 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 	// (pristine) backup of each shared file the only one.
 	backups := migrate.NewBackupTracker()
 
+	// Lazy, once-per-run index of every value already stored, for the
+	// duplicate-disclosure notes below (see migrateduplicates.go). Lazy so
+	// a run that migrates none of the disclosing categories never pays the
+	// full-vault read.
+	dupIdx := &dupIndexOnce{v: v}
+
 	// Each migrated category gets the same "[Label] (N)" header + bullet
 	// shape the plan itself already uses (printMigratePlan/
 	// printMigratePlanCategory) — a real, reported problem: this log used
@@ -557,6 +563,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 				fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`, replaced with a safe pointer file (never mounted; nothing reads a backup file live)\n",
 					displayPath(home, envPath), result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath)))
 				noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
+				noteDuplicateValues(out, v, dupIdx.get(), result.ProfileName, result.Variables)
 				continue
 			}
 			if err := addMount(mount.Entry{MountPath: result.EnvPath, ProfilePath: result.ProfilePath}); err != nil {
@@ -567,6 +574,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 			}
 			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`\n", displayPath(home, envPath), result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath)))
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
+			noteDuplicateValues(out, v, dupIdx.get(), result.ProfileName, result.Variables)
 		}
 		fmt.Fprintln(out)
 	}
@@ -736,6 +744,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 					displayPath(home, mcpPath), sm.ServerName, sm.ProfileName, countWord(len(sm.Variables), "var", "vars"), result.BackupPath)))
 				noteNamespaceMove(out, sm.NamespaceMovedFrom, sm.ProfileName)
 				noteRewrap(out, sm.RewrappedFrom)
+				noteDuplicateValues(out, v, dupIdx.get(), sm.ProfileName, sm.Variables)
 			}
 			// A project block that could not be parsed still holds whatever
 			// `jit scan` flagged. Saying nothing here would report success
