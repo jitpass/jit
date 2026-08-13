@@ -22,18 +22,28 @@ import (
 // later removed), and the note routes to `jit vault duplicates` for the
 // full comparison and remedy.
 
-// buildVaultValueIndex digests every secret ALREADY stored before this run
-// writes anything, mapping value digest -> the first vault path holding it.
-// Values are hashed as read and never kept. Best-effort: an unreadable
-// envelope is skipped, and a nil index (a listing failure) simply disables
-// the notes — disclosure must never fail a migration.
-func buildVaultValueIndex(v *vault.Vault) map[string]string {
+// buildVaultValueIndex digests every stored secret, mapping value digest ->
+// every vault path holding it. Values are hashed as read and never kept.
+// Best-effort: an unreadable envelope is skipped, and a nil index (a listing
+// failure) simply disables the notes — disclosure must never fail a
+// migration.
+//
+// It maps a digest to EVERY path holding it, not just the first. The index
+// is built lazily, which means it is built AFTER the run's first file has
+// already been stored, so a value's own freshly-written path is in here
+// too — and with a single-path map the lookup could return that path
+// instead of the older copy, see itself, and stay silent about a real
+// duplicate. Keeping every path lets the lookup skip the migrating
+// profile's own and still find the older one. (Found by migrating a copied
+// folder on a real machine: the note never appeared, because
+// "ws-copy/CAIDO_URL" sorts before "ws/CAIDO_URL" and won the map slot.)
+func buildVaultValueIndex(v *vault.Vault) map[string][]string {
 	paths, err := v.List()
 	if err != nil {
 		return nil
 	}
 	secrets, _ := splitBackupPaths(paths)
-	idx := make(map[string]string, len(secrets))
+	idx := make(map[string][]string, len(secrets))
 	for _, p := range secrets {
 		value, err := v.Get(p)
 		if err != nil {
@@ -41,9 +51,7 @@ func buildVaultValueIndex(v *vault.Vault) map[string]string {
 		}
 		sum := sha256.Sum256(value)
 		key := fmt.Sprintf("%x", sum)
-		if _, ok := idx[key]; !ok {
-			idx[key] = p
-		}
+		idx[key] = append(idx[key], p)
 	}
 	return idx
 }
@@ -58,7 +66,7 @@ const minDuplicateValueLen = 6
 // already held. Key names that look like plain configuration are skipped on
 // sharedCredentialFindings' reasoning (two scripts sharing OUTPUT_FILE is
 // not a duplicate credential), as are very short values.
-func noteDuplicateValues(out io.Writer, v *vault.Vault, idx map[string]string, profileName string, vars []string) {
+func noteDuplicateValues(out io.Writer, v *vault.Vault, idx map[string][]string, profileName string, vars []string) {
 	if len(idx) == 0 {
 		return
 	}
@@ -73,13 +81,19 @@ func noteDuplicateValues(out io.Writer, v *vault.Vault, idx map[string]string, p
 			continue
 		}
 		sum := sha256.Sum256(value)
-		existing, ok := idx[fmt.Sprintf("%x", sum)]
-		if !ok {
-			continue
-		}
-		if g := groupPrefix(existing); g != profileName {
-			dupCount++
+		counted := false
+		for _, existing := range idx[fmt.Sprintf("%x", sum)] {
+			// Skip the value's own group, including the copy this very
+			// migration just wrote (the index is built after the store).
+			g := groupPrefix(existing)
+			if g == profileName {
+				continue
+			}
 			groupSet[g] = true
+			if !counted {
+				dupCount++
+				counted = true
+			}
 		}
 	}
 	if dupCount == 0 {
@@ -99,10 +113,10 @@ func noteDuplicateValues(out io.Writer, v *vault.Vault, idx map[string]string, p
 type dupIndexOnce struct {
 	v     *vault.Vault
 	built bool
-	idx   map[string]string
+	idx   map[string][]string
 }
 
-func (d *dupIndexOnce) get() map[string]string {
+func (d *dupIndexOnce) get() map[string][]string {
 	if !d.built {
 		d.built = true
 		d.idx = buildVaultValueIndex(d.v)
