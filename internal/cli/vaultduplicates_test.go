@@ -564,6 +564,14 @@ func TestPruneDuplicatesOnlyTouchesTheSafeShape(t *testing.T) {
 		{ // diverged: never jit's call
 			Groups: []string{"a", "b"}, ValuesMatch: false,
 		},
+		{ // remedy withheld because its project scope covers another finding
+			Groups: []string{"caido", "caido-2"}, RemoveGroup: "caido-2", ValuesMatch: true,
+			RemoveBlockedBy: "okta",
+		},
+		{ // a copy holds keys the others lack
+			Groups: []string{"okta", "okta-2"}, ValuesMatch: true,
+			ExtraKeys: []string{"OKTA_PRIVATE_KEY"},
+		},
 	}
 
 	// Declining the confirmation must delete nothing.
@@ -591,12 +599,15 @@ func TestPruneDuplicatesOnlyTouchesTheSafeShape(t *testing.T) {
 			t.Errorf("prune plan must not list %s, got:\n%s", unsafe, out)
 		}
 	}
-	// And it accounts for what it left behind, with each command.
+	// And it accounts for EVERY finding it did not delete, each with its
+	// own reason — including the two shapes that have no command at all.
 	for _, want := range []string{
-		"Left alone, 3 findings need a command only you should run:",
+		"Left alone, 5 findings are not safe to delete here:",
 		"jit migrate remove /x/live/.env",
 		"jit vault rm wired/KEY",
 		"copies have diverged, compare them first",
+		"no safe one-command fix, it would take okta too",
+		"one copy holds keys the other lacks",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("prune must report what it skipped (%q), got:\n%s", want, out)
@@ -609,7 +620,7 @@ func TestPruneDuplicatesOnlyTouchesTheSafeShape(t *testing.T) {
 		t.Fatalf("pruneDuplicates (nothing prunable): %v", err)
 	}
 	if !strings.Contains(buf.String(), "Nothing to prune") ||
-		!strings.Contains(buf.String(), "Left alone, 3 findings") {
+		!strings.Contains(buf.String(), "Left alone, 5 findings") {
 		t.Errorf("empty prune must explain, got:\n%s", buf.String())
 	}
 }
