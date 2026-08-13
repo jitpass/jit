@@ -55,8 +55,16 @@ then reports:
   had just forbidden.
 - **Shared credentials**: the same value stored by independent files, for
   example one API client used by five export scripts. These are *not* stale
-  copies - removing any breaks its tool - and the report lists every place
-  a rotation has to reach.
+  copies and there is nothing to fix, so they collapse to a count:
+
+  ```
+  [shared credentials] 4 · one credential in several tools each, nothing to fix
+    jit vault duplicates --shared to list them
+  ```
+
+  `--shared` expands them, naming every place a rotation would have to
+  reach. They stay out of the default view because this command's question
+  is "what can I safely delete", and the answer for these is "nothing".
 
 ### Why it asks for Touch ID more than once
 

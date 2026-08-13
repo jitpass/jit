@@ -139,6 +139,7 @@ var (
 	vaultDuplicatesFormat string
 	vaultDuplicatesPrune  bool
 	vaultDuplicatesYes    bool
+	vaultDuplicatesShared bool
 )
 
 var vaultDuplicatesCmd = &cobra.Command{
@@ -156,9 +157,9 @@ var vaultDuplicatesCmd = &cobra.Command{
 		"  Diverged copies (same file ancestry, different values now) are reported\n" +
 		"  without a removal pick.\n\n" +
 		"  Shared credentials: the same value stored by independent files, e.g.\n" +
-		"  one API client used by five export scripts. These are NOT stale copies,\n" +
-		"  removing any breaks its tool, and the report lists every place a\n" +
-		"  rotation has to reach.\n\n" +
+		"  one API client used by five export scripts. These are NOT stale copies\n" +
+		"  and there is nothing to fix, so they collapse to a count; --shared\n" +
+		"  lists them with every place a rotation would have to reach.\n\n" +
 		"Reporting only by default. --prune deletes the ONE shape that is pure\n" +
 		"vault garbage: a stale copy whose origin file is already gone AND that no\n" +
 		"profile jit can see references, after a [y/N] confirmation and a fresh\n" +
@@ -175,6 +176,7 @@ var vaultDuplicatesCmd = &cobra.Command{
 		"therefore asks about three times, not once: the unlock plus one per class.\n" +
 		"`jit service consent off` removes the per-class half.",
 	Example: "  jit vault duplicates\n" +
+		"  jit vault duplicates --shared\n" +
 		"  jit vault duplicates --prune\n" +
 		"  jit vault duplicates --format json",
 	Args:         cobra.NoArgs,
@@ -797,16 +799,29 @@ func printDuplicatesReport(out io.Writer, findings []dupFinding, shared []shared
 		if len(findings) > 0 {
 			fmt.Fprintln(out)
 		}
+		// Collapsed by default. This section answers a question the command
+		// was not asked: it lists groups that are FINE, in a report whose
+		// only question is what can be deleted. It earned its space when
+		// `jit vault list`'s nudge was telling users to rm these exact
+		// groups and the section existed to contradict that; the nudge is
+		// origin-based now and never flags them, so the rebuttal became a
+		// dozen lines of "do nothing" on every run. The rotation map it
+		// carries is real but belongs where a rotation happens, not here.
 		_, _ = cBold.Fprintf(out, "[shared credentials]")
-		fmt.Fprintf(out, " %d · same value in independent tools, keep all\n", len(shared))
-		for _, f := range shared {
-			fmt.Fprintln(out)
-			_, _ = cOK.Fprintf(out, "%s ", glyphOK)
-			_, _ = cBold.Fprint(out, strings.Join(f.Keys, ", "))
-			fmt.Fprintf(out, " shared by %d profiles\n", len(f.Groups))
-			fmt.Fprintf(out, "  %s %s\n", glyphBranch, strings.Join(f.Groups, ", "))
+		if !vaultDuplicatesShared {
+			fmt.Fprintf(out, " %d · one credential in several tools each, nothing to fix\n", len(shared))
+			fmt.Fprint(out, hlCmds("  `jit vault duplicates --shared` to list them\n"))
+		} else {
+			fmt.Fprintf(out, " %d · same value in independent tools, keep all\n", len(shared))
+			for _, f := range shared {
+				fmt.Fprintln(out)
+				_, _ = cOK.Fprintf(out, "%s ", glyphOK)
+				_, _ = cBold.Fprint(out, strings.Join(f.Keys, ", "))
+				fmt.Fprintf(out, " shared by %d profiles\n", len(f.Groups))
+				fmt.Fprintf(out, "  %s %s\n", glyphBranch, strings.Join(f.Groups, ", "))
+			}
+			fmt.Fprintln(out, "  removing any copy breaks its tool; when rotating, update every copy")
 		}
-		fmt.Fprintln(out, "  removing any copy breaks its tool; when rotating, update every copy")
 	}
 	prunable := 0
 	for _, f := range findings {
@@ -899,6 +914,7 @@ func truncateList(names []string, max int) string {
 
 func init() {
 	vaultDuplicatesCmd.Flags().StringVar(&vaultDuplicatesFormat, "format", "text", `output format: "text" (default) or "json"`)
+	vaultDuplicatesCmd.Flags().BoolVar(&vaultDuplicatesShared, "shared", false, "list the shared credentials instead of collapsing them to a count")
 	vaultDuplicatesCmd.Flags().BoolVar(&vaultDuplicatesPrune, "prune", false, "delete stale copies whose origin file is gone and which nothing references")
 	vaultDuplicatesCmd.Flags().BoolVarP(&vaultDuplicatesYes, "yes", "y", false, "skip the confirmation prompt (never the fingerprint)")
 	vaultCmd.AddCommand(vaultDuplicatesCmd)
