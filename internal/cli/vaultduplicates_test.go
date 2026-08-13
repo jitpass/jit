@@ -195,7 +195,7 @@ func TestPrintDuplicatesReport(t *testing.T) {
 		"from /u/Documents/ws/.mcp.json",
 		"mcp-caido-2 looks stale, retire it with:",
 		"jit migrate remove /u/Desktop/ws/.mcp.json",
-		"[shared credentials] 1 · one credential in several tools each, nothing to fix",
+		"[shared credentials] 1 · one credential in several tools, nothing to fix",
 		"jit vault duplicates --shared",
 		"118 secrets compared in memory; no value was printed or written.",
 	} {
@@ -636,11 +636,12 @@ func TestPruneDuplicatesOnlyTouchesTheSafeShape(t *testing.T) {
 	// And it accounts for EVERY finding it did not delete, each with its
 	// own reason — including the two shapes that have no command at all.
 	for _, want := range []string{
-		"Left alone, 5 findings are not safe to delete here:",
+		"Left alone, 6 findings are not safe to delete here:",
+		"keep, dead: you declined the deletion",
 		"jit migrate remove /x/live/.env",
 		"jit vault rm wired/KEY",
 		"copies have diverged, compare them first",
-		"no safe one-command fix, it would take okta too",
+		"which would take okta too",
 		"one copy holds keys the other lacks",
 	} {
 		if !strings.Contains(out, want) {
