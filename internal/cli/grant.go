@@ -25,12 +25,15 @@ import (
 )
 
 // jit grant — process grants (design/process-grants.md): pre-approve a
-// RUNNING process tree to use one or more profiles' secrets unattended, for
-// a bounded time, with one Touch ID given while you are still at the
-// keyboard. The bare command creates; list/revoke/extend manage what exists.
-// All state lives in the service's memory — the CLI here is a thin client
-// over the grant_* RPCs, plus the name-to-pid resolution and completion
-// that need a terminal-side view.
+// process tree to use one or more profiles' secrets unattended, for a
+// bounded time, with one Touch ID given while you are still at the
+// keyboard. --process NAME is tree-scoped: anchored to the terminal it is
+// typed in, covering every NAME under it, running now or started later
+// within the window. --pid is the exact-one-running-process mode. The bare
+// command creates; list/revoke/extend manage what exists. All state lives
+// in the service's memory — the CLI here is a thin client over the grant_*
+// RPCs, plus the anchor resolution and completion that need a terminal-side
+// view.
 
 var (
 	grantProcess      string
@@ -44,24 +47,30 @@ var (
 var grantCmd = &cobra.Command{
 	Use:     "grant --process NAME --profile NAME --for DURATION",
 	GroupID: groupSecrets,
-	Short:   "Pre-approve a running process to use profiles unattended",
-	Long: `Create a process grant: with one Touch ID now, allow a process that is
-already running (and everything it launches) to use the named profiles'
-secrets without further prompts, until the grant expires - including while
-the screen is locked or you are away.
+	Short:   "Pre-approve a program to use profiles unattended",
+	Long: `Create a process grant: with one Touch ID now, allow a program (and
+everything it launches) to use the named profiles' secrets without further
+prompts, until the grant expires - including while the screen is locked or
+you are away.
 
-The grant is anchored to the live process you name, not to its name: a new
-process called the same thing tomorrow inherits nothing. It covers exactly
-the secrets the named profiles resolve to at creation time, ends at its
-deadline (or when the process exits, or on 'jit grant revoke'), and every
+--process NAME is scoped to the terminal you type it in: every NAME under
+this terminal - running now or started later, in any tab - is covered
+until the deadline. The anchor is the terminal app itself, verified
+through kernel ancestry, so a same-named process elsewhere on the machine
+inherits nothing, and the grant ends early if the terminal app quits.
+--pid grants one exact running process instead, and ends when it exits.
+
+A grant covers exactly the secrets the named profiles resolve to at
+creation time, ends at its deadline (or on 'jit grant revoke'), and every
 serve under it is recorded in 'jit audit'.
 
 Grants live in the service's memory: they survive screen lock by design,
 and do not survive a service restart or reboot.`,
-	Example: `  # let the running claude session use the jamf profile for 8 hours
+	Example: `  # let claude use the jamf profile for 8 hours - current sessions and
+  # any started from this terminal within the window
   jit grant --process claude --profile jamf --for 8h
 
-  # several profiles in one grant, anchored by pid when the name is ambiguous
+  # several profiles, for one exact running process only
   jit grant --pid 4211 --profile jamf --profile aws-ci --for 1d
 
   # see, shorten, or end what is open
@@ -186,7 +195,7 @@ func runGrantCreate(out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	st, err := ac.GrantCreate(target.PID, grantProfileNames, cwd, ttl)
+	st, err := ac.GrantCreate(target.anchor.PID, target.name, grantProfileNames, cwd, ttl)
 	if err != nil {
 		return notRunningHint(err)
 	}
@@ -194,37 +203,39 @@ func runGrantCreate(out io.Writer) error {
 	return nil
 }
 
-// resolveGrantTarget turns --process/--pid into the live process the grant
-// anchors to. A name that matches several running processes is an error that
-// lists them — the human picks with --pid; jit never guesses which claude
-// they meant.
-func resolveGrantTarget() (lineage.Process, error) {
+// grantTarget is what a create resolves --process/--pid into: the process
+// the grant anchors to, plus (tree mode only) the name that narrows its
+// descendants. An empty name is the exact-one-process grant --pid means.
+type grantTarget struct {
+	anchor lineage.Process
+	name   string
+}
+
+// resolveGrantTarget turns --process/--pid into the grant's anchor.
+// --process needs no live match and no disambiguation: it anchors to THIS
+// terminal's session root and covers the name inside it — the sessions
+// running now and the ones started later within the window, which is why a
+// name that matches nothing yet is fine, not an error. --pid keeps the
+// exact-process shape for the times one specific tree is the point.
+func resolveGrantTarget() (grantTarget, error) {
 	if grantPIDFlag != 0 && grantProcess != "" {
-		return lineage.Process{}, fmt.Errorf("give --process or --pid, not both")
+		return grantTarget{}, fmt.Errorf("give --process or --pid, not both")
 	}
 	if grantPIDFlag != 0 {
 		p, ok := lineage.Describe(grantPIDFlag)
 		if !ok {
-			return lineage.Process{}, fmt.Errorf("no process with pid %d (it may have exited)", grantPIDFlag)
+			return grantTarget{}, fmt.Errorf("no process with pid %d (it may have exited)", grantPIDFlag)
 		}
-		return p, nil
+		return grantTarget{anchor: p}, nil
 	}
 	if grantProcess == "" {
-		return lineage.Process{}, fmt.Errorf("--process is required (the running program to grant to; tab-completes from recent callers)")
+		return grantTarget{}, fmt.Errorf("--process is required (the program to grant to; tab-completes from recent callers)")
 	}
-	procs := lineage.ProcessesNamed(grantProcess)
-	switch len(procs) {
-	case 0:
-		return lineage.Process{}, fmt.Errorf("nothing named %q is running - a grant anchors to a live process, start it first", grantProcess)
-	case 1:
-		return procs[0], nil
+	root, ok := lineage.SessionRoot(int32(os.Getpid())) // #nosec G115 -- darwin pids fit int32
+	if !ok {
+		return grantTarget{}, fmt.Errorf("no terminal tree to anchor %q to - run this from your terminal, or anchor one exact process with `--pid`", grantProcess)
 	}
-	lines := make([]string, 0, len(procs))
-	for _, p := range procs {
-		lines = append(lines, fmt.Sprintf("  --pid %-6d %s", p.PID, truncateEnd(p.Command(), 60)))
-	}
-	return lineage.Process{}, fmt.Errorf("%d processes are named %q, pick one with --pid:\n%s",
-		len(procs), grantProcess, strings.Join(lines, "\n"))
+	return grantTarget{anchor: root, name: grantProcess}, nil
 }
 
 func printGrantCreated(out io.Writer, st agent.GrantStatus) {
@@ -233,7 +244,27 @@ func printGrantCreated(out io.Writer, st agent.GrantStatus) {
 		st.Name, glyphAction, strings.Join(st.Profiles, ", "), grantClock(st.ExpiresUnix))
 	fmt.Fprintf(out, "  %s %s: %s\n", glyphBranch,
 		countWord(len(st.Secrets), "secret", "secrets"), truncateEnd(strings.Join(st.Secrets, ", "), 58))
+	if st.Anchor != "" {
+		fmt.Fprintf(out, "  %s covers %s under %s: %s, any started before %s\n", glyphBranch,
+			st.Name, st.Anchor, grantRunningNow(st.Name, st.PID), grantClock(st.ExpiresUnix))
+	}
 	fmt.Fprintf(out, "  %s end it early: %s\n", glyphBranch, cPath.Sprint("jit grant revoke "+st.ID))
+}
+
+// grantRunningNow phrases how many processes a fresh tree grant covers at
+// this moment — the reassurance half ("2 running now") or the granting-ahead
+// half ("none running yet"), both of which the human should see stated.
+func grantRunningNow(name string, anchorPID int32) string {
+	n := 0
+	for _, p := range lineage.ProcessesNamed(name) {
+		if lineage.AncestryContainsPID(p.PID, anchorPID) {
+			n++
+		}
+	}
+	if n == 0 {
+		return "none running yet"
+	}
+	return fmt.Sprintf("%d running now", n)
 }
 
 func runGrantList(out io.Writer) error {
@@ -284,6 +315,9 @@ func renderGrantRows(out io.Writer, grants []agent.GrantStatus) {
 		if !g.RootAlive {
 			glyph, ink = glyphRisk, cRisk
 			state = "process exited, ending"
+			if g.Anchor != "" {
+				state = "terminal closed, ending"
+			}
 		}
 		serves := "unused"
 		if g.Serves > 0 {
@@ -520,7 +554,7 @@ func completeGrantProcessNames(cmd *cobra.Command, args []string, toComplete str
 		// because it only shows up on a machine that has not used jit yet —
 		// exactly the machine that needs telling.
 		return cobra.AppendActiveHelp(nil,
-				"no recent callers recorded - name any running program, or use --pid"),
+				"no recent callers recorded - type any program name (it need not be running yet)"),
 			cobra.ShellCompDirectiveNoFileComp
 	}
 
@@ -549,10 +583,10 @@ func completeGrantProcessNames(cmd *cobra.Command, args []string, toComplete str
 	return out, cobra.ShellCompDirectiveNoFileComp
 }
 
-// completeGrantPIDs offers the visible processes for --pid, the flag that
-// exists precisely because --process was ambiguous — so answering it with
-// filenames left the disambiguation with no way to see the two candidates it
-// is meant to choose between. Same process table --process annotates from.
+// completeGrantPIDs offers the visible processes for --pid, the
+// exact-one-process mode — so answering it with filenames left the pick with
+// no way to see the candidates it is meant to choose between. Same process
+// table --process annotates from.
 func completeGrantPIDs(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	// Never the whole process table: a bare list of every visible pid runs to
 	// several hundred rows of system daemons, which is a worse answer than the
@@ -575,15 +609,38 @@ func completeGrantPIDs(cmd *cobra.Command, args []string, toComplete string) ([]
 		if !strings.HasPrefix(pid, toComplete) {
 			continue
 		}
-		out = append(out, pid+"\t"+name)
+		out = append(out, pid+"\t"+name+grantPIDDetail(p.PID))
 	}
 	if len(out) == 0 {
 		if grantProcess != "" {
 			return cobra.AppendActiveHelp(nil, "nothing named "+grantProcess+" is running"), cobra.ShellCompDirectiveNoFileComp
 		}
-		return cobra.AppendActiveHelp(nil, "name --process first, and --pid narrows it to one of its pids"), cobra.ShellCompDirectiveNoFileComp
+		return cobra.AppendActiveHelp(nil, "--pid grants one exact running process (--process covers a name under this terminal)"), cobra.ShellCompDirectiveNoFileComp
 	}
 	return out, cobra.ShellCompDirectiveNoFileComp
+}
+
+// grantPIDDetail annotates one --pid candidate with what tells identical
+// names apart: the directory the process runs in (seven rows saying only
+// "claude" were a real report — the cwd is which PROJECT each one is) and
+// how long it has lived, newest usually being the one meant. Display only,
+// like everything lineage answers.
+func grantPIDDetail(pid int32) string {
+	detail := ""
+	if cwd := lineage.ProcessCWD(pid); cwd != "" {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			if cwd == home {
+				cwd = "~"
+			} else if strings.HasPrefix(cwd, home+"/") {
+				cwd = "~" + cwd[len(home):]
+			}
+		}
+		detail += " · in " + cwd
+	}
+	if start, ok := lineage.ProcessStartTime(pid); ok {
+		detail += " · started " + grantAgo(time.Since(time.UnixMicro(start))) + " ago"
+	}
+	return detail
 }
 
 // grantAgo renders an age in one coarse unit for a completion description.
@@ -593,8 +650,10 @@ func grantAgo(d time.Duration) string {
 		return "moments"
 	case d < time.Hour:
 		return fmt.Sprintf("%dm", d/time.Minute)
-	default:
+	case d < 48*time.Hour:
 		return fmt.Sprintf("%dh", d/time.Hour)
+	default:
+		return fmt.Sprintf("%dd", d/(24*time.Hour))
 	}
 }
 
@@ -608,7 +667,7 @@ func completeGrantCreateEntry(cmd *cobra.Command, args []string, toComplete stri
 	if len(args) > 0 {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	comps := []string{"--process\tcreate: grant a running program (then --profile, --for)"}
+	comps := []string{"--process\tcreate: grant a program by name, future sessions included (then --profile, --for)"}
 	comps = cobra.AppendActiveHelp(comps, "create a grant: "+grantCreateUsage)
 	return comps, cobra.ShellCompDirectiveNoFileComp
 }
@@ -656,8 +715,8 @@ func completeGrantIDs(cmd *cobra.Command, args []string, toComplete string) ([]s
 }
 
 func init() {
-	grantCmd.Flags().StringVar(&grantProcess, "process", "", "running program the grant anchors to, by name (tab-completes from recent callers)")
-	grantCmd.Flags().Int32Var(&grantPIDFlag, "pid", 0, "running process the grant anchors to, by pid (when --process is ambiguous)")
+	grantCmd.Flags().StringVar(&grantProcess, "process", "", "program to cover, by name: every one under this terminal, running or started later")
+	grantCmd.Flags().Int32Var(&grantPIDFlag, "pid", 0, "one exact running process to grant instead (ends when it exits)")
 	grantCmd.Flags().StringArrayVar(&grantProfileNames, "profile", nil, "profile whose secrets the grant covers (repeatable)")
 	grantCmd.Flags().StringVar(&grantFor, "for", "", "how long the grant lasts (45m, 8h, 3d - max 7d)")
 	_ = grantCmd.RegisterFlagCompletionFunc("process", completeGrantProcessNames)

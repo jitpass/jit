@@ -26,5 +26,5 @@ jit grant list [flags]
 
 ### SEE ALSO
 
-* [jit grant](jit_grant.md)	 - Pre-approve a running process to use profiles unattended
+* [jit grant](jit_grant.md)	 - Pre-approve a program to use profiles unattended
 
