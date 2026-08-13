@@ -22,6 +22,7 @@ import (
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
+	"github.com/jitpass/jit/internal/termtext"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -815,6 +816,69 @@ func TestPrintVaultListLong(t *testing.T) {
 	}
 }
 
+// TestGroupHeaderProvenance pins the top-level group header's provenance
+// note: a group whose members share one recorded Origin states it once on
+// the header with the newest member's age ("dotenv · from <origin> · 2d
+// ago"), a uniformly manual group reads "set directly", mixed origins say
+// nothing, nested headers never restate the top-level fact, and an origin
+// too long for the window is truncated, never wrapped.
+func TestGroupHeaderProvenance(t *testing.T) {
+	now := time.Now().Unix()
+	secrets := []string{
+		"jamf/CLIENT_ID", "jamf/CLIENT_SECRET",
+		"manual-grp/KEY_A", "manual-grp/KEY_B",
+		"mixed/ONE", "mixed/TWO",
+		"nested/sub/KEY",
+	}
+	meta := map[string]vault.SecretInfo{
+		"jamf/CLIENT_ID":     {Class: vault.ClassDotenv, Origin: "/x/scripts/jamf/.env", UpdatedUnix: now - 3*24*3600},
+		"jamf/CLIENT_SECRET": {Class: vault.ClassDotenv, Origin: "/x/scripts/jamf/.env", UpdatedUnix: now - 9*24*3600},
+		"manual-grp/KEY_A":   {Class: vault.ClassManual, UpdatedUnix: now - 3600},
+		"manual-grp/KEY_B":   {Class: vault.ClassManual, UpdatedUnix: now - 7200},
+		"mixed/ONE":          {Class: vault.ClassDotenv, Origin: "/x/a/.env", UpdatedUnix: now},
+		"mixed/TWO":          {Class: vault.ClassDotenv, Origin: "/x/b/.env", UpdatedUnix: now},
+		"nested/sub/KEY":     {Class: vault.ClassMCP, Origin: "/x/n/.mcp.json", UpdatedUnix: now},
+	}
+
+	var buf bytes.Buffer
+	printVaultList(&buf, secrets, nil, false, true, false, meta, "path")
+	out := buf.String()
+
+	if !strings.Contains(out, "[jamf] 2 · dotenv · from /x/scripts/jamf/.env · 3d ago") {
+		t.Errorf("uniform-origin group must carry origin + newest age on its header, got:\n%s", out)
+	}
+	if !strings.Contains(out, "[manual-grp] 2 · manual · set directly · 1h ago") {
+		t.Errorf("uniformly manual group must read \"set directly\", got:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "[mixed]") && strings.Contains(line, "from ") {
+			t.Errorf("mixed-origin group must not claim an origin, got line:\n%s", line)
+		}
+		// The nested [sub] header must not restate what [nested] already
+		// carries.
+		if strings.Contains(line, "[sub]") && (strings.Contains(line, "from ") || strings.Contains(line, "ago")) {
+			t.Errorf("nested header must not restate provenance, got line:\n%s", line)
+		}
+	}
+	if !strings.Contains(out, "[nested] 1 · mcp · from /x/n/.mcp.json") {
+		t.Errorf("top-level header of a nested group carries the provenance, got:\n%s", out)
+	}
+
+	// An origin longer than the window is middle-truncated onto the one
+	// header line, and a window too narrow for any useful origin drops it.
+	long := "/very/long/prefix/" + strings.Repeat("deep/", 30) + ".env"
+	buf.Reset()
+	printVaultList(&buf, []string{"big/KEY"}, nil, false, true, false,
+		map[string]vault.SecretInfo{"big/KEY": {Class: vault.ClassDotenv, Origin: long, UpdatedUnix: now}}, "path")
+	header, _, _ := strings.Cut(buf.String(), "\n")
+	if w := termtext.VisibleWidth(header); w > 80 {
+		t.Errorf("header must truncate to the window, got %d columns:\n%s", w, header)
+	}
+	if !strings.Contains(header, "…") {
+		t.Errorf("a too-long origin must be visibly truncated, got:\n%s", header)
+	}
+}
+
 // TestPrintSecretsByProvenance pins --by origin: secrets bucket under their
 // source file (with class + count), a distinct file makes a distinct bucket,
 // and provenance-less secrets collect under "no recorded source" last.
@@ -913,26 +977,87 @@ func TestLooksLikeConfig(t *testing.T) {
 	}
 }
 
-// TestPrintDuplicateGroupNudge: identical key sets across groups trigger one
-// hint, but small look-alikes (2 keys) and genuinely distinct groups don't.
+// TestPrintDuplicateGroupNudge pins the origin-backed duplicate hint: the
+// nudge fires only when groups share both their key set AND origin evidence
+// (the same recorded file, or the same file's tail in two directories), it
+// routes to `jit vault duplicates` rather than telling anyone to rm, and —
+// the regression that motivated the rewrite — same key names from DIFFERENT
+// live files stay silent, because five export scripts sharing Jamf keys are
+// not stale copies of each other.
 func TestPrintDuplicateGroupNudge(t *testing.T) {
-	// wiz/ and custom_scripts-wiz/ share five keys -> nudge.
-	dup := []string{
-		"wiz/A", "wiz/B", "wiz/C", "wiz/D",
-		"custom_scripts-wiz/A", "custom_scripts-wiz/B", "custom_scripts-wiz/C", "custom_scripts-wiz/D",
+	origin := func(paths []string, o string) map[string]vault.SecretInfo {
+		m := map[string]vault.SecretInfo{}
+		for _, p := range paths {
+			m[p] = vault.SecretInfo{Origin: o}
+		}
+		return m
 	}
-	var buf bytes.Buffer
-	printDuplicateGroupNudge(&buf, dup)
-	if !strings.Contains(buf.String(), "wiz/, custom_scripts-wiz/") && !strings.Contains(buf.String(), "hold the same keys") {
-		t.Errorf("expected a duplicate-group nudge, got:\n%s", buf.String())
+	merge := func(ms ...map[string]vault.SecretInfo) map[string]vault.SecretInfo {
+		out := map[string]vault.SecretInfo{}
+		for _, m := range ms {
+			for k, v := range m {
+				out[k] = v
+			}
+		}
+		return out
 	}
 
-	// Two-key sandboxes are below the threshold -> silence.
+	// The same file migrated into two namespaces -> nudge naming the file.
+	sameFile := []string{"wiz/A", "wiz/B", "wiz-2/A", "wiz-2/B"}
+	meta := merge(
+		origin([]string{"wiz/A", "wiz/B"}, "/u/x/scripts/.env"),
+		origin([]string{"wiz-2/A", "wiz-2/B"}, "/u/x/scripts/.env"),
+	)
+	var buf bytes.Buffer
+	printDuplicateGroupNudge(&buf, sameFile, meta)
+	if !strings.Contains(buf.String(), "wiz, wiz-2 were migrated from the same file") ||
+		!strings.Contains(buf.String(), "jit vault duplicates") {
+		t.Errorf("expected a same-file nudge routing to jit vault duplicates, got:\n%s", buf.String())
+	}
+
+	// Two copies of one file in different trees -> nudge naming the tail,
+	// even for a single-key group (origin evidence needs no key-count floor).
+	copied := []string{"mcp-caido/CAIDO_URL", "mcp-caido-2/CAIDO_URL"}
+	meta = merge(
+		origin([]string{"mcp-caido/CAIDO_URL"}, "/u/x/Documents/ws/.mcp.json"),
+		origin([]string{"mcp-caido-2/CAIDO_URL"}, "/u/x/Desktop/Share/ws/.mcp.json"),
+	)
 	buf.Reset()
-	small := []string{"sandbox/DATABASE_URL", "sandbox/STRIPE_KEY", "sandbox-2/DATABASE_URL", "sandbox-2/STRIPE_KEY"}
-	printDuplicateGroupNudge(&buf, small)
+	printDuplicateGroupNudge(&buf, copied, meta)
+	if !strings.Contains(buf.String(), "two copies of ws/.mcp.json") {
+		t.Errorf("expected a copied-file nudge naming the tail, got:\n%s", buf.String())
+	}
+
+	// Same key names from different live files -> silence. This is the
+	// shared-credential shape the old key-set-only nudge mislabeled.
+	shared := []string{
+		"export-a/JAMF_CLIENT_ID", "export-a/JAMF_CLIENT_SECRET", "export-a/JAMF_URL",
+		"export-b/JAMF_CLIENT_ID", "export-b/JAMF_CLIENT_SECRET", "export-b/JAMF_URL",
+	}
+	meta = merge(
+		origin([]string{"export-a/JAMF_CLIENT_ID", "export-a/JAMF_CLIENT_SECRET", "export-a/JAMF_URL"}, "/u/x/scripts/inventory/.env"),
+		origin([]string{"export-b/JAMF_CLIENT_ID", "export-b/JAMF_CLIENT_SECRET", "export-b/JAMF_URL"}, "/u/x/scripts/computers/.env"),
+	)
+	buf.Reset()
+	printDuplicateGroupNudge(&buf, shared, meta)
 	if buf.Len() != 0 {
-		t.Errorf("2-key look-alikes must not nudge, got:\n%s", buf.String())
+		t.Errorf("same keys from different files must not nudge, got:\n%s", buf.String())
+	}
+
+	// No recorded origin -> key names alone are not evidence -> silence.
+	buf.Reset()
+	printDuplicateGroupNudge(&buf, sameFile, map[string]vault.SecretInfo{})
+	if buf.Len() != 0 {
+		t.Errorf("origin-less groups must not nudge, got:\n%s", buf.String())
+	}
+	// The rm footgun must be gone from every nudge.
+	buf.Reset()
+	printDuplicateGroupNudge(&buf, sameFile, merge(
+		origin([]string{"wiz/A", "wiz/B"}, "/u/x/scripts/.env"),
+		origin([]string{"wiz-2/A", "wiz-2/B"}, "/u/x/scripts/.env"),
+	))
+	if strings.Contains(buf.String(), "vault rm") {
+		t.Errorf("the nudge must never recommend rm on listing evidence, got:\n%s", buf.String())
 	}
 }
 

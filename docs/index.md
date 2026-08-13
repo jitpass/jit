@@ -90,7 +90,7 @@ then **[Install](./getting-started/install.md)** →
 
 - [Store, read, and delete secrets](./vault/index.md) - `set`/`get`/`list`/`rm`, rotating a key, undoing a rotation with `history`/`restore`
 - [Back up and restore](./vault/backup-restore.md) - passphrase-encrypted export/import
-- [Maintenance](./vault/maintenance.md) - `rekey`, `prune`, `clean`, `delete`
+- [Maintenance](./vault/maintenance.md) - `rekey`, `duplicates`, `prune`, `orphans`, `clean`, `delete`
 
 ## The background service
 

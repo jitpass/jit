@@ -101,6 +101,14 @@ explicitly: it never scrubs git history, so the old value is still
 recoverable via `git log -p` no matter what happens going forward - rotate
 that credential.
 
+If a file stores a value the vault already holds under another profile -
+the same API client used by several scripts, or a workspace folder you
+copied and migrated twice - `migrate` says so on the result line and keeps
+going. The copy is stored normally under its own profile, because merging
+them would mean one `rm` later breaking every tool that shares it.
+[`jit vault duplicates`](../vault/maintenance.md#jit-vault-duplicates---find-groups-that-hold-the-same-secrets)
+compares the values and says which copies, if any, are safe to retire.
+
 ## What each category turns into
 
 Limit a run to specific categories with `--only`

@@ -27,28 +27,45 @@ version timestamps, never a value.
 
 `jit vault set myapp/NEW_KEY` prompts for a value and stores it (add `-f`
 to overwrite an existing path, `--stdin` to pipe the value in);
-`jit vault rm <path>` deletes one secret (it confirms first).
+`jit vault rm <path>` deletes one secret (it confirms first). If a profile
+or a live mount still points at that path, `rm` names it before the
+confirmation: deleting only the secret leaves the mount serving a file
+nothing can fill, so for a migrated file the right cleanup is
+[`jit migrate remove <file>`](../migrate/undo-and-remove.md), which takes
+the file, its profile and its secrets down together.
 `jit vault get <path>` decrypts and prints one (`--copy` sends it to the
 clipboard instead - marked so clipboard managers skip it, and auto-cleared
 after 45 seconds unless you've copied something else by then); on a
 terminal, a footer line follows on stderr with when the secret was
 last updated and which profile uses it - piped output gets the value only.
 `jit vault list` shows what's stored - names and paths only, never values.
-On a terminal, entries group under a header per prefix:
+On a terminal, entries group under a header per prefix, and each group
+states where it came from and how recently it changed:
 
 ```
 $ jit vault list
-myapp/ (2)
-  DATABASE_URL
-  STRIPE_API_KEY
-notion-sync/ (1)
-  NOTION_API_KEY
+[myapp] 2 · dotenv · from ~/code/myapp/.env · 7d ago
+    DATABASE_URL  STRIPE_API_KEY
 
-3 secrets stored, plus 2 encrypted file backups kept for `jit migrate undo` (list with --all).
+[notion-sync] 1 · mcp · from ~/.mcp.json · 2d ago
+    NOTION_API_KEY
+
+3 secrets stored, plus 2 encrypted file backups kept for jit migrate undo (list with --all).
 ```
+
+That header line is what tells two look-alike groups apart: `myapp` and
+`myapp-2` holding the same key names are only a duplicate if they came
+from the same file. A group whose members were migrated from different
+files, or set by hand, says so instead (`set directly`), and a long path
+is truncated rather than wrapped. When two groups do look like one file
+stored twice, a note under the listing points at
+[`jit vault duplicates`](./maintenance.md#jit-vault-duplicates---find-groups-that-hold-the-same-secrets),
+which compares the actual values.
 
 Piped or redirected, output stays one full path per line
 (`myapp/DATABASE_URL`), so it feeds `grep` and scripts unchanged.
+`-l` annotates each secret with its own class and age; `--by origin`
+buckets by source file instead of by path.
 
 With [shell completion](../getting-started/install.md#shell-completion)
 installed, `jit vault get <TAB>` completes stored paths - names only, so
@@ -117,6 +134,7 @@ credential helper.
 
 - **[Back up and restore](./backup-restore.md)** - `vault export` /
   `vault import`, for disaster recovery
-- **[Maintenance](./maintenance.md)** - `rekey` the master key, `prune`
-  stale backups, delete secrets nothing references with `orphans`, `clean`
-  out all secrets, or `delete` the vault entirely
+- **[Maintenance](./maintenance.md)** - `rekey` the master key, find
+  copies of the same secret with `duplicates`, `prune` stale backups,
+  delete secrets nothing references with `orphans`, `clean` out all
+  secrets, or `delete` the vault entirely
