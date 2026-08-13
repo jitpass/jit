@@ -128,6 +128,51 @@ func splitBackupPaths(paths []string) (secrets, backups []string) {
 	return secrets, backups
 }
 
+// applyProfileSourceFallback fills in a display Origin for secrets whose
+// envelope has none (pre-provenance v1/v2), taking the source file the
+// referencing PROFILE records. Group-scoped: every member of a group gets
+// the same fallback, so sharedGroupNote still sees one uniform origin and
+// states it once on the header. Silently does nothing when a group has no
+// referencing profile or the profile records no source — absence stays
+// absence rather than becoming a guess.
+func applyProfileSourceFallback(meta map[string]vault.SecretInfo, root, cwd string, secrets []string) {
+	if len(meta) == 0 || cwd == "" {
+		return
+	}
+	var missing []string
+	for _, p := range secrets {
+		if info, ok := meta[p]; ok && info.Origin == "" {
+			missing = append(missing, p)
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+	refs := referencesForPaths(root, cwd, missing)
+	byGroup := map[string]string{}
+	for _, p := range missing {
+		g := groupPrefix(p)
+		if byGroup[g] != "" {
+			continue
+		}
+		for _, r := range refs[p] {
+			if r.OwnerConfig != "" {
+				byGroup[g] = r.OwnerConfig
+				break
+			}
+		}
+	}
+	for _, p := range missing {
+		src := byGroup[groupPrefix(p)]
+		if src == "" {
+			continue
+		}
+		info := meta[p]
+		info.Origin = src
+		meta[p] = info
+	}
+}
+
 // printVaultList renders jit vault list's text output. Piped (grouped
 // false), secrets stay one full path per line, grep/pipe-friendly with no
 // decoration; on a terminal (grouped true) they collapse under a
@@ -300,7 +345,7 @@ func originTail(origin string) string {
 // case is unchanged. Relies on List's naturally-sorted input keeping every
 // path that shares a prefix contiguous.
 func printGroupedSecrets(out io.Writer, secrets []string, meta map[string]vault.SecretInfo, long bool) {
-	printSecretTree(out, secrets, "", 0, meta, long)
+	printSecretTree(out, secrets, "", 0, meta, long, computeListColumns(secrets, meta))
 }
 
 // printSecretTree renders one level of the tree: paths are already stripped of
@@ -310,7 +355,7 @@ func printGroupedSecrets(out io.Writer, secrets []string, meta map[string]vault.
 // subtree recurses one level deeper; a leaf prints at the current indent,
 // -l-annotated when meta is set. Direct leaves at this level align their
 // metadata column to the widest of them.
-func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth int, meta map[string]vault.SecretInfo, long bool) {
+func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth int, meta map[string]vault.SecretInfo, long bool, cols listColumns) {
 	indent := strings.Repeat("  ", depth)
 
 	// Plain listing (no -l): this level's own keys flow into aligned columns
@@ -343,14 +388,17 @@ func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth i
 			if depth == 0 && wrote {
 				fmt.Fprintln(out)
 			}
-			printSecretGroupHeader(out, indent, paths[i][:slash], j-i,
-				sharedGroupNote(paths[i:j], ancestorPath, meta,
-					groupHeaderUsed(indent, paths[i][:slash], j-i), depth == 0))
+			note := sharedGroupNote(paths[i:j], ancestorPath, meta, depth == 0)
+			if depth == 0 {
+				printTopGroupHeader(out, paths[i][:slash], j-i, note, cols)
+			} else {
+				printSecretGroupHeader(out, indent, paths[i][:slash], j-i, note)
+			}
 			sub := make([]string, j-i)
 			for k := i; k < j; k++ {
 				sub[k-i] = paths[k][len(seg):]
 			}
-			printSecretTree(out, sub, ancestorPath+seg, depth+1, meta, long)
+			printSecretTree(out, sub, ancestorPath+seg, depth+1, meta, long, cols)
 			wrote = true
 			i = j
 		}
@@ -384,37 +432,117 @@ func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth i
 		if depth == 0 && wrote {
 			fmt.Fprintln(out)
 		}
-		printSecretGroupHeader(out, indent, paths[i][:slash], j-i,
-			sharedGroupNote(paths[i:j], ancestorPath, meta,
-				groupHeaderUsed(indent, paths[i][:slash], j-i), depth == 0))
+		note := sharedGroupNote(paths[i:j], ancestorPath, meta, depth == 0)
+		if depth == 0 {
+			printTopGroupHeader(out, paths[i][:slash], j-i, note, cols)
+		} else {
+			printSecretGroupHeader(out, indent, paths[i][:slash], j-i, note)
+		}
 		sub := make([]string, j-i)
 		for k := i; k < j; k++ {
 			sub[k-i] = paths[k][len(seg):]
 		}
-		printSecretTree(out, sub, ancestorPath+seg, depth+1, meta, long)
+		printSecretTree(out, sub, ancestorPath+seg, depth+1, meta, long, cols)
 		wrote = true
 		i = j
 	}
+}
+
+// printCompactGroupHeader is the un-aligned fallback for a window too narrow
+// to carry the shared column grid: the same facts, each following the last
+// rather than starting at a fixed column, with the origin taking whatever
+// the line has left.
+func printCompactGroupHeader(out io.Writer, label string, n int, note groupNote) {
+	_, _ = cBold.Fprint(out, label)
+	countClass := " " + groupCountClass(n, note.class)
+	fmt.Fprint(out, countClass)
+	used := termtext.VisibleWidth(label) + termtext.VisibleWidth(countClass)
+	origin := note.origin
+	if origin != "" {
+		avail := outputWidth() - used - 3
+		if note.age != "" {
+			avail -= termtext.VisibleWidth(note.age) + 3
+		}
+		if avail < originMinWidth {
+			origin = ""
+		} else {
+			origin = promptEllipsis(origin, avail)
+		}
+	}
+	for _, part := range []string{origin, note.age} {
+		if part != "" {
+			fmt.Fprint(out, " · ", part)
+		}
+	}
+	fmt.Fprintln(out)
 }
 
 // printSecretGroupHeader renders a vault-tree segment header in the one house
 // header shape every jit section/group uses: a `[segment]` name (default
 // weight — the brackets delimit it, no bold) and a plain count, at the given
 // indent. The tree's indentation shows the nesting.
-func printSecretGroupHeader(out io.Writer, indent, name string, n int, note string) {
+func printSecretGroupHeader(out io.Writer, indent, name string, n int, note groupNote) {
 	fmt.Fprintf(out, "%s[%s]", indent, name)
-	if note != "" {
-		_, _ = fmt.Fprintf(out, " %d · %s\n", n, note)
+	if note.class != "" {
+		_, _ = fmt.Fprintf(out, " %d · %s\n", n, note.class)
 		return
 	}
 	_, _ = fmt.Fprintf(out, " %d\n", n)
 }
 
-// groupHeaderUsed is how many columns printSecretGroupHeader's own prefix
-// ("[name] N") occupies before the note starts — what sharedGroupNote
-// budgets the origin against.
-func groupHeaderUsed(indent, name string, n int) int {
-	return len(fmt.Sprintf("%s[%s] %d", indent, name, n))
+// printTopGroupHeader renders a TOP-LEVEL header on the shared column grid:
+// the bold "[name]" padded to the widest name, then "N · class" padded to
+// the widest of those, then the origin and age. Padding is written OUTSIDE
+// the bold span — bolding trailing spaces inverts them on some themes.
+// The origin gets whatever the window has left and is middle-truncated to
+// it (truncate, never wrap), and is dropped entirely below originMinWidth,
+// since a five-character sliver of a path identifies nothing.
+func printTopGroupHeader(out io.Writer, name string, n int, note groupNote, cols listColumns) {
+	label := "[" + name + "]"
+	if cols.name == 0 {
+		printCompactGroupHeader(out, label, n, note)
+		return
+	}
+	_, _ = cBold.Fprint(out, label)
+	pad := cols.name - termtext.VisibleWidth(label)
+	if pad < 0 {
+		pad = 0
+	}
+	fmt.Fprint(out, strings.Repeat(" ", pad), " ")
+
+	countClass := groupCountClass(n, note.class)
+	fmt.Fprint(out, countClass)
+	if note.origin == "" && note.age == "" {
+		fmt.Fprintln(out)
+		return
+	}
+	pad = cols.meta - termtext.VisibleWidth(countClass)
+	if pad < 0 {
+		pad = 0
+	}
+	fmt.Fprint(out, strings.Repeat(" ", pad), " ")
+
+	used := cols.name + 1 + cols.meta + 1
+	origin := note.origin
+	if origin != "" {
+		avail := outputWidth() - used
+		if note.age != "" {
+			avail -= termtext.VisibleWidth(note.age) + 3 // the " · " joiner
+		}
+		if avail < originMinWidth {
+			origin = "" // a sliver of a path identifies nothing
+		} else {
+			origin = promptEllipsis(origin, avail)
+		}
+	}
+	switch {
+	case origin != "" && note.age != "":
+		fmt.Fprintln(out, origin+" · "+note.age)
+	case origin != "":
+		fmt.Fprintln(out, origin)
+	default:
+		fmt.Fprintln(out, note.age)
+	}
 }
 
 // sharedGroupNote is the Tree shape's per-group note: one fact every member
@@ -455,9 +583,10 @@ func groupHeaderUsed(indent, name string, n int) int {
 //
 // paths are relative to ancestorPath (what printSecretTree has consumed so
 // far), so the two rejoin to the real vault path meta is keyed by.
-func sharedGroupNote(paths []string, ancestorPath string, meta map[string]vault.SecretInfo, used int, topLevel bool) string {
+func sharedGroupNote(paths []string, ancestorPath string, meta map[string]vault.SecretInfo, topLevel bool) groupNote {
+	var note groupNote
 	if len(meta) == 0 || len(paths) == 0 {
-		return ""
+		return note
 	}
 	class, origin := "", ""
 	classUniform, originUniform := true, true
@@ -465,7 +594,7 @@ func sharedGroupNote(paths []string, ancestorPath string, meta map[string]vault.
 	for i, rel := range paths {
 		info, ok := meta[ancestorPath+rel]
 		if !ok {
-			return "" // a member we know nothing about: claim nothing
+			return groupNote{} // a member we know nothing about: claim nothing
 		}
 		if i == 0 {
 			class, origin = info.Class, info.Origin
@@ -481,42 +610,110 @@ func sharedGroupNote(paths []string, ancestorPath string, meta map[string]vault.
 			newest = info.UpdatedUnix
 		}
 	}
-	var parts []string
-	if classUniform && class != "" {
-		parts = append(parts, class)
+	if classUniform {
+		note.class = class
 	}
 	if !topLevel {
-		return strings.Join(parts, " · ")
+		return note
 	}
-	age := ""
 	if newest > 0 {
-		age = humanAgo(time.Since(time.Unix(newest, 0))) + " ago"
+		note.age = humanAgo(time.Since(time.Unix(newest, 0))) + " ago"
 	}
-	src := ""
 	switch {
 	case originUniform && origin != "":
-		src = "from " + shortPath(origin)
+		note.origin = shortPath(origin)
 	case classUniform && class == vault.ClassManual && originUniform && origin == "":
-		src = "set directly"
+		note.origin = "set directly"
 	}
-	if src != "" {
-		// Budget: prefix + " · " joins + this src + the age still to come.
-		avail := outputWidth() - used
-		for _, p := range parts {
-			avail -= len(p) + 3
+	return note
+}
+
+// groupNote is a top-level group's shared facts, kept as PARTS rather than
+// one joined string so the header can align them into columns: every
+// group's count+class starts at the same screen column, and so does every
+// origin. A ragged run of 28 headers is what the aligned layout replaced.
+type groupNote struct {
+	class  string
+	origin string // display-shortened, not yet truncated to the window
+	age    string
+}
+
+// listColumns are the shared column widths every top-level header aligns
+// to: the widest "[name]" and the widest "N · class". Both are capped so
+// one very long group name or class can't push the origin off the screen
+// for every other row.
+type listColumns struct {
+	name int
+	meta int
+}
+
+const (
+	maxNameColumn = 30
+	maxMetaColumn = 22
+)
+
+// computeListColumns measures every TOP-LEVEL group once, before anything
+// is printed, so the whole listing shares one set of columns. Nested
+// headers are excluded: they are indented under their parent and carry only
+// a class, so aligning them to the top-level grid would just push them out.
+func computeListColumns(paths []string, meta map[string]vault.SecretInfo) listColumns {
+	var cols listColumns
+	alignable := false
+	for i := 0; i < len(paths); {
+		slash := strings.Index(paths[i], "/")
+		if slash < 0 {
+			i++
+			continue
 		}
-		avail -= 3 // src's own " · "
-		if age != "" {
-			avail -= len(age) + 3
+		seg := paths[i][:slash+1]
+		j := i
+		for j < len(paths) && strings.HasPrefix(paths[j], seg) {
+			j++
 		}
-		if avail >= originMinWidth {
-			parts = append(parts, promptEllipsis(src, avail))
+		name := "[" + paths[i][:slash] + "]"
+		if w := termtext.VisibleWidth(name); w > cols.name {
+			cols.name = w
 		}
+		note := sharedGroupNote(paths[i:j], "", meta, true)
+		if w := termtext.VisibleWidth(groupCountClass(j-i, note.class)); w > cols.meta {
+			cols.meta = w
+		}
+		if note.origin != "" || note.age != "" {
+			alignable = true
+		}
+		i = j
 	}
-	if age != "" {
-		parts = append(parts, age)
+	// Alignment exists to line the ORIGIN column up. With nothing to line
+	// up — a vault with no recorded provenance at all — padding every name
+	// to a shared width just adds trailing space to "[wiz] 1".
+	if !alignable {
+		return listColumns{}
 	}
-	return strings.Join(parts, " · ")
+	if cols.name > maxNameColumn {
+		cols.name = maxNameColumn
+	}
+	if cols.meta > maxMetaColumn {
+		cols.meta = maxMetaColumn
+	}
+	// Alignment is a wide-window luxury: padding every name out to the
+	// widest one costs columns that a narrow terminal needs for the origin,
+	// and a 26-column name plus a 17-column "3 · shell_history" already
+	// overruns an 50-column window on its own. When the grid cannot leave
+	// room for a useful origin, drop back to the compact inline header —
+	// a zero name column is the signal for that.
+	if cols.name+cols.meta+2+originMinWidth > outputWidth() {
+		return listColumns{}
+	}
+	return cols
+}
+
+// groupCountClass is the second column: the member count, plus the shared
+// class when every member agrees on one.
+func groupCountClass(n int, class string) string {
+	if class == "" {
+		return strconv.Itoa(n)
+	}
+	return strconv.Itoa(n) + " · " + class
 }
 
 // originMinWidth is the narrowest rendering of a group's origin worth
@@ -993,6 +1190,7 @@ var vaultListCmd = &cobra.Command{
 			return fmt.Errorf("jit vault list: %w", err)
 		}
 		secrets, backups := splitBackupPaths(paths)
+		cwd, _ := os.Getwd()
 
 		grouped := term.IsTerminal(int(os.Stdout.Fd()))
 		axis := vaultListBy
@@ -1042,6 +1240,19 @@ var vaultListCmd = &cobra.Command{
 			return writeJSON(cmd.OutOrStdout(), out)
 		}
 
+		// DISPLAY-ONLY provenance fallback, deliberately after the JSON
+		// branch above: a pre-provenance (v1/v2) envelope carries no Origin
+		// at all, so the header and the duplicate note would say nothing
+		// about the very secrets most likely to BE a stale copy. The
+		// referencing profile's recorded source is the evidence that does
+		// exist for them, and is what `jit vault get`'s "migrated from"
+		// footer has always shown. --format json keeps reporting the
+		// envelope's own truth, so nothing scripted sees a synthesized
+		// value. Prompt-free: profile manifests and their .source sidecars
+		// are plain files, no decryption and no agent call.
+		if grouped {
+			applyProfileSourceFallback(meta, root, cwd, secrets)
+		}
 		printVaultList(cmd.OutOrStdout(), secrets, backups, vaultListAll, grouped, vaultListLong, meta, axis)
 		return nil
 	},
