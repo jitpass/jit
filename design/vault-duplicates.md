@@ -68,8 +68,12 @@ The remedy differs per verdict, and routing it correctly is most of the value:
 - origin gone, nothing references it -> `jit vault orphans --prune`
 - origin gone, still wired -> `jit vault rm <paths>`
 - values diverged -> **no removal pick**; which copy is right is the user's call
-- shared credential -> no removal at all, plus the list of places a rotation
-  must reach
+- shared credential -> no removal at all. Collapsed to a count by default,
+  since the answer is "nothing to do"; `--shared` expands it into the list of
+  every place a rotation must reach. That list must name EVERY holder,
+  including groups already reported as a same-file finding: excluding them
+  under-reported JAMF_CLIENT_ID from six profiles to four on a real vault,
+  which would have left two copies stale after a rotation
 
 ## Identity, not deduplication
 

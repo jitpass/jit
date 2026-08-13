@@ -18,9 +18,9 @@ from names alone:
   without a removal pick.
 
   Shared credentials: the same value stored by independent files, e.g.
-  one API client used by five export scripts. These are NOT stale copies,
-  removing any breaks its tool, and the report lists every place a
-  rotation has to reach.
+  one API client used by five export scripts. These are NOT stale copies
+  and there is nothing to fix, so they collapse to a count; --shared
+  lists them with every place a rotation would have to reach.
 
 Reporting only by default. --prune deletes the ONE shape that is pure
 vault garbage: a stale copy whose origin file is already gone AND that no
@@ -47,6 +47,7 @@ jit vault duplicates [flags]
 
 ```
   jit vault duplicates
+  jit vault duplicates --shared
   jit vault duplicates --prune
   jit vault duplicates --format json
 ```
@@ -56,6 +57,7 @@ jit vault duplicates [flags]
 ```
       --format string   output format: "text" (default) or "json" (default "text")
       --prune           delete stale copies whose origin file is gone and which nothing references
+      --shared          list the shared credentials instead of collapsing them to a count
   -y, --yes             skip the confirmation prompt (never the fingerprint)
 ```
 
