@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -177,18 +178,27 @@ func printVaultList(out io.Writer, secrets, backups []string, showBackups, group
 	// piped/grep listing (grouped == false) and the provenance axes stay
 	// uncluttered.
 	if grouped && axis == "path" {
-		printDuplicateGroupNudge(out, secrets)
+		printDuplicateGroupNudge(out, secrets, meta)
 	}
 }
 
-// printDuplicateGroupNudge emits one hint when two or more top-level
-// groups hold an identical set of key names — the "wiz/ and
-// custom_scripts-wiz/ are the same five WIZ_ keys" case, a common sign of an
-// accidentally re-migrated file. Conservative on purpose: it fires only for
-// sets of at least three keys, so intentional small look-alikes (a couple of
-// sandboxes each holding DATABASE_URL + STRIPE_KEY) don't trip it.
-func printDuplicateGroupNudge(out io.Writer, secrets []string) {
-	const minKeys = 3
+// printDuplicateGroupNudge emits one hint when two or more top-level groups
+// look like the same file stored twice: an identical set of key names AND
+// origins that agree — either literally the same recorded path (a
+// re-migration that forked a namespace) or the same file in two directories
+// (a copied project tree, e.g. ~/Documents/ws/.mcp.json and
+// ~/Desktop/Share/ws/.mcp.json both migrated). Key names alone are NOT
+// evidence and no longer nudge: on a real vault, five separate export
+// scripts each legitimately held the same Jamf client keys, and the old
+// key-set-only rule told the user to `jit vault rm` copies that were all
+// live. Origin matching is what separates "one file, twice" from "one
+// credential, many tools" — and it is strong enough evidence that even a
+// one-key group (the case the old three-key floor existed to filter) may
+// fire. Groups with no recorded origin, or members that disagree, stay
+// silent. The nudge names the evidence and routes to `jit vault duplicates`
+// (which compares actual values under an unlock) rather than telling anyone
+// to delete on filename evidence alone.
+func printDuplicateGroupNudge(out io.Writer, secrets []string, meta map[string]vault.SecretInfo) {
 	members := map[string][]string{} // top-level group -> its sub-paths
 	var order []string
 	for _, p := range secrets {
@@ -202,36 +212,84 @@ func printDuplicateGroupNudge(out io.Writer, secrets []string) {
 		}
 		members[g] = append(members[g], p[slash+1:])
 	}
-	bySignature := map[string][]string{} // key-set signature -> group names
+	// A group participates only with a uniform recorded origin.
+	groupOrigin := func(g string) string {
+		origin := ""
+		for i, key := range members[g] {
+			info, ok := meta[g+"/"+key]
+			if !ok || info.Origin == "" {
+				return ""
+			}
+			if i == 0 {
+				origin = info.Origin
+			} else if info.Origin != origin {
+				return ""
+			}
+		}
+		return origin
+	}
+	// Cluster on key set + origin tail (the file's own name under its
+	// parent directory): equal origins share a tail by construction, and a
+	// copied tree keeps the tail while the prefix moves. One extra segment
+	// beyond the basename on purpose — every project has a ".mcp.json", so
+	// the bare basename would call two unrelated projects' configs copies.
+	type cluster struct {
+		groups  []string
+		origins []string
+	}
+	byEvidence := map[string]*cluster{}
+	var clusterOrder []string
 	for _, g := range order {
-		keys := members[g]
-		if len(keys) < minKeys {
+		origin := groupOrigin(g)
+		if origin == "" {
 			continue
 		}
-		sorted := append([]string(nil), keys...)
-		sort.Strings(sorted)
-		sig := strings.Join(sorted, "\x00")
-		bySignature[sig] = append(bySignature[sig], g)
+		keys := append([]string(nil), members[g]...)
+		sort.Strings(keys)
+		sig := strings.Join(keys, "\x00") + "\x00\x00" + originTail(origin)
+		if _, ok := byEvidence[sig]; !ok {
+			byEvidence[sig] = &cluster{}
+			clusterOrder = append(clusterOrder, sig)
+		}
+		byEvidence[sig].groups = append(byEvidence[sig].groups, g)
+		byEvidence[sig].origins = append(byEvidence[sig].origins, origin)
 	}
-	var dupes [][]string
-	for _, g := range order {
-		keys := members[g]
-		if len(keys) < minKeys {
+	for _, sig := range clusterOrder {
+		c := byEvidence[sig]
+		if len(c.groups) < 2 {
 			continue
 		}
-		sorted := append([]string(nil), keys...)
-		sort.Strings(sorted)
-		sig := strings.Join(sorted, "\x00")
-		if groups := bySignature[sig]; len(groups) > 1 && groups[0] == g {
-			dupes = append(dupes, groups) // report once, at the first group
+		sameOrigin := true
+		for _, o := range c.origins[1:] {
+			if o != c.origins[0] {
+				sameOrigin = false
+				break
+			}
 		}
+		names := strings.Join(c.groups, ", ")
+		if sameOrigin {
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("note: %s were migrated from the same file (%s), see `jit vault duplicates`.\n",
+				names, shortPath(c.origins[0]))))
+			continue
+		}
+		copies := "two copies"
+		if len(c.groups) > 2 {
+			copies = fmt.Sprintf("%d copies", len(c.groups))
+		}
+		fmt.Fprint(out, hlCmds(fmt.Sprintf("note: %s hold the same keys from %s of %s, see `jit vault duplicates`.\n",
+			names, copies, originTail(c.origins[0]))))
 	}
-	if len(dupes) == 0 {
-		return
+}
+
+// originTail is an origin path's identifying suffix — its final segment
+// under its parent directory ("ws/.mcp.json") — the piece a copied tree
+// preserves while its location changes.
+func originTail(origin string) string {
+	dir := filepath.Base(filepath.Dir(origin))
+	if dir == "." || dir == string(filepath.Separator) || dir == "/" {
+		return filepath.Base(origin)
 	}
-	for _, groups := range dupes {
-		fmt.Fprint(out, hlCmds(fmt.Sprintf("note: %s hold the same keys, a re-migrated file? `jit vault rm` the stale copy.\n", strings.Join(groups, ", "))))
-	}
+	return dir + "/" + filepath.Base(origin)
 }
 
 // printGroupedSecrets renders secrets as an indented tree, nesting on every
@@ -286,7 +344,8 @@ func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth i
 				fmt.Fprintln(out)
 			}
 			printSecretGroupHeader(out, indent, paths[i][:slash], j-i,
-				sharedGroupNote(paths[i:j], ancestorPath, meta))
+				sharedGroupNote(paths[i:j], ancestorPath, meta,
+					groupHeaderUsed(indent, paths[i][:slash], j-i), depth == 0))
 			sub := make([]string, j-i)
 			for k := i; k < j; k++ {
 				sub[k-i] = paths[k][len(seg):]
@@ -326,7 +385,8 @@ func printSecretTree(out io.Writer, paths []string, ancestorPath string, depth i
 			fmt.Fprintln(out)
 		}
 		printSecretGroupHeader(out, indent, paths[i][:slash], j-i,
-			sharedGroupNote(paths[i:j], ancestorPath, meta))
+			sharedGroupNote(paths[i:j], ancestorPath, meta,
+				groupHeaderUsed(indent, paths[i][:slash], j-i), depth == 0))
 		sub := make([]string, j-i)
 		for k := i; k < j; k++ {
 			sub[k-i] = paths[k][len(seg):]
@@ -350,6 +410,13 @@ func printSecretGroupHeader(out io.Writer, indent, name string, n int, note stri
 	_, _ = fmt.Fprintf(out, " %d\n", n)
 }
 
+// groupHeaderUsed is how many columns printSecretGroupHeader's own prefix
+// ("[name] N") occupies before the note starts — what sharedGroupNote
+// budgets the origin against.
+func groupHeaderUsed(indent, name string, n int) int {
+	return len(fmt.Sprintf("%s[%s] %d", indent, name, n))
+}
+
 // sharedGroupNote is the Tree shape's per-group note: one fact every member
 // of the group shares, stated once on the header instead of repeated down the
 // column (design/output-style.md — "a shared per-group note is stated once on
@@ -368,28 +435,94 @@ func printSecretGroupHeader(out io.Writer, indent, name string, n int, note stri
 // where it is actionable: as "unknown" per secret under -l, and grouped
 // under `--by origin`.
 //
+// A top-level group additionally reports where its members came from and how
+// fresh they are: "from <origin> · <age>" when every member shares one
+// recorded Origin, or "set directly" for a uniformly manual group (that class
+// MEANS `jit vault set`, so the phrase is a fact, not absence-reporting). This
+// is what lets look-alike groups tell themselves apart in the listing —
+// [jamf-2] from ~/custom_scripts/computer_inventory/.env is visibly not a
+// stale copy of [jamf] from ~/custom_scripts/.env, and two migrations of a
+// copied file show two origins one line apart. Nested headers skip it: the
+// tree nests on path segments of ONE group, so every nested header would
+// restate the top-level fact. The age is the newest member's last update,
+// one clock for every group whatever its class.
+//
+// used is how many columns the caller's header prefix ("[name] N") already
+// occupies; a long origin is middle-truncated to what remains of the window
+// (truncate, never wrap — house rule), and dropped entirely when fewer than
+// originMinWidth columns remain, because a five-character sliver of a path
+// identifies nothing.
+//
 // paths are relative to ancestorPath (what printSecretTree has consumed so
 // far), so the two rejoin to the real vault path meta is keyed by.
-func sharedGroupNote(paths []string, ancestorPath string, meta map[string]vault.SecretInfo) string {
+func sharedGroupNote(paths []string, ancestorPath string, meta map[string]vault.SecretInfo, used int, topLevel bool) string {
 	if len(meta) == 0 || len(paths) == 0 {
 		return ""
 	}
-	class := ""
+	class, origin := "", ""
+	classUniform, originUniform := true, true
+	var newest int64
 	for i, rel := range paths {
 		info, ok := meta[ancestorPath+rel]
 		if !ok {
 			return "" // a member we know nothing about: claim nothing
 		}
 		if i == 0 {
-			class = info.Class
-			continue
+			class, origin = info.Class, info.Origin
+		} else {
+			if info.Class != class {
+				classUniform = false
+			}
+			if info.Origin != origin {
+				originUniform = false
+			}
 		}
-		if info.Class != class {
-			return "" // members disagree
+		if info.UpdatedUnix > newest {
+			newest = info.UpdatedUnix
 		}
 	}
-	return class
+	var parts []string
+	if classUniform && class != "" {
+		parts = append(parts, class)
+	}
+	if !topLevel {
+		return strings.Join(parts, " · ")
+	}
+	age := ""
+	if newest > 0 {
+		age = humanAgo(time.Since(time.Unix(newest, 0))) + " ago"
+	}
+	src := ""
+	switch {
+	case originUniform && origin != "":
+		src = "from " + shortPath(origin)
+	case classUniform && class == vault.ClassManual && originUniform && origin == "":
+		src = "set directly"
+	}
+	if src != "" {
+		// Budget: prefix + " · " joins + this src + the age still to come.
+		avail := outputWidth() - used
+		for _, p := range parts {
+			avail -= len(p) + 3
+		}
+		avail -= 3 // src's own " · "
+		if age != "" {
+			avail -= len(age) + 3
+		}
+		if avail >= originMinWidth {
+			parts = append(parts, promptEllipsis(src, avail))
+		}
+	}
+	if age != "" {
+		parts = append(parts, age)
+	}
+	return strings.Join(parts, " · ")
 }
+
+// originMinWidth is the narrowest rendering of a group's origin worth
+// printing — below it, sharedGroupNote drops the origin rather than showing
+// an unidentifiable sliver of path.
+const originMinWidth = 12
 
 // validateListBy guards the --by axis. "path" is the default first-segment
 // grouping; "origin"/"group" bucket by provenance instead.
@@ -944,6 +1077,19 @@ var vaultRmCmd = &cobra.Command{
 		for _, path := range args {
 			if err := vault.ValidatePath(path); err != nil {
 				return fmt.Errorf("jit vault rm: %w", err)
+			}
+		}
+
+		// Advisory, before the confirmation: name whatever still points at
+		// each doomed path. rm deletes only the envelope file, so a wired
+		// secret leaves its profile naming a hole and its mount serving a
+		// FIFO nothing can fill — the user should learn that here, not
+		// from a hung tool an hour later. Best-effort by design (see
+		// referencesForPaths); a lookup failure changes nothing about the
+		// delete itself.
+		if root, err := vaultRootDir(); err == nil {
+			if cwd, err := os.Getwd(); err == nil {
+				printRmReferenceWarnings(cmd.OutOrStdout(), referencesForPaths(root, cwd, args))
 			}
 		}
 

@@ -3,7 +3,7 @@ title: Vault maintenance
 description: Prune stale file backups, empty the vault, or destroy it entirely.
 ---
 
-# Vault maintenance - `rekey`, `prune`, `orphans`, `clean`, `delete`
+# Vault maintenance - `rekey`, `duplicates`, `prune`, `orphans`, `clean`, `delete`
 
 These commands run in increasing order of severity. The destructive ones
 confirm first (`-y` skips the prompt) and require a fresh Touch ID/passcode.
@@ -21,6 +21,67 @@ any point: both keys exist until the final step, every re-wrapped secret is
 verified before it's written, re-running `jit vault rekey` finishes an
 interrupted rotation, and other vault commands refuse to write while one is
 in progress.
+
+## `jit vault duplicates` - find groups that hold the same secrets
+
+Answers "which of these look-alike groups can I safely delete?" - the
+question a listing can't, because it takes comparing the actual values.
+Under one unlock it decrypts every stored secret in memory (nothing is
+printed or written), then reports:
+
+- **Duplicated groups**: the same key names migrated from the same file, or
+  from two copies of it (a re-migrated project, a copied workspace tree).
+  When the values still match, the report names the copy that looks stale
+  and the command that retires it cleanly. Which command depends on whether
+  the stale copy's file is still on disk:
+
+  | The stale copy's origin file | Command | What it does |
+  |---|---|---|
+  | still there | [`jit migrate remove <file>`](../migrate/undo-and-remove.md) | un-migrates that one file: **writes its values back as plaintext**, then deletes its profile, its secrets and its backups. Delete the file or folder yourself afterwards if you don't want it. |
+  | already gone, nothing references it | `jit vault duplicates --prune` | deletes those secrets for you (see below) |
+  | gone, but a profile still names it | `jit vault rm <paths>` | deletes exactly those secrets, leaving you to fix the profile |
+
+  `migrate remove` never deletes a secret another profile outside that
+  project also references - it keeps and reports it - so retiring one copy
+  cannot break a tool that shares the credential. Copies that have diverged
+  (same ancestry, different values now) are reported without a removal pick:
+  which copy is right is your call.
+- **Shared credentials**: the same value stored by independent files, for
+  example one API client used by five export scripts. These are *not* stale
+  copies - removing any breaks its tool - and the report lists every place
+  a rotation has to reach.
+
+### `--prune`
+
+Reporting is the default. `jit vault duplicates --prune` deletes the one
+shape that is pure vault garbage: a stale copy whose **origin file is gone
+and which no profile references**. It confirms first (`-y` skips the
+prompt) and requires a fresh Touch ID/passcode.
+
+It deliberately will not touch the others, and says so instead of
+reporting a clean sweep:
+
+```
+Deleted 2 duplicated secrets.
+
+Left alone, 2 findings need a command only you should run:
+  └ mcp-caido-2: jit migrate remove ~/Desktop/Share/ai_security_workspace/.mcp.json
+  └ a, b: copies have diverged, compare them first
+```
+
+A copy whose file still exists has to be un-migrated by `jit migrate
+remove`, which restores the plaintext, deregisters the mount and drops the
+profile - deleting just its secrets would leave a live mount serving a file
+nothing can fill. A copy some profile still names is a per-path decision.
+Diverged copies and shared credentials are never jit's call.
+
+Note the neighbouring commands delete different things under the same word:
+`vault prune` deletes file *backups*, `vault orphans --prune` deletes
+*unreferenced* secrets, and this deletes *duplicated* ones. Each
+confirmation names its own.
+
+`jit migrate` also discloses on the spot when a file it is migrating stores
+values the vault already holds under another group.
 
 ## `jit vault prune` - delete stale file backups
 
