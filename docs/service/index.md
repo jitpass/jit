@@ -22,9 +22,11 @@ hooks (`aws`, `kubectl`) and `jit run`. On top of it,
 the first time each tool reaches for a real credential, naming who is asking,
 so an unlocked session is never a blank cheque. And for the opposite
 situation - work that must keep running while you are *away* from the
-keyboard - a [process grant](./grants.md) lets you pre-approve one running
-tool for named profiles and a bounded time, with one Touch ID given while
-you are still there. It deliberately does **not**
+keyboard - a [process grant](./grants.md) lets you pre-approve a named tool
+under this terminal for named profiles and a bounded time, with one Touch ID
+given while you are still there. The scope is the terminal's process tree, so
+sessions that start later inside it are covered too, and you can grant before
+the tool is even running. It deliberately does **not**
 cover the sensitive [`jit vault`](../vault/index.md) management commands
 (`get`/`set`/`rm`/`import`/`restore`/`clean`/`prune`/`delete`/`export`):
 those always require a fresh Touch ID/passcode on every run, unlocked or
