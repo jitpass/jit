@@ -14,6 +14,10 @@ a batch (a test run, a decommissioned project) is one approval, not one
 per secret. Missing paths are reported but don't stop the rest; the
 command exits non-zero if any path couldn't be removed.
 
+A bare group name (the part before the slash in `jit vault list`)
+deletes every secret in that group: the expansion is announced and the
+confirmation lists each path, still one gesture for the lot.
+
 -y/--yes skips the typed confirmation (never the fingerprint), matching
 every other jit command. `-f`/`--force` is still accepted as a synonym,
 so the `rm -f` reflex keeps working.
@@ -27,6 +31,7 @@ jit vault rm <path>... [flags]
 ```
   jit vault rm stripe/dev-key
   jit vault rm old-proj/API_KEY old-proj/DB_URL   # one approval, both gone
+  jit vault rm old-proj                           # the whole group, listed before you confirm
 ```
 
 ### Options
