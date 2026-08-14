@@ -413,6 +413,146 @@ func TestVaultOrphansListsAndPrunes(t *testing.T) {
 	}
 }
 
+// TestVaultRmGroupNameDeletesWholeGroup: a bare group name expands to every
+// secret under it — announced before the confirmation, one gesture for the
+// lot — while an overlapping explicit member dedupes, a sibling group is
+// spared, and `_backups/` never joins the expansion (its cleanup belongs to
+// `jit vault prune`). Pins the fix for `jit vault rm jamf-2` costing a
+// confirmation plus a Touch ID before failing with "no secret stored".
+func TestVaultRmGroupNameDeletesWholeGroup(t *testing.T) {
+	withFixtureHome(t)
+	prev := requireUserPresence
+	var gestures int
+	requireUserPresence = func(string) error { gestures++; return nil }
+	t.Cleanup(func() { requireUserPresence = prev; vaultRmYes = false })
+
+	root := seedFixtureVault(t, "jamf-2/JAMF_URL")
+	v := &vault.Vault{Root: root, KeyWrapper: newFakeKeyWrapper(), RecipientID: "test-device"}
+	for _, p := range []string{"jamf-2/JAMF_CLIENT_ID", "jamf-2/OUTPUT_FILE", "jamf/JAMF_URL", "_backups/jamf-2/.env.jit-bak-1"} {
+		if err := v.Set(p, []byte("val")); err != nil {
+			t.Fatalf("seeding %s: %v", p, err)
+		}
+	}
+
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"vault", "rm", "-y", "jamf-2", "jamf-2/JAMF_URL"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("jit vault rm (group): %v", err)
+	}
+	if gestures != 1 {
+		t.Errorf("user-presence gestures = %d, want 1 for the whole group", gestures)
+	}
+	if !strings.Contains(buf.String(), "jamf-2 is a group: deleting all 3 secrets under it.") {
+		t.Errorf("expected the expansion announced, got:\n%s", buf.String())
+	}
+	ro := &vault.Vault{Root: root, RecipientID: "test-device"}
+	paths, err := ro.List()
+	if err != nil {
+		t.Fatalf("List after rm: %v", err)
+	}
+	want := []string{"_backups/jamf-2/.env.jit-bak-1", "jamf/JAMF_URL"}
+	if strings.Join(paths, ",") != strings.Join(want, ",") {
+		t.Errorf("vault after group rm = %v, want %v (sibling group and backup spared)", paths, want)
+	}
+}
+
+// TestVaultRmUnknownNameStillReportsMissing: an argument that is neither a
+// stored secret nor a group falls through the expansion untouched and keeps
+// rm's established missing-path contract (reported, non-zero exit).
+func TestVaultRmUnknownNameStillReportsMissing(t *testing.T) {
+	withFixtureHome(t)
+	stubUserPresence(t)
+	t.Cleanup(func() { vaultRmYes = false })
+	seedFixtureVault(t, "e2e/a")
+
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"vault", "rm", "-y", "nope"})
+	if err := rootCmd.Execute(); err == nil {
+		t.Errorf("expected a non-zero error for an unknown name, got nil")
+	}
+	if !strings.Contains(buf.String(), `no secret stored at "nope"`) {
+		t.Errorf("missing-path report absent, got:\n%s", buf.String())
+	}
+}
+
+// TestVaultOrphansStaleMountSurvivesAndPrunes: a registered mount whose
+// profile file is GONE (project directory deleted without `jit unmount`
+// first) must not abort `jit vault orphans` — that stranded the exact
+// recovery the command exists for. The stale registration is reported, the
+// now-unreferenced secrets list as orphans, and --prune deletes the orphans
+// AND clears the registration plus its .pointers companion in the same run.
+func TestVaultOrphansStaleMountSurvivesAndPrunes(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	stubUserPresence(t)
+	t.Cleanup(func() { vaultOrphansPrune = false; vaultOrphansYes = false })
+
+	root := seedFixtureVault(t, "deadproj/API_KEY")
+	mountPath := filepath.Join(home, "deadproj", ".env")
+	registerFixtureMount(t, home, mountPath, filepath.Join(home, "deadproj", ".jit", "profiles", "deadproj.yaml"))
+
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"vault", "orphans"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("jit vault orphans with a stale mount registered: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "[stale mounts]") || !strings.Contains(out, "deadproj/.env") {
+		t.Errorf("expected the stale mount reported, got:\n%s", out)
+	}
+	if !strings.Contains(out, "API_KEY") {
+		t.Errorf("expected the dead project's secret listed as an orphan, got:\n%s", out)
+	}
+
+	buf.Reset()
+	rootCmd.SetArgs([]string{"vault", "orphans", "--prune", "--yes"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("jit vault orphans --prune with a stale mount: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Deleted 1 orphaned secret") || !strings.Contains(buf.String(), "Cleared 1 stale mount registration") {
+		t.Errorf("expected both the delete and the clear reported, got:\n%s", buf.String())
+	}
+	v := &vault.Vault{Root: root, RecipientID: "test-device"}
+	if ok, _ := v.Exists("deadproj/API_KEY"); ok {
+		t.Error("prune must delete the dead project's orphaned secret")
+	}
+	entries, err := mount.LoadRegistry(mount.RegistryPath(root))
+	if err != nil {
+		t.Fatalf("LoadRegistry after prune: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("stale registry entry still present after prune: %v", entries)
+	}
+}
+
+// TestVaultOrphansUnparseableMountProfileStillAborts: the stale-mount carve-
+// out is for a MISSING profile only. A profile that exists but fails to
+// parse still aborts the command — --prune must never treat a secret as
+// unreferenced because the manifest naming it failed to load.
+func TestVaultOrphansUnparseableMountProfileStillAborts(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	seedFixtureVault(t, "proj/API_KEY")
+	profilePath := filepath.Join(home, "proj", ".jit", "profiles", "proj.yaml")
+	writeProfileAt(t, profilePath, "not: [valid")
+	registerFixtureMount(t, home, filepath.Join(home, "proj", ".env"), profilePath)
+
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"vault", "orphans"})
+	err := rootCmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "loading profile") {
+		t.Fatalf("expected the unparseable mount profile to abort, got: %v", err)
+	}
+}
+
 // TestVaultCleanDeclinedConfirmationAborts: declining must leave every
 // secret in place — and, per this package's ordering discipline, the
 // listing/count shown in the prompt itself must never have cost any auth

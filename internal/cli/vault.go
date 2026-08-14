@@ -1269,11 +1269,15 @@ var vaultRmCmd = &cobra.Command{
 		"a batch (a test run, a decommissioned project) is one approval, not one\n" +
 		"per secret. Missing paths are reported but don't stop the rest; the\n" +
 		"command exits non-zero if any path couldn't be removed.\n\n" +
+		"A bare group name (the part before the slash in `jit vault list`)\n" +
+		"deletes every secret in that group: the expansion is announced and the\n" +
+		"confirmation lists each path, still one gesture for the lot.\n\n" +
 		"-y/--yes skips the typed confirmation (never the fingerprint), matching\n" +
 		"every other jit command. `-f`/`--force` is still accepted as a synonym,\n" +
 		"so the `rm -f` reflex keeps working.",
 	Example: "  jit vault rm stripe/dev-key\n" +
-		"  jit vault rm old-proj/API_KEY old-proj/DB_URL   # one approval, both gone",
+		"  jit vault rm old-proj/API_KEY old-proj/DB_URL   # one approval, both gone\n" +
+		"  jit vault rm old-proj                           # the whole group, listed before you confirm",
 	Args:              requireArgs(1, -1, "at least one secret path (see `jit vault list`)"),
 	ValidArgsFunction: completeVaultPaths,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -1290,6 +1294,10 @@ var vaultRmCmd = &cobra.Command{
 				return fmt.Errorf("jit vault rm: %w", err)
 			}
 		}
+
+		// Before the confirmation, so the [y/N] prompt below lists exactly
+		// what a group argument is about to delete.
+		args = expandRmGroups(cmd.OutOrStdout(), args)
 
 		// Advisory, before the confirmation: name whatever still points at
 		// each doomed path. rm deletes only the envelope file, so a wired
@@ -1358,6 +1366,63 @@ var vaultRmCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+// expandRmGroups turns a GROUP argument (`jamf-2`) into that group's member
+// secret paths (`jamf-2/JAMF_URL`, …). rm's contract is full secret paths,
+// but a group is how `jit vault list` displays them and how `jit vault
+// duplicates` names its findings, so the bare name is what users reach for —
+// and it used to cost a typed confirmation plus a Touch ID before failing
+// with "no secret stored" (a real session: `jit vault rm jamf-2` straight
+// off the duplicates report). Only an argument matching NO stored secret
+// expands, so a secret literally named like a group still deletes exactly
+// itself, and only the plain secret tree is searched — never `_backups/`,
+// whose cleanup belongs to `jit vault prune`/`clean`. Listing envelope
+// filenames needs no auth, so this runs before the confirmation; every
+// expansion is announced, and the [y/N] prompt lists the resulting paths.
+// Best-effort on a listing error: the original arguments fall through to
+// rm's own per-path reporting.
+func expandRmGroups(out io.Writer, args []string) []string {
+	root, err := vaultRootDir()
+	if err != nil {
+		return args
+	}
+	paths, err := (&vault.Vault{Root: root}).List()
+	if err != nil {
+		return args
+	}
+	secrets, _ := splitBackupPaths(paths)
+	stored := make(map[string]bool, len(secrets))
+	for _, p := range secrets {
+		stored[p] = true
+	}
+	expanded := make([]string, 0, len(args))
+	seen := make(map[string]bool)
+	keep := func(p string) {
+		if !seen[p] {
+			seen[p] = true
+			expanded = append(expanded, p)
+		}
+	}
+	for _, arg := range args {
+		var members []string
+		if !stored[arg] {
+			for _, p := range secrets {
+				if strings.HasPrefix(p, arg+"/") {
+					members = append(members, p)
+				}
+			}
+		}
+		if len(members) == 0 {
+			keep(arg)
+			continue
+		}
+		fmt.Fprintf(out, "%s is a group: deleting all %s under it.\n", arg, countWord(len(members), "secret", "secrets"))
+		for _, p := range members {
+			keep(p)
+		}
+	}
+	return expanded
 }
 
 // promptEllipsis shortens s for display inside a macOS authentication
@@ -1898,7 +1963,14 @@ var (
 // parse aborts with an error rather than returning a short set — because its
 // only deleting caller (`jit vault orphans --prune`) must never treat a secret
 // as unreferenced just because the manifest that names it failed to load.
-func collectReferencedPaths(root, cwd string) (map[string]bool, error) {
+//
+// A registered mount whose profile file is GONE is the one exception: a
+// missing manifest names nothing, so skipping it cannot under-count. Those
+// entries come back as stale mounts instead of aborting — aborting here
+// bricked `jit vault orphans` in exactly the situation it exists for, a
+// project directory deleted without `jit unmount` first (GAPS.md #67), with
+// the error naming the missing profile and no way forward.
+func collectReferencedPaths(root, cwd string) (map[string]bool, []mount.Entry, error) {
 	referenced := map[string]bool{}
 	add := func(path string) error {
 		p, err := profile.LoadFile(path)
@@ -1912,23 +1984,28 @@ func collectReferencedPaths(root, cwd string) (map[string]bool, error) {
 	}
 	infos, err := profile.ListAll(cwd)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, info := range infos {
 		if err := add(info.Path); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	entries, err := mount.LoadRegistry(mount.RegistryPath(root))
 	if err != nil {
-		return nil, fmt.Errorf("reading the mount registry: %w", err)
+		return nil, nil, fmt.Errorf("reading the mount registry: %w", err)
 	}
+	var stale []mount.Entry
 	for _, e := range entries {
+		if _, statErr := os.Stat(e.ProfilePath); os.IsNotExist(statErr) {
+			stale = append(stale, e)
+			continue
+		}
 		if err := add(e.ProfilePath); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	return referenced, nil
+	return referenced, stale, nil
 }
 
 // printOrphanGroups renders orphaned secret paths grouped by their first path
@@ -2013,7 +2090,10 @@ var vaultOrphansCmd = &cobra.Command{
 		"(current directory) and global profile stores, plus the profile behind every\n" +
 		"registered mount. A secret used ONLY by a different project you're not in and\n" +
 		"haven't mounted would look orphaned here, so check each secret's origin\n" +
-		"before pruning, and delete a single one with `jit vault rm <path>` if unsure.",
+		"before pruning, and delete a single one with `jit vault rm <path>` if unsure.\n\n" +
+		"A registered mount whose profile is gone — a project directory deleted\n" +
+		"without `jit unmount` first — is reported as a stale mount registration,\n" +
+		"and --prune clears it too (a registry edit; no secret value is touched).",
 	Args:         cobra.NoArgs,
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -2030,7 +2110,7 @@ var vaultOrphansCmd = &cobra.Command{
 			return fmt.Errorf("jit vault orphans: %w", err)
 		}
 
-		referenced, err := collectReferencedPaths(root, cwd)
+		referenced, staleMounts, err := collectReferencedPaths(root, cwd)
 		if err != nil {
 			return fmt.Errorf("jit vault orphans: %w", err)
 		}
@@ -2059,14 +2139,23 @@ var vaultOrphansCmd = &cobra.Command{
 				Path   string `json:"path"`
 				Origin string `json:"origin"`
 			}
+			type staleMountRecord struct {
+				MountPath   string `json:"mount_path"`
+				ProfilePath string `json:"profile_path"`
+			}
 			records := make([]orphanRecord, 0, len(orphans))
 			for _, p := range orphans {
 				records = append(records, orphanRecord{Path: p, Origin: orphanOrigin(readVault, p)})
 			}
+			staleRecords := make([]staleMountRecord, 0, len(staleMounts))
+			for _, e := range staleMounts {
+				staleRecords = append(staleRecords, staleMountRecord{MountPath: e.MountPath, ProfilePath: e.ProfilePath})
+			}
 			if err := writeJSON(out, struct {
-				Count   int            `json:"count"`
-				Orphans []orphanRecord `json:"orphans"`
-			}{Count: len(records), Orphans: records}); err != nil {
+				Count       int                `json:"count"`
+				Orphans     []orphanRecord     `json:"orphans"`
+				StaleMounts []staleMountRecord `json:"stale_mounts"`
+			}{Count: len(records), Orphans: records, StaleMounts: staleRecords}); err != nil {
 				return fmt.Errorf("jit vault orphans: %w", err)
 			}
 			if !vaultOrphansPrune {
@@ -2074,7 +2163,7 @@ var vaultOrphansCmd = &cobra.Command{
 			}
 		}
 
-		if len(orphans) == 0 {
+		if len(orphans) == 0 && len(staleMounts) == 0 {
 			if vaultOrphansFormat != "json" {
 				fmt.Fprintln(out, "No orphaned secrets: every stored secret is referenced by a profile jit can see.")
 			}
@@ -2082,19 +2171,43 @@ var vaultOrphansCmd = &cobra.Command{
 		}
 
 		if vaultOrphansFormat != "json" {
-			printOrphanGroups(out, readVault, orphans)
+			if len(orphans) > 0 {
+				printOrphanGroups(out, readVault, orphans)
+			}
+			printStaleMountGroup(out, staleMounts)
 		}
 
 		if !vaultOrphansPrune {
-			fmt.Fprintf(out, "\n%s, referenced by no profile jit can currently see.\n"+
-				"Run `jit vault orphans --prune` to delete %s, or `jit vault rm <path>` one at a time.\n", countWord(len(orphans), "orphaned secret", "orphaned secrets"), pluralWord(len(orphans), "it", "them"))
+			if len(orphans) > 0 {
+				fmt.Fprintf(out, "\n%s, referenced by no profile jit can currently see.\n"+
+					"Run `jit vault orphans --prune` to delete %s, or `jit vault rm <path>` one at a time.\n", countWord(len(orphans), "orphaned secret", "orphaned secrets"), pluralWord(len(orphans), "it", "them"))
+			}
+			if len(staleMounts) > 0 {
+				fmt.Fprint(out, hlCmds(fmt.Sprintf("\n`jit vault orphans --prune` also clears %s\n"+
+					"(no secret is touched), or run `jit unmount <path>` on each.\n",
+					countWord(len(staleMounts), "the stale mount registration", "the stale mount registrations"))))
+			}
 			return nil
 		}
 
 		// Names the object class and disclaims the other prune's — see the
-		// matching comment in `jit vault prune`.
-		if !vaultOrphansYes && !confirmPrompt(cmd, fmt.Sprintf(
-			"Permanently delete %s? This removes stored secret values, not `jit migrate`'s file backups. This can't be undone. [y/N] ", countWord(len(orphans), "orphaned secret", "orphaned secrets"))) {
+		// matching comment in `jit vault prune`. Stale mount registrations
+		// ride the same confirmation: clearing them writes no plaintext and
+		// deletes no secret, so they add wording, never their own prompt.
+		var confirmQ string
+		switch {
+		case len(orphans) > 0 && len(staleMounts) > 0:
+			confirmQ = fmt.Sprintf("Permanently delete %s and clear %s? This removes stored secret values, not `jit migrate`'s file backups. This can't be undone. [y/N] ",
+				countWord(len(orphans), "orphaned secret", "orphaned secrets"), countWord(len(staleMounts), "stale mount registration", "stale mount registrations"))
+		case len(orphans) > 0:
+			confirmQ = fmt.Sprintf("Permanently delete %s? This removes stored secret values, not `jit migrate`'s file backups. This can't be undone. [y/N] ",
+				countWord(len(orphans), "orphaned secret", "orphaned secrets"))
+		default:
+			confirmQ = fmt.Sprintf("Clear %s? The %s already gone; no secret value is touched. [y/N] ",
+				countWord(len(staleMounts), "stale mount registration", "stale mount registrations"),
+				pluralWord(len(staleMounts), "project is", "projects are"))
+		}
+		if !vaultOrphansYes && !confirmPrompt(cmd, confirmQ) {
 			fmt.Fprintln(out, "Aborted. Nothing was deleted.")
 			return nil
 		}
@@ -2102,12 +2215,17 @@ var vaultOrphansCmd = &cobra.Command{
 		// Remove only unlinks envelope files (never touches the KeyWrapper), so
 		// this explicit user-presence check is what forces a fingerprint here,
 		// locked or not. The [y/N] above is only a footgun guard (--yes skips it).
-		if err := requireUserPresence(fmt.Sprintf("delete %s from the vault", countWord(len(orphans), "orphaned secret", "orphaned secrets"))); err != nil {
-			return fmt.Errorf("jit vault orphans: %w", err)
-		}
-		for _, p := range orphans {
-			if err := readVault.Remove(p); err != nil && !errors.Is(err, vault.ErrNotFound) {
-				return fmt.Errorf("jit vault orphans: deleting %s: %w", p, err)
+		// Clearing ONLY stale mount registrations skips the gate on purpose —
+		// it is a registry edit that reveals nothing, the same no-auth cleanup
+		// `jit unmount` performs for a single orphaned mount.
+		if len(orphans) > 0 {
+			if err := requireUserPresence(fmt.Sprintf("delete %s from the vault", countWord(len(orphans), "orphaned secret", "orphaned secrets"))); err != nil {
+				return fmt.Errorf("jit vault orphans: %w", err)
+			}
+			for _, p := range orphans {
+				if err := readVault.Remove(p); err != nil && !errors.Is(err, vault.ErrNotFound) {
+					return fmt.Errorf("jit vault orphans: deleting %s: %w", p, err)
+				}
 			}
 		}
 		// In --format json the listing above is the machine output, so this
@@ -2117,9 +2235,53 @@ var vaultOrphansCmd = &cobra.Command{
 		if vaultOrphansFormat == "json" {
 			done = cmd.ErrOrStderr()
 		}
-		fmt.Fprintf(done, "Deleted %s.\n", countWord(len(orphans), "orphaned secret", "orphaned secrets"))
+		if len(orphans) > 0 {
+			fmt.Fprintf(done, "Deleted %s.\n", countWord(len(orphans), "orphaned secret", "orphaned secrets"))
+		}
+		if len(staleMounts) > 0 {
+			if err := clearStaleMounts(root, staleMounts); err != nil {
+				return fmt.Errorf("jit vault orphans: %w", err)
+			}
+			fmt.Fprintf(done, "Cleared %s.\n", countWord(len(staleMounts), "stale mount registration", "stale mount registrations"))
+		}
 		return nil
 	},
+}
+
+// printStaleMountGroup renders the stale-mount block of the orphans report:
+// registered mounts whose profile manifest is gone because the project
+// directory was deleted without `jit unmount` first. Same [header] shape as
+// the orphan groups above it; amber, because each entry blocks `jit vault
+// delete` and once also blocked this very command.
+func printStaleMountGroup(out io.Writer, stale []mount.Entry) {
+	if len(stale) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "  [stale mounts] %d · project deleted without unmounting first\n", len(stale))
+	home, _ := os.UserHomeDir()
+	for _, e := range stale {
+		fmt.Fprintf(out, "    %s %s\n", cWarn.Sprint(glyphWarn), displayPath(home, e.MountPath))
+	}
+}
+
+// clearStaleMounts drops stale registry entries the way `jit unmount` does
+// for one orphaned mount: stop any still-running serve goroutine
+// (best-effort — the profile is gone, so it cannot be serving anything
+// real), remove the registry entry, and sweep the .pointers companion.
+func clearStaleMounts(root string, stale []mount.Entry) error {
+	registryPath := mount.RegistryPath(root)
+	agentClient := agent.NewClient(agent.SocketPath(root))
+	reachable := agentClient.Reachable()
+	for _, e := range stale {
+		if reachable {
+			_ = agentClient.StopMount(e.MountPath)
+		}
+		if _, err := mount.RemoveMount(registryPath, e.MountPath); err != nil {
+			return fmt.Errorf("clearing the stale mount registration for %s: %w", e.MountPath, err)
+		}
+		_ = os.Remove(migrate.PointerFilePath(e.MountPath)) // best-effort; usually already gone with the project
+	}
+	return nil
 }
 
 var vaultDeleteYes bool
