@@ -16,6 +16,10 @@ registered mount. A secret used ONLY by a different project you're not in and
 haven't mounted would look orphaned here, so check each secret's origin
 before pruning, and delete a single one with `jit vault rm <path>` if unsure.
 
+A registered mount whose profile is gone — a project directory deleted
+without `jit unmount` first — is reported as a stale mount registration,
+and --prune clears it too (a registry edit; no secret value is touched).
+
 ```
 jit vault orphans [flags]
 ```
