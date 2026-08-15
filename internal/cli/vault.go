@@ -2206,9 +2206,14 @@ var vaultOrphansCmd = &cobra.Command{
 					"Run `jit vault orphans --prune` to delete %s, or `jit vault rm <path>` one at a time.\n", countWord(len(orphans), "orphaned secret", "orphaned secrets"), pluralWord(len(orphans), "it", "them"))
 			}
 			if len(staleMounts) > 0 {
+				// Not countWord: it renders "1 the stale mount registration".
+				// The article belongs to the sentence, the count to the noun.
+				phrase := "the stale mount registration"
+				if len(staleMounts) > 1 {
+					phrase = fmt.Sprintf("the %d stale mount registrations", len(staleMounts))
+				}
 				fmt.Fprint(out, hlCmds(fmt.Sprintf("\n`jit vault orphans --prune` also clears %s\n"+
-					"(no secret is touched), or run `jit unmount <path>` on each.\n",
-					countWord(len(staleMounts), "the stale mount registration", "the stale mount registrations"))))
+					"(no secret is touched), or run `jit unmount <path>` on each.\n", phrase)))
 			}
 			return nil
 		}
