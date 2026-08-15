@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -69,6 +70,16 @@ func plantVaultSecret(t *testing.T, home, path string) {
 func plantCorruptSecret(t *testing.T, home, path string) {
 	t.Helper()
 	writeVaultEnc(t, home, path, `{"version":999,"recipients":{"test":"00"},"payload":"00"}`)
+}
+
+// plantOriginSecret is plantVaultSecret with birth-time provenance: a v3
+// envelope recording the file the secret was migrated from, for the
+// duplicates and origin-gone sweeps (which read Origin via the auth-free
+// Vault.Info, exactly as doctor does).
+func plantOriginSecret(t *testing.T, home, path, origin string) {
+	t.Helper()
+	writeVaultEnc(t, home, path,
+		`{"version":3,"origin":`+strconv.Quote(origin)+`,"recipients":{"test":"00"},"payload":"00"}`)
 }
 
 func writeVaultEnc(t *testing.T, home, path, content string) {
@@ -380,9 +391,11 @@ func TestDoctorOrphansAreAdvisory(t *testing.T) {
 	}
 }
 
-// TestDoctorOrphansOffByDefault confirms the sweep is opt-in: without
-// --orphans, an unreferenced secret is silent.
-func TestDoctorOrphansOffByDefault(t *testing.T) {
+// TestDoctorOrphanCountOnByDefault confirms the sweep always runs: without
+// --orphans the unreferenced secret shows as a one-line COUNT (routing to
+// `jit vault orphans`), never as a per-path listing — that detail is what
+// the flag now selects. Still advisory: the run must not fail.
+func TestDoctorOrphanCountOnByDefault(t *testing.T) {
 	home := withFixtureHome(t)
 	cwd := withFixtureCwd(t)
 	writeFixtureProfile(t, cwd, "aws-admin", "AWS_ACCESS_KEY_ID: aws/s3-access-key\n")
@@ -391,10 +404,13 @@ func TestDoctorOrphansOffByDefault(t *testing.T) {
 
 	out, err := execDoctor(t)
 	if err != nil {
-		t.Fatalf("jit doctor: %v", err)
+		t.Fatalf("the orphan count is advisory and must not fail the run: %v", err)
 	}
-	if strings.Contains(out, "orphan") {
-		t.Errorf("expected no orphan output without --orphans, got:\n%s", out)
+	if !strings.Contains(out, "[orphan]") || !strings.Contains(out, "1 secret in the vault referenced by no profile") {
+		t.Errorf("expected the default run to carry the orphan count, got:\n%s", out)
+	}
+	if strings.Contains(out, "stripe/unused-key") {
+		t.Errorf("the per-path listing is --orphans' job, not the default's, got:\n%s", out)
 	}
 }
 
@@ -529,6 +545,108 @@ func TestDoctorUnloadableMountProfileIsAdvisory(t *testing.T) {
 	}
 	if strings.Contains(out, "[orphan]") {
 		t.Errorf("the orphan sweep must be suppressed when a mount manifest is unreadable, got:\n%s", out)
+	}
+}
+
+// TestDoctorStaleMountDoesNotSuppressOrphans: a registry entry whose manifest
+// is GONE (project deleted without `jit unmount`) is a different state from
+// one that won't parse — a missing file names no references, so skipping it
+// cannot make the orphan sweep under-count. Doctor used to lump both into
+// [mount] and suppress the sweep, hiding the orphan count in exactly the
+// cleanup that state calls for. Same split `jit vault orphans` v0.93.0 made.
+func TestDoctorStaleMountDoesNotSuppressOrphans(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	writeFixtureProfile(t, cwd, "app", "APP_KEY: app/key\n")
+	plantVaultSecret(t, home, "app/key")
+
+	gone := filepath.Join(t.TempDir(), "deleted-project", ".jit", "profiles", "npmrc.yaml")
+	registerFixtureMount(t, home, filepath.Join(home, ".npmrc"), gone)
+	plantVaultSecret(t, home, "npm/token") // the deleted project's leftover
+
+	out, err := execDoctor(t)
+	if err != nil {
+		t.Fatalf("a stale mount registration is advisory and must not fail the run: %v", err)
+	}
+	if !strings.Contains(out, "[mount: stale]") || !strings.Contains(out, "vault orphans --prune") {
+		t.Errorf("expected a stale-mount warning routing to `jit vault orphans --prune`, got:\n%s", out)
+	}
+	if !strings.Contains(out, "[orphan]") {
+		t.Errorf("a missing manifest names no references, so the orphan sweep must still run, got:\n%s", out)
+	}
+}
+
+// TestDoctorDuplicatesHint: two groups holding the same key set with the same
+// recorded origin — `jit vault list`'s nudge evidence, via the shared
+// duplicateGroupClusters — surface as an advisory [duplicates] finding
+// routing to `jit vault duplicates`. Name-level evidence only: doctor must
+// hint at the comparison, never nominate a copy to delete.
+func TestDoctorDuplicatesHint(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	origin := filepath.Join(t.TempDir(), "ws", ".mcp.json")
+	writeProfileAt(t, origin, "{}") // the origin file still exists
+	writeFixtureProfile(t, cwd, "mcp",
+		"CAIDO_TOKEN: mcp-caido/CAIDO_TOKEN\nCAIDO_TOKEN_2: mcp-caido-2/CAIDO_TOKEN\n")
+	plantOriginSecret(t, home, "mcp-caido/CAIDO_TOKEN", origin)
+	plantOriginSecret(t, home, "mcp-caido-2/CAIDO_TOKEN", origin)
+
+	out, err := execDoctor(t)
+	if err != nil {
+		t.Fatalf("a duplicates hint is advisory and must not fail the run: %v", err)
+	}
+	if !strings.Contains(out, "[duplicates]") || !strings.Contains(out, "migrated from the same file") {
+		t.Errorf("expected a [duplicates] warning naming the shared origin, got:\n%s", out)
+	}
+	if !strings.Contains(out, "jit vault duplicates") {
+		t.Errorf("expected the finding to route to `jit vault duplicates`, got:\n%s", out)
+	}
+}
+
+// TestDoctorOriginGoneForReferencedSecret: a secret a profile still uses,
+// whose recorded origin file has been deleted, gets an advisory [origin gone]
+// line — while a sibling whose origin still exists stays silent. Nothing is
+// broken (the vault copy is the live one), so the run must not fail.
+func TestDoctorOriginGoneForReferencedSecret(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	alive := filepath.Join(t.TempDir(), "proj", ".env")
+	writeProfileAt(t, alive, "X=1")
+	writeFixtureProfile(t, cwd, "app", "ACME_TOKEN: acme/TOKEN\nBETA_TOKEN: beta/TOKEN\n")
+	plantOriginSecret(t, home, "acme/TOKEN", filepath.Join(t.TempDir(), "gone-project", ".env"))
+	plantOriginSecret(t, home, "beta/TOKEN", alive)
+
+	out, err := execDoctor(t)
+	if err != nil {
+		t.Fatalf("a gone origin is advisory and must not fail the run: %v", err)
+	}
+	if !strings.Contains(out, "[origin gone]") || !strings.Contains(out, "acme was migrated from") {
+		t.Errorf("expected an [origin gone] warning naming the group, got:\n%s", out)
+	}
+	if strings.Contains(out, "beta was migrated") {
+		t.Errorf("a secret whose origin still exists must not be flagged, got:\n%s", out)
+	}
+}
+
+// TestDoctorOriginGoneSkipsUnreferencedSecrets: origin gone AND referenced by
+// nothing is the orphan definition — that count already carries it, and a
+// second line about the same secret would state one fact twice.
+func TestDoctorOriginGoneSkipsUnreferencedSecrets(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	writeFixtureProfile(t, cwd, "app", "APP_KEY: app/key\n")
+	plantVaultSecret(t, home, "app/key")
+	plantOriginSecret(t, home, "stray/TOKEN", filepath.Join(t.TempDir(), "gone", ".env"))
+
+	out, err := execDoctor(t)
+	if err != nil {
+		t.Fatalf("jit doctor: %v", err)
+	}
+	if !strings.Contains(out, "[orphan]") {
+		t.Errorf("expected the unreferenced secret in the orphan count, got:\n%s", out)
+	}
+	if strings.Contains(out, "[origin gone]") {
+		t.Errorf("an unreferenced secret is an orphan, not an [origin gone] finding, got:\n%s", out)
 	}
 }
 

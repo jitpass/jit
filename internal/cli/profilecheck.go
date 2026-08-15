@@ -6,6 +6,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/vault"
+	"github.com/jitpass/jit/internal/wrap"
 )
 
 // checkKind classifies one doctor finding so a --format json consumer can
@@ -54,6 +56,21 @@ const (
 	// (see warning): dead weight and audit surface worth surfacing, never a
 	// reason to fail the run.
 	kindOrphan checkKind = "orphan"
+	// kindDuplicates: two or more vault groups that look like the same file
+	// stored twice — identical key sets with agreeing recorded origins, the
+	// same auth-free evidence behind `jit vault list`'s nudge. Advisory, and
+	// deliberately name-level only: confirming the VALUES match (and which
+	// copy is safe to retire) takes a decrypt, which is `jit vault
+	// duplicates`' job, never doctor's. The finding routes there.
+	kindDuplicates checkKind = "duplicates"
+	// kindOriginGone: a secret a profile still references whose recorded
+	// origin file no longer exists on disk. Advisory: nothing is broken (the
+	// vault copy is the live one; that is the product working), but the file
+	// this credential was born from being gone is worth one line — a deleted
+	// project whose profile survived looks exactly like this. The
+	// UNREFERENCED half of the same situation needs no kind of its own: it is
+	// already an orphan.
+	kindOriginGone checkKind = "origin_gone"
 	// kindShadowed: a profile name exists in BOTH project and global scope.
 	// Load resolves to the project one, so the global profile of the same
 	// name is silently ignored — the exact "why is my global profile not
@@ -87,6 +104,15 @@ const (
 	// asked about is, and the registry can outlive a project directory
 	// legitimately (see reconcileSecrets, which tolerates the same state).
 	kindMount checkKind = "mount"
+	// kindMountStale: a registered mount whose profile manifest is GONE — the
+	// project directory was deleted without `jit unmount` first. Split from
+	// kindMount because the two must behave differently, the same distinction
+	// `jit vault orphans` draws (GAPS.md #67): a manifest that exists but
+	// won't parse leaves that profile's references UNKNOWN and so suppresses
+	// the orphan sweep, while a missing manifest names nothing — skipping it
+	// cannot under-count, the deleted project's secrets really are orphaned,
+	// and `jit vault orphans --prune` clears the registration without auth.
+	kindMountStale checkKind = "mount_stale"
 	// kindVaultKey: the vault holds secrets but this Mac's master key is gone
 	// from the keychain. Every envelope still passes Verify — structure and
 	// recipient are intact — and not one of them can be decrypted. A hard
@@ -171,9 +197,10 @@ const (
 // Add new kinds here.
 var allCheckKinds = []checkKind{
 	kindParse, kindNotFound, kindMissing, kindCorrupt, kindVaultError,
-	kindBadPath, kindOrphan, kindShadowed, kindService, kindBackup,
-	kindWrap, kindWrapEnv, kindMount, kindVaultKey, kindRekey, kindAudit,
-	kindMCP, kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion,
+	kindBadPath, kindOrphan, kindDuplicates, kindOriginGone, kindShadowed,
+	kindService, kindBackup, kindWrap, kindWrapEnv, kindMount,
+	kindMountStale, kindVaultKey, kindRekey, kindAudit, kindMCP,
+	kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion,
 }
 
 // warning reports whether a finding of this kind is advisory (does not fail
@@ -189,7 +216,7 @@ var allCheckKinds = []checkKind{
 // one process and must never fail a CI run.
 func (k checkKind) warning() bool {
 	switch k {
-	case kindOrphan, kindShadowed, kindService, kindBackup, kindMount, kindWrapEnv, kindAudit, kindInstall, kindJitPathUpgrade, kindCompletion:
+	case kindOrphan, kindDuplicates, kindOriginGone, kindShadowed, kindService, kindBackup, kindMount, kindMountStale, kindWrapEnv, kindAudit, kindInstall, kindJitPathUpgrade, kindCompletion:
 		return true
 	default:
 		return false
@@ -250,6 +277,16 @@ type checkOptions struct {
 	// needs the whole profile picture to be meaningful, so it is ignored
 	// when Profile is set (a single profile can't tell you what's unused).
 	Orphans bool
+	// Duplicates additionally reports look-alike duplicate groups: identical
+	// key sets whose recorded origins agree, the same name-level evidence
+	// `jit vault list`'s nudge uses. Still auth-free (List + Info only, no
+	// decrypt), so still no prompt. Ignored when Profile is set — the
+	// evidence is a whole-vault property, not one profile's.
+	Duplicates bool
+	// Origins additionally stats each referenced secret's recorded origin
+	// file and reports the ones that no longer exist on disk. Ignored when
+	// Profile is set, like the other whole-picture sweeps.
+	Origins bool
 }
 
 // checkOutcome is the structured result both jit doctor and jit status build
@@ -451,36 +488,139 @@ func runProfileCheck(cwd string, v *vault.Vault, opts checkOptions) (checkOutcom
 		}
 	}
 
-	// Orphan detection needs the WHOLE profile picture to be truthful, so it
-	// runs only across all profiles (not --profile), only when at least one
-	// profile actually loaded (a zero-profile directory would otherwise call
-	// the entire vault orphaned), and only when every manifest parsed (an
-	// unreadable one leaves `referenced` incomplete — see parseFailed).
-	if opts.Orphans && opts.Profile == "" && len(entries) > 0 && !parseFailed {
+	// The whole-vault hygiene sweeps, all sharing one vault listing. Each
+	// needs the WHOLE profile picture to be truthful, so none runs under
+	// --profile. Orphan detection carries two extra guards of its own: at
+	// least one profile actually loaded (a zero-profile directory would
+	// otherwise call the entire vault orphaned), and every manifest parsed
+	// (an unreadable one leaves `referenced` incomplete — see parseFailed).
+	// The duplicates and origin sweeps make only POSITIVE claims about
+	// secrets they can see, so an incomplete picture can hide a finding but
+	// never invent one, and neither needs those guards.
+	wantOrphans := opts.Orphans && len(entries) > 0 && !parseFailed
+	if opts.Profile == "" && (wantOrphans || opts.Duplicates || opts.Origins) {
 		paths, err := v.List()
 		if err != nil {
-			// The orphan sweep is a bonus; a vault it can't list is still a
+			// The sweeps are a bonus; a vault it can't list is still a
 			// reportable problem, not a reason to lose the checks above.
-			out.Findings = append(out.Findings, checkFinding{Kind: kindVaultError, Detail: fmt.Sprintf("listing the vault for orphan detection: %v", err)})
+			out.Findings = append(out.Findings, checkFinding{Kind: kindVaultError, Detail: fmt.Sprintf("listing the vault for the hygiene sweeps: %v", err)})
 			return out, nil
 		}
 		secrets, _ := splitBackupPaths(paths)
-		for _, p := range secrets {
-			if !referenced[p] {
-				out.Findings = append(out.Findings, checkFinding{
-					Kind:   kindOrphan,
-					Path:   p,
-					Detail: "in the vault but referenced by no profile",
-					// Identical for every orphan, which is exactly why the
-					// renderer states a group's shared action once rather
-					// than repeating it under each of twenty lines.
-					Action: "`jit vault orphans --prune` to delete, or `jit vault list` to inspect first",
-				})
+		if wantOrphans {
+			for _, p := range secrets {
+				if !referenced[p] {
+					out.Findings = append(out.Findings, checkFinding{
+						Kind:   kindOrphan,
+						Path:   p,
+						Detail: "in the vault but referenced by no profile",
+						// Identical for every orphan, which is exactly why the
+						// renderer states a group's shared action once rather
+						// than repeating it under each of twenty lines.
+						Action: "`jit vault orphans --prune` to delete, or `jit vault list` to inspect first",
+					})
+				}
+			}
+		}
+		if opts.Duplicates || opts.Origins {
+			// Info never touches the KeyWrapper (same contract as List), so
+			// the metadata pass keeps doctor's never-prompts guarantee. A
+			// secret whose envelope won't parse is simply absent from meta:
+			// the integrity check above already reported it if referenced,
+			// and evidence built on it would be guesswork.
+			meta := map[string]vault.SecretInfo{}
+			for _, p := range secrets {
+				if info, err := v.Info(p); err == nil {
+					meta[p] = info
+				}
+			}
+			if opts.Duplicates {
+				out.Findings = append(out.Findings, duplicateFindings(secrets, meta)...)
+			}
+			if opts.Origins {
+				out.Findings = append(out.Findings, originGoneFindings(secrets, meta, referenced)...)
 			}
 		}
 	}
 
 	return out, nil
+}
+
+// duplicateFindings turns the duplicate-evidence clusters — the exact ones
+// `jit vault list`'s nudge prints, via the shared duplicateGroupClusters —
+// into advisory findings. The action routes to `jit vault duplicates` rather
+// than naming a copy to delete: name-level evidence must never nominate a
+// removal, only the value comparison behind an unlock may (a surviving copy
+// can lack a key the retired one held).
+func duplicateFindings(secrets []string, meta map[string]vault.SecretInfo) []checkFinding {
+	var out []checkFinding
+	for _, c := range duplicateGroupClusters(secrets, meta) {
+		out = append(out, checkFinding{
+			Kind:   kindDuplicates,
+			Detail: describeDuplicateCluster(c),
+			Action: "`jit vault duplicates` compares the stored values and names the copy safe to retire",
+		})
+	}
+	return out
+}
+
+// originGoneFindings reports each REFERENCED secret whose recorded origin
+// file no longer exists on disk — one finding per origin file, naming the
+// vault groups born from it. Only os.IsNotExist counts as gone: a
+// permission error is not evidence of absence, and a false "your file is
+// gone" costs more trust than the missed finding. Unreferenced secrets are
+// skipped on purpose — origin gone plus referenced-by-nothing IS the orphan
+// definition, and that count already carries them.
+//
+// No action line, following kindShadowed's reasoning: a deliberately deleted
+// source file (the product working as intended) and a half-deleted project
+// look identical from here, so any command would be advice, not a next step.
+func originGoneFindings(secrets []string, meta map[string]vault.SecretInfo, referenced map[string]bool) []checkFinding {
+	home, _ := os.UserHomeDir()
+	groupsByOrigin := map[string][]string{}
+	var order []string
+	gone := map[string]bool{}
+	for _, p := range secrets {
+		if !referenced[p] {
+			continue
+		}
+		info, ok := meta[p]
+		if !ok || info.Origin == "" {
+			continue
+		}
+		g, seen := gone[info.Origin]
+		if !seen {
+			_, statErr := os.Stat(wrap.ExpandHome(home, info.Origin))
+			g = os.IsNotExist(statErr)
+			gone[info.Origin] = g
+		}
+		if !g {
+			continue
+		}
+		group := p
+		if i := strings.IndexByte(p, '/'); i >= 0 {
+			group = p[:i]
+		}
+		if _, ok := groupsByOrigin[info.Origin]; !ok {
+			order = append(order, info.Origin)
+		}
+		// secrets is sorted, so one group's members are contiguous — the
+		// last-element check is a full dedupe.
+		if members := groupsByOrigin[info.Origin]; len(members) == 0 || members[len(members)-1] != group {
+			groupsByOrigin[info.Origin] = append(members, group)
+		}
+	}
+	var out []checkFinding
+	for _, origin := range order {
+		groups := groupsByOrigin[origin]
+		out = append(out, checkFinding{
+			Kind: kindOriginGone,
+			Path: origin,
+			Detail: fmt.Sprintf("%s %s migrated from %s, which no longer exists on disk",
+				strings.Join(groups, ", "), pluralWord(len(groups), "was", "were"), shortPath(origin)),
+		})
+	}
+	return out
 }
 
 // secretAction is the one runnable step for a broken secret reference.
@@ -547,6 +687,22 @@ func mountCheckTargets(root string, seen map[string]bool) (targets []mountTarget
 			continue
 		}
 		seen[clean] = true
+		// A manifest that is GONE is a different finding from one that won't
+		// parse, and crucially does NOT set parseFailed: a missing file names
+		// no references, so skipping it cannot make the orphan sweep
+		// under-count — the deleted project's secrets really are orphans, and
+		// suppressing the sweep here hid the count in exactly the cleanup
+		// this state calls for. Same split `collectReferencedPaths` makes.
+		if _, statErr := os.Stat(e.ProfilePath); os.IsNotExist(statErr) {
+			findings = append(findings, checkFinding{
+				Kind:   kindMountStale,
+				Scope:  scopeMount,
+				Path:   e.MountPath,
+				Detail: fmt.Sprintf("the mount at %s is still registered, but its profile is gone: project deleted without unmounting first", shortPath(e.MountPath)),
+				Action: "`jit vault orphans --prune` clears it (no secret is touched), or `jit unmount " + shortPath(e.MountPath) + "`",
+			})
+			continue
+		}
 		p, err := profile.LoadFile(e.ProfilePath)
 		if err != nil {
 			parseFailed = true
