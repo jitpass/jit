@@ -96,9 +96,14 @@ var doctorCmd = &cobra.Command{
 		"because this Mac's master key is gone from the keychain or a master-key\n" +
 		"rotation never finished; or a wrapped tool's installation damaged, which\n" +
 		"means that tool now runs unwrapped or not at all. Everything else it\n" +
-		"reports is an advisory warning: an orphaned secret (with --orphans), a\n" +
-		"profile name shadowed across scopes, a mount whose profile won't load, a\n" +
-		"stopped service, a stale or missing vault backup, more than one jit\n" +
+		"reports is an advisory warning: orphaned secrets no profile references\n" +
+		"(a count by default; --orphans lists each, `jit vault orphans` adds\n" +
+		"origins and can prune), vault groups that look like the same file stored\n" +
+		"twice (name-level evidence only — `jit vault duplicates` compares the\n" +
+		"values, which doctor never decrypts), a referenced secret whose recorded\n" +
+		"origin file is gone from disk, a profile name shadowed across scopes, a\n" +
+		"mount whose profile won't load or whose project was deleted without\n" +
+		"unmounting, a stopped service, a stale or missing vault backup, more than one jit\n" +
 		"installed on PATH (a Homebrew copy and a tarball copy each answering to\n" +
 		"the name, with which copy runs decided by PATH order), and any shim\n" +
 		"complaint that is only true of the shell you happen to be in — a CI job\n" +
@@ -115,7 +120,7 @@ var doctorCmd = &cobra.Command{
 		"check that passed, not just the ones that failed, and --format json prints a\n" +
 		"machine-readable snapshot.",
 	Example: "  jit doctor\n" +
-		"  jit doctor --verbose --orphans   # also what passed, and unreferenced secrets\n" +
+		"  jit doctor --verbose --orphans   # also what passed, and each unreferenced secret\n" +
 		"  jit doctor --wrap                # only the shims, no vault access\n" +
 		"  jit doctor --strict              # advisory warnings gate too, for CI",
 	Args: cobra.NoArgs,
@@ -162,11 +167,19 @@ var doctorCmd = &cobra.Command{
 		// plaintext) and cheap, and a "doctor" that couldn't tell a
 		// truncated secret from a healthy one would be missing the failure
 		// most likely to look like a jit bug at runtime.
+		// Orphans is always on now — the count is the finding, and hiding it
+		// behind a flag meant the run where you'd learn you have eleven never
+		// showed it. --orphans only chooses between the one-line count and
+		// the per-path listing (see collapseOrphanFindings). Duplicates and
+		// Origins are the other always-on hygiene sweeps; all three stay
+		// auth-free (List/Info/stat, never a decrypt).
 		outcome, err = runProfileCheck(cwd, v, checkOptions{
-			Root:      root,
-			Profile:   doctorProfile,
-			Integrity: true,
-			Orphans:   doctorOrphans,
+			Root:       root,
+			Profile:    doctorProfile,
+			Integrity:  true,
+			Orphans:    true,
+			Duplicates: true,
+			Origins:    true,
 		})
 		if err != nil {
 			return fmt.Errorf("jit doctor: %w", err)
@@ -187,8 +200,45 @@ var doctorCmd = &cobra.Command{
 			outcome.OKChecks = wrapOK
 		}
 
+		if !doctorOrphans {
+			outcome.Findings = collapseOrphanFindings(outcome.Findings)
+		}
+
 		return renderDoctorOutcome(cmd, outcome)
 	},
+}
+
+// collapseOrphanFindings folds the per-path [orphan] findings into one
+// summary finding carrying only the count — the default view now that the
+// sweep always runs. The full listing (with each path) is one `--orphans`
+// away here, or `jit vault orphans` with origins and ages. Applied to text
+// and JSON alike: the two must say the same thing, and a JSON consumer that
+// wants every path passes --orphans exactly like a human would.
+func collapseOrphanFindings(findings []checkFinding) []checkFinding {
+	count := 0
+	at := -1
+	var out []checkFinding
+	for _, f := range findings {
+		if f.Kind != kindOrphan {
+			out = append(out, f)
+			continue
+		}
+		if at < 0 {
+			// Placeholder keeps the summary where the first orphan appeared,
+			// so the group order still reflects what the run found first.
+			at = len(out)
+			out = append(out, checkFinding{})
+		}
+		count++
+	}
+	if at >= 0 {
+		out[at] = checkFinding{
+			Kind:   kindOrphan,
+			Detail: fmt.Sprintf("%s in the vault referenced by no profile jit can see", countWord(count, "secret", "secrets")),
+			Action: "`jit vault orphans` to list them with origins, or `jit vault orphans --prune` to delete",
+		}
+	}
+	return out
 }
 
 // doctorProblemsExitCode is deliberately not 1, matching `jit scan --fail-on`
@@ -550,6 +600,10 @@ func findingLabel(f checkFinding) string {
 		return "[bad path]"
 	case kindOrphan:
 		return "[orphan]"
+	case kindDuplicates:
+		return "[duplicates]"
+	case kindOriginGone:
+		return "[origin gone]"
 	case kindShadowed:
 		return "[shadowed]"
 	case kindService:
@@ -565,6 +619,11 @@ func findingLabel(f checkFinding) string {
 		return "[wrap: this shell]"
 	case kindMount:
 		return "[mount]"
+	case kindMountStale:
+		// Names the cause on the header, as "[wrap: this shell]" does: a
+		// stale registration is leftover state from a deleted project, and a
+		// bare "[mount]" beside it would read as two of the same problem.
+		return "[mount: stale]"
 	case kindVaultKey:
 		return "[vault key]"
 	case kindRekey:
@@ -599,7 +658,7 @@ func findingLabel(f checkFinding) string {
 // that identifies the file off the first line (rule 6).
 func formatFinding(f checkFinding) string {
 	switch f.Kind {
-	case kindParse, kindNotFound, kindService, kindBackup, kindWrap, kindWrapEnv, kindMount, kindVaultKey, kindRekey, kindAudit, kindMCP, kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion:
+	case kindParse, kindNotFound, kindService, kindBackup, kindWrap, kindWrapEnv, kindMount, kindMountStale, kindDuplicates, kindOriginGone, kindVaultKey, kindRekey, kindAudit, kindMCP, kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion:
 		return shortHome(f.Detail)
 	case kindMissing:
 		return fmt.Sprintf("%s: %s "+glyphAction+" %s, not in the vault", profileRef(f), f.Variable, f.Path)
@@ -613,6 +672,11 @@ func formatFinding(f checkFinding) string {
 		}
 		return fmt.Sprintf("%s: %s "+glyphAction+" %s: %s", profileRef(f), f.Variable, f.Path, shortHome(f.Detail))
 	case kindOrphan:
+		// The collapsed default carries only a count in Detail and no Path;
+		// the --orphans listing names each path.
+		if f.Path == "" {
+			return f.Detail
+		}
 		return fmt.Sprintf("%s — %s", f.Path, f.Detail)
 	case kindShadowed:
 		return fmt.Sprintf("%s: %s", profileRef(f), f.Detail)
@@ -638,7 +702,7 @@ func init() {
 	_ = doctorCmd.RegisterFlagCompletionFunc("profile", completeProfileNames)
 	doctorCmd.Flags().StringVar(&doctorFormat, "format", "text", `output format: "text" (default) or "json"`)
 	doctorCmd.Flags().BoolVar(&doctorVerbose, "verbose", false, "also list every check that passed, not just the ones that failed")
-	doctorCmd.Flags().BoolVar(&doctorOrphans, "orphans", false, "also warn about vault secrets no profile references (advisory, never a failure)")
+	doctorCmd.Flags().BoolVar(&doctorOrphans, "orphans", false, "list each unreferenced vault secret; without it the count alone is reported")
 	doctorCmd.Flags().BoolVar(&doctorWrap, "wrap", false, "check only the wrapped-tool shims, without opening the vault (replaces `jit wrap doctor`)")
 	doctorCmd.Flags().BoolVar(&doctorStrict, "strict", false, "exit non-zero on advisory warnings too, for a pipeline that wants them to gate")
 	doctorCmd.MarkFlagsMutuallyExclusive("wrap", "profile")

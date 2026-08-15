@@ -244,6 +244,42 @@ func printVaultList(out io.Writer, secrets, backups []string, showBackups, group
 // (which compares actual values under an unlock) rather than telling anyone
 // to delete on filename evidence alone.
 func printDuplicateGroupNudge(out io.Writer, secrets []string, meta map[string]vault.SecretInfo) {
+	for _, c := range duplicateGroupClusters(secrets, meta) {
+		fmt.Fprint(out, hlCmds("note: "+describeDuplicateCluster(c)+", see `jit vault duplicates`.\n"))
+	}
+}
+
+// dupEvidenceCluster is one set of top-level groups that look like the same
+// file stored more than once, on name-level evidence alone. Shared by `jit
+// vault list`'s nudge and `jit doctor`'s [duplicates] finding, so the two
+// surfaces can never disagree on what counts as evidence.
+type dupEvidenceCluster struct {
+	groups  []string
+	origins []string // parallel to groups
+	// sameOrigin: every member records literally the same path (a
+	// re-migration that forked a namespace) rather than the same file in two
+	// directories (a copied project tree).
+	sameOrigin bool
+}
+
+// describeDuplicateCluster names the evidence in one clause — what the nudge
+// prints after "note:" and what doctor carries as the finding's detail.
+func describeDuplicateCluster(c dupEvidenceCluster) string {
+	names := strings.Join(c.groups, ", ")
+	if c.sameOrigin {
+		return fmt.Sprintf("%s were migrated from the same file (%s)", names, shortPath(c.origins[0]))
+	}
+	copies := "two copies"
+	if len(c.groups) > 2 {
+		copies = fmt.Sprintf("%d copies", len(c.groups))
+	}
+	return fmt.Sprintf("%s hold the same keys from %s of %s", names, copies, originTail(c.origins[0]))
+}
+
+// duplicateGroupClusters computes the evidence clusters described on
+// printDuplicateGroupNudge, from a sorted secret listing and its Info
+// metadata — auth-free by construction, since both inputs are.
+func duplicateGroupClusters(secrets []string, meta map[string]vault.SecretInfo) []dupEvidenceCluster {
 	members := map[string][]string{} // top-level group -> its sub-paths
 	var order []string
 	for _, p := range secrets {
@@ -278,11 +314,7 @@ func printDuplicateGroupNudge(out io.Writer, secrets []string, meta map[string]v
 	// copied tree keeps the tail while the prefix moves. One extra segment
 	// beyond the basename on purpose — every project has a ".mcp.json", so
 	// the bare basename would call two unrelated projects' configs copies.
-	type cluster struct {
-		groups  []string
-		origins []string
-	}
-	byEvidence := map[string]*cluster{}
+	byEvidence := map[string]*dupEvidenceCluster{}
 	var clusterOrder []string
 	for _, g := range order {
 		origin := groupOrigin(g)
@@ -293,37 +325,28 @@ func printDuplicateGroupNudge(out io.Writer, secrets []string, meta map[string]v
 		sort.Strings(keys)
 		sig := strings.Join(keys, "\x00") + "\x00\x00" + originTail(origin)
 		if _, ok := byEvidence[sig]; !ok {
-			byEvidence[sig] = &cluster{}
+			byEvidence[sig] = &dupEvidenceCluster{}
 			clusterOrder = append(clusterOrder, sig)
 		}
 		byEvidence[sig].groups = append(byEvidence[sig].groups, g)
 		byEvidence[sig].origins = append(byEvidence[sig].origins, origin)
 	}
+	var clusters []dupEvidenceCluster
 	for _, sig := range clusterOrder {
 		c := byEvidence[sig]
 		if len(c.groups) < 2 {
 			continue
 		}
-		sameOrigin := true
+		c.sameOrigin = true
 		for _, o := range c.origins[1:] {
 			if o != c.origins[0] {
-				sameOrigin = false
+				c.sameOrigin = false
 				break
 			}
 		}
-		names := strings.Join(c.groups, ", ")
-		if sameOrigin {
-			fmt.Fprint(out, hlCmds(fmt.Sprintf("note: %s were migrated from the same file (%s), see `jit vault duplicates`.\n",
-				names, shortPath(c.origins[0]))))
-			continue
-		}
-		copies := "two copies"
-		if len(c.groups) > 2 {
-			copies = fmt.Sprintf("%d copies", len(c.groups))
-		}
-		fmt.Fprint(out, hlCmds(fmt.Sprintf("note: %s hold the same keys from %s of %s, see `jit vault duplicates`.\n",
-			names, copies, originTail(c.origins[0]))))
+		clusters = append(clusters, *c)
 	}
+	return clusters
 }
 
 // originTail is an origin path's identifying suffix — its final segment
