@@ -27,9 +27,14 @@ secret missing, corrupt, or unparseable; the whole vault unreadable
 because this Mac's master key is gone from the keychain or a master-key
 rotation never finished; or a wrapped tool's installation damaged, which
 means that tool now runs unwrapped or not at all. Everything else it
-reports is an advisory warning: an orphaned secret (with --orphans), a
-profile name shadowed across scopes, a mount whose profile won't load, a
-stopped service, a stale or missing vault backup, more than one jit
+reports is an advisory warning: orphaned secrets no profile references
+(a count by default; --orphans lists each, `jit vault orphans` adds
+origins and can prune), vault groups that look like the same file stored
+twice (name-level evidence only — `jit vault duplicates` compares the
+values, which doctor never decrypts), a referenced secret whose recorded
+origin file is gone from disk, a profile name shadowed across scopes, a
+mount whose profile won't load or whose project was deleted without
+unmounting, a stopped service, a stale or missing vault backup, more than one jit
 installed on PATH (a Homebrew copy and a tarball copy each answering to
 the name, with which copy runs decided by PATH order), and any shim
 complaint that is only true of the shell you happen to be in — a CI job
@@ -56,7 +61,7 @@ jit doctor [flags]
 
 ```
   jit doctor
-  jit doctor --verbose --orphans   # also what passed, and unreferenced secrets
+  jit doctor --verbose --orphans   # also what passed, and each unreferenced secret
   jit doctor --wrap                # only the shims, no vault access
   jit doctor --strict              # advisory warnings gate too, for CI
 ```
@@ -65,7 +70,7 @@ jit doctor [flags]
 
 ```
       --format string          output format: "text" (default) or "json" (default "text")
-      --orphans                also warn about vault secrets no profile references (advisory, never a failure)
+      --orphans                list each unreferenced vault secret; without it the count alone is reported
       --profile string         check only this profile, and skip the service/backup/wrap health sections
       --strict                 exit non-zero on advisory warnings too, for a pipeline that wants them to gate
       --verbose                also list every check that passed, not just the ones that failed
