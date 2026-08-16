@@ -8,6 +8,7 @@ package agent
 import (
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/jitpass/jit/internal/lineage"
@@ -144,5 +145,105 @@ func TestChallengeReasonTruncationNeverSplitsARune(t *testing.T) {
 	}
 	if utf8.RuneCountInString(got) > maxReasonLen {
 		t.Errorf("reason is %d runes, want <= %d", utf8.RuneCountInString(got), maxReasonLen)
+	}
+}
+
+// The session history is durable (agent-history.jsonl, rendered back by `jit
+// audit` and `jit agent history`), and By is the caller's own argv — so a
+// secret the caller carried on its command line must be masked BEFORE the
+// event exists. The application audit log promises it "records that a command
+// RAN, not the secret it may have carried" (internal/auditlog); the agent's
+// half of the merged timeline has to keep the same promise, or `jit run --
+// tool --token=…` upgrades a transient argv into a durable plaintext copy —
+// precisely the shell-history exposure jit exists to eliminate.
+func TestUnlockEventNeverRecordsACredentialFromTheCallersArgv(t *testing.T) {
+	secret := "sk_FAKEfixture_notARealKeyXYZ0123"
+	c := callerFor([]string{"jit", "run", "--profile", "deploy", "--", "curl", "-H", "Authorization=" + secret}, "claude")
+
+	e := unlockEvent(OpUnwrap, c)
+
+	if strings.Contains(e.By, secret) {
+		t.Fatalf("By = %q carries the caller's raw credential into the durable history", e.By)
+	}
+	if !strings.Contains(e.By, "jit run --profile deploy") {
+		t.Errorf("By = %q, want the non-secret part of the command kept legible", e.By)
+	}
+}
+
+// A weak value ("hunter2") is not credential-shaped, so the entropy pass alone
+// would record it — the vault-set positional mask has to catch it, the same
+// way cli/auditrecord.go masks the identical position in jit's own os.Args.
+// The PATH stays legible: it is the one part of the line an investigation
+// needs, and it is not a secret.
+func TestUnlockEventMasksAVaultSetValueTooWeakForTheEntropyTest(t *testing.T) {
+	c := callerFor([]string{"jit", "vault", "set", "stripe/live-key", "hunter2"})
+
+	e := unlockEvent(OpWrap, c)
+
+	if strings.Contains(e.By, "hunter2") {
+		t.Fatalf("By = %q records the vault-set value in the clear", e.By)
+	}
+	if !strings.Contains(e.By, "stripe/live-key") {
+		t.Errorf("By = %q, want the secret's path kept, it is not a secret", e.By)
+	}
+}
+
+// The path-only form carries no value (it came from the prompt or --stdin),
+// and masking the last positional then would redact the path itself.
+func TestUnlockEventKeepsVaultSetPathWhenValueCameFromPrompt(t *testing.T) {
+	c := callerFor([]string{"jit", "vault", "set", "stripe/live-key", "--stdin"})
+
+	e := unlockEvent(OpWrap, c)
+
+	if !strings.Contains(e.By, "stripe/live-key") {
+		t.Errorf("By = %q, want the path kept when no value was on the line", e.By)
+	}
+}
+
+// recordServeError stamps the same By provenance an unlock would, for peers
+// that were REJECTED — and a rejected peer's argv is even less trustworthy
+// than an accepted one's, so it gets the same redaction.
+func TestRecordServeErrorRedactsTheRejectedPeersArgv(t *testing.T) {
+	secret := "sk_FAKEfixture_notARealKeyXYZ0123"
+	var got SessionEvent
+	s := &Server{OnServeError: func(e SessionEvent) { got = e }}
+	c := callerFor([]string{"some-tool", "--token=" + secret})
+
+	s.recordServeError("reject", "peer uid mismatch", c)
+
+	if strings.Contains(got.By, secret) {
+		t.Fatalf("By = %q carries a rejected peer's raw credential into the history", got.By)
+	}
+	if got.ByPID != c.pid {
+		t.Errorf("ByPID = %d, want %d: redaction must not cost the provenance", got.ByPID, c.pid)
+	}
+}
+
+// Redaction can map two DIFFERENT callers' argvs onto one string — here two
+// tools differing only in the token they carry. The use-aggregation key must
+// be the raw command (never recorded, in-memory only), or the second
+// caller's uses would merge into the first's aggregate and jit audit would
+// attribute them to the wrong process.
+func TestRecordUseKeepsCallersSeparateWhenRedactionCollides(t *testing.T) {
+	s := &Server{useWindow: time.Hour} // a real window, so neither aggregate expires mid-test
+	c1 := callerFor([]string{"some-tool", "--token=sk_FAKEfixtureAAAA1111BBBB2222"})
+	c2 := callerFor([]string{"some-tool", "--token=sk_FAKEfixtureCCCC3333DDDD4444"})
+	if c1.command() != c2.command() {
+		t.Fatalf("test premise broken: redacted commands differ: %q vs %q", c1.command(), c2.command())
+	}
+
+	s.recordUse(OpUnwrap, c1, "a")
+	s.recordUse(OpUnwrap, c2, "b")
+
+	s.mu.Lock()
+	flushed := s.flushUsesLocked(true, time.Now())
+	s.mu.Unlock()
+	if len(flushed) != 2 {
+		t.Fatalf("flushed %d aggregate(s), want 2: distinct callers must not merge just because their redacted argvs match (got %+v)", len(flushed), flushed)
+	}
+	for _, e := range flushed {
+		if strings.Contains(e.By, "sk_FAKEfixture") {
+			t.Errorf("flushed event By = %q still carries the raw token", e.By)
+		}
 	}
 }

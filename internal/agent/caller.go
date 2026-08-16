@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/jitpass/jit/internal/auditlog"
 	"github.com/jitpass/jit/internal/lineage"
 )
 
@@ -58,8 +59,34 @@ func callerFromConn(conn net.Conn) *caller {
 
 // command is the caller's full invocation for a status line or a log: a wide
 // terminal can take the whole argv, and when investigating you want the
-// literal command back.
+// command back — with any secret it carried MASKED. Every By this feeds ends
+// up in the in-memory ring and the durable agent-history.jsonl, and the
+// application audit log's promise ("records that a command RAN, not the
+// secret it may have carried", internal/auditlog) has to hold for the agent's
+// half of the merged `jit audit` timeline too: a caller like
+// `jit vault set <path> <value>` or `jit run -- tool --token=…` must never
+// have its transient argv upgraded into a durable plaintext copy — the
+// shell-history exposure jit exists to eliminate. Redacting here, at the one
+// point argv becomes a By, is what keeps a future recording site from having
+// to remember to.
 func (c *caller) command() string {
+	if c == nil {
+		return ""
+	}
+	if cmd := c.self.Command(); cmd != "" {
+		return auditlog.RedactCommandLine(cmd)
+	}
+	return fmt.Sprintf("pid %d", c.pid)
+}
+
+// rawCommand is the caller's invocation UNREDACTED, and it exists for exactly
+// one consumer: recordUse's aggregation key. Redaction can map two different
+// argvs onto one string (two MCP servers under long versioned paths, say),
+// and keying the collapse window on the redacted form would merge unrelated
+// callers into one event stamped with the first caller's pid — misattribution
+// in the audit trail. The raw string lives only in the in-memory pendingUses
+// map key; everything recorded or displayed goes through command().
+func (c *caller) rawCommand() string {
 	if c == nil {
 		return ""
 	}
@@ -113,8 +140,9 @@ func (c *caller) profile() string {
 // renders the reason as one sentence inside a small modal ("jit is trying to
 // <reason>."), and Apple's own guidance is a short phrase — the raw argv of a
 // jit-launched MCP server runs past 120 characters of absolute paths and is
-// unreadable there. The full command line is still recorded for `jit agent
-// status`, which has a whole terminal to print it in.
+// unreadable there. The command line is still recorded — secrets masked, see
+// command() — for `jit agent status`, which has a whole terminal to print it
+// in.
 const maxReasonLen = 90
 
 // challengeReason is what the human actually reads on the Touch ID/passcode
