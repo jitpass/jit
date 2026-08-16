@@ -1,6 +1,6 @@
 ---
 title: Which command delivers a secret
-description: When to use jit wrap, jit run, jit run --profile, jit run --with, and how a migrated .env stays compatible with your scripts.
+description: When to use jit wrap, jit run, jit run --profile, jit run --with, jit grant, and how a migrated .env stays compatible with your scripts.
 ---
 
 # Which command delivers a secret
@@ -18,6 +18,7 @@ are not alternatives to each other so much as answers to different questions.
 | A one-off command that needs a specific profile | **`jit run --profile <name>`** | No setup; name the profile for this run only |
 | A machine-wide credential *file* a tool reads (gcloud ADC, SOPS age key, global `~/.npmrc`, `~/.pypirc`) | **run it** and approve the prompt, or **`jit run --with <name>`** | Consent prompts on first read (default); `--with` is the explicit, hard-gated grant, never authorized by a repo |
 | Secrets in your current interactive shell | **`jit export`** | Prints `export` lines to `eval` |
+| Any of the above, but running while you are *away from the keyboard* (an overnight agent, a long build, a scheduled job) | **`jit grant`** first, then the command as usual | One disclosed Touch ID now covers a bounded window, so no prompt waits for a person who is not there |
 
 ## `jit wrap`: a tool that carries its own token
 
@@ -115,6 +116,46 @@ guarantee that a project can never even prompt for the credential (or,
 grant-wrapped, every time you type the tool). See [jit run](../run/index.md) and
 the per-credential pages for
 [gcp](../migrate/gcp.md), [sops](../migrate/sops.md), and [npm](../migrate/npm.md).
+
+## `jit grant`: the same delivery, while you are away
+
+`jit grant` is not a sixth way to deliver a secret. It is an answer to a
+different question: *who approves the delivery when you are not at the
+keyboard?*
+
+Everything above rides a session you opened with Touch ID, and that session
+ends when you walk away: idle timeout, screen lock, sleep. For work that runs
+while you are there, that is exactly right. For an AI agent working overnight,
+a long build, or a scheduled job, it means the next credential read stops on a
+prompt nobody will answer.
+
+A process grant moves your decision earlier instead of removing it. While you
+are still at the keyboard, one disclosed Touch ID approves that a program, and
+everything it launches, may use the secrets of named profiles until a deadline
+you set:
+
+```
+jit grant --process claude --profile jamf --for 8h
+claude                      # reads succeed with no prompt, until the grant expires
+```
+
+The command you actually run does not change. Wrap shims, credential hooks and
+`jit run` all keep working exactly as described above; the grant only decides
+whether their reads prompt. It is scoped to the terminal you type it in,
+verified through kernel process ancestry, so a same-named process elsewhere on
+the machine inherits nothing. It ends at its deadline, when its terminal quits,
+or the moment you run `jit grant revoke <id>`, and every stage lands in
+`jit audit`.
+
+**Use `jit grant` when:** the work is unattended and a Touch ID prompt would
+simply hang. Do not reach for it to skip prompts you *are* present for. See
+[Process grants](../service/grants.md) for what it anchors to, what ends it,
+and its limits (it does not cover live file mounts, which keep their own
+[consent gating](../service/consent.md)).
+
+Note the word "grant" does double duty in jit: `jit run --with` above creates a
+grant scoped to a single run that ends when that run exits, while `jit grant`
+creates a standing one, scoped to a process tree and a deadline.
 
 ## How a migrated `.env` stays compatible with your scripts
 
