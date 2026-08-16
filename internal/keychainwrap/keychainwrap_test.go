@@ -8,6 +8,7 @@ package keychainwrap
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -371,5 +372,32 @@ func TestRequireUserPresenceFailedChallenge(t *testing.T) {
 	}
 	if err := w.RequireUserPresence("test"); err == nil {
 		t.Fatal("RequireUserPresence succeeded despite a failed challenge")
+	}
+}
+
+// A keychain item that is not a 32-byte key must be rejected AT THE FETCH,
+// where "the master key item is malformed" can still be stated plainly. Left
+// to travel on, a short item surfaces from aes.NewCipher as "invalid key
+// size" several layers below the fact that explains it — and a user who has
+// just approved a Touch ID prompt reads any error about their vault as "my
+// secrets are gone". Reachable in practice through a half-written migration
+// or a hand-edited Keychain Access entry.
+func TestFetchMEKRejectsAMalformedKeychainItem(t *testing.T) {
+	w := testWrapper(noChallenge)
+	cleanupTestMEK(t, w)
+
+	if err := w.setMEK(make([]byte, 16)); err != nil { // AES-128 length, not this vault's AES-256
+		t.Fatalf("setMEK: %v", err)
+	}
+
+	_, err := w.fetchMEK("test")
+	if err == nil {
+		t.Fatal("fetchMEK accepted a 16-byte master key item; a wrong-length item must never reach the cipher")
+	}
+	if !strings.Contains(err.Error(), "malformed") {
+		t.Errorf("error = %q, want it to name the item as malformed rather than surfacing a cipher-level message", err)
+	}
+	if w.mek != nil {
+		t.Error("a rejected item must not be cached on the Wrapper")
 	}
 }

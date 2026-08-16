@@ -246,7 +246,15 @@ var scanCmd = &cobra.Command{
 			// scanOutput is a path the user typed themselves via --output —
 			// this is the intended use of the flag (like `curl -o` or `gcc
 			// -o`), not attacker-controlled input.
-			outFile, err = os.Create(scanOutput) // #nosec G304 -- user-specified output destination, the flag's entire purpose
+			//
+			// 0600, not os.Create's 0666-minus-umask: the report holds only
+			// masked previews (first 4 characters), key names and paths, but
+			// an inventory of exactly where this machine keeps its
+			// credentials is worth reading on its own, and every other file
+			// jit writes is owner-only. A report the user then chooses to
+			// share is a chmod away; one written world-readable by default
+			// cannot be un-read.
+			outFile, err = os.OpenFile(scanOutput, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) // #nosec G304 -- user-specified output destination, the flag's entire purpose
 			if err != nil {
 				return fmt.Errorf("jit scan: %w", err)
 			}
