@@ -677,6 +677,10 @@ func readNewEvents(path string, off int64) (int64, []agent.SessionEvent) {
 		if err := json.Unmarshal(line, &e); err != nil || e.Kind == "" {
 			continue
 		}
+		// Same legacy scrub historyLog.load applies: a line written before the
+		// agent masked By at the source can hold a caller's raw secret, and
+		// this reader feeds `jit audit` (text and JSON alike).
+		e.By = auditlog.RedactCommandLine(e.By)
 		out = append(out, e)
 	}
 	return newOff, out

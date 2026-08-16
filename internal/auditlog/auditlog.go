@@ -318,6 +318,76 @@ func RedactText(s string) string {
 	})
 }
 
+// RedactCommandLine masks secrets inside a whole command line recorded as ONE
+// string — the agent's SessionEvent.By, a caller's argv joined with spaces —
+// the one recorded shape neither Redact (which sees jit's own parsed args) nor
+// a plain RedactText pass fully covers. Two passes, mirroring what Redact plus
+// cli/auditrecord.go's positional mask do for jit's own os.Args: a grammar
+// pass that unconditionally masks the value positionals of a
+// `jit vault set <path> <value>` line (a weak value — "hunter2" — is not
+// credential-shaped and would survive the entropy test), then RedactText for
+// every credential-shaped token whatever the command was.
+//
+// This lives here rather than beside the agent that records By or the CLI
+// that re-reads it, because both need the identical judgement and auditlog is
+// the leaf they already share for exactly this doctrine.
+func RedactCommandLine(line string) string {
+	fields := strings.Fields(line)
+	if masked, changed := maskVaultSetValues(fields); changed {
+		line = strings.Join(masked, " ")
+	}
+	return RedactText(line)
+}
+
+// maskVaultSetValues replaces the value positionals of a `jit vault set
+// <path> <value>` field list with RedactToken. The first four positionals —
+// the program (matched on its base name, argv[0] is usually an absolute
+// path), "vault", "set", and the path — stay legible: the path is the one
+// part of the line an investigation needs, and it is not a secret. EVERY
+// positional past the path is masked, not just the last: a value argv element
+// containing spaces rejoins as several fields, and a mistyped extra argument
+// is more likely a mis-pasted secret than anything the trail should keep.
+func maskVaultSetValues(fields []string) ([]string, bool) {
+	pos := positionalIndexes(fields)
+	if len(pos) < 5 {
+		return fields, false
+	}
+	if filepath.Base(fields[pos[0]]) != "jit" || fields[pos[1]] != "vault" || fields[pos[2]] != "set" {
+		return fields, false
+	}
+	out := append([]string(nil), fields...)
+	for _, i := range pos[4:] {
+		out[i] = RedactToken
+	}
+	return out, true
+}
+
+// positionalIndexes lists the indexes of fields' non-flag tokens. Reliable
+// for the vault-set grammar specifically because every flag that command can
+// see (--stdin, --yes/-y, --force/-f, the root --quiet) is a BOOLEAN, so a
+// "-" prefix is always a whole flag and never a flag's detached value; if a
+// value-taking flag is ever added there, its value would count as positional
+// and be masked — over-masking, never a leak. A bare "--" ends flag parsing:
+// everything after it is positional whatever it looks like, exactly as cobra
+// reads it.
+func positionalIndexes(fields []string) []int {
+	var pos []int
+	flagsDone := false
+	for i, f := range fields {
+		if !flagsDone {
+			if f == "--" {
+				flagsDone = true
+				continue
+			}
+			if strings.HasPrefix(f, "-") && f != "-" {
+				continue
+			}
+		}
+		pos = append(pos, i)
+	}
+	return pos
+}
+
 // hasMixedClasses requires both letters and digits, a lone long word
 // ("informationtechnology") or a lone long number (a nanosecond timestamp) is
 // not credential-shaped, so this keeps the entropy test from flagging them.

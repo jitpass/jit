@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/jitpass/jit/internal/auditlog"
 	"github.com/jitpass/jit/internal/lineage"
 )
 
@@ -58,13 +59,22 @@ func callerFromConn(conn net.Conn) *caller {
 
 // command is the caller's full invocation for a status line or a log: a wide
 // terminal can take the whole argv, and when investigating you want the
-// literal command back.
+// command back — with any secret it carried MASKED. Every By this feeds ends
+// up in the in-memory ring and the durable agent-history.jsonl, and the
+// application audit log's promise ("records that a command RAN, not the
+// secret it may have carried", internal/auditlog) has to hold for the agent's
+// half of the merged `jit audit` timeline too: a caller like
+// `jit vault set <path> <value>` or `jit run -- tool --token=…` must never
+// have its transient argv upgraded into a durable plaintext copy — the
+// shell-history exposure jit exists to eliminate. Redacting here, at the one
+// point argv becomes a By, is what keeps a future recording site from having
+// to remember to.
 func (c *caller) command() string {
 	if c == nil {
 		return ""
 	}
 	if cmd := c.self.Command(); cmd != "" {
-		return cmd
+		return auditlog.RedactCommandLine(cmd)
 	}
 	return fmt.Sprintf("pid %d", c.pid)
 }
