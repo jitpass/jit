@@ -31,7 +31,7 @@ then **[Install](./getting-started/install.md)** →
 - [Quickstart](./getting-started/quickstart.md) - scan → vault → migrate → status, start to finish
 - [How it works](./getting-started/how-it-works.md) - the vault, the service, mounts, shims, and provenance
 - [How it all fits together](./getting-started/how-it-fits.md) - the three delivery models, and how integrating (migrate/wrap) and running (native hook, shim, or `jit run`) connect
-- [Delivering a secret to a program](./getting-started/delivering-secrets.md) - when to use `jit wrap`, `jit run`, `jit run --profile`, and `read_as_file`
+- [Delivering a secret to a program](./getting-started/delivering-secrets.md) - when to use `jit wrap`, `jit run`, `jit run --profile`, `jit run --with`, `jit grant`, and `read_as_file`
 - [Troubleshooting](./getting-started/troubleshooting.md) - placeholder values, hangs, surprise Touch ID prompts
 - [FAQ for developers and security](./faq.md) - blunt answers on how it works, what it protects, and what it deliberately does not
 
@@ -83,11 +83,19 @@ then **[Install](./getting-started/install.md)** →
 
 ## Use secrets - `jit run` & profiles
 
-- [Which command delivers a secret](./getting-started/delivering-secrets.md) - when to use `jit wrap`, `jit run`, `jit run --profile`, and `read_as_file`
+- [Which command delivers a secret](./getting-started/delivering-secrets.md) - when to use `jit wrap`, `jit run`, `jit run --profile`, `jit run --with`, `jit grant`, and `read_as_file`
 - [Run a command with secrets](./run/index.md) - layer merging, modes, `--profile`, the compatibility swap and `--live`
 - [Profiles](./run/profiles.md) - the manifest mapping variables to vault paths
 - [Shell exports](./run/export.md) - `eval "$(jit export)"`
 - [Live-mounted files](./run/mounts.md) - decoys, grants, the compatibility swap, and reading values safely
+
+## Run unattended - `jit grant`
+
+- [Process grants](./service/grants.md) - one disclosed Touch ID now lets a
+  program and everything it launches use profiles for a bounded time, instead of
+  a prompt nobody is there to answer; revocable, expiring, fully audited
+- [`list`, `revoke`, `extend`](./reference/commands/jit_grant.md) - what is open
+  right now, the kill switch that needs no authentication, and buying more time
 
 ## The vault
 
