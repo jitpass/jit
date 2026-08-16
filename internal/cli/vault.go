@@ -1594,6 +1594,10 @@ var vaultExportCmd = &cobra.Command{
 			return fmt.Errorf("jit vault export: %w", err)
 		}
 		defer wipeBytes(passphrase)
+		// Said HERE, before the Touch ID prompt and before a byte is
+		// written, so Ctrl-C still costs nothing. After the file exists it
+		// would be a scolding rather than a warning.
+		warnWeakExportPassphrase(cmd, passphrase)
 
 		// Fresh challenge on purpose, even mid-session — see
 		// openVaultFreshAuth: one command that decrypts EVERY secret into
@@ -1693,6 +1697,37 @@ var vaultImportCmd = &cobra.Command{
 		fmt.Fprintf(cmd.OutOrStdout(), "Restored %s from %s.\n", countWord(n, "secret", "secrets"), srcPath)
 		return nil
 	},
+}
+
+// weakExportPassphraseLen is where the export passphrase stops being the
+// only real protection this file has and starts being a formality. Length is
+// a crude proxy for strength, deliberately: the alternative is shipping a
+// wordlist to grade what someone typed, and a check that guesses at quality
+// would refuse real passphrases while waving through "Password1234". Twelve
+// is low enough that a considered passphrase never trips it.
+const weakExportPassphraseLen = 12
+
+// warnWeakExportPassphrase says one line when the passphrase protecting a
+// full-vault export is short. It never refuses, never re-prompts, and never
+// fails the command.
+//
+// A warning rather than a floor because the shapes it would break are
+// legitimate: `--stdin` exports pipe a passphrase in from a password
+// manager's CLI, and a minimum length turns a working backup script into a
+// broken one at the worst possible moment. It is worth saying at all because
+// this file is the one place jit's secrets leave their device binding: the
+// vault itself is useless without this Mac's keychain, while the export is
+// restorable anywhere by anyone who has it and the passphrase. Argon2id at
+// 64 MiB is a strong KDF and still cannot save a one-character secret.
+//
+// Written to stderr so a scripted `--stdin` export still surfaces it without
+// polluting anything a caller might be capturing on stdout.
+func warnWeakExportPassphrase(cmd *cobra.Command, passphrase []byte) {
+	if len(passphrase) >= weakExportPassphraseLen {
+		return
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "  %s Short passphrase (%s). It is all that protects this file.\n",
+		cWarn.Sprint(glyphWarn), countWord(len(passphrase), "character", "characters"))
 }
 
 // readPassphrase reads a passphrase for jit vault export/import — hidden
