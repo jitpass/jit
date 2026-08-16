@@ -230,6 +230,18 @@ func (w *Wrapper) fetchMEK(reason string) ([]byte, error) {
 		// in freed C heap memory.
 		wipe(unsafe.Slice((*byte)(unsafe.Pointer(keyPtr)), int(keyLen)))
 		C.free(unsafe.Pointer(keyPtr))
+		// Check the length HERE, where "the keychain item is not a
+		// master key" can still be said plainly. A truncated or
+		// foreign item (a hand-edited Keychain Access entry, a
+		// half-written migration) otherwise travels on and surfaces
+		// from aes.NewCipher as "invalid key size", several layers
+		// below the fact that explains it — and a user who has just
+		// been asked for Touch ID reads any error about their vault
+		// as "my secrets are gone".
+		if len(mek) != mekSize {
+			wipe(mek)
+			return nil, fmt.Errorf("master key item in keychain %q is malformed: got %d bytes, want %d", w.service, len(mek), mekSize)
+		}
 		w.mek = mek
 		// Best-effort: keep the cached MEK's page out of swap for this
 		// Wrapper's lifetime (same defense-in-depth internal/agent applies
