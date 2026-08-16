@@ -745,3 +745,82 @@ func TestWrappedDEKReadsWithoutDecrypting(t *testing.T) {
 		t.Errorf("WrappedDEK on missing secret = %v, want ErrNotFound", err)
 	}
 }
+
+// UnboundPaths is how a user finds out they are carrying pre-v0.57.0
+// envelopes at all: nothing else reports it, and it never heals on its own
+// (RewrapAll rewraps the DEK and leaves the envelope alone). It must name
+// exactly the v1 files — a v3 secret listed here would send someone through
+// a full export/import round-trip for nothing.
+func TestUnboundPathsNamesOnlyPreAADEnvelopes(t *testing.T) {
+	v := newTestVault(t)
+	writeV1Envelope(t, v, "legacy/old-key", []byte("pre-v2 value"))
+	writeV1Envelope(t, v, "legacy/another", []byte("also old"))
+	if err := v.Set("modern/current", []byte("today")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	got, err := v.UnboundPaths()
+	if err != nil {
+		t.Fatalf("UnboundPaths: %v", err)
+	}
+	want := []string{"legacy/another", "legacy/old-key"} // sorted, so a report reads the same twice
+	if len(got) != len(want) {
+		t.Fatalf("UnboundPaths = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("UnboundPaths = %v, want %v", got, want)
+		}
+	}
+}
+
+// A vault written entirely by a current jit must report nothing at all —
+// otherwise doctor grows a line every user sees forever, recommending an
+// export/import round-trip that would rewrite every secret they own for no
+// reason.
+func TestUnboundPathsSilentOnACurrentVault(t *testing.T) {
+	v := newTestVault(t)
+	if err := v.Set("modern/one", []byte("a")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := v.Set("modern/two", []byte("b")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	got, err := v.UnboundPaths()
+	if err != nil {
+		t.Fatalf("UnboundPaths: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("UnboundPaths = %v on an all-v3 vault, want none", got)
+	}
+}
+
+// The whole point of re-sealing: writing the secret again is what upgrades
+// it, and it is the ONLY thing that does. This pins the remediation the
+// doctor finding recommends (export/import writes through Set), so a change
+// that broke the upgrade would fail here rather than leave users following
+// advice that no longer works.
+func TestSettingAV1SecretAgainUpgradesItsEnvelope(t *testing.T) {
+	v := newTestVault(t)
+	writeV1Envelope(t, v, "legacy/old-key", []byte("pre-v2 value"))
+
+	if err := v.Set("legacy/old-key", []byte("rewritten")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	got, err := v.UnboundPaths()
+	if err != nil {
+		t.Fatalf("UnboundPaths: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("UnboundPaths = %v after rewriting, want none: Set must seal at the current version", got)
+	}
+	info, err := v.Info("legacy/old-key")
+	if err != nil {
+		t.Fatalf("Info: %v", err)
+	}
+	if info.Version != envelopeVersion {
+		t.Errorf("Version = %d after rewrite, want %d", info.Version, envelopeVersion)
+	}
+}

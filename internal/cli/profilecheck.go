@@ -125,6 +125,17 @@ const (
 	// errRekeyInProgress), so a doctor that reported a clean bill of health
 	// left the user to discover the state from the next command that failed.
 	kindRekey checkKind = "rekey"
+	// kindLegacyEnvelope: secrets are still stored in the pre-AAD envelope
+	// (v1), whose payload is sealed with no additional authenticated data
+	// and so is bound to nothing — two v1 payloads can be exchanged and both
+	// still decrypt, the swap envelopeAAD exists to refuse. Advisory: it
+	// takes write access to the vault directory to exploit, which on macOS
+	// means an attacker who can read those files anyway, and nothing is
+	// broken today. It is here because nothing else reports it and it does
+	// not heal on its own — a rekey rewraps the DEK and leaves the envelope
+	// alone, so a secret stored before v0.57.0 and never re-set is still v1
+	// years later, with no way for its owner to find out.
+	kindLegacyEnvelope checkKind = "legacy_envelope"
 	// kindAudit: the audit trail has stopped recording. Advisory — no secret
 	// is at risk and no command is blocked — but for a tool whose job is
 	// custody of secrets, losing the record of what touched them silently is
@@ -199,7 +210,8 @@ var allCheckKinds = []checkKind{
 	kindParse, kindNotFound, kindMissing, kindCorrupt, kindVaultError,
 	kindBadPath, kindOrphan, kindDuplicates, kindOriginGone, kindShadowed,
 	kindService, kindBackup, kindWrap, kindWrapEnv, kindMount,
-	kindMountStale, kindVaultKey, kindRekey, kindAudit, kindMCP,
+	kindMountStale, kindVaultKey, kindRekey, kindLegacyEnvelope,
+	kindAudit, kindMCP,
 	kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion,
 }
 
@@ -216,7 +228,7 @@ var allCheckKinds = []checkKind{
 // one process and must never fail a CI run.
 func (k checkKind) warning() bool {
 	switch k {
-	case kindOrphan, kindDuplicates, kindOriginGone, kindShadowed, kindService, kindBackup, kindMount, kindMountStale, kindWrapEnv, kindAudit, kindInstall, kindJitPathUpgrade, kindCompletion:
+	case kindOrphan, kindDuplicates, kindOriginGone, kindShadowed, kindService, kindBackup, kindMount, kindMountStale, kindWrapEnv, kindAudit, kindInstall, kindJitPathUpgrade, kindCompletion, kindLegacyEnvelope:
 		return true
 	default:
 		return false

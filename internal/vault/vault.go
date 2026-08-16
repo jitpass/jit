@@ -534,3 +534,45 @@ func syncDir(dir string) {
 		_ = d.Close()
 	}
 }
+
+// UnboundPaths lists the secrets whose envelope predates AAD binding —
+// v1 files, the only schema that sealed its payload with no additional
+// authenticated data. Sorted, so a report reads the same twice.
+//
+// Why this is worth naming at all: a v1 payload opens under aad = nil
+// forever, so nothing ties it to the secret it belongs to. Two v1 files can
+// have their payloads exchanged and both still decrypt, which is exactly
+// what envelopeAAD was introduced to prevent (see its comment). v2 and v3
+// bind the path, so the same swap fails the auth tag.
+//
+// It is not self-healing. RewrapAll rewraps the DEK and leaves the envelope
+// untouched, so even a full master-key rotation never upgrades a v1 file;
+// only writing the secret again does, which is what `jit vault export`
+// followed by `jit vault import` accomplishes for a whole vault at once.
+// AAD binding shipped in v0.57.0, so any secret stored before it and not
+// re-set since is still v1 — a real population, and one no command
+// currently reports.
+//
+// Auth-free by construction: it reads envelope metadata through the same
+// path Info does, never touching the KeyWrapper, so it can never prompt and
+// is safe for jit doctor to run unattended. An unreadable envelope is
+// skipped rather than reported — Verify owns corruption, and one bad file
+// should not cost the count of the rest.
+func (v *Vault) UnboundPaths() ([]string, error) {
+	paths, err := v.List()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, p := range paths {
+		info, err := v.Info(p)
+		if err != nil {
+			continue
+		}
+		if info.Version == envelopeVersionAADLess {
+			out = append(out, p)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
