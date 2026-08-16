@@ -152,18 +152,22 @@ jobs:
       - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
         with:
           distribution: goreleaser
-          # Pin the goreleaser MAJOR, not "latest", so CI's config check and
-          # snapshot build track the same v2 the release job uses.
-          version: "~> v2"
+          # Pin the EXACT goreleaser, not a range: this job and the release
+          # job must agree, and "~> v2" let whatever v2.x existed at run
+          # time decide whether a release built. Must stay >= v2.13, which
+          # is where the cask's `binaries:` field landed. Bump on purpose.
+          version: "2.17.1"
           args: check
 
       - name: Snapshot build (no publish, no signing)
         uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
         with:
           distribution: goreleaser
-          # Pin the goreleaser MAJOR, not "latest", so CI's config check and
-          # snapshot build track the same v2 the release job uses.
-          version: "~> v2"
+          # Pin the EXACT goreleaser, not a range: this job and the release
+          # job must agree, and "~> v2" let whatever v2.x existed at run
+          # time decide whether a release built. Must stay >= v2.13, which
+          # is where the cask's `binaries:` field landed. Bump on purpose.
+          version: "2.17.1"
           # notarize and homebrew are skipped explicitly, not just left to
           # their `enabled`/`skip_upload` env gates: CI must never post a
           # snapshot to Apple's notary service or to the tap, even if the
