@@ -39,7 +39,7 @@ the terminal app itself (iTerm2, Terminal, a tmux server, an IDE's terminal,
 an SSH connection) - verified through kernel process ancestry, pinned by pid
 and fork time. A credential read is served only when the asking process sits
 under that exact terminal AND its chain passes through a process named NAME.
-Two consequences worth spelling out:
+Two consequences:
 
 - **Future sessions are covered.** Membership is checked per read against
   the live process tree, not against a list frozen at creation - so you can

@@ -6,7 +6,7 @@ description: What to type to run each tool after jit migrate - nothing, jit wrap
 # Supported tools
 
 After `jit migrate`, most tools keep working exactly as before. A few need a
-short prefix. Here's what to type for your tool, and why.
+short prefix.
 
 ## At a glance
 
@@ -129,7 +129,7 @@ jit wrap add gcloud --grant gcp   # once
 gcloud storage ls                 # the shim runs `jit run --with gcp` per call
 ```
 
-Note what you **can't** do: a project's `.jit/config.yaml` can auto-select
+A project's `.jit/config.yaml` can auto-select
 `--live` for its own `.env` (`read_as_file: true`), but it can **never**
 auto-grant a `--with` credential. A repo file travels with the repo, so letting
 one reach your machine-global creds would let any cloned project pull them
@@ -161,8 +161,7 @@ git-safe pointer, or with `--mount` it stays live at its path. See the
 A credential you once **typed** - and so is sitting in `~/.zsh_history` - is
 handled by `jit migrate ~/.zsh_history`: each value moves to the vault and
 every occurrence is redacted in place, leaving your command lines readable.
-There is nothing to run afterwards; the point is that nothing is there to
-find. `jit guard history` then keeps the next one from being recorded at all.
+There is nothing to run afterwards; nothing is left to find. `jit guard history` then keeps the next one from being recorded at all.
 See [shell history](./migrate/shell-history.md).
 
 The source-of-truth lists are the generated

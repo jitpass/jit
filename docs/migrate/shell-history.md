@@ -124,8 +124,7 @@ session's history list - up-arrow still works, your flow is unbroken - but is
 never written to `$HISTFILE`. jit prints one line saying so, naming the
 format it matched.
 
-The hook is built to stay out of your way, and the numbers are worth stating
-plainly rather than rounding to "free". A pure-zsh test settles an ordinary
+The hook is built to stay out of your way. A pure-zsh test settles an ordinary
 command in about 15 microseconds without launching anything. A line that could
 hold a credential runs the real check instead, which costs about 33
 milliseconds; on a real 592-command history that is 14% of lines, mostly
