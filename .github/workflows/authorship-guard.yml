@@ -39,9 +39,14 @@ jobs:
           set -euo pipefail
           ZERO=0000000000000000000000000000000000000000
 
-          # Approved author/committer emails for this project. Keep in sync with
-          # the repository ruleset that enforces the same identity server-side.
-          allow='^menitasa@users\.noreply\.github\.com$'
+          # Approved author/committer emails: any GitHub noreply address. The
+          # incident this guard exists for was a REAL email reaching main; a
+          # noreply address leaks nothing, and the maintainer's own hazard
+          # identities (gmail, work domains, *.shared hostnames) all fail this
+          # pattern, so the original protection is intact while outside
+          # contributors keep their attribution. Keep in sync with the
+          # repository ruleset that enforces the same pattern server-side.
+          allow='^[A-Za-z0-9._+-]+@users\.noreply\.github\.com$'
 
           if [ -n "${PR_HEAD:-}" ]; then
             base="$PR_BASE"; head="$PR_HEAD"
