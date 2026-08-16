@@ -88,7 +88,7 @@ Caller identity — peercred, then pid command line and parent chain — **expla
 
 **Dependency minimalism is a threat-model consistency check, not taste.** jit exists partly to mitigate malicious dependency lifecycle scripts, so a bloated supply chain undermines the product. Prefer stdlib; `golang.org/x/*` is the default extension point; every crypto or OS-security-boundary dependency gets named and justified in `TECH_STACK.md` §2. Two credential-helper JSON shapes are hand-rolled (`k8scred.go`, `awscred.go`) specifically to avoid pulling `client-go`'s tree for a five-field struct. Adding a dependency means updating `TECH_STACK.md`.
 
-**Every `.go` file carries the SPDX header** (364/364 currently):
+**Every `.go` file carries the SPDX header** (390/390 currently):
 
 ```go
 // Copyright 2026 Meni Tasa
