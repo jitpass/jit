@@ -61,7 +61,7 @@ API keys stop living in a config file and get injected per invocation.
 One tool works the other way around: `clisso` doesn't carry a token, it
 *mints* AWS credentials at every SSO login. `jit wrap clisso` captures
 each mint into the vault instead of letting it land in
-`~/.aws/credentials` — MFA prompts unchanged. See [clisso](./wrap/clisso.md).
+`~/.aws/credentials` - MFA prompts unchanged. See [clisso](./wrap/clisso.md).
 
 Any other tool that reads its token from an environment variable can be added
 with `jit wrap add <tool> --env VAR=<vault-path>`. See
