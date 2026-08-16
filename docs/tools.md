@@ -54,10 +54,9 @@ the token is injected per call.
 `railway`, `databricks`, `hf`, `supabase`, `wrangler`, `sentry-cli`, `snyk`,
 `circleci`, `vault`, `pulumi`, `descope`, `okta-cli-client`, `snow`, `jira`.
 
-The AI coding CLIs are wrappable too, and worth doing precisely because they
-run as you and read your files: `claude`, `codex`, `gemini`, `cursor-agent`,
-`copilot`, `cline`, `opencode`, `kiro-cli`, and `openai`. Their own API keys
-stop living in a config file on disk and get injected per invocation.
+The AI coding CLIs wrap the same way: `claude`, `codex`, `gemini`,
+`cursor-agent`, `copilot`, `cline`, `opencode`, `kiro-cli`, `openai`. Their
+API keys stop living in a config file and get injected per invocation.
 
 One tool works the other way around: `clisso` doesn't carry a token, it
 *mints* AWS credentials at every SSO login. `jit wrap clisso` captures
