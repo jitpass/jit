@@ -118,18 +118,81 @@ func (h *historyLog) load(max int) []agent.SessionEvent {
 		if err := json.Unmarshal(line, &e); err != nil || e.Kind == "" {
 			continue
 		}
-		// Lines written before the agent masked By at the source can hold a
-		// caller's raw secret, and this file keeps ~10k events — scrub them
-		// with the same judgement the agent now applies on record, so a
-		// poisoned legacy line stops leaking the moment it is read rather
-		// than the year it rotates out.
-		e.By = auditlog.RedactCommandLine(e.By)
 		out = append(out, e)
 	}
 	if len(out) > max {
 		out = out[len(out)-max:]
 	}
+	// Lines written before the agent masked By at the source can hold a
+	// caller's raw secret — scrub the ones being returned with the same
+	// judgement the agent now applies on record, so a poisoned legacy line
+	// never renders. After the cap, not inside the decode loop: seeding the
+	// ring reads a ~10k-line file to keep 200, and redacting the other 98%
+	// first was pure waste. scrubLegacy is what actually removes the
+	// plaintext from disk; this keeps a file it hasn't rewritten yet (an
+	// upgraded CLI reading before the upgraded service ran) from leaking on
+	// display in the meantime.
+	for i := range out {
+		out[i].By = auditlog.RedactCommandLine(out[i].By)
+	}
 	return out
+}
+
+// scrubLegacy rewrites the history file ONCE with every By masked, so lines
+// written before the agent redacted By at the source stop existing in
+// plaintext on disk — not merely on display. Without this the raw secret
+// would sit in the 0600 file (and in every backup of it) until ~2MB of newer
+// events pushed it out, which on a quiet machine is years. Called at service
+// startup next to trim, the same single-writer window, so it never races an
+// append.
+//
+// Lines whose By is already clean are kept byte-for-byte (no re-marshal), so
+// fields written by a newer binary than this one survive. Undecodable lines
+// are dropped: every reader skips them anyway, and a torn legacy line is the
+// one shape that could hold a partial secret this scrub cannot judge.
+func (h *historyLog) scrubLegacy() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	data, err := os.ReadFile(h.path) // #nosec G304 -- jit's own bookkeeping file under its config root
+	if err != nil {
+		return
+	}
+	var buf bytes.Buffer
+	changed := false
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var e agent.SessionEvent
+		if err := json.Unmarshal(line, &e); err != nil || e.Kind == "" {
+			changed = true
+			continue
+		}
+		if red := auditlog.RedactCommandLine(e.By); red != e.By {
+			e.By = red
+			changed = true
+			nl, err := json.Marshal(e)
+			if err != nil {
+				continue
+			}
+			buf.Write(nl)
+			buf.WriteByte('\n')
+			continue
+		}
+		buf.Write(line)
+		buf.WriteByte('\n')
+	}
+	if !changed {
+		return
+	}
+	tmp := h.path + ".tmp"
+	if err := os.WriteFile(tmp, buf.Bytes(), 0o600); err != nil { // #nosec G703 -- jit's own bookkeeping path under its config root, not external input
+		fmt.Fprintf(h.stderr, "jit service: scrubbing session history: %v\n", err)
+		return
+	}
+	if err := os.Rename(tmp, h.path); err != nil {
+		fmt.Fprintf(h.stderr, "jit service: scrubbing session history: %v\n", err)
+	}
 }
 
 // trim rewrites the file down to its newest half once it exceeds

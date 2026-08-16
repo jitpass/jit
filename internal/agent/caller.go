@@ -79,6 +79,23 @@ func (c *caller) command() string {
 	return fmt.Sprintf("pid %d", c.pid)
 }
 
+// rawCommand is the caller's invocation UNREDACTED, and it exists for exactly
+// one consumer: recordUse's aggregation key. Redaction can map two different
+// argvs onto one string (two MCP servers under long versioned paths, say),
+// and keying the collapse window on the redacted form would merge unrelated
+// callers into one event stamped with the first caller's pid — misattribution
+// in the audit trail. The raw string lives only in the in-memory pendingUses
+// map key; everything recorded or displayed goes through command().
+func (c *caller) rawCommand() string {
+	if c == nil {
+		return ""
+	}
+	if cmd := c.self.Command(); cmd != "" {
+		return cmd
+	}
+	return fmt.Sprintf("pid %d", c.pid)
+}
+
 // launchedBy names the nearest ancestor that actually EXPLAINS the call. The
 // rule (skip the shells that merely relayed it) lives in internal/lineage,
 // because the mount manager asks the same question of a different process:
@@ -123,8 +140,9 @@ func (c *caller) profile() string {
 // renders the reason as one sentence inside a small modal ("jit is trying to
 // <reason>."), and Apple's own guidance is a short phrase — the raw argv of a
 // jit-launched MCP server runs past 120 characters of absolute paths and is
-// unreadable there. The full command line is still recorded for `jit agent
-// status`, which has a whole terminal to print it in.
+// unreadable there. The command line is still recorded — secrets masked, see
+// command() — for `jit agent status`, which has a whole terminal to print it
+// in.
 const maxReasonLen = 90
 
 // challengeReason is what the human actually reads on the Touch ID/passcode

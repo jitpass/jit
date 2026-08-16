@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jitpass/jit/internal/auditlog"
 	"github.com/jitpass/jit/internal/lineage"
 )
 
@@ -257,11 +258,15 @@ func (s *Server) createGrant(req Request, c *caller) Response {
 		return Response{OK: false, Error: err.Error()}
 	}
 	g := &processGrant{
-		id:         id,
-		rootPID:    req.TargetPID,
-		rootStart:  rootStart,
-		name:       who,
-		command:    target.Command(),
+		id:        id,
+		rootPID:   req.TargetPID,
+		rootStart: rootStart,
+		name:      who,
+		// Masked at capture like every other argv the agent keeps: this
+		// string ships out through GrantStatus.Command into `jit grant list
+		// --json` and `jit status`, and a grant target launched as
+		// `tool --token=…` must not show its secret in every status listing.
+		command:    auditlog.RedactCommandLine(target.Command()),
 		nameFilter: req.GrantName,
 		anchorName: under,
 		profiles:   append([]string(nil), req.GrantProfiles...),

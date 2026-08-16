@@ -204,6 +204,11 @@ var agentRunCmd = &cobra.Command{
 		// and followed.
 		hist := newHistoryLog(root, stderr)
 		hist.trim()
+		// One-time rewrite masking any By a pre-fix agent recorded raw —
+		// this is what removes a legacy line's plaintext from DISK; the
+		// readers' scrub only keeps it off the screen. Same single-writer
+		// startup window as trim, so it can't race an append.
+		hist.scrubLegacy()
 		hist.append(agent.SessionEvent{
 			UnixTime: time.Now().Unix(),
 			Kind:     agent.KindStart,

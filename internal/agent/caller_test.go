@@ -8,6 +8,7 @@ package agent
 import (
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/jitpass/jit/internal/lineage"
@@ -215,5 +216,34 @@ func TestRecordServeErrorRedactsTheRejectedPeersArgv(t *testing.T) {
 	}
 	if got.ByPID != c.pid {
 		t.Errorf("ByPID = %d, want %d: redaction must not cost the provenance", got.ByPID, c.pid)
+	}
+}
+
+// Redaction can map two DIFFERENT callers' argvs onto one string — here two
+// tools differing only in the token they carry. The use-aggregation key must
+// be the raw command (never recorded, in-memory only), or the second
+// caller's uses would merge into the first's aggregate and jit audit would
+// attribute them to the wrong process.
+func TestRecordUseKeepsCallersSeparateWhenRedactionCollides(t *testing.T) {
+	s := &Server{useWindow: time.Hour} // a real window, so neither aggregate expires mid-test
+	c1 := callerFor([]string{"some-tool", "--token=sk_FAKEfixtureAAAA1111BBBB2222"})
+	c2 := callerFor([]string{"some-tool", "--token=sk_FAKEfixtureCCCC3333DDDD4444"})
+	if c1.command() != c2.command() {
+		t.Fatalf("test premise broken: redacted commands differ: %q vs %q", c1.command(), c2.command())
+	}
+
+	s.recordUse(OpUnwrap, c1, "a")
+	s.recordUse(OpUnwrap, c2, "b")
+
+	s.mu.Lock()
+	flushed := s.flushUsesLocked(true, time.Now())
+	s.mu.Unlock()
+	if len(flushed) != 2 {
+		t.Fatalf("flushed %d aggregate(s), want 2: distinct callers must not merge just because their redacted argvs match (got %+v)", len(flushed), flushed)
+	}
+	for _, e := range flushed {
+		if strings.Contains(e.By, "sk_FAKEfixture") {
+			t.Errorf("flushed event By = %q still carries the raw token", e.By)
+		}
 	}
 }
