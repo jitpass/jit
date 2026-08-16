@@ -30,6 +30,41 @@ the time.
 
  
 
+**What it does not do:** it does not make an already-compromised account safe,
+and it does not protect a secret once it is in the memory of the process that
+asked for it. The boundaries are stated on one page, up front:
+**[the deliberate limits](./docs/security/brief.md#deliberate-limits-stated-plainly)**.
+
+## How it works, mechanically
+
+No kernel extension, no filesystem driver, no FUSE. Three mechanisms, picked
+by what the tool can do:
+
+1. **Environment variables into one process, then `execve`.** jit's own image
+   is replaced by your command, so the value lives in that one process and jit
+   is gone from memory.
+2. **The tool's native credential protocol**, where one exists: AWS
+   `credential_process`, docker and git credential helpers, kubectl exec
+   plugins, Terraform's credentials helper. The tool asks, jit answers, no
+   file involved.
+3. **A named-pipe mount**, for tools that can only read a file.
+
+That third one is the one people ask about. The "file" is a POSIX FIFO made
+with `mkfifo(2)` at mode `0600`. When a program calls `open(".env")`, the
+kernel blocks that open until a writer connects. The background service is the
+writer: it opens the path `O_WRONLY`, which releases the reader, writes the
+decrypted bytes from memory straight into the kernel pipe buffer, closes, then
+loops back to `open(2)` for the next reader. Nothing touches the disk, and
+what gets written is decided per read: decoy values for an ambient reader,
+real values only for a process inside a run you authorized.
+
+One caveat worth stating plainly, since it is the obvious follow-up question:
+**caller identity explains and audits, it never decides.** Process names are
+forgeable and a fast-closing FIFO reader can evade identification entirely.
+The human answering the prompt is the gate; the process name only tells you
+what to answer. Full detail in
+**[how it works](./docs/getting-started/how-it-works.md)** and
+**[live mounts](./docs/run/mounts.md)**.
 
 ## Install
 
@@ -37,14 +72,34 @@ the time.
 brew install jitpass/tap/jitpass
 ```
 
-Or without Homebrew:
+That is the recommended route, and for a security tool the reason matters.
+Releases are signed with an Apple Developer ID and notarized by Apple.
+Homebrew quarantines what it downloads, so Gatekeeper checks the binary
+against its notarization ticket before it is ever allowed to run. To verify
+that yourself rather than take our word for it, run `jit doctor`: its `jit`
+line reports `signed CZC6BH93GJ`, the same check `jit upgrade` runs before it
+will install anything.
+
+<details>
+<summary>Without Homebrew (the weaker path, and why)</summary>
 
 ```sh
 curl -sL https://dl.jitpass.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz | tar -xz jit
+shasum -a 256 jit   # compare against checksums.txt on the release page
+codesign -dv --verify --verbose=2 ./jit   # expect: Developer ID, TeamIdentifier=CZC6BH93GJ
 sudo mv jit /usr/local/bin/
 ```
 
-Apple Silicon only — on an Intel Mac, build from source with
+This is here for people without Homebrew, and it is genuinely the weaker
+path: `curl` sets no quarantine bit, so Gatekeeper never consults the
+notarization ticket, and the same is true of `go install`. The binary is
+still signed and still notarized, so the two lines above let you check both
+before you run it, but you have to actually run them. If you have Homebrew,
+use Homebrew.
+
+</details>
+
+Apple Silicon only. On an Intel Mac, build from source with
 `go install github.com/jitpass/jit/cmd/jit@latest`.
 
 Pick one route. If you installed from the tarball before and are switching to
@@ -52,15 +107,7 @@ Homebrew, remove the old copy after the `brew install` (`sudo rm
 /usr/local/bin/jit`); otherwise two jits sit on PATH upgrading separately, and
 `jit doctor` will flag it.
 
-Releases are signed with a Developer ID and notarized by Apple, so both paths
-run without a Gatekeeper prompt: Homebrew quarantines its downloads and
-Gatekeeper clears them against the notarization ticket, while `curl` (and `go
-install`) set no quarantine flag at all. To check what you got rather than
-take our word for it, run `jit doctor` — its `jit` line reports
-`signed CZC6BH93GJ`, using the same check `jit upgrade` runs before it will
-install anything.
-
-**Upgrading:** `brew upgrade jitpass`, or `jit upgrade` — a verified
+**Upgrading:** `brew upgrade jitpass`, or `jit upgrade`: a verified
 self-update (Developer-ID signature and checksum both checked before the
 swap, restarts the service). Either way your vault is untouched.
 
@@ -210,7 +257,7 @@ Kicking off something that needs several credentials at once? `jit run --trust
 -- terraform apply` approves that whole run's tools in one gesture. Full details:
 [per-process consent](./docs/service/consent.md).
 
-## Leaving the keyboard? Approve the work before you go
+## Leaving the keyboard? `jit grant`
 
 Both gates assume a human is there to answer. An AI agent working overnight, a
 long build, a scheduled job: the screen locks, the session drops, and the run
@@ -237,6 +284,40 @@ one exact process instead, gone when it exits? `--pid`. Every serve lands in
 the audit trail as its own event, so the morning after you can read exactly
 what your agent touched while you slept. Full details:
 [process grants](./docs/service/grants.md).
+
+## AI agents and MCP servers
+
+The agent in your editor runs as you, with your permissions, and reads files
+for you all day. That is the whole point of it, and it is also why a plaintext
+`.env` in your repo is now a very different risk than it was two years ago.
+jit treats agents as first-class, on four fronts:
+
+```sh
+jit migrate ~/.claude.json           # MCP server configs: keys move to the vault,
+                                     # each server now launches through `jit run`
+jit wrap claude                      # the AI CLIs themselves: claude, codex, gemini,
+                                     # cursor-agent, copilot, cline, opencode, kiro-cli
+jit grant --process claude --profile myapp --for 8h
+                                     # let it work overnight without a prompt nobody answers
+jit audit --parent claude            # read back exactly what it touched while you slept
+```
+
+- **The prompt names the agent.** With per-process consent on (the default),
+  the first time a tool reaches for a real credential you get a Touch ID that
+  says which program is asking. That is what the two screenshots at the top of
+  this page show: the same secret requested by VS Code and by `claude`, each
+  named. An agent quietly reading `~/.aws/credentials` is a prompt, not a
+  silent success.
+- **MCP servers launch through `jit run`.** A migrated MCP config holds vault
+  paths, not keys, so the config file itself is safe to have on disk and safe
+  to hand to the agent that reads it.
+- **A decoy is what an unauthorized read gets.** An agent that greps your repo
+  for `.env` and reads it cold gets placeholder values, and the read is logged.
+- **`jit audit --parent claude`** shows every secret an agent used, every
+  prompt it triggered, and every one you declined.
+
+More in [MCP / AI tools](./docs/migrate/mcp.md) and
+[per-process consent](./docs/service/consent.md).
 
 ## The audit trail: what happened, and who did it
 

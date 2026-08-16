@@ -27,10 +27,15 @@ version timestamps, never a value.
 
 `jit vault set myapp/NEW_KEY` prompts for a value and stores it (add `-f`
 to overwrite an existing path, `--stdin` to pipe the value in);
-`jit vault rm <path>` deletes one secret (it confirms first). If a profile
-or a live mount still points at that path, `rm` names it before the
-confirmation: deleting only the secret leaves the mount serving a file
-nothing can fill, so for a migrated file the right cleanup is
+`jit vault rm <path>...` deletes secrets (it confirms first). Several paths
+delete under a **single** Touch ID gesture, so cleaning up a decommissioned
+project is one approval rather than one per secret, and a bare group name (the
+part before the slash in `jit vault list`) removes the whole group, with the
+expansion announced and every path listed before you confirm. A missing path
+is reported without stopping the rest. If a profile or a live mount still
+points at a path, `rm` names it before the confirmation: deleting only the
+secret leaves the mount serving a file nothing can fill, so for a migrated file
+the right cleanup is
 [`jit migrate remove <file>`](../migrate/undo-and-remove.md), which takes
 the file, its profile and its secrets down together.
 `jit vault get <path>` decrypts and prints one (`--copy` sends it to the

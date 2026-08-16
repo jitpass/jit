@@ -24,6 +24,37 @@ jit narrows *where* and *when* a secret exists in plaintext, down to the
 moment a tool uses it. It does **not** make an already-compromised user
 account safe.
 
+## What you have to trust, and how to check it
+
+Reviewing this does not require taking anything on faith, so here is where to
+point a reviewer:
+
+- **No custom cryptography.** The primitives are Go's standard library:
+  AES-256-GCM (`crypto/aes` + `crypto/cipher`) for both the per-secret data
+  keys and the master key wrap, and `crypto/rand` for all key and nonce
+  generation. The one exception is deliberate and narrow: a
+  passphrase-encrypted [export](../vault/backup-restore.md) derives its key
+  with Argon2id from `golang.org/x/crypto`, because a passphrase needs a
+  memory-hard KDF and the standard library has none. There are no hand-rolled
+  primitives and no novel constructions. What is jit-specific is the
+  *composition*: envelope encryption, and binding each ciphertext to the
+  secret's vault path and metadata as AEAD additional data so a swapped or
+  renamed file fails to decrypt instead of resolving as the wrong secret.
+  That composition is the part worth reading critically, and it is under 90
+  lines in `internal/vault/crypto.go`.
+- **The non-pure-Go surface is four small packages**, and they are named so a
+  reviewer can start there rather than hunting: `internal/keychainwrap`
+  (Keychain and the Touch ID challenge), `internal/lineage` (libproc, audit
+  logging only, never a gate), `internal/pasteboard`, and
+  `internal/screenlock`. Everything else is portable Go.
+- **The design notes are in the tree.** Each `internal/` package has a
+  `doc.go` stating what it does and what it deliberately does not, and the
+  hard problems (the named-pipe re-open loop, peer credentials, the Secure
+  Enclave entitlement wall) carry their evidence in `spike/*/FINDINGS.md`.
+- **Every published [self-review](./self-reviews/index.md)** carries an explicit
+  "known, accepted limitations" list as of that review, rather than a summary
+  that only reports what passed.
+
 ## Architecture at a glance
 
 - **At rest.** Envelope encryption: each secret is its own AEAD-encrypted file
@@ -69,7 +100,7 @@ session, not the scope. A cloned repo's config, or a script that slips a
   application-level LocalAuthentication challenge, not an OS-enforced Keychain
   ACL or a Secure Enclave binding, because a real ACL needs a
   provisioning-profile-authorized entitlement that macOS will only honor
-  inside an `.app` bundle — a bare CLI binary has nowhere to carry it, signed
+  inside an `.app` bundle, and a bare CLI binary has nowhere to carry it, signed
   or not (see `spike/secure-enclave/FINDINGS.md`). A determined attacker with
   local code execution could read the plain Keychain item directly while the
   vault is locked, and could ask the service while it is unlocked. This is the
@@ -77,6 +108,20 @@ session, not the scope. A cloned repo's config, or a script that slips a
 - **A process you give a secret to can do anything with it.** Delivery is the
   end of jit's control; that is why the decision point is the caller-naming
   prompt, before delivery.
+- **Memory is not protected, and jit does not claim to protect it.** Once a
+  value is in the address space of the process that asked for it, jit is out
+  of the loop. There is no attempt to lock pages, defeat a debugger, or hide
+  from a process running as you with the patience to attach to another one.
+  The threat this is built against is the infostealer that globs for `.env`
+  and `~/.aws/credentials`, reads them, and exfiltrates, which is the common
+  case and the automatable one. If your adversary is instead a targeted
+  attacker with local code execution and time, you want VM-level isolation,
+  not this.
+- **Full-disk encryption solves a different problem.** FileVault protects a
+  powered-off or stolen machine. It does nothing once you are logged in and
+  the volume is mounted, which is exactly when every process running as you
+  can read every plaintext credential on it. The two are complementary; keep
+  FileVault on.
 - **Credentials a tool mints for itself are not jit's.** After the AWS CLI uses
   a migrated key to assume a role it caches the resulting STS session in
   plaintext under `~/.aws/cli/cache`, and `aws sso login` writes tokens to
@@ -104,12 +149,20 @@ session, not the scope. A cloned repo's config, or a script that slips a
 
 - Source is public on GitHub under the **PolyForm Perimeter License 1.0.0**
   (source-available, not open source); it can be built from source with Go.
-- Release builds are **Developer-ID signed** (`Meni Tasa, CZC6BH93GJ`); the
-  `curl` install is quarantine-free, so Gatekeeper clears it without a prompt.
-  Dev builds from source are ad-hoc signed, so a dev build's first run shows a
-  one-time Keychain permission prompt.
-- No network calls, no telemetry, no auto-update. The vault leaves the machine
-  only through an explicit passphrase-encrypted export the user runs.
+- Release builds are **Developer-ID signed and notarized by Apple**
+  (`Meni Tasa, CZC6BH93GJ`). Homebrew quarantines its download, so Gatekeeper
+  verifies it against the notarization ticket before first run; a `curl`
+  install sets no quarantine bit, so that check never happens and the tarball
+  is the weaker path. `jit doctor` reports the Team ID it verified. Dev builds
+  from source are ad-hoc signed, so a dev build's first run shows a one-time
+  Keychain permission prompt.
+- **No telemetry and no background network activity.** jit makes exactly one
+  kind of outbound request, and only when you type it: `jit upgrade` fetches
+  the release archive and `checksums.txt`, verifies both the Developer-ID
+  signature and the checksum, and refuses to install if either fails (there is
+  no override flag). Nothing auto-updates, nothing phones home, and no secret,
+  path, or scan result is ever transmitted. The vault leaves the machine only
+  through a passphrase-encrypted export you run yourself.
 
 ## Verifying and reporting
 

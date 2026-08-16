@@ -131,6 +131,26 @@ just clearer.) Whatever the mode, real values flow **only** to the process
 tree of the `jit run` you launch — never on an unlock, a `cd`, or a bare
 command with no `jit run` in front of it.
 
+## Runs that outlive your presence
+
+Everything above assumes you are at the keyboard: a read that needs approval
+gets it, because you are there. A run that continues after you leave hits the
+opposite case, since the session ends on idle timeout, screen lock, and sleep,
+and the next credential read stops on a prompt nobody will answer.
+
+`jit grant` decides that in advance instead of removing the decision. One
+Touch ID, while you are there, approves a named program to use specific
+profiles until a deadline:
+
+```
+$ jit grant --process claude --profile jamf --for 8h
+```
+
+The grant is scoped to the terminal you typed it in, covers sessions started
+later inside that window, and is listed by `jit grant list`, ended early by
+`jit grant revoke`, and recorded in `jit audit` both when it is created and on
+every use. See **[Process grants](../service/grants.md)**.
+
 ## Where else `jit run` shows up
 
 Migrated [MCP configs](../migrate/mcp.md) launch their servers through
