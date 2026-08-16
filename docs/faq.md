@@ -20,13 +20,19 @@ collects the threat-model answers on one page.
 - [Does it work inside scripts, Makefiles, and git hooks?](#does-it-work-inside-scripts-makefiles-and-git-hooks)
 - [Does it work in CI?](#does-it-work-in-ci)
 - [What if a tool breaks after I migrate?](#what-if-a-tool-breaks-after-i-migrate)
+- [Why not just use age, SOPS, dotenvx, 1Password, or systemd-creds?](#why-not-just-use-age-sops-dotenvx-1password-or-systemd-creds)
 - [Which platforms does it run on?](#which-platforms-does-it-run-on)
+- [What license is it under, and is it free?](#what-license-is-it-under-and-is-it-free)
 - [What happens if the service is locked or not running?](#what-happens-if-the-service-is-locked-or-not-running)
 - [Can my team share a vault?](#can-my-team-share-a-vault)
 
 **Security**
 
 - [What is the threat model in one line?](#what-is-the-threat-model-in-one-line)
+- [If something is running code as me, haven't I already lost?](#if-something-is-running-code-as-me-havent-i-already-lost)
+- [I have FileVault. Isn't my disk already encrypted?](#i-have-filevault-isnt-my-disk-already-encrypted)
+- [How can I trust your crypto implementation?](#how-can-i-trust-your-crypto-implementation)
+- [What about the secret once it is in memory?](#what-about-the-secret-once-it-is-in-memory)
 - [How are secrets encrypted at rest?](#how-are-secrets-encrypted-at-rest)
 - [Where does the master key live, and is it hardware-bound?](#where-does-the-master-key-live-and-is-it-hardware-bound)
 - [Can an attacker who already runs code as me read my secrets?](#so-can-an-attacker-who-already-runs-code-as-me-read-my-secrets)
@@ -34,8 +40,9 @@ collects the threat-model answers on one page.
 - [Can a malicious repo I clone steal my cloud credentials?](#can-a-malicious-repo-i-clone-steal-my-cloud-credentials)
 - [The mounts identify the reading process, isn't that spoofable?](#the-mounts-identify-the-reading-process-isnt-that-spoofable)
 - [Does jit phone home or sync anywhere?](#does-jit-phone-home-or-sync-anywhere)
-- [Is `jit scan` safe to run on a sensitive machine?](#is-jit-audit-safe-to-run-on-a-sensitive-machine)
+- [Is `jit scan` safe to run on a sensitive machine?](#is-jit-scan-safe-to-run-on-a-sensitive-machine)
 - [What about secrets already committed to git?](#what-about-secrets-already-committed-to-git)
+- [What about credentials sitting in my shell history?](#what-about-credentials-sitting-in-my-shell-history)
 - [Once a secret reaches a process, what stops it leaking it?](#once-a-secret-reaches-a-process-what-stops-that-process-from-leaking-it)
 - [How is it distributed and signed?](#how-is-it-distributed-and-signed)
 - [Where can I report a security issue?](#where-can-i-report-a-security-issue)
@@ -101,10 +108,57 @@ handles the common cases automatically, and `--live` (or `read_as_file: true`)
 covers the rest. Failures are loud and self-explaining, not silent
 placeholder errors.
 
+### Why not just use age, SOPS, dotenvx, 1Password, or systemd-creds?
+
+Use them. Most of them are good, and several solve a problem jit does not.
+The honest comparison is about which problem you are solving:
+
+- **`age` / SOPS / dotenvx** encrypt a file *you decided to encrypt*, and you
+  decrypt it when you need it (`eval $(age -d -i secrets.env.age)`). Fewer
+  moving parts than jit, and the trusted-tool argument is real. Two
+  differences: they do not tell you about the plaintext already sitting in
+  `~/.aws/credentials`, `~/.docker/config.json`, and a `.env` you forgot about
+  three projects ago, and once you decrypt into your environment or a file,
+  every process running as you can read it for as long as it is there. jit's
+  bet is on the secrets you did not remember to protect.
+- **1Password (and its CLI / Environments)** is a better home for a secret
+  than jit and the right way for a *team* to share one. Its model is to keep
+  the secret in the vendor cloud and have you rewrite files to reference it
+  (`op://…`). jit works the other way around: it stays local, finds the
+  plaintext already on your disk, and rewrites the files for you through each
+  tool's native credential mechanism. Sensible setup: 1Password for shared
+  team secrets, jit underneath for the copies that land on your machine. More
+  detail in [Why jit](./why-jit.md#if-you-already-use-1password-or-another-password-manager).
+- **`systemd-creds`** does the equivalent job on Linux, TPM-backed, and if you
+  are on Linux you should use it. It is not available on macOS, which is the
+  platform jit targets.
+- **Credential-proxying tools** (fnox, nono, and similar) sit in front of a
+  provider and hand out short-lived credentials. That is a strong model and a
+  different one: it changes where credentials come from, while jit's starting
+  assumption is the plaintext already on the disk of a machine you did not set
+  up from scratch. They are not mutually exclusive.
+
+The thing jit does that none of the above do is `jit scan`: tell you what is
+exposed on this machine right now, read-only, before you have committed to any
+of it.
+
 ### Which platforms does it run on?
 
-macOS only, currently, because the local-auth and Keychain integration is
-macOS-native. There is no Linux or Windows build.
+macOS only today (Apple Silicon), because the Touch ID and Keychain
+integration is macOS-native. There is no Linux or Windows build yet. The
+platform-specific code is deliberately confined to a small number of packages
+rather than spread through the tree, so a port is a bounded piece of work
+rather than a rewrite, but it is not done and there is no date. More platforms
+are [on the roadmap](./why-jit.md#on-the-roadmap). On Linux today,
+`systemd-creds` covers part of the same ground.
+
+### What license is it under, and is it free?
+
+[PolyForm Perimeter 1.0.0](./about/license.md). Source-available, not OSI
+open source: you can read it, build it, fork it, and run it free of charge for
+personal use and for internal use at your company, with no seat count and no
+subscription. What the license forbids is repackaging it into a competing
+product. It never converts to another license.
 
 ### What happens if the service is locked or not running?
 
@@ -128,6 +182,65 @@ Every deliberate limit is documented in the
 [security architecture](./security/architecture.md) and re-stated in each
 published [self-review](./security/self-reviews/index.md).
 
+### If something is running code as me, haven't I already lost?
+
+Not entirely, and the "already lost" framing proves too much: by that logic
+per-app permissions on phones, short-lived cloud credentials, and not running
+as root would all be theatre. They aren't, because they raise cost and cut
+blast radius.
+
+Be concrete about what is actually attacking developers. It is overwhelmingly
+not a targeted operator with a debugger attached to your processes. It is an
+automated infostealer, usually arriving through a dependency's install script
+or a compromised package, that globs for `.env`, `~/.aws/credentials`,
+`.npmrc`, and kubeconfig, reads whatever it finds, and posts it. That entire
+class fails against a decoy, because the file it reads returns fake values and
+the read itself is recorded.
+
+What jit does not do is stop a determined attacker who already has local
+execution and is willing to spend time. Nothing at this layer does. jit is one
+layer, it says so, and it is not a reason to skip the others (containers, VMs,
+short-lived credentials, least privilege).
+
+### I have FileVault. Isn't my disk already encrypted?
+
+FileVault protects a machine that is powered off or stolen. It is decrypted
+and mounted the entire time you are logged in and working, which is precisely
+when every process running as your user can read every plaintext credential on
+it. The AI agent in your editor does not need to defeat FileVault to `cat`
+your `.env`.
+
+They solve different problems and compose fine. Keep FileVault on.
+
+### How can I trust your crypto implementation?
+
+By not having to trust much of it. The primitives are Go's standard library:
+AES-256-GCM via `crypto/aes` and `crypto/cipher`, with `crypto/rand` for keys
+and nonces. The single third-party primitive is Argon2id from
+`golang.org/x/crypto`, used only to derive a key from a passphrase for
+[encrypted exports](./vault/backup-restore.md), because a passphrase needs a
+memory-hard KDF and the standard library has none. Nothing is hand-rolled.
+
+What is jit-specific is the composition: envelope encryption, plus binding
+each ciphertext to the secret's vault path and metadata as AEAD additional
+data so a swapped or renamed file fails to decrypt rather than quietly
+resolving as the wrong secret. That is the part to read critically, and it is
+under 90 lines in `internal/vault/crypto.go`. The non-pure-Go surface is four
+small packages, named in the [security brief](./security/brief.md) so you can
+start there instead of hunting for them.
+
+### What about the secret once it is in memory?
+
+That is out of scope, deliberately. Once a value reaches the address space of
+the process that asked for it, jit has no further control: there is no attempt
+to lock its pages, defeat a debugger, or hide it from another process running
+as you. jit's own handling is bounded (the master key is page-locked and wiped
+on lock, and `jit run` `execve`s so jit's image is gone), but the tool you
+handed the credential to is on its own.
+
+If in-memory extraction is in your threat model, you want VM-level or
+container isolation, which is a different and complementary control.
+
 ### How are secrets encrypted at rest?
 
 Envelope encryption: each secret is its own authenticated-encrypted file with
@@ -143,7 +256,7 @@ ID or device-passcode challenge. Be precise about the guarantee: today that is
 an **application-level** local-auth gate (LocalAuthentication), not a
 hardware-enforced Keychain ACL or a Secure Enclave binding. A real OS-enforced
 ACL needs an entitlement macOS only grants through a provisioning profile,
-and a provisioning profile can only be embedded in an `.app` bundle — never a
+and a provisioning profile can only be embedded in an `.app` bundle, never a
 bare CLI binary like jit (releases are Developer-ID signed, and that alone
 doesn't unlock it; see `spike/secure-enclave/FINDINGS.md`). So the honest
 statement is "OS local-authentication-bound," not "cryptographically enforced

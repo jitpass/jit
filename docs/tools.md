@@ -18,6 +18,7 @@ short prefix. Here's what to type for your tool, and why.
 | `docker compose`, `podman`, tools that read the `.env` file itself | **`jit run --live -- <cmd>`** | jit serves the real file to that run (auto-picked for these). |
 | `gcp`, `sops`, `npm`, `netrc`, `pypi` | **run it** and approve the prompt, or **`jit run --with <name> -- <cmd>`** | A machine-global credential file: consent prompts on first read, or `--with` grants it explicitly. |
 | A specific named set of secrets (an MCP server, a one-off) | **`jit run --profile <name> -- <cmd>`** | Loads that profile instead of the ambient project `.env`. |
+| An agent or job that must keep working while you're away | **`jit grant --process <name> --profile <p> --for <d>`** once | One Touch ID now approves that program's reads until the deadline, so nothing stops on a prompt nobody is there to answer. [Process grants](./service/grants.md) |
 
 ## Just run them (nothing to type)
 
@@ -50,9 +51,13 @@ moves it to the vault once; after that you keep typing the command by name and
 the token is injected per call.
 
 `gh`, `glab`, `stripe`, `ngrok`, `doctl`, `hcloud`, `flyctl`, `vercel`,
-`railway`, `databricks`, `hf`, `supabase`, `wrangler`, `openai`, `claude`,
-`gemini`, `codex`, `sentry-cli`, `snyk`, `circleci`, `vault`, `pulumi`,
-`descope`, `okta-cli-client`, `snow`, `jira`.
+`railway`, `databricks`, `hf`, `supabase`, `wrangler`, `sentry-cli`, `snyk`,
+`circleci`, `vault`, `pulumi`, `descope`, `okta-cli-client`, `snow`, `jira`.
+
+The AI coding CLIs are wrappable too, and worth doing precisely because they
+run as you and read your files: `claude`, `codex`, `gemini`, `cursor-agent`,
+`copilot`, `cline`, `opencode`, `kiro-cli`, and `openai`. Their own API keys
+stop living in a config file on disk and get injected per invocation.
 
 One tool works the other way around: `clisso` doesn't carry a token, it
 *mints* AWS credentials at every SSO login. `jit wrap clisso` captures

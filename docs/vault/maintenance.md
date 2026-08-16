@@ -8,6 +8,15 @@ description: Prune stale file backups, empty the vault, or destroy it entirely.
 These commands run in increasing order of severity. The destructive ones
 confirm first (`-y` skips the prompt) and require a fresh Touch ID/passcode.
 
+**You do not have to remember to run these.** `jit doctor` sweeps for the
+same hygiene problems and reports what it finds as advisory warnings, naming
+the command that fixes each one: unreferenced secrets (a count, or each one
+with `--orphans`) and groups whose key names appear more than once. Doctor is
+the router and stays cheap and auth-free, so its duplicate check is
+name-level only; `jit vault duplicates` is what actually compares the values.
+Advisory warnings do not fail `jit doctor` unless you pass `--strict`, which
+is there for a pipeline that wants them to gate.
+
 ## `jit vault rekey` - rotate the master key
 
 Generates a new master encryption key, re-wraps every stored secret's key
@@ -140,6 +149,15 @@ once the profile that named a secret is gone. By default it only lists them;
 registered mount. A secret used only by another project you are not in and
 have not mounted would look orphaned here, so check each secret's origin
 before pruning, or delete just one with `jit vault rm <path>`.
+
+### Stale mount registrations
+
+Deleting a project directory without running `jit unmount` first leaves a
+registered mount whose profile no longer exists. `jit vault orphans` reports
+those separately as **stale mount registrations**, and `--prune` clears them
+along with the orphaned secrets. That is a registry edit only: no secret value
+is read or touched. Before this was handled, a deleted project could leave the
+sweep unable to complete at all.
 
 ## `jit vault clean` - delete every secret
 
