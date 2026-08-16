@@ -1430,3 +1430,52 @@ func TestPromptEllipsis(t *testing.T) {
 		t.Errorf("promptEllipsis = %q, want the head and tail kept", got)
 	}
 }
+
+// The export is the one file where jit's secrets leave their device binding:
+// the vault is useless without this Mac's keychain, while the export opens
+// anywhere for anyone holding it and the passphrase. So a short passphrase
+// gets one line — and only a line. It must never refuse or re-prompt: an
+// enforced minimum would break `--stdin` exports piping a passphrase in from
+// a password manager, turning a working backup script into a broken one.
+func TestWarnWeakExportPassphrase(t *testing.T) {
+	cases := []struct {
+		name       string
+		passphrase string
+		wantWarn   bool
+		wantText   string
+	}{
+		{"one character", "x", true, "1 character"},
+		{"short", "hunter2", true, "7 characters"},
+		{"just under the line", "elevenchars", true, "11 characters"},
+		{"at the line", "twelvechars!", false, ""},
+		{"a real passphrase", "correct horse battery staple", false, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := &cobra.Command{}
+			var stderr bytes.Buffer
+			cmd.SetErr(&stderr)
+
+			warnWeakExportPassphrase(cmd, []byte(tc.passphrase))
+
+			got := stderr.String()
+			if !tc.wantWarn {
+				if got != "" {
+					t.Fatalf("warned on a passphrase that is long enough: %q", got)
+				}
+				return
+			}
+			if got == "" {
+				t.Fatal("no warning for a short passphrase on a full-vault export")
+			}
+			if !strings.Contains(got, tc.wantText) {
+				t.Errorf("warning = %q, want it to name the length %q", got, tc.wantText)
+			}
+			// The passphrase itself must never be echoed back — it was typed
+			// hidden, and a terminal it appears in is one it can be read from.
+			if strings.Contains(got, tc.passphrase) {
+				t.Errorf("warning echoed the passphrase itself: %q", got)
+			}
+		})
+	}
+}
