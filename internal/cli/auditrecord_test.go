@@ -8,6 +8,10 @@ package cli
 import (
 	"strings"
 	"testing"
+
+	"github.com/spf13/pflag"
+
+	"github.com/jitpass/jit/internal/auditlog"
 )
 
 // TestSanitizeInvocationArgsVaultSet checks that `jit vault set` masks the
@@ -88,5 +92,62 @@ func TestSanitizeInvocationArgsVaultSet(t *testing.T) {
 				t.Errorf("the secret path was lost from the record: %v", got)
 			}
 		})
+	}
+}
+
+// auditlog.MaskVaultSetValues is the ONE vault-set grammar both producers
+// share — sanitizeInvocationArgs for jit's own os.Args, RedactCommandLine
+// for a recorded By. Its flag knowledge (VaultSetBooleanFlags) is what lets
+// it keep real flags legible while masking a dash-prefixed value, so it must
+// track the real command: every flag vault set defines (its own and the
+// root's persistent ones) must be listed, boolean, and nothing extra may be
+// listed. A non-boolean flag added to vault set would break the grammar's
+// core assumption — fail loudly here, not silently over-mask in the log.
+func TestVaultSetGrammarMatchesCommand(t *testing.T) {
+	seen := map[string]bool{}
+	collect := func(fs *pflag.FlagSet) {
+		fs.VisitAll(func(f *pflag.Flag) {
+			if f.Name == "help" {
+				return
+			}
+			if f.Value.Type() != "bool" {
+				t.Errorf("vault set flag --%s is %s, not bool: MaskVaultSetValues assumes every flag is boolean (a flag's detached value would be masked as a secret) — rethink the grammar before adding it", f.Name, f.Value.Type())
+			}
+			seen["--"+f.Name] = true
+			if f.Shorthand != "" {
+				seen["-"+f.Shorthand] = true
+			}
+		})
+	}
+	collect(vaultSetCmd.Flags())
+	collect(vaultSetCmd.Root().PersistentFlags())
+	for tok := range seen {
+		if !auditlog.VaultSetBooleanFlags[tok] {
+			t.Errorf("vault set defines %s but auditlog.VaultSetBooleanFlags does not list it — the grammar would mask it as a value (over-masking, but fix the list)", tok)
+		}
+	}
+	for tok := range auditlog.VaultSetBooleanFlags {
+		if !seen[tok] {
+			t.Errorf("auditlog.VaultSetBooleanFlags lists %s but vault set defines no such flag — a value spelled like it would be kept in the clear", tok)
+		}
+	}
+}
+
+// The parse-error fallback and the shared grammar must agree that EVERY
+// token past the path is masked — the first review caught them disagreeing
+// on `hunter2 extra`, where only the last token was masked and the actual
+// mis-pasted value survived into the durable log.
+func TestSanitizeInvocationArgsMasksEveryValuePastThePath(t *testing.T) {
+	got := sanitizeInvocationArgs("jit vault set",
+		[]string{"vault", "set", "stripe/key", "hunter2", "extra"},
+		nil, false)
+	want := []string{"vault", "set", "stripe/key", "<redacted>", "<redacted>"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v — a mis-pasted value must not outlive the mask", got, want)
+		}
 	}
 }

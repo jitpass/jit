@@ -392,10 +392,14 @@ type SessionEvent struct {
 	// "serve_mounts" for the agent's own in-process unlock when it resolves
 	// a mount's real content. Empty on a lock event.
 	Op string `json:"op,omitempty"`
-	// By is the caller's full command line as the kernel reports it, and
-	// ByPID its pid — the literal "what asked for this", for a terminal wide
-	// enough to print it. The Touch ID prompt gets a much shorter phrasing
-	// (see challengeReason); this is the investigative version.
+	// By is the caller's full command line as the kernel reports it — with
+	// any secret the caller carried on it masked (caller.command routes argv
+	// through auditlog.RedactCommandLine before a By ever exists) — and
+	// ByPID its pid: the "what asked for this", for a terminal wide enough
+	// to print it. The Touch ID prompt gets a much shorter phrasing (see
+	// challengeReason); this is the investigative version, durable in
+	// agent-history.jsonl, which is exactly why it must never hold a
+	// plaintext secret.
 	By    string `json:"by,omitempty"`
 	ByPID int32  `json:"by_pid,omitempty"`
 	// ByLikely marks By/ByPID as an identity carried over from an earlier

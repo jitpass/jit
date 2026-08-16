@@ -10,6 +10,8 @@ import (
 	"net"
 	"os"
 	"time"
+
+	"github.com/jitpass/jit/internal/auditlog"
 )
 
 // ErrNotRunning marks a dial failure: nothing answered the agent socket at
@@ -451,6 +453,9 @@ func (c *Client) History() ([]SessionEvent, error) {
 	if err != nil {
 		return nil, err
 	}
+	for i := range resp.Events {
+		scrubEventBy(&resp.Events[i])
+	}
 	return resp.Events, nil
 }
 
@@ -460,6 +465,9 @@ func (c *Client) Status() (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
+	scrubEventBy(resp.LastUnlock)
+	scrubEventBy(resp.LastLock)
+	scrubEventBy(resp.PendingUnlock)
 	return Status{
 		Unlocked:       resp.Unlocked,
 		Remaining:      time.Duration(resp.ExpiresInSeconds) * time.Second,
@@ -471,4 +479,18 @@ func (c *Client) Status() (Status, error) {
 		Version:        resp.Version,
 		ExecutablePath: resp.ExecutablePath,
 	}, nil
+}
+
+// scrubEventBy masks an RPC-served event's By on the CLIENT side, mirroring
+// the legacy scrub the file readers apply. The agent now redacts By at the
+// source, but the process answering this RPC may still be a pre-fix binary
+// whose in-memory ring holds raw argv — launchd swaps it within the stale
+// binary poll, a foreground `jit agent run` never does — and an upgraded CLI
+// must not render that window's plaintext through `jit service status` or
+// `jit agent history`.
+func scrubEventBy(e *SessionEvent) {
+	if e == nil {
+		return
+	}
+	e.By = auditlog.RedactCommandLine(e.By)
 }

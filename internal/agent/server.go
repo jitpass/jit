@@ -1529,7 +1529,12 @@ const maxUseLabels = 8
 // actually reads). A crash loses at most the still-pending window —
 // bounded, and the durable file gets everything else.
 func (s *Server) recordUse(op string, c *caller, label string) {
-	s.recordAggregated(KindUse, op, c.command(), c, label)
+	// The collapse key is the RAW command line, not the redacted one the
+	// event will carry: redaction can map two different callers' argvs onto
+	// one string, and merging their aggregates would stamp the first
+	// caller's pid onto the second's uses. The raw string never leaves the
+	// in-memory pendingUses map (see caller.rawCommand).
+	s.recordAggregated(KindUse, op, c.rawCommand(), c, label)
 }
 
 // opClassMismatch is the op label for an unwrap rejected because the class the

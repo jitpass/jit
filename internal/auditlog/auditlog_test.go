@@ -228,3 +228,193 @@ func TestRedactTextKeepsOrdinaryText(t *testing.T) {
 		t.Errorf("RedactText altered ordinary text:\n in: %q\nout: %q", in, got)
 	}
 }
+
+// RedactCommandLine guards the one recorded shape Redact never sees: a whole
+// command line stored as a single string — the agent's SessionEvent.By, the
+// caller's argv joined with spaces. Its grammar pass must mask the value
+// positionals of a `jit vault set <path> <value>` line unconditionally,
+// because a weak value ("hunter2") is not credential-shaped and would sail
+// through the entropy test — the exact reason cli/auditrecord.go masks the
+// same position in jit's own recorded args.
+func TestRedactCommandLineMasksVaultSetValues(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{
+			"weak value masked, path kept",
+			"jit vault set stripe/live-key hunter2",
+			"jit vault set stripe/live-key " + RedactToken,
+		},
+		{
+			"absolute jit path and boolean flags",
+			"/opt/homebrew/bin/jit vault set -y stripe/live-key hunter2",
+			"/opt/homebrew/bin/jit vault set -y stripe/live-key " + RedactToken,
+		},
+		{
+			"multi-word value masked whole: one argv element rejoins as several fields",
+			"jit vault set stripe/live-key my weak phrase",
+			"jit vault set stripe/live-key " + RedactToken + " " + RedactToken + " " + RedactToken,
+		},
+		{
+			"value after the -- terminator is still the value",
+			"jit vault set stripe/live-key -- -hunter2",
+			"jit vault set stripe/live-key -- " + RedactToken,
+		},
+	}
+	for _, tc := range cases {
+		if got := RedactCommandLine(tc.in); got != tc.want {
+			t.Errorf("%s:\n in: %q\ngot: %q\nwant: %q", tc.name, tc.in, got, tc.want)
+		}
+	}
+}
+
+// The path-only form (value from the prompt or --stdin) has NO value on the
+// line, and masking then would redact the secret's PATH — a non-secret the
+// trail should keep. Same rule cli/auditrecord.go applies via cobra's
+// positional count; here the count comes from the line itself.
+func TestRedactCommandLineKeepsVaultSetPathWhenNoValuePresent(t *testing.T) {
+	for _, in := range []string{
+		"jit vault set stripe/live-key",
+		"jit vault set --stdin stripe/live-key",
+		"jit vault set stripe/live-key --stdin",
+	} {
+		if got := RedactCommandLine(in); got != in {
+			t.Errorf("RedactCommandLine(%q) = %q, want unchanged: the only positional is the path", in, got)
+		}
+	}
+}
+
+// Everything that is not the vault-set grammar still gets the credential-
+// shaped pass and nothing more: ordinary lines survive verbatim, shaped
+// tokens are masked wherever they sit.
+func TestRedactCommandLineOutsideVaultSetGrammar(t *testing.T) {
+	secret := "sk_FAKEfixture_notARealKeyXYZ0123"
+	cases := []struct{ name, in, want string }{
+		{
+			"ordinary command untouched",
+			"jit run --profile deploy -- terraform plan",
+			"jit run --profile deploy -- terraform plan",
+		},
+		{
+			"vault get keeps its path",
+			"jit vault get stripe/live-key",
+			"jit vault get stripe/live-key",
+		},
+		{
+			"a non-jit program is not vault-set even with the words",
+			"vi jit vault set notes.txt",
+			"vi jit vault set notes.txt",
+		},
+		{
+			"shaped token masked in any command",
+			"jit run -- curl -H " + secret,
+			"jit run -- curl -H " + RedactToken,
+		},
+		{"empty line", "", ""},
+	}
+	for _, tc := range cases {
+		if got := RedactCommandLine(tc.in); got != tc.want {
+			t.Errorf("%s:\n in: %q\ngot: %q\nwant: %q", tc.name, tc.in, got, tc.want)
+		}
+	}
+}
+
+// A secret glued to its key with '=' is the single most common shape a
+// credential takes on a real command line (`--token=ghp_…`, `KEY=VALUE` env
+// prefixes), and the first review of this redactor found exactly that shape
+// leaking: the whole glued token starts with the key, so a prefix test on it
+// never fires, and a short vendor token is under the entropy floor. The
+// value half must be judged on its own, the same split Redact applies to
+// jit's own args.
+func TestRedactCommandLineMasksKeyValueGluedSecrets(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{
+			"jit run -- curl -H token=ghp_short1",
+			"jit run -- curl -H token=" + RedactToken,
+		},
+		{
+			"jit run -- tool --token=ghp_short1",
+			"jit run -- tool --token=" + RedactToken,
+		},
+		{
+			"some-tool --api-key=sk_FAKEfixture_notARealKeyXYZ01",
+			"some-tool --api-key=" + RedactToken,
+		},
+	}
+	for _, tc := range cases {
+		if got := RedactCommandLine(tc.in); got != tc.want {
+			t.Errorf("RedactCommandLine(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// The entropy pass must never eat an ordinary path: By exists so an
+// investigator can identify the program, and a versioned install path
+// ("/opt/homebrew/Cellar/awscli/2.17.5/bin/aws") is long, digit-bearing, and
+// entirely credential-alphabet — everything the entropy test looks for. The
+// same '/'-exemption looksSecret applies to jit's own args holds here, and
+// it must also protect a long vault PATH inside a vault-set line: masking
+// the path the grammar pass deliberately kept would defeat its whole point.
+func TestRedactCommandLineKeepsOrdinaryPaths(t *testing.T) {
+	for _, in := range []string{
+		"/opt/homebrew/Cellar/awscli/2.17.5/bin/aws s3 ls",
+		"node /Users/me/.nvm/versions/node/v22.1.0/bin/mcp-server-jamf",
+	} {
+		if got := RedactCommandLine(in); got != in {
+			t.Errorf("RedactCommandLine mangled an innocent path:\n in: %q\nout: %q", in, got)
+		}
+	}
+	in := "jit vault set github/tokens/menit-bot-2026 hunter2"
+	want := "jit vault set github/tokens/menit-bot-2026 " + RedactToken
+	if got := RedactCommandLine(in); got != want {
+		t.Errorf("long vault path lost:\n in: %q\ngot: %q\nwant: %q", in, got, want)
+	}
+}
+
+// A value that happens to start with "-" must not escape the grammar mask by
+// looking like a flag — secrets pasted from base64 output realistically do.
+// Only vault set's own boolean flags stay legible; anything else past the
+// path is a value.
+func TestRedactCommandLineMasksDashPrefixedVaultSetValues(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{
+			"jit vault set stripe/live-key -hunter2",
+			"jit vault set stripe/live-key " + RedactToken,
+		},
+		{
+			"jit vault set stripe/live-key -my weak phrase",
+			"jit vault set stripe/live-key " + RedactToken + " " + RedactToken + " " + RedactToken,
+		},
+		{
+			"jit vault set stripe/live-key --stdin",
+			"jit vault set stripe/live-key --stdin",
+		},
+		{
+			"jit vault set --stdin=true stripe/live-key",
+			"jit vault set --stdin=true stripe/live-key",
+		},
+	}
+	for _, tc := range cases {
+		if got := RedactCommandLine(tc.in); got != tc.want {
+			t.Errorf("RedactCommandLine(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// MaskVaultSetValues works element-wise so a REAL argv (where a multi-word
+// value is one element) gets the identical judgement a Fields-split line
+// does — it is the one grammar both producers share.
+func TestMaskVaultSetValuesArgvElements(t *testing.T) {
+	got, changed := MaskVaultSetValues([]string{"jit", "vault", "set", "stripe/key", "my weak phrase"})
+	if !changed {
+		t.Fatal("value element not masked")
+	}
+	want := []string{"jit", "vault", "set", "stripe/key", RedactToken}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("MaskVaultSetValues = %v, want %v", got, want)
+		}
+	}
+	in := []string{"vi", "jit", "vault", "set", "notes.txt"}
+	if _, changed := MaskVaultSetValues(in); changed {
+		t.Errorf("non-jit argv %v was treated as vault set", in)
+	}
+}

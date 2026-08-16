@@ -201,8 +201,19 @@ func sanitizeInvocationArgs(cmdPath string, rawArgs, positionals []string, parse
 	if parsedOK && len(positionals) == 1 {
 		return args
 	}
-	// Mask the last non-flag token: where a value is present it is the value,
-	// the only thing it can be, and Redact may have left a weak one alone.
+	// The SAME grammar the agent's By redaction applies (one implementation,
+	// auditlog.MaskVaultSetValues, so the two halves of the merged `jit
+	// audit` timeline can never disagree): every element past the path is
+	// masked, including a value that starts with "-" or a mis-pasted extra
+	// argument. The grammar wants argv[0]; os.Args[1:] lacks it, so lend it
+	// one.
+	if masked, changed := auditlog.MaskVaultSetValues(append([]string{"jit"}, args...)); changed {
+		return masked[1:]
+	}
+	// The grammar saw nothing past the path, but on a failed parse the one
+	// positional present may itself be a mistyped value sitting in the path
+	// slot — keep the old conservative fallback and mask the last non-flag
+	// token rather than trust it.
 	for i := len(args) - 1; i >= 0; i-- {
 		if strings.HasPrefix(args[i], "-") {
 			continue
