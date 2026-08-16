@@ -193,6 +193,18 @@ func TestScanCommandOutputToFile(t *testing.T) {
 	if strings.Contains(string(contents), "sk_test_fixture_value") {
 		t.Fatal("report file must never contain the raw secret value")
 	}
+
+	// A saved report is an inventory of where this machine keeps its
+	// credentials, so it gets the owner-only posture every other file jit
+	// writes has — os.Create's 0666-minus-umask would leave it readable by
+	// anyone with an account here.
+	fi, err := os.Stat(reportPath)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Errorf("report file mode = %#o, want 0600", perm)
+	}
 }
 
 func TestScanCommandRejectsUnknownFormat(t *testing.T) {

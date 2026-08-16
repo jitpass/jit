@@ -22,6 +22,15 @@ import (
 // this agent's socket at all, regardless of file permissions on the
 // socket path (which are also restricted, but this is defense in depth,
 // not the only check).
+// xucredVersion is XUCRED_VERSION from <sys/ucred.h>, the layout version the
+// kernel stamps into every xucred it fills (cru2x sets it unconditionally).
+// Written out here because golang.org/x/sys/unix defines the STRUCT but
+// exports no constant for its version, and TestVerifyPeerUIDAcceptsARealPeer
+// proves the value against a live socket rather than trusting this comment —
+// a wrong constant here would fail every connection closed, which is the one
+// failure mode worse than the check being absent.
+const xucredVersion = 0
+
 func verifyPeerUID(conn net.Conn) error {
 	unixConn, ok := conn.(*net.UnixConn)
 	if !ok {
@@ -44,6 +53,17 @@ func verifyPeerUID(conn net.Conn) error {
 		return fmt.Errorf("LOCAL_PEERCRED failed: %w", xucredErr)
 	}
 
+	// Check the struct version BEFORE trusting any field in it. The kernel
+	// fills Xucred per its own layout, and this code reads Uid at whatever
+	// offset the Go definition puts it; a future layout the runtime does not
+	// match would have us comparing some other word against our uid and
+	// possibly liking the answer. The uid gate is the one thing standing
+	// between another user's process and this agent's unlocked session, so
+	// it fails closed on a struct it does not recognize rather than
+	// interpreting bytes whose meaning it cannot vouch for.
+	if xucred.Version != xucredVersion {
+		return fmt.Errorf("peer credentials have version %d, want %d", xucred.Version, xucredVersion)
+	}
 	if int(xucred.Uid) != os.Getuid() {
 		return fmt.Errorf("peer uid %d does not match this agent's uid %d", xucred.Uid, os.Getuid())
 	}
