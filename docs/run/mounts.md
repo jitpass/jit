@@ -54,7 +54,7 @@ The re-open behavior was proven out before it was built on, in
   run's process tree **real file reads** (decided per read, by process
   ancestry; decoys to everything else). Use this for tools that read
   values *from the `.env` file itself* rather than the environment, such
-  as `docker compose` with `env_file:` — jit run auto-detects the common
+  as `docker compose` with `env_file:` - jit run auto-detects the common
   ones. `jit service status` shows whether each mount is swapped or granted,
   and for which run.
 - `jit run --with <name> <command>` grants a machine-global file-delivered
@@ -70,7 +70,7 @@ The re-open behavior was proven out before it was built on, in
 - A project whose tools **always** read the file itself can pin live mode
   once instead of typing `--live` every time: put `read_as_file: true` in
   the project's `.jit/config.yaml`. Only set it when the project genuinely
-  reads the file rather than the environment — it is an explicit
+  reads the file rather than the environment - it is an explicit
   declaration, not a guess, because choosing live for a project whose
   scripts guard with `[ -f .env ]` would break those guards. See
   [Which command delivers a secret](../getting-started/delivering-secrets.md).

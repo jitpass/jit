@@ -1,17 +1,17 @@
 # jit Pre-Release QA Playbook
 
-**This is a procedure for the assistant (Claude) to execute as jit's personal QA — not a CI job.**
+**This is a procedure for the assistant (Claude) to execute as jit's personal QA - not a CI job.**
 When the user says *"test release N"* (or "QA the release", "check the build before we ship"),
 follow this end to end: install the release candidate, **use jit the way a real user would**
-across every workflow, and actively **hunt for bugs and anything that feels off** — then hand
+across every workflow, and actively **hunt for bugs and anything that feels off** - then hand
 back a findings report.
 
 The goal is not a green checkmark. A script can produce those (`scripts/pre-release-live-test.sh`
 is that script, used here only as a fast mechanical baseline). The goal is the judgment a script
 can't have: *is the output clear? is this flag consistent with its siblings? did a guard get an
-awkward edge? did anything regress?* The real findings from past sessions — a `cp`-over-running-
+awkward edge? did anything regress?* The real findings from past sessions - a `cp`-over-running-
 binary SIGKILL, `vault restore` rejecting a `-y` its own help implies, `vault delete` blocked by a
-mount with no clean escape — were all found by looking, not asserting.
+mount with no clean escape - were all found by looking, not asserting.
 
 ## The QA team
 
@@ -20,15 +20,15 @@ skill (`.claude/skills/qa-release/`). Invoke the skill when the user says "test/
 
 | Agent | Lens |
 |---|---|
-| `jit-qa-functionality` | core secret engine — vault CRUD, scan, migrate mechanics, rekey, audit/status/doctor, export/import, delete drill |
-| `jit-qa-integrations` | external tools — wrap, mounts, terraform, clisso/aws, docker/git, env files, shell, k8s/sops/netrc/npmrc (drives real programs) |
+| `jit-qa-functionality` | core secret engine - vault CRUD, scan, migrate mechanics, rekey, audit/status/doctor, export/import, delete drill |
+| `jit-qa-integrations` | external tools - wrap, mounts, terraform, clisso/aws, docker/git, env files, shell, k8s/sops/netrc/npmrc (drives real programs) |
 | `jit-qa-ux` | output clarity, help, error messages, flag consistency, house style |
-| `jit-qa-bughunter` | adversarial — malformed inputs, edge cases, guard bypass, weird states, concurrency |
+| `jit-qa-bughunter` | adversarial - malformed inputs, edge cases, guard bypass, weird states, concurrency |
 | `jit-qa-code` | read-only review of the release diff for correctness/security/regressions |
 | `jit-qa-docs` | docs match the shipped CLI; implementation follows the design docs |
 
 The orchestrator runs the read-only agents (code, ux, docs) in parallel and the vault-mutating
-agents (functionality, integrations, bughunter) **sequentially** — there is one machine-global
+agents (functionality, integrations, bughunter) **sequentially** - there is one machine-global
 vault, so they can't safely mutate it at once. The sections below are the shared charter.
 
 ## Automate the mechanical; spend agent effort on judgment
@@ -37,7 +37,7 @@ Anything deterministic goes in `scripts/pre-release-live-test.sh` so agents don'
 Touch ID re-doing it. Two levers keep the cost down:
 - **One unlock per run.** Only `jit vault <sub>` commands force a fresh gesture; everything else
   (migrate, run, clisso, docker/git, mounts) rides one `jit unlock`. Prompt-free runs (cmdtree,
-  scan, audit/status/doctor) skip the unlock entirely — **zero** Touch ID.
+  scan, audit/status/doctor) skip the unlock entirely - **zero** Touch ID.
 - **Focused baselines via `--phase`.** Each agent runs *its* surface as a fast scripted baseline,
   then adds judgment on top. Named aliases:
 
@@ -57,7 +57,7 @@ Touch ID re-doing it. Two levers keep the cost down:
   `--phase migrate` for just the migrate surface.
 
 **Command-tree completeness:** `--phase cmdtree` walks the entire tree from the binary (via cobra
-`__complete`) so no command/subcommand — including `service consent` and the plumbing helpers — can
+`__complete`) so no command/subcommand - including `service consent` and the plumbing helpers - can
 be silently missing or broken. Run it every release; it costs nothing.
 
 ---
@@ -65,7 +65,7 @@ be silently missing or broken. Run it every release; it costs nothing.
 ## 0. Mindset
 
 - **Be the user, not the script.** Read every output as if you'd never seen it. Confusing wording,
-  a wrong path in a hint, a stack-trace where a sentence belonged — those are bugs.
+  a wrong path in a hint, a stack-trace where a sentence belonged - those are bugs.
 - **Follow your nose.** When something looks off, stop and dig. Go off-playbook. The playbook is a
   floor for coverage, not a ceiling.
 - **Diff against expectations.** You know how jit behaved last release (git log, memories, docs). A
@@ -84,9 +84,9 @@ be silently missing or broken. Run it every release; it costs nothing.
   except in the deliberate, export-first delete drill (§8). Those are machine-wide.
 - Unlock once (`jit unlock`) and bump the TTL (`jit service ttl 45m`) so session-backed commands
   (migrate, run, export, mounts, credential_process, docker/git helpers) don't re-prompt. Only the
-  literal `jit vault <sub>` commands force a fresh Touch ID by design — restore the TTL when done.
+  literal `jit vault <sub>` commands force a fresh Touch ID by design - restore the TTL when done.
 
-## 2. Pre-flight — get the release candidate running
+## 2. Pre-flight - get the release candidate running
 
 1. Identify the RC: the tag/commit you're validating (`git describe`, or the `JIT_BIN` the user
    hands you).
@@ -94,15 +94,15 @@ be silently missing or broken. Run it every release; it costs nothing.
    ```
    go build -ldflags "-s -w -X github.com/jitpass/jit/internal/agent.version=<VER>" -o /tmp/jit-rc ./cmd/jit
    ```
-3. **Install gotcha (known, will recur):** never `cp` a fresh build over the running binary — it
+3. **Install gotcha (known, will recur):** never `cp` a fresh build over the running binary - it
    corrupts the live service's mmap'd, signed pages and macOS SIGKILLs it (exit 137). Atomic-replace:
    ```
    cp /tmp/jit-rc ~/.local/bin/.jit.new && mv -f ~/.local/bin/.jit.new ~/.local/bin/jit
    jit service restart
    ```
-4. **Verify the swap took:** `jit service status` — service build and CLI build must match. A stale
+4. **Verify the swap took:** `jit service status` - service build and CLI build must match. A stale
    service on the old build is the #1 release-day trap.
-5. `jit doctor` — should resolve cleanly. Anything already broken here is either a real bug or
+5. `jit doctor` - should resolve cleanly. Anything already broken here is either a real bug or
    leftover test state; investigate before proceeding.
 
 ## 3. Fast mechanical baseline (the helper script)
@@ -112,15 +112,15 @@ on the hand-driven parts:
 ```
 JIT_BIN=/path/to/jit-rc scripts/pre-release-live-test.sh --os-creds --destructive
 ```
-- Read the summary. Every `✗` is a finding (or a bug in the script — decide which).
-- Confirm the final line: **vault returned to baseline**. If not, the run leaked state — investigate.
+- Read the summary. Every `✗` is a finding (or a bug in the script - decide which).
+- Confirm the final line: **vault returned to baseline**. If not, the run leaked state - investigate.
 - Budget: ~7 gestures default, ~13 with `--os-creds --destructive`.
 
 The script covers the mechanical happy-paths. The sections below are where you *use* jit and *hunt*.
 
 ## 4. The playground run (real tools, real programs)
 
-Clone the purpose-built sandbox and drive its actual programs through jit — this catches integration
+Clone the purpose-built sandbox and drive its actual programs through jit - this catches integration
 bugs hermetic fixtures never will.
 
 ```
@@ -138,7 +138,7 @@ It ships: `.env` / `.env.local` (a `server.js` that parses `.env` itself), `.mcp
 | Scan | `jit scan` (repo) and `jit scan .` | Does it find every planted secret? Right risk level? Any false negative on a real vendor token? Is the report readable? |
 | Preview | `jit migrate --dry-run` | Plan matches what scan found? Nothing touched on disk? |
 | Migrate | `jit migrate` (or per-file) | Files become mounts + `.pointers`; profiles created; confirm messages name real paths, not `<path>` |
-| **Run the app** | `jit run -- npm start` then `curl localhost:<port>` | The **app** reads real values from the live-mounted `.env`; raw `cat .env` shows inert/decoy. This is the core promise — verify the app actually works. |
+| **Run the app** | `jit run -- npm start` then `curl localhost:<port>` | The **app** reads real values from the live-mounted `.env`; raw `cat .env` shows inert/decoy. This is the core promise - verify the app actually works. |
 | Docker | `jit run -- docker compose config` / `up` (if docker present) | env reaches the container; no plaintext on disk |
 | Terraform | migrate `terraform.tfvars`, then `jit run -- terraform plan` (if installed) | `TF_VAR_*` delivered; tfvars secret-shaped values vaulted, settings left |
 | Reveal | `bash scripts/reveal.sh` under `jit run` | behaves; no unexpected plaintext leak |
@@ -223,7 +223,7 @@ Work each surface as a user. Hermetic if you prefer, or reuse the playground.
   help text matches actual accepted flags (the `restore -y` mismatch was exactly this).
 - **Output style:** consistent with the house style (docs/design); no raw Go errors surfacing to
   users; hints name real paths, not literal `<path>`.
-- **Error quality:** feed each command a bad path, a missing secret, a locked state — is the message
+- **Error quality:** feed each command a bad path, a missing secret, a locked state - is the message
   a clear next step or a stack trace?
 - **Touch ID enforcement:** every vault read/write/destroy prompts; nothing that touches a secret
   value silently rides the session when it shouldn't.
@@ -233,14 +233,14 @@ Work each surface as a user. Hermetic if you prefer, or reuse the playground.
 
 ## 7. Known-gotcha watchlist (regression guards)
 
-Re-check these each time — they've bitten before or are inherent edges:
+Re-check these each time - they've bitten before or are inherent edges:
 - `cp`-over-running-binary → SIGKILL 137 (install must be atomic). *(pre-flight)*
 - `vault restore` and `-y`: does help still over-promise `-y` "on every command"?
-- `vault delete` blocked by a live mount with no non-plaintext escape — still the case? note it.
-- `migrate remove`/`undo` leaving orphan secrets a prior release fixed — confirm still fixed.
+- `vault delete` blocked by a live mount with no non-plaintext escape - still the case? note it.
+- `migrate remove`/`undo` leaving orphan secrets a prior release fixed - confirm still fixed.
 - stale service on old build after upgrade/restart.
 
-## 8. The delete drill (destructive — deliberate, export-first)
+## 8. The delete drill (destructive, deliberate, export-first)
 
 Only on a mount-free vault (or after unmounting your own mounts). Proves the disaster-recovery path:
 ```
@@ -272,5 +272,5 @@ Notes / accepted gaps: <...>
 State: vault restored to baseline (list/status match pre-run)
 ```
 
-Keep it to what I actually observed. If a step was skipped (tool not installed, etc.), say so —
+Keep it to what I actually observed. If a step was skipped (tool not installed, etc.), say so  - 
 never imply coverage that didn't happen.

@@ -136,7 +136,7 @@ jit scan — alex@Alexs-MacBook-Pro — scanned ~/ (7 files) — full inventory 
 Under `--unfiltered`, the same view adds an amber `○ suppression off` notice
 at the top, tags each finding the everyday gates would have hidden with
 `[unfiltered]`, and explains the rule that hid it on a
-`└ shown by --unfiltered: …` line — so one report answers what the filters
+`└ shown by --unfiltered: …` line - so one report answers what the filters
 are hiding, instead of needing a diff of two runs.
 
 ## How to read a finding block (`--full`)
