@@ -22,7 +22,7 @@ their token in the variable the tool documents, for example:
 The **[wrap catalog](../wrap/index.md#shim-based-plugins)** lists every wrapped
 tool and its injected variable - it tracks the code, so it's always current.
 (`aws`, `terraform`, `docker`, and `git` don't inject variables - they use
-[native credential hooks](../wrap/index.md#native-hook-plugins-no-shim--stronger).)
+[native credential hooks](../wrap/index.md#native-hook-plugins-no-shim---stronger).)
 
 An injected variable exists only inside that one process, for its
 lifetime - it is never exported to your shell or written anywhere.
