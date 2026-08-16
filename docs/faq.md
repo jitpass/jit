@@ -138,9 +138,8 @@ The honest comparison is about which problem you are solving:
   assumption is the plaintext already on the disk of a machine you did not set
   up from scratch. They are not mutually exclusive.
 
-The thing jit does that none of the above do is `jit scan`: tell you what is
-exposed on this machine right now, read-only, before you have committed to any
-of it.
+None of them do what `jit scan` does: tell you what is exposed on this machine
+right now, read-only, before you have committed to anything.
 
 ### Which platforms does it run on?
 
@@ -189,13 +188,12 @@ per-app permissions on phones, short-lived cloud credentials, and not running
 as root would all be theatre. They aren't, because they raise cost and cut
 blast radius.
 
-Be concrete about what is actually attacking developers. It is overwhelmingly
-not a targeted operator with a debugger attached to your processes. It is an
-automated infostealer, usually arriving through a dependency's install script
-or a compromised package, that globs for `.env`, `~/.aws/credentials`,
-`.npmrc`, and kubeconfig, reads whatever it finds, and posts it. That entire
-class fails against a decoy, because the file it reads returns fake values and
-the read itself is recorded.
+What actually attacks developers is overwhelmingly not a targeted operator
+with a debugger attached to your processes. It is an automated infostealer,
+usually arriving through a dependency's install script or a compromised
+package, that globs for `.env`, `~/.aws/credentials`, `.npmrc`, and
+kubeconfig, reads whatever it finds, and posts it. That entire class fails
+against a decoy: the file returns fake values, and the read is recorded.
 
 What jit does not do is stop a determined attacker who already has local
 execution and is willing to spend time. Nothing at this layer does. jit is one

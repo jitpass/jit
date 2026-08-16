@@ -49,18 +49,16 @@ by what the tool can do:
    file involved.
 3. **A named-pipe mount**, for tools that can only read a file.
 
-That third one is the one people ask about. The "file" is a POSIX FIFO made
-with `mkfifo(2)` at mode `0600`. When a program calls `open(".env")`, the
-kernel blocks that open until a writer connects. The background service is the
-writer: it opens the path `O_WRONLY`, which releases the reader, writes the
-decrypted bytes from memory straight into the kernel pipe buffer, closes, then
-loops back to `open(2)` for the next reader. Nothing touches the disk, and
-what gets written is decided per read: decoy values for an ambient reader,
-real values only for a process inside a run you authorized.
+The mount is a POSIX FIFO, created with `mkfifo(2)` at mode `0600`. A program
+calling `open(".env")` blocks in the kernel until a writer connects. The
+background service is that writer: it opens the path `O_WRONLY`, which
+releases the reader, writes the decrypted bytes from memory into the kernel
+pipe buffer, closes, and loops back to `open(2)` for the next reader. Nothing
+touches the disk. What gets written is decided per read: decoys for an ambient
+reader, real values only inside a run you authorized.
 
-One caveat worth stating plainly, since it is the obvious follow-up question:
-**caller identity explains and audits, it never decides.** Process names are
-forgeable and a fast-closing FIFO reader can evade identification entirely.
+**Caller identity explains and audits, it never decides.** Process names are
+forgeable, and a fast-closing FIFO reader can evade identification entirely.
 The human answering the prompt is the gate; the process name only tells you
 what to answer. Full detail in
 **[how it works](./docs/getting-started/how-it-works.md)** and
