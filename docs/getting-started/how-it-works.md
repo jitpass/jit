@@ -55,18 +55,18 @@ by what the tool is able to do:
    jit answers. No file is involved at any point.
 3. **A named-pipe mount**, for tools that only know how to read a file.
 
-The third one is the one people ask about, so here it is concretely. The
-"file" is a POSIX FIFO created with `mkfifo(2)` at mode `0600`. When a program
-calls `open(".env")`, the kernel **blocks that open** until a writer connects.
-The background service is the writer: it opens the same path `O_WRONLY`, which
-releases the reader, writes the decrypted bytes from memory straight into the
-kernel pipe buffer, closes, and loops back to `open(2)` to wait for the next
-reader. Nothing is written to disk in that sequence.
+The third mechanism, concretely: the "file" is a POSIX FIFO created with
+`mkfifo(2)` at mode `0600`. A program calling `open(".env")` **blocks in the
+kernel** until a writer connects. The background service is that writer. It
+opens the same path `O_WRONLY`, which releases the reader, writes the
+decrypted bytes from memory into the kernel pipe buffer, closes, and loops
+back to `open(2)` to wait for the next reader. Nothing is written to disk in
+that sequence.
 
-What gets written is decided per read, in the service: decoy values for an
-ambient reader (a `cat`, a backup, a stray `npm install`), real values only
-for a process inside an authorized run's tree. Details, including what a FIFO
-cannot do that a regular file can, in **[Live-mounted files](../run/mounts.md)**.
+The service decides what to write on each read: decoy values for an ambient
+reader (a `cat`, a backup, a stray `npm install`), real values only for a
+process inside an authorized run's tree. Details, including what a FIFO cannot
+do that a regular file can, in **[Live-mounted files](../run/mounts.md)**.
 
 ## How each secret keeps working
 

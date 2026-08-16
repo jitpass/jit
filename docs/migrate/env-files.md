@@ -20,7 +20,7 @@ things sit on disk afterwards, neither containing a secret:
   value. This is where you look to answer "where does this variable live
   now?"
 
-## Running the project — it just works
+## Running the project - it just works
 
 When you run your commands with [`jit run`](../run/index.md), it makes the
 mount compatible with whatever your command does for the duration of that

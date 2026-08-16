@@ -14,8 +14,7 @@ your editor with your full permissions.
 
 jit finds those secrets, moves them into a local encrypted vault gated by
 Touch ID, and rewrites each file so everything keeps working, without the
-secret sitting on disk the rest of the time. This page is the short version of
-what you get and why it matters.
+secret sitting on disk the rest of the time.
 
 ## The one idea
 
@@ -173,7 +172,7 @@ Keep it. A cloud password manager is the right home for a secret and the right
 way for a team to share one. But it is built for a different job, and there is a
 layer it does not reach: the plaintext copies that end up on your own disk.
 
-Here is what jit does that a cloud password manager and its CLI do not:
+What jit does that a cloud password manager and its CLI do not:
 
 - **Finds the plaintext you already have.** 1Password stores what you put in it.
   It does not scan your machine and tell you that a production database URL is
@@ -206,8 +205,8 @@ machine.
 
 ## On the roadmap
 
-jit is a local, per-developer tool by design, and it is still early. Here is
-what is landing next:
+jit is a local, per-developer tool by design, and it is still early. Landing
+next:
 
 - **Keys in the Secure Enclave.** Hardware-backed, OS-level enforcement of the
   Touch ID gate. The blocker isn't signing (releases are Developer-ID signed)

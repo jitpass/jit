@@ -26,9 +26,6 @@ account safe.
 
 ## What you have to trust, and how to check it
 
-Reviewing this does not require taking anything on faith, so here is where to
-point a reviewer:
-
 - **No custom cryptography.** The primitives are Go's standard library:
   AES-256-GCM (`crypto/aes` + `crypto/cipher`) for both the per-secret data
   keys and the master key wrap, and `crypto/rand` for all key and nonce

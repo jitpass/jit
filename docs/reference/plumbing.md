@@ -90,7 +90,7 @@ guard exists to prevent.
 Everything else about the guard IS audited: `jit guard history` and
 `--remove` are recorded like any command, and when bare `jit migrate`
 installs the guard as part of its plan, that lands in the trail too, as
-`jit guard history (by jit migrate)` — so a hook you find in your `~/.zshrc`
+`jit guard history (by jit migrate)` - so a hook you find in your `~/.zshrc`
 can always be traced to the run that put it there.
 
 `jit guard check` alone is excluded from the [application audit log](./commands/jit_audit.md),

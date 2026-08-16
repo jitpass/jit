@@ -18,7 +18,7 @@ that directory precedes the real binary's location on PATH, and the
 
 It never opens the vault, so it still works when the vault is the thing
 that's broken. Add `--verbose` to list the checks that passed as well as the
-ones that failed — right after `jit wrap add`, "shim, real binary, and
+ones that failed - right after `jit wrap add`, "shim, real binary, and
 profile all resolve" is usually the answer you want.
 
 A plain [`jit doctor`](../run/profiles.md#checking-a-profiles-health-jit-doctor)
@@ -32,7 +32,7 @@ the run.
     than the check: it exited non-zero for every failed check while
     `jit doctor` treated all of them as advisory, so the same facts got two
     verdicts depending on which one you typed. Severity now lives on the
-    check — a damaged shim installation fails the run, while "the shim dir
+    check - a damaged shim installation fails the run, while "the shim dir
     isn't on PATH in *this* shell" stays advisory, because a CI job that
     doesn't put it there is not a broken machine. With that settled, a second
     command had nothing left to offer.

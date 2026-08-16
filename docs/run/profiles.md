@@ -47,7 +47,7 @@ $ jit doctor
 ```
 
 It checks project-local profiles, the home-rooted global ones, **and the
-profile behind every registered mount** — that last set may live in a project
+profile behind every registered mount** - that last set may live in a project
 tree the current directory never walks into, yet jit is serving it right now,
 so a broken reference there is just as real. This is the same set
 [`jit status`](../reference/commands/jit_status.md) and `jit vault orphans`
@@ -63,12 +63,12 @@ It exits **2** when something this setup depends on is actually broken:
 - a profile's own secret is **missing**, **corrupt**, or **unparseable**, or
   names something that isn't a legal vault path at all (**bad path**)
 - this Mac's **master key is gone** from the keychain, so the whole vault is
-  undecryptable — every envelope stays structurally intact, which is exactly
+  undecryptable - every envelope stays structurally intact, which is exactly
   why nothing else notices
 - a **master-key rotation** is in progress or was interrupted, which blocks
   every command that writes to the vault
-- a wrapped tool's **shim installation is damaged** — a missing shim, a
-  symlink pointing at nothing, a vanished `wrap-<tool>` profile — so that tool
+- a wrapped tool's **shim installation is damaged** - a missing shim, a
+  symlink pointing at nothing, a vanished `wrap-<tool>` profile - so that tool
   now runs unwrapped or not at all
 
 Everything else it reports is a warning, never a failure:
@@ -81,7 +81,7 @@ Everything else it reports is a warning, never a failure:
   so nothing else would ever tell you)
 - a stopped service, or a stale or missing vault backup
 - a shim complaint that is only true of the shell you are in (the shim dir
-  absent from *this* `PATH`) — a CI job that doesn't put it there is not a
+  absent from *this* `PATH`) - a CI job that doesn't put it there is not a
   broken machine
 
 It never decrypts a secret or triggers Touch ID (existence and envelope
@@ -91,7 +91,7 @@ flags:
 - `--profile <name>` narrows the run to a single profile and skips the
   service/backup/wrap sections. The whole-vault key checks still run: with no
   master key, no profile resolves, and reporting otherwise would be false.
-- `--wrap` runs only the wrapped-tool checks, and never opens the vault — so
+- `--wrap` runs only the wrapped-tool checks, and never opens the vault - so
   it still works when the vault is what's broken. Replaces `jit wrap doctor`.
 - `--verbose` lists every check that passed, not just the ones that failed.
 - `--strict` makes the advisory warnings count toward the exit code too, for
@@ -99,7 +99,7 @@ flags:
 - `--format json` prints a machine-readable snapshot: `schema_version`, a
   `tool` block naming the binary that produced it (version, build, and whether
   it satisfies jit's release-signing requirement), `ok`, and structured
-  `problems`/`warnings` arrays — each entry carrying `kind`, `profile`,
+  `problems`/`warnings` arrays - each entry carrying `kind`, `profile`,
   `variable`, `path`, `detail`, and an `action` you can act on without parsing
   prose.
 
@@ -108,7 +108,7 @@ flags:
 | Code | Meaning |
 | --- | --- |
 | `0` | nothing broken |
-| `1` | **doctor itself** couldn't run — a bad flag, an unreadable vault root |
+| `1` | **doctor itself** couldn't run - a bad flag, an unreadable vault root |
 | `2` | findings: something is broken (or, with `--strict`, warned about) |
 
 Exit 2 is the findings code, the same convention

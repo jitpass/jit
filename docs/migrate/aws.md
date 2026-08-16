@@ -46,8 +46,8 @@ of its own, downstream of the one it just fetched, and those are not jit's:
   clears them now.
 - **A profile with an `aws_expiration` stamp** was minted by an SSO tool
   (clisso, aws-okta, onelogin-aws) that rewrites `~/.aws/credentials` on
-  each login. Migrating it protects today's token — expiration included,
-  served via `Expiration` so SDKs refresh on time — but the finding
+  each login. Migrating it protects today's token - expiration included,
+  served via `Expiration` so SDKs refresh on time - but the finding
   returns with tomorrow's login, and `jit scan` says so rather than
   reporting a clean machine that won't stay clean. The tool's own
   long-lived secret (for clisso: the OneLogin client-secret in

@@ -183,7 +183,7 @@ the mounted `.env` outside a reveal window gets decoys. The long-lived loot is
 gone, so the four-second smash-and-grab comes up mostly empty.
 
 "Mostly" is doing real work in that sentence, and it took an outside reader to
-make me say why — see the fourth bullet below.
+make me say why - see the fourth bullet below.
 
 **What it does *not* stop, and I won't pretend otherwise:**
 
@@ -201,7 +201,7 @@ make me say why — see the fourth bullet below.
   plaintext STS session to `~/.aws/cli/cache` the moment it assumes a role;
   `aws sso login` writes tokens to `~/.aws/sso/cache`. Those are short-lived
   rather than standing, which is a genuine improvement and not the same as
-  gone — and they sit in the very directory the post above describes jit
+  gone - and they sit in the very directory the post above describes jit
   tidying. `jit scan` now names them as out of scope instead of walking past
   hex-named files without comment, because a clean report that omits a live
   session token is worse than no report.

@@ -52,7 +52,7 @@ The flag has to go with the file. Left in place it would aim the launcher
 at the pointer file and set every credential to a literal
 `jit://vault/...` string, so the server would start and nothing would work.
 
-Three things worth knowing:
+Three things:
 
 - **Two files change.** You name a config; a `.env` elsewhere on disk
   becomes a pointer. The plan says so before you approve it
@@ -100,7 +100,7 @@ in two places: the ordinary top-level `mcpServers` block, and a `projects`
 map keying a **second set of server definitions by project directory**.
 `jit migrate ~/.claude.json` converts both.
 
-Three things worth knowing:
+Three things:
 
 - **Each project block gets its own profile namespace.** Two projects
   routinely define a server under the same name (`github`, `postgres`), with
