@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/jitpass/jit/internal/agent"
@@ -157,5 +158,37 @@ func TestHistoryLogLoadMissingFile(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(h.path))); err != nil {
 		t.Fatalf("temp dir: %v", err)
+	}
+}
+
+// Lines written before the agent redacted By at the source (the pre-fix
+// format) can hold a caller's raw secret for years — the file keeps ~10k
+// events. Loading must scrub them with the same masking the agent now applies
+// on record, so a poisoned legacy line stops leaking through `jit agent
+// history`, the seeded ring, and `jit audit` alike.
+func TestHistoryLogLoadScrubsLegacyPlaintextBy(t *testing.T) {
+	secret := "sk_FAKEfixture_notARealKeyXYZ0123"
+	dir := t.TempDir()
+	h := newHistoryLog(dir, nil)
+	legacy := fmt.Sprintf(
+		`{"unix_time":100,"kind":"unlock","op":"unwrap","by":"jit run -- curl -H %s","by_pid":42}
+{"unix_time":200,"kind":"unlock","op":"wrap","by":"jit vault set stripe/live-key hunter2","by_pid":43}
+`, secret)
+	if err := os.WriteFile(filepath.Join(dir, historyFileName), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := h.load(agent.MaxSessionEvents)
+	if len(got) != 2 {
+		t.Fatalf("load returned %d events, want 2", len(got))
+	}
+	if strings.Contains(got[0].By, secret) {
+		t.Errorf("By = %q still carries a legacy line's raw credential", got[0].By)
+	}
+	if strings.Contains(got[1].By, "hunter2") {
+		t.Errorf("By = %q still carries a legacy vault-set value", got[1].By)
+	}
+	if !strings.Contains(got[1].By, "stripe/live-key") {
+		t.Errorf("By = %q, want the path kept while scrubbing the value", got[1].By)
 	}
 }

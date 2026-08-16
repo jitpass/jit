@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	"github.com/jitpass/jit/internal/agent"
+	"github.com/jitpass/jit/internal/auditlog"
 )
 
 // historyLog is the durable half of the agent's session history: one JSON
@@ -117,6 +118,12 @@ func (h *historyLog) load(max int) []agent.SessionEvent {
 		if err := json.Unmarshal(line, &e); err != nil || e.Kind == "" {
 			continue
 		}
+		// Lines written before the agent masked By at the source can hold a
+		// caller's raw secret, and this file keeps ~10k events — scrub them
+		// with the same judgement the agent now applies on record, so a
+		// poisoned legacy line stops leaking the moment it is read rather
+		// than the year it rotates out.
+		e.By = auditlog.RedactCommandLine(e.By)
 		out = append(out, e)
 	}
 	if len(out) > max {
