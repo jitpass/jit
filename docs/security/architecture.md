@@ -44,8 +44,8 @@ Secrets materialize at the moment of use and nowhere else:
   file) or, with `--live`, kept as a pipe that serves real values only to
   that run's own process tree. Neither writes a secret to disk, and both
   end the instant the command exits.
-- A tool that *mints* credentials rather than carrying one — an SSO CLI like
-  [clisso](../wrap/clisso.md) — is intercepted at the mint: its shim runs it
+- A tool that *mints* credentials rather than carrying one (an SSO CLI like
+  [clisso](../wrap/clisso.md)) is intercepted at the mint: its shim runs it
   with the tool's own machine-readable output mode, captures the credentials
   from that output, and stores them in the vault instead of letting the tool
   write them to a plaintext file. The capture happens in the user's terminal,
@@ -150,8 +150,8 @@ dialog *per request* while saying yes cost one dialog *once*, so anything
 asking in a loop could simply outlast you. Consent prompts now back off per
 request after a refusal (about two seconds, then eight, then thirty), and the
 prompt says how many times that caller has already been refused. Nothing is
-locked out, the next genuine attempt still asks, and a *fresh* `jit unlock` —
-one that actually challenges you — clears the pause outright, while an unlock
+locked out, the next genuine attempt still asks, and a *fresh* `jit unlock`,
+one that actually challenges you, clears the pause outright, while an unlock
 against an already-open session prompts nobody and so clears nothing. A caller
 also cannot conjure a prompt out of
 nothing: the credential class it names is verified against the ciphertext it

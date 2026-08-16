@@ -67,7 +67,10 @@ then **[Install](./getting-started/install.md)** →
   [hf](./wrap/hf.md) · [supabase](./wrap/supabase.md) ·
   [wrangler](./wrap/wrangler.md) · [openai](./wrap/openai.md) ·
   [claude](./wrap/claude-code.md) · [gemini](./wrap/gemini.md) ·
-  [codex](./wrap/codex.md) · [sentry-cli](./wrap/sentry-cli.md) ·
+  [codex](./wrap/codex.md) · [cursor-agent](./wrap/cursor-agent.md) ·
+  [copilot](./wrap/copilot.md) · [cline](./wrap/cline.md) ·
+  [opencode](./wrap/opencode.md) · [kiro-cli](./wrap/kiro-cli.md) ·
+  [sentry-cli](./wrap/sentry-cli.md) ·
   [snyk](./wrap/snyk.md) · [circleci](./wrap/circleci.md) ·
   [vault](./wrap/vault.md) · [pulumi](./wrap/pulumi.md) ·
   [descope](./wrap/descope.md) · [okta-cli-client](./wrap/okta-cli-client.md) ·

@@ -30,9 +30,9 @@ After setup, daily life with jit is mostly nothing: your app starts normally,
 
 ## 1. See what's exposed: `jit scan`
 
-Start here. `audit` is strictly read-only under every flag: it never touches,
-encrypts, or rewrites anything, and never prints a real secret value in full,
-only a masked preview.
+Start here. `jit scan` is strictly read-only under every flag: it never
+touches, encrypts, or rewrites anything, and never prints a real secret value
+in full, only a masked preview.
 
 ```
 $ jit scan
@@ -132,14 +132,14 @@ Touch ID; both are safe to run as often as you like.
 ## 5. Run your project: `jit run`
 
 After migration a `.env` serves **decoy** values to anything that reads it
-cold — a `cat`, a backup, or a bare `npm run dev`. Real values reach a tool
+cold: a `cat`, a backup, or a bare `npm run dev`. Real values reach a tool
 **only** when you launch it through `jit run`:
 
 ```
 $ jit run -- npm run dev      # injects your .env secrets into the process
 ```
 
-There are four modes, split across two independent switches — `--live` for
+There are four modes, split across two independent switches. `--live` is for
 **this project's** files, `--with` for a **machine-global** credential:
 
 ```
@@ -152,6 +152,30 @@ $ jit run --live --with gcp -- <cmd>     # needs both at once
 Not sure whether you need `--live`? Just run the default first; if the tool
 acts like its config is empty, re-run with `--live`. Full guide, including a
 decision table, in **[Run a command with secrets](../run/index.md)**.
+
+## 6. Work that runs while you're away: `jit grant`
+
+The session above ends when you do: idle timeout, screen lock, sleep. That is
+the right default until something has to keep running without you - an agent
+working overnight, a long build, a scheduled job. Those stop at a prompt
+nobody is there to answer.
+
+`jit grant` moves the decision earlier instead of removing it. One Touch ID,
+now, approves a named program to use specific profiles until a deadline you
+set:
+
+```sh
+$ jit grant --process claude --profile jamf --for 8h
+```
+
+The prompt names exactly what you're signing ("let claude under iTerm2 use
+2 secrets (jamf) unattended for 8h"), and the grant is scoped to the terminal
+you typed it in, including sessions you start later inside that window.
+Everything else keeps prompting as usual. `jit grant list` shows what's open,
+`jit grant revoke` ends one early, and every grant and every use of it lands
+in `jit audit`.
+
+More in **[Process grants](../service/grants.md)**.
 
 ## Optional: wrap your CLI tools
 

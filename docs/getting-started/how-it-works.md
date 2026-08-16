@@ -40,6 +40,34 @@ myapp/STRIPE_API_KEY`). `jit migrate` and `jit wrap` create them;
 contains a secret value, only names and paths - which is exactly why it's
 safe to commit. More in **[Profiles](../run/profiles.md)**.
 
+## How a secret actually reaches a program
+
+No kernel extension, no filesystem driver, no FUSE. Three mechanisms, picked
+by what the tool is able to do:
+
+1. **Environment injection, then `execve`.** `jit run` puts the values in the
+   environment and replaces its own process image with your command. jit is
+   gone from memory the instant your command starts, and the value exists
+   only in that one process.
+2. **The tool's own credential protocol**, where one exists: AWS
+   `credential_process`, docker and git credential helpers, kubectl exec
+   plugins, Terraform's credentials helper. The tool asks on stdout/stdin and
+   jit answers. No file is involved at any point.
+3. **A named-pipe mount**, for tools that only know how to read a file.
+
+The third one is the one people ask about, so here it is concretely. The
+"file" is a POSIX FIFO created with `mkfifo(2)` at mode `0600`. When a program
+calls `open(".env")`, the kernel **blocks that open** until a writer connects.
+The background service is the writer: it opens the same path `O_WRONLY`, which
+releases the reader, writes the decrypted bytes from memory straight into the
+kernel pipe buffer, closes, and loops back to `open(2)` to wait for the next
+reader. Nothing is written to disk in that sequence.
+
+What gets written is decided per read, in the service: decoy values for an
+ambient reader (a `cat`, a backup, a stray `npm install`), real values only
+for a process inside an authorized run's tree. Details, including what a FIFO
+cannot do that a regular file can, in **[Live-mounted files](../run/mounts.md)**.
+
 ## How each secret keeps working
 
 Each credential flows back to its consumer through that tool's own native
