@@ -7,7 +7,7 @@ description: The mental model - secrets only at the moment of use, the three way
 
 jit has one job: take the secrets that already sit in plaintext across your
 Mac, move them into an encrypted vault, and leave every tool working exactly
-as before. Everything below follows from that.
+as before.
 
 Two questions organize the whole tool: **how did the secret get into the
 vault** (integrate), and **how does it reach the tool at use time** (run).
@@ -37,9 +37,9 @@ one-time setup per secret, the last is every day.
 
 ## Three ways a tool consumes a credential
 
-This is the distinction everything else hangs off. A tool reads its secret in
-exactly one of three ways. It is not a preference you pick, it is a fact about
-the tool, and it decides both how you integrate it and how you run it.
+A tool reads its secret in exactly one of three ways. It is not a preference
+you pick, it is a fact about the tool, and it decides both how you integrate
+it and how you run it.
 
 | Delivery model | The tool reads its secret by... | Examples |
 | --- | --- | --- |
@@ -64,8 +64,7 @@ hood it delegates to a native hook or installs a shim as appropriate.
 ## Running: three patterns, decided by the model
 
 You do not freely choose how a tool runs; its delivery model does. Two of
-these three let you "just type the command," but through different machinery,
-which is the subtlety worth internalizing.
+these three let you "just type the command," but through different machinery.
 
 | Pattern | What you actually run | Who does the work |
 | --- | --- | --- |
@@ -73,7 +72,7 @@ which is the subtlety worth internalizing.
 | **Wrap shim** (looks native) | `gh pr list`, `gcloud storage ls` | A `PATH` shim transparently runs `jit run` for you. Feels like the bare tool; it is jit underneath. |
 | **Explicit [`jit run`](../run/index.md)** | `jit run ./deploy.sh`, `jit run --with gcp -- terraform apply` | You launch through jit directly: a project's `.env`, a named `--profile`, or a machine-global `--with` grant. |
 
-The subtlety in one line: `aws` is *truly* native (jit hooked its
+`aws` is *truly* native (jit hooked its
 `credential_process`, nothing wraps it), but a grant-wrapped `gcloud` only
 *looks* native, the shim is quietly running `jit run --with gcp -- gcloud`.
 
@@ -134,7 +133,7 @@ Only you widen the scope, and an unexpected prompt is your cue to decline. The f
 ## What jit does not defend against
 
 jit narrows where and when plaintext exists. It does not make a compromised
-account safe, and it says so plainly.
+account safe.
 
 - **A process you grant a secret to can do anything with it.** Delivery hands
   the real value to the target; what it does next is outside jit's control.

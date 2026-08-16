@@ -6,10 +6,9 @@ description: Migrated .env files serve decoy values by default and real ones onl
 # Live-mounted files
 
 A migrated `.env` is no longer a regular file: it's a named pipe the
-[service](../service/index.md) serves fresh content into on every read. One
-thing to know up front: **the mount serves fake-looking placeholder values
-by default, and real values only to the process tree of a `jit run` grant
-you launch on purpose.** Unlocking the vault, `cd`-ing into a directory, or
+[service](../service/index.md) serves fresh content into on every read. **The
+mount serves fake-looking placeholder values by default, and real values only
+to the process tree of a `jit run` grant you launch on purpose.** Unlocking the vault, `cd`-ing into a directory, or
 a `cat` never makes a mount serve real values. A file that served real
 secrets to whatever opened it would defeat the point of moving them off
 disk.

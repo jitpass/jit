@@ -7,7 +7,6 @@ description: When to use jit wrap, jit run, jit run --profile, jit run --with, a
 
 jit has a few ways to get a secret out of the vault and into a program. They
 are not alternatives to each other so much as answers to different questions.
-This page is the decision guide.
 
 ## The one-line answer
 
@@ -19,8 +18,6 @@ This page is the decision guide.
 | A one-off command that needs a specific profile | **`jit run --profile <name>`** | No setup; name the profile for this run only |
 | A machine-wide credential *file* a tool reads (gcloud ADC, SOPS age key, global `~/.npmrc`, `~/.pypirc`) | **run it** and approve the prompt, or **`jit run --with <name>`** | Consent prompts on first read (default); `--with` is the explicit, hard-gated grant, never authorized by a repo |
 | Secrets in your current interactive shell | **`jit export`** | Prints `export` lines to `eval` |
-
-Everything below is the longer "why".
 
 ## `jit wrap`: a tool that carries its own token
 

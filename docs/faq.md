@@ -250,9 +250,9 @@ Crypto primitives are in [TECH_STACK.md](../TECH_STACK.md).
 ### Where does the master key live, and is it hardware-bound?
 
 The master key is in the macOS login Keychain, and every use requires a Touch
-ID or device-passcode challenge. Be precise about the guarantee: today that is
-an **application-level** local-auth gate (LocalAuthentication), not a
-hardware-enforced Keychain ACL or a Secure Enclave binding. A real OS-enforced
+ID or device-passcode challenge. Today that is an **application-level**
+local-auth gate (LocalAuthentication), not a hardware-enforced Keychain ACL or
+a Secure Enclave binding. A real OS-enforced
 ACL needs an entitlement macOS only grants through a provisioning profile,
 and a provisioning profile can only be embedded in an `.app` bundle, never a
 bare CLI binary like jit (releases are Developer-ID signed, and that alone
@@ -270,7 +270,7 @@ local attacker can reliably do is ask repeatedly until you approve to make it
 stop. If the service is locked, the master key sits in a
 plain Keychain item with no OS-level ACL today, so a determined local attacker
 could read it directly, bypassing the app-level challenge. This is the
-accepted Phase 1 boundary, stated plainly rather than hidden.
+accepted Phase 1 boundary.
 
 ### Is the master key ever in memory?
 
@@ -318,7 +318,7 @@ Yes. It never touches, encrypts or rewrites a single file it scans, and never
 prints a real value (every preview is masked). Use `jit scan --format ndjson`
 for machine-readable output under the same redaction rules.
 
-To be exact about "writes nothing": the scan itself writes nothing, and the
+The scan itself writes nothing, and the
 guard test in `internal/audit` enforces that. The command around it appends a
 line to jit's own application audit log under
 `~/Library/Application Support/jitpass/`, the same as every other jit

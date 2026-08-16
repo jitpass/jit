@@ -23,7 +23,6 @@ Every mutating command prints its plan and asks first; every rewritten file is
 backed up (encrypted, into the vault) before it's touched, and
 `jit migrate undo` restores any of them byte-for-byte.
 
-The rest of this page walks the same steps with what to expect at each.
 After setup, daily life with jit is mostly nothing: your app starts normally,
 `aws`/`kubectl`/`terraform` behave exactly as before, and roughly once per
 5 minutes of active use, macOS asks for a Touch ID confirmation.
