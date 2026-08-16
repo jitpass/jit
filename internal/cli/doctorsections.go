@@ -469,13 +469,40 @@ func gatherVaultIntegrityFindings(root string, v *vault.Vault) []checkFinding {
 	// exists to catch; MEKIndeterminate (a keychain error, or a query that
 	// would have required interaction) is reported as neither present nor gone,
 	// so doctor stays silent rather than raise a false alarm.
-	if vaultMasterKeyPresence() == keychainwrap.MEKAbsent {
+	keyGone := vaultMasterKeyPresence() == keychainwrap.MEKAbsent
+	if keyGone {
 		out = append(out, checkFinding{
 			Kind: kindVaultKey,
 			Detail: fmt.Sprintf(
 				"the vault holds %s but this Mac's master key is missing from the keychain, so none of them can be decrypted. Every envelope is structurally intact; only the key is gone.",
 				countWord(len(paths), "secret", "secrets")),
 			Action: "`jit vault import <file>` from a `jit vault export` backup",
+		})
+	}
+
+	// Auth-free like everything else here: UnboundPaths reads envelope
+	// metadata only. Reported LAST because it is the least urgent thing this
+	// section can say — nothing is broken, and a v1 file decrypts today
+	// exactly as it always has. It earns a line because no other command
+	// reports it and it never fixes itself: rekey rewraps the DEK and leaves
+	// the envelope alone, so a secret written before v0.57.0 stays v1 until
+	// it is written again.
+	//
+	// Silent when the master key is gone. The remediation is an export,
+	// which has to DECRYPT every secret, so with no key it is not advice —
+	// it is a second line telling a user whose vault just became unreadable
+	// to go run something that cannot work. The vault-key finding above is
+	// the only actionable thing in that state.
+	if keyGone {
+		return out
+	}
+	if unbound, err := v.UnboundPaths(); err == nil && len(unbound) > 0 {
+		out = append(out, checkFinding{
+			Kind: kindLegacyEnvelope,
+			Detail: fmt.Sprintf(
+				"%s an old format that cannot tell if a value was swapped on disk.",
+				countWord(len(unbound), "secret uses", "secrets use")),
+			Action: "`jit vault export <file>` then `jit vault import <file>` to update them",
 		})
 	}
 	return out

@@ -350,3 +350,70 @@ func TestMCPFindingsIgnoresUnwrappedServers(t *testing.T) {
 		t.Errorf("findings = %+v, want none: nothing here is jit's", findings)
 	}
 }
+
+// plantLegacySecret writes a pre-AAD (v1) envelope, the shape every jit
+// before v0.57.0 wrote. Structurally fine and readable forever — what makes
+// it worth a doctor line is that its payload is bound to nothing.
+func plantLegacySecret(t *testing.T, home, path string) {
+	t.Helper()
+	writeVaultEnc(t, home, path, `{"version":1,"recipients":{"test":"00"},"payload":"00"}`)
+}
+
+// A vault still holding pre-v0.57.0 envelopes gets one advisory line. It has
+// to be advisory: nothing is broken, the secrets read exactly as they always
+// have, and exploiting the unbound payload takes write access to the vault
+// directory — an attacker who could read those files anyway. It has to be
+// SAID because no other command reports it and it never heals on its own.
+func TestLegacyEnvelopesAreReportedAsAdvisory(t *testing.T) {
+	home := withFixtureHome(t)
+	plantLegacySecret(t, home, "legacy/old-key")
+	plantVaultSecret(t, home, "modern/current")
+	stubKeychain(t, keychainwrap.MEKPresent)
+
+	findings := gatherVaultIntegrityFindings(fixtureRoot(home), fixtureVault(home))
+	if len(findings) != 1 || findings[0].Kind != kindLegacyEnvelope {
+		t.Fatalf("expected one legacy_envelope finding, got %+v", findings)
+	}
+	if !findings[0].Kind.warning() {
+		t.Error("a legacy envelope must be advisory: nothing is broken and the secret still reads")
+	}
+	if !strings.Contains(findings[0].Detail, "1 secret uses") {
+		t.Errorf("expected the finding to count what is affected, got: %s", findings[0].Detail)
+	}
+	// The action has to name a remediation that actually works. Re-writing
+	// the secret is the only thing that upgrades an envelope, and
+	// export/import is how a whole vault does it at once — a rekey would
+	// leave every one of these exactly as it found them.
+	if !strings.Contains(findings[0].Action, "export") || !strings.Contains(findings[0].Action, "import") {
+		t.Errorf("action must point at the round-trip that rewrites envelopes, got: %s", findings[0].Action)
+	}
+}
+
+// A vault written by a current jit must stay silent, or every user carries a
+// permanent doctor line urging an export/import round-trip that would
+// rewrite every secret they own for nothing.
+func TestCurrentEnvelopesAreSilent(t *testing.T) {
+	home := withFixtureHome(t)
+	plantVaultSecret(t, home, "modern/current")
+	plantOriginSecret(t, home, "modern/other", "~/code/app/.env")
+	stubKeychain(t, keychainwrap.MEKPresent)
+
+	if findings := gatherVaultIntegrityFindings(fixtureRoot(home), fixtureVault(home)); len(findings) != 0 {
+		t.Errorf("a current vault must be silent about envelope formats, got %+v", findings)
+	}
+}
+
+// With the master key gone, the legacy-envelope line must not appear. Its
+// remediation is an export, which decrypts every secret — unrunnable without
+// the key. Printing it beside the vault-key finding would tell a user whose
+// vault just became unreadable to go do something that cannot work.
+func TestLegacyEnvelopesStaySilentWhenTheMasterKeyIsGone(t *testing.T) {
+	home := withFixtureHome(t)
+	plantLegacySecret(t, home, "legacy/old-key")
+	stubKeychain(t, keychainwrap.MEKAbsent)
+
+	findings := gatherVaultIntegrityFindings(fixtureRoot(home), fixtureVault(home))
+	if len(findings) != 1 || findings[0].Kind != kindVaultKey {
+		t.Fatalf("expected only the vault_key finding, got %+v", findings)
+	}
+}
