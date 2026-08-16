@@ -109,8 +109,8 @@ Among the auth events, eight kinds appear:
 
   Repeated rejections collapse into a single line carrying a `count`, and that
   line names the *first* caller of the window rather than each one. That is
-  deliberate and worth knowing when you read the trail forensically: keying
-  these per caller would let a flood of throwaway processes - one `fork` each -
+  deliberate: keying these per caller would let a flood of throwaway
+  processes - one `fork` each -
   push every real unlock and denial out of the history, so the record of an
   attack would be the first thing the attack erased.
 

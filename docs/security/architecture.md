@@ -5,11 +5,10 @@ description: How jit protects secrets - encryption at rest, the service boundary
 
 # Security architecture
 
-This page is the shape of the design; the
-[self-reviews](./self-reviews/index.md) are where each claim gets tested,
-and [TECH_STACK.md](../../TECH_STACK.md) documents the implementation
-choices (crypto primitives, Keychain/Secure Enclave usage, IPC) and their
-rationale.
+The [self-reviews](./self-reviews/index.md) are where each claim on this page
+gets tested, and [TECH_STACK.md](../../TECH_STACK.md) documents the
+implementation choices (crypto primitives, Keychain/Secure Enclave usage, IPC)
+and their rationale.
 
 ## At rest
 
@@ -145,7 +144,7 @@ serve under it is a distinct [`jit audit`](../service/provenance.md) event.
 **Refusing has to stay cheap.** A consent prompt cannot cache a refusal as a
 lasting "no" - the prompt cannot tell a human's decline from a keychain
 failure, and treating either as permanent would lock a credential out with no
-way back. That left an asymmetry worth naming: saying no cost one full-screen
+way back. That left an asymmetry: saying no cost one full-screen
 dialog *per request* while saying yes cost one dialog *once*, so anything
 asking in a loop could simply outlast you. Consent prompts now back off per
 request after a refusal (about two seconds, then eight, then thirty), and the
@@ -161,7 +160,7 @@ longer put a dialog on your screen.
 ## Deliberate limits
 
 jit narrows *where* and *when* plaintext exists; it does not make a
-compromised user account safe. The boundaries worth knowing:
+compromised user account safe. The boundaries:
 
 - **Redacting shell history is cleanup, not rotation.** `jit migrate
   <historyfile>` removes a recorded credential from the file, but the value

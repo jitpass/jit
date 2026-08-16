@@ -60,7 +60,7 @@ command does with it, automatically:
   command exits. This fits shell scripts, dotenv loaders, and anything that
   reads its config from the environment.
 - **`--live` keeps the live mount and serves real values through the file**,
-  for a tool that reads values *from the file itself* — `docker compose` with
+  for a tool that reads values *from the file itself* - `docker compose` with
   `env_file:` is the canonical case. jit auto-detects the common ones
   (`docker`, `docker-compose`, `podman`), and a project that always reads the
   file can pin this with `read_as_file: true` in its `.jit/config.yaml`
@@ -108,17 +108,17 @@ a command. `--live` is about **this project's** files; `--with` is about a
 | --- | --- | --- |
 | `jit run -- <cmd>` | The tool reads secrets from **environment variables** (the common case: `process.env`, most dotenv loaders, shell scripts). | Injects the project's `.env` values into the environment; the mount is swapped for an inert file. |
 | `jit run --live -- <cmd>` | The tool reads the project's `.env` **file itself** and ignores the environment (`docker compose` with `env_file:`). Auto-selected for `docker`/`docker-compose`/`podman`. | Serves the project's `.env` mount real values to that run's process tree, per read. |
-| `jit run --with <name> -- <cmd>` | The tool reads a **machine-global** credential file — `gcp` (gcloud ADC), `sops`, `npm` (`~/.npmrc`), `netrc`. | Serves that global mount real values to the run, behind a fresh disclosed Touch ID. |
-| `jit run --live --with <name> -- <cmd>` | The run needs **both**: it reads the project `.env` file directly *and* a global credential file. | Two independent grants on the same run — project mount (`--live`) and the named global mount (`--with`). |
+| `jit run --with <name> -- <cmd>` | The tool reads a **machine-global** credential file - `gcp` (gcloud ADC), `sops`, `npm` (`~/.npmrc`), `netrc`. | Serves that global mount real values to the run, behind a fresh disclosed Touch ID. |
+| `jit run --live --with <name> -- <cmd>` | The run needs **both**: it reads the project `.env` file directly *and* a global credential file. | Two independent grants on the same run - project mount (`--live`) and the named global mount (`--with`). |
 
 **How do I know if I need `--live`?** You usually don't decide upfront. Run
 the default; if the tool behaves as though its config is empty or missing
 (connection refused, a missing key, a blank variable), that's the tell it
-read the `.env` file and got the inert swap — re-run with `--live`. Once you
+read the `.env` file and got the inert swap - re-run with `--live`. Once you
 know a project always reads the file, pin `read_as_file: true` in its
 `.jit/config.yaml` so you never type `--live` there again.
 
-**Combined example** — a compose stack that reads the project `.env` file and
+**Combined example** - a compose stack that reads the project `.env` file and
 needs the gcloud ADC to pull an image:
 
 ```
@@ -128,7 +128,7 @@ $ jit run --live --with gcp -- docker compose up
 Both grants land on that one run's process tree and end the instant it exits.
 (Because docker is auto-detected you could drop `--live` here; writing it is
 just clearer.) Whatever the mode, real values flow **only** to the process
-tree of the `jit run` you launch — never on an unlock, a `cd`, or a bare
+tree of the `jit run` you launch - never on an unlock, a `cd`, or a bare
 command with no `jit run` in front of it.
 
 ## Runs that outlive your presence

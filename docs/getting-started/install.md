@@ -55,11 +55,11 @@ confirm that signature, run `jit doctor` and read its `jit` line: it reports
 `signed CZC6BH93GJ` using the same check `jit upgrade` runs before it will
 install anything, so it cannot disagree with what jit itself enforces.
 
-Note that `codesign -dv` *displays* a signature without validating it — a
+Note that `codesign -dv` *displays* a signature without validating it - a
 tampered binary still prints the right `Authority` line. If you would rather
 check before running the binary at all, `codesign --verify --strict
 $(command -v jit)` verifies its integrity and prints nothing on success. Releases are also **notarized** by Apple, so every route runs
-without a Gatekeeper prompt — including ones that quarantine. Homebrew
+without a Gatekeeper prompt - including ones that quarantine. Homebrew
 quarantines its downloads and Gatekeeper clears them against the notarization
 ticket, which it fetches online the first time a new version runs (jit ships a
 bare Mach-O, and those cannot be stapled). The `curl` install sets no
