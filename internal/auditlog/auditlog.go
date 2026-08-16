@@ -320,72 +320,149 @@ func RedactText(s string) string {
 
 // RedactCommandLine masks secrets inside a whole command line recorded as ONE
 // string — the agent's SessionEvent.By, a caller's argv joined with spaces —
-// the one recorded shape neither Redact (which sees jit's own parsed args) nor
-// a plain RedactText pass fully covers. Two passes, mirroring what Redact plus
-// cli/auditrecord.go's positional mask do for jit's own os.Args: a grammar
-// pass that unconditionally masks the value positionals of a
-// `jit vault set <path> <value>` line (a weak value — "hunter2" — is not
-// credential-shaped and would survive the entropy test), then RedactText for
-// every credential-shaped token whatever the command was.
+// the one recorded shape Redact (which sees jit's own parsed args) never
+// covers. Two passes: the vault-set grammar mask (a weak value — "hunter2" —
+// is not credential-shaped and would survive every heuristic), then redactArg
+// on each field, the same KEY=VALUE-splitting, path-exempting judgement
+// Redact applies to jit's own os.Args. Fields redactArg keeps and that carry
+// no path separator get one more RedactText sweep, so a credential wrapped in
+// quotes or glued to punctuation is still found; path-bearing fields skip it
+// because the entropy test has no business inside "/opt/homebrew/Cellar/…" —
+// an investigator needs the program back, and looksSecret's prefix check has
+// already had its chance at a path that really is a credential.
+//
+// Whitespace is normalized to single spaces (the fields are re-joined). By
+// strings are argv joined with single spaces already, so nothing observable
+// changes.
 //
 // This lives here rather than beside the agent that records By or the CLI
 // that re-reads it, because both need the identical judgement and auditlog is
 // the leaf they already share for exactly this doctrine.
 func RedactCommandLine(line string) string {
 	fields := strings.Fields(line)
-	if masked, changed := maskVaultSetValues(fields); changed {
-		line = strings.Join(masked, " ")
+	if len(fields) == 0 {
+		return line
 	}
-	return RedactText(line)
+	fields, _ = MaskVaultSetValues(fields)
+	for i, f := range fields {
+		if f == RedactToken {
+			continue
+		}
+		if r := redactArg(f); r != f {
+			fields[i] = r
+			continue
+		}
+		if !strings.Contains(f, "/") {
+			fields[i] = RedactText(f)
+		}
+	}
+	return strings.Join(fields, " ")
 }
 
-// maskVaultSetValues replaces the value positionals of a `jit vault set
-// <path> <value>` field list with RedactToken. The first four positionals —
-// the program (matched on its base name, argv[0] is usually an absolute
-// path), "vault", "set", and the path — stay legible: the path is the one
-// part of the line an investigation needs, and it is not a secret. EVERY
-// positional past the path is masked, not just the last: a value argv element
-// containing spaces rejoins as several fields, and a mistyped extra argument
-// is more likely a mis-pasted secret than anything the trail should keep.
-func maskVaultSetValues(fields []string) ([]string, bool) {
-	pos := positionalIndexes(fields)
-	if len(pos) < 5 {
-		return fields, false
+// MaskVaultSetValues replaces the value positionals of a `jit vault set
+// <path> <value>` argv with RedactToken, reporting whether anything was
+// masked. The grammar's own words — the program (matched on its base name,
+// argv[0] is usually an absolute path), "vault", "set", and the path — stay
+// legible: the path is the one part of the line an investigation needs, and
+// it is not a secret. EVERY element past the path is masked, not just the
+// last: a value argv element containing spaces rejoins as several fields, a
+// mistyped extra argument is more likely a mis-pasted secret than anything
+// the trail should keep, and a dash-prefixed token past the path is masked
+// too unless it is one of the command's own boolean flags — a value that
+// happens to start with "-" must not slip through by looking like a flag.
+// After a bare "--" even a flag-spelled token is a value, exactly as cobra
+// reads it.
+//
+// Exported because the two producers of this judgement — RedactCommandLine
+// here and cli/auditrecord.go's positional mask for jit's own os.Args — must
+// share ONE grammar; they briefly held two hand-rolled copies, which
+// disagreed within the first review. It works element-wise, so both a real
+// argv slice (elements may contain spaces) and a Fields-split line get the
+// identical treatment. A slice that is not a vault-set invocation is
+// returned unchanged.
+func MaskVaultSetValues(argv []string) ([]string, bool) {
+	const (
+		wantJit = iota
+		wantVault
+		wantSet
+		wantPath
+		masking
+	)
+	stage := wantJit
+	terminated := false
+	changed := false
+	out := append([]string(nil), argv...)
+	for i, f := range argv {
+		if !terminated && f == "--" {
+			terminated = true
+			continue
+		}
+		flagLike := !terminated && strings.HasPrefix(f, "-") && f != "-"
+		switch stage {
+		case wantJit:
+			if flagLike {
+				continue
+			}
+			if filepath.Base(f) != "jit" {
+				return argv, false
+			}
+			stage = wantVault
+		case wantVault:
+			if flagLike {
+				continue
+			}
+			if f != "vault" {
+				return argv, false
+			}
+			stage = wantSet
+		case wantSet:
+			if flagLike {
+				continue
+			}
+			if f != "set" {
+				return argv, false
+			}
+			stage = wantPath
+		case wantPath:
+			if flagLike {
+				continue
+			}
+			stage = masking // f is the path; keep it
+		case masking:
+			if !terminated && isVaultSetFlag(f) {
+				continue
+			}
+			out[i] = RedactToken
+			changed = true
+		}
 	}
-	if filepath.Base(fields[pos[0]]) != "jit" || fields[pos[1]] != "vault" || fields[pos[2]] != "set" {
-		return fields, false
-	}
-	out := append([]string(nil), fields...)
-	for _, i := range pos[4:] {
-		out[i] = RedactToken
+	if !changed {
+		return argv, false
 	}
 	return out, true
 }
 
-// positionalIndexes lists the indexes of fields' non-flag tokens. Reliable
-// for the vault-set grammar specifically because every flag that command can
-// see (--stdin, --yes/-y, --force/-f, the root --quiet) is a BOOLEAN, so a
-// "-" prefix is always a whole flag and never a flag's detached value; if a
-// value-taking flag is ever added there, its value would count as positional
-// and be masked — over-masking, never a leak. A bare "--" ends flag parsing:
-// everything after it is positional whatever it looks like, exactly as cobra
-// reads it.
-func positionalIndexes(fields []string) []int {
-	var pos []int
-	flagsDone := false
-	for i, f := range fields {
-		if !flagsDone {
-			if f == "--" {
-				flagsDone = true
-				continue
-			}
-			if strings.HasPrefix(f, "-") && f != "-" {
-				continue
-			}
-		}
-		pos = append(pos, i)
+// VaultSetBooleanFlags are the flags a `jit vault set` command line can
+// legitimately carry, all boolean — which is what lets MaskVaultSetValues
+// keep them legible while masking every other token past the path. A flag
+// added to the command but not listed here is masked as if it were a value:
+// over-masking, never a leak. TestVaultSetGrammarMatchesCommand (cli) walks
+// the real cobra command and fails if this map drifts from it, or if the
+// command ever grows a non-boolean flag this grammar could not survive.
+var VaultSetBooleanFlags = map[string]bool{
+	"--stdin": true,
+	"--yes":   true, "-y": true,
+	"--force": true, "-f": true,
+	"--quiet": true,
+}
+
+// isVaultSetFlag reports whether tok spells one of vault set's own boolean
+// flags, including the "--flag=true" form.
+func isVaultSetFlag(tok string) bool {
+	if i := strings.IndexByte(tok, '='); i > 0 {
+		tok = tok[:i]
 	}
-	return pos
+	return VaultSetBooleanFlags[tok]
 }
 
 // hasMixedClasses requires both letters and digits, a lone long word

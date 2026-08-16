@@ -14,6 +14,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/jitpass/jit/internal/agent"
+	"github.com/jitpass/jit/internal/auditlog"
 	"github.com/jitpass/jit/internal/lineage"
 )
 
@@ -187,7 +188,13 @@ func (m *mountManager) newRunAttachment(pid int32) (*runAttachment, bool) {
 	}
 	command := ""
 	if p, ok := lineage.Describe(pid); ok {
-		command = p.Command()
+		// Masked at capture, same doctrine as SessionEvent.By: this string
+		// is Fprintf'd into the durable service log ("serving real content
+		// to pid N's process tree (…)") and shipped out via
+		// MountGrantStatus.Command, and a run target launched as
+		// `tool --token=…` must not have its argv upgraded into a durable
+		// plaintext copy there either.
+		command = auditlog.RedactCommandLine(p.Command())
 	}
 	now := time.Now()
 	return &runAttachment{pid: pid, startMicro: startMicro, command: command, since: now, hardCap: now.Add(runHardCap)}, true
