@@ -237,10 +237,15 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 	// if the restart hiccups, so a restart failure is a warning, not an error
 	// that would wrongly imply the binary wasn't swapped.
 	fmt.Fprintf(out, "Restarting service ... ")
-	if err := restartServiceOntoCurrentBinary(); err != nil {
+	running, restartErr := restartServiceOntoCurrentBinary()
+	switch {
+	case restartErr != nil:
 		fmt.Fprintln(out, "could not restart automatically")
-		fmt.Fprint(out, hlCmds(fmt.Sprintf("  Run `jit service restart` to move the service onto %s (%s).\n", latest, err)))
-	} else {
+		fmt.Fprint(out, hlCmds(fmt.Sprintf("  Run `jit service restart` to move the service onto %s (%s).\n", latest, restartErr)))
+	case !running:
+		fmt.Fprintf(out, "reinstalled for %s, but it has not come back yet\n", latest)
+		fmt.Fprint(out, hlCmds("  Run `jit service restart`.\n"))
+	default:
 		fmt.Fprintf(out, "now on %s.\n", latest)
 	}
 
@@ -521,40 +526,45 @@ func sudoCommand(args ...string) *exec.Cmd {
 // Reloading then re-execs the old file and leaves the user upgraded in every
 // way except the service that holds their key — while this function's whole
 // contract is that it "points the service at the binary now on disk."
-func restartServiceOntoCurrentBinary() error {
+// It returns whether the service came back on this build within the start
+// wait: the upgrade path is the exact trigger of the 2026-08-17 incident
+// (binary swapped, launchd never respawned), and "now on v<latest>" printed
+// off a discarded result was one of the surfaces that reported success over
+// a dead broker.
+func restartServiceOntoCurrentBinary() (running bool, err error) {
 	plistPath, err := agentPlistPath()
 	if err != nil {
-		return err
+		return false, err
 	}
 	if _, statErr := os.Stat(plistPath); errors.Is(statErr, os.ErrNotExist) {
 		// No plist to preserve a setting from, so install with the defaults
 		// (default TTL, consent on). An existing plist takes a branch below,
 		// which keeps whatever TTL and consent state it already has baked in.
-		if _, _, ierr := installAgentService(agentInstallDefaultTTL, true); ierr != nil {
-			return ierr
-		}
-		return nil
+		_, running, ierr := installAgentService(agentInstallDefaultTTL, true)
+		return running, ierr
 	} else if statErr != nil {
-		return statErr
+		return false, statErr
 	}
 	plistData, err := os.ReadFile(plistPath) // #nosec G304 -- jit's own launchd plist under the user's LaunchAgents dir
 	if err != nil {
-		return err
+		return false, err
 	}
 	if agentPlistNeedsRepoint(plistData) {
 		ttl := agentInstallDefaultTTL
 		if d, ok := configuredAgentTTL(); ok {
 			ttl = d
 		}
-		if _, _, ierr := installAgentService(ttl, configuredAgentConsent()); ierr != nil {
-			return ierr
-		}
-		return nil
+		_, running, ierr := installAgentService(ttl, configuredAgentConsent())
+		return running, ierr
 	}
 	if out, err := reloadAgentService(plistPath); err != nil {
-		return fmt.Errorf("%w (%s)", err, strings.TrimSpace(string(out)))
+		return false, fmt.Errorf("%w (%s)", err, strings.TrimSpace(string(out)))
 	}
-	return nil
+	root, err := vaultRootDir()
+	if err != nil {
+		return false, err
+	}
+	return waitForAgentBuild(root, agentStartWait), nil
 }
 
 func dirWritable(dir string) bool {

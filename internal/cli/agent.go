@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -97,6 +98,19 @@ var agentRunCmd = &cobra.Command{
 		root, err := vaultRootDir()
 		if err != nil {
 			return fmt.Errorf("jit service run: %w", err)
+		}
+
+		// A foreground run must not steal the socket from a live agent:
+		// Listen unconditionally replaces the socket file, so a second agent
+		// silently splits the world — the first keeps the session and every
+		// FIFO mount's writer while new clients dial this one, and this one's
+		// exit then removes the socket out from under the first's listener,
+		// leaving a healthy process every command reports as crashed. Only
+		// the foreground case checks: under launchd (ppid 1) the reload's
+		// bootout guarantees the singleton, and a mid-teardown predecessor
+		// still answering the socket would turn this probe into a crash loop.
+		if os.Getppid() != 1 && agent.NewClient(agent.SocketPath(root)).Reachable() {
+			return fmt.Errorf("jit service run: an agent is already running and answering on %s; `jit service restart` restarts it", agent.SocketPath(root))
 		}
 
 		// launchd creates the StandardOutPath/StandardErrorPath log 0644;
@@ -278,9 +292,27 @@ var agentRunCmd = &cobra.Command{
 		// file out from under a concurrently-installed agent's O_APPEND fd
 		// is exactly the cross-process interference to avoid.
 		if os.Getppid() == 1 {
-			if exePath, exeErr := os.Executable(); exeErr == nil {
+			// Watch the STABLE path (the same one the plist names), not the raw
+			// os.Executable(): a versioned Caskroom exec path is deleted whole
+			// by `brew upgrade`, and a vanished file deliberately reads as "no
+			// change yet" forever — a watcher pointed there would never fire,
+			// leaving the old build running with only the status mismatch
+			// warning saying why: the exact trap this watcher exists to end.
+			if exePath, exeErr := agentBinaryPath(); exeErr == nil {
 				go watchOwnBinary(runCtx, exePath, agentBinaryCheckInterval, server.Quiescent, func() {
-					fmt.Fprintf(stdout, "jit service: the jit binary on disk changed (this process is build %s), exiting while the session is locked so launchd restarts the service on the current build\n", agent.BuildID())
+					fmt.Fprintf(stdout, "jit service: the jit binary on disk changed (this process is build %s), demanding a launchd restart onto the current build while the session is locked\n", agent.BuildID())
+					// The restart is DEMANDED, not hoped for. A clean exit
+					// trusting KeepAlive was how the 2026-08-17 incident
+					// happened: launchd pended the respawn ("pended nondemand
+					// spawn = inefficient") and the broker stayed dead for 71
+					// minutes. kickstart -k has launchd kill this process and
+					// spawn the new binary, re-reading the plist on the way (so
+					// an upgraded --ttl/--consent takes effect); it cannot hit
+					// the exit-113 dead end because a running service is by
+					// definition bootstrapped. If launchctl itself errors,
+					// endRun's clean exit still happens and KeepAlive remains
+					// the (unreliable) backstop it always was.
+					_, _ = launchctlRun("kickstart", "-k", agentServiceTarget())
 					endRun()
 				})
 			}
@@ -368,10 +400,13 @@ var serviceTTLCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit service ttl: %w", err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Session TTL set to %s. The background service restarted, so the next vault use prompts Touch ID once.\n", d)
 		if !running {
-			fmt.Fprintln(cmd.OutOrStdout(), hlCmds("It's still starting up in the background; give `jit service status` a few seconds."))
+			// The TTL itself IS saved — say so before failing on the
+			// restart half, so the error can't read as "nothing happened".
+			fmt.Fprintf(cmd.OutOrStdout(), "Session TTL set to %s.\n", d)
+			return fmt.Errorf("jit service ttl: the TTL is written, but %s; retry `jit service restart`", restartedServiceClause())
 		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Session TTL set to %s. The background service restarted, so the next vault use prompts Touch ID once.\n", d)
 		return nil
 	},
 }
@@ -483,8 +518,21 @@ var serviceConsentCmd = &cobra.Command{
 		if !ok {
 			ttl = agentInstallDefaultTTL
 		}
-		if _, _, err := installAgentService(ttl, on); err != nil {
+		_, running, err := installAgentService(ttl, on)
+		if err != nil {
 			return fmt.Errorf("jit service consent: %w", err)
+		}
+		state := "OFF"
+		if on {
+			state = "ON"
+		}
+		if !running {
+			// The setting IS saved (a Touch ID gated one, when turning off) —
+			// but "The service restarted" was printed unconditionally here,
+			// exit 0, for a service that may never have come back. Say what
+			// happened and fail on the restart half.
+			fmt.Fprintf(cmd.OutOrStdout(), "Per-process credential consent is now %s.\n", state)
+			return fmt.Errorf("jit service consent: the setting is written, but %s; retry `jit service restart`", restartedServiceClause())
 		}
 		if on {
 			fmt.Fprintln(cmd.OutOrStdout(), "Per-process credential consent is now ON. The service restarted; the next credential use prompts Touch ID.")
@@ -588,7 +636,13 @@ func plistProgramPath(data []byte) (string, bool) {
 	if len(values) == 0 {
 		return "", false
 	}
-	return values[0], true
+	// Unescape what install escaped: a path containing `&` (common in real
+	// directory names, as the install-side comment notes) round-trips through
+	// the plist as `&amp;`, and returning the escaped form made every
+	// comparison and stat against it wrong — agentPlistNeedsRepoint
+	// permanently true, and agentPlistOrphaned calling a healthy install
+	// orphaned because it stat'ed a path that doesn't exist.
+	return xmlUnescape(values[0]), true
 }
 
 // agentPlistNeedsRepoint reports whether the installed plist runs a different
@@ -650,7 +704,13 @@ func installAgentService(ttl time.Duration, consent bool) (plistPath string, run
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0o700); err != nil {
 		return plistPath, false, err
 	}
-	if err := os.WriteFile(plistPath, []byte(plist), 0o600); err != nil {
+	// Temp+rename, not a plain WriteFile: launchd or a concurrent session's
+	// configuredAgentTTL() read can catch a half-written plist otherwise.
+	tmp := plistPath + ".tmp"
+	if err := os.WriteFile(tmp, []byte(plist), 0o600); err != nil {
+		return plistPath, false, err
+	}
+	if err := os.Rename(tmp, plistPath); err != nil {
 		return plistPath, false, err
 	}
 
@@ -667,8 +727,8 @@ func installAgentService(ttl time.Duration, consent bool) (plistPath string, run
 	// bound its socket — a real, observed confusion where `jit service status`
 	// typed right after a successful install said "not running" for the ~2s
 	// launchd took to actually start it. Wait briefly so "installed" also
-	// means "answering."
-	running = waitForAgentSocket(root, 5*time.Second)
+	// means "answering, on this build."
+	running = waitForAgentBuild(root, agentStartWait)
 	return plistPath, running, nil
 }
 
@@ -771,28 +831,24 @@ var agentRestartCmd = &cobra.Command{
 		if readErr != nil && !os.IsNotExist(readErr) {
 			return fmt.Errorf("jit service restart: %w", readErr)
 		}
-		if _, statErr := os.Stat(plistPath); os.IsNotExist(statErr) {
+		if os.IsNotExist(readErr) {
 			// No login item yet (never started, or uninstalled). Rather than
 			// dead-end, create it: restart is the single "get the service
 			// running" command, and the service is meant to always be present.
 			// Default TTL and default (on) consent, since a missing plist has no
 			// configured value to preserve — `jit service ttl <d>` and
-			// `jit service consent off` change them afterward.
-			root, rerr := vaultRootDir()
-			if rerr != nil {
-				return fmt.Errorf("jit service restart: %w", rerr)
-			}
-			if _, _, ierr := installAgentService(agentInstallDefaultTTL, true); ierr != nil {
+			// `jit service consent off` change them afterward. Branching on the
+			// ReadFile error alone (no separate Stat) keeps this race-free
+			// against a concurrent session's install, and installAgentService
+			// already waited for the socket — its result is the answer, a
+			// second wait would only double the worst-case silence.
+			if _, running, ierr := installAgentService(agentInstallDefaultTTL, true); ierr != nil {
 				return fmt.Errorf("jit service restart: %w", ierr)
-			}
-			if !waitForAgentSocket(root, 5*time.Second) {
-				fmt.Fprintln(cmd.OutOrStdout(), hlCmds("Started the background service; it's still coming up, give `jit service status` a few seconds."))
-				return nil
+			} else if !running {
+				return fmt.Errorf("jit service restart: %w", agentStartFailure())
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "Started the background service. The next vault use will prompt Touch ID.")
 			return nil
-		} else if statErr != nil {
-			return fmt.Errorf("jit service restart: %w", statErr)
 		}
 		// bootout + bootstrap (reloadAgentService) restarts a running agent
 		// AND recovers one launchd has dropped (the plist on disk with no live
@@ -817,8 +873,7 @@ var agentRestartCmd = &cobra.Command{
 			if _, running, ierr := installAgentService(ttl, configuredAgentConsent()); ierr != nil {
 				return fmt.Errorf("jit service restart: %w", ierr)
 			} else if !running {
-				fmt.Fprintln(cmd.OutOrStdout(), hlCmds("Restart requested, the service is still starting up in the background; give `jit service status` a few seconds."))
-				return nil
+				return fmt.Errorf("jit service restart: %w", agentStartFailure())
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "Restarted, the service is now running the current binary. The next vault use will prompt Touch ID.")
 			return nil
@@ -833,9 +888,8 @@ var agentRestartCmd = &cobra.Command{
 		// Same wait as install, same reason: "Restarted" must mean the new
 		// process is actually answering, or status contradicts us moments
 		// later.
-		if !waitForAgentSocket(root, 5*time.Second) {
-			fmt.Fprintln(cmd.OutOrStdout(), hlCmds("Restart requested, the service is still starting up in the background; give `jit service status` a few seconds."))
-			return nil
+		if !waitForAgentBuild(root, agentStartWait) {
+			return fmt.Errorf("jit service restart: %w", agentStartFailure())
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "Restarted, the service is now running the current binary. The next vault use will prompt Touch ID.")
 		return nil
@@ -892,6 +946,15 @@ var lockCmd = &cobra.Command{
 			return fmt.Errorf("jit lock: %w", err)
 		}
 		if err := c.Lock(); err != nil {
+			// A not-running service holds no session: the state `lock` wants
+			// is already true. Telling the user "may have crashed... try
+			// restart" here sent them on a repair errand to lock a session
+			// that didn't exist (observed doing exactly that in the
+			// 2026-08-17 incident, where the restart couldn't work either).
+			if errors.Is(err, agent.ErrNotRunning) {
+				fmt.Fprintln(cmd.OutOrStdout(), "Already locked: the service isn't running, so no session exists.")
+				return nil
+			}
 			return fmt.Errorf("jit lock: %w", notRunningHint(err))
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "Locked.")
@@ -969,7 +1032,7 @@ var agentStatusCmd = &cobra.Command{
 				// situation from one that was never set up — launchd was
 				// supposed to keep this one alive, so "run install" is the
 				// wrong advice and hides that something actually failed.
-				fmt.Fprintln(cmd.OutOrStdout(), installedNotRunningAdvice("jit's background service is"))
+				fmt.Fprintln(cmd.OutOrStdout(), installedNotRunningAdvice("jit's background service"))
 				return nil
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), hlCmds("jit's background service is not running. Run `jit service restart` to start it (or just use jit and it starts on its own)."))
@@ -1535,16 +1598,136 @@ func announceTouchIDWait() {
 // answer, but the thing a human can DO about that differs: an installed
 // agent that isn't answering wants a restart (and its log), one that was
 // never installed wants installing.
-// installedNotRunningAdvice is the SINGLE source of the "installed but not
-// running" guidance, shared by `jit status`, `jit service status`, and the
-// notRunningHint agent subcommands print on a dial failure — so the wording
-// can't drift across the three. It did drift once: a change to what restart
-// recovers updated only `jit service status`, leaving `jit status` (the first
-// place a user sees this) and notRunningHint on stale advice. subject is the
-// caller's sentence opener ("Service:", "jit's background service is", "the service is") so each
-// surface keeps its own voice while the actionable half stays identical.
+// launchdJobState is the slice of `launchctl print` the health surfaces
+// phrase advice from: whether the job is loaded, how many times launchd has
+// run it, and how the last run ended. Parsing launchctl's undocumented,
+// localizable output is deliberately confined to queryLaunchdJobState, is
+// best-effort (any surprise degrades to the unknown state), and NEVER gates
+// behaviour — the restart comment's warning about launchctl text as a
+// decision input still stands. It only turns "installed but not running"
+// into the right sentence: the 2026-08-17 incident's job sat loaded with
+// runs = 0 ("pended nondemand spawn") while every surface said "may have
+// crashed or be mid-restart", both halves of which were false.
+type launchdJobState struct {
+	loaded      bool
+	runs        int
+	lastExit    int
+	hasLastExit bool
+}
+
+// queryLaunchdJobState asks launchd about the service's job record. known is
+// false when the state could not be read at all; "could not find service" is
+// a KNOWN answer (the job is definitively not loaded), not a read failure.
+func queryLaunchdJobState() (st launchdJobState, known bool) {
+	out, err := launchctlRun("print", agentServiceTarget())
+	if err != nil {
+		if bytes.Contains(bytes.ToLower(out), []byte("could not find service")) {
+			return launchdJobState{}, true
+		}
+		return launchdJobState{}, false
+	}
+	st.loaded = true
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if v, ok := strings.CutPrefix(line, "runs = "); ok {
+			if n, aerr := strconv.Atoi(strings.TrimSpace(v)); aerr == nil {
+				st.runs = n
+			}
+		} else if v, ok := strings.CutPrefix(line, "last exit code = "); ok {
+			// "(never exited)" and other non-numeric values simply leave
+			// hasLastExit false — exactly the never-spawned shape.
+			if n, aerr := strconv.Atoi(strings.TrimSpace(v)); aerr == nil {
+				st.lastExit, st.hasLastExit = n, true
+			}
+		}
+	}
+	return st, true
+}
+
+// installedNotRunningParts is the SINGLE source of the "installed but not
+// running" guidance, shared by `jit status`, `jit service status`, doctor,
+// migrate's trailer and the notRunningHint agent subcommands print on a dial
+// failure — so the wording can't drift across the surfaces. It did drift
+// once: a change to what restart recovers updated only `jit service status`,
+// leaving `jit status` (the first place a user sees this) and notRunningHint
+// on stale advice. The state half and the action half return separately
+// because doctor renders them as Detail and Action; flat surfaces join them
+// (installedNotRunningAdvice). subject is the caller's noun phrase ("the
+// service", "jit's background service") so each surface keeps its own voice
+// while the sentences stay identical.
+func installedNotRunningParts(subject string) (detail, action string) {
+	st, known := queryLaunchdJobState()
+	switch {
+	case known && st.loaded && st.runs == 0:
+		return subject + " is installed and launchd accepted it, but never started it.",
+			"`jit service restart` demands a start directly; `jit service log` shows recent output."
+	case known && st.loaded && st.hasLastExit:
+		return fmt.Sprintf("%s stopped (last exit code %d) and launchd has not brought it back.", subject, st.lastExit),
+			"`jit service restart` restarts it; `jit service log` shows recent output."
+	case known && !st.loaded:
+		return subject + " is installed but launchd has dropped it.",
+			"`jit service restart` re-registers and starts it; `jit service log` shows recent output."
+	default:
+		return subject + " is installed but not running.",
+			"`jit service restart` restarts it; `jit service log` shows recent output."
+	}
+}
+
 func installedNotRunningAdvice(subject string) string {
-	return subject + " installed but not running, it may have crashed or be mid-restart. Try `jit service restart` (it reloads the service, recovering even one launchd has dropped, and recreates the login item if it was removed). `jit service log` shows recent output."
+	detail, action := installedNotRunningParts(subject)
+	return detail + " " + action
+}
+
+// statusServiceRow is the dashboard-width version of
+// installedNotRunningParts: one clause for `jit status`'s service row, with
+// the action rendered separately as the row's → line.
+func statusServiceRow() string {
+	st, known := queryLaunchdJobState()
+	switch {
+	case known && st.loaded && st.runs == 0:
+		return "installed, but launchd never started it (runs 0)"
+	case known && st.loaded && st.hasLastExit:
+		return fmt.Sprintf("stopped (last exit code %d), launchd has not brought it back", st.lastExit)
+	case known && !st.loaded:
+		return "installed, but launchd has dropped it"
+	default:
+		return "installed but not running"
+	}
+}
+
+// agentStartFailure is the error restart returns when the just-reloaded
+// service never answered: what launchd says happened, and what to do. This
+// replaced "still starting up in the background" + exit 0, which audited
+// success: true for a permanently dead service — the incident's second
+// half. A timeout here is a failure, in the exit code and the audit record.
+func agentStartFailure() error {
+	st, known := queryLaunchdJobState()
+	switch {
+	case known && st.loaded && st.runs == 0:
+		return fmt.Errorf("reloaded, but the service never started (launchd: loaded, runs 0 after %s); retry, and `jit service log` shows recent output", agentStartWait)
+	case known && st.loaded && st.hasLastExit:
+		return fmt.Errorf("the service started but exited (last exit code %d) and has not come back; `jit service log` shows its output", st.lastExit)
+	case known && !st.loaded:
+		return errors.New("launchd no longer shows the service after the reload; `jit service log` shows recent output")
+	default:
+		return fmt.Errorf("the service did not answer within %s; `jit service status` may catch it late, `jit service log` shows output", agentStartWait)
+	}
+}
+
+// restartedServiceClause is ttl/consent's version of agentStartFailure: their
+// setting IS saved, so the sentence blames only the restart half.
+func restartedServiceClause() string {
+	st, known := queryLaunchdJobState()
+	switch {
+	case known && st.loaded && st.runs == 0:
+		return "the restarted service never started (launchd: loaded, runs 0)"
+	case known && st.loaded && st.hasLastExit:
+		return fmt.Sprintf("the restarted service exited (last exit code %d)", st.lastExit)
+	case known && !st.loaded:
+		return "launchd no longer shows the service"
+	default:
+		return "the restarted service has not answered yet"
+	}
 }
 
 func notRunningHint(err error) error {
@@ -1552,7 +1735,7 @@ func notRunningHint(err error) error {
 		return err
 	}
 	if agentInstalled() {
-		return errors.New(installedNotRunningAdvice("the service is"))
+		return errors.New(installedNotRunningAdvice("the service"))
 	}
 	return errors.New("the background service isn't running; run `jit service restart` to start it")
 }
@@ -1569,6 +1752,24 @@ var xmlEscaper = strings.NewReplacer(
 	">", "&gt;",
 	`"`, "&quot;",
 	"'", "&apos;",
+)
+
+// xmlUnescape reverses xmlEscape for values read back OUT of a plist.
+// plistStringValues deliberately does not unescape (its literal matches,
+// "--ttl" and durations, carry no entities); a PATH read through
+// plistProgramPath must be unescaped before it is compared or stat'ed.
+// `&amp;` is listed first so an escaped-escape (`&amp;lt;`) resolves the
+// way the escaper produced it.
+func xmlUnescape(s string) string {
+	return xmlUnescaper.Replace(s)
+}
+
+var xmlUnescaper = strings.NewReplacer(
+	"&amp;", "&",
+	"&lt;", "<",
+	"&gt;", ">",
+	"&quot;", `"`,
+	"&apos;", "'",
 )
 
 // agentLogMaxBytes caps agent.log. 5MB is months of ordinary lines and
@@ -1694,21 +1895,45 @@ var launchctlRun = func(args ...string) ([]byte, error) {
 // (EIO, launchctl exit 5) — observed on real hardware. The previous install
 // code happened to dodge it by writing the plist between bootout and
 // bootstrap, which gave launchd that beat; doing the two back-to-back exposed
-// it. So retry the bootstrap through the teardown window rather than
-// surfacing a transient race as a hard failure. A non-transient error (bad
-// plist, permissions) is returned on the first try.
+// it. So retry through the teardown window rather than surfacing a transient
+// race as a hard failure — and retry the bootout+bootstrap PAIR, not
+// bootstrap alone: a bootout that genuinely failed leaves every bootstrap
+// answering "already bootstrapped", which bootstrapRaceError classifies as
+// transient, and without a fresh bootout the loop could never converge. A
+// non-transient error (bad plist, permissions) is returned on the first try.
+//
+// A successful bootstrap is followed by a best-effort kickstart, because
+// bootstrap only REGISTERS the job — it does not guarantee a spawn. launchd
+// can defer a RunAtLoad spawn indefinitely: observed 2026-08-17 on real
+// hardware as `pended nondemand spawn = speculative`, runs = 0, twice, 30s+
+// each — and the same machine's KeepAlive equally never respawned a cleanly
+// exited agent, leaving the broker dead for 71 minutes while restart
+// reported success. kickstart is the one launchctl verb that creates an
+// explicit demand; in those experiments it spawned the job instantly, 3 of
+// 3. Its error is ignored the way bootout's is: in the healthy case
+// RunAtLoad has already spawned the process and kickstart merely reports it
+// running. The exit-113 "Could not find service" that got kickstart dropped
+// in 660ce2c cannot recur here — the job was registered one line earlier,
+// and this kickstart never uses -k, so it cannot kill a just-spawned
+// process either.
 func reloadAgentService(plistPath string) ([]byte, error) {
-	_, _ = launchctlRun("bootout", agentServiceTarget())
 	var out []byte
 	var err error
 	for attempt := 0; attempt < 15; attempt++ {
+		if attempt > 0 {
+			time.Sleep(200 * time.Millisecond)
+		}
+		_, _ = launchctlRun("bootout", agentServiceTarget())
 		out, err = launchctlRun("bootstrap", agentDomainTarget(), plistPath)
 		if err == nil || !bootstrapRaceError(out) {
-			return out, err
+			break
 		}
-		time.Sleep(200 * time.Millisecond)
 	}
-	return out, err
+	if err != nil {
+		return out, err
+	}
+	_, _ = launchctlRun("kickstart", agentServiceTarget())
+	return out, nil
 }
 
 // bootstrapRaceError reports whether a failed bootstrap is the transient
@@ -1722,13 +1947,24 @@ func bootstrapRaceError(launchctlOutput []byte) bool {
 		bytes.Contains(l, []byte("service already bootstrapped"))
 }
 
-// waitForAgentSocket polls until an agent answers the socket, or gives up.
-// install/restart use it so their success message never races launchd's
-// actual spawn of the process.
-func waitForAgentSocket(root string, timeout time.Duration) bool {
+// agentStartWait is how long install/restart wait for the just-(re)loaded
+// service to answer before declaring the start unconfirmed. A package var so
+// tests don't spend real wall-clock on the give-up path.
+var agentStartWait = 5 * time.Second
+
+// waitForAgentBuild polls until an agent running THIS build answers the
+// socket, or gives up. install/restart use it so their success message never
+// races launchd's actual spawn — and "the service is now running the current
+// binary" is a statement about the answering process's own BuildID, not
+// about a bare dial succeeding. The distinction is real: during a reload the
+// OLD process can still be draining its shutdown and answering the socket,
+// and a wait that only dialed would declare success on it (every path here
+// has just written or verified a plist pointing at this binary, so build
+// equality is the correct postcondition).
+func waitForAgentBuild(root string, timeout time.Duration) bool {
 	client := agent.NewClient(agent.SocketPath(root))
 	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
-		if client.Reachable() {
+		if st, err := client.Status(); err == nil && st.Build == agent.BuildID() {
 			return true
 		}
 		time.Sleep(100 * time.Millisecond)
