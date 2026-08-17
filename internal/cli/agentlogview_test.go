@@ -112,3 +112,21 @@ func TestAgentLogHandlesEmptyInput(t *testing.T) {
 		t.Errorf("expected no output for an empty log, got %q", buf.String())
 	}
 }
+
+// TestAgentLogRendererKeepsDayStateAcrossChunks pins --follow's chunk fix:
+// every polled chunk renders through ONE renderer, so a chunk continuing the
+// same day must not re-print the date header (a fresh stateless pass per
+// chunk used to print it once per poll that carried rows).
+func TestAgentLogRendererKeepsDayStateAcrossChunks(t *testing.T) {
+	var buf bytes.Buffer
+	r := &agentLogRenderer{home: "/Users/x"}
+	r.write(&buf, []byte("2026-08-17 10:00:00 jit service: stopped.\n"))
+	r.write(&buf, []byte("2026-08-17 10:01:00 jit service: stopped.\n"))
+	if got := strings.Count(buf.String(), "2026-08-17"); got != 1 {
+		t.Errorf("the day header printed %d times across two same-day chunks, want 1:\n%s", got, buf.String())
+	}
+	r.write(&buf, []byte("2026-08-18 09:00:00 jit service: stopped.\n"))
+	if got := strings.Count(buf.String(), "2026-08-18"); got != 1 {
+		t.Errorf("a genuinely new day must print its header once, got %d:\n%s", got, buf.String())
+	}
+}
