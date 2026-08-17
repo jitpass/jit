@@ -379,6 +379,20 @@ commands kept prompting per their own policy. Still untested: the
 background service's op session behavior (no linked secret has been
 mounted yet), and 1Password-app-locked failure at refresh time.
 
+`jit audit` captures the whole story with no new code: every link and
+get is a command record with caller attribution, failed resolves keep
+op's full error text, and a `jit run` against a linked profile shows
+the unlock event with the secret's path beneath it. Two notes. The
+audit log necessarily contains reference URIs — they appear in the
+command line the user typed and in op's error text; that is command
+recording working as designed, and the log is local, but it is why
+ErrRefUnresolvable still keeps the URI out of arbitrary error
+surfaces. And a SUCCESSFUL resolve is not marked as
+"via 1Password" — the command record is identical to a literal get,
+with the class/storage fields in `vault get --format json` as the
+tell. An explicit resolve audit kind is a phase 2 candidate, not a
+gap in the trail's honesty.
+
 ## Dependencies and testing
 
 Zero new Go modules: the integration is an exec boundary, consistent
