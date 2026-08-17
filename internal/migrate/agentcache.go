@@ -170,6 +170,51 @@ func PreviewAgentCaches(home string, secrets []AgentCacheSecret) (AgentCacheClea
 	return sweepAgentCaches(nil, home, secrets, false)
 }
 
+// PlanNeedles collects the plaintext values a migrate run of the named
+// files WOULD vault, so the plan can preview the agent-cache sweep before
+// anything reaches the vault (design/dry-run-refactor.md D4). Read-only
+// and best-effort by contract: an unreadable or unparseable file
+// contributes nothing, because the plan must never fail (or prompt) over
+// a preview. Only the categories with a read-only value parser feed it
+// (.env files, loose secret files) — the apply-time sweep still hunts
+// every vaulted value via Vault.OnSet, which stays the authoritative
+// needle set; the plan's cache category discloses the sweep, it does not
+// bound it.
+func PlanNeedles(envFiles, looseFiles []string) []AgentCacheSecret {
+	var out []AgentCacheSecret
+	seen := map[string]bool{}
+	add := func(value, name string) {
+		if value == "" || seen[value] {
+			return
+		}
+		seen[value] = true
+		out = append(out, AgentCacheSecret{Value: value, Var: name})
+	}
+	for _, path := range envFiles {
+		values, names, _, err := parseEnvFile(path)
+		if err != nil {
+			continue
+		}
+		for _, name := range names {
+			add(values[name], name)
+		}
+	}
+	for _, path := range looseFiles {
+		tokens, _, err := ClassifyLooseSecretFile(path)
+		if err != nil {
+			continue
+		}
+		for _, tok := range tokens {
+			name := tok.AssignedName
+			if name == "" {
+				name = filepath.Base(path)
+			}
+			add(tok.Value, name)
+		}
+	}
+	return out
+}
+
 // CleanAgentCaches removes verbatim copies of the given credentials from every
 // AI agent cache under home, replacing each with a marker naming the vault
 // variable that now holds the value.
