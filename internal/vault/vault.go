@@ -38,8 +38,10 @@ type Vault struct {
 	// instead of blocking on an external tool. See refresolver.go.
 	RefResolver RefResolver
 
-	// OnSet, when non-nil, is called with every secret this Vault stores,
-	// after the write succeeds. It exists so a caller can act on the set of
+	// OnSet, when non-nil, is called with every secret VALUE this Vault
+	// stores, after the write succeeds (reference writes carry no
+	// credential and never fire it — except through LinkOnSet's intercept,
+	// which fires it with the intercepted plaintext; see below). It exists so a caller can act on the set of
 	// credentials IT just vaulted without every writer having to hand them
 	// back: `jit migrate` uses it to find and remove the copies AI agents
 	// keep of the values it has just moved (internal/migrate/agentcache.go),
@@ -53,6 +55,24 @@ type Vault struct {
 	// the trust boundary, where a callback in the writer's own process would
 	// prove nothing.
 	OnSet func(path string, value []byte)
+
+	// LinkOnSet, when non-nil, is consulted by SetWithMeta before a literal
+	// value is sealed: returning (ref, true) stores that op:// reference at
+	// the path instead of the value — SetReference semantics, the caller's
+	// meta untouched, so the secret keeps its migrator's class and only the
+	// AAD-bound storage marker records the linkedness. It exists for the
+	// same reason OnSet does: `jit migrate` dedupes what it vaults against
+	// the user's 1Password (design/1password-adapter.md), and the
+	// alternative was threading a matcher through nineteen Apply*
+	// signatures. Paths in jit's own bookkeeping namespaces
+	// (IsReservedPath — whole-file backups, history) are never offered to
+	// the hook: they are jit's copies, not credentials to dedupe.
+	//
+	// On an intercepted write, OnSet still fires with the ORIGINAL
+	// plaintext, never the reference — OnSet's consumer hunts stray copies
+	// of the real value, which existed on disk regardless of where the
+	// vault now points.
+	LinkOnSet func(path string, value []byte, meta Meta) (ref string, ok bool)
 }
 
 func (v *Vault) vaultDir() string {
@@ -117,11 +137,24 @@ func (v *Vault) Set(path string, value []byte) error {
 // CreatedUnix == UpdatedUnix and takes its provenance from meta (with Origin,
 // when present, stamped as seen now).
 //
-// The storage marker does NOT rotate like provenance: SetWithMeta always
-// writes a literal-value envelope, so a literal Set over a linked path
+// The storage marker does NOT rotate like provenance: SetWithMeta writes
+// a literal-value envelope, so a literal Set over a linked path
 // (see SetReference) deliberately turns the pointer back into a value —
-// the caller explicitly replaced it.
+// the caller explicitly replaced it. The one exception is LinkOnSet:
+// when that hook claims the write, the value is stored as the op://
+// reference it returned instead (see the field's doc comment).
 func (v *Vault) SetWithMeta(path string, value []byte, meta Meta) error {
+	if v.LinkOnSet != nil && !IsReservedPath(path) {
+		if ref, ok := v.LinkOnSet(path, value, meta); ok {
+			if err := v.setEnvelope(path, []byte(ref), meta, StorageOpRef); err != nil {
+				return err
+			}
+			if v.OnSet != nil {
+				v.OnSet(path, value)
+			}
+			return nil
+		}
+	}
 	return v.setEnvelope(path, value, meta, "")
 }
 
@@ -225,8 +258,12 @@ func (v *Vault) setEnvelope(path string, value []byte, meta Meta, storage string
 		return err
 	}
 	// After the write succeeds, never before: a caller acting on "what did I
-	// just vault" must not be told about a secret that failed to land.
-	if v.OnSet != nil {
+	// just vault" must not be told about a secret that failed to land. And
+	// only for VALUES: an op:// reference is not a credential, so a
+	// reference write reports nothing here — SetWithMeta's link path
+	// reports the plaintext it intercepted itself, and a direct
+	// SetReference has no plaintext to report.
+	if v.OnSet != nil && storage == "" {
 		v.OnSet(path, value)
 	}
 	return nil

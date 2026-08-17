@@ -260,21 +260,73 @@ Rules, all fail-safe:
 - `--prefix <p>` namespaces everything under `p/` for users whose
   1Password vault names collide with existing jit paths.
 
-### Migrate dedupe: link instead of copy
+### Migrate dedupe: link instead of copy (phase 2, plan verified against the code 2026-08-17)
 
-The sharper flow. When `jit scan` has found a plaintext secret and
-the user runs `jit migrate --link-1password <path>`, migrate bulk-
-fetches concealed field values once, and any found secret whose
-value **exactly matches** a 1Password field is vaulted as a
-reference to that field instead of as a literal copy — the file is
-neutralized identically either way, and no second copy of the value
-is ever created. Matching compares the value the migrator parsed
-(after its own unquoting) against the field bytes, byte-exact, no
-trimming or normalization: a near-miss silently linking the wrong
-credential is far worse than a miss that falls back to a local copy. No match falls back to today's behavior, a local
-literal. A value matching several 1Password fields links to the
-first, and says so in the plan (same value, same secret; the choice
-is cosmetic).
+The sharper flow, and the one that ships first. When the 1Password
+CLI is installed, every `jit migrate` run dedupes against 1Password
+by default: any secret it is about to vault whose value byte-exactly
+matches a concealed 1Password field is stored as a reference to that
+field instead of as a literal copy. The file is neutralized
+identically either way, and no second copy of the value is created.
+Opt-OUT (`--no-1password`), not opt-in: the user already opted in by
+installing `op` and signing in, and a flag nobody discovers is a
+feature nobody has. No `op` on PATH means the whole path is inert.
+
+Matching compares the value the migrator parsed (after its own
+unquoting) against the field bytes, byte-exact, no trimming or
+normalization: a near-miss silently linking the wrong credential is
+far worse than a miss that falls back to a local copy. Values
+shorter than 8 bytes never match (a `PASSWORD=admin` line must not
+link to whichever item also says "admin"). A value matching several
+fields links to the first under a deterministic order (vault id,
+item id, field id) — same value, same secret; the choice is
+cosmetic. No match falls back to today's behavior, a local literal.
+
+A migrated value that already IS a reference (`FOO=op://…` in a
+`.env` kept for `op run`) links verbatim. Verified against the code:
+today migrate would vault the literal `op://` string and `jit run`
+would deliver it unresolved, breaking the workflow being migrated —
+the dedupe hook turns that file into linked entries that keep
+resolving. `jit scan` already treats `op://` values as non-secrets
+(verified live), so scan and migrate agree.
+
+**Where each piece lives**, verified against the real seams:
+
+- **The intercept is a vault hook, not 23 edited call sites.**
+  `vault.Vault` grows `LinkOnSet func(path string, value []byte,
+  meta Meta) (ref string, ok bool)` beside `OnSet`, consulted by
+  `SetWithMeta` (never by `SetReference`, never for
+  `IsBackupPath` paths — whole-file backups are jit's copies, not
+  credentials). Returning a ref stores a reference envelope with the
+  MIGRATOR'S meta: class stays `dotenv`/`aws`/…, `storage` alone
+  marks linkedness, exactly the provenance model above. All 23
+  `SetWithMeta` call sites across 19 Apply paths stay untouched,
+  the same reasoning that put `OnSet` on the vault.
+- **`OnSet` still fires with the ORIGINAL plaintext on a linked
+  write** — the agent-cache sweep hunts copies of the real value,
+  which was on disk regardless of where the vault now points. A
+  reference envelope write never reports the `op://` string to
+  `OnSet`; a reference is not a credential the sweep should hunt.
+- **The match list prints in the mutation log, not the plan.** The
+  plan renders BEFORE `openVault()` by explicit design (declining
+  must never cost a Touch ID prompt), and the same holds for
+  1Password's authorization dialog, so the plan cannot contact `op`.
+  The plan (and `--dry-run`, same rendering path, parity preserved)
+  carries one announcement line when `op` is on PATH; the bulk fetch
+  runs after [y/N] and Touch ID, behind a stderr cue in `jit vault
+  link`'s wording, and the per-secret `path → reference` rows print
+  as a `[1Password]` block in the mutation log.
+- **Fail open, say so.** A signed-out CLI, a locked app, a timeout,
+  or unparseable output degrades to literal copies with one amber
+  note naming op's first error line. Migrate must never break
+  because 1Password is broken.
+- **The index holds hashes, not values**: SHA-256 of each concealed
+  field → its reference, built from one
+  `op item list --format json | op item get - --format json`
+  enumeration (one authorization, values in memory only, raw JSON
+  wiped after parsing). Stored references are built in ID form from
+  the item JSON's own vault/item/field ids; the mutation log
+  displays the name form, which is what the user recognizes.
 
 This closes the loop the issue is really about: a 1Password user's
 `.env` is usually a hand-made plaintext cache of things 1Password
@@ -284,7 +336,18 @@ written to.
 
 What "automatic" does NOT mean: no daemon watches 1Password for new
 items, and nothing links without the plan/confirm step. Re-running
-`--from-op` or `--link-1password` is the refresh.
+migrate or `--from-op` is the refresh.
+
+### Scan nudge (with the dedupe, scoped down)
+
+Scan stays promptless and read-only, so it can never value-match
+against 1Password; that nudge lives in migrate alone. What scan CAN
+say textually: when a reported `.env` file also carries `op://`
+reference values, the file's entry notes how many, and that migrate
+keeps them linked. No new finding type, no schema change — a
+rendering-only note on findings that already exist, `EndLine`'s
+precedent. A file that is ALL references produces no findings and
+stays unreported: nothing is exposed, and scan does not advertise.
 
 ## Interaction with the agent, grants, and mounts
 
