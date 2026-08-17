@@ -315,10 +315,44 @@ func (c *Client) RunForPID(mounts []RunMount, pid int32) error {
 // machine-wide credential must not be phrased by the process asking for it —
 // and "the process asking" is only ever `jit run` when nothing malicious is
 // on the machine.
+// Version skew is handled BEFORE the request goes out, and the belt is
+// deliberately worn with braces:
+//
+//   - MinProtocol makes an agent that knows the field refuse rather than
+//     under-enforce.
+//   - The status pre-check catches the case MinProtocol structurally cannot
+//     — an agent so old it ignores MinProtocol too. Such an agent also
+//     ignores Disclose, so it would perform this machine-wide reveal with no
+//     prompt at all. Refusing to ask is the only fail-closed answer
+//     available from this side of the socket.
+//   - DiscloseReason is set as a last-resort trigger for an agent from the
+//     window where that was the flag's spelling. It is honored there as a
+//     TRIGGER only, and the text is jit's own, not a caller's — the
+//     prompt-spoofing hazard that retired the field is about caller-supplied
+//     wording reaching a human, and there is no caller here but jit run.
 func (c *Client) GrantGlobalForPID(mounts []RunMount, pid int32) error {
-	_, err := c.call(Request{Op: OpRevealPID, RunMounts: mounts, TargetPID: pid, Disclose: true})
+	st, err := c.Status()
+	if err != nil {
+		return err
+	}
+	if st.Protocol < protocolDisclosedGate {
+		return fmt.Errorf("the running background service is too old to enforce the disclosed-credential prompt this grant requires (it speaks protocol %d, this needs %d), and granting a machine-wide credential without that prompt is exactly what the check prevents; run `jit service restart` to move it onto the current binary", st.Protocol, protocolDisclosedGate)
+	}
+	_, err = c.call(Request{
+		Op:             OpRevealPID,
+		RunMounts:      mounts,
+		TargetPID:      pid,
+		Disclose:       true,
+		DiscloseReason: legacyDiscloseTrigger,
+		MinProtocol:    protocolDisclosedGate,
+	})
 	return err
 }
+
+// legacyDiscloseTrigger is the DiscloseReason text sent purely so a
+// pre-Disclose agent still takes its gate. Phrased as what is happening
+// rather than as reassurance, since such an agent renders it verbatim.
+const legacyDiscloseTrigger = "grant a machine-wide credential to this run"
 
 // GrantCreate asks the agent to create a process grant: after one disclosed
 // challenge (agent-worded, like every prompt), pid's process tree may unwrap
@@ -438,6 +472,11 @@ type Status struct {
 	// cannot, which is whether that binary still exists. Empty when the
 	// agent predates the field.
 	ExecutablePath string
+	// Protocol is the agent's socket-protocol revision (agent.Protocol),
+	// zero from any agent predating the field. Callers whose safety depends
+	// on the agent enforcing something check this BEFORE asking — see
+	// GrantGlobalForPID.
+	Protocol int
 }
 
 // History asks for every unlock and lock the agent knows of, newest first
@@ -478,6 +517,7 @@ func (c *Client) Status() (Status, error) {
 		Build:          resp.Build,
 		Version:        resp.Version,
 		ExecutablePath: resp.ExecutablePath,
+		Protocol:       resp.Protocol,
 	}, nil
 }
 

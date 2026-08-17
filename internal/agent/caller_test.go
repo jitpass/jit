@@ -247,3 +247,29 @@ func TestRecordUseKeepsCallersSeparateWhenRedactionCollides(t *testing.T) {
 		}
 	}
 }
+
+// The grant-serve path has the identical collapse window and the identical
+// hazard, and it keyed on the REDACTED command — so two tools under one grant
+// whose argvs redact to the same string merged into one aggregate stamped
+// with the first one's pid. A grant covers a whole process tree, so two tools
+// sharing a window is the ordinary case there, not an exotic one. This is
+// TestRecordUseKeepsCallersSeparateWhenRedactionCollides for grant_use.
+func TestGrantUseKeepsCallersSeparateWhenRedactionCollides(t *testing.T) {
+	s := &Server{useWindow: time.Hour}
+	c1 := callerFor([]string{"some-tool", "--token=sk_FAKEfixtureAAAA1111BBBB2222"})
+	c2 := callerFor([]string{"some-tool", "--token=sk_FAKEfixtureCCCC3333DDDD4444"})
+	if c1.command() != c2.command() {
+		t.Fatalf("test premise broken: redacted commands differ: %q vs %q", c1.command(), c2.command())
+	}
+
+	// Exactly what the OpUnwrap grant hit records.
+	s.recordAggregated(KindUse, OpGrantUse, c1.rawCommand(), c1, "a")
+	s.recordAggregated(KindUse, OpGrantUse, c2.rawCommand(), c2, "b")
+
+	s.mu.Lock()
+	flushed := s.flushUsesLocked(true, time.Now())
+	s.mu.Unlock()
+	if len(flushed) != 2 {
+		t.Fatalf("flushed %d grant_use aggregate(s), want 2: distinct callers must not merge just because their redacted argvs match (got %+v)", len(flushed), flushed)
+	}
+}

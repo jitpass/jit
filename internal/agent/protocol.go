@@ -3,12 +3,48 @@
 
 package agent
 
+// Protocol is this build's socket-protocol revision. It exists because
+// version skew across the socket degrades by SILENT JSON FIELD DROPPING,
+// and that is fail-open for any field whose presence is what enforces
+// something: an old agent that has never heard of Request.Disclose simply
+// ignores it and performs the reveal with no disclosed challenge at all —
+// exactly the machine-wide silent credential grant that flag exists to
+// prevent. Vault-side skew already fails CLOSED and loudly ("envelope
+// version 4, newer than this jit understands"); the socket had no
+// equivalent.
+//
+// Two mechanisms use it, in opposite directions:
+//
+//   - Request.MinProtocol lets a client REQUIRE enforcement it cannot
+//     verify from the outside: an agent whose own Protocol is lower
+//     refuses the request instead of silently doing less than was asked.
+//     This protects a future client talking to today's agent.
+//   - Response.Protocol (on status) lets a client check BEFORE it sends
+//     anything security-relevant, which is what protects a new client
+//     talking to a genuinely old agent — one that predates MinProtocol
+//     and would ignore that too. An absent field reads as 0.
+//
+// Bump this when adding a field whose absence would weaken a gate, and
+// name the new value in the client check that requires it.
+const Protocol = 1
+
+// protocolDisclosedGate is the Protocol at which the agent is known to
+// honor Request.Disclose. Below it, a disclosed grant cannot be proven to
+// have prompted anyone, so the client refuses to ask.
+const protocolDisclosedGate = 1
+
 // Request is one RPC sent to a running agent over its Unix socket, one
 // JSON object per connection (dial, send exactly one Request, read exactly
 // one Response, close — no multiplexing needed for this CLI-tool traffic
 // pattern).
 type Request struct {
-	Op string `json:"op"` // "wrap" | "unwrap" | "unlock" | "lock" | "status" | "refresh" | "reveal_pid" | "stop_mount" | "history"
+	// MinProtocol is the lowest agent Protocol that can serve this request
+	// AS ASKED. Set it whenever dropping one of this request's fields would
+	// silently weaken a gate rather than merely losing a nicety; an agent
+	// below it fails the request closed. Zero (absent) means any agent will
+	// do, which is the truth for ordinary wrap/unwrap/status traffic.
+	MinProtocol int    `json:"min_protocol,omitempty"`
+	Op          string `json:"op"` // "wrap" | "unwrap" | "unlock" | "lock" | "status" | "refresh" | "reveal_pid" | "stop_mount" | "history"
 	// Data is the DEK (for "wrap") or the wrapped DEK (for "unwrap").
 	// encoding/json base64-encodes a []byte field automatically.
 	Data []byte `json:"data,omitempty"`
@@ -258,6 +294,12 @@ const OpGrantUse = "grant_use"
 type Response struct {
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
+	// Protocol is the answering agent's own socket-protocol revision (see
+	// Protocol). Set on every response, so a client can check what the
+	// running agent enforces before it sends a request whose safety depends
+	// on that enforcement. Zero from any agent predating the field, which is
+	// precisely the "too old to trust with this" signal.
+	Protocol int `json:"protocol,omitempty"`
 	// Data is the wrapped/unwrapped result for "wrap"/"unwrap".
 	Data []byte `json:"data,omitempty"`
 	// Unlocked and ExpiresInSeconds answer "status" (and are also set on

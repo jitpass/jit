@@ -62,6 +62,10 @@ func startConsentServer(t *testing.T, denyConsent *atomic.Bool) (*Server, string
 	}
 	s := NewServer(shortSocketPath(t), newFetcher, time.Minute)
 	s.Consent = consent.New(time.Minute)
+	// Several of these tests flip a decline to an approval and retry
+	// immediately, which the disclosed-prompt backoff would (correctly)
+	// pause. That backoff has its own tests; here it would only buy sleep.
+	s.discloseBackoff = nil
 
 	var launcher atomic.Pointer[string]
 	aws := "/usr/local/bin/aws"
