@@ -518,8 +518,12 @@ var agentStartWait = 5 * time.Second
 //
 //   - sameBuildAsThisProcess: the ordinary case. The CLI doing the restart IS
 //     the binary the service will run, so build equality is exactly the
-//     postcondition, and it rules out the old process still answering while
-//     it drains its shutdown.
+//     postcondition. Note what it does NOT prove: on a same-build restart the
+//     outgoing process answers with the same build, so a Status() served by a
+//     booted-out-but-not-yet-dead listener satisfies this. The guarantee that
+//     a replacement actually starts comes from the kickstart demand (D1), not
+//     from this wait; the wait's job is to keep the success line from printing
+//     before SOMETHING answers.
 //   - movedOffBuild: `jit upgrade`. The CLI doing the restart is the OLD
 //     binary — the new one was just written to disk and is what the service
 //     will exec — so equality can NEVER hold, and demanding it made every
