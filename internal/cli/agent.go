@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -299,7 +300,7 @@ var agentRunCmd = &cobra.Command{
 			// warning saying why: the exact trap this watcher exists to end.
 			if exePath, exeErr := agentBinaryPath(); exeErr == nil {
 				go watchOwnBinary(runCtx, exePath, agentBinaryCheckInterval, server.Quiescent, func() {
-					fmt.Fprintf(stdout, "jit service: the jit binary on disk changed (this process is build %s), exiting while the session is locked so launchd restarts the service on the current build\n", agent.BuildID())
+					fmt.Fprintf(stdout, "jit service: the jit binary on disk changed (this process is build %s), demanding a launchd restart onto the current build while the session is locked\n", agent.BuildID())
 					// The restart is DEMANDED, not hoped for. A clean exit
 					// trusting KeepAlive was how the 2026-08-17 incident
 					// happened: launchd pended the respawn ("pended nondemand
@@ -399,10 +400,13 @@ var serviceTTLCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit service ttl: %w", err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Session TTL set to %s. The background service restarted, so the next vault use prompts Touch ID once.\n", d)
 		if !running {
-			fmt.Fprintln(cmd.OutOrStdout(), hlCmds("It's still starting up in the background; give `jit service status` a few seconds."))
+			// The TTL itself IS saved — say so before failing on the
+			// restart half, so the error can't read as "nothing happened".
+			fmt.Fprintf(cmd.OutOrStdout(), "Session TTL set to %s.\n", d)
+			return fmt.Errorf("jit service ttl: the TTL is written, but %s; retry `jit service restart`", restartedServiceClause())
 		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Session TTL set to %s. The background service restarted, so the next vault use prompts Touch ID once.\n", d)
 		return nil
 	},
 }
@@ -514,8 +518,21 @@ var serviceConsentCmd = &cobra.Command{
 		if !ok {
 			ttl = agentInstallDefaultTTL
 		}
-		if _, _, err := installAgentService(ttl, on); err != nil {
+		_, running, err := installAgentService(ttl, on)
+		if err != nil {
 			return fmt.Errorf("jit service consent: %w", err)
+		}
+		state := "OFF"
+		if on {
+			state = "ON"
+		}
+		if !running {
+			// The setting IS saved (a Touch ID gated one, when turning off) —
+			// but "The service restarted" was printed unconditionally here,
+			// exit 0, for a service that may never have come back. Say what
+			// happened and fail on the restart half.
+			fmt.Fprintf(cmd.OutOrStdout(), "Per-process credential consent is now %s.\n", state)
+			return fmt.Errorf("jit service consent: the setting is written, but %s; retry `jit service restart`", restartedServiceClause())
 		}
 		if on {
 			fmt.Fprintln(cmd.OutOrStdout(), "Per-process credential consent is now ON. The service restarted; the next credential use prompts Touch ID.")
@@ -828,8 +845,7 @@ var agentRestartCmd = &cobra.Command{
 			if _, running, ierr := installAgentService(agentInstallDefaultTTL, true); ierr != nil {
 				return fmt.Errorf("jit service restart: %w", ierr)
 			} else if !running {
-				fmt.Fprintln(cmd.OutOrStdout(), hlCmds("Started the background service; it's still coming up, give `jit service status` a few seconds."))
-				return nil
+				return fmt.Errorf("jit service restart: %w", agentStartFailure())
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "Started the background service. The next vault use will prompt Touch ID.")
 			return nil
@@ -857,8 +873,7 @@ var agentRestartCmd = &cobra.Command{
 			if _, running, ierr := installAgentService(ttl, configuredAgentConsent()); ierr != nil {
 				return fmt.Errorf("jit service restart: %w", ierr)
 			} else if !running {
-				fmt.Fprintln(cmd.OutOrStdout(), hlCmds("Restart requested, the service is still starting up in the background; give `jit service status` a few seconds."))
-				return nil
+				return fmt.Errorf("jit service restart: %w", agentStartFailure())
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "Restarted, the service is now running the current binary. The next vault use will prompt Touch ID.")
 			return nil
@@ -874,8 +889,7 @@ var agentRestartCmd = &cobra.Command{
 		// process is actually answering, or status contradicts us moments
 		// later.
 		if !waitForAgentBuild(root, agentStartWait) {
-			fmt.Fprintln(cmd.OutOrStdout(), hlCmds("Restart requested, the service is still starting up in the background; give `jit service status` a few seconds."))
-			return nil
+			return fmt.Errorf("jit service restart: %w", agentStartFailure())
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "Restarted, the service is now running the current binary. The next vault use will prompt Touch ID.")
 		return nil
@@ -932,6 +946,15 @@ var lockCmd = &cobra.Command{
 			return fmt.Errorf("jit lock: %w", err)
 		}
 		if err := c.Lock(); err != nil {
+			// A not-running service holds no session: the state `lock` wants
+			// is already true. Telling the user "may have crashed... try
+			// restart" here sent them on a repair errand to lock a session
+			// that didn't exist (observed doing exactly that in the
+			// 2026-08-17 incident, where the restart couldn't work either).
+			if errors.Is(err, agent.ErrNotRunning) {
+				fmt.Fprintln(cmd.OutOrStdout(), "Already locked: the service isn't running, so no session exists.")
+				return nil
+			}
 			return fmt.Errorf("jit lock: %w", notRunningHint(err))
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "Locked.")
@@ -1009,7 +1032,7 @@ var agentStatusCmd = &cobra.Command{
 				// situation from one that was never set up — launchd was
 				// supposed to keep this one alive, so "run install" is the
 				// wrong advice and hides that something actually failed.
-				fmt.Fprintln(cmd.OutOrStdout(), installedNotRunningAdvice("jit's background service is"))
+				fmt.Fprintln(cmd.OutOrStdout(), installedNotRunningAdvice("jit's background service"))
 				return nil
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), hlCmds("jit's background service is not running. Run `jit service restart` to start it (or just use jit and it starts on its own)."))
@@ -1575,16 +1598,136 @@ func announceTouchIDWait() {
 // answer, but the thing a human can DO about that differs: an installed
 // agent that isn't answering wants a restart (and its log), one that was
 // never installed wants installing.
-// installedNotRunningAdvice is the SINGLE source of the "installed but not
-// running" guidance, shared by `jit status`, `jit service status`, and the
-// notRunningHint agent subcommands print on a dial failure — so the wording
-// can't drift across the three. It did drift once: a change to what restart
-// recovers updated only `jit service status`, leaving `jit status` (the first
-// place a user sees this) and notRunningHint on stale advice. subject is the
-// caller's sentence opener ("Service:", "jit's background service is", "the service is") so each
-// surface keeps its own voice while the actionable half stays identical.
+// launchdJobState is the slice of `launchctl print` the health surfaces
+// phrase advice from: whether the job is loaded, how many times launchd has
+// run it, and how the last run ended. Parsing launchctl's undocumented,
+// localizable output is deliberately confined to queryLaunchdJobState, is
+// best-effort (any surprise degrades to the unknown state), and NEVER gates
+// behaviour — the restart comment's warning about launchctl text as a
+// decision input still stands. It only turns "installed but not running"
+// into the right sentence: the 2026-08-17 incident's job sat loaded with
+// runs = 0 ("pended nondemand spawn") while every surface said "may have
+// crashed or be mid-restart", both halves of which were false.
+type launchdJobState struct {
+	loaded      bool
+	runs        int
+	lastExit    int
+	hasLastExit bool
+}
+
+// queryLaunchdJobState asks launchd about the service's job record. known is
+// false when the state could not be read at all; "could not find service" is
+// a KNOWN answer (the job is definitively not loaded), not a read failure.
+func queryLaunchdJobState() (st launchdJobState, known bool) {
+	out, err := launchctlRun("print", agentServiceTarget())
+	if err != nil {
+		if bytes.Contains(bytes.ToLower(out), []byte("could not find service")) {
+			return launchdJobState{}, true
+		}
+		return launchdJobState{}, false
+	}
+	st.loaded = true
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if v, ok := strings.CutPrefix(line, "runs = "); ok {
+			if n, aerr := strconv.Atoi(strings.TrimSpace(v)); aerr == nil {
+				st.runs = n
+			}
+		} else if v, ok := strings.CutPrefix(line, "last exit code = "); ok {
+			// "(never exited)" and other non-numeric values simply leave
+			// hasLastExit false — exactly the never-spawned shape.
+			if n, aerr := strconv.Atoi(strings.TrimSpace(v)); aerr == nil {
+				st.lastExit, st.hasLastExit = n, true
+			}
+		}
+	}
+	return st, true
+}
+
+// installedNotRunningParts is the SINGLE source of the "installed but not
+// running" guidance, shared by `jit status`, `jit service status`, doctor,
+// migrate's trailer and the notRunningHint agent subcommands print on a dial
+// failure — so the wording can't drift across the surfaces. It did drift
+// once: a change to what restart recovers updated only `jit service status`,
+// leaving `jit status` (the first place a user sees this) and notRunningHint
+// on stale advice. The state half and the action half return separately
+// because doctor renders them as Detail and Action; flat surfaces join them
+// (installedNotRunningAdvice). subject is the caller's noun phrase ("the
+// service", "jit's background service") so each surface keeps its own voice
+// while the sentences stay identical.
+func installedNotRunningParts(subject string) (detail, action string) {
+	st, known := queryLaunchdJobState()
+	switch {
+	case known && st.loaded && st.runs == 0:
+		return subject + " is installed and launchd accepted it, but never started it.",
+			"`jit service restart` demands a start directly; `jit service log` shows recent output."
+	case known && st.loaded && st.hasLastExit:
+		return fmt.Sprintf("%s stopped (last exit code %d) and launchd has not brought it back.", subject, st.lastExit),
+			"`jit service restart` restarts it; `jit service log` shows recent output."
+	case known && !st.loaded:
+		return subject + " is installed but launchd has dropped it.",
+			"`jit service restart` re-registers and starts it; `jit service log` shows recent output."
+	default:
+		return subject + " is installed but not running.",
+			"`jit service restart` restarts it; `jit service log` shows recent output."
+	}
+}
+
 func installedNotRunningAdvice(subject string) string {
-	return subject + " installed but not running, it may have crashed or be mid-restart. Try `jit service restart` (it reloads the service, recovering even one launchd has dropped, and recreates the login item if it was removed). `jit service log` shows recent output."
+	detail, action := installedNotRunningParts(subject)
+	return detail + " " + action
+}
+
+// statusServiceRow is the dashboard-width version of
+// installedNotRunningParts: one clause for `jit status`'s service row, with
+// the action rendered separately as the row's → line.
+func statusServiceRow() string {
+	st, known := queryLaunchdJobState()
+	switch {
+	case known && st.loaded && st.runs == 0:
+		return "installed, but launchd never started it (runs 0)"
+	case known && st.loaded && st.hasLastExit:
+		return fmt.Sprintf("stopped (last exit code %d), launchd has not brought it back", st.lastExit)
+	case known && !st.loaded:
+		return "installed, but launchd has dropped it"
+	default:
+		return "installed but not running"
+	}
+}
+
+// agentStartFailure is the error restart returns when the just-reloaded
+// service never answered: what launchd says happened, and what to do. This
+// replaced "still starting up in the background" + exit 0, which audited
+// success: true for a permanently dead service — the incident's second
+// half. A timeout here is a failure, in the exit code and the audit record.
+func agentStartFailure() error {
+	st, known := queryLaunchdJobState()
+	switch {
+	case known && st.loaded && st.runs == 0:
+		return fmt.Errorf("reloaded, but the service never started (launchd: loaded, runs 0 after %s); retry, and `jit service log` shows recent output", agentStartWait)
+	case known && st.loaded && st.hasLastExit:
+		return fmt.Errorf("the service started but exited (last exit code %d) and has not come back; `jit service log` shows its output", st.lastExit)
+	case known && !st.loaded:
+		return errors.New("launchd no longer shows the service after the reload; `jit service log` shows recent output")
+	default:
+		return fmt.Errorf("the service did not answer within %s; `jit service status` may catch it late, `jit service log` shows output", agentStartWait)
+	}
+}
+
+// restartedServiceClause is ttl/consent's version of agentStartFailure: their
+// setting IS saved, so the sentence blames only the restart half.
+func restartedServiceClause() string {
+	st, known := queryLaunchdJobState()
+	switch {
+	case known && st.loaded && st.runs == 0:
+		return "the restarted service never started (launchd: loaded, runs 0)"
+	case known && st.loaded && st.hasLastExit:
+		return fmt.Sprintf("the restarted service exited (last exit code %d)", st.lastExit)
+	case known && !st.loaded:
+		return "launchd no longer shows the service"
+	default:
+		return "the restarted service has not answered yet"
+	}
 }
 
 func notRunningHint(err error) error {
@@ -1592,7 +1735,7 @@ func notRunningHint(err error) error {
 		return err
 	}
 	if agentInstalled() {
-		return errors.New(installedNotRunningAdvice("the service is"))
+		return errors.New(installedNotRunningAdvice("the service"))
 	}
 	return errors.New("the background service isn't running; run `jit service restart` to start it")
 }

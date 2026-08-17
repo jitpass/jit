@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -213,11 +214,28 @@ func TestWrapFindingsReportPassingChecks(t *testing.T) {
 }
 
 // TestAgentFindingsInstalledNotRunning confirms the unreachable case above
-// didn't swallow the ordinary crashed/mid-restart one.
+// didn't swallow the ordinary installed-but-not-running one, and that doctor
+// derives its wording from installedNotRunningParts (which phrases the state
+// from launchd's job record — faked here so the machine running the test
+// can't change the expected variant).
 func TestAgentFindingsInstalledNotRunning(t *testing.T) {
+	restore := launchctlRun
+	t.Cleanup(func() { launchctlRun = restore })
+	launchctlRun = func(args ...string) ([]byte, error) {
+		return []byte(`Could not find service "com.jitpass.agent" in domain for user gui: 501`), errors.New("exit status 113")
+	}
+
 	findings := agentFindingsFrom(t.TempDir(), statusAgent{Installed: true})
-	if len(findings) != 1 || !strings.Contains(findings[0].Detail, "may have crashed") {
-		t.Errorf("expected the installed-but-not-running advice, got %+v", findings)
+	if len(findings) != 1 || !strings.Contains(findings[0].Detail, "launchd has dropped it") {
+		t.Errorf("expected the launchd-dropped-it advice for a not-loaded job, got %+v", findings)
+	}
+	if !strings.Contains(findings[0].Action, "jit service restart") {
+		t.Errorf("the action must name the restart, got %q", findings[0].Action)
+	}
+
+	wantDetail, _ := installedNotRunningParts("the service")
+	if findings[0].Detail != wantDetail {
+		t.Errorf("doctor's detail must BE installedNotRunningParts's, not a copy: %q vs %q", findings[0].Detail, wantDetail)
 	}
 }
 

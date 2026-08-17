@@ -593,9 +593,12 @@ func printStatusText(w io.Writer, r statusResult) {
 		printStatusAction(w, "`jit service restart` to bring it back")
 	case !r.Agent.Running && r.Agent.Installed:
 		// launchd was supposed to keep this one alive — "run install" is
-		// the wrong advice and hides that something actually failed.
+		// the wrong advice and hides that something actually failed. The row
+		// carries what launchd says happened (statusServiceRow queries it);
+		// the action line is the one command.
 		_, _ = cRisk.Fprint(w, glyphRisk+" ")
-		printStatusGlyphValue(w, "%s", installedNotRunningAdvice("the service is"))
+		printStatusGlyphValue(w, "%s", statusServiceRow())
+		printStatusAction(w, "`jit service restart`")
 	case !r.Agent.Running:
 		_, _ = cRisk.Fprint(w, glyphRisk+" ")
 		fmt.Fprint(w, "not running — run ")
