@@ -23,6 +23,7 @@ import (
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/onepassword"
+	"github.com/jitpass/jit/internal/termtext"
 	"github.com/jitpass/jit/internal/vault"
 	"github.com/jitpass/jit/internal/wrap"
 )
@@ -212,10 +213,14 @@ func printSkippedFindings(w io.Writer, home string, count int, reason string, pa
 	}
 	_, _ = cWarn.Fprintf(w, "\nSkipped %s %s:\n", countWord(count, "finding", "findings"), reason)
 	for _, p := range paths {
-		fmt.Fprintf(w, "  - %s\n", displayPath(home, p))
+		// Middle-truncated like scan's own path lists: truncate variable
+		// content rather than let a 140-char repo path wrap and shear the
+		// list's alignment (design/output-style.md).
+		fmt.Fprintf(w, "  - %s\n", termtext.TruncMid(displayPath(home, p), outputWidth()-4))
 	}
 	if hint != "" {
-		fmt.Fprintf(w, "  %s\n", hint)
+		fmt.Fprint(w, "  ")
+		wrapBody(w, 2, "  ", hlCmds(hint))
 	}
 }
 
@@ -301,7 +306,7 @@ func printSkippedWrapOwned(w io.Writer, home string, paths []string) {
 	var cmds []string
 	seen := map[string]bool{}
 	for _, p := range paths {
-		fmt.Fprintf(w, "  - %s\n", displayPath(home, p))
+		fmt.Fprintf(w, "  - %s\n", termtext.TruncMid(displayPath(home, p), outputWidth()-4))
 		if tool, ok := wrapOwnerForPath(home, p); ok && !seen[tool] {
 			seen[tool] = true
 			cmds = append(cmds, "`jit wrap "+tool+"`")
@@ -668,9 +673,8 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 	// than Touch ID. The real check runs after [y/N].
 	if migrateOpInstalled() && !migrateNo1Password {
 		w := cmd.OutOrStdout()
-		fmt.Fprintln(w, "1Password CLI detected: values already stored there are linked, not")
-		fmt.Fprintln(w, "copied (--no-1password to copy).")
 		fmt.Fprintln(w)
+		wrapBody(w, 0, "", "1Password CLI detected: values already stored there are linked, not copied (--no-1password to copy).")
 	}
 
 	if migrateDryRun {
@@ -680,6 +684,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 		return false, nil
 	}
 
+	fmt.Fprintln(cmd.OutOrStdout())
 	if !migrateYes && !confirmPrompt(cmd, "Proceed? [y/N] ") {
 		fmt.Fprintln(cmd.OutOrStdout(), "Aborted. Nothing was changed.")
 		return false, nil
@@ -1480,7 +1485,7 @@ func runMigrateAll(cmd *cobra.Command) error {
 	// the OUTCOME per catalog kind — a reader who has never seen `jit wrap`
 	// or `jit guard history` cannot evaluate a bare command name, and a
 	// line they cannot evaluate is one they should not be agreeing to.
-	extras := &planExtras{}
+	extras := &planExtras{scanDriven: true}
 	for _, tool := range tools {
 		extras.wraps = append(extras.wraps, wrapPlanRow{tool: tool, detail: wrapPlanDetail(home, tool)})
 	}

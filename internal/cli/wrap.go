@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -78,7 +79,11 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
 		printDryRunBanner(out)
-		printPlanExtras(out, home, &planExtras{wraps: []wrapPlanRow{{tool: tool, detail: wrapPlanDetail(home, tool)}}})
+		// printPlanExtras ends with its category-separator blank line and
+		// the trailer opens with one; trim to a single blank between them.
+		var plan bytes.Buffer
+		printPlanExtras(&plan, home, &planExtras{wraps: []wrapPlanRow{{tool: tool, detail: wrapPlanDetail(home, tool)}}})
+		fmt.Fprint(out, strings.TrimRight(plan.String(), "\n")+"\n")
 		printDryRunTrailer(out, "jit wrap "+tool, false)
 		return nil
 	}

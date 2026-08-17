@@ -57,6 +57,11 @@ type planExtras struct {
 	guardItems []string // non-empty offers the guard; each item is one bullet
 	cacheEdits []migrate.AgentCacheEdit
 	cacheNote  string // non-empty: the preview failed; the sweep still runs at apply time
+	// scanDriven flips the group headers from "you named" to "flagged by
+	// the scan": bare `jit migrate` names nothing — the scan did, and a
+	// header claiming otherwise misstates why the file is in the plan.
+	// A rendering mode, not content: excluded from empty()/counts().
+	scanDriven bool
 }
 
 // wrapPlanRow is one catalog tool the run will wrap, with its
@@ -131,7 +136,11 @@ func printMigratePlan(w io.Writer, home string, d *discovered, extras *planExtra
 		for _, p := range d.envFiles {
 			envOriginal[displayPath(home, p)] = p
 		}
-		_, _ = cBold.Fprintf(w, "Project files you named\n\n")
+		scopedHeader := "Project files you named"
+		if extras != nil && extras.scanDriven {
+			scopedHeader = "Project files flagged by the scan"
+		}
+		_, _ = cBold.Fprintf(w, "%s\n\n", scopedHeader)
 		printMigratePlanCategoryAnnotated(w,
 			pluralWord(len(d.envFiles), ".env file", ".env files")+" "+glyphAction+" EVERY variable moves to the vault (ordinary config too, so the file still works); the file keeps working as a live, auto-updating mount",
 			shorten(d.envFiles),
@@ -203,8 +212,13 @@ func printMigratePlan(w io.Writer, home string, d *discovered, extras *planExtra
 		// These appear only because the caller named a machine-wide file (or
 		// its exact path) explicitly — a migrate run never reaches them on its
 		// own, so the header states plainly that the caller asked for them.
-		_, _ = fmt.Fprintln(w, "Machine-wide config files you named")
-		fmt.Fprintln(w)
+		fixedHeader := "Machine-wide config files you named"
+		if extras != nil && extras.scanDriven {
+			fixedHeader = "Machine-wide config files flagged by the scan"
+		}
+		// Bold like the scoped group's header: the two are the same rank,
+		// and hierarchy comes from bold alone (design/output-style.md).
+		_, _ = cBold.Fprintf(w, "%s\n\n", fixedHeader)
 		printMigratePlanCategory(w,
 			pluralWord(len(d.shellConfigs), "shell config", "shell configs")+" "+glyphAction+" secrets move to the vault; loaded back automatically when your shell starts",
 			shorten(d.shellConfigs))
