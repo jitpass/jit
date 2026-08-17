@@ -76,19 +76,38 @@ is accurate:
 
 ```
 $ jit migrate ~/code/myapp/.env --dry-run
+[DRY RUN] Preview, this run changes nothing; the plan below is what a real run would do.
+
 jit migrate, plan
 Each modified file is backed up before it's rewritten.
 
-[.env file(s) → secrets move to the vault; the file keeps working as a live, auto-updating mount] (1)
-  • /Users/alex/code/myapp/.env
+Project files you named
 
-[DRY RUN] No files were changed. Run without --dry-run to apply this plan.
+[.env file] 1
+  → EVERY variable moves to the vault (ordinary config too, so the file still works); the file keeps working as a live, auto-updating mount
+  • ~/code/myapp/.env (3 variables, 2 secret-shaped)
+
+────────────────────────────────────────────
+  1 change planned across 1 category
+
+[DRY RUN] Apply this plan: jit migrate ~/code/myapp/.env
+This only covers what jit migrate can act on; run jit scan for the complete
+picture, including findings it can never auto-fix, like private keys.
 ```
 
-Then apply it by dropping `--dry-run`. The same plan prints again, followed
+The plan is complete: everything the run will do appears as a counted
+category — including CLI wraps, the shell history guard, and AI-agent
+cache files holding copies of the values being vaulted, when those
+apply. The closing line is your own command minus `--dry-run`, ready to
+paste.
+
+Then apply it by running that command. The same plan prints again, followed
 by a `Proceed? [y/N]` confirmation; answering `y` triggers the vault writes
 (one Touch ID prompt if the service isn't unlocked yet). Declining aborts
 with nothing changed.
+
+`jit wrap <tool>`, `jit wrap undo <tool>`, and `jit guard history` take
+`--dry-run` too, with the same banner-and-trailer frame.
 
 ## The safety model
 

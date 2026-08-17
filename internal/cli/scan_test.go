@@ -383,3 +383,40 @@ func TestScanFailOnRejectsBadThreshold(t *testing.T) {
 		}
 	}
 }
+
+// TestScanRefusedK8sManifestNotPromisedToMigrate: the wired
+// K8sMigratable hook (design/dry-run-refactor.md D5) makes scan tell the
+// truth about a Secret manifest migrate will refuse — a real dogfood run
+// had scan promise Secret.yaml under "jit will protect these" (+3%),
+// then migrate skip it as complex. The refused manifest must carry
+// migrate's reason and no `jit migrate <path>` recommendation.
+func TestScanRefusedK8sManifestNotPromisedToMigrate(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	dir := filepath.Join(home, "code", "k8s")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// data: mixed with stringData: in one document — migrate's classifier
+	// refuses this shape (k8ssecret.go), so scan must not promise it.
+	manifest := filepath.Join(dir, "Secret.yaml")
+	if err := os.WriteFile(manifest, []byte(`apiVersion: v1
+kind: Secret
+metadata:
+  name: my-secret
+data:
+  password: aHVudGVyMg==
+stringData:
+  token: vlt09zXcVbNm2qWe4rTy6uIo8p42
+`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out := runScan(t, manifest)
+	if !strings.Contains(out, "can't rewrite provably right") {
+		t.Errorf("expected migrate's refusal reason in the report, got:\n%s", out)
+	}
+	if strings.Contains(out, "jit migrate "+manifest) || strings.Contains(out, "jit migrate ~/code/k8s/Secret.yaml") {
+		t.Errorf("scan must not recommend migrating a manifest migrate refuses, got:\n%s", out)
+	}
+}

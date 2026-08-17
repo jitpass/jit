@@ -25,6 +25,7 @@ import (
 func execMigrateRemove(t *testing.T, input string, args ...string) (output string, err error) {
 	t.Helper()
 	migrateRemoveYes = false
+	migrateDryRun = false // persistent on the migrate group; a prior test's --dry-run must not leak into a remove run
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)

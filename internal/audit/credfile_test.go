@@ -785,7 +785,7 @@ providers:
 	// finding), and annotateRemedies must respect it — the
 	// selfRotatingCaches entry for this file exists for OTHER findings,
 	// not to override this one.
-	annotateRemedies(findings, home)
+	annotateRemedies(findings, home, nil)
 	f = findings[0]
 	if f.Remedy != RemedyWrap {
 		t.Errorf("Remedy = %q, want %q", f.Remedy, RemedyWrap)

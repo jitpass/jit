@@ -15,7 +15,13 @@ Store the secret first (`jit vault set`), then describe the tool:
 catalog of known tools with automatic discovery.
 
 ```
-jit wrap
+jit wrap [flags]
+```
+
+### Options
+
+```
+      --dry-run   preview what wrapping would do without changing anything
 ```
 
 ### Options inherited from parent commands

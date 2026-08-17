@@ -20,6 +20,7 @@ func execWrap(t *testing.T, args ...string) (stdout string, err error) {
 	// previous test would leak into a call that passes none.
 	wrapAddEnv = nil
 	wrapAddGrant = ""
+	wrapDryRun = false
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
@@ -214,5 +215,61 @@ func TestWrapAddGrantRoundTrip(t *testing.T) {
 
 	if _, err := execWrap(t, "undo", "gcloud"); err != nil {
 		t.Fatalf("jit wrap undo: %v", err)
+	}
+}
+
+// TestWrapDryRunPreviewsWithoutChanging: `jit wrap <tool> --dry-run`
+// renders the same frame + [CLI wrap] plan row migrate's plan uses
+// (design/dry-run-refactor.md D6) and touches nothing — no shim dir, no
+// rc edit, no vault.
+func TestWrapDryRunPreviewsWithoutChanging(t *testing.T) {
+	home := withFixtureHome(t)
+
+	out, err := execWrap(t, "gh", "--dry-run")
+	if err != nil {
+		t.Fatalf("jit wrap gh --dry-run: %v", err)
+	}
+	if got := strings.Count(out, "[DRY RUN]"); got != 2 {
+		t.Errorf("expected exactly 2 [DRY RUN] markers, got %d:\n%s", got, out)
+	}
+	for _, want := range []string{"[CLI wrap] 1", "gh", "Apply this plan: jit wrap gh"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in the preview, got:\n%s", want, out)
+		}
+	}
+	if _, err := os.Stat(wrap.ShimDir(home)); !os.IsNotExist(err) {
+		t.Errorf("dry-run must not create the shim dir (stat err=%v)", err)
+	}
+}
+
+// TestWrapUndoDryRunPreviewsWithoutChanging: the undo preview names the
+// shim (and rc PATH-line removal for the last tool) and leaves the
+// manifest, shim, and rc untouched.
+func TestWrapUndoDryRunPreviewsWithoutChanging(t *testing.T) {
+	home := withFixtureHome(t)
+	putToolOnPath(t, "openai")
+	plantVaultSecret(t, home, "wrap-openai/OPENAI_API_KEY")
+	if _, err := execWrap(t, "openai"); err != nil {
+		t.Fatalf("jit wrap openai: %v", err)
+	}
+	shim := filepath.Join(wrap.ShimDir(home), "openai")
+	if _, err := os.Lstat(shim); err != nil {
+		t.Fatalf("expected the shim installed before the undo preview: %v", err)
+	}
+
+	out, err := execWrap(t, "undo", "openai", "--dry-run")
+	if err != nil {
+		t.Fatalf("jit wrap undo openai --dry-run: %v", err)
+	}
+	if got := strings.Count(out, "[DRY RUN]"); got != 2 {
+		t.Errorf("expected exactly 2 [DRY RUN] markers, got %d:\n%s", got, out)
+	}
+	for _, want := range []string{"Unwrap openai:", "shim removed:", "last wrapped tool", "Apply this plan: jit wrap undo openai"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in the undo preview, got:\n%s", want, out)
+		}
+	}
+	if _, err := os.Lstat(shim); err != nil {
+		t.Errorf("dry-run must leave the shim in place: %v", err)
 	}
 }

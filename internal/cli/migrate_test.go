@@ -83,6 +83,17 @@ func execMigrate(t *testing.T, args ...string) (stdout string, err error) {
 	return buf.String(), err
 }
 
+// dryRunPlanOnly strips the dry-run trailer from captured output. The
+// trailer's apply command faithfully echoes EVERY target the user named —
+// including ones --only scoped out of the plan — so assertions about what
+// the PLAN contains must not scan the trailer.
+func dryRunPlanOnly(out string) string {
+	if i := strings.LastIndex(out, "\n[DRY RUN] Apply this plan:"); i >= 0 {
+		return out[:i]
+	}
+	return out
+}
+
 // TestMigrateBareRunsProtectPlan: bare `jit migrate` executes the scan's
 // protect plan (2026-07-28 redesign — it is the command the scan report's
 // green section points at). Consent is preserved: the plan prints and the
@@ -399,8 +410,8 @@ func TestMigrateOnlyWorksWithDryRun(t *testing.T) {
 	if strings.Contains(out, "shell config") {
 		t.Errorf("expected --only=env to exclude the shell-config category from the preview too, got:\n%s", out)
 	}
-	if !strings.Contains(out, "[DRY RUN] No files were changed.") {
-		t.Errorf("expected the dry-run disclaimer, got:\n%s", out)
+	if !strings.Contains(out, "[DRY RUN] Apply this plan:") {
+		t.Errorf("expected the dry-run trailer, got:\n%s", out)
 	}
 }
 
@@ -441,6 +452,155 @@ func TestMigrateDryRunMatchesRealPlanExactly(t *testing.T) {
 	realPlan := strings.TrimRight(strings.Split(realOut, "\nProceed?")[0], "\n")
 	if dryPlan != realPlan {
 		t.Errorf("dry-run plan and real-run plan differ:\n--dry-run:\n%s\n--real:\n%s", dryPlan, realPlan)
+	}
+}
+
+// TestDryRunFrameExactlyTwoMarkers locks in the dry-run frame contract
+// (design/dry-run-refactor.md D1/D2): a dry run prints exactly two
+// [DRY RUN] markers — the banner as its first plan-facing line and the
+// trailer at the end — and never the retired lowercase [dry-run] spelling.
+// A third marker means some printer regrew its own prefix; one means a
+// surface lost half its frame (the wraps-only hole this refactor closed).
+func TestDryRunFrameExactlyTwoMarkers(t *testing.T) {
+	withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	envPath := filepath.Join(cwd, ".env")
+	if err := os.WriteFile(envPath, []byte("STRIPE_KEY=sk_test_fixture\n"), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := execMigrate(t, envPath, "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate <env> --dry-run: %v", err)
+	}
+	if got := strings.Count(out, "[DRY RUN]"); got != 2 {
+		t.Errorf("expected exactly 2 [DRY RUN] markers (banner + trailer), got %d:\n%s", got, out)
+	}
+	if strings.Contains(out, "[dry-run]") {
+		t.Errorf("lowercase [dry-run] marker resurfaced:\n%s", out)
+	}
+	if !strings.HasPrefix(out, "[DRY RUN] Preview") {
+		t.Errorf("expected the banner as the first output line, got:\n%s", out)
+	}
+	// The trailer must be the LAST [DRY RUN] content — nothing after it
+	// but its own hint lines.
+	tail := out[strings.LastIndex(out, "[DRY RUN]"):]
+	if !strings.Contains(tail, "Apply this plan:") {
+		t.Errorf("expected the closing trailer last, got tail:\n%s", tail)
+	}
+	// The trailer's apply command echoes the invocation minus --dry-run.
+	if !strings.Contains(out, "Apply this plan: jit migrate "+envPath) {
+		t.Errorf("expected the trailer to name the target %s, got:\n%s", envPath, out)
+	}
+}
+
+// TestMigrateRemoveRejectsDryRun: --dry-run is a persistent flag on the
+// migrate group, so it PARSES on remove — where no preview exists. It
+// must fail loud, never silently proceed to a [y/N] on the command that
+// writes plaintext back and deletes vault secrets.
+func TestMigrateRemoveRejectsDryRun(t *testing.T) {
+	withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	out, err := execMigrateRemove(t, "", cwd, "--dry-run")
+	if err == nil || !strings.Contains(err.Error(), "--dry-run isn't supported here yet") {
+		t.Errorf("expected a loud --dry-run refusal from migrate remove, got err=%v output:\n%s", err, out)
+	}
+	migrateDryRun = false // this test set the persistent flag; scrub it for whoever runs next
+}
+
+// TestMigrateDryRunPreviewsAgentCacheSweep: the post-migrate agent-cache
+// sweep rewrites files, so the plan must disclose them as a counted
+// category (design/dry-run-refactor.md D4) — a real run editing files
+// the plan never listed was the gap. The needles are the plaintext
+// values of the files being migrated, readable at plan time.
+func TestMigrateDryRunPreviewsAgentCacheSweep(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	const secret = "vlt09zXcVbNm2qWe4rTy6uIo8p42" // realistic shape: placeholder-looking values are ineligible needles
+	envPath := filepath.Join(cwd, ".env")
+	if err := os.WriteFile(envPath, []byte("STRIPE_KEY="+secret+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	pasteDir := filepath.Join(home, ".claude", "paste-cache")
+	if err := os.MkdirAll(pasteDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	pastePath := filepath.Join(pasteDir, "paste1.txt")
+	if err := os.WriteFile(pastePath, []byte("here is the key: "+secret+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := execMigrate(t, envPath, "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate <env> --dry-run: %v", err)
+	}
+	if !strings.Contains(out, "[AI agent cache file] 1") {
+		t.Errorf("expected the agent-cache category in the plan, got:\n%s", out)
+	}
+	if !strings.Contains(out, displayPath(home, pastePath)) {
+		t.Errorf("expected the cache copy's path in the plan, got:\n%s", out)
+	}
+	if !strings.Contains(out, "2 changes planned across 2 categories") {
+		t.Errorf("expected the subtotal to count the cache copy, got:\n%s", out)
+	}
+	if data, readErr := os.ReadFile(pastePath); readErr != nil || !strings.Contains(string(data), secret) {
+		t.Errorf("dry-run must not touch the cache file (err=%v):\n%s", readErr, data)
+	}
+}
+
+// TestPlanExtrasWrapAndGuardRows: wraps and the guard render as counted
+// plan categories with the outcome stated per row — the plan row is the
+// consent line (design/dry-run-refactor.md D3). Driven through
+// printMigratePlan directly because bare `jit migrate` needs a full scan
+// to produce a wraps plan.
+func TestPlanExtrasWrapAndGuardRows(t *testing.T) {
+	home := t.TempDir()
+	var buf bytes.Buffer
+	extras := &planExtras{
+		wraps:      []wrapPlanRow{{tool: "clisso", detail: "temporary AWS credentials minted via OneLogin/Okta SAML: each mint goes to the vault"}},
+		guardItems: []string{"~/.jit/guard.zsh (sourced from ~/.zshrc)"},
+	}
+	printMigratePlan(&buf, home, &discovered{}, extras)
+	out := buf.String()
+
+	for _, want := range []string{
+		"[CLI wrap] 1",
+		"jit wrap undo <tool>",
+		"clisso",
+		"each mint goes", // wrapBody may break the line inside the phrase
+		"[shell history guard] 1",
+		"jit guard history --remove",
+		"~/.jit/guard.zsh (sourced from ~/.zshrc)",
+		"2 changes planned across 2 categories",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in the extras plan, got:\n%s", want, out)
+		}
+	}
+}
+
+// TestMigrateWrapOwnedConfigRoutesToWrap: naming a file a wrappable CLI
+// owns (clisso's config, a catalog tool's token Source) gets the skip
+// note pointing at `jit wrap <tool>` — not the loose-secret "mixes a
+// secret with other content" hint, which sent the user at --mount for a
+// file the wrap flow protects whole (design/dry-run-refactor.md D7).
+func TestMigrateWrapOwnedConfigRoutesToWrap(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	clisso := filepath.Join(home, ".clisso.yaml")
+	if err := os.WriteFile(clisso, []byte("providers:\n  onelogin:\n    client-secret: 9f8e7d6c5b4a39281706f5e4d3c2b1a0\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := execMigrate(t, clisso, "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate ~/.clisso.yaml --dry-run: %v", err)
+	}
+	if !strings.Contains(out, "a wrappable CLI owns") || !strings.Contains(out, "jit wrap clisso") {
+		t.Errorf("expected the wrap-owned skip note naming jit wrap clisso, got:\n%s", out)
+	}
+	if strings.Contains(out, "mixes") {
+		t.Errorf("wrap-owned file must not fall through to the mixed-content note, got:\n%s", out)
 	}
 }
 
@@ -703,8 +863,8 @@ func TestMigrateTerraformCredentialsDiscoveryAndOnlyFlag(t *testing.T) {
 	if !strings.Contains(onlyOut, "app.terraform.io") {
 		t.Errorf("expected --only terraform to keep the Terraform finding, got:\n%s", onlyOut)
 	}
-	if strings.Contains(onlyOut, envPath) {
-		t.Errorf("expected --only terraform to exclude the .env finding, got:\n%s", onlyOut)
+	if strings.Contains(dryRunPlanOnly(onlyOut), envPath) {
+		t.Errorf("expected --only terraform to exclude the .env finding from the plan, got:\n%s", onlyOut)
 	}
 }
 
@@ -746,8 +906,8 @@ func TestMigrateGCPADCDiscoveryAndOnlyFlag(t *testing.T) {
 	if !strings.Contains(onlyOut, displayPath(home, adcPath)) {
 		t.Errorf("expected --only gcp to keep the ADC finding, got:\n%s", onlyOut)
 	}
-	if strings.Contains(onlyOut, envPath) {
-		t.Errorf("expected --only gcp to exclude the .env finding, got:\n%s", onlyOut)
+	if strings.Contains(dryRunPlanOnly(onlyOut), envPath) {
+		t.Errorf("expected --only gcp to exclude the .env finding from the plan, got:\n%s", onlyOut)
 	}
 }
 
@@ -789,8 +949,8 @@ func TestMigrateDockerDiscoveryAndOnlyFlag(t *testing.T) {
 	if !strings.Contains(onlyOut, "registry.example.com") {
 		t.Errorf("expected --only docker to keep the Docker finding, got:\n%s", onlyOut)
 	}
-	if strings.Contains(onlyOut, envPath) {
-		t.Errorf("expected --only docker to exclude the .env finding, got:\n%s", onlyOut)
+	if strings.Contains(dryRunPlanOnly(onlyOut), envPath) {
+		t.Errorf("expected --only docker to exclude the .env finding from the plan, got:\n%s", onlyOut)
 	}
 }
 

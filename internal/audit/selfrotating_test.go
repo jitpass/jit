@@ -47,7 +47,7 @@ func TestSelfRotatingCacheIsNeverMigrated(t *testing.T) {
 			FilePath: "/Users/alex/.gemini/oauth_creds.json",
 			KeyName:  str("JSON Web Token"), ValuePreview: str("eyJh**********")},
 	}
-	annotateRemedies(findings, "/Users/alex")
+	annotateRemedies(findings, "/Users/alex", nil)
 
 	if findings[0].Remedy != RemedyManual {
 		t.Errorf("remedy = %q, want %q", findings[0].Remedy, RemedyManual)
@@ -128,7 +128,7 @@ func TestTerraformStateIsManualWithBackendAdvice(t *testing.T) {
 			FilePath: "/Users/alex/infra/terraform.tfstate",
 			KeyName:  str("AWS Secret Access Key"), ValuePreview: str("wJal**********")},
 	}
-	annotateRemedies(findings, "/Users/alex")
+	annotateRemedies(findings, "/Users/alex", nil)
 	if findings[0].Remedy != RemedyManual {
 		t.Errorf("remedy = %q, want %q", findings[0].Remedy, RemedyManual)
 	}

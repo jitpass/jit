@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/jitpass/jit/internal/auditlog"
+	"github.com/jitpass/jit/internal/guard"
 )
 
 func TestGuardCheckStdinFindsVendors(t *testing.T) {
@@ -115,5 +117,71 @@ func TestGuardInstallBySideEffectIsAudited(t *testing.T) {
 	joined := strings.Join(r.Args, " ")
 	if !strings.Contains(joined, "by jit migrate") {
 		t.Errorf("args = %q, want them to name the command that did it", joined)
+	}
+}
+
+// execGuardHistory drives `jit guard history <args...>` through rootCmd,
+// resetting the package-level flag vars first (same discipline as
+// execMigrate/execWrap).
+func execGuardHistory(t *testing.T, args ...string) (stdout string, err error) {
+	t.Helper()
+	guardHistoryRemove = false
+	guardHistoryDryRun = false
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs(append([]string{"guard", "history"}, args...))
+	err = rootCmd.Execute()
+	return buf.String(), err
+}
+
+// TestGuardHistoryDryRun: install and remove previews carry the shared
+// two-marker frame and change nothing on disk; the no-op answers
+// (already installed / not installed) stay frameless.
+func TestGuardHistoryDryRun(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	out, err := execGuardHistory(t, "--dry-run")
+	if err != nil {
+		t.Fatalf("jit guard history --dry-run: %v", err)
+	}
+	if got := strings.Count(out, "[DRY RUN]"); got != 2 {
+		t.Errorf("expected exactly 2 [DRY RUN] markers, got %d:\n%s", got, out)
+	}
+	for _, want := range []string{"Install the history guard:", "guard.zsh", "Apply this plan: jit guard history"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in the install preview, got:\n%s", want, out)
+		}
+	}
+	if _, statErr := os.Stat(guard.HookPath(home)); !os.IsNotExist(statErr) {
+		t.Errorf("dry-run must not write the hook (stat err=%v)", statErr)
+	}
+
+	// --remove with nothing installed: a plain answer, no frame.
+	out, err = execGuardHistory(t, "--remove", "--dry-run")
+	if err != nil {
+		t.Fatalf("jit guard history --remove --dry-run: %v", err)
+	}
+	if strings.Contains(out, "[DRY RUN]") || !strings.Contains(out, "not installed") {
+		t.Errorf("expected a frameless not-installed answer, got:\n%s", out)
+	}
+
+	// Install for real, then preview the removal.
+	if _, err := guard.Install(home); err != nil {
+		t.Fatalf("guard.Install: %v", err)
+	}
+	out, err = execGuardHistory(t, "--remove", "--dry-run")
+	if err != nil {
+		t.Fatalf("jit guard history --remove --dry-run (installed): %v", err)
+	}
+	if got := strings.Count(out, "[DRY RUN]"); got != 2 {
+		t.Errorf("expected exactly 2 [DRY RUN] markers on the remove preview, got %d:\n%s", got, out)
+	}
+	if !strings.Contains(out, "Remove the history guard:") || !strings.Contains(out, "Apply this plan: jit guard history --remove") {
+		t.Errorf("expected the remove preview, got:\n%s", out)
+	}
+	if !guard.Installed(home) {
+		t.Error("remove --dry-run must leave the guard installed")
 	}
 }

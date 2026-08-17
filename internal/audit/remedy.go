@@ -62,7 +62,7 @@ const (
 //     command as THE fix would dress the wound without treating it. The
 //     migrate result output carries the rotation advice for the ordinary
 //     case; for production, rotation IS the remedy and the report says so.
-func annotateRemedies(findings []Finding, home string) {
+func annotateRemedies(findings []Finding, home string, k8sMigratable func(string) (string, bool)) {
 	// Purity is per file and can involve a re-read; cache it, since copies
 	// of one dump produce many findings for the same path.
 	pureCache := map[string]bool{}
@@ -73,6 +73,24 @@ func annotateRemedies(findings []Finding, home string) {
 		v := isPureTokenFile(path)
 		pureCache[path] = v
 		return v
+	}
+	// The migratability probe re-parses the manifest; cache per path, since
+	// one manifest can carry several findings.
+	type k8sVerdict struct {
+		reason string
+		ok     bool
+	}
+	k8sCache := map[string]k8sVerdict{}
+	k8sRefusal := func(path string) (string, bool) {
+		if k8sMigratable == nil {
+			return "", true // no hook wired: keep the optimistic pre-hook behavior
+		}
+		v, cached := k8sCache[path]
+		if !cached {
+			v.reason, v.ok = k8sMigratable(path)
+			k8sCache[path] = v
+		}
+		return v.reason, v.ok
 	}
 	for i := range findings {
 		f := &findings[i]
@@ -93,9 +111,7 @@ func annotateRemedies(findings []Finding, home string) {
 			// wouldn't parse as YAML, line-scanned at ConfidenceMedium) stays
 			// manual: migrate needs a parseable manifest. A structurally
 			// parsed Secret manifest (ConfidenceHigh, buildK8sSecretFinding)
-			// falls through to RemedyMigrate — `jit migrate <path>` either
-			// converts it to a rejectable-decoy mount or explains exactly why
-			// it refused (block scalars, mixed data:/stringData:).
+			// is asked about below.
 			f.Remedy = RemedyManual
 		case f.FindingType == FindingTypeShellHistorySecret && f.ProductionIndicatorMatch:
 			f.Remedy = RemedyManual
@@ -113,6 +129,24 @@ func annotateRemedies(findings []Finding, home string) {
 		case f.FindingType == FindingTypeExposedSecret &&
 			(f.ProductionIndicatorMatch || !isPure(f.FilePath)):
 			f.Remedy = RemedyManual
+		case f.FindingType == FindingTypeIACVariableFile &&
+			!strings.HasSuffix(f.FilePath, ".tfvars") &&
+			f.Confidence == ConfidenceHigh:
+			// A structurally parsed Secret manifest migrate itself refuses
+			// (Config.K8sMigratable) must not be promised as "jit will
+			// protect these": the user runs the recommended command and
+			// gets a skip note for a percent gain that was never
+			// achievable (design/dry-run-refactor.md D5). Manual, with
+			// migrate's own refusal reason in the evidence. When the hook
+			// says ok — or isn't wired — this is RemedyMigrate exactly as
+			// before the hook existed.
+			if reason, ok := k8sRefusal(f.FilePath); !ok {
+				f.Remedy = RemedyManual
+				f.Evidence = "kubernetes Secret manifest `jit migrate` can't rewrite provably right (" + reason + "); sealed-secrets/SOPS or a hand edit is the fix"
+			} else {
+				f.Remedy = RemedyMigrate
+				f.FixCommand = "jit migrate " + shellSafePath(home, f.FilePath)
+			}
 		default:
 			f.Remedy = RemedyMigrate
 			f.FixCommand = "jit migrate " + shellSafePath(home, f.FilePath)

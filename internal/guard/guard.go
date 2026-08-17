@@ -316,6 +316,25 @@ func Remove(home string) (changed, rcEdited bool, err error) {
 	return true, true, nil
 }
 
+// RcCarriesJitLine reports whether the rc file holds the exact
+// comment/source pair Install writes — the read-only half of Remove's
+// rc-edit decision, so `jit guard history --dry-run` can say whether a
+// real --remove would edit the rc or leave a hand-written source line
+// alone.
+func RcCarriesJitLine(home string) bool {
+	data, err := os.ReadFile(zshrcPath(home)) // #nosec G304 -- fixed path under the user's own home
+	if err != nil {
+		return false
+	}
+	for _, l := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(l)
+		if trimmed == rcComment || trimmed == rcLine {
+			return true
+		}
+	}
+	return false
+}
+
 // Installed reports whether the guard is fully in place: the hook file
 // exists and the rc file actually sources it.
 func Installed(home string) bool {

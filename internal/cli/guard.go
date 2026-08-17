@@ -19,6 +19,7 @@ import (
 )
 
 var guardHistoryRemove bool
+var guardHistoryDryRun bool
 
 var guardCmd = &cobra.Command{
 	Use:     "guard",
@@ -63,6 +64,41 @@ var guardHistoryCmd = &cobra.Command{
 			return fmt.Errorf("jit guard history: %w", err)
 		}
 		out := cmd.OutOrStdout()
+		// --dry-run: the same frame every migrate preview uses
+		// (design/dry-run-refactor.md D6). The no-op answers stay
+		// frameless, matching migrate's "Nothing to migrate" runs — a
+		// banner over "nothing to do" would promise a plan that isn't
+		// there.
+		if guardHistoryDryRun {
+			installed := guard.Installed(home)
+			switch {
+			case guardHistoryRemove && !installed:
+				wrapBody(out, 0, "", "The history guard is not installed, nothing to remove.")
+			case guardHistoryRemove:
+				printDryRunBanner(out)
+				fmt.Fprintln(out, "Remove the history guard:")
+				fmt.Fprintf(out, "  "+glyphBullet+" delete %s\n", displayPath(home, guard.HookPath(home)))
+				if guard.RcCarriesJitLine(home) {
+					fmt.Fprintf(out, "  "+glyphBullet+" take the source line out of %s\n", displayPath(home, guard.RcPath(home)))
+				} else {
+					fmt.Fprint(out, "  ")
+					wrapBody(out, 2, "    ", glyphBullet+" "+displayPath(home, guard.RcPath(home))+" sources the hook by a line jit did not write; it would be left alone")
+				}
+				printDryRunTrailer(out, "jit guard history --remove", false)
+			case installed:
+				wrapBody(out, 0, "", hlCmds(fmt.Sprintf("The history guard is already installed (%s, sourced from %s). Nothing to do.",
+					displayPath(home, guard.HookPath(home)), displayPath(home, guard.RcPath(home)))))
+			default:
+				printDryRunBanner(out)
+				fmt.Fprintln(out, "Install the history guard:")
+				fmt.Fprintf(out, "  "+glyphBullet+" write the zsh hook to %s\n", displayPath(home, guard.HookPath(home)))
+				fmt.Fprintf(out, "  "+glyphBullet+" append its source line to %s\n", displayPath(home, guard.RcPath(home)))
+				fmt.Fprint(out, "  ")
+				wrapBody(out, 2, "    ", glyphBullet+" from then on, a command carrying a recognized credential stays usable in that session but is never written to your history file")
+				printDryRunTrailer(out, "jit guard history", false)
+			}
+			return nil
+		}
 		// Every prose line goes through wrapBody at the indent that owns it
 		// (design/output-style.md rule 6): hard-wrapping at a source-file
 		// width leaves the terminal to break these at column 0 in a narrow
@@ -197,6 +233,7 @@ func guardCheckStdin(r io.Reader) ([]string, error) {
 
 func init() {
 	guardHistoryCmd.Flags().BoolVar(&guardHistoryRemove, "remove", false, "remove the guard: delete the hook file and take the source line out of ~/.zshrc")
+	guardHistoryCmd.Flags().BoolVar(&guardHistoryDryRun, "dry-run", false, "preview what installing (or --remove: removing) the guard would do without changing anything")
 	guardCmd.AddCommand(guardHistoryCmd)
 	guardCmd.AddCommand(guardCheckCmd)
 	rootCmd.AddCommand(guardCmd)

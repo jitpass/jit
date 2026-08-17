@@ -97,10 +97,16 @@ func runMigrateCaches(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
+	// The frame brackets the plan like every other migrate dry-run
+	// (design/dry-run-refactor.md D1); the vault open above it is
+	// inherent — the needles ARE vault values — and reads only.
+	if migrateDryRun {
+		printDryRunBanner(out)
+	}
 	renderAgentCleanupPlan(out, home, plan)
 
 	if migrateDryRun {
-		fmt.Fprintln(out, "\n[dry-run] Nothing was changed.")
+		printDryRunTrailer(out, migrateApplyCommand("jit migrate caches", nil), false)
 		return nil
 	}
 	if !migrateYes && !confirmPrompt(cmd, "Redact these copies? [y/N] ") {
