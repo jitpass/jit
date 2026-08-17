@@ -7,12 +7,15 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jitpass/jit/internal/agent"
 )
@@ -233,4 +236,30 @@ func TestHistoryLogScrubLegacyRemovesPlaintextFromDisk(t *testing.T) {
 	if got := h.load(agent.MaxSessionEvents); len(got) != 3 {
 		t.Errorf("load returned %d events after scrub, want 3", len(got))
 	}
+}
+
+// TestTrimHistoryPeriodically pins the mid-run cap: the 2MB trim used to run
+// only at service start, so anything that grew the file — launchd keeps one
+// process alive for weeks — ran unbounded until the NEXT restart.
+func TestTrimHistoryPeriodically(t *testing.T) {
+	h := newHistoryLog(t.TempDir(), io.Discard)
+	line := []byte(`{"unix_time":1,"kind":"unlock"}` + "\n")
+	big := bytes.Repeat(line, historyMaxBytes/len(line)+64)
+	if err := os.WriteFile(h.path, big, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go trimHistoryPeriodically(ctx, h, 5*time.Millisecond)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if fi, err := os.Stat(h.path); err == nil && fi.Size() <= historyMaxBytes {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	fi, _ := os.Stat(h.path)
+	t.Fatalf("the periodic trim never brought the file under the cap (size %d, cap %d)", fi.Size(), historyMaxBytes)
 }

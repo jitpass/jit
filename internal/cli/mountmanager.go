@@ -119,6 +119,18 @@ type mountManager struct {
 	mu     sync.Mutex
 	wg     sync.WaitGroup
 	served map[string]*servedMount
+	// skipReason/skipSuppressed make mount-skip logging transitional: a
+	// mount that structurally cannot serve or resolve (deleted profile, an
+	// envelope version newer than this build) is retried on EVERY unlock and
+	// refresh, and each pass used to log the identical line — the 2026-08-17
+	// incident's log was hours of it, every few minutes, drowning the
+	// startup and serve-error lines the log exists to surface. A skip now
+	// logs when its reason CHANGES (appears, changes text, clears); the
+	// steady state stays visible through lastResolveErr on the status
+	// surfaces. Keyed by mount path, guarded by mu; both the ensureServing
+	// skips (mount never entered served) and the resolveReal skips share it.
+	skipReason   map[string]string
+	skipAttempts map[string]int
 	// shuttingDown is set once by shutdown() (under mu) so ensureServing
 	// refuses to start — and wg.Add — a new Serve goroutine after shutdown
 	// snapshotted served and began wg.Wait(). Without it, an in-flight RPC's
@@ -328,6 +340,61 @@ func (sm *servedMount) setResolveErr(err error) {
 	sm.mu.Unlock()
 }
 
+// noteMountSkip records that path was skipped for err and reports whether to
+// log it: only on a transition (the first failure, or the reason changing).
+// Identical repeats are counted, not logged; noteMountRecovered surfaces the
+// count when the mount comes back.
+func (m *mountManager) noteMountSkip(path string, err error) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.skipReason == nil {
+		m.skipReason = map[string]string{}
+		m.skipAttempts = map[string]int{}
+	}
+	m.skipAttempts[path]++
+	cur := err.Error()
+	if m.skipReason[path] == cur {
+		return false
+	}
+	m.skipReason[path] = cur
+	return true
+}
+
+// noteMountRecovered clears path's skip state. attempts is how many times
+// the mount was skipped in total since it started failing (across reason
+// changes); recovered is false when the mount was never failing, which is
+// every ordinary resolve.
+func (m *mountManager) noteMountRecovered(path string) (attempts int, recovered bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.skipReason[path]; !ok {
+		return 0, false
+	}
+	attempts = m.skipAttempts[path]
+	delete(m.skipReason, path)
+	delete(m.skipAttempts, path)
+	return attempts, true
+}
+
+// logMountSkip is every skip site's one exit: transition-gated, and phrased
+// as "mount <path>: skipped, <reason>" so `jit service log` folds and
+// path-shortens it like any other mount row (the old "skipping mount X"
+// shape matched none of the view's machinery and rendered green).
+func (m *mountManager) logMountSkip(path string, err error) {
+	if m.noteMountSkip(path, err) {
+		fmt.Fprintf(m.stderr, "jit service: mount %s: skipped, %v\n", path, err)
+	}
+}
+
+// logMountRecovered is the clear half of the transition: one line saying the
+// mount is back, carrying how many attempts the suppression absorbed.
+func (m *mountManager) logMountRecovered(path string) {
+	if attempts, recovered := m.noteMountRecovered(path); recovered {
+		fmt.Fprintf(m.stdout, "jit service: mount %s: recovered, serving again (%s before this)\n",
+			path, countWord(attempts, "skipped attempt", "skipped attempts"))
+	}
+}
+
 // loadRegistry reads the mount registry, logging (not erroring — this
 // runs from hooks with no caller to return an error to) on failure.
 func (m *mountManager) loadRegistry() ([]mount.Entry, bool) {
@@ -373,7 +440,7 @@ func (m *mountManager) ensureServing(entries []mount.Entry) {
 
 		p, varOrder, err := profile.LoadFileOrdered(entry.ProfilePath)
 		if err != nil {
-			fmt.Fprintf(m.stderr, "jit service: skipping mount %s: %v\n", entry.MountPath, err)
+			m.logMountSkip(entry.MountPath, err)
 			continue
 		}
 		// DecoyValues only ever reads p's KEYS (variable names) — never a
@@ -384,7 +451,7 @@ func (m *mountManager) ensureServing(entries []mount.Entry) {
 		if entry.TemplatePath != "" {
 			tmpl, err := os.ReadFile(entry.TemplatePath) // #nosec G304 -- path comes from jit's own mount registry, not external input
 			if err != nil {
-				fmt.Fprintf(m.stderr, "jit service: skipping mount %s: reading template: %v\n", entry.MountPath, err)
+				m.logMountSkip(entry.MountPath, fmt.Errorf("reading template: %w", err))
 				continue
 			}
 			decoy = mount.FormatTemplate(tmpl, decoyValues)
@@ -426,6 +493,10 @@ func (m *mountManager) ensureServing(entries []mount.Entry) {
 		m.served[entry.MountPath] = sm
 		m.wg.Add(1)
 		m.mu.Unlock()
+		// A mount that had been skipped (deleted profile, unreadable
+		// template) and now serves again closes its skip transition here —
+		// resolveReal closes the resolve-failure kind on its own success.
+		m.logMountRecovered(entry.MountPath)
 
 		onReaderConnected := func(path string, sm *servedMount) func() {
 			return func() { m.noteReaderConnected(path, sm) }
@@ -522,13 +593,13 @@ func (m *mountManager) resolveReal(entries []mount.Entry, v *vault.Vault) {
 
 		p, varOrder, err := profile.LoadFileOrdered(entry.ProfilePath)
 		if err != nil {
-			fmt.Fprintf(m.stderr, "jit service: skipping mount %s: %v\n", entry.MountPath, err)
+			m.logMountSkip(entry.MountPath, err)
 			sm.setResolveErr(err)
 			continue
 		}
 		values, err := inject.Resolve(v, p)
 		if err != nil {
-			fmt.Fprintf(m.stderr, "jit service: skipping mount %s: %v\n", entry.MountPath, err)
+			m.logMountSkip(entry.MountPath, err)
 			sm.setResolveErr(err)
 			continue
 		}
@@ -537,7 +608,7 @@ func (m *mountManager) resolveReal(entries []mount.Entry, v *vault.Vault) {
 		if entry.TemplatePath != "" {
 			tmpl, err := os.ReadFile(entry.TemplatePath) // #nosec G304 -- path comes from jit's own mount registry, not external input
 			if err != nil {
-				fmt.Fprintf(m.stderr, "jit service: skipping mount %s: reading template: %v\n", entry.MountPath, err)
+				m.logMountSkip(entry.MountPath, fmt.Errorf("reading template: %w", err))
 				sm.setResolveErr(err)
 				continue
 			}
@@ -548,6 +619,7 @@ func (m *mountManager) resolveReal(entries []mount.Entry, v *vault.Vault) {
 		if !sm.setRealIfGen(real, gen) {
 			continue // a lock raced this resolve; leave the mount decoy
 		}
+		m.logMountRecovered(entry.MountPath)
 		// Resolution only ARMS the real content in memory; it never opens a
 		// window. A mount serves that real content solely to a run-scoped
 		// grant's own process tree (jit run --live / --with) — there is no

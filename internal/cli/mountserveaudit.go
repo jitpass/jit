@@ -100,12 +100,16 @@ const maxPendingServes = 64
 
 // serveKey is one aggregate's identity. Deliberately includes the reader and
 // the verdict: collapsing across either would merge facts an investigation
-// needs separated ("who read it" and "what did they get").
+// needs separated ("who read it" and "what did they get"). The reader is its
+// executable path, NOT its pid: a watcher that re-execs per read gets a
+// fresh pid every time, and a pid-keyed aggregate minted one event per read
+// — defeating the hour window the auditor exists to enforce and letting the
+// noisiest reader flood the durable trail. The first read's pid still rides
+// in the event payload (ByPID); the follow-up pids were noise, not facts.
 type serveKey struct {
-	mount     string
-	readerPID int32
-	reader    string
-	decoy     bool
+	mount  string
+	reader string
+	decoy  bool
 }
 
 type serveAggregate struct {
@@ -159,7 +163,7 @@ func (a *serveAuditor) record(now time.Time, mount, reason string, rec serveReco
 	if a == nil || a.emit == nil {
 		return
 	}
-	key := serveKey{mount: mount, readerPID: rec.reader.pid, reader: rec.reader.execPath, decoy: rec.decoy}
+	key := serveKey{mount: mount, reader: rec.reader.execPath, decoy: rec.decoy}
 
 	a.mu.Lock()
 	if a.pending == nil {

@@ -33,10 +33,12 @@ import (
 // "… jit service <verb>" for lifecycle lines (stopped, listening on …).
 var logLineRe = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) jit service(?::)? (.*)$`)
 
-// readsRe collapses the log's own rate-limiting note. "(+207 reads since the
-// last logged one)" is 38 columns to say a number the "×207" motif already
-// carries everywhere else in jit.
-var readsRe = regexp.MustCompile(`\s*\(\+(\d+) reads? since the last logged one\)`)
+// readsRe collapses the log's own rate-limiting notes. "(+207 reads since
+// the last logged one)" is 38 columns to say a number the "×207" motif
+// already carries everywhere else in jit; the serve-error suffix ("+3
+// similar since the last logged one") is the same note in different words
+// and folds the same way.
+var readsRe = regexp.MustCompile(`\s*\(\+(\d+) (?:reads?|similar) since the last logged one\)`)
 
 // mountRe pulls the mount path out of a mount note so it can be shortened to
 // its tail. Every one of these lines opens with the same ~50 characters of
@@ -46,13 +48,28 @@ var mountRe = regexp.MustCompile(`^mount ([^:]+): (.*)$`)
 // writeAgentLog renders the log for humans. home is used to shorten paths;
 // pass "" to leave them absolute.
 func writeAgentLog(w io.Writer, data []byte, home string) {
+	(&agentLogRenderer{home: home}).write(w, data)
+}
+
+// agentLogRenderer renders chunks of the log through one continuous state,
+// so --follow's polled chunks read like a single document: the day header
+// prints on day CHANGES only. Each chunk used to go through a fresh
+// stateless pass, so every poll that carried rows re-printed the date
+// header. Folding still happens within a chunk only — a run spanning a poll
+// boundary stays two rows, the same "timeline is never rewritten" trade the
+// collapse already makes at minute boundaries.
+type agentLogRenderer struct {
+	home string
+	day  string
+}
+
+func (r *agentLogRenderer) write(w io.Writer, data []byte) {
 	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
 	if len(lines) == 1 && lines[0] == "" {
 		return
 	}
 
-	day := ""
-	for _, e := range collapseAgentLog(lines, home) {
+	for _, e := range collapseAgentLog(lines, r.home) {
 		if e.raw != "" {
 			// A panic, a stack frame, anything the daemon printed that isn't
 			// one of its own timestamped notes. It goes through byte-exact —
@@ -63,11 +80,11 @@ func writeAgentLog(w io.Writer, data []byte, home string) {
 			fmt.Fprintln(w, e.raw)
 			continue
 		}
-		if e.date != day {
-			if day != "" {
+		if e.date != r.day {
+			if r.day != "" {
 				fmt.Fprintln(w)
 			}
-			day = e.date
+			r.day = e.date
 			_, _ = fmt.Fprintf(w, "  %s\n", e.date)
 		}
 		writeAgentLogEntry(w, e)
@@ -170,7 +187,13 @@ func agentLogGlyph(msg string) (string, *color.Color) {
 	case strings.Contains(l, "decoy"),
 		strings.Contains(l, "not identified"),
 		strings.Contains(l, "missed"),
-		strings.Contains(l, "denied"):
+		strings.Contains(l, "denied"),
+		// A mount the service cannot serve or resolve is degraded, not
+		// narration: "skipped," is the current write shape, "skipping
+		// mount" the one older logs still carry. Both rendered green
+		// through an entire afternoon of the 2026-08-17 incident.
+		strings.Contains(l, "skipped,"),
+		strings.Contains(l, "skipping mount"):
 		return glyphWarn, cWarn
 	default:
 		return glyphOK, cOK
