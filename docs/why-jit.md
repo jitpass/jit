@@ -203,12 +203,15 @@ The clean setup: keep 1Password for shared team secrets and non-developer
 logins, and run jit underneath it to protect the copies that land on your
 machine.
 
-The two also compose directly. `jit vault link` stores a 1Password secret
-reference (`op://vault/item/field`) instead of a value: 1Password stays the
-system of record where you rotate and share, and jit resolves the reference
-through the 1Password CLI at the moment of use, while still deciding which
-process gets it, serving decoys to everything else, and keeping the audit
-trail. No copy of the value ever lands in jit's vault. See
+The two also compose directly, and mostly by themselves. With the
+1Password CLI installed, `jit migrate` checks each value it is about to
+vault against your 1Password and stores a match as a secret reference
+(`op://vault/item/field`) instead of a copy; `jit vault link` does the
+same for one secret by hand. 1Password stays the system of record where
+you rotate and share, and jit resolves the reference through the
+1Password CLI at the moment of use, while still deciding which process
+gets it, serving decoys to everything else, and keeping the audit trail.
+No copy of the value ever lands in jit's vault. See
 [Use secrets that live in 1Password](./vault/1password.md).
 
 ## On the roadmap

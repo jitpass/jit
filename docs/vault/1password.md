@@ -96,6 +96,18 @@ locked 1Password fails the resolve with op's own error in front of you
 and in `jit audit`. Nothing falls back to a cached value, because there
 is no cached value.
 
+## Check link health
+
+`jit vault list` counts linked secrets in its footer and, with `-l`,
+tags each linked entry; `jit doctor` automatically checks (prompt-free)
+that the op CLI is installed and carries 1Password's own code
+signature whenever linked secrets exist. `jit doctor --1password` goes
+further and test-resolves every link, so a reference broken by a
+deleted or renamed item surfaces as a finding now rather than the
+moment a tool needed the value. That sweep takes one Touch ID (the
+stored references are encrypted like any secret) and 1Password may
+show its own prompt, which is why it never runs by default.
+
 ## Limits
 
 jit never writes to 1Password, and the background service resolves at

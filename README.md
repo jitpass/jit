@@ -358,10 +358,12 @@ The full catalog, grouped by exactly what to type for each tool, is
 removed. Anything not listed can still be wrapped with
 [`jit wrap add`](./docs/wrap/custom-tools.md).
 
-Already keep your secrets in 1Password? [`jit vault
-link`](./docs/vault/1password.md) stores the `op://` reference instead of a
-copy: 1Password stays the system of record, and jit delivers the value
-just-in-time through every mechanism above.
+Already keep your secrets in 1Password? With its CLI installed,
+[`jit migrate` links instead of copying](./docs/vault/1password.md): a
+value that already lives in 1Password is vaulted as its `op://` reference,
+so 1Password stays the system of record and jit delivers the value
+just-in-time through every mechanism above (`jit vault link` does the same
+for one secret by hand).
 
 ## Can I undo it? Always.
 

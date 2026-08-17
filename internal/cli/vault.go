@@ -218,17 +218,32 @@ func printVaultList(out io.Writer, secrets, backups []string, showBackups, group
 	}
 	secretsWord := pluralWord(len(secrets), "secret", "secrets")
 	backupsWord := pluralWord(len(backups), "backup", "backups")
+	// The footer states the linked count once for the whole vault — the
+	// prompt-free answer to "which of my secrets follow 1Password" (the
+	// per-row tag needs -l). Absent when nothing is linked.
+	linkedClause := ""
+	if meta != nil {
+		linked := 0
+		for _, p := range secrets {
+			if meta[p].Storage == vault.StorageOpRef {
+				linked++
+			}
+		}
+		if linked > 0 {
+			linkedClause = fmt.Sprintf(", %d linked to 1Password", linked)
+		}
+	}
 	switch {
 	case len(backups) == 0:
-		fmt.Fprintf(out, "\n%d %s stored.\n", len(secrets), secretsWord)
+		fmt.Fprintf(out, "\n%d %s stored%s.\n", len(secrets), secretsWord, linkedClause)
 	case len(secrets) == 0 && showBackups:
 		writeVaultFooter(out, true, hlCmds(fmt.Sprintf("No secrets stored yet, %d encrypted file %s kept for `jit migrate undo`.", len(backups), backupsWord)))
 	case len(secrets) == 0:
 		writeVaultFooter(out, false, hlCmds(fmt.Sprintf("No secrets stored yet, %d encrypted file %s kept for `jit migrate undo` (list with --all).", len(backups), backupsWord)))
 	case showBackups:
-		writeVaultFooter(out, true, hlCmds(fmt.Sprintf("%d %s stored, plus %d encrypted file %s kept for `jit migrate undo`.", len(secrets), secretsWord, len(backups), backupsWord)))
+		writeVaultFooter(out, true, hlCmds(fmt.Sprintf("%d %s stored%s, plus %d encrypted file %s kept for `jit migrate undo`.", len(secrets), secretsWord, linkedClause, len(backups), backupsWord)))
 	default:
-		writeVaultFooter(out, true, hlCmds(fmt.Sprintf("%d %s stored, plus %d encrypted file %s kept for `jit migrate undo` (list with --all).", len(secrets), secretsWord, len(backups), backupsWord)))
+		writeVaultFooter(out, true, hlCmds(fmt.Sprintf("%d %s stored%s, plus %d encrypted file %s kept for `jit migrate undo` (list with --all).", len(secrets), secretsWord, linkedClause, len(backups), backupsWord)))
 	}
 	// Duplicate-group nudge only decorates the default terminal view — a
 	// piped/grep listing (grouped == false) and the provenance axes stay
@@ -860,6 +875,20 @@ func secretMetaSuffix(info vault.SecretInfo) string {
 		class = "unknown"
 	}
 	parts := []string{class}
+	// Linkedness is the storage marker's, never the class's: a migrated
+	// secret keeps its dotenv/aws class when the dedupe links it, so
+	// without this tag nothing in the listing separates a link from a
+	// copy. The two suppressions keep it honest without stuttering: a
+	// born-as-link row's class already says "1password", and the inverse
+	// case — a 1password-class secret whose link was overwritten by a
+	// literal set — is exactly when the reader must be told it is NOT
+	// linked anymore.
+	switch {
+	case info.Storage == vault.StorageOpRef && info.Class != vault.ClassOnePassword:
+		parts = append(parts, "linked to 1Password")
+	case info.Storage == "" && info.Class == vault.ClassOnePassword:
+		parts = append(parts, "local copy")
+	}
 	if info.UpdatedUnix > 0 {
 		parts = append(parts, "updated "+humanAgo(time.Since(time.Unix(info.UpdatedUnix, 0)))+" ago")
 	}

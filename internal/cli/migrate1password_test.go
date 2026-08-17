@@ -26,6 +26,8 @@ func TestMain(m *testing.M) {
 	migrateOpInventory = func() (opInventory, error) {
 		return nil, errors.New("1Password inventory pinned off in tests")
 	}
+	doctorOpVerified = func() (string, error) { return "", errors.New("op pinned off in tests") }
+	doctorOpVersion = func(string) string { return "" }
 	os.Exit(m.Run())
 }
 

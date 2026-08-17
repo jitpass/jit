@@ -93,8 +93,20 @@ then **[Install](./getting-started/install.md)** →
 
 - [Store, read, and delete secrets](./vault/index.md) - `set`/`get`/`list`/`rm`, rotating a key, undoing a rotation with `history`/`restore`
 - [Back up and restore](./vault/backup-restore.md) - passphrase-encrypted export/import
-- [Use secrets that live in 1Password](./vault/1password.md) - `vault link` stores an `op://` reference; the value stays in 1Password
 - [Maintenance](./vault/maintenance.md) - `rekey`, `duplicates`, `prune`, `orphans`, `clean`, `delete`
+
+## Adapters - secrets that live somewhere else
+
+When a secret's real home is another manager, jit stores a reference
+instead of a copy and resolves it at the moment of use - the other tool
+stays the system of record, jit stays the layer that decides which process
+receives the value, serves decoys to everything else, and writes the audit
+trail.
+
+- [1Password](./vault/1password.md) - `jit migrate` automatically links
+  values that already live in 1Password (an `op://` reference, never a
+  copy); `vault link` links one by hand; `doctor --1password` checks every
+  link still resolves
 
 ## The background service
 
