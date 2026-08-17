@@ -135,6 +135,15 @@ type discovered struct {
 	// files whose only finding is private-key material, which migrate reports
 	// and refuses to redact (see migrate.HasOnlyPrivateKeyMaterial).
 	historyKeyOnly []string
+	// wrapOwnedSkipped is note-only: explicitly named files that belong to
+	// a wrappable CLI (a catalog tool's token Source, or clisso's config).
+	// Their fix is `jit wrap <tool>`, not loose-secret surgery — routing
+	// them into the "mixes a secret with other content" note sent the user
+	// at --mount for a file the wrap flow protects whole
+	// (design/dry-run-refactor.md D7). The owning tool is re-derived at
+	// print time (wrapOwnerForPath) rather than stored beside the path, so
+	// dedupe() can treat this like every other []string.
+	wrapOwnedSkipped []string
 }
 
 // noteNamespaceMove explains a claimNamespace bump (GAPS.md #55) directly
@@ -266,6 +275,41 @@ func shellQuoteArg(a string) string {
 		return a
 	}
 	return "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+}
+
+// wrapOwnerForPath names the catalog tool whose credential file an
+// explicitly named path is: a KindShim entry's token Source, or clisso's
+// config (KindCapture, so it has no Sources entry for its long-lived
+// client-secret).
+func wrapOwnerForPath(home, path string) (string, bool) {
+	if tool, ok := wrap.WrappableToolForPath(home, path); ok {
+		return tool, true
+	}
+	if path == migrate.ClissoConfigPath(home) {
+		return "clisso", true
+	}
+	return "", false
+}
+
+// printSkippedWrapOwned renders the skip note for files a wrappable CLI
+// owns, naming the per-tool command that actually protects each one —
+// the whole point of the note is the redirect, so the command carries it.
+func printSkippedWrapOwned(w io.Writer, home string, paths []string) {
+	if len(paths) == 0 {
+		return
+	}
+	_, _ = cWarn.Fprintf(w, "\nSkipped %s in %s a wrappable CLI owns:\n", countWord(len(paths), "finding", "findings"), pluralWord(len(paths), "a file", "files"))
+	var cmds []string
+	seen := map[string]bool{}
+	for _, p := range paths {
+		fmt.Fprintf(w, "  - %s\n", displayPath(home, p))
+		if tool, ok := wrapOwnerForPath(home, p); ok && !seen[tool] {
+			seen[tool] = true
+			cmds = append(cmds, "`jit wrap "+tool+"`")
+		}
+	}
+	fmt.Fprint(w, "  ")
+	wrapBody(w, 2, "  ", hlCmds("Protect "+pluralWord(len(paths), "it", "them")+" with "+strings.Join(cmds, ", ")+" instead: the token moves to the vault and the tool keeps working through a shim."))
 }
 
 // wrapPlanDetail states what wrapping this catalog tool actually DOES,
@@ -462,6 +506,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 	looseSecretFiles := d.looseSecretFiles
 	looseEmbeddedSkipped := d.looseEmbeddedSkipped
 	historyKeyOnly := d.historyKeyOnly
+	wrapOwnedSkipped := d.wrapOwnedSkipped
 
 	// --only scopes a run to just the named categories (GAPS.md #21) —
 	// validated against migrateCategories BEFORE anything else, including
@@ -544,6 +589,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 			"Re-run with --mount to protect them in place as a live mount (the non-secret content is preserved); otherwise they stay put and `jit scan` keeps reporting them.")
 		printSkippedFindings(cmd.OutOrStdout(), home, len(historyKeyOnly), "in "+pluralWord(len(historyKeyOnly), "a history file", "history files")+" holding private key material", historyKeyOnly,
 			"jit only matched the -----BEGIN line; the key body is on the lines around it, so redacting would leave the key behind and make the file look clean. Regenerate the key, then delete those lines by hand.")
+		printSkippedWrapOwned(cmd.OutOrStdout(), home, wrapOwnedSkipped)
 		return false, nil
 	}
 
@@ -614,6 +660,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 		"Re-run with --mount to protect them in place as a live mount (the non-secret content is preserved); otherwise they stay put and `jit scan` keeps reporting them.")
 	printSkippedFindings(cmd.OutOrStdout(), home, len(historyKeyOnly), "in "+pluralWord(len(historyKeyOnly), "a history file", "history files")+" holding private key material", historyKeyOnly,
 		"jit only matched the -----BEGIN line; the key body is on the lines around it, so redacting would leave the key behind and make the file look clean. Regenerate the key, then delete those lines by hand.")
+	printSkippedWrapOwned(cmd.OutOrStdout(), home, wrapOwnedSkipped)
 
 	// The 1Password announcement is part of the plan the user confirms
 	// against (and --dry-run's, same rendering), but the plan never
@@ -1816,6 +1863,16 @@ func discoverFileTarget(d *discovered, home, path string) error {
 	// scan keeps reporting it). Never runs on a directory walk, only on a file
 	// the user named directly, matching the intent gate scan uses.
 	if d.total() == before {
+		// A file a wrappable CLI owns (a catalog tool's token Source, or
+		// clisso's config) has a better fix than loose-secret surgery:
+		// `jit wrap <tool>` vaults the token and keeps the tool working
+		// through a shim. Routing it into the "mixes a secret with other
+		// content" note sent the user at --mount instead — the wrong tool
+		// for a file the wrap flow protects whole (D7).
+		if _, owned := wrapOwnerForPath(home, path); owned {
+			d.wrapOwnedSkipped = append(d.wrapOwnedSkipped, path)
+			return nil
+		}
 		if tokens, pure, err := migrate.ClassifyLooseSecretFile(path); err == nil && len(tokens) > 0 {
 			switch {
 			case pure || migrateMount:
@@ -1899,7 +1956,7 @@ func (d *discovered) dedupe() {
 		&d.historyFiles, &d.mcpConfigs, &d.awsProfiles, &d.k8sUsers, &d.terraformHosts,
 		&d.dockerRegistries, &d.gitHosts, &d.gcpADCFiles, &d.sopsAgeFiles,
 		&d.npmrcFiles, &d.netrcFiles, &d.pypircFiles, &d.looseSecretFiles, &d.looseEmbeddedSkipped,
-		&d.historyKeyOnly,
+		&d.historyKeyOnly, &d.wrapOwnedSkipped,
 	} {
 		dedupeStrings(s)
 	}
