@@ -358,6 +358,27 @@ Each gets a one-clause error plus the one command to type:
 - Any daemonized 1Password sync; manual re-runs of the bulk/migrate
   flows are the refresh.
 
+## Dogfood findings (2026-08-17, live account, phase 1 build)
+
+Exercised end to end against a real signed-in 1Password desktop app:
+link (name form and ID form), get, get --format json, rotation in
+1Password reflected with no re-link, byte-exact resolution of a value
+containing quotes, backticks, `$VAR`, double spaces, and emoji
+(delta vs `op read -n` was exactly vault get's display newline; the
+JSON channel matches op byte for byte), `jit run` env injection,
+literal-set-over-link clearing storage while keeping birth class,
+history archiving the reference and restore turning the path back
+into a link, dead links failing with op's own item-not-found error,
+and malformed references failing before any prompt.
+
+Two UX facts confirmed: the first use costs exactly the predicted
+double prompt (jit Touch ID, then 1Password's "Allow iTerm2 to get
+CLI access" dialog naming the process and account), and every op call
+after that rode the 1Password session silently while jit's fresh-auth
+commands kept prompting per their own policy. Still untested: the
+background service's op session behavior (no linked secret has been
+mounted yet), and 1Password-app-locked failure at refresh time.
+
 ## Dependencies and testing
 
 Zero new Go modules: the integration is an exec boundary, consistent
