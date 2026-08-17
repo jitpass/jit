@@ -499,12 +499,27 @@ func (s *Server) extendGrant(req Request, c *caller) Response {
 	var name, under string
 	var count int
 	var profiles []string
+	var rootPID int32
+	var rootStart int64
 	if g != nil {
 		name, under, count, profiles = g.name, g.anchorName, len(g.deks), g.profiles
+		rootPID, rootStart = g.rootPID, g.rootStart
 	}
 	s.grantMu.Unlock()
 	if g == nil {
 		return Response{OK: false, Error: fmt.Sprintf("grant_extend: no grant %q (it may have expired — extend cannot resurrect one, create it again)", req.GrantID)}
+	}
+	// The root must still be the process this grant was anchored to, checked
+	// BEFORE prompting. Creation verifies the fork-time stamp on both sides
+	// of its challenge and every serve re-checks it, but extend did neither:
+	// a human could be asked to widen the window of a grant whose root had
+	// already died, approve it, and get an OK whose echoed status hard-coded
+	// RootAlive true. The next prune would end it moments later — so the
+	// prompt bought nothing and the answer described a grant that was
+	// already over.
+	if cur, alive := lineage.ProcessStartTime(rootPID); !alive || cur != rootStart {
+		s.endGrant(req.GrantID, grantEndExited)
+		return Response{OK: false, Error: fmt.Sprintf("grant_extend: grant %q's process has exited, so there is no window left to extend (create a new grant)", req.GrantID)}
 	}
 
 	// grantCreateReason already words the full scope; re-lead it as an
@@ -548,6 +563,14 @@ func (s *Server) endGrantBy(id, cause string, c *caller) {
 		return
 	}
 	delete(s.grants, id)
+	// The expiry timer has nothing left to check; stopping it here (rather
+	// than leaving it to fire and find the grant gone) is what keeps timers
+	// from outliving the grants they time. Already under grantMu, so this is
+	// the map operation, not stopGrantExpiry.
+	if t := s.grantTimers[id]; t != nil {
+		t.Stop()
+		delete(s.grantTimers, id)
+	}
 	paths := g.secretPaths()
 	name := g.name
 	g.wipeDEKs()
@@ -609,13 +632,28 @@ func (s *Server) pruneGrants(now time.Time) {
 // deadline re-check is the guard).
 func (s *Server) armGrantExpiry(id string, expires time.Time) {
 	delay := time.Until(expires) + time.Second
-	time.AfterFunc(delay, func() {
+	timer := time.AfterFunc(delay, func() {
 		s.grantMu.Lock()
 		g := s.grants[id]
 		expired := g != nil && time.Now().After(g.expires)
+		delete(s.grantTimers, id)
 		s.grantMu.Unlock()
 		if expired {
 			s.endGrant(id, grantEndExpired)
 		}
 	})
+	// Keep the handle so a re-extend or an end can stop it. Each arming used
+	// to leave its predecessor running — up to a week out, holding the id and
+	// closure — so a grant extended through a working week accumulated a pile
+	// of live timers. Harmless (every one re-checks the deadline before
+	// acting) but unbounded, and the fix is one map.
+	s.grantMu.Lock()
+	if s.grantTimers == nil {
+		s.grantTimers = map[string]*time.Timer{}
+	}
+	if old := s.grantTimers[id]; old != nil {
+		old.Stop()
+	}
+	s.grantTimers[id] = timer
+	s.grantMu.Unlock()
 }
