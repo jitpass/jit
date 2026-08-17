@@ -69,6 +69,14 @@ type agentStatusResult struct {
 	// release-scale counterpart. Empty when the service isn't running or
 	// predates the field.
 	Version string `json:"version,omitempty"`
+	// Protocol is the running service's socket-protocol revision
+	// (agent.Protocol). It decides real behaviour — a service below
+	// protocolDisclosedGate cannot enforce the disclosed-credential prompt,
+	// so the client refuses to ask it for a machine-wide grant — and this is
+	// the only machine-readable surface that reports it. Zero when the
+	// service isn't running or predates the field, which is itself the
+	// "too old to trust with that" answer.
+	Protocol int `json:"protocol,omitempty"`
 }
 
 var agentStatusCmd = &cobra.Command{
@@ -116,7 +124,7 @@ var agentStatusCmd = &cobra.Command{
 		}
 
 		if agentStatusFormat == "json" {
-			result := agentStatusResult{Running: true, Installed: agentInstalled(), Unlocked: st.Unlocked, Mounts: st.Mounts, LastUnlock: st.LastUnlock, LastLock: st.LastLock, PendingUnlock: st.PendingUnlock, Build: st.Build, Version: st.Version}
+			result := agentStatusResult{Running: true, Installed: agentInstalled(), Unlocked: st.Unlocked, Mounts: st.Mounts, LastUnlock: st.LastUnlock, LastLock: st.LastLock, PendingUnlock: st.PendingUnlock, Build: st.Build, Version: st.Version, Protocol: st.Protocol}
 			if st.Unlocked {
 				result.LocksInSeconds = int64(st.Remaining.Round(time.Second).Seconds())
 			}

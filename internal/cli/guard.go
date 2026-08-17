@@ -211,8 +211,8 @@ func guardCheckStdin(r io.Reader) ([]string, error) {
 	// whole read with "token too long" on a single line past its buffer, and
 	// the hook treats any failure as "clean" — so pasting a 3 MB command that
 	// happened to carry a credential got it recorded, with a raw Go error on
-	// stderr. Truncating at the bound instead still checks the first megabyte,
-	// which is where a credential in a pasted blob will be.
+	// stderr. Truncating at the bound instead still checks everything up to
+	// the cap above, which is where a credential in a pasted blob will be.
 	data, err := io.ReadAll(io.LimitReader(r, maxCheckInput))
 	if err != nil {
 		return nil, err
