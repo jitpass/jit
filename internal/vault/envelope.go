@@ -37,6 +37,18 @@ type envelope struct {
 	GroupID        string `json:"group_id,omitempty"`
 	Origin         string `json:"origin,omitempty"`
 	OriginSeenUnix int64  `json:"origin_seen_unix,omitempty"`
+	// Storage says what the PAYLOAD is (version 4+): "" means the payload
+	// is the secret value itself, StorageOpRef means it is a 1Password
+	// secret reference (an op:// URI) that Get resolves through the
+	// Vault's RefResolver at read time. Unlike the provenance fields it is
+	// NOT birth-immutable — it describes the current payload, and a
+	// literal Set over a linked path deliberately clears it (the user
+	// replaced the pointer with a value). It is deliberately an explicit,
+	// AAD-bound marker rather than a payload sniff: a stored value that
+	// happens to look like "op://…" must never silently morph into a
+	// resolver call, and flipping the marker on disk (either direction)
+	// must fail decryption rather than change what Get does.
+	Storage string `json:"storage,omitempty"`
 	// Recipients maps a recipient ID (this device's hostname in Phase 1;
 	// Phase 2 adds real multi-recipient sharing, RFC.md §5.2) to that
 	// recipient's hex-encoded wrapped DEK.
@@ -86,12 +98,24 @@ const (
 	envelopeVersionAADLess = 1
 	// envelopeVersionMetaOnly is the second schema: created/updated
 	// timestamps bound into the AAD, no provenance. Never written anymore
-	// (Set writes v3), readable forever, same as v1.
+	// (Set writes v4), readable forever, same as v1.
 	envelopeVersionMetaOnly = 2
-	// envelopeVersion is what Set writes today: v2's metadata plus
-	// class/group/origin provenance, all AAD-bound.
-	envelopeVersion = 3
+	// envelopeVersionProvenance is the third schema: v2's metadata plus
+	// class/group/origin provenance, all AAD-bound. Never written anymore
+	// (Set writes v4), readable forever, same as v1 and v2.
+	envelopeVersionProvenance = 3
+	// envelopeVersion is what Set writes today: v3's provenance plus the
+	// storage marker (see envelope.Storage), all AAD-bound.
+	envelopeVersion = 4
 )
+
+// StorageOpRef marks an envelope whose payload is a 1Password secret
+// reference (an op:// URI) rather than the secret value itself — see
+// envelope.Storage and design/1password-adapter.md. The reference is
+// encrypted and consent-gated exactly like a literal value: an op://
+// path names the user's 1Password credential map, and gating its unwrap
+// is what keeps per-process consent meaningful for linked secrets.
+const StorageOpRef = "op-ref"
 
 // Class values name the semantic source a secret came from — the durable,
 // AAD-bound answer to "is this from a .env, an .mcp.json, my shell rc?".
@@ -124,6 +148,12 @@ const (
 	// manifest's data:/stringData: block (distinct from ClassKube, which is
 	// a kubeconfig credential). Origin is the manifest path.
 	ClassK8sSecret = "k8s_secret" // #nosec G101 -- provenance class label, not a credential
+	// ClassOnePassword is a 1Password reference linked from nothing (`jit
+	// vault link`, manual or bulk): born as a link, its only source IS
+	// 1Password. A secret that `jit migrate` links keeps its migrator's
+	// class instead — it was born in that file, and envelope.Storage alone
+	// says how it is fulfilled. See design/1password-adapter.md.
+	ClassOnePassword = "1password"
 	// ClassShellHistory is a credential redacted out of a shell history file
 	// by `jit migrate` (distinct from ClassShell, which is an export line
 	// moved out of a shell rc file). Origin is the history file path. These
@@ -145,16 +175,21 @@ const (
 // admits only [A-Za-z0-9_.-] and '/', so a colon can never appear in it and
 // the encoding is unambiguous.
 //
-// The AAD is version-shaped: a v3 payload was sealed under a string that
+// The AAD is version-shaped: a v4 payload was sealed under a string that
+// appends class:group:storage:origin, a v3 payload under the shape that
 // appends class:group:origin, a v2 payload under the four-field string that
-// predates them. Get MUST reconstruct whichever the stored version used, so
-// the branch here is keyed on version, NOT on whether the provenance fields
-// happen to be non-empty. class and group_id never contain a colon (fixed
-// vocabulary / hex id); origin can in principle, but it is the LAST field, so
-// everything past the final delimiter is origin and the encoding stays
-// unambiguous.
-func envelopeAAD(path string, version int, createdUnix, updatedUnix int64, class, groupID, origin string) []byte {
-	if version >= envelopeVersion {
+// predates them all. Get MUST reconstruct whichever the stored version used,
+// so the branch here is keyed on version, NOT on whether the newer fields
+// happen to be non-empty. class, group_id, and storage never contain a colon
+// (fixed vocabulary / hex id); origin can in principle, which is why origin
+// stays the LAST field in every version's shape — v4 inserts storage BEFORE
+// origin, not after it — so everything past the final delimiter is origin
+// and the encoding stays unambiguous.
+func envelopeAAD(path string, version int, createdUnix, updatedUnix int64, class, groupID, origin, storage string) []byte {
+	switch {
+	case version >= envelopeVersion:
+		return fmt.Appendf(nil, "jit-envelope:%d:%s:%d:%d:%s:%s:%s:%s", version, path, createdUnix, updatedUnix, class, groupID, storage, origin)
+	case version >= envelopeVersionProvenance:
 		return fmt.Appendf(nil, "jit-envelope:%d:%s:%d:%d:%s:%s:%s", version, path, createdUnix, updatedUnix, class, groupID, origin)
 	}
 	return fmt.Appendf(nil, "jit-envelope:%d:%s:%d:%d", version, path, createdUnix, updatedUnix)
