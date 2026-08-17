@@ -126,6 +126,12 @@ This is the one layer of the stack that is unavoidably macOS-only and unavoidabl
 | `net/http` (stdlib) | Base client for Datadog/Splunk/Slack/Teams webhook delivery. |
 | `github.com/hashicorp/go-retryablehttp` | Backoff/retry wrapper so a transient network blip doesn't silently drop a high-severity event (failed auth, blocked lineage, tripped velocity limit, canary use), these are exactly the events where "we tried once and gave up" is the wrong failure mode. |
 
+### 2.13 1Password reference resolution (design/1password-adapter.md)
+
+| Package | Role |
+|---|---|
+| No SDK for 1Password | `github.com/1password/onepassword-sdk-go` exists and was NOT adopted: it authenticates via service-account token (a credential jit would then have to store, recursively) and adds a supply-chain edge to the exact class of secret this feature handles. `internal/onepassword` instead execs the user's own `op` CLI (`op read -n`), pure Go, zero new modules -- and refuses to exec an `op` that fails Developer ID signature verification against AgileBits' pinned Team ID (same codesign requirement shape as `jit upgrade`'s own check). The desktop app's biometric authorization gates release from 1Password; jit's consent gates delivery. |
+
 ---
 
 ## 3. Architecture Note: Two Curves, Two Purposes

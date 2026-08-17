@@ -76,7 +76,7 @@ type ExportEnvelope struct {
 	Payload string `json:"payload"`
 }
 
-// Export decrypts every secret currently in the vault (via getStored, so
+// Export decrypts every secret currently in the vault (via GetStored, so
 // it needs the same KeyWrapper/local-auth Get always does — but never the
 // RefResolver: an export is a vault backup, and a linked secret exports
 // as its reference, not as a 1Password read) and re-encrypts the whole
@@ -92,7 +92,7 @@ func (v *Vault) Export(passphrase []byte) (*ExportEnvelope, error) {
 	secrets := make(map[string]exportEntry, len(paths))
 	defer wipeEntries(secrets)
 	for _, path := range paths {
-		value, storage, err := v.getStored(path)
+		value, storage, err := v.GetStored(path)
 		if err != nil {
 			return nil, fmt.Errorf("reading %s: %w", path, err)
 		}
