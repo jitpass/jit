@@ -260,9 +260,9 @@ func (v *Vault) readEnvelope(path string) (envelope, error) {
 // stored one; a Vault built without a resolver fails such a read with
 // ErrRefUnresolvable instead. Export is the one caller that must NOT
 // resolve (an export is a vault backup, not a 1Password read) and uses
-// getStored directly.
+// GetStored directly.
 func (v *Vault) Get(path string) ([]byte, error) {
-	plaintext, storage, err := v.getStored(path)
+	plaintext, storage, err := v.GetStored(path)
 	if err != nil {
 		return nil, err
 	}
@@ -289,10 +289,10 @@ func (v *Vault) Get(path string) ([]byte, error) {
 	}
 }
 
-// getStored decrypts and returns the payload stored at path exactly as
+// GetStored decrypts and returns the payload stored at path exactly as
 // stored, plus its storage marker, never touching RefResolver — Get's
 // core, and Export's non-resolving read.
-func (v *Vault) getStored(path string) ([]byte, string, error) {
+func (v *Vault) GetStored(path string) ([]byte, string, error) {
 	env, err := v.readEnvelope(path)
 	if err != nil {
 		return nil, "", err

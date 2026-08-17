@@ -112,7 +112,13 @@ type vaultGetResult struct {
 	OriginSeenUnix int64  `json:"origin_seen_unix,omitempty"`
 	CreatedUnix    int64  `json:"created_unix,omitempty"`
 	UpdatedUnix    int64  `json:"updated_unix,omitempty"`
-	Value          string `json:"value"`
+	// Storage/Reference appear only for a linked secret (`jit vault
+	// link`): the storage marker and the op:// reference the value was
+	// resolved through — Value still carries the resolved value, so a
+	// script consuming .value never cares whether the secret is linked.
+	Storage   string `json:"storage,omitempty"`
+	Reference string `json:"reference,omitempty"`
+	Value     string `json:"value"`
 }
 
 // splitBackupPaths separates a vault listing into user secrets and jit
@@ -1051,6 +1057,16 @@ var vaultGetCmd = &cobra.Command{
 			// value is in hand, so a header hiccup drops metadata, never the
 			// whole get.
 			info, _ := v.Info(args[0])
+			// For a linked secret, also show WHICH 1Password field the value
+			// came from. GetStored re-decrypts the stored reference; the
+			// Wrapper's MEK cache means no second prompt (same reason the
+			// Info read above is free).
+			var reference string
+			if info.Storage == vault.StorageOpRef {
+				if ref, _, err := v.GetStored(args[0]); err == nil {
+					reference = string(ref)
+				}
+			}
 			return writeJSON(cmd.OutOrStdout(), vaultGetResult{
 				Path:           args[0],
 				Version:        info.Version,
@@ -1060,6 +1076,8 @@ var vaultGetCmd = &cobra.Command{
 				OriginSeenUnix: info.OriginSeenUnix,
 				CreatedUnix:    info.CreatedUnix,
 				UpdatedUnix:    info.UpdatedUnix,
+				Storage:        info.Storage,
+				Reference:      reference,
 				Value:          string(value),
 			})
 		}
