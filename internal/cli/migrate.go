@@ -351,7 +351,8 @@ func wrapPlanDetail(home, tool string) string {
 	// shell rc — a file edit the plan must disclose (ensureShimOnPath).
 	if entry.Kind != wrap.KindNative {
 		rc := wrap.RcFile(home, os.Getenv("SHELL"))
-		if data, err := os.ReadFile(rc); err != nil || !wrap.RcMentionsShimDir(string(data)) {
+		data, err := os.ReadFile(rc) // #nosec G304 G703 -- rc is derived from the user's own home dir and $SHELL (same read wrap.EnsurePathLine makes), never external input; read-only probe for the plan's disclosure
+		if err != nil || !wrap.RcMentionsShimDir(string(data)) {
 			detail += "; adds the shim PATH line to " + displayPath(home, rc)
 		}
 	}
