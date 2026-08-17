@@ -229,16 +229,25 @@ func (s *Server) recordServeError(op, cause string, c *caller) {
 	if s.OnServeError == nil {
 		return
 	}
-	key := op + "\x00" + cause
+	// Keyed on the OP ALONE, never on the cause. The cause embeds the
+	// decoder's own error text, which quotes bytes the caller chose — so a
+	// prober that varies one digit ("min_protocol":1<N>0) mints a fresh key
+	// per request and every request earns its own durable line. Measured at
+	// ~1200 lines/sec, which evicts the real unlock/denial/grant history from
+	// agent-history.jsonl (trim keeps the newest half) in seconds: exactly
+	// the eviction this limit exists to prevent, walked straight through the
+	// middle of it. A caller-influenced value can never be part of a
+	// rate-limit key.
+	//
+	// The cost is real and accepted: several genuinely different decode
+	// failures inside one gap now fold into one event carrying the FIRST
+	// cause and the total Count. An investigator loses the variety, which is
+	// the lesser loss — the raw prose still lands in agent.log, and an
+	// unbounded durable trail loses everything.
+	key := op
 	now := time.Now()
 	s.serveErrMu.Lock()
 	if s.serveErrSeen == nil {
-		s.serveErrSeen = map[string]*serveErrNote{}
-	}
-	if len(s.serveErrSeen) > 64 {
-		// A prober minting DISTINCT causes must not grow this map for the
-		// process's weeks-long life; resetting forfeits some suppression
-		// counts, never events.
 		s.serveErrSeen = map[string]*serveErrNote{}
 	}
 	n := s.serveErrSeen[key]

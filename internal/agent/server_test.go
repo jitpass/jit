@@ -1558,22 +1558,30 @@ func TestRecordServeErrorRateLimitsIdenticalFailures(t *testing.T) {
 		t.Fatalf("100 identical failures inside the gap wrote %d events, want 1", len(events))
 	}
 
+	// A distinct CAUSE under the same op does NOT get its own line: the
+	// cause quotes caller-chosen bytes, so keying on it let a prober mint a
+	// durable line per request (see
+	// TestServeErrorRateLimitIgnoresCallerText). Only a distinct op does.
 	s.recordServeError("decode", "malformed json", nil)
+	if len(events) != 1 {
+		t.Fatalf("a distinct cause under the same op must fold, got %d events", len(events))
+	}
+	s.recordServeError("reject", "rejected peer: uid mismatch", nil)
 	if len(events) != 2 {
-		t.Fatalf("a DISTINCT cause must record immediately, got %d events", len(events))
+		t.Fatalf("a DISTINCT op must record immediately, got %d events", len(events))
 	}
 
-	// Age the first pair past the gap: the next identical failure records
-	// and carries the fold (1 recorded + 99 suppressed = 100 occurrences).
+	// Age the op past the gap: the next failure records and carries the fold
+	// (1 recorded + 100 suppressed = 101 occurrences).
 	s.serveErrMu.Lock()
-	s.serveErrSeen["decode\x00request too large"].last = time.Now().Add(-2 * serveErrorMinGap)
+	s.serveErrSeen["decode"].last = time.Now().Add(-2 * serveErrorMinGap)
 	s.serveErrMu.Unlock()
 	s.recordServeError("decode", "request too large", nil)
 	if len(events) != 3 {
 		t.Fatalf("after the gap the failure must record again, got %d events", len(events))
 	}
-	if events[2].Count != 100 {
-		t.Errorf("the recorded event must carry the fold: Count = %d, want 100", events[2].Count)
+	if events[2].Count != 101 {
+		t.Errorf("the recorded event must carry the fold: Count = %d, want 101", events[2].Count)
 	}
 }
 
@@ -1958,5 +1966,45 @@ func TestThrottledDisclosedAttemptRecordsNothing(t *testing.T) {
 		if e.Kind == KindUnlock {
 			t.Fatalf("the in-memory ring carries a fabricated unlock: %+v", e)
 		}
+	}
+}
+
+// TestServeErrorRateLimitIgnoresCallerText is the regression test for a
+// bypass the pre-release bug hunt found: the limit keyed on op+cause, and
+// cause embeds the decoder's error text, which quotes bytes the CALLER
+// chose. Varying one digit per request minted a fresh key and a fresh
+// durable line — measured at ~1200 lines/sec, enough to evict the real
+// unlock/denial/grant history out of agent-history.jsonl within seconds,
+// which is precisely the eviction the limit exists to prevent. A
+// caller-influenced value can never be part of a rate-limit key.
+func TestServeErrorRateLimitIgnoresCallerText(t *testing.T) {
+	s := NewServer(filepath.Join(t.TempDir(), "x.sock"), nil, time.Minute)
+	var events []SessionEvent
+	s.OnServeError = func(e SessionEvent) { events = append(events, e) }
+
+	// Every cause distinct, exactly as a prober varying its payload gets.
+	for i := 0; i < 200; i++ {
+		s.recordServeError("decode", fmt.Sprintf("bad request: invalid character %d looking for beginning of value", i), nil)
+	}
+	if len(events) != 1 {
+		t.Fatalf("200 caller-varied causes wrote %d durable events, want 1: the flood key is caller-controllable", len(events))
+	}
+
+	// A different OP is a different fact and still records immediately.
+	s.recordServeError("reject", "rejected peer: uid mismatch", nil)
+	if len(events) != 2 {
+		t.Fatalf("a distinct op must record immediately, got %d events", len(events))
+	}
+
+	// After the gap, the op records again and carries the whole fold.
+	s.serveErrMu.Lock()
+	s.serveErrSeen["decode"].last = time.Now().Add(-2 * serveErrorMinGap)
+	s.serveErrMu.Unlock()
+	s.recordServeError("decode", "bad request: whatever", nil)
+	if len(events) != 3 {
+		t.Fatalf("after the gap the op must record again, got %d events", len(events))
+	}
+	if events[2].Count != 200 {
+		t.Errorf("the recorded event must carry the suppressed fold: Count = %d, want 200", events[2].Count)
 	}
 }
