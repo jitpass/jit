@@ -33,10 +33,12 @@ import (
 // "… jit service <verb>" for lifecycle lines (stopped, listening on …).
 var logLineRe = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) jit service(?::)? (.*)$`)
 
-// readsRe collapses the log's own rate-limiting note. "(+207 reads since the
-// last logged one)" is 38 columns to say a number the "×207" motif already
-// carries everywhere else in jit.
-var readsRe = regexp.MustCompile(`\s*\(\+(\d+) reads? since the last logged one\)`)
+// readsRe collapses the log's own rate-limiting notes. "(+207 reads since
+// the last logged one)" is 38 columns to say a number the "×207" motif
+// already carries everywhere else in jit; the serve-error suffix ("+3
+// similar since the last logged one") is the same note in different words
+// and folds the same way.
+var readsRe = regexp.MustCompile(`\s*\(\+(\d+) (?:reads?|similar) since the last logged one\)`)
 
 // mountRe pulls the mount path out of a mount note so it can be shortened to
 // its tail. Every one of these lines opens with the same ~50 characters of
@@ -185,7 +187,13 @@ func agentLogGlyph(msg string) (string, *color.Color) {
 	case strings.Contains(l, "decoy"),
 		strings.Contains(l, "not identified"),
 		strings.Contains(l, "missed"),
-		strings.Contains(l, "denied"):
+		strings.Contains(l, "denied"),
+		// A mount the service cannot serve or resolve is degraded, not
+		// narration: "skipped," is the current write shape, "skipping
+		// mount" the one older logs still carry. Both rendered green
+		// through an entire afternoon of the 2026-08-17 incident.
+		strings.Contains(l, "skipped,"),
+		strings.Contains(l, "skipping mount"):
 		return glyphWarn, cWarn
 	default:
 		return glyphOK, cOK

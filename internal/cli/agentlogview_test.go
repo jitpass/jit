@@ -130,3 +130,63 @@ func TestAgentLogRendererKeepsDayStateAcrossChunks(t *testing.T) {
 		t.Errorf("a genuinely new day must print its header once, got %d:\n%s", got, buf.String())
 	}
 }
+
+// TestAgentLogRendersSkipsAsDegraded drives the 2026-08-17 incident's exact
+// line shapes through the renderer: a mount the service cannot serve or
+// resolve must read as degraded (amber), fold like any other mount row, and
+// the recovery line must read as routine (green). The old "skipping mount"
+// shape — still present in logs written before the transition-logging fix —
+// gets the amber glyph too, even though it predates the foldable format.
+func TestAgentLogRendersSkipsAsDegraded(t *testing.T) {
+	in := "2026-08-17 11:38:12 jit service: mount /Users/x/pt2/proj/.env: skipped, reading profile /Users/x/pt2/proj/.jit/profiles/proj-2.yaml: open: no such file or directory\n" +
+		"2026-08-17 12:33:01 jit service: mount /Users/x/e2e/.env: skipped, resolving MATCHED_SECRET: secret has envelope version 4, newer than this jit understands (max 3), upgrade jit to read it\n" +
+		"2026-08-17 12:34:40 jit service: mount /Users/x/e2e/.env: recovered, serving again (14 skipped attempts before this)\n" +
+		"2026-08-17 12:36:02 jit service: skipping mount /Users/x/old/.env: legacy line from an older build\n"
+	var buf bytes.Buffer
+	writeAgentLog(&buf, []byte(in), "/Users/x")
+	out := buf.String()
+
+	// The glyph sits on a row's FIRST line; long reasons wrap onto
+	// continuation lines, so assert against the substring that shares the
+	// glyph's line (the row lead, not the wrapped tail).
+	for glyph, want := range map[string]string{
+		glyphWarn: "skipped, reading profile",
+		glyphOK:   "recovered, serving again",
+	} {
+		found := false
+		for _, line := range strings.Split(out, "\n") {
+			if strings.Contains(line, want) && strings.Contains(line, glyph) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected %q marked with %q, got:\n%s", want, glyph, out)
+		}
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "skipped, resolving") && !strings.Contains(line, glyphWarn) {
+			t.Errorf("an envelope-version skip must be amber, got: %s", line)
+		}
+		if strings.Contains(line, "skipping mount") && !strings.Contains(line, glyphWarn) {
+			t.Errorf("the pre-fix 'skipping mount' shape must be amber too, got: %s", line)
+		}
+	}
+	if !strings.Contains(out, "…") && !strings.Contains(out, "~/pt2/proj/.env") {
+		t.Errorf("the skip row must go through the mount-row path shortening, got:\n%s", out)
+	}
+}
+
+// TestAgentLogFoldsSimilarSuffix: the serve-error rate-limit suffix is the
+// reads suffix in different words, and folds to the same ×N motif.
+func TestAgentLogFoldsSimilarSuffix(t *testing.T) {
+	in := "2026-08-17 12:36:02 jit service: mount /Users/x/a/.env: writing: broken pipe (still serving) (+3 similar since the last logged one)\n"
+	var buf bytes.Buffer
+	writeAgentLog(&buf, []byte(in), "/Users/x")
+	out := buf.String()
+	if !strings.Contains(out, "×3") {
+		t.Errorf("the similar-suffix must fold to ×3, got:\n%s", out)
+	}
+	if strings.Contains(out, "since the last logged one") {
+		t.Errorf("the prose suffix must not survive the fold, got:\n%s", out)
+	}
+}

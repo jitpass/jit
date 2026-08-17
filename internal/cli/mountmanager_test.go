@@ -7,6 +7,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -541,5 +542,40 @@ func TestServedMountGenGuardDropsResolveRacedByLock(t *testing.T) {
 	// And a later lock clears it and reports it did.
 	if !sm.invalidateReal() {
 		t.Fatal("invalidateReal should report clearing the real content just installed")
+	}
+}
+
+// TestMountSkipLogsOnTransitionOnly pins the incident's log-storm fix at the
+// source: a mount that fails the same way on every unlock logs ONCE, a
+// changed reason logs once more, and the recovery line carries how many
+// attempts the suppression absorbed. The steady state stays observable
+// through lastResolveErr on the status surfaces, not through repetition.
+func TestMountSkipLogsOnTransitionOnly(t *testing.T) {
+	var errBuf, outBuf bytes.Buffer
+	m := &mountManager{stdout: &outBuf, stderr: &errBuf}
+
+	for i := 0; i < 50; i++ {
+		m.logMountSkip("/tmp/a.env", errors.New("no such file or directory"))
+	}
+	if got := strings.Count(errBuf.String(), "skipped,"); got != 1 {
+		t.Fatalf("50 identical failures logged %d lines, want 1:\n%s", got, errBuf.String())
+	}
+
+	m.logMountSkip("/tmp/a.env", errors.New("envelope version 4, newer than this jit understands"))
+	if got := strings.Count(errBuf.String(), "skipped,"); got != 2 {
+		t.Fatalf("a CHANGED reason must log, got %d lines:\n%s", got, errBuf.String())
+	}
+
+	m.logMountRecovered("/tmp/a.env")
+	if !strings.Contains(outBuf.String(), "recovered, serving again (51 skipped attempts before this)") {
+		t.Errorf("recovery must carry the absorbed attempts (49 suppressed + 2 logged), got:\n%s", outBuf.String())
+	}
+
+	// A mount that was never failing recovers silently — this is every
+	// ordinary resolve, and it must not add a line per unlock.
+	outBuf.Reset()
+	m.logMountRecovered("/tmp/b.env")
+	if outBuf.Len() != 0 {
+		t.Errorf("an ordinary resolve must not log a recovery, got: %s", outBuf.String())
 	}
 }
