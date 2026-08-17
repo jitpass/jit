@@ -442,6 +442,39 @@ commands kept prompting per their own policy. Still untested: the
 background service's op session behavior (no linked secret has been
 mounted yet), and 1Password-app-locked failure at refresh time.
 
+### Dogfood, phase 2 build (2026-08-17, live account, dev VM)
+
+The dedupe ran end to end against the real account (174 items) with a
+throwaway 1Password item: a matching value linked ID-form, a verbatim
+op:// value linked as itself, a plain value copied — the mutation-log
+block named all of it. Rotating the item in 1Password flowed through
+with no re-link. Edge cases held live: duplicate values both linked to
+the same field, an under-8-byte value ("admin") stayed a copy even
+with a real concealed "admin" field present, `--no-1password` stored a
+literal and silenced the plan line, `--dry-run` never contacted op,
+decoy mounts served placeholder values for linked paths with no op
+call, undo restored the original bytes, and a PATH-planted fake op was
+rejected by the signature gate with the amber fail-open note while the
+run completed on copies.
+
+Two live findings worth keeping. First, the rename split is real and
+correct: after renaming the item, the ID-form (matched) link kept
+resolving while the verbatim name-form link failed loud with op's own
+item-not-found error — exactly the fragility the user's `op run` file
+already had, preserved rather than silently rewritten. Upgrading
+verbatim name-form refs to ID form via the index is a possible future
+nicety, but it means storing something the user didn't write. Second,
+`op signout` is NOT a way to observe the fail-open path on a machine
+with the desktop-app integration: the next op invocation transparently
+re-signs in through the app, so the enumeration succeeds. The genuine
+failure modes remain app-locked and CLI-not-integrated.
+
+The previously untested service-side path is now half-covered: the
+background service refreshed and served decoy mounts for linked
+secrets without an op session (decoys are name-derived). Real-value
+mount delivery of a linked secret through a grant is still the open
+verification, along with app-locked failure at refresh.
+
 `jit audit` captures the whole story with no new code: every link and
 get is a command record with caller attribution, failed resolves keep
 op's full error text, and a `jit run` against a linked profile shows
