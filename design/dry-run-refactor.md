@@ -1,8 +1,8 @@
 # Dry-run refactor: one frame, a complete plan, a scan that keeps its promises
 
-**Status: approved design, unimplemented. Preview rendering approved by
-eye 2026-08-17 (scratchpad `dryrun-preview.zsh`); this document is the
-spec for the implementation.**
+**Status: implemented, 2026-08-17 (branch dryrun-frame, five commits —
+one per phase). Preview rendering approved by eye 2026-08-17; this
+document is the spec the implementation followed.**
 
 `--dry-run` is the product's consent surface: the plan it prints is the
 thing a real run's `[y/N]` commits to, byte for byte (GAPS.md #26). A
