@@ -19,6 +19,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jitpass/jit/internal/lineage"
 )
 
 // shortSocketPath returns a socket path under /tmp directly, not
@@ -1572,5 +1574,322 @@ func TestRecordServeErrorRateLimitsIdenticalFailures(t *testing.T) {
 	}
 	if events[2].Count != 100 {
 		t.Errorf("the recorded event must carry the fold: Count = %d, want 100", events[2].Count)
+	}
+}
+
+// TestMinProtocolFailsClosed pins the socket-skew defense. Version skew here
+// degrades by silent JSON field dropping, which is fail-OPEN for any field
+// whose presence is what enforces something: an agent that never heard of
+// Disclose ignores it and performs the reveal with no disclosed challenge.
+// Unknown OPS always failed closed; unknown FIELDS did not. A request naming
+// a protocol above this build's is now refused whole, and the error names the
+// fix (restart the service onto the current binary).
+func TestMinProtocolFailsClosed(t *testing.T) {
+	s := NewServer(filepath.Join(t.TempDir(), "x.sock"), nil, time.Minute)
+
+	resp := s.handle(Request{Op: OpStatus, MinProtocol: Protocol + 1}, nil)
+	if resp.OK {
+		t.Fatal("a request needing a newer protocol than this build speaks must be refused")
+	}
+	if !strings.Contains(resp.Error, "jit service restart") {
+		t.Errorf("the refusal must name the fix, got %q", resp.Error)
+	}
+
+	// At or below this build's protocol, the request is served normally.
+	if resp := s.handle(Request{Op: OpStatus, MinProtocol: Protocol}, nil); !resp.OK {
+		t.Errorf("a request this build can serve as asked must proceed, got %q", resp.Error)
+	}
+	if resp := s.handle(Request{Op: OpStatus}, nil); !resp.OK {
+		t.Errorf("an ordinary request (no MinProtocol) must proceed, got %q", resp.Error)
+	}
+}
+
+// TestStatusReportsProtocol: the Protocol stamp is what lets a client check
+// what the running agent enforces BEFORE sending a request whose safety
+// depends on that enforcement — the only fail-closed option against an agent
+// so old it would ignore MinProtocol too (see Client.GrantGlobalForPID).
+func TestStatusReportsProtocol(t *testing.T) {
+	_, socketPath, cleanup := startTestServer(t, time.Minute, new(int32))
+	defer cleanup()
+
+	st, err := NewClient(socketPath).Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if st.Protocol != Protocol {
+		t.Errorf("Status.Protocol = %d, want %d", st.Protocol, Protocol)
+	}
+	if st.Protocol < protocolDisclosedGate {
+		t.Errorf("this build must satisfy its own disclosed-gate requirement (%d)", protocolDisclosedGate)
+	}
+}
+
+// TestDisclosedChallengeBacksOffAfterRefusals is the prompt-storm defense.
+// Disclosed challenges deliberately never arm the global denial cooldown (a
+// refused grant is "not this", not "stop trying to unlock"), which left the
+// widest-scope operations in the product with no throttle at all: a caller in
+// a loop could put an unbounded stream of Touch ID dialogs on screen until
+// the human approved one to make it stop. That is the exact asymmetry
+// consent.Throttled exists to close, and it was never carried over here.
+func TestDisclosedChallengeBacksOffAfterRefusals(t *testing.T) {
+	var prompts int32
+	s := NewServer(filepath.Join(t.TempDir(), "x.sock"), func() MEKFetcher {
+		return fnFetcher{fn: func(string) ([]byte, error) {
+			atomic.AddInt32(&prompts, 1)
+			return nil, errors.New("declined")
+		}}
+	}, time.Minute)
+
+	c := &caller{pid: 4242, self: lineage.Process{PID: 4242, ExecPath: "/bin/loop"},
+		ancestors: []lineage.Process{{PID: 1234, ExecPath: "/bin/zsh"}}}
+
+	// First refusal prompts and arms the pause.
+	if _, _, err := s.discloseChallengeOp("grant something wide", OpTrust, c); err == nil {
+		t.Fatal("a declined challenge must return an error")
+	}
+	if got := atomic.LoadInt32(&prompts); got != 1 {
+		t.Fatalf("first attempt prompted %d times, want 1", got)
+	}
+
+	// A loop retrying immediately gets the pause, NOT another dialog.
+	for i := 0; i < 20; i++ {
+		_, _, err := s.discloseChallengeOp("grant something wide", OpTrust, c)
+		if err == nil {
+			t.Fatal("a paused challenge must not succeed")
+		}
+		if !strings.Contains(err.Error(), "not asking again") {
+			t.Fatalf("attempt %d: want the pause message, got %q", i+2, err)
+		}
+	}
+	if got := atomic.LoadInt32(&prompts); got != 1 {
+		t.Errorf("a 21-iteration loop put %d dialogs on screen, want 1", got)
+	}
+
+	// The key is the op plus the caller's LAUNCHER, not the prompt reason:
+	// trustReason renders the caller's own command, so keying on the reason
+	// would let a loop mint a fresh key per iteration and out-wait nothing.
+	if _, _, err := s.discloseChallengeOp("a completely different reason", OpTrust, c); err == nil ||
+		!strings.Contains(err.Error(), "not asking again") {
+		t.Errorf("varying the reason must not escape the pause, got %v", err)
+	}
+	if got := atomic.LoadInt32(&prompts); got != 1 {
+		t.Errorf("varying the reason produced %d dialogs, want 1", got)
+	}
+}
+
+// An approval clears the pause: the point is to make refusing cheap, never to
+// lock the operation out. A fresh unlock clears it too (clearDiscloseBackoff),
+// on the same "a human at the keyboard is the signal a refusal withheld"
+// reasoning the consent backoff already honors.
+func TestDisclosedBackoffClearedByApprovalAndUnlock(t *testing.T) {
+	var deny atomic.Bool
+	deny.Store(true)
+	key := bytes.Repeat([]byte{0x42}, 32)
+	s := NewServer(filepath.Join(t.TempDir(), "x.sock"), func() MEKFetcher {
+		return fnFetcher{fn: func(string) ([]byte, error) {
+			if deny.Load() {
+				return nil, errors.New("declined")
+			}
+			k := make([]byte, len(key))
+			copy(k, key)
+			return k, nil
+		}}
+	}, time.Minute)
+	// A pause long enough that only an explicit clear can end it inside the test.
+	s.discloseBackoff = []time.Duration{time.Hour}
+
+	c := &caller{pid: 7, self: lineage.Process{PID: 7, ExecPath: "/bin/tool"}}
+
+	if _, _, err := s.discloseChallengeOp("r", OpGrantCreate, c); err == nil {
+		t.Fatal("precondition: the challenge must be declined")
+	}
+	if err := s.discloseBackoffLocked(OpGrantCreate, c); err == nil {
+		t.Fatal("precondition: the pause must be armed")
+	}
+
+	// clearDiscloseBackoff is what a FRESH unlock calls.
+	s.clearDiscloseBackoff()
+	if err := s.discloseBackoffLocked(OpGrantCreate, c); err != nil {
+		t.Errorf("a fresh unlock must clear the pause, got %v", err)
+	}
+
+	// And an approval clears the key it approved.
+	if _, _, err := s.discloseChallengeOp("r", OpGrantCreate, c); err == nil {
+		t.Fatal("expected the second decline to re-arm")
+	}
+	deny.Store(false)
+	s.clearDiscloseBackoff() // let the approval through
+	if _, mek, err := s.discloseChallengeOp("r", OpGrantCreate, c); err != nil {
+		t.Fatalf("approved challenge: %v", err)
+	} else {
+		wipe(mek)
+	}
+	if err := s.discloseBackoffLocked(OpGrantCreate, c); err != nil {
+		t.Errorf("an approval must leave no pause behind, got %v", err)
+	}
+}
+
+// TestLazyExpiryStillRecordsTheLock: a session collected lazily (a request
+// noticing the expiry before the idle timer's goroutine got there) used to be
+// wiped with no KindLock event and no lastLock at all — history showed
+// unlock → unlock with nothing between, and the re-prompt had no explanation.
+// Recording at collection also survives the usual continuation, where the
+// same request goes straight on to a fresh unlock and no timer ever runs for
+// the session that ended.
+func TestLazyExpiryStillRecordsTheLock(t *testing.T) {
+	var events []SessionEvent
+	var mu sync.Mutex
+	s := NewServer(filepath.Join(t.TempDir(), "x.sock"), func() MEKFetcher {
+		return &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32), calls: new(int32)}
+	}, time.Minute)
+	s.OnSessionEvent = func(e SessionEvent) {
+		mu.Lock()
+		events = append(events, e)
+		mu.Unlock()
+	}
+
+	mek, err := s.ensureUnlocked(OpUnlock, nil, "")
+	if err != nil {
+		t.Fatalf("ensureUnlocked: %v", err)
+	}
+	wipe(mek)
+
+	// Expire the session in place and stop the timer, modelling the race the
+	// bug needed: the timer has not run, and a request arrives.
+	s.mu.Lock()
+	s.expiry = time.Now().Add(-time.Second)
+	if s.lockTimer != nil {
+		s.lockTimer.Stop()
+	}
+	s.mu.Unlock()
+
+	if got := s.touchSession(); got != nil {
+		wipe(got)
+		t.Fatal("an expired session must not serve the key")
+	}
+
+	if _, lastLock := s.provenance(); lastLock == nil {
+		t.Error("a lazily-collected session recorded no lastLock: history shows unlock -> unlock with nothing between")
+	} else if !strings.Contains(lastLock.Cause, "idle timeout") {
+		t.Errorf("lock cause = %q, want the idle timeout that actually ended it", lastLock.Cause)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var locks int
+	for _, e := range events {
+		if e.Kind == KindLock {
+			locks++
+		}
+	}
+	if locks != 1 {
+		t.Errorf("durable trail got %d lock events, want exactly 1", locks)
+	}
+}
+
+// TestDisclosedGrantRefusesAnOldAgent is the fail-closed half that MinProtocol
+// structurally cannot cover: an agent old enough to ignore Disclose also
+// ignores MinProtocol, so it would perform this machine-wide reveal with no
+// prompt at all — the exact silent credential grant the flag exists to
+// prevent. The client checks the agent's reported protocol BEFORE sending
+// anything, and refuses to ask rather than asking something that cannot
+// enforce the answer.
+func TestDisclosedGrantRefusesAnOldAgent(t *testing.T) {
+	socketPath := shortSocketPath(t)
+	l, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+
+	var reveals atomic.Int32
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				var req Request
+				if err := json.NewDecoder(conn).Decode(&req); err != nil {
+					return
+				}
+				if req.Op == OpRevealPID {
+					reveals.Add(1)
+				}
+				// A pre-Protocol agent: no protocol field at all, and it
+				// would happily serve the reveal.
+				_ = json.NewEncoder(conn).Encode(Response{OK: true})
+			}()
+		}
+	}()
+
+	err = NewClient(socketPath).GrantGlobalForPID([]RunMount{{Path: "/x/ADC", Mode: MountModeGrant}}, 4242)
+	if err == nil {
+		t.Fatal("granting a machine-wide credential through an agent that cannot enforce the disclosed prompt must fail")
+	}
+	if !strings.Contains(err.Error(), "jit service restart") {
+		t.Errorf("the refusal must name the fix, got %q", err)
+	}
+	if got := reveals.Load(); got != 0 {
+		t.Errorf("the reveal was sent %d time(s) to an agent that cannot gate it; it must never leave the client", got)
+	}
+}
+
+// The same call against a current agent still works, and carries both the
+// MinProtocol requirement and the legacy trigger — the belt and the braces
+// must not have broken the ordinary path.
+func TestDisclosedGrantSendsRequirementAndLegacyTrigger(t *testing.T) {
+	socketPath := shortSocketPath(t)
+	l, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+
+	got := make(chan Request, 4)
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				var req Request
+				if err := json.NewDecoder(conn).Decode(&req); err != nil {
+					return
+				}
+				got <- req
+				_ = json.NewEncoder(conn).Encode(Response{OK: true, Protocol: Protocol})
+			}()
+		}
+	}()
+
+	if err := NewClient(socketPath).GrantGlobalForPID([]RunMount{{Path: "/x/ADC", Mode: MountModeGrant}}, 4242); err != nil {
+		t.Fatalf("GrantGlobalForPID against a current agent: %v", err)
+	}
+
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case req := <-got:
+			if req.Op != OpRevealPID {
+				continue // the status pre-check
+			}
+			if !req.Disclose {
+				t.Error("the disclosed flag must still be set")
+			}
+			if req.MinProtocol < protocolDisclosedGate {
+				t.Errorf("MinProtocol = %d, want at least %d so a knowing-but-older agent refuses rather than under-enforcing", req.MinProtocol, protocolDisclosedGate)
+			}
+			if req.DiscloseReason == "" {
+				t.Error("the legacy trigger must be set so a pre-Disclose agent still takes its gate")
+			}
+			return
+		case <-deadline:
+			t.Fatal("no reveal_pid request arrived")
+		}
 	}
 }

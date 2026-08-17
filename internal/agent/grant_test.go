@@ -585,3 +585,90 @@ func historyKinds(s *Server) string {
 	}
 	return strings.Join(kinds, ", ")
 }
+
+// TestGrantExtendRefusesADeadRoot: creation verifies the root's fork-time
+// stamp on both sides of its challenge, and every serve re-checks it — extend
+// did neither. A human could be asked to widen the window of a grant whose
+// root had already exited, approve it, and get back a status hard-coding
+// RootAlive true; the next prune would end it moments later. The prompt bought
+// nothing and the answer described a grant that was already over.
+func TestGrantExtendRefusesADeadRoot(t *testing.T) {
+	var calls int32
+	s, socketPath, cleanup := startTestServer(t, time.Minute, &calls)
+	defer cleanup()
+
+	sec := sealGrantSecret(t, "jamf/api-pass", "mcp", bytes.Repeat([]byte{0x07}, 32))
+	wireGrantResolver(s, sec)
+
+	// A real short-lived child: its pid is genuine at creation and genuinely
+	// gone afterwards, so this exercises the actual lineage check.
+	cmd := exec.Command("/bin/sh", "-c", "sleep 30")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting the grant root: %v", err)
+	}
+	rootPID := int32(cmd.Process.Pid) // #nosec G115 -- a pid from the OS
+
+	c := NewClient(socketPath)
+	st, err := c.GrantCreate(rootPID, "", []string{"jamf"}, "", time.Hour)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatalf("GrantCreate: %v", err)
+	}
+
+	_ = cmd.Process.Kill()
+	_, _ = cmd.Process.Wait()
+
+	before := atomic.LoadInt32(&calls)
+	_, err = c.GrantExtend(st.ID, 2*time.Hour)
+	if err == nil {
+		t.Fatal("extending a grant whose root has exited must fail, not report RootAlive true")
+	}
+	if !strings.Contains(err.Error(), "exited") {
+		t.Errorf("the error must say the process is gone, got %q", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != before {
+		t.Errorf("the dead root was checked AFTER prompting (%d -> %d): a Touch ID that can buy nothing must not be asked for", before, got)
+	}
+}
+
+// Every arming used to leave its predecessor running, up to a week out,
+// holding the id and its closure — so a grant extended through a working week
+// accumulated a pile of live timers. Each was harmless (they re-check the
+// deadline before acting) but the pile was unbounded.
+func TestGrantExpiryTimersDoNotAccumulate(t *testing.T) {
+	var calls int32
+	s, socketPath, cleanup := startTestServer(t, time.Minute, &calls)
+	defer cleanup()
+
+	sec := sealGrantSecret(t, "jamf/api-pass", "mcp", bytes.Repeat([]byte{0x07}, 32))
+	wireGrantResolver(s, sec)
+
+	c := NewClient(socketPath)
+	st, err := c.GrantCreate(int32(os.Getpid()), "", []string{"jamf"}, "", time.Hour) // #nosec G115 -- test pid
+	if err != nil {
+		t.Fatalf("GrantCreate: %v", err)
+	}
+	for i := 0; i < 10; i++ {
+		if _, err := c.GrantExtend(st.ID, time.Duration(i+2)*time.Hour); err != nil {
+			t.Fatalf("GrantExtend %d: %v", i, err)
+		}
+	}
+
+	s.grantMu.Lock()
+	timers := len(s.grantTimers)
+	s.grantMu.Unlock()
+	if timers != 1 {
+		t.Errorf("one grant extended 10 times holds %d timers, want 1", timers)
+	}
+
+	// Ending the grant leaves none behind.
+	if err := c.GrantRevoke(st.ID); err != nil {
+		t.Fatalf("GrantRevoke: %v", err)
+	}
+	s.grantMu.Lock()
+	timers = len(s.grantTimers)
+	s.grantMu.Unlock()
+	if timers != 0 {
+		t.Errorf("a revoked grant left %d timers armed, want 0", timers)
+	}
+}

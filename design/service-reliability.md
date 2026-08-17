@@ -1,9 +1,10 @@
 # Service reliability: demand-spawned lifecycle, honest health, a broker that keeps its promises
 
-**Status: phases 1-3 implemented, 2026-08-17 (phases 1-2 on branch
-service-reliability, PR #72; phase 3 stacked on it as
-service-log-hygiene, PR #73; both wording previews approved by eye the
-same day). Phases 4-5 are specified but not yet built. Drafted from a
+**Status: phases 1-4 implemented, 2026-08-17 (phases 1-2 on branch
+service-reliability, PR #72; phase 3 stacked as service-log-hygiene,
+PR #73; phase 4 stacked as service-broker-hardening, PR #74; both
+wording previews approved by eye the same day). Phase 5 (the
+mechanical file split) is specified but not yet built. Drafted from a
 full review of the service surface (three parallel code reviews over
 `internal/agent`, `internal/cli/agent*.go` and the log/history/status
 surfaces, 43 findings) plus a verified production incident.**
@@ -216,11 +217,16 @@ the payload).
 
 ## Phase 4: broker hardening
 
-**D12. Socket version skew fails closed.** The Client sends BOTH
-`Disclose` and `DiscloseReason` (belt and suspenders for old
-services), and requests carrying security-relevant fields gain a
-`min_protocol` integer the server compares against its own; a server
-too old to know a field refuses rather than silently dropping it.
+**D12. Socket version skew fails closed.** Three layers, because one
+is not enough: an `agent.Protocol` constant stamped on every response;
+`Request.MinProtocol`, which a server compares against its own and
+refuses when it is too old to serve the request as asked; and — the
+layer that actually covers today's old agents, which would ignore
+`MinProtocol` too — a CLIENT-side check of the agent's reported
+protocol before a disclosed grant is sent at all, refusing to ask
+rather than asking something that cannot enforce the answer.
+`DiscloseReason` is also set as a last-resort trigger for an agent
+from the window when that was the flag's spelling.
 Today a new CLI's `jit run --with` against an old service performs a
 machine-wide reveal with NO disclosed challenge: the exact attack
 `Request.Disclose`'s doc names, and the fail-open sibling of the
@@ -237,10 +243,14 @@ over. Refusals stay recorded (KindDenied), the cooldown-clearing
 unlock semantics stay.
 
 **D14. Audit truth fixes.**
-- Lazy session expiry records its KindLock: `collectIfDoneLocked`
-  stashes the cause, `lockIfGen` writes the event when it finds a
-  lazily-collected session. Today a busy agent can show
-  unlock → unlock with no lock between.
+- Lazy session expiry records its KindLock. Implemented one step
+  earlier than specified: `collectIfDoneLocked` records the event
+  itself (ring and `lastLock` under `mu`, the durable hand-off parked
+  for `notifyPendingLock` to drain outside it) rather than leaving it
+  for `lockIfGen`. Deferring to the timer would still have lost the
+  event in the commonest continuation, where the same request goes
+  straight on to a fresh unlock and no timer ever runs for the session
+  that ended.
 - `grant_use` collapse keys on `c.rawCommand()`, not the redacted
   command (`server.go:754-757`): redaction can map two callers onto
   one string, the misattribution `recordUse` already fixed once.
@@ -248,10 +258,24 @@ unlock semantics stay.
   `RootAlive: true` in its echo.
 
 **D15. Small broker fixes riding along.** Grant expiry timers are
-cancelled on revoke/re-extend (today they accumulate for up to 7
-days); the sleep-path handler moves durable-log writes off the
-kernel's power-change wait (the MEK wipe stays synchronous); `Serve`'s
-ctx-watcher goroutine is joined on accept failure.
+cancelled on revoke/re-extend (they accumulated for up to 7 days);
+`Serve`'s ctx-watcher goroutine ends with Serve rather than parking on
+`ctx.Done()` past an accept failure.
+
+**Rejected on implementation: moving the sleep-path durable write off
+the kernel's power-change wait.** The reviewed finding is real (a
+wedged disk could stall sleep toward the ~30s ceiling) but every
+candidate fix is worse than the bug. The lock's tail is ordered: MEK
+wipe, then `OnLock` → `mountManager.stop`, which is what clears each
+mount's resolved real content. Making the tail asynchronous to get the
+log write off the critical path also defers that clearing, opening a
+window where mounts still hold real values while the machine is going
+to sleep — trading a rare, recoverable stall for a credential-exposure
+window. Buffering only the history append would decouple the write
+from every lock and unlock, but it changes the durability of the one
+trail `jit audit` reads. Neither is worth it for a low-severity
+latency issue; the synchronous ordering is load-bearing. Revisit only
+with evidence of a real stall.
 
 ## Phase 5: mechanical split (last, pure movement)
 
