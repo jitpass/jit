@@ -12,6 +12,7 @@ import (
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/profile"
+	"github.com/jitpass/jit/internal/termtext"
 )
 
 // This file is real migrate's MUTATION LOG rendering — the per-category
@@ -30,6 +31,52 @@ import (
 func printMigrateResultCategory(w io.Writer, label string, n int) {
 	fmt.Fprintf(w, "[%s]", label)
 	_, _ = fmt.Fprintf(w, " %d\n", n)
+}
+
+// opLinkedRow is one linked-instead-of-copied secret for the [1Password]
+// mutation-log block: the vault path, and the reference in its
+// human-readable name form (the stored one is rename-proof ID form; the
+// name form is what the user recognizes from the 1Password app).
+type opLinkedRow struct{ path, ref string }
+
+// printOpLinkResult renders the 1Password dedupe outcome after the
+// per-category results (design/1password-adapter.md). Three cases: the
+// check failed (one amber note — the run continued with copies, fail
+// open), nothing matched (silence; an empty block would be noise on every
+// run op is merely installed for), or N linked (the block naming each
+// path → reference, so the user knows exactly which secrets now follow
+// 1Password rotation).
+func printOpLinkResult(w io.Writer, linked []opLinkedRow, offered, itemsChecked int, skipNote string) {
+	if skipNote != "" {
+		_, _ = cWarn.Fprint(w, glyphWarn)
+		wrapBody(w, 1, "  ", " 1Password check skipped: "+skipNote+"; values were copied, not linked")
+		fmt.Fprintln(w)
+		return
+	}
+	if len(linked) == 0 {
+		return
+	}
+	widest := 0
+	for _, r := range linked {
+		if len(r.path) > widest {
+			widest = len(r.path)
+		}
+	}
+	printMigrateResultCategoryLabel(w, fmt.Sprintf("%d of %d linked, not copied · %s checked", len(linked), offered, countWord(itemsChecked, "item", "items")))
+	for _, r := range linked {
+		// Truncate the variable tail rather than wrap: one row per secret.
+		row := fmt.Sprintf("  %-*s %s %s", widest, r.path, glyphAction, r.ref)
+		fmt.Fprintln(w, truncateEnd(row, termtext.Width()))
+	}
+	fmt.Fprintln(w, "  Rotate these in 1Password; jit follows. The vault holds the")
+	fmt.Fprintln(w, "  reference, never a copy.")
+	fmt.Fprintln(w)
+}
+
+// printMigrateResultCategoryLabel is printMigrateResultCategory for a
+// header whose tail is richer than a bare count.
+func printMigrateResultCategoryLabel(w io.Writer, tail string) {
+	fmt.Fprintf(w, "[1Password] %s\n", tail)
 }
 
 // migrateSummary collects everything that used to print inline, once per

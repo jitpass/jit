@@ -168,6 +168,7 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 	// whole .env is the problem — so this is "start here", the lead credential's
 	// line, chosen after the loop in the same priority the severity switch uses.
 	var prodLine, ipLine, tokenLine, shapedLine, entropyLine int
+	var opRefs int
 	lineNum := 0
 
 	scanner := newLineScanner(file)
@@ -187,6 +188,9 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 		rawValue := unquote(m[3])
 		if IsAlreadyMasked(rawValue) {
 			continue // per RFC.md §4: already-masked values are never evaluated for these signals
+		}
+		if m[1] == "" && IsOpSecretReference(rawValue) {
+			opRefs++ // counted for the report note only; the value itself is reference-suppressed below
 		}
 		if IsProductionIndicator(key) || IsProductionIndicator(rawValue) {
 			if !prodMatch {
@@ -329,6 +333,7 @@ func buildEnvFileFinding(cfg Config, path string, isTemplate bool) (Finding, boo
 	f.FindingType = FindingTypeEnvFilePresent
 	f.FilePath = path
 	f.claimedRawValues = claimedRaw
+	f.OpRefCount = opRefs
 	f.Confidence = ConfidenceHigh
 	f.ProductionIndicatorMatch = prodMatch
 	if ipMatch {

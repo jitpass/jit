@@ -23,7 +23,21 @@ jit is never given an account credential, token, or config. It talks to
 the `op` binary you installed, and refuses to run one that does not carry
 1Password's own Developer ID code signature.
 
-## Link a secret
+## Linking happens by itself during migrate
+
+With `op` installed and signed in, every `jit migrate` run checks the
+values it is about to vault against your 1Password (one authenticated
+check per run, after you confirm the plan): a value that byte-exactly
+matches a concealed 1Password field is stored as a reference, not a
+copy, and the mutation log lists each one under a `[1Password]`
+heading. A `.env` you kept for `op run`, full of `op://` values,
+converts the same way: each reference stays a reference, so it keeps
+resolving after migration. Matching is exact, values shorter than 8
+characters never match, and `--no-1password` restores plain copies.
+If the check fails (signed out, app locked), the run continues with
+copies and says so; nothing breaks because 1Password is unavailable.
+
+## Link a secret by hand
 
 Copy the reference in the 1Password app: open the item, click the field's
 menu, **Copy Secret Reference**. Then:
@@ -84,7 +98,9 @@ is no cached value.
 
 ## Limits
 
-Linking is per-secret and manual today. jit never writes to 1Password,
-and the background service resolves at unlock/refresh time, so linked
-secrets in mounts want you present (the same moments Touch ID already
-wants you).
+jit never writes to 1Password, and the background service resolves at
+unlock/refresh time, so linked secrets in mounts want you present (the
+same moments Touch ID already wants you). Migrate links what it
+touches; there is no bulk import of a whole 1Password vault yet, and
+`jit scan` never contacts 1Password at all (it only notes `op://`
+references it sees in flagged files).
