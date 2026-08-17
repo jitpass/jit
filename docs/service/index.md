@@ -77,12 +77,18 @@ dropped and the next vault use prompts once.
   (`jit upgrade` does it for you; the service also notices a replaced binary
   itself and restarts onto it within a few seconds once its session is locked
   and no prompt is pending). It also brings the service back if it ever
-  stopped, recreating the login item if needed.
+  stopped, recreating the login item if needed. It demands the start from
+  launchd directly rather than registering the job and hoping, and it only
+  reports success once the new build actually answers - a restart that
+  can't confirm that fails loudly, with what launchd says happened.
 - `jit service log` - the tail of the service's raw operational output (startup,
   mount reads and who made them, serve-error detail); `-f` follows it live. The
   session events themselves live in [`jit audit`](./provenance.md), not here.
 - `jit service run` - run it in the foreground (normally launchd's job,
-  useful for debugging).
+  useful for debugging). It refuses to start while the background service is
+  answering: two agents on one socket would silently split the world, with
+  the old one keeping your session and mounts while new commands talk to the
+  new one.
 - `jit service consent [on|off]` - show or set
   [per-process credential consent](./consent.md), on by default: a Touch ID the
   first time each tool reaches for a real credential, naming who is asking.

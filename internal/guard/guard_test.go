@@ -326,7 +326,14 @@ func TestHookFailsOpenWhenTheCheckHangs(t *testing.T) {
 	if !strings.Contains(outBuf.String(), "rc=0") {
 		t.Errorf("hook returned %q, want rc=0 (fail open on a hung check)", strings.TrimSpace(outBuf.String()))
 	}
-	if elapsed > 10*time.Second {
+	// The property is "gave up long before the hung check's 30s", NOT "took
+	// ~2s": the deadline is 200 zselect ticks of 10ms, and each tick is a
+	// MINIMUM — on a loaded CI runner the loop has been observed stretching
+	// to ~10s of wall clock with the mechanism working exactly as designed
+	// (rc=0 above already proves the fail-open). A ceiling tight against the
+	// nominal 2s failed twice in one afternoon on shared runners; the only
+	// dishonest outcome to catch here is waiting out the stub's full hang.
+	if elapsed > 20*time.Second {
 		t.Errorf("hook blocked for %v; the deadline did not fire", elapsed)
 	}
 	// Job-control chatter would land in the user's terminal on every guarded
