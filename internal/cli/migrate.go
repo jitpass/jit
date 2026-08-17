@@ -211,6 +211,63 @@ func printSkippedFindings(w io.Writer, home string, count int, reason string, pa
 	}
 }
 
+// printDryRunBanner is the head of the dry-run frame: the FIRST line a
+// dry run prints, before any plan or disclosure (GAPS.md #32 — the
+// preview-vs-real signal used to live only at the very end, and a reader
+// skimming a long plan mistook it for changes already made). Every
+// dry-run surface prints exactly two [DRY RUN] markers: this banner and
+// printDryRunTrailer's closing line. Nothing else carries the marker —
+// design/dry-run-refactor.md D1/D2, and TestDryRunFrameExactlyTwoMarkers
+// fails the build on a third.
+func printDryRunBanner(w io.Writer) {
+	_, _ = cPathBold.Fprintln(w, "[DRY RUN] Preview, this run changes nothing; the plan below is what a real run would do.")
+	fmt.Fprintln(w)
+}
+
+// printDryRunTrailer is the tail of the dry-run frame: the LAST line(s) a
+// dry run prints. It no longer restates the banner's "changes nothing";
+// it carries only what the banner cannot — the copy-pasteable apply
+// command (the caller's own invocation minus --dry-run) and, for migrate
+// itself, the pointer back to `jit scan` for findings migrate can never
+// act on.
+func printDryRunTrailer(w io.Writer, applyCmd string, scanHint bool) {
+	fmt.Fprintln(w)
+	_, _ = cPathBold.Fprint(w, "[DRY RUN]")
+	fmt.Fprintln(w, hlCmds(fmt.Sprintf(" Apply this plan: `%s`", applyCmd)))
+	if scanHint {
+		wrapBody(w, 0, "", hlCmds("This only covers what jit migrate can act on; run `jit scan` for the complete picture, including findings it can never auto-fix, like private keys."))
+	}
+}
+
+// migrateApplyCommand reconstructs the invocation the trailer tells the
+// user to run: base + the targets they named + the scope flags that
+// shaped this plan (--only, --mount). --yes is deliberately dropped even
+// when set: the suggested command should re-show the plan and ask [y/N],
+// never propagate a consent skip out of a preview.
+func migrateApplyCommand(base string, args []string) string {
+	parts := []string{base}
+	for _, a := range args {
+		parts = append(parts, shellQuoteArg(a))
+	}
+	if len(migrateOnly) > 0 {
+		parts = append(parts, "--only="+strings.Join(migrateOnly, ","))
+	}
+	if migrateMount {
+		parts = append(parts, "--mount")
+	}
+	return strings.Join(parts, " ")
+}
+
+// shellQuoteArg single-quotes an argument that would not survive a paste
+// into a shell as-is. Everyday paths pass through untouched so the
+// trailer stays readable.
+func shellQuoteArg(a string) string {
+	if a != "" && !strings.ContainsAny(a, " \t'\"\\$`(){}[]*?;&|<>#~") {
+		return a
+	}
+	return "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+}
+
 // filterMigrateOnly validates only (the raw --only tokens) against
 // migrateCategories and returns the set of selected categories. An unknown
 // token fails loud rather than being silently ignored — a typo'd category
@@ -325,7 +382,14 @@ var migratePathCmd = &cobra.Command{
 // directory: an explicitly named target can sit under any project, so
 // deriving from the invoking cwd would produce a nonsensical profile name
 // disconnected from the secret's real home.
-func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) {
+// dryRunApplyCmd carries the frame contract (design/dry-run-refactor.md
+// D1): non-empty means applyMigrate owns the dry-run frame and prints the
+// banner/trailer itself, with this as the trailer's apply command
+// (runMigratePath). Empty means the caller owns the frame — runMigrateAll
+// prints the banner BEFORE its wrap/guard disclosures and the trailer
+// after its own tail, so the frame still brackets everything the run
+// discloses.
+func applyMigrate(cmd *cobra.Command, home string, d *discovered, dryRunApplyCmd string) (bool, error) {
 	// Locals aliased to d's fields so the --only filter, plan, and apply
 	// loops below read exactly as they did before this function was split
 	// out. categorySlices points at these locals, and the --only nil-out
@@ -437,24 +501,15 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 		return false, nil
 	}
 
-	// A real, reported point of confusion: the ONLY "this is a preview"
-	// signal used to be the "[DRY RUN]" disclaimer at the very END of the
-	// plan — after every category, every file, every scope note. A
-	// reader skimming a long plan (or one who stops reading partway
-	// through) could easily mistake it for a description of changes
-	// already made, especially once the plan's own leading line ("Each
-	// modified file is backed up before it's rewritten.") reads like a
-	// statement of fact rather than a preview of what a real run would
-	// do. Printing the same cyan/bold "[DRY RUN]" banner BEFORE the plan
-	// too — not just after — means that risk exists for at most one line,
-	// not the whole plan. printMigratePlan itself stays unaware of
-	// migrateDryRun (this banner is printed here, at the call site, not
-	// inside it) specifically so it keeps rendering the exact same plan
-	// for --dry-run and the real confirmation prompt (GAPS.md #26's core
-	// guarantee) — see TestMigrateLocalDryRunMatchesRealPlanExactly.
-	if migrateDryRun {
-		_, _ = cPathBold.Fprintln(cmd.OutOrStdout(), "[DRY RUN] Preview, this run changes nothing; the plan below is what a real run would do.")
-		fmt.Fprintln(cmd.OutOrStdout())
+	// The banner prints here only when this function owns the frame (a
+	// targeted `jit migrate <path>` run); see printDryRunBanner for the
+	// GAPS.md #32 rationale. printMigratePlan itself stays unaware of
+	// migrateDryRun (the banner is printed at the call site, not inside
+	// it) specifically so it keeps rendering the exact same plan for
+	// --dry-run and the real confirmation prompt (GAPS.md #26's core
+	// guarantee) — see TestMigrateDryRunMatchesRealPlanExactly.
+	if migrateDryRun && dryRunApplyCmd != "" {
+		printDryRunBanner(cmd.OutOrStdout())
 	}
 
 	// Confirm before touching anything — vault set/rm both gate a single
@@ -511,12 +566,9 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 	}
 
 	if migrateDryRun {
-		out := cmd.OutOrStdout()
-		fmt.Fprintln(out)
-		_, _ = cPathBold.Fprint(out, "[DRY RUN]")
-		fmt.Fprintln(out, " No files were changed. Run without --dry-run to apply this plan.")
-		wrapBody(out, 0, "", hlCmds("This only covers what jit migrate can act on, run `jit scan` for a complete "+
-			"picture, including findings it can never auto-fix, like private keys."))
+		if dryRunApplyCmd != "" {
+			printDryRunTrailer(cmd.OutOrStdout(), dryRunApplyCmd, true)
+		}
 		return false, nil
 	}
 
@@ -1309,12 +1361,18 @@ func runMigrateAll(cmd *cobra.Command) error {
 		return nil
 	}
 
+	// The frame opens before ANY disclosure: the wrap/guard lines below are
+	// part of what the run proposes, so the banner must precede them
+	// (design/dry-run-refactor.md D1 — the old per-line "[DRY RUN]"
+	// prefixes existed only because the banner printed after these lines,
+	// inside applyMigrate).
+	if migrateDryRun {
+		printDryRunBanner(out)
+	}
+
 	// The wrap half of the plan prints ABOVE applyMigrate's file plan so the
 	// one [y/N] below covers everything this run will do.
 	if len(tools) > 0 {
-		if migrateDryRun {
-			_, _ = cPathBold.Fprint(out, "[DRY RUN] ")
-		}
 		fmt.Fprint(out, hlCmds(fmt.Sprintf("Will also wrap %s (token into the vault, tool keeps working; each is\nreversible with `jit wrap undo <tool>`): %s\n\n",
 			pluralWord(len(tools), "CLI", "CLIs"), strings.Join(tools, ", "))))
 	}
@@ -1325,14 +1383,7 @@ func runMigrateAll(cmd *cobra.Command) error {
 	// guess what it does, and a line they cannot evaluate is one they should
 	// not be agreeing to.
 	if offerGuard {
-		if migrateDryRun {
-			_, _ = cPathBold.Fprint(out, "[DRY RUN] ")
-		}
-		used := 0
-		if migrateDryRun {
-			used = len("[DRY RUN] ")
-		}
-		wrapBody(out, used, "", hlCmds("Will also install the shell history guard, so this cannot happen again: a "+
+		wrapBody(out, 0, "", hlCmds("Will also install the shell history guard, so this cannot happen again: a "+
 			"zsh hook keeps a command carrying a credential out of your history file, "+
 			"while leaving it usable in that session (reversible with "+
 			"`jit guard history --remove`)."))
@@ -1341,7 +1392,7 @@ func runMigrateAll(cmd *cobra.Command) error {
 
 	applied := true
 	if d.total() > 0 {
-		applied, err = applyMigrate(cmd, home, d)
+		applied, err = applyMigrate(cmd, home, d, "") // "" — this function owns the dry-run frame
 		if err != nil {
 			return err
 		}
@@ -1354,34 +1405,31 @@ func runMigrateAll(cmd *cobra.Command) error {
 		return nil // declined at the plan — wraps and the guard must not run either
 	}
 
-	if offerGuard {
-		switch {
-		case migrateDryRun:
-			fmt.Fprintln(out, "[dry-run] would install the shell history guard (undo: jit guard history --remove)")
-		default:
-			if _, guardErr := guard.Install(home); guardErr != nil {
-				// One failed hook must not fail a migrate that already moved
-				// real secrets into the vault.
-				fmt.Fprintf(cmd.ErrOrStderr(), "installing the history guard failed: %v\n", guardErr)
-			} else {
-				// The hook runs on every command the user types from now on,
-				// and they agreed to it as one line in a plan. The trail has
-				// to say where it came from.
-				recordSideEffect("jit guard history", []string{"guard", "history"}, "jit migrate")
-				fmt.Fprintln(out)
-				_, _ = cOK.Fprintf(out, "%s ", glyphDone)
-				wrapBody(out, 2, "  ", hlCmds(fmt.Sprintf("history guard installed (%s, sourced from %s). New shells pick it up; "+
-					"run `source ~/.jit/guard.zsh` in ones already open. Reverse with `jit guard history --remove`.",
-					displayPath(home, guard.HookPath(home)), displayPath(home, guard.RcPath(home)))))
-			}
+	// In a dry run the guard and the wraps were already disclosed above the
+	// plan, inside the frame — the old post-trailer "[dry-run] would ..."
+	// echoes printed a third marker after the line that claimed to be last.
+	if offerGuard && !migrateDryRun {
+		if _, guardErr := guard.Install(home); guardErr != nil {
+			// One failed hook must not fail a migrate that already moved
+			// real secrets into the vault.
+			fmt.Fprintf(cmd.ErrOrStderr(), "installing the history guard failed: %v\n", guardErr)
+		} else {
+			// The hook runs on every command the user types from now on,
+			// and they agreed to it as one line in a plan. The trail has
+			// to say where it came from.
+			recordSideEffect("jit guard history", []string{"guard", "history"}, "jit migrate")
+			fmt.Fprintln(out)
+			_, _ = cOK.Fprintf(out, "%s ", glyphDone)
+			wrapBody(out, 2, "  ", hlCmds(fmt.Sprintf("history guard installed (%s, sourced from %s). New shells pick it up; "+
+				"run `source ~/.jit/guard.zsh` in ones already open. Reverse with `jit guard history --remove`.",
+				displayPath(home, guard.HookPath(home)), displayPath(home, guard.RcPath(home)))))
 		}
 	}
 
 	wrapped := 0
 	for _, tool := range tools {
 		if migrateDryRun {
-			fmt.Fprintf(out, "[dry-run] would wrap %s (undo: jit wrap undo %s)\n", tool, tool)
-			continue
+			break // disclosed above the plan, inside the frame
 		}
 		fmt.Fprintln(out)
 		if wrapErr := runCatalogWrap(cmd, tool); wrapErr != nil {
@@ -1414,6 +1462,12 @@ func runMigrateAll(cmd *cobra.Command) error {
 		before := summary.SecretsProtected * 100 / summary.SecretsTotal
 		after := (summary.SecretsProtected + summary.SecretsMigratable) * 100 / summary.SecretsTotal
 		fmt.Fprint(out, hlCmds(fmt.Sprintf("\ncoverage: %d%% "+glyphAction+" up to %d%% — run `jit scan` to see the new number\n", before, after)))
+	}
+	// The frame closes after everything the run disclosed — including the
+	// wraps-only case, which never enters applyMigrate at all and used to
+	// print no frame whatsoever.
+	if migrateDryRun {
+		printDryRunTrailer(out, migrateApplyCommand("jit migrate", nil), true)
 	}
 	return nil
 }
@@ -1479,7 +1533,7 @@ func runMigratePath(cmd *cobra.Command, targets []string) error {
 	d.dedupe()
 
 	progress.Stop() // settle the discovery trail before the plan/prompt prints
-	_, err = applyMigrate(cmd, home, d)
+	_, err = applyMigrate(cmd, home, d, migrateApplyCommand("jit migrate", targets))
 	return err
 }
 
