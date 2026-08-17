@@ -579,6 +579,31 @@ func TestPlanExtrasWrapAndGuardRows(t *testing.T) {
 	}
 }
 
+// TestMigrateWrapOwnedConfigRoutesToWrap: naming a file a wrappable CLI
+// owns (clisso's config, a catalog tool's token Source) gets the skip
+// note pointing at `jit wrap <tool>` — not the loose-secret "mixes a
+// secret with other content" hint, which sent the user at --mount for a
+// file the wrap flow protects whole (design/dry-run-refactor.md D7).
+func TestMigrateWrapOwnedConfigRoutesToWrap(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	clisso := filepath.Join(home, ".clisso.yaml")
+	if err := os.WriteFile(clisso, []byte("providers:\n  onelogin:\n    client-secret: 9f8e7d6c5b4a39281706f5e4d3c2b1a0\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := execMigrate(t, clisso, "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate ~/.clisso.yaml --dry-run: %v", err)
+	}
+	if !strings.Contains(out, "a wrappable CLI owns") || !strings.Contains(out, "jit wrap clisso") {
+		t.Errorf("expected the wrap-owned skip note naming jit wrap clisso, got:\n%s", out)
+	}
+	if strings.Contains(out, "mixes") {
+		t.Errorf("wrap-owned file must not fall through to the mixed-content note, got:\n%s", out)
+	}
+}
+
 func TestMigrateDryRunCleanTarget(t *testing.T) {
 	home := withFixtureHome(t) // empty fixture, nothing planted
 	withFixtureCwd(t)

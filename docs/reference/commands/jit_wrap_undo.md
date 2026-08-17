@@ -3,7 +3,13 @@
 Unwrap a tool: remove its shim and wrap profile
 
 ```
-jit wrap undo <tool>
+jit wrap undo <tool> [flags]
+```
+
+### Options
+
+```
+      --dry-run   preview what unwrapping would do without changing anything
 ```
 
 ### Options inherited from parent commands

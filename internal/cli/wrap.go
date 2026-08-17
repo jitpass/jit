@@ -67,6 +67,21 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 			tool, strings.Join(wrap.CatalogTools(), ", "), tool)
 	}
 	out := cmd.OutOrStdout()
+	// --dry-run: the same frame and plan row migrate's plan uses
+	// (design/dry-run-refactor.md D6), so one dry-run vocabulary covers
+	// the whole CLI. Rendered before any probe that could fail — a
+	// preview of a tool that isn't installed yet is still a valid answer
+	// to "what would this do".
+	if wrapDryRun {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		printDryRunBanner(out)
+		printPlanExtras(out, home, &planExtras{wraps: []wrapPlanRow{{tool: tool, detail: wrapPlanDetail(home, tool)}}})
+		printDryRunTrailer(out, "jit wrap "+tool, false)
+		return nil
+	}
 	// One vault for the whole wrap, not one per step: openVault builds a
 	// fresh keychainwrap.Wrapper whose master-key cache is per instance,
 	// so each extra open is another Touch ID prompt when the agent
@@ -302,6 +317,11 @@ func wrapSecretAlreadyVaulted(path string) bool {
 var wrapAddEnv []string
 var wrapAddGrant string
 
+// wrapDryRun serves both `jit wrap <tool> --dry-run` and `jit wrap undo
+// <tool> --dry-run` — one flag var, two registrations, matching how the
+// migrate group shares migrateDryRun across its subcommands.
+var wrapDryRun bool
+
 // wrapAddUsage is the one-line shape of a wrap, quoted wherever a user lands
 // without it: `jit wrap list` with nothing wrapped, an empty `wrap undo`
 // completion, the tool-name position that has no flag yet. Same role
@@ -464,6 +484,29 @@ var wrapUndoCmd = &cobra.Command{
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return fmt.Errorf("jit wrap undo: %w", err)
+		}
+		if wrapDryRun {
+			prev, err := wrap.PreviewUndo(home, tool)
+			if err != nil {
+				return fmt.Errorf("jit wrap undo: %w", err)
+			}
+			out := cmd.OutOrStdout()
+			printDryRunBanner(out)
+			fmt.Fprintf(out, "Unwrap %s:\n", tool)
+			fmt.Fprintf(out, "  "+glyphBullet+" shim removed: %s\n", displayPath(home, prev.ShimPath))
+			if prev.ProfilePath != "" {
+				fmt.Fprintf(out, "  "+glyphBullet+" profile removed: %s\n", displayPath(home, prev.ProfilePath))
+			}
+			if len(prev.VaultPaths) > 0 {
+				fmt.Fprint(out, "  ")
+				wrapBody(out, 2, "    ", hlCmds(glyphBullet+" vault secrets kept: "+strings.Join(prev.VaultPaths, ", ")+" (`jit vault rm <path>` removes one for good)"))
+			}
+			if prev.LastTool {
+				fmt.Fprint(out, "  ")
+				wrapBody(out, 2, "    ", glyphBullet+" last wrapped tool: the shim PATH line comes out of "+displayPath(home, wrap.RcFile(home, os.Getenv("SHELL"))))
+			}
+			printDryRunTrailer(out, "jit wrap undo "+tool, false)
+			return nil
 		}
 		res, err := wrap.Undo(home, tool)
 		if err != nil {
@@ -631,6 +674,8 @@ func init() {
 	// --env's value is VAR=<vault-path>: two halves the shell cannot guess,
 	// and it was offering filenames for both.
 	_ = wrapAddCmd.RegisterFlagCompletionFunc("env", completeWrapEnvAssignment)
+	wrapCmd.Flags().BoolVar(&wrapDryRun, "dry-run", false, "preview what wrapping would do without changing anything")
+	wrapUndoCmd.Flags().BoolVar(&wrapDryRun, "dry-run", false, "preview what unwrapping would do without changing anything")
 	wrapCmd.AddCommand(wrapAddCmd, wrapListCmd, wrapUndoCmd)
 	rootCmd.AddCommand(wrapCmd)
 }

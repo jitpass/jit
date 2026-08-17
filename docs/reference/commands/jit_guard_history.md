@@ -43,7 +43,8 @@ jit guard history [flags]
 ### Options
 
 ```
-      --remove   remove the guard: delete the hook file and take the source line out of ~/.zshrc
+      --dry-run   preview what installing (or --remove: removing) the guard would do without changing anything
+      --remove    remove the guard: delete the hook file and take the source line out of ~/.zshrc
 ```
 
 ### Options inherited from parent commands
