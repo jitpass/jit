@@ -508,6 +508,77 @@ func TestMigrateRemoveRejectsDryRun(t *testing.T) {
 	migrateDryRun = false // this test set the persistent flag; scrub it for whoever runs next
 }
 
+// TestMigrateDryRunPreviewsAgentCacheSweep: the post-migrate agent-cache
+// sweep rewrites files, so the plan must disclose them as a counted
+// category (design/dry-run-refactor.md D4) — a real run editing files
+// the plan never listed was the gap. The needles are the plaintext
+// values of the files being migrated, readable at plan time.
+func TestMigrateDryRunPreviewsAgentCacheSweep(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	const secret = "vlt09zXcVbNm2qWe4rTy6uIo8p42" // realistic shape: placeholder-looking values are ineligible needles
+	envPath := filepath.Join(cwd, ".env")
+	if err := os.WriteFile(envPath, []byte("STRIPE_KEY="+secret+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	pasteDir := filepath.Join(home, ".claude", "paste-cache")
+	if err := os.MkdirAll(pasteDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	pastePath := filepath.Join(pasteDir, "paste1.txt")
+	if err := os.WriteFile(pastePath, []byte("here is the key: "+secret+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := execMigrate(t, envPath, "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate <env> --dry-run: %v", err)
+	}
+	if !strings.Contains(out, "[AI agent cache file] 1") {
+		t.Errorf("expected the agent-cache category in the plan, got:\n%s", out)
+	}
+	if !strings.Contains(out, displayPath(home, pastePath)) {
+		t.Errorf("expected the cache copy's path in the plan, got:\n%s", out)
+	}
+	if !strings.Contains(out, "2 changes planned across 2 categories") {
+		t.Errorf("expected the subtotal to count the cache copy, got:\n%s", out)
+	}
+	if data, readErr := os.ReadFile(pastePath); readErr != nil || !strings.Contains(string(data), secret) {
+		t.Errorf("dry-run must not touch the cache file (err=%v):\n%s", readErr, data)
+	}
+}
+
+// TestPlanExtrasWrapAndGuardRows: wraps and the guard render as counted
+// plan categories with the outcome stated per row — the plan row is the
+// consent line (design/dry-run-refactor.md D3). Driven through
+// printMigratePlan directly because bare `jit migrate` needs a full scan
+// to produce a wraps plan.
+func TestPlanExtrasWrapAndGuardRows(t *testing.T) {
+	home := t.TempDir()
+	var buf bytes.Buffer
+	extras := &planExtras{
+		wraps:      []wrapPlanRow{{tool: "clisso", detail: "temporary AWS credentials minted via OneLogin/Okta SAML: each mint goes to the vault"}},
+		guardItems: []string{"~/.jit/guard.zsh (sourced from ~/.zshrc)"},
+	}
+	printMigratePlan(&buf, home, &discovered{}, extras)
+	out := buf.String()
+
+	for _, want := range []string{
+		"[CLI wrap] 1",
+		"jit wrap undo <tool>",
+		"clisso",
+		"each mint goes", // wrapBody may break the line inside the phrase
+		"[shell history guard] 1",
+		"jit guard history --remove",
+		"~/.jit/guard.zsh (sourced from ~/.zshrc)",
+		"2 changes planned across 2 categories",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in the extras plan, got:\n%s", want, out)
+		}
+	}
+}
+
 func TestMigrateDryRunCleanTarget(t *testing.T) {
 	home := withFixtureHome(t) // empty fixture, nothing planted
 	withFixtureCwd(t)

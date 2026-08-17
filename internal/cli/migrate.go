@@ -268,6 +268,47 @@ func shellQuoteArg(a string) string {
 	return "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
 }
 
+// wrapPlanDetail states what wrapping this catalog tool actually DOES,
+// per kind, for the plan's └ evidence line — "would wrap clisso" hides
+// four materially different behaviors, and informed consent needs the
+// right one. Everything here is read-only and prompt-free: the catalog
+// is compiled in, and the two probes (clisso's config, the shell rc)
+// are plain file reads.
+func wrapPlanDetail(home, tool string) string {
+	entry, ok := wrap.Lookup(tool)
+	if !ok {
+		return ""
+	}
+	var detail string
+	switch entry.Kind {
+	case wrap.KindShim:
+		detail = entry.Doc + " moves to the vault; its plaintext source is scrubbed (backed up encrypted first)"
+	case wrap.KindCapture:
+		detail = entry.Doc + ": each mint goes to the vault instead of a plaintext credentials file"
+		if tool == "clisso" {
+			// The capture flow also moves clisso's own long-lived
+			// client-secret out of ~/.clisso.yaml (see runCatalogWrap);
+			// disclose it only when the probe says it will happen.
+			if found, err := migrate.DiscoverClissoSecrets(home); err == nil && len(found) > 0 {
+				detail += "; the client-secret in ~/.clisso.yaml moves to the vault too"
+			}
+		}
+	case wrap.KindNative:
+		detail = entry.Doc + ": no shim; delegates to jit's native credential flow for this tool"
+	case wrap.KindRunGrant:
+		detail = entry.Doc + ": shim only; every run happens inside a jit run grant"
+	}
+	// A first shim also puts ~/.jit/shims on PATH by appending to the
+	// shell rc — a file edit the plan must disclose (ensureShimOnPath).
+	if entry.Kind != wrap.KindNative {
+		rc := wrap.RcFile(home, os.Getenv("SHELL"))
+		if data, err := os.ReadFile(rc); err != nil || !wrap.RcMentionsShimDir(string(data)) {
+			detail += "; adds the shim PATH line to " + displayPath(home, rc)
+		}
+	}
+	return detail
+}
+
 // filterMigrateOnly validates only (the raw --only tokens) against
 // migrateCategories and returns the set of selected categories. An unknown
 // token fails loud rather than being silently ignored — a typo'd category
@@ -382,14 +423,19 @@ var migratePathCmd = &cobra.Command{
 // directory: an explicitly named target can sit under any project, so
 // deriving from the invoking cwd would produce a nonsensical profile name
 // disconnected from the secret's real home.
+// extras carries the plan's non-file categories (wraps and the guard
+// offer, from runMigrateAll's scan; nil on targeted runs). applyMigrate
+// adds the agent-cache sweep preview itself, AFTER the --only filter,
+// because the preview's needles are the values of exactly the files
+// this run will vault (design/dry-run-refactor.md D4).
+//
 // dryRunApplyCmd carries the frame contract (design/dry-run-refactor.md
 // D1): non-empty means applyMigrate owns the dry-run frame and prints the
 // banner/trailer itself, with this as the trailer's apply command
 // (runMigratePath). Empty means the caller owns the frame — runMigrateAll
-// prints the banner BEFORE its wrap/guard disclosures and the trailer
-// after its own tail, so the frame still brackets everything the run
-// discloses.
-func applyMigrate(cmd *cobra.Command, home string, d *discovered, dryRunApplyCmd string) (bool, error) {
+// prints the banner BEFORE calling here and the trailer after its own
+// tail, so the frame still brackets everything the run discloses.
+func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planExtras, dryRunApplyCmd string) (bool, error) {
 	// Locals aliased to d's fields so the --only filter, plan, and apply
 	// loops below read exactly as they did before this function was split
 	// out. categorySlices points at these locals, and the --only nil-out
@@ -543,7 +589,23 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, dryRunApplyCmd
 		pypircFiles:      pypircFiles,
 		looseSecretFiles: looseSecretFiles,
 	}
-	printMigratePlan(cmd.OutOrStdout(), home, &planned)
+	// The cache-sweep preview joins the plan HERE, after the --only
+	// filter: its needles are the plaintext values of exactly the files
+	// this run will vault, so a scoped-out category must not feed it.
+	// Best-effort by design — a failed preview becomes a note, never a
+	// failed (or prompting) plan; the apply-time sweep is unaffected
+	// either way, its needles come from Vault.OnSet.
+	if extras == nil {
+		extras = &planExtras{}
+	}
+	if needles := migrate.PlanNeedles(envFiles, looseSecretFiles); len(needles) > 0 {
+		if preview, err := migrate.PreviewAgentCaches(home, needles); err != nil {
+			extras.cacheNote = err.Error()
+		} else {
+			extras.cacheEdits = preview.Edited
+		}
+	}
+	printMigratePlan(cmd.OutOrStdout(), home, &planned, extras)
 	printSkippedFindings(cmd.OutOrStdout(), home, len(tfvarsComplexOnly), "in Terraform "+pluralWord(len(tfvarsComplexOnly), "variable file", "variable files")+" whose secret-shaped values aren't simple one-line strings", tfvarsComplexOnly,
 		"Nothing migrate can move safely; they stay in place, and `jit scan` keeps reporting them.")
 	printSkippedFindings(cmd.OutOrStdout(), home, len(k8sManifestsComplexOnly), "in "+pluralWord(len(k8sManifestsComplexOnly), "Kubernetes Secret manifest", "Kubernetes Secret manifests")+" migrate can't rewrite provably right", k8sManifestsComplexOnly,
@@ -1361,45 +1423,41 @@ func runMigrateAll(cmd *cobra.Command) error {
 		return nil
 	}
 
-	// The frame opens before ANY disclosure: the wrap/guard lines below are
-	// part of what the run proposes, so the banner must precede them
-	// (design/dry-run-refactor.md D1 — the old per-line "[DRY RUN]"
-	// prefixes existed only because the banner printed after these lines,
-	// inside applyMigrate).
+	// The frame opens before the plan (design/dry-run-refactor.md D1).
 	if migrateDryRun {
 		printDryRunBanner(out)
 	}
 
-	// The wrap half of the plan prints ABOVE applyMigrate's file plan so the
-	// one [y/N] below covers everything this run will do.
-	if len(tools) > 0 {
-		fmt.Fprint(out, hlCmds(fmt.Sprintf("Will also wrap %s (token into the vault, tool keeps working; each is\nreversible with `jit wrap undo <tool>`): %s\n\n",
-			pluralWord(len(tools), "CLI", "CLIs"), strings.Join(tools, ", "))))
+	// The wraps and the guard enter the plan as counted categories rather
+	// than prose above it (design/dry-run-refactor.md D3): the plan row is
+	// the consent line the single [y/N] below commits to, and it states
+	// the OUTCOME per catalog kind — a reader who has never seen `jit wrap`
+	// or `jit guard history` cannot evaluate a bare command name, and a
+	// line they cannot evaluate is one they should not be agreeing to.
+	extras := &planExtras{}
+	for _, tool := range tools {
+		extras.wraps = append(extras.wraps, wrapPlanRow{tool: tool, detail: wrapPlanDetail(home, tool)})
 	}
-
-	// Announced ABOVE applyMigrate's plan, like the wraps, so the single
-	// [y/N] below is the consent for it too. Stated as an outcome rather than
-	// a command name: a reader who has never seen `jit guard history` cannot
-	// guess what it does, and a line they cannot evaluate is one they should
-	// not be agreeing to.
 	if offerGuard {
-		wrapBody(out, 0, "", hlCmds("Will also install the shell history guard, so this cannot happen again: a "+
-			"zsh hook keeps a command carrying a credential out of your history file, "+
-			"while leaving it usable in that session (reversible with "+
-			"`jit guard history --remove`)."))
-		fmt.Fprintln(out)
+		extras.guardItems = []string{displayPath(home, guard.HookPath(home)) + " (sourced from " + displayPath(home, guard.RcPath(home)) + ")"}
 	}
 
 	applied := true
 	if d.total() > 0 {
-		applied, err = applyMigrate(cmd, home, d, "") // "" — this function owns the dry-run frame
+		applied, err = applyMigrate(cmd, home, d, extras, "") // "" — this function owns the dry-run frame
 		if err != nil {
 			return err
 		}
-	} else if !migrateDryRun && !migrateYes && !confirmPrompt(cmd, "Proceed? [y/N] ") {
-		// Only wraps in the plan: applyMigrate never ran, so gate here.
-		fmt.Fprintln(out, "Aborted. Nothing was changed.")
-		return nil
+	} else {
+		// Wraps/guard only: applyMigrate never runs, so render the same
+		// plan shape it would (extras as its only categories) and gate on
+		// the same [y/N] — this run installs shims and shell hooks, which
+		// is exactly what the plan-then-consent discipline exists for.
+		printMigratePlan(out, home, d, extras)
+		if !migrateDryRun && !migrateYes && !confirmPrompt(cmd, "Proceed? [y/N] ") {
+			fmt.Fprintln(out, "Aborted. Nothing was changed.")
+			return nil
+		}
 	}
 	if !applied && !migrateDryRun {
 		return nil // declined at the plan — wraps and the guard must not run either
@@ -1533,7 +1591,7 @@ func runMigratePath(cmd *cobra.Command, targets []string) error {
 	d.dedupe()
 
 	progress.Stop() // settle the discovery trail before the plan/prompt prints
-	_, err = applyMigrate(cmd, home, d, migrateApplyCommand("jit migrate", targets))
+	_, err = applyMigrate(cmd, home, d, nil, migrateApplyCommand("jit migrate", targets))
 	return err
 }
 
