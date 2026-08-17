@@ -86,12 +86,16 @@ type vaultListResult struct {
 
 // vaultSecretJSON is one secret in a --format json listing: its path plus the
 // same header metadata Info exposes, never a value (list never decrypts).
+// Storage is the honest "is this a 1Password link" marker for scripts —
+// class covers only born-as-link entries, while a migrate-linked secret
+// keeps its migrator's class and is a link by storage alone.
 type vaultSecretJSON struct {
 	Path           string `json:"path"`
 	Version        int    `json:"version,omitempty"`
 	Class          string `json:"class,omitempty"`
 	GroupID        string `json:"group_id,omitempty"`
 	Origin         string `json:"origin,omitempty"`
+	Storage        string `json:"storage,omitempty"`
 	OriginSeenUnix int64  `json:"origin_seen_unix,omitempty"`
 	CreatedUnix    int64  `json:"created_unix,omitempty"`
 	UpdatedUnix    int64  `json:"updated_unix,omitempty"`
@@ -1277,6 +1281,7 @@ var vaultListCmd = &cobra.Command{
 					OriginSeenUnix: info.OriginSeenUnix,
 					CreatedUnix:    info.CreatedUnix,
 					UpdatedUnix:    info.UpdatedUnix,
+					Storage:        info.Storage,
 				})
 			}
 			return writeJSON(cmd.OutOrStdout(), out)

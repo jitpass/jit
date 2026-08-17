@@ -93,6 +93,7 @@ then **[Install](./getting-started/install.md)** →
 
 - [Store, read, and delete secrets](./vault/index.md) - `set`/`get`/`list`/`rm`, rotating a key, undoing a rotation with `history`/`restore`
 - [Back up and restore](./vault/backup-restore.md) - passphrase-encrypted export/import
+- [Use secrets that live in 1Password](./vault/1password.md) - `vault link` stores an `op://` reference; the value stays in 1Password
 - [Maintenance](./vault/maintenance.md) - `rekey`, `duplicates`, `prune`, `orphans`, `clean`, `delete`
 
 ## The background service
