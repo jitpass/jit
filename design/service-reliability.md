@@ -1,10 +1,11 @@
 # Service reliability: demand-spawned lifecycle, honest health, a broker that keeps its promises
 
-**Status: proposed, 2026-08-17. Drafted from a full review of the
-service surface (three parallel code reviews over `internal/agent`,
-`internal/cli/agent*.go` and the log/history/status surfaces, 43
-findings) plus a verified production incident. Nothing here is
-implemented yet.**
+**Status: phases 1-2 implemented, 2026-08-17 (branch
+service-reliability; wording preview approved by eye the same day).
+Phases 3-5 are specified but not yet built. Drafted from a full review
+of the service surface (three parallel code reviews over
+`internal/agent`, `internal/cli/agent*.go` and the log/history/status
+surfaces, 43 findings) plus a verified production incident.**
 
 ## The incident that forced this
 
