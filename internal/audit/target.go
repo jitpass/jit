@@ -80,7 +80,7 @@ func TargetedScan(cfg Config, targets []string) ([]Finding, ScanSummary, error) 
 	// be handed a repository full of test fixtures.
 	tagArchivedAndFixtures(all)
 	// And the same remedy/cause annotation, for the same no-drift reason.
-	annotateRemedies(all, cfg.HomeDir)
+	annotateRemedies(all, cfg.HomeDir, cfg.K8sMigratable)
 
 	summary := buildScanSummary(cfg, all, countProtectedMounts(cfg.MountRegistryPath), time.Since(start))
 	summary.Targets = targets

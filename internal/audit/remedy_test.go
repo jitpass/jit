@@ -42,7 +42,7 @@ func TestAnnotateRemedies(t *testing.T) {
 		{FindingType: FindingTypeWrappableCLIToken, FilePath: filepath.Join(home, ".config/gh/hosts.yml"),
 			Remedy: RemedyWrap, FixCommand: "jit wrap gh", KeyName: str("oauth_token")},
 	}
-	annotateRemedies(findings, home)
+	annotateRemedies(findings, home, nil)
 
 	want := []struct {
 		remedy, fixContains string
@@ -333,5 +333,66 @@ func TestShellSafePathTildeFormResolvesInARealShell(t *testing.T) {
 		if _, err := os.Stat(string(out)); err != nil {
 			t.Errorf("%s: resolved path does not exist: %v", sh, err)
 		}
+	}
+}
+
+// TestK8sMigratableHookFlipsRefusedManifests: Config.K8sMigratable is how
+// scan stops promising a Secret manifest that migrate will refuse
+// (design/dry-run-refactor.md D5). Refused: RemedyManual, migrate's
+// reason in the evidence. ok or nil hook: RemedyMigrate with a
+// FixCommand, the pre-hook behavior.
+func TestK8sMigratableHookFlipsRefusedManifests(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "code", "k8s")
+	mkdirAll(t, dir)
+	manifest := filepath.Join(dir, "secrets.yaml")
+	writeFile(t, manifest, `apiVersion: v1
+kind: Secret
+metadata:
+  name: my-secret
+data:
+  password: aHVudGVyMg==
+`)
+
+	find := func(cfg Config) Finding {
+		t.Helper()
+		findings, _, err := TargetedScan(cfg, []string{manifest})
+		if err != nil {
+			t.Fatalf("TargetedScan: %v", err)
+		}
+		for _, f := range findings {
+			if f.FindingType == FindingTypeIACVariableFile {
+				return f
+			}
+		}
+		t.Fatalf("no IAC finding for the manifest, got %d findings", len(findings))
+		return Finding{}
+	}
+
+	refused := find(Config{HomeDir: home, K8sMigratable: func(path string) (string, bool) {
+		if path != manifest {
+			t.Errorf("hook asked about %q, want %q", path, manifest)
+		}
+		return "a Secret document uses both data: and stringData:", false
+	}})
+	if refused.Remedy != RemedyManual {
+		t.Errorf("refused manifest remedy = %q, want %q", refused.Remedy, RemedyManual)
+	}
+	if !strings.Contains(refused.Evidence, "can't rewrite provably right") ||
+		!strings.Contains(refused.Evidence, "both data: and stringData:") {
+		t.Errorf("refused evidence should carry migrate's reason, got: %q", refused.Evidence)
+	}
+	if refused.FixCommand != "" {
+		t.Errorf("refused manifest must not carry a FixCommand, got %q", refused.FixCommand)
+	}
+
+	okFinding := find(Config{HomeDir: home, K8sMigratable: func(string) (string, bool) { return "", true }})
+	if okFinding.Remedy != RemedyMigrate || okFinding.FixCommand == "" {
+		t.Errorf("ok verdict: remedy=%q fix=%q, want migrate with a FixCommand", okFinding.Remedy, okFinding.FixCommand)
+	}
+
+	nilHook := find(Config{HomeDir: home})
+	if nilHook.Remedy != RemedyMigrate {
+		t.Errorf("nil hook must keep the pre-hook optimistic remedy, got %q", nilHook.Remedy)
 	}
 }

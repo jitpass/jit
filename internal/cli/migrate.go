@@ -18,7 +18,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/audit"
 	"github.com/jitpass/jit/internal/guard"
 	"github.com/jitpass/jit/internal/migrate"
@@ -1371,7 +1370,7 @@ func runMigrateAll(cmd *cobra.Command) error {
 	if err != nil {
 		return fmt.Errorf("jit migrate: %w", err)
 	}
-	cfg, err := audit.NewConfig(agent.Version())
+	cfg, err := newAuditConfig()
 	if err != nil {
 		return fmt.Errorf("jit migrate: %w", err)
 	}

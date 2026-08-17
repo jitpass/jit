@@ -145,7 +145,7 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 	// Same seam, same reason: who can act on each finding (and the id that
 	// groups copies of one secret) is set once, centrally, so every renderer
 	// and consumer reads identical answers.
-	annotateRemedies(all, cfg.HomeDir)
+	annotateRemedies(all, cfg.HomeDir, cfg.K8sMigratable)
 
 	summary := buildScanSummary(cfg, all, countProtectedMounts(cfg.MountRegistryPath), time.Since(start))
 	summary.FilesScanned = filesWalked
