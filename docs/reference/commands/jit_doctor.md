@@ -41,6 +41,13 @@ complaint that is only true of the shell you happen to be in — a CI job
 that doesn't put the shim dir on PATH is not a broken machine. --strict
 makes those count too.
 
+When vault secrets are linked to 1Password, doctor also checks (prompt-free)
+that the op CLI is installed and signature-verified. --1password goes
+further and test-resolves every link, so a reference broken by a deleted or
+renamed item surfaces here instead of at the moment a tool needed it; that
+sweep costs a Touch ID and 1Password may show its own prompt, which is why
+it never runs by default.
+
 Exit 2 is the FINDINGS code, matching `jit scan --fail-on`; exit 1 means
 doctor itself couldn't run (a bad flag, an unreadable vault root), which a
 pipeline needs to tell apart from a machine that is genuinely broken.
@@ -69,6 +76,7 @@ jit doctor [flags]
 ### Options
 
 ```
+      --1password              also test-resolve every 1Password-linked secret (Touch ID, and 1Password may prompt); a dead link becomes a finding
       --format string          output format: "text" (default) or "json" (default "text")
       --orphans                list each unreferenced vault secret; without it the count alone is reported
       --profile string         check only this profile, and skip the service/backup/wrap health sections

@@ -172,6 +172,21 @@ const (
 	// that the README calls optional, which means the people who never read
 	// it are exactly the people who never learn the flags exist.
 	kindCompletion checkKind = "completion"
+	// kind1Password: the automatic, prompt-free 1Password section — vault
+	// secrets are linked to 1Password (envelope storage "op-ref") but the
+	// op CLI is missing or the binary on PATH fails the Developer ID
+	// signature gate, so those secrets cannot resolve. A hard problem, not
+	// advisory: a linked secret that cannot resolve is as broken as a
+	// missing one. Emitted only when linked secrets exist; a machine with
+	// no links has no 1Password health to report.
+	kind1Password checkKind = "1password"
+	// kind1PasswordLink: one linked secret whose reference no longer
+	// resolves — the item was deleted, a name-form reference broke on a
+	// rename, or the field is gone. Found only by the explicit
+	// `jit doctor --1password` sweep: the references are sealed like values
+	// (reading them costs a Touch ID) and each resolve can pop 1Password's
+	// own prompt, so this can never run on the default, prompt-free path.
+	kind1PasswordLink checkKind = "1password_link"
 	// kindJitPath: an artifact `jit migrate` rewrote records an absolute jit
 	// path that will not keep working — the binary is already gone, or it is
 	// a version-numbered Homebrew copy the next upgrade deletes.
@@ -213,6 +228,7 @@ var allCheckKinds = []checkKind{
 	kindMountStale, kindVaultKey, kindRekey, kindLegacyEnvelope,
 	kindAudit, kindMCP,
 	kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion,
+	kind1Password, kind1PasswordLink,
 }
 
 // warning reports whether a finding of this kind is advisory (does not fail
@@ -315,7 +331,13 @@ type checkOutcome struct {
 	// installation is healthy was the one thing it could say that the rollup,
 	// which only ever reported failures, could not.
 	OKChecks []string
-	Findings []checkFinding
+	// OpLinksChecked/OpLinksOK are the `--1password` sweep's tally, for the
+	// closing summary line and the JSON snapshot. Zero checked means the
+	// sweep did not run or found no links; each failure is its own
+	// kind1PasswordLink finding.
+	OpLinksChecked int
+	OpLinksOK      int
+	Findings       []checkFinding
 	// Cwd is where the profile sweep looked, retained so a zero-profile run
 	// can say something more useful than "nothing here".
 	Cwd string

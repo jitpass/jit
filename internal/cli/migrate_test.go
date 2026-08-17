@@ -73,6 +73,7 @@ func execMigrate(t *testing.T, args ...string) (stdout string, err error) {
 	migrateYes = false
 	migrateOnly = nil
 	migrateMount = false // omitted once, and --mount leaking out of one test made the next one plan a mount it never asked for
+	migrateNo1Password = false
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)                 // confirmation prompts go to stderr, capture both streams in order

@@ -41,6 +41,16 @@ var credentialClasses = map[string]bool{
 	"pypirc":        true,
 	"k8s_secret":    true,
 	"shell_history": true,
+	// 1password is a secret linked from the user's password manager (`jit
+	// vault link` — the vault holds an op:// reference, resolved through
+	// the 1Password CLI at read time). Gated: something kept in a password
+	// manager is the definition of a credential a process should not
+	// obtain silently, and the envelope's class cannot say what KIND of
+	// credential the link points at, so the safe half of the partition is
+	// the only defensible default. 1Password's own biometric authorization
+	// is a different decision (release from ITS vault) and does not
+	// substitute for per-process consent here.
+	"1password": true,
 }
 
 // ungatedClasses is the other half of the partition, listed rather than implied

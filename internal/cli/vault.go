@@ -26,6 +26,7 @@ import (
 	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
+	"github.com/jitpass/jit/internal/onepassword"
 	"github.com/jitpass/jit/internal/pasteboard"
 	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/termtext"
@@ -85,12 +86,16 @@ type vaultListResult struct {
 
 // vaultSecretJSON is one secret in a --format json listing: its path plus the
 // same header metadata Info exposes, never a value (list never decrypts).
+// Storage is the honest "is this a 1Password link" marker for scripts —
+// class covers only born-as-link entries, while a migrate-linked secret
+// keeps its migrator's class and is a link by storage alone.
 type vaultSecretJSON struct {
 	Path           string `json:"path"`
 	Version        int    `json:"version,omitempty"`
 	Class          string `json:"class,omitempty"`
 	GroupID        string `json:"group_id,omitempty"`
 	Origin         string `json:"origin,omitempty"`
+	Storage        string `json:"storage,omitempty"`
 	OriginSeenUnix int64  `json:"origin_seen_unix,omitempty"`
 	CreatedUnix    int64  `json:"created_unix,omitempty"`
 	UpdatedUnix    int64  `json:"updated_unix,omitempty"`
@@ -111,7 +116,13 @@ type vaultGetResult struct {
 	OriginSeenUnix int64  `json:"origin_seen_unix,omitempty"`
 	CreatedUnix    int64  `json:"created_unix,omitempty"`
 	UpdatedUnix    int64  `json:"updated_unix,omitempty"`
-	Value          string `json:"value"`
+	// Storage/Reference appear only for a linked secret (`jit vault
+	// link`): the storage marker and the op:// reference the value was
+	// resolved through — Value still carries the resolved value, so a
+	// script consuming .value never cares whether the secret is linked.
+	Storage   string `json:"storage,omitempty"`
+	Reference string `json:"reference,omitempty"`
+	Value     string `json:"value"`
 }
 
 // splitBackupPaths separates a vault listing into user secrets and jit
@@ -207,17 +218,32 @@ func printVaultList(out io.Writer, secrets, backups []string, showBackups, group
 	}
 	secretsWord := pluralWord(len(secrets), "secret", "secrets")
 	backupsWord := pluralWord(len(backups), "backup", "backups")
+	// The footer states the linked count once for the whole vault — the
+	// prompt-free answer to "which of my secrets follow 1Password" (the
+	// per-row tag needs -l). Absent when nothing is linked.
+	linkedClause := ""
+	if meta != nil {
+		linked := 0
+		for _, p := range secrets {
+			if meta[p].Storage == vault.StorageOpRef {
+				linked++
+			}
+		}
+		if linked > 0 {
+			linkedClause = fmt.Sprintf(", %d linked to 1Password", linked)
+		}
+	}
 	switch {
 	case len(backups) == 0:
-		fmt.Fprintf(out, "\n%d %s stored.\n", len(secrets), secretsWord)
+		fmt.Fprintf(out, "\n%d %s stored%s.\n", len(secrets), secretsWord, linkedClause)
 	case len(secrets) == 0 && showBackups:
 		writeVaultFooter(out, true, hlCmds(fmt.Sprintf("No secrets stored yet, %d encrypted file %s kept for `jit migrate undo`.", len(backups), backupsWord)))
 	case len(secrets) == 0:
 		writeVaultFooter(out, false, hlCmds(fmt.Sprintf("No secrets stored yet, %d encrypted file %s kept for `jit migrate undo` (list with --all).", len(backups), backupsWord)))
 	case showBackups:
-		writeVaultFooter(out, true, hlCmds(fmt.Sprintf("%d %s stored, plus %d encrypted file %s kept for `jit migrate undo`.", len(secrets), secretsWord, len(backups), backupsWord)))
+		writeVaultFooter(out, true, hlCmds(fmt.Sprintf("%d %s stored%s, plus %d encrypted file %s kept for `jit migrate undo`.", len(secrets), secretsWord, linkedClause, len(backups), backupsWord)))
 	default:
-		writeVaultFooter(out, true, hlCmds(fmt.Sprintf("%d %s stored, plus %d encrypted file %s kept for `jit migrate undo` (list with --all).", len(secrets), secretsWord, len(backups), backupsWord)))
+		writeVaultFooter(out, true, hlCmds(fmt.Sprintf("%d %s stored%s, plus %d encrypted file %s kept for `jit migrate undo` (list with --all).", len(secrets), secretsWord, linkedClause, len(backups), backupsWord)))
 	}
 	// Duplicate-group nudge only decorates the default terminal view — a
 	// piped/grep listing (grouped == false) and the provenance axes stay
@@ -849,6 +875,20 @@ func secretMetaSuffix(info vault.SecretInfo) string {
 		class = "unknown"
 	}
 	parts := []string{class}
+	// Linkedness is the storage marker's, never the class's: a migrated
+	// secret keeps its dotenv/aws class when the dedupe links it, so
+	// without this tag nothing in the listing separates a link from a
+	// copy. The two suppressions keep it honest without stuttering: a
+	// born-as-link row's class already says "1password", and the inverse
+	// case — a 1password-class secret whose link was overwritten by a
+	// literal set — is exactly when the reader must be told it is NOT
+	// linked anymore.
+	switch {
+	case info.Storage == vault.StorageOpRef && info.Class != vault.ClassOnePassword:
+		parts = append(parts, "linked to 1Password")
+	case info.Storage == "" && info.Class == vault.ClassOnePassword:
+		parts = append(parts, "local copy")
+	}
 	if info.UpdatedUnix > 0 {
 		parts = append(parts, "updated "+humanAgo(time.Since(time.Unix(info.UpdatedUnix, 0)))+" ago")
 	}
@@ -1050,6 +1090,16 @@ var vaultGetCmd = &cobra.Command{
 			// value is in hand, so a header hiccup drops metadata, never the
 			// whole get.
 			info, _ := v.Info(args[0])
+			// For a linked secret, also show WHICH 1Password field the value
+			// came from. GetStored re-decrypts the stored reference; the
+			// Wrapper's MEK cache means no second prompt (same reason the
+			// Info read above is free).
+			var reference string
+			if info.Storage == vault.StorageOpRef {
+				if ref, _, err := v.GetStored(args[0]); err == nil {
+					reference = string(ref)
+				}
+			}
 			return writeJSON(cmd.OutOrStdout(), vaultGetResult{
 				Path:           args[0],
 				Version:        info.Version,
@@ -1059,6 +1109,8 @@ var vaultGetCmd = &cobra.Command{
 				OriginSeenUnix: info.OriginSeenUnix,
 				CreatedUnix:    info.CreatedUnix,
 				UpdatedUnix:    info.UpdatedUnix,
+				Storage:        info.Storage,
+				Reference:      reference,
 				Value:          string(value),
 			})
 		}
@@ -1258,6 +1310,7 @@ var vaultListCmd = &cobra.Command{
 					OriginSeenUnix: info.OriginSeenUnix,
 					CreatedUnix:    info.CreatedUnix,
 					UpdatedUnix:    info.UpdatedUnix,
+					Storage:        info.Storage,
 				})
 			}
 			return writeJSON(cmd.OutOrStdout(), out)
@@ -2722,6 +2775,7 @@ func openVaultFreshAuth() (*vault.Vault, error) {
 		Root:        root,
 		KeyWrapper:  keychainwrap.New(),
 		RecipientID: deviceID,
+		RefResolver: onepassword.New(),
 	}, nil
 }
 
@@ -2760,6 +2814,7 @@ func openVault() (*vault.Vault, error) {
 		Root:        root,
 		KeyWrapper:  kw,
 		RecipientID: deviceID,
+		RefResolver: onepassword.New(),
 	}, nil
 }
 
