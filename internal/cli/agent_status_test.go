@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -95,10 +96,14 @@ func TestAgentStatusFormatRejectsUnknownValue(t *testing.T) {
 // TestReloadAgentServiceBootoutThenBootstrap pins reloadAgentService's
 // recovery contract (the launchctl seam is what makes this testable at all,
 // which the old exec'd path was not): it ALWAYS boots out first, then
-// bootstraps, and it recovers a launchd-dropped service — the bootout
-// failing with "Could not find service" is expected and must not fail the
-// reload, only the bootstrap result decides. Guards against a future edit
-// that drops the bootout, reorders the two, or lets bootout's error abort.
+// bootstraps, then KICKSTARTS — and it recovers a launchd-dropped service:
+// the bootout failing with "Could not find service" is expected and must not
+// fail the reload, only the bootstrap result decides. The kickstart is the
+// incident guard (2026-08-17): bootstrap only registers the job, and launchd
+// can pend the RunAtLoad spawn forever ("pended nondemand spawn", runs=0);
+// kickstart is the explicit demand. Guards against a future edit that drops
+// the bootout, reorders the verbs, lets bootout's error abort — or drops the
+// kickstart again the way 660ce2c did.
 func TestReloadAgentServiceBootoutThenBootstrap(t *testing.T) {
 	var calls [][]string
 	restore := launchctlRun
@@ -110,22 +115,50 @@ func TestReloadAgentServiceBootoutThenBootstrap(t *testing.T) {
 			// The dropped-service case: launchd has no record to boot out.
 			return []byte(`Could not find service "com.jitpass.agent" in domain for user gui: 502`), errors.New("exit status 113")
 		}
-		return nil, nil // bootstrap succeeds
+		return nil, nil // bootstrap and kickstart succeed
 	}
 
 	if out, err := reloadAgentService("/tmp/whatever.plist"); err != nil {
 		t.Fatalf("reload must succeed when only bootout fails (dropped service): err=%v out=%q", err, out)
 	}
-	if len(calls) != 2 || calls[0][0] != "bootout" || calls[1][0] != "bootstrap" {
-		t.Fatalf("want bootout then bootstrap, got %v", calls)
+	if len(calls) != 3 || calls[0][0] != "bootout" || calls[1][0] != "bootstrap" || calls[2][0] != "kickstart" {
+		t.Fatalf("want bootout, bootstrap, kickstart, got %v", calls)
 	}
 	if calls[1][len(calls[1])-1] != "/tmp/whatever.plist" {
 		t.Errorf("bootstrap must be handed the plist path, got %v", calls[1])
 	}
+	// Plain kickstart, never -k: -k would kill the process RunAtLoad may
+	// already have spawned; the demand must only start, not restart.
+	for _, a := range calls[2] {
+		if a == "-k" {
+			t.Errorf("reload's kickstart must not use -k, got %v", calls[2])
+		}
+	}
+	if calls[2][len(calls[2])-1] != agentServiceTarget() {
+		t.Errorf("kickstart must target the service, got %v", calls[2])
+	}
+
+	// A kickstart error must NOT fail the reload: in the healthy case
+	// RunAtLoad already spawned the process and kickstart merely reports it
+	// running.
+	launchctlRun = func(args ...string) ([]byte, error) {
+		if args[0] == "kickstart" {
+			return []byte("already running"), errors.New("exit status 37")
+		}
+		return nil, nil
+	}
+	if _, err := reloadAgentService("/tmp/whatever.plist"); err != nil {
+		t.Fatalf("a kickstart error must be ignored, got %v", err)
+	}
 
 	// And a non-transient bootstrap failure IS surfaced (a race error like EIO
-	// would instead be retried — see TestReloadAgentServiceRetriesThroughBootoutRace).
+	// would instead be retried — see TestReloadAgentServiceRetriesThroughBootoutRace),
+	// with no kickstart after it: there is no registered job to demand.
+	var kickstarts int
 	launchctlRun = func(args ...string) ([]byte, error) {
+		if args[0] == "kickstart" {
+			kickstarts++
+		}
 		if args[0] == "bootstrap" {
 			return []byte("Bootstrap failed: 112: Operation not permitted"), errors.New("exit status 112")
 		}
@@ -133,6 +166,9 @@ func TestReloadAgentServiceBootoutThenBootstrap(t *testing.T) {
 	}
 	if _, err := reloadAgentService("/tmp/whatever.plist"); err == nil {
 		t.Fatal("a bootstrap failure must be returned, got nil")
+	}
+	if kickstarts != 0 {
+		t.Errorf("no kickstart after a failed bootstrap, got %d", kickstarts)
 	}
 }
 
@@ -145,9 +181,13 @@ func TestReloadAgentServiceRetriesThroughBootoutRace(t *testing.T) {
 	restore := launchctlRun
 	t.Cleanup(func() { launchctlRun = restore })
 
-	var bootstraps int
+	var bootstraps, bootouts int
 	launchctlRun = func(args ...string) ([]byte, error) {
 		if args[0] == "bootout" {
+			bootouts++
+			return nil, nil
+		}
+		if args[0] == "kickstart" {
 			return nil, nil
 		}
 		bootstraps++
@@ -161,6 +201,12 @@ func TestReloadAgentServiceRetriesThroughBootoutRace(t *testing.T) {
 	}
 	if bootstraps != 3 {
 		t.Errorf("want 3 bootstrap attempts (2 EIO + 1 success), got %d", bootstraps)
+	}
+	// The PAIR retries, not bootstrap alone: a bootout that genuinely failed
+	// leaves every bootstrap answering "already bootstrapped" (a transient by
+	// the classifier), and only a fresh bootout can ever clear it.
+	if bootouts != 3 {
+		t.Errorf("want the bootout re-run on every retry (3 total), got %d", bootouts)
 	}
 
 	// A non-transient bootstrap error returns immediately, no retry.
@@ -192,5 +238,43 @@ func TestBoundedPromptWaitIsScopedToRun(t *testing.T) {
 	boundedPromptWait = true
 	if !boundedPromptWait {
 		t.Error("jit run must be able to opt in")
+	}
+}
+
+// TestWaitForAgentBuild pins install/restart's success condition: "the
+// service is now running the current binary" is decided by the answering
+// process's own BuildID matching ours, not by a bare dial succeeding. The
+// bare-dial version could declare success on the OLD process still draining
+// its shutdown during a reload. (The wrong-build half is structural: the
+// server answers OpStatus with agent.BuildID(), so a same-process test can
+// only exercise the match and the give-up; the mismatch path is the same
+// comparison.)
+func TestWaitForAgentBuild(t *testing.T) {
+	root, err := os.MkdirTemp("/tmp", "jit-wfb-") // short path: unix sockets cap at ~104 bytes
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+
+	// Nothing listening: the wait gives up. The timeout is the caller's
+	// (agentStartWait in production), so the test pays 300ms, not 5s.
+	if waitForAgentBuild(root, 300*time.Millisecond) {
+		t.Fatal("no agent is listening; the wait must give up")
+	}
+
+	server := agent.NewServer(agent.SocketPath(root), func() agent.MEKFetcher { return &fakeMEKFetcher{key: bytes.Repeat([]byte{1}, 32)} }, time.Minute)
+	if err := server.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = server.Serve(ctx) }()
+	t.Cleanup(func() { _ = server.Close() })
+
+	// This process serves OpStatus with its own BuildID, which is by
+	// definition the caller's too — the wait must succeed, locked session
+	// and all (status never challenges).
+	if !waitForAgentBuild(root, 2*time.Second) {
+		t.Fatal("an agent on this build answers; the wait must succeed")
 	}
 }

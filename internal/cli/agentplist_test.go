@@ -51,14 +51,25 @@ func TestPlistProgramPath(t *testing.T) {
 		}
 	})
 
-	t.Run("a path with XML metacharacters survives", func(t *testing.T) {
+	t.Run("a path with XML metacharacters round-trips to its RAW form", func(t *testing.T) {
 		// Directory names really do contain "&" — installAgentService escapes
-		// on the way in, so the value read back is the escaped form. What
-		// matters here is that the reader returns the ProgramArguments entry
-		// rather than stopping at the first entity.
+		// on the way in, and the reader must UNESCAPE on the way out. Returning
+		// the escaped form made every consumer wrong for such a path:
+		// agentPlistNeedsRepoint compared `R&amp;D` against `R&D` (permanently
+		// true, every restart took the rewrite branch), and agentPlistOrphaned
+		// stat'ed the escaped path (IsNotExist, so ensureAgentInstalled treated
+		// a healthy install as orphaned and bounced it).
 		got, ok := plistProgramPath(plistFor("/Users/x/R&amp;D/jit"))
-		if !ok || got != "/Users/x/R&amp;D/jit" {
-			t.Errorf("got %q ok=%v, want the full escaped path", got, ok)
+		if !ok || got != "/Users/x/R&D/jit" {
+			t.Errorf("got %q ok=%v, want the unescaped path /Users/x/R&D/jit", got, ok)
+		}
+	})
+
+	t.Run("escape then read is the identity for every metacharacter", func(t *testing.T) {
+		raw := `/Users/x/R&D/<odd> "dir"/it's/jit`
+		got, ok := plistProgramPath(plistFor(xmlEscape(raw)))
+		if !ok || got != raw {
+			t.Errorf("got %q ok=%v, want %q (write-side xmlEscape must round-trip through the reader)", got, ok, raw)
 		}
 	})
 

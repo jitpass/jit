@@ -99,6 +99,19 @@ var agentRunCmd = &cobra.Command{
 			return fmt.Errorf("jit service run: %w", err)
 		}
 
+		// A foreground run must not steal the socket from a live agent:
+		// Listen unconditionally replaces the socket file, so a second agent
+		// silently splits the world — the first keeps the session and every
+		// FIFO mount's writer while new clients dial this one, and this one's
+		// exit then removes the socket out from under the first's listener,
+		// leaving a healthy process every command reports as crashed. Only
+		// the foreground case checks: under launchd (ppid 1) the reload's
+		// bootout guarantees the singleton, and a mid-teardown predecessor
+		// still answering the socket would turn this probe into a crash loop.
+		if os.Getppid() != 1 && agent.NewClient(agent.SocketPath(root)).Reachable() {
+			return fmt.Errorf("jit service run: an agent is already running and answering on %s; `jit service restart` restarts it", agent.SocketPath(root))
+		}
+
 		// launchd creates the StandardOutPath/StandardErrorPath log 0644;
 		// tighten it to 0600 on every start (covering both a fresh log and
 		// one an older build already left world-readable). It records reader
@@ -278,9 +291,27 @@ var agentRunCmd = &cobra.Command{
 		// file out from under a concurrently-installed agent's O_APPEND fd
 		// is exactly the cross-process interference to avoid.
 		if os.Getppid() == 1 {
-			if exePath, exeErr := os.Executable(); exeErr == nil {
+			// Watch the STABLE path (the same one the plist names), not the raw
+			// os.Executable(): a versioned Caskroom exec path is deleted whole
+			// by `brew upgrade`, and a vanished file deliberately reads as "no
+			// change yet" forever — a watcher pointed there would never fire,
+			// leaving the old build running with only the status mismatch
+			// warning saying why: the exact trap this watcher exists to end.
+			if exePath, exeErr := agentBinaryPath(); exeErr == nil {
 				go watchOwnBinary(runCtx, exePath, agentBinaryCheckInterval, server.Quiescent, func() {
 					fmt.Fprintf(stdout, "jit service: the jit binary on disk changed (this process is build %s), exiting while the session is locked so launchd restarts the service on the current build\n", agent.BuildID())
+					// The restart is DEMANDED, not hoped for. A clean exit
+					// trusting KeepAlive was how the 2026-08-17 incident
+					// happened: launchd pended the respawn ("pended nondemand
+					// spawn = inefficient") and the broker stayed dead for 71
+					// minutes. kickstart -k has launchd kill this process and
+					// spawn the new binary, re-reading the plist on the way (so
+					// an upgraded --ttl/--consent takes effect); it cannot hit
+					// the exit-113 dead end because a running service is by
+					// definition bootstrapped. If launchctl itself errors,
+					// endRun's clean exit still happens and KeepAlive remains
+					// the (unreliable) backstop it always was.
+					_, _ = launchctlRun("kickstart", "-k", agentServiceTarget())
 					endRun()
 				})
 			}
@@ -588,7 +619,13 @@ func plistProgramPath(data []byte) (string, bool) {
 	if len(values) == 0 {
 		return "", false
 	}
-	return values[0], true
+	// Unescape what install escaped: a path containing `&` (common in real
+	// directory names, as the install-side comment notes) round-trips through
+	// the plist as `&amp;`, and returning the escaped form made every
+	// comparison and stat against it wrong — agentPlistNeedsRepoint
+	// permanently true, and agentPlistOrphaned calling a healthy install
+	// orphaned because it stat'ed a path that doesn't exist.
+	return xmlUnescape(values[0]), true
 }
 
 // agentPlistNeedsRepoint reports whether the installed plist runs a different
@@ -650,7 +687,13 @@ func installAgentService(ttl time.Duration, consent bool) (plistPath string, run
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0o700); err != nil {
 		return plistPath, false, err
 	}
-	if err := os.WriteFile(plistPath, []byte(plist), 0o600); err != nil {
+	// Temp+rename, not a plain WriteFile: launchd or a concurrent session's
+	// configuredAgentTTL() read can catch a half-written plist otherwise.
+	tmp := plistPath + ".tmp"
+	if err := os.WriteFile(tmp, []byte(plist), 0o600); err != nil {
+		return plistPath, false, err
+	}
+	if err := os.Rename(tmp, plistPath); err != nil {
 		return plistPath, false, err
 	}
 
@@ -667,8 +710,8 @@ func installAgentService(ttl time.Duration, consent bool) (plistPath string, run
 	// bound its socket — a real, observed confusion where `jit service status`
 	// typed right after a successful install said "not running" for the ~2s
 	// launchd took to actually start it. Wait briefly so "installed" also
-	// means "answering."
-	running = waitForAgentSocket(root, 5*time.Second)
+	// means "answering, on this build."
+	running = waitForAgentBuild(root, agentStartWait)
 	return plistPath, running, nil
 }
 
@@ -771,28 +814,25 @@ var agentRestartCmd = &cobra.Command{
 		if readErr != nil && !os.IsNotExist(readErr) {
 			return fmt.Errorf("jit service restart: %w", readErr)
 		}
-		if _, statErr := os.Stat(plistPath); os.IsNotExist(statErr) {
+		if os.IsNotExist(readErr) {
 			// No login item yet (never started, or uninstalled). Rather than
 			// dead-end, create it: restart is the single "get the service
 			// running" command, and the service is meant to always be present.
 			// Default TTL and default (on) consent, since a missing plist has no
 			// configured value to preserve — `jit service ttl <d>` and
-			// `jit service consent off` change them afterward.
-			root, rerr := vaultRootDir()
-			if rerr != nil {
-				return fmt.Errorf("jit service restart: %w", rerr)
-			}
-			if _, _, ierr := installAgentService(agentInstallDefaultTTL, true); ierr != nil {
+			// `jit service consent off` change them afterward. Branching on the
+			// ReadFile error alone (no separate Stat) keeps this race-free
+			// against a concurrent session's install, and installAgentService
+			// already waited for the socket — its result is the answer, a
+			// second wait would only double the worst-case silence.
+			if _, running, ierr := installAgentService(agentInstallDefaultTTL, true); ierr != nil {
 				return fmt.Errorf("jit service restart: %w", ierr)
-			}
-			if !waitForAgentSocket(root, 5*time.Second) {
+			} else if !running {
 				fmt.Fprintln(cmd.OutOrStdout(), hlCmds("Started the background service; it's still coming up, give `jit service status` a few seconds."))
 				return nil
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "Started the background service. The next vault use will prompt Touch ID.")
 			return nil
-		} else if statErr != nil {
-			return fmt.Errorf("jit service restart: %w", statErr)
 		}
 		// bootout + bootstrap (reloadAgentService) restarts a running agent
 		// AND recovers one launchd has dropped (the plist on disk with no live
@@ -833,7 +873,7 @@ var agentRestartCmd = &cobra.Command{
 		// Same wait as install, same reason: "Restarted" must mean the new
 		// process is actually answering, or status contradicts us moments
 		// later.
-		if !waitForAgentSocket(root, 5*time.Second) {
+		if !waitForAgentBuild(root, agentStartWait) {
 			fmt.Fprintln(cmd.OutOrStdout(), hlCmds("Restart requested, the service is still starting up in the background; give `jit service status` a few seconds."))
 			return nil
 		}
@@ -1571,6 +1611,24 @@ var xmlEscaper = strings.NewReplacer(
 	"'", "&apos;",
 )
 
+// xmlUnescape reverses xmlEscape for values read back OUT of a plist.
+// plistStringValues deliberately does not unescape (its literal matches,
+// "--ttl" and durations, carry no entities); a PATH read through
+// plistProgramPath must be unescaped before it is compared or stat'ed.
+// `&amp;` is listed first so an escaped-escape (`&amp;lt;`) resolves the
+// way the escaper produced it.
+func xmlUnescape(s string) string {
+	return xmlUnescaper.Replace(s)
+}
+
+var xmlUnescaper = strings.NewReplacer(
+	"&amp;", "&",
+	"&lt;", "<",
+	"&gt;", ">",
+	"&quot;", `"`,
+	"&apos;", "'",
+)
+
 // agentLogMaxBytes caps agent.log. 5MB is months of ordinary lines and
 // still small enough to open casually; the previous generation is kept in
 // agent.log.1, so a rotation never costs the recent past.
@@ -1694,21 +1752,45 @@ var launchctlRun = func(args ...string) ([]byte, error) {
 // (EIO, launchctl exit 5) — observed on real hardware. The previous install
 // code happened to dodge it by writing the plist between bootout and
 // bootstrap, which gave launchd that beat; doing the two back-to-back exposed
-// it. So retry the bootstrap through the teardown window rather than
-// surfacing a transient race as a hard failure. A non-transient error (bad
-// plist, permissions) is returned on the first try.
+// it. So retry through the teardown window rather than surfacing a transient
+// race as a hard failure — and retry the bootout+bootstrap PAIR, not
+// bootstrap alone: a bootout that genuinely failed leaves every bootstrap
+// answering "already bootstrapped", which bootstrapRaceError classifies as
+// transient, and without a fresh bootout the loop could never converge. A
+// non-transient error (bad plist, permissions) is returned on the first try.
+//
+// A successful bootstrap is followed by a best-effort kickstart, because
+// bootstrap only REGISTERS the job — it does not guarantee a spawn. launchd
+// can defer a RunAtLoad spawn indefinitely: observed 2026-08-17 on real
+// hardware as `pended nondemand spawn = speculative`, runs = 0, twice, 30s+
+// each — and the same machine's KeepAlive equally never respawned a cleanly
+// exited agent, leaving the broker dead for 71 minutes while restart
+// reported success. kickstart is the one launchctl verb that creates an
+// explicit demand; in those experiments it spawned the job instantly, 3 of
+// 3. Its error is ignored the way bootout's is: in the healthy case
+// RunAtLoad has already spawned the process and kickstart merely reports it
+// running. The exit-113 "Could not find service" that got kickstart dropped
+// in 660ce2c cannot recur here — the job was registered one line earlier,
+// and this kickstart never uses -k, so it cannot kill a just-spawned
+// process either.
 func reloadAgentService(plistPath string) ([]byte, error) {
-	_, _ = launchctlRun("bootout", agentServiceTarget())
 	var out []byte
 	var err error
 	for attempt := 0; attempt < 15; attempt++ {
+		if attempt > 0 {
+			time.Sleep(200 * time.Millisecond)
+		}
+		_, _ = launchctlRun("bootout", agentServiceTarget())
 		out, err = launchctlRun("bootstrap", agentDomainTarget(), plistPath)
 		if err == nil || !bootstrapRaceError(out) {
-			return out, err
+			break
 		}
-		time.Sleep(200 * time.Millisecond)
 	}
-	return out, err
+	if err != nil {
+		return out, err
+	}
+	_, _ = launchctlRun("kickstart", agentServiceTarget())
+	return out, nil
 }
 
 // bootstrapRaceError reports whether a failed bootstrap is the transient
@@ -1722,13 +1804,24 @@ func bootstrapRaceError(launchctlOutput []byte) bool {
 		bytes.Contains(l, []byte("service already bootstrapped"))
 }
 
-// waitForAgentSocket polls until an agent answers the socket, or gives up.
-// install/restart use it so their success message never races launchd's
-// actual spawn of the process.
-func waitForAgentSocket(root string, timeout time.Duration) bool {
+// agentStartWait is how long install/restart wait for the just-(re)loaded
+// service to answer before declaring the start unconfirmed. A package var so
+// tests don't spend real wall-clock on the give-up path.
+var agentStartWait = 5 * time.Second
+
+// waitForAgentBuild polls until an agent running THIS build answers the
+// socket, or gives up. install/restart use it so their success message never
+// races launchd's actual spawn — and "the service is now running the current
+// binary" is a statement about the answering process's own BuildID, not
+// about a bare dial succeeding. The distinction is real: during a reload the
+// OLD process can still be draining its shutdown and answering the socket,
+// and a wait that only dialed would declare success on it (every path here
+// has just written or verified a plist pointing at this binary, so build
+// equality is the correct postcondition).
+func waitForAgentBuild(root string, timeout time.Duration) bool {
 	client := agent.NewClient(agent.SocketPath(root))
 	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
-		if client.Reachable() {
+		if st, err := client.Status(); err == nil && st.Build == agent.BuildID() {
 			return true
 		}
 		time.Sleep(100 * time.Millisecond)

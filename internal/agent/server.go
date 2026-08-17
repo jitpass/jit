@@ -368,6 +368,14 @@ type Server struct {
 	events []SessionEvent
 
 	listener net.Listener
+	// socketInfo identifies the socket file THIS server bound, so Close can
+	// tell its own socket from one a later agent has since claimed at the
+	// same path. Without it, a foreground run (or an instance dying in a
+	// reload's teardown window) unlinked the LIVE agent's socket on exit:
+	// that agent kept its session and every FIFO writer, but held an
+	// unlinked inode nothing could dial, so every command reported a healthy
+	// process as crashed until a manual restart booted it out.
+	socketInfo os.FileInfo
 }
 
 // defaultDenialCooldown pauses automatic re-prompts after a declined
@@ -427,6 +435,9 @@ func (s *Server) Listen() error {
 		_ = l.Close()
 		return fmt.Errorf("chmod %s: %w", s.socketPath, err)
 	}
+	if fi, err := os.Lstat(s.socketPath); err == nil {
+		s.socketInfo = fi
+	}
 	s.listener = l
 	return nil
 }
@@ -482,13 +493,19 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 }
 
-// Close shuts down the listener and removes the socket file.
+// Close shuts down the listener and removes the socket file — but only if
+// the path still holds the socket this server bound. A later agent may have
+// claimed the path (Listen replaces stale sockets); removing ITS live socket
+// on our way out is how a briefly-run second agent used to strand the real
+// one behind an unlinked inode.
 func (s *Server) Close() error {
 	var err error
 	if s.listener != nil {
 		err = s.listener.Close()
 	}
-	_ = os.Remove(s.socketPath)
+	if fi, statErr := os.Lstat(s.socketPath); statErr == nil && s.socketInfo != nil && os.SameFile(fi, s.socketInfo) {
+		_ = os.Remove(s.socketPath)
+	}
 	return err
 }
 
