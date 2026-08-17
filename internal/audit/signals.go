@@ -492,5 +492,23 @@ func LooksLikeUnresolvedReference(v string) bool {
 	if v == "" {
 		return false
 	}
-	return unresolvedReferenceValue.MatchString(v)
+	return IsOpSecretReference(v) || unresolvedReferenceValue.MatchString(v)
+}
+
+// IsOpSecretReference reports whether v is a 1Password secret reference
+// (op://<vault>/<item>/<field>, optionally with a section segment): a
+// value the 1Password CLI resolves at runtime, holding no secret at
+// rest — the `op run` workflow writes exactly these into .env files, so
+// they were already suppressed by the entropy/placeholder gates by
+// accident; this makes it principled, through the same unresolved-
+// reference rule as ${VAR}. Shape check only, mirroring
+// internal/onepassword.ValidateRef without importing it — this package
+// stays portable and audit-only.
+func IsOpSecretReference(v string) bool {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(v), "op://")
+	if !ok {
+		return false
+	}
+	segs := strings.Split(rest, "/")
+	return len(segs) >= 3 && segs[0] != "" && segs[1] != "" && segs[len(segs)-1] != ""
 }

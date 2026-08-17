@@ -13,7 +13,8 @@ jit migrate path <file-or-dir>... [flags]
 ### Options
 
 ```
-      --mount   for a loose secret file, keep it live at its path as a mount (real value to jit run grants, a decoy otherwise) instead of replacing it with a pointer; also required to protect a file that mixes a secret with other content
+      --mount          for a loose secret file, keep it live at its path as a mount (real value to jit run grants, a decoy otherwise) instead of replacing it with a pointer; also required to protect a file that mixes a secret with other content
+      --no-1password   store plain copies even when a value already lives in 1Password (default: matching values are vaulted as op:// references)
 ```
 
 ### Options inherited from parent commands

@@ -36,6 +36,7 @@ jit vault
 * [jit vault history](jit_vault_history.md)	 - List a secret's archived previous versions
 * [jit vault import](jit_vault_import.md)	 - Restore secrets from a jit vault export file
 * [jit vault init](jit_vault_init.md)	 - Set up the local vault (generates the master encryption key)
+* [jit vault link](jit_vault_link.md)	 - Store a 1Password reference instead of a value
 * [jit vault list](jit_vault_list.md)	 - List stored secret paths (names only, never values)
 * [jit vault orphans](jit_vault_orphans.md)	 - List (and with --prune delete) secrets no profile references
 * [jit vault prune](jit_vault_prune.md)	 - Delete stale encrypted file backups, keeping each file's newest

@@ -127,7 +127,12 @@ The honest comparison is about which problem you are solving:
   (`op://…`). jit works the other way around: it stays local, finds the
   plaintext already on your disk, and rewrites the files for you through each
   tool's native credential mechanism. Sensible setup: 1Password for shared
-  team secrets, jit underneath for the copies that land on your machine. More
+  team secrets, jit underneath for the copies that land on your machine. The
+  two also compose, automatically: with the 1Password CLI installed,
+  `jit migrate` stores a value that already lives in 1Password as its
+  `op://` reference rather than a copy, and `jit vault link` does the same
+  for one secret by hand, see
+  [Use secrets that live in 1Password](./vault/1password.md). More
   detail in [Why jit](./why-jit.md#if-you-already-use-1password-or-another-password-manager).
 - **`systemd-creds`** does the equivalent job on Linux, TPM-backed, and if you
   are on Linux you should use it. It is not available on macOS, which is the

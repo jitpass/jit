@@ -31,8 +31,17 @@ type Vault struct {
 	KeyWrapper  KeyWrapper
 	RecipientID string
 
-	// OnSet, when non-nil, is called with every secret this Vault stores,
-	// after the write succeeds. It exists so a caller can act on the set of
+	// RefResolver, when non-nil, is what Get uses to resolve a
+	// reference-kind envelope (envelope.Storage) into the secret bytes it
+	// names. Nil is a valid configuration meaning "this surface never
+	// resolves": Get then fails a reference read with ErrRefUnresolvable
+	// instead of blocking on an external tool. See refresolver.go.
+	RefResolver RefResolver
+
+	// OnSet, when non-nil, is called with every secret VALUE this Vault
+	// stores, after the write succeeds (reference writes carry no
+	// credential and never fire it — except through LinkOnSet's intercept,
+	// which fires it with the intercepted plaintext; see below). It exists so a caller can act on the set of
 	// credentials IT just vaulted without every writer having to hand them
 	// back: `jit migrate` uses it to find and remove the copies AI agents
 	// keep of the values it has just moved (internal/migrate/agentcache.go),
@@ -46,6 +55,24 @@ type Vault struct {
 	// the trust boundary, where a callback in the writer's own process would
 	// prove nothing.
 	OnSet func(path string, value []byte)
+
+	// LinkOnSet, when non-nil, is consulted by SetWithMeta before a literal
+	// value is sealed: returning (ref, true) stores that op:// reference at
+	// the path instead of the value — SetReference semantics, the caller's
+	// meta untouched, so the secret keeps its migrator's class and only the
+	// AAD-bound storage marker records the linkedness. It exists for the
+	// same reason OnSet does: `jit migrate` dedupes what it vaults against
+	// the user's 1Password (design/1password-adapter.md), and the
+	// alternative was threading a matcher through nineteen Apply*
+	// signatures. Paths in jit's own bookkeeping namespaces
+	// (IsReservedPath — whole-file backups, history) are never offered to
+	// the hook: they are jit's copies, not credentials to dedupe.
+	//
+	// On an intercepted write, OnSet still fires with the ORIGINAL
+	// plaintext, never the reference — OnSet's consumer hunts stray copies
+	// of the real value, which existed on disk regardless of where the
+	// vault now points.
+	LinkOnSet func(path string, value []byte, meta Meta) (ref string, ok bool)
 }
 
 func (v *Vault) vaultDir() string {
@@ -109,7 +136,46 @@ func (v *Vault) Set(path string, value []byte) error {
 // still that key, born where it was born. A genuinely new path gets
 // CreatedUnix == UpdatedUnix and takes its provenance from meta (with Origin,
 // when present, stamped as seen now).
+//
+// The storage marker does NOT rotate like provenance: SetWithMeta writes
+// a literal-value envelope, so a literal Set over a linked path
+// (see SetReference) deliberately turns the pointer back into a value —
+// the caller explicitly replaced it. The one exception is LinkOnSet:
+// when that hook claims the write, the value is stored as the op://
+// reference it returned instead (see the field's doc comment).
 func (v *Vault) SetWithMeta(path string, value []byte, meta Meta) error {
+	if v.LinkOnSet != nil && !IsReservedPath(path) {
+		if ref, ok := v.LinkOnSet(path, value, meta); ok {
+			if err := v.setEnvelope(path, []byte(ref), meta, StorageOpRef); err != nil {
+				return err
+			}
+			if v.OnSet != nil {
+				v.OnSet(path, value)
+			}
+			return nil
+		}
+	}
+	return v.setEnvelope(path, value, meta, "")
+}
+
+// SetReference stores ref (a 1Password op:// secret reference) at path as
+// a reference-kind envelope: encrypted, provenance-stamped, and rotated
+// exactly like any secret, but marked (AAD-bound, see envelope.Storage)
+// so Get resolves it through the Vault's RefResolver instead of returning
+// it. The reference is deliberately sealed like a value — an op:// URI
+// names the user's 1Password credential map, and gating its unwrap is
+// what keeps per-process consent meaningful for linked secrets.
+//
+// SetReference validates nothing about ref beyond the caller's own
+// checks: whether it resolves is the resolver's business (the CLI's
+// `jit vault link` trial-resolves before writing).
+func (v *Vault) SetReference(path, ref string, meta Meta) error {
+	return v.setEnvelope(path, []byte(ref), meta, StorageOpRef)
+}
+
+// setEnvelope is SetWithMeta and SetReference's shared core; storage says
+// what the payload is (see envelope.Storage).
+func (v *Vault) setEnvelope(path string, value []byte, meta Meta, storage string) error {
 	dest, err := sanitizeSecretPath(v.vaultDir(), path)
 	if err != nil {
 		return err
@@ -146,7 +212,7 @@ func (v *Vault) SetWithMeta(path string, value []byte, meta Meta) error {
 	}
 	defer wipe(dek)
 
-	sealedPayload, err := seal(dek, value, envelopeAAD(path, envelopeVersion, created, now, class, groupID, origin))
+	sealedPayload, err := seal(dek, value, envelopeAAD(path, envelopeVersion, created, now, class, groupID, origin, storage))
 	if err != nil {
 		return fmt.Errorf("encrypting secret: %w", err)
 	}
@@ -177,6 +243,7 @@ func (v *Vault) SetWithMeta(path string, value []byte, meta Meta) error {
 		GroupID:        groupID,
 		Origin:         origin,
 		OriginSeenUnix: originSeen,
+		Storage:        storage,
 		Recipients: map[string]string{
 			v.RecipientID: hex.EncodeToString(wrappedDEK),
 		},
@@ -191,8 +258,12 @@ func (v *Vault) SetWithMeta(path string, value []byte, meta Meta) error {
 		return err
 	}
 	// After the write succeeds, never before: a caller acting on "what did I
-	// just vault" must not be told about a secret that failed to land.
-	if v.OnSet != nil {
+	// just vault" must not be told about a secret that failed to land. And
+	// only for VALUES: an op:// reference is not a credential, so a
+	// reference write reports nothing here — SetWithMeta's link path
+	// reports the plaintext it intercepted itself, and a direct
+	// SetReference has no plaintext to report.
+	if v.OnSet != nil && storage == "" {
 		v.OnSet(path, value)
 	}
 	return nil
@@ -220,11 +291,48 @@ func (v *Vault) readEnvelope(path string) (envelope, error) {
 	return env, nil
 }
 
-// Get decrypts and returns the secret stored at path.
+// Get decrypts and returns the secret stored at path. A reference-kind
+// envelope (envelope.Storage) is resolved through RefResolver, so every
+// caller receives the secret VALUE and cannot tell a linked secret from a
+// stored one; a Vault built without a resolver fails such a read with
+// ErrRefUnresolvable instead. Export is the one caller that must NOT
+// resolve (an export is a vault backup, not a 1Password read) and uses
+// GetStored directly.
 func (v *Vault) Get(path string) ([]byte, error) {
-	env, err := v.readEnvelope(path)
+	plaintext, storage, err := v.GetStored(path)
 	if err != nil {
 		return nil, err
+	}
+	switch storage {
+	case "":
+		return plaintext, nil
+	case StorageOpRef:
+		if v.RefResolver == nil {
+			wipe(plaintext)
+			return nil, fmt.Errorf("secret %s: %w", path, ErrRefUnresolvable)
+		}
+		resolved, err := v.RefResolver.ResolveRef(string(plaintext))
+		wipe(plaintext)
+		if err != nil {
+			return nil, fmt.Errorf("resolving %s: %w", path, err)
+		}
+		return resolved, nil
+	default:
+		// Fail closed on a storage kind this build doesn't know, exactly
+		// like the version gate: returning the payload would hand a caller
+		// expecting a credential some future marker's raw pointer.
+		wipe(plaintext)
+		return nil, fmt.Errorf("secret %s has storage kind %q, newer than this jit understands, upgrade jit to read it", path, storage)
+	}
+}
+
+// GetStored decrypts and returns the payload stored at path exactly as
+// stored, plus its storage marker, never touching RefResolver — Get's
+// core, and Export's non-resolving read.
+func (v *Vault) GetStored(path string) ([]byte, string, error) {
+	env, err := v.readEnvelope(path)
+	if err != nil {
+		return nil, "", err
 	}
 
 	// The AAD the payload must open under is decided by the envelope's own
@@ -238,22 +346,23 @@ func (v *Vault) Get(path string) ([]byte, error) {
 	switch env.Version {
 	case envelopeVersionAADLess:
 		// v1: no AAD, no metadata. Readable forever.
-	case envelopeVersionMetaOnly, envelopeVersion:
-		// v2 and v3 both bind their metadata into the AAD; envelopeAAD
+	case envelopeVersionMetaOnly, envelopeVersionProvenance, envelopeVersion:
+		// v2, v3, and v4 all bind their metadata into the AAD; envelopeAAD
 		// reconstructs the exact shape the stored version sealed under
-		// (v3 appends class/group/origin, which are empty on a v2 file).
-		aad = envelopeAAD(path, env.Version, env.CreatedUnix, env.UpdatedUnix, env.Class, env.GroupID, env.Origin)
+		// (v3 appends class/group/origin, v4 adds storage — all empty on
+		// the versions that predate them).
+		aad = envelopeAAD(path, env.Version, env.CreatedUnix, env.UpdatedUnix, env.Class, env.GroupID, env.Origin, env.Storage)
 	default:
-		return nil, fmt.Errorf("secret %s has envelope version %d, newer than this jit understands (max %d), upgrade jit to read it", path, env.Version, envelopeVersion)
+		return nil, "", fmt.Errorf("secret %s has envelope version %d, newer than this jit understands (max %d), upgrade jit to read it", path, env.Version, envelopeVersion)
 	}
 
 	wrappedHex, err := env.wrappedDEKFor(v.RecipientID, path)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	wrappedDEK, err := hex.DecodeString(wrappedHex)
 	if err != nil {
-		return nil, fmt.Errorf("corrupt envelope %s: invalid recipient encoding: %w", path, err)
+		return nil, "", fmt.Errorf("corrupt envelope %s: invalid recipient encoding: %w", path, err)
 	}
 	// Payload decoded BEFORE unwrapKey: that call is where a Touch
 	// ID/passcode prompt can fire, and a corrupt envelope should fail
@@ -261,20 +370,20 @@ func (v *Vault) Get(path string) ([]byte, error) {
 	// watch turn into an error.
 	sealedPayload, err := hex.DecodeString(env.Payload)
 	if err != nil {
-		return nil, fmt.Errorf("corrupt envelope %s: invalid payload encoding: %w", path, err)
+		return nil, "", fmt.Errorf("corrupt envelope %s: invalid payload encoding: %w", path, err)
 	}
 
 	dek, err := v.unwrapKey(wrappedDEK, path, env.Class)
 	if err != nil {
-		return nil, fmt.Errorf("unwrapping data encryption key: %w", err)
+		return nil, "", fmt.Errorf("unwrapping data encryption key: %w", err)
 	}
 	defer wipe(dek)
 
 	plaintext, err := open(dek, sealedPayload, aad)
 	if err != nil {
-		return nil, fmt.Errorf("decrypting %s: %w", path, err)
+		return nil, "", fmt.Errorf("decrypting %s: %w", path, err)
 	}
-	return plaintext, nil
+	return plaintext, env.Storage, nil
 }
 
 // WrappedDEK returns the wrapped data key this device would use to open the
@@ -321,6 +430,12 @@ type SecretInfo struct {
 	GroupID        string
 	Origin         string
 	OriginSeenUnix int64
+	// Storage is the envelope's payload-kind marker ("" for a literal
+	// value, StorageOpRef for a 1Password reference) — what lets listings
+	// tag a linked secret without decrypting anything. Like the rest of
+	// Info it reports what the file claims; the AAD check that keeps the
+	// claim honest runs in Get.
+	Storage string
 }
 
 // Verify checks that the secret at path is structurally intact and readable
@@ -344,7 +459,7 @@ func (v *Vault) Verify(path string) error {
 	// "corruption" that isn't corruption at all, so name it as such rather
 	// than letting it read as a damaged file.
 	switch env.Version {
-	case envelopeVersionAADLess, envelopeVersionMetaOnly, envelopeVersion:
+	case envelopeVersionAADLess, envelopeVersionMetaOnly, envelopeVersionProvenance, envelopeVersion:
 	default:
 		return fmt.Errorf("secret %s has envelope version %d, newer than this jit understands (max %d), upgrade jit to read it", path, env.Version, envelopeVersion)
 	}
@@ -386,6 +501,7 @@ func (v *Vault) Info(path string) (SecretInfo, error) {
 		GroupID:        env.GroupID,
 		Origin:         env.Origin,
 		OriginSeenUnix: env.OriginSeenUnix,
+		Storage:        env.Storage,
 	}, nil
 }
 

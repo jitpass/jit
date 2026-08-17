@@ -23,6 +23,7 @@ import (
 	"github.com/jitpass/jit/internal/guard"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
+	"github.com/jitpass/jit/internal/onepassword"
 	"github.com/jitpass/jit/internal/vault"
 	"github.com/jitpass/jit/internal/wrap"
 )
@@ -32,6 +33,61 @@ var (
 	migrateYes    bool
 	migrateOnly   []string
 	migrateMount  bool
+	// migrateNo1Password opts OUT of the 1Password link dedupe
+	// (design/1password-adapter.md): when op is installed, migrate stores
+	// values that already live in 1Password as references by default, and
+	// this flag restores plain copies. Opt-out, not opt-in — installing
+	// and signing in to `op` was the opt-in.
+	migrateNo1Password bool
+)
+
+// opInventory is what the dedupe needs from onepassword.Index, as an
+// interface so tests can pin a fake index without a real `op`.
+type opInventory interface {
+	RefFor(value []byte) (onepassword.IndexEntry, bool)
+	Items() int
+}
+
+// newOpLinkHook builds the vault.LinkOnSet migrate installs for the
+// 1Password dedupe: a value that already IS an op:// reference links as
+// itself (a .env kept for `op run` needs no index, and vaulting the
+// literal would hand `jit run` an unresolvable string); anything else
+// links iff its bytes match a concealed 1Password field. ix may be nil —
+// the enumeration failed — and verbatim links still work. The stored
+// reference is the rename-proof ID form; the recorded row carries the
+// name form for the mutation log.
+func newOpLinkHook(ix opInventory, linked *[]opLinkedRow, offered *int) func(path string, value []byte, meta vault.Meta) (string, bool) {
+	return func(path string, value []byte, _ vault.Meta) (string, bool) {
+		*offered++
+		if s := string(value); onepassword.ValidateRef(s) == nil {
+			*linked = append(*linked, opLinkedRow{path: path, ref: s})
+			return s, true
+		}
+		if ix == nil {
+			return "", false
+		}
+		e, ok := ix.RefFor(value)
+		if !ok {
+			return "", false
+		}
+		*linked = append(*linked, opLinkedRow{path: path, ref: e.NameRef})
+		return e.IDRef, true
+	}
+}
+
+// migrateOpInstalled/migrateOpInventory are the 1Password seams: the
+// plan's announcement line keys off the cheap PATH probe, the post-confirm
+// dedupe off the real enumeration. Vars so tests pin both — the plan must
+// render identically on machines with and without op installed.
+var (
+	migrateOpInstalled = onepassword.Installed
+	migrateOpInventory = func() (opInventory, error) {
+		ix, err := onepassword.New().Inventory()
+		if err != nil {
+			return nil, err
+		}
+		return ix, nil
+	}
 )
 
 // migrateCategories are the --only tokens real (non---dry-run) migrate
@@ -214,7 +270,12 @@ var migrateCmd = &cobra.Command{
 		"naming a file is itself the decision to convert it. Every run prints the full\n" +
 		"plan and asks for confirmation before touching anything, and every modified\n" +
 		"file is backed up (encrypted, into the vault) first, `jit migrate undo <path>`\n" +
-		"restores a migrated file from that backup.",
+		"restores a migrated file from that backup.\n\n" +
+		"With the 1Password CLI installed and signed in, a value that already lives\n" +
+		"in 1Password is vaulted as an op:// reference instead of a copy (one\n" +
+		"authenticated check per run, after you confirm), and a value that already IS\n" +
+		"an op:// reference stays one; rotate in 1Password and jit follows.\n" +
+		"--no-1password stores plain copies instead.",
 	Example: "  jit migrate                     # protect everything the scan found\n" +
 		"  jit migrate ~/proj/.env         # migrate just one file\n" +
 		"  jit migrate ~/proj              # walk one project for .env/tfvars/mcp/npmrc\n" +
@@ -437,6 +498,18 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 	printSkippedFindings(cmd.OutOrStdout(), home, len(historyKeyOnly), "in "+pluralWord(len(historyKeyOnly), "a history file", "history files")+" holding private key material", historyKeyOnly,
 		"jit only matched the -----BEGIN line; the key body is on the lines around it, so redacting would leave the key behind and make the file look clean. Regenerate the key, then delete those lines by hand.")
 
+	// The 1Password announcement is part of the plan the user confirms
+	// against (and --dry-run's, same rendering), but the plan never
+	// contacts op: the PATH probe is the whole test here, because the plan
+	// must stay free of prompts — 1Password's authorization dialog no less
+	// than Touch ID. The real check runs after [y/N].
+	if migrateOpInstalled() && !migrateNo1Password {
+		w := cmd.OutOrStdout()
+		fmt.Fprintln(w, "1Password CLI detected: values already stored there are linked, not")
+		fmt.Fprintln(w, "copied (--no-1password to copy).")
+		fmt.Fprintln(w)
+	}
+
 	if migrateDryRun {
 		out := cmd.OutOrStdout()
 		fmt.Fprintln(out)
@@ -491,6 +564,31 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 		return false, fmt.Errorf("jit migrate: %w", err)
 	}
 	registryPath := mount.RegistryPath(root)
+
+	// 1Password dedupe (design/1password-adapter.md): one authenticated
+	// enumeration up front, then every value about to be vaulted is offered
+	// to the vault's LinkOnSet hook — a byte-exact match, or a value that
+	// already IS an op:// reference (a .env kept for `op run`), stores the
+	// reference instead of a copy. Fails open on purpose: a signed-out CLI
+	// or a locked app degrades to today's literal copies, reported once in
+	// the mutation log. Runs after [y/N] and Touch ID, never at plan time —
+	// the plan's announcement line above is a PATH probe only.
+	var opLinked []opLinkedRow
+	var opOffered, opItemsChecked int
+	var opSkipNote string
+	if migrateOpInstalled() && !migrateNo1Password {
+		fmt.Fprintln(cmd.ErrOrStderr(), "checking 1Password for already-stored values (its prompt may appear)...")
+		ix, invErr := migrateOpInventory()
+		if invErr != nil {
+			opSkipNote = invErr.Error()
+		} else {
+			opItemsChecked = ix.Items()
+		}
+		// The hook stays installed even when the enumeration failed:
+		// verbatim op:// values need no index, and vaulting one as a
+		// literal would hand `jit run` an unresolvable string.
+		v.LinkOnSet = newOpLinkHook(ix, &opLinked, &opOffered)
+	}
 
 	// producedMount records whether this run registered ANY live mount, so the
 	// closing reportAgentStatus knows to send the running service the Refresh
@@ -1039,6 +1137,8 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 		fmt.Fprintln(out)
 	}
 
+	printOpLinkResult(out, opLinked, opOffered, opItemsChecked, opSkipNote)
+
 	// Best-effort: an unreadable marker means no nudge, never a failed
 	// migrate — everything above already succeeded.
 	if _, recorded, err := vault.LastExport(root); err == nil && !recorded {
@@ -1053,6 +1153,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered) (bool, error) 
 	// file it rewrites through this same vault, and those writes must not feed
 	// back into the needle set (nor matter after collection is done).
 	v.OnSet = nil
+	v.LinkOnSet = nil // the sweep's own backups must never be offered for linking
 	cleanup, cleanErr := migrate.CleanAgentCaches(v, home, vaultedSecrets)
 
 	summary.print(out)
@@ -1768,6 +1869,11 @@ func init() {
 	const mountUsage = "for a loose secret file, keep it live at its path as a mount (real value to jit run grants, a decoy otherwise) instead of replacing it with a pointer; also required to protect a file that mixes a secret with other content"
 	migrateCmd.Flags().BoolVar(&migrateMount, "mount", false, mountUsage)
 	migratePathCmd.Flags().BoolVar(&migrateMount, "mount", false, mountUsage)
+	// Local like --mount: undo/remove never vault a new value, so there is
+	// nothing for them to link.
+	const no1pUsage = "store plain copies even when a value already lives in 1Password (default: matching values are vaulted as op:// references)"
+	migrateCmd.Flags().BoolVar(&migrateNo1Password, "no-1password", false, no1pUsage)
+	migratePathCmd.Flags().BoolVar(&migrateNo1Password, "no-1password", false, no1pUsage)
 
 	migrateCmd.AddCommand(migratePathCmd)
 	rootCmd.AddCommand(migrateCmd)

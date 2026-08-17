@@ -20,6 +20,10 @@ var (
 	doctorOrphans bool
 	doctorWrap    bool
 	doctorStrict  bool
+	// doctor1Password opts into the explicit resolve sweep of every
+	// 1Password-linked secret — see doctor1password.go for why it can
+	// never be the default.
+	doctor1Password bool
 )
 
 // doctorResult is jit doctor's --format json shape. Problems and Warnings
@@ -43,13 +47,21 @@ type doctorResult struct {
 	// breaking a consumer. It was missing while the doc comment above was
 	// promising stability, which is a promise nothing could keep: the only
 	// way to keep it was never to add a field, and this commit adds three.
-	SchemaVersion   int            `json:"schema_version"`
-	Tool            doctorTool     `json:"tool"`
-	ProfilesChecked int            `json:"profiles_checked"`
-	SecretsChecked  int            `json:"secrets_checked"`
-	OK              bool           `json:"ok"`
-	Problems        []checkFinding `json:"problems"`
-	Warnings        []checkFinding `json:"warnings"`
+	SchemaVersion   int        `json:"schema_version"`
+	Tool            doctorTool `json:"tool"`
+	ProfilesChecked int        `json:"profiles_checked"`
+	SecretsChecked  int        `json:"secrets_checked"`
+	// OpLinksChecked/OpLinksOK report the --1password resolve sweep;
+	// absent when it did not run (additive, no schema bump — a consumer
+	// that never asked for the sweep never sees them). omitempty also
+	// drops op_links_ok when every link failed: the 1password_link
+	// problems are the authoritative failure list, so read successes as
+	// checked minus those.
+	OpLinksChecked int            `json:"op_links_checked,omitempty"`
+	OpLinksOK      int            `json:"op_links_ok,omitempty"`
+	OK             bool           `json:"ok"`
+	Problems       []checkFinding `json:"problems"`
+	Warnings       []checkFinding `json:"warnings"`
 }
 
 // doctorSchemaVersion is bumped when a field is removed or its meaning
@@ -109,6 +121,12 @@ var doctorCmd = &cobra.Command{
 		"complaint that is only true of the shell you happen to be in — a CI job\n" +
 		"that doesn't put the shim dir on PATH is not a broken machine. --strict\n" +
 		"makes those count too.\n\n" +
+		"When vault secrets are linked to 1Password, doctor also checks (prompt-free)\n" +
+		"that the op CLI is installed and signature-verified. --1password goes\n" +
+		"further and test-resolves every link, so a reference broken by a deleted or\n" +
+		"renamed item surfaces here instead of at the moment a tool needed it; that\n" +
+		"sweep costs a Touch ID and 1Password may show its own prompt, which is why\n" +
+		"it never runs by default.\n\n" +
 		"Exit 2 is the FINDINGS code, matching `jit scan --fail-on`; exit 1 means\n" +
 		"doctor itself couldn't run (a bad flag, an unreadable vault root), which a\n" +
 		"pipeline needs to tell apart from a machine that is genuinely broken.\n\n" +
@@ -198,6 +216,21 @@ var doctorCmd = &cobra.Command{
 			systemFindings, wrapOK := gatherSystemFindings(root, cwd, v)
 			outcome.Findings = append(outcome.Findings, systemFindings...)
 			outcome.OKChecks = wrapOK
+			opFindings, opOK := onePasswordFindings(v)
+			outcome.Findings = append(outcome.Findings, opFindings...)
+			outcome.OKChecks = append(outcome.OKChecks, opOK...)
+		}
+
+		// The explicit resolve sweep, only ever on request: it costs a
+		// Touch ID (the stored references are sealed like values) and can
+		// pop 1Password's own prompt — see doctor1password.go.
+		if doctor1Password {
+			swFindings, checked, okLinks, err := onePasswordSweep(cmd.ErrOrStderr(), v)
+			if err != nil {
+				return fmt.Errorf("jit doctor: %w", err)
+			}
+			outcome.Findings = append(outcome.Findings, swFindings...)
+			outcome.OpLinksChecked, outcome.OpLinksOK = checked, okLinks
 		}
 
 		if !doctorOrphans {
@@ -294,9 +327,11 @@ func renderDoctorOutcome(cmd *cobra.Command, outcome checkOutcome) error {
 			// ok stays keyed to hard problems whatever --strict does to the
 			// exit code: the field answers "is anything broken", and a flag
 			// about pipeline strictness must not change what a fact means.
-			OK:       len(problems) == 0,
-			Problems: problems,
-			Warnings: warnings,
+			OpLinksChecked: outcome.OpLinksChecked,
+			OpLinksOK:      outcome.OpLinksOK,
+			OK:             len(problems) == 0,
+			Problems:       problems,
+			Warnings:       warnings,
 		}); err != nil {
 			return fmt.Errorf("jit doctor: %w", err)
 		}
@@ -379,6 +414,19 @@ func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings []
 		summary := fmt.Sprintf("%s, %s resolve cleanly",
 			countWord(outcome.ProfilesChecked, "profile", "profiles"),
 			countWord(outcome.SecretsChecked, "secret reference", "secret references"))
+		// The sweep's tally joins the verdict only when it ran: in this
+		// branch there are no problems, so checked == ok and the clause is
+		// a plain count. A run with no links says so rather than nothing —
+		// the user explicitly asked, and silence would read as "not run".
+		if doctor1Password {
+			if outcome.OpLinksChecked > 0 {
+				summary += fmt.Sprintf(" · %s %s",
+					countWord(outcome.OpLinksOK, "1Password link", "1Password links"),
+					pluralWord(outcome.OpLinksOK, "resolves", "resolve"))
+			} else {
+				summary += " · no 1Password links to check"
+			}
+		}
 		if len(warnings) > 0 {
 			summary += fmt.Sprintf(" · %s above", countWord(len(warnings), "warning", "warnings"))
 		}
@@ -636,6 +684,14 @@ func findingLabel(f checkFinding) string {
 		return "[storage format]"
 	case kindAudit:
 		return "[audit]"
+	case kind1Password:
+		return "[1password]"
+	case kind1PasswordLink:
+		// Names what was examined on the header, as "[mount: stale]" does:
+		// these come from the explicit --1password resolve sweep, and a bare
+		// "[1password]" beside the automatic section's findings would read
+		// as the same check twice.
+		return "[1password: link]"
 	case kindMCP:
 		return "[mcp]"
 	case kindInstall:
@@ -711,6 +767,7 @@ func init() {
 	doctorCmd.Flags().BoolVar(&doctorOrphans, "orphans", false, "list each unreferenced vault secret; without it the count alone is reported")
 	doctorCmd.Flags().BoolVar(&doctorWrap, "wrap", false, "check only the wrapped-tool shims, without opening the vault (replaces `jit wrap doctor`)")
 	doctorCmd.Flags().BoolVar(&doctorStrict, "strict", false, "exit non-zero on advisory warnings too, for a pipeline that wants them to gate")
+	doctorCmd.Flags().BoolVar(&doctor1Password, "1password", false, "also test-resolve every 1Password-linked secret (Touch ID, and 1Password may prompt); a dead link becomes a finding")
 	doctorCmd.MarkFlagsMutuallyExclusive("wrap", "profile")
 	doctorCmd.MarkFlagsMutuallyExclusive("wrap", "orphans")
 	_ = doctorCmd.RegisterFlagCompletionFunc("format", completeOutputFormat)

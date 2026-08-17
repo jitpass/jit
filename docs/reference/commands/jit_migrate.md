@@ -45,6 +45,12 @@ plan and asks for confirmation before touching anything, and every modified
 file is backed up (encrypted, into the vault) first, `jit migrate undo <path>`
 restores a migrated file from that backup.
 
+With the 1Password CLI installed and signed in, a value that already lives
+in 1Password is vaulted as an op:// reference instead of a copy (one
+authenticated check per run, after you confirm), and a value that already IS
+an op:// reference stays one; rotate in 1Password and jit follows.
+--no-1password stores plain copies instead.
+
 ```
 jit migrate <file-or-dir>... [flags]
 ```
@@ -66,6 +72,7 @@ jit migrate <file-or-dir>... [flags]
 ```
       --dry-run        preview the plan without changing anything
       --mount          for a loose secret file, keep it live at its path as a mount (real value to jit run grants, a decoy otherwise) instead of replacing it with a pointer; also required to protect a file that mixes a secret with other content
+      --no-1password   store plain copies even when a value already lives in 1Password (default: matching values are vaulted as op:// references)
       --only strings   scope a run to just these comma-separated categories: env,tfvars,k8s-secret,shell,history,mcp,aws,kube,terraform,docker,git,gcp,sops,npmrc,netrc,pypirc,loose (default: all)
   -y, --yes            skip the confirmation prompt and proceed immediately
 ```

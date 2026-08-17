@@ -361,7 +361,15 @@ type Finding struct {
 	// Deliberately NOT serialized, on EndLine's contract: key_name already
 	// carries the human name of the kind for NDJSON consumers, so this
 	// stays a rendering input until a consumer asks for more.
-	KeyKind                  string  `json:"-"`
+	KeyKind string `json:"-"`
+	// OpRefCount counts this file's active values that are 1Password
+	// secret references (op://…). Not exposures — IsOpSecretReference is
+	// part of the unresolved-reference suppression — but worth one report
+	// note on a file that IS flagged for other reasons: `jit migrate`
+	// links these rather than copying, so an `op run` file converts
+	// cleanly. EndLine's contract: a rendering input, not NDJSON schema,
+	// until a consumer asks.
+	OpRefCount               int     `json:"-"`
 	ValuePreview             *string `json:"value_preview"`
 	ProductionIndicatorMatch bool    `json:"production_indicator_match"`
 	PublicIPMatch            *string `json:"public_ip_match"`
