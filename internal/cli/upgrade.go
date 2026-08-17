@@ -526,21 +526,38 @@ func sudoCommand(args ...string) *exec.Cmd {
 // Reloading then re-execs the old file and leaves the user upgraded in every
 // way except the service that holds their key — while this function's whole
 // contract is that it "points the service at the binary now on disk."
-// It returns whether the service came back on this build within the start
-// wait: the upgrade path is the exact trigger of the 2026-08-17 incident
-// (binary swapped, launchd never respawned), and "now on v<latest>" printed
-// off a discarded result was one of the surfaces that reported success over
-// a dead broker.
+// It returns whether the service came back within the start wait: the
+// upgrade path is the exact trigger of the 2026-08-17 incident (binary
+// swapped, launchd never respawned), and "now on v<latest>" printed off a
+// discarded result was one of the surfaces that reported success over a dead
+// broker.
+//
+// "Came back" here means MOVED OFF the build that was running, not "matches
+// this process's build" — the postcondition every other restart caller uses.
+// This is the one caller for which those differ: the process running this
+// code is the OLD binary (the new one is what was just written to disk and
+// what the service will exec), so build equality can never hold, and
+// demanding it made every successful upgrade wait out the full timeout and
+// then report failure over a healthy service.
 func restartServiceOntoCurrentBinary() (running bool, err error) {
 	plistPath, err := agentPlistPath()
 	if err != nil {
 		return false, err
 	}
+	root, err := vaultRootDir()
+	if err != nil {
+		return false, err
+	}
+	// Captured BEFORE anything restarts: the build we need the service to
+	// stop being. Empty when nothing is answering, which makes any later
+	// answer proof enough.
+	ready := movedOffBuild(runningAgentBuild(root))
+
 	if _, statErr := os.Stat(plistPath); errors.Is(statErr, os.ErrNotExist) {
 		// No plist to preserve a setting from, so install with the defaults
 		// (default TTL, consent on). An existing plist takes a branch below,
 		// which keeps whatever TTL and consent state it already has baked in.
-		_, running, ierr := installAgentService(agentInstallDefaultTTL, true)
+		_, running, ierr := installAgentServiceReady(agentInstallDefaultTTL, true, ready)
 		return running, ierr
 	} else if statErr != nil {
 		return false, statErr
@@ -554,17 +571,13 @@ func restartServiceOntoCurrentBinary() (running bool, err error) {
 		if d, ok := configuredAgentTTL(); ok {
 			ttl = d
 		}
-		_, running, ierr := installAgentService(ttl, configuredAgentConsent())
+		_, running, ierr := installAgentServiceReady(ttl, configuredAgentConsent(), ready)
 		return running, ierr
 	}
 	if out, err := reloadAgentService(plistPath); err != nil {
 		return false, fmt.Errorf("%w (%s)", err, strings.TrimSpace(string(out)))
 	}
-	root, err := vaultRootDir()
-	if err != nil {
-		return false, err
-	}
-	return waitForAgentBuild(root, agentStartWait), nil
+	return waitForAgentReady(root, agentStartWait, ready), nil
 }
 
 func dirWritable(dir string) bool {

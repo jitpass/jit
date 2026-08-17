@@ -259,7 +259,7 @@ func reportAgentStatus(w io.Writer, root string, producedMount bool) {
 		// Installed but not answering — crashed or mid-restart. Don't reinstall
 		// on top of it; point at restart, the same guidance every other surface
 		// gives for this state (installedNotRunningAdvice).
-		bold("%s", installedNotRunningAdvice("jit's background service"))
+		bold("%s", hlCmds(installedNotRunningAdvice("jit's background service")))
 	default:
 		// Never installed. Set it up silently now — this used to be the single
 		// next step every migrate run ended by telling the user to run
