@@ -85,24 +85,9 @@ func (r *Resolver) ResolveRef(ref string) ([]byte, error) {
 	if err := ValidateRef(ref); err != nil {
 		return nil, err
 	}
-	r.once.Do(func() {
-		path := r.path
-		if path == "" {
-			var err error
-			path, err = exec.LookPath("op")
-			if err != nil {
-				r.initErr = fmt.Errorf("the 1Password CLI is not installed (`op` not on PATH); install it with `brew install 1password-cli`")
-				return
-			}
-		}
-		if err := r.verify(path); err != nil {
-			r.initErr = err
-			return
-		}
-		r.binPath = path
-	})
-	if r.initErr != nil {
-		return nil, r.initErr
+	bin, err := r.bin()
+	if err != nil {
+		return nil, err
 	}
 
 	timeout := r.timeout
@@ -113,7 +98,7 @@ func (r *Resolver) ResolveRef(ref string) ([]byte, error) {
 	defer cancel()
 
 	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, r.binPath, "read", "-n", ref) // #nosec G204 -- binPath is signature-verified above; ref is validated op:// syntax
+	cmd := exec.CommandContext(ctx, bin, "read", "-n", ref) // #nosec G204 -- bin is signature-verified above; ref is validated op:// syntax
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	// Without WaitDelay, a child op leaves behind (its cache daemon, a
@@ -131,6 +116,43 @@ func (r *Resolver) ResolveRef(ref string) ([]byte, error) {
 		return nil, fmt.Errorf("op read failed: %s", detail)
 	}
 	return stdout.Bytes(), nil
+}
+
+// bin resolves and vets the op binary exactly once: $PATH lookup (unless
+// a path was injected), then the Developer ID signature check. Shared by
+// every exec-ing entry point (ResolveRef, Inventory) so none can reach
+// an unverified binary.
+func (r *Resolver) bin() (string, error) {
+	r.once.Do(func() {
+		path := r.path
+		if path == "" {
+			var err error
+			path, err = exec.LookPath("op")
+			if err != nil {
+				r.initErr = fmt.Errorf("the 1Password CLI is not installed (`op` not on PATH); install it with `brew install 1password-cli`")
+				return
+			}
+		}
+		if err := r.verify(path); err != nil {
+			r.initErr = err
+			return
+		}
+		r.binPath = path
+	})
+	if r.initErr != nil {
+		return "", r.initErr
+	}
+	return r.binPath, nil
+}
+
+// Installed reports whether an `op` binary is on $PATH at all — the cheap,
+// exec-free probe surfaces use to decide whether 1Password integration is
+// even in play (e.g. migrate's plan line). It deliberately does NOT verify
+// the signature: verification runs before the first exec, and a plan must
+// stay free of side effects and of second-guessing a binary it won't run.
+func Installed() bool {
+	_, err := exec.LookPath("op")
+	return err == nil
 }
 
 // ValidateRef checks that ref is a structurally plausible op:// secret
