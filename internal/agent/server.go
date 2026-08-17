@@ -238,6 +238,10 @@ type Server struct {
 	// never survives the agent process.
 	grantMu sync.Mutex
 	grants  map[string]*processGrant
+	// grantTimers holds each live grant's expiry timer so re-arming or ending
+	// one can stop its predecessor instead of leaving it to run out (see
+	// armGrantExpiry). Guarded by grantMu, alongside grants itself.
+	grantTimers map[string]*time.Timer
 
 	// OnResolveGrant, if set, resolves grant_create's profile NAMES to the
 	// concrete secrets they cover — vault path, wrapped DEK bytes, AAD-bound
@@ -324,7 +328,12 @@ type Server struct {
 	// the anchor maxSessionAge measures from. Unlike expiry it is never
 	// pushed forward by use; that is the whole point of it.
 	sessionStart time.Time
-	lockTimer    *time.Timer
+	// pendingLockNotify is a lock event that has been recorded in the ring
+	// (and in lastLock) but not yet handed to OnSessionEvent, because it was
+	// created under mu and that callback must never run there. Set only by
+	// collectIfDoneLocked; drained by notifyPendingLock. Guarded by mu.
+	pendingLockNotify *SessionEvent
+	lockTimer         *time.Timer
 	// lastDenied is when a challenge most recently failed — what the
 	// denial cooldown above measures from — and lastDeniedCause is why, so
 	// the cooldown refusal can repeat the ORIGINAL failure instead of
@@ -374,6 +383,18 @@ type Server struct {
 	serveErrMu   sync.Mutex
 	serveErrSeen map[string]*serveErrNote
 
+	// discloseRefusals is the prompt-storm backoff for disclosed challenges
+	// (see discloseBackoffLocked). Guarded by challengeMu, not mu: every
+	// read and write happens inside discloseChallengeOp, which holds
+	// challengeMu across the whole prompt, so the state a waiter reads is
+	// always the one the challenge it queued behind just wrote.
+	discloseRefusals map[string]discloseRefusal
+	// discloseBackoff is the escalation schedule, a field for the same
+	// reason denialCooldown is one: a test that wants to exercise the
+	// decline-then-approve sequence should not have to sleep out a real
+	// pause. Empty disables the backoff entirely.
+	discloseBackoff []time.Duration
+
 	listener net.Listener
 	// socketInfo identifies the socket file THIS server bound, so Close can
 	// tell its own socket from one a later agent has since claimed at the
@@ -417,9 +438,12 @@ func NewServer(socketPath string, newFetcher func() MEKFetcher, ttl time.Duratio
 		maxSessionAge:  DefaultMaxSessionAge,
 		readTimeout:    10 * time.Second,
 		denialCooldown: defaultDenialCooldown,
-		useWindow:      defaultUseWindow,
-		trustRoots:     map[int32]int64{},
-		identify:       callerFromConn,
+		// The disclosed-prompt backoff (discloseBackoffLocked) starts from
+		// the shipped schedule; tests override the field.
+		discloseBackoff: discloseBackoffSchedule,
+		useWindow:       defaultUseWindow,
+		trustRoots:      map[int32]int64{},
+		identify:        callerFromConn,
 	}
 }
 
@@ -483,9 +507,19 @@ func tightenSocketDir(dir string) {
 // Serve accepts connections until ctx is cancelled or the listener fails.
 // Call Listen first.
 func (s *Server) Serve(ctx context.Context) error {
+	// The watcher ends when Serve does, not only when ctx is cancelled: a
+	// listener that fails for its own reason returns below, and a watcher
+	// still parked on ctx.Done() would outlive the Serve call that started
+	// it. The daemon's deferred cancel covers that today; a library embedding
+	// this Server need not have one.
+	served := make(chan struct{})
+	defer close(served)
 	go func() {
-		<-ctx.Done()
-		_ = s.listener.Close()
+		select {
+		case <-ctx.Done():
+			_ = s.listener.Close()
+		case <-served:
+		}
 	}()
 	for {
 		conn, err := s.listener.Accept()
@@ -578,6 +612,10 @@ func (s *Server) handleConn(conn net.Conn) {
 	// the response write.
 	_ = conn.SetDeadline(time.Time{})
 	resp := s.handle(req, c)
+	// Stamped on EVERY response, not just status: it is how a client learns
+	// what this agent is able to enforce, and a client that has to make a
+	// second round trip to find out would be tempted to skip the check.
+	resp.Protocol = Protocol
 	_ = conn.SetWriteDeadline(time.Now().Add(s.readTimeout))
 	_ = json.NewEncoder(conn).Encode(resp)
 }
@@ -594,6 +632,18 @@ func currentExecutablePath() string {
 }
 
 func (s *Server) handle(req Request, c *caller) Response {
+	// A request that names a protocol this build cannot speak is refused
+	// whole, before any dispatch. Unknown OPS already failed closed; unknown
+	// FIELDS did not — JSON drops them silently, so a request whose safety
+	// rests on a field this agent has never heard of would otherwise be
+	// served as though the field had said nothing. Refusing names the fix,
+	// because the fix is always the same: the agent is older than the CLI
+	// asking, and restarting it onto the current binary resolves it.
+	if req.MinProtocol > Protocol {
+		return Response{OK: false, Error: fmt.Sprintf(
+			"%s: this request needs agent protocol %d but the running service speaks %d — it predates a check this request depends on; run `jit service restart` to move it onto the current binary",
+			req.Op, req.MinProtocol, Protocol)}
+	}
 	switch req.Op {
 	case OpStatus:
 		unlocked, remaining := s.status()
@@ -632,8 +682,13 @@ func (s *Server) handle(req Request, c *caller) Response {
 		// alone would have handed every process on the machine a free reset:
 		// refuse, unlock, refuse, unlock — the exact flood this backoff exists
 		// to stop, with an extra syscall per round.
-		if fresh && s.Consent != nil {
-			s.Consent.ClearBackoff()
+		if fresh {
+			if s.Consent != nil {
+				s.Consent.ClearBackoff()
+			}
+			// The disclosed-prompt pauses clear on the same signal and under
+			// the same `fresh` gate, for the identical reason.
+			s.clearDiscloseBackoff()
 		}
 		unlocked, remaining := s.status()
 		return Response{OK: true, Unlocked: unlocked, ExpiresInSeconds: int64(remaining.Seconds())}
@@ -776,7 +831,14 @@ func (s *Server) handle(req Request, c *caller) Response {
 		// minutes-old unlock are different facts in an audit. Any miss falls
 		// through to the ordinary path unchanged.
 		if dek, path, ok := s.grantUnwrap(c, req.Data); ok {
-			s.recordAggregated(KindUse, OpGrantUse, c.command(), c, path)
+			// Collapse on the RAW argv, never the redacted form — the same
+			// requirement recordUse documents at length and has a test for.
+			// Redaction can map two different callers onto one string, and
+			// this path has the identical collapse window, so keying on it
+			// would stamp the first caller's pid onto the second's uses. A
+			// grant covers a whole tree, so two tools under one grant hitting
+			// the same window is the ordinary case here, not an exotic one.
+			s.recordAggregated(KindUse, OpGrantUse, c.rawCommand(), c, path)
 			return Response{OK: true, Data: dek}
 		}
 		// Nothing has verified req.Class yet. It is AEAD-bound into the wrap,
@@ -974,6 +1036,14 @@ func (s *Server) discloseChallengeOp(reason, op string, c *caller) (*SessionEven
 	s.challengeMu.Lock()
 	defer s.challengeMu.Unlock()
 
+	// Checked INSIDE challengeMu, the same placement and the same reason as
+	// the denial cooldown on the unlock path: a caller that queued behind
+	// the very challenge just refused must be turned away too, or a loop
+	// gets a second dialog the instant the first is dismissed.
+	if err := s.discloseBackoffLocked(op, c); err != nil {
+		return unlockEvent(op, c), nil, err
+	}
+
 	pending := unlockEvent(op, c)
 	pending.Cause = reason
 	s.mu.Lock()
@@ -1003,10 +1073,128 @@ func (s *Server) discloseChallengeOp(reason, op string, c *caller) (*SessionEven
 	s.recordEvent(*event)
 	s.mu.Unlock()
 
+	s.noteDiscloseOutcomeLocked(op, c, err == nil)
+
 	if err != nil {
 		return event, nil, fmt.Errorf("disclosed grant declined: %w", err)
 	}
 	return event, mek, nil
+}
+
+// discloseRefusal is one key's consecutive-refusal state for the disclosed
+// prompt backoff.
+type discloseRefusal struct {
+	count int
+	until time.Time
+}
+
+// discloseBackoffKey identifies who is being throttled. It is the op plus the
+// caller's LAUNCHER, deliberately not the prompt reason and not the caller's
+// own argv: trustReason renders the caller's command, which the caller
+// chooses, so a loop could otherwise mint a fresh key per iteration and
+// out-wait nothing. The launcher is the same coarse anchor the consent
+// engine's backoff uses, with the same acknowledged cost (a shared
+// interpreter or terminal covers several programs) and the same mitigation —
+// the pauses are seconds, they never become a standing refusal, and an
+// approval clears them.
+func discloseBackoffKey(op string, c *caller) string {
+	launcher := ""
+	if c != nil {
+		launcher = c.launchedBy()
+	}
+	return op + "\x00" + launcher
+}
+
+// maxDiscloseRefusalKeys bounds the map over a weeks-long process. Reached
+// only by a caller churning launchers; resetting forfeits escalation state,
+// never a prompt.
+const maxDiscloseRefusalKeys = 64
+
+// discloseBackoffLocked refuses to prompt while a key is inside its
+// post-refusal pause. Caller must hold challengeMu.
+//
+// Disclosed challenges deliberately do NOT arm the global denial cooldown —
+// a refused grant is a targeted "not this", not "stop trying to unlock" —
+// which left the widest-scope operations in the product (OpTrust, whose one
+// approval waives per-tool consent for a whole tree; grant create and
+// extend; a global-credential reveal) with no throttle whatsoever. Any
+// same-user process could put an unbounded stream of Touch ID dialogs on
+// screen until the human approved one to make it stop. That is the exact
+// asymmetry consent.Throttled was introduced to close, in the words of its
+// own rationale — "a caller in a loop could simply outlast the user" — and
+// it was never carried over to here.
+func (s *Server) discloseBackoffLocked(op string, c *caller) error {
+	r, ok := s.discloseRefusals[discloseBackoffKey(op, c)]
+	if !ok {
+		return nil
+	}
+	if remaining := time.Until(r.until); remaining > 0 {
+		return fmt.Errorf("this authorization was declined %s; not asking again for %s (approve one, or run `jit unlock`, to clear the pause)",
+			plural(r.count, "time"), remaining.Round(time.Second))
+	}
+	return nil
+}
+
+// noteDiscloseOutcomeLocked records an approval (which clears the key) or a
+// refusal (which escalates its pause). Caller must hold challengeMu.
+func (s *Server) noteDiscloseOutcomeLocked(op string, c *caller, approved bool) {
+	key := discloseBackoffKey(op, c)
+	if approved {
+		delete(s.discloseRefusals, key)
+		return
+	}
+	if s.discloseRefusals == nil {
+		s.discloseRefusals = map[string]discloseRefusal{}
+	}
+	if len(s.discloseRefusals) >= maxDiscloseRefusalKeys {
+		if _, known := s.discloseRefusals[key]; !known {
+			s.discloseRefusals = map[string]discloseRefusal{}
+		}
+	}
+	r := s.discloseRefusals[key]
+	r.count++
+	r.until = time.Now().Add(discloseBackoffFor(s.discloseBackoff, r.count))
+	s.discloseRefusals[key] = r
+}
+
+// discloseBackoffSchedule is the pause after the 1st, 2nd, and 3rd-or-later
+// consecutive refusal. Same numbers as the consent engine's, for the same
+// reasons: short enough that an accidental decline followed immediately by a
+// re-run barely registers, topping out at the denial cooldown's 30s, which
+// is long enough that a loop cannot convert patience into approval.
+var discloseBackoffSchedule = []time.Duration{
+	2 * time.Second,
+	8 * time.Second,
+	30 * time.Second,
+}
+
+func discloseBackoffFor(schedule []time.Duration, refusals int) time.Duration {
+	if refusals <= 0 || len(schedule) == 0 {
+		return 0
+	}
+	if refusals > len(schedule) {
+		refusals = len(schedule)
+	}
+	return schedule[refusals-1]
+}
+
+// plural renders a refusal count the way consent.Throttled's message does.
+func plural(n int, unit string) string {
+	if n == 1 {
+		return "once"
+	}
+	return fmt.Sprintf("%d %ss", n, unit)
+}
+
+// clearDiscloseBackoff drops every disclosed-prompt pause. Called by a FRESH
+// unlock, on the same reasoning that clears the consent backoff there: a
+// human who just passed Touch ID is present, and "now" is exactly the signal
+// a refusal withheld. An unlock that prompts nobody clears nothing, or any
+// process could reset its own pause by asking for a session it already has.
+func (s *Server) clearDiscloseBackoff() {
+	s.challengeMu.Lock()
+	defer s.challengeMu.Unlock()
+	s.discloseRefusals = nil
 }
 
 func (s *Server) ensureUnlockedNotify(onFresh func(), op string, c *caller, label string) ([]byte, error) {
@@ -1243,6 +1431,9 @@ func (s *Server) challengeUnlock(op string, c *caller, label string) ([]byte, *S
 // session from the unlock that started it, so continuous use extends a
 // session but can no longer sustain one forever (see collectIfDoneLocked).
 func (s *Server) touchSession() []byte {
+	// Ordered so the durable hand-off for a session this call may have
+	// collected runs after mu is released (defers unwind last-in-first-out).
+	defer s.notifyPendingLock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.mek == nil {
@@ -1267,6 +1458,7 @@ func (s *Server) touchSession() []byte {
 // buy the session another full TTL on its way to being rejected, or the check
 // meant to make junk requests cheap would make them useful instead.
 func (s *Server) peekSession() []byte {
+	defer s.notifyPendingLock() // see touchSession: drained outside mu
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.mek == nil {
@@ -1289,10 +1481,48 @@ func (s *Server) collectIfDoneLocked(now time.Time) bool {
 	if now.Before(s.expiry) && !aged {
 		return false
 	}
+	// This collection IS the session's lock, so it is recorded as one. It
+	// used to be recorded nowhere: the wipe below nils the MEK silently, and
+	// the still-armed idle timer then found hadSession false and wrote no
+	// KindLock and no lastLock at all — history showed unlock → unlock with
+	// nothing between, which is exactly the "I authorized this twenty
+	// minutes ago, why again?" question a lock cause exists to answer. The
+	// race needs a request to beat the timer goroutine past expiry: a busy
+	// agent, which is the common one. Recording HERE rather than leaving it
+	// to the timer also survives the usual continuation, where the same
+	// request goes straight on to a fresh unlock and no timer ever runs for
+	// the session that ended.
+	//
+	// The ring and lastLock are updated under mu (both require it); the
+	// durable OnSessionEvent hand-off cannot run here, so it is parked for
+	// notifyPendingLock to drain outside the lock.
+	cause := fmt.Sprintf("%s idle timeout", s.ttl)
+	if aged {
+		cause = fmt.Sprintf("%s maximum session age", s.maxSessionAge)
+	}
+	event := &SessionEvent{UnixTime: now.Unix(), Kind: KindLock, Cause: cause}
+	s.lastLock = event
+	s.recordEvent(*event)
+	s.pendingLockNotify = event
+
 	wipe(s.mek)
 	unlockMemory(s.mek)
 	s.mek = nil
 	return true
+}
+
+// notifyPendingLock hands a lazily-collected session's lock event to the
+// durable sink, outside mu. Every caller of collectIfDoneLocked calls it once
+// it has released the lock; it is a no-op when nothing was collected, so
+// calling it unconditionally is correct and cheap.
+func (s *Server) notifyPendingLock() {
+	s.mu.Lock()
+	event := s.pendingLockNotify
+	s.pendingLockNotify = nil
+	s.mu.Unlock()
+	if event != nil && s.OnSessionEvent != nil {
+		s.OnSessionEvent(*event)
+	}
 }
 
 // armLockTimer (re)arms the idle auto-lock a full TTL out. Caller must
