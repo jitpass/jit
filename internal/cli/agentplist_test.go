@@ -155,7 +155,10 @@ func TestAgentBinaryPathResolvesSymlinks(t *testing.T) {
 // The bug was fixed in one place first; this makes sure a future edit cannot
 // quietly restore the bare-reload version in either.
 func TestBothServicePathsRepoint(t *testing.T) {
-	for _, file := range []string{"agent.go", "upgrade.go"} {
+	// The two call sites: `jit service restart` (servicecmds.go) and
+	// `jit upgrade` (upgrade.go). Named rather than tree-scanned, so moving
+	// either command's body out from under the check fails here.
+	for _, file := range []string{"servicecmds.go", "upgrade.go"} {
 		data, err := os.ReadFile(file) // #nosec G304 -- this package's own sources
 		if err != nil {
 			t.Fatalf("reading %s: %v", file, err)
