@@ -367,6 +367,13 @@ type Server struct {
 	// structurally cannot, since each new unlock overwrites the last.
 	events []SessionEvent
 
+	// serveErrSeen rate-limits identical socket-boundary failures into the
+	// durable trail (see recordServeError). Its own mutex: these fire on
+	// connection-handling goroutines before any session state is involved,
+	// and must not contend with mu.
+	serveErrMu   sync.Mutex
+	serveErrSeen map[string]*serveErrNote
+
 	listener net.Listener
 	// socketInfo identifies the socket file THIS server bound, so Close can
 	// tell its own socket from one a later agent has since claimed at the
@@ -1449,17 +1456,65 @@ func unlockEvent(op string, c *caller) *SessionEvent {
 	return e
 }
 
+// serveErrNote is one (op, cause) pair's rate-limit state.
+type serveErrNote struct {
+	last       time.Time
+	suppressed int
+}
+
+// serveErrorMinGap spaces identical socket-boundary failures in the durable
+// trail. One minute keeps a sustained flood at a bounded one line per
+// minute per distinct failure — visible, timestamped, countable — instead
+// of one line per connection.
+const serveErrorMinGap = time.Minute
+
 // recordServeError hands a socket-boundary failure to OnServeError as a
 // KindError event: op names which failure ("reject", "decode", "accept"),
 // cause carries the detail, and c (when the kernel still named the peer)
 // stamps the same By/ByPID/LaunchedBy provenance an unlock would carry — for a
 // rejected peer that provenance is the whole point of recording it. No-op when
 // no sink is wired (a test server, or the KeyWrapper embedding with no socket).
+//
+// Identical (op, cause) pairs are rate-limited: a misbehaving peer can hit
+// the same failure at connection rate for weeks, and each event used to
+// become its own durable line — recordRejectedClass defends the in-memory
+// ring against exactly that caller-minted eviction, but the FILE had no
+// equivalent, so a flood could push real unlock/denial history out by byte
+// pressure. Repeats within serveErrorMinGap fold into the next recorded
+// event's Count (total occurrences), the same ×N motif mount serves carry.
 func (s *Server) recordServeError(op, cause string, c *caller) {
 	if s.OnServeError == nil {
 		return
 	}
-	e := SessionEvent{UnixTime: time.Now().Unix(), Kind: KindError, Op: op, Cause: cause}
+	key := op + "\x00" + cause
+	now := time.Now()
+	s.serveErrMu.Lock()
+	if s.serveErrSeen == nil {
+		s.serveErrSeen = map[string]*serveErrNote{}
+	}
+	if len(s.serveErrSeen) > 64 {
+		// A prober minting DISTINCT causes must not grow this map for the
+		// process's weeks-long life; resetting forfeits some suppression
+		// counts, never events.
+		s.serveErrSeen = map[string]*serveErrNote{}
+	}
+	n := s.serveErrSeen[key]
+	if n != nil && now.Sub(n.last) < serveErrorMinGap {
+		n.suppressed++
+		s.serveErrMu.Unlock()
+		return
+	}
+	var suppressed int
+	if n != nil {
+		suppressed = n.suppressed
+	}
+	s.serveErrSeen[key] = &serveErrNote{last: now}
+	s.serveErrMu.Unlock()
+
+	e := SessionEvent{UnixTime: now.Unix(), Kind: KindError, Op: op, Cause: cause}
+	if suppressed > 0 {
+		e.Count = int64(suppressed) + 1
+	}
 	if c != nil {
 		e.By = c.command()
 		e.ByPID = c.pid

@@ -1536,3 +1536,41 @@ func TestApprovedDisclosedChallengeIsRecorded(t *testing.T) {
 	}
 	t.Error("approved event never reached OnSessionEvent, so it never reaches the durable trail jit audit reads")
 }
+
+// TestRecordServeErrorRateLimitsIdenticalFailures pins the durable-trail
+// flood defense: recordRejectedClass protects the in-memory ring from
+// caller-minted eviction, but every socket-boundary failure used to become
+// its own durable line — a peer looping on the same malformed request could
+// push real unlock/denial history out of agent-history.jsonl by byte
+// pressure. Identical (op, cause) pairs inside serveErrorMinGap fold into
+// the next recorded event's Count; distinct causes still record immediately.
+func TestRecordServeErrorRateLimitsIdenticalFailures(t *testing.T) {
+	s := NewServer(filepath.Join(t.TempDir(), "x.sock"), nil, time.Minute)
+	var events []SessionEvent
+	s.OnServeError = func(e SessionEvent) { events = append(events, e) }
+
+	for i := 0; i < 100; i++ {
+		s.recordServeError("decode", "request too large", nil)
+	}
+	if len(events) != 1 {
+		t.Fatalf("100 identical failures inside the gap wrote %d events, want 1", len(events))
+	}
+
+	s.recordServeError("decode", "malformed json", nil)
+	if len(events) != 2 {
+		t.Fatalf("a DISTINCT cause must record immediately, got %d events", len(events))
+	}
+
+	// Age the first pair past the gap: the next identical failure records
+	// and carries the fold (1 recorded + 99 suppressed = 100 occurrences).
+	s.serveErrMu.Lock()
+	s.serveErrSeen["decode\x00request too large"].last = time.Now().Add(-2 * serveErrorMinGap)
+	s.serveErrMu.Unlock()
+	s.recordServeError("decode", "request too large", nil)
+	if len(events) != 3 {
+		t.Fatalf("after the gap the failure must record again, got %d events", len(events))
+	}
+	if events[2].Count != 100 {
+		t.Errorf("the recorded event must carry the fold: Count = %d, want 100", events[2].Count)
+	}
+}

@@ -6,6 +6,7 @@
 package cli
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -138,25 +139,26 @@ func TestServeAuditMemoizesTheMountLabel(t *testing.T) {
 	a.labelFn = func(string) string { lookups++; return "gcp" }
 	now := time.Unix(1_700_000_000, 0)
 
-	// Distinct readers, so each gets its own aggregate and every one of them
-	// needs the label — but the mount is the same, so the lookup is not.
+	// Distinct readers (by executable, the key's identity), so each gets its
+	// own aggregate and every one of them needs the label — but the mount is
+	// the same, so the lookup is not.
 	for i := 0; i < 20; i++ {
-		a.record(now, "/tmp/m.env", "r", decoyRead(int32(i+1), "/bin/sh"))
+		a.record(now, "/tmp/m.env", "r", decoyRead(int32(i+1), fmt.Sprintf("/bin/sh%d", i)))
 	}
 	if lookups != 1 {
 		t.Errorf("resolved the same mount's label %d times, want 1", lookups)
 	}
 }
 
-// The pending map is keyed partly on pid, so a burst of short-lived readers
-// each claim a key. It needs a ceiling that isn't "however many processes the
-// machine can spawn" — and hitting it must flush, never drop.
+// The pending map is keyed on reader identity, so a burst of distinct
+// readers each claim a key. It needs a ceiling that isn't "however many
+// programs the machine can run" — and hitting it must flush, never drop.
 func TestServeAuditBoundsPendingAggregates(t *testing.T) {
 	a, c := newTestAuditor(time.Hour)
 	now := time.Unix(1_700_000_000, 0)
 
 	for i := 0; i < maxPendingServes*3; i++ {
-		a.record(now, "/tmp/m.env", "r", decoyRead(int32(i+1), "/bin/sh"))
+		a.record(now, "/tmp/m.env", "r", decoyRead(int32(i+1), fmt.Sprintf("/bin/tool%d", i)))
 	}
 
 	a.mu.Lock()
@@ -250,5 +252,35 @@ func TestServeReasonNamesTheCause(t *testing.T) {
 				t.Errorf("serveReason = %q, want it to mention %q", got, tc.wantFragment)
 			}
 		})
+	}
+}
+
+// TestServeAuditFoldsReExecingReader pins the key's identity choice: a
+// watcher that re-execs per read arrives with a fresh pid every time, and a
+// pid-keyed aggregate minted one event per read — defeating the hour window
+// outright (the noisiest possible reader got the least collapsed trail).
+// Same executable, same mount, same verdict = one aggregate, however many
+// pids it burns; the count carries the reads.
+func TestServeAuditFoldsReExecingReader(t *testing.T) {
+	a, c := newTestAuditor(time.Hour)
+	now := time.Unix(1_700_000_000, 0)
+
+	for i := 0; i < 50; i++ {
+		a.record(now, "/tmp/m.env", "r", decoyRead(int32(1000+i), "/usr/bin/watcher"))
+	}
+
+	a.mu.Lock()
+	pending := len(a.pending)
+	a.mu.Unlock()
+	if pending != 1 {
+		t.Fatalf("50 reads by one re-execing program produced %d aggregates, want 1", pending)
+	}
+	if got := len(c.all()); got != 0 {
+		t.Errorf("nothing should have flushed inside the window, got %d events", got)
+	}
+	a.emitAll(a.take(true, now))
+	events := c.all()
+	if len(events) != 1 || events[0].Count != 50 {
+		t.Fatalf("want one event carrying all 50 reads, got %+v", events)
 	}
 }

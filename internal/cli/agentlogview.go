@@ -46,13 +46,28 @@ var mountRe = regexp.MustCompile(`^mount ([^:]+): (.*)$`)
 // writeAgentLog renders the log for humans. home is used to shorten paths;
 // pass "" to leave them absolute.
 func writeAgentLog(w io.Writer, data []byte, home string) {
+	(&agentLogRenderer{home: home}).write(w, data)
+}
+
+// agentLogRenderer renders chunks of the log through one continuous state,
+// so --follow's polled chunks read like a single document: the day header
+// prints on day CHANGES only. Each chunk used to go through a fresh
+// stateless pass, so every poll that carried rows re-printed the date
+// header. Folding still happens within a chunk only — a run spanning a poll
+// boundary stays two rows, the same "timeline is never rewritten" trade the
+// collapse already makes at minute boundaries.
+type agentLogRenderer struct {
+	home string
+	day  string
+}
+
+func (r *agentLogRenderer) write(w io.Writer, data []byte) {
 	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
 	if len(lines) == 1 && lines[0] == "" {
 		return
 	}
 
-	day := ""
-	for _, e := range collapseAgentLog(lines, home) {
+	for _, e := range collapseAgentLog(lines, r.home) {
 		if e.raw != "" {
 			// A panic, a stack frame, anything the daemon printed that isn't
 			// one of its own timestamped notes. It goes through byte-exact —
@@ -63,11 +78,11 @@ func writeAgentLog(w io.Writer, data []byte, home string) {
 			fmt.Fprintln(w, e.raw)
 			continue
 		}
-		if e.date != day {
-			if day != "" {
+		if e.date != r.day {
+			if r.day != "" {
 				fmt.Fprintln(w)
 			}
-			day = e.date
+			r.day = e.date
 			_, _ = fmt.Fprintf(w, "  %s\n", e.date)
 		}
 		writeAgentLogEntry(w, e)
