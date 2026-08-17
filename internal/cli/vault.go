@@ -26,6 +26,7 @@ import (
 	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
+	"github.com/jitpass/jit/internal/onepassword"
 	"github.com/jitpass/jit/internal/pasteboard"
 	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/termtext"
@@ -2722,6 +2723,7 @@ func openVaultFreshAuth() (*vault.Vault, error) {
 		Root:        root,
 		KeyWrapper:  keychainwrap.New(),
 		RecipientID: deviceID,
+		RefResolver: onepassword.New(),
 	}, nil
 }
 
@@ -2760,6 +2762,7 @@ func openVault() (*vault.Vault, error) {
 		Root:        root,
 		KeyWrapper:  kw,
 		RecipientID: deviceID,
+		RefResolver: onepassword.New(),
 	}, nil
 }
 

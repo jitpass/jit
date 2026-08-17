@@ -107,7 +107,7 @@ func (m *mountManager) resumeServing(entry mount.Entry) {
 	if err != nil {
 		return
 	}
-	v := &vault.Vault{Root: m.root, KeyWrapper: m.keyWrapper, RecipientID: deviceID}
+	v := &vault.Vault{Root: m.root, KeyWrapper: m.keyWrapper, RecipientID: deviceID, RefResolver: m.refResolver}
 	// Re-arm real content in memory after a run's swap ends; it stays decoy
 	// to every reader until the next run-scoped grant, never auto-revealed.
 	m.resolveReal([]mount.Entry{entry}, v)
