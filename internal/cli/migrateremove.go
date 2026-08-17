@@ -140,6 +140,14 @@ type projectRemovalPlan struct {
 }
 
 func runMigrateRemove(cmd *cobra.Command, args []string) error {
+	// --dry-run is a persistent flag on the migrate group, so it PARSES
+	// here — but remove has no preview implementation, and a "preview"
+	// flag silently ignored on the command that writes plaintext back and
+	// deletes vault secrets is the worst place to ignore one. Fail loud
+	// until remove grows a real plan (design/dry-run-refactor.md D6).
+	if migrateDryRun {
+		return fmt.Errorf("jit migrate remove: --dry-run isn't supported here yet; the per-project [y/N] plan is the preview (decline it to change nothing)")
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("jit migrate remove: %w", err)

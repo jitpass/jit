@@ -12,7 +12,6 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/audit"
 	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/mount"
@@ -171,7 +170,7 @@ func prodFirstRunDeps(cmd *cobra.Command) firstRunDeps {
 // the current directory yields a project-scoped report from the exact same
 // engine and renderer `jit scan` uses.
 func scanRoot(root string) ([]audit.Finding, audit.ScanSummary, error) {
-	cfg, err := audit.NewConfig(agent.Version())
+	cfg, err := newAuditConfig()
 	if err != nil {
 		return nil, audit.ScanSummary{}, err
 	}

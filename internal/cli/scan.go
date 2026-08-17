@@ -15,6 +15,7 @@ import (
 
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/audit"
+	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
 )
 
@@ -26,6 +27,41 @@ var (
 	scanFull       bool
 	scanFailOn     string
 )
+
+// newAuditConfig builds the audit Config every CLI scan surface shares
+// (scan, bare migrate's protect plan, first-run), with the cross-package
+// hooks wired. audit cannot import migrate (migrate imports audit), so
+// the classifier arrives as a hook — the vault.KeyWrapper pattern; see
+// audit.Config.K8sMigratable.
+func newAuditConfig() (audit.Config, error) {
+	cfg, err := audit.NewConfig(agent.Version())
+	if err != nil {
+		return cfg, err
+	}
+	cfg.K8sMigratable = k8sMigratableForScan
+	return cfg, nil
+}
+
+// k8sMigratableForScan answers the hook with migrate's own classifier, so
+// scan and migrate can never disagree about a manifest. Read-only and
+// prompt-free, as the hook's contract requires.
+func k8sMigratableForScan(path string) (reason string, ok bool) {
+	plan, reason, err := migrate.ClassifyK8sSecretManifest(path)
+	switch {
+	case err != nil:
+		// Unreadable where audit could read it moments ago (racing edit,
+		// permissions): don't promise a migrate that will error.
+		return err.Error(), false
+	case plan != nil:
+		return "", true
+	case reason != "":
+		return reason, false
+	default:
+		// Recognized but with nothing migrate can move (fully
+		// SOPS-encrypted, an empty scaffold).
+		return "no plaintext Secret values migrate can move", false
+	}
+}
 
 // riskRank orders the aggregate RISK LEVEL vocabulary so --fail-on can ask
 // "at or above". Kept local to the flag: it is a CLI comparison, not a
@@ -163,7 +199,7 @@ var scanCmd = &cobra.Command{
 			}
 		}
 
-		cfg, err := audit.NewConfig(agent.Version())
+		cfg, err := newAuditConfig()
 		if err != nil {
 			return fmt.Errorf("jit scan: %w", err)
 		}

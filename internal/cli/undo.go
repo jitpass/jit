@@ -141,9 +141,9 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 	}
 
 	if migrateDryRun {
-		// Same leading banner discipline as jit migrate (GAPS.md #32): the
+		// Same frame discipline as jit migrate (GAPS.md #32): the
 		// preview-vs-real signal comes BEFORE the plan, not only after it.
-		_, _ = cPathBold.Fprintln(out, "[DRY RUN] Preview, this run changes nothing; the plan below is what a real run would do.")
+		printDryRunBanner(out)
 	}
 
 	registryPath := mount.RegistryPath(root)
@@ -173,9 +173,7 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(out, "Vault secrets and profile manifests are left in place, this reverses files, never the vault.")
 
 	if migrateDryRun {
-		fmt.Fprintln(out)
-		_, _ = cPathBold.Fprint(out, "[DRY RUN]")
-		fmt.Fprintln(out, " No files were changed.")
+		printDryRunTrailer(out, migrateApplyCommand("jit migrate undo", args), false)
 		return nil
 	}
 

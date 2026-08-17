@@ -452,7 +452,7 @@ func TestFirstFindingPathSkipsUnfixable(t *testing.T) {
 		{FindingType: FindingTypePrivateKeyRisk, FilePath: "/home/u/.ssh/id_ed25519", KeyName: &key},
 		{FindingType: FindingTypeCredentialFile, FilePath: "/home/u/.mcp-auth/mcp-remote-0.1.37/abc_tokens.json", KeyName: &key},
 	}
-	annotateRemedies(unfixable, "/home/u")
+	annotateRemedies(unfixable, "/home/u", nil)
 	if got := firstFindingPath(unfixable); got != "" {
 		t.Errorf("firstFindingPath = %q, want \"\" so the trailer falls back to its <path> placeholder", got)
 	}
@@ -464,7 +464,7 @@ func TestFirstFindingPathSkipsUnfixable(t *testing.T) {
 		FilePath:    "/home/u/proj/.streamlit/secrets.toml",
 		KeyName:     &key,
 	})
-	annotateRemedies(mixed, "/home/u")
+	annotateRemedies(mixed, "/home/u", nil)
 	if got := firstFindingPath(mixed); got != "/home/u/proj/.streamlit/secrets.toml" {
 		t.Errorf("firstFindingPath = %q, want the migratable file", got)
 	}

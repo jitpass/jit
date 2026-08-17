@@ -676,6 +676,21 @@ type Config struct {
 	// a full home-directory scan runs. nil (the default, and in every test)
 	// means no reporting and identical behavior.
 	Progress func(category string)
+
+	// K8sMigratable, when non-nil, answers whether `jit migrate <path>`
+	// can actually rewrite a structurally parsed Kubernetes Secret
+	// manifest — ok=false comes with migrate's own refusal reason (block
+	// scalars, data: mixed with stringData:, a Helm template that isn't
+	// valid YAML). annotateRemedies consults it so scan never counts a
+	// manifest under "jit will protect these" that migrate will then
+	// refuse (design/dry-run-refactor.md D5 — the +N% promise was
+	// unachievable). A hook rather than an import, the vault.KeyWrapper
+	// pattern: internal/migrate imports this package, so the classifier
+	// can't be called from here directly; the CLI wires it. nil (tests,
+	// other callers) keeps the optimistic pre-hook behavior. Must be
+	// read-only and prompt-free — it runs inside `jit scan`, whose
+	// every mode is strictly read-only.
+	K8sMigratable func(path string) (reason string, ok bool)
 }
 
 // NewConfig builds a Config for a real run against the actual machine.

@@ -44,6 +44,53 @@ import (
 // item-by-item (splitMCPByScope/splitNpmrcByScope) since Claude Desktop's
 // config / the global ~/.npmrc belong in the machine-wide group while a
 // project mcp.json/.npmrc belongs with the scoped files.
+// planExtras carries the non-file halves of a migrate plan — the CLI
+// wraps, the shell-history-guard offer, and the agent-cache sweep
+// preview — so they render as counted plan categories instead of prose
+// around the plan (design/dry-run-refactor.md D3/D4). The plan row IS
+// the consent line, for --dry-run and the real [y/N] alike, so anything
+// the run will do that isn't a file category must arrive here or not
+// happen. nil means a run with no extras (targeted runs without a cache
+// preview yet, tests).
+type planExtras struct {
+	wraps      []wrapPlanRow
+	guardItems []string // non-empty offers the guard; each item is one bullet
+	cacheEdits []migrate.AgentCacheEdit
+	cacheNote  string // non-empty: the preview failed; the sweep still runs at apply time
+	// scanDriven flips the group headers from "you named" to "flagged by
+	// the scan": bare `jit migrate` names nothing — the scan did, and a
+	// header claiming otherwise misstates why the file is in the plan.
+	// A rendering mode, not content: excluded from empty()/counts().
+	scanDriven bool
+}
+
+// wrapPlanRow is one catalog tool the run will wrap, with its
+// kind-specific consequence rendered as a └ evidence line under the
+// bullet — "would wrap clisso" hides four different behaviors, and the
+// consent screen has to say which one this is.
+type wrapPlanRow struct {
+	tool   string
+	detail string
+}
+
+func (e *planExtras) empty() bool {
+	return e == nil || (len(e.wraps) == 0 && len(e.guardItems) == 0 && len(e.cacheEdits) == 0 && e.cacheNote == "")
+}
+
+// counts returns the extra items and categories for the plan subtotal.
+func (e *planExtras) counts() (items, categories int) {
+	if e == nil {
+		return 0, 0
+	}
+	for _, group := range []int{len(e.wraps), len(e.guardItems), len(e.cacheEdits)} {
+		if group > 0 {
+			categories++
+			items += group
+		}
+	}
+	return items, categories
+}
+
 // printMigratePlan renders the "what jit will rewrite" plan.
 //
 // It takes *discovered rather than the seventeen positional []string it used
@@ -52,7 +99,7 @@ import (
 // showing the user one category's files under another category's heading, on
 // the screen whose whole job is to obtain informed consent before rewriting
 // them. Named fields make the same mistake a compile error.
-func printMigratePlan(w io.Writer, home string, d *discovered) {
+func printMigratePlan(w io.Writer, home string, d *discovered, extras *planExtras) {
 	fmt.Fprintln(w, "jit migrate, plan")
 	fmt.Fprintln(w, "Each modified file is backed up before it's rewritten.")
 	fmt.Fprintln(w)
@@ -89,7 +136,11 @@ func printMigratePlan(w io.Writer, home string, d *discovered) {
 		for _, p := range d.envFiles {
 			envOriginal[displayPath(home, p)] = p
 		}
-		_, _ = cBold.Fprintf(w, "Project files you named\n\n")
+		scopedHeader := "Project files you named"
+		if extras != nil && extras.scanDriven {
+			scopedHeader = "Project files flagged by the scan"
+		}
+		_, _ = cBold.Fprintf(w, "%s\n\n", scopedHeader)
 		printMigratePlanCategoryAnnotated(w,
 			pluralWord(len(d.envFiles), ".env file", ".env files")+" "+glyphAction+" EVERY variable moves to the vault (ordinary config too, so the file still works); the file keeps working as a live, auto-updating mount",
 			shorten(d.envFiles),
@@ -161,8 +212,13 @@ func printMigratePlan(w io.Writer, home string, d *discovered) {
 		// These appear only because the caller named a machine-wide file (or
 		// its exact path) explicitly — a migrate run never reaches them on its
 		// own, so the header states plainly that the caller asked for them.
-		_, _ = fmt.Fprintln(w, "Machine-wide config files you named")
-		fmt.Fprintln(w)
+		fixedHeader := "Machine-wide config files you named"
+		if extras != nil && extras.scanDriven {
+			fixedHeader = "Machine-wide config files flagged by the scan"
+		}
+		// Bold like the scoped group's header: the two are the same rank,
+		// and hierarchy comes from bold alone (design/output-style.md).
+		_, _ = cBold.Fprintf(w, "%s\n\n", fixedHeader)
 		printMigratePlanCategory(w,
 			pluralWord(len(d.shellConfigs), "shell config", "shell configs")+" "+glyphAction+" secrets move to the vault; loaded back automatically when your shell starts",
 			shorten(d.shellConfigs))
@@ -258,6 +314,8 @@ func printMigratePlan(w io.Writer, home string, d *discovered) {
 		}
 	}
 
+	printPlanExtras(w, home, extras)
+
 	categories, total := 0, 0
 	for _, items := range [][]string{d.envFiles, d.tfvarsFiles, d.k8sManifests, d.shellConfigs, d.historyFiles, d.mcpConfigs, d.awsProfiles, d.k8sUsers, d.terraformHosts, d.dockerRegistries, d.gitHosts, d.gcpADCFiles, d.sopsAgeFiles, d.npmrcFiles, d.netrcFiles, d.pypircFiles, d.looseSecretFiles} {
 		if len(items) > 0 {
@@ -265,8 +323,57 @@ func printMigratePlan(w io.Writer, home string, d *discovered) {
 		}
 		total += len(items)
 	}
+	extraItems, extraCategories := extras.counts()
+	total += extraItems
+	categories += extraCategories
 	fmt.Fprintln(w, strings.Repeat(glyphRule, 44))
 	fmt.Fprintf(w, "  %s planned across %s\n", countWord(total, "change", "changes"), countWord(categories, "category", "categories"))
+}
+
+// printPlanExtras renders the wrap/guard/cache-sweep categories in the
+// same [Name] count + outcome + bullets shape the file categories use,
+// so one [y/N] reads one uniform plan. Wrap bullets carry a └ detail
+// line because each catalog kind does something materially different.
+func printPlanExtras(w io.Writer, home string, e *planExtras) {
+	if e.empty() {
+		return
+	}
+	if len(e.wraps) > 0 {
+		// Not the shared category renderer: each bullet carries a └ detail
+		// line (the kind-specific consequence), which the shared shape's
+		// inline "(note)" would jam into an unreadable parenthetical.
+		fmt.Fprintf(w, "[%s] %d\n", pluralWord(len(e.wraps), "CLI wrap", "CLI wraps"), len(e.wraps))
+		fmt.Fprintf(w, "  "+glyphAction+" each tool keeps working through a jit shim; reversible: jit wrap undo <tool>\n")
+		for _, row := range e.wraps {
+			fmt.Fprintf(w, "  "+glyphBullet+" %s\n", row.tool)
+			if row.detail != "" {
+				fmt.Fprint(w, "    "+glyphBranch+" ")
+				wrapBody(w, 6, "      ", row.detail)
+			}
+		}
+		fmt.Fprintln(w)
+	}
+	if len(e.guardItems) > 0 {
+		printMigratePlanCategoryAnnotated(w,
+			"shell history guard "+glyphAction+" a zsh hook keeps credential-carrying commands out of your history file, while leaving them usable in that session; reversible: jit guard history --remove",
+			e.guardItems, nil)
+	}
+	if len(e.cacheEdits) > 0 {
+		items := make([]string, 0, len(e.cacheEdits))
+		annotations := make(map[string]string, len(e.cacheEdits))
+		for _, edit := range e.cacheEdits {
+			item := displayPath(home, edit.Path)
+			items = append(items, item)
+			annotations[item] = countWord(edit.Occurrences, "copy", "copies")
+		}
+		printMigratePlanCategoryAnnotated(w,
+			pluralWord(len(e.cacheEdits), "AI agent cache file", "AI agent cache files")+" "+glyphAction+" copies of the values above are redacted in place (backed up encrypted first)",
+			items,
+			func(item string) string { return annotations[item] })
+	}
+	if e.cacheNote != "" {
+		_, _ = cWarn.Fprintf(w, "  AI agent caches could not be previewed (%s); the sweep still runs after the file migrations.\n\n", e.cacheNote)
+	}
 }
 
 // splitMCPByScope separates Claude Desktop's always-checked fixed path
