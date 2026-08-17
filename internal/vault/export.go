@@ -14,8 +14,22 @@ import (
 
 // exportVersion is ExportEnvelope's on-disk schema version — bumped if the
 // shape or KDF parameters ever change, so a future Import can tell an old
-// export apart from a new one rather than guessing.
-const exportVersion = 1
+// export apart from a new one rather than guessing. Version 1's payload
+// was a bare path→value map; version 2 wraps each value in an exportEntry
+// so a reference-kind secret (envelope.Storage) exports as the reference
+// it is. Import reads both, forever.
+const exportVersion = 2
+
+// exportEntry is one secret inside a version-2 export payload: the stored
+// payload bytes plus the envelope's storage marker. Carrying storage is
+// what lets a linked secret survive the export/import round trip AS a
+// link — without it, an import would freeze the reference URI into a
+// literal "secret" whose value is the string "op://…", silently breaking
+// the link on the restored machine.
+type exportEntry struct {
+	Value   []byte `json:"value"`
+	Storage string `json:"storage,omitempty"`
+}
 
 // Argon2id parameters for deriving an export's encryption key from a
 // passphrase. Deliberately memory-hard and reasonably slow (not vault
@@ -56,30 +70,33 @@ type ExportEnvelope struct {
 	// passphrase never derive the same key.
 	Salt string `json:"salt"`
 	// Payload is the hex-encoded (nonce || ciphertext) of the JSON-encoded
-	// map[string][]byte of every secret path to its plaintext value,
-	// AES-256-GCM sealed under the Argon2id-derived key.
+	// map of every secret path to its exportEntry (version 2; version 1
+	// mapped straight to plaintext values), AES-256-GCM sealed under the
+	// Argon2id-derived key.
 	Payload string `json:"payload"`
 }
 
-// Export decrypts every secret currently in the vault (via Get, so it
-// needs the same KeyWrapper/local-auth Get always does) and re-encrypts
-// the whole set under a single Argon2id-derived key from passphrase.
-// Callers own passphrase and should wipe() it once done, same as any
-// other secret material.
+// Export decrypts every secret currently in the vault (via getStored, so
+// it needs the same KeyWrapper/local-auth Get always does — but never the
+// RefResolver: an export is a vault backup, and a linked secret exports
+// as its reference, not as a 1Password read) and re-encrypts the whole
+// set under a single Argon2id-derived key from passphrase. Callers own
+// passphrase and should wipe() it once done, same as any other secret
+// material.
 func (v *Vault) Export(passphrase []byte) (*ExportEnvelope, error) {
 	paths, err := v.List()
 	if err != nil {
 		return nil, fmt.Errorf("listing vault: %w", err)
 	}
 
-	secrets := make(map[string][]byte, len(paths))
-	defer wipeValues(secrets)
+	secrets := make(map[string]exportEntry, len(paths))
+	defer wipeEntries(secrets)
 	for _, path := range paths {
-		value, err := v.Get(path)
+		value, storage, err := v.getStored(path)
 		if err != nil {
 			return nil, fmt.Errorf("reading %s: %w", path, err)
 		}
-		secrets[path] = value
+		secrets[path] = exportEntry{Value: value, Storage: storage}
 	}
 
 	plaintext, err := json.Marshal(secrets)
@@ -110,18 +127,30 @@ func (v *Vault) Export(passphrase []byte) (*ExportEnvelope, error) {
 }
 
 // Import decrypts env with passphrase and writes every secret it contains
-// into v via Set (so it needs the same KeyWrapper Set always does),
-// overwriting any existing secret at the same path. Returns the number of
-// secrets restored.
+// into v via Set — or SetReference, for an entry exported from a linked
+// secret, so a link is restored as a link (so it needs the same
+// KeyWrapper Set always does), overwriting any existing secret at the
+// same path. Returns the number of secrets restored.
 func (v *Vault) Import(env *ExportEnvelope, passphrase []byte) (int, error) {
 	secrets, err := decryptExport(env, passphrase)
 	if err != nil {
 		return 0, err
 	}
-	defer wipeValues(secrets)
+	defer wipeEntries(secrets)
 
-	for path, value := range secrets {
-		if err := v.Set(path, value); err != nil {
+	for path, entry := range secrets {
+		switch entry.Storage {
+		case "":
+			err = v.Set(path, entry.Value)
+		case StorageOpRef:
+			err = v.SetReference(path, string(entry.Value), Meta{})
+		default:
+			// Same fail-closed stance as Get's storage gate: restoring a
+			// future marker's payload as a literal secret would silently
+			// change what it means.
+			err = fmt.Errorf("storage kind %q is newer than this jit understands, upgrade jit to import it", entry.Storage)
+		}
+		if err != nil {
 			return 0, fmt.Errorf("restoring %s: %w", path, err)
 		}
 	}
@@ -141,16 +170,18 @@ func VerifyExportPassphrase(env *ExportEnvelope, passphrase []byte) error {
 	if err != nil {
 		return err
 	}
-	wipeValues(secrets)
+	wipeEntries(secrets)
 	return nil
 }
 
 // decryptExport is Import and VerifyExportPassphrase's shared core: derive
 // the key, open the AEAD payload, and parse the resulting JSON into a
-// secret-path-to-value map.
-func decryptExport(env *ExportEnvelope, passphrase []byte) (map[string][]byte, error) {
-	if env.Version != exportVersion {
-		return nil, fmt.Errorf("unsupported export version %d (this jit understands version %d)", env.Version, exportVersion)
+// secret-path-to-entry map. Version 1 files (a bare path→value map, from
+// every jit before the storage marker existed) parse forever, as
+// literal-value entries.
+func decryptExport(env *ExportEnvelope, passphrase []byte) (map[string]exportEntry, error) {
+	if env.Version < 1 || env.Version > exportVersion {
+		return nil, fmt.Errorf("unsupported export version %d (this jit understands versions 1 to %d)", env.Version, exportVersion)
 	}
 	salt, err := hex.DecodeString(env.Salt)
 	if err != nil {
@@ -170,7 +201,18 @@ func decryptExport(env *ExportEnvelope, passphrase []byte) (map[string][]byte, e
 	}
 	defer wipe(plaintext)
 
-	var secrets map[string][]byte
+	if env.Version == 1 {
+		var values map[string][]byte
+		if err := json.Unmarshal(plaintext, &values); err != nil {
+			return nil, fmt.Errorf("parsing decrypted export: %w", err)
+		}
+		secrets := make(map[string]exportEntry, len(values))
+		for path, value := range values {
+			secrets[path] = exportEntry{Value: value}
+		}
+		return secrets, nil
+	}
+	var secrets map[string]exportEntry
 	if err := json.Unmarshal(plaintext, &secrets); err != nil {
 		return nil, fmt.Errorf("parsing decrypted export: %w", err)
 	}
@@ -181,13 +223,13 @@ func deriveExportKey(passphrase, salt []byte) []byte {
 	return argon2.IDKey(passphrase, salt, argon2Time, argon2MemoryKiB, argon2Threads, argon2KeyLen)
 }
 
-// wipeValues zeroes every value in a map[string][]byte — Export/Import's
+// wipeEntries zeroes every entry's value bytes — Export/Import's
 // secret-bearing maps, so their contents don't linger in memory any
 // longer than crypto.go's own wipe() convention already accepts elsewhere
 // in this package (best-effort, not a hard guarantee against a GC-moved
 // copy — see wipe's own doc comment).
-func wipeValues(m map[string][]byte) {
-	for _, v := range m {
-		wipe(v)
+func wipeEntries(m map[string]exportEntry) {
+	for _, e := range m {
+		wipe(e.Value)
 	}
 }
