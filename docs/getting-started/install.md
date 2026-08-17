@@ -243,8 +243,13 @@ restarts, every command that talks to it still gets last version's behavior -
 `jit status` warns "different build" until then. The service does switch onto
 the replaced binary on its own once its session is locked and idle; restart is
 for wanting it immediately. It also re-points launchd if the binary moved,
-re-bootstraps a service launchd had dropped, and recreates the login item if
-it was missing. (`jit upgrade` does this step for you.)
+re-registers a service launchd had dropped, and recreates the login item if
+it was missing - and it demands the start from launchd rather than trusting
+registration alone, reporting success only once the new build answers.
+launchd can defer a registered job's spawn indefinitely (observed in the
+field: a job accepted but never started), which is exactly the state a bare
+re-register cannot fix. (`jit upgrade` does this step for you, and confirms
+the service came back before saying so.)
 
 ## Uninstalling
 
