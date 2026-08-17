@@ -7,12 +7,14 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/auditlog"
@@ -223,5 +225,25 @@ func (h *historyLog) trim() {
 	}
 	if err := os.Rename(tmp, h.path); err != nil {
 		fmt.Fprintf(h.stderr, "jit service: trimming session history: %v\n", err)
+	}
+}
+
+// trimHistoryPeriodically re-checks the history cap while the service runs,
+// on the same cadence (and for the same reason) as rotateAgentLogPeriodically:
+// launchd keeps one process alive for weeks, so a startup-only trim leaves
+// anything that grows the file — the durable trail now also carries KindError
+// socket events — free to run past the cap until the NEXT restart. trim()
+// takes the same mutex as append, so a mid-run trim can't tear a write; the
+// temp+rename is the same one the startup call does.
+func trimHistoryPeriodically(ctx context.Context, h *historyLog, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			h.trim()
+		}
 	}
 }

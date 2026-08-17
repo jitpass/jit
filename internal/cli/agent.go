@@ -317,6 +317,7 @@ var agentRunCmd = &cobra.Command{
 				})
 			}
 			go rotateAgentLogPeriodically(runCtx, logPath, &logMu, stderr)
+			go trimHistoryPeriodically(runCtx, hist, agentLogRotateCheckInterval)
 		}
 
 		fmt.Fprintf(stdout, "jit service listening on %s (session TTL %s, build %s)\n", agent.SocketPath(root), agentTTL, agent.BuildID())
@@ -1123,7 +1124,21 @@ var agentLogCmd = &cobra.Command{
 			out, donePaging = pageableOutput(cmd)
 			defer donePaging()
 		}
-		writeAgentLogTail(out, tailLines(data, agentLogLines))
+		// One renderer for the tail AND every --follow chunk, so the day
+		// header prints on day changes rather than once per polled chunk.
+		home, herr := os.UserHomeDir()
+		if herr != nil {
+			home = ""
+		}
+		renderer := &agentLogRenderer{home: home}
+		render := func(b []byte) {
+			if agentLogRaw {
+				_, _ = out.Write(b)
+				return
+			}
+			renderer.write(out, b)
+		}
+		render(tailLines(data, agentLogLines))
 
 		if !agentLogFollow {
 			return nil
@@ -1159,30 +1174,23 @@ var agentLogCmd = &cobra.Command{
 			}
 			if _, err := f.Seek(offset, io.SeekStart); err == nil {
 				// --follow renders each appended chunk through the same
-				// formatter as the initial tail, so a live stream and a
-				// static read look identical rather than the stream
-				// reverting to raw lines partway down the screen.
+				// formatter (and the same renderer state) as the initial
+				// tail, so a live stream and a static read look identical.
+				// Consume only complete lines: a chunk read mid-write used
+				// to split a line across two polls, and each half rendered
+				// as an unparseable raw fragment. The remainder stays
+				// unconsumed — offset advances only past the last newline —
+				// and comes back whole on the next poll (audit's
+				// readAppended makes the same cut).
 				chunk, _ := io.ReadAll(f)
-				writeAgentLogTail(out, chunk)
-				offset += int64(len(chunk))
+				if i := bytes.LastIndexByte(chunk, '\n'); i >= 0 {
+					render(chunk[:i+1])
+					offset += int64(i + 1)
+				}
 			}
 			_ = f.Close()
 		}
 	},
-}
-
-// writeAgentLogTail prints a slice of the log, formatted for reading unless
-// --raw asked for the bytes as written.
-func writeAgentLogTail(out io.Writer, data []byte) {
-	if agentLogRaw {
-		_, _ = out.Write(data)
-		return
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = ""
-	}
-	writeAgentLog(out, data, home)
 }
 
 // tailLines returns the last n lines of data, newline-terminated — the
