@@ -460,7 +460,7 @@ func TestShellHistoryRemedySplitsOnProductionFlag(t *testing.T) {
 			ProductionIndicatorMatch: true,
 		},
 	}
-	annotateRemedies(findings, home)
+	annotateRemedies(findings, home, nil)
 	if findings[0].Remedy != RemedyMigrate {
 		t.Errorf("ordinary history remedy = %q, want %q", findings[0].Remedy, RemedyMigrate)
 	}

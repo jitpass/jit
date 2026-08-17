@@ -38,7 +38,7 @@ func TestManualActionAgreesPerFile(t *testing.T) {
 			FilePath: "/Users/alex/reports/dump-b.html", KeyName: str("JSON Web Token"),
 			ValuePreview: str("eyJh**********")},
 	}
-	annotateRemedies(findings, "/Users/alex")
+	annotateRemedies(findings, "/Users/alex", nil)
 
 	groups := triageGroupManual(findings, "/Users/alex")
 	if len(groups) != 2 {
@@ -70,7 +70,7 @@ func TestManualActionCopiesBeatMount(t *testing.T) {
 			ValuePreview: str("pgpw**********"),
 		})
 	}
-	annotateRemedies(findings, "/Users/alex")
+	annotateRemedies(findings, "/Users/alex", nil)
 
 	groups := triageGroupManual(findings, "/Users/alex")
 	if len(groups) != 1 {
@@ -102,7 +102,7 @@ func TestManualActionStillOffersMountWhereItWorks(t *testing.T) {
 			FilePath: "/Users/alex/bin/deploy.sh", KeyName: str("Database connection string"),
 			ValuePreview: str("pgpw**********")},
 	}
-	annotateRemedies(findings, "/Users/alex")
+	annotateRemedies(findings, "/Users/alex", nil)
 
 	groups := triageGroupManual(findings, "/Users/alex")
 	if len(groups) != 1 {
