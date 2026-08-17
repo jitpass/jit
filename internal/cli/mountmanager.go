@@ -98,9 +98,17 @@ type mountManager struct {
 	root       string
 	home       string
 	keyWrapper vault.KeyWrapper
-	consent    readerConsent
-	stdout     io.Writer
-	stderr     io.Writer
+	// refResolver resolves reference-kind secrets (1Password links) during
+	// resolveReal — one shared instance, so the op binary's signature is
+	// verified once per service process, not once per refresh. Resolution
+	// fires only at unlock/refresh (the user just passed Touch ID, so they
+	// are present for a 1Password prompt too) and is bounded by the
+	// resolver's own timeout; a failure keeps the mount on decoys via the
+	// existing lastResolveErr path. Nil in tests that never resolve.
+	refResolver vault.RefResolver
+	consent     readerConsent
+	stdout      io.Writer
+	stderr      io.Writer
 
 	// serveAudit turns mount reads into durable `jit audit` events, collapsed
 	// so a watcher loop can't evict the trail it is being written to. Zero
@@ -806,7 +814,7 @@ func (m *mountManager) start() {
 		fmt.Fprintf(m.stderr, "jit service: determining device recipient ID: %v\n", err)
 		return
 	}
-	v := &vault.Vault{Root: m.root, KeyWrapper: m.keyWrapper, RecipientID: deviceID}
+	v := &vault.Vault{Root: m.root, KeyWrapper: m.keyWrapper, RecipientID: deviceID, RefResolver: m.refResolver}
 	m.resolveReal(entries, v)
 }
 
