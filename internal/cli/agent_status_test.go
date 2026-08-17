@@ -12,6 +12,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -276,5 +277,140 @@ func TestWaitForAgentBuild(t *testing.T) {
 	// and all (status never challenges).
 	if !waitForAgentBuild(root, 2*time.Second) {
 		t.Fatal("an agent on this build answers; the wait must succeed")
+	}
+}
+
+// fakeLaunchdPrint pins launchctlRun to a canned `launchctl print` answer
+// (all other verbs succeed silently), so the advice-variant tests are
+// deterministic regardless of the machine's real launchd state.
+func fakeLaunchdPrint(t *testing.T, out string, err error) {
+	t.Helper()
+	restore := launchctlRun
+	t.Cleanup(func() { launchctlRun = restore })
+	launchctlRun = func(args ...string) ([]byte, error) {
+		if args[0] == "print" {
+			return []byte(out), err
+		}
+		return nil, nil
+	}
+}
+
+// TestQueryLaunchdJobState pins the (deliberately confined) parse of
+// launchctl print: the three states the health surfaces phrase advice from,
+// and the read-failure case that must degrade to unknown rather than guess.
+func TestQueryLaunchdJobState(t *testing.T) {
+	t.Run("pended spawn: loaded, runs 0, never exited", func(t *testing.T) {
+		fakeLaunchdPrint(t, "com.jitpass.agent = {\n\truns = 0\n\tlast exit code = (never exited)\n}", nil)
+		st, known := queryLaunchdJobState()
+		if !known || !st.loaded || st.runs != 0 || st.hasLastExit {
+			t.Errorf("got %+v known=%v, want loaded runs=0 no-last-exit (the incident's exact state)", st, known)
+		}
+	})
+	t.Run("ran and exited", func(t *testing.T) {
+		fakeLaunchdPrint(t, "\truns = 3\n\tlast exit code = 78\n", nil)
+		st, known := queryLaunchdJobState()
+		if !known || !st.loaded || st.runs != 3 || !st.hasLastExit || st.lastExit != 78 {
+			t.Errorf("got %+v known=%v, want loaded runs=3 lastExit=78", st, known)
+		}
+	})
+	t.Run("job not loaded is a KNOWN answer", func(t *testing.T) {
+		fakeLaunchdPrint(t, `Could not find service "com.jitpass.agent" in domain for user gui: 501`, errors.New("exit status 113"))
+		st, known := queryLaunchdJobState()
+		if !known || st.loaded {
+			t.Errorf("got %+v known=%v, want known and not loaded", st, known)
+		}
+	})
+	t.Run("any other failure is unknown, never a guess", func(t *testing.T) {
+		fakeLaunchdPrint(t, "Bad request.", errors.New("exit status 5"))
+		if _, known := queryLaunchdJobState(); known {
+			t.Error("an unreadable state must report known=false")
+		}
+	})
+}
+
+// TestInstalledNotRunningPartsVariants pins each launchd state to its
+// sentence — the vocabulary that replaced one "may have crashed or be
+// mid-restart" for every state, which the 2026-08-17 incident showed being
+// wrong on both halves (nothing crashed, nothing was mid-restart, and the
+// advised restart couldn't work).
+func TestInstalledNotRunningPartsVariants(t *testing.T) {
+	cases := []struct {
+		name, print string
+		printErr    error
+		wantDetail  string
+	}{
+		{"never started", "runs = 0\nlast exit code = (never exited)", nil,
+			"the service is installed and launchd accepted it, but never started it."},
+		{"stopped", "runs = 2\nlast exit code = 1", nil,
+			"the service stopped (last exit code 1) and launchd has not brought it back."},
+		{"dropped", `Could not find service "x"`, errors.New("exit status 113"),
+			"the service is installed but launchd has dropped it."},
+		{"unknown", "Bad request.", errors.New("exit status 5"),
+			"the service is installed but not running."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeLaunchdPrint(t, tc.print, tc.printErr)
+			detail, action := installedNotRunningParts("the service")
+			if detail != tc.wantDetail {
+				t.Errorf("detail = %q, want %q", detail, tc.wantDetail)
+			}
+			if !strings.Contains(action, "`jit service restart`") || !strings.Contains(action, "`jit service log`") {
+				t.Errorf("action must carry the restart and the log command, got %q", action)
+			}
+		})
+	}
+}
+
+// TestRestartTimeoutIsAFailure is the incident's second half as a test: a
+// reload that launchd accepts but never spawns must make `jit service
+// restart` FAIL — non-zero exit, an audit record of failure — not print
+// "still starting up" and exit 0 (which audited success: true over a broker
+// that stayed dead 71 minutes).
+func TestRestartTimeoutIsAFailure(t *testing.T) {
+	shortFixtureHome(t)
+
+	restoreWait := agentStartWait
+	agentStartWait = 50 * time.Millisecond
+	t.Cleanup(func() { agentStartWait = restoreWait })
+
+	restore := launchctlRun
+	t.Cleanup(func() { launchctlRun = restore })
+	launchctlRun = func(args ...string) ([]byte, error) {
+		if args[0] == "print" {
+			// The incident's state: job registered, spawn pended forever.
+			return []byte("runs = 0\nlast exit code = (never exited)"), nil
+		}
+		return nil, nil // bootout/bootstrap/kickstart all "succeed"
+	}
+
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"service", "restart"})
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("a restart whose service never came up must fail, got exit 0")
+	}
+	if !strings.Contains(err.Error(), "never started") || !strings.Contains(err.Error(), "runs 0") {
+		t.Errorf("the error must carry launchd's diagnosis, got %q", err)
+	}
+}
+
+// TestLockIsHonestWhenServiceDown: a not-running service holds no session,
+// so `jit lock` reports the already-true state instead of sending the user
+// on a restart errand to lock a session that doesn't exist.
+func TestLockIsHonestWhenServiceDown(t *testing.T) {
+	shortFixtureHome(t)
+
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"lock"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("lock against a dead service must succeed (the state is already true), got %v", err)
+	}
+	if !strings.Contains(buf.String(), "Already locked") {
+		t.Errorf("want the honest already-locked line, got %q", buf.String())
 	}
 }

@@ -553,15 +553,16 @@ func agentFindingsFrom(root string, st statusAgent) []checkFinding {
 			Action: "`jit service restart` to bring it back",
 		})
 	case !st.Running && st.Installed:
+		// installedNotRunningParts is the single source of this state's
+		// wording (it queries launchd for WHICH not-running state this is);
+		// doctor renders its two halves as Detail and Action rather than
+		// re-typing them — the hand-typed copy here is the drift the shared
+		// helper's comment warns about, and it happened once already.
+		detail, action := installedNotRunningParts("the service")
 		out = append(out, checkFinding{
 			Kind:   kindService,
-			Detail: "the service is installed but not running; it may have crashed, or be mid-restart.",
-			// installedNotRunningAdvice packs the restart, what it recovers,
-			// and the log command into one sentence, which is three next
-			// steps on one line. The action line takes at most one (rule:
-			// "a reader given three next steps takes none"); the log command
-			// follows as its own finding-level note rather than riding along.
-			Action: "`jit service restart` reloads it, recovering even one launchd has dropped. `jit service log` shows recent output",
+			Detail: detail,
+			Action: strings.TrimSuffix(action, "."),
 		})
 	case !st.Running:
 		// Not installed and not running is fine on its own — you just haven't
