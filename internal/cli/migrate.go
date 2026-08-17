@@ -273,9 +273,10 @@ func migrateApplyCommand(base string, args []string) string {
 
 // shellQuoteArg single-quotes an argument that would not survive a paste
 // into a shell as-is. Everyday paths pass through untouched so the
-// trailer stays readable.
+// trailer stays readable — including a leading ~/, which jit expands
+// itself (expandTilde) whether or not the shell got to it first.
 func shellQuoteArg(a string) string {
-	if a != "" && !strings.ContainsAny(a, " \t'\"\\$`(){}[]*?;&|<>#~") {
+	if a != "" && !strings.ContainsAny(a, " \t'\"\\$`(){}[]*?;&|<>#") {
 		return a
 	}
 	return "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"

@@ -87,13 +87,21 @@ the plan fixes:
 
 ```
 $ jit migrate ~/code/myapp/.env --dry-run
+[DRY RUN] Preview, this run changes nothing; the plan below is what a real run would do.
+
 jit migrate, plan
 Each modified file is backed up before it's rewritten.
 
-[.env file(s) → secrets move to the vault; the file keeps working as a live, auto-updating mount] (1)
-  • ~/code/myapp/.env
+Project files you named
 
-[DRY RUN] No files were changed. Run without --dry-run to apply this plan.
+[.env file] 1
+  → EVERY variable moves to the vault (ordinary config too, so the file still works); the file keeps working as a live, auto-updating mount
+  • ~/code/myapp/.env (3 variables, 2 secret-shaped)
+
+────────────────────────────────────────────
+  1 change planned across 1 category
+
+[DRY RUN] Apply this plan: jit migrate ~/code/myapp/.env
 ```
 
 Then apply it by dropping `--dry-run`. The same plan prints again, followed
