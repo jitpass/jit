@@ -195,6 +195,13 @@ func agentPlistNeedsRepoint(data []byte) bool {
 // sets itself up on first use, and the plist is a low-privilege, fully
 // reversible user LaunchAgent.
 func installAgentService(ttl time.Duration, consent bool) (plistPath string, running bool, err error) {
+	return installAgentServiceReady(ttl, consent, sameBuildAsThisProcess)
+}
+
+// installAgentServiceReady is installAgentService with the "it's up" test
+// injected, for the one caller whose new build is not its own: `jit upgrade`
+// (see restartServiceOntoCurrentBinary). Everything else wants the default.
+func installAgentServiceReady(ttl time.Duration, consent bool, ready agentReady) (plistPath string, running bool, err error) {
 	exePath, err := agentBinaryPath()
 	if err != nil {
 		return "", false, err
@@ -249,7 +256,7 @@ func installAgentService(ttl time.Duration, consent bool) (plistPath string, run
 	// typed right after a successful install said "not running" for the ~2s
 	// launchd took to actually start it. Wait briefly so "installed" also
 	// means "answering, on this build."
-	running = waitForAgentBuild(root, agentStartWait)
+	running = waitForAgentReady(root, agentStartWait, ready)
 	return plistPath, running, nil
 }
 
@@ -504,24 +511,61 @@ func bootstrapRaceError(launchctlOutput []byte) bool {
 // tests don't spend real wall-clock on the give-up path.
 var agentStartWait = 5 * time.Second
 
+// agentReady decides when a just-(re)started service counts as up. Two
+// implementations exist because the caller's relationship to the new build
+// differs, and getting that backwards makes the success message lie in one
+// direction or the other:
+//
+//   - sameBuildAsThisProcess: the ordinary case. The CLI doing the restart IS
+//     the binary the service will run, so build equality is exactly the
+//     postcondition, and it rules out the old process still answering while
+//     it drains its shutdown.
+//   - movedOffBuild: `jit upgrade`. The CLI doing the restart is the OLD
+//     binary — the new one was just written to disk and is what the service
+//     will exec — so equality can NEVER hold, and demanding it made every
+//     successful upgrade wait out the full timeout and then report a failure
+//     over a perfectly healthy service. What upgrade can honestly verify is
+//     that the service came back and is no longer the build it was.
+type agentReady func(st agent.Status) bool
+
+func sameBuildAsThisProcess(st agent.Status) bool { return st.Build == agent.BuildID() }
+
+func movedOffBuild(previous string) agentReady {
+	return func(st agent.Status) bool {
+		// Nothing was running before (or its build was unreadable): any agent
+		// answering now is the one this restart produced.
+		return previous == "" || st.Build != previous
+	}
+}
+
 // waitForAgentBuild polls until an agent running THIS build answers the
-// socket, or gives up. install/restart use it so their success message never
-// races launchd's actual spawn — and "the service is now running the current
-// binary" is a statement about the answering process's own BuildID, not
-// about a bare dial succeeding. The distinction is real: during a reload the
-// OLD process can still be draining its shutdown and answering the socket,
-// and a wait that only dialed would declare success on it (every path here
-// has just written or verified a plist pointing at this binary, so build
-// equality is the correct postcondition).
+// socket, or gives up.
 func waitForAgentBuild(root string, timeout time.Duration) bool {
+	return waitForAgentReady(root, timeout, sameBuildAsThisProcess)
+}
+
+// waitForAgentReady polls until an answering agent satisfies ready, so a
+// success message never races launchd's actual spawn.
+func waitForAgentReady(root string, timeout time.Duration, ready agentReady) bool {
 	client := agent.NewClient(agent.SocketPath(root))
 	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
-		if st, err := client.Status(); err == nil && st.Build == agent.BuildID() {
+		if st, err := client.Status(); err == nil && ready(st) {
 			return true
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	return false
+}
+
+// runningAgentBuild reports the build of whatever agent is answering now, ""
+// when none is. `jit upgrade` captures it BEFORE restarting so it can verify
+// the service actually moved off it.
+func runningAgentBuild(root string) string {
+	st, err := agent.NewClient(agent.SocketPath(root)).Status()
+	if err != nil {
+		return ""
+	}
+	return st.Build
 }
 
 const agentPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>

@@ -44,12 +44,16 @@ func TestAgentLogDoesNotCollapseAcrossTimes(t *testing.T) {
 }
 
 func TestAgentLogCollapsesTheReadsNoteIntoACount(t *testing.T) {
+	// The raw suffix counts what was SUPPRESSED since the last logged read,
+	// so 205 suppressed + the logged one = 206 occurrences. ×N means "N
+	// times" everywhere else in jit, so the row must say ×206 — rendering
+	// the suppressed count verbatim understated every row by one.
 	in := "2026-07-28 11:49:30 jit service: mount /Users/x/w/.env: reader pid=6067 (Code) (+205 reads since the last logged one)\n"
 	var buf bytes.Buffer
 	writeAgentLog(&buf, []byte(in), "/Users/x")
 	out := buf.String()
-	if !strings.Contains(out, "×205") {
-		t.Errorf("expected the reads note as ×205, got:\n%s", out)
+	if !strings.Contains(out, "×206") {
+		t.Errorf("expected the reads note as ×206 (205 suppressed + 1 logged), got:\n%s", out)
 	}
 	if strings.Contains(out, "since the last logged one") {
 		t.Errorf("expected the prose form gone, got:\n%s", out)
@@ -183,8 +187,8 @@ func TestAgentLogFoldsSimilarSuffix(t *testing.T) {
 	var buf bytes.Buffer
 	writeAgentLog(&buf, []byte(in), "/Users/x")
 	out := buf.String()
-	if !strings.Contains(out, "×3") {
-		t.Errorf("the similar-suffix must fold to ×3, got:\n%s", out)
+	if !strings.Contains(out, "×4") {
+		t.Errorf("the similar-suffix must fold to ×4 (3 suppressed + 1 logged), got:\n%s", out)
 	}
 	if strings.Contains(out, "since the last logged one") {
 		t.Errorf("the prose suffix must not survive the fold, got:\n%s", out)

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/fatih/color"
@@ -130,7 +131,15 @@ func collapseAgentLog(lines []string, home string) []logEntry {
 		}
 		e := logEntry{date: m[1], clock: m[2][:5], count: 1, detail: m[3]}
 		if r := readsRe.FindStringSubmatch(e.detail); r != nil {
-			e.detail = readsRe.ReplaceAllString(e.detail, "") + " ×" + r[1]
+			// The raw suffix counts what was SUPPRESSED ("+3 since the last
+			// logged one"), so the total occurrences are one more — the
+			// logged one plus the three. ×N means "N times" everywhere else
+			// in jit, so rendering the suppressed count verbatim understated
+			// every row by one (and "×1" claimed a single occurrence for a
+			// line that actually happened twice).
+			if n, err := strconv.Atoi(r[1]); err == nil {
+				e.detail = readsRe.ReplaceAllString(e.detail, "") + " ×" + strconv.Itoa(n+1)
+			}
 		}
 		if mm := mountRe.FindStringSubmatch(e.detail); mm != nil {
 			e.subject, e.detail = mm[1], mm[2]
