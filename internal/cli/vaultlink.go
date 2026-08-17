@@ -39,6 +39,10 @@ var vaultLinkCmd = &cobra.Command{
 		"CLI fails here, not at first use; --no-verify skips that (offline setup).\n" +
 		"Requires the 1Password CLI (`brew install 1password-cli`) with the\n" +
 		"desktop app integration on.\n\n" +
+		"First use in a terminal session may show two prompts: jit's Touch ID\n" +
+		"and 1Password's own authorization dialog. Each gates a different thing\n" +
+		"(jit: this process gets the secret; 1Password: this terminal may use\n" +
+		"its CLI) and both remember, so later uses are quiet.\n\n" +
 		"Requires a fresh Touch ID/passcode on every run, never the cached service\n" +
 		"session, same as `jit vault set`.\n\n" +
 		"Overwriting an existing secret asks first; -y/--yes skips that question,\n" +
@@ -62,6 +66,11 @@ var vaultLinkCmd = &cobra.Command{
 		// it, and where "op is not installed / not signed in / item gone"
 		// surfaces without costing a fingerprint on a doomed link.
 		if !vaultLinkNoVerify {
+			// The cue exists because op can block silently on 1Password's
+			// authorization dialog — without it, first use reads as a hang
+			// and nothing on screen says which prompt belongs to whom.
+			// stderr, so stdout stays byte-clean for pipes.
+			fmt.Fprintln(cmd.ErrOrStderr(), "checking with 1Password (its prompt may appear)...")
 			if _, err := onepassword.New().ResolveRef(ref); err != nil {
 				return fmt.Errorf("jit vault link: %w (use --no-verify to link anyway)", err)
 			}

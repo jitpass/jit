@@ -19,6 +19,11 @@ CLI fails here, not at first use; --no-verify skips that (offline setup).
 Requires the 1Password CLI (`brew install 1password-cli`) with the
 desktop app integration on.
 
+First use in a terminal session may show two prompts: jit's Touch ID
+and 1Password's own authorization dialog. Each gates a different thing
+(jit: this process gets the secret; 1Password: this terminal may use
+its CLI) and both remember, so later uses are quiet.
+
 Requires a fresh Touch ID/passcode on every run, never the cached service
 session, same as `jit vault set`.
 
