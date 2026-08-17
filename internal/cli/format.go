@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -120,4 +121,25 @@ func pluralWord(n int, singular, plural string) string {
 // form-letter style the reports had drifted into.
 func countWord(n int, singular, plural string) string {
 	return fmt.Sprintf("%d %s", n, pluralWord(n, singular, plural))
+}
+
+// humanAgo renders an elapsed duration at the precision a human scanning
+// a status or plan line wants ("37s", "2m", "3h", "12d") — never "2m0s".
+// Shared with jit migrate undo's backup ages, where "3d" vs "2m" is what
+// tells a human whether edits-since-backup are plausible.
+func humanAgo(d time.Duration) string {
+	switch {
+	case d < 0:
+		// An event stamped ahead of the reader's clock (durable history
+		// crossing an NTP step-back) would otherwise render as "-3s ago".
+		return "0s"
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }

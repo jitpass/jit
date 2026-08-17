@@ -1,13 +1,13 @@
 # Service reliability: demand-spawned lifecycle, honest health, a broker that keeps its promises
 
-**Status: phases 1-4 implemented, 2026-08-17 (phases 1-2 on branch
-service-reliability, PR #72; phase 3 stacked as service-log-hygiene,
-PR #73; phase 4 stacked as service-broker-hardening, PR #74; both
-wording previews approved by eye the same day). Phase 5 (the
-mechanical file split) is specified but not yet built. Drafted from a
-full review of the service surface (three parallel code reviews over
-`internal/agent`, `internal/cli/agent*.go` and the log/history/status
-surfaces, 43 findings) plus a verified production incident.**
+**Status: fully implemented, 2026-08-17, as a stack of four PRs — #72
+(phases 1-2, branch service-reliability), #73 (phase 3,
+service-log-hygiene), #74 (phase 4, service-broker-hardening), #75
+(phase 5, service-file-split). Both wording previews were approved by
+eye the same day. Drafted from a full review of the service surface
+(three parallel code reviews over `internal/agent`,
+`internal/cli/agent*.go` and the log/history/status surfaces, 43
+findings) plus a verified production incident.**
 
 ## The incident that forced this
 
@@ -225,8 +225,12 @@ layer that actually covers today's old agents, which would ignore
 `MinProtocol` too — a CLIENT-side check of the agent's reported
 protocol before a disclosed grant is sent at all, refusing to ask
 rather than asking something that cannot enforce the answer.
-`DiscloseReason` is also set as a last-resort trigger for an agent
-from the window when that was the flag's spelling.
+`DiscloseReason` briefly rode along as a last-resort trigger; the
+post-implementation review removed it as dead — the pre-check already
+refuses every pre-Protocol agent (a superset of the DiscloseReason-only
+era, which release history shows never shipped: both spellings first
+appeared in v0.57.0), and a compiled-in reason string on the wire is
+the caller-visible-text shape the field was retired for.
 Today a new CLI's `jit run --with` against an old service performs a
 machine-wide reveal with NO disclosed challenge: the exact attack
 `Request.Disclose`'s doc names, and the fail-open sibling of the
@@ -241,6 +245,21 @@ rationale applies verbatim to the op with the widest scope in the
 product (OpTrust: whole-tree consent bypass) and was not carried
 over. Refusals stay recorded (KindDenied), the cooldown-clearing
 unlock semantics stay.
+
+Honesty about what this closes, from the post-implementation review:
+the key is op + launcher (the consent engine's own anchor, with the
+same acknowledged coarseness), and a launcher is a NAME — an adversary
+re-execing its loop under renamed wrappers mints a fresh key per
+iteration, and a fresh key's first attempt always prompts. This
+throttles accidental and naive loops, which are the storms actually
+observed; it does not defeat a deliberately churning adversary, whom
+the threat model already concedes same-user execution to. Identity
+here still never DECIDES anything: it only ever refuses a prompt,
+never grants one. A throttled attempt records nothing — no prompt
+happened — which the review made load-bearing: the first
+implementation returned a default-Kind event that every caller handed
+to the durable sink, appending fabricated "unlock" lines at
+connection rate (caught before merge, regression-tested since).
 
 **D14. Audit truth fixes.**
 - Lazy session expiry records its KindLock. Implemented one step
@@ -301,6 +320,22 @@ recordUse family), with `server.go` keeping the struct, hooks and
 dispatch. The struct's three locking regimes are currently
 reconstructed by scanning 1760 lines; the split makes each regime's
 home explicit.
+
+**As implemented.** `agent.go` was removed outright (its six
+successors cover it); `humanAgo` went to `format.go` rather than a
+service file, since `migrate undo` shares it. Result: `agent.go` 2069
+→ six files of 173-546, and `server.go` 2062 → 687 plus four files of
+70-853. `session.go` is the largest at 853 rather than the estimated
+450 — the phase-4 disclosed-prompt backoff landed there, and it is
+still one concern (the session state machine) with one locking
+regime, so it was left whole rather than split on size alone.
+
+Verified as pure movement rather than asserted: the set of top-level
+declarations before and after is byte-identical per package, checked
+mechanically, and every gate passes unchanged. One test needed
+editing, and only because it names source files — the
+`agentPlistNeedsRepoint` source guard now reads `servicecmds.go`
+instead of `agent.go`.
 
 ## Test plan
 

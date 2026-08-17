@@ -98,6 +98,17 @@ session locks after its TTL (default 5 minutes, user-configurable with
 machine sleeps - the idle TTL is a proxy for "the user left," and those two
 events are the OS saying so outright.
 
+Version skew across that socket **fails closed**, the same rule the vault
+applies to its envelopes. The wire protocol degrades by silently dropping
+fields a peer doesn't know, which is fail-open for any field whose presence
+is what enforces something - so requests carry a minimum protocol the
+service refuses when it is too old to serve them as asked, and the client
+checks the service's reported protocol before sending anything whose safety
+depends on enforcement it cannot otherwise verify (a machine-wide credential
+grant is refused outright against a service too old to prove it would have
+prompted). An out-of-date service is an error naming the fix, never a
+silently weaker gate.
+
 The TTL is an *inactivity* timeout, so use extends it - and on its own that
 is a bound a busy caller never reaches. A **hard ceiling of 8 hours** from
 the unlock itself runs alongside it: past that the session ends and the next

@@ -111,6 +111,13 @@ the keyboard) clears every pause outright. (Only a *fresh* one: `jit unlock`
 against an already-open session prompts nobody, so it deliberately clears
 nothing.)
 
+The same pause covers the *widest* approvals too - `jit run --trust`,
+creating or extending a [process grant](./grants.md), and a `--with` global
+credential grant. Those prompts hand over the most, which made them exactly
+the ones a looping process would hammer: without the pause, declining bought
+you nothing but the next dialog, until approving became the only way to make
+it stop.
+
 ## Pre-authorizing a whole run: `jit run --trust`
 
 When you deliberately launch something that reaches for several credentials (a

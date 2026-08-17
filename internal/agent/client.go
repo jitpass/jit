@@ -315,8 +315,7 @@ func (c *Client) RunForPID(mounts []RunMount, pid int32) error {
 // machine-wide credential must not be phrased by the process asking for it —
 // and "the process asking" is only ever `jit run` when nothing malicious is
 // on the machine.
-// Version skew is handled BEFORE the request goes out, and the belt is
-// deliberately worn with braces:
+// Version skew is handled BEFORE the request goes out, twice over:
 //
 //   - MinProtocol makes an agent that knows the field refuse rather than
 //     under-enforce.
@@ -325,11 +324,13 @@ func (c *Client) RunForPID(mounts []RunMount, pid int32) error {
 //     ignores Disclose, so it would perform this machine-wide reveal with no
 //     prompt at all. Refusing to ask is the only fail-closed answer
 //     available from this side of the socket.
-//   - DiscloseReason is set as a last-resort trigger for an agent from the
-//     window where that was the flag's spelling. It is honored there as a
-//     TRIGGER only, and the text is jit's own, not a caller's — the
-//     prompt-spoofing hazard that retired the field is about caller-supplied
-//     wording reaching a human, and there is no caller here but jit run.
+//
+// No DiscloseReason legacy trigger rides along: the pre-check already
+// refuses every pre-Protocol agent, which is a superset of the
+// DiscloseReason-only era — and the release history says that era never
+// shipped anyway (Disclose and DiscloseReason both first appeared in
+// v0.57.0). A dead const inviting caller-visible reason strings back into
+// the codebase is worse than no belt.
 func (c *Client) GrantGlobalForPID(mounts []RunMount, pid int32) error {
 	st, err := c.Status()
 	if err != nil {
@@ -339,20 +340,14 @@ func (c *Client) GrantGlobalForPID(mounts []RunMount, pid int32) error {
 		return fmt.Errorf("the running background service is too old to enforce the disclosed-credential prompt this grant requires (it speaks protocol %d, this needs %d), and granting a machine-wide credential without that prompt is exactly what the check prevents; run `jit service restart` to move it onto the current binary", st.Protocol, protocolDisclosedGate)
 	}
 	_, err = c.call(Request{
-		Op:             OpRevealPID,
-		RunMounts:      mounts,
-		TargetPID:      pid,
-		Disclose:       true,
-		DiscloseReason: legacyDiscloseTrigger,
-		MinProtocol:    protocolDisclosedGate,
+		Op:          OpRevealPID,
+		RunMounts:   mounts,
+		TargetPID:   pid,
+		Disclose:    true,
+		MinProtocol: protocolDisclosedGate,
 	})
 	return err
 }
-
-// legacyDiscloseTrigger is the DiscloseReason text sent purely so a
-// pre-Disclose agent still takes its gate. Phrased as what is happening
-// rather than as reassurance, since such an agent renders it verbatim.
-const legacyDiscloseTrigger = "grant a machine-wide credential to this run"
 
 // GrantCreate asks the agent to create a process grant: after one disclosed
 // challenge (agent-worded, like every prompt), pid's process tree may unwrap
