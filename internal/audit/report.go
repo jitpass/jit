@@ -953,6 +953,24 @@ func writeRenderItemText(w io.Writer, item renderItem, home string, cols columns
 		cols.writeFindingRow(w, f, true)
 		fmt.Fprintln(w)
 	}
+	// One note per file, never per finding: op:// values are reference-
+	// suppressed (IsOpSecretReference), so a 1Password user whose flagged
+	// .env mixes plaintext with references learns here that migrate
+	// converts the whole file cleanly — references stay linked, not copied.
+	opRefs := 0
+	for _, f := range item.findings {
+		if f.OpRefCount > opRefs {
+			opRefs = f.OpRefCount
+		}
+	}
+	if opRefs > 0 {
+		fmt.Fprint(w, findingIndent+style.GlyphBranch+" ")
+		termtext.Wrap(w, len(findingIndent)+2, findingIndent+"  ",
+			highlightCmds(fmt.Sprintf("%s, not exposed; `jit migrate` keeps %s linked",
+				countWord(opRefs, "value is a 1Password reference", "values are 1Password references"),
+				pluralWord(opRefs, "it", "them"))))
+		fmt.Fprintln(w)
+	}
 }
 
 // displayEvidence is Evidence prepared for the terminal: when the pattern

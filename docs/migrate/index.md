@@ -109,6 +109,12 @@ them would mean one `rm` later breaking every tool that shares it.
 [`jit vault duplicates`](../vault/maintenance.md#jit-vault-duplicates---find-groups-that-hold-the-same-secrets)
 compares the values and says which copies, if any, are safe to retire.
 
+If the [1Password CLI](../vault/1password.md) is installed and signed
+in, migrate also checks each value against your 1Password (once per
+run, after you confirm): a value already stored there is vaulted as an
+`op://` reference instead of a copy, so rotating it in 1Password is the
+only rotation you do. `--no-1password` stores plain copies instead.
+
 ## What each category turns into
 
 Limit a run to specific categories with `--only`
