@@ -94,14 +94,18 @@ var agentStatusCmd = &cobra.Command{
 		if errors.Is(err, agent.ErrNotRunning) {
 			installed := agentInstalled()
 			if agentStatusFormat == "json" {
-				return writeJSON(cmd.OutOrStdout(), agentStatusResult{Installed: installed})
+				// Mounts is [] rather than null, as its own doc comment
+				// promises: "never omitted outright, so a script parsing
+				// this doesn't need to special-case field-missing vs empty
+				// list". A nil slice marshals to null and broke that.
+				return writeJSON(cmd.OutOrStdout(), agentStatusResult{Installed: installed, Mounts: []agent.MountRevealStatus{}})
 			}
 			if installed {
 				// An installed agent that isn't answering is a different
 				// situation from one that was never set up — launchd was
 				// supposed to keep this one alive, so "run install" is the
 				// wrong advice and hides that something actually failed.
-				fmt.Fprintln(cmd.OutOrStdout(), installedNotRunningAdvice("jit's background service"))
+				fmt.Fprintln(cmd.OutOrStdout(), hlCmds(installedNotRunningAdvice("jit's background service")))
 				return nil
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), hlCmds("jit's background service is not running. Run `jit service restart` to start it (or just use jit and it starts on its own)."))
