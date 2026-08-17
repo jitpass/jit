@@ -19,9 +19,14 @@ import (
 	"github.com/jitpass/jit/internal/selfpath"
 )
 
-// This file is every interaction with launchd: writing the LaunchAgent plist,
-// reading values back out of it, (re)loading it, demanding a spawn, and
-// waiting for the result — plus the one place that parses `launchctl print`.
+// This file is the launchd seam and its mechanics: writing the LaunchAgent
+// plist, reading values back out of it, (re)loading it, demanding a spawn,
+// and waiting for the result — plus the one place that parses `launchctl
+// print`. Two callers compose launchctl verbs remotely through the seam
+// rather than through a helper here: the self-retire kickstart (servicerun.go,
+// which must run inside the daemon) and uninstall's bootout (uninstall.go,
+// which tears down rather than manages). The plist path/existence probes live
+// in un-gated agentinstalled.go so the portable status surface can ask.
 //
 // Two rules govern all of it, both learned from the 2026-08-17 incident
 // (design/service-reliability.md):

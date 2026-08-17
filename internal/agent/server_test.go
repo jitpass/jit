@@ -1754,6 +1754,12 @@ func TestLazyExpiryStillRecordsTheLock(t *testing.T) {
 	}
 	wipe(mek)
 
+	// A use inside the session, still pending in the aggregation window when
+	// the session lazily ends — it must land BEFORE the lock in the durable
+	// trail, the order lockIfGen documents ("the order it actually
+	// happened"), not after it.
+	s.recordUse(OpUnwrap, nil, "stripe/live-key")
+
 	// Expire the session in place and stop the timer, modelling the race the
 	// bug needed: the timer has not run, and a request arrives.
 	s.mu.Lock()
@@ -1777,13 +1783,23 @@ func TestLazyExpiryStillRecordsTheLock(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	var locks int
-	for _, e := range events {
-		if e.Kind == KindLock {
+	lockAt, useAt := -1, -1
+	for i, e := range events {
+		switch e.Kind {
+		case KindLock:
 			locks++
+			lockAt = i
+		case KindUse:
+			useAt = i
 		}
 	}
 	if locks != 1 {
 		t.Errorf("durable trail got %d lock events, want exactly 1", locks)
+	}
+	if useAt == -1 {
+		t.Error("the session's pending use never reached the durable trail")
+	} else if lockAt != -1 && useAt > lockAt {
+		t.Errorf("the session's use landed AFTER its lock (use at %d, lock at %d): the trail reordered what happened", useAt, lockAt)
 	}
 }
 
@@ -1837,9 +1853,14 @@ func TestDisclosedGrantRefusesAnOldAgent(t *testing.T) {
 	}
 }
 
-// The same call against a current agent still works, and carries both the
-// MinProtocol requirement and the legacy trigger — the belt and the braces
-// must not have broken the ordinary path.
+// The same call against a current agent still works, and carries the
+// disclosed flag and the MinProtocol requirement — the pre-check must not
+// have broken the ordinary path. It must also NOT carry DiscloseReason: the
+// legacy trigger briefly rode along "for pre-Disclose agents", but the
+// pre-check already refuses every pre-Protocol agent (a superset of that
+// era, which release history says never shipped anyway), and a reason
+// string on the wire is exactly the caller-visible-text shape the field was
+// retired for.
 func TestDisclosedGrantSendsRequirementAndLegacyTrigger(t *testing.T) {
 	socketPath := shortSocketPath(t)
 	l, err := net.Listen("unix", socketPath)
@@ -1884,12 +1905,58 @@ func TestDisclosedGrantSendsRequirementAndLegacyTrigger(t *testing.T) {
 			if req.MinProtocol < protocolDisclosedGate {
 				t.Errorf("MinProtocol = %d, want at least %d so a knowing-but-older agent refuses rather than under-enforcing", req.MinProtocol, protocolDisclosedGate)
 			}
-			if req.DiscloseReason == "" {
-				t.Error("the legacy trigger must be set so a pre-Disclose agent still takes its gate")
+			if req.DiscloseReason != "" {
+				t.Errorf("DiscloseReason = %q; the deprecated field must stay empty — this version's Client never sends it", req.DiscloseReason)
 			}
 			return
 		case <-deadline:
 			t.Fatal("no reveal_pid request arrived")
+		}
+	}
+}
+
+// TestThrottledDisclosedAttemptRecordsNothing is the regression test for a
+// real audit-falsification bug the phase-4 review caught: the backoff early
+// return handed callers unlockEvent(op, c) — Kind defaulting to KindUnlock —
+// and every caller passed it to OnSessionEvent unconditionally, so each
+// throttled retry appended a fabricated "unlock" line to the durable trail
+// `jit audit` reads: unlocks that never happened, attributed to the caller,
+// at connection rate with no cap, and never recorded in the ring (so file
+// and ring disagreed). A throttled attempt shows no prompt and must record
+// NOTHING; the one real KindDenied from the refusal that armed the pause is
+// the whole truth of the episode.
+func TestThrottledDisclosedAttemptRecordsNothing(t *testing.T) {
+	var events []SessionEvent
+	var mu sync.Mutex
+	s := NewServer(filepath.Join(t.TempDir(), "x.sock"), func() MEKFetcher {
+		return fnFetcher{fn: func(string) ([]byte, error) { return nil, errors.New("declined") }}
+	}, time.Minute)
+	s.OnSessionEvent = func(e SessionEvent) {
+		mu.Lock()
+		events = append(events, e)
+		mu.Unlock()
+	}
+
+	c := &caller{pid: 4242, self: lineage.Process{PID: 4242, ExecPath: "/bin/loop"}}
+
+	// One real declined prompt, then a storm of throttled retries through
+	// EVERY caller of discloseChallengeOp.
+	if err := s.forceDisclosedChallenge("grant something wide", c); err == nil {
+		t.Fatal("the declined challenge must error")
+	}
+	for i := 0; i < 20; i++ {
+		_ = s.forceDisclosedChallenge("grant something wide", c)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 1 || events[0].Kind != KindDenied {
+		t.Fatalf("1 real decline + 20 throttled retries recorded %d events (want exactly 1 KindDenied): %+v", len(events), events)
+	}
+	// And the ring agrees with the file: no unlock ever happened.
+	for _, e := range s.history() {
+		if e.Kind == KindUnlock {
+			t.Fatalf("the in-memory ring carries a fabricated unlock: %+v", e)
 		}
 	}
 }

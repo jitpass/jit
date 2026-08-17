@@ -245,7 +245,8 @@ func (s *Server) createGrant(req Request, c *caller) Response {
 	}
 	reason := grantCreateReason(who, under, req.GrantProfiles, len(secrets), ttl)
 	event, mek, err := s.discloseChallengeOp(reason, OpGrantCreate, c)
-	if s.OnSessionEvent != nil {
+	// nil event = throttled, no prompt shown — nothing true to record.
+	if event != nil && s.OnSessionEvent != nil {
 		s.OnSessionEvent(*event)
 	}
 	if err != nil {
@@ -526,13 +527,23 @@ func (s *Server) extendGrant(req Request, c *caller) Response {
 	// extension so the prompt says what is actually happening.
 	reason := truncate("extend: "+grantCreateReason(name, under, profiles, count, ttl), maxReasonLen)
 	event, mek, err := s.discloseChallengeOp(reason, OpGrantExtend, c)
-	if s.OnSessionEvent != nil {
+	// nil event = throttled, no prompt shown — nothing true to record.
+	if event != nil && s.OnSessionEvent != nil {
 		s.OnSessionEvent(*event)
 	}
 	if err != nil {
 		return Response{OK: false, Error: err.Error()}
 	}
 	wipe(mek)
+
+	// Re-verify the root AFTER the prompt too, the same both-sides shape
+	// creation uses: the prompt can sit on screen for two minutes, and the
+	// echoed status used to hard-code RootAlive true — an OK describing a
+	// grant whose process died mid-prompt, which the next prune would end.
+	rootAliveNow := false
+	if cur, alive := lineage.ProcessStartTime(rootPID); alive && cur == rootStart {
+		rootAliveNow = true
+	}
 
 	s.grantMu.Lock()
 	g = s.grants[req.GrantID] // re-check: it may have ended during the prompt
@@ -541,7 +552,7 @@ func (s *Server) extendGrant(req Request, c *caller) Response {
 		return Response{OK: false, Error: fmt.Sprintf("grant_extend: grant %q ended while the prompt was up", req.GrantID)}
 	}
 	g.expires = time.Now().Add(ttl)
-	st := g.status(true)
+	st := g.status(rootAliveNow)
 	expires := g.expires
 	s.grantMu.Unlock()
 	s.armGrantExpiry(req.GrantID, expires)
@@ -632,11 +643,21 @@ func (s *Server) pruneGrants(now time.Time) {
 // deadline re-check is the guard).
 func (s *Server) armGrantExpiry(id string, expires time.Time) {
 	delay := time.Until(expires) + time.Second
-	timer := time.AfterFunc(delay, func() {
+	var timer *time.Timer
+	timer = time.AfterFunc(delay, func() {
 		s.grantMu.Lock()
 		g := s.grants[id]
 		expired := g != nil && time.Now().After(g.expires)
-		delete(s.grantTimers, id)
+		// Unregister only OUR OWN handle. A stale callback (fired, then
+		// blocked on grantMu while an extend re-armed) would otherwise
+		// delete the SUCCESSOR's entry — the new timer would still fire
+		// correctly, but nothing could stop it anymore, quietly reinstating
+		// the leak this map exists to close. Reading `timer` here is safe:
+		// the closure cannot run before AfterFunc returns it, and the
+		// minimum grant TTL dwarfs the assignment window regardless.
+		if s.grantTimers[id] == timer {
+			delete(s.grantTimers, id)
+		}
 		s.grantMu.Unlock()
 		if expired {
 			s.endGrant(id, grantEndExpired)

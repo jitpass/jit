@@ -260,11 +260,13 @@ type Server struct {
 	// the anchor maxSessionAge measures from. Unlike expiry it is never
 	// pushed forward by use; that is the whole point of it.
 	sessionStart time.Time
-	// pendingLockNotify is a lock event that has been recorded in the ring
-	// (and in lastLock) but not yet handed to OnSessionEvent, because it was
-	// created under mu and that callback must never run there. Set only by
-	// collectIfDoneLocked; drained by notifyPendingLock. Guarded by mu.
-	pendingLockNotify *SessionEvent
+	// pendingLockNotify is a lazily-collected session's events — its flushed
+	// uses, then its lock — already recorded in the ring (and lastLock) but
+	// not yet handed to OnSessionEvent, because they were created under mu
+	// and that callback must never run there. Appended only by
+	// collectIfDoneLocked; drained in order by notifyPendingLock. Guarded by
+	// mu.
+	pendingLockNotify []SessionEvent
 	lockTimer         *time.Timer
 	// lastDenied is when a challenge most recently failed — what the
 	// denial cooldown above measures from — and lastDeniedCause is why, so

@@ -154,7 +154,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		// Enrich with its lineage while it's still connected — that identity
 		// is exactly what the audit trail is for.
 		s.recordServeError("reject", fmt.Sprintf("rejected peer: %v", err), s.identify(conn))
-		_ = json.NewEncoder(conn).Encode(Response{OK: false, Error: fmt.Sprintf("rejected: %v", err)})
+		_ = json.NewEncoder(conn).Encode(Response{OK: false, Error: fmt.Sprintf("rejected: %v", err), Protocol: Protocol})
 		return
 	}
 
@@ -175,7 +175,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			return
 		}
 		s.recordServeError("decode", fmt.Sprintf("bad request: %v", err), s.identify(conn))
-		_ = json.NewEncoder(conn).Encode(Response{OK: false, Error: fmt.Sprintf("bad request: %v", err)})
+		_ = json.NewEncoder(conn).Encode(Response{OK: false, Error: fmt.Sprintf("bad request: %v", err), Protocol: Protocol})
 		return
 	}
 

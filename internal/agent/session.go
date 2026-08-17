@@ -26,7 +26,13 @@ import (
 //
 //   - A callback (OnUnlock, OnLock, OnSessionEvent) is NEVER invoked while mu
 //     is held. Anything a callback needs is collected under the lock and
-//     acted on after releasing it.
+//     acted on after releasing it. One acknowledged wrinkle: OnSessionEvent
+//     can fire while challengeMu (not mu) is held — challengeUnlock's
+//     re-check calls touchSession, whose deferred notifyPendingLock can
+//     drain ANOTHER goroutine's just-parked lazy-lock event. The window is a
+//     few instructions wide and the sink is a plain file append that never
+//     re-enters Server, so it cannot deadlock; a callback that ever calls
+//     back into a challenge path would change that.
 //   - challengeMu is held across a prompt, so a second caller queues rather
 //     than stacking a second dialog on the user's screen.
 //   - Every MEK handed out is a copy (mekCopy); the cache is never aliased.
@@ -115,8 +121,11 @@ func (s *Server) forceDisclosedChallenge(reason string, c *caller) error {
 	event, mek, err := s.discloseChallengeOp(reason, OpRevealPID, c)
 	wipe(mek)
 	// Outside challengeMu — see ensureUnlockedNotify for what happens when a
-	// callback runs under it.
-	if s.OnSessionEvent != nil {
+	// callback runs under it. event is nil for a throttled attempt: no
+	// prompt happened, so there is NOTHING to record — see the backoff
+	// return in discloseChallengeOp for the audit-falsification bug that
+	// made this nil-check load-bearing.
+	if event != nil && s.OnSessionEvent != nil {
 		s.OnSessionEvent(*event)
 	}
 	return err
@@ -125,9 +134,11 @@ func (s *Server) forceDisclosedChallenge(reason string, c *caller) error {
 // discloseChallengeOp is the serialized half every disclosed challenge shares:
 // it holds challengeMu across the prompt (so a disclosed challenge queues
 // behind an in-flight one rather than stacking a second dialog) and returns
-// the event for the caller to notify on, outside the lock. The event is never
-// nil; op stamps it, so a grant creation's approval and a reveal's approval
-// stay distinguishable in history.
+// the event for the caller to notify on, outside the lock. The event is nil
+// exactly when NO PROMPT HAPPENED (the backoff turned the attempt away), and
+// every caller must nil-check before notifying; op stamps the non-nil ones,
+// so a grant creation's approval and a reveal's approval stay
+// distinguishable in history.
 //
 // On approval it also returns the challenge's MEK instead of discarding it.
 // Session state is still never touched — a disclosed challenge remains a
@@ -144,8 +155,18 @@ func (s *Server) discloseChallengeOp(reason, op string, c *caller) (*SessionEven
 	// the denial cooldown on the unlock path: a caller that queued behind
 	// the very challenge just refused must be turned away too, or a loop
 	// gets a second dialog the instant the first is dismissed.
+	//
+	// The event returned here is NIL, emphatically. A throttled attempt
+	// showed no prompt and unlocked nothing; this used to return
+	// unlockEvent(op, c) — whose Kind defaults to KindUnlock — and every
+	// caller handed it to OnSessionEvent, so each retry during a pause
+	// appended a fabricated "unlock" line to the durable trail `jit audit`
+	// reads: unlocks that never happened, attributed to the caller, at
+	// connection rate with no cap (the ring never saw them, so the file and
+	// the ring disagreed too). The one real KindDenied from the refusal that
+	// armed the pause is the whole truth of the episode.
 	if err := s.discloseBackoffLocked(op, c); err != nil {
-		return unlockEvent(op, c), nil, err
+		return nil, nil, err
 	}
 
 	pending := unlockEvent(op, c)
@@ -233,7 +254,13 @@ func (s *Server) discloseBackoffLocked(op string, c *caller) error {
 		return nil
 	}
 	if remaining := time.Until(r.until); remaining > 0 {
-		return fmt.Errorf("this authorization was declined %s; not asking again for %s (approve one, or run `jit unlock`, to clear the pause)",
+		// No "run `jit unlock` to clear it" advice, deliberately: the clear
+		// is gated on a FRESH unlock, and a disclosed challenge usually runs
+		// against an already-open session — where `jit unlock` prompts
+		// nobody and clears nothing, so the advice failed exactly when it
+		// was most likely to be tried. The pause is seconds; it explains
+		// itself.
+		return fmt.Errorf("this authorization was declined %s; not asking again for %s",
 			plural(r.count, "time"), remaining.Round(time.Second))
 	}
 	return nil
@@ -600,14 +627,22 @@ func (s *Server) collectIfDoneLocked(now time.Time) bool {
 	// The ring and lastLock are updated under mu (both require it); the
 	// durable OnSessionEvent hand-off cannot run here, so it is parked for
 	// notifyPendingLock to drain outside the lock.
+	//
+	// Pending uses flush FIRST, exactly as lockIfGen orders them: they
+	// happened inside the session this collection ends, and recording the
+	// lock ahead of them would file a session's own uses after its end —
+	// and, in the usual continuation (the same request goes straight on to
+	// a fresh unlock, whose armLockTimer neutralizes the stale timer), after
+	// the NEXT session's unlock line too.
 	cause := fmt.Sprintf("%s idle timeout", s.ttl)
 	if aged {
 		cause = fmt.Sprintf("%s maximum session age", s.maxSessionAge)
 	}
-	event := &SessionEvent{UnixTime: now.Unix(), Kind: KindLock, Cause: cause}
-	s.lastLock = event
-	s.recordEvent(*event)
-	s.pendingLockNotify = event
+	event := SessionEvent{UnixTime: now.Unix(), Kind: KindLock, Cause: cause}
+	s.lastLock = &event
+	flushed := s.flushUsesLocked(true, now)
+	s.recordEvent(event)
+	s.pendingLockNotify = append(s.pendingLockNotify, append(flushed, event)...)
 
 	wipe(s.mek)
 	unlockMemory(s.mek)
@@ -615,17 +650,20 @@ func (s *Server) collectIfDoneLocked(now time.Time) bool {
 	return true
 }
 
-// notifyPendingLock hands a lazily-collected session's lock event to the
-// durable sink, outside mu. Every caller of collectIfDoneLocked calls it once
-// it has released the lock; it is a no-op when nothing was collected, so
-// calling it unconditionally is correct and cheap.
+// notifyPendingLock hands a lazily-collected session's parked events (its
+// flushed uses, then its lock) to the durable sink, outside mu. Every caller
+// of collectIfDoneLocked calls it once it has released the lock; it is a
+// no-op when nothing was collected, so calling it unconditionally is correct
+// and cheap.
 func (s *Server) notifyPendingLock() {
 	s.mu.Lock()
-	event := s.pendingLockNotify
+	events := s.pendingLockNotify
 	s.pendingLockNotify = nil
 	s.mu.Unlock()
-	if event != nil && s.OnSessionEvent != nil {
-		s.OnSessionEvent(*event)
+	if s.OnSessionEvent != nil {
+		for _, e := range events {
+			s.OnSessionEvent(e)
+		}
 	}
 }
 

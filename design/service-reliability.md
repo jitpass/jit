@@ -225,8 +225,12 @@ layer that actually covers today's old agents, which would ignore
 `MinProtocol` too — a CLIENT-side check of the agent's reported
 protocol before a disclosed grant is sent at all, refusing to ask
 rather than asking something that cannot enforce the answer.
-`DiscloseReason` is also set as a last-resort trigger for an agent
-from the window when that was the flag's spelling.
+`DiscloseReason` briefly rode along as a last-resort trigger; the
+post-implementation review removed it as dead — the pre-check already
+refuses every pre-Protocol agent (a superset of the DiscloseReason-only
+era, which release history shows never shipped: both spellings first
+appeared in v0.57.0), and a compiled-in reason string on the wire is
+the caller-visible-text shape the field was retired for.
 Today a new CLI's `jit run --with` against an old service performs a
 machine-wide reveal with NO disclosed challenge: the exact attack
 `Request.Disclose`'s doc names, and the fail-open sibling of the
@@ -241,6 +245,21 @@ rationale applies verbatim to the op with the widest scope in the
 product (OpTrust: whole-tree consent bypass) and was not carried
 over. Refusals stay recorded (KindDenied), the cooldown-clearing
 unlock semantics stay.
+
+Honesty about what this closes, from the post-implementation review:
+the key is op + launcher (the consent engine's own anchor, with the
+same acknowledged coarseness), and a launcher is a NAME — an adversary
+re-execing its loop under renamed wrappers mints a fresh key per
+iteration, and a fresh key's first attempt always prompts. This
+throttles accidental and naive loops, which are the storms actually
+observed; it does not defeat a deliberately churning adversary, whom
+the threat model already concedes same-user execution to. Identity
+here still never DECIDES anything: it only ever refuses a prompt,
+never grants one. A throttled attempt records nothing — no prompt
+happened — which the review made load-bearing: the first
+implementation returned a default-Kind event that every caller handed
+to the durable sink, appending fabricated "unlock" lines at
+connection rate (caught before merge, regression-tested since).
 
 **D14. Audit truth fixes.**
 - Lazy session expiry records its KindLock. Implemented one step
