@@ -77,7 +77,10 @@ var agentRunCmd = &cobra.Command{
 		// bootout guarantees the singleton, and a mid-teardown predecessor
 		// still answering the socket would turn this probe into a crash loop.
 		if os.Getppid() != 1 && agent.NewClient(agent.SocketPath(root)).Reachable() {
-			return fmt.Errorf("jit service run: an agent is already running and answering on %s; `jit service restart` restarts it", agent.SocketPath(root))
+			// "the background service", not "an agent": this is the only
+			// surface a user would meet the word, and every other one
+			// (help, status, doctor) says service.
+			return fmt.Errorf("jit service run: the background service is already running and answering on %s; use `jit service restart` to restart it", agent.SocketPath(root))
 		}
 
 		// launchd creates the StandardOutPath/StandardErrorPath log 0644;
@@ -348,7 +351,11 @@ func validateAgentTTLSetting(ttl time.Duration) error {
 		return err
 	}
 	if ttl > agent.DefaultMaxSessionAge {
-		return fmt.Errorf("--ttl must not exceed %s, got %s (a session ends at that hard ceiling no matter how actively it is used, so a longer idle timeout could never be reached)", agent.DefaultMaxSessionAge, ttl)
+		// No "--ttl" in the message: the human who reaches this typed a
+		// POSITIONAL argument to `jit service ttl`, and --ttl is a flag only
+		// `jit service run` takes. Naming it sent people looking for a flag
+		// they never used.
+		return fmt.Errorf("the session TTL must not exceed %s, got %s (a session ends at that hard ceiling no matter how actively it is used, so a longer idle timeout could never be reached)", agent.DefaultMaxSessionAge, ttl)
 	}
 	return nil
 }
