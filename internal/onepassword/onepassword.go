@@ -155,6 +155,36 @@ func Installed() bool {
 	return err == nil
 }
 
+// InstalledVerified resolves op on $PATH and runs the Developer ID
+// signature check on it, returning the vetted path. For `jit doctor`'s
+// automatic 1Password section: prompt-free (codesign inspects the binary,
+// op itself is never executed) and fail-closed like every other caller of
+// the verifier.
+func InstalledVerified() (string, error) {
+	path, err := exec.LookPath("op")
+	if err != nil {
+		return "", fmt.Errorf("the 1Password CLI is not installed (`op` not on PATH)")
+	}
+	if err := verifySignature(path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// Version reports the op binary's own version string ("2.39.0"), or "" if
+// it cannot be read. `op --version` needs no session and pops no prompt;
+// the short bound is because a health report must never hang on a
+// misbehaving binary.
+func Version(path string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := runOp(ctx, path, nil, "--version")
+	if err != nil {
+		return ""
+	}
+	return firstLine(string(out))
+}
+
 // ValidateRef checks that ref is a structurally plausible op:// secret
 // reference — scheme op, a vault, and at least item/field path segments.
 // It deliberately validates SHAPE only: whether the reference resolves is

@@ -137,8 +137,9 @@ credential helper.
 
 ## More
 
-- **[Use secrets that live in 1Password](./1password.md)** - `vault link`
-  stores an `op://` reference; the value stays in 1Password and jit
+- **[Use secrets that live in 1Password](./1password.md)** - migrate links
+  matching values automatically, `vault link` links one by hand; the vault
+  stores an `op://` reference, the value stays in 1Password, and jit
   resolves it on use
 - **[Back up and restore](./backup-restore.md)** - `vault export` /
   `vault import`, for disaster recovery
