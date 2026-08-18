@@ -212,7 +212,14 @@ async function netblockOrgOf(ip) {
     if (hit) return await hit.text();
 
     const res = await fetch(`https://rdap.org/ip/${ip}`, {
-      headers: { accept: "application/rdap+json" },
+      headers: {
+        accept: "application/rdap+json",
+        // Workers' fetch sends no User-Agent at all, and rdap.org 403s
+        // UA-less requests -- which is exactly how the first live row came
+        // back with this column empty while the same lookup worked from a
+        // terminal, where curl supplies its own. Identify ourselves honestly.
+        "user-agent": "jit-dl-redirect/1.0 (download analytics; jitpass.com)",
+      },
       signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS),
     });
     if (!res.ok) {
@@ -263,7 +270,12 @@ async function ptrHostOf(ip) {
     const res = await fetch(
       `https://cloudflare-dns.com/dns-query?name=${name}&type=PTR`,
       {
-        headers: { accept: "application/dns-json" },
+        headers: {
+          accept: "application/dns-json",
+          // DoH tolerates a missing UA today; send one anyway so this lookup
+          // never breaks the way the RDAP one did.
+          "user-agent": "jit-dl-redirect/1.0 (download analytics; jitpass.com)",
+        },
         signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS),
       },
     );
