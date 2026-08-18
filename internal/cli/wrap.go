@@ -507,8 +507,14 @@ var wrapUndoCmd = &cobra.Command{
 				wrapBody(out, 2, "    ", hlCmds(glyphBullet+" vault secrets kept: "+strings.Join(prev.VaultPaths, ", ")+" (`jit vault rm <path>` removes one for good)"))
 			}
 			if prev.LastTool {
+				rc := displayPath(home, wrap.RcFile(home, os.Getenv("SHELL")))
 				fmt.Fprint(out, "  ")
-				wrapBody(out, 2, "    ", glyphBullet+" last wrapped tool: the shim PATH line comes out of "+displayPath(home, wrap.RcFile(home, os.Getenv("SHELL"))))
+				if len(prev.Leftovers) == 0 {
+					wrapBody(out, 2, "    ", glyphBullet+" last wrapped tool: the shim PATH line comes out of "+rc)
+				} else {
+					wrapBody(out, 2, "    ", glyphBullet+" last wrapped tool: the shim PATH line stays in "+rc+
+						" ("+strings.Join(prev.Leftovers, ", ")+" still in "+displayPath(home, wrap.ShimDir(home))+")")
+				}
 			}
 			printDryRunTrailer(out, "jit wrap undo "+tool, false)
 			return nil
@@ -523,14 +529,25 @@ var wrapUndoCmd = &cobra.Command{
 		if len(res.VaultPaths) > 0 {
 			fmt.Fprint(out, hlCmds(fmt.Sprintf("Vault secrets were kept: %s, `jit vault rm <path>` removes one for good.\n", strings.Join(res.VaultPaths, ", "))))
 		}
+		// The PATH line comes out only when the shim directory is EMPTY, not
+		// when the wrap manifest is — the docker/git credential helpers live
+		// there too (scripts wrap never counts), are found strictly by $PATH
+		// lookup, and removing the line broke their lookup in the next shell
+		// with no message (issue #77). The directory's contents are the one
+		// honest ledger of who still needs the line.
 		if res.Remaining == 0 {
 			rc := wrap.RcFile(home, os.Getenv("SHELL"))
-			changed, err := wrap.RemovePathLine(rc)
-			if err != nil {
-				return fmt.Errorf("jit wrap undo: %w", err)
-			}
-			if changed {
-				fmt.Fprintf(out, "Last wrapped tool gone, removed the shim PATH line from %s.\n", rc)
+			if len(res.Leftovers) == 0 {
+				changed, err := wrap.RemovePathLine(rc)
+				if err != nil {
+					return fmt.Errorf("jit wrap undo: %w", err)
+				}
+				if changed {
+					fmt.Fprintf(out, "Last wrapped tool gone, removed the shim PATH line from %s.\n", rc)
+				}
+			} else {
+				wrapBody(out, 0, "  ", "Last wrapped tool gone; the shim PATH line stays in "+displayPath(home, rc)+
+					": "+strings.Join(res.Leftovers, ", ")+" still in "+displayPath(home, wrap.ShimDir(home))+".")
 			}
 		}
 		return nil

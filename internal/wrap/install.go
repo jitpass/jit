@@ -137,6 +137,29 @@ func RemoveShim(home, tool string) (bool, error) {
 	return true, nil
 }
 
+// ShimDirResidents lists EVERY entry in home's shim dir, sorted — symlink
+// shims and non-symlink residents alike. The docker/git credential helpers
+// are deliberately shell scripts, not symlinks, so wrap's shim dispatch
+// ignores them (see internal/migrate dockercreds.go/gitcreds.go) — but they
+// live in this directory and are found strictly by $PATH lookup, so anything
+// deciding the fate of the rc PATH line must see them. InstalledShims
+// deliberately cannot. A missing dir is an empty list, not an error.
+func ShimDirResidents(home string) ([]string, error) {
+	entries, err := os.ReadDir(ShimDir(home))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
 // InstalledShims lists the symlink names present in home's shim dir,
 // sorted. A missing dir is an empty list, not an error — a machine with no
 // wraps yet is a valid state (same contract as profile.ListNames).
