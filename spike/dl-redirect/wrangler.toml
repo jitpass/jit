@@ -9,6 +9,12 @@ routes = [
   { pattern = "dl.jitpass.com", custom_domain = true }
 ]
 
+# Workers Logs. Without this the console.log lines below are emitted and
+# immediately discarded, which is how an empty netblock_org column went from
+# "a bug" to "a bug nobody can diagnose".
+[observability]
+enabled = true
+
 # Aggregated download stats, queryable with SQL from the dashboard/API.
 # Free tier is ample at this volume. No local emulation — deploy-verified.
 [[analytics_engine_datasets]]
