@@ -66,7 +66,7 @@ func TestServeSequentialReaders(t *testing.T) {
 	defer cancel()
 
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- Serve(ctx, path, fixedContent, nil, nil, nil) }()
+	go func() { serveErr <- Serve(ctx, path, fixedContent, nil, nil, nil, nil) }()
 
 	for i := 0; i < 3; i++ {
 		got := readFIFO(t, path)
@@ -109,6 +109,81 @@ func readFIFO(t *testing.T, path string) []byte {
 // the read end without draining reliably produces EPIPE on the pending
 // write (the pipe's kernel buffer fills, so the write is still in flight
 // when the reader disappears) — this must be deterministic, not a maybe.
+// TestServeCycleEndReportsDelivery pins onCycleEnd's contract: exactly one
+// call per reader cycle, delivered=false only on EPIPE (the write outcome
+// that proves the reader received nothing), delivered=true on a drained
+// read. The distinction is what lets the audit trail stop logging a
+// touch-and-go reader's empty open as "decoy served".
+func TestServeCycleEndReportsDelivery(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	if err := CreateFIFO(path); err != nil {
+		t.Fatalf("CreateFIFO: %v", err)
+	}
+
+	// Oversized payload, borrowed from TestServeContinuesAfterReaderClosesEarly:
+	// it makes the EPIPE deterministic, because the in-flight write is only
+	// unblocked by the reader's close.
+	content := bytes.Repeat([]byte("x"), 256*1024)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	outcomes := make(chan bool, 8)
+	onCycleEnd := func(delivered bool) { outcomes <- delivered }
+
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- Serve(ctx, path, func() []byte { return content }, nil, nil, nil, onCycleEnd)
+	}()
+
+	// Cycle 1: open and close without reading — the reader receives nothing.
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("opening %s for read: %v", path, err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("closing early: %v", err)
+	}
+	select {
+	case delivered := <-outcomes:
+		if delivered {
+			t.Error("onCycleEnd(delivered=true) for an EPIPE cycle, want false: the reader provably received nothing")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("onCycleEnd did not fire for the early-closing reader's cycle")
+	}
+
+	// Cycle 2: a reader that drains the content.
+	if got := readFIFO(t, path); !bytes.Equal(got, content) {
+		t.Fatal("drained reader did not get the full content")
+	}
+	select {
+	case delivered := <-outcomes:
+		if !delivered {
+			t.Error("onCycleEnd(delivered=false) for a drained read, want true")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("onCycleEnd did not fire for the drained cycle")
+	}
+
+	cancel()
+	select {
+	case err := <-serveErr:
+		if err != context.Canceled {
+			t.Errorf("Serve returned %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not exit within 5s of cancellation")
+	}
+	// One call per cycle, none extra from shutdown.
+	select {
+	case extra := <-outcomes:
+		t.Errorf("unexpected extra onCycleEnd(%v) after two cycles", extra)
+	default:
+	}
+}
+
 func TestServeContinuesAfterReaderClosesEarly(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")
@@ -131,7 +206,7 @@ func TestServeContinuesAfterReaderClosesEarly(t *testing.T) {
 	}
 
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- Serve(ctx, path, fixedContent, onError, nil, nil) }()
+	go func() { serveErr <- Serve(ctx, path, fixedContent, onError, nil, nil, nil) }()
 
 	// First reader: opens then closes immediately without draining.
 	f, err := os.Open(path)
@@ -202,7 +277,7 @@ func TestServeIsolatesStaleReaderFromNextCycle(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- Serve(ctx, path, provideContent, nil, nil, nil) }()
+	go func() { serveErr <- Serve(ctx, path, provideContent, nil, nil, nil, nil) }()
 
 	// Reader 1: open and read cycle 1's content in full, but deliberately
 	// hold the fd open afterward instead of closing it right away — the
@@ -286,7 +361,7 @@ func TestServeReusesPipeWhenReaderClosedCleanly(t *testing.T) {
 	onError := func(err error) { errCh <- err }
 
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- Serve(ctx, path, fixedContent, onError, nil, nil) }()
+	go func() { serveErr <- Serve(ctx, path, fixedContent, onError, nil, nil, nil) }()
 
 	// Reader that opens then closes without draining — guaranteed fully
 	// closed by the time Serve's cycle-end probe runs, since its close is
@@ -372,7 +447,7 @@ func TestServeReusesPipeAfterDrainedReadWhenNothingLingers(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- Serve(ctx, path, func() []byte { return content }, nil, nil, noLinger) }()
+	go func() { serveErr <- Serve(ctx, path, func() []byte { return content }, nil, nil, noLinger, nil) }()
 
 	// A full drain — the exact read shape that always renamed before.
 	if got := readFIFO(t, path); !bytes.Equal(got, content) {
@@ -443,7 +518,7 @@ func TestServeIsolatesWhenLingeringReaderReported(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- Serve(ctx, path, provideContent, nil, nil, linger) }()
+	go func() { serveErr <- Serve(ctx, path, provideContent, nil, nil, linger, nil) }()
 
 	// Reader 1 drains cycle 1 and HOLDS its fd — the genuine lingerer the
 	// callback is reporting.
@@ -504,7 +579,7 @@ func TestServeStopsCleanlyWithNoReaders(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	err := Serve(ctx, path, func() []byte { return []byte("A=1\n") }, nil, nil, nil)
+	err := Serve(ctx, path, func() []byte { return []byte("A=1\n") }, nil, nil, nil, nil)
 	if err != context.DeadlineExceeded {
 		t.Errorf("Serve = %v, want context.DeadlineExceeded (no reader ever connected)", err)
 	}
@@ -543,7 +618,7 @@ func TestServeGatesRealContentFreshEachCycle(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- Serve(ctx, path, provideContent, nil, nil, nil) }()
+	go func() { serveErr <- Serve(ctx, path, provideContent, nil, nil, nil, nil) }()
 
 	// Unauthorized: must get decoy content, never the real value.
 	got := readFIFO(t, path)
@@ -609,7 +684,7 @@ func TestServeCallsOnReaderConnectedBeforeWriting(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- Serve(ctx, path, content, nil, onReaderConnected, nil) }()
+	go func() { serveErr <- Serve(ctx, path, content, nil, onReaderConnected, nil, nil) }()
 
 	readFIFO(t, path)
 	readFIFO(t, path)

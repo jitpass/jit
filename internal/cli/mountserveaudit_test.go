@@ -255,6 +255,40 @@ func TestServeReasonNamesTheCause(t *testing.T) {
 	}
 }
 
+// TestServeAuditKeepsUndeliveredApart pins the key's fourth axis: a cycle
+// whose reader received nothing (EPIPE before the write) must never collapse
+// into the same aggregate as one whose reader actually got the decoy — a
+// sweep's empty touches and an app's decoy reads are different findings, and
+// merging them is how "75 decoy reads" came to describe a backup tool.
+func TestServeAuditKeepsUndeliveredApart(t *testing.T) {
+	a, c := newTestAuditor(time.Hour)
+	now := time.Unix(1_700_000_000, 0)
+
+	delivered := decoyRead(1, "/usr/libexec/backupd")
+	empty := decoyRead(1, "/usr/libexec/backupd")
+	empty.undelivered = true
+
+	a.record(now, "/tmp/m.env", "r", delivered)
+	a.record(now, "/tmp/m.env", "r", empty)
+	a.record(now, "/tmp/m.env", "r", empty)
+
+	a.emitAll(a.take(true, now))
+	events := c.all()
+	if len(events) != 2 {
+		t.Fatalf("delivered and undelivered reads collapsed into %d events, want 2", len(events))
+	}
+	byUndelivered := map[bool]agent.SessionEvent{}
+	for _, e := range events {
+		byUndelivered[e.Undelivered] = e
+	}
+	if e, ok := byUndelivered[true]; !ok || e.Count != 2 {
+		t.Errorf("undelivered aggregate = %+v, want present with Count 2", e)
+	}
+	if e, ok := byUndelivered[false]; !ok || e.Count != 1 {
+		t.Errorf("delivered aggregate = %+v, want present with Count 1", e)
+	}
+}
+
 // TestServeAuditFoldsReExecingReader pins the key's identity choice: a
 // watcher that re-execs per read arrives with a fresh pid every time, and a
 // pid-keyed aggregate minted one event per read — defeating the hour window

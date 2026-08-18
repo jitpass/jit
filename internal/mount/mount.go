@@ -117,7 +117,24 @@ func CreateFIFO(path string) error {
 // only logs a write/close failure and continues. Only a failure to OPEN
 // the FIFO at all (path gone, disk error — something structurally wrong,
 // not a reader race) ends the loop.
-func Serve(ctx context.Context, path string, provideContent func() []byte, onError func(error), onReaderConnected func(), hasLingeringReader func() bool) error {
+//
+// onCycleEnd, if non-nil, is called exactly once per reader cycle, after
+// the write and the close/isolation handling, with whether this cycle's
+// content was DELIVERED. delivered is false only on EPIPE — the write
+// outcome that proves zero readers held the pipe when content was sent,
+// so the reader received nothing (the same race
+// spike/fifo-reader-identify/FINDINGS.md notes: a reader fast enough to
+// evade classification is also too fast to be served). Strictly, an EPIPE
+// midway through a payload larger than the pipe buffer could follow a
+// partial transfer — but env-file content fits the buffer many times
+// over, so the single write either lands whole or moves nothing. Every
+// other outcome — a clean write, even a failed one where bytes may have
+// reached a reader — reports delivered=true, because an audit trail must
+// err toward overstating exposure, never understating it. This is the
+// hook a caller folds its per-cycle audit record on: the content decision
+// (provideContent) happens before the write, but what the reader actually
+// RECEIVED is only known here.
+func Serve(ctx context.Context, path string, provideContent func() []byte, onError func(error), onReaderConnected func(), hasLingeringReader func() bool, onCycleEnd func(delivered bool)) error {
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -169,6 +186,12 @@ func Serve(ctx context.Context, path string, provideContent func() []byte, onErr
 		}
 		if closeErr != nil && onError != nil {
 			onError(fmt.Errorf("closing %s: %w", path, closeErr))
+		}
+		// Before the recreateErr return, deliberately: a cycle that kills the
+		// loop still completed its write, and its audit record must fold
+		// rather than vanish with the goroutine.
+		if onCycleEnd != nil {
+			onCycleEnd(!errors.Is(writeErr, syscall.EPIPE))
 		}
 		if recreateErr != nil {
 			return recreateErr

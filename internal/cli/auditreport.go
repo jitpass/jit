@@ -120,6 +120,9 @@ type auditScale struct {
 	oldest, newest time.Time
 	failed, denied int
 	decoy          int
+	// empty counts serve rows whose reader received nothing — kept out of
+	// decoy so the header can't call a sweep's touch-and-go opens "reads".
+	empty int
 }
 
 // auditScaleOf measures the full match set. Entries arrive newest-first.
@@ -130,7 +133,7 @@ func auditScaleOf(entries []auditEntry) auditScale {
 	}
 	s.newest, s.oldest = entries[0].t, entries[len(entries)-1].t
 	s.failed, s.denied = auditOutcomeCounts(entries)
-	s.decoy = auditDecoyRows(entries)
+	s.decoy, s.empty = auditDecoyRows(entries)
 	return s
 }
 
@@ -161,9 +164,14 @@ func writeAuditHeader(w io.Writer, entries []auditEntry, scale auditScale) {
 	// Decoy reads are counted in ROWS, not in the collapsed Count each row
 	// carries: the header's job is "how much of what follows is this", and a
 	// single looping watcher would otherwise report thousands and read like a
-	// breach.
+	// breach. Empty reads — a reader connected but received nothing — are
+	// their own count for the same reason: folding them into "decoy reads"
+	// made a backup tool's sweep read like an exposure.
 	if scale.decoy > 0 {
 		head += fmt.Sprintf(" · %s", countWord(scale.decoy, "decoy read", "decoy reads"))
+	}
+	if scale.empty > 0 {
+		head += fmt.Sprintf(" · %s", countWord(scale.empty, "empty read", "empty reads"))
 	}
 	_, _ = fmt.Fprintln(w, head)
 	fmt.Fprintln(w)
@@ -183,16 +191,24 @@ func auditOutcomeCounts(entries []auditEntry) (failed, denied int) {
 	return failed, denied
 }
 
-// auditDecoyRows counts serve events that handed over a decoy — the rows the
-// header calls out and the footer offers a filter for.
-func auditDecoyRows(entries []auditEntry) int {
-	n := 0
+// auditDecoyRows counts serve rows two ways: decoy is the rows where a
+// reader actually RECEIVED decoy values (what the header calls out and the
+// footer offers a filter for), empty the rows where a reader connected but
+// received nothing at all — any verdict, since nothing was delivered either
+// way.
+func auditDecoyRows(entries []auditEntry) (decoy, empty int) {
 	for _, e := range entries {
-		if e.kind == "serve" && e.status == "decoy" {
-			n++
+		if e.kind != "serve" {
+			continue
+		}
+		switch {
+		case e.undelivered:
+			empty++
+		case e.status == "decoy":
+			decoy++
 		}
 	}
-	return n
+	return decoy, empty
 }
 
 func sameDay(a, b time.Time) bool {
