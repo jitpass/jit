@@ -190,13 +190,15 @@ func PlanNeedles(envFiles, looseFiles []string) []AgentCacheSecret {
 		seen[value] = true
 		out = append(out, AgentCacheSecret{Value: value, Var: name})
 	}
+	// Only the values scan's own agent-cache hunt would count, NOT every
+	// variable: an env migration vaults ordinary config too (so the pointer
+	// file stays complete), but hunting a vaulted APP_NAME through files the
+	// user never named is how issue #79 spliced redaction markers into a
+	// live transcript. audit.EnvFileCacheNeedles is the scan-side predicate,
+	// so plan, apply (DropEnvOrdinaryValues) and scan can never disagree.
 	for _, path := range envFiles {
-		values, names, _, err := parseEnvFile(path)
-		if err != nil {
-			continue
-		}
-		for _, name := range names {
-			add(values[name], name)
+		for _, n := range audit.EnvFileCacheNeedles(path) {
+			add(n.Value, n.Key)
 		}
 	}
 	for _, path := range looseFiles {
@@ -213,6 +215,66 @@ func PlanNeedles(envFiles, looseFiles []string) []AgentCacheSecret {
 		}
 	}
 	return out
+}
+
+// EnvOrdinaryValues reads the given env files and reports the values an env
+// migration will vault as ordinary configuration — everything audit's own
+// cache-hunt predicate (audit.EnvFileCacheNeedles) would NOT count as a
+// secret. A value that is ordinary in one file but a claimed credential in
+// another is not ordinary — the claimed set wins.
+//
+// MUST be called BEFORE the applies run: the sweep itself runs last, by
+// which time each .env has been rewritten into a pointer file that parses
+// as neither its old values nor a finding. Read-only and best-effort — an
+// unreadable file contributes nothing, erring toward keeping needles.
+func EnvOrdinaryValues(envFiles []string) map[string]bool {
+	if len(envFiles) == 0 {
+		return nil
+	}
+	claimed := map[string]bool{}
+	for _, path := range envFiles {
+		for _, n := range audit.EnvFileCacheNeedles(path) {
+			claimed[n.Value] = true
+		}
+	}
+	ordinary := map[string]bool{}
+	for _, path := range envFiles {
+		values, names, _, err := parseEnvFile(path)
+		if err != nil {
+			continue
+		}
+		for _, name := range names {
+			if v := values[name]; v != "" && !claimed[v] {
+				ordinary[v] = true
+			}
+		}
+	}
+	return ordinary
+}
+
+// DropOrdinaryValues filters the apply-time needle set (collected via
+// vault.Vault.OnSet, i.e. every value the run vaulted) down to what the
+// sweep may hunt, removing the EnvOrdinaryValues capture. Values from every
+// other category pass through untouched: those categories only ever vault
+// real credentials.
+//
+// The asymmetry with the env migration itself is the point (issue #79):
+// vaulting ordinary config keeps the pointer file complete and touches only
+// the file the user named; the sweep rewrites files under $HOME the user
+// never named — splicing <jit:redacted:APP_NAME> markers into a live agent
+// transcript over an application name — so its needles must clear the same
+// bar scan's cache hunt applies.
+func DropOrdinaryValues(secrets []AgentCacheSecret, ordinary map[string]bool) []AgentCacheSecret {
+	if len(secrets) == 0 || len(ordinary) == 0 {
+		return secrets
+	}
+	kept := make([]AgentCacheSecret, 0, len(secrets))
+	for _, s := range secrets {
+		if !ordinary[s.Value] {
+			kept = append(kept, s)
+		}
+	}
+	return kept
 }
 
 // CleanAgentCaches removes verbatim copies of the given credentials from every

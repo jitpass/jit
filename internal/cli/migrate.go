@@ -95,7 +95,11 @@ var (
 // Keyed by the short token a caller passes, not the display label used in
 // output — keep the two lists in this exact order so error messages and
 // --only's own help text stay in sync with printMigratePlan.
-var migrateCategories = []string{"env", "tfvars", "k8s-secret", "shell", "history", "mcp", "aws", "kube", "terraform", "docker", "git", "gcp", "sops", "npmrc", "netrc", "pypirc", "loose"}
+// "cache" is the one category with no file list of its own: it scopes the
+// post-migrate agent-cache sweep, which rewrites files under $HOME that the
+// run's other categories never name. Before it existed, --only env still ran
+// the sweep and NO token could scope it out (issue #79).
+var migrateCategories = []string{"env", "tfvars", "k8s-secret", "shell", "history", "mcp", "aws", "kube", "terraform", "docker", "git", "gcp", "sops", "npmrc", "netrc", "pypirc", "loose", "cache"}
 
 // discovered holds one run's findings per category. runMigratePath resolves
 // each named target into one of these and hands it to applyMigrate — the
@@ -393,8 +397,8 @@ var migrateCmd = &cobra.Command{
 		"full plan — every file it will rewrite and every CLI it will wrap — and\n" +
 		"asks for confirmation before touching anything. It is exactly the command\n" +
 		"the scan report's \"jit will protect these\" section points at.\n\n" +
-		"With arguments, nothing is discovered or touched except the targets you\n" +
-		"name. Each target is resolved on its own:\n\n" +
+		"With arguments, discovery is scoped to the targets you name (plus the\n" +
+		"agent-cache sweep described below). Each target is resolved on its own:\n\n" +
 		"  A file       is routed to the right category by what it is. A project file\n" +
 		"               (.env, *.tfvars, mcp.json/.mcp.json, .npmrc) has its secrets\n" +
 		"               moved into a profile and the vault, the file keeps working as a\n" +
@@ -419,6 +423,12 @@ var migrateCmd = &cobra.Command{
 		"plan and asks for confirmation before touching anything, and every modified\n" +
 		"file is backed up (encrypted, into the vault) first, `jit migrate undo <path>`\n" +
 		"restores a migrated file from that backup.\n\n" +
+		"After vaulting, the run also clears verbatim copies of the newly vaulted\n" +
+		"credentials from AI agent caches under your home directory — files beyond\n" +
+		"the targets you named, each listed in the plan and backed up before it is\n" +
+		"touched. Only values the scanner counts as secrets are hunted; ordinary\n" +
+		"config a .env migration vaults alongside them is not. `--only` without the\n" +
+		"`cache` category skips the sweep entirely.\n\n" +
 		"With the 1Password CLI installed and signed in, a value that already lives\n" +
 		"in 1Password is vaulted as an op:// reference instead of a copy (one\n" +
 		"authenticated check per run, after you confirm), and a value that already IS\n" +
@@ -548,19 +558,26 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 		"pypirc":     &pypircFiles,
 		"loose":      &looseSecretFiles,
 	}
-	if len(categorySlices) != len(migrateCategories) {
+	// len-1: "cache" is file-less (the sweep, not a file list) and lives
+	// outside the table; cacheSelected below is its whole --only handling.
+	if len(categorySlices) != len(migrateCategories)-1 {
 		return false, fmt.Errorf("jit migrate: internal error: category table (%d) out of sync with --only categories (%d)", len(categorySlices), len(migrateCategories))
 	}
 	for _, token := range migrateCategories {
+		if token == "cache" {
+			continue
+		}
 		if _, ok := categorySlices[token]; !ok {
 			return false, fmt.Errorf("jit migrate: internal error: --only category %q has no entry in the category table", token)
 		}
 	}
+	cacheSelected := true
 	if len(migrateOnly) > 0 {
 		selected, err := filterMigrateOnly(migrateOnly)
 		if err != nil {
 			return false, fmt.Errorf("jit migrate: %w", err)
 		}
+		cacheSelected = selected["cache"]
 		for token, items := range categorySlices {
 			if !selected[token] {
 				*items = nil
@@ -650,11 +667,13 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 	if extras == nil {
 		extras = &planExtras{}
 	}
-	if needles := migrate.PlanNeedles(envFiles, looseSecretFiles); len(needles) > 0 {
-		if preview, err := migrate.PreviewAgentCaches(home, needles); err != nil {
-			extras.cacheNote = err.Error()
-		} else {
-			extras.cacheEdits = preview.Edited
+	if cacheSelected {
+		if needles := migrate.PlanNeedles(envFiles, looseSecretFiles); len(needles) > 0 {
+			if preview, err := migrate.PreviewAgentCaches(home, needles); err != nil {
+				extras.cacheNote = err.Error()
+			} else {
+				extras.cacheEdits = preview.Edited
+			}
 		}
 	}
 	printMigratePlan(cmd.OutOrStdout(), home, &planned, extras)
@@ -726,6 +745,11 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 		}
 		vaultedSecrets = append(vaultedSecrets, migrate.AgentCacheSecret{Value: val, Var: name})
 	}
+	// Captured NOW, not at sweep time: the sweep runs last, after each .env
+	// has been rewritten into a pointer file that no longer parses as its
+	// old values. These are the values the env migration vaults as ordinary
+	// config, which the sweep must not hunt (issue #79).
+	envOrdinary := migrate.EnvOrdinaryValues(envFiles)
 	root, err := vaultRootDir()
 	if err != nil {
 		return false, fmt.Errorf("jit migrate: %w", err)
@@ -1321,7 +1345,15 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 	// back into the needle set (nor matter after collection is done).
 	v.OnSet = nil
 	v.LinkOnSet = nil // the sweep's own backups must never be offered for linking
-	cleanup, cleanErr := migrate.CleanAgentCaches(v, home, vaultedSecrets)
+	// DropOrdinaryValues: needle discipline over the OnSet capture — an env
+	// migration vaults ordinary config too, and the sweep must hunt only
+	// what scan's cache hunt would (issue #79). --only without "cache"
+	// scopes the whole sweep out, matching the plan the user confirmed.
+	var cleanup migrate.AgentCacheCleanup
+	var cleanErr error
+	if cacheSelected {
+		cleanup, cleanErr = migrate.CleanAgentCaches(v, home, migrate.DropOrdinaryValues(vaultedSecrets, envOrdinary))
+	}
 
 	summary.print(out)
 	// Rendered after the file summary, through the same helper `jit migrate
@@ -1342,8 +1374,11 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 	// pointer, so scan and a future migrate cannot). Binary/hard-link skips
 	// are standing conditions re-running won't fix, so they don't set a
 	// reminder — the one-time output already named them. A run with no live
-	// skips clears any stale crumb.
-	migrate.WriteCacheBreadcrumb(root, cleanup.LiveSkips(), time.Now().UnixNano())
+	// skips clears any stale crumb. A run that never swept (--only without
+	// "cache") learned nothing and must not clear one either.
+	if cacheSelected {
+		migrate.WriteCacheBreadcrumb(root, cleanup.LiveSkips(), time.Now().UnixNano())
+	}
 	reportAgentStatus(out, root, producedMount)
 	// The folder-rename advisory is left to `jit status`: an explicitly named
 	// migrate target can sit under any project, so there's no single "this
