@@ -226,23 +226,13 @@ var scanCmd = &cobra.Command{
 
 		machineScan := scanFormat == "ndjson" || scanFormat == "markdown" || scanFormat == "md" || scanOutput != ""
 		progress := newProgress(cmd, machineScan)
-		// The trail is scaffolding for either view, not part of the result: a
-		// scan report is a page the reader works down, and sixteen settled
-		// "✓ Scanned …" lines pushed its top off a short window. They still
-		// animate while the scan runs — a ten-second home walk must not look
-		// hung — and collapse to one line the moment it finishes.
-		//
-		// --full used to keep its trail, on the reasoning that per-category
-		// lines above an inventory read as a table of contents. They don't:
-		// the actual table of contents is the category count table three lines
-		// below the header, which carries the same sixteen names AND their
-		// counts. So the trail was sixteen lines of duplication at the top of
-		// the longest view in the tool, and it was the largest remaining
-		// difference between the two views of one command.
-		progress.Collapse()
-		cfg.Progress = func(category string) {
-			progress.Step("Scanning "+category+"…", "Scanned "+category)
-		}
+		// The trail is scaffolding, not result (see collapsedCategoryTrail).
+		// --full gets the collapse too: its per-category lines were once kept
+		// as a table of contents, but the category count table three lines
+		// below the header carries the same sixteen names AND their counts,
+		// so the trail was pure duplication at the top of the longest view.
+		step, settleTrail := collapsedCategoryTrail(progress)
+		cfg.Progress = step
 
 		var findings []audit.Finding
 		var summary audit.ScanSummary
@@ -256,11 +246,7 @@ var scanCmd = &cobra.Command{
 		} else {
 			findings, summary, err = audit.Scan(cfg)
 		}
-		// Stop before any result is written — the trail lives on stderr, but
-		// the spinner's in-place line must be settled before stdout output (or
-		// the confirm-free score line) begins.
-		progress.StopCollapsed(fmt.Sprintf("%s scanned",
-			countWord(progress.Steps(), "category", "categories")))
+		settleTrail()
 		if err != nil {
 			return fmt.Errorf("jit scan: %w", err)
 		}
