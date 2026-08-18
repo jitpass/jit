@@ -5,6 +5,7 @@ package wrap
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -38,6 +39,41 @@ func TestUndoRemovesEverythingAndReportsVaultPaths(t *testing.T) {
 	}
 	if _, ok := m.Tools["gh"]; ok {
 		t.Error("manifest entry survived undo")
+	}
+}
+
+// TestUndoReportsHelperLeftovers pins the #77 fix at the package layer: a
+// credential-helper script in the shim dir (docker/git migrations write
+// those; wrap never counts them) must surface in Leftovers on both the undo
+// and its preview, so the CLI keeps the rc PATH line the helpers need.
+func TestUndoReportsHelperLeftovers(t *testing.T) {
+	home := t.TempDir()
+	addGH(t, home)
+	helper := filepath.Join(ShimDir(home), "docker-credential-jit")
+	if err := os.WriteFile(helper, []byte("#!/bin/sh\nexec jit dockercred \"$@\"\n"), 0o700); err != nil { // #nosec G306 -- an executable helper script needs the execute bit
+		t.Fatal(err)
+	}
+
+	prev, err := PreviewUndo(home, "gh")
+	if err != nil {
+		t.Fatalf("PreviewUndo: %v", err)
+	}
+	if !prev.LastTool {
+		t.Error("PreviewUndo.LastTool = false, want true for the only wrapped tool")
+	}
+	if strings.Join(prev.Leftovers, ",") != "docker-credential-jit" {
+		t.Errorf("PreviewUndo.Leftovers = %v, want just the helper (gh's own shim excluded)", prev.Leftovers)
+	}
+
+	undo, err := Undo(home, "gh")
+	if err != nil {
+		t.Fatalf("Undo: %v", err)
+	}
+	if undo.Remaining != 0 {
+		t.Errorf("Remaining = %d, want 0", undo.Remaining)
+	}
+	if strings.Join(undo.Leftovers, ",") != "docker-credential-jit" {
+		t.Errorf("Undo.Leftovers = %v, want the helper still resident", undo.Leftovers)
 	}
 }
 

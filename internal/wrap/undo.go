@@ -19,6 +19,13 @@ type UndoResult struct {
 	ProfilePath    string
 	VaultPaths     []string // paths the removed profile referenced, the user's to keep or `jit vault rm`
 	Remaining      int      // wrap-managed tools left after this undo
+	// Leftovers is everything still living in the shim directory after this
+	// undo — the docker/git credential helpers land here (scripts, not
+	// symlinks, so Remaining can never count them). The rc PATH line must
+	// stay while this is non-empty: docker and git find those helpers
+	// strictly by $PATH lookup, and removing the line on Remaining alone
+	// silently broke their credential lookup in the next shell (issue #77).
+	Leftovers []string
 }
 
 // UndoPreview reports what Undo WOULD remove, for `jit wrap undo
@@ -27,7 +34,12 @@ type UndoPreview struct {
 	ShimPath    string
 	ProfilePath string   // "" for grant/capture/run-grant wraps, which have no profile to remove
 	VaultPaths  []string // kept either way; listed so the preview matches the real run's output
-	LastTool    bool     // true: the real run also removes the shim PATH line from the rc
+	LastTool    bool     // true: this undo empties the wrap manifest
+	// Leftovers mirrors UndoResult.Leftovers: what would remain in the shim
+	// directory after this undo (this tool's own shim excluded). The real
+	// run only removes the rc PATH line when LastTool is true AND this is
+	// empty, and the preview must promise the same.
+	Leftovers []string
 }
 
 // PreviewUndo resolves what Undo(home, tool) would do, touching nothing.
@@ -45,6 +57,15 @@ func PreviewUndo(home, tool string) (UndoPreview, error) {
 	prev := UndoPreview{
 		ShimPath: filepath.Join(ShimDir(home), tool),
 		LastTool: len(manifest.Tools) == 1,
+	}
+	residents, err := ShimDirResidents(home)
+	if err != nil {
+		return UndoPreview{}, err
+	}
+	for _, name := range residents {
+		if name != tool {
+			prev.Leftovers = append(prev.Leftovers, name)
+		}
 	}
 	if !entry.IsGrant() && !entry.IsCapture() && !entry.IsRunGrant() {
 		prev.ProfilePath, err = profile.Path(home, entry.Profile)
@@ -116,5 +137,15 @@ func Undo(home, tool string) (UndoResult, error) {
 		return res, err
 	}
 	res.Remaining = len(manifest.Tools)
+	// After the shim removal, so this IS the leftover set — no need to
+	// exclude the tool the way PreviewUndo must. Best-effort: a listing
+	// error must not fail an undo that already converged, and an unknown
+	// directory state reads as "something might still be there", which
+	// keeps the PATH line — the fail-safe direction.
+	if leftovers, err := ShimDirResidents(home); err == nil {
+		res.Leftovers = leftovers
+	} else {
+		res.Leftovers = []string{"(unreadable shim directory)"}
+	}
 	return res, nil
 }

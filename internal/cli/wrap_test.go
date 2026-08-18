@@ -136,6 +136,43 @@ func TestWrapAddListUndoRoundTrip(t *testing.T) {
 	}
 }
 
+// TestWrapUndoKeepsPathLineWhileHelpersRemain pins the #77 fix end to end:
+// undoing the last wrapped tool must NOT remove the shim PATH line while a
+// docker/git credential helper still lives in the shim dir — docker and git
+// find those helpers strictly by $PATH lookup, and yanking the line silently
+// broke their credential lookup in the next shell.
+func TestWrapUndoKeepsPathLineWhileHelpersRemain(t *testing.T) {
+	home := withFixtureHome(t)
+	if _, err := execWrap(t, "add", "faketool", "--env", "FAKE_TOKEN=wrap-faketool/FAKE_TOKEN"); err != nil {
+		t.Fatalf("jit wrap add: %v", err)
+	}
+	helper := filepath.Join(wrap.ShimDir(home), "docker-credential-jit")
+	if err := os.WriteFile(helper, []byte("#!/bin/sh\nexec jit dockercred \"$@\"\n"), 0o700); err != nil { // #nosec G306 -- an executable helper script needs the execute bit
+		t.Fatal(err)
+	}
+	rc := wrap.RcFile(home, os.Getenv("SHELL"))
+
+	// The preview must promise what the real run does: the line stays.
+	out, err := execWrap(t, "undo", "faketool", "--dry-run")
+	if err != nil {
+		t.Fatalf("jit wrap undo --dry-run: %v", err)
+	}
+	if !strings.Contains(out, "stays") || !strings.Contains(out, "docker-credential-jit") {
+		t.Errorf("dry-run should say the PATH line stays and name the helper, got:\n%s", out)
+	}
+
+	out, err = execWrap(t, "undo", "faketool")
+	if err != nil {
+		t.Fatalf("jit wrap undo: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "stays") || !strings.Contains(out, "docker-credential-jit") {
+		t.Errorf("undo should say the PATH line stays and name the helper, got:\n%s", out)
+	}
+	if data, err := os.ReadFile(rc); err != nil || !strings.Contains(string(data), ".jit/shims") {
+		t.Errorf("PATH line must survive the undo while the helper needs it (err=%v):\n%s", err, data)
+	}
+}
+
 func TestWrapAddRequiresEnv(t *testing.T) {
 	withFixtureHome(t)
 	if _, err := execWrap(t, "add", "faketool"); err == nil {

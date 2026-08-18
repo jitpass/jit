@@ -350,6 +350,15 @@ var scanCmd = &cobra.Command{
 // should be an error, not a silently empty scan (the same choice `jit migrate
 // <path>` makes). Absolute paths keep the findings' file_path locations
 // unambiguous regardless of the process's working directory.
+//
+// A symlink root the user typed by name is resolved to its target, not
+// walked as-is: the walkers refuse symlinks so a recursive walk stays
+// contained, but that policy is about descendants, and letting it apply to
+// the named root made `jit scan /etc` report CLEAN with exit 0 on a stock
+// Mac (where /etc is a symlink) while --fail-on silently passed. Findings
+// then carry the target's real path, which is the unambiguous one. `jit
+// migrate` still refuses a symlink argument — it rewrites files, scan only
+// reads them.
 func resolveScanTargets(args []string) ([]string, error) {
 	targets := make([]string, 0, len(args))
 	for _, arg := range args {
@@ -357,11 +366,22 @@ func resolveScanTargets(args []string) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("resolving %q: %w", arg, err)
 		}
-		if _, err := os.Lstat(abs); err != nil {
+		info, err := os.Lstat(abs)
+		if err != nil {
 			if os.IsNotExist(err) {
 				return nil, fmt.Errorf("no such file or directory: %s", arg)
 			}
 			return nil, fmt.Errorf("%s: %w", arg, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			resolved, err := filepath.EvalSymlinks(abs)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return nil, fmt.Errorf("no such file or directory: %s (a symlink whose target is gone)", arg)
+				}
+				return nil, fmt.Errorf("%s: %w", arg, err)
+			}
+			abs = resolved
 		}
 		targets = append(targets, abs)
 	}
