@@ -279,6 +279,32 @@ func TestAuditServeWithoutAnIdentifiedReader(t *testing.T) {
 	}
 }
 
+// An undelivered serve handed over nothing: the reader was gone before the
+// write (EPIPE). Logging it as "served" was overstating exposure — the row
+// must read as a touch, in both views, while status stays decoy so the
+// existing filter still reaches it.
+func TestAuditUndeliveredServeReadsAsATouch(t *testing.T) {
+	e := authEntry("/Users/alice", agent.SessionEvent{
+		UnixTime: 6000, Kind: agent.KindServe, Op: agent.OpServeDecoy,
+		Labels: []string{"gcp"}, Undelivered: true,
+	})
+	if !strings.Contains(e.subject, "nothing read") {
+		t.Errorf("report subject = %q, want it to say nothing was read", e.subject)
+	}
+	if strings.Contains(e.subject, "served") {
+		t.Errorf("report subject = %q, must not claim a serve that delivered nothing", e.subject)
+	}
+	if !strings.Contains(e.match, "undelivered=true") {
+		t.Errorf("logfmt line = %q, want undelivered=true", e.match)
+	}
+	if e.status != "decoy" {
+		t.Errorf("status = %q, want decoy — the verdict axis must survive for --status", e.status)
+	}
+	if !e.undelivered {
+		t.Error("entry.undelivered = false, the header count depends on it")
+	}
+}
+
 // The header counts decoy ROWS, not the collapsed count each row carries: one
 // looping watcher would otherwise report thousands and read like a breach.
 func TestAuditHeaderCountsDecoyRowsNotReads(t *testing.T) {
@@ -290,6 +316,25 @@ func TestAuditHeaderCountsDecoyRowsNotReads(t *testing.T) {
 	writeAuditHeader(&buf, entries, auditScaleOf(entries))
 	if got := buf.String(); !strings.Contains(got, "1 decoy read") {
 		t.Errorf("header = %q, want it to count 1 decoy row (not 34 reads)", got)
+	}
+}
+
+// Empty reads get their own header count: folding a sweep's touch-and-go
+// opens into "decoy reads" made a backup tool read like an exposure.
+func TestAuditHeaderCountsEmptyReadsApart(t *testing.T) {
+	var buf bytes.Buffer
+	entries := []auditEntry{
+		{t: time.Unix(5000, 0), kind: "serve", status: "decoy", subject: "decoy served to node"},
+		{t: time.Unix(4000, 0), kind: "serve", status: "decoy", undelivered: true,
+			subject: "opened by an unidentified reader, nothing read ×13"},
+	}
+	writeAuditHeader(&buf, entries, auditScaleOf(entries))
+	got := buf.String()
+	if !strings.Contains(got, "1 decoy read") {
+		t.Errorf("header = %q, want the delivered row counted as the only decoy read", got)
+	}
+	if !strings.Contains(got, "1 empty read") {
+		t.Errorf("header = %q, want the undelivered row counted as an empty read", got)
 	}
 }
 

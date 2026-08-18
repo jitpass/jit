@@ -170,6 +170,12 @@ type mountManager struct {
 	grantHoldersFn  func(path string) (pids []int32, ok bool)
 	grantAncestryFn func(pid, root int32) bool
 	grantStartFn    func(pid int32) (unixMicro int64, ok bool)
+
+	// identifyRetryFn is finalizeServe's post-write identity scan; nil means
+	// lineage.IdentifyFIFOReader. A seam for the same reason the grant ones
+	// are: the retry's gating (delivered-only, missed-scan-only) is what
+	// tests pin down, and none of it should need a real lingering reader.
+	identifyRetryFn func(path string) (pid int32, execPath string, ok bool)
 }
 
 // readerIdentity is internal/lineage's best-effort answer to "who just
@@ -216,6 +222,22 @@ type serveRecord struct {
 	// Status reports it so a real serve reads as "only this run's tree could
 	// have read it", never an ambient exposure.
 	grantServed bool
+	// undelivered marks a cycle whose reader received nothing: the write hit
+	// EPIPE, proof that zero processes held the read end when content was
+	// sent. The decision (decoy/real) still happened; delivery didn't — and
+	// recording the two as the same fact was overstating exposure, which for
+	// a tripwire trail is the wrong direction to be wrong in.
+	undelivered bool
+}
+
+// pendingServe is a serveRecord between its two moments: the content
+// DECISION (serveContent, before the write) and the cycle's OUTCOME
+// (finalizeServe, after it — did the reader actually receive anything).
+// The reason is captured at decision time because it explains the verdict,
+// which is decided then; the outcome only annotates it.
+type pendingServe struct {
+	rec    serveRecord
+	reason string
 }
 
 // servedMount is one mount's live, dynamic state — read fresh by
@@ -260,10 +282,18 @@ type servedMount struct {
 	lastResolveErr string
 	// pendingReader is set by the onReaderConnected hook (which mount.Serve
 	// guarantees fires before provideContent in the same cycle, on the same
-	// goroutine); provideContent folds it into lastServe when it decides
-	// what that reader actually gets.
+	// goroutine); provideContent captures it into pendingServe when it
+	// decides what that reader gets, and finalizeServe — the onCycleEnd
+	// hook, same cycle, same goroutine — folds that into lastServe and the
+	// durable trail once the write's outcome is known.
 	pendingReader readerIdentity
-	lastServe     *serveRecord
+	pendingServe  *pendingServe
+	// scanMissed is true when THIS cycle's lineage scan actually ran and
+	// found nobody (not when the rate limit skipped it) — the one case
+	// finalizeServe spends a second scan on. Set by noteReaderConnected,
+	// consumed and cleared by finalizeServe, both on the Serve goroutine.
+	scanMissed bool
+	lastServe  *serveRecord
 
 	// grantVerdicts is this mount's per-(holder,root) ancestry verdict
 	// cache — the read gate's amortization of the libproc ancestry walk
@@ -532,13 +562,20 @@ func (m *mountManager) ensureServing(entries []mount.Entry) {
 			}
 		}(entry.MountPath)
 
+		// finalizeServe is the record's second half: serveContent decided
+		// what to serve, this learns whether it was received, and only then
+		// does the record reach lastServe and the durable trail.
+		onCycleEnd := func(path string, sm *servedMount) func(bool) {
+			return func(delivered bool) { m.finalizeServe(path, sm, delivered) }
+		}(entry.MountPath, sm)
+
 		go func(path string, sm *servedMount) {
 			defer m.wg.Done()
 			defer close(sm.done)
 			onError := func(err error) {
 				m.noteServeError(path, sm, err)
 			}
-			if err := mount.Serve(ctx, path, provideContent, onError, onReaderConnected, hasLingeringReader); err != nil && !errors.Is(err, context.Canceled) {
+			if err := mount.Serve(ctx, path, provideContent, onError, onReaderConnected, hasLingeringReader, onCycleEnd); err != nil && !errors.Is(err, context.Canceled) {
 				fmt.Fprintf(m.stderr, "jit service: mount %s stopped: %v\n", path, err)
 				// A mount whose Serve loop died structurally must not
 				// stay in the map looking alive (GAPS.md #44): a stale
@@ -668,6 +705,10 @@ func (m *mountManager) noteReaderConnected(path string, sm *servedMount) {
 
 		sm.mu.Lock()
 		sm.pendingReader = next
+		// A scan that ran and found nobody (not one the rate limit skipped)
+		// is finalizeServe's cue to try once more after the write, when a
+		// slow reader is still holding the pipe. Cleared there.
+		sm.scanMissed = !next.identified
 		sm.mu.Unlock()
 	}
 	if !doLog {
@@ -744,6 +785,65 @@ func launcherOf(pid int32) string {
 	return lineage.LaunchedBy(chain[1:])
 }
 
+// finalizeServe is every mount's onCycleEnd hook (mount.Serve guarantees it
+// fires once per cycle, after the write and close, on the Serve goroutine).
+// It completes the record serveContent opened: folds in whether the reader
+// actually RECEIVED the content (delivered=false is EPIPE — proof it got
+// nothing), spends one more identity scan when this cycle's scan ran and
+// missed a reader that turned out to linger, and only then publishes the
+// record to lastServe and the durable trail. Recording at decision time —
+// the old shape — wrote "decoy served" for cycles that delivered nothing,
+// and left a late-found identity with no record to land in.
+func (m *mountManager) finalizeServe(path string, sm *servedMount, delivered bool) {
+	sm.mu.Lock()
+	ps := sm.pendingServe
+	sm.pendingServe = nil
+	missed := sm.scanMissed
+	sm.scanMissed = false
+	sm.mu.Unlock()
+	if ps == nil {
+		return // no decision this cycle (cannot happen in Serve's contract; refuse to invent one)
+	}
+	rec := ps.rec
+	rec.undelivered = !delivered
+
+	// The second scan, bounded on purpose: only when content was delivered
+	// (an EPIPE reader is provably gone), only when this cycle's own scan ran
+	// and found nobody (so it inherits noteReaderConnected's rate limit — at
+	// most one extra walk per lineageScanMinGap per mount, and none at all in
+	// an identified reader's storm). Marked likely, never asserted: whoever
+	// holds the pipe now almost certainly is this cycle's reader, but a
+	// brand-new non-blocking reader could have arrived in the gap.
+	if delivered && missed && !rec.reader.identified {
+		identify := m.identifyRetryFn
+		if identify == nil {
+			identify = lineage.IdentifyFIFOReader
+		}
+		if pid, execPath, ok := identify(path); ok {
+			r := readerIdentity{
+				pid:        pid,
+				execPath:   execPath,
+				launchedBy: launcherOf(pid),
+				identified: true,
+				likely:     true,
+			}
+			rec.reader = r
+			// Feed the carry-forward too: the next cycle's skipped or missed
+			// scan can now name this reader instead of starting from nothing.
+			sm.mu.Lock()
+			sm.pendingReader = r
+			sm.mu.Unlock()
+		}
+	}
+
+	sm.mu.Lock()
+	sm.lastServe = &rec
+	sm.mu.Unlock()
+	// Outside sm.mu for the same reason serveContent kept it there: the
+	// auditor takes its own lock and may append to a file.
+	m.serveAudit.record(rec.at, path, ps.reason, rec)
+}
+
 // noteServeError logs a mount's transient write/close errors with the same
 // collapse as noteReaderConnected — a watcher loop produces one broken-pipe
 // line per read, which is pure repetition once the first has said what's
@@ -797,7 +897,7 @@ func (m *mountManager) mountRevealStatuses() []agent.MountRevealStatus {
 		}
 		sm.mu.Lock()
 		if ls := sm.lastServe; ls != nil {
-			status.LastServe = &agent.MountServeEvent{UnixTime: ls.at.Unix(), Decoy: ls.decoy, GrantServed: ls.grantServed}
+			status.LastServe = &agent.MountServeEvent{UnixTime: ls.at.Unix(), Decoy: ls.decoy, GrantServed: ls.grantServed, Undelivered: ls.undelivered}
 			if ls.reader.identified {
 				status.LastServe.ReaderPID = ls.reader.pid
 				status.LastServe.ReaderPath = ls.reader.execPath

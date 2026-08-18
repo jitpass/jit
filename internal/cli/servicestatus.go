@@ -331,6 +331,10 @@ func printMountStatuses(w io.Writer, mounts []agent.MountRevealStatus) {
 			reader := describeReader(ls)
 			ago := humanAgo(time.Since(time.Unix(ls.UnixTime, 0)))
 			switch {
+			case ls.Undelivered:
+				// Not counted in decoyReads: nothing was received, so the
+				// "run it through jit run --live" advice doesn't apply.
+				_, _ = fmt.Fprintf(w, "      opened %s ago by %s · nothing read\n", ago, reader)
 			case ls.Decoy:
 				decoyReads++
 				_, _ = fmt.Fprintf(w, "      read %s ago by %s · decoy\n", ago, reader)

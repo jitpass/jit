@@ -178,16 +178,15 @@ func (m *mountManager) serveContent(path string, sm *servedMount) []byte {
 		content, decoy = sm.real, false
 	}
 	rec := serveRecord{at: now, decoy: decoy, reader: sm.pendingReader, grantServed: !decoy && grantServed}
-	sm.lastServe = &rec
 	hadReal, resolveErr := sm.real != nil, sm.lastResolveErr
+	// The decision is only HALF the record: what the reader actually received
+	// is not knowable until the write lands. Stash it; finalizeServe (the
+	// onCycleEnd hook, same cycle, same goroutine) folds in the outcome and
+	// publishes to lastServe and the durable trail. Recording here — the old
+	// shape — logged "decoy served" for a reader that closed before the
+	// write and received nothing at all.
+	sm.pendingServe = &pendingServe{rec: rec, reason: serveReason(decoy, grantServed, hadReal, resolveErr)}
 	sm.mu.Unlock()
-
-	// Durable audit, outside sm.mu on purpose: the auditor takes its own lock
-	// and a finished aggregate is appended to a file, neither of which belongs
-	// on a mount's critical section — every reader of every mount waits behind
-	// it. The auditor collapses before writing, so this call is a map lookup
-	// and a counter increment on all but one read in a window.
-	m.serveAudit.record(now, path, serveReason(decoy, grantServed, hadReal, resolveErr), rec)
 	return content
 }
 
