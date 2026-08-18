@@ -258,6 +258,63 @@ func TestScanCommandScansNamedFile(t *testing.T) {
 	}
 }
 
+// TestScanCommandFollowsSymlinkRoot pins the fix for issue #78: a symlink the
+// user names as the scan root is resolved and scanned, instead of being
+// silently skipped by the walkers' no-symlink policy — which reported CLEAN
+// with exit 0 and let --fail-on pass over a real finding (`jit scan /etc` on
+// a stock Mac, where /etc is a symlink).
+func TestScanCommandFollowsSymlinkRoot(t *testing.T) {
+	withFixtureHome(t)
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.Mkdir(real, 0700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	env := filepath.Join(real, ".env")
+	if err := os.WriteFile(env, []byte("STRIPE_LIVE=sk_live_4eC39HqLyjWDarjtT1zdp7dc\n"), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	dirLink := filepath.Join(base, "link")
+	if err := os.Symlink("real", dirLink); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	fileLink := filepath.Join(base, "envlink")
+	if err := os.Symlink(filepath.Join("real", ".env"), fileLink); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	// The gate is the surface where the old behavior did real damage (a CI
+	// check silently passing), so assert through it: both symlink shapes
+	// must trip --fail-on exactly like the target itself does.
+	for _, root := range []string{dirLink, fileLink} {
+		_, err := execScan(t, root, "--fail-on", "any")
+		if err == nil {
+			t.Fatalf("scan of symlink root %s must find the target's secret and trip --fail-on, got nil", root)
+		}
+		var exitErr *ExitError
+		if !errors.As(err, &exitErr) || exitErr.Code != 2 {
+			t.Fatalf("expected --fail-on to trip with exit 2 on %s, got: %v", root, err)
+		}
+	}
+}
+
+// TestScanCommandRejectsBrokenSymlink: a named root whose symlink target is
+// gone fails loud like any other mistyped path — never a silently empty scan.
+func TestScanCommandRejectsBrokenSymlink(t *testing.T) {
+	withFixtureHome(t)
+	link := filepath.Join(t.TempDir(), "dangling")
+	if err := os.Symlink("no-such-target", link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	_, err := execScan(t, link)
+	if err == nil {
+		t.Fatal("expected an error for a broken symlink root, got nil")
+	}
+	if !strings.Contains(err.Error(), "no such file or directory") {
+		t.Errorf("expected the error to say the target is missing, got: %v", err)
+	}
+}
+
 // TestScanFailOnDefaultAlwaysExitsZero pins the contract that matters most for
 // backward compatibility: without --fail-on, a scan that finds critical
 // secrets still exits 0. Anyone who already runs `jit scan` in a script must
