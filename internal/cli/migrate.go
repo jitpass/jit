@@ -1421,11 +1421,10 @@ func runMigrateAll(cmd *cobra.Command) error {
 	}
 
 	progress := newProgress(cmd, false)
-	defer progress.Stop()
-	cfg.Progress = func(category string) {
-		progress.Step("Scanning "+category+"…", "Scanned "+category)
-	}
+	step, settleTrail := collapsedCategoryTrail(progress)
+	cfg.Progress = step
 	findings, summary, err := audit.Scan(cfg)
+	settleTrail()
 	if err != nil {
 		return fmt.Errorf("jit migrate: %w", err)
 	}
@@ -1478,7 +1477,6 @@ func runMigrateAll(cmd *cobra.Command) error {
 	}
 
 	if len(files) == 0 && len(tools) == 0 && !offerGuard {
-		progress.Stop()
 		fmt.Fprintln(cmd.OutOrStdout(), hlCmds("Nothing to protect — the scan found no secrets jit can act on. Run `jit scan` for the full picture."))
 		return nil
 	}
@@ -1493,7 +1491,6 @@ func runMigrateAll(cmd *cobra.Command) error {
 		}
 	}
 	d.dedupe()
-	progress.Stop()
 
 	out := cmd.OutOrStdout()
 	if d.total() == 0 && len(tools) == 0 && !offerGuard {

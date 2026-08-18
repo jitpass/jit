@@ -360,7 +360,10 @@ var lockCmd = &cobra.Command{
 		"live-mounted files serve placeholder values until then.",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := agentClient()
+		// NoHeal: a not-running service holds no session, so the state lock
+		// wants is already true — demand-starting one just to lock it would
+		// trade the honest "Already locked" below for a pointless spawn.
+		c, err := agentClientNoHeal()
 		if err != nil {
 			return fmt.Errorf("jit lock: %w", err)
 		}

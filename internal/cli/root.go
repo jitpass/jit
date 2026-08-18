@@ -125,6 +125,15 @@ func newRootCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runFirstRun(cmd)
 		},
+		// Captures the resolved command path before any RunE, for code that
+		// runs mid-command with no *cobra.Command in reach (the service heal's
+		// audit record names which command found the broker dead). NOTE: cobra
+		// runs only the NEAREST PersistentPreRun in the command chain — no
+		// subcommand defines one today, and any that does must set
+		// invocationCommandPath itself or this record loses its "(by ...)".
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			invocationCommandPath = cmd.CommandPath()
+		},
 	}
 	cmd.AddGroup(
 		&cobra.Group{ID: groupWorkflow, Title: "Find & fix exposed secrets:"},
@@ -364,6 +373,12 @@ func Execute() error {
 // record itself before Execute regains control — `jit run`, which ends in
 // syscall.Exec and never returns.
 var invocationStart time.Time
+
+// invocationCommandPath is the resolved command path of the invocation being
+// run ("jit vault get"), set by the root PersistentPreRun above. Empty until
+// a command actually dispatches (completion, help). Portable file on purpose:
+// the darwin-only heal reads it, but root.go owns the cobra lifecycle.
+var invocationCommandPath string
 
 // invocationRecorded is set once a command has written its own audit line, so
 // Execute does not record it a second time.
