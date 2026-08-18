@@ -459,6 +459,11 @@ type auditEntry struct {
 	subject string
 	detail  string
 	action  string
+
+	// undelivered marks a serve row whose reader received nothing (EPIPE
+	// before the write) — the header counts those apart from decoy reads,
+	// because an empty touch and a delivered decoy are different findings.
+	undelivered bool
 }
 
 // printAuditLog merges command records and auth events into one reverse-
@@ -944,9 +949,16 @@ func authEntry(home string, e agent.SessionEvent) auditEntry {
 			lineColor = cWarn
 		}
 		reader := serveReaderName(e)
-		if status == agent.OpServeDecoy {
+		switch {
+		case e.Undelivered:
+			// The reader was gone before the write: it received nothing, and
+			// saying "served" here is exactly the overstatement this field
+			// exists to retire. The verdict still rides in status, so
+			// --status decoy keeps matching these rows.
+			subject = "opened by " + reader + ", nothing read"
+		case status == agent.OpServeDecoy:
 			subject = "decoy served to " + reader
-		} else {
+		default:
 			subject = "real value served to " + reader
 		}
 		if e.Count > 1 {
@@ -954,6 +966,9 @@ func authEntry(home string, e agent.SessionEvent) auditEntry {
 		}
 		pairs = append(pairs,
 			kv{"level", level}, kv{"kind", "serve"}, kv{"status", status})
+		if e.Undelivered {
+			pairs = append(pairs, kv{"undelivered", "true"})
+		}
 		if len(e.Labels) > 0 {
 			pairs = append(pairs, kv{"mount", strings.Join(e.Labels, ", ")})
 		}
@@ -1042,15 +1057,16 @@ func authEntry(home string, e agent.SessionEvent) auditEntry {
 		line = lineColor.Sprint(plain)
 	}
 	return auditEntry{
-		t:       t,
-		kind:    kind,
-		status:  status,
-		parent:  e.LaunchedBy,
-		labels:  e.Labels,
-		match:   plain,
-		line:    line,
-		subject: subject,
-		detail:  detail,
+		t:           t,
+		kind:        kind,
+		status:      status,
+		parent:      e.LaunchedBy,
+		labels:      e.Labels,
+		match:       plain,
+		line:        line,
+		subject:     subject,
+		detail:      detail,
+		undelivered: e.Kind == agent.KindServe && e.Undelivered,
 	}
 }
 

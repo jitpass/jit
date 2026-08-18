@@ -447,7 +447,7 @@ func serveClissoConfig(openV vaultOpener) (fifo string, serving bool, cleanup fu
 	// precisely the isolation that prevents it.
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		_ = mount.Serve(ctx, fifo, func() []byte { return rendered }, nil, nil, nil)
+		_ = mount.Serve(ctx, fifo, func() []byte { return rendered }, nil, nil, nil, nil)
 	}()
 	// Idempotent: the caller both defers this and calls it explicitly
 	// before propagating clisso's exit code (os.Exit skips defers).

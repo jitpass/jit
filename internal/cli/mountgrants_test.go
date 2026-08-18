@@ -246,6 +246,7 @@ func TestServeContentServesRealToInTreeHolders(t *testing.T) {
 	if got := m.serveContent("/tmp/fixture/.env", sm); string(got) != "API_KEY=real\n" {
 		t.Fatalf("serveContent = %q, want real content for an all-in-tree holder set", got)
 	}
+	m.finalizeServe("/tmp/fixture/.env", sm, true)
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	if sm.lastServe == nil || !sm.lastServe.grantServed || sm.lastServe.decoy {
@@ -265,6 +266,7 @@ func TestServeContentFailsClosedOnStrangerHolder(t *testing.T) {
 	if got := m.serveContent("/tmp/fixture/.env", sm); string(got) != "decoy" {
 		t.Fatalf("serveContent = %q, want decoy when any holder is out-of-tree", got)
 	}
+	m.finalizeServe("/tmp/fixture/.env", sm, true)
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	if sm.lastServe == nil || !sm.lastServe.decoy || sm.lastServe.grantServed {
@@ -422,6 +424,7 @@ func TestMountRevealStatusesReportsGrant(t *testing.T) {
 	if got := m.serveContent("/tmp/fixture/.env", sm); string(got) != "API_KEY=real\n" {
 		t.Fatalf("setup: serveContent = %q, want real", got)
 	}
+	m.finalizeServe("/tmp/fixture/.env", sm, true)
 
 	statuses := m.mountRevealStatuses()
 	if len(statuses) != 1 {
