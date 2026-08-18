@@ -245,6 +245,129 @@ func TestProvideContentRecordsLastServe(t *testing.T) {
 	// here, where no grant machinery is wired.
 }
 
+// TestKnownReaderFastPathNamesASweepReader is the sweep fix end to end at
+// the unit level: the full-table walk identifies the reader on mount A and
+// feeds the service-wide recent list; mount B's scan — where the walk would
+// lose the race — re-finds that same reader with the targeted one-pid check,
+// names it flatly (a direct observation, not a carry-forward), and never
+// pays for a second walk.
+func TestKnownReaderFastPathNamesASweepReader(t *testing.T) {
+	m := &mountManager{stdout: io.Discard, stderr: io.Discard}
+	fullScans := 0
+	m.identifyFn = func(path string) (int32, string, bool) {
+		fullScans++
+		if path == "/tmp/fixture/a.env" {
+			return 555, "/usr/libexec/sharingd", true
+		}
+		return 0, "", false
+	}
+	m.describeFn = func(pid int32) (string, bool) {
+		if pid == 555 {
+			return "/usr/libexec/sharingd", true
+		}
+		return "", false
+	}
+	m.holdsFIFOFn = func(pid int32, path string) bool { return pid == 555 }
+	m.launcherFn = func(int32) string { return "" }
+
+	got := m.identifyReader("/tmp/fixture/a.env", readerIdentity{})
+	if !got.identified || got.pid != 555 || got.likely {
+		t.Fatalf("mount A: identifyReader = %+v, want the walk's flat identification", got)
+	}
+	if fullScans != 1 {
+		t.Fatalf("mount A: full scans = %d, want 1", fullScans)
+	}
+
+	got = m.identifyReader("/tmp/fixture/b.env", readerIdentity{})
+	if !got.identified || got.pid != 555 || got.likely {
+		t.Errorf("mount B: identifyReader = %+v, want the fast check's flat identification", got)
+	}
+	if fullScans != 1 {
+		t.Errorf("mount B: full scans = %d, want still 1 — the fast check must answer before the walk", fullScans)
+	}
+}
+
+// TestKnownReaderFastPathEvictsAReusedPID: a remembered pid now running a
+// different binary can never match again; it must be dropped from the recent
+// list, never matched against, and the scan must fall through to the walk.
+func TestKnownReaderFastPathEvictsAReusedPID(t *testing.T) {
+	m := &mountManager{stdout: io.Discard, stderr: io.Discard}
+	m.noteRecentReader(readerIdentity{pid: 555, execPath: "/usr/libexec/sharingd", identified: true})
+	m.identifyFn = func(string) (int32, string, bool) { return 0, "", false }
+	m.describeFn = func(int32) (string, bool) { return "/usr/bin/python3", true } // recycled
+	m.holdsFIFOFn = func(int32, string) bool {
+		t.Error("holds check ran for a candidate the pid-reuse guard should have dropped")
+		return false
+	}
+
+	if got := m.identifyReader("/tmp/fixture/a.env", readerIdentity{}); got.identified {
+		t.Errorf("identifyReader = %+v, want unidentified after the eviction", got)
+	}
+	m.readersMu.Lock()
+	left := len(m.recentReaders)
+	m.readersMu.Unlock()
+	if left != 0 {
+		t.Errorf("recent list still holds %d entries, want the reused pid evicted", left)
+	}
+}
+
+// TestKnownReaderUpgradesPreviousToDirectObservation: a mount's previous
+// reader that provably still holds the pipe is a fresh observation, not a
+// carry-forward — the row it produces must not be hedged as "likely".
+func TestKnownReaderUpgradesPreviousToDirectObservation(t *testing.T) {
+	m := &mountManager{stdout: io.Discard, stderr: io.Discard}
+	m.identifyFn = func(string) (int32, string, bool) {
+		t.Error("full walk ran although the previous reader answered the targeted check")
+		return 0, "", false
+	}
+	m.describeFn = func(int32) (string, bool) { return "/usr/local/bin/node", true }
+	m.holdsFIFOFn = func(pid int32, _ string) bool { return pid == 700 }
+
+	previous := readerIdentity{pid: 700, execPath: "/usr/local/bin/node", launchedBy: "Code", identified: true}
+	got := m.identifyReader("/tmp/fixture/a.env", previous)
+	if !got.identified || got.pid != 700 || got.likely {
+		t.Errorf("identifyReader = %+v, want the previous reader confirmed flatly, not marked likely", got)
+	}
+	if got.launchedBy != "Code" {
+		t.Errorf("launchedBy = %q, want it carried without a fresh ancestry walk", got.launchedBy)
+	}
+}
+
+// TestNoteRecentReadersCapDedupeAndDoctrine: newest first, one entry per
+// pid, capped — and likely-marked identities are never admitted, or the fast
+// check's own inference would compound.
+func TestNoteRecentReadersCapDedupeAndDoctrine(t *testing.T) {
+	m := &mountManager{stdout: io.Discard, stderr: io.Discard}
+	for i := 0; i < recentReadersCap+4; i++ {
+		m.noteRecentReader(readerIdentity{pid: int32(100 + i), execPath: "/bin/x", identified: true})
+	}
+	m.readersMu.Lock()
+	n, first := len(m.recentReaders), m.recentReaders[0].pid
+	m.readersMu.Unlock()
+	if n != recentReadersCap {
+		t.Errorf("recent list holds %d entries, want capped at %d", n, recentReadersCap)
+	}
+	if first != int32(100+recentReadersCap+3) {
+		t.Errorf("front of the list = pid %d, want the newest observation", first)
+	}
+
+	m.noteRecentReader(readerIdentity{pid: int32(100 + recentReadersCap), execPath: "/bin/x", identified: true})
+	m.readersMu.Lock()
+	n, first = len(m.recentReaders), m.recentReaders[0].pid
+	m.readersMu.Unlock()
+	if n != recentReadersCap || first != int32(100+recentReadersCap) {
+		t.Errorf("re-noting an existing pid: len=%d front=%d, want moved to front without growing", n, first)
+	}
+
+	m.noteRecentReader(readerIdentity{pid: 9999, execPath: "/bin/x", identified: true, likely: true})
+	m.readersMu.Lock()
+	first = m.recentReaders[0].pid
+	m.readersMu.Unlock()
+	if first == 9999 {
+		t.Error("a likely-marked identity entered the recent list; only direct observations may feed the fast check")
+	}
+}
+
 // TestFinalizeServeRecordsUndelivered pins the record's two-moment shape:
 // nothing is published at decision time, and an EPIPE cycle (the reader was
 // gone before the write — it received nothing) reaches lastServe and the
@@ -294,7 +417,7 @@ func TestFinalizeServeIdentityRetryGating(t *testing.T) {
 		sm.decoy = []byte("decoy")
 		m := &mountManager{stdout: io.Discard, stderr: io.Discard}
 		retries := 0
-		m.identifyRetryFn = func(string) (int32, string, bool) {
+		m.identifyFn = func(string) (int32, string, bool) {
 			retries++
 			return 777, "/usr/libexec/sharingd", true
 		}

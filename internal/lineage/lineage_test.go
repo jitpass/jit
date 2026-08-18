@@ -143,6 +143,75 @@ func TestIdentifyFIFOReaderPermissionBoundary(t *testing.T) {
 // same as TestIdentifyFIFOReaderFindsRealReader — a same-process reader
 // would also be seen (PathHeldOpen deliberately includes our own pid),
 // but the separate process is the case that matters.
+// TestPIDHoldsFIFOTargetedCheck pins the one-pid form of the reader scan:
+// true only for the pid that actually holds the FIFO, false for the wrong
+// path, a wrong pid, and our own process (the serve path's writer must never
+// identify itself as its own reader).
+func TestPIDHoldsFIFOTargetedCheck(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.fifo")
+	if err := unix.Mkfifo(path, 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+	other := filepath.Join(dir, "other.fifo")
+	if err := unix.Mkfifo(other, 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+
+	cmd := exec.Command("cat", path)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting reader: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+	pid := int32(cmd.Process.Pid)
+
+	// Complete cat's read-open so it genuinely holds the fd (a blocked
+	// open holds nothing — see TestPathHeldOpenSeesRealHolderAndItsAbsence).
+	opened := make(chan *os.File, 1)
+	openErr := make(chan error, 1)
+	go func() {
+		f, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			openErr <- err
+			return
+		}
+		opened <- f
+	}()
+	var f *os.File
+	select {
+	case f = <-opened:
+	case err := <-openErr:
+		t.Fatalf("opening for write: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the reader to connect")
+	}
+	defer f.Close()
+
+	// Poll: rendezvous completing and the fd appearing in proc_pidfdinfo's
+	// view are not the same instant under CI load (same reasoning as
+	// TestIdentifyFIFOReaderFindsRealReader).
+	deadline := time.Now().Add(5 * time.Second)
+	for !PIDHoldsFIFO(pid, path) {
+		if time.Now().After(deadline) {
+			t.Fatal("PIDHoldsFIFO = false for the pid provably holding the FIFO's read end")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if PIDHoldsFIFO(pid, other) {
+		t.Error("PIDHoldsFIFO = true for a FIFO the pid has never opened")
+	}
+	if PIDHoldsFIFO(pid+100000, path) {
+		t.Error("PIDHoldsFIFO = true for an unrelated (almost certainly dead) pid")
+	}
+	if PIDHoldsFIFO(int32(os.Getpid()), path) {
+		t.Error("PIDHoldsFIFO = true for our own pid — the writer must never read as its own reader")
+	}
+}
+
 func TestPathHeldOpenSeesRealHolderAndItsAbsence(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.fifo")
