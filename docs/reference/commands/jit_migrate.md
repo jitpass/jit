@@ -16,8 +16,8 @@ full plan — every file it will rewrite and every CLI it will wrap — and
 asks for confirmation before touching anything. It is exactly the command
 the scan report's "jit will protect these" section points at.
 
-With arguments, nothing is discovered or touched except the targets you
-name. Each target is resolved on its own:
+With arguments, discovery is scoped to the targets you name (plus the
+agent-cache sweep described below). Each target is resolved on its own:
 
   A file       is routed to the right category by what it is. A project file
                (.env, *.tfvars, mcp.json/.mcp.json, .npmrc) has its secrets
@@ -44,6 +44,13 @@ naming a file is itself the decision to convert it. Every run prints the full
 plan and asks for confirmation before touching anything, and every modified
 file is backed up (encrypted, into the vault) first, `jit migrate undo <path>`
 restores a migrated file from that backup.
+
+After vaulting, the run also clears verbatim copies of the newly vaulted
+credentials from AI agent caches under your home directory — files beyond
+the targets you named, each listed in the plan and backed up before it is
+touched. Only values the scanner counts as secrets are hunted; ordinary
+config a .env migration vaults alongside them is not. `--only` without the
+`cache` category skips the sweep entirely.
 
 With the 1Password CLI installed and signed in, a value that already lives
 in 1Password is vaulted as an op:// reference instead of a copy (one
@@ -73,7 +80,7 @@ jit migrate <file-or-dir>... [flags]
       --dry-run        preview the plan without changing anything
       --mount          for a loose secret file, keep it live at its path as a mount (real value to jit run grants, a decoy otherwise) instead of replacing it with a pointer; also required to protect a file that mixes a secret with other content
       --no-1password   store plain copies even when a value already lives in 1Password (default: matching values are vaulted as op:// references)
-      --only strings   scope a run to just these comma-separated categories: env,tfvars,k8s-secret,shell,history,mcp,aws,kube,terraform,docker,git,gcp,sops,npmrc,netrc,pypirc,loose (default: all)
+      --only strings   scope a run to just these comma-separated categories: env,tfvars,k8s-secret,shell,history,mcp,aws,kube,terraform,docker,git,gcp,sops,npmrc,netrc,pypirc,loose,cache (default: all)
   -y, --yes            skip the confirmation prompt and proceed immediately
 ```
 

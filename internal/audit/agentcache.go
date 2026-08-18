@@ -289,6 +289,46 @@ func eligibleNeedle(v string) bool {
 // read-only scanner and must not depend on the package that writes.
 const pointerValuePrefix = pointerfile.ValuePrefix
 
+// CacheNeedle is one variable/value pair the agent-cache hunt would search
+// for, exported for internal/migrate's cleanup sweep.
+type CacheNeedle struct {
+	Key   string
+	Value string
+}
+
+// EnvFileCacheNeedles reports the needles the agent-cache cross-reference
+// below would hunt for ONE env file: the values the env scanner judges to
+// be real credentials (Finding.claimedRawValues), gated on CountedAsSecret
+// and eligibleNeedle — the same predicate crossReferenceAgentCaches
+// applies, computed by the same classifier.
+//
+// It exists for `jit migrate`, whose env migration deliberately vaults
+// EVERY variable of a .env (ordinary config too, so the pointer file stays
+// complete) and then hunts agent caches for copies of what it vaulted.
+// Hunting every vaulted value meant splicing <jit:redacted:APP_NAME>
+// markers through transcripts under $HOME the user never named, on the
+// strength of an application name (issue #79). EligibleNeedle alone cannot
+// stop that — it tests distinctiveness, not secretness. Read-only and
+// best-effort: an unreadable or finding-free file contributes nothing.
+func EnvFileCacheNeedles(path string) []CacheNeedle {
+	var cfg Config // zero value: the default (filtered) gates scan itself uses
+	findings := classifyEnvFile(cfg, path, filepath.Base(path))
+	tagArchivedAndFixtures(findings) // CountedAsSecret reads TestFixture
+	var out []CacheNeedle
+	for _, f := range findings {
+		if !CountedAsSecret(f) {
+			continue
+		}
+		for _, cv := range f.claimedRawValues {
+			if !eligibleNeedle(cv.Value) {
+				continue
+			}
+			out = append(out, CacheNeedle(cv))
+		}
+	}
+	return out
+}
+
 // crossReferenceAgentCaches searches every present AI agent cache for verbatim
 // copies of the credentials findings already confirmed, and returns one
 // finding per (file, credential).
