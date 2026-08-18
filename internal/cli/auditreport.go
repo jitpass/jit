@@ -56,6 +56,7 @@ func printAuditReport(w io.Writer, entries []auditEntry, filtered bool, scale au
 	}
 	writeAuditHeader(w, entries, scale)
 	groups := groupAuditEntries(entries)
+	attachSweepHints(groups)
 	cols := auditColumns(groups)
 
 	day := ""
@@ -262,6 +263,78 @@ func groupAuditEntries(entries []auditEntry) []auditGroup {
 	return out
 }
 
+// sweepHintWindow bounds how far apart two serve rows can sit and still be
+// read as one sweep. The observed pattern is a file-walker touching every
+// registered mount within the same minute; two minutes absorbs the report's
+// minute-granularity fold without reaching into unrelated activity.
+const sweepHintWindow = 2 * time.Minute
+
+// attachSweepHints annotates unidentified serve rows with the one inference
+// the report can responsibly make: when a sweep touches many mounts at once
+// and the lineage scan wins the race on just one of them, the unidentified
+// siblings were almost certainly the same reader. The candidate must be a
+// LONE read (a watcher storm hammering its own mount proves nothing about
+// its neighbors — and at ×45775 it would otherwise nominate itself for
+// every sweep in its hour) on a DIFFERENT mount inside the window; if more
+// than one distinct reader qualifies, no hint is made at all. The hint is
+// phrased as likelihood, never asserted, and exists only in this view —
+// the recorded events and the logfmt/json streams stay inference-free
+// (identifyReader's doctrine: an audit trail that lies is worse than one
+// that admits it doesn't know).
+func attachSweepHints(groups []auditGroup) {
+	for i := range groups {
+		g := &groups[i]
+		if g.e.kind != "serve" || g.e.serveReader != "" {
+			continue
+		}
+		var name string
+		var at time.Time
+		ambiguous := false
+		for j := range groups {
+			c := &groups[j]
+			if i == j || c.e.kind != "serve" || c.e.serveReader == "" {
+				continue
+			}
+			if c.e.serveCount > 1 {
+				continue // a storm can't nominate itself
+			}
+			d := g.e.t.Sub(c.e.t)
+			if d < 0 {
+				d = -d
+			}
+			if d > sweepHintWindow {
+				continue
+			}
+			if labelsOverlap(g.e.labels, c.e.labels) {
+				continue // same mount is the carry-forward's job, not a sweep signal
+			}
+			if name != "" && name != c.e.serveReader {
+				ambiguous = true
+				break
+			}
+			name, at = c.e.serveReader, c.e.t
+		}
+		if name == "" || ambiguous {
+			continue
+		}
+		g.e.hint = fmt.Sprintf("likely %s, which read a sibling mount at %s", name, at.Format("15:04"))
+	}
+}
+
+// labelsOverlap reports whether the two label sets share a mount.
+func labelsOverlap(a, b []string) bool {
+	seen := make(map[string]bool, len(a))
+	for _, l := range a {
+		seen[l] = true
+	}
+	for _, l := range b {
+		if seen[l] {
+			return true
+		}
+	}
+	return false
+}
+
 // unionLabels returns the secret names in a followed by any in b not already
 // present, order-preserving and deduped. It never aliases either input, so
 // folding into a group can't mutate the backing entry's slice.
@@ -369,6 +442,13 @@ func writeAuditRow(w io.Writer, g auditGroup, cols auditCols) {
 	if g.e.detail != "" {
 		fmt.Fprint(w, auditHangIndent)
 		termtext.Wrap(w, auditRowLead, auditHangIndent, g.e.detail)
+	}
+	// The sweep inference hangs as evidence under the row it qualifies,
+	// plain like every other secondary line.
+	if g.e.hint != "" {
+		fmt.Fprint(w, auditHangIndent)
+		fmt.Fprint(w, glyphBranch+" ")
+		termtext.Wrap(w, auditRowLead+2, auditHangIndent+"  ", g.e.hint)
 	}
 	if g.e.action != "" {
 		fmt.Fprint(w, auditHangIndent)
