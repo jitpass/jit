@@ -156,7 +156,9 @@ var vaultRekeyCmd = &cobra.Command{
 // bracket around the rotation. Deliberately quiet on failure: no agent
 // (or an unreachable one) is the common, fine case.
 func lockAgent() {
-	if c, err := agentClient(); err == nil && c.Reachable() {
+	// NoHeal: a dead service already holds no session — the bracket's goal —
+	// so demand-starting one just to lock it would be a pointless spawn.
+	if c, err := agentClientNoHeal(); err == nil && c.Reachable() {
 		_ = c.Lock()
 	}
 }
