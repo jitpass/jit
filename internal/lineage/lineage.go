@@ -87,6 +87,33 @@ func IdentifyFIFOReader(path string) (pid int32, execPath string, ok bool) {
 	return 0, "", false
 }
 
+// PIDHoldsFIFO reports whether pid currently holds path open as a FIFO —
+// IdentifyFIFOReader's scan pointed at ONE process instead of the whole
+// table, a few proc_pidfdinfo calls instead of a full pid walk. It exists
+// for the serve path's known-reader fast check: a sweep that touches every
+// mount in one minute is identified by the full walk on whichever mount it
+// lingers at, and this is how the sibling mounts' scans re-find that same
+// reader before it closes, at a cost cheap enough to spend on a guess.
+// Same audit-only doctrine as the rest of this package: a false here means
+// "not observed", never "not present", and it gates nothing.
+func PIDHoldsFIFO(pid int32, path string) bool {
+	if pid <= 0 || pid == int32(os.Getpid()) {
+		return false
+	}
+	target := resolveTarget(path)
+	fds, err := listVnodeFDs(pid)
+	if err != nil {
+		return false // EPERM/ESRCH: not ours or gone, either way not observed
+	}
+	for _, fd := range fds {
+		p, vtype, err := vnodeInfo(pid, fd)
+		if err == nil && vtype == C.VFIFO && p == target {
+			return true
+		}
+	}
+	return false
+}
+
 // PathHeldOpen reports whether ANY currently-visible process (including
 // this one) holds an open fd on path as a FIFO. Unlike IdentifyFIFOReader,
 // this is allowed to gate one narrow decision in internal/mount's serve
