@@ -22,6 +22,91 @@ func renderReport(entries []auditEntry) string {
 	return buf.String()
 }
 
+// serveEntry builds a serve row the way authEntry would: reader "" is a scan
+// miss, count is the event's collapsed read count, labels the mounts touched.
+func serveEntry(at time.Time, reader string, count int64, labels ...string) auditEntry {
+	subject := "opened by an unidentified reader, nothing read"
+	if reader != "" {
+		subject = "decoy served to " + reader
+	}
+	return auditEntry{
+		t: at, kind: "serve", status: "decoy", subject: subject,
+		serveReader: reader, serveCount: count, labels: labels,
+	}
+}
+
+// The one inference the report may responsibly draw: a sweep touched many
+// mounts in one window, the scan won the race on exactly one of them, so the
+// unidentified siblings were almost certainly the same reader. Phrased as
+// likelihood, attached as evidence under the row.
+func TestSweepHintNamesTheLoneSiblingReader(t *testing.T) {
+	base := time.Date(2026, 8, 12, 16, 42, 30, 0, time.Local)
+	out := renderReport([]auditEntry{
+		serveEntry(base, "", 7, "~/a/.env", "~/b/.env"),
+		serveEntry(base.Add(-20*time.Second), "com.apple.Virtualization.VirtualMachine", 1, "~/jamf/.env"),
+	})
+	// Two fragments, because the hint wraps at narrow widths.
+	if !strings.Contains(out, "likely com.apple.Virtualization.VirtualMachine") ||
+		!strings.Contains(out, "sibling mount at 16:42") {
+		t.Errorf("expected the sweep hint under the unidentified row, got:\n%s", out)
+	}
+	if n := strings.Count(out, "likely"); n != 1 {
+		t.Errorf("the hint leaked onto %d rows, want the unidentified row only:\n%s", n, out)
+	}
+}
+
+// A watcher storm proves nothing about its neighbors — and at ×45775 it
+// would otherwise nominate itself for every sweep in its hour.
+func TestSweepHintRefusesAStormAsCandidate(t *testing.T) {
+	base := time.Date(2026, 8, 13, 12, 50, 30, 0, time.Local)
+	out := renderReport([]auditEntry{
+		serveEntry(base, "", 8, "~/a/.env"),
+		serveEntry(base.Add(-10*time.Second), "Code", 45775, "~/okta/.env"),
+	})
+	if strings.Contains(out, "likely") {
+		t.Errorf("a read storm nominated itself as the sweep reader:\n%s", out)
+	}
+}
+
+// Two different identified readers in the window is ambiguity, and an audit
+// view must say less rather than guess between them.
+func TestSweepHintRefusesAmbiguousCandidates(t *testing.T) {
+	base := time.Date(2026, 8, 12, 16, 42, 30, 0, time.Local)
+	out := renderReport([]auditEntry{
+		serveEntry(base, "", 3, "~/a/.env"),
+		serveEntry(base.Add(-15*time.Second), "sharingd", 1, "~/b/.env"),
+		serveEntry(base.Add(-30*time.Second), "backupd", 1, "~/c/.env"),
+	})
+	if strings.Contains(out, "likely") {
+		t.Errorf("two distinct candidates should mean no hint at all:\n%s", out)
+	}
+}
+
+// Outside the window it is not the same sweep, however lone the reader.
+func TestSweepHintRespectsTheWindow(t *testing.T) {
+	base := time.Date(2026, 8, 12, 16, 42, 30, 0, time.Local)
+	out := renderReport([]auditEntry{
+		serveEntry(base, "", 3, "~/a/.env"),
+		serveEntry(base.Add(-5*time.Minute), "sharingd", 1, "~/b/.env"),
+	})
+	if strings.Contains(out, "likely") {
+		t.Errorf("a reader five minutes away is not this sweep:\n%s", out)
+	}
+}
+
+// A read of the SAME mount is the per-mount carry-forward's territory
+// (identifyReader), not sweep evidence — the hint must not double-claim it.
+func TestSweepHintIgnoresSameMountReads(t *testing.T) {
+	base := time.Date(2026, 8, 12, 16, 42, 30, 0, time.Local)
+	out := renderReport([]auditEntry{
+		serveEntry(base, "", 3, "~/a/.env"),
+		serveEntry(base.Add(-15*time.Second), "sharingd", 1, "~/a/.env"),
+	})
+	if strings.Contains(out, "likely") {
+		t.Errorf("a same-mount read must not produce a sweep hint:\n%s", out)
+	}
+}
+
 // The report's whole reason to exist: the facts a person needs, without the
 // key=value scaffolding the machine form carries.
 func TestAuditReportDropsLogfmtScaffolding(t *testing.T) {
