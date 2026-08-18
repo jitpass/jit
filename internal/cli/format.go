@@ -38,6 +38,31 @@ func newProgress(cmd *cobra.Command, machineMode bool) *ui.Tracker {
 	return ui.New(cmd.ErrOrStderr(), enabled, animate)
 }
 
+// collapsedCategoryTrail wires an audit scan's per-category progress onto
+// progress as SCAFFOLDING: the steps animate while the walk runs (a
+// ten-second home walk must not look hung), their settled lines are marked
+// transient, and the returned settle func replaces the whole trail with one
+// "N categories scanned" line. Settle BEFORE any result is written — the
+// trail lives on stderr and its in-place line must be finished before
+// stdout output begins.
+//
+// One component for `jit scan` and `jit migrate`, whose pre-plan walk is
+// the same sixteen categories. Migrate long kept all sixteen "✓ Scanned …"
+// lines above its plan on the reasoning that settled trail lines record
+// what a command CHANGED — but the walk changes nothing, and the plan
+// (like the scan report before it) then fought sixteen lines of its own
+// scaffolding for a short window. The rekey trail stays uncollapsed: its
+// settled lines really are the record of work done.
+func collapsedCategoryTrail(progress *ui.Tracker) (step func(category string), settle func()) {
+	progress.Collapse()
+	return func(category string) {
+			progress.Step("Scanning "+category+"…", "Scanned "+category)
+		}, func() {
+			progress.StopCollapsed(fmt.Sprintf("%s scanned",
+				countWord(progress.Steps(), "category", "categories")))
+		}
+}
+
 // validateOutputFormat is the shared --format check for commands whose
 // machine-readable output is a single JSON snapshot rather than a stream
 // of records — doctor, vault list, agent status, and jit status
