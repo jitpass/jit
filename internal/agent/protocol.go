@@ -476,6 +476,15 @@ type SessionEvent struct {
 	// discipline the mount read-storm logging already applies. Zero/one
 	// everywhere else.
 	Count int64 `json:"count,omitempty"`
+	// Undelivered, on serve events, marks a cycle whose reader received
+	// NOTHING: the write hit EPIPE, proof that zero processes held the read
+	// end by the time content was sent. The verdict (Op) still records what
+	// WOULD have been served — but a touch-and-go reader (a backup tool, an
+	// indexer, a VM file-sharing sweep) that opens and closes without
+	// reading used to be logged as "decoy served", overstating exposure.
+	// False (the default, and the value on every event from before this
+	// field) means content reached the pipe with a reader attached.
+	Undelivered bool `json:"undelivered,omitempty"`
 	// AuthMethod, on the events that involved a FRESH local-auth challenge
 	// (unlock and denied), is a best-effort description of how the user was
 	// asked: "Touch ID or device passcode" when biometry is enrolled on this
@@ -567,4 +576,8 @@ type MountServeEvent struct {
 	// grant (every attached reader verified inside the granted process
 	// tree) rather than by a reveal window. Always false on decoy serves.
 	GrantServed bool `json:"grant_served,omitempty"`
+	// Undelivered marks a cycle whose reader received nothing (the write
+	// hit EPIPE — zero readers held the pipe). Decoy still records the
+	// verdict that was decided; this records that it never arrived.
+	Undelivered bool `json:"undelivered,omitempty"`
 }

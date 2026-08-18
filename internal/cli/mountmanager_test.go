@@ -41,9 +41,13 @@ import (
 // serveNoGrant runs the unified content decision (serveContent) with no
 // grant runs active — the fast path: always decoy, since real content flows
 // only to a run-scoped grant's own process tree.
+// serveNoGrant is one COMPLETED read: the content decision plus the
+// cycle-end fold (delivered), the way mount.Serve drives the two hooks.
 func serveNoGrant(sm *servedMount) []byte {
 	m := &mountManager{stdout: io.Discard, stderr: io.Discard}
-	return m.serveContent("/tmp/fixture/.env", sm)
+	content := m.serveContent("/tmp/fixture/.env", sm)
+	m.finalizeServe("/tmp/fixture/.env", sm, true)
+	return content
 }
 
 func TestEnsureServingConcurrentCallsClaimSlotOnce(t *testing.T) {
@@ -239,6 +243,94 @@ func TestProvideContentRecordsLastServe(t *testing.T) {
 	// under a run-scoped grant now (there is no reveal window), so it's
 	// exercised by the grant e2e tests (rungrant_e2e_test.go) rather than
 	// here, where no grant machinery is wired.
+}
+
+// TestFinalizeServeRecordsUndelivered pins the record's two-moment shape:
+// nothing is published at decision time, and an EPIPE cycle (the reader was
+// gone before the write — it received nothing) reaches lastServe and the
+// durable trail marked undelivered, instead of as the "decoy served" it
+// used to be logged as.
+func TestFinalizeServeRecordsUndelivered(t *testing.T) {
+	sm := newTestServedMount()
+	sm.decoy = []byte("decoy")
+	c := &collector{}
+	m := &mountManager{stdout: io.Discard, stderr: io.Discard}
+	m.serveAudit = serveAuditor{window: time.Hour, emit: c.append}
+
+	if got := m.serveContent("/tmp/fixture/.env", sm); string(got) != "decoy" {
+		t.Fatalf("serveContent = %q, want decoy", got)
+	}
+	sm.mu.Lock()
+	published := sm.lastServe
+	sm.mu.Unlock()
+	if published != nil {
+		t.Fatalf("lastServe = %+v before the cycle ended, want nil until the outcome is known", published)
+	}
+
+	m.finalizeServe("/tmp/fixture/.env", sm, false)
+
+	sm.mu.Lock()
+	ls := sm.lastServe
+	sm.mu.Unlock()
+	if ls == nil || !ls.undelivered || !ls.decoy {
+		t.Fatalf("lastServe = %+v, want a decoy record marked undelivered", ls)
+	}
+	m.serveAudit.stopFlusher()
+	events := c.all()
+	if len(events) != 1 || !events[0].Undelivered {
+		t.Fatalf("durable trail = %+v, want one event marked Undelivered", events)
+	}
+}
+
+// TestFinalizeServeIdentityRetryGating: the post-write identity scan is spent
+// only where it can pay — content was delivered (an EPIPE reader is provably
+// gone) AND this cycle's own scan ran and found nobody. Its find is marked
+// likely (a post-hoc observation, not the open itself) and feeds the
+// carry-forward so the next cycle starts with a name.
+func TestFinalizeServeIdentityRetryGating(t *testing.T) {
+	run := func(t *testing.T, delivered, missed bool) (*servedMount, int) {
+		t.Helper()
+		sm := newTestServedMount()
+		sm.decoy = []byte("decoy")
+		m := &mountManager{stdout: io.Discard, stderr: io.Discard}
+		retries := 0
+		m.identifyRetryFn = func(string) (int32, string, bool) {
+			retries++
+			return 777, "/usr/libexec/sharingd", true
+		}
+		if got := m.serveContent("/tmp/fixture/.env", sm); string(got) != "decoy" {
+			t.Fatalf("serveContent = %q, want decoy", got)
+		}
+		sm.mu.Lock()
+		sm.scanMissed = missed
+		sm.mu.Unlock()
+		m.finalizeServe("/tmp/fixture/.env", sm, delivered)
+		return sm, retries
+	}
+
+	sm, retries := run(t, true, true)
+	if retries != 1 {
+		t.Fatalf("delivered+missed: retries = %d, want 1", retries)
+	}
+	sm.mu.Lock()
+	ls, carried := sm.lastServe, sm.pendingReader
+	if sm.scanMissed {
+		t.Error("scanMissed not cleared by finalizeServe")
+	}
+	sm.mu.Unlock()
+	if ls == nil || !ls.reader.identified || !ls.reader.likely || ls.reader.pid != 777 {
+		t.Errorf("lastServe.reader = %+v, want the retry's find, marked likely", ls.reader)
+	}
+	if !carried.identified || carried.pid != 777 || !carried.likely {
+		t.Errorf("pendingReader = %+v, want the retry's find fed to the carry-forward", carried)
+	}
+
+	if _, retries := run(t, false, true); retries != 0 {
+		t.Errorf("undelivered cycle: retries = %d, want 0 — an EPIPE reader is provably gone", retries)
+	}
+	if _, retries := run(t, true, false); retries != 0 {
+		t.Errorf("no missed scan: retries = %d, want 0 — the rate limit must bound the extra walk", retries)
+	}
 }
 
 // TestMountRevealStatusesIncludesLastServe confirms the serve record crosses

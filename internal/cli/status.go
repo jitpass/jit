@@ -661,7 +661,10 @@ func printStatusText(w io.Writer, r statusResult) {
 	// about yesterday.
 	decoyReads := 0
 	for _, m := range r.Agent.Mounts {
-		if m.LastServe != nil && m.LastServe.Decoy {
+		// An undelivered serve handed over nothing, so it isn't "served
+		// decoy values" — saying so here was the overstatement the field
+		// exists to retire.
+		if m.LastServe != nil && m.LastServe.Decoy && !m.LastServe.Undelivered {
 			decoyReads++
 		}
 	}
