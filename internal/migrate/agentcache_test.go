@@ -31,6 +31,43 @@ func writeCacheTree(t *testing.T, path, content string) {
 	}
 }
 
+// TestNeedleGateDropsOrdinaryEnvValues pins the #79 fix at the migrate
+// layer: an env migration vaults EVERY variable, but neither the plan's
+// needle preview nor the apply-time sweep may hunt values scan's cache hunt
+// would not count as secrets. "jit-e2e-demo" is the shape that got through
+// before — 12 chars, mixed character classes, a perfectly eligible needle
+// and a perfectly ordinary application name.
+func TestNeedleGateDropsOrdinaryEnvValues(t *testing.T) {
+	dir := t.TempDir()
+	env := filepath.Join(dir, ".env")
+	writeCacheTree(t, env, "APP_NAME=jit-e2e-demo\nSTRIPE_KEY="+cacheKey+"\n")
+
+	needles := PlanNeedles([]string{env}, nil)
+	if len(needles) != 1 || needles[0].Value != cacheKey {
+		t.Errorf("PlanNeedles = %+v, want only the credential", needles)
+	}
+
+	ordinary := EnvOrdinaryValues([]string{env})
+	if !ordinary["jit-e2e-demo"] {
+		t.Errorf("EnvOrdinaryValues = %v, want the app name captured", ordinary)
+	}
+	if ordinary[cacheKey] {
+		t.Error("a claimed credential must never be classed ordinary")
+	}
+
+	// The OnSet capture holds env values AND other categories' credentials;
+	// only the env-ordinary ones come out.
+	vaulted := []AgentCacheSecret{
+		{Value: "jit-e2e-demo", Var: "APP_NAME"},
+		{Value: cacheKey, Var: "STRIPE_KEY"},
+		{Value: "ghp_Fq8xW2mN5rTv7yZb3cJd1kLp9sAe4u", Var: "GIT_TOKEN"},
+	}
+	kept := DropOrdinaryValues(vaulted, ordinary)
+	if len(kept) != 2 || kept[0].Value != cacheKey || kept[1].Value != "ghp_Fq8xW2mN5rTv7yZb3cJd1kLp9sAe4u" {
+		t.Errorf("DropOrdinaryValues = %+v, want the app name gone and both credentials kept", kept)
+	}
+}
+
 // The headline case: the agent's copy of a file it edited still holds the
 // credential after the .env was migrated.
 func TestCleanAgentCachesRedactsFileHistoryCopy(t *testing.T) {

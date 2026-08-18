@@ -88,6 +88,36 @@ func TestEligibleNeedle(t *testing.T) {
 	}
 }
 
+// TestEnvFileCacheNeedlesGatesOnSecretness pins the #79 fix's seam: migrate's
+// sweep needles for a .env come from this helper, which must admit only what
+// the scan-side hunt would — claimed credential values, CountedAsSecret,
+// eligibleNeedle. APP_NAME=jit-e2e-demo passes eligibleNeedle (12 chars,
+// mixed classes), which is exactly how it became a needle that spliced
+// redaction markers through a live agent transcript.
+func TestEnvFileCacheNeedlesGatesOnSecretness(t *testing.T) {
+	dir := t.TempDir()
+	env := filepath.Join(dir, ".env")
+	writeTree(t, env, "APP_NAME=jit-e2e-demo\nSTRIPE_KEY="+realKey+"\nPORT=8080\n")
+
+	needles := EnvFileCacheNeedles(env)
+	if len(needles) != 1 {
+		t.Fatalf("needles = %+v, want exactly the one claimed credential", needles)
+	}
+	if needles[0].Key != "STRIPE_KEY" || needles[0].Value != realKey {
+		t.Errorf("needle = %+v, want STRIPE_KEY/%s", needles[0], realKey)
+	}
+	for _, n := range needles {
+		if n.Value == "jit-e2e-demo" {
+			t.Error("an ordinary app name must never become a sweep needle")
+		}
+	}
+
+	// Best-effort contract: a missing file contributes nothing, never errors.
+	if got := EnvFileCacheNeedles(filepath.Join(dir, "absent.env")); got != nil {
+		t.Errorf("EnvFileCacheNeedles(missing) = %+v, want nil", got)
+	}
+}
+
 // The headline case: a credential in a .env, copied verbatim into an agent's
 // file cache. env_file_present is a FILE-level finding with no value of its
 // own, so this only works because the env scanner hands its parsed values up

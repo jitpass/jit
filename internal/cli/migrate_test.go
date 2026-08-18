@@ -548,6 +548,76 @@ func TestMigrateDryRunPreviewsAgentCacheSweep(t *testing.T) {
 	}
 }
 
+// TestMigrateDryRunCacheSweepIgnoresOrdinaryEnvValues pins issue #79's
+// headline failure at the plan level: an env migration vaults every
+// variable, but a cache copy of an ORDINARY value (an app name that happens
+// to be an eligible needle) must not put the cache file in the plan — the
+// sweep's needles are gated on what scan itself counts as a secret.
+func TestMigrateDryRunCacheSweepIgnoresOrdinaryEnvValues(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	const secret = "vlt09zXcVbNm2qWe4rTy6uIo8p42"
+	envPath := filepath.Join(cwd, ".env")
+	if err := os.WriteFile(envPath, []byte("APP_NAME=jit-e2e-demo\nSTRIPE_KEY="+secret+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	pastePath := filepath.Join(home, ".claude", "paste-cache", "paste1.txt")
+	if err := os.MkdirAll(filepath.Dir(pastePath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// The cache copy holds ONLY the app name — the QA transcript case.
+	if err := os.WriteFile(pastePath, []byte("building jit-e2e-demo today\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := execMigrate(t, envPath, "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate <env> --dry-run: %v", err)
+	}
+	if strings.Contains(out, "[AI agent cache file]") {
+		t.Errorf("a cache copy of an ordinary value must not enter the plan, got:\n%s", out)
+	}
+	if strings.Contains(out, displayPath(home, pastePath)) {
+		t.Errorf("the cache file must not be named in the plan, got:\n%s", out)
+	}
+}
+
+// TestMigrateOnlyScopesCacheSweep: --only without "cache" excludes the
+// agent-cache sweep from the plan (before #79 no token could), and naming
+// it brings the sweep back.
+func TestMigrateOnlyScopesCacheSweep(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	const secret = "vlt09zXcVbNm2qWe4rTy6uIo8p42"
+	envPath := filepath.Join(cwd, ".env")
+	if err := os.WriteFile(envPath, []byte("STRIPE_KEY="+secret+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	pastePath := filepath.Join(home, ".claude", "paste-cache", "paste1.txt")
+	if err := os.MkdirAll(filepath.Dir(pastePath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(pastePath, []byte("here is the key: "+secret+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := execMigrate(t, envPath, "--dry-run", "--only", "env")
+	if err != nil {
+		t.Fatalf("jit migrate --only env --dry-run: %v", err)
+	}
+	if strings.Contains(out, "[AI agent cache file]") {
+		t.Errorf("--only env must scope the sweep out of the plan, got:\n%s", out)
+	}
+
+	out, err = execMigrate(t, envPath, "--dry-run", "--only", "env,cache")
+	if err != nil {
+		t.Fatalf("jit migrate --only env,cache --dry-run: %v", err)
+	}
+	if !strings.Contains(out, "[AI agent cache file] 1") {
+		t.Errorf("--only env,cache must include the sweep in the plan, got:\n%s", out)
+	}
+}
+
 // TestPlanExtrasWrapAndGuardRows: wraps and the guard render as counted
 // plan categories with the outcome stated per row — the plan row is the
 // consent line (design/dry-run-refactor.md D3). Driven through
