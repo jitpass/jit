@@ -94,7 +94,9 @@ var agentStatusCmd = &cobra.Command{
 			return fmt.Errorf("jit service status: %w", err)
 		}
 
-		client, err := agentClient()
+		// NoHeal: a health reporter that quietly revived the service would
+		// erase the very state its advice describes (see agentClientNoHeal).
+		client, err := agentClientNoHeal()
 		if err != nil {
 			return fmt.Errorf("jit service status: %w", err)
 		}
