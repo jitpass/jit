@@ -7,6 +7,7 @@ package cli
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -193,9 +194,10 @@ func TestIdentifyReaderRejectsAReusedPID(t *testing.T) {
 	// A path nothing holds open, so the live scan is guaranteed to miss and
 	// the fallback is what's under test.
 	unread := filepath.Join(t.TempDir(), "nobody-reads-this")
+	m := &mountManager{stdout: io.Discard, stderr: io.Discard}
 
 	stale := readerIdentity{pid: 999999, execPath: "/usr/bin/python3", identified: true}
-	if got := identifyReader(unread, stale); got.identified {
+	if got := m.identifyReader(unread, stale); got.identified {
 		t.Errorf("carried forward a reader whose pid is dead or now runs another binary: %+v", got)
 	}
 
@@ -215,7 +217,7 @@ func TestIdentifyReaderRejectsAReusedPID(t *testing.T) {
 		t.Fatal("lineage.Describe couldn't identify this test process")
 	}
 	live := readerIdentity{pid: self.PID, execPath: self.ExecPath, identified: true}
-	got := identifyReader(unread, live)
+	got := m.identifyReader(unread, live)
 	if !got.identified || !got.likely {
 		t.Errorf("dropped a live, still-running reader instead of carrying it forward as likely: %+v", got)
 	}
