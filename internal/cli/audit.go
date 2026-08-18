@@ -464,6 +464,15 @@ type auditEntry struct {
 	// before the write) — the header counts those apart from decoy reads,
 	// because an empty touch and a delivered decoy are different findings.
 	undelivered bool
+
+	// serveReader/serveCount are the serve-row facts the report's sweep-
+	// correlation pass keys on (attachSweepHints): the reader's base name
+	// ("" when the scan missed it) and the event's collapsed read count. A
+	// hint computed from them lands in hint — viewer-side inference only,
+	// never part of the recorded event or the logfmt/json views.
+	serveReader string
+	serveCount  int64
+	hint        string
 }
 
 // printAuditLog merges command records and auth events into one reverse-
@@ -1056,7 +1065,7 @@ func authEntry(home string, e agent.SessionEvent) auditEntry {
 	if lineColor != nil {
 		line = lineColor.Sprint(plain)
 	}
-	return auditEntry{
+	entry := auditEntry{
 		t:           t,
 		kind:        kind,
 		status:      status,
@@ -1068,6 +1077,13 @@ func authEntry(home string, e agent.SessionEvent) auditEntry {
 		detail:      detail,
 		undelivered: e.Kind == agent.KindServe && e.Undelivered,
 	}
+	if e.Kind == agent.KindServe {
+		if e.By != "" {
+			entry.serveReader = filepath.Base(e.By)
+		}
+		entry.serveCount = e.Count
+	}
+	return entry
 }
 
 // serveReaderName names who read a mount, for the human report's subject.
