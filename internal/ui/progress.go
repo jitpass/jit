@@ -144,9 +144,12 @@ func (t *Tracker) Stop() {
 // that earns its keep (a home scan takes ten seconds and must not look hung);
 // only their residue goes.
 //
-// Opt-in, and only meaningful in animate mode: `jit migrate` and `vault rekey`
-// keep their trails because there the settled lines are a record of what was
-// changed, not scaffolding. A dumb terminal cannot erase, so it is unaffected
+// Opt-in, and only meaningful in animate mode: `vault rekey` keeps its trail
+// because there the settled lines are a record of what was changed, not
+// scaffolding — the same reasoning that long kept `jit migrate`'s trail,
+// wrongly: its sixteen lines narrate the pre-plan category WALK, which
+// changes nothing, so migrate now collapses like scan (see the CLI's
+// collapsedCategoryTrail). A dumb terminal cannot erase, so it is unaffected
 // and keeps its one-line-per-step feedback.
 func (t *Tracker) Collapse() {
 	t.mu.Lock()

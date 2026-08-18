@@ -337,6 +337,54 @@ editing, and only because it names source files — the
 `agentPlistNeedsRepoint` source guard now reads `servicecmds.go`
 instead of `agent.go`.
 
+## Addendum 2026-08-18: the client-side demand heal
+
+The v0.98.0 kickstart fixes carry a structural limit the first post-fix
+`brew upgrade` exposed: they live in the SERVICE, so they only act once a
+fixed build is already running. The upgrade that delivers a lifecycle fix
+is executed by the outgoing build — the cask has no postflight, `jit
+upgrade` steps aside for Homebrew-managed installs, and the self-retire
+watcher firing at swap time IS the old code. A broker launchd pended
+before or during that upgrade stayed dead until a human noticed
+`jit status`'s advice and typed `jit service restart` themselves.
+
+**D16. Commands that need the broker demand it.** `agent.Client` gains a
+dial-failed hook (`WithDialFailedHook`, fired at most once per Client,
+returning the retry window it earned); the CLI installs
+`healDeadService` on it in `agentClient()` whenever the plist is
+installed. On the first failed dial the heal issues one PLAIN
+`launchctl kickstart` (never `-k`, never bootstrap), prints one stderr
+notice, records a `jit service heal` line in the application audit log,
+and extends the dial wait to `agentStartWait` — a cold demand-spawn
+needs more than the respawn-gap grace. The demand is once per process;
+a kickstart launchd refuses grants nothing and the command falls
+through to `installedNotRunningAdvice` unchanged. Because the heal
+lives in the CLIENT binary — the one the user's next command runs — it
+works for the very upgrade that ships it, and retroactively for any
+broker already sitting dead. Wrap shims re-exec as `jit run`, so every
+wrapped tool invocation is a healer.
+
+The line it draws: **commands that NEED the broker heal; probes and
+reporters that ask ABOUT the broker never do.** `jit service status`,
+`jit lock` and rekey's lock bracket take `agentClientNoHeal` — a
+reporter that quietly revived the service would erase the state its
+advice describes, and locking a dead service means the goal is already
+true. The `Reachable()` probes (foreground run's refuse-to-steal,
+`ensureAgentInstalled`'s orphan gate) and `SessionUnlocked` (a Tab
+press must never spawn work) already bypass `agentClient` and stay
+bare. Build skew is deliberately NOT healed client-side: self-retire
+owns it behind the quiescent gate, and a client demand would bypass
+the gate and kill a live session mid-upgrade.
+
+Honest residuals: a wedged-but-running process holding a dead socket is
+only reported (plain kickstart no-ops on a running job; automating `-k`
+is the live-session-killer above); a bare `cat` on a mounted FIFO never
+dials the socket, so a dead broker still hangs it until the first jit
+command runs; fully headless setups run no jit command at all. Full
+coverage remains the parked `Sockets` activation — the audit trail's
+`jit service heal` records are now the field evidence for whether it is
+ever needed.
+
 ## Test plan
 
 Through the existing `launchctlRun` fake plus the new wait seam:

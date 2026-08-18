@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"golang.org/x/term"
@@ -60,6 +61,22 @@ func SessionUnlocked() bool {
 }
 
 func agentClient() (*agent.Client, error) {
+	return configuredAgentClient(true)
+}
+
+// agentClientNoHeal is agentClient for the surfaces that must never SPAWN
+// the service as a side effect of asking about it: the health reporters
+// (`jit service status`) and the session reducers (`jit lock`, rekey's
+// lock bracket). A reporter that quietly revived what it was reporting on
+// would erase the very state its advice describes, and locking a service
+// that isn't running means the goal — no session — is already true; a
+// demand-start there trades an honest "already locked" for a pointless
+// spawn. Everything that NEEDS the broker up takes agentClient and heals.
+func agentClientNoHeal() (*agent.Client, error) {
+	return configuredAgentClient(false)
+}
+
+func configuredAgentClient(heal bool) (*agent.Client, error) {
 	root, err := vaultRootDir()
 	if err != nil {
 		return nil, err
@@ -67,6 +84,9 @@ func agentClient() (*agent.Client, error) {
 	c := agent.NewClient(agent.SocketPath(root))
 	if agentInstalled() {
 		c = c.WithDialRetry(agentRestartGrace)
+		if heal {
+			c = c.WithDialFailedHook(healDeadService)
+		}
 	}
 	c = c.WithWaitNotifier(announceTouchIDWait)
 	// A LAUNCH with no terminal on stderr is one where nobody can see the
@@ -102,6 +122,66 @@ var boundedPromptWait bool
 // timeout with room to spare, so the host reports jit's own message from the
 // server log instead of killing jit mid-handshake and blaming the server.
 const headlessPromptWait = 20 * time.Second
+
+// healDeadService is the dial-failed hook every healing agentClient carries:
+// a command that finds the socket dead while the launchd plist is installed
+// demands a start instead of failing with restart advice the user must type
+// themselves. It is the client half of the 2026-08-17 incident fix
+// (design/service-reliability.md): the service-side kickstart only acts once
+// a fixed build is already running, so the upgrade that DELIVERS a fix — and
+// any broker already sitting dead — still needed a human to notice and run
+// `jit service restart`. This demand lives in the client binary the user's
+// next command runs, so it works for the very upgrade that ships it, and
+// retroactively for a broker launchd already pended.
+//
+// Plain kickstart, never -k and never bootstrap. On a running job kickstart
+// merely reports it running, which is what makes concurrent healers (a burst
+// of wrap shims hitting a dead broker) cost one spawn and no kills; on a
+// dropped job it fails and the command falls through to
+// installedNotRunningAdvice, which already tells that state apart.
+// Re-registering a dropped job stays `jit service restart`'s work. Build
+// skew is deliberately NOT healed here: the service's own self-retire owns
+// it, behind the quiescent gate that keeps an upgrade from killing a live
+// session — a client-side demand would bypass that gate.
+//
+// Returns agentStartWait when the demand went out, so the dial waits out a
+// cold spawn (agentRestartGrace is sized for a respawn already in flight,
+// not a fresh exec), and 0 when it didn't — the dial keeps its ordinary
+// grace and the existing advice paths do their work.
+func healDeadService() time.Duration {
+	var window time.Duration
+	agentHealOnce.Do(func() {
+		fmt.Fprintln(os.Stderr, serviceHealNotice)
+		if _, err := launchctlRun("kickstart", agentServiceTarget()); err != nil {
+			return
+		}
+		by := invocationCommandPath
+		if by == "" {
+			by = "jit"
+		}
+		// The heal must stay visible after it succeeds: a surface that
+		// quietly fixes the dead-broker state would also erase the field
+		// evidence of how often launchd pends spawns — the signal that
+		// decides whether the parked Sockets-activation work is ever needed.
+		// Args mimic argv words, not prose: commandEntry renders (and --grep
+		// matches) "jit " + args, so prose here made the line lose "heal".
+		recordSideEffect("jit service heal",
+			[]string{"service", "heal", "(was not running; demanded start)"}, by)
+		window = agentStartWait
+	})
+	return window
+}
+
+// serviceHealNotice is the one stderr line healDeadService prints, so the
+// seconds the demand-spawn takes read as jit doing something rather than a
+// silent hang — the same job announceTouchIDWait does for a prompt wait.
+// stderr, like every transient notice, so it never corrupts stdout output.
+const serviceHealNotice = "the background service isn't running; starting it..."
+
+// agentHealOnce bounds healDeadService to one demand per process: if the
+// service cannot come up, the command should fail with the honest advice,
+// not churn launchd with repeated demands. Tests reset it.
+var agentHealOnce sync.Once
 
 // announceTouchIDWait is the wait notifier every CLI agent client carries: it
 // prints one line to stderr when a request has been blocked long enough to

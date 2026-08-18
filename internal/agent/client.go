@@ -57,6 +57,7 @@ const (
 type Client struct {
 	socketPath  string
 	dialRetry   time.Duration
+	dialFailed  func() time.Duration
 	waitNotify  func()
 	respTimeout time.Duration
 	// bounded records that respTimeout was deliberately shortened below the
@@ -129,6 +130,24 @@ func (c *Client) WithDialRetry(d time.Duration) *Client {
 	return c
 }
 
+// WithDialFailedHook registers fn, fired at most once per Client when a
+// dial attempt fails — the caller's one chance to CAUSE the socket to come
+// up rather than just wait for it (the CLI's hook demands a launchd start
+// of an installed-but-not-running service). fn returns how long the dial
+// should keep retrying, replacing WithDialRetry's window when longer: a
+// cold demand-spawn needs more than the respawn-gap grace that window is
+// sized for. A hook that did nothing returns 0 and changes nothing.
+//
+// At most once per Client, not per dial: a multi-call client (Status then
+// the real request) must not issue a fresh demand for every call that
+// finds the socket still dead. This package stays free of launchctl —
+// what "cause the socket to come up" means is entirely the caller's.
+// Returns c for chaining.
+func (c *Client) WithDialFailedHook(fn func() time.Duration) *Client {
+	c.dialFailed = fn
+	return c
+}
+
 // dialRetryInterval paces WithDialRetry's re-dials. 100ms matches the
 // poll the CLI's own install/restart wait uses; a respawning agent binds
 // its socket within a couple of these.
@@ -149,13 +168,24 @@ func (c *Client) Reachable() bool {
 }
 
 // dial connects to the agent socket, retrying for up to dialRetry (see
-// WithDialRetry) when set.
+// WithDialRetry) when set. A first failure fires the dial-failed hook (see
+// WithDialFailedHook), which may lengthen the retry window it just earned.
 func (c *Client) dial() (net.Conn, error) {
 	conn, err := net.DialTimeout("unix", c.socketPath, dialTimeout)
-	if err == nil || c.dialRetry <= 0 {
+	if err == nil {
+		return conn, nil
+	}
+	retry := c.dialRetry
+	if fn := c.dialFailed; fn != nil {
+		c.dialFailed = nil
+		if window := fn(); window > retry {
+			retry = window
+		}
+	}
+	if retry <= 0 {
 		return conn, err
 	}
-	deadline := time.Now().Add(c.dialRetry)
+	deadline := time.Now().Add(retry)
 	for time.Now().Before(deadline) {
 		time.Sleep(dialRetryInterval)
 		conn, err = net.DialTimeout("unix", c.socketPath, dialTimeout)
