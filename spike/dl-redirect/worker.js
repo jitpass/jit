@@ -15,10 +15,19 @@
 //
 // What gets logged, and deliberately nothing more:
 //   client class (brew | curl | jit-upgrade | browser | other), tag, asset,
-//   country, Cloudflare colo. NO IP, NO full user-agent string, NO cookies.
-//   The privacy story must survive being read aloud: "we count downloads by
-//   client type and country". Analytics Engine rows carry no IP unless you
-//   write one — so we don't.
+//   country, Cloudflare colo, and a salted hash of the IP. NO RAW IP, NO full
+//   user-agent string, NO cookies.
+//   The privacy story must still survive being read aloud: "we count downloads
+//   by client type and country, and we can tell two downloads apart without
+//   knowing who either one is." The hash exists because a download count that
+//   cannot separate one person pulling ten times from ten people is not a
+//   number worth quoting. It is salted because SHA-256 over a bare IPv4 is
+//   2^32 guesses, which is an IP with extra steps.
+//
+// The columns themselves are named and ordered in schema.mjs. Run `./sql.mjs`
+// for queries that come back with those names as headers instead of blob1..9.
+
+import { BLOBS, DOUBLES, INDEX } from "./schema.mjs";
 
 const OWNER = "jitpass";
 const REPO = "jit";
@@ -102,15 +111,10 @@ export default {
     try {
       console.log(`dl client=${client} tag=${tag} asset=${asset} country=${country} colo=${colo} arch=${arch} os=${os} asn=${asnOrg}`);
       if (env.DL_STATS) {
-        // blobs: dimensions to group by; doubles: the count. No IP, no full
-        // UA, no city — aggregate facts only. Blob order is the query
-        // contract: 1=client 2=tag 3=asset 4=country 5=os 6=arch
-        // 7=brewVersion 8=asnOrg 9=colo.
-        env.DL_STATS.writeDataPoint({
-          blobs: [client, tag, asset, country, os, arch, brewVersion, asnOrg, colo],
-          doubles: [1],
-          indexes: [client],
-        });
+        // Column order and meaning both live in schema.mjs, which `./sql.mjs`
+        // reads to generate queries with real headers.
+        const view = { client, tag, asset, country, os, arch, brewVersion, asnOrg, colo };
+        ctx.waitUntil(record(env, view, request.headers.get("cf-connecting-ip")));
       }
     } catch (e) {
       // swallowed deliberately: a lost data point over a lost download
@@ -119,3 +123,134 @@ export default {
     return Response.redirect(dest, 302);
   },
 };
+
+// Hashing is async, so this runs detached after the 302 has already gone out.
+// It keeps its own try/catch for the same FAIL OPEN reason: a lost data point
+// is always cheaper than a lost download.
+async function record(env, view, ip) {
+  try {
+    // All three derive from the IP, none of them keep it. Run together because
+    // two are network calls and this is already off the critical path.
+    const [vid, netblockOrg, ptrHost] = await Promise.all([
+      visitorId(ip, env.IP_SALT),
+      netblockOrgOf(ip),
+      ptrHostOf(ip),
+    ]);
+    const row = { ...view, visitorId: vid, netblockOrg, ptrHost };
+    env.DL_STATS.writeDataPoint({
+      blobs: BLOBS.map(([, get]) => get(row) || ""),
+      doubles: DOUBLES.map(([, get]) => get(row) || 0),
+      indexes: [INDEX[1](row)],
+    });
+  } catch (e) {
+    // swallowed deliberately: see above
+  }
+}
+
+// A stable pseudonym for one downloader: the first 64 bits of SHA-256 over the
+// IP and a secret salt. Enough to tell a repeat puller from a new one, not
+// enough to be an IP at rest. Matches the landing site's worker exactly, so
+// the two datasets can be reasoned about the same way.
+//
+// Unset salt writes a marker rather than a reversible hash. Set it with:
+//   npx wrangler secret put IP_SALT
+async function visitorId(ip, salt) {
+  if (!ip) return "";
+  if (!salt) return "unsalted";
+
+  const bytes = new TextEncoder().encode(`${salt}:${ip}`);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+
+  return Array.from(new Uint8Array(digest, 0, 8))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+// ---------------------------------------------------------------------------
+// IP enrichment. Both lookups answer "which company is this" better than the
+// ASN can, and both return "" rather than throwing: a row with a blank column
+// is worth more than no row, and neither may ever be the reason a download
+// goes uncounted.
+// ---------------------------------------------------------------------------
+
+const LOOKUP_TIMEOUT_MS = 3000;
+
+// RDAP is WHOIS over HTTPS returning JSON, free and unauthenticated, so a
+// Worker can query it directly. rdap.org bootstraps to whichever RIR owns the
+// address (ARIN, RIPE, APNIC, ...).
+//
+// Cached by /24 for a day. RIRs rate-limit, and a team pulling the binary
+// would otherwise issue the same lookup over and over.
+async function netblockOrgOf(ip) {
+  if (!ip) return "";
+
+  const key = new Request(`https://rdap.cache.invalid/${block(ip)}`);
+  const cache = caches.default;
+
+  try {
+    const hit = await cache.match(key);
+    if (hit) return await hit.text();
+
+    const res = await fetch(`https://rdap.org/ip/${ip}`, {
+      headers: { accept: "application/rdap+json" },
+      signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS),
+    });
+    if (!res.ok) return "";
+
+    const org = registrantOf(await res.json());
+    await cache.put(
+      key,
+      new Response(org, { headers: { "cache-control": "max-age=86400" } }),
+    );
+    return org;
+  } catch (e) {
+    return "";
+  }
+}
+
+// Prefer a named registrant entity; fall back to the network's own name, which
+// is often a handle like "COMCAST-BIZ-4" but still narrows it down.
+function registrantOf(data) {
+  for (const entity of data.entities || []) {
+    const roles = entity.roles || [];
+    if (!roles.includes("registrant") && !roles.includes("administrative")) continue;
+    for (const field of (entity.vcardArray || [])[1] || []) {
+      if (field[0] === "fn" && field[3]) return String(field[3]).slice(0, 128);
+    }
+  }
+  return String(data.name || "").slice(0, 128);
+}
+
+// Reverse DNS over Cloudflare's DoH endpoint. A corporate host frequently
+// resolves to something carrying the company's own domain.
+//
+// IPv4 only: IPv6 reverse names are nibble-expanded and the hit rate on them
+// is close to nothing, so it is not worth the code.
+async function ptrHostOf(ip) {
+  if (!ip || !isIPv4(ip)) return "";
+
+  const name = ip.split(".").reverse().join(".") + ".in-addr.arpa";
+  try {
+    const res = await fetch(
+      `https://cloudflare-dns.com/dns-query?name=${name}&type=PTR`,
+      {
+        headers: { accept: "application/dns-json" },
+        signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS),
+      },
+    );
+    if (!res.ok) return "";
+
+    const ptr = ((await res.json()).Answer || []).find((a) => a.type === 12);
+    return ptr ? String(ptr.data).replace(/\.$/, "").slice(0, 128) : "";
+  } catch (e) {
+    return "";
+  }
+}
+
+const isIPv4 = (ip) => /^\d{1,3}(\.\d{1,3}){3}$/.test(ip);
+
+// Cache key granularity: a /24 for v4, the routing-ish prefix for v6.
+function block(ip) {
+  if (isIPv4(ip)) return ip.split(".").slice(0, 3).join(".");
+  return ip.split(":").slice(0, 4).join(":");
+}
