@@ -171,12 +171,39 @@ type mountManager struct {
 	grantAncestryFn func(pid, root int32) bool
 	grantStartFn    func(pid int32) (unixMicro int64, ok bool)
 
-	// identifyRetryFn is finalizeServe's post-write identity scan; nil means
-	// lineage.IdentifyFIFOReader. A seam for the same reason the grant ones
-	// are: the retry's gating (delivered-only, missed-scan-only) is what
-	// tests pin down, and none of it should need a real lingering reader.
-	identifyRetryFn func(path string) (pid int32, execPath string, ok bool)
+	// The identity scan's kernel lookups, seamed like the grant gate's: the
+	// known-reader fast path's gating and eviction, and the finalize retry's
+	// bounds, are what tests pin down, and none of it should need real
+	// process trees. Nil means the internal/lineage implementations.
+	identifyFn  func(path string) (pid int32, execPath string, ok bool) // full-table scan
+	holdsFIFOFn func(pid int32, path string) bool                       // one-pid targeted check
+	describeFn  func(pid int32) (execPath string, ok bool)              // pid-reuse guard
+	launcherFn  func(pid int32) string                                  // ancestry naming
+
+	// recentReaders is the service-wide memory behind the known-reader fast
+	// check: the last few DIRECTLY-OBSERVED reader identities, newest first.
+	// A sweep touching every mount in one minute is identified by the full
+	// table walk on whichever mount it lingers at; the sibling mounts' scans
+	// then re-find that same reader with a targeted one-pid check cheap
+	// enough to win the race the walk loses. Its own mutex — noted and
+	// consulted on Serve goroutines, and it must never contend with m.mu.
+	readersMu     sync.Mutex
+	recentReaders []recentReader
 }
+
+// recentReader is one remembered identification. The exec path is the
+// pid-reuse guard (a recycled pid running a different binary is evicted,
+// never matched); launchedBy rides along so a fast-path hit doesn't repeat
+// the ancestry walk.
+type recentReader struct {
+	pid        int32
+	execPath   string
+	launchedBy string
+}
+
+// recentReadersCap bounds the memory: mounts share a handful of live readers
+// (an editor, a sweep daemon, a dev server), not a population.
+const recentReadersCap = 8
 
 // readerIdentity is internal/lineage's best-effort answer to "who just
 // opened this mount" — audit-only (RFC.md §5.1), never consulted by the
@@ -701,7 +728,7 @@ func (m *mountManager) noteReaderConnected(path string, sm *servedMount) {
 		previous := sm.pendingReader
 		sm.mu.Unlock()
 
-		next := identifyReader(path, previous)
+		next := m.identifyReader(path, previous)
 
 		sm.mu.Lock()
 		sm.pendingReader = next
@@ -736,48 +763,152 @@ func (m *mountManager) noteReaderConnected(path string, sm *servedMount) {
 	fmt.Fprintf(m.stderr, "jit service: mount %s: reader connected (not identified, best-effort scan missed it)%s\n", path, suffix)
 }
 
-// identifyReader is the best-effort "who is reading this mount" scan, with a
-// fallback to whoever this mount's PREVIOUS scan found.
+// identifyReader is the best-effort "who is reading this mount" scan: the
+// known-reader fast check first, then the full table walk, then a fallback
+// to whoever this mount's PREVIOUS scan found.
 //
-// The fallback exists because the plain scan produced a genuinely useless log:
-// a mount in an editor's watcher loop alternated between "reader pid=57346
-// (…/Code)" and "reader connected (not identified — best-effort scan missed
-// it)" — the same editor both times, one of which jit had just named. The scan
-// is rate-limited and races a reader that closes fast, so misses are normal,
-// not exceptional.
+// The fast check is the sweep fix: a file-walker touching every mount in one
+// minute was identified on whichever mount it lingered at and "unidentified"
+// on all the siblings, because the full walk (milliseconds) loses the race a
+// targeted one-pid check (microseconds) can win. A candidate that still runs
+// the same executable AND currently holds this mount open is a direct
+// observation, reported flatly — the same evidence the walk produces, found
+// faster.
+//
+// The carry-forward fallback exists because the plain scan produced a
+// genuinely useless log: a mount in an editor's watcher loop alternated
+// between "reader pid=57346 (…/Code)" and "reader connected (not identified —
+// best-effort scan missed it)" — the same editor both times, one of which jit
+// had just named. The scan is rate-limited and races a reader that closes
+// fast, so misses are normal, not exceptional.
 //
 // Carried forward only while the remembered pid is still alive AND still
 // running the same executable: pids get reused, and without that check a
 // recycled pid would let jit attribute one process's read to another program
 // entirely — an audit log that lies is worse than one that admits it doesn't
 // know. The result is marked likely, and every display of it says so.
-func identifyReader(path string, previous readerIdentity) readerIdentity {
-	if pid, execPath, ok := lineage.IdentifyFIFOReader(path); ok {
-		return readerIdentity{
+func (m *mountManager) identifyReader(path string, previous readerIdentity) readerIdentity {
+	if r, ok := m.knownReaderHolding(path, previous); ok {
+		return r
+	}
+	identify := m.identifyFn
+	if identify == nil {
+		identify = lineage.IdentifyFIFOReader
+	}
+	if pid, execPath, ok := identify(path); ok {
+		r := readerIdentity{
 			pid:        pid,
 			execPath:   execPath,
-			launchedBy: launcherOf(pid),
+			launchedBy: m.launcherOf(pid),
 			identified: true,
 		}
+		m.noteRecentReader(r)
+		return r
 	}
-	if previous.identified && stillRunning(previous) {
+	if previous.identified && m.stillRunning(previous) {
 		previous.likely = true
 		return previous
 	}
 	return readerIdentity{}
 }
 
+// knownReaderHolding runs the targeted fast check: this mount's previous
+// reader first (in a watcher loop it is almost always the answer), then the
+// service-wide recent list. A candidate must pass the pid-reuse guard (same
+// executable) and then actually hold this mount's pipe open — both direct
+// observations, so a hit is reported flatly, never as "likely". A candidate
+// whose pid now runs something else is evicted rather than skipped: it can
+// never match again, and a dead entry's slot is worth more than its history.
+func (m *mountManager) knownReaderHolding(path string, previous readerIdentity) (readerIdentity, bool) {
+	holds := m.holdsFIFOFn
+	if holds == nil {
+		holds = lineage.PIDHoldsFIFO
+	}
+
+	candidates := make([]recentReader, 0, recentReadersCap+1)
+	if previous.identified {
+		candidates = append(candidates, recentReader{pid: previous.pid, execPath: previous.execPath, launchedBy: previous.launchedBy})
+	}
+	m.readersMu.Lock()
+	for _, c := range m.recentReaders {
+		if !previous.identified || c.pid != previous.pid {
+			candidates = append(candidates, c)
+		}
+	}
+	m.readersMu.Unlock()
+
+	for _, c := range candidates {
+		execPath, ok := m.describePID(c.pid)
+		if !ok || execPath != c.execPath {
+			m.evictRecentReader(c.pid)
+			continue
+		}
+		if !holds(c.pid, path) {
+			continue
+		}
+		r := readerIdentity{pid: c.pid, execPath: c.execPath, launchedBy: c.launchedBy, identified: true}
+		m.noteRecentReader(r) // refresh recency: the live sweep reader stays first
+		return r, true
+	}
+	return readerIdentity{}, false
+}
+
+// noteRecentReader records a DIRECT observation at the front of the recent
+// list, deduplicated by pid, capped at recentReadersCap. Likely-marked
+// identities are never fed here — the list holds only what a scan actually
+// saw, or the fast check's own inference would compound.
+func (m *mountManager) noteRecentReader(r readerIdentity) {
+	if !r.identified || r.likely {
+		return
+	}
+	m.readersMu.Lock()
+	defer m.readersMu.Unlock()
+	out := make([]recentReader, 0, recentReadersCap)
+	out = append(out, recentReader{pid: r.pid, execPath: r.execPath, launchedBy: r.launchedBy})
+	for _, c := range m.recentReaders {
+		if c.pid != r.pid && len(out) < recentReadersCap {
+			out = append(out, c)
+		}
+	}
+	m.recentReaders = out
+}
+
+// evictRecentReader drops a remembered pid whose process is gone or reused.
+func (m *mountManager) evictRecentReader(pid int32) {
+	m.readersMu.Lock()
+	defer m.readersMu.Unlock()
+	out := m.recentReaders[:0]
+	for _, c := range m.recentReaders {
+		if c.pid != pid {
+			out = append(out, c)
+		}
+	}
+	m.recentReaders = out
+}
+
 // stillRunning reports whether a remembered reader is still the same live
 // process — same pid, still executing the same binary. The exec-path check is
 // what makes pid reuse safe to ignore.
-func stillRunning(r readerIdentity) bool {
-	p, ok := lineage.Describe(r.pid)
-	return ok && p.ExecPath == r.execPath
+func (m *mountManager) stillRunning(r readerIdentity) bool {
+	execPath, ok := m.describePID(r.pid)
+	return ok && execPath == r.execPath
+}
+
+// describePID resolves a pid's executable path through the seam.
+func (m *mountManager) describePID(pid int32) (string, bool) {
+	if m.describeFn != nil {
+		return m.describeFn(pid)
+	}
+	p, ok := lineage.Describe(pid)
+	return p.ExecPath, ok
 }
 
 // launcherOf names what launched pid, skipping relay shells — the mount's
 // answer to the same question `jit service status` answers about an unlock.
-func launcherOf(pid int32) string {
+func (m *mountManager) launcherOf(pid int32) string {
+	if m.launcherFn != nil {
+		return m.launcherFn(pid)
+	}
 	chain := lineage.Ancestry(pid)
 	if len(chain) < 2 {
 		return ""
@@ -815,7 +946,7 @@ func (m *mountManager) finalizeServe(path string, sm *servedMount, delivered boo
 	// holds the pipe now almost certainly is this cycle's reader, but a
 	// brand-new non-blocking reader could have arrived in the gap.
 	if delivered && missed && !rec.reader.identified {
-		identify := m.identifyRetryFn
+		identify := m.identifyFn
 		if identify == nil {
 			identify = lineage.IdentifyFIFOReader
 		}
@@ -823,7 +954,7 @@ func (m *mountManager) finalizeServe(path string, sm *servedMount, delivered boo
 			r := readerIdentity{
 				pid:        pid,
 				execPath:   execPath,
-				launchedBy: launcherOf(pid),
+				launchedBy: m.launcherOf(pid),
 				identified: true,
 				likely:     true,
 			}
@@ -833,6 +964,11 @@ func (m *mountManager) finalizeServe(path string, sm *servedMount, delivered boo
 			sm.mu.Lock()
 			sm.pendingReader = r
 			sm.mu.Unlock()
+			// And the service-wide recent list: the scan DID observe this pid
+			// holding the mount just now — only the attribution to the served
+			// cycle is the inference the likely mark carries — so the sibling
+			// mounts' fast checks may use it.
+			m.noteRecentReader(readerIdentity{pid: pid, execPath: execPath, launchedBy: r.launchedBy, identified: true})
 		}
 	}
 
