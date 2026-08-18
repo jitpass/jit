@@ -47,14 +47,34 @@ function classifyUA(ua) {
 }
 
 // Pull the aggregate platform facts out of Homebrew's UA without storing the
-// UA itself: "Homebrew/4.6.19 (Macintosh; arm64 Mac OS X 15.5)". arch is the
-// one that matters — jit is arm64-only by decision, and x86_64 rows here are
-// the first real measure of Intel demand. Non-brew UAs yield "" (curl's UA
-// says nothing about the OS).
-function platformFromUA(ua) {
-  const m = /Homebrew\/([\d.]+) \(Macintosh; (\w+) Mac OS X ([\d.]+)\)/.exec(ua || "");
-  if (!m) return { brewVersion: "", arch: "", os: "" };
-  return { brewVersion: m[1], arch: m[2], os: m[3] };
+// UA itself: "Homebrew/6.0.18 (Macintosh; arm64 Mac OS X 26.5.2) curl/8.7.1".
+// arch is the one that matters — jit is arm64-only by decision, and x86_64
+// rows here are the first real measure of Intel demand.
+//
+// Deliberately loose about the platform segment. The original pattern demanded
+// "Macintosh; <arch> Mac OS X <version>" exactly, and a real brew download in
+// JP arrived classified as brew with all three fields empty, which means the
+// UA said something this did not anticipate — Homebrew on Linux, an older
+// release, or a format change. Rather than guess which, match the version and
+// arch wherever they appear and let the OS label be whatever it is.
+//
+// When it still does not parse, say so in the log. We never store the full UA,
+// so a silent "" is unfalsifiable: it looks the same whether the client was
+// curl (correct) or a brew format we cannot read (a bug).
+function platformFromUA(ua, client) {
+  const s = ua || "";
+  const brew = /Homebrew\/([\d.]+)/.exec(s);
+  if (!brew) return { brewVersion: "", arch: "", os: "" };
+
+  // "(Macintosh; arm64 Mac OS X 26.5.2)" and "(Linux; x86_64 Ubuntu 22.04)"
+  // both land here; group 2 is the OS label, group 3 its version.
+  const platform = /\((?:Macintosh|Linux); (\w+) ([A-Za-z ]+?) ([\d._]+)\)/.exec(s);
+  if (!platform) {
+    console.log(`dl ua-parse-miss client=${client} brew=${brew[1]}`);
+    return { brewVersion: brew[1], arch: "", os: "" };
+  }
+
+  return { brewVersion: brew[1], arch: platform[1], os: platform[3] };
 }
 
 export default {
@@ -92,7 +112,7 @@ export default {
 
     const ua = request.headers.get("user-agent") || "";
     const client = classifyUA(ua);
-    const { brewVersion, arch, os } = platformFromUA(ua);
+    const { brewVersion, arch, os } = platformFromUA(ua, client);
     const country = (request.cf && request.cf.country) || "??";
     const colo = (request.cf && request.cf.colo) || "??";
     // ASN org separates datacenter/CI pulls (GitHub Actions, AWS, ...) from
@@ -195,15 +215,24 @@ async function netblockOrgOf(ip) {
       headers: { accept: "application/rdap+json" },
       signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS),
     });
-    if (!res.ok) return "";
+    if (!res.ok) {
+      console.log(`dl rdap-http status=${res.status} block=${block(ip)}`);
+      return "";
+    }
 
     const org = registrantOf(await res.json());
+    // The first live row came back with this column empty even though the same
+    // lookup by hand returned a usable registrant in 0.3s. Log the outcome so
+    // the next occurrence says which half failed instead of leaving us to
+    // guess between the fetch, the parse, and the cache.
+    if (!org) console.log(`dl rdap-no-org block=${block(ip)}`);
     await cache.put(
       key,
       new Response(org, { headers: { "cache-control": "max-age=86400" } }),
     );
     return org;
   } catch (e) {
+    console.log(`dl rdap-threw block=${block(ip)} err=${e && e.name}`);
     return "";
   }
 }
