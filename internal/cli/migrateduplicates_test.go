@@ -7,6 +7,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 
@@ -100,5 +101,48 @@ func TestNoteDuplicateValuesIndexBuiltAfterTheWrite(t *testing.T) {
 	}
 	if strings.Contains(out, "ws-copy") {
 		t.Errorf("the migrating profile must never name itself, got:\n%s", out)
+	}
+}
+
+// countingResolver fails every resolve and counts the attempts: the
+// duplicate index must key linked entries by their stored reference, never
+// by resolving them — one `op read` per linked secret per migrate run, each
+// able to block on an unlock dialog, for a disclosure note.
+type countingResolver struct{ calls int }
+
+func (c *countingResolver) ResolveRef(string) ([]byte, error) {
+	c.calls++
+	return nil, errors.New("must not resolve")
+}
+
+func TestDuplicateIndexNeverResolvesLinkedSecrets(t *testing.T) {
+	withFixtureHome(t)
+	root, err := vaultRootDir()
+	if err != nil {
+		t.Fatalf("vaultRootDir: %v", err)
+	}
+	resolver := &countingResolver{}
+	v := &vault.Vault{Root: root, KeyWrapper: newFakeKeyWrapper(), RecipientID: "test-device", RefResolver: resolver}
+	link := func(path, ref string) {
+		t.Helper()
+		if err := v.SetReference(path, ref, vault.Meta{}); err != nil {
+			t.Fatalf("SetReference(%s): %v", path, err)
+		}
+	}
+	link("svc-a/DB_PASSWORD", "op://vault-1/item-a/password")
+	if err := v.Set("svc-a/API_KEY", []byte("literal-value-here")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	idx := buildVaultValueIndex(v)
+	link("svc-b/DB_PASSWORD", "op://vault-1/item-a/password") // same field linked twice
+	link("svc-b/OTHER", "op://vault-1/item-b/password")
+
+	var buf bytes.Buffer
+	noteDuplicateValues(&buf, v, idx, "svc-b", []string{"DB_PASSWORD", "OTHER"})
+	if out := buf.String(); !strings.Contains(out, "1 value is already stored under svc-a") {
+		t.Errorf("two links to the same 1Password field must read as a duplicate, got:\n%s", out)
+	}
+	if resolver.calls != 0 {
+		t.Errorf("the duplicate index resolved through 1Password %d times, want 0", resolver.calls)
 	}
 }
