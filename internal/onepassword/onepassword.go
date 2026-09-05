@@ -80,7 +80,11 @@ func New() *Resolver {
 
 // ResolveRef resolves one op:// secret reference to the exact bytes of
 // the field it names, via `op read -n` (no trailing newline appended, so
-// injection stays byte-exact).
+// injection stays byte-exact). A reference pinned to an account
+// (account.go) resolves in that account, whatever op's default is today;
+// an unpinned one resolves under op's default, and when that fails on a
+// machine with several accounts the error says so, because that is the
+// likely cause.
 func (r *Resolver) ResolveRef(ref string) ([]byte, error) {
 	if err := ValidateRef(ref); err != nil {
 		return nil, err
@@ -89,6 +93,8 @@ func (r *Resolver) ResolveRef(ref string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	bare, account := SplitAccount(ref)
+	args := accountArgs(Account{ID: account}, "read", "-n", bare)
 
 	timeout := r.timeout
 	if timeout <= 0 {
@@ -98,7 +104,7 @@ func (r *Resolver) ResolveRef(ref string) ([]byte, error) {
 	defer cancel()
 
 	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, bin, "read", "-n", ref) // #nosec G204 -- bin is signature-verified above; ref is validated op:// syntax
+	cmd := exec.CommandContext(ctx, bin, args...) // #nosec G204 -- bin is signature-verified above; ref is validated op:// syntax, account is op's own id
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	// Without WaitDelay, a child op leaves behind (its cache daemon, a
@@ -112,6 +118,11 @@ func (r *Resolver) ResolveRef(ref string) ([]byte, error) {
 		detail := firstLine(stderr.String())
 		if detail == "" {
 			detail = err.Error()
+		}
+		if account == "" {
+			if accounts, aerr := r.Accounts(); aerr == nil && len(accounts) > 1 {
+				return nil, fmt.Errorf("op read failed: %s (op is signed in to %d accounts and this link names none; `jit vault link` it again to pin one)", detail, len(accounts))
+			}
 		}
 		return nil, fmt.Errorf("op read failed: %s", detail)
 	}
