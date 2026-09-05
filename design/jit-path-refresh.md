@@ -1,6 +1,6 @@
 # Refreshing a recorded jit path: migrate owns what migrate wrote
 
-**Status: proposed 2026-09-05. Supersedes the "PR 2 — `jit doctor --fix`"
+**Status: implemented 2026-09-05 (branch jit-path-refresh). Supersedes the "PR 2 — `jit doctor --fix`"
 section of `design/sessions-and-path-repair.md`, which loses for the
 reasons in "Why not doctor --fix".**
 

@@ -23,6 +23,7 @@ var jitPathRecorders = []string{
 	"dockercreds.go",
 	"gitcreds.go",
 	"terraform.go",
+	"jitpathrefresh.go",
 }
 
 // TestEveryRecorderGoesThroughResolveJitExecutable is a source-level guard, in
