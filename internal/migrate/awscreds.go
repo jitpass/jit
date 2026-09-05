@@ -140,6 +140,11 @@ func ApplyAWSProfile(v *vault.Vault, home, profileName string, dedup ...*BackupT
 	if err != nil {
 		return AWSCredentialMigration{}, err
 	}
+	// Every secret of a temporary session carries the session's end as
+	// metadata (vault.Meta.ExpiresUnix), so a listing can say whether the
+	// session is live without decrypting anything. A static key has no
+	// stamp and gets none.
+	meta.ExpiresUnix = expiryStamp(kv["aws_expiration"])
 	var varNames []string
 	for _, iniKey := range awsCredentialKeys {
 		varName := varByINIKey[iniKey]
@@ -466,6 +471,10 @@ func StoreAWSSession(v *vault.Vault, home, profileName string, s AWSSession) (AW
 	if err != nil {
 		return AWSCredentialMigration{}, err
 	}
+	// The session's end rides on every one of its secrets as metadata —
+	// what ListSessions (and so jit status and the wrapped `clisso
+	// status`) reads without an unlock.
+	meta.ExpiresUnix = expiryStamp(s.Expiration)
 	var varNames []string
 	captured := map[string]string{
 		"ACCESS_KEY_ID":     s.AccessKeyID,

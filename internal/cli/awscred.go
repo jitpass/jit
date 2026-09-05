@@ -74,7 +74,7 @@ var awsCredentialProcessCmd = &cobra.Command{
 			return fmt.Errorf("jit aws-credential-process: %w", err)
 		}
 
-		out, err := buildAWSCredentialProcessOutput(values, time.Now())
+		out, err := buildAWSCredentialProcessOutput(values, clissoMint(awsCredProfile, clissoApps()), time.Now())
 		if err != nil {
 			return fmt.Errorf("jit aws-credential-process: profile %q: %w", awsCredProfile, err)
 		}
@@ -101,17 +101,25 @@ var awsCredentialProcessCmd = &cobra.Command{
 // the stamp is in the past the answer is an error naming the expiry, not
 // the dead token: every AWS call made with it would fail ExpiredToken
 // anyway, and this error is the only place the user can be told to mint
-// fresh credentials with the tool that issued them. A stamp that doesn't
-// parse as RFC3339 is passed through untouched: the SDK's own complaint
-// about it beats jit guessing, and refusing to serve live credentials
-// over a malformed timestamp would be the wrong trade.
-func buildAWSCredentialProcessOutput(values map[string]string, now time.Time) (awsCredentialProcessOutput, error) {
+// fresh credentials with the tool that issued them — by name when mint
+// says which command that is (clissoMint: the app is one ~/.clisso.yaml
+// defines), generically otherwise. It is the error kubectl and the AWS
+// CLI surface when the morning's login has run out, so the command to
+// type belongs in it. A stamp that doesn't parse as RFC3339 is passed
+// through untouched: the SDK's own complaint about it beats jit guessing,
+// and refusing to serve live credentials over a malformed timestamp would
+// be the wrong trade.
+func buildAWSCredentialProcessOutput(values map[string]string, mint string, now time.Time) (awsCredentialProcessOutput, error) {
 	if values["ACCESS_KEY_ID"] == "" || values["SECRET_ACCESS_KEY"] == "" {
 		return awsCredentialProcessOutput{}, fmt.Errorf("missing ACCESS_KEY_ID/SECRET_ACCESS_KEY")
 	}
 	expiration := values["EXPIRATION"]
 	if expiration != "" {
 		if t, perr := time.Parse(time.RFC3339, expiration); perr == nil && !t.After(now) {
+			if mint != "" {
+				return awsCredentialProcessOutput{}, fmt.Errorf(
+					"temporary credentials expired at %s; run `%s` to mint fresh ones, then retry", expiration, mint)
+			}
 			return awsCredentialProcessOutput{}, fmt.Errorf(
 				"temporary credentials expired at %s; mint fresh ones with the tool that issued them (for a SAML/SSO CLI, its get/login command), then retry",
 				expiration)
