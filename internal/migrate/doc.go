@@ -140,6 +140,15 @@
 // test). A narrower named directory is unaffected: every file it discovers
 // genuinely is under cwd already.
 //
+// A profile that carries an EXPIRATION variable is a session
+// (sessions.go): temporary credentials with a known end, stamped onto every
+// one of its secrets as vault metadata by both writers — the clisso capture
+// (StoreAWSSession) and a ~/.aws/credentials migration that found an
+// aws_expiration line. ListSessions reads that metadata and never a value,
+// which is what lets `jit status` show a session row without a prompt and
+// the clisso wrap answer `clisso status` from the vault (the file clisso
+// would read is the one the wrap deliberately empties).
+//
 // A migrated .env/npmrc becomes a decoy-by-default live mount (GAPS.md #2):
 // after migrate creates it, it serves fake placeholder values to every
 // reader. Real values reach a tool only through a `jit run` grant — env

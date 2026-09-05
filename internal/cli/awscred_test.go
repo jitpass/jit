@@ -16,7 +16,7 @@ func TestBuildAWSCredentialProcessOutputShape(t *testing.T) {
 	out, err := buildAWSCredentialProcessOutput(map[string]string{
 		"ACCESS_KEY_ID":     "AKIAIOSFODNN7EXAMPLE",
 		"SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-	}, time.Now())
+	}, "", time.Now())
 	if err != nil {
 		t.Fatalf("buildAWSCredentialProcessOutput: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestBuildAWSCredentialProcessOutputIncludesSessionToken(t *testing.T) {
 		"ACCESS_KEY_ID":     "AKIA1",
 		"SECRET_ACCESS_KEY": "secret1",
 		"SESSION_TOKEN":     "tok123",
-	}, time.Now())
+	}, "", time.Now())
 	if err != nil {
 		t.Fatalf("buildAWSCredentialProcessOutput: %v", err)
 	}
@@ -56,10 +56,10 @@ func TestBuildAWSCredentialProcessOutputIncludesSessionToken(t *testing.T) {
 }
 
 func TestBuildAWSCredentialProcessOutputMissingKeysErrors(t *testing.T) {
-	if _, err := buildAWSCredentialProcessOutput(map[string]string{"ACCESS_KEY_ID": "AKIA1"}, time.Now()); err == nil {
+	if _, err := buildAWSCredentialProcessOutput(map[string]string{"ACCESS_KEY_ID": "AKIA1"}, "", time.Now()); err == nil {
 		t.Fatal("expected an error for a profile missing SECRET_ACCESS_KEY")
 	}
-	if _, err := buildAWSCredentialProcessOutput(map[string]string{}, time.Now()); err == nil {
+	if _, err := buildAWSCredentialProcessOutput(map[string]string{}, "", time.Now()); err == nil {
 		t.Fatal("expected an error for an empty profile")
 	}
 }
@@ -71,7 +71,7 @@ func TestBuildAWSCredentialProcessOutputPassesExpirationThrough(t *testing.T) {
 		"SECRET_ACCESS_KEY": "secret1",
 		"SESSION_TOKEN":     "tok123",
 		"EXPIRATION":        "2026-07-29T19:00:11Z",
-	}, now)
+	}, "", now)
 	if err != nil {
 		t.Fatalf("buildAWSCredentialProcessOutput: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestBuildAWSCredentialProcessOutputRefusesExpiredToken(t *testing.T) {
 		"SECRET_ACCESS_KEY": "secret1",
 		"SESSION_TOKEN":     "tok123",
 		"EXPIRATION":        "2026-07-29T19:00:11Z",
-	}, now)
+	}, "", now)
 	if err == nil {
 		t.Fatal("expected an error for an expired token, got credentials")
 	}
@@ -96,6 +96,28 @@ func TestBuildAWSCredentialProcessOutputRefusesExpiredToken(t *testing.T) {
 	// what to do — it must name the expiry time.
 	if !strings.Contains(err.Error(), "2026-07-29T19:00:11Z") {
 		t.Errorf("expected the expiry timestamp in the error, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "clisso") {
+		t.Errorf("no mint command was known, yet the error names one: %v", err)
+	}
+
+	// When jit knows which tool minted the session, the error says the
+	// exact command — this is what kubectl shows when the login ran out.
+	_, err = buildAWSCredentialProcessOutput(map[string]string{
+		"ACCESS_KEY_ID": "AKIA1", "SECRET_ACCESS_KEY": "secret1", "EXPIRATION": "2026-07-29T19:00:11Z",
+	}, "clisso get stage", now)
+	if err == nil || !strings.Contains(err.Error(), "run `clisso get stage` to mint fresh ones") {
+		t.Errorf("expected the mint command in the error, got: %v", err)
+	}
+}
+
+func TestClissoMint(t *testing.T) {
+	apps := map[string]bool{"stage": true}
+	if got := clissoMint("aws-stage", apps); got != "clisso get stage" {
+		t.Errorf("clissoMint(aws-stage) = %q", got)
+	}
+	if got := clissoMint("aws-ci", apps); got != "" {
+		t.Errorf("clissoMint(aws-ci) = %q, want \"\" for an app clisso does not define", got)
 	}
 }
 
@@ -106,7 +128,7 @@ func TestBuildAWSCredentialProcessOutputMalformedExpirationServed(t *testing.T) 
 		"ACCESS_KEY_ID":     "AKIA1",
 		"SECRET_ACCESS_KEY": "secret1",
 		"EXPIRATION":        "not-a-timestamp",
-	}, time.Now())
+	}, "", time.Now())
 	if err != nil {
 		t.Fatalf("buildAWSCredentialProcessOutput: %v", err)
 	}

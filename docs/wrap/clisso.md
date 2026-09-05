@@ -77,16 +77,45 @@ this wrap exists to remove.
 ## When the session expires
 
 Nothing changes from your current routine: when the session dies (your
-`duration`, up to 12 h), AWS commands report the credentials expired and
-you run `clisso get <app>` again. jit serves the real `Expiration` to
-SDKs, so long-running processes refresh on schedule instead of caching a
-dead token.
+`duration`, up to 12 h), AWS commands report the credentials expired -
+jit's error names the exact command, `clisso get <app>` - and you run it
+again. jit serves the real `Expiration` to SDKs, so long-running
+processes refresh on schedule instead of caching a dead token, and
+`jit status` shows every session's expiry so you can check before a
+command fails.
+
+## `clisso status` answers from the vault
+
+clisso's own `status` reads `~/.aws/credentials` - the file this wrap keeps
+empty - so passed through it would say "No apps with valid credentials"
+while a perfectly good session sits in the vault, and a login script that
+checks it before calling `clisso get` would re-login with full MFA every
+time. Under the wrap, `clisso status` lists the sessions jit captured, in
+clisso's own table, so `clisso status | grep -qw stage` keeps working:
+
+```
++-------+------------------+-----------+
+|  APP  |    EXPIRE AT     | REMAINING |
++-------+------------------+-----------+
+| stage | 2026-09-05 21:11 | 9h11m     |
++-------+------------------+-----------+
+```
+
+The one difference from clisso's table is EXPIRE AT: a date and time
+instead of the raw epoch. It reads the expiry from vault metadata, never a
+value, so it never prompts. A `-r/--read-from-file` you pass yourself is
+honored - that is clisso's own status, on the file you named. The same
+sessions appear as a row in `jit status`.
+
+Sessions captured by a jit older than the expiry stamp are left out of the
+table until their next `clisso get` (a script that saw one would skip the
+login; one that doesn't logs in once and the stamp is there from then on).
 
 ## What passes through untouched
 
-Every clisso invocation that isn't a plain `get` - `clisso apps`,
-`clisso providers`, `clisso status`, `clisso cp`, `--help` - and any `get`
-where you explicitly chose an output (`-o/--output`, `-w/--write-to-file`,
+Every clisso invocation that isn't a plain `get` or `status` - `clisso
+apps`, `clisso providers`, `clisso cp`, `--help` - and any `get` where you
+explicitly chose an output (`-o/--output`, `-w/--write-to-file`,
 `-s/--shell`) runs the real clisso unchanged (config still served,
 `apps`/`providers`/`cp` still reconciled). The shim reroutes the default
 destination; it doesn't argue with explicit flags. A `-c/--config` you pass
