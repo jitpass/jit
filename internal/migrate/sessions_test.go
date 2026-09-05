@@ -92,6 +92,9 @@ func TestListSessions(t *testing.T) {
 	writeManifest(t, home, "aws-ci", "ACCESS_KEY_ID: aws-ci/ACCESS_KEY_ID\nSECRET_ACCESS_KEY: aws-ci/SECRET_ACCESS_KEY\n")
 	// half-present: manifest says EXPIRATION, vault has no such secret.
 	writeManifest(t, home, "aws-gone", "EXPIRATION: aws-gone/EXPIRATION\n")
+	// unreadable: a manifest that is not a map. jit status must survive
+	// it, so the listing skips it rather than failing the whole call.
+	writeManifest(t, home, "broken", "- not\n- a map\n")
 
 	sessions, err := ListSessions(v, home, now)
 	if err != nil {
@@ -128,6 +131,9 @@ func TestListSessions(t *testing.T) {
 	}
 	if _, ok := byName["aws-gone"]; ok {
 		t.Error("a manifest whose EXPIRATION secret is missing was listed as a session")
+	}
+	if _, ok := byName["broken"]; ok {
+		t.Error("an unparsable manifest was listed as a session")
 	}
 }
 

@@ -433,26 +433,7 @@ func grantClock(unix int64) string {
 // grantRemaining renders time left in at most two units ("6h12m", "3d2h",
 // "45m"), matching how --for was typed rather than time.Duration's seconds.
 func grantRemaining(expiresUnix int64) string {
-	d := time.Until(time.Unix(expiresUnix, 0))
-	if d <= 0 {
-		return "0m"
-	}
-	d = d.Round(time.Minute)
-	days := d / (24 * time.Hour)
-	hours := (d % (24 * time.Hour)) / time.Hour
-	mins := (d % time.Hour) / time.Minute
-	switch {
-	case days > 0 && hours > 0:
-		return fmt.Sprintf("%dd%dh", days, hours)
-	case days > 0:
-		return fmt.Sprintf("%dd", days)
-	case hours > 0 && mins > 0:
-		return fmt.Sprintf("%dh%02dm", hours, mins)
-	case hours > 0:
-		return fmt.Sprintf("%dh", hours)
-	default:
-		return fmt.Sprintf("%dm", mins)
-	}
+	return remainingUnits(time.Until(time.Unix(expiresUnix, 0)))
 }
 
 // truncateEnd cuts s to max runes with a trailing ellipsis — variable content

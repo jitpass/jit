@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -107,6 +108,23 @@ func runClissoCapture(real string, args []string) error {
 	app, capturable := clissoCaptureApp(args)
 	isGet := inv.sub == "get"
 	openV := memoizedVaultOpener()
+
+	// `clisso status` reads ~/.aws/credentials — the file this wrap keeps
+	// empty — so passed through it denies every session the vault holds,
+	// and a script that reuses a session by grepping it re-logins with
+	// full MFA each time. Answer it from the vault instead: metadata only,
+	// no unlock. Not when the user named a file with -r (their own
+	// arrangement, the same rule -o applies to get), and not when the
+	// config isn't wrapped at all (clisso's own answer is honest then).
+	if inv.sub == "status" && !inv.help && !inv.explicitRead {
+		wrapped, err := clissoConfigWrapped()
+		if err != nil {
+			return fmt.Errorf("jit clisso-capture: %w", err)
+		}
+		if wrapped {
+			return runClissoStatus(os.Stdout, os.Stderr, time.Now())
+		}
+	}
 
 	// Any `get` needs the REAL config: after `jit wrap clisso` the on-disk
 	// ~/.clisso.yaml holds a jit://vault pointer where the OneLogin
@@ -237,12 +255,13 @@ func runClissoCapture(real string, args []string) error {
 // independent scans, because every question here depends on the same fact:
 // where the subcommand actually is.
 type clissoInvocation struct {
-	sub         string // the subcommand ("get", "apps", …), "" if none
-	app         string // first bare argument after the subcommand
-	configPath  string // the user's own -c/--config, if any
-	explicitOut bool   // -o/--output, -w/--write-to-file, or -s/--shell
-	help        bool
-	cacheEnable bool
+	sub          string // the subcommand ("get", "apps", …), "" if none
+	app          string // first bare argument after the subcommand
+	configPath   string // the user's own -c/--config, if any
+	explicitOut  bool   // -o/--output, -w/--write-to-file, or -s/--shell
+	explicitRead bool   // status's -r/--read-from-file: the user named the file
+	help         bool
+	cacheEnable  bool
 }
 
 // clissoValueFlags are the flags that consume the NEXT argument — root
@@ -253,9 +272,11 @@ var clissoValueFlags = map[string]bool{
 	"--log-file": true, "--log-level": true,
 	"-m": true, "--mfa-device": true,
 	"-o": true, "--output": true,
-	"--cache-path":    true,
-	"-w":              true,
-	"--write-to-file": true,
+	"--cache-path":     true,
+	"-w":               true,
+	"--write-to-file":  true,
+	"-r":               true,
+	"--read-from-file": true,
 }
 
 // clissoOutputFlags are the ways a user explicitly chooses where
@@ -306,6 +327,8 @@ func parseClissoArgs(args []string) clissoInvocation {
 			// A bool flag: bare means true, and only an explicit
 			// =false turns it off.
 			inv.cacheEnable = !hasEq || !strings.EqualFold(val, "false")
+		case name == "-r" || name == "--read-from-file":
+			inv.explicitRead = true
 		}
 		if clissoOutputFlags[name] {
 			inv.explicitOut = true
@@ -460,6 +483,46 @@ func serveClissoConfig(openV vaultOpener) (fifo string, serving bool, cleanup fu
 	}, nil
 }
 
+// clissoConfigWrapped reports whether ~/.clisso.yaml is the wrap's: it
+// holds a jit://vault pointer where a client-secret was. A missing config
+// is simply not wrapped.
+func clissoConfigWrapped() (bool, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false, err
+	}
+	data, err := os.ReadFile(migrate.ClissoConfigPath(home)) // #nosec G304 -- fixed ~/.clisso.yaml under the user's home
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return bytes.Contains(data, []byte(pointerfile.ValuePrefix)), nil
+}
+
+// runClissoStatus is the wrapped `clisso status`: clisso's own sessions,
+// from the vault, in clisso's own table. Read-only vault, so it never
+// prompts — the whole point of stamping expiry as metadata. jit's one
+// line of attribution goes to stderr; stdout stays what a script expects.
+func runClissoStatus(stdout, stderr io.Writer, now time.Time) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("jit clisso-capture: %w", err)
+	}
+	v, err := openVaultReadOnly()
+	if err != nil {
+		return fmt.Errorf("jit clisso-capture: %w", err)
+	}
+	sessions, err := migrate.ListSessions(v, home, now)
+	if err != nil {
+		return fmt.Errorf("jit clisso-capture: listing sessions: %w", err)
+	}
+	fmt.Fprintln(stderr, "jit: answered from the vault; the wrap keeps ~/.aws/credentials empty")
+	renderClissoStatusTable(stdout, clissoStatusRows(sessions, clissoApps(), now))
+	return nil
+}
+
 // clissoCaptureApp decides whether args are a capturable `clisso get` and,
 // if so, which app is being fetched — the name that becomes the AWS profile
 // (clisso writes credentials under the app's name, so app name == profile
@@ -557,26 +620,51 @@ func warnClissoCredentialProcess() {
 // any failure returns "", and the caller passes through to clisso, whose
 // own "no app specified" error is the right message.
 func clissoSelectedApp(configPath string) string {
+	return readClissoConfig(configPath).Global.SelectedApp
+}
+
+// clissoConfig is the little of ~/.clisso.yaml the shim reads: the default
+// app, and which apps clisso knows at all — the rule for "is this vaulted
+// session clisso's". Origin cannot answer that: a profile first migrated
+// out of ~/.aws/credentials and re-minted by clisso ever after keeps its
+// birth origin, and would never count.
+type clissoConfig struct {
+	Global struct {
+		SelectedApp string `yaml:"selected-app"`
+	} `yaml:"global"`
+	Apps map[string]any `yaml:"apps"`
+}
+
+// readClissoConfig parses configPath ("" for ~/.clisso.yaml). Unreadable
+// or unparsable reads as an empty config — every caller's fallback is
+// "clisso's own answer wins", never an error.
+func readClissoConfig(configPath string) clissoConfig {
+	var cfg clissoConfig
 	if configPath == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return ""
+			return cfg
 		}
 		configPath = filepath.Join(home, ".clisso.yaml")
 	}
 	data, err := os.ReadFile(configPath) // #nosec G304 -- clisso's own config path: the fixed ~/.clisso.yaml or the -c value the user themselves passed
 	if err != nil {
-		return ""
-	}
-	var cfg struct {
-		Global struct {
-			SelectedApp string `yaml:"selected-app"`
-		} `yaml:"global"`
+		return cfg
 	}
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return ""
+		return clissoConfig{}
 	}
-	return cfg.Global.SelectedApp
+	return cfg
+}
+
+// clissoApps is the set of app names ~/.clisso.yaml defines.
+func clissoApps() map[string]bool {
+	cfg := readClissoConfig("")
+	apps := make(map[string]bool, len(cfg.Apps))
+	for name := range cfg.Apps {
+		apps[name] = true
+	}
+	return apps
 }
 
 // captureFilter streams clisso's stdout to the terminal while intercepting
