@@ -49,6 +49,20 @@ type envelope struct {
 	// resolver call, and flipping the marker on disk (either direction)
 	// must fail decryption rather than change what Get does.
 	Storage string `json:"storage,omitempty"`
+	// ExpiresUnix is when the PAYLOAD stops being valid (version 5+): the
+	// stamp a temporary credential arrived with — an AWS session minted by
+	// an SSO CLI carries its own expiry — copied out of the value so a
+	// listing can answer "is this session still live" without decrypting
+	// anything (jit status is prompt-free by design, so it may read
+	// metadata and never a value). Zero means no known expiry: a
+	// long-lived key, or any secret written before version 5 — never
+	// "expired". Unlike the provenance fields it is NOT birth-immutable: a
+	// rotation replaces it, because a re-minted session has a new end, and
+	// a Set that carries no stamp clears it, because a value with no known
+	// end has none. Plaintext on disk (the SDKs receive the same stamp in
+	// the clear) but AAD-bound, so an edited stamp fails decryption rather
+	// than resurrecting a dead session or hiding a live one.
+	ExpiresUnix int64 `json:"expires_unix,omitempty"`
 	// Recipients maps a recipient ID (this device's hostname in Phase 1;
 	// Phase 2 adds real multi-recipient sharing, RFC.md §5.2) to that
 	// recipient's hex-encoded wrapped DEK.
@@ -104,9 +118,13 @@ const (
 	// class/group/origin provenance, all AAD-bound. Never written anymore
 	// (Set writes v4), readable forever, same as v1 and v2.
 	envelopeVersionProvenance = 3
-	// envelopeVersion is what Set writes today: v3's provenance plus the
-	// storage marker (see envelope.Storage), all AAD-bound.
-	envelopeVersion = 4
+	// envelopeVersionStorage is the fourth schema: v3's provenance plus
+	// the storage marker (see envelope.Storage), all AAD-bound. Never
+	// written anymore (Set writes v5), readable forever, same as v1–v3.
+	envelopeVersionStorage = 4
+	// envelopeVersion is what Set writes today: v4 plus the expiry stamp
+	// (see envelope.ExpiresUnix), AAD-bound like everything before it.
+	envelopeVersion = 5
 )
 
 // StorageOpRef marks an envelope whose payload is a 1Password secret
@@ -175,19 +193,23 @@ const (
 // admits only [A-Za-z0-9_.-] and '/', so a colon can never appear in it and
 // the encoding is unambiguous.
 //
-// The AAD is version-shaped: a v4 payload was sealed under a string that
-// appends class:group:storage:origin, a v3 payload under the shape that
-// appends class:group:origin, a v2 payload under the four-field string that
+// The AAD is version-shaped: a v5 payload was sealed under a string that
+// appends class:group:storage:expires:origin, a v4 payload under the shape
+// that appends class:group:storage:origin, a v3 payload under
+// class:group:origin, a v2 payload under the four-field string that
 // predates them all. Get MUST reconstruct whichever the stored version used,
 // so the branch here is keyed on version, NOT on whether the newer fields
-// happen to be non-empty. class, group_id, and storage never contain a colon
-// (fixed vocabulary / hex id); origin can in principle, which is why origin
-// stays the LAST field in every version's shape — v4 inserts storage BEFORE
-// origin, not after it — so everything past the final delimiter is origin
-// and the encoding stays unambiguous.
-func envelopeAAD(path string, version int, createdUnix, updatedUnix int64, class, groupID, origin, storage string) []byte {
+// happen to be non-empty. class, group_id, storage and the expiry never
+// contain a colon (fixed vocabulary / hex id / integer); origin can in
+// principle, which is why origin stays the LAST field in every version's
+// shape — v4 inserts storage and v5 inserts expires BEFORE origin, not
+// after it — so everything past the final delimiter is origin and the
+// encoding stays unambiguous.
+func envelopeAAD(path string, version int, createdUnix, updatedUnix int64, class, groupID, origin, storage string, expiresUnix int64) []byte {
 	switch {
 	case version >= envelopeVersion:
+		return fmt.Appendf(nil, "jit-envelope:%d:%s:%d:%d:%s:%s:%s:%d:%s", version, path, createdUnix, updatedUnix, class, groupID, storage, expiresUnix, origin)
+	case version >= envelopeVersionStorage:
 		return fmt.Appendf(nil, "jit-envelope:%d:%s:%d:%d:%s:%s:%s:%s", version, path, createdUnix, updatedUnix, class, groupID, storage, origin)
 	case version >= envelopeVersionProvenance:
 		return fmt.Appendf(nil, "jit-envelope:%d:%s:%d:%d:%s:%s:%s", version, path, createdUnix, updatedUnix, class, groupID, origin)

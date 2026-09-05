@@ -105,6 +105,12 @@ type Meta struct {
 	Class   string
 	GroupID string
 	Origin  string
+	// ExpiresUnix is the one field honored on EVERY write, rotation
+	// included — see envelope.ExpiresUnix for why an expiry follows the
+	// value rather than the path. Zero (the default) means no known
+	// expiry, so a caller that isn't storing a temporary credential need
+	// not think about it.
+	ExpiresUnix int64
 }
 
 // NewGroupID mints a fresh surrogate group id: 128 bits of randomness, hex
@@ -184,6 +190,9 @@ func (v *Vault) setEnvelope(path string, value []byte, meta Meta, storage string
 	now := time.Now().Unix()
 	created := now
 	class, groupID, origin := meta.Class, meta.GroupID, meta.Origin
+	// The expiry is the one piece of meta a rotation does NOT preserve:
+	// it describes this value, not the path (envelope.ExpiresUnix).
+	expires := meta.ExpiresUnix
 	var originSeen int64
 	if origin != "" {
 		originSeen = now
@@ -212,7 +221,7 @@ func (v *Vault) setEnvelope(path string, value []byte, meta Meta, storage string
 	}
 	defer wipe(dek)
 
-	sealedPayload, err := seal(dek, value, envelopeAAD(path, envelopeVersion, created, now, class, groupID, origin, storage))
+	sealedPayload, err := seal(dek, value, envelopeAAD(path, envelopeVersion, created, now, class, groupID, origin, storage, expires))
 	if err != nil {
 		return fmt.Errorf("encrypting secret: %w", err)
 	}
@@ -244,6 +253,7 @@ func (v *Vault) setEnvelope(path string, value []byte, meta Meta, storage string
 		Origin:         origin,
 		OriginSeenUnix: originSeen,
 		Storage:        storage,
+		ExpiresUnix:    expires,
 		Recipients: map[string]string{
 			v.RecipientID: hex.EncodeToString(wrappedDEK),
 		},
@@ -287,6 +297,18 @@ func (v *Vault) readEnvelope(path string) (envelope, error) {
 	var env envelope
 	if err := json.Unmarshal(data, &env); err != nil {
 		return envelope{}, fmt.Errorf("parsing envelope %s: %w", src, err)
+	}
+	// A field the stored version cannot authenticate is a claim the file
+	// is not allowed to make. The AAD is version-shaped (envelopeAAD), so
+	// an expiry written into a v4 file — or a storage marker into a v3 one
+	// — is bound by nothing: Get would open the payload cleanly and Info
+	// would repeat the forgery. Refuse at the parse, before any reader
+	// acts on it; a genuine older envelope never carries these.
+	if env.Version < envelopeVersion && env.ExpiresUnix != 0 {
+		return envelope{}, fmt.Errorf("corrupt envelope %s: an expiry stamp on a version-%d envelope, which cannot authenticate one", src, env.Version)
+	}
+	if env.Version < envelopeVersionStorage && env.Storage != "" {
+		return envelope{}, fmt.Errorf("corrupt envelope %s: a storage marker on a version-%d envelope, which cannot authenticate one", src, env.Version)
 	}
 	return env, nil
 }
@@ -346,12 +368,12 @@ func (v *Vault) GetStored(path string) ([]byte, string, error) {
 	switch env.Version {
 	case envelopeVersionAADLess:
 		// v1: no AAD, no metadata. Readable forever.
-	case envelopeVersionMetaOnly, envelopeVersionProvenance, envelopeVersion:
-		// v2, v3, and v4 all bind their metadata into the AAD; envelopeAAD
+	case envelopeVersionMetaOnly, envelopeVersionProvenance, envelopeVersionStorage, envelopeVersion:
+		// v2 through v5 all bind their metadata into the AAD; envelopeAAD
 		// reconstructs the exact shape the stored version sealed under
-		// (v3 appends class/group/origin, v4 adds storage — all empty on
-		// the versions that predate them).
-		aad = envelopeAAD(path, env.Version, env.CreatedUnix, env.UpdatedUnix, env.Class, env.GroupID, env.Origin, env.Storage)
+		// (v3 appends class/group/origin, v4 adds storage, v5 adds the
+		// expiry — all empty on the versions that predate them).
+		aad = envelopeAAD(path, env.Version, env.CreatedUnix, env.UpdatedUnix, env.Class, env.GroupID, env.Origin, env.Storage, env.ExpiresUnix)
 	default:
 		return nil, "", fmt.Errorf("secret %s has envelope version %d, newer than this jit understands (max %d), upgrade jit to read it", path, env.Version, envelopeVersion)
 	}
@@ -430,6 +452,11 @@ type SecretInfo struct {
 	GroupID        string
 	Origin         string
 	OriginSeenUnix int64
+	// ExpiresUnix is when the value stops being valid, 0 when unknown (a
+	// long-lived key, or a secret written before the stamp existed) — see
+	// envelope.ExpiresUnix. Render 0 as "no known expiry", never as 1970
+	// and never as "expired".
+	ExpiresUnix int64
 	// Storage is the envelope's payload-kind marker ("" for a literal
 	// value, StorageOpRef for a 1Password reference) — what lets listings
 	// tag a linked secret without decrypting anything. Like the rest of
@@ -459,7 +486,7 @@ func (v *Vault) Verify(path string) error {
 	// "corruption" that isn't corruption at all, so name it as such rather
 	// than letting it read as a damaged file.
 	switch env.Version {
-	case envelopeVersionAADLess, envelopeVersionMetaOnly, envelopeVersionProvenance, envelopeVersion:
+	case envelopeVersionAADLess, envelopeVersionMetaOnly, envelopeVersionProvenance, envelopeVersionStorage, envelopeVersion:
 	default:
 		return fmt.Errorf("secret %s has envelope version %d, newer than this jit understands (max %d), upgrade jit to read it", path, env.Version, envelopeVersion)
 	}
@@ -501,6 +528,7 @@ func (v *Vault) Info(path string) (SecretInfo, error) {
 		GroupID:        env.GroupID,
 		Origin:         env.Origin,
 		OriginSeenUnix: env.OriginSeenUnix,
+		ExpiresUnix:    env.ExpiresUnix,
 		Storage:        env.Storage,
 	}, nil
 }

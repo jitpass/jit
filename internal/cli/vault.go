@@ -97,6 +97,7 @@ type vaultSecretJSON struct {
 	Origin         string `json:"origin,omitempty"`
 	Storage        string `json:"storage,omitempty"`
 	OriginSeenUnix int64  `json:"origin_seen_unix,omitempty"`
+	ExpiresUnix    int64  `json:"expires_unix,omitempty"`
 	CreatedUnix    int64  `json:"created_unix,omitempty"`
 	UpdatedUnix    int64  `json:"updated_unix,omitempty"`
 }
@@ -114,6 +115,7 @@ type vaultGetResult struct {
 	GroupID        string `json:"group_id,omitempty"`
 	Origin         string `json:"origin,omitempty"`
 	OriginSeenUnix int64  `json:"origin_seen_unix,omitempty"`
+	ExpiresUnix    int64  `json:"expires_unix,omitempty"`
 	CreatedUnix    int64  `json:"created_unix,omitempty"`
 	UpdatedUnix    int64  `json:"updated_unix,omitempty"`
 	// Storage/Reference appear only for a linked secret (`jit vault
@@ -1107,6 +1109,7 @@ var vaultGetCmd = &cobra.Command{
 				GroupID:        info.GroupID,
 				Origin:         info.Origin,
 				OriginSeenUnix: info.OriginSeenUnix,
+				ExpiresUnix:    info.ExpiresUnix,
 				CreatedUnix:    info.CreatedUnix,
 				UpdatedUnix:    info.UpdatedUnix,
 				Storage:        info.Storage,
@@ -1308,6 +1311,7 @@ var vaultListCmd = &cobra.Command{
 					GroupID:        info.GroupID,
 					Origin:         info.Origin,
 					OriginSeenUnix: info.OriginSeenUnix,
+					ExpiresUnix:    info.ExpiresUnix,
 					CreatedUnix:    info.CreatedUnix,
 					UpdatedUnix:    info.UpdatedUnix,
 					Storage:        info.Storage,
