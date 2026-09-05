@@ -1,6 +1,8 @@
 # Sessions, and repairing a recorded jit path
 
-**Status: PR 1 in progress (2026-09-05); PR 2 and the runbook edit proposed.**
+**Status: PR 1 shipped as #87 (2026-09-05). The "PR 2 — `jit doctor --fix`"
+section below was superseded before it was built — `design/jit-path-refresh.md`
+says why, and shipped as #88. The runbook edit is pending.**
 
 ## What prompted this
 
