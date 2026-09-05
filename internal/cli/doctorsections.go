@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -312,41 +311,6 @@ func mcpFindings(cwd string) []checkFinding {
 	return findings
 }
 
-// jitPathArtifact is one thing `jit migrate` rewrote to call back into jit,
-// paired with how to find the recorded path inside it and what to re-run to
-// refresh it.
-type jitPathArtifact struct {
-	// Label names the artifact the way the user thinks of it, since the file
-	// itself is sometimes an implementation detail they never chose (the
-	// helper scripts under ~/.jit/shims).
-	Label string
-	Path  string
-	// Key is the token whose line carries the recorded path. Anchoring to it
-	// rather than scanning the whole file keeps an unrelated /usr/bin/jit
-	// mentioned in a comment from being reported as a broken artifact.
-	Key    string
-	Action string
-}
-
-// jitPathArtifacts enumerates every non-MCP artifact that records jit's
-// absolute path. MCP configs are deliberately absent: mcpFindings already
-// checks theirs, and it can say which SERVER broke, which is the more useful
-// sentence there.
-func jitPathArtifacts(home string) []jitPathArtifact {
-	return []jitPathArtifact{
-		{"~/.kube/config", migrate.KubeconfigPath(home), "command:", "`jit migrate " + shortPath(migrate.KubeconfigPath(home)) + "`"},
-		{"~/.aws/config", migrate.AWSConfigPath(home), "credential_process", "`jit migrate --only aws`"},
-		{"the docker credential helper", migrate.DockerHelperPath(home), "exec ", "`jit migrate --only docker`"},
-		{"the git credential helper", migrate.GitHelperPath(home), "exec ", "`jit migrate --only git`"},
-		{"the terraform credentials helper", migrate.TerraformHelperPath(home), "exec ", "`jit migrate --only terraform`"},
-	}
-}
-
-// recordedJitPath matches an absolute path ending in the jit binary, with the
-// surrounding quoting the writers apply (shell single quotes, YAML/JSON double
-// quotes) left outside the capture.
-var recordedJitPath = regexp.MustCompile(`(/[^\s"']*/jit)\b`)
-
 // jitPathFindings checks every recorded jit path OUTSIDE MCP configs.
 //
 // It exists because that check was written once, for MCP, and never extended
@@ -358,49 +322,44 @@ var recordedJitPath = regexp.MustCompile(`(/[^\s"']*/jit)\b`)
 // resolving a reference and being able to EXEC the binary that resolves it
 // are different questions and only the first was being asked.
 //
-// Best-effort per artifact: an unreadable or absent file yields nothing
-// rather than a failed run. A file jit never wrote has no matching line and
-// so is silently uninteresting, which is what makes it safe to probe all five
-// unconditionally.
+// The enumeration and the staleness rule live in internal/migrate
+// (DiscoverRecordedJitPaths), because migrate is what refreshes these
+// (design/jit-path-refresh.md) and the two must agree on what an artifact
+// is. What is doctor's alone is the verdict: a gone binary is a problem, a
+// version-pinned one is advice, and each names the migrate run that fixes it.
 func jitPathFindings(home string) []checkFinding {
 	var findings []checkFinding
-	for _, a := range jitPathArtifacts(home) {
-		data, err := os.ReadFile(a.Path) // #nosec G304 -- fixed, jit-owned artifact locations
-		if err != nil {
-			continue
-		}
-		seen := map[string]bool{}
-		for _, line := range strings.Split(string(data), "\n") {
-			if !strings.Contains(line, a.Key) {
-				continue
-			}
-			m := recordedJitPath.FindStringSubmatch(line)
-			if m == nil || seen[m[1]] {
-				continue
-			}
-			seen[m[1]] = true
-			recorded := m[1]
-
-			switch {
-			case !executableFile(recorded):
-				findings = append(findings, checkFinding{
-					Kind: kindJitPath,
-					Path: a.Path,
-					Detail: fmt.Sprintf("%s runs jit from %s, which isn't there",
-						a.Label, shortHome(recorded)),
-					Action: a.Action,
-				})
-			case selfpath.VersionedBrew(recorded):
-				findings = append(findings, checkFinding{
-					Kind:   kindJitPathUpgrade,
-					Path:   a.Path,
-					Detail: fmt.Sprintf("%s runs a version-pinned jit", a.Label),
-					Action: a.Action,
-				})
-			}
+	for _, r := range migrate.DiscoverRecordedJitPaths(home) {
+		switch r.Stale() {
+		case migrate.StaleMissing:
+			findings = append(findings, checkFinding{
+				Kind: kindJitPath,
+				Path: r.Path,
+				Detail: fmt.Sprintf("%s runs jit from %s, which isn't there",
+					r.Label, shortHome(r.Recorded)),
+				Action: jitPathAction(r),
+			})
+		case migrate.StaleVersioned:
+			findings = append(findings, checkFinding{
+				Kind:   kindJitPathUpgrade,
+				Path:   r.Path,
+				Detail: fmt.Sprintf("%s runs a version-pinned jit", r.Label),
+				Action: jitPathAction(r),
+			})
 		}
 	}
 	return findings
+}
+
+// jitPathAction names the migrate run that refreshes an artifact: the file
+// itself for the kubeconfig (the one a user knows by path), the owning
+// category for the rest. Both reach the artifact through migrate's own
+// discovery, so the command doctor prints is the command that works.
+func jitPathAction(r migrate.RecordedJitPath) string {
+	if r.Category == "kube" {
+		return "`jit migrate " + shortPath(r.Path) + "`"
+	}
+	return "`jit migrate --only " + r.Category + "`"
 }
 
 // executableFile reports whether path is a regular file with an execute bit.
