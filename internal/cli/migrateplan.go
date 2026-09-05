@@ -126,7 +126,7 @@ func printMigratePlan(w io.Writer, home string, d *discovered, extras *planExtra
 	}
 
 	hasScoped := len(d.envFiles) > 0 || len(d.tfvarsFiles) > 0 || len(d.k8sManifests) > 0 || len(mcpScoped) > 0 || len(npmrcScoped) > 0 || len(d.looseSecretFiles) > 0
-	hasFixed := len(d.shellConfigs) > 0 || len(d.historyFiles) > 0 || len(mcpFixed) > 0 || len(d.awsProfiles) > 0 || len(d.k8sUsers) > 0 || len(d.terraformHosts) > 0 || len(d.dockerRegistries) > 0 || len(d.gitHosts) > 0 || len(d.gcpADCFiles) > 0 || len(d.sopsAgeFiles) > 0 || len(npmrcFixed) > 0 || len(d.netrcFiles) > 0 || len(d.pypircFiles) > 0
+	hasFixed := len(d.shellConfigs) > 0 || len(d.historyFiles) > 0 || len(mcpFixed) > 0 || len(d.awsProfiles) > 0 || len(d.k8sUsers) > 0 || len(d.terraformHosts) > 0 || len(d.dockerRegistries) > 0 || len(d.gitHosts) > 0 || len(d.gcpADCFiles) > 0 || len(d.sopsAgeFiles) > 0 || len(npmrcFixed) > 0 || len(d.netrcFiles) > 0 || len(d.pypircFiles) > 0 || len(d.jitPaths) > 0
 
 	if hasScoped {
 		// The annotation callback below is handed the display-shortened path,
@@ -255,6 +255,24 @@ func printMigratePlan(w io.Writer, home string, d *discovered, extras *planExtra
 				}
 				return "also rewrites " + strings.Join(short, ", ")
 			})
+		// A recorded jit path: the artifact stays what it is, only the
+		// binary it calls back into changes (design/jit-path-refresh.md D6).
+		if len(d.jitPaths) > 0 {
+			items := make([]string, 0, len(d.jitPaths))
+			was := make(map[string]string, len(d.jitPaths))
+			for _, r := range d.jitPaths {
+				item := displayPath(home, r.Path)
+				items = append(items, item)
+				note := "was " + displayPath(home, r.Recorded)
+				if r.Stale() == migrate.StaleVersioned {
+					note += ", still there until the next brew upgrade"
+				}
+				was[item] = note
+			}
+			printMigratePlanCategoryAnnotated(w,
+				"recorded jit path "+glyphAction+" the jit "+pluralWord(len(d.jitPaths), "this config runs", "these configs run")+" is gone or version-pinned; rewritten to "+d.jitPathTarget+" (backed up encrypted first)",
+				items, func(item string) string { return was[item] })
+		}
 		// AWS/kubeconfig/Terraform/Docker items are profile/user/host/
 		// registry NAMES, not paths — nothing to shorten.
 		printMigratePlanCategory(w,
@@ -322,6 +340,10 @@ func printMigratePlan(w io.Writer, home string, d *discovered, extras *planExtra
 			categories++
 		}
 		total += len(items)
+	}
+	if len(d.jitPaths) > 0 {
+		categories++
+		total += len(d.jitPaths)
 	}
 	extraItems, extraCategories := extras.counts()
 	total += extraItems

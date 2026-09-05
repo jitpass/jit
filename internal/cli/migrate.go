@@ -148,6 +148,59 @@ type discovered struct {
 	// print time (wrapOwnerForPath) rather than stored beside the path, so
 	// dedupe() can treat this like every other []string.
 	wrapOwnedSkipped []string
+	// jitPaths are artifacts migrate wrote whose recorded jit path is stale
+	// (gone, or a version-numbered Homebrew copy the next upgrade deletes),
+	// each to be rewritten to jitPathTarget — the durable path resolved
+	// once, at plan time, so the plan and the write agree by construction
+	// (design/jit-path-refresh.md D2–D5). Counted like any category; scoped
+	// by --only through each artifact's own owning category.
+	jitPaths      []migrate.RecordedJitPath
+	jitPathTarget string
+	// jitPathRefused is note-only: the same stale artifacts when this jit
+	// has no durable path to record (jitPathRefusal says why). Rendered as
+	// a skip hint, never counted, never applied — the refusal is decided
+	// here rather than after the user confirmed.
+	jitPathRefused []string
+	jitPathRefusal string
+}
+
+// durableJitPath is the plan-time resolver, a seam for the cli tests: the
+// test binary lives under a volatile directory, so the real one correctly
+// refuses there, and both outcomes need exercising from this package.
+var durableJitPath = migrate.ResolveDurableJitPath
+
+// discoverJitPathRefresh adds every stale recorded jit path that `keep`
+// admits (nil keeps all) — as a refresh row when this jit has a durable
+// path, as a refusal note when it does not. Read-only and prompt-free:
+// the enumeration reads five fixed files, and the resolver never touches
+// the vault.
+func discoverJitPathRefresh(d *discovered, home string, keep func(migrate.RecordedJitPath) bool) {
+	for _, r := range migrate.DiscoverRecordedJitPaths(home) {
+		if r.Stale() == "" || (keep != nil && !keep(r)) {
+			continue
+		}
+		to, err := durableJitPath()
+		if err != nil {
+			d.jitPathRefused = append(d.jitPathRefused, r.Path)
+			d.jitPathRefusal = err.Error()
+			continue
+		}
+		d.jitPathTarget = to
+		d.jitPaths = append(d.jitPaths, r)
+	}
+}
+
+// printJitPathRefused renders the refusal note (design/jit-path-refresh.md
+// D4) in the shape every other skip hint uses.
+func printJitPathRefused(w io.Writer, home string, d *discovered) {
+	if len(d.jitPathRefused) == 0 {
+		return
+	}
+	// The frame reads "Skipped N finding(s) <reason>:", so the reason
+	// starts mid-sentence, as every other skip note's does.
+	printSkippedFindings(w, home, len(d.jitPathRefused),
+		"in "+countWord(len(d.jitPathRefused), "config", "configs")+" that "+pluralWord(len(d.jitPathRefused), "runs", "run")+" a jit that is gone or version-pinned, which this jit can't refresh right now",
+		d.jitPathRefused, d.jitPathRefusal)
 }
 
 // noteNamespaceMove explains a claimNamespace bump (GAPS.md #55) directly
@@ -368,6 +421,18 @@ func wrapPlanDetail(home, tool string) string {
 // token fails loud rather than being silently ignored — a typo'd category
 // name should never look like "nothing found" once the confirmation
 // prompt already fired.
+// filterJitPathsByCategory keeps the refresh rows whose owning category
+// --only selected.
+func filterJitPathsByCategory(rows []migrate.RecordedJitPath, selected map[string]bool) []migrate.RecordedJitPath {
+	var kept []migrate.RecordedJitPath
+	for _, r := range rows {
+		if selected[r.Category] {
+			kept = append(kept, r)
+		}
+	}
+	return kept
+}
+
 func filterMigrateOnly(only []string) (map[string]bool, error) {
 	valid := make(map[string]bool, len(migrateCategories))
 	for _, c := range migrateCategories {
@@ -423,6 +488,11 @@ var migrateCmd = &cobra.Command{
 		"plan and asks for confirmation before touching anything, and every modified\n" +
 		"file is backed up (encrypted, into the vault) first, `jit migrate undo <path>`\n" +
 		"restores a migrated file from that backup.\n\n" +
+		"A machine-wide file jit already migrated is still worth naming: the line it\n" +
+		"carries to call back into jit records an absolute path, and if that path has\n" +
+		"gone stale (a version-numbered Homebrew copy the last upgrade deleted) the run\n" +
+		"refreshes it to the durable one — the fix `jit doctor` prescribes for a\n" +
+		"[jit path] finding. Bare `jit migrate` checks every such file it ever wrote.\n\n" +
 		"After vaulting, the run also clears verbatim copies of the newly vaulted\n" +
 		"credentials from AI agent caches under your home directory — files beyond\n" +
 		"the targets you named, each listed in the plan and backed up before it is\n" +
@@ -523,6 +593,8 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 	looseEmbeddedSkipped := d.looseEmbeddedSkipped
 	historyKeyOnly := d.historyKeyOnly
 	wrapOwnedSkipped := d.wrapOwnedSkipped
+	jitPaths := d.jitPaths
+	jitPathRefused := d.jitPathRefused
 
 	// --only scopes a run to just the named categories (GAPS.md #21) —
 	// validated against migrateCategories BEFORE anything else, including
@@ -589,9 +661,24 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 		if !selected["k8s-secret"] {
 			k8sManifestsComplexOnly = nil // note-only companion, scoped with its category
 		}
+		// A recorded-path refresh is scoped by the category whose migration
+		// wrote the artifact: `--only aws` refreshes ~/.aws/config exactly
+		// as it migrates ~/.aws/credentials. Not a token of its own.
+		jitPaths = filterJitPathsByCategory(jitPaths, selected)
+		if len(jitPathRefused) > 0 {
+			var kept []string
+			for _, r := range migrate.DiscoverRecordedJitPaths(home) {
+				for _, p := range jitPathRefused {
+					if r.Path == p && selected[r.Category] {
+						kept = append(kept, p)
+					}
+				}
+			}
+			jitPathRefused = kept
+		}
 	}
 
-	total := 0
+	total := len(jitPaths)
 	for _, items := range categorySlices {
 		total += len(*items)
 	}
@@ -613,6 +700,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 		printSkippedFindings(cmd.OutOrStdout(), home, len(historyKeyOnly), "in "+pluralWord(len(historyKeyOnly), "a history file", "history files")+" holding private key material", historyKeyOnly,
 			"jit only matched the -----BEGIN line; the key body is on the lines around it, so redacting would leave the key behind and make the file look clean. Regenerate the key, then delete those lines by hand.")
 		printSkippedWrapOwned(cmd.OutOrStdout(), home, wrapOwnedSkipped)
+		printJitPathRefused(cmd.OutOrStdout(), home, &discovered{jitPathRefused: jitPathRefused, jitPathRefusal: d.jitPathRefusal})
 		return false, nil
 	}
 
@@ -657,6 +745,8 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 		netrcFiles:       netrcFiles,
 		pypircFiles:      pypircFiles,
 		looseSecretFiles: looseSecretFiles,
+		jitPaths:         jitPaths,
+		jitPathTarget:    d.jitPathTarget,
 	}
 	// The cache-sweep preview joins the plan HERE, after the --only
 	// filter: its needles are the plaintext values of exactly the files
@@ -686,6 +776,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 	printSkippedFindings(cmd.OutOrStdout(), home, len(historyKeyOnly), "in "+pluralWord(len(historyKeyOnly), "a history file", "history files")+" holding private key material", historyKeyOnly,
 		"jit only matched the -----BEGIN line; the key body is on the lines around it, so redacting would leave the key behind and make the file look clean. Regenerate the key, then delete those lines by hand.")
 	printSkippedWrapOwned(cmd.OutOrStdout(), home, wrapOwnedSkipped)
+	printJitPathRefused(cmd.OutOrStdout(), home, &discovered{jitPathRefused: jitPathRefused, jitPathRefusal: d.jitPathRefusal})
 
 	// The 1Password announcement is part of the plan the user confirms
 	// against (and --dry-run's, same rendering), but the plan never
@@ -816,6 +907,23 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 	// a run that migrates none of the disclosing categories never pays the
 	// full-vault read.
 	dupIdx := &dupIndexOnce{v: v}
+
+	// Recorded jit paths first: a category migration later in this run
+	// (a kubeconfig user, an AWS profile) rewrites the same artifact with
+	// the same durable path, and the tracker's first backup of the file is
+	// the pristine one either way.
+	if len(jitPaths) > 0 {
+		printMigrateResultCategory(out, pluralWord(len(jitPaths), "recorded jit path refreshed", "recorded jit paths refreshed"), len(jitPaths))
+		for _, r := range jitPaths {
+			res, err := migrate.RefreshRecordedJitPath(v, r, d.jitPathTarget, backups)
+			if err != nil {
+				return false, fmt.Errorf("jit migrate: %w", err)
+			}
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> %s; backup: `jit vault get %s`\n",
+				displayPath(home, res.Path), res.To, res.Backup)))
+		}
+		fmt.Fprintln(out)
+	}
 
 	// Each migrated category gets the same "[Label] (N)" header + bullet
 	// shape the plan itself already uses (printMigratePlan/
@@ -1476,13 +1584,19 @@ func runMigrateAll(cmd *cobra.Command) error {
 		offerGuard = false
 	}
 
-	if len(files) == 0 && len(tools) == 0 && !offerGuard {
+	// The artifacts migrate itself wrote are checked on every bare run —
+	// independent of the scan, which is about secrets — so a recorded jit
+	// path heals before the upgrade that would break it, under a plan the
+	// user previews (design/jit-path-refresh.md D3).
+	d := &discovered{}
+	discoverJitPathRefresh(d, home, nil)
+
+	if len(files) == 0 && len(tools) == 0 && !offerGuard && d.total() == 0 && len(d.jitPathRefused) == 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), hlCmds("Nothing to protect — the scan found no secrets jit can act on. Run `jit scan` for the full picture."))
 		return nil
 	}
 	sort.Strings(files)
 
-	d := &discovered{}
 	for _, path := range files {
 		if err := discoverFileTarget(d, home, path); err != nil {
 			// One unreadable file must not sink the whole protect run; say
@@ -1504,6 +1618,10 @@ func runMigrateAll(cmd *cobra.Command) error {
 		// hard-linked, or changed under us), so preventing the NEXT one is the
 		// only protection left to give. Returning here would have offered it
 		// in the plan and then silently not installed it.
+		if len(d.jitPathRefused) > 0 {
+			printJitPathRefused(out, home, d)
+			return nil
+		}
 		fmt.Fprintln(out, hlCmds("Nothing bare `jit migrate` can protect right now: the flagged file(s) mix secrets with other content or need to be named explicitly. `jit scan` has the details."))
 		return nil
 	}
@@ -1792,6 +1910,14 @@ func discoverFileTarget(d *discovered, home, path string) error {
 			return nil
 		}
 	}
+	// An artifact migrate itself wrote (~/.kube/config, ~/.aws/config, a
+	// credential helper) is also checked for the jit path it records —
+	// before the switch, which returns early for the kubeconfig, and in
+	// addition to it: a kubeconfig with a plaintext token AND a stale exec
+	// line gets both rows (design/jit-path-refresh.md D3). This is what
+	// makes doctor's `jit migrate ~/.kube/config` do what it says on a
+	// file that has already been migrated.
+	discoverJitPathRefresh(d, home, func(r migrate.RecordedJitPath) bool { return r.Path == path })
 	// The remaining fixed files each live at exactly one path. The name-keyed
 	// categories (aws/kube/terraform/docker/git) migrate every profile/user/
 	// host/registry the one file holds, so there's nothing to narrow; the
@@ -1994,10 +2120,19 @@ func (d *discovered) dedupe() {
 		&d.historyFiles, &d.mcpConfigs, &d.awsProfiles, &d.k8sUsers, &d.terraformHosts,
 		&d.dockerRegistries, &d.gitHosts, &d.gcpADCFiles, &d.sopsAgeFiles,
 		&d.npmrcFiles, &d.netrcFiles, &d.pypircFiles, &d.looseSecretFiles, &d.looseEmbeddedSkipped,
-		&d.historyKeyOnly, &d.wrapOwnedSkipped,
+		&d.historyKeyOnly, &d.wrapOwnedSkipped, &d.jitPathRefused,
 	} {
 		dedupeStrings(s)
 	}
+	seen := map[string]bool{}
+	kept := d.jitPaths[:0]
+	for _, r := range d.jitPaths {
+		if k := r.Path + "\x00" + r.Recorded; !seen[k] {
+			seen[k] = true
+			kept = append(kept, r)
+		}
+	}
+	d.jitPaths = kept
 }
 
 // total counts everything discovered across every category, so
@@ -2014,7 +2149,7 @@ func (d *discovered) total() int {
 	} {
 		n += len(s)
 	}
-	return n
+	return n + len(d.jitPaths)
 }
 
 // dedupeStrings drops repeated entries in place, keeping first-seen order.
