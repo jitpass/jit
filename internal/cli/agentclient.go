@@ -8,6 +8,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 	"time"
@@ -191,9 +192,32 @@ var agentHealOnce sync.Once
 // their Mac — the same silent-prompt confusion internal/keychainwrap already
 // documents. stderr, so it never corrupts a --format json payload on stdout;
 // json/status commands don't challenge, so it won't fire for them anyway.
+//
+// Once per process. The client's timer is per RPC, and a command like
+// migrate issues several slow RPCs after its one real unlock (a mount
+// refresh that re-serves every registered mount, a store behind the
+// service's own housekeeping), each of which crossed the 400ms line and
+// printed the notice again — three or four "Touch ID required" lines for
+// one prompt (seen live 2026-09-05, the audit log showing a single
+// unlock). The line's job is to explain the first hang; the audit log,
+// not this notice, is the record of prompts.
 func announceTouchIDWait() {
-	fmt.Fprintln(os.Stderr, glyphLock+" Touch ID required: approve the prompt on your Mac to continue...")
+	touchIDNotice.mu.Lock()
+	defer touchIDNotice.mu.Unlock()
+	if touchIDNotice.shown {
+		return
+	}
+	touchIDNotice.shown = true
+	fmt.Fprintln(touchIDNotice.out, glyphLock+" Touch ID required: approve the prompt on your Mac to continue...")
 }
+
+// touchIDNotice is announceTouchIDWait's once-per-process state; the
+// writer is a field so tests can capture the line and reset the guard.
+var touchIDNotice = struct {
+	mu    sync.Mutex
+	shown bool
+	out   io.Writer
+}{out: os.Stderr}
 
 // installedNotRunningParts is the SINGLE source of the "installed but not
 // running" guidance, shared by `jit status`, `jit service status`, doctor,

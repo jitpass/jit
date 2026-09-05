@@ -22,8 +22,8 @@ import (
 	"github.com/jitpass/jit/internal/guard"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
-	"github.com/jitpass/jit/internal/onepassword"
 	"github.com/jitpass/jit/internal/termtext"
+	"github.com/jitpass/jit/internal/ui"
 	"github.com/jitpass/jit/internal/vault"
 	"github.com/jitpass/jit/internal/wrap"
 )
@@ -39,55 +39,6 @@ var (
 	// this flag restores plain copies. Opt-out, not opt-in — installing
 	// and signing in to `op` was the opt-in.
 	migrateNo1Password bool
-)
-
-// opInventory is what the dedupe needs from onepassword.Index, as an
-// interface so tests can pin a fake index without a real `op`.
-type opInventory interface {
-	RefFor(value []byte) (onepassword.IndexEntry, bool)
-	Items() int
-}
-
-// newOpLinkHook builds the vault.LinkOnSet migrate installs for the
-// 1Password dedupe: a value that already IS an op:// reference links as
-// itself (a .env kept for `op run` needs no index, and vaulting the
-// literal would hand `jit run` an unresolvable string); anything else
-// links iff its bytes match a concealed 1Password field. ix may be nil —
-// the enumeration failed — and verbatim links still work. The stored
-// reference is the rename-proof ID form; the recorded row carries the
-// name form for the mutation log.
-func newOpLinkHook(ix opInventory, linked *[]opLinkedRow, offered *int) func(path string, value []byte, meta vault.Meta) (string, bool) {
-	return func(path string, value []byte, _ vault.Meta) (string, bool) {
-		*offered++
-		if s := string(value); onepassword.ValidateRef(s) == nil {
-			*linked = append(*linked, opLinkedRow{path: path, ref: s})
-			return s, true
-		}
-		if ix == nil {
-			return "", false
-		}
-		e, ok := ix.RefFor(value)
-		if !ok {
-			return "", false
-		}
-		*linked = append(*linked, opLinkedRow{path: path, ref: e.NameRef})
-		return e.IDRef, true
-	}
-}
-
-// migrateOpInstalled/migrateOpInventory are the 1Password seams: the
-// plan's announcement line keys off the cheap PATH probe, the post-confirm
-// dedupe off the real enumeration. Vars so tests pin both — the plan must
-// render identically on machines with and without op installed.
-var (
-	migrateOpInstalled = onepassword.Installed
-	migrateOpInventory = func() (opInventory, error) {
-		ix, err := onepassword.New().Inventory()
-		if err != nil {
-			return nil, err
-		}
-		return ix, nil
-	}
 )
 
 // migrateCategories are the --only tokens real (non---dry-run) migrate
@@ -849,29 +800,20 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 	}
 	registryPath := mount.RegistryPath(root)
 
-	// 1Password dedupe (design/1password-adapter.md): one authenticated
-	// enumeration up front, then every value about to be vaulted is offered
-	// to the vault's LinkOnSet hook — a byte-exact match, or a value that
-	// already IS an op:// reference (a .env kept for `op run`), stores the
-	// reference instead of a copy. Fails open on purpose: a signed-out CLI
+	// 1Password dedupe (design/1password-adapter.md, migrate1password.go):
+	// every value about to be vaulted is offered to the vault's LinkOnSet
+	// hook — a byte-exact match against 1Password's concealed fields, or a
+	// value that already IS an op:// reference (a .env kept for `op run`),
+	// stores the reference instead of a copy. The enumeration behind the
+	// match runs lazily on the first value that could link, after [y/N]
+	// and Touch ID, never at plan time — the plan's announcement line
+	// above is a PATH probe only. Fails open on purpose: a signed-out CLI
 	// or a locked app degrades to today's literal copies, reported once in
-	// the mutation log. Runs after [y/N] and Touch ID, never at plan time —
-	// the plan's announcement line above is a PATH probe only.
-	var opLinked []opLinkedRow
-	var opOffered, opItemsChecked int
-	var opSkipNote string
+	// the mutation log.
+	var opLinks *opDedupe
 	if vaultsValues && migrateOpInstalled() && !migrateNo1Password {
-		fmt.Fprintln(cmd.ErrOrStderr(), "checking 1Password for already-stored values (its prompt may appear)...")
-		ix, invErr := migrateOpInventory()
-		if invErr != nil {
-			opSkipNote = invErr.Error()
-		} else {
-			opItemsChecked = ix.Items()
-		}
-		// The hook stays installed even when the enumeration failed:
-		// verbatim op:// values need no index, and vaulting one as a
-		// literal would hand `jit run` an unresolvable string.
-		v.LinkOnSet = newOpLinkHook(ix, &opLinked, &opOffered)
+		opLinks = newOpDedupe(func() *ui.Tracker { return newProgress(cmd, false) })
+		v.LinkOnSet = opLinks.hook
 	}
 
 	// producedMount records whether this run registered ANY live mount, so the
@@ -1438,7 +1380,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 		fmt.Fprintln(out)
 	}
 
-	printOpLinkResult(out, opLinked, opOffered, opItemsChecked, opSkipNote)
+	opLinks.print(out)
 
 	// Best-effort: an unreadable marker means no nudge, never a failed
 	// migrate — everything above already succeeded. Only when this run

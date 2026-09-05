@@ -28,6 +28,13 @@ import (
 // failure) simply disables the notes — disclosure must never fail a
 // migration.
 //
+// It reads what is STORED, never what a linked secret resolves to: a
+// 1Password-linked entry is keyed by its reference, so two links to the
+// same field read as duplicates of each other and a link never equals a
+// literal copy of the same value. Resolving would cost one `op read` exec
+// per linked secret on every migrate run — and, with the app locked, one
+// unlock dialog each — for a disclosure note.
+//
 // It maps a digest to EVERY path holding it, not just the first. The index
 // is built lazily, which means it is built AFTER the run's first file has
 // already been stored, so a value's own freshly-written path is in here
@@ -45,15 +52,29 @@ func buildVaultValueIndex(v *vault.Vault) map[string][]string {
 	secrets, _ := splitBackupPaths(paths)
 	idx := make(map[string][]string, len(secrets))
 	for _, p := range secrets {
-		value, err := v.Get(p)
-		if err != nil {
+		key, _, ok := storedDigest(v, p)
+		if !ok {
 			continue
 		}
-		sum := sha256.Sum256(value)
-		key := fmt.Sprintf("%x", sum)
 		idx[key] = append(idx[key], p)
 	}
 	return idx
+}
+
+// storedDigest keys one vault entry for the duplicate index: the digest of
+// its stored bytes, prefixed by storage kind so a reference and a literal
+// can never collide. Returns the stored length too, for the floor below.
+func storedDigest(v *vault.Vault, path string) (key string, n int, ok bool) {
+	payload, storage, err := v.GetStored(path)
+	if err != nil {
+		return "", 0, false
+	}
+	sum := sha256.Sum256(payload)
+	key = fmt.Sprintf("%x", sum)
+	if storage != "" {
+		key = storage + ":" + key
+	}
+	return key, len(payload), true
 }
 
 // minDuplicateValueLen keeps trivially-coincidental values ("true", a port
@@ -76,13 +97,12 @@ func noteDuplicateValues(out io.Writer, v *vault.Vault, idx map[string][]string,
 		if looksLikeConfig(name) {
 			continue
 		}
-		value, err := v.Get(profileName + "/" + name)
-		if err != nil || len(value) < minDuplicateValueLen {
+		key, n, ok := storedDigest(v, profileName+"/"+name)
+		if !ok || n < minDuplicateValueLen {
 			continue
 		}
-		sum := sha256.Sum256(value)
 		counted := false
-		for _, existing := range idx[fmt.Sprintf("%x", sum)] {
+		for _, existing := range idx[key] {
 			// Skip the value's own group, including the copy this very
 			// migration just wrote (the index is built after the store).
 			g := groupPrefix(existing)

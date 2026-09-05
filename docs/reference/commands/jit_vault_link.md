@@ -15,7 +15,10 @@ Reference). Item and vault IDs also work in place of names and survive
 renames.
 
 The link is test-resolved through `op` first, so a typo or a signed-out
-CLI fails here, not at first use; --no-verify skips that (offline setup).
+CLI fails here, not at first use, and the reference is pinned to the
+1Password account it resolved in, so a Mac signed in to several keeps
+resolving it there whichever account op last used. --no-verify skips
+both (offline setup): the link then follows op's default account.
 Requires the 1Password CLI (`brew install 1password-cli`) with the
 desktop app integration on.
 

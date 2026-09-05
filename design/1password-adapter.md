@@ -178,10 +178,25 @@ type RefResolver interface {
   in a fresh session can cost two prompts back to back (jit's Touch
   ID, then 1Password's); both sides session-cache, so steady state is
   zero or one. Dogfood this before shipping — it is the UX risk.
-- **Multi-account**: the URI does not name an account. v1 defers to
-  op's own selection (`OP_ACCOUNT`, app-integration chooser) and
-  records this as an open question rather than inventing per-link
-  account storage speculatively.
+- **Multi-account**: the URI does not name an account, and op resolves
+  every reference against ONE — `--account`, else `OP_ACCOUNT`, else
+  its most recent sign-in. v1 deferred this as speculative; a Mac with
+  a personal and an employer account then showed the failure live
+  (2026-09-05): a link made under one account fails with "isn't a
+  vault in this account" once op's default flips to the other. So a
+  link jit creates is **pinned**: the stored reference carries
+  `?account=<account uuid>` (the query slot op itself uses for
+  `?attribute=otp`; op ignores the parameter, verified), the resolver
+  strips it and passes `--account`, and every other consumer of the
+  stored string — export, doctor's sweep, `vault get`'s JSON — carries
+  it along. Migrate's enumeration covers every signed-in account
+  unless `OP_ACCOUNT` names one, pinning each match to its account;
+  `jit vault link` tries each account until the reference resolves and
+  pins that one (`--no-verify` stores it unpinned, following op's
+  default as before). An unpinned link that fails to resolve on a
+  multi-account machine says so in its error. The pin is the ACCOUNT
+  uuid, not the user's: it names what the vault ids inside the
+  reference belong to.
 
 ## Command surface
 
@@ -323,10 +338,37 @@ resolving. `jit scan` already treats `op://` values as non-secrets
 - **The index holds hashes, not values**: SHA-256 of each concealed
   field → its reference, built from one
   `op item list --format json | op item get - --format json`
-  enumeration (one authorization, values in memory only, raw JSON
-  wiped after parsing). Stored references are built in ID form from
-  the item JSON's own vault/item/field ids; the mutation log
-  displays the name form, which is what the user recognizes.
+  enumeration (one authorization; the item stream is decoded one
+  object at a time, so at most one item's plaintext is resident).
+  Stored references are built in ID form from the item JSON's own
+  vault/item/field ids; the mutation log displays the name form,
+  which is what the user recognizes.
+- **The enumeration is lazy and scoped** (2026-09-05, after the first
+  real post-1.0 migrate spent minutes in it for one kubeconfig line).
+  It runs on the FIRST value that could link — 8 bytes or more, not
+  already an `op://` string — so a run with no such value never
+  contacts op; `item list` is filtered client-side on `category`
+  before piping, dropping Credit Card, Bank Account, Identity and the
+  other document/finance categories (their CONCEALED fields are CVVs
+  and PINs, which must not pass through jit to be hashed, and each
+  fetch is an activity-log event in a Business account) — a
+  deny-list, so a category 1Password adds is enumerated by default;
+  and the two op calls carry different bounds: the list waits on the
+  unlock dialog under the resolve timeout, the get is bounded by an
+  idle watchdog per item, so a large account is never cut off for
+  being large while a hung op is still killed. Items that arrived
+  before op stopped early stay indexed; the shortfall is stated.
+- **The user sees it run.** A stderr spinner counts items as they
+  stream ("37/174 items"); the `[1Password]` block in the mutation
+  log prints whenever the check ran — including "0 of 12 linked" with
+  the item count — so a user who waited through the enumeration and
+  answered its prompt is never left guessing whether it happened.
+  Silence is reserved for a run that never consulted op.
+- **Nothing else in migrate resolves through op.** The duplicate
+  disclosure index keys a linked entry by its stored reference
+  (`GetStored`), never by resolving it: before this, every linked
+  secret in the vault cost one `op read` exec per env/MCP migration,
+  each able to block on the unlock dialog, for a note.
 
 This closes the loop the issue is really about: a 1Password user's
 `.env` is usually a hand-made plaintext cache of things 1Password
@@ -412,7 +454,8 @@ Each gets a one-clause error plus the one command to type:
 - Batch resolution (one `op inject` exec for a whole profile) — only
   if per-reference exec latency proves annoying in practice.
 - Secure Note linking (PEM keys stored in note bodies).
-- Per-link account pinning for multi-account users.
+- ~~Per-link account pinning for multi-account users.~~ Shipped
+  2026-09-05, see Multi-account above.
 - Other backends (the scheme-dispatched resolver leaves the door
   open; nothing else is built).
 - `jit scan` awareness of `op://` references already sitting in
