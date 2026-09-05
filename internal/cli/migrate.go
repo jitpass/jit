@@ -682,6 +682,8 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 	for _, items := range categorySlices {
 		total += len(*items)
 	}
+	// After --only: what this run stores, as opposed to merely rewrites.
+	vaultsValues := total-len(jitPaths) > 0
 	if total == 0 {
 		if len(migrateOnly) > 0 {
 			fmt.Fprintf(cmd.OutOrStdout(), "Nothing to migrate in the selected --only %s: %s.\n", pluralWord(len(migrateOnly), "category", "categories"), strings.Join(migrateOnly, ", "))
@@ -783,7 +785,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 	// contacts op: the PATH probe is the whole test here, because the plan
 	// must stay free of prompts — 1Password's authorization dialog no less
 	// than Touch ID. The real check runs after [y/N].
-	if migrateOpInstalled() && !migrateNo1Password {
+	if vaultsValues && migrateOpInstalled() && !migrateNo1Password {
 		w := cmd.OutOrStdout()
 		fmt.Fprintln(w)
 		wrapBody(w, 0, "", "1Password CLI detected: values already stored there are linked, not copied (--no-1password to copy).")
@@ -858,7 +860,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 	var opLinked []opLinkedRow
 	var opOffered, opItemsChecked int
 	var opSkipNote string
-	if migrateOpInstalled() && !migrateNo1Password {
+	if vaultsValues && migrateOpInstalled() && !migrateNo1Password {
 		fmt.Fprintln(cmd.ErrOrStderr(), "checking 1Password for already-stored values (its prompt may appear)...")
 		ix, invErr := migrateOpInventory()
 		if invErr != nil {
@@ -1439,8 +1441,10 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 	printOpLinkResult(out, opLinked, opOffered, opItemsChecked, opSkipNote)
 
 	// Best-effort: an unreadable marker means no nudge, never a failed
-	// migrate — everything above already succeeded.
-	if _, recorded, err := vault.LastExport(root); err == nil && !recorded {
+	// migrate — everything above already succeeded. Only when this run
+	// stored a secret: "these secrets now live only in this vault" is
+	// false of a run that refreshed a path and vaulted a file backup.
+	if _, recorded, err := vault.LastExport(root); err == nil && !recorded && vaultsValues {
 		summary.exportNudge = true
 	}
 
@@ -1719,7 +1723,7 @@ func runMigrateAll(cmd *cobra.Command) error {
 	// `applied` stays at its initial true and the projection would promise a
 	// jump ("0% → up to 100%") for work that provably did not happen. That
 	// path is reachable now that the guard can be the only thing a run does.
-	if applied && !migrateDryRun && d.total() > 0 && summary.SecretsTotal > 0 {
+	if applied && !migrateDryRun && d.vaultsValues() > 0 && summary.SecretsTotal > 0 {
 		before := summary.SecretsProtected * 100 / summary.SecretsTotal
 		after := (summary.SecretsProtected + summary.SecretsMigratable) * 100 / summary.SecretsTotal
 		fmt.Fprint(out, hlCmds(fmt.Sprintf("\ncoverage: %d%% "+glyphAction+" up to %d%% — run `jit scan` to see the new number\n", before, after)))
@@ -2150,6 +2154,16 @@ func (d *discovered) total() int {
 		n += len(s)
 	}
 	return n + len(d.jitPaths)
+}
+
+// vaultsValues counts what the run will actually STORE: every category
+// except the recorded-path refresh, which rewrites one line in a file and
+// vaults nothing. Everything that exists to serve stored values — the
+// 1Password inventory, the export nudge, the coverage projection — gates
+// on this, not on total(): a refresh-only run used to spend minutes
+// enumerating a 1Password account for values it was never going to write.
+func (d *discovered) vaultsValues() int {
+	return d.total() - len(d.jitPaths)
 }
 
 // dedupeStrings drops repeated entries in place, keeping first-seen order.
