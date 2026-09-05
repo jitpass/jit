@@ -45,6 +45,12 @@ plan and asks for confirmation before touching anything, and every modified
 file is backed up (encrypted, into the vault) first, `jit migrate undo <path>`
 restores a migrated file from that backup.
 
+A machine-wide file jit already migrated is still worth naming: the line it
+carries to call back into jit records an absolute path, and if that path has
+gone stale (a version-numbered Homebrew copy the last upgrade deleted) the run
+refreshes it to the durable one — the fix `jit doctor` prescribes for a
+[jit path] finding. Bare `jit migrate` checks every such file it ever wrote.
+
 After vaulting, the run also clears verbatim copies of the newly vaulted
 credentials from AI agent caches under your home directory — files beyond
 the targets you named, each listed in the plan and backed up before it is

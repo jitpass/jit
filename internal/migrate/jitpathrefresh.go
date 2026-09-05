@@ -4,11 +4,13 @@
 package migrate
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
 
 	"github.com/jitpass/jit/internal/selfpath"
+	"github.com/jitpass/jit/internal/vault"
 )
 
 // A RecordedJitPath is one artifact `jit migrate` rewrote to call back into
@@ -117,4 +119,87 @@ func executableFile(path string) bool {
 	}
 	info, err := os.Stat(path) // #nosec G703 -- stat-only probe; no content is read
 	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
+}
+
+// ResolveDurableJitPath is the path a refresh records — resolveJitExecutable
+// (selfpath.Durable) for callers outside the package — or the refusal
+// naming why this jit has none (a build directory, ~/Downloads, an
+// unmatched Caskroom copy). Prompt-free and cheap, so a plan can ask
+// before anything is confirmed and turn a refusal into a note rather than
+// a failure after [y/N] (design/jit-path-refresh.md D4).
+func ResolveDurableJitPath() (string, error) {
+	return resolveJitExecutable()
+}
+
+// JitPathRefresh is one refreshed artifact, for the mutation log.
+type JitPathRefresh struct {
+	Path   string
+	From   string
+	To     string
+	Backup string // the vault path holding the pristine bytes; `jit migrate undo` restores it
+}
+
+// RefreshRecordedJitPath rewrites the jit path r records to `to`, the
+// durable path the plan resolved and showed the user — passed in rather
+// than re-resolved here so the line the user confirmed is the line that
+// gets written. Line-anchored: only lines carrying r.Key, only the regex
+// match equal to r.Recorded; every other byte, quoting included, is
+// preserved, and the file keeps its own mode (the helpers are 0755
+// scripts). Backed up first through the run's tracker, so undo restores
+// the pristine artifact even when a category migration rewrites the same
+// file later in the run.
+func RefreshRecordedJitPath(v *vault.Vault, r RecordedJitPath, to string, tracker *BackupTracker) (JitPathRefresh, error) {
+	// The writers quote per artifact (single quotes in a shell helper,
+	// nothing in INI/YAML); a substitution inside their quoting is right
+	// only for a path that needs none. Homebrew and /usr/local never do.
+	if strings.ContainsAny(to, " \t'\"") {
+		return JitPathRefresh{}, fmt.Errorf("refusing to record %q: a jit path with whitespace or quotes cannot be substituted into every artifact's own quoting", to)
+	}
+	data, err := os.ReadFile(r.Path) // #nosec G304 -- fixed, jit-owned artifact location
+	if err != nil {
+		return JitPathRefresh{}, fmt.Errorf("reading %s: %w", r.Path, err)
+	}
+	info, err := os.Stat(r.Path)
+	if err != nil {
+		return JitPathRefresh{}, err
+	}
+	rewritten, changed := refreshRecordedLines(string(data), r.Key, r.Recorded, to)
+	if !changed {
+		return JitPathRefresh{}, fmt.Errorf("%s no longer carries %s; nothing to refresh", r.Path, r.Recorded)
+	}
+	backup, err := tracker.backupOnce(v, r.Path)
+	if err != nil {
+		return JitPathRefresh{}, fmt.Errorf("backing up %s: %w", r.Path, err)
+	}
+	if err := vault.AtomicWriteFile(r.Path, []byte(rewritten)); err != nil {
+		return JitPathRefresh{}, fmt.Errorf("writing %s: %w", r.Path, err)
+	}
+	// AtomicWriteFile lands at the vault's own 0600; a helper script has
+	// to stay executable or the tool it serves fails on its next call.
+	if err := os.Chmod(r.Path, info.Mode().Perm()); err != nil {
+		return JitPathRefresh{}, fmt.Errorf("restoring mode of %s: %w", r.Path, err)
+	}
+	return JitPathRefresh{Path: r.Path, From: r.Recorded, To: to, Backup: backup}, nil
+}
+
+// refreshRecordedLines is the pure substitution: on every line containing
+// key, each recorded-path match equal to from becomes to. Splitting and
+// joining on "\n" keeps a trailing newline (or its absence) exactly as
+// the file had it.
+func refreshRecordedLines(content, key, from, to string) (string, bool) {
+	lines := strings.Split(content, "\n")
+	changed := false
+	for i, line := range lines {
+		if !strings.Contains(line, key) {
+			continue
+		}
+		lines[i] = recordedJitPath.ReplaceAllStringFunc(line, func(m string) string {
+			if m != from {
+				return m
+			}
+			changed = true
+			return to
+		})
+	}
+	return strings.Join(lines, "\n"), changed
 }
