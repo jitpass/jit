@@ -77,10 +77,12 @@ this wrap exists to remove.
 ## When the session expires
 
 Nothing changes from your current routine: when the session dies (your
-`duration`, up to 12 h), AWS commands report the credentials expired and
-you run `clisso get <app>` again. jit serves the real `Expiration` to
-SDKs, so long-running processes refresh on schedule instead of caching a
-dead token.
+`duration`, up to 12 h), AWS commands report the credentials expired -
+jit's error names the exact command, `clisso get <app>` - and you run it
+again. jit serves the real `Expiration` to SDKs, so long-running
+processes refresh on schedule instead of caching a dead token, and
+`jit status` shows every session's expiry so you can check before a
+command fails.
 
 ## `clisso status` answers from the vault
 

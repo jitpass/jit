@@ -652,7 +652,7 @@ func readClissoConfig(configPath string) clissoConfig {
 		return cfg
 	}
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return clissoConfig{}
+		return clissoConfig{} // a half-decoded config is not "what clisso knows"
 	}
 	return cfg
 }
