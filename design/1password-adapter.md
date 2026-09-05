@@ -178,10 +178,25 @@ type RefResolver interface {
   in a fresh session can cost two prompts back to back (jit's Touch
   ID, then 1Password's); both sides session-cache, so steady state is
   zero or one. Dogfood this before shipping — it is the UX risk.
-- **Multi-account**: the URI does not name an account. v1 defers to
-  op's own selection (`OP_ACCOUNT`, app-integration chooser) and
-  records this as an open question rather than inventing per-link
-  account storage speculatively.
+- **Multi-account**: the URI does not name an account, and op resolves
+  every reference against ONE — `--account`, else `OP_ACCOUNT`, else
+  its most recent sign-in. v1 deferred this as speculative; a Mac with
+  a personal and an employer account then showed the failure live
+  (2026-09-05): a link made under one account fails with "isn't a
+  vault in this account" once op's default flips to the other. So a
+  link jit creates is **pinned**: the stored reference carries
+  `?account=<account uuid>` (the query slot op itself uses for
+  `?attribute=otp`; op ignores the parameter, verified), the resolver
+  strips it and passes `--account`, and every other consumer of the
+  stored string — export, doctor's sweep, `vault get`'s JSON — carries
+  it along. Migrate's enumeration covers every signed-in account
+  unless `OP_ACCOUNT` names one, pinning each match to its account;
+  `jit vault link` tries each account until the reference resolves and
+  pins that one (`--no-verify` stores it unpinned, following op's
+  default as before). An unpinned link that fails to resolve on a
+  multi-account machine says so in its error. The pin is the ACCOUNT
+  uuid, not the user's: it names what the vault ids inside the
+  reference belong to.
 
 ## Command surface
 
@@ -439,7 +454,8 @@ Each gets a one-clause error plus the one command to type:
 - Batch resolution (one `op inject` exec for a whole profile) — only
   if per-reference exec latency proves annoying in practice.
 - Secure Note linking (PEM keys stored in note bodies).
-- Per-link account pinning for multi-account users.
+- ~~Per-link account pinning for multi-account users.~~ Shipped
+  2026-09-05, see Multi-account above.
 - Other backends (the scheme-dispatched resolver leaves the door
   open; nothing else is built).
 - `jit scan` awareness of `op://` references already sitting in

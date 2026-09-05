@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -145,27 +146,33 @@ type opItem struct {
 	} `json:"fields"`
 }
 
-// Inventory enumerates the credential-bearing items the signed-in account
-// can read and returns an Index of their concealed field values, for
-// migrate's link-instead-of-copy dedupe (design/1password-adapter.md).
-// One authenticated enumeration — `op item list` piped into
+// Inventory enumerates the credential-bearing items the signed-in
+// accounts can read and returns an Index of their concealed field values,
+// for migrate's link-instead-of-copy dedupe (design/1password-adapter.md).
+// Per account, one authenticated enumeration — `op item list` piped into
 // `op item get -`, the CLI's own documented bulk pattern — so the user
-// answers at most one 1Password authorization prompt per run. Only fields
-// op marks CONCEALED are indexed: that is 1Password's own "this is a
-// secret" bit, and it naturally excludes usernames, URLs, and Secure Note
-// bodies. (SSH Key items never match either: their private key is type
-// SSHKEY, not CONCEALED, and on-disk key bytes rarely equal op's rendering
-// anyway.)
+// answers at most one 1Password authorization prompt per account per
+// run. Every signed-in account is covered unless OP_ACCOUNT names one
+// (enumerationAccounts), and each indexed reference is pinned to the
+// account it came from (account.go), so the link resolves there whatever
+// op's default account is later. Only fields op marks CONCEALED are
+// indexed: that is 1Password's own "this is a secret" bit, and it
+// naturally excludes usernames, URLs, and Secure Note bodies. (SSH Key
+// items never match either: their private key is type SSHKEY, not
+// CONCEALED, and on-disk key bytes rarely equal op's rendering anyway.)
 //
 // The item stream is decoded one object at a time as op emits it, so at
 // most one item's plaintext is resident, and progress (when non-nil) is
-// told after each — (read, listed) — so a long enumeration can show a
-// counter instead of looking hung. The two op calls carry different
-// bounds: the list waits on 1Password's unlock dialog, the same class of
-// wait as jit's own Touch ID, and gets the resolve timeout; the get is
-// bounded per item — an idle watchdog that trips when no item has arrived
-// for that long, so a large account is never cut off for merely being
-// large while a hung op is still killed.
+// told after each — (read, listed), cumulative across accounts — so a
+// long enumeration can show a counter instead of looking hung. The two
+// op calls carry different bounds: the list waits on 1Password's unlock
+// dialog, the same class of wait as jit's own Touch ID, and gets the
+// resolve timeout; the get is bounded per item — an idle watchdog that
+// trips when no item has arrived for that long, so a large account is
+// never cut off for merely being large while a hung op is still killed.
+// With several accounts, one that fails (not authorized, gone) is
+// reported on the index and the others still count; only every account
+// failing is a failed enumeration.
 func (r *Resolver) Inventory(progress func(read, listed int)) (*Index, error) {
 	bin, err := r.bin()
 	if err != nil {
@@ -176,31 +183,119 @@ func (r *Resolver) Inventory(progress func(read, listed int)) (*Index, error) {
 	if timeout <= 0 {
 		timeout = resolveTimeout
 	}
-	listCtx, cancelList := context.WithTimeout(context.Background(), timeout)
-	defer cancelList()
 
-	list, err := runOp(listCtx, bin, nil, "item", "list", "--format", "json")
-	if err != nil {
-		return nil, fmt.Errorf("op item list failed: %w", err)
+	// One pass per account; a nil account set is one unpinned pass under
+	// op's own default (no accounts listed, or OP_ACCOUNT matched none).
+	passes := []Account{{}}
+	if accounts := r.enumerationAccounts(); len(accounts) > 0 {
+		passes = accounts
 	}
-	worklist, listed, err := filterListed(list)
-	if err != nil {
-		return nil, err
+
+	type pass struct {
+		account  Account
+		worklist []byte
+		listed   int
+	}
+	var work []pass
+	var shortfalls []string
+	var firstErr error
+	for _, a := range passes {
+		listCtx, cancelList := context.WithTimeout(context.Background(), timeout)
+		list, err := runOp(listCtx, bin, nil, accountArgs(a, "item", "list", "--format", "json")...)
+		cancelList()
+		if err != nil {
+			err = fmt.Errorf("op item list failed: %w", err)
+			if len(passes) == 1 {
+				return nil, err
+			}
+			shortfalls = append(shortfalls, accountLabel(a)+": "+err.Error())
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		worklist, listed, err := filterListed(list)
+		if err != nil {
+			if len(passes) == 1 {
+				return nil, err
+			}
+			shortfalls = append(shortfalls, accountLabel(a)+": "+err.Error())
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		work = append(work, pass{account: a, worklist: worklist, listed: listed})
+	}
+	if len(work) == 0 && firstErr != nil {
+		return nil, firstErr
+	}
+
+	ix := &Index{byHash: map[[sha256.Size]byte]indexed{}}
+	for _, p := range work {
+		ix.listed += p.listed
 	}
 	// An account with zero (kept) items: don't hand `op item get -` an
 	// empty worklist to choke on.
-	ix := &Index{byHash: map[[sha256.Size]byte]indexed{}, listed: listed}
-	if listed == 0 {
+	if ix.listed == 0 {
+		ix.incomplete = strings.Join(shortfalls, "; ")
 		return ix, nil
 	}
 	if progress != nil {
-		progress(0, listed)
+		progress(0, ix.listed)
 	}
 
-	if err := r.streamItems(bin, worklist, timeout, ix, progress); err != nil {
-		return nil, err
+	streamed := 0
+	for _, p := range work {
+		if p.listed == 0 {
+			continue
+		}
+		if err := r.streamItems(bin, p.account, p.worklist, timeout, ix, progress); err != nil {
+			if len(work) == 1 {
+				return nil, err
+			}
+			shortfalls = append(shortfalls, accountLabel(p.account)+": "+err.Error())
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		streamed++
+	}
+	if streamed == 0 && firstErr != nil {
+		return nil, firstErr
+	}
+	// Whole-account shortfalls first, then what the streams recorded.
+	if len(shortfalls) > 0 {
+		if ix.incomplete != "" {
+			shortfalls = append(shortfalls, ix.incomplete)
+		}
+		ix.incomplete = strings.Join(shortfalls, "; ")
 	}
 	return ix, nil
+}
+
+// accountArgs prefixes op arguments with --account for a real account and
+// leaves them alone for the zero Account (op's own default).
+func accountArgs(a Account, args ...string) []string {
+	if a.ID == "" {
+		return args
+	}
+	return append([]string{"--account", a.ID}, args...)
+}
+
+// accountLabel names an account in a shortfall note the way the user
+// knows it — the sign-in address — never by uuid alone.
+func accountLabel(a Account) string {
+	switch {
+	case a.URL != "":
+		return a.URL
+	case a.Shorthand != "":
+		return a.Shorthand
+	case a.ID != "":
+		return a.ID
+	}
+	return "default account"
 }
 
 // filterListed parses `op item list` output, drops skipCategories, and
@@ -236,7 +331,7 @@ func filterListed(list []byte) ([]byte, int, error) {
 // trips, or op exits non-zero, whatever was read stays indexed and the
 // shortfall is recorded on ix — unless nothing at all was read, which is
 // a failed enumeration and returns the error.
-func (r *Resolver) streamItems(bin string, worklist []byte, idle time.Duration, ix *Index, progress func(read, listed int)) error {
+func (r *Resolver) streamItems(bin string, account Account, worklist []byte, idle time.Duration, ix *Index, progress func(read, listed int)) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var stalled atomic.Bool
@@ -244,7 +339,7 @@ func (r *Resolver) streamItems(bin string, worklist []byte, idle time.Duration, 
 	defer watchdog.Stop()
 
 	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, bin, "item", "get", "-", "--format", "json") // #nosec G204 -- bin is signature-verified by bin(); args are fixed literals
+	cmd := exec.CommandContext(ctx, bin, accountArgs(account, "item", "get", "-", "--format", "json")...) // #nosec G204 -- bin is signature-verified by bin(); args are fixed literals plus op's own account id
 	cmd.Stdin = bytes.NewReader(worklist)
 	cmd.Stderr = &stderr
 	cmd.WaitDelay = time.Second
@@ -256,9 +351,11 @@ func (r *Resolver) streamItems(bin string, worklist []byte, idle time.Duration, 
 		return fmt.Errorf("op item get failed: %v", err)
 	}
 
+	read := 0
 	decodeErr := decodeItems(stdout, func(it opItem) {
 		watchdog.Reset(idle)
-		ix.add(it)
+		read++
+		ix.add(it, account.ID)
 		if progress != nil {
 			progress(ix.read, ix.listed)
 		}
@@ -283,10 +380,16 @@ func (r *Resolver) streamItems(bin string, worklist []byte, idle time.Duration, 
 			detail = waitErr.Error()
 		}
 	}
-	if ix.read == 0 {
+	if read == 0 {
 		return fmt.Errorf("op item get failed: %s", detail)
 	}
-	ix.incomplete = detail
+	if ix.incomplete != "" {
+		ix.incomplete += "; "
+	}
+	if account.ID != "" {
+		detail = accountLabel(account) + ": " + detail
+	}
+	ix.incomplete += detail
 	return nil
 }
 
@@ -333,12 +436,13 @@ func peekNonSpace(br *bufio.Reader) (byte, error) {
 	}
 }
 
-// add indexes one item's concealed fields. A value present in several
-// fields settles on the lowest (vault id, item id, first field) — the
-// choice is cosmetic (same value, same secret), but it must not change
-// between runs of the same vault state, and the stream's own order is
-// op's to change.
-func (ix *Index) add(it opItem) {
+// add indexes one item's concealed fields, pinning each reference to
+// accountID ("" for an unpinned pass). A value present in several fields
+// settles on the lowest (vault id, item id, first field) — the choice is
+// cosmetic (same value, same secret), but it must not change between
+// runs of the same vault state, and the stream's own order is op's to
+// change.
+func (ix *Index) add(it opItem, accountID string) {
 	ix.read++
 	for _, f := range it.Fields {
 		if f.Type != "CONCEALED" || len(f.Value) < MinLinkableValueLen {
@@ -357,7 +461,7 @@ func (ix *Index) add(it opItem) {
 		}
 		ix.byHash[sum] = indexed{
 			IndexEntry: IndexEntry{
-				IDRef:   fmt.Sprintf("op://%s/%s/%s", it.Vault.ID, it.ID, f.ID),
+				IDRef:   PinAccount(fmt.Sprintf("op://%s/%s/%s", it.Vault.ID, it.ID, f.ID), accountID),
 				NameRef: name,
 			},
 			vaultID: it.Vault.ID,

@@ -24,6 +24,18 @@ var (
 	vaultLinkNoVerify bool
 )
 
+// vaultLinkPin is the trial resolve: it proves the reference resolves and
+// returns it pinned to the account it resolved in (onepassword.Pin), so
+// the link keeps resolving there whatever account op defaults to later.
+// A var so tests can drive the command past it without a real op; the
+// vault opener is a var for the same reason (no Touch ID in tests).
+var (
+	vaultLinkPin = func(ref string) (string, error) {
+		return onepassword.New().Pin(ref)
+	}
+	vaultLinkOpen = openVaultFreshAuth
+)
+
 var vaultLinkCmd = &cobra.Command{
 	Use:   "link <path> <op://vault/item/field>",
 	Short: "Store a 1Password reference instead of a value",
@@ -36,7 +48,10 @@ var vaultLinkCmd = &cobra.Command{
 		"Reference). Item and vault IDs also work in place of names and survive\n" +
 		"renames.\n\n" +
 		"The link is test-resolved through `op` first, so a typo or a signed-out\n" +
-		"CLI fails here, not at first use; --no-verify skips that (offline setup).\n" +
+		"CLI fails here, not at first use, and the reference is pinned to the\n" +
+		"1Password account it resolved in, so a Mac signed in to several keeps\n" +
+		"resolving it there whichever account op last used. --no-verify skips\n" +
+		"both (offline setup): the link then follows op's default account.\n" +
 		"Requires the 1Password CLI (`brew install 1password-cli`) with the\n" +
 		"desktop app integration on.\n\n" +
 		"First use in a terminal session may show two prompts: jit's Touch ID\n" +
@@ -71,16 +86,18 @@ var vaultLinkCmd = &cobra.Command{
 			// and nothing on screen says which prompt belongs to whom.
 			// stderr, so stdout stays byte-clean for pipes.
 			fmt.Fprintln(cmd.ErrOrStderr(), "checking with 1Password (its prompt may appear)...")
-			if _, err := onepassword.New().ResolveRef(ref); err != nil {
+			pinned, err := vaultLinkPin(ref)
+			if err != nil {
 				return fmt.Errorf("jit vault link: %w (use --no-verify to link anyway)", err)
 			}
+			ref = pinned
 		}
 
 		// Fresh auth on every sensitive vault command, never the cached
 		// agent session — writing a pointer is writing a secret: whoever
 		// controls the reference controls what every consumer of this path
 		// receives.
-		v, err := openVaultFreshAuth()
+		v, err := vaultLinkOpen()
 		if err != nil {
 			return fmt.Errorf("jit vault link: %w", err)
 		}

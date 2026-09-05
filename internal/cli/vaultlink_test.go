@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jitpass/jit/internal/vault"
 )
 
 // TestVaultLinkRejectsBadReferenceBeforeAnythingElse confirms a malformed
@@ -58,5 +60,43 @@ func TestVaultLinkTrialResolveFailsClosedOnAnUnsignedOp(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--no-verify") {
 		t.Errorf("error does not offer --no-verify: %v", err)
+	}
+}
+
+// TestVaultLinkStoresThePinnedReference: the trial resolve hands back the
+// reference pinned to the account it resolved in, and THAT is what gets
+// stored — not the bare reference the user typed.
+func TestVaultLinkStoresThePinnedReference(t *testing.T) {
+	prevPin, prevOpen := vaultLinkPin, vaultLinkOpen
+	t.Cleanup(func() { vaultLinkPin, vaultLinkOpen = prevPin, prevOpen })
+	var pinnedWith string
+	vaultLinkPin = func(ref string) (string, error) {
+		pinnedWith = ref
+		return ref + "?account=ACC1", nil
+	}
+	withFixtureHome(t)
+	root, err := vaultRootDir()
+	if err != nil {
+		t.Fatalf("vaultRootDir: %v", err)
+	}
+	v := &vault.Vault{Root: root, KeyWrapper: newFakeKeyWrapper(), RecipientID: "test-device"}
+	vaultLinkOpen = func() (*vault.Vault, error) { return v, nil }
+
+	vaultLinkYes, vaultLinkNoVerify = true, false
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetArgs([]string{"vault", "link", "svc/TOKEN", "op://vaultid/itemid/fieldid"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("vault link: %v", err)
+	}
+	if pinnedWith != "op://vaultid/itemid/fieldid" {
+		t.Errorf("trial resolve got %q, want the reference as typed", pinnedWith)
+	}
+	stored, storage, err := v.GetStored("svc/TOKEN")
+	if err != nil {
+		t.Fatalf("GetStored: %v", err)
+	}
+	if storage != vault.StorageOpRef || string(stored) != "op://vaultid/itemid/fieldid?account=ACC1" {
+		t.Errorf("stored (%q, %q), want the pinned reference as a link", stored, storage)
 	}
 }
