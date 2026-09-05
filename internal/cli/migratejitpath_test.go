@@ -135,3 +135,27 @@ func TestMigrateNamedArtifactWithDurablePathIsQuiet(t *testing.T) {
 		t.Errorf("a durable path was planned for refresh:\n%s", out)
 	}
 }
+
+// A refresh-only run stores nothing, so nothing that exists to serve
+// stored values may run: no 1Password announcement (and so no inventory
+// after [y/N] — the step that cost a user minutes on a one-line rewrite).
+func TestRefreshOnlyRunNeverConsults1Password(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	stubDurableJitPath(t, "/opt/homebrew/bin/jit", nil)
+	withOpInstalled(t, true)
+	writeArtifact(t, migrate.KubeconfigPath(home), staleKubeconfig)
+
+	out, err := execMigrate(t, migrate.KubeconfigPath(home), "--dry-run")
+	if err != nil {
+		t.Fatalf("jit migrate ~/.kube/config --dry-run: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[recorded jit path] 1") {
+		t.Fatalf("expected the refresh row:\n%s", out)
+	}
+	for _, phrase := range []string{"1Password CLI detected", "checking 1Password"} {
+		if strings.Contains(out, phrase) {
+			t.Errorf("a run that vaults nothing printed %q:\n%s", phrase, out)
+		}
+	}
+}
