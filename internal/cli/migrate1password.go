@@ -153,9 +153,9 @@ func (d *opDedupe) print(w io.Writer) {
 
 // printOpLinkResult renders the 1Password dedupe outcome. Four cases: the
 // check failed (one amber note — the run continued with copies, fail
-// open); op was never consulted (silence: every value was under the
-// floor or a verbatim reference, and there is no 1Password outcome to
-// report); the check ran and nothing matched (the header with its
+// open); op was never consulted and nothing linked (silence: every value
+// was under the floor, and there is no 1Password outcome to report); the
+// check ran and nothing matched (the header with its
 // counts, so a user who just waited through the enumeration — and
 // possibly answered 1Password's prompt — sees that it ran, what it
 // covered, and that copies were the honest result); or N linked (the
@@ -170,12 +170,17 @@ func printOpLinkResult(w io.Writer, linked []opLinkedRow, offered int, stats opC
 		fmt.Fprintln(w)
 		return
 	}
-	if !stats.ran {
+	if !stats.ran && len(linked) == 0 {
 		return
 	}
-	items := countWord(stats.read, "item", "items") + " checked"
-	if stats.read < stats.listed {
+	// Verbatim op:// values link without an enumeration; the header must
+	// not claim items were checked when none were.
+	items := "1Password not consulted"
+	switch {
+	case stats.ran && stats.read < stats.listed:
 		items = fmt.Sprintf("%d of %d items read", stats.read, stats.listed)
+	case stats.ran:
+		items = countWord(stats.read, "item", "items") + " checked"
 	}
 	printMigrateResultCategoryLabel(w, fmt.Sprintf("%d of %d linked, not copied · %s", len(linked), offered, items))
 	if stats.incomplete != "" {

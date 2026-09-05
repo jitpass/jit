@@ -266,13 +266,30 @@ func TestPrintOpLinkResultSkipNote(t *testing.T) {
 	}
 }
 
-// op never consulted (every value under the floor, or verbatim): there is
-// no 1Password outcome, so nothing prints.
+// op never consulted (every value under the floor) and nothing linked:
+// there is no 1Password outcome, so nothing prints.
 func TestPrintOpLinkResultSilentWhenNeverConsulted(t *testing.T) {
 	var buf bytes.Buffer
 	printOpLinkResult(&buf, nil, 12, opCheckStats{}, "")
 	if buf.Len() != 0 {
 		t.Errorf("a run that never consulted op must print nothing, got:\n%s", buf.String())
+	}
+}
+
+// A verbatim op:// value links with no enumeration at all (found live:
+// the lazy path skipped op, and the block that names the link went with
+// it). The block prints, and its header must not claim items checked.
+func TestPrintOpLinkResultVerbatimLinksWithoutEnumeration(t *testing.T) {
+	var buf bytes.Buffer
+	printOpLinkResult(&buf, []opLinkedRow{{path: "app/REF", ref: "op://Personal/X/field"}}, 3, opCheckStats{}, "")
+	out := buf.String()
+	for _, want := range []string{"[1Password] 1 of 3 linked, not copied · 1Password not consulted", "app/REF", "Rotate these"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q, got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "items checked") {
+		t.Errorf("header claims items were checked with no enumeration:\n%s", out)
 	}
 }
 
