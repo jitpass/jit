@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jitpass/jit/internal/profile"
 )
@@ -196,6 +197,7 @@ func TestApplyAWSProfileWithExpirationStamp(t *testing.T) {
 	if err != nil || string(got) != "2026-07-29T19:00:11Z" {
 		t.Errorf("EXPIRATION = (%q, %v), want (2026-07-29T19:00:11Z, nil)", got, err)
 	}
+	assertSessionStamp(t, v, "aws-prod", time.Date(2026, 7, 29, 19, 0, 11, 0, time.UTC).Unix())
 	credRaw, err := os.ReadFile(AWSCredentialsPath(home)) // #nosec G304 -- test-controlled path
 	if err != nil {
 		t.Fatalf("reading rewritten credentials: %v", err)
@@ -448,6 +450,7 @@ func TestStoreAWSSessionFreshWiring(t *testing.T) {
 			t.Errorf("%s = (%q, %v), want (%q, nil)", path, got, err, want)
 		}
 	}
+	assertSessionStamp(t, v, "aws-prod", time.Date(2026, 7, 29, 19, 0, 11, 0, time.UTC).Unix())
 
 	configRaw, err := os.ReadFile(AWSConfigPath(home)) // #nosec G304 -- test-controlled path
 	if err != nil {
