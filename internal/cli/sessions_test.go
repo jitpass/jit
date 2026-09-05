@@ -5,6 +5,9 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -169,5 +172,63 @@ func TestParseClissoArgsStatus(t *testing.T) {
 		if inv.sub != tc.sub || inv.explicitRead != tc.explicitRead {
 			t.Errorf("parseClissoArgs(%v) = sub %q explicitRead %v, want %q %v", tc.args, inv.sub, inv.explicitRead, tc.sub, tc.explicitRead)
 		}
+	}
+}
+
+// End to end against a real (read-only) vault: a wrapped ~/.clisso.yaml,
+// a captured session whose envelope carries the stamp, and `clisso
+// status` answered from the vault without ever decrypting — the envelope
+// here has a junk payload that could never open, which is the proof.
+func TestClissoStatusFromVault(t *testing.T) {
+	home := withFixtureHome(t)
+	writeClissoConfig := func(body string) {
+		if err := os.WriteFile(filepath.Join(home, ".clisso.yaml"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeClissoConfig("apps:\n  stage:\n    app-id: \"1\"\n  prod:\n    app-id: \"2\"\nproviders:\n  acme:\n    client-secret: jit://vault/wrap-clisso/acme-client-secret\n")
+	wrapped, err := clissoConfigWrapped()
+	if err != nil || !wrapped {
+		t.Fatalf("clissoConfigWrapped = %v, %v; want true, nil", wrapped, err)
+	}
+
+	expires := sessionNow.Add(9*time.Hour + 11*time.Minute).Unix()
+	plant := func(profile string, stamp int64) {
+		writeVaultEnc(t, home, profile+"/EXPIRATION",
+			fmt.Sprintf(`{"version":5,"expires_unix":%d,"origin":"~/.clisso.yaml","recipients":{"test":"00"},"payload":"00"}`, stamp))
+		dir := filepath.Join(home, ".jit", "profiles")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		manifest := fmt.Sprintf("ACCESS_KEY_ID: %s/ACCESS_KEY_ID\nEXPIRATION: %s/EXPIRATION\n", profile, profile)
+		if err := os.WriteFile(filepath.Join(dir, profile+".yaml"), []byte(manifest), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plant("aws-stage", expires)
+	plant("aws-prod", sessionNow.Add(-time.Hour).Unix()) // expired: not listed
+	plant("aws-other", expires)                          // not an app clisso defines: not listed
+
+	var stdout, stderr bytes.Buffer
+	if err := runClissoStatus(&stdout, &stderr, sessionNow); err != nil {
+		t.Fatalf("runClissoStatus: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "| stage | "+sessionClock(expires)+" | 9h11m     |") {
+		t.Errorf("stdout = %q, want the stage row with its date", stdout.String())
+	}
+	for _, absent := range []string{"prod", "other"} {
+		if strings.Contains(stdout.String(), absent) {
+			t.Errorf("stdout lists %q, which must not appear:\n%s", absent, stdout.String())
+		}
+	}
+	if !strings.HasPrefix(stderr.String(), "jit: answered from the vault") {
+		t.Errorf("stderr = %q, want jit's attribution line", stderr.String())
+	}
+
+	// A config with no pointer is not the wrap's: clisso's own status
+	// must answer, so the shim must not intercept.
+	writeClissoConfig("apps:\n  stage:\n    app-id: \"1\"\nproviders:\n  acme:\n    client-secret: plaintext\n")
+	if wrapped, err := clissoConfigWrapped(); err != nil || wrapped {
+		t.Errorf("clissoConfigWrapped on an unwrapped config = %v, %v; want false, nil", wrapped, err)
 	}
 }

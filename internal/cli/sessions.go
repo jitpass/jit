@@ -47,9 +47,7 @@ func sessionsStatusFrom(sessions []migrate.Session, clissoApps map[string]bool, 
 			Live:             s.Live(now),
 			RemainingSeconds: int64(s.Remaining(now).Seconds()),
 		}
-		if app := sessionApp(s.Profile); clissoApps[app] {
-			entry.Mint = "clisso get " + app
-		}
+		entry.Mint = clissoMint(s.Profile, clissoApps)
 		out = append(out, entry)
 	}
 	return out
@@ -59,6 +57,16 @@ func sessionsStatusFrom(sessions []migrate.Session, clissoApps map[string]bool, 
 // stores "aws-<app>", and `clisso get <app>` is what mints it again.
 func sessionApp(profile string) string {
 	return strings.TrimPrefix(profile, "aws-")
+}
+
+// clissoMint is the command that mints profile afresh when its app is one
+// clissoApps (what ~/.clisso.yaml defines) knows, "" otherwise: jit names a
+// command only when it can be sure which tool the session belongs to.
+func clissoMint(profile string, clissoApps map[string]bool) string {
+	if app := sessionApp(profile); clissoApps[app] {
+		return "clisso get " + app
+	}
+	return ""
 }
 
 // sessionClock renders an expiry as a full local date and time. Not the
@@ -83,9 +91,9 @@ func atomicClause(s string) string { return strings.ReplaceAll(s, " ", clauseSpa
 // to offer — a session exists only once a wrapped SSO tool has minted one.
 //
 // The glyph carries the rollup (all live, some expired, all expired); each
-// session gets one clause; the action names the mint command when the
-// origin says which tool that is, and stays silent otherwise rather than
-// guess.
+// session gets one clause; the action names the mint command for every
+// expired session that has one (sessionsStatusFrom sets it from clisso's
+// own app list), and stays silent otherwise rather than guess.
 func printSessionsSection(w io.Writer, sessions []statusSession, now time.Time) {
 	if len(sessions) == 0 {
 		return
