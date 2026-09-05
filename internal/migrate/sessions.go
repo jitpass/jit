@@ -4,7 +4,6 @@
 package migrate
 
 import (
-	"fmt"
 	"sort"
 	"time"
 
@@ -67,10 +66,14 @@ func (s Session) Remaining(now time.Time) time.Duration {
 // value, so it never prompts: jit status is prompt-free by design, and
 // this is what lets a session row live on it.
 //
-// The expiry is taken from the EXPIRATION secret's own stamp. A manifest
-// whose EXPIRATION secret is missing from the vault is skipped rather than
-// reported — doctor's [missing] finding already owns that story, and a
-// half-present session is not a session.
+// The expiry is taken from the EXPIRATION secret's own stamp. Best-effort
+// per manifest, like the secrets reconciliation beside it on the
+// dashboard: a manifest that does not parse, or whose EXPIRATION secret is
+// missing from the vault, is skipped rather than reported — the secrets
+// rollup counts the parse failure and doctor's [missing] finding owns the
+// gone secret, and a half-present session is not a session. `jit status`
+// promises to survive an unreadable profile; this listing must not be the
+// one to break that.
 func ListSessions(v *vault.Vault, root string, now time.Time) ([]Session, error) {
 	infos, err := profile.ListAll(root)
 	if err != nil {
@@ -80,7 +83,7 @@ func ListSessions(v *vault.Vault, root string, now time.Time) ([]Session, error)
 	for _, info := range infos {
 		p, err := profile.LoadFile(info.Path)
 		if err != nil {
-			return nil, fmt.Errorf("reading profile %s: %w", info.Path, err)
+			continue
 		}
 		secretPath, ok := p["EXPIRATION"]
 		if !ok || secretPath == "" {

@@ -35,6 +35,10 @@ type statusResult struct {
 	Agent   statusAgent   `json:"agent"`
 	Secrets statusSecrets `json:"secrets"`
 	Mounts  statusMounts  `json:"mounts"`
+	// Sessions are the vaulted temporary credentials with a known end (a
+	// wrapped SSO tool's mints) — the "is the morning's login still good"
+	// row. Metadata only, like everything else here: never a decrypt.
+	Sessions []statusSession `json:"sessions,omitempty"`
 }
 
 // statusCLI identifies the jit binary answering this very command — the
@@ -239,6 +243,10 @@ var statusCmd = &cobra.Command{
 		"original copy behind, and those leftovers are usually the bulk of what " +
 		"jit vault orphans would prune. Key names are compared, never values, since " +
 		"status never decrypts.\n\n" +
+		"A sessions row appears once a wrapped SSO tool (jit wrap clisso) has minted " +
+		"temporary credentials into the vault: each with its expiry, so the morning's " +
+		"login can be checked without re-running it. Read from envelope metadata, so " +
+		"this too never prompts.\n\n" +
 		"--format json prints a machine-readable snapshot instead of the default " +
 		"text report, in the same shape jit service status/vault list/doctor's own " +
 		"--format json use for their overlapping sections.",
@@ -283,13 +291,19 @@ var statusCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit status: reading mount registry: %w", err)
 		}
+		now := time.Now()
+		sessions, err := migrate.ListSessions(v, cwd, now)
+		if err != nil {
+			return fmt.Errorf("jit status: listing sessions: %w", err)
+		}
 
 		result := statusResult{
-			CLI:     statusCLI{Version: agent.Version(), Build: agent.BuildID()},
-			Vault:   vaultStatus,
-			Agent:   agentStatus,
-			Secrets: secretsStatusFrom(rec, statusSecretsDetail),
-			Mounts:  mountStatus,
+			CLI:      statusCLI{Version: agent.Version(), Build: agent.BuildID()},
+			Vault:    vaultStatus,
+			Agent:    agentStatus,
+			Secrets:  secretsStatusFrom(rec, statusSecretsDetail),
+			Mounts:   mountStatus,
+			Sessions: sessionsStatusFrom(sessions, clissoApps(), now),
 		}
 		if statusFormat == "json" {
 			return writeJSON(cmd.OutOrStdout(), result)
@@ -675,6 +689,7 @@ func printStatusText(w io.Writer, r statusResult) {
 	}
 
 	printGrantsSection(w, r)
+	printSessionsSection(w, r.Sessions, time.Now())
 }
 
 // printGrantsSection reports the live process grants, and is where `jit grant`

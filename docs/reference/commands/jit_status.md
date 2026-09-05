@@ -10,6 +10,8 @@ The Secrets section reconciles the vault against the profiles jit can see: every
 
 An unreferenced group holding the same key names as a group still in use is called out as such: usually a second migration renamed the group and left the original copy behind, and those leftovers are usually the bulk of what jit vault orphans would prune. Key names are compared, never values, since status never decrypts.
 
+A sessions row appears once a wrapped SSO tool (jit wrap clisso) has minted temporary credentials into the vault: each with its expiry, so the morning's login can be checked without re-running it. Read from envelope metadata, so this too never prompts.
+
 --format json prints a machine-readable snapshot instead of the default text report, in the same shape jit service status/vault list/doctor's own --format json use for their overlapping sections.
 
 ```
