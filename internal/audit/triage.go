@@ -2042,7 +2042,7 @@ type manualContext struct {
 // are read as a list — the sentence that explains the fix is the arrow line
 // under the group, printed once for all of it.
 const (
-	kindTrash          = "empty the trash"
+	kindTrash          = "finish the deletion"
 	kindIAMKey         = "rotate in IAM, then delete the file"
 	kindArchived       = "name the file — the sweep skips archived folders"
 	kindPassphrase     = "add a passphrase"
