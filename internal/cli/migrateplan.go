@@ -109,6 +109,7 @@ func printMigratePlan(w io.Writer, home string, d *discovered, extras *planExtra
 	// "~"-shortened copy would never match them.
 	mcpScoped, mcpFixed := splitMCPByScope(home, d.mcpConfigs)
 	npmrcScoped, npmrcFixed := splitNpmrcByScope(home, d.npmrcFiles)
+	streamlitScoped, streamlitFixed := splitStreamlitByScope(home, d.streamlitFiles)
 
 	shorten := func(items []string) []string {
 		out := make([]string, len(items))
@@ -125,8 +126,8 @@ func printMigratePlan(w io.Writer, home string, d *discovered, extras *planExtra
 		mcpOriginal[shorten([]string{p})[0]] = p
 	}
 
-	hasScoped := len(d.envFiles) > 0 || len(d.tfvarsFiles) > 0 || len(d.k8sManifests) > 0 || len(mcpScoped) > 0 || len(npmrcScoped) > 0 || len(d.looseSecretFiles) > 0
-	hasFixed := len(d.shellConfigs) > 0 || len(d.historyFiles) > 0 || len(mcpFixed) > 0 || len(d.awsProfiles) > 0 || len(d.k8sUsers) > 0 || len(d.terraformHosts) > 0 || len(d.dockerRegistries) > 0 || len(d.gitHosts) > 0 || len(d.gcpADCFiles) > 0 || len(d.sopsAgeFiles) > 0 || len(npmrcFixed) > 0 || len(d.netrcFiles) > 0 || len(d.pypircFiles) > 0 || len(d.jitPaths) > 0
+	hasScoped := len(d.envFiles) > 0 || len(d.tfvarsFiles) > 0 || len(d.k8sManifests) > 0 || len(mcpScoped) > 0 || len(npmrcScoped) > 0 || len(streamlitScoped) > 0 || len(d.looseSecretFiles) > 0
+	hasFixed := len(d.shellConfigs) > 0 || len(d.historyFiles) > 0 || len(mcpFixed) > 0 || len(d.awsProfiles) > 0 || len(d.k8sUsers) > 0 || len(d.terraformHosts) > 0 || len(d.dockerRegistries) > 0 || len(d.gitHosts) > 0 || len(d.gcpADCFiles) > 0 || len(d.sopsAgeFiles) > 0 || len(npmrcFixed) > 0 || len(d.netrcFiles) > 0 || len(d.pypircFiles) > 0 || len(d.cargoRegistries) > 0 || len(streamlitFixed) > 0 || len(d.jitPaths) > 0
 
 	if hasScoped {
 		// The annotation callback below is handed the display-shortened path,
@@ -200,6 +201,9 @@ func printMigratePlan(w io.Writer, home string, d *discovered, extras *planExtra
 		printMigratePlanCategory(w,
 			pluralWord(len(npmrcScoped), "npmrc file", "npmrc files")+" "+glyphAction+" secrets move to the vault; the file keeps working via a live, auto-updating mount",
 			shorten(npmrcScoped))
+		printMigratePlanCategoryAnnotated(w,
+			pluralWord(len(streamlitScoped), "Streamlit secrets file", "Streamlit secrets files")+" "+glyphAction+" credentials move to the vault; the file keeps working via a live, auto-updating mount (other settings untouched)",
+			shorten(streamlitScoped), streamlitPlanAnnotation(home))
 		looseName := pluralWord(len(d.looseSecretFiles), "loose secret file", "loose secret files")
 		looseHeadline := looseName + " " + glyphAction + " the whole file is a bare token; it moves to the vault and the file is replaced with a git-safe pointer (retrieve with `jit vault get`)"
 		if migrateMount {
@@ -305,6 +309,14 @@ func printMigratePlan(w io.Writer, home string, d *discovered, extras *planExtra
 		printMigratePlanCategory(w,
 			pluralWord(len(d.pypircFiles), "~/.pypirc credential", "~/.pypirc credentials")+" "+glyphAction+" secrets move to the vault; the file keeps working via a live, auto-updating mount (repository/username lines untouched)",
 			shorten(d.pypircFiles))
+		// Cargo items are registry NAMES like terraform's hosts — nothing
+		// to shorten.
+		printMigratePlanCategory(w,
+			pluralWord(len(d.cargoRegistries), "cargo registry token", "cargo registry tokens")+" in ~/.cargo/credentials.toml "+glyphAction+" "+pluralWord(len(d.cargoRegistries), "the token moves", "tokens move")+" to the vault; fetched automatically whenever cargo needs "+pluralWord(len(d.cargoRegistries), "it", "them")+" (cargo login/logout keep working)",
+			d.cargoRegistries)
+		printMigratePlanCategoryAnnotated(w,
+			pluralWord(len(streamlitFixed), "Streamlit secrets file", "Streamlit secrets files")+" "+glyphAction+" credentials move to the vault; the file keeps working via a live, auto-updating mount (other settings untouched)",
+			shorten(streamlitFixed), streamlitPlanAnnotation(home))
 
 		// --only filters by CATEGORY, not by this scoped/machine-wide
 		// split — selecting "mcp" or "npmrc" always pulls in their own
@@ -335,7 +347,7 @@ func printMigratePlan(w io.Writer, home string, d *discovered, extras *planExtra
 	printPlanExtras(w, home, extras)
 
 	categories, total := 0, 0
-	for _, items := range [][]string{d.envFiles, d.tfvarsFiles, d.k8sManifests, d.shellConfigs, d.historyFiles, d.mcpConfigs, d.awsProfiles, d.k8sUsers, d.terraformHosts, d.dockerRegistries, d.gitHosts, d.gcpADCFiles, d.sopsAgeFiles, d.npmrcFiles, d.netrcFiles, d.pypircFiles, d.looseSecretFiles} {
+	for _, items := range [][]string{d.envFiles, d.tfvarsFiles, d.k8sManifests, d.shellConfigs, d.historyFiles, d.mcpConfigs, d.awsProfiles, d.k8sUsers, d.terraformHosts, d.dockerRegistries, d.gitHosts, d.gcpADCFiles, d.sopsAgeFiles, d.npmrcFiles, d.netrcFiles, d.pypircFiles, d.cargoRegistries, d.streamlitFiles, d.looseSecretFiles} {
 		if len(items) > 0 {
 			categories++
 		}
@@ -424,6 +436,40 @@ func splitMCPByScope(home string, mcpConfigs []string) (scoped, fixed []string) 
 func splitNpmrcByScope(home string, npmrcFiles []string) (scoped, fixed []string) {
 	globalPath := migrate.GlobalNpmrcPath(home)
 	for _, path := range npmrcFiles {
+		if path == globalPath {
+			fixed = append(fixed, path)
+		} else {
+			scoped = append(scoped, path)
+		}
+	}
+	return scoped, fixed
+}
+
+// streamlitPlanAnnotation counts each secrets.toml's migratable
+// credentials for the plan row, the same per-file number the .env rows
+// carry. The callback receives the display-shortened path, so it expands
+// "~" back through home; best-effort — an unreadable file annotates as
+// nothing, never fails the plan.
+func streamlitPlanAnnotation(home string) func(string) string {
+	return func(item string) string {
+		path := item
+		if strings.HasPrefix(path, "~/") {
+			path = filepath.Join(home, path[2:])
+		}
+		n, err := migrate.StreamlitFilePreview(path)
+		if err != nil || n == 0 {
+			return ""
+		}
+		return countWord(n, "credential", "credentials")
+	}
+}
+
+// splitStreamlitByScope separates the global ~/.streamlit/secrets.toml
+// from any project-scoped .streamlit/secrets.toml findings in the same
+// DiscoverStreamlitSecrets result — same reasoning as splitNpmrcByScope.
+func splitStreamlitByScope(home string, streamlitFiles []string) (scoped, fixed []string) {
+	globalPath := migrate.StreamlitGlobalPath(home)
+	for _, path := range streamlitFiles {
 		if path == globalPath {
 			fixed = append(fixed, path)
 		} else {

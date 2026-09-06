@@ -75,7 +75,9 @@ $ jit scan ./my-project token.txt
   (`.env` files, IaC variable files, MCP configs), and
   skips the usual noise directories (`node_modules`, `.git`, …).
 - A **file you name** is classified regardless of what it's called. A
-  shell/`.env`/MCP/IaC file is routed to its scanner; a private key is detected
+  shell/`.env`/MCP/IaC file is routed to its scanner (so are a
+  `.streamlit/secrets.toml` and cargo's own credential files, whose tokens
+  the generic sweep would miss); a private key is detected
   by its contents; and anything else is swept for known vendor tokens and JWTs.
   That last part is why `jit scan token.txt` catches a bare token that the
   whole-machine scan's naming rules would never look at.

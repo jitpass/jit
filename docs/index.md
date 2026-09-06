@@ -49,6 +49,7 @@ then **[Install](./getting-started/install.md)** →
   [shell history](./migrate/shell-history.md) · [AWS](./migrate/aws.md) ·
   [Kubernetes](./migrate/kubernetes.md) · [Terraform](./migrate/terraform.md) ·
   [GCP](./migrate/gcp.md) · [npm](./migrate/npm.md) · [PyPI](./migrate/pypi.md) ·
+  [Cargo](./migrate/cargo.md) · [Streamlit](./migrate/streamlit.md) ·
   [netrc](./migrate/netrc.md) · [SOPS](./migrate/sops.md) · [MCP / AI tools](./migrate/mcp.md)
 - [Undo, unmount, and remove](./migrate/undo-and-remove.md) - every change is reversible
 

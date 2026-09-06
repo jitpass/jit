@@ -20,22 +20,24 @@ With arguments, discovery is scoped to the targets you name (plus the
 agent-cache sweep described below). Each target is resolved on its own:
 
   A file       is routed to the right category by what it is. A project file
-               (.env, *.tfvars, mcp.json/.mcp.json, .npmrc) has its secrets
+               (.env, *.tfvars, mcp.json/.mcp.json, .npmrc,
+               .streamlit/secrets.toml) has its secrets
                moved into a profile and the vault, the file keeps working as a
                live mount (a git-safe <file>.pointers companion is written
                alongside). A machine-wide file at a known path (a shell config
                like ~/.zshrc, a shell history file like ~/.zsh_history,
                ~/.aws/credentials, ~/.kube/config, Terraform Cloud creds,
-               ~/.docker/config.json, ~/.git-credentials, GCP
+               ~/.docker/config.json, ~/.git-credentials, ~/.cargo/credentials.toml, GCP
                application-default credentials, a SOPS age key, ~/.netrc,
                ~/.pypirc, Claude Desktop's MCP config, Claude Code's
-               ~/.claude.json, the global ~/.npmrc)
+               ~/.claude.json, the global ~/.npmrc, the global
+               ~/.streamlit/secrets.toml)
                is routed to that credential type's handling
                (credential_process, exec plugin, credential helper, live
                mount, or in-place redaction for a history file, where each
                recorded credential moves to the vault and the line keeps
                its shape, minus the secret).
-  A directory  is walked for its .env/tfvars/mcp/npmrc findings only, never
+  A directory  is walked for its .env/tfvars/mcp/npmrc/streamlit findings only, never
                the machine-wide fixed-path files (those aren't "under" any
                project directory) — name them explicitly to convert them.
 
@@ -86,7 +88,7 @@ jit migrate <file-or-dir>... [flags]
       --dry-run        preview the plan without changing anything
       --mount          for a loose secret file, keep it live at its path as a mount (real value to jit run grants, a decoy otherwise) instead of replacing it with a pointer; also required to protect a file that mixes a secret with other content
       --no-1password   store plain copies even when a value already lives in 1Password (default: matching values are vaulted as op:// references)
-      --only strings   scope a run to just these comma-separated categories: env,tfvars,k8s-secret,shell,history,mcp,aws,kube,terraform,docker,git,gcp,sops,npmrc,netrc,pypirc,loose,cache (default: all)
+      --only strings   scope a run to just these comma-separated categories: env,tfvars,k8s-secret,shell,history,mcp,aws,kube,terraform,docker,git,gcp,sops,npmrc,netrc,pypirc,cargo,streamlit,loose,cache (default: all)
   -y, --yes            skip the confirmation prompt and proceed immediately
 ```
 

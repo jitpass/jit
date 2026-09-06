@@ -42,7 +42,7 @@ func TestAnnotateRemedies(t *testing.T) {
 		{FindingType: FindingTypeWrappableCLIToken, FilePath: filepath.Join(home, ".config/gh/hosts.yml"),
 			Remedy: RemedyWrap, FixCommand: "jit wrap gh", KeyName: str("oauth_token")},
 	}
-	annotateRemedies(findings, home, nil)
+	annotateRemedies(findings, home, nil, nil)
 
 	want := []struct {
 		remedy, fixContains string
@@ -387,6 +387,61 @@ data:
 	}
 
 	okFinding := find(Config{HomeDir: home, K8sMigratable: func(string) (string, bool) { return "", true }})
+	if okFinding.Remedy != RemedyMigrate || okFinding.FixCommand == "" {
+		t.Errorf("ok verdict: remedy=%q fix=%q, want migrate with a FixCommand", okFinding.Remedy, okFinding.FixCommand)
+	}
+
+	nilHook := find(Config{HomeDir: home})
+	if nilHook.Remedy != RemedyMigrate {
+		t.Errorf("nil hook must keep the pre-hook optimistic remedy, got %q", nilHook.Remedy)
+	}
+}
+
+// TestStreamlitMigratableHookFlipsUnrewritableFiles: Config.
+// StreamlitMigratable is how scan stops promising a secrets.toml whose
+// every flagged value falls outside migrate's stricter rewritable shape
+// (single-line quoted string, no escapes) — the same D5 rule
+// K8sMigratable enforces for Secret manifests.
+func TestStreamlitMigratableHookFlipsUnrewritableFiles(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "proj", ".streamlit")
+	mkdirAll(t, dir)
+	secrets := filepath.Join(dir, "secrets.toml")
+	writeFile(t, secrets, "db_password = \"Tr0ub4dor3xKq9ZmPq2Lr\"\n")
+
+	find := func(cfg Config) Finding {
+		t.Helper()
+		findings, _, err := TargetedScan(cfg, []string{secrets})
+		if err != nil {
+			t.Fatalf("TargetedScan: %v", err)
+		}
+		for _, f := range findings {
+			if f.FindingType == FindingTypeCredentialFile {
+				return f
+			}
+		}
+		t.Fatalf("no credential_file finding for the secrets file, got %d findings", len(findings))
+		return Finding{}
+	}
+
+	refused := find(Config{HomeDir: home, StreamlitMigratable: func(path string) (string, bool) {
+		if path != secrets {
+			t.Errorf("hook asked about %q, want %q", path, secrets)
+		}
+		return "its values aren't single-line quoted strings", false
+	}})
+	if refused.Remedy != RemedyManual {
+		t.Errorf("refused file remedy = %q, want %q", refused.Remedy, RemedyManual)
+	}
+	if !strings.Contains(refused.Evidence, "can't rewrite provably right") ||
+		!strings.Contains(refused.Evidence, "single-line quoted strings") {
+		t.Errorf("refused evidence should carry migrate's reason, got: %q", refused.Evidence)
+	}
+	if refused.FixCommand != "" {
+		t.Errorf("refused file must not carry a FixCommand, got %q", refused.FixCommand)
+	}
+
+	okFinding := find(Config{HomeDir: home, StreamlitMigratable: func(string) (string, bool) { return "", true }})
 	if okFinding.Remedy != RemedyMigrate || okFinding.FixCommand == "" {
 		t.Errorf("ok verdict: remedy=%q fix=%q, want migrate with a FixCommand", okFinding.Remedy, okFinding.FixCommand)
 	}

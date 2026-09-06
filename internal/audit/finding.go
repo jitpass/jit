@@ -691,6 +691,16 @@ type Config struct {
 	// read-only and prompt-free — it runs inside `jit scan`, whose
 	// every mode is strictly read-only.
 	K8sMigratable func(path string) (reason string, ok bool)
+
+	// StreamlitMigratable is K8sMigratable's twin for .streamlit/
+	// secrets.toml findings: migrate's shape rule is deliberately
+	// stricter than this scanner's (only a single-line quoted value with
+	// no escapes rewrites provably right), so a file whose every flagged
+	// value falls outside it must not be promised as `jit migrate <path>`
+	// — the command would answer "nothing to migrate" at a file the
+	// report just flagged. Same contract: read-only, prompt-free, nil
+	// keeps the optimistic pre-hook behavior.
+	StreamlitMigratable func(path string) (reason string, ok bool)
 }
 
 // NewConfig builds a Config for a real run against the actual machine.

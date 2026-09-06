@@ -62,7 +62,7 @@ func TestFixtureNotChargedToLedger(t *testing.T) {
 	}
 
 	findings := []Finding{fixture, real}
-	annotateRemedies(findings, "/Users/alex", nil)
+	annotateRemedies(findings, "/Users/alex", nil, nil)
 	cov := ComputeCoverage("", "", findings)
 	if cov.Exposed != 1 {
 		t.Errorf("exposed = %d, want 1 (the fixture must not inflate the ledger)", cov.Exposed)
