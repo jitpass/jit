@@ -43,7 +43,7 @@ then **[Install](./getting-started/install.md)** →
 
 ## Fix them - `jit migrate`
 
-- [Migrating a project or a single file](./migrate/index.md) - name what to convert, dry runs, safety model, and loose secret files (a bare token in `token.txt`)
+- [Migrating a project or a single file](./migrate/index.md) - name what to convert, dry runs, safety model, loose secret files (a bare token in `token.txt`), and [`--clean`](./migrate/index.md#finishing-deletions---clean) to finish the deletions the scan recommends
 - Per-credential guides: [.env files](./migrate/env-files.md) ·
   [shell configs](./migrate/shell-configs.md) ·
   [shell history](./migrate/shell-history.md) · [AWS](./migrate/aws.md) ·
