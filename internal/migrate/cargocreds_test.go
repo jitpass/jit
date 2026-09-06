@@ -270,3 +270,62 @@ func TestStoreAndForgetCargoToken(t *testing.T) {
 		t.Errorf("second ForgetCargoToken must be a no-op, got %v", err)
 	}
 }
+
+// TestFindCargoTokensAcceptsLiteralStrings pins quote parity with audit:
+// its unquote strips single quotes (a TOML literal string) exactly like
+// double quotes, so migrate accepting only one form would flag-but-refuse
+// a single-quoted token — the D5 divergence this category exists to close.
+func TestFindCargoTokensAcceptsLiteralStrings(t *testing.T) {
+	tokens, err := findCargoTokens(writeTempCargo(t, "[registry]\ntoken = 'cioSingleQuotedTokenQmPl4T'\n"))
+	if err != nil {
+		t.Fatalf("findCargoTokens: %v", err)
+	}
+	if len(tokens) != 1 || tokens[0].Token != "cioSingleQuotedTokenQmPl4T" {
+		t.Errorf("tokens = %+v, want the single-quoted value", tokens)
+	}
+}
+
+// TestApplyCargoRegistryLinksUndoToConfig pins the RestoreWith linkage:
+// jit's provider registered in config.toml OUTRANKS credentials.toml
+// (later wins), so restoring the credentials file alone would be silently
+// ineffective — cargo would keep fetching the stale vault token. The
+// credentials backup must name config.toml as a file that comes back with
+// it, and the config backup names the credentials file(s) in return.
+func TestApplyCargoRegistryLinksUndoToConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	credPath := CargoCredentialPaths(home)[0]
+	writeFile(t, credPath, cargoCredsFixture)
+	writeFile(t, CargoConfigPath(home), "[build]\njobs = 4\n")
+
+	v := newTestVault(t)
+	if _, err := ApplyCargoRegistry(v, home, "work", NewBackupTracker()); err != nil {
+		t.Fatalf("ApplyCargoRegistry: %v", err)
+	}
+
+	recs, err := LoadBackupRecords(v.Root)
+	if err != nil {
+		t.Fatalf("LoadBackupRecords: %v", err)
+	}
+	byPath := map[string]BackupRecord{}
+	for _, r := range LatestBackups(recs) {
+		byPath[r.OriginalPath] = r
+	}
+	absCred, _ := filepath.Abs(credPath)
+	absConfig, _ := filepath.Abs(CargoConfigPath(home))
+
+	credRec, ok := byPath[absCred]
+	if !ok {
+		t.Fatalf("no backup record for %s (have %v)", absCred, byPath)
+	}
+	if len(credRec.RestoreWith) != 1 || credRec.RestoreWith[0] != CargoConfigPath(home) {
+		t.Errorf("credentials RestoreWith = %v, want [%s]", credRec.RestoreWith, CargoConfigPath(home))
+	}
+	configRec, ok := byPath[absConfig]
+	if !ok {
+		t.Fatalf("no backup record for %s", absConfig)
+	}
+	if len(configRec.RestoreWith) != 1 || configRec.RestoreWith[0] != credPath {
+		t.Errorf("config RestoreWith = %v, want [%s]", configRec.RestoreWith, credPath)
+	}
+}

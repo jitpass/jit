@@ -331,6 +331,14 @@ func scanNpmrcFile(path string, cfg Config) ([]Finding, error) {
 const streamlitSecretsDir = ".streamlit"
 const streamlitSecretsFile = "secrets.toml" // #nosec G101 -- a filename, not a credential
 
+// IsStreamlitSecretsPath reports whether path is a Streamlit secrets file
+// — the same two-part gate classifyStreamlitSecrets applies, exported so
+// annotateRemedies (and any consumer of a finding's path) can recognize
+// the category without re-deriving the rule.
+func IsStreamlitSecretsPath(path string) bool {
+	return filepath.Base(path) == streamlitSecretsFile && filepath.Base(filepath.Dir(path)) == streamlitSecretsDir
+}
+
 // classifyStreamlitSecrets is the discovery half for Streamlit's secrets file.
 // Streamlit's own docs call this file "secrets", tell you to gitignore it, and
 // have `st.secrets` read it directly — so unlike a generic .toml, its entire
@@ -603,6 +611,19 @@ func mcpAuthTokenFindings(cfg Config, path string) []Finding {
 var cargoCredentialPaths = [][]string{
 	{".cargo", "credentials.toml"},
 	{".cargo", "credentials"},
+}
+
+// isCargoCredentialsPath reports whether path is one of cargo's two fixed
+// credential files — exact-path, not name-based: a project's own
+// credentials.toml is not cargo's. Exported to the targeted scan via
+// scanTargetFile, which has no fixed-path half of its own.
+func isCargoCredentialsPath(home, path string) bool {
+	for _, rel := range cargoCredentialPaths {
+		if path == filepath.Join(append([]string{home}, rel...)...) {
+			return true
+		}
+	}
+	return false
 }
 
 // scanCargoCredentials reports the crates.io API token (and any alternate

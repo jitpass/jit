@@ -55,5 +55,8 @@ fetch), and the answer never touches disk.
   including precedence, fallback, and login/logout routing - see
   `spike/cargo-credential-provider/FINDINGS.md`.
 - **Undo:** `jit migrate undo ~/.cargo/credentials.toml` restores the
-  original file byte-for-byte from its encrypted backup (and
-  `~/.cargo/config.toml` alongside it).
+  original file byte-for-byte from its encrypted backup, and pulls
+  `~/.cargo/config.toml` back with it automatically. The two are linked on
+  purpose: jit's provider registration outranks the credentials file, so
+  restoring the token without also unregistering the provider would leave
+  cargo still fetching from the vault - a "restored" file nothing reads.

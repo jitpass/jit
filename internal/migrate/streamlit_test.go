@@ -319,3 +319,21 @@ db_password = "Tr0ub4dor3xKq9ZmPq2Lr"
 		t.Errorf("refusal must leave the original file untouched, got %v (err=%v)", info, statErr)
 	}
 }
+
+// TestStreamlitFilePreview is the probe behind audit's StreamlitMigratable
+// hook: a file whose every flagged value is unrewritable must report 0, so
+// scan downgrades it to manual instead of promising `jit migrate <path>`.
+func TestStreamlitFilePreview(t *testing.T) {
+	root := t.TempDir()
+	rewritable := filepath.Join(root, "a", streamlitDirName, streamlitFileName)
+	writeFile(t, rewritable, streamlitFixture)
+	if n, err := StreamlitFilePreview(rewritable); err != nil || n != 3 {
+		t.Errorf("rewritable preview = (%d, %v), want (3, nil)", n, err)
+	}
+
+	unrewritable := filepath.Join(root, "b", streamlitDirName, streamlitFileName)
+	writeFile(t, unrewritable, "password = \"has a \\\" escape Xk92QmPl4Tz\"\n")
+	if n, err := StreamlitFilePreview(unrewritable); err != nil || n != 0 {
+		t.Errorf("unrewritable preview = (%d, %v), want (0, nil)", n, err)
+	}
+}
