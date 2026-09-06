@@ -785,7 +785,7 @@ providers:
 	// finding), and annotateRemedies must respect it — the
 	// selfRotatingCaches entry for this file exists for OTHER findings,
 	// not to override this one.
-	annotateRemedies(findings, home, nil)
+	annotateRemedies(findings, home, nil, nil)
 	f = findings[0]
 	if f.Remedy != RemedyWrap {
 		t.Errorf("Remedy = %q, want %q", f.Remedy, RemedyWrap)
@@ -845,5 +845,49 @@ func TestScanClissoConfigEmptySecretSkipped(t *testing.T) {
 	findings, err = scanClissoConfig(Config{HomeDir: home})
 	if err != nil || len(findings) != 0 {
 		t.Errorf("empty file: got (%d findings, %v), want (0, nil)", len(findings), err)
+	}
+}
+
+// TestTargetedScanReachesCargoCredentials: the machine-wide scan's fixed
+// half owns ~/.cargo/credentials.toml, but a targeted scan has no fixed
+// half — and a cargo token carries no vendor prefix, so the generic sweep
+// reports nothing. Naming the file must route to the cargo scanner (the
+// same reasoning as the explicit ~/.npmrc branch in scanTargetFile).
+func TestTargetedScanReachesCargoCredentials(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, ".cargo"))
+	path := filepath.Join(home, ".cargo", "credentials.toml")
+	writeFile(t, path, "[registry]\ntoken = \"cioTargetedScanTokenQmPl4T\"\n")
+
+	findings, _, err := TargetedScan(Config{HomeDir: home}, []string{path})
+	if err != nil {
+		t.Fatalf("TargetedScan: %v", err)
+	}
+	var got *Finding
+	for i := range findings {
+		if findings[i].FindingType == FindingTypeCredentialFile {
+			got = &findings[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("no credential_file finding for the named cargo file, got %d findings", len(findings))
+	}
+	if got.KeyName == nil || *got.KeyName != "registry/token" {
+		t.Errorf("KeyName = %v, want registry/token", got.KeyName)
+	}
+	// And a project's own credentials.toml is NOT cargo's — exact-path
+	// gate, not name-based.
+	mkdirAll(t, filepath.Join(home, "proj"))
+	other := filepath.Join(home, "proj", "credentials.toml")
+	writeFile(t, other, "[registry]\ntoken = \"cioNotCargoQmPl4TzWhu\"\n")
+	findings, _, err = TargetedScan(Config{HomeDir: home}, []string{other})
+	if err != nil {
+		t.Fatalf("TargetedScan(project file): %v", err)
+	}
+	for _, f := range findings {
+		if f.FindingType == FindingTypeCredentialFile {
+			t.Errorf("project credentials.toml must not classify as cargo's, got %+v", f)
+		}
 	}
 }

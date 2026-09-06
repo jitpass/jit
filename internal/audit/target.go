@@ -80,7 +80,7 @@ func TargetedScan(cfg Config, targets []string) ([]Finding, ScanSummary, error) 
 	// be handed a repository full of test fixtures.
 	tagArchivedAndFixtures(all)
 	// And the same remedy/cause annotation, for the same no-drift reason.
-	annotateRemedies(all, cfg.HomeDir, cfg.K8sMigratable)
+	annotateRemedies(all, cfg.HomeDir, cfg.K8sMigratable, cfg.StreamlitMigratable)
 
 	summary := buildScanSummary(cfg, all, countProtectedMounts(cfg.MountRegistryPath), time.Since(start))
 	summary.Targets = targets
@@ -180,6 +180,26 @@ func scanTargetFile(cfg Config, path string) ([]Finding, []ScannerFailure) {
 	if isTFVars, isK8s := iacNameGates(name); isTFVars || isK8s {
 		structured = true
 		findings = append(findings, classifyIACFile(cfg, path, name)...)
+	}
+	// The walk's two-part gate (.streamlit/secrets.toml) holds here too: a
+	// bare secrets.toml named explicitly is still ambiguous (a Rust
+	// config, a Helm values file) and falls through to the vendor-token
+	// sweep below instead.
+	if IsStreamlitSecretsPath(path) {
+		structured = true
+		if fs, err := scanStreamlitSecretsFile(cfg, path); err == nil {
+			findings = append(findings, fs...)
+		} else {
+			note("streamlit secrets", err)
+		}
+	}
+	// Cargo's registry tokens carry no vendor prefix, so the sweep below
+	// would report nothing at all for a named ~/.cargo/credentials.toml —
+	// the machine-wide scan's fixed half owns these paths, but a targeted
+	// scan has no fixed half (the same reasoning as ~/.npmrc above).
+	if isCargoCredentialsPath(cfg.HomeDir, path) {
+		structured = true
+		findings = append(findings, scanCargoCredentialFile(cfg, path)...)
 	}
 
 	// A content check that doesn't care what the file is named: the

@@ -62,7 +62,7 @@ const (
 //     command as THE fix would dress the wound without treating it. The
 //     migrate result output carries the rotation advice for the ordinary
 //     case; for production, rotation IS the remedy and the report says so.
-func annotateRemedies(findings []Finding, home string, k8sMigratable func(string) (string, bool)) {
+func annotateRemedies(findings []Finding, home string, k8sMigratable, streamlitMigratable func(string) (string, bool)) {
 	// Purity is per file and can involve a re-read; cache it, since copies
 	// of one dump produce many findings for the same path.
 	pureCache := map[string]bool{}
@@ -89,6 +89,20 @@ func annotateRemedies(findings []Finding, home string, k8sMigratable func(string
 		if !cached {
 			v.reason, v.ok = k8sMigratable(path)
 			k8sCache[path] = v
+		}
+		return v.reason, v.ok
+	}
+	// Same probe-and-cache for Streamlit secrets files: one file carries a
+	// finding per flagged value, and the probe re-reads the file.
+	streamlitCache := map[string]k8sVerdict{}
+	streamlitRefusal := func(path string) (string, bool) {
+		if streamlitMigratable == nil {
+			return "", true
+		}
+		v, cached := streamlitCache[path]
+		if !cached {
+			v.reason, v.ok = streamlitMigratable(path)
+			streamlitCache[path] = v
 		}
 		return v.reason, v.ok
 	}
@@ -143,6 +157,18 @@ func annotateRemedies(findings []Finding, home string, k8sMigratable func(string
 			if reason, ok := k8sRefusal(f.FilePath); !ok {
 				f.Remedy = RemedyManual
 				f.Evidence = "kubernetes Secret manifest `jit migrate` can't rewrite provably right (" + reason + "); sealed-secrets/SOPS or a hand edit is the fix"
+			} else {
+				f.Remedy = RemedyMigrate
+				f.FixCommand = "jit migrate " + shellSafePath(home, f.FilePath)
+			}
+		case f.FindingType == FindingTypeCredentialFile && IsStreamlitSecretsPath(f.FilePath):
+			// The same D5 rule the ConfidenceHigh Secret-manifest case
+			// applies: migrate's shape rule for secrets.toml is stricter
+			// than this scanner's, and a file whose every flagged value
+			// falls outside it must not be promised as fixable.
+			if reason, ok := streamlitRefusal(f.FilePath); !ok {
+				f.Remedy = RemedyManual
+				f.Evidence = "Streamlit secrets file `jit migrate` can't rewrite provably right (" + reason + "); move the value out and rotate it, or quote it as a simple one-line string"
 			} else {
 				f.Remedy = RemedyMigrate
 				f.FixCommand = "jit migrate " + shellSafePath(home, f.FilePath)

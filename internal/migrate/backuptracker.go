@@ -83,6 +83,30 @@ func (t *BackupTracker) backupOnce(v *vault.Vault, path string) (string, error) 
 	return vp, nil
 }
 
+// backupOnceLinking is backupOnce for a migration whose undo is only
+// correct if other files come back in the same run (see
+// BackupRecord.RestoreWith). The link is recorded on the FIRST backup of
+// path — later dedup'd calls return the cached vault path, exactly like
+// backupOnce, and the first call's links stand for the run.
+func (t *BackupTracker) backupOnceLinking(v *vault.Vault, path string, restoreWith []string) (string, error) {
+	if t == nil {
+		return backupSecretFileLinking(v, path, restoreWith)
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolving %s: %w", path, err)
+	}
+	if vp, ok := t.backups[absPath]; ok {
+		return vp, nil
+	}
+	vp, err := backupSecretFileLinking(v, path, restoreWith)
+	if err != nil {
+		return "", err
+	}
+	t.backups[absPath] = vp
+	return vp, nil
+}
+
 // alreadyHandled reports whether an earlier unit in this run already gave
 // path a disposition — either backed it up (backupOnce) or created it fresh
 // (markCreated). A later unit that sees true must not add a second undo-index
