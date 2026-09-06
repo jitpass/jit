@@ -44,8 +44,8 @@ var trashDirNames = map[string]bool{".trash": true, "trash": true}
 // callers ordering remedies must test trash FIRST or the archived branch
 // swallows it. Exported for the same reason LooksArchived is: both sides of
 // the audit→migrate funnel need the one predicate — the triage renderer to
-// say "empty the Trash", and `jit migrate --clean` to plan finishing that
-// deletion — and two copies would drift.
+// route the finding to its trash group, and `jit migrate --clean` to plan
+// finishing the deletion — and two copies would drift.
 func InTrash(path string) bool {
 	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
 		if trashDirNames[strings.ToLower(part)] {
