@@ -163,6 +163,13 @@ func runMigrateUndo(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(out, "  "+glyphBullet+" %s (created by migration, will be removed)%s\n", displayPath(home, rec.OriginalPath), note)
 			continue
 		}
+		if rec.Cleaned {
+			// The file is gone, not rewritten: restoring re-creates it. Said
+			// here so an undo of a --clean deletion is never a surprise
+			// (design/migrate-clean.md D3).
+			fmt.Fprintf(out, "  "+glyphBullet+" %s (deleted by jit migrate --clean %s ago, will be re-created)%s\n", displayPath(home, rec.OriginalPath), humanAgo(time.Since(time.Unix(rec.UnixTS, 0))), note)
+			continue
+		}
 		fmt.Fprintf(out, "  "+glyphBullet+" %s (backed up %s ago)%s\n", displayPath(home, rec.OriginalPath), humanAgo(time.Since(time.Unix(rec.UnixTS, 0))), note)
 	}
 	fmt.Fprintln(out)

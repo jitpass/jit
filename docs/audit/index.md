@@ -112,6 +112,13 @@ The default view already made the split: the green section is fixed by
 running bare **[`jit migrate`](../migrate/index.md)** (which also runs
 any **[`jit wrap <tool>`](../wrap/index.md)** the plan calls for), and
 the red section lists what only you can do - rotate, delete, or seal.
+The delete half of that is no longer only yours:
+**[`jit migrate --clean`](../migrate/index.md#finishing-deletions---clean)**
+finishes the deletions the report recommends - Trash copies, archived
+copies whose secrets are already vaulted, AI agent cache leftovers -
+behind its own consent and a fresh Touch ID, with every file backed up
+encrypted and restorable via `jit migrate undo`. Rotation and sealing
+stay yours.
 Per category, in the `--full` inventory:
 
 - Most categories are fixed by **`jit migrate`** - it converts findings

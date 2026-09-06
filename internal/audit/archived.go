@@ -39,11 +39,14 @@ func LooksArchived(path string) bool {
 // deletion instead of being offered jit migrate.
 var trashDirNames = map[string]bool{".trash": true, "trash": true}
 
-// inTrash reports whether any path component of path matches trashDirNames,
-// case-insensitively. Every inTrash path also satisfies LooksArchived, so
+// InTrash reports whether any path component of path matches trashDirNames,
+// case-insensitively. Every InTrash path also satisfies LooksArchived, so
 // callers ordering remedies must test trash FIRST or the archived branch
-// swallows it.
-func inTrash(path string) bool {
+// swallows it. Exported for the same reason LooksArchived is: both sides of
+// the audit→migrate funnel need the one predicate — the triage renderer to
+// route the finding to its trash group, and `jit migrate --clean` to plan
+// finishing the deletion — and two copies would drift.
+func InTrash(path string) bool {
 	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
 		if trashDirNames[strings.ToLower(part)] {
 			return true

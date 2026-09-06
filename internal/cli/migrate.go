@@ -278,6 +278,9 @@ func migrateApplyCommand(base string, args []string) string {
 	if migrateMount {
 		parts = append(parts, "--mount")
 	}
+	if migrateClean {
+		parts = append(parts, "--clean")
+	}
 	return strings.Join(parts, " ")
 }
 
@@ -458,7 +461,14 @@ var migrateCmd = &cobra.Command{
 		"in 1Password is vaulted as an op:// reference instead of a copy (one\n" +
 		"authenticated check per run, after you confirm), and a value that already IS\n" +
 		"an op:// reference stays one; rotate in 1Password and jit follows.\n" +
-		"--no-1password stores plain copies instead.",
+		"--no-1password stores plain copies instead.\n\n" +
+		"--clean adds a delete pass for the findings whose stated fix is deletion:\n" +
+		"files in the Trash, archived/backup copies whose every secret is already in\n" +
+		"the vault (verified against the vault's own values, after your consent), and\n" +
+		"AI agent cache leftovers. It runs after the migrations, behind its own y/N\n" +
+		"listing every path plus a fresh Touch ID that --yes never skips. Each file\n" +
+		"is backed up encrypted before the delete and `jit migrate undo <path>`\n" +
+		"restores it. Anything the pass can't prove safe is left alone and says why.",
 	Example: "  jit migrate                     # protect everything the scan found\n" +
 		"  jit migrate ~/proj/.env         # migrate just one file\n" +
 		"  jit migrate ~/proj              # walk one project for .env/tfvars/mcp/npmrc\n" +
@@ -520,7 +530,14 @@ var migratePathCmd = &cobra.Command{
 // (runMigratePath). Empty means the caller owns the frame — runMigrateAll
 // prints the banner BEFORE calling here and the trailer after its own
 // tail, so the frame still brackets everything the run discloses.
-func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planExtras, dryRunApplyCmd string) (bool, error) {
+//
+// cleanInputs, when non-nil, is filled on a successful apply with what the
+// --clean phase needs and only this function has: the values this run
+// vaulted (Vault.OnSet) and the cache files its sweep rewrote. The clean
+// phase itself runs in the CALLER's tail, after the wraps, so a
+// wrap-vaulted token also counts toward an archived copy's redundancy
+// proof (design/migrate-clean.md D1).
+func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planExtras, dryRunApplyCmd string, cleanInputs *cleanPhaseInputs) (bool, error) {
 	// Locals aliased to d's fields so the --only filter, plan, and apply
 	// loops below read exactly as they did before this function was split
 	// out. categorySlices points at these locals, and the --only nil-out
@@ -1502,11 +1519,26 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 		migrate.WriteCacheBreadcrumb(root, cleanup.LiveSkips(), time.Now().UnixNano())
 	}
 	reportAgentStatus(out, root, producedMount)
+	if cleanInputs != nil {
+		cleanInputs.vaulted = vaultedSecrets
+		cleanInputs.swept = map[string]bool{}
+		for _, e := range cleanup.Edited {
+			cleanInputs.swept[e.Path] = true
+		}
+	}
 	// The folder-rename advisory is left to `jit status`: an explicitly named
 	// migrate target can sit under any project, so there's no single "this
 	// project" here whose rename to flag (see noteFolderRename, still used by
 	// status).
 	return true, nil
+}
+
+// cleanPhaseInputs is applyMigrate's hand-off to runCleanPhase — see
+// applyMigrate's doc comment. Zero-valued when the apply never ran (a
+// declined plan, a dry run), which the clean phase never reaches anyway.
+type cleanPhaseInputs struct {
+	vaulted []migrate.AgentCacheSecret
+	swept   map[string]bool
 }
 
 // runMigratePath implements `jit migrate <file-or-dir>...` (and its `path`
@@ -1598,6 +1630,16 @@ func runMigrateAll(cmd *cobra.Command) error {
 		offerGuard = false
 	}
 
+	// --clean plans the delete pass from the same scan (design/
+	// migrate-clean.md D1). No exclude set on a bare run: the migrate half
+	// above filters out f.Archived and RemedyManual findings, so a migrate
+	// target can never also be a deletion candidate here.
+	var cleanPlan *migrate.CleanPlan
+	if migrateClean {
+		cp := migrate.PlanClean(home, findings, nil)
+		cleanPlan = &cp
+	}
+
 	// The artifacts migrate itself wrote are checked on every bare run —
 	// independent of the scan, which is about secrets — so a recorded jit
 	// path heals before the upgrade that would break it, under a plan the
@@ -1605,7 +1647,7 @@ func runMigrateAll(cmd *cobra.Command) error {
 	d := &discovered{}
 	discoverJitPathRefresh(d, home, nil)
 
-	if len(files) == 0 && len(tools) == 0 && !offerGuard && d.total() == 0 && len(d.jitPathRefused) == 0 {
+	if len(files) == 0 && len(tools) == 0 && !offerGuard && d.total() == 0 && len(d.jitPathRefused) == 0 && !cleanHasWork(cleanPlan) {
 		fmt.Fprintln(cmd.OutOrStdout(), hlCmds("Nothing to protect — the scan found no secrets jit can act on. Run `jit scan` for the full picture."))
 		return nil
 	}
@@ -1621,7 +1663,7 @@ func runMigrateAll(cmd *cobra.Command) error {
 	d.dedupe()
 
 	out := cmd.OutOrStdout()
-	if d.total() == 0 && len(tools) == 0 && !offerGuard {
+	if d.total() == 0 && len(tools) == 0 && !offerGuard && !cleanHasWork(cleanPlan) {
 		// Discovery routed every candidate to a skip (mixed-content files,
 		// or files that changed since the scan). No plan, no prompt, and
 		// definitely no coverage promise.
@@ -1658,22 +1700,29 @@ func runMigrateAll(cmd *cobra.Command) error {
 	if offerGuard {
 		extras.guardItems = []string{displayPath(home, guard.HookPath(home)) + " (sourced from " + displayPath(home, guard.RcPath(home)) + ")"}
 	}
+	extras.clean = cleanPlan
 
 	applied := true
+	var cleanIn cleanPhaseInputs
 	if d.total() > 0 {
-		applied, err = applyMigrate(cmd, home, d, extras, "") // "" — this function owns the dry-run frame
+		applied, err = applyMigrate(cmd, home, d, extras, "", &cleanIn) // "" — this function owns the dry-run frame
 		if err != nil {
 			return err
 		}
 	} else {
-		// Wraps/guard only: applyMigrate never runs, so render the same
-		// plan shape it would (extras as its only categories) and gate on
-		// the same [y/N] — this run installs shims and shell hooks, which
-		// is exactly what the plan-then-consent discipline exists for.
+		// Wraps/guard/deletions only: applyMigrate never runs, so render the
+		// same plan shape it would (extras as its only categories) and gate
+		// on the same [y/N] — this run installs shims and shell hooks, which
+		// is exactly what the plan-then-consent discipline exists for. A
+		// deletions-only plan skips this gate: runCleanPhase's own [y/N],
+		// which names every path, is that plan's consent, and two prompts
+		// for one category teaches people to stop reading them.
 		printMigratePlan(out, home, d, extras)
-		if !migrateDryRun && !migrateYes && !confirmPrompt(cmd, "Proceed? [y/N] ") {
-			fmt.Fprintln(out, "Aborted. Nothing was changed.")
-			return nil
+		if len(tools) > 0 || offerGuard {
+			if !migrateDryRun && !migrateYes && !confirmPrompt(cmd, "Proceed? [y/N] ") {
+				fmt.Fprintln(out, "Aborted. Nothing was changed.")
+				return nil
+			}
 		}
 	}
 	if !applied && !migrateDryRun {
@@ -1724,6 +1773,17 @@ func runMigrateAll(cmd *cobra.Command) error {
 		fmt.Fprintln(out, hlCmds("\nWrapped tokens may also sit in AI agent caches, run `jit migrate caches` to clear those copies too."))
 	}
 
+	// The clean phase runs LAST, after the wraps, so everything this run
+	// vaulted — wrap-captured tokens included — counts toward a copy's
+	// redundancy proof. Its own [y/N] and fresh Touch ID live inside
+	// (design/migrate-clean.md D4/D5); a dry run already disclosed it as
+	// the [deletions] category inside the frame.
+	if applied && !migrateDryRun && cleanPlan != nil && len(cleanPlan.Candidates) > 0 {
+		if err := runCleanPhase(cmd, home, cleanPlan, cleanIn.vaulted, cleanIn.swept); err != nil {
+			return err
+		}
+	}
+
 	// Close the loop with the number the scan report opened with — only
 	// after something actually applied; a declined or empty run must not
 	// print a coverage gain it didn't produce.
@@ -1768,12 +1828,14 @@ func runMigratePath(cmd *cobra.Command, targets []string) error {
 	defer progress.Stop()
 
 	d := &discovered{}
+	var resolved []string
 	for _, target := range targets {
 		abs := expandTilde(target, home)
 		if !filepath.IsAbs(abs) {
 			abs = filepath.Join(cwd, abs)
 		}
 		abs = filepath.Clean(abs)
+		resolved = append(resolved, abs)
 		progress.Step("Scanning "+displayPath(home, abs)+" for secrets…", "Scanned "+displayPath(home, abs))
 
 		info, err := os.Lstat(abs)
@@ -1808,8 +1870,60 @@ func runMigratePath(cmd *cobra.Command, targets []string) error {
 	d.dedupe()
 
 	progress.Stop() // settle the discovery trail before the plan/prompt prints
-	_, err = applyMigrate(cmd, home, d, nil, migrateApplyCommand("jit migrate", targets))
-	return err
+
+	// --clean on a targeted run: classify the named paths with the scanner
+	// (discovery above only routes files to migrations) and route every
+	// delete-class file to the delete pass INSTEAD of migration — naming a
+	// Trash file with --clean means finish its deletion, and vaulting it
+	// would preserve what deletion is about to fix (the scan report's own
+	// stance; design/migrate-clean.md D9).
+	var cleanPlan *migrate.CleanPlan
+	var extras *planExtras
+	if migrateClean {
+		cfg, cfgErr := newAuditConfig()
+		if cfgErr != nil {
+			return fmt.Errorf("jit migrate path: %w", cfgErr)
+		}
+		findings, _, scanErr := audit.TargetedScan(cfg, resolved)
+		if scanErr != nil {
+			return fmt.Errorf("jit migrate path: %w", scanErr)
+		}
+		cp := migrate.PlanClean(home, findings, nil)
+		cleanPlan = &cp
+		dropCleanCandidates(d, cleanPlan)
+		extras = &planExtras{clean: cleanPlan}
+	}
+
+	applied := true
+	var cleanIn cleanPhaseInputs
+	if d.total() > 0 || !cleanHasWork(cleanPlan) {
+		applied, err = applyMigrate(cmd, home, d, extras, migrateApplyCommand("jit migrate", targets), &cleanIn)
+		if err != nil {
+			return err
+		}
+	} else {
+		// Deletions-only run: applyMigrate would report "nothing to
+		// migrate", so render the same plan shape with the delete pass as
+		// its only category, inside the frame this branch now owns. No
+		// separate Proceed gate — runCleanPhase's own [y/N], which names
+		// every path, IS this plan's consent, and two prompts for one
+		// category teaches people to stop reading them.
+		out := cmd.OutOrStdout()
+		if migrateDryRun {
+			printDryRunBanner(out)
+		}
+		printMigratePlan(out, home, d, extras)
+		if migrateDryRun {
+			printDryRunTrailer(out, migrateApplyCommand("jit migrate", targets), true)
+			return nil
+		}
+	}
+	if applied && !migrateDryRun && cleanPlan != nil && len(cleanPlan.Candidates) > 0 {
+		if err := runCleanPhase(cmd, home, cleanPlan, cleanIn.vaulted, cleanIn.swept); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // expandTilde turns a leading ~ or ~/ into home. A login shell expands this
@@ -2259,6 +2373,13 @@ func init() {
 	const no1pUsage = "store plain copies even when a value already lives in 1Password (default: matching values are vaulted as op:// references)"
 	migrateCmd.Flags().BoolVar(&migrateNo1Password, "no-1password", false, no1pUsage)
 	migratePathCmd.Flags().BoolVar(&migrateNo1Password, "no-1password", false, no1pUsage)
+	// Local like --mount: undo/remove/caches never delete scan findings.
+	// Wording promises the safety net up front — the flag's whole risk is
+	// deletion, so the one fact that changes the decision (encrypted
+	// backups + jit migrate undo) belongs in the usage string.
+	const cleanUsage = "also delete files whose stated fix is deletion (Trash copies, archived copies whose secrets are all vaulted, AI agent cache leftovers); each is backed up encrypted first and jit migrate undo restores it; gated by its own y/N plus Touch ID"
+	migrateCmd.Flags().BoolVar(&migrateClean, "clean", false, cleanUsage)
+	migratePathCmd.Flags().BoolVar(&migrateClean, "clean", false, cleanUsage)
 
 	migrateCmd.AddCommand(migratePathCmd)
 	rootCmd.AddCommand(migrateCmd)

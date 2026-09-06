@@ -138,6 +138,44 @@ run, after you confirm): a value already stored there is vaulted as an
 `op://` reference instead of a copy, so rotating it in 1Password is the
 only rotation you do. `--no-1password` stores plain copies instead.
 
+## Finishing deletions: `--clean`
+
+Some findings' stated fix is deletion, not migration: a credential file
+sitting in the Trash, an archived/backup copy of a secret you already
+vaulted, a stray copy in an AI agent's file cache. `jit migrate --clean`
+finishes those deletions for you, after the migrations, under a whitelist
+it can prove safe:
+
+- **Trash copies** - you already decided the file should not exist;
+  vaulting it would preserve what deletion is about to fix, so jit
+  finishes the deletion. No vault check needed.
+- **Archived/backup copies** - deleted only after *every* secret in the
+  file is verified byte-identical to a value already in your vault. The
+  delete pass runs after the migrations, so a live `.env` vaulted in the
+  same run already proves its archived siblings redundant - one command
+  fixes both.
+- **AI agent cache leftovers** (pasted text, shell snapshots, agent-made
+  backups) - same vault verification.
+
+Nothing else is ever touched: private keys, history lines, and any file
+whose secrets can't all be verified stay put, listed with the reason and
+the next step. A file that changed between the plan and the delete is
+left alone too.
+
+The deletions appear in the plan as their own counted `[deletions]`
+category (`--dry-run` shows it, no authentication needed). Applying them
+takes two more gates than a migration: a dedicated `y/N` that lists every
+path, then a fresh Touch ID/passcode that even `--yes` never skips.
+
+Every deleted file is first backed up, encrypted, into the vault -
+[`jit migrate undo <path>`](./undo-and-remove.md) re-creates it exactly,
+permissions included. The deletion is final for everyone except you.
+
+Naming a delete-class file explicitly changes its routing:
+`jit migrate ~/.Trash/old/.env` (no flag) vaults it, because naming a
+file is the decision to convert it - but the same command with `--clean`
+finishes its deletion instead, because that is what the flag asks for.
+
 ## What each category turns into
 
 Limit a run to specific categories with `--only`

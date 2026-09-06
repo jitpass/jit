@@ -22,6 +22,11 @@ pre-migration backups. You name what to restore: a file restores that
 file, a directory restores everything recorded under it. The vault stays
 untouched. A bare `jit migrate undo` with no path does nothing.
 
+Files deleted by [`jit migrate --clean`](./index.md#finishing-deletions---clean)
+restore the same way: the plan labels them "deleted by jit migrate
+--clean, will be re-created", and the restore brings the file back
+byte-for-byte, permissions included.
+
 ```
 jit migrate undo ~/code/myapp/.env   # one file
 jit migrate undo ~/code/myapp        # everything migrated under a project
