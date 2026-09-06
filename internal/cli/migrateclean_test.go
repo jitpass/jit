@@ -62,6 +62,35 @@ func TestMigrateCleanDryRunPlansDeletion(t *testing.T) {
 	}
 }
 
+// TestMigrateCleanClaimsSkipNotes: a planned deletion must not ALSO render
+// in a skip note — the live dogfood run (2026-09-06) showed one Trash file
+// under [deletions] and under "Skipped … they stay put" at once, two
+// verdicts about one file on one consent screen. dropCleanCandidates clears
+// the note-only lists too.
+func TestMigrateCleanClaimsSkipNotes(t *testing.T) {
+	home := withFixtureHome(t)
+	// KEY=VALUE in a .txt is an embedded (mixed-content) loose file to
+	// discovery, and a counted trash finding to the scanner.
+	trashFile := filepath.Join(home, ".Trash", "leaked-creds.txt")
+	if err := os.MkdirAll(filepath.Dir(trashFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(trashFile, []byte("OPENAI_API_KEY="+cleanCLISecret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := execMigrate(t, trashFile, "--dry-run", "--clean")
+	if err != nil {
+		t.Fatalf("jit migrate <trash txt> --dry-run --clean: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[deletions] 1") {
+		t.Fatalf("expected the trash file planned as a deletion, got:\n%s", out)
+	}
+	if strings.Contains(out, "Skipped") {
+		t.Errorf("a --clean-claimed file must not also render in a skip note, got:\n%s", out)
+	}
+}
+
 // TestMigrateCleanOffByDefault: without --clean the same trash file keeps
 // today's behavior — a targeted run migrates it, and no [deletions]
 // category appears anywhere.

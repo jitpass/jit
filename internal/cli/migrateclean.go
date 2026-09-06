@@ -50,11 +50,17 @@ func dropCleanCandidates(d *discovered, plan *migrate.CleanPlan) {
 	for _, c := range plan.Candidates {
 		claimed[c.Path] = true
 	}
+	// The note-only lists are cleared too: a planned deletion must not also
+	// render as "skipped … they stay put" — the live dogfood run showed the
+	// Trash copy in the mixed-content skip note and in [deletions] at once,
+	// two verdicts about one file on one consent screen.
 	for _, list := range []*[]string{
 		&d.envFiles, &d.tfvarsFiles, &d.k8sManifests, &d.shellConfigs,
 		&d.historyFiles, &d.mcpConfigs, &d.gcpADCFiles, &d.sopsAgeFiles,
 		&d.npmrcFiles, &d.netrcFiles, &d.pypircFiles, &d.streamlitFiles,
 		&d.looseSecretFiles,
+		&d.tfvarsComplexOnly, &d.k8sManifestsComplexOnly,
+		&d.looseEmbeddedSkipped, &d.historyKeyOnly, &d.wrapOwnedSkipped,
 	} {
 		kept := (*list)[:0]
 		for _, p := range *list {
