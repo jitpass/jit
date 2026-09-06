@@ -153,8 +153,13 @@ const (
 	ClassSOPS      = "sops"
 	ClassNpmrc     = "npmrc"
 	ClassPypirc    = "pypirc"
+	ClassCargo     = "cargo"
 	ClassGit       = "git"
 	ClassNetrc     = "netrc"
+	// ClassStreamlit is a value migrated out of a .streamlit/secrets.toml
+	// (project or global) — Streamlit's own application-secrets file, read
+	// directly by st.secrets. Origin is the file path.
+	ClassStreamlit = "streamlit"
 	ClassKube      = "kube"
 	ClassWrap      = "wrap"
 	// ClassLooseFile is a bare secret migrated out of a file the user named

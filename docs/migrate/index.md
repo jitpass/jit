@@ -43,14 +43,18 @@ jit migrate ~/.zshrc ~/code/myapp  # several targets at once
 Each named target is resolved on its own:
 
 - **A file** is routed to the right category by what it is. A project file
-  (`.env`, `*.tfvars`, `mcp.json`/`.mcp.json`, `.npmrc`) has its secrets
+  (`.env`, `*.tfvars`, `mcp.json`/`.mcp.json`, `.npmrc`,
+  `.streamlit/secrets.toml`) has its secrets
   moved into a profile and the vault, and the file keeps working. A
   machine-wide file at a known path - a shell config like `~/.zshrc`, a shell
   history file like `~/.zsh_history`, `~/.aws/credentials`, `~/.kube/config`, the Terraform Cloud token file,
-  `~/.docker/config.json`, `~/.git-credentials`, GCP application-default
+  `~/.docker/config.json`, `~/.git-credentials`, `~/.cargo/credentials.toml`,
+  GCP application-default
   credentials, the SOPS age key, `~/.netrc`, `~/.pypirc`, Claude Desktop's MCP config,
-  Claude Code's `~/.claude.json`, the global `~/.npmrc` - is routed to that credential type's handling.
-- **A directory** is walked for its `.env`/tfvars/`mcp.json`/`.npmrc`
+  Claude Code's `~/.claude.json`, the global `~/.npmrc`,
+  `~/.streamlit/secrets.toml` - is routed to that credential type's handling.
+- **A directory** is walked for its
+  `.env`/tfvars/`mcp.json`/`.npmrc`/`.streamlit/secrets.toml`
   findings only, never the machine-wide fixed-path files (those aren't
   "under" any project directory - name them explicitly to convert them).
 
@@ -157,6 +161,8 @@ Limit a run to specific categories with `--only`
 | `npmrc` | just the secret lines (`_authToken`, etc.) | a live-mounted pipe serving a template; everything else untouched | [npm](./npm.md) |
 | `netrc` | every `password` value in `~/.netrc` | a live-mounted pipe serving a template; `machine`/`login` lines and macdef scripts untouched | [netrc](./netrc.md) |
 | `pypirc` | every repository section's `password` in `~/.pypirc` | a live-mounted pipe serving a template; `[distutils]`, `repository` and `username` lines untouched | [PyPI](./pypi.md) |
+| `cargo` | each registry's publish token in `~/.cargo/credentials.toml` | a credential provider wired into `~/.cargo/config.toml`; `cargo login`/`logout` keep working, no file with the real value at all | [Cargo](./cargo.md) |
+| `streamlit` | every credential-shaped value in a `.streamlit/secrets.toml` (project or global) | a live-mounted pipe serving a template; table headers and connection settings untouched | [Streamlit](./streamlit.md) |
 | `loose` | secrets in a plain file you named that matches no format above: a bare token (a JWT in `token.txt`), and any secret-shaped `key = value` assignment (`db_password = ...`) whose value isn't obviously a setting | by default (whole-file token) the value moves to the vault and the file is replaced with a git-safe pointer; retrieve with `jit vault get`. With `--mount`, or for a token mixed with other content, the file stays live at its path as a mount (a template with `${VAR}` placeholders) serving the real value to `jit run` grants and a decoy otherwise | |
 
 The `loose` category never appears on its own, only when you explicitly name

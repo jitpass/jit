@@ -39,6 +39,10 @@ func globalMountKinds(home string) map[string][]string {
 		"npm":   {migrate.GlobalNpmrcPath(home)},
 		"netrc": {migrate.NetrcPath(home)},
 		"pypi":  {migrate.PypircPath(home)},
+		// The GLOBAL ~/.streamlit/secrets.toml only — a project's own
+		// .streamlit/secrets.toml is a project template mount, granted by
+		// running from the project directory like a project .npmrc.
+		"streamlit": {migrate.StreamlitGlobalPath(home)},
 	}
 }
 
@@ -138,6 +142,8 @@ func globalMountGuidanceForPath(home, mountPath string) (globalMountGuidance, bo
 		return globalMountGuidance{name: "netrc", tools: "curl, git, ftp, wget"}, true
 	case migrate.PypircPath(home):
 		return globalMountGuidance{name: "pypi", tools: "twine, uv publish, poetry publish"}, true
+	case migrate.StreamlitGlobalPath(home):
+		return globalMountGuidance{name: "streamlit", tools: "streamlit run"}, true
 	}
 	for _, p := range migrate.SOPSAgeKeyPaths(home) {
 		if mountPath == p {
