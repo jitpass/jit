@@ -140,11 +140,11 @@ func PlanClean(home string, findings []audit.Finding, exclude map[string]bool) C
 
 		info, err := os.Lstat(path)
 		if err != nil {
-			skip("can't be examined; left alone")
+			skip("that couldn't be read")
 			continue
 		}
 		if !info.Mode().IsRegular() {
-			skip("not a regular file; left alone")
+			skip("that aren't regular files")
 			continue
 		}
 
@@ -152,7 +152,7 @@ func PlanClean(home string, findings []audit.Finding, exclude map[string]bool) C
 		if class != audit.CleanTrash {
 			fd, ok := digestsByFile[path]
 			if !ok || !fd.Complete || len(fd.Digests) == 0 {
-				skip("jit couldn't pin every secret in it; left alone")
+				skip("whose secrets jit couldn't pin one by one")
 				continue
 			}
 			cand.digests = fd.Digests
@@ -163,7 +163,7 @@ func PlanClean(home string, findings []audit.Finding, exclude map[string]bool) C
 		// in agent-written directories, both places arbitrary code writes.
 		data, err := audit.ReadCacheFileGuarded(path)
 		if err != nil {
-			skip("can't be read whole; left alone")
+			skip("that couldn't be read")
 			continue
 		}
 		sum := sha256.Sum256(data)
@@ -202,40 +202,40 @@ func ApplyClean(v *vault.Vault, plan CleanPlan, runValues []AgentCacheSecret, sw
 		}
 
 		if swept[cand.Path] {
-			skip("this run's cache sweep redacted it instead", false)
+			skip("this run's cache sweep already redacted", false)
 			continue
 		}
 		if cand.Class != audit.CleanTrash && !allDigestsVaulted(cand.digests, vaulted) {
 			switch cand.Class {
 			case audit.CleanArchivedCopy:
-				skip("its secrets aren't all in the vault — migrate the live copy first", false)
+				skip("whose secrets aren't all in the vault yet", false)
 			default:
-				skip("its secret isn't in the vault; rotate it, then delete by hand", false)
+				skip("whose secret isn't in the vault", false)
 			}
 			continue
 		}
 
 		info, err := os.Lstat(cand.Path)
 		if os.IsNotExist(err) {
-			skip("already gone", false)
+			skip("already deleted", false)
 			continue
 		}
 		if err != nil || !info.Mode().IsRegular() {
-			skip("no longer a regular file; left alone", false)
+			skip("that aren't regular files", false)
 			continue
 		}
 		if err := refuseMultiplyLinked(info, cand.Path); err != nil {
-			skip("hard-linked under another name — unlinking this one removes nothing", false)
+			skip("hard-linked under another name", false)
 			continue
 		}
 		data, err := audit.ReadCacheFileGuarded(cand.Path)
 		if err != nil {
-			skip("can't be re-read; left alone", false)
+			skip("that couldn't be read", false)
 			continue
 		}
 		sum := sha256.Sum256(data)
 		if hex.EncodeToString(sum[:]) != cand.sha256 {
-			skip("changed since the plan; left alone", false)
+			skip("that changed since the plan", false)
 			continue
 		}
 

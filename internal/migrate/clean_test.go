@@ -83,7 +83,7 @@ func TestPlanCleanRefusesNonRegularFile(t *testing.T) {
 	}
 	found := false
 	for _, s := range plan.LeftAlone {
-		if s.Path == trashFile && strings.Contains(s.Reason, "not a regular file") {
+		if s.Path == trashFile && strings.Contains(s.Reason, "aren't regular files") {
 			found = true
 		}
 	}
@@ -224,7 +224,7 @@ func TestApplyCleanSweptFileLeftAlone(t *testing.T) {
 	if len(out.Deleted) != 0 {
 		t.Fatal("deleted a file the cache sweep already redacted this run")
 	}
-	if len(out.LeftAlone) != 1 || !strings.Contains(out.LeftAlone[0].Reason, "redacted it instead") {
+	if len(out.LeftAlone) != 1 || !strings.Contains(out.LeftAlone[0].Reason, "already redacted") {
 		t.Fatalf("left-alone = %+v", out.LeftAlone)
 	}
 }
