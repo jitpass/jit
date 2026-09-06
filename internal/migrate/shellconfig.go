@@ -328,7 +328,14 @@ func snapshotSecretFile(v *vault.Vault, path string) (string, error) {
 // `jit migrate undo` would silently roll it away — breaking the byte-for-byte
 // promise in the one direction that loses the user's data.
 func backupSecretBytes(v *vault.Vault, path string, data []byte) (string, error) {
-	return storeSecretBackup(v, path, data, false, nil)
+	return storeSecretBackup(v, path, data, backupFlags{})
+}
+
+// backupCleanedBytes is backupSecretBytes for `jit migrate --clean`: the
+// exact bytes about to be DELETED, flagged so the undo surface can name the
+// deletion (BackupRecord.Cleaned).
+func backupCleanedBytes(v *vault.Vault, path string, data []byte) (string, error) {
+	return storeSecretBackup(v, path, data, backupFlags{cleaned: true})
 }
 
 func backupSecretFileAs(v *vault.Vault, path string, snapshot bool, restoreWith []string) (string, error) {
@@ -336,14 +343,22 @@ func backupSecretFileAs(v *vault.Vault, path string, snapshot bool, restoreWith 
 	if err != nil {
 		return "", err
 	}
-	return storeSecretBackup(v, path, data, snapshot, restoreWith)
+	return storeSecretBackup(v, path, data, backupFlags{snapshot: snapshot, restoreWith: restoreWith})
+}
+
+// backupFlags carries the BackupRecord markers a storeSecretBackup caller
+// sets — see BackupRecord for what each means.
+type backupFlags struct {
+	snapshot    bool
+	cleaned     bool
+	restoreWith []string
 }
 
 // storeSecretBackup encrypts data into the vault's _backups/ namespace under a
 // path derived from the original file, and records it in the undo index. The
 // shared tail of backupSecretFileAs and backupSecretBytes, which differ only
 // in where the bytes came from.
-func storeSecretBackup(v *vault.Vault, path string, data []byte, snapshot bool, restoreWith []string) (string, error) {
+func storeSecretBackup(v *vault.Vault, path string, data []byte, flags backupFlags) (string, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return "", fmt.Errorf("resolving %s: %w", path, err)
@@ -381,7 +396,8 @@ func storeSecretBackup(v *vault.Vault, path string, data []byte, snapshot bool, 
 	// file back as it was, not at jit's 0600 default — see BackupRecord.Mode.
 	// A stat failure is not fatal: an unrecorded mode just means the historic
 	// 0600 restore, which is what every pre-existing backup gets anyway.
-	rec := BackupRecord{OriginalPath: absPath, VaultPath: vaultPath, UnixTS: ts, Snapshot: snapshot, RestoreWith: restoreWith}
+	rec := BackupRecord{OriginalPath: absPath, VaultPath: vaultPath, UnixTS: ts,
+		Snapshot: flags.snapshot, Cleaned: flags.cleaned, RestoreWith: flags.restoreWith}
 	if info, statErr := os.Stat(path); statErr == nil {
 		rec.Mode = strconv.FormatUint(uint64(info.Mode().Perm()), 8)
 	}
