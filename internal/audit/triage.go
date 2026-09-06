@@ -2078,7 +2078,7 @@ func manualAction(f Finding, ctx manualContext, home string) (kind, action strin
 		them = "them"
 	}
 	switch {
-	case inTrash(f.FilePath):
+	case InTrash(f.FilePath):
 		// Above archived, which would otherwise swallow it (every trash path
 		// looks archived). Trash is the one archived-looking place where even
 		// migrate-by-name is the wrong offer: the user already decided this
