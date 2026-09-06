@@ -2083,8 +2083,10 @@ func manualAction(f Finding, ctx manualContext, home string) (kind, action strin
 		// looks archived). Trash is the one archived-looking place where even
 		// migrate-by-name is the wrong offer: the user already decided this
 		// file should not exist, and vaulting it would preserve what deletion
-		// is about to fix. Finishing the deletion IS the remedy.
-		return kindTrash, "empty the Trash, then rotate anything it held"
+		// is about to fix. Finishing the deletion IS the remedy — and since
+		// --clean exists, jit can finish it: the arrow is the command now,
+		// and the rotation caveat rides the note (actionNote).
+		return kindTrash, "jit migrate --clean"
 	case f.Archived:
 		// Next, because archived is a property of WHERE the file is and it
 		// overrides every remedy below: bare `jit migrate` walks past these
@@ -2200,7 +2202,8 @@ func actionNote(kind string) string {
 		return "bare jit migrate walks past archive/ and backups/ on purpose — these are counted above, and naming a file explicitly still vaults it\n" +
 			archivedDeletionNote
 	case kindTrash:
-		return "this file is already on its way out — migrating it would preserve what deletion is about to fix"
+		return "this file is already on its way out — migrating it would preserve what deletion is about to fix\n" +
+			"deleting a copy rotates nothing — rotate anything production it held"
 	case kindIAMKey:
 		return "deleting the file does not revoke the key — only deleting the key in IAM does"
 	}
@@ -2209,8 +2212,10 @@ func actionNote(kind string) string {
 
 // archivedDeletionNote is the second line of the archived group's note, kept
 // identical between the file-list and folder forms of the group so the two
-// cannot drift apart in wording.
-const archivedDeletionNote = "already protected the live copy? deleting the archived one is the cleaner fix"
+// cannot drift apart in wording. The command mention stays plain, not cyan:
+// the group's arrow (jit migrate <path>) is the thing this report asks the
+// reader to run, and a note names an alternative (manualViewHint's rule).
+const archivedDeletionNote = "already protected the live copy? jit migrate --clean deletes the archived one, backed up and undoable"
 
 func formatDuration(ms int64) string {
 	if ms >= 1000 {

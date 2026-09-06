@@ -66,6 +66,14 @@ authenticated check per run, after you confirm), and a value that already IS
 an op:// reference stays one; rotate in 1Password and jit follows.
 --no-1password stores plain copies instead.
 
+--clean adds a delete pass for the findings whose stated fix is deletion:
+files in the Trash, archived/backup copies whose every secret is already in
+the vault (verified against the vault's own values, after your consent), and
+AI agent cache leftovers. It runs after the migrations, behind its own y/N
+listing every path plus a fresh Touch ID that --yes never skips. Each file
+is backed up encrypted before the delete and `jit migrate undo <path>`
+restores it. Anything the pass can't prove safe is left alone and says why.
+
 ```
 jit migrate <file-or-dir>... [flags]
 ```

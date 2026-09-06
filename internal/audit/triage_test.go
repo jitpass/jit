@@ -293,8 +293,11 @@ func TestTrashFindingsGetTheirOwnGroup(t *testing.T) {
 	if trash == nil || archived == nil {
 		t.Fatalf("want one trash and one archived group, got: %+v", groups)
 	}
-	if want := "empty the Trash, then rotate anything it held"; trash.action != want {
+	if want := "jit migrate --clean"; trash.action != want {
 		t.Errorf("trash action = %q, want %q", trash.action, want)
+	}
+	if !strings.Contains(trash.note, "rotate anything production it held") {
+		t.Errorf("trash note %q lost the rotation caveat the old arrow carried", trash.note)
 	}
 	if strings.Contains(archived.action, ".Trash") {
 		t.Errorf("archived action %q reaches into the Trash; migrate must not be offered there", archived.action)

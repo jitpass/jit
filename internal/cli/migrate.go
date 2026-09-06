@@ -461,7 +461,14 @@ var migrateCmd = &cobra.Command{
 		"in 1Password is vaulted as an op:// reference instead of a copy (one\n" +
 		"authenticated check per run, after you confirm), and a value that already IS\n" +
 		"an op:// reference stays one; rotate in 1Password and jit follows.\n" +
-		"--no-1password stores plain copies instead.",
+		"--no-1password stores plain copies instead.\n\n" +
+		"--clean adds a delete pass for the findings whose stated fix is deletion:\n" +
+		"files in the Trash, archived/backup copies whose every secret is already in\n" +
+		"the vault (verified against the vault's own values, after your consent), and\n" +
+		"AI agent cache leftovers. It runs after the migrations, behind its own y/N\n" +
+		"listing every path plus a fresh Touch ID that --yes never skips. Each file\n" +
+		"is backed up encrypted before the delete and `jit migrate undo <path>`\n" +
+		"restores it. Anything the pass can't prove safe is left alone and says why.",
 	Example: "  jit migrate                     # protect everything the scan found\n" +
 		"  jit migrate ~/proj/.env         # migrate just one file\n" +
 		"  jit migrate ~/proj              # walk one project for .env/tfvars/mcp/npmrc\n" +

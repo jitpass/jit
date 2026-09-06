@@ -1,8 +1,10 @@
 # Migrate --clean: finishing the deletion the user already chose
 
-**Status:** design, 2026-09-06. Unimplemented. Companion to
+**Status:** implemented on branch `migrate-clean`, 2026-09-06 (audit
+predicates, migrate core, CLI wiring, undo label, scan prose). Companion to
 `design/dry-run-refactor.md` (the plan frame it extends) and
 `internal/audit/triage.go`'s red section (the prose it automates).
+Deviations the build settled are folded into D2/D3/D4/D9 below.
 
 Three promises this doc makes:
 
@@ -142,7 +144,7 @@ existing prose.
 |---|---|---|
 | trash | counted secret finding, `audit.InTrash(path)` (exported from `archived.go:46`), regular file, not a symlink | the flagged file |
 | redundant archived copy | `f.Archived`, not in Trash, and *every* secret detected in the file is value-identical to a vault secret (vaulted earlier, or vaulted by this run's migrate phase) | the flagged file |
-| agent leftover | under `agentCacheSweepDirs` or snapshot-mapped via `SnapshotsOf` to a migrated origin, holding a vaulted value the redaction sweep cannot splice (`SkipBinary`), or a whole-file copy in a sweep dir | the blob |
+| agent leftover | a secret-holding file strictly inside `agentCacheSweepDirs` (paste-cache, shell snapshots, agent-made backups), every detected value vault-verified | the blob |
 
 Permanently out, stated here so nobody relitigates them item by item:
 IAM / private-key findings (`kindIAMKey`, `kindKeyByHand`: rotation is the
@@ -159,8 +161,8 @@ instead); anything reached through a symlink.
 **D3. Every deletion is backed up encrypted first.** For each file:
 `storeSecretBackup` into the vault's `_backups/` namespace, a
 `BackupRecord` appended to `backups.yaml` (ordinary record, `Snapshot`
-false, mode preserved; `RestoreWith` labels it as a clean deletion), then
-the unlink. `jit migrate undo <path>` restores it through the existing
+false, mode preserved; a new `Cleaned` marker labels it, since
+`RestoreWith` already means linked restores), then the unlink. `jit migrate undo <path>` restores it through the existing
 `RestoreFromBackup` path, `O_EXCL|O_NOFOLLOW`, snapshot-first, already
 audited. No plaintext ever touches disk between backup and delete. The
 undo listing distinguishes "deleted by --clean" from "migrated" so a
@@ -177,9 +179,12 @@ prompt:
 
 `--yes` skips both typed prompts and never the fingerprint, with
 uninstall's exact flag wording ("still requires the Touch ID/passcode
-gate"). Decline prints the migrate-tree standard "Aborted. Nothing was
-changed." and the migrate phase's work stands (it was separately
-consented).
+gate"). Decline prints "Deletions skipped. Nothing was deleted." — not the
+migrate-tree "Aborted. Nothing was changed.", which would be false: the
+migrate phase's work stands (it was separately consented). A run whose
+plan holds ONLY deletions skips the main `Proceed?` gate — the deletion
+prompt, which names every path, is that plan's consent, and two prompts
+for one category teach people to stop reading them.
 
 **D5. Fresh presence, forced explicitly, after consent.** The clean phase
 opens its own vault handle via `openVaultFreshAuth()` (never the broker)
@@ -250,7 +255,11 @@ the full plan, auth-free, frame unchanged. `--only` filters migrate
 categories exactly as today and does not filter the clean phase (the flag
 that requested it is consent enough to *plan* it; the [y/N] still gates
 the act). `jit migrate <path> --clean` scopes candidates to the named
-paths. `--clean` on `remove`/`undo`/`caches` is refused loudly.
+paths, and routes a named delete-class file to the delete pass INSTEAD of
+migration: naming a Trash file with `--clean` means finish its deletion,
+and vaulting it would preserve what deletion is about to fix — the scan
+report's own stance. `--clean` is a local flag on migrate/path only, so
+`remove`/`undo`/`caches` reject it as unknown.
 
 **D10. Classification helpers live in audit, consumption in migrate.**
 `InTrash` gets exported beside `LooksArchived`; a small exported
@@ -332,6 +341,11 @@ One commit each, ordered so every intermediate state ships.
 ## Out of scope, recorded
 
 - Emptying the Trash, or deleting directories of any kind.
+- Deleting the redaction sweep's `SkipBinary` residue (binary blobs the
+  sweep can't splice, whose advice stays "delete those files yourself").
+  Identifying them needs the post-auth sweep's skip set, which cannot
+  appear in a pre-auth plan the user consents to — a follow-up needs its
+  own plan/consent shape for them.
 - A scan-side "cleanable" coverage number (needs auth scan doesn't have;
   revisit only if the red section's count proves misleading in practice).
 - Serializing `kind`/`in_trash`/`KeyKind` into NDJSON (real gaps, listed
