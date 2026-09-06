@@ -85,6 +85,12 @@ type BackupRecord struct {
 	// Empty on every record written before this existed, which restores
 	// exactly as it used to.
 	RestoreWith []string `yaml:"restore_with,omitempty"`
+	// Cleaned marks a backup `jit migrate --clean` took immediately before
+	// DELETING the original (design/migrate-clean.md D3). Restore mechanics
+	// are ordinary — the bytes come back exactly like any other record — the
+	// flag exists so the undo surface can say "deleted by --clean" instead of
+	// implying the file was migrated, and a restore is never a surprise.
+	Cleaned bool `yaml:"cleaned,omitempty"`
 }
 
 // defaultRestoreMode is what a restore uses when a BackupRecord carries no

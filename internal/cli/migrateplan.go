@@ -57,6 +57,12 @@ type planExtras struct {
 	guardItems []string // non-empty offers the guard; each item is one bullet
 	cacheEdits []migrate.AgentCacheEdit
 	cacheNote  string // non-empty: the preview failed; the sweep still runs at apply time
+	// clean is the --clean delete pass's plan (design/migrate-clean.md):
+	// candidates render as the [deletions] category, counted into the
+	// subtotal like every other consented change. nil on runs without
+	// --clean; the deletions themselves are gated again at apply time by
+	// their own [y/N] plus a fresh Touch ID (runCleanPhase).
+	clean *migrate.CleanPlan
 	// scanDriven flips the group headers from "you named" to "flagged by
 	// the scan": bare `jit migrate` names nothing — the scan did, and a
 	// header claiming otherwise misstates why the file is in the plan.
@@ -74,7 +80,15 @@ type wrapPlanRow struct {
 }
 
 func (e *planExtras) empty() bool {
-	return e == nil || (len(e.wraps) == 0 && len(e.guardItems) == 0 && len(e.cacheEdits) == 0 && e.cacheNote == "")
+	return e == nil || (len(e.wraps) == 0 && len(e.guardItems) == 0 && len(e.cacheEdits) == 0 && e.cacheNote == "" && e.cleanCount() == 0)
+}
+
+// cleanCount is the number of planned deletions, 0 when --clean is off.
+func (e *planExtras) cleanCount() int {
+	if e == nil || e.clean == nil {
+		return 0
+	}
+	return len(e.clean.Candidates)
 }
 
 // counts returns the extra items and categories for the plan subtotal.
@@ -82,7 +96,7 @@ func (e *planExtras) counts() (items, categories int) {
 	if e == nil {
 		return 0, 0
 	}
-	for _, group := range []int{len(e.wraps), len(e.guardItems), len(e.cacheEdits)} {
+	for _, group := range []int{len(e.wraps), len(e.guardItems), len(e.cacheEdits), e.cleanCount()} {
 		if group > 0 {
 			categories++
 			items += group
@@ -407,6 +421,9 @@ func printPlanExtras(w io.Writer, home string, e *planExtras) {
 	}
 	if e.cacheNote != "" {
 		_, _ = cWarn.Fprintf(w, "  AI agent caches could not be previewed (%s); the sweep still runs after the file migrations.\n\n", e.cacheNote)
+	}
+	if e.clean != nil {
+		printCleanPlanCategory(w, home, e.clean)
 	}
 }
 
