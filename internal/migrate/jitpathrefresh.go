@@ -52,6 +52,7 @@ func jitPathArtifacts(home string) []RecordedJitPath {
 		{Label: "the docker credential helper", Path: DockerHelperPath(home), Category: "docker", Key: "exec "},
 		{Label: "the git credential helper", Path: GitHelperPath(home), Category: "git", Key: "exec "},
 		{Label: "the terraform credentials helper", Path: TerraformHelperPath(home), Category: "terraform", Key: "exec "},
+		{Label: "the cargo credential provider", Path: CargoHelperPath(home), Category: "cargo", Key: "exec "},
 	}
 }
 

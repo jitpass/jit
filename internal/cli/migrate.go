@@ -50,7 +50,7 @@ var (
 // post-migrate agent-cache sweep, which rewrites files under $HOME that the
 // run's other categories never name. Before it existed, --only env still ran
 // the sweep and NO token could scope it out (issue #79).
-var migrateCategories = []string{"env", "tfvars", "k8s-secret", "shell", "history", "mcp", "aws", "kube", "terraform", "docker", "git", "gcp", "sops", "npmrc", "netrc", "pypirc", "loose", "cache"}
+var migrateCategories = []string{"env", "tfvars", "k8s-secret", "shell", "history", "mcp", "aws", "kube", "terraform", "docker", "git", "gcp", "sops", "npmrc", "netrc", "pypirc", "cargo", "streamlit", "loose", "cache"}
 
 // discovered holds one run's findings per category. runMigratePath resolves
 // each named target into one of these and hands it to applyMigrate — the
@@ -80,6 +80,8 @@ type discovered struct {
 	npmrcFiles              []string
 	netrcFiles              []string
 	pypircFiles             []string
+	cargoRegistries         []string
+	streamlitFiles          []string
 	looseSecretFiles        []string
 	// looseEmbeddedSkipped is note-only (like tfvarsComplexOnly): files that
 	// mix a secret with other content, which neutralize can't move whole.
@@ -416,22 +418,24 @@ var migrateCmd = &cobra.Command{
 		"With arguments, discovery is scoped to the targets you name (plus the\n" +
 		"agent-cache sweep described below). Each target is resolved on its own:\n\n" +
 		"  A file       is routed to the right category by what it is. A project file\n" +
-		"               (.env, *.tfvars, mcp.json/.mcp.json, .npmrc) has its secrets\n" +
+		"               (.env, *.tfvars, mcp.json/.mcp.json, .npmrc,\n" +
+		"               .streamlit/secrets.toml) has its secrets\n" +
 		"               moved into a profile and the vault, the file keeps working as a\n" +
 		"               live mount (a git-safe <file>.pointers companion is written\n" +
 		"               alongside). A machine-wide file at a known path (a shell config\n" +
 		"               like ~/.zshrc, a shell history file like ~/.zsh_history,\n" +
 		"               ~/.aws/credentials, ~/.kube/config, Terraform Cloud creds,\n" +
-		"               ~/.docker/config.json, ~/.git-credentials, GCP\n" +
+		"               ~/.docker/config.json, ~/.git-credentials, ~/.cargo/credentials.toml, GCP\n" +
 		"               application-default credentials, a SOPS age key, ~/.netrc,\n" +
 		"               ~/.pypirc, Claude Desktop's MCP config, Claude Code's\n" +
-		"               ~/.claude.json, the global ~/.npmrc)\n" +
+		"               ~/.claude.json, the global ~/.npmrc, the global\n" +
+		"               ~/.streamlit/secrets.toml)\n" +
 		"               is routed to that credential type's handling\n" +
 		"               (credential_process, exec plugin, credential helper, live\n" +
 		"               mount, or in-place redaction for a history file, where each\n" +
 		"               recorded credential moves to the vault and the line keeps\n" +
 		"               its shape, minus the secret).\n" +
-		"  A directory  is walked for its .env/tfvars/mcp/npmrc findings only, never\n" +
+		"  A directory  is walked for its .env/tfvars/mcp/npmrc/streamlit findings only, never\n" +
 		"               the machine-wide fixed-path files (those aren't \"under\" any\n" +
 		"               project directory) — name them explicitly to convert them.\n\n" +
 		"Targets are explicit, so nothing is skipped for looking archived/backup-like:\n" +
@@ -540,6 +544,8 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 	npmrcFiles := d.npmrcFiles
 	netrcFiles := d.netrcFiles
 	pypircFiles := d.pypircFiles
+	cargoRegistries := d.cargoRegistries
+	streamlitFiles := d.streamlitFiles
 	looseSecretFiles := d.looseSecretFiles
 	looseEmbeddedSkipped := d.looseEmbeddedSkipped
 	historyKeyOnly := d.historyKeyOnly
@@ -579,6 +585,8 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 		"npmrc":      &npmrcFiles,
 		"netrc":      &netrcFiles,
 		"pypirc":     &pypircFiles,
+		"cargo":      &cargoRegistries,
+		"streamlit":  &streamlitFiles,
 		"loose":      &looseSecretFiles,
 	}
 	// len-1: "cache" is file-less (the sweep, not a file list) and lives
@@ -697,6 +705,8 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 		npmrcFiles:       npmrcFiles,
 		netrcFiles:       netrcFiles,
 		pypircFiles:      pypircFiles,
+		cargoRegistries:  cargoRegistries,
+		streamlitFiles:   streamlitFiles,
 		looseSecretFiles: looseSecretFiles,
 		jitPaths:         jitPaths,
 		jitPathTarget:    d.jitPathTarget,
@@ -1380,6 +1390,64 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 		fmt.Fprintln(out)
 	}
 
+	if n := len(cargoRegistries); n > 0 {
+		summary.checkGitHistory(migrate.CargoCredentialPaths(home)[0])
+		printMigrateResultCategory(out, pluralWord(n, "cargo registry token", "cargo registry tokens")+" migrated", n)
+		for _, cargoRegistry := range cargoRegistries {
+			result, err := migrate.ApplyCargoRegistry(v, home, cargoRegistry, backups)
+			if err != nil {
+				return false, fmt.Errorf("jit migrate: %w", err)
+			}
+			backupNotes := fmt.Sprintf("`jit vault get %s`", result.CredentialsBackup)
+			if result.ConfigBackup != "" {
+				backupNotes += fmt.Sprintf(", `jit vault get %s`", result.ConfigBackup)
+			}
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %q -> vault profile %q (%s); backups: %s\n",
+				cargoRegistry, result.VaultProfileName, countWord(len(result.Variables), "var", "vars"), backupNotes)))
+		}
+		fmt.Fprintln(out, hlCmds("  `cargo login`/`logout` keep working — a re-login lands in the vault, not a file."))
+		fmt.Fprintln(out)
+	}
+
+	if n := len(streamlitFiles); n > 0 {
+		printMigrateResultCategory(out, pluralWord(n, "Streamlit secrets file", "Streamlit secrets files")+" migrated", n)
+		for _, slPath := range streamlitFiles {
+			summary.checkGitHistory(slPath)
+
+			// The project root is the parent of .streamlit — the file's
+			// location inside a project is fixed by Streamlit, so the root
+			// derives from the path itself, never from the invoking cwd
+			// (the deriveProfileName lesson recorded in migrate/doc.go).
+			// When that parent IS $HOME, this is the global file.
+			globalStreamlit := slPath == migrate.StreamlitGlobalPath(home)
+			slRoot := filepath.Dir(filepath.Dir(slPath))
+			result, err := migrate.ApplyStreamlitSecrets(v, slRoot, slPath, globalStreamlit)
+			if err != nil {
+				return false, fmt.Errorf("jit migrate: %w", err)
+			}
+			if err := addMount(mount.Entry{MountPath: slPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
+				return false, fmt.Errorf("jit migrate: registering mount for %s: %w", slPath, err)
+			}
+			if err := summary.writePointerFile(slPath, result.ProfilePath); err != nil {
+				return false, fmt.Errorf("jit migrate: %w", err)
+			}
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`\n",
+				displayPath(home, slPath), result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath)))
+			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
+			if globalStreamlit {
+				// The global ~/.streamlit/secrets.toml is a machine-wide
+				// mount, same as ~/.pypirc: usage is explicit `jit run
+				// --with streamlit` intent (plan §12a). A project's own
+				// file needs no reminder — `jit run` grants it from the
+				// project directory like any project template mount.
+				if g, ok := globalMountGuidanceForPath(home, slPath); ok {
+					fmt.Fprintf(out, "    %s read it with: jit run --with %s <command>\n", g.tools, g.name)
+				}
+			}
+		}
+		fmt.Fprintln(out)
+	}
+
 	opLinks.print(out)
 
 	// Best-effort: an unreadable marker means no nudge, never a failed
@@ -1791,6 +1859,15 @@ func discoverDirTarget(d *discovered, home, dir string) error {
 		return err
 	}
 	d.npmrcFiles = append(d.npmrcFiles, npms...)
+	// One walk finds both a project's .streamlit/secrets.toml and — when
+	// dir IS $HOME — the global ~/.streamlit/secrets.toml, which is just
+	// the copy that happens to sit there (audit's scanner takes the same
+	// one-walk stance; see migrate.DiscoverStreamlitSecrets).
+	sls, err := migrate.DiscoverStreamlitSecrets(dir)
+	if err != nil {
+		return err
+	}
+	d.streamlitFiles = append(d.streamlitFiles, sls...)
 	return nil
 }
 
@@ -1919,6 +1996,16 @@ func discoverFileTarget(d *discovered, home, path string) error {
 			return err
 		}
 		d.netrcFiles = append(d.netrcFiles, filterToTarget(files, path)...)
+		return nil
+	case migrate.CargoCredentialPaths(home)[0], migrate.CargoCredentialPaths(home)[1]:
+		// Name-keyed like aws/kube/terraform: naming either credentials
+		// file migrates every registry it holds (and strips the stale
+		// copy in the sibling file too — cargo reads only the first).
+		regs, err := migrate.DiscoverCargoRegistries(home)
+		if err != nil {
+			return err
+		}
+		d.cargoRegistries = append(d.cargoRegistries, regs...)
 		return nil
 	case migrate.PypircPath(home):
 		files, err := migrate.DiscoverPypirc(home)
@@ -2065,7 +2152,7 @@ func (d *discovered) dedupe() {
 		&d.k8sManifests, &d.k8sManifestsComplexOnly, &d.shellConfigs,
 		&d.historyFiles, &d.mcpConfigs, &d.awsProfiles, &d.k8sUsers, &d.terraformHosts,
 		&d.dockerRegistries, &d.gitHosts, &d.gcpADCFiles, &d.sopsAgeFiles,
-		&d.npmrcFiles, &d.netrcFiles, &d.pypircFiles, &d.looseSecretFiles, &d.looseEmbeddedSkipped,
+		&d.npmrcFiles, &d.netrcFiles, &d.pypircFiles, &d.cargoRegistries, &d.streamlitFiles, &d.looseSecretFiles, &d.looseEmbeddedSkipped,
 		&d.historyKeyOnly, &d.wrapOwnedSkipped, &d.jitPathRefused,
 	} {
 		dedupeStrings(s)
@@ -2091,7 +2178,7 @@ func (d *discovered) total() int {
 		d.envFiles, d.tfvarsFiles, d.k8sManifests, d.shellConfigs, d.historyFiles, d.mcpConfigs, d.awsProfiles,
 		d.k8sUsers, d.terraformHosts, d.dockerRegistries, d.gitHosts,
 		d.gcpADCFiles, d.sopsAgeFiles, d.npmrcFiles, d.netrcFiles, d.pypircFiles,
-		d.looseSecretFiles,
+		d.cargoRegistries, d.streamlitFiles, d.looseSecretFiles,
 	} {
 		n += len(s)
 	}

@@ -29,16 +29,20 @@ package consent
 // importing it (consent stays a pure package); the TEST imports vault, which
 // is where the coupling belongs.
 var credentialClasses = map[string]bool{
-	"aws":           true,
-	"terraform":     true,
-	"docker":        true,
-	"git":           true,
-	"kube":          true,
-	"gcp":           true,
-	"sops":          true,
-	"npmrc":         true,
-	"netrc":         true,
-	"pypirc":        true,
+	"aws":       true,
+	"terraform": true,
+	"docker":    true,
+	"git":       true,
+	"kube":      true,
+	"gcp":       true,
+	"sops":      true,
+	"npmrc":     true,
+	"netrc":     true,
+	"pypirc":    true,
+	// cargo is a crates.io/registry publish token — the same
+	// supply-chain blast radius as npmrc's and pypirc's, gated for the
+	// same reason.
+	"cargo":         true,
 	"k8s_secret":    true,
 	"shell_history": true,
 	// 1password is a secret linked from the user's password manager (`jit
@@ -65,6 +69,14 @@ var ungatedClasses = map[string]bool{
 	"manual":     true,
 	"loose_file": true,
 	"wrap":       true,
+	// streamlit is a .streamlit/secrets.toml — the application's own
+	// secrets (database passwords, API keys the app itself uses), read by
+	// st.secrets exactly the way a .env's values are read by the app. It
+	// sits in dotenv's half of the partition for dotenv's reason: a
+	// project's own secrets, delivered through a jit run the user
+	// launched. It is NOT a registry/publish credential like npmrc or
+	// pypirc, which is what puts those on the gated side.
+	"streamlit": true,
 }
 
 // RequiresConsent reports whether a secret of the given provenance class is
