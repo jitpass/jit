@@ -83,6 +83,10 @@ two databases would collide on one vault path.
   (`"""…"""`), one carrying escape sequences, or one sharing its line with a
   trailing comment stays in place - rewriting those can't be guaranteed to
   round-trip byte-for-byte, so the line keeps its `jit scan` finding instead.
+  A file where **no** value is rewritable is reported by the scan as a
+  manual fix with that reason, never as `jit migrate <path>` - scan asks
+  migrate before promising (the same rule Kubernetes Secret manifests
+  follow).
 - **The two-part path gate is deliberate.** `secrets.toml` alone is a common
   name (a Rust config, a Helm values file); only `.streamlit/secrets.toml`
   is unambiguously Streamlit's. Name any other secrets.toml explicitly and

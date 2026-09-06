@@ -39,6 +39,7 @@ func newAuditConfig() (audit.Config, error) {
 		return cfg, err
 	}
 	cfg.K8sMigratable = k8sMigratableForScan
+	cfg.StreamlitMigratable = streamlitMigratableForScan
 	return cfg, nil
 }
 
@@ -60,6 +61,23 @@ func k8sMigratableForScan(path string) (reason string, ok bool) {
 		// Recognized but with nothing migrate can move (fully
 		// SOPS-encrypted, an empty scaffold).
 		return "no plaintext Secret values migrate can move", false
+	}
+}
+
+// streamlitMigratableForScan answers the hook with migrate's own probe, so
+// scan and migrate can never disagree about a secrets.toml. Read-only and
+// prompt-free, as the hook's contract requires.
+func streamlitMigratableForScan(path string) (reason string, ok bool) {
+	n, err := migrate.StreamlitFilePreview(path)
+	switch {
+	case err != nil:
+		// Unreadable where audit could read it moments ago (racing edit,
+		// permissions): don't promise a migrate that will error.
+		return err.Error(), false
+	case n == 0:
+		return "its values aren't single-line quoted strings", false
+	default:
+		return "", true
 	}
 }
 

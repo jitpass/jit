@@ -201,9 +201,9 @@ func printMigratePlan(w io.Writer, home string, d *discovered, extras *planExtra
 		printMigratePlanCategory(w,
 			pluralWord(len(npmrcScoped), "npmrc file", "npmrc files")+" "+glyphAction+" secrets move to the vault; the file keeps working via a live, auto-updating mount",
 			shorten(npmrcScoped))
-		printMigratePlanCategory(w,
+		printMigratePlanCategoryAnnotated(w,
 			pluralWord(len(streamlitScoped), "Streamlit secrets file", "Streamlit secrets files")+" "+glyphAction+" credentials move to the vault; the file keeps working via a live, auto-updating mount (other settings untouched)",
-			shorten(streamlitScoped))
+			shorten(streamlitScoped), streamlitPlanAnnotation(home))
 		looseName := pluralWord(len(d.looseSecretFiles), "loose secret file", "loose secret files")
 		looseHeadline := looseName + " " + glyphAction + " the whole file is a bare token; it moves to the vault and the file is replaced with a git-safe pointer (retrieve with `jit vault get`)"
 		if migrateMount {
@@ -314,9 +314,9 @@ func printMigratePlan(w io.Writer, home string, d *discovered, extras *planExtra
 		printMigratePlanCategory(w,
 			pluralWord(len(d.cargoRegistries), "cargo registry token", "cargo registry tokens")+" in ~/.cargo/credentials.toml "+glyphAction+" "+pluralWord(len(d.cargoRegistries), "the token moves", "tokens move")+" to the vault; fetched automatically whenever cargo needs "+pluralWord(len(d.cargoRegistries), "it", "them")+" (cargo login/logout keep working)",
 			d.cargoRegistries)
-		printMigratePlanCategory(w,
+		printMigratePlanCategoryAnnotated(w,
 			pluralWord(len(streamlitFixed), "Streamlit secrets file", "Streamlit secrets files")+" "+glyphAction+" credentials move to the vault; the file keeps working via a live, auto-updating mount (other settings untouched)",
-			shorten(streamlitFixed))
+			shorten(streamlitFixed), streamlitPlanAnnotation(home))
 
 		// --only filters by CATEGORY, not by this scoped/machine-wide
 		// split — selecting "mcp" or "npmrc" always pulls in their own
@@ -443,6 +443,25 @@ func splitNpmrcByScope(home string, npmrcFiles []string) (scoped, fixed []string
 		}
 	}
 	return scoped, fixed
+}
+
+// streamlitPlanAnnotation counts each secrets.toml's migratable
+// credentials for the plan row, the same per-file number the .env rows
+// carry. The callback receives the display-shortened path, so it expands
+// "~" back through home; best-effort — an unreadable file annotates as
+// nothing, never fails the plan.
+func streamlitPlanAnnotation(home string) func(string) string {
+	return func(item string) string {
+		path := item
+		if strings.HasPrefix(path, "~/") {
+			path = filepath.Join(home, path[2:])
+		}
+		n, err := migrate.StreamlitFilePreview(path)
+		if err != nil || n == 0 {
+			return ""
+		}
+		return countWord(n, "credential", "credentials")
+	}
 }
 
 // splitStreamlitByScope separates the global ~/.streamlit/secrets.toml

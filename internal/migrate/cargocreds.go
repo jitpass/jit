@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -84,7 +85,11 @@ func CargoHelperPath(home string) string {
 var cargoSectionPattern = regexp.MustCompile(`^\s*\[\s*(registry|registries\.([A-Za-z0-9_-]+))\s*\]\s*$`)
 
 // cargoTokenLinePattern matches the `token = "..."` line within a table.
-var cargoTokenLinePattern = regexp.MustCompile(`^\s*token\s*=\s*"([^"]*)"\s*$`)
+// Both TOML string forms: basic ("...") and literal ('...') — audit's
+// unquote strips either, so migrate accepting only one would flag-but-
+// refuse a single-quoted token (the D5 divergence this category exists to
+// close).
+var cargoTokenLinePattern = regexp.MustCompile(`^\s*token\s*=\s*(?:"([^"]*)"|'([^']*)')\s*$`)
 
 // cargoRegistryToken is one registry's token and where it was found.
 type cargoRegistryToken struct {
@@ -121,10 +126,17 @@ func findCargoTokens(path string) ([]cargoRegistryToken, error) {
 			continue
 		}
 		m := cargoTokenLinePattern.FindStringSubmatch(line)
-		if m == nil || m[1] == "" {
+		if m == nil {
 			continue
 		}
-		out = append(out, cargoRegistryToken{Registry: registry, Token: m[1], Path: path, Line: i})
+		token := m[1]
+		if token == "" {
+			token = m[2] // the single-quoted (TOML literal string) form
+		}
+		if token == "" {
+			continue
+		}
+		out = append(out, cargoRegistryToken{Registry: registry, Token: token, Path: path, Line: i})
 	}
 	return out, nil
 }
@@ -297,11 +309,6 @@ func ApplyCargoRegistry(v *vault.Vault, home, registry string, dedup ...*BackupT
 		return CargoMigration{}, err
 	}
 
-	credBackup, err := tracker.backupOnce(v, live.Path)
-	if err != nil {
-		return CargoMigration{}, fmt.Errorf("backing up %s: %w", live.Path, err)
-	}
-
 	// ~/.cargo/config.toml is shared across every registry in this run and
 	// may not exist yet — same discipline as ~/.terraformrc: back it up
 	// once at its pristine state if it existed; if jit creates it, record
@@ -309,9 +316,37 @@ func ApplyCargoRegistry(v *vault.Vault, home, registry string, dedup ...*BackupT
 	configHandled := tracker.alreadyHandled(configPath)
 	_, configStatErr := os.Stat(configPath)
 	configExisted := configStatErr == nil
+
+	// Undo linkage (BackupRecord.RestoreWith): cargo is the category where
+	// restoring the credentials file ALONE is silently ineffective — jit's
+	// provider registered in config.toml outranks credentials.toml (later
+	// wins, spike finding 2), so cargo would keep fetching the stale vault
+	// token and the "restored" file would never be read. Terraform has the
+	// opposite precedence (a static credentials entry beats the helper),
+	// which is why its records need no link. The link is recorded when this
+	// run touches config.toml (appends the provider line, creates the file,
+	// or an earlier registry in the run already handled it); a config left
+	// untouched because a PREVIOUS run registered jit must not be yanked
+	// back to that older backup by this run's undo.
+	var credLink []string
+	if !alreadyInstalled || configHandled {
+		credLink = []string{configPath}
+	}
+	var credFiles []string
+	for _, t := range tokens {
+		if !slices.Contains(credFiles, t.Path) {
+			credFiles = append(credFiles, t.Path)
+		}
+	}
+
+	credBackup, err := tracker.backupOnceLinking(v, live.Path, credLink)
+	if err != nil {
+		return CargoMigration{}, fmt.Errorf("backing up %s: %w", live.Path, err)
+	}
+
 	var configBackup string
 	if configExisted && !configHandled {
-		configBackup, err = tracker.backupOnce(v, configPath)
+		configBackup, err = tracker.backupOnceLinking(v, configPath, credFiles)
 		if err != nil {
 			return CargoMigration{}, fmt.Errorf("backing up %s: %w", configPath, err)
 		}
@@ -343,7 +378,7 @@ func ApplyCargoRegistry(v *vault.Vault, home, registry string, dedup ...*BackupT
 		if t.Registry != registry {
 			continue
 		}
-		if _, err := tracker.backupOnce(v, t.Path); err != nil {
+		if _, err := tracker.backupOnceLinking(v, t.Path, credLink); err != nil {
 			return CargoMigration{}, fmt.Errorf("backing up %s: %w", t.Path, err)
 		}
 		if err := removeCargoTokenLine(t.Path, registry); err != nil {

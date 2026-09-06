@@ -139,6 +139,20 @@ func DiscoverStreamlitSecrets(root string) ([]string, error) {
 	return found, nil
 }
 
+// StreamlitFilePreview reports how many credential lines this migrator
+// would move from one secrets.toml — the read-only probe behind
+// audit.Config.StreamlitMigratable (so scan never promises a file whose
+// every flagged value falls outside the rewritable shape) and the plan's
+// per-file annotation. Prompt-free by construction: it reads the file and
+// nothing else.
+func StreamlitFilePreview(path string) (migratable int, err error) {
+	lines, err := readLines(path)
+	if err != nil {
+		return 0, err
+	}
+	return len(findSecretStreamlitLines(lines)), nil
+}
+
 // ApplyStreamlitSecrets moves every credential-shaped quoted value out of
 // a secrets.toml and into v's vault, then replaces the file with a FIFO
 // serving a template-substituted reconstruction (mount.FormatTemplate):
