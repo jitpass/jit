@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -310,15 +311,52 @@ func scanMCPConfigFile(cfg Config, path string) ([]Finding, error) {
 	// --env-file pointer is left alone: its credential lives in the .env it
 	// names (OriginPath), not on any line of this config, so a line here would
 	// point at the wrong file.
-	for i := range findings {
-		if findings[i].OriginPath != "" {
-			continue
-		}
-		if ln := mcpFindingLine(raw, findings[i]); ln > 0 {
-			findings[i].Line = &ln
+	//
+	// Locating a finding costs one bytes.Index over the raw text (plus a
+	// binary search for the line, once the newline offsets are precomputed),
+	// so locating every finding is O(findings x filesize). Both are bounded
+	// for a real config — a handful of servers in a few KB — but a hostile
+	// .mcp.json can carry thousands of token-shaped values in a file up to
+	// the 5 MiB parse cap, and that product is a multi-second hang the fuzzer
+	// found (2026-09-10). The line number is a cosmetic anchor with a
+	// documented fallback (a nil Line makes the report emit a grep locator),
+	// so cap the work by the product rather than pay it: past the budget,
+	// leave the findings lineless. No real config comes near it.
+	if len(findings) > 0 && len(findings)*len(raw) <= mcpLineLocateBudget {
+		nl := newlineOffsets(raw)
+		for i := range findings {
+			if findings[i].OriginPath != "" {
+				continue
+			}
+			if ln := mcpFindingLine(raw, nl, findings[i]); ln > 0 {
+				findings[i].Line = &ln
+			}
 		}
 	}
 	return findings, nil
+}
+
+// mcpLineLocateBudget caps findings x filesize for the line-location pass
+// above. 64 MiB-worth of byte scans is ~10 ms and dwarfs any real config
+// (dozens of findings in a few KB is well under a million), while a hostile
+// file of thousands of findings in megabytes lands far above it and skips
+// straight to the grep-locator fallback instead of hanging.
+const mcpLineLocateBudget = 64 << 20
+
+// newlineOffsets returns the byte index of every '\n' in raw, ascending, so a
+// byte position maps to a line number with one binary search instead of a
+// fresh prefix scan per lookup.
+func newlineOffsets(raw []byte) []int {
+	var offs []int
+	for i := 0; i < len(raw); {
+		j := bytes.IndexByte(raw[i:], '\n')
+		if j < 0 {
+			break
+		}
+		offs = append(offs, i+j)
+		i += j + 1
+	}
+	return offs
 }
 
 // mcpFindingLine returns the 1-based line in the raw config where a finding's
@@ -331,9 +369,9 @@ func scanMCPConfigFile(cfg Config, path string) ([]Finding, error) {
 // literally in the source and sits on the credential's line (compact JSON) or
 // one line above it (pretty-printed) — close enough to send a reader to the
 // right place, and never a value.
-func mcpFindingLine(raw []byte, f Finding) int {
+func mcpFindingLine(raw []byte, nl []int, f Finding) int {
 	if f.rawValue != "" {
-		if ln := lineContaining(raw, []byte(f.rawValue)); ln > 0 {
+		if ln := lineContaining(raw, nl, []byte(f.rawValue)); ln > 0 {
 			return ln
 		}
 	}
@@ -355,13 +393,16 @@ func mcpFindingLine(raw []byte, f Finding) int {
 	// not a key, so searching for the quoted form finds nothing and the
 	// finding stays lineless rather than pointing somewhere wrong — the
 	// intended outcome, no special case needed.
-	return lineContaining(raw, []byte("\""+tail+"\""))
+	return lineContaining(raw, nl, []byte("\""+tail+"\""))
 }
 
 // lineContaining returns the 1-based line of the first occurrence of needle in
 // raw, or 0 if absent. Never prints needle — it is used to locate, and the
-// caller stores only the line number.
-func lineContaining(raw []byte, needle []byte) int {
+// caller stores only the line number. nl is raw's ascending newline offsets
+// (newlineOffsets): the line is 1 + the count of newlines before the match,
+// found by binary search rather than a fresh prefix scan, so locating many
+// findings in one file stays linear overall.
+func lineContaining(raw []byte, nl []int, needle []byte) int {
 	if len(needle) == 0 {
 		return 0
 	}
@@ -369,7 +410,7 @@ func lineContaining(raw []byte, needle []byte) int {
 	if i < 0 {
 		return 0
 	}
-	return 1 + bytes.Count(raw[:i], []byte{'\n'})
+	return 1 + sort.SearchInts(nl, i)
 }
 
 // withContextEvidence restores a scanner's own evidence over the generic
