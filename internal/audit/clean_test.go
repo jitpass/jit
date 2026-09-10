@@ -39,6 +39,21 @@ func TestCleanClassOfMatrix(t *testing.T) {
 			f.Archived = true
 			return f
 		}(), CleanArchivedCopy},
+		// A bare trash/ scratch directory is not the OS Trash: nobody chose
+		// deletion, so it must take the vault-verified archived route, never
+		// the no-check trash one (code review, 2026-09-10).
+		{"bare trash scratch dir is archived, not trash", func() Finding {
+			f := countedFinding(FindingTypeEnvFilePresent, filepath.Join(home, "dev", "myapp", "trash", ".env"))
+			f.Archived = true
+			return f
+		}(), CleanArchivedCopy},
+		// A volume's .Trashes IS the OS Trash and was previously matched by
+		// neither trash nor archive names.
+		{"volume .Trashes is trash", func() Finding {
+			f := countedFinding(FindingTypeEnvFilePresent, "/Volumes/USB/.Trashes/501/.env")
+			f.Archived = true
+			return f
+		}(), CleanTrash},
 		{"archived private key excluded", func() Finding {
 			f := countedFinding(FindingTypePrivateKeyRisk, filepath.Join(home, "backup", "id_rsa"))
 			f.Archived = true
