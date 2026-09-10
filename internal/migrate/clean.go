@@ -70,7 +70,11 @@ type CleanDeletion struct {
 }
 
 // CleanOutcome is one apply's result. Deleted and LeftAlone together cover
-// every candidate the plan listed — nothing is dropped silently.
+// every CANDIDATE the plan listed — nothing is dropped silently. Plan-time
+// refusals (CleanPlan.LeftAlone) are deliberately NOT copied in: they were
+// already printed with the plan, and carrying them here made the same
+// refusal print twice, reading as a second failure caused by the delete
+// pass (code review, 2026-09-10).
 type CleanOutcome struct {
 	Deleted   []CleanDeletion
 	LeftAlone []CleanSkip
@@ -104,6 +108,13 @@ func (o CleanOutcome) Errors() bool {
 func PlanClean(home string, findings []audit.Finding, exclude map[string]bool) CleanPlan {
 	var plan CleanPlan
 	classes := map[string]map[audit.CleanClass]bool{}
+	// Archived private-key files come out of CleanClassOf as CleanNone (the
+	// key body is never vaulted, so redundancy is unprovable), but the scan
+	// report's archived note still points their group at --clean. Track them
+	// so the plan can REFUSE them visibly instead of dropping them — the
+	// plan's own invariant, "a finding the scan showed never silently
+	// vanishes" (code review, 2026-09-10).
+	archivedKey := map[string]bool{}
 	for _, f := range findings {
 		if !audit.CountedAsSecret(f) || f.FilePath == "" {
 			continue
@@ -112,6 +123,9 @@ func PlanClean(home string, findings []audit.Finding, exclude map[string]bool) C
 			classes[f.FilePath] = map[audit.CleanClass]bool{}
 		}
 		classes[f.FilePath][audit.CleanClassOf(home, f)] = true
+		if f.Archived && f.FindingType == audit.FindingTypePrivateKeyRisk && !audit.InTrash(f.FilePath) {
+			archivedKey[f.FilePath] = true
+		}
 	}
 	digestsByFile := audit.SecretDigestsByFile(findings)
 
@@ -123,19 +137,30 @@ func PlanClean(home string, findings []audit.Finding, exclude map[string]bool) C
 
 	for _, path := range paths {
 		set := classes[path]
+		skip := func(reason string) {
+			plan.LeftAlone = append(plan.LeftAlone, CleanSkip{Path: path, Reason: reason})
+		}
 		if len(set) != 1 {
-			continue // mixed classes: the refusing finding wins, file stays manual
+			// Mixed classes: the refusing finding wins and the file stays
+			// manual — said out loud, because at least one of its findings
+			// sits in a group whose report prose names --clean.
+			skip("that mix deletable findings with ones --clean must not touch")
+			continue
 		}
 		var class audit.CleanClass
 		for c := range set {
 			class = c
 		}
-		if class == audit.CleanNone || exclude[path] {
+		if class == audit.CleanNone {
+			if archivedKey[path] {
+				skip("holding private key material (rotate the key, then delete the file by hand)")
+			}
+			// Every other CleanNone file is migrate's or the manual list's
+			// business, disclosed on those surfaces; silence here is correct.
 			continue
 		}
-
-		skip := func(reason string) {
-			plan.LeftAlone = append(plan.LeftAlone, CleanSkip{Path: path, Reason: reason})
+		if exclude[path] {
+			continue
 		}
 
 		info, err := os.Lstat(path)
@@ -184,12 +209,17 @@ func PlanClean(home string, findings []audit.Finding, exclude map[string]bool) C
 // is gone and its bytes no longer match the plan, so it is reported as fixed
 // another way, never deleted.
 //
+// live lists files this run's cache sweep left alone because an agent
+// session was actively writing them (SkipLive): deleting one would unlink
+// the inode out from under the live writer, so the clean pass refuses them
+// too — the design's own permanent exclusion, previously unenforced (code
+// review, 2026-09-10). Nil when the sweep did not run this time.
+//
 // Per-file failures never abort the batch (jit migrate undo's runRestores
 // precedent): each candidate ends up in Deleted or LeftAlone, and the caller
 // exits non-zero if Outcome.Errors().
-func ApplyClean(v *vault.Vault, plan CleanPlan, runValues []AgentCacheSecret, swept map[string]bool) (CleanOutcome, error) {
+func ApplyClean(v *vault.Vault, plan CleanPlan, runValues []AgentCacheSecret, swept, live map[string]bool) (CleanOutcome, error) {
 	var out CleanOutcome
-	out.LeftAlone = append(out.LeftAlone, plan.LeftAlone...)
 
 	vaulted, err := vaultValueDigests(v, runValues)
 	if err != nil {
@@ -203,6 +233,10 @@ func ApplyClean(v *vault.Vault, plan CleanPlan, runValues []AgentCacheSecret, sw
 
 		if swept[cand.Path] {
 			skip("this run's cache sweep already redacted", false)
+			continue
+		}
+		if live[cand.Path] {
+			skip("an agent session was writing to them this run; re-run later", false)
 			continue
 		}
 		if cand.Class != audit.CleanTrash && !allDigestsVaulted(cand.digests, vaulted) {

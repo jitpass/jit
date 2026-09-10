@@ -80,7 +80,13 @@ type wrapPlanRow struct {
 }
 
 func (e *planExtras) empty() bool {
-	return e == nil || (len(e.wraps) == 0 && len(e.guardItems) == 0 && len(e.cacheEdits) == 0 && e.cacheNote == "" && e.cleanCount() == 0)
+	// The clean test counts LeftAlone too, not just cleanCount(): a
+	// refusals-only --clean plan has nothing to delete but something the
+	// user must still see, and empty()==true here early-returned
+	// printPlanExtras before printCleanSkips could say why their file was
+	// refused (code review, 2026-09-10). cleanHasWork is the one predicate
+	// for that, shared with the routing in migrate.go.
+	return e == nil || (len(e.wraps) == 0 && len(e.guardItems) == 0 && len(e.cacheEdits) == 0 && e.cacheNote == "" && !cleanHasWork(e.clean))
 }
 
 // cleanCount is the number of planned deletions, 0 when --clean is off.
