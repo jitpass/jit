@@ -1905,7 +1905,15 @@ func viewHintByAnchor(f Finding, home string, plural, multiFile bool) string {
 	// Single quotes are safe for the ANCHOR unconditionally: isAnchorRune and
 	// identLike between them admit only letters, digits, "_", "-" and ".".
 	// The PATH's quoting is shellSafePath's responsibility, not this line's.
-	return fmt.Sprintf("%s: grep -Fno '%s' %s", lead, a, shellSafePath(home, f.FilePath))
+	flags := "-Fno"
+	// Against a SQLite store (gcloud's credentials.db) grep answers "Binary
+	// file matches" instead of showing the anchor; -a makes it print the
+	// match. As safe as the text form, and for the same reason: the anchor
+	// is the key NAME, so the value never reaches the terminal.
+	if strings.EqualFold(filepath.Ext(f.FilePath), ".db") {
+		flags = "-Fnoa"
+	}
+	return fmt.Sprintf("%s: grep %s '%s' %s", lead, flags, a, shellSafePath(home, f.FilePath))
 }
 
 // patternEREFor resolves the finding's vendor — named directly in KeyName, or
