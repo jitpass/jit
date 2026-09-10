@@ -56,6 +56,32 @@ var selfRotatingCaches = []selfRotatingCache{
 		title:  "A Gemini CLI OAuth token (rotates itself)",
 		action: "revoke at the provider if exposed; sign out and back in to reset — the CLI rewrites this file on every refresh",
 	},
+	// The gcloud CLI's own login store (issue #93). gcloud rewrites
+	// credentials.db on login, reauth and refresh-token rotation, and the
+	// legacy_credentials tree on every login — and both are doubly out of
+	// mount's reach: a SQLite file needs seeks and byte-range locks no FIFO
+	// can serve, and the tool writes back. scanGcloudCLICredentials reports
+	// what is inside; these entries keep the remedy manual so scan never
+	// promises a `jit migrate` that migrate would refuse.
+	// One shared action string for both gcloud entries: the triage group
+	// prints a single arrow for the class, so two entries that will always
+	// appear together must agree on it or the group shows one of them
+	// picked arbitrarily.
+	{
+		match:  filepath.Join(".config", "gcloud", "credentials.db"),
+		title:  "The gcloud CLI's own login (gcloud rewrites this store itself)",
+		action: "revoke with `gcloud auth revoke` if exposed, then log in again when needed; jit never mounts a store gcloud rewrites",
+	},
+	{
+		// Anchored under .config/gcloud, not a bare component match: a
+		// project's own legacy_credentials/ directory holding, say, a
+		// Stripe key must keep its migrate offer and must not be told to
+		// run `gcloud auth revoke` (code review, 2026-09-10).
+		match:  filepath.Join(".config", "gcloud", "legacy_credentials"),
+		dir:    true,
+		title:  "A gcloud legacy credential copy (rewritten on every login)",
+		action: "revoke with `gcloud auth revoke` if exposed, then log in again when needed; jit never mounts a store gcloud rewrites",
+	},
 	// A variant of the class: the value (a OneLogin API client-secret)
 	// never rotates, but the file is still tool-rewritten — clisso creates
 	// it on any run and rewrites it wholesale from `clisso apps create`,
