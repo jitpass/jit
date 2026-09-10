@@ -238,6 +238,124 @@ func TestScanGCPApplicationDefaultCredentialsSkipsFIFO(t *testing.T) {
 	}
 }
 
+// fakeGcloudCredentialsDB builds bytes shaped like gcloud's credentials.db:
+// a SQLite header, binary page noise (NUL bytes included, which the line
+// scanners would reject), and each account's serialized credential JSON
+// embedded verbatim the way the credentials table stores it. Not a valid
+// SQLite file on purpose — the scanner reads raw bytes, and the test must
+// hold only to what the scanner holds to.
+func fakeGcloudCredentialsDB(blobs ...string) string {
+	var b strings.Builder
+	b.WriteString("SQLite format 3\x00")
+	b.WriteString("\x10\x00\x01\x01\x00@  \x00\x00\x00\x05")
+	for _, blob := range blobs {
+		b.WriteString("\x00\x00\x17\x01\x05tablecredentials\x00")
+		b.WriteString(blob)
+	}
+	return b.String()
+}
+
+func TestScanGcloudCLICredentials(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, ".config", "gcloud"))
+	writeFile(t, filepath.Join(home, ".config", "gcloud", "credentials.db"),
+		fakeGcloudCredentialsDB(
+			`{"type": "authorized_user", "client_id": "example.apps.googleusercontent.com", "client_secret": "example-public-constant", "refresh_token": "1//jit-test-refresh-token-a"}`,
+			`{"type": "authorized_user", "client_id": "example.apps.googleusercontent.com", "client_secret": "example-public-constant", "refresh_token": "1//jit-test-refresh-token-b"}`,
+		))
+	findings, err := scanGcloudCLICredentials(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("scanGcloudCLICredentials: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1 (one per secret field kind, accounts counted in evidence)", len(findings))
+	}
+	f := findings[0]
+	if *f.KeyName != "refresh_token" {
+		t.Errorf("KeyName = %q, want %q", *f.KeyName, "refresh_token")
+	}
+	if !strings.Contains(f.Evidence, "2 accounts") {
+		t.Errorf("Evidence = %q, want the account count in it", f.Evidence)
+	}
+	if !strings.Contains(f.Evidence, "authorized_user") {
+		t.Errorf("Evidence = %q, want the credential type in it", f.Evidence)
+	}
+}
+
+func TestScanGcloudCLICredentialsServiceAccount(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, ".config", "gcloud"))
+	writeFile(t, filepath.Join(home, ".config", "gcloud", "credentials.db"),
+		fakeGcloudCredentialsDB(
+			`{"type": "service_account", "client_email": "svc@example.iam.gserviceaccount.com", "private_key": "-----BEGIN PRIVATE KEY-----\\njit-test\\n-----END PRIVATE KEY-----\\n"}`,
+		))
+	findings, err := scanGcloudCLICredentials(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("scanGcloudCLICredentials: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+	if *findings[0].KeyName != "private_key" {
+		t.Errorf("KeyName = %q, want %q", *findings[0].KeyName, "private_key")
+	}
+}
+
+func TestScanGcloudCLICredentialsLegacyCopies(t *testing.T) {
+	home := t.TempDir()
+	legacy := filepath.Join(home, ".config", "gcloud", "legacy_credentials", "alex@example.com")
+	mkdirAll(t, legacy)
+	writeFile(t, filepath.Join(legacy, "adc.json"), `{
+  "type": "authorized_user",
+  "client_id": "example.apps.googleusercontent.com",
+  "client_secret": "example-public-constant",
+  "refresh_token": "1//jit-test-refresh-token-legacy"
+}
+`)
+	findings, err := scanGcloudCLICredentials(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("scanGcloudCLICredentials: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+	if got := findings[0].FilePath; got != filepath.Join(legacy, "adc.json") {
+		t.Errorf("FilePath = %q, want the legacy adc.json", got)
+	}
+	if !strings.Contains(findings[0].Evidence, "gsutil") {
+		t.Errorf("Evidence = %q, want it to name what wrote the copy", findings[0].Evidence)
+	}
+}
+
+func TestScanGcloudCLICredentialsAbsent(t *testing.T) {
+	findings, err := scanGcloudCLICredentials(Config{HomeDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("scanGcloudCLICredentials: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("got %d findings on an empty home, want 0", len(findings))
+	}
+}
+
+func TestScanGcloudCLICredentialsSkipsFIFO(t *testing.T) {
+	home := t.TempDir()
+	mkdirAll(t, filepath.Join(home, ".config", "gcloud"))
+	path := filepath.Join(home, ".config", "gcloud", "credentials.db")
+	// Same contract as the ADC scanner's guard: a non-regular file is
+	// skipped without being opened. If the guard regresses, this test hangs
+	// on the open rather than failing; the go test timeout surfaces it.
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatalf("Mkfifo: %v", err)
+	}
+	findings, err := scanGcloudCLICredentials(Config{HomeDir: home})
+	if err != nil {
+		t.Fatalf("scanGcloudCLICredentials: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("got %d findings for a FIFO, want 0", len(findings))
+	}
+}
+
 func TestScanNetrc(t *testing.T) {
 	home := t.TempDir()
 	writeFile(t, filepath.Join(home, ".netrc"), `machine api.github.com

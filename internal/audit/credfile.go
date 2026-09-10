@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/url"
 	"os"
@@ -65,6 +66,7 @@ func scanKnownCredentialFiles(cfg Config) ([]Finding, error) {
 		scanDockerConfig,
 		scanGitCredentials,
 		scanGCPApplicationDefaultCredentials,
+		scanGcloudCLICredentials,
 		scanNetrc,
 		scanClissoConfig,
 	} {
@@ -998,6 +1000,133 @@ func scanGCPApplicationDefaultCredentials(cfg Config) ([]Finding, error) {
 		})}, nil
 	}
 	return nil, nil
+}
+
+// --- gcloud CLI credential store (~/.config/gcloud/credentials.db) ---
+
+// The ADC file above is what the Google SDKs and terraform read; the gcloud
+// CLI itself reads none of it. Its own login lives in credentials.db, a
+// SQLite file whose credentials table stores each account's serialized OAuth
+// credential as plain JSON in a BLOB column: refresh_token beside client_id
+// and client_secret. The client pair is gcloud's public installed-app
+// constant (the same position gcpadc.go takes for the ADC), so the refresh
+// token is the whole secret — and it mints access tokens from any machine,
+// with no MFA on refresh. A machine whose ADC file is migrated and mounted
+// still runs `gcloud secrets versions access` with no Touch ID, because that
+// command never touches the file jit protects; without this scanner the
+// report names the ADC beside it, which reads as coverage the user does not
+// have (issue #93).
+//
+// There is no SQL here on purpose. The serialized JSON sits verbatim in the
+// DB pages, so the same locate-a-JSON-string-literal regex the ADC migration
+// uses on raw bytes (migrate's gcpADCValuePattern) finds it without jit
+// growing a SQLite dependency — TECH_STACK §4 R5 stays untouched. The
+// content sweep can never catch this file: its NUL sniff rejects binary
+// content, and the refresh token matches no vendor pattern besides.
+var (
+	gcloudCredTypePattern    = gcloudJSONValuePattern("type")
+	gcloudCredSecretPatterns = []struct {
+		field   string
+		pattern *regexp.Regexp
+	}{
+		{"refresh_token", gcloudJSONValuePattern("refresh_token")},
+		{"private_key", gcloudJSONValuePattern("private_key")},
+	}
+)
+
+// gcloudJSONValuePattern matches `"field": "value"` in raw bytes, JSON
+// escapes included — the byte-level shape of both the DB blobs and the
+// legacy adc.json copies, whitespace-tolerant for either serializer.
+func gcloudJSONValuePattern(field string) *regexp.Regexp {
+	return regexp.MustCompile(`"` + field + `"\s*:\s*"((?:[^"\\]|\\.)+)"`)
+}
+
+func scanGcloudCLICredentials(cfg Config) ([]Finding, error) {
+	gcloudDir := filepath.Join(cfg.HomeDir, ".config", "gcloud")
+	findings, err := scanGcloudSerializedCredential(cfg,
+		filepath.Join(gcloudDir, "credentials.db"), "gcloud CLI login credential")
+
+	// legacy_credentials/<account>/adc.json duplicates each account's
+	// refresh token in plain JSON, written for gsutil. Same serialized
+	// shape, so the same byte-level extraction reads it; per-account
+	// subdirectories, so each file is its own finding (distinct FilePath,
+	// distinct RecordID).
+	entries, dirErr := os.ReadDir(filepath.Join(gcloudDir, "legacy_credentials"))
+	if dirErr != nil && !os.IsNotExist(dirErr) {
+		err = errors.Join(err, dirErr)
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		legacy, legacyErr := scanGcloudSerializedCredential(cfg,
+			filepath.Join(gcloudDir, "legacy_credentials", e.Name(), "adc.json"),
+			"gcloud legacy credential copy (written for gsutil)")
+		err = errors.Join(err, legacyErr)
+		findings = append(findings, legacy...)
+	}
+	return findings, err
+}
+
+// scanGcloudSerializedCredential reports the secret fields of a serialized
+// gcloud OAuth credential found in path's raw bytes — SQLite store and
+// legacy JSON copy alike. One finding per secret field kind, not per
+// account: RecordID is (type, path, key_name), so a second account's
+// refresh token in the same file would collide; the account count goes in
+// the evidence instead.
+func scanGcloudSerializedCredential(cfg Config, path, what string) ([]Finding, error) {
+	// Lstat + IsRegular before open, the standard fixed-path FIFO guard
+	// (see scanGCPApplicationDefaultCredentials above). Nothing mounts
+	// these paths today, but the guard is what keeps that a fact about
+	// migrate rather than a hang in scan.
+	info, statErr := os.Lstat(path)
+	if statErr != nil {
+		if os.IsNotExist(statErr) {
+			return nil, nil
+		}
+		return nil, statErr
+	}
+	if !info.Mode().IsRegular() {
+		return nil, nil
+	}
+	file, err := openFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxContentScanSize))
+	if err != nil {
+		return nil, err
+	}
+
+	credType := "authorized_user"
+	if m := gcloudCredTypePattern.FindSubmatch(data); m != nil {
+		credType = string(m[1])
+	}
+	var findings []Finding
+	for _, sp := range gcloudCredSecretPatterns {
+		matches := sp.pattern.FindAllSubmatch(data, -1)
+		if len(matches) == 0 {
+			continue
+		}
+		evidence := fmt.Sprintf("%s (%s) found", what, credType)
+		if len(matches) > 1 {
+			evidence = fmt.Sprintf("%s (%s) found for %d accounts", what, credType, len(matches))
+		}
+		findings = append(findings, cfg.ValueFinding(ValueFindingParams{
+			FindingType:  FindingTypeCredentialFile,
+			FilePath:     path,
+			KeyName:      sp.field,
+			RawValue:     string(matches[0][1]),
+			BaseSeverity: SeverityHigh,
+			Confidence:   ConfidenceHigh,
+			Evidence:     evidence,
+		}))
+	}
+	return findings, nil
 }
 
 // --- netrc (~/.netrc, machine/login/password) ---

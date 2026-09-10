@@ -65,6 +65,14 @@ var credentialDumpSkipExts = map[string]bool{
 	".mp4": true, ".mov": true, ".woff": true, ".woff2": true, ".ttf": true,
 	".docx": true, ".pptx": true, ".dmg": true, ".sqlite": true,
 	".webp": true, ".heic": true, ".7z": true, ".tgz": true,
+	// .db is deliberately NOT here, though gcloud's credentials.db is
+	// binary and admitted by the "credential" name hint: this list is an
+	// open()-saving optimization, and .db is also the extension people
+	// give hand-written text dumps ("prod-credentials.db"). Skipping it
+	// would trade one wasted open of a real SQLite store — which the NUL
+	// sniff rejects anyway — for silently losing those text exports from
+	// the sweep (code review, 2026-09-10). gcloud's actual store has its
+	// own structural scanner, scanGcloudCLICredentials.
 }
 
 // classifyCredentialDump content-scans a walked file whose NAME says it holds

@@ -68,6 +68,18 @@ func ScanDerivedCredentials(cfg Config) []DerivedCredential {
 			Advice: "migrating the source profile still protects the long-lived key; the session minted from it is cached by the CLI",
 		})
 	}
+	// gcloud's access-token cache: the ~1h tokens minted from the refresh
+	// token in credentials.db, one row per account. The refresh token
+	// itself is a finding (scanGcloudCLICredentials); this cache is the
+	// derived layer below it — rewritten by gcloud whenever a cached token
+	// nears expiry, so the same doctrine as ~/.aws/cli/cache applies.
+	if isRegularFile(filepath.Join(cfg.HomeDir, ".config", "gcloud", "access_tokens.db")) {
+		out = append(out, DerivedCredential{
+			Path:   filepath.Join(cfg.HomeDir, ".config", "gcloud", "access_tokens.db"),
+			What:   "access tokens gcloud cached for itself (about an hour each), in plaintext",
+			Advice: "they expire on their own; delete the file to clear them now (gcloud rewrites it in use)",
+		})
+	}
 	// clisso's opt-in credential_process cache (its --cache-path default):
 	// live temporary AWS credentials in AWS INI format, at a path nothing
 	// else looks in — not even ~/.aws/credentials sweeps, since the name

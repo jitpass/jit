@@ -23,6 +23,17 @@ func TestSelfRotatingCacheFor(t *testing.T) {
 		// offered. A copy under any directory classifies the same.
 		{"/Users/alex/.clisso.yaml", true},
 		{"/backup/home/alex/.clisso.yaml", true},
+		// The gcloud CLI's own login store and its legacy per-account
+		// copies: gcloud rewrites both on login/reauth (issue #93).
+		{"/Users/alex/.config/gcloud/credentials.db", true},
+		{"/Users/alex/.config/gcloud/legacy_credentials/alex@example.com/adc.json", true},
+		// A project's own directory that happens to be called
+		// legacy_credentials is not gcloud's: it keeps its migrate offer
+		// and must not be handed `gcloud auth revoke` advice.
+		{"/Users/alex/work/billing/legacy_credentials/prod.env", false},
+		// The ADC file beside them stays migratable — it must never be
+		// swept into the class by a loose gcloud-path match.
+		{"/Users/alex/.config/gcloud/application_default_credentials.json", false},
 		// Neighbours in the same directory are ordinary files.
 		{"/Users/alex/.gemini/google_accounts.json", false},
 		{"/Users/alex/.gemini/.env", false},

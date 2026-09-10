@@ -80,9 +80,10 @@ prose should state).
 - A `selfRotatingCaches` entry (`selfrotating.go`) so the remedy is
   manual, `FixCommand` stays empty, and scan never promises a migrate
   it cannot perform. Permanent until part B ships, if it ever does.
-- Add `.db` to `credentialDumpSkipExts` (`content.go:62-68` has only
-  `.sqlite`), so the content sweep stops reading DB binaries for
-  nothing.
+- Reviewed out (2026-09-10): adding `.db` to `credentialDumpSkipExts`.
+  The skip would also drop hand-written text dumps named `*.db` from
+  the sweep; the NUL sniff already keeps the binary store out, so the
+  skip saved one open and cost real coverage.
 - Fix `docs/migrate/gcp.md:57-58`, which currently frames the gap as
   intentional; after this it is a reported finding.
 - Extend the derived-credentials advisory to name the gcloud store
