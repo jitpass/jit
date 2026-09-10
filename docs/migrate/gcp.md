@@ -56,6 +56,10 @@ leaves it alone.)
   convert it (a project directory walk never touches it).
 - The gcloud CLI's *own* login (`gcloud auth login`) lives elsewhere
   (`~/.config/gcloud/credentials.db`) and isn't part of this migration.
+  `jit scan` reports it — the refresh token inside mints access tokens
+  from any machine — but gcloud rewrites that store on login and reauth,
+  so jit never mounts or migrates it; if it was exposed, revoke with
+  `gcloud auth revoke` and log in again.
 - Re-running `gcloud auth application-default login` replaces the mount
   with a fresh plaintext file; run `jit migrate <path-to-ADC-json>` again
   to re-vault it.

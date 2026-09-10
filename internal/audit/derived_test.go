@@ -57,6 +57,25 @@ func TestDerivedCredentialsFoundWhereTheScannerWalksPast(t *testing.T) {
 	}
 }
 
+// gcloud's access-token cache is the derived layer under the credentials.db
+// finding: it must appear as an advisory, never as a finding.
+func TestGcloudAccessTokenCacheIsAdvisory(t *testing.T) {
+	home := t.TempDir()
+	writeFileIn(t, filepath.Join(home, ".config", "gcloud", "access_tokens.db"),
+		"SQLite format 3\x00")
+
+	got := ScanDerivedCredentials(Config{HomeDir: home})
+	if len(got) != 1 {
+		t.Fatalf("got %d advisory item(s), want 1: %+v", len(got), got)
+	}
+	if want := filepath.Join(home, ".config", "gcloud", "access_tokens.db"); got[0].Path != want {
+		t.Errorf("Path = %q, want %q", got[0].Path, want)
+	}
+	if !strings.Contains(got[0].What, "gcloud") {
+		t.Errorf("What = %q, want it to name gcloud", got[0].What)
+	}
+}
+
 // An empty cache directory is a directory, not a credential.
 func TestEmptyCacheDirectoryIsNotReported(t *testing.T) {
 	home := t.TempDir()
