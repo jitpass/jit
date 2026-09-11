@@ -113,7 +113,7 @@ func TestStatusReflectsRealAgentRunningAndLocked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "service  ● running · locked") {
+	if !strings.Contains(out, "service  ○ running · locked") {
 		t.Errorf("expected a locked agent summary, got:\n%s", out)
 	}
 	if !strings.Contains(out, "mounts   ○ 1 registered mount · serving decoy content only (service locked") {

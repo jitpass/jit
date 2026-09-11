@@ -621,7 +621,12 @@ func printStatusText(w io.Writer, r statusResult) {
 		_, _ = cOK.Fprint(w, glyphOK+" ")
 		printStatusGlyphValue(w, "running · unlocked (locks in %s)", (time.Duration(r.Agent.LocksInSeconds) * time.Second).String())
 	default:
-		_, _ = cOK.Fprint(w, glyphOK+" ")
+		// Amber, not green: locked is the resting state, but it is the same
+		// state the mounts row reports amber ("serving decoy content only"),
+		// and the glyph table files a locked session under ○. One state, one
+		// ink — a dashboard that painted it green on one row and amber on the
+		// next disagreed with itself.
+		_, _ = cWarn.Fprint(w, glyphWarn+" ")
 		printStatusGlyphValue(w, "running · locked")
 	}
 	if _, _, mismatched := agentBuildMismatch(r.Agent.Build); mismatched {
@@ -710,7 +715,11 @@ func printGrantsSection(w io.Writer, r statusResult) {
 	case len(r.Agent.Grants) == 0:
 		printStatusValue(w, "%s", "none active")
 		if r.Vault.SecretsStored > 0 {
-			printStatusAction(w, "`"+grantCreateUsage+"` pre-approves a program to work unattended")
+			// The on-ramp stays (this is where `jit grant` becomes
+			// discoverable), but not the full three-placeholder signature —
+			// a ~95-column teaching line displaced the words on a dashboard
+			// whose job is state. `jit grant` itself prints the shape.
+			printStatusAction(w, "`jit grant --help` — pre-approve a program to work unattended")
 		}
 		return
 	}
@@ -769,10 +778,15 @@ func printSecretsSection(w io.Writer, s statusSecrets) {
 			countWord(s.WiredProfiles, "profile", "profiles"),
 			countWord(s.WiredReferences, "reference", "references")))
 	default:
-		printRollupLine(w, cRisk, glyphRisk, "Wired here", fmt.Sprintf("%s via %s (%s), %d broken — run `jit doctor` for details.",
+		// The state on the row, the command on its own arrow line — advice
+		// buried mid-sentence reads as prose the eye skims
+		// (design/output-style.md, "The action line"). Same phrase as the
+		// parse-failure arrow below, so the two doctor pointers match.
+		printRollupLine(w, cRisk, glyphRisk, "Wired here", fmt.Sprintf("%s via %s (%s), %d broken",
 			countWord(s.WiredGroups, "group", "groups"),
 			countWord(s.WiredProfiles, "profile", "profiles"),
 			countWord(s.WiredReferences, "reference", "references"), s.WiredProblems))
+		printStatusAction(w, "`jit doctor` to see which")
 	}
 
 	printRollupLine(w, cOK, glyphOK, "Managed elsewhere", fmt.Sprintf("%s · referenced only by global profiles or mounts",

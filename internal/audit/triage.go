@@ -8,6 +8,7 @@ import (
 	"io"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -120,7 +121,13 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 			green.Sprintf("%d protected by jit (%d%%)", cov.Protected, pct))
 	fmt.Fprint(w, "  ")
 	writeBar(w, pct)
-	if cov.Total() > 0 && (cov.Migratable > 0 || len(manual) > 0) {
+	// The manual half of the clause prints only when the green block will sit
+	// between it and the red header. With nothing migratable the header is the
+	// very next line, and the two are the same sentence about the same number
+	// (deliberately — one denominator, see below), so printing both was
+	// verbatim repetition two lines apart.
+	showManual := len(manual) > 0 && len(migratable) > 0
+	if cov.Total() > 0 && (cov.Migratable > 0 || showManual) {
 		// Assembled first, then wrapped: the bar is a fixed 10 columns and the
 		// clause beside it is prose, so at a narrow width the clause has to
 		// break under itself rather than push the line past the edge.
@@ -135,7 +142,7 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 				clause += greenBold.Sprintf("+%d%%", after-pct)
 			}
 		}
-		if len(manual) > 0 {
+		if showManual {
 			if cov.Migratable > 0 {
 				clause += " ·"
 			}
@@ -338,7 +345,94 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 		writeHistoryGuardOffer(w, findings, summary, cmd, true)
 		fmt.Fprintln(w)
 	}
+	writeToolMintedBlock(w, findings, home, bold, yellow, cmd)
 	writeTriageFooter(w, findings, summary, home, bold, cmd)
+}
+
+// writeToolMintedBlock renders the tool-minted logins the ledger excludes
+// (CountedAsSecret / toolMintedLogin): confident finds, with their address
+// and the revoke advice, under a header that says why no number above
+// includes them. They sit between the red section and the footer — more than
+// the derived advisories (these are durable credentials, worth revoking if
+// exposed), less than a finding the reader is asked to go fix.
+//
+// The ○ glyph, not the findings !: these rows report a state the reader
+// should know about, not an item on the fix list — the whole point of the
+// block is that the list above can reach zero while these remain.
+func writeToolMintedBlock(w io.Writer, findings []Finding, home string, bold, yellow, cmd *color.Color) {
+	type entry struct {
+		title  string
+		action string
+		files  []string
+		line   map[string]int
+		names  []string
+	}
+	var order []*entry
+	byTitle := map[string]*entry{}
+	for _, f := range findings {
+		if !toolMintedLogin(f) {
+			continue
+		}
+		c, _ := toolMintedLoginFor(f.FilePath)
+		e, ok := byTitle[c.title]
+		if !ok {
+			e = &entry{title: c.title, action: c.action, line: map[string]int{}}
+			byTitle[c.title] = e
+			order = append(order, e)
+		}
+		if _, seen := e.line[f.FilePath]; !seen {
+			e.files = append(e.files, f.FilePath)
+			ln := 0
+			if f.Line != nil {
+				ln = *f.Line
+			}
+			e.line[f.FilePath] = ln
+		}
+		if f.AssignedName != "" && !slices.Contains(e.names, f.AssignedName) {
+			e.names = append(e.names, f.AssignedName)
+		}
+	}
+	if len(order) == 0 {
+		return
+	}
+
+	fmt.Fprint(w, "  ")
+	leaves := "jit leaves it to the tool:"
+	if len(order) > 1 {
+		leaves = "jit leaves these to their tools:"
+	}
+	termtext.Wrap(w, 2, "  ", bold.Sprint("Rotates itself — outside the count, "+leaves))
+	for i, e := range order {
+		fmt.Fprint(w, "    ")
+		_, _ = yellow.Fprint(w, style.GlyphWarn)
+		fmt.Fprint(w, " ")
+		// The header already says the class rotates itself; a title repeating
+		// it verbatim would say a shared fact twice (the entry titles that
+		// carry a more specific parenthetical — who rewrites what — keep it).
+		termtext.Wrap(w, 6, triageNoteIndent, bold.Sprint(strings.TrimSuffix(e.title, " (rotates itself)")))
+		if len(e.names) == 1 {
+			fmt.Fprintf(w, "%s%s assigned to %s\n", triageNoteIndent, style.GlyphBranch, e.names[0])
+		}
+		lineMap := map[string]int{}
+		for p, ln := range e.line {
+			if ln > 0 {
+				lineMap[p] = ln
+			}
+		}
+		for _, p := range e.files {
+			fmt.Fprintf(w, "%s%s\n", triageNoteIndent,
+				termtext.TruncHead(fileAddr(home, p, lineMap, nil), termtext.Width()-len(triageNoteIndent)))
+		}
+		// One arrow per action, after the last entry sharing it — the two
+		// gcloud entries always appear together and carry one instruction.
+		if i+1 < len(order) && order[i+1].action == e.action {
+			continue
+		}
+		fmt.Fprint(w, triageNoteIndent)
+		_, _ = cmd.Fprint(w, style.GlyphAction+" ")
+		termtext.Wrap(w, len(triageNoteIndent)+2, triageNoteIndent+"  ", highlightCmds(e.action))
+	}
+	fmt.Fprintln(w)
 }
 
 // writeManualItem prints one problem inside an action group: the marked title,
@@ -364,7 +458,14 @@ func writeManualItem(w io.Writer, g triageManualGroup, home string, bold, red, y
 	// live release-publishing token and for a test vector, which is how a
 	// real scan (2026-08-09) buried the former among the latter.
 	if g.assignedName != "" {
-		fmt.Fprintf(w, "%s%s assigned to %s\n", triageNoteIndent, style.GlyphBranch, g.assignedName)
+		// "one assigned to" when the group holds several secrets and only one
+		// of them carries this name — "assigned to DB_URL" under a
+		// "2 credentials" title attributed both to it.
+		label := "assigned to"
+		if g.assignedOne {
+			label = "one assigned to"
+		}
+		fmt.Fprintf(w, "%s%s %s %s\n", triageNoteIndent, style.GlyphBranch, label, g.assignedName)
 	}
 	// The addresses. When jit recorded a line for the files (content and
 	// shell-history findings), list every one grouped by folder, each as
@@ -488,6 +589,18 @@ func writeManualFileListing(w io.Writer, g triageManualGroup, home string) bool 
 
 	const fileIndent = "        " // one step past the folder header
 	for _, d := range dirs {
+		// A folder holding exactly one of the group's files earns no header —
+		// two rows saying what one says. The row is cut TruncMid, not
+		// TruncHead: the folder-grouping this branch belongs to exists because
+		// widely-copied files share a near-identical NAME and differ in the
+		// folder (2026-08-09), so a cut that kept only the tail would render
+		// two such rows identically.
+		if len(byDir[d]) == 1 {
+			fmt.Fprintf(w, "%s%s\n", triageNoteIndent,
+				termtext.TruncMid(fileAddr(home, byDir[d][0], g.fileLine, g.fileEnd),
+					termtext.Width()-len(triageNoteIndent)))
+			continue
+		}
 		header := ShortenHome(home, d) + "/"
 		fmt.Fprintf(w, "%s%s\n", triageNoteIndent,
 			termtext.TruncHead(header, termtext.Width()-len(triageNoteIndent)))
@@ -591,6 +704,10 @@ func writeTriageFooter(w io.Writer, findings []Finding, summary ScanSummary, hom
 			// Separate for the same reason: jit matched the value and is
 			// saying it documents a shape rather than storing a secret.
 			examples++
+		case toolMintedLogin(f):
+			// Rendered in the "Rotates itself" block above, which says
+			// "outside the count" itself — tallying it here as a
+			// low-confidence sighting would misdescribe a confident match.
 		case !CountedAsSecret(f):
 			quiet++
 		}
@@ -616,8 +733,10 @@ func writeTriageFooter(w io.Writer, findings []Finding, summary ScanSummary, hom
 	}
 	fmt.Fprint(w, "  ")
 	_, _ = cmd.Fprint(w, style.GlyphAction+" ")
+	// "--format ndjson" in cyan so the machine path is typeable — the bare
+	// word "ndjson" named a format without the flag that selects it.
 	termtext.Wrap(w, 4, "    ",
-		cmd.Sprint("jit scan --full")+"   the full inventory · ndjson for machines")
+		cmd.Sprint("jit scan --full")+"   the full inventory · "+cmd.Sprint("--format ndjson")+" for machines")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  No secret values are ever printed in full.")
 }
@@ -857,6 +976,10 @@ type triageManualGroup struct {
 	// where jit found it, when every constituent agrees on one. It is what
 	// distinguishes two findings that share a vendor, and so share a title.
 	assignedName string
+	// assignedOne is set when the group holds several secrets and
+	// assignedName names only one of them, so the evidence line can say
+	// "one assigned to" rather than attributing every secret to that name.
+	assignedOne bool
 	// sample and ctx are kept so a merged group can REGENERATE its action
 	// against the combined counts. Inheriting the first constituent's wording
 	// told a reader with three exposed passwords to "rotate it now".
@@ -1217,6 +1340,18 @@ func triageGroupManual(findings []Finding, home string) []triageManualGroup {
 		}
 		kind, action := manualAction(worst, ctx, home)
 		fileLine, fileEnd := mergeCauseLines(p.causes)
+		assigned := groupAssignedName(worst, p.causes)
+		assignedOne := false
+		if assigned != "" && len(p.causes) > 1 {
+			// "one assigned to" unless every cause carries the same name — two
+			// secrets both recorded under DB_URL really are both assigned to it.
+			for _, c := range p.causes {
+				if c.assignedName != assigned {
+					assignedOne = true
+					break
+				}
+			}
+		}
 		out = append(out, triageManualGroup{
 			secrets:      len(p.causes),
 			critical:     worst.Severity == SeverityCritical,
@@ -1231,7 +1366,8 @@ func triageGroupManual(findings []Finding, home string) []triageManualGroup {
 			fileList:     append([]string(nil), p.files...),
 			fileLine:     fileLine,
 			fileEnd:      fileEnd,
-			assignedName: groupAssignedName(worst, p.causes),
+			assignedName: assigned,
+			assignedOne:  assignedOne,
 			sample:       worst,
 			ctx:          ctx,
 		})
@@ -1324,6 +1460,9 @@ func mergeManualGroups(groups []triageManualGroup, home string) []triageManualGr
 		// credential to it.
 		if m.assignedName != g.assignedName {
 			m.assignedName = ""
+			m.assignedOne = false
+		} else {
+			m.assignedOne = m.assignedOne || g.assignedOne
 		}
 		if g.sortKey < m.sortKey {
 			m.sortKey = g.sortKey
@@ -1558,6 +1697,13 @@ func manualTitle(causes []*triageCause, files []string, worst Finding, home stri
 		// being "— N separate secrets in M file copies" and a bare noun).
 		// One shape, so two items can be compared at a glance.
 		return fmt.Sprintf("%s in %d files", noun, len(files))
+	}
+	if len(causes) > 1 {
+		// The count-noun needs grounding the way a named noun does not: a bare
+		// "2 credentials" was the one item title in the section that said
+		// neither what nor where, while its siblings read "… in 2 files".
+		// Same grammar, so the two shapes compare at a glance.
+		return noun + " in one file"
 	}
 	return noun
 }
@@ -2061,6 +2207,7 @@ const (
 	kindAgentCopies    = "rotate — an agent kept its own copies"
 	kindKeyByHand      = "delete by hand"
 	kindHistoryLine    = "rotate, then clear the line"
+	kindAgentLine      = "rotate, then delete the line"
 	kindRotateDelete   = "rotate, then delete every copy"
 	kindMoveOut        = "move it out, then rotate"
 	kindProtectInPlace = "protect in place"
@@ -2169,6 +2316,18 @@ func manualAction(f Finding, ctx manualContext, home string) (kind, action strin
 		}
 		return kindHistoryLine, fmt.Sprintf("rotate %s at the provider now, then remove %s — your shell rewrites %s on exit, so close other shells first",
 			them, lines, file)
+	case ctx.copies == 1 && isAgentPromptHistoryPath(f.FilePath):
+		// Above the production branch for the same reason shell history is:
+		// there is one copy, and the instruction that resolves it is rotate,
+		// then delete THE LINE — the loose-file branch below said "move it
+		// out", which nobody can do to one line of an agent's prompt history.
+		// A secret that also spread to other files (copies > 1) falls through
+		// to delete-every-copy, which then covers this one too.
+		lines := "the line"
+		if ctx.secrets > 1 {
+			lines = "the lines"
+		}
+		return kindAgentLine, fmt.Sprintf("rotate %s at the provider now, then delete %s — no program reads this file", them, lines)
 	case ctx.production || f.ProductionIndicatorMatch:
 		// Rotation FIRST and on its own clause, because the deletion is the
 		// part people do and mistake for the fix. The arrow used to read

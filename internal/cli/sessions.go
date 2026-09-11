@@ -118,22 +118,32 @@ func printSessionsSection(w io.Writer, sessions []statusSession, now time.Time) 
 			}
 		}
 	}
-	var rollup string
 	switch {
 	case expired == 0:
 		_, _ = cOK.Fprint(w, glyphOK+" ")
-		rollup = fmt.Sprintf("%d live", live)
 	case live == 0:
 		_, _ = cRisk.Fprint(w, glyphRisk+" ")
-		rollup = fmt.Sprintf("%d expired", expired)
 	default:
 		_, _ = cWarn.Fprint(w, glyphWarn+" ")
-		rollup = fmt.Sprintf("%d live, %d expired", live, expired)
 	}
 	for i, c := range clauses {
 		clauses[i] = atomicClause(c)
 	}
-	printStatusGlyphValue(w, "%s · %s", atomicClause(rollup), strings.Join(clauses, " · "))
+	// The count rollup earns its room only when it summarizes more sessions
+	// than the row can name: with one or two, every session is right there
+	// with its own state, and "1 live, 1 expired ·" restated what the next
+	// two clauses were about to say. The glyph still carries the verdict.
+	if len(sessions) > 2 {
+		rollup := fmt.Sprintf("%d live, %d expired", live, expired)
+		if expired == 0 {
+			rollup = fmt.Sprintf("%d live", live)
+		} else if live == 0 {
+			rollup = fmt.Sprintf("%d expired", expired)
+		}
+		printStatusGlyphValue(w, "%s · %s", atomicClause(rollup), strings.Join(clauses, " · "))
+	} else {
+		printStatusGlyphValue(w, "%s", strings.Join(clauses, " · "))
+	}
 	switch len(remint) {
 	case 0:
 	case 1:

@@ -326,8 +326,14 @@ func annotateCauseGroups(findings []Finding) {
 // Source examples are the third face of the same rule: a credential-shaped
 // value in a comment documents a shape, it does not store a secret
 // (Finding.SourceExample).
+//
+// Tool-minted logins (toolMintedLogin) are the fourth face: the finding is
+// real and stays visible, but the only remedy jit can offer — sign out and
+// back in — reproduces the same plaintext file, so counting one against the
+// ledger promised a 100% the user could never reach while the tool stayed
+// installed. The triage view renders them in their own uncounted block.
 func CountedAsSecret(f Finding) bool {
-	if f.TestFixture || f.SourceExample {
+	if f.TestFixture || f.SourceExample || toolMintedLogin(f) {
 		return false
 	}
 	switch f.Severity {
