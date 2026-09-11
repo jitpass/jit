@@ -411,6 +411,7 @@ func writeDerivedCredentialAdvisory(w io.Writer, summary ScanSummary, home strin
 	for _, d := range summary.DerivedCredentials {
 		fmt.Fprintf(w, "    %s\n", displayFilePath(home, d.Path))
 		fmt.Fprintf(w, "      %s\n", d.What)
+		writeDerivedStatus(w, d)
 		if d.Advice != "" {
 			fmt.Fprintf(w, "      %s\n", d.Advice)
 		}
@@ -418,6 +419,24 @@ func writeDerivedCredentialAdvisory(w io.Writer, summary ScanSummary, home strin
 	fmt.Fprintln(w, "    jit protects credentials you stored; these were minted by the tools that used them.")
 	fmt.Fprintln(w, "    It does not manage, rotate or hide them — see docs/security/architecture.md.")
 	fmt.Fprintln(w)
+}
+
+// writeDerivedStatus renders a derived credential's freshness line, when jit
+// could read one. A live cache carries the amber ○ state glyph (a plaintext
+// token usable right now is worth a look); expired-only residue gets no glyph,
+// because a dead token is not an active state — the same rule the row-state
+// glyphs follow everywhere else.
+func writeDerivedStatus(w io.Writer, d DerivedCredential) {
+	if d.Status == "" {
+		return
+	}
+	if d.StatusLive {
+		fmt.Fprint(w, "      ")
+		_, _ = style.Warn.Fprint(w, style.GlyphWarn)
+		fmt.Fprintf(w, " %s\n", d.Status)
+		return
+	}
+	fmt.Fprintf(w, "      %s\n", d.Status)
 }
 
 // archivedTag renders the per-path "[archived]" marker: the same

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // writeFileIn is writeFile plus the parent directories, which every path in
@@ -54,6 +55,71 @@ func TestDerivedCredentialsFoundWhereTheScannerWalksPast(t *testing.T) {
 		if !strings.Contains(filepath.ToSlash(joined), want) {
 			t.Errorf("advisory paths %v, want one covering %s", paths, want)
 		}
+	}
+}
+
+// TestCacheFreshness pins the freshness line and the live/expired split that
+// drives the amber-glyph decision.
+func TestCacheFreshness(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	mk := func(offsets ...time.Duration) []time.Time {
+		var ts []time.Time
+		for _, o := range offsets {
+			ts = append(ts, now.Add(o))
+		}
+		return ts
+	}
+	cases := []struct {
+		name       string
+		expiries   []time.Time
+		wantStatus string
+		wantLive   bool
+	}{
+		{"none readable", nil, "", false},
+		{"all expired", mk(-time.Hour, -2*time.Hour), "all 2 cached credentials expired", false},
+		{"one expired singular", mk(-time.Minute), "all 1 cached credential expired", false},
+		{"mixed", mk(47*time.Minute, -time.Hour, -2*time.Hour, 3*time.Hour), "2 live, soonest expires in 47m; 2 expired", true},
+		{"all live", mk(8*time.Hour, 30*time.Hour), "2 live, soonest expires in 8h", true},
+		{"live under a minute", mk(30 * time.Second), "1 live, soonest expires in under a minute", true},
+		{"days", mk(50 * time.Hour), "1 live, soonest expires in 2d", true},
+	}
+	for _, tc := range cases {
+		gotStatus, gotLive := cacheFreshness(tc.expiries, now)
+		if gotStatus != tc.wantStatus || gotLive != tc.wantLive {
+			t.Errorf("%s: got (%q, %v), want (%q, %v)", tc.name, gotStatus, gotLive, tc.wantStatus, tc.wantLive)
+		}
+	}
+}
+
+// TestDerivedExpiryReadFromRealCacheShapes drives the actual file readers over
+// the concrete formats: AWS's RFC3339 JSON and gcloud's space-separated
+// SQLite-row timestamp.
+func TestDerivedExpiryReadFromRealCacheShapes(t *testing.T) {
+	home := t.TempDir()
+	future := time.Now().Add(90 * time.Minute).UTC().Format(time.RFC3339)
+	past := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	// AWS CLI cache: one live file, one expired.
+	writeFileIn(t, filepath.Join(home, ".aws", "cli", "cache", "aaaa.json"),
+		`{"Credentials":{"AccessKeyId":"ASIA...","Expiration":"`+future+`"}}`)
+	writeFileIn(t, filepath.Join(home, ".aws", "cli", "cache", "bbbb.json"),
+		`{"Credentials":{"AccessKeyId":"ASIA...","Expiration":"`+past+`"}}`)
+	// gcloud access_tokens.db: a SQLite header plus two expired token_expiry
+	// timestamps in gcloud's space-separated form.
+	writeFileIn(t, filepath.Join(home, ".config", "gcloud", "access_tokens.db"),
+		"SQLite format 3\x00\x00acct1\x002020-01-02 03:04:05.678\x00acct2\x002019-06-01 00:00:00\x00")
+
+	got := ScanDerivedCredentials(Config{HomeDir: home})
+	byPath := map[string]DerivedCredential{}
+	for _, d := range got {
+		byPath[d.Path] = d
+	}
+	cli := byPath[filepath.Join(home, ".aws", "cli", "cache")]
+	if cli.Status != "1 live, soonest expires in 1h; 1 expired" || !cli.StatusLive {
+		t.Errorf("aws cli/cache: got (%q, %v), want 1 live + 1 expired", cli.Status, cli.StatusLive)
+	}
+	gc := byPath[filepath.Join(home, ".config", "gcloud", "access_tokens.db")]
+	if gc.Status != "all 2 cached credentials expired" || gc.StatusLive {
+		t.Errorf("gcloud db: got (%q, %v), want all-expired", gc.Status, gc.StatusLive)
 	}
 }
 
