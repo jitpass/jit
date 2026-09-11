@@ -548,10 +548,29 @@ func isAnchorRune(r rune) bool {
 // variable keeps its full weight.
 func IsAmbiguousTokenFormat(vendor string) bool { return vendor == jwtVendor }
 
+// maxTokenScanLen caps how much of a value the vendor-pattern gauntlet
+// inspects. Each match is one linear RE2 scan of the value, but the gauntlet
+// is ~100 patterns, so the per-value cost is ~100x the value length — a few
+// megabytes takes seconds (measured: 4 MiB ~= 2.5 s), and a parser that scans
+// a value more than once (shell's value gate plus its finding, an MCP field
+// reached from several angles) multiplies that into the multi-second hang the
+// fuzzer found across FuzzScanEnvFile / ShellConfig / MCPConfig (2026-09-10).
+//
+// No real credential is anywhere near this: the longest tokens (JWTs, connect
+// strings) are a few KB, and multi-line private keys are ScanPrivateKeys'
+// job, not this whole-value matcher's. 64 KiB is ~30x the largest real token
+// and bounds the gauntlet at a few milliseconds regardless of value size. A
+// token buried past 64 KiB inside a single value is not a plaintext secret at
+// rest in any shape jit is meant to find.
+const maxTokenScanLen = 64 << 10
+
 // MatchKnownTokenPattern checks value against well-known vendor credential
 // formats. Returns the vendor/format name, whether that format is verified
 // (see tokenPattern.verified), and whether anything matched at all.
 func MatchKnownTokenPattern(value string) (vendor string, verified bool, ok bool) {
+	if len(value) > maxTokenScanLen {
+		value = value[:maxTokenScanLen]
+	}
 	for _, tp := range knownTokenPatterns {
 		match := tp.pattern.FindString(value)
 		if match == "" {
