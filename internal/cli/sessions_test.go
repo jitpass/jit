@@ -28,24 +28,34 @@ func TestSessionsRowStates(t *testing.T) {
 		absent   []string
 	}{
 		{"omitted when nothing is a session", nil, nil, []string{"sessions"}},
+		// One or two sessions: every session is named with its own state, so
+		// the "N live, N expired" rollup would restate the clauses beside it.
+		// The glyph alone carries the verdict.
 		{"all live", []statusSession{
 			{Profile: "aws-stage", ExpiresUnix: stampAt(9 * time.Hour), Live: true, Mint: mint("stage")},
 			{Profile: "aws-dev", ExpiresUnix: stampAt(6 * time.Hour), Live: true, Mint: mint("dev")},
-		}, []string{"sessions ● 2 live", "stage expires 2026-09-05 21:00", "dev expires 2026-09-05 18:00"}, []string{"→"}},
+		}, []string{"sessions ● stage expires 2026-09-05 21:00", "dev expires 2026-09-05 18:00"}, []string{"→", "2 live"}},
 		{"one expired names the mint command", []statusSession{
 			{Profile: "aws-stage", ExpiresUnix: stampAt(9 * time.Hour), Live: true, Mint: mint("stage")},
 			{Profile: "aws-prod", ExpiresUnix: stampAt(-3 * time.Hour), Mint: mint("prod")},
-		}, []string{"○ 1 live, 1 expired", "prod expired 3h ago", "→ clisso get prod"}, nil},
+		}, []string{"sessions ○ stage expires", "prod expired 3h ago", "→ clisso get prod"}, []string{"1 live, 1 expired"}},
 		{"all expired, several", []statusSession{
 			{Profile: "aws-stage", ExpiresUnix: stampAt(-3 * time.Hour), Mint: mint("stage")},
 			{Profile: "aws-prod", ExpiresUnix: stampAt(-30 * time.Hour), Mint: mint("prod")},
-		}, []string{"✗ 2 expired", "prod expired 30h ago", "→ clisso get stage, then prod"}, nil},
+		}, []string{"sessions ✗ stage expired 3h ago", "prod expired 30h ago", "→ clisso get stage, then prod"}, []string{"2 expired"}},
+		// Three or more: the rollup summarizes more than the eye can total at
+		// a glance, so it earns its room again.
+		{"three sessions keep the count rollup", []statusSession{
+			{Profile: "aws-stage", ExpiresUnix: stampAt(9 * time.Hour), Live: true, Mint: mint("stage")},
+			{Profile: "aws-dev", ExpiresUnix: stampAt(6 * time.Hour), Live: true, Mint: mint("dev")},
+			{Profile: "aws-prod", ExpiresUnix: stampAt(-3 * time.Hour), Mint: mint("prod")},
+		}, []string{"○ 2 live, 1 expired", "prod expired 3h ago", "→ clisso get prod"}, nil},
 		{"a pre-stamp capture counts as live and says so", []statusSession{
 			{Profile: "aws-dev", Live: true, Mint: mint("dev")},
-		}, []string{"● 1 live", "dev expiry unknown until its next login"}, []string{"1970", "→"}},
+		}, []string{"● dev expiry unknown until its next login"}, []string{"1970", "→", "1 live"}},
 		{"an expired session no tool claims gets no command", []statusSession{
 			{Profile: "aws-ci", Origin: "~/.aws/credentials", ExpiresUnix: stampAt(-time.Hour)},
-		}, []string{"✗ 1 expired", "ci expired 1h ago"}, []string{"→"}},
+		}, []string{"✗ ci expired 1h ago"}, []string{"→", "1 expired"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer

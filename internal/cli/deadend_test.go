@@ -119,15 +119,15 @@ func TestStatusSurfacesGrants(t *testing.T) {
 	if !strings.Contains(out, "none active") {
 		t.Errorf("status with no grants = %q, want it to report none active", out)
 	}
-	if !strings.Contains(out, "--process") {
-		t.Errorf("status with no grants = %q, want the create shape, the feature's only on-ramp", out)
+	if !strings.Contains(out, "jit grant --help") {
+		t.Errorf("status with no grants = %q, want the jit grant on-ramp", out)
 	}
 
 	// Nothing stored yet: advice for a feature the reader cannot use is noise,
 	// and the dashboard reports state rather than advertising.
 	buf.Reset()
 	printGrantsSection(&buf, statusResult{Agent: statusAgent{Running: true}})
-	if strings.Contains(buf.String(), "--process") {
+	if strings.Contains(buf.String(), "jit grant --help") {
 		t.Errorf("status on an empty vault = %q, want no grant advice", buf.String())
 	}
 
