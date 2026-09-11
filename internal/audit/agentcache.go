@@ -623,6 +623,22 @@ var agentCacheSweepFiles = []string{
 	filepath.Join(".claude", "history.jsonl"),
 }
 
+// isAgentPromptHistoryPath reports whether path is one of the prompt-history
+// files above. These are line-shaped records, so the remedy for a secret in
+// one is the shell-history instruction (delete the line), not the loose-file
+// one (move the file out) — nobody can move line 3209 out of history.jsonl.
+// Suffix-matched like selfRotatingCacheFor, so a scan of a copied-out home
+// directory recognizes them under any prefix.
+func isAgentPromptHistoryPath(path string) bool {
+	sep := string(filepath.Separator)
+	for _, f := range agentCacheSweepFiles {
+		if strings.HasSuffix(path, sep+f) {
+			return true
+		}
+	}
+	return false
+}
+
 // ScanAgentStores reports vendor-format credentials in AI agents' own
 // credential files and in their file-shaped caches.
 //
