@@ -110,6 +110,39 @@ func TestMigrateCleanOffByDefault(t *testing.T) {
 	}
 }
 
+// TestMigrateCleanOnlyStillRunsDeletePass: --only scopes the MIGRATE half of
+// a run, never the delete pass (design/migrate-clean.md D9). A bare run whose
+// migrations are all filtered away by --only must still offer [deletions] the
+// user asked for by typing --clean — the early "nothing to migrate" return
+// used to swallow them silently (code review, 2026-09-10).
+func TestMigrateCleanOnlyStillRunsDeletePass(t *testing.T) {
+	home := withFixtureHome(t)
+	// A live project .env (migratable, category "env") and a trash copy
+	// (a delete candidate). --only k8s excludes the env migration entirely.
+	liveEnv := filepath.Join(home, "proj", ".env")
+	if err := os.MkdirAll(filepath.Dir(liveEnv), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(liveEnv, []byte("OPENAI_API_KEY="+cleanCLISecret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeCleanTrashEnv(t, home)
+
+	// EOF at the deletion [y/N] declines, so nothing is deleted and no vault
+	// (no Touch ID) is opened — the assertion is only that the category was
+	// offered rather than silently dropped.
+	out, err := execMigrate(t, "--clean", "--only", "k8s-secret")
+	if err != nil {
+		t.Fatalf("jit migrate --clean --only k8s-secret: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[deletions]") {
+		t.Errorf("--only filtered the migrate half to nothing and the delete pass vanished with it, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Delete this file from disk?") {
+		t.Errorf("expected the deletion [y/N] to still be reached, got:\n%s", out)
+	}
+}
+
 // TestMigrateCleanDeclineDeletesNothing: the deletions get their own [y/N]
 // naming every path, an EOF/decline prints the standing-work line, the file
 // survives, and no vault (hence no Touch ID) was ever opened — the consent

@@ -92,6 +92,36 @@ func TestPlanCleanRefusesNonRegularFile(t *testing.T) {
 	}
 }
 
+// TestPlanCleanRefusesArchivedKeyVisibly: an archived private-key file is
+// CleanNone (its body is never vaulted), but the scan report's archived note
+// points its group at --clean — so the plan must REFUSE it out loud, not drop
+// it, keeping the "a finding the scan showed never silently vanishes"
+// invariant (code review, 2026-09-10).
+func TestPlanCleanRefusesArchivedKeyVisibly(t *testing.T) {
+	home := t.TempDir()
+	archivedKey := filepath.Join(home, "backup", "id_rsa")
+	writeFile(t, archivedKey, "-----BEGIN OPENSSH PRIVATE KEY-----\n"+
+		"b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZQ\n"+
+		"-----END OPENSSH PRIVATE KEY-----\n")
+	findings := cleanScan(t, home, archivedKey)
+	plan := PlanClean(home, findings, nil)
+
+	for _, c := range plan.Candidates {
+		if c.Path == archivedKey {
+			t.Fatal("an archived private key must never be a delete candidate")
+		}
+	}
+	found := false
+	for _, s := range plan.LeftAlone {
+		if s.Path == archivedKey && strings.Contains(s.Reason, "private key material") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("archived key silently dropped instead of refused: %+v", plan.LeftAlone)
+	}
+}
+
 func TestApplyCleanArchivedRequiresVaultMatch(t *testing.T) {
 	home := t.TempDir()
 	archivedEnv := filepath.Join(home, "backup", ".env")
@@ -103,7 +133,7 @@ func TestApplyCleanArchivedRequiresVaultMatch(t *testing.T) {
 	v := newTestVault(t)
 
 	// Value not in the vault: refused, file untouched.
-	out, err := ApplyClean(v, plan, nil, nil)
+	out, err := ApplyClean(v, plan, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +152,7 @@ func TestApplyCleanArchivedRequiresVaultMatch(t *testing.T) {
 	if err := v.Set("proj/OPENAI_API_KEY", []byte(cleanTestSecret)); err != nil {
 		t.Fatal(err)
 	}
-	out, err = ApplyClean(v, plan, nil, nil)
+	out, err = ApplyClean(v, plan, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +187,7 @@ func TestApplyCleanTrashNeedsNoVaultMatch(t *testing.T) {
 	writeFile(t, trashEnv, "OPENAI_API_KEY="+cleanTestSecret+"\n")
 	plan := PlanClean(home, cleanScan(t, home, trashEnv), nil)
 
-	out, err := ApplyClean(newTestVault(t), plan, nil, nil)
+	out, err := ApplyClean(newTestVault(t), plan, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +207,7 @@ func TestApplyCleanRunValuesCount(t *testing.T) {
 
 	// Empty vault, but the value was vaulted by THIS run's migrate phase.
 	out, err := ApplyClean(newTestVault(t), plan,
-		[]AgentCacheSecret{{Value: cleanTestSecret, Var: "OPENAI_API_KEY"}}, nil)
+		[]AgentCacheSecret{{Value: cleanTestSecret, Var: "OPENAI_API_KEY"}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +226,7 @@ func TestApplyCleanRehashesBeforeUnlink(t *testing.T) {
 	// hash no longer holds, so the consent no longer covers it.
 	writeFile(t, trashEnv, "OPENAI_API_KEY="+cleanTestSecret+"\nNEW_NOTE=kept\n")
 
-	out, err := ApplyClean(newTestVault(t), plan, nil, nil)
+	out, err := ApplyClean(newTestVault(t), plan, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +247,7 @@ func TestApplyCleanSweptFileLeftAlone(t *testing.T) {
 	writeFile(t, trashEnv, "OPENAI_API_KEY="+cleanTestSecret+"\n")
 	plan := PlanClean(home, cleanScan(t, home, trashEnv), nil)
 
-	out, err := ApplyClean(newTestVault(t), plan, nil, map[string]bool{trashEnv: true})
+	out, err := ApplyClean(newTestVault(t), plan, nil, map[string]bool{trashEnv: true}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +269,7 @@ func TestApplyCleanUndoRestores(t *testing.T) {
 	}
 	plan := PlanClean(home, cleanScan(t, home, trashEnv), nil)
 	v := newTestVault(t)
-	out, err := ApplyClean(v, plan, nil, nil)
+	out, err := ApplyClean(v, plan, nil, nil, nil)
 	if err != nil || len(out.Deleted) != 1 {
 		t.Fatalf("apply: %v %+v", err, out)
 	}
@@ -269,6 +299,107 @@ func TestApplyCleanUndoRestores(t *testing.T) {
 	}
 }
 
+// TestApplyCleanUndoRestoresAfterParentRemoved is the headline undo promise
+// under the case that broke it: --clean deletes a file, then the user empties
+// the Trash so the parent directory is gone too. undo must recreate the
+// directory and restore the bytes, not fail ENOENT after taking a Touch ID
+// (code review, 2026-09-10).
+func TestApplyCleanUndoRestoresAfterParentRemoved(t *testing.T) {
+	home := t.TempDir()
+	trashDir := filepath.Join(home, ".Trash", "old-proj")
+	trashEnv := filepath.Join(trashDir, ".env")
+	content := "OPENAI_API_KEY=" + cleanTestSecret + "\n"
+	writeFile(t, trashEnv, content)
+	plan := PlanClean(home, cleanScan(t, home, trashEnv), nil)
+	v := newTestVault(t)
+	out, err := ApplyClean(v, plan, nil, nil, nil)
+	if err != nil || len(out.Deleted) != 1 {
+		t.Fatalf("apply: %v %+v", err, out)
+	}
+
+	// The user empties the Trash: the whole directory the file lived in is
+	// gone, not just the file.
+	if err := os.RemoveAll(trashDir); err != nil {
+		t.Fatal(err)
+	}
+
+	recs, err := LoadBackupRecords(v.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec BackupRecord
+	for _, r := range LatestBackups(recs) {
+		if r.OriginalPath == trashEnv {
+			rec = r
+		}
+	}
+	if rec.OriginalPath == "" {
+		t.Fatal("no undo record for the deleted file")
+	}
+	if err := RestoreFromBackup(v, rec); err != nil {
+		t.Fatalf("RestoreFromBackup with a vanished parent: %v", err)
+	}
+	got, err := os.ReadFile(trashEnv)
+	if err != nil || string(got) != content {
+		t.Errorf("restored content = %q, %v; want the original bytes", got, err)
+	}
+	// The recreated parent holds a plaintext secret and must not be world- or
+	// group-accessible.
+	if info, err := os.Stat(trashDir); err != nil || info.Mode().Perm()&0o077 != 0 {
+		t.Errorf("recreated parent mode = %v, %v; want no group/other access", info.Mode().Perm(), err)
+	}
+}
+
+// TestApplyCleanRefusesLiveSweptFile: a file an agent session was writing
+// this run (SkipLive) must be refused by the delete pass, not unlinked out
+// from under the live writer — design/migrate-clean.md D2, unenforced until
+// the 2026-09-10 review.
+func TestApplyCleanRefusesLiveSweptFile(t *testing.T) {
+	home := t.TempDir()
+	trashEnv := filepath.Join(home, ".Trash", ".env")
+	writeFile(t, trashEnv, "OPENAI_API_KEY="+cleanTestSecret+"\n")
+	plan := PlanClean(home, cleanScan(t, home, trashEnv), nil)
+
+	out, err := ApplyClean(newTestVault(t), plan, nil, nil, map[string]bool{trashEnv: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Deleted) != 0 {
+		t.Fatal("deleted a file an agent session was still writing")
+	}
+	if len(out.LeftAlone) != 1 || !strings.Contains(out.LeftAlone[0].Reason, "agent session was writing") {
+		t.Fatalf("left-alone = %+v", out.LeftAlone)
+	}
+	if _, statErr := os.Stat(trashEnv); statErr != nil {
+		t.Error("the refused file must still exist")
+	}
+}
+
+// TestApplyCleanOutcomeDoesNotEchoPlanRefusals: a plan-time refusal is
+// printed with the plan; ApplyClean's outcome must not carry it too, or the
+// same refusal renders twice (code review, 2026-09-10).
+func TestApplyCleanOutcomeDoesNotEchoPlanRefusals(t *testing.T) {
+	home := t.TempDir()
+	// An archived copy whose secret is NOT in the vault: PlanClean makes it a
+	// candidate, ApplyClean refuses it at the vault check — that refusal is an
+	// outcome row, correctly. Separately, a plan-time LeftAlone must not
+	// reappear.
+	trashEnv := filepath.Join(home, ".Trash", ".env")
+	writeFile(t, trashEnv, "OPENAI_API_KEY="+cleanTestSecret+"\n")
+	plan := PlanClean(home, cleanScan(t, home, trashEnv), nil)
+	plan.LeftAlone = append(plan.LeftAlone, CleanSkip{Path: filepath.Join(home, "x"), Reason: "a plan-time refusal"})
+
+	out, err := ApplyClean(newTestVault(t), plan, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range out.LeftAlone {
+		if s.Reason == "a plan-time refusal" {
+			t.Error("ApplyClean echoed a plan-time refusal into its outcome; it prints twice")
+		}
+	}
+}
+
 func TestApplyCleanHardLinkRefused(t *testing.T) {
 	home := t.TempDir()
 	trashEnv := filepath.Join(home, ".Trash", ".env")
@@ -278,7 +409,7 @@ func TestApplyCleanHardLinkRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := ApplyClean(newTestVault(t), plan, nil, nil)
+	out, err := ApplyClean(newTestVault(t), plan, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

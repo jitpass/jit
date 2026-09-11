@@ -148,7 +148,7 @@ func printCleanSkips(w io.Writer, home string, skips []migrate.CleanSkip) {
 // even though the verification itself touches the KeyWrapper — the gate
 // must not depend on that incidental fact (GAPS.md #60). --yes skips the
 // typed prompt only, exactly like jit uninstall.
-func runCleanPhase(cmd *cobra.Command, home string, plan *migrate.CleanPlan, runValues []migrate.AgentCacheSecret, swept map[string]bool) error {
+func runCleanPhase(cmd *cobra.Command, home string, plan *migrate.CleanPlan, runValues []migrate.AgentCacheSecret, swept, live map[string]bool) error {
 	out := cmd.OutOrStdout()
 	if len(plan.Candidates) == 0 {
 		// Nothing deletable; the plan-time refusals were already printed
@@ -184,7 +184,7 @@ func runCleanPhase(cmd *cobra.Command, home string, plan *migrate.CleanPlan, run
 		return fmt.Errorf("jit migrate --clean: %w", err)
 	}
 
-	outcome, err := migrate.ApplyClean(v, *plan, runValues, swept)
+	outcome, err := migrate.ApplyClean(v, *plan, runValues, swept, live)
 	if err != nil {
 		return fmt.Errorf("jit migrate --clean: %w", err)
 	}

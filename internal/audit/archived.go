@@ -17,8 +17,8 @@ import (
 // and the audit report tags them so that skip never reads as migrate
 // having lost a finding the audit just showed.
 var archivedDirNames = map[string]bool{
-	"archive": true, "archived": true, ".trash": true, "trash": true,
-	"backup": true, "backups": true,
+	"archive": true, "archived": true, ".trash": true, ".trashes": true,
+	"trash": true, "backup": true, "backups": true,
 }
 
 // LooksArchived reports whether any path component of path matches
@@ -37,7 +37,16 @@ func LooksArchived(path string) bool {
 // remedy in the report: migrating a file out of the Trash would preserve
 // what deletion is about to fix, so the reader is told to finish the
 // deletion instead of being offered jit migrate.
-var trashDirNames = map[string]bool{".trash": true, "trash": true}
+//
+// Dotted names only — the OS's own Trash locations (~/.Trash, a volume's
+// .Trashes) plus a deliberately dot-named .trash folder. A bare trash/ is a
+// scratch directory someone is still using, not a deletion already chosen:
+// classifying it here handed `jit migrate --clean` a file to delete with no
+// vault check and the false evidence "finishing the deletion you started"
+// (code review, 2026-09-10). Bare trash/ stays in archivedDirNames, so those
+// findings take the archived route — reported, and deletable by --clean only
+// after every value is verified already in the vault.
+var trashDirNames = map[string]bool{".trash": true, ".trashes": true}
 
 // InTrash reports whether any path component of path matches trashDirNames,
 // case-insensitively. Every InTrash path also satisfies LooksArchived, so
