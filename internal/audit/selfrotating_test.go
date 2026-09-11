@@ -6,6 +6,8 @@ package audit
 import (
 	"strings"
 	"testing"
+
+	"github.com/jitpass/jit/internal/style"
 )
 
 func TestSelfRotatingCacheFor(t *testing.T) {
@@ -67,18 +69,52 @@ func TestSelfRotatingCacheIsNeverMigrated(t *testing.T) {
 		t.Errorf("fix_command = %q, want empty — jit cannot fix a self-rotating cache", findings[0].FixCommand)
 	}
 
-	groups := triageGroupManual(findings, "/Users/alex")
-	if len(groups) != 1 {
-		t.Fatalf("got %d groups, want 1", len(groups))
+	// Tool-minted logins render in the triage view's own uncounted block, not
+	// in the red section — the sign-out remedy reproduces the same file, so
+	// they must not gate the "→ 100%" promise (see CountedAsSecret).
+	if groups := triageGroupManual(findings, "/Users/alex"); len(groups) != 0 {
+		t.Fatalf("got %d manual groups, want 0 — tool-minted logins render in their own block", len(groups))
 	}
-	if strings.Contains(groups[0].action, "--mount") {
-		t.Errorf("action offers a mount for a self-rotating cache: %q", groups[0].action)
+	if CountedAsSecret(findings[0]) {
+		t.Errorf("a tool-minted login counted against the coverage ledger")
 	}
-	if !strings.Contains(groups[0].action, "revoke") {
-		t.Errorf("action = %q, want it to lead with revoking at the provider", groups[0].action)
+	var buf strings.Builder
+	writeToolMintedBlock(&buf, findings, "/Users/alex", style.Bold, style.Warn, style.Path)
+	out := buf.String()
+	if !strings.Contains(out, "Rotates itself — outside the count") {
+		t.Errorf("block missing its header:\n%s", out)
 	}
-	if !strings.Contains(groups[0].title, "rotates itself") {
-		t.Errorf("title = %q, want it to say the file rotates itself", groups[0].title)
+	if !strings.Contains(out, "A Gemini CLI OAuth token") {
+		t.Errorf("block missing the finding's title:\n%s", out)
+	}
+	if !strings.Contains(out, "~/.gemini/oauth_creds.json") {
+		t.Errorf("block missing the address:\n%s", out)
+	}
+	if !strings.Contains(out, "revoke") {
+		t.Errorf("block = %q, want the revoke-at-the-provider advice", out)
+	}
+	if strings.Contains(out, "--mount") {
+		t.Errorf("block offers a mount for a self-rotating cache:\n%s", out)
+	}
+}
+
+// TestUserStoredSecretInToolRewrittenFileStillCounts pins the boundary inside
+// the class: clisso's config is tool-REWRITTEN but its client-secret is
+// user-stored and genuinely protectable (`jit wrap clisso`), so it keeps
+// counting against the ledger and keeps its red-section group.
+func TestUserStoredSecretInToolRewrittenFileStillCounts(t *testing.T) {
+	str := func(s string) *string { return &s }
+	findings := []Finding{
+		{RecordID: "c1", FindingType: FindingTypeExposedSecret, Severity: SeverityHigh,
+			FilePath: "/Users/alex/.clisso.yaml",
+			KeyName:  str("client-secret"), ValuePreview: str("abcd**********")},
+	}
+	annotateRemedies(findings, "/Users/alex", nil, nil)
+	if !CountedAsSecret(findings[0]) {
+		t.Errorf("a user-stored secret in clisso's config fell out of the ledger")
+	}
+	if groups := triageGroupManual(findings, "/Users/alex"); len(groups) != 1 {
+		t.Fatalf("got %d manual groups, want 1", len(groups))
 	}
 }
 

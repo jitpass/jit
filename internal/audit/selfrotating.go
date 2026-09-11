@@ -42,19 +42,35 @@ type selfRotatingCache struct {
 	title string
 	// action is the one honest instruction for it.
 	action string
+	// toolMinted marks the entries whose VALUE the tool minted for itself —
+	// an OAuth pair the CLI writes on login and rewrites on refresh. These
+	// stay findings (a refresh token is a durable credential, worth naming
+	// and worth revoking if exposed — the issue #93 decision), but they are
+	// excluded from the coverage ledger: the only "fix" jit can offer
+	// (sign out and back in) reproduces the same plaintext file, so counting
+	// them under "only you can fix, → 100%" promised a 100% the user could
+	// never reach while the tool stayed installed. The triage view renders
+	// them in their own uncounted block instead.
+	//
+	// False for a tool-REWRITTEN file holding a USER-stored value
+	// (.clisso.yaml's OneLogin client-secret): that credential is the user's,
+	// `jit wrap clisso` genuinely protects it, and it counts.
+	toolMinted bool
 }
 
 var selfRotatingCaches = []selfRotatingCache{
 	{
-		match:  mcpAuthDir,
-		dir:    true,
-		title:  "A remote-MCP OAuth token (rotates itself)",
-		action: "revoke at the provider if exposed; reset with rm -rf ~/.mcp-auth",
+		match:      mcpAuthDir,
+		dir:        true,
+		title:      "A remote-MCP OAuth token (rotates itself)",
+		action:     "revoke at the provider if exposed; reset with rm -rf ~/.mcp-auth",
+		toolMinted: true,
 	},
 	{
-		match:  filepath.Join(".gemini", "oauth_creds.json"),
-		title:  "A Gemini CLI OAuth token (rotates itself)",
-		action: "revoke at the provider if exposed; sign out and back in to reset — the CLI rewrites this file on every refresh",
+		match:      filepath.Join(".gemini", "oauth_creds.json"),
+		title:      "A Gemini CLI OAuth token (rotates itself)",
+		action:     "revoke at the provider if exposed; sign out and back in to reset",
+		toolMinted: true,
 	},
 	// The gcloud CLI's own login store (issue #93). gcloud rewrites
 	// credentials.db on login, reauth and refresh-token rotation, and the
@@ -68,19 +84,21 @@ var selfRotatingCaches = []selfRotatingCache{
 	// appear together must agree on it or the group shows one of them
 	// picked arbitrarily.
 	{
-		match:  filepath.Join(".config", "gcloud", "credentials.db"),
-		title:  "The gcloud CLI's own login (gcloud rewrites this store itself)",
-		action: "revoke with `gcloud auth revoke` if exposed, then log in again when needed; jit never mounts a store gcloud rewrites",
+		match:      filepath.Join(".config", "gcloud", "credentials.db"),
+		title:      "The gcloud CLI's own login (gcloud rewrites this store itself)",
+		action:     "revoke with `gcloud auth revoke` if exposed, then log in again when needed",
+		toolMinted: true,
 	},
 	{
 		// Anchored under .config/gcloud, not a bare component match: a
 		// project's own legacy_credentials/ directory holding, say, a
 		// Stripe key must keep its migrate offer and must not be told to
 		// run `gcloud auth revoke` (code review, 2026-09-10).
-		match:  filepath.Join(".config", "gcloud", "legacy_credentials"),
-		dir:    true,
-		title:  "A gcloud legacy credential copy (rewritten on every login)",
-		action: "revoke with `gcloud auth revoke` if exposed, then log in again when needed; jit never mounts a store gcloud rewrites",
+		match:      filepath.Join(".config", "gcloud", "legacy_credentials"),
+		dir:        true,
+		title:      "A gcloud legacy credential copy (rewritten on every login)",
+		action:     "revoke with `gcloud auth revoke` if exposed, then log in again when needed",
+		toolMinted: true,
 	},
 	// A variant of the class: the value (a OneLogin API client-secret)
 	// never rotates, but the file is still tool-rewritten — clisso creates
@@ -121,6 +139,36 @@ func selfRotatingCacheFor(path string) (selfRotatingCache, bool) {
 func isSelfRotatingCache(path string) bool {
 	_, ok := selfRotatingCacheFor(path)
 	return ok
+}
+
+// toolMintedLoginFor returns the tool-minted class entry for path, if any —
+// the subset of selfRotatingCaches the coverage ledger excludes (see
+// selfRotatingCache.toolMinted).
+func toolMintedLoginFor(path string) (selfRotatingCache, bool) {
+	c, ok := selfRotatingCacheFor(path)
+	if !ok || !c.toolMinted {
+		return selfRotatingCache{}, false
+	}
+	return c, true
+}
+
+// toolMintedLogin reports whether f is a finding the triage view renders in
+// its uncounted "rotates itself" block: a Critical/High/Medium match inside a
+// tool-minted login store. The severity and fixture gates mirror
+// CountedAsSecret's, so this names exactly the findings that WOULD have
+// counted but for the class — the footer's low-confidence tally keeps the
+// rest, unchanged.
+func toolMintedLogin(f Finding) bool {
+	if f.TestFixture || f.SourceExample {
+		return false
+	}
+	switch f.Severity {
+	case SeverityCritical, SeverityHigh, SeverityMedium:
+		_, ok := toolMintedLoginFor(f.FilePath)
+		return ok
+	default:
+		return false
+	}
 }
 
 // mountableExts are the file kinds where replacing the file with a jit FIFO
