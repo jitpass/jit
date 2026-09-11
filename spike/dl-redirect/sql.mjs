@@ -33,6 +33,28 @@ const INFRA = [
 ];
 const HUMAN = INFRA.map((o) => `blob8 NOT LIKE '%${o}%'`).join("\n    AND ");
 
+// visitor_id (blob10) was appended to the schema on 18 Aug 2026 and only
+// reached every row from the 19th. Earlier rows carry "", and Analytics Engine
+// counts "" as a value -- so a DISTINCT over the whole table reports one extra
+// "downloader" who is actually every pre-19-Aug download collapsed into one.
+// Any query that counts PEOPLE has to exclude those rows; queries that count
+// downloads must not, or they lose the launch week.
+const HAS_VISITOR = `blob10 != ''`;
+
+// A conditional distinct count.
+//
+// Analytics Engine has no uniqIf/countDistinctIf, and it rejects
+// IF(cond, blob10, NULL) outright -- both branches of IF must be the same type
+// and NULL is not a String. That error is why `summary` and `active` below
+// returned nothing but a 400 from the day they were written.
+//
+// IF(cond, blob10, '') is accepted, but it folds every non-matching row into a
+// single "" bucket that DISTINCT then counts as one person. So subtract that
+// bucket, and only when it exists -- MAX(IF(cond, 0, 1)) is 1 if any row fails
+// the condition and 0 if none do, which keeps the all-match case exact too.
+const peopleWhere = (cond) =>
+  `COUNT(DISTINCT IF(${cond}, blob10, '')) - MAX(IF(${cond}, 0, 1))`;
+
 
 // `_sample_interval` is how many real events a row stands for once Analytics
 // Engine starts sampling. At this volume it is 1, but summing it instead of
@@ -64,11 +86,18 @@ LIMIT 100`,
 
   // The four numbers worth putting in front of someone, and the one caveat
   // that keeps them honest.
+  // NOT scoped by HAS_VISITOR in the WHERE, on purpose: the download totals
+  // (downloads_all, downloads_human) must span the whole 30 days including the
+  // pre-19-Aug launch week, per HAS_VISITOR's own contract. The people counts
+  // exclude the pre-visitor rows themselves, via peopleWhere -- so downloads
+  // are all-time and downloaders start 19 Aug, in one query. countries and
+  // networks span the full window too; a dimension count is not people, and a
+  // launch-week country is still a real country.
   summary: `SELECT
   SUM(_sample_interval) AS downloads_all,
-  COUNT(DISTINCT blob10) AS downloaders_all,
-  SUM(IF(${INFRA.map((o) => `blob8 NOT LIKE '%${o}%'`).join(" AND ")}, _sample_interval, 0)) AS downloads_human,
-  COUNT(DISTINCT IF(${INFRA.map((o) => `blob8 NOT LIKE '%${o}%'`).join(" AND ")}, blob10, NULL)) AS downloaders_human,
+  ${peopleWhere(HAS_VISITOR)} AS downloaders_all,
+  SUM(IF(${HUMAN}, _sample_interval, 0)) AS downloads_human,
+  ${peopleWhere(HUMAN)} AS downloaders_human,
   COUNT(DISTINCT blob4) AS countries,
   COUNT(DISTINCT blob8) AS networks
 FROM ${DATASET}
@@ -76,10 +105,14 @@ WHERE timestamp >= NOW() - INTERVAL '30' DAY`,
 
   // Downloaders, not downloads. The gap between the two columns is the answer
   // to "how many of those are the same person pulling repeatedly".
+  // No HAS_VISITOR in the WHERE: the weekly downloads column is a total and
+  // must keep the launch week. downloaders excludes the pre-visitor rows with
+  // peopleWhere(HAS_VISITOR) instead -- the WHERE already filters to human, so
+  // peopleWhere(HUMAN) would be all-true here and fold nothing.
   growth: `SELECT
   toStartOfWeek(timestamp) AS week,
   SUM(_sample_interval) AS downloads,
-  COUNT(DISTINCT blob10) AS downloaders,
+  ${peopleWhere(HAS_VISITOR)} AS downloaders,
   COUNT(DISTINCT blob8) AS networks
 FROM ${DATASET}
 WHERE timestamp >= NOW() - INTERVAL '90' DAY
@@ -99,6 +132,7 @@ ORDER BY week DESC`,
 FROM ${DATASET}
 WHERE timestamp >= NOW() - INTERVAL '90' DAY
   AND ${HUMAN}
+  AND ${HAS_VISITOR}
   AND blob8 != ''
 GROUP BY company, country
 ORDER BY downloaders DESC
@@ -112,6 +146,7 @@ LIMIT 50`,
 FROM ${DATASET}
 WHERE timestamp >= NOW() - INTERVAL '90' DAY
   AND ${HUMAN}
+  AND ${HAS_VISITOR}
 GROUP BY country
 ORDER BY downloaders DESC`,
 
@@ -120,12 +155,13 @@ ORDER BY downloaders DESC`,
   // number that answers the question a download count always invites.
   active: `SELECT
   toStartOfWeek(timestamp) AS week,
-  COUNT(DISTINCT IF(blob1 = 'jit-upgrade', blob10, NULL)) AS upgrading_users,
-  COUNT(DISTINCT IF(blob1 != 'jit-upgrade', blob10, NULL)) AS new_installs,
+  ${peopleWhere(`blob1 = 'jit-upgrade'`)} AS upgrading_users,
+  ${peopleWhere(`blob1 != 'jit-upgrade'`)} AS new_installs,
   COUNT(DISTINCT blob10) AS total_downloaders
 FROM ${DATASET}
 WHERE timestamp >= NOW() - INTERVAL '90' DAY
   AND ${HUMAN}
+  AND ${HAS_VISITOR}
 GROUP BY week
 ORDER BY week DESC`,
 };
