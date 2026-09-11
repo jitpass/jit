@@ -477,21 +477,22 @@ func TestMCPFindingCarriesALine(t *testing.T) {
     }
   }
 }`)
+	nl := newlineOffsets(raw)
 	name := "snowflake/header:Authorization"
 	f := Finding{KeyName: &name, rawValue: "Bearer sk-abc"}
-	if got := mcpFindingLine(raw, f); got != 6 {
+	if got := mcpFindingLine(raw, nl, f); got != 6 {
 		t.Errorf("value anchor: line = %d, want 6", got)
 	}
 	// With no usable value (JSON-escaped in the real file), fall back to the
 	// key — same line here, one above in pretty JSON, never a value.
 	f2 := Finding{KeyName: &name}
-	if got := mcpFindingLine(raw, f2); got != 6 {
+	if got := mcpFindingLine(raw, nl, f2); got != 6 {
 		t.Errorf("key fallback: line = %d, want 6", got)
 	}
 	// An args index is not a real JSON key, so it stays lineless rather than
 	// matching something unrelated.
 	argName := "snowflake/args[2]"
-	if got := mcpFindingLine(raw, Finding{KeyName: &argName}); got != 0 {
+	if got := mcpFindingLine(raw, nl, Finding{KeyName: &argName}); got != 0 {
 		t.Errorf("args index should not match a key: line = %d, want 0", got)
 	}
 }
