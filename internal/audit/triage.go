@@ -559,6 +559,7 @@ func writeTriageFooter(w io.Writer, findings []Finding, summary ScanSummary, hom
 		for _, d := range summary.DerivedCredentials {
 			fmt.Fprintf(w, "    %s\n", displayFilePath(home, d.Path))
 			fmt.Fprintf(w, "      %s\n", d.What)
+			writeDerivedStatus(w, d)
 		}
 		fmt.Fprintln(w, "  jit protects credentials you stored; these were minted by the tools")
 		fmt.Fprintln(w, "  that used them, and jit does not manage, rotate or hide them.")

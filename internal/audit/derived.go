@@ -4,9 +4,13 @@
 package audit
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
+	"time"
 )
 
 // DerivedCredential is a credential-bearing file a TOOL wrote for itself,
@@ -33,6 +37,15 @@ type DerivedCredential struct {
 	What string
 	// Advice is the one thing worth doing about it, if anything.
 	Advice string
+	// Status, when non-empty, is a pre-rendered freshness line read from the
+	// cached credentials' own expiry timestamps: "2 live, soonest expires in
+	// 47m; 3 expired" or "all 5 expired". Empty when jit could not read any
+	// expiry (then only What/Advice show). StatusLive is true when at least
+	// one cached credential is still usable right now — the report renders
+	// that with the amber ○ state glyph; expired-only residue gets no glyph,
+	// because a dead token is not an active state.
+	Status     string
+	StatusLive bool
 }
 
 // ScanDerivedCredentials reports the derived artifacts jit knows how to
@@ -47,19 +60,24 @@ type DerivedCredential struct {
 func ScanDerivedCredentials(cfg Config) []DerivedCredential {
 	var out []DerivedCredential
 
-	if n := countFilesIn(filepath.Join(cfg.HomeDir, ".aws", "cli", "cache")); n > 0 {
-		out = append(out, DerivedCredential{
-			Path:   filepath.Join(cfg.HomeDir, ".aws", "cli", "cache"),
+	now := time.Now()
+	if dir := filepath.Join(cfg.HomeDir, ".aws", "cli", "cache"); countFilesIn(dir) > 0 {
+		d := DerivedCredential{
+			Path:   dir,
 			What:   "STS session credentials the AWS CLI cached for itself, in plaintext",
 			Advice: "they expire on their own; delete the directory to clear them now",
-		})
+		}
+		d.Status, d.StatusLive = cacheFreshness(dirCacheExpiries(dir), now)
+		out = append(out, d)
 	}
-	if n := countFilesIn(filepath.Join(cfg.HomeDir, ".aws", "sso", "cache")); n > 0 {
-		out = append(out, DerivedCredential{
-			Path:   filepath.Join(cfg.HomeDir, ".aws", "sso", "cache"),
+	if dir := filepath.Join(cfg.HomeDir, ".aws", "sso", "cache"); countFilesIn(dir) > 0 {
+		d := DerivedCredential{
+			Path:   dir,
 			What:   "SSO access tokens and role credentials, in plaintext",
 			Advice: "`aws sso logout` clears them",
-		})
+		}
+		d.Status, d.StatusLive = cacheFreshness(dirCacheExpiries(dir), now)
+		out = append(out, d)
 	}
 	if hasAssumeRoleProfile(filepath.Join(cfg.HomeDir, ".aws", "config")) {
 		out = append(out, DerivedCredential{
@@ -73,24 +91,32 @@ func ScanDerivedCredentials(cfg Config) []DerivedCredential {
 	// itself is a finding (scanGcloudCLICredentials); this cache is the
 	// derived layer below it — rewritten by gcloud whenever a cached token
 	// nears expiry, so the same doctrine as ~/.aws/cli/cache applies.
-	if isRegularFile(filepath.Join(cfg.HomeDir, ".config", "gcloud", "access_tokens.db")) {
-		out = append(out, DerivedCredential{
-			Path:   filepath.Join(cfg.HomeDir, ".config", "gcloud", "access_tokens.db"),
+	if p := filepath.Join(cfg.HomeDir, ".config", "gcloud", "access_tokens.db"); isRegularFile(p) {
+		d := DerivedCredential{
+			Path:   p,
 			What:   "access tokens gcloud cached for itself (about an hour each), in plaintext",
 			Advice: "they expire on their own; delete the file to clear them now (gcloud rewrites it in use)",
-		})
+		}
+		// A SQLite file, not JSON: gcloud stores token_expiry as a plain
+		// timestamp in the row, so the bytes carry it verbatim (best-effort —
+		// see fileCacheExpiries). No expiry read means the plain line, never
+		// a wrong one.
+		d.Status, d.StatusLive = cacheFreshness(fileCacheExpiries(p), now)
+		out = append(out, d)
 	}
 	// clisso's opt-in credential_process cache (its --cache-path default):
 	// live temporary AWS credentials in AWS INI format, at a path nothing
 	// else looks in — not even ~/.aws/credentials sweeps, since the name
 	// doesn't match. Rewritten by clisso on every cached fetch, so it's
 	// derived, not a finding.
-	if isRegularFile(filepath.Join(cfg.HomeDir, ".aws", "credentials-cache")) {
-		out = append(out, DerivedCredential{
-			Path:   filepath.Join(cfg.HomeDir, ".aws", "credentials-cache"),
+	if p := filepath.Join(cfg.HomeDir, ".aws", "credentials-cache"); isRegularFile(p) {
+		d := DerivedCredential{
+			Path:   p,
 			What:   "temporary AWS session credentials clisso cached for credential_process use, in plaintext",
 			Advice: "they expire on their own; delete the file to clear them now (clisso's cache-enable option keeps writing it)",
-		})
+		}
+		d.Status, d.StatusLive = cacheFreshness(fileCacheExpiries(p), now)
+		out = append(out, d)
 	}
 	// clisso logs to stderr by default; this file exists only if someone
 	// turned on file logging — and at `--log-level trace` clisso writes the
@@ -106,6 +132,137 @@ func ScanDerivedCredentials(cfg Config) []DerivedCredential {
 	}
 
 	return out
+}
+
+// maxCacheReadSize bounds how much of a cached-credential file jit reads to
+// find expiry timestamps. These are small by nature (one session's JSON, a
+// few-KB SQLite page); the cap keeps a surprise large file from being slurped.
+const maxCacheReadSize = 1 << 20
+
+// cacheExpiryPattern matches the timestamp shapes these caches store: RFC3339
+// ("2026-09-11T12:34:56Z", "...+00:00"), which the AWS caches write, and the
+// space-separated Python form ("2026-09-11 12:34:56.789012"), which gcloud's
+// sqlite3 layer writes for token_expiry. Time zone is optional; a bare form is
+// read as UTC (see parseCacheExpiry), matching what both tools mean by it.
+var cacheExpiryPattern = regexp.MustCompile(
+	`\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?`)
+
+// parseCacheExpiry parses one matched timestamp, trying the time-zoned forms
+// first and falling back to a zone-less form read as UTC. Returns ok=false for
+// anything it can't place, so a stray timestamp-shaped string is ignored
+// rather than counted as a bogus expiry.
+func parseCacheExpiry(s string) (time.Time, bool) {
+	for _, layout := range []string{
+		time.RFC3339Nano, time.RFC3339,
+		"2006-01-02T15:04:05.999999", "2006-01-02T15:04:05",
+		"2006-01-02 15:04:05.999999", "2006-01-02 15:04:05",
+	} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC(), true
+		}
+	}
+	return time.Time{}, false
+}
+
+// fileCacheExpiries returns every credential-expiry timestamp jit can read
+// from one cache file's raw bytes. Best-effort by design: it is an advisory,
+// so a timestamp it cannot parse (or a format it has never seen) yields fewer
+// entries and a plainer line, never a wrong verdict or an error.
+func fileCacheExpiries(path string) []time.Time {
+	data, err := readCappedFile(path)
+	if err != nil {
+		return nil
+	}
+	var out []time.Time
+	for _, m := range cacheExpiryPattern.FindAllString(string(data), -1) {
+		if t, ok := parseCacheExpiry(m); ok {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// dirCacheExpiries reads one expiry per cache file in dir — each file in
+// ~/.aws/cli/cache or ~/.aws/sso/cache is a single cached credential, so its
+// FIRST timestamp is that credential's expiry. A file with no readable
+// timestamp contributes nothing, so the count reflects only what jit could
+// actually place.
+func dirCacheExpiries(dir string) []time.Time {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []time.Time
+	for _, e := range entries {
+		if !e.Type().IsRegular() {
+			continue
+		}
+		if ts := fileCacheExpiries(filepath.Join(dir, e.Name())); len(ts) > 0 {
+			out = append(out, ts[0])
+		}
+	}
+	return out
+}
+
+// readCappedFile reads up to maxCacheReadSize bytes of a regular file through
+// the package's hardened opener (no symlink follow, no FIFO block).
+func readCappedFile(path string) ([]byte, error) {
+	f, err := openFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	buf := make([]byte, maxCacheReadSize)
+	n, err := f.Read(buf)
+	if err != nil && n == 0 {
+		return nil, err
+	}
+	return buf[:n], nil
+}
+
+// cacheFreshness renders the advisory's freshness line from a set of expiry
+// timestamps and reports whether any are still live. It returns ("", false)
+// for an empty set, so a cache whose expiries jit could not read shows only
+// its plain existence line — the freshness claim is made only when it can be
+// backed.
+func cacheFreshness(expiries []time.Time, now time.Time) (status string, live bool) {
+	if len(expiries) == 0 {
+		return "", false
+	}
+	var liveExp []time.Time
+	expired := 0
+	for _, e := range expiries {
+		if e.After(now) {
+			liveExp = append(liveExp, e)
+		} else {
+			expired++
+		}
+	}
+	if len(liveExp) == 0 {
+		return fmt.Sprintf("all %s expired", countWord(expired, "cached credential", "cached credentials")), false
+	}
+	sort.Slice(liveExp, func(i, j int) bool { return liveExp[i].Before(liveExp[j]) })
+	soonest := humanUntil(liveExp[0].Sub(now))
+	if expired == 0 {
+		return fmt.Sprintf("%d live, soonest expires in %s", len(liveExp), soonest), true
+	}
+	return fmt.Sprintf("%d live, soonest expires in %s; %d expired", len(liveExp), soonest, expired), true
+}
+
+// humanUntil renders a positive duration coarsely — the reader wants "about
+// how long", not seconds. Under a minute reads as "under a minute" rather
+// than "0m", which would look like it already expired.
+func humanUntil(d time.Duration) string {
+	switch {
+	case d >= 24*time.Hour:
+		return fmt.Sprintf("%dd", d/(24*time.Hour))
+	case d >= time.Hour:
+		return fmt.Sprintf("%dh", d/time.Hour)
+	case d >= time.Minute:
+		return fmt.Sprintf("%dm", d/time.Minute)
+	default:
+		return "under a minute"
+	}
 }
 
 // isRegularFile reports whether path is a regular file. Lstat, not Stat,
