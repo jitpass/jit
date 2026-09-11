@@ -333,6 +333,16 @@ func RestoreFromBackup(v *vault.Vault, rec BackupRecord) error {
 	if err != nil {
 		return fmt.Errorf("removing %s: %w", rec.OriginalPath, err)
 	}
+	// The parent directory can be gone by restore time: a --clean deletion
+	// leaves its directory in place, but the user may empty the Trash (or
+	// prune the archive) afterwards, and the undo promise — the encrypted
+	// bytes come back with one command — must survive that. A no-op for the
+	// rewrite-in-place records, whose parent still holds the file. 0700:
+	// the restored file carries a plaintext secret, and a recreated parent
+	// must not be wider than the file it exists to hold.
+	if err := os.MkdirAll(filepath.Dir(rec.OriginalPath), 0o700); err != nil {
+		return fmt.Errorf("recreating the directory for %s: %w", rec.OriginalPath, err)
+	}
 	// O_CREATE|O_EXCL|O_NOFOLLOW, not os.WriteFile's O_CREATE|O_TRUNC: the
 	// latter follows a symlink present at open time, and something (a
 	// racing attacker, or an unexpected reappearance) can occupy the path

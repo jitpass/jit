@@ -679,6 +679,17 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 			"jit only matched the -----BEGIN line; the key body is on the lines around it, so redacting would leave the key behind and make the file look clean. Regenerate the key, then delete those lines by hand.")
 		printSkippedWrapOwned(cmd.OutOrStdout(), home, wrapOwnedSkipped)
 		printJitPathRefused(cmd.OutOrStdout(), home, &discovered{jitPathRefused: jitPathRefused, jitPathRefusal: d.jitPathRefusal})
+		// --only never scopes the delete pass (design/migrate-clean.md D9),
+		// so a run whose migrate half filtered to nothing still owes the
+		// [deletions] category: print it here — nothing else will — and
+		// tell the caller the clean phase is still due. Without this, the
+		// early return silently dropped deletions the user asked for by
+		// typing --clean (code review, 2026-09-10).
+		if cleanInputs != nil && extras != nil && cleanHasWork(extras.clean) {
+			fmt.Fprintln(cmd.OutOrStdout())
+			printCleanPlanCategory(cmd.OutOrStdout(), home, extras.clean)
+			cleanInputs.migrateEmpty = true
+		}
 		return false, nil
 	}
 
@@ -1525,6 +1536,15 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 		for _, e := range cleanup.Edited {
 			cleanInputs.swept[e.Path] = true
 		}
+		// The sweep's live-writer verdicts feed the clean phase: a file an
+		// agent session was writing must not be deleted either
+		// (design/migrate-clean.md D2, enforced since the 2026-09-10 review).
+		cleanInputs.live = map[string]bool{}
+		for _, s := range cleanup.Skipped {
+			if s.Kind == migrate.SkipLive {
+				cleanInputs.live[s.Path] = true
+			}
+		}
 	}
 	// The folder-rename advisory is left to `jit status`: an explicitly named
 	// migrate target can sit under any project, so there's no single "this
@@ -1539,6 +1559,15 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 type cleanPhaseInputs struct {
 	vaulted []migrate.AgentCacheSecret
 	swept   map[string]bool
+	// live are the files the cache sweep left alone because an agent
+	// session was writing them — the clean pass must refuse those too
+	// (design/migrate-clean.md D2's SkipLive exclusion).
+	live map[string]bool
+	// migrateEmpty distinguishes "--only filtered every migration away"
+	// from "the user declined the plan". The first must still run the
+	// clean phase — D9: --only never scopes the delete pass — while the
+	// second must stop everything (code review, 2026-09-10).
+	migrateEmpty bool
 }
 
 // runMigratePath implements `jit migrate <file-or-dir>...` (and its `path`
@@ -1725,7 +1754,7 @@ func runMigrateAll(cmd *cobra.Command) error {
 			}
 		}
 	}
-	if !applied && !migrateDryRun {
+	if !applied && !migrateDryRun && !cleanIn.migrateEmpty {
 		return nil // declined at the plan — wraps and the guard must not run either
 	}
 
@@ -1778,8 +1807,8 @@ func runMigrateAll(cmd *cobra.Command) error {
 	// redundancy proof. Its own [y/N] and fresh Touch ID live inside
 	// (design/migrate-clean.md D4/D5); a dry run already disclosed it as
 	// the [deletions] category inside the frame.
-	if applied && !migrateDryRun && cleanPlan != nil && len(cleanPlan.Candidates) > 0 {
-		if err := runCleanPhase(cmd, home, cleanPlan, cleanIn.vaulted, cleanIn.swept); err != nil {
+	if (applied || cleanIn.migrateEmpty) && !migrateDryRun && cleanPlan != nil && len(cleanPlan.Candidates) > 0 {
+		if err := runCleanPhase(cmd, home, cleanPlan, cleanIn.vaulted, cleanIn.swept, cleanIn.live); err != nil {
 			return err
 		}
 	}
@@ -1918,8 +1947,8 @@ func runMigratePath(cmd *cobra.Command, targets []string) error {
 			return nil
 		}
 	}
-	if applied && !migrateDryRun && cleanPlan != nil && len(cleanPlan.Candidates) > 0 {
-		if err := runCleanPhase(cmd, home, cleanPlan, cleanIn.vaulted, cleanIn.swept); err != nil {
+	if (applied || cleanIn.migrateEmpty) && !migrateDryRun && cleanPlan != nil && len(cleanPlan.Candidates) > 0 {
+		if err := runCleanPhase(cmd, home, cleanPlan, cleanIn.vaulted, cleanIn.swept, cleanIn.live); err != nil {
 			return err
 		}
 	}
