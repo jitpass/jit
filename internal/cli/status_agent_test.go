@@ -113,11 +113,18 @@ func TestStatusReflectsRealAgentRunningAndLocked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "service  ○ running · locked") {
-		t.Errorf("expected a locked agent summary, got:\n%s", out)
+	// The clause after "locked" answers the question the amber ink raises:
+	// nothing to do, the next use unlocks it.
+	if !strings.Contains(unwrap(out), "service  ○ running · locked — unlocks with Touch ID on first use") {
+		t.Errorf("expected a locked agent summary saying what unlocks it, got:\n%s", out)
 	}
-	if !strings.Contains(out, "mounts   ○ 1 registered mount · serving decoy content only (service locked") {
+	// No "(service locked)" tail: the service row above already states the
+	// lock (rule 5 — a shared fact is stated once).
+	if !strings.Contains(out, "mounts   ○ 1 registered mount · serving decoy content only") {
 		t.Errorf("expected mounts to be reported as still served (decoy-only) while locked, not fully unserved, GAPS.md #35, got:\n%s", out)
+	}
+	if strings.Contains(out, "service locked)") {
+		t.Errorf("expected the mounts row not to restate the service row's lock, got:\n%s", out)
 	}
 }
 
