@@ -92,7 +92,7 @@ var vaultMasterKeyPresence = func() keychainwrap.MEKPresence { return keychainwr
 func gatherSystemFindings(root, cwd string, v *vault.Vault) ([]checkFinding, []string) {
 	var findings []checkFinding
 	findings = append(findings, agentFindings(root)...)
-	findings = append(findings, backupFindings(v)...)
+	findings = append(findings, backupFindings(v, root)...)
 	findings = append(findings, auditLogFindings(root)...)
 	findings = append(findings, mcpFindings(cwd)...)
 	if home, err := os.UserHomeDir(); err == nil {
@@ -543,8 +543,8 @@ func agentFindingsFrom(root string, st statusAgent) []checkFinding {
 // backupFindings mirrors `jit status`'s backup nudge: the vault only decrypts
 // on this Mac, and a `jit vault export` is the one thing that survives losing
 // it. Silent for an empty vault (nothing to lose) or an up-to-date export.
-func backupFindings(v *vault.Vault) []checkFinding {
-	vs, err := gatherVaultStatus(v)
+func backupFindings(v *vault.Vault, root string) []checkFinding {
+	vs, err := gatherVaultStatus(v, root)
 	if err != nil {
 		return []checkFinding{{Kind: kindBackup, Detail: fmt.Sprintf("could not check vault backup state: %v", err)}}
 	}
