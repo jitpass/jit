@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jitpass/jit/internal/agent"
+	"github.com/jitpass/jit/internal/guard"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/vault"
 )
@@ -138,6 +139,89 @@ func TestStatusVaultOnlyBackups(t *testing.T) {
 	}
 }
 
+// The prune nudge fires only once the backup pile outweighs the vault
+// itself — the point where "170 file backups" starts reading as a problem
+// with no exit. A vault with a modest pile stays un-nagged: pruning three
+// backups is not a decision worth a dashboard line.
+func TestStatusVaultPruneNudge(t *testing.T) {
+	t.Run("more backups than secrets points at prune", func(t *testing.T) {
+		home := withFixtureHome(t)
+		withFixtureCwd(t)
+		plantVaultSecret(t, home, "stripe/dev-key")
+		plantVaultSecret(t, home, "_backups/Users/x/app/.env.jit-bak-1")
+		plantVaultSecret(t, home, "_backups/Users/x/app/.env.jit-bak-2")
+
+		out, err := execStatus(t)
+		if err != nil {
+			t.Fatalf("jit status: %v", err)
+		}
+		if !strings.Contains(out, "jit vault prune") {
+			t.Errorf("expected a prune nudge when backups outnumber secrets, got:\n%s", out)
+		}
+	})
+
+	t.Run("a balanced pile stays quiet", func(t *testing.T) {
+		home := withFixtureHome(t)
+		withFixtureCwd(t)
+		plantVaultSecret(t, home, "stripe/dev-key")
+		plantVaultSecret(t, home, "aws/s3-access-key")
+		plantVaultSecret(t, home, "_backups/Users/x/app/.env.jit-bak-1")
+
+		out, err := execStatus(t)
+		if err != nil {
+			t.Fatalf("jit status: %v", err)
+		}
+		if strings.Contains(out, "jit vault prune") {
+			t.Errorf("expected no prune nudge for a modest backup pile, got:\n%s", out)
+		}
+	})
+}
+
+// The guard row is the prevention mode's one dashboard surface: present and
+// green when the hook is fully in place, absent otherwise — like the
+// sessions row, no state means no row, and the scan report owns the on-ramp.
+func TestStatusGuardRow(t *testing.T) {
+	t.Run("installed hook gets a row", func(t *testing.T) {
+		home := withFixtureHome(t)
+		withFixtureCwd(t)
+		t.Setenv("ZDOTDIR", "")
+		plantVaultSecret(t, home, "stripe/dev-key")
+		hook := guard.HookPath(home)
+		if err := os.MkdirAll(filepath.Dir(hook), 0o700); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(hook, []byte("# hook\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile hook: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte(guard.RcLine()+"\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile zshrc: %v", err)
+		}
+
+		out, err := execStatus(t)
+		if err != nil {
+			t.Fatalf("jit status: %v", err)
+		}
+		if !strings.Contains(unwrap(out), "guard    ● zsh history hook active") {
+			t.Errorf("expected a guard row for an installed hook, got:\n%s", out)
+		}
+	})
+
+	t.Run("no hook, no row", func(t *testing.T) {
+		home := withFixtureHome(t)
+		withFixtureCwd(t)
+		t.Setenv("ZDOTDIR", "")
+		plantVaultSecret(t, home, "stripe/dev-key")
+
+		out, err := execStatus(t)
+		if err != nil {
+			t.Fatalf("jit status: %v", err)
+		}
+		if strings.Contains(out, "guard    ") {
+			t.Errorf("expected no guard row when the hook is not installed, got:\n%s", out)
+		}
+	})
+}
+
 // The three backup-nudge states: the vault's one disaster-recovery path
 // (`jit vault export`) used to be entirely invisible — nothing ever
 // suggested it existed, on a vault that only decrypts on this machine.
@@ -150,8 +234,10 @@ func TestStatusBackupNudgeWhenNeverExported(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jit status: %v", err)
 	}
-	if !strings.Contains(out, "backup   ✗ no vault export on record") || !strings.Contains(out, "jit vault export") {
-		t.Errorf("expected a never-exported nudge naming the command, got:\n%s", out)
+	// Amber, not red: nothing is broken today, this is exposure to a future
+	// event — red stays reserved for what is failing right now.
+	if !strings.Contains(out, "backup   ○ no vault export on record") || !strings.Contains(out, "jit vault export") {
+		t.Errorf("expected an amber never-exported nudge naming the command, got:\n%s", out)
 	}
 }
 
