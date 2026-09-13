@@ -15,6 +15,7 @@ import (
 
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/guard"
+	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/vault"
 )
@@ -139,33 +140,75 @@ func TestStatusVaultOnlyBackups(t *testing.T) {
 	}
 }
 
-// The prune nudge fires only once the backup pile outweighs the vault
-// itself — the point where "170 file backups" starts reading as a problem
-// with no exit. A vault with a modest pile stays un-nagged: pruning three
-// backups is not a decision worth a dashboard line.
+// plantUndoIndex writes the undo index that backs the prune nudge — the
+// same YAML shape TestVaultPruneKeepsNewestBackupPerFile seeds.
+func plantUndoIndex(t *testing.T, home string, records ...string) {
+	t.Helper()
+	root := filepath.Join(home, "Library", "Application Support", "jitpass")
+	index := "backups:\n"
+	for _, r := range records {
+		index += "    - " + r + "\n"
+	}
+	if err := os.WriteFile(migrate.BackupIndexPath(root), []byte(index), 0o600); err != nil {
+		t.Fatalf("seeding undo index: %v", err)
+	}
+}
+
+// The prune nudge fires only when BOTH hold: the backup pile outweighs the
+// vault itself (the point where "170 file backups" starts reading as a
+// problem with no exit), AND prune would actually delete something. The
+// second condition is the live lesson: a pile of newest-only backups kept
+// the arrow pointing at a command that answered "Nothing to prune".
 func TestStatusVaultPruneNudge(t *testing.T) {
-	t.Run("more backups than secrets points at prune", func(t *testing.T) {
+	t.Run("a stale-heavy pile points at prune, with the count", func(t *testing.T) {
 		home := withFixtureHome(t)
 		withFixtureCwd(t)
 		plantVaultSecret(t, home, "stripe/dev-key")
-		plantVaultSecret(t, home, "_backups/Users/x/app/.env.jit-bak-1")
-		plantVaultSecret(t, home, "_backups/Users/x/app/.env.jit-bak-2")
+		plantVaultSecret(t, home, "_backups/a/.env.jit-bak-1")
+		plantVaultSecret(t, home, "_backups/a/.env.jit-bak-2")
+		plantUndoIndex(t, home,
+			"{original_path: /a/.env, vault_path: _backups/a/.env.jit-bak-1, unix_ts: 1}",
+			"{original_path: /a/.env, vault_path: _backups/a/.env.jit-bak-2, unix_ts: 2}")
 
 		out, err := execStatus(t)
 		if err != nil {
 			t.Fatalf("jit status: %v", err)
 		}
-		if !strings.Contains(out, "jit vault prune") {
-			t.Errorf("expected a prune nudge when backups outnumber secrets, got:\n%s", out)
+		if !strings.Contains(unwrap(out), "jit vault prune — deletes 1 stale backup, keeps each file's newest") {
+			t.Errorf("expected a prune nudge naming the stale count, got:\n%s", out)
 		}
 	})
 
-	t.Run("a balanced pile stays quiet", func(t *testing.T) {
+	t.Run("a pile of newest-only backups stays quiet", func(t *testing.T) {
+		home := withFixtureHome(t)
+		withFixtureCwd(t)
+		plantVaultSecret(t, home, "stripe/dev-key")
+		plantVaultSecret(t, home, "_backups/a/.env.jit-bak-1")
+		plantVaultSecret(t, home, "_backups/b/.env.jit-bak-1")
+		plantUndoIndex(t, home,
+			"{original_path: /a/.env, vault_path: _backups/a/.env.jit-bak-1, unix_ts: 1}",
+			"{original_path: /b/.env, vault_path: _backups/b/.env.jit-bak-1, unix_ts: 1}")
+
+		out, err := execStatus(t)
+		if err != nil {
+			t.Fatalf("jit status: %v", err)
+		}
+		if strings.Contains(out, "jit vault prune") {
+			t.Errorf("expected no prune nudge when every backup is already each file's newest, got:\n%s", out)
+		}
+	})
+
+	t.Run("a balanced pile stays quiet even with stale backups", func(t *testing.T) {
 		home := withFixtureHome(t)
 		withFixtureCwd(t)
 		plantVaultSecret(t, home, "stripe/dev-key")
 		plantVaultSecret(t, home, "aws/s3-access-key")
-		plantVaultSecret(t, home, "_backups/Users/x/app/.env.jit-bak-1")
+		plantVaultSecret(t, home, "gcp/sa-key")
+		plantVaultSecret(t, home, "_backups/a/.env.jit-bak-1")
+		plantVaultSecret(t, home, "_backups/a/.env.jit-bak-2")
+		plantUndoIndex(t, home,
+			"{original_path: /a/.env, vault_path: _backups/a/.env.jit-bak-1, unix_ts: 1}",
+			"{original_path: /a/.env, vault_path: _backups/a/.env.jit-bak-2, unix_ts: 2}")
 
 		out, err := execStatus(t)
 		if err != nil {
