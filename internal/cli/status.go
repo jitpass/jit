@@ -62,6 +62,11 @@ type statusVault struct {
 	// number always agrees with `jit vault list`.
 	SecretsStored int `json:"secrets_stored"`
 	BackupsStored int `json:"backups_stored"`
+	// StaleBackups counts what `jit vault prune` would delete (every recorded
+	// backup except each file's newest), via the same staleBackupRecords
+	// computation prune runs. Best-effort: an unreadable undo index reports 0
+	// here — status always runs, and prune is where that index fails loud.
+	StaleBackups int `json:"stale_backups,omitempty"`
 	// ExportRecorded/ExportUnixTime/ExportStale surface the vault's one
 	// disaster-recovery path: the vault only decrypts on this machine
 	// (device keychain-bound), and `jit vault export` is what survives
@@ -288,7 +293,7 @@ var statusCmd = &cobra.Command{
 			return fmt.Errorf("jit status: %w", err)
 		}
 
-		vaultStatus, err := gatherVaultStatus(v)
+		vaultStatus, err := gatherVaultStatus(v, root)
 		if err != nil {
 			return fmt.Errorf("jit status: listing vault: %w", err)
 		}
@@ -357,13 +362,20 @@ func notePendingCacheCleanup(w io.Writer, root string) {
 // gatherVaultStatus reports how many secrets are stored, never their
 // values, via the same read-only Exists/List path jit doctor uses (no
 // KeyWrapper, so no local-auth prompt).
-func gatherVaultStatus(v *vault.Vault) (statusVault, error) {
+func gatherVaultStatus(v *vault.Vault, root string) (statusVault, error) {
 	paths, err := v.List()
 	if err != nil {
 		return statusVault{}, err
 	}
 	secrets, backups := splitBackupPaths(paths)
 	result := statusVault{SecretsStored: len(secrets), BackupsStored: len(backups)}
+	// Best-effort on purpose (see statusVault.StaleBackups): a corrupt undo
+	// index must not take the always-runnable overview down, it just costs
+	// the prune nudge until `jit vault prune` reports the corruption itself.
+	if recs, err := migrate.LoadBackupRecords(root); err == nil {
+		stale, _ := staleBackupRecords(recs)
+		result.StaleBackups = len(stale)
+	}
 	if len(paths) == 0 {
 		return result, nil // an empty vault has nothing worth exporting, no nudge
 	}
@@ -606,8 +618,13 @@ func printStatusText(w io.Writer, r statusResult, now time.Time) {
 		// No automatic TTL exists on purpose (see vaultPruneCmd: silently
 		// expiring a recovery snapshot is worse than a big vault), which makes
 		// this row the one place the keep-or-prune decision can surface.
-		if r.Vault.BackupsStored > r.Vault.SecretsStored {
-			printStatusAction(w, "`jit vault prune` — keeps each file's newest backup, deletes the rest")
+		// StaleBackups must ALSO be nonzero: a big pile of newest-only backups
+		// kept this arrow pointing at a prune that answered "Nothing to prune"
+		// (the no-op arrow staleBackupRecords' comment recounts). Naming the
+		// count tells the reader what typing the command will actually do.
+		if r.Vault.BackupsStored > r.Vault.SecretsStored && r.Vault.StaleBackups > 0 {
+			printStatusAction(w, fmt.Sprintf("`jit vault prune` — deletes %s, keeps each file's newest",
+				countWord(r.Vault.StaleBackups, "stale backup", "stale backups")))
 		}
 		statusLabel(w, "backup")
 		switch {
