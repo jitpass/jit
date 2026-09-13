@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jitpass/jit/internal/agent"
+	"github.com/jitpass/jit/internal/guard"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/vault"
@@ -33,6 +34,7 @@ type statusResult struct {
 	CLI     statusCLI     `json:"cli"`
 	Vault   statusVault   `json:"vault"`
 	Agent   statusAgent   `json:"agent"`
+	Guard   statusGuard   `json:"guard"`
 	Secrets statusSecrets `json:"secrets"`
 	Mounts  statusMounts  `json:"mounts"`
 	// Sessions are the vaulted temporary credentials with a known end (a
@@ -207,6 +209,17 @@ func secretsStatusFrom(rec secretsReconciliation, includeGroups bool) statusSecr
 	return s
 }
 
+// statusGuard reports the prevention mode's presence: the zsh history hook
+// `jit guard history` installs. Installed carries guard.Installed's meaning
+// exactly — the hook file exists AND the rc sources it with a live line, so
+// a commented-out source line reports false here too. Prevention was the one
+// jit mode with no row on this dashboard: storage, delivery and the service
+// all reported their state, while the user who installed the hook had no
+// surface confirming it still protects anything.
+type statusGuard struct {
+	Installed bool `json:"installed"`
+}
+
 // statusMounts.BeingServed is inferred from agent running+unlocked state,
 // not a per-mount query RPC (none exists) — see printMountsText/gatherMounts.
 type statusMounts struct {
@@ -301,6 +314,7 @@ var statusCmd = &cobra.Command{
 			CLI:      statusCLI{Version: agent.Version(), Build: agent.BuildID()},
 			Vault:    vaultStatus,
 			Agent:    agentStatus,
+			Guard:    gatherGuardStatus(),
 			Secrets:  secretsStatusFrom(rec, statusSecretsDetail),
 			Mounts:   mountStatus,
 			Sessions: sessionsStatusFrom(sessions, clissoApps(), now),
@@ -308,7 +322,7 @@ var statusCmd = &cobra.Command{
 		if statusFormat == "json" {
 			return writeJSON(cmd.OutOrStdout(), result)
 		}
-		printStatusText(cmd.OutOrStdout(), result)
+		printStatusText(cmd.OutOrStdout(), result, now)
 		if statusSecretsDetail {
 			printSecretsDetail(cmd.OutOrStdout(), rec, v)
 		}
@@ -431,6 +445,17 @@ func agentMissingBinaryLine(exePath string) string {
 	return fmt.Sprintf("The background service is running a binary that no longer exists (%s) — an upgrade moved or removed it. Every vault unlock will fail until you run `jit service restart`.", exePath)
 }
 
+// gatherGuardStatus is best-effort like the grants listing: a home directory
+// that can't be resolved reports not-installed rather than failing the one
+// command that promises to always run.
+func gatherGuardStatus() statusGuard {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return statusGuard{}
+	}
+	return statusGuard{Installed: guard.Installed(home)}
+}
+
 // gatherAgentStatus reports the same running/unlocked state `jit service
 // status` does.
 func gatherAgentStatus(root string) (statusAgent, error) {
@@ -544,7 +569,7 @@ func printStatusHeadline(w io.Writer, r statusResult) {
 	printStatusValue(w, "%s", statusVersionTail(r))
 }
 
-func printStatusText(w io.Writer, r statusResult) {
+func printStatusText(w io.Writer, r statusResult, now time.Time) {
 	// The dashboard reads as aligned label/value rows (docker-style): a plain
 	// fixed-width label, then the value, with a semantic glyph leading any row
 	// that carries a state so the one needing attention is found at a glance
@@ -576,10 +601,24 @@ func printStatusText(w io.Writer, r statusResult) {
 		} else {
 			printStatusValue(w, "%s", stored)
 		}
+		// The backups count gets its exit only once the pile outweighs the
+		// vault itself — the point where a reader starts asking "is 170 bad?".
+		// No automatic TTL exists on purpose (see vaultPruneCmd: silently
+		// expiring a recovery snapshot is worse than a big vault), which makes
+		// this row the one place the keep-or-prune decision can surface.
+		if r.Vault.BackupsStored > r.Vault.SecretsStored {
+			printStatusAction(w, "`jit vault prune` — keeps each file's newest backup, deletes the rest")
+		}
 		statusLabel(w, "backup")
 		switch {
 		case !r.Vault.ExportRecorded:
-			_, _ = cRisk.Fprint(w, glyphRisk+" ")
+			// Amber, not red: nothing is failing right now — this is exposure
+			// to a future event (losing the Mac). Red on this dashboard means
+			// broken today (an unreachable service, a wired reference that
+			// doesn't resolve), and keeping it scarce is what lets the eye
+			// land on the actual breakage first. The stale-export state below
+			// was already amber; the two backup warnings now agree.
+			_, _ = cWarn.Fprint(w, glyphWarn+" ")
 			printStatusGlyphValue(w, "no vault export on record — the vault only decrypts on this Mac")
 			// Says what the export IS, in concrete terms the reader can
 			// picture. An earlier draft ("the only copy that survives losing
@@ -626,8 +665,13 @@ func printStatusText(w io.Writer, r statusResult) {
 		// and the glyph table files a locked session under ○. One state, one
 		// ink — a dashboard that painted it green on one row and amber on the
 		// next disagreed with itself.
+		//
+		// The trailing clause answers the question the amber ink raises.
+		// Everywhere else on this screen ○ means "needs a look", so a bare
+		// "running · locked" left the reader hunting for an unlock command
+		// that they don't need to run: the next jit use unlocks it.
 		_, _ = cWarn.Fprint(w, glyphWarn+" ")
-		printStatusGlyphValue(w, "running · locked")
+		printStatusGlyphValue(w, "running · locked — unlocks with Touch ID on first use")
 	}
 	if _, _, mismatched := agentBuildMismatch(r.Agent.Build); mismatched {
 		// Says what jit is (two programs, which is news to most readers),
@@ -635,8 +679,24 @@ func printStatusText(w io.Writer, r statusResult) {
 		// service status` and `jit doctor` — naming them here answered a
 		// question nobody reading a dashboard was asking, and cost the line
 		// the room it needed to explain itself.
-		printStatusWarnNote(w, "running a different build than this command; recent changes may not take effect until they match")
+		// Shortened from 97 characters — the longest line on the screen.
+		// "Different", never "older": the comparison can only prove the
+		// builds differ (see agentBuildMismatch).
+		printStatusWarnNote(w, "running a different build than this CLI; changes may not apply until they match")
 		printStatusAction(w, "`jit service restart` — or leave it; it self-restarts once locked and idle")
+	}
+
+	// The guard row appears only when the hook is installed, like the
+	// sessions row below: with nothing installed there is no state to
+	// report, and the scan report already owns the on-ramp. When present it
+	// confirms the hook still protects anything at all — guard.Installed
+	// rejects a commented-out source line, the obvious way someone disables
+	// it "temporarily" and forgets, and until this row nothing ever
+	// re-surfaced that.
+	if r.Guard.Installed {
+		statusLabel(w, "guard")
+		_, _ = cOK.Fprint(w, glyphOK+" ")
+		printStatusGlyphValue(w, "zsh history hook active — credentials stay out of history")
 	}
 
 	printSecretsSection(w, r.Secrets)
@@ -660,8 +720,12 @@ func printStatusText(w io.Writer, r statusResult) {
 			printStatusValue(w, "%s · unlocked, all decoy (real values flow through a jit run grant, or an approved consent prompt for a global credential file)", registered)
 		}
 	case r.Mounts.BeingServed:
+		// No "(service locked)" tail: the service row a few lines up already
+		// states the lock, in the same amber (rule 5 — a shared fact is
+		// stated once). "Decoy content only" stands on its own as this row's
+		// consequence of that state.
 		_, _ = cWarn.Fprint(w, glyphWarn+" ")
-		printStatusGlyphValue(w, "%s · serving decoy content only (service locked)", registered)
+		printStatusGlyphValue(w, "%s · serving decoy content only", registered)
 	default:
 		printStatusValue(w, "%s · not being served (service not running)", registered)
 	}
@@ -694,7 +758,10 @@ func printStatusText(w io.Writer, r statusResult) {
 	}
 
 	printGrantsSection(w, r)
-	printSessionsSection(w, r.Sessions, time.Now())
+	// The same instant the sessions were shaped with: a second boundary
+	// between gather and render must not let the text and JSON views of one
+	// run disagree about live/expired.
+	printSessionsSection(w, r.Sessions, now)
 }
 
 // printGrantsSection reports the live process grants, and is where `jit grant`
