@@ -1978,6 +1978,34 @@ var vaultPruneYes bool
 // decide when history is disposable. Pruning keeps exactly what
 // `jit migrate undo` would use (the newest backup per file) and deletes
 // the rest.
+// staleBackupRecords is exactly what `jit vault prune` would delete: every
+// recorded backup except each file's newest — the one `jit migrate undo`
+// restores. RemoveOnRestore records have no vault entry at all (VaultPath is
+// empty); they cost nothing and must never land in the drop set, where an
+// empty VaultPath would match every one of them in DropBackupRecords.
+//
+// Shared with `jit status`'s prune nudge so the two cannot drift: the nudge
+// first shipped keying on the raw backup COUNT, and a vault whose every
+// backup was already each file's newest kept an arrow pointing at a command
+// that answered "Nothing to prune" (caught live, first dogfood after
+// v1.5.0). An arrow is the one command to type; it must never be a no-op.
+// keptFiles counts the files whose newest backup survives — the other half
+// of prune's closing summary.
+func staleBackupRecords(recs []migrate.BackupRecord) (stale []migrate.BackupRecord, keptFiles int) {
+	keep := map[string]bool{}
+	for _, r := range migrate.LatestBackups(recs) {
+		if r.VaultPath != "" {
+			keep[r.VaultPath] = true
+		}
+	}
+	for _, r := range recs {
+		if r.VaultPath != "" && !keep[r.VaultPath] {
+			stale = append(stale, r)
+		}
+	}
+	return stale, len(keep)
+}
+
 var vaultPruneCmd = &cobra.Command{
 	Use:   "prune",
 	Short: "Delete stale encrypted file backups, keeping each file's newest",
@@ -2007,23 +2035,7 @@ var vaultPruneCmd = &cobra.Command{
 			return fmt.Errorf("jit vault prune: %w", err)
 		}
 
-		// Keep the newest record per file — exactly the set undo restores
-		// from. RemoveOnRestore records have no vault entry at all
-		// (VaultPath is empty); they cost nothing and must never land in
-		// the drop set, where an empty VaultPath would match every one of
-		// them in DropBackupRecords.
-		keep := map[string]bool{}
-		for _, r := range migrate.LatestBackups(recs) {
-			if r.VaultPath != "" {
-				keep[r.VaultPath] = true
-			}
-		}
-		var stale []migrate.BackupRecord
-		for _, r := range recs {
-			if r.VaultPath != "" && !keep[r.VaultPath] {
-				stale = append(stale, r)
-			}
-		}
+		stale, kept := staleBackupRecords(recs)
 		if len(stale) == 0 {
 			fmt.Fprintln(out, "Nothing to prune, each backed-up file already has only its newest backup.")
 			return nil
@@ -2060,7 +2072,7 @@ var vaultPruneCmd = &cobra.Command{
 		if err := migrate.DropBackupRecords(root, stale); err != nil {
 			return fmt.Errorf("jit vault prune: %w", err)
 		}
-		fmt.Fprint(out, hlCmds(fmt.Sprintf("Pruned %s. %s %s newest backup for `jit migrate undo`.\n", countWord(len(stale), "stale file backup", "stale file backups"), countWord(len(keep), "file", "files"), pluralWord(len(keep), "keeps its", "keep their"))))
+		fmt.Fprint(out, hlCmds(fmt.Sprintf("Pruned %s. %s %s newest backup for `jit migrate undo`.\n", countWord(len(stale), "stale file backup", "stale file backups"), countWord(kept, "file", "files"), pluralWord(kept, "keeps its", "keep their"))))
 		return nil
 	},
 }
