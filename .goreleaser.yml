@@ -209,12 +209,15 @@ homebrew_casks:
     # serving bytes, so the sha256 below still pins GitHub's artifact, and
     # `jit upgrade` keeps fetching from github.com directly — the redirect
     # host must never become load-bearing for the signature/checksum chain.
-    # `verified:` tells brew audit the differing domain is ours. Provenance,
-    # live verification (11/11), and rollback (re-point here at github.com)
-    # are in spike/dl-redirect/FINDINGS.md.
+    # Provenance, live verification (11/11), and rollback (re-point here at
+    # github.com) are in spike/dl-redirect/FINDINGS.md.
+    #
+    # No `verified:` here: it used to declare the differing domain ours for
+    # brew audit, but Homebrew deprecated it to a no-op (DEPRECATED_URL_SPECS
+    # in cask/url.rb) that prints a deprecation warning to every tap user on
+    # every brew run.
     url:
       template: "https://dl.jitpass.com/jitpass/jit/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
-      verified: "dl.jitpass.com/"
     # PolyForm Perimeter 1.0.0 — homebrew_casks has no `license:` field
     # (unlike the deprecated `brews`/Formula schema); license lives in
     # LICENSE instead.
