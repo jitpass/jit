@@ -53,6 +53,12 @@ description: Placeholder values, hanging reads, surprise Touch ID prompts, MCP s
   - the jit binary it names has moved, or its profile is gone. Hosts report
   only "server failed", so this is the only place the two get connected. See
   [MCP configs](../migrate/mcp.md#checking-a-migrated-config).
+- **`kubectl` or `aws` fails naming a jit path that no longer exists.**
+  `~/.kube/config` or `~/.aws/config` records the absolute path jit was
+  run from, and an upgrade that moved the binary left it stale. `jit doctor`
+  names the file; `jit migrate ~/.kube/config` (or bare `jit migrate`)
+  plans a `[recorded jit path]` refresh of just that line. See
+  [A recorded jit path that went stale](../migrate/index.md#a-recorded-jit-path-that-went-stale).
 - **Touch ID prompts feel too frequent.** First find out what's asking -
   `jit audit` (above) names each one. If they're all legitimate,
   lengthen the [service's](../service/index.md) session window:
