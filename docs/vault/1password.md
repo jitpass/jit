@@ -25,17 +25,31 @@ the `op` binary you installed, and refuses to run one that does not carry
 
 ## Linking happens by itself during migrate
 
-With `op` installed and signed in, every `jit migrate` run checks the
-values it is about to vault against your 1Password (one authenticated
-check per run, after you confirm the plan): a value that byte-exactly
-matches a concealed 1Password field is stored as a reference, not a
-copy, and the mutation log lists each one under a `[1Password]`
-heading. A `.env` you kept for `op run`, full of `op://` values,
-converts the same way: each reference stays a reference, so it keeps
-resolving after migration. Matching is exact, values shorter than 8
-characters never match, and `--no-1password` restores plain copies.
-If the check fails (signed out, app locked), the run continues with
-copies and says so; nothing breaks because 1Password is unavailable.
+With `op` installed and signed in, `jit migrate` checks the values it is
+about to vault against your 1Password: a value that byte-exactly matches
+a concealed 1Password field is stored as a reference, not a copy. A
+`.env` you kept for `op run`, full of `op://` values, converts the same
+way: each reference stays a reference, so it keeps resolving after
+migration. Matching is exact, values shorter than 8 characters never
+match, and `--no-1password` restores plain copies.
+
+The check runs after you confirm the plan, and only when the run holds a
+value that could match; a run of short values or ready-made references
+never contacts 1Password. It reads the credential-bearing items of every
+account you are signed in to (cards, bank accounts, identity documents
+and the like are skipped, so their PINs never pass through jit), one
+authorization prompt per account at most, with a counter on the
+terminal while items stream in. Set `OP_ACCOUNT` to a sign-in address
+to keep it to one account, the same variable `op` itself honors.
+
+The mutation log then reports under a `[1Password]` heading: each linked
+path with the field it now follows, or "0 of N linked" with the number of
+items checked when nothing matched, so a check you waited through is
+never silent. If 1Password stopped answering part way (a rate limit, an
+account that went away), the items that did arrive are still matched and
+the heading says how many were read. If the check fails outright (signed
+out, app locked), the run continues with copies and says so; nothing
+breaks because 1Password is unavailable.
 
 ## Link a secret by hand
 
@@ -47,9 +61,11 @@ jit vault link stripe/live "op://Private/Stripe/credential"
 ```
 
 jit test-resolves the reference first, so a typo, a signed-out CLI, or a
-deleted item fails here rather than at first use (`--no-verify` skips the
-test for offline setup). Then it stores the reference under a fresh
-Touch ID.
+deleted item fails here rather than at first use, and pins it to the
+1Password account it resolved in (see below). Then it stores the
+reference under a fresh Touch ID. `--no-verify` skips the test for
+offline setup; the link is then stored unpinned and follows whichever
+account `op` defaults to.
 
 First use in a terminal session can show two prompts, and they are
 different decisions: jit's Touch ID approves *this process getting the
@@ -76,8 +92,31 @@ jit run --profile deploy -- ./deploy.sh
 ```
 
 `jit vault get stripe/live` prints the resolved value;
-`--format json` adds the reference it resolved through. `jit vault list
--l` shows linked entries under the `1password` class.
+`--format json` adds the reference it resolved through, account pin
+included. `jit vault list -l` shows linked entries under the `1password`
+class.
+
+## Several 1Password accounts
+
+An `op://` reference names a vault, an item and a field, but not an
+account, and `op` resolves it against one account only: `--account`,
+else `OP_ACCOUNT`, else whichever it signed in to most recently. On a
+Mac with a personal account and an employer's, that default changes
+with ordinary use, and a bare reference made under one account fails
+under the other with "isn't a vault in this account".
+
+So every link jit creates carries its account: the stored reference
+ends in `?account=<account id>`, and jit passes that account to `op` on
+every resolve. Migrate pins each match to the account it was found in;
+`jit vault link` tries each signed-in account until the reference
+resolves and pins that one, so a reference copied from either app
+window links correctly. The pin rides inside the reference, so exports,
+`jit doctor --1password` and `jit vault get --format json` all carry it.
+
+A link made before pinning existed, or with `--no-verify`, follows
+`op`'s default account. If such a link stops resolving on a
+multi-account Mac, the error says so; `jit vault link` it again to pin
+it.
 
 ## Rotation, backup, removal
 

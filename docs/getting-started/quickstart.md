@@ -12,7 +12,7 @@ jit scan                       # 1. see the problem (read-only, run it anywhere)
 jit vault init                  # 2. create the vault (master key in your login keychain)
 jit migrate ~/code/myapp --dry-run  # 3. preview the fix for a file or project scan flagged
 jit migrate ~/code/myapp        # 4. apply it: plan, [y/N], one Touch ID prompt
-jit status                      # 5. vault / service / mounts / backup health, one screen
+jit status                      # 5. vault / service / mounts / sessions / backup health, one screen
 ```
 
 The background service (so you unlock once, not once per command) installs
@@ -115,20 +115,29 @@ that one - one `.env`, a `~/.zshrc`, or even a bare token in a plain file
 
 ```
 $ jit status
-Vault: 5 secret(s) stored.
-Service: running and unlocked (locks in 12m30s).
-Secrets: 5 stored in 2 group(s).
-  Wired here:        2 group(s) via 2 profile(s) (5 reference(s)), all resolve.
-  Managed elsewhere: 0 group(s) (referenced only by global profiles or mounts).
-  Unreferenced here: none.
-Mounts: 1 registered, service unlocked, all serving decoy (real values flow through a jit run grant, or an approved consent prompt for a global credential file).
+jit      v1.1.0 · service 1.1.0
+vault    5 secrets in 2 groups · 1 file backup kept for jit migrate undo
+backup   ✗ no vault export on record — the vault only decrypts on this Mac
+      → jit vault export <file> — a copy you could restore on another Mac
+service  ● running · unlocked (locks in 12m30s)
+secrets  reconciled against every profile and mount
+  ● Wired here          2 groups via 2 profiles (5 references), all resolve.
+  ● Managed elsewhere   0 groups · referenced only by global profiles or mounts
+    Unreferenced here   none
+mounts   ○ 1 registered mount · unlocked, all decoy (real values flow through a jit run grant, or an approved consent prompt for a global credential file)
+grants   none active
+      → jit grant --process <name> --profile <profile> --for <duration>
+        pre-approves a program to work unattended
 ```
 
-`jit status` is the quick read-only snapshot. Its **Secrets** section
-reconciles the vault against your profiles: every stored secret is *wired
-here* (a project-local profile uses it), *managed elsewhere* (referenced only
-by a global profile or a mount), or *unreferenced* (a candidate orphan). Add
-`jit status --secrets` for the full per-group listing. `jit doctor` is the
+`jit status` is the quick read-only snapshot, one row per concern. The
+**secrets** rows reconcile the vault against your profiles: every stored
+secret is *wired here* (a project-local profile uses it), *managed
+elsewhere* (referenced only by a global profile or a mount), or
+*unreferenced* (a candidate orphan). Add `jit status --secrets` for the
+full per-group listing. A **sessions** row appears once a profile holds an
+expiring credential (an SSO-minted AWS session, say) and shows each one's
+expiry; the **backup** row nags until the vault has been exported once. `jit doctor` is the
 deeper pass/fail diagnostic (it also verifies each secret's envelope, sweeps
 for orphaned secrets, and checks service, backup, and shim health). See
 **[Profiles](../run/profiles.md#checking-a-profiles-health-jit-doctor)**.

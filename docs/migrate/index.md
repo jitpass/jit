@@ -133,10 +133,12 @@ them would mean one `rm` later breaking every tool that shares it.
 compares the values and says which copies, if any, are safe to retire.
 
 If the [1Password CLI](../vault/1password.md) is installed and signed
-in, migrate also checks each value against your 1Password (once per
-run, after you confirm): a value already stored there is vaulted as an
-`op://` reference instead of a copy, so rotating it in 1Password is the
-only rotation you do. `--no-1password` stores plain copies instead.
+in, migrate also checks each value against your 1Password (after you
+confirm, and only when a value could match): a value already stored
+there is vaulted as an `op://` reference instead of a copy, pinned to
+the account it was found in, so rotating it in 1Password is the only
+rotation you do. Every signed-in account is checked unless `OP_ACCOUNT`
+names one. `--no-1password` stores plain copies instead.
 
 ## Finishing deletions: `--clean`
 
@@ -270,6 +272,27 @@ decoy to anything else.
 
 CLI tool tokens (`gh`, `stripe`, `ngrok`, …) live in their own config files
 that `migrate` doesn't cover - that's [`jit wrap`](../wrap/index.md)'s job.
+
+## A recorded jit path that went stale
+
+Several of the files above name jit by its absolute path rather than by
+`jit` on `PATH`: the `credential_process` line in `~/.aws/config`, the
+`exec` block in `~/.kube/config`, and the docker, git and terraform helper
+scripts under `~/.jit/shims`. jit records the durable location it was run
+from, so a `PATH` change never breaks a tool. An upgrade that moves the
+binary can, though: an older Homebrew install recorded a versioned
+`Caskroom/jitpass/<version>/jit` path that the next `brew upgrade`
+deleted, and `kubectl` or `aws` then fail with "no such file" naming a
+jit that is gone.
+
+`jit doctor` flags the stale path, and `jit migrate` repairs it: naming
+the file (`jit migrate ~/.kube/config`) or running bare `jit migrate`
+plans a `[recorded jit path]` row that rewrites just that line to jit's
+current durable path, backed up and undoable like any other rewrite.
+`--only aws` and `--only kube` scope it the way they scope the
+migration. If jit is itself running from somewhere volatile (`/tmp`, a
+`Downloads` folder), the plan says so and refuses rather than record a
+path that will break again.
 
 ## Leaving is as easy as arriving
 

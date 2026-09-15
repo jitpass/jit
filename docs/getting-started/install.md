@@ -208,6 +208,12 @@ published Apple Silicon release; on an Intel or source install, use the
 New versions are announced on the
 [Releases page](https://github.com/jitpass/jit/releases).
 
+If an upgrade moves the binary - an older Homebrew install lived under a
+versioned `Caskroom/jitpass/<version>/` directory - the files jit wrote
+naming its own path (`~/.aws/config`, `~/.kube/config`, the credential
+helper scripts) go stale. `jit doctor` flags that, and `jit migrate`
+[refreshes the recorded path](../migrate/index.md#a-recorded-jit-path-that-went-stale).
+
 ### Manual upgrade (your first upgrade onto v0.41.0, Intel, or by preference)
 
 `jit upgrade` only exists once you've installed a build that has it, so the
