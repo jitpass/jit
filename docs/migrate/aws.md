@@ -30,6 +30,19 @@ rather than a shim; nothing about how you invoke your tools changes.
 - `jit wrap aws` routes to this same migration - there's one AWS
   mechanism, whichever command you arrive through.
 
+- A profile that carries an expiration - one a SAML/SSO tool such as
+  clisso minted - is a **session**. `jit status` lists every session with
+  its expiry in a `sessions` row, and for an expired one names the command
+  that mints a fresh one (`clisso get <app>`); `--format json` carries the
+  same under `sessions`. jit serves the real `Expiration` to SDKs, so
+  long-running processes refresh on schedule rather than cache a dead
+  token, and the expired-token error from `aws-credential-process` names
+  the mint command too.
+- The `credential_process` line records jit's absolute path. If an
+  upgrade moves the binary, `jit doctor` flags the stale line and
+  `jit migrate ~/.aws/config` (or `--only aws`) [refreshes
+  it](./index.md#a-recorded-jit-path-that-went-stale).
+
 ## What jit does not cover
 
 jit protects the credential *you* stored. The AWS CLI also mints credentials
