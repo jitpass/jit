@@ -29,6 +29,10 @@ standard `ExecCredential` response; nothing about your workflow changes.
   [service](../service/index.md)'s shared session, or a Touch ID prompt.
 - Rotating: update the vault paths shown by `jit status --secrets`; the
   next fetch serves the new credential.
+- The `exec` block records jit's absolute path. If an upgrade moves the
+  binary, `jit doctor` flags the stale line and `jit migrate ~/.kube/config`
+  (or `--only kube`) [refreshes
+  it](./index.md#a-recorded-jit-path-that-went-stale).
 
 `jit k8s-exec-credential` is the [plumbing
 command](../reference/plumbing.md) the kubeconfig invokes - you never run
