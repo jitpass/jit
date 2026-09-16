@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -532,6 +533,59 @@ func (c *Client) History() ([]SessionEvent, error) {
 		scrubEventBy(&resp.Events[i])
 	}
 	return resp.Events, nil
+}
+
+// Subscribe streams the agent's session events to fn as they are recorded —
+// exactly the events History returns, without polling — until ctx is done,
+// the agent disconnects, or the agent drops this client for not keeping up
+// (see OpSubscribe). It returns ctx.Err() on a clean stop and the transport
+// error otherwise; a caller that wants to keep following reconnects and
+// re-syncs from History first, since anything recorded in the gap is only
+// there.
+//
+// Like History it never triggers a challenge: it is the "why do you keep
+// prompting me?" question, asked continuously.
+func (c *Client) Subscribe(ctx context.Context, fn func(SessionEvent)) error {
+	conn, err := c.dial()
+	if err != nil {
+		return fmt.Errorf("connecting to agent: %w: %v", ErrNotRunning, err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	// Closing the connection is what unblocks Decode when ctx ends; the
+	// watcher exits with this call either way, so it never outlives it.
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
+	}()
+
+	if err := json.NewEncoder(conn).Encode(Request{Op: OpSubscribe}); err != nil {
+		return fmt.Errorf("sending request: %w", err)
+	}
+	dec := json.NewDecoder(conn)
+	var ack Response
+	if err := dec.Decode(&ack); err != nil {
+		return fmt.Errorf("reading response: %w", err)
+	}
+	if !ack.OK {
+		return fmt.Errorf("agent: %s", ack.Error)
+	}
+	for {
+		var e SessionEvent
+		if err := dec.Decode(&e); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("reading event stream: %w", err)
+		}
+		scrubEventBy(&e)
+		fn(e)
+	}
 }
 
 // Status asks the running agent for that snapshot.

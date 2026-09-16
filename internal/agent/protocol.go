@@ -166,6 +166,17 @@ const (
 	OpRevealPID = "reveal_pid"
 	OpStopMount = "stop_mount"
 	OpHistory   = "history"
+	// OpSubscribe is the one streaming op: the agent answers with a single
+	// Response{OK: true} line and then keeps the connection open, writing one
+	// SessionEvent JSON document per line as each is recorded (the same
+	// events "history" returns, in the order they enter the ring), until the
+	// client closes or the agent shuts down. It carries nothing "history"
+	// does not — no new information, only no polling — and needs no unlock,
+	// for the reason OpHistory gives. A subscriber that stops reading is
+	// disconnected rather than buffered without bound (see subscribeBuffer);
+	// it re-syncs with a "history" call, which is what `jit audit -f` and
+	// the menu bar app do on reconnect.
+	OpSubscribe = "subscribe"
 	// OpTrust registers the CALLER's own process (the kernel peer pid) as a
 	// consent trust root: `jit run --trust` marks its run so any credential a
 	// process in that run's tree reaches for is auto-allowed without a

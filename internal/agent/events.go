@@ -68,6 +68,9 @@ func (s *Server) recordEvent(e SessionEvent) {
 		n := copy(s.events, s.events[len(s.events)-MaxSessionEvents:])
 		s.events = s.events[:n]
 	}
+	// Every event that enters the ring is what a subscriber sees — this is
+	// the one append site, so a stream can never disagree with "history".
+	s.publish(e)
 }
 
 // useKey groups uses that collapse into one KindUse event: same op, same
