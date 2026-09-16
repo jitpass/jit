@@ -407,13 +407,21 @@ func (s *Server) handle(req Request, c *caller) Response {
 	}
 	switch req.Op {
 	case OpStatus:
-		unlocked, remaining := s.status()
+		unlocked, remaining, ceiling := s.statusWithCeiling()
 		var mounts []MountRevealStatus
 		if s.OnMountStatus != nil {
 			mounts = s.OnMountStatus()
 		}
 		lastUnlock, lastLock := s.provenance()
-		return Response{OK: true, Unlocked: unlocked, ExpiresInSeconds: int64(remaining.Seconds()), Mounts: mounts, LastUnlock: lastUnlock, LastLock: lastLock, PendingUnlock: s.pendingUnlock(), Build: BuildID(), Version: Version(), ExecutablePath: currentExecutablePath()}
+		return Response{
+			OK: true, Unlocked: unlocked,
+			ExpiresInSeconds: int64(remaining.Seconds()),
+			CeilingInSeconds: int64(ceiling.Seconds()),
+			TTLSeconds:       int64(s.ttl.Seconds()),
+			ConsentEnabled:   s.Consent != nil,
+			Mounts:           mounts, LastUnlock: lastUnlock, LastLock: lastLock, PendingUnlock: s.pendingUnlock(),
+			Build: BuildID(), Version: Version(), ExecutablePath: currentExecutablePath(),
+		}
 	case OpHistory:
 		// Deliberately no ensureUnlocked: reading which prompts have already
 		// happened must never itself cause one. An agent you can't ask "why do

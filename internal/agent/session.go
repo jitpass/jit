@@ -861,16 +861,28 @@ func (s *Server) SessionUnlocked() bool {
 }
 
 func (s *Server) status() (unlocked bool, remaining time.Duration) {
+	unlocked, remaining, _ = s.statusWithCeiling()
+	return unlocked, remaining
+}
+
+// statusWithCeiling is status plus how long the hard ceiling alone allows,
+// for a renderer that shows both bounds (Response.CeilingInSeconds). Zero
+// when locked, or when no ceiling is configured, so a caller can never read
+// a stale ceiling off a session that has already ended.
+func (s *Server) statusWithCeiling() (unlocked bool, remaining, ceiling time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.mek == nil {
-		return false, 0
+		return false, 0, 0
 	}
 	remaining = s.remainingLocked()
 	if remaining <= 0 {
-		return false, 0
+		return false, 0, 0
 	}
-	return true, remaining
+	if !s.sessionStart.IsZero() && s.maxSessionAge > 0 {
+		ceiling = time.Until(s.sessionStart.Add(s.maxSessionAge))
+	}
+	return true, remaining, ceiling
 }
 
 // remainingLocked is how long this session actually has left: the idle expiry
