@@ -470,6 +470,17 @@ type Status struct {
 	Unlocked bool
 	// Remaining is how long until the idle auto-lock, zero when locked.
 	Remaining time.Duration
+	// Ceiling is how long the hard session ceiling alone allows — Remaining
+	// is the nearer of the two bounds. Zero when locked, or from an agent
+	// predating the field, so a renderer treats zero as "not reported".
+	Ceiling time.Duration
+	// TTL is the agent's configured inactivity timeout; zero from an agent
+	// predating the field.
+	TTL time.Duration
+	// ConsentEnabled is whether per-process credential consent is on in the
+	// running agent; false from an agent predating the field, which a caller
+	// must render as unknown rather than off when Protocol reports an old agent.
+	ConsentEnabled bool
 	// Mounts is every currently-served mount's reveal state (GAPS.md #37) —
 	// "is X revealed, and for how long" used to have no answer anywhere short
 	// of reading mountManager's in-process state directly, which a separate
@@ -535,6 +546,9 @@ func (c *Client) Status() (Status, error) {
 	return Status{
 		Unlocked:       resp.Unlocked,
 		Remaining:      time.Duration(resp.ExpiresInSeconds) * time.Second,
+		Ceiling:        time.Duration(resp.CeilingInSeconds) * time.Second,
+		TTL:            time.Duration(resp.TTLSeconds) * time.Second,
+		ConsentEnabled: resp.ConsentEnabled,
 		Mounts:         resp.Mounts,
 		LastUnlock:     resp.LastUnlock,
 		LastLock:       resp.LastLock,
