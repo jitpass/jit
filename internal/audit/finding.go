@@ -203,7 +203,7 @@ import (
 // instead of promising a migration. It previously carried remedy "migrate"
 // and a runnable fix_command that answered "Nothing to migrate" on the very
 // path it named.
-const SchemaVersion = "0.19.0"
+const SchemaVersion = "0.20.0"
 
 // ScannerName identifies this tool in the shared NDJSON envelope, matching
 // bumblebee's record shape so a receiver can co-ingest both (RFC.md §4).
@@ -577,6 +577,10 @@ type ScanSummary struct {
 	// Unfiltered records that Config.Unfiltered was set for this run, so a
 	// stored report says which view it is. See Config.Unfiltered.
 	Unfiltered bool `json:"unfiltered"`
+	// ExcludedPaths echoes Config.ExcludePaths, so a consumer can tell "jit
+	// found nothing there" from "jit was told not to look there". Absent
+	// when nothing was excluded. Added in 0.20.0.
+	ExcludedPaths []string `json:"excluded_paths,omitempty"`
 	// Targets are the paths a targeted `jit scan <path>...` was pointed at,
 	// empty for the machine-wide scan. Carried so the report header can say
 	// what was actually scanned: it used to print "~/" regardless, so
@@ -648,6 +652,15 @@ type Config struct {
 	// registry: a named pipe has no at-rest content whether jit made it or
 	// not). Empty (the default in tests) means no count is reported.
 	MountRegistryPath string
+
+	// ExcludePaths are absolute, cleaned directory (or file) paths the scan
+	// leaves alone: the walk does not descend into them, and no finding is
+	// reported from under them, whichever scanner would have found it. A
+	// user's own choice ("that vendored monorepo is not mine to fix"), and
+	// deliberately NOT a suppression of jit's own noise rules, which stay
+	// as they are. The summary records the list (ExcludedPaths), so a
+	// report that shows less says why.
+	ExcludePaths []string
 
 	// Unfiltered turns OFF the name/value suppression gates
 	// (LooksLikeNonSecretName, LooksLikeNonSecretValue, and the
