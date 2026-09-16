@@ -45,6 +45,16 @@ type agentStatusResult struct {
 	Installed      bool  `json:"installed"`
 	Unlocked       bool  `json:"unlocked"`
 	LocksInSeconds int64 `json:"locks_in_seconds,omitempty"`
+	// CeilingInSeconds is the hard session ceiling's remainder, the bound
+	// LocksInSeconds may already be reporting when it is the nearer one.
+	// Same omission rule as LocksInSeconds: only while running and unlocked.
+	CeilingInSeconds int64 `json:"ceiling_in_seconds,omitempty"`
+	// TTLSeconds is the configured inactivity timeout and ConsentEnabled
+	// whether per-process consent is on — the two service settings, reported
+	// by the running process rather than read back from the launchd plist.
+	// Omitted from an agent that predates them.
+	TTLSeconds     int64 `json:"ttl_seconds,omitempty"`
+	ConsentEnabled bool  `json:"consent_enabled,omitempty"`
 	// Mounts is GAPS.md #37's per-mount reveal snapshot — empty when nothing
 	// is registered/served, never omitted outright, so a script parsing
 	// this doesn't need to special-case "field missing" vs "empty list."
@@ -126,9 +136,10 @@ var agentStatusCmd = &cobra.Command{
 		}
 
 		if agentStatusFormat == "json" {
-			result := agentStatusResult{Running: true, Installed: agentInstalled(), Unlocked: st.Unlocked, Mounts: st.Mounts, LastUnlock: st.LastUnlock, LastLock: st.LastLock, PendingUnlock: st.PendingUnlock, Build: st.Build, Version: st.Version, Protocol: st.Protocol}
+			result := agentStatusResult{Running: true, Installed: agentInstalled(), Unlocked: st.Unlocked, Mounts: st.Mounts, LastUnlock: st.LastUnlock, LastLock: st.LastLock, PendingUnlock: st.PendingUnlock, Build: st.Build, Version: st.Version, Protocol: st.Protocol, TTLSeconds: int64(st.TTL.Seconds()), ConsentEnabled: st.ConsentEnabled}
 			if st.Unlocked {
 				result.LocksInSeconds = int64(st.Remaining.Round(time.Second).Seconds())
+				result.CeilingInSeconds = int64(st.Ceiling.Round(time.Second).Seconds())
 			}
 			return writeJSON(cmd.OutOrStdout(), result)
 		}

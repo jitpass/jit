@@ -2008,3 +2008,43 @@ func TestServeErrorRateLimitIgnoresCallerText(t *testing.T) {
 		t.Errorf("the recorded event must carry the suppressed fold: Count = %d, want 200", events[2].Count)
 	}
 }
+
+func TestStatusReportsCeilingTTLAndConsent(t *testing.T) {
+	s, socketPath, cleanup := startTestServer(t, time.Minute, nil)
+	defer cleanup()
+	s.maxSessionAge = 10 * time.Minute
+	c := NewClient(socketPath)
+
+	locked, err := c.Status()
+	if err != nil {
+		t.Fatalf("Status (locked): %v", err)
+	}
+	if locked.Unlocked || locked.Remaining != 0 || locked.Ceiling != 0 {
+		t.Errorf("locked status = unlocked=%v remaining=%s ceiling=%s, want all zero", locked.Unlocked, locked.Remaining, locked.Ceiling)
+	}
+	if locked.TTL != time.Minute {
+		t.Errorf("TTL = %s, want 1m (reported while locked too: it is a setting, not session state)", locked.TTL)
+	}
+	if locked.ConsentEnabled {
+		t.Error("ConsentEnabled = true on a server with no consent engine")
+	}
+
+	if _, err := c.WrapKey(bytes.Repeat([]byte{1}, 32)); err != nil {
+		t.Fatalf("WrapKey: %v", err)
+	}
+	st, err := c.Status()
+	if err != nil {
+		t.Fatalf("Status (unlocked): %v", err)
+	}
+	if !st.Unlocked {
+		t.Fatal("not unlocked after WrapKey")
+	}
+	// Remaining is the nearer bound (the 1m idle TTL); Ceiling is the 10m
+	// hard cap on its own, measured from the fresh unlock a moment ago.
+	if st.Remaining <= 50*time.Second || st.Remaining > time.Minute {
+		t.Errorf("Remaining = %s, want just under 1m", st.Remaining)
+	}
+	if st.Ceiling <= 9*time.Minute || st.Ceiling > 10*time.Minute {
+		t.Errorf("Ceiling = %s, want just under 10m", st.Ceiling)
+	}
+}
