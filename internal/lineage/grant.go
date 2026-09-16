@@ -194,6 +194,23 @@ func SessionRoot(pid int32) (Process, bool) {
 	return p, true
 }
 
+// IsSessionRoot reports whether pid is itself a session root: a process
+// launchd started directly, which is what every terminal app, editor and
+// tmux server is. It is the shape an explicitly chosen tree-grant anchor
+// must have (see agent.Request.AnchorExplicit): a top-level app a human
+// can name, never an interior process of someone else's tree, and never
+// launchd itself.
+func IsSessionRoot(pid int32) bool {
+	if pid <= 1 {
+		return false
+	}
+	kp, err := unix.SysctlKinfoProc("kern.proc.pid", int(pid))
+	if err != nil {
+		return false
+	}
+	return int32(kp.Eproc.Ppid) <= 1
+}
+
 // ProcessStartTime returns pid's fork-time stamp in microseconds since the
 // epoch, ok=false when the process is gone or unreadable. The stamp is
 // stable across execve (spike-verified through a double exec), which is

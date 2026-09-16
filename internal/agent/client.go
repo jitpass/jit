@@ -408,6 +408,29 @@ func (c *Client) GrantCreate(pid int32, name string, profiles []string, projectR
 	return resp.Grants[0], nil
 }
 
+// GrantCreateUnderRoot is GrantCreate for a caller that is not inside the
+// tree it names: a menu bar app asking for "any NAME under the terminal app
+// at anchorPID". The agent accepts only a genuine session root as the
+// anchor (see Request.AnchorExplicit) and names this program on the prompt.
+func (c *Client) GrantCreateUnderRoot(anchorPID int32, name string, profiles []string, projectRoot string, ttl time.Duration) (GrantStatus, error) {
+	resp, err := c.call(Request{
+		Op:             OpGrantCreate,
+		TargetPID:      anchorPID,
+		GrantName:      name,
+		AnchorExplicit: true,
+		GrantProfiles:  profiles,
+		ProjectRoot:    projectRoot,
+		TTLSeconds:     int64(ttl / time.Second),
+	})
+	if err != nil {
+		return GrantStatus{}, err
+	}
+	if len(resp.Grants) != 1 {
+		return GrantStatus{}, fmt.Errorf("agent: grant created but not reported back")
+	}
+	return resp.Grants[0], nil
+}
+
 // GrantList reads the live process grants — prompt-free, like History.
 func (c *Client) GrantList() ([]GrantStatus, error) {
 	resp, err := c.call(Request{Op: OpGrantList})
