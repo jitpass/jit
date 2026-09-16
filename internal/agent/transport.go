@@ -119,6 +119,10 @@ func (s *Server) Serve(ctx context.Context) error {
 // on our way out is how a briefly-run second agent used to strand the real
 // one behind an unlinked inode.
 func (s *Server) Close() error {
+	// Streams end with the listener: a subscriber parked on its channel
+	// would otherwise hold its connection (and goroutine) past the process's
+	// own shutdown sequence.
+	s.shutdownOnce.Do(func() { close(s.shutdown) })
 	var err error
 	if s.listener != nil {
 		err = s.listener.Close()
@@ -190,6 +194,19 @@ func (s *Server) handleConn(conn net.Conn) {
 	// request-read bound — clear the deadline for it, then re-bound just
 	// the response write.
 	_ = conn.SetDeadline(time.Time{})
+	if req.Op == OpSubscribe {
+		// The one op whose response is not a single document: it takes the
+		// connection over until the peer hangs up (subscribe.go). The
+		// protocol floor applies to it exactly as to every other op.
+		if resp, tooOld := s.protocolTooOld(req); tooOld {
+			resp.Protocol = Protocol
+			_ = conn.SetWriteDeadline(time.Now().Add(s.readTimeout))
+			_ = json.NewEncoder(conn).Encode(resp)
+			return
+		}
+		s.serveSubscription(conn)
+		return
+	}
 	resp := s.handle(req, c)
 	// Stamped on EVERY response, not just status: it is how a client learns
 	// what this agent is able to enforce, and a client that has to make a
