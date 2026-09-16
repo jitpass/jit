@@ -127,6 +127,20 @@ type Request struct {
 	// it never widens anything, so the "identity never decides" doctrine
 	// holds. Empty means the exact-process grant TargetPID has always meant.
 	GrantName string `json:"grant_name,omitempty"`
+	// AnchorExplicit ("grant_create", tree mode) says the caller is NOT
+	// inside the tree it names and is choosing the anchor deliberately: a
+	// menu bar app asking for "any claude under iTerm2" has no terminal
+	// above it to anchor to. The agent then requires TargetPID to be a
+	// session root in its own right (launchd's direct child: a terminal
+	// app, an editor, a tmux server — lineage.IsSessionRoot), never an
+	// interior process and never launchd, and the disclosed prompt names
+	// the requesting program alongside the tree, so the human sees who is
+	// asking to hang a grant under which app. Everything else about a tree
+	// grant is unchanged: the name only narrows, the fork-time anchor and
+	// per-read ancestry check decide membership, and the human on the
+	// prompt is the decision. An agent older than this field ignores it and
+	// refuses the request on the ancestry check, which is the safe answer.
+	AnchorExplicit bool `json:"anchor_explicit,omitempty"`
 	// GrantID ("grant_revoke"/"grant_extend") names the grant to act on.
 	GrantID string `json:"grant_id,omitempty"`
 	// TTLSeconds ("grant_create"/"grant_extend") is the requested lifetime.

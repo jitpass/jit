@@ -58,6 +58,17 @@ Two consequences:
 its tab completion annotates each candidate with its working directory and
 age so same-named processes are tellable apart.
 
+A program with no terminal above it - the JitPass menu bar app - cannot
+anchor to "the terminal you type it in", so it may name one explicitly:
+"any `claude` under iTerm2". The service accepts only a genuine session
+root there (an app the system launched directly, never a process inside
+someone's tree and never launchd), and the Touch ID prompt then opens with
+who is asking - "JitPass asks: let claude under iTerm2 use 2 secrets …" -
+so the tree no longer implies the requester and the prompt says it instead.
+Everything else is the same grant: the name only narrows, membership is
+decided per read against the live tree, and the human on the prompt is the
+decision.
+
 The covered secrets are resolved from the profiles **at creation time**, by
 the service itself, through the same project-then-global profile lookup
 `jit run` uses. Editing a profile later never silently widens a standing
