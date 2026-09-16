@@ -26,6 +26,7 @@ var (
 	scanUnfiltered bool
 	scanFull       bool
 	scanFailOn     string
+	scanExclude    []string
 )
 
 // newAuditConfig builds the audit Config every CLI scan surface shares
@@ -241,6 +242,11 @@ var scanCmd = &cobra.Command{
 		// newProgress. --score deliberately gets it too: it runs the entire
 		// scan before printing its one line, so it's just as silent otherwise.
 		cfg.Unfiltered = scanUnfiltered
+		excludes, excludeErr := resolveScanExcludes(scanExclude, cfg.HomeDir)
+		if excludeErr != nil {
+			return fmt.Errorf("jit scan: %w", excludeErr)
+		}
+		cfg.ExcludePaths = excludes
 
 		machineScan := scanFormat == "ndjson" || scanFormat == "markdown" || scanFormat == "md" || scanOutput != ""
 		progress := newProgress(cmd, machineScan)
@@ -363,6 +369,26 @@ var scanCmd = &cobra.Command{
 // then carry the target's real path, which is the unambiguous one. `jit
 // migrate` still refuses a symlink argument — it rewrites files, scan only
 // reads them.
+// resolveScanExcludes turns --exclude arguments into the absolute, cleaned
+// paths audit.Config.ExcludePaths expects. A path that does not exist is
+// still accepted: an exclude names a place not to look, and a stale one is
+// harmless, while erroring on it would make a saved list fail the moment a
+// folder is deleted.
+func resolveScanExcludes(args []string, home string) ([]string, error) {
+	out := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg == "" {
+			continue
+		}
+		abs, err := filepath.Abs(expandTilde(arg, home))
+		if err != nil {
+			return nil, fmt.Errorf("resolving --exclude %q: %w", arg, err)
+		}
+		out = append(out, filepath.Clean(abs))
+	}
+	return out, nil
+}
+
 func resolveScanTargets(args []string) ([]string, error) {
 	targets := make([]string, 0, len(args))
 	for _, arg := range args {
@@ -431,6 +457,7 @@ func init() {
 	scanCmd.Flags().BoolVar(&scanUnfiltered, "unfiltered", false, "show findings jit normally judges to be settings, paths, browser-public build variables or unfilled template values; each is tagged [unfiltered] with the rule that hid it, so one run audits what the filters are hiding")
 	scanCmd.Flags().BoolVar(&scanScore, "score", false, `print only the exposure score (e.g. "Exposure: 92/100 (CRITICAL)") and exit`)
 	scanCmd.Flags().BoolVar(&scanFull, "full", false, "print the full finding inventory (categories, severities, every file and line) instead of the coverage summary")
+	scanCmd.Flags().StringArrayVar(&scanExclude, "exclude", nil, "skip this folder and everything under it (repeatable; ~ and relative paths allowed); the report records what was excluded")
 	scanCmd.Flags().StringVar(&scanFailOn, "fail-on", "", "exit 2 when the scan's risk level is at or above this: critical, high, medium, low, or any (default: always exit 0)")
 	registerPagerFlag(scanCmd)
 	_ = scanCmd.RegisterFlagCompletionFunc("fail-on", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {

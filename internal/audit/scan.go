@@ -141,6 +141,7 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 	all = append(all, cached...)
 	degraded = append(degraded, cacheFailures...)
 
+	all = dropExcluded(cfg, all)
 	all = dropRedundantExposedSecrets(all)
 	// Same seam, same reason: who can act on each finding (and the id that
 	// groups copies of one secret) is set once, centrally, so every renderer
@@ -149,6 +150,7 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 
 	summary := buildScanSummary(cfg, all, countProtectedMounts(cfg.MountRegistryPath), time.Since(start))
 	summary.FilesScanned = filesWalked
+	summary.ExcludedPaths = cfg.ExcludePaths
 	summary.DegradedScanners = degraded
 	summary.DerivedCredentials = ScanDerivedCredentials(cfg)
 	coverage := ComputeCoverage(cfg.HomeDir, cfg.MountRegistryPath, all)
@@ -329,7 +331,7 @@ func discoverByWalk(cfg Config) ([][]Finding, int) {
 		for _, e := range entries {
 			path := filepath.Join(dir, e.Name())
 			if e.IsDir() {
-				if SkipNoiseDir(cfg.HomeDir, path, e.Name()) {
+				if SkipNoiseDir(cfg.HomeDir, path, e.Name()) || cfg.Excluded(path) {
 					continue
 				}
 				wg.Add(1)
