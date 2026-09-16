@@ -69,11 +69,22 @@ func (f *fakeFetcher) FetchMEK(reason string) ([]byte, error) {
 
 func startTestServer(t *testing.T, ttl time.Duration, calls *int32) (*Server, string, func()) {
 	t.Helper()
+	return startTestServerWith(t, ttl, calls, nil)
+}
+
+// startTestServerWith is startTestServer with a hook that runs BEFORE
+// Listen, for the fields (readTimeout, subscribeBuffer, ...) a test must set
+// before any handler goroutine can observe them.
+func startTestServerWith(t *testing.T, ttl time.Duration, calls *int32, configure func(*Server)) (*Server, string, func()) {
+	t.Helper()
 	socketPath := shortSocketPath(t)
 	newFetcher := func() MEKFetcher {
 		return &fakeFetcher{key: bytes.Repeat([]byte{0x42}, 32), calls: calls}
 	}
 	s := NewServer(socketPath, newFetcher, ttl)
+	if configure != nil {
+		configure(s)
+	}
 	if err := s.Listen(); err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
