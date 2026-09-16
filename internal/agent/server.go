@@ -329,6 +329,20 @@ type Server struct {
 	// pause. Empty disables the backoff entirely.
 	discloseBackoff []time.Duration
 
+	// subscribers are the live OpSubscribe connections (subscribe.go), each
+	// a bounded channel recordEvent fans every ring append into. Guarded by
+	// subMu, never by mu: recordEvent runs under mu, so the fan-out must take
+	// a lock of its own, and the order is always mu → subMu.
+	subMu       sync.Mutex
+	subscribers map[*subscriber]struct{}
+	// subscribeBuffer is each subscriber's channel depth. Defaulted by
+	// NewServer; a field so a test can force the lagging path.
+	subscribeBuffer int
+	// shutdown is closed exactly once by Close, so streaming connections end
+	// with the listener instead of outliving it.
+	shutdown     chan struct{}
+	shutdownOnce sync.Once
+
 	listener net.Listener
 	// socketInfo identifies the socket file THIS server bound, so Close can
 	// tell its own socket from one a later agent has since claimed at the
@@ -378,6 +392,8 @@ func NewServer(socketPath string, newFetcher func() MEKFetcher, ttl time.Duratio
 		useWindow:       defaultUseWindow,
 		trustRoots:      map[int32]int64{},
 		identify:        callerFromConn,
+		subscribeBuffer: defaultSubscribeBuffer,
+		shutdown:        make(chan struct{}),
 	}
 }
 
@@ -392,18 +408,26 @@ func currentExecutablePath() string {
 	return exe
 }
 
+// protocolTooOld refuses a request that names a protocol this build cannot
+// speak, whole, before any dispatch. Unknown OPS already failed closed;
+// unknown FIELDS did not — JSON drops them silently, so a request whose
+// safety rests on a field this agent has never heard of would otherwise be
+// served as though the field had said nothing. Refusing names the fix,
+// because the fix is always the same: the agent is older than the CLI
+// asking, and restarting it onto the current binary resolves it. Shared by
+// handle and the streaming path, which never reaches handle.
+func (s *Server) protocolTooOld(req Request) (Response, bool) {
+	if req.MinProtocol <= Protocol {
+		return Response{}, false
+	}
+	return Response{OK: false, Error: fmt.Sprintf(
+		"%s: this request needs agent protocol %d but the running service speaks %d — it predates a check this request depends on; run `jit service restart` to move it onto the current binary",
+		req.Op, req.MinProtocol, Protocol)}, true
+}
+
 func (s *Server) handle(req Request, c *caller) Response {
-	// A request that names a protocol this build cannot speak is refused
-	// whole, before any dispatch. Unknown OPS already failed closed; unknown
-	// FIELDS did not — JSON drops them silently, so a request whose safety
-	// rests on a field this agent has never heard of would otherwise be
-	// served as though the field had said nothing. Refusing names the fix,
-	// because the fix is always the same: the agent is older than the CLI
-	// asking, and restarting it onto the current binary resolves it.
-	if req.MinProtocol > Protocol {
-		return Response{OK: false, Error: fmt.Sprintf(
-			"%s: this request needs agent protocol %d but the running service speaks %d — it predates a check this request depends on; run `jit service restart` to move it onto the current binary",
-			req.Op, req.MinProtocol, Protocol)}
+	if resp, tooOld := s.protocolTooOld(req); tooOld {
+		return resp
 	}
 	switch req.Op {
 	case OpStatus:
