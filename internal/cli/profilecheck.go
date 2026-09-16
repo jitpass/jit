@@ -652,6 +652,12 @@ func originGoneFindings(secrets []string, meta map[string]vault.SecretInfo, refe
 			Path: origin,
 			Detail: fmt.Sprintf("%s %s migrated from %s, which no longer exists on disk",
 				strings.Join(groups, ", "), pluralWord(len(groups), "was", "were"), shortPath(origin)),
+			// A finding with no action reads as a fault the reader cannot
+			// address. There are exactly two answers: keep using the secrets
+			// (the vault is their home now), or delete the group if the
+			// project that owned them is gone for good.
+			Action: "nothing, if you still use these secrets: the vault is where they live now; " +
+				"`jit vault rm " + groups[0] + "` if the project is gone for good",
 		})
 	}
 	return out
@@ -733,7 +739,14 @@ func mountCheckTargets(root string, seen map[string]bool) (targets []mountTarget
 				Scope:  scopeMount,
 				Path:   e.MountPath,
 				Detail: fmt.Sprintf("the mount at %s is still registered, but its profile is gone: project deleted without unmounting first", shortPath(e.MountPath)),
-				Action: "`jit vault orphans --prune` clears it (no secret is touched), or `jit unmount " + shortPath(e.MountPath) + "`",
+				// unmount first: on an orphaned mount it clears just this
+				// registration, with no auth and no secret touched. orphans
+				// --prune clears every stale mount too, but in the same
+				// confirmation it permanently deletes every orphaned SECRET —
+				// naming it first, as "no secret is touched", once walked a
+				// user up to a "delete 45 secrets? [y/N]" they had not asked for.
+				Action: "`jit unmount " + shortPath(e.MountPath) + "` clears just this registration (no secret is touched); " +
+					"`jit vault orphans --prune` clears every stale mount but also permanently deletes every orphaned secret",
 			})
 			continue
 		}
