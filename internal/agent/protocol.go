@@ -307,6 +307,19 @@ type Response struct {
 	// a second round trip).
 	Unlocked         bool  `json:"unlocked,omitempty"`
 	ExpiresInSeconds int64 `json:"expires_in_seconds,omitempty"`
+	// CeilingInSeconds, TTLSeconds and ConsentEnabled answer "status" only,
+	// for a client that renders the session rather than merely checking it
+	// (the menu bar app, design/menu-bar-app.md). ExpiresInSeconds is the
+	// nearer of the idle expiry and the hard ceiling, which is the right
+	// single number for "locks in"; CeilingInSeconds is the ceiling on its
+	// own, so a renderer can say "locks in 4:12, and no later than 17:58"
+	// without re-deriving DefaultMaxSessionAge. Zero while locked, like
+	// ExpiresInSeconds. TTLSeconds is the configured inactivity TTL, and
+	// ConsentEnabled whether per-process consent gates credential classes —
+	// both were previously only knowable from the launchd plist.
+	CeilingInSeconds int64 `json:"ceiling_in_seconds,omitempty"`
+	TTLSeconds       int64 `json:"ttl_seconds,omitempty"`
+	ConsentEnabled   bool  `json:"consent_enabled,omitempty"`
 	// Mounts answers "status" too (GAPS.md #37) — per-mount reveal state,
 	// so a caller can see "which mount is revealed and for how long" in the
 	// same round trip, instead of inferring it (or, before this, having
