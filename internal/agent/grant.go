@@ -215,12 +215,25 @@ func (s *Server) createGrant(req Request, c *caller) Response {
 	// be a machine-wide name grant, the exact shape tree grants exist to
 	// refuse (everything descends from launchd, so the tree would gate
 	// nothing and the name would decide alone).
+	//
+	// The one relaxation is an EXPLICIT anchor (Request.AnchorExplicit):
+	// a caller with no terminal above it — the menu bar app — may name a
+	// session root it is not inside, provided that pid genuinely is one
+	// (launchd's direct child, never an interior process), and the prompt
+	// then names the requesting program too. The ancestry check narrows
+	// who may ask for what; the human reading "JitPass asks: let claude
+	// under iTerm2 …" is still the decision.
 	if req.GrantName != "" {
 		if req.TargetPID == 1 {
 			return Response{OK: false, Error: "grant_create: launchd is not a session root - a tree grant anchors under your own terminal"}
 		}
 		if !lineage.AncestryContainsPID(c.pid, req.TargetPID) {
-			return Response{OK: false, Error: fmt.Sprintf("grant_create: pid %d is not an ancestor of the requesting process - a tree grant anchors to your own session root", req.TargetPID)}
+			if !req.AnchorExplicit {
+				return Response{OK: false, Error: fmt.Sprintf("grant_create: pid %d is not an ancestor of the requesting process - a tree grant anchors to your own session root", req.TargetPID)}
+			}
+			if !lineage.IsSessionRoot(req.TargetPID) {
+				return Response{OK: false, Error: fmt.Sprintf("grant_create: pid %d is not a session root - an explicit anchor must be a terminal app or editor launched by the system, not a process inside one", req.TargetPID)}
+			}
 		}
 	}
 
@@ -239,11 +252,14 @@ func (s *Server) createGrant(req Request, c *caller) Response {
 	// are describing their intent, not a process describing itself) and the
 	// anchor rendering stays kernel-derived from the verified pid — so every
 	// prompt fact is still either human-typed-about-self or kernel-vouched.
-	who, under := target.Name(), ""
+	who, under, requester := target.Name(), "", ""
 	if req.GrantName != "" {
 		who, under = req.GrantName, target.Name()
+		if req.AnchorExplicit && !lineage.AncestryContainsPID(c.pid, req.TargetPID) {
+			requester = requesterName(c)
+		}
 	}
-	reason := grantCreateReason(who, under, req.GrantProfiles, len(secrets), ttl)
+	reason := grantCreateReason(who, under, req.GrantProfiles, len(secrets), ttl, requester)
 	event, mek, err := s.discloseChallengeOp(reason, OpGrantCreate, c)
 	// nil event = throttled, no prompt shown — nothing true to record.
 	if event != nil && s.OnSessionEvent != nil {
@@ -316,15 +332,37 @@ func (s *Server) createGrant(req Request, c *caller) Response {
 // being granted (OnResolveGrant), never echoed from free text. The scope
 // statement ("unattended, until ...") is the half that must never be the
 // truncated half, same budget discipline as trustReason.
-func grantCreateReason(name, under string, profiles []string, count int, ttl time.Duration) string {
+// requesterName is the kernel's name for the socket peer, for a prompt that
+// must say who is asking. "a program" when the peer is already gone.
+func requesterName(c *caller) string {
+	if c == nil {
+		return "a program"
+	}
+	if p, ok := lineage.Describe(c.pid); ok && p.Name() != "" {
+		return p.Name()
+	}
+	return "a program"
+}
+
+// grantCreateReason is the one line the human decides by. requester is set
+// only for an explicit anchor (a GUI app naming a tree it is not inside) and
+// prefixes the sentence with who is asking, since the tree alone no longer
+// implies it.
+func grantCreateReason(name, under string, profiles []string, count int, ttl time.Duration, requester string) string {
 	// A tree grant's who-clause carries two names ("claude under iTerm2"),
 	// so its budgets shrink: 11 runes per name and 16 for the profiles is
 	// what keeps the whole sentence — including a worst-case "167h59m" TTL —
 	// inside maxReasonLen, checked by TestGrantCreateReasonWording's
-	// worst-case fixture.
+	// worst-case fixture. With a requester in front ("JitPass asks: ") the
+	// budgets shrink again, to 8/8/10, for the same reason.
 	whoBudget, profBudget := maxTrustWhoLen, 20
 	if under != "" {
 		whoBudget, profBudget = 11, 16
+	}
+	prefix := ""
+	if requester != "" {
+		whoBudget, profBudget = 8, 10
+		prefix = truncate(requester, 8) + " asks: "
 	}
 	who := truncate(name, whoBudget)
 	if who == "" {
@@ -342,7 +380,7 @@ func grantCreateReason(name, under string, profiles []string, count int, ttl tim
 	// ("unattended for …") is the half that changes the decision, so it must
 	// never be the half a long tool name pushes off the prompt. The outer
 	// truncate is a belt only.
-	return truncate(fmt.Sprintf("let %s use %d %s (%s) unattended for %s",
+	return truncate(prefix+fmt.Sprintf("let %s use %d %s (%s) unattended for %s",
 		who, count, noun, truncate(strings.Join(profiles, ", "), profBudget), formatGrantTTL(ttl)), maxReasonLen)
 }
 
@@ -525,7 +563,7 @@ func (s *Server) extendGrant(req Request, c *caller) Response {
 
 	// grantCreateReason already words the full scope; re-lead it as an
 	// extension so the prompt says what is actually happening.
-	reason := truncate("extend: "+grantCreateReason(name, under, profiles, count, ttl), maxReasonLen)
+	reason := truncate("extend: "+grantCreateReason(name, under, profiles, count, ttl, ""), maxReasonLen)
 	event, mek, err := s.discloseChallengeOp(reason, OpGrantExtend, c)
 	// nil event = throttled, no prompt shown — nothing true to record.
 	if event != nil && s.OnSessionEvent != nil {
