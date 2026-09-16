@@ -461,7 +461,8 @@ func gatherVaultIntegrityFindings(root string, v *vault.Vault) []checkFinding {
 			Detail: fmt.Sprintf(
 				"%s an old format that cannot tell if a value was swapped on disk.",
 				countWord(len(unbound), "secret uses", "secrets use")),
-			Action: "`jit vault export <file>` then `jit vault import <file>` to update them",
+			Action: "`jit vault export <file>` then `jit vault import <file>` re-encrypts every secret in the current format " +
+				"(the export doubles as the backup below)",
 		})
 	}
 	return out
