@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -100,6 +101,12 @@ type vaultSecretJSON struct {
 	ExpiresUnix    int64  `json:"expires_unix,omitempty"`
 	CreatedUnix    int64  `json:"created_unix,omitempty"`
 	UpdatedUnix    int64  `json:"updated_unix,omitempty"`
+	// UsedBy names the profiles that reference the secret: the
+	// project-local (cwd) and global stores plus the profile behind every
+	// registered mount, the same lookup `jit vault get`'s footer and `jit
+	// vault rm`'s warning make. Omitted when nothing references it, so a
+	// delete dialog can say "used by wrap-gh" before the user confirms.
+	UsedBy []string `json:"used_by,omitempty"`
 }
 
 // vaultGetResult is `jit vault get --json`'s object: the decrypted value plus
@@ -1234,7 +1241,8 @@ var vaultListCmd = &cobra.Command{
 		"--by origin groups secrets by the source file they were migrated from\n" +
 		"(--by group by the finer import-batch id); -l annotates each with its\n" +
 		"class and age. --format json prints an object per secret carrying that\n" +
-		"provenance, for grouping in a script without a `get` per secret.",
+		"provenance and, as used_by, the profiles that reference it, for grouping\n" +
+		"in a script without a `get` per secret.",
 	Example: "  jit vault list\n" +
 		"  jit vault list -l --by origin     # what each came from, with ages\n" +
 		"  jit vault list --format json | jq -r '.path'",
@@ -1301,10 +1309,21 @@ var vaultListCmd = &cobra.Command{
 			// --all is text-display-only: JSON always carries both
 			// arrays, since a script parsing the snapshot shouldn't
 			// need a flag to see the whole picture.
+			// Profile references are the lenient lookup (an unloadable
+			// profile is skipped, never an error): prompt-free plain
+			// files, so the snapshot can afford them on every list.
+			refs := referencesForPaths(root, cwd, secrets)
 			out := vaultListResult{Secrets: make([]vaultSecretJSON, 0, len(secrets)), Backups: backups}
 			for _, p := range secrets {
 				info := meta[p]
+				var usedBy []string
+				for _, r := range refs[p] {
+					if !slices.Contains(usedBy, r.ProfileName) {
+						usedBy = append(usedBy, r.ProfileName)
+					}
+				}
 				out.Secrets = append(out.Secrets, vaultSecretJSON{
+					UsedBy:         usedBy,
 					Path:           p,
 					Version:        info.Version,
 					Class:          info.Class,
