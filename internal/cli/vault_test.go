@@ -1259,7 +1259,7 @@ func TestSecretMetaSuffix(t *testing.T) {
 // regression this test pins. Also covers natural ordering end to end and
 // the --format json shape.
 func TestVaultListEndToEndWithoutAuth(t *testing.T) {
-	withFixtureHome(t)
+	home := withFixtureHome(t)
 	vaultListFormat = "text"
 	vaultListAll = false
 	t.Cleanup(func() { vaultListFormat = "text" })
@@ -1282,6 +1282,17 @@ func TestVaultListEndToEndWithoutAuth(t *testing.T) {
 		t.Errorf("expected the closing count line, got:\n%s", out)
 	}
 
+	// A global profile naming one of the two: the JSON says so per secret,
+	// the way `jit vault rm` would warn, without a get per path.
+	profilesDir := filepath.Join(home, ".jit", "profiles")
+	if err := os.MkdirAll(profilesDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(profilesDir, "wrap-descope.yaml"),
+		[]byte("DESCOPE_KEY: descope/PROJECT_2\n"), 0o600); err != nil {
+		t.Fatalf("writing manifest: %v", err)
+	}
+
 	buf.Reset()
 	rootCmd.SetArgs([]string{"vault", "list", "--format", "json"})
 	if err := rootCmd.Execute(); err != nil {
@@ -1289,7 +1300,8 @@ func TestVaultListEndToEndWithoutAuth(t *testing.T) {
 	}
 	var res struct {
 		Secrets []struct {
-			Path string `json:"path"`
+			Path   string   `json:"path"`
+			UsedBy []string `json:"used_by"`
 		} `json:"secrets"`
 		Backups []string `json:"backups"`
 	}
@@ -1305,6 +1317,12 @@ func TestVaultListEndToEndWithoutAuth(t *testing.T) {
 	}
 	if res.Backups == nil || len(res.Backups) != 0 {
 		t.Errorf("json backups = %#v, want empty non-nil array", res.Backups)
+	}
+	if strings.Join(res.Secrets[0].UsedBy, ",") != "wrap-descope" {
+		t.Errorf("used_by for PROJECT_2 = %v, want [wrap-descope]", res.Secrets[0].UsedBy)
+	}
+	if len(res.Secrets[1].UsedBy) != 0 {
+		t.Errorf("used_by for PROJECT_10 = %v, want omitted", res.Secrets[1].UsedBy)
 	}
 }
 

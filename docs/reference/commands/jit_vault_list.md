@@ -14,7 +14,8 @@ listed; --all lists them too.
 --by origin groups secrets by the source file they were migrated from
 (--by group by the finer import-batch id); -l annotates each with its
 class and age. --format json prints an object per secret carrying that
-provenance, for grouping in a script without a `get` per secret.
+provenance and, as used_by, the profiles that reference it, for grouping
+in a script without a `get` per secret.
 
 ```
 jit vault list [flags]
