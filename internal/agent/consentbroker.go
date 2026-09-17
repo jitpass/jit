@@ -170,6 +170,31 @@ func (s *Server) brokerConsent(pending *SessionEvent) brokerVerdict {
 	}
 }
 
+// promptOrBroker is the one place a prompt reaches the screen: it offers
+// pending to the consent broker first when broker is set, then runs the
+// Touch ID for reason unless the broker refused. prompted reports whether
+// a dialog was actually shown, so a refusal that never reached the screen
+// records no auth method. The MEK, when there is one, is the caller's to
+// keep or wipe.
+func (s *Server) promptOrBroker(pending *SessionEvent, reason string, broker bool) (mek []byte, prompted bool, err error) {
+	if broker {
+		switch s.brokerConsent(pending) {
+		case brokerDenied:
+			return nil, false, errDeclinedByBroker
+		case brokerUnanswered:
+			return nil, false, fmt.Errorf("%w within %s", errUnansweredByBroker, s.brokerWait)
+		case brokerProceed:
+		}
+	}
+	fetcher := s.newFetcher()
+	mek, err = fetcher.FetchMEK(reason)
+	// The fetcher's own cache is pure residue once FetchMEK has returned
+	// its copy; every prompt in the agent comes through here, so this is
+	// the site that used to leak a MEK copy per prompt.
+	closeFetcher(fetcher)
+	return mek, true, err
+}
+
 // brokerLeft is called when a broker subscription ends, so a request it
 // was shown does not sit out the full wait for an answer that cannot come.
 func (s *Server) brokerLeft() {
