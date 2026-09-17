@@ -5,6 +5,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,8 @@ func execWrap(t *testing.T, args ...string) (stdout string, err error) {
 	wrapAddEnv = nil
 	wrapAddGrant = ""
 	wrapDryRun = false
+	wrapListFormat = "text"
+	wrapListAll = false
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
@@ -308,5 +311,114 @@ func TestWrapUndoDryRunPreviewsWithoutChanging(t *testing.T) {
 	}
 	if _, err := os.Lstat(shim); err != nil {
 		t.Errorf("dry-run must leave the shim in place: %v", err)
+	}
+}
+
+// `jit wrap list --format json` is what the JitPass app's Tools window reads,
+// so the shape is a contract: a wrapped tool carries its shim verdict, the
+// vars it injects with their vault paths and whether each is stored, and
+// with --all the catalog joins in with where each tool is installed.
+func TestWrapListJSON(t *testing.T) {
+	home := withFixtureHome(t)
+	putToolOnPath(t, "faketool")
+	if _, err := execWrap(t, "add", "faketool", "--env", "FAKE_TOKEN=wrap-faketool/FAKE_TOKEN"); err != nil {
+		t.Fatalf("jit wrap add: %v", err)
+	}
+	plantVaultSecret(t, home, "wrap-faketool/FAKE_TOKEN")
+
+	out, err := execWrap(t, "list", "--format", "json")
+	if err != nil {
+		t.Fatalf("jit wrap list --format json: %v\n%s", err, out)
+	}
+	var res wrapListResult
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if !res.RcHasPathLine {
+		t.Error("rc_has_path_line = false after a wrap add that wrote the PATH line")
+	}
+	if len(res.Tools) != 1 {
+		t.Fatalf("got %d tools, want the one wrapped: %+v", len(res.Tools), res.Tools)
+	}
+	row := res.Tools[0]
+	if row.Tool != "faketool" || !row.Wrapped || row.Kind != "shim" || row.Catalog {
+		t.Errorf("row = %+v, want faketool, wrapped, kind shim, not in the catalog", row)
+	}
+	if row.Shim != wrap.ShimOK || row.ShimDetail != "" {
+		t.Errorf("shim = %q (%q), want ok with no detail", row.Shim, row.ShimDetail)
+	}
+	if row.InstalledPath == "" {
+		t.Error("installed_path empty for a tool the test put on PATH")
+	}
+	if len(row.Injects) != 1 || row.Injects[0].Var != "FAKE_TOKEN" ||
+		row.Injects[0].VaultPath != "wrap-faketool/FAKE_TOKEN" || !row.Injects[0].Stored {
+		t.Errorf("injects = %+v, want FAKE_TOKEN from wrap-faketool/FAKE_TOKEN, stored", row.Injects)
+	}
+
+	// Break the shim: the verdict must say so, in doctor's words.
+	if err := os.Remove(filepath.Join(wrap.ShimDir(home), "faketool")); err != nil {
+		t.Fatal(err)
+	}
+	out, err = execWrap(t, "list", "--format", "json")
+	if err != nil {
+		t.Fatalf("jit wrap list --format json: %v", err)
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.Tools[0].Shim != wrap.ShimMissing || !strings.Contains(res.Tools[0].ShimDetail, "symlink missing") {
+		t.Errorf("after removing the shim: %q (%q)", res.Tools[0].Shim, res.Tools[0].ShimDetail)
+	}
+}
+
+func TestWrapListJSONAllAddsTheCatalog(t *testing.T) {
+	withFixtureHome(t)
+	putToolOnPath(t, "gh")
+	out, err := execWrap(t, "list", "--format", "json", "--all")
+	if err != nil {
+		t.Fatalf("jit wrap list --format json --all: %v", err)
+	}
+	var res wrapListResult
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if len(res.Tools) != len(wrap.CatalogTools()) {
+		t.Fatalf("got %d tools, want the whole catalog (%d)", len(res.Tools), len(wrap.CatalogTools()))
+	}
+	byName := map[string]wrapToolJSON{}
+	for _, r := range res.Tools {
+		byName[r.Tool] = r
+	}
+	gh := byName["gh"]
+	if gh.Wrapped || !gh.Catalog || gh.Kind != "shim" || gh.InstalledPath == "" || gh.Shim != "" {
+		t.Errorf("gh = %+v, want catalog, not wrapped, kind shim, installed, no shim verdict", gh)
+	}
+	if len(gh.Injects) != 1 || gh.Injects[0].VaultPath != "wrap-gh/GH_TOKEN" || gh.Injects[0].Stored {
+		t.Errorf("gh injects = %+v, want the catalog's vault path, not stored", gh.Injects)
+	}
+	if gh.TokenCommand != "gh auth token" || len(gh.Sources) == 0 {
+		t.Errorf("gh discovery = sources %v, token_command %q", gh.Sources, gh.TokenCommand)
+	}
+	// The real PATH stays behind the stub dir, so whether aws is installed
+	// is the machine's business; the kind and category are the contract.
+	if aws := byName["aws"]; aws.Kind != "native" || aws.NativeCategory != "aws" || aws.Shim != "" {
+		t.Errorf("aws = %+v, want native/aws with no shim verdict", aws)
+	}
+	if clisso := byName["clisso"]; clisso.Kind != "capture" {
+		t.Errorf("clisso kind = %q, want capture", clisso.Kind)
+	}
+
+	// Text mode has no --all view (it would need a rendered table nobody
+	// has designed), so the flag says so rather than printing the same table.
+	if _, err := execWrap(t, "list", "--all"); err == nil || !strings.Contains(err.Error(), "--format json") {
+		t.Errorf("--all without --format json: err = %v, want a pointer at the JSON view", err)
+	}
+	// An empty manifest is an empty list in JSON, not the text hint.
+	out, err = execWrap(t, "list", "--format", "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"tools": []`) {
+		t.Errorf("empty listing = %s, want an empty tools array", out)
 	}
 }

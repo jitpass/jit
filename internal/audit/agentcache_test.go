@@ -151,6 +151,16 @@ func TestCrossReferenceFindsEnvSecretCopiedIntoAgentCache(t *testing.T) {
 		if f.ValuePreview == nil || strings.Contains(*f.ValuePreview, "bWpKmT") {
 			t.Errorf("value_preview %v must be masked, never the credential", f.ValuePreview)
 		}
+		if f.Agent != "Claude Code" {
+			t.Errorf("agent = %q, want the agent named as a field, not only in the evidence prose", f.Agent)
+		}
+		want := "edit history"
+		if strings.Contains(f.FilePath, "projects") {
+			want = "transcripts"
+		}
+		if f.CacheArea != want {
+			t.Errorf("cache_area = %q for %s, want %q", f.CacheArea, f.FilePath, want)
+		}
 	}
 }
 

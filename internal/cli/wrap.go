@@ -322,6 +322,11 @@ func wrapSecretAlreadyVaulted(path string) bool {
 var wrapAddEnv []string
 var wrapAddGrant string
 
+// wrapListFormat/wrapListAll drive `jit wrap list --format json [--all]`;
+// see wraplist.go for the shape and why --all is JSON-only.
+var wrapListFormat string
+var wrapListAll bool
+
 // wrapDryRun serves both `jit wrap <tool> --dry-run` and `jit wrap undo
 // <tool> --dry-run` — one flag var, two registrations, matching how the
 // migrate group shares migrateDryRun across its subcommands.
@@ -433,9 +438,22 @@ var wrapListCmd = &cobra.Command{
 	// prevent for `jit <typo>`.
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateOutputFormat(wrapListFormat); err != nil {
+			return fmt.Errorf("jit wrap list: %w", err)
+		}
+		if wrapListAll && wrapListFormat != "json" {
+			return errors.New("jit wrap list: --all is a --format json view (the text table shows wrapped tools only)")
+		}
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return fmt.Errorf("jit wrap list: %w", err)
+		}
+		if wrapListFormat == "json" {
+			res, err := gatherWrapListing(home, wrapListAll)
+			if err != nil {
+				return fmt.Errorf("jit wrap list: %w", err)
+			}
+			return writeJSON(cmd.OutOrStdout(), res)
 		}
 		manifest, err := wrap.LoadManifest(home)
 		if err != nil {
@@ -696,6 +714,8 @@ func init() {
 	// --env's value is VAR=<vault-path>: two halves the shell cannot guess,
 	// and it was offering filenames for both.
 	_ = wrapAddCmd.RegisterFlagCompletionFunc("env", completeWrapEnvAssignment)
+	wrapListCmd.Flags().StringVar(&wrapListFormat, "format", "text", `output format: "text" (default) or "json"`)
+	wrapListCmd.Flags().BoolVar(&wrapListAll, "all", false, "with --format json: include every catalog tool, wrapped or not, with where it is installed")
 	wrapCmd.Flags().BoolVar(&wrapDryRun, "dry-run", false, "preview what wrapping would do without changing anything")
 	wrapUndoCmd.Flags().BoolVar(&wrapDryRun, "dry-run", false, "preview what unwrapping would do without changing anything")
 	wrapCmd.AddCommand(wrapAddCmd, wrapListCmd, wrapUndoCmd)
