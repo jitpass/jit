@@ -9,9 +9,14 @@
 // and never proxies a body.
 //
 // Routes (mirroring GitHub's own path shape so the cask template is trivial):
-//   GET /jitpass/jit/releases/download/<tag>/<asset>   -> 302 pinned tag
-//   GET /jitpass/jit/releases/latest/download/<asset>  -> 302 latest
-//   anything else                                      -> 404
+//   GET /jitpass/<repo>/releases/download/<tag>/<asset>   -> 302 pinned tag
+//   GET /jitpass/<repo>/releases/latest/download/<asset>  -> 302 latest
+//   anything else                                         -> 404
+// Two repos: `jit` (the CLI tarball, what the curl line fetches) and
+// `jit-app` (the JitPass.app zip the website's Download button and the
+// `jitpass` cask fetch). Each repo has its own asset allowlist and tag
+// shape: the app's tag carries an optional fourth part for an app-only
+// release (v1.6.2, v1.6.1.3), the CLI's never does.
 //
 // What gets logged, and deliberately nothing more:
 //   client class (brew | curl | jit-upgrade | browser | other), tag, asset,
@@ -30,12 +35,23 @@
 import { BLOBS, DOUBLES, INDEX } from "./schema.mjs";
 
 const OWNER = "jitpass";
-const REPO = "jit";
 
 // Only assets a release actually publishes; anything else 404s rather than
-// becoming an open redirect namespace.
-const ASSET_ALLOW = /^(jitpass_darwin_arm64\.tar\.gz|checksums\.txt)$/;
-const TAG_ALLOW = /^v\d+\.\d+\.\d+$/;
+// becoming an open redirect namespace. A new asset name (a future amd64
+// tarball, a renamed zip) must be added here or its download fails loudly.
+const REPOS = {
+  jit: {
+    assets: /^(jitpass_darwin_arm64\.tar\.gz|checksums\.txt)$/,
+    tags: /^v\d+\.\d+\.\d+$/,
+  },
+  "jit-app": {
+    // JitPass-arm64.zip is the unversioned copy of the same bytes, so
+    // /releases/latest/download/JitPass-arm64.zip is a stable link the
+    // website can print without knowing the current version.
+    assets: /^(JitPass-arm64\.zip|JitPass-\d+\.\d+\.\d+(\.\d+)?-arm64\.zip|checksums\.txt)$/,
+    tags: /^v\d+\.\d+\.\d+(\.\d+)?$/,
+  },
+};
 
 function classifyUA(ua) {
   if (!ua) return "other";
@@ -82,23 +98,25 @@ export default {
     const url = new URL(request.url);
     const parts = url.pathname.split("/").filter(Boolean);
 
-    // /jitpass/jit/releases/download/<tag>/<asset>
-    // /jitpass/jit/releases/latest/download/<asset>
+    // /jitpass/<repo>/releases/download/<tag>/<asset>
+    // /jitpass/<repo>/releases/latest/download/<asset>
+    const repo = parts.length === 6 && parts[0] === OWNER && Object.hasOwn(REPOS, parts[1])
+      ? parts[1]
+      : null;
+    const rules = repo ? REPOS[repo] : null;
     let tag = null;
     let asset = null;
     if (
-      parts.length === 6 &&
-      parts[0] === OWNER && parts[1] === REPO &&
+      rules &&
       parts[2] === "releases" && parts[3] === "download" &&
-      TAG_ALLOW.test(parts[4]) && ASSET_ALLOW.test(parts[5])
+      rules.tags.test(parts[4]) && rules.assets.test(parts[5])
     ) {
       tag = parts[4];
       asset = parts[5];
     } else if (
-      parts.length === 6 &&
-      parts[0] === OWNER && parts[1] === REPO &&
+      rules &&
       parts[2] === "releases" && parts[3] === "latest" &&
-      parts[4] === "download" && ASSET_ALLOW.test(parts[5])
+      parts[4] === "download" && rules.assets.test(parts[5])
     ) {
       tag = "latest";
       asset = parts[5];
@@ -107,8 +125,8 @@ export default {
     }
 
     const dest = tag === "latest"
-      ? `https://github.com/${OWNER}/${REPO}/releases/latest/download/${asset}`
-      : `https://github.com/${OWNER}/${REPO}/releases/download/${tag}/${asset}`;
+      ? `https://github.com/${OWNER}/${repo}/releases/latest/download/${asset}`
+      : `https://github.com/${OWNER}/${repo}/releases/download/${tag}/${asset}`;
 
     const ua = request.headers.get("user-agent") || "";
     const client = classifyUA(ua);
