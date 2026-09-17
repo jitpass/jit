@@ -1149,6 +1149,7 @@ func (m *mountManager) stop() {
 	// Every run attachment ends with the session — see clearAllRuns for
 	// why this isn't only hygiene.
 	m.clearAllRuns()
+	m.closeRunWatch()
 	if cleared {
 		// Print only when this lock actually hid something (some mount had
 		// real content): stop() now also runs on a
@@ -1210,6 +1211,7 @@ func (m *mountManager) shutdown() {
 		sm.cancel()
 	}
 	m.wg.Wait()
+	m.closeRunWatch()
 	// After wg.Wait, so the last in-flight serve's event is already recorded
 	// and gets written by this flush rather than being dropped.
 	m.serveAudit.stopFlusher()

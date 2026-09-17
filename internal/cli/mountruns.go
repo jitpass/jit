@@ -504,12 +504,22 @@ func (m *mountManager) watchRunPID(pid int32, startMicro int64) {
 			fmt.Fprintf(m.stderr, "jit service: run exit watcher unavailable (%v), relying on per-status liveness checks\n", err)
 			m.grantKq = -1
 		} else {
-			m.grantKq = kq
-			// Daemon-lifetime goroutine, deliberately NOT in m.wg:
-			// shutdown()'s wg.Wait exists so no in-flight FILESYSTEM write
-			// races process teardown, and this goroutine never touches the
-			// filesystem — it dies with the process.
-			go m.runWatchLoop(kq)
+			// The wake event closeRunWatch triggers: the loop owns the fd
+			// and closes it on the way out, so no close ever races a
+			// kevent(2) blocked on the same descriptor.
+			wake := unix.Kevent_t{Ident: runWatchWake, Filter: unix.EVFILT_USER, Flags: unix.EV_ADD | unix.EV_CLEAR}
+			if _, err := unix.Kevent(kq, []unix.Kevent_t{wake}, nil, nil); err != nil {
+				fmt.Fprintf(m.stderr, "jit service: run exit watcher unavailable (%v), relying on per-status liveness checks\n", err)
+				_ = unix.Close(kq)
+				m.grantKq = -1
+			} else {
+				m.grantKq = kq
+				// Not in m.wg: shutdown()'s wg.Wait exists so no in-flight
+				// FILESYSTEM write races process teardown, and this goroutine
+				// never touches the filesystem. It ends when closeRunWatch
+				// wakes it, on lock and on shutdown.
+				go m.runWatchLoop(kq)
+			}
 		}
 	}
 	if m.grantKq < 0 {
@@ -537,6 +547,34 @@ type runWatchKey struct {
 	startMicro int64
 }
 
+// runWatchWake is the EVFILT_USER ident closeRunWatch triggers to end the
+// watch loop. Any constant works; pids are never registered under it.
+const runWatchWake = 1
+
+// closeRunWatch ends the run exit watcher, if one is armed: the kqueue and
+// its goroutine used to live for the process ("it dies with the process"),
+// which held in the daemon and leaked one fd and one blocked goroutine per
+// manager in any longer-lived host, the test binary first. Every run
+// attachment ends with the session, so the lock is the natural end of the
+// watch too; the next attachment arms a fresh one. Also the fallback
+// ("watcher unavailable") is forgotten, so a transient failure is retried.
+func (m *mountManager) closeRunWatch() {
+	m.watchMu.Lock()
+	kq := m.grantKq
+	m.grantKq = 0
+	m.grantWatched = nil
+	m.watchMu.Unlock()
+	if kq <= 0 {
+		return
+	}
+	wake := unix.Kevent_t{Ident: runWatchWake, Filter: unix.EVFILT_USER, Fflags: unix.NOTE_TRIGGER}
+	if _, err := unix.Kevent(kq, []unix.Kevent_t{wake}, nil, nil); err != nil {
+		// The loop cannot be woken; closing under it is the one remaining
+		// way out, and kevent(2) on a closed descriptor returns EBADF.
+		_ = unix.Close(kq)
+	}
+}
+
 func (m *mountManager) runWatchLoop(kq int) {
 	for {
 		events := make([]unix.Kevent_t, 8)
@@ -548,6 +586,10 @@ func (m *mountManager) runWatchLoop(kq int) {
 			return
 		}
 		for _, ev := range events[:n] {
+			if ev.Filter == unix.EVFILT_USER && ev.Ident == runWatchWake {
+				_ = unix.Close(kq)
+				return
+			}
 			if ev.Filter != unix.EVFILT_PROC || ev.Fflags&unix.NOTE_EXIT == 0 {
 				continue
 			}
