@@ -569,6 +569,45 @@ func (c *Client) History() ([]SessionEvent, error) {
 // Like History it never triggers a challenge: it is the "why do you keep
 // prompting me?" question, asked continuously.
 func (c *Client) Subscribe(ctx context.Context, fn func(SessionEvent)) error {
+	return c.subscribe(ctx, false, fn)
+}
+
+// SubscribeAsBroker is Subscribe for a client that will ANSWER consent
+// requests (consentbroker.go): the stream additionally carries a KindPending
+// event for each disclosed challenge before its Touch ID appears, and fn
+// answers it with ConsentAnswer. While a broker is connected, every such
+// challenge waits on it — so a broker that shows nothing and answers nothing
+// turns every prompt into a refusal; it must render each request or not
+// subscribe this way.
+func (c *Client) SubscribeAsBroker(ctx context.Context, fn func(SessionEvent)) error {
+	return c.subscribe(ctx, true, fn)
+}
+
+// ConsentList is the requests waiting on a broker right now, oldest first,
+// for a broker that connected after they were raised. Never prompts.
+func (c *Client) ConsentList() ([]SessionEvent, error) {
+	resp, err := c.call(Request{Op: OpConsentList})
+	if err != nil {
+		return nil, err
+	}
+	for i := range resp.Events {
+		scrubEventBy(&resp.Events[i])
+	}
+	return resp.Events, nil
+}
+
+// ConsentAnswer resolves a pending request by ConsentID. allow lets the
+// agent proceed to its own Touch ID; false refuses it with no prompt.
+func (c *Client) ConsentAnswer(consentID string, allow bool) error {
+	decision := DecisionDeny
+	if allow {
+		decision = DecisionAllow
+	}
+	_, err := c.call(Request{Op: OpConsentAnswer, ConsentID: consentID, Decision: decision})
+	return err
+}
+
+func (c *Client) subscribe(ctx context.Context, broker bool, fn func(SessionEvent)) error {
 	conn, err := c.dial()
 	if err != nil {
 		return fmt.Errorf("connecting to agent: %w: %v", ErrNotRunning, err)
@@ -587,7 +626,7 @@ func (c *Client) Subscribe(ctx context.Context, fn func(SessionEvent)) error {
 		}
 	}()
 
-	if err := json.NewEncoder(conn).Encode(Request{Op: OpSubscribe}); err != nil {
+	if err := json.NewEncoder(conn).Encode(Request{Op: OpSubscribe, Broker: broker}); err != nil {
 		return fmt.Errorf("sending request: %w", err)
 	}
 	dec := json.NewDecoder(conn)
