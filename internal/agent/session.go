@@ -180,28 +180,13 @@ func (s *Server) discloseChallengeOp(reason, op string, c *caller) (*SessionEven
 	// screen. brokerConsent stamps pending with the consent id the outcome
 	// below must carry, and status keeps pointing at the same snapshot, so
 	// `jit status` during a brokered wait still explains it.
-	var mek []byte
-	var err error
-	switch s.brokerConsent(pending) {
-	case brokerDenied:
-		err = errDeclinedByBroker
-	case brokerUnanswered:
-		err = fmt.Errorf("%w within %s", errUnansweredByBroker, s.brokerWait)
-	default:
-		fetcher := s.newFetcher()
-		mek, err = fetcher.FetchMEK(reason)
-		// The fetcher's own cache is pure residue once FetchMEK has returned
-		// its copy. Closing it here matters more than on the unlock path:
-		// every consent prompt comes through here, so this is the site that
-		// leaked a MEK copy per prompt.
-		closeFetcher(fetcher)
-	}
+	mek, prompted, err := s.promptOrBroker(pending, reason, true)
 
 	event := unlockEvent(op, c)
 	event.ConsentID = pending.ConsentID
-	if pending.ConsentID == "" || err == nil {
+	if prompted {
 		// A refusal from the broker never showed a dialog, so it has no
-		// auth method to report; a brokered approval did.
+		// auth method to report.
 		event.AuthMethod = s.authMethod()
 	}
 	if err != nil {
@@ -503,22 +488,27 @@ func (s *Server) challengeUnlock(op string, c *caller, label string) ([]byte, *S
 	// UnixTime is when the prompt APPEARED. The recorded unlock event is
 	// built fresh after success, so history carries when the human
 	// actually approved, not when they were first asked.
-	pending := unlockEvent(op, c)
-	s.mu.Lock()
-	s.pendingChallenge = pending
-	s.mu.Unlock()
-
 	// The reason handed to the fetcher is the prompt the human is about to
 	// read, so it is built HERE, where both the op and the caller are known
 	// — the fetcher itself has no idea who it's prompting on behalf of.
 	// label is deliberately NOT part of it: it's caller-reported, and the
 	// one line a human decides by must never carry a fact the caller could
 	// have made up (see Request.Label).
-	fetcher := s.newFetcher()
-	mek, err := fetcher.FetchMEK(challengeReason(op, c))
-	// The MEK we keep is the copy FetchMEK returned; the fetcher's own cache
-	// has served its purpose the moment we have it.
-	closeFetcher(fetcher)
+	reason := challengeReason(op, c)
+	pending := unlockEvent(op, c)
+	pending.Cause = reason
+	s.mu.Lock()
+	s.pendingChallenge = pending
+	s.mu.Unlock()
+
+	// An unlock a PROGRAM triggered (an MCP server, an agent, a script —
+	// anything with a launcher to name) goes to the consent broker first,
+	// like a disclosed challenge: that is the unexplained prompt the
+	// provenance work exists for. One the human typed themselves — a bare
+	// `jit run` at a shell, or `jit unlock` — needs no explaining and gets
+	// the dialog directly. Explanation, not a gate: the launcher chooses
+	// which prompt, never whether.
+	mek, prompted, err := s.promptOrBroker(pending, reason, op != OpUnlock && c.launchedBy() != "")
 
 	s.mu.Lock()
 	s.pendingChallenge = nil
@@ -531,7 +521,10 @@ func (s *Server) challengeUnlock(op string, c *caller, label string) ([]byte, *S
 		event := unlockEvent(op, c)
 		event.Kind = KindDenied
 		event.Cause = err.Error()
-		event.AuthMethod = s.authMethod()
+		event.ConsentID = pending.ConsentID
+		if prompted {
+			event.AuthMethod = s.authMethod()
+		}
 		if label != "" {
 			event.Labels = []string{label}
 		}
@@ -549,6 +542,7 @@ func (s *Server) challengeUnlock(op string, c *caller, label string) ([]byte, *S
 	out := s.mekCopy()
 	event := unlockEvent(op, c)
 	event.AuthMethod = s.authMethod()
+	event.ConsentID = pending.ConsentID
 	if label != "" {
 		event.Labels = []string{label}
 	}
