@@ -135,6 +135,13 @@ func SkipNoiseDir(root, path, name string) bool {
 // aborting the whole scan — one unreadable file shouldn't take down the
 // entire audit.
 func walkHomeDir(root string, fn func(path string, d fs.DirEntry) error) error {
+	return walkHomeDirExcluding(root, nil, fn)
+}
+
+// walkHomeDirExcluding is walkHomeDir with a directory-level exclusion
+// hook: a directory `excluded` says yes to is not entered at all, which is
+// what makes a folder scan with --exclude cheap rather than merely correct.
+func walkHomeDirExcluding(root string, excluded func(string) bool, fn func(path string, d fs.DirEntry) error) error {
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -143,7 +150,7 @@ func walkHomeDir(root string, fn func(path string, d fs.DirEntry) error) error {
 			if path == root {
 				return nil
 			}
-			if SkipNoiseDir(root, path, d.Name()) {
+			if SkipNoiseDir(root, path, d.Name()) || (excluded != nil && excluded(path)) {
 				return filepath.SkipDir
 			}
 			return nil
