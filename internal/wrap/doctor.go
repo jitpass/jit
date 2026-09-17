@@ -8,10 +8,7 @@ package wrap
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
-
-	"github.com/jitpass/jit/internal/profile"
 )
 
 // DoctorCheck is one health verdict — machine-shaped so the CLI owns all
@@ -69,21 +66,14 @@ func Doctor(home, pathEnv, shell string) []DoctorCheck {
 		checks = append(checks, DoctorCheck{Name: "shim dir", OK: true, Detail: dir + " (0700)"})
 	}
 
-	onPath := false
-	for _, p := range filepath.SplitList(pathEnv) {
-		if samePath(p, dir) {
-			onPath = true
-			break
-		}
-	}
-	if onPath {
+	if ShimDirOnPath(home, pathEnv) {
 		checks = append(checks, DoctorCheck{Name: "PATH", OK: true, Detail: "shim dir is on PATH in this shell"})
 	} else {
 		checks = append(checks, DoctorCheck{Name: "PATH", OK: false, Environmental: true, Detail: "shim dir not on PATH in this shell, open a new shell or `" + PathLine() + "`"})
 	}
 
 	rc := RcFile(home, shell)
-	if data, readErr := os.ReadFile(rc); readErr == nil && RcMentionsShimDir(string(data)) { // #nosec G304 -- the user's own rc file
+	if RcHasPathLine(home, shell) {
 		checks = append(checks, DoctorCheck{Name: "rc file", OK: true, Detail: rc + " has the shim PATH line"})
 	} else {
 		checks = append(checks, DoctorCheck{Name: "rc file", OK: false, Detail: rc + " missing the shim PATH line, re-run `jit wrap add` for any tool"})
@@ -92,69 +82,36 @@ func Doctor(home, pathEnv, shell string) []DoctorCheck {
 	for _, tool := range manifestTools(manifest) {
 		entry := manifest.Tools[tool]
 		name := "tool " + tool
+		st := CheckTool(home, pathEnv, tool, entry)
 
-		link := filepath.Join(dir, tool)
-		target, linkErr := os.Readlink(link)
 		switch {
-		case linkErr != nil:
-			checks = append(checks, DoctorCheck{Name: name, OK: false, Detail: "shim symlink missing, `jit wrap add " + tool + " ...` reinstalls it"})
-			continue
-		default:
-			if info, statErr := os.Stat(target); statErr != nil || info.Mode()&0o111 == 0 {
-				checks = append(checks, DoctorCheck{Name: name, OK: false, Detail: "shim points at " + target + ", which isn't an executable, jit moved? re-run `jit wrap add " + tool + " ...`"})
-				continue
-			}
-		}
-
-		if _, lookErr := lookPathSkipping(pathEnv, tool, dir); lookErr != nil {
+		case st.Shim != ShimOK:
+			checks = append(checks, DoctorCheck{Name: name, OK: false, Detail: st.Detail})
+		case st.InstalledPath == "":
 			// Environmental: this is a statement about the PATH this process
 			// was handed. The tool may simply be absent from a CI runner's
 			// slim PATH while being perfectly installed for the user.
 			checks = append(checks, DoctorCheck{Name: name, OK: false, Environmental: true, Detail: "real " + tool + " not found on PATH beyond the shim dir, is it still installed?"})
-			continue
-		}
-
-		// A grant-wrap has no profile — it grants a global mount by name,
-		// validated by `jit run --with` at use time. The shim + real binary
-		// resolving is all doctor can (and needs to) check here.
-		if entry.IsGrant() {
+		case st.ProfileDetail != "":
+			checks = append(checks, DoctorCheck{Name: name, OK: false, Detail: st.ProfileDetail})
+		case entry.IsGrant():
+			// A grant-wrap has no profile — it grants a global mount by name,
+			// validated by `jit run --with` at use time. The shim + real binary
+			// resolving is all doctor can (and needs to) check here.
 			checks = append(checks, DoctorCheck{Name: name, OK: true, Detail: "shim and real binary resolve; grants the " + entry.With + " mount via `jit run --with`"})
-			continue
-		}
-
-		// A capture-wrap has no profile either — its vault profiles
-		// (aws-<app>) appear per capture, so their absence before the
-		// first `clisso get` is health, not sickness.
-		if entry.IsCapture() {
+		case entry.IsCapture():
+			// A capture-wrap has no profile either — its vault profiles
+			// (aws-<app>) appear per capture, so their absence before the
+			// first `clisso get` is health, not sickness.
 			checks = append(checks, DoctorCheck{Name: name, OK: true, Detail: "shim and real binary resolve; captures via `jit " + entry.Capture + "-capture`"})
-			continue
-		}
-
-		// A run-grant-wrap has no profile and no named mount — which
-		// project mounts apply is decided per invocation from the tool's
-		// cwd, so the shim + real binary resolving is all doctor can check.
-		if entry.IsRunGrant() {
+		case entry.IsRunGrant():
+			// A run-grant-wrap has no profile and no named mount — which
+			// project mounts apply is decided per invocation from the tool's
+			// cwd, so the shim + real binary resolving is all doctor can check.
 			checks = append(checks, DoctorCheck{Name: name, OK: true, Detail: "shim and real binary resolve; grants project mounts via `jit run --grant-only`"})
-			continue
+		default:
+			checks = append(checks, DoctorCheck{Name: name, OK: true, Detail: "shim, real binary, and profile all resolve"})
 		}
-
-		// profile.Path owns this layout, and every other call site in the repo
-		// goes through it (add.go, undo.go, and 18 more). Hand-joining it here
-		// meant a change to ProfilesDir or the extension would make `jit wrap
-		// doctor` report EVERY wrapped tool's profile as missing — a fully red
-		// report over a healthy install, which is the worst direction for a
-		// diagnostic to fail in.
-		profilePath, perr := profile.Path(home, entry.Profile)
-		if perr != nil {
-			checks = append(checks, DoctorCheck{Name: name, OK: false, Detail: "profile " + entry.Profile + " has an unusable name: " + perr.Error()})
-			continue
-		}
-		if _, statErr := os.Stat(profilePath); statErr != nil {
-			checks = append(checks, DoctorCheck{Name: name, OK: false, Detail: "profile " + entry.Profile + " missing at " + profilePath})
-			continue
-		}
-
-		checks = append(checks, DoctorCheck{Name: name, OK: true, Detail: "shim, real binary, and profile all resolve"})
 	}
 	return checks
 }

@@ -539,6 +539,8 @@ func (c Config) agentCachedSecretFinding(path, agent string, pin cacheNeedle, da
 	// claimed values are several different secrets.
 	f.rawValue = pin.value
 	f.OriginPath = origin.FilePath
+	f.Agent = agent
+	f.CacheArea = AgentCacheArea(c.HomeDir, path)
 	digest := sha256.Sum256([]byte(pin.value))
 	f.rawValueDigest = hex.EncodeToString(digest[:])
 
@@ -659,6 +661,8 @@ func ScanAgentStores(cfg Config) ([]Finding, error) {
 		}
 		for i := range fs {
 			fs[i].Evidence = fmt.Sprintf("%s (found in %s local store)", fs[i].Evidence, possessive(label))
+			fs[i].Agent = label
+			fs[i].CacheArea = AgentCacheArea(cfg.HomeDir, path)
 		}
 		findings = append(findings, fs...)
 	}
