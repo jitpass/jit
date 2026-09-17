@@ -15,7 +15,12 @@ With Homebrew:
 brew install jitpass/tap/jitpass
 ```
 
-Or download the release directly:
+This installs the JitPass menu bar app into /Applications with the `jit`
+command line inside it, linked onto PATH, plus shell completions. `brew
+upgrade jitpass` updates both together. (If you installed the earlier
+`jit-app` cask, remove it first: `brew uninstall --cask jit-app`.)
+
+Or download the CLI on its own:
 
 ```sh
 curl -sLO https://dl.jitpass.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz
@@ -187,8 +192,9 @@ install locations.
 
 ## Upgrading
 
-Installed with Homebrew? It's `brew upgrade jitpass`; a Homebrew-managed jit
-declines to self-update and says so.
+Installed with Homebrew? It's `brew upgrade jitpass`, which updates the app
+and the jit inside it together; a Homebrew-managed jit, or one inside
+JitPass.app, declines to self-update and says so.
 
 Otherwise, on **v0.41.0 or newer**, upgrading is one command:
 
