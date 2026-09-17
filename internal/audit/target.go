@@ -45,6 +45,10 @@ func TargetedScan(cfg Config, targets []string) ([]Finding, ScanSummary, error) 
 	// other door: "we could not look" must never render as "there is nothing
 	// there".
 	var degraded []ScannerFailure
+	// Counted the way the machine-wide walk counts: every regular file a
+	// classifier was offered. It was never set on this path, so a folder
+	// scan's summary said "0 files" under a list of findings from them.
+	var filesScanned int
 	for _, target := range targets {
 		info, err := os.Lstat(target)
 		if err != nil {
@@ -57,17 +61,26 @@ func TargetedScan(cfg Config, targets []string) ([]Finding, ScanSummary, error) 
 			if cfg.Progress != nil {
 				cfg.Progress(filepath.Base(target))
 			}
-			all = append(all, scanTargetDir(cfg, target)...)
+			found, walked := scanTargetDir(cfg, target)
+			all = append(all, found...)
+			filesScanned += walked
 		case info.Mode().IsRegular():
 			if cfg.Progress != nil {
 				cfg.Progress(filepath.Base(target))
 			}
+			if cfg.Excluded(target) {
+				continue
+			}
 			fs, failures := scanTargetFile(cfg, target)
 			all = append(all, fs...)
 			degraded = append(degraded, failures...)
+			filesScanned++
 		}
 	}
 	all = dedupeFindings(all)
+	// Same exclusion Scan applies; the walk above already skips excluded
+	// directories, this catches a named file or a nested one.
+	all = dropExcluded(cfg, all)
 
 	// Same redundancy filter Scan applies: a targeted directory scan runs the
 	// classify halves too, so a claimed file could otherwise be reported both
@@ -84,6 +97,8 @@ func TargetedScan(cfg Config, targets []string) ([]Finding, ScanSummary, error) 
 
 	summary := buildScanSummary(cfg, all, countProtectedMounts(cfg.MountRegistryPath), time.Since(start))
 	summary.Targets = targets
+	summary.FilesScanned = filesScanned
+	summary.ExcludedPaths = cfg.ExcludePaths
 	summary.DegradedScanners = degraded
 	coverage := ComputeCoverage(cfg.HomeDir, cfg.MountRegistryPath, all)
 	summary.SecretsTotal = coverage.Total()
@@ -102,9 +117,9 @@ func TargetedScan(cfg Config, targets []string) ([]Finding, ScanSummary, error) 
 // reserved for files the user names explicitly (scanTargetFile), so a
 // directory scan keeps the low-false-positive, name-gated behavior of the
 // full scan.
-func scanTargetDir(cfg Config, dir string) []Finding {
-	var findings []Finding
-	_ = walkHomeDir(dir, func(path string, d fs.DirEntry) error {
+func scanTargetDir(cfg Config, dir string) (findings []Finding, filesWalked int) {
+	_ = walkHomeDirExcluding(dir, cfg.Excluded, func(path string, d fs.DirEntry) error {
+		filesWalked++
 		name := d.Name()
 		for _, c := range categories {
 			if c.classify != nil {
@@ -113,7 +128,7 @@ func scanTargetDir(cfg Config, dir string) []Finding {
 		}
 		return nil
 	})
-	return findings
+	return findings, filesWalked
 }
 
 // scanTargetFile classifies one explicitly named regular file. A name that
