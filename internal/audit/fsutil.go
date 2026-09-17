@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -98,6 +99,21 @@ var noiseRelativePaths = []string{
 	filepath.Join(".claude", "plugins"),
 	filepath.Join(".claude", "chrome"),
 	filepath.Join(".claude", "image-cache"),
+	// Apple's media libraries: tens of thousands of photos, tracks and
+	// video files behind a package directory, none of them a secret the
+	// user could fix. Walking them is also what made JitPass trigger the
+	// "would like to access your Photo Library" and "Apple Music" prompts
+	// on a whole-Mac scan, because macOS guards these packages separately
+	// from the folders that hold them.
+	filepath.Join("Music", "Music"),
+	filepath.Join("Movies", "TV"),
+}
+
+// noisePackageSuffixes are macOS package directories skipped wherever they
+// sit: the media libraries above are the common case, but a Photos library
+// can live anywhere the user chose, so the suffix is the reliable test.
+var noisePackageSuffixes = []string{
+	".photoslibrary", ".musiclibrary", ".tvlibrary", ".aplibrary", ".imovielibrary", ".fcpbundle",
 }
 
 // SkipNoiseDir reports whether a discovery walk under root should skip the
@@ -111,6 +127,11 @@ var noiseRelativePaths = []string{
 func SkipNoiseDir(root, path, name string) bool {
 	if noiseDirs[name] {
 		return true
+	}
+	for _, suffix := range noisePackageSuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
 	}
 	if rel, err := filepath.Rel(root, path); err == nil {
 		for _, noise := range noiseRelativePaths {
