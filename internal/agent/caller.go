@@ -40,6 +40,24 @@ type caller struct {
 	// first). Both come from lineage.Ancestry.
 	self      lineage.Process
 	ancestors []lineage.Process
+	// bestEffort marks an identity found by scanning the process table
+	// rather than vouched for by the kernel as a socket peer — a FIFO mount
+	// reader (callerForPID). Every event it feeds carries ByLikely, so no
+	// renderer shows it as certainty.
+	bestEffort bool
+}
+
+// callerForPID identifies a process that never connected — a FIFO reader
+// found by scanning holders — with the same lineage walk a socket peer
+// gets, marked bestEffort because nothing vouched for the pid. It exists so
+// a consent broker can name the reader on a mount prompt; before it, those
+// prompts recorded no caller at all.
+func callerForPID(pid int32) *caller {
+	chain := lineage.Ancestry(pid)
+	if len(chain) == 0 {
+		return &caller{pid: pid, bestEffort: true}
+	}
+	return &caller{pid: pid, self: chain[0], ancestors: chain[1:], bestEffort: true}
 }
 
 // callerFromConn identifies conn's peer, or returns nil if the kernel won't

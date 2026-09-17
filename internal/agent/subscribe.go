@@ -31,10 +31,13 @@ const defaultSubscribeBuffer = 64
 type subscriber struct {
 	ch     chan SessionEvent
 	lagged chan struct{}
+	// broker marks a stream that answers consent requests (consentbroker.go);
+	// it receives KindPending events on top of the recorded ones.
+	broker bool
 }
 
-func (s *Server) subscribe() *subscriber {
-	sub := &subscriber{ch: make(chan SessionEvent, s.subscribeBuffer), lagged: make(chan struct{})}
+func (s *Server) subscribe(broker bool) *subscriber {
+	sub := &subscriber{ch: make(chan SessionEvent, s.subscribeBuffer), lagged: make(chan struct{}), broker: broker}
 	s.subMu.Lock()
 	if s.subscribers == nil {
 		s.subscribers = map[*subscriber]struct{}{}
@@ -48,6 +51,9 @@ func (s *Server) unsubscribe(sub *subscriber) {
 	s.subMu.Lock()
 	delete(s.subscribers, sub)
 	s.subMu.Unlock()
+	if sub.broker {
+		s.brokerLeft()
+	}
 }
 
 // subscriberCount is for tests, which need to know a stream is registered
@@ -81,8 +87,8 @@ func (s *Server) publish(e SessionEvent) {
 // serveSubscription owns conn for the life of the stream. The peer has
 // already been verified same-user and its request decoded; nothing here
 // needs the vault, so it never touches the session and never prompts.
-func (s *Server) serveSubscription(conn net.Conn) {
-	sub := s.subscribe()
+func (s *Server) serveSubscription(conn net.Conn, broker bool) {
+	sub := s.subscribe(broker)
 	defer s.unsubscribe(sub)
 
 	// One document acknowledges the subscription, in the same shape every
