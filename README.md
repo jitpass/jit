@@ -70,6 +70,11 @@ what to answer. Full detail in
 brew install jitpass/tap/jitpass
 ```
 
+That installs the JitPass menu bar app into /Applications with the `jit`
+command line inside it, linked onto PATH with shell completions. The app is
+where a prompt explains itself; the CLI is everything below. Open JitPass
+once and it stays in the menu bar.
+
 That is the recommended route, and for a security tool the reason matters.
 Releases are signed with an Apple Developer ID and notarized by Apple.
 Homebrew quarantines what it downloads, so Gatekeeper checks the binary
@@ -105,9 +110,10 @@ Homebrew, remove the old copy after the `brew install` (`sudo rm
 /usr/local/bin/jit`); otherwise two jits sit on PATH upgrading separately, and
 `jit doctor` will flag it.
 
-**Upgrading:** `brew upgrade jitpass`, or `jit upgrade`: a verified
-self-update (Developer-ID signature and checksum both checked before the
-swap, restarts the service). Either way your vault is untouched.
+**Upgrading:** `brew upgrade jitpass` for a Homebrew install (it updates the
+app and the jit inside it together), or `jit upgrade` for a tarball install:
+a verified self-update (Developer-ID signature and checksum both checked
+before the swap, restarts the service). Either way your vault is untouched.
 
 Homebrew installs shell completion with the binary, so `jit <TAB>` completes
 subcommands, flags, vault paths, and wrappable tool names out of the box.
