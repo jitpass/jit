@@ -173,61 +173,11 @@ release:
   # independent fetches of "latest".
   replace_existing_artifacts: true
 
-# Cask re-added 2026-08-07 alongside notarization (same gate, see the
-# notarize block above). Homebrew quarantines cask downloads, so this block
-# only makes sense while releases are notarized: Gatekeeper fetches the
-# ticket online (bare Mach-O, can't staple) and clears the binary on its own.
-#
-# `homebrew_casks`, not the older `brews` — brews is deprecated as of
-# goreleaser v2.10 (it hackily used Formulas to install precompiled binaries;
-# casks are the correct mechanism for that, per goreleaser.com/deprecations#brews).
-homebrew_casks:
-  - name: jitpass
-    repository:
-      owner: jitpass
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    directory: Casks
-    # The archive's binary is `jit`; without this the cask defaults to
-    # linking a binary named after the cask (jitpass) and install breaks.
-    binaries: [jit]
-    # Installed from the archive into Homebrew's own completion directories,
-    # which are already on zsh's fpath — the same place _gh and _kubectl land.
-    # Without this the cask installs a binary whose entire tab-completion
-    # surface (grant's create shape, audit's filters, every vault path) is
-    # inert, and `jit doctor`'s [completion] check is what notices when a
-    # tarball install has the same gap.
-    completions:
-      zsh: completions/_jit
-      bash: completions/jit.bash
-      fish: completions/jit.fish
-    homepage: "https://github.com/jitpass/jit"
-    description: "Local-first developer secret runtime"
-    # Downloads route through dl.jitpass.com — a Cloudflare Worker that logs
-    # ONE aggregate line (client class, tag, asset, country; never an IP) and
-    # 302s to the exact GitHub release asset. GitHub stays the only origin
-    # serving bytes, so the sha256 below still pins GitHub's artifact, and
-    # `jit upgrade` keeps fetching from github.com directly — the redirect
-    # host must never become load-bearing for the signature/checksum chain.
-    # Provenance, live verification (11/11), and rollback (re-point here at
-    # github.com) are in spike/dl-redirect/FINDINGS.md.
-    #
-    # No `verified:` here: it used to declare the differing domain ours for
-    # brew audit, but Homebrew deprecated it to a no-op (DEPRECATED_URL_SPECS
-    # in cask/url.rb) that prints a deprecation warning to every tap user on
-    # every brew run.
-    url:
-      template: "https://dl.jitpass.com/jitpass/jit/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
-    # PolyForm Perimeter 1.0.0 — homebrew_casks has no `license:` field
-    # (unlike the deprecated `brews`/Formula schema); license lives in
-    # LICENSE instead.
-    # Don't fail the whole release if the tap token secret goes missing —
-    # binaries still publish, only the cask push is skipped.
-    skip_upload: '{{ if eq (envOrDefault "HOMEBREW_TAP_GITHUB_TOKEN" "") "" }}true{{ else }}false{{ end }}'
-    # No `xattr -dr com.apple.quarantine` post-install hook here, deliberately.
-    # The pre-signing version of this block needed one because ad-hoc-signed
-    # binaries died on first run under Homebrew's cask quarantine; now that
-    # releases carry a Developer ID signature and a notarization ticket,
-    # Gatekeeper clears them on its own. Stripping quarantine would throw away
-    # the check we just paid for — and Apple has signalled it may close that
-    # bypass without notice.
+# No homebrew_casks block, since phase 2 of design/menu-bar-app.md: the
+# `jitpass` cask in jitpass/homebrew-tap is owned by the JitPass app release
+# (jitpass/jit-app), which bundles the jit tarball this config publishes and
+# symlinks it onto PATH. A cask block here would overwrite that cask with a
+# CLI-only one on every jit release. The tarball above stays the CLI-only
+# install and what `jit upgrade` fetches; a jit release reaches Homebrew
+# users when the app bumps its pinned jit.version and releases. The block
+# this replaced is in history (v1.5.7) should the cask ever move back.

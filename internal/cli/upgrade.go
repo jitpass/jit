@@ -80,6 +80,22 @@ func brewManaged(resolvedPath string) bool {
 	return false
 }
 
+// inAppBundle reports whether resolvedPath is an executable inside a macOS
+// application bundle (<Name>.app/Contents/MacOS/...). The JitPass app ships
+// jit there, and the `jitpass` cask symlinks it onto PATH, so this is what a
+// Homebrew install resolves to. Replacing that file in place would break the
+// bundle's code signature and notarization ticket, so the app is what gets
+// updated — by brew, or by installing the app's next release.
+func inAppBundle(resolvedPath string) bool {
+	segs := strings.Split(resolvedPath, string(filepath.Separator))
+	for i, seg := range segs {
+		if strings.HasSuffix(seg, ".app") && i+2 < len(segs) && segs[i+1] == "Contents" && segs[i+2] == "MacOS" {
+			return true
+		}
+	}
+	return false
+}
+
 var upgradeForce bool
 
 var upgradeCmd = &cobra.Command{
@@ -131,6 +147,12 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 	// EvalSymlinks above deliberately follows into the Caskroom.
 	if brewManaged(exePath) {
 		return fmt.Errorf("jit upgrade: this jit is managed by Homebrew (%s), so it can't self-replace — run `brew upgrade jitpass` instead, or reinstall from the release tarball (https://github.com/%s/%s/releases/latest) if you want this command to manage it", exePath, upgradeRepoOwner, upgradeRepoName)
+	}
+	// Checked after the Caskroom test so a brew-installed app still gets the
+	// `brew upgrade` advice; this catches the app dragged into /Applications
+	// by hand, and the cask's symlink, which resolves into /Applications.
+	if inAppBundle(exePath) {
+		return fmt.Errorf("jit upgrade: this jit ships inside JitPass.app (%s), so it can't self-replace without breaking the app's signature — update the app instead: `brew upgrade jitpass`, or install the latest JitPass from https://github.com/jitpass/jit-app/releases/latest", exePath)
 	}
 
 	// The refusal above covers a brew-managed copy asked to self-update; the

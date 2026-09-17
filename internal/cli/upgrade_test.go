@@ -43,6 +43,26 @@ func TestBrewManaged(t *testing.T) {
 	}
 }
 
+func TestInAppBundle(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/Applications/JitPass.app/Contents/MacOS/jit", true}, // the jitpass cask's symlink target
+		{"/Users/dev/Applications/JitPass.app/Contents/MacOS/jit", true},
+		{"/opt/homebrew/Caskroom/jitpass/1.6.0,0.9.0/JitPass.app/Contents/MacOS/jit", true},
+		{"/Applications/JitPass.app/Contents/Resources/jit", false}, // not the executable directory
+		{"/Users/dev/my.app/jit", false},                            // no Contents/MacOS
+		{"/usr/local/bin/jit", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := inAppBundle(c.path); got != c.want {
+			t.Errorf("inAppBundle(%q) = %v, want %v", c.path, got, c.want)
+		}
+	}
+}
+
 func TestVersionNewer(t *testing.T) {
 	cases := []struct {
 		latest, current string
