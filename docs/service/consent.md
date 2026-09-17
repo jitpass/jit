@@ -132,6 +132,12 @@ been refused. Two answers:
 - **Deny** refuses without a prompt. The caller gets the same error and the
   same pause a declined dialog gives it.
 
+The same goes for an **unlock a program asked for**: when the vault is locked
+and an MCP server, an agent or a script reaches for a secret, the app shows
+who before the unlock dialog does. An unlock you typed yourself, `jit unlock`
+or a `jit run` at your own shell, gets the dialog directly; there is nothing
+to explain.
+
 A request the app is shown and nobody answers is refused after ninety seconds,
 like a dialog nobody touched. If the app quits while a request is waiting, the
 dialog appears directly. Without the app, nothing changes: the service prompts
