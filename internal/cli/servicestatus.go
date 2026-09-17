@@ -195,7 +195,11 @@ func printPendingUnlock(w io.Writer, p *agent.SessionEvent) {
 	if p == nil {
 		return
 	}
-	line := fmt.Sprintf("A Touch ID/passcode prompt is up right now (appeared %s ago)", humanAgo(time.Since(time.Unix(p.UnixTime, 0))))
+	what := "A Touch ID/passcode prompt is up right now"
+	if p.Kind == agent.KindPending {
+		what = "JitPass is showing a request right now"
+	}
+	line := fmt.Sprintf("%s (appeared %s ago)", what, humanAgo(time.Since(time.Unix(p.UnixTime, 0))))
 	if p.LaunchedBy != "" {
 		line += fmt.Sprintf(", triggered by a command launched by %s", p.LaunchedBy)
 	}

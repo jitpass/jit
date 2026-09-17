@@ -114,9 +114,12 @@ if the app is abandoned.
    is covered by one implementation. `allow` proceeds to the agent's own
    Touch ID; `deny` refuses with no dialog; no answer within ninety seconds
    is a refusal; a broker that disconnects mid-request falls back to the
-   dialog. The outcome event carries the request's `consent_id`. This is the
-   only addition that touches a decision path, and it never adds authority:
-   the app can only refuse or ask the human.
+   dialog. The outcome event carries the request's `consent_id`. An unlock a
+   program triggered (the caller has a launcher to name) is brokered the same
+   way; one the human typed (`jit unlock`, a bare `jit run` at a shell) goes
+   straight to the dialog. This is the only addition that touches a decision
+   path, and it never adds authority: the app can only refuse or ask the
+   human.
 
 Nothing else in `internal/agent` changes. `internal/consent` stays pure.
 

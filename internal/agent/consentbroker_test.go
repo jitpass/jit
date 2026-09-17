@@ -6,7 +6,9 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"net"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jitpass/jit/internal/consent"
+	"github.com/jitpass/jit/internal/lineage"
 )
 
 // startBrokerServer is a server on which `trust` raises a disclosed
@@ -225,5 +228,104 @@ func TestScannedReaderIsMarkedLikely(t *testing.T) {
 	}
 	if e := unlockEvent(OpRevealPID, &caller{pid: 1}); e.ByLikely {
 		t.Error("a kernel-vouched caller was marked likely")
+	}
+}
+
+// startLaunchedServer is startBrokerServer with the caller's ancestry
+// replaced: launcher names the program that launched every caller ("" for
+// a human at a bare shell), since a test process cannot pick its parents.
+func startLaunchedServer(t *testing.T, calls *int32, launcher string) (*Server, *Client, func()) {
+	t.Helper()
+	s, socketPath, cleanup := startTestServerWith(t, time.Minute, calls, func(s *Server) {
+		s.Consent = consent.New(time.Minute)
+		s.discloseBackoff = nil
+		s.brokerWait = 10 * time.Second
+		s.identify = func(conn net.Conn) *caller {
+			c := callerFromConn(conn)
+			if c == nil {
+				return nil
+			}
+			c.ancestors = nil
+			if launcher != "" {
+				c.ancestors = []lineage.Process{{PID: 424242, ExecPath: launcher}}
+			}
+			return c
+		}
+	})
+	return s, NewClient(socketPath), cleanup
+}
+
+func TestUnlockAskedForByAProgramIsBrokered(t *testing.T) {
+	var calls int32
+	s, c, cleanup := startLaunchedServer(t, &calls, "/usr/local/bin/claude")
+	defer cleanup()
+	pending, stop := broker(t, s, c)
+	defer stop()
+
+	errc := make(chan error, 1)
+	go func() { _, err := c.WrapKey(bytes.Repeat([]byte{1}, 32)); errc <- err }()
+	var req SessionEvent
+	select {
+	case req = <-pending:
+	case <-time.After(5 * time.Second):
+		t.Fatal("an unlock triggered by a launched program was not offered to the broker")
+	}
+	if !strings.HasPrefix(req.Cause, "unlock the vault") || req.LaunchedBy != "claude" {
+		t.Fatalf("pending unlock = %+v, want the unlock wording and the launcher", req)
+	}
+	if err := c.ConsentAnswer(req.ConsentID, false); err != nil {
+		t.Fatalf("ConsentAnswer: %v", err)
+	}
+	if err := <-errc; err == nil || !strings.Contains(err.Error(), errDeclinedByBroker.Error()) {
+		t.Fatalf("wrap after a broker deny = %v, want the decline", err)
+	}
+	if n := atomic.LoadInt32(&calls); n != 0 {
+		t.Errorf("fetcher called %d times; a denied unlock must show no dialog", n)
+	}
+	if e := lastEvent(t, c); e.Kind != KindDenied || e.ConsentID != req.ConsentID || e.AuthMethod != "" {
+		t.Errorf("recorded outcome = %+v, want denied with the consent id and no auth method", e)
+	}
+}
+
+func TestUnlockTypedByAHumanGoesStraightToTheDialog(t *testing.T) {
+	var calls int32
+	s, c, cleanup := startLaunchedServer(t, &calls, "")
+	defer cleanup()
+	pending, stop := broker(t, s, c)
+	defer stop()
+
+	if _, err := c.WrapKey(bytes.Repeat([]byte{1}, 32)); err != nil {
+		t.Fatalf("WrapKey: %v", err)
+	}
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Errorf("fetcher called %d times, want the dialog directly", n)
+	}
+	select {
+	case req := <-pending:
+		t.Errorf("a human's own unlock was offered to the broker: %+v", req)
+	default:
+	}
+	if e := lastEvent(t, c); e.ConsentID != "" {
+		t.Errorf("an unbrokered unlock carries a consent id: %+v", e)
+	}
+}
+
+func TestExplicitUnlockIsNeverBrokered(t *testing.T) {
+	var calls int32
+	s, c, cleanup := startLaunchedServer(t, &calls, "/usr/local/bin/claude")
+	defer cleanup()
+	pending, stop := broker(t, s, c)
+	defer stop()
+
+	if _, _, err := c.Unlock(); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+	select {
+	case req := <-pending:
+		t.Errorf("`jit unlock` was offered to the broker: %+v", req)
+	default:
+	}
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Errorf("fetcher called %d times, want exactly one dialog", n)
 	}
 }
