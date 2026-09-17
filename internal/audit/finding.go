@@ -203,7 +203,14 @@ import (
 // instead of promising a migration. It previously carried remedy "migrate"
 // and a runnable fix_command that answered "Nothing to migrate" on the very
 // path it named.
-const SchemaVersion = "0.20.0"
+// 0.21.0 adds two additive finding fields, `agent` and `cache_area`, on
+// findings that sit in an AI agent's cache or credential store
+// (agent_cached_secret, and the agent-store sweep's ordinary findings). The
+// agent's name and the cache area were already in the evidence sentence
+// ("a verbatim copy of the credential from ~/proj/.env, kept by Claude
+// Code"); a consumer that groups copies per agent — the JitPass app's AI
+// Agents row — had to parse that prose. Nothing else changes.
+const SchemaVersion = "0.21.0"
 
 // ScannerName identifies this tool in the shared NDJSON envelope, matching
 // bumblebee's record shape so a receiver can co-ingest both (RFC.md §4).
@@ -545,6 +552,15 @@ type Finding struct {
 	// it in the stream a consumer could not apply the rule the ledger
 	// applies, so a recomputed total counted every link as its own secret.
 	OriginPath string `json:"origin_path,omitempty"`
+
+	// Agent names the AI coding agent whose cache or credential store the
+	// finding sits in ("Claude Code", "Cline"), and CacheArea what that part
+	// of the cache holds in the reader's terms ("edit history", "pasted
+	// text"), "" for a store with no area. Both were already in the evidence
+	// sentence; as fields a consumer groups copies per agent the way the
+	// human report does, without parsing prose. Since 0.21.0.
+	Agent     string `json:"agent,omitempty"`
+	CacheArea string `json:"cache_area,omitempty"`
 }
 
 // claimedValue is one credential a file-level scanner parsed and judged real
