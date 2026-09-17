@@ -78,7 +78,7 @@ The dropdown, top to bottom. Each row is a socket op the CLI can also send.
 | Lock now / Unlock | `lock`, `unlock` | `jit lock`, `jit unlock` |
 | Active grants: holder, profiles, expiry, serve count; Revoke | `grant_list`, `grant_revoke` | `jit grant list`, `jit grant revoke` |
 | Last N events, live | `subscribe` | `jit audit -f` |
-| Pending consent request with Allow / Deny (phase 4) | `consent_list`, `consent_answer` | none today; added for both |
+| Pending consent request with Deny / Allow with Touch ID (phase 4) | `subscribe` with `broker`, `consent_list`, `consent_answer` | none; the dialog itself is the CLI's view |
 | Open jit audit / doctor in Terminal | none | shell out |
 
 Notifications, opt-in per kind: session locked (with why: idle, ceiling,
@@ -104,14 +104,19 @@ if the app is abandoned.
 2. **Richer `status`.** Add `locks_at` (absolute), `lock_reason` of the last
    lock, `ceiling_at`, `consent_enabled`, `protocol`. `jit status` prints the
    new fields; no field is removed.
-3. **Consent brokering ops** (phase 4 only): `consent_list` returns pending
-   requests with the full `consentReason` line and strength; `consent_answer`
-   carries a decision and scope. The engine's `consent.Prompter` gains an
-   implementation that parks the request, notifies subscribers, and waits
-   with the existing timeout, falling back to the `LAContext` dialog when no
-   app is subscribed. `Undecided` on timeout stays deny. This is the only
-   addition that touches a decision path, which is why it is last and
-   optional.
+3. **Consent brokering ops** (phase 4, shipped): a subscriber that sets
+   `broker` on `subscribe` is streamed a `pending` event for every disclosed
+   challenge (consent gate, grant create/extend, trust, `--with`) before its
+   Touch ID appears; `consent_list` returns the ones waiting; `consent_answer`
+   carries `allow` or `deny`. The hook is in the one function every disclosed
+   challenge already passes through (`discloseChallengeOp`), not in
+   `consent.Prompter`, so `internal/consent` stays pure and every prompt kind
+   is covered by one implementation. `allow` proceeds to the agent's own
+   Touch ID; `deny` refuses with no dialog; no answer within ninety seconds
+   is a refusal; a broker that disconnects mid-request falls back to the
+   dialog. The outcome event carries the request's `consent_id`. This is the
+   only addition that touches a decision path, and it never adds authority:
+   the app can only refuse or ask the human.
 
 Nothing else in `internal/agent` changes. `internal/consent` stays pure.
 

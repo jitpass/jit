@@ -175,16 +175,35 @@ func (s *Server) discloseChallengeOp(reason, op string, c *caller) (*SessionEven
 	s.pendingChallenge = pending
 	s.mu.Unlock()
 
-	fetcher := s.newFetcher()
-	mek, err := fetcher.FetchMEK(reason)
-	// The fetcher's own cache is pure residue once FetchMEK has returned its
-	// copy. Closing it here matters more than on the unlock path: every
-	// consent prompt comes through here, so this is the site that leaked a
-	// MEK copy per prompt.
-	closeFetcher(fetcher)
+	// A consent broker, when one is connected, sees the request first and
+	// may refuse it outright; only its allow (or its absence) reaches the
+	// screen. brokerConsent stamps pending with the consent id the outcome
+	// below must carry, and status keeps pointing at the same snapshot, so
+	// `jit status` during a brokered wait still explains it.
+	var mek []byte
+	var err error
+	switch s.brokerConsent(pending) {
+	case brokerDenied:
+		err = errDeclinedByBroker
+	case brokerUnanswered:
+		err = fmt.Errorf("%w within %s", errUnansweredByBroker, s.brokerWait)
+	default:
+		fetcher := s.newFetcher()
+		mek, err = fetcher.FetchMEK(reason)
+		// The fetcher's own cache is pure residue once FetchMEK has returned
+		// its copy. Closing it here matters more than on the unlock path:
+		// every consent prompt comes through here, so this is the site that
+		// leaked a MEK copy per prompt.
+		closeFetcher(fetcher)
+	}
 
 	event := unlockEvent(op, c)
-	event.AuthMethod = s.authMethod()
+	event.ConsentID = pending.ConsentID
+	if pending.ConsentID == "" || err == nil {
+		// A refusal from the broker never showed a dialog, so it has no
+		// auth method to report; a brokered approval did.
+		event.AuthMethod = s.authMethod()
+	}
 	if err != nil {
 		event.Kind = KindDenied
 		event.Cause = fmt.Sprintf("%s: %s", reason, err)

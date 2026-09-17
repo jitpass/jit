@@ -26,6 +26,7 @@ func unlockEvent(op string, c *caller) *SessionEvent {
 	if c != nil {
 		e.By = c.command()
 		e.ByPID = c.pid
+		e.ByLikely = c.bestEffort
 		e.LaunchedBy = c.launchedBy()
 	}
 	return e

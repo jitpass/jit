@@ -338,6 +338,13 @@ type Server struct {
 	// subscribeBuffer is each subscriber's channel depth. Defaulted by
 	// NewServer; a field so a test can force the lagging path.
 	subscribeBuffer int
+	// pendingConsents are the disclosed challenges parked with a consent
+	// broker (consentbroker.go), by consent id. Guarded by brokerMu, taken
+	// after subMu when both are needed; brokerWait bounds how long each
+	// waits, a field so a test need not sit out the real ninety seconds.
+	brokerMu        sync.Mutex
+	pendingConsents map[string]*pendingConsent
+	brokerWait      time.Duration
 	// shutdown is closed exactly once by Close, so streaming connections end
 	// with the listener instead of outliving it.
 	shutdown     chan struct{}
@@ -393,6 +400,7 @@ func NewServer(socketPath string, newFetcher func() MEKFetcher, ttl time.Duratio
 		trustRoots:      map[int32]int64{},
 		identify:        callerFromConn,
 		subscribeBuffer: defaultSubscribeBuffer,
+		brokerWait:      defaultBrokerWait,
 		shutdown:        make(chan struct{}),
 	}
 }
@@ -602,6 +610,18 @@ func (s *Server) handle(req Request, c *caller) Response {
 		// Deliberately no ensureUnlocked, OpHistory's reasoning: reading what
 		// standing access exists must never itself cost an authentication.
 		return Response{OK: true, Grants: s.listGrants()}
+	case OpConsentList:
+		// Prompt-free for the same reason: it is the broker asking what it
+		// should be showing, which must never itself become a prompt.
+		return Response{OK: true, Events: s.pendingConsentEvents()}
+	case OpConsentAnswer:
+		if req.ConsentID == "" {
+			return Response{OK: false, Error: "consent_answer: missing consent_id"}
+		}
+		if err := s.answerConsent(req.ConsentID, req.Decision); err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true}
 	case OpGrantRevoke:
 		if req.GrantID == "" {
 			return Response{OK: false, Error: "grant_revoke: missing grant_id"}

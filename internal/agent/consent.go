@@ -350,7 +350,7 @@ func (s *Server) ConsentReaders(cred string, holders []int32) bool {
 			// consentReason itself, off the caller's BestEffort strength, so
 			// it is budgeted alongside the credential name rather than
 			// appended past a truncation that would cut into it.
-			if err := s.forceDisclosedChallenge(consentReason(req), nil); err != nil {
+			if err := s.forceDisclosedChallenge(consentReason(req), callerForPID(h)); err != nil {
 				// Scoped Once, not Session: see gateConsent — a transient
 				// challenge failure must not cache a session-long Deny.
 				return consent.Deny, consent.Once, nil

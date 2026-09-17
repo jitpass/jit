@@ -87,6 +87,14 @@ type Request struct {
 	//
 	// Deprecated: send Disclose.
 	DiscloseReason string `json:"disclose_reason,omitempty"`
+	// Broker, on "subscribe", asks to be shown disclosed challenges before
+	// they prompt (OpConsentList). An agent that predates it ignores the
+	// field and the stream simply never carries a pending request.
+	Broker bool `json:"broker,omitempty"`
+	// ConsentID and Decision are "consent_answer"'s arguments: the pending
+	// event's ConsentID, and DecisionAllow or DecisionDeny.
+	ConsentID string `json:"consent_id,omitempty"`
+	Decision  string `json:"decision,omitempty"`
 	// Label is the caller's own description of what a "wrap"/"unwrap" is
 	// FOR — the vault path of the secret whose DEK is in Data ("stripe/
 	// live-key"), which the agent otherwise cannot know: it only ever sees
@@ -212,6 +220,15 @@ const (
 	OpGrantList   = "grant_list"
 	OpGrantRevoke = "grant_revoke"
 	OpGrantExtend = "grant_extend"
+	// OpConsentList and OpConsentAnswer are consent brokering
+	// (consentbroker.go): a subscriber that set Request.Broker is shown each
+	// disclosed challenge as a KindPending event before its Touch ID appears,
+	// and answers with a Decision. "consent_list" returns the requests waiting
+	// right now (a broker that just connected re-syncs from it), prompt-free
+	// for OpHistory's reason. An "allow" only lets the agent's own Touch ID
+	// proceed; "deny" refuses without one. Neither op needs an unlock.
+	OpConsentList   = "consent_list"
+	OpConsentAnswer = "consent_answer"
 )
 
 // SessionEvent.Kind values.
@@ -297,6 +314,12 @@ const (
 	// which is the first question an incident asks. Labels carries the
 	// covered vault paths; Op carries the grant id.
 	KindGrantEnd = "grant_end"
+	// KindPending is a disclosed challenge waiting on a consent broker
+	// (consentbroker.go): the same snapshot the status line's PendingUnlock
+	// shows, with ConsentID set so it can be answered. Streamed to brokers
+	// only and never recorded — the KindApproved or KindDenied that follows,
+	// carrying the same ConsentID, is the durable half.
+	KindPending = "pending"
 )
 
 // The Op values a KindServe event carries: which content the reader got.
@@ -535,6 +558,11 @@ type SessionEvent struct {
 	// happened) and on events restored from a jit version that predates this
 	// field.
 	AuthMethod string `json:"auth_method,omitempty"`
+	// ConsentID links a brokered challenge's events: set on the KindPending
+	// request a broker is shown and on the KindApproved/KindDenied outcome
+	// that answers it, so a renderer can close the one with the other.
+	// Empty on every challenge that went straight to the screen.
+	ConsentID string `json:"consent_id,omitempty"`
 }
 
 // MountRevealStatus is one currently-served mount's state — deliberately
