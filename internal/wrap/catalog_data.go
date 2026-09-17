@@ -544,10 +544,29 @@ var catalog = map[string]CatalogEntry{
 	// category serves as a rejectable-decoy mount. The shim makes bare
 	// kubectl run inside a `jit run` grant so the mount hands it the real
 	// manifest; everything else about kubectl is untouched.
+	// Grant kinds: the credential is a FILE the gcp / sops migrate
+	// categories already vault and serve as a global mount; the wrap makes
+	// the tool run inside `jit run --with <mount>` by its own name. The
+	// migration comes first (`jit migrate <file>`), and the wrap says so
+	// when the mount is not there yet.
+	"gcloud": {
+		Tool:       "gcloud",
+		Kind:       KindGrant,
+		Grant:      "gcp",
+		Doc:        "Google Cloud application-default credentials, served as a live mount to gcloud and the Google SDKs",
+		VerifyHint: "gcloud auth application-default print-access-token",
+	},
+	"sops": {
+		Tool:       "sops",
+		Kind:       KindGrant,
+		Grant:      "sops",
+		Doc:        "SOPS age private key, served as a live mount to sops and the tools that call it",
+		VerifyHint: "sops --decrypt <an encrypted file>",
+	},
 	"kubectl": {
 		Tool:       "kubectl",
 		Kind:       KindRunGrant,
-		Doc:        "applies migrated Secret manifests through a jit run grant; kubectl auth already uses the exec plugin",
+		Doc:        "Kubernetes Secret manifests, applied through a jit run grant; kubectl auth already uses the exec plugin",
 		VerifyHint: "kubectl apply --dry-run=client -f <your migrated secret.yaml>",
 	},
 }
