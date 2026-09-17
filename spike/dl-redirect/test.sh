@@ -70,6 +70,28 @@ want=$(grep 'jitpass_darwin_arm64.tar.gz' /tmp/dl-spike-sums.txt | cut -d' ' -f1
   || bad "sha256 mismatch: got=$got want=$want"
 echo
 
+echo "[6] the app repo: JitPass zip, versioned and unversioned, four-part tags"
+APPTAG=$(curl -s https://api.github.com/repos/jitpass/jit-app/releases/latest | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')
+APPVER="${APPTAG#v}"
+for route in \
+  "/jitpass/jit-app/releases/latest/download/JitPass-arm64.zip" \
+  "/jitpass/jit-app/releases/download/$APPTAG/JitPass-$APPVER-arm64.zip" \
+  "/jitpass/jit-app/releases/download/v1.6.1.3/JitPass-1.6.1.3-arm64.zip" \
+  "/jitpass/jit-app/releases/download/$APPTAG/checksums.txt" ; do
+  hdr=$(curl -s -o /dev/null -A "Mozilla/5.0 (Macintosh)" -w '%{http_code} %{redirect_url}' "$BASE$route")
+  want="302 https://github.com$route"
+  [ "$hdr" = "$want" ] && ok "$route -> 302" || bad "$route -> got '$hdr' want '$want'"
+done
+for p in \
+  "/jitpass/jit-app/releases/download/$APPTAG/jitpass_darwin_arm64.tar.gz" \
+  "/jitpass/jit-app/releases/download/v1.6.1.3.4/JitPass-1.6.1.3.4-arm64.zip" \
+  "/jitpass/jit/releases/download/v1.6.1.3/jitpass_darwin_arm64.tar.gz" \
+  "/jitpass/jit-dev/releases/latest/download/JitPass-arm64.zip" ; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE$p")
+  [ "$code" = "404" ] && ok "404 $p" || bad "want 404 got $code for $p"
+done
+echo
+
 echo "[4] HEAD also redirects (brew probes with HEAD before fetching)"
 code=$(curl -s -o /dev/null -I -w '%{http_code}' \
   "$BASE/jitpass/jit/releases/download/$TAG/jitpass_darwin_arm64.tar.gz")
