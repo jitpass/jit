@@ -85,6 +85,15 @@ func TestCatalogEntriesAreWellFormed(t *testing.T) {
 			if e.NativeCategory != "" {
 				t.Errorf("%s: run-grant entry must not set NativeCategory", tool)
 			}
+		case KindGrant:
+			// A grant entry names the global mount `jit run --with` takes
+			// and nothing else: no token, no discovery, no category.
+			if e.Grant == "" {
+				t.Errorf("%s: grant entry needs Grant (the mount name)", tool)
+			}
+			if len(e.EnvVars) != 0 || len(e.Sources) != 0 || len(e.TokenCommand) != 0 || e.NativeCategory != "" {
+				t.Errorf("%s: grant entry must not carry shim or native fields", tool)
+			}
 		default:
 			t.Errorf("%s: unknown kind %q", tool, e.Kind)
 		}

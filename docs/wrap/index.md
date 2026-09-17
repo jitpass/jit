@@ -121,22 +121,29 @@ Any tool that reads its credential from an environment variable works even
 without a catalog entry: see **[Custom tools](./custom-tools.md)**
 (`jit wrap add <tool> --env VAR=<vault-path>`).
 
-## Tools that read a credential *file* (gcloud, sops)
+## Grant plugins: tools that read a credential *file*
 
 Some tools don't read an env var - they read a machine-wide credential
-*file* (Google SDKs read the gcp ADC JSON; sops reads its age key). For
-those, wrap with `--grant` instead of `--env`:
+*file* that a migrate category vaults and serves as a global mount. The
+shim runs `jit run --with <mount>`, so each invocation grants the mount to
+that one process (scoped, gone when it exits) and prompts a **disclosed
+Touch ID** naming the credential - a global credential is never granted
+silently. Migrate the file first; the wrap only takes the grant for you:
+
+| Tool | Grants | Migrate first |
+|---|---|---|
+| [`gcloud`](./gcloud.md) | the `gcp` mount: application-default credentials | [`jit migrate ~/.config/gcloud/application_default_credentials.json`](../migrate/gcp.md) |
+| [`sops`](./sops.md) | the `sops` mount: the age private key | [`jit migrate ~/.config/sops/age/keys.txt`](../migrate/sops.md) |
 
 ```
 jit migrate ~/.config/gcloud/application_default_credentials.json  # into the vault, mount the file
-jit wrap add gcloud --grant gcp # shim: `gcloud` now runs jit run --with gcp
+jit wrap gcloud                 # shim: `gcloud` now runs jit run --with gcp
 gcloud storage ls               # native; the shim grants the real ADC
 ```
 
-The shim runs `jit run --with <name>`, so each invocation grants the mount
-to that one process (scoped, gone when it exits) and prompts a **disclosed
-Touch ID** naming the credential - a global credential is never granted
-silently. Names: `gcp`, `sops`, `npm`, `netrc`, `pypi`. See
+Any other tool that reads one of these files wraps the same way by hand:
+`jit wrap add <tool> --grant <name>`, with names `gcp`, `sops`, `npm`,
+`netrc`, `pypi`. See
 [Delivering a secret](../getting-started/delivering-secrets.md).
 
 ## Adding a tool
