@@ -24,6 +24,7 @@ func execWrap(t *testing.T, args ...string) (stdout string, err error) {
 	wrapDryRun = false
 	wrapListFormat = "text"
 	wrapListAll = false
+	wrapListDiscover = false
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
@@ -420,5 +421,92 @@ func TestWrapListJSONAllAddsTheCatalog(t *testing.T) {
 	}
 	if !strings.Contains(out, `"tools": []`) {
 		t.Errorf("empty listing = %s, want an empty tools array", out)
+	}
+}
+
+// --discover answers "is there anything to wrap": the same discovery the
+// wrap flow runs, reporting where the key is and never what it is.
+func TestWrapListJSONDiscoverReportsWhereTheKeyIs(t *testing.T) {
+	home := withFixtureHome(t)
+	putToolOnPath(t, "gh")
+	hosts, err := os.ReadFile(filepath.Join("..", "wrap", "testdata", "gh", "hosts.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".config", "gh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".config", "gh", "hosts.yml"), hosts, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := execWrap(t, "list", "--format", "json", "--all", "--discover")
+	if err != nil {
+		t.Fatalf("jit wrap list --discover: %v", err)
+	}
+	var res wrapListResult
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	var gh, stripe wrapToolJSON
+	for _, r := range res.Tools {
+		switch r.Tool {
+		case "gh":
+			gh = r
+		case "stripe":
+			stripe = r
+		}
+	}
+	if gh.KeyFound == nil || !*gh.KeyFound || gh.KeySource != "~/.config/gh/hosts.yml" {
+		t.Errorf("gh discovery = found %v at %q, want found at ~/.config/gh/hosts.yml", gh.KeyFound, gh.KeySource)
+	}
+	if strings.Contains(out, "gho_") {
+		t.Fatalf("the listing must never carry a token value:\n%s", out)
+	}
+	if stripe.KeyFound != nil {
+		t.Errorf("stripe is not installed in the fixture PATH, so discovery must not run for it: %+v", stripe)
+	}
+	if _, err := execWrap(t, "list", "--format", "json", "--discover"); err == nil {
+		t.Error("--discover without --all must be refused")
+	}
+}
+
+// A grant-kind catalog tool installs the `--with` shim by its own name and
+// says when the mount's file has not been migrated yet, instead of
+// silently installing a shim that grants nothing.
+func TestWrapGrantToolInstallsShimAndSaysMigrateFirst(t *testing.T) {
+	home := withFixtureHome(t)
+	putToolOnPath(t, "sops")
+	out, err := execWrap(t, "sops")
+	if err != nil {
+		t.Fatalf("jit wrap sops: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "Wrapped sops") || !strings.Contains(out, "jit run --with sops") {
+		t.Errorf("expected a grant-wrap summary, got:\n%s", out)
+	}
+	if !strings.Contains(out, "not migrated yet") {
+		t.Errorf("with nothing of class sops in the vault, the wrap must say to migrate first:\n%s", out)
+	}
+	if _, err := os.Lstat(filepath.Join(wrap.ShimDir(home), "sops")); err != nil {
+		t.Errorf("shim not installed: %v", err)
+	}
+	m, err := wrap.LoadManifest(home)
+	if err != nil || m.Tools["sops"].With != "sops" {
+		t.Errorf("manifest entry = %+v (err %v), want a grant-wrap on the sops mount", m.Tools["sops"], err)
+	}
+	out, err = execWrap(t, "list", "--format", "json", "--all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res wrapListResult
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range res.Tools {
+		if r.Tool == "sops" && (r.Kind != "grant" || !r.Wrapped || r.With != "sops" || !r.Catalog) {
+			t.Errorf("sops row = %+v, want catalog grant kind, wrapped, with sops", r)
+		}
+		if r.Tool == "gcloud" && (r.Kind != "grant" || r.With != "gcp") {
+			t.Errorf("gcloud row = %+v, want catalog grant kind with gcp", r)
+		}
 	}
 }

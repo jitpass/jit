@@ -41,6 +41,15 @@ const (
 	// profile, no scrub: the manifest migration owns the vaulting; the
 	// wrap only removes the need to type `jit run --` before the tool.
 	KindRunGrant Kind = "rungrant"
+	// KindGrant: the tool reads a machine-wide credential FILE jit serves
+	// as a global mount (the gcp ADC JSON, the sops age key). The shim
+	// re-execs through `jit run --with <Grant>`, granting that one mount to
+	// the tool's process under a disclosed Touch ID. The migrate category
+	// of the same name owns the vaulting; the wrap only removes the need to
+	// type `jit run --with` first. Same mechanism `jit wrap add <tool>
+	// --grant <name>` installs by hand; the catalog entry is what lets
+	// `jit wrap sops` and a listing know the tool at all.
+	KindGrant Kind = "grant"
 )
 
 // TokenSource names one place a tool's plaintext credential lives today and
@@ -78,6 +87,9 @@ type CatalogEntry struct {
 
 	// KindNative fields.
 	NativeCategory string // the `jit migrate <path> --only <category>` token
+
+	// KindGrant fields.
+	Grant string // the global mount name `jit run --with` takes: gcp, sops, npm, netrc, pypi
 }
 
 // Lookup returns the catalog entry for tool.

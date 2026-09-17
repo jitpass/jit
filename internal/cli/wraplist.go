@@ -71,9 +71,18 @@ type wrapToolJSON struct {
 	// NativeCategory is the migrate category a native-kind tool delegates
 	// to, and VaultSecrets how many secrets of that class the vault holds —
 	// the prompt-free proxy for "has this tool's credential been migrated",
-	// since the migration is what stamps that class.
+	// since the migration is what stamps that class. A grant-kind tool
+	// carries the same count for its mount's class, under With.
 	NativeCategory string `json:"native_category,omitempty"`
 	VaultSecrets   int    `json:"vault_secrets,omitempty"`
+	// KeyFound and KeySource answer "is there anything to wrap" for an
+	// unwrapped shim tool, with --discover: the same discovery `jit wrap
+	// <tool>` runs (its config files, then its own export command such as
+	// `gh auth token`), with the value discarded here. KeySource is the
+	// "~"-rooted file or the command. Absent without --discover, so a
+	// consumer can tell "not looked" from "looked and found nothing".
+	KeyFound  *bool  `json:"key_found,omitempty"`
+	KeySource string `json:"key_source,omitempty"`
 }
 
 // wrapInjectJSON is one env var an env-wrap fills: from which vault path,
@@ -89,7 +98,7 @@ type wrapInjectJSON struct {
 // gatherWrapListing builds the JSON listing. Errors are reserved for an
 // unreadable manifest; everything else degrades per field, because a
 // listing that fails outright over one unreadable profile answers nothing.
-func gatherWrapListing(home string, all bool) (wrapListResult, error) {
+func gatherWrapListing(home string, all, discover bool) (wrapListResult, error) {
 	manifest, err := wrap.LoadManifest(home)
 	if err != nil {
 		return wrapListResult{}, err
@@ -157,14 +166,44 @@ func gatherWrapListing(home string, all bool) (wrapListResult, error) {
 					p := ce.VaultPath(v)
 					row.Injects = append(row.Injects, wrapInjectJSON{Var: v, VaultPath: p, Stored: store.exists(p)})
 				}
+				// Only for a tool that is installed: the export command
+				// needs the binary, and a key for a tool that is not here
+				// is not this listing's question.
+				if discover && row.InstalledPath != "" {
+					found, source := discoverKey(home, ce)
+					row.KeyFound, row.KeySource = &found, source
+				}
 			}
 			if ce.Kind == wrap.KindNative {
 				row.VaultSecrets = store.classCount(ce.NativeCategory)
+			}
+			// The migrate category behind a grant wrap stamps its mount
+			// name as the class, so the same count says whether the file
+			// is vaulted yet.
+			if ce.Kind == wrap.KindGrant {
+				row.With = ce.Grant
+				row.VaultSecrets = store.classCount(ce.Grant)
 			}
 			res.Tools = append(res.Tools, row)
 		}
 	}
 	return res, nil
+}
+
+// discoverKey runs the catalog's discovery for a tool and reports only
+// whether it found a key and where. The value DiscoverToken returns is
+// dropped on the floor here and never serialized: a listing answers
+// "is there anything to wrap", and `jit wrap <tool>` is what moves it.
+// An error reads as not found; the wrap flow reports it properly.
+func discoverKey(home string, ce wrap.CatalogEntry) (bool, string) {
+	d, found, err := wrap.DiscoverToken(home, ce)
+	if err != nil || !found {
+		return false, ""
+	}
+	if d.Source != nil {
+		return true, d.Source.Path
+	}
+	return true, strings.Join(ce.TokenCommand, " ")
 }
 
 // applyCatalog copies the catalog's description onto a row. Kind is left

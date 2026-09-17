@@ -97,12 +97,19 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 	// Native tools delegate to the migrate flow that already hooks their
 	// own credential mechanism — stronger than a shim (SDKs, login/logout).
 	if entry.Kind == wrap.KindNative {
-		d, err := wrap.Delegation(entry)
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		d, err := wrap.Delegation(home, entry)
 		if err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
 		fmt.Fprintf(out, "%s: %s.\n", entry.Tool, entry.Doc)
-		fmt.Fprint(out, hlCmds(fmt.Sprintf("Running `jit %s`, no shim needed or installed.\n\n", strings.Join(d.Command, " "))))
+		// Shown with ~ for the home path, run with the absolute one.
+		shown := append([]string{}, d.Command...)
+		shown[1] = "~"
+		fmt.Fprint(out, hlCmds(fmt.Sprintf("Running `jit %s`, no shim needed or installed.\n\n", strings.Join(shown, " "))))
 		self, err := os.Executable()
 		if err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
@@ -140,6 +147,39 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 		wrapBody(out, 0, "", hlCmds(fmt.Sprintf("From now on `%s` runs inside a jit run grant: a Secret manifest migrated with "+
 			"`jit migrate <secret.yaml>` serves %s the real manifest, while anything not "+
 			"launched through jit reads decoys kubectl rejects.", tool, tool)))
+		if err := ensureShimOnPath(cmd, home, tool); err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		if entry.VerifyHint != "" {
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("Check it: open a new shell and run `%s`.\n", entry.VerifyHint)))
+		}
+		return nil
+	}
+
+	// Grant tools read a credential FILE the migrate category of the same
+	// name serves as a global mount; the shim runs `jit run --with <mount>`
+	// by the tool's own name. Nothing is discovered or moved here, so this
+	// says when the migration has not happened yet instead of installing a
+	// shim that would grant a mount that is not there.
+	if entry.Kind == wrap.KindGrant {
+		exe, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		jitBinary, err := selfpath.Stable(exe)
+		if err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		res, err := wrap.AddGrant(home, tool, entry.Grant, jitBinary)
+		if err != nil {
+			return fmt.Errorf("jit wrap: %w", err)
+		}
+		fmt.Fprintf(out, "Wrapped %s (%s):\n  grants   the %q global mount (jit run --with %s)\n  shim     %s\n",
+			tool, entry.Doc, entry.Grant, entry.Grant, res.ShimPath)
+		if !globalMountMigrated(home, entry.Grant) {
+			fmt.Fprint(cmd.ErrOrStderr(), hlCmds(fmt.Sprintf("note: the %s credential file is not migrated yet, so there is no mount to grant: "+
+				"`jit migrate <its file>` first (see `jit scan`); the shim then serves it per run.\n", entry.Grant)))
+		}
 		if err := ensureShimOnPath(cmd, home, tool); err != nil {
 			return fmt.Errorf("jit wrap: %w", err)
 		}
@@ -304,6 +344,27 @@ func runCatalogWrap(cmd *cobra.Command, tool string) error {
 	return nil
 }
 
+// globalMountMigrated reports whether the migrate category behind a grant
+// wrap has stored anything: a bare read-only vault, envelope headers only,
+// no prompt. The vault class is the mount name for every global mount kind.
+func globalMountMigrated(_ string, mount string) bool {
+	root, err := vaultRootDir()
+	if err != nil {
+		return false
+	}
+	v := &vault.Vault{Root: root}
+	paths, err := v.List()
+	if err != nil {
+		return false
+	}
+	for _, p := range paths {
+		if info, err := v.Info(p); err == nil && info.Class == mount {
+			return true
+		}
+	}
+	return false
+}
+
 // wrapSecretAlreadyVaulted reports whether the vault already stores a secret
 // at path — on a bare read-only Vault, deliberately: Exists is one os.Stat,
 // so this check never dials the agent, never prompts, and never writes the
@@ -326,6 +387,7 @@ var wrapAddGrant string
 // see wraplist.go for the shape and why --all is JSON-only.
 var wrapListFormat string
 var wrapListAll bool
+var wrapListDiscover bool
 
 // wrapDryRun serves both `jit wrap <tool> --dry-run` and `jit wrap undo
 // <tool> --dry-run` — one flag var, two registrations, matching how the
@@ -444,12 +506,15 @@ var wrapListCmd = &cobra.Command{
 		if wrapListAll && wrapListFormat != "json" {
 			return errors.New("jit wrap list: --all is a --format json view (the text table shows wrapped tools only)")
 		}
+		if wrapListDiscover && !wrapListAll {
+			return errors.New("jit wrap list: --discover looks for the keys of unwrapped tools, so it needs --all")
+		}
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return fmt.Errorf("jit wrap list: %w", err)
 		}
 		if wrapListFormat == "json" {
-			res, err := gatherWrapListing(home, wrapListAll)
+			res, err := gatherWrapListing(home, wrapListAll, wrapListDiscover)
 			if err != nil {
 				return fmt.Errorf("jit wrap list: %w", err)
 			}
@@ -716,6 +781,7 @@ func init() {
 	_ = wrapAddCmd.RegisterFlagCompletionFunc("env", completeWrapEnvAssignment)
 	wrapListCmd.Flags().StringVar(&wrapListFormat, "format", "text", `output format: "text" (default) or "json"`)
 	wrapListCmd.Flags().BoolVar(&wrapListAll, "all", false, "with --format json: include every catalog tool, wrapped or not, with where it is installed")
+	wrapListCmd.Flags().BoolVar(&wrapListDiscover, "discover", false, "with --all: for each installed, unwrapped tool, look for its key where `jit wrap <tool>` would (config files, then the tool's own export command) and report only whether one exists and where")
 	wrapCmd.Flags().BoolVar(&wrapDryRun, "dry-run", false, "preview what wrapping would do without changing anything")
 	wrapUndoCmd.Flags().BoolVar(&wrapDryRun, "dry-run", false, "preview what unwrapping would do without changing anything")
 	wrapCmd.AddCommand(wrapAddCmd, wrapListCmd, wrapUndoCmd)
