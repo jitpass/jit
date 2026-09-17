@@ -107,3 +107,15 @@ release. Rollback at any time is re-pointing the cask at github.com.
 - `wrangler dev --log-level warn` suppresses the Worker's `console.log`;
   use `--log-level log` (or `wrangler tail` in prod) to see classification
   lines. test.sh's section [5] is informational for this reason.
+
+## Update (2026-09-17): the app's downloads go through the same hop
+
+The JitPass app (`jitpass/jit-app`) publishes its zip under a versioned name
+(the cask, hash-pinned) and an unversioned `JitPass-arm64.zip` (the website's
+Download button, via `/releases/latest/download/`). The Worker now routes
+`/jitpass/jit-app/...` with its own allowlist: those two zip names plus
+`checksums.txt`, and a tag shape with an optional fourth part (`v1.6.1.3` is an
+app-only release). The `jit` repo's rules are unchanged. No schema change: the
+asset name already separates app pulls from CLI pulls. `test.sh` section [6]
+covers both repos and the cross-repo probes (an app asset name on the jit
+route, and vice versa, 404). Needs `wrangler deploy` from a logged-in shell.
