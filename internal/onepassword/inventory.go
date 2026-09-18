@@ -14,6 +14,7 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -48,6 +49,20 @@ var skipCategories = map[string]bool{
 	"REWARD_PROGRAM":         true,
 	"SOCIAL_SECURITY_NUMBER": true,
 }
+
+// opGetWorkers is how many `op item get -` processes share one account's
+// items, and opGetMinPerWorker how many items each must have before
+// another is worth starting. The wait is op's, not jit's: it fetches the
+// items it is handed one after another. Measured 2026-09-18 through
+// Inventory itself, two accounts, 473 items: 2m07s with one process, 35s
+// with four, every item read both times. Eight did not beat four in the
+// shell. The processes are all children of this one, as the `op item
+// list` before them is, so they run under the authorization that list
+// obtained.
+const (
+	opGetWorkers      = 4
+	opGetMinPerWorker = 16
+)
 
 // Index maps the SHA-256 of each concealed 1Password field value to the
 // reference naming that field. It holds hashes, never the values: each
@@ -161,8 +176,9 @@ type opItem struct {
 // items never match either: their private key is type SSHKEY, not
 // CONCEALED, and on-disk key bytes rarely equal op's rendering anyway.)
 //
-// The item stream is decoded one object at a time as op emits it, so at
-// most one item's plaintext is resident, and progress (when non-nil) is
+// Each item stream is decoded one object at a time as op emits it, so at
+// most one item's plaintext per op process (opGetWorkers) is resident, and
+// progress (when non-nil) is
 // told after each — (read, listed), cumulative across accounts — so a
 // long enumeration can show a counter instead of looking hung. The two
 // op calls carry different bounds: the list waits on 1Password's unlock
@@ -192,9 +208,9 @@ func (r *Resolver) Inventory(progress func(read, listed int)) (*Index, error) {
 	}
 
 	type pass struct {
-		account  Account
-		worklist []byte
-		listed   int
+		account   Account
+		worklists [][]byte
+		listed    int
 	}
 	var work []pass
 	var shortfalls []string
@@ -214,7 +230,7 @@ func (r *Resolver) Inventory(progress func(read, listed int)) (*Index, error) {
 			}
 			continue
 		}
-		worklist, listed, err := filterListed(list)
+		worklists, listed, err := filterListed(list)
 		if err != nil {
 			if len(passes) == 1 {
 				return nil, err
@@ -225,7 +241,7 @@ func (r *Resolver) Inventory(progress func(read, listed int)) (*Index, error) {
 			}
 			continue
 		}
-		work = append(work, pass{account: a, worklist: worklist, listed: listed})
+		work = append(work, pass{account: a, worklists: worklists, listed: listed})
 	}
 	if len(work) == 0 && firstErr != nil {
 		return nil, firstErr
@@ -250,7 +266,7 @@ func (r *Resolver) Inventory(progress func(read, listed int)) (*Index, error) {
 		if p.listed == 0 {
 			continue
 		}
-		if err := r.streamItems(bin, p.account, p.worklist, timeout, ix, progress); err != nil {
+		if err := streamItems(bin, p.account, p.worklists, timeout, ix, progress); err != nil {
 			if len(work) == 1 {
 				return nil, err
 			}
@@ -299,11 +315,12 @@ func accountLabel(a Account) string {
 }
 
 // filterListed parses `op item list` output, drops skipCategories, and
-// returns the kept objects re-encoded as the JSON array `op item get -`
+// returns the kept objects re-encoded as the JSON arrays `op item get -`
 // accepts (each object verbatim, so op keeps the vault it already knows
-// the item lives in), plus how many were kept. An object with no
-// category key is kept: the filter only ever removes what it can name.
-func filterListed(list []byte) ([]byte, int, error) {
+// the item lives in), one array per op process, plus how many were kept.
+// An object with no category key is kept: the filter only ever removes
+// what it can name.
+func filterListed(list []byte) ([][]byte, int, error) {
 	var listed []json.RawMessage
 	if err := json.Unmarshal(bytes.TrimSpace(list), &listed); err != nil {
 		return nil, 0, fmt.Errorf("op item list output not understood: %v", err)
@@ -319,19 +336,82 @@ func filterListed(list []byte) ([]byte, int, error) {
 	if len(kept) == 0 {
 		return nil, 0, nil
 	}
-	worklist, err := json.Marshal(kept)
-	if err != nil {
-		return nil, 0, fmt.Errorf("op item list output not understood: %v", err)
+	workers := min(opGetWorkers, max(1, len(kept)/opGetMinPerWorker))
+	// Dealt round-robin, so a run of slow items is spread across the
+	// workers rather than landing on one.
+	shards := make([][]json.RawMessage, workers)
+	for i, raw := range kept {
+		shards[i%workers] = append(shards[i%workers], raw)
 	}
-	return worklist, len(kept), nil
+	worklists := make([][]byte, 0, workers)
+	for _, shard := range shards {
+		worklist, err := json.Marshal(shard)
+		if err != nil {
+			return nil, 0, fmt.Errorf("op item list output not understood: %v", err)
+		}
+		worklists = append(worklists, worklist)
+	}
+	return worklists, len(kept), nil
 }
 
-// streamItems runs `op item get -` over worklist and indexes each item as
-// it arrives. The idle watchdog restarts on every decoded item; when it
-// trips, or op exits non-zero, whatever was read stays indexed and the
-// shortfall is recorded on ix — unless nothing at all was read, which is
-// a failed enumeration and returns the error.
-func (r *Resolver) streamItems(bin string, account Account, worklist []byte, idle time.Duration, ix *Index, progress func(read, listed int)) error {
+// streamItems runs one `op item get -` per worklist, all at once, and
+// indexes each item as it arrives; ix and progress are only ever touched
+// under one lock. Whatever was read stays indexed and each worker's
+// shortfall is recorded on ix, once per distinct reason — unless nothing
+// at all was read, which is a failed enumeration and returns the error.
+func streamItems(bin string, account Account, worklists [][]byte, idle time.Duration, ix *Index, progress func(read, listed int)) error {
+	var mu sync.Mutex
+	each := func(it opItem) {
+		mu.Lock()
+		defer mu.Unlock()
+		ix.add(it, account.ID)
+		if progress != nil {
+			progress(ix.read, ix.listed)
+		}
+	}
+
+	reads := make([]int, len(worklists))
+	details := make([]string, len(worklists))
+	var wg sync.WaitGroup
+	for i, worklist := range worklists {
+		wg.Go(func() {
+			reads[i], details[i] = streamWorklist(bin, account, worklist, idle, each)
+		})
+	}
+	wg.Wait()
+
+	read := 0
+	var reasons []string
+	seen := map[string]bool{}
+	for i, detail := range details {
+		read += reads[i]
+		if detail != "" && !seen[detail] {
+			seen[detail] = true
+			reasons = append(reasons, detail)
+		}
+	}
+	if len(reasons) == 0 {
+		return nil
+	}
+	detail := strings.Join(reasons, "; ")
+	if read == 0 {
+		return fmt.Errorf("op item get failed: %s", detail)
+	}
+	if ix.incomplete != "" {
+		ix.incomplete += "; "
+	}
+	if account.ID != "" {
+		detail = accountLabel(account) + ": " + detail
+	}
+	ix.incomplete += detail
+	return nil
+}
+
+// streamWorklist runs `op item get -` over one worklist, handing each item
+// to each as it is decoded, and returns how many arrived plus why the
+// stream fell short ("" when it did not). The idle watchdog restarts on
+// every decoded item and kills an op that has gone quiet.
+func streamWorklist(bin string, account Account, worklist []byte, idle time.Duration, each func(opItem)) (read int, shortfall string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var stalled atomic.Bool
@@ -345,20 +425,16 @@ func (r *Resolver) streamItems(bin string, account Account, worklist []byte, idl
 	cmd.WaitDelay = time.Second
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("op item get failed: %v", err)
+		return 0, err.Error()
 	}
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("op item get failed: %v", err)
+		return 0, err.Error()
 	}
 
-	read := 0
 	decodeErr := decodeItems(stdout, func(it opItem) {
 		watchdog.Reset(idle)
 		read++
-		ix.add(it, account.ID)
-		if progress != nil {
-			progress(ix.read, ix.listed)
-		}
+		each(it)
 	})
 	// Drain so op never blocks on a full pipe after a decode error, then
 	// let Wait collect the exit status (and, past WaitDelay, the pipe).
@@ -366,31 +442,18 @@ func (r *Resolver) streamItems(bin string, account Account, worklist []byte, idl
 	waitErr := cmd.Wait()
 
 	if waitErr == nil && decodeErr == nil {
-		return nil
+		return read, ""
 	}
-	var detail string
 	switch {
 	case stalled.Load():
-		detail = fmt.Sprintf("stalled: no item arrived for %s (waiting for a 1Password unlock that never came?)", idle)
+		return read, fmt.Sprintf("stalled: no item arrived for %s (waiting for a 1Password unlock that never came?)", idle)
 	case decodeErr != nil && waitErr == nil:
-		detail = fmt.Sprintf("op item get output not understood: %v", decodeErr)
-	default:
-		detail = firstLine(stderr.String())
-		if detail == "" {
-			detail = waitErr.Error()
-		}
+		return read, fmt.Sprintf("op item get output not understood: %v", decodeErr)
 	}
-	if read == 0 {
-		return fmt.Errorf("op item get failed: %s", detail)
+	if line := firstLine(stderr.String()); line != "" {
+		return read, line
 	}
-	if ix.incomplete != "" {
-		ix.incomplete += "; "
-	}
-	if account.ID != "" {
-		detail = accountLabel(account) + ": " + detail
-	}
-	ix.incomplete += detail
-	return nil
+	return read, waitErr.Error()
 }
 
 // decodeItems accepts both shapes `op item get - --format json` emits — a
