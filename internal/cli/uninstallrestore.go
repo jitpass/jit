@@ -180,14 +180,18 @@ func buildUninstallRestorePlan(root, home string, rv *vault.Vault) (uninstallRes
 			if _, err := os.Lstat(path); err == nil {
 				plan.Restore = append(plan.Restore, restoreItem{Path: path, Kind: restoreCreated, rec: rec})
 			}
-		case isGone(path):
-			plan.Gone = append(plan.Gone, path)
 		case audit.IsShellHistoryPath(path),
 			audit.AgentLabelForPath(home, path) != "" && originClass[path] == "":
 			// An agent's own credential file (~/.codex/auth.json, which
 			// `jit wrap` scrubs) sits under the same roots as its caches;
-			// a secret born from the path is what tells them apart.
-			plan.KeptClean = append(plan.KeptClean, path)
+			// a secret born from the path is what tells them apart. A cache
+			// file the agent has since rotated away is nobody's loss, and
+			// on a real Mac that was 120 of them: not worth a line.
+			if _, err := os.Lstat(path); err == nil {
+				plan.KeptClean = append(plan.KeptClean, path)
+			}
+		case isGone(path):
+			plan.Gone = append(plan.Gone, path)
 		case shellConfigs[path]:
 			if migrate.ShellConfigWired(path) {
 				plan.Restore = append(plan.Restore, restoreItem{Path: path, Kind: restoreShell, rec: rec})
