@@ -13,7 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jitpass/jit/internal/keychainwrap"
+	"github.com/jitpass/jit/internal/guard"
 	"github.com/jitpass/jit/internal/wrap"
 )
 
@@ -39,16 +39,23 @@ var uninstallCmd = &cobra.Command{
 	Long: "Removes jit from this Mac: stops and unloads the background service, deletes\n" +
 		"the wrap shims, and removes the jit binary (prompts for sudo only if its path\n" +
 		"isn't writable). \n\n" +
+		"A copy of jit inside JitPass.app, or one Homebrew installed, is left where\n" +
+		"it is: the app and brew own those, and uninstall says which to ask.\n\n" +
 		"Your vault is NOT touched by default — jit is the only thing that can decrypt\n" +
 		"it on this Mac, so uninstall leaves your secrets in place and tells you where\n" +
 		"they are. Add --purge to also erase the vault and global config; uninstall\n" +
 		"will name how many secrets that destroys and recommend `jit vault export`\n" +
-		"first.\n\n" +
+		"first. A purge leaves nothing of jit's behind: the vault's key in the macOS\n" +
+		"keychain, the history guard and its line in ~/.zshrc, the shim PATH line,\n" +
+		"and the credential-helper scripts `jit migrate` installed all go with it.\n" +
+		"It does NOT put migrated files back; run `jit migrate undo <path>` first.\n\n" +
 		"Uninstalling requires a fresh Touch ID/passcode approval — so someone at your\n" +
 		"unlocked Mac can't remove jit (or --purge your secrets) without your presence.\n" +
 		"--yes skips only the typed y/N confirmation, never the fingerprint. (This\n" +
 		"guards the `jit uninstall` path; it is not a substitute for file permissions —\n" +
-		"anyone with your shell can still delete files directly.)",
+		"anyone with your shell can still delete files directly.) When the vault's\n" +
+		"key is already missing from the keychain, the same prompt runs without it,\n" +
+		"so a vault nothing can open never blocks its own removal.",
 	Args:    cobra.NoArgs,
 	GroupID: groupService,
 	RunE:    runUninstall,
@@ -78,6 +85,14 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 	shims, _ := wrap.InstalledShims(home)
 	jitConfigDir := filepath.Join(home, ".jit")
 	secretCount := vaultSecretCount()
+	// A copy inside JitPass.app or a Homebrew tree is not jit's to delete:
+	// the first is part of the bundle's signature, the second is what brew's
+	// manifest describes. `jit upgrade` refuses both for the same reason.
+	owner := binaryOwner(exePath)
+	keepBinary := uninstallKeepBinary || owner != ""
+	guardOn := uninstallPurge && guard.Installed(home)
+	helpers := existingHelperScripts(home)
+	keyGone := secretCount > 0 && !uninstallNeedsVaultKey(secretCount)
 
 	// Lay out the plan before doing anything, so the confirmation is informed.
 	fmt.Fprintln(out, "This will remove:")
@@ -85,7 +100,18 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 	if len(shims) > 0 {
 		fmt.Fprintf(out, "  - %s: %v\n", countWord(len(shims), "wrap shim", "wrap shims"), shims)
 	}
-	if !uninstallKeepBinary {
+	if uninstallPurge {
+		if rc := shimPathLineFile(home, os.Getenv("SHELL")); rc != "" {
+			fmt.Fprintf(out, "  - the shim PATH line in %s\n", displayPath(home, rc))
+		}
+		if guardOn {
+			fmt.Fprintf(out, "  - the history guard and its line in %s\n", displayPath(home, guard.RcPath(home)))
+		}
+		if len(helpers) > 0 {
+			fmt.Fprintf(out, "  - %s: %s\n", countWord(len(helpers), "credential helper", "credential helpers"), displayPaths(home, helpers))
+		}
+	}
+	if !keepBinary {
 		fmt.Fprintf(out, "  - the jit binary at %s\n", exePath)
 	}
 	if uninstallPurge {
@@ -95,8 +121,18 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 			fmt.Fprintf(out, " (%s — this is irreversible)", countWord(secretCount, "secret", "secrets"))
 		}
 		fmt.Fprintln(out)
+		fmt.Fprintln(out, "  - the vault's key in the macOS keychain")
+	}
+	switch owner {
+	case "app":
+		fmt.Fprintln(out, "This jit binary stays: it is part of JitPass.app. Move the app to the Trash to remove it.")
+	case "homebrew":
+		fmt.Fprintln(out, hlCmds("This jit binary stays: Homebrew installed it. `brew uninstall --cask jitpass` removes it."))
 	}
 	fmt.Fprintln(out)
+	if keyGone {
+		fmt.Fprintf(out, "The vault's key is missing from the keychain, so its %s cannot be read\nby anything. Touch ID still confirms it is you.\n", countWord(secretCount, "secret", "secrets"))
+	}
 	if uninstallPurge {
 		fmt.Fprintln(out, "PURGE also deletes your secrets. If you might want them back, run")
 		fmt.Fprintln(out, hlCmds("`jit vault export <file>` first — there is no other copy on this Mac."))
@@ -157,6 +193,22 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 	// 3. Purge (opt-in): global config, then the vault. Order matters only for
 	//    messaging — both are just directory removals.
 	if uninstallPurge {
+		// Before ~/.jit goes: the guard's remover reads its own hook path, and
+		// two of the helpers live outside any directory removed below.
+		if guardOn {
+			if _, rcEdited, err := removeHistoryGuard(home); err != nil {
+				failures = append(failures, fmt.Sprintf("removing the history guard: %v", err))
+			} else if rcEdited {
+				note("Removed the history guard and its line in %s.", displayPath(home, guard.RcPath(home)))
+			} else {
+				note("Removed the history guard. Your own source line in %s was left alone.", displayPath(home, guard.RcPath(home)))
+			}
+		}
+		if removed, err := removeHelperScripts(home); err != nil {
+			failures = append(failures, fmt.Sprintf("removing credential helpers: %v", err))
+		} else if len(removed) > 0 {
+			note("Removed %s.", countWord(len(removed), "credential helper", "credential helpers"))
+		}
 		if err := os.RemoveAll(jitConfigDir); err != nil {
 			failures = append(failures, fmt.Sprintf("removing %s: %v", jitConfigDir, err))
 		} else {
@@ -167,11 +219,27 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 		} else {
 			note("Erased the vault at %s.", vaultRoot)
 		}
+		// Last of the purge, and only once the vault is gone: a key left
+		// behind protects nothing, and makes the next install look set up.
+		if err := deleteVaultKeys(); err != nil {
+			failures = append(failures, fmt.Sprintf("removing the vault's keychain key: %v", err))
+		} else {
+			note("Removed the vault's key from the macOS keychain.")
+		}
+	}
+
+	// The PATH line goes once nothing in the shim directory needs it: after
+	// a purge that is always, after a plain uninstall only when no credential
+	// helper still lives there (the rule `jit wrap undo` follows).
+	if rc, err := removeShimPathLine(home, os.Getenv("SHELL")); err != nil {
+		failures = append(failures, fmt.Sprintf("removing the shim PATH line: %v", err))
+	} else if rc != "" {
+		note("Removed the shim PATH line from %s.", displayPath(home, rc))
 	}
 
 	// 4. Binary last: once it's gone the running process stays in memory long
 	//    enough to finish these messages, but nothing should run after it.
-	if !uninstallKeepBinary {
+	if !keepBinary {
 		if err := removePath(exePath); err != nil {
 			failures = append(failures, fmt.Sprintf("removing %s: %v", exePath, err))
 		} else {
@@ -211,14 +279,14 @@ func requireUninstallPresence(secretCount int) error {
 	if uninstallPurge {
 		reason = "authorize erasing jit and its vault from this Mac"
 	}
-	if secretCount > 0 {
+	if uninstallNeedsVaultKey(secretCount) {
 		v, err := openVaultFreshAuth()
 		if err != nil {
 			return err
 		}
 		return requireFreshUserPresence(v, reason)
 	}
-	return keychainwrap.Challenge(reason)
+	return uninstallChallenge(reason)
 }
 
 // removePath deletes a single file, escalating to `sudo rm -f` only when a
