@@ -8,12 +8,14 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/jitpass/jit/internal/guard"
+	"github.com/jitpass/jit/internal/vault"
 	"github.com/jitpass/jit/internal/wrap"
 )
 
@@ -31,11 +33,18 @@ var (
 	uninstallPurge      bool
 	uninstallYes        bool
 	uninstallKeepBinary bool
+	uninstallRestore    bool
+	uninstallDryRun     bool
+	uninstallFormat     string
 )
 
 var uninstallCmd = &cobra.Command{
 	Use:   "uninstall",
 	Short: "Remove jit's service, shims, and binary (keeps your vault unless --purge)",
+	Example: "  jit uninstall                       # the software; the vault stays\n" +
+		"  jit uninstall --purge               # and everything jit stored\n" +
+		"  jit uninstall --restore --dry-run   # what putting every file back would do\n" +
+		"  jit uninstall --restore             # files back as plaintext, then nothing left",
 	Long: "Removes jit from this Mac: stops and unloads the background service, deletes\n" +
 		"the wrap shims, and removes the jit binary (prompts for sudo only if its path\n" +
 		"isn't writable). \n\n" +
@@ -48,7 +57,18 @@ var uninstallCmd = &cobra.Command{
 		"first. A purge leaves nothing of jit's behind: the vault's key in the macOS\n" +
 		"keychain, the history guard and its line in ~/.zshrc, the shim PATH line,\n" +
 		"and the credential-helper scripts `jit migrate` installed all go with it.\n" +
-		"It does NOT put migrated files back; run `jit migrate undo <path>` first.\n\n" +
+		"By itself it does NOT put migrated files back.\n\n" +
+		"Add --restore for the whole way out: every file jit migrated on this Mac\n" +
+		"gets its secrets back as plaintext first, then the purge runs. Live mounts,\n" +
+		"pointer files and MCP configs are written from the CURRENT vault values; a\n" +
+		"shell config has jit's export line turned back into export lines, in place,\n" +
+		"so nothing you added since is lost; any other file gets its content from\n" +
+		"before jit, and when it changed since, today's version is kept beside it as\n" +
+		"<name>.before-jitpass-removal. Shell history and AI caches stay cleaned,\n" +
+		"and a migrated file you have since deleted is not recreated. If even one\n" +
+		"file cannot be put back, nothing is deleted and the exit code is 2.\n" +
+		"`--restore --dry-run` shows the plan, including the secrets that have no\n" +
+		"file to go back to; `jit vault export <file>` first keeps those.\n\n" +
 		"Uninstalling requires a fresh Touch ID/passcode approval — so someone at your\n" +
 		"unlocked Mac can't remove jit (or --purge your secrets) without your presence.\n" +
 		"--yes skips only the typed y/N confirmation, never the fingerprint. (This\n" +
@@ -63,6 +83,22 @@ var uninstallCmd = &cobra.Command{
 
 func runUninstall(cmd *cobra.Command, _ []string) error {
 	out := cmd.OutOrStdout()
+	// --restore is the whole way out: files back, then nothing left. Keeping
+	// the vault after putting every file back would keep a second copy of
+	// every secret for no one.
+	if uninstallRestore {
+		uninstallPurge = true
+	}
+	events, err := newUninstallEvents(out, uninstallFormat)
+	if err != nil {
+		return err
+	}
+	if events != nil {
+		if !uninstallDryRun && !uninstallYes {
+			return errors.New("jit uninstall: --format " + uninstallFormat + " has nobody to answer the [y/N]; pass --yes (the Touch ID gate still runs)")
+		}
+		out = io.Discard // the stream is the output; prose would corrupt it
+	}
 
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -93,6 +129,32 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 	guardOn := uninstallPurge && guard.Installed(home)
 	helpers := existingHelperScripts(home)
 	keyGone := secretCount > 0 && !uninstallNeedsVaultKey(secretCount)
+
+	var restorePlan uninstallRestorePlan
+	if uninstallRestore {
+		rv, rerr := openVaultReadOnly()
+		if rerr != nil {
+			return fmt.Errorf("jit uninstall: %w", rerr)
+		}
+		restorePlan, err = buildUninstallRestorePlan(vaultRoot, home, rv)
+		if err != nil {
+			return fmt.Errorf("jit uninstall: %w", err)
+		}
+		if keyGone && len(restorePlan.Restore) > 0 {
+			return fmt.Errorf("jit uninstall: --restore cannot put %s back: the vault's key is missing from the keychain, so nothing in it can be read. `jit vault init` then `jit vault import <file>` brings it back from a recovery file; `jit uninstall --purge` removes jit without restoring",
+				countWord(len(restorePlan.Restore), "file", "files"))
+		}
+	}
+	if uninstallDryRun && events != nil {
+		return events.plan(uninstallPlanDoc{
+			Restore: restorePlan, Secrets: max(secretCount, 0), KeyPresent: !keyGone,
+			Shims: shims, Guard: guardOn, Helpers: helpers, BinaryOwner: owner,
+			PathLineFile: shimPathLineFile(home, os.Getenv("SHELL")),
+		})
+	}
+	if uninstallRestore {
+		printUninstallRestorePlan(out, home, restorePlan)
+	}
 
 	// Lay out the plan before doing anything, so the confirmation is informed.
 	fmt.Fprintln(out, "This will remove:")
@@ -140,6 +202,11 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintf(out, "Your vault at %s is kept.\n", vaultRoot)
 	}
 
+	if uninstallDryRun {
+		printDryRunTrailer(out, uninstallApplyCommand(), false)
+		return nil
+	}
+
 	if !uninstallYes {
 		prompt := "Uninstall jit? [y/N] "
 		if uninstallPurge {
@@ -157,12 +224,50 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 	// gets the same fresh-user-presence challenge as `jit migrate remove`,
 	// answered by THIS process (never a cached agent session). Placed after
 	// the confirm so a decline never costs a Touch ID prompt.
-	if err := requireUninstallPresence(secretCount); err != nil {
+	events.step("auth")
+	v, err := requireUninstallPresence(secretCount)
+	if err != nil {
 		return fmt.Errorf("jit uninstall: authorization failed, nothing was changed: %w", err)
 	}
 
 	var failures []string
 	note := func(format string, a ...any) { fmt.Fprintf(out, format+"\n", a...) }
+
+	// 0. Files first. Everything below destroys what a restore reads, so a
+	//    single file that could not be put back ends the run here, with the
+	//    vault, its key and every other secret exactly where they were.
+	if uninstallRestore {
+		events.step("restore")
+		if len(restorePlan.Restore) > 0 && v == nil {
+			return errors.New("jit uninstall: --restore needs the vault, and it could not be opened; nothing was changed")
+		}
+		res := runUninstallRestore(v, vaultRoot, home, restorePlan, func(item restoreItem, ferr error) {
+			events.file(item.Path, ferr)
+			if ferr != nil {
+				_, _ = cWarn.Fprintf(out, "SKIPPED %s, %v\n", displayPath(home, item.Path), ferr)
+			} else {
+				fmt.Fprintf(out, "Put back %s\n", displayPath(home, item.Path))
+			}
+		})
+		for _, kept := range res.KeptBeside {
+			note("Kept today's version as %s.", displayPath(home, kept))
+		}
+		if len(res.Failures) > 0 {
+			events.failed(res.Failures)
+			fmt.Fprintln(out)
+			_, _ = cWarn.Fprintf(out, "%s could not be put back, so nothing was deleted.\n", countWord(len(res.Failures), "file", "files"))
+			fmt.Fprintln(out, hlCmds("Fix what is listed above and run this again. jit, the vault and its key are all still here."))
+			return &ExitError{Code: uninstallRestoreFailedExitCode,
+				Msg: fmt.Sprintf("jit uninstall: %s could not be put back — exit %d", countWord(len(res.Failures), "file", "files"), uninstallRestoreFailedExitCode)}
+		}
+		events.step("stores")
+		if removed, serr := removeProjectStores(restorePlan.ProjectStores); serr != nil {
+			failures = append(failures, fmt.Sprintf("removing project .jit directories: %v", serr))
+		} else if len(removed) > 0 {
+			note("Removed .jit from %s.", countWord(len(removed), "project folder", "project folders"))
+		}
+	}
+	events.step("service")
 
 	// 1. Service: boot it out of launchd and remove the login item. bootout is
 	//    best-effort (nothing loaded is a success, not a failure); removing the
@@ -176,6 +281,7 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
+	events.step("tools")
 	// 2. Shims: un-wrap every tool. RemoveShim refuses to delete a non-symlink,
 	//    so a user's own file that happens to share a name is never touched.
 	removedShims := 0
@@ -192,6 +298,7 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 
 	// 3. Purge (opt-in): global config, then the vault. Order matters only for
 	//    messaging — both are just directory removals.
+	events.step("vault")
 	if uninstallPurge {
 		// Before ~/.jit goes: the guard's remover reads its own hook path, and
 		// two of the helpers live outside any directory removed below.
@@ -248,6 +355,7 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 	}
 
 	fmt.Fprintln(out)
+	events.done(failures)
 	if len(failures) > 0 {
 		fmt.Fprintln(out, "Uninstall finished with problems:")
 		for _, f := range failures {
@@ -274,19 +382,17 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 // secrets to protect there's no MEK to gate on, so it falls back to a bare
 // LocalAuthentication prompt that still proves a human is present. Either way
 // the gesture is unskippable — that's the whole point of gating uninstall.
-func requireUninstallPresence(secretCount int) error {
+func requireUninstallPresence(secretCount int) (*vault.Vault, error) {
 	reason := "authorize uninstalling jit from this Mac"
-	if uninstallPurge {
+	if uninstallRestore {
+		reason = "authorize putting your files back and removing jit from this Mac"
+	} else if uninstallPurge {
 		reason = "authorize erasing jit and its vault from this Mac"
 	}
 	if uninstallNeedsVaultKey(secretCount) {
-		v, err := openVaultFreshAuth()
-		if err != nil {
-			return err
-		}
-		return requireFreshUserPresence(v, reason)
+		return uninstallOpenVault(reason)
 	}
-	return uninstallChallenge(reason)
+	return nil, uninstallChallenge(reason)
 }
 
 // removePath deletes a single file, escalating to `sudo rm -f` only when a
@@ -328,5 +434,9 @@ func init() {
 	uninstallCmd.Flags().BoolVar(&uninstallPurge, "purge", false, "also erase the vault and global config (destroys your secrets)")
 	uninstallCmd.Flags().BoolVarP(&uninstallYes, "yes", "y", false, "skip the typed y/N confirmation (still requires the Touch ID/passcode gate)")
 	uninstallCmd.Flags().BoolVar(&uninstallKeepBinary, "keep-binary", false, "leave the jit binary in place (e.g. it's managed by a package manager)")
+	uninstallCmd.Flags().BoolVar(&uninstallRestore, "restore", false, "first put every file jit migrated back as plaintext, across this Mac; then --purge. One file that cannot be put back stops it with nothing deleted")
+	uninstallCmd.Flags().BoolVar(&uninstallDryRun, "dry-run", false, "print the plan and change nothing (no Touch ID)")
+	uninstallCmd.Flags().StringVar(&uninstallFormat, "format", "text", `output format: "text" (default), "json" (with --dry-run: the plan) or "ndjson" (one event per step, for a program driving this)`)
+	_ = uninstallCmd.RegisterFlagCompletionFunc("format", completeValues("text", "json", "ndjson"))
 	rootCmd.AddCommand(uninstallCmd)
 }

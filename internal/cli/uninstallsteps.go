@@ -13,6 +13,7 @@ import (
 	"github.com/jitpass/jit/internal/guard"
 	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/migrate"
+	"github.com/jitpass/jit/internal/vault"
 	"github.com/jitpass/jit/internal/wrap"
 )
 
@@ -97,6 +98,16 @@ var deleteVaultKeys = func() error {
 		errs = append(errs, w.DeleteStagedRekeyMEK())
 	}
 	return errors.Join(errs...)
+}
+
+// uninstallOpenVault is the strict gate: a vault opened on its own fresh
+// fingerprint, never a cached service session. A var for the same reason.
+var uninstallOpenVault = func(reason string) (*vault.Vault, error) {
+	v, err := openVaultFreshAuth()
+	if err != nil {
+		return nil, err
+	}
+	return v, requireFreshUserPresence(v, reason)
 }
 
 // uninstallChallenge is the bare presence prompt, a var for the same reason.
