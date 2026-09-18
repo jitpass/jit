@@ -46,12 +46,21 @@ what) and you decide. Everything else gets the decoy, and the read is logged.
 
 | 1. See what's exposed | 2. Lock it away | 3. Decide who gets one |
 | :---: | :---: | :---: |
-| <img src="docs/assets/readme/step-welcome.png" width="280" alt="JitPass Setup: Your secrets are sitting in plain files. Quick scan or Full scan."> | <img src="docs/assets/readme/step-results.png" width="280" alt="23 secrets in plain text. JitPass can protect 18 right now. Protect 18 Secrets."> | <img src="docs/assets/readme/step-finish.png" width="280" alt="78% protected, 18 of 23 secrets in the vault, and the last choices."> |
+| <a href="docs/assets/readme/step-welcome.png"><img src="docs/assets/readme/step-welcome.png" width="280" alt="JitPass Setup: Your secrets are sitting in plain files. Quick scan or Full scan."></a> | <a href="docs/assets/readme/step-results.png"><img src="docs/assets/readme/step-results.png" width="280" alt="23 secrets in plain text. JitPass can protect 18 right now. Protect 18 Secrets."></a> | <a href="docs/assets/readme/step-finish.png"><img src="docs/assets/readme/step-finish.png" width="280" alt="78% protected, 18 of 23 secrets in the vault, and the last choices."></a> |
 | One scan that only reads. Nothing is changed, and nothing leaves this Mac. | Secrets move to the vault, decoys stay in the files, every file is backed up first. | One fingerprint unlocks the session. Every program that asks is named. |
 
 Open JitPass once and setup walks you through the first two in about two
-minutes, no terminal needed; the third is how it works from then on. It lives in the menu bar after that: a green ring means
-unlocked, red means locked, amber means something is asking.
+minutes, no terminal needed; the third is how it works from then on.
+
+<img align="right" src="docs/assets/readme/panel.png" width="250" alt="The JitPass menu bar panel, unlocked: vault, AI agents, tools, grants, decoys, doctor all good, 24 of 24 protected.">
+
+After setup JitPass lives in the menu bar. **Green** means unlocked, **red**
+means locked, **amber** means something is asking. Click the ring for the
+whole picture: what is in the vault, which agents and tools are protected,
+active grants, decoy reads, and how much of your Mac is protected. Lock,
+grant, scan and audit are one click from there.
+
+<br clear="right">
 
 <details>
 <summary><b>In the terminal instead</b></summary>
