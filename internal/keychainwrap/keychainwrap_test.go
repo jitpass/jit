@@ -107,6 +107,26 @@ func TestWrapFailsWithoutEnsureMEK(t *testing.T) {
 	}
 }
 
+// TestNoChallengeWithoutAKey: a Mac that never ran `jit vault init` must be
+// told so BEFORE it is asked for a fingerprint. The challenge used to come
+// first, so the user authenticated and then learned there was nothing to open.
+func TestNoChallengeWithoutAKey(t *testing.T) {
+	challenged := 0
+	w := testWrapper(func(string) error {
+		challenged++
+		return nil
+	})
+	cleanupTestMEK(t, w) // no EnsureMEK call after this, item stays absent
+
+	_, err := w.WrapKey(bytes.Repeat([]byte{0x01}, 32))
+	if !errors.Is(err, errNoMEK) {
+		t.Fatalf("WrapKey error = %v, want errNoMEK", err)
+	}
+	if challenged != 0 {
+		t.Errorf("challenged %d time(s) for a key that does not exist, want 0", challenged)
+	}
+}
+
 func TestChallengeFailureBlocksAccess(t *testing.T) {
 	setupWrapper := testWrapper(noChallenge)
 	cleanupTestMEK(t, setupWrapper)
