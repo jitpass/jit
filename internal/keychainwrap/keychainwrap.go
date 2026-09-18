@@ -315,8 +315,10 @@ func (w *Wrapper) RequireUserPresence(reason string) error {
 }
 
 // DeleteMEK permanently removes this wrapper's keychain-stored MEK — the
-// key protecting every secret in the vault. Exactly one caller exists on
-// purpose: `jit vault delete`, behind its own explicit confirmation.
+// key protecting every secret in the vault. Two callers exist, on purpose
+// and no more: `jit vault delete` and `jit uninstall --purge`, each behind
+// its own explicit confirmation and a fresh presence check, and the second
+// only after the vault directory itself is gone.
 // Without the MEK, every envelope in the vault (and the encrypted
 // `_backups/` entries) is permanently undecryptable; passphrase-encrypted
 // `jit vault export` files are the only thing that survives it. Never
