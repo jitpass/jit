@@ -41,6 +41,7 @@ package keychainwrap
 import "C"
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"unsafe"
@@ -172,6 +173,12 @@ func (w *Wrapper) MEKPresence() MEKPresence {
 	}
 }
 
+// errNoMEK is the sentence kw_fetch_mek answers errSecItemNotFound with
+// (keychain.m), word for word, so the message is the same whether the absence
+// is caught before the challenge or, in a race, after it. The backticks are
+// what the CLI's error printer renders cyan.
+var errNoMEK = errors.New("no master key stored in the keychain, run `jit vault init` first")
+
 // WrapKey implements vault.KeyWrapper.
 func (w *Wrapper) WrapKey(dek []byte) ([]byte, error) {
 	return w.WrapKeyLabeled(dek, "", "")
@@ -210,6 +217,15 @@ func (w *Wrapper) fetchMEK(reason string) ([]byte, error) {
 	defer w.mu.Unlock()
 
 	if w.mek == nil {
+		// No fingerprint for a key that is not there. On a Mac that never
+		// ran `jit vault init` the challenge used to come first, so the user
+		// authenticated and was then told there was nothing to open — from
+		// the JitPass app's Protect button, with no terminal to explain it.
+		// Only a definite MEKAbsent short-circuits: MEKIndeterminate goes on
+		// to the challenge and the real fetch, whose own errors say more.
+		if w.MEKPresence() == MEKAbsent {
+			return nil, errNoMEK
+		}
 		if err := w.challenge(reason); err != nil {
 			return nil, fmt.Errorf("local authentication failed: %w", err)
 		}
