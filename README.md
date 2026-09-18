@@ -109,14 +109,13 @@ faster (`jit scan ~/.aws`). Everything the app does is one of these commands.
 
 <img align="right" src="docs/assets/readme/panel.png" width="250" alt="The JitPass menu bar panel, unlocked: vault, AI agents, tools, grants, decoys, doctor all good, 24 of 24 protected.">
 
-After setup, JitPass is a ring in your menu bar. **Green** means unlocked,
-**red** means locked, **amber** means a program is asking.
+After setup, JitPass is a ring in your menu bar: **green** unlocked, **red**
+locked, **amber** a program is asking.
 
-Click it for the whole picture: what is in the vault, which agents and tools
-are protected, active grants, decoy reads today, and how much of your Mac is
-protected. Lock, grant, scan and audit are one click away, and each window
-behind them (Vault, AI Agents, Tools, Grants, Doctor, Audit, Scan) runs the
-same commands the `jit` CLI does.
+Click it to see your vault, your agents and tools, active grants, today's decoy
+reads, and how much of your Mac is protected. Lock, New Grant, Run Scan and
+Open Audit are one click away, and every window runs the same commands as the
+`jit` CLI.
 
 <br clear="right">
 
@@ -132,12 +131,11 @@ it, linked onto PATH with shell completions. **Without Homebrew,**
 drag it into Applications and open it: it offers to link `jit` onto your PATH
 and checks for a newer release once a day.
 
-Either way it is the same build, signed with a Developer ID and notarized by
-Apple, and Gatekeeper checks it before it first runs. To check it yourself,
-run `jit doctor`: its `jit` line reports `signed CZC6BH93GJ`, the same check
-`jit upgrade` runs before it installs anything. Upgrade with
-`brew upgrade jitpass`, or when the app tells you. Installs and upgrades never
-touch your vault.
+Either way you get the same build, signed with a Developer ID and notarized by
+Apple, and Gatekeeper checks it before it first runs. Check it yourself:
+`jit doctor` reports `signed CZC6BH93GJ`. To update, `brew upgrade jitpass`,
+or the app tells you when a release is out. Installs and updates never touch
+your vault.
 
 <details>
 <summary>Only the command line, for a Mac with no app (the weaker path, and why)</summary>
@@ -272,20 +270,22 @@ same. Details: [process grants](./docs/service/grants.md).
 
 ## See what happened, and who did it
 
-Every use, unlock and refusal lands in a durable log. Arguments are masked, so
-the log proves a command ran without storing the secret it carried.
+Every use, unlock and refusal lands in a durable log, and so does every time a
+program read a decoy. Arguments are masked, so the log proves a command ran
+without storing the secret it carried.
 
 ```console
-$ jit audit --since 1h
+$ jit audit --since 1h --format logfmt
 time=2026-07-24 10:16:22 level=info kind=use op="read a secret" cmd="aws s3 ls" parent=claude secrets=aws/default
 time=2026-07-24 10:31:09 level=warn kind=unlock status=denied method=touchid-or-passcode cmd="node postinstall.js" parent=npm secrets=aws/default
 ```
 
 The first line is the story JitPass exists to tell: `aws/default` read by
 `aws s3 ls`, launched by `claude`. The second is a request you refused: a
-`node postinstall.js` under `npm` reaching for the same keys. Filter with
-`--parent claude`, `--secret aws`, `--status denied` or `--since 3d`, stream
-with `--follow`, or open **Audit** from the menu bar.
+`node postinstall.js` under `npm` reaching for the same keys. Plain `jit audit`
+shows the same events as a grouped timeline, and so does **Audit** in the menu
+bar. Filter with `--parent claude`, `--secret aws`, `--status denied` or
+`--since 3d`, and stream with `--follow`.
 
 ## Undo anything, or remove it all
 
@@ -320,8 +320,16 @@ the app to the Trash is your last click. From the terminal:
 
 ## How it works, mechanically
 
-No kernel extension, no filesystem driver, no FUSE. Three mechanisms, picked by
-what the tool can do:
+**The short version:** your secrets live encrypted in a local vault. A small
+background service holds the unlocked key for the session and hands a real
+value only to a program you approved; everything else reads a decoy.
+
+**Where secrets live.** Each secret is sealed with its own AES-256-GCM key, and
+those keys are wrapped by a master key kept in your login keychain, on this Mac
+only. Nothing is stored in plaintext, and nothing syncs anywhere.
+
+**How a program gets one.** No kernel extension, no filesystem driver, no FUSE.
+Three mechanisms, picked by what the tool can do:
 
 1. **Environment variables into one process, then `execve`.** jit's own image
    is replaced by your command, so the value lives in that one process and jit
@@ -350,9 +358,14 @@ and **[live mounts](./docs/run/mounts.md)**.
 
 ## What it does not do
 
-It does not make an already-compromised account safe, and it does not protect a
-secret once it is in the memory of the program you gave it to. It runs on
-macOS 14+ on Apple Silicon only. The boundaries are stated on one page:
+- It does not make an already-compromised account safe.
+- It does not protect a secret once it is in the memory of the program you gave
+  it to.
+- It is not a team secrets manager or a cloud vault: nothing syncs, and each Mac
+  has its own vault.
+- It runs on macOS 14+ on Apple Silicon only.
+
+Every boundary is stated on one page:
 **[the deliberate limits](./docs/security/brief.md#deliberate-limits-stated-plainly)**.
 
 ## Learn more
