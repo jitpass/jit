@@ -15,6 +15,7 @@ import (
 
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/guard"
+	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/vault"
@@ -408,6 +409,9 @@ func TestStatusFormatJSONMatchesTextSections(t *testing.T) {
 	home := withFixtureHome(t)
 	cwd := withFixtureCwd(t)
 	plantVaultSecret(t, home, "aws/s3-access-key")
+	// The vault section now reports the master key's presence, and the real
+	// probe answers from the production keychain of whatever machine runs this.
+	stubKeychain(t, keychainwrap.MEKPresent)
 	writeFixtureProfile(t, cwd, "aws-admin", "AWS_ACCESS_KEY_ID: aws/s3-access-key\n")
 	root := filepath.Join(home, "Library", "Application Support", "jitpass")
 	if err := mount.AddMount(mount.RegistryPath(root), mount.Entry{MountPath: "/tmp/fixture/.env", ProfilePath: "/tmp/fixture/profile.yaml"}); err != nil {
@@ -425,7 +429,7 @@ func TestStatusFormatJSONMatchesTextSections(t *testing.T) {
 
 	want := statusResult{
 		CLI:   statusCLI{Version: agent.Version(), Build: agent.BuildID()},
-		Vault: statusVault{SecretsStored: 1},
+		Vault: statusVault{Initialized: "yes", SecretsStored: 1},
 		Agent: statusAgent{Running: false, Unlocked: false},
 		Secrets: statusSecrets{
 			TotalSecrets: 1, TotalGroups: 1,
