@@ -48,6 +48,11 @@ type serveAuditor struct {
 	// with no history file), which is why every method tolerates a nil
 	// receiver field rather than requiring a constructor.
 	emit func(agent.SessionEvent)
+	// notify streams each aggregate's first read live, as KindServeStart,
+	// the moment it opens (agent.Server.PublishLive). Nil sends nothing.
+	// emit is the trail and waits for the window; notify is the doorbell
+	// and must not, or a lone decoy probe is news an hour late.
+	notify func(agent.SessionEvent)
 	// labelFn names the credential a mount holds. Resolved through labels
 	// below rather than called per read: the lookup walks jit's global-mount
 	// table building candidate paths, which is cheap once and wasteful on
@@ -160,19 +165,26 @@ func (a *serveAuditor) stopFlusher() {
 }
 
 // record folds one completed serve into its aggregate, writing out any
-// aggregate whose window has closed. reason is why this reader got this
-// content.
+// aggregate whose window has closed first, and announces an aggregate it
+// opens. reason is why this reader got this content.
 func (a *serveAuditor) record(now time.Time, mount, reason string, rec serveRecord) {
 	if a == nil || a.emit == nil {
 		return
 	}
 	key := serveKey{mount: mount, reader: rec.reader.execPath, decoy: rec.decoy, undelivered: rec.undelivered}
 
+	// Closed windows go out BEFORE this read is folded in. Folding first let a
+	// read that landed between a window's close and the next minute's flush
+	// join the closed aggregate: counted in the wrong hour, and never opening
+	// the aggregate whose notice says a reader is back.
+	a.emitAll(a.take(false, now))
+
 	a.mu.Lock()
 	if a.pending == nil {
 		a.pending = map[serveKey]*serveAggregate{}
 	}
 	agg := a.pending[key]
+	var opened *agent.SessionEvent
 	if agg == nil {
 		label := a.labelLocked(mount)
 		op := agent.OpServeReal
@@ -197,6 +209,10 @@ func (a *serveAuditor) record(now time.Time, mount, reason string, rec serveReco
 		}
 		agg = &serveAggregate{start: now, event: e}
 		a.pending[key] = agg
+		notice := e
+		notice.Kind = agent.KindServeStart
+		notice.Count = 1
+		opened = &notice
 	}
 	agg.event.Count++
 	// A verdict that changes mid-window is a different key, so the reason
@@ -215,7 +231,12 @@ func (a *serveAuditor) record(now time.Time, mount, reason string, rec serveReco
 	over := len(a.pending) >= maxPendingServes
 	a.mu.Unlock()
 
-	a.emitAll(a.take(over, now))
+	if opened != nil && a.notify != nil {
+		a.notify(*opened)
+	}
+	if over {
+		a.emitAll(a.take(true, now))
+	}
 }
 
 // take removes and returns the aggregates ready to be written — every one

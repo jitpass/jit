@@ -130,6 +130,65 @@ func TestServeAuditFlushesWhenTheWindowCloses(t *testing.T) {
 	}
 }
 
+// The trail is an hour late by design; the notice is not. The first read of
+// each (mount, reader, verdict) goes out live at once, and the reads that
+// fold into it after send nothing more — the stream stays as bounded as the
+// trail.
+func TestServeAuditNotifiesEachAggregateAtItsFirstRead(t *testing.T) {
+	a, c := newTestAuditor(time.Hour)
+	notices := &collector{}
+	a.notify = notices.append
+	a.labelFn = func(string) string { return "aws" }
+	start := time.Unix(1_700_000_000, 0)
+
+	for i := 0; i < 100; i++ {
+		a.record(start.Add(time.Duration(i)*time.Second), "/tmp/m.env", "r", decoyRead(4321, "/usr/local/bin/node"))
+	}
+	got := notices.all()
+	if len(got) != 1 {
+		t.Fatalf("100 reads of one aggregate sent %d notices, want 1", len(got))
+	}
+	n := got[0]
+	if n.Kind != agent.KindServeStart || n.Op != agent.OpServeDecoy || n.Count != 1 {
+		t.Errorf("notice = kind %q op %q count %d, want %q/%q/1", n.Kind, n.Op, n.Count, agent.KindServeStart, agent.OpServeDecoy)
+	}
+	if n.By != "/usr/local/bin/node" || n.ByPID != 4321 || n.LaunchedBy != "Code" || len(n.Labels) != 1 || n.Labels[0] != "aws" {
+		t.Errorf("notice = %+v, want the reader, launcher and label of the first read", n)
+	}
+	if n.UnixTime != start.Unix() {
+		t.Errorf("notice time = %d, want the first read's %d", n.UnixTime, start.Unix())
+	}
+	if len(c.all()) != 0 {
+		t.Fatalf("the trail got %d events inside the window, want 0: the notice must not replace the collapse", len(c.all()))
+	}
+
+	// Another reader is another aggregate, so another notice.
+	a.record(start.Add(time.Minute), "/tmp/m.env", "r", decoyRead(9999, "/usr/bin/python3"))
+	if got := len(notices.all()); got != 2 {
+		t.Fatalf("a second reader sent %d notices in total, want 2", got)
+	}
+
+	// Once the window closes the trail gets the collapsed event with the
+	// full count, and the next read opens a fresh aggregate: a new notice.
+	later := start.Add(2 * time.Hour)
+	a.record(later, "/tmp/m.env", "r", decoyRead(4321, "/usr/local/bin/node"))
+	if got := len(notices.all()); got != 3 {
+		t.Fatalf("a read after the window closed sent %d notices in total, want 3", got)
+	}
+	var trail int64
+	for _, e := range c.all() {
+		if e.Kind != agent.KindServe {
+			t.Errorf("the trail got kind %q, want only %q: notices are never recorded", e.Kind, agent.KindServe)
+		}
+		if e.By == "/usr/local/bin/node" {
+			trail += e.Count
+		}
+	}
+	if trail != 100 {
+		t.Errorf("the trail counted %d node reads, want the first window's 100", trail)
+	}
+}
+
 // The label lookup walks jit's global-mount table, so it must be memoized:
 // paying it once per rendezvous is exactly the per-read cost the mount code
 // has twice been bitten by.

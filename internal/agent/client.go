@@ -559,7 +559,8 @@ func (c *Client) History() ([]SessionEvent, error) {
 }
 
 // Subscribe streams the agent's session events to fn as they are recorded —
-// exactly the events History returns, without polling — until ctx is done,
+// exactly the events History returns, without polling, plus the live-only
+// KindServeStart notices History never holds — until ctx is done,
 // the agent disconnects, or the agent drops this client for not keeping up
 // (see OpSubscribe). It returns ctx.Err() on a clean stop and the transport
 // error otherwise; a caller that wants to keep following reconnects and

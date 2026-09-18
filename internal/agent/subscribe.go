@@ -84,6 +84,14 @@ func (s *Server) publish(e SessionEvent) {
 	}
 }
 
+// PublishLive streams e to every subscriber without recording it: no ring,
+// no durable trail, so "history" never returns it. For notices whose durable
+// half is written later, collapsed (KindServeStart). Never blocks, like
+// publish, so it is safe on a mount's serve path.
+func (s *Server) PublishLive(e SessionEvent) {
+	s.publish(e)
+}
+
 // serveSubscription owns conn for the life of the stream. The peer has
 // already been verified same-user and its request decoded; nothing here
 // needs the vault, so it never touches the session and never prompts.
