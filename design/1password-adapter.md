@@ -338,8 +338,12 @@ resolving. `jit scan` already treats `op://` values as non-secrets
 - **The index holds hashes, not values**: SHA-256 of each concealed
   field → its reference, built from one
   `op item list --format json | op item get - --format json`
-  enumeration (one authorization; the item stream is decoded one
-  object at a time, so at most one item's plaintext is resident).
+  enumeration (one authorization; each item stream is decoded one
+  object at a time, so at most one item's plaintext per op process is
+  resident). Since 2026-09-18 a large account's list is dealt across
+  up to four `op item get -` processes at once: op fetches its items
+  one after another, and four took a 473-item enumeration from 2m07s
+  to 35s. Sixteen items per process is the floor for starting another.
   Stored references are built in ID form from the item JSON's own
   vault/item/field ids; the mutation log displays the name form,
   which is what the user recognizes.
