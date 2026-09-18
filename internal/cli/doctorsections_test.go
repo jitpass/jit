@@ -311,6 +311,30 @@ func TestMCPFindingsHealthyEntryIsSilent(t *testing.T) {
 	}
 }
 
+// TestMCPFindingsReportsNestedWrapper: an entry an old jit wrapped twice
+// still launches, so it is advisory — but it is reported, because nothing
+// else connects the doubled command on a consent sheet to jit.
+func TestMCPFindingsReportsNestedWrapper(t *testing.T) {
+	jit := mcpTestJitBinary(t)
+	cwd := mcpTestSetup(t, `{"command":"`+jit+`","args":["run","--profile","mcp-srv","--",`+
+		`"`+jit+`","run","--profile","mcp-srv","--","uv","run","srv"]}`)
+	mcpTestProfile(t, "mcp-srv")
+
+	findings := mcpFindings(cwd)
+	if len(findings) != 1 {
+		t.Fatalf("findings = %+v, want exactly one", findings)
+	}
+	if findings[0].Kind != kindMCPNested {
+		t.Errorf("kind = %q, want %q", findings[0].Kind, kindMCPNested)
+	}
+	if !findings[0].Kind.warning() {
+		t.Error("a nested wrapper still launches: a warning, not a hard problem")
+	}
+	if !strings.Contains(findings[0].Action, "jit migrate") {
+		t.Errorf("action %q must name the migrate run that collapses it", findings[0].Action)
+	}
+}
+
 func TestMCPFindingsReportsVanishedProfile(t *testing.T) {
 	jit := mcpTestJitBinary(t)
 	cwd := mcpTestSetup(t, `{"command":"`+jit+`","args":["run","--profile","mcp-gone","--","uv","run","srv"]}`)

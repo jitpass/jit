@@ -152,6 +152,14 @@ const (
 	// and no error printed — from `jit upgrade` relocating the binary, a
 	// Homebrew-to-manual switch, or a workspace copied between machines.
 	kindMCP checkKind = "mcp"
+	// kindMCPNested: an MCP server entry launches through jit's wrapper more
+	// than once — `jit run ... -- jit run ... -- tool`, written by a jit old
+	// enough to wrap its own wrapper. Advisory: the server still starts. It
+	// is worth a line because the inner jit path is one nothing revalidates,
+	// and because the consent sheet shows the doubled command with nothing
+	// to say it is jit's own doing. A separate kind from kindMCP for the
+	// reason kindJitPathUpgrade is one: advisory-ness belongs to the kind.
+	kindMCPNested checkKind = "mcp_nested"
 	// kindInstall: more than one distinct jit binary is reachable on PATH —
 	// the state every pre-Homebrew user lands in by running `brew install`
 	// over a tarball install at /usr/local/bin. Nothing shared breaks (vault,
@@ -226,7 +234,7 @@ var allCheckKinds = []checkKind{
 	kindBadPath, kindOrphan, kindDuplicates, kindOriginGone, kindShadowed,
 	kindService, kindBackup, kindWrap, kindWrapEnv, kindMount,
 	kindMountStale, kindVaultKey, kindRekey, kindLegacyEnvelope,
-	kindAudit, kindMCP,
+	kindAudit, kindMCP, kindMCPNested,
 	kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion,
 	kind1Password, kind1PasswordLink,
 }
@@ -244,7 +252,7 @@ var allCheckKinds = []checkKind{
 // one process and must never fail a CI run.
 func (k checkKind) warning() bool {
 	switch k {
-	case kindOrphan, kindDuplicates, kindOriginGone, kindShadowed, kindService, kindBackup, kindMount, kindMountStale, kindWrapEnv, kindAudit, kindInstall, kindJitPathUpgrade, kindCompletion, kindLegacyEnvelope:
+	case kindOrphan, kindDuplicates, kindOriginGone, kindShadowed, kindService, kindBackup, kindMount, kindMountStale, kindWrapEnv, kindAudit, kindInstall, kindJitPathUpgrade, kindCompletion, kindLegacyEnvelope, kindMCPNested:
 		return true
 	default:
 		return false
