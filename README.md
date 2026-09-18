@@ -205,6 +205,14 @@ More in [MCP and AI tools](./docs/migrate/mcp.md) and
 
 No new commands to learn. Protect a credential once, then keep typing what you always typed.
 
+<p align="center">
+  <img src="docs/assets/readme/tools.png" width="720" alt="The JitPass Tools window: 9 of jit's 31 tools installed, aws, docker, git and gcloud protected, gh, vercel and wrangler wrapped, a Stripe key still in its config file with a Wrap button.">
+</p>
+
+The **Tools** window shows every CLI jit knows on your Mac: which are protected,
+which are wrapped, and which still keep a key in the open, one click from
+**Wrap…**.
+
 ```sh
 aws s3 ls                     # AWS and Terraform: from the vault, no prefix, no flag
 gh pr list                    # CLIs with their own token (gh, stripe, glab): wrapped once
