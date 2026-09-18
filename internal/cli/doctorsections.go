@@ -279,6 +279,18 @@ func mcpFindings(cwd string) []checkFinding {
 			})
 		}
 
+		// Works today, so advisory — but only the outer layer is checked
+		// above, and the inner jit path is one nothing revalidates.
+		if e.WrapperLayers > 1 {
+			findings = append(findings, checkFinding{
+				Kind:    kindMCPNested,
+				Profile: e.ProfileName,
+				Path:    e.ConfigPath,
+				Detail:  fmt.Sprintf("%q in %s runs jit inside jit", e.ServerName, shortPath(e.ConfigPath)),
+				Action:  fmt.Sprintf("`jit migrate %s` to collapse each to one wrapper", shortPath(e.ConfigPath)),
+			})
+		}
+
 		manifest, perr := profile.Path(globalRoot, e.ProfileName)
 		if perr != nil || !regularFile(manifest) {
 			findings = append(findings, checkFinding{

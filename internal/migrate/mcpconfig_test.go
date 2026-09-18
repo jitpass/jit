@@ -572,11 +572,12 @@ func TestDiscoverWrappedMCPEntriesReportsWrapperFields(t *testing.T) {
 	}
 	got := entries[0]
 	want := WrappedMCPEntry{
-		ConfigPath:  path,
-		ServerName:  "wrapped",
-		JitPath:     "/opt/jit",
-		ProfileName: "mcp-wrapped",
-		Command:     "uv",
+		ConfigPath:    path,
+		ServerName:    "wrapped",
+		JitPath:       "/opt/jit",
+		ProfileName:   "mcp-wrapped",
+		Command:       "uv",
+		WrapperLayers: 1,
 	}
 	if got != want {
 		t.Errorf("entry = %+v, want %+v", got, want)

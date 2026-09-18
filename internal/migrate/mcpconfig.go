@@ -87,10 +87,10 @@ func ClaudeDesktopConfigPath(home string) string {
 // mirror audit's discovery while knowing only the Desktop path, which left
 // every ~/.claude.json finding without a fix path. Only returns files with
 // at least one server that has something to migrate — a non-empty env
-// block, or an --env-file naming a readable file
-// (hasMigratableCredentials).
+// block, an --env-file naming a readable file, or a nested jit wrapper to
+// collapse (needsMCPMigration).
 func DiscoverMCPConfigs(home, cwd string, includeClaudeDesktop bool) ([]string, error) {
-	return discoverMCPConfigFiles(home, cwd, includeClaudeDesktop, hasMigratableCredentials)
+	return discoverMCPConfigFiles(home, cwd, includeClaudeDesktop, needsMCPMigration)
 }
 
 // discoverMCPConfigFiles is DiscoverMCPConfigs' walk with the "is this file
@@ -275,7 +275,7 @@ func ApplyMCPConfig(v *vault.Vault, path string) (MCPConfigMigration, error) {
 		scope := mcpSourceScope(path, b.projectDir)
 		for _, name := range names {
 			entry := b.servers[name]
-			if !hasMigratableCredentials(path, entry) {
+			if !needsMCPMigration(path, entry) {
 				continue
 			}
 			serverMigration, err := migrateMCPServer(v, home, jitPath, path, scope, name, entry, envCache, pointers)
@@ -398,19 +398,22 @@ func migrateMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, sourceSco
 		return MCPServerMigration{}, err
 	}
 
-	// Landing anywhere other than the profile the old wrapper named means
-	// unwrapping would drop whatever that profile injected, so carry its
-	// variables across. Lowest precedence: a value present in the env block
-	// or an --env-file is the one the user edited most recently.
-	if len(rewrappedFrom) > 0 && profileName != rewrappedFrom[0] {
-		carried, cerr := priorProfileValues(v, globalRoot, rewrappedFrom)
-		if cerr != nil {
-			return MCPServerMigration{}, cerr
-		}
-		for name, value := range carried {
-			if _, taken := env[name]; !taken {
-				env[name] = value
-			}
+	// Every peeled wrapper injected its profile's variables, and only ONE
+	// wrapper is written back, so whatever the others injected has to be
+	// carried into the profile this entry lands in or unwrapping drops it.
+	// That covers a namespace bump (the named profile belongs to another
+	// config) and, just as much, a nested entry whose layers name DIFFERENT
+	// profiles: landing back on the outer one used to carry nothing, and the
+	// inner profile's credentials silently left the launch line. Lowest
+	// precedence: a value present in the env block or an --env-file is the
+	// one the user edited most recently.
+	carried, cerr := carriedProfileValues(v, globalRoot, rewrappedFrom, profileName, entries)
+	if cerr != nil {
+		return MCPServerMigration{}, cerr
+	}
+	for name, value := range carried {
+		if _, taken := env[name]; !taken {
+			env[name] = value
 		}
 	}
 
@@ -672,15 +675,16 @@ func unwrapJitWrappers(command string, args []string) (string, []string, []strin
 	return command, args, profiles
 }
 
-// priorProfileValues reads the variables held by profiles a wrapper was
-// peeled off, so re-wrapping under a different namespace carries them
-// forward instead of dropping them.
+// carriedProfileValues reads the variables held by the profiles a wrapper
+// was peeled off, so collapsing to one wrapper carries them forward instead
+// of dropping them. landed is the profile the entry is being written under
+// and held is its manifest as claimMCPNamespace seeded it.
 //
-// It is needed only when the entry lands in a DIFFERENT profile than the one
-// it named — a same-named server owned by another config file, where
-// claimMCPNamespace correctly bumps to base-2. Landing back on the same
-// profile needs nothing: claimMCPNamespace already seeds entries from that
-// manifest.
+// A layer naming landed itself contributes nothing to carry — its variables
+// are already in the manifest — but it still takes its place in the order:
+// the names it holds are closed to every layer further in. That is what
+// keeps an inner profile from overwriting the outer one's stored value when
+// a nested entry lands back on the outer profile.
 //
 // Outermost wins a collision, matching the peel order: it was the last
 // migration to set the value. A profile whose manifest is gone contributes
@@ -688,9 +692,16 @@ func unwrapJitWrappers(command string, args []string) (string, []string, []strin
 // value that cannot be read is an ERROR rather than a skip — dropping it
 // would leave the server starting without a credential it has always had,
 // which is a runtime failure with no trace back to this rewrite.
-func priorProfileValues(v *vault.Vault, globalRoot string, profiles []string) (map[string]string, error) {
+func carriedProfileValues(v *vault.Vault, globalRoot string, profiles []string, landed string, held profile.Profile) (map[string]string, error) {
 	values := map[string]string{}
+	taken := map[string]bool{}
 	for _, name := range profiles {
+		if name == landed {
+			for varName := range held {
+				taken[varName] = true
+			}
+			continue
+		}
 		profilePath, err := profile.Path(globalRoot, name)
 		if err != nil {
 			return nil, err
@@ -703,7 +714,7 @@ func priorProfileValues(v *vault.Vault, globalRoot string, profiles []string) (m
 			return nil, fmt.Errorf("loading profile %s this entry already used: %w", name, err)
 		}
 		for varName, secretPath := range entries {
-			if _, taken := values[varName]; taken {
+			if taken[varName] {
 				continue
 			}
 			value, err := v.Get(secretPath)
@@ -711,6 +722,7 @@ func priorProfileValues(v *vault.Vault, globalRoot string, profiles []string) (m
 				return nil, fmt.Errorf("reading %s, which this entry's existing wrapper injects: %w", secretPath, err)
 			}
 			values[varName] = string(value)
+			taken[varName] = true
 		}
 	}
 	return values, nil
@@ -771,6 +783,10 @@ type WrappedMCPEntry struct {
 	// "--" separator. Empty for an entry that wrapped a bare env block
 	// with no command of its own.
 	Command string
+	// WrapperLayers counts the `jit run --profile <name> --` layers the
+	// entry launches through. One is healthy; more is the nesting an old jit
+	// wrote, which `jit migrate` collapses (unwrapJitWrappers).
+	WrapperLayers int
 }
 
 // DiscoverWrappedMCPEntries returns every server entry under cwd (plus, when
@@ -830,12 +846,14 @@ func DiscoverWrappedMCPEntries(home, cwd string, includeClaudeDesktop bool) ([]W
 			if len(args) > 4 {
 				wrapped = args[4]
 			}
+			_, _, layers := unwrapJitWrappers(command, args)
 			entries = append(entries, WrappedMCPEntry{
-				ConfigPath:  path,
-				ServerName:  name,
-				JitPath:     command,
-				ProfileName: profileName,
-				Command:     wrapped,
+				ConfigPath:    path,
+				ServerName:    name,
+				JitPath:       command,
+				ProfileName:   profileName,
+				Command:       wrapped,
+				WrapperLayers: len(layers),
 			})
 		}
 	}
@@ -1177,6 +1195,40 @@ func storeMCPBlocks(topLevel map[string]json.RawMessage, blocks []mcpBlock) erro
 		topLevel[mcpProjectsKey] = projectsJSON
 	}
 	return nil
+}
+
+// needsMCPMigration is the gate for both discovery and ApplyMCPConfig: an
+// entry with credentials to move, or one carrying the nested wrapper an old
+// jit wrote.
+//
+// The second half exists because nesting outlives its cause. A fully
+// migrated entry has no env block left, so gating on credentials alone made
+// a nested entry unreachable: `jit migrate <file>` answered "no server with
+// secrets to migrate" and unwrapJitWrappers' heal never ran. Found in the
+// field on 2026-09-18, in three entries nested by 0.84.0 and still nested
+// on 1.6.2. A SINGLE wrapper is deliberately not enough — that is a healthy
+// migrated entry, and admitting it would rewrite every config on every run.
+func needsMCPMigration(configPath string, entry mcpServerRaw) bool {
+	return hasMigratableCredentials(configPath, entry) || hasNestedJitWrapper(entry)
+}
+
+// hasNestedJitWrapper reports whether an entry launches through more than
+// one `jit run --profile <name> --` layer.
+func hasNestedJitWrapper(entry mcpServerRaw) bool {
+	var command string
+	if raw, ok := entry["command"]; ok {
+		if err := json.Unmarshal(raw, &command); err != nil {
+			return false
+		}
+	}
+	var args []string
+	if raw, ok := entry["args"]; ok {
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return false
+		}
+	}
+	_, _, profiles := unwrapJitWrappers(command, args)
+	return len(profiles) > 1
 }
 
 // hasMigratableCredentials reports whether a server entry has anything
