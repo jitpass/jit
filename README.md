@@ -8,7 +8,7 @@
 [Command reference](./docs/reference/commands/jit.md) ·
 [Security](./docs/security/architecture.md)
 
-> **Status:** macOS-only (Apple Silicon), and still in development.
+> **Status:** macOS only, on Apple Silicon.
 
 ## What jit is (30 seconds)
 
@@ -83,8 +83,16 @@ that yourself rather than take our word for it, run `jit doctor`: its `jit`
 line reports `signed CZC6BH93GJ`, the same check `jit upgrade` runs before it
 will install anything.
 
+**Without Homebrew,** download the app:
+[JitPass-arm64.zip](https://dl.jitpass.com/jitpass/jit-app/releases/latest/download/JitPass-arm64.zip).
+It is the same signed and notarized app, with its ticket stapled, and your
+browser quarantines the download, so Gatekeeper checks it the same way it
+checks a Homebrew install. Drag JitPass into Applications and open it: it
+offers to link `jit` onto your PATH, and checks for a newer release once a
+day.
+
 <details>
-<summary>Without Homebrew (the weaker path, and why)</summary>
+<summary>Only the command line, for a Mac with no app (the weaker path, and why)</summary>
 
 ```sh
 curl -sL https://dl.jitpass.com/jitpass/jit/releases/latest/download/jitpass_darwin_arm64.tar.gz | tar -xz jit
@@ -93,12 +101,12 @@ codesign -dv --verify --verbose=2 ./jit   # expect: Developer ID, TeamIdentifier
 sudo mv jit /usr/local/bin/
 ```
 
-This is here for people without Homebrew, and it is genuinely the weaker
+This is here for machines where the app does not fit, and it is genuinely the weaker
 path: `curl` sets no quarantine bit, so Gatekeeper never consults the
 notarization ticket, and the same is true of `go install`. The binary is
 still signed and still notarized, so the two lines above let you check both
 before you run it, but you have to actually run them. If you have Homebrew,
-use Homebrew.
+use Homebrew or the app download.
 
 </details>
 
@@ -400,7 +408,7 @@ The docs live under **[docs/](./docs/index.md)**, organized by task:
 - **[Audit trail](./docs/reference/commands/jit_audit.md)**: read back every command, unlock, and refusal, filterable and followable
 - **[Command reference](./docs/reference/commands/jit.md)**: every command and flag, generated from the CLI
 - **[Security architecture](./docs/security/architecture.md)**: the threat model and the honest limits
-- **[CONTRIBUTING.md](./CONTRIBUTING.md)**: build/test setup; sign-off via DCO (`git commit -s`), no CLA
+- **[CONTRIBUTING.md](./CONTRIBUTING.md)**: build/test setup; sign-off via DCO (`git commit -s`), which also accepts the [CLA](./CLA.md)
 
 ## License
 
