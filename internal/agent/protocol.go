@@ -320,6 +320,20 @@ const (
 	// only and never recorded — the KindApproved or KindDenied that follows,
 	// carrying the same ConsentID, is the durable half.
 	KindPending = "pending"
+	// KindServeStart is the first read of a new KindServe aggregate: the
+	// same fields, Count 1, sent the moment a reader, mount and verdict
+	// first meet. Streamed live to every subscriber and never recorded.
+	// The KindServe event that closes the aggregate, carrying the full
+	// Count, is the durable half.
+	//
+	// It exists because that durable half is late by design: serves
+	// collapse over serveAuditWindow (an hour) before they are written, so
+	// a lone decoy probe reaches the trail an hour after it happened. A
+	// renderer that says "something just read a decoy" needs it now, and
+	// the collapse must stay, because the trail it protects evicts
+	// oldest-first. One notice per aggregate keeps the stream exactly as
+	// bounded as the trail.
+	KindServeStart = "serve_start"
 )
 
 // The Op values a KindServe event carries: which content the reader got.
