@@ -367,3 +367,133 @@ esac
 		t.Fatalf("err = %v, want op's own error", err)
 	}
 }
+
+// fakeOpAnswering builds a fake op that lists n items and answers
+// `item get -` from its own stdin: one item per id it was handed, each
+// with a concealed value naming that id. Every `item get` invocation
+// leaves a file holding its stdin under invocations, so a test can count
+// the processes and see which items each was given.
+func fakeOpAnswering(t *testing.T, n int) (bin, invocations string) {
+	t.Helper()
+	invocations = t.TempDir()
+	ids := make([]string, n)
+	for i := range ids {
+		ids[i] = fmt.Sprintf(`{"id":"item-%03d"}`, i)
+	}
+	return fakeOp(t, `
+case "$1 $2" in
+"item list")
+cat <<'JSONEOF'
+[`+strings.Join(ids, ",")+`]
+JSONEOF
+;;
+"item get")
+cat >`+invocations+`/$$
+grep -o '"id":"[^"]*"' `+invocations+`/$$ | while IFS= read -r m; do
+  id=${m#\"id\":\"}; id=${id%\"}
+  printf '{"id":"%s","title":"T","vault":{"id":"v","name":"P"},"fields":[{"id":"f","type":"CONCEALED","label":"password","value":"value-of-%s"}]}\n' "$id" "$id"
+done
+;;
+*)
+echo "unexpected arguments: $*" >&2
+exit 2
+;;
+esac
+`), invocations
+}
+
+// A large account is split across opGetWorkers processes, and the split
+// loses nothing: every item is asked for exactly once, every value is
+// indexed, and the counter still ends at listed/listed.
+func TestInventorySplitsALargeAccountAcrossWorkers(t *testing.T) {
+	n := opGetWorkers*opGetMinPerWorker + 3
+	bin, invocations := fakeOpAnswering(t, n)
+	last := ""
+	ix, err := (&Resolver{path: bin, verify: noVerify}).Inventory(func(read, listed int) {
+		last = fmt.Sprintf("%d/%d", read, listed)
+	})
+	if err != nil {
+		t.Fatalf("Inventory: %v", err)
+	}
+	if ix.Items() != n || ix.Listed() != n || ix.Incomplete() != "" {
+		t.Errorf("Items/Listed/Incomplete = %d/%d/%q, want %d/%d/\"\"", ix.Items(), ix.Listed(), ix.Incomplete(), n, n)
+	}
+	if want := fmt.Sprintf("%d/%d", n, n); last != want {
+		t.Errorf("last progress = %q, want %q", last, want)
+	}
+	for i := range n {
+		if _, ok := ix.RefFor(fmt.Appendf(nil, "value-of-item-%03d", i)); !ok {
+			t.Errorf("item-%03d was not indexed", i)
+		}
+	}
+
+	files, err := os.ReadDir(invocations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != opGetWorkers {
+		t.Fatalf("op item get ran %d times, want %d", len(files), opGetWorkers)
+	}
+	asked := 0
+	for _, f := range files {
+		stdin, err := os.ReadFile(filepath.Join(invocations, f.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		asked += strings.Count(string(stdin), `"id"`)
+	}
+	if asked != n {
+		t.Errorf("items asked for across workers = %d, want %d (each exactly once)", asked, n)
+	}
+}
+
+// Under the per-worker floor one process does it all: a second op is
+// process start-up and nothing else.
+func TestInventorySmallAccountStaysOneProcess(t *testing.T) {
+	bin, invocations := fakeOpAnswering(t, 2*opGetMinPerWorker-1)
+	if _, err := (&Resolver{path: bin, verify: noVerify}).Inventory(nil); err != nil {
+		t.Fatalf("Inventory: %v", err)
+	}
+	files, err := os.ReadDir(invocations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 {
+		t.Errorf("op item get ran %d times, want 1", len(files))
+	}
+}
+
+// Workers that all stop for the same reason say so once, and what they
+// did read before stopping stays indexed.
+func TestInventoryWorkersShareOneShortfallNote(t *testing.T) {
+	n := opGetWorkers * opGetMinPerWorker
+	ids := make([]string, n)
+	for i := range ids {
+		ids[i] = fmt.Sprintf(`{"id":"item-%03d"}`, i)
+	}
+	bin := fakeOp(t, `
+case "$1 $2" in
+"item list")
+cat <<'JSONEOF'
+[`+strings.Join(ids, ",")+`]
+JSONEOF
+;;
+"item get")
+cat >/dev/null
+printf '{"id":"only-%s","title":"T","vault":{"id":"v","name":"P"},"fields":[]}\n' "$$"
+echo "[ERROR] rate limited" >&2
+exit 1
+;;
+esac
+`)
+	ix, err := (&Resolver{path: bin, verify: noVerify}).Inventory(nil)
+	if err != nil {
+		t.Fatalf("Inventory: %v", err)
+	}
+	if ix.Items() != opGetWorkers {
+		t.Errorf("Items = %d, want %d (one per worker before it stopped)", ix.Items(), opGetWorkers)
+	}
+	if got := strings.Count(ix.Incomplete(), "rate limited"); got != 1 {
+		t.Errorf("Incomplete = %q, want the reason once, got it %d times", ix.Incomplete(), got)
+	}
+}
