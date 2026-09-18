@@ -10,7 +10,8 @@
 <p align="center"><b>Just-In-Time Secret Protection for Developers &amp; AI Agents</b></p>
 
 <p align="center">
-  Your AI agent can read every secret on your Mac. JitPass makes it ask first.
+  Your AI agent can read every secret on your Mac.<br>
+  <b>JitPass makes it ask first.</b>
 </p>
 
 <p align="center">
@@ -27,55 +28,97 @@
   <a href="https://jitpass.com">jitpass.com</a>
 </p>
 
+<p align="center"><sub>Free for personal and internal company use · No account · No telemetry · Nothing leaves your Mac · Every change undoes</sub></p>
+
 <p align="center">
   <img src="docs/assets/readme/hero.png" width="880" alt="An AI agent runs aws. The JitPass menu bar ring turns amber and a sheet asks: aws, launched by claude, wants an AWS credential. Deny, or Allow with Touch ID.">
+  <br>
+  <sub><code>claude</code> ran <code>aws s3 ls</code>. Before the AWS key goes anywhere, JitPass says who is asking. You answer with Touch ID, or say no.</sub>
 </p>
 
-Your API keys sit in plain files: `.env`, `~/.aws/credentials`, `.npmrc`,
-`~/.zshrc`, your shell history, the MCP configs your agents read. Nothing has
-to be hacked for them to leak. Anything running as you can open those files:
-a compromised npm package, a trojanized IDE extension, a prompt-injected agent
-with your shell.
+## Your secrets are in plain files. Anything you run can read them.
+
+API keys in `.env`, cloud credentials in `~/.aws/credentials`, tokens in
+`.npmrc`, exports in `~/.zshrc`, your shell history, the MCP configs your
+agents read. **Nothing has to be hacked for them to leak.** A compromised npm
+package, a trojanized IDE extension or a prompt-injected agent runs as you, so
+it can simply open the file.
 
 **JitPass moves each secret into a local vault that opens with Touch ID, and
-leaves a decoy where the plaintext was.** Your tools keep working. When a
-program reaches for a real value, JitPass names it (which program, launched by
-what) and you decide. Everything else gets the decoy, and the read is logged.
+leaves a decoy where the plaintext was.** Your tools keep working. A program
+that asks for a real value is named, and you decide. Anything that just reads
+the file gets the decoy, and the read is logged.
 
-## Get protected in three steps
+## Three steps, about two minutes
 
-| 1. See what's exposed | 2. Lock it away | 3. Decide who gets one |
-| :---: | :---: | :---: |
-| <a href="docs/assets/readme/step-welcome.png"><img src="docs/assets/readme/step-welcome.png" width="280" alt="JitPass Setup: Your secrets are sitting in plain files. Quick scan or Full scan."></a> | <a href="docs/assets/readme/step-results.png"><img src="docs/assets/readme/step-results.png" width="280" alt="23 secrets in plain text. JitPass can protect 18 right now. Protect 18 Secrets."></a> | <a href="docs/assets/readme/step-finish.png"><img src="docs/assets/readme/step-finish.png" width="280" alt="78% protected, 18 of 23 secrets in the vault, and the last choices."></a> |
-| One scan that only reads. Nothing is changed, and nothing leaves this Mac. | Secrets move to the vault, decoys stay in the files, every file is backed up first. | One fingerprint unlocks the session. Every program that asks is named. |
+1. **Find every exposed secret.** Setup scans your Mac and only reads. You see
+   each plaintext secret: the file, what kind of key it is, and a masked value.
+2. **Lock them away in one click.** Each secret moves into the vault and a decoy
+   takes its place. Every file is backed up, encrypted, before it is touched,
+   and your tools read their secrets the same way as before.
+3. **Approve every request.** From then on, when a program reaches for a real
+   secret, JitPass shows you which program and what launched it, like the sheet
+   at the top of this page. Allow it with Touch ID, or deny it.
 
-Open JitPass once and setup walks you through the first two in about two
-minutes, no terminal needed; the third is how it works from then on.
+<table>
+  <tr>
+    <td width="50%" align="center"><a href="docs/assets/readme/step-results.png"><img src="docs/assets/readme/step-results.png" alt="Setup, after the scan: 23 secrets in plain text. JitPass can protect 18 right now, 5 need you. A list of files with masked values, and a Protect 18 Secrets button."></a></td>
+    <td width="50%" align="center"><a href="docs/assets/readme/step-finish.png"><img src="docs/assets/readme/step-finish.png" alt="Setup, done: 78% protected, 18 of 23 secrets in the vault, with options to save a recovery file, open at login, and get notified of decoy reads."></a></td>
+  </tr>
+  <tr>
+    <td align="center"><b>1.</b> What the scan found, before anything changes</td>
+    <td align="center"><b>2.</b> Protected, with every change backed up</td>
+  </tr>
+</table>
 
-<img align="right" src="docs/assets/readme/panel.png" width="250" alt="The JitPass menu bar panel, unlocked: vault, AI agents, tools, grants, decoys, doctor all good, 24 of 24 protected.">
-
-After setup JitPass lives in the menu bar. **Green** means unlocked, **red**
-means locked, **amber** means something is asking. Click the ring for the
-whole picture: what is in the vault, which agents and tools are protected,
-active grants, decoy reads, and how much of your Mac is protected. Lock,
-grant, scan and audit are one click from there.
-
-<br clear="right">
+No terminal needed: open JitPass and setup walks you through steps 1 and 2.
 
 <details>
-<summary><b>In the terminal instead</b></summary>
+<summary><b>Prefer the terminal?</b> The same three steps as commands</summary>
 
 ```sh
 jit scan                 # read-only: every exposed secret, file and line
 jit migrate --dry-run    # preview the whole fix plan
 jit migrate              # apply it: shows the plan, asks [y/N], one Touch ID
-jit run -- npm run dev   # or inject secrets into one process, no file at all
+jit audit                # afterwards: every request, and what you answered
 ```
 
 `jit scan` with no path sweeps your home folder; point it somewhere to go
 faster (`jit scan ~/.aws`). Everything the app does is one of these commands.
 
 </details>
+
+## What you get
+
+<table>
+  <tr>
+    <td width="50%" valign="top"><a href="#how-it-works-mechanically"><b>Decoys on disk</b></a><br>A program that reads <code>.env</code> or <code>~/.aws/credentials</code> without asking gets placeholder values, and the read is logged.</td>
+    <td width="50%" valign="top"><a href="#two-touch-id-moments"><b>Every request named</b></a><br>The first time a program reaches for a real secret, you see which one and what launched it, then decide.</td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top"><a href="#built-for-ai-agents"><b>Built for AI agents</b></a><br>MCP configs hold vault paths instead of keys. Agents get secrets only when you say so, even overnight.</td>
+    <td width="50%" valign="top"><a href="#your-tools-keep-working"><b>Your tools keep working</b></a><br><code>aws</code>, <code>gh</code>, <code>docker</code>, <code>terraform</code>, <code>kubectl</code> and your shell resolve secrets the way they always did.</td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top"><a href="#see-what-happened-and-who-did-it"><b>A full audit trail</b></a><br>Every use, unlock and refusal, with the program that asked and the one that launched it.</td>
+    <td width="50%" valign="top"><a href="#nothing-is-lost-everything-undoes"><b>Undo anything</b></a><br>Every file is backed up before it changes. One command puts it back, byte for byte.</td>
+  </tr>
+</table>
+
+## It lives in your menu bar
+
+<img align="right" src="docs/assets/readme/panel.png" width="250" alt="The JitPass menu bar panel, unlocked: vault, AI agents, tools, grants, decoys, doctor all good, 24 of 24 protected.">
+
+After setup, JitPass is a ring in your menu bar. **Green** means unlocked,
+**red** means locked, **amber** means a program is asking.
+
+Click it for the whole picture: what is in the vault, which agents and tools
+are protected, active grants, decoy reads today, and how much of your Mac is
+protected. Lock, grant, scan and audit are one click away, and each window
+behind them (Vault, AI Agents, Tools, Grants, Doctor, Audit, Scan) runs the
+same commands the `jit` CLI does.
+
+<br clear="right">
 
 ## Install
 
@@ -89,11 +132,12 @@ it, linked onto PATH with shell completions. **Without Homebrew,**
 drag it into Applications and open it: it offers to link `jit` onto your PATH
 and checks for a newer release once a day.
 
-Either way you get the same signed build, notarized by Apple, and Gatekeeper
-checks it before it first runs. To verify that yourself, run `jit doctor`: its
-`jit` line reports `signed CZC6BH93GJ`, the same check `jit upgrade` runs
-before it installs anything. Upgrade with `brew upgrade jitpass`, or let the
-app tell you. Your vault is never touched by an install or an upgrade.
+Either way it is the same build, signed with a Developer ID and notarized by
+Apple, and Gatekeeper checks it before it first runs. To check it yourself,
+run `jit doctor`: its `jit` line reports `signed CZC6BH93GJ`, the same check
+`jit upgrade` runs before it installs anything. Upgrade with
+`brew upgrade jitpass`, or when the app tells you. Installs and upgrades never
+touch your vault.
 
 <details>
 <summary>Only the command line, for a Mac with no app (the weaker path, and why)</summary>
@@ -124,21 +168,25 @@ The agent in your editor runs as you, with your permissions, and reads files
 for you all day. That is the point of it, and it is why a plaintext `.env` is a
 different risk than it was two years ago.
 
-| The same secret, asked for by VS Code | ...and by `claude` |
-| :---: | :---: |
-| <img width="420" alt="Touch ID prompt naming Code as the program asking for a credential" src="https://github.com/user-attachments/assets/e797790b-aadc-4616-8165-c6ca816ff80a" /> | <img width="420" alt="Touch ID prompt naming claude as the program asking for the same credential" src="https://github.com/user-attachments/assets/1487988e-b21a-4fe5-a196-94268dd284b6" /> |
+What an agent sees when it reads a protected `.env` without asking:
 
-- **Every request is named.** The first time a program reaches for a real
-  credential, you see which one, launched by what. An agent quietly reading
-  `~/.aws/credentials` is a question, not a silent success.
-- **Decoys for a cold read.** An agent that greps your repo for `.env` gets
+```console
+$ cat .env
+# jit: fake placeholder values. Real values flow only to a jit run grant: jit run --live -- <command> (or --with for a global credential).
+STRIPE_API_KEY=jit-hidden-STRIPE_API_KEY
+DATABASE_URL=jit-hidden-DATABASE_URL
+```
+
+- **Every request is named.** An agent quietly reading `~/.aws/credentials` is
+  a question you answer, not a silent success.
+- **A cold read gets a decoy.** An agent that greps your repo for `.env` gets
   placeholder values, and the read is logged.
-- **MCP configs hold vault paths, not keys.** `jit migrate ~/.claude.json`
-  moves the keys out; each server then launches through `jit run`, so the
-  config is safe to have on disk and safe to hand to the agent.
-- **The AI CLIs themselves:** `jit wrap claude` (and codex, gemini,
-  cursor-agent, copilot, cline, opencode, kiro-cli) keeps their own keys in
-  the vault too. The app's **AI Agents** window shows all of this at a glance.
+- **MCP configs hold vault paths, not keys.** After `jit migrate ~/.claude.json`
+  each server launches through `jit run`, so the config is safe on disk and
+  safe to hand to the agent.
+- **The AI CLIs' own keys too:** `jit wrap claude` (and codex, gemini,
+  cursor-agent, copilot, cline, opencode, kiro-cli). The **AI Agents** window
+  shows every agent, its key and its caches at a glance.
 
 ```sh
 jit migrate ~/.claude.json            # MCP server keys move to the vault
@@ -155,11 +203,11 @@ More in [MCP and AI tools](./docs/migrate/mcp.md) and
 Protect a credential once, then use the tool the way you always have.
 
 ```sh
-aws s3 ls          # AWS and Terraform: resolved from the vault, no prefix, no flag
-gh pr list         # CLIs with their own token (gh, stripe, glab): wrapped once
-docker login ghcr.io                  # registry logins go through a credential helper
-jit run -- docker compose up          # tools that only read a file get it for one run
-./deploy.sh        # exports that lived in ~/.zshrc: new shells just have them
+aws s3 ls                     # AWS and Terraform: from the vault, no prefix, no flag
+gh pr list                    # CLIs with their own token (gh, stripe, glab): wrapped once
+docker login ghcr.io          # registry logins go through a credential helper
+jit run -- docker compose up  # tools that only read a file get it for one run
+./deploy.sh                   # exports that lived in ~/.zshrc: new shells just have them
 ```
 
 The rule behind it: if a tool can ask for a secret itself (AWS
@@ -170,10 +218,10 @@ only inside a run you approved.
 
 **Supported:** `.env` files, shell exports, AWS and Terraform, kubeconfig,
 Docker registries, GCP ADC, `.npmrc` and `.netrc`, MCP configs, bare token
-files, tokens in your shell history, wrappable CLIs (`gh`, `stripe`, `vercel`,
-...) and SSO CLIs that mint credentials at login. The full list, with exactly
-what to type for each, is **[Supported tools](./docs/tools.md)**; anything else
-can be wrapped with [`jit wrap add`](./docs/wrap/custom-tools.md).
+files, tokens in your shell history, wrappable CLIs (`gh`, `stripe`, `vercel`
+and more) and SSO CLIs that mint credentials at login. The full list, with
+exactly what to type for each, is **[Supported tools](./docs/tools.md)**;
+anything else can be wrapped with [`jit wrap add`](./docs/wrap/custom-tools.md).
 
 **Already use 1Password?** Keep it as your source of truth.
 [`jit migrate` links instead of copying](./docs/vault/1password.md): a value
@@ -184,23 +232,25 @@ decides which process gets it.
 
 1. **Unlocking the vault.** One fingerprint opens it for the session: 5
    minutes of activity, then it locks again, and never longer than 8 hours.
-2. **Handing a credential to a tool.** The first time a given tool reaches
-   for a real credential, JitPass asks and names it. The same tool is not
-   asked again this session; a different one is.
+2. **Handing a secret to a program.** The first time a given program reaches
+   for a real secret, JitPass asks and names it: the sheet at the top of this
+   page, or a Touch ID prompt when the app is not running. The same program is
+   not asked again this session; a different one is.
 
-That second gate is what keeps an unlocked vault from being a free-for-all:
+The second question is what keeps an unlocked vault from being a free-for-all:
 after you have used `aws` yourself, a sketchy `npm install` reaching for the
-same keys still gets its own question. Turn it off in Settings, or with
-`jit service consent off`, if you only want the vault lock. Starting something
-that needs several credentials at once? `jit run --trust -- terraform apply`
-approves that whole run in one gesture. Details:
+same keys still has to ask. You can turn it off in Settings (or with
+`jit service consent off`) and keep only the vault lock. Starting something that
+needs several secrets at once? `jit run --trust -- terraform apply` approves
+that whole run in one gesture. Details:
 [per-process consent](./docs/service/consent.md).
 
 ## Leaving the keyboard
 
-An agent working overnight or a long build stalls on a prompt nobody will see.
-A **grant** moves your decision earlier instead of removing it: one Touch ID,
-while you are still there, naming exactly what you allow and for how long.
+An agent working overnight or a long build stalls on a question nobody is
+there to answer. A **grant** moves your decision earlier instead of removing
+it: one Touch ID while you are still there, naming exactly what you allow and
+for how long.
 
 ```console
 $ jit grant --process claude --profile myapp --for 8h
@@ -209,15 +259,15 @@ $ jit grant --process claude --profile myapp --for 8h
 ```
 
 It covers `claude` under the terminal you typed that in, through screen lock,
-and nothing named `claude` anywhere else. It ends at its deadline, when you
+and nothing called `claude` anywhere else. It ends at its deadline, when you
 quit that terminal, or on `jit grant revoke`, which needs no fingerprint:
-taking access away is always free. **New Grant…** in the app does the same.
-Details: [process grants](./docs/service/grants.md).
+taking access away is always free. **New Grant…** in the menu bar does the
+same. Details: [process grants](./docs/service/grants.md).
 
 ## See what happened, and who did it
 
-Every command, unlock and refusal lands in a durable log. Arguments are masked,
-so the log proves a command ran without storing the secret it carried.
+Every use, unlock and refusal lands in a durable log. Arguments are masked, so
+the log proves a command ran without storing the secret it carried.
 
 ```console
 $ jit audit --since 1h
@@ -226,10 +276,10 @@ time=2026-07-24 10:31:09 level=warn kind=unlock status=denied method=touchid-or-
 ```
 
 The first line is the story JitPass exists to tell: `aws/default` read by
-`aws s3 ls`, launched by `claude`. The second is a prompt you declined: a
-`node postinstall.js` under `npm` reaching for the same keys, refused. Filter
-with `--parent claude`, `--secret aws`, `--status denied`, `--since 3d`;
-stream with `--follow`; or open **Audit** from the menu bar.
+`aws s3 ls`, launched by `claude`. The second is a request you refused: a
+`node postinstall.js` under `npm` reaching for the same keys. Filter with
+`--parent claude`, `--secret aws`, `--status denied` or `--since 3d`, stream
+with `--follow`, or open **Audit** from the menu bar.
 
 ## Nothing is lost, everything undoes
 
@@ -277,7 +327,7 @@ and **[live mounts](./docs/run/mounts.md)**.
 ## What it does not do
 
 It does not make an already-compromised account safe, and it does not protect a
-secret once it is in the memory of the process you gave it to. It runs on
+secret once it is in the memory of the program you gave it to. It runs on
 macOS 14+ on Apple Silicon only. The boundaries are stated on one page:
 **[the deliberate limits](./docs/security/brief.md#deliberate-limits-stated-plainly)**.
 
