@@ -216,8 +216,11 @@ var agentRunCmd = &cobra.Command{
 		// the real value, and why. Collapsed by the auditor before they reach
 		// here — a watcher loop must not be able to evict the history it is
 		// being written into — and started only now that there is somewhere
-		// durable to put them.
+		// durable to put them. The collapse makes the trail an hour late, so
+		// each aggregate's first read also goes out live, unrecorded, to
+		// whoever is subscribed (the menu bar app's decoy notification).
 		mounts.serveAudit.emit = hist.append
+		mounts.serveAudit.notify = server.PublishLive
 		mounts.serveAudit.labelFn = mounts.serveAuditLabel
 		mounts.serveAudit.start()
 

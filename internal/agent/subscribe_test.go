@@ -68,6 +68,41 @@ func TestSubscribeStreamsEventsAsRecorded(t *testing.T) {
 	waitFor(t, "subscription to unregister", func() bool { return s.subscriberCount() == 0 })
 }
 
+// A live notice reaches the stream but never the ring: "history" must not
+// hold it, because the collapsed event that follows is the record, and
+// both in the ring would count the first read twice.
+func TestPublishLiveStreamsWithoutRecording(t *testing.T) {
+	s, socketPath, cleanup := startTestServer(t, time.Minute, nil)
+	defer cleanup()
+	c := NewClient(socketPath)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := make(chan SessionEvent, 4)
+	go func() { _ = c.Subscribe(ctx, func(e SessionEvent) { events <- e }) }()
+	waitFor(t, "subscription to register", func() bool { return s.subscriberCount() == 1 })
+
+	s.PublishLive(SessionEvent{UnixTime: 1, Kind: KindServeStart, Op: OpServeDecoy, By: "/bin/cat", Count: 1})
+	select {
+	case e := <-events:
+		if e.Kind != KindServeStart || e.Op != OpServeDecoy || e.By != "/bin/cat" {
+			t.Errorf("streamed %+v, want the serve_start notice", e)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the live notice never reached the stream")
+	}
+
+	history, err := c.History()
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	for _, e := range history {
+		if e.Kind == KindServeStart {
+			t.Errorf("history holds %+v, want no live notice in the ring", e)
+		}
+	}
+}
+
 func TestPublishMarksAFullSubscriberLagged(t *testing.T) {
 	// The registry level is where lag is decided: publish runs under s.mu
 	// and must never wait, so a subscriber whose channel is full is marked
