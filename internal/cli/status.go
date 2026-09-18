@@ -17,6 +17,7 @@ import (
 
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/guard"
+	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/vault"
@@ -57,6 +58,15 @@ type statusCLI struct {
 }
 
 type statusVault struct {
+	// Initialized says whether this Mac has a vault at all: "yes", "no", or
+	// "unknown" when the keychain would not answer without interaction. It
+	// is what tells "never set up" from "set up, holds nothing" — both
+	// report zero secrets — so a GUI can offer setup to the first and only
+	// the first. Read with the same no-prompt probe `jit doctor` uses
+	// (keychainwrap.MEKPresence): presence of the master key item, never its
+	// bytes. "unknown" must never be read as "no"; a locked keychain at login
+	// is not a new user.
+	Initialized string `json:"initialized"`
 	// SecretsStored counts real secrets only; `_backups/…` entries (kept
 	// for `jit migrate undo`) are reported separately so the headline
 	// number always agrees with `jit vault list`.
@@ -368,7 +378,11 @@ func gatherVaultStatus(v *vault.Vault, root string) (statusVault, error) {
 		return statusVault{}, err
 	}
 	secrets, backups := splitBackupPaths(paths)
-	result := statusVault{SecretsStored: len(secrets), BackupsStored: len(backups)}
+	result := statusVault{
+		Initialized:   vaultInitializedWord(vaultMasterKeyPresence()),
+		SecretsStored: len(secrets),
+		BackupsStored: len(backups),
+	}
 	// Best-effort on purpose (see statusVault.StaleBackups): a corrupt undo
 	// index must not take the always-runnable overview down, it just costs
 	// the prune nudge until `jit vault prune` reports the corruption itself.
@@ -393,6 +407,18 @@ func gatherVaultStatus(v *vault.Vault, root string) (statusVault, error) {
 		result.ExportStale = newest.After(exportedAt)
 	}
 	return result, nil
+}
+
+// vaultInitializedWord renders the master-key probe for statusVault.Initialized.
+func vaultInitializedWord(p keychainwrap.MEKPresence) string {
+	switch p {
+	case keychainwrap.MEKPresent:
+		return "yes"
+	case keychainwrap.MEKAbsent:
+		return "no"
+	default:
+		return "unknown"
+	}
 }
 
 // agentBuildMismatch returns a warning when the running service process was
