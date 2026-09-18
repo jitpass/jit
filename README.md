@@ -28,7 +28,7 @@
   <a href="https://jitpass.com">jitpass.com</a>
 </p>
 
-<p align="center"><sub>Free for personal and internal company use · No account · No telemetry · Nothing leaves your Mac · Every change undoes</sub></p>
+<p align="center"><sub>Free for personal and internal company use · No account · No telemetry · Nothing leaves your Mac · Every change can be undone</sub></p>
 
 <p align="center">
   <img src="docs/assets/readme/hero.png" width="880" alt="An AI agent runs aws. The JitPass menu bar ring turns amber and a sheet asks: aws, launched by claude, wants an AWS credential. Deny, or Allow with Touch ID.">
@@ -101,7 +101,7 @@ faster (`jit scan ~/.aws`). Everything the app does is one of these commands.
   </tr>
   <tr>
     <td width="50%" valign="top"><a href="#see-what-happened-and-who-did-it"><b>A full audit trail</b></a><br>Every use, unlock and refusal, with the program that asked and the one that launched it.</td>
-    <td width="50%" valign="top"><a href="#nothing-is-lost-everything-undoes"><b>Undo anything</b></a><br>Every file is backed up before it changes. One command puts it back, byte for byte.</td>
+    <td width="50%" valign="top"><a href="#undo-anything-or-remove-it-all"><b>Undo anything</b></a><br>Every file is backed up before it changes. Put one back, or remove JitPass and get every file back.</td>
   </tr>
 </table>
 
@@ -164,29 +164,34 @@ On an Intel Mac, build from source with
 
 ## Built for AI agents
 
-The agent in your editor runs as you, with your permissions, and reads files
-for you all day. That is the point of it, and it is why a plaintext `.env` is a
-different risk than it was two years ago.
+Your coding agent runs as you, with your shell and your files. One poisoned
+README, issue or web page can tell it to `cat .env` and paste the result
+somewhere. With JitPass, there is nothing real in that file to paste.
 
-What an agent sees when it reads a protected `.env` without asking:
+<p align="center">
+  <img src="docs/assets/readme/agents.png" width="720" alt="The JitPass AI Agents window: 3 of 3 agents protected, each agent's key and caches, decoys and grants, 3 cached copies found in Claude Code transcripts, and a protected MCP config.">
+</p>
 
-```console
-$ cat .env
-# jit: fake placeholder values. Real values flow only to a jit run grant: jit run --live -- <command> (or --with for a global credential).
-STRIPE_API_KEY=jit-hidden-STRIPE_API_KEY
-DATABASE_URL=jit-hidden-DATABASE_URL
-```
-
-- **Every request is named.** An agent quietly reading `~/.aws/credentials` is
-  a question you answer, not a silent success.
-- **A cold read gets a decoy.** An agent that greps your repo for `.env` gets
-  placeholder values, and the read is logged.
-- **MCP configs hold vault paths, not keys.** After `jit migrate ~/.claude.json`
-  each server launches through `jit run`, so the config is safe on disk and
-  safe to hand to the agent.
-- **The AI CLIs' own keys too:** `jit wrap claude` (and codex, gemini,
-  cursor-agent, copilot, cline, opencode, kiro-cli). The **AI Agents** window
-  shows every agent, its key and its caches at a glance.
+- **A cold read gets a decoy.** Placeholders, and the read is logged:
+  ```console
+  $ cat .env
+  STRIPE_API_KEY=jit-hidden-STRIPE_API_KEY
+  DATABASE_URL=jit-hidden-DATABASE_URL
+  ```
+- **Using a secret means asking.** When the agent runs `aws`, `gh` or an MCP
+  server that needs a real key, JitPass names the program and the agent that
+  launched it, and you decide.
+- **MCP configs hold vault paths, not keys.** After `jit migrate ~/.claude.json`,
+  each server launches through `jit run`, so the config is safe to have on disk
+  and safe to hand to the agent.
+- **The agents' own API keys too.** `jit wrap claude`, and codex, gemini,
+  cursor-agent, copilot, cline, opencode and kiro-cli.
+- **Secrets your agent already saw.** Transcripts and edit history keep copies
+  of keys that passed through the agent. The scan finds those copies, so you
+  know which keys to rotate.
+- **Let it work overnight, then check.** A [grant](#leaving-the-keyboard) covers
+  one agent for a set time; the [audit](#see-what-happened-and-who-did-it) shows
+  what it touched.
 
 ```sh
 jit migrate ~/.claude.json            # MCP server keys move to the vault
@@ -200,12 +205,12 @@ More in [MCP and AI tools](./docs/migrate/mcp.md) and
 
 ## Your tools keep working
 
-Protect a credential once, then use the tool the way you always have.
+No new commands to learn. Protect a credential once, then keep typing what you always typed.
 
 ```sh
 aws s3 ls                     # AWS and Terraform: from the vault, no prefix, no flag
 gh pr list                    # CLIs with their own token (gh, stripe, glab): wrapped once
-docker login ghcr.io          # registry logins go through a credential helper
+docker login ghcr.io          # registry logins are stored through a credential helper
 jit run -- docker compose up  # tools that only read a file get it for one run
 ./deploy.sh                   # exports that lived in ~/.zshrc: new shells just have them
 ```
@@ -232,23 +237,24 @@ decides which process gets it.
 
 1. **Unlocking the vault.** One fingerprint opens it for the session: 5
    minutes of activity, then it locks again, and never longer than 8 hours.
+   You unlock once, not once per command.
 2. **Handing a secret to a program.** The first time a given program reaches
-   for a real secret, JitPass asks and names it: the sheet at the top of this
-   page, or a Touch ID prompt when the app is not running. The same program is
-   not asked again this session; a different one is.
+   for a real secret, JitPass names it and asks: the sheet at the top of this
+   page, or a Touch ID prompt when the app is not running. That program is not
+   asked again this session; a different one is.
 
-The second question is what keeps an unlocked vault from being a free-for-all:
-after you have used `aws` yourself, a sketchy `npm install` reaching for the
-same keys still has to ask. You can turn it off in Settings (or with
-`jit service consent off`) and keep only the vault lock. Starting something that
-needs several secrets at once? `jit run --trust -- terraform apply` approves
-that whole run in one gesture. Details:
-[per-process consent](./docs/service/consent.md).
+The second question is what keeps an unlocked vault from being a free-for-all.
+You used `aws` a minute ago, the vault is open, and a sketchy `npm install`
+reaches for the same keys: it still has to ask, by name. Only want the vault
+lock? Turn the second question off in Settings, or with
+`jit service consent off`. Starting something that needs several secrets at
+once? `jit run --trust -- terraform apply` approves that whole run in one
+gesture. Details: [per-process consent](./docs/service/consent.md).
 
 ## Leaving the keyboard
 
-An agent working overnight or a long build stalls on a question nobody is
-there to answer. A **grant** moves your decision earlier instead of removing
+An agent working overnight, a long build or a 3 a.m. job stalls on a question
+nobody is there to answer. A **grant** moves your decision earlier instead of removing
 it: one Touch ID while you are still there, naming exactly what you allow and
 for how long.
 
@@ -281,7 +287,7 @@ The first line is the story JitPass exists to tell: `aws/default` read by
 `--parent claude`, `--secret aws`, `--status denied` or `--since 3d`, stream
 with `--follow`, or open **Audit** from the menu bar.
 
-## Nothing is lost, everything undoes
+## Undo anything, or remove it all
 
 JitPass never destroys a credential. It **moves** the value into the vault and
 leaves a **working hook** where it was (a decoy `.env`, an
@@ -293,6 +299,24 @@ file up, encrypted, into the vault.
 jit migrate ~/code/myapp        # applied, one Touch ID
 jit migrate undo ~/code/myapp   # every touched file restored, byte for byte
 ```
+
+**Changed your mind about all of it?** Settings › **Remove JitPass…** shows
+you the plan before anything changes, then runs it with one Touch ID:
+
+<img align="right" src="docs/assets/readme/remove.png" width="340" alt="The Remove JitPass window: 17 files go back to plain files, then everything JitPass installed is removed. Cancel, or Remove JitPass. Touch ID follows.">
+
+1. **Your files go back to plain files.** Every secret is written back where
+   it came from, readable as it was before JitPass.
+2. **Everything JitPass installed is removed:** the vault and its key, the
+   background service, its lines in your shell config, its settings and
+   permissions.
+
+Tokens it cleaned out of your shell history and AI caches stay cleaned. If a
+file cannot be put back, it stops and asks before deleting anything. Moving
+the app to the Trash is your last click. From the terminal:
+`jit uninstall --restore --dry-run` shows the same plan.
+
+<br clear="right">
 
 ## How it works, mechanically
 
