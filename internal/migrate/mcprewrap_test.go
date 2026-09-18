@@ -254,3 +254,124 @@ func TestApplyMCPConfigRewrapCarriesForeignProfileVars(t *testing.T) {
 		t.Errorf("mcp-caido/CAIDO_URL = (%q, %v), want (url-a, nil) — A's secrets are not B's to overwrite", got, gerr)
 	}
 }
+
+// TestApplyMCPConfigHealsANestedEntryWithNoEnv is the field shape of
+// 2026-09-18: nested by an old jit, fully migrated since, so there is no env
+// block left to trip the credentials gate. It used to be unreachable —
+// ApplyMCPConfig answered "no server with secrets to migrate" and the file
+// stayed nested forever.
+func TestApplyMCPConfigHealsANestedEntryWithNoEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	v := newTestVault(t)
+
+	path := filepath.Join(home, "proj", "mcp.json")
+	writeFile(t, path, `{"mcpServers":{"caido":{"command":"caido-server","args":["serve"],"env":{"CAIDO_URL":"url-v1"}}}}`)
+	if _, err := ApplyMCPConfig(v, path); err != nil {
+		t.Fatalf("first ApplyMCPConfig: %v", err)
+	}
+
+	writeFile(t, path, `{"mcpServers":{"caido":{
+		"command":"/opt/homebrew/bin/jit",
+		"args":["run","--profile","mcp-caido","--",
+		        "/opt/homebrew/bin/jit","run","--profile","mcp-caido","--",
+		        "caido-server","serve"],
+		"type":"stdio"}}}`)
+
+	configs, err := DiscoverMCPConfigs(home, filepath.Dir(path), false)
+	if err != nil {
+		t.Fatalf("DiscoverMCPConfigs: %v", err)
+	}
+	if !reflect.DeepEqual(configs, []string{path}) {
+		t.Errorf("DiscoverMCPConfigs = %v, want the nested config found", configs)
+	}
+
+	result, err := ApplyMCPConfig(v, path)
+	if err != nil {
+		t.Fatalf("ApplyMCPConfig on a nested entry with no env: %v", err)
+	}
+	if got := result.Servers[0].ProfileName; got != "mcp-caido" {
+		t.Errorf("ProfileName = %q, want mcp-caido (its own profile, no bump)", got)
+	}
+	command, args := readServerEntry(t, path, "caido")
+	if n := countWrapperLayers(command, args); n != 1 {
+		t.Fatalf("nesting survived: %d wrapper layers, want 1: %v", n, args)
+	}
+	if got, gerr := v.Get("mcp-caido/CAIDO_URL"); gerr != nil || string(got) != "url-v1" {
+		t.Errorf("mcp-caido/CAIDO_URL = (%q, %v), want (url-v1, nil)", got, gerr)
+	}
+}
+
+// TestApplyMCPConfigHealCarriesInnerProfileVars: layers naming DIFFERENT
+// profiles each injected their own variables. Collapsing onto the outer
+// profile used to carry nothing, so the inner profile's credentials left the
+// launch line with no error anywhere — the server just started without them.
+func TestApplyMCPConfigHealCarriesInnerProfileVars(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	v := newTestVault(t)
+
+	path := filepath.Join(home, "proj", "mcp.json")
+	writeFile(t, path, `{"mcpServers":{
+		"okta":{"command":"okta-server","env":{"OKTA_PRIVATE_KEY":"pk-inner","OKTA_ORG_URL":"url-inner"}},
+		"okta-mcp-server":{"command":"okta-server","env":{"OKTA_ORG_URL":"url-outer"}}}}`)
+	if _, err := ApplyMCPConfig(v, path); err != nil {
+		t.Fatalf("first ApplyMCPConfig: %v", err)
+	}
+
+	writeFile(t, path, `{"mcpServers":{"okta-mcp-server":{
+		"command":"/opt/homebrew/bin/jit",
+		"args":["run","--profile","mcp-okta-mcp-server","--",
+		        "/opt/homebrew/bin/jit","run","--profile","mcp-okta","--",
+		        "okta-server"],
+		"type":"stdio"}}}`)
+
+	result, err := ApplyMCPConfig(v, path)
+	if err != nil {
+		t.Fatalf("ApplyMCPConfig: %v", err)
+	}
+	if got := result.Servers[0].ProfileName; got != "mcp-okta-mcp-server" {
+		t.Fatalf("ProfileName = %q, want mcp-okta-mcp-server", got)
+	}
+	command, args := readServerEntry(t, path, "okta-mcp-server")
+	if n := countWrapperLayers(command, args); n != 1 {
+		t.Fatalf("nesting survived: %d wrapper layers, want 1: %v", n, args)
+	}
+
+	// The inner profile's variable is carried; the outer profile keeps its
+	// own value for the name both hold (outermost wins).
+	for name, want := range map[string]string{
+		"OKTA_PRIVATE_KEY": "pk-inner",
+		"OKTA_ORG_URL":     "url-outer",
+	} {
+		got, gerr := v.Get("mcp-okta-mcp-server/" + name)
+		if gerr != nil || string(got) != want {
+			t.Errorf("mcp-okta-mcp-server/%s = (%q, %v), want (%s, nil)", name, got, gerr, want)
+		}
+	}
+	// The inner profile is read, never written.
+	if got, gerr := v.Get("mcp-okta/OKTA_ORG_URL"); gerr != nil || string(got) != "url-inner" {
+		t.Errorf("mcp-okta/OKTA_ORG_URL = (%q, %v), want (url-inner, nil)", got, gerr)
+	}
+}
+
+// TestDiscoverMCPConfigsIgnoresAHealthyWrapper: one wrapper and no env is a
+// finished migration. Admitting it would put every migrated config back in
+// every plan and rewrite it on every run.
+func TestDiscoverMCPConfigsIgnoresAHealthyWrapper(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	path := filepath.Join(home, "proj", "mcp.json")
+	writeFile(t, path, `{"mcpServers":{"caido":{
+		"command":"/opt/homebrew/bin/jit",
+		"args":["run","--profile","mcp-caido","--","caido-server","serve"]}}}`)
+
+	configs, err := DiscoverMCPConfigs(home, filepath.Dir(path), false)
+	if err != nil {
+		t.Fatalf("DiscoverMCPConfigs: %v", err)
+	}
+	if len(configs) != 0 {
+		t.Errorf("DiscoverMCPConfigs = %v, want a healthy single wrapper left alone", configs)
+	}
+}
