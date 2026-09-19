@@ -2446,8 +2446,15 @@ func lockAgentAfterMEKDeletion(root string, w io.Writer) string {
 // other interactive prompt here, so it stays visible (and the wait on
 // stdin stays explicable) when stdout is redirected.
 func confirmPrompt(cmd *cobra.Command, prompt string) bool {
+	fmt.Fprintln(cmd.ErrOrStderr())
+	return confirmPromptTight(cmd, prompt)
+}
+
+// confirmPromptTight is confirmPrompt without the blank line before the
+// question, for a short plan whose last line the question closes (`jit
+// profile adopt` and `rm`): there the gap splits one block into two.
+func confirmPromptTight(cmd *cobra.Command, prompt string) bool {
 	out := cmd.ErrOrStderr()
-	fmt.Fprintln(out)
 	_, _ = cBold.Fprint(out, prompt)
 	line, err := readLineUnbuffered(cmd.InOrStdin())
 	// On a terminal the user's own Return echoes the newline that closes this
