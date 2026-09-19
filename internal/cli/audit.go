@@ -820,6 +820,14 @@ func commandEntry(r auditlog.Record) auditEntry {
 	if r.Auth != "" {
 		pairs = append(pairs, kv{"auth", r.Auth})
 	}
+	// What a delete actually took, after group expansion, and what it
+	// left unable to start. Paths and names only; see auditlog.Record.
+	if len(r.Deleted) > 0 {
+		pairs = append(pairs, kv{"deleted", strings.Join(r.Deleted, ",")})
+	}
+	if len(r.Broke) > 0 {
+		pairs = append(pairs, kv{"broke", strings.Join(r.Broke, ",")})
+	}
 	if r.Error != "" {
 		pairs = append(pairs, kv{"err", r.Error})
 	}

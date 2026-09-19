@@ -194,6 +194,33 @@ func RenderClissoConfig(v *vault.Vault, data []byte) (rendered []byte, resolved 
 	return out, true, nil
 }
 
+// ClissoPointerPaths returns the vault paths home's ~/.clisso.yaml points
+// at through jit://vault pointers, in file order. The capture shim resolves
+// every one of them on each clisso run, so each is in use even though no
+// profile names it. A missing config is an empty result; an unreadable or
+// unparseable one is an error, because a caller deciding whether a secret
+// may be deleted must not read "can't tell" as "nothing points at it".
+func ClissoPointerPaths(home string) ([]string, error) {
+	path := ClissoConfigPath(home)
+	data, err := os.ReadFile(path) // #nosec G304 -- fixed ~/.clisso.yaml under the user's home
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	var paths []string
+	err = walkClissoPointers(&doc, func(_ string, secret *yaml.Node) error {
+		paths = append(paths, strings.TrimPrefix(secret.Value, clissoPointerPrefix))
+		return nil
+	})
+	return paths, err
+}
+
 // walkClissoSecrets parses data and visits every provider whose
 // client-secret is plaintext (non-empty, not a pointer).
 func walkClissoSecrets(data []byte, visit func(provider string, secret *yaml.Node) error) error {

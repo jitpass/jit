@@ -76,6 +76,13 @@ type Record struct {
 	// destroy secrets. Empty for everything else, so the field's presence is
 	// itself the signal that a fresh fingerprint gated the action.
 	Auth string `json:"auth,omitempty"`
+	// Deleted names the vault paths a deleting command actually removed,
+	// after a group argument was expanded, so the trail says what went
+	// rather than only what was typed. Broke names what used one of them
+	// and now can't: profiles by name, pointer files by path. Names and
+	// paths only, never a value.
+	Deleted []string `json:"deleted,omitempty"`
+	Broke   []string `json:"broke,omitempty"`
 }
 
 // Logger appends Records to a JSONL file and reads them back. Concurrency-safe

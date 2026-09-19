@@ -13,7 +13,9 @@ from names alone:
   When the values still match, the report names the copy that looks stale
   and the command that retires it cleanly: `jit migrate remove <file>`
   while the file still exists (it restores that file's plaintext, then
-  deletes its profile and secrets), otherwise --prune or `jit vault rm`.
+  deletes its profile and secrets), otherwise --prune. A stale copy that
+  a profile or pointer file still uses gets no command: deleting it
+  would break what uses it.
   Diverged copies (same file ancestry, different values now) are reported
   without a removal pick.
 
@@ -29,9 +31,13 @@ Touch ID/passcode. Everything else keeps its printed command instead, on
 purpose: a copy whose file still exists has to be un-migrated by
 `jit migrate remove` (which restores its plaintext, deregisters its mount
 and drops its profile — deleting just the secrets would leave a mount
-serving a file nothing can fill), a copy a profile still names is a
-per-path `jit vault rm` decision, and diverged or shared copies are never
-jit's call at all. --prune always reports what it left behind and why.
+serving a file nothing can fill), a copy something still uses is left
+alone, and diverged or shared copies are never jit's call at all. --prune
+always reports what it left behind and why.
+
+"Uses" counts every profile jit can find (this directory's store, the
+global one and every project under your home folder), every mount, and
+pointer files such as ~/.clisso.yaml.
 
 Reading every value means unlocking the vault and, for each credential
 CLASS the per-process consent gate covers (aws, kube, git, shell_history,
