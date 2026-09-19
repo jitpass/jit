@@ -28,5 +28,6 @@ jit profile
 
 * [jit](jit.md)	 - Local-first developer secret runtime
 * [jit profile attach](jit_profile_attach.md)	 - Record an MCP config on the profiles its tools use
+* [jit profile create](jit_profile_create.md)	 - Write a profile manifest
 * [jit profile rm](jit_profile_rm.md)	 - Delete a global profile and the secrets nothing else uses
 
