@@ -153,6 +153,22 @@ const (
 	// cannot under-count, the deleted project's secrets really are orphaned,
 	// and `jit vault orphans --prune` clears the registration without auth.
 	kindMountStale checkKind = "mount_stale"
+	// kindMountMoved: a registry entry whose paths are gone, and a project
+	// found elsewhere carrying the record for it — renamed, moved, or both.
+	// Split from kindMountStale because the two call for opposite actions:
+	// stale means clear the registration, moved means re-point it, and
+	// telling a user to unmount a project that is alive and one directory
+	// away is how this whole family of findings went wrong
+	// (design/project-relocation.md).
+	kindMountMoved checkKind = "mount_moved"
+	// kindMountUnregistered: a project carries a record for a mount that
+	// exists on disk and that this Mac's registry does not list — a copied or
+	// cloned folder, which brings the FIFO with it and never the
+	// registration. The quietest failure jit had: the copy looks like a
+	// working project, and reading its .env blocks forever, because a FIFO
+	// nobody writes to never answers. Reported only when the file is really
+	// there, so a clone whose .env was never migrated here stays silent.
+	kindMountUnregistered checkKind = "mount_unregistered"
 	// kindVaultKey: the vault holds secrets but this Mac's master key is gone
 	// from the keychain. Every envelope still passes Verify — structure and
 	// recipient are intact — and not one of them can be decrypted. A hard
@@ -310,7 +326,8 @@ var allCheckKinds = []checkKind{
 	kindParse, kindNotFound, kindMissing, kindCorrupt, kindVaultError,
 	kindBadPath, kindOrphan, kindRegistryEmpty, kindStalePointers, kindDuplicates, kindOriginGone, kindShadowed,
 	kindService, kindBackup, kindWrap, kindWrapEnv, kindMount,
-	kindMountStale, kindVaultKey, kindRekey, kindLegacyEnvelope,
+	kindMountStale, kindMountMoved, kindMountUnregistered,
+	kindVaultKey, kindRekey, kindLegacyEnvelope,
 	kindAudit, kindMCP, kindMCPNested,
 	kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion,
 	kind1Password, kind1PasswordLink,
@@ -331,7 +348,7 @@ var allCheckKinds = []checkKind{
 // one process and must never fail a CI run.
 func (k checkKind) warning() bool {
 	switch k {
-	case kindOrphan, kindRegistryEmpty, kindDuplicates, kindOriginGone, kindShadowed, kindService, kindBackup, kindMount, kindMountStale, kindWrapEnv, kindAudit, kindInstall, kindJitPathUpgrade, kindCompletion, kindLegacyEnvelope, kindMCPNested,
+	case kindOrphan, kindRegistryEmpty, kindDuplicates, kindOriginGone, kindShadowed, kindService, kindBackup, kindMount, kindMountStale, kindMountMoved, kindMountUnregistered, kindWrapEnv, kindAudit, kindInstall, kindJitPathUpgrade, kindCompletion, kindLegacyEnvelope, kindMCPNested,
 		kindConfigDeleted, kindConfigNotRecorded, kindNoKnownTool, kindNotLoggedIn:
 		return true
 	default:

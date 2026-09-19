@@ -22,6 +22,8 @@ import (
 	"github.com/jitpass/jit/internal/guard"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
+	"github.com/jitpass/jit/internal/profile"
+	"github.com/jitpass/jit/internal/projectrecord"
 	"github.com/jitpass/jit/internal/termtext"
 	"github.com/jitpass/jit/internal/ui"
 	"github.com/jitpass/jit/internal/vault"
@@ -196,7 +198,7 @@ func noteKeptVariables(w io.Writer, kept []string, profileName string) {
 // had been wrapped more than once, that the nesting an older jit produced is
 // now gone.
 //
-// Plain prose rather than amber, on noteFolderRename's reasoning: nothing is
+// Plain prose rather than amber: nothing is
 // broken and there is nothing to do, and painting that yellow makes it read
 // as the warning it explicitly is not. It is still worth a line, because the
 // alternative is a migration that silently rewrites a launch command the user
@@ -209,27 +211,6 @@ func noteRewrap(w io.Writer, rewrappedFrom []string) {
 	default:
 		fmt.Fprintf(w, "    note: collapsed %d nested wrappers into one\n", len(rewrappedFrom))
 	}
-}
-
-// noteFolderRename warns, when a project's folder has been renamed since its
-// .env was migrated, that the vault still labels this project's secrets under
-// the OLD folder name. Purely informational: the secrets keep working (the
-// pointer files and manifests carry the frozen vault paths untouched), the
-// name is just cosmetic. Shared by jit migrate (local mode) and jit status;
-// stays silent unless migrate.DetectRenamedRootProject is confident.
-func noteFolderRename(w io.Writer, root string) {
-	oldName, newName, ok := migrate.DetectRenamedRootProject(root)
-	if !ok {
-		return
-	}
-	// Plain prose, not an amber wall: this says "nothing is broken, no
-	// action needed", and painting a whole reassurance yellow makes it read
-	// as the warning it is explicitly not (design/output-style.md rule 5 —
-	// amber reports state, on a glyph, never a sentence of advice).
-	wrapBody(w, 0, "", hlCmds(fmt.Sprintf("note: this project's folder was renamed after migration (migrated as %q, now %q). "+
-		"Nothing is broken: your secrets still work and jit keeps serving them under the original %q label, "+
-		"which is only cosmetic. No action is needed. Run `jit status --secrets` to see where they live, "+
-		"or `jit doctor` to verify the vault is healthy.", oldName, newName, oldName)))
 }
 
 // printSkippedFindings renders one whole-machine-sweep skip note: a
@@ -892,6 +873,17 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 			return err
 		}
 		producedMount = true
+		// The project's own record of this mount, beside the manifest
+		// (design/project-relocation.md). The registry above is this Mac's
+		// list of what it serves and holds absolute paths; this is the
+		// project's list of what it HAS, in paths that survive being renamed,
+		// moved or cloned.
+		//
+		// Never fatal. The secrets are vaulted and the mount is registered by
+		// the time this runs, so a record that could not be written costs the
+		// recognition this file exists for and nothing else — failing the
+		// migration over it would be wildly out of proportion.
+		writeProjectRecord(cmd, v, home, e)
 		return nil
 	}
 
@@ -1544,10 +1536,10 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 			}
 		}
 	}
-	// The folder-rename advisory is left to `jit status`: an explicitly named
-	// migrate target can sit under any project, so there's no single "this
-	// project" here whose rename to flag (see noteFolderRename, still used by
-	// status).
+	// A moved or renamed project is `jit doctor`'s to report now, from the
+	// registry and the project records — not migrate's, and no longer a
+	// status-time advisory that could only see a rename and called the
+	// result cosmetic (design/project-relocation.md).
 	return true, nil
 }
 
@@ -2410,4 +2402,55 @@ func init() {
 
 	migrateCmd.AddCommand(migratePathCmd)
 	rootCmd.AddCommand(migrateCmd)
+}
+
+// writeProjectRecord stores this mount in its project's own record, beside
+// the manifest that backs it (design/project-relocation.md).
+//
+// Skipped for a manifest in the GLOBAL store: `ProjectRoot` of
+// `~/.jit/profiles/x.mount` is the home directory, and "the project was
+// renamed" is not a thing that happens to `$HOME`. Writing one there would
+// put a file in every user's profile store to describe a relocation that
+// cannot occur.
+//
+// The group id comes from the secrets the manifest already names, read
+// through the auth-free Vault.Info — no value is decrypted and no Touch ID is
+// possible, the same contract completion and listings rely on. Empty when it
+// cannot be read, which is not a failure: the id is a tie-breaker, and
+// matching falls back to the manifest's name and contents without it.
+func writeProjectRecord(cmd *cobra.Command, v *vault.Vault, home string, e mount.Entry) {
+	record := projectrecord.Path(e.ProfilePath)
+	if canonicalPath(projectrecord.ProjectRoot(record)) == canonicalPath(home) {
+		return
+	}
+	if err := projectrecord.Add(e.ProfilePath, e.MountPath, manifestGroupID(v, e.ProfilePath)); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: recording the project's mount in %s: %v\n", shortPath(record), err)
+	}
+}
+
+// manifestGroupID is the vault group every secret in a manifest shares, or ""
+// when they disagree or none can be read. Disagreement is meaningful rather
+// than an edge case — a manifest merged across two migrations legitimately
+// spans two groups — and a tie-breaker that names one of them arbitrarily
+// would be worse than none.
+func manifestGroupID(v *vault.Vault, manifestPath string) string {
+	if v == nil {
+		return ""
+	}
+	p, err := profile.LoadFile(manifestPath)
+	if err != nil {
+		return ""
+	}
+	group := ""
+	for _, secretPath := range p {
+		info, err := v.Info(secretPath)
+		if err != nil || info.GroupID == "" {
+			continue
+		}
+		if group != "" && group != info.GroupID {
+			return ""
+		}
+		group = info.GroupID
+	}
+	return group
 }

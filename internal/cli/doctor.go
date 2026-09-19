@@ -264,6 +264,16 @@ func gatherDoctorOutcome(errOut io.Writer, profileName string, onePassword bool)
 	outcome.Findings = dropRegistryEmptyWhenProfilesExist(outcome.Findings, launcherMap, cwd)
 	outcome.Findings = dropOrphansReferencedElsewhere(outcome.Findings, launcherMap)
 
+	// Reconcile the registry against the project records the walk found: a
+	// mount whose project moved, and a mount a copied project brought with it
+	// that this Mac does not serve (design/project-relocation.md). Explained
+	// entries drop their kindMountStale row — one event, one finding, and the
+	// relocated one carries the repair.
+	doctorHome, _ := os.UserHomeDir()
+	moved, explained := relocationFindings(launcherMap, root, doctorHome, v)
+	outcome.Findings = dropSupersededStaleMounts(outcome.Findings, explained)
+	outcome.Findings = append(outcome.Findings, moved...)
+
 	// The ownership sections sit with the profile check they refine.
 	// Whole-vault integrity runs on EVERY invocation, --profile included:
 	// a missing master key or an unfinished rekey makes the named
@@ -783,6 +793,13 @@ func findingLabel(f checkFinding) string {
 		// stale registration is leftover state from a deleted project, and a
 		// bare "[mount]" beside it would read as two of the same problem.
 		return "[mount: stale]"
+	case kindMountMoved:
+		// Same header shape, naming the cause: these sit beside each other
+		// and the difference between them is the whole point — one clears a
+		// registration, the other re-points it.
+		return "[mount: moved]"
+	case kindMountUnregistered:
+		return "[mount: not served]"
 	case kindVaultKey:
 		return "[vault key]"
 	case kindRekey:

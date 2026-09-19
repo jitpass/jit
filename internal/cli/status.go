@@ -341,7 +341,6 @@ var statusCmd = &cobra.Command{
 		if statusSecretsDetail {
 			printSecretsDetail(cmd.OutOrStdout(), rec, v)
 		}
-		noteFolderRename(cmd.OutOrStdout(), cwd)
 		notePendingCacheCleanup(cmd.OutOrStdout(), root)
 		return nil
 	},
