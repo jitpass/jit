@@ -45,13 +45,14 @@ var (
 // output: a profile (with its store, project, mount and known launchers)
 // or a pointer file.
 type rmInUseJSON struct {
-	Path        string   `json:"path"`
-	Profile     string   `json:"profile,omitempty"`
-	Scope       string   `json:"scope,omitempty"`
-	Project     string   `json:"project,omitempty"`
-	Mount       string   `json:"mount,omitempty"`
-	PointerFile string   `json:"pointer_file,omitempty"`
-	LaunchedBy  []string `json:"launched_by,omitempty"`
+	Path        string    `json:"path"`
+	Profile     string    `json:"profile,omitempty"`
+	Scope       string    `json:"scope,omitempty"`
+	Project     string    `json:"project,omitempty"`
+	Mount       string    `json:"mount,omitempty"`
+	PointerFile string    `json:"pointer_file,omitempty"`
+	LaunchedBy  []string  `json:"launched_by,omitempty"`
+	Tools       []toolUse `json:"tools,omitempty"`
 }
 
 // rmDryRunJSON is `jit vault rm --dry-run --format json`: what the app
@@ -289,7 +290,7 @@ func rmUsesWhat(count, total int, paths []string) string {
 }
 
 // printRmUseWarnings names everything that uses a doomed path, one row per
-// user: the profile and its store, what launches it and which mount it
+// user: the profile and its store, the tools that use it and which mount it
 // feeds, or the pointer file. explain adds the line saying why that
 // matters, for the refusal and the --break-profiles run; the dry run leaves
 // it to its caller. Nothing is printed when nothing uses any of them.
@@ -313,7 +314,11 @@ func printRmUseWarnings(out io.Writer, doomed []string, uses map[string][]secret
 			cBold.Sprint(u.use.ProfileName), u.use.scopeLabel(), what))
 		for _, cfg := range u.use.LaunchedBy {
 			launched = true
-			fmt.Fprintf(out, "  %s launched by %s\n", glyphBranch, shortPath(cfg))
+			if tools := u.use.toolsIn(cfg); len(tools) > 0 {
+				fmt.Fprintf(out, "  %s tool %s in %s\n", glyphBranch, strings.Join(tools, ", "), shortPath(cfg))
+			} else {
+				fmt.Fprintf(out, "  %s a tool in %s\n", glyphBranch, shortPath(cfg))
+			}
 		}
 		if m := u.use.MountPath; m != "" {
 			fmt.Fprintf(out, "  %s served by the mount at %s\n", glyphBranch, shortPath(m))
@@ -385,6 +390,7 @@ func rmDryRunResult(existing, missing []string, uses map[string][]secretUse, ref
 				row.Project = u.Project
 				row.Mount = u.MountPath
 				row.LaunchedBy = u.LaunchedBy
+				row.Tools = u.Tools
 			}
 			res.InUse = append(res.InUse, row)
 		}

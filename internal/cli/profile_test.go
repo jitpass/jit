@@ -56,7 +56,7 @@ func newProfileHarness(t *testing.T) *profileHarness {
 }
 
 func resetProfileFlags() {
-	profileAdoptYes, profileAdoptDryRun, profileAdoptFormat = false, false, "text"
+	profileAttachYes, profileAttachDryRun, profileAttachFormat = false, false, "text"
 	profileRmYes, profileRmDryRun, profileRmFormat = false, false, "text"
 	invocationDeleted, invocationBroke, invocationAuth = nil, nil, ""
 }
@@ -74,8 +74,8 @@ func (h *profileHarness) run(stdin string, args ...string) (string, error) {
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
 	rootCmd.SetIn(strings.NewReader(stdin))
-	profileAdoptCmd.SetOut(nil)
-	profileAdoptCmd.SetErr(nil)
+	profileAttachCmd.SetOut(nil)
+	profileAttachCmd.SetErr(nil)
 	profileRmCmd.SetOut(nil)
 	profileRmCmd.SetErr(nil)
 	rootCmd.SetArgs(args)
@@ -148,9 +148,9 @@ func exists(path string) bool {
 	return err == nil
 }
 
-// The approved preview, from the incident Mac: five profiles whose owner
-// config was deleted and two that never had an owner, all launched by
-// ~/Security-Ops/.mcp.json (mcp-okta only as the inner layer).
+// The approved preview, from the incident Mac: five profiles whose
+// recorded config was deleted and two that record no config, all used by
+// tools in ~/Security-Ops/.mcp.json (mcp-okta only as the inner layer).
 func securityOpsFixture(h *profileHarness) string {
 	h.t.Helper()
 	config := filepath.Join(h.home, "Security-Ops", ".mcp.json")
@@ -173,61 +173,61 @@ func securityOpsFixture(h *profileHarness) string {
 	return config
 }
 
-func TestProfileAdoptPreview(t *testing.T) {
+func TestProfileAttachPreview(t *testing.T) {
 	h := newProfileHarness(t)
 	config := securityOpsFixture(h)
 
-	out, err := h.run("y\n", "profile", "adopt", "~/Security-Ops/.mcp.json")
+	out, err := h.run("y\n", "profile", "attach", "~/Security-Ops/.mcp.json")
 	if err != nil {
-		t.Fatalf("adopt: %v\n%s", err, out)
+		t.Fatalf("attach: %v\n%s", err, out)
 	}
 	assertContainsAll(t, out,
-		"~/Security-Ops/.mcp.json launches 7 profiles it doesn't own:\n"+
-			"  mcp-caido                          owner gone\n"+
-			"  mcp-google-workspace-investigate   owner gone\n"+
-			"  mcp-jamf                           owner gone\n"+
-			"  mcp-okta                           owner gone\n"+
-			"  mcp-okta-mcp-server                owner gone\n"+
-			"  mcp-google-workspace               no owner\n"+
-			"  mcp-urlscan                        no owner\n"+
+		"~/Security-Ops/.mcp.json uses 7 profiles that don't record it:\n"+
+			"  mcp-caido                          records a deleted config\n"+
+			"  mcp-google-workspace-investigate   records a deleted config\n"+
+			"  mcp-jamf                           records a deleted config\n"+
+			"  mcp-okta                           records a deleted config\n"+
+			"  mcp-okta-mcp-server                records a deleted config\n"+
+			"  mcp-google-workspace               records no config\n"+
+			"  mcp-urlscan                        records no config\n"+
 			"jit migrate remove ~/Security-Ops will then take them too.\n"+
-			"Adopt all 7? [y/N] ",
-		glyphDone+" ~/Security-Ops/.mcp.json owns 7 profiles\n")
+			"Record it on all 7? [y/N] ",
+		glyphDone+" 7 profiles now record ~/Security-Ops/.mcp.json\n")
 	for _, name := range []string{"mcp-caido", "mcp-okta", "mcp-urlscan", "mcp-google-workspace"} {
 		if got := h.owners(name); !reflect.DeepEqual(got, []string{config}) {
 			t.Errorf("%s owners = %v, want only %s (the gone owner dropped)", name, got, config)
 		}
 	}
 	if h.gestures != 0 {
-		t.Errorf("adopt reached Touch ID %d times, want none", h.gestures)
+		t.Errorf("attach reached Touch ID %d times, want none", h.gestures)
 	}
-	t.Logf("adopt:\n%s", out)
+	t.Logf("attach:\n%s", out)
 
-	// Everything owned now: nothing to adopt, exit 0.
-	out, err = h.run("", "profile", "adopt", config)
-	if err != nil || out != "~/Security-Ops/.mcp.json launches no profile it doesn't own\n" {
-		t.Errorf("second adopt = (%v) %q, want the nothing-to-adopt line", err, out)
+	// Everything recorded now: nothing to attach, exit 0.
+	out, err = h.run("", "profile", "attach", config)
+	if err != nil || out != "~/Security-Ops/.mcp.json uses no profile that doesn't record it\n" {
+		t.Errorf("second attach = (%v) %q, want the nothing-to-attach line", err, out)
 	}
-	t.Logf("nothing to adopt:\n%s", out)
+	t.Logf("nothing to attach:\n%s", out)
 }
 
-func TestProfileAdoptDeclinedWritesNothing(t *testing.T) {
+func TestProfileAttachDeclinedWritesNothing(t *testing.T) {
 	h := newProfileHarness(t)
 	securityOpsFixture(h)
-	out, err := h.run("n\n", "profile", "adopt", "~/Security-Ops/.mcp.json")
+	out, err := h.run("n\n", "profile", "attach", "~/Security-Ops/.mcp.json")
 	if err != nil {
-		t.Fatalf("adopt: %v", err)
+		t.Fatalf("attach: %v", err)
 	}
-	assertContainsAll(t, out, "Adopt all 7? [y/N] ", "Aborted.")
+	assertContainsAll(t, out, "Record it on all 7? [y/N] ", "Aborted.")
 	if got := h.owners("mcp-urlscan"); got != nil {
-		t.Errorf("declined adopt wrote owners %v", got)
+		t.Errorf("declined attach wrote owners %v", got)
 	}
 }
 
 // A live owner that isn't this config keeps its place; this config is
 // added beside it. `jit migrate remove` goes by the first owner, so the
-// migrate line is left out when only such profiles are adopted.
-func TestProfileAdoptOwnedElsewhereAddsOwner(t *testing.T) {
+// migrate line is left out when only such profiles are attached.
+func TestProfileAttachOwnedElsewhereAddsOwner(t *testing.T) {
 	h := newProfileHarness(t)
 	other := filepath.Join(h.home, "other", ".mcp.json")
 	writeFileAt(t, other, `{"mcpServers":{"x":`+mcpEntry("mcp-shared")+`}}`)
@@ -235,11 +235,11 @@ func TestProfileAdoptOwnedElsewhereAddsOwner(t *testing.T) {
 	writeFileAt(t, config, `{"mcpServers":{"x":`+mcpEntry("mcp-shared")+`}}`)
 	h.writeGlobal("mcp-shared", "KEY: mcp-shared/KEY\n", other, filepath.Join(h.home, "gone", ".mcp.json"))
 
-	out, err := h.run("", "profile", "adopt", "--yes", config)
+	out, err := h.run("", "profile", "attach", "--yes", config)
 	if err != nil {
-		t.Fatalf("adopt: %v\n%s", err, out)
+		t.Fatalf("attach: %v\n%s", err, out)
 	}
-	assertContainsAll(t, out, "  mcp-shared   owned by ~/other/.mcp.json\n", glyphDone+" ~/copy/.mcp.json owns 1 profile")
+	assertContainsAll(t, out, "  mcp-shared   records ~/other/.mcp.json\n", glyphDone+" 1 profile now records ~/copy/.mcp.json")
 	if strings.Contains(out, "migrate remove") || strings.Contains(out, "[y/N]") {
 		t.Errorf("owned elsewhere: no migrate line, and --yes skips the question:\n%s", out)
 	}
@@ -249,24 +249,39 @@ func TestProfileAdoptOwnedElsewhereAddsOwner(t *testing.T) {
 	t.Logf("owned elsewhere:\n%s", out)
 }
 
-func TestProfileAdoptNamedSubset(t *testing.T) {
+// One profile: the question names it, and the result is singular.
+func TestProfileAttachOneProfile(t *testing.T) {
+	h := newProfileHarness(t)
+	securityOpsFixture(h)
+	out, err := h.run("y\n", "profile", "attach", "~/Security-Ops/.mcp.json", "mcp-urlscan")
+	if err != nil {
+		t.Fatalf("attach: %v\n%s", err, out)
+	}
+	assertContainsAll(t, out,
+		"~/Security-Ops/.mcp.json uses 1 profile that doesn't record it:\n"+
+			"  mcp-urlscan   records no config\n",
+		"Record it on mcp-urlscan? [y/N] ",
+		glyphDone+" 1 profile now records ~/Security-Ops/.mcp.json\n")
+}
+
+func TestProfileAttachNamedSubset(t *testing.T) {
 	h := newProfileHarness(t)
 	config := securityOpsFixture(h)
 
-	out, err := h.run("", "profile", "adopt", "-y", config, "mcp-okta", "mcp-urlscan")
+	out, err := h.run("", "profile", "attach", "-y", config, "mcp-okta", "mcp-urlscan")
 	if err != nil {
-		t.Fatalf("adopt: %v\n%s", err, out)
+		t.Fatalf("attach: %v\n%s", err, out)
 	}
-	assertContainsAll(t, out, "launches 2 profiles it doesn't own:", glyphDone+" ~/Security-Ops/.mcp.json owns 2 profiles")
+	assertContainsAll(t, out, "uses 2 profiles that don't record it:", glyphDone+" 2 profiles now record ~/Security-Ops/.mcp.json")
 	if got := h.owners("mcp-caido"); len(got) != 1 || got[0] == config {
-		t.Errorf("an unnamed profile was adopted: %v", got)
+		t.Errorf("an unnamed profile was attached: %v", got)
 	}
 	if got := h.owners("mcp-okta"); !reflect.DeepEqual(got, []string{config}) {
 		t.Errorf("mcp-okta owners = %v", got)
 	}
 
-	out, err = h.run("", "profile", "adopt", config, "mcp-nope")
-	if err == nil || !strings.Contains(out, "~/Security-Ops/.mcp.json doesn't launch mcp-nope") {
+	out, err = h.run("", "profile", "attach", config, "mcp-nope")
+	if err == nil || !strings.Contains(out, "no tool in ~/Security-Ops/.mcp.json uses mcp-nope") {
 		t.Errorf("naming an unlaunched profile = (%v) %s", err, out)
 	}
 }
@@ -274,7 +289,7 @@ func TestProfileAdoptNamedSubset(t *testing.T) {
 // ~/.claude.json's project blocks own their profiles as "path#projectDir":
 // the same profile launched from two blocks is two owners, and a config at
 // home is never a `jit migrate remove` target.
-func TestProfileAdoptClaudeJSONScopedOwners(t *testing.T) {
+func TestProfileAttachClaudeJSONScopedOwners(t *testing.T) {
 	h := newProfileHarness(t)
 	config := filepath.Join(h.home, ".claude.json")
 	projA, projB := filepath.Join(h.home, "projA"), filepath.Join(h.home, "projB")
@@ -290,17 +305,17 @@ func TestProfileAdoptClaudeJSONScopedOwners(t *testing.T) {
 	h.writeGlobal("mcp-github", "KEY: mcp-github/KEY\n", ownerA)
 	h.writeGlobal("mcp-top", "KEY: mcp-top/KEY\n")
 
-	out, err := h.run("", "profile", "adopt", "--dry-run", "--format", "json", "~/.claude.json")
+	out, err := h.run("", "profile", "attach", "--dry-run", "--format", "json", "~/.claude.json")
 	if err != nil {
 		t.Fatalf("dry run: %v\n%s", err, out)
 	}
-	var res adoptDryRunJSON
+	var res attachDryRunJSON
 	if err := json.Unmarshal([]byte(out), &res); err != nil {
 		t.Fatalf("dry run JSON: %v\n%s", err, out)
 	}
-	want := adoptDryRunJSON{Config: config, Profiles: []adoptProfileJSON{
-		{Name: "mcp-top", Status: adoptNoOwner, Owners: []string{}, Adds: []string{config}},
-		{Name: "mcp-github", Status: adoptOwnedElsewhere, Owners: []string{ownerA}, Adds: []string{ownerB}},
+	want := attachDryRunJSON{Config: config, Profiles: []attachProfileJSON{
+		{Name: "mcp-top", Status: attachNoConfig, Owners: []string{}, Adds: []string{config}},
+		{Name: "mcp-github", Status: attachRecordedElsewhere, Owners: []string{ownerA}, Adds: []string{ownerB}},
 	}}
 	if !reflect.DeepEqual(res, want) {
 		t.Errorf("dry run = %+v\nwant %+v", res, want)
@@ -309,11 +324,11 @@ func TestProfileAdoptClaudeJSONScopedOwners(t *testing.T) {
 		t.Error("a dry run wrote an owner list")
 	}
 
-	out, err = h.run("y\n", "profile", "adopt", config)
+	out, err = h.run("y\n", "profile", "attach", config)
 	if err != nil {
-		t.Fatalf("adopt: %v\n%s", err, out)
+		t.Fatalf("attach: %v\n%s", err, out)
 	}
-	assertContainsAll(t, out, "  mcp-github   owned by ~/.claude.json (~/projA)\n")
+	assertContainsAll(t, out, "  mcp-github   records ~/.claude.json (~/projA)\n")
 	if strings.Contains(out, "migrate remove") {
 		t.Errorf("a config at home names no migrate remove target:\n%s", out)
 	}
@@ -326,7 +341,7 @@ func TestProfileAdoptClaudeJSONScopedOwners(t *testing.T) {
 	t.Logf("claude.json:\n%s", out)
 }
 
-func TestProfileAdoptRejects(t *testing.T) {
+func TestProfileAttachRejects(t *testing.T) {
 	h := newProfileHarness(t)
 	plain := filepath.Join(h.home, "plain", ".mcp.json")
 	writeFileAt(t, plain, `{"mcpServers":{"x":{"command":"npx","env":{"K":"v"}}}}`)
@@ -334,13 +349,13 @@ func TestProfileAdoptRejects(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{plain}, "jit profile adopt: no jit-wrapped MCP server in ~/plain/.mcp.json"},
-		{[]string{"~/nope.json"}, "jit profile adopt: ~/nope.json does not exist"},
+		{[]string{plain}, "jit profile attach: no jit-wrapped MCP server in ~/plain/.mcp.json"},
+		{[]string{"~/nope.json"}, "jit profile attach: ~/nope.json does not exist"},
 		{[]string{"--format", "json", plain}, "--format json needs --dry-run"},
 	} {
-		out, err := h.run("", append([]string{"profile", "adopt"}, tc.args...)...)
+		out, err := h.run("", append([]string{"profile", "attach"}, tc.args...)...)
 		if err == nil || !strings.Contains(out, tc.want) {
-			t.Errorf("adopt %v = (%v) %s, want %q", tc.args, err, out, tc.want)
+			t.Errorf("attach %v = (%v) %s, want %q", tc.args, err, out, tc.want)
 		}
 	}
 }
@@ -360,7 +375,7 @@ func TestProfileRmMissingSecretsOnly(t *testing.T) {
 	}
 	assertContainsAll(t, out,
 		"profile k8s-docker-desktop (global)\n"+
-			"  "+glyphBranch+" no known launcher\n"+
+			"  "+glyphBranch+" no known tool\n"+
 			"deletes the profile; its 2 secrets are already gone\n"+
 			"Delete it? [y/N] ",
 		glyphDone+" deleted profile k8s-docker-desktop\n")
@@ -388,7 +403,7 @@ func TestProfileRmDeletesUnsharedSecretsWithTouchID(t *testing.T) {
 	assertContainsAll(t, out,
 		"profile token (global)\n"+
 			"  "+glyphBranch+" made from ~/token.txt, now gone\n"+
-			"  "+glyphBranch+" no known launcher\n"+
+			"  "+glyphBranch+" no known tool\n"+
 			"deletes the profile and 1 secret nothing else uses:\n"+
 			"  token/JSON_WEB_TOKEN_JWT\n"+
 			"Delete both? [y/N] ",
@@ -474,9 +489,9 @@ func TestProfileRmRefusesMCPLauncher(t *testing.T) {
 		if err == nil {
 			t.Fatalf("rm %v of a launched profile succeeded:\n%s", flags, out)
 		}
-		want := glyphMark + " ~/Security-Ops/.mcp.json launches it (okta-mcp-server)\n" +
+		want := glyphMark + " tool okta-mcp-server uses it (~/Security-Ops/.mcp.json)\n" +
 			"jit profile rm: nothing deleted, mcp-okta is in use\n" +
-			"  remove the okta-mcp-server entry from that file first\n"
+			"  remove okta-mcp-server from that file first\n"
 		if out != want {
 			t.Errorf("refusal %v =\n%s\nwant\n%s", flags, out, want)
 		}
@@ -516,12 +531,12 @@ func TestProfileRmRefusesEveryLauncherKind(t *testing.T) {
 		name string
 		want []string
 	}{
-		{"aws-prod", []string{glyphMark + " ~/.aws/config [profile prod] launches it", "  remove the [profile prod] section from that file first"}},
-		{"k8s-lab", []string{glyphMark + " ~/.kube/config launches it (user lab)", "  remove user lab from that file first"}},
-		{"wrap-gh", []string{glyphMark + " wrapped tool gh launches it", glyphAction + " jit wrap undo gh", "unwraps the tool and removes this profile with it"}},
-		{"zshrc", []string{glyphMark + " ~/.zshrc exports it (line 2)", "  remove its jit export line (line 2) first"}},
-		{"docker-ghcr.io", []string{glyphMark + " " + displayPath(h.home, migrate.DockerHelperPath(h.home)) + " uses it", "  the docker helper may ask for it; undo that migration first"}},
-		{"mounted", []string{glyphMark + " mounted at ~/app/.env", glyphAction + " jit migrate remove ~/app/.env", "restores the file and removes the profile with it"}},
+		{"aws-prod", []string{glyphMark + " tool aws uses it (~/.aws/config [profile prod])", "  remove the [profile prod] section from that file first"}},
+		{"k8s-lab", []string{glyphMark + " tool kubectl uses it (~/.kube/config user lab)", "  remove user lab from that file first"}},
+		{"wrap-gh", []string{glyphMark + " tool gh uses it (wrapped)", glyphAction + " jit wrap undo gh", "unwraps the tool and removes this profile with it"}},
+		{"zshrc", []string{glyphMark + " your shell uses it (~/.zshrc line 2)", "  remove its jit export line (line 2) first"}},
+		{"docker-ghcr.io", []string{glyphMark + " tool docker uses it (credential helper)", "  the docker helper may ask for it; undo that migration first"}},
+		{"mounted", []string{glyphMark + " the mount at ~/app/.env uses it", glyphAction + " jit migrate remove ~/app/.env", "restores the file and removes the profile with it"}},
 	} {
 		out, err := h.run("y\n", "profile", "rm", "--yes", tc.name)
 		if err == nil {
@@ -592,7 +607,7 @@ func TestProfileRmStrictFailureRefuses(t *testing.T) {
 	t.Logf("strict failure, dry run:\n%s", out)
 }
 
-// A directory the walk can't enter makes "no known launcher" unsayable.
+// A directory the walk can't enter makes "no known tool" unsayable.
 func TestProfileRmIncompleteCoverage(t *testing.T) {
 	h := newProfileHarness(t)
 	h.writeGlobal("token", "K: token/K\n")
@@ -608,8 +623,8 @@ func TestProfileRmIncompleteCoverage(t *testing.T) {
 		t.Fatalf("rm: %v\n%s", err, out)
 	}
 	assertContainsAll(t, out, "  "+glyphBranch+" jit could not see all of ~\n", "Delete it? [y/N] ", "Aborted.")
-	if strings.Contains(out, "no known launcher") {
-		t.Errorf("incomplete coverage claimed no known launcher:\n%s", out)
+	if strings.Contains(out, "no known tool") {
+		t.Errorf("incomplete coverage claimed no known tool:\n%s", out)
 	}
 }
 
@@ -656,7 +671,7 @@ func TestProfileRmDryRunJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("text dry run of a refusal must exit 0: %v", err)
 	}
-	assertContainsAll(t, out, glyphMark+" ~/Security-Ops/.mcp.json launches it (okta-mcp-server)", "refused: nothing would be deleted")
+	assertContainsAll(t, out, glyphMark+" tool okta-mcp-server uses it (~/Security-Ops/.mcp.json)", "refused: nothing would be deleted")
 
 	out, err = h.run("", "profile", "rm", "--format", "json", "token")
 	if err == nil || !strings.Contains(out, "--format json needs --dry-run") {

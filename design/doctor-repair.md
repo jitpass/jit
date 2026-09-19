@@ -8,6 +8,40 @@ plans. Covers `jitpass/jit` and the
 Doctor window in `jitpass/jit-app`. Every claim below was checked against the
 code and this Mac on 2026-09-19, and corrected where the check disagreed.
 
+## Vocabulary (decided 2026-09-19)
+
+What the user reads uses four words. "Owner" sounded like a person, and
+"launcher" is jargon, so neither appears in output, help or docs.
+
+- **tool**: the thing that uses a profile. An MCP server such as
+  `okta-mcp-server`, `aws`, `kubectl`, a wrapped CLI.
+- **config**: the file that defines and starts tools. `.mcp.json`,
+  `~/.aws/config`, a kubeconfig, an rc line.
+- **profile**: which secrets a tool gets.
+- **record**: a profile's note of which configs use it (the `.source`
+  sidecar).
+
+Go identifiers, the `.source` file, the `owners` JSON field and the
+`internal/launchers` package keep their names. The rest of this document
+predates the decision and says owner and launcher where it means record and
+tool.
+
+| was | now |
+|---|---|
+| `jit profile adopt` | `jit profile attach` (no alias; nothing shipped) |
+| `[launcher broken]`, kind `launcher_broken` | `[profile missing]`, kind `profile_missing` |
+| `[owner gone]`, kind `owner_gone` | `[config deleted]`, kind `config_deleted` |
+| `[no owner]`, kind `no_owner` | `[config not recorded]`, kind `config_not_recorded` |
+| `[no known launcher]`, kind `unlaunched` | `[no known tool]`, kind `no_known_tool` |
+| "made by X, now gone" / "launched by Y" | "recorded config X is deleted" / "now started by Y" |
+| adopt statuses `owner_gone`, `no_owner`, `owned_elsewhere` | attach statuses `config_deleted`, `no_config`, `recorded_elsewhere` |
+| rm: "~/x/.mcp.json launches it (okta)" | rm: "tool okta uses it (~/x/.mcp.json)" |
+| vault rm: "└ launched by X" | vault rm: "└ tool okta in X" |
+| migrate remove: "still owned by X", "launched by X" | "still recorded by X", "still used by X" |
+| "comes off their owner list" | "is removed from their records" |
+
+The doctor JSON `schema_version` stays 2: none of this was released.
+
 ## The incident
 
 In the Doctor window the user clicked **Remove Secrets** on two "Origin files
@@ -102,7 +136,7 @@ Five faults lined up:
   rejected it, because it opens a write path in a report and rebuilds what
   migrate already has. Doctor names the command. The command that owns the
   consent runs it. The app gets that command as structured data.
-- **Say "no known launcher", never "unused".** Scripts, aliases and a bare
+- **Say "no known tool", never "unused".** Scripts, aliases and a bare
   `jit run` can't be discovered. A project-scope profile never gets a
   deletable verdict.
 - **Deleting a profile removes its manifest, its sidecar and every secret no
@@ -263,10 +297,10 @@ New findings (each gets a preview script first):
 
 | kind | severity | when | fix |
 |---|---|---|---|
-| `owner_gone` | warning | an owner file is gone, a live config launches the profile | `jit profile adopt <config> <profile>` |
-| `unowned_launch` | warning | a config launches a profile it doesn't own (a copied config) | `jit profile adopt <config> <profile>` |
-| `unlaunched` | warning, permanently (decided) | global profile, no live owner, no known launcher, walk covered `~` | `jit profile rm <profile>` |
-| `launcher_broken` | problem | a launcher names a profile that doesn't exist (`aws-dev`, `aws-admin` in `~/.aws/config`) | mint it (`clisso get`), or `jit migrate undo <file>` |
+| `config_deleted` (`[config deleted]`) | warning | every recorded config is deleted, a live config starts the tool | `jit profile attach <config>` |
+| `config_not_recorded` (`[config not recorded]`) | warning | an MCP profile records no config (made before records, or a copied config) | `jit profile attach <config>` |
+| `no_known_tool` (`[no known tool]`) | warning, permanently (decided) | global profile, no live recorded config, no known tool, walk covered `~` | `jit profile rm <profile>` |
+| `profile_missing` (`[profile missing]`) | problem | a config names a profile that doesn't exist (`aws-dev`, `aws-admin` in `~/.aws/config`) | mint it (`clisso get`), or `jit migrate undo <file>` |
 | `pointer_missing` | problem | a `jit://vault/...` pointer names a missing secret (`~/.clisso.yaml` today) | `jit vault set <path>` |
 
 Correlation:
@@ -287,9 +321,9 @@ Migrate:
 
 Commands, explicit by decision so the app can run them and doctor can name
 them. Both need `docs-gen`.
-- `jit profile adopt <config> [profile...]`: adds the owner and drops gone
-  ones. With no profiles it adopts every profile that config launches but
-  doesn't own. It widens what a later `migrate remove` of that config
+- `jit profile attach <config> [profile...]`: records the config and drops
+  deleted ones. With no profiles it attaches every profile that config's
+  tools use but that doesn't record it. It widens what a later `migrate remove` of that config
   deletes, so it shows that and asks y/N. No Touch ID, no secret read.
 - `jit profile rm <profile>`: manifest, sidecar and every secret nothing else
   uses. Refuses a profile with a launcher. y/N plus fresh Touch ID. Reuses
@@ -332,19 +366,22 @@ them. Both need `docs-gen`.
 
 ## Decided (2026-09-19)
 
-- `jit profile adopt` is an explicit command, not only a migrate side effect.
-- `unlaunched` stays a warning. "No known launcher" is never proof of unused.
+- `jit profile attach` (was `adopt`) is an explicit command, not only a
+  migrate side effect.
+- `no_known_tool` stays a warning. "No known tool" is never proof of unused.
 - One profile launched by several configs: one profile with a list of owners,
   not a split. Separate profiles only when the values differ.
 - No `doctor --fix`, per `design/jit-path-refresh.md`. The app runs the named
   commands.
-- `jit profile adopt <config> [profile...]`, config first. With no profiles
-  it adopts every profile that config launches but doesn't own. (Was
-  `adopt <profile> <config>`.)
-- A profile doctor reports under "no known launcher" is dropped from
+- `jit profile attach <config> [profile...]`, config first. With no
+  profiles it attaches every profile that config's tools use but that
+  doesn't record it. (Was `adopt <profile> <config>`.)
+- A profile doctor reports under "no known tool" is dropped from
   origin_gone, so each profile appears in one section.
-- A `missing` secret on a profile with no known launcher is reported under
-  "no known launcher", not `[missing]`.
+- A `missing` secret on a profile with no known tool is reported under
+  "no known tool", not `[missing]`.
+- The user-facing vocabulary is tool, config, profile and record (see
+  Vocabulary).
 - Owners are a list in the `.source` sidecar, one config path per line; a
   single line is today's format. An owner whose file is gone doesn't count.
   Separate profiles only when the values differ.

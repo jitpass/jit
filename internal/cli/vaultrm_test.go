@@ -131,7 +131,7 @@ func TestVaultRmRefusesGlobalProfileFromHome(t *testing.T) {
 		for _, want := range []string{
 			"mcp-okta-mcp-server is a group of 2 secrets.",
 			"profile mcp-okta-mcp-server (global) uses both",
-			"launched by ~/Security-Ops/.mcp.json",
+			"tool okta in ~/Security-Ops/.mcp.json",
 			"a profile missing a secret can't start its tool",
 			"jit vault rm: nothing deleted, 2 secrets are in use",
 			glyphAction + " jit vault rm --break-profiles mcp-okta-mcp-server",
@@ -181,7 +181,7 @@ func TestVaultRmRefusesProjectStoreOutsideCwd(t *testing.T) {
 		}
 	}
 	if strings.Contains(out, "anyway") || strings.Contains(out, "can't start its tool") {
-		t.Errorf("single secret, no known launcher: no note lines, got:\n%s", out)
+		t.Errorf("single secret, no known tool: no note lines, got:\n%s", out)
 	}
 	if h.gestures != 0 {
 		t.Errorf("a refusal reached Touch ID")
@@ -312,7 +312,7 @@ func TestVaultRmDryRun(t *testing.T) {
 		"  mcp-okta-mcp-server/OKTA_ORG_URL\n" +
 		"  mcp-okta-mcp-server/OKTA_SCOPES\n" +
 		glyphMark + " profile mcp-okta-mcp-server (global) uses both\n" +
-		"  " + glyphBranch + " launched by ~/Security-Ops/.mcp.json\n" +
+		"  " + glyphBranch + " tool okta in ~/Security-Ops/.mcp.json\n" +
 		"refused without --break-profiles\n"
 	if out != want {
 		t.Errorf("dry-run text =\n%s\nwant\n%s", out, want)
@@ -335,7 +335,8 @@ func TestVaultRmDryRun(t *testing.T) {
 	}
 	row := res.InUse[0]
 	if row.Path != "mcp-okta-mcp-server/OKTA_ORG_URL" || row.Profile != "mcp-okta-mcp-server" ||
-		row.Scope != "global" || row.Project != "" || len(row.LaunchedBy) != 1 || row.LaunchedBy[0] != cfg {
+		row.Scope != "global" || row.Project != "" || len(row.LaunchedBy) != 1 || row.LaunchedBy[0] != cfg ||
+		len(row.Tools) != 1 || row.Tools[0] != (toolUse{Name: "okta", Config: cfg}) {
 		t.Errorf("in_use row = %+v", row)
 	}
 	inUse := got["in_use"].([]any)[0].(map[string]any)
