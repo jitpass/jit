@@ -87,6 +87,13 @@ var jitFixClasses = map[string]fixClass{
 	// Deletes the profile and every secret nothing else uses; Touch ID
 	// whenever a secret goes.
 	"profile rm": {destructive: true, presence: true},
+	// Removes variables from one manifest, refusing any whose vault path
+	// holds a value, so no secret can be stranded and none is read (no Touch
+	// ID). Destructive all the same, and deliberately: dropping a variable
+	// the tool DOES need breaks it silently, and leaves doctor reporting
+	// nothing — the one outcome worse than the finding it clears. The
+	// confirmation naming the variable is the whole point.
+	"profile drop": {destructive: true},
 	// A live mount: unmount writes the secret values back to disk in
 	// plaintext. A stale one (its profile is gone) is reclassified in
 	// classifyFix: it only clears a registry entry.
