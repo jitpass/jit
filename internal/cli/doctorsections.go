@@ -401,11 +401,6 @@ func executableFile(path string) bool {
 	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
 }
 
-func regularFile(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.Mode().IsRegular()
-}
-
 // gatherVaultIntegrityFindings reports the two whole-vault states that make
 // EVERY secret unreadable no matter which profile you asked about: the
 // master key missing from this Mac's keychain, and a master-key rotation
