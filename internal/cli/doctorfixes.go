@@ -72,12 +72,18 @@ var jitFixClasses = map[string]fixClass{
 	"vault link":   {presence: true},
 	"migrate":      {},
 	// Puts the original file back, plaintext and all.
-	"migrate undo":   {destructive: true, presence: true},
+	"migrate undo": {destructive: true, presence: true},
+	// Deletes one pointer file jit wrote that nothing uses, and refuses
+	// anything else. No secret is read or removed, so no Touch ID.
+	"migrate forget": {destructive: true},
 	"migrate remove": {destructive: true, presence: true},
 	// Rewrites profile records (owner lists) only: no secret is read or
 	// deleted. It widens what a later migrate remove of that config takes,
 	// which the command says before its own y/N.
 	"profile attach": {},
+	// Writes one manifest of names, refusing to replace an existing one
+	// without --force. Reads the vault's names only, so no Touch ID.
+	"profile create": {},
 	// Deletes the profile and every secret nothing else uses; Touch ID
 	// whenever a secret goes.
 	"profile rm": {destructive: true, presence: true},

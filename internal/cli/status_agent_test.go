@@ -167,8 +167,12 @@ func TestStatusDegradesWhenAgentUnreachable(t *testing.T) {
 	if !strings.Contains(out, "service  ✗ unreachable") {
 		t.Errorf("expected the service reported as unreachable, got:\n%s", out)
 	}
-	// The sections that don't depend on the agent must still be there.
-	if !strings.Contains(out, "vault    1 secret in 1 group") || !strings.Contains(out, "secrets  reconciled") {
+	// The sections that don't depend on the agent must still be there. The
+	// secrets section is asserted by its label and its rollup rather than by
+	// its headline: which headline it picks depends on whether anything
+	// references the vault, which is not what this test is about.
+	if !strings.Contains(out, "vault    1 secret in 1 group") ||
+		!strings.Contains(out, "secrets  ") || !strings.Contains(out, "Wired here") {
 		t.Errorf("expected the agent-independent sections to still render, got:\n%s", out)
 	}
 }

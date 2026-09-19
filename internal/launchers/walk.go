@@ -17,6 +17,7 @@ import (
 type homeWalk struct {
 	projectRoots []string // directories holding a .jit (home's own excluded)
 	envPointers  []string // in-place pointer files with a .env-family name
+	companions   []string // .pointers companions written beside a live mount
 	mcpFiles     []string // files with an MCP config name
 	coverage     Coverage
 }
@@ -64,7 +65,15 @@ func walkHome(home string) homeWalk {
 		if audit.IsMCPConfigFileName(name) {
 			w.mcpFiles = append(w.mcpFiles, path)
 		}
-		if !pointerfile.IsCompanion(name) && migrate.IsEnvFileName(name) && migrate.IsPointerFile(path) {
+		if pointerfile.IsCompanion(name) {
+			// Recorded, but kept out of envPointers: a companion is not a
+			// launcher (readPointers says why), and counting it as one would
+			// make a secret only it names look used. It is collected so the
+			// targets it names can still be VALIDATED — the mount it was
+			// written beside is not always there to do that, which is the
+			// state a restored vault with no registered mounts arrives in.
+			w.companions = append(w.companions, path)
+		} else if migrate.IsEnvFileName(name) && migrate.IsPointerFile(path) {
 			w.envPointers = append(w.envPointers, path)
 		}
 		return nil

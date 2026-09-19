@@ -57,6 +57,39 @@ const (
 	// (see warning): dead weight and audit surface worth surfacing, never a
 	// reason to fail the run.
 	kindOrphan checkKind = "orphan"
+	// kindStalePointers: a `.pointers` companion records a whole vault group
+	// that no longer exists. Kept apart from kindPointerMissing, which it
+	// otherwise resembles, for two reasons that both matter at the surface:
+	//
+	// Its Path is a GROUP, not a secret. Every consumer that turns a
+	// pointer_missing finding into `jit vault set <path>` — the app's Set
+	// Value button among them — would build a set against a path with no key
+	// in it, and ask the user for a value for something that is not a secret.
+	//
+	// It is a HARD PROBLEM, like every other reference to a secret the vault
+	// does not hold (kindMissing, kindPointerMissing). An early version made
+	// it advisory on the reasoning that nothing reads a companion at
+	// runtime, which is true and beside the point: the file is not what
+	// breaks, the tool beside it is. A companion names the variables some
+	// program in that directory needs, so a group that is gone means that
+	// program cannot get its secrets — whether or not a mount happens to be
+	// registered on this Mac today. Where the project is genuinely retired,
+	// `jit doctor ignore` is the answer, not a softer severity for everyone.
+	kindStalePointers checkKind = "stale_pointers"
+	// kindRegistryEmpty: the vault holds secrets and NO profile manifest was
+	// found to reference any of them. Split from kindOrphan because the two
+	// call for opposite actions: an orphan beside working profiles is
+	// probably surplus, and `jit vault orphans --prune` is a reasonable
+	// answer; a vault where nothing is referenced is almost never surplus —
+	// the profile registry travels separately from the vault (it lives in a
+	// project's .jit/profiles or in ~/.jit/profiles) and a restore that
+	// brought the vault alone lands exactly here. Pruning then deletes
+	// everything the missing profiles would have named.
+	//
+	// Advisory, not a problem: a profile store one directory away is a
+	// perfectly healthy machine seen from the wrong cwd — which is what
+	// `jit doctor` run from home looks like on a project-scoped setup.
+	kindRegistryEmpty checkKind = "registry_empty"
 	// kindDuplicates: two or more vault groups that look like the same file
 	// stored twice — identical key sets with agreeing recorded origins, the
 	// same auth-free evidence behind `jit vault list`'s nudge. Advisory, and
@@ -272,7 +305,7 @@ const (
 // Add new kinds here.
 var allCheckKinds = []checkKind{
 	kindParse, kindNotFound, kindMissing, kindCorrupt, kindVaultError,
-	kindBadPath, kindOrphan, kindDuplicates, kindOriginGone, kindShadowed,
+	kindBadPath, kindOrphan, kindRegistryEmpty, kindStalePointers, kindDuplicates, kindOriginGone, kindShadowed,
 	kindService, kindBackup, kindWrap, kindWrapEnv, kindMount,
 	kindMountStale, kindVaultKey, kindRekey, kindLegacyEnvelope,
 	kindAudit, kindMCP, kindMCPNested,
@@ -295,7 +328,7 @@ var allCheckKinds = []checkKind{
 // one process and must never fail a CI run.
 func (k checkKind) warning() bool {
 	switch k {
-	case kindOrphan, kindDuplicates, kindOriginGone, kindShadowed, kindService, kindBackup, kindMount, kindMountStale, kindWrapEnv, kindAudit, kindInstall, kindJitPathUpgrade, kindCompletion, kindLegacyEnvelope, kindMCPNested,
+	case kindOrphan, kindRegistryEmpty, kindDuplicates, kindOriginGone, kindShadowed, kindService, kindBackup, kindMount, kindMountStale, kindWrapEnv, kindAudit, kindInstall, kindJitPathUpgrade, kindCompletion, kindLegacyEnvelope, kindMCPNested,
 		kindConfigDeleted, kindConfigNotRecorded, kindNoKnownTool, kindNotLoggedIn:
 		return true
 	default:
@@ -374,7 +407,10 @@ type checkFinding struct {
 // step: plain text closing the group, with no → and nothing to run. A cyan
 // arrow promises a command, and an origin_gone finding has none to offer.
 func (k checkKind) actionIsNote() bool {
-	return k == kindOriginGone || k == kindProfileMissing
+	// registry_empty has no single command: the profiles may simply live in
+	// another directory, and where they do not, rebuilding is one
+	// `jit profile create` per group rather than one thing to run.
+	return k == kindOriginGone || k == kindProfileMissing || k == kindRegistryEmpty
 }
 
 // checkedRef is one variable→path reference that resolved cleanly, retained
@@ -651,7 +687,14 @@ func runProfileCheck(cwd string, v *vault.Vault, opts checkOptions) (checkOutcom
 	// secrets they can see, so an incomplete picture can hide a finding but
 	// never invent one, and neither needs those guards.
 	wantOrphans := opts.Orphans && len(entries) > 0 && !parseFailed
-	if opts.Profile == "" && (wantOrphans || opts.Duplicates || opts.Origins) {
+	// The zero-profile case the orphan guard above deliberately skips. The
+	// skip is right — calling the whole vault orphaned would be twenty
+	// wrong lines — but silence was not: "69 secrets, no profile that names
+	// any of them" is one line, and it is the answer on a machine whose
+	// vault was restored without its profile registry. Reported instead of
+	// the orphans, never alongside them.
+	wantRegistryCheck := opts.Orphans && len(entries) == 0 && !parseFailed
+	if opts.Profile == "" && (wantOrphans || wantRegistryCheck || opts.Duplicates || opts.Origins) {
 		paths, err := v.List()
 		if err != nil {
 			// The sweeps are a bonus; a vault it can't list is still a
@@ -670,10 +713,23 @@ func runProfileCheck(cwd string, v *vault.Vault, opts checkOptions) (checkOutcom
 						// Identical for every orphan, which is exactly why the
 						// renderer states a group's shared action once rather
 						// than repeating it under each of twenty lines.
-						Action: "`jit vault orphans --prune` to delete, or `jit vault list` to inspect first",
+						Action: "`jit vault list --format json` names what uses each · `jit vault orphans --prune` to delete",
 					})
 				}
 			}
+		}
+		if wantRegistryCheck && len(secrets) > 0 {
+			out.Findings = append(out.Findings, checkFinding{
+				Kind: kindRegistryEmpty,
+				Detail: fmt.Sprintf("%s stored, and no profile manifest here or in the global store names any of them",
+					countWord(len(secrets), "secret", "secrets")),
+				// No `--prune` here, at any cost: in this state it would
+				// delete the whole vault. Nor `--format json`/used_by, which
+				// an earlier draft offered: with no profile in scope used_by
+				// is empty for every secret, so it prints the finding back as
+				// JSON. A note, not a command — see actionIsNote.
+				Action: "profiles travel separately from the vault; jit profile create <name> rebuilds one per group",
+			})
 		}
 		if opts.Duplicates || opts.Origins {
 			// Info never touches the KeyWrapper (same contract as List), so

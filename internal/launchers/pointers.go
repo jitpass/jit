@@ -71,6 +71,39 @@ func (d *discovery) readPointers(root string, walked []string) {
 	}
 }
 
+// readCompanions reads the `.pointers` companions the walk found, into
+// Companions rather than Pointers.
+//
+// A companion is not a user — readPointers says why, and that stays true:
+// nothing here reaches usage, so no secret becomes "referenced" because a
+// companion names it, and `vault orphans --prune` deletes exactly what it
+// did before. What this adds is the ability to CHECK the names, which the
+// old skip made impossible. The assumption the skip rests on — "the mount
+// it sits beside is already counted through its profile" — holds on a
+// machine that still has the mount and the profile. A vault restored onto
+// a new Mac has neither, and then the companion is the only surviving
+// record of what that mount served, naming secrets nothing else mentions.
+//
+// Unreadable is a skip, never an error: a companion is documentation jit
+// wrote for a human, and no deletion decision is taken on it.
+func (d *discovery) readCompanions(files []string) {
+	done := map[string]bool{}
+	for _, file := range files {
+		file = filepath.Clean(file)
+		if done[file] {
+			continue
+		}
+		done[file] = true
+		paths, err := readPointerFile(file, false)
+		if err != nil {
+			continue
+		}
+		for _, p := range paths {
+			d.m.Companions = append(d.m.Companions, Launcher{Kind: KindPointerFile, File: file, VaultPath: p})
+		}
+	}
+}
+
 // readPointerFile returns the vault paths a jit pointer file names, or
 // nothing for a file that isn't one (or no longer exists). Only a regular
 // file is ever opened: a path in the undo index may be a live mount's FIFO
