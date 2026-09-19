@@ -53,7 +53,9 @@
 //     interactive shell's). Which absolute path is internal/selfpath's
 //     call, shared with every other category here and with the launchd
 //     plist: a durable name, never the version-numbered Homebrew copy the
-//     next upgrade deletes. Backed up first too.
+//     next upgrade deletes. Backed up first too. All-or-nothing across a
+//     file's servers: each is planned before any is written, so one that
+//     fails strands no other's secrets or profile (mcpplan.go).
 //   - AWS credentials (awscreds.go, RFC.md Pillar III Tier 2): a profile's
 //     static keys move into the vault; ~/.aws/config gets a
 //     credential_process line (under the correct "[default]" vs
