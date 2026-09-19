@@ -115,10 +115,13 @@ var doctorCmd = &cobra.Command{
 		"It exits 2 when something this setup depends on is actually broken: a\n" +
 		"secret missing, corrupt, or unparseable; the whole vault unreadable\n" +
 		"because this Mac's master key is gone from the keychain or a master-key\n" +
-		"rotation never finished; or a wrapped tool's installation damaged, which\n" +
-		"means that tool now runs unwrapped or not at all. Everything else it\n" +
-		"reports is an advisory warning: orphaned secrets no profile references\n" +
-		"(a count by default; --orphans lists each, `jit vault orphans` adds\n" +
+		"rotation never finished; a wrapped tool's installation damaged, which\n" +
+		"means that tool now runs unwrapped or not at all; a launcher (an MCP\n" +
+		"entry, ~/.aws/config, a kubeconfig user, a shell rc line) naming a\n" +
+		"profile that doesn't exist; or a jit://vault pointer naming a secret the\n" +
+		"vault doesn't hold. Everything else it reports is an advisory warning:\n" +
+		"orphaned secrets no profile references (a count by default; --orphans\n" +
+		"lists each, `jit vault orphans` adds\n" +
 		"origins and can prune), vault groups that look like the same file stored\n" +
 		"twice (name-level evidence only — `jit vault duplicates` compares the\n" +
 		"values, which doctor never decrypts), a referenced secret whose recorded\n" +
@@ -126,7 +129,10 @@ var doctorCmd = &cobra.Command{
 		"mount whose profile won't load or whose project was deleted without\n" +
 		"unmounting, a stopped service, a stale or missing vault backup, more than one jit\n" +
 		"installed on PATH (a Homebrew copy and a tarball copy each answering to\n" +
-		"the name, with which copy runs decided by PATH order), and any shim\n" +
+		"the name, with which copy runs decided by PATH order), an MCP profile\n" +
+		"whose recorded owner config is gone or was never recorded, a global\n" +
+		"profile with no known launcher (only said when the look through your\n" +
+		"home covered all of it; a script or alias can still run it), and any shim\n" +
 		"complaint that is only true of the shell you happen to be in — a CI job\n" +
 		"that doesn't put the shim dir on PATH is not a broken machine. --strict\n" +
 		"makes those count too.\n\n" +
@@ -200,6 +206,17 @@ var doctorCmd = &cobra.Command{
 		// the per-path listing (see collapseOrphanFindings). Duplicates and
 		// Origins are the other always-on hygiene sweeps; all three stay
 		// auth-free (List/Info/stat, never a decrypt).
+		// Who launches each profile, discovered from home: the ownership
+		// sections, and which profiles have no known launcher. A whole-machine
+		// question, so skipped under --profile like the other sweeps. It runs
+		// first because the profile check leaves an unlaunched profile's
+		// missing secrets and gone origin to that profile's own row.
+		var launcherFound []checkFinding
+		var unlaunched map[string]bool
+		if doctorProfile == "" {
+			launcherFound, unlaunched = launcherFindings(doctorLauncherMap(root, cwd, v), v)
+		}
+
 		outcome, err = runProfileCheck(cwd, v, checkOptions{
 			Root:       root,
 			Profile:    doctorProfile,
@@ -207,15 +224,18 @@ var doctorCmd = &cobra.Command{
 			Orphans:    true,
 			Duplicates: true,
 			Origins:    true,
+			Unlaunched: unlaunched,
 		})
 		if err != nil {
 			return fmt.Errorf("jit doctor: %w", err)
 		}
 
+		// The ownership sections sit with the profile check they refine.
 		// Whole-vault integrity runs on EVERY invocation, --profile included:
 		// a missing master key or an unfinished rekey makes the named
 		// profile's secrets just as unreadable as everyone else's, so
 		// "resolves cleanly" would be false. See gatherVaultIntegrityFindings.
+		outcome.Findings = append(outcome.Findings, launcherFound...)
 		outcome.Findings = append(outcome.Findings, gatherVaultIntegrityFindings(root, v)...)
 
 		// The absorbed system-health sections run on the full sweep only. A
@@ -245,6 +265,7 @@ var doctorCmd = &cobra.Command{
 		if !doctorOrphans {
 			outcome.Findings = collapseOrphanFindings(outcome.Findings)
 		}
+		outcome.Findings = dropCoveredLauncherFindings(outcome.Findings)
 
 		return renderDoctorOutcome(cmd, outcome)
 	},
@@ -581,6 +602,10 @@ func writeFindingGroups(out io.Writer, glyph string, c *color.Color, findings []
 		// back to the templated form: five missing secrets would otherwise
 		// alternate ✗/→ ten lines deep, restating one command shape five
 		// times, when every path involved is already on the line above.
+		if writeOwnershipGroup(out, glyph, c, kind, group) {
+			continue
+		}
+
 		shared := sharedAction(group)
 		if shared == "" && len(group) > 1 {
 			shared = templateAction(kind)
@@ -738,6 +763,18 @@ func findingLabel(f checkFinding) string {
 		// "[wrap: this shell]" does: nothing is broken yet, and an amber
 		// group with no qualifier reads as one that is.
 		return "[jit path: after the next upgrade]"
+	case kindLauncherBroken:
+		return "[launcher broken]"
+	case kindPointerMissing:
+		return "[pointer missing]"
+	case kindOwnerGone:
+		return "[owner gone]"
+	case kindNoOwner:
+		return "[no owner]"
+	case kindUnlaunched:
+		// Never "unused": scripts and aliases launch profiles nothing on
+		// disk records, and the header must not claim more than jit saw.
+		return "[no known launcher]"
 	default:
 		return ""
 	}
@@ -775,6 +812,20 @@ func formatFinding(f checkFinding) string {
 		return fmt.Sprintf("%s — %s", f.Path, f.Detail)
 	case kindShadowed:
 		return fmt.Sprintf("%s: %s", profileRef(f), f.Detail)
+	case kindLauncherBroken:
+		if len(f.Launchers) == 0 {
+			return shortHome(f.Detail)
+		}
+		return fmt.Sprintf("%s · %s names it", f.Profile, launcherWhere(f.Launchers[0]))
+	case kindPointerMissing:
+		if f.File == "" {
+			return shortHome(f.Detail)
+		}
+		return fmt.Sprintf("%s · %s", shortPath(f.File), f.Path)
+	case kindOwnerGone, kindNoOwner:
+		return f.Profile
+	case kindUnlaunched:
+		return fmt.Sprintf("%s · %s", f.Profile, secretsPhrase(f.Secrets, f.SecretsMissing))
 	case kindOriginGone:
 		// Rendered from the structured fields, not Detail, whose sentence is
 		// frozen for the app. The path is cut from the front to fit one
