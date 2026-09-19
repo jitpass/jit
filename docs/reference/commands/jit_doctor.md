@@ -60,6 +60,12 @@ Exit 2 is the FINDINGS code, matching `jit scan --fail-on`; exit 1 means
 doctor itself couldn't run (a bad flag, an unreadable vault root), which a
 pipeline needs to tell apart from a machine that is genuinely broken.
 
+`jit doctor ignore <name>` takes a finding you have decided to leave as
+it is out of the counts: the exit code, ok and --strict. The report folds
+those into one [ignored] line at the end, and --show-ignored lists them.
+An ignored finding comes back, and counts again, when what it says
+changes. Doctor itself only reads that list; ignore and unignore write it.
+
 Use --profile to narrow the run to a single profile. The service, backup and
 shim sections are skipped then; the whole-vault key checks are not, because
 with no master key no profile resolves and saying otherwise would be false.
@@ -79,6 +85,7 @@ jit doctor [flags]
   jit doctor --verbose --orphans   # also what passed, and each unreferenced secret
   jit doctor --wrap                # only the shims, no vault access
   jit doctor --strict              # advisory warnings gate too, for CI
+  jit doctor ignore aws-dev        # stop counting a finding you mean to keep
 ```
 
 ### Options
@@ -88,6 +95,7 @@ jit doctor [flags]
       --format string          output format: "text" (default) or "json" (default "text")
       --orphans                list each unreferenced vault secret; without it the count alone is reported
       --profile string         check only this profile, and skip the service/backup/wrap health sections
+      --show-ignored           list each ignored finding in the [ignored] group, not just the count
       --strict                 exit non-zero on advisory warnings too, for a pipeline that wants them to gate
       --verbose                also list every check that passed, not just the ones that failed
       --wrap jit wrap doctor   check only the wrapped-tool shims, without opening the vault (replaces jit wrap doctor)
@@ -102,4 +110,6 @@ jit doctor [flags]
 ### SEE ALSO
 
 * [jit](jit.md)	 - Local-first developer secret runtime
+* [jit doctor ignore](jit_doctor_ignore.md)	 - Stop counting a doctor finding you have decided to leave as it is
+* [jit doctor unignore](jit_doctor_unignore.md)	 - Count an ignored doctor finding again
 
