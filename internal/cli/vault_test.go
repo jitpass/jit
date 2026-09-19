@@ -444,7 +444,7 @@ func TestVaultRmGroupNameDeletesWholeGroup(t *testing.T) {
 	if gestures != 1 {
 		t.Errorf("user-presence gestures = %d, want 1 for the whole group", gestures)
 	}
-	if !strings.Contains(buf.String(), "jamf-2 is a group: deleting all 3 secrets under it.") {
+	if !strings.Contains(buf.String(), "jamf-2 is a group of 3 secrets.") {
 		t.Errorf("expected the expansion announced, got:\n%s", buf.String())
 	}
 	ro := &vault.Vault{Root: root, RecipientID: "test-device"}
@@ -1421,6 +1421,7 @@ func TestVaultRmRejectsBadPathBeforePrompting(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
+	t.Cleanup(func() { cmd.SetOut(nil); cmd.SetErr(nil) })
 	err := cmd.RunE(cmd, []string{"not a valid path!! with spaces"})
 	if err == nil {
 		t.Fatal("RunE succeeded on a malformed secret path, want a validation error")

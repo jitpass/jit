@@ -4,22 +4,18 @@
 package cli
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/jitpass/jit/internal/mount"
 )
 
-// TestReferencesForPathsAndRmWarning pins the `jit vault rm` advisory: a
-// path wired to a profile is named before the confirmation, a mount served
-// from that profile attaches to the SAME reference (never a duplicate row),
-// the remedy routes to `jit migrate remove` for the mounted file, and an
-// unreferenced path stays silent. Also the lenient contract: an unloadable
-// profile is skipped, never an error, because a warning must not block rm.
-func TestReferencesForPathsAndRmWarning(t *testing.T) {
+// TestReferencesForPaths pins the lenient, display-only lookup `jit vault
+// list` uses: a mount served from a profile attaches to the SAME reference
+// (never a duplicate row), an unreferenced path stays absent, and an
+// unloadable profile is skipped, never an error.
+func TestReferencesForPaths(t *testing.T) {
 	home := withFixtureHome(t)
 	cwd := t.TempDir()
 	root := t.TempDir()
@@ -70,29 +66,5 @@ func TestReferencesForPathsAndRmWarning(t *testing.T) {
 	}
 	if _, ok := refs["unref/KEY"]; ok {
 		t.Errorf("unreferenced path must not appear, got %+v", refs["unref/KEY"])
-	}
-
-	var buf bytes.Buffer
-	printRmReferenceWarnings(&buf, refs)
-	out := buf.String()
-	for _, want := range []string{
-		"svc/API_KEY is wired to profile",
-		"mcp-caido-2/CAIDO_URL is wired to profile",
-		"served by the mount at /x/ws/.mcp.json",
-		"jit migrate remove /x/ws/.mcp.json",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("rm warning missing %q, got:\n%s", want, out)
-		}
-	}
-	if strings.Contains(out, "unref/KEY") {
-		t.Errorf("rm warning must not mention unreferenced paths, got:\n%s", out)
-	}
-
-	// No references at all -> total silence, the pre-existing rm experience.
-	buf.Reset()
-	printRmReferenceWarnings(&buf, map[string][]secretReference{})
-	if buf.Len() != 0 {
-		t.Errorf("no references must print nothing, got:\n%s", buf.String())
 	}
 }
