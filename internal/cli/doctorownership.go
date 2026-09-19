@@ -73,9 +73,24 @@ func launcherFindings(m *launchers.Map, v *vault.Vault) ([]checkFinding, map[str
 	if m == nil {
 		return nil, nil
 	}
+	// Whether the vault holds anything at all, for the companion sweep's
+	// own guard. List is metadata-only (no KeyWrapper, no decrypt), the
+	// same contract every other doctor probe keeps; a vault that won't
+	// list counts as empty, which only suppresses findings.
+	paths, err := v.List()
+	vaultGroups := map[string]bool{}
+	if err == nil {
+		secrets, _ := splitBackupPaths(paths)
+		for _, p := range secrets {
+			if g, _, ok := strings.Cut(p, "/"); ok {
+				vaultGroups[g] = true
+			}
+		}
+	}
+
 	var out []checkFinding
 	out = append(out, brokenLauncherFindings(m)...)
-	out = append(out, missingPointerFindings(m)...)
+	out = append(out, missingPointerFindings(m, vaultGroups)...)
 	out = append(out, ownerFindings(m)...)
 	unlaunched, names := unlaunchedFindings(m, v)
 	return append(out, unlaunched...), names
@@ -305,22 +320,199 @@ func resolvedPath(p string) string {
 
 // missingPointerFindings reports each pointer naming a secret the vault
 // doesn't hold, once per file and path.
-func missingPointerFindings(m *launchers.Map) []checkFinding {
+func missingPointerFindings(m *launchers.Map, vaultGroups map[string]bool) []checkFinding {
 	var out []checkFinding
 	seen := map[string]bool{}
-	for _, l := range m.MissingPointers {
+	add := func(l launchers.Launcher, detail string) {
 		key := l.File + "\x00" + l.VaultPath
 		if seen[key] {
-			continue
+			return
 		}
 		seen[key] = true
 		out = append(out, checkFinding{
 			Kind:   kindPointerMissing,
 			File:   l.File,
 			Path:   l.VaultPath,
-			Detail: fmt.Sprintf("%s points at %s, which isn't in the vault", shortPath(l.File), l.VaultPath),
+			Detail: detail,
 			Action: fmt.Sprintf("`jit vault set %s`", l.VaultPath),
 		})
+	}
+	for _, l := range m.MissingPointers {
+		add(l, fmt.Sprintf("%s points at %s, which isn't in the vault", shortPath(l.File), l.VaultPath))
+	}
+	out = append(out, missingCompanionFindings(m, vaultGroups)...)
+	return out
+}
+
+// missingCompanionFindings reports `.pointers` companions whose recorded
+// group the vault no longer holds — ONE finding per file and group, not per
+// value. A companion is written once per mount and names every variable it
+// served, so a renamed or never-restored group turns into as many rows as
+// that file has lines: eight stale files produced forty-four rows in the
+// field, each offering to `jit vault set` one value, which is neither how
+// the group comes back nor what went wrong. The group is the fact; the
+// count is evidence for it (design/output-style.md: state a shared fact
+// once on the group header).
+//
+// The action names no `jit vault set`: when a whole group is absent the
+// file is almost always a leftover from a machine that spelled the group
+// differently, and setting forty-four values by hand is not the fix.
+// `jit vault list` shows what the vault does hold, which is what tells the
+// reader whether this was a rename or a real loss.
+//
+// Skipped entirely when the vault holds nothing, for the same reason the
+// orphan sweep needs at least one profile: a vault that reads as empty
+// would call every companion on the disk stale. That is not hypothetical —
+// jit doctor run from a directory with no project vault sees exactly that.
+func missingCompanionFindings(m *launchers.Map, vaultGroups map[string]bool) []checkFinding {
+	if len(vaultGroups) == 0 {
+		return nil
+	}
+	type group struct {
+		file, name string
+	}
+	counts := map[group]int{}
+	var order []group
+	seen := map[string]bool{}
+	for _, l := range m.MissingCompanions {
+		key := l.File + "\x00" + l.VaultPath
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		name, _, ok := strings.Cut(l.VaultPath, "/")
+		if !ok || name == "" {
+			name = l.VaultPath
+		}
+		// A group that EXISTS but is missing some of its values is not a
+		// stale companion: it is the ordinary "this secret isn't stored
+		// yet" case, and the profile or mount that names those paths
+		// already reports each one with its own `jit vault set`. Saying
+		// "the vault has nothing under hibob/" while the vault holds two
+		// secrets under hibob/ was simply false, and it duplicated four
+		// better findings. Only a group with NOTHING in it is evidence
+		// that the companion names a group that has gone away.
+		if vaultGroups[name] {
+			continue
+		}
+		g := group{file: l.File, name: name}
+		if counts[g] == 0 {
+			order = append(order, g)
+		}
+		counts[g]++
+	}
+	out := make([]checkFinding, 0, len(order))
+	for _, g := range order {
+		out = append(out, checkFinding{
+			Kind: kindStalePointers,
+			File: g.file,
+			Path: g.name,
+			// Says what the file expects and what is there instead, rather
+			// than naming the shortfall in jit's own vocabulary. "A group
+			// the vault doesn't hold" made a reader ask what a group is;
+			// the path prefix in the sentence answers that by showing it.
+			Detail: fmt.Sprintf("%s expects %s under %s/, and the vault has nothing under %s/",
+				shortPath(g.file), countWord(counts[g], "value", "values"), g.name, g.name),
+			// A note, not a command. There is no one thing to run: the
+			// values have to be STORED (one `jit vault set` per key, or a
+			// `jit migrate` of the file they came from), and which of
+			// those applies depends on whether the group was renamed or
+			// never restored. Two earlier drafts offered `jit vault list`
+			// here, which is a listing, not a repair — a button that
+			// prints the vault and fixes nothing.
+			// The store half stays PROSE, deliberately: backticking it would
+			// mint a `jit vault set <group>/<NAME>` button nobody can run
+			// as written, which is the same defect as the `jit vault list`
+			// drafts above wearing a different shape. What did change is
+			// the vocabulary — "under a group a profile names" asked the
+			// reader to hold two pieces of jit's own jargon at once to
+			// follow an instruction they then still could not act on, and
+			// the detail line above already spells out the path prefix.
+			Action: fmt.Sprintf(
+				"store the values it lists, or `jit migrate forget %s` to delete the file",
+				shortPath(g.file)),
+		})
+	}
+	return out
+}
+
+// dropRegistryEmptyWhenProfilesExist removes the registry_empty finding when
+// the home walk found profile manifests in OTHER directories.
+//
+// The finding exists to catch one thing: a vault restored onto a machine
+// whose profile registry did not come with it. That is a claim about the
+// MACHINE, while the profile check that raises it only ever looks in cwd's
+// store and the global one — so a project-scoped setup read from any other
+// directory raises it too, and nothing is wrong there at all. The JitPass
+// app hit it on every run: it starts doctor from home, where a project's
+// manifests are by definition not.
+//
+// Dropped rather than reworded. An earlier version rewrote the row to name
+// the projects that do hold profiles, which read as a contradiction — a row
+// headed "Registry Empty" whose own text said sixteen profiles exist — and
+// offered a next step ("run jit doctor over there") for a machine with
+// nothing wrong with it. A finding that cannot be true is not worth
+// explaining; the per-profile checks report anything actually broken.
+func dropRegistryEmptyWhenProfilesExist(findings []checkFinding, m *launchers.Map, cwd string) []checkFinding {
+	if m == nil {
+		return findings
+	}
+	here := resolvedPath(cwd)
+	elsewhere := false
+	for _, p := range m.Profiles {
+		if p.Scope == profile.ScopeProject && p.Project != "" && resolvedPath(p.Project) != here {
+			elsewhere = true
+			break
+		}
+	}
+	if !elsewhere {
+		return findings
+	}
+	out := findings[:0]
+	for _, f := range findings {
+		if f.Kind != kindRegistryEmpty {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// dropOrphansReferencedElsewhere removes orphan findings for secrets a
+// profile OUTSIDE this directory references.
+//
+// The orphan sweep reads cwd's store, the global one and the mount registry
+// (profile.ListAll). "No profile references it" is a claim about the whole
+// machine, and those three sources are not the whole machine: every project
+// store under home is missing from them. The guard that was supposed to stop
+// this — at least one profile must have loaded — is satisfied by a single
+// mount-scope profile, so one registered mount is enough to make doctor call
+// an entire vault orphaned. Run from home on a project-scoped setup that is
+// exactly what happened: 69 of 71 secrets reported as orphans, every one of
+// them referenced by a profile one directory away.
+//
+// The launcher map has already walked home for these findings' sake, so the
+// references are in hand. `jit vault orphans` has always used that stricter
+// picture (collectVaultUsers); this is doctor catching up, and it can only
+// ever REMOVE an orphan finding, never invent one.
+func dropOrphansReferencedElsewhere(findings []checkFinding, m *launchers.Map) []checkFinding {
+	if m == nil {
+		return findings
+	}
+	referenced := map[string]bool{}
+	for _, p := range m.Profiles {
+		for _, path := range p.Values {
+			referenced[path] = true
+		}
+	}
+	if len(referenced) == 0 {
+		return findings
+	}
+	out := findings[:0]
+	for _, f := range findings {
+		if f.Kind == kindOrphan && referenced[f.Path] {
+			continue
+		}
+		out = append(out, f)
 	}
 	return out
 }

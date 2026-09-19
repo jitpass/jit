@@ -205,9 +205,15 @@ func applyProfileSourceFallback(meta map[string]vault.SecretInfo, root, cwd stri
 // meta, when non-nil (`-l` on a terminal), carries each secret's header
 // info so the grouped view can annotate every line with its class and
 // last-updated age; nil keeps the plain, unannotated listing.
-func printVaultList(out io.Writer, secrets, backups []string, showBackups, grouped, long bool, meta map[string]vault.SecretInfo, axis string) {
+// summary is where the closing count line and the empty-vault hint go. On a
+// terminal it is out; piped or redirected it is stderr, because everything
+// this function writes to out is a path a script consumes and the summary is
+// not one. `jit vault list | tail -3` used to hand awk "69 secrets stored."
+// as though it were a vault path — the help text at vaultListCmd promises the
+// opposite, and printVaultGetFooter already keeps that promise this way.
+func printVaultList(out, summary io.Writer, secrets, backups []string, showBackups, grouped, long bool, meta map[string]vault.SecretInfo, axis string) {
 	if len(secrets) == 0 && len(backups) == 0 {
-		fmt.Fprintln(out, hlCmds("No secrets stored yet. Run `jit vault set <path>` to add one, or `jit migrate .` to move existing secrets in."))
+		fmt.Fprintln(summary, hlCmds("No secrets stored yet. Run `jit vault set <path>` to add one, or `jit migrate .` to move existing secrets in."))
 		return
 	}
 	switch {
@@ -244,15 +250,15 @@ func printVaultList(out io.Writer, secrets, backups []string, showBackups, group
 	}
 	switch {
 	case len(backups) == 0:
-		fmt.Fprintf(out, "\n%d %s stored%s.\n", len(secrets), secretsWord, linkedClause)
+		fmt.Fprintf(summary, "\n%d %s stored%s.\n", len(secrets), secretsWord, linkedClause)
 	case len(secrets) == 0 && showBackups:
-		writeVaultFooter(out, true, hlCmds(fmt.Sprintf("No secrets stored yet, %d encrypted file %s kept for `jit migrate undo`.", len(backups), backupsWord)))
+		writeVaultFooter(summary, true, hlCmds(fmt.Sprintf("No secrets stored yet, %d encrypted file %s kept for `jit migrate undo`.", len(backups), backupsWord)))
 	case len(secrets) == 0:
-		writeVaultFooter(out, false, hlCmds(fmt.Sprintf("No secrets stored yet, %d encrypted file %s kept for `jit migrate undo` (list with --all).", len(backups), backupsWord)))
+		writeVaultFooter(summary, false, hlCmds(fmt.Sprintf("No secrets stored yet, %d encrypted file %s kept for `jit migrate undo` (list with --all).", len(backups), backupsWord)))
 	case showBackups:
-		writeVaultFooter(out, true, hlCmds(fmt.Sprintf("%d %s stored%s, plus %d encrypted file %s kept for `jit migrate undo`.", len(secrets), secretsWord, linkedClause, len(backups), backupsWord)))
+		writeVaultFooter(summary, true, hlCmds(fmt.Sprintf("%d %s stored%s, plus %d encrypted file %s kept for `jit migrate undo`.", len(secrets), secretsWord, linkedClause, len(backups), backupsWord)))
 	default:
-		writeVaultFooter(out, true, hlCmds(fmt.Sprintf("%d %s stored%s, plus %d encrypted file %s kept for `jit migrate undo` (list with --all).", len(secrets), secretsWord, linkedClause, len(backups), backupsWord)))
+		writeVaultFooter(summary, true, hlCmds(fmt.Sprintf("%d %s stored%s, plus %d encrypted file %s kept for `jit migrate undo` (list with --all).", len(secrets), secretsWord, linkedClause, len(backups), backupsWord)))
 	}
 	// Duplicate-group nudge only decorates the default terminal view — a
 	// piped/grep listing (grouped == false) and the provenance axes stay
@@ -648,7 +654,7 @@ func sharedGroupNote(paths []string, ancestorPath string, meta map[string]vault.
 	}
 	class, origin := "", ""
 	classUniform, originUniform := true, true
-	var newest int64
+	var newest, oldestCreated int64
 	for i, rel := range paths {
 		info, ok := meta[ancestorPath+rel]
 		if !ok {
@@ -667,6 +673,11 @@ func sharedGroupNote(paths []string, ancestorPath string, meta map[string]vault.
 		if info.UpdatedUnix > newest {
 			newest = info.UpdatedUnix
 		}
+		// The OLDEST creation in the group: when the group first appeared,
+		// which is what tells two same-named groups apart.
+		if info.CreatedUnix > 0 && (oldestCreated == 0 || info.CreatedUnix < oldestCreated) {
+			oldestCreated = info.CreatedUnix
+		}
 	}
 	if classUniform {
 		note.class = class
@@ -674,7 +685,16 @@ func sharedGroupNote(paths []string, ancestorPath string, meta map[string]vault.
 	if !topLevel {
 		return note
 	}
-	if newest > 0 {
+	// The age slot says when the group was BORN when that differs from when
+	// it was last touched, because "which of these two groups is the older
+	// one" is the question a duplicate pair raises and the last-updated
+	// stamp cannot answer — a re-migration rewrites both copies at once.
+	// Where nothing has happened since, the two are one fact and the slot
+	// keeps its original meaning.
+	switch {
+	case oldestCreated > 0 && newest > 0 && !sameStamp(oldestCreated, newest):
+		note.age = "created " + humanAgo(time.Since(time.Unix(oldestCreated, 0))) + " ago"
+	case newest > 0:
 		note.age = humanAgo(time.Since(time.Unix(newest, 0))) + " ago"
 	}
 	switch {
@@ -898,6 +918,17 @@ func secretMetaSuffix(info vault.SecretInfo) string {
 	case info.Storage == "" && info.Class == vault.ClassOnePassword:
 		parts = append(parts, "local copy")
 	}
+	// Created is stated only when it is a DIFFERENT fact from updated: a
+	// secret stored once and never touched again would otherwise read
+	// "created 3d ago · updated 3d ago", which is noise on most rows. Where
+	// they differ it is the fact the listing could not answer before —
+	// telling two same-named groups apart (mcp-jamf and mcp-jamf-2 carried
+	// identical mtimes and no history, so nothing in the terminal view said
+	// which came first). The envelope has carried CreatedUnix since v2; only
+	// --format json ever showed it.
+	if info.CreatedUnix > 0 && !sameStamp(info.CreatedUnix, info.UpdatedUnix) {
+		parts = append(parts, "created "+humanAgo(time.Since(time.Unix(info.CreatedUnix, 0)))+" ago")
+	}
 	if info.UpdatedUnix > 0 {
 		parts = append(parts, "updated "+humanAgo(time.Since(time.Unix(info.UpdatedUnix, 0)))+" ago")
 	}
@@ -905,6 +936,18 @@ func secretMetaSuffix(info vault.SecretInfo) string {
 		parts = append(parts, "likely config")
 	}
 	return strings.Join(parts, " · ")
+}
+
+// sameStamp reports whether two envelope times are close enough to be the
+// same event. A write records created and updated from two clock reads, so
+// they can differ by a tick without anything having happened since; a
+// minute is far below the resolution humanAgo renders and far above that.
+func sameStamp(a, b int64) bool {
+	d := a - b
+	if d < 0 {
+		d = -d
+	}
+	return d < 60
 }
 
 // leafKeyName is the final path segment — the environment-variable-style key
@@ -1352,7 +1395,11 @@ var vaultListCmd = &cobra.Command{
 		if grouped {
 			applyProfileSourceFallback(meta, root, cwd, secrets)
 		}
-		printVaultList(cmd.OutOrStdout(), secrets, backups, vaultListAll, grouped, vaultListLong, meta, axis)
+		summary := cmd.OutOrStdout()
+		if !grouped {
+			summary = cmd.ErrOrStderr()
+		}
+		printVaultList(cmd.OutOrStdout(), summary, secrets, backups, vaultListAll, grouped, vaultListLong, meta, axis)
 		return nil
 	},
 }
@@ -2291,7 +2338,7 @@ func printStaleMountGroup(out io.Writer, stale []mount.Entry) {
 	if len(stale) == 0 {
 		return
 	}
-	fmt.Fprintf(out, "  [stale mounts] %d · project deleted without unmounting first\n", len(stale))
+	fmt.Fprintf(out, "  [stale mounts] %d · project deleted, renamed or moved without unmounting first\n", len(stale))
 	home, _ := os.UserHomeDir()
 	for _, e := range stale {
 		fmt.Fprintf(out, "    %s %s\n", cWarn.Sprint(glyphWarn), displayPath(home, e.MountPath))

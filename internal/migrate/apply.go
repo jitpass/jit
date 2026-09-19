@@ -164,6 +164,19 @@ type EnvFileMigration struct {
 	// project's own name is exactly the kind of surprise that reads as a
 	// bug when it goes unexplained.
 	NamespaceMovedFrom string
+	// KeptVariables are the variables the manifest ALREADY listed that this
+	// file never mentioned, in sorted order — empty in the common case of a
+	// manifest this migration created.
+	//
+	// claimNamespace merges into an existing manifest rather than replacing
+	// it, so that a re-run can never silently drop an earlier variable's
+	// entry. The cost is invisible to the user: migrate a two-variable .env
+	// beside a manifest a git clone restored with six, and the result claims
+	// six — two with values and four without, which `jit doctor` then
+	// reports as a broken profile with no hint of where the other four came
+	// from. A real user lost an evening to exactly that. Callers must say
+	// what was kept; the merge is defensible, staying quiet about it is not.
+	KeptVariables []string
 	// Mounted is false for a backup-suffixed file (GAPS.md #34) — its
 	// secrets still moved into the vault above, but EnvPath was replaced
 	// with a pointer file instead of a live-mounted FIFO, since nothing
@@ -291,6 +304,10 @@ func ApplyEnvFile(v *vault.Vault, profilesRoot, envPath string) (EnvFileMigratio
 		return EnvFileMigration{}, err
 	}
 
+	// Computed before the loop below adds this file's own variables to
+	// entries, which is the only moment the two sets are still distinct.
+	kept := keptVariables(entries, varNames)
+
 	meta, err := newProvenance(vault.ClassDotenv, envPath)
 	if err != nil {
 		return EnvFileMigration{}, err
@@ -351,10 +368,31 @@ func ApplyEnvFile(v *vault.Vault, profilesRoot, envPath string) (EnvFileMigratio
 		ProfileName:        profileName,
 		ProfilePath:        profilePath,
 		Variables:          varNames,
+		KeptVariables:      kept,
 		BackupPath:         backupPath,
 		Mounted:            mounted,
 		NamespaceMovedFrom: movedFrom,
 	}, nil
+}
+
+// keptVariables names what an existing manifest contributed that this file
+// did not: the entries already in it under no variable this .env declares.
+func keptVariables(entries profile.Profile, varNames []string) []string {
+	if len(entries) == 0 {
+		return nil
+	}
+	mine := make(map[string]bool, len(varNames))
+	for _, name := range varNames {
+		mine[name] = true
+	}
+	var kept []string
+	for name := range entries {
+		if !mine[name] {
+			kept = append(kept, name)
+		}
+	}
+	sort.Strings(kept)
+	return kept
 }
 
 // deriveProfileName names the resulting profile after envPath's location

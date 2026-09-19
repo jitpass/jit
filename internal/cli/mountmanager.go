@@ -495,6 +495,31 @@ func (m *mountManager) ensureServing(entries []mount.Entry) {
 			continue
 		}
 
+		// Nothing at the mount path is a SKIP, like any other structural
+		// reason this entry cannot serve — checked before the goroutine
+		// exists rather than discovered inside it.
+		//
+		// Without this the entry still entered served, Serve's blocking
+		// O_WRONLY open failed ENOENT, and the structural-exit path below
+		// logged in full and then deleted the map entry — so the next unlock
+		// and every OpRefresh retried and logged again, forever. That is
+		// precisely the flood the skip gate was built for after 2026-08-17,
+		// and it was the one case that escaped it, because the gate only
+		// covers mounts that never entered served.
+		//
+		// It has to be a skip and not an after-the-fact note for the same
+		// reason: a mount that enters served and then dies would clear its
+		// own suppression on the next pass, so the steady state would
+		// alternate "recovered" and "skipped" — two lines per unlock instead
+		// of the zero this produces. A renamed or moved project is the
+		// canonical producer (design/project-relocation.md), and the file
+		// coming back — a relocate, or the volume remounting — closes the
+		// transition through logMountRecovered like every other skip.
+		if _, statErr := os.Lstat(entry.MountPath); statErr != nil {
+			m.logMountSkip(entry.MountPath, fmt.Errorf("nothing at this path to serve: %w", statErr))
+			continue
+		}
+
 		p, varOrder, err := profile.LoadFileOrdered(entry.ProfilePath)
 		if err != nil {
 			m.logMountSkip(entry.MountPath, err)

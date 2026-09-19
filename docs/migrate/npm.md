@@ -28,8 +28,8 @@ through untouched, and the token slots fill from the vault only for a
 - The global `~/.npmrc` is machine-wide - name it explicitly to convert
   it; a project `.npmrc` is picked up when you name that project's
   directory.
-- Rotating a token: `jit vault set` on the path shown in the mount's
-  pointers file - the next granted read serves it.
+- Rotating a token: `jit vault set` on the path shown in the mount's profile
+  manifest - the next granted read serves it.
 
 Reversing: `jit unmount <path>` writes the file back plain, or
 [`jit migrate undo`](./undo-and-remove.md) restores the original bytes.

@@ -54,7 +54,7 @@ func TestVaultListFooterCountsLinks(t *testing.T) {
 		"myapp/C": {Class: vault.ClassDotenv},
 	}
 	var buf bytes.Buffer
-	printVaultList(&buf, secrets, nil, false, false, false, meta, "path")
+	printVaultList(&buf, &buf, secrets, nil, false, false, false, meta, "path")
 	if !strings.Contains(buf.String(), "3 secrets stored, 2 linked to 1Password.") {
 		t.Errorf("footer missing the linked count, got:\n%s", buf.String())
 	}
@@ -62,7 +62,7 @@ func TestVaultListFooterCountsLinks(t *testing.T) {
 	// And silence when nothing is linked — the clause must not become
 	// boilerplate on every vault.
 	buf.Reset()
-	printVaultList(&buf, secrets, nil, false, false, false, map[string]vault.SecretInfo{}, "path")
+	printVaultList(&buf, &buf, secrets, nil, false, false, false, map[string]vault.SecretInfo{}, "path")
 	if strings.Contains(buf.String(), "1Password") {
 		t.Errorf("no links, no clause, got:\n%s", buf.String())
 	}

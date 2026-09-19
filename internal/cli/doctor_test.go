@@ -553,12 +553,21 @@ func TestDoctorUnloadableMountProfileIsAdvisory(t *testing.T) {
 	}
 }
 
-// TestDoctorStaleMountDoesNotSuppressOrphans: a registry entry whose manifest
-// is GONE (project deleted without `jit unmount`) is a different state from
-// one that won't parse — a missing file names no references, so skipping it
-// cannot make the orphan sweep under-count. Doctor used to lump both into
-// [mount] and suppress the sweep, hiding the orphan count in exactly the
-// cleanup that state calls for. Same split `jit vault orphans` v0.93.0 made.
+// TestDoctorStaleMountDoesNotSuppressOrphans: a registry entry with no
+// manifest at its recorded path is a different state from one that won't
+// parse — a missing file names no references, so skipping it cannot make the
+// orphan sweep under-count. Doctor used to lump both into [mount] and
+// suppress the sweep, hiding the orphan count in exactly the cleanup that
+// state calls for. Same split `jit vault orphans` v0.93.0 made.
+//
+// It also pins what the finding must NOT offer. This state is produced
+// identically by a deleted project and by one that was renamed or moved
+// (design/project-relocation.md), and `jit vault orphans --prune` deletes
+// every orphaned secret in the same confirmation — so a user who reorganised
+// their folders was one button from losing the values those folders still
+// used. The assertion used to look for "--prune" anywhere in the report and
+// passed on the ORPHAN group's action, never checking the stale mount's at
+// all; it reads the finding directly now.
 func TestDoctorStaleMountDoesNotSuppressOrphans(t *testing.T) {
 	home := withFixtureHome(t)
 	cwd := withFixtureCwd(t)
@@ -573,8 +582,36 @@ func TestDoctorStaleMountDoesNotSuppressOrphans(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a stale mount registration is advisory and must not fail the run: %v", err)
 	}
-	if !strings.Contains(out, "[mount: stale]") || !strings.Contains(out, "vault orphans --prune") {
-		t.Errorf("expected a stale-mount warning routing to `jit vault orphans --prune`, got:\n%s", out)
+	if !strings.Contains(out, "[mount: stale]") {
+		t.Errorf("expected a stale-mount warning, got:\n%s", out)
+	}
+	outcome, gerr := gatherDoctorOutcome(nil, "", false)
+	if gerr != nil {
+		t.Fatal(gerr)
+	}
+	var stale []checkFinding
+	for _, f := range outcome.Findings {
+		if f.Kind == kindMountStale {
+			stale = append(stale, f)
+		}
+	}
+	if len(stale) != 1 {
+		t.Fatalf("want one stale-mount finding, got %+v", stale)
+	}
+	if strings.Contains(stale[0].Action, "--prune") {
+		t.Errorf("a state jit cannot tell from a rename must not offer a secret-deleting fix: %q", stale[0].Action)
+	}
+	for _, fix := range fixesFor(stale[0].Kind, stale[0].Action) {
+		if fix.Destructive {
+			t.Errorf("stale-mount fix %q must not be destructive: it only edits the registry", fix.Command)
+		}
+	}
+	// And it says what jit actually saw, never which of the three causes it was.
+	if strings.Contains(stale[0].Detail, "project deleted without") {
+		t.Errorf("the detail must not assert a cause jit cannot know: %q", stale[0].Detail)
+	}
+	if !strings.Contains(stale[0].Detail, "renamed or moved") {
+		t.Errorf("the detail must name the causes it cannot tell apart: %q", stale[0].Detail)
 	}
 	if !strings.Contains(out, "[orphan]") {
 		t.Errorf("a missing manifest names no references, so the orphan sweep must still run, got:\n%s", out)
@@ -941,9 +978,16 @@ func TestDoctorJSONCarriesStructuredAction(t *testing.T) {
 	// And as data: each backticked command, classified, so a client never
 	// has to split prose on backticks or guess what a command does.
 	got := result.Problems[0].Fixes
+	// Two, because a missing secret has two opposite answers and doctor
+	// cannot pick between them: supply the value, or drop the entry that
+	// asks for it. The drop names the profile and variable outright — a fix
+	// the user has to finish typing is one they will run in a terminal
+	// instead, which is where this class of confusion started. `jit migrate`
+	// is deliberately not a third: output-style.md gives an action line at
+	// most one next step, and a reader given three takes none.
 	want := []doctorFix{
 		{Command: "jit vault set a/one", Argv: []string{"vault", "set", "a/one"}, Presence: true},
-		{Command: "jit migrate <path>", Argv: []string{"migrate", "<path>"}, Needs: "<path>"},
+		{Command: "jit profile drop app A_KEY", Argv: []string{"profile", "drop", "app", "A_KEY"}, Destructive: true},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("fixes = %+v, want %+v", got, want)

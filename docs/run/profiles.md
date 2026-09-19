@@ -7,15 +7,35 @@ description: The YAML manifest mapping environment variables to vault paths - na
 
 Migration's bookkeeping unit is the **profile**: a small YAML manifest
 mapping environment-variable names to vault paths. `jit migrate` and
-`jit wrap` create them automatically; `jit run`, `jit export`, and
-`jit doctor` resolve them. A manifest holds only names and vault paths,
-never a secret value, which is exactly why it is safe to commit:
+`jit wrap` create them automatically, and
+[`jit profile create`](../reference/commands/jit_profile_create.md) writes
+one directly; `jit run`, `jit export`, and `jit doctor` resolve them. A
+manifest holds only names and vault paths, never a secret value, which is
+exactly why it is safe to commit:
 
 ```
 # .jit/profiles/myapp.yaml
 DATABASE_URL: myapp/DATABASE_URL
 STRIPE_API_KEY: myapp/STRIPE_API_KEY
 ```
+
+The format is stable and hand-editing is supported — it is a plain map of
+variable name to vault path, and jit re-reads it on every run. `jit profile
+create` is the quicker route to the same file, and the only one that can
+rebuild a manifest you have lost:
+
+```sh
+jit profile create myapp          # every secret in the myapp/ vault group
+jit profile create myapp --from old-name
+jit profile create deploy DATABASE_URL=myapp/DATABASE_URL
+```
+
+Secrets and the manifests naming them travel by **different mechanisms**: a
+vault export carries the secrets, while the manifests live in the project
+(commit them) or in `~/.jit/profiles`. A vault restored onto a new Mac
+without its manifests resolves nothing — `jit status` and `jit doctor` both
+report that state explicitly — and `jit profile create <name>` is how each
+one comes back.
 
 To see how your stored secrets line up against your profiles, use
 [`jit status --secrets`](../reference/commands/jit_status.md). It reconciles

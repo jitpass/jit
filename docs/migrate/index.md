@@ -185,7 +185,7 @@ Limit a run to specific categories with `--only`
 
 | `--only` | Vault gets | The original file becomes | Guide |
 |---|---|---|---|
-| `env` | one secret per variable | a live-mounted named pipe, plus a git-safe `.env.pointers` companion | [.env files](./env-files.md) |
+| `env` | one secret per variable | a live-mounted named pipe, plus a git-safe profile manifest under `.jit/profiles/` | [.env files](./env-files.md) |
 | `tfvars` | one secret per variable, stored as `TF_VAR_<name>` | the secret lines deleted; terraform reads them back as `TF_VAR_` env vars via `jit run` | [Terraform tfvars](./tfvars.md) |
 | `shell` | one secret per `export KEY=value` line | the export line replaced with `eval "$(jit export --profile ...)"` | [Shell configs](./shell-configs.md) |
 | `history` | one secret per distinct credential recorded in a shell history file (`~/.zsh_history`, `~/.bash_history`, `$HISTFILE`, fish) | every occurrence of the value replaced in place by a `<jit:redacted:VAR>` marker naming the vault entry; the command line itself, and every other byte of the file, untouched | [Shell history](./shell-history.md) |

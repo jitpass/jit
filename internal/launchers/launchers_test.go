@@ -357,3 +357,38 @@ func TestFixedMCPConfigPathsIncludeEditors(t *testing.T) {
 		}
 	}
 }
+
+// TestDiscoverCompanionTargetsAreCheckedNotCounted: a `.pointers` companion
+// is git-safe documentation, not a launcher. Its targets must be reachable
+// for checking — on a restored machine it is the only record of what the
+// mount beside it served — without ever making a secret look USED, which
+// would change what `jit vault orphans --prune` deletes.
+func TestDiscoverCompanionTargetsAreCheckedNotCounted(t *testing.T) {
+	f := newFixture(t)
+	companion := pointerfile.CompanionPath(filepath.Join(f.project, ".env"))
+	write(t, companion, pointerfile.Header+"\nGONE="+pointerfile.Value("okta-mcp-server-2/OKTA_ORG_URL")+"\n")
+
+	stored := map[string]bool{"security-ops/API": true, "wrap-clisso/blockaid-client-secret": true}
+	m := f.discover(t, Options{SecretExists: func(p string) (bool, error) { return stored[p], nil }})
+
+	// Never a user: nothing that decides a deletion may see it.
+	for _, l := range m.Pointers {
+		if l.VaultPath == "okta-mcp-server-2/OKTA_ORG_URL" {
+			t.Fatalf("a companion must not count as a pointer/user: %+v", l)
+		}
+	}
+	var got []string
+	for _, l := range m.Companions {
+		got = append(got, filepath.Base(l.File)+"->"+l.VaultPath)
+	}
+	if strings.Join(got, ",") != ".env.pointers->okta-mcp-server-2/OKTA_ORG_URL" {
+		t.Errorf("companions = %v", got)
+	}
+	if len(m.MissingCompanions) != 1 || m.MissingCompanions[0].VaultPath != "okta-mcp-server-2/OKTA_ORG_URL" {
+		t.Errorf("missing companions = %+v, want the vault group that does not exist", m.MissingCompanions)
+	}
+	// The pre-existing pointer answer must be untouched by all of this.
+	if len(m.MissingPointers) != 0 {
+		t.Errorf("missing pointers = %+v, want none: both real pointer targets are stored", m.MissingPointers)
+	}
+}
