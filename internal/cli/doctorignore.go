@@ -406,8 +406,14 @@ func (fp *ignoreFingerprinter) finding(f checkFinding) string {
 			add(list.key, v)
 		}
 	}
+	// A per-secret finding's launchers are context (which tools start the
+	// profile), not what it says: a tool added or removed must not bring
+	// an ignored [missing] back.
 	var ls []string
 	for _, l := range f.Launchers {
+		if perSecretKind(f.Kind) {
+			break
+		}
 		k := strings.Join([]string{string(l.Kind), l.File, l.Detail, l.Profile, l.VaultPath, strconv.Itoa(l.Layer)}, "|")
 		if l.Kind == launchers.KindAWS {
 			k += "|" + strings.Join(fp.awsSection(l.File, l.Detail), "\n")

@@ -343,7 +343,9 @@ type checkFinding struct {
 	// missing pointer's pointer file. Config is the launching config an
 	// owner finding's fix attaches, Configs every config launching it, and
 	// Owners the profile's .source owner list, verbatim. Launchers are the
-	// launchers behind the finding. Secrets and SecretsMissing count an
+	// launchers behind the finding; on a per-secret finding (missing,
+	// corrupt, bad_path, vault_error) they are what starts its profile,
+	// set by withProfileLaunchers. Secrets and SecretsMissing count an
 	// unlaunched profile's distinct vault paths, and Origin is the file it
 	// was made from when that file is gone.
 	File           string               `json:"file,omitempty"`

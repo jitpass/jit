@@ -527,3 +527,102 @@ func TestDoctorIgnoreNames(t *testing.T) {
 		t.Error("names must not match loosely")
 	}
 }
+
+// A missing secret names the tools that start its profile, in JSON, so
+// the app can say which tool won't start without other findings to read.
+func TestDoctorMissingCarriesItsProfileLaunchers(t *testing.T) {
+	home := ignoreFixture(t)
+	result, _ := doctorJSON(t)
+	config := filepath.Join(home, "Security-Ops", ".mcp.json")
+	n := 0
+	for _, f := range result.Problems {
+		if f.Kind != kindMissing {
+			continue
+		}
+		n++
+		if len(f.Launchers) != 1 || f.Launchers[0].Kind != launchers.KindMCP || f.Launchers[0].File != config ||
+			f.Launchers[0].Detail != "okta-mcp-server" || f.Launchers[0].Profile != "mcp-okta-mcp-server" {
+			t.Errorf("missing %s launchers = %+v", f.Variable, f.Launchers)
+		}
+	}
+	if n != 2 {
+		t.Errorf("want 2 missing findings, got %d", n)
+	}
+}
+
+// The launchers are JSON only: [missing] reads byte for byte as it did.
+func TestDoctorMissingTextUnchangedByLaunchers(t *testing.T) {
+	ignoreFixture(t)
+	out, _ := execDoctor(t)
+	want := "[missing]  2\n" +
+		"  ✗ profile \"mcp-okta-mcp-server\" (global): OKTA_ORG_URL →\n" +
+		"    mcp-okta-mcp-server/OKTA_ORG_URL, not in the vault\n" +
+		"  ✗ profile \"mcp-okta-mcp-server\" (global): OKTA_SCOPES →\n" +
+		"    mcp-okta-mcp-server/OKTA_SCOPES, not in the vault\n" +
+		"  → jit vault set <path> for each, or jit migrate <path> to convert the files\n" +
+		"    they came from\n\n"
+	if !strings.Contains(out, want) {
+		t.Errorf("[missing] changed:\n%s\nwant:\n%s", out, want)
+	}
+
+	outcome, err := gatherDoctorOutcome(nil, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var missing, bare []checkFinding
+	for _, f := range outcome.Findings {
+		if f.Kind == kindMissing {
+			if len(f.Launchers) == 0 {
+				t.Fatalf("fixture's missing finding has no launchers: %+v", f)
+			}
+			missing = append(missing, f)
+			f.Launchers = nil
+			bare = append(bare, f)
+		}
+	}
+	var with, without bytes.Buffer
+	writeFindingGroups(&with, glyphRisk, cRisk, missing, false)
+	writeFindingGroups(&without, glyphRisk, cRisk, bare, false)
+	if with.String() != without.String() {
+		t.Errorf("launchers changed the text:\n%s\nvs\n%s", with.String(), without.String())
+	}
+}
+
+// A tool added or removed is not a change to a [missing] finding: its
+// ignore holds.
+func TestDoctorIgnoreFingerprintSkipsProfileLaunchers(t *testing.T) {
+	home := ignoreFixture(t)
+	miss := checkFinding{Kind: kindMissing, Profile: "p", Scope: "global", Variable: "A", Path: "p/A"}
+	withTool := miss
+	withTool.Launchers = []launchers.Launcher{{Kind: launchers.KindMCP, File: "/x/.mcp.json", Detail: "okta", Profile: "p"}}
+	if fingerprintOf(miss) != fingerprintOf(withTool) {
+		t.Error("a per-secret finding's launchers must stay out of its fingerprint")
+	}
+
+	if _, err := execDoctorSub(t, "ignore", "--kind", "missing", "mcp-okta-mcp-server"); err != nil {
+		t.Fatal(err)
+	}
+	jit := testJitPath(t)
+	writeMCPConfig(t, filepath.Join(home, "Security-Ops", ".mcp.json"), map[string]string{
+		"okta-mcp-server": mcpServerJSON(jit, "mcp-okta-mcp-server"),
+		"okta-second":     mcpServerJSON(jit, "mcp-okta-mcp-server"),
+	})
+	result, _ := doctorJSON(t)
+	for _, f := range result.Problems {
+		if f.Kind == kindMissing {
+			t.Errorf("a new tool un-ignored [missing]: %+v", f)
+		}
+	}
+	n := 0
+	for _, f := range result.Ignored {
+		if f.Kind == kindMissing {
+			n++
+			if len(f.Launchers) != 2 {
+				t.Errorf("the ignored finding still lists both tools: %+v", f.Launchers)
+			}
+		}
+	}
+	if n != 2 {
+		t.Errorf("want both missing rows ignored, got %d", n)
+	}
+}
