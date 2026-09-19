@@ -49,7 +49,8 @@ var migrateRemoveCmd = &cobra.Command{
 		"are kept), and then the project's profile manifests, including the ones\n" +
 		"created for this project's MCP servers, the vault secrets they\n" +
 		"reference, the project's encrypted file backups, and the .jit/ directory\n" +
-		"itself are all deleted.\n\n" +
+		"itself are all deleted. A profile another config still owns or launches\n" +
+		"is kept; this project only comes off its owner list.\n\n" +
 		"You must name the project to remove; a bare `jit migrate remove` with no\n" +
 		"path does nothing. Name a FOLDER to remove that project, or name any\n" +
 		"FILE inside a project (e.g. its .env) and jit resolves up to the .jit/\n" +
@@ -321,12 +322,17 @@ func removeOneProject(cmd *cobra.Command, root, home, projectRoot string) error 
 	}
 	if len(plan.mounts) == 0 && len(plan.inPlace) == 0 && len(plan.companions) == 0 &&
 		len(plan.profileInfos) == 0 && len(plan.ownedGlobal) == 0 && len(plan.backups) == 0 &&
-		len(plan.deletePaths) == 0 && len(plan.jitDirs) == 0 && len(plan.mcpRestores) == 0 {
+		len(plan.deletePaths) == 0 && len(plan.jitDirs) == 0 && len(plan.mcpRestores) == 0 &&
+		len(plan.disowned) == 0 {
 		fmt.Fprint(out, hlCmds(fmt.Sprintf("No jit artifacts found in %s, nothing to remove. (Machine-level migrations are reversed with `jit migrate undo`.)\n", displayPath(home, projectRoot))))
 		return nil
 	}
 
 	printProjectRemovalPlan(out, home, plan)
+
+	if plan.ownerListOnly() {
+		return disownOnly(cmd, plan)
+	}
 
 	// Confirm BEFORE auth — declining must never cost a Touch ID prompt
 	// for work that's about to be aborted (the ordering every mutating
@@ -344,10 +350,7 @@ func removeOneProject(cmd *cobra.Command, root, home, projectRoot string) error 
 	// this command both puts plaintext back on disk AND permanently deletes
 	// vault secrets; neither may ride a cached session another same-user
 	// process could be riding (see openVaultFreshAuth).
-	v, err := openVaultFreshAuth()
-	if err != nil {
-		return fmt.Errorf("jit migrate remove: %w", err)
-	}
+	//
 	// ...and the challenge must fire NOW, explicitly — not lazily on first
 	// key use. A run with nothing left to restore (files already back via
 	// `jit migrate undo` — the common removal sequence) is deletion-only,
@@ -356,7 +359,8 @@ func removeOneProject(cmd *cobra.Command, root, home, projectRoot string) error 
 	// real first-run report). Priming here also means a run that DOES
 	// restore files won't prompt a second time. requireFreshUserPresence
 	// also records the fresh auth into this invocation's audit entry.
-	if err := requireFreshUserPresence(v, "permanently remove this project's secrets from the vault"); err != nil {
+	v, err := removeOpenVault("permanently remove this project's secrets from the vault")
+	if err != nil {
 		return fmt.Errorf("jit migrate remove: %w", err)
 	}
 
@@ -514,6 +518,56 @@ func removeOneProject(cmd *cobra.Command, root, home, projectRoot string) error 
 	return nil
 }
 
+// removeOpenVault is remove's strict gate: a vault opened on its own fresh
+// Touch ID/passcode challenge, fired now (requireFreshUserPresence), never a
+// cached service session. A var so no test can reach the production keychain,
+// the same seam as uninstallOpenVault.
+var removeOpenVault = func(reason string) (*vault.Vault, error) {
+	v, err := openVaultFreshAuth()
+	if err != nil {
+		return nil, err
+	}
+	return v, requireFreshUserPresence(v, reason)
+}
+
+// ownerListOnly reports whether the plan's ONLY work is taking this project
+// off kept profiles' owner lists: nothing to restore, delete or unmount, so
+// no secret is decrypted, written back or destroyed. That is the one plan
+// that skips the fresh Touch ID; anything more keeps the full gate.
+func (plan projectRemovalPlan) ownerListOnly() bool {
+	return len(plan.disowned) > 0 &&
+		len(plan.mounts) == 0 && len(plan.inPlace) == 0 && len(plan.companions) == 0 &&
+		len(plan.rewritten) == 0 && len(plan.mcpRestores) == 0 &&
+		len(plan.profileInfos) == 0 && len(plan.ownedGlobal) == 0 &&
+		len(plan.deletePaths) == 0 && len(plan.orphanSecrets) == 0 &&
+		len(plan.backups) == 0 && len(plan.jitDirs) == 0
+}
+
+// disownOnly applies an ownerListOnly plan: y/N (skipped by --yes), then
+// the sidecar rewrites. No vault is opened and no Touch ID is asked for —
+// an owner list is a plain file naming configs, and nothing here reads,
+// restores or deletes a secret.
+func disownOnly(cmd *cobra.Command, plan projectRemovalPlan) error {
+	out := cmd.OutOrStdout()
+	// Tight: the plan already ends on a blank line (jitDirs, the line that
+	// usually closes it, is always empty here).
+	if !migrateRemoveYes && !confirmPromptTight(cmd, fmt.Sprintf(
+		"Take this project off %s? [y/N] ",
+		countWord(len(plan.disowned), "owner list", "owner lists"))) {
+		fmt.Fprintln(out, "Aborted. Nothing was changed.")
+		return nil
+	}
+	for _, d := range plan.disowned {
+		if err := migrate.WriteProfileOwners(d.path, d.owners); err != nil {
+			return fmt.Errorf("jit migrate remove: %w", err)
+		}
+	}
+	fmt.Fprintf(out, "Took this project off %s; the %s kept.\n",
+		countWord(len(plan.disowned), "owner list", "owner lists"),
+		pluralWord(len(plan.disowned), "profile is", "profiles are"))
+	return nil
+}
+
 // looseFileRemovalPlan is everything removeOneLooseFile decided to do for a
 // single loose secret file, gathered before anything is confirmed, authed, or
 // mutated. A loose secret has a self-contained footprint — its own dedicated
@@ -580,17 +634,14 @@ func removeOneLooseFile(cmd *cobra.Command, root, home, file string) error {
 		return nil
 	}
 
-	v, err := openVaultFreshAuth()
-	if err != nil {
-		return fmt.Errorf("jit migrate remove: %w", err)
-	}
 	// Force the fresh challenge NOW and audit it: a run whose file is already
 	// plaintext (undo already ran) is deletion-only, and Vault.Remove never
 	// touches the KeyWrapper, so without this the promised Touch ID approval
 	// would silently never happen (the same GAPS.md #60 class removeOneProject
 	// guards against). Priming here also means a run that DOES restore prompts
 	// exactly once.
-	if err := requireFreshUserPresence(v, "permanently remove this migrated file's secrets from the vault"); err != nil {
+	v, err := removeOpenVault("permanently remove this migrated file's secrets from the vault")
+	if err != nil {
 		return fmt.Errorf("jit migrate remove: %w", err)
 	}
 
@@ -956,7 +1007,10 @@ func buildProjectRemovalPlan(root, home, cwd string, rv *vault.Vault) (projectRe
 				}
 			}
 			if !decision.remove {
-				plan.disowned = append(plan.disowned, disownedProfile{path: info.Path, owners: decision.remaining})
+				plan.disowned = append(plan.disowned, disownedProfile{
+					name: info.Name, path: info.Path, owners: decision.remaining,
+					keptOwner: decision.keptOwner, keptLauncher: decision.keptLauncher,
+				})
 				continue
 			}
 			plan.ownedGlobal = append(plan.ownedGlobal, info)
@@ -1100,10 +1154,29 @@ func (usage vaultUsage) sharedOutside(removing []profile.Info, ownPointer func(s
 }
 
 // disownedProfile is a global profile a project removal keeps, with the owner
-// list it is left with (possibly empty, which removes the sidecar).
+// list it is left with (possibly empty, which removes the sidecar) and why it
+// is kept: keptOwner is the first live owner file outside the project, else
+// keptLauncher the first file outside it that launches the profile. Both
+// empty means launchedOutside failed closed (a launcher source it could not
+// read), which keeps the profile without a file to name.
 type disownedProfile struct {
-	path   string
-	owners []string
+	name         string
+	path         string
+	owners       []string
+	keptOwner    string
+	keptLauncher string
+}
+
+// keptReason is the plan row's reason for keeping d.
+func (d disownedProfile) keptReason(home string) string {
+	switch {
+	case d.keptOwner != "":
+		return "still owned by " + displayPath(home, d.keptOwner)
+	case d.keptLauncher != "":
+		return "launched by " + displayPath(home, d.keptLauncher)
+	default:
+		return "may be launched elsewhere; not every config was readable"
+	}
 }
 
 // globalRemovalDecision is what removing a project does to one global-store
@@ -1114,6 +1187,9 @@ type globalRemovalDecision struct {
 	inside    []string
 	remaining []string
 	remove    bool
+	// Why a kept profile stays; see disownedProfile.
+	keptOwner    string
+	keptLauncher string
 }
 
 // globalProfileRemoval decides a global-store profile's fate when the project
@@ -1142,12 +1218,19 @@ func globalProfileRemoval(root, profilePath string, m *launchers.Map) globalRemo
 	if len(d.inside) == 0 {
 		return d
 	}
+	var liveOutside []string
 	for _, owner := range migrate.LiveProfileOwners(profilePath) {
-		if !pathWithinDir(root, migrate.OwnerFile(owner)) {
-			return d
+		if file := migrate.OwnerFile(owner); !pathWithinDir(root, file) {
+			liveOutside = append(liveOutside, file)
 		}
 	}
-	if launchedOutside(root, profilePath, m) {
+	if len(liveOutside) > 0 {
+		sort.Strings(liveOutside)
+		d.keptOwner = liveOutside[0]
+		return d
+	}
+	if outside, launcher := launchedOutside(root, profilePath, m); outside {
+		d.keptLauncher = launcher
 		return d
 	}
 	d.remove = true
@@ -1164,29 +1247,37 @@ func globalProfileRemoval(root, profilePath string, m *launchers.Map) globalRemo
 // removal deletes a profile something else launches. Keeping it costs a
 // profile that outlives the project, which doctor reports; deleting it costs
 // a server that no longer starts.
-func launchedOutside(root, profilePath string, m *launchers.Map) bool {
+//
+// launcher is the first (sorted) launching file outside root, for the plan
+// to name; it is empty when the answer is the fail-closed "yes".
+func launchedOutside(root, profilePath string, m *launchers.Map) (outside bool, launcher string) {
 	if m == nil {
-		return true
+		return true, ""
 	}
 	if m.Err(launchers.SourceMCP, launchers.SourceAWS, launchers.SourceKube, launchers.SourceWrap,
 		launchers.SourceShellRC, launchers.SourceHelpers, launchers.SourceMounts) != nil {
-		return true
+		return true, ""
 	}
 	p := m.ProfileAt(profilePath)
 	if p == nil {
-		return true
+		return true, ""
 	}
 	croot := canonicalPath(root)
+	var found []string
 	for _, l := range p.Launchers {
 		where := l.File
 		if l.Kind == launchers.KindMount {
 			where = l.Detail // File is the registry; the mount path is where it lands
 		}
 		if !pathWithinDir(croot, canonicalPath(where)) {
-			return true
+			found = append(found, where)
 		}
 	}
-	return false
+	if len(found) == 0 {
+		return false, ""
+	}
+	sort.Strings(found)
+	return true, found[0]
 }
 
 // backupMatchesDisk reports whether rec's backed-up bytes are already what
@@ -1365,6 +1456,19 @@ func printProjectRemovalPlan(out interface{ Write([]byte) (int, error) }, home s
 		printMigrateResultCategory(out, "Vault secrets KEPT (another profile still references them)", n)
 		for _, p := range plan.keptShared {
 			fmt.Fprintf(out, "  "+glyphBullet+" %s\n", p)
+		}
+		fmt.Fprintln(out)
+	}
+	if n := len(plan.disowned); n > 0 {
+		// Next to the kept vault secrets on purpose: these are the profiles
+		// that keep them. Only the owner list changes.
+		printMigrateResultCategory(out, "Profiles kept, still used outside this project", n)
+		for _, d := range plan.disowned {
+			fmt.Fprintf(out, "  "+glyphBullet+" %s · %s\n", d.name, d.keptReason(home))
+		}
+		fmt.Fprintln(out, "  this project comes off their owner list; nothing else changes")
+		if plan.ownerListOnly() {
+			fmt.Fprintln(out, "Nothing to decrypt or restore; no Touch ID needed.")
 		}
 		fmt.Fprintln(out)
 	}
