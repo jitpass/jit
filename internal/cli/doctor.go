@@ -132,7 +132,9 @@ var doctorCmd = &cobra.Command{
 		"the name, with which copy runs decided by PATH order), an MCP profile\n" +
 		"whose recorded config is deleted or was never recorded, a global\n" +
 		"profile no known tool uses (only said when the look through your\n" +
-		"home covered all of it; a script or alias can still use it), and any shim\n" +
+		"home covered all of it; a script or alias can still use it), an\n" +
+		"~/.aws/config profile clisso makes the first time you log in (`clisso\n" +
+		"get <app>`, with clisso's capture wrap installed), and any shim\n" +
 		"complaint that is only true of the shell you happen to be in — a CI job\n" +
 		"that doesn't put the shim dir on PATH is not a broken machine. --strict\n" +
 		"makes those count too.\n\n" +
@@ -215,6 +217,9 @@ var doctorCmd = &cobra.Command{
 		var unlaunched map[string]bool
 		if doctorProfile == "" {
 			launcherFound, unlaunched = launcherFindings(doctorLauncherMap(root, cwd, v), v)
+			if home, herr := os.UserHomeDir(); herr == nil {
+				launcherFound = notLoggedInFindings(launcherFound, home)
+			}
 		}
 
 		outcome, err = runProfileCheck(cwd, v, checkOptions{
@@ -765,6 +770,10 @@ func findingLabel(f checkFinding) string {
 		return "[jit path: after the next upgrade]"
 	case kindProfileMissing:
 		return "[profile missing]"
+	case kindNotLoggedIn:
+		// Names the state, not a fault: the header is what tells the
+		// reader this group is waiting on them to log in, not broken.
+		return "[not logged in]"
 	case kindPointerMissing:
 		return "[pointer missing]"
 	case kindConfigDeleted:
@@ -817,6 +826,14 @@ func formatFinding(f checkFinding) string {
 			return shortHome(f.Detail)
 		}
 		return fmt.Sprintf("%s · %s names it", f.Profile, launcherWhere(f.Launchers[0]))
+	case kindNotLoggedIn:
+		// Led by the command the reader types, which is how they know the
+		// profile: `aws --profile dev`, not the jit profile aws-dev.
+		if len(f.Launchers) == 0 {
+			return shortHome(f.Detail)
+		}
+		l := f.Launchers[0]
+		return fmt.Sprintf("%s · %s", awsProfileCommand(l.Detail), launcherWhere(l))
 	case kindPointerMissing:
 		if f.File == "" {
 			return shortHome(f.Detail)

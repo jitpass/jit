@@ -42,7 +42,9 @@ installed on PATH (a Homebrew copy and a tarball copy each answering to
 the name, with which copy runs decided by PATH order), an MCP profile
 whose recorded config is deleted or was never recorded, a global
 profile no known tool uses (only said when the look through your
-home covered all of it; a script or alias can still use it), and any shim
+home covered all of it; a script or alias can still use it), an
+~/.aws/config profile clisso makes the first time you log in (`clisso
+get <app>`, with clisso's capture wrap installed), and any shim
 complaint that is only true of the shell you happen to be in — a CI job
 that doesn't put the shim dir on PATH is not a broken machine. --strict
 makes those count too.

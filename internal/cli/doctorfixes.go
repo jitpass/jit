@@ -98,6 +98,10 @@ var externalFixClasses = map[string]fixClass{
 	"sudo rm":        {destructive: true},
 	"chmod":          {},
 	"echo":           {}, // appends a line to a shell rc
+	// An SSO login through the capture wrap: it deletes nothing, and it
+	// asks for the IdP password and MFA itself, then stores the minted
+	// session in the vault. Needs a terminal for those prompts.
+	"clisso get": {presence: true},
 }
 
 // fixPlaceholder matches an argument the caller has to supply: <file>,

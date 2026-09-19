@@ -231,6 +231,14 @@ const (
 	// entry's outer layer; this one covers the inner layers and every other
 	// by-name launcher.
 	kindProfileMissing checkKind = "profile_missing"
+	// kindNotLoggedIn ([not logged in]): a kindProfileMissing whose config
+	// is an ~/.aws/config section naming aws-<app>, where <app> is an app
+	// ~/.clisso.yaml defines and clisso's capture wrap is installed. The
+	// profile is missing only because nobody has run `clisso get <app>`
+	// yet, which is what creates it: a state, not breakage. Advisory; with
+	// no capture wrap the same finding stays a problem, since then no login
+	// ever makes the profile.
+	kindNotLoggedIn checkKind = "not_logged_in"
 	// kindPointerMissing: a jit://vault pointer (~/.clisso.yaml, an in-place
 	// pointer file) names a secret the vault doesn't hold, so the tool that
 	// reads it gets nothing. No profile names it, so [missing] can't see it.
@@ -271,7 +279,7 @@ var allCheckKinds = []checkKind{
 	kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion,
 	kind1Password, kind1PasswordLink,
 	kindProfileMissing, kindPointerMissing, kindConfigDeleted, kindConfigNotRecorded,
-	kindNoKnownTool,
+	kindNoKnownTool, kindNotLoggedIn,
 }
 
 // warning reports whether a finding of this kind is advisory (does not fail
@@ -288,7 +296,7 @@ var allCheckKinds = []checkKind{
 func (k checkKind) warning() bool {
 	switch k {
 	case kindOrphan, kindDuplicates, kindOriginGone, kindShadowed, kindService, kindBackup, kindMount, kindMountStale, kindWrapEnv, kindAudit, kindInstall, kindJitPathUpgrade, kindCompletion, kindLegacyEnvelope, kindMCPNested,
-		kindConfigDeleted, kindConfigNotRecorded, kindNoKnownTool:
+		kindConfigDeleted, kindConfigNotRecorded, kindNoKnownTool, kindNotLoggedIn:
 		return true
 	default:
 		return false
