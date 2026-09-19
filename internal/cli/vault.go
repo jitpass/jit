@@ -2452,7 +2452,7 @@ func confirmPrompt(cmd *cobra.Command, prompt string) bool {
 
 // confirmPromptTight is confirmPrompt without the blank line before the
 // question, for a short plan whose last line the question closes (`jit
-// profile adopt` and `rm`): there the gap splits one block into two.
+// profile attach` and `rm`): there the gap splits one block into two.
 func confirmPromptTight(cmd *cobra.Command, prompt string) bool {
 	out := cmd.ErrOrStderr()
 	_, _ = cBold.Fprint(out, prompt)

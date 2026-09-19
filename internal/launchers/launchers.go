@@ -406,7 +406,7 @@ func (d *discovery) loadProfiles() {
 		}
 		owners, err := migrate.ReadProfileOwners(p.Path)
 		if err != nil {
-			d.fail(SourceOwners, p.Path, fmt.Errorf("reading the owners of profile %s: %w", p.Path, err))
+			d.fail(SourceOwners, p.Path, fmt.Errorf("reading the record of profile %s: %w", p.Path, err))
 			continue
 		}
 		p.Owners = owners

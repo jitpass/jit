@@ -227,7 +227,7 @@ func TestDoctorChecksGlobalScopeProfilesByDefault(t *testing.T) {
 	withFixtureCwd(t) // no project-local profile at all, only the global one below
 	writeFixtureProfile(t, home, "shell", "STRIPE_KEY: stripe/dev-key\n")
 	// Launched, so its missing secret is a [missing] problem rather than a
-	// count on a [no known launcher] row.
+	// count on a [no known tool] row.
 	launchFromShellRC(t, home, "shell")
 	// stripe/dev-key deliberately not planted in the vault.
 
@@ -645,7 +645,7 @@ func TestDoctorOriginGoneOffersNoDelete(t *testing.T) {
 	writeFixtureProfile(t, home, "mcp-okta", "OKTA_API_TOKEN: mcp-okta/OKTA_API_TOKEN\n")
 	writeFixtureProfile(t, home, "mcp-okta-mcp-server", "OKTA_ORG_URL: mcp-okta-mcp-server/OKTA_ORG_URL\n")
 	writeFixtureProfile(t, cwd, "app", "OKTA_ORG_URL: mcp-okta-mcp-server/OKTA_ORG_URL\n")
-	// Launched: an unlaunched profile is reported under [no known launcher]
+	// Launched: an unlaunched profile is reported under [no known tool]
 	// and leaves [origin gone] (TestDoctorUnlaunchedLeavesOriginGone).
 	launchFromShellRC(t, home, "mcp-okta", "mcp-okta-mcp-server")
 	plantOriginSecret(t, home, "mcp-okta/OKTA_API_TOKEN", gone)
@@ -715,7 +715,7 @@ func TestDoctorOriginGoneOffersNoDelete(t *testing.T) {
 // row that fits keeps "which no longer exists", one whose path must wrap
 // drops it (the header says it), a └ line names the profiles, and the group
 // closes on the note. Run from ~ itself, so the profiles are global, each
-// launched from an rc line so it isn't [no known launcher] instead.
+// launched from an rc line so it isn't [no known tool] instead.
 func TestDoctorOriginGoneRendersTheApprovedShape(t *testing.T) {
 	home := withFixtureHome(t)
 	chdirForTest(t, home)

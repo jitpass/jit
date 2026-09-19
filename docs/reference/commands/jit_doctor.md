@@ -26,7 +26,7 @@ It exits 2 when something this setup depends on is actually broken: a
 secret missing, corrupt, or unparseable; the whole vault unreadable
 because this Mac's master key is gone from the keychain or a master-key
 rotation never finished; a wrapped tool's installation damaged, which
-means that tool now runs unwrapped or not at all; a launcher (an MCP
+means that tool now runs unwrapped or not at all; a config (an MCP
 entry, ~/.aws/config, a kubeconfig user, a shell rc line) naming a
 profile that doesn't exist; or a jit://vault pointer naming a secret the
 vault doesn't hold. Everything else it reports is an advisory warning:
@@ -40,9 +40,9 @@ mount whose profile won't load or whose project was deleted without
 unmounting, a stopped service, a stale or missing vault backup, more than one jit
 installed on PATH (a Homebrew copy and a tarball copy each answering to
 the name, with which copy runs decided by PATH order), an MCP profile
-whose recorded owner config is gone or was never recorded, a global
-profile with no known launcher (only said when the look through your
-home covered all of it; a script or alias can still run it), and any shim
+whose recorded config is deleted or was never recorded, a global
+profile no known tool uses (only said when the look through your
+home covered all of it; a script or alias can still use it), and any shim
 complaint that is only true of the shell you happen to be in — a CI job
 that doesn't put the shim dir on PATH is not a broken machine. --strict
 makes those count too.

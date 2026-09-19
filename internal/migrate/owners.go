@@ -111,7 +111,7 @@ func OwnerFile(owner string) string {
 
 // LiveProfileOwners is ProfileOwners minus every owner whose config file no
 // longer exists. A gone owner launches nothing and must not keep a profile
-// alive; that is the whole of design/doctor-repair.md's owner_gone case.
+// alive; that is the whole of design/doctor-repair.md's config_deleted case.
 // Only a definite "does not exist" drops an owner: a file that can't be
 // stat'ed for another reason (a privacy-denied folder) is kept, since
 // "can't tell" must not read as "gone".
