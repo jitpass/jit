@@ -141,8 +141,11 @@ const (
 	// asked about is, and the registry can outlive a project directory
 	// legitimately (see reconcileSecrets, which tolerates the same state).
 	kindMount checkKind = "mount"
-	// kindMountStale: a registered mount whose profile manifest is GONE — the
-	// project directory was deleted without `jit unmount` first. Split from
+	// kindMountStale: a registered mount with no profile manifest at its
+	// recorded path — the project directory was deleted, renamed or moved
+	// without `jit unmount` first. jit cannot tell those apart: the registry
+	// holds absolute paths, nothing reconciles them, and all three leave the
+	// identical state (design/project-relocation.md). Split from
 	// kindMount because the two must behave differently, the same distinction
 	// `jit vault orphans` draws (GAPS.md #67): a manifest that exists but
 	// won't parse leaves that profile's references UNKNOWN and so suppresses
@@ -950,18 +953,26 @@ func mountCheckTargets(root string, seen map[string]bool) (targets []mountTarget
 		// this state calls for. Same split `collectReferencedPaths` makes.
 		if _, statErr := os.Stat(e.ProfilePath); os.IsNotExist(statErr) {
 			findings = append(findings, checkFinding{
-				Kind:   kindMountStale,
-				Scope:  scopeMount,
-				Path:   e.MountPath,
-				Detail: fmt.Sprintf("the mount at %s is still registered, but its profile is gone: project deleted without unmounting first", shortPath(e.MountPath)),
-				// unmount first: on an orphaned mount it clears just this
-				// registration, with no auth and no secret touched. orphans
-				// --prune clears every stale mount too, but in the same
-				// confirmation it permanently deletes every orphaned SECRET —
-				// naming it first, as "no secret is touched", once walked a
-				// user up to a "delete 45 secrets? [y/N]" they had not asked for.
-				Action: "`jit unmount " + shortPath(e.MountPath) + "` clears just this registration (no secret is touched); " +
-					"`jit vault orphans --prune` clears every stale mount but also permanently deletes every orphaned secret",
+				Kind:  kindMountStale,
+				Scope: scopeMount,
+				Path:  e.MountPath,
+				// Says what jit SAW, not what it guesses happened. The
+				// registry records absolute paths and nothing reconciles
+				// them, so a renamed or moved project produces this state
+				// byte-for-byte identically to a deleted one — the folder's
+				// contents, mount included, simply travelled somewhere jit
+				// was not told about. Asserting "deleted" of a live project
+				// is how the offer below came to be aimed at a project that
+				// still exists.
+				Detail: fmt.Sprintf("the mount at %s is still registered, but there is no profile at its recorded path: the project was deleted, renamed or moved", shortPath(e.MountPath)),
+				// One command, and it only edits the registry: no auth, no
+				// secret touched. `jit vault orphans --prune` used to be
+				// named here as the bulk form, and it does not belong on a
+				// finding jit cannot tell from a rename — the same
+				// confirmation permanently deletes every orphaned SECRET, so
+				// a user reorganising their folders was one button from
+				// losing the values those folders still used.
+				Action: "`jit unmount " + shortPath(e.MountPath) + "` clears this registration; no secret is touched",
 			})
 			continue
 		}
@@ -985,6 +996,32 @@ func mountCheckTargets(root string, seen map[string]bool) (targets []mountTarget
 				Action: "fix the manifest, or `jit unmount " + shortPath(e.MountPath) + "` to stop tracking it",
 			})
 			continue
+		}
+		// The manifest is fine and the file it serves is GONE. Nothing in
+		// doctor stat'ed a mount path before this — only two counters in
+		// internal/audit did — so this state produced no finding at all,
+		// while the service logged a skip for it on every single unlock. The
+		// commonest cause is a project folder renamed or moved: its contents
+		// travelled, the registry did not (design/project-relocation.md).
+		//
+		// Deliberately NOT parseFailed and NOT a `continue`: the manifest
+		// loaded, so its references are real and must still reach the orphan
+		// sweep. A missing file is a broken mount, never a reason to call the
+		// secrets it names unreferenced.
+		if _, statErr := os.Lstat(e.MountPath); statErr != nil && os.IsNotExist(statErr) {
+			findings = append(findings, checkFinding{
+				Kind:   kindMount,
+				Scope:  scopeMount,
+				Path:   e.MountPath,
+				Detail: fmt.Sprintf("%s is registered as a live mount, but there is no file there: anything reading it gets nothing", shortPath(e.MountPath)),
+				// unmount is a real repair here, not just bookkeeping: the
+				// manifest and the vault values are both intact, so it writes
+				// the file back as plain content. That also makes it
+				// genuinely destructive (plaintext on disk), which the
+				// existing classification for `unmount` outside kindMountStale
+				// already says.
+				Action: "`jit unmount " + shortPath(e.MountPath) + "` writes the values back as a plain file, or re-create the mount where the project now is",
+			})
 		}
 		// The manifest's own filename is the only name a registry entry
 		// carries — there is no separate profile name in the registry.

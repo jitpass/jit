@@ -2338,7 +2338,7 @@ func printStaleMountGroup(out io.Writer, stale []mount.Entry) {
 	if len(stale) == 0 {
 		return
 	}
-	fmt.Fprintf(out, "  [stale mounts] %d · project deleted without unmounting first\n", len(stale))
+	fmt.Fprintf(out, "  [stale mounts] %d · project deleted, renamed or moved without unmounting first\n", len(stale))
 	home, _ := os.UserHomeDir()
 	for _, e := range stale {
 		fmt.Fprintf(out, "    %s %s\n", cWarn.Sprint(glyphWarn), displayPath(home, e.MountPath))
