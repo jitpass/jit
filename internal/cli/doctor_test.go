@@ -226,6 +226,9 @@ func TestDoctorChecksGlobalScopeProfilesByDefault(t *testing.T) {
 	home := withFixtureHome(t)
 	withFixtureCwd(t) // no project-local profile at all, only the global one below
 	writeFixtureProfile(t, home, "shell", "STRIPE_KEY: stripe/dev-key\n")
+	// Launched, so its missing secret is a [missing] problem rather than a
+	// count on a [no known launcher] row.
+	launchFromShellRC(t, home, "shell")
 	// stripe/dev-key deliberately not planted in the vault.
 
 	out, err := execDoctor(t)
@@ -642,6 +645,9 @@ func TestDoctorOriginGoneOffersNoDelete(t *testing.T) {
 	writeFixtureProfile(t, home, "mcp-okta", "OKTA_API_TOKEN: mcp-okta/OKTA_API_TOKEN\n")
 	writeFixtureProfile(t, home, "mcp-okta-mcp-server", "OKTA_ORG_URL: mcp-okta-mcp-server/OKTA_ORG_URL\n")
 	writeFixtureProfile(t, cwd, "app", "OKTA_ORG_URL: mcp-okta-mcp-server/OKTA_ORG_URL\n")
+	// Launched: an unlaunched profile is reported under [no known launcher]
+	// and leaves [origin gone] (TestDoctorUnlaunchedLeavesOriginGone).
+	launchFromShellRC(t, home, "mcp-okta", "mcp-okta-mcp-server")
 	plantOriginSecret(t, home, "mcp-okta/OKTA_API_TOKEN", gone)
 	plantOriginSecret(t, home, "mcp-okta-mcp-server/OKTA_ORG_URL", gone)
 
@@ -708,11 +714,13 @@ func TestDoctorOriginGoneOffersNoDelete(t *testing.T) {
 // design/doctor-repair.md Phase 1 approved, byte for byte at 80 columns: a
 // row that fits keeps "which no longer exists", one whose path must wrap
 // drops it (the header says it), a └ line names the profiles, and the group
-// closes on the note. Run from ~ itself, so the profiles are global.
+// closes on the note. Run from ~ itself, so the profiles are global, each
+// launched from an rc line so it isn't [no known launcher] instead.
 func TestDoctorOriginGoneRendersTheApprovedShape(t *testing.T) {
 	home := withFixtureHome(t)
 	chdirForTest(t, home)
 	writeFixtureProfile(t, home, "token", "TOKEN: token/TOKEN\n")
+	launchFromShellRC(t, home, "token")
 	plantOriginSecret(t, home, "token/TOKEN", filepath.Join(home, "token.txt"))
 
 	out, err := execDoctor(t)
@@ -733,6 +741,7 @@ func TestDoctorOriginGoneRendersTheApprovedShape(t *testing.T) {
 	writeFixtureProfile(t, home, "mcp-okta", "OKTA_API_TOKEN: mcp-okta/OKTA_API_TOKEN\n")
 	writeFixtureProfile(t, home, "mcp-okta-mcp-server",
 		"OKTA_CLIENT_ID: mcp-okta-mcp-server/OKTA_CLIENT_ID\nOKTA_ORG_URL: mcp-okta-mcp-server/OKTA_ORG_URL\n")
+	launchFromShellRC(t, home, "mcp-okta", "mcp-okta-mcp-server")
 	plantOriginSecret(t, home, "mcp-okta/OKTA_API_TOKEN", gone)
 	plantOriginSecret(t, home, "mcp-okta-mcp-server/OKTA_CLIENT_ID", gone)
 

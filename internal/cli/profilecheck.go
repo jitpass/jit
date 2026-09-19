@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jitpass/jit/internal/launchers"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/vault"
@@ -222,6 +223,32 @@ const (
 	// states want different words on the group header. Same split, same
 	// reason, as kindWrap and kindWrapEnv.
 	kindJitPathUpgrade checkKind = "jit_path_upgrade"
+	// kindLauncherBroken: a launcher names a profile by name (an MCP entry's
+	// wrapper layer, a credential_process line in ~/.aws/config, a
+	// kubeconfig user, a `jit export --profile` rc line) and no store holds
+	// a profile of that name, so whatever it starts fails. A hard problem,
+	// like kindMCP, which already reports an MCP entry's outer layer; this
+	// one covers the inner layers and every other by-name launcher.
+	kindLauncherBroken checkKind = "launcher_broken"
+	// kindPointerMissing: a jit://vault pointer (~/.clisso.yaml, an in-place
+	// pointer file) names a secret the vault doesn't hold, so the tool that
+	// reads it gets nothing. No profile names it, so [missing] can't see it.
+	kindPointerMissing checkKind = "pointer_missing"
+	// kindOwnerGone: an MCP profile whose recorded owners' files are all
+	// gone, while a live config launches it. Advisory: it runs today. It
+	// matters for the next delete: a profile with no live owner looks
+	// unowned, and `jit profile adopt` records the config that uses it.
+	kindOwnerGone checkKind = "owner_gone"
+	// kindNoOwner: an MCP profile a config launches that has no owner
+	// recorded at all (made before owners were, or by hand). Advisory, with
+	// the same fix as kindOwnerGone.
+	kindNoOwner checkKind = "no_owner"
+	// kindUnlaunched: a global profile with no known launcher and no live
+	// owner, reported only when the discovery walk covered all of home.
+	// Permanently advisory (design/doctor-repair.md, "Decided"): a script, an
+	// alias or a `jit run` typed at a prompt launches profiles nothing on
+	// disk records, so "no known launcher" is never proof of unused.
+	kindUnlaunched checkKind = "unlaunched"
 )
 
 // allCheckKinds enumerates every kind above, for the completeness tests that
@@ -240,6 +267,8 @@ var allCheckKinds = []checkKind{
 	kindAudit, kindMCP, kindMCPNested,
 	kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion,
 	kind1Password, kind1PasswordLink,
+	kindLauncherBroken, kindPointerMissing, kindOwnerGone, kindNoOwner,
+	kindUnlaunched,
 }
 
 // warning reports whether a finding of this kind is advisory (does not fail
@@ -255,7 +284,8 @@ var allCheckKinds = []checkKind{
 // one process and must never fail a CI run.
 func (k checkKind) warning() bool {
 	switch k {
-	case kindOrphan, kindDuplicates, kindOriginGone, kindShadowed, kindService, kindBackup, kindMount, kindMountStale, kindWrapEnv, kindAudit, kindInstall, kindJitPathUpgrade, kindCompletion, kindLegacyEnvelope, kindMCPNested:
+	case kindOrphan, kindDuplicates, kindOriginGone, kindShadowed, kindService, kindBackup, kindMount, kindMountStale, kindWrapEnv, kindAudit, kindInstall, kindJitPathUpgrade, kindCompletion, kindLegacyEnvelope, kindMCPNested,
+		kindOwnerGone, kindNoOwner, kindUnlaunched:
 		return true
 	default:
 		return false
@@ -297,13 +327,29 @@ type checkFinding struct {
 	// its own (when a backticked span in the prose is a reference, not a
 	// step). See doctorfixes.go.
 	Fixes []doctorFix `json:"fixes,omitempty"`
+	// The ownership kinds' structured half (doctorownership.go). File is the
+	// file that names the profile or secret: a broken launcher's config, a
+	// missing pointer's pointer file. Config is the launching config an
+	// owner finding's fix adopts to, Configs every config launching it, and
+	// Owners the profile's .source owner list, verbatim. Launchers are the
+	// launchers behind the finding. Secrets and SecretsMissing count an
+	// unlaunched profile's distinct vault paths, and Origin is the file it
+	// was made from when that file is gone.
+	File           string               `json:"file,omitempty"`
+	Config         string               `json:"config,omitempty"`
+	Configs        []string             `json:"configs,omitempty"`
+	Owners         []string             `json:"owners,omitempty"`
+	Launchers      []launchers.Launcher `json:"launchers,omitempty"`
+	Secrets        int                  `json:"secrets,omitempty"`
+	SecretsMissing int                  `json:"secrets_missing,omitempty"`
+	Origin         string               `json:"origin,omitempty"`
 }
 
 // actionIsNote reports whether a kind's Action is a note rather than a next
 // step: plain text closing the group, with no → and nothing to run. A cyan
 // arrow promises a command, and an origin_gone finding has none to offer.
 func (k checkKind) actionIsNote() bool {
-	return k == kindOriginGone
+	return k == kindOriginGone || k == kindLauncherBroken
 }
 
 // checkedRef is one variable→path reference that resolved cleanly, retained
@@ -345,6 +391,11 @@ type checkOptions struct {
 	// file and reports the ones that no longer exist on disk. Ignored when
 	// Profile is set, like the other whole-picture sweeps.
 	Origins bool
+	// Unlaunched names the global profiles doctor reports under [no known
+	// launcher]. Their missing secrets are counted on that row instead of
+	// under [missing], and their secrets don't make an [origin gone] group,
+	// so each profile is reported in one section.
+	Unlaunched map[string]bool
 }
 
 // checkOutcome is the structured result both jit doctor and jit status build
@@ -527,15 +578,22 @@ func runProfileCheck(cwd string, v *vault.Vault, opts checkOptions) (checkOutcom
 		}
 		sort.Strings(vars)
 
+		// A profile reported under [no known launcher] carries its own
+		// missing count and origin there (see checkOptions.Unlaunched).
+		unlaunched := e.scope == string(profile.ScopeGlobal) && opts.Unlaunched[e.name]
+
 		for _, varName := range vars {
 			secretPath := e.prof[varName]
-			out.SecretsChecked++
 			referenced[secretPath] = true
-			if by := referencedBy[secretPath]; len(by) == 0 || by[len(by)-1] != e.name {
+			if by := referencedBy[secretPath]; !unlaunched && (len(by) == 0 || by[len(by)-1] != e.name) {
 				referencedBy[secretPath] = append(by, e.name)
 			}
 
 			status := checkSecret(v, secretPath, opts.Integrity, cache)
+			if unlaunched && status.kind == kindMissing {
+				continue
+			}
+			out.SecretsChecked++
 			switch status.kind {
 			case kindCorrupt, kindMissing, kindVaultError, kindBadPath:
 				out.Findings = append(out.Findings, checkFinding{
