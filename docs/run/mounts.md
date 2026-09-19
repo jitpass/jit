@@ -93,9 +93,10 @@ Without an active `jit run` grant you'll see decoy values, not an error, and
 a named pipe can't support everything a regular file can (`stat` for size,
 `mmap`), so editors may behave oddly against it regardless. Instead:
 
-- **Where does a variable live?** Open the `.env.pointers` file next to the
-  mount. It's a plain, regular, git-safe file mapping each variable to its
-  vault path (`KEY=jit://vault/<path>`), never to a value.
+- **Where does a variable live?** Open the profile manifest the mount reads,
+  under `.jit/profiles/`. It's a plain, regular, git-safe file mapping each
+  variable to its vault path, never to a value. `jit status --secrets` prints
+  the same mapping.
 - **What's the actual value?** `jit vault get <path>` prints one secret
   (`--copy` sends it to the clipboard instead), or run `jit export`
   *without* `eval` to see a whole profile's resolved values.
