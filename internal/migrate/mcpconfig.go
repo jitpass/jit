@@ -405,14 +405,17 @@ func planMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, sourceScope,
 	// is the base to claim: a re-migration lands back on the same profile and
 	// simply refreshes it, instead of bumping to a spurious base-2 every time
 	// the file is migrated again. claimMCPNamespace still bumps when that
-	// profile turns out to belong to a DIFFERENT config file, which is the
-	// case the suffix exists for.
+	// profile turns out to belong to a DIFFERENT live config file with
+	// different values, which is the case the suffix exists for. A profile
+	// whose recorded owners are all gone is adopted instead, so a config
+	// copied from a deleted one lands back on the profiles it launches, and a
+	// nested entry collapses onto its outer profile rather than a -2 copy.
 	base := "mcp-" + sanitizeProfileName(serverName)
 	if len(rewrappedFrom) > 0 {
 		base = rewrappedFrom[0]
 	}
 
-	profileName, profilePath, entries, movedFrom, owners, err := claimMCPNamespace(v, pending, globalRoot, base, sourceScope, env)
+	profileName, profilePath, entries, movedFrom, owners, err := claimMCPNamespace(v, pending, globalRoot, base, sourceScope, rewrappedFrom, env)
 	if err != nil {
 		return mcpServerPlan{}, err
 	}
@@ -524,22 +527,54 @@ func profileSourceSidecarPath(profilePath string) string {
 // ownership test — every same-named server lands in the SAME store, so a
 // foreign server's earlier migration looks exactly like a legitimate
 // re-run of this one. Ownership is instead recorded per profile in a
-// ".source" sidecar naming the config file that created it:
+// ".source" sidecar listing the config files that own it (owners.go), and
+// each candidate is claimed under exactly one of these rules
+// (design/doctor-repair.md, Phase 2, "Migrate"):
 //
-//   - sidecar lists sourcePath among its owners → this config's own
-//     profile; refresh freely (the re-run/undo-then-remigrate case). The
-//     returned owners keep every other owner the sidecar lists.
-//   - sidecar names only other files → foreign; bump. Whether those files
-//     still exist does not matter here (see the owner list, owners.go).
-//   - manifest exists with NO sidecar (migrated before this mechanism):
-//     adopt it — and stamp it — only if every variable this server would
-//     write already holds the IDENTICAL value (same token → same secret in
-//     practice, and the write changes nothing); any difference means two
-//     genuinely different servers are colliding, the exact silent
-//     overwrite this exists to stop → bump.
+//   - no manifest → a fresh namespace, owned by this config alone.
+//   - sidecar lists sourcePath → this config's own profile; refresh freely
+//     (the re-run/undo-then-remigrate case). The returned owners keep every
+//     other owner the sidecar lists.
+//   - sidecar lists no LIVE owner, and this entry's own wrapper launches the
+//     candidate → ADOPT: refresh freely, owned by this config alone (the gone
+//     owners are dropped). This is the copied-config case: a config copied
+//     from one since deleted launches profiles whose only recorded owner is
+//     gone, and bumping made -2/-3 copies beside the originals on every
+//     re-migration. Nothing live claims the profile, and this entry already
+//     runs on it, so refreshing it takes nothing from anyone.
+//   - any other sidecar → SHARE when every variable this migration would
+//     write (its env block and --env-file values, plus whatever collapsing
+//     its wrappers carries in) is already in the manifest holding the
+//     IDENTICAL value: one profile, this config appended to its owners, and
+//     the write changes nothing another owner's server receives. Anything
+//     else (a different value, a variable the profile doesn't hold, a value
+//     that can't be read) is two genuinely different servers → bump.
+//   - manifest with NO sidecar (migrated before this mechanism): adopt it —
+//     and stamp it — only if every variable this server would write that the
+//     manifest already maps holds the IDENTICAL value (same token → same
+//     secret in practice, and the write changes nothing); any difference
+//     means two genuinely different servers are colliding, the exact silent
+//     overwrite this exists to stop → bump. When this entry's own wrapper
+//     launches the candidate, a mapped secret that is MISSING from the vault
+//     no longer forces the bump: there is no value there to overwrite, and
+//     the entry is already launching the profile with that hole in it
+//     (`jit vault rm` of a wrapped profile's secret, then the value re-entered
+//     into the config, is the case). A value that exists and DIFFERS still
+//     bumps even then. Without a sidecar nothing says whether another config
+//     launches the same profile too — a copy of this config made after the
+//     first migration does, with its own server — so "this entry launches
+//     it" cannot prove the stored value is this entry's to replace. The
+//     sidecar rules above can: a live owner is known, and there adoption
+//     needs every owner gone.
+//
+// layers are the profiles of the jit wrappers peeled off this entry,
+// outermost first (unwrapJitWrappers). Only the first candidate can be one
+// this entry launches — base IS layers[0] for a wrapped entry — so a bumped
+// candidate never adopts or shares on the strength of the launch.
 //
 // A vault path that exists without being claimed by the candidate's
-// manifest is foreign regardless (claimNamespace's own rule).
+// manifest is foreign regardless (claimNamespace's own rule), under every
+// rule above.
 //
 // sourcePath is the block-scoped source (mcpSourceScope) — the config file
 // path, suffixed "#<projectDir>" for a server inside ~/.claude.json's
@@ -551,7 +586,7 @@ func profileSourceSidecarPath(profilePath string) string {
 // Every read goes through pending, so a claim sees the manifests, sidecars
 // and secrets that servers planned earlier in the same run will write exactly
 // as if they were already on disk — see mcpPendingWrites.
-func claimMCPNamespace(v *vault.Vault, pending *mcpPendingWrites, globalRoot, base, sourcePath string, env map[string]string) (name, profilePath string, entries profile.Profile, movedFrom string, owners []string, err error) {
+func claimMCPNamespace(v *vault.Vault, pending *mcpPendingWrites, globalRoot, base, sourcePath string, layers []string, env map[string]string) (name, profilePath string, entries profile.Profile, movedFrom string, owners []string, err error) {
 	for i := 1; i <= maxNamespaceCandidates; i++ {
 		name = base
 		if i > 1 {
@@ -577,76 +612,166 @@ func claimMCPNamespace(v *vault.Vault, pending *mcpPendingWrites, globalRoot, ba
 		}
 
 		recordedSource, srcErr := pending.readSidecar(profileSourceSidecarPath(profilePath))
-		legacy := manifestExists && srcErr != nil
-
-		// The sidecar is an owner list (owners.go). This config being ANY
-		// of its owners makes the profile ours; for a one-line sidecar that
-		// is exactly the string compare this always was. A list that does
-		// not name this config is foreign, whether or not its owners still
-		// exist: adopting a profile whose owners are gone is a separate,
-		// explicit rule (design/doctor-repair.md, Phase 2), not this one.
+		stamped := srcErr == nil
 		var recordedOwners []string
-		if srcErr == nil {
+		if stamped {
 			recordedOwners = parseOwnerLines(recordedSource)
 		}
-		conflict := manifestExists && srcErr == nil && !ownersInclude(recordedOwners, sourcePath)
-		if !conflict {
-			for envKey, value := range env {
-				secretPath := name + "/" + envKey
-				if entries[envKey] == secretPath {
-					if legacy {
-						// Unstamped claim: only an identical stored value
-						// proves this was "us" (or is indistinguishable
-						// from us). Any read/compare failure errs toward
-						// bump — reuse on a guess is the bug.
-						existing, gerr := pending.getSecret(v, secretPath)
-						if gerr != nil || string(existing) != value {
-							conflict = true
-							break
-						}
-					}
-					continue
-				}
-				exists, eerr := pending.secretExists(v, secretPath)
-				if eerr != nil {
-					return "", "", nil, "", nil, fmt.Errorf("checking vault path %s: %w", secretPath, eerr)
-				}
-				if exists {
-					conflict = true
-					break
-				}
-			}
+		launched := i == 1 && containsString(layers, name)
+
+		rule := mcpClaimLegacy
+		switch {
+		case !manifestExists:
+			rule = mcpClaimFresh
+		case stamped && ownersInclude(recordedOwners, sourcePath):
+			rule = mcpClaimOwn
+		case stamped && launched && len(liveOwners(recordedOwners)) == 0:
+			rule = mcpClaimAdopt
+		case stamped:
+			rule = mcpClaimShare
+		case launched:
+			rule = mcpClaimLegacyLaunched
 		}
-		if !conflict {
-			if i > 1 {
-				movedFrom = base
-			}
-			// The owner list to stamp: an existing profile this config
-			// already co-owns keeps every other owner, and this config's own
-			// line is refreshed in place. Anything else (a fresh namespace,
-			// an adopted legacy profile, a stray sidecar without a manifest)
-			// is owned by this config alone.
+
+		conflict, cerr := mcpClaimConflicts(v, pending, globalRoot, rule, name, layers, entries, env)
+		if cerr != nil {
+			return "", "", nil, "", nil, cerr
+		}
+		if conflict {
+			continue
+		}
+		if i > 1 {
+			movedFrom = base
+		}
+		switch rule {
+		case mcpClaimOwn:
+			// Refreshed in place: every other owner stays.
+			owners = recordedOwners
+		case mcpClaimShare:
+			owners = append(append([]string(nil), recordedOwners...), sourcePath)
+		default:
+			// A fresh namespace, an adopted profile (its gone owners
+			// dropped), an adopted legacy one, a stray sidecar without a
+			// manifest: owned by this config alone.
 			owners = []string{sourcePath}
-			if manifestExists && ownersInclude(recordedOwners, sourcePath) {
-				owners = recordedOwners
-			}
-			return name, profilePath, entries, movedFrom, owners, nil
 		}
+		return name, profilePath, entries, movedFrom, owners, nil
 	}
 	return "", "", nil, "", nil, fmt.Errorf("no free vault namespace for %q after %d candidates", base, maxNamespaceCandidates)
+}
+
+// mcpClaimRule is which of claimMCPNamespace's rules a candidate falls under.
+type mcpClaimRule int
+
+const (
+	mcpClaimFresh          mcpClaimRule = iota // no manifest
+	mcpClaimOwn                                // the sidecar lists this config
+	mcpClaimAdopt                              // no live owner, and this entry launches it
+	mcpClaimShare                              // another owner: identical values only
+	mcpClaimLegacy                             // no sidecar: mapped values must be identical
+	mcpClaimLegacyLaunched                     // no sidecar, launched by this entry: a missing value is no conflict
+)
+
+// mcpClaimConflicts reports whether writing env under name would take
+// something from another server, under rule (see claimMCPNamespace). Any
+// read or compare failure in a value check counts as a conflict: reuse on a
+// guess is the bug, and a bump only ever copies. Only a failure to ask the
+// vault whether a path exists at all is an error.
+func mcpClaimConflicts(v *vault.Vault, pending *mcpPendingWrites, globalRoot string, rule mcpClaimRule, name string, layers []string, entries profile.Profile, env map[string]string) (bool, error) {
+	if rule == mcpClaimShare {
+		return mcpShareConflicts(v, pending, globalRoot, name, layers, entries, env), nil
+	}
+	for envKey, value := range env {
+		secretPath := name + "/" + envKey
+		if entries[envKey] == secretPath {
+			switch rule {
+			case mcpClaimLegacy:
+				existing, gerr := pending.getSecret(v, secretPath)
+				if gerr != nil || string(existing) != value {
+					return true, nil
+				}
+			case mcpClaimLegacyLaunched:
+				exists, eerr := pending.secretExists(v, secretPath)
+				if eerr != nil {
+					return true, nil
+				}
+				if !exists {
+					continue // a hole this entry already launches with, nothing to overwrite
+				}
+				existing, gerr := pending.getSecret(v, secretPath)
+				if gerr != nil || string(existing) != value {
+					return true, nil
+				}
+			}
+			continue
+		}
+		exists, eerr := pending.secretExists(v, secretPath)
+		if eerr != nil {
+			return false, fmt.Errorf("checking vault path %s: %w", secretPath, eerr)
+		}
+		if exists {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// mcpShareConflicts is the share rule's test: every variable this migration
+// would write under name, INCLUDING what collapsing its wrappers carries in
+// (carriedProfileValues, computed here as if name were the landing profile),
+// must already be in the manifest at its own path and hold the identical
+// value. The carried half matters: a nested entry landing on a profile
+// another live config owns would otherwise add the inner layer's variables
+// to that config's server, a write it never agreed to.
+func mcpShareConflicts(v *vault.Vault, pending *mcpPendingWrites, globalRoot, name string, layers []string, entries profile.Profile, env map[string]string) bool {
+	want := map[string]string{}
+	carried, err := carriedProfileValues(v, pending, globalRoot, layers, name, entries)
+	if err != nil {
+		// Bump: planMCPServer's own carry for the namespace it does land on
+		// reports the failure if it is real.
+		return true
+	}
+	for k, value := range carried {
+		want[k] = value
+	}
+	for k, value := range env {
+		want[k] = value // the env block and --env-file win, as in planMCPServer
+	}
+	for envKey, value := range want {
+		secretPath := name + "/" + envKey
+		if entries[envKey] != secretPath {
+			return true
+		}
+		existing, gerr := pending.getSecret(v, secretPath)
+		if gerr != nil || string(existing) != value {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 // ProfileOwnerConfig returns the MCP config file recorded as owning a
 // global-store profile (the .source sidecar claimMCPNamespace writes), or
 // "" when there is none — a non-MCP global profile (shell config, AWS,
 // kubeconfig, Terraform, the global npmrc) or one migrated before the
-// sidecar mechanism existed. `jit migrate remove` uses this to tell a
-// profile that belongs to the project's own mcp.json — global-store only
-// because an MCP host's subprocess can't rely on a project-relative lookup
-// — apart from a genuinely machine-level one: without it, removing a
-// project stranded that profile and its vault secrets forever (a real E2E
-// finding: `jit status` reported dangling references right after a
-// "removed jit from this project" success).
+// sidecar mechanism existed. The sidecar is what tells a profile that
+// belongs to a project's own mcp.json — global-store only because an MCP
+// host's subprocess can't rely on a project-relative lookup — apart from a
+// genuinely machine-level one: without it, removing a project stranded that
+// profile and its vault secrets forever (a real E2E finding: `jit status`
+// reported dangling references right after a "removed jit from this
+// project" success). `jit migrate remove` now reads the whole owner list
+// (ProfileOwners), since a profile two projects share is not one project's
+// to delete; this function serves the callers that name one source.
 // The sidecar may record a block-scoped source ("path#projectDir", written for
 // a server inside ~/.claude.json's projects map — see mcpSourceScope); every
 // caller of THIS function wants the file, so the scope is stripped here. The
