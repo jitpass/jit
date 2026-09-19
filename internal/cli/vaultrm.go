@@ -15,7 +15,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -114,22 +113,18 @@ func runVaultRm(cmd *cobra.Command, args []string) error {
 	// jit can find. Strict: a file it can't read is an error, and an error
 	// is a refusal, because "can't tell" must never read as "unused".
 	var uses map[string][]secretUse
+	var usage vaultUsage
 	root, err := vaultRootDir()
 	if err == nil {
 		var cwd string
 		if cwd, err = os.Getwd(); err == nil {
-			var usage vaultUsage
 			if usage, err = collectVaultUsers(root, cwd); err == nil {
 				uses = usage.usesOf(existing)
 			}
 		}
 	}
 	collectErr := err
-	if len(uses) > 0 {
-		if home, herr := profile.GlobalRoot(); herr == nil {
-			attachLaunchers(uses, home)
-		}
-	}
+	usage.attachLaunchers(uses)
 	refused := !vaultRmBreakProfiles && (collectErr != nil || len(uses) > 0)
 
 	if vaultRmDryRun {
