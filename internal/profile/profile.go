@@ -60,6 +60,12 @@ var namePattern = regexp.MustCompile(`^[A-Za-z0-9_.\-]+$`)
 // `=` made inject.MergeEnv emit `FOO=BAR=<secret>`, quietly shadowing FOO.
 var varNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// ValidVarName reports whether name is a legal manifest key, by the rule
+// above. Exported so a command that WRITES a manifest applies the same rule
+// LoadFile applies when reading one, instead of writing a file that only
+// fails at first use.
+func ValidVarName(name string) bool { return varNamePattern.MatchString(name) }
+
 // Profile maps an environment variable name to the vault secret path that
 // should fill it (RFC.md Pillar IV) — a named *view* over the vault tree,
 // not a copy of it.
@@ -233,6 +239,24 @@ func LoadFileOrdered(path string) (Profile, []string, error) {
 	return p, order, nil
 }
 
+// manifestHeader is the comment every manifest jit writes carries. It says
+// the one thing someone deciding whether to commit the file needs to know,
+// and it exists because the pointer files jit writes beside these have said
+// it since they shipped while the manifests said nothing — so the .pointers
+// companions got committed and the profiles they name did not, which is how
+// a restored vault arrives on a new machine with every secret present and
+// no profile left to reference them.
+//
+// Deliberately NOT pointerfile.Header: that marker is how audit and migrate
+// recognise a rewritten .env, and a manifest answering to it would be parsed
+// as one.
+//
+// yaml.v3 writes each line with its own "# " prefix, so none is typed here.
+const manifestHeader = "jit profile — no secret values here, only vault paths.\n" +
+	"Real values reach a tool through `jit run --profile <name>`, never from\n" +
+	"this file. Safe to commit: without it the vault's secrets cannot be\n" +
+	"resolved on another machine."
+
 // MarshalOrdered renders p as YAML with its keys in order — names p
 // contains from order first, then any p has that order doesn't, sorted.
 // yaml.Marshal on a map always alphabetizes; this is how migrate persists
@@ -256,7 +280,7 @@ func MarshalOrdered(p Profile, order []string) ([]byte, error) {
 	sort.Strings(rest)
 	names = append(names, rest...)
 
-	node := &yaml.Node{Kind: yaml.MappingNode}
+	node := &yaml.Node{Kind: yaml.MappingNode, HeadComment: manifestHeader}
 	for _, name := range names {
 		node.Content = append(node.Content,
 			&yaml.Node{Kind: yaml.ScalarNode, Value: name},

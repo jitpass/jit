@@ -23,8 +23,7 @@ agent-cache sweep described below). Each target is resolved on its own:
                (.env, *.tfvars, mcp.json/.mcp.json, .npmrc,
                .streamlit/secrets.toml) has its secrets
                moved into a profile and the vault, the file keeps working as a
-               live mount (a git-safe <file>.pointers companion is written
-               alongside). A machine-wide file at a known path (a shell config
+               live mount. A machine-wide file at a known path (a shell config
                like ~/.zshrc, a shell history file like ~/.zsh_history,
                ~/.aws/credentials, ~/.kube/config, Terraform Cloud creds,
                ~/.docker/config.json, ~/.git-credentials, ~/.cargo/credentials.toml, GCP
@@ -111,6 +110,7 @@ jit migrate <file-or-dir>... [flags]
 
 * [jit](jit.md)	 - Local-first developer secret runtime
 * [jit migrate caches](jit_migrate_caches.md)	 - Remove copies of your vaulted secrets that AI agents cached (whole-vault sweep)
+* [jit migrate forget](jit_migrate_forget.md)	 - Delete a pointer file nothing uses any more
 * [jit migrate path](jit_migrate_path.md)	 - Alias for `jit migrate <file-or-dir>...`
 * [jit migrate remove](jit_migrate_remove.md)	 - Remove jit from a project completely (restore plaintext, delete its secrets)
 * [jit migrate undo](jit_migrate_undo.md)	 - Restore named migrated files from their encrypted pre-migration backups

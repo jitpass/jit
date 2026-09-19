@@ -11,7 +11,6 @@ import (
 
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/migrate"
-	"github.com/jitpass/jit/internal/profile"
 )
 
 // This file is real migrate's MUTATION LOG rendering — the per-category
@@ -54,7 +53,6 @@ type migrateSummary struct {
 	// nothing re-reads them as paths).
 	home            string
 	gitHistoryFiles []string
-	pointerFiles    int
 	backupOnlyFiles int
 	// exportNudge is set when the vault holding everything just migrated
 	// has never been exported at all — the one moment this is most worth
@@ -78,25 +76,6 @@ func (s *migrateSummary) checkGitHistory(path string) {
 	if hasHistory, err := migrate.HasGitHistory(path); err == nil && hasHistory {
 		s.gitHistoryFiles = append(s.gitHistoryFiles, displayPath(s.home, path))
 	}
-}
-
-// writePointerFile loads the just-written profile manifest at profilePath
-// and writes its git-safe, IDE-peekable .pointers companion alongside
-// mountPath (GAPS.md #26) — reads the profile back from disk rather than
-// threading its in-memory map through ApplyEnvFile/ApplyNpmrc, since both
-// already return everything else the caller needs via their own result
-// structs and this is the one extra piece only the CLI layer's feature
-// needs.
-func (s *migrateSummary) writePointerFile(mountPath, profilePath string) error {
-	p, varOrder, err := profile.LoadFileOrdered(profilePath)
-	if err != nil {
-		return fmt.Errorf("loading profile to write pointer file: %w", err)
-	}
-	if err := migrate.WritePointerFile(mountPath, p, varOrder); err != nil {
-		return err
-	}
-	s.pointerFiles++
-	return nil
 }
 
 // print renders every non-empty block collected above, once each,
@@ -138,13 +117,6 @@ func (s *migrateSummary) print(w io.Writer) {
 		fmt.Fprintln(w, "  the repository, and by anyone who already has a clone or fork. To actually remove it,")
 		fmt.Fprintln(w, "  rotate the secret and rewrite history with git-filter-repo (https://github.com/newren/")
 		fmt.Fprintln(w, "  git-filter-repo) or BFG Repo-Cleaner.")
-	}
-	if s.pointerFiles > 0 {
-		sep()
-		fmt.Fprintf(w, "%s written alongside the %s above, %s vault paths only, safe to open or commit.\n",
-			countWord(s.pointerFiles, "git-safe .pointers file", "git-safe .pointers files"),
-			pluralWord(s.pointerFiles, "mount", "mounts"),
-			pluralWord(s.pointerFiles, "lists", "list"))
 	}
 	if s.exportNudge {
 		sep()

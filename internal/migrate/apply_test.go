@@ -741,3 +741,72 @@ func TestGoModCacheDirFallsBackToHome(t *testing.T) {
 		t.Errorf("goModCacheDir() = %q, want %q", got, want)
 	}
 }
+
+// TestApplyEnvFileReportsWhatAnExistingManifestKept reproduces the incident
+// that made KeptVariables exist: a git clone restores a six-entry manifest,
+// the user recreates a .env with the two values they can see, and migrate
+// merges — leaving a profile that claims six variables while the vault holds
+// two. `jit doctor` then calls the profile broken, hours later, with nothing
+// tying the other four to this migration.
+//
+// The merge stays (claimNamespace must never silently drop an entry); what
+// this pins is that the run SAYS what it kept, at the only moment the two
+// sets are still distinguishable.
+func TestApplyEnvFileReportsWhatAnExistingManifestKept(t *testing.T) {
+	root := t.TempDir()
+	profilesDir := filepath.Join(root, ".jit", "profiles")
+	if err := os.MkdirAll(profilesDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	name := filepath.Base(root)
+	writeFile(t, filepath.Join(profilesDir, name+".yaml"),
+		"HIBOB_SERVICE_USER_ID: "+name+"/HIBOB_SERVICE_USER_ID\n"+
+			"HIBOB_BASE_URL: "+name+"/HIBOB_BASE_URL\n"+
+			"HIBOB_FIELDS: "+name+"/HIBOB_FIELDS\n")
+
+	path := filepath.Join(root, ".env")
+	writeFile(t, path, "HIBOB_SERVICE_USER_ID=real-id\n")
+
+	v := newTestVault(t)
+	result, err := ApplyEnvFile(v, root, path)
+	if err != nil {
+		t.Fatalf("ApplyEnvFile: %v", err)
+	}
+	want := []string{"HIBOB_BASE_URL", "HIBOB_FIELDS"}
+	if strings.Join(result.KeptVariables, ",") != strings.Join(want, ",") {
+		t.Errorf("KeptVariables = %v, want %v", result.KeptVariables, want)
+	}
+	// The variable this file DID set is never reported as kept: it is this
+	// migration's own, and naming it would turn the note into noise on every
+	// ordinary re-run.
+	for _, k := range result.KeptVariables {
+		if k == "HIBOB_SERVICE_USER_ID" {
+			t.Error("a variable this file set must not be reported as kept")
+		}
+	}
+	// The merge itself still happened — that is the behaviour being
+	// explained, not removed.
+	p, err := profile.LoadFile(result.ProfilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p) != 3 {
+		t.Errorf("manifest = %v, want all three entries kept", p)
+	}
+}
+
+// A manifest this migration created has nothing to report, so an ordinary
+// first migrate stays silent.
+func TestApplyEnvFileKeepsNothingWhenTheManifestIsNew(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ".env")
+	writeFile(t, path, "A=1\nB=2\n")
+
+	result, err := ApplyEnvFile(newTestVault(t), root, path)
+	if err != nil {
+		t.Fatalf("ApplyEnvFile: %v", err)
+	}
+	if len(result.KeptVariables) != 0 {
+		t.Errorf("KeptVariables = %v, want none", result.KeptVariables)
+	}
+}

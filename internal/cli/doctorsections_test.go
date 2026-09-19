@@ -264,6 +264,22 @@ func mcpTestJitBinary(t *testing.T) string {
 	return path
 }
 
+// mcpTestProjectProfile writes a manifest to the PROJECT store under root,
+// the store a config's own directory resolves first.
+func mcpTestProjectProfile(t *testing.T, root, name string) {
+	t.Helper()
+	path, err := profile.Path(root, name)
+	if err != nil {
+		t.Fatalf("Path: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("API_KEY: "+name+"/API_KEY\n"), 0o600); err != nil {
+		t.Fatalf("writing manifest: %v", err)
+	}
+}
+
 func mcpTestProfile(t *testing.T, name string) {
 	t.Helper()
 	root, err := profile.GlobalRoot()
@@ -335,6 +351,46 @@ func TestMCPFindingsReportsNestedWrapper(t *testing.T) {
 	}
 }
 
+// TestMCPFindingsResolvesProjectScopedProfile: a profile stored beside the
+// config it serves resolves at launch, so doctor must not call it missing.
+// Every other fixture here writes to the GLOBAL store, which is why a check
+// that consulted only that store passed the whole suite while reporting
+// every project-scoped MCP profile on a real machine as vanished.
+func TestMCPFindingsResolvesProjectScopedProfile(t *testing.T) {
+	jit := mcpTestJitBinary(t)
+	cwd := mcpTestSetup(t, `{"command":"`+jit+`","args":["run","--profile","mcp-srv","--","uv","run","srv"]}`)
+	mcpTestProjectProfile(t, cwd, "mcp-srv")
+
+	if findings := mcpFindings(cwd); len(findings) != 0 {
+		t.Errorf("findings = %+v, want none: the profile resolves from the project store", findings)
+	}
+}
+
+// TestMCPFindingsReportsNestedWrapperWithVanishedJitBinary: the two are
+// independent defects and the entry has both. The missing binary used to
+// end the entry before the nesting check ran, so re-pointing the path
+// revealed a second problem that was there all along.
+func TestMCPFindingsReportsNestedWrapperWithVanishedJitBinary(t *testing.T) {
+	cwd := mcpTestSetup(t, `{"command":"/nonexistent/bin/jit","args":["run","--profile","mcp-srv","--",`+
+		`"/nonexistent/bin/jit","run","--profile","mcp-srv","--","uv","run","srv"]}`)
+	mcpTestProfile(t, "mcp-srv")
+
+	findings := mcpFindings(cwd)
+	if len(findings) != 2 {
+		t.Fatalf("findings = %+v, want both the nesting and the missing binary", findings)
+	}
+	kinds := map[checkKind]bool{}
+	for _, f := range findings {
+		kinds[f.Kind] = true
+	}
+	if !kinds[kindMCPNested] {
+		t.Error("the nesting must be reported even though the outer jit is missing")
+	}
+	if !kinds[kindMCP] {
+		t.Error("the missing binary must still be reported")
+	}
+}
+
 func TestMCPFindingsReportsVanishedProfile(t *testing.T) {
 	jit := mcpTestJitBinary(t)
 	cwd := mcpTestSetup(t, `{"command":"`+jit+`","args":["run","--profile","mcp-gone","--","uv","run","srv"]}`)
@@ -345,6 +401,23 @@ func TestMCPFindingsReportsVanishedProfile(t *testing.T) {
 	}
 	if !strings.Contains(findings[0].Detail, "mcp-gone") {
 		t.Errorf("detail %q must name the missing profile", findings[0].Detail)
+	}
+	// The missing file is the manifest, and that is what the action must
+	// name. `jit migrate undo` restores a pre-migration backup: it dead-ends
+	// with "no recorded backup" on a machine that never migrated, and
+	// rewrites the wrong file on one that did.
+	if strings.Contains(findings[0].Action, "migrate undo") {
+		t.Errorf("action %q must not send the user to migrate undo", findings[0].Action)
+	}
+	if !strings.Contains(findings[0].Action, "jit profile create mcp-gone") {
+		t.Errorf("action %q must name the command that rebuilds it", findings[0].Action)
+	}
+	// Every backticked span becomes a runnable fix, and classifyFix marks an
+	// unrecognised one destructive — so a path must never be backticked.
+	for _, f := range fixesFor(findings[0].Kind, findings[0].Action) {
+		if f.Destructive {
+			t.Errorf("fix %q must not be destructive: nothing here deletes anything", f.Command)
+		}
 	}
 }
 

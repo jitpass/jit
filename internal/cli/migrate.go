@@ -169,6 +169,28 @@ func noteNamespaceMove(w io.Writer, movedFrom, profileName string) {
 	_, _ = cWarn.Fprintf(w, "    note: vault namespace %q already holds a different migration's secrets, this file's secrets live under %q instead\n", movedFrom, profileName)
 }
 
+// noteKeptVariables says what an EXISTING manifest contributed that the file
+// just migrated never mentioned.
+//
+// The merge itself is deliberate and right (claimNamespace: a re-run must
+// never silently drop an earlier variable). Staying quiet about it was not.
+// A manifest restored by a git clone with six entries, beside a .env holding
+// two, produces a profile claiming six — and the four without values surface
+// hours later as `jit doctor` calling the profile broken, with nothing
+// anywhere connecting them to this migration. That is a real evening lost.
+//
+// Said here because this is the only moment the two sets are distinguishable
+// at all: afterwards the manifest is just a list, and no later command can
+// tell which entries this file brought.
+func noteKeptVariables(w io.Writer, kept []string, profileName string) {
+	if len(kept) == 0 {
+		return
+	}
+	fmt.Fprint(w, hlCmds(fmt.Sprintf(
+		"    note: profile %q already listed %s this file doesn't set (%s), kept with no value; `jit profile drop %s <VAR>` removes one the tool never uses\n",
+		profileName, countWord(len(kept), "variable", "variables"), truncateList(kept, 3), profileName)))
+}
+
 // noteRewrap says a server entry was already launching through jit, so this
 // migration REPLACED that wrapper instead of adding one — and, when the entry
 // had been wrapped more than once, that the nesting an older jit produced is
@@ -426,8 +448,7 @@ var migrateCmd = &cobra.Command{
 		"               (.env, *.tfvars, mcp.json/.mcp.json, .npmrc,\n" +
 		"               .streamlit/secrets.toml) has its secrets\n" +
 		"               moved into a profile and the vault, the file keeps working as a\n" +
-		"               live mount (a git-safe <file>.pointers companion is written\n" +
-		"               alongside). A machine-wide file at a known path (a shell config\n" +
+		"               live mount. A machine-wide file at a known path (a shell config\n" +
 		"               like ~/.zshrc, a shell history file like ~/.zsh_history,\n" +
 		"               ~/.aws/credentials, ~/.kube/config, Terraform Cloud creds,\n" +
 		"               ~/.docker/config.json, ~/.git-credentials, ~/.cargo/credentials.toml, GCP\n" +
@@ -944,17 +965,16 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 				fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`, replaced with a safe pointer file (never mounted; nothing reads a backup file live)\n",
 					displayPath(home, envPath), result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath)))
 				noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
+				noteKeptVariables(out, result.KeptVariables, result.ProfileName)
 				noteDuplicateValues(out, v, dupIdx.get(), result.ProfileName, result.Variables)
 				continue
 			}
 			if err := addMount(mount.Entry{MountPath: result.EnvPath, ProfilePath: result.ProfilePath}); err != nil {
 				return false, fmt.Errorf("jit migrate: registering mount for %s: %w", result.EnvPath, err)
 			}
-			if err := summary.writePointerFile(result.EnvPath, result.ProfilePath); err != nil {
-				return false, fmt.Errorf("jit migrate: %w", err)
-			}
 			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`\n", displayPath(home, envPath), result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath)))
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
+			noteKeptVariables(out, result.KeptVariables, result.ProfileName)
 			noteDuplicateValues(out, v, dupIdx.get(), result.ProfileName, result.Variables)
 		}
 		fmt.Fprintln(out)
@@ -975,9 +995,6 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 				}
 				if err := addMount(mount.Entry{MountPath: path, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
 					return false, fmt.Errorf("jit migrate: registering mount for %s: %w", path, err)
-				}
-				if err := summary.writePointerFile(path, result.ProfilePath); err != nil {
-					return false, fmt.Errorf("jit migrate: %w", err)
 				}
 				fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`, live mount (real value to `jit run` grants, a decoy otherwise)\n",
 					displayPath(home, path), result.ProfileName, countWord(len(result.Variables), "secret", "secrets"), result.BackupPath)))
@@ -1046,9 +1063,6 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 			}
 			if err := addMount(mount.Entry{MountPath: path, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
 				return false, fmt.Errorf("jit migrate: registering mount for %s: %w", path, err)
-			}
-			if err := summary.writePointerFile(path, result.ProfilePath); err != nil {
-				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`, live mount (real manifest to `jit run` grants, rejectable decoys otherwise)\n",
 				displayPath(home, path), result.ProfileName, countWord(len(result.Variables), "secret", "secrets"), result.BackupPath)))
@@ -1285,9 +1299,6 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 			if err := addMount(mount.Entry{MountPath: adcPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
 				return false, fmt.Errorf("jit migrate: registering mount for %s: %w", adcPath, err)
 			}
-			if err := summary.writePointerFile(adcPath, result.ProfilePath); err != nil {
-				return false, fmt.Errorf("jit migrate: %w", err)
-			}
 			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s (%s) -> profile %q (%s); backup: `jit vault get %s`\n",
 				displayPath(home, adcPath), result.CredType, result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath)))
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
@@ -1312,9 +1323,6 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 			}
 			if err := addMount(mount.Entry{MountPath: keyPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
 				return false, fmt.Errorf("jit migrate: registering mount for %s: %w", keyPath, err)
-			}
-			if err := summary.writePointerFile(keyPath, result.ProfilePath); err != nil {
-				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q; backup: `jit vault get %s`\n",
 				displayPath(home, keyPath), result.ProfileName, result.BackupPath)))
@@ -1348,9 +1356,6 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 			if err := addMount(mount.Entry{MountPath: npmrcPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
 				return false, fmt.Errorf("jit migrate: registering mount for %s: %w", npmrcPath, err)
 			}
-			if err := summary.writePointerFile(npmrcPath, result.ProfilePath); err != nil {
-				return false, fmt.Errorf("jit migrate: %w", err)
-			}
 			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`\n",
 				displayPath(home, npmrcPath), result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath)))
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
@@ -1377,9 +1382,6 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 			if err := addMount(mount.Entry{MountPath: netrcPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
 				return false, fmt.Errorf("jit migrate: registering mount for %s: %w", netrcPath, err)
 			}
-			if err := summary.writePointerFile(netrcPath, result.ProfilePath); err != nil {
-				return false, fmt.Errorf("jit migrate: %w", err)
-			}
 			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`\n",
 				displayPath(home, netrcPath), result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath)))
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
@@ -1403,9 +1405,6 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 			}
 			if err := addMount(mount.Entry{MountPath: pypircPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
 				return false, fmt.Errorf("jit migrate: registering mount for %s: %w", pypircPath, err)
-			}
-			if err := summary.writePointerFile(pypircPath, result.ProfilePath); err != nil {
-				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`\n",
 				displayPath(home, pypircPath), result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath)))
@@ -1457,9 +1456,6 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 			}
 			if err := addMount(mount.Entry{MountPath: slPath, ProfilePath: result.ProfilePath, TemplatePath: result.TemplatePath}); err != nil {
 				return false, fmt.Errorf("jit migrate: registering mount for %s: %w", slPath, err)
-			}
-			if err := summary.writePointerFile(slPath, result.ProfilePath); err != nil {
-				return false, fmt.Errorf("jit migrate: %w", err)
 			}
 			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`\n",
 				displayPath(home, slPath), result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath)))

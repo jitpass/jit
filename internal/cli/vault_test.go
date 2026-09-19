@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -829,12 +830,49 @@ func TestLockAgentAfterMEKDeletionNoAgent(t *testing.T) {
 // absolute-path backup entries and counted them as "secrets." They
 // collapse into the count line by default, list only under --all, and the
 // closing count never lumps the two together.
+// TestPrintVaultListPipedSummaryStaysOffStdout: `jit vault list` promises
+// "piped or redirected, output stays one full path per line, so it feeds
+// grep and scripts unchanged". The closing count is not a path, so a script
+// splitting stdout on "/" must never meet it — the reported symptom was an
+// awk over `jit vault list` reading "69 secrets stored." as a group name.
+func TestPrintVaultListPipedSummaryStaysOffStdout(t *testing.T) {
+	secrets := []string{"notion/NOTION_API_KEY", "wiz/WIZ_CLIENT_ID"}
+	backups := []string{"_backups/Users/x/notion/.env.jit-bak-1"}
+
+	var stdout, stderr bytes.Buffer
+	printVaultList(&stdout, &stderr, secrets, backups, false, false, false, nil, "path")
+
+	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
+		if !slices.Contains(secrets, line) {
+			t.Errorf("stdout must hold only secret paths, got %q", line)
+		}
+	}
+	if !strings.Contains(stderr.String(), "2 secrets stored") {
+		t.Errorf("the count line must still be reported, on stderr; got %q", stderr.String())
+	}
+}
+
+// TestPrintVaultListEmptyHintStaysOffStdout: the same contract for a vault
+// with nothing in it — an empty listing is zero lines on stdout, not a
+// sentence a script has to recognize and skip.
+func TestPrintVaultListEmptyHintStaysOffStdout(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	printVaultList(&stdout, &stderr, nil, nil, false, false, false, nil, "path")
+
+	if stdout.Len() != 0 {
+		t.Errorf("stdout must be empty for an empty vault, got %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "No secrets stored yet") {
+		t.Errorf("the hint must still be reported, on stderr; got %q", stderr.String())
+	}
+}
+
 func TestPrintVaultList(t *testing.T) {
 	secrets := []string{"notion/NOTION_API_KEY", "wiz/WIZ_CLIENT_ID"}
 	backups := []string{"_backups/Users/x/notion/.env.jit-bak-1"}
 
 	var buf bytes.Buffer
-	printVaultList(&buf, secrets, backups, false, false, false, nil, "path")
+	printVaultList(&buf, &buf, secrets, backups, false, false, false, nil, "path")
 	out := buf.String()
 	if strings.Contains(out, "_backups/") {
 		t.Errorf("default listing must not include _backups/ entries, got:\n%s", out)
@@ -850,7 +888,7 @@ func TestPrintVaultList(t *testing.T) {
 	}
 
 	buf.Reset()
-	printVaultList(&buf, secrets, backups, true, false, false, nil, "path")
+	printVaultList(&buf, &buf, secrets, backups, true, false, false, nil, "path")
 	out = buf.String()
 	if !strings.Contains(out, "_backups/Users/x/notion/.env.jit-bak-1") {
 		t.Errorf("--all must list backup entries, got:\n%s", out)
@@ -862,7 +900,7 @@ func TestPrintVaultList(t *testing.T) {
 	}
 
 	buf.Reset()
-	printVaultList(&buf, nil, backups, false, false, false, nil, "path")
+	printVaultList(&buf, &buf, nil, backups, false, false, false, nil, "path")
 	out = buf.String()
 	for _, want := range []string{"No secrets stored yet, 1 encrypted file backup", "jit migrate undo", "--all"} {
 		if !strings.Contains(out, want) {
@@ -873,7 +911,7 @@ func TestPrintVaultList(t *testing.T) {
 	// Backups-only with --all: the backups list, and the closing line
 	// still says "No secrets" rather than the old "0 secret(s)".
 	buf.Reset()
-	printVaultList(&buf, nil, backups, true, false, false, nil, "path")
+	printVaultList(&buf, &buf, nil, backups, true, false, false, nil, "path")
 	out = buf.String()
 	if !strings.Contains(out, "_backups/Users/x/notion/.env.jit-bak-1") {
 		t.Errorf("backups-only --all must list backup entries, got:\n%s", out)
@@ -883,7 +921,7 @@ func TestPrintVaultList(t *testing.T) {
 	}
 
 	buf.Reset()
-	printVaultList(&buf, nil, nil, false, false, false, nil, "path")
+	printVaultList(&buf, &buf, nil, nil, false, false, false, nil, "path")
 	if !strings.Contains(buf.String(), "No secrets stored yet. Run jit vault set <path>") {
 		t.Errorf("empty vault keeps the standard empty state, got:\n%s", buf.String())
 	}
@@ -903,7 +941,7 @@ func TestPrintVaultListGrouped(t *testing.T) {
 	backups := []string{"_backups/Users/x/notion/.env.jit-bak-1"}
 
 	var buf bytes.Buffer
-	printVaultList(&buf, secrets, backups, true, true, false, nil, "path")
+	printVaultList(&buf, &buf, secrets, backups, true, true, false, nil, "path")
 	out := buf.String()
 	for _, want := range []string{
 		"[descope] 2",
@@ -939,7 +977,7 @@ func TestPrintVaultListLong(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	printVaultList(&buf, secrets, nil, false, true, true, meta, "path")
+	printVaultList(&buf, &buf, secrets, nil, false, true, true, meta, "path")
 	out := buf.String()
 
 	if !strings.Contains(out, "dotenv · updated") {
@@ -981,7 +1019,7 @@ func TestGroupHeaderProvenance(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	printVaultList(&buf, secrets, nil, false, true, false, meta, "path")
+	printVaultList(&buf, &buf, secrets, nil, false, true, false, meta, "path")
 	out := buf.String()
 
 	// Aligned layout (option A): every top-level name is padded to the
@@ -1040,7 +1078,7 @@ func TestGroupHeaderProvenance(t *testing.T) {
 	// header line, and a window too narrow for any useful origin drops it.
 	long := "/very/long/prefix/" + strings.Repeat("deep/", 30) + ".env"
 	buf.Reset()
-	printVaultList(&buf, []string{"big/KEY"}, nil, false, true, false,
+	printVaultList(&buf, &buf, []string{"big/KEY"}, nil, false, true, false,
 		map[string]vault.SecretInfo{"big/KEY": {Class: vault.ClassDotenv, Origin: long, UpdatedUnix: now}}, "path")
 	header, _, _ := strings.Cut(buf.String(), "\n")
 	if w := termtext.VisibleWidth(header); w > 80 {
@@ -1496,5 +1534,56 @@ func TestWarnWeakExportPassphrase(t *testing.T) {
 				t.Errorf("warning echoed the passphrase itself: %q", got)
 			}
 		})
+	}
+}
+
+// TestSecretMetaSuffixShowsCreatedWhenItDiffers: the envelope has carried
+// CreatedUnix since v2 and only --format json ever showed it, so the
+// terminal listing could not answer "which of these two same-named groups
+// came first". Stated only when it differs from the update, or every row
+// would read "created 3d ago · updated 3d ago".
+func TestSecretMetaSuffixShowsCreatedWhenItDiffers(t *testing.T) {
+	now := time.Now().Unix()
+	born := vault.SecretInfo{
+		Path: "mcp-jamf/KEY", Class: vault.ClassManual,
+		CreatedUnix: now - 90*24*3600, UpdatedUnix: now - 3600,
+	}
+	got := secretMetaSuffix(born)
+	if !strings.Contains(got, "created ") || !strings.Contains(got, "updated ") {
+		t.Errorf("suffix %q must carry both stamps when they differ", got)
+	}
+
+	// Stored once and never touched: one fact, said once.
+	untouched := vault.SecretInfo{
+		Path: "mcp-jamf/KEY", Class: vault.ClassManual,
+		CreatedUnix: now - 3600, UpdatedUnix: now - 3600,
+	}
+	if got := secretMetaSuffix(untouched); strings.Contains(got, "created ") {
+		t.Errorf("suffix %q must not stutter when created and updated are one event", got)
+	}
+}
+
+// TestSharedGroupNoteAgeNamesBirthWhenItDiffers: the group header's age slot
+// answers the duplicate-pair question, which last-updated cannot — a
+// re-migration rewrites both copies at once.
+func TestSharedGroupNoteAgeNamesBirthWhenItDiffers(t *testing.T) {
+	now := time.Now().Unix()
+	meta := map[string]vault.SecretInfo{
+		"mcp-jamf/A": {Path: "mcp-jamf/A", Class: vault.ClassManual, CreatedUnix: now - 90*24*3600, UpdatedUnix: now - 3600},
+		"mcp-jamf/B": {Path: "mcp-jamf/B", Class: vault.ClassManual, CreatedUnix: now - 80*24*3600, UpdatedUnix: now - 3600},
+	}
+	note := sharedGroupNote([]string{"A", "B"}, "mcp-jamf/", meta, true)
+	if !strings.HasPrefix(note.age, "created ") {
+		t.Errorf("age = %q, want the group's birth once it differs from its last write", note.age)
+	}
+
+	// Same event: the slot keeps its original meaning and says it bare.
+	for k, v := range meta {
+		v.CreatedUnix = v.UpdatedUnix
+		meta[k] = v
+	}
+	note = sharedGroupNote([]string{"A", "B"}, "mcp-jamf/", meta, true)
+	if strings.HasPrefix(note.age, "created ") {
+		t.Errorf("age = %q, want the bare age when nothing happened since", note.age)
 	}
 }

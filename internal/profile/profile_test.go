@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/jitpass/jit/internal/pointerfile"
 )
 
 func writeProfile(t *testing.T, root, name, content string) {
@@ -473,5 +476,39 @@ func TestMalformedGlobalManifestIsNotReportedAsNotFound(t *testing.T) {
 	// The same call still reports a genuinely absent profile as ErrNotFound.
 	if _, _, _, err := LoadWithScope(project, "absent"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("an absent profile must still be ErrNotFound, got %v", err)
+	}
+}
+
+// TestMarshalOrderedCarriesCommitHeader: the manifest must say it holds no
+// secret values, the way the pointer files jit writes beside it do. That
+// sentence is what tells someone the file belongs in git — and a profile
+// that never reaches the next machine leaves its vault's secrets
+// unresolvable there, with nothing reporting why.
+func TestMarshalOrderedCarriesCommitHeader(t *testing.T) {
+	b, err := MarshalOrdered(Profile{"API_KEY": "wiz/API_KEY"}, nil)
+	if err != nil {
+		t.Fatalf("MarshalOrdered: %v", err)
+	}
+	for _, want := range []string{"no secret values here", "only vault paths", "Safe to commit"} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("manifest header missing %q, got:\n%s", want, b)
+		}
+	}
+	// The pointer-file marker identifies a rewritten .env to audit and
+	// migrate; a manifest answering to it would be parsed as one.
+	if strings.Contains(string(b), pointerfile.Header) {
+		t.Errorf("manifest must not carry the pointer-file marker, got:\n%s", b)
+	}
+
+	path := filepath.Join(t.TempDir(), "p.yaml")
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	got, order, err := LoadFileOrdered(path)
+	if err != nil {
+		t.Fatalf("LoadFileOrdered: %v", err)
+	}
+	if got["API_KEY"] != "wiz/API_KEY" || len(order) != 1 {
+		t.Errorf("header broke the roundtrip: %+v, order %v", got, order)
 	}
 }
