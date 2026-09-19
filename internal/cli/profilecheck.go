@@ -57,6 +57,39 @@ const (
 	// (see warning): dead weight and audit surface worth surfacing, never a
 	// reason to fail the run.
 	kindOrphan checkKind = "orphan"
+	// kindStalePointers: a `.pointers` companion records a whole vault group
+	// that no longer exists. Kept apart from kindPointerMissing, which it
+	// otherwise resembles, for two reasons that both matter at the surface:
+	//
+	// Its Path is a GROUP, not a secret. Every consumer that turns a
+	// pointer_missing finding into `jit vault set <path>` — the app's Set
+	// Value button among them — would build a set against a path with no key
+	// in it, and ask the user for a value for something that is not a secret.
+	//
+	// It is a HARD PROBLEM, like every other reference to a secret the vault
+	// does not hold (kindMissing, kindPointerMissing). An early version made
+	// it advisory on the reasoning that nothing reads a companion at
+	// runtime, which is true and beside the point: the file is not what
+	// breaks, the tool beside it is. A companion names the variables some
+	// program in that directory needs, so a group that is gone means that
+	// program cannot get its secrets — whether or not a mount happens to be
+	// registered on this Mac today. Where the project is genuinely retired,
+	// `jit doctor ignore` is the answer, not a softer severity for everyone.
+	kindStalePointers checkKind = "stale_pointers"
+	// kindRegistryEmpty: the vault holds secrets and NO profile manifest was
+	// found to reference any of them. Split from kindOrphan because the two
+	// call for opposite actions: an orphan beside working profiles is
+	// probably surplus, and `jit vault orphans --prune` is a reasonable
+	// answer; a vault where nothing is referenced is almost never surplus —
+	// the profile registry travels separately from the vault (it lives in a
+	// project's .jit/profiles or in ~/.jit/profiles) and a restore that
+	// brought the vault alone lands exactly here. Pruning then deletes
+	// everything the missing profiles would have named.
+	//
+	// Advisory, not a problem: a profile store one directory away is a
+	// perfectly healthy machine seen from the wrong cwd — which is what
+	// `jit doctor` run from home looks like on a project-scoped setup.
+	kindRegistryEmpty checkKind = "registry_empty"
 	// kindDuplicates: two or more vault groups that look like the same file
 	// stored twice — identical key sets with agreeing recorded origins, the
 	// same auth-free evidence behind `jit vault list`'s nudge. Advisory, and
@@ -108,8 +141,11 @@ const (
 	// asked about is, and the registry can outlive a project directory
 	// legitimately (see reconcileSecrets, which tolerates the same state).
 	kindMount checkKind = "mount"
-	// kindMountStale: a registered mount whose profile manifest is GONE — the
-	// project directory was deleted without `jit unmount` first. Split from
+	// kindMountStale: a registered mount with no profile manifest at its
+	// recorded path — the project directory was deleted, renamed or moved
+	// without `jit unmount` first. jit cannot tell those apart: the registry
+	// holds absolute paths, nothing reconciles them, and all three leave the
+	// identical state (design/project-relocation.md). Split from
 	// kindMount because the two must behave differently, the same distinction
 	// `jit vault orphans` draws (GAPS.md #67): a manifest that exists but
 	// won't parse leaves that profile's references UNKNOWN and so suppresses
@@ -117,6 +153,22 @@ const (
 	// cannot under-count, the deleted project's secrets really are orphaned,
 	// and `jit vault orphans --prune` clears the registration without auth.
 	kindMountStale checkKind = "mount_stale"
+	// kindMountMoved: a registry entry whose paths are gone, and a project
+	// found elsewhere carrying the record for it — renamed, moved, or both.
+	// Split from kindMountStale because the two call for opposite actions:
+	// stale means clear the registration, moved means re-point it, and
+	// telling a user to unmount a project that is alive and one directory
+	// away is how this whole family of findings went wrong
+	// (design/project-relocation.md).
+	kindMountMoved checkKind = "mount_moved"
+	// kindMountUnregistered: a project carries a record for a mount that
+	// exists on disk and that this Mac's registry does not list — a copied or
+	// cloned folder, which brings the FIFO with it and never the
+	// registration. The quietest failure jit had: the copy looks like a
+	// working project, and reading its .env blocks forever, because a FIFO
+	// nobody writes to never answers. Reported only when the file is really
+	// there, so a clone whose .env was never migrated here stays silent.
+	kindMountUnregistered checkKind = "mount_unregistered"
 	// kindVaultKey: the vault holds secrets but this Mac's master key is gone
 	// from the keychain. Every envelope still passes Verify — structure and
 	// recipient are intact — and not one of them can be decrypted. A hard
@@ -272,9 +324,10 @@ const (
 // Add new kinds here.
 var allCheckKinds = []checkKind{
 	kindParse, kindNotFound, kindMissing, kindCorrupt, kindVaultError,
-	kindBadPath, kindOrphan, kindDuplicates, kindOriginGone, kindShadowed,
+	kindBadPath, kindOrphan, kindRegistryEmpty, kindStalePointers, kindDuplicates, kindOriginGone, kindShadowed,
 	kindService, kindBackup, kindWrap, kindWrapEnv, kindMount,
-	kindMountStale, kindVaultKey, kindRekey, kindLegacyEnvelope,
+	kindMountStale, kindMountMoved, kindMountUnregistered,
+	kindVaultKey, kindRekey, kindLegacyEnvelope,
 	kindAudit, kindMCP, kindMCPNested,
 	kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion,
 	kind1Password, kind1PasswordLink,
@@ -295,7 +348,7 @@ var allCheckKinds = []checkKind{
 // one process and must never fail a CI run.
 func (k checkKind) warning() bool {
 	switch k {
-	case kindOrphan, kindDuplicates, kindOriginGone, kindShadowed, kindService, kindBackup, kindMount, kindMountStale, kindWrapEnv, kindAudit, kindInstall, kindJitPathUpgrade, kindCompletion, kindLegacyEnvelope, kindMCPNested,
+	case kindOrphan, kindRegistryEmpty, kindDuplicates, kindOriginGone, kindShadowed, kindService, kindBackup, kindMount, kindMountStale, kindMountMoved, kindMountUnregistered, kindWrapEnv, kindAudit, kindInstall, kindJitPathUpgrade, kindCompletion, kindLegacyEnvelope, kindMCPNested,
 		kindConfigDeleted, kindConfigNotRecorded, kindNoKnownTool, kindNotLoggedIn:
 		return true
 	default:
@@ -374,7 +427,10 @@ type checkFinding struct {
 // step: plain text closing the group, with no → and nothing to run. A cyan
 // arrow promises a command, and an origin_gone finding has none to offer.
 func (k checkKind) actionIsNote() bool {
-	return k == kindOriginGone || k == kindProfileMissing
+	// registry_empty has no single command: the profiles may simply live in
+	// another directory, and where they do not, rebuilding is one
+	// `jit profile create` per group rather than one thing to run.
+	return k == kindOriginGone || k == kindProfileMissing || k == kindRegistryEmpty
 }
 
 // checkedRef is one variable→path reference that resolved cleanly, retained
@@ -628,7 +684,7 @@ func runProfileCheck(cwd string, v *vault.Vault, opts checkOptions) (checkOutcom
 					Variable: varName,
 					Path:     secretPath,
 					Detail:   status.detail,
-					Action:   secretAction(status.kind, secretPath),
+					Action:   secretAction(status.kind, e.name, varName, secretPath),
 				})
 			default:
 				out.OKRefs = append(out.OKRefs, checkedRef{
@@ -651,7 +707,14 @@ func runProfileCheck(cwd string, v *vault.Vault, opts checkOptions) (checkOutcom
 	// secrets they can see, so an incomplete picture can hide a finding but
 	// never invent one, and neither needs those guards.
 	wantOrphans := opts.Orphans && len(entries) > 0 && !parseFailed
-	if opts.Profile == "" && (wantOrphans || opts.Duplicates || opts.Origins) {
+	// The zero-profile case the orphan guard above deliberately skips. The
+	// skip is right — calling the whole vault orphaned would be twenty
+	// wrong lines — but silence was not: "69 secrets, no profile that names
+	// any of them" is one line, and it is the answer on a machine whose
+	// vault was restored without its profile registry. Reported instead of
+	// the orphans, never alongside them.
+	wantRegistryCheck := opts.Orphans && len(entries) == 0 && !parseFailed
+	if opts.Profile == "" && (wantOrphans || wantRegistryCheck || opts.Duplicates || opts.Origins) {
 		paths, err := v.List()
 		if err != nil {
 			// The sweeps are a bonus; a vault it can't list is still a
@@ -670,10 +733,23 @@ func runProfileCheck(cwd string, v *vault.Vault, opts checkOptions) (checkOutcom
 						// Identical for every orphan, which is exactly why the
 						// renderer states a group's shared action once rather
 						// than repeating it under each of twenty lines.
-						Action: "`jit vault orphans --prune` to delete, or `jit vault list` to inspect first",
+						Action: "`jit vault list --format json` names what uses each · `jit vault orphans --prune` to delete",
 					})
 				}
 			}
+		}
+		if wantRegistryCheck && len(secrets) > 0 {
+			out.Findings = append(out.Findings, checkFinding{
+				Kind: kindRegistryEmpty,
+				Detail: fmt.Sprintf("%s stored, and no profile manifest here or in the global store names any of them",
+					countWord(len(secrets), "secret", "secrets")),
+				// No `--prune` here, at any cost: in this state it would
+				// delete the whole vault. Nor `--format json`/used_by, which
+				// an earlier draft offered: with no profile in scope used_by
+				// is empty for every secret, so it prints the finding back as
+				// JSON. A note, not a command — see actionIsNote.
+				Action: "profiles travel separately from the vault; jit profile create <name> rebuilds one per group",
+			})
 		}
 		if opts.Duplicates || opts.Origins {
 			// Info never touches the KeyWrapper (same contract as List), so
@@ -808,10 +884,29 @@ const originGoneNote = "nothing to do: the vault is where these live now"
 // other is "the value there is unreadable, restore or replace it".
 // kindVaultError names a malformed path or an unreadable store — neither has
 // a single command behind it, so it gets no action line rather than a guess.
-func secretAction(kind checkKind, secretPath string) string {
+//
+// Missing is deliberately TWO-SIDED, and doctor cannot pick the side: a
+// manifest entry with no value is either a variable whose value has not been
+// restored yet, or one the tool never needed and the manifest kept anyway
+// (`jit migrate` merges into an existing manifest, so a restored six-entry
+// manifest survives a two-entry .env). Only the user knows which, so both
+// are offered — and the drop is named last, because a variable the tool DOES
+// need, dropped, breaks it silently with doctor reporting nothing.
+func secretAction(kind checkKind, profileName, varName, secretPath string) string {
 	switch kind {
 	case kindMissing:
-		return fmt.Sprintf("`jit vault set %s`, or `jit migrate <path>` to convert the file it came from", secretPath)
+		if profileName == "" || varName == "" {
+			return fmt.Sprintf("`jit vault set %s`, or `jit migrate <path>` to convert the file it came from", secretPath)
+		}
+		// Two clauses, not three: output-style.md is explicit that a reader
+		// given three next steps takes none. `jit migrate <path>` is the one
+		// that goes, for reasons that compound — it is the only placeholder
+		// the reader cannot fill from the lines above, and the app offers it
+		// as its own button regardless, since that builder does not read
+		// this string. What is left is the pair that actually needs saying:
+		// supply the value, or drop the entry asking for it.
+		return fmt.Sprintf("`jit vault set %s`, or `jit profile drop %s %s` if the tool never needed it",
+			secretPath, profileName, varName)
 	case kindCorrupt:
 		return fmt.Sprintf("`jit vault history %s` to see earlier versions, or `jit vault set %s` to replace it", secretPath, secretPath)
 	default:
@@ -875,18 +970,26 @@ func mountCheckTargets(root string, seen map[string]bool) (targets []mountTarget
 		// this state calls for. Same split `collectReferencedPaths` makes.
 		if _, statErr := os.Stat(e.ProfilePath); os.IsNotExist(statErr) {
 			findings = append(findings, checkFinding{
-				Kind:   kindMountStale,
-				Scope:  scopeMount,
-				Path:   e.MountPath,
-				Detail: fmt.Sprintf("the mount at %s is still registered, but its profile is gone: project deleted without unmounting first", shortPath(e.MountPath)),
-				// unmount first: on an orphaned mount it clears just this
-				// registration, with no auth and no secret touched. orphans
-				// --prune clears every stale mount too, but in the same
-				// confirmation it permanently deletes every orphaned SECRET —
-				// naming it first, as "no secret is touched", once walked a
-				// user up to a "delete 45 secrets? [y/N]" they had not asked for.
-				Action: "`jit unmount " + shortPath(e.MountPath) + "` clears just this registration (no secret is touched); " +
-					"`jit vault orphans --prune` clears every stale mount but also permanently deletes every orphaned secret",
+				Kind:  kindMountStale,
+				Scope: scopeMount,
+				Path:  e.MountPath,
+				// Says what jit SAW, not what it guesses happened. The
+				// registry records absolute paths and nothing reconciles
+				// them, so a renamed or moved project produces this state
+				// byte-for-byte identically to a deleted one — the folder's
+				// contents, mount included, simply travelled somewhere jit
+				// was not told about. Asserting "deleted" of a live project
+				// is how the offer below came to be aimed at a project that
+				// still exists.
+				Detail: fmt.Sprintf("the mount at %s is still registered, but there is no profile at its recorded path: the project was deleted, renamed or moved", shortPath(e.MountPath)),
+				// One command, and it only edits the registry: no auth, no
+				// secret touched. `jit vault orphans --prune` used to be
+				// named here as the bulk form, and it does not belong on a
+				// finding jit cannot tell from a rename — the same
+				// confirmation permanently deletes every orphaned SECRET, so
+				// a user reorganising their folders was one button from
+				// losing the values those folders still used.
+				Action: "`jit unmount " + shortPath(e.MountPath) + "` clears this registration; no secret is touched",
 			})
 			continue
 		}
@@ -910,6 +1013,32 @@ func mountCheckTargets(root string, seen map[string]bool) (targets []mountTarget
 				Action: "fix the manifest, or `jit unmount " + shortPath(e.MountPath) + "` to stop tracking it",
 			})
 			continue
+		}
+		// The manifest is fine and the file it serves is GONE. Nothing in
+		// doctor stat'ed a mount path before this — only two counters in
+		// internal/audit did — so this state produced no finding at all,
+		// while the service logged a skip for it on every single unlock. The
+		// commonest cause is a project folder renamed or moved: its contents
+		// travelled, the registry did not (design/project-relocation.md).
+		//
+		// Deliberately NOT parseFailed and NOT a `continue`: the manifest
+		// loaded, so its references are real and must still reach the orphan
+		// sweep. A missing file is a broken mount, never a reason to call the
+		// secrets it names unreferenced.
+		if _, statErr := os.Lstat(e.MountPath); statErr != nil && os.IsNotExist(statErr) {
+			findings = append(findings, checkFinding{
+				Kind:   kindMount,
+				Scope:  scopeMount,
+				Path:   e.MountPath,
+				Detail: fmt.Sprintf("%s is registered as a live mount, but there is no file there: anything reading it gets nothing", shortPath(e.MountPath)),
+				// unmount is a real repair here, not just bookkeeping: the
+				// manifest and the vault values are both intact, so it writes
+				// the file back as plain content. That also makes it
+				// genuinely destructive (plaintext on disk), which the
+				// existing classification for `unmount` outside kindMountStale
+				// already says.
+				Action: "`jit unmount " + shortPath(e.MountPath) + "` writes the values back as a plain file, or re-create the mount where the project now is",
+			})
 		}
 		// The manifest's own filename is the only name a registry entry
 		// carries — there is no separate profile name in the registry.

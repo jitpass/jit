@@ -155,11 +155,21 @@ type Map struct {
 	// Pointers lists every jit://vault reference found in a pointer file, in
 	// discovery order, one per reference (a file naming a path twice is two).
 	Pointers []Launcher
+	// Companions lists every jit://vault reference found in a `.pointers`
+	// companion file. Deliberately NOT part of Pointers: a companion
+	// launches nothing (readPointers says why), so counting it as a user
+	// would make a secret only it names look referenced. Kept so its
+	// targets can be checked.
+	Companions []Launcher
 	// MissingPointers is the subset of Pointers whose secret the vault does
 	// not hold. Only computed when Options.SecretExists is set
 	// (PointersChecked).
 	MissingPointers []Launcher
-	PointersChecked bool
+	// MissingCompanions is the same for Companions. A companion naming a
+	// secret the vault lacks is usually a leftover from a machine that had
+	// it — and the only record left of what the mount beside it served.
+	MissingCompanions []Launcher
+	PointersChecked   bool
 	// StaleMounts are registered mounts whose manifest is gone. They name
 	// no profile, so they are not launchers (doctor's mount_stale).
 	StaleMounts []mount.Entry
@@ -280,6 +290,7 @@ func Discover(opts Options) (*Map, error) {
 	}
 	d.loadProfiles()
 	d.readPointers(opts.Root, w.envPointers)
+	d.readCompanions(w.companions)
 
 	d.readMCP(w.mcpFiles)
 	d.readProfileLaunches(SourceAWS, KindAWS, migrate.AWSConfigProfileLaunches)
@@ -541,16 +552,20 @@ func (d *discovery) addProjectStores() {
 
 func (d *discovery) checkPointers(exists func(string) (bool, error)) {
 	d.m.PointersChecked = true
-	for _, l := range d.m.Pointers {
-		ok, err := exists(l.VaultPath)
-		if err != nil {
-			d.fail(SourcePointers, l.File, fmt.Errorf("checking %s's target %s: %w", l.File, l.VaultPath, err))
-			continue
-		}
-		if !ok {
-			d.m.MissingPointers = append(d.m.MissingPointers, l)
+	check := func(in []Launcher, out *[]Launcher) {
+		for _, l := range in {
+			ok, err := exists(l.VaultPath)
+			if err != nil {
+				d.fail(SourcePointers, l.File, fmt.Errorf("checking %s's target %s: %w", l.File, l.VaultPath, err))
+				continue
+			}
+			if !ok {
+				*out = append(*out, l)
+			}
 		}
 	}
+	check(d.m.Pointers, &d.m.MissingPointers)
+	check(d.m.Companions, &d.m.MissingCompanions)
 }
 
 // FixedMCPConfigPaths lists the MCP configs no home walk reaches, whether

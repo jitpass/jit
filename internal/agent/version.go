@@ -3,7 +3,10 @@
 
 package agent
 
-import "runtime/debug"
+import (
+	"regexp"
+	"runtime/debug"
+)
 
 // version is set at build time via -ldflags
 // "-X github.com/jitpass/jit/internal/agent.version=vX.Y.Z" (see
@@ -29,9 +32,30 @@ func Version() string {
 		return version
 	}
 	if bi, ok := debug.ReadBuildInfo(); ok {
-		if v := bi.Main.Version; v != "" && v != "(devel)" {
+		if v := bi.Main.Version; v != "" && v != "(devel)" && !isPseudoVersion(v) {
 			return v
 		}
 	}
 	return version
 }
+
+// pseudoVersion matches Go's synthesized "no tag here" version:
+// vX.Y.Z-<pre.>0.<14-digit UTC stamp>-<12 hex of the commit>, with the
+// "+dirty" build metadata an in-tree build adds.
+var pseudoVersion = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?-?[0-9]{14}-[0-9a-f]{12}(\+[0-9A-Za-z.-]+)?$`)
+
+// isPseudoVersion reports whether v is synthesized rather than a tag.
+//
+// It must be rejected, not reported, because it is a confident wrong
+// answer. This module's path carries no /vN suffix while the repo is
+// tagged v2.x, so the toolchain ignores every v2 tag and derives the
+// pseudo-version from the highest v1 one: an in-tree `go build` of a v2.1
+// tree reports "v1.9.1-0.<stamp>-<sha>", and shortVersion renders that as
+// "v1.9.1" — a real release, and not this binary. doctor puts that string
+// in its footer precisely so a pasted report can be tied to a build, so
+// naming the wrong release is worse there than admitting to none.
+//
+// A genuine tag (`go install …@v1.9.0`) is not a pseudo-version and is
+// still reported. Falling back to "dev" loses nothing: BuildID() carries
+// the exact revision, and status and doctor print both.
+func isPseudoVersion(v string) bool { return pseudoVersion.MatchString(v) }

@@ -15,10 +15,16 @@ things sit on disk afterwards, neither containing a secret:
   real values only to the process tree of a `jit run` grant you launch on
   purpose - a file that served real secrets to whatever opened it would
   defeat the point of moving them off disk.
-- **A `.env.pointers` companion**: a plain, regular, git-safe file mapping
-  each variable to its vault path (`KEY=jit://vault/<path>`), never to a
-  value. This is where you look to answer "where does this variable live
-  now?"
+- **A profile manifest** at `.jit/profiles/<name>.yaml`: a plain, regular,
+  git-safe file mapping each variable to its vault path, never to a value.
+  This is where you look to answer "where does this variable live now?", and
+  it is what `jit run --profile` actually reads.
+
+  Older versions also wrote a `.env.pointers` companion beside the mount,
+  saying the same thing in a second syntax with nothing keeping the two in
+  step. jit no longer writes those; it still understands the ones already in
+  your repos, and `jit migrate forget <file>` deletes one that has gone
+  stale.
 
 ## Running the project - it just works
 

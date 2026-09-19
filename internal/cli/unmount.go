@@ -70,8 +70,9 @@ var unmountCmd = &cobra.Command{
 			return fmt.Errorf("jit unmount: no mount registered at %s, currently mounted:\n%s", mountPath, strings.Join(lines, "\n"))
 		}
 
-		// An orphaned mount: its profile manifest is gone — the whole project
-		// directory was deleted without unmounting first (GAPS.md #67). There
+		// An orphaned mount: there is no profile manifest at the recorded
+		// path — the project directory was deleted, renamed or moved without
+		// unmounting first (GAPS.md #67). jit cannot tell those apart. There
 		// are no secrets to decrypt and nowhere meaningful to write them back,
 		// so the only sensible action is to clear the stale registry entry:
 		// otherwise it blocks `jit vault delete` ("N file(s) still
@@ -82,7 +83,7 @@ var unmountCmd = &cobra.Command{
 		// best-effort stop of any still-running serve goroutine.
 		if _, statErr := os.Stat(entry.ProfilePath); os.IsNotExist(statErr) {
 			if !unmountYes && !confirmPrompt(cmd, fmt.Sprintf(
-				"The mount at %s is orphaned, its profile %s is gone (the project was likely deleted), so there are no secrets to write back. Remove the stale registry entry? [y/N] ",
+				"The mount at %s is orphaned: there is no profile at %s, because the project was deleted, renamed or moved. There are no secrets to write back. Remove the stale registry entry? [y/N] ",
 				mountPath, entry.ProfilePath)) {
 				fmt.Fprintln(cmd.OutOrStdout(), "Aborted. Nothing was changed.")
 				return nil
@@ -94,7 +95,7 @@ var unmountCmd = &cobra.Command{
 				return fmt.Errorf("jit unmount: %w", err)
 			}
 			_ = os.Remove(migrate.PointerFilePath(mountPath)) // best-effort; usually already gone with the project
-			fmt.Fprintf(cmd.OutOrStdout(), "Removed the stale mount registration for %s (its project was already gone; nothing to restore).\n", mountPath)
+			fmt.Fprintf(cmd.OutOrStdout(), "Removed the stale mount registration for %s (no profile at its recorded path; nothing to restore).\n", mountPath)
 			return nil
 		}
 

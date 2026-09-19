@@ -505,3 +505,47 @@ func TestAgentMissingBinaryParts(t *testing.T) {
 		}
 	})
 }
+
+// TestSecretsSectionEmptyRegistryNeverOffersPrune: a vault whose groups are
+// referenced by nothing at all is the restored-without-its-profiles case,
+// not a pile of surplus secrets. `jit vault orphans --prune` would delete
+// every one of them, so this state must not name it; and the headline must
+// not claim a reconciliation against the zero profiles and zero mounts it
+// actually found.
+func TestSecretsSectionEmptyRegistryNeverOffersPrune(t *testing.T) {
+	var buf bytes.Buffer
+	printSecretsSection(&buf, statusSecrets{
+		TotalSecrets: 69, TotalGroups: 21,
+		UnreferencedGroups: 21, UnreferencedSecrets: 69,
+	})
+	out := buf.String()
+	if strings.Contains(out, "--prune") {
+		t.Errorf("a vault nothing references must not be pointed at --prune, got:\n%s", out)
+	}
+	if strings.Contains(out, "reconciled against every profile and mount") {
+		t.Errorf("nothing was reconciled: there are no profiles and no mounts, got:\n%s", out)
+	}
+	if !strings.Contains(out, "used_by") {
+		t.Errorf("the diagnostic that answers 'what references this' must be offered, got:\n%s", out)
+	}
+	if !strings.Contains(out, ".jit/profiles") {
+		t.Errorf("the reason — profiles travel separately from the vault — must be stated, got:\n%s", out)
+	}
+}
+
+// The ordinary case keeps its wording and its prune offer: orphans beside
+// working profiles really can be surplus.
+func TestSecretsSectionWithProfilesKeepsPrune(t *testing.T) {
+	var buf bytes.Buffer
+	printSecretsSection(&buf, statusSecrets{
+		TotalSecrets: 44, TotalGroups: 21, WiredGroups: 5, WiredProfiles: 9, WiredReferences: 44,
+		UnreferencedGroups: 16, UnreferencedSecrets: 59,
+	})
+	out := buf.String()
+	if !strings.Contains(out, "reconciled against every profile and mount") {
+		t.Errorf("the ordinary headline must be unchanged, got:\n%s", out)
+	}
+	if !strings.Contains(out, "--prune") {
+		t.Errorf("orphans beside real profiles still offer the prune, got:\n%s", out)
+	}
+}

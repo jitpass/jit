@@ -37,6 +37,12 @@ func PointerFilePath(mountPath string) string {
 // vault get` are the only ways to actually get the real value — this
 // file is deliberately never resolved or parsed by jit itself, purely a
 // human-readable map of "what's here and where it actually lives."
+//
+// Migration no longer calls this (see pointerfile.CompanionSuffix for why
+// these companions stopped being created). The remaining caller is `jit
+// profile drop`, which rewrites a companion that is ALREADY on disk so it
+// cannot go on naming a variable the manifest no longer has — keeping the
+// existing ones honest for as long as they exist, without making more.
 // order carries the source file's variable order (issue #4) — same
 // contract as mount.FormatDotenv: listed names first, leftovers sorted,
 // nil for fully sorted.
