@@ -67,11 +67,13 @@ var jitFixClasses = map[string]fixClass{
 	"vault rm":                 {destructive: true, presence: true},
 	"vault rekey":              {presence: true},
 	"vault export":             {presence: true},
-	"vault import":             {presence: true},
-	"vault link":               {presence: true},
-	"migrate":                  {},
-	"migrate undo":             {presence: true},
-	"migrate remove":           {destructive: true, presence: true},
+	// Overwrites any secret the file also holds.
+	"vault import": {destructive: true, presence: true},
+	"vault link":   {presence: true},
+	"migrate":      {},
+	// Puts the original file back, plaintext and all.
+	"migrate undo":   {destructive: true, presence: true},
+	"migrate remove": {destructive: true, presence: true},
 	// A live mount: unmount writes the secret values back to disk in
 	// plaintext. A stale one (its profile is gone) is reclassified in
 	// classifyFix: it only clears a registry entry.

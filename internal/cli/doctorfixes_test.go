@@ -75,11 +75,11 @@ func TestDoctorFixesClassifyEachKind(t *testing.T) {
 			},
 		},
 		{
-			name:   "mcp: migrate a path, and migrate undo asks for presence",
+			name:   "mcp: migrate undo restores plaintext, so it is destructive and asks for presence",
 			kind:   kindMCP,
 			action: "`jit migrate undo ~/ws/.mcp.json` to restore the original entry, or re-migrate it",
 			want: []doctorFix{
-				{Command: "jit migrate undo ~/ws/.mcp.json", Argv: []string{"migrate", "undo", filepath.Join(home, "ws/.mcp.json")}, Presence: true},
+				{Command: "jit migrate undo ~/ws/.mcp.json", Argv: []string{"migrate", "undo", filepath.Join(home, "ws/.mcp.json")}, Destructive: true, Presence: true},
 			},
 		},
 		{
@@ -148,7 +148,7 @@ func TestDoctorVaultKeyFixIsOnlyTheImport(t *testing.T) {
 	f := checkFinding{Kind: kindVaultKey, Action: "`jit vault import <file>` from a `jit vault export` backup",
 		Fixes: fixesFor(kindVaultKey, "`jit vault import <file>`")}
 	got := withFixes([]checkFinding{f})[0].Fixes
-	want := []doctorFix{{Command: "jit vault import <file>", Argv: []string{"vault", "import", "<file>"}, Presence: true, Needs: "<file>"}}
+	want := []doctorFix{{Command: "jit vault import <file>", Argv: []string{"vault", "import", "<file>"}, Destructive: true, Presence: true, Needs: "<file>"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("fixes = %+v, want %+v", got, want)
 	}
