@@ -161,6 +161,48 @@ func clissoCaptureInstalled(home string) bool {
 	return wrap.CheckTool(home, "", "clisso", e).Shim == wrap.ShimOK
 }
 
+// perSecretKind reports whether a kind is one broken secret reference of
+// one profile: the findings withProfileLaunchers gives their launchers.
+func perSecretKind(k checkKind) bool {
+	switch k {
+	case kindMissing, kindCorrupt, kindBadPath, kindVaultError:
+		return true
+	default:
+		return false
+	}
+}
+
+// withProfileLaunchers sets Launchers on every per-secret finding to what
+// starts its profile, from the launcher map doctor already discovered: an
+// MCP server, an ~/.aws/config section, a project store. JSON only — the
+// text report doesn't print them. A global finding matches the global
+// profile of its name; a project one, the project store at cwd, where
+// runProfileCheck found it. A mount-scope profile has no entry in the map
+// by name, and a nil map (a --profile run, no usable home) adds nothing.
+func withProfileLaunchers(findings []checkFinding, m *launchers.Map, cwd string) []checkFinding {
+	if m == nil {
+		return findings
+	}
+	here := resolvedPath(cwd)
+	for i := range findings {
+		f := &findings[i]
+		if !perSecretKind(f.Kind) || f.Profile == "" || len(f.Launchers) > 0 {
+			continue
+		}
+		for _, p := range m.Profiles {
+			if p.Name != f.Profile || string(p.Scope) != f.Scope {
+				continue
+			}
+			if p.Scope == profile.ScopeProject && resolvedPath(p.Project) != here {
+				continue
+			}
+			f.Launchers = p.Launchers
+			break
+		}
+	}
+	return findings
+}
+
 // launcherWhere names a launcher as the user would find it: the file, then
 // the place inside it ("[profile dev]", "user docker-desktop", "line 12", an
 // MCP server's name).

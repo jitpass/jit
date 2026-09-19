@@ -12,6 +12,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
+	"github.com/jitpass/jit/internal/launchers"
 	"github.com/jitpass/jit/internal/termtext"
 )
 
@@ -234,8 +235,10 @@ func gatherDoctorOutcome(errOut io.Writer, profileName string, onePassword bool)
 	// missing secrets and gone origin to that profile's own row.
 	var launcherFound []checkFinding
 	var unlaunched map[string]bool
+	var launcherMap *launchers.Map
 	if profileName == "" {
-		launcherFound, unlaunched = launcherFindings(doctorLauncherMap(root, cwd, v), v)
+		launcherMap = doctorLauncherMap(root, cwd, v)
+		launcherFound, unlaunched = launcherFindings(launcherMap, v)
 		if home, herr := os.UserHomeDir(); herr == nil {
 			launcherFound = notLoggedInFindings(launcherFound, home)
 		}
@@ -253,6 +256,11 @@ func gatherDoctorOutcome(errOut io.Writer, profileName string, onePassword bool)
 	if err != nil {
 		return checkOutcome{}, err
 	}
+
+	// Each broken secret reference names the tools that start its
+	// profile, so a consumer can say which tool won't start without
+	// looking through other findings (which a fix may have cleared).
+	outcome.Findings = withProfileLaunchers(outcome.Findings, launcherMap, cwd)
 
 	// The ownership sections sit with the profile check they refine.
 	// Whole-vault integrity runs on EVERY invocation, --profile included:
