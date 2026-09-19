@@ -4,8 +4,6 @@
 package cli
 
 import (
-	"fmt"
-	"io"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -30,14 +28,17 @@ type secretReference struct {
 	OwnerConfig string
 }
 
-// referencesForPaths maps each requested vault path to whatever jit can see
-// pointing at it: profiles in the project-local (cwd) and global stores,
-// plus the profile behind every registered mount. The mirror image of
-// collectReferencedPaths with the opposite failure contract — that one is
-// STRICT because its caller deletes what looks unreferenced, this one is
-// LENIENT (an unloadable profile is skipped) because its callers only WARN:
-// a parse failure must not block `jit vault rm`, and a missed warning is
-// the pre-existing behavior, not a new hazard.
+// referencesForPaths maps each requested vault path to the profiles jit can
+// see from cwd pointing at it: the project-local (cwd) and global stores,
+// plus the profile behind every registered mount. LENIENT (an unloadable
+// profile is skipped) and narrow (no walk of home, no pointer files),
+// because its callers only DISPLAY: `jit vault list`'s used_by and its
+// provenance fallback, which run on every listing and must stay cheap.
+//
+// Nothing that deletes may use it. Every deleting caller goes through
+// collectVaultUsers, the strict collector: this one once decided what
+// `vault rm`, `duplicates --prune` and `migrate remove` treated as unused,
+// and missed every project store outside cwd and every pointer file.
 func referencesForPaths(root, cwd string, paths []string) map[string][]secretReference {
 	wanted := map[string]bool{}
 	for _, p := range paths {
@@ -99,48 +100,4 @@ func referencesForPaths(root, cwd string, paths []string) map[string][]secretRef
 		sort.Slice(list, func(i, j int) bool { return list[i].ProfileName < list[j].ProfileName })
 	}
 	return refs
-}
-
-// printRmReferenceWarnings tells the user, BEFORE the delete-confirmation,
-// which of the doomed paths something still points at — the gap that made
-// "rm the stale copy" advice dangerous: rm deletes only the envelope file,
-// so a wired secret's profile keeps naming it and its mount keeps serving a
-// FIFO no writer can fill. Purely advisory (the [y/N] and the fingerprint
-// still decide); the remedy routes to `jit migrate remove`, the command
-// that takes the file, the profile and the secrets down together.
-func printRmReferenceWarnings(out io.Writer, refs map[string][]secretReference) {
-	if len(refs) == 0 {
-		return
-	}
-	paths := make([]string, 0, len(refs))
-	for p := range refs {
-		paths = append(paths, p)
-	}
-	sort.Strings(paths)
-	mounts := map[string]bool{}
-	var mountOrder []string
-	for _, p := range paths {
-		for _, r := range refs[p] {
-			_, _ = cWarnBold.Fprintf(out, "%s ", glyphMark)
-			fmt.Fprintf(out, "%s is wired to profile ", p)
-			_, _ = cBold.Fprint(out, r.ProfileName)
-			fmt.Fprintf(out, " (%s)\n", r.Scope)
-			if r.MountPath != "" && !mounts[r.MountPath] {
-				mounts[r.MountPath] = true
-				mountOrder = append(mountOrder, r.MountPath)
-				fmt.Fprintf(out, "  %s served by the mount at %s\n", glyphBranch, shortPath(r.MountPath))
-			}
-		}
-	}
-	if len(mountOrder) > 0 {
-		which := "that mount"
-		if len(mountOrder) > 1 {
-			which = "those mounts"
-		}
-		fmt.Fprintf(out, "  deleting only the secret leaves %s broken; to remove file,\n", which)
-		fmt.Fprintln(out, "  profile and secret together:")
-		for _, m := range mountOrder {
-			_, _ = cPath.Fprintf(out, "  %s jit migrate remove %s\n", glyphAction, shortPath(m))
-		}
-	}
 }

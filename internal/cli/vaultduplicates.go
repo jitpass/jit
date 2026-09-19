@@ -18,6 +18,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/vault"
 	"github.com/jitpass/jit/internal/wrap"
 )
@@ -40,9 +41,12 @@ import (
 //   - origin file still on disk -> `jit migrate remove <file>`. Retiring
 //     that copy means un-migrating it (restore its plaintext, deregister
 //     its mount, drop its profile). Deleting only the secrets would leave a
-//     registered mount serving a FIFO no writer can fill.
-//   - origin gone but a profile still names the paths -> `jit vault rm`,
-//     per path, since deleting them leaves that manifest pointing at holes.
+//     registered mount serving a FIFO no writer can fill. Offered only when
+//     that removal takes every user of the copy with it.
+//   - a copy something still uses, and no command retires it together with
+//     its users -> no command at all. It used to get `jit vault rm` of its
+//     paths, which broke the profile using them: a fix must never create a
+//     finding worse than the one it clears (design/doctor-repair.md).
 //   - values diverged, or the groups are a shared credential -> no removal
 //     at all; neither is jit's call.
 //
@@ -59,7 +63,10 @@ type dupGroup struct {
 	origin       string   // uniform recorded origin, "" when absent/mixed
 	originExists bool     // stat of origin, false when origin == ""
 	profiles     []string // referencing profile names (deduped)
-	mountPath    string   // a mount serving this group's profile, "" when none
+	// uses is everything using any of the group's paths, one entry per
+	// profile or pointer file (collectVaultUsers, launchers attached).
+	uses      []secretUse
+	mountPath string // a mount serving this group's profile, "" when none
 	// ownerConfig is the source file the referencing PROFILE records, the
 	// fallback provenance for a pre-provenance secret whose envelope has no
 	// Origin. See sourceFile.
@@ -87,11 +94,14 @@ func (g *dupGroup) sourceFile() string {
 // key set from the same file (or two copies of it), with the value
 // comparison's result and the routed remedy.
 type dupFinding struct {
-	Groups      []string `json:"groups"`
-	Keys        []string `json:"keys"`
-	Origins     []string `json:"origins"` // parallel to Groups
-	SameOrigin  bool     `json:"same_origin"`
-	ValuesMatch bool     `json:"values_match"`
+	Groups  []string `json:"groups"`
+	Keys    []string `json:"keys"`
+	Origins []string `json:"origins"` // parallel to Groups
+	// OriginGone is parallel to Groups: true where that copy's origin file
+	// no longer exists (rendered "(gone)").
+	OriginGone  []bool `json:"origin_gone,omitempty"`
+	SameOrigin  bool   `json:"same_origin"`
+	ValuesMatch bool   `json:"values_match"`
 	// RemoveGroup/RemoveCommand: the copy the report suggests retiring and
 	// the command that retires it correctly. Empty when values differ —
 	// diverged copies are the user's call, not a heuristic's.
@@ -124,6 +134,13 @@ type dupFinding struct {
 	// group belonging to a finding this report deliberately refused to
 	// nominate for removal. The remedy is then withheld entirely.
 	RemoveBlockedBy string `json:"remove_blocked_by,omitempty"`
+	// InUseGroup is set when the copy that looks stale is still used by a
+	// profile or pointer file that no command would retire with it, so there
+	// is no pick: deleting it would break that user. InUseProfiles and
+	// InUsePointerFiles name the users.
+	InUseGroup        string   `json:"in_use_group,omitempty"`
+	InUseProfiles     []string `json:"in_use_profiles,omitempty"`
+	InUsePointerFiles []string `json:"in_use_pointer_files,omitempty"`
 }
 
 // sharedFinding is one shared-credential verdict: the same value stored
@@ -153,7 +170,9 @@ var vaultDuplicatesCmd = &cobra.Command{
 		"  When the values still match, the report names the copy that looks stale\n" +
 		"  and the command that retires it cleanly: `jit migrate remove <file>`\n" +
 		"  while the file still exists (it restores that file's plaintext, then\n" +
-		"  deletes its profile and secrets), otherwise --prune or `jit vault rm`.\n" +
+		"  deletes its profile and secrets), otherwise --prune. A stale copy that\n" +
+		"  a profile or pointer file still uses gets no command: deleting it\n" +
+		"  would break what uses it.\n" +
 		"  Diverged copies (same file ancestry, different values now) are reported\n" +
 		"  without a removal pick.\n\n" +
 		"  Shared credentials: the same value stored by independent files, e.g.\n" +
@@ -167,9 +186,12 @@ var vaultDuplicatesCmd = &cobra.Command{
 		"purpose: a copy whose file still exists has to be un-migrated by\n" +
 		"`jit migrate remove` (which restores its plaintext, deregisters its mount\n" +
 		"and drops its profile — deleting just the secrets would leave a mount\n" +
-		"serving a file nothing can fill), a copy a profile still names is a\n" +
-		"per-path `jit vault rm` decision, and diverged or shared copies are never\n" +
-		"jit's call at all. --prune always reports what it left behind and why.\n\n" +
+		"serving a file nothing can fill), a copy something still uses is left\n" +
+		"alone, and diverged or shared copies are never jit's call at all. --prune\n" +
+		"always reports what it left behind and why.\n\n" +
+		"\"Uses\" counts every profile jit can find (this directory's store, the\n" +
+		"global one and every project under your home folder), every mount, and\n" +
+		"pointer files such as ~/.clisso.yaml.\n\n" +
 		"Reading every value means unlocking the vault and, for each credential\n" +
 		"CLASS the per-process consent gate covers (aws, kube, git, shell_history,\n" +
 		"...), approving that class once. A vault holding two gated classes\n" +
@@ -283,6 +305,8 @@ func pruneDuplicates(cmd *cobra.Command, v *vault.Vault, findings []dupFinding) 
 			switch {
 			case f.Prunable:
 				fmt.Fprintf(out, "  %s %s: you declined the deletion\n", glyphBranch, label)
+			case f.InUseGroup != "":
+				fmt.Fprintf(out, "  %s %s: %s\n", glyphBranch, label, inUseSentence(f, "it"))
 			case f.RemoveBlockedBy != "":
 				// Names the command, because this trailer (unlike the report
 				// above) prints none — "it would take X too" had no
@@ -345,7 +369,17 @@ func pruneDuplicates(cmd *cobra.Command, v *vault.Vault, findings []dupFinding) 
 // actually decrypted (an envelope that fails to read is skipped — one
 // unreadable secret must not take down the whole report).
 func gatherDupGroups(v *vault.Vault, root, cwd string, secrets []string) (map[string]*dupGroup, int, error) {
-	refs := referencesForPaths(root, cwd, secrets)
+	// Strict: every remedy this report prints is advice to delete, so what
+	// uses a copy must be known, not guessed. An unreadable manifest or
+	// pointer file fails the report rather than making a copy look unused.
+	usage, err := collectVaultUsers(root, cwd)
+	if err != nil {
+		return nil, 0, err
+	}
+	refs := usage.usesOf(secrets)
+	if home, herr := os.UserHomeDir(); herr == nil {
+		attachLaunchers(refs, home)
+	}
 	groups := map[string]*dupGroup{}
 	compared := 0
 	for _, p := range secrets {
@@ -370,6 +404,12 @@ func gatherDupGroups(v *vault.Vault, root, cwd string, secrets []string) (map[st
 			}
 		}
 		for _, r := range refs[p] {
+			if !slices.ContainsFunc(g.uses, func(u secretUse) bool { return sameUser(u, r) }) {
+				g.uses = append(g.uses, r)
+			}
+			if r.PointerFile != "" {
+				continue
+			}
 			if !slices.Contains(g.profiles, r.ProfileName) {
 				g.profiles = append(g.profiles, r.ProfileName)
 			}
@@ -410,13 +450,18 @@ func gatherDupGroups(v *vault.Vault, root, cwd string, secrets []string) (map[st
 	return groups, compared, nil
 }
 
+// sameUser reports whether two uses are the same profile or pointer file.
+func sameUser(a, b secretUse) bool {
+	if a.PointerFile != "" || b.PointerFile != "" {
+		return a.PointerFile == b.PointerFile
+	}
+	return a.ProfilePath == b.ProfilePath
+}
+
 // sameFileFindings clusters groups on (key set, origin tail) — the same
 // evidence rule the listing's nudge uses — and settles each cluster with
-// the value comparison the nudge can't run. The removal pick prefers, in
-// order: a copy whose origin file is gone (nothing can still read it), a
-// copy nothing references, then the lexicographically-later name (the
-// claimNamespace "-2" fork is the later arrival). No pick at all when
-// values differ.
+// the value comparison the nudge can't run. The removal pick is
+// pickRemoval's. No pick at all when values differ.
 func sameFileFindings(groups map[string]*dupGroup) []dupFinding {
 	// Cluster on the origin TAIL only. Requiring an identical key set as
 	// well was too strict for the most ordinary real shape: copy a
@@ -646,6 +691,7 @@ func buildDupFinding(bucket []*dupGroup) dupFinding {
 	for _, g := range bucket {
 		f.Groups = append(f.Groups, g.name)
 		f.Origins = append(f.Origins, g.sourceFile())
+		f.OriginGone = append(f.OriginGone, g.sourceFile() != "" && !g.originExists)
 		if g.sourceFile() != bucket[0].sourceFile() {
 			f.SameOrigin = false
 		}
@@ -670,17 +716,22 @@ func buildDupFinding(bucket []*dupGroup) dupFinding {
 		// either way jit must not nominate a copy to delete.
 		return f
 	}
-	pick := pickRemoval(bucket)
+	pick, blocked := pickRemoval(bucket)
+	if pick == nil {
+		// Every candidate is in use by something no command would retire
+		// with it. No pick, and no `jit vault rm`: that is the advice that
+		// broke a live profile.
+		f.InUseGroup = blocked.name
+		f.InUseProfiles, f.InUsePointerFiles = blockingUsers(blocked)
+		return f
+	}
 	f.RemoveGroup = pick.name
 	f.RemovePaths = groupSecretPaths(pick)
-	switch {
-	case pick.sourceFile() != "" && pick.originExists:
+	if pick.sourceFile() != "" && pick.originExists {
 		f.RemoveCommand = "jit migrate remove " + shortPath(pick.sourceFile())
-	case len(pick.profiles) == 0:
+	} else {
 		f.RemoveCommand = "jit vault duplicates --prune"
 		f.Prunable = true
-	default:
-		f.RemoveCommand = "jit vault rm " + strings.Join(f.RemovePaths, " ")
 	}
 	return f
 }
@@ -697,19 +748,142 @@ func extraKeys(g *dupGroup, shared []string) []string {
 }
 
 // pickRemoval chooses which copy of a matching cluster the report suggests
-// retiring. It is a suggestion, printed under a caveat — never acted on.
-func pickRemoval(cluster []*dupGroup) *dupGroup {
+// retiring, or none. It is a suggestion, printed under a caveat — never
+// acted on by anything but --prune, which takes only an unused copy.
+//
+// In order:
+//
+//  1. a copy nothing uses: one whose origin file is gone first (--prune),
+//     then one whose file exists (`jit migrate remove`);
+//  2. a copy whose origin is gone but that something still uses: NO pick.
+//     That copy is the stale one, and it can't go without breaking what
+//     uses it. It used to be picked anyway, with `jit vault rm` of its
+//     paths, which is how a report broke a live profile. Retiring the
+//     live twin instead would answer a question nobody asked.
+//  3. every origin still exists: the later name (the claimNamespace "-2"
+//     fork is the later arrival), through `jit migrate remove`, but only
+//     when that removal takes every user of the copy with it (retiredWith).
+//     Otherwise no pick.
+//
+// blocked names the copy that has no safe pick, for the report to explain.
+func pickRemoval(cluster []*dupGroup) (pick, blocked *dupGroup) {
+	for _, g := range cluster {
+		if !g.inUse() && g.sourceFile() != "" && !g.originExists {
+			return g, nil
+		}
+	}
+	for _, g := range cluster {
+		if !g.inUse() {
+			return g, nil
+		}
+	}
 	for _, g := range cluster {
 		if g.sourceFile() != "" && !g.originExists {
-			return g
+			return nil, g
 		}
 	}
-	for _, g := range cluster {
-		if len(g.profiles) == 0 {
-			return g
+	last := cluster[len(cluster)-1]
+	if len(unretiredUses(last)) == 0 {
+		return last, nil
+	}
+	return nil, last
+}
+
+// inUse reports whether anything uses one of the group's paths.
+func (g *dupGroup) inUse() bool { return len(g.uses) > 0 || len(g.profiles) > 0 }
+
+// unretiredUses returns the uses of g that `jit migrate remove` of g's
+// origin would NOT take down with it: anything outside the project that
+// removal operates on. A profile goes with it only when it lives in that
+// project's store or records a source inside it; a mount only inside it;
+// and an MCP config elsewhere that launches the profile would be left
+// starting a profile that no longer exists, which is the incident's shape.
+func unretiredUses(g *dupGroup) []secretUse {
+	if g.sourceFile() == "" {
+		return g.uses
+	}
+	home, _ := os.UserHomeDir()
+	root := migrateRemoveRoot(g.sourceFile(), home)
+	var out []secretUse
+	for _, u := range g.uses {
+		if !retiredWith(u, root, home) {
+			out = append(out, u)
 		}
 	}
-	return cluster[len(cluster)-1]
+	return out
+}
+
+func retiredWith(u secretUse, root, home string) bool {
+	if u.PointerFile != "" {
+		return pathWithinDir(root, u.PointerFile)
+	}
+	owned := (u.Scope == profile.ScopeProject && u.Project != "" && pathWithinDir(root, u.Project)) ||
+		(u.OwnerConfig != "" && underRoot(u.OwnerConfig, root, home))
+	if !owned {
+		return false
+	}
+	if u.MountPath != "" && !pathWithinDir(root, u.MountPath) {
+		return false
+	}
+	for _, cfg := range u.LaunchedBy {
+		if !pathWithinDir(root, cfg) {
+			return false
+		}
+	}
+	return true
+}
+
+// blockingUsers names what keeps g from being retired: profile names and
+// pointer files. A test-built group carrying only profile names reports
+// those.
+func blockingUsers(g *dupGroup) (profiles, pointers []string) {
+	uses := g.uses
+	if g.sourceFile() != "" && g.originExists {
+		uses = unretiredUses(g)
+	}
+	if len(g.uses) == 0 {
+		return append([]string(nil), g.profiles...), nil
+	}
+	for _, u := range uses {
+		if u.PointerFile != "" {
+			if !slices.Contains(pointers, u.PointerFile) {
+				pointers = append(pointers, u.PointerFile)
+			}
+			continue
+		}
+		if !slices.Contains(profiles, u.ProfileName) {
+			profiles = append(profiles, u.ProfileName)
+		}
+	}
+	sort.Strings(profiles)
+	sort.Strings(pointers)
+	return profiles, pointers
+}
+
+// inUseSentence explains an in-use finding: who uses the copy and that
+// deleting it breaks them. obj is how the copy is referred to ("this
+// copy" in the report, "it" in --prune's left-alone list).
+func inUseSentence(f dupFinding, obj string) string {
+	var who []string
+	for _, p := range f.InUsePointerFiles {
+		who = append(who, shortPath(p))
+	}
+	np, nf := len(f.InUseProfiles), len(who)
+	switch {
+	case np == 1 && nf == 0:
+		return fmt.Sprintf("profile %s uses %s, and deleting it would break that profile", f.InUseProfiles[0], obj)
+	case np > 1 && nf == 0:
+		return fmt.Sprintf("profiles %s use %s, and deleting it would break those profiles", truncateList(f.InUseProfiles, 3), obj)
+	case np == 0 && nf == 1:
+		return fmt.Sprintf("%s points at %s, and deleting it would break that file", who[0], obj)
+	case np == 0 && nf > 1:
+		return fmt.Sprintf("%s point at %s, and deleting it would break those files", truncateList(who, 3), obj)
+	case np == 0 && nf == 0:
+		return fmt.Sprintf("something still uses %s", obj)
+	default:
+		return fmt.Sprintf("%s %s and %s use %s, and deleting it would break them",
+			pluralWord(np, "profile", "profiles"), truncateList(f.InUseProfiles, 3), truncateList(who, 3), obj)
+	}
 }
 
 func groupSecretPaths(g *dupGroup) []string {
@@ -925,9 +1099,16 @@ func printDupFinding(out io.Writer, f dupFinding) {
 		}
 	}
 	for i, g := range f.Groups {
-		fmt.Fprintf(out, "  %s %-*s  from %s\n", glyphBranch, wide, g, shortPath(f.Origins[i]))
+		gone := ""
+		if i < len(f.OriginGone) && f.OriginGone[i] {
+			gone = " (gone)"
+		}
+		fmt.Fprintf(out, "  %s %-*s  from %s%s\n", glyphBranch, wide, g, shortPath(f.Origins[i]), gone)
 	}
 	switch {
+	case f.InUseGroup != "":
+		fmt.Fprint(out, "  ")
+		wrapBody(out, 2, "    ", "no safe one-command fix: "+inUseSentence(f, "this copy"))
 	case f.RemoveBlockedBy != "":
 		// The only command that could retire this copy would also take a
 		// group this report just refused to nominate. Withheld, and said

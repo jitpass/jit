@@ -10,11 +10,13 @@ path-only `jit migrate undo`/`remove` leaves in the vault once the profile
 that named them is gone. With --prune, they are permanently deleted after a
 [y/N] confirmation and a fresh Touch ID/passcode.
 
-"Referenced" is judged against every profile jit can see: the project-local
-(current directory) and global profile stores, plus the profile behind every
-registered mount. A secret used ONLY by a different project you're not in and
-haven't mounted would look orphaned here, so check each secret's origin
-before pruning, and delete a single one with `jit vault rm <path>` if unsure.
+"Referenced" is judged against everything jit can find: the current
+directory's profile store, the global one, every project store under your
+home folder, the profile behind every registered mount, and pointer files
+(jit's own in-place pointer files and ~/.clisso.yaml). A file among those
+that can't be read stops the command instead of making its secrets look
+orphaned. A project outside your home folder is not searched, so check each
+secret's origin before pruning.
 
 A registered mount whose profile is gone — a project directory deleted
 without `jit unmount` first — is reported as a stale mount registration,

@@ -1371,100 +1371,30 @@ var vaultRmCmd = &cobra.Command{
 		"A bare group name (the part before the slash in `jit vault list`)\n" +
 		"deletes every secret in that group: the expansion is announced and the\n" +
 		"confirmation lists each path, still one gesture for the lot.\n\n" +
+		"A secret something still uses is refused, and nothing is deleted: a\n" +
+		"profile in any store jit can find (this directory's, the global one,\n" +
+		"or any project under your home folder), a mount, or a pointer file such\n" +
+		"as ~/.clisso.yaml. A profile missing a secret can't start its tool at\n" +
+		"all, and rm deletes the version history too. --break-profiles deletes\n" +
+		"anyway, after the same warnings, confirmation and Touch ID. If jit can't\n" +
+		"read one of those files, it can't tell, and refuses the same way.\n\n" +
+		"--dry-run shows what would be deleted and what uses it, then stops: no\n" +
+		"prompt, no Touch ID. With --format json it prints paths, missing,\n" +
+		"in_use and refused, for a script or app to confirm against.\n\n" +
 		"-y/--yes skips the typed confirmation (never the fingerprint), matching\n" +
-		"every other jit command. `-f`/`--force` is still accepted as a synonym,\n" +
-		"so the `rm -f` reflex keeps working.",
+		"every other jit command, and never implies --break-profiles.\n" +
+		"`-f`/`--force` is still accepted as a synonym for --yes, so the\n" +
+		"`rm -f` reflex keeps working.",
 	Example: "  jit vault rm stripe/dev-key\n" +
 		"  jit vault rm old-proj/API_KEY old-proj/DB_URL   # one approval, both gone\n" +
-		"  jit vault rm old-proj                           # the whole group, listed before you confirm",
+		"  jit vault rm old-proj                           # the whole group, listed before you confirm\n" +
+		"  jit vault rm --dry-run --format json old-proj   # what it would delete, and what uses it",
 	Args:              requireArgs(1, -1, "at least one secret path (see `jit vault list`)"),
 	ValidArgsFunction: completeVaultPaths,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		// Validate BEFORE the confirmation and the biometric gate. Remove
-		// validates each path itself, but that runs after both, so a
-		// malformed path made jit demand a fingerprint to delete something it
-		// was always going to refuse. Hit for real by a shell-quoting slip
-		// that passed seventeen paths as one argument: the prompt appeared,
-		// asked for a password, and the command then failed on the argument
-		// it had just been authorized to act on. Needless prompts are how
-		// users learn to approve without reading.
-		for _, path := range args {
-			if err := vault.ValidatePath(path); err != nil {
-				return fmt.Errorf("jit vault rm: %w", err)
-			}
-		}
-
-		// Before the confirmation, so the [y/N] prompt below lists exactly
-		// what a group argument is about to delete.
-		args = expandRmGroups(cmd.OutOrStdout(), args)
-
-		// Advisory, before the confirmation: name whatever still points at
-		// each doomed path. rm deletes only the envelope file, so a wired
-		// secret leaves its profile naming a hole and its mount serving a
-		// FIFO nothing can fill — the user should learn that here, not
-		// from a hung tool an hour later. Best-effort by design (see
-		// referencesForPaths); a lookup failure changes nothing about the
-		// delete itself.
-		if root, err := vaultRootDir(); err == nil {
-			if cwd, err := os.Getwd(); err == nil {
-				printRmReferenceWarnings(cmd.OutOrStdout(), referencesForPaths(root, cwd, args))
-			}
-		}
-
-		var confirmQ, presence string
-		if len(args) == 1 {
-			confirmQ = fmt.Sprintf("Permanently delete %s from the vault? This can't be undone. [y/N] ", args[0])
-			// Bounded: this string is rendered verbatim into a macOS
-			// authentication dialog, which neither wraps nor scrolls
-			// usefully. A long path pushed the actual question off the
-			// visible area, leaving a wall of text over an OK button --
-			// the exact shape of a prompt people approve without reading.
-			presence = fmt.Sprintf("delete the secret %q from the vault", promptEllipsis(args[0], 60))
-		} else {
-			confirmQ = fmt.Sprintf("Permanently delete these %d secrets from the vault? This can't be undone:\n  %s\n[y/N] ",
-				len(args), strings.Join(args, "\n  "))
-			presence = fmt.Sprintf("delete %d secrets from the vault", len(args))
-		}
-		if !vaultRmYes && !vaultRmForce && !confirmPrompt(cmd, confirmQ) {
-			fmt.Fprintln(cmd.OutOrStdout(), "Aborted.")
-			return nil
-		}
-
-		// Fresh biometric gate, same idiom as restore/delete: Remove only
-		// deletes envelope files (never touches the KeyWrapper), so an
-		// explicit user-presence check is what forces a fingerprint/passcode
-		// here, whether the agent is locked or not. The [y/N] above is a
-		// footgun guard (bypassable with --force); this is the real gate. One
-		// gesture covers the whole batch: user-presence proves a human is here
-		// for THIS command, and deleting N of their own secrets needs no finer
-		// per-secret proof than deleting one.
-		if err := requireUserPresence(presence); err != nil {
-			return fmt.Errorf("jit vault rm: %w", err)
-		}
-
-		v, err := openVaultReadOnly()
-		if err != nil {
-			return fmt.Errorf("jit vault rm: %w", err)
-		}
-		out := cmd.OutOrStdout()
-		var failed int
-		for _, path := range args {
-			if err := v.Remove(path); err != nil {
-				failed++
-				if errors.Is(err, vault.ErrNotFound) {
-					fmt.Fprintf(cmd.ErrOrStderr(), "jit vault rm: no secret stored at %q\n", path)
-				} else {
-					fmt.Fprintf(cmd.ErrOrStderr(), "jit vault rm: %s: %v\n", path, err)
-				}
-				continue
-			}
-			fmt.Fprintf(out, "Removed %s\n", path)
-		}
-		if failed > 0 {
-			return fmt.Errorf("jit vault rm: %d of %d %s could not be removed", failed, len(args), pluralWord(len(args), "secret", "secrets"))
-		}
-		return nil
-	},
+	// A refusal is a result the user acts on, not a usage mistake; and a
+	// --format json dry-run must never have usage text appended.
+	SilenceUsage: true,
+	RunE:         runVaultRm,
 }
 
 // expandRmGroups turns a GROUP argument (`jamf-2`) into that group's member
@@ -1481,21 +1411,24 @@ var vaultRmCmd = &cobra.Command{
 // expansion is announced, and the [y/N] prompt lists the resulting paths.
 // Best-effort on a listing error: the original arguments fall through to
 // rm's own per-path reporting.
-func expandRmGroups(out io.Writer, args []string) []string {
+//
+// stored is the set of plain secret paths the vault holds, nil when the
+// listing failed.
+func expandRmGroups(out io.Writer, args []string) (expanded []string, stored map[string]bool) {
 	root, err := vaultRootDir()
 	if err != nil {
-		return args
+		return args, nil
 	}
 	paths, err := (&vault.Vault{Root: root}).List()
 	if err != nil {
-		return args
+		return args, nil
 	}
 	secrets, _ := splitBackupPaths(paths)
-	stored := make(map[string]bool, len(secrets))
+	stored = make(map[string]bool, len(secrets))
 	for _, p := range secrets {
 		stored[p] = true
 	}
-	expanded := make([]string, 0, len(args))
+	expanded = make([]string, 0, len(args))
 	seen := make(map[string]bool)
 	keep := func(p string) {
 		if !seen[p] {
@@ -1516,12 +1449,12 @@ func expandRmGroups(out io.Writer, args []string) []string {
 			keep(arg)
 			continue
 		}
-		fmt.Fprintf(out, "%s is a group: deleting all %s under it.\n", arg, countWord(len(members), "secret", "secrets"))
+		fmt.Fprintf(out, "%s is a group of %s.\n", arg, countWord(len(members), "secret", "secrets"))
 		for _, p := range members {
 			keep(p)
 		}
 	}
-	return expanded
+	return expanded, stored
 }
 
 // promptEllipsis shortens s for display inside a macOS authentication
@@ -2102,58 +2035,6 @@ var (
 	vaultOrphansFormat string
 )
 
-// collectReferencedPaths gathers every vault path referenced by a profile jit
-// can currently see: every profile in the project-local (cwd) and global
-// stores, plus the profile behind every registered mount (which may live in
-// another project's tree). It is deliberately STRICT — a profile it can't
-// parse aborts with an error rather than returning a short set — because its
-// only deleting caller (`jit vault orphans --prune`) must never treat a secret
-// as unreferenced just because the manifest that names it failed to load.
-//
-// A registered mount whose profile file is GONE is the one exception: a
-// missing manifest names nothing, so skipping it cannot under-count. Those
-// entries come back as stale mounts instead of aborting — aborting here
-// bricked `jit vault orphans` in exactly the situation it exists for, a
-// project directory deleted without `jit unmount` first (GAPS.md #67), with
-// the error naming the missing profile and no way forward.
-func collectReferencedPaths(root, cwd string) (map[string]bool, []mount.Entry, error) {
-	referenced := map[string]bool{}
-	add := func(path string) error {
-		p, err := profile.LoadFile(path)
-		if err != nil {
-			return fmt.Errorf("loading profile %s: %w", path, err)
-		}
-		for _, vaultPath := range p {
-			referenced[vaultPath] = true
-		}
-		return nil
-	}
-	infos, err := profile.ListAll(cwd)
-	if err != nil {
-		return nil, nil, err
-	}
-	for _, info := range infos {
-		if err := add(info.Path); err != nil {
-			return nil, nil, err
-		}
-	}
-	entries, err := mount.LoadRegistry(mount.RegistryPath(root))
-	if err != nil {
-		return nil, nil, fmt.Errorf("reading the mount registry: %w", err)
-	}
-	var stale []mount.Entry
-	for _, e := range entries {
-		if _, statErr := os.Stat(e.ProfilePath); os.IsNotExist(statErr) {
-			stale = append(stale, e)
-			continue
-		}
-		if err := add(e.ProfilePath); err != nil {
-			return nil, nil, err
-		}
-	}
-	return referenced, stale, nil
-}
-
 // printOrphanGroups renders orphaned secret paths grouped by their first path
 // segment (the same grouping `jit vault list` shows), annotating each with its
 // recorded Origin and age so a secret that actually belongs to another project
@@ -2232,11 +2113,13 @@ var vaultOrphansCmd = &cobra.Command{
 		"path-only `jit migrate undo`/`remove` leaves in the vault once the profile\n" +
 		"that named them is gone. With --prune, they are permanently deleted after a\n" +
 		"[y/N] confirmation and a fresh Touch ID/passcode.\n\n" +
-		"\"Referenced\" is judged against every profile jit can see: the project-local\n" +
-		"(current directory) and global profile stores, plus the profile behind every\n" +
-		"registered mount. A secret used ONLY by a different project you're not in and\n" +
-		"haven't mounted would look orphaned here, so check each secret's origin\n" +
-		"before pruning, and delete a single one with `jit vault rm <path>` if unsure.\n\n" +
+		"\"Referenced\" is judged against everything jit can find: the current\n" +
+		"directory's profile store, the global one, every project store under your\n" +
+		"home folder, the profile behind every registered mount, and pointer files\n" +
+		"(jit's own in-place pointer files and ~/.clisso.yaml). A file among those\n" +
+		"that can't be read stops the command instead of making its secrets look\n" +
+		"orphaned. A project outside your home folder is not searched, so check each\n" +
+		"secret's origin before pruning.\n\n" +
 		"A registered mount whose profile is gone — a project directory deleted\n" +
 		"without `jit unmount` first — is reported as a stale mount registration,\n" +
 		"and --prune clears it too (a registry edit; no secret value is touched).",
@@ -2872,6 +2755,9 @@ func init() {
 	vaultRmCmd.Flags().BoolVarP(&vaultRmYes, "yes", "y", false, "skip the confirmation prompt")
 	vaultRmCmd.Flags().BoolVarP(&vaultRmForce, "force", "f", false, "synonym for --yes")
 	_ = vaultRmCmd.Flags().MarkHidden("force")
+	vaultRmCmd.Flags().BoolVar(&vaultRmBreakProfiles, "break-profiles", false, "delete secrets a profile or pointer file still uses")
+	vaultRmCmd.Flags().BoolVar(&vaultRmDryRun, "dry-run", false, "show what would be deleted and what uses it; change nothing")
+	vaultRmCmd.Flags().StringVar(&vaultRmFormat, "format", "text", `dry-run output format: "text" (default) or "json"`)
 	vaultListCmd.Flags().StringVar(&vaultListFormat, "format", "text", `output format: "text" (default) or "json"`)
 	vaultListCmd.Flags().BoolVar(&vaultListAll, "all", false, "also list jit migrate's encrypted file backups ("+vault.BackupPathPrefix+"...)")
 	vaultListCmd.Flags().BoolVarP(&vaultListLong, "long", "l", false, "show each secret's class and last-updated age (terminal output only)")

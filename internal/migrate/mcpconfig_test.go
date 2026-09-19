@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -578,9 +579,27 @@ func TestDiscoverWrappedMCPEntriesReportsWrapperFields(t *testing.T) {
 		ProfileName:   "mcp-wrapped",
 		Command:       "uv",
 		WrapperLayers: 1,
+		Profiles:      []string{"mcp-wrapped"},
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("entry = %+v, want %+v", got, want)
+	}
+}
+
+// A nested entry starts every layer's profile, so all of them are named:
+// `jit vault rm` reports the config as launching an inner-layer profile too.
+func TestDiscoverWrappedMCPEntriesNamesEveryLayer(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	writeFile(t, filepath.Join(cwd, ".mcp.json"), `{"mcpServers":{"nested":{"command":"/opt/jit",
+		"args":["run","--profile","outer","--","/old/jit","run","--profile","inner","--","uv"]}}}`)
+
+	entries, err := DiscoverWrappedMCPEntries(home, cwd, false)
+	if err != nil {
+		t.Fatalf("DiscoverWrappedMCPEntries: %v", err)
+	}
+	if len(entries) != 1 || !reflect.DeepEqual(entries[0].Profiles, []string{"outer", "inner"}) {
+		t.Errorf("entries = %+v, want Profiles [outer inner]", entries)
 	}
 }
 
