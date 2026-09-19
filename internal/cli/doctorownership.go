@@ -31,6 +31,8 @@ import (
 // (its .source owner list) names the configs that use it.
 //
 //   - profile_missing (problem): a config names a profile no store holds.
+//   - not_logged_in (warning): the same, for an ~/.aws/config section whose
+//     profile clisso's capture wrap makes at the first `clisso get`.
 //   - pointer_missing (problem): a jit://vault pointer names a missing secret.
 //   - config_deleted (warning): every config an MCP profile's record names
 //     is deleted, and a live config starts its tool.
@@ -108,6 +110,55 @@ func brokenLauncherFindings(m *launchers.Map) []checkFinding {
 		})
 	}
 	return out
+}
+
+// notLoggedInFindings reclassifies the profile_missing rows that are only
+// waiting on a login: an ~/.aws/config section naming aws-<app>, where
+// <app> is an app ~/.clisso.yaml defines (clissoMint's rule, the one the
+// session listing and credential_process already use) and clisso's
+// capture wrap is installed, so `clisso get <app>` is what creates the
+// profile. Without the capture wrap no login ever makes it, and the row
+// stays a problem.
+func notLoggedInFindings(findings []checkFinding, home string) []checkFinding {
+	if !clissoCaptureInstalled(home) {
+		return findings
+	}
+	apps := clissoApps()
+	if len(apps) == 0 {
+		return findings
+	}
+	for i, f := range findings {
+		if f.Kind != kindProfileMissing || len(f.Launchers) != 1 || f.Launchers[0].Kind != launchers.KindAWS ||
+			!strings.HasPrefix(f.Profile, "aws-") {
+			continue
+		}
+		mint := clissoMint(f.Profile, apps)
+		if mint == "" {
+			continue
+		}
+		findings[i].Kind = kindNotLoggedIn
+		findings[i].Detail = fmt.Sprintf("%s names profile %s, which clisso makes the first time you log in",
+			launcherWhere(f.Launchers[0]), f.Profile)
+		findings[i].Action = "`" + mint + "`"
+	}
+	return findings
+}
+
+// clissoCaptureInstalled reports whether clisso is wrapped as a capture
+// wrap (~/.jit/wrap.json) with its shim in place: then `clisso get <app>`
+// runs through jit and stores the aws-<app> profile. A missing shim means
+// the login runs clisso bare, which makes no profile, so it doesn't count;
+// [wrap] reports the shim itself. Read-only, like every doctor probe.
+func clissoCaptureInstalled(home string) bool {
+	m, err := wrap.LoadManifest(home)
+	if err != nil {
+		return false
+	}
+	e, ok := m.Tools["clisso"]
+	if !ok || !e.IsCapture() {
+		return false
+	}
+	return wrap.CheckTool(home, "", "clisso", e).Shim == wrap.ShimOK
 }
 
 // launcherWhere names a launcher as the user would find it: the file, then
@@ -527,6 +578,8 @@ func writeOwnershipGroup(out io.Writer, glyph string, c *color.Color, kind check
 	switch kind {
 	case kindProfileMissing:
 		writeLauncherBrokenGroup(out, glyph, c, group)
+	case kindNotLoggedIn:
+		writeNotLoggedInGroup(out, glyph, c, group)
 	case kindConfigDeleted, kindConfigNotRecorded:
 		writeOwnerGroup(out, glyph, c, kind, group)
 	case kindNoKnownTool:
@@ -573,6 +626,19 @@ func writeLauncherBrokenGroup(out io.Writer, glyph string, c *color.Color, group
 				writeGroupNote(out, note)
 			}
 		}
+	}
+}
+
+// writeNotLoggedInGroup states once what the rows share (clisso makes
+// them at the first login), then each row with its own login command:
+// the app differs per row, so there is no shared action to fold.
+func writeNotLoggedInGroup(out io.Writer, glyph string, c *color.Color, group []checkFinding) {
+	writeGroupNote(out, fmt.Sprintf("clisso makes %s the first time you log in",
+		pluralWord(len(group), "this profile", "these profiles")))
+	arrow := strings.Repeat(" ", findingArrow)
+	for _, f := range group {
+		writeGroupRow(out, glyph, c, formatFinding(f))
+		writeActionLine(out, arrow, kindNotLoggedIn, f.Action)
 	}
 }
 
