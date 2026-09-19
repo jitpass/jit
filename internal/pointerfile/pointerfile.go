@@ -43,9 +43,27 @@ const (
 	// in the vault a second time as though it were a credential.
 	ValuePrefix = "jit://vault/"
 
-	// CompanionSuffix names the git-safe file written ALONGSIDE a live mount
-	// (`.env` -> `.env.pointers`), listing which vault path each variable
-	// resolves to. Committable and IDE-peekable, holding no secret.
+	// CompanionSuffix names the git-safe file that used to be written
+	// ALONGSIDE a live mount (`.env` -> `.env.pointers`), listing which vault
+	// path each variable resolves to.
+	//
+	// `jit migrate` no longer creates these. The companion was a second copy
+	// of the profile manifest — which is written beside the same file, in the
+	// same repo, and committed with it — in a different syntax, with nothing
+	// keeping the two in sync: one writer, at migration time, and no path
+	// that ever updated it afterwards. A copy with no invalidation drifts by
+	// construction, and this one did: doctor's [stale pointers], a profile
+	// that read as broken because the companion still named a group renamed
+	// two machines ago, and the re-discovery incident above, where a second
+	// migrate parsed a companion's own `jit://vault/...` lines as though they
+	// were credentials.
+	//
+	// The suffix stays, and everything that RECOGNISES the format stays with
+	// it: companions already on disk in people's repos must still be
+	// understood, or `jit scan` re-reports them as exposed secrets, `jit
+	// migrate forget` loses the guards that let it delete one safely, and
+	// that re-discovery incident returns for every file already written.
+	// Stop writing them; never stop reading them.
 	CompanionSuffix = ".pointers"
 )
 

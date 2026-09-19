@@ -22,7 +22,6 @@ import (
 func TestMigrateSummaryPrintCollapsesRepeatedExplanations(t *testing.T) {
 	s := &migrateSummary{
 		gitHistoryFiles: []string{"/proj/.env", "/proj/.env.bak", "/proj/.env.local"},
-		pointerFiles:    3,
 	}
 	var buf bytes.Buffer
 	s.print(&buf)
@@ -36,8 +35,10 @@ func TestMigrateSummaryPrintCollapsesRepeatedExplanations(t *testing.T) {
 			t.Errorf("expected %s listed in the collapsed git-history block, got:\n%s", f, out)
 		}
 	}
-	if !strings.Contains(out, "3 git-safe .pointers files") {
-		t.Errorf("expected the pointer-file count line, got:\n%s", out)
+	// No .pointers line: migrate stopped writing those companions, so a
+	// summary claiming it wrote three would be inventing them.
+	if strings.Contains(out, ".pointers") {
+		t.Errorf("migrate no longer writes .pointers companions, got:\n%s", out)
 	}
 }
 

@@ -23,8 +23,7 @@ agent-cache sweep described below). Each target is resolved on its own:
                (.env, *.tfvars, mcp.json/.mcp.json, .npmrc,
                .streamlit/secrets.toml) has its secrets
                moved into a profile and the vault, the file keeps working as a
-               live mount (a git-safe <file>.pointers companion is written
-               alongside). A machine-wide file at a known path (a shell config
+               live mount. A machine-wide file at a known path (a shell config
                like ~/.zshrc, a shell history file like ~/.zsh_history,
                ~/.aws/credentials, ~/.kube/config, Terraform Cloud creds,
                ~/.docker/config.json, ~/.git-credentials, ~/.cargo/credentials.toml, GCP
