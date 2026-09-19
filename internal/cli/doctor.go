@@ -262,6 +262,7 @@ func gatherDoctorOutcome(errOut io.Writer, profileName string, onePassword bool)
 	// looking through other findings (which a fix may have cleared).
 	outcome.Findings = withProfileLaunchers(outcome.Findings, launcherMap, cwd)
 	outcome.Findings = dropRegistryEmptyWhenProfilesExist(outcome.Findings, launcherMap, cwd)
+	outcome.Findings = dropOrphansReferencedElsewhere(outcome.Findings, launcherMap)
 
 	// The ownership sections sit with the profile check they refine.
 	// Whole-vault integrity runs on EVERY invocation, --profile included:
