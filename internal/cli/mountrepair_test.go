@@ -240,3 +240,106 @@ func TestMountRegisterCreatesNothing(t *testing.T) {
 		t.Error("a record naming a file that is not there must report nothing")
 	}
 }
+
+func execMountRecord(t *testing.T) (string, error) {
+	t.Helper()
+	mountRecordYes = true
+	var buf bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	err := runMountRecord(cmd, nil)
+	return buf.String(), err
+}
+
+// The backfill: a mount migrated before records existed is registered,
+// working, and unrecognisable if its folder moves. After recording it, a
+// rename is repairable exactly as a freshly migrated one is.
+func TestMountRecordBackfillsAnExistingMountAndMakesItRelocatable(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	dir := filepath.Join(home, "scripts", "hibob")
+	manifest := filepath.Join(dir, ".jit", "profiles", "hibob.yaml")
+	if err := os.MkdirAll(filepath.Dir(manifest), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, []byte("TOKEN: hibob/TOKEN\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mountPath := filepath.Join(dir, ".env")
+	if err := mount.CreateFIFO(mountPath); err != nil {
+		t.Fatal(err)
+	}
+	registerFixtureMount(t, home, mountPath, manifest)
+	plantVaultSecret(t, home, "hibob/TOKEN")
+
+	// Before: no record, so a move is unrecognisable.
+	if _, err := os.Stat(projectrecord.Path(manifest)); !os.IsNotExist(err) {
+		t.Fatal("the fixture must start with no record")
+	}
+
+	out, err := execMountRecord(t)
+	if err != nil {
+		t.Fatalf("record: %v\n%s", err, out)
+	}
+	r, ok, err := projectrecord.Read(projectrecord.Path(manifest))
+	if err != nil || !ok || len(r.Mounts) != 1 || r.Mounts[0] != ".env" {
+		t.Fatalf("record = %+v ok=%v err=%v", r, ok, err)
+	}
+
+	// Re-running writes nothing new.
+	out, err = execMountRecord(t)
+	if err != nil || !strings.Contains(out, "already has one") {
+		t.Errorf("a second run must be a no-op, got %v:\n%s", err, out)
+	}
+
+	// After: the move is recognised and repairable.
+	moved := filepath.Join(home, "elsewhere", "hibob")
+	if err := os.MkdirAll(filepath.Dir(moved), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(dir, moved); err != nil {
+		t.Fatal(err)
+	}
+	if found := findingsOfKind(t, kindMountMoved); len(found) != 1 {
+		t.Fatalf("a recorded mount must be recognised after a move, got %+v", found)
+	}
+	if out, rerr := execMountRepair(t, moved, true); rerr != nil {
+		t.Fatalf("relocate: %v\n%s", rerr, out)
+	}
+	if len(findingsOfKind(t, kindMountMoved)) != 0 {
+		t.Error("the finding must clear")
+	}
+}
+
+// A mount served from the global store is skipped: "the project moved" is
+// not a thing that happens to a home directory, and writing a record there
+// would put a file in every user's profile store for a relocation that
+// cannot occur.
+func TestMountRecordSkipsTheGlobalStore(t *testing.T) {
+	home := withFixtureHome(t)
+	withFixtureCwd(t)
+	manifest := filepath.Join(home, ".jit", "profiles", "npmrc.yaml")
+	if err := os.MkdirAll(filepath.Dir(manifest), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, []byte("TOKEN: npmrc/TOKEN\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mountPath := filepath.Join(home, ".npmrc")
+	if err := mount.CreateFIFO(mountPath); err != nil {
+		t.Fatal(err)
+	}
+	registerFixtureMount(t, home, mountPath, manifest)
+
+	out, err := execMountRecord(t)
+	if err != nil {
+		t.Fatalf("record: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "global store") {
+		t.Errorf("expected the global mount to be skipped by name, got:\n%s", out)
+	}
+	if _, serr := os.Stat(projectrecord.Path(manifest)); !os.IsNotExist(serr) {
+		t.Error("no record may be written into the global profile store")
+	}
+}
