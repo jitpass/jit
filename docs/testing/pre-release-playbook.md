@@ -137,7 +137,7 @@ It ships: `.env` / `.env.local` (a `server.js` that parses `.env` itself), `.mcp
 |---|---|---|
 | Scan | `jit scan` (repo) and `jit scan .` | Does it find every planted secret? Right risk level? Any false negative on a real vendor token? Is the report readable? |
 | Preview | `jit migrate --dry-run` | Plan matches what scan found? Nothing touched on disk? |
-| Migrate | `jit migrate` (or per-file) | Files become mounts + `.pointers`; profiles created; confirm messages name real paths, not `<path>` |
+| Migrate | `jit migrate` (or per-file) | Files become mounts; profile manifests created and NO `.pointers` companion written; confirm messages name real paths, not `<path>` |
 | **Run the app** | `jit run -- npm start` then `curl localhost:<port>` | The **app** reads real values from the live-mounted `.env`; raw `cat .env` shows inert/decoy. This is the core promise - verify the app actually works. |
 | Docker | `jit run -- docker compose config` / `up` (if docker present) | env reaches the container; no plaintext on disk |
 | Terraform | migrate `terraform.tfvars`, then `jit run -- terraform plan` (if installed) | `TF_VAR_*` delivered; tfvars secret-shaped values vaulted, settings left |
@@ -170,7 +170,7 @@ Work each surface as a user. Hermetic if you prefer, or reuse the playground.
 ### migrate (+ flags) / mounts / profiles
 - **Exercise:** `--dry-run`, real migrate of `.env`/`tfvars`/`.npmrc`/`.mcp.json`; `--only <cats>`;
   `--mount` on a loose/bare secret; `migrate undo`; `migrate remove`.
-- **Expect:** file→FIFO mount + git-safe `.pointers`; `jit run` injects real values, ambient stays
+- **Expect:** file→FIFO mount + git-safe profile manifest (no `.pointers` companion); `jit run` injects real values, ambient stays
   empty; `--only` scopes precisely; undo restores byte-for-byte.
 - **Hunt:** does the mount serve decoy when locked and real only inside `jit run`? does `--only`
   leak an out-of-scope file? does undo/remove leave orphan profiles or secrets (a real past bug)?

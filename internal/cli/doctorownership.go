@@ -420,8 +420,16 @@ func missingCompanionFindings(m *launchers.Map, vaultGroups map[string]bool) []c
 			// never restored. Two earlier drafts offered `jit vault list`
 			// here, which is a listing, not a repair — a button that
 			// prints the vault and fixes nothing.
+			// The store half stays PROSE, deliberately: backticking it would
+			// mint a `jit vault set <group>/<NAME>` button nobody can run
+			// as written, which is the same defect as the `jit vault list`
+			// drafts above wearing a different shape. What did change is
+			// the vocabulary — "under a group a profile names" asked the
+			// reader to hold two pieces of jit's own jargon at once to
+			// follow an instruction they then still could not act on, and
+			// the detail line above already spells out the path prefix.
 			Action: fmt.Sprintf(
-				"store those values under a group a profile names, or `jit migrate forget %s` to delete this record",
+				"store the values it lists, or `jit migrate forget %s` to delete the file",
 				shortPath(g.file)),
 		})
 	}

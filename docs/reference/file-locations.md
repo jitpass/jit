@@ -31,7 +31,7 @@ the vault is gone.
 
 | Path | After migration |
 |---|---|
-| `<project>/.env` (and layers) | a [live mount](../run/mounts.md), with a `.env.pointers` companion beside it |
+| `<project>/.env` (and layers) | a [live mount](../run/mounts.md), read from the profile manifest in `<project>/.jit/profiles/` |
 | `~/.zshrc` / `~/.bashrc` | export lines replaced with `eval "$(jit export --profile ...)"` |
 | `~/.aws/config` | gains a `credential_process` line per migrated profile - and one per app captured by [`jit wrap clisso`](../wrap/clisso.md) |
 | `~/.clisso.yaml` | each OneLogin provider's `client-secret` becomes a `jit://vault/` pointer; the real config is served over a pipe per run |
