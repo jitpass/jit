@@ -101,7 +101,12 @@ flags:
   it satisfies jit's release-signing requirement), `ok`, and structured
   `problems`/`warnings` arrays - each entry carrying `kind`, `profile`,
   `variable`, `path`, `detail`, and an `action` you can act on without parsing
-  prose.
+  prose. When the action names commands, `fixes` lists each one as data:
+  `command`, `argv` (without the leading `jit`), whether it is `destructive`,
+  whether it asks for Touch ID itself (`presence`), `external` for a command
+  that isn't jit's, and `needs` for a placeholder such as `<file>` you must
+  fill in. An `origin_gone` entry also lists its `groups` and the `profiles`
+  still using them; its action is a note, with nothing to run.
 
 ### Exit codes
 

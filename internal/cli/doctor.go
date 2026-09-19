@@ -11,6 +11,8 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
+
+	"github.com/jitpass/jit/internal/termtext"
 )
 
 var (
@@ -66,7 +68,14 @@ type doctorResult struct {
 
 // doctorSchemaVersion is bumped when a field is removed or its meaning
 // changes — not when one is added, which an existing consumer ignores.
-const doctorSchemaVersion = 1
+//
+// 2: findings carry `fixes`, their action's commands as data, and a finding
+// with no `fixes` now means "nothing to run" rather than "not stated", which
+// is a meaning a consumer must be able to tell from version 1's silence. In
+// the same change an origin_gone action became a note with no command in it
+// (plus `groups` and `profiles`), and a [service] build-mismatch or
+// missing-binary finding moved its command from `detail` to `action`.
+const doctorSchemaVersion = 2
 
 // doctorTool identifies the binary that produced the report. A pasted doctor
 // output could not previously be tied to a release at all, on the one surface
@@ -330,8 +339,8 @@ func renderDoctorOutcome(cmd *cobra.Command, outcome checkOutcome) error {
 			OpLinksChecked: outcome.OpLinksChecked,
 			OpLinksOK:      outcome.OpLinksOK,
 			OK:             len(problems) == 0,
-			Problems:       problems,
-			Warnings:       warnings,
+			Problems:       withFixes(problems),
+			Warnings:       withFixes(warnings),
 		}); err != nil {
 			return fmt.Errorf("jit doctor: %w", err)
 		}
@@ -579,23 +588,45 @@ func writeFindingGroups(out io.Writer, glyph string, c *color.Color, findings []
 		for _, f := range group {
 			_, _ = c.Fprintf(out, "  %s ", glyph)
 			wrapBody(out, findingIndent, body, hlCmds(formatFinding(f)))
+			if ev := findingEvidence(f); ev != "" {
+				fmt.Fprint(out, arrow+glyphBranch+" ")
+				wrapBody(out, findingIndent, body, ev)
+			}
 			if shared == "" && f.Action != "" {
-				writeActionLine(out, arrow, f.Action)
+				writeActionLine(out, arrow, kind, f.Action)
 			}
 		}
 		if shared != "" {
-			writeActionLine(out, arrow, shared)
+			writeActionLine(out, arrow, kind, shared)
 		}
 	}
 	return true
 }
 
 // writeActionLine prints one cyan-arrow next step, and nothing else on the
-// line (design/output-style.md, "The action line").
-func writeActionLine(out io.Writer, arrow, action string) {
+// line (design/output-style.md, "The action line"). A kind whose action is a
+// note (actionIsNote) gets plain text at the same column instead: an arrow
+// promises something to run, and a note has nothing.
+func writeActionLine(out io.Writer, arrow string, kind checkKind, action string) {
 	fmt.Fprint(out, arrow)
+	if kind.actionIsNote() {
+		wrapBody(out, findingArrow, arrow, action)
+		return
+	}
 	_, _ = cPath.Fprint(out, glyphAction+" ")
 	wrapBody(out, findingIndent, arrow+"  ", hlCmds(action))
+}
+
+// findingEvidence is the └ line under a finding's row: the fact that backs
+// it, when the row alone would leave the reader asking. Today only
+// [origin gone] has one, naming the profiles that still use the secrets,
+// which is the reason nothing should be deleted.
+func findingEvidence(f checkFinding) string {
+	if f.Kind != kindOriginGone || len(f.Profiles) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("used by %s %s",
+		pluralWord(len(f.Profiles), "profile", "profiles"), strings.Join(f.Profiles, ", "))
 }
 
 // templateAction is the group-level form of an action whose per-finding
@@ -722,7 +753,7 @@ func findingLabel(f checkFinding) string {
 // that identifies the file off the first line (rule 6).
 func formatFinding(f checkFinding) string {
 	switch f.Kind {
-	case kindParse, kindNotFound, kindService, kindBackup, kindWrap, kindWrapEnv, kindMount, kindMountStale, kindDuplicates, kindOriginGone, kindVaultKey, kindRekey, kindLegacyEnvelope, kindAudit, kindMCP, kindMCPNested, kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion:
+	case kindParse, kindNotFound, kindService, kindBackup, kindWrap, kindWrapEnv, kindMount, kindMountStale, kindDuplicates, kindVaultKey, kindRekey, kindLegacyEnvelope, kindAudit, kindMCP, kindMCPNested, kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion:
 		return shortHome(f.Detail)
 	case kindMissing:
 		return fmt.Sprintf("%s: %s "+glyphAction+" %s, not in the vault", profileRef(f), f.Variable, f.Path)
@@ -744,6 +775,23 @@ func formatFinding(f checkFinding) string {
 		return fmt.Sprintf("%s — %s", f.Path, f.Detail)
 	case kindShadowed:
 		return fmt.Sprintf("%s: %s", profileRef(f), f.Detail)
+	case kindOriginGone:
+		// Rendered from the structured fields, not Detail, whose sentence is
+		// frozen for the app. The path is cut from the front to fit one
+		// continuation line: its tail is what names the file. "which no
+		// longer exists" is said only when the row fits on one line; when the
+		// path has to wrap it would spill a third line to repeat what the
+		// [origin gone] header already says.
+		if len(f.Groups) == 0 {
+			return shortHome(f.Detail)
+		}
+		width := outputWidth()
+		row := fmt.Sprintf("%s · from %s", strings.Join(f.Groups, ", "), shortPath(f.Path))
+		if full := row + ", which no longer exists"; findingIndent+termtext.VisibleWidth(full) <= width {
+			return full
+		}
+		return fmt.Sprintf("%s · from %s",
+			strings.Join(f.Groups, ", "), termtext.TruncHead(shortPath(f.Path), width-findingIndent))
 	default:
 		return shortHome(f.Detail)
 	}

@@ -70,6 +70,9 @@ const (
 	// project whose profile survived looks exactly like this. The
 	// UNREFERENCED half of the same situation needs no kind of its own: it is
 	// already an orphan.
+	//
+	// Its action is a note, not a command (see actionIsNote): every secret it
+	// names is in use by definition, so deleting one always breaks a profile.
 	kindOriginGone checkKind = "origin_gone"
 	// kindShadowed: a profile name exists in BOTH project and global scope.
 	// Load resolves to the project one, so the global profile of the same
@@ -282,6 +285,25 @@ type checkFinding struct {
 	// isn't losing every secret"), and a JSON consumer got an English
 	// sentence with markup in it instead of a field.
 	Action string `json:"action,omitempty"`
+	// Groups and Profiles are kindOriginGone's structured half: every vault
+	// group born from the gone file, and every profile that still names one
+	// of their secrets. Detail keeps its sentence, byte for byte, because the
+	// shipped menu bar app parses it; these let a consumer stop doing that.
+	Groups   []string `json:"groups,omitempty"`
+	Profiles []string `json:"profiles,omitempty"`
+	// Fixes is Action's commands as data: argv, and whether running one
+	// deletes something or asks for Touch ID. Filled for JSON output by
+	// withFixes from the backticked spans in Action, unless a finding sets
+	// its own (when a backticked span in the prose is a reference, not a
+	// step). See doctorfixes.go.
+	Fixes []doctorFix `json:"fixes,omitempty"`
+}
+
+// actionIsNote reports whether a kind's Action is a note rather than a next
+// step: plain text closing the group, with no → and nothing to run. A cyan
+// arrow promises a command, and an origin_gone finding has none to offer.
+func (k checkKind) actionIsNote() bool {
+	return k == kindOriginGone
 }
 
 // checkedRef is one variable→path reference that resolved cleanly, retained
@@ -489,10 +511,13 @@ func runProfileCheck(cwd string, v *vault.Vault, opts checkOptions) (checkOutcom
 	}
 
 	// referenced collects every vault path any target profile points at, for
-	// the orphan sweep below. cache dedupes the actual vault work: the same
-	// path referenced by five profiles (or five variables) is one stat, not
-	// five — a real saving on a shared credential without changing any count.
+	// the orphan sweep below, and referencedBy which profiles those are, for
+	// the origin sweep's "used by" line. cache dedupes the actual vault work:
+	// the same path referenced by five profiles (or five variables) is one
+	// stat, not five — a real saving on a shared credential without changing
+	// any count.
 	referenced := map[string]bool{}
+	referencedBy := map[string][]string{}
 	cache := map[string]secretStatus{}
 
 	for _, e := range entries {
@@ -506,6 +531,9 @@ func runProfileCheck(cwd string, v *vault.Vault, opts checkOptions) (checkOutcom
 			secretPath := e.prof[varName]
 			out.SecretsChecked++
 			referenced[secretPath] = true
+			if by := referencedBy[secretPath]; len(by) == 0 || by[len(by)-1] != e.name {
+				referencedBy[secretPath] = append(by, e.name)
+			}
 
 			status := checkSecret(v, secretPath, opts.Integrity, cache)
 			switch status.kind {
@@ -580,7 +608,7 @@ func runProfileCheck(cwd string, v *vault.Vault, opts checkOptions) (checkOutcom
 				out.Findings = append(out.Findings, duplicateFindings(secrets, meta)...)
 			}
 			if opts.Origins {
-				out.Findings = append(out.Findings, originGoneFindings(secrets, meta, referenced)...)
+				out.Findings = append(out.Findings, originGoneFindings(secrets, meta, referencedBy)...)
 			}
 		}
 	}
@@ -607,23 +635,28 @@ func duplicateFindings(secrets []string, meta map[string]vault.SecretInfo) []che
 }
 
 // originGoneFindings reports each REFERENCED secret whose recorded origin
-// file no longer exists on disk — one finding per origin file, naming the
-// vault groups born from it. Only os.IsNotExist counts as gone: a
-// permission error is not evidence of absence, and a false "your file is
-// gone" costs more trust than the missed finding. Unreferenced secrets are
-// skipped on purpose — origin gone plus referenced-by-nothing IS the orphan
-// definition, and that count already carries them.
+// file no longer exists on disk — one finding per origin file, naming every
+// vault group born from it and every profile that still uses one. Only
+// os.IsNotExist counts as gone: a permission error is not evidence of
+// absence, and a false "your file is gone" costs more trust than the missed
+// finding. Unreferenced secrets are skipped on purpose — origin gone plus
+// referenced-by-nothing IS the orphan definition, and that count already
+// carries them.
 //
-// No action line, following kindShadowed's reasoning: a deliberately deleted
-// source file (the product working as intended) and a half-deleted project
-// look identical from here, so any command would be advice, not a next step.
-func originGoneFindings(secrets []string, meta map[string]vault.SecretInfo, referenced map[string]bool) []checkFinding {
+// Its action is a note, not a command. Every secret here is in use by
+// construction, so the `jit vault rm <group>` it used to offer broke a
+// profile every time it was followed: the menu bar app made it a one-click
+// delete, and two live MCP servers stopped starting. The vault copy is the
+// live one now, which is the product working, so there is nothing to run.
+func originGoneFindings(secrets []string, meta map[string]vault.SecretInfo, referencedBy map[string][]string) []checkFinding {
 	home, _ := os.UserHomeDir()
 	groupsByOrigin := map[string][]string{}
+	profilesByOrigin := map[string]map[string]bool{}
 	var order []string
 	gone := map[string]bool{}
 	for _, p := range secrets {
-		if !referenced[p] {
+		users := referencedBy[p]
+		if len(users) == 0 {
 			continue
 		}
 		info, ok := meta[p]
@@ -645,6 +678,10 @@ func originGoneFindings(secrets []string, meta map[string]vault.SecretInfo, refe
 		}
 		if _, ok := groupsByOrigin[info.Origin]; !ok {
 			order = append(order, info.Origin)
+			profilesByOrigin[info.Origin] = map[string]bool{}
+		}
+		for _, name := range users {
+			profilesByOrigin[info.Origin][name] = true
 		}
 		// secrets is sorted, so one group's members are contiguous — the
 		// last-element check is a full dedupe.
@@ -654,22 +691,34 @@ func originGoneFindings(secrets []string, meta map[string]vault.SecretInfo, refe
 	}
 	var out []checkFinding
 	for _, origin := range order {
+		// By name: path order puts "mcp-okta-mcp-server/…" before
+		// "mcp-okta/…" ('-' sorts before '/'), which reads as shuffled.
 		groups := groupsByOrigin[origin]
+		sort.Strings(groups)
+		profiles := make([]string, 0, len(profilesByOrigin[origin]))
+		for name := range profilesByOrigin[origin] {
+			profiles = append(profiles, name)
+		}
+		sort.Strings(profiles)
 		out = append(out, checkFinding{
 			Kind: kindOriginGone,
 			Path: origin,
+			// Detail's wording is frozen: the shipped menu bar app parses it.
+			// The text report renders from Groups and Profiles instead.
 			Detail: fmt.Sprintf("%s %s migrated from %s, which no longer exists on disk",
 				strings.Join(groups, ", "), pluralWord(len(groups), "was", "were"), shortPath(origin)),
-			// A finding with no action reads as a fault the reader cannot
-			// address. There are exactly two answers: keep using the secrets
-			// (the vault is their home now), or delete the group if the
-			// project that owned them is gone for good.
-			Action: "nothing, if you still use these secrets: the vault is where they live now; " +
-				"`jit vault rm " + groups[0] + "` if the project is gone for good",
+			Groups:   groups,
+			Profiles: profiles,
+			// A note, not a step (see actionIsNote), so the reader is told
+			// there is nothing to do rather than left looking for the command.
+			Action: originGoneNote,
 		})
 	}
 	return out
 }
+
+// originGoneNote closes an [origin gone] group, and is its JSON action.
+const originGoneNote = "nothing to do: the vault is where these live now"
 
 // secretAction is the one runnable step for a broken secret reference.
 // Missing and corrupt want different fixes: one is "put a value there", the

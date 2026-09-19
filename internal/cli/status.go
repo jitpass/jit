@@ -448,15 +448,28 @@ func agentBuildMismatch(agentBuild string) (service, cli string, ok bool) {
 	return agentBuild, cliBuild, true
 }
 
+// agentBuildMismatchParts is the mismatch as doctor's finding shape: what is
+// wrong, with the revisions named, and the command that fixes it as its own
+// action (so it reaches doctor's JSON as a fix, not as prose inside detail).
+// Both empty when the builds match or either side can't tell.
+func agentBuildMismatchParts(agentBuild string) (detail, action string) {
+	service, cli, ok := agentBuildMismatch(agentBuild)
+	if !ok {
+		return "", ""
+	}
+	return fmt.Sprintf("The background service is running a different build than this CLI (service %s, CLI %s).", service, cli),
+		"`jit service restart` to move it to the current binary"
+}
+
 // agentBuildMismatchLine is the flat one-sentence form, for the diagnostic
 // surfaces that render a finding as a single string rather than as a state
 // row with an action beneath it — and that do want the revisions named.
 func agentBuildMismatchLine(agentBuild string) string {
-	service, cli, ok := agentBuildMismatch(agentBuild)
-	if !ok {
+	detail, action := agentBuildMismatchParts(agentBuild)
+	if detail == "" {
 		return ""
 	}
-	return fmt.Sprintf("The background service is running a different build than this CLI (service %s, CLI %s) — run `jit service restart` to move it to the current binary.", service, cli)
+	return strings.TrimSuffix(detail, ".") + " — run " + action + "."
 }
 
 // agentMissingBinaryLine reports a running service whose own executable is no
@@ -472,15 +485,18 @@ func agentBuildMismatchLine(agentBuild string) string {
 // 2026-08-09, during exactly the tarball-to-cask move 0.82.0 introduced).
 //
 // Silent when the path is empty (an agent older than the field) rather than
-// guessing: unknown is not the same as missing.
-func agentMissingBinaryLine(exePath string) string {
+// guessing: unknown is not the same as missing. Split like
+// agentBuildMismatchParts: doctor carries the restart as the finding's
+// action, where its JSON can name it as a fix.
+func agentMissingBinaryParts(exePath string) (detail, action string) {
 	if exePath == "" {
-		return ""
+		return "", ""
 	}
 	if _, err := os.Stat(exePath); err == nil || !os.IsNotExist(err) {
-		return ""
+		return "", ""
 	}
-	return fmt.Sprintf("The background service is running a binary that no longer exists (%s) — an upgrade moved or removed it. Every vault unlock will fail until you run `jit service restart`.", exePath)
+	return fmt.Sprintf("The background service is running a binary that no longer exists (%s) — an upgrade moved or removed it. Every vault unlock will fail until it restarts.", exePath),
+		"`jit service restart` to run the current binary"
 }
 
 // gatherGuardStatus is best-effort like the grants listing: a home directory

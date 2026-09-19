@@ -448,6 +448,9 @@ func gatherVaultIntegrityFindings(root string, v *vault.Vault) []checkFinding {
 				"the vault holds %s but this Mac's master key is missing from the keychain, so none of them can be decrypted. Every envelope is structurally intact; only the key is gone.",
 				countWord(len(paths), "secret", "secrets")),
 			Action: "`jit vault import <file>` from a `jit vault export` backup",
+			// Only the import is a step: with the key gone, an export can't
+			// run, and the prose names it as where the backup came from.
+			Fixes: fixesFor(kindVaultKey, "`jit vault import <file>`"),
 		})
 	}
 
@@ -499,14 +502,14 @@ func agentFindings(root string) []checkFinding {
 // one of them, the unreachable agent, silently wrong) until now.
 func agentFindingsFrom(root string, st statusAgent) []checkFinding {
 	var out []checkFinding
-	if warn := agentBuildMismatchLine(st.Build); warn != "" {
-		out = append(out, checkFinding{Kind: kindService, Detail: warn})
+	if detail, action := agentBuildMismatchParts(st.Build); detail != "" {
+		out = append(out, checkFinding{Kind: kindService, Detail: detail, Action: action})
 	}
 	// Checked separately from the build mismatch above, and reported even
 	// when that one already fired: they are different failures with the same
 	// fix, and this one takes the vault down completely.
-	if warn := agentMissingBinaryLine(st.ExecutablePath); warn != "" {
-		out = append(out, checkFinding{Kind: kindService, Detail: warn})
+	if detail, action := agentMissingBinaryParts(st.ExecutablePath); detail != "" {
+		out = append(out, checkFinding{Kind: kindService, Detail: detail, Action: action})
 	}
 
 	switch {
