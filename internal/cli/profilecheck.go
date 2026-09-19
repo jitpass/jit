@@ -231,6 +231,14 @@ const (
 	// entry's outer layer; this one covers the inner layers and every other
 	// by-name launcher.
 	kindProfileMissing checkKind = "profile_missing"
+	// kindNotLoggedIn ([not logged in]): a kindProfileMissing whose config
+	// is an ~/.aws/config section naming aws-<app>, where <app> is an app
+	// ~/.clisso.yaml defines and clisso's capture wrap is installed. The
+	// profile is missing only because nobody has run `clisso get <app>`
+	// yet, which is what creates it: a state, not breakage. Advisory; with
+	// no capture wrap the same finding stays a problem, since then no login
+	// ever makes the profile.
+	kindNotLoggedIn checkKind = "not_logged_in"
 	// kindPointerMissing: a jit://vault pointer (~/.clisso.yaml, an in-place
 	// pointer file) names a secret the vault doesn't hold, so the tool that
 	// reads it gets nothing. No profile names it, so [missing] can't see it.
@@ -271,7 +279,7 @@ var allCheckKinds = []checkKind{
 	kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion,
 	kind1Password, kind1PasswordLink,
 	kindProfileMissing, kindPointerMissing, kindConfigDeleted, kindConfigNotRecorded,
-	kindNoKnownTool,
+	kindNoKnownTool, kindNotLoggedIn,
 }
 
 // warning reports whether a finding of this kind is advisory (does not fail
@@ -288,7 +296,7 @@ var allCheckKinds = []checkKind{
 func (k checkKind) warning() bool {
 	switch k {
 	case kindOrphan, kindDuplicates, kindOriginGone, kindShadowed, kindService, kindBackup, kindMount, kindMountStale, kindWrapEnv, kindAudit, kindInstall, kindJitPathUpgrade, kindCompletion, kindLegacyEnvelope, kindMCPNested,
-		kindConfigDeleted, kindConfigNotRecorded, kindNoKnownTool:
+		kindConfigDeleted, kindConfigNotRecorded, kindNoKnownTool, kindNotLoggedIn:
 		return true
 	default:
 		return false
@@ -335,7 +343,9 @@ type checkFinding struct {
 	// missing pointer's pointer file. Config is the launching config an
 	// owner finding's fix attaches, Configs every config launching it, and
 	// Owners the profile's .source owner list, verbatim. Launchers are the
-	// launchers behind the finding. Secrets and SecretsMissing count an
+	// launchers behind the finding; on a per-secret finding (missing,
+	// corrupt, bad_path, vault_error) they are what starts its profile,
+	// set by withProfileLaunchers. Secrets and SecretsMissing count an
 	// unlaunched profile's distinct vault paths, and Origin is the file it
 	// was made from when that file is gone.
 	File           string               `json:"file,omitempty"`
@@ -346,6 +356,18 @@ type checkFinding struct {
 	Secrets        int                  `json:"secrets,omitempty"`
 	SecretsMissing int                  `json:"secrets_missing,omitempty"`
 	Origin         string               `json:"origin,omitempty"`
+	// The ignore half (doctorignore.go). Ignore is the unit this finding
+	// is ignored by and the argv that does it, on every finding in JSON.
+	// IgnoreChanged marks a shown finding whose ignore no longer matches
+	// what it says. IgnoredSince, Severity and Unignore are set on the
+	// findings in the top-level ignored list only; Severity is what the
+	// finding would count as if it weren't ignored ("problem" or
+	// "warning"), which problems/warnings otherwise say by placement.
+	Ignore        *doctorIgnoreRef   `json:"ignore,omitempty"`
+	IgnoreChanged bool               `json:"ignore_changed,omitempty"`
+	IgnoredSince  string             `json:"ignored_since,omitempty"`
+	Severity      string             `json:"severity,omitempty"`
+	Unignore      *doctorUnignoreRef `json:"unignore,omitempty"`
 }
 
 // actionIsNote reports whether a kind's Action is a note rather than a next

@@ -14,6 +14,7 @@ import (
 	"github.com/jitpass/jit/internal/launchers"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/pointerfile"
+	"github.com/jitpass/jit/internal/wrap"
 )
 
 // launchFromShellRC gives each named global profile a known launcher: a
@@ -551,5 +552,113 @@ func TestDoctorOwnerGroupHeaderCountsExtras(t *testing.T) {
 		"  → jit profile attach ~/a/.mcp.json\n"
 	if !strings.Contains(out, want) {
 		t.Errorf("expected:\n%s\ngot:\n%s", want, out)
+	}
+}
+
+// installClissoCapture wraps clisso the way `jit wrap clisso` does: a
+// capture entry in ~/.jit/wrap.json and a shim symlink to an executable.
+func installClissoCapture(t *testing.T, home string) {
+	t.Helper()
+	m := wrap.Manifest{Tools: map[string]wrap.Entry{"clisso": {Capture: "clisso"}}}
+	if err := m.Save(home); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	dir := wrap.ShimDir(home)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(testJitPath(t), filepath.Join(dir, "clisso")); err != nil {
+		t.Fatal(err)
+	}
+	// The rc PATH line, so [wrap] has no damage to report: the only wrap
+	// rows left are about this test process's own PATH.
+	t.Setenv("SHELL", "/bin/zsh")
+	writeProfileAt(t, filepath.Join(home, ".zshrc"), wrap.PathLine()+"\n")
+}
+
+// notLoggedInFixture is ~/.aws/config naming aws-dev, aws-admin and aws-qa,
+// with dev and admin apps in ~/.clisso.yaml and no profile for any of them.
+func notLoggedInFixture(t *testing.T) string {
+	t.Helper()
+	home := withFixtureHome(t)
+	chdirForTest(t, home)
+	jit := testJitPath(t)
+	var b strings.Builder
+	for _, name := range []string{"dev", "admin", "qa"} {
+		b.WriteString("[profile " + name + "]\ncredential_process = " + jit + " aws-credential-process --profile aws-" + name + "\n")
+	}
+	writeProfileAt(t, migrate.AWSConfigPath(home), b.String())
+	writeProfileAt(t, migrate.ClissoConfigPath(home), "apps:\n  dev:\n    principal-arn: x\n  admin:\n    principal-arn: y\n")
+	return home
+}
+
+// A profile clisso makes at the first login is a state, not breakage — but
+// only when the capture wrap is there to make it, and only for an app
+// clisso knows.
+func TestDoctorNotLoggedIn(t *testing.T) {
+	cases := []struct {
+		name        string
+		wrapped     bool
+		notLoggedIn []string
+		missing     []string
+	}{
+		{name: "capture wrap installed", wrapped: true, notLoggedIn: []string{"aws-dev", "aws-admin"}, missing: []string{"aws-qa"}},
+		{name: "no capture wrap", wrapped: false, missing: []string{"aws-dev", "aws-admin", "aws-qa"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := notLoggedInFixture(t)
+			if tc.wrapped {
+				installClissoCapture(t, home)
+			}
+			out, _ := execDoctor(t, "--format", "json")
+			var result doctorResult
+			if err := json.Unmarshal([]byte(out), &result); err != nil {
+				t.Fatalf("unmarshal: %v\n%s", err, out)
+			}
+			var gotNLI, gotMissing []string
+			for _, f := range result.Warnings {
+				if f.Kind == kindNotLoggedIn {
+					gotNLI = append(gotNLI, f.Profile)
+					if len(f.Fixes) != 1 || strings.Join(f.Fixes[0].Argv, " ") != "clisso get "+strings.TrimPrefix(f.Profile, "aws-") ||
+						!f.Fixes[0].External || f.Fixes[0].Destructive {
+						t.Errorf("not_logged_in fixes = %+v", f.Fixes)
+					}
+				}
+			}
+			for _, f := range result.Problems {
+				if f.Kind == kindProfileMissing {
+					gotMissing = append(gotMissing, f.Profile)
+				}
+				if f.Kind == kindNotLoggedIn {
+					t.Errorf("not_logged_in is advisory, found under problems: %+v", f)
+				}
+			}
+			if strings.Join(gotNLI, ",") != strings.Join(tc.notLoggedIn, ",") {
+				t.Errorf("not_logged_in = %v, want %v", gotNLI, tc.notLoggedIn)
+			}
+			if strings.Join(gotMissing, ",") != strings.Join(tc.missing, ",") {
+				t.Errorf("profile_missing = %v, want %v", gotMissing, tc.missing)
+			}
+		})
+	}
+}
+
+// The approved [not logged in] block, byte for byte at 80 columns.
+func TestDoctorNotLoggedInRendersTheApprovedShape(t *testing.T) {
+	home := notLoggedInFixture(t)
+	installClissoCapture(t, home)
+	out, _ := execDoctor(t)
+	want := "[not logged in]  2\n" +
+		"  clisso makes these profiles the first time you log in\n" +
+		"  ○ aws --profile dev · ~/.aws/config [profile dev]\n" +
+		"  → clisso get dev\n" +
+		"  ○ aws --profile admin · ~/.aws/config [profile admin]\n" +
+		"  → clisso get admin\n"
+	if !strings.Contains(out, want) {
+		t.Errorf("expected:\n%s\ngot:\n%s", want, out)
+	}
+	if !strings.Contains(out, "[profile missing]\n  ✗ aws-qa · ~/.aws/config [profile qa] names it\n") {
+		t.Errorf("aws-qa has no clisso app and stays a problem, got:\n%s", out)
 	}
 }

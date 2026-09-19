@@ -12,6 +12,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
+	"github.com/jitpass/jit/internal/launchers"
 	"github.com/jitpass/jit/internal/termtext"
 )
 
@@ -64,6 +65,10 @@ type doctorResult struct {
 	OK             bool           `json:"ok"`
 	Problems       []checkFinding `json:"problems"`
 	Warnings       []checkFinding `json:"warnings"`
+	// Ignored holds the findings `jit doctor ignore` took out of the
+	// counts, each as it would otherwise appear plus ignored_since and
+	// unignore. Always present; ok and the exit code never read it.
+	Ignored []checkFinding `json:"ignored"`
 }
 
 // doctorSchemaVersion is bumped when a field is removed or its meaning
@@ -132,7 +137,9 @@ var doctorCmd = &cobra.Command{
 		"the name, with which copy runs decided by PATH order), an MCP profile\n" +
 		"whose recorded config is deleted or was never recorded, a global\n" +
 		"profile no known tool uses (only said when the look through your\n" +
-		"home covered all of it; a script or alias can still use it), and any shim\n" +
+		"home covered all of it; a script or alias can still use it), an\n" +
+		"~/.aws/config profile clisso makes the first time you log in (`clisso\n" +
+		"get <app>`, with clisso's capture wrap installed), and any shim\n" +
 		"complaint that is only true of the shell you happen to be in — a CI job\n" +
 		"that doesn't put the shim dir on PATH is not a broken machine. --strict\n" +
 		"makes those count too.\n\n" +
@@ -145,6 +152,11 @@ var doctorCmd = &cobra.Command{
 		"Exit 2 is the FINDINGS code, matching `jit scan --fail-on`; exit 1 means\n" +
 		"doctor itself couldn't run (a bad flag, an unreadable vault root), which a\n" +
 		"pipeline needs to tell apart from a machine that is genuinely broken.\n\n" +
+		"`jit doctor ignore <name>` takes a finding you have decided to leave as\n" +
+		"it is out of the counts: the exit code, ok and --strict. The report folds\n" +
+		"those into one [ignored] line at the end, and --show-ignored lists them.\n" +
+		"An ignored finding comes back, and counts again, when what it says\n" +
+		"changes. Doctor itself only reads that list; ignore and unignore write it.\n\n" +
 		"Use --profile to narrow the run to a single profile. The service, backup and\n" +
 		"shim sections are skipped then; the whole-vault key checks are not, because\n" +
 		"with no master key no profile resolves and saying otherwise would be false.\n" +
@@ -155,7 +167,8 @@ var doctorCmd = &cobra.Command{
 	Example: "  jit doctor\n" +
 		"  jit doctor --verbose --orphans   # also what passed, and each unreferenced secret\n" +
 		"  jit doctor --wrap                # only the shims, no vault access\n" +
-		"  jit doctor --strict              # advisory warnings gate too, for CI",
+		"  jit doctor --strict              # advisory warnings gate too, for CI\n" +
+		"  jit doctor ignore aws-dev        # stop counting a finding you mean to keep",
 	Args: cobra.NoArgs,
 	// A "problems found" exit is a normal, expected outcome here, not a
 	// usage mistake — cobra's default of dumping the usage string to
@@ -168,8 +181,6 @@ var doctorCmd = &cobra.Command{
 			return fmt.Errorf("jit doctor: %w", err)
 		}
 
-		var outcome checkOutcome
-
 		// --wrap is the shim-only run that used to be `jit wrap doctor`. It
 		// never opens the vault — not as an optimisation, but because the
 		// state you most often want it in is one where the vault itself is
@@ -177,98 +188,115 @@ var doctorCmd = &cobra.Command{
 		// is no use debugging a shim.
 		if doctorWrap {
 			findings, okChecks := wrapFindings()
-			outcome.Findings = findings
-			outcome.OKChecks = okChecks
-			outcome.WrapOnly = true
-			return renderDoctorOutcome(cmd, outcome)
+			return renderDoctorOutcome(cmd, checkOutcome{Findings: findings, OKChecks: okChecks, WrapOnly: true})
 		}
 
-		cwd, err := os.Getwd()
+		outcome, err := gatherDoctorOutcome(cmd.ErrOrStderr(), doctorProfile, doctor1Password)
 		if err != nil {
 			return fmt.Errorf("jit doctor: %w", err)
 		}
-		root, err := vaultRootDir()
-		if err != nil {
-			return fmt.Errorf("jit doctor: %w", err)
-		}
-		v, err := openVaultReadOnly()
-		if err != nil {
-			return fmt.Errorf("jit doctor: %w", err)
-		}
-
-		// Integrity is always on: it is auth-free (envelope structure is
-		// plaintext) and cheap, and a "doctor" that couldn't tell a
-		// truncated secret from a healthy one would be missing the failure
-		// most likely to look like a jit bug at runtime.
-		// Orphans is always on now — the count is the finding, and hiding it
-		// behind a flag meant the run where you'd learn you have eleven never
-		// showed it. --orphans only chooses between the one-line count and
-		// the per-path listing (see collapseOrphanFindings). Duplicates and
-		// Origins are the other always-on hygiene sweeps; all three stay
-		// auth-free (List/Info/stat, never a decrypt).
-		// Who launches each profile, discovered from home: the ownership
-		// sections, and which profiles have no known launcher. A whole-machine
-		// question, so skipped under --profile like the other sweeps. It runs
-		// first because the profile check leaves an unlaunched profile's
-		// missing secrets and gone origin to that profile's own row.
-		var launcherFound []checkFinding
-		var unlaunched map[string]bool
-		if doctorProfile == "" {
-			launcherFound, unlaunched = launcherFindings(doctorLauncherMap(root, cwd, v), v)
-		}
-
-		outcome, err = runProfileCheck(cwd, v, checkOptions{
-			Root:       root,
-			Profile:    doctorProfile,
-			Integrity:  true,
-			Orphans:    true,
-			Duplicates: true,
-			Origins:    true,
-			Unlaunched: unlaunched,
-		})
-		if err != nil {
-			return fmt.Errorf("jit doctor: %w", err)
-		}
-
-		// The ownership sections sit with the profile check they refine.
-		// Whole-vault integrity runs on EVERY invocation, --profile included:
-		// a missing master key or an unfinished rekey makes the named
-		// profile's secrets just as unreadable as everyone else's, so
-		// "resolves cleanly" would be false. See gatherVaultIntegrityFindings.
-		outcome.Findings = append(outcome.Findings, launcherFound...)
-		outcome.Findings = append(outcome.Findings, gatherVaultIntegrityFindings(root, v)...)
-
-		// The absorbed system-health sections run on the full sweep only. A
-		// --profile run is a narrow "does THIS profile resolve" query; folding
-		// agent/backup/wrap warnings into it would be surprising noise.
-		if doctorProfile == "" {
-			systemFindings, wrapOK := gatherSystemFindings(root, cwd, v)
-			outcome.Findings = append(outcome.Findings, systemFindings...)
-			outcome.OKChecks = wrapOK
-			opFindings, opOK := onePasswordFindings(v)
-			outcome.Findings = append(outcome.Findings, opFindings...)
-			outcome.OKChecks = append(outcome.OKChecks, opOK...)
-		}
-
-		// The explicit resolve sweep, only ever on request: it costs a
-		// Touch ID (the stored references are sealed like values) and can
-		// pop 1Password's own prompt — see doctor1password.go.
-		if doctor1Password {
-			swFindings, checked, okLinks, err := onePasswordSweep(cmd.ErrOrStderr(), v)
-			if err != nil {
-				return fmt.Errorf("jit doctor: %w", err)
-			}
-			outcome.Findings = append(outcome.Findings, swFindings...)
-			outcome.OpLinksChecked, outcome.OpLinksOK = checked, okLinks
-		}
-
-		if !doctorOrphans {
-			outcome.Findings = collapseOrphanFindings(outcome.Findings)
-		}
-		outcome.Findings = dropCoveredLauncherFindings(outcome.Findings)
-
 		return renderDoctorOutcome(cmd, outcome)
 	},
+}
+
+// gatherDoctorOutcome runs every check a full doctor run makes (or the
+// --profile subset), and returns the findings before any presentation
+// step: orphans uncollapsed, nothing ignored. `jit doctor ignore` resolves
+// names against exactly this list, so a name and its fingerprint mean the
+// same thing to the command that stores them and the run that reads them.
+func gatherDoctorOutcome(errOut io.Writer, profileName string, onePassword bool) (checkOutcome, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return checkOutcome{}, err
+	}
+	root, err := vaultRootDir()
+	if err != nil {
+		return checkOutcome{}, err
+	}
+	v, err := openVaultReadOnly()
+	if err != nil {
+		return checkOutcome{}, err
+	}
+
+	// Integrity is always on: it is auth-free (envelope structure is
+	// plaintext) and cheap, and a "doctor" that couldn't tell a
+	// truncated secret from a healthy one would be missing the failure
+	// most likely to look like a jit bug at runtime.
+	// Orphans is always on now — the count is the finding, and hiding it
+	// behind a flag meant the run where you'd learn you have eleven never
+	// showed it. --orphans only chooses between the one-line count and
+	// the per-path listing (see collapseOrphanFindings). Duplicates and
+	// Origins are the other always-on hygiene sweeps; all three stay
+	// auth-free (List/Info/stat, never a decrypt).
+	// Who launches each profile, discovered from home: the ownership
+	// sections, and which profiles have no known launcher. A whole-machine
+	// question, so skipped under --profile like the other sweeps. It runs
+	// first because the profile check leaves an unlaunched profile's
+	// missing secrets and gone origin to that profile's own row.
+	var launcherFound []checkFinding
+	var unlaunched map[string]bool
+	var launcherMap *launchers.Map
+	if profileName == "" {
+		launcherMap = doctorLauncherMap(root, cwd, v)
+		launcherFound, unlaunched = launcherFindings(launcherMap, v)
+		if home, herr := os.UserHomeDir(); herr == nil {
+			launcherFound = notLoggedInFindings(launcherFound, home)
+		}
+	}
+
+	outcome, err := runProfileCheck(cwd, v, checkOptions{
+		Root:       root,
+		Profile:    profileName,
+		Integrity:  true,
+		Orphans:    true,
+		Duplicates: true,
+		Origins:    true,
+		Unlaunched: unlaunched,
+	})
+	if err != nil {
+		return checkOutcome{}, err
+	}
+
+	// Each broken secret reference names the tools that start its
+	// profile, so a consumer can say which tool won't start without
+	// looking through other findings (which a fix may have cleared).
+	outcome.Findings = withProfileLaunchers(outcome.Findings, launcherMap, cwd)
+
+	// The ownership sections sit with the profile check they refine.
+	// Whole-vault integrity runs on EVERY invocation, --profile included:
+	// a missing master key or an unfinished rekey makes the named
+	// profile's secrets just as unreadable as everyone else's, so
+	// "resolves cleanly" would be false. See gatherVaultIntegrityFindings.
+	outcome.Findings = append(outcome.Findings, launcherFound...)
+	outcome.Findings = append(outcome.Findings, gatherVaultIntegrityFindings(root, v)...)
+
+	// The absorbed system-health sections run on the full sweep only. A
+	// --profile run is a narrow "does THIS profile resolve" query; folding
+	// agent/backup/wrap warnings into it would be surprising noise.
+	if profileName == "" {
+		systemFindings, wrapOK := gatherSystemFindings(root, cwd, v)
+		outcome.Findings = append(outcome.Findings, systemFindings...)
+		outcome.OKChecks = wrapOK
+		opFindings, opOK := onePasswordFindings(v)
+		outcome.Findings = append(outcome.Findings, opFindings...)
+		outcome.OKChecks = append(outcome.OKChecks, opOK...)
+	}
+
+	// The explicit resolve sweep, only ever on request: it costs a
+	// Touch ID (the stored references are sealed like values) and can
+	// pop 1Password's own prompt — see doctor1password.go.
+	if onePassword {
+		swFindings, checked, okLinks, err := onePasswordSweep(errOut, v)
+		if err != nil {
+			return checkOutcome{}, err
+		}
+		outcome.Findings = append(outcome.Findings, swFindings...)
+		outcome.OpLinksChecked, outcome.OpLinksOK = checked, okLinks
+	}
+
+	outcome.Findings = dropCoveredLauncherFindings(outcome.Findings)
+
+	return outcome, nil
 }
 
 // collapseOrphanFindings folds the per-path [orphan] findings into one
@@ -281,11 +309,13 @@ func collapseOrphanFindings(findings []checkFinding) []checkFinding {
 	count := 0
 	at := -1
 	var out []checkFinding
+	ignoreChanged, since := false, ""
 	for _, f := range findings {
 		if f.Kind != kindOrphan {
 			out = append(out, f)
 			continue
 		}
+		ignoreChanged, since = f.IgnoreChanged, f.IgnoredSince
 		if at < 0 {
 			// Placeholder keeps the summary where the first orphan appeared,
 			// so the group order still reflects what the run found first.
@@ -299,6 +329,9 @@ func collapseOrphanFindings(findings []checkFinding) []checkFinding {
 			Kind:   kindOrphan,
 			Detail: fmt.Sprintf("%s in the vault referenced by no profile jit can see", countWord(count, "secret", "secrets")),
 			Action: "`jit vault orphans` to list them with origins, or `jit vault orphans --prune` to delete",
+			// The orphans are one ignore unit, so they share this state.
+			IgnoreChanged: ignoreChanged,
+			IgnoredSince:  since,
 		}
 	}
 	return out
@@ -317,6 +350,14 @@ const doctorProblemsExitCode = 2
 // renderDoctorOutcome is the single exit path both the full run and the
 // --wrap run take, so the two can't drift in exit code or JSON shape.
 func renderDoctorOutcome(cmd *cobra.Command, outcome checkOutcome) error {
+	// Ignoring comes before the orphan collapse, so an orphan unit is
+	// fingerprinted by its paths rather than by the count they fold into.
+	shown, ignored := applyDoctorIgnores(outcome.Findings, doctorIgnoreEntriesForReport(cmd.ErrOrStderr()))
+	if !doctorOrphans {
+		shown = collapseOrphanFindings(shown)
+		ignored = collapseOrphanFindings(ignored)
+	}
+	outcome.Findings = shown
 	problems := outcome.Problems()
 	warnings := outcome.Warnings()
 
@@ -349,6 +390,9 @@ func renderDoctorOutcome(cmd *cobra.Command, outcome checkOutcome) error {
 		if warnings == nil {
 			warnings = []checkFinding{}
 		}
+		if ignored == nil {
+			ignored = []checkFinding{}
+		}
 		if err := writeJSON(cmd.OutOrStdout(), doctorResult{
 			SchemaVersion:   doctorSchemaVersion,
 			Tool:            runningTool(),
@@ -360,15 +404,16 @@ func renderDoctorOutcome(cmd *cobra.Command, outcome checkOutcome) error {
 			OpLinksChecked: outcome.OpLinksChecked,
 			OpLinksOK:      outcome.OpLinksOK,
 			OK:             len(problems) == 0,
-			Problems:       withFixes(problems),
-			Warnings:       withFixes(warnings),
+			Problems:       withIgnoreRefs(withFixes(problems), false),
+			Warnings:       withIgnoreRefs(withFixes(warnings), false),
+			Ignored:        withIgnoreRefs(withFixes(ignored), true),
 		}); err != nil {
 			return fmt.Errorf("jit doctor: %w", err)
 		}
 		return doctorExit(failing)
 	}
 
-	if err := renderDoctorText(cmd.OutOrStdout(), outcome, problems, warnings); err != nil {
+	if err := renderDoctorText(cmd.OutOrStdout(), outcome, problems, warnings, ignored); err != nil {
 		return err
 	}
 	return doctorExit(failing)
@@ -406,7 +451,7 @@ func doctorExit(failing int) error {
 // `[rekey]` lines hung at three different depths down the same report. Under a
 // header the label is out of the item line entirely and every item, wrap and
 // arrow sits at one fixed indent.
-func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings []checkFinding) error {
+func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings, ignored []checkFinding) error {
 	// The identifying line first, so a pasted report says which binary
 	// produced it. Dim: it is context for the findings, never a finding.
 	tool := runningTool()
@@ -414,6 +459,9 @@ func renderDoctorText(out io.Writer, outcome checkOutcome, problems, warnings []
 
 	wrote := writeFindingGroups(out, glyphRisk, cRisk, problems, true)
 	wrote = writeFindingGroups(out, glyphWarn, cWarn, warnings, wrote)
+	// Last before the verdict: what the reader set aside is context for
+	// the counts, not a finding of its own.
+	wrote = writeIgnoredGroup(out, ignored, doctorShowIgnored, wrote)
 
 	// The verdict lines wrap like every other line here: at 44 columns the
 	// clean-bill-of-health line was the one thing still running past the edge,
@@ -617,6 +665,7 @@ func writeFindingGroups(out io.Writer, glyph string, c *color.Color, findings []
 				fmt.Fprint(out, arrow+glyphBranch+" ")
 				wrapBody(out, findingIndent, body, ev)
 			}
+			writeIgnoreChanged(out, f)
 			if shared == "" && f.Action != "" {
 				writeActionLine(out, arrow, kind, f.Action)
 			}
@@ -765,6 +814,10 @@ func findingLabel(f checkFinding) string {
 		return "[jit path: after the next upgrade]"
 	case kindProfileMissing:
 		return "[profile missing]"
+	case kindNotLoggedIn:
+		// Names the state, not a fault: the header is what tells the
+		// reader this group is waiting on them to log in, not broken.
+		return "[not logged in]"
 	case kindPointerMissing:
 		return "[pointer missing]"
 	case kindConfigDeleted:
@@ -817,6 +870,14 @@ func formatFinding(f checkFinding) string {
 			return shortHome(f.Detail)
 		}
 		return fmt.Sprintf("%s · %s names it", f.Profile, launcherWhere(f.Launchers[0]))
+	case kindNotLoggedIn:
+		// Led by the command the reader types, which is how they know the
+		// profile: `aws --profile dev`, not the jit profile aws-dev.
+		if len(f.Launchers) == 0 {
+			return shortHome(f.Detail)
+		}
+		l := f.Launchers[0]
+		return fmt.Sprintf("%s · %s", awsProfileCommand(l.Detail), launcherWhere(l))
 	case kindPointerMissing:
 		if f.File == "" {
 			return shortHome(f.Detail)
