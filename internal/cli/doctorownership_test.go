@@ -778,3 +778,32 @@ func TestCompanionSilentWhenItsGroupPartlyExists(t *testing.T) {
 		t.Errorf("finding = %+v, want the wiz group", got[0])
 	}
 }
+
+// TestOrphansDroppedWhenAProfileElsewhereUsesThem: "no profile references
+// it" is a claim about the machine, but the sweep reads only cwd's store,
+// the global one and the mount registry. One mount-scope profile is enough
+// to pass its "at least one profile loaded" guard, so from the wrong
+// directory it called a whole vault orphaned while a project one directory
+// away referenced nearly all of it.
+func TestOrphansDroppedWhenAProfileElsewhereUsesThem(t *testing.T) {
+	m := &launchers.Map{Profiles: []*launchers.Profile{
+		{Name: "custom_scripts-wiz", Values: profile.Profile{
+			"WIZ_CLIENT_ID": "custom_scripts-wiz/WIZ_CLIENT_ID",
+		}},
+	}}
+	in := []checkFinding{
+		{Kind: kindOrphan, Path: "custom_scripts-wiz/WIZ_CLIENT_ID"},
+		{Kind: kindOrphan, Path: "really-unused/KEY"},
+		{Kind: kindBackup, Detail: "keep me"},
+	}
+	got := dropOrphansReferencedElsewhere(in, m)
+	if len(got) != 2 {
+		t.Fatalf("findings = %+v, want the referenced orphan dropped and the rest kept", got)
+	}
+	if got[0].Path != "really-unused/KEY" {
+		t.Errorf("a secret nothing references must still be reported, got %+v", got[0])
+	}
+	if got[1].Kind != kindBackup {
+		t.Errorf("unrelated findings must survive, got %+v", got[1])
+	}
+}

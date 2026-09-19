@@ -469,6 +469,46 @@ func dropRegistryEmptyWhenProfilesExist(findings []checkFinding, m *launchers.Ma
 	return out
 }
 
+// dropOrphansReferencedElsewhere removes orphan findings for secrets a
+// profile OUTSIDE this directory references.
+//
+// The orphan sweep reads cwd's store, the global one and the mount registry
+// (profile.ListAll). "No profile references it" is a claim about the whole
+// machine, and those three sources are not the whole machine: every project
+// store under home is missing from them. The guard that was supposed to stop
+// this — at least one profile must have loaded — is satisfied by a single
+// mount-scope profile, so one registered mount is enough to make doctor call
+// an entire vault orphaned. Run from home on a project-scoped setup that is
+// exactly what happened: 69 of 71 secrets reported as orphans, every one of
+// them referenced by a profile one directory away.
+//
+// The launcher map has already walked home for these findings' sake, so the
+// references are in hand. `jit vault orphans` has always used that stricter
+// picture (collectVaultUsers); this is doctor catching up, and it can only
+// ever REMOVE an orphan finding, never invent one.
+func dropOrphansReferencedElsewhere(findings []checkFinding, m *launchers.Map) []checkFinding {
+	if m == nil {
+		return findings
+	}
+	referenced := map[string]bool{}
+	for _, p := range m.Profiles {
+		for _, path := range p.Values {
+			referenced[path] = true
+		}
+	}
+	if len(referenced) == 0 {
+		return findings
+	}
+	out := findings[:0]
+	for _, f := range findings {
+		if f.Kind == kindOrphan && referenced[f.Path] {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
 // ownerFindings reports the MCP profiles a live config launches but no live
 // config owns: config_deleted when every recorded owner's file is gone,
 // config_not_recorded when none was ever recorded. Only global profiles an MCP entry launches
