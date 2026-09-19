@@ -97,6 +97,14 @@ func TestDoctorFixesClassifyEachKind(t *testing.T) {
 			want:   []doctorFix{{Command: "jit vault rekey", Argv: []string{"vault", "rekey"}, Presence: true}},
 		},
 		{
+			name:   "not logged in: clisso's own login, external, deletes nothing, asks for the user",
+			kind:   kindNotLoggedIn,
+			action: "`clisso get dev`",
+			want: []doctorFix{
+				{Command: "clisso get dev", Argv: []string{"clisso", "get", "dev"}, External: true, Presence: true},
+			},
+		},
+		{
 			name:   "an unknown jit command is destructive until classified",
 			kind:   kindService,
 			action: "`jit vault frobnicate x` or `jit frobnicate`",
