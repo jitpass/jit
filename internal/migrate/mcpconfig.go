@@ -412,7 +412,7 @@ func planMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, sourceScope,
 		base = rewrappedFrom[0]
 	}
 
-	profileName, profilePath, entries, movedFrom, err := claimMCPNamespace(v, pending, globalRoot, base, sourceScope, env)
+	profileName, profilePath, entries, movedFrom, owners, err := claimMCPNamespace(v, pending, globalRoot, base, sourceScope, env)
 	if err != nil {
 		return mcpServerPlan{}, err
 	}
@@ -495,7 +495,7 @@ func planMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, sourceScope,
 		values:      env,
 		meta:        meta,
 		entries:     entries,
-		sidecar:     sourceScope + "\n",
+		sidecar:     formatOwnerLines(owners),
 		migration: MCPServerMigration{
 			ServerName:         serverName,
 			ProfileName:        profileName,
@@ -526,9 +526,11 @@ func profileSourceSidecarPath(profilePath string) string {
 // re-run of this one. Ownership is instead recorded per profile in a
 // ".source" sidecar naming the config file that created it:
 //
-//   - sidecar matches sourcePath → this config's own profile; refresh
-//     freely (the re-run/undo-then-remigrate case).
-//   - sidecar names another file → foreign; bump.
+//   - sidecar lists sourcePath among its owners → this config's own
+//     profile; refresh freely (the re-run/undo-then-remigrate case). The
+//     returned owners keep every other owner the sidecar lists.
+//   - sidecar names only other files → foreign; bump. Whether those files
+//     still exist does not matter here (see the owner list, owners.go).
 //   - manifest exists with NO sidecar (migrated before this mechanism):
 //     adopt it — and stamp it — only if every variable this server would
 //     write already holds the IDENTICAL value (same token → same secret in
@@ -549,7 +551,7 @@ func profileSourceSidecarPath(profilePath string) string {
 // Every read goes through pending, so a claim sees the manifests, sidecars
 // and secrets that servers planned earlier in the same run will write exactly
 // as if they were already on disk — see mcpPendingWrites.
-func claimMCPNamespace(v *vault.Vault, pending *mcpPendingWrites, globalRoot, base, sourcePath string, env map[string]string) (name, profilePath string, entries profile.Profile, movedFrom string, err error) {
+func claimMCPNamespace(v *vault.Vault, pending *mcpPendingWrites, globalRoot, base, sourcePath string, env map[string]string) (name, profilePath string, entries profile.Profile, movedFrom string, owners []string, err error) {
 	for i := 1; i <= maxNamespaceCandidates; i++ {
 		name = base
 		if i > 1 {
@@ -557,7 +559,7 @@ func claimMCPNamespace(v *vault.Vault, pending *mcpPendingWrites, globalRoot, ba
 		}
 		profilePath, err = profile.Path(globalRoot, name)
 		if err != nil {
-			return "", "", nil, "", err
+			return "", "", nil, "", nil, err
 		}
 
 		entries = profile.Profile{}
@@ -571,13 +573,23 @@ func claimMCPNamespace(v *vault.Vault, pending *mcpPendingWrites, globalRoot, ba
 		case errors.Is(lerr, os.ErrNotExist):
 			// fresh namespace, unless the vault disagrees below
 		default:
-			return "", "", nil, "", fmt.Errorf("loading existing profile %s: %w", profilePath, lerr)
+			return "", "", nil, "", nil, fmt.Errorf("loading existing profile %s: %w", profilePath, lerr)
 		}
 
 		recordedSource, srcErr := pending.readSidecar(profileSourceSidecarPath(profilePath))
 		legacy := manifestExists && srcErr != nil
 
-		conflict := manifestExists && srcErr == nil && strings.TrimSpace(string(recordedSource)) != sourcePath
+		// The sidecar is an owner list (owners.go). This config being ANY
+		// of its owners makes the profile ours; for a one-line sidecar that
+		// is exactly the string compare this always was. A list that does
+		// not name this config is foreign, whether or not its owners still
+		// exist: adopting a profile whose owners are gone is a separate,
+		// explicit rule (design/doctor-repair.md, Phase 2), not this one.
+		var recordedOwners []string
+		if srcErr == nil {
+			recordedOwners = parseOwnerLines(recordedSource)
+		}
+		conflict := manifestExists && srcErr == nil && !ownersInclude(recordedOwners, sourcePath)
 		if !conflict {
 			for envKey, value := range env {
 				secretPath := name + "/" + envKey
@@ -597,7 +609,7 @@ func claimMCPNamespace(v *vault.Vault, pending *mcpPendingWrites, globalRoot, ba
 				}
 				exists, eerr := pending.secretExists(v, secretPath)
 				if eerr != nil {
-					return "", "", nil, "", fmt.Errorf("checking vault path %s: %w", secretPath, eerr)
+					return "", "", nil, "", nil, fmt.Errorf("checking vault path %s: %w", secretPath, eerr)
 				}
 				if exists {
 					conflict = true
@@ -609,10 +621,19 @@ func claimMCPNamespace(v *vault.Vault, pending *mcpPendingWrites, globalRoot, ba
 			if i > 1 {
 				movedFrom = base
 			}
-			return name, profilePath, entries, movedFrom, nil
+			// The owner list to stamp: an existing profile this config
+			// already co-owns keeps every other owner, and this config's own
+			// line is refreshed in place. Anything else (a fresh namespace,
+			// an adopted legacy profile, a stray sidecar without a manifest)
+			// is owned by this config alone.
+			owners = []string{sourcePath}
+			if manifestExists && ownersInclude(recordedOwners, sourcePath) {
+				owners = recordedOwners
+			}
+			return name, profilePath, entries, movedFrom, owners, nil
 		}
 	}
-	return "", "", nil, "", fmt.Errorf("no free vault namespace for %q after %d candidates", base, maxNamespaceCandidates)
+	return "", "", nil, "", nil, fmt.Errorf("no free vault namespace for %q after %d candidates", base, maxNamespaceCandidates)
 }
 
 // ProfileOwnerConfig returns the MCP config file recorded as owning a
@@ -631,12 +652,16 @@ func claimMCPNamespace(v *vault.Vault, pending *mcpPendingWrites, globalRoot, ba
 // caller of THIS function wants the file, so the scope is stripped here. The
 // scoped form is compared only inside claimMCPNamespace, which reads the
 // sidecar raw.
+//
+// A sidecar can list several owners (owners.go); this returns the FIRST,
+// which for every sidecar written before the owner list is the only one.
+// Callers that must see every owner use ProfileOwners or LiveProfileOwners.
 func ProfileOwnerConfig(profilePath string) string {
-	data, err := os.ReadFile(profileSourceSidecarPath(profilePath)) // #nosec G304 -- a fixed-suffix sibling of jit's own profile manifest
-	if err != nil {
+	owners := ProfileOwners(profilePath)
+	if len(owners) == 0 {
 		return ""
 	}
-	return mcpSourceFile(strings.TrimSpace(string(data)))
+	return mcpSourceFile(owners[0])
 }
 
 // RemoveOwnedProfile deletes a global-store profile manifest together with
@@ -839,59 +864,75 @@ func DiscoverWrappedMCPEntries(home, cwd string, includeClaudeDesktop bool) ([]W
 
 	var entries []WrappedMCPEntry
 	for _, path := range paths {
-		_, blocks, _, err := loadMCPFile(path)
+		found, err := WrappedMCPEntriesIn(path)
 		if err != nil {
 			continue // discovery already tolerated it; don't fail the check on it
 		}
-		var flat []struct {
-			name  string
-			entry mcpServerRaw
-		}
-		for _, b := range blocks {
-			names := make([]string, 0, len(b.servers))
-			for name := range b.servers {
-				names = append(names, name)
-			}
-			sort.Strings(names)
-			for _, name := range names {
-				flat = append(flat, struct {
-					name  string
-					entry mcpServerRaw
-				}{name, b.servers[name]})
-			}
-		}
+		entries = append(entries, found...)
+	}
+	return entries, nil
+}
 
-		for _, it := range flat {
-			name, entry := it.name, it.entry
-			profileName := mcpWrapperProfile(entry)
-			if profileName == "" {
-				continue
-			}
-			var command string
-			_ = json.Unmarshal(entry["command"], &command) // "" for a malformed/absent command, which the caller reports
-			var args []string
-			_ = json.Unmarshal(entry["args"], &args) // shape already validated by mcpWrapperProfile
-			var wrapped string
-			if len(args) > 4 {
-				wrapped = args[4]
-			}
-			_, _, layers := unwrapJitWrappers(command, args)
-			profiles := layers
-			if len(profiles) == 0 {
-				// A wrapper-shaped entry whose command is not jit's own
-				// binary name still names its profile.
-				profiles = []string{profileName}
-			}
-			entries = append(entries, WrappedMCPEntry{
-				ConfigPath:    path,
-				ServerName:    name,
-				JitPath:       command,
-				ProfileName:   profileName,
-				Command:       wrapped,
-				WrapperLayers: len(layers),
-				Profiles:      profiles,
-			})
+// WrappedMCPEntriesIn returns every server entry in the one config file at
+// path that launches through jit's wrapper, in block order and, within a
+// block, by server name. It is DiscoverWrappedMCPEntries' per-file half,
+// exported for a caller that walks for config files itself (the launcher
+// map, internal/launchers) and must see a file it can't read or parse as an
+// error rather than as a file with nothing in it.
+func WrappedMCPEntriesIn(path string) ([]WrappedMCPEntry, error) {
+	_, blocks, _, err := loadMCPFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var entries []WrappedMCPEntry
+	var flat []struct {
+		name  string
+		entry mcpServerRaw
+	}
+	for _, b := range blocks {
+		names := make([]string, 0, len(b.servers))
+		for name := range b.servers {
+			names = append(names, name)
 		}
+		sort.Strings(names)
+		for _, name := range names {
+			flat = append(flat, struct {
+				name  string
+				entry mcpServerRaw
+			}{name, b.servers[name]})
+		}
+	}
+
+	for _, it := range flat {
+		name, entry := it.name, it.entry
+		profileName := mcpWrapperProfile(entry)
+		if profileName == "" {
+			continue
+		}
+		var command string
+		_ = json.Unmarshal(entry["command"], &command) // "" for a malformed/absent command, which the caller reports
+		var args []string
+		_ = json.Unmarshal(entry["args"], &args) // shape already validated by mcpWrapperProfile
+		var wrapped string
+		if len(args) > 4 {
+			wrapped = args[4]
+		}
+		_, _, layers := unwrapJitWrappers(command, args)
+		profiles := layers
+		if len(profiles) == 0 {
+			// A wrapper-shaped entry whose command is not jit's own
+			// binary name still names its profile.
+			profiles = []string{profileName}
+		}
+		entries = append(entries, WrappedMCPEntry{
+			ConfigPath:    path,
+			ServerName:    name,
+			JitPath:       command,
+			ProfileName:   profileName,
+			Command:       wrapped,
+			WrapperLayers: len(layers),
+			Profiles:      profiles,
+		})
 	}
 	return entries, nil
 }
