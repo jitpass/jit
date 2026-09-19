@@ -885,8 +885,21 @@ func printSecretsSection(w io.Writer, s statusSecrets) {
 		printStatusValue(w, "%s", "none stored yet")
 		return
 	}
+	// Nothing on this Mac references any of them: no project profile, no
+	// global profile, no mount. "Reconciled against every profile and mount"
+	// is still literally true then — it reconciled against all zero of them —
+	// and that is exactly why it must not be said. A vault restores whole
+	// while the profile registry travels separately (it lives in the project,
+	// or in ~/.jit/profiles, and is committed or it is lost), so this state
+	// is what a restored vault on a new Mac looks like, and the old wording
+	// presented it as health.
+	registryEmpty := s.WiredProfiles == 0 && s.ManagedElsewhereGroups == 0
 	statusLabel(w, "secrets")
-	printStatusValue(w, "%s", "reconciled against every profile and mount")
+	if registryEmpty && s.TotalSecrets > 0 {
+		printStatusValue(w, "%s", "no profile or mount on this Mac references any of them")
+	} else {
+		printStatusValue(w, "%s", "reconciled against every profile and mount")
+	}
 
 	// Each state leads with a semantic glyph so the eye finds the one that
 	// needs attention (an amber ○ unreferenced, or a red ✗ broken) before
@@ -915,15 +928,31 @@ func printSecretsSection(w io.Writer, s statusSecrets) {
 		printStatusAction(w, "`jit doctor` to see which")
 	}
 
-	printRollupLine(w, cOK, glyphOK, "Managed elsewhere", fmt.Sprintf("%s · referenced only by global profiles or mounts",
-		countWord(s.ManagedElsewhereGroups, "group", "groups")))
+	// Zero groups is not a healthy green: the glyph vocabulary makes ● mean
+	// "this is fine", and an empty row said it loudest on the machine where
+	// nothing was fine. Neutral at zero, the way "Unreferenced here: none"
+	// already reads.
+	if s.ManagedElsewhereGroups == 0 {
+		printEmptyRollupLine(w, "Managed elsewhere", "none — no global profile or mount")
+	} else {
+		printRollupLine(w, cOK, glyphOK, "Managed elsewhere", fmt.Sprintf("%s · referenced only by global profiles or mounts",
+			countWord(s.ManagedElsewhereGroups, "group", "groups")))
+	}
 
 	if s.UnreferencedGroups == 0 {
 		printEmptyRollupLine(w, "Unreferenced here", "none")
 	} else {
-		printRollupLine(w, cWarn, glyphWarn, "Unreferenced here", fmt.Sprintf("%s, %s. May belong to another project.",
+		// "May belong to another project" is the right guess when SOME
+		// groups are unreferenced. When none of them are referenced, the
+		// vault is not partly unaccounted for — it is entirely unaccounted
+		// for, and that is a different sentence.
+		tail := "May belong to another project."
+		if registryEmpty {
+			tail = "Every group in the vault."
+		}
+		printRollupLine(w, cWarn, glyphWarn, "Unreferenced here", fmt.Sprintf("%s, %s. %s",
 			countWord(s.UnreferencedGroups, "group", "groups"),
-			countWord(s.UnreferencedSecrets, "secret", "secrets")))
+			countWord(s.UnreferencedSecrets, "secret", "secrets"), tail))
 		// The single most useful thing to say about a pile of orphans is
 		// which of them are already accounted for elsewhere. Without this the
 		// reader has to diff the group listings by eye before they can safely
@@ -947,7 +976,21 @@ func printSecretsSection(w io.Writer, s statusSecrets) {
 				countWord(s.DuplicateSecrets, "secret", "secrets"), verb)
 			printStatusNote(w, "Usually a second migration renamed the group; jit compared names, not values.")
 		}
-		printStatusAction(w, "`jit status --secrets` to inspect · `jit vault orphans --prune` to delete")
+		// With nothing referencing anything, "unreferenced" describes the
+		// whole vault, and `--prune` would delete all of it. The cause is
+		// almost never surplus secrets — it is the profile registry not
+		// having arrived — so this state gets the diagnostic and the reason,
+		// and deliberately does NOT name the destructive command. `--format
+		// json` carries used_by, which is the one field that answers "what
+		// references this", and nothing in status or doctor pointed at it.
+		if registryEmpty {
+			printStatusNote(w, "Profiles travel separately from the vault: they live in .jit/profiles,")
+			printStatusNote(w, "committed with the project or kept in ~/.jit/profiles. A restored vault")
+			printStatusNote(w, "without them resolves nothing, and every group reads as unreferenced.")
+			printStatusAction(w, "`jit vault list --format json` — used_by names what references each")
+		} else {
+			printStatusAction(w, "`jit status --secrets` to inspect · `jit vault orphans --prune` to delete")
+		}
 	}
 
 	// Stated whatever the group totals say, including when they say "none":

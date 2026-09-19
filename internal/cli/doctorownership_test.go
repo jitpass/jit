@@ -14,6 +14,7 @@ import (
 	"github.com/jitpass/jit/internal/launchers"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/pointerfile"
+	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/wrap"
 )
 
@@ -660,5 +661,120 @@ func TestDoctorNotLoggedInRendersTheApprovedShape(t *testing.T) {
 	}
 	if !strings.Contains(out, "[profile missing]\n  ✗ aws-qa · ~/.aws/config [profile qa] names it\n") {
 		t.Errorf("aws-qa has no clisso app and stays a problem, got:\n%s", out)
+	}
+}
+
+// TestMissingPointerFindingsReportsCompanions: a `.pointers` companion is
+// the one record of what a mount served, and on a machine whose mounts were
+// never re-registered nothing else in doctor names its secrets. It was
+// skipped entirely by discovery, so a companion naming a vault group that
+// does not exist — the state that silently blocks the server beside it —
+// produced no finding at all.
+func TestMissingPointerFindingsReportsCompanions(t *testing.T) {
+	m := &launchers.Map{
+		MissingPointers: []launchers.Launcher{
+			{Kind: launchers.KindPointerFile, File: "/h/.clisso.yaml", VaultPath: "wrap-clisso/secret"},
+		},
+		MissingCompanions: []launchers.Launcher{
+			{Kind: launchers.KindPointerFile, File: "/h/okta-mcp-server/.env.pointers", VaultPath: "okta-mcp-server-2/OKTA_ORG_URL"},
+			{Kind: launchers.KindPointerFile, File: "/h/okta-mcp-server/.env.pointers", VaultPath: "okta-mcp-server-2/OKTA_SCOPES"},
+			// The same value named twice must not inflate the count.
+			{Kind: launchers.KindPointerFile, File: "/h/okta-mcp-server/.env.pointers", VaultPath: "okta-mcp-server-2/OKTA_SCOPES"},
+		},
+	}
+	got := missingPointerFindings(m, map[string]bool{"other": true})
+	if len(got) != 2 {
+		t.Fatalf("findings = %+v, want the pointer and ONE row for the companion's group", got)
+	}
+	if got[0].Path != "wrap-clisso/secret" {
+		t.Errorf("the real pointer must still be reported first, got %+v", got[0])
+	}
+	c := got[1]
+	if c.Kind != kindStalePointers || c.Path != "okta-mcp-server-2" {
+		t.Errorf("companion finding = %+v, want the GROUP as its path", c)
+	}
+	if !strings.Contains(c.Detail, "okta-mcp-server-2/") || !strings.Contains(c.Detail, "2 values") {
+		t.Errorf("detail %q must name the group and how many values it records", c.Detail)
+	}
+	// The offered fix deletes the record, so it must be marked destructive:
+	// that is what makes the app confirm before it runs, and what keeps it
+	// out of any "apply everything" path.
+	fixes := fixesFor(c.Kind, c.Action)
+	if len(fixes) != 1 || !strings.HasPrefix(fixes[0].Command, "jit migrate forget ") {
+		t.Fatalf("fixes = %+v, want the one command that removes a stale record", fixes)
+	}
+	if !fixes[0].Destructive {
+		t.Error("deleting a file must be marked destructive so the app confirms")
+	}
+	if fixes[0].Presence {
+		t.Error("no secret is read or removed, so it must not demand Touch ID")
+	}
+	// An empty vault makes every companion on the disk look stale.
+	if got := missingCompanionFindings(m, nil); got != nil {
+		t.Errorf("companions = %+v, want none when the vault holds nothing", got)
+	}
+}
+
+// TestRegistryEmptyDroppedWhenProfilesLiveElsewhere: the finding claims the
+// MACHINE has no profile registry, while the check that raises it looked only
+// in cwd and the global store. A project-scoped setup read from anywhere else
+// — which is every run the JitPass app makes, since it starts from home — is
+// not the state this warns about.
+func TestRegistryEmptyDroppedWhenProfilesLiveElsewhere(t *testing.T) {
+	home := withFixtureHome(t)
+	m := &launchers.Map{Profiles: []*launchers.Profile{
+		{Name: "a", Scope: profile.ScopeProject, Project: filepath.Join(home, "Security-Ops")},
+	}}
+	in := []checkFinding{
+		{Kind: kindRegistryEmpty, Detail: "69 secrets stored"},
+		{Kind: kindBackup, Detail: "keep me"},
+	}
+	got := dropRegistryEmptyWhenProfilesExist(in, m, home)
+	if len(got) != 1 || got[0].Kind != kindBackup {
+		t.Errorf("findings = %+v, want only the unrelated one", got)
+	}
+}
+
+// With no profile manifest anywhere, the registry really is gone and the
+// finding stands — the incident it was written for.
+func TestRegistryEmptyKeptWhenNoProfilesAnywhere(t *testing.T) {
+	home := withFixtureHome(t)
+	in := []checkFinding{{Kind: kindRegistryEmpty, Detail: "69 secrets stored"}}
+	if got := dropRegistryEmptyWhenProfilesExist(in, &launchers.Map{}, home); len(got) != 1 {
+		t.Errorf("findings = %+v, want the finding kept", got)
+	}
+}
+
+// TestStalePointersIsAProblemNotAWarning: a companion names the variables a
+// program in that directory needs. A group that is gone means that program
+// cannot get its secrets, which is breakage — the same verdict jit gives any
+// other reference to a secret the vault does not hold.
+func TestStalePointersIsAProblemNotAWarning(t *testing.T) {
+	if kindStalePointers.warning() {
+		t.Error("a tool whose secrets are not in the vault is broken, not untidy")
+	}
+	if kindPointerMissing.warning() || kindMissing.warning() {
+		t.Error("the kinds this one matches must stay hard problems too")
+	}
+}
+
+// TestCompanionSilentWhenItsGroupPartlyExists: a migrate that stored some of
+// a companion's values leaves the rest to the profile or mount that names
+// them, each with its own `jit vault set`. Claiming the vault "has nothing"
+// under a group holding two secrets was false, and it buried four better
+// findings under one wrong one.
+func TestCompanionSilentWhenItsGroupPartlyExists(t *testing.T) {
+	m := &launchers.Map{MissingCompanions: []launchers.Launcher{
+		{File: "/h/hibob/.env.pointers", VaultPath: "hibob/HIBOB_BASE_URL"},
+		{File: "/h/hibob/.env.pointers", VaultPath: "hibob/OUTPUT_FILE"},
+		{File: "/h/wiz/.env.pointers", VaultPath: "wiz/WIZ_CLIENT_ID"},
+	}}
+	// hibob exists (migrate stored two of its values); wiz does not.
+	got := missingCompanionFindings(m, map[string]bool{"hibob": true})
+	if len(got) != 1 {
+		t.Fatalf("findings = %+v, want only the group that is wholly absent", got)
+	}
+	if got[0].Path != "wiz" {
+		t.Errorf("finding = %+v, want the wiz group", got[0])
 	}
 }

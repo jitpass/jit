@@ -261,6 +261,7 @@ func gatherDoctorOutcome(errOut io.Writer, profileName string, onePassword bool)
 	// profile, so a consumer can say which tool won't start without
 	// looking through other findings (which a fix may have cleared).
 	outcome.Findings = withProfileLaunchers(outcome.Findings, launcherMap, cwd)
+	outcome.Findings = dropRegistryEmptyWhenProfilesExist(outcome.Findings, launcherMap, cwd)
 
 	// The ownership sections sit with the profile check they refine.
 	// Whole-vault integrity runs on EVERY invocation, --profile included:
@@ -753,6 +754,10 @@ func findingLabel(f checkFinding) string {
 		return "[bad path]"
 	case kindOrphan:
 		return "[orphan]"
+	case kindRegistryEmpty:
+		return "[no profiles]"
+	case kindStalePointers:
+		return "[stale pointers]"
 	case kindDuplicates:
 		return "[duplicates]"
 	case kindOriginGone:
@@ -843,7 +848,7 @@ func findingLabel(f checkFinding) string {
 // that identifies the file off the first line (rule 6).
 func formatFinding(f checkFinding) string {
 	switch f.Kind {
-	case kindParse, kindNotFound, kindService, kindBackup, kindWrap, kindWrapEnv, kindMount, kindMountStale, kindDuplicates, kindVaultKey, kindRekey, kindLegacyEnvelope, kindAudit, kindMCP, kindMCPNested, kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion:
+	case kindParse, kindNotFound, kindService, kindBackup, kindWrap, kindWrapEnv, kindMount, kindMountStale, kindDuplicates, kindVaultKey, kindRekey, kindLegacyEnvelope, kindAudit, kindMCP, kindMCPNested, kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion, kindRegistryEmpty, kindStalePointers:
 		return shortHome(f.Detail)
 	case kindMissing:
 		return fmt.Sprintf("%s: %s "+glyphAction+" %s, not in the vault", profileRef(f), f.Variable, f.Path)

@@ -5,6 +5,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -244,14 +245,25 @@ func mcpFindings(cwd string) []checkFinding {
 	if err != nil || len(entries) == 0 {
 		return nil
 	}
-	globalRoot, err := profile.GlobalRoot()
-	if err != nil {
-		return nil
-	}
 
 	var findings []checkFinding
 	for _, e := range entries {
 		label := fmt.Sprintf("MCP server %q in %s", e.ServerName, shortPath(e.ConfigPath))
+
+		// Reported before the binary check below rather than after it,
+		// because that check ends the entry with `continue`: a nested entry
+		// whose OUTER jit is missing used to report only the missing binary,
+		// and the nesting — which survives re-pointing that path, and which
+		// only this check ever names — went unmentioned.
+		if e.WrapperLayers > 1 {
+			findings = append(findings, checkFinding{
+				Kind:    kindMCPNested,
+				Profile: e.ProfileName,
+				Path:    e.ConfigPath,
+				Detail:  fmt.Sprintf("%q in %s runs jit inside jit", e.ServerName, shortPath(e.ConfigPath)),
+				Action:  fmt.Sprintf("`jit migrate %s` to collapse each to one wrapper", shortPath(e.ConfigPath)),
+			})
+		}
 
 		if !executableFile(e.JitPath) {
 			findings = append(findings, checkFinding{
@@ -279,27 +291,31 @@ func mcpFindings(cwd string) []checkFinding {
 			})
 		}
 
-		// Works today, so advisory — but only the outer layer is checked
-		// above, and the inner jit path is one nothing revalidates.
-		if e.WrapperLayers > 1 {
-			findings = append(findings, checkFinding{
-				Kind:    kindMCPNested,
-				Profile: e.ProfileName,
-				Path:    e.ConfigPath,
-				Detail:  fmt.Sprintf("%q in %s runs jit inside jit", e.ServerName, shortPath(e.ConfigPath)),
-				Action:  fmt.Sprintf("`jit migrate %s` to collapse each to one wrapper", shortPath(e.ConfigPath)),
-			})
-		}
-
-		manifest, perr := profile.Path(globalRoot, e.ProfileName)
-		if perr != nil || !regularFile(manifest) {
+		// Resolved the way the launched `jit run` resolves it — project
+		// store first, then the global one — rather than against the global
+		// root alone. A profile living beside the config it serves
+		// (<config dir>/.jit/profiles/) loads fine at launch, and checking
+		// only ~/.jit/profiles reported every one of them as missing while
+		// the same report's orphan count, which unions both stores, saw them.
+		if _, _, _, perr := profile.LoadWithScope(filepath.Dir(e.ConfigPath), e.ProfileName); errors.Is(perr, profile.ErrNotFound) {
+			// The missing file is the profile manifest, so that is what the
+			// action names. It used to name `jit migrate undo <config>`,
+			// which is wrong twice over on the machine that actually hits
+			// this: undo restores a pre-migration backup, so it dead-ends
+			// with "no recorded backup" wherever migrate never ran, and
+			// where it DID run it rewrites a config that is not the broken
+			// half. The config is fine; the profile it names is gone.
+			// Names the command that rebuilds it. Before `jit profile
+			// create` existed there was none, and the best this could do
+			// was name the file to write by hand.
+			action := fmt.Sprintf("`jit profile create %s` to rebuild it from the vault group of that name", e.ProfileName)
 			findings = append(findings, checkFinding{
 				Kind:    kindMCP,
 				Profile: e.ProfileName,
 				Path:    e.ConfigPath,
 				Detail: fmt.Sprintf("%s names profile %s, which no longer exists, so the server starts with none of its secrets",
 					label, e.ProfileName),
-				Action: fmt.Sprintf("`jit migrate undo %s` to restore the original entry, or re-migrate it", shortPath(e.ConfigPath)),
+				Action: action,
 			})
 			continue
 		}
