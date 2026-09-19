@@ -116,8 +116,15 @@ func OwnerFile(owner string) string {
 // stat'ed for another reason (a privacy-denied folder) is kept, since
 // "can't tell" must not read as "gone".
 func LiveProfileOwners(profilePath string) []string {
+	return liveOwners(ProfileOwners(profilePath))
+}
+
+// liveOwners is LiveProfileOwners over a list already in hand, for a caller
+// reading the sidecar some other way (claimMCPNamespace reads it through the
+// run's pending writes).
+func liveOwners(owners []string) []string {
 	var live []string
-	for _, o := range ProfileOwners(profilePath) {
+	for _, o := range owners {
 		if _, err := os.Stat(OwnerFile(o)); errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
