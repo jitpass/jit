@@ -117,6 +117,15 @@ func ownershipFixture(t *testing.T) string {
 		"CLIENT_CERTIFICATE_DATA: k8s-docker-desktop/CLIENT_CERTIFICATE_DATA\nCLIENT_KEY_DATA: k8s-docker-desktop/CLIENT_KEY_DATA\n")
 	writeFixtureProfile(t, home, "token", "JSON_WEB_TOKEN_JWT: token/JSON_WEB_TOKEN_JWT\n")
 	plantOriginSecret(t, home, "token/JSON_WEB_TOKEN_JWT", "~/token.txt")
+	// Credentials redacted out of shell history: an archive nothing
+	// launches, and the vault's copy is the only one, so it is never
+	// offered for deletion.
+	writeFixtureProfile(t, home, "zsh_history", "NOTION_TOKEN: zsh_history/NOTION_TOKEN\n")
+	writeVaultEnc(t, home, "zsh_history/NOTION_TOKEN",
+		`{"version":3,"origin":"~/.zsh_history","class":"shell_history","recipients":{"test":"00"},"payload":"00"}`)
+	if err := os.WriteFile(filepath.Join(home, ".zsh_history"), nil, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 	return home
 }
 
@@ -154,7 +163,6 @@ func TestDoctorOwnershipRendersTheApprovedShape(t *testing.T) {
 			"  → jit profile adopt ~/Security-Ops/.mcp.json\n\n",
 		"[no known launcher]  2\n" +
 			"  ○ k8s-docker-desktop · 2 secrets, both missing\n" +
-			"    └ made from ~/.kube/config, now gone\n" +
 			"  ○ token · 1 secret\n" +
 			"    └ made from ~/token.txt, now gone\n" +
 			"  a script or alias may still run them; jit can't see those\n" +
@@ -467,7 +475,7 @@ func TestDoctorOwnershipJSON(t *testing.T) {
 	}
 	k8s, token := un[0], un[1]
 	if k8s.Profile != "k8s-docker-desktop" || k8s.Scope != "global" || k8s.Secrets != 2 || k8s.SecretsMissing != 2 ||
-		k8s.Origin != migrate.KubeconfigPath(home) {
+		k8s.Origin != "" {
 		t.Errorf("unlaunched k8s = %+v", k8s)
 	}
 	if token.Secrets != 1 || token.SecretsMissing != 0 || token.Origin != filepath.Join(home, "token.txt") ||

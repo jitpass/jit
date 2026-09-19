@@ -372,7 +372,7 @@ func unlaunchedFindings(m *launchers.Map, v *vault.Vault) ([]checkFinding, map[s
 			continue
 		}
 		paths := profileVaultPaths(p.Values)
-		missing := 0
+		missing, history := 0, 0
 		origins := map[string]int{}
 		for _, sp := range paths {
 			ok, err := v.Exists(sp)
@@ -383,9 +383,20 @@ func unlaunchedFindings(m *launchers.Map, v *vault.Vault) ([]checkFinding, map[s
 				missing++
 				continue
 			}
-			if info, err := v.Info(sp); err == nil && info.Origin != "" {
-				origins[info.Origin]++
+			if info, err := v.Info(sp); err == nil {
+				if info.Origin != "" {
+					origins[info.Origin]++
+				}
+				if info.Class == vault.ClassShellHistory {
+					history++
+				}
 			}
+		}
+		// Credentials redacted out of a shell history file are an archive:
+		// nothing is meant to launch them, and the vault holds the only
+		// copy. Offering `jit profile rm` there would offer to destroy them.
+		if history > 0 && history == len(paths)-missing {
+			continue
 		}
 		origin := unlaunchedOrigin(m.Home, p, origins)
 		f := checkFinding{
@@ -424,9 +435,9 @@ func profileVaultPaths(values profile.Profile) []string {
 // unlaunchedOrigin is the file an unlaunched profile was made from, when
 // that file is gone; "" when it still exists or can't be told. The evidence,
 // best first: the origin most of its secrets' envelopes record; the owner
-// its .source sidecar names (an MCP profile); for a kubeconfig user's
-// profile (k8s-<user>, migrate's naming), the kubeconfig itself, which is
-// the only record left once its secrets are gone too.
+// its .source sidecar names (an MCP profile). Never a guess from the
+// profile's name: a line that states where a profile came from has to rest
+// on a record, so a profile whose secrets are all gone may have none.
 func unlaunchedOrigin(home string, p *launchers.Profile, origins map[string]int) string {
 	candidate := ""
 	switch {
@@ -440,8 +451,6 @@ func unlaunchedOrigin(home string, p *launchers.Profile, origins map[string]int)
 		candidate = wrap.ExpandHome(home, best)
 	case len(p.Owners) > 0:
 		candidate = migrate.OwnerFile(p.Owners[0])
-	case strings.HasPrefix(p.Name, "k8s-"):
-		candidate = migrate.KubeconfigPath(home)
 	}
 	if candidate == "" || !filepath.IsAbs(candidate) {
 		return ""
