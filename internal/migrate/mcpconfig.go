@@ -219,6 +219,11 @@ func MCPEnvFilePreview(path string) []string {
 // matters for safety, same as ApplyEnvFile/ApplyShellConfig: every vault
 // write and profile manifest write happens before path itself is
 // rewritten, and path is backed up first.
+//
+// Servers are all-or-nothing: every selected server is planned before any is
+// written, so one that fails leaves no other server's secrets, manifest or
+// sidecar behind, and a write failing partway through committing them is
+// rolled back. See mcpplan.go for the guarantee at its exact strength.
 func ApplyMCPConfig(v *vault.Vault, path string) (MCPConfigMigration, error) {
 	topLevel, blocks, skippedProjects, err := loadMCPFile(path)
 	if err != nil {
@@ -260,6 +265,8 @@ func ApplyMCPConfig(v *vault.Vault, path string) (MCPConfigMigration, error) {
 
 	result := MCPConfigMigration{FilePath: path, SkippedProjects: skippedProjects}
 	pointers := newEnvFilePointerSet()
+	pending := newMCPPendingWrites()
+	var plans []mcpServerPlan
 	for _, b := range blocks {
 		names := make([]string, 0, len(b.servers))
 		for name := range b.servers {
@@ -278,15 +285,23 @@ func ApplyMCPConfig(v *vault.Vault, path string) (MCPConfigMigration, error) {
 			if !needsMCPMigration(path, entry) {
 				continue
 			}
-			serverMigration, err := migrateMCPServer(v, home, jitPath, path, scope, name, entry, envCache, pointers)
+			plan, err := planMCPServer(v, home, jitPath, path, scope, name, entry, envCache, pointers, pending)
 			if err != nil {
 				return MCPConfigMigration{}, fmt.Errorf("%s: server %q: %w", scope, name, err)
 			}
-			result.Servers = append(result.Servers, serverMigration)
+			pending.add(plan)
+			plans = append(plans, plan)
+			result.Servers = append(result.Servers, plan.migration)
 		}
 	}
 	if len(result.Servers) == 0 {
 		return MCPConfigMigration{}, fmt.Errorf("%s has no server with secrets to migrate", path)
+	}
+
+	// Every server planned; only now does anything reach the vault or the
+	// profile store. A failure in here rolls this run's writes back.
+	if err := commitMCPPlans(v, plans); err != nil {
+		return MCPConfigMigration{}, err
 	}
 
 	// Now that every value is in the vault and every manifest is written, the
@@ -325,21 +340,25 @@ func ApplyMCPConfig(v *vault.Vault, path string) (MCPConfigMigration, error) {
 	return result, nil
 }
 
-// migrateMCPServer mutates entry in place (moving its env block into the
-// vault and rewriting command/args) and returns a summary of what moved.
-// entry is a reference into the caller's servers map, so this mutation is
-// visible to the subsequent json.Marshal(servers) call. sourcePath is the
-// config file being migrated — MCP profile namespaces are claimed per
-// source file (claimMCPNamespace, GAPS.md #56), so a same-named server in
-// a different config can never silently overwrite this one's secrets.
-func migrateMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, sourceScope, serverName string, entry mcpServerRaw, envCache map[string]*mcpEnvFile, pointers *envFilePointerSet) (MCPServerMigration, error) {
+// planMCPServer works out one server's migration without writing anything:
+// the secrets, manifest and sidecar it would store (returned as a plan for
+// commitMCPPlans), with entry rewritten in place (command/args wrapped, env
+// block dropped). entry is a reference into the caller's servers map, so
+// that rewrite is visible to the later json.Marshal(servers) — and is only
+// in memory, so a run that fails before the config is written loses it with
+// nothing on disk. sourcePath is the config file being migrated — MCP profile
+// namespaces are claimed per source file (claimMCPNamespace, GAPS.md #56), so
+// a same-named server in a different config can never silently overwrite this
+// one's secrets. pending is what servers planned earlier in this run will
+// write, which the claim and the carried-value reads look through.
+func planMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, sourceScope, serverName string, entry mcpServerRaw, envCache map[string]*mcpEnvFile, pointers *envFilePointerSet, pending *mcpPendingWrites) (mcpServerPlan, error) {
 	// Absent, not merely empty: with the widened discovery gate a server can
 	// reach here carrying an --env-file and no env block at all, and
 	// json.Unmarshal(nil, ...) fails with "unexpected end of JSON input".
 	env := map[string]string{}
 	if raw, ok := entry["env"]; ok && len(raw) > 0 {
 		if err := json.Unmarshal(raw, &env); err != nil {
-			return MCPServerMigration{}, fmt.Errorf("parsing env block: %w", err)
+			return mcpServerPlan{}, fmt.Errorf("parsing env block: %w", err)
 		}
 	}
 
@@ -350,13 +369,13 @@ func migrateMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, sourceSco
 	var command string
 	if craw, ok := entry["command"]; ok {
 		if err := json.Unmarshal(craw, &command); err != nil {
-			return MCPServerMigration{}, fmt.Errorf("command is not a string")
+			return mcpServerPlan{}, fmt.Errorf("command is not a string")
 		}
 	}
 	var args []string
 	if araw, ok := entry["args"]; ok {
 		if err := json.Unmarshal(araw, &args); err != nil {
-			return MCPServerMigration{}, fmt.Errorf("args is not a string array")
+			return mcpServerPlan{}, fmt.Errorf("args is not a string array")
 		}
 	}
 	command, args, rewrappedFrom := unwrapJitWrappers(command, args)
@@ -393,9 +412,9 @@ func migrateMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, sourceSco
 		base = rewrappedFrom[0]
 	}
 
-	profileName, profilePath, entries, movedFrom, err := claimMCPNamespace(v, globalRoot, base, sourceScope, env)
+	profileName, profilePath, entries, movedFrom, err := claimMCPNamespace(v, pending, globalRoot, base, sourceScope, env)
 	if err != nil {
-		return MCPServerMigration{}, err
+		return mcpServerPlan{}, err
 	}
 
 	// Every peeled wrapper injected its profile's variables, and only ONE
@@ -407,9 +426,9 @@ func migrateMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, sourceSco
 	// inner profile's credentials silently left the launch line. Lowest
 	// precedence: a value present in the env block or an --env-file is the
 	// one the user edited most recently.
-	carried, cerr := carriedProfileValues(v, globalRoot, rewrappedFrom, profileName, entries)
+	carried, cerr := carriedProfileValues(v, pending, globalRoot, rewrappedFrom, profileName, entries)
 	if cerr != nil {
-		return MCPServerMigration{}, cerr
+		return mcpServerPlan{}, cerr
 	}
 	for name, value := range carried {
 		if _, taken := env[name]; !taken {
@@ -425,25 +444,12 @@ func migrateMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, sourceSco
 
 	meta, err := newProvenance(vault.ClassMCP, sourcePath)
 	if err != nil {
-		return MCPServerMigration{}, err
+		return mcpServerPlan{}, err
 	}
+	// Planned, not written: commitMCPPlans stores each value at this path,
+	// then the manifest, then the ownership sidecar.
 	for _, envKey := range varNames {
-		secretPath := profileName + "/" + envKey
-		if err := v.SetWithMeta(secretPath, []byte(env[envKey]), meta); err != nil {
-			return MCPServerMigration{}, fmt.Errorf("storing %s in vault: %w", envKey, err)
-		}
-		entries[envKey] = secretPath
-	}
-
-	if err := writeProfileManifest(profilePath, entries, nil); err != nil {
-		return MCPServerMigration{}, fmt.Errorf("writing profile %s: %w", profilePath, err)
-	}
-	// Stamp ownership AFTER the manifest write: a crash in between leaves a
-	// legacy-shaped (unstamped) profile, which the next run treats with the
-	// cautious legacy rules rather than trusting a stamp for content that
-	// never landed.
-	if err := os.WriteFile(profileSourceSidecarPath(profilePath), []byte(sourceScope+"\n"), 0o600); err != nil {
-		return MCPServerMigration{}, fmt.Errorf("recording profile source %s: %w", profilePath, err)
+		entries[envKey] = profileName + "/" + envKey
 	}
 
 	// Record where this server's copy of each file variable landed. The file
@@ -470,24 +476,35 @@ func migrateMCPServer(v *vault.Vault, globalRoot, jitPath, sourcePath, sourceSco
 
 	commandJSON, err := marshalJSONNoEscape(jitPath, "")
 	if err != nil {
-		return MCPServerMigration{}, err
+		return mcpServerPlan{}, err
 	}
 	argsJSON, err := marshalJSONNoEscape(newArgs, "")
 	if err != nil {
-		return MCPServerMigration{}, err
+		return mcpServerPlan{}, err
 	}
 	entry["command"] = commandJSON
 	entry["args"] = argsJSON
 	delete(entry, "env")
 
-	return MCPServerMigration{
-		ServerName:         serverName,
-		ProfileName:        profileName,
-		ProfilePath:        profilePath,
-		Variables:          varNames,
-		NamespaceMovedFrom: movedFrom,
-		EnvFiles:           envFiles,
-		RewrappedFrom:      rewrappedFrom,
+	return mcpServerPlan{
+		scope:       sourceScope,
+		serverName:  serverName,
+		profileName: profileName,
+		profilePath: profilePath,
+		varNames:    varNames,
+		values:      env,
+		meta:        meta,
+		entries:     entries,
+		sidecar:     sourceScope + "\n",
+		migration: MCPServerMigration{
+			ServerName:         serverName,
+			ProfileName:        profileName,
+			ProfilePath:        profilePath,
+			Variables:          varNames,
+			NamespaceMovedFrom: movedFrom,
+			EnvFiles:           envFiles,
+			RewrappedFrom:      rewrappedFrom,
+		},
 	}, nil
 }
 
@@ -528,7 +545,11 @@ func profileSourceSidecarPath(profilePath string) string {
 // define the same server name without the second silently overwriting the
 // first's vault values; for a top-level server the scope IS the path, so
 // every sidecar written before project blocks existed still compares equal.
-func claimMCPNamespace(v *vault.Vault, globalRoot, base, sourcePath string, env map[string]string) (name, profilePath string, entries profile.Profile, movedFrom string, err error) {
+//
+// Every read goes through pending, so a claim sees the manifests, sidecars
+// and secrets that servers planned earlier in the same run will write exactly
+// as if they were already on disk — see mcpPendingWrites.
+func claimMCPNamespace(v *vault.Vault, pending *mcpPendingWrites, globalRoot, base, sourcePath string, env map[string]string) (name, profilePath string, entries profile.Profile, movedFrom string, err error) {
 	for i := 1; i <= maxNamespaceCandidates; i++ {
 		name = base
 		if i > 1 {
@@ -541,7 +562,7 @@ func claimMCPNamespace(v *vault.Vault, globalRoot, base, sourcePath string, env 
 
 		entries = profile.Profile{}
 		manifestExists := false
-		switch existing, lerr := profile.LoadFile(profilePath); {
+		switch existing, lerr := pending.loadProfile(profilePath); {
 		case lerr == nil:
 			manifestExists = true
 			for k, p := range existing {
@@ -553,7 +574,7 @@ func claimMCPNamespace(v *vault.Vault, globalRoot, base, sourcePath string, env 
 			return "", "", nil, "", fmt.Errorf("loading existing profile %s: %w", profilePath, lerr)
 		}
 
-		recordedSource, srcErr := os.ReadFile(profileSourceSidecarPath(profilePath)) // #nosec G304 -- a fixed-suffix sibling of jit's own profile manifest
+		recordedSource, srcErr := pending.readSidecar(profileSourceSidecarPath(profilePath))
 		legacy := manifestExists && srcErr != nil
 
 		conflict := manifestExists && srcErr == nil && strings.TrimSpace(string(recordedSource)) != sourcePath
@@ -566,7 +587,7 @@ func claimMCPNamespace(v *vault.Vault, globalRoot, base, sourcePath string, env 
 						// proves this was "us" (or is indistinguishable
 						// from us). Any read/compare failure errs toward
 						// bump — reuse on a guess is the bug.
-						existing, gerr := v.Get(secretPath)
+						existing, gerr := pending.getSecret(v, secretPath)
 						if gerr != nil || string(existing) != value {
 							conflict = true
 							break
@@ -574,7 +595,7 @@ func claimMCPNamespace(v *vault.Vault, globalRoot, base, sourcePath string, env 
 					}
 					continue
 				}
-				exists, eerr := v.Exists(secretPath)
+				exists, eerr := pending.secretExists(v, secretPath)
 				if eerr != nil {
 					return "", "", nil, "", fmt.Errorf("checking vault path %s: %w", secretPath, eerr)
 				}
@@ -692,7 +713,10 @@ func unwrapJitWrappers(command string, args []string) (string, []string, []strin
 // value that cannot be read is an ERROR rather than a skip — dropping it
 // would leave the server starting without a credential it has always had,
 // which is a runtime failure with no trace back to this rewrite.
-func carriedProfileValues(v *vault.Vault, globalRoot string, profiles []string, landed string, held profile.Profile) (map[string]string, error) {
+//
+// Reads go through pending, like claimMCPNamespace's: a profile another
+// server planned earlier in this run is read as that server will write it.
+func carriedProfileValues(v *vault.Vault, pending *mcpPendingWrites, globalRoot string, profiles []string, landed string, held profile.Profile) (map[string]string, error) {
 	values := map[string]string{}
 	taken := map[string]bool{}
 	for _, name := range profiles {
@@ -706,7 +730,7 @@ func carriedProfileValues(v *vault.Vault, globalRoot string, profiles []string, 
 		if err != nil {
 			return nil, err
 		}
-		entries, err := profile.LoadFile(profilePath)
+		entries, err := pending.loadProfile(profilePath)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
@@ -717,7 +741,7 @@ func carriedProfileValues(v *vault.Vault, globalRoot string, profiles []string, 
 			if taken[varName] {
 				continue
 			}
-			value, err := v.Get(secretPath)
+			value, err := pending.getSecret(v, secretPath)
 			if err != nil {
 				return nil, fmt.Errorf("reading %s, which this entry's existing wrapper injects: %w", secretPath, err)
 			}
@@ -730,7 +754,7 @@ func carriedProfileValues(v *vault.Vault, globalRoot string, profiles []string, 
 
 // mcpWrapperProfile extracts the profile name from a server entry whose
 // args are jit's own `run --profile <name> -- ...` wrapper shape
-// (migrateMCPServer's rewrite), or "" for anything else.
+// (planMCPServer's rewrite), or "" for anything else.
 func mcpWrapperProfile(entry mcpServerRaw) string {
 	var args []string
 	if araw, ok := entry["args"]; ok {
@@ -772,7 +796,7 @@ func WrappedMCPProfiles(path string) map[string]bool {
 type WrappedMCPEntry struct {
 	ConfigPath string
 	ServerName string
-	// JitPath is the entry's "command" — migrateMCPServer deliberately
+	// JitPath is the entry's "command" — planMCPServer deliberately
 	// writes jit's own resolved executable path rather than a bare "jit",
 	// since a GUI-launched MCP host's PATH often doesn't match a shell's.
 	// That is the right call and it is also why this can go stale: the
