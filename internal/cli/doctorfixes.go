@@ -74,10 +74,10 @@ var jitFixClasses = map[string]fixClass{
 	// Puts the original file back, plaintext and all.
 	"migrate undo":   {destructive: true, presence: true},
 	"migrate remove": {destructive: true, presence: true},
-	// Rewrites owner lists only: no secret is read or deleted. It widens
-	// what a later migrate remove of that config takes, which the command
-	// says before its own y/N.
-	"profile adopt": {},
+	// Rewrites profile records (owner lists) only: no secret is read or
+	// deleted. It widens what a later migrate remove of that config takes,
+	// which the command says before its own y/N.
+	"profile attach": {},
 	// Deletes the profile and every secret nothing else uses; Touch ID
 	// whenever a secret goes.
 	"profile rm": {destructive: true, presence: true},

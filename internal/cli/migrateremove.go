@@ -49,8 +49,8 @@ var migrateRemoveCmd = &cobra.Command{
 		"are kept), and then the project's profile manifests, including the ones\n" +
 		"created for this project's MCP servers, the vault secrets they\n" +
 		"reference, the project's encrypted file backups, and the .jit/ directory\n" +
-		"itself are all deleted. A profile another config still owns or launches\n" +
-		"is kept; this project only comes off its owner list.\n\n" +
+		"itself are all deleted. A profile another config still uses or records\n" +
+		"is kept; this project is only removed from its record.\n\n" +
 		"You must name the project to remove; a bare `jit migrate remove` with no\n" +
 		"path does nothing. Name a FOLDER to remove that project, or name any\n" +
 		"FILE inside a project (e.g. its .env) and jit resolves up to the .jit/\n" +
@@ -552,8 +552,8 @@ func disownOnly(cmd *cobra.Command, plan projectRemovalPlan) error {
 	// Tight: the plan already ends on a blank line (jitDirs, the line that
 	// usually closes it, is always empty here).
 	if !migrateRemoveYes && !confirmPromptTight(cmd, fmt.Sprintf(
-		"Take this project off %s? [y/N] ",
-		countWord(len(plan.disowned), "owner list", "owner lists"))) {
+		"Remove this project from %s? [y/N] ",
+		countWord(len(plan.disowned), "profile record", "profile records"))) {
 		fmt.Fprintln(out, "Aborted. Nothing was changed.")
 		return nil
 	}
@@ -562,8 +562,8 @@ func disownOnly(cmd *cobra.Command, plan projectRemovalPlan) error {
 			return fmt.Errorf("jit migrate remove: %w", err)
 		}
 	}
-	fmt.Fprintf(out, "Took this project off %s; the %s kept.\n",
-		countWord(len(plan.disowned), "owner list", "owner lists"),
+	fmt.Fprintf(out, "Removed this project from %s; the %s kept.\n",
+		countWord(len(plan.disowned), "profile record", "profile records"),
 		pluralWord(len(plan.disowned), "profile is", "profiles are"))
 	return nil
 }
@@ -1171,11 +1171,11 @@ type disownedProfile struct {
 func (d disownedProfile) keptReason(home string) string {
 	switch {
 	case d.keptOwner != "":
-		return "still owned by " + displayPath(home, d.keptOwner)
+		return "still recorded by " + displayPath(home, d.keptOwner)
 	case d.keptLauncher != "":
-		return "launched by " + displayPath(home, d.keptLauncher)
+		return "still used by " + displayPath(home, d.keptLauncher)
 	default:
-		return "may be launched elsewhere; not every config was readable"
+		return "may be used elsewhere; not every config was readable"
 	}
 }
 
@@ -1466,7 +1466,8 @@ func printProjectRemovalPlan(out interface{ Write([]byte) (int, error) }, home s
 		for _, d := range plan.disowned {
 			fmt.Fprintf(out, "  "+glyphBullet+" %s · %s\n", d.name, d.keptReason(home))
 		}
-		fmt.Fprintln(out, "  this project comes off their owner list; nothing else changes")
+		fmt.Fprintf(out, "  this project is removed from %s; nothing else changes\n",
+			pluralWord(len(plan.disowned), "its record", "their records"))
 		if plan.ownerListOnly() {
 			fmt.Fprintln(out, "Nothing to decrypt or restore; no Touch ID needed.")
 		}

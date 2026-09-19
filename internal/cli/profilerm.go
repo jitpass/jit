@@ -27,13 +27,13 @@ import (
 // other profile or pointer references"). Deleting only the secrets breaks
 // the profile; deleting only the manifest leaves orphans.
 //
-// It refuses a profile anything known launches, with no flag to override:
-// the fix is to remove the launcher, which is a hand edit or another jit
-// command, never a reason to break a tool. It reads the launcher map
-// STRICTLY: a file it can't read might be the one launching this profile,
-// so "can't tell" refuses too. Global profiles only: a project profile is
-// launched by `jit run` from its project, which nothing records, and goes
-// with its project (`jit migrate remove`).
+// It refuses a profile any known tool uses, with no flag to override: the
+// fix is to remove that use (a launcher, in the code), which is a hand edit
+// or another jit command, never a reason to break a tool. It reads the
+// launcher map STRICTLY: a file it can't read might be the one launching
+// this profile, so "can't tell" refuses too. Global profiles only: a
+// project profile is launched by `jit run` from its project, which nothing
+// records, and goes with its project (`jit migrate remove`).
 
 var (
 	profileRmYes    bool
@@ -44,16 +44,16 @@ var (
 var profileRmCmd = &cobra.Command{
 	Use:   "rm <profile>",
 	Short: "Delete a global profile and the secrets nothing else uses",
-	Long: "Deletes a global profile: its manifest, its owner record, and each of\n" +
-		"its secrets no other profile or pointer file uses. Secrets another\n" +
-		"profile uses are kept.\n\n" +
-		"A profile something still launches is refused, and nothing is deleted:\n" +
-		"an MCP server entry (any wrapper layer), an AWS or kubeconfig entry, a\n" +
-		"wrapped tool, a mount, a shell rc export or a credential helper, found\n" +
-		"anywhere under your home folder. Remove that first. If jit can't read\n" +
-		"one of those files, it can't tell, and refuses the same way. Scripts\n" +
-		"and aliases can't be seen, so \"no known launcher\" is never proof the\n" +
-		"profile is unused.\n\n" +
+	Long: "Deletes a global profile: its manifest, its record of the configs\n" +
+		"that use it, and each of its secrets no other profile or pointer file\n" +
+		"uses. Secrets another profile uses are kept.\n\n" +
+		"A profile a tool still uses is refused, and nothing is deleted: an MCP\n" +
+		"server entry (any wrapper layer), an AWS or kubeconfig entry, a wrapped\n" +
+		"tool, a mount, a shell rc export or a credential helper, found anywhere\n" +
+		"under your home folder. Remove that first. If jit can't read one of\n" +
+		"those files, it can't tell, and refuses the same way. Scripts and\n" +
+		"aliases can't be seen, so \"no known tool\" is never proof the profile\n" +
+		"is unused.\n\n" +
 		"A project profile goes with its project: `jit migrate remove <project>`.\n\n" +
 		"Beyond the [y/N] confirmation, deleting secrets needs a fresh Touch ID;\n" +
 		"-y/--yes skips only the confirmation. --dry-run shows the plan and\n" +
@@ -246,7 +246,7 @@ func planProfileRm(m *launchers.Map, home, name, manifest string) (profileRmPlan
 	plan := profileRmPlan{name: name, manifest: manifest, complete: m.Coverage.Complete()}
 	p := m.ProfileAt(manifest)
 	if p == nil {
-		return plan, fmt.Errorf("profile %s was not in the launcher map", shortPath(manifest))
+		return plan, fmt.Errorf("profile %s was not found looking for its tools", shortPath(manifest))
 	}
 	seen := map[string]bool{}
 	for _, l := range p.Launchers {
@@ -329,7 +329,7 @@ func printProfileRmPlan(out io.Writer, home string, plan profileRmPlan) {
 			displayPath(home, wrap.ExpandHome(home, plan.originGone)))
 	}
 	if plan.complete {
-		fmt.Fprintf(out, "  %s no known launcher\n", glyphBranch)
+		fmt.Fprintf(out, "  %s no known tool\n", glyphBranch)
 	} else {
 		fmt.Fprintf(out, "  %s jit could not see all of ~\n", glyphBranch)
 	}
@@ -362,7 +362,8 @@ func printProfileRmPlan(out io.Writer, home string, plan profileRmPlan) {
 	}
 }
 
-// printProfileRmLaunchers names each known launcher, one `!` line each.
+// printProfileRmLaunchers names each known tool that uses the profile, one
+// `!` line each.
 func printProfileRmLaunchers(out io.Writer, blocking []launchers.Launcher) {
 	for _, l := range blocking {
 		_, _ = cWarnBold.Fprintf(out, "%s ", glyphMark)
@@ -370,26 +371,28 @@ func printProfileRmLaunchers(out io.Writer, blocking []launchers.Launcher) {
 	}
 }
 
-// profileRmLauncherLine says, in the user's terms, where a launcher is.
+// profileRmLauncherLine says, in the user's terms, which tool uses the
+// profile and the config that starts it: "tool okta-mcp-server uses it
+// (~/Security-Ops/.mcp.json)".
 func profileRmLauncherLine(l launchers.Launcher) string {
 	file := shortPath(l.File)
 	switch l.Kind {
 	case launchers.KindMCP:
-		return fmt.Sprintf("%s launches it (%s)", file, l.Detail)
+		return fmt.Sprintf("tool %s uses it (%s)", l.Detail, file)
 	case launchers.KindAWS:
-		return fmt.Sprintf("%s %s launches it", file, l.Detail)
+		return fmt.Sprintf("tool aws uses it (%s %s)", file, l.Detail)
 	case launchers.KindKube:
-		return fmt.Sprintf("%s launches it (%s)", file, l.Detail)
+		return fmt.Sprintf("tool kubectl uses it (%s %s)", file, l.Detail)
 	case launchers.KindWrap:
-		return fmt.Sprintf("wrapped tool %s launches it", l.Detail)
+		return fmt.Sprintf("tool %s uses it (wrapped)", l.Detail)
 	case launchers.KindMount:
-		return fmt.Sprintf("mounted at %s", shortPath(l.Detail))
+		return fmt.Sprintf("the mount at %s uses it", shortPath(l.Detail))
 	case launchers.KindShellRC:
-		return fmt.Sprintf("%s exports it (%s)", file, l.Detail)
+		return fmt.Sprintf("your shell uses it (%s %s)", file, l.Detail)
 	case launchers.KindHelper:
-		return fmt.Sprintf("%s uses it", file)
+		return fmt.Sprintf("tool %s uses it (credential helper)", l.Detail)
 	}
-	return fmt.Sprintf("%s launches it", file)
+	return fmt.Sprintf("%s uses it", file)
 }
 
 // profileRmRefusal is the in-use error, with the one step that clears it:
@@ -410,7 +413,7 @@ func profileRmRefusal(name string, blocking []launchers.Launcher) *hintedError {
 	case launchers.KindMCP:
 		e.note = "remove those entries first"
 		if one {
-			e.note = fmt.Sprintf("remove the %s entry from that file first", l.Detail)
+			e.note = fmt.Sprintf("remove %s from that file first", l.Detail)
 		}
 	case launchers.KindAWS:
 		e.note = "remove those sections first"

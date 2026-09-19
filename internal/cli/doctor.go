@@ -116,7 +116,7 @@ var doctorCmd = &cobra.Command{
 		"secret missing, corrupt, or unparseable; the whole vault unreadable\n" +
 		"because this Mac's master key is gone from the keychain or a master-key\n" +
 		"rotation never finished; a wrapped tool's installation damaged, which\n" +
-		"means that tool now runs unwrapped or not at all; a launcher (an MCP\n" +
+		"means that tool now runs unwrapped or not at all; a config (an MCP\n" +
 		"entry, ~/.aws/config, a kubeconfig user, a shell rc line) naming a\n" +
 		"profile that doesn't exist; or a jit://vault pointer naming a secret the\n" +
 		"vault doesn't hold. Everything else it reports is an advisory warning:\n" +
@@ -130,9 +130,9 @@ var doctorCmd = &cobra.Command{
 		"unmounting, a stopped service, a stale or missing vault backup, more than one jit\n" +
 		"installed on PATH (a Homebrew copy and a tarball copy each answering to\n" +
 		"the name, with which copy runs decided by PATH order), an MCP profile\n" +
-		"whose recorded owner config is gone or was never recorded, a global\n" +
-		"profile with no known launcher (only said when the look through your\n" +
-		"home covered all of it; a script or alias can still run it), and any shim\n" +
+		"whose recorded config is deleted or was never recorded, a global\n" +
+		"profile no known tool uses (only said when the look through your\n" +
+		"home covered all of it; a script or alias can still use it), and any shim\n" +
 		"complaint that is only true of the shell you happen to be in — a CI job\n" +
 		"that doesn't put the shim dir on PATH is not a broken machine. --strict\n" +
 		"makes those count too.\n\n" +
@@ -763,18 +763,18 @@ func findingLabel(f checkFinding) string {
 		// "[wrap: this shell]" does: nothing is broken yet, and an amber
 		// group with no qualifier reads as one that is.
 		return "[jit path: after the next upgrade]"
-	case kindLauncherBroken:
-		return "[launcher broken]"
+	case kindProfileMissing:
+		return "[profile missing]"
 	case kindPointerMissing:
 		return "[pointer missing]"
-	case kindOwnerGone:
-		return "[owner gone]"
-	case kindNoOwner:
-		return "[no owner]"
-	case kindUnlaunched:
-		// Never "unused": scripts and aliases launch profiles nothing on
-		// disk records, and the header must not claim more than jit saw.
-		return "[no known launcher]"
+	case kindConfigDeleted:
+		return "[config deleted]"
+	case kindConfigNotRecorded:
+		return "[config not recorded]"
+	case kindNoKnownTool:
+		// Never "unused": scripts and aliases use profiles nothing on disk
+		// records, and the header must not claim more than jit saw.
+		return "[no known tool]"
 	default:
 		return ""
 	}
@@ -812,7 +812,7 @@ func formatFinding(f checkFinding) string {
 		return fmt.Sprintf("%s — %s", f.Path, f.Detail)
 	case kindShadowed:
 		return fmt.Sprintf("%s: %s", profileRef(f), f.Detail)
-	case kindLauncherBroken:
+	case kindProfileMissing:
 		if len(f.Launchers) == 0 {
 			return shortHome(f.Detail)
 		}
@@ -822,9 +822,12 @@ func formatFinding(f checkFinding) string {
 			return shortHome(f.Detail)
 		}
 		return fmt.Sprintf("%s · %s", shortPath(f.File), f.Path)
-	case kindOwnerGone, kindNoOwner:
+	case kindConfigDeleted, kindConfigNotRecorded:
+		if tools := mcpToolNames(f.Launchers); len(tools) > 0 {
+			return fmt.Sprintf("%s · tool %s", f.Profile, strings.Join(tools, ", "))
+		}
 		return f.Profile
-	case kindUnlaunched:
+	case kindNoKnownTool:
 		return fmt.Sprintf("%s · %s", f.Profile, secretsPhrase(f.Secrets, f.SecretsMissing))
 	case kindOriginGone:
 		// Rendered from the structured fields, not Detail, whose sentence is

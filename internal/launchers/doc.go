@@ -37,7 +37,7 @@
 // A launcher names a profile the way `jit run` resolves one, project first:
 // a global profile takes every launcher naming it, a project profile only
 // launchers inside its own project. A by-name launcher that resolves to no
-// profile at all is Broken (the future `launcher_broken` finding). A pointer
+// profile at all is Broken (doctor's `profile_missing` finding). A pointer
 // naming a secret the vault lacks is a MissingPointer, when the caller
 // supplies a way to ask the vault.
 //
