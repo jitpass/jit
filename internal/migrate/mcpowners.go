@@ -21,7 +21,7 @@ type MCPProfileOwner struct {
 
 // MCPProfileOwners lists, for every wrapped server entry in path, every
 // wrapper layer's profile together with its block-scoped owner string. It
-// is WrappedMCPEntriesIn with the block kept: `jit profile adopt` must
+// is WrappedMCPEntriesIn with the block kept: `jit profile attach` must
 // write the owner migrate itself would have written, and one file can
 // launch the same profile from several blocks, each its own owner.
 //

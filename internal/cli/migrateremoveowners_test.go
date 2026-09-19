@@ -169,8 +169,8 @@ func TestPrintProjectRemovalPlanListsKeptProfile(t *testing.T) {
 	for _, want := range []string{
 		"[Profiles + their vault secrets deleted] 1\n",
 		"[Profiles kept, still used outside this project] 1\n" +
-			"  " + glyphBullet + " mcp-shared · still owned by ~/projB/.mcp.json\n" +
-			"  this project comes off their owner list; nothing else changes\n\n",
+			"  " + glyphBullet + " mcp-shared · still recorded by ~/projB/.mcp.json\n" +
+			"  this project is removed from its record; nothing else changes\n\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("plan missing %q:\n%s", want, out)
@@ -185,8 +185,8 @@ func TestPrintProjectRemovalPlanListsKeptProfile(t *testing.T) {
 	}
 }
 
-// Kept because a config outside the project launches it without owning it:
-// the row names that launcher.
+// Kept because a config outside the project uses it without its record
+// naming that config: the row names that config.
 func TestPrintProjectRemovalPlanNamesOutsideLauncher(t *testing.T) {
 	home := withFixtureHome(t)
 	cwd := withFixtureCwd(t)
@@ -196,7 +196,7 @@ func TestPrintProjectRemovalPlanNamesOutsideLauncher(t *testing.T) {
 
 	var buf bytes.Buffer
 	printProjectRemovalPlan(&buf, home, removalPlanFor(t, home, cwd))
-	if want := "  " + glyphBullet + " mcp-shared · launched by ~/copy/.mcp.json\n"; !strings.Contains(buf.String(), want) {
+	if want := "  " + glyphBullet + " mcp-shared · still used by ~/copy/.mcp.json\n"; !strings.Contains(buf.String(), want) {
 		t.Errorf("plan missing %q:\n%s", want, buf.String())
 	}
 }
@@ -267,8 +267,8 @@ func TestMigrateRemoveOwnerListOnly(t *testing.T) {
 		t.Errorf("owner-list-only project reported as empty:\n%s", out)
 	}
 	want := "[Profiles kept, still used outside this project] 1\n" +
-		"  " + glyphBullet + " mcp-shared · still owned by ~/projB/.mcp.json\n" +
-		"  this project comes off their owner list; nothing else changes\n" +
+		"  " + glyphBullet + " mcp-shared · still recorded by ~/projB/.mcp.json\n" +
+		"  this project is removed from its record; nothing else changes\n" +
 		"Nothing to decrypt or restore; no Touch ID needed.\n"
 	if !strings.Contains(out, want) {
 		t.Errorf("output missing %q:\n%s", want, out)
@@ -342,7 +342,7 @@ func migrateSourceSidecar(manifest string) string {
 
 func TestMigrateRemoveHelpNamesKeptProfiles(t *testing.T) {
 	long := strings.Join(strings.Fields(migrateRemoveCmd.Long), " ")
-	if want := "A profile another config still owns or launches is kept; this project only comes off its owner list."; !strings.Contains(long, want) {
+	if want := "A profile another config still uses or records is kept; this project is only removed from its record."; !strings.Contains(long, want) {
 		t.Errorf("help missing %q", want)
 	}
 }

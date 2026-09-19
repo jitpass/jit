@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -24,18 +25,21 @@ import (
 
 // Doctor's ownership sections (design/doctor-repair.md, Phase 2) read the
 // launcher map (internal/launchers): what starts each profile, and what
-// points at each secret, discovered from home. Five findings come of it:
+// points at each secret, discovered from home. Five findings come of it,
+// named in the user's vocabulary (design/doctor-repair.md, "Vocabulary"):
+// a tool uses a profile, a config starts the tool, and a profile's record
+// (its .source owner list) names the configs that use it.
 //
-//   - launcher_broken (problem): a launcher names a profile no store holds.
+//   - profile_missing (problem): a config names a profile no store holds.
 //   - pointer_missing (problem): a jit://vault pointer names a missing secret.
-//   - owner_gone (warning): an MCP profile's recorded owners are all gone,
-//     and a live config launches it.
-//   - no_owner (warning): an MCP profile with no owner recorded at all.
-//   - unlaunched (warning): a global profile nothing known launches.
+//   - config_deleted (warning): every config an MCP profile's record names
+//     is deleted, and a live config starts its tool.
+//   - config_not_recorded (warning): an MCP profile that records no config.
+//   - no_known_tool (warning): a global profile no known tool uses.
 //
 // Discovery is lenient here: doctor reports, so a source it can't read is
 // not a doctor failure. What an unread source costs is the one verdict that
-// depends on having read everything, "no known launcher", which is then not
+// depends on having read everything, "no known tool", which is then not
 // issued at all (see unlaunchedFindings).
 
 // doctorLauncherMap discovers the launcher map for doctor: always from home
@@ -95,7 +99,7 @@ func brokenLauncherFindings(m *launchers.Map) []checkFinding {
 		}
 		seen[key] = true
 		out = append(out, checkFinding{
-			Kind:      kindLauncherBroken,
+			Kind:      kindProfileMissing,
 			Profile:   l.Profile,
 			File:      l.File,
 			Launchers: []launchers.Launcher{l},
@@ -168,7 +172,7 @@ func awsProfileCommand(section string) string {
 	return "aws --profile " + name
 }
 
-// dropCoveredLauncherFindings removes the launcher_broken rows [mcp] already
+// dropCoveredLauncherFindings removes the profile_missing rows [mcp] already
 // reports: an MCP entry's outer layer, for an entry [mcp] flagged. [mcp]
 // walks from cwd and launcher discovery from home, so an entry outside cwd
 // keeps its row here rather than going unreported.
@@ -184,7 +188,7 @@ func dropCoveredLauncherFindings(findings []checkFinding) []checkFinding {
 	}
 	out := make([]checkFinding, 0, len(findings))
 	for _, f := range findings {
-		if f.Kind == kindLauncherBroken && len(f.Launchers) == 1 {
+		if f.Kind == kindProfileMissing && len(f.Launchers) == 1 {
 			l := f.Launchers[0]
 			if l.Kind == launchers.KindMCP && l.Layer == 0 && covered[resolvedPath(l.File)+"\x00"+l.Profile] {
 				continue
@@ -229,12 +233,12 @@ func missingPointerFindings(m *launchers.Map) []checkFinding {
 }
 
 // ownerFindings reports the MCP profiles a live config launches but no live
-// config owns: owner_gone when every recorded owner's file is gone, no_owner
-// when none was ever recorded. Only global profiles an MCP entry launches
+// config owns: config_deleted when every recorded owner's file is gone,
+// config_not_recorded when none was ever recorded. Only global profiles an MCP entry launches
 // qualify; a profile something else also launches (an AWS or rc line) is
 // not an MCP profile unless its owner list says it was made by one.
 //
-// Sorted into the groups the report prints: owner_gone first, then by gone
+// Sorted into the groups the report prints: config_deleted first, then by gone
 // owners, launching configs and name.
 func ownerFindings(m *launchers.Map) []checkFinding {
 	var out []checkFinding
@@ -247,12 +251,12 @@ func ownerFindings(m *launchers.Map) []checkFinding {
 			continue
 		}
 		configs := launcherFiles(mcp)
-		adopt := fmt.Sprintf("`jit profile adopt %s`", shellQuoteArg(shortPath(configs[0])))
+		attach := fmt.Sprintf("`jit profile attach %s`", shellQuoteArg(shortPath(configs[0])))
 		switch {
 		case len(p.Owners) > 0 && len(p.LiveOwners) == 0:
 			gone := ownerFiles(p.Owners)
 			out = append(out, checkFinding{
-				Kind:      kindOwnerGone,
+				Kind:      kindConfigDeleted,
 				Profile:   p.Name,
 				Scope:     string(profile.ScopeGlobal),
 				Path:      p.Path,
@@ -260,27 +264,27 @@ func ownerFindings(m *launchers.Map) []checkFinding {
 				Configs:   configs,
 				Owners:    p.Owners,
 				Launchers: mcp,
-				Detail: fmt.Sprintf("made by %s, now gone; launched by %s",
-					pathsPhrase(gone), pathsPhrase(configs)),
-				Action: adopt,
+				Detail: fmt.Sprintf("%s; now started by %s",
+					recordedConfigsGone(gone), pathsPhrase(configs)),
+				Action: attach,
 			})
 		case len(p.Owners) == 0 && len(mcp) == len(p.Launchers):
 			out = append(out, checkFinding{
-				Kind:      kindNoOwner,
+				Kind:      kindConfigNotRecorded,
 				Profile:   p.Name,
 				Scope:     string(profile.ScopeGlobal),
 				Path:      p.Path,
 				Config:    configs[0],
 				Configs:   configs,
 				Launchers: mcp,
-				Detail:    fmt.Sprintf("no owner recorded; launched by %s", pathsPhrase(configs)),
-				Action:    adopt,
+				Detail:    fmt.Sprintf("no config recorded; started by %s", pathsPhrase(configs)),
+				Action:    attach,
 			})
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Kind != out[j].Kind {
-			return out[i].Kind == kindOwnerGone
+			return out[i].Kind == kindConfigDeleted
 		}
 		a, b := ownerGroupKey(out[i]), ownerGroupKey(out[j])
 		if a != b {
@@ -344,13 +348,36 @@ func pathsPhrase(paths []string) string {
 	return s
 }
 
+// recordedConfigsGone is a config_deleted group's first header line:
+// "recorded config ~/a/.mcp.json is deleted", "recorded config
+// ~/a/.mcp.json and 2 more are deleted".
+func recordedConfigsGone(files []string) string {
+	verb := "is"
+	if len(files) > 1 {
+		verb = "are"
+	}
+	return fmt.Sprintf("recorded config %s %s deleted", pathsPhrase(files), verb)
+}
+
+// mcpToolNames returns the distinct MCP server names among ls, in order:
+// the tools a config_deleted or config_not_recorded row names.
+func mcpToolNames(ls []launchers.Launcher) []string {
+	var names []string
+	for _, l := range ls {
+		if l.Kind == launchers.KindMCP && l.Detail != "" && !slices.Contains(names, l.Detail) {
+			names = append(names, l.Detail)
+		}
+	}
+	return names
+}
+
 // ownerGroupKey is the owner sub-group a finding prints under: the same gone
 // owners and the same launching configs share one header.
 func ownerGroupKey(f checkFinding) string {
 	return strings.Join(ownerFiles(f.Owners), "\x00") + "\x01" + strings.Join(f.Configs, "\x00")
 }
 
-// launcherSources are the inputs a "no known launcher" verdict depends on.
+// launcherSources are the inputs a "no known tool" verdict depends on.
 // If any failed to read, a launcher may be sitting in it.
 var launcherSources = []launchers.Source{
 	launchers.SourceMounts, launchers.SourceMCP, launchers.SourceAWS,
@@ -408,7 +435,7 @@ func unlaunchedFindings(m *launchers.Map, v *vault.Vault) ([]checkFinding, map[s
 		}
 		origin := unlaunchedOrigin(m.Home, p, origins)
 		f := checkFinding{
-			Kind:           kindUnlaunched,
+			Kind:           kindNoKnownTool,
 			Profile:        p.Name,
 			Scope:          string(profile.ScopeGlobal),
 			Path:           p.Path,
@@ -416,7 +443,7 @@ func unlaunchedFindings(m *launchers.Map, v *vault.Vault) ([]checkFinding, map[s
 			Secrets:        len(paths),
 			SecretsMissing: missing,
 			Origin:         origin,
-			Detail:         fmt.Sprintf("no known launcher; %s", secretsPhrase(len(paths), missing)),
+			Detail:         fmt.Sprintf("no known tool; %s", secretsPhrase(len(paths), missing)),
 			Action:         fmt.Sprintf("`jit profile rm %s` if you no longer use it", p.Name),
 		}
 		out = append(out, f)
@@ -488,21 +515,21 @@ func secretsPhrase(n, missing int) string {
 	}
 }
 
-// unlaunchedTemplate closes a [no known launcher] group of more than one:
+// unlaunchedTemplate closes a [no known tool] group of more than one:
 // the placeholder stands for the names listed above it.
 const unlaunchedTemplate = "`jit profile rm <name>` for any you no longer use"
 
 // writeOwnershipGroup renders the ownership kinds, whose groups carry shared
-// lines a plain finding list has no place for: launcher_broken's closing
-// notes per launcher kind, the owner kinds' "made by"/"launched by" headers,
-// unlaunched's └ origin line and closing note. false for any other kind.
+// lines a plain finding list has no place for: profile_missing's closing
+// notes per launcher kind, the record kinds' "recorded config"/"started by"
+// headers, no_known_tool's └ origin line and closing note. false for any other kind.
 func writeOwnershipGroup(out io.Writer, glyph string, c *color.Color, kind checkKind, group []checkFinding) bool {
 	switch kind {
-	case kindLauncherBroken:
+	case kindProfileMissing:
 		writeLauncherBrokenGroup(out, glyph, c, group)
-	case kindOwnerGone, kindNoOwner:
+	case kindConfigDeleted, kindConfigNotRecorded:
 		writeOwnerGroup(out, glyph, c, kind, group)
-	case kindUnlaunched:
+	case kindNoKnownTool:
 		writeUnlaunchedGroup(out, glyph, c, group)
 	default:
 		return false
@@ -563,10 +590,12 @@ func writeOwnerGroup(out io.Writer, glyph string, c *color.Color, kind checkKind
 	for _, k := range keys {
 		rows := subs[k]
 		first := rows[0]
-		if kind == kindOwnerGone {
-			writeGroupNote(out, fmt.Sprintf("made by %s, now gone", pathsPhrase(ownerFiles(first.Owners))))
+		if kind == kindConfigDeleted {
+			writeGroupNote(out, recordedConfigsGone(ownerFiles(first.Owners)))
+			writeGroupNote(out, "now started by "+pathsPhrase(first.Configs))
+		} else {
+			writeGroupNote(out, "started by "+pathsPhrase(first.Configs))
 		}
-		writeGroupNote(out, "launched by "+pathsPhrase(first.Configs))
 		for _, f := range rows {
 			writeGroupRow(out, glyph, c, formatFinding(f))
 		}
@@ -583,11 +612,11 @@ func writeUnlaunchedGroup(out io.Writer, glyph string, c *color.Color, group []c
 			wrapBody(out, findingIndent+2, evidence+"  ", fmt.Sprintf("made from %s, now gone", shortPath(f.Origin)))
 		}
 	}
-	writeGroupNote(out, fmt.Sprintf("a script or alias may still run %s; jit can't see those",
+	writeGroupNote(out, fmt.Sprintf("a script or alias may still use %s; jit can't see those",
 		pluralWord(len(group), "it", "them")))
 	action := group[0].Action
 	if len(group) > 1 {
 		action = unlaunchedTemplate
 	}
-	writeActionLine(out, strings.Repeat(" ", findingArrow), kindUnlaunched, action)
+	writeActionLine(out, strings.Repeat(" ", findingArrow), kindNoKnownTool, action)
 }

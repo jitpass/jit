@@ -8,6 +8,7 @@ package cli
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 
 	"github.com/jitpass/jit/internal/launchers"
@@ -33,6 +34,28 @@ type secretUse struct {
 	// config that fails to parse is skipped there, so an empty list means
 	// "no known launcher", never "unused".
 	LaunchedBy []string
+	// Tools names the MCP servers behind LaunchedBy, each with the config
+	// that starts it, in config then server order. Same provenance and
+	// caveats as LaunchedBy.
+	Tools []toolUse
+}
+
+// toolUse is one tool (an MCP server, by name) that uses a profile, and
+// the config that starts it.
+type toolUse struct {
+	Name   string `json:"name"`
+	Config string `json:"config"`
+}
+
+// toolsIn returns the names of u's tools that config starts, in order.
+func (u secretUse) toolsIn(config string) []string {
+	var names []string
+	for _, t := range u.Tools {
+		if t.Config == config && !containsString(names, t.Name) {
+			names = append(names, t.Name)
+		}
+	}
+	return names
 }
 
 // scopeLabel renders the profile's store the way the rm warnings show it:
@@ -187,7 +210,7 @@ func canonicalPath(p string) string {
 	return filepath.Clean(p)
 }
 
-// attachLaunchers fills LaunchedBy on the given uses from the MCP launchers
+// attachLaunchers fills LaunchedBy and Tools on the given uses from the MCP launchers
 // in the map collectVaultUsers built: which configs start each profile,
 // counting every wrapper layer of a nested entry and discovered from home.
 // Display only, and lenient: an MCP config that failed to parse adds
@@ -217,8 +240,18 @@ func (usage vaultUsage) attachLaunchers(uses map[string][]secretUse) {
 				if !containsString(u.LaunchedBy, l.File) {
 					u.LaunchedBy = append(u.LaunchedBy, l.File)
 				}
+				t := toolUse{Name: l.Detail, Config: l.File}
+				if l.Detail != "" && !slices.Contains(u.Tools, t) {
+					u.Tools = append(u.Tools, t)
+				}
 			}
 			sort.Strings(u.LaunchedBy)
+			sort.SliceStable(u.Tools, func(i, j int) bool {
+				if u.Tools[i].Config != u.Tools[j].Config {
+					return u.Tools[i].Config < u.Tools[j].Config
+				}
+				return u.Tools[i].Name < u.Tools[j].Name
+			})
 		}
 		uses[p] = list
 	}

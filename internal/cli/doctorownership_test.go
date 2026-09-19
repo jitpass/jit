@@ -139,7 +139,7 @@ func TestDoctorOwnershipRendersTheApprovedShape(t *testing.T) {
 		t.Fatalf("broken launchers and a missing pointer are problems: err = %v", err)
 	}
 	for _, block := range []string{
-		"[launcher broken]  2\n" +
+		"[profile missing]  2\n" +
 			"  ✗ aws-dev · ~/.aws/config [profile dev] names it\n" +
 			"  ✗ aws-admin · ~/.aws/config [profile admin] names it\n" +
 			"  no such jit profiles, so aws fails for those profiles\n" +
@@ -147,33 +147,34 @@ func TestDoctorOwnershipRendersTheApprovedShape(t *testing.T) {
 		"[pointer missing]\n" +
 			"  ✗ ~/.clisso.yaml · wrap-clisso/blockaid-client-secret\n" +
 			"  → jit vault set wrap-clisso/blockaid-client-secret\n\n",
-		"[owner gone]  5\n" +
-			"  made by ~/Documents/ai_security_workspace/.mcp.json, now gone\n" +
-			"  launched by ~/Security-Ops/.mcp.json\n" +
-			"  ○ mcp-caido\n" +
-			"  ○ mcp-google-workspace-investigate\n" +
-			"  ○ mcp-jamf\n" +
-			"  ○ mcp-okta\n" +
-			"  ○ mcp-okta-mcp-server\n" +
-			"  → jit profile adopt ~/Security-Ops/.mcp.json\n\n",
-		"[no owner]  2\n" +
-			"  launched by ~/Security-Ops/.mcp.json\n" +
-			"  ○ mcp-google-workspace\n" +
-			"  ○ mcp-urlscan\n" +
-			"  → jit profile adopt ~/Security-Ops/.mcp.json\n\n",
-		"[no known launcher]  2\n" +
+		"[config deleted]  5\n" +
+			"  recorded config ~/Documents/ai_security_workspace/.mcp.json is deleted\n" +
+			"  now started by ~/Security-Ops/.mcp.json\n" +
+			"  ○ mcp-caido · tool caido\n" +
+			"  ○ mcp-google-workspace-investigate · tool google-workspace-investigate\n" +
+			"  ○ mcp-jamf · tool jamf\n" +
+			"  ○ mcp-okta · tool okta-mcp-server\n" +
+			"  ○ mcp-okta-mcp-server · tool okta-mcp-server\n" +
+			"  → jit profile attach ~/Security-Ops/.mcp.json\n\n",
+		"[config not recorded]  2\n" +
+			"  started by ~/Security-Ops/.mcp.json\n" +
+			"  ○ mcp-google-workspace · tool google-workspace-investigate\n" +
+			"  ○ mcp-urlscan · tool urlscan\n" +
+			"  → jit profile attach ~/Security-Ops/.mcp.json\n\n",
+		"[no known tool]  2\n" +
 			"  ○ k8s-docker-desktop · 2 secrets, both missing\n" +
 			"  ○ token · 1 secret\n" +
 			"    └ made from ~/token.txt, now gone\n" +
-			"  a script or alias may still run them; jit can't see those\n" +
+			"  a script or alias may still use them; jit can't see those\n" +
 			"  → jit profile rm <name> for any you no longer use\n",
 	} {
 		if !strings.Contains(out, block) {
 			t.Errorf("expected the approved block:\n%s\ngot:\n%s", block, out)
 		}
 	}
-	// Order: problems first, then owner gone, no owner, no known launcher.
-	order := []string{"[launcher broken]", "[pointer missing]", "[owner gone]", "[no owner]", "[no known launcher]"}
+	// Order: problems first, then config deleted, config not recorded, no
+	// known tool.
+	order := []string{"[profile missing]", "[pointer missing]", "[config deleted]", "[config not recorded]", "[no known tool]"}
 	last := -1
 	for _, h := range order {
 		i := strings.Index(out, h)
@@ -185,7 +186,7 @@ func TestDoctorOwnershipRendersTheApprovedShape(t *testing.T) {
 	// Correlation (a): the unlaunched profile's missing secrets are on its
 	// row, not repeated under [missing].
 	if strings.Contains(out, "[missing]") {
-		t.Errorf("k8s-docker-desktop's missing secrets belong to its [no known launcher] row, got:\n%s", out)
+		t.Errorf("k8s-docker-desktop's missing secrets belong to its [no known tool] row, got:\n%s", out)
 	}
 	// Correlation (b): token is reported once, not also under [origin gone].
 	if strings.Contains(out, "[origin gone]") {
@@ -197,7 +198,7 @@ func TestDoctorOwnershipRendersTheApprovedShape(t *testing.T) {
 	}
 }
 
-// Correlation (c): an owner_gone profile IS launched, so a secret it lacks is
+// Correlation (c): a config_deleted profile IS launched, so a secret it lacks is
 // still a [missing] problem, which a launched profile's missing secret
 // always is.
 func TestDoctorOwnerGoneProfileStillReportsMissing(t *testing.T) {
@@ -215,14 +216,14 @@ func TestDoctorOwnerGoneProfileStillReportsMissing(t *testing.T) {
 	}
 	for _, want := range []string{
 		"[missing]\n  ✗ profile \"mcp-okta\" (global): OKTA_API_TOKEN",
-		"[owner gone]\n  made by ~/gone/.mcp.json, now gone\n",
+		"[config deleted]\n  recorded config ~/gone/.mcp.json is deleted\n  now started by ~/Security-Ops/.mcp.json\n  ○ mcp-okta · tool okta\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected %q in:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "[no known launcher]") {
-		t.Errorf("an MCP-launched profile has a launcher, got:\n%s", out)
+	if strings.Contains(out, "[no known tool]") {
+		t.Errorf("an MCP-launched profile has a tool, got:\n%s", out)
 	}
 }
 
@@ -249,10 +250,10 @@ func TestDoctorUnlaunchedLeavesOriginGone(t *testing.T) {
 	if strings.Contains(out, "used by profiles") || strings.Contains(out, "idle, used") {
 		t.Errorf("the unlaunched profile must leave [origin gone], got:\n%s", out)
 	}
-	want := "[no known launcher]\n" +
+	want := "[no known tool]\n" +
 		"  ○ idle · 1 secret\n" +
 		"    └ made from ~/old/.env, now gone\n" +
-		"  a script or alias may still run it; jit can't see those\n" +
+		"  a script or alias may still use it; jit can't see those\n" +
 		"  → jit profile rm idle if you no longer use it\n"
 	if !strings.Contains(out, want) {
 		t.Errorf("expected the single-row shape:\n%s\ngot:\n%s", want, out)
@@ -281,11 +282,11 @@ func TestDoctorUnlaunchedMissingIsNotAProblem(t *testing.T) {
 		t.Errorf("the verdict counts only what it verified, got:\n%s", out)
 	}
 	if _, err := execDoctor(t, "--strict"); err == nil {
-		t.Error("--strict makes the [no known launcher] warning count")
+		t.Error("--strict makes the [no known tool] warning count")
 	}
 }
 
-// "No known launcher" is only said about places jit looked: a directory the
+// "No known tool" is only said about places jit looked: a directory the
 // walk couldn't enter might hold the launcher, so the section goes quiet.
 func TestDoctorUnlaunchedNeedsCompleteCoverage(t *testing.T) {
 	home := withFixtureHome(t)
@@ -300,15 +301,15 @@ func TestDoctorUnlaunchedNeedsCompleteCoverage(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
 
 	out, _ := execDoctor(t)
-	if strings.Contains(out, "[no known launcher]") {
-		t.Errorf("an incomplete walk must not say no known launcher, got:\n%s", out)
+	if strings.Contains(out, "[no known tool]") {
+		t.Errorf("an incomplete walk must not say no known tool, got:\n%s", out)
 	}
 
 	// Same for a launcher source that failed to read.
 	_ = os.Chmod(locked, 0o700)
 	writeProfileAt(t, filepath.Join(home, "ws", ".mcp.json"), "{not json")
 	out, _ = execDoctor(t)
-	if strings.Contains(out, "[no known launcher]") {
+	if strings.Contains(out, "[no known tool]") {
 		t.Errorf("an unreadable MCP config might launch it, got:\n%s", out)
 	}
 }
@@ -327,14 +328,14 @@ func TestDoctorProjectProfileNeverUnlaunched(t *testing.T) {
 		if err != nil {
 			t.Fatalf("from %s: %v\n%s", dir, err, out)
 		}
-		if strings.Contains(out, "[no known launcher]") {
+		if strings.Contains(out, "[no known tool]") {
 			t.Errorf("from %s, a project profile was called unlaunched:\n%s", dir, out)
 		}
 	}
 }
 
-// A nested MCP entry's inner layer naming a gone profile is [launcher
-// broken]; the outer layer's is [mcp]'s, reported there once.
+// A nested MCP entry's inner layer naming a gone profile is [profile
+// missing]; the outer layer's is [mcp]'s, reported there once.
 func TestDoctorBrokenInnerMCPLayer(t *testing.T) {
 	home := withFixtureHome(t)
 	chdirForTest(t, home)
@@ -351,7 +352,7 @@ func TestDoctorBrokenInnerMCPLayer(t *testing.T) {
 	if !errors.As(err, &exit) || exit.Code != doctorProblemsExitCode {
 		t.Fatalf("a broken launcher is a problem: err = %v", err)
 	}
-	want := "[launcher broken]\n" +
+	want := "[profile missing]\n" +
 		"  ✗ mcp-inner · ~/ws/.mcp.json inner-gone names it\n" +
 		"  no such jit profile, so that MCP server fails to start\n" +
 		"  undo that migration, or drop that jit run layer\n"
@@ -375,7 +376,7 @@ func TestDoctorBrokenLauncherNotesPerKind(t *testing.T) {
 	launchFromShellRC(t, home, "gone-rc")
 
 	out, _ := execDoctor(t)
-	want := "[launcher broken]  2\n" +
+	want := "[profile missing]  2\n" +
 		"  ✗ k8s-dd · ~/.kube/config user dd names it\n" +
 		"  no such jit profile, so kubectl fails as that user\n" +
 		"  undo that migration, or delete that user entry\n" +
@@ -399,10 +400,10 @@ func TestDoctorOwnershipExitCodes(t *testing.T) {
 
 	out, err := execDoctor(t)
 	if err != nil {
-		t.Fatalf("[no owner] is advisory: %v\n%s", err, out)
+		t.Fatalf("[config not recorded] is advisory: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "[no owner]") {
-		t.Fatalf("expected a [no owner] warning, got:\n%s", out)
+	if !strings.Contains(out, "[config not recorded]") {
+		t.Fatalf("expected a [config not recorded] warning, got:\n%s", out)
 	}
 	if _, err := execDoctor(t, "--strict"); err == nil {
 		t.Error("--strict must count the ownership warnings")
@@ -435,11 +436,11 @@ func TestDoctorOwnershipJSON(t *testing.T) {
 		t.Error("ok must be false with broken launchers")
 	}
 
-	broken := byKind[kindLauncherBroken]
+	broken := byKind[kindProfileMissing]
 	if len(broken) != 2 || broken[0].Profile != "aws-dev" || broken[0].File != migrate.AWSConfigPath(home) ||
 		len(broken[0].Launchers) != 1 || broken[0].Launchers[0].Kind != launchers.KindAWS ||
 		broken[0].Launchers[0].Detail != "[profile dev]" || len(broken[0].Fixes) != 0 {
-		t.Errorf("launcher_broken = %+v", broken)
+		t.Errorf("profile_missing = %+v", broken)
 	}
 
 	ptr := byKind[kindPointerMissing]
@@ -450,26 +451,26 @@ func TestDoctorOwnershipJSON(t *testing.T) {
 	}
 
 	config := filepath.Join(home, "Security-Ops", ".mcp.json")
-	gone := byKind[kindOwnerGone]
+	gone := byKind[kindConfigDeleted]
 	if len(gone) != 5 {
-		t.Fatalf("owner_gone = %d findings, want 5", len(gone))
+		t.Fatalf("config_deleted = %d findings, want 5", len(gone))
 	}
 	okta := gone[3]
 	if okta.Profile != "mcp-okta" || okta.Config != config || len(okta.Configs) != 1 ||
 		len(okta.Owners) != 1 || okta.Owners[0] != filepath.Join(home, "Documents", "ai_security_workspace", ".mcp.json") ||
 		len(okta.Launchers) != 1 || okta.Launchers[0].Layer != 1 || okta.Launchers[0].Detail != "okta-mcp-server" {
-		t.Errorf("owner_gone mcp-okta = %+v", okta)
+		t.Errorf("config_deleted mcp-okta = %+v", okta)
 	}
 	if len(okta.Fixes) != 1 || okta.Fixes[0].Destructive || okta.Fixes[0].Presence ||
-		strings.Join(okta.Fixes[0].Argv, " ") != "profile adopt "+config {
-		t.Errorf("owner_gone fixes = %+v, want adopt: owner lists only, no Touch ID", okta.Fixes)
+		strings.Join(okta.Fixes[0].Argv, " ") != "profile attach "+config {
+		t.Errorf("config_deleted fixes = %+v, want attach: records only, no Touch ID", okta.Fixes)
 	}
 
-	if no := byKind[kindNoOwner]; len(no) != 2 || no[0].Profile != "mcp-google-workspace" || no[0].Config != config || len(no[0].Owners) != 0 {
-		t.Errorf("no_owner = %+v", no)
+	if no := byKind[kindConfigNotRecorded]; len(no) != 2 || no[0].Profile != "mcp-google-workspace" || no[0].Config != config || len(no[0].Owners) != 0 {
+		t.Errorf("config_not_recorded = %+v", no)
 	}
 
-	un := byKind[kindUnlaunched]
+	un := byKind[kindNoKnownTool]
 	if len(un) != 2 {
 		t.Fatalf("unlaunched = %+v", un)
 	}
@@ -492,7 +493,7 @@ func TestDoctorOwnershipJSON(t *testing.T) {
 func TestDoctorProfileFlagSkipsOwnership(t *testing.T) {
 	ownershipFixture(t)
 	out, _ := execDoctor(t, "--profile", "token")
-	for _, h := range []string{"[launcher broken]", "[pointer missing]", "[owner gone]", "[no owner]", "[no known launcher]"} {
+	for _, h := range []string{"[profile missing]", "[pointer missing]", "[config deleted]", "[config not recorded]", "[no known tool]"} {
 		if strings.Contains(out, h) {
 			t.Errorf("--profile must skip %s, got:\n%s", h, out)
 		}
@@ -543,11 +544,11 @@ func TestDoctorOwnerGroupHeaderCountsExtras(t *testing.T) {
 	}
 
 	out, _ := execDoctor(t)
-	want := "[owner gone]\n" +
-		"  made by ~/gone1/.mcp.json and 1 more, now gone\n" +
-		"  launched by ~/a/.mcp.json and 2 more\n" +
-		"  ○ mcp-okta\n" +
-		"  → jit profile adopt ~/a/.mcp.json\n"
+	want := "[config deleted]\n" +
+		"  recorded config ~/gone1/.mcp.json and 1 more are deleted\n" +
+		"  now started by ~/a/.mcp.json and 2 more\n" +
+		"  ○ mcp-okta · tool okta\n" +
+		"  → jit profile attach ~/a/.mcp.json\n"
 	if !strings.Contains(out, want) {
 		t.Errorf("expected:\n%s\ngot:\n%s", want, out)
 	}

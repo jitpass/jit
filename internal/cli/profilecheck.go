@@ -223,32 +223,35 @@ const (
 	// states want different words on the group header. Same split, same
 	// reason, as kindWrap and kindWrapEnv.
 	kindJitPathUpgrade checkKind = "jit_path_upgrade"
-	// kindLauncherBroken: a launcher names a profile by name (an MCP entry's
-	// wrapper layer, a credential_process line in ~/.aws/config, a
-	// kubeconfig user, a `jit export --profile` rc line) and no store holds
-	// a profile of that name, so whatever it starts fails. A hard problem,
-	// like kindMCP, which already reports an MCP entry's outer layer; this
-	// one covers the inner layers and every other by-name launcher.
-	kindLauncherBroken checkKind = "launcher_broken"
+	// kindProfileMissing ([profile missing]): a config names a profile by
+	// name (an MCP entry's wrapper layer, a credential_process line in
+	// ~/.aws/config, a kubeconfig user, a `jit export --profile` rc line)
+	// and no store holds a profile of that name, so the tool it starts
+	// fails. A hard problem, like kindMCP, which already reports an MCP
+	// entry's outer layer; this one covers the inner layers and every other
+	// by-name launcher.
+	kindProfileMissing checkKind = "profile_missing"
 	// kindPointerMissing: a jit://vault pointer (~/.clisso.yaml, an in-place
 	// pointer file) names a secret the vault doesn't hold, so the tool that
 	// reads it gets nothing. No profile names it, so [missing] can't see it.
 	kindPointerMissing checkKind = "pointer_missing"
-	// kindOwnerGone: an MCP profile whose recorded owners' files are all
-	// gone, while a live config launches it. Advisory: it runs today. It
-	// matters for the next delete: a profile with no live owner looks
-	// unowned, and `jit profile adopt` records the config that uses it.
-	kindOwnerGone checkKind = "owner_gone"
-	// kindNoOwner: an MCP profile a config launches that has no owner
-	// recorded at all (made before owners were, or by hand). Advisory, with
-	// the same fix as kindOwnerGone.
-	kindNoOwner checkKind = "no_owner"
-	// kindUnlaunched: a global profile with no known launcher and no live
-	// owner, reported only when the discovery walk covered all of home.
-	// Permanently advisory (design/doctor-repair.md, "Decided"): a script, an
-	// alias or a `jit run` typed at a prompt launches profiles nothing on
-	// disk records, so "no known launcher" is never proof of unused.
-	kindUnlaunched checkKind = "unlaunched"
+	// kindConfigDeleted ([config deleted]): an MCP profile whose record (its
+	// .source owner list) names only configs that are deleted, while a live
+	// config starts its tool. Advisory: it runs today. It matters for the
+	// next delete: a profile whose record names no live config looks
+	// unowned, and `jit profile attach` records the config that uses it.
+	kindConfigDeleted checkKind = "config_deleted"
+	// kindConfigNotRecorded ([config not recorded]): an MCP profile a config
+	// starts that records no config at all (made before records were, or by
+	// hand). Advisory, with the same fix as kindConfigDeleted.
+	kindConfigNotRecorded checkKind = "config_not_recorded"
+	// kindNoKnownTool ([no known tool]): a global profile no known tool uses
+	// and whose record names no live config, reported only when the
+	// discovery walk covered all of home. Permanently advisory
+	// (design/doctor-repair.md, "Decided"): a script, an alias or a `jit run`
+	// typed at a prompt uses profiles nothing on disk records, so "no known
+	// tool" is never proof of unused.
+	kindNoKnownTool checkKind = "no_known_tool"
 )
 
 // allCheckKinds enumerates every kind above, for the completeness tests that
@@ -267,8 +270,8 @@ var allCheckKinds = []checkKind{
 	kindAudit, kindMCP, kindMCPNested,
 	kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion,
 	kind1Password, kind1PasswordLink,
-	kindLauncherBroken, kindPointerMissing, kindOwnerGone, kindNoOwner,
-	kindUnlaunched,
+	kindProfileMissing, kindPointerMissing, kindConfigDeleted, kindConfigNotRecorded,
+	kindNoKnownTool,
 }
 
 // warning reports whether a finding of this kind is advisory (does not fail
@@ -285,7 +288,7 @@ var allCheckKinds = []checkKind{
 func (k checkKind) warning() bool {
 	switch k {
 	case kindOrphan, kindDuplicates, kindOriginGone, kindShadowed, kindService, kindBackup, kindMount, kindMountStale, kindWrapEnv, kindAudit, kindInstall, kindJitPathUpgrade, kindCompletion, kindLegacyEnvelope, kindMCPNested,
-		kindOwnerGone, kindNoOwner, kindUnlaunched:
+		kindConfigDeleted, kindConfigNotRecorded, kindNoKnownTool:
 		return true
 	default:
 		return false
@@ -330,7 +333,7 @@ type checkFinding struct {
 	// The ownership kinds' structured half (doctorownership.go). File is the
 	// file that names the profile or secret: a broken launcher's config, a
 	// missing pointer's pointer file. Config is the launching config an
-	// owner finding's fix adopts to, Configs every config launching it, and
+	// owner finding's fix attaches, Configs every config launching it, and
 	// Owners the profile's .source owner list, verbatim. Launchers are the
 	// launchers behind the finding. Secrets and SecretsMissing count an
 	// unlaunched profile's distinct vault paths, and Origin is the file it
@@ -349,7 +352,7 @@ type checkFinding struct {
 // step: plain text closing the group, with no → and nothing to run. A cyan
 // arrow promises a command, and an origin_gone finding has none to offer.
 func (k checkKind) actionIsNote() bool {
-	return k == kindOriginGone || k == kindLauncherBroken
+	return k == kindOriginGone || k == kindProfileMissing
 }
 
 // checkedRef is one variable→path reference that resolved cleanly, retained
@@ -578,7 +581,7 @@ func runProfileCheck(cwd string, v *vault.Vault, opts checkOptions) (checkOutcom
 		}
 		sort.Strings(vars)
 
-		// A profile reported under [no known launcher] carries its own
+		// A profile reported under [no known tool] carries its own
 		// missing count and origin there (see checkOptions.Unlaunched).
 		unlaunched := e.scope == string(profile.ScopeGlobal) && opts.Unlaunched[e.name]
 
