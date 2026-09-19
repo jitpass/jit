@@ -44,7 +44,123 @@ var mountCmd = &cobra.Command{
 var (
 	mountRelocateYes bool
 	mountRegisterYes bool
+	mountRecordYes   bool
 )
+
+// `jit mount record` is the backfill. Every mount migrated before project
+// records existed is registered and working and has no record, so jit can
+// still serve it and still cannot recognise it if the folder moves — the
+// repairs above need a record to match against, and nothing writes one for a
+// mount that is already healthy.
+//
+// Deliberately a command rather than something doctor or the service does on
+// its own. It writes files into the user's project directories, which are
+// git repositories: that is a thing to be asked for once, not a side effect
+// of running a health check.
+var mountRecordCmd = &cobra.Command{
+	Use:   "record",
+	Short: "Write the project record for mounts already registered",
+	Long: "Writes each registered mount into its own project's record, so jit can\n" +
+		"recognise that project if the folder is later renamed, moved or copied.\n\n" +
+		"`jit migrate` writes this record for anything it mounts, so this is only\n" +
+		"needed once, for mounts migrated before records existed. Mounts that\n" +
+		"already have one are left alone, and a mount served from the global\n" +
+		"profile store is skipped: \"the project moved\" is not a thing that\n" +
+		"happens to your home directory.\n\n" +
+		"It writes only inside the projects that already own these mounts, and\n" +
+		"changes no registry entry, no manifest and no secret. No Touch ID.",
+	Example:      "  jit mount record",
+	Args:         requireArgs(0, 0, ""),
+	SilenceUsage: true,
+	RunE:         runMountRecord,
+}
+
+func runMountRecord(cmd *cobra.Command, _ []string) error {
+	root, err := vaultRootDir()
+	if err != nil {
+		return fmt.Errorf("jit mount record: %w", err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("jit mount record: %w", err)
+	}
+	entries, err := mount.LoadRegistry(mount.RegistryPath(root))
+	if err != nil {
+		return fmt.Errorf("jit mount record: %w", err)
+	}
+	// Names only, so this never prompts — the same contract completion and
+	// listings rely on.
+	v, err := openVaultReadOnly()
+	if err != nil {
+		return fmt.Errorf("jit mount record: %w", err)
+	}
+
+	var todo []mount.Entry
+	var skipped []string
+	for _, e := range entries {
+		if _, serr := os.Stat(e.ProfilePath); serr != nil {
+			skipped = append(skipped, fmt.Sprintf("%s: its profile is gone", shortPath(e.MountPath)))
+			continue
+		}
+		recordPath := projectrecord.Path(e.ProfilePath)
+		project := projectrecord.ProjectRoot(recordPath)
+		if canonicalPath(project) == canonicalPath(home) {
+			skipped = append(skipped, fmt.Sprintf("%s: served from the global store", shortPath(e.MountPath)))
+			continue
+		}
+		if recorded(recordPath, project, e.MountPath) {
+			continue
+		}
+		todo = append(todo, e)
+	}
+
+	out := cmd.OutOrStdout()
+	if len(todo) == 0 {
+		fmt.Fprintln(out, "Every mount that can have a project record already has one.")
+		for _, s := range skipped {
+			fmt.Fprintf(out, "  %s %s\n", glyphBullet, s)
+		}
+		return nil
+	}
+
+	fmt.Fprintf(out, "%s write a project record for %s:\n", glyphAction, countWord(len(todo), "mount", "mounts"))
+	for _, e := range todo {
+		fmt.Fprintf(out, "  %s %s\n", glyphBullet, shortPath(projectrecord.Path(e.ProfilePath)))
+	}
+	if !mountRecordYes && !confirmPrompt(cmd, "These are files inside your projects, committable like the manifests beside them. Continue? [y/N] ") {
+		fmt.Fprintln(out, "Left alone.")
+		return nil
+	}
+
+	written := 0
+	for _, e := range todo {
+		if err := projectrecord.Add(e.ProfilePath, e.MountPath, manifestGroupID(v, e.ProfilePath)); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "%s %s: %v\n", glyphWarn, shortPath(e.MountPath), err)
+			continue
+		}
+		written++
+	}
+	_, _ = cOK.Fprint(out, glyphOK+" ")
+	fmt.Fprintf(out, "recorded %s\n", countWord(written, "mount", "mounts"))
+	for _, s := range skipped {
+		fmt.Fprintf(out, "  %s %s\n", glyphBullet, s)
+	}
+	return nil
+}
+
+// recorded reports whether this mount is already in its project's record.
+func recorded(recordPath, project, mountPath string) bool {
+	r, ok, err := projectrecord.Read(recordPath)
+	if err != nil || !ok {
+		return false
+	}
+	for _, rel := range r.Mounts {
+		if abs, rerr := projectrecord.Resolve(project, rel); rerr == nil && canonicalPath(abs) == canonicalPath(mountPath) {
+			return true
+		}
+	}
+	return false
+}
 
 var mountRelocateCmd = &cobra.Command{
 	Use:   "relocate <project dir>",
@@ -273,6 +389,7 @@ func deadEntryFor(entries []mount.Entry, want mount.Entry) string {
 func init() {
 	mountRelocateCmd.Flags().BoolVarP(&mountRelocateYes, "yes", "y", false, "skip the confirmation prompt")
 	mountRegisterCmd.Flags().BoolVarP(&mountRegisterYes, "yes", "y", false, "skip the confirmation prompt")
-	mountCmd.AddCommand(mountRelocateCmd, mountRegisterCmd)
+	mountRecordCmd.Flags().BoolVarP(&mountRecordYes, "yes", "y", false, "skip the confirmation prompt")
+	mountCmd.AddCommand(mountRelocateCmd, mountRegisterCmd, mountRecordCmd)
 	rootCmd.AddCommand(mountCmd)
 }

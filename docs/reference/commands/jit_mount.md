@@ -21,6 +21,7 @@ or written, so neither needs Touch ID.
 ### SEE ALSO
 
 * [jit](jit.md)	 - Local-first developer secret runtime
+* [jit mount record](jit_mount_record.md)	 - Write the project record for mounts already registered
 * [jit mount register](jit_mount_register.md)	 - Serve a project's mounts on this Mac
 * [jit mount relocate](jit_mount_relocate.md)	 - Re-point a mount registration at the project's new location
 
