@@ -236,6 +236,91 @@ func TestListAllSkipsGlobalDuplicationWhenRootIsHome(t *testing.T) {
 	if len(infos) != 1 {
 		t.Fatalf("ListAll = %+v, want exactly 1 entry (no duplicate global pass)", infos)
 	}
+	// From ~ there is no project store: ~/.jit/profiles IS the global one, and
+	// labelling it "project" is what made doctor print "(project)" on global
+	// profiles and `jit status` count all of them as wired here.
+	if infos[0].Scope != ScopeGlobal {
+		t.Errorf("a profile in ~/.jit/profiles listed from ~ has scope %q, want %q", infos[0].Scope, ScopeGlobal)
+	}
+}
+
+// TestHomeRootIsGlobalHoweverItIsSpelled: a cwd of ~ reached through a symlink
+// or with a trailing slash is still ~. A string compare treated it as a
+// project, listing the global store twice (once under each label).
+func TestHomeRootIsGlobalHoweverItIsSpelled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeProfile(t, home, "shell", "A: b\n")
+
+	link := filepath.Join(t.TempDir(), "home-link")
+	if err := os.Symlink(home, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	for _, root := range []string{home + "/", link} {
+		infos, err := ListAll(root)
+		if err != nil {
+			t.Fatalf("ListAll(%s): %v", root, err)
+		}
+		if len(infos) != 1 || infos[0].Scope != ScopeGlobal {
+			t.Errorf("ListAll(%s) = %+v, want the one profile, once, as global", root, infos)
+			continue
+		}
+		want, _ := Path(home, "shell")
+		if infos[0].Path != want {
+			t.Errorf("ListAll(%s) path = %q, want the home-rooted %q", root, infos[0].Path, want)
+		}
+
+		_, scope, path, err := LoadWithScope(root, "shell")
+		if err != nil {
+			t.Fatalf("LoadWithScope(%s): %v", root, err)
+		}
+		if scope != ScopeGlobal || path != want {
+			t.Errorf("LoadWithScope(%s) = %q %q, want global %q", root, scope, path, want)
+		}
+	}
+}
+
+// TestLoadWithScopeFromHomeIsGlobal: the single-profile half of the same fix
+// (`jit doctor --profile x` run from ~).
+func TestLoadWithScopeFromHomeIsGlobal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeProfile(t, home, "shell", "A: b\n")
+
+	_, scope, _, err := LoadWithScope(home, "shell")
+	if err != nil {
+		t.Fatalf("LoadWithScope: %v", err)
+	}
+	if scope != ScopeGlobal {
+		t.Errorf("scope = %q, want %q", scope, ScopeGlobal)
+	}
+	if _, _, _, err := LoadWithScope(home, "absent"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a name in neither store from ~ must still be ErrNotFound, got %v", err)
+	}
+}
+
+// TestProjectBelowHomeStaysProject: the fix is for ~ itself only. A real
+// project directory under ~ keeps its own store as project scope, and the
+// global store beside it.
+func TestProjectBelowHomeStaysProject(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeProfile(t, home, "shell", "A: b\n")
+	project := filepath.Join(home, "src", "app")
+	writeProfile(t, project, "app", "A: b\n")
+
+	infos, err := ListAll(project)
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	if len(infos) != 2 || infos[0].Name != "app" || infos[0].Scope != ScopeProject ||
+		infos[1].Name != "shell" || infos[1].Scope != ScopeGlobal {
+		t.Errorf("ListAll = %+v, want project app then global shell", infos)
+	}
+	_, scope, _, err := LoadWithScope(project, "app")
+	if err != nil || scope != ScopeProject {
+		t.Errorf("LoadWithScope(project, app) = %q, %v; want project", scope, err)
+	}
 }
 
 func TestListNamesNoProfilesDir(t *testing.T) {
