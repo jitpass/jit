@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jitpass/jit/internal/agent"
+	"github.com/jitpass/jit/internal/launchers"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/profile"
@@ -93,12 +94,21 @@ type projectRemovalPlan struct {
 	// with it, unlike genuinely machine-level global profiles. Also listed
 	// in profileInfos for display; kept separately because their manifest
 	// (+ sidecar) files need explicit deletion — they don't live under the
-	// .jit directory RemoveAll covers.
+	// .jit directory RemoveAll covers. Only a profile nothing outside the
+	// project still needs is here (see globalProfileRemoval); one that is
+	// is in disowned instead.
 	ownedGlobal []profile.Info
+	// disowned are global-store profiles this project owns TOGETHER with
+	// something outside it: another live owner on the .source list, or a
+	// launcher outside the tree. The removal takes this project's configs off
+	// the owner list and keeps the profile and its secrets.
+	disowned []disownedProfile
 	// mcpRestores: config file → (profile name → manifest path) for owned
 	// profiles whose server entry is still wrapped as `jit run --profile
 	// ... --` — those get their plaintext env block back (current vault
-	// values) before the profile and its secrets are deleted.
+	// values) before the profile and its secrets are deleted. A disowned
+	// profile's entries in this project are restored too: the project is
+	// leaving jit whether or not the profile outlives it.
 	mcpRestores map[string]map[string]string
 	deletePaths []string // vault secret paths to delete
 	keptShared  []string // vault paths kept because another profile references them
@@ -311,7 +321,7 @@ func removeOneProject(cmd *cobra.Command, root, home, projectRoot string) error 
 	}
 	if len(plan.mounts) == 0 && len(plan.inPlace) == 0 && len(plan.companions) == 0 &&
 		len(plan.profileInfos) == 0 && len(plan.ownedGlobal) == 0 && len(plan.backups) == 0 &&
-		len(plan.deletePaths) == 0 && len(plan.jitDirs) == 0 {
+		len(plan.deletePaths) == 0 && len(plan.jitDirs) == 0 && len(plan.mcpRestores) == 0 {
 		fmt.Fprint(out, hlCmds(fmt.Sprintf("No jit artifacts found in %s, nothing to remove. (Machine-level migrations are reversed with `jit migrate undo`.)\n", displayPath(home, projectRoot))))
 		return nil
 	}
@@ -478,6 +488,13 @@ func removeOneProject(cmd *cobra.Command, root, home, projectRoot string) error 
 	for _, info := range plan.ownedGlobal {
 		if err := migrate.RemoveOwnedProfile(info.Path); err != nil {
 			return fmt.Errorf("jit migrate remove: removing profile %s: %w", info.Path, err)
+		}
+	}
+	// A profile something outside this project still needs stays, with this
+	// project's configs taken off its owner list.
+	for _, d := range plan.disowned {
+		if err := migrate.WriteProfileOwners(d.path, d.owners); err != nil {
+			return fmt.Errorf("jit migrate remove: %w", err)
 		}
 	}
 
@@ -876,13 +893,22 @@ func buildProjectRemovalPlan(root, home, cwd string, rv *vault.Vault) (projectRe
 		return plan, err
 	}
 
+	// One strict read of what uses what, from home: which profiles and
+	// pointer files name each secret (the shared guard below) and what
+	// launches each profile (which owned global profiles may go).
+	usage, err := collectVaultUsers(root, cwd)
+	if err != nil {
+		return plan, fmt.Errorf("checking what else uses these secrets: %w", err)
+	}
+
 	// The project's own profiles: everything in the project-local store,
 	// plus any global-store profile whose .source sidecar names an MCP
 	// config file inside this tree — the one kind of global profile that
 	// belongs to a single project (it only lives in the global store because
 	// an MCP host's subprocess can't do a project-relative lookup). Every
 	// other global profile is a machine-level migration, out of a project
-	// removal's scope by definition.
+	// removal's scope by definition. An owned one that something outside the
+	// tree still needs is disowned, not deleted (globalProfileRemoval).
 	infos, err := profile.ListAll(cwd)
 	if err != nil {
 		return plan, err
@@ -909,26 +935,31 @@ func buildProjectRemovalPlan(root, home, cwd string, rv *vault.Vault) (projectRe
 		}
 	}
 	deleteSet := map[string]bool{}
-	ownedPaths := map[string]bool{}
 	plan.mcpRestores = map[string]map[string]string{}
 	wrappedByConfig := map[string]map[string]bool{}
 	for _, info := range infos {
 		if info.Scope != profile.ScopeProject {
-			owner := migrate.ProfileOwnerConfig(info.Path)
-			if owner == "" || !pathWithinDir(cwd, owner) {
+			decision := globalProfileRemoval(cwd, info.Path, usage.launchers)
+			if len(decision.inside) == 0 {
+				continue
+			}
+			for _, inside := range decision.inside {
+				owner := migrate.OwnerFile(inside)
+				if _, checked := wrappedByConfig[owner]; !checked {
+					wrappedByConfig[owner] = migrate.WrappedMCPProfiles(owner)
+				}
+				if wrappedByConfig[owner][info.Name] {
+					if plan.mcpRestores[owner] == nil {
+						plan.mcpRestores[owner] = map[string]string{}
+					}
+					plan.mcpRestores[owner][info.Name] = info.Path
+				}
+			}
+			if !decision.remove {
+				plan.disowned = append(plan.disowned, disownedProfile{path: info.Path, owners: decision.remaining})
 				continue
 			}
 			plan.ownedGlobal = append(plan.ownedGlobal, info)
-			ownedPaths[info.Path] = true
-			if _, checked := wrappedByConfig[owner]; !checked {
-				wrappedByConfig[owner] = migrate.WrappedMCPProfiles(owner)
-			}
-			if wrappedByConfig[owner][info.Name] {
-				if plan.mcpRestores[owner] == nil {
-					plan.mcpRestores[owner] = map[string]string{}
-				}
-				plan.mcpRestores[owner][info.Name] = info.Path
-			}
 		}
 		plan.profileInfos = append(plan.profileInfos, info)
 		p, err := profile.LoadFile(info.Path)
@@ -994,12 +1025,9 @@ func buildProjectRemovalPlan(root, home, cwd string, rv *vault.Vault) (projectRe
 	// which a cwd-only lookup never saw), or a pointer file outside this
 	// tree such as ~/.clisso.yaml. An unreadable manifest or pointer file
 	// fails the plan rather than making a shared secret look unshared.
-	shared, err := sharedOutside(root, cwd, plan.profileInfos, func(pointer string) bool {
+	shared := usage.sharedOutside(plan.profileInfos, func(pointer string) bool {
 		return pathWithinDir(canonicalPath(cwd), canonicalPath(pointer))
 	}, deleteSet)
-	if err != nil {
-		return plan, err
-	}
 	for vaultPath := range deleteSet {
 		if shared[vaultPath] {
 			plan.keptShared = append(plan.keptShared, vaultPath)
@@ -1044,6 +1072,12 @@ func sharedOutside(root, cwd string, removing []profile.Info, ownPointer func(st
 	if err != nil {
 		return nil, fmt.Errorf("checking what else uses these secrets: %w", err)
 	}
+	return usage.sharedOutside(removing, ownPointer, deleteSet), nil
+}
+
+// sharedOutside is the package function's check over a usage already
+// collected, for a caller that needs the same map for something else too.
+func (usage vaultUsage) sharedOutside(removing []profile.Info, ownPointer func(string) bool, deleteSet map[string]bool) map[string]bool {
 	gone := make(map[string]bool, len(removing))
 	for _, info := range removing {
 		gone[canonicalPath(info.Path)] = true
@@ -1062,7 +1096,97 @@ func sharedOutside(root, cwd string, removing []profile.Info, ownPointer func(st
 			break
 		}
 	}
-	return shared, nil
+	return shared
+}
+
+// disownedProfile is a global profile a project removal keeps, with the owner
+// list it is left with (possibly empty, which removes the sidecar).
+type disownedProfile struct {
+	path   string
+	owners []string
+}
+
+// globalRemovalDecision is what removing a project does to one global-store
+// profile: which of its owners are inside the project (none means the
+// profile isn't the project's at all), which remain, and whether the profile
+// goes.
+type globalRemovalDecision struct {
+	inside    []string
+	remaining []string
+	remove    bool
+}
+
+// globalProfileRemoval decides a global-store profile's fate when the project
+// at root is removed (design/doctor-repair.md, Phase 2: "jit migrate remove
+// <project> drops that project's configs from each owner list and deletes a
+// profile only when the list is then empty").
+//
+// The owner list is the whole list, not its first line: a profile two
+// projects share (same values, one profile) belongs to both, and removing
+// one used to delete it out from under the other whenever the removed one
+// happened to be listed first. The owners inside root come off. The profile
+// is deleted only when that leaves no LIVE owner (a gone owner launches
+// nothing) AND nothing outside root is known to launch it: a copied config
+// elsewhere that launches the profile without owning it still needs it, and
+// deleting it would turn "remove this project" into "break that one". Every
+// other case keeps the profile and rewrites its owner list.
+func globalProfileRemoval(root, profilePath string, m *launchers.Map) globalRemovalDecision {
+	var d globalRemovalDecision
+	for _, owner := range migrate.ProfileOwners(profilePath) {
+		if pathWithinDir(root, migrate.OwnerFile(owner)) {
+			d.inside = append(d.inside, owner)
+		} else {
+			d.remaining = append(d.remaining, owner)
+		}
+	}
+	if len(d.inside) == 0 {
+		return d
+	}
+	for _, owner := range migrate.LiveProfileOwners(profilePath) {
+		if !pathWithinDir(root, migrate.OwnerFile(owner)) {
+			return d
+		}
+	}
+	if launchedOutside(root, profilePath, m) {
+		return d
+	}
+	d.remove = true
+	return d
+}
+
+// launchedOutside reports whether anything outside root is known to launch
+// the profile at profilePath, per the launcher map. Launchers inside root are
+// this removal's own (its configs are restored to plaintext) and don't count.
+//
+// It fails closed: no map, a profile the map doesn't hold, or a launcher
+// source the map could not read all answer "yes". A config that failed to
+// parse can still name this profile, and answering "no" on a guess is how a
+// removal deletes a profile something else launches. Keeping it costs a
+// profile that outlives the project, which doctor reports; deleting it costs
+// a server that no longer starts.
+func launchedOutside(root, profilePath string, m *launchers.Map) bool {
+	if m == nil {
+		return true
+	}
+	if m.Err(launchers.SourceMCP, launchers.SourceAWS, launchers.SourceKube, launchers.SourceWrap,
+		launchers.SourceShellRC, launchers.SourceHelpers, launchers.SourceMounts) != nil {
+		return true
+	}
+	p := m.ProfileAt(profilePath)
+	if p == nil {
+		return true
+	}
+	croot := canonicalPath(root)
+	for _, l := range p.Launchers {
+		where := l.File
+		if l.Kind == launchers.KindMount {
+			where = l.Detail // File is the registry; the mount path is where it lands
+		}
+		if !pathWithinDir(croot, canonicalPath(where)) {
+			return true
+		}
+	}
+	return false
 }
 
 // backupMatchesDisk reports whether rec's backed-up bytes are already what
