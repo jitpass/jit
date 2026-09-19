@@ -878,8 +878,14 @@ func secretAction(kind checkKind, profileName, varName, secretPath string) strin
 		if profileName == "" || varName == "" {
 			return fmt.Sprintf("`jit vault set %s`, or `jit migrate <path>` to convert the file it came from", secretPath)
 		}
-		return fmt.Sprintf(
-			"`jit vault set %s` if the tool needs it, `jit migrate <path>` to bring back the file it came from, or `jit profile drop %s %s` if the manifest claims a variable the tool never uses",
+		// Two clauses, not three: output-style.md is explicit that a reader
+		// given three next steps takes none. `jit migrate <path>` is the one
+		// that goes, for reasons that compound — it is the only placeholder
+		// the reader cannot fill from the lines above, and the app offers it
+		// as its own button regardless, since that builder does not read
+		// this string. What is left is the pair that actually needs saying:
+		// supply the value, or drop the entry asking for it.
+		return fmt.Sprintf("`jit vault set %s`, or `jit profile drop %s %s` if the tool never needed it",
 			secretPath, profileName, varName)
 	case kindCorrupt:
 		return fmt.Sprintf("`jit vault history %s` to see earlier versions, or `jit vault set %s` to replace it", secretPath, secretPath)
