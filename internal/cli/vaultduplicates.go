@@ -377,9 +377,7 @@ func gatherDupGroups(v *vault.Vault, root, cwd string, secrets []string) (map[st
 		return nil, 0, err
 	}
 	refs := usage.usesOf(secrets)
-	if home, herr := os.UserHomeDir(); herr == nil {
-		attachLaunchers(refs, home)
-	}
+	usage.attachLaunchers(refs)
 	groups := map[string]*dupGroup{}
 	compared := 0
 	for _, p := range secrets {

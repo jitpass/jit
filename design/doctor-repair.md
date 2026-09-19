@@ -2,7 +2,9 @@
 
 **Status:** Phase 1 built 2026-09-19 (jit branches `migrate-mcp-atomic`,
 `doctor-origin-scope`, `vault-rm-in-use`; app branch `doctor-safe-actions`).
-Phases 2 and 3 are plans. Covers `jitpass/jit` and the
+Phase 2's foundation (F1, F2 and the owner list) built 2026-09-19 on
+`launcher-map`, with no output change. The rest of Phase 2, and Phase 3, are
+plans. Covers `jitpass/jit` and the
 Doctor window in `jitpass/jit-app`. Every claim below was checked against the
 code and this Mac on 2026-09-19, and corrected where the check disagreed.
 
@@ -130,12 +132,48 @@ manifest or config is an error for deleting callers, never a skip.
 
 Last use from `agent-history.jsonl` is evidence, never a verdict.
 
+**Built (`launcher-map`).** `internal/launchers` (`Discover`), read-only and
+below `internal/cli`. Every row above is read, plus Claude Desktop,
+`~/.claude.json`, VS Code's user and per-profile `mcp.json` and Windsurf's
+`mcp_config.json` as fixed files. A launcher attaches to profiles the way
+`jit run` resolves a name: every global profile of that name, a project one
+only from inside its project. A by-name launcher (MCP, AWS, kube, env-wrap,
+rc) that resolves to nothing is `Broken`. A pointer whose secret the vault
+lacks is a `MissingPointer` when the caller passes `SecretExists`. Every
+unreadable source is a `SourceError`. `Strict` turns any of them into a
+failed discovery; `Map.Err(sources...)` lets a caller be strict about some.
+Phase 1's `collectVaultUsers` is now this map flattened by vault path, strict
+about profiles, mounts and pointers as before. `LaunchedBy` still shows MCP
+launchers only, so no output changed. Not read: `$AWS_CONFIG_FILE` and
+`$KUBECONFIG` (no jit writer honours them), grant and capture wraps (they
+name a mount or a capture command, counted through the registry and
+`~/.clisso.yaml`). Helpers name no profile, so a helper script counts as a
+launcher of every global profile under its prefix (`docker-`, `git-`,
+`terraform-`, `cargo-`).
+
+Checked on this Mac: `aws-dev` and `aws-admin` are broken launchers in
+`~/.aws/config`; `k8s-docker-desktop`, `token` and `zsh_history` have no
+known launcher; `mcp-okta` is launched only as the inner layer of
+`okta-mcp-server`; the four `custom_scripts-*` profiles are seen from `~`.
+Two pointers name missing secrets: `~/.clisso.yaml` →
+`wrap-clisso/acme-client-secret`, and
+`~/Documents/jitpass-playground/.env.bak` → `jitpass-playground-bak/API_KEY`.
+
 **F2. Discover from home.** Discovery walks down from cwd today. From a
 subfolder it misses `~/Security-Ops`. From `/` it walks the whole disk and finds
 each config twice via `/System/Volumes/Data`. Always start at `~`, plus the
 fixed files, plus VS Code's user `mcp.json` (under `Library`, pruned by name
 today) and Windsurf's `mcp_config.json`. A "nothing uses it" verdict is only
 issued when the walk covered `~`.
+
+**Built (`launcher-map`).** `Discover` walks `~` once for project stores,
+pointer files and MCP configs, pruning what migrate prunes plus the Trash. It
+refuses a home of `/`. `Map.Coverage` records whether it read `~` and which
+directories it could not enter; `Coverage.Complete()` is the precondition for
+`unlaunched`. The editor configs are launcher sources only:
+`audit.FixedMCPConfigPaths` is unchanged, so `jit scan` and `jit migrate` see
+the same files as before. Doctor's `mcpFindings` still walks from cwd; moving
+it onto `Map.MCPEntries` changes doctor's output and waits for a preview.
 
 **F3. Scope label.** `profile.ListAll` and `LoadWithScope` label
 `~/.jit/profiles` as `project` when cwd is `~` and skip the global pass. That
@@ -204,6 +242,13 @@ App:
 holds one config path per line. A single line is today's format, so every
 existing sidecar stays valid.
 
+**Built (`launcher-map`):** `migrate.ProfileOwners`, `ReadProfileOwners`,
+`LiveProfileOwners`, `WriteProfileOwners` and `OwnerFile`.
+`ProfileOwnerConfig` returns the first owner. `claimMCPNamespace` treats a
+sidecar that lists this config as its own and keeps the other owners when it
+refreshes. It still bumps on a list without this config, live owners or not:
+the adopt rule below is not built.
+
 - **Same values, several configs:** one profile, every config an owner. No
   copies, so a rotation happens once, and doctor and the app can say "used by
   A, B".
@@ -218,8 +263,8 @@ New findings (each gets a preview script first):
 
 | kind | severity | when | fix |
 |---|---|---|---|
-| `owner_gone` | warning | an owner file is gone, a live config launches the profile | `jit profile adopt <profile> <config>` |
-| `unowned_launch` | warning | a config launches a profile it doesn't own (a copied config) | `jit profile adopt <profile> <config>` |
+| `owner_gone` | warning | an owner file is gone, a live config launches the profile | `jit profile adopt <config> <profile>` |
+| `unowned_launch` | warning | a config launches a profile it doesn't own (a copied config) | `jit profile adopt <config> <profile>` |
 | `unlaunched` | warning, permanently (decided) | global profile, no live owner, no known launcher, walk covered `~` | `jit profile rm <profile>` |
 | `launcher_broken` | problem | a launcher names a profile that doesn't exist (`aws-dev`, `aws-admin` in `~/.aws/config`) | mint it (`clisso get`), or `jit migrate undo <file>` |
 | `pointer_missing` | problem | a `jit://vault/...` pointer names a missing secret (`~/.clisso.yaml` today) | `jit vault set <path>` |
@@ -242,9 +287,10 @@ Migrate:
 
 Commands, explicit by decision so the app can run them and doctor can name
 them. Both need `docs-gen`.
-- `jit profile adopt <profile> <config>`: adds the owner and drops gone ones.
-  It widens what a later `migrate remove` of that config deletes, so it shows
-  that and asks y/N. No Touch ID, no secret read.
+- `jit profile adopt <config> [profile...]`: adds the owner and drops gone
+  ones. With no profiles it adopts every profile that config launches but
+  doesn't own. It widens what a later `migrate remove` of that config
+  deletes, so it shows that and asks y/N. No Touch ID, no secret read.
 - `jit profile rm <profile>`: manifest, sidecar and every secret nothing else
   uses. Refuses a profile with a launcher. y/N plus fresh Touch ID. Reuses
   `migrate.RemoveOwnedProfile`.
@@ -292,6 +338,16 @@ them. Both need `docs-gen`.
   not a split. Separate profiles only when the values differ.
 - No `doctor --fix`, per `design/jit-path-refresh.md`. The app runs the named
   commands.
+- `jit profile adopt <config> [profile...]`, config first. With no profiles
+  it adopts every profile that config launches but doesn't own. (Was
+  `adopt <profile> <config>`.)
+- A profile doctor reports under "no known launcher" is dropped from
+  origin_gone, so each profile appears in one section.
+- A `missing` secret on a profile with no known launcher is reported under
+  "no known launcher", not `[missing]`.
+- Owners are a list in the `.source` sidecar, one config path per line; a
+  single line is today's format. An owner whose file is gone doesn't count.
+  Separate profiles only when the values differ.
 
 ## Still open
 
