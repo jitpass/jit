@@ -559,8 +559,9 @@ func TestDoctorMissingTextUnchangedByLaunchers(t *testing.T) {
 		"    mcp-okta-mcp-server/OKTA_ORG_URL, not in the vault\n" +
 		"  ✗ profile \"mcp-okta-mcp-server\" (global): OKTA_SCOPES →\n" +
 		"    mcp-okta-mcp-server/OKTA_SCOPES, not in the vault\n" +
-		"  → jit vault set <path> for each, or jit migrate <path> to convert the files\n" +
-		"    they came from\n\n"
+		"  → jit vault set <path> for each, jit migrate <path> to bring back the files\n" +
+		"    they came from, or jit profile drop <profile> <VAR> for one the tool never\n" +
+		"    uses\n\n"
 	if !strings.Contains(out, want) {
 		t.Errorf("[missing] changed:\n%s\nwant:\n%s", out, want)
 	}

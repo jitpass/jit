@@ -941,9 +941,15 @@ func TestDoctorJSONCarriesStructuredAction(t *testing.T) {
 	// And as data: each backticked command, classified, so a client never
 	// has to split prose on backticks or guess what a command does.
 	got := result.Problems[0].Fixes
+	// Three, because a missing secret has two opposite answers and doctor
+	// cannot pick between them: supply the value, or drop the entry that
+	// asks for it. The drop names the profile and variable outright — a fix
+	// the user has to finish typing is one they will run in a terminal
+	// instead, which is where this class of confusion started.
 	want := []doctorFix{
 		{Command: "jit vault set a/one", Argv: []string{"vault", "set", "a/one"}, Presence: true},
 		{Command: "jit migrate <path>", Argv: []string{"migrate", "<path>"}, Needs: "<path>"},
+		{Command: "jit profile drop app A_KEY", Argv: []string{"profile", "drop", "app", "A_KEY"}, Destructive: true},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("fixes = %+v, want %+v", got, want)

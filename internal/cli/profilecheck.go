@@ -664,7 +664,7 @@ func runProfileCheck(cwd string, v *vault.Vault, opts checkOptions) (checkOutcom
 					Variable: varName,
 					Path:     secretPath,
 					Detail:   status.detail,
-					Action:   secretAction(status.kind, secretPath),
+					Action:   secretAction(status.kind, e.name, varName, secretPath),
 				})
 			default:
 				out.OKRefs = append(out.OKRefs, checkedRef{
@@ -864,10 +864,23 @@ const originGoneNote = "nothing to do: the vault is where these live now"
 // other is "the value there is unreadable, restore or replace it".
 // kindVaultError names a malformed path or an unreadable store — neither has
 // a single command behind it, so it gets no action line rather than a guess.
-func secretAction(kind checkKind, secretPath string) string {
+//
+// Missing is deliberately TWO-SIDED, and doctor cannot pick the side: a
+// manifest entry with no value is either a variable whose value has not been
+// restored yet, or one the tool never needed and the manifest kept anyway
+// (`jit migrate` merges into an existing manifest, so a restored six-entry
+// manifest survives a two-entry .env). Only the user knows which, so both
+// are offered — and the drop is named last, because a variable the tool DOES
+// need, dropped, breaks it silently with doctor reporting nothing.
+func secretAction(kind checkKind, profileName, varName, secretPath string) string {
 	switch kind {
 	case kindMissing:
-		return fmt.Sprintf("`jit vault set %s`, or `jit migrate <path>` to convert the file it came from", secretPath)
+		if profileName == "" || varName == "" {
+			return fmt.Sprintf("`jit vault set %s`, or `jit migrate <path>` to convert the file it came from", secretPath)
+		}
+		return fmt.Sprintf(
+			"`jit vault set %s` if the tool needs it, `jit migrate <path>` to bring back the file it came from, or `jit profile drop %s %s` if the manifest claims a variable the tool never uses",
+			secretPath, profileName, varName)
 	case kindCorrupt:
 		return fmt.Sprintf("`jit vault history %s` to see earlier versions, or `jit vault set %s` to replace it", secretPath, secretPath)
 	default:

@@ -713,7 +713,7 @@ func findingEvidence(f checkFinding) string {
 func templateAction(kind checkKind) string {
 	switch kind {
 	case kindMissing:
-		return "`jit vault set <path>` for each, or `jit migrate <path>` to convert the files they came from"
+		return "`jit vault set <path>` for each, `jit migrate <path>` to bring back the files they came from, or `jit profile drop <profile> <VAR>` for one the tool never uses"
 	case kindCorrupt:
 		return "`jit vault history <path>` to see earlier versions, or `jit vault set <path>` to replace"
 	default:

@@ -169,6 +169,28 @@ func noteNamespaceMove(w io.Writer, movedFrom, profileName string) {
 	_, _ = cWarn.Fprintf(w, "    note: vault namespace %q already holds a different migration's secrets, this file's secrets live under %q instead\n", movedFrom, profileName)
 }
 
+// noteKeptVariables says what an EXISTING manifest contributed that the file
+// just migrated never mentioned.
+//
+// The merge itself is deliberate and right (claimNamespace: a re-run must
+// never silently drop an earlier variable). Staying quiet about it was not.
+// A manifest restored by a git clone with six entries, beside a .env holding
+// two, produces a profile claiming six — and the four without values surface
+// hours later as `jit doctor` calling the profile broken, with nothing
+// anywhere connecting them to this migration. That is a real evening lost.
+//
+// Said here because this is the only moment the two sets are distinguishable
+// at all: afterwards the manifest is just a list, and no later command can
+// tell which entries this file brought.
+func noteKeptVariables(w io.Writer, kept []string, profileName string) {
+	if len(kept) == 0 {
+		return
+	}
+	fmt.Fprint(w, hlCmds(fmt.Sprintf(
+		"    note: profile %q already listed %s this file doesn't set (%s), kept with no value; `jit profile drop %s <VAR>` removes one the tool never uses\n",
+		profileName, countWord(len(kept), "variable", "variables"), truncateList(kept, 3), profileName)))
+}
+
 // noteRewrap says a server entry was already launching through jit, so this
 // migration REPLACED that wrapper instead of adding one — and, when the entry
 // had been wrapped more than once, that the nesting an older jit produced is
@@ -944,6 +966,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 				fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`, replaced with a safe pointer file (never mounted; nothing reads a backup file live)\n",
 					displayPath(home, envPath), result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath)))
 				noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
+				noteKeptVariables(out, result.KeptVariables, result.ProfileName)
 				noteDuplicateValues(out, v, dupIdx.get(), result.ProfileName, result.Variables)
 				continue
 			}
@@ -955,6 +978,7 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 			}
 			fmt.Fprint(out, hlCmds(fmt.Sprintf("  "+glyphBullet+" %s -> profile %q (%s); backup: `jit vault get %s`\n", displayPath(home, envPath), result.ProfileName, countWord(len(result.Variables), "var", "vars"), result.BackupPath)))
 			noteNamespaceMove(out, result.NamespaceMovedFrom, result.ProfileName)
+			noteKeptVariables(out, result.KeptVariables, result.ProfileName)
 			noteDuplicateValues(out, v, dupIdx.get(), result.ProfileName, result.Variables)
 		}
 		fmt.Fprintln(out)
