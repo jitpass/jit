@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -620,12 +621,152 @@ func TestDoctorOriginGoneForReferencedSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a gone origin is advisory and must not fail the run: %v", err)
 	}
-	if !strings.Contains(out, "[origin gone]") || !strings.Contains(out, "acme was migrated from") {
+	if !strings.Contains(out, "[origin gone]") || !strings.Contains(out, "acme · from") {
 		t.Errorf("expected an [origin gone] warning naming the group, got:\n%s", out)
 	}
-	if strings.Contains(out, "beta was migrated") {
+	if strings.Contains(out, "beta · from") {
 		t.Errorf("a secret whose origin still exists must not be flagged, got:\n%s", out)
 	}
+}
+
+// TestDoctorOriginGoneOffersNoDelete pins the incident fix. Every secret an
+// [origin gone] finding names is used by a profile, by construction, so the
+// `jit vault rm <group>` it used to offer broke a profile every time: the menu
+// bar app turned it into a one-click delete and two MCP servers stopped
+// starting. The finding now names every group and every profile using them,
+// ends on a note rather than a command, and carries no fix.
+func TestDoctorOriginGoneOffersNoDelete(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := withFixtureCwd(t)
+	gone := filepath.Join(t.TempDir(), "ws", ".mcp.json")
+	writeFixtureProfile(t, home, "mcp-okta", "OKTA_API_TOKEN: mcp-okta/OKTA_API_TOKEN\n")
+	writeFixtureProfile(t, home, "mcp-okta-mcp-server", "OKTA_ORG_URL: mcp-okta-mcp-server/OKTA_ORG_URL\n")
+	writeFixtureProfile(t, cwd, "app", "OKTA_ORG_URL: mcp-okta-mcp-server/OKTA_ORG_URL\n")
+	plantOriginSecret(t, home, "mcp-okta/OKTA_API_TOKEN", gone)
+	plantOriginSecret(t, home, "mcp-okta-mcp-server/OKTA_ORG_URL", gone)
+
+	out, err := execDoctor(t)
+	if err != nil {
+		t.Fatalf("jit doctor: %v", err)
+	}
+	if strings.Contains(out, "vault rm") {
+		t.Errorf("an [origin gone] finding must never offer a delete, got:\n%s", out)
+	}
+	for _, want := range []string{
+		"mcp-okta, mcp-okta-mcp-server · from",
+		"  " + glyphBranch + " used by profiles app, mcp-okta, mcp-okta-mcp-server\n",
+		"\n  " + originGoneNote + "\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in the report, got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, glyphAction+" "+originGoneNote) {
+		t.Errorf("the note is not a command and must not wear the action arrow, got:\n%s", out)
+	}
+
+	jsonOut, err := execDoctor(t, "--format", "json")
+	if err != nil {
+		t.Fatalf("jit doctor --format json: %v", err)
+	}
+	var result doctorResult
+	if err := json.Unmarshal([]byte(jsonOut), &result); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, jsonOut)
+	}
+	var f *checkFinding
+	for i := range result.Warnings {
+		if result.Warnings[i].Kind == kindOriginGone {
+			f = &result.Warnings[i]
+		}
+	}
+	if f == nil {
+		t.Fatalf("no origin_gone warning in:\n%s", jsonOut)
+	}
+	if got := strings.Join(f.Groups, ","); got != "mcp-okta,mcp-okta-mcp-server" {
+		t.Errorf("groups = %q, want every group, not groups[0]", got)
+	}
+	if got := strings.Join(f.Profiles, ","); got != "app,mcp-okta,mcp-okta-mcp-server" {
+		t.Errorf("profiles = %q, want every referencing profile, sorted", got)
+	}
+	// The shipped menu bar app parses this sentence: its shape is frozen.
+	wantDetail := "mcp-okta, mcp-okta-mcp-server were migrated from " + shortPath(gone) + ", which no longer exists on disk"
+	if f.Detail != wantDetail {
+		t.Errorf("detail = %q, want the frozen %q", f.Detail, wantDetail)
+	}
+	if f.Action != originGoneNote {
+		t.Errorf("action = %q, want the note %q", f.Action, originGoneNote)
+	}
+	if len(f.Fixes) != 0 {
+		t.Errorf("an origin_gone finding has nothing to run, got fixes %+v", f.Fixes)
+	}
+	if result.SchemaVersion != 2 {
+		t.Errorf("schema_version = %d, want 2", result.SchemaVersion)
+	}
+}
+
+// TestDoctorOriginGoneRendersTheApprovedShape pins the text the preview for
+// design/doctor-repair.md Phase 1 approved, byte for byte at 80 columns: a
+// row that fits keeps "which no longer exists", one whose path must wrap
+// drops it (the header says it), a └ line names the profiles, and the group
+// closes on the note. Run from ~ itself, so the profiles are global.
+func TestDoctorOriginGoneRendersTheApprovedShape(t *testing.T) {
+	home := withFixtureHome(t)
+	chdirForTest(t, home)
+	writeFixtureProfile(t, home, "token", "TOKEN: token/TOKEN\n")
+	plantOriginSecret(t, home, "token/TOKEN", filepath.Join(home, "token.txt"))
+
+	out, err := execDoctor(t)
+	if err != nil {
+		t.Fatalf("jit doctor: %v", err)
+	}
+	want := "[origin gone]\n" +
+		"  " + glyphWarn + " token · from ~/token.txt, which no longer exists\n" +
+		"  " + glyphBranch + " used by profile token\n" +
+		"  nothing to do: the vault is where these live now\n"
+	if !strings.Contains(out, want) {
+		t.Errorf("expected the approved single-row shape:\n%s\ngot:\n%s", want, out)
+	}
+
+	home = withFixtureHome(t)
+	chdirForTest(t, home)
+	gone := filepath.Join(home, "Documents", "ai_security_workspace", ".mcp.json")
+	writeFixtureProfile(t, home, "mcp-okta", "OKTA_API_TOKEN: mcp-okta/OKTA_API_TOKEN\n")
+	writeFixtureProfile(t, home, "mcp-okta-mcp-server",
+		"OKTA_CLIENT_ID: mcp-okta-mcp-server/OKTA_CLIENT_ID\nOKTA_ORG_URL: mcp-okta-mcp-server/OKTA_ORG_URL\n")
+	plantOriginSecret(t, home, "mcp-okta/OKTA_API_TOKEN", gone)
+	plantOriginSecret(t, home, "mcp-okta-mcp-server/OKTA_CLIENT_ID", gone)
+
+	out, _ = execDoctor(t)
+	want = "[origin gone]\n" +
+		"  " + glyphWarn + " mcp-okta, mcp-okta-mcp-server · from\n" +
+		"    ~/Documents/ai_security_workspace/.mcp.json\n" +
+		"  " + glyphBranch + " used by profiles mcp-okta, mcp-okta-mcp-server\n" +
+		"  nothing to do: the vault is where these live now\n"
+	if !strings.Contains(out, want) {
+		t.Errorf("expected the approved wrapped shape:\n%s\ngot:\n%s", want, out)
+	}
+	// Section 5 of the same preview: from ~, a global profile says so.
+	wantMissing := "  " + glyphRisk + " profile \"mcp-okta-mcp-server\" (global): OKTA_ORG_URL " + glyphAction + "\n" +
+		"    mcp-okta-mcp-server/OKTA_ORG_URL, not in the vault\n"
+	if !strings.Contains(out, wantMissing) {
+		t.Errorf("expected the missing row labelled global from ~:\n%s\ngot:\n%s", wantMissing, out)
+	}
+	if strings.Contains(out, "(project)") {
+		t.Errorf("from ~ there is no project store, got:\n%s", out)
+	}
+}
+
+// chdirForTest is withFixtureCwd for a directory the test already has.
+func chdirForTest(t *testing.T, dir string) {
+	t.Helper()
+	original, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("os.Chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(original) })
 }
 
 // TestDoctorOriginGoneSkipsUnreferencedSecrets: origin gone AND referenced by
@@ -786,6 +927,16 @@ func TestDoctorJSONCarriesStructuredAction(t *testing.T) {
 	// The detail is now purely what IS wrong; the fix lives in Action.
 	if strings.Contains(result.Problems[0].Detail, "jit vault set") {
 		t.Errorf("the remediation must not be duplicated into detail, got %q", result.Problems[0].Detail)
+	}
+	// And as data: each backticked command, classified, so a client never
+	// has to split prose on backticks or guess what a command does.
+	got := result.Problems[0].Fixes
+	want := []doctorFix{
+		{Command: "jit vault set a/one", Argv: []string{"vault", "set", "a/one"}, Presence: true},
+		{Command: "jit migrate <path>", Argv: []string{"migrate", "<path>"}, Needs: "<path>"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("fixes = %+v, want %+v", got, want)
 	}
 }
 

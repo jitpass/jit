@@ -464,23 +464,26 @@ func TestStatusNeverTouchesKeyWrapper(t *testing.T) {
 	}
 }
 
-// TestAgentMissingBinaryLine covers the failure the build comparison beside
+// TestAgentMissingBinaryParts covers the failure the build comparison beside
 // it structurally cannot see: a service whose binary was MOVED rather than
 // replaced reports the same build and version as the CLI while being unable
 // to read the keychain at all, because macOS validates a caller's code
 // signature against an on-disk file that no longer exists.
-func TestAgentMissingBinaryLine(t *testing.T) {
-	t.Run("a deleted binary is named, with the fix", func(t *testing.T) {
+func TestAgentMissingBinaryParts(t *testing.T) {
+	t.Run("a deleted binary is named, with the fix as the action", func(t *testing.T) {
 		gone := filepath.Join(t.TempDir(), "jit")
-		line := agentMissingBinaryLine(gone)
-		if line == "" {
+		detail, action := agentMissingBinaryParts(gone)
+		if detail == "" {
 			t.Fatalf("no finding for a service running a binary that does not exist (%s)", gone)
 		}
-		if !strings.Contains(line, gone) {
-			t.Errorf("finding does not name the path: %q", line)
+		if !strings.Contains(detail, gone) {
+			t.Errorf("finding does not name the path: %q", detail)
 		}
-		if !strings.Contains(line, "jit service restart") {
-			t.Errorf("finding does not name the fix: %q", line)
+		if action != "`jit service restart` to run the current binary" {
+			t.Errorf("the fix must be the action, backticked for doctor's fixes: %q", action)
+		}
+		if strings.Contains(detail, "`") {
+			t.Errorf("the command belongs in the action, not the detail: %q", detail)
 		}
 	})
 
@@ -489,16 +492,16 @@ func TestAgentMissingBinaryLine(t *testing.T) {
 		if err := os.WriteFile(here, []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatalf("write: %v", err)
 		}
-		if line := agentMissingBinaryLine(here); line != "" {
-			t.Errorf("reported a healthy service: %q", line)
+		if detail, action := agentMissingBinaryParts(here); detail != "" || action != "" {
+			t.Errorf("reported a healthy service: %q %q", detail, action)
 		}
 	})
 
 	t.Run("an unknown path is silent, not a warning", func(t *testing.T) {
 		// An agent predating the field reports "". Unknown must not render as
 		// missing, or every user on an older service sees a false alarm.
-		if line := agentMissingBinaryLine(""); line != "" {
-			t.Errorf("treated an unknown path as missing: %q", line)
+		if detail, _ := agentMissingBinaryParts(""); detail != "" {
+			t.Errorf("treated an unknown path as missing: %q", detail)
 		}
 	})
 }

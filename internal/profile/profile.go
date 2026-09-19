@@ -121,21 +121,33 @@ func Load(root, name string) (Profile, error) {
 // was actually resolved from (its Scope) and the manifest's real file path
 // — for callers like jit doctor that report where a profile lives, not
 // just its contents.
+//
+// A root that IS the home directory resolves as ScopeGlobal: <home>/.jit/profiles
+// is the global store, whichever way the caller reached it (see rootIsGlobal).
 func LoadWithScope(root, name string) (Profile, Scope, string, error) {
+	home, herr := GlobalRoot()
+	atHome := herr == nil && rootIsGlobal(root, home)
+	scope := ScopeProject
+	if atHome {
+		// The home-rooted path, not root's spelling of it, so a caller that
+		// compares manifest paths (the mount registry records them) sees the
+		// same string it would from any other directory.
+		root, scope = home, ScopeGlobal
+	}
 	path, err := Path(root, name)
 	if err != nil {
 		return nil, "", "", err
 	}
 	p, err := LoadFile(path)
 	if err == nil {
-		return p, ScopeProject, path, nil
+		return p, scope, path, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return nil, "", "", err
 	}
 
 	tried := []string{path}
-	if home, herr := GlobalRoot(); herr == nil && home != root {
+	if herr == nil && !atHome {
 		if globalPath, perr := Path(home, name); perr == nil {
 			gp, gerr := LoadFile(globalPath)
 			if gerr == nil {
@@ -300,26 +312,30 @@ func ListNames(root string) ([]string, error) {
 // ListAll returns every profile manifest visible from root: project-local
 // ones under root's ProfilesDir first, then home-rooted global ones
 // (GlobalRoot) — mirroring Load's own project-before-global preference.
-// If root and GlobalRoot() are the same directory (root already is the
-// home directory), the global pass is skipped rather than listing every
-// name twice.
+//
+// If root and GlobalRoot() are the same directory (root already is the home
+// directory), there is no project store at all: <home>/.jit/profiles IS the
+// global one, so it is listed once, as ScopeGlobal. It used to be labelled
+// "project" from ~, which made `jit doctor` print "(project)" on global
+// profiles and `jit status` count every one of them as wired here.
 func ListAll(root string) ([]Info, error) {
 	var infos []Info
 
-	projectNames, err := ListNames(root)
-	if err != nil {
-		return nil, err
-	}
-	for _, name := range projectNames {
-		path, err := Path(root, name)
+	home, herr := GlobalRoot()
+	if herr != nil || !rootIsGlobal(root, home) {
+		projectNames, err := ListNames(root)
 		if err != nil {
 			return nil, err
 		}
-		infos = append(infos, Info{Name: name, Scope: ScopeProject, Path: path})
+		for _, name := range projectNames {
+			path, err := Path(root, name)
+			if err != nil {
+				return nil, err
+			}
+			infos = append(infos, Info{Name: name, Scope: ScopeProject, Path: path})
+		}
 	}
-
-	home, err := GlobalRoot()
-	if err != nil || home == root {
+	if herr != nil {
 		return infos, nil
 	}
 	globalNames, err := ListNames(home)
@@ -334,4 +350,21 @@ func ListAll(root string) ([]Info, error) {
 		infos = append(infos, Info{Name: name, Scope: ScopeGlobal, Path: path})
 	}
 	return infos, nil
+}
+
+// rootIsGlobal reports whether root names the same directory as home, the
+// global store's root. A plain string compare is not enough: a cwd reached
+// through a symlink (macOS's /var and /tmp are links into /private) or
+// spelled with a trailing slash is still the home directory, and treating it
+// as a project would list the global store twice, once under each label.
+func rootIsGlobal(root, home string) bool {
+	if root == "" || home == "" {
+		return false
+	}
+	if filepath.Clean(root) == filepath.Clean(home) {
+		return true
+	}
+	r, rerr := filepath.EvalSymlinks(root)
+	h, herr := filepath.EvalSymlinks(home)
+	return rerr == nil && herr == nil && r == h
 }
