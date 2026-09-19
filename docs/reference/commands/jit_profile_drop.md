@@ -15,7 +15,8 @@ nothing pointing at it (`jit vault rm` is the command that means
 that). It refuses to empty a manifest, and it never touches a
 secret, a mount or another profile.
 
-The `.pointers` companion beside a live mount is rewritten to match.
+A `.pointers` companion left beside a live mount by an older jit is
+rewritten to match; none is created.
 
 No value is read, so no Touch ID is needed.
 

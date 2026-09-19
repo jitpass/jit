@@ -268,3 +268,143 @@ func TestProfileDropNamesWhereItLooked(t *testing.T) {
 		t.Errorf("the refusal must say where it looked, got: %v", err)
 	}
 }
+
+// Two variables on one vault path is a rename left half-done, and the
+// leftover alias is exactly what this command is for. The secret cannot be
+// stranded — the surviving variable still names it — so refusing would send
+// the user back to hand-editing YAML.
+func TestProfileDropAllowsAnAliasAnotherVariableStillNames(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := inProject(t)
+	writeFixtureProfile(t, cwd, "app", "OLD_NAME: app/TOKEN\nNEW_NAME: app/TOKEN\nOTHER: app/OTHER\n")
+	plantVaultSecret(t, home, "app/TOKEN")
+
+	if out, err := execProfileDrop(t, "app", "OLD_NAME"); err != nil {
+		t.Fatalf("drop: %v\n%s", err, out)
+	}
+	got := readProfile(t, filepath.Join(cwd, ".jit", "profiles", "app.yaml"))
+	if got["NEW_NAME"] != "app/TOKEN" {
+		t.Errorf("the surviving alias must keep the secret: %v", got)
+	}
+	if _, present := got["OLD_NAME"]; present {
+		t.Errorf("OLD_NAME must be gone: %v", got)
+	}
+	// And dropping the LAST variable naming that path is still refused.
+	if _, err := execProfileDrop(t, "app", "NEW_NAME"); err == nil {
+		t.Error("dropping the only remaining reference must still be refused")
+	}
+}
+
+// A path the vault can never hold anything at strands nothing. Doctor
+// reports these as [bad path] with no action of its own, so refusing here
+// left them removable by no jit command at all.
+func TestProfileDropRemovesAnEntryWithAnUnusableVaultPath(t *testing.T) {
+	withFixtureHome(t)
+	cwd := inProject(t)
+	writeFixtureProfile(t, cwd, "app", "BAD: /absolute/not/a/vault/path\nGOOD: app/GOOD\n")
+
+	if out, err := execProfileDrop(t, "app", "BAD"); err != nil {
+		t.Fatalf("drop: %v\n%s", err, out)
+	}
+	got := readProfile(t, filepath.Join(cwd, ".jit", "profiles", "app.yaml"))
+	if _, present := got["BAD"]; present || got["GOOD"] != "app/GOOD" {
+		t.Errorf("manifest = %v, want only GOOD", got)
+	}
+}
+
+// A name that means two different files is refused, not guessed at: doctor
+// names a mount-scope profile by its manifest's basename, so acting on a
+// finding for another project's tree could otherwise edit the local
+// manifest of the same name.
+func TestProfileDropRefusesAnAmbiguousName(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := inProject(t)
+	writeFixtureProfile(t, cwd, "api", "A_KEY: api/A_KEY\nB_KEY: api/B_KEY\n")
+
+	elsewhere := t.TempDir()
+	writeFixtureProfile(t, elsewhere, "api", "A_KEY: other/A_KEY\nB_KEY: other/B_KEY\n")
+	root := filepath.Join(home, "Library", "Application Support", "jitpass")
+	if err := mount.AddMount(mount.RegistryPath(root), mount.Entry{
+		MountPath:   filepath.Join(elsewhere, ".env"),
+		ProfilePath: filepath.Join(elsewhere, ".jit", "profiles", "api.yaml"),
+	}); err != nil {
+		t.Fatalf("AddMount: %v", err)
+	}
+
+	_, err := execProfileDrop(t, "api", "A_KEY")
+	if err == nil || !strings.Contains(err.Error(), "more than one manifest") {
+		t.Fatalf("err = %v, want a refusal naming both manifests", err)
+	}
+	if got := readProfile(t, filepath.Join(cwd, ".jit", "profiles", "api.yaml")); len(got) != 2 {
+		t.Errorf("neither manifest may be touched, got %v", got)
+	}
+	// The path is the unambiguous form, and it resolves.
+	if out, derr := execProfileDrop(t, filepath.Join(elsewhere, ".jit", "profiles", "api.yaml"), "A_KEY"); derr != nil {
+		t.Fatalf("a manifest path must resolve: %v\n%s", derr, out)
+	}
+	if got := readProfile(t, filepath.Join(elsewhere, ".jit", "profiles", "api.yaml")); len(got) != 1 {
+		t.Errorf("the named manifest = %v, want one variable", got)
+	}
+}
+
+// Several mounts may share one manifest, and every companion must be
+// rewritten — fixing one while reporting success left the others naming the
+// dropped variable for good.
+func TestProfileDropRewritesEveryCompanionSharingTheManifest(t *testing.T) {
+	home := withFixtureHome(t)
+	cwd := inProject(t)
+	writeFixtureProfile(t, cwd, "app", "A_KEY: app/A_KEY\nB_KEY: app/B_KEY\n")
+	manifest := filepath.Join(cwd, ".jit", "profiles", "app.yaml")
+	root := filepath.Join(home, "Library", "Application Support", "jitpass")
+
+	var companions []string
+	for _, name := range []string{".env", ".env.local"} {
+		mountPath := filepath.Join(cwd, name)
+		if err := migrate.WritePointerFile(mountPath, profile.Profile{
+			"A_KEY": "app/A_KEY", "B_KEY": "app/B_KEY",
+		}, []string{"A_KEY", "B_KEY"}); err != nil {
+			t.Fatalf("WritePointerFile: %v", err)
+		}
+		if err := mount.AddMount(mount.RegistryPath(root), mount.Entry{
+			MountPath: mountPath, ProfilePath: manifest,
+		}); err != nil {
+			t.Fatalf("AddMount: %v", err)
+		}
+		companions = append(companions, migrate.PointerFilePath(mountPath))
+	}
+
+	out, err := execProfileDrop(t, "app", "A_KEY")
+	if err != nil {
+		t.Fatalf("drop: %v\n%s", err, out)
+	}
+	for _, c := range companions {
+		data, rerr := os.ReadFile(c)
+		if rerr != nil {
+			t.Fatalf("reading %s: %v", c, rerr)
+		}
+		if strings.Contains(string(data), "A_KEY") {
+			t.Errorf("%s still lists the dropped variable:\n%s", c, data)
+		}
+	}
+}
+
+// A hand-written manifest using a YAML merge key must not come back
+// unloadable: "<<" is in the key order but never in the parsed profile.
+func TestProfileDropSkipsAYAMLMergeKey(t *testing.T) {
+	withFixtureHome(t)
+	cwd := inProject(t)
+	writeFixtureProfile(t, cwd, "app",
+		"defaults: &defaults\n  A_KEY: app/A_KEY\n"+
+			"<<: *defaults\nB_KEY: app/B_KEY\nC_KEY: app/C_KEY\n")
+
+	manifest := filepath.Join(cwd, ".jit", "profiles", "app.yaml")
+	if _, err := profile.LoadFile(manifest); err != nil {
+		t.Skipf("this jit's parser rejects the fixture outright (%v), so the guard is unreachable", err)
+	}
+	if out, err := execProfileDrop(t, "app", "B_KEY"); err != nil {
+		t.Fatalf("drop: %v\n%s", err, out)
+	}
+	if _, err := profile.LoadFile(manifest); err != nil {
+		t.Errorf("the rewritten manifest must still load: %v", err)
+	}
+}
