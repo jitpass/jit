@@ -620,6 +620,7 @@ func writeLauncherBrokenGroup(out io.Writer, glyph string, c *color.Color, group
 		rows := byKind[k]
 		for _, f := range rows {
 			writeGroupRow(out, glyph, c, formatFinding(f))
+			writeIgnoreChanged(out, f)
 		}
 		if len(rows[0].Launchers) > 0 {
 			for _, note := range brokenLauncherNote(rows[0].Launchers[0], len(rows)) {
@@ -638,6 +639,7 @@ func writeNotLoggedInGroup(out io.Writer, glyph string, c *color.Color, group []
 	arrow := strings.Repeat(" ", findingArrow)
 	for _, f := range group {
 		writeGroupRow(out, glyph, c, formatFinding(f))
+		writeIgnoreChanged(out, f)
 		writeActionLine(out, arrow, kindNotLoggedIn, f.Action)
 	}
 }
@@ -664,6 +666,7 @@ func writeOwnerGroup(out io.Writer, glyph string, c *color.Color, kind checkKind
 		}
 		for _, f := range rows {
 			writeGroupRow(out, glyph, c, formatFinding(f))
+			writeIgnoreChanged(out, f)
 		}
 		writeActionLine(out, arrow, kind, first.Action)
 	}
@@ -677,6 +680,7 @@ func writeUnlaunchedGroup(out io.Writer, glyph string, c *color.Color, group []c
 			fmt.Fprint(out, evidence+glyphBranch+" ")
 			wrapBody(out, findingIndent+2, evidence+"  ", fmt.Sprintf("made from %s, now gone", shortPath(f.Origin)))
 		}
+		writeIgnoreChanged(out, f)
 	}
 	writeGroupNote(out, fmt.Sprintf("a script or alias may still use %s; jit can't see those",
 		pluralWord(len(group), "it", "them")))

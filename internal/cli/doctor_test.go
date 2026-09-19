@@ -132,6 +132,7 @@ func execDoctor(t *testing.T, args ...string) (stdout string, err error) {
 	doctorOrphans = false
 	doctorWrap = false
 	doctorStrict = false
+	doctorShowIgnored = false
 	// The real one spawns codesign against the test binary on every single
 	// invocation — ~30ms each, for an answer ("unsigned") that is a property
 	// of `go test`, not of anything under test.

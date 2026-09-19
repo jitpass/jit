@@ -570,6 +570,10 @@ func installClissoCapture(t *testing.T, home string) {
 	if err := os.Symlink(testJitPath(t), filepath.Join(dir, "clisso")); err != nil {
 		t.Fatal(err)
 	}
+	// The rc PATH line, so [wrap] has no damage to report: the only wrap
+	// rows left are about this test process's own PATH.
+	t.Setenv("SHELL", "/bin/zsh")
+	writeProfileAt(t, filepath.Join(home, ".zshrc"), wrap.PathLine()+"\n")
 }
 
 // notLoggedInFixture is ~/.aws/config naming aws-dev, aws-admin and aws-qa,

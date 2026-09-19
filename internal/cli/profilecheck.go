@@ -354,6 +354,18 @@ type checkFinding struct {
 	Secrets        int                  `json:"secrets,omitempty"`
 	SecretsMissing int                  `json:"secrets_missing,omitempty"`
 	Origin         string               `json:"origin,omitempty"`
+	// The ignore half (doctorignore.go). Ignore is the unit this finding
+	// is ignored by and the argv that does it, on every finding in JSON.
+	// IgnoreChanged marks a shown finding whose ignore no longer matches
+	// what it says. IgnoredSince, Severity and Unignore are set on the
+	// findings in the top-level ignored list only; Severity is what the
+	// finding would count as if it weren't ignored ("problem" or
+	// "warning"), which problems/warnings otherwise say by placement.
+	Ignore        *doctorIgnoreRef   `json:"ignore,omitempty"`
+	IgnoreChanged bool               `json:"ignore_changed,omitempty"`
+	IgnoredSince  string             `json:"ignored_since,omitempty"`
+	Severity      string             `json:"severity,omitempty"`
+	Unignore      *doctorUnignoreRef `json:"unignore,omitempty"`
 }
 
 // actionIsNote reports whether a kind's Action is a note rather than a next
