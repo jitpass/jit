@@ -6,20 +6,13 @@
 package cli
 
 import (
-	"bufio"
-	"bytes"
-	"errors"
 	"fmt"
-	"io/fs"
-	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 
-	"github.com/jitpass/jit/internal/audit"
+	"github.com/jitpass/jit/internal/launchers"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
-	"github.com/jitpass/jit/internal/pointerfile"
 	"github.com/jitpass/jit/internal/profile"
 )
 
@@ -53,9 +46,11 @@ func (u secretUse) scopeLabel() string {
 
 // vaultUsage is collectVaultUsers' answer: every vault path something uses,
 // with each user, plus the registered mounts whose profile manifest is gone.
+// launchers is the map it was built from, kept for attachLaunchers.
 type vaultUsage struct {
 	byPath      map[string][]secretUse
 	staleMounts []mount.Entry
+	launchers   *launchers.Map
 }
 
 // usesOf returns the uses of the given paths only, keyed by path.
@@ -71,127 +66,63 @@ func (u vaultUsage) usesOf(paths []string) map[string][]secretUse {
 
 // collectVaultUsers is the one STRICT answer to "what uses this secret",
 // for every caller that deletes on the answer (`jit vault rm`, `vault
-// orphans --prune`, `vault duplicates`, `jit migrate remove`). It reads:
+// orphans --prune`, `vault duplicates`, `jit migrate remove`). It is the
+// launcher map (internal/launchers) flattened by vault path, so this and
+// every other "what launches it" answer read the same files the same way:
 //
 //   - profiles in cwd's store, the global store (always, even when cwd is
 //     home) and every project store under home. A project store is found by
-//     walking home for .jit directories, skipping the same noise directories
-//     jit scan does, plus the Trash: a trashed project launches nothing.
-//     The walk used to be missing, and every check ran from cwd alone, so a
-//     project's secrets looked unused from anywhere else. That is how "Delete
-//     All" in the app was one click from removing a project's secrets.
+//     walking home for .jit directories. The walk used to be missing, and
+//     every check ran from cwd alone, so a project's secrets looked unused
+//     from anywhere else. That is how "Delete All" in the app was one click
+//     from removing a project's secrets.
 //   - the mount registry. A registered mount whose manifest is gone names
 //     nothing and comes back as a stale mount instead (GAPS.md #67).
 //   - pointer files: jit's own in-place pointer files (header-marked), found
-//     through the undo index (every one was backed up before it was written)
-//     and the home walk (.env-family names), plus ~/.clisso.yaml. Their
-//     `.pointers` companions are not users: jit never reads them, and the
-//     mount they sit beside is already counted through its profile.
+//     through the undo index and the home walk, plus ~/.clisso.yaml.
 //
 // STRICT means an unreadable or unparseable manifest, registry, undo index
 // or pointer file is an ERROR, never a skip: a skipped file would make its
 // secrets look unused, which is exactly the verdict a deleting caller must
-// never reach by accident. A directory the walk can't enter is skipped, as
-// every home walk in jit does: a macOS privacy denial on one folder must
-// not disable deletion everywhere.
+// never reach by accident. It is strict about exactly those sources. The
+// map's other sources (MCP configs, AWS, kubeconfig, rc files) only ever
+// add launchers to a profile that already counts as a user, so one of them
+// failing cannot make a secret look unused, and a hand-broken mcp.json
+// somewhere under home must not disable deletion everywhere. A directory
+// the walk can't enter is skipped, as every home walk in jit does.
 func collectVaultUsers(root, cwd string) (vaultUsage, error) {
 	usage := vaultUsage{byPath: map[string][]secretUse{}}
 	home, err := profile.GlobalRoot()
 	if err != nil {
 		return usage, fmt.Errorf("finding the global profile store: %w", err)
 	}
-	home = filepath.Clean(home)
-	cwd = filepath.Clean(cwd)
-
-	// Keyed by the manifest's resolved path: cwd from os.Getwd and the
-	// same directory reached by the home walk can differ by a symlink
-	// (/var vs /private/var), and one profile must be one use.
-	seen := map[string]int{} // canonical manifest path -> index into profiles
-	var profiles []secretUse
-	addStore := func(storeRoot string, scope profile.Scope) error {
-		manifests, err := listProfileManifests(storeRoot)
-		if err != nil {
-			return err
-		}
-		for _, m := range manifests {
-			key := canonicalPath(m)
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			u := secretUse{
-				ProfileName: manifestName(m),
-				ProfilePath: m,
-				Scope:       scope,
-			}
-			if scope == profile.ScopeProject {
-				u.Project = storeRoot
-			}
-			seen[key] = len(profiles)
-			profiles = append(profiles, u)
-		}
-		return nil
-	}
-
-	if canonicalPath(cwd) == canonicalPath(home) {
-		if err := addStore(home, profile.ScopeGlobal); err != nil {
-			return usage, err
-		}
-	} else {
-		if err := addStore(cwd, profile.ScopeProject); err != nil {
-			return usage, err
-		}
-		if err := addStore(home, profile.ScopeGlobal); err != nil {
-			return usage, err
-		}
-	}
-
-	projectRoots, envPointers := walkHomeForUsers(home)
-	for _, pr := range projectRoots {
-		if err := addStore(pr, profile.ScopeProject); err != nil {
-			return usage, err
-		}
-	}
-
-	entries, err := mount.LoadRegistry(mount.RegistryPath(root))
-	if err != nil {
-		return usage, fmt.Errorf("reading the mount registry: %w", err)
-	}
-	for _, e := range entries {
-		m := filepath.Clean(e.ProfilePath)
-		if _, statErr := os.Stat(m); errors.Is(statErr, fs.ErrNotExist) {
-			usage.staleMounts = append(usage.staleMounts, e)
-			continue
-		}
-		key := canonicalPath(m)
-		if i, ok := seen[key]; ok {
-			if profiles[i].MountPath == "" {
-				profiles[i].MountPath = e.MountPath
-			}
-			continue
-		}
-		u := secretUse{ProfileName: manifestName(m), ProfilePath: m, MountPath: e.MountPath}
-		u.Scope, u.Project = scopeOfManifest(home, m)
-		seen[key] = len(profiles)
-		profiles = append(profiles, u)
-	}
-
-	for _, u := range profiles {
-		entries, err := profile.LoadFile(u.ProfilePath)
-		if err != nil {
-			return usage, fmt.Errorf("loading profile %s: %w", u.ProfilePath, err)
-		}
-		u.OwnerConfig = migrate.ProfileOwnerConfig(u.ProfilePath)
-		for _, vaultPath := range uniqueValues(entries) {
-			usage.byPath[vaultPath] = append(usage.byPath[vaultPath], u)
-		}
-	}
-
-	pointers, err := pointerFileUses(root, home, envPointers)
+	m, err := launchers.Discover(launchers.Options{Home: home, Root: root, Cwd: cwd})
 	if err != nil {
 		return usage, err
 	}
-	for _, pu := range pointers {
-		usage.byPath[pu.path] = append(usage.byPath[pu.path], secretUse{PointerFile: pu.file})
+	if err := m.Err(launchers.SourceProfiles, launchers.SourceMounts, launchers.SourcePointers); err != nil {
+		return usage, err
+	}
+	usage.launchers = m
+	usage.staleMounts = m.StaleMounts
+
+	for _, p := range m.Profiles {
+		u := secretUse{
+			ProfileName: p.Name,
+			ProfilePath: p.Path,
+			Scope:       p.Scope,
+			Project:     p.Project,
+			OwnerConfig: migrate.ProfileOwnerConfig(p.Path),
+		}
+		if len(p.Mounts) > 0 {
+			u.MountPath = p.Mounts[0]
+		}
+		for _, vaultPath := range uniqueValues(p.Values) {
+			usage.byPath[vaultPath] = append(usage.byPath[vaultPath], u)
+		}
+	}
+	for _, pl := range m.Pointers {
+		usage.byPath[pl.VaultPath] = append(usage.byPath[pl.VaultPath], secretUse{PointerFile: pl.File})
 	}
 
 	for p, list := range usage.byPath {
@@ -238,30 +169,6 @@ func uniqueValues(p profile.Profile) []string {
 	return out
 }
 
-// listProfileManifests returns the manifest files in storeRoot's profile
-// directory. It reads the directory itself rather than rebuilding each path
-// from a name, so a `.yml` manifest is listed under its real name.
-func listProfileManifests(storeRoot string) ([]string, error) {
-	dir := filepath.Join(storeRoot, profile.ProfilesDir)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("reading %s: %w", dir, err)
-	}
-	var out []string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		if ext := filepath.Ext(e.Name()); ext == ".yaml" || ext == ".yml" {
-			out = append(out, filepath.Join(dir, e.Name()))
-		}
-	}
-	return out, nil
-}
-
 // canonicalPath resolves symlinks for comparison, falling back to the
 // cleaned path when it can't (the file vanished mid-read).
 func canonicalPath(p string) string {
@@ -271,197 +178,21 @@ func canonicalPath(p string) string {
 	return filepath.Clean(p)
 }
 
-// manifestName is the profile name a manifest file carries.
-func manifestName(path string) string {
-	return strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-}
-
-// scopeOfManifest labels a manifest reached only through the mount
-// registry: global when it sits in home's store, else a project store,
-// whose root is the directory holding .jit.
-func scopeOfManifest(home, manifest string) (profile.Scope, string) {
-	storeRoot := filepath.Dir(filepath.Dir(filepath.Dir(manifest)))
-	if canonicalPath(storeRoot) == canonicalPath(home) {
-		return profile.ScopeGlobal, ""
-	}
-	return profile.ScopeProject, storeRoot
-}
-
-// walkHomeForUsers walks home once for the two kinds of user a fixed path
-// can't find: project roots (a directory holding .jit) and in-place pointer
-// files with a .env-family name. Noise directories are skipped exactly as
-// jit scan skips them, and so is the Trash. A .jit directory is never
-// entered. Home's own .jit is the global store, already read.
-func walkHomeForUsers(home string) (projectRoots, pointerFiles []string) {
-	_ = filepath.WalkDir(home, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			if path == home {
-				return err
-			}
-			if d != nil && d.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if d.IsDir() {
-			if path == home {
-				return nil
-			}
-			name := d.Name()
-			if name == ".jit" {
-				if parent := filepath.Dir(path); parent != home {
-					projectRoots = append(projectRoots, parent)
-				}
-				return fs.SkipDir
-			}
-			if name == ".Trash" || audit.SkipNoiseDir(home, path, name) {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if !d.Type().IsRegular() || pointerfile.IsCompanion(d.Name()) || !migrate.IsEnvFileName(d.Name()) {
-			return nil
-		}
-		if migrate.IsPointerFile(path) {
-			pointerFiles = append(pointerFiles, path)
-		}
-		return nil
-	})
-	sort.Strings(projectRoots)
-	return projectRoots, pointerFiles
-}
-
-// pointerUse is one jit://vault reference found in a pointer file.
-type pointerUse struct {
-	path string // the vault path
-	file string // the pointer file
-}
-
-// pointerFileUses reads every pointer file jit can enumerate: in-place
-// pointer files from the undo index and the home walk, and ~/.clisso.yaml.
-func pointerFileUses(root, home string, walked []string) ([]pointerUse, error) {
-	var uses []pointerUse
-	done := map[string]bool{}
-	read := func(file string, mustRead bool) error {
-		file = filepath.Clean(file)
-		if done[file] {
-			return nil
-		}
-		done[file] = true
-		paths, err := readPointerFile(file, mustRead)
-		if err != nil {
-			return err
-		}
-		for _, p := range paths {
-			uses = append(uses, pointerUse{path: p, file: file})
-		}
-		return nil
-	}
-
-	recs, err := migrate.LoadBackupRecords(root)
-	if err != nil {
-		return nil, fmt.Errorf("reading the undo index: %w", err)
-	}
-	for _, rec := range recs {
-		if rec.OriginalPath == "" || filepath.Clean(rec.OriginalPath) == migrate.ClissoConfigPath(home) {
-			continue
-		}
-		if err := read(rec.OriginalPath, true); err != nil {
-			return nil, err
-		}
-	}
-	for _, f := range walked {
-		if err := read(f, false); err != nil {
-			return nil, err
-		}
-	}
-
-	clisso, err := migrate.ClissoPointerPaths(home)
-	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", migrate.ClissoConfigPath(home), err)
-	}
-	for _, p := range clisso {
-		uses = append(uses, pointerUse{path: p, file: migrate.ClissoConfigPath(home)})
-	}
-	return uses, nil
-}
-
-// readPointerFile returns the vault paths a jit pointer file names, or
-// nothing for a file that isn't one (or no longer exists). Only a regular
-// file is ever opened: a path in the undo index may be a live mount's FIFO
-// by now, and opening one for read blocks on a writer. mustRead is set for a
-// file jit knows it rewrote (the undo index says so): failing to open that
-// one is an error. A walk candidate that can't be opened can't be told
-// apart from any other unreadable .env file, so it is skipped.
-func readPointerFile(file string, mustRead bool) ([]string, error) {
-	info, err := os.Lstat(file)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
-		}
-		if mustRead {
-			return nil, fmt.Errorf("reading pointer file %s: %w", file, err)
-		}
-		return nil, nil
-	}
-	if !info.Mode().IsRegular() {
-		return nil, nil
-	}
-	data, err := os.ReadFile(file) // #nosec G304 -- a path from jit's own undo index or its home walk, confirmed a regular file above
-	if err != nil {
-		if mustRead {
-			return nil, fmt.Errorf("reading pointer file %s: %w", file, err)
-		}
-		return nil, nil
-	}
-	if !pointerfile.HasHeader(data) {
-		return nil, nil
-	}
-	var paths []string
-	sc := bufio.NewScanner(bytes.NewReader(data))
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		_, value, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		value = strings.Trim(strings.TrimSpace(value), `"'`)
-		if p, ok := pointerfile.VaultPath(value); ok && p != "" {
-			paths = append(paths, p)
-		}
-	}
-	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("reading pointer file %s: %w", file, err)
-	}
-	return paths, nil
-}
-
-// attachLaunchers fills LaunchedBy on the given uses from every MCP config
-// jit can discover from home: which configs start each profile, counting
-// every wrapper layer of a nested entry. Display only, and lenient: a
-// discovery error leaves the lists empty, which reads as "no known
-// launcher", never as "unused". A launcher names a profile by NAME, which
-// `jit run` resolves project-first: a global profile takes every launcher
-// naming it, a project one only launchers inside its own project.
-func attachLaunchers(uses map[string][]secretUse, home string) {
-	if len(uses) == 0 {
+// attachLaunchers fills LaunchedBy on the given uses from the MCP launchers
+// in the map collectVaultUsers built: which configs start each profile,
+// counting every wrapper layer of a nested entry and discovered from home.
+// Display only, and lenient: an MCP config that failed to parse adds
+// nothing, which reads as "no known launcher", never as "unused". The map
+// attributes a launcher the way `jit run` resolves a profile NAME, project
+// first: a global profile takes every launcher naming it, a project one
+// only launchers inside its own project.
+//
+// MCP only, deliberately: the other launcher kinds are in the map, and
+// widening what `vault rm` and `vault duplicates` print is a separate,
+// previewed change.
+func (usage vaultUsage) attachLaunchers(uses map[string][]secretUse) {
+	if len(uses) == 0 || usage.launchers == nil {
 		return
-	}
-	entries, err := migrate.DiscoverWrappedMCPEntries(home, home, true)
-	if err != nil || len(entries) == 0 {
-		return
-	}
-	byName := map[string][]string{}
-	for _, e := range entries {
-		for _, name := range e.Profiles {
-			if !containsString(byName[name], e.ConfigPath) {
-				byName[name] = append(byName[name], e.ConfigPath)
-			}
-		}
 	}
 	for p, list := range uses {
 		for i := range list {
@@ -469,12 +200,13 @@ func attachLaunchers(uses map[string][]secretUse, home string) {
 			if u.ProfilePath == "" {
 				continue
 			}
-			for _, cfg := range byName[u.ProfileName] {
-				if u.Scope == profile.ScopeProject && !pathWithinDir(u.Project, cfg) {
-					continue
-				}
-				if !containsString(u.LaunchedBy, cfg) {
-					u.LaunchedBy = append(u.LaunchedBy, cfg)
+			lp := usage.launchers.ProfileAt(u.ProfilePath)
+			if lp == nil {
+				continue
+			}
+			for _, l := range lp.LaunchersOf(launchers.KindMCP) {
+				if !containsString(u.LaunchedBy, l.File) {
+					u.LaunchedBy = append(u.LaunchedBy, l.File)
 				}
 			}
 			sort.Strings(u.LaunchedBy)
