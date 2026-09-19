@@ -74,6 +74,13 @@ var jitFixClasses = map[string]fixClass{
 	// Puts the original file back, plaintext and all.
 	"migrate undo":   {destructive: true, presence: true},
 	"migrate remove": {destructive: true, presence: true},
+	// Rewrites owner lists only: no secret is read or deleted. It widens
+	// what a later migrate remove of that config takes, which the command
+	// says before its own y/N.
+	"profile adopt": {},
+	// Deletes the profile and every secret nothing else uses; Touch ID
+	// whenever a secret goes.
+	"profile rm": {destructive: true, presence: true},
 	// A live mount: unmount writes the secret values back to disk in
 	// plaintext. A stale one (its profile is gone) is reclassified in
 	// classifyFix: it only clears a registry entry.

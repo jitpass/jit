@@ -460,9 +460,9 @@ func TestDoctorOwnershipJSON(t *testing.T) {
 		len(okta.Launchers) != 1 || okta.Launchers[0].Layer != 1 || okta.Launchers[0].Detail != "okta-mcp-server" {
 		t.Errorf("owner_gone mcp-okta = %+v", okta)
 	}
-	if len(okta.Fixes) != 1 || !okta.Fixes[0].Destructive ||
+	if len(okta.Fixes) != 1 || okta.Fixes[0].Destructive || okta.Fixes[0].Presence ||
 		strings.Join(okta.Fixes[0].Argv, " ") != "profile adopt "+config {
-		t.Errorf("owner_gone fixes = %+v, want adopt, unknown to this build so destructive", okta.Fixes)
+		t.Errorf("owner_gone fixes = %+v, want adopt: owner lists only, no Touch ID", okta.Fixes)
 	}
 
 	if no := byKind[kindNoOwner]; len(no) != 2 || no[0].Profile != "mcp-google-workspace" || no[0].Config != config || len(no[0].Owners) != 0 {
