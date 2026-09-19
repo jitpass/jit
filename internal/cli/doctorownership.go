@@ -100,7 +100,7 @@ func brokenLauncherFindings(m *launchers.Map) []checkFinding {
 			File:      l.File,
 			Launchers: []launchers.Launcher{l},
 			Detail:    fmt.Sprintf("%s names profile %s, which no jit store holds", launcherWhere(l), l.Profile),
-			Action:    strings.Join(brokenLauncherNote(l), "; "),
+			Action:    strings.Join(brokenLauncherNote(l, 1), "; "),
 		})
 	}
 	return out
@@ -116,12 +116,20 @@ func launcherWhere(l launchers.Launcher) string {
 	return shortPath(l.File) + " " + l.Detail
 }
 
-// brokenLauncherNote closes a run of broken launchers of one kind: what
+// brokenLauncherNote closes a run of n broken launchers of one kind: what
 // fails, then what to do. Plain notes, not commands: the fix is an edit to
 // a file jit doesn't own, or re-creating a profile only its source can.
-func brokenLauncherNote(l launchers.Launcher) []string {
+// Several AWS sections get a plural note rather than naming the first one,
+// which read as if only that profile were broken.
+func brokenLauncherNote(l launchers.Launcher, n int) []string {
 	switch l.Kind {
 	case launchers.KindAWS:
+		if n > 1 {
+			return []string{
+				"no such jit profiles, so aws fails for those profiles",
+				"mint them again, or delete those [profile] blocks",
+			}
+		}
 		return []string{
 			fmt.Sprintf("no such jit profile, so %s fails", awsProfileCommand(l.Detail)),
 			"mint it again, or delete that [profile] block",
@@ -534,7 +542,7 @@ func writeLauncherBrokenGroup(out io.Writer, glyph string, c *color.Color, group
 			writeGroupRow(out, glyph, c, formatFinding(f))
 		}
 		if len(rows[0].Launchers) > 0 {
-			for _, note := range brokenLauncherNote(rows[0].Launchers[0]) {
+			for _, note := range brokenLauncherNote(rows[0].Launchers[0], len(rows)) {
 				writeGroupNote(out, note)
 			}
 		}

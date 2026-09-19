@@ -142,8 +142,8 @@ func TestDoctorOwnershipRendersTheApprovedShape(t *testing.T) {
 		"[launcher broken]  2\n" +
 			"  ✗ aws-dev · ~/.aws/config [profile dev] names it\n" +
 			"  ✗ aws-admin · ~/.aws/config [profile admin] names it\n" +
-			"  no such jit profile, so aws --profile dev fails\n" +
-			"  mint it again, or delete that [profile] block\n\n",
+			"  no such jit profiles, so aws fails for those profiles\n" +
+			"  mint them again, or delete those [profile] blocks\n\n",
 		"[pointer missing]\n" +
 			"  ✗ ~/.clisso.yaml · wrap-clisso/acme-client-secret\n" +
 			"  → jit vault set wrap-clisso/acme-client-secret\n\n",
