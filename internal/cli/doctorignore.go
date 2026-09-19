@@ -166,7 +166,7 @@ func ignoreName(f checkFinding) string {
 		if f.Path != "" {
 			return f.Path
 		}
-	case kindOriginGone, kindInstall, kindJitPath, kindJitPathUpgrade, kindMount, kindMountStale:
+	case kindOriginGone, kindInstall, kindJitPath, kindJitPathUpgrade, kindMount, kindMountStale, kindMountMoved, kindMountUnregistered:
 		if f.Path != "" {
 			return shortPath(f.Path)
 		}

@@ -94,6 +94,13 @@ var jitFixClasses = map[string]fixClass{
 	// nothing — the one outcome worse than the finding it clears. The
 	// confirmation naming the variable is the whole point.
 	"profile drop": {destructive: true},
+	// Both edit the machine-local mount registry and nothing else: no secret
+	// is read or written, no file is created or deleted, no manifest is
+	// touched. Not destructive, and no Touch ID — the whole point of keeping
+	// a project record unable to authorize anything is that acting on one
+	// costs a registry line and a human's yes.
+	"mount relocate": {},
+	"mount register": {},
 	// A live mount: unmount writes the secret values back to disk in
 	// plaintext. A stale one (its profile is gone) is reclassified in
 	// classifyFix: it only clears a registry entry.
