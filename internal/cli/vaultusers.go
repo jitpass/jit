@@ -103,6 +103,15 @@ func collectVaultUsers(root, cwd string) (vaultUsage, error) {
 	if err := m.Err(launchers.SourceProfiles, launchers.SourceMounts, launchers.SourcePointers); err != nil {
 		return usage, err
 	}
+	return vaultUsageFromMap(m), nil
+}
+
+// vaultUsageFromMap flattens an already-discovered launcher map by vault
+// path. collectVaultUsers is its strict front door; `jit profile rm`
+// discovers strictly itself (it needs the launchers as well) and flattens
+// the same map, so the two can never disagree about a secret's users.
+func vaultUsageFromMap(m *launchers.Map) vaultUsage {
+	usage := vaultUsage{byPath: map[string][]secretUse{}}
 	usage.launchers = m
 	usage.staleMounts = m.StaleMounts
 
@@ -129,7 +138,7 @@ func collectVaultUsers(root, cwd string) (vaultUsage, error) {
 		sort.SliceStable(list, func(i, j int) bool { return useSortKey(list[i]) < useSortKey(list[j]) })
 		usage.byPath[p] = list
 	}
-	return usage, nil
+	return usage
 }
 
 // collectReferencedPaths is collectVaultUsers flattened to the set of used

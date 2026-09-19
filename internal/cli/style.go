@@ -127,6 +127,11 @@ type hintedError struct {
 func (e *hintedError) Error() string { return e.msg }
 
 func (e *hintedError) hint() string {
+	// No command moves past some refusals, only a hand edit (`jit profile
+	// rm` on a profile a config still launches): the note stands alone.
+	if e.cmd == "" {
+		return "  " + e.note
+	}
 	s := cPath.Sprintf("  %s %s", glyphAction, e.cmd)
 	if e.note != "" {
 		s += "\n    " + e.note
