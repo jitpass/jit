@@ -603,7 +603,7 @@ func TestDiscoverWrappedMCPEntriesNamesEveryLayer(t *testing.T) {
 	}
 }
 
-// A wrapper with nothing after the "--" is legal (migrateMCPServer writes it
+// A wrapper with nothing after the "--" is legal (planMCPServer writes it
 // for a server that had an env block and no command of its own), and must
 // report an empty Command rather than panicking on args[4].
 func TestDiscoverWrappedMCPEntriesEmptyWrappedCommand(t *testing.T) {
