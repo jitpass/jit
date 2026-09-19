@@ -69,16 +69,31 @@ func TestSameFileFindings(t *testing.T) {
 		t.Errorf("gone-origin unreferenced finding must be prunable with its paths, got %+v", fs[0])
 	}
 
-	// Gone origin but still wired somewhere -> vault rm of the exact paths,
-	// and NOT prunable: deleting them would leave that manifest pointing at
-	// holes, which is a per-path decision.
+	// Gone origin but still used by a profile -> NO pick and no command at
+	// all. This used to print `jit vault rm` of the copy's paths, which
+	// deleted secrets a live profile still named: the profile's tool could
+	// no longer start. The finding names who uses the copy instead, and the
+	// live twin is not offered either.
 	groups["mcp-caido-2"] = dupTestGroup("mcp-caido-2", "/u/Desktop/ws/.mcp.json", false, []string{"mcp-caido-2"}, map[string]string{"CAIDO_URL": "v1"})
 	fs = sameFileFindings(groups)
-	if len(fs) != 1 || fs[0].RemoveCommand != "jit vault rm mcp-caido-2/CAIDO_URL" {
-		t.Errorf("gone-origin wired pick = %+v, want vault rm of the group's paths", fs)
+	if len(fs) != 1 || fs[0].RemoveCommand != "" || fs[0].RemoveGroup != "" || fs[0].Prunable {
+		t.Fatalf("a gone-origin copy still in use must get no pick, got %+v", fs)
 	}
-	if fs[0].Prunable {
-		t.Errorf("a still-referenced copy must never be prunable: %+v", fs[0])
+	if fs[0].InUseGroup != "mcp-caido-2" || strings.Join(fs[0].InUseProfiles, ",") != "mcp-caido-2" {
+		t.Errorf("in-use finding must name the copy and its profile, got %+v", fs[0])
+	}
+	var rendered bytes.Buffer
+	printDupFinding(&rendered, fs[0])
+	for _, want := range []string{
+		"mcp-caido-2  from /u/Desktop/ws/.mcp.json (gone)",
+		"no safe one-command fix: profile mcp-caido-2 uses this copy, and deleting it would break that profile",
+	} {
+		if !strings.Contains(strings.Join(strings.Fields(rendered.String()), " "), strings.Join(strings.Fields(want), " ")) {
+			t.Errorf("rendered finding missing %q, got:\n%s", want, rendered.String())
+		}
+	}
+	if strings.Contains(rendered.String(), "vault rm") || strings.Contains(rendered.String(), glyphAction) {
+		t.Errorf("an in-use copy must be offered no command, got:\n%s", rendered.String())
 	}
 
 	// Two DIFFERENT files whose only shared key disagrees are not evidenced

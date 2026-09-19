@@ -105,6 +105,8 @@ func recordAuditEvent(cmd *cobra.Command, cmdErr error, elapsed time.Duration) {
 		DurationMS: elapsed.Milliseconds(),
 		Success:    cmdErr == nil,
 		Auth:       invocationAuth, // set only when the command forced a fresh Touch ID/passcode challenge
+		Deleted:    auditlog.Redact(invocationDeleted),
+		Broke:      auditlog.Redact(invocationBroke),
 	}
 	if u, uerr := user.Current(); uerr == nil {
 		rec.User = u.Username

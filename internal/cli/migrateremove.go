@@ -759,29 +759,25 @@ func buildLooseFileRemovalPlan(root, home, file string, rv *vault.Vault) (looseF
 	}
 	sort.Strings(plan.profilePaths)
 
-	// Never delete a secret another profile or another mount still references
-	// (a pre-namespaced vault can genuinely share paths). "Other" = every
-	// profile NOT marked as this file's, and every mount but this one.
-	shared := map[string]bool{}
+	// Never delete a secret anything else still uses (a pre-namespaced vault
+	// can genuinely share paths). "Else" = every profile NOT marked as this
+	// file's, in any store the strict collector finds, and every pointer
+	// file but this one.
+	var ours []profile.Info
 	for _, info := range infos {
 		if ourProfiles[info.Path] {
-			continue
-		}
-		if refs, err := profile.LoadFile(info.Path); err == nil {
-			for _, vp := range refs {
-				shared[vp] = true
-			}
+			ours = append(ours, info)
 		}
 	}
-	for _, e := range entries {
-		if e.MountPath == file {
-			continue
-		}
-		if refs, err := profile.LoadFile(e.ProfilePath); err == nil {
-			for _, vp := range refs {
-				shared[vp] = true
-			}
-		}
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = home
+	}
+	shared, err := sharedOutside(root, cwd, ours, func(pointer string) bool {
+		return canonicalPath(pointer) == canonicalPath(file)
+	}, deleteSet)
+	if err != nil {
+		return plan, err
 	}
 	for vp := range deleteSet {
 		if shared[vp] {
@@ -989,31 +985,20 @@ func buildProjectRemovalPlan(root, home, cwd string, rv *vault.Vault) (projectRe
 		}
 	}
 
-	// Never delete a vault path some OTHER profile still references — a
+	// Never delete a vault path something OTHER than this project uses — a
 	// pre-#55 vault (flat root/ namespace) genuinely has cross-project
 	// shared paths, and deleting one project's copy would break the other
-	// project silently. "Other profiles" = every global-store profile plus
-	// every registered mount's profile outside this tree.
-	shared := map[string]bool{}
-	for _, e := range entries {
-		if pathWithinDir(cwd, e.MountPath) {
-			continue
-		}
-		if p, err := profile.LoadFile(e.ProfilePath); err == nil {
-			for _, vaultPath := range p {
-				shared[vaultPath] = true
-			}
-		}
-	}
-	for _, info := range infos {
-		if info.Scope == profile.ScopeProject || ownedPaths[info.Path] {
-			continue // owned-by-this-project profiles are being deleted, not "other"
-		}
-		if p, err := profile.LoadFile(info.Path); err == nil {
-			for _, vaultPath := range p {
-				shared[vaultPath] = true
-			}
-		}
+	// project silently. "Other" is every user the strict collector finds
+	// that this removal doesn't take down itself: a profile it isn't
+	// deleting (global, or ANOTHER project's store anywhere under home,
+	// which a cwd-only lookup never saw), or a pointer file outside this
+	// tree such as ~/.clisso.yaml. An unreadable manifest or pointer file
+	// fails the plan rather than making a shared secret look unshared.
+	shared, err := sharedOutside(root, cwd, plan.profileInfos, func(pointer string) bool {
+		return pathWithinDir(canonicalPath(cwd), canonicalPath(pointer))
+	}, deleteSet)
+	if err != nil {
+		return plan, err
 	}
 	for vaultPath := range deleteSet {
 		if shared[vaultPath] {
@@ -1047,6 +1032,37 @@ func buildProjectRemovalPlan(root, home, cwd string, rv *vault.Vault) (projectRe
 		plan.jitDirs = append(plan.jitDirs, filepath.Join(nested, ".jit"))
 	}
 	return plan, nil
+}
+
+// sharedOutside returns the paths in deleteSet that something besides the
+// removal itself uses: any profile not among removing, and any pointer file
+// ownPointer doesn't claim (a pointer file the removal restores). Built on
+// collectVaultUsers, so it is strict and sees every project store under
+// home, not just the stores visible from cwd.
+func sharedOutside(root, cwd string, removing []profile.Info, ownPointer func(string) bool, deleteSet map[string]bool) (map[string]bool, error) {
+	usage, err := collectVaultUsers(root, cwd)
+	if err != nil {
+		return nil, fmt.Errorf("checking what else uses these secrets: %w", err)
+	}
+	gone := make(map[string]bool, len(removing))
+	for _, info := range removing {
+		gone[canonicalPath(info.Path)] = true
+	}
+	shared := map[string]bool{}
+	for vaultPath := range deleteSet {
+		for _, u := range usage.byPath[vaultPath] {
+			if u.PointerFile != "" {
+				if ownPointer(u.PointerFile) {
+					continue
+				}
+			} else if gone[canonicalPath(u.ProfilePath)] {
+				continue
+			}
+			shared[vaultPath] = true
+			break
+		}
+	}
+	return shared, nil
 }
 
 // backupMatchesDisk reports whether rec's backed-up bytes are already what

@@ -787,6 +787,11 @@ type WrappedMCPEntry struct {
 	// entry launches through. One is healthy; more is the nesting an old jit
 	// wrote, which `jit migrate` collapses (unwrapJitWrappers).
 	WrapperLayers int
+	// Profiles names the profile of EVERY wrapper layer, outermost first
+	// (ProfileName is Profiles[0]). A nested entry starts all of them, so
+	// an inner layer's profile is launched by this config just as much as
+	// the outer one is: `jit vault rm` names the config for either.
+	Profiles []string
 }
 
 // DiscoverWrappedMCPEntries returns every server entry under cwd (plus, when
@@ -847,6 +852,12 @@ func DiscoverWrappedMCPEntries(home, cwd string, includeClaudeDesktop bool) ([]W
 				wrapped = args[4]
 			}
 			_, _, layers := unwrapJitWrappers(command, args)
+			profiles := layers
+			if len(profiles) == 0 {
+				// A wrapper-shaped entry whose command is not jit's own
+				// binary name still names its profile.
+				profiles = []string{profileName}
+			}
 			entries = append(entries, WrappedMCPEntry{
 				ConfigPath:    path,
 				ServerName:    name,
@@ -854,6 +865,7 @@ func DiscoverWrappedMCPEntries(home, cwd string, includeClaudeDesktop bool) ([]W
 				ProfileName:   profileName,
 				Command:       wrapped,
 				WrapperLayers: len(layers),
+				Profiles:      profiles,
 			})
 		}
 	}

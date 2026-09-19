@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -105,7 +106,32 @@ func FormatError(err error) string {
 	if err == nil {
 		return ""
 	}
-	return hlCmds(err.Error())
+	s := hlCmds(err.Error())
+	var h *hintedError
+	if errors.As(err, &h) {
+		s += "\n" + h.hint()
+	}
+	return s
+}
+
+// hintedError is an error that the terminal follows with the one command
+// that moves past it: the refusal line, then "→ <command>" and an optional
+// note under it. Error() is the refusal alone, so the audit log records
+// what happened, not the remedy's styling.
+type hintedError struct {
+	msg  string
+	cmd  string
+	note string
+}
+
+func (e *hintedError) Error() string { return e.msg }
+
+func (e *hintedError) hint() string {
+	s := cPath.Sprintf("  %s %s", glyphAction, e.cmd)
+	if e.note != "" {
+		s += "\n    " + e.note
+	}
+	return s
 }
 
 // maxFlowWidth caps how wide flowNames lays out, and maxFlowCols how many
