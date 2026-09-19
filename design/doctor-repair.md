@@ -3,8 +3,9 @@
 **Status:** Phase 1 built 2026-09-19 (jit branches `migrate-mcp-atomic`,
 `doctor-origin-scope`, `vault-rm-in-use`; app branch `doctor-safe-actions`).
 Phase 2's foundation (F1, F2 and the owner list) built 2026-09-19 on
-`launcher-map`, with no output change. The rest of Phase 2, and Phase 3, are
-plans. Covers `jitpass/jit` and the
+`launcher-map`, with no output change. `not_logged_in` and `jit doctor
+ignore` built 2026-09-19 on `doctor-ignore` (see "Ignore"). The rest of
+Phase 2, and Phase 3, are plans. Covers `jitpass/jit` and the
 Doctor window in `jitpass/jit-app`. Every claim below was checked against the
 code and this Mac on 2026-09-19, and corrected where the check disagreed.
 
@@ -135,7 +136,10 @@ Five faults lined up:
 - **Doctor stays read-only.** No `doctor --fix`: `design/jit-path-refresh.md`
   rejected it, because it opens a write path in a report and rebuilds what
   migrate already has. Doctor names the command. The command that owns the
-  consent runs it. The app gets that command as structured data.
+  consent runs it. The app gets that command as structured data. The same
+  holds for ignores: doctor reads `~/.jit/doctor-ignore.json` and never
+  writes it, not even to prune; `jit doctor ignore` and `unignore` are the
+  only writers.
 - **Say "no known tool", never "unused".** Scripts, aliases and a bare
   `jit run` can't be discovered. A project-scope profile never gets a
   deletable verdict.
@@ -302,6 +306,10 @@ New findings (each gets a preview script first):
 | `no_known_tool` (`[no known tool]`) | warning, permanently (decided) | global profile, no live recorded config, no known tool, walk covered `~` | `jit profile rm <profile>` |
 | `profile_missing` (`[profile missing]`) | problem | a config names a profile that doesn't exist (`aws-dev`, `aws-admin` in `~/.aws/config`) | mint it (`clisso get`), or `jit migrate undo <file>` |
 | `pointer_missing` | problem | a `jit://vault/...` pointer names a missing secret (`~/.clisso.yaml` today) | `jit vault set <path>` |
+| `not_logged_in` (`[not logged in]`) | warning | a `profile_missing` whose config is an `~/.aws/config` section naming `aws-<app>`, `<app>` is in `~/.clisso.yaml`, and clisso's capture wrap is installed (manifest entry and shim), so the first `clisso get <app>` makes the profile | `clisso get <app>` (external, presence: clisso asks for the IdP password and MFA) |
+
+Built: `not_logged_in` (`doctor-ignore`). Without the capture wrap no login
+makes the profile, so the row stays `profile_missing`, a problem.
 
 Correlation:
 - A **missing** secret on a profile with no known launcher gets
@@ -328,6 +336,50 @@ them. Both need `docs-gen`.
 - `jit profile rm <profile>`: manifest, sidecar and every secret nothing else
   uses. Refuses a profile with a launcher. y/N plus fresh Touch ID. Reuses
   `migrate.RemoveOwnedProfile`.
+
+## Ignore (built 2026-09-19, `doctor-ignore`)
+
+Some findings describe a state the user has decided to keep: a clisso app
+they never log into, a config they know is gone. Without a way to say so,
+doctor exits 2 on every run and the one new problem hides among the ones
+nobody reads any more.
+
+- **Commands.** `jit doctor ignore <name>... [--kind <kind>]`,
+  `jit doctor unignore <name>... | --all`, `jit doctor --show-ignored`. Both
+  writers take `--format json` and print `{ignored: [{kind, name}],
+  unignored: [...], error}`, exit 1 on any error with nothing written.
+- **The unit is (kind, name).** The name is what a row leads with: the
+  profile for the profile and record kinds (`aws-dev`, `mcp-okta`, all of a
+  profile's `[missing]` rows together), the file for `pointer_missing`,
+  mounts, recorded jit paths, `install` and `origin_gone` (`~/…` or
+  absolute), the vault path for `1password_link`, the check for a wrap row,
+  and the section for a section whose rows have no subject (`backup`,
+  `orphan`, `storage-format`). `--kind` takes the JSON kind with `_` or `-`,
+  or the section. A name in two kinds with no `--kind` is refused, naming
+  both and suggesting the advisory one.
+- **Store.** `~/.jit/doctor-ignore.json`, 0600, written temp-and-rename
+  (`vault.AtomicWriteFile`): `{version: 1, entries: [{kind, name,
+  fingerprint, since}]}`. Never pruned: a finding this run can't see
+  (another directory's project profile, the `--1password` sweep) has not
+  stopped existing. A store that won't parse ignores nothing in the report
+  (a stderr line says so) and is refused, never overwritten, by the writers.
+- **Fingerprint.** A hash of what the unit says: subject, scope, variable,
+  secret path, file, configs, record, launchers, and for an AWS launcher its
+  `~/.aws/config` section body. Detail joins only for kinds whose prose is
+  their only identity, with digit runs folded so a date, count or version
+  doesn't count as a change. Order, counts, origins, "used by" evidence and
+  actions stay out. When it no longer matches, the finding shows and counts
+  again with `└ was ignored; that entry changed since`, and JSON
+  `ignore_changed: true`, until it is ignored again.
+- **Report.** Ignored findings leave their section and every count (exit
+  code, `ok`, `--strict`, "N problems found"). An `[ignored]  N` group closes
+  the findings, pointing at `--show-ignored`, which lists `name · section ·
+  since date` with the finding's own glyph. Ignoring a problem says what
+  still fails: "aws --profile qa still fails; doctor just stops counting it".
+- **JSON** (schema 2, additive). Every finding carries `ignore: {kind, name,
+  argv}`. A top-level `ignored` list (always present) holds each ignored
+  finding as it would otherwise appear, plus `ignored_since`, `severity`
+  (`problem` or `warning`: what it would count as) and `unignore: {argv}`.
 
 ## Phase 3: other things that go stale unnoticed
 
@@ -382,6 +434,10 @@ them. Both need `docs-gen`.
   "no known tool", not `[missing]`.
 - The user-facing vocabulary is tool, config, profile and record (see
   Vocabulary).
+- A clisso app nobody has logged into is `not_logged_in`, a warning, not
+  `profile_missing`, when the capture wrap would make the profile.
+- Findings can be ignored per (kind, name), coming back when what they say
+  changes. Doctor only reads the ignore list.
 - Owners are a list in the `.source` sidecar, one config path per line; a
   single line is today's format. An owner whose file is gone doesn't count.
   Separate profiles only when the values differ.
