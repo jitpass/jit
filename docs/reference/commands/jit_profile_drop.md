@@ -46,5 +46,5 @@ jit profile drop <name> VAR... [flags]
 
 ### SEE ALSO
 
-* [jit profile](jit_profile.md)	 - Record which configs use a profile, and delete one
+* [jit profile](jit_profile.md)	 - Write, edit, and delete profile manifests
 

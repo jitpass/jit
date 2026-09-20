@@ -42,10 +42,15 @@ var profileCmd = &cobra.Command{
 	// and exit 0.
 	RunE:        runCommandGroup,
 	Annotations: commandGroupAnnotations(),
-	Short:       "Record which configs use a profile, and delete one",
+	Short:       "Write, edit, and delete profile manifests",
 	Long: "A profile maps variables to vault secrets; `jit run --profile` resolves\n" +
 		"it. A profile made from an MCP config records that config, which is\n" +
 		"what `jit migrate remove` goes by.\n\n" +
+		"`jit profile create` writes a manifest: every secret in a vault group of\n" +
+		"the same name, or the variable=path pairs you name. It is how a manifest\n" +
+		"lost with its project comes back beside a vault that survived.\n" +
+		"`jit profile drop` removes variables from a manifest, leaving the\n" +
+		"secrets they named in the vault.\n" +
 		"`jit profile attach` records a config on the profiles its tools use but\n" +
 		"that don't record it (the recorded config was deleted, or the config\n" +
 		"was copied).\n" +

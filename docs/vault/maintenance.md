@@ -152,12 +152,18 @@ before pruning, or delete just one with `jit vault rm <path>`.
 
 ### Stale mount registrations
 
-Deleting a project directory without running `jit unmount` first leaves a
-registered mount whose profile no longer exists. `jit vault orphans` reports
-those separately as **stale mount registrations**, and `--prune` clears them
-along with the orphaned secrets. That is a registry edit only: no secret value
-is read or touched. Before this was handled, a deleted project could leave the
+A registered mount whose project directory is no longer at its recorded path
+leaves a registration pointing at nothing. `jit vault orphans` reports those
+separately as **stale mount registrations**, and `--prune` clears them along
+with the orphaned secrets. That is a registry edit only: no secret value is
+read or touched. Before this was handled, a missing project could leave the
 sweep unable to complete at all.
+
+**Check `jit doctor` first.** A renamed or moved project looks identical from
+the registry, and pruning it deregisters a mount that still has a live project
+behind it. doctor looks for that project and, when it finds one,
+[`jit mount relocate <dir>`](../reference/commands/jit_mount_relocate.md)
+re-points the registration instead. Prune only what doctor could not find.
 
 ## `jit vault clean` - delete every secret
 

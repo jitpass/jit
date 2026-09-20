@@ -101,6 +101,29 @@ a named pipe can't support everything a regular file can (`stat` for size,
   (`--copy` sends it to the clipboard instead), or run `jit export`
   *without* `eval` to see a whole profile's resolved values.
 
+## When the project moves
+
+The registry that tells the service which files to serve is **machine-local
+and records absolute paths**, so renaming, moving or copying a project folder
+leaves it pointing at the wrong place. Nothing reconciles it on its own, and
+the symptom is quiet: the named pipe travelled with the folder, nothing writes
+to it, and a read of it blocks forever.
+
+`jit migrate` writes a small **project record** beside each manifest
+(`.jit/profiles/<name>.mount`, relative paths only, no secret - commit it),
+which is what lets jit recognise the project in its new place. `jit doctor`
+does the looking and names the repair:
+
+```sh
+jit mount relocate ~/work/hibob   # renamed or moved: re-point the registration
+jit mount register ~/code/hibob2  # arrived by copy or clone: serve it here
+jit mount record                  # once, for mounts migrated before records existed
+```
+
+All three edit the registry and nothing else - no secret is read or written,
+so none needs Touch ID. Only an entry whose recorded path is **gone** is ever
+re-pointed, so `relocate` can never steal a live mount from another project.
+
 ## Back to a plain file
 
 `jit unmount <path>` reverses a single live mount: decrypts the vault

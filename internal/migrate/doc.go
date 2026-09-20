@@ -27,9 +27,11 @@
 //   - .env files (apply.go/unmount.go), scoped to the chosen root (cwd for
 //     a named directory, $HOME when that is the named path), converted into a
 //     profile + vault secrets + a live-mounted pipe (RFC.md Pillar III
-//     Tier 3) that jit unmount can reverse. A git-safe,
-//     IDE-peekable <file>.pointers companion (pointerfile.go, GAPS.md #26)
-//     is written alongside it — see that file's own doc comment for why,
+//     Tier 3) that jit unmount can reverse. Older versions also wrote a
+//     git-safe, IDE-peekable <file>.pointers companion (pointerfile.go,
+//     GAPS.md #26); that is no longer written — the manifest is the single
+//     answer to "where does this variable live" — but companions already on
+//     disk are still read. See that file's own doc comment for why,
 //     including the just-in-time interception scheme that was considered
 //     and rejected as infeasible on macOS without Endpoint Security.
 //   - Shell configs (shellconfig.go): .zshrc/.bashrc/etc. under $HOME —
@@ -107,7 +109,7 @@
 //     untouched, so this uses a template-based mount
 //     (mount.FormatTemplate/mount.Entry.TemplatePath) rather than
 //     regenerating the whole file from the vault. Backed up first, and
-//     gets the same .pointers companion .env does.
+//     gets the same profile manifest .env does, and no companion.
 //
 // Skipping archived projects is a home-wide run's only safety net over its
 // wider discovery (GAPS.md #26): a live-mounted pipe in a project nobody
