@@ -451,13 +451,28 @@ func agentBuildMismatch(agentBuild string) (service, cli string, ok bool) {
 // wrong, with the revisions named, and the command that fixes it as its own
 // action (so it reaches doctor's JSON as a fix, not as prose inside detail).
 // Both empty when the builds match or either side can't tell.
+//
+// The self-restart clause lives in DETAIL, not in the action, because the
+// menu bar app renders detail as the card's body and reduces action to the
+// button's label (DoctorReport.row / DoctorAdvice's "Restart Service").
+// Prose put in the action is therefore invisible there, which is how this
+// card came to say only "restart it" while `jit status` — same fact, same
+// report — said "or leave it; it self-restarts once locked and idle". The
+// wait is the ordinary path, not a fallback: agentbinary.go's watcher picks
+// up a new binary within ~5s of the session going quiescent. A card that
+// hides that reads as a service that cannot look after itself, and sends
+// the reader to press a button for something already in hand.
+//
+// Worded to match printStatusAction's line below verbatim ("self-restarts
+// once locked and idle") so the two surfaces can't drift into describing
+// one behaviour two ways.
 func agentBuildMismatchParts(agentBuild string) (detail, action string) {
 	service, cli, ok := agentBuildMismatch(agentBuild)
 	if !ok {
 		return "", ""
 	}
-	return fmt.Sprintf("The background service is running a different build than this CLI (service %s, CLI %s).", service, cli),
-		"`jit service restart` to move it to the current binary"
+	return fmt.Sprintf("The background service is running a different build than this CLI (service %s, CLI %s); it self-restarts once locked and idle.", service, cli),
+		"`jit service restart` to move it now instead of waiting"
 }
 
 // agentBuildMismatchLine is the flat one-sentence form, for the diagnostic
