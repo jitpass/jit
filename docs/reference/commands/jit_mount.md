@@ -9,8 +9,8 @@ arrived by copy. jit records where a project's mounted files are using
 absolute paths; renaming, moving or duplicating a folder leaves that
 record pointing at the wrong place, and nothing reconciles it on its own.
 
-Both subcommands edit the registry and nothing else — no secret is read
-or written, so neither needs Touch ID.
+These edit the registry, or the project records they match against, and
+nothing else — no secret is read or written, so none needs Touch ID.
 
 ### Options inherited from parent commands
 

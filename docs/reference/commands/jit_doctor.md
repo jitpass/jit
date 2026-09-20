@@ -28,16 +28,22 @@ because this Mac's master key is gone from the keychain or a master-key
 rotation never finished; a wrapped tool's installation damaged, which
 means that tool now runs unwrapped or not at all; a config (an MCP
 entry, ~/.aws/config, a kubeconfig user, a shell rc line) naming a
-profile that doesn't exist; or a jit://vault pointer naming a secret the
-vault doesn't hold. Everything else it reports is an advisory warning:
+profile that doesn't exist; a jit://vault pointer naming a secret the
+vault doesn't hold; or a pointer file left by an older jit naming a
+vault group that no longer exists, which is the same failure wearing a
+different shape (`jit migrate forget <file>` retires one whose project
+is genuinely gone). Everything else it reports is an advisory warning:
 orphaned secrets no profile references (a count by default; --orphans
 lists each, `jit vault orphans` adds
 origins and can prune), vault groups that look like the same file stored
 twice (name-level evidence only — `jit vault duplicates` compares the
 values, which doctor never decrypts), a referenced secret whose recorded
 origin file is gone from disk, a profile name shadowed across scopes, a
-mount whose profile won't load or whose project was deleted without
-unmounting, a stopped service, a stale or missing vault backup, more than one jit
+mount whose profile won't load, a mount whose project is gone from its
+recorded path — found somewhere else (`jit mount relocate`), or not
+found at all — a mounted file a copied project brought along that this
+Mac does not serve (`jit mount register`), a vault holding secrets no
+profile anywhere references, a stopped service, a stale or missing vault backup, more than one jit
 installed on PATH (a Homebrew copy and a tarball copy each answering to
 the name, with which copy runs decided by PATH order), an MCP profile
 whose recorded config is deleted or was never recorded, a global

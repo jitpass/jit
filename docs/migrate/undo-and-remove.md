@@ -15,6 +15,14 @@ Decrypts the vault values and writes them out as a regular plain file
 again. The vault secrets and profile stay put - you're only choosing to
 have this one file on disk in plaintext again.
 
+## `jit migrate forget <file>` - delete a pointer file nothing uses
+
+A `.pointers` file left by an older jit whose project is gone is inert but not
+silent: `jit doctor` reports it as `[stale pointers]`. `forget` deletes that
+one file and nothing else - no vault secret, no registry entry, no manifest -
+and refuses any file jit did not write, any a registered mount still serves,
+and any whose vault group still exists.
+
 ## `jit migrate undo <path>...` - restore from backup, byte-for-byte
 
 Restores migrated files, of any category, from their encrypted

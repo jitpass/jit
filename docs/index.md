@@ -52,6 +52,7 @@ then **[Install](./getting-started/install.md)** →
   [Cargo](./migrate/cargo.md) · [Streamlit](./migrate/streamlit.md) ·
   [netrc](./migrate/netrc.md) · [SOPS](./migrate/sops.md) · [MCP / AI tools](./migrate/mcp.md)
 - [Undo, unmount, and remove](./migrate/undo-and-remove.md) - every change is reversible
+- [`jit migrate forget`](./reference/commands/jit_migrate_forget.md) - delete a stale pointer file left by an older jit
 
 ## Stop them being recorded - `jit guard`
 
@@ -86,9 +87,10 @@ then **[Install](./getting-started/install.md)** →
 
 - [Which command delivers a secret](./getting-started/delivering-secrets.md) - when to use `jit wrap`, `jit run`, `jit run --profile`, `jit run --with`, `jit grant`, and `read_as_file`
 - [Run a command with secrets](./run/index.md) - layer merging, modes, `--profile`, the compatibility swap and `--live`
-- [Profiles](./run/profiles.md) - the manifest mapping variables to vault paths
+- [Profiles](./run/profiles.md) - the manifest mapping variables to vault paths, and `jit profile create` / `drop` to author one
 - [Shell exports](./run/export.md) - `eval "$(jit export)"`
 - [Live-mounted files](./run/mounts.md) - decoys, grants, the compatibility swap, and reading values safely
+- [Repairing a moved or copied project](./run/mounts.md#when-the-project-moves) - `jit mount relocate`, `register` and `record` when a folder is renamed, moved or cloned
 
 ## Run unattended - `jit grant`
 

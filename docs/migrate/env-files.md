@@ -7,8 +7,8 @@ description: Project .env files become live-mounted files - decoy values by defa
 
 `jit migrate` moves each variable in a `.env` file into the vault and
 replaces the file with a **live mount**: a named pipe the
-[service](../service/index.md) serves fresh content into on every read. Two
-things sit on disk afterwards, neither containing a secret:
+[service](../service/index.md) serves fresh content into on every read. Three
+things sit on disk afterwards, none containing a secret:
 
 - **The mount** at the original path, so every tool that expects `.env`
   still finds one. It serves fake-looking placeholder values by default and
@@ -25,6 +25,11 @@ things sit on disk afterwards, neither containing a secret:
   step. jit no longer writes those; it still understands the ones already in
   your repos, and `jit migrate forget <file>` deletes one that has gone
   stale.
+- **A project record** at `.jit/profiles/<name>.mount`: the mount's path
+  relative to the project root, and nothing else - no vault path, no variable
+  name, no value. It is what lets jit recognise this project if you later
+  rename, move or copy the folder. Commit it with the manifest. See
+  [`jit mount`](../reference/commands/jit_mount.md).
 
 ## Running the project - it just works
 

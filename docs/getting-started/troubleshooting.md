@@ -23,6 +23,10 @@ description: Placeholder values, hanging reads, surprise Touch ID prompts, MCP s
 - **A command hangs reading `.env`.** The service is the mount's writer and
   normally auto-starts; if it crashed the read blocks with nothing serving it.
   `jit status` will say. `jit service restart` (re)starts it.
+  If the project arrived by **copy or clone**, the cause is different: the
+  named pipe came with the folder and the registration did not, so nothing is
+  serving it at all. `jit doctor` says so; `jit mount register <dir>` fixes
+  it. See [When the project moves](../run/mounts.md#when-the-project-moves).
 - **"No secret stored at ..." or a doctor failure.** A profile references a
   vault path that's gone (usually a `jit vault rm` after migration).
   Re-set it with `jit vault set <path>`, or update the profile.

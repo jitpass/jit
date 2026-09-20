@@ -90,6 +90,11 @@ It exits **2** when something this setup depends on is actually broken:
 - a wrapped tool's **shim installation is damaged** - a missing shim, a
   symlink pointing at nothing, a vanished `wrap-<tool>` profile - so that tool
   now runs unwrapped or not at all
+- a **pointer file left by an older jit** names a vault group the vault no
+  longer holds. Nothing reads the file at runtime, but it names the variables
+  a program in that directory needs, so that program cannot get its secrets.
+  [`jit migrate forget <file>`](../reference/commands/jit_migrate_forget.md)
+  retires one whose project is genuinely gone
 
 Everything else it reports is a warning, never a failure:
 
@@ -97,6 +102,20 @@ Everything else it reports is a warning, never a failure:
 - a profile name **shadowed** across scopes (the same name in both project and
   global; the project copy wins and the global one is ignored)
 - a registered **mount** whose profile manifest won't load
+- a registered **mount whose project is not where jit recorded it**. If the
+  project turns up elsewhere - renamed, or moved - doctor says so and
+  [`jit mount relocate <dir>`](../reference/commands/jit_mount_relocate.md)
+  re-points the registration. If it turns up nowhere, the registration is
+  stale and `jit unmount` clears it. jit no longer guesses that a project it
+  cannot find was deleted
+- a **mounted file a copied or cloned project brought with it** that this Mac
+  does not serve. The file comes with the folder and the registration never
+  does, so reading it blocks forever;
+  [`jit mount register <dir>`](../reference/commands/jit_mount_register.md)
+  fixes it
+- a vault holding secrets that **no profile anywhere references** - typically
+  a vault restored without the manifests that name its secrets. Distinct from
+  an orphan, and the one case where pruning is exactly wrong
 - the **audit trail** has stopped recording (writes are swallowed by design,
   so nothing else would ever tell you)
 - a stopped service, or a stale or missing vault backup
