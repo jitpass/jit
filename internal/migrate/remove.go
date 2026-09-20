@@ -106,8 +106,9 @@ func RestorePointerFile(v *vault.Vault, path string) ([]string, error) {
 }
 
 // DiscoverPointerArtifacts walks root's tree for the two pointer-file forms
-// jit migrate leaves behind: ".pointers" companions written alongside a
-// live mount (safe to just delete — the mount itself is handled
+// jit migrate leaves behind: ".pointers" companions an older jit wrote
+// alongside a live mount — no longer produced, still found and removed
+// where they exist (safe to just delete — the mount itself is handled
 // separately), and in-place pointer files (a backup-suffixed .env-family
 // file replaced by ReplaceWithPointerFile — these need RestorePointerFile,
 // since the pointer content replaced the original file itself). Same walk

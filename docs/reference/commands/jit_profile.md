@@ -1,6 +1,6 @@
 ## jit profile
 
-Record which configs use a profile, and delete one
+Write, edit, and delete profile manifests
 
 ### Synopsis
 
@@ -8,6 +8,11 @@ A profile maps variables to vault secrets; `jit run --profile` resolves
 it. A profile made from an MCP config records that config, which is
 what `jit migrate remove` goes by.
 
+`jit profile create` writes a manifest: every secret in a vault group of
+the same name, or the variable=path pairs you name. It is how a manifest
+lost with its project comes back beside a vault that survived.
+`jit profile drop` removes variables from a manifest, leaving the
+secrets they named in the vault.
 `jit profile attach` records a config on the profiles its tools use but
 that don't record it (the recorded config was deleted, or the config
 was copied).

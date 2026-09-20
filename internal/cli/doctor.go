@@ -123,16 +123,22 @@ var doctorCmd = &cobra.Command{
 		"rotation never finished; a wrapped tool's installation damaged, which\n" +
 		"means that tool now runs unwrapped or not at all; a config (an MCP\n" +
 		"entry, ~/.aws/config, a kubeconfig user, a shell rc line) naming a\n" +
-		"profile that doesn't exist; or a jit://vault pointer naming a secret the\n" +
-		"vault doesn't hold. Everything else it reports is an advisory warning:\n" +
+		"profile that doesn't exist; a jit://vault pointer naming a secret the\n" +
+		"vault doesn't hold; or a pointer file left by an older jit naming a\n" +
+		"vault group that no longer exists, which is the same failure wearing a\n" +
+		"different shape (`jit migrate forget <file>` retires one whose project\n" +
+		"is genuinely gone). Everything else it reports is an advisory warning:\n" +
 		"orphaned secrets no profile references (a count by default; --orphans\n" +
 		"lists each, `jit vault orphans` adds\n" +
 		"origins and can prune), vault groups that look like the same file stored\n" +
 		"twice (name-level evidence only — `jit vault duplicates` compares the\n" +
 		"values, which doctor never decrypts), a referenced secret whose recorded\n" +
 		"origin file is gone from disk, a profile name shadowed across scopes, a\n" +
-		"mount whose profile won't load or whose project was deleted without\n" +
-		"unmounting, a stopped service, a stale or missing vault backup, more than one jit\n" +
+		"mount whose profile won't load, a mount whose project is gone from its\n" +
+		"recorded path — found somewhere else (`jit mount relocate`), or not\n" +
+		"found at all — a mounted file a copied project brought along that this\n" +
+		"Mac does not serve (`jit mount register`), a vault holding secrets no\n" +
+		"profile anywhere references, a stopped service, a stale or missing vault backup, more than one jit\n" +
 		"installed on PATH (a Homebrew copy and a tarball copy each answering to\n" +
 		"the name, with which copy runs decided by PATH order), an MCP profile\n" +
 		"whose recorded config is deleted or was never recorded, a global\n" +

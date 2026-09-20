@@ -31,6 +31,7 @@ the vault is gone.
 
 | Path | After migration |
 |---|---|
+| `<project>/.jit/profiles/<name>.mount` | the project record for that manifest's [live mounts](../run/mounts.md) - relative paths only, no secret and no vault path, safe to commit. It is how jit recognises the project after the folder is renamed, moved or copied (see [`jit mount`](./commands/jit_mount.md)). Written by `jit migrate`; `jit mount record` backfills projects migrated before it existed |
 | `<project>/.env` (and layers) | a [live mount](../run/mounts.md), read from the profile manifest in `<project>/.jit/profiles/` |
 | `~/.zshrc` / `~/.bashrc` | export lines replaced with `eval "$(jit export --profile ...)"` |
 | `~/.aws/config` | gains a `credential_process` line per migrated profile - and one per app captured by [`jit wrap clisso`](../wrap/clisso.md) |
