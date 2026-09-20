@@ -241,8 +241,8 @@ func LoadFileOrdered(path string) (Profile, []string, error) {
 
 // manifestHeader is the comment every manifest jit writes carries. It says
 // the one thing someone deciding whether to commit the file needs to know,
-// and it exists because the pointer files jit writes beside these have said
-// it since they shipped while the manifests said nothing — so the .pointers
+// and it exists because the pointer files jit used to write beside these said
+// it from the day they shipped while the manifests said nothing — so the .pointers
 // companions got committed and the profiles they name did not, which is how
 // a restored vault arrives on a new machine with every secret present and
 // no profile left to reference them.

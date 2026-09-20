@@ -35,7 +35,7 @@ jit [flags]
 * [jit lock](jit_lock.md)	 - Lock jit's session immediately, without waiting for the TTL
 * [jit migrate](jit_migrate.md)	 - Guided fix path for findings jit scan reports (name the file(s) to convert)
 * [jit mount](jit_mount.md)	 - Re-point or register a project's live mounts
-* [jit profile](jit_profile.md)	 - Record which configs use a profile, and delete one
+* [jit profile](jit_profile.md)	 - Write, edit, and delete profile manifests
 * [jit run](jit_run.md)	 - Execute a command with a profile's secrets injected into its environment
 * [jit scan](jit_scan.md)	 - Scan for plaintext secrets exposed on this machine (read-only)
 * [jit service](jit_service.md)	 - Manage jit's background service (the daemon that holds your session and serves mounts)

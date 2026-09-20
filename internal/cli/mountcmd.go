@@ -37,8 +37,8 @@ var mountCmd = &cobra.Command{
 		"arrived by copy. jit records where a project's mounted files are using\n" +
 		"absolute paths; renaming, moving or duplicating a folder leaves that\n" +
 		"record pointing at the wrong place, and nothing reconciles it on its own.\n\n" +
-		"Both subcommands edit the registry and nothing else — no secret is read\n" +
-		"or written, so neither needs Touch ID.",
+		"These edit the registry, or the project records they match against, and\n" +
+		"nothing else — no secret is read or written, so none needs Touch ID.",
 }
 
 var (

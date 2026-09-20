@@ -46,7 +46,8 @@ The credential is in the `.env`, and the config holds only a pointer.
 `jit migrate` follows it: the file's variables move into the same
 `mcp-<server>` profile as an env block would, the `--env-file` flag is
 removed from the rewritten args, and the file itself is replaced with a
-[pointer file](./env-files.md) naming the vault paths.
+[pointer file](./env-files.md) naming the vault paths (the file's own
+contents are replaced; this is not the retired `.pointers` companion).
 
 The flag has to go with the file. Left in place it would aim the launcher
 at the pointer file and set every credential to a literal
