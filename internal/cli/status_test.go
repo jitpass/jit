@@ -533,9 +533,20 @@ func TestSecretsSectionEmptyRegistryNeverOffersPrune(t *testing.T) {
 	}
 }
 
-// The ordinary case keeps its wording and its prune offer: orphans beside
-// working profiles really can be surplus.
-func TestSecretsSectionWithProfilesKeepsPrune(t *testing.T) {
+// The ordinary case keeps its wording and still offers the cleanup —
+// orphans beside working profiles really can be surplus — but routes to the
+// LISTING, not straight to the delete.
+//
+// This row counts what is unreferenced FROM HERE. `jit vault orphans` counts
+// what is unreferenced by any profile on the machine, and on a
+// project-scoped setup the two legitimately disagree: measured on a real one,
+// 21 groups/69 secrets here against 16/59 machine-wide, the gap being five
+// groups referenced by profiles one directory away. Naming `--prune` under
+// this count implied it would delete these 69; it deletes the other 59, and
+// nothing on the line let the reader see that. The listing prints its own
+// count and ends with its own `--prune`, so the destructive command sits
+// beside the number it actually acts on.
+func TestSecretsSectionRoutesOrphansToTheListingNotThePrune(t *testing.T) {
 	var buf bytes.Buffer
 	printSecretsSection(&buf, statusSecrets{
 		TotalSecrets: 44, TotalGroups: 21, WiredGroups: 5, WiredProfiles: 9, WiredReferences: 44,
@@ -545,7 +556,10 @@ func TestSecretsSectionWithProfilesKeepsPrune(t *testing.T) {
 	if !strings.Contains(out, "reconciled against every profile and mount") {
 		t.Errorf("the ordinary headline must be unchanged, got:\n%s", out)
 	}
-	if !strings.Contains(out, "--prune") {
-		t.Errorf("orphans beside real profiles still offer the prune, got:\n%s", out)
+	if !strings.Contains(out, "jit vault orphans") {
+		t.Errorf("the cleanup must still be reachable, got:\n%s", out)
+	}
+	if strings.Contains(out, "--prune") {
+		t.Errorf("a count scoped to this directory must not name a delete scoped to the machine, got:\n%s", out)
 	}
 }
