@@ -988,7 +988,22 @@ func printSecretsSection(w io.Writer, s statusSecrets) {
 			printStatusNote(w, "without them resolves nothing, and every group reads as unreferenced.")
 			printStatusAction(w, "`jit vault list --format json` — used_by names what references each")
 		} else {
-			printStatusAction(w, "`jit status --secrets` to inspect · `jit vault orphans --prune` to delete")
+			// Routes to the LISTING, never straight to the delete.
+			//
+			// This row counts what is unreferenced FROM HERE — that is what
+			// "here" means, and it is the right question beside "Wired here"
+			// and "Managed elsewhere". `jit vault orphans` asks a different
+			// one: what is unreferenced by any profile on the machine. On a
+			// project-scoped setup the two legitimately disagree by a lot
+			// (measured: 21 groups/69 secrets here, 16/59 machine-wide — the
+			// gap is five groups referenced by profiles one directory away).
+			//
+			// Naming `--prune` under this count implied it would delete these
+			// 69. It deletes the other 59, and the reader has no way to see
+			// that from this line. `jit vault orphans` prints its own count
+			// and ends with its own `--prune`, so the destructive command
+			// stays one hop away and sits next to the number it acts on.
+			printStatusAction(w, "`jit status --secrets` to inspect · `jit vault orphans` for what is prunable")
 		}
 	}
 
