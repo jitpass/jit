@@ -113,9 +113,10 @@ After setup, JitPass is a ring in your menu bar: **green** unlocked, **red**
 locked, **amber** a program is asking.
 
 Click it to see your vault, your agents and tools, active grants, today's decoy
-reads, and how much of your Mac is protected. Lock, New Grant, Run Scan and
+reads, and how much of your Mac is protected. Lock, New Grant, Scan Now and
 Open Audit are one click away, and every window runs the same commands as the
-`jit` CLI.
+`jit` CLI. Findings is where every scan lands - scheduled or yours - and a
+scheduled scan that finds something new says so, once.
 
 <br clear="right">
 
@@ -167,7 +168,7 @@ README, issue or web page can tell it to `cat .env` and paste the result
 somewhere. With JitPass, there is nothing real in that file to paste.
 
 <p align="center">
-  <img src="docs/assets/readme/agents.png" width="720" alt="The JitPass AI Agents window: 3 of 3 agents protected, each agent's key and caches, decoys and grants, 3 cached copies found in Claude Code transcripts, and a protected MCP config.">
+  <img src="docs/assets/readme/agents.png" width="720" alt="The JitPass AI Agents window: one row per agent - its key, its cached copies, its decoy reads today, its grant - each fact linking to the window it lives in.">
 </p>
 
 - **A cold read gets a decoy.** Placeholders, and the read is logged:
