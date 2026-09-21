@@ -425,3 +425,13 @@ func (c Config) agentCachePatternFindings(path, agent string, data []byte, skipV
 	}
 	return findings
 }
+
+// CachePatternTokens is the sweep's matcher over bytes already in hand, for
+// `jit migrate redact`: the same needles, windows, overlap rule, excludes
+// and placeholder rejection the scan applies, so what redact rewrites is
+// exactly what the scan reported — one Start/End span per token, absolute
+// offsets into data, the line filled in. The caller decides what to do with
+// binary content; this only matches.
+func CachePatternTokens(data []byte) []FileToken {
+	return cachePatternIndex().matches(data)
+}

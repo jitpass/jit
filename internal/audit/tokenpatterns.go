@@ -413,6 +413,15 @@ var knownTokenPatterns = []tokenPattern{
 // past anything randomness produces.
 const placeholderRunLen = 8
 
+// placeholderSeqLen is how many consecutive characters in a row — each one
+// past the last in the alphabet or the digits ("ABCDEFGHIJKL", "0123456789ab")
+// — mark a token as hand-typed filler. A CSPRNG token essentially cannot
+// contain one: for base62 the odds of a 12-run at any position are about
+// 40 x 62^-11. Every keyboard-typed example has one. Found the hard way:
+// a Claude Code transcript that quoted jit's own test vectors
+// ("AKIAABCDEFGHIJKLMNOP") reported them as live credentials (2026-09-21).
+const placeholderSeqLen = 12
+
 // placeholderTokenWords are literal words that only appear in a token a human
 // typed. Matched case-insensitively as substrings of the token itself, so
 // deliberately none of them occur inside any vendor PREFIX above — "test"
@@ -451,8 +460,15 @@ var placeholderTokenWords = []string{
 // tokenPattern.humanReadable for why, and note the run half still applies to
 // them (a "xxxxxxxx" password is filler in any format).
 func isPlaceholderToken(match string, humanReadable bool) bool {
-	run := 1
+	run, seq := 1, 1
 	for i := 1; i < len(match); i++ {
+		if match[i] == match[i-1]+1 && isAlnumByte(match[i]) && isAlnumByte(match[i-1]) {
+			if seq++; seq >= placeholderSeqLen {
+				return true
+			}
+		} else {
+			seq = 1
+		}
 		if match[i] != match[i-1] {
 			run = 1
 			continue
@@ -471,6 +487,10 @@ func isPlaceholderToken(match string, humanReadable bool) bool {
 		}
 	}
 	return false
+}
+
+func isAlnumByte(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 }
 
 // jwtVendor is the one entry in knownTokenPatterns that names a CONTAINER

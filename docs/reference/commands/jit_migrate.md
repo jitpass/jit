@@ -113,6 +113,7 @@ jit migrate <file-or-dir>... [flags]
 * [jit migrate caches](jit_migrate_caches.md)	 - Remove copies of your vaulted secrets that AI agents cached (whole-vault sweep)
 * [jit migrate forget](jit_migrate_forget.md)	 - Delete a pointer file nothing uses any more
 * [jit migrate path](jit_migrate_path.md)	 - Alias for `jit migrate <file-or-dir>...`
+* [jit migrate redact](jit_migrate_redact.md)	 - Replace tokens AI agents cached — found by their format — with a marker
 * [jit migrate remove](jit_migrate_remove.md)	 - Remove jit from a project completely (restore plaintext, delete its secrets)
 * [jit migrate undo](jit_migrate_undo.md)	 - Restore named migrated files from their encrypted pre-migration backups
 

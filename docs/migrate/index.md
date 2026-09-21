@@ -140,6 +140,31 @@ the account it was found in, so rotating it in 1Password is the only
 rotation you do. Every signed-in account is checked unless `OP_ACCOUNT`
 names one. `--no-1password` stores plain copies instead.
 
+## Redacting what an agent cached: `jit migrate redact`
+
+`jit migrate caches` removes copies of secrets that are *in your vault*.
+A token an agent cached that was never vaulted - a key pasted into a
+prompt, a snapshot of a file you have since rotated - is found by
+[`jit scan`](../audit/index.md) by its format, and `jit migrate redact` is
+its fix: the same vendor formats, over every agent cache, each token
+replaced in place with a `<jit:redacted:VENDOR>` marker and the rest of
+the line untouched. Name files to limit it, `--line` to limit it to the
+tokens on those lines.
+
+```console
+$ jit migrate redact --dry-run
+```
+
+Only agent caches are ever rewritten, never a file of your own. There is
+**no backup and no Touch ID**: a backup would put an agent's whole
+transcript, token and all, into a vault you never chose for it, and
+needing the vault is what would keep this from running unattended. The
+change is one-way; the marker says what was there, and the plan says so
+before you confirm. A file an agent is writing at that moment is left
+alone and reported; a binary store is reported, never rewritten. `--format
+json --yes` writes one document for a program, in the shape
+[Migrate JSON output](../reference/migrate-json.md) describes.
+
 ## For a program: `--format json`
 
 `jit migrate <path> --yes --format json` runs the targeted migrate with its
