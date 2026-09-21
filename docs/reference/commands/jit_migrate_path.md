@@ -13,9 +13,10 @@ jit migrate path <file-or-dir>... [flags]
 ### Options
 
 ```
-      --clean          also delete files whose stated fix is deletion (Trash copies, archived copies whose secrets are all vaulted, AI agent cache leftovers); each is backed up encrypted first and jit migrate undo restores it; gated by its own y/N plus Touch ID
-      --mount          for a loose secret file, keep it live at its path as a mount (real value to jit run grants, a decoy otherwise) instead of replacing it with a pointer; also required to protect a file that mixes a secret with other content
-      --no-1password   store plain copies even when a value already lives in 1Password (default: matching values are vaulted as op:// references)
+      --clean           also delete files whose stated fix is deletion (Trash copies, archived copies whose secrets are all vaulted, AI agent cache leftovers); each is backed up encrypted first and jit migrate undo restores it; gated by its own y/N plus Touch ID
+      --format string   output format: "text" (default), or "json": one document on stdout naming what was vaulted, what the agent-cache sweep removed and what it left, plus the text report; needs --yes (default "text")
+      --mount           for a loose secret file, keep it live at its path as a mount (real value to jit run grants, a decoy otherwise) instead of replacing it with a pointer; also required to protect a file that mixes a secret with other content
+      --no-1password    store plain copies even when a value already lives in 1Password (default: matching values are vaulted as op:// references)
 ```
 
 ### Options inherited from parent commands
