@@ -58,13 +58,18 @@ import (
 // the small file-shaped caches where pattern matching still behaves (see
 // agentCacheSweepDirs).
 //
-// And one case is invisible to `jit scan` by construction: a credential that
-// has ALREADY been migrated. Once the .env holds a jit://vault/ pointer, no
-// scanner can see the value, so nothing can search for it — while the copy
-// in file-history/ keeps the plaintext. Closing that needs the vault, which
-// needs authentication, which `jit scan` deliberately does not have. It
-// belongs to `jit migrate` (which holds the plaintext at vault time) and to
-// an authenticated `jit doctor` check.
+// And one case WAS invisible to `jit scan` by construction: a credential
+// that has already been migrated. Once the .env holds a jit://vault/ pointer
+// there is no value to search for — while the copy in file-history/ keeps the
+// plaintext. The vendor-pattern sweep (agentcachepatterns.go) closes that for
+// every credential with a recognisable format, by finding the copy's SHAPE in
+// the same walk this cross-reference makes; it was kept off the cache trees
+// for cost until the patterns were reduced to indexed literal leads. What
+// remains invisible without the vault is a copy with no format to recognise
+// — a bare password — once its origin is a pointer; that copy is reported by
+// this cross-reference while the origin is still in plaintext, named by
+// `jit migrate` at the moment its sweep skips it, and reached by
+// `jit migrate caches`, which holds the vault.
 
 // cacheNeedle is one confirmed credential to hunt copies of, plus enough of
 // its origin to explain the copy: the variable it was stored under and the
@@ -377,9 +382,11 @@ func crossReferenceAgentCaches(cfg Config, findings []Finding) ([]Finding, []Sca
 			add(cv.Key, cv.Value)
 		}
 	}
-	if len(pins) == 0 {
-		return nil, nil
-	}
+	// Not an early return when pins is empty: the vendor-pattern sweep below
+	// runs on every cache file regardless, and the protected-origin case —
+	// the whole reason that sweep exists — has no pins by construction (the
+	// .env is a jit://vault pointer now, so nothing confirmed its value). The
+	// exact-string pass simply finds nothing when the needle set is empty.
 	needles := make([]string, len(pins))
 	for i, p := range pins {
 		needles[i] = p.value
@@ -434,15 +441,18 @@ func crossReferenceAgentCaches(cfg Config, findings []Finding) ([]Finding, []Sca
 				return nil // unreadable — skip, never fail the scan
 			}
 			first, count, named := index.findAll(data)
-			if len(first) == 0 {
-				return nil
-			}
+			// No early return when the exact pass finds nothing: the pattern
+			// sweep below still has to see the file — after a migrate the
+			// exact pass has no needles at all, and that is precisely when the
+			// sweep is the only thing that can report a copy.
+			//
 			// Binary content has no meaningful line number; an offset into a
 			// SQLite page would be a coordinate the reader cannot use.
 			textual := !bytes.Contains(headOf(data), []byte{0})
 			// Iterated over pins, not over the map: Go randomises map order,
 			// and scan.go's contract is that findings come out in a stable
 			// order so NDJSON is byte-comparable across runs.
+			reportedHere := map[string]bool{}
 			for idx := range pins {
 				at, hit := first[idx]
 				if !hit {
@@ -452,6 +462,16 @@ func crossReferenceAgentCaches(cfg Config, findings []Finding) ([]Finding, []Sca
 					path, root.label, pins[idx], data, at, count[idx], textual)
 				f.AssignedName = named[idx]
 				out = append(out, f)
+				reportedHere[pins[idx].value] = true
+			}
+			// The vendor-pattern sweep: a copy the exact-string pass cannot
+			// reach because its origin is already protected, found by its
+			// shape instead (agentcachepatterns.go). Textual files only — a
+			// binary store is the exact pass's territory, above. A value the
+			// exact pass just reported here is skipped, so a copy whose origin
+			// is still in plaintext stays one finding, not two.
+			if textual {
+				out = append(out, cfg.agentCachePatternFindings(path, root.label, data, reportedHere)...)
 			}
 			return nil
 		})
@@ -608,10 +628,14 @@ var agentCredentialStores = []struct{ path, agent string }{
 	{filepath.Join(".continue", "config.json"), "Continue"},
 }
 
-// agentCacheSweepDirs are the file-shaped caches swept with the vendor
-// patterns. Small by nature (~1.2 MB across all of them on the machine this
-// was measured on) and high-signal; see the note above for why projects/ is
-// deliberately not among them.
+// agentCacheSweepDirs are the file-shaped caches ScanAgentStores sweeps with
+// the full content scanner, and the set clean.go treats as deletable
+// leftovers (AgentSweepDirFile). Small by nature (~1.2 MB across all of them
+// on the machine this was measured on). Every other cache directory — the
+// transcripts and file-history the note above kept the regexes away from —
+// is swept by the indexed pattern pass in agentcachepatterns.go, inside the
+// cross-reference's walk; a file listed here is reported once, by
+// ScanAgentStores, and the walk skips it as already reported.
 var agentCacheSweepDirs = []string{
 	filepath.Join(".claude", "paste-cache"),
 	filepath.Join(".claude", "shell-snapshots"),
