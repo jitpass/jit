@@ -321,7 +321,9 @@ yourself (an Argon2id-derived key, machine-independent by design).
 
 Yes. It never touches, encrypts or rewrites a single file it scans, and never
 prints a real value (every preview is masked). Use `jit scan --format ndjson`
-for machine-readable output under the same redaction rules.
+for machine-readable output under the same redaction rules. `jit scan --deep`
+adds one read - of your vault, to search for exact copies of what it holds -
+and still writes nothing; see [Deep scan](./audit/index.md#deep-scan---deep).
 
 The scan itself writes nothing, and the
 guard test in `internal/audit` enforces that. The command around it appends a

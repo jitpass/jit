@@ -48,6 +48,7 @@ var findingTypeLabels = map[string]string{ // #nosec G101 -- enum label keys, no
 	FindingTypeExposedSecret:      "Exposed Secrets",
 	FindingTypeShellHistorySecret: "Shell History",
 	FindingTypeAgentCachedSecret:  "AI Agent Caches",
+	FindingTypeVaultCopy:          "Vaulted Secrets Still in the Open",
 }
 
 // The severity ladder spends the semantic inks rather than shades of one
@@ -531,6 +532,13 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	// same reason: it changes what every count below it means, and "0
 	// findings" from a run that could not read a category is not the claim
 	// a reader of a full inventory will think to question.
+	if summary.Deep {
+		noun := "secrets"
+		if summary.VaultSecretsChecked == 1 {
+			noun = "secret"
+		}
+		fmt.Fprintf(w, "  deep scan: %d vault %s checked for exact copies in the open\n\n", summary.VaultSecretsChecked, noun)
+	}
 	if len(summary.DegradedScanners) > 0 {
 		yellowBold := style.WarnBold
 		noun := "categories"

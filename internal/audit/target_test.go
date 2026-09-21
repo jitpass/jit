@@ -221,7 +221,7 @@ func TestTargetedScanNamedPrivateKey(t *testing.T) {
 func TestScanFileContentForTokensSpecificWins(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "keys.txt")
-	writeFile(t, p, "OPENAI=sk-proj-abcdefghijklmnopqrstuvwx\n")
+	writeFile(t, p, "OPENAI=sk-proj-axbwcvduetfsgrhqipjoknlm\n")
 
 	findings, err := scanFileContentForTokens(Config{HomeDir: dir}, p)
 	if err != nil {

@@ -22,7 +22,7 @@ import (
 // The stride of 7 is coprime with the alphabet length, so consecutive
 // characters always differ and no placeholder word can form.
 func tokenBody(n int) string {
-	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	const alphabet = "azbycxdwevfugthsirjqkplomnAZBYCXDWEVFUGTHSIRJQKPLOMN0123456789"
 	b := make([]byte, n)
 	for i := range b {
 		b[i] = alphabet[(i*7+3)%len(alphabet)]
@@ -53,8 +53,8 @@ func TestMatchKnownTokenPattern(t *testing.T) {
 		{"GitHub PAT", "ghp_" + tokenBody(36), "GitHub Personal Access Token", true, true},
 		{"GitHub fine-grained PAT", "github_pat_" + tokenBody(22), "GitHub Fine-Grained Personal Access Token", true, true},
 		{"GitLab PAT", "glpat-" + tokenBody(20), "GitLab Personal Access Token", true, true},
-		{"AWS Access Key ID", "AKIAABCDEFGHIJKLMNOP", "AWS Access Key ID", true, true},
-		{"AWS temp Access Key ID", "ASIAABCDEFGHIJKLMNOP", "AWS Access Key ID", true, true},
+		{"AWS Access Key ID", "AKIAAPBOCNDMELFKGJHI", "AWS Access Key ID", true, true},
+		{"AWS temp Access Key ID", "ASIAAPBOCNDMELFKGJHI", "AWS Access Key ID", true, true},
 		{"Anthropic key", "sk-ant-api03-" + tokenBody(20), "Anthropic Claude API Key", true, true},
 		{"OpenAI project key", "sk-proj-" + tokenBody(20), "OpenAI Project API Key", true, true},
 		{"bare sk- key", "sk-" + tokenBody(20), "OpenAI (legacy) or DeepSeek API Key", true, true},
@@ -90,6 +90,70 @@ func TestMatchKnownTokenPattern(t *testing.T) {
 		{"DB connection string, SQLAlchemy +driver", "postgresql+asyncpg://postgres:Xk92QmPl4TzWhu@db.prod.internal/main", "Database connection string with embedded credentials", true, true},
 		{"DB connection string, mysql +driver", "mysql+pymysql://svc:S3cretPwLong@db.example.com/app", "Database connection string with embedded credentials", true, true},
 		{"DB connection string, scheme-less", "scanner_user:Dnn07HjN5s5C0tM4@scanner.cluster-abc.rds.amazonaws.com/postgres", "Database connection string with embedded credentials (scheme-less)", true, true},
+		// Added 2026-09-21 (see the table's own comment).
+		{"AWS service bearer key ID", "ABIAAPBOCNDMELFKGJHI", "AWS Access Key ID", true, true},
+		{"AWS context key ID", "ACCAAPBOCNDMELFKGJHI", "AWS Access Key ID", true, true},
+		{"OpenRouter key, not OpenAI", "sk-or-v1-" + hexBody(64), "OpenRouter API Key", true, true},
+		{"Slack rotated bot token, not the plain bot form", "xoxe.xoxb-" + tokenBody(24), "Slack Rotated Access Token", true, true},
+		{"Slack rotation refresh token", "xoxe-" + tokenBody(24), "Slack Refresh Token (rotation)", true, true},
+		{"Doppler config-scoped service token", "dp.st.prd." + tokenBody(24), "Doppler Service Token", true, true},
+		{"Doppler personal token", "dp.pt." + tokenBody(24), "Doppler Token", true, true},
+		{"Groq key", "gsk_" + tokenBody(52), "Groq API Key", true, true},
+		{"xAI key", "xai-" + tokenBody(80), "xAI API Key", true, true},
+		{"Perplexity key", "pplx-" + tokenBody(48), "Perplexity API Key", true, true},
+		{"Replicate token", "r8_" + tokenBody(37), "Replicate API Token", true, true},
+		{"Pinecone key", "pcsk_" + tokenBody(6) + "_" + tokenBody(63), "Pinecone API Key", true, true},
+		{"LangSmith key", "lsv2_pt_" + hexBody(32) + "_" + hexBody(10), "LangSmith API Key", true, true},
+		{"Hugging Face org token", "api_org_" + tokenBody(34), "Hugging Face Organization Token", true, true},
+		{"Bedrock key", "ABSK" + tokenBody(64), "Amazon Bedrock API Key", true, true},
+		{"Google OAuth client secret", "GOCSPX-" + tokenBody(28), "Google OAuth Client Secret", true, true},
+		{"Vercel token", "vcp_" + tokenBody(24), "Vercel Access Token", true, true},
+		{"Vercel AI gateway key", "vck_" + tokenBody(24), "Vercel AI Gateway Key", true, true},
+		{"Fly org token", "fo1_" + tokenBody(43), "Fly.io Org Token", true, true},
+		{"Fly machine token", "fm2_" + tokenBody(100), "Fly.io Machine Token", true, true},
+		{"Heroku key", "HRKU-AA" + tokenBody(50), "Heroku API Key", true, true},
+		{"Databricks PAT", "dapi" + hexBody(32), "Databricks Personal Access Token", true, true},
+		{"Pulumi token", "pul-" + hexBody(40), "Pulumi Access Token", true, true},
+		{"Grafana Cloud token", "glc_" + tokenBody(40), "Grafana Cloud Access Policy Token", true, true},
+		{"Sourcegraph token", "sgp_" + hexBody(40), "Sourcegraph Access Token", true, true},
+		{"Sourcegraph token, instance form", "sgp_" + hexBody(16) + "_" + hexBody(40), "Sourcegraph Access Token", true, true},
+		{"Sonar user token", "squ_" + hexBody(40), "SonarQube Token", true, true},
+		{"Sentry token", "sntrys_" + tokenBody(40), "Sentry Token", true, true},
+		{"Postman key", "PMAK-" + hexBody(24) + "-" + hexBody(34), "Postman API Key", true, true},
+		{"PlanetScale token", "pscale_tkn_" + tokenBody(32), "PlanetScale Token", true, true},
+		{"Supabase PAT, not the secret key", "sbp_" + hexBody(40), "Supabase Personal Access Token", true, true},
+		{"Neon key", "napi_" + tokenBody(60), "Neon API Key", true, true},
+		{"CircleCI personal token", "CCIPAT_" + tokenBody(22) + "_" + hexBody(40), "CircleCI Personal API Token", true, true},
+		{"CircleCI project token", "CCIPRJ_" + tokenBody(22) + "_" + hexBody(40), "CircleCI Project API Token", true, true},
+		{"GitLab feature flags token", "glffct-" + tokenBody(20), "GitLab Feature Flags Client Token", true, true},
+		{"GitLab incoming mail token", "glimt-" + tokenBody(20), "GitLab Incoming Mail Token", true, true},
+		{"GitLab SCIM token", "glsoat-" + tokenBody(20), "GitLab SCIM OAuth Token", true, true},
+		{"GitLab runner registration token", "GR1348941" + tokenBody(20), "GitLab Runner Registration Token", true, true},
+		{"Alibaba AccessKey ID", "LTAI" + tokenBody(20), "Alibaba Cloud AccessKey ID", true, true},
+		{"Docker Hub PAT", "dckr_pat_" + tokenBody(27), "Docker Hub Personal Access Token", true, true},
+		{"RubyGems key", "rubygems_" + hexBody(48), "RubyGems API Key", true, true},
+		{"crates.io token", "cio" + tokenBody(32), "crates.io API Token", true, true},
+		{"JFrog token", "AKCp" + tokenBody(70), "JFrog Access Token", true, true},
+		{"Atlassian token", "ATATT3" + tokenBody(180), "Atlassian API Token", true, true},
+		{"Linear key", "lin_api_" + tokenBody(40), "Linear API Key", true, true},
+		{"Figma token", "figd_" + tokenBody(40), "Figma Personal Access Token", true, true},
+		{"HubSpot token", "pat-na1-" + hexBody(8) + "-" + hexBody(4) + "-" + hexBody(4) + "-" + hexBody(4) + "-" + hexBody(12), "HubSpot Private App Token", true, true},
+		{"1Password service account token", "ops_" + tokenBody(100), "1Password Service Account Token", true, true},
+		{"Tailscale auth key", "tskey-auth-k" + tokenBody(8) + "-" + tokenBody(20), "Tailscale Key", true, true},
+		{"Shopify custom app token", "shpca_" + hexBody(32), "Shopify Custom App Access Token", true, true},
+		{"Shopify private app password", "shppa_" + hexBody(32), "Shopify Private App Password", true, true},
+		{"Shopify shared secret", "shpss_" + hexBody(32), "Shopify Shared Secret", true, true},
+		{"Stripe test restricted key", "rk_test_" + tokenBody(24), "Stripe Test Restricted Key", true, true},
+		{"Square access token", "sq0atp-" + tokenBody(22), "Square Access Token", true, true},
+		{"Square application secret", "sq0csp-" + tokenBody(43), "Square Application Secret", true, true},
+		{"Twilio API key SID", "SK" + hexBody(32), "Twilio API Key SID", true, true},
+		{"Brevo key", "xkeysib-" + hexBody(64) + "-" + tokenBody(16), "Brevo API Key", true, true},
+		{"New Relic key", "NRAK-" + strings.ToUpper(tokenBody(27)), "New Relic Key", true, true},
+		{"Dynatrace token", "dt0c01." + strings.ToUpper(tokenBody(24)) + "." + strings.ToUpper(tokenBody(64)), "Dynatrace API Token", true, true},
+		{"Resend key", "re_" + tokenBody(8) + "_" + tokenBody(24), "Resend API Key", true, true},
+		{"Telegram bot token", "1234567890:AA" + tokenBody(33), "Telegram Bot Token", true, true},
+		{"Azure AD client secret", "abc8Q~" + tokenBody(32), "Azure AD Client Secret", true, true},
+		{"Terraform Cloud token", tokenBody(14) + ".atlasv1." + tokenBody(60), "Terraform Cloud API Token", true, true},
 		{"unverified Cursor key", "crsr_" + tokenBody(10), "Cursor API Key", false, true},
 		{"unverified Tavily key", "tvly-" + tokenBody(10), "Tavily API Key", false, true},
 		{"plain string, no match", "just a normal value", "", false, false},
@@ -167,6 +231,15 @@ func TestMatchKnownTokenPatternSchemeLessConnString(t *testing.T) {
 		"mailto:engineering@acme.io",
 		"mailto:somebody@company.co.uk",
 		"tel:pluslongnumber@carrier.example",
+		// A Zoom invitation's dial-in, quoted in a Claude Code transcript,
+		// reported as a database credential (2026-09-21). The telephony
+		// URI family shares the shape.
+		"sip:89462296467@zoomcrc.com",
+		"sips:89462296467@zoomcrc.com",
+		"h323:conference1234@gateway.example.com",
+		// Mail search syntax, from the same note: an operator, not a user.
+		"from:notifications@calendly.com",
+		"replyto:somebody.long@example.com",
 	}
 	for _, v := range shouldNotMatch {
 		if vendor, _, ok := MatchKnownTokenPattern(v); ok {
@@ -244,8 +317,12 @@ func TestMatchKnownTokenPatternPlaceholderToken(t *testing.T) {
 		"sk_live_" + strings.Repeat("x", 24),
 		"xoxb-" + strings.Repeat("0", 10),
 		"hf_your_token_here_abcdefghij",
-		"shpat_placeholder_abcdefghijkl",
+		"shpat_placeholder_albkcjdiehfg",
 		"github_pat_EXAMPLEEXAMPLEEXAMPLE12",
+		// Sequential runs: the keyboard-typed example a transcript quoted.
+		"AKIAABCDEFGHIJKLMNOP",
+		"sk_live_" + "abcdefghijklmnopqrstuvwx",
+		"ghp_" + "0123456789abcdefghijklmnopqrstuvwxyz",
 	}
 	for _, v := range placeholders {
 		if vendor, _, ok := MatchKnownTokenPattern(v); ok {
@@ -259,9 +336,10 @@ func TestMatchKnownTokenPatternPlaceholderToken(t *testing.T) {
 	real := []string{
 		"secret_" + tokenBody(40),
 		"ghp_" + tokenBody(36),
-		"AKIAABCDEFGHIJKLMNOP",
+		"AKIAAPBOCNDMELFKGJHI",
 		"sk-ant-api03-" + tokenBody(20),
-		"ghp_aaaaaaa" + tokenBody(29), // a 7-long run is not enough
+		"ghp_aaaaaaa" + tokenBody(29),     // a 7-long run is not enough
+		"ghp_ABCDEFGHIJK" + tokenBody(25), // an 11-long sequence is not enough either
 	}
 	for _, v := range real {
 		if _, _, ok := MatchKnownTokenPattern(v); !ok {
@@ -337,6 +415,13 @@ func TestEveryRecognizedFormatIsRedactedInTheAuditLog(t *testing.T) {
 		"AWS Access Key ID":     {"AKIA" + shortBody, "ASIA" + shortBody},                     // AKIA/ASIA are in secretPrefixes
 		"HashiCorp Vault Token": {"hvs." + shortBody, "hvb." + shortBody, "hvr." + shortBody}, // hvs./hvb./hvr. are in secretPrefixes
 		"Twilio Account SID":    {"AC" + hexBody(32)},                                         // no usable prefix; the 34-char SID trips the entropy floor (built at runtime so the source carries no literal SID)
+		"Twilio API Key SID":    {"SK" + hexBody(32)},                                         // same: two-letter prefix, entropy floor
+		"SonarQube Token":       {"squ_" + shortBody, "sqp_" + shortBody, "sqa_" + shortBody}, // squ_/sqp_/sqa_ are in secretPrefixes
+		"New Relic Key":         {"NRAK-" + shortBody, "NRII-" + shortBody, "NRJS-" + shortBody},
+		// No prefix at all: the body trips the entropy floor.
+		"Telegram Bot Token":        {"1234567890:AA" + tokenBody(33)},
+		"Azure AD Client Secret":    {"abc8Q~" + tokenBody(32)},
+		"Terraform Cloud API Token": {tokenBody(14) + ".atlasv1." + tokenBody(60)},
 	}
 
 	for _, tp := range knownTokenPatterns {
@@ -420,7 +505,7 @@ func TestMatchKnownTokenPatternTinyUserinfo(t *testing.T) {
 func TestTokenPatternERE(t *testing.T) {
 	// The motivating vendor: no literal prefix, so the anchor scheme gave it
 	// no hint. The ERE must be the full pattern with (?: opened up.
-	if got := TokenPatternERE("AWS Access Key ID"); got != `\b(AKIA|ASIA)[A-Z0-9]{16}\b` {
+	if got := TokenPatternERE("AWS Access Key ID"); got != `\b(ABIA|ACCA|AKIA|ASIA)[A-Z0-9]{16}\b` {
 		t.Errorf("AWS ERE = %q", got)
 	}
 	// A dash-leading pattern would parse as grep OPTIONS, not a pattern:
@@ -471,14 +556,14 @@ func TestTokenPatternEREsMatchLikeTheScanner(t *testing.T) {
 	samples := []string{
 		"AKIA" + "IOSFODNN7EXAMPLZ",
 		"ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
-		"gith" + "ub_pat_11ABCDEFG0abcdefghijkl_MNOPQRST",
+		"gith" + "ub_pat_11ABCDEFG0albkcjdiehfg_MNOPQRST",
 		"xoxb" + "-1234567890-AbCdEfGhIj",
 		"sk_l" + "ive_51H8xQ2KZvMnPq7RtY4wU6iO9",
 		"SG.AbCdEfGhIj.KlMnOpQrStUv",
 		"dp.st.AbCdEfGhIjKlMnOpQrStUv",
 		"hvs." + "AbCdEfGhIjKlMnOpQrStUvWxYz01",
 		"npm_" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
-		"AIza" + "SyC1234567890abcdefghijklmnopqrstuv",
+		"AIza" + "SyC1234567890avbuctdserfqgphoinjmkl",
 		"eyJh" + "bGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.AbCdEfGhIj",
 		"postgres://app:s3cr3tPassw0rd@db.internal:5432/app",
 		"scanner_user:hunter2x@db.example.com/postgres",

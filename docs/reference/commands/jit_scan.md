@@ -45,6 +45,7 @@ jit scan [path...] [flags]
 ### Options
 
 ```
+      --deep                  also look for exact copies of every secret in your vault, across the AI agent caches and every file the scan reads (name a folder to cover it); reads the vault, so Touch ID follows unless the service holds a session; still writes nothing, and no value reaches the report
       --exclude stringArray   skip this folder and everything under it (repeatable; ~ and relative paths allowed); the report records what was excluded
       --fail-on string        exit 2 when the scan's risk level is at or above this: critical, high, medium, low, or any (default: always exit 0)
       --format string         output format: "text" (default), "markdown"/"md", or "ndjson" (default "text")
