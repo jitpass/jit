@@ -1,6 +1,6 @@
 # Findings and Protect: the build plan
 
-**Status:** plan, 2026-09-21. Implements `scan-and-protect.md` (D7–D10) and
+**Status:** built, 2026-09-21 (all eight steps, on branches `scan-agent-cache-patterns` in jit and `findings-window` in jit-app; D11 built as "count as exposed, protected stands"). Kept as the record of what was built and why. Implements `scan-and-protect.md` (D7–D10) and
 the approved mockup, https://claude.ai/artifact/6S859C7vyFBfiy4XVoW5Jc
 (eleven frames). Each step is one commit, gated the same way, and the
 mockup is the thing each step is checked against — no drift.
