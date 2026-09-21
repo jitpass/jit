@@ -27,7 +27,7 @@ Five promises this page makes:
 
 |            | **Scan** — looks                                 | **Protect** — acts                              |
 |------------|--------------------------------------------------|-------------------------------------------------|
-| does       | reads and reports; changes no file               | migrate a file, wrap a tool, clean the caches   |
+| does       | reads and reports; changes no file               | migrate a file, wrap a tool, clean or redact the caches |
 | needs      | nothing; deep: Touch ID *to read* the vault      | Touch ID, because it writes                     |
 | output     | a finding: secret or vendor · file · line        | a result: what changed, what it could not       |
 | runs       | on a schedule, unattended                        | when the user presses the verb                  |
@@ -52,7 +52,7 @@ producing one finding type that names its verb:
 | IaC files (tfvars, Kubernetes manifests)       | `iac_variable_file`     | migrate, or only you |
 | wrappable CLI tokens (claude, gh, cursor, …)   | `wrappable_cli_token`   | wrap              |
 | SOPS age keys                                  | `sops_age_key`          | migrate           |
-| tokens by shape — files, and agent caches      | `exposed_secret`        | only you, or clean |
+| tokens by shape — files, and agent caches      | `exposed_secret`        | only you, or redact |
 | shell history                                  | `shell_history_secret`  | migrate           |
 | AI agent stores and caches                     | `agent_cached_secret`   | clean             |
 
@@ -225,6 +225,18 @@ left behind, the scan is what gets fixed — not by a note, but by looking.
   last run, next run, what is new since. "Scan" stays the verb on its
   buttons (Scan Now…, Scan Whole Mac…) and the CLI keeps `jit scan`.
   Scheduled runs are regular depth; Deep is by hand. Decided 2026-09-21.
+- **D12 — Redact is the Protect verb for a shape-found token in an agent
+  cache, and it takes no backup.** `jit migrate redact` replaces the span
+  with `<jit:redacted:VENDOR>`, the marker the value sweep writes with a
+  variable's name, and touches only agent caches. No vault, no backup, no
+  Touch ID: a backup would put an agent's whole transcript in a vault the
+  user never chose for it, and needing the vault is what would stop the
+  automatic run after a scheduled scan. The marker is the record; the
+  change is one-way and the plan says so. Nothing is deleted — a
+  transcript is one record per line. The app offers it on a row (Redact…),
+  on the card (Redact All…), and, under an opt-in switch, after every
+  scheduled scan; the scan itself still writes nothing. Decided
+  2026-09-21.
 - **D11 — A vault copy counts as an exposed secret, and the protected
   count stands.** Every `vault_copy` of one value is one exposed secret
   (they share a cause group), so the score falls by the copy. The

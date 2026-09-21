@@ -85,7 +85,7 @@ func TestScanShellHistoryCoversEveryShell(t *testing.T) {
 		"export STRIPE_KEY=sk_live_"+"51H8xQ2KZvMnPq7RtY4wU6iO9pL3kJ5hG2f",
 	)
 	writeHistory(t, home, filepath.Join(".local", "share", "fish", "fish_history"),
-		"- cmd: export HF=hf_abcdefghijklmnopqrstuvwx",
+		"- cmd: export HF=hf_axbwcvduetfsgrhqipjoknlm",
 		"  when: 1782826755",
 	)
 	findings, err := ScanShellHistories(Config{HomeDir: home})
@@ -106,7 +106,7 @@ func TestScanShellHistoryCoversEveryShell(t *testing.T) {
 func TestScanShellHistoryHonorsHISTFILE(t *testing.T) {
 	home := t.TempDir()
 	custom := writeHistory(t, home, filepath.Join(".cache", "zsh", "history"),
-		": 1782826756:0;export HF=hf_abcdefghijklmnopqrstuvwx",
+		": 1782826756:0;export HF=hf_axbwcvduetfsgrhqipjoknlm",
 	)
 	t.Setenv("HISTFILE", custom)
 	findings, err := ScanShellHistories(Config{HomeDir: home})
@@ -389,7 +389,7 @@ func TestHistoryTimestampDoesNotDefeatThePrefilter(t *testing.T) {
 // "CLEAN — exposure 0/100" and exited 0.
 func TestTargetedScanReportsAnUnreadableHistoryFile(t *testing.T) {
 	home := t.TempDir()
-	path := writeHistory(t, home, ".zsh_history", ": 1782826756:0;export HF=hf_abcdefghijklmnopqrstuvwx")
+	path := writeHistory(t, home, ".zsh_history", ": 1782826756:0;export HF=hf_axbwcvduetfsgrhqipjoknlm")
 	if err := os.Chmod(path, 0o000); err != nil {
 		t.Skip("cannot make a file unreadable here")
 	}
@@ -787,7 +787,7 @@ func TestViewAnchorsAreConstantsNotValues(t *testing.T) {
 	// AND the sample must contain the anchor, which together are the whole
 	// claim — that greping the anchor finds the line the scanner flagged.
 	samples := map[string]string{
-		"GitHub Fine-Grained Personal Access Token": "github_pat_11ABCDEFG0abcdefghijklmnop",
+		"GitHub Fine-Grained Personal Access Token": "github_pat_11ABCDEFG0apbocndmelfkgjhi",
 		"GitHub Personal Access Token":              "ghp_" + strings.Repeat("A1b2", 9),
 		"Anthropic Claude API Key":                  "sk-ant-api03-" + strings.Repeat("x", 24),
 		"npm Publishing Token":                      "npm_" + strings.Repeat("z", 36),
@@ -845,7 +845,7 @@ func TestAnchorFromEvidencePrefersLongestVendor(t *testing.T) {
 // not in the output. A hint that echoes the secret would put it in the
 // terminal and in the reader's own shell history.
 func TestViewHintCommandNeverPrintsTheCredential(t *testing.T) {
-	secret := "github_pat_11ABCDEFG0abcdefghijklmnop"
+	secret := "github_pat_11ABCDEFG0apbocndmelfkgjhi"
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")
 	if err := os.WriteFile(path, []byte("OLD_TOKEN="+secret+"\n"), 0o600); err != nil {
@@ -1066,7 +1066,7 @@ func TestTargetedScanRoutesNamedHistoryFile(t *testing.T) {
 	home := t.TempDir()
 	path := writeHistory(t, home, ".zsh_history",
 		": 1782826755:0;cd ~/work",
-		": 1782826756:0;export HF=hf_abcdefghijklmnopqrstuvwx",
+		": 1782826756:0;export HF=hf_axbwcvduetfsgrhqipjoknlm",
 	)
 	findings, failures := scanTargetFile(Config{HomeDir: home}, path)
 	if len(failures) != 0 {
@@ -1087,7 +1087,7 @@ func TestTargetedScanRoutesNamedHistoryFile(t *testing.T) {
 func TestScanShellHistoryCollapsesRepeatVendors(t *testing.T) {
 	home := t.TempDir()
 	writeHistory(t, home, ".zsh_history",
-		": 1782826755:0;export A=hf_abcdefghijklmnopqrstuvwx",
+		": 1782826755:0;export A=hf_axbwcvduetfsgrhqipjoknlm",
 		": 1782826756:0;git status",
 		": 1782826757:0;export B=hf_zyxwvutsrqponmlkjihgfed",
 	)

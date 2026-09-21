@@ -22,7 +22,7 @@ import (
 // The stride of 7 is coprime with the alphabet length, so consecutive
 // characters always differ and no placeholder word can form.
 func tokenBody(n int) string {
-	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	const alphabet = "azbycxdwevfugthsirjqkplomnAZBYCXDWEVFUGTHSIRJQKPLOMN0123456789"
 	b := make([]byte, n)
 	for i := range b {
 		b[i] = alphabet[(i*7+3)%len(alphabet)]
@@ -53,8 +53,8 @@ func TestMatchKnownTokenPattern(t *testing.T) {
 		{"GitHub PAT", "ghp_" + tokenBody(36), "GitHub Personal Access Token", true, true},
 		{"GitHub fine-grained PAT", "github_pat_" + tokenBody(22), "GitHub Fine-Grained Personal Access Token", true, true},
 		{"GitLab PAT", "glpat-" + tokenBody(20), "GitLab Personal Access Token", true, true},
-		{"AWS Access Key ID", "AKIAABCDEFGHIJKLMNOP", "AWS Access Key ID", true, true},
-		{"AWS temp Access Key ID", "ASIAABCDEFGHIJKLMNOP", "AWS Access Key ID", true, true},
+		{"AWS Access Key ID", "AKIAAPBOCNDMELFKGJHI", "AWS Access Key ID", true, true},
+		{"AWS temp Access Key ID", "ASIAAPBOCNDMELFKGJHI", "AWS Access Key ID", true, true},
 		{"Anthropic key", "sk-ant-api03-" + tokenBody(20), "Anthropic Claude API Key", true, true},
 		{"OpenAI project key", "sk-proj-" + tokenBody(20), "OpenAI Project API Key", true, true},
 		{"bare sk- key", "sk-" + tokenBody(20), "OpenAI (legacy) or DeepSeek API Key", true, true},
@@ -91,8 +91,8 @@ func TestMatchKnownTokenPattern(t *testing.T) {
 		{"DB connection string, mysql +driver", "mysql+pymysql://svc:S3cretPwLong@db.example.com/app", "Database connection string with embedded credentials", true, true},
 		{"DB connection string, scheme-less", "scanner_user:Dnn07HjN5s5C0tM4@scanner.cluster-abc.rds.amazonaws.com/postgres", "Database connection string with embedded credentials (scheme-less)", true, true},
 		// Added 2026-09-21 (see the table's own comment).
-		{"AWS service bearer key ID", "ABIAABCDEFGHIJKLMNOP", "AWS Access Key ID", true, true},
-		{"AWS context key ID", "ACCAABCDEFGHIJKLMNOP", "AWS Access Key ID", true, true},
+		{"AWS service bearer key ID", "ABIAAPBOCNDMELFKGJHI", "AWS Access Key ID", true, true},
+		{"AWS context key ID", "ACCAAPBOCNDMELFKGJHI", "AWS Access Key ID", true, true},
 		{"OpenRouter key, not OpenAI", "sk-or-v1-" + hexBody(64), "OpenRouter API Key", true, true},
 		{"Slack rotated bot token, not the plain bot form", "xoxe.xoxb-" + tokenBody(24), "Slack Rotated Access Token", true, true},
 		{"Slack rotation refresh token", "xoxe-" + tokenBody(24), "Slack Refresh Token (rotation)", true, true},
@@ -317,8 +317,12 @@ func TestMatchKnownTokenPatternPlaceholderToken(t *testing.T) {
 		"sk_live_" + strings.Repeat("x", 24),
 		"xoxb-" + strings.Repeat("0", 10),
 		"hf_your_token_here_abcdefghij",
-		"shpat_placeholder_abcdefghijkl",
+		"shpat_placeholder_albkcjdiehfg",
 		"github_pat_EXAMPLEEXAMPLEEXAMPLE12",
+		// Sequential runs: the keyboard-typed example a transcript quoted.
+		"AKIAABCDEFGHIJKLMNOP",
+		"sk_live_" + "abcdefghijklmnopqrstuvwx",
+		"ghp_" + "0123456789abcdefghijklmnopqrstuvwxyz",
 	}
 	for _, v := range placeholders {
 		if vendor, _, ok := MatchKnownTokenPattern(v); ok {
@@ -332,9 +336,10 @@ func TestMatchKnownTokenPatternPlaceholderToken(t *testing.T) {
 	real := []string{
 		"secret_" + tokenBody(40),
 		"ghp_" + tokenBody(36),
-		"AKIAABCDEFGHIJKLMNOP",
+		"AKIAAPBOCNDMELFKGJHI",
 		"sk-ant-api03-" + tokenBody(20),
-		"ghp_aaaaaaa" + tokenBody(29), // a 7-long run is not enough
+		"ghp_aaaaaaa" + tokenBody(29),     // a 7-long run is not enough
+		"ghp_ABCDEFGHIJK" + tokenBody(25), // an 11-long sequence is not enough either
 	}
 	for _, v := range real {
 		if _, _, ok := MatchKnownTokenPattern(v); !ok {
@@ -551,14 +556,14 @@ func TestTokenPatternEREsMatchLikeTheScanner(t *testing.T) {
 	samples := []string{
 		"AKIA" + "IOSFODNN7EXAMPLZ",
 		"ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
-		"gith" + "ub_pat_11ABCDEFG0abcdefghijkl_MNOPQRST",
+		"gith" + "ub_pat_11ABCDEFG0albkcjdiehfg_MNOPQRST",
 		"xoxb" + "-1234567890-AbCdEfGhIj",
 		"sk_l" + "ive_51H8xQ2KZvMnPq7RtY4wU6iO9",
 		"SG.AbCdEfGhIj.KlMnOpQrStUv",
 		"dp.st.AbCdEfGhIjKlMnOpQrStUv",
 		"hvs." + "AbCdEfGhIjKlMnOpQrStUvWxYz01",
 		"npm_" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
-		"AIza" + "SyC1234567890abcdefghijklmnopqrstuv",
+		"AIza" + "SyC1234567890avbuctdserfqgphoinjmkl",
 		"eyJh" + "bGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.AbCdEfGhIj",
 		"postgres://app:s3cr3tPassw0rd@db.internal:5432/app",
 		"scanner_user:hunter2x@db.example.com/postgres",

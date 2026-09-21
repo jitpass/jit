@@ -35,6 +35,15 @@ stream) and takes neither `--dry-run` (nothing to report as done) nor
 
 Slices are always present, `[]` when empty, never `null`.
 
+## `jit migrate redact --format json`
+
+The same shape, for the shape-redaction sweep over agent caches:
+`files` (the files named on the command line, absolute, empty for every
+cache), `applied`, `caches.removed` and `caches.left` as above (`copies`
+is the number of tokens replaced in the file), `errors`, `report`. No
+`vaulted` field: redact vaults nothing and backs nothing up. It needs
+`--yes` and refuses `--dry-run`, as migrate does.
+
 ## On error
 
 The document is written even when the run fails: the edits made before

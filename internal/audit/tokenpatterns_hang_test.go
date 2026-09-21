@@ -36,8 +36,8 @@ func TestMatchKnownTokenPatternBoundsLargeValues(t *testing.T) {
 func TestMatchKnownTokenPatternStillMatchesWithinBound(t *testing.T) {
 	// A real token ends at a delimiter (the pattern needs the trailing \b)
 	// and is mixed enough not to read as a placeholder.
-	// abcdefghijklmnopqrstuvwxyz0123456789 is exactly 36 chars and mixed.
-	val := "ghp_abcdefghijklmnopqrstuvwxyz0123456789 " + strings.Repeat("x", 2<<20)
+	// azbycxdwevfugthsirjqkplomn0123456789 is exactly 36 chars and mixed.
+	val := "ghp_azbycxdwevfugthsirjqkplomn0123456789 " + strings.Repeat("x", 2<<20)
 	vendor, _, ok := MatchKnownTokenPattern(val)
 	if !ok || vendor == "" {
 		t.Fatalf("a GitHub PAT at the front of a large value must still match, got ok=%v vendor=%q", ok, vendor)

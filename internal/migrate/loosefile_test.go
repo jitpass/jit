@@ -156,7 +156,7 @@ func TestBuildLooseTemplate(t *testing.T) {
 
 	t.Run("embedded keeps surrounding text", func(t *testing.T) {
 		p := filepath.Join(dir, "embedded.txt")
-		writeFile(t, p, "key is sk-ant-api03-abcdefghijklmnopqrstuvwx here\nport=8080\n")
+		writeFile(t, p, "key is sk-ant-api03-axbwcvduetfsgrhqipjoknlm here\nport=8080\n")
 		tokens, _, err := ClassifyLooseSecretFile(p)
 		if err != nil {
 			t.Fatal(err)
