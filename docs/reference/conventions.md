@@ -38,6 +38,8 @@ always the default, and `json` always means "one JSON snapshot on stdout".
 | `jit vault orphans` | `text`, `json` |
 | `jit audit` | `text`, `json`, `logfmt` |
 | `jit scan` | `text`, `markdown`/`md`, `ndjson` (no plain `json`) |
+| `jit migrate <path>` | `text`, `json` (needs `--yes`; see [Migrate JSON output](./migrate-json.md)) |
+| `jit migrate redact` | `text`, `json` (needs `--yes`; same page) |
 
 Two commands have a wider vocabulary because they emit a stream of records
 rather than a snapshot:

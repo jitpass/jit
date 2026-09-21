@@ -247,6 +247,17 @@ var secretPrefixes = []string{
 	// Package registries and vendor formats the scanner recognizes.
 	"pypi-", "ntn_", "secret_", "SG.", "whsec_", "sb_secret_", "glsa_",
 	"dp.st.", "hvs.", "hvb.", "hvr.", "AGE-SECRET-KEY-", "crsr_", "tvly-",
+	// Added 2026-09-21 with the scanner's wider vendor table; every prefix
+	// is a format knownTokenPatterns recognizes, and the drift test there
+	// fails when one is missing here.
+	"ABIA", "ACCA", "xoxe.xox", "xoxe-", "dp.",
+	"gsk_", "xai-", "pplx-", "r8_", "pcsk_", "lsv2_", "api_org_", "ABSK",
+	"GOCSPX-", "vcp_", "vck_", "fo1_", "fm2_", "HRKU-", "dapi", "pul-", "glc_", "sgp_",
+	"squ_", "sqp_", "sqa_", "sntry", "PMAK-", "pscale_", "sbp_", "napi_", "CCIPAT_", "CCIPRJ_",
+	"glffct-", "glimt-", "glsoat-", "GR1348941", "LTAI",
+	"rubygems_", "cio", "AKCp",
+	"ATATT3", "lin_api_", "figd_", "pat-", "ops_", "tskey-", "shpca_", "shppa_",
+	"sq0atp-", "sq0csp-", "xkeysib-", "NRAK-", "NRII-", "NRJS-", "dt0c01.", "re_",
 	// A JWT's header is always base64 of {"alg":... — "eyJ" is the whole
 	// format's tell, and a bare JWT in a log line is a live session.
 	"eyJ",

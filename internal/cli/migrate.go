@@ -33,6 +33,9 @@ import (
 var (
 	migrateDryRun bool
 	migrateYes    bool
+	// migrateFormat is "text" or "json" for the targeted form; json is one
+	// document on stdout (migratereport.go) for a caller that is a program.
+	migrateFormat string
 	migrateOnly   []string
 	migrateMount  bool
 	// migrateNo1Password opts OUT of the 1Password link dedupe
@@ -492,7 +495,13 @@ var migrateCmd = &cobra.Command{
 		return nil, cobra.ShellCompDirectiveDefault
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateOutputFormat(migrateFormat); err != nil {
+			return fmt.Errorf("jit migrate: %w", err)
+		}
 		if len(args) == 0 {
+			if migrateFormat == "json" {
+				return errors.New("jit migrate: --format json is for `jit migrate <path>`; the bare run's plan is interactive")
+			}
 			return runMigrateAll(cmd)
 		}
 		return runMigratePath(cmd, args)
@@ -509,6 +518,9 @@ var migratePathCmd = &cobra.Command{
 	Long:  "Alias for `jit migrate <file-or-dir>...` — see `jit migrate --help`.",
 	Args:  requirePaths("jit migrate path"),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateOutputFormat(migrateFormat); err != nil {
+			return fmt.Errorf("jit migrate: %w", err)
+		}
 		return runMigratePath(cmd, args)
 	},
 }
@@ -1522,6 +1534,8 @@ func applyMigrate(cmd *cobra.Command, home string, d *discovered, extras *planEx
 	reportAgentStatus(out, root, producedMount)
 	if cleanInputs != nil {
 		cleanInputs.vaulted = vaultedSecrets
+		cleanInputs.cleanup = cleanup
+		cleanInputs.cleanErr = cleanErr
 		cleanInputs.swept = map[string]bool{}
 		for _, e := range cleanup.Edited {
 			cleanInputs.swept[e.Path] = true
@@ -1558,6 +1572,11 @@ type cleanPhaseInputs struct {
 	// clean phase — D9: --only never scopes the delete pass — while the
 	// second must stop everything (code review, 2026-09-10).
 	migrateEmpty bool
+	// cleanup and cleanErr are the agent-cache sweep's result, kept here
+	// (not only printed) for `--format json`'s report, which must name
+	// what the sweep removed and what it left even when it failed midway.
+	cleanup  migrate.AgentCacheCleanup
+	cleanErr error
 }
 
 // runMigratePath implements `jit migrate <file-or-dir>...` (and its `path`
@@ -1827,6 +1846,16 @@ func runMigrateAll(cmd *cobra.Command) error {
 }
 
 func runMigratePath(cmd *cobra.Command, targets []string) error {
+	if migrateFormat == "json" {
+		return runMigratePathJSON(cmd, targets)
+	}
+	return migratePath(cmd, targets, nil)
+}
+
+// migratePath is runMigratePath's body. `report`, when non-nil, is filled
+// with what the run resolved, vaulted and swept, for `--format json`; the
+// text output is unchanged either way.
+func migratePath(cmd *cobra.Command, targets []string, report *migrateReport) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("jit migrate path: %w", err)
@@ -1887,6 +1916,9 @@ func runMigratePath(cmd *cobra.Command, targets []string) error {
 	// file inside it) would otherwise migrate a finding more than once, so
 	// collapse duplicates before applyMigrate, which assumes a unique set.
 	d.dedupe()
+	if report != nil {
+		report.Targets = append(report.Targets, resolved...)
+	}
 
 	progress.Stop() // settle the discovery trail before the plan/prompt prints
 
@@ -1917,6 +1949,12 @@ func runMigratePath(cmd *cobra.Command, targets []string) error {
 	var cleanIn cleanPhaseInputs
 	if d.total() > 0 || !cleanHasWork(cleanPlan) {
 		applied, err = applyMigrate(cmd, home, d, extras, migrateApplyCommand("jit migrate", targets), &cleanIn)
+		if report != nil {
+			// Filled before the error check: a sweep that removed eight
+			// copies and then failed still removed eight copies.
+			report.Applied = applied && err == nil && d.total() > 0
+			report.fill(cleanIn)
+		}
 		if err != nil {
 			return err
 		}
@@ -2399,6 +2437,14 @@ func init() {
 	const cleanUsage = "also delete files whose stated fix is deletion (Trash copies, archived copies whose secrets are all vaulted, AI agent cache leftovers); each is backed up encrypted first and jit migrate undo restores it; gated by its own y/N plus Touch ID"
 	migrateCmd.Flags().BoolVar(&migrateClean, "clean", false, cleanUsage)
 	migratePathCmd.Flags().BoolVar(&migrateClean, "clean", false, cleanUsage)
+	// Local like --mount: only the targeted form has a result to report.
+	// json needs --yes (a plan cannot be confirmed on a JSON stream) and
+	// takes neither --dry-run nor --clean; see migratereport.go.
+	const formatUsage = `output format: "text" (default), or "json": one document on stdout naming what was vaulted, what the agent-cache sweep removed and what it left, plus the text report; needs --yes`
+	migrateCmd.Flags().StringVar(&migrateFormat, "format", "text", formatUsage)
+	migratePathCmd.Flags().StringVar(&migrateFormat, "format", "text", formatUsage)
+	_ = migrateCmd.RegisterFlagCompletionFunc("format", completeOutputFormat)
+	_ = migratePathCmd.RegisterFlagCompletionFunc("format", completeOutputFormat)
 
 	migrateCmd.AddCommand(migratePathCmd)
 	rootCmd.AddCommand(migrateCmd)

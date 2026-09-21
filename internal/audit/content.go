@@ -193,6 +193,11 @@ func scanFileContentForTokens(cfg Config, path string) ([]Finding, error) {
 			findings = append(findings, f)
 		}
 	}
+	// A deep scan's exact pass over the same file: a vaulted secret's copy,
+	// formatless or not (deep.go). dropRedundantExposedSecrets then drops
+	// the vendor match this sweep raised for the same value, so one copy is
+	// one finding — the vault_copy, which names the secret.
+	findings = append(findings, cfg.vaultCopiesInFile(path)...)
 	return findings, nil
 }
 

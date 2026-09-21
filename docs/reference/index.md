@@ -16,6 +16,8 @@ description: Command reference, file locations, environment variables, and proto
   sets, and injects
 - **[Scan NDJSON output](./scan-ndjson.md)** - the machine-readable
   finding schema
+- **[Migrate JSON output](./migrate-json.md)** - what a targeted migrate
+  vaulted, swept and left, as one document
 - **[Plumbing protocols](./plumbing.md)** - the commands other tools
   invoke (`aws-credential-process`, `k8s-exec-credential`,
   `terraform-credentials`, `docker-credential`, `git-credential`)

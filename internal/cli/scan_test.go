@@ -57,6 +57,7 @@ func execScan(t *testing.T, args ...string) (stdout string, err error) {
 	scanUnfiltered = false
 	scanFull = false
 	scanFailOn = ""
+	scanDeep = false
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetArgs(append([]string{"scan"}, args...))
