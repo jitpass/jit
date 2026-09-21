@@ -207,7 +207,9 @@ var knownTokenPatterns = []tokenPattern{
 	{"GitLab OAuth Application Secret", regexp.MustCompile(`\bgloas-[A-Za-z0-9_\-]{20,}`), true, nil, false},
 	{"GitLab Agent for Kubernetes Token", regexp.MustCompile(`\bglagent-[A-Za-z0-9_\-]{20,}`), true, nil, false},
 	{"GitLab Feed Token", regexp.MustCompile(`\bglft-[A-Za-z0-9_\-]{20,}`), true, nil, false},
-	{"AWS Access Key ID", regexp.MustCompile(`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`), true, nil, false},
+	// AKIA long-term, ASIA temporary (STS), ABIA service bearer, ACCA
+	// context-specific — AWS's own list of access-key ID prefixes.
+	{"AWS Access Key ID", regexp.MustCompile(`\b(?:ABIA|ACCA|AKIA|ASIA)[A-Z0-9]{16}\b`), true, nil, false},
 	{"DigitalOcean API Token", regexp.MustCompile(`\bdop_v1_[a-f0-9]{40,}\b`), true, nil, false},
 	{"npm Publishing Token", regexp.MustCompile(`\bnpm_[A-Za-z0-9]{36,}\b`), true, nil, false},
 	// pypi.org's help page: "Set your password to the token value, including
@@ -222,6 +224,9 @@ var knownTokenPatterns = []tokenPattern{
 	{"OpenAI Project API Key", regexp.MustCompile(`\bsk-proj-[A-Za-z0-9_\-]{20,}\b`), true, nil, false},
 	{"OpenAI Service Account Key", regexp.MustCompile(`\bsk-svcacct-[A-Za-z0-9_\-]{20,}`), true, nil, false},
 	{"OpenAI Admin API Key", regexp.MustCompile(`\bsk-admin-[A-Za-z0-9_\-]{20,}`), true, nil, false},
+	// OpenRouter keys open with "sk-or-v1-": listed before the bare "sk-"
+	// below, which would otherwise claim them as OpenAI.
+	{"OpenRouter API Key", regexp.MustCompile(`\bsk-or-v1-[a-f0-9]{64}\b`), true, nil, false},
 	// Bare "sk-" is shared by OpenAI's legacy key format and DeepSeek's
 	// current format — the prefix alone can't distinguish them, so the
 	// vendor name says both rather than falsely picking one.
@@ -230,6 +235,11 @@ var knownTokenPatterns = []tokenPattern{
 	{"Stripe Live Secret Key", regexp.MustCompile(`\bsk_live_[A-Za-z0-9]{24,}\b`), true, nil, false},
 	{"Stripe Test Secret Key", regexp.MustCompile(`\bsk_test_[A-Za-z0-9]{24,}\b`), true, nil, false},
 	{"Stripe Restricted Key", regexp.MustCompile(`\brk_live_[A-Za-z0-9]{24,}\b`), true, nil, false},
+	// Token rotation wraps a bot or user token as "xoxe.xoxb-…" and issues
+	// an "xoxe-…" refresh token. Listed before the plain forms, which would
+	// otherwise claim the "xoxb-…" tail of a rotated token.
+	{"Slack Rotated Access Token", regexp.MustCompile(`\bxoxe\.xox[bp]-[0-9A-Za-z\-]{20,}`), true, nil, false},
+	{"Slack Refresh Token (rotation)", regexp.MustCompile(`\bxoxe-[0-9A-Za-z\-]{20,}`), true, nil, false},
 	{"Slack Bot Token", regexp.MustCompile(`\bxoxb-[0-9A-Za-z\-]{10,}\b`), true, nil, false},
 	{"Slack User Token", regexp.MustCompile(`\bxoxp-[0-9A-Za-z\-]{10,}\b`), true, nil, false},
 	{"Shopify Access Token", regexp.MustCompile(`\bshpat_[A-Za-z0-9]{20,}\b`), true, nil, false},
@@ -253,7 +263,10 @@ var knownTokenPatterns = []tokenPattern{
 	{"Stripe Webhook Signing Secret", regexp.MustCompile(`\bwhsec_[A-Za-z0-9]{24,}\b`), true, nil, false},
 	{"Supabase Secret Key", regexp.MustCompile(`\bsb_secret_[A-Za-z0-9_\-]{20,}`), true, nil, false},
 	{"Grafana Service Account Token", regexp.MustCompile(`\bglsa_[A-Za-z0-9_]{20,}`), true, nil, false},
-	{"Doppler Service Token", regexp.MustCompile(`\bdp\.st\.[A-Za-z0-9_\-]{20,}`), true, nil, false},
+	// A config-scoped service token carries the config name with dots
+	// ("dp.st.prd.xxxx"), which the old [A-Za-z0-9_-] class cut short.
+	{"Doppler Service Token", regexp.MustCompile(`\bdp\.st\.[A-Za-z0-9_.\-]{20,}`), true, nil, false},
+	{"Doppler Token", regexp.MustCompile(`\bdp\.(?:pt|ct|sa|scim|audit)\.[A-Za-z0-9_.\-]{20,}`), true, nil, false},
 	// Vault 1.10+ prefixes: hvs. service, hvb. batch, hvr. recovery, each
 	// followed by "24 or more randomly-generated characters" per the docs.
 	// The pre-1.10 "s." prefix is deliberately NOT matched: two characters of
@@ -265,6 +278,72 @@ var knownTokenPatterns = []tokenPattern{
 	// .env or a note went unseen. AGE-SECRET-KEY-1 is the standard identity;
 	// the PQ- variant is the post-quantum one.
 	{"age Secret Key", regexp.MustCompile(`\bAGE-SECRET-KEY-(?:PQ-)?1[0-9A-Z]{20,}`), true, nil, false},
+	// --- Added 2026-09-21: each prefix verified against a primary source
+	// (the vendor's own docs, GitHub's secret-scanning list, gitleaks or
+	// trufflehog), admitted by the rule in design/scan-and-protect.md D6: a
+	// hard prefix the cache sweep can index, and a test vector. Formats with
+	// no fixed bytes (Telegram, Azure AD, Terraform Cloud, below) are matched
+	// in files only; the sweep over agent transcripts skips them. ---
+	// AI
+	{"Groq API Key", regexp.MustCompile(`\bgsk_[A-Za-z0-9]{52}\b`), true, nil, false},
+	{"xAI API Key", regexp.MustCompile(`\bxai-[A-Za-z0-9]{80}\b`), true, nil, false},
+	{"Perplexity API Key", regexp.MustCompile(`\bpplx-[A-Za-z0-9]{48}\b`), true, nil, false},
+	{"Replicate API Token", regexp.MustCompile(`\br8_[A-Za-z0-9]{37}\b`), true, nil, false},
+	{"Pinecone API Key", regexp.MustCompile(`\bpcsk_[A-Za-z0-9]{5,6}_[A-Za-z0-9]{63}\b`), true, nil, false},
+	{"LangSmith API Key", regexp.MustCompile(`\blsv2_(?:pt|sk)_[a-f0-9]{32}_[a-f0-9]{10}\b`), true, nil, false},
+	{"Hugging Face Organization Token", regexp.MustCompile(`\bapi_org_[A-Za-z0-9]{34}\b`), true, nil, false},
+	{"Amazon Bedrock API Key", regexp.MustCompile(`\bABSK[A-Za-z0-9+/=]{60,}`), true, nil, false},
+	// Cloud, infrastructure, CI
+	{"Google OAuth Client Secret", regexp.MustCompile(`\bGOCSPX-[A-Za-z0-9_\-]{28}\b`), true, nil, false},
+	{"Vercel Access Token", regexp.MustCompile(`\bvcp_[A-Za-z0-9]{24,}\b`), true, nil, false},
+	{"Vercel AI Gateway Key", regexp.MustCompile(`\bvck_[A-Za-z0-9]{20,}\b`), true, nil, false},
+	{"Fly.io Org Token", regexp.MustCompile(`\bfo1_[A-Za-z0-9_\-]{43}\b`), true, nil, false},
+	{"Fly.io Machine Token", regexp.MustCompile(`\bfm2_[A-Za-z0-9_\-]{100,}`), true, nil, false},
+	{"Heroku API Key", regexp.MustCompile(`\bHRKU-AA[A-Za-z0-9_\-]{50,}`), true, nil, false},
+	{"Databricks Personal Access Token", regexp.MustCompile(`\bdapi[a-f0-9]{32}\b`), true, nil, false},
+	{"Pulumi Access Token", regexp.MustCompile(`\bpul-[a-f0-9]{40}\b`), true, nil, false},
+	{"Grafana Cloud Access Policy Token", regexp.MustCompile(`\bglc_[A-Za-z0-9+/=]{32,}`), true, nil, false},
+	{"Sourcegraph Access Token", regexp.MustCompile(`\bsgp_(?:[a-f0-9]{16}_)?[a-f0-9]{40}\b`), true, nil, false},
+	{"SonarQube Token", regexp.MustCompile(`\bsq[upa]_[a-f0-9]{40}\b`), true, nil, false},
+	{"Sentry Token", regexp.MustCompile(`\bsntry[su]_[A-Za-z0-9+/=]{40,}`), true, nil, false},
+	{"Postman API Key", regexp.MustCompile(`\bPMAK-[a-f0-9]{24}-[a-f0-9]{34}\b`), true, nil, false},
+	{"PlanetScale Token", regexp.MustCompile(`\bpscale_(?:tkn|oauth|pw)_[A-Za-z0-9_.\-]{32,}`), true, nil, false},
+	{"Supabase Personal Access Token", regexp.MustCompile(`\bsbp_[a-f0-9]{40}\b`), true, nil, false},
+	{"Neon API Key", regexp.MustCompile(`\bnapi_[A-Za-z0-9]{60,}\b`), true, nil, false},
+	{"CircleCI Personal API Token", regexp.MustCompile(`\bCCIPAT_[A-Za-z0-9]{22}_[a-f0-9]{40}\b`), true, nil, false},
+	{"CircleCI Project API Token", regexp.MustCompile(`\bCCIPRJ_[A-Za-z0-9]{22}_[a-f0-9]{40}\b`), true, nil, false},
+	{"GitLab Feature Flags Client Token", regexp.MustCompile(`\bglffct-[A-Za-z0-9_\-]{20,}`), true, nil, false},
+	{"GitLab Incoming Mail Token", regexp.MustCompile(`\bglimt-[A-Za-z0-9_\-]{20,}`), true, nil, false},
+	{"GitLab SCIM OAuth Token", regexp.MustCompile(`\bglsoat-[A-Za-z0-9_\-]{20,}`), true, nil, false},
+	{"GitLab Runner Registration Token", regexp.MustCompile(`\bGR1348941[A-Za-z0-9_\-]{20}\b`), true, nil, false},
+	{"Alibaba Cloud AccessKey ID", regexp.MustCompile(`\bLTAI[A-Za-z0-9]{16,24}\b`), true, nil, false},
+	// Registries
+	{"Docker Hub Personal Access Token", regexp.MustCompile(`\bdckr_pat_[A-Za-z0-9_\-]{27}\b`), true, nil, false},
+	{"RubyGems API Key", regexp.MustCompile(`\brubygems_[a-f0-9]{48}\b`), true, nil, false},
+	{"crates.io API Token", regexp.MustCompile(`\bcio[A-Za-z0-9]{32}\b`), true, nil, false},
+	{"JFrog Access Token", regexp.MustCompile(`\bAKCp[A-Za-z0-9]{70,}`), true, nil, false},
+	// SaaS keys that land in .env files
+	{"Atlassian API Token", regexp.MustCompile(`\bATATT3[A-Za-z0-9_=\-]{180,}`), true, nil, false},
+	{"Linear API Key", regexp.MustCompile(`\blin_api_[A-Za-z0-9]{40}\b`), true, nil, false},
+	{"Figma Personal Access Token", regexp.MustCompile(`\bfigd_[A-Za-z0-9_\-]{40,}`), true, nil, false},
+	{"HubSpot Private App Token", regexp.MustCompile(`\bpat-(?:na1|eu1)-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\b`), true, nil, false},
+	{"1Password Service Account Token", regexp.MustCompile(`\bops_[A-Za-z0-9+/=_\-]{100,}`), true, nil, false},
+	{"Tailscale Key", regexp.MustCompile(`\btskey-(?:auth|api|client)-[A-Za-z0-9]{6,}-[A-Za-z0-9]{20,}\b`), true, nil, false},
+	{"Shopify Custom App Access Token", regexp.MustCompile(`\bshpca_[a-fA-F0-9]{32}\b`), true, nil, false},
+	{"Shopify Private App Password", regexp.MustCompile(`\bshppa_[a-fA-F0-9]{32}\b`), true, nil, false},
+	{"Shopify Shared Secret", regexp.MustCompile(`\bshpss_[a-fA-F0-9]{32}\b`), true, nil, false},
+	{"Stripe Test Restricted Key", regexp.MustCompile(`\brk_test_[A-Za-z0-9]{24,}\b`), true, nil, false},
+	{"Square Access Token", regexp.MustCompile(`\bsq0atp-[A-Za-z0-9_\-]{22}\b`), true, nil, false},
+	{"Square Application Secret", regexp.MustCompile(`\bsq0csp-[A-Za-z0-9_\-]{43}\b`), true, nil, false},
+	{"Twilio API Key SID", regexp.MustCompile(`\bSK[a-f0-9]{32}\b`), true, nil, false},
+	{"Brevo API Key", regexp.MustCompile(`\bxkeysib-[a-f0-9]{64}-[A-Za-z0-9]{16}\b`), true, nil, false},
+	{"New Relic Key", regexp.MustCompile(`\bNR(?:AK|II|JS)-[A-Z0-9]{25,}\b`), true, nil, false},
+	{"Dynatrace API Token", regexp.MustCompile(`\bdt0c01\.[A-Z0-9]{24}\.[A-Z0-9]{64}\b`), true, nil, false},
+	{"Resend API Key", regexp.MustCompile(`\bre_[A-Za-z0-9]{8}_[A-Za-z0-9]{24}\b`), true, nil, false},
+	// Shapes with no fixed bytes: files only (see sweptByPattern).
+	{"Telegram Bot Token", regexp.MustCompile(`\b[0-9]{8,10}:AA[A-Za-z0-9_\-]{33}\b`), true, nil, false},
+	{"Azure AD Client Secret", regexp.MustCompile(`\b[A-Za-z0-9_.~\-]{3}[78]Q~[A-Za-z0-9_.~\-]{31,34}`), true, nil, false},
+	{"Terraform Cloud API Token", regexp.MustCompile(`\b[A-Za-z0-9]{14}\.atlasv1\.[A-Za-z0-9_\-]{60,}`), true, nil, false},
 	{"JSON Web Token (JWT)", regexp.MustCompile(`\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]*\b`), true, nil, false},
 	{"RSA Private Key", regexp.MustCompile(`-----BEGIN RSA PRIVATE KEY-----`), true, nil, false},
 	{"OpenSSH Private Key", regexp.MustCompile(`-----BEGIN OPENSSH PRIVATE KEY-----`), true, nil, false},

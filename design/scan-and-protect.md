@@ -176,7 +176,7 @@ verb from `annotateRemedies`; a decision on whether it counts
 (`CountedAsSecret`); and, if it is a token shape, a hard literal prefix — or
 an anchor in `patternAnchors` — plus a test vector. A shape with no fixed
 bytes to look for is not admitted, however common the vendor; that is why
-jit's table is fifty-five formats and not four hundred.
+jit's table is 114 formats and not four hundred (fifty-five until 2026-09-21; the sixty-odd verified prefixes recorded that day were admitted by this rule, and the shapes with no fixed bytes among them are matched in files only).
 
 A candidate belongs to **Protect** when it writes. It must be one jit
 command the CLI can run on its own (the app is never the only way to do

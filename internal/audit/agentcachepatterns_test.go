@@ -23,17 +23,27 @@ func exposedAt(findings []Finding, path string) []Finding {
 	return out
 }
 
-// Every pattern this sweep is meant to cover has a needle. A new entry in the
-// table with neither a derivable lead nor an anchor would otherwise be swept
-// by the content scanner and silently skipped here.
-func TestPatternLeadIndexCoversEveryPattern(t *testing.T) {
+// Every pattern the sweep covers has a needle, and the set it leaves out is
+// exactly the shapes with no fixed bytes plus the private-key headers. A new
+// entry in the table that lands in the left-out set by accident fails here,
+// instead of silently going unswept.
+func TestPatternSweepSkipsShapesWithoutLeads(t *testing.T) {
+	wantSkipped := map[string]bool{
+		"RSA Private Key": true, "OpenSSH Private Key": true, "EC Private Key": true, "PKCS8 Private Key": true,
+		"Database connection string with embedded credentials (scheme-less)": true,
+		"Telegram Bot Token": true, "Azure AD Client Secret": true, "Terraform Cloud API Token": true,
+	}
 	for _, tp := range knownTokenPatterns {
-		if !sweptByPattern(tp) {
+		swept := sweptByPattern(tp)
+		if swept == wantSkipped[tp.vendor] {
+			t.Errorf("%q: swept=%v, want %v", tp.vendor, swept, !wantSkipped[tp.vendor])
+		}
+		if !swept {
 			continue
 		}
 		lits, _ := patternLeads(tp)
 		if len(lits) == 0 {
-			t.Errorf("%q has no literal lead and no entry in patternAnchors; the cache sweep cannot find it", tp.vendor)
+			t.Errorf("%q is swept but has no literal lead", tp.vendor)
 		}
 		for _, l := range lits {
 			if l == "" {
@@ -49,8 +59,8 @@ func TestPatternLeadIndexCoversEveryPattern(t *testing.T) {
 		}
 		lits, _ := patternLeads(tp)
 		got := strings.Join(lits, ",")
-		if got != "AKIA,ASIA" {
-			t.Errorf("AWS leads = %q, want AKIA,ASIA", got)
+		if got != "ABIA,ACCA,AKIA,ASIA" {
+			t.Errorf("AWS leads = %q, want ABIA,ACCA,AKIA,ASIA", got)
 		}
 	}
 }
@@ -91,9 +101,17 @@ func TestPatternLeadsNeverDropAMatch(t *testing.T) {
 	}
 	data, _ := os.ReadFile(path)
 	swept := cachePatternIndex().matches(data)
+	// Only the formats the sweep covers: a shape with no fixed bytes is
+	// matched in files and deliberately not in transcripts.
+	sweptVendor := map[string]bool{}
+	for _, tp := range knownTokenPatterns {
+		sweptVendor[tp.vendor] = sweptByPattern(tp)
+	}
 	fullSet := map[string]bool{}
 	for _, tk := range full {
-		fullSet[tk.Vendor+"\x00"+tk.Value] = true
+		if sweptVendor[tk.Vendor] {
+			fullSet[tk.Vendor+"\x00"+tk.Value] = true
+		}
 	}
 	for _, tk := range swept {
 		if !fullSet[tk.Vendor+"\x00"+tk.Value] {
@@ -224,18 +242,27 @@ func TestCachePatternsBoundaries(t *testing.T) {
 	}
 }
 
-// The one pattern with no literal lead is reached through its anchor.
-func TestSchemeLessConnStringFoundViaAnchor(t *testing.T) {
+// A shape with no fixed bytes is matched in files, not in transcripts: the
+// scheme-less connection string is reported from a name-gated file and not
+// from a Claude Code transcript holding the same line (2026-09-21: a real
+// transcript reported "sip:…@zoomcrc.com" and "from:…@calendly.com").
+func TestSchemeLessConnStringIsFilesOnly(t *testing.T) {
 	home := t.TempDir()
-	path := filepath.Join(home, ".claude", "projects", "p", "s.jsonl")
-	writeTree(t, path, `{"text":"DB_URL=scanner_user:hunter2hunter2@db.example.com/postgres"}`+"\n")
+	line := "DB_URL=scanner_user:hunter2hunter2@db.example.com/postgres\n"
+	transcript := filepath.Join(home, ".claude", "projects", "p", "s.jsonl")
+	writeTree(t, transcript, `{"text":"`+strings.TrimSpace(line)+`"}`+"\n")
+	file := filepath.Join(home, "proj", "credentials.txt")
+	writeTree(t, file, line)
 	findings, _, err := Scan(Config{HomeDir: home, RunID: "r", ScannerVersion: "t"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := exposedAt(findings, path)
+	if got := exposedAt(findings, transcript); len(got) != 0 {
+		t.Errorf("scheme-less connection string reported from a transcript: %+v", got)
+	}
+	got := exposedAt(findings, file)
 	if len(got) != 1 || got[0].KeyName == nil || !strings.HasPrefix(*got[0].KeyName, "Database connection string") {
-		t.Fatalf("scheme-less connection string via its @ anchor: got %+v", got)
+		t.Errorf("scheme-less connection string not reported from the file: %+v", got)
 	}
 }
 
@@ -286,7 +313,7 @@ func TestSweepOverlapMatchesFindFileTokens(t *testing.T) {
 		"KEY=sk-proj-" + body,                            // sk-proj- must win over sk-
 		"KEY=sk-svcacct-" + body,                         // sk-svcacct- over sk-
 		"URL=postgres://u:paSSwOrd12@db.example.com/app", // scheme'd over scheme-less
-		"DSN=u_ser:paSSwOrd12@db.example.com/app",        // scheme-less alone (no scheme)
+		"KEY=sk-or-v1-" + strings.Repeat("0a1b2c3d", 8),  // sk-or-v1- over sk-
 		"AKIAABCDEFGHIJKLMNOP and ASIAABCDEFGHIJKLMNOP",  // both AWS forms
 	}
 	dir := t.TempDir()
