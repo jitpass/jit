@@ -54,14 +54,18 @@ import (
 // trusted on — and the exact-string search already covers it whenever the
 // origin is known.
 
-// patternAnchors names, for a pattern whose regex has no literal lead, a
-// literal every one of its matches must contain. Keyed by vendor. A pattern
-// with neither a lead nor an anchor cannot be swept here, and the test that
-// every pattern has one is what keeps a new pattern from silently going
-// unswept.
-var patternAnchors = map[string]string{
-	"Database connection string with embedded credentials (scheme-less)": "@",
-}
+// patternAnchors could name, for a pattern whose regex has no literal lead,
+// a literal every one of its matches must contain. It is empty on purpose.
+// The scheme-less connection string was swept through an "@" anchor until
+// 2026-09-21, when a real transcript reported "sip:894…@zoomcrc.com" and
+// "from:notifications@calendly.com" as database credentials: in prose
+// about mail and meetings, "word:word@host" is ordinary text. A shape with
+// no fixed bytes is not admitted to the sweep (design/scan-and-protect.md
+// D6); it keeps matching in the files the content scanner reads, where it
+// has earned its place, and a vaulted password's copy in a transcript is
+// the deep scan's to find by value. TestPatternSweepSkipsShapesWithoutLeads
+// pins the exact set left out.
+var patternAnchors = map[string]string{}
 
 // patternNeedle is one fixed string to look for and the pattern it belongs to.
 type patternNeedle struct {
@@ -92,7 +96,11 @@ func cachePatternIndex() *patternLeadIndex {
 // sweptByPattern reports whether a table entry takes part in this sweep.
 // Private-key bodies are ceded to ScanPrivateKeys, as FindFileTokens does.
 func sweptByPattern(tp tokenPattern) bool {
-	return !strings.HasSuffix(tp.vendor, "Private Key")
+	if strings.HasSuffix(tp.vendor, "Private Key") {
+		return false
+	}
+	lits, _ := patternLeads(tp)
+	return len(lits) > 0
 }
 
 // patternLeads returns the needles for one pattern: its literal leads, or its
