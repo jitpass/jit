@@ -100,6 +100,8 @@ func TargetedScan(cfg Config, targets []string) ([]Finding, ScanSummary, error) 
 	summary.FilesScanned = filesScanned
 	summary.ExcludedPaths = cfg.ExcludePaths
 	summary.DegradedScanners = degraded
+	summary.Deep = cfg.VaultNeedles != nil
+	summary.VaultSecretsChecked = len(cfg.vaultNeedles())
 	coverage := ComputeCoverage(cfg.HomeDir, cfg.MountRegistryPath, all)
 	summary.SecretsTotal = coverage.Total()
 	summary.SecretsProtected = coverage.Protected

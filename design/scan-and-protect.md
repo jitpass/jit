@@ -225,6 +225,14 @@ left behind, the scan is what gets fixed — not by a note, but by looking.
   last run, next run, what is new since. "Scan" stays the verb on its
   buttons (Scan Now…, Scan Whole Mac…) and the CLI keeps `jit scan`.
   Scheduled runs are regular depth; Deep is by hand. Decided 2026-09-21.
+- **D11 — A vault copy counts as an exposed secret, and the protected
+  count stands.** Every `vault_copy` of one value is one exposed secret
+  (they share a cause group), so the score falls by the copy. The
+  protected count is not reduced: it counts vault entries behind live
+  mounts, and a vaulted secret is not always one of those (a pointer
+  file, a wrap-captured token), so subtracting would guess. Built
+  2026-09-21 with `jit scan --deep`; the alternative — report, mark, do not
+  count — kept the score flattering while a copy was loose.
 - **D10 — AI Agents is a digest, not a place to act.** One row per agent,
   one line of facts, every fact linking to its home: key state to Tools,
   cached copies and MCP keys to Findings, reads to Decoys, grants to

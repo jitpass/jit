@@ -153,6 +153,8 @@ func Scan(cfg Config) ([]Finding, ScanSummary, error) {
 	summary.ExcludedPaths = cfg.ExcludePaths
 	summary.DegradedScanners = degraded
 	summary.DerivedCredentials = ScanDerivedCredentials(cfg)
+	summary.Deep = cfg.VaultNeedles != nil
+	summary.VaultSecretsChecked = len(cfg.vaultNeedles())
 	coverage := ComputeCoverage(cfg.HomeDir, cfg.MountRegistryPath, all)
 	summary.SecretsTotal = coverage.Total()
 	summary.SecretsProtected = coverage.Protected
