@@ -156,11 +156,19 @@ var connStringPlaceholderUserinfo = regexp.MustCompile(
 // Anchored at the start because both call sites test it against a span that
 // begins at the userinfo: MatchKnownTokenPattern passes the whole value, and
 // FindFileTokens passes the matched span, which starts at the scheme.
+// The 2026-09-21 addition is the telephony family — a Zoom invitation's
+// "sip:89462296467@zoomcrc.com" dial-in was reported as a database
+// credential from a Claude Code transcript that quoted the invite; sips,
+// h323, im, pres and fax are the same shape from the same RFCs. So is a
+// mail search operator — "from:notifications@calendly.com" in an
+// investigation note, the same transcript — hence from, to, cc, bcc,
+// replyto, sender and deliveredto: an operator name is never a database
+// user.
 // It composes with placeholderUserinfoAlt rather than replacing it: a
 // scheme-less match must clear BOTH checks, and tokenPattern carries a single
 // exclude, so the two alternatives are ORed into one regex here.
 var schemeLessConnStringExclude = regexp.MustCompile(
-	`(?i)^(?:mailto|tel|sms|callto|skype|xmpp|urn|data|geo|magnet):` + `|` +
+	`(?i)^(?:mailto|tel|sms|callto|skype|xmpp|urn|data|geo|magnet|sips?|h323|im|pres|fax|from|to|cc|bcc|replyto|sender|deliveredto):` + `|` +
 		placeholderUserinfoAlt + `|` + shellExpansionUserinfoAlt + `|` + angleBracketUserinfoAlt)
 
 // knownTokenPatterns is checked in order — more specific prefixes must
