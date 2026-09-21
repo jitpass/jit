@@ -167,6 +167,15 @@ func TestMatchKnownTokenPatternSchemeLessConnString(t *testing.T) {
 		"mailto:engineering@acme.io",
 		"mailto:somebody@company.co.uk",
 		"tel:pluslongnumber@carrier.example",
+		// A Zoom invitation's dial-in, quoted in a Claude Code transcript,
+		// reported as a database credential (2026-09-21). The telephony
+		// URI family shares the shape.
+		"sip:89462296467@zoomcrc.com",
+		"sips:89462296467@zoomcrc.com",
+		"h323:conference1234@gateway.example.com",
+		// Mail search syntax, from the same note: an operator, not a user.
+		"from:notifications@calendly.com",
+		"replyto:somebody.long@example.com",
 	}
 	for _, v := range shouldNotMatch {
 		if vendor, _, ok := MatchKnownTokenPattern(v); ok {
