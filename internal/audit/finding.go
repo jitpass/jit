@@ -210,7 +210,21 @@ import (
 // ("a verbatim copy of the credential from ~/proj/.env, kept by Claude
 // Code"); a consumer that groups copies per agent — the JitPass app's AI
 // Agents row — had to parse that prose. Nothing else changes.
-const SchemaVersion = "0.21.0"
+// 0.22.0 records a semantic change with no new field: exposed_secret findings
+// are now also produced from inside AI agent caches by CONTENT — the vendor
+// patterns swept over every agent cache root (Claude Code's file-history and
+// transcripts, Cursor's, Codex's, …), not only the three small Claude dirs
+// they covered before, and at the cache walk's 64 MiB bound rather than the
+// content scanner's 5 MiB. Such a finding carries `agent` and `cache_area`
+// like an agent_cached_secret does. The change a consumer will notice: a
+// cached copy of a credential whose origin is ALREADY protected (a .env now
+// holding a jit://vault pointer) used to disappear from the report — the
+// cross-reference had no value left to search for — and is now reported as
+// an exposed_secret at the cache file, with its line. Where the origin is
+// still in plaintext the cross-reference's agent_cached_secret is reported
+// and the content match for the same value is dropped, so nothing is
+// reported twice.
+const SchemaVersion = "0.22.0"
 
 // ScannerName identifies this tool in the shared NDJSON envelope, matching
 // bumblebee's record shape so a receiver can co-ingest both (RFC.md §4).
