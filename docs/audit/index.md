@@ -86,6 +86,32 @@ Named paths never pull in the fixed machine-wide credential stores (`~/.aws`,
 `~/.ssh`, your shell configs) unless you name them, and symlinks are not
 followed. A path that doesn't exist is an error, not a silently empty scan.
 
+## Deep scan: `--deep`
+
+A scan recognises a token by its shape. It cannot know that
+`hunter2-prod` is your database password; only your vault knows that.
+`jit scan --deep` reads every secret in the vault and searches for each
+one as an exact string - across every AI agent cache (binary stores
+included) and every file the scan reads anyway - and reports each hit as
+a **vault copy**: the vault path, the file, the line. That reaches the two
+things shape cannot: a secret with no format, and a copy whose original
+you have already protected, so nothing else confirms its value any more.
+
+It is still a scan. It writes nothing. Reading the vault is the one thing
+it authenticates for: no prompt when jit's service holds an unlocked
+session, one Touch ID otherwise. The values stay in memory for the length
+of the run and never reach the report - a vault copy is named by its
+variable, never its value. A Mac with no vault yet is refused before
+anything is read. To check a folder the whole-machine scan does not open,
+name it: `jit scan --deep ~/scripts`.
+
+```console
+$ jit scan --deep
+🔐 Touch ID required: approve the prompt on your Mac to continue...
+jit scan  ~/ · 11,884 files · 4.1s
+  deep scan: 14 vault secrets checked for exact copies in the open
+```
+
 ## Output formats
 
 | Invocation | Gets you |

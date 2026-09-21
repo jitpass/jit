@@ -140,6 +140,17 @@ the account it was found in, so rotating it in 1Password is the only
 rotation you do. Every signed-in account is checked unless `OP_ACCOUNT`
 names one. `--no-1password` stores plain copies instead.
 
+## For a program: `--format json`
+
+`jit migrate <path> --yes --format json` runs the targeted migrate with its
+text captured and writes one JSON document instead: the targets, whether
+the plan applied, the variable names vaulted, what the agent-cache sweep
+removed and what it left (with why), every error, and the text it would
+have printed. Never a value. The JitPass app's banner after a Protect reads
+its fields - "NOTION_TOKEN is in the vault · 8 cached copies removed · 1
+file left in Claude Code's transcripts" - rather than parsing prose. The
+shape is in [Migrate JSON output](../reference/migrate-json.md).
+
 ## Finishing deletions: `--clean`
 
 Some findings' stated fix is deletion, not migration: a credential file
