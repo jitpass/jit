@@ -78,6 +78,9 @@ type cacheNeedle struct {
 	value  string
 	key    string
 	origin Finding
+	// vault is set for a deep scan's needle: the origin is the vault, not a
+	// finding, and a hit is a vault_copy (deep.go).
+	vault *VaultNeedle
 }
 
 // agentCacheRoot is one AI agent's local state directory.
@@ -368,6 +371,13 @@ func crossReferenceAgentCaches(cfg Config, findings []Finding) ([]Finding, []Sca
 		if !CountedAsSecret(f) {
 			continue
 		}
+		// A deep scan's own find is not an origin: the vault is. Letting it
+		// pin its value here would report the next copy as "a copy of the
+		// credential from credentials.txt" when both are copies of the vault
+		// entry, and the needle below already covers them.
+		if f.FindingType == FindingTypeVaultCopy {
+			continue
+		}
 		add := func(key, value string) {
 			if value == "" || seen[value] || !eligibleNeedle(value) {
 				return
@@ -381,6 +391,18 @@ func crossReferenceAgentCaches(cfg Config, findings []Finding) ([]Finding, []Sca
 		for _, cv := range f.claimedRawValues {
 			add(cv.Key, cv.Value)
 		}
+	}
+	// A deep scan adds the vault's values, after the origin pins: a value a
+	// finding already confirmed keeps its cross-reference finding (the copy
+	// names its origin file), and the vault names the rest.
+	vaultNeedles := cfg.vaultNeedles()
+	for i := range vaultNeedles {
+		n := vaultNeedles[i]
+		if seen[n.Value] {
+			continue
+		}
+		seen[n.Value] = true
+		pins = append(pins, cacheNeedle{value: n.Value, key: n.Name, vault: &vaultNeedles[i]})
 	}
 	// Not an early return when pins is empty: the vendor-pattern sweep below
 	// runs on every cache file regardless, and the protected-origin case —
@@ -456,6 +478,11 @@ func crossReferenceAgentCaches(cfg Config, findings []Finding) ([]Finding, []Sca
 			for idx := range pins {
 				at, hit := first[idx]
 				if !hit {
+					continue
+				}
+				if pins[idx].vault != nil {
+					out = append(out, cfg.vaultCopyFinding(path, root.label, *pins[idx].vault, data, at, count[idx], textual))
+					reportedHere[pins[idx].value] = true
 					continue
 				}
 				f := cfg.agentCachedSecretFinding(

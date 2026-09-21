@@ -81,6 +81,13 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 	// below it means: "0 secrets" from a run that could not read ~/.aws
 	// is not the same claim as "0 secrets", and the difference is exactly the
 	// one a user reading a clean report will not think to ask about.
+	if summary.Deep {
+		noun := "secrets"
+		if summary.VaultSecretsChecked == 1 {
+			noun = "secret"
+		}
+		fmt.Fprintf(w, "  deep scan: %d vault %s checked for exact copies in the open\n\n", summary.VaultSecretsChecked, noun)
+	}
 	if len(summary.DegradedScanners) > 0 {
 		fmt.Fprint(w, "  ")
 		noun := "categories"
@@ -2205,6 +2212,7 @@ const (
 	kindTerraformState = "get secrets out of Terraform state"
 	kindSeal           = "seal it"
 	kindAgentCopies    = "rotate — an agent kept its own copies"
+	kindVaultCopy      = "rotate, then clear the copy — the secret is already in your vault"
 	kindKeyByHand      = "delete by hand"
 	kindHistoryLine    = "rotate, then clear the line"
 	kindAgentLine      = "rotate, then delete the line"
@@ -2272,6 +2280,15 @@ func manualAction(f Finding, ctx manualContext, home string) (kind, action strin
 		return kindTerraformState, "rotate " + them + " now; move state to an encrypted remote backend, and keep secrets out of it with ephemeral values (Terraform 1.10+)"
 	case f.FindingType == FindingTypeIACVariableFile:
 		return kindSeal, "seal it (sealed-secrets/SOPS) or move it to a real secret store"
+	case f.FindingType == FindingTypeVaultCopy:
+		// A deep scan's find: the vault already holds this secret, so the
+		// only work is the plaintext copy — and rotation, since it was
+		// readable. Clean Caches reaches a copy in an agent's cache; a copy
+		// in a plain file is deleted by hand.
+		if f.Agent != "" {
+			return kindVaultCopy, "rotate " + them + " now, then jit migrate caches clears this copy"
+		}
+		return kindVaultCopy, "rotate " + them + " now, then delete this copy — the vault has the secret"
 	case f.FindingType == FindingTypeAgentCachedSecret:
 		// Rotation leads because it is the fix: the credential sat in an
 		// agent's cache in plaintext, and clearing a copy does not un-expose

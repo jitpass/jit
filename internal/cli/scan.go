@@ -26,7 +26,9 @@ var (
 	scanUnfiltered bool
 	scanFull       bool
 	scanFailOn     string
-	scanExclude    []string
+	// scanDeep turns the run into a deep scan: see collectVaultNeedles.
+	scanDeep    bool
+	scanExclude []string
 )
 
 // newAuditConfig builds the audit Config every CLI scan surface shares
@@ -247,6 +249,16 @@ var scanCmd = &cobra.Command{
 			return fmt.Errorf("jit scan: %w", excludeErr)
 		}
 		cfg.ExcludePaths = excludes
+		// --deep: the vault's values as exact-match needles, gathered before
+		// the scan starts so a locked vault is a plain error, never a
+		// silently regular result (scandeep.go).
+		if scanDeep {
+			needles, deepErr := collectVaultNeedles()
+			if deepErr != nil {
+				return fmt.Errorf("jit scan --deep: %w", deepErr)
+			}
+			cfg.VaultNeedles = needles
+		}
 
 		machineScan := scanFormat == "ndjson" || scanFormat == "markdown" || scanFormat == "md" || scanOutput != ""
 		progress := newProgress(cmd, machineScan)
@@ -459,6 +471,7 @@ func init() {
 	scanCmd.Flags().BoolVar(&scanFull, "full", false, "print the full finding inventory (categories, severities, every file and line) instead of the coverage summary")
 	scanCmd.Flags().StringArrayVar(&scanExclude, "exclude", nil, "skip this folder and everything under it (repeatable; ~ and relative paths allowed); the report records what was excluded")
 	scanCmd.Flags().StringVar(&scanFailOn, "fail-on", "", "exit 2 when the scan's risk level is at or above this: critical, high, medium, low, or any (default: always exit 0)")
+	scanCmd.Flags().BoolVar(&scanDeep, "deep", false, "also look for exact copies of every secret in your vault, across the AI agent caches and every file the scan reads (name a folder to cover it); reads the vault, so Touch ID follows unless the service holds a session; still writes nothing, and no value reaches the report")
 	registerPagerFlag(scanCmd)
 	_ = scanCmd.RegisterFlagCompletionFunc("fail-on", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 		return []string{audit.RiskLevelCritical, audit.RiskLevelHigh, audit.RiskLevelMedium, audit.RiskLevelLow, "any"}, cobra.ShellCompDirectiveNoFileComp

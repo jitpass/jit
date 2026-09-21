@@ -224,7 +224,20 @@ import (
 // still in plaintext the cross-reference's agent_cached_secret is reported
 // and the content match for the same value is dropped, so nothing is
 // reported twice.
-const SchemaVersion = "0.22.0"
+//
+// 0.23.0: a deep scan (`jit scan --deep`) adds the `vault_copy` finding —
+// an exact copy of a secret already in the vault, found in an agent cache
+// or a file the scan reads, with `key_name` the vault path, the line where
+// the file is text, and `agent`/`cache_area` when it sits in a cache. Its
+// `origin_path` is empty: the origin is the vault. The summary carries
+// `deep` and `vault_secrets_checked`. A copy the cross-reference already
+// reports as agent_cached_secret (its origin still in plaintext) is not
+// reported again as a vault_copy, and a vault_copy suppresses the
+// exposed_secret the vendor patterns would have raised for the same value
+// in the same file. Counted in the ledger as one exposed secret per value
+// (the same cause_group for every copy of it); the protected count is not
+// reduced, so the score falls by the copy, not by the vaulted entry.
+const SchemaVersion = "0.23.0"
 
 // ScannerName identifies this tool in the shared NDJSON envelope, matching
 // bumblebee's record shape so a receiver can co-ingest both (RFC.md §4).
@@ -265,6 +278,11 @@ const (
 	// in a structured store in the same run, which is what makes it a fact
 	// rather than a guess. See agentcache.go.
 	FindingTypeAgentCachedSecret = "agent_cached_secret" // #nosec G101 -- enum label, not a credential
+	// An exact copy of a secret already in the vault, found in the open by
+	// a deep scan (`jit scan --deep`): KeyName is the vault path, OriginPath
+	// is empty because the origin is the vault, not a file. Never produced
+	// by a regular scan. See deep.go. Schema 0.23.0.
+	FindingTypeVaultCopy = "vault_copy" // #nosec G101 -- enum label, not a credential
 )
 
 // AllFindingTypes lists every finding_type in the fixed order used for
@@ -284,6 +302,7 @@ var AllFindingTypes = []string{
 	FindingTypeExposedSecret,
 	FindingTypeShellHistorySecret,
 	FindingTypeAgentCachedSecret,
+	FindingTypeVaultCopy,
 }
 
 // Severity levels for an individual finding.
@@ -650,6 +669,13 @@ type ScanSummary struct {
 	// the first is true. Empty (omitted) on a clean run, which is the norm.
 	DegradedScanners []ScannerFailure `json:"degraded_scanners,omitempty"`
 
+	// Deep records that the run was a deep scan (Config.VaultNeedles set):
+	// its vault_copy findings exist only because the vault's values were
+	// searched for, and VaultSecretsChecked says how many. Absent on a
+	// regular scan. Added in 0.23.0.
+	Deep                bool `json:"deep,omitempty"`
+	VaultSecretsChecked int  `json:"vault_secrets_checked,omitempty"`
+
 	// JitProtectedCount is how many registered jit live mounts (FIFOs
 	// currently occupying a path jit migrated) exist on this machine.
 	// Scanners never read those paths — a pipe has no at-rest content, and
@@ -710,6 +736,15 @@ type Config struct {
 	// vault a placeholder as though it were a credential, so the two would
 	// disagree about what is real. Value-level filler stays suppressed.
 	Unfiltered bool
+
+	// VaultNeedles turns a run into a deep scan (`jit scan --deep`): the
+	// vault's secrets, each searched for as an exact string across every
+	// agent cache root and every file the scan reads, reported as a
+	// vault_copy naming the variable, the file and the line. The caller did
+	// the authentication; this package stays read-only and prompt-free, and
+	// no value reaches any output (see deep.go). nil, the default and every
+	// test's, is a regular scan.
+	VaultNeedles []VaultNeedle
 
 	// Progress, when non-nil, is called once as each category (or targeted
 	// path) is about to be scanned, with a short human noun for it
