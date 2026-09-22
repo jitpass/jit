@@ -251,13 +251,21 @@ left behind, the scan is what gets fixed — not by a note, but by looking.
   file, a wrap-captured token), so subtracting would guess. Built
   2026-09-21 with `jit scan --deep`; the alternative — report, mark, do not
   count — kept the score flattering while a copy was loose.
-- **D10 — AI Agents is a digest, not a place to act.** One row per agent,
-  one line of facts, every fact linking to its home: key state to Tools,
-  cached copies and MCP keys to Findings, reads to Decoys, grants to
-  Grants. It answers the one question no other window puts in a sentence,
-  "what is this agent doing on my Mac", and owns no fact of its own. Two
-  windows acting on one fact is where the original report hid. Decided
-  2026-09-21; drawn in the final mockup.
+- **D10 — AI Agents answers "what is this agent doing on my Mac", and
+  acts on its own rows.** One card per agent: what is in its files (every
+  finding the scan placed there — vault copies, cached copies, tokens by
+  format — with Clean Caches and Redact, the same commands Findings runs,
+  Redact narrowed to that agent's files), what it can reach (protected
+  files through jit, whether a real value goes to it only after Touch ID,
+  MCP keys in the open, grants), what it did this week (from the audit:
+  runs, real values, decoy reads, prompts), its key, and its one setting —
+  redact its caches after every scheduled scan. Every number is one
+  Findings or the audit holds. *Revised 2026-09-22.* The first cut (decided
+  2026-09-21) was a digest that owned no verb: one row, four facts, each
+  linking to its home. It counted one finding type, said "all set" over
+  34 copies in Claude Code's transcripts, and nobody noticed, because a
+  digest nobody acts from is a digest nobody reads. An agent is not a tool:
+  it records, so the first row is what it has seen. jit-app #45.
 - **D13 — A deep scan searches for the vault's secrets, not for
   everything in the vault.** `Config.vaultNeedles` applies the same
   `NonSecretValueReason` / `NonSecretNameReason` pair every other scanner
@@ -305,6 +313,39 @@ left behind, the scan is what gets fixed — not by a note, but by looking.
   `secrets_total` / `secrets_protected` stay in the NDJSON for the score.
   Mockup: jit-app `docs/design/mockups/Findings-header.html`. Decided
   2026-09-22.
+
+- **D15 — The panel's rows follow one rule, and the windows' headers
+  share one shape.** A panel value is a number plus one or two words; its
+  dot is the window's own mark, or nothing for a count; a green dot says
+  why in words; red or amber is the worst fact, and the window names it.
+  A window's header is the headline, then one line per thing to do in
+  the numbers a card below shows, ending in the card's verb. Both rules
+  are written in the design system's `windows.md` ("Panel rows", "The
+  header's to-do lines"); the tests on `PanelValue` hold the first. The
+  Decoys window (jit-app #45) and the Tools window (#46) were built on
+  them; the panel (#47). Decided 2026-09-22.
+
+## Known gaps the app now shows honestly
+
+Found while building the three windows on a real Mac (2026-09-22). Each
+is the engine's to close; until then the app says so in the row rather
+than pretending.
+
+- **`jit scan` does not ask the keychain.** A token in a tool's own
+  keychain (`gh auth token`) is found only by `wrap list --discover`, so it
+  is not a Finding; the Tools window carries it as the one before-fact
+  that lives there, naming the command any program can read it with.
+- **git through the `osxkeychain` helper reads as "nothing found".**
+  Discovery asks export commands only for shim tools.
+- **Serve events name no reader.** Every decoy read this week says
+  "reader not recorded"; the audit's best-effort kernel lookup came back
+  empty each time. The Decoys window prints that rather than "unknown".
+- **Consent events carry no program.** The agent card's "prompts" count
+  wants approvals and declines by the program that raised them.
+- **A run that asks a mount for a variable the vault lacks is logged as an
+  undelivered decoy serve** with the variable in its cause. The Decoys
+  window reads it out of the cause string ("secret not found"); a typed
+  field would be better than a regex.
 
 ## What this decides next
 
