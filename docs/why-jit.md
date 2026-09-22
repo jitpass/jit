@@ -35,10 +35,11 @@ number.)
 ```
 jit scan  ~/ · 7 files · 1ms
 
-  YOUR SECRETS: 7 — 0 protected by jit (0%)
-  ▱▱▱▱▱▱▱▱▱▱  to 100%: one command +71% · 2 secrets only you can fix +29%
+  Nothing in your vault yet
+  4 files hold secrets jit can move into the vault  jit migrate
+  2 secrets · rotate, then delete every copy
 
-  jit will protect these — 5 secrets in 4 files, 0% → 71%
+  jit will protect these — 5 secrets in 4 files
       → jit migrate
         one command; it vaults the values and rewrites 4 files — every tool that
         reads them keeps working:
@@ -49,7 +50,7 @@ jit scan  ~/ · 7 files · 1ms
       these are in plaintext now — rotating after vaulting is the gold standard
       · every change is reversible: jit migrate undo
 
-  only you can protect these — 2 secrets, 71% → 100%
+  only you can protect these — 2 secrets
 
     [rotate, then delete every copy]
     ! A production database password in 2 files

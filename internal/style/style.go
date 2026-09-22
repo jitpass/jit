@@ -137,8 +137,6 @@ const (
 
 	// The coverage bar's cells: filled is OK green, empty is Plain. Ten
 	// cells, one per 10%.
-	GlyphBarFilled = "▰"
-	GlyphBarEmpty  = "▱"
 
 	// GlyphRule draws the single subtotal line under a numeric table — the
 	// one box-rule the house style keeps, because a table total is where a
