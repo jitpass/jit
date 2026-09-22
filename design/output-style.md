@@ -31,14 +31,14 @@ whitespace or wording, not a new color.
 
 | Ink | Helper | Means | Use it on | Never on |
 |---|---|---|---|---|
-| green | `cOK` | this is fine / this is done | `●` and `✓` glyphs, "N protected by jit (62%)", the filled `▰` of the coverage bar, "· wraps docker" | a command; a heading that isn't reporting good state |
-| green + bold | `cOKBold` | the one headline good state on the line | `jit will protect these`, the coverage arithmetic `62% → 81%`, `+19%` | more than once per line |
-| amber | `cWarn` | needs a look, nothing is broken | `○` glyphs, "unreferenced", decoy notes, the manual-remainder `+18%` | a sentence of plain advice — that reads as a warning state it isn't |
+| green | `cOK` | this is fine / this is done | `●` and `✓` glyphs, the report's "4 files hold secrets jit can move into the vault" line, "· wraps docker" | a command; a heading that isn't reporting good state |
+| green + bold | `cOKBold` | the one headline good state on the line | `jit will protect these` | more than once per line |
+| amber | `cWarn` | needs a look, nothing is broken | `○` glyphs, "unreferenced", decoy notes | a sentence of plain advice — that reads as a warning state it isn't |
 | amber + bold | — | an amber state marker that must be found first | the `!` leading a non-critical manual group, `INCOMPLETE SCAN`, `81% → 100%` | body prose |
 | red | `cRisk` | a real problem the reader must act on | `✗`, `HIGH`, the `!` on a critical group | anything the reader can't do something about |
 | red + bold | `cRiskBold` (`style.RiskBold`) | the section header naming what only the user can fix, and `CRITICAL` | `only you can protect these` | individual items inside a red-bold section |
 | cyan | `cPath` / `cPathBold` | **something you can type or open** | every command, always via `hlCmds`; the `→` that introduces one; runnable spans inside a sentence | a path the report is merely describing (that's plain) |
-| **bold** | `cBold` | the single primary thing on this line | a group name, a manual-group title, `YOUR SECRETS: 80` | two things on one line — then neither is primary |
+| **bold** | `cBold` | the single primary thing on this line | a group name, a manual-group title, `25 secrets in your vault` | two things on one line — then neither is primary |
 | plain | *(no helper — just `fmt`)* | everything else, primary or secondary | body prose, action sentences after the `→`, manifest paths, counts, origins, timestamps, hints, footers | — |
 
 **Secondary text is plain, not dim.** jit rendered everything secondary with
@@ -70,7 +70,6 @@ is a line that lies at a glance, so the pairing is part of the definition.
 | `→` | *(inline)* | plain | "maps to" inside prose: `AWS_KEY → ~/.aws/credentials`, `62% → 81%` | starting a line — that reads as the action arrow |
 | `•` | `GlyphBullet` | plain | a list item with no state of its own | anything colored — color would claim a state |
 | `└` | `GlyphBranch` | plain | evidence hanging off the item above: the matched rule, why a gate kept it | a tree of paths — `vault list` indents instead |
-| `▰ ▱` | `GlyphBarFilled` / `GlyphBarEmpty` | green / plain | the ten-cell coverage bar, one cell per 10% | any other progress — nothing else has a denominator |
 | `─` | `GlyphRule` | plain | the single subtotal line under a numeric table | section dividers, borders, boxes |
 | `🔐` | `GlyphLock` | plain | the stderr line announcing a blocking Touch ID prompt | anything else; this is the only emoji jit prints |
 | braille | `SpinnerFrames` | plain | a step still running, replaced by `✓ <text>` when it settles | a step that finished |

@@ -26,10 +26,11 @@ categories, no severity labels - those live in `--full`, below.
 ```
 jit scan — alex@Alexs-MacBook-Pro — scanned ~/ (7 files) — 3ms
 
-  YOUR SECRETS: 7 — 0 protected by jit (0%)
-  ▱▱▱▱▱▱▱▱▱▱  to 100%: one command +85% · 1 thing only you can fix +14%
+  Nothing in your vault yet
+  5 files hold secrets jit can move into the vault  jit migrate
+  1 secret · rotate, then delete every copy
 
-  jit will protect these — 6 secrets in 5 files, 0% → 85%
+  jit will protect these — 6 secrets in 5 files
       → jit migrate
         one command; it vaults the values and rewrites 5 files — every tool that
         reads them keeps working:
@@ -41,7 +42,7 @@ jit scan — alex@Alexs-MacBook-Pro — scanned ~/ (7 files) — 3ms
       these sat in plaintext until now — rotating after vaulting is the gold
       standard · every change is reversible: jit migrate undo
 
-  only you can protect these — 1 secret, 85% → 100%
+  only you can protect these — 1 secret
     ! A production database password in 2 copies of a file  (1)
       ~/Downloads/customer-secrets-report.txt … and 1 more
       → rotate it now, then delete every copy
@@ -52,7 +53,7 @@ jit scan — alex@Alexs-MacBook-Pro — scanned ~/ (7 files) — 3ms
 ```
 
 Counting note: the two report copies hold the **same** database password, so
-they are one secret of the 7, not two - the ledger counts distinct secrets,
+they are one secret of the 7, not two - the report counts distinct secrets,
 never findings. Low/Info sightings are not counted at all; they are jit's own
 uncertainty, listed only in `--full`.
 
