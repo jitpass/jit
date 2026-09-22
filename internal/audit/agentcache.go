@@ -80,7 +80,7 @@ type cacheNeedle struct {
 	origin Finding
 	// vault is set for a deep scan's needle: the origin is the vault, not a
 	// finding, and a hit is a vault_copy (deep.go).
-	vault *VaultNeedle
+	vault *vaultNeedle
 }
 
 // agentCacheRoot is one AI agent's local state directory.
