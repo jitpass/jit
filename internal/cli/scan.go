@@ -451,6 +451,7 @@ func writeScanReport(w io.Writer, format string, findings []audit.Finding, summa
 				Exposed:    summary.SecretsTotal - summary.SecretsProtected,
 				Migratable: summary.SecretsMigratable,
 			}
+			cov.Stored, cov.StoredKnown = vaultSecretsStored()
 			audit.WriteTriageReport(w, findings, summary, home, cov)
 			return nil
 		}
@@ -486,4 +487,21 @@ func init() {
 		"markdown\ta report to paste into a document",
 		"ndjson\tone JSON finding per line"))
 	rootCmd.AddCommand(scanCmd)
+}
+
+// vaultSecretsStored is the report's headline number: how many secrets the
+// vault holds, read the way jit status reads it — names only, no key, so no
+// prompt. Best-effort: a vault that cannot be listed is simply unknown, and
+// the headline falls back to the mounts' count.
+func vaultSecretsStored() (int, bool) {
+	v, err := openVaultReadOnly()
+	if err != nil {
+		return 0, false
+	}
+	paths, err := v.List()
+	if err != nil {
+		return 0, false
+	}
+	secrets, _ := splitBackupPaths(paths)
+	return len(secrets), true
 }

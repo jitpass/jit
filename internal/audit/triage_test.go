@@ -5,7 +5,6 @@ package audit
 
 import (
 	"bytes"
-	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -59,10 +58,8 @@ func TestWriteTriageReportShape(t *testing.T) {
 		// identity belongs on the diagnostic surfaces, not on the report's
 		// most prominent line.
 		"jit scan", "~/ · 47,312 files",
-		// The ledger: 1 dump secret + env + wrap = 3 counted (archived and
-		// Low excluded from migratable/counted respectively: exposed=4
-		// including archived).
-		"YOUR SECRETS: 4",
+		// The opening lines: what to do, in the sections' own numbers.
+		"secrets jit can move into the vault",
 		// Green section: bare command, manifest rows with labels, wrap note.
 		"jit will protect these",
 		"→ jit migrate",
@@ -117,48 +114,103 @@ func TestWriteTriageReportShape(t *testing.T) {
 	}
 }
 
-// The three percentages a reader sees on the ledger must sum to 100, asserted
-// against the RENDER rather than against the formula.
-//
-// The formula version of this test was a tautology — pct + (after-pct) +
-// (100-after) is 100 for any two integers — so it stayed green no matter what
-// WriteTriageReport printed, including the pctOf() form that shipped a visible
-// 53 + 12 + 34 = 99. Parsing the numbers back off the rendered line is the
-// only version that can fail when the render regresses.
-func TestLedgerPercentagesSumTo100InTheRender(t *testing.T) {
+// headlineKinds and sectionKinds read the two sides of the rule the opening
+// lines follow — every red-section block has a line up top, in its own
+// words and count, and no line up top lacks a block — off the render.
+func headlineKinds(out string) map[string]int {
+	kinds := map[string]int{}
+	for _, m := range regexp.MustCompile(`(?m)^  (\d+) secrets? · (.+?)(?:  +jit .*)?$`).FindAllStringSubmatch(out, -1) {
+		n, _ := strconv.Atoi(m[1])
+		kinds[m[2]] = n
+	}
+	return kinds
+}
+
+func sectionKinds(out string) map[string]bool {
+	kinds := map[string]bool{}
+	for _, m := range regexp.MustCompile(`(?m)^    \[(.+?)\]`).FindAllStringSubmatch(out, -1) {
+		kinds[m[1]] = true
+	}
+	return kinds
+}
+
+// The opening lines say what to do in the numbers the sections below show,
+// and nothing else: no ledger, no percentages, no bar. The vault's own count
+// is the headline; the red section's blocks are the lines, kind for kind.
+func TestTriageHeadlinesUseTheSectionsNumbers(t *testing.T) {
 	findings, summary, _ := triageFixture()
-	// The fixture's own ledger divides evenly (0/50/50) and so cannot see a
-	// rounding bug at all. These are the real numbers off the machine that
-	// reported it — 50 protected, 11 migratable, 32 manual of 93 — where
-	// three independent floors printed 53 + 12 + 34. Coverage is a separate
-	// argument from findings precisely so the arithmetic can be driven like
-	// this.
-	cov := Coverage{Protected: 50, Exposed: 43, Migratable: 11}
+	cov := Coverage{Protected: 50, Exposed: 43, Migratable: 11, Stored: 60, StoredKnown: true}
 	var buf bytes.Buffer
 	WriteTriageReport(&buf, findings, summary, "/Users/alex", cov)
 	out := regexp.MustCompile("\x1b\\[[0-9;]*m").ReplaceAllString(buf.String(), "")
 
-	var protected, gain, remainder int
-	for _, line := range strings.Split(out, "\n") {
-		if m := regexp.MustCompile(`\((\d+)%\)`).FindStringSubmatch(line); m != nil && protected == 0 {
-			protected, _ = strconv.Atoi(m[1])
-		}
-		if strings.Contains(line, "to 100%:") {
-			plus := regexp.MustCompile(`\+(\d+)%`).FindAllStringSubmatch(line, -1)
-			if len(plus) != 2 {
-				t.Fatalf("ledger line has %d increments, want 2 (migrate + manual):\n%s", len(plus), line)
-			}
-			gain, _ = strconv.Atoi(plus[0][1])
-			remainder, _ = strconv.Atoi(plus[1][1])
+	// The command column is padded to the widest line, so the gap is a run
+	// of spaces, never a fixed two.
+	for _, want := range []*regexp.Regexp{
+		regexp.MustCompile(`\n  60 secrets in your vault\n`),
+		regexp.MustCompile(`secrets jit can move into the vault +jit migrate\n`),
+		regexp.MustCompile(`copies of your vaulted secrets are not looked for by a regular scan +jit scan --deep\n`),
+	} {
+		if !want.MatchString(out) {
+			t.Errorf("report missing %s:\n%s", want, out)
 		}
 	}
-	if sum := protected + gain + remainder; sum != 100 {
-		t.Errorf("rendered ledger reads %d%% + %d%% + %d%% = %d%%, want 100:\n%s",
-			protected, gain, remainder, sum, out)
+	for _, gone := range []string{"YOUR SECRETS", "%", "▱", "to 100%", "only you can fix"} {
+		if strings.Contains(out, gone) {
+			t.Errorf("report still carries the ledger's %q:\n%s", gone, out)
+		}
 	}
-	// And the red header's promise has to be the same arithmetic.
-	if !strings.Contains(out, fmt.Sprintf("%d%% → 100%%", protected+gain)) {
-		t.Errorf("red header does not continue from %d%%:\n%s", protected+gain, out)
+	up, below := headlineKinds(out), sectionKinds(out)
+	if len(up) == 0 || len(below) == 0 {
+		t.Fatalf("expected red-section blocks and their lines up top:\n%s", out)
+	}
+	for kind := range below {
+		if _, ok := up[kind]; !ok {
+			t.Errorf("red block %q has no line up top:\n%s", kind, out)
+		}
+	}
+	for kind := range up {
+		if !below[kind] {
+			t.Errorf("line up top %q names no red block:\n%s", kind, out)
+		}
+	}
+
+	// No vault to list: the mounts' count stands in, in the ledger's old word.
+	buf.Reset()
+	WriteTriageReport(&buf, findings, summary, "/Users/alex", Coverage{Protected: 9, Exposed: 43, Migratable: 11})
+	if !strings.Contains(buf.String(), "9 secrets protected by jit") {
+		t.Errorf("headline without a vault count should fall back to the mounts:\n%s", buf.String())
+	}
+}
+
+// A deep scan's copies are a red block of their own, so they are one line
+// up top in the block's words and count — never a second tally in files or
+// lines on top of it — and a deep scan is not told to run one.
+func TestTriageHeadlinesNameVaultCopiesOnce(t *testing.T) {
+	key := func(s string) *string { return &s }
+	findings := []Finding{
+		{FindingType: FindingTypeVaultCopy, Severity: SeverityHigh, FilePath: "/Users/alex/rules/a.json", KeyName: key("wiz/WIZ_CLIENT_SECRET")},
+		{FindingType: FindingTypeVaultCopy, Severity: SeverityHigh, FilePath: "/Users/alex/rules/b.json", KeyName: key("wiz/WIZ_CLIENT_SECRET")},
+		{FindingType: FindingTypeVaultCopy, Severity: SeverityHigh, FilePath: "/Users/alex/.claude/history.jsonl", KeyName: key("hibob/SERVICE_USER_ID"), Agent: "Claude Code", CacheArea: "local store"},
+	}
+	annotateRemedies(findings, "/Users/alex", nil, nil)
+	summary := buildScanSummary(Config{Endpoint: Endpoint{Username: "alex", Hostname: "mbp"}}, findings, 0, 10)
+	summary.Deep = true
+	var buf bytes.Buffer
+	WriteTriageReport(&buf, findings, summary, "/Users/alex", Coverage{Stored: 25, StoredKnown: true})
+	out := regexp.MustCompile("\x1b\\[[0-9;]*m").ReplaceAllString(buf.String(), "")
+	if !strings.Contains(out, "\n  25 secrets in your vault\n") {
+		t.Errorf("headline missing:\n%s", out)
+	}
+	up, below := headlineKinds(out), sectionKinds(out)
+	if !below[kindVaultCopy] || up[kindVaultCopy] == 0 {
+		t.Errorf("vault copies should be one red block and one line up top:\nup=%v below=%v\n%s", up, below, out)
+	}
+	if len(up) != len(below) {
+		t.Errorf("lines up top %v do not match red blocks %v:\n%s", up, below, out)
+	}
+	if strings.Contains(out, "jit scan --deep") {
+		t.Errorf("a deep scan is not told to run one:\n%s", out)
 	}
 }
 
@@ -543,7 +595,7 @@ func TestWriteTriageReportCleanMachine(t *testing.T) {
 	var buf bytes.Buffer
 	WriteTriageReport(&buf, nil, summary, "/Users/alex", cov)
 	out := buf.String()
-	for _, want := range []string{"9 protected by jit (100%)", "Nothing exposed"} {
+	for _, want := range []string{"9 secrets protected by jit", "Nothing exposed"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("clean-machine report missing %q:\n%s", want, out)
 		}
