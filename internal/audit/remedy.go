@@ -349,6 +349,12 @@ type Coverage struct {
 	Protected  int // vault entries served by live jit mounts
 	Exposed    int // distinct counted secrets in the findings
 	Migratable int // of Exposed: covered by a remedy jit can run
+	// Stored is the vault's own count, the report's headline ("25 secrets
+	// in your vault"), read the way jit status reads it: names, no key, no
+	// prompt. StoredKnown is false when no caller could list the vault, and
+	// the headline falls back to Protected (writeTriageHeadlines).
+	Stored      int
+	StoredKnown bool
 }
 
 // Total is every secret jit knows about on this machine.

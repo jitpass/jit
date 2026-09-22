@@ -277,6 +277,34 @@ left behind, the scan is what gets fixed — not by a note, but by looking.
   that would have hidden it. What the gates cannot reach — an admin email,
   a service-user id — is the user's call, and wants a mark on the vault
   entry, not a wider rule. Decided 2026-09-22.
+- **D14 — The report opens with what to do, in the sections' own
+  numbers, not with a ledger.** `jit scan` led with "YOUR SECRETS: 26 — 10
+  protected by jit (38%)" and a ten-cell bar; the app's Findings window
+  mirrored it as "10 of 26 secrets protected". The 26 were deduplicated
+  secrets no section listed: on the machine that asked (2026-09-22) the
+  sixteen "unprotected" were four vaulted entries with copies in the open
+  and twelve tokens in Claude Code transcripts — none of them a thing
+  `jit migrate` protects — and the honest answer to "which sixteen?" took
+  a scan, `jq` and the engine's source. Both surfaces now open with the
+  vault's own count ("25 secrets in your vault", read the way `jit status`
+  reads it: names, no key, no prompt) and then one line per block below,
+  in that block's own numbers and words, naming its command when it has
+  one: "5 files hold secrets jit can move into the vault · jit migrate",
+  then the red section's action blocks one each — "4 secrets · rotate,
+  then clear the copy — the secret is already in your vault", "12 secrets
+  · rotate — an agent kept its own copies". The app, whose cards are
+  tiers rather than actions, says the same in its cards' numbers: "4
+  still have plaintext copies in 32 files · clear the copies", "17
+  flagged lines sit in 2 files of Claude Code's transcripts · redact
+  them". The rule, held by tests on both sides: a number in the opening
+  lines is a number a block (the app: a card) shows, and nothing is
+  counted twice in two units. The percentages went with the ledger —
+  "0% → 85%" on a section header had no denominator left to refer to —
+  and so did the bar. A regular scan whose vault holds secrets is told what
+  it did not look for, with `jit scan --deep` as the line's command.
+  `secrets_total` / `secrets_protected` stay in the NDJSON for the score.
+  Mockup: jit-app `docs/design/mockups/Findings-header.html`. Decided
+  2026-09-22.
 
 ## What this decides next
 

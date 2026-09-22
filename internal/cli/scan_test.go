@@ -83,8 +83,8 @@ func TestScanCommandTextFormat(t *testing.T) {
 	// The default text view is the coverage triage (2026-07-28 redesign):
 	// secrets counted, the migrate manifest, no scanner vocabulary.
 	out := runScan(t, "--format", "text")
-	if !strings.Contains(out, "YOUR SECRETS:") {
-		t.Errorf("expected the coverage ledger, got:\n%s", out)
+	if !strings.Contains(out, "secrets jit can move into the vault") {
+		t.Errorf("expected the opening to-do lines, got:\n%s", out)
 	}
 	if !strings.Contains(out, "jit will protect these") || !strings.Contains(out, ".zshrc") {
 		t.Errorf("expected the migrate manifest naming the planted file, got:\n%s", out)

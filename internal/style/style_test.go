@@ -35,17 +35,15 @@ func TestPlainColorEmitsNothing(t *testing.T) {
 // would break every column budget that assumes one cell.
 func TestGlyphsAreSingleRune(t *testing.T) {
 	for name, g := range map[string]string{
-		"GlyphOK":        GlyphOK,
-		"GlyphWarn":      GlyphWarn,
-		"GlyphRisk":      GlyphRisk,
-		"GlyphDone":      GlyphDone,
-		"GlyphMark":      GlyphMark,
-		"GlyphAction":    GlyphAction,
-		"GlyphBullet":    GlyphBullet,
-		"GlyphBranch":    GlyphBranch,
-		"GlyphBarFilled": GlyphBarFilled,
-		"GlyphBarEmpty":  GlyphBarEmpty,
-		"GlyphRule":      GlyphRule,
+		"GlyphOK":     GlyphOK,
+		"GlyphWarn":   GlyphWarn,
+		"GlyphRisk":   GlyphRisk,
+		"GlyphDone":   GlyphDone,
+		"GlyphMark":   GlyphMark,
+		"GlyphAction": GlyphAction,
+		"GlyphBullet": GlyphBullet,
+		"GlyphBranch": GlyphBranch,
+		"GlyphRule":   GlyphRule,
 	} {
 		if n := len([]rune(g)); n != 1 {
 			t.Errorf("%s is %d runes, want 1", name, n)

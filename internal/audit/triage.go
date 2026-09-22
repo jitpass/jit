@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/fatih/color"
 
@@ -115,77 +116,7 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 	// unit. Whatever the bar says the reader must be able to count on screen.
 	actions := groupManualByAction(manual, home)
 
-	// --- the coverage ledger ---
-	pct := cov.Percent()
-	after := cov.PercentAfterMigrate()
-	fmt.Fprint(w, "  ")
-	termtext.Wrap(w, 2, "  ",
-		bold.Sprintf("YOUR SECRETS: %d — ", cov.Total())+
-			green.Sprintf("%d protected by jit (%d%%)", cov.Protected, pct))
-	fmt.Fprint(w, "  ")
-	writeBar(w, pct)
-	// The manual half of the clause prints only when the green block will sit
-	// between it and the red header. With nothing migratable the header is the
-	// very next line, and the two are the same sentence about the same number
-	// (deliberately — one denominator, see below), so printing both was
-	// verbatim repetition two lines apart.
-	showManual := len(manual) > 0 && len(migratable) > 0
-	if cov.Total() > 0 && (cov.Migratable > 0 || showManual) {
-		// Assembled first, then wrapped: the bar is a fixed 10 columns and the
-		// clause beside it is prose, so at a narrow width the clause has to
-		// break under itself rather than push the line past the edge.
-		clause := "  to 100%:"
-		if cov.Migratable > 0 {
-			clause += " one command "
-			if after == pct {
-				// 1 migratable of 200 rounds to +0%, which reads as
-				// "pointless" — it isn't.
-				clause += greenBold.Sprint("+<1%")
-			} else {
-				clause += greenBold.Sprintf("+%d%%", after-pct)
-			}
-		}
-		if showManual {
-			if cov.Migratable > 0 {
-				clause += " ·"
-			}
-			// SECRETS, the same unit and the same number as the red header
-			// below — not "N things".
-			//
-			// The pile was being counted three ways at once: the bar said
-			// "13 things" (problems), the header said "32 secrets", and each
-			// item carried a "(N)" badge. Fixing the badge and the header left
-			// two units still disagreeing, and switching the bar to count
-			// action groups only moved the disagreement — the reader would see
-			// "8 things" over a section holding thirteen "!" items, both
-			// countable on screen and neither matching. One denominator ends
-			// it: the bar and the header are now the same sentence about the
-			// same number, and the grouping below is organisation rather than
-			// a third tally.
-			clause += fmt.Sprintf(" %s only you can fix ",
-				countWord(cov.manualRemainder(), "secret", "secrets"))
-			// The remainder is what's LEFT of 100 after the migrate, never its
-			// own division. manualRemainder/Total is the same quantity in
-			// exact arithmetic, but printed it is a third independent floor:
-			// 50 protected, 11 migratable, 32 manual of 93 rendered as
-			// "53% ... +12% ... +34%", which sums to 99 on the same line the
-			// red header below promises "→ 100%". Deriving it from `after`
-			// makes the three numbers close by construction, which is what
-			// Coverage.manualRemainder's comment already claims they do.
-			//
-			// The trade, stated because it is a deliberate inaccuracy: this
-			// term now absorbs the rounding error of all three, so it can read
-			// up to two points above the manual bucket's true share (the
-			// 50/11/32 case prints +35% against a true 34.4%). Three numbers
-			// on one line that sum to 99 is a visible error; one number a
-			// fraction high is not, and consistency is what the reader is
-			// actually checking.
-			clause += yellow.Sprintf("+%d%%", 100-after)
-		}
-		termtext.Wrap(w, 2+coverageBarWidth, "  "+strings.Repeat(" ", coverageBarWidth), clause)
-	} else {
-		fmt.Fprintln(w)
-	}
+	writeTriageHeadlines(w, findings, summary, cov, len(migratable), actions)
 	fmt.Fprintln(w)
 
 	// --- green: what jit will do ---
@@ -206,8 +137,7 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 		if cov.Migratable == 0 {
 			header += fmt.Sprintf(" — %s", countWord(len(migratable), "file", "files"))
 		} else {
-			header += fmt.Sprintf(" — %s in %s, ", countWord(cov.Migratable, "secret", "secrets"), countWord(len(migratable), "file", "files")) +
-				greenBold.Sprintf("%d%% "+style.GlyphAction+" %d%%", pct, after)
+			header += fmt.Sprintf(" — %s in %s", countWord(cov.Migratable, "secret", "secrets"), countWord(len(migratable), "file", "files"))
 		}
 		termtext.Wrap(w, 2, "  ", header)
 		fmt.Fprint(w, triageNoteIndent)
@@ -238,8 +168,8 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 		note := "these are in plaintext now — rotating after vaulting is the " +
 			"gold standard · every change is reversible: jit migrate undo"
 		if cov.Migratable == 0 {
-			note = "every secret here also sits somewhere this migrate will not rewrite, so the score " +
-				"moves only once you rotate — protecting the file is still worth doing · " +
+			note = "every secret here also sits somewhere this migrate will not rewrite, so nothing here " +
+				"counts as protected until you rotate — protecting the file is still worth doing · " +
 				"every change is reversible: jit migrate undo"
 		}
 		termtext.Wrap(w, len(triageNoteIndent), triageNoteIndent, note)
@@ -252,8 +182,7 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 		fmt.Fprint(w, "  ")
 		termtext.Wrap(w, 2, "  ",
 			red.Sprint("only you can protect these")+
-				fmt.Sprintf(" — %s, ", countWord(cov.manualRemainder(), "secret", "secrets"))+
-				yellowBold.Sprintf("%d%% "+style.GlyphAction+" 100%%", after))
+				fmt.Sprintf(" — %s", countWord(cov.manualRemainder(), "secret", "secrets")))
 		for _, ag := range actions {
 			fmt.Fprintln(w)
 			fmt.Fprint(w, "    ")
@@ -2426,13 +2355,108 @@ func groupDigits(n int) string {
 	return b.String()
 }
 
-// coverageBarWidth is how many columns writeBar occupies — the width the
-// clause beside it has to hang under when it wraps.
-const coverageBarWidth = 10
+// writeTriageHeadlines is the report's first block: what is safe, then one
+// line per block below, in that block's own numbers and words, naming its
+// command when it has one. It replaced the coverage ledger — "YOUR SECRETS:
+// 26 — 10 protected by jit (38%)" and its ten-cell bar — which counted
+// deduplicated secrets no section listed: on the machine that prompted the
+// change the sixteen "unprotected" were four vaulted entries with copies in
+// the open and twelve tokens in agent transcripts, none of them a thing jit
+// migrate protects, and the reader asked which sixteen they were
+// (design/scan-and-protect.md, D14). The rule: a number up here is a number
+// a section shows. The red section's lines are its own action blocks, one
+// each — the vault copies, the agent-kept tokens, the rotations — so
+// nothing is counted twice in two units.
+func writeTriageHeadlines(w io.Writer, findings []Finding, summary ScanSummary, cov Coverage, migratableFiles int, actions []triageActionGroup) {
+	if head := triageHeadline(cov); head != "" {
+		fmt.Fprintf(w, "  %s\n", style.Bold.Sprint(head))
+	}
+	type todo struct {
+		text, command string
+		ink           func(string) string
+	}
+	risk := func(t string) string { return style.Risk.Sprint(t) }
+	ok := func(t string) string { return style.OK.Sprint(t) }
+	var todos []todo
+	if migratableFiles > 0 {
+		verb := "hold"
+		if migratableFiles == 1 {
+			verb = "holds"
+		}
+		todos = append(todos, todo{countWord(migratableFiles, "file", "files") + " " + verb + " secrets jit can move into the vault", "jit migrate", ok})
+	}
+	// One line per kind: the section can print two blocks under the same
+	// words when regeneration lands two merged blocks on one remedy (a real
+	// scan, 2026-09-22: "[rotate, then delete every copy] 7" and "… 6"), and
+	// two identical lines up top would read as a mistake. Summed, the line
+	// is the red header's own number. A command survives the merge only
+	// when every block shares it.
+	type block struct {
+		secrets int
+		command string
+	}
+	var kinds []string
+	blocks := map[string]*block{}
+	for _, ag := range actions {
+		command := ""
+		if isCommandAction(ag.action) {
+			command = ag.action
+		}
+		if b, seen := blocks[ag.kind]; seen {
+			b.secrets += ag.secrets
+			if b.command != command {
+				b.command = ""
+			}
+			continue
+		}
+		kinds = append(kinds, ag.kind)
+		blocks[ag.kind] = &block{secrets: ag.secrets, command: command}
+	}
+	for _, kind := range kinds {
+		b := blocks[kind]
+		todos = append(todos, todo{countWord(b.secrets, "secret", "secrets") + " · " + kind, b.command, risk})
+	}
+	copies := false
+	for _, f := range findings {
+		if f.FindingType == FindingTypeVaultCopy {
+			copies = true
+			break
+		}
+	}
+	if !summary.Deep && !copies && cov.StoredKnown && cov.Stored > 0 {
+		todos = append(todos, todo{"copies of your vaulted secrets are not looked for by a regular scan", "jit scan --deep", nil})
+	}
+	width := 0
+	for _, t := range todos {
+		if n := utf8.RuneCountInString(t.text); n > width {
+			width = n
+		}
+	}
+	for _, t := range todos {
+		text := t.text
+		if t.ink != nil {
+			text = t.ink(text)
+		}
+		if t.command == "" {
+			fmt.Fprintf(w, "  %s\n", text)
+			continue
+		}
+		pad := strings.Repeat(" ", width-utf8.RuneCountInString(t.text))
+		fmt.Fprintf(w, "  %s%s  %s\n", text, pad, style.Path.Sprint(t.command))
+	}
+}
 
-// writeBar renders the ten-cell coverage bar.
-func writeBar(w io.Writer, pct int) {
-	filled := pct / 10
-	_, _ = style.OK.Fprint(w, strings.Repeat(style.GlyphBarFilled, filled))
-	fmt.Fprint(w, strings.Repeat(style.GlyphBarEmpty, coverageBarWidth-filled))
+// triageHeadline is the good news, and the one count that needs no
+// explanation: the vault's own. Without it (no caller listed the vault),
+// the mounts' count, which is what the old ledger called protected.
+func triageHeadline(cov Coverage) string {
+	switch {
+	case cov.StoredKnown && cov.Stored == 0:
+		return "Nothing in your vault yet"
+	case cov.StoredKnown:
+		return countWord(cov.Stored, "secret", "secrets") + " in your vault"
+	case cov.Protected > 0:
+		return countWord(cov.Protected, "secret", "secrets") + " protected by jit"
+	}
+	return ""
 }
