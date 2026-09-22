@@ -125,6 +125,12 @@ Its rules:
   locations, never a value (the app never handles plaintext).
 - It is opt-in. The scheduled scans that keep the menu-bar dot honest stay
   regular, so a background scan never interrupts anyone.
+- **It searches for the vault's secrets, not for everything in the vault.**
+  `jit migrate` vaults every variable of a `.env` — ordinary configuration
+  too, so the pointer file stays complete — so a vault is routinely half
+  endpoints, ids and paths. The needles pass the scan's own name and value
+  gates before the search, and the summary says how many entries were left
+  out. See D13.
 
 Read-only and authenticated is a new combination for jit: `jit scan`
 was unauthenticated by design, `jit migrate caches --dry-run` was
@@ -252,6 +258,25 @@ left behind, the scan is what gets fixed — not by a note, but by looking.
   "what is this agent doing on my Mac", and owns no fact of its own. Two
   windows acting on one fact is where the original report hid. Decided
   2026-09-21; drawn in the final mockup.
+- **D13 — A deep scan searches for the vault's secrets, not for
+  everything in the vault.** `Config.vaultNeedles` applies the same
+  `NonSecretValueReason` / `NonSecretNameReason` pair every other scanner
+  asks, so a vaulted endpoint URL, filesystem path or documented-public id
+  is not hunted across the Mac. The premise it replaces — "the vault says
+  what it is" — stopped holding the moment `jit migrate` began vaulting a
+  whole `.env`: on a real machine (2026-09-22) 14 of 25 vault entries were
+  configuration (`CAIDO_URL`, `WIZ_API_ENDPOINT`, `JAMF_PRO_URL`, three
+  `*_CLIENT_ID`s), every hit a true exact match and none an exposure. This
+  is the same overreach `EnvFileCacheNeedles` fixed one layer down (issue
+  #79) with the same two gates: `eligibleNeedle` tests distinctiveness, not
+  secretness. The gates stay narrow — a URL is excused only with no
+  userinfo and no opaque segment, so a `DATABASE_URL` carrying a password
+  keeps its place — and the filtering is never silent: the summary carries
+  `vault_config_skipped`, the report prints it above the ledger, and
+  `--unfiltered` searches for them all and tags each copy with the rule
+  that would have hidden it. What the gates cannot reach — an admin email,
+  a service-user id — is the user's call, and wants a mark on the vault
+  entry, not a wider rule. Decided 2026-09-22.
 
 ## What this decides next
 

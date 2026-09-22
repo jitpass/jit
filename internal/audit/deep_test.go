@@ -268,3 +268,136 @@ func TestDeepScanNeedleEligibility(t *testing.T) {
 		t.Errorf("eligible needles = %+v, want only a/OK", got)
 	}
 }
+
+// A bare endpoint URL is not a secret, and a deep scan must not hunt the
+// Mac for copies of one. `jit migrate` vaults every variable of a .env —
+// configuration included, so the pointer file stays complete — so half a
+// real vault is endpoints, ids and paths; searching for those found true
+// exact matches that were never exposures. The gates are the scan's own,
+// and the summary says how many entries they left out.
+func TestDeepScanDoesNotSearchForVaultedConfiguration(t *testing.T) {
+	home := t.TempDir()
+	const endpoint = "https://api.us17.app.acmecorp.io/graphql"
+	p := filepath.Join(home, ".claude", "projects", "p", "s.jsonl")
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("{\"cmd\":\"curl "+endpoint+"\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := deepConfig(t, home,
+		VaultNeedle{Name: "wiz/WIZ_API_ENDPOINT", Value: endpoint},
+		VaultNeedle{Name: "db-prod/PASSWORD", Value: deepProbeValue},
+	)
+	findings, summary, err := Scan(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(vaultCopies(findings)); n != 0 {
+		t.Errorf("%d vault copies, want 0: the endpoint is configuration", n)
+	}
+	if summary.VaultSecretsChecked != 1 || summary.VaultConfigSkipped != 1 {
+		t.Errorf("checked/skipped = %d/%d, want 1/1",
+			summary.VaultSecretsChecked, summary.VaultConfigSkipped)
+	}
+	var human bytes.Buffer
+	WriteHumanReport(&human, findings, summary, home)
+	if !bytes.Contains(human.Bytes(), []byte("1 more read as configuration")) {
+		t.Errorf("the report does not say an entry was left out:\n%s", human.String())
+	}
+}
+
+// The negative control for the rule above: the gate excuses a URL only when
+// it carries nothing secret. A connection string with a password in its
+// userinfo is exactly what a deep scan exists to find — no pattern matches
+// it, and only the vault knows what it is.
+func TestDeepScanStillSearchesForASecretBearingURL(t *testing.T) {
+	home := t.TempDir()
+	const conn = "postgres://svc_prod:" + deepProbeValue + "@db.internal:5432/orders"
+	p := filepath.Join(home, ".claude", "projects", "p", "s.jsonl")
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("{\"cmd\":\"psql "+conn+"\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := deepConfig(t, home, VaultNeedle{Name: "db-prod/DATABASE_URL", Value: conn})
+	findings, summary, err := Scan(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copies := vaultCopies(findings)
+	if len(copies) != 1 {
+		t.Fatalf("%d vault copies, want 1: a connection string is a secret", len(copies))
+	}
+	if copies[0].UnfilteredOnly {
+		t.Error("the connection string was marked as configuration")
+	}
+	if summary.VaultConfigSkipped != 0 {
+		t.Errorf("skipped = %d, want 0", summary.VaultConfigSkipped)
+	}
+}
+
+// --unfiltered searches for the gated needles too, and marks every copy it
+// finds with the rule that would have hidden it. The filtering is a
+// judgment, so it is never silent: the auditing view can diff the two.
+func TestDeepScanUnfilteredSearchesForConfigurationAndSaysSo(t *testing.T) {
+	home := t.TempDir()
+	const endpoint = "https://api.us17.app.acmecorp.io/graphql"
+	p := filepath.Join(home, ".claude", "projects", "p", "s.jsonl")
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("{\"cmd\":\"curl "+endpoint+"\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := deepConfig(t, home, VaultNeedle{Name: "wiz/WIZ_API_ENDPOINT", Value: endpoint})
+	cfg.Unfiltered = true
+	findings, summary, err := Scan(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copies := vaultCopies(findings)
+	if len(copies) != 1 {
+		t.Fatalf("%d vault copies, want 1 under --unfiltered", len(copies))
+	}
+	if !copies[0].UnfilteredOnly || copies[0].UnfilteredReason == "" {
+		t.Errorf("the copy is not marked: only=%v reason=%q",
+			copies[0].UnfilteredOnly, copies[0].UnfilteredReason)
+	}
+	if summary.VaultConfigSkipped != 0 || summary.VaultSecretsChecked != 1 {
+		t.Errorf("checked/skipped = %d/%d, want 1/0 under --unfiltered",
+			summary.VaultSecretsChecked, summary.VaultConfigSkipped)
+	}
+	var human bytes.Buffer
+	WriteHumanReport(&human, findings, summary, home)
+	if !bytes.Contains(human.Bytes(), []byte("shown by --unfiltered: the value is a bare URL")) {
+		t.Errorf("the report does not name the rule:\n%s", human.String())
+	}
+}
+
+// The name gate judges the VARIABLE, not the vault namespace, and a name
+// that says "secret" overrides the public-name rules — the same contract
+// NonSecretNameReason carries everywhere else.
+func TestDeepScanNeedleNameGate(t *testing.T) {
+	cfg := deepConfig(t, t.TempDir(),
+		// Dropped by the name: a documented-public id, a path variable.
+		VaultNeedle{Name: "wiz/WIZ_CLIENT_ID", Value: "Cl13nt-1d-" + deepProbeValue},
+		VaultNeedle{Name: "notion/OUTPUT_FILE", Value: "/Users/x/out/Notion-Export-2026.json"},
+		// Kept: the namespace looks like a path variable, the name does not.
+		VaultNeedle{Name: "output_file/NOTION_API_KEY", Value: deepProbeValue + "-a"},
+		// Kept: SECRET overrides the browser-public prefix.
+		VaultNeedle{Name: "web/NEXT_PUBLIC_STRIPE_SECRET_KEY", Value: deepProbeValue + "-b"},
+	)
+	var names []string
+	for _, n := range cfg.vaultNeedles() {
+		names = append(names, n.Name)
+	}
+	want := "output_file/NOTION_API_KEY,web/NEXT_PUBLIC_STRIPE_SECRET_KEY"
+	if strings.Join(names, ",") != want {
+		t.Errorf("needles = %v, want %s", names, want)
+	}
+	if _, skipped := cfg.vaultNeedleSet(); skipped != 2 {
+		t.Errorf("skipped = %d, want 2", skipped)
+	}
+}

@@ -237,7 +237,7 @@ import (
 // in the same file. Counted in the ledger as one exposed secret per value
 // (the same cause_group for every copy of it); the protected count is not
 // reduced, so the score falls by the copy, not by the vaulted entry.
-const SchemaVersion = "0.23.0"
+const SchemaVersion = "0.24.0"
 
 // ScannerName identifies this tool in the shared NDJSON envelope, matching
 // bumblebee's record shape so a receiver can co-ingest both (RFC.md §4).
@@ -675,6 +675,16 @@ type ScanSummary struct {
 	// regular scan. Added in 0.23.0.
 	Deep                bool `json:"deep,omitempty"`
 	VaultSecretsChecked int  `json:"vault_secrets_checked,omitempty"`
+
+	// VaultConfigSkipped is how many vault entries the deep scan did NOT
+	// search for because the scan's own gates read them as configuration —
+	// a bare endpoint URL, a filesystem path, a documented-public id. It
+	// exists so "11 vault secrets checked" against a vault of 25 is not a
+	// silent difference; --unfiltered searches for them and marks what it
+	// finds. Zero on a regular scan and on a deep scan of a vault that
+	// holds only credentials. Added in 0.24.0. See deep.go's
+	// vaultNeedleSet.
+	VaultConfigSkipped int `json:"vault_config_skipped,omitempty"`
 
 	// JitProtectedCount is how many registered jit live mounts (FIFOs
 	// currently occupying a path jit migrated) exist on this machine.

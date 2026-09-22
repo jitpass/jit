@@ -82,11 +82,7 @@ func WriteTriageReport(w io.Writer, findings []Finding, summary ScanSummary, hom
 	// is not the same claim as "0 secrets", and the difference is exactly the
 	// one a user reading a clean report will not think to ask about.
 	if summary.Deep {
-		noun := "secrets"
-		if summary.VaultSecretsChecked == 1 {
-			noun = "secret"
-		}
-		fmt.Fprintf(w, "  deep scan: %d vault %s checked for exact copies in the open\n\n", summary.VaultSecretsChecked, noun)
+		fmt.Fprint(w, deepScanLine(summary))
 	}
 	if len(summary.DegradedScanners) > 0 {
 		fmt.Fprint(w, "  ")
