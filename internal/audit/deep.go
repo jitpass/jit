@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"strings"
 )
 
 // A deep scan (`jit scan --deep`) is the one bridge between the two sides
@@ -33,20 +34,117 @@ type VaultNeedle struct {
 	Value string
 }
 
-// vaultNeedles is the eligible subset of the deep scan's needles, in the
-// order given. A value the exact-string index cannot search for safely (too
-// short, a pointer, all digits) is left out; see eligibleNeedle.
-func (c Config) vaultNeedles() []VaultNeedle {
-	var out []VaultNeedle
+// vaultNeedle is one searchable needle: the vault entry, plus the gate
+// verdict that would have dropped it. unfilteredReason is non-empty only
+// under Config.Unfiltered, and is stamped onto every finding the needle
+// produces, so a copy of a bare endpoint is marked as the configuration it
+// is rather than presented as a loose credential.
+type vaultNeedle struct {
+	VaultNeedle
+	unfilteredReason string
+}
+
+// vaultNeedles is the searchable subset of the deep scan's needles, in the
+// order given. vaultNeedleSet explains what is left out and why.
+func (c Config) vaultNeedles() []vaultNeedle {
+	needles, _ := c.vaultNeedleSet()
+	return needles
+}
+
+// vaultNeedleSet is the deep scan's needle gate: the needles to search for,
+// and how many vault entries were left out as configuration.
+//
+// Two things are dropped, for different reasons.
+//
+// A value the exact-string index cannot search for safely — too short, a
+// pointer, all digits — is left out by eligibleNeedle. That is a property of
+// the search.
+//
+// A value that is self-evidently not a credential is left out by the scan's
+// own name and value gates, the same pair every other scanner asks
+// (NonSecretValueReason, NonSecretNameReason). That one is a judgment, and
+// it is here because `jit migrate` deliberately vaults EVERY variable of a
+// .env — ordinary configuration too, so the pointer file stays complete —
+// and a deep scan that treats the whole vault as secrets then hunts the Mac
+// for copies of an endpoint URL. A real machine (2026-09-22) had 14 of its
+// 25 vault entries in that shape: CAIDO_URL, WIZ_API_ENDPOINT, JAMF_PRO_URL,
+// three *_CLIENT_IDs. Every hit was a true exact match and none was an
+// exposure, which is the definition of noise.
+//
+// This is the same overreach EnvFileCacheNeedles already fixed one layer
+// down (issue #79), for the same reason and with the same pair of gates:
+// eligibleNeedle tests distinctiveness, not secretness.
+//
+// The gates are narrow on purpose. A URL only reads as configuration when it
+// carries no userinfo and no opaque segment, so a DATABASE_URL with a
+// password in it, or a webhook URL with a token in its path, keeps its place
+// in the search. And --unfiltered keeps every dropped needle, marking what it
+// finds with the rule that fired — the filtering is never silent.
+func (c Config) vaultNeedleSet() (needles []vaultNeedle, skippedAsConfig int) {
 	seen := map[string]bool{}
 	for _, n := range c.VaultNeedles {
 		if n.Value == "" || seen[n.Value] || !eligibleNeedle(n.Value) {
 			continue
 		}
+		suppress, reason := c.needleGate(n)
+		if suppress {
+			skippedAsConfig++
+			continue
+		}
 		seen[n.Value] = true
-		out = append(out, n)
+		needles = append(needles, vaultNeedle{VaultNeedle: n, unfilteredReason: reason})
 	}
-	return out
+	return needles, skippedAsConfig
+}
+
+// vaultNeedleCounts is what the summary records about a deep run: how many
+// vault secrets were searched for, and how many were left out as
+// configuration.
+func (c Config) vaultNeedleCounts() (checked, skippedAsConfig int) {
+	needles, skipped := c.vaultNeedleSet()
+	return len(needles), skipped
+}
+
+// deepScanLine is the banner both report views print above the ledger on a
+// deep run. It names what was searched for and, when the gates left
+// something out, what was not — "11 vault secrets checked" against a vault
+// of 25 is a difference the reader is owed, not a footnote.
+func deepScanLine(summary ScanSummary) string {
+	noun := "secrets"
+	if summary.VaultSecretsChecked == 1 {
+		noun = "secret"
+	}
+	line := fmt.Sprintf("  deep scan: %d vault %s checked for exact copies in the open\n",
+		summary.VaultSecretsChecked, noun)
+	if summary.VaultConfigSkipped > 0 {
+		line += fmt.Sprintf("  %d more read as configuration and were not searched for; --unfiltered includes them\n",
+			summary.VaultConfigSkipped)
+	}
+	return line + "\n"
+}
+
+// needleGate asks the value gate first and the name gate second, exactly as
+// the env scanner does: the value is the better evidence, and a name rule
+// should not excuse a variable whose value is plainly a credential.
+//
+// The name it judges is the variable, not the vault path — the gate's rules
+// are written about variable names ("*_FILE", "CLIENT_ID"), and a vault
+// namespace is the user's folder name, not evidence about the value.
+func (c Config) needleGate(n VaultNeedle) (suppress bool, reason string) {
+	if suppress, reason := c.valueGate(n.Value); suppress || reason != "" {
+		return suppress, reason
+	}
+	return c.nameGate(vaultVarName(n.Name))
+}
+
+// vaultVarName is the variable at the end of a vault path:
+// "wiz/WIZ_AUTH_URL" is WIZ_AUTH_URL. A path with no separator is already
+// the name.
+func vaultVarName(path string) string {
+	if i := strings.LastIndexByte(path, '/'); i >= 0 {
+		return path[i+1:]
+	}
+	return path
 }
 
 // vaultCopiesInFile runs the deep scan's exact pass over one file the
@@ -107,7 +205,7 @@ func (c Config) vaultCopiesIn(path, agent string, data []byte) []Finding {
 // file. Not built through ValueFinding: the value's identity is not a
 // judgment here — the vault says what it is — so severity is the one a
 // vaulted secret in the open earns, and only the location is derived.
-func (c Config) vaultCopyFinding(path, agent string, n VaultNeedle, data []byte, at, count int, textual bool) Finding {
+func (c Config) vaultCopyFinding(path, agent string, n vaultNeedle, data []byte, at, count int, textual bool) Finding {
 	f := c.baseFinding()
 	f.FindingType = FindingTypeVaultCopy
 	f.FilePath = path
@@ -134,6 +232,13 @@ func (c Config) vaultCopyFinding(path, agent string, n VaultNeedle, data []byte,
 	}
 	if count > 1 {
 		f.Evidence = fmt.Sprintf("%s (%d occurrences in this file)", f.Evidence, count)
+	}
+	if n.unfilteredReason != "" {
+		// The everyday scan does not search for this value at all: the
+		// gates read it as configuration. Say which rule, rather than
+		// present an endpoint URL as a credential in the open.
+		f.UnfilteredOnly = true
+		f.UnfilteredReason = n.unfilteredReason
 	}
 	// Manual, as a scan verdict: the secret is already in the vault, and
 	// this plaintext copy is not something a file migration moves. Clean
