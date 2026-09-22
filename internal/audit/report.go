@@ -533,11 +533,7 @@ func WriteHumanReport(w io.Writer, findings []Finding, summary ScanSummary, home
 	// findings" from a run that could not read a category is not the claim
 	// a reader of a full inventory will think to question.
 	if summary.Deep {
-		noun := "secrets"
-		if summary.VaultSecretsChecked == 1 {
-			noun = "secret"
-		}
-		fmt.Fprintf(w, "  deep scan: %d vault %s checked for exact copies in the open\n\n", summary.VaultSecretsChecked, noun)
+		fmt.Fprint(w, deepScanLine(summary))
 	}
 	if len(summary.DegradedScanners) > 0 {
 		yellowBold := style.WarnBold
