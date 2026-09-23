@@ -340,6 +340,24 @@ var knownTokenPatterns = []tokenPattern{
 	{"New Relic Key", regexp.MustCompile(`\bNR(?:AK|II|JS)-[A-Z0-9]{25,}\b`), true, nil, false},
 	{"Dynatrace API Token", regexp.MustCompile(`\bdt0c01\.[A-Z0-9]{24}\.[A-Z0-9]{64}\b`), true, nil, false},
 	{"Resend API Key", regexp.MustCompile(`\bre_[A-Za-z0-9]{8}_[A-Za-z0-9]{24}\b`), true, nil, false},
+	// --- Added 2026-09-23: Cloudflare's prefixed credentials. Until 2026 a
+	// Cloudflare token was a bare 40-character alphanumeric string with no
+	// fixed bytes to look for, which is why this table had no Cloudflare entry
+	// at all — even though jit already wraps CLOUDFLARE_API_TOKEN for wrangler,
+	// so it told you to vault the credential and then could not find it when it
+	// leaked. The vendor now issues "prefix_" + 40 characters + a checksum
+	// expressly so scanners can recognize a leaked one, which admits all three
+	// under D6.
+	//
+	// Open-ended like the GitLab block above, and for the same reason: the
+	// prefix and the 40-character body are documented, the checksum's length
+	// and the body's exact alphabet are not, so a pinned total would be a guess
+	// that silently misses the real thing. The legacy unprefixed format stays
+	// out — no fixed bytes, not admissible, and indistinguishable from any
+	// other base62 blob by shape alone. ---
+	{"Cloudflare Account API Token", regexp.MustCompile(`\bcfat_[A-Za-z0-9_\-]{40,}`), true, nil, false},
+	{"Cloudflare User API Token", regexp.MustCompile(`\bcfut_[A-Za-z0-9_\-]{40,}`), true, nil, false},
+	{"Cloudflare Global API Key", regexp.MustCompile(`\bcfk_[A-Za-z0-9_\-]{40,}`), true, nil, false},
 	// Shapes with no fixed bytes: files only (see sweptByPattern).
 	{"Telegram Bot Token", regexp.MustCompile(`\b[0-9]{8,10}:AA[A-Za-z0-9_\-]{33}\b`), true, nil, false},
 	{"Azure AD Client Secret", regexp.MustCompile(`\b[A-Za-z0-9_.~\-]{3}[78]Q~[A-Za-z0-9_.~\-]{31,34}`), true, nil, false},
