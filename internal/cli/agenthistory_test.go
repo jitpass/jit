@@ -28,7 +28,7 @@ func TestHistoryLogRoundTrip(t *testing.T) {
 		{UnixTime: 100, Kind: agent.KindStart, Cause: "build abc123"},
 		{UnixTime: 200, Kind: agent.KindUnlock, Op: agent.OpUnwrap, By: "jit run --profile x", ByPID: 42, LaunchedBy: "claude", Labels: []string{"stripe/live-key"}},
 		{UnixTime: 250, Kind: agent.KindUse, Op: agent.OpUnwrap, By: "jit run --profile x", Count: 7, Labels: []string{"a/b", "c/d"}},
-		{UnixTime: 300, Kind: agent.KindLock, Cause: "15m0s idle timeout"},
+		{UnixTime: 300, Kind: agent.KindLock, Cause: "15 min idle timeout"},
 	}
 	for _, e := range events {
 		h.append(e)

@@ -647,9 +647,9 @@ func (s *Server) collectIfDoneLocked(now time.Time) bool {
 	// and, in the usual continuation (the same request goes straight on to
 	// a fresh unlock, whose armLockTimer neutralizes the stale timer), after
 	// the NEXT session's unlock line too.
-	cause := fmt.Sprintf("%s idle timeout", s.ttl)
+	cause := fmt.Sprintf("%s idle timeout", lockCauseDuration(s.ttl))
 	if aged {
-		cause = fmt.Sprintf("%s maximum session age", s.maxSessionAge)
+		cause = fmt.Sprintf("%s maximum session age", lockCauseDuration(s.maxSessionAge))
 	}
 	event := SessionEvent{UnixTime: now.Unix(), Kind: KindLock, Cause: cause}
 	s.lastLock = &event
@@ -696,11 +696,11 @@ func (s *Server) armLockTimer() {
 	// ceiling sit there past it until something happened to ask — collected
 	// lazily by collectIfDoneLocked, with no lock event and nothing in
 	// history to explain why the next access re-prompted.
-	delay, cause := s.ttl, fmt.Sprintf("%s idle timeout", s.ttl)
+	delay, cause := s.ttl, fmt.Sprintf("%s idle timeout", lockCauseDuration(s.ttl))
 	if !s.sessionStart.IsZero() && s.maxSessionAge > 0 {
 		if untilCap := time.Until(s.sessionStart.Add(s.maxSessionAge)); untilCap < delay {
 			delay = untilCap
-			cause = fmt.Sprintf("%s maximum session age", s.maxSessionAge)
+			cause = fmt.Sprintf("%s maximum session age", lockCauseDuration(s.maxSessionAge))
 		}
 	}
 	s.lockTimer = time.AfterFunc(delay, func() {

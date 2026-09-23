@@ -272,7 +272,7 @@ func TestAuditReportHeaderSeparatesFailedFromDenied(t *testing.T) {
 }
 
 func TestAuditReportMarksALockAsAStateNotAFailure(t *testing.T) {
-	e := auditEntry{t: time.Now(), kind: "lock", subject: "session locked (5m0s idle timeout)"}
+	e := auditEntry{t: time.Now(), kind: "lock", subject: "session locked (5 min idle timeout)"}
 	out := renderReport([]auditEntry{e})
 	if !strings.Contains(out, glyphWarn) {
 		t.Errorf("expected a lock marked %q, got:\n%s", glyphWarn, out)
