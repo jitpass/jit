@@ -871,14 +871,19 @@ func printGrantsSection(w io.Writer, r statusResult) {
 			name = fmt.Sprintf("pid %d", g.PID)
 		}
 		names = append(names, name)
-		if soonest == 0 || g.ExpiresUnix < soonest {
+		// A standing grant has no deadline and never sets the soonest one.
+		if !g.Standing && (soonest == 0 || g.ExpiresUnix < soonest) {
 			soonest = g.ExpiresUnix
 		}
 	}
+	tail := "until revoked"
+	if soonest != 0 {
+		tail = "next expires " + grantClock(soonest)
+	}
 	_, _ = cOK.Fprint(w, glyphOK+" ")
-	printStatusGlyphValue(w, "%s · %s · next expires %s",
+	printStatusGlyphValue(w, "%s · %s · %s",
 		countWord(len(r.Agent.Grants), "active grant", "active grants"),
-		strings.Join(names, ", "), grantClock(soonest))
+		strings.Join(names, ", "), tail)
 }
 
 // printSecretsSection renders the vault<->profile reconciliation rollup: how

@@ -18,7 +18,7 @@ are not alternatives to each other so much as answers to different questions.
 | A one-off command that needs a specific profile | **`jit run --profile <name>`** | No setup; name the profile for this run only |
 | A machine-wide credential *file* a tool reads (gcloud ADC, SOPS age key, global `~/.npmrc`, `~/.pypirc`) | **run it** and approve the prompt, or **`jit run --with <name>`** | Consent prompts on first read (default); `--with` is the explicit, hard-gated grant, never authorized by a repo |
 | Secrets in your current interactive shell | **`jit export`** | Prints `export` lines to `eval` |
-| Any of the above, but running while you are *away from the keyboard* (an overnight agent, a long build, a scheduled job) | **`jit grant`** first, then the command as usual | One disclosed Touch ID now covers a bounded window, so no prompt waits for a person who is not there |
+| Any of the above, but running while you are *away from the keyboard* (an overnight agent, a long build, a scheduled job) | **`jit grant`** first, then the command as usual | One disclosed Touch ID now covers a deadline you set, or lasts until you revoke it, so no prompt waits for a person who is not there |
 
 ## `jit wrap`: a tool that carries its own token
 
@@ -137,6 +137,7 @@ you set:
 ```
 jit grant --process claude --profile jamf --for 8h
 claude                      # reads succeed with no prompt, until the grant expires
+                            # (--until-revoked instead of --for: no deadline at all)
 ```
 
 The command you actually run does not change. Wrap shims, credential hooks and

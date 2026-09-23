@@ -9,6 +9,9 @@ decision, so this puts the same disclosed prompt in front of you that
 creating the grant did. Shortening needs no command of its own: revoke and
 re-create, and neither step re-asks for what you already have.
 
+A grant made with --until-revoked has no deadline to move, so this refuses
+it. Revoke it when you want it to end.
+
 ```
 jit grant extend ID --for DURATION [flags]
 ```

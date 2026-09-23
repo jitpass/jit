@@ -158,6 +158,17 @@ var agentRunCmd = &cobra.Command{
 		// stores `jit run` reads — see resolveGrantSecrets for why that
 		// agent-side resolution is what makes the grant prompt trustworthy.
 		server.OnResolveGrant = resolveGrantSecrets(root)
+		// Standing grants (design/standing-grants.md): each holds its own
+		// keychain key and persists in the ledger, so they are loaded
+		// before the socket opens and outlive this process. A ledger that
+		// fails to parse is left untouched and reported, never overwritten.
+		server.GrantKeys = grantKeyStore{}
+		server.OnWrappedDEK = wrappedDEKReader(root)
+		if n, err := server.SetGrantLedger(agent.GrantLedgerPath(root)); err != nil {
+			fmt.Fprintf(stderr, "jit service: standing grants not loaded: %v\n", err)
+		} else if n > 0 {
+			fmt.Fprintf(stdout, "jit service: %s loaded\n", countWord(n, "standing grant", "standing grants"))
+		}
 		// Best-effort "how were you asked" for the audit trail: probe once per
 		// fresh challenge whether Touch ID is currently usable, so a denial or
 		// unlock records "Touch ID or device passcode" on a Mac with biometry

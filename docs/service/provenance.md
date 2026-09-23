@@ -68,8 +68,11 @@ Among the auth events, eight kinds appear:
   this entry the trail could show every prompt you *refused* and none that you
   allowed, which is the wrong half to be able to prove.
 - **grant (status=ended)** - a [process grant](./grants.md) ending, with the
-  reason (`expired`, `revoked` - carrying the revoker's provenance - or the
-  anchored process exiting), the grant id, and the vault paths it covered.
+  reason (`expired`, `revoked` - carrying the revoker's provenance - the
+  anchored process exiting, or `ended when the service stopped`, which is
+  how a grant held in the service's memory ends), the grant id, and the
+  vault paths it covered. A grant made with `--until-revoked` has only one
+  of those endings: it survives a restart, so `revoked` is the whole story.
   Recorded because a standing approval's *end* is the fact an investigation
   needs: "was the grant still live at the time?" is unanswerable from a trail
   that only records beginnings. `--kind grant` shows a grant's whole life.
