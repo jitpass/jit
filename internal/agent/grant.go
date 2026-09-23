@@ -204,13 +204,22 @@ func (s *Server) createGrant(req Request, c *caller) Response {
 		// TTL and standing are exclusive so that omitting --for can never
 		// mint a permanent grant by accident.
 		if req.GrantName == "" {
-			return Response{OK: false, Error: "grant_create: a standing grant covers a program under an app (grant_name); one process cannot outlive a reboot, so it keeps a deadline"}
+			return Response{OK: false, Error: "grant_create: a grant with no deadline covers a program under an app (grant_name) - one process cannot outlive a reboot"}
 		}
 		if req.TTLSeconds != 0 {
 			return Response{OK: false, Error: "grant_create: standing and ttl_seconds are exclusive - a grant lasts until revoked or until a deadline, not both"}
 		}
 		if s.GrantKeys == nil {
-			return Response{OK: false, Error: "grant_create: this agent has no grant key store wired, so it cannot make a standing grant"}
+			return Response{OK: false, Error: "grant_create: this agent has no grant key store wired, so it cannot make a grant with no deadline"}
+		}
+		// Without a ledger the grant cannot survive a restart, which is the
+		// whole of what its prompt promises and what the app prints under
+		// it. Minting one anyway produced a grant that read as permanent,
+		// died at the next restart, and left its keychain key orphaned with
+		// nothing able to name it for revoke. Refuse instead, and say which
+		// of the two reasons it is.
+		if !s.ledgerReady() {
+			return Response{OK: false, Error: "grant_create: this agent has no usable grant ledger, so a grant with no deadline could not survive a restart (see the service log for why it was not loaded)"}
 		}
 	} else if ttl < minGrantTTL || ttl > MaxGrantTTL {
 		return Response{OK: false, Error: fmt.Sprintf("grant_create: ttl must be between %s and %s", minGrantTTL, MaxGrantTTL)}
@@ -261,6 +270,17 @@ func (s *Server) createGrant(req Request, c *caller) Response {
 				return Response{OK: false, Error: fmt.Sprintf("grant_create: pid %d is not a session root - an explicit anchor must be a terminal app or editor launched by the system, not a process inside one", req.TargetPID)}
 			}
 		}
+	}
+
+	// A standing grant is matched by the anchor's EXECUTABLE PATH on every
+	// serve, so an anchor the kernel reports no path for can never match:
+	// the grant would cost a Touch ID, list as live, serve nothing, and
+	// then vanish on the next load (which skips a pathless entry) leaving
+	// its key orphaned. lineage.Describe genuinely returns an empty path
+	// for a binary replaced under a running process, which is what an app
+	// updated in place while open looks like. Refused before the prompt.
+	if msg := standingAnchorError(req, target.ExecPath); msg != "" {
+		return Response{OK: false, Error: msg}
 	}
 
 	// Resolution happens BEFORE the prompt (same ordering as OnCanGrant): an
@@ -420,6 +440,17 @@ func grantCreateReason(name, under string, profiles []string, count int, ttl tim
 	}
 	return truncate(prefix+fmt.Sprintf("let %s use %d %s (%s) %s",
 		who, count, noun, truncate(strings.Join(profiles, ", "), profBudget), scope), maxReasonLen)
+}
+
+// standingAnchorError refuses a standing grant whose anchor the kernel
+// reports no executable path for, and returns "" for every other case. It
+// is a function so a test can reach the condition without arranging a
+// process whose binary was replaced underneath it.
+func standingAnchorError(req Request, execPath string) string {
+	if !req.Standing || execPath != "" {
+		return ""
+	}
+	return "grant_create: the kernel reports no executable path for that app, so a grant with no deadline could never match it again (restart the app, or use --for)"
 }
 
 // grantProfilesOf reads the profile set a create names, in either wire
@@ -620,7 +651,7 @@ func (s *Server) extendGrant(req Request, c *caller) Response {
 	_, isStanding := s.standing[req.GrantID]
 	s.grantMu.Unlock()
 	if isStanding {
-		return Response{OK: false, Error: fmt.Sprintf("grant_extend: grant %q is standing - it has no deadline to extend and lasts until you revoke it", req.GrantID)}
+		return Response{OK: false, Error: fmt.Sprintf("grant_extend: grant %q has no deadline to extend - it runs until you revoke it", req.GrantID)}
 	}
 	if g == nil {
 		return Response{OK: false, Error: fmt.Sprintf("grant_extend: no grant %q (it may have expired — extend cannot resurrect one, create it again)", req.GrantID)}

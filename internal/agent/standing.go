@@ -72,6 +72,34 @@ type GrantKeyStore interface {
 // a flag day.
 const standingWrapAEAD = "aead-v1"
 
+// standingExpiryCompat is the ExpiresUnix a standing grant reports on the
+// WIRE, and nothing else: 2099-12-31, an obviously synthetic date meaning
+// "this does not expire".
+//
+// It exists for one reason. A client older than standing grants has no
+// Standing field to read and renders the deadline it does have, so a zero
+// ExpiresUnix came out as the Unix epoch — jit 2.2.6 printed a live
+// standing grant as "expires Thu 02:00 (0m left)" and `jit status` as
+// "next expires Thu 02:00". A grant that never expires reading as long
+// expired is the worst direction for that error to point, and the old
+// binary cannot be changed. A far-future instant is the standard way to
+// say "no expiry" to a field that insists on one: the old renderer then
+// shows a date decades out with tens of thousands of days remaining,
+// which is true.
+//
+// Every current reader MUST branch on Standing and never read this: the
+// CLI's grant list and status do, the app's Format.grantFact does, and
+// TestStandingGrantReportsACompatExpiryOldClientsCanRender pins it.
+// Nothing server-side ever reads GrantStatus back, so this value decides
+// nothing — a standing grant's record genuinely has no deadline, which is
+// why the serve path has no expiry check for one.
+// The noon-UTC hour is deliberate. The old renderer drops the DATE for
+// anything past tomorrow and prints a bare weekday and clock, so no
+// instant can be made unambiguous there; midnight UTC happened to land on
+// "Thu 02:00" in this timezone, the very string the epoch produced, which
+// made the fix look like no fix at all when read side by side.
+var standingExpiryCompat = time.Date(2099, time.December, 31, 12, 0, 0, 0, time.UTC)
+
 // standingSecret is one covered secret inside a standing grant: its vault
 // path, class, and the DEK sealed under the grant key. digest keys the serve
 // path exactly as a timed grant's cache does — the hash of the envelope's
@@ -140,6 +168,7 @@ func (g *standingGrant) status(running bool, rotated []string) GrantStatus {
 		ProfileRoots: append([]GrantProfile(nil), g.profiles...),
 		Secrets:      g.secretPaths(),
 		CreatedUnix:  g.created.Unix(),
+		ExpiresUnix:  standingExpiryCompat.Unix(),
 		Serves:       g.serves,
 		RootAlive:    running,
 		Standing:     true,
@@ -260,11 +289,77 @@ func (s *Server) SetGrantLedger(path string) (count int, err error) {
 	return len(loaded), nil
 }
 
-// saveLedger writes the current standing grants atomically (temp file,
-// rename), 0600. Caller must NOT hold grantMu: it takes it to snapshot.
-// A server with no ledger path (tests without persistence, a service whose
-// ledger failed to parse) keeps its grants in memory only.
+// ledgerServeInterval bounds how often the SERVE path rewrites the ledger.
+// Nothing authorization-critical lives in a serve's update — only the serve
+// count and the last-serve stamp, which are bookkeeping — so the cost of
+// losing the last few seconds of them to a crash is a slightly low counter,
+// against a full JSON marshal plus a write and a rename on every credential
+// read. Structural changes (create, revoke) never wait: they call
+// saveLedger directly, and Close flushes whatever a serve left dirty.
+const ledgerServeInterval = 10 * time.Second
+
+// saveLedgerAfterServe persists a serve's bookkeeping at most once per
+// ledgerServeInterval, marking the rest dirty for the next writer or for
+// Close.
+func (s *Server) saveLedgerAfterServe() {
+	s.ledgerMu.Lock()
+	if time.Since(s.ledgerSavedAt) < ledgerServeInterval {
+		s.ledgerDirty = true
+		s.ledgerMu.Unlock()
+		return
+	}
+	s.ledgerMu.Unlock()
+	_ = s.saveLedger()
+}
+
+// flushLedger writes what a coalesced serve left behind. Called on the way
+// out, so a clean stop never loses a count it could have kept.
+func (s *Server) flushLedger() {
+	s.ledgerMu.Lock()
+	dirty := s.ledgerDirty
+	s.ledgerMu.Unlock()
+	if dirty {
+		_ = s.saveLedger()
+	}
+}
+
+// ledgerReady reports whether a standing grant made now could survive a
+// restart: a ledger path is set, which SetGrantLedger clears on any file it
+// refused to read rather than risk overwriting.
+func (s *Server) ledgerReady() bool {
+	s.grantMu.Lock()
+	defer s.grantMu.Unlock()
+	return s.ledgerPath != ""
+}
+
+// saveLedger writes the current standing grants atomically, 0600. Caller
+// must NOT hold grantMu or ledgerMu: it takes both. A server with no ledger
+// path (tests without persistence, a service whose ledger failed to parse)
+// keeps its grants in memory only.
+//
+// ledgerMu spans the SNAPSHOT as well as the write, and both halves of that
+// are load-bearing:
+//
+//   - Two concurrent saves used to write the same temp path and rename it
+//     out from under each other, publishing a spliced file. Measured, not
+//     feared: six concurrent callers produced invalid JSON in a quarter of
+//     a second. Every serve saves (it bumps serves/lastServe) and every
+//     mount read and `jit run` is a serve, so the race is on the hot path,
+//     and the payload length really does change between saves — the first
+//     serve adds a last_serve_unix line, and a serve count rolls digits.
+//     The cost of losing was total: the next start cannot parse the file,
+//     disowns it, and every standing grant silently disappears with its
+//     keychain key orphaned and nothing left that can name it for revoke.
+//   - Snapshotting inside the same lock is what makes a revoke durable. A
+//     serve that had already snapshotted could otherwise rename its older
+//     picture over a revoke's, resurrecting a grant whose key was already
+//     deleted: gone from memory, back on disk, unservable, and refused by
+//     revoke because it is no longer in either store.
 func (s *Server) saveLedger() error {
+	s.ledgerMu.Lock()
+	defer s.ledgerMu.Unlock()
+	s.ledgerDirty = false
+	s.ledgerSavedAt = time.Now()
 	s.grantMu.Lock()
 	path := s.ledgerPath
 	f := ledgerFile{Version: ledgerVersion, Grants: make([]ledgerGrant, 0, len(s.standing))}
@@ -293,8 +388,22 @@ func (s *Server) saveLedger() error {
 	if err != nil {
 		return err
 	}
+	// A crash between write and rename leaves a temp behind, and writing
+	// into it would keep whatever mode (or symlink) it had rather than the
+	// 0600 this file promises. Remove it, then create exclusively.
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	if err := os.Remove(tmp); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	f2, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- a fixed path beside the ledger, created exclusively
+	if err != nil {
+		return err
+	}
+	if _, err := f2.Write(data); err != nil {
+		_ = f2.Close()
+		return err
+	}
+	if err := f2.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
@@ -418,9 +527,11 @@ func (s *Server) standingUnwrap(c *caller, wrapped []byte) (dek []byte, path str
 		g.serves++
 		g.lastServe = time.Now()
 		s.grantMu.Unlock()
-		// Best-effort: a use count that did not reach disk is not worth
-		// failing a serve over.
-		_ = s.saveLedger()
+		// Best-effort and coalesced: a use count that did not reach disk is
+		// not worth failing a serve over, and it is certainly not worth a
+		// whole-ledger marshal, write and rename per credential read on the
+		// path that serves every mount.
+		s.saveLedgerAfterServe()
 		return out, sec.path, true
 	}
 	return nil, "", false
@@ -544,6 +655,7 @@ func (s *Server) revokeStanding(id string, c *caller) bool {
 // the ledger and the keychain items are untouched, since the grants outlive
 // the process by design.
 func (s *Server) closeStanding() {
+	s.flushLedger()
 	s.grantMu.Lock()
 	grants := make([]*standingGrant, 0, len(s.standing))
 	for _, g := range s.standing {

@@ -207,6 +207,14 @@ type Server struct {
 	// but the key.
 	standing   map[string]*standingGrant
 	ledgerPath string
+	// ledgerMu serializes the whole save: snapshot, write, rename. It is
+	// NOT grantMu, because the file write must not hold the lock the serve
+	// path needs, and it is not optional — see saveLedger for the tear it
+	// prevents and the revoke it keeps durable. It also guards the two
+	// fields below, which coalesce the serve path's bookkeeping writes.
+	ledgerMu      sync.Mutex
+	ledgerDirty   bool
+	ledgerSavedAt time.Time
 
 	// AuthMethodFn, if set, returns a best-effort description of how the local
 	// auth challenge asked the user ("Touch ID or device passcode" vs. "device
