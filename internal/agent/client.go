@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"syscall"
 	"time"
 
 	"github.com/jitpass/jit/internal/auditlog"
@@ -22,6 +23,21 @@ import (
 // Reachable(), which costs a second dial per command just to learn what
 // the real call was about to report anyway.
 var ErrNotRunning = errors.New("agent is not running")
+
+// ErrSocketBlocked marks the other way a dial fails: the socket is there and
+// an agent is almost certainly behind it, but the KERNEL refused us the
+// connect. On macOS a seatbelt profile with `(deny network-outbound)` covers
+// unix-domain sockets too, so every jit command run inside a sandboxed shell
+// — an agent harness, a CI runner, anything under sandbox-exec — hits this.
+//
+// Distinct from ErrNotRunning, and deliberately NOT wrapping it: the two
+// states want opposite handling. "Not running" earns restart advice and a
+// launchd demand-start; a blocked connect earns neither, because the service
+// it would restart is already up and the sandbox will refuse the next dial
+// just as it refused this one. Reporting that as "installed but not running"
+// sent people to `jit service restart` for a service that never stopped, and
+// let `jit unlock` try to spawn a second one.
+var ErrSocketBlocked = errors.New("agent socket blocked")
 
 // ErrPromptUnanswered is a bounded-wait client giving up on a call that was
 // almost certainly sitting behind a human-in-the-loop prompt (session unlock,
@@ -176,6 +192,14 @@ func (c *Client) dial() (net.Conn, error) {
 	if err == nil {
 		return conn, nil
 	}
+	// A refused connect is answered before the hook and before the retry
+	// window: neither can help. The hook's launchd demand would spawn
+	// against a service that is already running, and re-dialing a policy
+	// denial just burns the caller's grace period — agentRestartGrace of it
+	// on every command — to arrive at the same EPERM.
+	if socketBlocked(err) {
+		return nil, err
+	}
 	retry := c.dialRetry
 	if fn := c.dialFailed; fn != nil {
 		c.dialFailed = nil
@@ -193,14 +217,38 @@ func (c *Client) dial() (net.Conn, error) {
 		if err == nil {
 			return conn, nil
 		}
+		if socketBlocked(err) {
+			return nil, err
+		}
 	}
 	return nil, err
+}
+
+// socketBlocked tells a policy refusal apart from an absent listener, which
+// is the whole basis for ErrSocketBlocked. Measured against the three ways
+// this dial fails on macOS: a live socket under `(deny network-outbound)`
+// gives EPERM, a service that exited and cleaned up gives ENOENT, and one
+// that died leaving the socket file behind gives ECONNREFUSED. EACCES joins
+// EPERM because the same conclusion — something other than the service's own
+// state is refusing us — holds when it is the directory mode rather than a
+// sandbox, and the advice names both.
+func socketBlocked(err error) bool {
+	return errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES)
+}
+
+// dialSentinel picks which of the two dial sentinels a failed connect earns,
+// so both call sites wrap the same judgement rather than each deciding.
+func dialSentinel(err error) error {
+	if socketBlocked(err) {
+		return ErrSocketBlocked
+	}
+	return ErrNotRunning
 }
 
 func (c *Client) call(req Request) (Response, error) {
 	conn, err := c.dial()
 	if err != nil {
-		return Response{}, fmt.Errorf("connecting to agent: %w: %v", ErrNotRunning, err)
+		return Response{}, fmt.Errorf("connecting to agent: %w: %v", dialSentinel(err), err)
 	}
 	defer func() { _ = conn.Close() }()
 
@@ -644,7 +692,7 @@ func (c *Client) ConsentAnswer(consentID string, allow bool) error {
 func (c *Client) subscribe(ctx context.Context, broker bool, fn func(SessionEvent)) error {
 	conn, err := c.dial()
 	if err != nil {
-		return fmt.Errorf("connecting to agent: %w: %v", ErrNotRunning, err)
+		return fmt.Errorf("connecting to agent: %w: %v", dialSentinel(err), err)
 	}
 	defer func() { _ = conn.Close() }()
 
@@ -722,4 +770,21 @@ func scrubEventBy(e *SessionEvent) {
 		return
 	}
 	e.By = auditlog.RedactCommandLine(e.By)
+}
+
+// AuditAppend asks the agent to write one finished invocation to the
+// application audit log on this caller's behalf (see OpAuditAppend).
+//
+// For callers that can reach the socket but not write the config directory —
+// a sandboxed shell, where the direct append fails with EPERM and the event
+// is lost. The caller keeps its own direct-write path for every other case
+// and falls back to it whenever this returns an error, which is also what
+// makes the op safe to send to an agent too old to know it: an unknown op
+// fails closed with an error, and the caller writes the file itself.
+func (c *Client) AuditAppend(rec auditlog.Record) error {
+	// call already turns a non-OK response into an error, so a refusal by the
+	// handler and an unreachable agent reach the caller the same way — which
+	// is what the caller wants, since its answer to both is the direct write.
+	_, err := c.call(Request{Op: OpAuditAppend, AuditRecord: &rec})
+	return err
 }

@@ -305,7 +305,45 @@ func restartedServiceClause() string {
 	}
 }
 
+// socketBlockedParts is installedNotRunningParts' counterpart for the state
+// that looks identical from outside and wants the opposite advice: the
+// service is up and the kernel refused this process the connect (see
+// agent.ErrSocketBlocked). Restarting fixes nothing here — the next dial
+// from the same shell is refused just the same — so the action names the one
+// thing that does: allowing the socket where the shell's sandbox is
+// configured. Split and rendered exactly like its sibling so doctor gets
+// Detail/Action and flat surfaces get one joined sentence.
+func socketBlockedParts(subject string) (detail, action string) {
+	return subject + " is running, but this shell was refused its socket.",
+		"a sandbox is the usual cause — allow " + shortPath(agentSocketPath()) + " in its config"
+}
+
+func socketBlockedAdvice(subject string) string {
+	detail, action := socketBlockedParts(subject)
+	return detail + " " + action
+}
+
+// statusSocketBlockedRow is socketBlockedParts at dashboard width — one
+// clause for `jit status`'s service row, action rendered as the row's → line.
+func statusSocketBlockedRow() string {
+	return "running, but this shell was refused its socket"
+}
+
+// agentSocketPath is the socket the client would dial, for advice that has to
+// name it. An unresolvable home leaves the advice generic rather than
+// printing a half-built path.
+func agentSocketPath() string {
+	root, err := vaultRootDir()
+	if err != nil {
+		return "the agent socket"
+	}
+	return agent.SocketPath(root)
+}
+
 func notRunningHint(err error) error {
+	if errors.Is(err, agent.ErrSocketBlocked) {
+		return errors.New(socketBlockedAdvice("the service"))
+	}
 	if !errors.Is(err, agent.ErrNotRunning) {
 		return err
 	}

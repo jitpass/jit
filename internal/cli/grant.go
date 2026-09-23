@@ -879,7 +879,10 @@ func completeGrantIDs(cmd *cobra.Command, args []string, toComplete string) ([]s
 	grants, err := ac.GrantList()
 	if err != nil {
 		msg := "could not list grants (is the service on an older jit?)"
-		if errors.Is(err, agent.ErrNotRunning) {
+		switch {
+		case errors.Is(err, agent.ErrSocketBlocked):
+			msg = "this shell can't reach the jit service (sandboxed?)"
+		case errors.Is(err, agent.ErrNotRunning):
 			msg = "the jit service is not running"
 		}
 		return cobra.AppendActiveHelp(nil, msg), cobra.ShellCompDirectiveNoFileComp
