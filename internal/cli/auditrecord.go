@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/auditlog"
 	"github.com/jitpass/jit/internal/lineage"
 )
@@ -118,9 +119,80 @@ func recordAuditEvent(cmd *cobra.Command, cmdErr error, elapsed time.Duration) {
 		rec.Error = redactText(cmdErr.Error())
 	}
 
+	appendAuditRecord(root, rec)
+}
+
+// appendAuditRecord writes one record to the application audit log, via the
+// service when it can be reached and directly otherwise.
+//
+// The service is TRIED FIRST, not used as a fallback, because the case this
+// exists for is the one where the direct write fails: a sandboxed shell can
+// reach the socket (once its sandbox allows it) but cannot write jit's config
+// directory, so the append fails with EPERM and the event is lost — and those
+// invocations, an agent running jit on someone's behalf, are the ones most
+// worth having in the trail. The alternative was to grant the sandbox write
+// access to the vault root, which buys the trail back by handing a sandboxed
+// process the rest of jit's state (grants.json, mounts.yaml, the vault tree).
+//
+// Preferring the service also serialises concurrent appends through one
+// writer, where before every jit process appended to the same file at once
+// and relied on O_APPEND.
+//
+// Failures on BOTH paths stay swallowed, as this file's callers promise: an
+// audit trail is a nicety, and nothing about recording that a command ran may
+// make the command itself appear to have failed.
+func appendAuditRecord(root string, rec auditlog.Record) {
+	if auditViaService(root, rec) {
+		return
+	}
 	logger := auditlog.New(root, os.Stderr)
 	logger.Trim()
 	logger.Append(rec)
+}
+
+// auditViaService offers the record to the running service, reporting whether
+// it was written. Three deliberate choices in the client it builds:
+//
+//   - No heal hook. Recording that a command ran must never SPAWN the
+//     service — the same rule agentClientNoHeal exists for, and more so here,
+//     where the caller is a command that has already finished its work.
+//   - No dial retry. This runs at the end of every jit command; waiting out a
+//     restart gap would add agentRestartGrace to each one, to save a record
+//     the direct write is about to make anyway.
+//   - A short response timeout, as a backstop only: the handler takes no
+//     server lock, so it never queues behind a Touch ID challenge the way a
+//     status call can. A reply that still misses the bound means the service
+//     may have written the line before this process gave up, and the direct
+//     write that follows then lands it twice. A duplicate line on a stalled
+//     disk is the accepted cost of never LOSING one.
+//
+// The service itself must never take this path: asking the socket you own —
+// and are in the middle of closing — to write your own exit record is a
+// request into your own shutdown. That is decided from the record rather than
+// from a flag the service sets on itself, because a process-wide flag set
+// inside a RunE outlives the command that set it, which is wrong in any
+// process that runs more than one (the test binary does, and caught it).
+func auditViaService(root string, rec auditlog.Record) bool {
+	if auditSelfWriteCommands[rec.Command] {
+		return false
+	}
+	return agent.NewClient(agent.SocketPath(root)).
+		WithResponseTimeout(auditAppendWait).
+		AuditAppend(rec) == nil
+}
+
+// auditAppendWait bounds the audit append above. Generous for a local socket
+// round trip that writes one line, short enough that a finished command never
+// visibly hangs on it.
+const auditAppendWait = 2 * time.Second
+
+// auditSelfWriteCommands are the invocations whose audit record always takes
+// the direct write: the background service's own. Both spellings are listed
+// because the deprecated `jit agent run` alias, which old launchd plists still
+// exec, delegates to the same body (see agentCompatRunCmd).
+var auditSelfWriteCommands = map[string]bool{
+	"jit service run": true,
+	"jit agent run":   true,
 }
 
 // recordSideEffect appends an audit record for a persistent change a command
@@ -160,7 +232,7 @@ func recordSideEffect(cmdPath string, args []string, byCommand string) {
 		rec.User = strconv.Itoa(rec.UID)
 	}
 	rec.Parent, rec.LaunchedBy = resolveInvoker()
-	auditlog.New(root, os.Stderr).Append(rec)
+	appendAuditRecord(root, rec)
 }
 
 // resolveInvoker names this jit process's parent and the nearest ancestor that
