@@ -28,8 +28,23 @@ import (
 const grantService = "com.jitpass.grant.key"
 
 // GrantKeys is the keychain-backed store the agent's standing grants use.
-// The zero value is ready.
-type GrantKeys struct{}
+// The zero value is ready and targets the production service.
+type GrantKeys struct {
+	// service overrides the keychain service name. Empty means the real
+	// one. A TEST MUST SET IT, for the reason this package's Wrapper
+	// documents at length: a test that shared the production identifier
+	// once put a live "wants to access your confidential information"
+	// dialog on a real user's screen, one click from deleting the key
+	// protecting their whole vault. Never let a test near grantService.
+	service string
+}
+
+func (g GrantKeys) serviceName() string {
+	if g.service == "" {
+		return grantService
+	}
+	return g.service
+}
 
 // GrantKey is one grant's key: a Wrapper whose challenge always passes and
 // whose "missing" error names the grant rather than the vault.
@@ -37,12 +52,12 @@ type GrantKey struct {
 	w *Wrapper
 }
 
-func grantWrapper(id string) (*Wrapper, error) {
+func (g GrantKeys) wrapper(id string) (*Wrapper, error) {
 	if id == "" {
 		return nil, errors.New("grant key: empty grant id")
 	}
 	return &Wrapper{
-		service:   grantService,
+		service:   g.serviceName(),
 		account:   id,
 		challenge: func(string) error { return nil },
 		missing:   fmt.Errorf("no key for grant %s in the keychain (was it revoked?)", id),
@@ -52,8 +67,8 @@ func grantWrapper(id string) (*Wrapper, error) {
 // Create mints a fresh random key for id. It refuses an id that already
 // has one: a grant id is minted once, and reusing a key across grants
 // would let a revoked grant's ledger copies open again.
-func (GrantKeys) Create(id string) (*GrantKey, error) {
-	w, err := grantWrapper(id)
+func (g GrantKeys) Create(id string) (*GrantKey, error) {
+	w, err := g.wrapper(id)
 	if err != nil {
 		return nil, err
 	}
@@ -68,8 +83,8 @@ func (GrantKeys) Create(id string) (*GrantKey, error) {
 
 // Load returns the key for an existing grant. It never prompts; a missing
 // item is an error naming the grant.
-func (GrantKeys) Load(id string) (*GrantKey, error) {
-	w, err := grantWrapper(id)
+func (g GrantKeys) Load(id string) (*GrantKey, error) {
+	w, err := g.wrapper(id)
 	if err != nil {
 		return nil, err
 	}
@@ -81,8 +96,8 @@ func (GrantKeys) Load(id string) (*GrantKey, error) {
 
 // Delete destroys the key. Idempotent: a key already gone is success,
 // since the state the caller wants is "no key".
-func (GrantKeys) Delete(id string) error {
-	w, err := grantWrapper(id)
+func (g GrantKeys) Delete(id string) error {
+	w, err := g.wrapper(id)
 	if err != nil {
 		return err
 	}

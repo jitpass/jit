@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,8 +135,11 @@ func TestStandingGrantServesWithoutPromptAcrossRestart(t *testing.T) {
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Fatalf("standing create challenged %d times, want exactly 1", got)
 	}
-	if !st.Standing || st.ExpiresUnix != 0 || st.AnchorPath == "" {
-		t.Fatalf("status = %+v, want Standing with no expiry and an anchor path", st)
+	// ExpiresUnix carries the far-future compat instant, never a real
+	// deadline; TestStandingGrantReportsACompatExpiryOldClientsCanRender
+	// owns that contract.
+	if !st.Standing || st.ExpiresUnix != standingExpiryCompat.Unix() || st.AnchorPath == "" {
+		t.Fatalf("status = %+v, want Standing with the compat expiry and an anchor path", st)
 	}
 	if len(st.ProfileRoots) != 1 || st.ProfileRoots[0].Root != "/tmp/proj" {
 		t.Errorf("ProfileRoots = %v, want the folder each profile was named with", st.ProfileRoots)
@@ -408,8 +412,15 @@ func TestStandingGrantCannotBeExtended(t *testing.T) {
 	name, parent := ownNameAndParent(t)
 	c := NewClient(socketPath)
 	st := standingCreate(t, c, name, parent)
-	if _, err := c.GrantExtend(st.ID, time.Hour); err == nil || !strings.Contains(err.Error(), "standing") {
-		t.Errorf("extend on a standing grant = %v, want a refusal naming it", err)
+	// The refusal must say WHAT is wrong in the user's own vocabulary. The
+	// word "standing" is this package's noun and appears on no user surface:
+	// the flag is --until-revoked, the list says "until revoked".
+	_, err := c.GrantExtend(st.ID, time.Hour)
+	if err == nil || !strings.Contains(err.Error(), "no deadline to extend") {
+		t.Errorf("extend on a standing grant = %v, want a refusal saying it has no deadline", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "standing") {
+		t.Errorf("refusal = %q, leaks the internal noun 'standing' onto a user surface", err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Errorf("extend on a standing grant reached the prompt (%d fetches, want 1)", got)
@@ -528,5 +539,278 @@ func TestServiceStopEndsTimedGrantsAndRecordsIt(t *testing.T) {
 	}
 	if len(grants) != 1 || grants[0].ID != standing.ID {
 		t.Fatalf("after the stop GrantList = %+v, want only the standing grant", grants)
+	}
+}
+
+// A standing grant has no deadline, but a client older than the feature has
+// no Standing field to read and renders whatever ExpiresUnix holds. Zero came
+// out as the Unix epoch, so jit 2.2.6 showed a live grant as "expires Thu
+// 02:00 (0m left)" — never-expires reading as long-expired, the worst
+// direction for that error. The wire therefore carries a far-future
+// compatibility instant, and every CURRENT reader must ignore it and branch
+// on Standing instead. Both halves are pinned here: the value is sent, and
+// it decides nothing.
+func TestStandingGrantReportsACompatExpiryOldClientsCanRender(t *testing.T) {
+	var calls int32
+	store := &memGrantKeys{}
+	ledger := filepath.Join(t.TempDir(), "grants.json")
+	s, socketPath, cleanup := standingTestServer(t, &calls, store, ledger)
+	defer cleanup()
+	wireGrantResolver(s, sealGrantSecret(t, "jamf/api-pass", "mcp", bytes.Repeat([]byte{0x07}, 32)))
+	name, parent := ownNameAndParent(t)
+	c := NewClient(socketPath)
+	st := standingCreate(t, c, name, parent)
+
+	if st.ExpiresUnix <= time.Now().Add(50*365*24*time.Hour).Unix() {
+		t.Errorf("ExpiresUnix = %d, want a far-future instant an old client renders as 'does not expire'", st.ExpiresUnix)
+	}
+	if !st.Standing {
+		t.Fatal("Standing is false; every current reader branches on it and would fall back to the compat date")
+	}
+	// It is a wire projection only: the record itself has no deadline, which
+	// is why nothing prunes or expires a standing grant.
+	s.grantMu.Lock()
+	_, timed := s.grants[st.ID]
+	_, standing := s.standing[st.ID]
+	s.grantMu.Unlock()
+	if timed || !standing {
+		t.Fatalf("grant %s landed in the wrong store (timed=%v standing=%v)", st.ID, timed, standing)
+	}
+	// The compat date must never make a standing grant expire: prune it hard
+	// at an instant far past any real deadline and it must still serve.
+	s.pruneGrants(time.Now().Add(100 * 365 * 24 * time.Hour))
+	grants, err := c.GrantList()
+	if err != nil {
+		t.Fatalf("GrantList: %v", err)
+	}
+	if len(grants) != 1 || grants[0].ID != st.ID {
+		t.Fatalf("a prune past the compat date ended the standing grant: %+v", grants)
+	}
+}
+
+// Every serve saves the ledger, because it bumps the serve count, and every
+// mount read and `jit run` is a serve. Two of them racing used to write the
+// same temp path and rename it out from under each other, publishing a
+// spliced file — measured at six concurrent callers producing invalid JSON
+// in a quarter of a second. The cost of losing is total: the next start
+// cannot parse it, disowns the file, and every standing grant disappears
+// with its keychain key orphaned and nothing left that can name it.
+//
+// The grant set changes length under the writers on purpose: that is what
+// makes the payload lengths differ, which is what splices.
+func TestConcurrentLedgerSavesPublishValidJSON(t *testing.T) {
+	store := &memGrantKeys{}
+	ledger := filepath.Join(t.TempDir(), "grants.json")
+	s := NewServer(shortSocketPath(t), nil, time.Minute)
+	s.GrantKeys = store
+	if _, err := s.SetGrantLedger(ledger); err != nil {
+		t.Fatalf("SetGrantLedger: %v", err)
+	}
+	s.grantMu.Lock()
+	for i := range 6 {
+		id := fmt.Sprintf("g-%04d", i)
+		s.standing[id] = &standingGrant{
+			id: id, created: time.Now(), anchorPath: "/Applications/T.app/Contents/MacOS/T",
+			anchorName: "T", name: "claude", profiles: []GrantProfile{{Name: "p", Root: "/tmp/r"}},
+			secrets: map[string]standingSecret{
+				"d" + id: {path: "p/" + id, class: "mcp", digest: "d" + id, grantWrapped: bytes.Repeat([]byte{byte(i)}, 60)},
+			},
+		}
+	}
+	s.grantMu.Unlock()
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	// A churner, so the serialized payload really does change length.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for n := 0; ; n++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			s.grantMu.Lock()
+			for _, g := range s.standing {
+				g.serves++
+				g.lastServe = time.Now()
+			}
+			s.grantMu.Unlock()
+		}
+	}()
+	for range 6 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 60 {
+				if err := s.saveLedger(); err != nil {
+					t.Errorf("saveLedger: %v", err)
+					return
+				}
+				// Every published file must parse, every time. A reader
+				// starting mid-run is exactly what a service restart is.
+				data, err := os.ReadFile(ledger)
+				if err != nil {
+					t.Errorf("reading the published ledger: %v", err)
+					return
+				}
+				var f ledgerFile
+				if err := json.Unmarshal(data, &f); err != nil {
+					t.Errorf("published ledger is not valid JSON (%d bytes): %v", len(data), err)
+					return
+				}
+				if len(f.Grants) != 6 {
+					t.Errorf("published ledger holds %d grants, want 6", len(f.Grants))
+					return
+				}
+			}
+		}()
+	}
+	close(stop)
+	wg.Wait()
+
+	// And the file it leaves behind is the one a restart will read.
+	fi, err := os.Stat(ledger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("ledger mode = %v, want 0600", fi.Mode().Perm())
+	}
+	if _, err := os.Stat(ledger + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("a temp file survived the run; a stale one is what carries a wrong mode into the next write")
+	}
+	s2 := NewServer(shortSocketPath(t), nil, time.Minute)
+	n, err := s2.SetGrantLedger(ledger)
+	if err != nil || n != 6 {
+		t.Fatalf("a fresh service loaded %d grants (%v), want 6", n, err)
+	}
+}
+
+// A revoke must be durable against a serve that is already mid-save. The
+// serve snapshots inside ledgerMu, so a revoke that got there first is the
+// picture that gets written; otherwise the serve's older snapshot renames
+// the revoked grant back onto disk, where it is unservable (its key is
+// gone) and unrevokable (it is in neither store).
+func TestARevokeIsNotResurrectedByAConcurrentServe(t *testing.T) {
+	store := &memGrantKeys{}
+	ledger := filepath.Join(t.TempDir(), "grants.json")
+	s := NewServer(shortSocketPath(t), nil, time.Minute)
+	s.GrantKeys = store
+	if _, err := s.SetGrantLedger(ledger); err != nil {
+		t.Fatalf("SetGrantLedger: %v", err)
+	}
+	for round := range 40 {
+		id := fmt.Sprintf("g-r%02d", round)
+		key, err := store.Create(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.grantMu.Lock()
+		s.standing[id] = &standingGrant{
+			id: id, created: time.Now(), anchorPath: "/Applications/T.app/Contents/MacOS/T",
+			anchorName: "T", name: "claude", key: key,
+			secrets: map[string]standingSecret{"d": {path: "p/one", class: "mcp", digest: "d", grantWrapped: []byte("x")}},
+		}
+		s.grantMu.Unlock()
+		if err := s.saveLedger(); err != nil {
+			t.Fatal(err)
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); s.revokeStanding(id, nil) }()
+		go func() { defer wg.Done(); _ = s.saveLedger() }() // the serve's bookkeeping
+		wg.Wait()
+
+		data, err := os.ReadFile(ledger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var f ledgerFile
+		if err := json.Unmarshal(data, &f); err != nil {
+			t.Fatalf("round %d: ledger not valid JSON: %v", round, err)
+		}
+		for _, g := range f.Grants {
+			if g.ID == id {
+				t.Fatalf("round %d: revoked grant %s came back on disk; its key is already deleted, so it can never serve and revoke will not find it", round, id)
+			}
+		}
+		if store.has(id) {
+			t.Fatalf("round %d: revoke left the key behind", round)
+		}
+	}
+}
+
+// A grant with no deadline promises to survive a restart, and its prompt and
+// the app's sheet both say so. Without a ledger it cannot: it would die at
+// the next start with its keychain key orphaned and nothing left able to
+// name it for revoke. Refuse before the prompt rather than mint the lie.
+func TestAStandingGrantIsRefusedWithoutAUsableLedger(t *testing.T) {
+	var calls int32
+	store := &memGrantKeys{}
+	ledger := filepath.Join(t.TempDir(), "grants.json")
+	// A ledger written by a newer jit: SetGrantLedger refuses it and clears
+	// the path, which is exactly the state this guards.
+	if err := os.WriteFile(ledger, []byte(`{"version": 99, "grants": []}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, socketPath, cleanup := startTestServerWith(t, time.Minute, &calls, func(s *Server) {
+		s.GrantKeys = store
+		if _, err := s.SetGrantLedger(ledger); err == nil {
+			t.Fatal("a newer ledger version was accepted")
+		}
+	})
+	defer cleanup()
+	wireGrantResolver(s, sealGrantSecret(t, "jamf/api-pass", "mcp", bytes.Repeat([]byte{0x07}, 32)))
+	name, parent := ownNameAndParent(t)
+
+	_, err := NewClient(socketPath).GrantCreateWith(GrantCreateOpts{
+		TargetPID: parent, Name: name, Standing: true, Profiles: []GrantProfile{{Name: "jamf"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "survive a restart") {
+		t.Errorf("standing create with no usable ledger = %v, want a refusal naming what it could not promise", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Errorf("the refused create reached the prompt %d times, want 0", got)
+	}
+	if len(store.keys) != 0 {
+		t.Errorf("a refused create left %d keys behind", len(store.keys))
+	}
+	// A TIMED grant is unaffected: it never needed the ledger.
+	if _, err := NewClient(socketPath).GrantCreate(int32(os.Getpid()), "", []string{"jamf"}, "", time.Hour); err != nil { // #nosec G115 -- test pid
+		t.Errorf("a timed grant was refused for a ledger it does not use: %v", err)
+	}
+}
+
+// The anchor is matched by executable path on every serve, so an anchor the
+// kernel reports no path for can never match again. Such a grant would cost
+// a Touch ID, list as live, serve nothing, and then vanish on the next load
+// (which skips a pathless entry) with its key orphaned. A process whose
+// binary was replaced underneath it cannot be arranged in a test, so the
+// guard is the unit; createGrant calls it before the prompt.
+func TestAStandingGrantIsRefusedWhenTheAnchorHasNoExecutablePath(t *testing.T) {
+	if msg := standingAnchorError(Request{Standing: true}, ""); msg == "" {
+		t.Fatal("a standing grant with no anchor executable path was allowed")
+	} else {
+		if !strings.Contains(msg, "executable path") {
+			t.Errorf("refusal = %q, want it to name what is missing", msg)
+		}
+		if !strings.Contains(msg, "--for") {
+			t.Errorf("refusal = %q, want it to name the shape that still works", msg)
+		}
+	}
+	// Everything else passes through: a real anchor, and any timed grant.
+	if msg := standingAnchorError(Request{Standing: true}, "/Applications/iTerm.app/Contents/MacOS/iTerm2"); msg != "" {
+		t.Errorf("a real anchor was refused: %s", msg)
+	}
+	if msg := standingAnchorError(Request{}, ""); msg != "" {
+		t.Errorf("a timed grant was refused for an anchor path it does not use: %s", msg)
+	}
+	// And the serve gate agrees: an empty anchor matches nothing, so a
+	// grant holding one could only ever have been dead weight.
+	if lineage.AncestryNamedUnderPath(int32(os.Getpid()), "", "anything") { // #nosec G115 -- test pid
+		t.Error("AncestryNamedUnderPath matched an empty anchor path")
 	}
 }
