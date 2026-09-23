@@ -258,6 +258,9 @@ var secretPrefixes = []string{
 	"rubygems_", "cio", "AKCp",
 	"ATATT3", "lin_api_", "figd_", "pat-", "ops_", "tskey-", "shpca_", "shppa_",
 	"sq0atp-", "sq0csp-", "xkeysib-", "NRAK-", "NRII-", "NRJS-", "dt0c01.", "re_",
+	// Added 2026-09-23 with Cloudflare's prefixed credentials: cfat_ account
+	// token, cfut_ user token, cfk_ global API key.
+	"cfat_", "cfut_", "cfk_",
 	// A JWT's header is always base64 of {"alg":... — "eyJ" is the whole
 	// format's tell, and a bare JWT in a log line is a live session.
 	"eyJ",
