@@ -159,6 +159,49 @@ func AncestryNamedWithin(pid, root int32, name string) bool {
 	return false
 }
 
+// AncestryNamedUnderPath is AncestryNamedWithin with the root given as an
+// EXECUTABLE PATH instead of a pid: the chain must pass through a process
+// matching name and then reach a process whose ExecPath is anchorPath, all
+// below launchd. It is the serve gate for a standing grant
+// (design/standing-grants.md), whose anchor has to survive a reboot and so
+// cannot be a pid. Same fail-closed posture: unreadable link, cycle, cap
+// overrun, or reaching launchd without a match all answer false, and
+// launchd itself can never be the anchor (cur <= 1 stops the walk before
+// it is compared), so a machine-wide name grant is unreachable from here
+// as it is from the pid-rooted walk.
+func AncestryNamedUnderPath(pid int32, anchorPath, name string) bool {
+	if pid <= 0 || anchorPath == "" || name == "" {
+		return false
+	}
+	cur := pid
+	nameSeen := false
+	for depth := 0; depth < grantAncestryCap; depth++ {
+		if cur <= 1 {
+			return false
+		}
+		p, ok := Describe(cur)
+		if !ok {
+			return false
+		}
+		if !nameSeen && p.MatchesName(name) {
+			nameSeen = true
+		}
+		if p.ExecPath == anchorPath {
+			return nameSeen
+		}
+		kp, err := unix.SysctlKinfoProc("kern.proc.pid", int(cur))
+		if err != nil {
+			return false
+		}
+		ppid := int32(kp.Eproc.Ppid)
+		if ppid == cur {
+			return false
+		}
+		cur = ppid
+	}
+	return false
+}
+
 // SessionRoot returns the topmost ancestor of pid below launchd — the
 // terminal app, tmux server, or SSH connection that owns pid's session —
 // which is what a tree-scoped grant anchors to. ok is false when pid has no

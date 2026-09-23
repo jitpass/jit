@@ -86,7 +86,7 @@ func TestExplicitAnchorOnAForeignSessionRootIsPromptedWithRequester(t *testing.T
 }
 
 func TestGrantCreateReasonWithRequesterFitsTheBudget(t *testing.T) {
-	r := grantCreateReason("claude-code-agent", "WezTerm-gui-app", []string{"jamf-production", "aws-ci"}, 12, 167*time.Hour+59*time.Minute, "JitPassApp")
+	r := grantCreateReason("claude-code-agent", "WezTerm-gui-app", []string{"jamf-production", "aws-ci"}, 12, 167*time.Hour+59*time.Minute, "JitPassApp", false)
 	if n := utf8.RuneCountInString(r); n > maxReasonLen {
 		t.Errorf("reason is %d runes, over maxReasonLen %d: %q", n, maxReasonLen, r)
 	}

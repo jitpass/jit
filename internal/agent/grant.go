@@ -92,9 +92,10 @@ type processGrant struct {
 	// served — including ones started after creation. anchorName is that
 	// root's display name, for status and the prompt. Both empty on an
 	// exact-process grant.
-	nameFilter string
-	anchorName string
-	profiles   []string
+	nameFilter   string
+	anchorName   string
+	profiles     []string
+	profileRoots []GrantProfile
 	// deks maps hex(sha256(wrapped bytes)) -> the covered secret. Keyed on
 	// the wrapped bytes themselves so the serve path needs no vault access
 	// at all: the client already sends exactly those bytes on every unwrap.
@@ -119,17 +120,18 @@ func (g *processGrant) secretPaths() []string {
 // liveness needs a sysctl the caller has usually just done.
 func (g *processGrant) status(rootAlive bool) GrantStatus {
 	st := GrantStatus{
-		ID:          g.id,
-		PID:         g.rootPID,
-		Name:        g.name,
-		Command:     g.command,
-		Anchor:      g.anchorName,
-		Profiles:    append([]string(nil), g.profiles...),
-		Secrets:     g.secretPaths(),
-		CreatedUnix: g.created.Unix(),
-		ExpiresUnix: g.expires.Unix(),
-		Serves:      g.serves,
-		RootAlive:   rootAlive,
+		ID:           g.id,
+		PID:          g.rootPID,
+		Name:         g.name,
+		Command:      g.command,
+		Anchor:       g.anchorName,
+		Profiles:     append([]string(nil), g.profiles...),
+		ProfileRoots: append([]GrantProfile(nil), g.profileRoots...),
+		Secrets:      g.secretPaths(),
+		CreatedUnix:  g.created.Unix(),
+		ExpiresUnix:  g.expires.Unix(),
+		Serves:       g.serves,
+		RootAlive:    rootAlive,
 	}
 	if !g.lastServe.IsZero() {
 		st.LastServeUnix = g.lastServe.Unix()
@@ -152,6 +154,14 @@ const (
 	grantEndExpired = "expired"
 	grantEndRevoked = "revoked"
 	grantEndExited  = "process exited"
+	// grantEndServiceStop is what a TIMED grant ends with when the service
+	// itself stops: its DEKs live in this process's memory, so the stop is
+	// the ending. It was silent until 2026-09-23, found the way such gaps
+	// usually are — a grant vanished from `jit grant list` after a restart
+	// and the trail could not say when its unattended access had ceased,
+	// which is the first question an incident asks. Standing grants have no
+	// such ending: they outlive the process (standing.go).
+	grantEndServiceStop = "ended when the service stopped"
 )
 
 // newGrantID mints a short, non-guessable grant id ("g-3f9a2c81"). Random
@@ -182,11 +192,36 @@ func (s *Server) createGrant(req Request, c *caller) Response {
 	if req.TargetPID <= 0 {
 		return Response{OK: false, Error: "grant_create: missing target_pid"}
 	}
-	if len(req.GrantProfiles) == 0 {
+	profiles := grantProfilesOf(req)
+	if len(profiles) == 0 {
 		return Response{OK: false, Error: "grant_create: missing grant_profiles"}
 	}
 	ttl := time.Duration(req.TTLSeconds) * time.Second
-	if ttl < minGrantTTL || ttl > MaxGrantTTL {
+	if req.Standing {
+		// A standing grant (standing.go) has no deadline and anchors to an
+		// app's executable, so it is tree-scoped by construction: one
+		// process cannot outlive the reboot the grant is meant to survive.
+		// TTL and standing are exclusive so that omitting --for can never
+		// mint a permanent grant by accident.
+		if req.GrantName == "" {
+			return Response{OK: false, Error: "grant_create: a grant with no deadline covers a program under an app (grant_name) - one process cannot outlive a reboot"}
+		}
+		if req.TTLSeconds != 0 {
+			return Response{OK: false, Error: "grant_create: standing and ttl_seconds are exclusive - a grant lasts until revoked or until a deadline, not both"}
+		}
+		if s.GrantKeys == nil {
+			return Response{OK: false, Error: "grant_create: this agent has no grant key store wired, so it cannot make a grant with no deadline"}
+		}
+		// Without a ledger the grant cannot survive a restart, which is the
+		// whole of what its prompt promises and what the app prints under
+		// it. Minting one anyway produced a grant that read as permanent,
+		// died at the next restart, and left its keychain key orphaned with
+		// nothing able to name it for revoke. Refuse instead, and say which
+		// of the two reasons it is.
+		if !s.ledgerReady() {
+			return Response{OK: false, Error: "grant_create: this agent has no usable grant ledger, so a grant with no deadline could not survive a restart (see the service log for why it was not loaded)"}
+		}
+	} else if ttl < minGrantTTL || ttl > MaxGrantTTL {
 		return Response{OK: false, Error: fmt.Sprintf("grant_create: ttl must be between %s and %s", minGrantTTL, MaxGrantTTL)}
 	}
 	if s.OnResolveGrant == nil {
@@ -237,10 +272,21 @@ func (s *Server) createGrant(req Request, c *caller) Response {
 		}
 	}
 
+	// A standing grant is matched by the anchor's EXECUTABLE PATH on every
+	// serve, so an anchor the kernel reports no path for can never match:
+	// the grant would cost a Touch ID, list as live, serve nothing, and
+	// then vanish on the next load (which skips a pathless entry) leaving
+	// its key orphaned. lineage.Describe genuinely returns an empty path
+	// for a binary replaced under a running process, which is what an app
+	// updated in place while open looks like. Refused before the prompt.
+	if msg := standingAnchorError(req, target.ExecPath); msg != "" {
+		return Response{OK: false, Error: msg}
+	}
+
 	// Resolution happens BEFORE the prompt (same ordering as OnCanGrant): an
 	// unresolvable profile fails without burning a Touch ID, and the human
 	// approves the whole named set or none of it.
-	secrets, err := s.OnResolveGrant(req.GrantProfiles, req.ProjectRoot)
+	secrets, err := s.OnResolveGrant(profiles)
 	if err != nil {
 		return Response{OK: false, Error: fmt.Sprintf("grant_create: %s", err)}
 	}
@@ -259,7 +305,7 @@ func (s *Server) createGrant(req Request, c *caller) Response {
 			requester = requesterName(c)
 		}
 	}
-	reason := grantCreateReason(who, under, req.GrantProfiles, len(secrets), ttl, requester)
+	reason := grantCreateReason(who, under, profileNames(profiles), len(secrets), ttl, requester, req.Standing)
 	event, mek, err := s.discloseChallengeOp(reason, OpGrantCreate, c)
 	// nil event = throttled, no prompt shown — nothing true to record.
 	if event != nil && s.OnSessionEvent != nil {
@@ -269,6 +315,10 @@ func (s *Server) createGrant(req Request, c *caller) Response {
 		return Response{OK: false, Error: err.Error()}
 	}
 	defer wipe(mek)
+
+	if req.Standing {
+		return s.createStandingGrant(req, target, profiles, secrets, mek)
+	}
 
 	id, err := newGrantID()
 	if err != nil {
@@ -283,13 +333,14 @@ func (s *Server) createGrant(req Request, c *caller) Response {
 		// string ships out through GrantStatus.Command into `jit grant list
 		// --json` and `jit status`, and a grant target launched as
 		// `tool --token=…` must not show its secret in every status listing.
-		command:    auditlog.RedactCommandLine(target.Command()),
-		nameFilter: req.GrantName,
-		anchorName: under,
-		profiles:   append([]string(nil), req.GrantProfiles...),
-		deks:       make(map[string]grantSecret, len(secrets)),
-		created:    time.Now(),
-		expires:    time.Now().Add(ttl),
+		command:      auditlog.RedactCommandLine(target.Command()),
+		nameFilter:   req.GrantName,
+		anchorName:   under,
+		profiles:     profileNames(profiles),
+		profileRoots: append([]GrantProfile(nil), profiles...),
+		deks:         make(map[string]grantSecret, len(secrets)),
+		created:      time.Now(),
+		expires:      time.Now().Add(ttl),
 	}
 	for _, sec := range secrets {
 		dek, err := open(mek, sec.Wrapped, []byte(sec.Class))
@@ -348,7 +399,7 @@ func requesterName(c *caller) string {
 // only for an explicit anchor (a GUI app naming a tree it is not inside) and
 // prefixes the sentence with who is asking, since the tree alone no longer
 // implies it.
-func grantCreateReason(name, under string, profiles []string, count int, ttl time.Duration, requester string) string {
+func grantCreateReason(name, under string, profiles []string, count int, ttl time.Duration, requester string, standing bool) string {
 	// A tree grant's who-clause carries two names ("claude under iTerm2"),
 	// so its budgets shrink: 11 runes per name and 16 for the profiles is
 	// what keeps the whole sentence — including a worst-case "167h59m" TTL —
@@ -380,8 +431,48 @@ func grantCreateReason(name, under string, profiles []string, count int, ttl tim
 	// ("unattended for …") is the half that changes the decision, so it must
 	// never be the half a long tool name pushes off the prompt. The outer
 	// truncate is a belt only.
-	return truncate(prefix+fmt.Sprintf("let %s use %d %s (%s) unattended for %s",
-		who, count, noun, truncate(strings.Join(profiles, ", "), profBudget), formatGrantTTL(ttl)), maxReasonLen)
+	// The scope clause is the half that changes the decision. A standing
+	// grant's is "until you revoke it": no deadline, and the sentence must
+	// say so in the same words the app's sheet used.
+	scope := "unattended for " + formatGrantTTL(ttl)
+	if standing {
+		scope = "until you revoke it"
+	}
+	return truncate(prefix+fmt.Sprintf("let %s use %d %s (%s) %s",
+		who, count, noun, truncate(strings.Join(profiles, ", "), profBudget), scope), maxReasonLen)
+}
+
+// standingAnchorError refuses a standing grant whose anchor the kernel
+// reports no executable path for, and returns "" for every other case. It
+// is a function so a test can reach the condition without arranging a
+// process whose binary was replaced underneath it.
+func standingAnchorError(req Request, execPath string) string {
+	if !req.Standing || execPath != "" {
+		return ""
+	}
+	return "grant_create: the kernel reports no executable path for that app, so a grant with no deadline could never match it again (restart the app, or use --for)"
+}
+
+// grantProfilesOf reads the profile set a create names, in either wire
+// shape: the per-name folders (GrantProfileRoots) when the client sent
+// them, else the older names-plus-one-root pair.
+func grantProfilesOf(req Request) []GrantProfile {
+	if len(req.GrantProfileRoots) > 0 {
+		return append([]GrantProfile(nil), req.GrantProfileRoots...)
+	}
+	out := make([]GrantProfile, 0, len(req.GrantProfiles))
+	for _, n := range req.GrantProfiles {
+		out = append(out, GrantProfile{Name: n, Root: req.ProjectRoot})
+	}
+	return out
+}
+
+func profileNames(ps []GrantProfile) []string {
+	out := make([]string, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, p.Name)
+	}
+	return out
 }
 
 // formatGrantTTL renders a duration the way a human typed it: "8h", "45m",
@@ -411,6 +502,16 @@ func formatGrantTTL(d time.Duration) string {
 // fork-time is re-verified before descent, and any unreadable ancestry
 // answers "no grant". A miss never errors — the ordinary path decides.
 func (s *Server) grantUnwrap(c *caller, wrapped []byte) (dek []byte, path string, ok bool) {
+	if dek, path, ok := s.timedUnwrap(c, wrapped); ok {
+		return dek, path, true
+	}
+	return s.standingUnwrap(c, wrapped)
+}
+
+// timedUnwrap is grantUnwrap's original half: the deadline-bounded grants
+// whose DEKs live in memory (this file). standingUnwrap (standing.go) is
+// the other half.
+func (s *Server) timedUnwrap(c *caller, wrapped []byte) (dek []byte, path string, ok bool) {
 	if c == nil {
 		return nil, "", false
 	}
@@ -504,7 +605,7 @@ func (s *Server) listGrants() []GrantStatus {
 		s.grantMu.Unlock()
 		out = append(out, st)
 	}
-	return out
+	return append(out, s.standingStatuses()...)
 }
 
 // revokeGrant ends a grant by id, attributing the revoker. Deliberately NO
@@ -512,6 +613,9 @@ func (s *Server) listGrants() []GrantStatus {
 // easiest operation in the feature — an auth gate on the kill switch only
 // ever delays the person pulling it.
 func (s *Server) revokeGrant(id string, c *caller) Response {
+	if s.revokeStanding(id, c) {
+		return Response{OK: true}
+	}
 	s.grantMu.Lock()
 	_, exists := s.grants[id]
 	s.grantMu.Unlock()
@@ -544,7 +648,11 @@ func (s *Server) extendGrant(req Request, c *caller) Response {
 		name, under, count, profiles = g.name, g.anchorName, len(g.deks), g.profiles
 		rootPID, rootStart = g.rootPID, g.rootStart
 	}
+	_, isStanding := s.standing[req.GrantID]
 	s.grantMu.Unlock()
+	if isStanding {
+		return Response{OK: false, Error: fmt.Sprintf("grant_extend: grant %q has no deadline to extend - it runs until you revoke it", req.GrantID)}
+	}
 	if g == nil {
 		return Response{OK: false, Error: fmt.Sprintf("grant_extend: no grant %q (it may have expired — extend cannot resurrect one, create it again)", req.GrantID)}
 	}
@@ -563,7 +671,7 @@ func (s *Server) extendGrant(req Request, c *caller) Response {
 
 	// grantCreateReason already words the full scope; re-lead it as an
 	// extension so the prompt says what is actually happening.
-	reason := truncate("extend: "+grantCreateReason(name, under, profiles, count, ttl, ""), maxReasonLen)
+	reason := truncate("extend: "+grantCreateReason(name, under, profiles, count, ttl, "", false), maxReasonLen)
 	event, mek, err := s.discloseChallengeOp(reason, OpGrantExtend, c)
 	// nil event = throttled, no prompt shown — nothing true to record.
 	if event != nil && s.OnSessionEvent != nil {
@@ -595,6 +703,23 @@ func (s *Server) extendGrant(req Request, c *caller) Response {
 	s.grantMu.Unlock()
 	s.armGrantExpiry(req.GrantID, expires)
 	return Response{OK: true, Grants: []GrantStatus{st}}
+}
+
+// endTimedGrants ends every deadline-bounded grant with one cause, each
+// recorded like any other ending. Standing grants are untouched: they are
+// not in this map, and surviving the process is their whole point. Ids are
+// ended in a stable order so a trail reads the same way twice.
+func (s *Server) endTimedGrants(cause string) {
+	s.grantMu.Lock()
+	ids := make([]string, 0, len(s.grants))
+	for id := range s.grants {
+		ids = append(ids, id)
+	}
+	s.grantMu.Unlock()
+	sort.Strings(ids)
+	for _, id := range ids {
+		s.endGrant(id, cause)
+	}
 }
 
 // endGrant ends one grant with a cause, wiping its DEKs and emitting the

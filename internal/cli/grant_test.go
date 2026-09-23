@@ -86,7 +86,7 @@ func TestResolveGrantSecretsResolvesProfilesToWrappedDEKs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := resolveGrantSecrets(root)([]string{"jamf"}, "")
+	got, err := resolveGrantSecrets(root)([]agent.GrantProfile{{Name: "jamf"}})
 	if err != nil {
 		t.Fatalf("resolveGrantSecrets: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestResolveGrantSecretsResolvesProfilesToWrappedDEKs(t *testing.T) {
 		}
 	}
 
-	if _, err := resolveGrantSecrets(root)([]string{"nope"}, ""); err == nil {
+	if _, err := resolveGrantSecrets(root)([]agent.GrantProfile{{Name: "nope"}}); err == nil {
 		t.Error("unknown profile resolved, want an error naming the files checked")
 	}
 }
@@ -328,5 +328,59 @@ func TestGrantClockAxes(t *testing.T) {
 	}
 	if got := grantClock(now.Add(3 * 24 * time.Hour).Unix()); !strings.Contains(got, " ") {
 		t.Errorf("multi-day expiry = %q, want a day marker before the clock", got)
+	}
+}
+
+// Completion must never finish a command that can only fail. A grant with no
+// deadline has nothing for extend to move, and the server refuses it, so
+// extend's id completion skips it while revoke's still offers it.
+func TestExtendCompletionSkipsGrantsWithNoDeadline(t *testing.T) {
+	grants := []agent.GrantStatus{
+		{ID: "g-timed", Name: "claude", Profiles: []string{"jamf"}, ExpiresUnix: time.Now().Add(time.Hour).Unix()},
+		{ID: "g-standing", Name: "claude", Profiles: []string{"mcp-caido"}, Standing: true},
+	}
+	var forExtend, forRevoke []string
+	for _, g := range grants {
+		row := g.ID + "\t" + g.Name + " " + glyphAction + " " + strings.Join(g.Profiles, ", ") + " · " + grantUntil(g)
+		forRevoke = append(forRevoke, row)
+		if !g.Standing {
+			forExtend = append(forExtend, row)
+		}
+	}
+	if len(forExtend) != 1 || !strings.HasPrefix(forExtend[0], "g-timed\t") {
+		t.Errorf("extend candidates = %v, want only the grant that has a deadline", forExtend)
+	}
+	if len(forRevoke) != 2 {
+		t.Errorf("revoke candidates = %v, want both: revoke is how a standing grant ends", forRevoke)
+	}
+	if !strings.Contains(forRevoke[1], "until you revoke it") {
+		t.Errorf("standing row = %q, want it to say how it ends", forRevoke[1])
+	}
+}
+
+// The create surfaces teach BOTH endings. A user who reads only the usage
+// line and follows it lands on "--for is required", which is the dead end
+// --until-revoked was added to remove.
+func TestCreateUsageTeachesBothEndings(t *testing.T) {
+	if strings.Contains(grantCreateUsage, "--for") {
+		t.Errorf("grantCreateUsage = %q, must not present one ending as the shape", grantCreateUsage)
+	}
+	for _, want := range []string{"--for", "--until-revoked"} {
+		if !strings.Contains(grantCreateEnding, want) {
+			t.Errorf("grantCreateEnding = %q, missing %s", grantCreateEnding, want)
+		}
+	}
+	grantProcess, grantPIDFlag, grantProfileNames, grantFor, grantUntilRevoked = "", 0, nil, "", false
+	err := runGrantCreate(io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "--until-revoked") {
+		t.Errorf("bare grant error = %v, want it to name --until-revoked as well as --for", err)
+	}
+}
+
+// The 7d cap is exactly the moment a user wants the grant that has no cap.
+func TestTheDurationCapPointsAtTheAlternative(t *testing.T) {
+	_, err := parseGrantFor("30d")
+	if err == nil || !strings.Contains(err.Error(), "--until-revoked") {
+		t.Errorf("--for 30d = %v, want the refusal to name --until-revoked", err)
 	}
 }
