@@ -184,7 +184,29 @@ type Server struct {
 	// set derive from the same facts, and a caller cannot put one profile on
 	// the prompt and a different secret set in the grant. Nil disables
 	// grant_create entirely.
-	OnResolveGrant func(profiles []string, projectRoot string) ([]GrantSecret, error)
+	OnResolveGrant func(profiles []GrantProfile) ([]GrantSecret, error)
+
+	// OnWrappedDEK, if set, reads one vault path's CURRENT wrapped DEK bytes
+	// without decrypting or prompting (vault.WrappedDEK). A standing grant's
+	// list compares them with the bytes it was made from, so a rotated
+	// secret is reported as such rather than silently not served. Nil
+	// means rotation goes unreported (never unserved-and-unreported: the
+	// serve path's hash miss stands on its own).
+	OnWrappedDEK func(path string) (wrapped []byte, class string, err error)
+
+	// GrantKeys is where a standing grant's own key lives
+	// (design/standing-grants.md): one keychain item per grant, created
+	// under the disclosed challenge, used on every serve with no prompt,
+	// deleted on revoke. The CLI wires keychainwrap's store; tests wire an
+	// in-memory one. Nil disables standing grants entirely.
+	GrantKeys GrantKeyStore
+
+	// standing holds the loaded standing grants, keyed by id, guarded by
+	// grantMu like grants. Their keys are fetched lazily and cached on the
+	// record; the ledger (ledgerPath) is the durable copy of everything
+	// but the key.
+	standing   map[string]*standingGrant
+	ledgerPath string
 
 	// AuthMethodFn, if set, returns a best-effort description of how the local
 	// auth challenge asked the user ("Touch ID or device passcode" vs. "device
