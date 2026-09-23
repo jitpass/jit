@@ -154,6 +154,12 @@ func TestMatchKnownTokenPattern(t *testing.T) {
 		{"Telegram bot token", "1234567890:AA" + tokenBody(33), "Telegram Bot Token", true, true},
 		{"Azure AD client secret", "abc8Q~" + tokenBody(32), "Azure AD Client Secret", true, true},
 		{"Terraform Cloud token", tokenBody(14) + ".atlasv1." + tokenBody(60), "Terraform Cloud API Token", true, true},
+		// Added 2026-09-23. Cloudflare's own docs give the body as 40
+		// characters plus a checksum of unstated length, so the vectors carry
+		// 40 + 8 and the pattern's floor is the documented 40.
+		{"Cloudflare account API token", "cfat_" + tokenBody(40) + hexBody(8), "Cloudflare Account API Token", true, true},
+		{"Cloudflare user API token", "cfut_" + tokenBody(40) + hexBody(8), "Cloudflare User API Token", true, true},
+		{"Cloudflare global API key", "cfk_" + tokenBody(40) + hexBody(8), "Cloudflare Global API Key", true, true},
 		{"unverified Cursor key", "crsr_" + tokenBody(10), "Cursor API Key", false, true},
 		{"unverified Tavily key", "tvly-" + tokenBody(10), "Tavily API Key", false, true},
 		{"plain string, no match", "just a normal value", "", false, false},
