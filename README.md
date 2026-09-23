@@ -263,7 +263,7 @@ gesture. Details: [per-process consent](./docs/service/consent.md).
 An agent working overnight, a long build or a 3 a.m. job stalls on a question
 nobody is there to answer. A **grant** moves your decision earlier instead of removing
 it: one Touch ID while you are still there, naming exactly what you allow and
-for how long.
+how long it lasts.
 
 ```console
 $ jit grant --process claude --profile myapp --for 8h
@@ -274,8 +274,12 @@ $ jit grant --process claude --profile myapp --for 8h
 It covers `claude` under the terminal you typed that in, through screen lock,
 and nothing called `claude` anywhere else. It ends at its deadline, when you
 quit that terminal, or on `jit grant revoke`, which needs no fingerprint:
-taking access away is always free. **New Grant…** in the menu bar does the
-same. Details: [process grants](./docs/service/grants.md).
+taking access away is always free.
+
+Swap `--for 8h` for `--until-revoked` and it has no deadline at all: it
+holds a key of its own, survives a restart and a reboot, and ends only when
+you revoke it. **New Grant…** in the menu bar does either. Details:
+[process grants](./docs/service/grants.md).
 
 ## See what happened, and who did it
 
