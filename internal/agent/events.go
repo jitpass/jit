@@ -6,6 +6,7 @@
 package agent
 
 import (
+	"fmt"
 	"sort"
 	"time"
 )
@@ -266,4 +267,48 @@ func (s *Server) provenance() (lastUnlock, lastLock *SessionEvent) {
 		lastLock = &l
 	}
 	return lastUnlock, lastLock
+}
+
+// lockCauseDuration renders a session bound for the one place these strings
+// are read: a human asking why they are being prompted again. It exists
+// because time.Duration's own String() is a wire format, not a sentence —
+// s.ttl formatted with %s gives "5m0s", which reached the menu bar app's
+// panel subtitle verbatim and read as a bug ("5m0s idle timeout", reported
+// 2026-09-23). The trailing zero unit is the whole tell: nobody writes the
+// seconds in five minutes.
+//
+// "min" and "sec" stay singular — they are abbreviations, and "1 mins" is
+// the error the other direction — while "hour" is a whole word and takes
+// its plural. A remainder is kept one unit down and no further: "1 hour
+// 30 min" is a real --ttl someone can set, "1 hour 30 min 12 sec" is a
+// precision no lock explanation needs.
+//
+// Nothing parses these strings (the surfaces test for the "idle timeout"
+// substring, which is unchanged), so this only affects events written from
+// here on; history already on disk keeps whatever it was written with.
+func lockCauseDuration(d time.Duration) string {
+	if d <= 0 {
+		return "0 sec"
+	}
+	d = d.Round(time.Second)
+	hours := int(d / time.Hour)
+	minutes := int((d % time.Hour) / time.Minute)
+	seconds := int((d % time.Minute) / time.Second)
+
+	unit := "hours"
+	if hours == 1 {
+		unit = "hour"
+	}
+	switch {
+	case hours > 0 && minutes > 0:
+		return fmt.Sprintf("%d %s %d min", hours, unit, minutes)
+	case hours > 0:
+		return fmt.Sprintf("%d %s", hours, unit)
+	case minutes > 0 && seconds > 0:
+		return fmt.Sprintf("%d min %d sec", minutes, seconds)
+	case minutes > 0:
+		return fmt.Sprintf("%d min", minutes)
+	default:
+		return fmt.Sprintf("%d sec", seconds)
+	}
 }

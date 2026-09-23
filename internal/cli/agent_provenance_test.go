@@ -42,7 +42,7 @@ func TestAgentStatusExplainsAnUnexplainedPrompt(t *testing.T) {
 			ByPID:      41233,
 			LaunchedBy: "claude",
 		},
-		LastLock: &agent.SessionEvent{UnixTime: now.Add(-48 * time.Minute).Unix(), Cause: "15m0s idle timeout"},
+		LastLock: &agent.SessionEvent{UnixTime: now.Add(-48 * time.Minute).Unix(), Cause: "15 min idle timeout"},
 	})
 	got := buf.String()
 
@@ -106,7 +106,7 @@ func TestAgentStatusOmitsStaleLockLineWhileUnlocked(t *testing.T) {
 		Unlocked:   true,
 		Remaining:  12 * time.Minute,
 		LastUnlock: &agent.SessionEvent{UnixTime: now.Add(-3 * time.Minute).Unix(), Op: agent.OpUnwrap, By: "jit run --profile aws-admin -- terraform plan", LaunchedBy: "Code"},
-		LastLock:   &agent.SessionEvent{UnixTime: now.Add(-30 * time.Minute).Unix(), Cause: "15m0s idle timeout"},
+		LastLock:   &agent.SessionEvent{UnixTime: now.Add(-30 * time.Minute).Unix(), Cause: "15 min idle timeout"},
 	})
 	got := buf.String()
 
