@@ -40,7 +40,8 @@ changes, revisit the choice that cites it.
    `internal/consent/policy.go` — never for `mcp` or `dotenv`, which is
    what every profile on the author's own Mac resolves to. For those
    secrets the only Touch ID anyone ever sees is the vault being locked.
-3. **A grant answers before both gates** (`internal/agent/server.go:635`),
+3. **A grant answers before both gates** (the `OpUnwrap` case in
+   `internal/agent/server.go`, which calls `grantUnwrap` first),
    from plaintext DEKs it unwrapped at creation and holds in mlocked
    memory. That is why today's grant needs no session, survives lock, has
    a hard deadline, and dies with the process: the deadline is the
@@ -114,6 +115,22 @@ app's process tree is ever covered, and the tree is still verified by the
 kernel on every serve. The doctrine holds as before: the *decision* is
 the disclosed Touch ID at creation; ancestry afterwards only narrows.
 
+Two further weaknesses of a path anchor, which the paragraph above does
+not cover and a reviewer should not have to rediscover:
+
+- **Nothing verifies the code at that path.** A pid anchor cannot be
+  forged after creation; a path anchor is re-resolved on every serve, so
+  whoever can WRITE to `anchorPath` substitutes the binary and keeps the
+  grant. A user-writable `/Applications` bundle, `~/Applications`, or a
+  Homebrew-installed terminal under `/opt/homebrew` all qualify. There is
+  no code-signing or inode check. This is the strongest argument for the
+  Secure Enclave move, where the OS holds the key rather than jit's own
+  discipline, and for a later code-requirement check on the anchor.
+- **Neither side of the comparison is canonicalized.** Symlinks and case
+  are compared as written, so an anchor reached by a different spelling of
+  the same file does not match. That direction fails closed, which is the
+  safe one, but it means an anchor can silently stop working.
+
 A later `--exec <path>` can pin the program for scripts with stable
 paths. Not in v1.
 
@@ -122,8 +139,11 @@ paths. Not in v1.
 ### Create
 
 1. The CLI or app sends `grant_create{ standing: true, grant_name,
-   target_pid (the session root), grant_profiles, project_root }`. No
-   `ttl_seconds`; sending both is an error.
+   target_pid (the session root), grant_profile_roots }`. No
+   `ttl_seconds`; sending both is an error. (`grant_profile_roots` is the
+   name-and-folder pair described under **App** below; it replaced the
+   `grant_profiles` + one `project_root` pair, which cannot express two
+   profiles beside two different projects.)
 2. The agent resolves the profiles (`OnResolveGrant`), derives the anchor
    from `target_pid` via lineage, and runs the disclosed challenge:
    *"Let claude under iTerm2 use mcp-caido and mcp-urlscan until you
@@ -141,12 +161,29 @@ paths. Not in v1.
 `~/Library/Application Support/jitpass/grants.json`, mode 0600, written
 atomically. One entry per standing grant:
 
-    id, created_unix
-    anchor { exec_path, name }
-    program { name, exec_path_at_creation }
-    profiles[], project_root
-    secrets[] { path, class, device_wrapped_sha256, grant_wrapped (hex), wrap: "aead-v1" }
-    serves, last_serve_unix
+    version: 1
+    grants[]:
+      id, created_unix
+      anchor { exec_path, name }
+      program { name, exec_path_at_creation }
+      profiles[] { name, root }
+      secrets[] { path, class, device_wrapped_sha256, grant_wrapped (hex), wrap: "aead-v1" }
+      serves, last_serve_unix
+
+`version` is checked on load: a file written by a NEWER jit is refused and
+then never written back over, so a downgrade cannot silently truncate a
+grant it does not understand. Within a file this build can read, a secret
+whose `wrap` it does not recognise is **skipped**, so the grant comes back
+covering fewer secrets than were approved — the list's rotation reporting
+is what makes that visible rather than silent.
+
+Two operational facts that belong here rather than in a reader's surprise.
+The ledger is rewritten on **every serve**, because `serves` and
+`last_serve_unix` live in it: one credential read costs a JSON marshal, a
+temp-file write and a rename. That is cheap beside the AEAD open it
+accompanies, and it is why a serve's bookkeeping failure is deliberately
+ignored rather than failing the serve. And the whole file is rewritten each
+time, not appended to, so a grant's entry cannot be partially updated.
 
 Never a DEK, never the grant key. The ledger and the keychain item are
 the same trust tier as the vault's envelopes and the MEK: wrapped
@@ -187,10 +224,14 @@ Delete the keychain item, wipe the cached key, remove the ledger entry,
 record `KindGrantEnd` with cause `revoked`. The ledger's wrapped copies
 are garbage without the key. As today, revoke needs no authentication.
 
-### Rotation
+### Rotation, and anything else that uncovers a secret
 
 A rotated secret has new wrapped bytes; its hash misses; the serve falls
-through to a prompt. This is correct and is the existing behaviour, but
+through to a prompt. A secret DELETED from the vault reports identically,
+because the check is "does the vault still hold what this grant covers",
+and it cannot distinguish the two. The wire field is named `rotated` for
+the common case; the surfaces say "no longer covered", which is true of
+both. This is correct and is the existing behaviour, but
 it must be visible: `jit grant list` and the app compare each ledger hash
 with the envelope's current wrapped bytes (a plain file read, no prompt)
 and mark the secret *rotated, re-approve*. Re-approval is a new create;
@@ -232,11 +273,25 @@ within the budget.
 
 ## Protocol
 
-- `Request`: `standing bool` on `grant_create`. Exclusive with
-  `ttl_seconds`.
-- `GrantStatus`: `standing bool`, `anchor_path string`, `rotated []string`
-  (paths whose hash no longer matches), `expires_unix` zero on a standing
-  grant.
+- `Request`: `standing bool` on `grant_create`, exclusive with
+  `ttl_seconds`; and `grant_profile_roots []GrantProfile` ({name, root}),
+  which replaces the `grant_profiles` + single `project_root` pair.
+- `GrantStatus`: `standing bool`, `anchor_path string`, `profile_roots
+  []GrantProfile`, `rotated []string` (paths the vault no longer holds as
+  granted), and `expires_unix` carrying a far-future **compatibility**
+  instant, 2099-12-31.
+- That compat instant is the one piece of the wire that is not literally
+  true, and it exists because of a client that cannot be changed. A jit
+  older than this feature has no `standing` field to read, so it renders
+  whatever `expires_unix` holds: zero came out as the Unix epoch and
+  printed a live grant as *"expires Thu 02:00 (0m left)"* — never-expires
+  reading as long-expired, the worst direction for that error. A
+  far-future instant is the standard way to tell a field that insists on a
+  deadline that there is none; the old client then shows tens of thousands
+  of days remaining, which is true. Every current reader MUST branch on
+  `standing` and ignore it. One thing it cannot fix: the old renderer
+  drops the DATE past tomorrow and prints a bare weekday, so old `jit
+  status` still shows a meaningless clock with no countdown beside it.
 - Ops unchanged: `grant_create`, `grant_list`, `grant_revoke`,
   `grant_extend` (refused on a standing grant: there is nothing to
   extend).
@@ -245,7 +300,7 @@ within the budget.
 
     jit grant --process <name> --profile <p>... --until-revoked
     jit grant --process <name> --profile <p>... --for <dur>      # unchanged
-    jit grant list                                             # ∞ in the expiry column, rotated secrets flagged
+    jit grant list                                             # "until revoked", and what a rotation stopped
     jit grant revoke <id>                                      # unchanged
 
 `--until-revoked` is an explicit flag. Omitting `--for` never mints a
@@ -292,10 +347,39 @@ changes there:
   rule that matters: the agent resolves the names itself, so nothing can
   name one profile on the prompt and grant another. This is the only wire
   change the app's design forces; everything else is client-side.
-- Grants window eyebrows: *Serving* (green) for a grant that served in
-  the last minute, *Standing* (grey dot) otherwise, *Ending* (amber) for a
-  pid grant whose process exited. A rotated secret is the row's second
-  line.
+- Grants window eyebrows, in the order `Format.grantTier` ranks them:
+  *Needs you* (amber) when a covered secret stopped being served, *Serving*
+  (green) when it served in the last minute, *Ending* (amber) for any timed
+  grant whose anchor is gone — a pid whose process exited, or a tree grant
+  whose terminal quit — *Standing* (grey) for a grant with no deadline, and
+  *Active* (grey) for a timed one. **Needs you outranks Serving**: a grant
+  actively serving its healthy secrets still shows Needs you while one of
+  them is uncovered, because that is the state only the human can clear.
+  The rotated secrets are their own rows under the grant's, each naming the
+  secret; the card above carries the count and *Re-approve…*.
+
+- **The sheet checks the vault before it lets you tick a profile**, which
+  the mockup never drew. The service refuses a whole create if any one
+  named secret is missing from the vault, so a profile naming one would
+  spend a Touch ID only to fail. `reloadGrantSheet` therefore reads
+  `jit vault list` (prompt-free, paths only) and dims any profile with a
+  missing path, saying how many. This is a client-side gate on what can be
+  granted, so it is recorded here rather than left to be discovered: its
+  failure mode is a profile the sheet will not let you pick, and the reason
+  is on the row. It is a convenience over the service's own refusal, never
+  a substitute — the service still re-resolves and still refuses.
+
+- **The app's Audit window learned to name grant events**, which is a
+  change to a surface this document otherwise describes only on the agent
+  side. An approval carrying `grant_create` reads "grant approved, asked by
+  JitPass" with the approved sentence beneath it; a serve reads "… read …
+  via grant"; an ending reads the agent's own cause. Before this they were
+  a generic "approved JitPass" and "used", so a grant made seconds earlier
+  was invisible in the window it should be most visible in.
+
+- **`jit status`'s grants row** now ends "until revoked" when no live grant
+  has a deadline, in place of "next expires <clock>". A standing grant is
+  skipped when computing the soonest expiry, or it would always win.
 - The schedule (days and hours) drawn in the mockup is **deferred**. A
   standing grant answers the ask without it; if it returns it is one
   predicate beside the anchor check, and the mockup already shows it.

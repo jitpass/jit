@@ -135,7 +135,8 @@ are prompt-free.
 the session key, consent decisions, `--trust` roots, run attachments - drops
 the moment the session ends, because those all ride an approval whose scope
 was "this session". A grant's approval said something different, out loud:
-*unattended, until a deadline*, for named secrets and one live process tree.
+*unattended, until a deadline or until you revoke it*, for named secrets and
+one process tree.
 `--process NAME` anchors that tree at the terminal it was typed in (pinned by
 pid and kernel fork-time, so a recycled pid inherits nothing) and serves only
 callers whose ancestry passes through both that terminal and a process named
@@ -146,9 +147,21 @@ is self-reported (exec path, or argv when a self-updating tool has replaced
 its own binary) and carries no security weight, because it can only narrow
 what the approved tree already admits. `--pid` anchors one exact process
 instead. It is strictly narrower than the session it stands in for: never the
-master key, only the covered secrets' data keys, in service memory only, ended by
-its deadline, its anchor exiting, a restart, or an unauthenticated
-`jit grant revoke`. The decision point is unchanged - a human on a disclosed
+master key, only the covered secrets' data keys, ended by its deadline, its
+anchor exiting, a restart, or an unauthenticated `jit grant revoke`.
+
+`--until-revoked` trades two of those endings for survival, and pays for it
+in storage rather than in scope. It is anchored to the app's executable
+path instead of a live pid, so it outlives a restart and a reboot, and it
+ends only on revoke. To serve with the vault locked it cannot rely on the
+session, so at creation it re-wraps the covered data keys under a key of
+its own: that key is a second keychain item with the same protection as the
+master key, and the wrapped copies sit in a ledger on disk. The exposure it
+adds is therefore bounded by what the master key already carries, and it
+opens strictly fewer secrets; revoking deletes the key, which makes the
+ledger's copies unrecoverable. The full argument, including what the
+executable-path anchor gives up against a pid, is in
+[Standing grants](../../design/standing-grants.md). The decision point is unchanged - a human on a disclosed
 prompt - it just happens before the absence instead of during it, and every
 serve under it is a distinct [`jit audit`](../service/provenance.md) event.
 

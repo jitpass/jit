@@ -1,6 +1,6 @@
 ---
 title: Process grants
-description: Pre-approve a tool to use profiles unattended for a bounded time - one Touch ID now, no prompts while you are away, everything on the audit trail.
+description: Pre-approve a tool to use profiles unattended - one Touch ID now, until a deadline or until you revoke it, no prompts while you are away, everything on the audit trail.
 ---
 
 # Process grants - approve now, run unattended
@@ -14,12 +14,23 @@ will answer.
 
 A **process grant** moves your decision earlier instead of removing it. While
 you are at the keyboard, one disclosed Touch ID approves that a program (and
-everything it launches) may use the secrets of one or more profiles until a
-deadline you set:
+everything it launches) may use the secrets of one or more profiles:
 
 ```sh
 jit grant --process claude --profile jamf --profile aws-ci --for 8h
 ```
+
+You choose how it ends, and the two shapes differ in more than duration.
+`--for` is above: a deadline of at most 7 days, held in the service's
+memory. `--until-revoked` has no deadline at all and holds a key of its
+own, so it survives a service restart and a reboot:
+
+```sh
+jit grant --process claude --profile mcp-caido --until-revoked
+```
+
+[Standing grants](../../design/standing-grants.md) is the design note for
+the second shape: what it stores, where, and what it costs you.
 
 The prompt says exactly what you are signing:
 
@@ -71,25 +82,33 @@ decision.
 
 The covered secrets are resolved from the profiles **at creation time**, by
 the service itself, through the same project-then-global profile lookup
-`jit run` uses. Editing a profile later never silently widens a standing
-grant, and the prompt can never describe a different set than the grant
-covers.
+`jit run` uses. Editing a profile later never silently widens a grant that
+already exists, and the prompt can never describe a different set than the
+grant covers.
 
 ## What ends it
 
 Whichever comes first, and each ending lands in `jit audit`:
 
-- **its deadline** - `--for` takes `45m`, `8h`, `3d`, capped at 7 days;
-- **its anchor exiting** - quitting the terminal app ends a `--process`
-  grant; a `--pid` grant dies with the process it named;
 - **`jit grant revoke <id>`** - immediate, and deliberately needs no
   authentication: reducing access is always free, so the kill switch is the
-  easiest command in the feature;
-- **a service restart or reboot** - grants live in the service's memory,
-  never on disk.
+  easiest command in the feature. For an `--until-revoked` grant this is the
+  **only** ending, and it deletes the key that grant holds;
+- **its deadline** - `--for` takes `45m`, `8h`, `3d`, capped at 7 days.
+  An `--until-revoked` grant has none;
+- **its anchor exiting** - quitting the terminal app ends a `--for
+  --process` grant; a `--pid` grant dies with the process it named. An
+  `--until-revoked` grant is anchored to the app's executable rather than to
+  a running pid, so quitting the app does not end it;
+- **a service restart or reboot** - a `--for` grant lives in the service's
+  memory and dies with it, recorded as *ended when the service stopped*. An
+  `--until-revoked` grant survives both: its covered keys are on disk,
+  wrapped under a key that is not.
 
 Wanting *more* time is a new decision, so `jit grant extend <id> --for 24h`
-puts the same disclosed prompt in front of you that creating it did.
+puts the same disclosed prompt in front of you that creating it did. There
+is no deadline to move on an `--until-revoked` grant, so `extend` refuses
+it; revoke it when you want it to end.
 
 ```sh
 jit grant list             # what is open: who, which profiles, time left, serves
@@ -98,28 +117,31 @@ jit grant extend g-7f3a2c81 --for 24h
 ```
 
 `jit status` carries the same fact as a one-line `grants` row (who, and the
-next expiry), so an open grant is visible on the dashboard you already check
-rather than only behind its own subcommand. Tab completion knows grants too:
-`jit grant revoke <TAB>` offers the live ids with their programs and
-expiries, and `--process <TAB>` offers the programs that recently asked jit
-for a secret, marked running or not.
+next expiry, or *until revoked* when nothing has one), so an open grant is
+visible on the dashboard you already check rather than only behind its own
+subcommand. Tab completion knows grants too: `jit grant revoke <TAB>` offers
+the live ids with their programs and how each ends, and `--process <TAB>`
+offers the programs that recently asked jit for a secret, marked running or
+not. `jit grant extend <TAB>` offers only the grants that have a deadline to
+move, since it refuses the rest.
 
 ## The audit trail tells the whole story
 
-A standing, unattended credential channel is only acceptable if you can read
-back everything it did. Each stage is a durable
+An unattended credential channel is only acceptable if you can read back
+everything it did. Each stage is a durable
 [`jit audit`](./provenance.md) event:
 
 ```
 $ jit audit --kind grant
 time=... kind=grant status=approved reason="let claude under iTerm2 use 2 secrets (jamf) unattended for 8h"
 time=... kind=grant status=ended grant=g-7f3a2c81 reason="claude's grant expired"
+# ... or "revoked", "process exited", "ended when the service stopped"
 $ jit audit --kind use
 time=... kind=use op="read a secret via grant" count=2 parent=claude secrets="jamf/api-user, jamf/api-pass"
 ```
 
 Serves under a grant carry their own op (`read a secret via grant`), so
-"rode an unlock you gave moments ago" and "rode a standing grant from this
+"rode an unlock you gave moments ago" and "rode a grant you gave this
 morning" are never the same line.
 
 ## The honest limits
@@ -129,8 +151,11 @@ morning" are never the same line.
   `jit run` already injected were handed over up front, grant or no grant.
 - Live file mounts keep their own [consent gating](./consent.md); grants do
   not cover FIFO reads.
-- Rotating a covered secret changes its key material; the grant simply stops
-  matching it and that read falls back to prompting.
+- Rotating a covered secret changes its key material, so the grant stops
+  matching it and that read falls back to prompting. The rest of the grant
+  keeps working. For an `--until-revoked` grant `jit grant list` says which
+  secret stopped and prints the command that covers it again; a `--for`
+  grant is short-lived enough that it does not check.
 - The grant's process match is the anchor for a decision **you** made on a
   Touch ID naming that process; as everywhere in jit, kernel-derived
   identity explains and audits, it never decides on its own (see

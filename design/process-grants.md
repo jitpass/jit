@@ -3,6 +3,15 @@
 **Status: shipped (v0.86.0); tree-scoped `--process` grants added later —
 see "Tree-scoped grants" below.**
 
+> **Read this first (2026-09-23).** Everything below describes a grant with
+> a DEADLINE, which is the only kind that existed when it was written, and
+> it is still accurate for one. A grant made with `--until-revoked` inverts
+> the two properties this document leans on throughout — bounded lifetime
+> and memory-only — so read `standing-grants.md` beside it. Where a sentence
+> here says "a grant" and means "a timed grant", that is why. The amendments
+> marked inline are the ones where the difference is load-bearing rather
+> than cosmetic.
+
 Today every credential serve ultimately rides a session the human opened with
 Touch ID, and the session dies on idle, on an 8h ceiling, on screen lock, on
 sleep. That is the right default and it stays the default. The gap is the
@@ -21,14 +30,21 @@ today's behavior.
 
 ## What a grant is (and is not)
 
-A grant is `(root process, secret set, expiry)`:
+A grant is `(root process, secret set, expiry)`. *A grant with no deadline
+is `(anchor exec path, program name, secret set, grant key)` instead — a
+different tuple, not this one with a field blanked; see
+`standing-grants.md`.*
 
 - **Root process** -- a live pid plus its fork-time stamp
   (`lineage.ProcessStartTime`), exactly the anchoring `trustRoots` and the
   run-scoped mount attachments already use. Membership is decided by
   `lineage.AncestryContainsPID`, fail-closed. The grant names a *process that
   exists right now*; it is never a name-pattern. A new process claiming the
-  same name tomorrow matches nothing.
+  same name tomorrow matches nothing. *This is the half `--until-revoked`
+  deliberately gives up: it anchors to the app's executable path, so a
+  same-named program started under that app tomorrow IS covered. What it
+  keeps, and what that costs, is argued in `standing-grants.md`; do not
+  read this paragraph as covering it.*
 - **Secret set** -- the union of the named profiles' vault paths, resolved at
   creation time (project profile first, then global, same as `jit run`). One
   or many profiles; the grant stores concrete paths, not profile names, so a
@@ -126,7 +142,10 @@ the envelope's wrapped data key and returns the plaintext DEK; payload
 decryption happens in the client. The MEK never leaves the agent, and Touch ID
 is application-level (`LAContext`), not a keychain ACL.
 
-So a grant needs no on-disk re-wrap and no new keychain item class:
+So a TIMED grant needs no on-disk re-wrap and no new keychain item class.
+(*Amended 2026-09-23:* a grant with no deadline needs exactly both, which
+is what buys it survival across a restart — see `standing-grants.md`. This
+section describes the timed shape, which is unchanged.)
 
 1. **Creation.** The CLI resolves the profiles to vault paths and reads each
    envelope's wrapped DEK bytes and AAD-bound class (a plain file read, no
@@ -162,13 +181,24 @@ survive re-lock by design**, because surviving the screen lock is the entire
 feature. The carve-out is safe to state because a grant is strictly narrower
 than the session it replaces (specific secrets, specific tree, absolute
 deadline, revocable), and it is what the human approved in so many words.
+*For a grant with no deadline the deadline drops out of that list, so the
+argument rests on the remaining three plus the fact that revoke destroys
+the key — `standing-grants.md` makes it in full rather than leaning on
+this one.*
 Grants do NOT survive agent restart or reboot in v1 -- and cannot
 meaningfully, since the root process tree dies with the boot anyway.
+*Amended 2026-09-23:* true of a grant anchored to a live pid, and that is
+why a `--pid` grant is still timed and memory-only. The "cannot
+meaningfully" half was wrong: a grant anchored to the APP's executable
+path outlives the boot the pid does not, which is what
+`standing-grants.md` builds on.
 
 ### End of life
 
-A grant ends by whichever comes first; all endings wipe the cached DEKs and
-emit an audit event with the cause:
+A timed grant ends by whichever comes first; all endings wipe the cached
+DEKs and emit an audit event with the cause. (A grant with no deadline has
+exactly one ending, revoke, which deletes its key instead of wiping a
+cache.)
 
 - **expiry** -- lazy check at serve plus a timer so the record does not
   linger,
@@ -194,6 +224,7 @@ is a new decision); shortening via `revoke` + re-create, or a later
 `jit grant` is a command group whose bare form creates:
 
     jit grant --process <name>|--pid <pid> --profile <p> [--profile <p>...] --for <dur>
+    jit grant --process <name> --profile <p> [--profile <p>...] --until-revoked
     jit grant list [--format json]
     jit grant revoke <id>
     jit grant extend <id> --for <dur>
@@ -232,7 +263,9 @@ Audit trail (both files already merged by `jit audit`):
 - serves under a grant -> aggregated `KindUse` with op `grant-use`, labels
   carrying the vault paths, collapse-per-caller like session uses,
 - endings -> new `KindGrantEnd` with `Cause` = `expired` | `revoked` |
-  `process-exit`, rendered by `jit audit` and aliased under `--kind grant`.
+  `process-exit` | `ended when the service stopped` (added 2026-09-23 with
+  the recorded service-stop ending), rendered by `jit audit` and aliased
+  under `--kind grant`.
 
 ## Limits, stated plainly
 
@@ -243,9 +276,11 @@ Audit trail (both files already merged by `jit audit`):
 - **FIFO mounts are out of scope in v1.** The best-effort reader-scan path
   keeps its own consent gating; extending grants to mounts is a later,
   separate decision.
-- **Rotation invalidates silently but safely.** Rotating a covered secret
-  changes its wrapped DEK; the grant simply stops matching and the serve
-  falls back to prompting.
+- **Rotation invalidates safely, and silently for a timed grant.** Rotating
+  a covered secret changes its wrapped DEK; the grant stops matching and the
+  serve falls back to prompting. A grant with no deadline lives long enough
+  for silence to be wrong, so `jit grant list` reports which of its secrets
+  stopped (`standing-grants.md`).
 - **Agent restart drops grants.** `jit grant list` after a restart is empty;
   the audit trail still shows what existed. Acceptable for v1; a persisted
   (metadata-only) ledger is a possible v2, but the DEKs themselves should

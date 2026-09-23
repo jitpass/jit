@@ -95,7 +95,8 @@ then **[Install](./getting-started/install.md)** →
 ## Run unattended - `jit grant`
 
 - [Process grants](./service/grants.md) - one disclosed Touch ID now lets a
-  program and everything it launches use profiles for a bounded time, instead of
+  program and everything it launches use profiles until a deadline, or until you
+  revoke it, instead of
   a prompt nobody is there to answer; revocable, expiring, fully audited
 - [`list`, `revoke`, `extend`](./reference/commands/jit_grant.md) - what is open
   right now, the kill switch that needs no authentication, and buying more time
@@ -123,7 +124,7 @@ trail.
 
 - [Unlock once, not per command](./service/index.md) - always-on, TTL, lock/unlock
 - [Per-process credential consent](./service/consent.md) - a Touch ID the first time each tool reaches for a credential, naming who is asking
-- [Process grants](./service/grants.md) - pre-approve a running tool to work unattended for a bounded time, revocable and fully audited
+- [Process grants](./service/grants.md) - pre-approve a running tool to work unattended, until a deadline or until you revoke it, fully audited
 - [Provenance](./service/provenance.md) - why every prompt names its caller, `status` and `audit`
 
 ## Reference
