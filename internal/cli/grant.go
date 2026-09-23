@@ -19,6 +19,7 @@ import (
 
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/auditlog"
+	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/lineage"
 	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/vault"
@@ -40,6 +41,7 @@ var (
 	grantPIDFlag      int32
 	grantProfileNames []string
 	grantFor          string
+	grantUntilRevoked bool
 	grantListFormat   string
 	grantExtendFor    string
 )
@@ -151,7 +153,7 @@ func runGrantCreate(out io.Writer) error {
 	// A bare `jit grant` is someone discovering the command, not someone who
 	// forgot one flag: answer with the whole shape, not the first missing
 	// piece of it.
-	if grantProcess == "" && grantPIDFlag == 0 && len(grantProfileNames) == 0 && grantFor == "" {
+	if grantProcess == "" && grantPIDFlag == 0 && len(grantProfileNames) == 0 && grantFor == "" && !grantUntilRevoked {
 		return fmt.Errorf("create a grant with %s\n(list / revoke / extend manage existing grants - see `jit grant --help`)", grantCreateUsage)
 	}
 	if grantProcess == "" && grantPIDFlag == 0 {
@@ -160,12 +162,25 @@ func runGrantCreate(out io.Writer) error {
 	if len(grantProfileNames) == 0 {
 		return fmt.Errorf("--profile is required (repeat it for several: --profile jamf --profile aws-ci)")
 	}
-	if grantFor == "" {
-		return fmt.Errorf("--for is required (how long the grant lasts, like 45m, 8h, 3d - max %s)", formatFlexDuration(agent.MaxGrantTTL))
+	// A grant lasts until a deadline or until revoked, never both and never
+	// neither: --until-revoked is an explicit flag so that omitting --for
+	// can never mint a permanent grant by accident (design/standing-grants.md).
+	if grantFor == "" && !grantUntilRevoked {
+		return fmt.Errorf("--for is required (how long the grant lasts, like 45m, 8h, 3d - max %s), or --until-revoked for a grant with no deadline", formatFlexDuration(agent.MaxGrantTTL))
 	}
-	ttl, err := parseGrantFor(grantFor)
-	if err != nil {
-		return err
+	if grantFor != "" && grantUntilRevoked {
+		return fmt.Errorf("give --for or --until-revoked, not both")
+	}
+	if grantUntilRevoked && grantProcess == "" {
+		return fmt.Errorf("--until-revoked covers a program under an app (--process); one process cannot outlive a reboot, so --pid keeps a --for deadline")
+	}
+	var ttl time.Duration
+	if grantFor != "" {
+		var err error
+		ttl, err = parseGrantFor(grantFor)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Validate the profiles HERE, where the error can name the files checked —
@@ -195,7 +210,13 @@ func runGrantCreate(out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	st, err := ac.GrantCreate(target.anchor.PID, target.name, grantProfileNames, cwd, ttl)
+	profiles := make([]agent.GrantProfile, 0, len(grantProfileNames))
+	for _, name := range grantProfileNames {
+		profiles = append(profiles, agent.GrantProfile{Name: name, Root: cwd})
+	}
+	st, err := ac.GrantCreateWith(agent.GrantCreateOpts{
+		TargetPID: target.anchor.PID, Name: target.name, Profiles: profiles, TTL: ttl, Standing: grantUntilRevoked,
+	})
 	if err != nil {
 		return notRunningHint(err)
 	}
@@ -250,15 +271,27 @@ func resolveGrantTarget() (grantTarget, error) {
 
 func printGrantCreated(out io.Writer, st agent.GrantStatus) {
 	_, _ = cOKBold.Fprint(out, glyphDone+" granted "+st.ID)
-	fmt.Fprintf(out, "   %s %s %s   until %s\n",
-		st.Name, glyphAction, strings.Join(st.Profiles, ", "), grantClock(st.ExpiresUnix))
+	fmt.Fprintf(out, "   %s %s %s   %s\n",
+		st.Name, glyphAction, strings.Join(st.Profiles, ", "), grantUntil(st))
 	fmt.Fprintf(out, "  %s %s: %s\n", glyphBranch,
 		countWord(len(st.Secrets), "secret", "secrets"), truncateEnd(strings.Join(st.Secrets, ", "), 58))
-	if st.Anchor != "" {
+	if st.Standing {
+		fmt.Fprintf(out, "  %s covers every %s under %s, now or later, across restarts and reboots\n", glyphBranch, st.Name, st.Anchor)
+		fmt.Fprintf(out, "  %s no Touch ID for these secrets while it exists; a rotated secret stops being covered\n", glyphBranch)
+	} else if st.Anchor != "" {
 		fmt.Fprintf(out, "  %s covers %s under %s: %s, any started before %s\n", glyphBranch,
 			st.Name, st.Anchor, grantRunningNow(st.Name, st.PID), grantClock(st.ExpiresUnix))
 	}
 	fmt.Fprintf(out, "  %s end it early: %s\n", glyphBranch, cPath.Sprint("jit grant revoke "+st.ID))
+}
+
+// grantUntil words a grant's end: the deadline, or "until you revoke it"
+// for a standing grant, which has none.
+func grantUntil(st agent.GrantStatus) string {
+	if st.Standing {
+		return "until you revoke it"
+	}
+	return "until " + grantClock(st.ExpiresUnix)
 }
 
 // grantRunningNow phrases how many processes a fresh tree grant covers at
@@ -322,7 +355,15 @@ func renderGrantRows(out io.Writer, grants []agent.GrantStatus) {
 	for i, g := range grants {
 		glyph, ink := glyphOK, cOK
 		state := fmt.Sprintf("expires %s (%s left)", grantClock(g.ExpiresUnix), grantRemaining(g.ExpiresUnix))
-		if !g.RootAlive {
+		switch {
+		case g.Standing && len(g.Rotated) > 0:
+			// The design's one silent failure made loud: a rotated secret is
+			// not served, so the row must say which and what to do.
+			glyph, ink = glyphWarn, cWarn
+			state = fmt.Sprintf("until revoked · %s rotated, re-approve", countWord(len(g.Rotated), "secret", "secrets"))
+		case g.Standing:
+			state = "until revoked"
+		case !g.RootAlive:
 			glyph, ink = glyphRisk, cRisk
 			state = "process exited, ending"
 			if g.Anchor != "" {
@@ -457,8 +498,8 @@ func truncateEnd(s string, max int) string {
 // prompt trustworthy: the caller sends names, and the set those names cover
 // is decided by the same code path `jit run` resolves them with (project
 // store shadowing global), never by anything the caller listed.
-func resolveGrantSecrets(root string) func(profiles []string, projectRoot string) ([]agent.GrantSecret, error) {
-	return func(profiles []string, projectRoot string) ([]agent.GrantSecret, error) {
+func resolveGrantSecrets(root string) func(profiles []agent.GrantProfile) ([]agent.GrantSecret, error) {
+	return func(profiles []agent.GrantProfile) ([]agent.GrantSecret, error) {
 		deviceID, err := vault.EnsureDeviceID(root)
 		if err != nil {
 			return nil, fmt.Errorf("determining device recipient ID: %w", err)
@@ -466,15 +507,17 @@ func resolveGrantSecrets(root string) func(profiles []string, projectRoot string
 		// No KeyWrapper: WrappedDEK reads envelopes without decrypting, so
 		// resolution can never prompt on its own.
 		v := &vault.Vault{Root: root, RecipientID: deviceID}
-		loadRoot := projectRoot
-		if loadRoot == "" {
-			if home, err := profile.GlobalRoot(); err == nil {
-				loadRoot = home
-			}
-		}
+		home, herr := profile.GlobalRoot()
 		seen := map[string]bool{}
 		var out []agent.GrantSecret
-		for _, name := range profiles {
+		for _, gp := range profiles {
+			// Each name resolves from ITS folder (project store shadowing
+			// global), so two profiles beside two projects can share one
+			// grant. An empty folder means the global store alone.
+			name, loadRoot := gp.Name, gp.Root
+			if loadRoot == "" && herr == nil {
+				loadRoot = home
+			}
 			p, err := profile.Load(loadRoot, name)
 			if err != nil {
 				return nil, err
@@ -503,6 +546,43 @@ func resolveGrantSecrets(root string) func(profiles []string, projectRoot string
 		return out, nil
 	}
 }
+
+// wrappedDEKReader is the service-side OnWrappedDEK hook: one path's
+// current wrapped DEK bytes, read without decrypting or prompting, so a
+// standing grant's listing can say which of its secrets were rotated.
+func wrappedDEKReader(root string) func(path string) ([]byte, string, error) {
+	return func(path string) ([]byte, string, error) {
+		deviceID, err := vault.EnsureDeviceID(root)
+		if err != nil {
+			return nil, "", err
+		}
+		v := &vault.Vault{Root: root, RecipientID: deviceID}
+		return v.WrappedDEK(path)
+	}
+}
+
+// grantKeyStore adapts keychainwrap's grant-key store to the agent's
+// interface (the agent never imports keychainwrap; the CLI wires it, as it
+// wires the MEK fetcher).
+type grantKeyStore struct{ keys keychainwrap.GrantKeys }
+
+func (g grantKeyStore) Create(id string) (agent.GrantKey, error) {
+	k, err := g.keys.Create(id)
+	if err != nil {
+		return nil, err
+	}
+	return k, nil
+}
+
+func (g grantKeyStore) Load(id string) (agent.GrantKey, error) {
+	k, err := g.keys.Load(id)
+	if err != nil {
+		return nil, err
+	}
+	return k, nil
+}
+
+func (g grantKeyStore) Delete(id string) error { return g.keys.Delete(id) }
 
 // completeGrantProcessNames offers --process candidates from the audit
 // trails: the programs that actually asked for secrets recently, annotated
@@ -671,8 +751,11 @@ func completeGrantCreateEntry(cmd *cobra.Command, args []string, toComplete stri
 		return comps, cobra.ShellCompDirectiveNoFileComp
 	case len(grantProfileNames) == 0:
 		return []string{"--profile\tprofile whose secrets the grant covers (repeatable)"}, cobra.ShellCompDirectiveNoFileComp
-	case grantFor == "":
-		return []string{"--for\thow long the grant lasts (45m, 8h, 3d - max 7d)"}, cobra.ShellCompDirectiveNoFileComp
+	case grantFor == "" && !grantUntilRevoked:
+		return []string{
+			"--for\thow long the grant lasts (45m, 8h, 3d - max 7d)",
+			"--until-revoked\tno deadline: survives restarts and reboots, ends on jit grant revoke",
+		}, cobra.ShellCompDirectiveNoFileComp
 	default:
 		return cobra.AppendActiveHelp(nil, "all set - press enter to create the grant"), cobra.ShellCompDirectiveNoFileComp
 	}
@@ -714,8 +797,8 @@ func completeGrantIDs(cmd *cobra.Command, args []string, toComplete string) ([]s
 	}
 	out := make([]string, 0, len(grants))
 	for _, g := range grants {
-		out = append(out, fmt.Sprintf("%s\t%s %s %s · until %s",
-			g.ID, g.Name, glyphAction, strings.Join(g.Profiles, ", "), grantClock(g.ExpiresUnix)))
+		out = append(out, fmt.Sprintf("%s\t%s %s %s · %s",
+			g.ID, g.Name, glyphAction, strings.Join(g.Profiles, ", "), grantUntil(g)))
 	}
 	return out, cobra.ShellCompDirectiveNoFileComp
 }
@@ -725,6 +808,7 @@ func init() {
 	grantCmd.Flags().Int32Var(&grantPIDFlag, "pid", 0, "one exact running process to grant instead (ends when it exits)")
 	grantCmd.Flags().StringArrayVar(&grantProfileNames, "profile", nil, "profile whose secrets the grant covers (repeatable)")
 	grantCmd.Flags().StringVar(&grantFor, "for", "", "how long the grant lasts (45m, 8h, 3d - max 7d)")
+	grantCmd.Flags().BoolVar(&grantUntilRevoked, "until-revoked", false, "no deadline: the grant holds its own key, survives restarts and reboots, and ends on jit grant revoke (--process only)")
 	_ = grantCmd.RegisterFlagCompletionFunc("process", completeGrantProcessNames)
 	_ = grantCmd.RegisterFlagCompletionFunc("profile", completeProfileNames)
 	_ = grantCmd.RegisterFlagCompletionFunc("for", completeGrantFor)

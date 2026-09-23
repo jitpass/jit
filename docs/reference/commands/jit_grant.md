@@ -50,6 +50,7 @@ jit grant --process NAME --profile NAME --for DURATION [flags]
       --pid int32             one exact running process to grant instead (ends when it exits)
       --process string        program to cover, by name: every one under this terminal, running or started later
       --profile stringArray   profile whose secrets the grant covers (repeatable)
+      --until-revoked         no deadline: the grant holds its own key, survives restarts and reboots, and ends on jit grant revoke (--process only)
 ```
 
 ### Options inherited from parent commands

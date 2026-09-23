@@ -86,7 +86,7 @@ func TestResolveGrantSecretsResolvesProfilesToWrappedDEKs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := resolveGrantSecrets(root)([]string{"jamf"}, "")
+	got, err := resolveGrantSecrets(root)([]agent.GrantProfile{{Name: "jamf"}})
 	if err != nil {
 		t.Fatalf("resolveGrantSecrets: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestResolveGrantSecretsResolvesProfilesToWrappedDEKs(t *testing.T) {
 		}
 	}
 
-	if _, err := resolveGrantSecrets(root)([]string{"nope"}, ""); err == nil {
+	if _, err := resolveGrantSecrets(root)([]agent.GrantProfile{{Name: "nope"}}); err == nil {
 		t.Error("unknown profile resolved, want an error naming the files checked")
 	}
 }

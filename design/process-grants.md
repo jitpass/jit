@@ -176,7 +176,14 @@ emit an audit event with the cause:
   always free),
 - **root exit** -- fork-time re-verification fails, grant is pruned lazily on
   the next serve/list/status touch,
-- **agent exit** -- memory gone.
+- **agent exit** -- memory gone. *Recorded since 2026-09-23*: a timed
+  grant's DEKs live in the process, so a clean stop IS its ending, and
+  `Server.Close` ends every one of them with cause "ended when the service
+  stopped" before the streams close. It was silent until then, found the
+  way such gaps usually are: a grant vanished from `jit grant list` after a
+  restart and the trail could not say when its unattended access had
+  ceased, which is the first question an incident asks. A kill -9 still
+  records nothing, and nothing can.
 
 `jit grant extend <id> --for <d>` re-runs the disclosed challenge (more time
 is a new decision); shortening via `revoke` + re-create, or a later
@@ -242,7 +249,11 @@ Audit trail (both files already merged by `jit audit`):
 - **Agent restart drops grants.** `jit grant list` after a restart is empty;
   the audit trail still shows what existed. Acceptable for v1; a persisted
   (metadata-only) ledger is a possible v2, but the DEKs themselves should
-  never touch disk.
+  never touch disk. *Superseded by `standing-grants.md` (design,
+  2026-09-23): a grant anchored to an app carries its own key in the
+  keychain and a ledger of DEKs wrapped under it, so it survives restart
+  and reboot with no plaintext DEK on disk; pid-anchored grants keep this
+  limit, because the pid dies with the boot.*
 - **v2 candidates, not now:** binding by code-signing identity (survives
   restarts, murky for interpreter-run tools), grants offered directly from
   the consent prompt ("allow once / 1h / 8h"), `jit status` surfacing.

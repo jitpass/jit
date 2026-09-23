@@ -124,6 +124,23 @@ type Request struct {
 	// should shadow the global ones during that resolution — the caller's cwd,
 	// exactly the layering `jit run` applies. Empty means global-only.
 	ProjectRoot string `json:"project_root,omitempty"`
+	// GrantProfileRoots ("grant_create") is GrantProfiles with a folder per
+	// name instead of one ProjectRoot for all of them — what a client that
+	// lists every profile on the Mac needs, since two ticked profiles may
+	// live beside two different projects. Same rule as GrantProfiles: names
+	// and folders only, the agent resolves them itself. When set it
+	// replaces GrantProfiles/ProjectRoot; an agent older than this field
+	// ignores it and refuses the create for having no profiles, which is
+	// the safe answer.
+	GrantProfileRoots []GrantProfile `json:"grant_profile_roots,omitempty"`
+	// Standing ("grant_create") asks for a grant with no deadline
+	// (design/standing-grants.md): it holds its own key in the keychain,
+	// survives a service restart and a reboot, and ends only on
+	// grant_revoke. Tree mode only (GrantName set): a pid dies with the
+	// boot, so an exact-process grant always keeps a TTL. Exclusive with
+	// TTLSeconds — sending both is an error, so omitting --for can never
+	// mint a permanent grant by accident.
+	Standing bool `json:"standing,omitempty"`
 	// GrantName ("grant_create") switches the grant from exact-process to
 	// tree-scoped: TargetPID is then the SESSION ROOT to anchor under (the
 	// caller's own terminal app or tmux server — the agent verifies it is
@@ -453,6 +470,15 @@ type Response struct {
 
 // GrantStatus is one process grant as the agent reports it — deliberately
 // plain strings/ints like every other wire type here. Name and Command are
+// GrantProfile names one profile a grant covers and the folder it is read
+// from: Root is the project directory whose .jit/profiles holds the manifest
+// (or "" for the global store), exactly the root profile.Load takes. Names
+// and folders only, never secrets or paths — the agent resolves them.
+type GrantProfile struct {
+	Name string `json:"name"`
+	Root string `json:"root,omitempty"`
+}
+
 // kernel-derived at grant creation (internal/lineage), never caller-reported,
 // matching MountGrantStatus's convention.
 type GrantStatus struct {
@@ -482,7 +508,28 @@ type GrantStatus struct {
 	// RootAlive reports whether the anchored process (pid + fork time) still
 	// exists at the time of the status read. A dead root is pruned lazily, so
 	// a listing can catch one mid-flight; render it as ending, not live.
+	// For a standing grant it reports whether the anchor app is running
+	// right now: informational, since the grant outlives it.
 	RootAlive bool `json:"root_alive"`
+	// Standing marks a grant with no deadline (design/standing-grants.md).
+	// ExpiresUnix is zero, PID is zero (there is no anchored process: the
+	// anchor is AnchorPath, matched by executable on every serve), and it
+	// ends only on revoke.
+	Standing bool `json:"standing,omitempty"`
+	// AnchorPath is a standing grant's anchor: the executable path of the
+	// app the covered program must run under ("/Applications/iTerm.app/
+	// Contents/MacOS/iTerm2"). Anchor carries its display name.
+	AnchorPath string `json:"anchor_path,omitempty"`
+	// ProfileRoots is Profiles with each name's folder, so a listing can
+	// tell two same-named profiles apart. Empty for grants created before
+	// the field existed.
+	ProfileRoots []GrantProfile `json:"profile_roots,omitempty"`
+	// Rotated lists the covered vault paths whose secret has changed since
+	// the grant was made (standing grants only, checked at list time). A
+	// rotated secret is not served — its wrapped bytes no longer match —
+	// so the caller prompts for it as if there were no grant; this is what
+	// lets the list say so instead of leaving a silent gap.
+	Rotated []string `json:"rotated,omitempty"`
 }
 
 // SessionEvent is one transition of the agent's session — an unlock or a

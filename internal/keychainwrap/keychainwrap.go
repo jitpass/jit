@@ -94,6 +94,10 @@ type Wrapper struct {
 	service   string
 	account   string
 	challenge func(reason string) error
+	// missing is the error a definite absence answers with; nil means
+	// errNoMEK (the vault's master key). A grant key (grantkey.go) names
+	// its grant instead of telling the user to run `jit vault init`.
+	missing error
 
 	mu  sync.Mutex
 	mek []byte
@@ -224,6 +228,9 @@ func (w *Wrapper) fetchMEK(reason string) ([]byte, error) {
 		// Only a definite MEKAbsent short-circuits: MEKIndeterminate goes on
 		// to the challenge and the real fetch, whose own errors say more.
 		if w.MEKPresence() == MEKAbsent {
+			if w.missing != nil {
+				return nil, w.missing
+			}
 			return nil, errNoMEK
 		}
 		if err := w.challenge(reason); err != nil {

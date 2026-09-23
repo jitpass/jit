@@ -122,7 +122,16 @@ func (s *Server) Close() error {
 	// Streams end with the listener: a subscriber parked on its channel
 	// would otherwise hold its connection (and goroutine) past the process's
 	// own shutdown sequence.
+	// A timed grant dies with this process, so the stop IS its ending and
+	// the trail must say so. Recorded BEFORE the streams close, so a live
+	// subscriber sees the notice on its way out rather than only finding
+	// the grant gone next time it asks. Idempotent, like every ending: a
+	// second Close finds no grants left to end.
+	s.endTimedGrants(grantEndServiceStop)
 	s.shutdownOnce.Do(func() { close(s.shutdown) })
+	// Standing grants outlive the process by design; only their cached
+	// keys are released here (standing.go).
+	s.closeStanding()
 	var err error
 	if s.listener != nil {
 		err = s.listener.Close()

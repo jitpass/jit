@@ -38,7 +38,7 @@ func sealGrantSecret(t *testing.T, path, class string, dek []byte) GrantSecret {
 // wireGrantResolver points OnResolveGrant at a fixed secret set and returns
 // the entries, so a test controls exactly what the profiles resolve to.
 func wireGrantResolver(s *Server, secrets ...GrantSecret) {
-	s.OnResolveGrant = func(profiles []string, projectRoot string) ([]GrantSecret, error) {
+	s.OnResolveGrant = func(profiles []GrantProfile) ([]GrantSecret, error) {
 		return secrets, nil
 	}
 }
@@ -459,21 +459,21 @@ func TestGrantCreateValidatesBeforePrompting(t *testing.T) {
 }
 
 func TestGrantCreateReasonWording(t *testing.T) {
-	got := grantCreateReason("claude", "", []string{"jamf", "aws-ci"}, 3, 8*time.Hour, "")
+	got := grantCreateReason("claude", "", []string{"jamf", "aws-ci"}, 3, 8*time.Hour, "", false)
 	want := "let claude use 3 secrets (jamf, aws-ci) unattended for 8h"
 	if got != want {
 		t.Errorf("grantCreateReason = %q, want %q", got, want)
 	}
 	// The tree-scoped shape must name both halves of the perimeter: the
 	// filter name AND the anchor the human is hanging it under.
-	tree := grantCreateReason("claude", "iTerm2", []string{"jamf"}, 1, time.Hour, "")
+	tree := grantCreateReason("claude", "iTerm2", []string{"jamf"}, 1, time.Hour, "", false)
 	if want := "let claude under iTerm2 use 1 secret (jamf) unattended for 1h"; tree != want {
 		t.Errorf("tree grantCreateReason = %q, want %q", tree, want)
 	}
-	if r := grantCreateReason("", "", []string{"p"}, 1, time.Minute, ""); !strings.Contains(r, "this process") {
+	if r := grantCreateReason("", "", []string{"p"}, 1, time.Minute, "", false); !strings.Contains(r, "this process") {
 		t.Errorf("nameless reason = %q, want a 'this process' fallback", r)
 	}
-	long := grantCreateReason(strings.Repeat("x", 100), strings.Repeat("z", 100), []string{strings.Repeat("y", 100)}, 12, 3*24*time.Hour, "")
+	long := grantCreateReason(strings.Repeat("x", 100), strings.Repeat("z", 100), []string{strings.Repeat("y", 100)}, 12, 3*24*time.Hour, "", false)
 	if len([]rune(long)) > maxReasonLen {
 		t.Errorf("reason is %d runes, must fit the %d-rune prompt budget", len([]rune(long)), maxReasonLen)
 	}

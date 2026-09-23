@@ -431,6 +431,39 @@ func (c *Client) GrantCreateUnderRoot(anchorPID int32, name string, profiles []s
 	return resp.Grants[0], nil
 }
 
+// GrantCreateOpts is GrantCreate's full argument set, for the two shapes
+// the positional forms cannot express: a folder per profile
+// (Request.GrantProfileRoots) and a standing grant (Request.Standing,
+// design/standing-grants.md — no deadline, TTL must be zero).
+type GrantCreateOpts struct {
+	TargetPID      int32
+	Name           string
+	Profiles       []GrantProfile
+	TTL            time.Duration
+	AnchorExplicit bool
+	Standing       bool
+}
+
+// GrantCreateWith is GrantCreate with every option spelled out.
+func (c *Client) GrantCreateWith(o GrantCreateOpts) (GrantStatus, error) {
+	resp, err := c.call(Request{
+		Op:                OpGrantCreate,
+		TargetPID:         o.TargetPID,
+		GrantName:         o.Name,
+		AnchorExplicit:    o.AnchorExplicit,
+		GrantProfileRoots: o.Profiles,
+		TTLSeconds:        int64(o.TTL / time.Second),
+		Standing:          o.Standing,
+	})
+	if err != nil {
+		return GrantStatus{}, err
+	}
+	if len(resp.Grants) != 1 {
+		return GrantStatus{}, fmt.Errorf("agent: grant created but not reported back")
+	}
+	return resp.Grants[0], nil
+}
+
 // GrantList reads the live process grants — prompt-free, like History.
 func (c *Client) GrantList() ([]GrantStatus, error) {
 	resp, err := c.call(Request{Op: OpGrantList})
