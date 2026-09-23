@@ -5,7 +5,9 @@ Show the active process grants
 ### Synopsis
 
 List every live process grant: who holds it, which profiles it covers,
-when it expires, and how many serves have ridden it. Reading this never
+how it ends - at a deadline, or only when you revoke it - and how many
+serves have ridden it. A covered secret that has been rotated is flagged
+here, because a rotated secret stops being served. Reading this never
 prompts.
 
 ```

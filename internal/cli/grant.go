@@ -47,30 +47,39 @@ var (
 )
 
 var grantCmd = &cobra.Command{
-	Use:     "grant --process NAME --profile NAME --for DURATION",
+	Use:     "grant --process NAME --profile NAME (--for DURATION | --until-revoked)",
 	GroupID: groupSecrets,
 	Short:   "Pre-approve a program to use profiles unattended",
 	Long: `Create a process grant: with one Touch ID now, allow a program (and
 everything it launches) to use the named profiles' secrets without further
-prompts, until the grant expires - including while the screen is locked or
-you are away.
+prompts - including while the screen is locked or you are away.
+
+You choose how it ends, and the two shapes differ in more than duration:
+
+  --for DURATION    until a deadline, at most 7d. The grant lives in the
+                    service's memory, so it also ends if the service stops
+                    or the terminal it is anchored to quits.
+  --until-revoked   until you run 'jit grant revoke'. The grant holds a key
+                    of its own, so it survives screen lock, a service
+                    restart and a reboot.
 
 --process NAME is scoped to the terminal you type it in: every NAME under
-this terminal - running now or started later, in any tab - is covered
-until the deadline. The anchor is the terminal app itself, verified
-through kernel ancestry, so a same-named process elsewhere on the machine
-inherits nothing, and the grant ends early if the terminal app quits.
---pid grants one exact running process instead, and ends when it exits.
+this terminal - running now or started later, in any tab - is covered. The
+anchor is the terminal app itself, verified through kernel ancestry, so a
+same-named process elsewhere on the machine inherits nothing. --pid grants
+one exact running process instead and ends when it exits; it always takes
+--for, because one process cannot outlive a reboot.
 
 A grant covers exactly the secrets the named profiles resolve to at
-creation time, ends at its deadline (or on 'jit grant revoke'), and every
-serve under it is recorded in 'jit audit'.
-
-Grants live in the service's memory: they survive screen lock by design,
-and do not survive a service restart or reboot.`,
+creation time, and every serve under it is recorded in 'jit audit'. If one
+of those secrets is rotated it stops being served and 'jit grant list'
+says so; the rest keep working.`,
 	Example: `  # let claude use the jamf profile for 8 hours - current sessions and
   # any started from this terminal within the window
   jit grant --process claude --profile jamf --for 8h
+
+  # no deadline: until you revoke it, across restarts and reboots
+  jit grant --process claude --profile mcp-caido --until-revoked
 
   # several profiles, for one exact running process only
   jit grant --pid 4211 --profile jamf --profile aws-ci --for 1d
@@ -92,7 +101,9 @@ var grantListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "Show the active process grants",
 	Long: `List every live process grant: who holds it, which profiles it covers,
-when it expires, and how many serves have ridden it. Reading this never
+how it ends - at a deadline, or only when you revoke it - and how many
+serves have ridden it. A covered secret that has been rotated is flagged
+here, because a rotated secret stops being served. Reading this never
 prompts.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -108,7 +119,11 @@ var grantRevokeCmd = &cobra.Command{
 	Short: "End a process grant now",
 	Long: `End a grant immediately. No authentication: reducing access is always
 free, and the kill switch is deliberately the easiest command in the
-feature. The ending is recorded in 'jit audit'.`,
+feature. The ending is recorded in 'jit audit'.
+
+For a grant made with --until-revoked this is the only way it ends, and it
+deletes the key that grant holds, so the secrets it covered go back to
+asking for Touch ID.`,
 	Args:              requireGrantID,
 	ValidArgsFunction: completeGrantIDs,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -125,7 +140,10 @@ var grantExtendCmd = &cobra.Command{
 	Long: `Move a grant's deadline to now plus the new duration. More time is a new
 decision, so this puts the same disclosed prompt in front of you that
 creating the grant did. Shortening needs no command of its own: revoke and
-re-create, and neither step re-asks for what you already have.`,
+re-create, and neither step re-asks for what you already have.
+
+A grant made with --until-revoked has no deadline to move, so this refuses
+it. Revoke it when you want it to end.`,
 	Args:              requireGrantID,
 	ValidArgsFunction: completeGrantIDs,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -147,14 +165,19 @@ func requireGrantID(cmd *cobra.Command, args []string) error {
 
 // grantCreateUsage is the one-line shape of a create, quoted wherever a user
 // lands without it: the bare command, an empty completion, a missing flag.
-const grantCreateUsage = "jit grant --process <name> --profile <profile> --for <duration>"
+const grantCreateUsage = "jit grant --process <name> --profile <profile>"
+
+// grantCreateEnding is the choice that completes grantCreateUsage. It is a
+// second line rather than a longer usage string: "(--for <d> | --until-revoked)"
+// pushed the one-line shape past the width where a reader stops reading it.
+const grantCreateEnding = "then --for <duration> for a deadline, or --until-revoked for none"
 
 func runGrantCreate(out io.Writer) error {
 	// A bare `jit grant` is someone discovering the command, not someone who
 	// forgot one flag: answer with the whole shape, not the first missing
 	// piece of it.
 	if grantProcess == "" && grantPIDFlag == 0 && len(grantProfileNames) == 0 && grantFor == "" && !grantUntilRevoked {
-		return fmt.Errorf("create a grant with %s\n(list / revoke / extend manage existing grants - see `jit grant --help`)", grantCreateUsage)
+		return fmt.Errorf("create a grant with %s\n%s\n(list / revoke / extend manage existing grants - see `jit grant --help`)", grantCreateUsage, grantCreateEnding)
 	}
 	if grantProcess == "" && grantPIDFlag == 0 {
 		return fmt.Errorf("--process is required (the running program to grant to; tab-completes from recent callers)")
@@ -166,13 +189,13 @@ func runGrantCreate(out io.Writer) error {
 	// neither: --until-revoked is an explicit flag so that omitting --for
 	// can never mint a permanent grant by accident (design/standing-grants.md).
 	if grantFor == "" && !grantUntilRevoked {
-		return fmt.Errorf("--for is required (how long the grant lasts, like 45m, 8h, 3d - max %s), or --until-revoked for a grant with no deadline", formatFlexDuration(agent.MaxGrantTTL))
+		return fmt.Errorf("say how the grant ends: --for a deadline (45m, 8h, 3d - max %s)\nor --until-revoked for none", formatFlexDuration(agent.MaxGrantTTL))
 	}
 	if grantFor != "" && grantUntilRevoked {
 		return fmt.Errorf("give --for or --until-revoked, not both")
 	}
 	if grantUntilRevoked && grantProcess == "" {
-		return fmt.Errorf("--until-revoked covers a program under an app (--process); one process cannot outlive a reboot, so --pid keeps a --for deadline")
+		return fmt.Errorf("--until-revoked needs --process: one process cannot outlive a reboot\n(--pid grants one exact running process, and always takes --for)")
 	}
 	var ttl time.Duration
 	if grantFor != "" {
@@ -218,7 +241,7 @@ func runGrantCreate(out io.Writer) error {
 		TargetPID: target.anchor.PID, Name: target.name, Profiles: profiles, TTL: ttl, Standing: grantUntilRevoked,
 	})
 	if err != nil {
-		return notRunningHint(err)
+		return grantAgentErr("grant_create", err)
 	}
 	// A service older than tree grants ignores the unknown grant_name field
 	// and mints an EXACT grant anchored at the terminal — every process under
@@ -232,6 +255,22 @@ func runGrantCreate(out io.Writer) error {
 	}
 	printGrantCreated(out, st)
 	return nil
+}
+
+// grantAgentErr unwraps the framing a grant error collects on its way to the
+// screen. The server prefixes its own op ("grant_extend: "), the client adds
+// "agent: ", and the command's RunE adds "jit grant extend: " — so the reader
+// met three prefixes before the sentence, which is the raw-error-reaching-
+// the-user shape the house style rules out. The op is passed rather than
+// derived so a rename cannot silently stop the stripping.
+func grantAgentErr(op string, err error) error {
+	if err == nil {
+		return nil
+	}
+	err = notRunningHint(err)
+	msg := strings.TrimPrefix(err.Error(), "agent: ")
+	msg = strings.TrimPrefix(msg, op+": ")
+	return errors.New(msg)
 }
 
 // grantTarget is what a create resolves --process/--pid into: the process
@@ -276,8 +315,9 @@ func printGrantCreated(out io.Writer, st agent.GrantStatus) {
 	fmt.Fprintf(out, "  %s %s: %s\n", glyphBranch,
 		countWord(len(st.Secrets), "secret", "secrets"), truncateEnd(strings.Join(st.Secrets, ", "), 58))
 	if st.Standing {
-		fmt.Fprintf(out, "  %s covers every %s under %s, now or later, across restarts and reboots\n", glyphBranch, st.Name, st.Anchor)
-		fmt.Fprintf(out, "  %s no Touch ID for these secrets while it exists; a rotated secret stops being covered\n", glyphBranch)
+		fmt.Fprintf(out, "  %s every %s under %s, now or later\n", glyphBranch, st.Name, st.Anchor)
+		fmt.Fprintf(out, "  %s survives a service restart and a reboot\n", glyphBranch)
+		fmt.Fprintf(out, "  %s a rotated secret stops being covered\n", glyphBranch)
 	} else if st.Anchor != "" {
 		fmt.Fprintf(out, "  %s covers %s under %s: %s, any started before %s\n", glyphBranch,
 			st.Name, st.Anchor, grantRunningNow(st.Name, st.PID), grantClock(st.ExpiresUnix))
@@ -320,7 +360,7 @@ func runGrantList(out io.Writer) error {
 	}
 	grants, err := ac.GrantList()
 	if err != nil {
-		return notRunningHint(err)
+		return grantAgentErr("grant_list", err)
 	}
 	if grantListFormat == "json" {
 		if grants == nil {
@@ -345,8 +385,10 @@ func renderGrantRows(out io.Writer, grants []agent.GrantStatus) {
 	widest := 0
 	for i, g := range grants {
 		who[i] = fmt.Sprintf("%s %s %s", g.Name, glyphAction, strings.Join(g.Profiles, ", "))
-		if len(who[i]) > widest {
-			widest = len(who[i])
+		// Runes, not bytes: every row carries a multi-byte arrow, so a byte
+		// width padded each column two spaces too far.
+		if n := len([]rune(who[i])); n > widest {
+			widest = n
 		}
 	}
 	if widest > 34 {
@@ -357,10 +399,12 @@ func renderGrantRows(out io.Writer, grants []agent.GrantStatus) {
 		state := fmt.Sprintf("expires %s (%s left)", grantClock(g.ExpiresUnix), grantRemaining(g.ExpiresUnix))
 		switch {
 		case g.Standing && len(g.Rotated) > 0:
-			// The design's one silent failure made loud: a rotated secret is
-			// not served, so the row must say which and what to do.
+			// The design's one silent failure made loud. The row counts what
+			// stopped; the block under the table names each one and prints
+			// the command that covers them again, because "re-approve" is
+			// not a command anyone can type.
 			glyph, ink = glyphWarn, cWarn
-			state = fmt.Sprintf("until revoked · %s rotated, re-approve", countWord(len(g.Rotated), "secret", "secrets"))
+			state = fmt.Sprintf("until revoked · %s no longer covered", countWord(len(g.Rotated), "secret", "secrets"))
 		case g.Standing:
 			state = "until revoked"
 		case !g.RootAlive:
@@ -380,6 +424,44 @@ func renderGrantRows(out io.Writer, grants []agent.GrantStatus) {
 		_, _ = cBold.Fprint(out, g.ID)
 		fmt.Fprintf(out, "  %-*s  %s · %s\n", widest, truncateEnd(who[i], widest), state, serves)
 	}
+	renderRotatedSecrets(out, grants)
+}
+
+// renderRotatedSecrets names the covered secrets a rotation stopped, and the
+// one command that covers them again. The row above can only carry a count,
+// and a count the reader cannot act on is a count they ignore.
+func renderRotatedSecrets(out io.Writer, grants []agent.GrantStatus) {
+	for _, g := range grants {
+		if len(g.Rotated) == 0 {
+			continue
+		}
+		fmt.Fprintln(out)
+		_, _ = cWarn.Fprint(out, "  "+glyphWarn+" ")
+		// "rotated" is the common case but not the only one: a secret deleted
+		// from the vault reports identically, because the check is whether
+		// the vault still holds what the grant covers.
+		fmt.Fprintf(out, "%s stopped being served: the value changed, or it left the vault\n",
+			countWord(len(g.Rotated), "secret", "secrets"))
+		for _, path := range g.Rotated {
+			fmt.Fprintf(out, "    %s %s\n", glyphBranch, path)
+		}
+		fmt.Fprint(out, "    ")
+		_, _ = cPath.Fprint(out, glyphAction+" "+regrantCommand(g))
+		fmt.Fprintln(out, "   covers them again")
+	}
+}
+
+// regrantCommand is the create that re-covers a grant's secrets as they are
+// now. A standing grant is always tree-scoped, so its whole shape is known.
+func regrantCommand(g agent.GrantStatus) string {
+	cmd := "jit grant --process " + g.Name
+	for _, p := range g.Profiles {
+		cmd += " --profile " + p
+	}
+	if g.Standing {
+		return cmd + " --until-revoked"
+	}
+	return cmd + " --for <duration>"
 }
 
 func runGrantRevoke(out io.Writer, id string) error {
@@ -399,7 +481,7 @@ func runGrantRevoke(out io.Writer, id string) error {
 		}
 	}
 	if err := ac.GrantRevoke(id); err != nil {
-		return notRunningHint(err)
+		return grantAgentErr("grant_revoke", err)
 	}
 	_, _ = cOKBold.Fprint(out, glyphDone+" revoked "+id)
 	fmt.Fprintln(out, who)
@@ -420,7 +502,7 @@ func runGrantExtend(out io.Writer, id string) error {
 	}
 	st, err := ac.GrantExtend(id, ttl)
 	if err != nil {
-		return notRunningHint(err)
+		return grantAgentErr("grant_extend", err)
 	}
 	_, _ = cOKBold.Fprint(out, glyphDone+" extended "+st.ID)
 	fmt.Fprintf(out, "   %s %s %s   until %s\n",
@@ -440,7 +522,7 @@ func parseGrantFor(s string) (time.Duration, error) {
 		return 0, fmt.Errorf("--for %s is under the 1m minimum", s)
 	}
 	if d > agent.MaxGrantTTL {
-		return 0, fmt.Errorf("--for %s exceeds the %s maximum for an unattended grant", s, formatFlexDuration(agent.MaxGrantTTL))
+		return 0, fmt.Errorf("--for %s is over the %s maximum\n(--until-revoked has no deadline at all)", s, formatFlexDuration(agent.MaxGrantTTL))
 	}
 	return d, nil
 }
@@ -746,8 +828,9 @@ func completeGrantCreateEntry(cmd *cobra.Command, args []string, toComplete stri
 	}
 	switch {
 	case grantProcess == "" && grantPIDFlag == 0:
-		comps := []string{"--process\tcreate: grant a program by name, future sessions included (then --profile, --for)"}
+		comps := []string{"--process\tcreate: grant a program by name, future sessions included (then --profile, then --for or --until-revoked)"}
 		comps = cobra.AppendActiveHelp(comps, "create a grant: "+grantCreateUsage)
+		comps = cobra.AppendActiveHelp(comps, grantCreateEnding)
 		return comps, cobra.ShellCompDirectiveNoFileComp
 	case len(grantProfileNames) == 0:
 		return []string{"--profile\tprofile whose secrets the grant covers (repeatable)"}, cobra.ShellCompDirectiveNoFileComp
@@ -777,7 +860,16 @@ func completeGrantFor(cmd *cobra.Command, args []string, toComplete string) ([]s
 // rather than to dead silence - a tab that produces nothing, explains
 // nothing, and leaves the user stuck was a real report.
 func completeGrantIDs(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	// extend's id is taken; what it still needs is the duration. Answering
+	// with nothing at that point is the dead-end tab this function was
+	// written to remove, and it had grown one of its own.
+	// cmd is nil when a test drives this directly; treat that as the revoke
+	// shape, which is the one that offers everything.
+	forExtend := cmd != nil && cmd.Name() == "extend"
 	if len(args) > 0 {
+		if forExtend && grantExtendFor == "" {
+			return []string{"--for\tnew lifetime from now (45m, 8h, 3d - max 7d)"}, cobra.ShellCompDirectiveNoFileComp
+		}
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 	ac, err := agentClient()
@@ -793,12 +885,23 @@ func completeGrantIDs(cmd *cobra.Command, args []string, toComplete string) ([]s
 		return cobra.AppendActiveHelp(nil, msg), cobra.ShellCompDirectiveNoFileComp
 	}
 	if len(grants) == 0 {
-		return cobra.AppendActiveHelp(nil, "no active grants - create one: "+grantCreateUsage), cobra.ShellCompDirectiveNoFileComp
+		comps := cobra.AppendActiveHelp(nil, "no active grants - create one: "+grantCreateUsage)
+		return cobra.AppendActiveHelp(comps, grantCreateEnding), cobra.ShellCompDirectiveNoFileComp
 	}
 	out := make([]string, 0, len(grants))
 	for _, g := range grants {
+		// A grant with no deadline has nothing for extend to move, and the
+		// server refuses it. Offering it would complete a command that can
+		// only fail.
+		if forExtend && g.Standing {
+			continue
+		}
 		out = append(out, fmt.Sprintf("%s\t%s %s %s · %s",
 			g.ID, g.Name, glyphAction, strings.Join(g.Profiles, ", "), grantUntil(g)))
+	}
+	if len(out) == 0 && forExtend {
+		return cobra.AppendActiveHelp(nil,
+			"every live grant runs until revoked - there is no deadline to extend; `jit grant revoke` ends one"), cobra.ShellCompDirectiveNoFileComp
 	}
 	return out, cobra.ShellCompDirectiveNoFileComp
 }
