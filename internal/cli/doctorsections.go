@@ -538,6 +538,18 @@ func agentFindingsFrom(root string, st statusAgent) []checkFinding {
 			Detail: fmt.Sprintf("the service is unreachable: %s", st.Error),
 			Action: "`jit service restart` to bring it back",
 		})
+	case st.SocketBlocked:
+		// Before the not-running arms: the dial was refused, so this process
+		// knows nothing about the service's actual state. Doctor is the
+		// surface someone reaches for when jit "stopped working" inside an
+		// agent harness or CI runner, and it is the one place that should
+		// name the sandbox rather than invent a crash.
+		detail, action := socketBlockedParts("the service")
+		out = append(out, checkFinding{
+			Kind:   kindService,
+			Detail: detail,
+			Action: strings.TrimSuffix(action, "."),
+		})
 	case !st.Running && st.Installed:
 		// installedNotRunningParts is the single source of this state's
 		// wording (it queries launchd for WHICH not-running state this is);

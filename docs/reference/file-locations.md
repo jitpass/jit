@@ -11,6 +11,7 @@ description: Where the vault, profiles, shims, and rewritten config files live o
 |---|---|
 | `~/Library/Application Support/jitpass/` | the vault - one encrypted file per secret, plus encrypted pre-migration file backups |
 | macOS login Keychain | the vault's master encryption key (Touch ID/passcode gated) |
+| `~/Library/Application Support/jitpass/agent.sock` | the [background service](../service/index.md)'s socket - the one path a [sandboxed caller](../service/sandboxed-callers.md) has to be allowed to reach |
 | `~/.jit/profiles/` | global [profile](../run/profiles.md) manifests (machine-wide migrations, `wrap-<tool>` profiles) |
 | `<project>/.jit/profiles/` | project profile manifests - names and vault paths only, safe to commit |
 | `<project>/.jit/config.yaml` | optional per-project settings, currently `read_as_file: true` to pin [`jit run`](../run/index.md) to live mode - safe to commit |

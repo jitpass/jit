@@ -532,3 +532,62 @@ func TestLegacyEnvelopesStaySilentWhenTheMasterKeyIsGone(t *testing.T) {
 		t.Fatalf("expected only the vault_key finding, got %+v", findings)
 	}
 }
+
+// TestAgentFindingsSocketBlocked pins doctor's handling of the state a
+// sandboxed shell lands in: the service is up, this process was refused the
+// connect. Doctor must not reach for restart advice here — the service it
+// would restart never stopped — and must name the socket the sandbox has to
+// allow, since that is the only thing the reader can actually act on.
+func TestAgentFindingsSocketBlocked(t *testing.T) {
+	// Faked so a real launchd job on the machine running the test can't
+	// change the answer: a blocked dial must report the same thing whatever
+	// launchd says, because it learned nothing about the job either way.
+	restore := launchctlRun
+	t.Cleanup(func() { launchctlRun = restore })
+	launchctlRun = func(args ...string) ([]byte, error) {
+		return []byte(`Could not find service "com.jitpass.agent" in domain for user gui: 501`), errors.New("exit status 113")
+	}
+
+	findings := agentFindingsFrom(t.TempDir(), statusAgent{Installed: true, SocketBlocked: true})
+	if len(findings) != 1 {
+		t.Fatalf("expected exactly one service finding, got %+v", findings)
+	}
+	if strings.Contains(findings[0].Action, "jit service restart") {
+		t.Errorf("a blocked socket must not be answered with restart advice — the service is running: %q", findings[0].Action)
+	}
+	if !strings.Contains(findings[0].Detail, "refused") {
+		t.Errorf("the detail must say the connect was refused, got %q", findings[0].Detail)
+	}
+	if !strings.Contains(findings[0].Action, "sandbox") {
+		t.Errorf("the action must name the sandbox as the cause to look at, got %q", findings[0].Action)
+	}
+	if !strings.Contains(findings[0].Action, "agent.sock") {
+		t.Errorf("the action must name the socket to allow, got %q", findings[0].Action)
+	}
+
+	// Same single-source rule the installed-not-running test enforces: the
+	// wording is socketBlockedParts's, never a copy that can drift from it.
+	wantDetail, _ := socketBlockedParts("the service")
+	if findings[0].Detail != wantDetail {
+		t.Errorf("doctor's detail must BE socketBlockedParts's, not a copy: %q vs %q", findings[0].Detail, wantDetail)
+	}
+}
+
+// TestAgentFindingsSocketBlockedBeatsNotRunning is the ordering control for
+// the test above. statusAgent carries Running=false in BOTH states, so the
+// blocked arm has to be reached first; if the not-running arm ever wins, a
+// sandboxed caller is told their service crashed — the original bug.
+func TestAgentFindingsSocketBlockedBeatsNotRunning(t *testing.T) {
+	restore := launchctlRun
+	t.Cleanup(func() { launchctlRun = restore })
+	launchctlRun = func(args ...string) ([]byte, error) { return nil, errors.New("exit status 113") }
+
+	findings := agentFindingsFrom(t.TempDir(), statusAgent{Installed: true, Running: false, SocketBlocked: true})
+	if len(findings) != 1 {
+		t.Fatalf("expected exactly one service finding, got %+v", findings)
+	}
+	notRunning, _ := installedNotRunningParts("the service")
+	if findings[0].Detail == notRunning {
+		t.Error("a blocked socket was reported as installed-but-not-running: the service is up and this shell simply can't reach it")
+	}
+}

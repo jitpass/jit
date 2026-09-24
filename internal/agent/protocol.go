@@ -3,6 +3,8 @@
 
 package agent
 
+import "github.com/jitpass/jit/internal/auditlog"
+
 // Protocol is this build's socket-protocol revision. It exists because
 // version skew across the socket degrades by SILENT JSON FIELD DROPPING,
 // and that is fail-open for any field whose presence is what enforces
@@ -64,6 +66,11 @@ type Request struct {
 	// entirely in the CLI layer's OnRevealPID.
 	RunMounts []RunMount `json:"run_mounts,omitempty"`
 	TargetPID int32      `json:"target_pid,omitempty"`
+	// AuditRecord is "audit_append"'s payload: one finished invocation for
+	// the agent to write to the application audit log. A pointer so an absent
+	// record is distinguishable from a zero one, which the handler refuses
+	// rather than writing an empty line into the trail.
+	AuditRecord *auditlog.Record `json:"audit_record,omitempty"`
 	// Disclose, set on "reveal_pid" only, forces a FRESH challenge naming a
 	// global credential even when the session is already unlocked — the
 	// disclosed-grant gate for machine-wide file-delivered mounts (gcloud ADC,
@@ -246,6 +253,26 @@ const (
 	// proceed; "deny" refuses without one. Neither op needs an unlock.
 	OpConsentList   = "consent_list"
 	OpConsentAnswer = "consent_answer"
+	// OpAuditAppend hands the application audit log one finished invocation
+	// for the agent to write, instead of the CLI appending to audit.jsonl
+	// itself. It exists for callers that can REACH the agent but cannot write
+	// its config directory — a sandboxed shell, where the direct append fails
+	// with EPERM and the event is simply lost. Those are precisely the
+	// invocations most worth having in the trail, and the alternative fix
+	// (granting the sandbox write access to the vault root) buys the trail
+	// back by handing the sandboxed process the rest of jit's state.
+	//
+	// Needs no unlock, for OpHistory's reason: recording that a command ran
+	// must never itself raise a prompt.
+	//
+	// The agent RE-STAMPS the three fields the kernel vouches for — uid (the
+	// peercred gate has already proved it), pid (the socket peer) and the
+	// timestamp (its own clock, at receipt). Everything else is the caller's
+	// account of itself, exactly as it was when the caller wrote the file
+	// directly: this op is about reaching the log, not about trusting its
+	// contents more than before. A same-uid process could always append
+	// whatever it liked to a file it owned.
+	OpAuditAppend = "audit_append"
 )
 
 // SessionEvent.Kind values.

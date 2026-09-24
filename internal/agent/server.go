@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/jitpass/jit/internal/auditlog"
 	"github.com/jitpass/jit/internal/consent"
 )
 
@@ -484,6 +486,10 @@ func (s *Server) handle(req Request, c *caller) Response {
 			Mounts:           mounts, LastUnlock: lastUnlock, LastLock: lastLock, PendingUnlock: s.pendingUnlock(),
 			Build: BuildID(), Version: Version(), ExecutablePath: currentExecutablePath(),
 		}
+	case OpAuditAppend:
+		// Deliberately no ensureUnlocked, for OpHistory's reason below:
+		// recording that a command ran must never itself cause a prompt.
+		return s.appendAuditRecord(req, c)
 	case OpHistory:
 		// Deliberately no ensureUnlocked: reading which prompts have already
 		// happened must never itself cause one. An agent you can't ask "why do
@@ -768,4 +774,51 @@ func (s *Server) UnwrapKeyLabeled(wrapped []byte, label, class string) ([]byte, 
 	}
 	defer wipe(mek)
 	return open(mek, wrapped, []byte(class))
+}
+
+// appendAuditRecord serves OpAuditAppend: write one caller-supplied
+// invocation into the application audit log the CLI would otherwise have
+// appended to itself (see the op's comment for why the indirection exists).
+//
+// Three fields are re-stamped rather than taken from the request, because
+// three are all this process can actually vouch for: the uid the peercred
+// gate already proved, the pid the kernel named as the socket peer, and the
+// time of receipt by the agent's own clock. The rest — what command ran, how
+// it exited, who launched it — is the caller's account of itself, no more and
+// no less trusted than when the caller wrote the file with its own hands.
+//
+// Errors are reported to the caller but the caller ignores them: on this
+// path, as on the direct one, failing to RECORD a command must never make the
+// command look like it failed. The agent's own stderr (agent.log) is where a
+// write failure becomes visible.
+func (s *Server) appendAuditRecord(req Request, c *caller) Response {
+	if req.AuditRecord == nil {
+		return Response{OK: false, Error: "audit_append: no record"}
+	}
+	rec := *req.AuditRecord
+	if rec.Command == "" {
+		// An empty command would render as a blank line in `jit audit`, which
+		// is worse than the dropped event this op exists to prevent.
+		return Response{OK: false, Error: "audit_append: record has no command"}
+	}
+	rec.UID = os.Getuid()
+	if c != nil && c.pid > 0 {
+		rec.PID = int(c.pid)
+	}
+	rec.UnixNano = time.Now().UnixNano()
+	// The CLI redacts before sending; redacting again here costs nothing and
+	// means a future client that forgets cannot put a token into the trail
+	// through this door. Same masks the direct write applies.
+	rec.Args = auditlog.Redact(rec.Args)
+	rec.Error = auditlog.RedactText(rec.Error)
+	rec.Deleted = auditlog.Redact(rec.Deleted)
+	rec.Broke = auditlog.Redact(rec.Broke)
+
+	// filepath.Dir of the socket IS the config root, by SocketPath's own
+	// construction — the agent is told where to listen, not where the root
+	// is, and inventing a second way to find it is how the two drift.
+	l := auditlog.New(filepath.Dir(s.socketPath), os.Stderr)
+	l.Trim()
+	l.Append(rec)
+	return Response{OK: true}
 }
