@@ -97,7 +97,13 @@ type statusAgent struct {
 	// Installed mirrors agentStatusResult.Installed: with Running false,
 	// it separates "crashed or mid-restart" from "never set up" — two
 	// states with entirely different fixes.
-	Installed      bool                      `json:"installed"`
+	Installed bool `json:"installed"`
+	// SocketBlocked records that the dial was REFUSED rather than unanswered
+	// — a sandboxed shell, not a dead service (agent.ErrSocketBlocked). It
+	// rides alongside Running false because the service is, in fact, running;
+	// what this process cannot do is reach it, and the two states want
+	// opposite advice.
+	SocketBlocked  bool                      `json:"socket_blocked,omitempty"`
 	Unlocked       bool                      `json:"unlocked"`
 	LocksInSeconds int64                     `json:"locks_in_seconds,omitempty"`
 	Mounts         []agent.MountRevealStatus `json:"mounts"`
@@ -529,6 +535,14 @@ func gatherGuardStatus() statusGuard {
 func gatherAgentStatus(root string) (statusAgent, error) {
 	client := agent.NewClient(agent.SocketPath(root))
 	st, err := client.Status()
+	if errors.Is(err, agent.ErrSocketBlocked) {
+		// Also reportable, and deliberately checked BEFORE the not-running
+		// arm: a refused connect says nothing about whether the service is
+		// alive, so reporting it as "not running" would be a guess that is
+		// usually wrong — and it sends the reader to `jit service restart`
+		// for a service that never stopped.
+		return statusAgent{Installed: agentInstalled(), SocketBlocked: true}, nil
+	}
 	if errors.Is(err, agent.ErrNotRunning) {
 		// Not running is a reportable state, not an error — and whether
 		// it's ALSO installed decides which fix the report suggests.
@@ -717,6 +731,14 @@ func printStatusText(w io.Writer, r statusResult, now time.Time) {
 		_, _ = cRisk.Fprint(w, glyphRisk+" ")
 		printStatusGlyphValue(w, "unreachable — %s", r.Agent.Error)
 		printStatusAction(w, "`jit service restart` to bring it back")
+	case r.Agent.SocketBlocked:
+		// Amber, not red: nothing is broken — the service is up and this
+		// shell simply isn't allowed to reach it. Red here would send a
+		// reader to repair a service that is working.
+		_, _ = cWarn.Fprint(w, glyphWarn+" ")
+		printStatusGlyphValue(w, "%s", statusSocketBlockedRow())
+		_, action := socketBlockedParts("")
+		printStatusAction(w, action)
 	case !r.Agent.Running && r.Agent.Installed:
 		// launchd was supposed to keep this one alive — "run install" is
 		// the wrong advice and hides that something actually failed. The row
@@ -779,6 +801,14 @@ func printStatusText(w io.Writer, r statusResult, now time.Time) {
 	switch {
 	case r.Mounts.Registered == 0:
 		printStatusValue(w, "%s", "none registered")
+	case r.Agent.SocketBlocked:
+		// Whether they are served is the service's fact, and this shell was
+		// refused the socket that carries it. Say that, rather than the
+		// "not running" the default arm would guess — the service row above
+		// has already named the cause once (rule 5), so this row only
+		// states what is and isn't known.
+		_, _ = cWarn.Fprint(w, glyphWarn+" ")
+		printStatusGlyphValue(w, "%s · serving state unknown from this shell", registered)
 	case r.Mounts.ServingReal:
 		granted := 0
 		for _, m := range r.Agent.Mounts {
@@ -849,6 +879,12 @@ func printStatusText(w io.Writer, r statusResult, now time.Time) {
 func printGrantsSection(w io.Writer, r statusResult) {
 	statusLabel(w, "grants")
 	switch {
+	case r.Agent.SocketBlocked:
+		// Grants live in the service, and this shell can't ask it. "None"
+		// would be a guess that is wrong exactly when a grant IS active —
+		// the state an agent inside a sandbox most needs to see.
+		printStatusValue(w, "%s", "unknown from this shell — the service refused the socket")
+		return
 	case !r.Agent.Running:
 		printStatusValue(w, "%s", "none — the service is not running")
 		return

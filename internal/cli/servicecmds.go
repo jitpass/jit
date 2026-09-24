@@ -377,6 +377,11 @@ var lockCmd = &cobra.Command{
 				fmt.Fprintln(cmd.OutOrStdout(), "Already locked: the service isn't running, so no session exists.")
 				return nil
 			}
+			// NOT folded into the arm above: a refused dial proves nothing
+			// about the session. There may well be an unlocked one on the
+			// other side of the sandbox wall, and "Already locked" would be
+			// a false all-clear about exactly the thing `jit lock` exists to
+			// guarantee.
 			return fmt.Errorf("jit lock: %w", notRunningHint(err))
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "Locked.")

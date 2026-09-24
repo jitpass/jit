@@ -42,7 +42,12 @@ type agentStatusResult struct {
 	// respawning it; `jit service restart` forces it) from "never set up"
 	// (only jit reinstalling it, via any use or `jit service restart`, helps). A script alerting on dead agents
 	// needs exactly this distinction.
-	Installed      bool  `json:"installed"`
+	Installed bool `json:"installed"`
+	// SocketBlocked is the kernel refusing this process the connect — a
+	// sandboxed caller, not a dead service. A script alerting on `running:
+	// false` must not page anyone for this: nothing is down, and no restart
+	// it could run would change the answer.
+	SocketBlocked  bool  `json:"socket_blocked,omitempty"`
 	Unlocked       bool  `json:"unlocked"`
 	LocksInSeconds int64 `json:"locks_in_seconds,omitempty"`
 	// CeilingInSeconds is the hard session ceiling's remainder, the bound
@@ -111,6 +116,17 @@ var agentStatusCmd = &cobra.Command{
 			return fmt.Errorf("jit service status: %w", err)
 		}
 		st, err := client.Status()
+		if errors.Is(err, agent.ErrSocketBlocked) {
+			// Checked before the not-running arm: the dial was refused, so
+			// this process learned nothing about whether the service is
+			// alive. Reporting it as not-running would be the one wrong
+			// answer a health reporter must never give.
+			if agentStatusFormat == "json" {
+				return writeJSON(cmd.OutOrStdout(), agentStatusResult{Installed: agentInstalled(), SocketBlocked: true, Mounts: []agent.MountRevealStatus{}})
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), hlCmds(socketBlockedAdvice("jit's background service")))
+			return nil
+		}
 		if errors.Is(err, agent.ErrNotRunning) {
 			installed := agentInstalled()
 			if agentStatusFormat == "json" {

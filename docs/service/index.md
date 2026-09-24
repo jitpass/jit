@@ -104,6 +104,16 @@ dropped and the next vault use prompts once.
   anything, and the idle TTL covers the case where you stay at your desk
   but stop using it.
 
+## Called from a sandbox
+
+Commands increasingly arrive from something sandboxed - a coding agent
+working in your repo, a CI runner. A sandbox that denies outbound network
+access denies the service's unix socket with it, so those callers have to be
+allowed that one path or nothing needing the service works. That, what jit
+reports when the socket is refused, and how a sandboxed caller still reaches
+the audit trail without write access to anything, are the subject of
+**[Calling jit from a sandbox](./sandboxed-callers.md)**.
+
 ## Every unlock is attributed
 
 The service knows, from the kernel, exactly which process asked for every

@@ -6,6 +6,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 
@@ -176,14 +177,21 @@ func reportAgentStatus(w io.Writer, root string, producedMount bool) {
 			fmt.Fprintln(w, "\njit's background service is already running and now serving the new mount(s).")
 		}
 	}
+	// Status rather than Reachable: Reachable answers one bit, and the bit
+	// folds "the service refused this shell" into "nothing is listening" —
+	// which the arm below would then answer with restart advice for a
+	// service that never stopped. The error carries the distinction.
+	_, dialErr := agentClient.Status()
 	switch {
-	case agentClient.Reachable():
+	case dialErr == nil:
 		if producedMount {
 			refreshMounts(false)
 		}
 		// Agent already running, nothing mount-related to refresh: shell-
 		// config/MCP/AWS/kubeconfig already resolve transparently through the
 		// running agent's shared session — nothing new to say.
+	case errors.Is(dialErr, agent.ErrSocketBlocked):
+		bold("%s", hlCmds(socketBlockedAdvice("jit's background service")))
 	case agentInstalled():
 		// Installed but not answering — crashed or mid-restart. Don't reinstall
 		// on top of it; point at restart, the same guidance every other surface
