@@ -42,18 +42,125 @@ const (
 	wrapperSecureEnclave = "secure-enclave"
 )
 
-// moveInProgress returns the target of an interrupted move, or "" when the
-// marker is absent or belongs to a rotation.
-func moveInProgress(root string) string {
+// markerKind is what the rekey marker says, read without trusting more of
+// it than jit can prove.
+type markerKind int
+
+const (
+	markerNone      markerKind = iota // no marker: the vault is open for changes
+	markerRotation                    // a rotation's own "started …" line
+	markerMove                        // a move to a target this jit knows
+	markerOtherMove                   // a move to a target this jit does not know
+	markerUnknown                     // a marker jit can't read, or doesn't recognise
+)
+
+// rekeyMarker is the marker's reading. target is set for either kind of
+// move; err for a marker that is there but could not be read.
+type rekeyMarker struct {
+	kind   markerKind
+	target string
+	err    error
+}
+
+// readRekeyMarker reads rekey.inprogress. Only a line jit itself writes
+// counts as a rotation's ("started …", vaultrekey.go) or a move's
+// ("move <target> started …", writeMarker); anything else is markerUnknown,
+// which no command will finish, because none can prove what it would be
+// finishing.
+func readRekeyMarker(root string) rekeyMarker {
 	data, err := os.ReadFile(rekeyMarkerPath(root)) // #nosec G304 -- the vault root's own marker
 	if err != nil {
-		return ""
+		if errors.Is(err, os.ErrNotExist) {
+			return rekeyMarker{kind: markerNone}
+		}
+		return rekeyMarker{kind: markerUnknown, err: err}
 	}
 	line := strings.TrimSpace(strings.SplitN(string(data), "\n", 2)[0])
-	if !strings.HasPrefix(line, moveMarkerPrefix) {
-		return ""
+	if rest, ok := strings.CutPrefix(line, moveMarkerPrefix); ok {
+		fields := strings.Fields(rest)
+		if len(fields) == 0 {
+			return rekeyMarker{kind: markerUnknown}
+		}
+		switch fields[0] {
+		case wrapperSecureEnclave, wrapperKeychain:
+			return rekeyMarker{kind: markerMove, target: fields[0]}
+		}
+		return rekeyMarker{kind: markerOtherMove, target: fields[0]}
 	}
-	return strings.Fields(strings.TrimPrefix(line, moveMarkerPrefix))[0]
+	if line == "started" || strings.HasPrefix(line, "started ") {
+		return rekeyMarker{kind: markerRotation}
+	}
+	return rekeyMarker{kind: markerUnknown}
+}
+
+// moveInProgress returns the target of an interrupted move, known or not,
+// or "" when the marker is absent, belongs to a rotation, or can't be read.
+func moveInProgress(root string) string {
+	if m := readRekeyMarker(root); m.kind == markerMove || m.kind == markerOtherMove {
+		return m.target
+	}
+	return ""
+}
+
+// moveUnfinished is moveInProgress for REPORTING (`jit status`
+// move_unfinished, doctor's vault_move): the target only when it is one this
+// jit knows, else "". A marker it cannot read or does not recognise gets its
+// own report (unknownMarkerDetail); the commands themselves keep refusing
+// on the marker's mere presence (rekeyInProgress), so nothing here loosens
+// that.
+func moveUnfinished(root string) string {
+	if m := readRekeyMarker(root); m.kind == markerMove {
+		return m.target
+	}
+	return ""
+}
+
+// moveDescription is what an unfinished move to target was doing, in the
+// reader's words.
+func moveDescription(target string) string {
+	if target == wrapperKeychain {
+		return "moving the vault key back to your keychain"
+	}
+	return "moving the vault key into the Secure Enclave"
+}
+
+// unknownMarkerDetail is what jit can honestly say about a marker it can't
+// finish: one it can't read, or a change it doesn't recognise (a move to a
+// target a newer jit wrote, or a line no jit writes). Neither `jit vault
+// rekey` nor any `--wrapper` can finish it: the rotation would resume over
+// a half-done move, and a move needs a target this jit knows.
+func unknownMarkerDetail(m rekeyMarker) string {
+	switch {
+	case m.err != nil:
+		return fmt.Sprintf("jit can't read the file that marks an unfinished change of the vault key (%v), so every command that changes the vault will refuse until it can.", m.err)
+	case m.kind == markerOtherMove:
+		return fmt.Sprintf("a move of the vault key this version of jit doesn't understand (to %q) is unfinished, so every command that changes the vault will refuse until it finishes.", m.target)
+	}
+	return "a change of the vault key this version of jit doesn't understand is unfinished, so every command that changes the vault will refuse until it finishes."
+}
+
+// unknownMarkerAction is the step for unknownMarkerDetail. Plain words, no
+// command: there is no jit command here that would work.
+func unknownMarkerAction(m rekeyMarker) string {
+	if m.err != nil {
+		return "make that file readable again, then check again"
+	}
+	return "update jit, then finish it with the newer jit"
+}
+
+// rekeyMarkerRefusal is what a vault command reports while the marker
+// exists. A move's own sentence names the command that finishes it:
+// errRekeyInProgress sends the reader to `jit vault rekey`, which refuses
+// to finish a move, and a marker jit can't read or doesn't recognise names
+// no command at all, since none would work.
+func rekeyMarkerRefusal(root string) error {
+	switch m := readRekeyMarker(root); m.kind {
+	case markerMove:
+		return fmt.Errorf("%s did not finish, and vault changes are refused until it does; run `jit vault rekey --wrapper %s` to finish it", moveDescription(m.target), m.target)
+	case markerOtherMove, markerUnknown:
+		return errors.New(unknownMarkerDetail(m) + " To fix: " + unknownMarkerAction(m) + ".")
+	}
+	return errRekeyInProgress
 }
 
 // The move's dialog reasons, shown after the app's name ("JitPass is trying
@@ -286,14 +393,20 @@ func runVaultMove(cmd *cobra.Command, root, target string) error {
 		return fmt.Errorf("jit vault rekey: --wrapper is %q or %q, not %q", wrapperSecureEnclave, wrapperKeychain, target)
 	}
 	// A rotation's marker must be finished by `jit vault rekey`, not
-	// adopted by a move.
-	if rekeyInProgress(root) && moveInProgress(root) == "" {
+	// adopted by a move; a marker jit can't read or doesn't recognise is
+	// finished by nothing here.
+	marker := readRekeyMarker(root)
+	switch marker.kind {
+	case markerRotation:
 		return errors.New("jit vault rekey: a rotation of the master key is unfinished; run `jit vault rekey` to finish it first")
+	case markerOtherMove, markerUnknown:
+		return fmt.Errorf("jit vault rekey: %w", rekeyMarkerRefusal(root))
+	case markerMove:
+		if marker.target != target {
+			return fmt.Errorf("jit vault rekey: a move to %s is unfinished; run `jit vault rekey --wrapper %s` to finish it first", marker.target, marker.target)
+		}
 	}
-	if other := moveInProgress(root); other != "" && other != target {
-		return fmt.Errorf("jit vault rekey: a move to %s is unfinished; run `jit vault rekey --wrapper %s` to finish it first", other, other)
-	}
-	resuming := moveInProgress(root) == target
+	resuming := marker.kind == markerMove && marker.target == target
 	if target == wrapperSecureEnclave && !resuming {
 		if err := recoveryFileCurrent(root); err != nil {
 			return fmt.Errorf("jit vault rekey: %w", err)

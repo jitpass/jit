@@ -72,6 +72,25 @@ type statusVault struct {
 	// without a prompt. Added for the app's "Where the vault key is kept"
 	// card (design/secure-enclave-plan.md, A4).
 	KeyStore string `json:"key_store,omitempty"`
+	// MoveUnfinished names where an interrupted `jit vault rekey --wrapper`
+	// was moving the key: "secure-enclave" or "keychain". Omitted when no
+	// move is unfinished, including under a rotation's marker or a marker
+	// this jit cannot read or recognise (both still refuse every vault
+	// change; doctor's rekey and rekey_unknown findings report them). While
+	// it is set, every vault change is refused until `jit vault rekey
+	// --wrapper <that value>` finishes it.
+	MoveUnfinished string `json:"move_unfinished,omitempty"`
+	// RestorePending: the vault's Secure Enclave key was lost, `jit vault
+	// init` made a new key, and secrets sealed to the old one are still on
+	// disk, unopenable, until `jit vault import <file>` brings them back
+	// (vault.SealedToLostKey, which reads files only: no prompt). Omitted
+	// when false.
+	RestorePending bool `json:"restore_pending,omitempty"`
+	// RestoreCheckError: a lost key's file is set aside but jit could not
+	// check which secrets are still sealed to it (its record unreadable, or
+	// the vault not readable). RestorePending is true with it: an unchecked
+	// restore is reported as pending, never as done. Omitted otherwise.
+	RestoreCheckError string `json:"restore_check_error,omitempty"`
 	// SecretsStored counts real secrets only; `_backups/…` entries (kept
 	// for `jit migrate undo`) are reported separately so the headline
 	// number always agrees with `jit vault list`.
@@ -383,16 +402,47 @@ func notePendingCacheCleanup(w io.Writer, root string) {
 // values, via the same read-only Exists/List path jit doctor uses (no
 // KeyWrapper, so no local-auth prompt).
 func gatherVaultStatus(v *vault.Vault, root string) (statusVault, error) {
+	return gatherVaultStatusWith(v, root, checkLostKey(root))
+}
+
+// lostKeyCheck is one run's answer to "which secrets are still sealed to a
+// lost key?" (vault.SealedToLostKey). It hashes every envelope, so doctor
+// computes it once and hands it to both places that need it.
+type lostKeyCheck struct {
+	pending []string
+	err     error
+}
+
+// restorePending is fail-closed: a check that failed counts as pending.
+func (c lostKeyCheck) restorePending() bool { return c.err != nil || len(c.pending) > 0 }
+
+// checkLostKey runs the check. A package var so a test can count the runs.
+var checkLostKey = func(root string) lostKeyCheck {
+	pending, _, err := vault.SealedToLostKey(root)
+	return lostKeyCheck{pending: pending, err: err}
+}
+
+// gatherVaultStatusWith is gatherVaultStatus with the lost-key check
+// already made.
+func gatherVaultStatusWith(v *vault.Vault, root string, lost lostKeyCheck) (statusVault, error) {
 	paths, err := v.List()
 	if err != nil {
 		return statusVault{}, err
 	}
 	secrets, backups := splitBackupPaths(paths)
 	result := statusVault{
-		Initialized:   vaultInitializedWord(vaultMasterKeyPresence()),
-		KeyStore:      string(openKeyStore(root).Kind()),
-		SecretsStored: len(secrets),
-		BackupsStored: len(backups),
+		Initialized:    vaultInitializedWord(vaultMasterKeyPresence()),
+		KeyStore:       string(openKeyStore(root).Kind()),
+		MoveUnfinished: moveUnfinished(root),
+		SecretsStored:  len(secrets),
+		BackupsStored:  len(backups),
+	}
+	// Best-effort like StaleBackups, a lost-key file that can't be checked
+	// must not take the overview down, but it fails closed: it is reported
+	// as pending, with why it couldn't be checked.
+	result.RestorePending = lost.restorePending()
+	if lost.err != nil {
+		result.RestoreCheckError = lost.err.Error()
 	}
 	// Best-effort on purpose (see statusVault.StaleBackups): a corrupt undo
 	// index must not take the always-runnable overview down, it just costs
@@ -418,6 +468,63 @@ func gatherVaultStatus(v *vault.Vault, root string) (statusVault, error) {
 		result.ExportStale = newest.After(exportedAt)
 	}
 	return result, nil
+}
+
+// printStatusKeyRows prints the two vault-key states that block the vault
+// until one command runs: an unfinished move of the key, and secrets still
+// sealed to a lost key. Silent otherwise. Red: both are broken today.
+func printStatusKeyRows(w io.Writer, v statusVault) {
+	if v.MoveUnfinished != "" {
+		statusLabel(w, "key")
+		_, _ = cRisk.Fprint(w, glyphRisk+" ")
+		where := "into the Secure Enclave"
+		if v.MoveUnfinished == wrapperKeychain {
+			where = "back to the keychain"
+		}
+		printStatusGlyphValue(w, "unfinished move %s — vault changes refused", where)
+		printStatusAction(w, fmt.Sprintf("`jit vault rekey --wrapper %s` to finish it", v.MoveUnfinished))
+	}
+	switch {
+	case v.RestoreCheckError != "":
+		statusLabel(w, "key")
+		_, _ = cRisk.Fprint(w, glyphRisk+" ")
+		printStatusGlyphValue(w, "couldn't check the vault for secrets sealed to a lost key: %s", v.RestoreCheckError)
+		printStatusAction(w, "`jit vault import --finish` once every recovery file is imported")
+	case v.RestorePending:
+		statusLabel(w, "key")
+		_, _ = cRisk.Fprint(w, glyphRisk+" ")
+		printStatusGlyphValue(w, "some secrets are sealed to a key this Mac no longer has")
+		printStatusAction(w, "`jit vault import <file>` brings them back from a recovery file")
+	}
+}
+
+// printStatusBackupRow is the vault's backup row: whether an export exists
+// and is current.
+func printStatusBackupRow(w io.Writer, v statusVault) {
+	statusLabel(w, "backup")
+	switch {
+	case !v.ExportRecorded:
+		// Amber, not red: nothing is failing right now — this is exposure
+		// to a future event (losing the Mac). Red on this dashboard means
+		// broken today (an unreachable service, a wired reference that
+		// doesn't resolve), and keeping it scarce is what lets the eye
+		// land on the actual breakage first. The stale-export state below
+		// was already amber; the two backup warnings now agree.
+		_, _ = cWarn.Fprint(w, glyphWarn+" ")
+		printStatusGlyphValue(w, "no vault export on record — the vault only decrypts on this Mac")
+		// Says what the export IS, in concrete terms the reader can
+		// picture. An earlier draft ("the only copy that survives losing
+		// it") left "it" pointing at either the Mac or the vault, and
+		// made the reader work out what an export even is.
+		printStatusAction(w, "`jit vault export <file>` — a copy you could restore on another Mac")
+	case v.ExportStale:
+		_, _ = cWarn.Fprint(w, glyphWarn+" ")
+		printStatusGlyphValue(w, "secrets changed since the last export (%s)", time.Unix(v.ExportUnixTime, 0).Format("2006-01-02"))
+		printStatusAction(w, "`jit vault export <file>` — the newest secrets aren't in any backup")
+	default:
+		_, _ = cOK.Fprint(w, glyphOK+" ")
+		printStatusGlyphValue(w, "export up to date (%s)", time.Unix(v.ExportUnixTime, 0).Format("2006-01-02"))
+	}
 }
 
 // vaultInitializedWord renders the master-key probe for statusVault.Initialized.
@@ -670,6 +777,9 @@ func printStatusText(w io.Writer, r statusResult, now time.Time) {
 	if r.Vault.SecretsStored == 0 && r.Vault.BackupsStored == 0 {
 		statusLabel(w, "vault")
 		printStatusValue(w, "%s", hlCmds("no secrets yet — run `jit vault init`, or `jit migrate .` to populate it."))
+		// A move can be interrupted on an empty vault too, and it still
+		// refuses every change.
+		printStatusKeyRows(w, r.Vault)
 	} else {
 		statusLabel(w, "vault")
 		// The group breakdown moved up here from the secrets rollup, which
@@ -705,29 +815,13 @@ func printStatusText(w io.Writer, r statusResult, now time.Time) {
 			printStatusAction(w, fmt.Sprintf("`jit vault prune` — deletes %s, keeps each file's newest",
 				countWord(r.Vault.StaleBackups, "stale backup", "stale backups")))
 		}
-		statusLabel(w, "backup")
-		switch {
-		case !r.Vault.ExportRecorded:
-			// Amber, not red: nothing is failing right now — this is exposure
-			// to a future event (losing the Mac). Red on this dashboard means
-			// broken today (an unreachable service, a wired reference that
-			// doesn't resolve), and keeping it scarce is what lets the eye
-			// land on the actual breakage first. The stale-export state below
-			// was already amber; the two backup warnings now agree.
-			_, _ = cWarn.Fprint(w, glyphWarn+" ")
-			printStatusGlyphValue(w, "no vault export on record — the vault only decrypts on this Mac")
-			// Says what the export IS, in concrete terms the reader can
-			// picture. An earlier draft ("the only copy that survives losing
-			// it") left "it" pointing at either the Mac or the vault, and
-			// made the reader work out what an export even is.
-			printStatusAction(w, "`jit vault export <file>` — a copy you could restore on another Mac")
-		case r.Vault.ExportStale:
-			_, _ = cWarn.Fprint(w, glyphWarn+" ")
-			printStatusGlyphValue(w, "secrets changed since the last export (%s)", time.Unix(r.Vault.ExportUnixTime, 0).Format("2006-01-02"))
-			printStatusAction(w, "`jit vault export <file>` — the newest secrets aren't in any backup")
-		default:
-			_, _ = cOK.Fprint(w, glyphOK+" ")
-			printStatusGlyphValue(w, "export up to date (%s)", time.Unix(r.Vault.ExportUnixTime, 0).Format("2006-01-02"))
+		printStatusKeyRows(w, r.Vault)
+		// While a restore is pending the backup row stays out: the export
+		// it advises can't open the secrets sealed to the lost key, and the
+		// key row's import is the one step (doctor's backup finding is
+		// silent for the same reason).
+		if !r.Vault.RestorePending {
+			printStatusBackupRow(w, r.Vault)
 		}
 	}
 

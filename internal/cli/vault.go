@@ -50,6 +50,7 @@ var (
 	vaultExportStdin   bool
 	vaultImportStdin   bool
 	vaultImportYes     bool
+	vaultImportFinish  bool
 	vaultHistoryFormat string
 	vaultRestoreStamp  int64
 )
@@ -1014,7 +1015,17 @@ var vaultInitCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit vault init: %w", err)
 		}
-		if err := openKeyStore(root).Init(); err != nil {
+		store := openKeyStore(root)
+		// Over a lost Secure Enclave key, Init makes a new key. A running
+		// service may still hold the lost one in its session and would keep
+		// sealing writes under it, unreadable to the new key and invisible
+		// to the lost-key record, so its session is dropped on both sides,
+		// as rekey does. Presence never prompts.
+		if store.Presence() == keystore.KeyLost {
+			lockAgent()
+			defer lockAgent()
+		}
+		if err := store.Init(); err != nil {
 			return fmt.Errorf("jit vault init: %w", err)
 		}
 		// Pin this machine's envelope-recipient identifier now, at init,
@@ -1711,9 +1722,26 @@ var vaultImportCmd = &cobra.Command{
 		"supply and writes every secret it contains into this vault, overwriting\n" +
 		"any existing secret at the same path. Confirms first unless --yes, the\n" +
 		"passphrase prompt only comes after that, so declining never costs a\n" +
-		"wasted attempt at typing it.",
-	Args: requireArgs(1, 1, "a `jit vault export` file to read"),
+		"wasted attempt at typing it.\n\n" +
+		"After the vault's Secure Enclave key was lost, importing is how secrets\n" +
+		"come back, and jit tracks which ones still can't be opened. If it can't\n" +
+		"check (its record of them is unreadable), --finish stops tracking once\n" +
+		"you've imported every recovery file you have: it lists the secrets that\n" +
+		"may still not open, confirms unless --yes, and keeps the lost key's\n" +
+		"files under a dated name. It takes no file and needs no Touch ID.",
+	Args: func(cmd *cobra.Command, args []string) error {
+		if vaultImportFinish {
+			if len(args) > 0 {
+				return fmt.Errorf("%s --finish: takes no file; import each recovery file first, then finish", cmd.CommandPath())
+			}
+			return nil
+		}
+		return requireArgs(1, 1, "a `jit vault export` file to read")(cmd, args)
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if vaultImportFinish {
+			return runVaultImportFinish(cmd)
+		}
 		srcPath := args[0]
 
 		data, err := os.ReadFile(srcPath) // #nosec G304 -- user-specified input file, the command's entire purpose
@@ -1758,8 +1786,128 @@ var vaultImportCmd = &cobra.Command{
 			return fmt.Errorf("jit vault import: %w", err)
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "Restored %s from %s.\n", countWord(n, "secret", "secrets"), srcPath)
+		reportLostKeyRestore(cmd, v.Root)
 		return nil
 	},
+}
+
+// reportLostKeyRestore finishes a restore after a lost Secure Enclave key
+// (vault.SettleLostKey). When every secret sealed to the lost key has been
+// replaced, the lost key's file is retired, kept under a timestamped name
+// and never deleted, and `jit status` stops reporting restore_pending. When
+// the recovery file did not hold them all, nothing is removed: the secrets
+// it left out stay on disk, still unopenable, and are named here so the
+// user decides (another recovery file, or `jit vault rm`). The import itself
+// already succeeded, so a failure here is reported, not returned.
+func reportLostKeyRestore(cmd *cobra.Command, root string) {
+	out := cmd.OutOrStdout()
+	settle, err := vault.SettleLostKey(root, time.Now(), true)
+	switch {
+	case err != nil:
+		fmt.Fprintf(cmd.ErrOrStderr(), "jit vault import: could not check for secrets sealed to the lost key: %v\n", err)
+		fmt.Fprint(cmd.ErrOrStderr(), hlCmds("Once you've imported every recovery file you have, `jit vault import --finish` stops tracking it.\n"))
+	case len(settle.Remaining) > 0:
+		remaining := settle.Remaining
+		fmt.Fprintf(out, "%s still sealed to a key this Mac no longer has; this file didn't hold %s:\n",
+			countWord(len(remaining), "secret is", "secrets are"), pluralWord(len(remaining), "it", "them"))
+		printSecretList(out, remaining)
+		fmt.Fprint(out, hlCmds("Import a recovery file that holds them, or remove them with `jit vault rm <path>`.\n"))
+	case settle.Unchecked:
+		fmt.Fprintln(out, "jit can't tell whether this file held every secret from before the key was lost; any it didn't hold won't open.")
+	}
+}
+
+// printSecretList prints vault paths one per line, indented, the first
+// ten only.
+func printSecretList(w io.Writer, paths []string) {
+	const shown = 10
+	for i, p := range paths {
+		if i == shown {
+			fmt.Fprintf(w, "  and %d more\n", len(paths)-shown)
+			break
+		}
+		fmt.Fprintf(w, "  %s\n", p)
+	}
+}
+
+// runVaultImportFinish is `jit vault import --finish`: the way out of a
+// lost-key restore whose record can't say when it is done
+// (vault.FinishLostKeyRestore). It reads files only and asks for no key:
+// it retires the lost key's sealed file and record by renaming them, never
+// deletes them, and changes no secret. It refuses while a readable record
+// still lists secrets, since an import or `jit vault rm` settles those
+// with proof.
+func runVaultImportFinish(cmd *cobra.Command) error {
+	out := cmd.OutOrStdout()
+	root, err := vaultRootDir()
+	if err != nil {
+		return fmt.Errorf("jit vault import --finish: %w", err)
+	}
+	plan, err := vault.PlanLostKeyFinish(root)
+	if err != nil {
+		return fmt.Errorf("jit vault import --finish: %w", err)
+	}
+	switch {
+	case !plan.Pending:
+		fmt.Fprintln(out, "No lost key's restore is pending.")
+		return nil
+	case len(plan.Remaining) > 0:
+		fmt.Fprintf(out, "%s still sealed to the lost key:\n", countWord(len(plan.Remaining), "secret is", "secrets are"))
+		printSecretList(out, plan.Remaining)
+		fmt.Fprint(out, hlCmds("Import a recovery file that holds them, or remove them with `jit vault rm <path>`.\n"))
+		return fmt.Errorf("jit vault import --finish: jit can still check this restore, and it isn't done")
+	}
+	printLostKeyFinishPlan(out, plan)
+	if !vaultImportYes && !confirmPrompt(cmd, "Stop tracking the restore? The lost key's files are kept. [y/N] ") {
+		fmt.Fprintln(out, "Aborted.")
+		return nil
+	}
+	done, err := vault.FinishLostKeyRestore(root, time.Now())
+	if err != nil {
+		return fmt.Errorf("jit vault import --finish: %w", err)
+	}
+	if !done.Settled {
+		// Changed between the plan and now (another jit settled it, or an
+		// import left secrets a readable record lists): say so, do nothing.
+		return fmt.Errorf("jit vault import --finish: the restore changed while asking; run it again")
+	}
+	fmt.Fprintln(out, "Restore finished. The lost key's files are kept under a dated name.")
+	return nil
+}
+
+// printLostKeyFinishPlan says what --finish can't verify: why the record
+// can't check, and which secrets may still not open.
+func printLostKeyFinishPlan(w io.Writer, plan vault.LostKeyFinish) {
+	if plan.Unverified == "" {
+		fmt.Fprintln(w, "Every secret sealed to the lost key is back.")
+		return
+	}
+	fmt.Fprintf(w, "jit can't check which secrets still won't open: %s.\n", plan.Unverified)
+	switch {
+	case !plan.SetAsideKnown:
+		fmt.Fprintln(w, "It can't tell when the key was lost, so any secret may not open.")
+	case len(plan.MayBeSealed) == 0:
+		fmt.Fprintln(w, "No secret was last changed before the key was lost.")
+	default:
+		fmt.Fprintf(w, "%s last changed before the key was lost, so may not open:\n",
+			countWord(len(plan.MayBeSealed), "secret was", "secrets were"))
+		printSecretList(w, plan.MayBeSealed)
+	}
+}
+
+// settleLostKeyAfterRm is reportLostKeyRestore for `jit vault rm`: removing
+// the last secrets a recovery file didn't hold is the other way a lost-key
+// restore ends. It settles only when no live secret is left sealed to the
+// lost key, and says nothing while some are. The removal already
+// succeeded, so a failure here is reported, not returned.
+func settleLostKeyAfterRm(cmd *cobra.Command, root string) {
+	settle, err := vault.SettleLostKey(root, time.Now(), false)
+	switch {
+	case err != nil:
+		fmt.Fprintf(cmd.ErrOrStderr(), "jit vault rm: could not check for secrets sealed to the lost key: %v\n", err)
+	case settle.Settled:
+		fmt.Fprintln(cmd.OutOrStdout(), "No secret sealed to the lost key is left.")
+	}
 }
 
 // weakExportPassphraseLen is where the export passphrase stops being the
@@ -2754,7 +2902,7 @@ func openVaultFreshAuth() (*vault.Vault, error) {
 		return nil, err
 	}
 	if rekeyInProgress(root) {
-		return nil, errRekeyInProgress
+		return nil, rekeyMarkerRefusal(root)
 	}
 	deviceID, err := vault.EnsureDeviceID(root)
 	if err != nil {
@@ -2778,7 +2926,7 @@ func openVault() (*vault.Vault, error) {
 	// guaranteed to hold the right one — refuse rather than risk sealing
 	// anything under a key that's about to be destroyed.
 	if rekeyInProgress(root) {
-		return nil, errRekeyInProgress
+		return nil, rekeyMarkerRefusal(root)
 	}
 	// A persisted random ID, never os.Hostname() — a Mac rename or a
 	// DHCP-supplied hostname used to change the recipient key out from
@@ -2836,6 +2984,7 @@ func init() {
 	vaultExportCmd.Flags().BoolVar(&vaultExportStdin, "stdin", false, "read the passphrase from stdin instead of prompting (no confirmation double-entry)")
 	vaultImportCmd.Flags().BoolVar(&vaultImportStdin, "stdin", false, "read the passphrase from stdin instead of prompting")
 	vaultImportCmd.Flags().BoolVarP(&vaultImportYes, "yes", "y", false, "skip the confirmation prompt and import immediately")
+	vaultImportCmd.Flags().BoolVar(&vaultImportFinish, "finish", false, "after a lost key: stop tracking a restore jit can't check, once every recovery file is imported")
 
 	vaultCleanCmd.Flags().BoolVarP(&vaultCleanYes, "yes", "y", false, "skip the confirmation prompt")
 	vaultPruneCmd.Flags().BoolVarP(&vaultPruneYes, "yes", "y", false, "skip the confirmation prompt")
