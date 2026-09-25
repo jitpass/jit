@@ -15,10 +15,13 @@
 # Usage:
 #   scripts/se-test.sh                        # unattended: keys that never ask
 #   JIT_SE_INTERACTIVE=1 scripts/se-test.sh   # also the Touch ID key (one dialog)
+#   PKG=./internal/cli JIT_SE_INTERACTIVE=1 scripts/se-test.sh -test.run TestHardwareMoveRoundTrip
+#                                             # the key move, TEST-ONLY names (three dialogs)
 # Env:
 #   PROFILE        provisioning profile (default: the dev profile in ~/Downloads)
 #   SIGN_IDENTITY  codesign identity (default: the team's Apple Development one)
 #   TEAM_ID        default CZC6BH93GJ
+#   PKG            the package whose tests to run (default ./internal/secureenclave)
 #
 # Needs a Mac listed in the development profile. CI cannot run this until the
 # profile is a CI secret (design/secure-enclave-plan.md, B1); until then it is
@@ -26,6 +29,7 @@
 set -euo pipefail
 
 TEAM_ID="${TEAM_ID:-CZC6BH93GJ}"
+PKG="${PKG:-./internal/secureenclave}"
 PROFILE="${PROFILE:-$HOME/Downloads/JitPass_Agent_Dev.provisionprofile}"
 BUNDLE_ID="com.jitpass.agent"
 GROUP="$TEAM_ID.com.jitpass.vault"
@@ -60,7 +64,7 @@ trap 'rm -rf "$work"' EXIT
 app="$work/SecureEnclaveTest.app"
 mkdir -p "$app/Contents/MacOS"
 
-CGO_ENABLED=1 go test -c -o "$app/Contents/MacOS/secureenclave.test" ./internal/secureenclave
+CGO_ENABLED=1 go test -c -o "$app/Contents/MacOS/secureenclave.test" "$PKG"
 cp "$PROFILE" "$app/Contents/embedded.provisionprofile"
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
