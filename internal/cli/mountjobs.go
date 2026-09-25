@@ -6,9 +6,7 @@
 package cli
 
 import (
-	"os"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 
 	"github.com/jitpass/jit/internal/mount"
@@ -24,36 +22,33 @@ import (
 // A job reader gets what `jit run` swaps in instead, the inert pointer file,
 // and no serve is recorded, when BOTH hold:
 //
-//   - every process holding the mount descends from this service process.
-//     Every job is the service's own child, so this needs no registration of
-//     the child's pid, and so has no window between the child starting and a
-//     registration landing, the race jit run avoids by registering before
-//     its exec. Any other child of the service would also get only the inert
-//     file, never a value;
-//   - the mount is inside the folder of a job running right now. A job that
-//     reads ANOTHER project's .env still gets the decoy and still raises the
-//     alert, because that is exactly the read worth knowing about.
+//   - the mount is the .env of the job's OWN folder: its directory IS the
+//     job's folder. A mount in a nested project, or in another job's
+//     folder, does not qualify;
+//   - every process holding the mount descends from THAT job's process
+//     (registered the moment it starts). Another job, or anything else the
+//     service started, does not qualify.
 //
-// Identification is lineage's best effort and never widens anything: when
-// the holders cannot be named, or any one of them is not the service's, the
-// read falls through to the ordinary decision (decoy, alert).
+// A read that lands before the registration (microseconds after the start)
+// falls through to the decoy and the alert: the safe direction to be wrong
+// in. Identification is lineage's best effort and never widens anything:
+// when the holders cannot be named, or any one of them is outside the job's
+// tree, the read gets the ordinary decision (decoy, alert).
 
-// beginJobRun marks dir as the folder of a running job until the returned
-// function is called.
-func (m *mountManager) beginJobRun(dir string) (end func()) {
+// beginJobRun records a running job's process and folder until the
+// returned function is called.
+func (m *mountManager) beginJobRun(dir string, pid int32) (end func()) {
 	dir = filepath.Clean(dir)
 	m.jobMu.Lock()
-	if m.jobDirs == nil {
-		m.jobDirs = map[string]int{}
+	if m.jobProcs == nil {
+		m.jobProcs = map[int32]string{}
 	}
-	m.jobDirs[dir]++
+	m.jobProcs[pid] = dir
 	m.jobMu.Unlock()
 	atomic.AddInt32(&m.jobRuns, 1)
 	return func() {
 		m.jobMu.Lock()
-		if m.jobDirs[dir]--; m.jobDirs[dir] <= 0 {
-			delete(m.jobDirs, dir)
-		}
+		delete(m.jobProcs, pid)
 		m.jobMu.Unlock()
 		atomic.AddInt32(&m.jobRuns, -1)
 	}
@@ -65,28 +60,25 @@ func (m *mountManager) jobReaderContent(path string) ([]byte, bool) {
 	if atomic.LoadInt32(&m.jobRuns) == 0 {
 		return nil, false
 	}
+	parent := filepath.Dir(path)
+	var jobPID int32
 	m.jobMu.Lock()
-	covered := false
-	for dir := range m.jobDirs {
-		if path == dir || strings.HasPrefix(path, dir+string(filepath.Separator)) {
-			covered = true
+	for pid, dir := range m.jobProcs {
+		if dir == parent {
+			jobPID = pid
 			break
 		}
 	}
 	m.jobMu.Unlock()
-	if !covered {
+	if jobPID == 0 {
 		return nil, false
 	}
 	holders, ok := m.grantHolders(path)
 	if !ok || len(holders) == 0 {
 		return nil, false
 	}
-	self := m.servicePID
-	if self == 0 {
-		self = int32(os.Getpid()) // #nosec G115 -- a pid always fits int32 on darwin
-	}
 	for _, h := range holders {
-		if h == self || !m.grantAncestry(h, self) {
+		if h != jobPID && !m.grantAncestry(h, jobPID) {
 			return nil, false
 		}
 	}

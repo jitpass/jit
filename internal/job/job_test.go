@@ -37,6 +37,8 @@ func TestCheckArgv(t *testing.T) {
 		{"deno", "eval", "console.log(Deno.env.toObject())"},
 		{"node", "--require", "./m.js", "-e", "console.log(process.env)"}, // review finding 5
 		{"bash", "--rcfile", "x", "-c", "env"},
+		{"python3", "-uW", "ignore", "-c", "print(1)"}, // third review, finding 4
+		{"python3", "-Wignore", "-c", "print(1)"},
 	}
 	for _, argv := range refused {
 		if err := CheckArgv(argv); err == nil {
@@ -415,7 +417,7 @@ func TestExternalFilesAreFingerprinted(t *testing.T) {
 	write(t, outside, "print('v1')\n")
 	cfg := filepath.Join(filepath.Dir(outside), "c.yaml")
 	write(t, cfg, "a: 1\n")
-	extra, err := ExternalFiles([]string{"python", outside, "--config=" + cfg, "list_guest_users.py", "not-a-file", "-u"}, dir)
+	extra, err := ExternalFiles([]string{"python", outside, "--config=" + cfg, "list_guest_users.py", "not-a-file", "-u"}, dir, nil)
 	if err != nil || len(extra) != 2 {
 		t.Fatalf("ExternalFiles = %v, want the script and the config, nothing inside the folder", extra)
 	}
@@ -460,10 +462,10 @@ func TestOutputCoversDir(t *testing.T) {
 func TestExternalFilesRefusesAProgramFolderOutside(t *testing.T) {
 	dir, _ := fixture(t)
 	pkg := t.TempDir()
-	if _, err := ExternalFiles([]string{"python", pkg}, dir); err == nil {
+	if _, err := ExternalFiles([]string{"python", pkg}, dir, nil); err == nil {
 		t.Fatal("python <folder outside> was accepted")
 	}
-	if _, err := ExternalFiles([]string{"python", "run.py", "--out", pkg}, dir); err != nil {
+	if _, err := ExternalFiles([]string{"python", "run.py", "--out", pkg}, dir, nil); err != nil {
 		t.Fatalf("a folder given to the script as an argument was refused: %v", err)
 	}
 }
@@ -498,5 +500,67 @@ func TestMaskerHidesEmbeddedAndEscapedForms(t *testing.T) {
 	got, _ = masked(t, map[string]string{"SA_KEY": pem}, "line: q2bm0T2p3xYvS7kEo4jRmN8cWfU1dL6aZqPp9hXvTt0YQeKs1a\n")
 	if strings.Contains(got, "q2bm0T2p3xYvS7kEo4jRmN8c") {
 		t.Errorf("one line of a multi-line key passed: %q", got)
+	}
+}
+
+// Third review, finding 1: the label names what runs, never an argument the
+// command passes along.
+func TestLabelNamesTheProgram(t *testing.T) {
+	cases := []struct {
+		argv []string
+		want string
+	}{
+		{[]string{".venv/bin/python", "list_guest_users.py"}, "list_guest_users.py"},
+		{[]string{"./exfil.sh", "list_guest_users.py"}, "exfil.sh"},
+		{[]string{".venv/bin/python", "-W", "list_guest_users.py", "evil.py"}, "evil.py"},
+		{[]string{"python3", "-uW", "ignore", "run.py"}, "run.py"},
+		{[]string{"python3", "-m", "exporter"}, "-m exporter"},
+		{[]string{"node", "-r", "./hook.js", "app.js"}, "app.js"},
+	}
+	for _, tc := range cases {
+		if _, got := Label("/x/notion", tc.argv); got != tc.want {
+			t.Errorf("Label(%q) = %q, want %q", tc.argv, got, tc.want)
+		}
+	}
+}
+
+// Third review, findings 3 and 4: what the walk skips, and code an
+// interpreter loads through a flag, are still covered.
+func TestExternalFilesCoversSkippedPartsAndCodeFlags(t *testing.T) {
+	dir, exe := fixture(t)
+	write(t, filepath.Join(dir, ".git/run.py"), "print('v1')\n")
+	extra, err := ExternalFiles([]string{"python", ".git/run.py"}, dir, nil)
+	if err != nil || len(extra) != 1 {
+		t.Fatalf("a script inside .git: extra = %v, %v", extra, err)
+	}
+	out := filepath.Join(dir, "out")
+	write(t, filepath.Join(out, "run.py"), "print('v1')\n")
+	if extra, err := ExternalFiles([]string{"python", "out/run.py"}, dir, []string{out}); err != nil || len(extra) != 1 {
+		t.Fatalf("a script inside an output: extra = %v, %v", extra, err)
+	}
+	outside := t.TempDir()
+	write(t, filepath.Join(outside, "hook.js"), "x\n")
+	if extra, err := ExternalFiles([]string{"node", "-r", filepath.Join(outside, "hook.js"), "app.js"}, dir, nil); err != nil || len(extra) != 1 {
+		t.Fatalf("node -r <outside file>: extra = %v, %v", extra, err)
+	}
+	if _, err := ExternalFiles([]string{"node", "-r", outside, "app.js"}, dir, nil); err == nil {
+		t.Fatal("node -r <outside folder> was accepted")
+	}
+	if _, err := ExternalFiles([]string{"ruby", "-I" + outside, "app.rb"}, dir, nil); err == nil {
+		t.Fatal("ruby -I<outside folder> was accepted")
+	}
+
+	// A symlink in the folder to a file the walk skips is covered by content.
+	if err := os.Symlink(filepath.Join(dir, ".git/run.py"), filepath.Join(dir, "run.py")); err != nil {
+		t.Fatal(err)
+	}
+	before, err := Compute(dir, exe, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, ".git/run.py"), "import os; print(os.environ)\n")
+	after, _ := Compute(dir, exe, nil, nil)
+	if d := Diff(before, after); len(d) != 1 || d[0].Path != "run.py"+LinkTargetSuffix {
+		t.Fatalf("Diff = %v, want the linked .git file's content", d)
 	}
 }

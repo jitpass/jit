@@ -491,6 +491,38 @@ things it showed were wrong:
   false for a job. That is the app's generic consent wording; step 4 gives
   job runs their own sheet.
 
+### After the third review (2026-09-25)
+
+A review of `jit mcp` and the second round's fixes found ten more; eight are
+fixed, each with a control run against the code without it, and two are
+open decisions (below).
+
+- **The prompt names the program that runs.** The label is the file the
+  interpreter runs (`python -W x run.py evil.py` runs evil.py), `-m module`,
+  or the executable itself, never an argument it passes along; the folder
+  gets 14 runes and the label is shortened from its middle, so a long,
+  caller-chosen folder name can never push the program out of the sentence.
+- **One run of a job at a time**, and the stored job is checked again after
+  the prompt: concurrent runs each carried their own snapshot, so a stop one
+  of them set did not reach the others.
+- **Skipped parts are still covered.** A script inside `.git`, an output
+  folder or `node_modules/.cache`, or a symlink into one, is fingerprinted
+  by content instead of falling between the walk and the outside check.
+- **One argument scanner.** `CheckArgv`, the program and the label all read
+  arguments through `scanArgs`; clusters are read letter by letter
+  (`-uW ignore`, `-Wignore`), and code-loading flags (`node -r`, `ruby -I`)
+  are fingerprinted, or refused when they name a folder outside the job.
+- **The `.env` rule is per job.** The pointer goes only to readers
+  descended from THAT job's process, registered the moment it starts, and
+  only for the `.env` of the job's own folder. Another job, a nested
+  project, or a read that beats the registration gets the decoy and the
+  alert.
+- **`disclaimer` is looked through for display only**, matched by its place
+  inside an app bundle. Consent and the prompt backoff still key on the
+  helper, so no cache widens.
+- **The scratch folder is inside jit's own directory**, not `$TMPDIR`, with
+  its `pycache` and `zdotdir` created 0700 before the command starts.
+
 ## Open decisions
 
 1. **The name.** Decided 2026-09-25: **AI Jobs** in the app (window,

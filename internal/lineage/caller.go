@@ -201,10 +201,29 @@ func Ancestry(pid int32) []Process {
 // Shared by the agent (who unlocked the vault) and the mount manager (who
 // read a secret file), which ask the same question of different processes.
 func LaunchedBy(ancestors []Process) string {
-	if p, _, ok := LaunchedByProcess(ancestors); ok {
-		return p.Name()
+	p, above, ok := LaunchedByProcess(ancestors)
+	if !ok {
+		return ""
 	}
-	return ""
+	// For DISPLAY only, an app's own disclaimer helper is looked through to
+	// the app. Claude Desktop starts every local MCP server through
+	// Contents/Helpers/disclaimer, so a prompt said "launched by disclaimer"
+	// (found by running the real thing). LaunchedByProcess, which consent and
+	// the prompt backoff KEY on, is deliberately untouched: widening those
+	// keys to the whole app would merge what the app launches through its
+	// helper with what it launches directly. Matched by the helper's place
+	// inside an app bundle, never by the bare name, which any binary can take.
+	if isAppDisclaimer(p) {
+		if name := LaunchedBy(above); name != "" {
+			return name
+		}
+	}
+	return p.Name()
+}
+
+// isAppDisclaimer reports whether p is an app bundle's disclaimer helper.
+func isAppDisclaimer(p Process) bool {
+	return strings.HasSuffix(p.ExecPath, ".app/Contents/Helpers/disclaimer")
 }
 
 // LaunchedByProcess is LaunchedBy's structured counterpart: it returns the
@@ -233,15 +252,10 @@ func LaunchedByProcess(ancestors []Process) (launcher Process, above []Process, 
 // being the reason for it. Shells dominate, but the login/exec wrappers belong
 // here too — none of them is ever the interesting answer to "why is this
 // happening".
-//
-// "disclaimer" is the helper Claude Desktop (Contents/Helpers/disclaimer)
-// starts every local MCP server through, to disclaim macOS privacy
-// responsibility for it. Found by running the real thing: a Touch ID prompt
-// for a job Cowork asked for said it was "launched by disclaimer".
 func isRelay(name string) bool {
 	switch strings.TrimPrefix(name, "-") { // login shells appear as "-zsh"
 	case "zsh", "bash", "sh", "dash", "fish", "tcsh", "csh", "ksh",
-		"login", "env", "sudo", "xargs", "time", "disclaimer":
+		"login", "env", "sudo", "xargs", "time":
 		return true
 	}
 	return false

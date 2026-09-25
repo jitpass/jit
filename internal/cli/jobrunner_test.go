@@ -41,7 +41,7 @@ exit 3
 `)
 	values := map[string]string{"NOTION_API_KEY": jobTestKey, "INTERNAL_DOMAINS": "blockaid.co"}
 	hidden := map[string]string{"NOTION_API_KEY": jobTestKey}
-	res, err := runJobCommand(j, values, hidden, jobEnv(t.TempDir(), j), time.Minute)
+	res, err := runJobCommand(j, values, hidden, jobEnv(t.TempDir(), j), time.Minute, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestRunJobCommandReportsNewOutputFiles(t *testing.T) {
 	}
 	j := shJob(t, `echo a,b > "$1/new.csv"`+"\n", out)
 	j.Argv = append(j.Argv, out)
-	res, err := runJobCommand(j, nil, nil, jobEnv(t.TempDir(), j), time.Minute)
+	res, err := runJobCommand(j, nil, nil, jobEnv(t.TempDir(), j), time.Minute, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestRunJobCommandReportsNewOutputFiles(t *testing.T) {
 func TestRunJobCommandStopsAtTheTimeLimit(t *testing.T) {
 	j := shJob(t, "echo started\nsleep 30\n")
 	start := time.Now()
-	res, err := runJobCommand(j, nil, nil, jobEnv(t.TempDir(), j), 300*time.Millisecond)
+	res, err := runJobCommand(j, nil, nil, jobEnv(t.TempDir(), j), 300*time.Millisecond, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestReapproveCommandKeepsEverySetting(t *testing.T) {
 // Review finding 6: the note names the per-stream cap, not the total.
 func TestRunJobCommandTruncationNoteNamesTheStreamCap(t *testing.T) {
 	j := shJob(t, "head -c 140000 /dev/zero | tr '\\0' a\necho END\n")
-	res, err := runJobCommand(j, nil, nil, jobEnv(t.TempDir(), j), time.Minute)
+	res, err := runJobCommand(j, nil, nil, jobEnv(t.TempDir(), j), time.Minute, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,11 +163,30 @@ func TestZshJobSkipsTheUsersZshenv(t *testing.T) {
 	}
 	j := shJob(t, "echo ran\n")
 	j.Argv, j.Exe, j.Home = []string{"zsh", "run.sh"}, "/bin/zsh", home
-	res, err := runJobCommand(j, nil, nil, jobEnv(t.TempDir(), j), time.Minute)
+	res, err := runJobCommand(j, nil, nil, jobEnv(t.TempDir(), j), time.Minute, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(res.Stdout, "SOURCED-USER-ZSHENV") || !strings.Contains(res.Stdout, "ran") {
 		t.Fatalf("stdout = %q", res.Stdout)
+	}
+}
+
+// Third review, finding 10: the scratch folder is inside jit's directory,
+// not $TMPDIR, and its subfolders exist, private, before anything starts.
+func TestJobScratchIsPrivateAndInsideJitsDirectory(t *testing.T) {
+	root := t.TempDir()
+	scratch, err := newJobScratch(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(scratch, filepath.Join(root, "job-scratch")+string(filepath.Separator)) {
+		t.Fatalf("scratch %s is not under jit's directory", scratch)
+	}
+	for _, sub := range []string{"", "pycache", "zdotdir"} {
+		info, err := os.Stat(filepath.Join(scratch, sub))
+		if err != nil || info.Mode().Perm() != 0o700 {
+			t.Errorf("%s: %v %v, want an existing 0700 folder", sub, info.Mode().Perm(), err)
+		}
 	}
 }

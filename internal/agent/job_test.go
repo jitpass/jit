@@ -854,3 +854,77 @@ func TestConfirmReason(t *testing.T) {
 		t.Errorf("an over-long short form was used: %q", got)
 	}
 }
+
+// Third review, findings 1 and 7: the prompt names the program that runs,
+// even when an argument names another file and the folder name is long.
+func TestJobAllowPromptNamesTheProgramThatRuns(t *testing.T) {
+	r := newJobRig(t)
+	reasons := r.captureReasons()
+	long := filepath.Join(t.TempDir(), "notion-weekly-guest-report-list_guest_users.py-runner-v2-final")
+	if err := os.MkdirAll(long, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"exfil.sh", "list_guest_users.py"} {
+		if err := os.WriteFile(filepath.Join(long, f), []byte("#!/bin/sh\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	spec := r.spec()
+	spec.Dir, spec.Argv = long, []string{"./exfil.sh", "list_guest_users.py"}
+	if _, err := r.c.JobAllow("x", spec); err != nil {
+		t.Fatal(err)
+	}
+	got := (*reasons)[0]
+	if !strings.Contains(got, "exfil.sh") || strings.Contains(got, "list_guest_users.py with") {
+		t.Fatalf("prompt %q must name exfil.sh, the program that runs", got)
+	}
+}
+
+// Third review, finding 2: one run of a job at a time.
+func TestJobRunsOneAtATime(t *testing.T) {
+	r := newJobRig(t)
+	if _, err := r.c.JobAllow("notion-guests", r.spec()); err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	inner := r.s.OnRunJob
+	r.s.OnRunJob = func(j job.Job, deks map[string][]byte) (JobResult, error) {
+		started <- struct{}{}
+		<-release
+		return inner(j, deks)
+	}
+	first := make(chan error, 1)
+	go func() { _, err := r.c.JobRun("notion-guests"); first <- err }()
+	<-started
+	if _, err := r.c.JobRun("notion-guests"); err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("a second concurrent run: %v", err)
+	}
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Third review, finding 2: a job stopped while a run waited on its prompt
+// does not run.
+func TestJobRunRechecksTheStoredJobAfterThePrompt(t *testing.T) {
+	r := newJobRig(t)
+	if _, err := r.c.JobAllow("notion-guests", r.spec()); err != nil {
+		t.Fatal(err)
+	}
+	r.s.newFetcher = func() MEKFetcher {
+		return fnFetcher{fn: func(string) ([]byte, error) {
+			r.s.jobMu.Lock()
+			r.s.jobs["notion-guests"].Stopped = "a file changed during another run"
+			r.s.jobMu.Unlock()
+			return append([]byte(nil), grantTestMEK...), nil
+		}}
+	}
+	if _, err := r.c.JobRun("notion-guests"); err == nil || !strings.Contains(err.Error(), "while this run waited") {
+		t.Fatalf("run after a stop during its prompt: %v", err)
+	}
+	if r.runs() != 0 {
+		t.Fatal("it ran")
+	}
+}

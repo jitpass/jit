@@ -52,11 +52,19 @@ const OutsidePrefix = "outside:"
 // with one exception: the PROGRAM an interpreter is given (`python ../tool`,
 // `node ../pkg`) may be a folder, whose code no fingerprint covers, so that is
 // refused. dir must already be resolved (the service resolves it).
-func ExternalFiles(argv []string, dir string) ([]string, error) {
+func ExternalFiles(argv []string, dir string, outputs []string) ([]string, error) {
 	dir = ResolvePath(dir)
+	outs := resolveAll(outputs)
+	sc := scanArgs(argv)
+	code := map[string]bool{}
+	if sc.program != "" {
+		code[sc.program] = true
+	}
+	for _, c := range sc.code {
+		code[c] = true
+	}
 	seen := map[string]bool{}
 	var out []string
-	prog := programArg(argv)
 	for i, a := range argv {
 		if i == 0 {
 			continue // the executable, hashed on its own
@@ -64,6 +72,13 @@ func ExternalFiles(argv []string, dir string) ([]string, error) {
 		cands := []string{a}
 		if j := strings.IndexByte(a, '='); j > 0 {
 			cands = append(cands, a[j+1:])
+		}
+		// A value glued to a short code flag (`-rhook.js`, `-I../lib`) is
+		// still code: scanArgs reports it bare.
+		for c := range code {
+			if c != a && strings.HasSuffix(a, c) {
+				cands = append(cands, c)
+			}
 		}
 		for _, c := range cands {
 			if c == "" {
@@ -77,7 +92,10 @@ func ExternalFiles(argv []string, dir string) ([]string, error) {
 			if err != nil {
 				continue
 			}
-			if inside(resolved, dir) {
+			// Inside the folder and walked: the fingerprint has it already.
+			// Inside but in a part the walk skips (.git, an output folder):
+			// covered here, or it would be covered nowhere.
+			if inside(resolved, dir) && !skippedPath(resolved, dir, outs) {
 				continue
 			}
 			info, err := os.Stat(resolved)
@@ -85,8 +103,8 @@ func ExternalFiles(argv []string, dir string) ([]string, error) {
 				continue
 			}
 			if info.IsDir() {
-				if c == prog {
-					return nil, fmt.Errorf("%s runs the folder %s, which is outside the job's folder, so no edit to it could stop the job: approve the job from a folder that contains it", a, resolved)
+				if code[c] && !inside(resolved, dir) {
+					return nil, fmt.Errorf("%s loads code from the folder %s, which is outside the job's folder, so no edit to it could stop the job: approve the job from a folder that contains it", a, resolved)
 				}
 				continue
 			}
@@ -99,6 +117,40 @@ func ExternalFiles(argv []string, dir string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+func resolveAll(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		out = append(out, ResolvePath(p))
+	}
+	return out
+}
+
+// skippedPath reports whether p, inside dir, lies in a part the folder walk
+// does not visit: a skipped directory name, a skipped path, or an output.
+func skippedPath(p, dir string, outs []string) bool {
+	for _, o := range outs {
+		if inside(p, o) {
+			return true
+		}
+	}
+	rel, err := filepath.Rel(dir, p)
+	if err != nil {
+		return false
+	}
+	rel = filepath.ToSlash(rel)
+	for sp := range skipPaths {
+		if rel == sp || strings.HasPrefix(rel, sp+"/") {
+			return true
+		}
+	}
+	for _, part := range strings.Split(rel, "/") {
+		if skipDirs[part] {
+			return true
+		}
+	}
+	return false
 }
 
 // ResolvePath resolves p through symlinks as far as it exists, keeping the
@@ -211,15 +263,22 @@ func Compute(dir, exe string, outputs, extra []string) (Fingerprint, error) {
 			}
 			fp.Files[rel] = "link:" + target
 			resolved, rerr := filepath.EvalSymlinks(path)
-			if rerr != nil || inside(resolved, realDir) {
-				return nil // dangling, or its target is walked in place
+			if rerr != nil {
+				return nil // dangling
+			}
+			if inside(resolved, realDir) && !skippedPath(resolved, realDir, skipAbs) {
+				return nil // its target is walked in place
 			}
 			info, serr := os.Stat(resolved)
 			if serr != nil {
 				return nil
 			}
 			if info.IsDir() {
-				return fmt.Errorf("%s links to the folder %s, outside the job's folder, so no edit to it could stop the job: %w", rel, resolved, ErrLinkOutside)
+				where := "outside the job's folder"
+				if inside(resolved, realDir) {
+					where = "in a part of the folder jit does not fingerprint (.git, an output folder)"
+				}
+				return fmt.Errorf("%s links to the folder %s, %s, so no edit to it could stop the job: %w", rel, resolved, where, ErrLinkOutside)
 			}
 			if info.Mode().IsRegular() {
 				sum, n, herr := hashFile(resolved)
