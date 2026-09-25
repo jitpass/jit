@@ -103,15 +103,25 @@ func (g GrantKeys) Load(id string) (*GrantKey, error) {
 
 // Delete destroys the key. Idempotent: a key already gone is success,
 // since the state the caller wants is "no key".
+//
+// The long-running service calls this (a revoke, an expiry, the unused-key
+// cleanup, a move of grant keys), so it never takes deleteItem's reference
+// fallback: that switches keychain UI off for the whole process
+// (kwWithoutUI), under every other request in flight. It never needs it
+// either: this helper made every grant key, at its own path, and
+// errSecInvalidOwnerEdit is the answer to an item another executable made.
+// If it ever comes back anyway, it is returned as the error it is.
 func (g GrantKeys) Delete(id string) error {
 	w, err := g.wrapper(id)
 	if err != nil {
 		return err
 	}
-	if w.MEKPresence() == MEKAbsent {
+	ops := newItemOps(w)
+	if ops.presence() == MEKAbsent {
 		return nil
 	}
-	return w.deleteMEK()
+	_, err = deleteItem(ops, deleteOpts{verb: "delete failed"})
+	return err
 }
 
 // List returns every grant id with a keychain key, from metadata only: it

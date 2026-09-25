@@ -208,22 +208,28 @@ func Challenge(reason string) error {
 }
 
 // setMEK stores the given bytes as this wrapper's keychain item,
-// replacing any existing one: deleteItem (with the fallback, since the item
-// being replaced may be one an older jit, at another path, created: S3g),
-// then kw_add_mek. Replace-then-add, not SecItemUpdate: identical outcome
-// for the promote step either way, and the add is kw_ensure_mek's exact
-// shape. Private: only the promote step and InstallMEK have any business
-// writing chosen key bytes.
-func (w *Wrapper) setMEK(mek []byte) error {
-	if err := deleteItem(w.cOps(), true, "replacing existing key failed"); err != nil {
+// replacing any existing one: deleteItem (with the CLI fallback, since the
+// item being replaced may be one an older jit, at another path, created:
+// S3g; setMEK runs only from `jit vault rekey`, a CLI command), then the
+// add. Replace-then-add, not SecItemUpdate: identical outcome for the
+// promote step either way, and the add is kw_ensure_mek's exact shape.
+// Private: only the promote step and InstallMEK have any business writing
+// chosen key bytes.
+func (w *Wrapper) setMEK(mek []byte) error { return setMEKWith(newItemOps(w), mek) }
+
+// setMEKWith is setMEK over ops. A reference delete whose result couldn't
+// be confirmed goes on to the add, which fails with a duplicate if the old
+// item is really still there; that failure then says both halves.
+func setMEKWith(ops itemOps, mek []byte) error {
+	unconfirmed, err := deleteItem(ops, deleteOpts{cliRefFallback: true, addFollows: true, verb: "replacing existing key failed"})
+	if err != nil {
 		return err
 	}
-	cService, cAccount := w.cNames()
-	defer C.free(unsafe.Pointer(cService))
-	defer C.free(unsafe.Pointer(cAccount))
-	var p *C.uchar
-	if len(mek) > 0 {
-		p = (*C.uchar)(unsafe.Pointer(&mek[0]))
+	if err := ops.add(mek); err != nil {
+		if unconfirmed {
+			return fmt.Errorf("replacing existing key failed: deleted the old item through its reference but couldn't confirm it was gone, and storing the new one failed: %w", err)
+		}
+		return err
 	}
-	return goErr(C.kw_add_mek(cService, cAccount, p, C.int(len(mek))))
+	return nil
 }
