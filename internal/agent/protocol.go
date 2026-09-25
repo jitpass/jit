@@ -592,16 +592,20 @@ type GrantProfile struct {
 // JobStatus is one AI job as a client renders it. It carries no value and no
 // wrapped key, only names and state.
 type JobStatus struct {
-	Name        string            `json:"name"`
-	Dir         string            `json:"dir"`
-	Argv        []string          `json:"argv"`
-	Exe         string            `json:"exe"`
-	Profile     string            `json:"profile,omitempty"`
-	Secrets     []JobSecretStatus `json:"secrets,omitempty"`
-	Ask         string            `json:"ask"`
-	Outputs     []string          `json:"outputs,omitempty"`
-	Description string            `json:"description,omitempty"`
-	Files       int               `json:"files"`
+	Name    string   `json:"name"`
+	Dir     string   `json:"dir"`
+	Argv    []string `json:"argv"`
+	Exe     string   `json:"exe"`
+	Profile string   `json:"profile,omitempty"`
+	// ProfileGlobal says Profile is read from ~/.jit/profiles rather than
+	// the job's folder, so a client approving the job again (an edit, a
+	// stopped job) can send the same GrantProfile the job was made from.
+	ProfileGlobal bool              `json:"profile_global,omitempty"`
+	Secrets       []JobSecretStatus `json:"secrets,omitempty"`
+	Ask           string            `json:"ask"`
+	Outputs       []string          `json:"outputs,omitempty"`
+	Description   string            `json:"description,omitempty"`
+	Files         int               `json:"files"`
 	// State is JobReady, JobChanged or JobRotated; Changes names what
 	// changed, capped at maxJobChanges.
 	State        string       `json:"state"`
