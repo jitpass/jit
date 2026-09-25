@@ -20,8 +20,9 @@
 //
 // Wrapper satisfies vault.KeyWrapper, vault.LabeledKeyWrapper,
 // agent.MEKFetcher and agent.ClosableFetcher, and has keychainwrap's
-// RequireUserPresence. Nothing in jit selects it yet: choosing a backend per
-// vault is step B3.
+// RequireUserPresence. internal/keystore chooses it for a vault whose root
+// holds the sealed key file (step B3); no vault has one until step B4's
+// `jit vault rekey --wrapper secure-enclave` writes it.
 //
 // # What it guarantees, and what it does not
 //

@@ -25,8 +25,13 @@ func vaultKeyStore() (keystore.Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return keystore.Open(root), nil
+	return openKeyStore(root), nil
 }
+
+// openKeyStore is keystore.Open, as a var so a test can stand in a Store
+// that never reaches a real keychain item or enclave key: the same seam,
+// for the same reason, as requireUserPresence.
+var openKeyStore = keystore.Open
 
 func vaultRootDir() (string, error) {
 	home, err := os.UserHomeDir()

@@ -19,7 +19,7 @@ import (
 // key. Its presence is how every jit knows a vault's key is in the enclave
 // (design/secure-enclave.md, decision D2); `jit vault delete` must remove it
 // with the rest of the vault's local state.
-const SealedFile = "vault-key.sealed"
+const SealedFile = vault.SealedKeyFile
 
 const (
 	sealedVersion = 1

@@ -6,6 +6,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -61,6 +62,12 @@ var vaultRekeyCmd = &cobra.Command{
 			return fmt.Errorf("jit vault rekey: %w", err)
 		}
 
+		// Rotating a Secure Enclave vault's key is plan step B4. Until then
+		// refuse: the code below rotates the keychain item, which an
+		// enclave vault does not use.
+		if openKeyStore(root).Kind() == keystore.KindSecureEnclave {
+			return errors.New("jit vault rekey: this vault's key is in the Secure Enclave, and rekeying it is not available yet")
+		}
 		resume := rekeyInProgress(root)
 		// Rekey rotates the keychain item's own bytes through staged items;
 		// it stays keychain-specific until plan step B4.
