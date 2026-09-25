@@ -186,6 +186,11 @@ reverse is written and tested first.
   each crash point.
 - The flag is hidden until A2 has shipped in an app release.
 
+**B4 status (2026-09-25):** built in PR #161. The flag is hidden until A2.
+Two dialogs into the enclave (not one: the keychain's and the enclave's are
+separate contexts; the mockup's frame D caption needs that correction), one
+back. It passed on hardware with TEST-ONLY names.
+
 **B5. Docs (S).** Every sentence the read found false once B1–B4 land:
 `keychainwrap.go:6–9,30–32`, `grantkey.go:13–17,23–26`, `rekey.go:127–129`
 (already false today), `secureenclave/doc.go`, `vault/keywrapper.go:8–10`,
