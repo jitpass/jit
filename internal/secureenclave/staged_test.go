@@ -72,3 +72,16 @@ func TestRemoveStagedLeavesTheRealFileAndKey(t *testing.T) {
 		t.Fatalf("removing an absent staged file: %v", err)
 	}
 }
+
+func TestNewTestingRefusesProductionTags(t *testing.T) {
+	for _, tag := range []string{prodTag, "com.jitpass.vault.kek.other"} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("NewTesting(%q) did not refuse", tag)
+				}
+			}()
+			NewTesting(t.TempDir(), tag)
+		}()
+	}
+}
