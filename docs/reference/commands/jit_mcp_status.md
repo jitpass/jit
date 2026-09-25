@@ -1,15 +1,15 @@
 ## jit mcp status
 
-Show whether Claude Desktop can reach jit's MCP server
+Show whether an AI app can reach jit's MCP server
 
 ```
-jit mcp status [--client claude-desktop] [flags]
+jit mcp status [--client claude-desktop|cursor] [flags]
 ```
 
 ### Options
 
 ```
-      --client string   the AI app: claude-desktop (default "claude-desktop")
+      --client string   the AI app: claude-desktop or cursor (default "claude-desktop")
       --format string   output format: text or json (default "text")
 ```
 

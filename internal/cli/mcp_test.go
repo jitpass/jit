@@ -87,3 +87,22 @@ func TestSetMCPEntryCreatesAMissingFile(t *testing.T) {
 		t.Fatalf("changed=%v backup=%q err=%v", changed, backup, err)
 	}
 }
+
+func TestMCPClientsKnowWhereEachAppKeepsItsServers(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	for id, want := range map[string]string{
+		"claude-desktop": filepath.Join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json"),
+		"cursor":         filepath.Join(home, ".cursor", "mcp.json"),
+	} {
+		c, path, err := findMCPClient(id)
+		if err != nil || path != want {
+			t.Errorf("%s: %q %v, want %q", id, path, err, want)
+		}
+		if id == "cursor" && mcpInstallLine(c) != "jit mcp install --client cursor" {
+			t.Errorf("cursor's install line = %q", mcpInstallLine(c))
+		}
+	}
+	if _, _, err := findMCPClient("vscode"); err == nil || !strings.Contains(err.Error(), "claude-desktop, cursor") {
+		t.Fatalf("an unknown app: %v", err)
+	}
+}
