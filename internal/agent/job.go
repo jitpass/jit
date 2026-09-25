@@ -180,7 +180,7 @@ func (s *Server) allowJob(req Request, c *caller) Response {
 		}
 	}
 	reason := jobAllowReason(jobLabel(dir, spec.Argv), secretGroups(sources), len(sources), shownCount, ask)
-	event, mek, err := s.discloseChallengeOp(reason, OpJobAllow, c)
+	event, mek, err := s.discloseChallenge(reason, OpJobAllow, req.JobName, c)
 	if event != nil && s.OnSessionEvent != nil {
 		s.OnSessionEvent(*event)
 	}
@@ -570,7 +570,7 @@ func (s *Server) runJob(name string, c *caller) Response {
 		}
 	default:
 		reason := jobRunReason(requester, jobLabel(j.Dir, j.Argv), len(j.Secrets))
-		event, mek, err := s.discloseChallengeOp(reason, OpJobRun, c)
+		event, mek, err := s.discloseChallenge(reason, OpJobRun, j.Name, c)
 		if event != nil && s.OnSessionEvent != nil {
 			s.OnSessionEvent(*event)
 		}
@@ -680,6 +680,7 @@ func (s *Server) recordJobEvent(kind, op string, c *caller, j *job.Job, cause st
 	e := unlockEvent(op, c)
 	e.Kind = kind
 	e.Cause = cause
+	e.Job = j.Name
 	e.UnixTime = time.Now().Unix()
 	for _, sec := range j.Secrets {
 		if len(e.Labels) < maxUseLabels {
