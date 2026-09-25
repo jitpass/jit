@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.application-identifier</key>
+	<string>CZC6BH93GJ.com.jitpass.agent</string>
+	<key>com.apple.developer.team-identifier</key>
+	<string>CZC6BH93GJ</string>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>CZC6BH93GJ.com.jitpass.vault</string>
+	</array>
+</dict>
+</plist>
