@@ -43,6 +43,7 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -109,6 +110,17 @@ var _ vault.KeyWrapper = (*Wrapper)(nil)
 // and the real production keychain identifier.
 func New() *Wrapper {
 	return &Wrapper{service: prodService, account: prodAccount, challenge: realChallenge}
+}
+
+// NewTesting returns a Wrapper over a TEST-ONLY keychain item, for tests in
+// other packages that must drive a real keychain (internal/cli's hardware
+// move test). It panics on any service name without "TEST-ONLY": the rule
+// this type's comment records, enforced where a caller could break it.
+func NewTesting(service, account string, challenge func(reason string) error) *Wrapper {
+	if !strings.Contains(service, "TEST-ONLY") || service == prodService {
+		panic("keychainwrap.NewTesting: service " + service + " is not a TEST-ONLY identifier")
+	}
+	return &Wrapper{service: service, account: account, challenge: challenge}
 }
 
 // FetchMEK returns the raw MEK bytes, challenging first unless already
