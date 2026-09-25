@@ -83,7 +83,7 @@ func withFakeEnclave(t *testing.T, p secureenclave.Presence) *int {
 func TestEnclavePresenceMapping(t *testing.T) {
 	for in, want := range map[secureenclave.Presence]Presence{
 		secureenclave.Present:       Present,
-		secureenclave.Absent:        Absent,
+		secureenclave.Absent:        Indeterminate, // the file vanished after Open: not proof of no key
 		secureenclave.KeyLost:       KeyLost,
 		secureenclave.Unavailable:   Unavailable,
 		secureenclave.Indeterminate: Indeterminate,
@@ -102,9 +102,25 @@ func TestEnclaveInitConfirmsRatherThanCreates(t *testing.T) {
 	if err := (enclaveStore{}).Init(); err != nil {
 		t.Fatalf("Init over a present key: %v", err)
 	}
+	// A lost key: the sealed file is set aside (kept, it names the old
+	// key) and a keychain key is made, so a recovery file can be imported.
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, vault.SealedKeyFile), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	withFakeEnclave(t, secureenclave.KeyLost)
-	if err := (enclaveStore{}).Init(); !errors.Is(err, errEnclaveKeyLost) {
-		t.Fatalf("Init over a lost key: %v, want errEnclaveKeyLost", err)
+	made := 0
+	origInit := initKeychain
+	initKeychain = func() error { made++; return nil }
+	t.Cleanup(func() { initKeychain = origInit })
+	if err := (enclaveStore{root: root}).Init(); err != nil {
+		t.Fatalf("Init over a lost key: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, LostSealedFile)); err != nil {
+		t.Errorf("the lost sealed file was not kept aside: %v", err)
+	}
+	if k := Open(root).Kind(); k != KindKeychain || made != 1 {
+		t.Errorf("after Init: backend %q, keychain keys made %d; want keychain and 1", k, made)
 	}
 	withFakeEnclave(t, secureenclave.Unavailable)
 	if err := (enclaveStore{}).Init(); !errors.Is(err, secureenclave.ErrUnavailable) {
