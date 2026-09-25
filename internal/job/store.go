@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/jitpass/jit/internal/vault"
+	"github.com/jitpass/jit/internal/atomicfile"
 )
 
 // storeVersion is bumped when a job's shape changes incompatibly. A newer
@@ -65,7 +65,7 @@ func Load(path string) (map[string]*Job, error) {
 	return out, nil
 }
 
-// Save writes the whole list atomically and durably (vault.AtomicWriteFile:
+// Save writes the whole list atomically and durably (atomicfile.WriteFile:
 // fsynced, renamed into place, mode 0600), sorted by name so the file diffs
 // cleanly.
 func Save(path string, jobs map[string]*Job) error {
@@ -73,7 +73,7 @@ func Save(path string, jobs map[string]*Job) error {
 	if err != nil {
 		return err
 	}
-	return vault.AtomicWriteFile(path, data)
+	return atomicfile.WriteFile(path, data)
 }
 
 // Encode is the file Save writes, for a caller that writes it itself.
