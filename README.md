@@ -613,22 +613,22 @@ only. Nothing is stored in plaintext, and nothing syncs anywhere.
 **Or in the Secure Enclave.** Move the master key into your Mac's Secure
 Enclave, the chip that holds keys and never lets them out. Then the key cannot
 be copied off this Mac, and no other program running as you can read it.
-Opening it takes Touch ID or your password, and the hardware checks that, not
-jit. It is opt-in and off by default; your secrets, grants and AI jobs stay as
+Opening it takes Touch ID or your password, enforced by the Secure Enclave. It is opt-in and off by default; your secrets, grants and AI jobs stay as
 they are, and nothing is re-encrypted.
 
 <details>
 <summary><b>Prefer the terminal?</b> Moving the key, and its limits</summary>
 
 ```sh
-jit vault export                            # save a recovery file first
+jit vault export                            # a current recovery file is required first
 jit vault rekey --wrapper secure-enclave    # move the vault key into the Secure Enclave
 jit vault rekey --wrapper keychain          # move it back, any time
 ```
 
 It needs an Apple Silicon Mac and the `jit` inside JitPass.app; a `jit`
 installed on its own cannot reach the Secure Enclave, and says so. The key
-cannot follow you to a new Mac, which is why the recovery file comes first.
+cannot follow you to a new Mac, so jit refuses the move until you have a
+current recovery file.
 
 </details>
 
