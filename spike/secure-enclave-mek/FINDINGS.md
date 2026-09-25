@@ -205,6 +205,39 @@ on the outer app: OK.
   `agentPlistNeedsRepoint` sees the recorded old path differ and rewrites
   the plist. The old path can be dropped a release or two later.
 
+## S3f: existing keychain keys after the move into a helper (2026-09-25, a bug found and fixed)
+
+Found by the code review of track A1, then measured. `s3f/run.sh` creates a
+test login-keychain item the way `kw_ensure_mek` makes every vault's key (a
+plain generic password, no access control) from a bare binary signed with
+identifier `jit`, then reads it back from three signers. Reads run with user
+interaction disallowed, so a would-be dialog comes back as an error code.
+
+| Reader | Result |
+|---|---|
+| The same `jit` (control) | read OK, no dialog |
+| Helper bundle signed as `com.jitpass.agent` (A1 as first built) | **`errSecAuthFailed` (-25293)**: the "wants to use your confidential information" dialog, for every existing user after the update |
+| Helper bundle signed with `codesign -i jit` | read OK, no dialog |
+| That `-i jit` helper creating, opening and deleting an enclave key (the S3c Go program) | OK: the profile authorizes the entitlement, not the code identifier |
+
+The shipped jit's designated requirement is `identifier jit and anchor apple
+generic and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate
+leaf[subject.OU] = CZC6BH93GJ`: a helper CI re-signs with the same Developer
+ID certificate and `-i jit` satisfies every clause. jit-app PR #52 now signs
+the helper with `--identifier jit`, and `sign.sh` and `verify.sh` refuse any
+other identifier.
+
+## B4 on hardware: the move, both ways (2026-09-25, PASS)
+
+Not a spike: the production `keyMover` from PR #161 on the real enclave,
+with TEST-ONLY names. Run by Meni:
+`PKG=./internal/cli JIT_SE_INTERACTIVE=1 scripts/se-test.sh -test.run TestHardwareMoveRoundTrip`
+gave `--- PASS: TestHardwareMoveRoundTrip (11.69s)`, three approvals. The
+TEST-ONLY keychain key went into the enclave (keychain dialog, then the
+enclave's check of the staged copy, then promote, then the keychain copy
+deleted) and came back (enclave dialog, keychain write read back). It was
+byte-identical to the original, with no sealed file and no marker left.
+
 ## Not run yet
 
 - **S3d** (a same-user debugger is refused): needs the Developer ID build,
