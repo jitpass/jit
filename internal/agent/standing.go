@@ -110,6 +110,11 @@ type standingSecret struct {
 	class        string
 	digest       string
 	grantWrapped []byte
+	// wrap is how grantWrapped was sealed, written back as it was read:
+	// the ledger holds more than one kind once grant keys move to the
+	// Secure Enclave (design/secure-enclave-plan.md, C), and saving must
+	// never relabel one as another.
+	wrap string
 }
 
 // standingGrant is one loaded standing grant. Immutable after creation
@@ -126,10 +131,16 @@ type standingGrant struct {
 	// name is the human's own word for the program (the tree filter);
 	// execPath is where it ran from at creation, recorded and shown, never
 	// gated (design: Claude Code's path carries its version).
-	name      string
-	execPath  string
-	profiles  []GrantProfile
-	secrets   map[string]standingSecret // digest -> secret
+	name     string
+	execPath string
+	profiles []GrantProfile
+	secrets  map[string]standingSecret // digest -> secret
+	// unread holds ledger entries sealed in a way this build cannot open
+	// (a newer jit's wrap). They are not served, and they are written back
+	// byte for byte: an older jit that dropped them would delete them from
+	// the ledger on its next save, and a later upgrade could not get them
+	// back.
+	unread    []ledgerSecret
 	serves    int64
 	lastServe time.Time
 
@@ -269,16 +280,17 @@ func (s *Server) SetGrantLedger(path string) (count int, err error) {
 		}
 		for _, ls := range lg.Secrets {
 			if ls.Wrap != standingWrapAEAD {
-				// A wrap this build cannot open is skipped, not served: the
-				// grant then reports fewer secrets than it was made with,
-				// and the list shows the gap.
+				// A wrap this build cannot open is not served: the grant
+				// then reports fewer secrets than it was made with, and the
+				// list shows the gap. It is kept, verbatim, for saveLedger.
+				g.unread = append(g.unread, ls)
 				continue
 			}
 			gw, err := hex.DecodeString(ls.GrantWrapped)
 			if err != nil || ls.DeviceDigest == "" || ls.Path == "" {
 				continue
 			}
-			g.secrets[ls.DeviceDigest] = standingSecret{path: ls.Path, class: ls.Class, digest: ls.DeviceDigest, grantWrapped: gw}
+			g.secrets[ls.DeviceDigest] = standingSecret{path: ls.Path, class: ls.Class, digest: ls.DeviceDigest, grantWrapped: gw, wrap: ls.Wrap}
 		}
 		if g.id == "" || g.anchorPath == "" || g.name == "" {
 			continue
@@ -371,11 +383,16 @@ func (s *Server) saveLedger() error {
 			lg.LastServeUnix = g.lastServe.Unix()
 		}
 		for _, sec := range g.secrets {
+			wrap := sec.wrap
+			if wrap == "" {
+				wrap = standingWrapAEAD
+			}
 			lg.Secrets = append(lg.Secrets, ledgerSecret{
 				Path: sec.path, Class: sec.class, DeviceDigest: sec.digest,
-				GrantWrapped: hex.EncodeToString(sec.grantWrapped), Wrap: standingWrapAEAD,
+				GrantWrapped: hex.EncodeToString(sec.grantWrapped), Wrap: wrap,
 			})
 		}
+		lg.Secrets = append(lg.Secrets, g.unread...)
 		sort.Slice(lg.Secrets, func(i, j int) bool { return lg.Secrets[i].Path < lg.Secrets[j].Path })
 		f.Grants = append(f.Grants, lg)
 	}
@@ -459,7 +476,7 @@ func (s *Server) createStandingGrant(req Request, target lineage.Process, profil
 		if err != nil {
 			return fail(fmt.Sprintf("grant_create: %s cannot be sealed under the grant key (%s), no grant created", sec.Path, err))
 		}
-		g.secrets[wrappedDigest(sec.Wrapped)] = standingSecret{path: sec.Path, class: sec.Class, digest: wrappedDigest(sec.Wrapped), grantWrapped: gw}
+		g.secrets[wrappedDigest(sec.Wrapped)] = standingSecret{path: sec.Path, class: sec.Class, digest: wrappedDigest(sec.Wrapped), grantWrapped: gw, wrap: standingWrapAEAD}
 	}
 
 	s.grantMu.Lock()
