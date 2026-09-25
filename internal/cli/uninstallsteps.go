@@ -89,21 +89,22 @@ func removeHistoryGuard(home string) (changed, rcEdited bool, err error) {
 // deleteVaultKeys removes the master key and any key a half-finished rekey
 // staged beside it. A var so no test can reach the production keychain: the
 // same seam, for the same reason, as vaultMasterKeyPresence.
-var deleteVaultKeys = func() error {
-	ks, err := vaultKeyStore()
-	if err != nil {
-		return err
-	}
-	var errs []error
-	if ks.Presence() != keystore.Absent {
-		errs = append(errs, ks.Delete())
-	}
-	// The staged key a half-finished rekey left is the keychain's own item
-	// until plan step B4.
+var deleteVaultKeys = func(ks keystore.Store) error {
+	// Unconditional: this runs after the vault folder is gone, and an
+	// enclave store re-reads its sealed file to answer Presence, so a guard
+	// here once always answered "absent" and left the enclave key behind.
+	// Both backends' Delete already treat a missing key as done.
+	return errors.Join(ks.Delete(), deleteStagedRekeyKey())
+}
+
+// deleteStagedRekeyKey removes the key a half-finished rotation staged in the
+// keychain (a keychain-only concept). A var so no test reaches the
+// production keychain.
+var deleteStagedRekeyKey = func() error {
 	if w := keystore.Keychain(); w.StagedRekeyWrapper().MEKPresence() == keychainwrap.MEKPresent {
-		errs = append(errs, w.DeleteStagedRekeyMEK())
+		return w.DeleteStagedRekeyMEK()
 	}
-	return errors.Join(errs...)
+	return nil
 }
 
 // uninstallOpenVault is the strict gate: a vault opened on its own fresh
@@ -124,10 +125,15 @@ var uninstallChallenge = keychainwrap.Challenge
 // protect AND a key to fetch. With the key provably gone the vault is
 // already unreadable, and insisting on it made uninstall impossible for
 // exactly the person who most needs to start over; a human is still proven
-// present by the bare challenge. An indeterminate probe keeps the strict
-// path: only a definite absence relaxes it.
+// present by the bare challenge. A lost Secure Enclave key is the same
+// provable absence. An indeterminate probe keeps the strict path: only a
+// definite absence relaxes it.
 func uninstallNeedsVaultKey(secretCount int) bool {
-	return secretCount > 0 && vaultMasterKeyPresence() != keystore.Absent
+	if secretCount <= 0 { // none, or unreadable (-1): no key to protect them with
+		return false
+	}
+	p := vaultMasterKeyPresence()
+	return p != keystore.Absent && p != keystore.KeyLost
 }
 
 // helperScriptPaths is every credential-helper script migrate can drop.
