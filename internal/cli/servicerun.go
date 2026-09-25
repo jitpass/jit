@@ -167,10 +167,10 @@ var agentRunCmd = &cobra.Command{
 		// agent-side resolution is what makes the grant prompt trustworthy.
 		server.OnResolveGrant = resolveGrantSecrets(root)
 		// Standing grants (design/standing-grants.md): each holds its own
-		// keychain key and persists in the ledger, so they are loaded
+		// key (keychain, or Secure Enclave for an enclave vault) and persists in the ledger, so they are loaded
 		// before the socket opens and outlive this process. A ledger that
 		// fails to parse is left untouched and reported, never overwritten.
-		server.GrantKeys = grantKeyStore{}
+		server.GrantKeys = newGrantKeyStore(root)
 		server.OnWrappedDEK = wrappedDEKReader(root)
 		if n, err := server.SetGrantLedger(agent.GrantLedgerPath(root)); err != nil {
 			fmt.Fprintf(stderr, "jit service: standing grants not loaded: %v\n", err)
