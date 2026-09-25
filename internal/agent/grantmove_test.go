@@ -280,7 +280,7 @@ func TestMoveGrantKeysMovesANeverAskJob(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "jobs.json")
 	j := &job.Job{Name: "notion-guests", Dir: "/tmp", Argv: []string{"x"}, Exe: "/bin/x", Ask: job.AskNever, KeyID: "j-1",
 		Secrets: []job.Secret{{Var: "TOKEN", Path: "notion/token", Class: "env", DeviceDigest: "dd", KeyWrapped: hex.EncodeToString(sealed), Wrap: GrantWrapKeychain}}}
-	if err := job.Save(path, map[string]*job.Job{j.Name: j}); err != nil {
+	if err := saveJobFile(path, map[string]*job.Job{j.Name: j}); err != nil {
 		t.Fatal(err)
 	}
 	s := &Server{GrantKeys: store}
@@ -381,7 +381,7 @@ func TestAJobAMoveFailedOnStillOpens(t *testing.T) {
 			path := filepath.Join(dir, "jobs.json")
 			j := &job.Job{Name: "notion-guests", Dir: "/tmp", Argv: []string{"x"}, Exe: "/bin/x", Ask: job.AskNever, KeyID: "j-1",
 				Secrets: []job.Secret{{Var: "TOKEN", Path: "notion/token", Class: "env", DeviceDigest: "dd", KeyWrapped: hex.EncodeToString(sealed), Wrap: GrantWrapKeychain}}}
-			if err := job.Save(path, map[string]*job.Job{j.Name: j}); err != nil {
+			if err := saveJobFile(path, map[string]*job.Job{j.Name: j}); err != nil {
 				t.Fatal(err)
 			}
 			s := &Server{GrantKeys: store}
@@ -425,7 +425,7 @@ func TestAFailedMoveDeletesTheKeyItMade(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "jobs.json")
 	j := &job.Job{Name: "notion-guests", Dir: "/tmp", Argv: []string{"x"}, Exe: "/bin/x", Ask: job.AskNever, KeyID: "j-1",
 		Secrets: []job.Secret{{Var: "TOKEN", Path: "notion/token", Class: "env", DeviceDigest: "dd", KeyWrapped: hex.EncodeToString(sealed), Wrap: GrantWrapKeychain}}}
-	if err := job.Save(path, map[string]*job.Job{j.Name: j}); err != nil {
+	if err := saveJobFile(path, map[string]*job.Job{j.Name: j}); err != nil {
 		t.Fatal(err)
 	}
 	s := &Server{GrantKeys: store}
@@ -473,7 +473,7 @@ func manyWorld(t *testing.T, n int) (s *Server, store *memMover, ledger, jobs st
 	if err := s.saveLedger(); err != nil {
 		t.Fatal(err)
 	}
-	if err := job.Save(jobs, all); err != nil {
+	if err := saveJobFile(jobs, all); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.SetJobStore(jobs); err != nil {
@@ -640,7 +640,7 @@ func TestMoveLeavesAJobItCannotReadAlone(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "jobs.json")
 	j := &job.Job{Name: "notion-guests", Dir: "/tmp", Argv: []string{"x"}, Exe: "/bin/x", Ask: job.AskNever, KeyID: "j-1",
 		Secrets: []job.Secret{{Var: "TOKEN", Path: "notion/token", Class: "env", DeviceDigest: "dd", KeyWrapped: "0badf00d", Wrap: "future-v9"}}}
-	if err := job.Save(path, map[string]*job.Job{j.Name: j}); err != nil {
+	if err := saveJobFile(path, map[string]*job.Job{j.Name: j}); err != nil {
 		t.Fatal(err)
 	}
 	s := &Server{GrantKeys: store}

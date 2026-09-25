@@ -54,7 +54,7 @@ func orphanWorld(t *testing.T) (*Server, *memMover, string, string) {
 	}
 	j := &job.Job{Name: "notion", Dir: "/tmp", Argv: []string{"x"}, Exe: "/bin/x", Ask: job.AskNever, KeyID: "j-00000002",
 		Secrets: []job.Secret{{Var: "T", Path: "n/t", DeviceDigest: "d", KeyWrapped: "00", Wrap: GrantWrapKeychain}}}
-	if err := job.Save(jobs, map[string]*job.Job{j.Name: j}); err != nil {
+	if err := saveJobFile(jobs, map[string]*job.Job{j.Name: j}); err != nil {
 		t.Fatal(err)
 	}
 	s := &Server{GrantKeys: store}
@@ -153,7 +153,7 @@ func TestOrphanCleanupKeepsKeysOfRecordsTheLoadersSkipped(t *testing.T) {
 		Secrets: []job.Secret{{Var: "T", Path: "n/t", DeviceDigest: "d", KeyWrapped: "00", Wrap: GrantWrapKeychain}}}
 	all["later"] = &job.Job{Name: "later", Dir: "/tmp", Argv: []string{"x"}, Exe: "/bin/x", Ask: job.Ask("on-weekdays"), KeyID: "j-0000000c",
 		Secrets: []job.Secret{{Var: "T", Path: "n/t", DeviceDigest: "d", KeyWrapped: "00", Wrap: GrantWrapKeychain}}}
-	if err := job.Save(jobs, all); err != nil {
+	if err := saveJobFile(jobs, all); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"g-0000000a", "j-0000000b", "j-0000000c"} {

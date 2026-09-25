@@ -57,7 +57,7 @@ func keptWorld(t *testing.T, store *memMover, wrap string) (ledger, jobs string)
 	}
 	j := &job.Job{Name: "notion", Dir: "/tmp", Argv: []string{"x"}, Exe: "/bin/x", Ask: job.AskNever, KeyID: "j-00000002",
 		Secrets: []job.Secret{{Var: "T", Path: "n/t", Class: "env", DeviceDigest: "d", KeyWrapped: "00", Wrap: wrap}}}
-	if err := job.Save(jobs, map[string]*job.Job{j.Name: j}); err != nil {
+	if err := saveJobFile(jobs, map[string]*job.Job{j.Name: j}); err != nil {
 		t.Fatal(err)
 	}
 	return ledger, jobs
@@ -187,5 +187,40 @@ func TestWithoutUnreachable(t *testing.T) {
 		if (got == nil) != (c.want == nil) || (got != nil && !errors.Is(got, c.want)) || errors.Is(got, ErrGrantKeyUnreachable) {
 			t.Errorf("withoutUnreachable(%v) = %v, want %v", c.in, got, c.want)
 		}
+	}
+}
+
+// A revoke whose key delete really failed (not an enclave out of
+// reach) says so, in the response and in the trail, as a remove does; it
+// used to drop the error and let the caller believe the key was gone.
+func TestRevokeAndRemoveReportAFailedKeyDelete(t *testing.T) {
+	store := newMemMover()
+	ledger, jobs := keptWorld(t, store, GrantWrapKeychain)
+	s := &Server{GrantKeys: store}
+	load(t, s, ledger, jobs)
+	store.mu.Lock()
+	store.failDelete = errors.New("keychain says no")
+	store.mu.Unlock()
+
+	resp := s.revokeGrant("g-00000001", nil)
+	if !resp.OK {
+		t.Fatalf("the revoke failed: %s", resp.Error)
+	}
+	if !strings.Contains(resp.KeyNote, "keychain says no") {
+		t.Errorf("revoke's key note = %q, want the delete's failure", resp.KeyNote)
+	}
+	if c := lastCause(t, s); !strings.Contains(c, "keychain says no") {
+		t.Errorf("revoke's audit cause %q does not say the delete failed", c)
+	}
+
+	resp = s.removeJob("notion", nil)
+	if !resp.OK {
+		t.Fatalf("the remove failed: %s", resp.Error)
+	}
+	if !strings.Contains(resp.KeyNote, "keychain says no") {
+		t.Errorf("remove's key note = %q, want the delete's failure", resp.KeyNote)
+	}
+	if c := lastCause(t, s); !strings.Contains(c, "keychain says no") {
+		t.Errorf("remove's audit cause %q does not say the delete failed", c)
 	}
 }
