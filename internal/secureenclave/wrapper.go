@@ -70,6 +70,40 @@ func newWrapper(root, tag string, enc enclave) *Wrapper {
 	return &Wrapper{path: filepath.Join(root, SealedFile), tag: tag, enc: enc}
 }
 
+// stagedSuffix names the sealed file a move writes and verifies before it
+// becomes the vault's (`jit vault rekey --wrapper secure-enclave`): until the
+// rename, keystore.Open still sees a keychain vault.
+const stagedSuffix = ".next"
+
+// NewStaged returns the production Wrapper over the STAGED sealed file, the
+// one a move seals to and then opens once to verify.
+func NewStaged(root string) *Wrapper {
+	w := New(root)
+	w.path += stagedSuffix
+	return w
+}
+
+// PromoteStaged renames the verified staged file over the vault's sealed
+// key file, atomically: from this rename on, the vault is an enclave vault.
+func PromoteStaged(root string) error {
+	real := filepath.Join(root, SealedFile)
+	if err := os.Rename(real+stagedSuffix, real); err != nil {
+		return fmt.Errorf("promoting the staged sealed key: %w", err)
+	}
+	return nil
+}
+
+// RemoveStaged removes a staged file an interrupted move left, which was
+// never verified. The enclave key stays: the real sealed file, if any,
+// still needs it.
+func RemoveStaged(root string) error {
+	err := os.Remove(filepath.Join(root, SealedFile) + stagedSuffix)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("removing the staged sealed key: %w", err)
+	}
+	return nil
+}
+
 // Presence is what can be said about a vault's enclave key without a prompt.
 type Presence int
 
