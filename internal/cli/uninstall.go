@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jitpass/jit/internal/guard"
+	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/vault"
 	"github.com/jitpass/jit/internal/wrap"
 )
@@ -321,6 +322,9 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 		} else {
 			note("Removed global config at %s.", jitConfigDir)
 		}
+		// Which key to delete is read from the vault's own files, so it is
+		// decided before they go (see `jit vault delete`).
+		keys := openKeyStore(vaultRoot)
 		if err := os.RemoveAll(vaultRoot); err != nil {
 			failures = append(failures, fmt.Sprintf("removing %s: %v", vaultRoot, err))
 		} else {
@@ -328,8 +332,10 @@ func runUninstall(cmd *cobra.Command, _ []string) error {
 		}
 		// Last of the purge, and only once the vault is gone: a key left
 		// behind protects nothing, and makes the next install look set up.
-		if err := deleteVaultKeys(); err != nil {
-			failures = append(failures, fmt.Sprintf("removing the vault's keychain key: %v", err))
+		if err := deleteVaultKeys(keys); err != nil {
+			failures = append(failures, fmt.Sprintf("removing the vault's key: %v", err))
+		} else if keys.Kind() == keystore.KindSecureEnclave {
+			note("Removed the vault's key from this Mac's Secure Enclave.")
 		} else {
 			note("Removed the vault's key from the macOS keychain.")
 		}

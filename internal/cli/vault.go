@@ -1014,7 +1014,7 @@ var vaultInitCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit vault init: %w", err)
 		}
-		if err := keystore.Open(root).Init(); err != nil {
+		if err := openKeyStore(root).Init(); err != nil {
 			return fmt.Errorf("jit vault init: %w", err)
 		}
 		// Pin this machine's envelope-recipient identifier now, at init,
@@ -2419,8 +2419,17 @@ var vaultDeleteCmd = &cobra.Command{
 				noBackup = " No vault export exists, every secret will be unrecoverable."
 			}
 		}
+		// Resolved BEFORE anything is removed: the backend is read from the
+		// vault's own files (keystore.Open), and once DeleteLocalState has
+		// taken the sealed key file an enclave vault would look like a
+		// keychain one, leaving its enclave key behind.
+		ks := openKeyStore(root)
+		keyWhere := "in the macOS keychain"
+		if ks.Kind() == keystore.KindSecureEnclave {
+			keyWhere = "in this Mac's Secure Enclave"
+		}
 		if !vaultDeleteYes && !confirmPrompt(cmd, fmt.Sprintf(
-			"Permanently destroy the ENTIRE vault, %s, the undo backups, and the encryption key in the macOS keychain?%s [y/N] ", countWord(len(paths), "secret", "secrets"), noBackup)) {
+			"Permanently destroy the ENTIRE vault, %s, the undo backups, and the encryption key %s?%s [y/N] ", countWord(len(paths), "secret", "secrets"), keyWhere, noBackup)) {
 			fmt.Fprintln(cmd.OutOrStdout(), "Aborted. Nothing was deleted.")
 			return nil
 		}
@@ -2445,10 +2454,10 @@ var vaultDeleteCmd = &cobra.Command{
 		// above, a keychain entry that couldn't be removed (or was already
 		// gone) protects nothing — warn rather than leave the command
 		// half-failed over the least consequential step.
-		if err := keystore.Open(root).Delete(); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: couldn't remove the vault's keychain entry (it may already be gone): %v\n", err)
+		if err := ks.Delete(); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: couldn't remove the vault's key %s (it may already be gone): %v\n", keyWhere, err)
 		} else {
-			removed = append(removed, "the vault's macOS keychain entry")
+			removed = append(removed, "the vault's key "+keyWhere)
 		}
 		if locked := lockAgentAfterMEKDeletion(root, cmd.ErrOrStderr()); locked != "" {
 			removed = append(removed, locked)
@@ -2752,7 +2761,7 @@ func openVaultFreshAuth() (*vault.Vault, error) {
 	}
 	return &vault.Vault{
 		Root:        root,
-		KeyWrapper:  keystore.Open(root).NewWrapper(),
+		KeyWrapper:  openKeyStore(root).NewWrapper(),
 		RecipientID: deviceID,
 		RefResolver: onepassword.New(),
 	}, nil
@@ -2779,7 +2788,7 @@ func openVault() (*vault.Vault, error) {
 		return nil, fmt.Errorf("determining device recipient ID: %w", err)
 	}
 
-	var kw vault.KeyWrapper = keystore.Open(root).NewWrapper()
+	var kw vault.KeyWrapper = openKeyStore(root).NewWrapper()
 	// The retry-configured client (agentClient): when the agent is
 	// installed, a dial failure is usually its own restart gap (`jit service
 	// restart`, stale-binary self-retirement) — without the retry, a

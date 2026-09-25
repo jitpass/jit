@@ -6,6 +6,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,7 +19,10 @@ import (
 	"github.com/jitpass/jit/internal/vault"
 )
 
-var vaultRekeyYes bool
+var (
+	vaultRekeyYes     bool
+	vaultRekeyWrapper string
+)
 
 // rekeyMarkerPath is the in-progress marker `jit vault rekey` holds for
 // the duration of a rotation. While it exists, openVault/openVaultFreshAuth
@@ -61,6 +65,18 @@ var vaultRekeyCmd = &cobra.Command{
 			return fmt.Errorf("jit vault rekey: %w", err)
 		}
 
+		if vaultRekeyWrapper != "" {
+			return runVaultMove(cmd, root, vaultRekeyWrapper)
+		}
+		// A move and a rotation share the marker, never each other's work.
+		if target := moveInProgress(root); target != "" {
+			return fmt.Errorf("jit vault rekey: a move of the vault key is unfinished; run `jit vault rekey --wrapper %s` to finish it", target)
+		}
+		// Rotation rewrites the keychain item; an enclave vault does not use
+		// one. Rotating an enclave vault's key is not built yet.
+		if openKeyStore(root).Kind() == keystore.KindSecureEnclave {
+			return errors.New("jit vault rekey: this vault's key is in the Secure Enclave, and rotating it is not available yet")
+		}
 		resume := rekeyInProgress(root)
 		// Rekey rotates the keychain item's own bytes through staged items;
 		// it stays keychain-specific until plan step B4.
@@ -168,5 +184,10 @@ func lockAgent() {
 
 func init() {
 	vaultRekeyCmd.Flags().BoolVarP(&vaultRekeyYes, "yes", "y", false, "skip the confirmation prompt")
+	// Hidden until JitPass ships the signed helper bundle that can reach the
+	// enclave (design/secure-enclave-plan.md, A2): before that, every jit
+	// in the field would only be refused.
+	vaultRekeyCmd.Flags().StringVar(&vaultRekeyWrapper, "wrapper", "", `move the vault key: "secure-enclave" or "keychain"`)
+	_ = vaultRekeyCmd.Flags().MarkHidden("wrapper")
 	vaultCmd.AddCommand(vaultRekeyCmd)
 }
