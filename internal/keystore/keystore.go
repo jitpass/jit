@@ -27,6 +27,7 @@ package keystore
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -144,7 +145,11 @@ func (keychainStore) NewFetcher() Fetcher { return keychainwrap.New() }
 
 func (keychainStore) NewWrapper() Wrapper { return keychainwrap.New() }
 
-func (keychainStore) Init() error { return keychainwrap.New().EnsureMEK() }
+func (keychainStore) Init() error { return initKeychain() }
+
+// initKeychain creates the keychain key; a var so no test reaches the
+// production keychain item (keychainwrap's TEST-ONLY rule).
+var initKeychain = func() error { return keychainwrap.New().EnsureMEK() }
 
 func (keychainStore) Delete() error { return keychainwrap.New().DeleteMEK() }
 
@@ -168,7 +173,10 @@ func (s enclaveStore) Presence() Presence {
 	case secureenclave.Present:
 		return Present
 	case secureenclave.Absent:
-		return Absent
+		// Open saw a sealed file; its absence now is a race or a failed
+		// check, never proof that no key exists, which is what callers
+		// read Absent as.
+		return Indeterminate
 	case secureenclave.KeyLost:
 		return KeyLost
 	case secureenclave.Unavailable:
@@ -181,18 +189,26 @@ func (s enclaveStore) NewFetcher() Fetcher { return newEnclaveWrapper(s.root) }
 
 func (s enclaveStore) NewWrapper() Wrapper { return newEnclaveWrapper(s.root) }
 
-// errEnclaveKeyLost is what `jit vault init` says over an enclave vault whose
-// key is gone: making a new key would not open a single existing secret.
-var errEnclaveKeyLost = errors.New("this vault's key is not in this Mac's Secure Enclave; restore it from a recovery file with `jit vault import <file>`")
+// LostSealedFile is where Init sets a sealed key file aside when this Mac's
+// enclave has no key for it: kept, not deleted, because it is the one record
+// of which key the old secrets were sealed under.
+const LostSealedFile = vault.SealedKeyFile + ".lost"
 
-// Init has nothing to create for an enclave vault: the key was made when the
-// vault moved into the enclave. It confirms the key is there instead.
+// Init has nothing to create for an enclave vault whose key is there: it was
+// made when the vault moved into the enclave. When the key is LOST it starts
+// over the way a keychain vault whose key is gone does: the sealed file is
+// set aside and a new keychain key is made, so `jit vault import` can
+// restore a recovery file. The old secrets stay unreadable, as they already
+// were; nothing else would ever open them again.
 func (s enclaveStore) Init() error {
 	switch s.Presence() {
 	case Present:
 		return nil
 	case KeyLost:
-		return errEnclaveKeyLost
+		if err := os.Rename(filepath.Join(s.root, vault.SealedKeyFile), filepath.Join(s.root, LostSealedFile)); err != nil {
+			return fmt.Errorf("setting the lost vault key's file aside: %w", err)
+		}
+		return keychainStore{}.Init()
 	case Unavailable:
 		return secureenclave.ErrUnavailable
 	}
