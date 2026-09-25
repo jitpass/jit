@@ -36,6 +36,7 @@ jit job allow NAME [--profile NAME] [--show VAR] [--output DIR] -- COMMAND [ARGS
 ```
       --ask string           each-time (Touch ID per run) or never (runs unasked until you remove it) (default "each-time")
       --description string   one line an AI tool sees in the job list
+      --dry-run              check the job and show what approving it would do, without asking or keeping anything
       --output stringArray   a folder the job writes into (repeatable)
       --profile string       profile whose secrets the job gets
       --replace              approve over an existing job of the same name

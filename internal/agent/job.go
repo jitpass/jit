@@ -64,48 +64,65 @@ func (s *Server) saveJobsLocked() error {
 	return job.Save(s.jobsPath, s.jobs)
 }
 
-func (s *Server) allowJob(req Request, c *caller) Response {
-	if c == nil {
-		return Response{OK: false, Error: "job_allow: caller could not be identified"}
-	}
+// preparedJob is everything approval settles before the Touch ID: the
+// proposal checked and resolved by the service, the folder fingerprinted,
+// and the sentence the prompt will show. job_allow goes on to prompt with it;
+// job_preview hands it back without prompting. One function for both, so the
+// sheet the app shows can never promise what approval would then refuse.
+type preparedJob struct {
+	name, dir, exe           string
+	spec                     *JobSpec
+	ask                      job.Ask
+	outputs, extra           []string
+	sources                  []JobSecretSource
+	profileName, profileRoot string
+	before                   job.Fingerprint
+	shownCount               int
+	exists                   bool
+	reason                   string
+}
+
+// prepareJob runs every check approval makes before its prompt. The string
+// is the refusal, without the op's prefix.
+func (s *Server) prepareJob(req Request) (*preparedJob, string) {
 	spec := req.JobSpec
 	if spec == nil {
-		return Response{OK: false, Error: "job_allow: missing job_spec"}
+		return nil, "missing job_spec"
 	}
 	if err := job.ValidateName(req.JobName); err != nil {
-		return Response{OK: false, Error: "job_allow: " + err.Error()}
+		return nil, err.Error()
 	}
 	ask := job.Ask(spec.Ask)
 	if ask == "" {
 		ask = job.AskEachTime
 	}
 	if !ask.Valid() {
-		return Response{OK: false, Error: fmt.Sprintf("job_allow: ask must be %s or %s", job.AskEachTime, job.AskNever)}
+		return nil, fmt.Sprintf("ask must be %s or %s", job.AskEachTime, job.AskNever)
 	}
 	if ask == job.AskNever && s.GrantKeys == nil {
 		// A job that never asks runs on a key of its own, in the same store
 		// standing grants use. Without one it could only ever prompt, which is
 		// not what the human would be approving.
-		return Response{OK: false, Error: "job_allow: this service has no key store wired, so it cannot keep a job that never asks - approve it as each-time"}
+		return nil, "this service has no key store wired, so it cannot keep a job that never asks - approve it as each-time"
 	}
 	if err := job.CheckArgv(spec.Argv); err != nil {
-		return Response{OK: false, Error: "job_allow: " + err.Error()}
+		return nil, err.Error()
 	}
 	if !filepath.IsAbs(spec.Dir) {
-		return Response{OK: false, Error: "job_allow: the job folder must be an absolute path"}
+		return nil, "the job folder must be an absolute path"
 	}
 	// Resolved through symlinks: the fingerprint walks the real folder, and a
 	// job stored under a symlinked path once fingerprinted as empty.
 	dir, err := filepath.EvalSymlinks(filepath.Clean(spec.Dir))
 	if err != nil {
-		return Response{OK: false, Error: fmt.Sprintf("job_allow: %s is not a folder", spec.Dir)}
+		return nil, fmt.Sprintf("%s is not a folder", spec.Dir)
 	}
 	if info, serr := os.Stat(dir); serr != nil || !info.IsDir() {
-		return Response{OK: false, Error: fmt.Sprintf("job_allow: %s is not a folder", dir)}
+		return nil, fmt.Sprintf("%s is not a folder", dir)
 	}
 	exe, err := job.ResolveExe(spec.Argv[0], dir, spec.PathEnv)
 	if err != nil {
-		return Response{OK: false, Error: "job_allow: " + err.Error()}
+		return nil, err.Error()
 	}
 	outputs := make([]string, 0, len(spec.Outputs))
 	for _, o := range spec.Outputs {
@@ -117,35 +134,32 @@ func (s *Server) allowJob(req Request, c *caller) Response {
 			// Everything under an output is skipped by the fingerprint, so an
 			// output that holds the whole folder would leave nothing to stop
 			// the job on. Refused rather than fingerprinted empty.
-			return Response{OK: false, Error: fmt.Sprintf("job_allow: --output %s holds the job's own folder, so no edit could ever stop the job - name the folder it writes into, inside or beside this one", o)}
+			return nil, fmt.Sprintf("--output %s holds the job's own folder, so no edit could ever stop the job - name the folder it writes into, inside or beside this one", o)
 		}
 		outputs = append(outputs, o)
 	}
 	extra, err := job.ExternalFiles(spec.Argv, dir, outputs)
 	if err != nil {
-		return Response{OK: false, Error: "job_allow: " + err.Error()}
+		return nil, err.Error()
 	}
 
 	s.jobMu.Lock()
 	_, exists := s.jobs[req.JobName]
 	ready := s.jobsPath != ""
 	s.jobMu.Unlock()
-	if exists && !spec.Replace {
-		return Response{OK: false, Error: fmt.Sprintf("job_allow: a job named %s exists - remove it first, or approve it again with --replace", req.JobName)}
-	}
 	if !ready {
-		return Response{OK: false, Error: "job_allow: this service has no usable job list, so the job could not be kept (see the service log)"}
+		return nil, "this service has no usable job list, so the job could not be kept (see the service log)"
 	}
 
 	var sources []JobSecretSource
 	profileName, profileRoot := "", ""
 	if spec.Profile != nil {
 		if s.OnResolveJob == nil {
-			return Response{OK: false, Error: "job_allow: this service has no profile resolver wired"}
+			return nil, "this service has no profile resolver wired"
 		}
 		sources, err = s.OnResolveJob(*spec.Profile)
 		if err != nil {
-			return Response{OK: false, Error: "job_allow: " + err.Error()}
+			return nil, err.Error()
 		}
 		profileName, profileRoot = spec.Profile.Name, spec.Profile.Root
 	}
@@ -162,15 +176,15 @@ func (s *Server) allowJob(req Request, c *caller) Response {
 			names = append(names, v)
 		}
 		sort.Strings(names)
-		return Response{OK: false, Error: fmt.Sprintf("job_allow: --show names %s, which the profile does not set", strings.Join(names, ", "))}
+		return nil, fmt.Sprintf("--show names %s, which the profile does not set", strings.Join(names, ", "))
 	}
 
 	before, err := job.Compute(dir, exe, outputs, extra)
 	if err != nil {
-		return Response{OK: false, Error: "job_allow: fingerprinting the folder: " + err.Error()}
+		return nil, "fingerprinting the folder: " + err.Error()
 	}
 	if len(before.Files) == 0 {
-		return Response{OK: false, Error: fmt.Sprintf("job_allow: %s has no files jit can fingerprint, so no edit could ever stop the job", dir)}
+		return nil, fmt.Sprintf("%s has no files jit can fingerprint, so no edit could ever stop the job", dir)
 	}
 
 	shownCount := 0
@@ -179,7 +193,29 @@ func (s *Server) allowJob(req Request, c *caller) Response {
 			shownCount++
 		}
 	}
-	reason := jobAllowReason(jobLabel(dir, spec.Argv), secretGroups(sources), len(sources), shownCount, ask)
+	return &preparedJob{
+		name: req.JobName, dir: dir, exe: exe, spec: spec, ask: ask, outputs: outputs, extra: extra,
+		sources: sources, profileName: profileName, profileRoot: profileRoot, before: before,
+		shownCount: shownCount, exists: exists,
+		reason: jobAllowReason(jobLabel(dir, spec.Argv), secretGroups(sources), len(sources), shownCount, ask),
+	}, ""
+}
+
+func (s *Server) allowJob(req Request, c *caller) Response {
+	if c == nil {
+		return Response{OK: false, Error: "job_allow: caller could not be identified"}
+	}
+	pj, refusal := s.prepareJob(req)
+	if refusal != "" {
+		return Response{OK: false, Error: "job_allow: " + refusal}
+	}
+	if pj.exists && !pj.spec.Replace {
+		return Response{OK: false, Error: fmt.Sprintf("job_allow: a job named %s exists - remove it first, or approve it again with --replace", req.JobName)}
+	}
+	spec, ask, dir, exe, outputs, extra := pj.spec, pj.ask, pj.dir, pj.exe, pj.outputs, pj.extra
+	sources, profileName, profileRoot, before := pj.sources, pj.profileName, pj.profileRoot, pj.before
+	reason := pj.reason
+
 	event, mek, err := s.discloseChallenge(reason, OpJobAllow, req.JobName, c)
 	if event != nil && s.OnSessionEvent != nil {
 		s.OnSessionEvent(*event)
@@ -768,4 +804,22 @@ func changeReason(changes []job.Change, when string) string {
 		first += ". " + hint
 	}
 	return first
+}
+
+// previewJob is job_preview: prepareJob's result without the prompt.
+func (s *Server) previewJob(req Request) *JobPreview {
+	pj, refusal := s.prepareJob(req)
+	if refusal != "" {
+		return &JobPreview{Refusal: "job_allow: " + refusal}
+	}
+	_, program := job.Label(pj.dir, pj.spec.Argv)
+	p := &JobPreview{
+		Dir: pj.dir, Exe: pj.exe, Program: program, Files: len(pj.before.Files), Extra: pj.extra,
+		Ask: string(pj.ask), Exists: pj.exists, Prompt: pj.reason,
+	}
+	for _, src := range pj.sources {
+		p.Secrets = append(p.Secrets, JobSecretStatus{Var: src.Var, Path: src.Path, Shown: containsString(pj.spec.Shown, src.Var)})
+	}
+	sort.Slice(p.Secrets, func(a, b int) bool { return p.Secrets[a].Var < p.Secrets[b].Var })
+	return p
 }

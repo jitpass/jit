@@ -113,3 +113,16 @@ func (c *Client) JobDismiss(id string) error {
 	_, err := c.call(Request{Op: OpJobDismiss, ProposalID: id})
 	return err
 }
+
+// JobPreview runs approval's checks without prompting and reports what
+// approving would do. A refusal is in the result, not the error.
+func (c *Client) JobPreview(name string, spec JobSpec) (JobPreview, error) {
+	resp, err := c.call(Request{Op: OpJobPreview, JobName: name, JobSpec: &spec})
+	if err != nil {
+		return JobPreview{}, err
+	}
+	if resp.Preview == nil {
+		return JobPreview{}, fmt.Errorf("agent: preview not reported back")
+	}
+	return *resp.Preview, nil
+}
