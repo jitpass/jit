@@ -922,3 +922,102 @@ func TestConcurrentMixedKindServesNeverUseAClosedKey(t *testing.T) {
 		t.Errorf("%d serves missed", n)
 	}
 }
+
+// revokeRaceStore is a memMover whose Delete stops until released, so a
+// revoke can be held after it has retired the grant and before the store
+// forgets the key; every key it hands out records its Close.
+type revokeRaceStore struct {
+	*memMover
+	entered, release chan struct{}
+	enterOnce        sync.Once
+
+	mu     sync.Mutex
+	handed []*closeRecorded
+}
+
+type closeRecorded struct {
+	GrantKey
+	closed atomic.Bool
+}
+
+func (k *closeRecorded) Wrap() string { return keyWrap(k.GrantKey) }
+func (k *closeRecorded) Close()       { k.closed.Store(true); k.GrantKey.Close() }
+
+func (r *revokeRaceStore) LoadWrap(id, wrap string) (GrantKey, error) {
+	k, err := r.memMover.LoadWrap(id, wrap)
+	if err != nil {
+		return nil, err
+	}
+	ck := &closeRecorded{GrantKey: k}
+	r.mu.Lock()
+	r.handed = append(r.handed, ck)
+	r.mu.Unlock()
+	return ck, nil
+}
+
+func (r *revokeRaceStore) Delete(id string) error {
+	r.enterOnce.Do(func() { close(r.entered) })
+	<-r.release
+	return r.memMover.Delete(id)
+}
+
+// Third review of #168: a revoke that lands after a serve found the grant
+// live, and before the serve opens, must stop the serve. The serve used to
+// find no cached key (the revoke had closed it), load it again from a store
+// the revoke had not yet deleted it from, serve the secret after the
+// revoke, and leave the key cached on a grant no longer in s.standing, so
+// that nothing would ever close it.
+func TestARevokeBetweenTheCheckAndTheOpenStopsTheServe(t *testing.T) {
+	store := &revokeRaceStore{memMover: newMemMover(), entered: make(chan struct{}), release: make(chan struct{})}
+	name, parent := ownNameAndParent(t)
+	anchor, ok := lineage.Describe(parent)
+	if !ok || anchor.ExecPath == "" {
+		t.Skip("the test's parent has no executable path to anchor under")
+	}
+	k, err := store.CreateWrap("g-00000001", GrantWrapKeychain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := k.Seal(make([]byte, 32), "env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped := []byte("wrapped")
+	d := wrappedDigest(wrapped)
+	g := &standingGrant{id: "g-00000001", anchorPath: anchor.ExecPath, name: name,
+		secrets: map[string]standingSecret{d: {path: "p", class: "env", digest: d, grantWrapped: sealed, wrap: GrantWrapKeychain}}}
+	s := &Server{GrantKeys: store, standing: map[string]*standingGrant{g.id: g}}
+	c := &caller{pid: int32(os.Getpid())} // #nosec G115 -- test pid
+
+	revoked := make(chan bool)
+	s.standingChecked = func(string) {
+		// The serve has found the grant live. The revoke now runs up to
+		// its key delete, and holds there while the serve goes on.
+		go func() {
+			ok, _ := s.revokeStanding(g.id, nil)
+			revoked <- ok
+		}()
+		<-store.entered
+	}
+	_, _, served := s.standingUnwrap(c, wrapped)
+	close(store.release)
+	if !<-revoked {
+		t.Fatal("the revoke did not happen")
+	}
+	if served {
+		t.Error("a secret was served after its grant was revoked")
+	}
+	g.keyMu.Lock()
+	cached := g.key
+	g.keyMu.Unlock()
+	if cached != nil {
+		t.Error("a key is left cached on the revoked grant")
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	for i, k := range store.handed {
+		if !k.closed.Load() {
+			t.Errorf("key %d handed out was never closed", i)
+		}
+	}
+}

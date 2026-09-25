@@ -1139,3 +1139,56 @@ func TestFitLabelDropsTheFolderBeforeCuttingTheProgram(t *testing.T) {
 		t.Fatalf("run reason = %q", got)
 	}
 }
+
+// removeDuringLoad is a key store that removes a job while the job's key is
+// being loaded for a run, once, and records whether the key it handed out
+// was closed.
+type removeDuringLoad struct {
+	*memGrantKeys
+	once   sync.Once
+	remove func()
+	handed []*closeRecorded
+	mu     sync.Mutex
+}
+
+func (r *removeDuringLoad) Load(id string) (GrantKey, error) {
+	k, err := r.memGrantKeys.Load(id)
+	if err != nil {
+		return nil, err
+	}
+	r.once.Do(r.remove)
+	ck := &closeRecorded{GrantKey: k}
+	r.mu.Lock()
+	r.handed = append(r.handed, ck)
+	r.mu.Unlock()
+	return ck, nil
+}
+
+// Third review of #168, the job half of the revoke race: a never-ask job
+// removed while its run is opening its key does not run. A job's key is
+// never cached (each run loads it and closes it), so nothing is left
+// behind; the stored-job check after the open is what refuses the run.
+func TestANeverJobRemovedWhileItsKeyOpensDoesNotRun(t *testing.T) {
+	r := newJobRig(t)
+	if _, err := r.c.JobAllow("notion-guests", r.neverSpec()); err != nil {
+		t.Fatalf("JobAllow: %v", err)
+	}
+	store := &removeDuringLoad{memGrantKeys: r.keys}
+	store.remove = func() {
+		if resp := r.s.removeJob("notion-guests", nil); !resp.OK {
+			t.Errorf("remove: %s", resp.Error)
+		}
+	}
+	r.s.GrantKeys = store
+	if _, err := r.c.JobRun("notion-guests"); err == nil || !strings.Contains(err.Error(), "while this run waited") {
+		t.Fatalf("run of a job removed while its key opened: %v", err)
+	}
+	if r.runs() != 0 {
+		t.Fatal("it ran")
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.handed) != 1 || !store.handed[0].closed.Load() {
+		t.Fatalf("the job's key was not closed after the refused run (%d handed out)", len(store.handed))
+	}
+}

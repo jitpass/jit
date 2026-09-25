@@ -244,6 +244,29 @@ type standingGrant struct {
 
 	keyMu sync.Mutex
 	key   GrantKey
+	// dead is set, under keyMu, once the grant is revoked (or the service
+	// closes, or a create that published it fails): openStanding then
+	// refuses to load or use a key for it. A serve checks the grant is live
+	// under grantMu and opens under keyMu, and a revoke can land between the
+	// two; without this the serve would find no cached key, load it again
+	// from a store the revoke has not yet deleted it from, serve a secret
+	// after the revoke, and leave the key cached on a grant closeStanding no
+	// longer sees. See retire.
+	dead bool
+}
+
+// retire closes g's cached key and marks g dead, both under keyMu, so no
+// serve opens with the key afterwards and none loads it again. Called with
+// grantMu NOT held (keyMu is never held while taking grantMu, and a serve
+// holds keyMu across a key load).
+func (g *standingGrant) retire() {
+	g.keyMu.Lock()
+	defer g.keyMu.Unlock()
+	if g.key != nil {
+		g.key.Close()
+		g.key = nil
+	}
+	g.dead = true
 }
 
 func (g *standingGrant) secretPaths() []string {
@@ -739,10 +762,15 @@ func (s *Server) createStandingGrant(req Request, target lineage.Process, profil
 		// that could not be written means it will not survive a restart.
 		// Say so rather than pretend: the human just approved something
 		// described as standing.
+		// A serve may have found it while it was published, so it is
+		// retired under keyMu, as a revoke does, rather than its key closed
+		// from under an open.
 		s.grantMu.Lock()
 		delete(s.standing, id)
 		s.grantMu.Unlock()
-		return fail(fmt.Sprintf("grant_create: the grant could not be recorded (%s), no grant created", err))
+		g.retire()
+		_ = s.GrantKeys.Delete(id)
+		return Response{OK: false, Error: fmt.Sprintf("grant_create: the grant could not be recorded (%s), no grant created", err)}
 	}
 	return Response{OK: true, Grants: []GrantStatus{st}}
 }
@@ -777,6 +805,9 @@ func (s *Server) standingUnwrap(c *caller, wrapped []byte) (dek []byte, path str
 			continue
 		}
 		s.grantMu.Unlock()
+		if s.standingChecked != nil {
+			s.standingChecked(g.id)
+		}
 		out, err := s.openStanding(g, sec)
 		if err != nil {
 			// A grant whose key is gone (deleted out of band) cannot serve;
@@ -802,6 +833,10 @@ func (s *Server) standingUnwrap(c *caller, wrapped []byte) (dek []byte, path str
 // is sealed for, which is never tried.
 var errOtherKind = errors.New("the grant's key is not the kind its entry is sealed for")
 
+// errGrantEnded: the grant was revoked (or the service closed) after the
+// serve checked it was live.
+var errGrantEnded = errors.New("the grant has ended")
+
 // openStanding opens sec with g's key of the kind sec is sealed for (not
 // whichever kind exists: a move that made the new key and then failed
 // leaves the grant sealed for its old one, and that is the key that opens
@@ -814,6 +849,11 @@ var errOtherKind = errors.New("the grant's key is not the kind its entry is seal
 // freed. The price is that serves of ONE grant open one at a time; serves
 // of different grants never wait on each other, and nothing under keyMu
 // takes grantMu.
+//
+// A retired grant (dead) is refused before anything is loaded: the liveness
+// check the serve made under grantMu may be stale by now (standingGrant.dead).
+// A revoke that lands while this holds keyMu waits for it, and then closes
+// the key it cached.
 func (s *Server) openStanding(g *standingGrant, sec standingSecret) ([]byte, error) {
 	wrap := sec.wrap
 	if wrap == "" {
@@ -821,6 +861,9 @@ func (s *Server) openStanding(g *standingGrant, sec standingSecret) ([]byte, err
 	}
 	g.keyMu.Lock()
 	defer g.keyMu.Unlock()
+	if g.dead {
+		return nil, errGrantEnded
+	}
 	if g.key == nil || keyWrap(g.key) != wrap {
 		key, err := s.loadGrantKey(g.id, wrap)
 		if err != nil {
@@ -929,12 +972,10 @@ func (s *Server) revokeStanding(id string, c *caller) (revoked bool, keyNote str
 	}
 	s.grantMu.Unlock()
 
-	g.keyMu.Lock()
-	if g.key != nil {
-		g.key.Close()
-		g.key = nil
-	}
-	g.keyMu.Unlock()
+	// Dead before the key is deleted: a serve that checked the grant was
+	// live before the delete above must not load the key again in the
+	// window before the store forgets it.
+	g.retire()
 	if s.GrantKeys != nil {
 		keyNote = keyNoteOf(s.deleteKeyOf(id, mayBeEnclave))
 	}
@@ -965,9 +1006,11 @@ func (s *Server) revokeStanding(id string, c *caller) (revoked bool, keyNote str
 	return true, keyNote
 }
 
-// closeStanding releases every cached grant key. Called from Server.Close;
-// the ledger and the keychain items are untouched, since the grants outlive
-// the process by design.
+// closeStanding releases every cached grant key and retires every grant, so
+// a serve still in flight cannot load a key again after it and leave it
+// cached past the close. Called from Server.Close; the ledger and the
+// keychain items are untouched, since the grants outlive the process by
+// design (the next start loads them afresh).
 func (s *Server) closeStanding() {
 	s.flushLedger()
 	s.grantMu.Lock()
@@ -977,11 +1020,6 @@ func (s *Server) closeStanding() {
 	}
 	s.grantMu.Unlock()
 	for _, g := range grants {
-		g.keyMu.Lock()
-		if g.key != nil {
-			g.key.Close()
-			g.key = nil
-		}
-		g.keyMu.Unlock()
+		g.retire()
 	}
 }
