@@ -13,7 +13,13 @@ import (
 // it. The agent resolves and fingerprints everything itself; spec is the
 // proposal, and the status returned is what was actually stored.
 func (c *Client) JobAllow(name string, spec JobSpec) (JobStatus, error) {
-	resp, err := c.call(Request{Op: OpJobAllow, JobName: name, JobSpec: &spec})
+	return c.JobAllowProposal(name, spec, "")
+}
+
+// JobAllowProposal is JobAllow for a job an agent proposed: the same
+// approval, plus the proposal's id, so it stops waiting once approved.
+func (c *Client) JobAllowProposal(name string, spec JobSpec, proposalID string) (JobStatus, error) {
+	resp, err := c.call(Request{Op: OpJobAllow, JobName: name, JobSpec: &spec, ProposalID: proposalID})
 	if err != nil {
 		return JobStatus{}, err
 	}
@@ -77,4 +83,33 @@ func (c *Client) JobRun(name string) (JobResult, error) {
 		return JobResult{}, fmt.Errorf("agent: job ran but no result came back")
 	}
 	return *resp.JobResult, nil
+}
+
+// JobRequest proposes a job for the human to approve in JitPass. It
+// creates nothing. ErrNoJobBroker's text in the error means no app is
+// running; the caller then prints the `jit job allow` line instead.
+func (c *Client) JobRequest(name string, spec JobSpec, why string) (JobProposal, error) {
+	resp, err := c.call(Request{Op: OpJobRequest, JobName: name, JobSpec: &spec, Why: why})
+	if err != nil {
+		return JobProposal{}, err
+	}
+	if len(resp.Proposals) != 1 {
+		return JobProposal{}, fmt.Errorf("agent: proposal kept but not reported back")
+	}
+	return resp.Proposals[0], nil
+}
+
+// JobProposals lists the proposals waiting for the human. No prompt.
+func (c *Client) JobProposals() ([]JobProposal, error) {
+	resp, err := c.call(Request{Op: OpJobProposals})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Proposals, nil
+}
+
+// JobDismiss drops a proposal. No prompt.
+func (c *Client) JobDismiss(id string) error {
+	_, err := c.call(Request{Op: OpJobDismiss, ProposalID: id})
+	return err
 }

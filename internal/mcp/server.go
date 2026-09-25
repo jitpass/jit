@@ -23,6 +23,9 @@ import (
 type Backend interface {
 	ListJobs() ([]agent.JobStatus, error)
 	RunJob(name string) (agent.JobResult, error)
+	// RequestJob hands a proposal to JitPass to show the human. An error
+	// carrying agent.ErrNoJobBroker's text means no app is running.
+	RequestJob(name string, spec agent.JobSpec, why string) error
 }
 
 // Server answers MCP over one stdin/stdout pair.
@@ -280,7 +283,7 @@ func (s *Server) call(params json.RawMessage) (callResult, *rpcError) {
 		if err := json.Unmarshal(p.Arguments, &a); err != nil {
 			return callResult{}, &rpcError{codeInvalidParams, "request_job: bad arguments"}
 		}
-		return requestJob(a), nil
+		return s.requestJob(a), nil
 	}
 	return callResult{}, &rpcError{codeInvalidParams, "unknown tool: " + p.Name}
 }
@@ -395,12 +398,12 @@ type jobProposal struct {
 	Why     string   `json:"why"`
 }
 
-// requestJob answers a proposal with the command the human runs to approve
-// it. It creates nothing and sends nothing to the service: approval is the
-// human's, at their own terminal, reading the whole job before Touch ID. The
-// proposal is checked here only so the model hears a refusal now rather than
-// the human hearing it later.
-func requestJob(p jobProposal) callResult {
+// requestJob hands a proposal to the human. With JitPass running it goes to
+// the app, which shows it pre-filled for the human to read and approve with
+// Touch ID; without it, the answer is the `jit job allow` line for the human
+// to run. It creates nothing either way. The proposal is checked here too so
+// the model hears a refusal now rather than the human hearing it later.
+func (s *Server) requestJob(p jobProposal) callResult {
 	if err := job.ValidateName(p.Name); err != nil {
 		return textResult(err.Error(), true)
 	}
@@ -412,6 +415,18 @@ func requestJob(p jobProposal) callResult {
 	}
 	if p.Profile != "" && strings.ContainsAny(p.Profile, "/\\ \t\n") {
 		return textResult("profile must be a profile name, not a path", true)
+	}
+	var profile *agent.GrantProfile
+	if p.Profile != "" {
+		profile = &agent.GrantProfile{Name: p.Profile, Root: p.Folder}
+	}
+	err := s.Backend.RequestJob(p.Name, agent.JobSpec{Dir: p.Folder, Argv: p.Command, Profile: profile}, p.Why)
+	if err == nil {
+		return textResult("Sent to JitPass on the user's Mac. Nothing was created: the user reads the whole job there and approves it with Touch ID, or dismisses it. "+
+			"Once approved, call run_job with the name "+p.Name+". You will see the job's output, never its secret values.", false)
+	}
+	if !strings.Contains(err.Error(), agent.ErrNoJobBroker.Error()) {
+		return textResult("The proposal was not accepted: "+serviceError(err), true)
 	}
 	parts := []string{"cd", quote(p.Folder), "&&", "jit", "job", "allow", p.Name}
 	if p.Profile != "" {

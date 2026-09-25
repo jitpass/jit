@@ -276,6 +276,9 @@ func (s *Server) allowJob(req Request, c *caller) Response {
 		dropKey()
 		return Response{OK: false, Error: "job_allow: saving the job: " + err.Error()}
 	}
+	if req.ProposalID != "" {
+		s.dropProposal(req.ProposalID) // approved: it no longer waits
+	}
 	// Approving again replaces the job, and with it the old key: a job that
 	// was never-asking and is now each-time must not keep a key that opens
 	// its secrets.

@@ -196,6 +196,13 @@ type Request struct {
 	// not re-hash every job folder on each Tab. An agent that predates it
 	// ignores it and answers in full, which is only slower.
 	JobNamesOnly bool `json:"job_names_only,omitempty"`
+	// Why ("job_request") is the proposer's one sentence for the human. It
+	// is the model's own words: shown labelled as unchecked, never used to
+	// decide anything, and never on a Touch ID prompt.
+	Why string `json:"why,omitempty"`
+	// ProposalID ("job_allow", "job_dismiss") names the proposal being
+	// approved or dismissed, so it stops waiting.
+	ProposalID string `json:"proposal_id,omitempty"`
 }
 
 // JobSpec is a job as the approving client describes it.
@@ -323,6 +330,15 @@ const (
 	OpJobList   = "job_list"
 	OpJobRemove = "job_remove"
 	OpJobRun    = "job_run"
+	// OpJobRequest is an agent PROPOSING a job (MCP request_job): the
+	// service keeps it for the app to show, and creates nothing. Refused
+	// when no app (broker) is connected, so the proposer can fall back to
+	// printing the `jit job allow` line. OpJobProposals lists what waits;
+	// OpJobDismiss drops one. Approving a proposal is an ordinary job_allow
+	// carrying its ProposalID, under the ordinary Touch ID.
+	OpJobRequest   = "job_request"
+	OpJobProposals = "job_proposals"
+	OpJobDismiss   = "job_dismiss"
 )
 
 // SessionEvent.Kind values.
@@ -428,6 +444,10 @@ const (
 	// oldest-first. One notice per aggregate keeps the stream exactly as
 	// bounded as the trail.
 	KindServeStart = "serve_start"
+	// KindJobProposal is an agent's job proposal, streamed to brokers only
+	// (the app), with ConsentID carrying the proposal's id and Job its name.
+	// The request itself is recorded in the trail as a use of job_request.
+	KindJobProposal = "job_proposal"
 )
 
 // The Op values a KindServe event carries: which content the reader got.
@@ -547,6 +567,8 @@ type Response struct {
 	Jobs []JobStatus `json:"jobs,omitempty"`
 	// JobResult answers job_run.
 	JobResult *JobResult `json:"job_result,omitempty"`
+	// Proposals answers job_proposals, and job_request with the one kept.
+	Proposals []JobProposal `json:"proposals,omitempty"`
 }
 
 // GrantStatus is one process grant as the agent reports it — deliberately
@@ -584,6 +606,19 @@ type JobStatus struct {
 	LastCaller   string       `json:"last_caller,omitempty"`
 	LastRefusal  string       `json:"last_refusal,omitempty"`
 	LastHidden   int          `json:"last_hidden,omitempty"`
+}
+
+// JobProposal is a job an agent proposed and the human has not answered.
+// Nothing in it has been resolved or approved: the app shows it, and the
+// human's own job_allow is what resolves, fingerprints and prompts.
+type JobProposal struct {
+	ID         string  `json:"id"`
+	Name       string  `json:"name"`
+	Spec       JobSpec `json:"spec"`
+	Why        string  `json:"why,omitempty"`
+	By         string  `json:"by,omitempty"`
+	LaunchedBy string  `json:"launched_by,omitempty"`
+	UnixTime   int64   `json:"unix_time"`
 }
 
 // JobSecretStatus is one secret a job injects: its variable and vault path,
