@@ -14,7 +14,7 @@ package keychainwrap
 import "C"
 
 import (
-	"bytes"
+	"crypto/subtle"
 	"fmt"
 	"unsafe"
 )
@@ -83,7 +83,7 @@ func (w *Wrapper) HasMEK() bool {
 
 	var keyPtr *C.uchar
 	var keyLen C.int
-	if err := goErr(C.kw_fetch_mek(cService, cAccount, &keyPtr, &keyLen)); err != nil {
+	if err := goErr(C.kw_fetch_mek(cService, cAccount, &keyPtr, &keyLen, 0)); err != nil {
 		return false
 	}
 	wipe(unsafe.Slice((*byte)(unsafe.Pointer(keyPtr)), int(keyLen)))
@@ -117,7 +117,7 @@ func (w *Wrapper) PromoteStagedRekeyMEK() error {
 		return fmt.Errorf("verifying new master key: %w", err)
 	}
 	defer wipe(got)
-	if !bytes.Equal(got, mek) {
+	if subtle.ConstantTimeCompare(got, mek) != 1 {
 		return fmt.Errorf("verifying new master key: keychain read back a different key, staged key kept, rekey NOT complete")
 	}
 
@@ -137,17 +137,24 @@ func (w *Wrapper) InstallMEK(mek []byte) error {
 		return fmt.Errorf("refusing to install a %d-byte master key, want %d", len(mek), mekSize)
 	}
 	check := &Wrapper{service: w.service, account: w.account, challenge: func(string) error { return nil }}
-	if w.MEKPresence() == MEKPresent {
+	switch mekPresence(w) {
+	case MEKPresent:
 		got, err := check.fetchMEK("")
 		if err != nil {
 			return fmt.Errorf("reading the existing master key: %w", err)
 		}
 		defer wipe(got)
 		check.Close()
-		if !bytes.Equal(got, mek) {
+		if subtle.ConstantTimeCompare(got, mek) != 1 {
 			return fmt.Errorf("the keychain already holds a different master key; refusing to replace it")
 		}
 		return nil
+	case MEKAbsent:
+	default:
+		// setMEK deletes whatever is there first, so writing over an item
+		// that could not be checked could replace a different key, which
+		// this method promises never to do.
+		return fmt.Errorf("couldn't check the keychain for an existing master key; nothing was written")
 	}
 	if err := w.setMEK(mek); err != nil {
 		return fmt.Errorf("installing the master key: %w", err)
@@ -158,7 +165,7 @@ func (w *Wrapper) InstallMEK(mek []byte) error {
 	}
 	defer wipe(got)
 	check.Close()
-	if !bytes.Equal(got, mek) {
+	if subtle.ConstantTimeCompare(got, mek) != 1 {
 		return fmt.Errorf("verifying the installed master key: the keychain read back a different key")
 	}
 	return nil
@@ -178,8 +185,12 @@ func (w *Wrapper) MatchesMEK(mek []byte) (bool, error) {
 	}
 	defer wipe(got)
 	check.Close()
-	return bytes.Equal(got, mek), nil
+	return subtle.ConstantTimeCompare(got, mek) == 1, nil
 }
+
+// mekPresence is (*Wrapper).MEKPresence, a var so a test can make InstallMEK
+// see a keychain that would not answer.
+var mekPresence = (*Wrapper).MEKPresence
 
 // DeleteStagedRekeyMEK removes a staged key outright — cleanup for `jit
 // uninstall --purge` (which destroys the vault the staged key was meant
@@ -197,16 +208,22 @@ func Challenge(reason string) error {
 }
 
 // setMEK stores the given bytes as this wrapper's keychain item,
-// replacing any existing one. Private: only the promote step above has
-// any business writing chosen key bytes.
+// replacing any existing one: deleteItem (with the fallback, since the item
+// being replaced may be one an older jit, at another path, created: S3g),
+// then kw_add_mek. Replace-then-add, not SecItemUpdate: identical outcome
+// for the promote step either way, and the add is kw_ensure_mek's exact
+// shape. Private: only the promote step and InstallMEK have any business
+// writing chosen key bytes.
 func (w *Wrapper) setMEK(mek []byte) error {
-	cService := C.CString(w.service)
+	if err := deleteItem(w.cOps(), true, "replacing existing key failed"); err != nil {
+		return err
+	}
+	cService, cAccount := w.cNames()
 	defer C.free(unsafe.Pointer(cService))
-	cAccount := C.CString(w.account)
 	defer C.free(unsafe.Pointer(cAccount))
 	var p *C.uchar
 	if len(mek) > 0 {
 		p = (*C.uchar)(unsafe.Pointer(&mek[0]))
 	}
-	return goErr(C.kw_set_mek(cService, cAccount, p, C.int(len(mek))))
+	return goErr(C.kw_add_mek(cService, cAccount, p, C.int(len(mek))))
 }

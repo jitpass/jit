@@ -116,6 +116,129 @@ KWResult kw_ensure_mek(const char *service, const char *account, int keySize) {
     return r;
 }
 
+// kwWithoutUI runs block with this process's keychain user interaction
+// switched off, then puts back whatever it was. A would-be keychain dialog
+// (an access prompt, an unlock prompt) then fails the call inside block with
+// errSecInteractionNotAllowed instead of appearing. The setting is
+// process-wide, so it is scoped to the few calls that need it and only ever
+// used from a CLI command's own thread of work (a delete's fallback, a quiet
+// read), never from the long-running service. It affects keychain UI only:
+// LocalAuthentication's Touch ID prompt (kw_challenge) and the Secure
+// Enclave's own dialog are not keychain UI and are not touched by it. If the
+// current value cannot be read, the framework's default (allowed) is what is
+// put back.
+static void kwWithoutUI(void (^block)(void)) {
+    Boolean was = true;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    if (SecKeychainGetUserInteractionAllowed(&was) != errSecSuccess) {
+        was = true;
+    }
+    SecKeychainSetUserInteractionAllowed(false);
+    block();
+    SecKeychainSetUserInteractionAllowed(was);
+#pragma clang diagnostic pop
+}
+
+int kw_ui_scope_probe(int start, int *during, int *after) {
+    __block Boolean in = true;
+    Boolean out = true;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    Boolean orig = true;
+    SecKeychainGetUserInteractionAllowed(&orig);
+    SecKeychainSetUserInteractionAllowed(start ? true : false);
+    kwWithoutUI(^{
+        SecKeychainGetUserInteractionAllowed(&in);
+    });
+    SecKeychainGetUserInteractionAllowed(&out);
+    SecKeychainSetUserInteractionAllowed(orig);
+#pragma clang diagnostic pop
+    *during = in ? 1 : 0;
+    *after = out ? 1 : 0;
+    return 0;
+}
+
+void kw_set_user_interaction(int allowed) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    SecKeychainSetUserInteractionAllowed(allowed ? true : false);
+#pragma clang diagnostic pop
+}
+
+// kwNoUI marks a query so that anything needing a dialog fails with
+// errSecInteractionNotAllowed rather than asking.
+static void kwNoUI(NSMutableDictionary *q) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    q[(id)kSecUseAuthenticationUI] = (id)kSecUseAuthenticationUIFail;
+#pragma clang diagnostic pop
+}
+
+// kwItemQuery is the service/account match every call here starts from.
+static NSMutableDictionary *kwItemQuery(NSString *svc, NSString *acct) {
+    return [@{
+        (id)kSecClass: (id)kSecClassGenericPassword,
+        (id)kSecAttrService: svc,
+        (id)kSecAttrAccount: acct,
+    } mutableCopy];
+}
+
+// kwPresenceQuery is kw_mek_present's query: metadata only, one match, and
+// no dialog. kSecReturnData is deliberately absent (see kw_mek_present).
+static NSMutableDictionary *kwPresenceQuery(NSString *svc, NSString *acct) {
+    NSMutableDictionary *q = kwItemQuery(svc, acct);
+    q[(id)kSecMatchLimit] = (id)kSecMatchLimitOne;
+    kwNoUI(q);
+    return q;
+}
+
+// kwRefQuery is the delete fallback's lookup: every matching item's
+// reference, no dialog, and only in the user's default keychain (the login
+// keychain, where SecItemAdd put every vault key), so an item of the same
+// name in any other keychain on the search list is never touched. kc is that
+// default keychain.
+static NSMutableDictionary *kwRefQuery(NSString *svc, NSString *acct, SecKeychainRef kc) {
+    NSMutableDictionary *q = kwItemQuery(svc, acct);
+    q[(id)kSecReturnRef] = @YES;
+    q[(id)kSecMatchLimit] = (id)kSecMatchLimitAll;
+    q[(id)kSecMatchSearchList] = @[(__bridge id)kc];
+    kwNoUI(q);
+    return q;
+}
+
+// kwDeleteQuery is kw_item_delete's query: SecItemDelete, no dialog.
+static NSMutableDictionary *kwDeleteQuery(NSString *svc, NSString *acct) {
+    NSMutableDictionary *q = kwItemQuery(svc, acct);
+    kwNoUI(q);
+    return q;
+}
+
+int kw_query_traits(int which) {
+    @autoreleasepool {
+        NSMutableDictionary *q = nil;
+        SecKeychainRef kc = NULL;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        if (SecKeychainCopyDefault(&kc) != errSecSuccess) {
+            return -1;
+        }
+        switch (which) {
+        case 0: q = kwPresenceQuery(@"probe", @"probe"); break;
+        case 1: q = kwRefQuery(@"probe", @"probe", kc); break;
+        case 2: q = kwDeleteQuery(@"probe", @"probe"); break;
+        }
+        int traits = 0;
+        if ([q[(id)kSecUseAuthenticationUI] isEqual:(id)kSecUseAuthenticationUIFail]) traits |= 1;
+#pragma clang diagnostic pop
+        NSArray *list = q[(id)kSecMatchSearchList];
+        if (list.count == 1 && CFEqual((__bridge CFTypeRef)list[0], kc)) traits |= 2;
+        if ([q[(id)kSecReturnData] boolValue]) traits |= 4;
+        CFRelease(kc);
+        return traits;
+    }
+}
+
 // kwPOSIXENOENT is how macOS reports "the calling process's executable is
 // gone" from a keychain lookup. Security.framework maps POSIX errno values
 // into OSStatus as kPOSIXErrorBase + errno (kPOSIXErrorBase is 100000), so
@@ -141,21 +264,28 @@ KWResult kw_ensure_mek(const char *service, const char *account, int keySize) {
 // constant used once, and the arithmetic is the documentation.
 static const OSStatus kwPOSIXENOENT = 100000 + 2;
 
-KWResult kw_fetch_mek(const char *service, const char *account, unsigned char **key, int *key_len) {
+KWResult kw_fetch_mek(const char *service, const char *account, unsigned char **key, int *key_len, int quiet) {
     KWResult r = {0, NULL};
     @autoreleasepool {
         NSString *svc = [NSString stringWithUTF8String:service];
         NSString *acct = [NSString stringWithUTF8String:account];
 
-        NSDictionary *query = @{
-            (id)kSecClass: (id)kSecClassGenericPassword,
-            (id)kSecAttrService: svc,
-            (id)kSecAttrAccount: acct,
-            (id)kSecReturnData: @YES,
-        };
-        CFTypeRef result = NULL;
-        OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
+        NSMutableDictionary *query = kwItemQuery(svc, acct);
+        query[(id)kSecReturnData] = @YES;
+        __block CFTypeRef result = NULL;
+        __block OSStatus status;
+        if (quiet) {
+            // A read that must not ask (keystore's check of a leftover key
+            // at `jit vault init`): a dialog fails the read instead.
+            kwNoUI(query);
+            kwWithoutUI(^{
+                status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
+            });
+        } else {
+            status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
+        }
         if (status != errSecSuccess || !result) {
+            if (result) CFRelease(result);
             // Only errSecItemNotFound actually means "no MEK stored" — the
             // old catch-all message told a user whose key EXISTS to consider
             // re-running "jit vault init" (a real incident: errSecAuthFailed,
@@ -199,119 +329,98 @@ int kw_mek_present(const char *service, const char *account) {
         // could not run its master-key probe on a non-interactive run precisely
         // because the data-reading check might block on that dialog, and this
         // one cannot. (kSecReturnData omitted is load-bearing; do not add it.)
-        NSDictionary *query = @{
-            (id)kSecClass: (id)kSecClassGenericPassword,
-            (id)kSecAttrService: svc,
-            (id)kSecAttrAccount: acct,
-            (id)kSecMatchLimit: (id)kSecMatchLimitOne,
-        };
-        OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, NULL);
-        if (status == errSecSuccess) {
-            return 1; // present
-        }
-        if (status == errSecItemNotFound) {
-            return 0; // genuinely absent — the finding jit doctor exists to raise
-        }
-        return -1; // indeterminate (e.g. errSecInteractionNotAllowed): don't guess
+        // kSecUseAuthenticationUIFail (kwPresenceQuery) covers what is left, a
+        // keychain that would have to ask to be searched at all (a locked
+        // one): the query fails with errSecInteractionNotAllowed instead, and
+        // the caller reads that as indeterminate.
+        //
+        // Returns the raw OSStatus; keychainwrap.presenceFromStatus maps it.
+        return (int)SecItemCopyMatching((__bridge CFDictionaryRef)kwPresenceQuery(svc, acct), NULL);
     }
 }
 
-// kwDeleteItems removes every generic-password item under service/account
-// and returns SecItemDelete's status, or the legacy fallback's.
+int kw_item_delete(const char *service, const char *account) {
+    @autoreleasepool {
+        NSMutableDictionary *q = kwDeleteQuery([NSString stringWithUTF8String:service],
+                                               [NSString stringWithUTF8String:account]);
+        return (int)SecItemDelete((__bridge CFDictionaryRef)q);
+    }
+}
+
+// kw_item_delete_by_ref is the one fallback deleteItem (keychainwrap.go)
+// takes, on exactly errSecInvalidOwnerEdit, for one measured case
+// (spike/secure-enclave-mek/FINDINGS.md, S3g). In the file-based login
+// keychain, SecItemDelete answers errSecInvalidOwnerEdit (-25244) to any
+// process that is not the executable, at the same PATH, that created the
+// item: the JitPass Agent helper could read the vault key an older jit had
+// made (same identifier, same team), yet could not delete it, and the move
+// into the Secure Enclave stopped one step from done. SecKeychainItemDelete
+// on the item's reference removes it with no dialog. It is the legacy API,
+// deprecated since macOS 10.10 and still the one that works on a
+// legacy-keychain item; it is used for nothing else.
 //
-// The fallback exists for one measured case (spike/secure-enclave-mek/
-// FINDINGS.md, S3g). In the file-based login keychain, SecItemDelete answers
-// errSecInvalidOwnerEdit (-25244) to any process that is not the executable,
-// at the same PATH, that created the item: the JitPass Agent helper could
-// read the vault key an older jit had made (same identifier, same team),
-// yet could not delete it, and the move into the Secure Enclave stopped one
-// step from done. The same binary copied to another path fails the same way,
-// so it follows every vault whose jit was installed somewhere else since.
-// SecKeychainItemDelete on the item's reference removes it with no dialog
-// (measured with user interaction disallowed, so a dialog would have failed
-// the call instead), so on that one status this finds the references and
-// deletes each. It is the legacy API, deprecated since macOS 10.10 and still
-// the one that works on a legacy-keychain item; it is used for nothing else.
+// No dialog, by construction rather than by measurement alone: the lookup
+// carries kSecUseAuthenticationUIFail and searches only the default (login)
+// keychain (kwRefQuery), and both the lookup and each delete run with the
+// process's keychain interaction off (kwWithoutUI).
 //
-// legacyFallback is 0 only for the hardware test that proves the fallback is
-// still needed (keychainwrap's TestHardwareDeleteAnOldJitsItem).
-static OSStatus kwDeleteItems(NSString *svc, NSString *acct, int legacyFallback) {
-    NSDictionary *query = @{
-        (id)kSecClass: (id)kSecClassGenericPassword,
-        (id)kSecAttrService: svc,
-        (id)kSecAttrAccount: acct,
-    };
-    OSStatus status = SecItemDelete((__bridge CFDictionaryRef)query);
-    if (status != errSecInvalidOwnerEdit || !legacyFallback) {
-        return status;
-    }
-    NSMutableDictionary *refQuery = [query mutableCopy];
-    refQuery[(id)kSecReturnRef] = @YES;
-    refQuery[(id)kSecMatchLimit] = (id)kSecMatchLimitAll;
-    CFTypeRef result = NULL;
-    OSStatus findStatus = SecItemCopyMatching((__bridge CFDictionaryRef)refQuery, &result);
-    if (findStatus != errSecSuccess || !result) {
-        return findStatus == errSecItemNotFound ? errSecItemNotFound : status;
-    }
-    NSArray *refs = (__bridge_transfer NSArray *)result;
-    if (![refs isKindOfClass:[NSArray class]]) {
-        return status;
-    }
-    OSStatus out = errSecSuccess;
+// Returns the lookup's status when it fails (errSecItemNotFound included:
+// the caller decides what an empty lookup means, and it is not "deleted"),
+// else the first failing delete's, else errSecSuccess.
+int kw_item_delete_by_ref(const char *service, const char *account) {
+    __block OSStatus out = errSecSuccess;
+    @autoreleasepool {
+        NSString *svc = [NSString stringWithUTF8String:service];
+        NSString *acct = [NSString stringWithUTF8String:account];
+        SecKeychainRef kc = NULL;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    for (id ref in refs) {
-        if (CFGetTypeID((__bridge CFTypeRef)ref) != SecKeychainItemGetTypeID()) {
-            out = status;
-            continue;
+        OSStatus kcStatus = SecKeychainCopyDefault(&kc);
+        if (kcStatus != errSecSuccess || !kc) {
+            return kcStatus != errSecSuccess ? (int)kcStatus : (int)errSecNoDefaultKeychain;
         }
-        OSStatus d = SecKeychainItemDelete((__bridge SecKeychainItemRef)ref);
-        if (d != errSecSuccess && d != errSecItemNotFound) {
-            out = d;
-        }
-    }
+        NSDictionary *q = kwRefQuery(svc, acct, kc);
+        kwWithoutUI(^{
+            CFTypeRef result = NULL;
+            OSStatus find = SecItemCopyMatching((__bridge CFDictionaryRef)q, &result);
+            if (find != errSecSuccess || !result) {
+                if (result) CFRelease(result);
+                out = find != errSecSuccess ? find : errSecItemNotFound;
+                return;
+            }
+            NSArray *refs = (__bridge_transfer NSArray *)result;
+            if (![refs isKindOfClass:[NSArray class]] || refs.count == 0) {
+                out = errSecItemNotFound;
+                return;
+            }
+            for (id ref in refs) {
+                if (CFGetTypeID((__bridge CFTypeRef)ref) != SecKeychainItemGetTypeID()) {
+                    if (out == errSecSuccess) out = errSecInvalidItemRef;
+                    continue;
+                }
+                OSStatus d = SecKeychainItemDelete((__bridge SecKeychainItemRef)ref);
+                if (d != errSecSuccess && out == errSecSuccess) {
+                    out = d;
+                }
+            }
+        });
+        CFRelease(kc);
 #pragma clang diagnostic pop
-    return out;
-}
-
-KWResult kw_delete_mek(const char *service, const char *account, int legacy_fallback) {
-    KWResult r = {0, NULL};
-    @autoreleasepool {
-        NSString *svc = [NSString stringWithUTF8String:service];
-        NSString *acct = [NSString stringWithUTF8String:account];
-        OSStatus status = kwDeleteItems(svc, acct, legacy_fallback);
-        if (status != errSecSuccess && status != errSecItemNotFound) {
-            r.error_message = dupNSString([NSString stringWithFormat:@"delete failed, OSStatus=%d", (int)status]);
-            return r;
-        }
-        r.success = 1;
     }
-    return r;
+    return (int)out;
 }
 
-KWResult kw_set_mek(const char *service, const char *account, const unsigned char *key, int key_len) {
+KWResult kw_add_mek(const char *service, const char *account, const unsigned char *key, int key_len) {
     KWResult r = {0, NULL};
     @autoreleasepool {
-        NSString *svc = [NSString stringWithUTF8String:service];
-        NSString *acct = [NSString stringWithUTF8String:account];
         NSData *keyData = [NSData dataWithBytes:key length:(NSUInteger)key_len];
-
-        // Replace-then-add, not SecItemUpdate: identical outcome for the
-        // promote step either way, and this reuses the exact add-shape
-        // kw_ensure_mek already uses (same accessibility attribute, same
-        // plain-item posture) rather than a second code path to keep in sync.
-        // The delete takes kwDeleteItems' fallback: the item being replaced
-        // may be one an older jit, at another path, created (S3g).
-        OSStatus delStatus = kwDeleteItems(svc, acct, 1);
-        if (delStatus != errSecSuccess && delStatus != errSecItemNotFound) {
-            r.error_message = dupNSString([NSString stringWithFormat:@"replacing existing key failed, OSStatus=%d", (int)delStatus]);
-            return r;
-        }
-
+        // The exact add-shape kw_ensure_mek uses (same accessibility
+        // attribute, same plain-item posture), so a replaced key is stored
+        // the way a created one is.
         NSDictionary *addQuery = @{
             (id)kSecClass: (id)kSecClassGenericPassword,
-            (id)kSecAttrService: svc,
-            (id)kSecAttrAccount: acct,
+            (id)kSecAttrService: [NSString stringWithUTF8String:service],
+            (id)kSecAttrAccount: [NSString stringWithUTF8String:account],
             (id)kSecValueData: keyData,
             (id)kSecAttrAccessible: (id)kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
         };
