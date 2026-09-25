@@ -28,9 +28,26 @@ import (
 type memGrantKeys struct {
 	mu   sync.Mutex
 	keys map[string][]byte
+	// enclave makes the keys it hands out report the Secure Enclave wrap,
+	// as secureenclave.GrantKey does; otherwise they say nothing, like the
+	// keychain's.
+	enclave bool
 }
 
 type memGrantKey struct{ key []byte }
+
+// memEnclaveKey is memGrantKey that reports the enclave wrap.
+type memEnclaveKey struct{ memGrantKey }
+
+func (memEnclaveKey) Wrap() string { return standingWrapEnclave }
+
+func (m *memGrantKeys) handOut(k []byte) GrantKey {
+	key := memGrantKey{key: append([]byte(nil), k...)}
+	if m.enclave {
+		return &memEnclaveKey{key}
+	}
+	return &key
+}
 
 func (m *memGrantKeys) Create(id string) (GrantKey, error) {
 	m.mu.Lock()
@@ -46,7 +63,7 @@ func (m *memGrantKeys) Create(id string) (GrantKey, error) {
 		return nil, err
 	}
 	m.keys[id] = k
-	return &memGrantKey{key: append([]byte(nil), k...)}, nil
+	return m.handOut(k), nil
 }
 
 func (m *memGrantKeys) Load(id string) (GrantKey, error) {
@@ -56,7 +73,7 @@ func (m *memGrantKeys) Load(id string) (GrantKey, error) {
 	if !ok {
 		return nil, os.ErrNotExist
 	}
-	return &memGrantKey{key: append([]byte(nil), k...)}, nil
+	return m.handOut(k), nil
 }
 
 func (m *memGrantKeys) Delete(id string) error {
