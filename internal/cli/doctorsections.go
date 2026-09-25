@@ -425,12 +425,25 @@ func gatherVaultIntegrityFindings(root string, v *vault.Vault) []checkFinding {
 
 	// Ordered first: while the marker exists every vault WRITE is refused,
 	// so this explains failures the reader may already have hit today.
+	//
+	// A move (`jit vault rekey --wrapper`) shares the marker but is finished
+	// by its own command, which a rotation's `jit vault rekey` refuses to
+	// stand in for; a marker naming no target this jit knows stays the
+	// rotation finding, as it always was.
 	if rekeyInProgress(root) {
-		out = append(out, checkFinding{
-			Kind:   kindRekey,
-			Detail: "a master-key rotation is in progress, or was interrupted, so every command that writes to the vault will refuse until it finishes.",
-			Action: "`jit vault rekey` to finish it",
-		})
+		if target := moveUnfinished(root); target != "" {
+			out = append(out, checkFinding{
+				Kind:   kindVaultMove,
+				Detail: moveDescription(target) + " did not finish, so every command that changes the vault will refuse until it does.",
+				Action: "`jit vault rekey --wrapper " + target + "` to finish it",
+			})
+		} else {
+			out = append(out, checkFinding{
+				Kind:   kindRekey,
+				Detail: "a master-key rotation is in progress, or was interrupted, so every command that writes to the vault will refuse until it finishes.",
+				Action: "`jit vault rekey` to finish it",
+			})
+		}
 	}
 
 	// An empty vault with no key is a machine that hasn't run `jit vault
@@ -485,6 +498,25 @@ func gatherVaultIntegrityFindings(root string, v *vault.Vault) []checkFinding {
 		})
 	}
 
+	// A lost Secure Enclave key whose secrets have not all come back: the
+	// new keychain key is Present, so the check above is silent, and only
+	// the snapshot jit wrote when it set the old key aside can tell. Files
+	// only (vault.SealedToLostKey): no key is read, nothing can prompt.
+	restoring := false
+	// With the key itself gone, the finding above already says every secret
+	// is unreadable and names the same import.
+	if sealed, _, err := vault.SealedToLostKey(root); err == nil && len(sealed) > 0 && !keyGone {
+		restoring = true
+		out = append(out, checkFinding{
+			Kind: kindVaultRestore,
+			Detail: fmt.Sprintf(
+				"%s sealed to a key this Mac no longer has, so %s can't be opened. A recovery file brings them back.",
+				countWord(len(sealed), "secret was", "secrets were"), pluralWord(len(sealed), "it", "they")),
+			Action: "`jit vault import <file>` from a `jit vault export` backup",
+			Fixes:  fixesFor(kindVaultRestore, "`jit vault import <file>`"),
+		})
+	}
+
 	// Auth-free like everything else here: UnboundPaths reads envelope
 	// metadata only. Reported LAST because it is the least urgent thing this
 	// section can say — nothing is broken, and a v1 file decrypts today
@@ -498,7 +530,9 @@ func gatherVaultIntegrityFindings(root string, v *vault.Vault) []checkFinding {
 	// it is a second line telling a user whose vault just became unreadable
 	// to go run something that cannot work. The vault-key finding above is
 	// the only actionable thing in that state.
-	if keyGone {
+	// Silent while a restore is pending too, for the same reason: the export
+	// it asks for cannot open the secrets sealed to the lost key.
+	if keyGone || restoring {
 		return out
 	}
 	if unbound, err := v.UnboundPaths(); err == nil && len(unbound) > 0 {
@@ -608,6 +642,11 @@ func backupFindings(v *vault.Vault, root string) []checkFinding {
 		return []checkFinding{{Kind: kindBackup, Detail: fmt.Sprintf("could not check vault backup state: %v", err)}}
 	}
 	if vs.SecretsStored == 0 && vs.BackupsStored == 0 {
+		return nil
+	}
+	// An export cannot open secrets sealed to a lost key, so "make a backup"
+	// would be advice that fails; the vault_restore finding is the one step.
+	if vs.RestorePending {
 		return nil
 	}
 	switch {

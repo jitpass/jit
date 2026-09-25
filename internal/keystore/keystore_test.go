@@ -128,6 +128,40 @@ func TestEnclaveInitConfirmsRatherThanCreates(t *testing.T) {
 	}
 }
 
+// Init over a lost key records which secrets were sealed to it, so status
+// and doctor can keep saying a restore is pending after the new keychain key
+// makes the vault look healthy. Without the record nothing would know.
+func TestEnclaveInitOverALostKeyRecordsWhatItCannotOpen(t *testing.T) {
+	root := t.TempDir()
+	v := &vault.Vault{Root: root, KeyWrapper: identityWrapper{}, RecipientID: "TEST-ONLY"}
+	if err := v.Set("fixture/API_KEY", []byte("TEST-ONLY value")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, vault.SealedKeyFile), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	withFakeEnclave(t, secureenclave.KeyLost)
+	origInit := initKeychain
+	initKeychain = func() error { return nil }
+	t.Cleanup(func() { initKeychain = origInit })
+
+	if err := (enclaveStore{root: root}).Init(); err != nil {
+		t.Fatalf("Init over a lost key: %v", err)
+	}
+	sealed, known, err := vault.SealedToLostKey(root)
+	if err != nil || !known || len(sealed) != 1 || sealed[0] != "fixture/API_KEY" {
+		t.Fatalf("after Init: sealed to the lost key %q (known=%v, err=%v), want [fixture/API_KEY]", sealed, known, err)
+	}
+}
+
+// identityWrapper stands in for a key: only file bytes matter here.
+type identityWrapper struct{}
+
+func (identityWrapper) WrapKey(dek []byte) ([]byte, error) { return append([]byte(nil), dek...), nil }
+func (identityWrapper) UnwrapKey(wrapped []byte) ([]byte, error) {
+	return append([]byte(nil), wrapped...), nil
+}
+
 func TestEnclaveDeleteDeletesTheEnclaveKey(t *testing.T) {
 	deleted := withFakeEnclave(t, secureenclave.Present)
 	if err := (enclaveStore{}).Delete(); err != nil || *deleted != 1 {

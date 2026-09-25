@@ -126,6 +126,29 @@ tested before the forward** (`menu-bar-app.md:133`). Rotating the MEK
 itself stays today's `vault rekey`; under the enclave, staging a new MEK is
 sealing it, which S1b shows needs no prompt.
 
+**What status and doctor say about the key** (files only, never a prompt):
+
+| State | `jit status --format json` | `jit doctor` kind | Fix |
+|---|---|---|---|
+| A move did not finish | `vault.move_unfinished`: `"secure-enclave"` or `"keychain"` | `vault_move` | `jit vault rekey --wrapper <target>` |
+| A rotation did not finish, or a marker jit can't parse | nothing new | `rekey` (unchanged) | `jit vault rekey` |
+| Secrets still sealed to a lost enclave key | `vault.restore_pending`: `true` | `vault_restore` | `jit vault import <file>` |
+
+A lost key's restore: `jit vault init` renames `vault-key.sealed` to
+`vault-key.sealed.lost` and writes `vault-key.sealed.lost.envelopes`, the
+SHA-256 of every envelope on disk, all sealed to the lost key. Envelopes
+name no key, so this record is the only way to know, without a key, which
+secrets the new key can't open: a restored envelope has a new data key and
+different bytes. `restore_pending` holds while any recorded envelope is
+still there unchanged. A `jit vault import` that restores all of them
+renames both files with a timestamp and never deletes them: if the key was
+reported lost by mistake, the sealed file is what could still open the old
+secrets. An import whose file leaves some out keeps the state and names
+them. The import deletes nothing: the secrets it could not restore stay on
+disk, and it is up to the user to import another file or run `jit vault rm`.
+The history copies the import makes of overwritten envelopes are sealed to
+the lost key too, and are kept for the same reason.
+
 ## Phase 2: grant and job keys
 
 `standing-grants.md` has this rule: both keys move, one flag apart. If only

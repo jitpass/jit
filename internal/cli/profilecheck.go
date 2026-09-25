@@ -181,6 +181,22 @@ const (
 	// errRekeyInProgress), so a doctor that reported a clean bill of health
 	// left the user to discover the state from the next command that failed.
 	kindRekey checkKind = "rekey"
+	// kindVaultMove: `jit vault rekey --wrapper <target>` did not finish.
+	// It shares kindRekey's marker, so every vault write is refused the same
+	// way, but its own kind rather than kindRekey with another fix: the two
+	// are finished by different commands that refuse each other's work, a
+	// client keys on the kind (the app shows a card per kind), and ignoring
+	// one must never hide the other. A marker naming a target this jit does
+	// not know stays kindRekey, exactly as before.
+	kindVaultMove checkKind = "vault_move"
+	// kindVaultRestore: the vault's Secure Enclave key was lost, `jit vault
+	// init` started over on a new key, and secrets sealed to the old key are
+	// still on disk (vault.SealedToLostKey): the import that brings them back
+	// has not happened, or failed partway, or its recovery file did not hold
+	// them all. The new key is present, so kindVaultKey is silent, and every
+	// envelope is intact, so nothing else notices. A hard problem: those
+	// secrets cannot be read.
+	kindVaultRestore checkKind = "vault_restore"
 	// kindLegacyEnvelope: secrets are still stored in the pre-AAD envelope
 	// (v1), whose payload is sealed with no additional authenticated data
 	// and so is bound to nothing — two v1 payloads can be exchanged and both
@@ -327,7 +343,7 @@ var allCheckKinds = []checkKind{
 	kindBadPath, kindOrphan, kindRegistryEmpty, kindStalePointers, kindDuplicates, kindOriginGone, kindShadowed,
 	kindService, kindBackup, kindWrap, kindWrapEnv, kindMount,
 	kindMountStale, kindMountMoved, kindMountUnregistered,
-	kindVaultKey, kindRekey, kindLegacyEnvelope,
+	kindVaultKey, kindRekey, kindVaultMove, kindVaultRestore, kindLegacyEnvelope,
 	kindAudit, kindMCP, kindMCPNested,
 	kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion,
 	kind1Password, kind1PasswordLink,

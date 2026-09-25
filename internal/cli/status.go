@@ -72,6 +72,19 @@ type statusVault struct {
 	// without a prompt. Added for the app's "Where the vault key is kept"
 	// card (design/secure-enclave-plan.md, A4).
 	KeyStore string `json:"key_store,omitempty"`
+	// MoveUnfinished names where an interrupted `jit vault rekey --wrapper`
+	// was moving the key: "secure-enclave" or "keychain". Omitted when no
+	// move is unfinished, including under a rotation's marker or a marker
+	// this jit cannot parse (both still refuse every vault change; doctor's
+	// rekey finding reports them). While it is set, every vault change is
+	// refused until `jit vault rekey --wrapper <that value>` finishes it.
+	MoveUnfinished string `json:"move_unfinished,omitempty"`
+	// RestorePending: the vault's Secure Enclave key was lost, `jit vault
+	// init` made a new key, and secrets sealed to the old one are still on
+	// disk, unopenable, until `jit vault import <file>` brings them back
+	// (vault.SealedToLostKey, which reads files only: no prompt). Omitted
+	// when false.
+	RestorePending bool `json:"restore_pending,omitempty"`
 	// SecretsStored counts real secrets only; `_backups/…` entries (kept
 	// for `jit migrate undo`) are reported separately so the headline
 	// number always agrees with `jit vault list`.
@@ -389,10 +402,16 @@ func gatherVaultStatus(v *vault.Vault, root string) (statusVault, error) {
 	}
 	secrets, backups := splitBackupPaths(paths)
 	result := statusVault{
-		Initialized:   vaultInitializedWord(vaultMasterKeyPresence()),
-		KeyStore:      string(openKeyStore(root).Kind()),
-		SecretsStored: len(secrets),
-		BackupsStored: len(backups),
+		Initialized:    vaultInitializedWord(vaultMasterKeyPresence()),
+		KeyStore:       string(openKeyStore(root).Kind()),
+		MoveUnfinished: moveUnfinished(root),
+		SecretsStored:  len(secrets),
+		BackupsStored:  len(backups),
+	}
+	// Best-effort like StaleBackups: a lost-key file that can't be checked
+	// must not take the overview down; doctor runs the same check.
+	if sealed, _, err := vault.SealedToLostKey(root); err == nil {
+		result.RestorePending = len(sealed) > 0
 	}
 	// Best-effort on purpose (see statusVault.StaleBackups): a corrupt undo
 	// index must not take the always-runnable overview down, it just costs
@@ -418,6 +437,28 @@ func gatherVaultStatus(v *vault.Vault, root string) (statusVault, error) {
 		result.ExportStale = newest.After(exportedAt)
 	}
 	return result, nil
+}
+
+// printStatusKeyRows prints the two vault-key states that block the vault
+// until one command runs: an unfinished move of the key, and secrets still
+// sealed to a lost key. Silent otherwise. Red: both are broken today.
+func printStatusKeyRows(w io.Writer, v statusVault) {
+	if v.MoveUnfinished != "" {
+		statusLabel(w, "key")
+		_, _ = cRisk.Fprint(w, glyphRisk+" ")
+		where := "into the Secure Enclave"
+		if v.MoveUnfinished == wrapperKeychain {
+			where = "back to the keychain"
+		}
+		printStatusGlyphValue(w, "unfinished move %s — vault changes refused", where)
+		printStatusAction(w, fmt.Sprintf("`jit vault rekey --wrapper %s` to finish it", v.MoveUnfinished))
+	}
+	if v.RestorePending {
+		statusLabel(w, "key")
+		_, _ = cRisk.Fprint(w, glyphRisk+" ")
+		printStatusGlyphValue(w, "some secrets are sealed to a key this Mac no longer has")
+		printStatusAction(w, "`jit vault import <file>` brings them back from a recovery file")
+	}
 }
 
 // vaultInitializedWord renders the master-key probe for statusVault.Initialized.
@@ -670,6 +711,9 @@ func printStatusText(w io.Writer, r statusResult, now time.Time) {
 	if r.Vault.SecretsStored == 0 && r.Vault.BackupsStored == 0 {
 		statusLabel(w, "vault")
 		printStatusValue(w, "%s", hlCmds("no secrets yet — run `jit vault init`, or `jit migrate .` to populate it."))
+		// A move can be interrupted on an empty vault too, and it still
+		// refuses every change.
+		printStatusKeyRows(w, r.Vault)
 	} else {
 		statusLabel(w, "vault")
 		// The group breakdown moved up here from the secrets rollup, which
@@ -705,6 +749,7 @@ func printStatusText(w io.Writer, r statusResult, now time.Time) {
 			printStatusAction(w, fmt.Sprintf("`jit vault prune` — deletes %s, keeps each file's newest",
 				countWord(r.Vault.StaleBackups, "stale backup", "stale backups")))
 		}
+		printStatusKeyRows(w, r.Vault)
 		statusLabel(w, "backup")
 		switch {
 		case !r.Vault.ExportRecorded:
