@@ -9,6 +9,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+
+	"github.com/jitpass/jit/internal/job"
 )
 
 // Moving existing grant and job keys to where the vault's key is
@@ -148,7 +150,14 @@ func reseal(mover GrantKeyMover, id, target string, items []sealedItem) (_ [][]b
 // deleteOthers removes the keys of every other kind, after the record that
 // needed them is gone. Best effort: a key left over is only clutter, and
 // the next start tries again.
-func deleteOthers(mover GrantKeyMover, id, target string) {
+//
+// Unless unreadable: the grant or job also holds entries this build cannot
+// read (a newer jit's wrap, kept verbatim, C1). Nothing here knows which
+// kind of key such an entry is sealed for, so every kind is kept.
+func deleteOthers(mover GrantKeyMover, id, target string, unreadable bool) {
+	if unreadable {
+		return
+	}
 	for _, w := range otherWraps(target) {
 		_ = mover.DeleteWrap(id, w)
 	}
@@ -171,8 +180,10 @@ func (s *Server) moveStandingKeys(mover GrantKeyMover, target string) (int, []er
 	sort.Strings(ids)
 	var todo []*move
 	var settled []string // already on the target
+	unread := map[string]bool{}
 	for _, id := range ids {
 		g := s.standing[id]
+		unread[id] = len(g.unread) > 0
 		m := &move{g: g}
 		pending := false
 		for d, sec := range g.secrets {
@@ -195,7 +206,7 @@ func (s *Server) moveStandingKeys(mover GrantKeyMover, target string) (int, []er
 	// Already on the target: whatever key of the other kind a crashed move
 	// left can go now.
 	for _, id := range settled {
-		deleteOthers(mover, id, target)
+		deleteOthers(mover, id, target, unread[id])
 	}
 
 	// Re-seal every grant in memory first. A grant that fails stays exactly
@@ -253,7 +264,7 @@ func (s *Server) moveStandingKeys(mover GrantKeyMover, target string) (int, []er
 			m.g.key = nil
 		}
 		m.g.keyMu.Unlock()
-		deleteOthers(mover, m.g.id, target)
+		deleteOthers(mover, m.g.id, target, unread[m.g.id])
 	}
 	return len(moving), errs
 }
@@ -284,6 +295,12 @@ func (s *Server) moveJobKeys(mover GrantKeyMover, target string) (int, []error) 
 		if j.KeyID == "" {
 			continue // an each-time job has no key of its own
 		}
+		if !jobReadable(j) {
+			// Sealed, in part, in a way this build cannot open (a newer
+			// jit's): a run refuses it anyway, and its keys, of whatever
+			// kind, are left for the jit that can.
+			continue
+		}
 		items := make([]sealedItem, len(j.Secrets))
 		pending, damaged := false, false
 		for i, sec := range j.Secrets {
@@ -300,7 +317,7 @@ func (s *Server) moveJobKeys(mover GrantKeyMover, target string) (int, []error) 
 			continue
 		}
 		if !pending {
-			deleteOthers(mover, j.KeyID, target)
+			deleteOthers(mover, j.KeyID, target, false)
 			continue
 		}
 		sealed, err := reseal(mover, j.KeyID, target, items)
@@ -336,7 +353,18 @@ func (s *Server) moveJobKeys(mover GrantKeyMover, target string) (int, []error) 
 		return 0, errs
 	}
 	for _, m := range moving {
-		deleteOthers(mover, s.jobs[m.name].KeyID, target)
+		deleteOthers(mover, s.jobs[m.name].KeyID, target, false)
 	}
 	return len(moving), errs
+}
+
+// jobReadable reports whether this build knows every wrap a job's secrets
+// are sealed with.
+func jobReadable(j *job.Job) bool {
+	for _, sec := range j.Secrets {
+		if !knownWrap(sec.Wrap) {
+			return false
+		}
+	}
+	return true
 }
