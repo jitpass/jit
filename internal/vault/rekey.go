@@ -55,17 +55,23 @@ type RewrapResult struct {
 // Rewrap is RewrapAll, reporting the envelopes it kept.
 //
 // The one exception to "an envelope neither key opens is a hard error":
-// an envelope sealed to a lost Secure Enclave key (lostkey.go), one whose
-// bytes a lost key's record lists, or that a record which could not list
-// everything presumes. No key here ever opened it, so rotating cannot make
-// it any less readable, and stopping on it would leave the marker behind
-// and refuse every vault change, the import and rm that clear it included.
-// It is left exactly as it is, never rewritten and never deleted, and
-// reported in Kept. The old key is still tried first: an envelope it does
-// open is rewrapped like any other, whatever a record says.
+// an envelope PROVABLY sealed to a lost Secure Enclave key (lostkey.go):
+// a lost key's readable record lists its bytes, or names it as unreadable
+// when the key was set aside and it has not been written since. No key
+// here ever opened it, so rotating cannot make it any less readable, and
+// stopping on it would leave the marker behind and refuse every vault
+// change, the import and rm that clear it included. It is left exactly as
+// it is, never rewritten and never deleted, and reported in Kept. The old
+// key is still tried first: an envelope it does open is rewrapped like any
+// other, whatever a record says.
+//
+// Anything short of proof stops the rotation, as it always has: an
+// envelope a record only presumes (an incomplete record, or one that is
+// missing or unreadable) may be sealed to the key this rotation is about
+// to destroy. The error says why jit could not prove it.
 func (v *Vault) Rewrap(oldKW, newKW KeyWrapper) (RewrapResult, error) {
 	var r RewrapResult
-	lost, err := loadLostKeyCopies(v.Root)
+	lost, err := v.lostKeyCopies()
 	if err != nil {
 		return r, err
 	}
@@ -76,13 +82,16 @@ func (v *Vault) Rewrap(oldKW, newKW KeyWrapper) (RewrapResult, error) {
 	for _, file := range files {
 		changed, err := v.rewrapFile(file, oldKW, newKW)
 		if err != nil {
-			if errors.Is(err, errNoKeyOpens) && lost.sealedFile(file) {
-				rel, relErr := filepath.Rel(v.vaultDir(), file)
-				if relErr != nil {
-					rel = file
+			if errors.Is(err, errNoKeyOpens) && lost.any() {
+				if lost.matchFile(v.vaultDir(), file) == provenLost {
+					rel, relErr := filepath.Rel(v.vaultDir(), file)
+					if relErr != nil {
+						rel = file
+					}
+					r.Kept = append(r.Kept, filepath.ToSlash(rel))
+					continue
 				}
-				r.Kept = append(r.Kept, filepath.ToSlash(rel))
-				continue
+				return r, fmt.Errorf("%w; %s", err, lost.unproven())
 			}
 			return r, err
 		}

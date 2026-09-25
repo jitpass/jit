@@ -5,9 +5,11 @@ package vault
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -467,5 +469,241 @@ func TestSettleAfterARemovalWaitsUntilNothingIsLeft(t *testing.T) {
 	}
 	if settle, err := SettleLostKey(v.Root, time.Now(), false); err != nil || !settle.Settled || settle.Unchecked {
 		t.Fatalf("after removing b: %+v, %v; want settled", settle, err)
+	}
+}
+
+// corruptSnapshot overwrites the current lost key's record with bytes that
+// are not a snapshot, the way a disk error or a hand edit would.
+func corruptSnapshot(t *testing.T, root string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(root, lostKeySnapshotFile), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// strangerEnvelope writes an envelope under a key that is neither the
+// lost one nor the one a rotation starts from, and gives it an old time,
+// so a rule that presumes by time alone would call it a lost-key copy.
+func strangerEnvelope(t *testing.T, v *Vault, path string, mod time.Time) string {
+	t.Helper()
+	other := &Vault{Root: v.Root, KeyWrapper: &fakeKeyWrapper{key: bytes.Repeat([]byte{0x11}, dekSize)}, RecipientID: "test-device"}
+	setSecrets(t, other, path)
+	file := filepath.Join(v.vaultDir(), path+".enc")
+	if err := os.Chtimes(file, mod, mod); err != nil {
+		t.Fatal(err)
+	}
+	return file
+}
+
+// Review 3, finding 1: a lost key whose record is unreadable used to
+// presume every envelope sealed to it (with no time bound at all), so
+// rekey kept an envelope NO record lists, finished the rotation and
+// destroyed the old master key. Rekey now leaves only provable copies
+// behind, and stops on this one, naming it and saying why.
+func TestRewrapStopsOnAnUnprovenEnvelopeWhenTheRecordIsCorrupt(t *testing.T) {
+	v, _, current := lostKeyVault(t) // nothing sealed: the stranger is the only envelope
+	corruptSnapshot(t, v.Root)
+	strangerEnvelope(t, v, "stranger", time.Now().Add(-time.Hour))
+	staged := &fakeKeyWrapper{key: bytes.Repeat([]byte{0x55}, dekSize)}
+	r, err := v.Rewrap(current, staged)
+	if err == nil {
+		t.Fatalf("Rewrap finished over an envelope no key opens and no record lists: %+v", r)
+	}
+	for _, want := range []string{"stranger", "unreadable", "can't show"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Rewrap error %q does not say %q", err, want)
+		}
+	}
+}
+
+// The same with no record at all, and for a retired key whose record is
+// gone: nothing proves the envelope is a lost-key copy.
+func TestRewrapStopsWhenALostKeyHasNoRecord(t *testing.T) {
+	for _, retired := range []bool{false, true} {
+		v, _, current := lostKeyVault(t)
+		if err := os.Remove(filepath.Join(v.Root, lostKeySnapshotFile)); err != nil {
+			t.Fatal(err)
+		}
+		if retired {
+			if err := retireLostKey(v.Root, time.Now().Add(time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		strangerEnvelope(t, v, "stranger", time.Now().Add(-time.Hour))
+		staged := &fakeKeyWrapper{key: bytes.Repeat([]byte{0x55}, dekSize)}
+		if r, err := v.Rewrap(current, staged); err == nil || !strings.Contains(err.Error(), "stranger") {
+			t.Errorf("retired=%v: Rewrap = %+v, %v; want it to stop naming stranger", retired, r, err)
+		}
+	}
+}
+
+// Proof by the unknown list: an envelope that could not be read at the
+// set-aside and has not been written since is a lost-key copy, and rekey
+// keeps it.
+func TestRewrapKeepsAnEnvelopeTheRecordNamesAsUnreadable(t *testing.T) {
+	lost := newFakeKeyWrapper()
+	v := &Vault{Root: t.TempDir(), KeyWrapper: lost, RecipientID: "test-device"}
+	setSecrets(t, v, "a", "b")
+	bFile := filepath.Join(v.vaultDir(), "b.enc")
+	if err := os.Chmod(bFile, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	plantSealedKey(t, v.Root, "old")
+	if err := SetAsideLostSealedKey(v.Root, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(bFile, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	current := &fakeKeyWrapper{key: bytes.Repeat([]byte{0x77}, dekSize)}
+	v.KeyWrapper = current
+	setSecrets(t, v, "a")
+	staged := &fakeKeyWrapper{key: bytes.Repeat([]byte{0x55}, dekSize)}
+	r, err := v.Rewrap(current, staged)
+	if err != nil || !slices.Contains(r.Kept, "b.enc") {
+		t.Fatalf("Rewrap = %+v, %v; want b.enc kept", r, err)
+	}
+}
+
+// Pruning stays generous over an unreadable record, but bounded: a
+// version archived after the key was set aside is pruned as usual.
+func TestHistoryPruningOverACorruptRecordIsBounded(t *testing.T) {
+	v := newTestVault(t)
+	for range HistoryKeep + 1 {
+		setSecrets(t, v, "a")
+	}
+	plantSealedKey(t, v.Root, "old")
+	if err := SetAsideLostSealedKey(v.Root, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	lostCopies := historyFiles(t, v, "a")
+	corruptSnapshot(t, v.Root)
+	back := time.Now().Add(-time.Hour) // the record's own time is the set-aside
+	if err := os.Chtimes(filepath.Join(v.Root, lostKeySnapshotFile), back, back); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range lostCopies {
+		if err := os.Chtimes(f, back.Add(-time.Minute), back.Add(-time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := &Vault{Root: v.Root, KeyWrapper: &fakeKeyWrapper{key: bytes.Repeat([]byte{0x77}, dekSize)}, RecipientID: "test-device"}
+	for range HistoryKeep + 3 {
+		setSecrets(t, w, "a")
+	}
+	for _, f := range lostCopies {
+		if _, err := os.Stat(f); err != nil {
+			t.Errorf("a copy from before the set-aside was pruned: %v", err)
+		}
+	}
+	if got, want := len(historyFiles(t, v, "a")), len(lostCopies)+HistoryKeep; got != want {
+		t.Errorf("%d history files, want %d: later versions must still be bounded", got, want)
+	}
+}
+
+// Review 3, finding 3: a snapshot written by bae7b90 (version 1: live
+// secrets only, under "envelopes") reads correctly, not as corrupt.
+func TestAVersion1SnapshotIsRead(t *testing.T) {
+	v := newTestVault(t)
+	setSecrets(t, v, "a", "b")
+	setSecrets(t, v, "a") // a history copy, which version 1 never listed
+	plantSealedKey(t, v.Root, "old")
+	if err := SetAsideLostSealedKey(v.Root, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	envelopes := map[string]string{}
+	for _, p := range []string{"a", "b"} {
+		envelopes[p] = digest(fileBytes(t, filepath.Join(v.vaultDir(), p+".enc")))
+	}
+	v1, err := json.Marshal(map[string]any{"version": 1, "set_aside": time.Now().UTC().Format(time.RFC3339), "envelopes": envelopes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(v.Root, lostKeySnapshotFile), v1, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	current := &fakeKeyWrapper{key: bytes.Repeat([]byte{0x77}, dekSize)}
+	v.KeyWrapper = current
+	setSecrets(t, v, "a")
+	if got := sealedToLost(t, v.Root); !reflect.DeepEqual(got, []string{"b"}) {
+		t.Fatalf("version 1 record: pending %q, want [b]", got)
+	}
+	// The live copy of a it listed was archived by the import: proven, so
+	// rekey keeps it; the history copy it never listed stops rekey.
+	staged := &fakeKeyWrapper{key: bytes.Repeat([]byte{0x55}, dekSize)}
+	if _, err := v.Rewrap(current, staged); err == nil || !strings.Contains(err.Error(), "_history") {
+		t.Fatalf("Rewrap over a history copy version 1 never listed: %v, want it to stop there", err)
+	}
+}
+
+// Review 3, finding 4: one rule for status, history and rekey. An envelope
+// a record names as unreadable at set-aside, untouched since, is pending
+// for status, kept by history, and kept by rekey; the same bytes written
+// after the set-aside are none of those.
+func TestStatusHistoryAndRekeyShareOneRule(t *testing.T) {
+	rec := lostKeyRecord{
+		snap:   lostKeySnapshot{Unknown: []string{"b.enc"}},
+		hashes: map[string]bool{"listed": true},
+		upTo:   1000,
+	}
+	at := func(ns int64) time.Time { return time.Unix(0, ns) }
+	cases := []struct {
+		rel, sum string
+		mod      int64
+		want     lostKeyMatch
+	}{
+		{"a.enc", "listed", 5000, provenLost},        // bytes listed, whenever written
+		{"b.enc", "other", 900, provenLost},          // named unreadable, untouched since
+		{"b.enc", "other", 1100, notLost},            // written since the set-aside
+		{"c.enc", "other", 900, presumedLost},        // not listed, record couldn't see all
+		{"c.enc", "", 5000, presumedLost},            // unreadable now
+		{"_history/c/1.enc", "x", 900, presumedLost}, // same rule for history
+	}
+	for _, c := range cases {
+		if got := rec.match(c.rel, c.sum, at(c.mod)); got != c.want {
+			t.Errorf("match(%s, %s, %d) = %d, want %d", c.rel, c.sum, c.mod, got, c.want)
+		}
+	}
+	corrupt := lostKeyRecord{err: errLostKeyRecord, upTo: 1000}
+	if got := corrupt.match("a.enc", "listed", at(900)); got != presumedLost {
+		t.Errorf("corrupt record, before: %d, want presumed", got)
+	}
+	if got := corrupt.match("a.enc", "listed", at(1100)); got != notLost {
+		t.Errorf("corrupt record, after its time: %d, want not lost", got)
+	}
+}
+
+// Review 3, finding 5: archiving reads the lost-key records once per
+// Vault, and hashes nothing when there is no lost key.
+func TestHistoryPruningReadsTheRecordsOncePerVault(t *testing.T) {
+	var loads, hashes int
+	loadHook, digestHook = func() { loads++ }, func() { hashes++ }
+	t.Cleanup(func() { loadHook, digestHook = nil, nil })
+
+	v := newTestVault(t)
+	for range 3 * HistoryKeep {
+		setSecrets(t, v, "a")
+	}
+	if loads != 1 || hashes != 0 {
+		t.Fatalf("no lost key: %d loads, %d hashes; want 1 and 0", loads, hashes)
+	}
+
+	plantSealedKey(t, v.Root, "old")
+	if err := SetAsideLostSealedKey(v.Root, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	loads, hashes = 0, 0
+	w := &Vault{Root: v.Root, KeyWrapper: &fakeKeyWrapper{key: bytes.Repeat([]byte{0x77}, dekSize)}, RecipientID: "test-device"}
+	const writes = 3 * HistoryKeep
+	for range writes {
+		setSecrets(t, w, "a")
+	}
+	if loads != 1 {
+		t.Errorf("with a lost key: %d loads over %d writes, want 1", loads, writes)
+	}
+	// Each history file is hashed once, however many archives consult it:
+	// the HistoryKeep lost-key copies plus one new version per write.
+	if limit := HistoryKeep + writes; hashes > limit {
+		t.Errorf("with a lost key: %d hashes over %d writes, want at most %d", hashes, writes, limit)
 	}
 }

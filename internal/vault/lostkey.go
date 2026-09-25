@@ -13,8 +13,10 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -48,15 +50,21 @@ import (
 //     the enclave key was reported lost by mistake, the sealed file is the
 //     one thing that could still open the old envelopes, and a retired
 //     snapshot keeps protecting the copies it lists (below).
+//   - FinishLostKeyRestore (`jit vault import --finish`) is the way out when
+//     the record cannot say: it retires the files the same way, on the
+//     user's word, and says what it could not verify.
 //
 // Every record, current or retired, keeps two promises for as long as it
-// exists (lostKeyCopies):
+// exists (lostKeyCopies, one rule for status, rekey and history alike):
 //
-//   - pruneHistory never deletes an archived version sealed to a lost key,
-//     and such versions do not take one of the HistoryKeep places.
-//   - `jit vault rekey` (Rewrap) leaves an envelope sealed to a lost key
-//     untouched and reports it, instead of stopping on it with its marker
-//     left behind, which would refuse every vault change.
+//   - pruneHistory never deletes an archived version that is, or may be,
+//     sealed to a lost key, and such versions do not take one of the
+//     HistoryKeep places. Keeping is always safe, so "may be" is generous.
+//   - `jit vault rekey` (Rewrap) leaves an envelope PROVABLY sealed to a
+//     lost key untouched and reports it, instead of stopping on it with its
+//     marker left behind, which would refuse every vault change. Proof is
+//     strict: finishing a rotation destroys the old master key, so an
+//     envelope jit merely presumes is a lost-key copy still stops it.
 //
 // Nothing here removes or rewrites an envelope. An envelope the import did
 // not replace stays on disk and keeps the state pending, so the caller can
@@ -74,21 +82,34 @@ type lostKeySnapshot struct {
 	Version  int    `json:"version"`
 	SetAside string `json:"set_aside"`
 	// SetAsideUnixNano is the same moment, precise enough to compare with a
-	// file's modification time (presumedSealed).
-	SetAsideUnixNano int64 `json:"set_aside_unix_nano"`
+	// file's modification time.
+	SetAsideUnixNano int64 `json:"set_aside_unix_nano,omitempty"`
 	// Files maps every envelope file under vault/, by its slash path
 	// relative to vault/ ("aws/key.enc", "_history/aws/key/17….enc"), to
 	// the hex SHA-256 of its bytes.
-	Files map[string]string `json:"files"`
+	Files map[string]string `json:"files,omitempty"`
 	// Unknown names envelope files that were there but could not be read.
 	Unknown []string `json:"unknown,omitempty"`
 	// Incomplete says why the walk could not see every file. A snapshot
 	// with it set cannot say which live secrets are fine, so every one
 	// counts as pending, exactly as with no snapshot at all.
 	Incomplete string `json:"incomplete,omitempty"`
+
+	// Envelopes is version 1's only list: live secrets (List's paths, so
+	// _backups/ but never _history/) to the hash of their envelope file.
+	// Read, never written: readLostKeySnapshot moves it into Files.
+	Envelopes map[string]string `json:"envelopes,omitempty"`
+	// historyUnrecorded: a version 1 record, which never listed _history/.
+	historyUnrecorded bool
 }
 
-const lostKeySnapshotVersion = 1
+// lostKeySnapshotVersion 2 records every envelope file (Files, Unknown,
+// Incomplete, SetAsideUnixNano). Version 1 recorded live secrets only
+// (Envelopes) and is still read.
+const (
+	lostKeySnapshotVersion   = 2
+	lostKeySnapshotVersionV1 = 1
+)
 
 // errLostKeyRecord marks a snapshot that is there but cannot be used.
 var errLostKeyRecord = errors.New("the record of secrets sealed to the lost key is unreadable")
@@ -189,8 +210,17 @@ func digest(data []byte) string {
 
 // readLostKeySnapshot reads one snapshot file. An absent file is returned
 // as an error satisfying errors.Is(err, fs.ErrNotExist); anything else that
-// stops it being used (unreadable, not JSON, another version, no files
-// map) wraps errLostKeyRecord.
+// stops it being used (unreadable, not JSON, an unknown version, no list of
+// files) wraps errLostKeyRecord.
+//
+// A version 1 snapshot is read into the current shape: its Envelopes (vault
+// path to hash) become Files (path + ".enc" to hash), and, since it kept the
+// set-aside moment only to the second, SetAsideUnixNano becomes the
+// snapshot file's own modification time (it was written at that moment,
+// and renaming it on retirement keeps the time), or, failing that, the end
+// of the recorded second. It never listed _history/, which
+// historyUnrecorded carries to the rule (lostKeyRecord.match): archived
+// copies from before the set-aside are presumed, never proven.
 func readLostKeySnapshot(file string) (lostKeySnapshot, error) {
 	data, err := os.ReadFile(file) // #nosec G304 -- a fixed name under the vault root
 	if err != nil {
@@ -203,27 +233,248 @@ func readLostKeySnapshot(file string) (lostKeySnapshot, error) {
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return lostKeySnapshot{}, fmt.Errorf("%w: %v", errLostKeyRecord, err)
 	}
-	if snap.Version != lostKeySnapshotVersion || snap.Files == nil {
+	switch {
+	case snap.Version == lostKeySnapshotVersion && snap.Files != nil:
+	case snap.Version == lostKeySnapshotVersionV1 && snap.Envelopes != nil:
+		snap.Files = make(map[string]string, len(snap.Envelopes))
+		for p, h := range snap.Envelopes {
+			snap.Files[p+".enc"] = h
+		}
+		snap.Envelopes = nil
+		snap.historyUnrecorded = true
+		snap.SetAsideUnixNano = 0
+		if info, err := os.Stat(file); err == nil {
+			snap.SetAsideUnixNano = info.ModTime().UnixNano()
+		} else if t, err := time.Parse(time.RFC3339, snap.SetAside); err == nil {
+			snap.SetAsideUnixNano = t.Add(time.Second - 1).UnixNano()
+		}
+		if snap.SetAsideUnixNano == 0 {
+			return lostKeySnapshot{}, fmt.Errorf("%w: version 1 with no time it was set aside", errLostKeyRecord)
+		}
+	default:
 		return lostKeySnapshot{}, fmt.Errorf("%w: version %d", errLostKeyRecord, snap.Version)
 	}
 	return snap, nil
 }
 
-// presumedSealed: a snapshot that could not hash every file (unknown
-// entries, or an incomplete walk) cannot prove which files are sealed to
-// the lost key, so a file last written at or before the set-aside is
-// presumed to be. A file written since (an import, a set) was sealed to
-// the new key; a byte-for-byte restore keeps the archived copy's old time.
-func (s lostKeySnapshot) presumedSealed(mod time.Time) bool {
-	return (len(s.Unknown) > 0 || s.Incomplete != "") && mod.UnixNano() <= s.SetAsideUnixNano
+// lostKeyRecord is one lost key's record, current or retired.
+type lostKeyRecord struct {
+	// snap is the snapshot, valid only when err is nil; hashes is its
+	// Files' hashes as a set.
+	snap   lostKeySnapshot
+	hashes map[string]bool
+	// err: why the snapshot can't be used. errors.Is(err, fs.ErrNotExist)
+	// when there is none (a key set aside by a jit older than the snapshot);
+	// errLostKeyRecord when it is there but unreadable.
+	err error
+	// upTo (Unix nanoseconds): an envelope last written after this was
+	// written under a later key. The set-aside moment when jit knows it
+	// (the snapshot, or the snapshot file's own time); else, for a retired
+	// key, when it was retired; else math.MaxInt64, nothing known.
+	upTo int64
 }
 
-func (s lostKeySnapshot) hashes() map[string]bool {
-	set := make(map[string]bool, len(s.Files))
-	for _, h := range s.Files {
-		set[h] = true
+// lostKeyMatch is how far an envelope is known to be sealed to a lost key.
+type lostKeyMatch int
+
+const (
+	// notLost: written under a later key, as far as any record can tell.
+	notLost lostKeyMatch = iota
+	// presumedLost: a record that could not list everything dates from
+	// after the file was last written, or the file can't be read to
+	// compare. Enough to keep it (history) or count it (status), never
+	// enough for rekey to leave it behind.
+	presumedLost
+	// provenLost: a record lists its bytes, or names it as unreadable at
+	// set-aside and it has not been written since.
+	provenLost
+)
+
+// match is THE rule, for one record: status, rekey and history pruning all
+// come here, through lostKeyCopies.matchFile. rel is the file's slash path
+// relative to vault/, sum the hex SHA-256 of its bytes ("" when it could
+// not be read), mod its modification time.
+func (r lostKeyRecord) match(rel, sum string, mod time.Time) lostKeyMatch {
+	if sum == "" {
+		return presumedLost
 	}
-	return set
+	before := mod.UnixNano() <= r.upTo
+	switch {
+	case r.err != nil:
+		if before {
+			return presumedLost
+		}
+		return notLost
+	case r.hashes[sum]:
+		return provenLost
+	case !before:
+		return notLost
+	case slices.Contains(r.snap.Unknown, rel):
+		return provenLost
+	case len(r.snap.Unknown) > 0 || r.snap.Incomplete != "",
+		r.snap.historyUnrecorded && strings.HasPrefix(rel, historyDirName+"/"):
+		return presumedLost
+	}
+	return notLost
+}
+
+// lostKeyCopies is the records a caller consults, with each file's verdict
+// kept once reached: an envelope file is only ever replaced whole, by a
+// rename, so one whose size and time are unchanged is the same file, and
+// is not hashed again.
+type lostKeyCopies struct {
+	records []lostKeyRecord
+
+	mu    sync.Mutex
+	known map[string]fileVerdict
+}
+
+type fileVerdict struct {
+	size  int64
+	mod   time.Time
+	match lostKeyMatch
+}
+
+func newLostKeyCopies(records []lostKeyRecord) *lostKeyCopies {
+	return &lostKeyCopies{records: records, known: map[string]fileVerdict{}}
+}
+
+// any: at least one lost key's sealed file exists.
+func (c *lostKeyCopies) any() bool { return c != nil && len(c.records) > 0 }
+
+// matchFile is match for a file under vaultDir, against every record: the
+// strongest verdict wins. It hashes the file at most once.
+func (c *lostKeyCopies) matchFile(vaultDir, file string) lostKeyMatch {
+	if !c.any() {
+		return notLost
+	}
+	rel, err := filepath.Rel(vaultDir, file)
+	if err != nil {
+		return presumedLost
+	}
+	info, err := os.Stat(file)
+	if err != nil {
+		return presumedLost
+	}
+	c.mu.Lock()
+	v, seen := c.known[file]
+	c.mu.Unlock()
+	if seen && v.size == info.Size() && v.mod.Equal(info.ModTime()) {
+		return v.match
+	}
+	var sum string
+	if data, err := os.ReadFile(file); err == nil { // #nosec G304 -- file is under jit's own vault directory
+		if digestHook != nil {
+			digestHook()
+		}
+		sum = digest(data)
+	}
+	best := notLost
+	for _, r := range c.records {
+		best = max(best, r.match(filepath.ToSlash(rel), sum, info.ModTime()))
+	}
+	if sum != "" {
+		c.mu.Lock()
+		c.known[file] = fileVerdict{size: info.Size(), mod: info.ModTime(), match: best}
+		c.mu.Unlock()
+	}
+	return best
+}
+
+// unproven says why an envelope neither key opens is not provably a
+// lost-key copy, for rekey's error: empty when no lost key exists.
+func (c *lostKeyCopies) unproven() string {
+	if !c.any() {
+		return ""
+	}
+	for _, r := range c.records {
+		if r.err != nil {
+			if errors.Is(r.err, fs.ErrNotExist) {
+				return "a lost key was set aside with no record of its secrets, so jit can't show this is one of them"
+			}
+			return r.err.Error() + ", so jit can't show this is one of the lost key's secrets"
+		}
+	}
+	return "no record of a lost key lists it"
+}
+
+// loadLostKeyCopies reads every lost key's record under root, current and
+// retired. One ReadDir of root when there is none.
+func loadLostKeyCopies(root string) (*lostKeyCopies, error) {
+	if loadHook != nil {
+		loadHook()
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return newLostKeyCopies(nil), nil
+		}
+		return nil, fmt.Errorf("looking for a lost vault key: %w", err)
+	}
+	var records []lostKeyRecord
+	for _, e := range entries {
+		suffix, isSealed := strings.CutPrefix(e.Name(), LostSealedKeyFile)
+		if !isSealed || (suffix != "" && !strings.HasPrefix(suffix, "-")) {
+			continue // not a lost key's sealed file (the snapshot shares the prefix: ".envelopes")
+		}
+		records = append(records, loadLostKeyRecord(root, suffix))
+	}
+	return newLostKeyCopies(records), nil
+}
+
+// loadHook and digestHook, when set (tests only), are called on every
+// loadLostKeyCopies and on every envelope hashed to compare with a record.
+var loadHook, digestHook func()
+
+// loadLostKeyRecord reads the record of the lost key whose sealed file is
+// LostSealedKeyFile+suffix ("" for the current one).
+func loadLostKeyRecord(root, suffix string) lostKeyRecord {
+	file := filepath.Join(root, lostKeySnapshotFile+suffix)
+	snap, err := readLostKeySnapshot(file)
+	if err == nil {
+		upTo := snap.SetAsideUnixNano
+		if upTo == 0 {
+			upTo = math.MaxInt64 // a version 2 snapshot always has it; never guess low
+		}
+		hashes := make(map[string]bool, len(snap.Files))
+		for _, h := range snap.Files {
+			hashes[h] = true
+		}
+		return lostKeyRecord{snap: snap, hashes: hashes, upTo: upTo}
+	}
+	r := lostKeyRecord{err: err, upTo: math.MaxInt64}
+	switch info, statErr := os.Stat(file); {
+	case statErr == nil:
+		// Unreadable, but its own time is when it was written: at the
+		// set-aside.
+		r.upTo = info.ModTime().UnixNano()
+	case suffix != "":
+		if t, perr := time.Parse(retiredStampLayout, strings.TrimPrefix(suffix, "-")); perr == nil {
+			r.upTo = t.UnixNano()
+		}
+	}
+	return r
+}
+
+// lostKeyCopies returns the Vault's lost-key records, read once for the
+// life of this Vault value (every archive consults them, and a Vault lives
+// for one command or one service operation). Records change only through
+// the package functions in this file, which never run on a Vault a caller
+// is still writing through.
+func (v *Vault) lostKeyCopies() (*lostKeyCopies, error) {
+	v.lost.mu.Lock()
+	defer v.lost.mu.Unlock()
+	if v.lost.copies == nil && v.lost.err == nil {
+		v.lost.copies, v.lost.err = loadLostKeyCopies(v.Root)
+	}
+	return v.lost.copies, v.lost.err
+}
+
+// lostKeyCache holds a Vault's lost-key records (Vault.lostKeyCopies).
+type lostKeyCache struct {
+	mu     sync.Mutex
+	copies *lostKeyCopies
+	err    error
 }
 
 // SealedToLostKey returns the live vault paths (as List names them) whose
@@ -252,47 +503,32 @@ func SealedToLostKey(root string) (paths []string, known bool, err error) {
 }
 
 // sealedToLostKey is SealedToLostKey once LostSealedKeyFile is known to be
-// there.
+// there. Only the current record counts: a retired key's secrets were
+// settled when it was retired.
 func sealedToLostKey(root string) (paths []string, known bool, err error) {
 	v := &Vault{Root: root}
 	current, err := v.List()
 	if err != nil {
 		return nil, false, err
 	}
-	snap, err := readLostKeySnapshot(filepath.Join(root, lostKeySnapshotFile))
-	if errors.Is(err, fs.ErrNotExist) {
+	rec := loadLostKeyRecord(root, "")
+	switch {
+	case errors.Is(rec.err, fs.ErrNotExist):
+		return current, false, nil
+	case rec.err != nil:
+		return nil, false, rec.err
+	case rec.snap.Incomplete != "":
 		return current, false, nil
 	}
-	if err != nil {
-		return nil, false, err
-	}
-	if snap.Incomplete != "" {
-		return current, false, nil
-	}
-	recorded := snap.hashes()
+	copies := newLostKeyCopies([]lostKeyRecord{rec})
 	for _, p := range current {
 		file, err := sanitizeSecretPath(v.vaultDir(), p)
-		if err != nil || envelopeSealedTo(file, recorded, snap.presumedSealed) {
+		if err != nil || copies.matchFile(v.vaultDir(), file) != notLost {
 			paths = append(paths, p)
 		}
 	}
 	sort.Strings(paths)
 	return paths, true, nil
-}
-
-// envelopeSealedTo reports whether file is one of the recorded envelopes:
-// its bytes hash to a recorded hash, or presumed says so from its
-// modification time. A file that cannot be read counts as sealed.
-func envelopeSealedTo(file string, recorded map[string]bool, presumed func(time.Time) bool) bool {
-	info, err := os.Stat(file)
-	if err != nil {
-		return true
-	}
-	data, err := os.ReadFile(file) // #nosec G304 -- file is under jit's own vault directory
-	if err != nil {
-		return true
-	}
-	return recorded[digest(data)] || presumed(info.ModTime())
 }
 
 // LostKeySettle is what SettleLostKey did.
@@ -321,7 +557,7 @@ type LostKeySettle struct {
 // secret at all.
 //
 // A snapshot that is there but cannot be read settles nothing: that is an
-// error, never "no snapshot".
+// error, never "no snapshot" (FinishLostKeyRestore is the way out).
 func SettleLostKey(root string, now time.Time, imported bool) (LostKeySettle, error) {
 	if _, err := os.Lstat(filepath.Join(root, LostSealedKeyFile)); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -336,103 +572,115 @@ func SettleLostKey(root string, now time.Time, imported bool) (LostKeySettle, er
 	if len(left) > 0 && (known || !imported) {
 		return LostKeySettle{Remaining: left}, nil
 	}
-	suffix := retiredSuffix(now)
-	for _, name := range []string{LostSealedKeyFile, lostKeySnapshotFile} {
-		old := filepath.Join(root, name)
-		if err := os.Rename(old, old+suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return LostKeySettle{}, fmt.Errorf("retiring the lost key's %s: %w", name, err)
-		}
+	if err := retireLostKey(root, now); err != nil {
+		return LostKeySettle{}, err
 	}
 	return LostKeySettle{Settled: true, Unchecked: !known && imported}, nil
 }
 
-// lostKeyCopies is every record jit holds of envelopes sealed to a lost
-// key, the current one and every retired one, for the two promises in the
-// file comment: history keeps them, rekey leaves them alone.
-type lostKeyCopies struct {
-	// any: at least one lost key's file or snapshot exists.
-	any bool
-	// recorded holds every recorded hash.
-	recorded map[string]bool
-	// presumeUpTo: a file last written at or before this (Unix
-	// nanoseconds) is presumed sealed to a lost key, because some lost key
-	// has a record that could not hash everything, or none at all. Zero
-	// when every lost key's record is complete.
-	presumeUpTo int64
+// retireLostKey renames the current lost key's sealed file and snapshot
+// with a timestamp. Never a delete.
+func retireLostKey(root string, now time.Time) error {
+	suffix := retiredSuffix(now)
+	for _, name := range []string{LostSealedKeyFile, lostKeySnapshotFile} {
+		old := filepath.Join(root, name)
+		if err := os.Rename(old, old+suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("retiring the lost key's %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
-// sealed reports whether an envelope with these bytes and this
-// modification time is (or is presumed to be) sealed to a lost key.
-func (c lostKeyCopies) sealed(data []byte, mod time.Time) bool {
-	if !c.any {
-		return false
-	}
-	return c.recorded[digest(data)] || (c.presumeUpTo != 0 && mod.UnixNano() <= c.presumeUpTo)
+// LostKeyFinish is what `jit vault import --finish` would do, and did.
+type LostKeyFinish struct {
+	// Pending: a lost key's file is set aside. False means there is nothing
+	// to finish.
+	Pending bool
+	// Remaining: the record is readable and lists these live secrets as
+	// still sealed to the lost key. Finish refuses: an import or `jit vault
+	// rm` is the way, and the record can prove when they are done.
+	Remaining []string
+	// Unverified says why jit cannot check which secrets are still sealed
+	// to the lost key (the record unreadable or missing, a walk that saw
+	// only part of the vault, or the vault itself unreadable). Empty when
+	// the record could check, and found nothing left.
+	Unverified string
+	// MayBeSealed lists the live secrets last written at or before the key
+	// was set aside, which may still be sealed to it; SetAsideKnown is false
+	// when jit can't tell when that was, and then any secret may be.
+	MayBeSealed   []string
+	SetAsideKnown bool
+	// Settled: the lost key's files were retired (FinishLostKeyRestore).
+	Settled bool
 }
 
-// sealedFile is sealed for a file on disk; one it cannot read counts as
-// sealed (kept, never deleted).
-func (c lostKeyCopies) sealedFile(file string) bool {
-	if !c.any {
-		return false
-	}
-	info, err := os.Stat(file)
-	if err != nil {
-		return true
-	}
-	data, err := os.ReadFile(file) // #nosec G304 -- file is under jit's own vault directory
-	if err != nil {
-		return true
-	}
-	return c.sealed(data, info.ModTime())
-}
-
-// loadLostKeyCopies reads every lost key's record under root.
-//
-// A lost key's sealed file with no usable snapshot beside it (none, or an
-// unreadable one) cannot prove anything, so everything written before it
-// was retired (or, while it is current, everything) is presumed sealed to
-// it. Presumption only ever keeps a file: history keeps it, rekey leaves
-// it untouched when neither key opens it.
-func loadLostKeyCopies(root string) (lostKeyCopies, error) {
-	entries, err := os.ReadDir(root)
-	if err != nil {
+// PlanLostKeyFinish reports what FinishLostKeyRestore would do, changing
+// nothing. Files only, no key.
+func PlanLostKeyFinish(root string) (LostKeyFinish, error) {
+	if _, err := os.Lstat(filepath.Join(root, LostSealedKeyFile)); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return lostKeyCopies{}, nil
+			return LostKeyFinish{}, nil
 		}
-		return lostKeyCopies{}, fmt.Errorf("looking for a lost vault key: %w", err)
+		return LostKeyFinish{}, fmt.Errorf("checking for a lost vault key: %w", err)
 	}
-	c := lostKeyCopies{recorded: map[string]bool{}}
-	presume := func(upTo int64) {
-		c.presumeUpTo = max(c.presumeUpTo, upTo)
+	plan := LostKeyFinish{Pending: true}
+	left, known, err := sealedToLostKey(root)
+	switch {
+	case err == nil && known && len(left) > 0:
+		plan.Remaining = left
+		return plan, nil
+	case err == nil && known:
+		return plan, nil
+	case err != nil:
+		plan.Unverified = err.Error()
+	default:
+		rec := loadLostKeyRecord(root, "")
+		switch {
+		case rec.err != nil:
+			plan.Unverified = "the lost key was set aside with no record of its secrets"
+		default:
+			plan.Unverified = "the record of the lost key's secrets covers only part of the vault: " + rec.snap.Incomplete
+		}
 	}
-	for _, e := range entries {
-		name := e.Name()
-		suffix, isSealed := strings.CutPrefix(name, LostSealedKeyFile)
-		if !isSealed || (suffix != "" && !strings.HasPrefix(suffix, "-")) {
-			continue // not a lost key's sealed file (the snapshot shares the prefix: ".envelopes")
-		}
-		c.any = true
-		// The moment up to which files are presumed sealed when this key's
-		// record can't say: while current, now and forever; once retired,
-		// when it was retired.
-		upTo := int64(math.MaxInt64)
-		if suffix != "" {
-			if t, err := time.Parse(retiredStampLayout, strings.TrimPrefix(suffix, "-")); err == nil {
-				upTo = t.UnixNano()
-			}
-		}
-		snap, err := readLostKeySnapshot(filepath.Join(root, lostKeySnapshotFile+suffix))
+	rec := loadLostKeyRecord(root, "")
+	plan.SetAsideKnown = rec.upTo != math.MaxInt64
+	v := &Vault{Root: root}
+	live, listErr := v.List()
+	if listErr != nil {
+		plan.SetAsideKnown = false
+		return plan, nil
+	}
+	for _, p := range live {
+		file, err := sanitizeSecretPath(v.vaultDir(), p)
 		if err != nil {
-			presume(upTo)
+			plan.MayBeSealed = append(plan.MayBeSealed, p)
 			continue
 		}
-		for h := range snap.hashes() {
-			c.recorded[h] = true
-		}
-		if len(snap.Unknown) > 0 || snap.Incomplete != "" {
-			presume(snap.SetAsideUnixNano)
+		info, err := os.Stat(file)
+		if err != nil || info.ModTime().UnixNano() <= rec.upTo {
+			plan.MayBeSealed = append(plan.MayBeSealed, p)
 		}
 	}
-	return c, nil
+	return plan, nil
+}
+
+// FinishLostKeyRestore settles a lost key's restore on the user's word,
+// for when the record cannot (unreadable, missing, or covering only part
+// of the vault): it retires the lost key's sealed file and record, renamed
+// with a timestamp, never deleted, and returns the plan it acted on so the
+// caller can say what it could not verify. It refuses, changing nothing,
+// when the record is readable and still lists live secrets (Remaining).
+//
+// A retired record keeps its promises (lostKeyCopies): history keeps what
+// may be sealed to it, and rekey still stops on anything it can't prove.
+func FinishLostKeyRestore(root string, now time.Time) (LostKeyFinish, error) {
+	plan, err := PlanLostKeyFinish(root)
+	if err != nil || !plan.Pending || len(plan.Remaining) > 0 {
+		return plan, err
+	}
+	if err := retireLostKey(root, now); err != nil {
+		return plan, err
+	}
+	plan.Settled = true
+	return plan, nil
 }
