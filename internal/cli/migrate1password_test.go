@@ -34,7 +34,6 @@ func TestMain(m *testing.M) {
 	// The production keychain's vault key item, for status's and doctor's
 	// keychain-copy check: never probed from a test.
 	keychainCopyPresence = func() keystore.Presence { return keystore.Absent }
-	deleteLeftoverKey = func() error { panic("a test reached the production keychain item") }
 	// A hardware run (scripts/se-test.sh): no keychain dialog, whatever a
 	// test does; one that would have to ask fails instead.
 	if os.Getenv("JIT_SE_TEST") == "1" {

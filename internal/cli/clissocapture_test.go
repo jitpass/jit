@@ -257,6 +257,22 @@ func TestStripClissoCacheFlag(t *testing.T) {
 	}
 }
 
+// countingKeychainKey stands in for the vault key item: a working key (the
+// package's fakeKeyWrapper) that counts every use.
+type countingKeychainKey struct {
+	kw   *fakeKeyWrapper
+	uses *int
+}
+
+func (k countingKeychainKey) WrapKey(dek []byte) ([]byte, error) { *k.uses++; return k.kw.WrapKey(dek) }
+func (k countingKeychainKey) UnwrapKey(w []byte) ([]byte, error) { *k.uses++; return k.kw.UnwrapKey(w) }
+func (k countingKeychainKey) RequireUserPresence(string) error   { *k.uses++; return nil }
+func (k countingKeychainKey) FetchMEK(string) ([]byte, error) {
+	*k.uses++
+	return append([]byte(nil), k.kw.key...), nil
+}
+func (countingKeychainKey) Close() {}
+
 func TestMemoizedVaultOpenerOpensOnce(t *testing.T) {
 	// Every openVault builds a fresh keychainwrap.Wrapper, and that cache
 	// is per instance — so with the agent service unreachable, each extra
