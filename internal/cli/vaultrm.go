@@ -219,6 +219,9 @@ func runVaultRm(cmd *cobra.Command, args []string) error {
 	}
 	invocationDeleted = removed
 	invocationBroke = rmBrokenUsers(uses, removed)
+	if len(removed) > 0 {
+		settleLostKeyAfterRm(cmd, v.Root)
+	}
 	if failed > 0 {
 		return fmt.Errorf("jit vault rm: %d of %d %s could not be removed", failed, len(args), pluralWord(len(args), "secret", "secrets"))
 	}

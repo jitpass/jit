@@ -131,23 +131,68 @@ sealing it, which S1b shows needs no prompt.
 | State | `jit status --format json` | `jit doctor` kind | Fix |
 |---|---|---|---|
 | A move did not finish | `vault.move_unfinished`: `"secure-enclave"` or `"keychain"` | `vault_move` | `jit vault rekey --wrapper <target>` |
-| A rotation did not finish, or a marker jit can't parse | nothing new | `rekey` (unchanged) | `jit vault rekey` |
+| A rotation did not finish | nothing new | `rekey` (unchanged) | `jit vault rekey` |
+| A marker jit can't read, or a change it doesn't recognise (a move to a target only a newer jit knows) | nothing new | `rekey_unknown` | none: "update jit, then finish it with the newer jit", or make the file readable |
 | Secrets still sealed to a lost enclave key | `vault.restore_pending`: `true` | `vault_restore` | `jit vault import <file>` |
+| The lost-key record can't be checked | `vault.restore_pending`: `true`, `vault.restore_check_error`: why | `vault_restore`, detail "couldn't check the vault for secrets sealed to a lost key: …" | none |
 
-A lost key's restore: `jit vault init` renames `vault-key.sealed` to
-`vault-key.sealed.lost` and writes `vault-key.sealed.lost.envelopes`, the
-SHA-256 of every envelope on disk, all sealed to the lost key. Envelopes
-name no key, so this record is the only way to know, without a key, which
-secrets the new key can't open: a restored envelope has a new data key and
-different bytes. `restore_pending` holds while any recorded envelope is
-still there unchanged. A `jit vault import` that restores all of them
-renames both files with a timestamp and never deletes them: if the key was
-reported lost by mistake, the sealed file is what could still open the old
-secrets. An import whose file leaves some out keeps the state and names
-them. The import deletes nothing: the secrets it could not restore stay on
-disk, and it is up to the user to import another file or run `jit vault rm`.
-The history copies the import makes of overwritten envelopes are sealed to
-the lost key too, and are kept for the same reason.
+A rotation resumes only over a marker it can prove is a rotation's (the
+`started …` line `jit vault rekey` writes). Resuming over a move this jit
+can't read would rewrap under a key the move may be about to delete, so
+`jit vault rekey`, with or without `--wrapper`, refuses any other marker.
+
+### A lost key's restore
+
+`jit vault init` renames `vault-key.sealed` to `vault-key.sealed.lost` and
+writes `vault-key.sealed.lost.envelopes`: the SHA-256 of every envelope file
+under `vault/` (live secrets, `_backups/` and `_history/` alike), all sealed
+to the lost key. Envelopes name no key, so this record is the only way to
+know, without a key, which envelopes the new key can't open: a restored
+envelope has a new data key and different bytes. Init also drops the
+service's session on both sides, as rekey does: a service still holding
+the lost key would otherwise keep sealing writes under it.
+
+**Init is never blocked.** It is the only way back. A file it can't read
+is recorded by name as unknown; a walk that can't see every file marks the
+record incomplete. Both fail closed: an unknown file counts as sealed until
+it is rewritten after the set-aside (its modification time says so), and an
+incomplete record counts every secret as pending, like no record at all.
+
+**Pending counts live secrets only.** `restore_pending` holds while any
+live secret's bytes match any recorded hash, whatever path it sits at now:
+`jit vault restore <path> --version <old>` renames an archived copy into
+place byte for byte. A live file jit can't read counts as pending. Archived
+copies are kept, never pending. A record that is there but unreadable is an
+error, never "no record": status and doctor report it as pending and say
+they couldn't check, and nothing settles on it. Only an absent record (a
+vault set aside by an older jit) means every secret counts as pending.
+
+**Settling.** When no live secret is left sealed to the lost key, both files
+are renamed with a timestamp, never deleted: if the key was reported lost by
+mistake, the sealed file is what could still open the old envelopes. An
+import settles it once it has brought everything back; an import with no
+usable record settles it anyway and says it couldn't check. `jit vault rm`
+settles it once it removes the last one (and, with no record, only once the
+vault is empty). An import whose file leaves some out keeps the state and
+names them. Neither deletes what it did not name: the secrets an import
+could not restore stay on disk, and it is up to the user to import another
+file or run `jit vault rm`, which deletes that secret's history too, as rm
+always has.
+
+**Copies sealed to the lost key are kept for good.** Every record, current
+or retired, keeps two promises for as long as it exists:
+
+- History pruning never deletes an archived version sealed to a lost key,
+  and those versions take none of the five places `jit vault history` keeps.
+  If jit can't read the records at all, it prunes nothing.
+- `jit vault rekey` never stops on a lost-key copy and never destroys one.
+  It still tries the old key first, so an envelope that key opens is rotated
+  whatever a record says. An envelope neither key opens is left exactly as it
+  is, and reported, when a record lists its bytes, or when a record that
+  couldn't list everything (unknown or incomplete, or a lost key with no
+  record at all) dates from after the file was last written. No key on this
+  Mac ever opened it, so rotating can't make it less readable. Any other
+  envelope neither key opens still stops the rotation, as it always has.
 
 ## Phase 2: grant and job keys
 

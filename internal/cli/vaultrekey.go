@@ -8,6 +8,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -68,9 +69,15 @@ var vaultRekeyCmd = &cobra.Command{
 		if vaultRekeyWrapper != "" {
 			return runVaultMove(cmd, root, vaultRekeyWrapper)
 		}
-		// A move and a rotation share the marker, never each other's work.
-		if target := moveInProgress(root); target != "" {
-			return fmt.Errorf("jit vault rekey: a move of the vault key is unfinished; run `jit vault rekey --wrapper %s` to finish it", target)
+		// A move and a rotation share the marker, never each other's work,
+		// and a rotation resumes only over a marker it can prove is a
+		// rotation's: resuming over a half-done move this jit can't read
+		// would rewrap under a key the move may be about to delete.
+		switch m := readRekeyMarker(root); m.kind {
+		case markerMove:
+			return fmt.Errorf("jit vault rekey: a move of the vault key is unfinished; run `jit vault rekey --wrapper %s` to finish it", m.target)
+		case markerOtherMove, markerUnknown:
+			return fmt.Errorf("jit vault rekey: %w", rekeyMarkerRefusal(root))
 		}
 		// Rotation rewrites the keychain item; an enclave vault does not use
 		// one. Rotating an enclave vault's key is not built yet.
@@ -147,7 +154,8 @@ var vaultRekeyCmd = &cobra.Command{
 		// result line prints.
 		progress := newProgress(cmd, false)
 		progress.Step("Re-wrapping every secret under the new master key…", "Re-wrapped every secret under the new master key")
-		rewrapped, current, err := v.RewrapAll(oldKW, primary.StagedRekeyWrapper())
+		result, err := v.Rewrap(oldKW, primary.StagedRekeyWrapper())
+		rewrapped, current := result.Rewrapped, result.Current
 		progress.Stop()
 		if err != nil {
 			// Marker stays: the vault is mid-rotation and other commands
@@ -167,8 +175,21 @@ var vaultRekeyCmd = &cobra.Command{
 			fmt.Fprintf(cmd.OutOrStdout(), " (%d already current from an interrupted run)", current)
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), ". The old master key has been destroyed.")
+		printKeptLostKeyCopies(cmd.OutOrStdout(), result.Kept)
 		return nil
 	},
+}
+
+// printKeptLostKeyCopies says how many envelopes a rotation left as they were
+// because they are sealed to a lost Secure Enclave key (vault.Rewrap): no
+// key on this Mac opens them, and they stay on disk for the recovery file,
+// or a key found again, to bring back.
+func printKeptLostKeyCopies(w io.Writer, kept []string) {
+	if len(kept) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "Left %s sealed to a lost key as %s: no key on this Mac opens %s.\n",
+		countWord(len(kept), "file", "files"), pluralWord(len(kept), "it was", "they were"), pluralWord(len(kept), "it", "them"))
 }
 
 // lockAgent drops a running agent's session, best-effort — rekey's
