@@ -23,6 +23,7 @@ import (
 	"github.com/jitpass/jit/internal/consent"
 	"github.com/jitpass/jit/internal/job"
 	"github.com/jitpass/jit/internal/keychainwrap"
+	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/onepassword"
 	"github.com/jitpass/jit/internal/screenlock"
 )
@@ -44,6 +45,12 @@ import (
 // here instead of the assertion quietly failing to match and restoring a
 // plaintext master key that outlives every lock, screen-lock and sleep wipe.
 var _ agent.ClosableFetcher = (*keychainwrap.Wrapper)(nil)
+
+// What the service actually builds per unlock is a keystore.Fetcher, whose
+// backend depends on the vault; if its method set drifted from
+// agent.ClosableFetcher, closeFetcher's runtime check would stop matching and
+// no fetcher would be wiped after an unlock.
+var _ agent.ClosableFetcher = keystore.Fetcher(nil)
 
 var agentTTL time.Duration
 

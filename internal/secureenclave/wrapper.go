@@ -127,10 +127,16 @@ const (
 // Presence checks the file and the key's existence. It never uses the key,
 // so it never prompts, and is safe on a non-interactive run.
 func (w *Wrapper) Presence() Presence {
-	if _, err := os.Stat(w.path); err != nil {
+	// Lstat, like keystore.Open: a symlink here (dangling or planted) is
+	// neither a sealed key nor proof there is none.
+	info, err := os.Lstat(w.path)
+	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return Absent
 		}
+		return Indeterminate
+	}
+	if !info.Mode().IsRegular() {
 		return Indeterminate
 	}
 	ok, err := w.enc.present()
