@@ -331,6 +331,26 @@ locked temporary keychain raised its unlock prompt once (the `security`
 tool's, cancelled); the test uses only subcommands that take the password
 or never prompt.
 
+Third review of #170 (2026-09-26): with the fallback CLI-only, a grant or
+job key made by a jit at another path (a switch between the tarball or
+cask and the app) could never be deleted by the service: a revoked
+grant's key stayed, and the unused-key cleanup failed on it at every
+start. The service now takes the same reference delete WITHOUT the
+process-wide switch (`kw_item_delete_by_ref_no_switch`,
+`serviceRefFallback`): the lookup keeps `kSecUseAuthenticationUIFail`, and
+`SecKeychainItemDelete` runs with interaction as the service has it. That
+the delete needs no UI was shown before it was ever run with interaction
+on: row 8 (it succeeded with interaction OFF, so it needed none), row 9
+(Apple's `security`, interaction on, deleted the same item at once), and
+the locked-keychain test, which now also deletes by reference on a LOCKED
+temporary keychain with interaction off: 0, no unlock needed. Then, on
+this Mac, IDENTIFIER=jit, TEST-ONLY items made by `s3g/out/oldjit`:
+`TestHardwareGrantKeyDeleteAnOldJitsItem` (interaction off for the whole
+binary) passes, and fails with -25244 with the fallback removed;
+`TestHardwareGrantKeyDeleteAnOldJitsItemWithInteractionAllowed` first
+deletes one such item with interaction off (its gate), then a second with
+interaction ON: deleted in 9.5 ms, no dialog, the switch left on.
+
 Not measured: an item created by a Developer ID signed jit (this Mac has only
 the team's Apple Development identity). The partition entry is
 `teamid:CZC6BH93GJ` for both certificates, and row 4 shows the refusal

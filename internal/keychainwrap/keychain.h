@@ -44,6 +44,15 @@ int kw_item_delete(const char *service, const char *account);
 // included, else the first failing delete's, else errSecSuccess.
 int kw_item_delete_by_ref(const char *service, const char *account);
 
+// kw_item_delete_by_ref_no_switch is kw_item_delete_by_ref WITHOUT the
+// process-wide interaction switch around the lookup and the deletes: the
+// service's grant and job key deletes (GrantKeys.Delete), where flipping
+// that switch would reach every other request in flight. The lookup still
+// carries kSecUseAuthenticationUIFail; the delete needs no UI on these
+// items (S3g rows 8 and 9, the locked-keychain test; keychain.m has the
+// measurements).
+int kw_item_delete_by_ref_no_switch(const char *service, const char *account);
+
 // kw_add_mek stores the GIVEN key bytes under service/account, which must
 // not exist: the add half of keychainwrap's setMEK (the promote step of
 // `jit vault rekey`, and a move back to the keychain), after deleteItem.
@@ -101,9 +110,10 @@ void kw_set_user_interaction(int allowed);
 // kw_add_in_keychain and kw_probe_in_keychain work on a keychain FILE the
 // hardware test creates and locks itself (TEST-ONLY names only): the add
 // makes an item in it from this binary; the probe runs one registry query
-// (KW_Q_PRESENCE, KW_Q_FETCH_QUIET or KW_Q_DELETE) against that keychain
-// alone, with the process's interaction switched off around it only when
-// without_ui is set, and returns its status.
+// (KW_Q_PRESENCE, KW_Q_FETCH_QUIET or KW_Q_DELETE), or the delete by
+// reference (KW_Q_REF), against that keychain alone, with the process's
+// interaction switched off around it only when without_ui is set, and
+// returns its status.
 int kw_add_in_keychain(const char *path, const char *service, const char *account);
 int kw_probe_in_keychain(const char *path, const char *service, const char *account, int which, int without_ui);
 

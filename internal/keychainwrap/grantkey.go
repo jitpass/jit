@@ -105,12 +105,16 @@ func (g GrantKeys) Load(id string) (*GrantKey, error) {
 // since the state the caller wants is "no key".
 //
 // The long-running service calls this (a revoke, an expiry, the unused-key
-// cleanup, a move of grant keys), so it never takes deleteItem's reference
-// fallback: that switches keychain UI off for the whole process
-// (kwWithoutUI), under every other request in flight. It never needs it
-// either: this helper made every grant key, at its own path, and
-// errSecInvalidOwnerEdit is the answer to an item another executable made.
-// If it ever comes back anyway, it is returned as the error it is.
+// cleanup, a move of grant keys). A key another jit made at another path
+// (a switch between the tarball or cask and the app: S3g, the creator's
+// PATH decides) answers SecItemDelete with errSecInvalidOwnerEdit, and
+// without a fallback a revoked grant's key would stay and the cleanup
+// would fail on it at every start. So it takes the reference fallback, in
+// its service form (serviceRefFallback): never the CLI form, which
+// switches keychain UI off for the whole process (kwWithoutUI), under every
+// other request in flight. The lookup still refuses UI per call, and the
+// delete by reference needs none on these items (keychain.m,
+// kwDeleteRefsIn; TestHardwareGrantKeyDeleteAnOldJitsItem*).
 func (g GrantKeys) Delete(id string) error {
 	w, err := g.wrapper(id)
 	if err != nil {
@@ -120,7 +124,7 @@ func (g GrantKeys) Delete(id string) error {
 	if ops.presence() == MEKAbsent {
 		return nil
 	}
-	_, err = deleteItem(ops, deleteOpts{verb: "delete failed"})
+	_, err = deleteItem(ops, deleteOpts{fallback: serviceRefFallback, verb: "delete failed"})
 	return err
 }
 
