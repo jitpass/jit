@@ -264,6 +264,12 @@ type Server struct {
 	// service.
 	stateWriter func(path string, data []byte) error
 
+	// standingChecked, when a test sets it, runs in a standing-grant serve
+	// after the grant was found live under grantMu and before its key is
+	// opened: the window a revoke can land in (standingGrant.dead). Nil in
+	// the service.
+	standingChecked func(id string)
+
 	// AuthMethodFn, if set, returns a best-effort description of how the local
 	// auth challenge asked the user ("Touch ID or device passcode" vs. "device
 	// passcode"), stamped onto the unlock/denied event a fresh challenge
