@@ -127,29 +127,42 @@ S3g in `spike/secure-enclave-mek/FINDINGS.md`) finishes the move anyway and
 is reported until removed. The move says an older jit elsewhere on this Mac
 can still read it: that copy is the key, readable, not a dead leftover.
 
-A keychain item under the vault key's name is never adopted quietly as a
-vault's key, the way `kw_ensure_mek` would (it keeps an item it finds):
+**A key left in the keychain.** `jit vault delete` deletes the vault's key,
+and for an enclave vault the keychain copy too, through the reference
+fallback when an older jit made it (S3g). If a keychain item under the vault
+key's name still won't go, delete finishes and says so, naming the item:
+"couldn't delete the old copy of the vault key from your keychain (<err>).
+Delete "com.jitpass.vault.mek" in Keychain Access, or a new vault made with
+`jit vault init` reuses it." (for a keychain vault, "the vault key" rather
+than "the old copy"). The enclave key and the copy each get their own
+warning (`ErrEnclaveKeyKept`, `ErrKeychainCopyKept`).
 
-- `jit vault delete` names the key it couldn't remove (the enclave key or
-  the keychain copy), and when an item survives it writes
-  `keychain-key.leftover`; the next `jit vault init` then asks before
-  deleting that item, and stops on no, on no one to answer, on a keychain
-  that won't say, or on a vault that holds secrets again. Until init has
-  settled it, every use of the key refuses with "the vault you deleted left
-  its key in your keychain; run `jit vault init` to deal with it": every
-  command through `keystore.Open` (vault set, migrate, ...), the service's
-  unlock (it opens the store per unlock), and `jit vault rekey`, with or
-  without `--wrapper`, which reaches the item directly.
-- `jit vault init` over a LOST enclave key measures an item it finds: if it
-  opens every live secret (read with no challenge and no dialog), it is the
-  vault's own key and the vault is restored from it, said in three lines,
-  with `vault-key.sealed` set aside as `vault-key.sealed.recovered-<time>`
-  and nothing pending. Anything else (a different key, some of the secrets,
-  no secrets to try it on, an item it can't read without asking) is refused
-  with nothing changed, naming the item to delete in Keychain Access. An
-  item it can't read fails the same way every run, so that refusal is not
-  "try again": it names the item and the way out (delete it if the
-  recovery file has the secrets, init again, import the file).
+`jit vault init` on a keychain vault then does what it always has:
+`kw_ensure_mek` keeps an item it finds. That is a known weakness, chosen
+over the alternative. PR #170 first wrote a `keychain-key.leftover` marker
+and refused every use of the key until init had asked about it. A review
+found that worse: an older jit that ignored the marker could init and store
+secrets under the key, after which every command, the service's unlock and
+rekey were refused on a vault that worked, and the only way out deleted the
+key those secrets needed; `jit status`, `jit doctor` and the app could not
+see the marker; and a service session already unlocked walked past it. The
+weakness left is narrow and visible: it needs a delete that failed even
+through the fallback, which the warning names on the spot, and the reused
+key is one that was already on this Mac, readable by the same programs as
+before. A lockout of a working vault is neither.
+
+**Init over a lost enclave key.** `jit vault init` over a LOST enclave key
+measures an item it finds: if it
+opens every live secret (read with no challenge and no dialog), it is the
+vault's own key and the vault is restored from it, said in three lines,
+with `vault-key.sealed` set aside as `vault-key.sealed.recovered-<time>`
+and nothing pending. Anything else (a different key, some of the secrets,
+no secrets to try it on, an item it can't read without asking) is refused
+with nothing changed, naming the item to delete in Keychain Access. An
+item it can't read fails the same way every run, so that refusal is not
+"try again": it names the item and the way out (delete it if the
+recovery file has the secrets, init again, import the file).
+
 The reverse, `--wrapper keychain`, writes the plain item back, verifies it,
 then deletes the sealed file and the enclave key. **The reverse ships
 tested before the forward** (`menu-bar-app.md:133`). Rotating the MEK

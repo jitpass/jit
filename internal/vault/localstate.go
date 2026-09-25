@@ -15,14 +15,6 @@ import (
 // internal/keystore can tell which backend a vault uses from one constant.
 const SealedKeyFile = "vault-key.sealed"
 
-// LeftoverKeyMarker is written to the vault root by `jit vault delete` when
-// a keychain item under the vault key's name survives it: the deleted
-// vault's key (or its copy), which the next `jit vault init` must not adopt
-// as the new vault's key, as kw_ensure_mek would (it keeps an item it
-// finds). Init asks before deleting that item, and removes this marker once
-// the item is gone. DeleteLocalState does not remove it: it is written after.
-const LeftoverKeyMarker = "keychain-key.leftover"
-
 // DeleteLocalState permanently removes every file this package keeps
 // under root — the encrypted secrets tree, the device identity, the
 // last-export marker and the sealed key file — returning which of them

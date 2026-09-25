@@ -67,12 +67,6 @@ var vaultRekeyCmd = &cobra.Command{
 			return fmt.Errorf("jit vault rekey: %w", err)
 		}
 
-		// A key a deleted vault left in the keychain: a rotation would
-		// adopt it and a move would carry it into the enclave. Only `jit
-		// vault init` settles it (keystore.LeftoverKeyRefusal).
-		if err := keystore.LeftoverKeyRefusal(root); err != nil {
-			return fmt.Errorf("jit vault rekey: %w", err)
-		}
 		if vaultRekeyWrapper != "" {
 			return runVaultMove(cmd, root, vaultRekeyWrapper)
 		}
@@ -94,7 +88,7 @@ var vaultRekeyCmd = &cobra.Command{
 		resume := rekeyInProgress(root)
 		// Rekey rotates the keychain item's own bytes through staged items;
 		// it stays keychain-specific until plan step B4.
-		primary := rotationKeychain()
+		primary := keystore.Keychain()
 		hasPrimary := primary.HasMEK()
 		if !hasPrimary && !resume {
 			return fmt.Errorf("jit vault rekey: no vault master key found, run `jit vault init` first")
@@ -186,10 +180,6 @@ var vaultRekeyCmd = &cobra.Command{
 		return nil
 	},
 }
-
-// rotationKeychain is keystore.Keychain, the item a rotation rewrites; a var
-// so a test runs the command over a TEST-ONLY item, never the vault's own.
-var rotationKeychain = keystore.Keychain
 
 // printKeptLostKeyCopies says how many envelopes a rotation left as they were
 // because they are sealed to a lost Secure Enclave key (vault.Rewrap): no

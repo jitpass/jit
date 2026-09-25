@@ -137,7 +137,7 @@ var (
 func Open(root string) Store {
 	_, err := os.Lstat(filepath.Join(root, vault.SealedKeyFile))
 	if err != nil && errors.Is(err, fs.ErrNotExist) {
-		return keychainStore{root: root}
+		return keychainStore{}
 	}
 	// The file exists, or it could not be checked: either way this vault
 	// may be an enclave vault, and treating it as a keychain one would
@@ -147,41 +147,15 @@ func Open(root string) Store {
 }
 
 // OpenTesting is Open for another package's tests, with key standing in for
-// the login keychain's vault key item, so a test drives every command's real
-// path through the Store (the leftover-key refusal included) without
-// reaching the production item. It panics for a vault in the Secure Enclave,
-// which it cannot stand in for.
+// the login keychain's vault key item, so a test drives a command's real
+// path through the Store without reaching the production item. It panics
+// for a vault in the Secure Enclave, which it cannot stand in for.
 func OpenTesting(root string, key KeychainKey) Store {
 	s := Open(root)
 	if s.Kind() != KindKeychain {
 		panic("keystore.OpenTesting: " + root + " is not a keychain vault")
 	}
-	return keychainStore{root: root, key: func() KeychainKey { return key }}
-}
-
-// ErrLeftoverKey is what every use of a keychain vault's key answers while
-// vault.LeftoverKeyMarker is in the vault root: `jit vault delete` found a
-// keychain item under the vault key's name still there after it, the
-// deleted vault's key. Using it would adopt that key as the new vault's,
-// silently, which only `jit vault init` may decide, by asking
-// (settleLeftoverKey in internal/cli).
-var ErrLeftoverKey = errors.New("the vault you deleted left its key in your keychain;\n" +
-	"run `jit vault init` to deal with it")
-
-// LeftoverKeyRefusal returns ErrLeftoverKey while the vault at root has the
-// leftover-key marker, nil when it has none, and an error when the marker
-// can't be checked (fail closed: an unchecked marker may be there). The
-// keychain Store's fetchers and wrappers answer with it; `jit vault rekey`,
-// which works on the keychain item directly (Keychain), asks it first.
-func LeftoverKeyRefusal(root string) error {
-	_, err := os.Lstat(filepath.Join(root, vault.LeftoverKeyMarker))
-	switch {
-	case err == nil:
-		return ErrLeftoverKey
-	case errors.Is(err, fs.ErrNotExist):
-		return nil
-	}
-	return fmt.Errorf("checking for a key a deleted vault left in your keychain: %w", err)
+	return keychainStore{key: func() KeychainKey { return key }}
 }
 
 // Keychain returns the keychain backend's own Wrapper for `jit vault rekey`
@@ -199,11 +173,6 @@ func Keychain() *keychainwrap.Wrapper {
 // vault_key_copy). Metadata only (keychainwrap.MEKPresence).
 func KeychainCopy() Presence { return keychainStore{}.Presence() }
 
-// DeleteKeychainCopy deletes the keychain item under the vault key's name,
-// whichever backend the vault uses; a missing item is done. For `jit vault
-// init` removing a key a deleted vault left behind, on the user's yes.
-func DeleteKeychainCopy() error { return deleteKeychainCopy() }
-
 // KeychainItemName is the vault key item's name as Keychain Access lists it.
 const KeychainItemName = keychainwrap.VaultKeyItem
 
@@ -218,13 +187,10 @@ type KeychainKey interface {
 // package's tests never reach that item.
 var newKeychainKey = func() KeychainKey { return keychainwrap.New() }
 
-// keychainStore is a keychain vault's key. root is the vault's, for the
-// leftover-key marker; key, when set, stands in for the item (OpenTesting).
-// The zero value (no root) is only ever asked for Presence and Delete
-// (KeychainCopy, DeleteKeychainCopy).
+// keychainStore is a keychain vault's key. key, when set, stands in for the
+// item (OpenTesting); the zero value is the production item.
 type keychainStore struct {
-	root string
-	key  func() KeychainKey
+	key func() KeychainKey
 }
 
 func (keychainStore) Kind() Kind { return KindKeychain }
@@ -239,34 +205,19 @@ func (keychainStore) Presence() Presence {
 	return Indeterminate
 }
 
-// NewFetcher and NewWrapper are every use of a keychain vault's key: every
-// command through openVault, and each of the service's unlocks, which builds
-// a fetcher per unlock. While the leftover-key marker is there they hand
-// back a refusal instead (LeftoverKeyRefusal), so no path can adopt a key a
-// deleted vault left behind: only `jit vault init` settles it.
+// NewFetcher and NewWrapper are fresh each call: every command through
+// openVault, and each of the service's unlocks, which builds a fetcher per
+// unlock.
 func (s keychainStore) NewFetcher() Fetcher { return s.open() }
 
 func (s keychainStore) NewWrapper() Wrapper { return s.open() }
 
 func (s keychainStore) open() KeychainKey {
-	if err := LeftoverKeyRefusal(s.root); err != nil {
-		return refusal{err}
-	}
 	if s.key != nil {
 		return s.key()
 	}
 	return newKeychainKey()
 }
-
-// refusal is a Wrapper and Fetcher whose every use fails with err, without
-// touching any key.
-type refusal struct{ err error }
-
-func (r refusal) WrapKey([]byte) ([]byte, error)   { return nil, r.err }
-func (r refusal) UnwrapKey([]byte) ([]byte, error) { return nil, r.err }
-func (r refusal) RequireUserPresence(string) error { return r.err }
-func (r refusal) FetchMEK(string) ([]byte, error)  { return nil, r.err }
-func (refusal) Close()                             {}
 
 func (keychainStore) Init() (InitResult, error) { return InitReady, initKeychain() }
 
