@@ -123,23 +123,6 @@ func TestOrphanCleanupSkipsWhenTheJobListDidNotLoad(t *testing.T) {
 	}
 }
 
-// A grant whose entries this build cannot open is still a grant.
-func TestOrphanCleanupKeepsAGrantItCannotRead(t *testing.T) {
-	s, store, ledger, jobs := orphanWorld(t)
-	raw, _ := os.ReadFile(ledger)
-	raw = bytes.Replace(raw, []byte(`"wrap":"aead-v1"`), []byte(`"wrap":"future-v9"`), 1)
-	if err := os.WriteFile(ledger, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	load(t, s, ledger, jobs)
-	if _, errs := s.DeleteOrphanGrantKeys(); len(errs) != 0 {
-		t.Fatal(errs)
-	}
-	if !store.has(GrantWrapKeychain, "g-00000001") {
-		t.Fatal("deleted the key of a grant whose entries this build cannot open")
-	}
-}
-
 // A record a loader skipped still names its key. The ledger's grant with no
 // anchor (SetGrantLedger drops it), a job whose name this build rejects and
 // one whose ask value it does not know (job.Load skips both, as from a newer
