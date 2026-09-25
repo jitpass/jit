@@ -7,6 +7,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -110,7 +111,7 @@ func init() {
 	for _, c := range []*cobra.Command{mcpInstallCmd, mcpUninstallCmd, mcpStatusCmd} {
 		c.Flags().StringVar(&mcpClientName, "client", "claude-desktop", "the AI app: claude-desktop or cursor")
 	}
-	mcpInstallCmd.Flags().StringVar(&mcpCommandPath, "command", "", "the jit to start (default: the jit on your PATH)")
+	mcpInstallCmd.Flags().StringVar(&mcpCommandPath, "command", "", "the jit to start (default: the jit on your PATH when it has jit mcp, else this one)")
 	mcpStatusCmd.Flags().StringVar(&mcpStatusFmt, "format", "text", "output format: text or json")
 	mcpCmd.AddCommand(mcpInstallCmd, mcpUninstallCmd, mcpStatusCmd)
 	rootCmd.AddCommand(mcpCmd)
@@ -190,12 +191,34 @@ func mcpCommand() (string, error) {
 		}
 		return mcpCommandPath, nil
 	}
-	if p, err := exec.LookPath("jit"); err == nil {
-		if abs, aerr := filepath.Abs(p); aerr == nil {
+	self, err := os.Executable()
+	if p, lerr := exec.LookPath("jit"); lerr == nil {
+		if abs, aerr := filepath.Abs(p); aerr == nil && (sameFile(abs, self) || jitHasMCP(abs)) {
 			return abs, nil
 		}
 	}
-	return os.Executable()
+	// The jit on PATH is missing or older than `jit mcp` (the live Cursor
+	// test: the cask's link still pointed at a jit without it, and Cursor
+	// showed the dead server as one to "Authenticate"). This binary has it.
+	return self, err
+}
+
+// sameFile reports whether two paths reach the same file through links.
+func sameFile(a, b string) bool {
+	ra, aerr := filepath.EvalSymlinks(a)
+	rb, berr := filepath.EvalSymlinks(b)
+	return aerr == nil && berr == nil && ra == rb
+}
+
+// jitHasMCP reports whether the jit at path has the `jit mcp` server, by
+// asking it for `mcp install --help`: a jit that has it names --client, and
+// an older one answers with its root help or an unknown-command error. It
+// never asks for `mcp status`, which would ask this again.
+func jitHasMCP(path string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, path, "mcp", "install", "--help").Output() // #nosec G204 -- a jit binary the AI app's config names
+	return err == nil && strings.Contains(string(out), "--client")
 }
 
 type mcpServerEntry struct {
@@ -318,8 +341,9 @@ type mcpStatusJSON struct {
 	Config    string `json:"config"`
 	Installed bool   `json:"installed"`
 	Command   string `json:"command,omitempty"`
-	// Runnable says the command exists and is executable; an entry pointing
-	// at a jit that was since removed would fail at the app's next start.
+	// Runnable says the command exists and has `jit mcp`; an entry pointing
+	// at a jit since removed, or at one older than AI jobs, fails at the
+	// app's next start.
 	Runnable bool `json:"runnable"`
 }
 
@@ -340,7 +364,7 @@ func runMCPStatus(out io.Writer) error {
 			if e, ok := cfg.MCPServers[mcpServerName]; ok {
 				st.Installed, st.Command = true, e.Command
 				if info, ierr := os.Stat(e.Command); ierr == nil && info.Mode()&0o111 != 0 {
-					st.Runnable = true
+					st.Runnable = jitHasMCP(e.Command)
 				}
 			}
 		}
@@ -354,10 +378,10 @@ func runMCPStatus(out io.Writer) error {
 		fmt.Fprintf(out, " %s starts %s mcp\n", client.name, st.Command)
 	case st.Installed:
 		_, _ = cRisk.Fprint(out, glyphRisk)
-		fmt.Fprintf(out, " %s starts %s, which is not there\n", client.name, st.Command)
+		fmt.Fprintf(out, " %s starts %s, which can't run jit's MCP server (it is gone, or older than AI jobs)\n", client.name, st.Command)
 		fmt.Fprint(out, "  ")
 		_, _ = cPath.Fprintf(out, "%s %s", glyphAction, mcpInstallLine(client))
-		fmt.Fprintln(out, "   points it at the jit on your PATH")
+		fmt.Fprintln(out, "   points it at a jit that has it")
 	default:
 		_, _ = cWarn.Fprint(out, glyphWarn)
 		fmt.Fprintf(out, " %s does not start jit's MCP server\n", client.name)

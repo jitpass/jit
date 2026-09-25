@@ -106,3 +106,27 @@ func TestMCPClientsKnowWhereEachAppKeepsItsServers(t *testing.T) {
 		t.Fatalf("an unknown app: %v", err)
 	}
 }
+
+// Connect must not point an app at a jit that has no `jit mcp`: the live
+// Cursor test found the PATH link on a jit older than AI jobs, and Cursor
+// showed the dead server as one to "Authenticate".
+func TestJitHasMCPTellsANewJitFromAnOldOne(t *testing.T) {
+	dir := t.TempDir()
+	script := func(name, help string) string {
+		p := filepath.Join(dir, name)
+		body := "#!/bin/sh\nprintf '%s\\n' '" + help + "'\n"
+		if err := os.WriteFile(p, []byte(body), 0o755); err != nil { // #nosec G306 -- a test's own script
+			t.Fatal(err)
+		}
+		return p
+	}
+	if !jitHasMCP(script("new", "      --client string   the AI app")) {
+		t.Fatal("a jit whose mcp install names --client has jit mcp")
+	}
+	if jitHasMCP(script("old", "jit finds plaintext secrets exposed on your machine")) {
+		t.Fatal("a jit that answers with its root help has no jit mcp")
+	}
+	if jitHasMCP(filepath.Join(dir, "missing")) {
+		t.Fatal("a missing jit has no jit mcp")
+	}
+}
