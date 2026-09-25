@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jitpass/jit/internal/lineage"
+	"github.com/jitpass/jit/internal/vault"
 )
 
 // This file is the standing-grant store (design/standing-grants.md): a grant
@@ -364,16 +365,17 @@ func (s *Server) ledgerReady() bool {
 	return s.ledgerPath != ""
 }
 
-// saveLedger writes the current standing grants atomically, 0600. Caller
-// must NOT hold grantMu or ledgerMu: it takes both. A server with no ledger
-// path (tests without persistence, a service whose ledger failed to parse)
-// keeps its grants in memory only.
+// saveLedger writes the current standing grants atomically and durably,
+// 0600 (writeState). Caller must NOT hold grantMu or ledgerMu: it takes
+// both. A server with no ledger path (tests without persistence, a service
+// whose ledger failed to parse) keeps its grants in memory only.
 //
 // ledgerMu spans the SNAPSHOT as well as the write, and both halves of that
 // are load-bearing:
 //
 //   - Two concurrent saves used to write the same temp path and rename it
-//     out from under each other, publishing a spliced file. Measured, not
+//     out from under each other, publishing a spliced file (the temp name is
+//     random now, but the lock is what orders the renames). Measured, not
 //     feared: six concurrent callers produced invalid JSON in a quarter of
 //     a second. Every serve saves (it bumps serves/lastServe) and every
 //     mount read and `jit run` is a serve, so the race is on the hot path,
@@ -425,25 +427,23 @@ func (s *Server) saveLedger() error {
 	if err != nil {
 		return err
 	}
-	// A crash between write and rename leaves a temp behind, and writing
-	// into it would keep whatever mode (or symlink) it had rather than the
-	// 0600 this file promises. Remove it, then create exclusively.
-	tmp := path + ".tmp"
-	if err := os.Remove(tmp); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+	return s.writeState(path, data)
+}
+
+// writeState writes one of the service's own state files (the grant ledger,
+// the job list) with vault.AtomicWriteFile: a temp file created exclusively
+// under a fresh random name beside it (so a leftover temp, or a symlink
+// planted where one would go, is never written through), mode 0600, fsynced,
+// renamed over the old file, and the directory fsynced so the rename itself
+// survives a power cut. The fsyncs matter here more than for most files: a
+// move (plan C3) deletes a grant's old key right after the ledger names the
+// new one, and a ledger that reverted on power loss would then name a key
+// that no longer exists.
+func (s *Server) writeState(path string, data []byte) error {
+	if s.stateWriter != nil {
+		return s.stateWriter(path, data)
 	}
-	f2, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- a fixed path beside the ledger, created exclusively
-	if err != nil {
-		return err
-	}
-	if _, err := f2.Write(data); err != nil {
-		_ = f2.Close()
-		return err
-	}
-	if err := f2.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return vault.AtomicWriteFile(path, data)
 }
 
 // ---- create ----
