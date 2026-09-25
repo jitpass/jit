@@ -238,6 +238,65 @@ enclave's check of the staged copy, then promote, then the keychain copy
 deleted) and came back (enclave dialog, keychain write read back). It was
 byte-identical to the original, with no sealed file and no marker left.
 
+## S3g: the helper can read an old jit's vault key but not delete it (2026-09-25, a bug found and fixed)
+
+Found on Meni's Mac with test build app 0.0.2 (jit 2.2.8-dev.c087861):
+`jit vault rekey --wrapper secure-enclave`, run through the signed helper,
+sealed and verified the key, then stopped at the last step with
+`delete failed, OSStatus=-25244` (`errSecInvalidOwnerEdit`), leaving the
+`move secure-enclave` marker. The B4 hardware run had passed because its
+TEST-ONLY item was made by the same binary that deleted it.
+
+`s3g/build.sh` signs one program (`owner.m`) four ways; `s3g/owner.m` makes
+a TEST-ONLY item with `kw_ensure_mek`'s exact attributes and tries every way
+to remove it. Every call ran with user interaction disallowed
+(`SecKeychainSetUserInteractionAllowed(false)`), so a would-be dialog comes
+back as `errSecInteractionNotAllowed` (-25308) instead of appearing; only
+the `security` child process (row 9) could have shown one, and it returned
+at once. The item's ACL, read with `owner acl`: decrypt trusts the creator
+(path plus `identifier jit and anchor apple generic and certificate
+leaf[subject.CN] = ...`), the partition list is `teamid:CZC6BH93GJ`, and
+the change-ACL (owner) entry lists no application.
+
+| # | Created by | Operation, from | Result |
+|---|---|---|---|
+| 1 | old jit (bare, `-i jit`, no entitlements) | read, helper (bundle, profile, entitlements, `-i jit`) | OK, no dialog |
+| 2 | old jit | `SecItemDelete`, helper | **-25244** |
+| 3 | old jit | `SecItemDelete`, helper bundle with no entitlements or profile | **-25244** (the entitlements are not the cause) |
+| 4 | old jit | `SecItemDelete`, the same old-jit binary **copied to another path** | **-25244** (the creator's PATH is what counts) |
+| 5 | old jit | `SecItemDelete`, the old jit itself | OK |
+| 6 | helper | `SecItemDelete`, helper (the B4 hardware test's case) | OK |
+| 7 | old jit | `SecItemDelete` + `kSecUseAuthenticationUIAllow` + `kSecUseOperationPrompt`, helper, interaction disallowed and allowed | -25244 both ways, no dialog: not a question the UI can answer |
+| 8 | old jit | `SecItemCopyMatching(kSecReturnRef)` then **`SecKeychainItemDelete`**, helper (and the no-entitlement bundle) | **OK, no dialog** (three runs) |
+| 9 | old jit | `/usr/bin/security delete-generic-password` as the helper's child | OK, returned at once (exit 0) |
+| 10 | old jit | `SecItemUpdate` of the data, helper | OK, no dialog |
+| 11 | ad hoc | read, helper | -25293 (partition `cdhash:...`, not the team) |
+| 12 | ad hoc | `SecItemDelete` / `SecKeychainItemDelete`, helper | -25244 / OK |
+
+So `SecItemDelete` on a file-keychain item is refused to every executable
+but the creator at the creator's path, whatever it may read, while the
+legacy `SecKeychainItemDelete` on the item's reference is not. Every
+existing vault's key was made by a jit at some path (a tarball in
+`/usr/local/bin`, a cask in `/opt/homebrew`, a build in a worktree), so
+every move from the helper would have stopped here.
+
+The fix (`internal/keychainwrap/keychain.m`, `kwDeleteItems`): on exactly
+`errSecInvalidOwnerEdit`, find the items' references and delete each with
+`SecKeychainItemDelete`. `kw_delete_mek` and `kw_set_mek` (a rotation's
+promote replaces the primary item the same way) both use it. The move also
+no longer blocks on this step: if the copy still won't go, the move finishes
+and `jit status` / `jit doctor` report the copy (`keychain_copy_left`,
+`vault_key_copy`) until `jit vault rekey --wrapper secure-enclave` removes
+it. Hardware tests: `TestHardwareDeleteAnOldJitsItem` and
+`TestHardwareReplaceAnOldJitsItem` (keychainwrap) and
+`TestHardwareFinishMoveOverAnOldJitsItem` (cli) run the owner's exact state
+with TEST-ONLY names, unattended; each fails with the fallback switched off.
+
+Not measured: an item created by a Developer ID signed jit (this Mac has only
+the team's Apple Development identity). The partition entry is
+`teamid:CZC6BH93GJ` for both certificates, and row 4 shows the refusal
+follows the path, not the signature, so the result should not differ.
+
 ## Not run yet
 
 - **S3d** (a same-user debugger is refused): needs the Developer ID build,
