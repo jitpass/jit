@@ -20,12 +20,18 @@ import (
 // fixed when it is opened, exactly like keystore.Open's, which is what lets
 // these tests catch a command that opens the store too late.
 type recordingStore struct {
-	kind    keystore.Kind
-	deleted *[]keystore.Kind
+	kind     keystore.Kind
+	deleted  *[]keystore.Kind
+	presence keystore.Presence // zero value Indeterminate; see Presence
 }
 
-func (s recordingStore) Kind() keystore.Kind        { return s.kind }
-func (recordingStore) Presence() keystore.Presence  { return keystore.Present }
+func (s recordingStore) Kind() keystore.Kind { return s.kind }
+func (s recordingStore) Presence() keystore.Presence {
+	if s.presence == keystore.Indeterminate {
+		return keystore.Present
+	}
+	return s.presence
+}
 func (recordingStore) NewFetcher() keystore.Fetcher { panic("no key in a test") }
 func (recordingStore) NewWrapper() keystore.Wrapper { panic("no key in a test") }
 func (recordingStore) Init() error                  { return nil }
@@ -189,5 +195,63 @@ func TestStatusReportsWhereTheKeyIsKept(t *testing.T) {
 	}
 	if got.KeyStore != string(keystore.KindSecureEnclave) {
 		t.Fatalf("key_store = %q, want %q", got.KeyStore, keystore.KindSecureEnclave)
+	}
+}
+
+// Review finding: after `jit uninstall --purge` removes the vault folder, an
+// enclave store's Presence re-reads the (gone) sealed file, so the old
+// "delete only if not Absent" guard always skipped the enclave key.
+func TestDeleteVaultKeysDeletesEvenWhenPresenceSaysAbsent(t *testing.T) {
+	orig := deleteStagedRekeyKey
+	deleteStagedRekeyKey = func() error { return nil }
+	t.Cleanup(func() { deleteStagedRekeyKey = orig })
+	deleted := &[]keystore.Kind{}
+	ks := recordingStore{kind: keystore.KindSecureEnclave, deleted: deleted, presence: keystore.Absent}
+	if err := deleteVaultKeys(ks); err != nil {
+		t.Fatal(err)
+	}
+	if len(*deleted) != 1 {
+		t.Fatalf("Delete called %d times, want 1 even though Presence said Absent", len(*deleted))
+	}
+}
+
+// Review finding: a jit that cannot reach an enclave vault, or whose enclave
+// key is lost, must not offer first-run setup over it.
+func TestFirstRunTreatsAnUnreachableOrLostEnclaveVaultAsSetUp(t *testing.T) {
+	withFixtureHome(t)
+	for _, c := range []struct {
+		p    keystore.Presence
+		want bool
+	}{
+		{keystore.Present, true},
+		{keystore.KeyLost, true},
+		{keystore.Unavailable, true},
+		{keystore.Absent, false},
+	} {
+		orig := openKeyStore
+		p := c.p
+		openKeyStore = func(string) keystore.Store {
+			return recordingStore{kind: keystore.KindSecureEnclave, deleted: &[]keystore.Kind{}, presence: p}
+		}
+		got := prodFirstRunDeps(rootCmd).vaultReady()
+		openKeyStore = orig
+		if got != c.want {
+			t.Errorf("presence %v: vaultReady = %v, want %v", c.p, got, c.want)
+		}
+	}
+}
+
+// Review finding: a lost enclave key needs `jit vault init` before an import
+// can land; the finding must say so.
+func TestVaultKeyLostFindingSaysInitThenImport(t *testing.T) {
+	home := withFixtureHome(t)
+	plantVaultSecret(t, home, "aws/s3-access-key")
+	stubKeychain(t, keystore.KeyLost)
+	findings := gatherVaultIntegrityFindings(fixtureRoot(home), fixtureVault(home))
+	if len(findings) != 1 {
+		t.Fatalf("findings: %+v", findings)
+	}
+	if !strings.Contains(findings[0].Action, "jit vault init") || !strings.Contains(findings[0].Action, "jit vault import") {
+		t.Errorf("action %q should name init, then import", findings[0].Action)
 	}
 }

@@ -464,18 +464,24 @@ func gatherVaultIntegrityFindings(root string, v *vault.Vault) []checkFinding {
 	keyGone := presence == keystore.Absent || presence == keystore.KeyLost
 	if keyGone {
 		where := "missing from the keychain"
+		action := "`jit vault import <file>` from a `jit vault export` backup"
+		steps := "`jit vault import <file>`"
 		if presence == keystore.KeyLost {
+			// A lost enclave key needs a new key before an import can land:
+			// `jit vault init` sets the lost sealed file aside and makes one.
 			where = "not in this Mac's Secure Enclave"
+			action = "`jit vault init`, then `jit vault import <file>` from a `jit vault export` backup"
+			steps = "`jit vault init` `jit vault import <file>`"
 		}
 		out = append(out, checkFinding{
 			Kind: kindVaultKey,
 			Detail: fmt.Sprintf(
 				"the vault holds %s but this Mac's master key is %s, so none of them can be decrypted. Every envelope is structurally intact; only the key is gone.",
 				countWord(len(paths), "secret", "secrets"), where),
-			Action: "`jit vault import <file>` from a `jit vault export` backup",
-			// Only the import is a step: with the key gone, an export can't
+			Action: action,
+			// Only the restore is a step: with the key gone, an export can't
 			// run, and the prose names it as where the backup came from.
-			Fixes: fixesFor(kindVaultKey, "`jit vault import <file>`"),
+			Fixes: fixesFor(kindVaultKey, steps),
 		})
 	}
 

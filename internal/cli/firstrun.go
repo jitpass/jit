@@ -149,7 +149,17 @@ func prodFirstRunDeps(cmd *cobra.Command) firstRunDeps {
 		// can raise the keychain's per-signature dialog on a bare `jit`.
 		vaultReady: func() bool {
 			ks, err := vaultKeyStore()
-			return err == nil && ks.Presence() == keystore.Present
+			if err != nil {
+				return false
+			}
+			// An enclave vault this jit can't reach, or whose key is lost,
+			// still exists: offering first-run setup over it would only fail
+			// halfway (status reports these as initialized, for the same reason).
+			switch ks.Presence() {
+			case keystore.Present, keystore.KeyLost, keystore.Unavailable:
+				return true
+			}
+			return false
 		},
 		isTTY: func() bool {
 			// Both ends must be a terminal: stdout so the reveal is worth

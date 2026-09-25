@@ -133,6 +133,9 @@ func TestUninstallGateRelaxesOnlyWhenTheKeyIsProvablyGone(t *testing.T) {
 	}{
 		{"secrets and a key", 3, keystore.Present, true},
 		{"secrets, key gone", 3, keystore.Absent, false},
+		// Review finding: a lost enclave key is the same provable absence;
+		// the strict path would need the very key that is gone.
+		{"secrets, enclave key lost", 3, keystore.KeyLost, false},
 		{"secrets, key unknowable", 3, keystore.Indeterminate, true},
 		{"empty vault", 0, keystore.Present, false},
 		{"unreadable vault", -1, keystore.Present, false},
