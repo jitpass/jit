@@ -766,6 +766,10 @@ type SessionEvent struct {
 	// that answers it, so a renderer can close the one with the other.
 	// Empty on every challenge that went straight to the screen.
 	ConsentID string `json:"consent_id,omitempty"`
+	// Job names the AI job a job_allow or job_run event is about, so a broker
+	// rendering the pending request can show that job's command, folder and
+	// secrets from job_list (design/agent-jobs.md, step 4). Empty otherwise.
+	Job string `json:"job,omitempty"`
 }
 
 // MountRevealStatus is one currently-served mount's state — deliberately

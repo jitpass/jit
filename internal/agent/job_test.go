@@ -779,3 +779,78 @@ func TestJobRequesterNamesTheAppBehindJit(t *testing.T) {
 		t.Errorf("a direct caller: requester = %q, want claude", got)
 	}
 }
+
+// Step 4: after the app's sheet showed the request and the human pressed
+// Allow, the Touch ID says "confirm:" and the facts, not the whole sentence
+// again. Without the app, the whole sentence. The audit keeps the whole
+// sentence either way, and the pending event names the job for the sheet.
+func TestBrokeredJobRunConfirmsBriefly(t *testing.T) {
+	r := newJobRig(t)
+	reasons := r.captureReasons()
+	if _, err := r.c.JobAllow("notion-guests", r.spec()); err != nil {
+		t.Fatal(err)
+	}
+	// A run with no app: the whole sentence, promise and all. (The approval
+	// sentence has no tail, so it cannot show a wrong shortening; the first
+	// version of this test checked that one and missed the bug.)
+	if _, err := r.c.JobRun("notion-guests"); err != nil {
+		t.Fatal(err)
+	}
+	if d := (*reasons)[1]; strings.HasPrefix(d, "confirm:") || !strings.Contains(d, "never the values") {
+		t.Fatalf("with no app, the run prompt = %q, want the whole sentence", d)
+	}
+
+	pending, stop := broker(t, r.s, r.c)
+	defer stop()
+	errc := make(chan error, 1)
+	go func() { _, err := r.c.JobRun("notion-guests"); errc <- err }()
+	var req SessionEvent
+	select {
+	case req = <-pending:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the app was never shown the run")
+	}
+	if req.Op != OpJobRun || req.Job != "notion-guests" {
+		t.Fatalf("pending = op %q job %q, want job_run for notion-guests", req.Op, req.Job)
+	}
+	if err := r.c.ConsentAnswer(req.ConsentID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errc; err != nil {
+		t.Fatal(err)
+	}
+	dialog := (*reasons)[2]
+	if !strings.HasPrefix(dialog, "confirm: run ") || strings.Contains(dialog, "never the values") || !strings.Contains(dialog, "list_guest_users") {
+		t.Fatalf("dialog after an app allow = %q, want the short confirmation naming the script", dialog)
+	}
+	var e SessionEvent
+	events, _ := r.c.History()
+	for _, ev := range events {
+		if ev.Kind == KindApproved && ev.Op == OpJobRun {
+			e = ev
+		}
+	}
+	if !strings.Contains(e.Cause, "never the values") || e.Job != "notion-guests" {
+		t.Fatalf("audit = %+v, want the full sentence and the job", e)
+	}
+}
+
+func TestConfirmReason(t *testing.T) {
+	cases := map[string]string{
+		// A job run: the facts stay, the promise goes.
+		"run notion/list_guest_users.py for Claude (3 secrets); it sees output, never the values": "confirm: run notion/list_guest_users.py for Claude (3 secrets)",
+		// No tail: unchanged, never truncated into losing its scope.
+		"let claude under iTerm2 use 2 secrets (mcp-caido, mcp-urlscan) until you revoke it": "let claude under iTerm2 use 2 secrets (mcp-caido, mcp-urlscan) until you revoke it",
+	}
+	for in, want := range cases {
+		if got := confirmReason(in); got != want {
+			t.Errorf("confirmReason(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// A facts clause so long that "confirm: " would not fit whole keeps the
+	// original rather than cutting it.
+	long := strings.Repeat("x", 84) + "; y"
+	if got := confirmReason(long); got != long {
+		t.Errorf("an over-long short form was used: %q", got)
+	}
+}
