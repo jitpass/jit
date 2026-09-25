@@ -160,3 +160,41 @@ SEResult se_open(const char *tag, const char *group, const unsigned char *ct, in
         return r;
     }
 }
+
+SEResult se_list_tags(const char *group, const char *prefix, char ***tags, int *count) {
+    @autoreleasepool {
+        *tags = NULL;
+        *count = 0;
+        NSDictionary *q = @{
+            (id)kSecClass: (id)kSecClassKey,
+            (id)kSecAttrKeyClass: (id)kSecAttrKeyClassPrivate,
+            (id)kSecAttrAccessGroup: [NSString stringWithUTF8String:group],
+            (id)kSecAttrTokenID: (id)kSecAttrTokenIDSecureEnclave,
+            (id)kSecUseDataProtectionKeychain: @YES,
+            (id)kSecReturnAttributes: @YES,
+            (id)kSecMatchLimit: (id)kSecMatchLimitAll,
+        };
+        CFTypeRef result = NULL;
+        OSStatus st = SecItemCopyMatching((__bridge CFDictionaryRef)q, &result);
+        if (st == errSecItemNotFound) {
+            SEResult r = {1, 0, NULL};
+            return r;
+        }
+        if (st != errSecSuccess || !result) return fail(@"listing Secure Enclave keys", st);
+        NSArray *items = (__bridge_transfer NSArray *)result;
+        NSString *want = [NSString stringWithUTF8String:prefix];
+        char **out = calloc(items.count ? items.count : 1, sizeof(char *));
+        if (!out) return fail(@"listing Secure Enclave keys", errSecAllocate);
+        int n = 0;
+        for (NSDictionary *item in items) {
+            NSData *tag = item[(id)kSecAttrApplicationTag];
+            if (![tag isKindOfClass:[NSData class]]) continue;
+            NSString *s = [[NSString alloc] initWithData:tag encoding:NSUTF8StringEncoding];
+            if (s && [s hasPrefix:want]) out[n++] = dupNSString(s);
+        }
+        *tags = out;
+        *count = n;
+        SEResult r = {1, 0, NULL};
+        return r;
+    }
+}

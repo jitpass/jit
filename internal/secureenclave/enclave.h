@@ -42,4 +42,9 @@ SEResult se_seal(const char *tag, const char *group, const unsigned char *pt, in
 SEResult se_open(const char *tag, const char *group, const unsigned char *ct, int ct_len,
                  const char *reason, unsigned char **out, int *out_len);
 
+// se_list_tags returns the tag of every enclave key in group whose tag
+// starts with prefix, from attributes only (never uses a key, never
+// prompts). *tags is a malloc'd array of *count malloc'd strings.
+SEResult se_list_tags(const char *group, const char *prefix, char ***tags, int *count);
+
 #endif

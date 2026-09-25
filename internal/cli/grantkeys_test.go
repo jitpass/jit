@@ -19,6 +19,7 @@ type fakeBackend struct {
 	have      map[string]bool
 	calls     *[]string
 	deleteErr error
+	listErr   error
 }
 
 type fakeGrantKey struct{ agent.GrantKey }
@@ -38,6 +39,17 @@ func (f fakeBackend) Load(id string) (agent.GrantKey, error) {
 }
 
 func (f fakeBackend) Present(id string) (bool, error) { return f.have[id], nil }
+
+func (f fakeBackend) List() ([]string, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	var out []string
+	for id := range f.have {
+		out = append(out, id)
+	}
+	return out, nil
+}
 
 func (f fakeBackend) Delete(id string) error {
 	*f.calls = append(*f.calls, f.name+" delete "+id)
@@ -143,5 +155,27 @@ func TestGrantKeyMoverDeleteToleratesAnUnreachableEnclave(t *testing.T) {
 	g.enclave = se
 	if err := g.DeleteWrap("g", agent.GrantWrapEnclave); err != nil {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// Plan C4: the ids come from both places; an enclave this jit cannot reach
+// adds none rather than failing the list.
+func TestGrantKeyListerUnionsBothBackends(t *testing.T) {
+	g, _, kc, se := fakeGrantStore(t, t.TempDir())
+	kc.have["g-00000001"] = true
+	se.have["j-00000002"] = true
+	ids, err := g.ListGrantKeyIDs()
+	if err != nil || len(ids) != 2 {
+		t.Fatalf("ids %v, err %v", ids, err)
+	}
+	se.listErr = secureenclave.ErrUnavailable
+	g.enclave = se
+	if ids, err := g.ListGrantKeyIDs(); err != nil || len(ids) != 1 {
+		t.Fatalf("unreachable enclave: ids %v, err %v", ids, err)
+	}
+	se.listErr = errors.New("boom")
+	g.enclave = se
+	if _, err := g.ListGrantKeyIDs(); err == nil {
+		t.Fatal("a real enclave failure was swallowed; the service log should show it")
 	}
 }

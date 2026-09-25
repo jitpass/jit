@@ -16,6 +16,7 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"unsafe"
 )
 
@@ -185,4 +186,28 @@ func (h hardware) open(sealed []byte, reason string) ([]byte, error) {
 		return nil, err
 	}
 	return takeBytes(out, n), nil
+}
+
+// listTags returns, with prefix removed, the tag of every enclave key in
+// group that starts with prefix.
+func listTags(group, prefix string) ([]string, error) {
+	cGroup, cPrefix := C.CString(group), C.CString(prefix)
+	defer C.free(unsafe.Pointer(cGroup))
+	defer C.free(unsafe.Pointer(cPrefix))
+	var tags **C.char
+	var n C.int
+	if err := goResult(C.se_list_tags(cGroup, cPrefix, &tags, &n)); err != nil {
+		return nil, err
+	}
+	if tags == nil {
+		return nil, nil
+	}
+	defer C.free(unsafe.Pointer(tags))
+	list := unsafe.Slice(tags, int(n))
+	out := make([]string, 0, len(list))
+	for _, t := range list {
+		out = append(out, strings.TrimPrefix(C.GoString(t), prefix))
+		C.free(unsafe.Pointer(t))
+	}
+	return out, nil
 }
