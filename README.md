@@ -188,6 +188,10 @@ somewhere. With JitPass, there is nothing real in that file to paste.
 - **Secrets your agent already saw.** Transcripts and edit history keep copies
   of keys that passed through the agent. The scan finds those copies, so you
   know which keys to rotate.
+- **Let it run your script, never your key.** An [AI job](#run-a-script-for-an-ai-tool-keep-the-key)
+  is a command you approve once. Claude Code, Codex, Claude Desktop's Cowork or
+  Cursor runs it by name; jit runs it and hands back the output with every
+  secret value hidden.
 - **Let it work overnight, then check.** A [grant](#leaving-the-keyboard) covers
   one agent for a set time; the [audit](#see-what-happened-and-who-did-it) shows
   what it touched.
@@ -196,6 +200,8 @@ somewhere. With JitPass, there is nothing real in that file to paste.
 jit migrate ~/.claude.json            # MCP server keys move to the vault
 jit wrap claude                       # the agent's own API key too
 jit grant --process claude --profile myapp --for 8h   # let it work overnight
+jit job allow notion-guests -- .venv/bin/python list_guest_users.py   # a script it may run
+jit mcp install                       # Claude Desktop's Cowork can run it too
 jit audit --parent claude             # read back what it touched
 ```
 
@@ -280,6 +286,29 @@ Swap `--for 8h` for `--until-revoked` and it has no deadline at all: it
 holds a key of its own, survives a restart and a reboot, and ends only when
 you revoke it. **New Grant…** in the menu bar does either. Details:
 [process grants](./docs/service/grants.md).
+
+## Run a script for an AI tool, keep the key
+
+A grant hands a program the key. Sometimes the agent only needs what a
+script produces, and should never hold the key at all. An **AI job** is a
+command you approve once; the agent runs it by name, jit runs it on your
+Mac, and the agent gets the output with every secret value hidden.
+
+```console
+$ jit job allow notion-guests -- .venv/bin/python list_guest_users.py
+  Touch ID  ->  let AI run notion/list_guest_users.py with 3 notion secrets, 2 shown
+✓ Approved notion-guests · 242 files fingerprinted
+
+$ jit job run notion-guests          # what the agent types
+Total users seen: 291
+[jit] hidden values: none
+```
+
+jit fingerprints the job's folder, so a script or library changed after you
+approved it stops the job until you look. Terminal agents run `jit job run`;
+Claude Desktop's Cowork, whose shell is a Linux VM that cannot run jit, and
+Cursor reach the same jobs through `jit mcp install`. **AI Jobs** in the menu
+bar does all of it. Details: [AI jobs](./docs/service/ai-jobs.md).
 
 ## See what happened, and who did it
 

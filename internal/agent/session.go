@@ -148,6 +148,12 @@ func (s *Server) forceDisclosedChallenge(reason string, c *caller) error {
 // confirmation wipe it immediately (forceDisclosedChallenge); every caller
 // must wipe it. Nil on any failure.
 func (s *Server) discloseChallengeOp(reason, op string, c *caller) (*SessionEvent, []byte, error) {
+	return s.discloseChallenge(reason, op, "", c)
+}
+
+// discloseChallenge is discloseChallengeOp with the AI job the prompt is
+// about stamped on the pending and outcome events (SessionEvent.Job).
+func (s *Server) discloseChallenge(reason, op, jobName string, c *caller) (*SessionEvent, []byte, error) {
 	s.challengeMu.Lock()
 	defer s.challengeMu.Unlock()
 
@@ -171,6 +177,7 @@ func (s *Server) discloseChallengeOp(reason, op string, c *caller) (*SessionEven
 
 	pending := unlockEvent(op, c)
 	pending.Cause = reason
+	pending.Job = jobName
 	s.mu.Lock()
 	s.pendingChallenge = pending
 	s.mu.Unlock()
@@ -184,6 +191,7 @@ func (s *Server) discloseChallengeOp(reason, op string, c *caller) (*SessionEven
 
 	event := unlockEvent(op, c)
 	event.ConsentID = pending.ConsentID
+	event.Job = jobName
 	if prompted {
 		// A refusal from the broker never showed a dialog, so it has no
 		// auth method to report.

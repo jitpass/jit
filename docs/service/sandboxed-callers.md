@@ -112,6 +112,15 @@ machine without one loses nothing. The gap that remains is narrow and real:
 a caller that can write nothing **and** reach no service has nowhere to put
 the record, and it is lost.
 
+## Sandboxes that run in a VM
+
+Some AI apps run their agent inside a Linux virtual machine: Claude Desktop's
+Cowork is one. Nothing in that VM can reach a unix socket on your Mac, and it
+should not: a grant would hand the VM the secrets. Those apps reach jit
+through [AI jobs](./ai-jobs.md) instead. `jit mcp`, which the app starts on
+your Mac, runs a command you approved and hands the VM its output with every
+secret value hidden.
+
 ## Known rough edges
 
 - **The very first jit run on a machine** writes a device-id file, which a

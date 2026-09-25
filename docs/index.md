@@ -125,6 +125,7 @@ trail.
 - [Unlock once, not per command](./service/index.md) - always-on, TTL, lock/unlock
 - [Per-process credential consent](./service/consent.md) - a Touch ID the first time each tool reaches for a credential, naming who is asking
 - [Process grants](./service/grants.md) - pre-approve a running tool to work unattended, until a deadline or until you revoke it, fully audited
+- [AI jobs](./service/ai-jobs.md) - let an AI tool (Claude Code, Claude Desktop, Cursor) run a script that needs a secret without ever seeing it: approve the command once, the tool gets the output with every value hidden
 - [Provenance](./service/provenance.md) - why every prompt names its caller, `status` and `audit`
 - [Calling jit from a sandbox](./service/sandboxed-callers.md) - what a sandboxed shell (a coding agent, a CI runner) has to allow to reach the service, and what jit reports when it cannot
 
