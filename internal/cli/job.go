@@ -460,11 +460,13 @@ func runJobRemove(out io.Writer, name string) error {
 	if err != nil {
 		return err
 	}
-	if err := ac.JobRemove(name); err != nil {
+	keyNote, err := ac.JobRemove(name)
+	if err != nil {
 		return jobAgentErr("job_remove", err)
 	}
 	_, _ = cOK.Fprint(out, glyphDone)
 	fmt.Fprintf(out, " Removed %s. AI tools can no longer run it.\n", name)
+	printKeyNote(out, keyNote)
 	return nil
 }
 

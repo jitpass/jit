@@ -9,8 +9,15 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
+
+// fieldsOf is ls without what it remembers of the file it was read from.
+func fieldsOf(ls ledgerSecret) ledgerSecret {
+	ls.raw, ls.verbatim = nil, false
+	return ls
+}
 
 // A ledger written by a newer jit holds entries in a wrap this build cannot
 // open (grant keys in the Secure Enclave, plan C). This build must serve
@@ -55,10 +62,10 @@ func TestLedgerKeepsEntriesItCannotOpen(t *testing.T) {
 	for _, sec := range f.Grants[0].Secrets {
 		byPath[sec.Path] = sec
 	}
-	if got, ok := byPath["aws/secret"]; !ok || got != unknown {
+	if got, ok := byPath["aws/secret"]; !ok || !reflect.DeepEqual(fieldsOf(got), unknown) {
 		t.Errorf("the entry this build cannot open came back as %+v (present %v), want it verbatim", got, ok)
 	}
-	if got := byPath["stripe/key"]; got != known {
+	if got := byPath["stripe/key"]; !reflect.DeepEqual(fieldsOf(got), known) {
 		t.Errorf("the known entry came back as %+v, want %+v", got, known)
 	}
 }

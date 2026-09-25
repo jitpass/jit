@@ -10,10 +10,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/jitpass/jit/internal/atomicfile"
+	"github.com/jitpass/jit/internal/jsonkeep"
 	"github.com/jitpass/jit/internal/lineage"
 )
 
@@ -59,10 +62,76 @@ type GrantKey interface {
 // must never prompt; Delete must be idempotent. The CLI wires the keychain
 // and the Secure Enclave behind one store (cli's grantKeyStore); tests wire
 // memory.
+//
+// A Delete that removed what it could reach but could not reach where a key
+// of the other kind may live (the Secure Enclave, from a jit without its
+// entitlement) returns an error that is ErrGrantKeyUnreachable, joined with
+// any real failure.
 type GrantKeyStore interface {
 	Create(id string) (GrantKey, error)
 	Load(id string) (GrantKey, error)
 	Delete(id string) error
+}
+
+// ErrGrantKeyUnreachable is a GrantKeyStore's Delete saying it could not
+// reach the Secure Enclave, so a key there, if any, is still there. It is
+// not a failure of the revoke or the remove: the record is gone, so nothing
+// can use that key, and the start-up cleanup (grantorphans.go) deletes it
+// once a jit that can reach the enclave runs the service, because nothing
+// names it any more. But no one may be told it was deleted.
+var ErrGrantKeyUnreachable = errors.New("the Secure Enclave could not be reached from this copy of jit")
+
+// keyKeptNote is what a revoke or a remove says, instead of claiming a
+// delete, when the key its entries are sealed for is in an enclave this
+// copy of jit cannot reach.
+const keyKeptNote = "Its Secure Enclave key couldn't be reached from this copy of jit; JitPass's service deletes it the next time it starts."
+
+// keyNoteOf is what a revoke or a remove tells the caller about the key,
+// from deleteKeyOf: nothing when it was deleted, keyKeptNote when it sits
+// in an enclave this jit cannot reach, and the failure itself when the
+// delete failed. The record is gone either way, so nothing names the key
+// and the next start's cleanup (grantorphans.go) tries it again.
+func keyNoteOf(note string, err error) string {
+	if err != nil {
+		return fmt.Sprintf("Its key couldn't be deleted (%s); JitPass's service tries again the next time it starts.", err)
+	}
+	return note
+}
+
+// deleteKeyOf deletes a grant's or job's key after its record is gone, and
+// says what happened. note is keyKeptNote when the store could not reach
+// the enclave and the record's entries may be sealed for a key there
+// (mayBeEnclave: an enclave entry, or one this build cannot read); a record
+// sealed only for the keychain had that key deleted, and whatever leftover
+// the enclave may hold goes at the next start's cleanup. err is any other
+// failure.
+func (s *Server) deleteKeyOf(id string, mayBeEnclave bool) (note string, err error) {
+	err = s.GrantKeys.Delete(id)
+	if errors.Is(err, ErrGrantKeyUnreachable) {
+		err = withoutUnreachable(err)
+		if mayBeEnclave {
+			note = keyKeptNote
+		}
+	}
+	return note, err
+}
+
+// withoutUnreachable is err with every ErrGrantKeyUnreachable taken out of
+// an errors.Join (the store's shape): nil if that was all it said.
+func withoutUnreachable(err error) error {
+	if j, ok := err.(interface{ Unwrap() []error }); ok {
+		var rest []error
+		for _, e := range j.Unwrap() {
+			if e = withoutUnreachable(e); e != nil {
+				rest = append(rest, e)
+			}
+		}
+		return errors.Join(rest...)
+	}
+	if errors.Is(err, ErrGrantKeyUnreachable) {
+		return nil
+	}
+	return err
 }
 
 // standingWrapAEAD names the wrap the ledger carries today: AES-256-GCM
@@ -134,6 +203,11 @@ type standingSecret struct {
 	// the ledger holds more than one kind once grant keys move to the
 	// Secure Enclave (design/secure-enclave-plan.md, C), and saving must
 	// never relabel one as another.
+	//
+	// A served entry has no field this build does not know (one that does
+	// is unread, below), so it is written back from these fields alone, and
+	// a move that re-seals it can never leave a newer jit's field, tied to
+	// the old sealed bytes, beside the new ones.
 	wrap string
 }
 
@@ -155,17 +229,49 @@ type standingGrant struct {
 	execPath string
 	profiles []GrantProfile
 	secrets  map[string]standingSecret // digest -> secret
-	// unread holds ledger entries sealed in a way this build cannot open
-	// (a newer jit's wrap). They are not served, and they are written back
-	// byte for byte: an older jit that dropped them would delete them from
-	// the ledger on its next save, and a later upgrade could not get them
-	// back.
-	unread    []ledgerSecret
+	// unread holds ledger entries this build cannot serve: sealed in a way
+	// it cannot open (a newer jit's wrap), not reading as an entry it knows
+	// (sealed bytes that are not hex, no digest, no path), or carrying any
+	// field it does not know (a newer jit may tie one to the sealed bytes: a
+	// nonce, KDF parameters, an AAD version; jit never serves or re-seals
+	// what it does not fully understand). They are
+	// not served, and they are written back byte for byte: an older jit
+	// that dropped them would delete them from the ledger on its next save,
+	// and a later upgrade could not get them back. Since nothing here knows
+	// which kind of key such an entry needs, a grant holding one keeps
+	// every kind (the move's deleteOthers, a revoke's key note).
+	unread []ledgerSecret
+	// raw is the ledger record this grant was read from, if it was: its
+	// fields this build does not know are written back with it (jsonkeep).
+	raw       []byte
 	serves    int64
 	lastServe time.Time
 
 	keyMu sync.Mutex
 	key   GrantKey
+	// dead is set, under keyMu, once the grant is revoked (or the service
+	// closes, or a create that published it fails): openStanding then
+	// refuses to load or use a key for it. A serve checks the grant is live
+	// under grantMu and opens under keyMu, and a revoke can land between the
+	// two; without this the serve would find no cached key, load it again
+	// from a store the revoke has not yet deleted it from, serve a secret
+	// after the revoke, and leave the key cached on a grant closeStanding no
+	// longer sees. See retire.
+	dead bool
+}
+
+// retire closes g's cached key and marks g dead, both under keyMu, so no
+// serve opens with the key afterwards and none loads it again. Called with
+// grantMu NOT held (keyMu is never held while taking grantMu, and a serve
+// holds keyMu across a key load).
+func (g *standingGrant) retire() {
+	g.keyMu.Lock()
+	defer g.keyMu.Unlock()
+	if g.key != nil {
+		g.key.Close()
+		g.key = nil
+	}
+	g.dead = true
 }
 
 func (g *standingGrant) secretPaths() []string {
@@ -229,6 +335,23 @@ type ledgerFile struct {
 	Grants  []ledgerGrant `json:"grants"`
 }
 
+// rawLedgerFile is ledgerFile with every grant left as it was written.
+type rawLedgerFile struct {
+	Version int               `json:"version"`
+	Grants  []json.RawMessage `json:"grants"`
+}
+
+// keptGrant is a ledger record SetGrantLedger could not accept (no id,
+// anchor or program name, or a field that does not read as this build's),
+// kept as the file held it. It is never served,
+// listed or revoked: it is not a grant. saveLedger writes it back
+// unchanged, so the record, and the key id it names, outlive every save
+// (the start-up key cleanup keeps any key the ledger names).
+type keptGrant struct {
+	id  string // as written, possibly empty; a loaded grant of this id wins
+	raw json.RawMessage
+}
+
 type ledgerGrant struct {
 	ID          string `json:"id"`
 	CreatedUnix int64  `json:"created_unix"`
@@ -244,6 +367,9 @@ type ledgerGrant struct {
 	Secrets       []ledgerSecret `json:"secrets"`
 	Serves        int64          `json:"serves,omitempty"`
 	LastServeUnix int64          `json:"last_serve_unix,omitempty"`
+
+	// raw is the record as the file held it, for MarshalJSON.
+	raw []byte
 }
 
 type ledgerSecret struct {
@@ -252,6 +378,58 @@ type ledgerSecret struct {
 	DeviceDigest string `json:"device_wrapped_sha256"`
 	GrantWrapped string `json:"grant_wrapped"`
 	Wrap         string `json:"wrap"`
+
+	// raw is the entry as the file held it, for MarshalJSON; verbatim
+	// writes it back exactly so (an unread entry).
+	raw      []byte
+	verbatim bool
+}
+
+// MarshalJSON writes the grant with every field of the record it was read
+// from that this build does not know (jsonkeep), so a save by this jit
+// never deletes what a newer one wrote.
+func (lg ledgerGrant) MarshalJSON() ([]byte, error) {
+	type plain ledgerGrant
+	return jsonkeep.Marshal(plain(lg), lg.raw)
+}
+
+// UnmarshalJSON reads the grant and keeps the record it came from. A field
+// of the wrong type still leaves the rest read, so a record SetGrantLedger
+// keeps unread still has its id.
+func (lg *ledgerGrant) UnmarshalJSON(b []byte) error {
+	type plain ledgerGrant
+	var p plain
+	err := json.Unmarshal(b, &p)
+	*lg = ledgerGrant(p)
+	lg.raw = append([]byte(nil), b...)
+	return err
+}
+
+// MarshalJSON is ledgerGrant's, for one entry; an unread entry is written
+// exactly as it was read.
+func (ls ledgerSecret) MarshalJSON() ([]byte, error) {
+	if ls.verbatim && len(ls.raw) > 0 {
+		return ls.raw, nil
+	}
+	type plain ledgerSecret
+	return jsonkeep.Marshal(plain(ls), ls.raw)
+}
+
+// unknownFields names the entry's fields this build does not know: any
+// makes it unread (grantFromLedger).
+func (ls ledgerSecret) unknownFields() []string {
+	type plain ledgerSecret
+	return jsonkeep.Unknown(plain{}, ls.raw)
+}
+
+// UnmarshalJSON is ledgerGrant's, for one entry.
+func (ls *ledgerSecret) UnmarshalJSON(b []byte) error {
+	type plain ledgerSecret
+	var p plain
+	err := json.Unmarshal(b, &p)
+	*ls = ledgerSecret(p)
+	ls.raw = append([]byte(nil), b...)
+	return err
 }
 
 // SetGrantLedger names the ledger file and loads whatever it holds. Called
@@ -259,66 +437,136 @@ type ledgerSecret struct {
 // a malformed one is an error the service logs and starts without, since
 // refusing to serve anything over one bad grant record would be the wrong
 // trade — but nothing is ever written back over a file that failed to
-// parse, so a human can still read it.
+// parse, so a human can still read it. The file is read and parsed once:
+// each record is decoded from the bytes that parse left it as, and the key
+// ids it names are walked from the same bytes.
 func (s *Server) SetGrantLedger(path string) (count int, err error) {
 	s.grantMu.Lock()
 	defer s.grantMu.Unlock()
-	s.ledgerPath = path
+	s.ledgerPath, s.ledgerNames, s.ledgerKept = path, nil, nil
 	data, err := os.ReadFile(path) // #nosec G304 -- a fixed, well-known path under jit's own config directory
 	if errors.Is(err, os.ErrNotExist) {
 		s.standing = map[string]*standingGrant{}
+		s.ledgerNames = map[string]bool{}
 		return 0, nil
 	}
-	if err != nil {
+	fail := func(err error) (int, error) {
 		s.ledgerPath = "" // never overwrite a file we could not read
 		return 0, err
 	}
-	var f ledgerFile
+	if err != nil {
+		return fail(err)
+	}
+	var f rawLedgerFile
 	if err := json.Unmarshal(data, &f); err != nil {
-		s.ledgerPath = ""
-		return 0, fmt.Errorf("parsing %s: %w", path, err)
+		return fail(fmt.Errorf("parsing %s: %w", path, err))
 	}
 	if f.Version > ledgerVersion {
-		s.ledgerPath = ""
-		return 0, fmt.Errorf("%s was written by a newer jit (version %d, this build reads %d)", path, f.Version, ledgerVersion)
+		return fail(fmt.Errorf("%s was written by a newer jit (version %d, this build reads %d)", path, f.Version, ledgerVersion))
+	}
+	names, err := namedKeyIDs(data)
+	if err != nil {
+		return fail(fmt.Errorf("parsing %s: %w", path, err))
 	}
 	loaded := map[string]*standingGrant{}
-	for _, lg := range f.Grants {
-		g := &standingGrant{
-			id:         lg.ID,
-			created:    time.Unix(lg.CreatedUnix, 0),
-			anchorPath: lg.Anchor.ExecPath,
-			anchorName: lg.Anchor.Name,
-			name:       lg.Program.Name,
-			execPath:   lg.Program.ExecPath,
-			profiles:   append([]GrantProfile(nil), lg.Profiles...),
-			secrets:    make(map[string]standingSecret, len(lg.Secrets)),
-			serves:     lg.Serves,
-		}
-		if lg.LastServeUnix > 0 {
-			g.lastServe = time.Unix(lg.LastServeUnix, 0)
-		}
-		for _, ls := range lg.Secrets {
-			if !knownWrap(ls.Wrap) {
-				// A wrap this build cannot open is not served: the grant
-				// then reports fewer secrets than it was made with, and the
-				// list shows the gap. It is kept, verbatim, for saveLedger.
-				g.unread = append(g.unread, ls)
-				continue
-			}
-			gw, err := hex.DecodeString(ls.GrantWrapped)
-			if err != nil || ls.DeviceDigest == "" || ls.Path == "" {
-				continue
-			}
-			g.secrets[ls.DeviceDigest] = standingSecret{path: ls.Path, class: ls.Class, digest: ls.DeviceDigest, grantWrapped: gw, wrap: ls.Wrap}
-		}
-		if g.id == "" || g.anchorPath == "" || g.name == "" {
+	var skipped []keptGrant
+	for _, r := range f.Grants {
+		var lg ledgerGrant
+		if err := json.Unmarshal(r, &lg); err != nil || lg.ID == "" || lg.Anchor.ExecPath == "" || lg.Program.Name == "" {
+			// Not served, but not dropped either: kept verbatim for
+			// saveLedger, unless a loaded grant has its id (that one wins).
+			skipped = append(skipped, keptGrant{id: lg.ID, raw: r})
 			continue
 		}
-		loaded[g.id] = g
+		loaded[lg.ID] = grantFromLedger(lg)
 	}
-	s.standing = loaded
+	s.standing, s.ledgerNames = loaded, names
+	s.ledgerKept = unshadowedGrants(skipped, loaded)
 	return len(loaded), nil
+}
+
+// grantFromLedger is a loaded standing grant from its ledger record.
+func grantFromLedger(lg ledgerGrant) *standingGrant {
+	g := &standingGrant{
+		id:         lg.ID,
+		created:    time.Unix(lg.CreatedUnix, 0),
+		anchorPath: lg.Anchor.ExecPath,
+		anchorName: lg.Anchor.Name,
+		name:       lg.Program.Name,
+		execPath:   lg.Program.ExecPath,
+		profiles:   append([]GrantProfile(nil), lg.Profiles...),
+		secrets:    make(map[string]standingSecret, len(lg.Secrets)),
+		serves:     lg.Serves,
+		raw:        lg.raw,
+	}
+	if lg.LastServeUnix > 0 {
+		g.lastServe = time.Unix(lg.LastServeUnix, 0)
+	}
+	for _, ls := range lg.Secrets {
+		gw, err := hex.DecodeString(ls.GrantWrapped)
+		if !knownWrap(ls.Wrap) || err != nil || ls.DeviceDigest == "" || ls.Path == "" || len(ls.unknownFields()) > 0 {
+			// A wrap this build cannot open, an entry that does not read
+			// as one, or one with a field this build does not know, is not
+			// served: the grant then reports fewer secrets than it was made
+			// with, and the list shows the gap. It is kept, verbatim, for
+			// saveLedger, and a move leaves it sealed as it is.
+			ls.verbatim = true
+			g.unread = append(g.unread, ls)
+			continue
+		}
+		g.secrets[ls.DeviceDigest] = standingSecret{path: ls.Path, class: ls.Class, digest: ls.DeviceDigest, grantWrapped: gw, wrap: ls.Wrap}
+	}
+	return g
+}
+
+// unshadowedGrants is kept without every record a loaded grant has the id
+// of: the loaded one wins, and the ledger never holds two grants of one id.
+// The one place that rule is applied, at load and at every save.
+func unshadowedGrants(kept []keptGrant, standing map[string]*standingGrant) []keptGrant {
+	var out []keptGrant
+	for _, k := range kept {
+		if _, loaded := standing[k.id]; !loaded {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// mintedKeyID is the shape of every grant and job key id jit makes: g- or j-
+// and eight hex digits.
+var mintedKeyID = regexp.MustCompile(`^[gj]-[0-9a-f]{8}$`)
+
+// namedKeyIDs is every string in a JSON document that has the shape of a key
+// id jit mints, wherever it sits: the ids a file names, read raw, including
+// records a loader skips and fields a newer jit may add. The orphan cleanup
+// (grantorphans.go) keeps every key so named. A document that does not parse
+// is an error, and the caller keeps no names at all.
+func namedKeyIDs(data []byte) (map[string]bool, error) {
+	var v any
+	if err := json.Unmarshal(data, &v); err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	var walk func(any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case string:
+			if mintedKeyID.MatchString(x) {
+				out[x] = true
+			}
+		case []any:
+			for _, e := range x {
+				walk(e)
+			}
+		case map[string]any:
+			for k, e := range x {
+				walk(k)
+				walk(e)
+			}
+		}
+	}
+	walk(v)
+	return out, nil
 }
 
 // ledgerServeInterval bounds how often the SERVE path rewrites the ledger.
@@ -364,16 +612,17 @@ func (s *Server) ledgerReady() bool {
 	return s.ledgerPath != ""
 }
 
-// saveLedger writes the current standing grants atomically, 0600. Caller
-// must NOT hold grantMu or ledgerMu: it takes both. A server with no ledger
-// path (tests without persistence, a service whose ledger failed to parse)
-// keeps its grants in memory only.
+// saveLedger writes the current standing grants atomically and durably,
+// 0600 (writeState). Caller must NOT hold grantMu or ledgerMu: it takes
+// both. A server with no ledger path (tests without persistence, a service
+// whose ledger failed to parse) keeps its grants in memory only.
 //
 // ledgerMu spans the SNAPSHOT as well as the write, and both halves of that
 // are load-bearing:
 //
 //   - Two concurrent saves used to write the same temp path and rename it
-//     out from under each other, publishing a spliced file. Measured, not
+//     out from under each other, publishing a spliced file (the temp name is
+//     random now, but the lock is what orders the renames). Measured, not
 //     feared: six concurrent callers produced invalid JSON in a quarter of
 //     a second. Every serve saves (it bumps serves/lastServe) and every
 //     mount read and `jit run` is a serve, so the race is on the hot path,
@@ -396,7 +645,7 @@ func (s *Server) saveLedger() error {
 	path := s.ledgerPath
 	f := ledgerFile{Version: ledgerVersion, Grants: make([]ledgerGrant, 0, len(s.standing))}
 	for _, g := range s.standing {
-		lg := ledgerGrant{ID: g.id, CreatedUnix: g.created.Unix(), Profiles: append([]GrantProfile(nil), g.profiles...), Serves: g.serves}
+		lg := ledgerGrant{ID: g.id, CreatedUnix: g.created.Unix(), Profiles: append([]GrantProfile(nil), g.profiles...), Serves: g.serves, raw: g.raw}
 		lg.Anchor.ExecPath, lg.Anchor.Name = g.anchorPath, g.anchorName
 		lg.Program.Name, lg.Program.ExecPath = g.name, g.execPath
 		if !g.lastServe.IsZero() {
@@ -416,34 +665,48 @@ func (s *Server) saveLedger() error {
 		sort.Slice(lg.Secrets, func(i, j int) bool { return lg.Secrets[i].Path < lg.Secrets[j].Path })
 		f.Grants = append(f.Grants, lg)
 	}
+	// The records SetGrantLedger could not accept go back as they came,
+	// after the grants. Nothing in memory changes here, so a write that
+	// fails leaves every record where the caller's rollback expects it.
+	kept := unshadowedGrants(s.ledgerKept, s.standing)
 	s.grantMu.Unlock()
 	if path == "" {
 		return nil
 	}
 	sort.Slice(f.Grants, func(i, j int) bool { return f.Grants[i].CreatedUnix < f.Grants[j].CreatedUnix })
-	data, err := json.MarshalIndent(f, "", "  ")
+	out := rawLedgerFile{Version: f.Version, Grants: make([]json.RawMessage, 0, len(f.Grants)+len(kept))}
+	for _, lg := range f.Grants {
+		b, err := json.Marshal(lg)
+		if err != nil {
+			return err
+		}
+		out.Grants = append(out.Grants, b)
+	}
+	for _, k := range kept {
+		out.Grants = append(out.Grants, k.raw)
+	}
+	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return err
 	}
-	// A crash between write and rename leaves a temp behind, and writing
-	// into it would keep whatever mode (or symlink) it had rather than the
-	// 0600 this file promises. Remove it, then create exclusively.
-	tmp := path + ".tmp"
-	if err := os.Remove(tmp); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+	return s.writeState(path, data)
+}
+
+// writeState writes one of the service's own state files (the grant ledger,
+// the job list) with atomicfile.WriteFile, the one implementation behind
+// vault.AtomicWriteFile too (this package never imports internal/vault): a
+// temp file created exclusively under a fresh random name beside it (so a
+// leftover temp, or a symlink planted where one would go, is never written
+// through), mode 0600, fsynced, renamed over the old file, and the directory
+// fsynced so the rename itself survives a power cut. The fsyncs matter here
+// more than for most files: a move (plan C3) deletes a grant's old key right
+// after the ledger names the new one, and a ledger that reverted on power
+// loss would then name a key that no longer exists.
+func (s *Server) writeState(path string, data []byte) error {
+	if s.stateWriter != nil {
+		return s.stateWriter(path, data)
 	}
-	f2, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- a fixed path beside the ledger, created exclusively
-	if err != nil {
-		return err
-	}
-	if _, err := f2.Write(data); err != nil {
-		_ = f2.Close()
-		return err
-	}
-	if err := f2.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return atomicfile.WriteFile(path, data)
 }
 
 // ---- create ----
@@ -512,10 +775,15 @@ func (s *Server) createStandingGrant(req Request, target lineage.Process, profil
 		// that could not be written means it will not survive a restart.
 		// Say so rather than pretend: the human just approved something
 		// described as standing.
+		// A serve may have found it while it was published, so it is
+		// retired under keyMu, as a revoke does, rather than its key closed
+		// from under an open.
 		s.grantMu.Lock()
 		delete(s.standing, id)
 		s.grantMu.Unlock()
-		return fail(fmt.Sprintf("grant_create: the grant could not be recorded (%s), no grant created", err))
+		g.retire()
+		_ = s.GrantKeys.Delete(id)
+		return Response{OK: false, Error: fmt.Sprintf("grant_create: the grant could not be recorded (%s), no grant created", err)}
 	}
 	return Response{OK: true, Grants: []GrantStatus{st}}
 }
@@ -543,13 +811,6 @@ func (s *Server) standingUnwrap(c *caller, wrapped []byte) (dek []byte, path str
 		if !lineage.AncestryNamedUnderPath(c.pid, g.anchorPath, g.name) {
 			continue
 		}
-		key, err := s.grantKey(g)
-		if err != nil {
-			// A grant whose key is gone (deleted out of band) cannot serve;
-			// it falls through to the ordinary path, and the list will say
-			// what happened when it is asked.
-			continue
-		}
 		s.grantMu.Lock()
 		sec, still := g.secrets[digest]
 		if _, live := s.standing[g.id]; !live || !still { // a revoke may have won the race
@@ -557,13 +818,14 @@ func (s *Server) standingUnwrap(c *caller, wrapped []byte) (dek []byte, path str
 			continue
 		}
 		s.grantMu.Unlock()
-		// An entry sealed in another kind than this grant's key (mid-move
-		// between keychain and enclave) is never tried with the wrong key.
-		if w := sec.wrap; w != "" && w != keyWrap(key) {
-			continue
+		if s.standingChecked != nil {
+			s.standingChecked(g.id)
 		}
-		out, err := key.Open(sec.grantWrapped, sec.class)
+		out, err := s.openStanding(g, sec)
 		if err != nil {
+			// A grant whose key is gone (deleted out of band) cannot serve;
+			// it falls through to the ordinary path, and the list will say
+			// what happened when it is asked.
 			continue
 		}
 		s.grantMu.Lock()
@@ -580,19 +842,71 @@ func (s *Server) standingUnwrap(c *caller, wrapped []byte) (dek []byte, path str
 	return nil, "", false
 }
 
-// grantKey returns a grant's key, loading it from the store on first use.
-func (s *Server) grantKey(g *standingGrant) (GrantKey, error) {
+// errOtherKind: the store handed back a key of another kind than the entry
+// is sealed for, which is never tried.
+var errOtherKind = errors.New("the grant's key is not the kind its entry is sealed for")
+
+// errGrantEnded: the grant was revoked (or the service closed) after the
+// serve checked it was live.
+var errGrantEnded = errors.New("the grant has ended")
+
+// openStanding opens sec with g's key of the kind sec is sealed for (not
+// whichever kind exists: a move that made the new key and then failed
+// leaves the grant sealed for its old one, and that is the key that opens
+// it), loading it on first use or when the cached one is the other kind.
+//
+// keyMu is held from the load through the Open. The cached key is replaced,
+// and the old one closed, only under keyMu, and a revoke, a move and Close
+// close it only under keyMu too, so no serve ever opens with a key another
+// has closed: a closed key's memory, in the Secure Enclave's cgo half, is
+// freed. The price is that serves of ONE grant open one at a time; serves
+// of different grants never wait on each other, and nothing under keyMu
+// takes grantMu.
+//
+// A retired grant (dead) is refused before anything is loaded: the liveness
+// check the serve made under grantMu may be stale by now (standingGrant.dead).
+// A revoke that lands while this holds keyMu waits for it, and then closes
+// the key it cached.
+func (s *Server) openStanding(g *standingGrant, sec standingSecret) ([]byte, error) {
+	wrap := sec.wrap
+	if wrap == "" {
+		wrap = standingWrapAEAD
+	}
 	g.keyMu.Lock()
 	defer g.keyMu.Unlock()
-	if g.key != nil {
-		return g.key, nil
+	if g.dead {
+		return nil, errGrantEnded
 	}
-	key, err := s.GrantKeys.Load(g.id)
-	if err != nil {
-		return nil, err
+	if g.key == nil || keyWrap(g.key) != wrap {
+		key, err := s.loadGrantKey(g.id, wrap)
+		if err != nil {
+			return nil, err
+		}
+		if g.key != nil {
+			g.key.Close()
+		}
+		g.key = key
 	}
-	g.key = key
-	return key, nil
+	if keyWrap(g.key) != wrap {
+		return nil, errOtherKind
+	}
+	return g.key.Open(sec.grantWrapped, sec.class)
+}
+
+// loadGrantKey loads id's key of the kind wrap names. A store that holds
+// both kinds (GrantKeyMover) is asked for exactly that kind: its plain Load
+// prefers the enclave's whenever one exists, and an enclave key can exist
+// beside a grant or job still sealed for its keychain key (a move that made
+// the new key and then failed to re-seal or to save, or a move back). A
+// store of one kind has nothing to choose between.
+func (s *Server) loadGrantKey(id, wrap string) (GrantKey, error) {
+	if wrap == "" {
+		wrap = standingWrapAEAD
+	}
+	if m, ok := s.GrantKeys.(GrantKeyMover); ok {
+		return m.LoadWrap(id, wrap)
+	}
+	return s.GrantKeys.Load(id)
 }
 
 // ---- list ----
@@ -650,34 +964,45 @@ func (s *Server) standingStatuses() []GrantStatus {
 // ledger's copies are garbage before the record goes), then the record,
 // then the ledger is rewritten. Idempotent on a missing id. No challenge,
 // as with every revoke: reducing access is free.
-func (s *Server) revokeStanding(id string, c *caller) bool {
+//
+// keyNote is keyKeptNote when the key could not be deleted from here (the
+// grant's entries are sealed for a Secure Enclave this jit cannot reach):
+// the grant is revoked all the same, and the caller must not be told the key
+// went with it.
+func (s *Server) revokeStanding(id string, c *caller) (revoked bool, keyNote string) {
 	s.grantMu.Lock()
 	g := s.standing[id]
 	if g == nil {
 		s.grantMu.Unlock()
-		return false
+		return false, ""
 	}
 	delete(s.standing, id)
 	paths := g.secretPaths()
 	name := g.name
+	mayBeEnclave := len(g.unread) > 0
+	for _, sec := range g.secrets {
+		mayBeEnclave = mayBeEnclave || sec.wrap == standingWrapEnclave
+	}
 	s.grantMu.Unlock()
 
-	g.keyMu.Lock()
-	if g.key != nil {
-		g.key.Close()
-		g.key = nil
-	}
-	g.keyMu.Unlock()
+	// Dead before the key is deleted: a serve that checked the grant was
+	// live before the delete above must not load the key again in the
+	// window before the store forgets it.
+	g.retire()
 	if s.GrantKeys != nil {
-		_ = s.GrantKeys.Delete(id)
+		keyNote = keyNoteOf(s.deleteKeyOf(id, mayBeEnclave))
 	}
 	_ = s.saveLedger()
 
+	cause := fmt.Sprintf("%s's grant %s", name, grantEndRevoked)
+	if keyNote != "" {
+		cause += ". " + keyNote
+	}
 	event := SessionEvent{
 		UnixTime: time.Now().Unix(),
 		Kind:     KindGrantEnd,
 		Op:       id,
-		Cause:    fmt.Sprintf("%s's grant %s", name, grantEndRevoked),
+		Cause:    cause,
 		Labels:   paths,
 	}
 	if c != nil {
@@ -691,12 +1016,14 @@ func (s *Server) revokeStanding(id string, c *caller) bool {
 	if s.OnSessionEvent != nil {
 		s.OnSessionEvent(event)
 	}
-	return true
+	return true, keyNote
 }
 
-// closeStanding releases every cached grant key. Called from Server.Close;
-// the ledger and the keychain items are untouched, since the grants outlive
-// the process by design.
+// closeStanding releases every cached grant key and retires every grant, so
+// a serve still in flight cannot load a key again after it and leave it
+// cached past the close. Called from Server.Close; the ledger and the
+// keychain items are untouched, since the grants outlive the process by
+// design (the next start loads them afresh).
 func (s *Server) closeStanding() {
 	s.flushLedger()
 	s.grantMu.Lock()
@@ -706,11 +1033,6 @@ func (s *Server) closeStanding() {
 	}
 	s.grantMu.Unlock()
 	for _, g := range grants {
-		g.keyMu.Lock()
-		if g.key != nil {
-			g.key.Close()
-			g.key = nil
-		}
-		g.keyMu.Unlock()
+		g.retire()
 	}
 }

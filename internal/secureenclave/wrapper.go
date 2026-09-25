@@ -16,6 +16,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/jitpass/jit/internal/unlockreason"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -287,15 +288,6 @@ func (w *Wrapper) Delete() error {
 	return w.enc.remove()
 }
 
-// The dialog reasons for a direct wrap and unwrap. macOS shows them after
-// the app's name: "JitPass is trying to unlock the vault to read a secret."
-// The same words internal/agent uses, so a prompt reads the same whichever
-// process asked.
-const (
-	reasonStore = "unlock the vault to store a secret"
-	reasonRead  = "unlock the vault to read a secret"
-)
-
 // WrapKey implements vault.KeyWrapper.
 func (w *Wrapper) WrapKey(dek []byte) ([]byte, error) {
 	return w.WrapKeyLabeled(dek, "", "")
@@ -309,7 +301,7 @@ func (w *Wrapper) UnwrapKey(wrapped []byte) ([]byte, error) {
 // WrapKeyLabeled implements vault.LabeledKeyWrapper: class is the AAD, bound
 // exactly as keychainwrap and the agent bind it; label is ignored, as there.
 func (w *Wrapper) WrapKeyLabeled(dek []byte, label, class string) ([]byte, error) {
-	mek, err := w.fetchMEK(reasonStore)
+	mek, err := w.fetchMEK(unlockreason.Store)
 	if err != nil {
 		return nil, err
 	}
@@ -319,7 +311,7 @@ func (w *Wrapper) WrapKeyLabeled(dek []byte, label, class string) ([]byte, error
 
 // UnwrapKeyLabeled implements vault.LabeledKeyWrapper.
 func (w *Wrapper) UnwrapKeyLabeled(wrapped []byte, label, class string) ([]byte, error) {
-	mek, err := w.fetchMEK(reasonRead)
+	mek, err := w.fetchMEK(unlockreason.Read)
 	if err != nil {
 		return nil, err
 	}
