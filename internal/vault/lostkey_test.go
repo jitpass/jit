@@ -4,9 +4,11 @@
 package vault
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -79,18 +81,18 @@ func TestSettleLostKeyKeepsTheStateUntilNothingIsLeft(t *testing.T) {
 	}
 	setSecrets(t, v, "a")
 
-	remaining, unknown, err := SettleLostKey(v.Root, time.Now())
-	if err != nil || unknown || !reflect.DeepEqual(remaining, []string{"b"}) {
-		t.Fatalf("partial restore: remaining=%q unknown=%v err=%v, want [b]", remaining, unknown, err)
+	settle, err := SettleLostKey(v.Root, time.Now(), true)
+	if err != nil || settle.Unchecked || settle.Settled || !reflect.DeepEqual(settle.Remaining, []string{"b"}) {
+		t.Fatalf("partial restore: %+v err=%v, want [b] remaining", settle, err)
 	}
 	if _, err := os.Stat(filepath.Join(v.Root, LostSealedKeyFile)); err != nil {
 		t.Fatalf("a partial restore retired the lost key's file: %v", err)
 	}
 
 	setSecrets(t, v, "b")
-	remaining, unknown, err = SettleLostKey(v.Root, time.Now())
-	if err != nil || unknown || remaining != nil {
-		t.Fatalf("full restore: remaining=%q unknown=%v err=%v", remaining, unknown, err)
+	settle, err = SettleLostKey(v.Root, time.Now(), true)
+	if err != nil || settle.Unchecked || !settle.Settled || settle.Remaining != nil {
+		t.Fatalf("full restore: %+v err=%v", settle, err)
 	}
 	if got := sealedToLost(t, v.Root); got != nil {
 		t.Fatalf("after a full restore still reported: %q", got)
@@ -153,11 +155,317 @@ func TestSealedToLostKeyWithoutASnapshotFailsClosed(t *testing.T) {
 	if err != nil || known || !reflect.DeepEqual(got, []string{"a", "b"}) {
 		t.Fatalf("no snapshot: %q known=%v err=%v, want every path and known=false", got, known, err)
 	}
-	remaining, unknown, err := SettleLostKey(v.Root, time.Now())
-	if err != nil || !unknown || remaining != nil {
-		t.Fatalf("settle without a snapshot: remaining=%q unknown=%v err=%v", remaining, unknown, err)
+	settle, err := SettleLostKey(v.Root, time.Now(), true)
+	if err != nil || !settle.Unchecked || !settle.Settled || settle.Remaining != nil {
+		t.Fatalf("settle without a snapshot: %+v err=%v", settle, err)
 	}
 	if got, _, _ := SealedToLostKey(v.Root); got != nil {
 		t.Fatalf("still reported after settling: %q", got)
+	}
+}
+
+// lostKeyVault is a vault whose secrets were written under lost (the
+// Secure Enclave-era key), then set aside the way `jit vault init` does, and
+// switched to current, the new key an import writes under.
+func lostKeyVault(t *testing.T, paths ...string) (v *Vault, lost, current *fakeKeyWrapper) {
+	t.Helper()
+	lost = newFakeKeyWrapper()
+	current = &fakeKeyWrapper{key: bytes.Repeat([]byte{0x77}, dekSize)}
+	v = &Vault{Root: t.TempDir(), KeyWrapper: lost, RecipientID: "test-device"}
+	setSecrets(t, v, paths...)
+	plantSealedKey(t, v.Root, "sealed-to-the-old-key")
+	if err := SetAsideLostSealedKey(v.Root, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	v.KeyWrapper = current
+	return v, lost, current
+}
+
+func historyFiles(t *testing.T, v *Vault, path string) []string {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(v.historyDir(path), "*.enc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+func fileBytes(t *testing.T, file string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+// Review finding 1: _history/ holds envelopes sealed to the lost key, and a
+// later `jit vault rekey` used to stop on them ("cannot decrypt with the
+// current or the staged master key") with its marker left, refusing every
+// vault change. Rewrap now keeps every envelope a record lists, live or
+// archived, exactly as it is, and reports it; everything else rotates.
+func TestRewrapKeepsEnvelopesSealedToALostKey(t *testing.T) {
+	lost := newFakeKeyWrapper()
+	v := &Vault{Root: t.TempDir(), KeyWrapper: lost, RecipientID: "test-device"}
+	setSecrets(t, v, "a", "b")
+	setSecrets(t, v, "a") // an archived copy of a, sealed to the lost key
+	plantSealedKey(t, v.Root, "sealed-to-the-old-key")
+	if err := SetAsideLostSealedKey(v.Root, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	current := &fakeKeyWrapper{key: bytes.Repeat([]byte{0x77}, dekSize)}
+	v.KeyWrapper = current
+	setSecrets(t, v, "a", "c") // a restored (archiving another lost-key copy), c new
+
+	before := map[string][]byte{}
+	for _, f := range historyFiles(t, v, "a") {
+		before[f] = fileBytes(t, f)
+	}
+	bFile := filepath.Join(v.vaultDir(), "b.enc")
+	before[bFile] = fileBytes(t, bFile)
+
+	staged := &fakeKeyWrapper{key: bytes.Repeat([]byte{0x55}, dekSize)}
+	r, err := v.Rewrap(current, staged)
+	if err != nil {
+		t.Fatalf("Rewrap stopped on a lost-key copy: %v", err)
+	}
+	if r.Rewrapped != 2 || len(r.Kept) != 3 {
+		t.Fatalf("Rewrap = %+v, want a and c rewrapped, b and two history copies kept", r)
+	}
+	for f, want := range before {
+		if got := fileBytes(t, f); !bytes.Equal(got, want) {
+			t.Errorf("Rewrap changed a lost-key copy %s", f)
+		}
+	}
+	v.KeyWrapper = staged
+	for _, p := range []string{"a", "c"} {
+		if _, err := v.Get(p); err != nil {
+			t.Errorf("%s does not open under the new key: %v", p, err)
+		}
+	}
+}
+
+// The exception is only for what a record lists: an envelope no key opens
+// and no record names still stops a rotation, as it always has.
+func TestRewrapStillStopsOnAnUnrecordedEnvelopeNoKeyOpens(t *testing.T) {
+	v, _, current := lostKeyVault(t, "a")
+	other := &Vault{Root: v.Root, KeyWrapper: &fakeKeyWrapper{key: bytes.Repeat([]byte{0x11}, dekSize)}, RecipientID: "test-device"}
+	setSecrets(t, other, "stranger") // written after the set-aside, under neither key
+	staged := &fakeKeyWrapper{key: bytes.Repeat([]byte{0x55}, dekSize)}
+	if _, err := v.Rewrap(current, staged); err == nil || !strings.Contains(err.Error(), "stranger") {
+		t.Fatalf("Rewrap over an unrecorded envelope no key opens: %v, want it to stop naming it", err)
+	}
+}
+
+// A record lists bytes, not keys: if the old key does open a listed
+// envelope (the "lost" key was the same MEK after all), it is rotated like
+// any other, never left behind under a key the rotation deletes.
+func TestRewrapRotatesARecordedEnvelopeTheOldKeyOpens(t *testing.T) {
+	v, lost, _ := lostKeyVault(t, "a")
+	staged := &fakeKeyWrapper{key: bytes.Repeat([]byte{0x55}, dekSize)}
+	r, err := v.Rewrap(lost, staged)
+	if err != nil || r.Rewrapped != 1 || len(r.Kept) != 0 {
+		t.Fatalf("Rewrap = %+v, %v; want a rewrapped, nothing kept", r, err)
+	}
+}
+
+// restore_pending counts live secrets only: archived copies sealed to the
+// lost key are kept, never pending, so once every live secret is back the
+// state settles even though those copies stay.
+func TestSealedToLostKeyCountsLiveSecretsOnly(t *testing.T) {
+	v, _, _ := lostKeyVault(t, "a")
+	v.KeyWrapper = newFakeKeyWrapper()
+	setSecrets(t, v, "a") // archive a lost-key copy of a
+	plantSealedKey(t, v.Root, "second")
+	if err := SetAsideLostSealedKey(v.Root, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	v.KeyWrapper = &fakeKeyWrapper{key: bytes.Repeat([]byte{0x77}, dekSize)}
+	setSecrets(t, v, "a") // live a restored
+	if len(historyFiles(t, v, "a")) < 2 {
+		t.Fatal("expected archived copies of a")
+	}
+	if got := sealedToLost(t, v.Root); got != nil {
+		t.Fatalf("pending = %q, want none: only history copies are left", got)
+	}
+	settle, err := SettleLostKey(v.Root, time.Now(), true)
+	if err != nil || !settle.Settled {
+		t.Fatalf("settle = %+v, %v; want settled", settle, err)
+	}
+}
+
+// Review finding 2: only an absent record means "no record". A record that
+// is there but can't be read is an error: nothing settles on it.
+func TestACorruptLostKeyRecordFailsClosed(t *testing.T) {
+	v, _, _ := lostKeyVault(t, "a", "b")
+	if err := os.WriteFile(filepath.Join(v.Root, lostKeySnapshotFile), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	setSecrets(t, v, "a", "b") // an import that brought everything back
+	if _, _, err := SealedToLostKey(v.Root); err == nil {
+		t.Fatal("a corrupt record read as no record")
+	}
+	if settle, err := SettleLostKey(v.Root, time.Now(), true); err == nil || settle.Settled {
+		t.Fatalf("settle over a corrupt record = %+v, %v; want an error and nothing settled", settle, err)
+	}
+	if _, err := os.Stat(filepath.Join(v.Root, LostSealedKeyFile)); err != nil {
+		t.Fatalf("the lost key's file was retired over a corrupt record: %v", err)
+	}
+}
+
+// Review finding 3: `jit vault restore <path> --version <old>` renames an
+// archived lost-key envelope into place. Its bytes are a recorded
+// _history/ file's, not the recorded live file's, so a per-path comparison
+// called it fine.
+func TestAByteForByteRestoreOfALostKeyCopyIsStillPending(t *testing.T) {
+	v := newTestVault(t)
+	setSecrets(t, v, "a")
+	setSecrets(t, v, "a") // history: the first value, sealed to the lost key
+	plantSealedKey(t, v.Root, "old")
+	if err := SetAsideLostSealedKey(v.Root, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	v.KeyWrapper = &fakeKeyWrapper{key: bytes.Repeat([]byte{0x77}, dekSize)}
+	setSecrets(t, v, "a") // restored from a recovery file
+	if got := sealedToLost(t, v.Root); got != nil {
+		t.Fatalf("after the import: %q, want none", got)
+	}
+	versions, err := v.HistoryVersions("a")
+	if err != nil || len(versions) < 2 {
+		t.Fatalf("history: %+v, %v", versions, err)
+	}
+	oldest := versions[len(versions)-1].ArchiveStamp
+	if err := v.Restore("a", oldest); err != nil {
+		t.Fatal(err)
+	}
+	if got := sealedToLost(t, v.Root); !reflect.DeepEqual(got, []string{"a"}) {
+		t.Fatalf("after restoring a lost-key version: %q, want [a]", got)
+	}
+}
+
+// Review finding 4: pruning history must never delete a version sealed to
+// the lost key, while the state is pending or after it settled.
+func TestHistoryPruningKeepsLostKeyCopies(t *testing.T) {
+	v := newTestVault(t)
+	for range HistoryKeep + 1 {
+		setSecrets(t, v, "a")
+	}
+	plantSealedKey(t, v.Root, "old")
+	if err := SetAsideLostSealedKey(v.Root, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	lostCopies := historyFiles(t, v, "a")
+	if len(lostCopies) != HistoryKeep {
+		t.Fatalf("setup: %d history copies, want %d", len(lostCopies), HistoryKeep)
+	}
+	v.KeyWrapper = &fakeKeyWrapper{key: bytes.Repeat([]byte{0x77}, dekSize)}
+	setSecrets(t, v, "a")
+	if settle, err := SettleLostKey(v.Root, time.Now(), true); err != nil || !settle.Settled {
+		t.Fatalf("settle = %+v, %v", settle, err)
+	}
+	for range HistoryKeep + 2 {
+		setSecrets(t, v, "a")
+	}
+	for _, f := range lostCopies {
+		if _, err := os.Stat(f); err != nil {
+			t.Errorf("a history copy sealed to the lost key was pruned: %v", err)
+		}
+	}
+	// The new key's versions are still bounded, beside the kept copies: the
+	// five archived before the loss, plus the live one the import archived.
+	if got, want := len(historyFiles(t, v, "a")), HistoryKeep+1+HistoryKeep; got != want {
+		t.Errorf("%d history files, want %d kept lost-key copies plus %d current", got, HistoryKeep+1, HistoryKeep)
+	}
+}
+
+// Review finding 5: an envelope that can't be read must not block init. It
+// is recorded as unknown and counts as sealed until it is rewritten.
+func TestSetAsideRecordsAnUnreadableEnvelopeAndCarriesOn(t *testing.T) {
+	v := newTestVault(t)
+	setSecrets(t, v, "a", "b")
+	bFile := filepath.Join(v.vaultDir(), "b.enc")
+	if err := os.Chmod(bFile, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(bFile, 0o600) })
+	plantSealedKey(t, v.Root, "old")
+	if err := SetAsideLostSealedKey(v.Root, time.Now()); err != nil {
+		t.Fatalf("one unreadable envelope blocked the set-aside: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(v.Root, LostSealedKeyFile)); err != nil {
+		t.Fatalf("the key was not set aside: %v", err)
+	}
+	v.KeyWrapper = &fakeKeyWrapper{key: bytes.Repeat([]byte{0x77}, dekSize)}
+	setSecrets(t, v, "a")
+	if got := sealedToLost(t, v.Root); !reflect.DeepEqual(got, []string{"b"}) {
+		t.Fatalf("still unreadable: %q, want [b]", got)
+	}
+	if err := os.Chmod(bFile, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := sealedToLost(t, v.Root); !reflect.DeepEqual(got, []string{"b"}) {
+		t.Fatalf("readable but never rewritten: %q, want [b]", got)
+	}
+	setSecrets(t, v, "b")
+	if got := sealedToLost(t, v.Root); got != nil {
+		t.Fatalf("after b was rewritten: %q, want none", got)
+	}
+}
+
+// Review finding 5: a walk that can't see every file still sets the key
+// aside, and records that it is incomplete, so every secret counts.
+func TestSetAsideRecordsAnIncompleteWalkAndCarriesOn(t *testing.T) {
+	v := newTestVault(t)
+	setSecrets(t, v, "a", "group/b")
+	dir := filepath.Join(v.vaultDir(), "group")
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	plantSealedKey(t, v.Root, "old")
+	if err := SetAsideLostSealedKey(v.Root, time.Now()); err != nil {
+		t.Fatalf("an unreadable directory blocked the set-aside: %v", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	v.KeyWrapper = &fakeKeyWrapper{key: bytes.Repeat([]byte{0x77}, dekSize)}
+	setSecrets(t, v, "a")
+	got, known, err := SealedToLostKey(v.Root)
+	if err != nil || known || !reflect.DeepEqual(got, []string{"a", "group/b"}) {
+		t.Fatalf("incomplete record: %q known=%v err=%v, want every secret and known=false", got, known, err)
+	}
+}
+
+// An envelope that can't be read when checked counts as sealed: jit can't
+// show it was restored.
+func TestAnEnvelopeUnreadableAtCheckTimeCountsAsSealed(t *testing.T) {
+	v, _, _ := lostKeyVault(t, "a")
+	setSecrets(t, v, "a")
+	aFile := filepath.Join(v.vaultDir(), "a.enc")
+	if err := os.Chmod(aFile, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(aFile, 0o600) })
+	if got := sealedToLost(t, v.Root); !reflect.DeepEqual(got, []string{"a"}) {
+		t.Fatalf("unreadable envelope: %q, want [a]", got)
+	}
+}
+
+// `jit vault rm` settles too, but only once nothing is left: removing some
+// of what a recovery file didn't hold keeps the state.
+func TestSettleAfterARemovalWaitsUntilNothingIsLeft(t *testing.T) {
+	v, _, _ := lostKeyVault(t, "a", "b")
+	if err := v.Remove("a"); err != nil {
+		t.Fatal(err)
+	}
+	if settle, err := SettleLostKey(v.Root, time.Now(), false); err != nil || settle.Settled || !reflect.DeepEqual(settle.Remaining, []string{"b"}) {
+		t.Fatalf("after removing a: %+v, %v; want b remaining", settle, err)
+	}
+	if err := v.Remove("b"); err != nil {
+		t.Fatal(err)
+	}
+	if settle, err := SettleLostKey(v.Root, time.Now(), false); err != nil || !settle.Settled || settle.Unchecked {
+		t.Fatalf("after removing b: %+v, %v; want settled", settle, err)
 	}
 }

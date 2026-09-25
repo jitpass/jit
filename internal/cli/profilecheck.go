@@ -187,8 +187,17 @@ const (
 	// are finished by different commands that refuse each other's work, a
 	// client keys on the kind (the app shows a card per kind), and ignoring
 	// one must never hide the other. A marker naming a target this jit does
-	// not know stays kindRekey, exactly as before.
+	// not know is kindRekeyUnknown.
 	kindVaultMove checkKind = "vault_move"
+	// kindRekeyUnknown: the marker kindRekey and kindVaultMove share is
+	// there, but this jit can't read it, or doesn't recognise the change it
+	// marks (a move to a target a newer jit wrote, or a line no jit
+	// writes). Every vault change is refused as under the others, and no
+	// command here can finish it: `jit vault rekey` refuses (and resuming a
+	// rotation over a half-done move would be worse), and no --wrapper this
+	// jit knows is the right one. So it carries no fix, only the honest
+	// step: update jit, or make the file readable.
+	kindRekeyUnknown checkKind = "rekey_unknown"
 	// kindVaultRestore: the vault's Secure Enclave key was lost, `jit vault
 	// init` started over on a new key, and secrets sealed to the old key are
 	// still on disk (vault.SealedToLostKey): the import that brings them back
@@ -343,7 +352,7 @@ var allCheckKinds = []checkKind{
 	kindBadPath, kindOrphan, kindRegistryEmpty, kindStalePointers, kindDuplicates, kindOriginGone, kindShadowed,
 	kindService, kindBackup, kindWrap, kindWrapEnv, kindMount,
 	kindMountStale, kindMountMoved, kindMountUnregistered,
-	kindVaultKey, kindRekey, kindVaultMove, kindVaultRestore, kindLegacyEnvelope,
+	kindVaultKey, kindRekey, kindVaultMove, kindRekeyUnknown, kindVaultRestore, kindLegacyEnvelope,
 	kindAudit, kindMCP, kindMCPNested,
 	kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion,
 	kind1Password, kind1PasswordLink,

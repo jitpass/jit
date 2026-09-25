@@ -1014,7 +1014,17 @@ var vaultInitCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("jit vault init: %w", err)
 		}
-		if err := openKeyStore(root).Init(); err != nil {
+		store := openKeyStore(root)
+		// Over a lost Secure Enclave key, Init makes a new key. A running
+		// service may still hold the lost one in its session and would keep
+		// sealing writes under it, unreadable to the new key and invisible
+		// to the lost-key record, so its session is dropped on both sides,
+		// as rekey does. Presence never prompts.
+		if store.Presence() == keystore.KeyLost {
+			lockAgent()
+			defer lockAgent()
+		}
+		if err := store.Init(); err != nil {
 			return fmt.Errorf("jit vault init: %w", err)
 		}
 		// Pin this machine's envelope-recipient identifier now, at init,
@@ -1773,11 +1783,12 @@ var vaultImportCmd = &cobra.Command{
 // already succeeded, so a failure here is reported, not returned.
 func reportLostKeyRestore(cmd *cobra.Command, root string) {
 	out := cmd.OutOrStdout()
-	remaining, unknown, err := vault.SettleLostKey(root, time.Now())
+	settle, err := vault.SettleLostKey(root, time.Now(), true)
 	switch {
 	case err != nil:
 		fmt.Fprintf(cmd.ErrOrStderr(), "jit vault import: could not check for secrets sealed to the lost key: %v\n", err)
-	case len(remaining) > 0:
+	case len(settle.Remaining) > 0:
+		remaining := settle.Remaining
 		fmt.Fprintf(out, "%s still sealed to a key this Mac no longer has; this file didn't hold %s:\n",
 			countWord(len(remaining), "secret is", "secrets are"), pluralWord(len(remaining), "it", "them"))
 		const shown = 10
@@ -1789,8 +1800,23 @@ func reportLostKeyRestore(cmd *cobra.Command, root string) {
 			fmt.Fprintf(out, "  %s\n", p)
 		}
 		fmt.Fprint(out, hlCmds("Import a recovery file that holds them, or remove them with `jit vault rm <path>`.\n"))
-	case unknown:
+	case settle.Unchecked:
 		fmt.Fprintln(out, "jit can't tell whether this file held every secret from before the key was lost; any it didn't hold won't open.")
+	}
+}
+
+// settleLostKeyAfterRm is reportLostKeyRestore for `jit vault rm`: removing
+// the last secrets a recovery file didn't hold is the other way a lost-key
+// restore ends. It settles only when no live secret is left sealed to the
+// lost key, and says nothing while some are. The removal already
+// succeeded, so a failure here is reported, not returned.
+func settleLostKeyAfterRm(cmd *cobra.Command, root string) {
+	settle, err := vault.SettleLostKey(root, time.Now(), false)
+	switch {
+	case err != nil:
+		fmt.Fprintf(cmd.ErrOrStderr(), "jit vault rm: could not check for secrets sealed to the lost key: %v\n", err)
+	case settle.Settled:
+		fmt.Fprintln(cmd.OutOrStdout(), "No secret sealed to the lost key is left.")
 	}
 }
 
