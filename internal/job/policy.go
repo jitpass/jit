@@ -196,9 +196,6 @@ func scanArgs(argv []string) argScan {
 	return out
 }
 
-// programArg is the file an interpreter runs as its program.
-func programArg(argv []string) string { return scanArgs(argv).program }
-
 // Label names what a job runs, for the one line the human decides by:
 // the folder and the program. The program is the file the interpreter runs
 // (`python -W x run.py` → run.py), `-m module` for a module, and otherwise

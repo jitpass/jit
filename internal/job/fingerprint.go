@@ -348,17 +348,11 @@ func Compute(dir, exe string, outputs, extra []string) (Fingerprint, error) {
 	return fp, nil
 }
 
-// hashFile hashes one regular file. It opens without blocking and refuses
-// anything that is not a regular file once open: a path swapped for a named
-// pipe (by whoever can write the folder, or a file named outside it) would
-// otherwise block the open forever, hanging every list and run behind it.
-func hashFile(path string) (string, int64, error) {
-	sum, n, _, err := hashFileStamp(path)
-	return sum, n, err
-}
-
-// hashFileStamp is hashFile plus the file's change-time, read from the same
-// open file the hash is taken from.
+// hashFileStamp hashes one regular file and reads its change-time from the
+// same open file. It opens without blocking and refuses anything that is not
+// a regular file once open: a path swapped for a named pipe (by whoever can
+// write the folder, or a file named outside it) would otherwise block the
+// open forever, hanging every list and run behind it.
 func hashFileStamp(path string) (sum string, n int64, stamp string, err error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0) // #nosec G304 -- a file the human approved as part of a job
 	if err != nil {
