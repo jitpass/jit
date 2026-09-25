@@ -114,7 +114,11 @@ func (g GrantKeys) Load(id string) (*GrantKey, error) {
 // switches keychain UI off for the whole process (kwWithoutUI), under every
 // other request in flight. The lookup still refuses UI per call, and the
 // delete by reference needs none on these items (keychain.m,
-// kwDeleteRefsIn; TestHardwareGrantKeyDeleteAnOldJitsItem*).
+// kwDeleteRefsIn; TestHardwareGrantKeyDeleteAnOldJitsItem*). It is not
+// tried at all on a LOCKED default keychain (never measured with
+// interaction on): the error says "your keychain is locked", which the
+// revoke or remove passes on in its key note, and the start-up cleanup
+// tries the key again the next time the service starts.
 func (g GrantKeys) Delete(id string) error {
 	w, err := g.wrapper(id)
 	if err != nil {

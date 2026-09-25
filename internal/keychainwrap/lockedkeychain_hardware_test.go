@@ -257,6 +257,12 @@ func TestHardwareLockedKeychainNeverAsks(t *testing.T) {
 	if st := probeInKeychain(path, service, account, probePresence, true); st != errSecSuccess {
 		t.Errorf("locked, interaction off: presence answered %d; measured 0 (metadata needs no unlock)", st)
 	}
+	// The service's check before its reference delete (kwKeychainLockState,
+	// SecKeychainGetStatus): it reads the lock, with interaction off, so a
+	// check that needed any UI would fail -25308 instead of answering.
+	if st := probeInKeychain(path, "", "", probeLockState, true); st != 0 {
+		t.Errorf("locked, interaction off: the lock check answered %d, want 0 (locked)", st)
+	}
 
 	if os.Getenv("JIT_SE_INTERACTIVE") == "1" {
 		// The switch ON: only the query's own flag can stop a dialog now.
@@ -289,6 +295,9 @@ func TestHardwareLockedKeychainNeverAsks(t *testing.T) {
 		t.Errorf("locked, interaction off: the delete by reference answered %d, want 0", st)
 	}
 	securityTool(t, "unlock-keychain", "-p", password, path)
+	if st := probeInKeychain(path, "", "", probeLockState, true); st != 1 {
+		t.Errorf("unlocked, interaction off: the lock check answered %d, want 1 (unlocked)", st)
+	}
 	if st := probeInKeychain(path, service, account, probePresence, true); st != errSecItemNotFound {
 		t.Fatalf("after the delete: presence %d, want %d", st, errSecItemNotFound)
 	}

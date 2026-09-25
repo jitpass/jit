@@ -15,6 +15,7 @@ import "C"
 
 import (
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"unsafe"
 )
@@ -124,6 +125,11 @@ func (w *Wrapper) PromoteStagedRekeyMEK() error {
 	return staged.deleteMEK()
 }
 
+// ErrExistingKeyUnreadable is InstallMEK finding an item under its name
+// that it couldn't read quietly: nothing was written, and the error it
+// wraps (a *QuietReadError, or an item that isn't a master key) says why.
+var ErrExistingKeyUnreadable = errors.New("couldn't read the key already in the keychain")
+
 // InstallMEK stores mek as this wrapper's master key and reads it back — the
 // keychain half of moving a vault's key OUT of the Secure Enclave (`jit
 // vault rekey --wrapper keychain`), where the MEK comes from the enclave and
@@ -132,7 +138,8 @@ func (w *Wrapper) PromoteStagedRekeyMEK() error {
 // refused, never overwritten: it would be the key some other vault state
 // depends on. No challenge: the caller opened the enclave to get mek, which
 // was the approval. And no dialog: both reads, the check of an existing item
-// and the read-back, are the quiet read.
+// and the read-back, are the quiet read. An existing item it can't read is
+// refused too (ErrExistingKeyUnreadable), never written over.
 func (w *Wrapper) InstallMEK(mek []byte) error {
 	if len(mek) != mekSize {
 		return fmt.Errorf("refusing to install a %d-byte master key, want %d", len(mek), mekSize)
@@ -143,7 +150,9 @@ func (w *Wrapper) InstallMEK(mek []byte) error {
 		// access dialog (an older jit's item, read by another binary).
 		got, err := w.quietFetch()
 		if err != nil {
-			return fmt.Errorf("reading the existing master key: %w", err)
+			// Refused, never overwritten: an item this copy of jit can't
+			// read may be the key something else depends on.
+			return fmt.Errorf("%w: %w", ErrExistingKeyUnreadable, err)
 		}
 		defer wipe(got)
 		if subtle.ConstantTimeCompare(got, mek) != 1 {

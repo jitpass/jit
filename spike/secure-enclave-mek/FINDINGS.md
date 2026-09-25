@@ -351,6 +351,22 @@ binary) passes, and fails with -25244 with the fallback removed;
 deletes one such item with interaction off (its gate), then a second with
 interaction ON: deleted in 9.5 ms, no dialog, the switch left on.
 
+Fourth review of #170 (2026-09-26): that delete was never measured with
+interaction ON against a LOCKED keychain (the locked-keychain test runs it
+with interaction off), and the service's form runs with it on. So the
+service now reads the default keychain's lock state first
+(`SecKeychainGetStatus`, `kw_default_keychain_lock_state`) and does not
+attempt the reference delete on a locked keychain, or one whose state it
+can't read: the error ("your keychain is locked: delete failed,
+OSStatus=-25244") reaches the revoke's or remove's key note, and the
+start-up cleanup tries the key again the next time the service starts.
+`TestHardwareLockedKeychainNeverAsks` measures the check on its locked
+temporary keychain with interaction off: 0 (locked) at once, 1 once
+unlocked, so the check itself needs no UI. The interaction-ON half on a
+locked DEFAULT keychain was not run: making a temporary keychain the
+default for the length of a test would also redirect the running JitPass
+service's keychain writes, and no dialog could be ruled out beforehand.
+
 Not measured: an item created by a Developer ID signed jit (this Mac has only
 the team's Apple Development identity). The partition entry is
 `teamid:CZC6BH93GJ` for both certificates, and row 4 shows the refusal

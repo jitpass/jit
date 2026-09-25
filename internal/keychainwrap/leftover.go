@@ -14,6 +14,7 @@ package keychainwrap
 import "C"
 
 import (
+	"errors"
 	"fmt"
 	"unsafe"
 )
@@ -64,15 +65,38 @@ type QuietReadError struct {
 
 func (e *QuietReadError) Error() string { return e.Msg }
 
-// MayBeLocked reports a refusal that says nothing about the item: the
-// keychain would not be read right now. errSecAuthFailed (-25293) is what a
-// LOCKED file keychain answers a data read with, at once (measured,
-// TestHardwareLockedKeychainNeverAsks); errSecInteractionNotAllowed
-// (-25308) is a read that would have had to ask (an unlock, an access
-// dialog).
-func (e *QuietReadError) MayBeLocked() bool {
-	return e.Status == errSecAuthFailed || e.Status == errSecInteractionNotAllowed
+// MayBeLocked reports the refusal a LOCKED file keychain gives a data read:
+// errSecAuthFailed (-25293), at once and with no dialog (measured,
+// TestHardwareLockedKeychainNeverAsks). It says nothing about the item;
+// unlocking the keychain and trying again is the way on.
+func (e *QuietReadError) MayBeLocked() bool { return e.Status == errSecAuthFailed }
+
+// NotAllowed reports errSecInteractionNotAllowed (-25308): the read would
+// have had to ask, because this copy of jit isn't on the item's access list
+// (another signer or another path made it: S3g). It is not a lock (a locked
+// keychain answers -25293), and a quiet read from this copy of jit fails
+// the same way every time, so a jit command that rests on one (init over a
+// lost key, the move's comparisons, --force's measure) is no way out. It
+// says nothing about whether the item is still needed.
+func (e *QuietReadError) NotAllowed() bool { return e.Status == errSecInteractionNotAllowed }
+
+// CheckQuietRead reads the item the quiet way (no challenge, no dialog) and
+// keeps nothing: nil when this copy of jit can read it without asking, else
+// quietFetch's error (a *QuietReadError for a refused read). The move asks
+// it after a keychain copy would not go, so the way out it prints is one
+// that can work.
+func (w *Wrapper) CheckQuietRead() error {
+	mek, err := w.quietFetch()
+	if err != nil {
+		return err
+	}
+	wipe(mek)
+	return nil
 }
+
+// ErrNotAMasterKey is a quiet read that found an item of the wrong length:
+// it can't be a vault's master key, and it fails the same way every run.
+var ErrNotAMasterKey = errors.New("is not a master key")
 
 // quietFetch reads the item with no challenge and no dialog, and checks it
 // is a master key's length. A refused read is a *QuietReadError.
@@ -92,7 +116,7 @@ func (w *Wrapper) quietFetch() ([]byte, error) {
 	C.free(unsafe.Pointer(keyPtr))
 	if len(mek) != mekSize {
 		wipe(mek)
-		return nil, fmt.Errorf("the keychain item %q is not a master key: %d bytes, want %d", w.service, len(mek), mekSize)
+		return nil, fmt.Errorf("the keychain item %q %w: %d bytes, want %d", w.service, ErrNotAMasterKey, len(mek), mekSize)
 	}
 	return mek, nil
 }

@@ -35,7 +35,7 @@ func TestMain(m *testing.M) {
 	// Init over a lost key checks the production keychain for a leftover
 	// key: no item there, unless a test says otherwise (withLeftover).
 	leftoverPresence = func() Presence { return Absent }
-	leftoverOpens = func(string) (int, int, error) { panic("a keystore test reached the production keychain item") }
+	leftoverOpens = func(string) (KeyMeasure, error) { panic("a keystore test reached the production keychain item") }
 	newKeychainKey = func() KeychainKey { panic("a keystore test reached the production keychain item") }
 	os.Exit(m.Run())
 }

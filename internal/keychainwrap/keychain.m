@@ -131,9 +131,10 @@ KWResult kw_ensure_mek(const char *service, const char *account, int keySize) {
 //     secure-enclave`; MatchesMEK and InstallMEK, the move's comparisons)
 //     and the reference delete, which keychainwrap's
 //     deleteItem takes only when its caller asked for the CLI fallback (the
-//     vault key's move, rotation, `jit vault delete`, init). The service's
-//     grant and job key deletes take the reference delete without it
-//     (kw_item_delete_by_ref_no_switch, from GrantKeys.Delete), so the
+//     vault key's move, rotation, `jit vault delete`, `jit uninstall
+//     --purge`). The service's grant and job key deletes take the reference
+//     delete without it (kw_item_delete_by_ref_no_switch, from
+//     GrantKeys.Delete, and never on a locked default keychain), so the
 //     long-running service never switches keychain UI off for the whole
 //     process while other requests run.
 //   - Overlapping and nested uses share one save and one restore: a mutex
@@ -426,7 +427,8 @@ KWResult kw_fetch_mek(const char *service, const char *account, unsigned char **
                 r.error_message = dupNSString([NSString stringWithFormat:@"reading the key in the keychain without asking failed, OSStatus=%d", (int)r.status]);
                 return r;
             }
-            // Only errSecItemNotFound actually means "no MEK stored" — the old         // old catch-all message told a user whose key EXISTS to consider
+            // Only errSecItemNotFound actually means "no MEK stored" — the
+            // old catch-all message told a user whose key EXISTS to consider
             // re-running "jit vault init" (a real incident: errSecAuthFailed,
             // -25293, from macOS's per-code-signature keychain ACL after the
             // on-disk binary was replaced underneath the running agent, was
@@ -529,7 +531,11 @@ int kw_item_delete(const char *service, const char *account) {
 //   - kw_item_delete_by_ref_no_switch (the service's grant and job key
 //     deletes) runs it as it is: the switch is process-wide, and the
 //     long-running service must not flip it under every other request in
-//     flight. That is safe because the delete needs no UI on these items,
+//     flight. keychainwrap's deleteItem calls it only after
+//     kw_default_keychain_lock_state says the default keychain is
+//     UNLOCKED: a delete on a locked keychain with interaction on was never
+//     measured, and might ask to unlock. On an unlocked one it is safe
+//     because the delete needs no UI on these items,
 //     measured three ways: S3g row 8 (SecKeychainItemDelete on an older
 //     jit's item succeeded with interaction OFF, so it needed none), S3g
 //     row 9 (Apple's own `security delete-generic-password`, interaction
@@ -595,6 +601,36 @@ static int kwDeleteByRefInDefault(const char *service, const char *account, int 
         CFRelease(kc);
     }
     return (int)out;
+}
+
+// kwKeychainLockState is kc's lock state from SecKeychainGetStatus, which
+// only reads it: no unlock, no UI. 1 unlocked, 0 locked, else the failing
+// OSStatus (never 0 or 1: an OSStatus failure is negative, or a POSIX code
+// over 100000).
+static int kwKeychainLockState(SecKeychainRef kc) {
+    SecKeychainStatus st = 0;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    OSStatus s = SecKeychainGetStatus(kc, &st);
+#pragma clang diagnostic pop
+    if (s != errSecSuccess) return (int)s;
+    return (st & kSecUnlockStateStatus) ? 1 : 0;
+}
+
+int kw_default_keychain_lock_state(void) {
+    @autoreleasepool {
+        SecKeychainRef kc = NULL;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        OSStatus st = SecKeychainCopyDefault(&kc);
+#pragma clang diagnostic pop
+        if (st != errSecSuccess || !kc) {
+            return st != errSecSuccess ? (int)st : (int)errSecNoDefaultKeychain;
+        }
+        int out = kwKeychainLockState(kc);
+        CFRelease(kc);
+        return out;
+    }
 }
 
 int kw_item_delete_by_ref(const char *service, const char *account) {
@@ -718,6 +754,11 @@ int kw_probe_in_keychain(const char *path, const char *service, const char *acco
                 // The delete by reference (kwDeleteRefsIn), in that
                 // keychain alone.
                 out = kwDeleteRefsIn(svc, acct, kc);
+                break;
+            case KW_PROBE_LOCK_STATE:
+                // The service's check before its reference delete, on
+                // this keychain.
+                out = kwKeychainLockState(kc);
                 break;
             }
             if (result) CFRelease(result);
