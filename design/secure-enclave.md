@@ -1,6 +1,6 @@
 # Secure Enclave: the master key behind hardware, nothing else moves
 
-**Status: design, spikes S1, S1b and S3a passed 2026-09-25. Nothing built in jit or jit-app. Parked behind AI Jobs.** Read
+**Status: design; spikes S1, S1b, S2, S3a, S3b, S3c and S4 passed 2026-09-25 (`spike/secure-enclave-mek/FINDINGS.md`). Nothing built in jit or jit-app. Parked behind AI Jobs.** Read
 `standing-grants.md` ("For the Secure Enclave move") and
 `agent-jobs.md` (branch `ai-jobs`) first; this page keeps both working
 unchanged.
@@ -25,10 +25,10 @@ Enclave makes the prompt the hardware's decision, not jit's.
 | A provisioning profile | **Half** | App ID `com.jitpass.agent` and the development profile `JitPass Agent Dev` exist (2026-09-25), carrying `keychain-access-groups = CZC6BH93GJ.*`. The Developer ID profile for CI is not made yet |
 | **Entitlements on jit's own signature** | **No** | jit-app's `sign.sh` signs without `--deep`, so the bundled `jit` keeps the signature goreleaser gave it, which carries no entitlements. The entitlement has to be on *that* binary |
 | **A helper bundle for the agent** | **No, and now required by measurement** | S3a: a second executable in a correctly signed bundle is killed at launch (exit 137); only the main executable gets the profile. `Contents/MacOS/jit` is a second executable in `JitPass.app` |
-| CLI commands that read the key without the service | **Likely fine** | Eleven call sites build `keychainwrap.New()` in the CLI process (below). S3a: a symlink to the bundle's main executable creates and opens the key, so the Homebrew symlink should too. S3c confirms it with the real jit binary |
-| **Grants and never-ask jobs while the screen is locked** | **At risk** | Today's items are in the file-based login keychain (checked: `login.keychain-db`), which ignores `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`. Enclave keys live in the data-protection keychain, which enforces it. A straight port stops never-ask jobs whenever the Mac is locked |
+| CLI commands that read the key without the service | **Yes** | Eleven call sites build `keychainwrap.New()` in the CLI process (below). S3c: a Go `jit` as the helper's main executable, reached through a symlink and a `PATH` lookup, creates and opens the key |
+| **Grants and never-ask jobs while the screen is locked** | **At risk, fix measured** | S4: `WhenUnlocked` fails `-25308` about 9 s after locking; `AfterFirstUnlock` keeps working. Today's items are in the file-based login keychain (checked: `login.keychain-db`), which ignores `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`. Enclave keys live in the data-protection keychain, which enforces it. A straight port stops never-ask jobs whenever the Mac is locked |
 | **Moving to a new Mac** | **Regression to design for** | A file-based login keychain item is carried by Migration Assistant; an enclave key never is. S6 confirms today's behaviour |
-| **Macs without Touch ID** | **Design rule** | The old spike used `BiometryAny`, which fails with no fingerprint enrolled. Use `UserPresence` (Touch ID or the login password), matching today's fallback |
+| Macs without Touch ID | **Covered** | S2: a `UserPresence` key's dialog offers "Use Password…". The old spike used `BiometryAny`, which fails with no fingerprint enrolled. Use `UserPresence` (Touch ID or the login password), matching today's fallback |
 | Tarball / `go install` users | **Stay as they are** | A bare binary can never hold the entitlement (`spike/secure-enclave/FINDINGS.md`). They keep `keychainwrap` |
 
 **Verdict.** The code is ready: one seam, versioned formats, interfaces
@@ -182,12 +182,13 @@ Each spike states what counts as a pass. S1 and S1b ran here
 |---|---|---|---|
 | S1 | Seal and open the MEK with an enclave key | nothing | **Passed 2026-09-25:** identical round trip, tamper and wrong key refused, open p50 4.5 ms |
 | S1b | Sealing to a Touch ID key never prompts | nothing | **Passed 2026-09-25:** 0.31 s, no dialog |
-| S2 | The prompt: our reason text, the passcode fallback with Touch ID off (clamshell), one LAContext covering two opens | a human, ad hoc | The dialog shows the agent-derived reason in full within the 90-rune limit; the password works; step 3 of the migration adds no second prompt |
+| — | **The name in the dialog** | — | S2 found the dialog says "<CFBundleName> is trying to …", so the helper's bundle name is user-facing text. Choose it on purpose ("JitPass") |
+| S2 | The prompt: our reason text, the password fallback, one LAContext covering two opens | a human, profile | **Passed 2026-09-25:** the 74-character AI Jobs sentence shows in full; "Use Password…" offered; the same LAContext's second open took 0.008 s with no dialog |
 | S3a | A **persistent** enclave key from the helper's main executable | profile | **Passed 2026-09-25:** created, found from two later processes, MEK round trip. Controls reproduce `-34018` (no entitlements) and exit 137 (no bundle). A second executable in the bundle is killed (137); a symlink to the main executable works |
-| S3b | The same, started by launchd from the plist | profile | As S3a, with the prompt appearing for a LaunchAgent |
-| S3c | The CLI through `/opt/homebrew/bin/jit` → the helper | profile | Opens the key. **If it fails,** the fresh-auth commands go through the service (phase 1, above) |
+| S3b | The same, started by launchd | profile | **Passed 2026-09-25:** ppid 1, create, find, round trip, delete, exit 0. The prompt from a LaunchAgent is still to see; S2 ran from a terminal |
+| S3c | A Go `jit` through a symlink → the helper | profile | **Passed 2026-09-25** via symlink, `PATH` lookup and direct path. The real cask install is confirmed when the helper ships |
 | S3d | Hardened runtime blocks a same-user debugger | profile | `lldb -p <agent pid>` is refused |
-| S4 | A grant key while the screen is locked | profile | With `AfterFirstUnlock`, a loop in the service opens the key every 10 s while locked; with `WhenUnlocked`, it fails, proving the trap is real |
+| S4 | A grant key while the screen is locked | profile, a human | **Passed 2026-09-25:** `AfterFirstUnlock` opened throughout a 45 s lock; `WhenUnlocked` failed `-25308` from about 9 s in. Hold a lock for at least 15 s when testing |
 | S5 | Migration both ways on test identifiers | profile | keychain → enclave → keychain with a test service name and tag; every envelope in a fixture vault opens at each step; a crash injected at each step leaves a working vault |
 | S6 | What a new Mac inherits today | a second Mac or a VM | Migration Assistant carries `com.jitpass.vault.mek`: yes or no. Yes means the enclave move needs a recovery step (below) |
 

@@ -96,11 +96,84 @@ What it settles:
 - The named access group `CZC6BH93GJ.com.jitpass.vault` works under the
   profile's `CZC6BH93GJ.*` wildcard.
 
-## Not run here: needs a human or a provisioning profile
+## S3c and S3b: a Go `jit`, through a symlink and from launchd (2026-09-25, PASS)
 
-Listed with their exit criteria in `design/secure-enclave.md`, section
-"Spike plan": S2 (the prompt itself: its wording, the passcode fallback, one
-LAContext for two operations), S3 (a persistent key from the signed helper
-bundle, from launchd, and from the CLI through the Homebrew symlink), S4
-(a grant key while the screen is locked), S5 (the reverse migration), S6
-(what a new Mac inherits today).
+`s3c/build.sh`: the S3a Objective-C compiled into a **Go** binary (cgo),
+named `jit`, as the bundle's `CFBundleExecutable`, same entitlements and
+profile.
+
+- **S3c:** through a symlink `…/bin/jit` pointing at the bundle, through a
+  `PATH` lookup (`sh -c 'jit find'`), and directly: create, find, MEK round
+  trip and delete all OK. `os.Executable()` reports the symlink's path, not
+  the bundle's, which is why `selfpath.Stable` resolves it with
+  `EvalSymlinks` before writing the plist.
+- **S3b:** `launchctl bootstrap gui/$UID` of a plist in the scratchpad (label
+  `com.jitpass.spike.s3b`, never in `~/Library/LaunchAgents`); the job ran
+  with ppid 1 and did delete, create, find, round trip, delete, **exit 0**.
+  Booted out afterwards; `com.jitpass.agent` was never touched.
+
+## S4: a key while the screen is locked (2026-09-25, PASS, the trap is real)
+
+`s2s4/probe s4 180`: two enclave keys, `PrivateKeyUsage` only, one
+`AfterFirstUnlockThisDeviceOnly` and one `WhenUnlockedThisDeviceOnly`,
+opened every 3 s while Meni locked the screen (⌃⌘Q) for about 45 s.
+
+    10:59:02  LOCKED    ok                 ok
+    10:59:08  LOCKED    ok                 ok
+    10:59:11  LOCKED    ok                 open failed -25308
+    ...
+    10:59:44  LOCKED    ok                 open failed -25308
+    10:59:47  unlocked  ok                 ok
+
+- `AfterFirstUnlock` opened throughout. `WhenUnlocked` failed with
+  **`-25308` (errSecInteractionNotAllowed) from about 9 s after the lock**
+  until unlock.
+- So a grant or never-ask job key ported with today's
+  `WhenUnlockedThisDeviceOnly` would stop while the Mac is locked. Today it
+  doesn't, only because the file-based login keychain ignores the setting.
+  Grant and job keys must be `AfterFirstUnlockThisDeviceOnly`.
+- The ~9 s grace period means a quick lock-and-unlock test would pass
+  wrongly; hold the lock for at least 15 s.
+
+## S2: the prompt (2026-09-25, PASS)
+
+`s2s4/probe s2 "<reason>"`: a persistent enclave key with
+`PrivateKeyUsage | UserPresence`, the reason set as the `LAContext`'s
+`localizedReason` and passed to the lookup as
+`kSecUseAuthenticationContext`. The reason was the AI Jobs per-run
+sentence, 74 characters. Screenshots were taken by Meni with ⇧⌘4; a
+background `screencapture` from the terminal did not capture the dialog.
+
+The dialog read:
+
+> **JitPass Agent Spike is trying to run notion-guests (3 secrets) for
+> Claude; it sees output, never the values.**
+> Touch ID or enter your password to continue with JitPass Agent Spike.
+> [Use Password…] [Cancel]
+
+| Step | Result |
+|---|---|
+| Open 1, new LAContext | ok, 5.64 s (a person approving) |
+| Open 2, **same** LAContext | ok, **0.008 s, no dialog** |
+| Open 3, a second new LAContext | ok, 6.71 s; the second dialog offered Use Password… |
+
+- **The name in the dialog is the bundle's `CFBundleName`.** Today's
+  keychainwrap prompt reads "jit is trying to …"; after the move it reads
+  "<helper name> is trying to …". Choose the name deliberately ("JitPass"),
+  and the agent's reason strings must still read correctly after it.
+- The 74-character sentence shows in full, wrapped over four lines, not cut
+  off; macOS adds the full stop.
+- `UserPresence` offers the password in the dialog, so Macs without Touch
+  ID are covered. (That the password was typed for dialog 2 is not
+  confirmed; the offer is.)
+- One LAContext covers several opens: migration step 3 (open what was just
+  sealed, to verify) adds no second prompt, and the agent's one-prompt-per-
+  unlock holds.
+
+## Not run yet
+
+- **S3d** (a same-user debugger is refused): needs the Developer ID build,
+  since development signing allows debugging.
+- **S5** (migration both ways): left to the implementation's own tests; it
+  adds nothing about the platform that S1 and S3 have not shown.
+- **S6** (what a new Mac inherits today): needs a second Mac or a VM.
