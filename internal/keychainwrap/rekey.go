@@ -131,20 +131,21 @@ func (w *Wrapper) PromoteStagedRekeyMEK() error {
 // is success, so a resumed move is idempotent; one holding anything else is
 // refused, never overwritten: it would be the key some other vault state
 // depends on. No challenge: the caller opened the enclave to get mek, which
-// was the approval.
+// was the approval. And no dialog: both reads, the check of an existing item
+// and the read-back, are the quiet read.
 func (w *Wrapper) InstallMEK(mek []byte) error {
 	if len(mek) != mekSize {
 		return fmt.Errorf("refusing to install a %d-byte master key, want %d", len(mek), mekSize)
 	}
-	check := &Wrapper{service: w.service, account: w.account, challenge: func(string) error { return nil }}
 	switch mekPresence(w) {
 	case MEKPresent:
-		got, err := check.fetchMEK("")
+		// The quiet read: a comparison that must never raise the keychain's
+		// access dialog (an older jit's item, read by another binary).
+		got, err := w.quietFetch()
 		if err != nil {
 			return fmt.Errorf("reading the existing master key: %w", err)
 		}
 		defer wipe(got)
-		check.Close()
 		if subtle.ConstantTimeCompare(got, mek) != 1 {
 			return fmt.Errorf("the keychain already holds a different master key; refusing to replace it")
 		}
@@ -159,12 +160,11 @@ func (w *Wrapper) InstallMEK(mek []byte) error {
 	if err := w.setMEK(mek); err != nil {
 		return fmt.Errorf("installing the master key: %w", err)
 	}
-	got, err := check.fetchMEK("")
+	got, err := w.quietFetch()
 	if err != nil {
 		return fmt.Errorf("verifying the installed master key: %w", err)
 	}
 	defer wipe(got)
-	check.Close()
 	if subtle.ConstantTimeCompare(got, mek) != 1 {
 		return fmt.Errorf("verifying the installed master key: the keychain read back a different key")
 	}
@@ -172,19 +172,18 @@ func (w *Wrapper) InstallMEK(mek []byte) error {
 }
 
 // MatchesMEK reports whether this wrapper's keychain item holds exactly mek,
-// reading it with no challenge and handing no byte of it back. It is the
-// check before `jit vault rekey --wrapper secure-enclave` removes a copy a
-// move left behind: the caller has just opened the Secure Enclave to get
-// mek, which was the approval, and deletes the keychain item only when it is
-// that same key.
+// reading it with no challenge and no dialog (the quiet read) and handing
+// no byte of it back. It is the check before `jit vault rekey --wrapper
+// secure-enclave` removes a copy a move left behind: the caller has just
+// opened the Secure Enclave to get mek, which was the approval, and
+// deletes the keychain item only when it is that same key. An item that
+// can't be read without asking is an error, never a dialog.
 func (w *Wrapper) MatchesMEK(mek []byte) (bool, error) {
-	check := &Wrapper{service: w.service, account: w.account, challenge: func(string) error { return nil }}
-	got, err := check.fetchMEK("")
+	got, err := w.quietFetch()
 	if err != nil {
 		return false, err
 	}
 	defer wipe(got)
-	check.Close()
 	return subtle.ConstantTimeCompare(got, mek) == 1, nil
 }
 

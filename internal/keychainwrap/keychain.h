@@ -72,8 +72,8 @@ enum {
     KW_Q_PRESENCE_DEFAULT, // after a reference delete: the default keychain only
     KW_Q_REF,              // the reference delete's lookup
     KW_Q_DELETE,           // SecItemDelete
-    KW_Q_FETCH_QUIET,      // CountOpens' read: no dialog
-    KW_Q_FETCH,            // the read behind jit's Touch ID check
+    KW_Q_FETCH_QUIET,      // the quiet read (CountOpens, MatchesMEK, InstallMEK): no dialog
+    KW_Q_FETCH,            // the read behind jit's Touch ID check; may prompt (TestEveryQueryIsChecked lists its callers)
     KW_Q_EXISTS,           // kw_ensure_mek's check before it adds
     KW_Q_LIST,             // grant key ids, from metadata
     KW_Q_COUNT

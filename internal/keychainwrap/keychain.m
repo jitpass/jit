@@ -128,7 +128,8 @@ KWResult kw_ensure_mek(const char *service, const char *account, int keySize) {
 //
 //   - Only CLI commands reach it: the quiet read (CountOpens, at `jit vault
 //     init` and the --force check of `jit vault rekey --wrapper
-//     secure-enclave`) and the reference delete, which keychainwrap's
+//     secure-enclave`; MatchesMEK and InstallMEK, the move's comparisons)
+//     and the reference delete, which keychainwrap's
 //     deleteItem takes only when its caller asked for the CLI fallback (the
 //     vault key's move, rotation, `jit vault delete`, init). The service's
 //     grant and job key deletes take the reference delete without it
@@ -273,7 +274,8 @@ static NSMutableDictionary *kwQuery(int which, NSString *svc, NSString *acct, Se
         kwNoUI(q);
         return q;
     case KW_Q_FETCH_QUIET:
-        // CountOpens' read: the key's bytes, with no dialog.
+        // The quiet read (CountOpens, MatchesMEK, InstallMEK): the key's
+        // bytes, with no dialog.
         q[(id)kSecReturnData] = @YES;
         kwNoUI(q);
         return q;
@@ -402,8 +404,8 @@ KWResult kw_fetch_mek(const char *service, const char *account, unsigned char **
         __block CFTypeRef result = NULL;
         __block OSStatus status;
         if (quiet) {
-            // A read that must not ask (CountOpens, CLI only): a dialog
-            // fails the read instead.
+            // A read that must not ask (CountOpens, MatchesMEK,
+            // InstallMEK; CLI only): a dialog fails the read instead.
             kwWithoutUI(^{
                 status = kwCopyMatching(KW_Q_FETCH_QUIET, svc, acct, NULL, &result);
             });

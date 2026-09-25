@@ -276,6 +276,104 @@ func TestEveryQueryIsChecked(t *testing.T) {
 			t.Errorf("%q is stated here but not in the registry", name)
 		}
 	}
+	// The one query that may ask (the read behind Touch ID) is reached only
+	// from the callers listed here; every comparison that must not prompt
+	// uses the quiet read.
+	assertPromptingReadCallers(t)
+}
+
+// promptingReadCallers are the only functions that may reach KW_Q_FETCH,
+// the read that can show the keychain's access dialog: kw_fetch_mek with
+// quiet 0 (fetchMEK itself, and HasMEK, rotation's check of its own
+// items), and fetchMEK's callers. Each is a read behind jit's own Touch ID
+// check (FetchMEK, the wrap and unwrap, RequireUserPresence) or a
+// rotation's promote reading the items it wrote in the same command.
+// MatchesMEK, InstallMEK and CountOpens compare or measure an item that may
+// be another jit's, and must never prompt: they are not here.
+var promptingReadCallers = map[string]map[string]bool{
+	"kw_fetch_mek": {"fetchMEK": true, "HasMEK": true},
+	"fetchMEK": {
+		"FetchMEK": true, "WrapKeyLabeled": true, "UnwrapKeyLabeled": true,
+		"RequireUserPresence": true, "PromoteStagedRekeyMEK": true,
+	},
+}
+
+// assertPromptingReadCallers walks this package's source (tests excluded)
+// for every call that reaches the prompting read, fails on a caller not in
+// promptingReadCallers, and checks keychain.m builds KW_Q_FETCH in one
+// place, kw_fetch_mek's non-quiet branch.
+func assertPromptingReadCallers(t *testing.T) {
+	t.Helper()
+	_, self, _, _ := runtime.Caller(0)
+	dir := filepath.Dir(self)
+	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]map[string]bool{"kw_fetch_mek": {}, "fetchMEK": {}}
+	fset := token.NewFileSet()
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, file, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				var target string
+				switch sel.Sel.Name {
+				case "kw_fetch_mek":
+					// quiet is the last argument: a literal 1 is the quiet
+					// read; anything else may prompt.
+					if lit, ok := call.Args[len(call.Args)-1].(*ast.BasicLit); ok && lit.Value == "1" {
+						return true
+					}
+					target = "kw_fetch_mek"
+				case "fetchMEK":
+					target = "fetchMEK"
+				default:
+					return true
+				}
+				seen[target][fn.Name.Name] = true
+				if !promptingReadCallers[target][fn.Name.Name] {
+					t.Errorf("%s: %s calls %s, the read that may show the keychain's dialog; a comparison or check that must not prompt uses quietFetch", fset.Position(call.Pos()), fn.Name.Name, target)
+				}
+				return true
+			})
+		}
+	}
+	for target, callers := range promptingReadCallers {
+		for c := range callers {
+			if !seen[target][c] {
+				t.Errorf("%s is listed as calling %s but no longer does: take it off the list", c, target)
+			}
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "keychain.m"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(data)
+	if n := strings.Count(src, "kwCopyMatching(KW_Q_FETCH,"); n != 1 {
+		t.Errorf("keychain.m reads with KW_Q_FETCH %d times, want once (kw_fetch_mek, not quiet)", n)
+	} else if fn := strings.Index(src, "KWResult kw_fetch_mek("); fn < 0 || strings.Index(src, "kwCopyMatching(KW_Q_FETCH,") < fn ||
+		strings.Contains(src[fn:strings.Index(src, "kwCopyMatching(KW_Q_FETCH,")], "\n}\n") {
+		t.Error("keychain.m's KW_Q_FETCH read is not inside kw_fetch_mek")
+	}
 }
 
 // No query is built outside the registry: keychain.m calls
