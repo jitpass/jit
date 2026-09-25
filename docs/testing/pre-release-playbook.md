@@ -210,6 +210,19 @@ Work each surface as a user. Hermetic if you prefer, or reuse the playground.
 - **Hunt:** a credential served silently when consent is on; a refusal that hard-locks; the prompt
   not naming the real caller; `consent off` not actually loosening (or not gated).
 
+### job / mcp (AI jobs)
+- **Exercise:** `jit job allow NAME --dry-run -- CMD`, then without `--dry-run`; `jit job list`,
+  `jit job run NAME`, `jit job remove NAME`; `--ask never`; edit a file in the job's folder (and swap
+  one out and back) and run again; `jit mcp install/status/uninstall` for `claude-desktop` and
+  `--client cursor`; drive `jit mcp` over stdio (`initialize`, `tools/list`, `run_job`, `request_job`).
+- **Expect:** the prompt names the job, the command and who asked; output carries `[hidden: NAME]`
+  for every secret not marked shown; any folder change stops the job, sticky, naming the file, until
+  `--replace`; a never-ask job runs with the vault locked; removing it deletes its keychain key;
+  `mcp install` backs the config up and touches only the `jit` entry; a proposal creates nothing.
+- **Hunt:** a secret value (or its base64/URL/JSON form) in job output; a changed job that still
+  runs; a stop that clears itself; `request_job` approving or running anything; the job's `.env`
+  pointer handed to a reader outside the job's tree; `mcp install` clobbering other servers.
+
 ### audit / status / doctor / rekey
 - **Exercise:** `audit` + `--kind/--status/--since/--parent/--secret/--grep/--follow`; `status` +
   `--secrets`; `doctor` + `--json/--orphans/--verbose`; `vault rekey`.

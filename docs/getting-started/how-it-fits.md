@@ -72,6 +72,10 @@ these three let you "just type the command," but through different machinery.
 | **Wrap shim** (looks native) | `gh pr list`, `gcloud storage ls` | A `PATH` shim transparently runs `jit run` for you. Feels like the bare tool; it is jit underneath. |
 | **Explicit [`jit run`](../run/index.md)** | `jit run ./deploy.sh`, `jit run --with gcp -- terraform apply` | You launch through jit directly: a project's `.env`, a named `--profile`, or a machine-global `--with` grant. |
 
+An [AI job](../service/ai-jobs.md) is none of these three: the AI tool never
+runs the command itself. It asks the service to run a command you approved,
+and reads back the output with every secret value hidden.
+
 `aws` is *truly* native (jit hooked its
 `credential_process`, nothing wraps it), but a grant-wrapped `gcloud` only
 *looks* native, the shim is quietly running `jit run --with gcp -- gcloud`.
