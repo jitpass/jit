@@ -214,9 +214,17 @@ type Server struct {
 	// jobs is the approved job list, loaded from jobsPath (SetJobStore) and
 	// saved on every change, guarded by jobMu. A run copies its job out and
 	// releases the lock: a run lasts minutes and must not hold up a list.
-	jobMu      sync.Mutex
-	jobs       map[string]*job.Job
-	jobsPath   string
+	jobMu    sync.Mutex
+	jobs     map[string]*job.Job
+	jobsPath string
+	// jobNames is every key id jobs.json named when it loaded, read raw
+	// (namedKeyIDs); nil when it did not load.
+	jobNames map[string]bool
+	// jobKept is every record jobs.json held that job.Decode could not
+	// accept, verbatim: never run or listed, written back on every save so
+	// the record and its key outlive this build. Set at load, never changed
+	// after: approval refuses a name it holds.
+	jobKept    []job.Kept
 	jobRunning map[string]bool
 	// jobProposals are agents' job proposals waiting for the human
 	// (jobrequest.go), memory-only, capped and expiring. Guarded by jobMu.
@@ -235,6 +243,13 @@ type Server struct {
 	// but the key.
 	standing   map[string]*standingGrant
 	ledgerPath string
+	// ledgerNames is every key id the ledger named when it loaded, read raw
+	// (namedKeyIDs); nil when it did not load. Guarded by grantMu.
+	ledgerNames map[string]bool
+	// ledgerKept is every ledger record SetGrantLedger could not accept,
+	// verbatim: never served or listed, written back on every save so the
+	// record and its key outlive this build. Guarded by grantMu.
+	ledgerKept []keptGrant
 	// ledgerMu serializes the whole save: snapshot, write, rename. It is
 	// NOT grantMu, because the file write must not hold the lock the serve
 	// path needs, and it is not optional — see saveLedger for the tear it
@@ -243,6 +258,17 @@ type Server struct {
 	ledgerMu      sync.Mutex
 	ledgerDirty   bool
 	ledgerSavedAt time.Time
+
+	// stateWriter, when a test sets it, replaces writeState's durable write
+	// of the ledger and the job list, to count or fail them. Nil in the
+	// service.
+	stateWriter func(path string, data []byte) error
+
+	// standingChecked, when a test sets it, runs in a standing-grant serve
+	// after the grant was found live under grantMu and before its key is
+	// opened: the window a revoke can land in (standingGrant.dead). Nil in
+	// the service.
+	standingChecked func(id string)
 
 	// AuthMethodFn, if set, returns a best-effort description of how the local
 	// auth challenge asked the user ("Touch ID or device passcode" vs. "device

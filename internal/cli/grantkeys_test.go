@@ -6,6 +6,7 @@ package cli
 import (
 	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/jitpass/jit/internal/agent"
@@ -98,8 +99,10 @@ func TestGrantKeysLoadFromWhereverTheyAre(t *testing.T) {
 	}
 }
 
-// Revoking clears both places; a jit that cannot reach the enclave made no
-// key there, so its "unavailable" is not a failure.
+// Revoking clears both places. A jit that cannot reach the enclave still
+// clears the keychain, and says the enclave was unreachable rather than
+// passing as a delete: a jit that could reach it may have made a key there
+// (finding 5), and the agent must not report that key deleted.
 func TestGrantKeysDeleteClearsBoth(t *testing.T) {
 	g, calls, kc, se := fakeGrantStore(t, t.TempDir())
 	kc.have["g"], se.have["g"] = true, true
@@ -111,8 +114,13 @@ func TestGrantKeysDeleteClearsBoth(t *testing.T) {
 	}
 	se.deleteErr = secureenclave.ErrUnavailable
 	g.enclave = se
-	if err := g.Delete("g"); err != nil {
-		t.Fatalf("an unreachable enclave failed the delete: %v", err)
+	kc.have["g"] = true
+	err := g.Delete("g")
+	if !errors.Is(err, agent.ErrGrantKeyUnreachable) {
+		t.Fatalf("an unreachable enclave passed as a delete: %v", err)
+	}
+	if kc.have["g"] {
+		t.Fatal("an unreachable enclave stopped the keychain delete")
 	}
 	se.deleteErr = errors.New("boom")
 	g.enclave = se
@@ -177,5 +185,20 @@ func TestGrantKeyListerUnionsBothBackends(t *testing.T) {
 	g.enclave = se
 	if _, err := g.ListGrantKeyIDs(); err == nil {
 		t.Fatal("a real enclave failure was swallowed; the service log should show it")
+	}
+}
+
+// A revoke or a remove whose key was kept shows the service's note, one
+// clause a line; one with no note shows nothing extra.
+func TestPrintKeyNote(t *testing.T) {
+	var b strings.Builder
+	printKeyNote(&b, "")
+	if b.Len() != 0 {
+		t.Fatalf("an empty note printed %q", b.String())
+	}
+	printKeyNote(&b, "Its key couldn't be reached from this copy of jit; the service deletes it later.")
+	lines := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
+	if len(lines) != 2 || !strings.HasSuffix(lines[0], "from this copy of jit;") || !strings.HasSuffix(lines[1], "the service deletes it later.") {
+		t.Fatalf("printed %q", b.String())
 	}
 }
