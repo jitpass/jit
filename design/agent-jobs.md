@@ -333,8 +333,39 @@ prove it fails there.
 3. **`jit mcp`.** The server and `install`. Tests: a golden JSON-RPC
    exchange for each tool; `run_job` over the pipe returns hidden output;
    an end-to-end run from Cowork on the notion job, by hand, recorded here.
-4. **App (jit-app).** The Jobs window, New Job sheet, request banner,
-   Changed and Rotated states, per the mockup and nothing more.
+4. **App (jit-app), and one engine change it needs.** The AI Jobs window,
+   New AI Job sheet, request banner, Changed and Rotated states, the job
+   run sheet (below), and the wiring in the panel, AI Agents, Tools and
+   onboarding, per the mockup and nothing more.
+
+   **One sentence, not two (decided 2026-09-25).** With the app running, a
+   prompt is read twice: the app's sheet shows the whole request, then the
+   Touch ID dialog repeats it. The dialog cannot simply go: it is the one
+   of the two that is always there (no app, app quit, terminal-only Mac),
+   the one Touch ID actually approves, the one no other program can draw,
+   and its sentence is what the audit records. So it stays self-contained,
+   but shortens when a sheet came first:
+
+   - In `promptOrBroker`, when the broker answered allow, the dialog's
+     reason becomes a short confirmation that still names what runs and who
+     asked: "confirm: run notion/list_guest_users.py for Claude". Any
+     same-user process can subscribe as a broker, so the short form must
+     never drop those facts: a process posing as the app then gains nothing,
+     because the dialog still says what the fingerprint approves.
+   - With no broker, or a broker that did not answer, the full sentence as
+     today.
+   - The audit event keeps the FULL sentence either way (the event's Cause
+     is set before the prompt), so the trail never records the short form.
+   - It applies to every disclosed prompt the app brokers, grants and
+     consent included, not only jobs: each gets its own short form, built
+     from the same resolved facts as its long one, and a test holds each
+     short form to the facts its long form names.
+
+   **The job run sheet.** The app's generic consent sheet says "remembered
+   until the vault locks", which is false for a job: an each-time job asks
+   on every run. A pending event whose op is `job_run` gets its own sheet:
+   which job, the command, the folder, who asked (the launcher, e.g.
+   Claude), how many secrets, and "asks again next time".
 
 ## Decided while building step 1
 
