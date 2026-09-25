@@ -31,6 +31,7 @@ jit [flags]
 * [jit git-credential](jit_git-credential.md)	 - Implement git's credential-helper protocol for migrated HTTPS logins
 * [jit grant](jit_grant.md)	 - Pre-approve a program to use profiles unattended
 * [jit guard](jit_guard.md)	 - Prevention hooks that keep credentials from being recorded in the first place
+* [jit job](jit_job.md)	 - Let AI tools run approved scripts without seeing their keys
 * [jit k8s-exec-credential](jit_k8s-exec-credential.md)	 - Print a Kubernetes ExecCredential JSON for a migrated profile
 * [jit lock](jit_lock.md)	 - Lock jit's session immediately, without waiting for the TTL
 * [jit migrate](jit_migrate.md)	 - Guided fix path for findings jit scan reports (name the file(s) to convert)

@@ -21,6 +21,7 @@ import (
 
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/consent"
+	"github.com/jitpass/jit/internal/job"
 	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/onepassword"
 	"github.com/jitpass/jit/internal/screenlock"
@@ -168,6 +169,17 @@ var agentRunCmd = &cobra.Command{
 			fmt.Fprintf(stderr, "jit service: standing grants not loaded: %v\n", err)
 		} else if n > 0 {
 			fmt.Fprintf(stdout, "jit service: %s loaded\n", countWord(n, "standing grant", "standing grants"))
+		}
+		// AI Jobs (design/agent-jobs.md): approved commands the service runs
+		// for a caller that never holds a key. The list loads before the
+		// socket opens, like the grant ledger, and a file that fails to load
+		// is reported and never written over.
+		server.OnResolveJob = resolveJobSecrets(root)
+		server.OnRunJob = runJobProcess(root)
+		if n, err := server.SetJobStore(job.StorePath(root)); err != nil {
+			fmt.Fprintf(stderr, "jit service: AI jobs not loaded: %v\n", err)
+		} else if n > 0 {
+			fmt.Fprintf(stdout, "jit service: %s loaded\n", countWord(n, "AI job", "AI jobs"))
 		}
 		// Best-effort "how were you asked" for the audit trail: probe once per
 		// fresh challenge whether Touch ID is currently usable, so a denial or

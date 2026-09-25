@@ -3,7 +3,10 @@
 
 package agent
 
-import "github.com/jitpass/jit/internal/auditlog"
+import (
+	"github.com/jitpass/jit/internal/auditlog"
+	"github.com/jitpass/jit/internal/job"
+)
 
 // Protocol is this build's socket-protocol revision. It exists because
 // version skew across the socket degrades by SILENT JSON FIELD DROPPING,
@@ -179,6 +182,37 @@ type Request struct {
 	// The server clamps and validates; a client cannot mint a longer grant
 	// than MaxGrantTTL by inflating this field.
 	TTLSeconds int64 `json:"ttl_seconds,omitempty"`
+
+	// JobName names the AI job a "job_*" op acts on (design/agent-jobs.md).
+	JobName string `json:"job_name,omitempty"`
+	// JobSpec is "job_allow"'s proposal: what to run, where, with which
+	// profile. It is a PROPOSAL, the same footing as GrantProfiles: the agent
+	// resolves the executable, the profile's secrets and the fingerprint
+	// itself, and the human approves what the agent resolved, never a
+	// resolution the caller claims.
+	JobSpec *JobSpec `json:"job_spec,omitempty"`
+}
+
+// JobSpec is a job as the approving client describes it.
+type JobSpec struct {
+	Dir  string   `json:"dir"`
+	Argv []string `json:"argv"`
+	// Profile names the profile whose secrets the job gets, and the folder
+	// it resolves from, exactly as a grant names one. Nil means no secrets.
+	Profile *GrantProfile `json:"profile,omitempty"`
+	Ask     string        `json:"ask,omitempty"`
+	// Shown lists variables whose values may appear in the output.
+	Shown   []string `json:"shown,omitempty"`
+	Outputs []string `json:"outputs,omitempty"`
+	// PathEnv and Home are the approving shell's, captured so the service
+	// (which runs with launchd's environment) runs the command the way it
+	// ran when the human read it.
+	PathEnv     string `json:"path_env"`
+	Home        string `json:"home"`
+	Description string `json:"description,omitempty"`
+	// Replace approves a job over an existing one of the same name: how a
+	// job that changed is approved again.
+	Replace bool `json:"replace,omitempty"`
 }
 
 // RunMount is one mount's requested run-scoped treatment in a reveal_pid
@@ -273,6 +307,17 @@ const (
 	// contents more than before. A same-uid process could always append
 	// whatever it liked to a file it owned.
 	OpAuditAppend = "audit_append"
+	// OpJobAllow, OpJobList, OpJobRemove and OpJobRun are AI Jobs
+	// (design/agent-jobs.md): a command the human approved, run BY THE
+	// SERVICE for any caller that names it, with the output returned and the
+	// secret values hidden in it. job_allow takes a disclosed Touch ID;
+	// job_remove takes none (reducing access is always free); job_list is
+	// prompt-free for OpHistory's reason; job_run asks each time unless the
+	// job was approved to run without asking.
+	OpJobAllow  = "job_allow"
+	OpJobList   = "job_list"
+	OpJobRemove = "job_remove"
+	OpJobRun    = "job_run"
 )
 
 // SessionEvent.Kind values.
@@ -493,6 +538,10 @@ type Response struct {
 	// without a second round trip). Empty on every other Op. In-memory state:
 	// a process grant never survives the agent process, by design.
 	Grants []GrantStatus `json:"grants,omitempty"`
+	// Jobs answers job_allow (the one approved) and job_list.
+	Jobs []JobStatus `json:"jobs,omitempty"`
+	// JobResult answers job_run.
+	JobResult *JobResult `json:"job_result,omitempty"`
 }
 
 // GrantStatus is one process grant as the agent reports it — deliberately
@@ -504,6 +553,67 @@ type Response struct {
 type GrantProfile struct {
 	Name string `json:"name"`
 	Root string `json:"root,omitempty"`
+}
+
+// JobStatus is one AI job as a client renders it. It carries no value and no
+// wrapped key, only names and state.
+type JobStatus struct {
+	Name        string            `json:"name"`
+	Dir         string            `json:"dir"`
+	Argv        []string          `json:"argv"`
+	Exe         string            `json:"exe"`
+	Profile     string            `json:"profile,omitempty"`
+	Secrets     []JobSecretStatus `json:"secrets,omitempty"`
+	Ask         string            `json:"ask"`
+	Outputs     []string          `json:"outputs,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Files       int               `json:"files"`
+	// State is JobReady, JobChanged or JobRotated; Changes names what
+	// changed, capped at maxJobChanges.
+	State        string       `json:"state"`
+	Changes      []job.Change `json:"changes,omitempty"`
+	ApprovedUnix int64        `json:"approved_unix"`
+	Runs         int64        `json:"runs,omitempty"`
+	LastRunUnix  int64        `json:"last_run_unix,omitempty"`
+	LastExit     int          `json:"last_exit,omitempty"`
+	LastCaller   string       `json:"last_caller,omitempty"`
+	LastRefusal  string       `json:"last_refusal,omitempty"`
+	LastHidden   int          `json:"last_hidden,omitempty"`
+}
+
+// JobSecretStatus is one secret a job injects: its variable and vault path,
+// whether its value may appear in output, and whether it was rotated since
+// approval (which stops the job).
+type JobSecretStatus struct {
+	Var     string `json:"var"`
+	Path    string `json:"path"`
+	Shown   bool   `json:"shown,omitempty"`
+	Rotated bool   `json:"rotated,omitempty"`
+}
+
+// JobStatus.State values.
+const (
+	JobReady   = "ready"
+	JobChanged = "changed"
+	JobRotated = "rotated"
+)
+
+// JobResult is one run's outcome as the caller receives it. Stdout and Stderr
+// have every hidden value replaced with [hidden: NAME] before they leave the
+// service; Hidden counts the replacements.
+type JobResult struct {
+	Exit       int            `json:"exit"`
+	Stdout     string         `json:"stdout"`
+	Stderr     string         `json:"stderr"`
+	Truncated  bool           `json:"truncated,omitempty"`
+	TimedOut   bool           `json:"timed_out,omitempty"`
+	DurationMS int64          `json:"duration_ms"`
+	Hidden     map[string]int `json:"hidden,omitempty"`
+	// NewFiles are files created or changed under the job's outputs, as
+	// absolute paths. Paths only: the caller is never handed their contents.
+	NewFiles []string `json:"new_files,omitempty"`
+	// Notes are facts the caller should repeat, e.g. a value too short to hide.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // kernel-derived at grant creation (internal/lineage), never caller-reported,
