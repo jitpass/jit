@@ -164,8 +164,10 @@ The dialog read:
 - The 74-character sentence shows in full, wrapped over four lines, not cut
   off; macOS adds the full stop.
 - `UserPresence` offers the password in the dialog, so Macs without Touch
-  ID are covered. (That the password was typed for dialog 2 is not
-  confirmed; the offer is.)
+  ID are covered. Confirmed on
+  hardware 2026-09-25 by the B1 package's interactive test (PR #157): its
+  dialog read "Enter the password for the user … to continue with jit
+  test", was approved with the login password, and the key opened.
 - One LAContext covers several opens: migration step 3 (open what was just
   sealed, to verify) adds no second prompt, and the agent's one-prompt-per-
   unlock holds.
