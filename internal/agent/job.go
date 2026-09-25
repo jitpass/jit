@@ -289,7 +289,7 @@ func (s *Server) allowJob(req Request, c *caller) Response {
 				return Response{OK: false, Error: fmt.Sprintf("job_allow: %s cannot be sealed under the job's key (%s), no job created", j.Secrets[i].Path, serr)}
 			}
 			j.Secrets[i].KeyWrapped = hex.EncodeToString(sealed)
-			j.Secrets[i].Wrap = standingWrapAEAD
+			j.Secrets[i].Wrap = keyWrap(key)
 		}
 		key.Close()
 		j.KeyID = keyID
@@ -701,12 +701,15 @@ func (s *Server) openJobKeys(j *job.Job, deks map[string][]byte) error {
 	}
 	key, err := s.GrantKeys.Load(j.KeyID)
 	if err != nil {
-		return fmt.Errorf("the job's key is gone from the keychain")
+		return fmt.Errorf("the job's key is gone")
 	}
 	defer key.Close()
 	for _, sec := range j.Secrets {
-		if sec.Wrap != standingWrapAEAD {
+		if !knownWrap(sec.Wrap) {
 			return fmt.Errorf("%s is sealed in a way this jit cannot open", sec.Var)
+		}
+		if sec.Wrap != keyWrap(key) {
+			return fmt.Errorf("%s is sealed for a different kind of key than the job's", sec.Var)
 		}
 		sealed, herr := hex.DecodeString(sec.KeyWrapped)
 		if herr != nil {
