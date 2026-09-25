@@ -519,7 +519,10 @@ func gatherVaultIntegrityFindingsWith(root string, v *vault.Vault, lost lostKeyC
 	// With the key itself gone, the finding above already says every secret
 	// is unreadable and names the same import. A check that failed is
 	// reported as pending (fail closed), saying why, like any other
-	// best-effort check here, with no command: jit can't tell what to fix.
+	// best-effort check here. Its command is the way out of a record that
+	// can't say: `jit vault import --finish`, once every recovery file is
+	// in, stops tracking the restore (renaming, never deleting) and lists
+	// what may still not open.
 	restoring := !keyGone && lost.restorePending()
 	switch {
 	case !restoring:
@@ -527,6 +530,8 @@ func gatherVaultIntegrityFindingsWith(root string, v *vault.Vault, lost lostKeyC
 		out = append(out, checkFinding{
 			Kind:   kindVaultRestore,
 			Detail: fmt.Sprintf("couldn't check the vault for secrets sealed to a lost key: %v", lost.err),
+			Action: "`jit vault import --finish` once you've imported every recovery file you have",
+			Fixes:  fixesFor(kindVaultRestore, "`jit vault import --finish`"),
 		})
 	default:
 		sealed := lost.pending

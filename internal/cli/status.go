@@ -489,6 +489,7 @@ func printStatusKeyRows(w io.Writer, v statusVault) {
 		statusLabel(w, "key")
 		_, _ = cRisk.Fprint(w, glyphRisk+" ")
 		printStatusGlyphValue(w, "couldn't check the vault for secrets sealed to a lost key: %s", v.RestoreCheckError)
+		printStatusAction(w, "`jit vault import --finish` once every recovery file is imported")
 	case v.RestorePending:
 		statusLabel(w, "key")
 		_, _ = cRisk.Fprint(w, glyphRisk+" ")
