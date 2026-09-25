@@ -56,8 +56,10 @@ is separate from any fallout from the Secure Enclave.
   rewrites a plist whose path still exists (`ensureAgentInstalled` repoints
   only an orphaned one, `servicelaunchd.go:321`).
 - `scripts/sign.sh:19`: sign inside out. First the helper, with
-  `--options runtime --timestamp` (this replaces goreleaser's signature, so
-  the hardened runtime must be passed again), then the outer app. Nothing
+  `--options runtime --timestamp --identifier jit` (this replaces
+  goreleaser's signature, so the hardened runtime must be passed again; the
+  identifier stays `jit` because every existing keychain vault key's ACL
+  trusts `identifier jit`, spike S3f), then the outer app. Nothing
   uses `--deep`; keep it that way.
 - `scripts/verify.sh:35`: the helper path, plus strict verify of the helper,
   its `CFBundleIdentifier` and its `(runtime)` flag.
@@ -183,6 +185,11 @@ reverse is written and tested first.
   a fixture vault's every envelope opens after each direction; resume from
   each crash point.
 - The flag is hidden until A2 has shipped in an app release.
+
+**B4 status (2026-09-25):** built in PR #161. The flag is hidden until A2.
+Two dialogs into the enclave (not one: the keychain's and the enclave's are
+separate contexts; the mockup's frame D caption needs that correction), one
+back. It passed on hardware with TEST-ONLY names.
 
 **B5. Docs (S).** Every sentence the read found false once B1–B4 land:
 `keychainwrap.go:6–9,30–32`, `grantkey.go:13–17,23–26`, `rekey.go:127–129`
