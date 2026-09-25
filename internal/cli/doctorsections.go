@@ -15,7 +15,7 @@ import (
 
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/auditlog"
-	"github.com/jitpass/jit/internal/keychainwrap"
+	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/selfpath"
@@ -77,7 +77,13 @@ var binarySignature = func() string {
 // stub it: the real one reads the PRODUCTION keychain, so left un-stubbed it
 // would answer from whatever the machine running the test suite happens to
 // hold, and the test would be asserting the environment rather than the code.
-var vaultMasterKeyPresence = func() keychainwrap.MEKPresence { return keychainwrap.New().MEKPresence() }
+var vaultMasterKeyPresence = func() keystore.Presence {
+	ks, err := vaultKeyStore()
+	if err != nil {
+		return keystore.Indeterminate
+	}
+	return ks.Presence()
+}
 
 // gatherSystemFindings runs the absorbed mega-doctor sections — agent, backup,
 // and wrap-shim health — and returns them as advisory checkFindings (warnings,
@@ -451,7 +457,7 @@ func gatherVaultIntegrityFindings(root string, v *vault.Vault) []checkFinding {
 	// exists to catch; MEKIndeterminate (a keychain error, or a query that
 	// would have required interaction) is reported as neither present nor gone,
 	// so doctor stays silent rather than raise a false alarm.
-	keyGone := vaultMasterKeyPresence() == keychainwrap.MEKAbsent
+	keyGone := vaultMasterKeyPresence() == keystore.Absent
 	if keyGone {
 		out = append(out, checkFinding{
 			Kind: kindVaultKey,

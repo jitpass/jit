@@ -16,7 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jitpass/jit/internal/keychainwrap"
+	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/vault"
 )
@@ -194,7 +194,7 @@ func TestOnUnmountedVolume(t *testing.T) {
 // hands --restore the fixture's own vault.
 func stubUninstallSystem(t *testing.T, v *vault.Vault) (keysDeleted *bool) {
 	t.Helper()
-	stubKeychain(t, keychainwrap.MEKPresent)
+	stubKeychain(t, keystore.Present)
 	origLaunchctl, origDelete, origOpen, origChallenge := launchctlRun, deleteVaultKeys, uninstallOpenVault, uninstallChallenge
 	t.Cleanup(func() {
 		launchctlRun, deleteVaultKeys, uninstallOpenVault, uninstallChallenge = origLaunchctl, origDelete, origOpen, origChallenge

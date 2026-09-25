@@ -13,7 +13,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/jitpass/jit/internal/audit"
-	"github.com/jitpass/jit/internal/keychainwrap"
+	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/mount"
 )
 
@@ -145,7 +145,12 @@ func firstRun(cmd *cobra.Command, d firstRunDeps) error {
 
 func prodFirstRunDeps(cmd *cobra.Command) firstRunDeps {
 	return firstRunDeps{
-		vaultReady: func() bool { return keychainwrap.New().HasMEK() },
+		// Presence, never the key's bytes: HasMEK read the item's data, which
+		// can raise the keychain's per-signature dialog on a bare `jit`.
+		vaultReady: func() bool {
+			ks, err := vaultKeyStore()
+			return err == nil && ks.Presence() == keystore.Present
+		},
 		isTTY: func() bool {
 			// Both ends must be a terminal: stdout so the reveal is worth
 			// printing, stdin so the y/N prompt can actually be answered. A
