@@ -1016,6 +1016,13 @@ var vaultInitCmd = &cobra.Command{
 			return fmt.Errorf("jit vault init: %w", err)
 		}
 		store := openKeyStore(root)
+		// A vault `jit vault delete` removed, whose keychain item under the
+		// vault key's name survived: never adopt it (settleLeftoverKey).
+		if store.Kind() == keystore.KindKeychain {
+			if err := settleLeftoverKey(cmd, root); err != nil {
+				return fmt.Errorf("jit vault init: %w", err)
+			}
+		}
 		// Over a lost Secure Enclave key, Init makes a new key. A running
 		// service may still hold the lost one in its session and would keep
 		// sealing writes under it, unreadable to the new key and invisible
@@ -1025,7 +1032,8 @@ var vaultInitCmd = &cobra.Command{
 			lockAgent()
 			defer lockAgent()
 		}
-		if err := store.Init(); err != nil {
+		res, err := store.Init()
+		if err != nil {
 			return fmt.Errorf("jit vault init: %w", err)
 		}
 		// Pin this machine's envelope-recipient identifier now, at init,
@@ -1035,9 +1043,79 @@ var vaultInitCmd = &cobra.Command{
 		if _, err := vault.EnsureDeviceID(root); err != nil {
 			return fmt.Errorf("jit vault init: %w", err)
 		}
+		if res == keystore.InitRecovered {
+			// Said, never done silently: the vault now opens from a key
+			// that was left in the keychain (keystore's enclaveStore.Init).
+			fmt.Fprintln(cmd.OutOrStdout(), "This Mac's Secure Enclave no longer has the vault key.")
+			fmt.Fprintln(cmd.OutOrStdout(), "Your keychain still had it, and it opens every secret.")
+			fmt.Fprintln(cmd.OutOrStdout(), "The vault key is in your keychain now; nothing needs restoring.")
+			return nil
+		}
 		fmt.Fprint(cmd.OutOrStdout(), hlCmds(fmt.Sprintf("Vault initialized at %s.\nRun `jit vault set <path>` to add a secret, or `jit migrate .` to move existing secrets in.\n", root)))
 		return nil
 	},
+}
+
+// deleteLeftoverKey is keystore.DeleteKeychainCopy, a var so no test
+// reaches the production keychain item.
+var deleteLeftoverKey = keystore.DeleteKeychainCopy
+
+// settleLeftoverKey runs before `jit vault init` makes a keychain key. When
+// `jit vault delete` left vault.LeftoverKeyMarker (a keychain item under the
+// vault key's name survived it), Init must not run over that item: it would
+// keep it (kw_ensure_mek keeps an item it finds), and the new vault would
+// quietly run on the deleted one's key, which any program running as you,
+// or an older jit, could have read. So:
+//
+//   - the item is gone now: the marker goes, and init makes a new key.
+//   - it is there: init asks before deleting it, and stops if the answer is
+//     no (or there is no one to answer), or if the vault holds secrets again
+//     (an older jit may have written them under that key).
+//   - the keychain won't say: init stops; nothing is adopted on a guess.
+func settleLeftoverKey(cmd *cobra.Command, root string) error {
+	marker := filepath.Join(root, vault.LeftoverKeyMarker)
+	if _, err := os.Lstat(marker); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("checking for a key the deleted vault left: %w", err)
+	}
+	switch keychainCopyPresence() {
+	case keystore.Absent:
+		return removeLeftoverMarker(marker)
+	case keystore.Present:
+	default:
+		return errors.New("the vault you deleted may have left its key in your keychain.\n" +
+			"jit couldn't check, so nothing changed; try again")
+	}
+	if paths, err := (&vault.Vault{Root: root}).List(); err != nil || len(paths) > 0 {
+		return fmt.Errorf("the vault you deleted left its key in your keychain,\n"+
+			"and this vault holds secrets again.\n"+
+			"jit won't reuse or delete that key.\n"+
+			"If nothing needs it, delete %q in Keychain Access", keystore.KeychainItemName)
+	}
+	if !confirmPrompt(cmd, "The vault you deleted left its key in your keychain.\nDelete it and make a new one? [y/N] ") {
+		return fmt.Errorf("jit won't reuse the deleted vault's key; nothing changed.\n"+
+			"Run `jit vault init` again and answer y,\n"+
+			"or delete %q in Keychain Access", keystore.KeychainItemName)
+	}
+	if err := deleteLeftoverKey(); err != nil {
+		return fmt.Errorf("couldn't delete the deleted vault's key: %s\n"+
+			"Delete %q in Keychain Access, then run `jit vault init` again", truncateEnd(err.Error(), 54), keystore.KeychainItemName)
+	}
+	if keychainCopyPresence() != keystore.Absent {
+		return fmt.Errorf("the deleted vault's key is still in your keychain.\n"+
+			"Delete %q in Keychain Access, then run `jit vault init` again", keystore.KeychainItemName)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "Deleted the old vault's key from your keychain.")
+	return removeLeftoverMarker(marker)
+}
+
+func removeLeftoverMarker(marker string) error {
+	if err := os.Remove(marker); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("removing %s: %w", marker, err)
+	}
+	return nil
 }
 
 var vaultSetCmd = &cobra.Command{
@@ -2599,13 +2677,28 @@ var vaultDeleteCmd = &cobra.Command{
 			return fmt.Errorf("jit vault delete: removing the undo index: %w", err)
 		}
 		// Best-effort on purpose: with every encrypted file already gone
-		// above, a keychain entry that couldn't be removed (or was already
-		// gone) protects nothing — warn rather than leave the command
-		// half-failed over the least consequential step.
-		if err := ks.Delete(); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: couldn't remove the vault's key %s (it may already be gone): %v\n", keyWhere, err)
-		} else {
+		// above, a key that couldn't be removed protects nothing, so the
+		// command warns rather than fail half-way. Each warning names the
+		// key that stayed (keystore's ErrEnclaveKeyKept and
+		// ErrKeychainCopyKept), because one of them is not harmless: a
+		// keychain item under the vault key's name is what the next `jit
+		// vault init` would adopt as the new vault's key.
+		keyErr := ks.Delete()
+		for _, w := range keyDeleteWarnings(keyErr, keyWhere) {
+			fmt.Fprintln(cmd.ErrOrStderr(), w)
+		}
+		if keyErr == nil || (ks.Kind() == keystore.KindSecureEnclave && !errors.Is(keyErr, keystore.ErrEnclaveKeyKept)) {
 			removed = append(removed, "the vault's key "+keyWhere)
+		}
+		// Whatever Delete said, the item's own presence decides: anything
+		// short of "gone" leaves the marker settleLeftoverKey reads, so
+		// init asks instead of adopting it.
+		if keychainCopyPresence() != keystore.Absent {
+			if err := vault.AtomicWriteFile(filepath.Join(root, vault.LeftoverKeyMarker), fmt.Appendf(nil, "left by jit vault delete %s\n", time.Now().Format(time.RFC3339))); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: couldn't record the key left in your keychain: %v\n", err)
+			}
+			fmt.Fprintln(cmd.ErrOrStderr(), "warning: a key is still in your keychain under the vault key's name.")
+			fmt.Fprintln(cmd.ErrOrStderr(), hlCmds("`jit vault init` won't reuse it: it asks to delete it first."))
 		}
 		if locked := lockAgentAfterMEKDeletion(root, cmd.ErrOrStderr()); locked != "" {
 			removed = append(removed, locked)
@@ -2616,6 +2709,28 @@ var vaultDeleteCmd = &cobra.Command{
 		fmt.Fprintln(cmd.OutOrStdout(), hlCmds("The vault is gone. Run `jit vault init` to start fresh."))
 		return nil
 	},
+}
+
+// keyDeleteWarnings turns a Store.Delete error into one warning per key
+// that stayed, each naming that key.
+func keyDeleteWarnings(err error, keyWhere string) []string {
+	if err == nil {
+		return nil
+	}
+	parts := []error{err}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		parts = joined.Unwrap()
+	}
+	var out []string
+	for _, p := range parts {
+		switch {
+		case errors.Is(p, keystore.ErrEnclaveKeyKept), errors.Is(p, keystore.ErrKeychainCopyKept):
+			out = append(out, "warning: "+p.Error())
+		default:
+			out = append(out, fmt.Sprintf("warning: couldn't delete the vault's key %s: %v", keyWhere, p))
+		}
+	}
+	return out
 }
 
 // lockAgentAfterMEKDeletion locks a reachable agent's cached session right

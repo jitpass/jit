@@ -4,7 +4,7 @@
 package cli
 
 import (
-	"bytes"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -38,12 +38,15 @@ import (
 // spike/secure-enclave-mek/FINDINGS.md; keychainwrap now removes it another
 // way). If a delete still fails, the move finishes anyway, because the vault
 // already opens from the enclave and keystore.Open never reads the keychain
-// for a vault with a sealed file. The copy left behind is not recorded
-// anywhere: `jit status` (keychain_copy_left) and `jit doctor`
+// for a vault with a sealed file. The copy is not harmless for all that: an
+// older jit elsewhere on this Mac still reads the keychain item, as can any
+// program running as the user, so the move says so. The copy left behind is
+// not recorded anywhere: `jit status` (keychain_copy_left) and `jit doctor`
 // (vault_key_copy) see it directly, an item under the vault key's name in an
-// enclave vault, so the report can't go stale and also catches a copy that
+// enclave vault, so the report can't go stale and also catches an item that
 // got there some other way. `jit vault rekey --wrapper secure-enclave` on an
-// enclave vault with such a copy removes it (removeKeychainCopy).
+// enclave vault with such an item removes it when it is the same key, and
+// with --force when it is not or can't be read (removeKeychainCopy).
 
 // moveMarkerPrefix marks rekey.inprogress as a MOVE, not a rotation: the
 // two share the marker (so every command refuses mid-move the way it does
@@ -182,7 +185,7 @@ const (
 	reasonMoveIn    = "move the vault key into the Secure Enclave"
 	reasonMoveCheck = "check the vault key in the Secure Enclave"
 	reasonMoveBack  = "move the vault key back to the keychain"
-	reasonCopyGone  = "remove the old copy of the vault key from your keychain"
+	reasonCopyGone  = "remove a key under the vault key's name from your keychain"
 
 	reasonVaultDelete = "permanently destroy the entire vault and its encryption key"
 	reasonRekey       = "rotate the vault's master encryption key"
@@ -265,17 +268,58 @@ func (m *keyMover) finish() error {
 	return nil
 }
 
-// toEnclave moves the MEK from the keychain into the Secure Enclave. Two
-// dialogs: the keychain's (to read the key) and the enclave's (to prove the
-// sealed copy opens before the keychain copy is deleted).
-func (m *keyMover) toEnclave() error {
-	resumed := moveInProgress(m.root) == wrapperSecureEnclave
-	if !resumed && m.sealedExists() {
-		if m.kcPresent() == keystore.Present {
-			return m.removeKeychainCopy()
-		}
+// enclavePlan is what `jit vault rekey --wrapper secure-enclave` does,
+// decided once by planToEnclave from ONE keychain check and then passed
+// through, so the question runVaultMove asks and the action toEnclaveAs
+// takes can never disagree, and a keychain that would not answer can never
+// put the recovery-file rule (which guards a move) in front of a vault that
+// is already in the enclave.
+type enclavePlan int
+
+const (
+	planMove       enclavePlan = iota // the key is in the keychain: move it
+	planResume                        // an interrupted move: finish it
+	planRemoveCopy                    // in the enclave, a keychain item under its name: remove it
+	planNothing                       // in the enclave, no keychain item
+	planCantCheck                     // in the enclave, and the keychain would not say
+)
+
+// planToEnclave decides what a move into the enclave would do now.
+func (m *keyMover) planToEnclave() enclavePlan {
+	switch {
+	case moveInProgress(m.root) == wrapperSecureEnclave:
+		return planResume
+	case !m.sealedExists():
+		return planMove
+	}
+	switch m.kcPresent() {
+	case keystore.Present:
+		return planRemoveCopy
+	case keystore.Absent:
+		return planNothing
+	}
+	return planCantCheck
+}
+
+// toEnclave plans and runs a move into the enclave (tests, and callers with
+// nothing to ask in between).
+func (m *keyMover) toEnclave() error { return m.toEnclaveAs(m.planToEnclave(), false) }
+
+// toEnclaveAs moves the MEK from the keychain into the Secure Enclave, or
+// does what plan says instead. Two dialogs for a move: the keychain's (to
+// read the key) and the enclave's (to prove the sealed copy opens before the
+// keychain copy is deleted). force is removeKeychainCopy's.
+func (m *keyMover) toEnclaveAs(plan enclavePlan, force bool) error {
+	switch plan {
+	case planRemoveCopy:
+		return m.removeKeychainCopy(force)
+	case planNothing:
 		fmt.Fprintln(m.out, "The vault key is already in the Secure Enclave. Nothing to do.")
 		return nil
+	case planCantCheck:
+		return errors.New("the vault key is already in the Secure Enclave,\n" +
+			"but jit couldn't check your keychain for a key under its name.\n" +
+			"Nothing changed; try again")
 	}
 	if err := m.writeMarker(wrapperSecureEnclave); err != nil {
 		return err
@@ -305,7 +349,7 @@ func (m *keyMover) toEnclave() error {
 		if err != nil {
 			return m.abort(fmt.Errorf("checking the sealed key: %w (nothing changed, the key is still in the keychain)", err))
 		}
-		same := bytes.Equal(got, mek)
+		same := subtle.ConstantTimeCompare(got, mek) == 1
 		wipeBytes(got)
 		if !same {
 			return m.abort(errors.New("the Secure Enclave returned a different key; nothing changed, the key is still in the keychain"))
@@ -336,46 +380,63 @@ func (m *keyMover) toEnclave() error {
 	}
 	fmt.Fprintln(m.out, "Moved the vault key into the Secure Enclave. Every secret opens as before.")
 	if copyErr != nil {
-		fmt.Fprintln(m.out, hlCmds(copyLeftWarning(copyErr)))
+		fmt.Fprint(m.out, hlCmds(copyLeftWarning(copyErr)))
 	}
 	return nil
 }
 
-// copyLeftWarning is what the move, and the removal, print when the old
-// keychain copy would not go. The Keychain Access step is there for the day
-// no API removes it: then a person can.
+// copyLeftWarning is what a move prints when it finished but the keychain
+// copy would not go: one clause a line. The copy is not "never used again":
+// an older jit elsewhere on this Mac still reads the keychain item, so the
+// warning says so. The Keychain Access step is there for the day no API
+// removes it: then a person can.
 func copyLeftWarning(err error) string {
-	return fmt.Sprintf("An old copy of the vault key is still in your keychain; jit couldn't delete it (%v). "+
-		"Run `jit vault rekey --wrapper secure-enclave` to try again, or delete %q in Keychain Access.", err, keychainItemName)
+	return fmt.Sprintf("The vault key's keychain copy could not be deleted.\n"+
+		"The keychain said: %s\n"+
+		"An older jit elsewhere on this Mac can still read it.\n"+
+		"To remove it: `jit vault rekey --wrapper secure-enclave`\n"+
+		"Or delete %q in Keychain Access.\n", truncateEnd(err.Error(), 54), keystore.KeychainItemName)
 }
 
-// keychainItemName is the vault key item's name as Keychain Access lists it.
-const keychainItemName = "com.jitpass.vault.mek"
-
-// removeKeychainCopy deletes a keychain copy of the vault key from a vault
-// whose key is already in the Secure Enclave: what a move whose last delete
-// failed leaves behind. One dialog, the enclave's: the copy goes only once
-// the enclave copy has opened in this run and the keychain copy has been
-// read and found to be the same key, so it can never delete the only key
-// that works. A keychain item that holds a different key is left alone.
+// removeKeychainCopy deletes the keychain item under the vault key's name
+// from a vault whose key is already in the Secure Enclave: usually the copy
+// a move whose last delete failed leaves behind. One dialog, the enclave's,
+// always first: nothing goes unless the enclave copy opens in this run, so
+// this can never delete the only key that works. Then:
+//
+//   - the item holds the same key: it is deleted.
+//   - it holds a different key, or can't be read: without force it is left
+//     alone, and the error says why and names the --force form. With force
+//     it is deleted all the same; runVaultMove asked first, naming the risk
+//     (whatever that key protects is lost). The vault itself never uses a
+//     keychain item once its key is in the enclave, so it loses nothing.
+//
 // Changes nothing about where the vault opens from, so no marker.
-func (m *keyMover) removeKeychainCopy() error {
+func (m *keyMover) removeKeychainCopy(force bool) error {
 	mek, err := m.seOpen(reasonCopyGone)
 	if err != nil {
 		return fmt.Errorf("opening the vault key in the Secure Enclave: %w (nothing changed)", err)
 	}
 	defer wipeBytes(mek)
 	same, err := m.kcMatches(mek)
-	if err != nil {
-		return fmt.Errorf("reading the keychain copy: %w (nothing changed)", err)
-	}
-	if !same {
-		return fmt.Errorf("the keychain item %q holds a different key from the one in the Secure Enclave, so jit left it alone; delete it in Keychain Access if you know it isn't needed", keychainItemName)
+	switch {
+	case err == nil && same:
+	case force:
+	case err != nil:
+		return fmt.Errorf("couldn't read the key in your keychain under the vault key's name: %s\n"+
+			"It was left alone.\n"+
+			"To delete it unread: `jit vault rekey --wrapper secure-enclave --force`", truncateEnd(err.Error(), 54))
+	default:
+		return errors.New("the key in your keychain under the vault key's name isn't this vault's.\n" +
+			"It was left alone.\n" +
+			"If nothing needs it: `jit vault rekey --wrapper secure-enclave --force`")
 	}
 	if err := m.kcDelete(); err != nil {
-		return errors.New(copyLeftWarning(err))
+		return fmt.Errorf("couldn't delete the key in your keychain: %s\n"+
+			"Delete %q in Keychain Access", truncateEnd(err.Error(), 54), keystore.KeychainItemName)
 	}
-	fmt.Fprintln(m.out, "Removed the old copy of the vault key from your keychain. The key is only in the Secure Enclave now.")
+	fmt.Fprintln(m.out, "Removed the key under the vault key's name from your keychain.")
+	fmt.Fprintln(m.out, "The vault key is only in the Secure Enclave now.")
 	return nil
 }
 
@@ -467,39 +528,52 @@ func runVaultMove(cmd *cobra.Command, root, target string) error {
 			return fmt.Errorf("jit vault rekey: a move to %s is unfinished; run `jit vault rekey --wrapper %s` to finish it first", marker.target, marker.target)
 		}
 	}
-	resuming := marker.kind == markerMove && marker.target == target
 	m := runMover(root, out)
-	// Already in the enclave, with the keychain copy a move could not delete
-	// still there: this run removes that copy and moves nothing, so the
-	// recovery-file rule (which guards the move itself) does not apply.
-	copyOnly := target == wrapperSecureEnclave && !resuming && m.sealedExists() && m.kcPresent() == keystore.Present
-	if target == wrapperSecureEnclave && !resuming && !copyOnly {
-		if err := recoveryFileCurrent(root); err != nil {
-			return fmt.Errorf("jit vault rekey: %w", err)
+	if target == wrapperKeychain {
+		if vaultRekeyForce {
+			return errors.New("jit vault rekey: --force only goes with --wrapper secure-enclave")
 		}
-	}
-	if !vaultRekeyYes {
-		prompt := "Move the vault key into the Secure Enclave? After this it can't leave this Mac; your recovery file is how the secrets would. [y/N] "
-		switch {
-		case resuming:
-			prompt = "A move of the vault key was interrupted. Finish it now? [y/N] "
-		case copyOnly:
-			prompt = "The vault key is in the Secure Enclave, and an old copy is still in your keychain. Remove that copy? [y/N] "
-		case target == wrapperKeychain:
-			prompt = "Move the vault key back to the keychain? A program running as you could read it there again. [y/N] "
-		}
-		if !confirmPrompt(cmd, prompt) {
+		if !vaultRekeyYes && !confirmPrompt(cmd, "Move the vault key back to the keychain? A program running as you could read it there again. [y/N] ") {
 			fmt.Fprintln(out, "Aborted. Nothing was changed.")
 			return nil
 		}
+		if err := m.toKeychain(); err != nil {
+			return fmt.Errorf("jit vault rekey: %w", err)
+		}
+		return nil
 	}
-	var err error
-	if target == wrapperSecureEnclave {
-		err = m.toEnclave()
-	} else {
-		err = m.toKeychain()
+	// Decided once, from one keychain check: the question below and the
+	// action after it follow the same plan (enclavePlan).
+	plan := m.planToEnclave()
+	if vaultRekeyForce && plan != planRemoveCopy {
+		return errors.New("jit vault rekey: --force only removes a keychain key from a vault\n" +
+			"already in the Secure Enclave, and there is none to remove")
 	}
-	if err != nil {
+	var prompt string
+	switch plan {
+	case planMove:
+		// The recovery-file rule guards the move itself, and only the move:
+		// removing a keychain item, or finding nothing to do, moves nothing.
+		if err := recoveryFileCurrent(root); err != nil {
+			return fmt.Errorf("jit vault rekey: %w", err)
+		}
+		prompt = "Move the vault key into the Secure Enclave? After this it can't leave this Mac; your recovery file is how the secrets would. [y/N] "
+	case planResume:
+		prompt = "A move of the vault key was interrupted. Finish it now? [y/N] "
+	case planRemoveCopy:
+		prompt = "A key is still in your keychain under the vault key's name.\n" +
+			"Remove it if it is the vault key? [y/N] "
+		if vaultRekeyForce {
+			prompt = "A key is in your keychain under the vault key's name.\n" +
+				"This deletes it even if it isn't this vault's key,\n" +
+				"and whatever it protects is lost for good. Delete it? [y/N] "
+		}
+	}
+	if prompt != "" && !vaultRekeyYes && !confirmPrompt(cmd, prompt) {
+		fmt.Fprintln(out, "Aborted. Nothing was changed.")
+		return nil
+	}
+	if err := m.toEnclaveAs(plan, vaultRekeyForce); err != nil {
 		return fmt.Errorf("jit vault rekey: %w", err)
 	}
 	return nil

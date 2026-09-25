@@ -99,8 +99,9 @@ func TestHardwareMoveRoundTrip(t *testing.T) {
 // here is a stand-in; the resumed move only checks that it exists, and the
 // enclave constructors fail the test if the move reaches for them.
 //
-// Unattended, no dialog (the item is read by nothing here; the delete never
-// asks):
+// Unattended, no dialog: keychain interaction is off for the whole run
+// (TestMain, under JIT_SE_TEST=1), so a step that would have to ask fails
+// the test instead:
 //
 //	sh spike/secure-enclave-mek/s3g/build.sh
 //	JIT_KC_OLD_JIT=$PWD/spike/secure-enclave-mek/s3g/out/oldjit IDENTIFIER=jit \
@@ -152,6 +153,15 @@ func TestHardwareFinishMoveOverAnOldJitsItem(t *testing.T) {
 	if kc.MEKPresence() != keychainwrap.MEKPresent {
 		t.Fatal("the old jit's item is not there")
 	}
+	// The built-in control: SecItemDelete alone still refuses this item
+	// (errSecInvalidOwnerEdit, S3g) and leaves it, so the finished move
+	// below can only have removed it through keychainwrap's fallback.
+	if err := kc.DeleteMEKWithoutFallbackTesting(); err == nil || !strings.Contains(err.Error(), "-25244") {
+		t.Fatalf("SecItemDelete alone on the old jit's item: %v, want OSStatus=-25244 (S3g no longer holds)", err)
+	}
+	if kc.MEKPresence() != keychainwrap.MEKPresent {
+		t.Fatal("the control's failed delete removed the item")
+	}
 
 	if err := m.toEnclave(); err != nil {
 		t.Fatalf("finishing the move: %v", err)
@@ -162,7 +172,7 @@ func TestHardwareFinishMoveOverAnOldJitsItem(t *testing.T) {
 	if rekeyInProgress(root) {
 		t.Fatal("the marker survived")
 	}
-	if !strings.Contains(out.String(), "Moved the vault key into the Secure Enclave") || strings.Contains(out.String(), "old copy") {
+	if !strings.Contains(out.String(), "Moved the vault key into the Secure Enclave") || strings.Contains(out.String(), "could not be deleted") {
 		t.Fatalf("output:\n%s", out.String())
 	}
 }

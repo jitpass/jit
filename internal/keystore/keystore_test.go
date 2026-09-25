@@ -31,6 +31,10 @@ var _ agent.ClosableFetcher = Fetcher(nil)
 // withFakeEnclave.
 func TestMain(m *testing.M) {
 	deleteKeychainCopy = func() error { panic("a keystore test reached the production keychain item") }
+	// Init over a lost key checks the production keychain for a leftover
+	// key: no item there, unless a test says otherwise (withLeftover).
+	leftoverPresence = func() Presence { return Absent }
+	leftoverOpens = func(string) (int, int, error) { panic("a keystore test reached the production keychain item") }
 	os.Exit(m.Run())
 }
 
@@ -114,8 +118,8 @@ func TestEnclavePresenceMapping(t *testing.T) {
 // open none of the existing secrets, so a lost key must say so.
 func TestEnclaveInitConfirmsRatherThanCreates(t *testing.T) {
 	withFakeEnclave(t, secureenclave.Present)
-	if err := (enclaveStore{}).Init(); err != nil {
-		t.Fatalf("Init over a present key: %v", err)
+	if res, err := (enclaveStore{}).Init(); err != nil || res != InitReady {
+		t.Fatalf("Init over a present key: %v, %v", res, err)
 	}
 	// A lost key: the sealed file is set aside (kept, it names the old
 	// key) and a keychain key is made, so a recovery file can be imported.
@@ -128,8 +132,8 @@ func TestEnclaveInitConfirmsRatherThanCreates(t *testing.T) {
 	origInit := initKeychain
 	initKeychain = func() error { made++; return nil }
 	t.Cleanup(func() { initKeychain = origInit })
-	if err := (enclaveStore{root: root}).Init(); err != nil {
-		t.Fatalf("Init over a lost key: %v", err)
+	if res, err := (enclaveStore{root: root}).Init(); err != nil || res != InitNewKey {
+		t.Fatalf("Init over a lost key: %v, %v", res, err)
 	}
 	if _, err := os.Stat(filepath.Join(root, LostSealedFile)); err != nil {
 		t.Errorf("the lost sealed file was not kept aside: %v", err)
@@ -138,7 +142,7 @@ func TestEnclaveInitConfirmsRatherThanCreates(t *testing.T) {
 		t.Errorf("after Init: backend %q, keychain keys made %d; want keychain and 1", k, made)
 	}
 	withFakeEnclave(t, secureenclave.Unavailable)
-	if err := (enclaveStore{}).Init(); !errors.Is(err, secureenclave.ErrUnavailable) {
+	if _, err := (enclaveStore{}).Init(); !errors.Is(err, secureenclave.ErrUnavailable) {
 		t.Fatalf("Init unreachable: %v, want ErrUnavailable", err)
 	}
 }
@@ -160,7 +164,7 @@ func TestEnclaveInitOverALostKeyRecordsWhatItCannotOpen(t *testing.T) {
 	initKeychain = func() error { return nil }
 	t.Cleanup(func() { initKeychain = origInit })
 
-	if err := (enclaveStore{root: root}).Init(); err != nil {
+	if _, err := (enclaveStore{root: root}).Init(); err != nil {
 		t.Fatalf("Init over a lost key: %v", err)
 	}
 	sealed, known, err := vault.SealedToLostKey(root)

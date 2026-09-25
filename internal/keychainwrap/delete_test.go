@@ -11,6 +11,8 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -193,7 +195,10 @@ func TestKeyComparisonsAreConstantTime(t *testing.T) {
 // bytes.Equal, or never calls subtle.ConstantTimeCompare.
 func assertConstantTimeCompares(t *testing.T, file string, funcs ...string) {
 	t.Helper()
-	f, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
+	// Beside this test file, not the working directory: scripts/se-test.sh
+	// runs the test binary from the repository root.
+	_, self, _, _ := runtime.Caller(0)
+	f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(filepath.Dir(self), file), nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -635,7 +635,7 @@ func ignoreStillFails(u *ignoreUnit) string {
 	case kindVaultRestore:
 		return "some secrets still can't be opened"
 	case kindVaultKeyCopy:
-		return "the vault key can still be read from your keychain"
+		return "a key under the vault key's name is still in your keychain"
 	case kind1Password:
 		return "linked secrets still can't resolve"
 	case kind1PasswordLink:
