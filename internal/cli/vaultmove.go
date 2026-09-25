@@ -203,8 +203,8 @@ type keyMover struct {
 	kcFetch   func(reason string) ([]byte, error) // the keychain's own Touch ID
 	kcInstall func(mek []byte) error              // writes and reads back; no prompt
 	kcDelete  func() error
-	kcMatches func(mek []byte) (bool, error) // reads with no prompt; returns no bytes
-	kcOpens   func() (int, error)            // how many live secrets the item opens; reads with no prompt or dialog
+	kcMatches func(mek []byte) (bool, error)      // reads with no prompt; returns no bytes
+	kcOpens   func() (keystore.KeyMeasure, error) // the item against every live secret; reads with no prompt or dialog
 
 	seInstallStaged func(mek []byte) error              // seals; never prompts
 	seOpenStaged    func(reason string) ([]byte, error) // the enclave's dialog
@@ -449,19 +449,25 @@ func (m *keyMover) removeKeychainCopy(force bool) error {
 }
 
 // forceCheck is --force's measure before it deletes a key that isn't this
-// vault's (or can't be matched): whether it opens any live secret here.
+// vault's (or can't be matched): whether it opens any live secret here. It
+// deletes only on a measure that covered everything: the item was read (a
+// nil error from kcOpens says so), and every live secret was tried against
+// it. A secret whose envelope couldn't be read is one the key may open, so
+// even one refuses.
 func (m *keyMover) forceCheck() error {
-	n, err := m.kcOpens()
+	got, err := m.kcOpens()
 	switch {
 	case err != nil:
 		return fmt.Errorf("jit couldn't check whether the key in your keychain\n"+
 			"opens any of this vault's secrets (%s).\n"+
 			"It was left alone.\n"+
 			"If nothing needs it, delete %q in Keychain Access", truncateEnd(err.Error(), 40), keystore.KeychainItemName)
-	case n > 0:
+	case got.Opened > 0:
 		return fmt.Errorf("the key in your keychain under the vault key's name isn't this vault's,\n"+
 			"but it opens %s in this vault; jit won't delete it.\n"+
-			"It was left alone: an older jit may have saved them with it", countWord(n, "secret", "secrets"))
+			"It was left alone: an older jit may have saved them with it", countWord(got.Opened, "secret", "secrets"))
+	case got.Untested > 0:
+		return fmt.Errorf("jit couldn't test %s against that key; it was left alone", countWord(got.Untested, "secret", "secrets"))
 	}
 	return nil
 }
@@ -657,9 +663,8 @@ func newKeyMoverWith(root string, out io.Writer, kc *keychainwrap.Wrapper, se, s
 		kcInstall: kc.InstallMEK,
 		kcDelete:  kc.DeleteMEK,
 		kcMatches: kc.MatchesMEK,
-		kcOpens: func() (int, error) {
-			n, _, err := keystore.KeychainKeyOpens(root, kc)
-			return n, err
+		kcOpens: func() (keystore.KeyMeasure, error) {
+			return keystore.KeychainKeyOpens(root, kc)
 		},
 		seInstallStaged: func(mek []byte) error { return seStaged().Install(mek) },
 		seOpenStaged: func(reason string) ([]byte, error) {

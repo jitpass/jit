@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -198,6 +199,70 @@ func TestKeychainKeyOpensMeasuresTheItem(t *testing.T) {
 	}
 	if _, _, err := keychainKeyOpens(root, none); err == nil {
 		t.Error("no item, and no error")
+	}
+}
+
+// The --force measure (KeychainKeyOpens) over TEST-ONLY items: it reads the
+// item even in an empty vault, so a nil error always means the item was
+// read, and a secret whose envelope can't be read is counted as untested,
+// never as one the key does not open.
+func TestKeychainKeyOpensForForceCountsWhatItCouldNotTry(t *testing.T) {
+	suffix := make([]byte, 4)
+	if _, err := rand.Read(suffix); err != nil {
+		t.Fatal(err)
+	}
+	const service = "com.jitpass.vault.mek.TEST-ONLY"
+	item := func(name string) *keychainwrap.Wrapper {
+		w := keychainwrap.NewTesting(service, name+"-"+hex.EncodeToString(suffix), func(string) error { return nil })
+		t.Cleanup(func() { _ = w.DeleteMEK() })
+		return w
+	}
+	mine, theirs, none := item("force-mine"), item("force-other"), item("force-missing")
+	for _, w := range []*keychainwrap.Wrapper{mine, theirs} {
+		if err := w.EnsureMEK(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root := t.TempDir()
+	id, err := vault.EnsureDeviceID(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Empty vault: the item is still read.
+	if _, err := KeychainKeyOpens(root, none); err == nil {
+		t.Fatal("empty vault, no item: no error, so the item was never read")
+	}
+	if m, err := KeychainKeyOpens(root, theirs); err != nil || m != (KeyMeasure{}) {
+		t.Fatalf("empty vault: %+v, %v; want nothing measured and the item read", m, err)
+	}
+	v := &vault.Vault{Root: root, KeyWrapper: mine, RecipientID: id}
+	for _, p := range []string{"fixture/A", "fixture/B"} {
+		if err := v.Set(p, []byte("TEST-ONLY value")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if m, err := KeychainKeyOpens(root, theirs); err != nil || m != (KeyMeasure{Opened: 0, Untested: 0, Total: 2}) {
+		t.Fatalf("another key: %+v, %v; want 0 opened, 0 untested of 2", m, err)
+	}
+	// One envelope unreadable: untested, not "doesn't open".
+	var envelopes []string
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.Contains(p, "fixture") {
+			envelopes = append(envelopes, p)
+		}
+		return nil
+	})
+	if len(envelopes) != 2 {
+		t.Fatalf("found envelopes %q, want 2", envelopes)
+	}
+	if err := os.WriteFile(envelopes[0], []byte("not an envelope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if m, err := KeychainKeyOpens(root, theirs); err != nil || m != (KeyMeasure{Opened: 0, Untested: 1, Total: 2}) {
+		t.Fatalf("one envelope unreadable: %+v, %v; want 1 untested of 2", m, err)
+	}
+	if m, err := KeychainKeyOpens(root, mine); err != nil || m != (KeyMeasure{Opened: 1, Untested: 1, Total: 2}) {
+		t.Fatalf("the vault's key, one envelope unreadable: %+v, %v; want 1 opened, 1 untested", m, err)
 	}
 }
 
