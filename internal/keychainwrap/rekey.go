@@ -221,7 +221,7 @@ func (w *Wrapper) setMEK(mek []byte) error { return setMEKWith(newItemOps(w), me
 // be confirmed goes on to the add, which fails with a duplicate if the old
 // item is really still there; that failure then says both halves.
 func setMEKWith(ops itemOps, mek []byte) error {
-	unconfirmed, err := deleteItem(ops, deleteOpts{cliRefFallback: true, addFollows: true, verb: "replacing existing key failed"})
+	unconfirmed, err := deleteItem(ops, deleteOpts{fallback: cliRefFallback, addFollows: true, verb: "replacing existing key failed"})
 	if err != nil {
 		return err
 	}

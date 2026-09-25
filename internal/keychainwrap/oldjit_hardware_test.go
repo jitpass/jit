@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 // oldJitService is the TEST-ONLY service spike/secure-enclave-mek/s3g's
@@ -203,4 +204,82 @@ func TestHardwareCountOpensOnAnOldJitsItem(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("opened %d of 2, want exactly the one wrapped under the old jit's key", n)
 	}
+}
+
+// TestHardwareGrantKeyDeleteAnOldJitsItem: the service's grant and job key
+// delete (GrantKeys.Delete) over a key another jit made at another path, as
+// a switch between the tarball or cask and the app leaves behind (S3g:
+// the creator's PATH decides). SecItemDelete alone refuses it (the
+// control), so without a fallback a revoked grant's key would stay and the
+// unused-key cleanup would fail on it at every start. The service's
+// fallback deletes it through its reference without the process-wide
+// interaction switch. This half runs with interaction off for the whole
+// binary, so it cannot raise a dialog: a delete that needed one would fail.
+func TestHardwareGrantKeyDeleteAnOldJitsItem(t *testing.T) {
+	w := oldJitItem(t)
+	ownerEditPrecondition(t, w)
+	if uiAllowed() {
+		t.Fatal("keychain interaction is on; this half must run with it off")
+	}
+	if err := (GrantKeys{service: oldJitService}).Delete(w.account); err != nil {
+		t.Fatalf("GrantKeys.Delete of an older jit's key: %v", err)
+	}
+	if w.MEKPresence() != MEKAbsent {
+		t.Fatal("GrantKeys.Delete reported success and the key is still there")
+	}
+}
+
+// TestHardwareGrantKeyDeleteAnOldJitsItemWithInteractionAllowed is the same
+// delete as the service runs it: keychain interaction ON, as it is in the
+// service, and left alone by the delete. No dialog may appear, and none
+// can, because the delete needs no UI on such an item, shown before
+// interaction is switched on, three ways:
+//
+//   - S3g row 8: SecKeychainItemDelete on an older jit's item, from another
+//     binary, with interaction OFF, succeeded (three runs). A delete that
+//     needed any UI would have failed errSecInteractionNotAllowed.
+//   - S3g row 9: Apple's `security delete-generic-password`, a process with
+//     interaction on, deleted the same item and returned at once.
+//   - In this run: a first item of the same shape is deleted by this same
+//     code with interaction OFF (so a UI need would fail it, not show), and
+//     only if that works is a second one deleted with it ON.
+//
+// The lookup keeps kSecUseAuthenticationUIFail either way. The delete must
+// finish at once (a dialog would hold it), succeed, and leave the switch as
+// it found it.
+func TestHardwareGrantKeyDeleteAnOldJitsItemWithInteractionAllowed(t *testing.T) {
+	first := oldJitItem(t)
+	ownerEditPrecondition(t, first)
+	if uiAllowed() {
+		t.Fatal("keychain interaction is on before the gate; it must be off")
+	}
+	if err := (GrantKeys{service: oldJitService}).Delete(first.account); err != nil {
+		t.Fatalf("the gate: with interaction off the delete failed (%v); not switching it on", err)
+	}
+	if first.MEKPresence() != MEKAbsent {
+		t.Fatal("the gate: the key is still there; not switching interaction on")
+	}
+
+	w := oldJitItem(t)
+	ownerEditPrecondition(t, w)
+	t.Cleanup(func() { setUIAllowed(false) })
+	setUIAllowed(true)
+	start := time.Now()
+	err := (GrantKeys{service: oldJitService}).Delete(w.account)
+	took := time.Since(start)
+	stillOn := uiAllowed()
+	setUIAllowed(false)
+	if err != nil {
+		t.Fatalf("interaction on: GrantKeys.Delete of an older jit's key: %v", err)
+	}
+	if took > 2*time.Second {
+		t.Errorf("interaction on: the delete took %s; a dialog may have held it", took)
+	}
+	if !stillOn {
+		t.Error("the service's delete switched keychain interaction off; it must leave it alone")
+	}
+	if w.MEKPresence() != MEKAbsent {
+		t.Fatal("interaction on: the delete reported success and the key is still there")
+	}
+	t.Logf("interaction on: deleted an older jit's key through its reference in %s", took)
 }

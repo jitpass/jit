@@ -131,7 +131,8 @@ KWResult kw_ensure_mek(const char *service, const char *account, int keySize) {
 //     secure-enclave`) and the reference delete, which keychainwrap's
 //     deleteItem takes only when its caller asked for the CLI fallback (the
 //     vault key's move, rotation, `jit vault delete`, init). The service's
-//     grant and job key deletes never take it (GrantKeys.Delete), so the
+//     grant and job key deletes take the reference delete without it
+//     (kw_item_delete_by_ref_no_switch, from GrantKeys.Delete), so the
 //     long-running service never switches keychain UI off for the whole
 //     process while other requests run.
 //   - Overlapping and nested uses share one save and one restore: a mutex
@@ -490,8 +491,8 @@ int kw_item_delete(const char *service, const char *account) {
     }
 }
 
-// kw_item_delete_by_ref is the one fallback deleteItem (keychainwrap.go)
-// takes, on exactly errSecInvalidOwnerEdit, for one measured case
+// kwDeleteRefsIn is deleteItem's fallback (keychainwrap.go), taken on
+// exactly errSecInvalidOwnerEdit, for one measured case
 // (spike/secure-enclave-mek/FINDINGS.md, S3g). In the file-based login
 // keychain, SecItemDelete answers errSecInvalidOwnerEdit (-25244) to any
 // process that is not the executable, at the same PATH, that created the
@@ -502,18 +503,63 @@ int kw_item_delete(const char *service, const char *account) {
 // deprecated since macOS 10.10 and still the one that works on a
 // legacy-keychain item; it is used for nothing else.
 //
-// No dialog, by construction rather than by measurement alone: the lookup
-// carries kSecUseAuthenticationUIFail and searches only the default (login)
-// keychain (KW_Q_REF), and both the lookup and each delete run with the
-// process's keychain interaction off (kwWithoutUI). That switch is
-// process-wide, so this runs only from CLI commands: keychainwrap's
-// deleteItem takes it only when its caller asked for the CLI fallback, and
-// the service's grant and job key deletes never do.
+// The lookup carries kSecUseAuthenticationUIFail and searches only kc
+// (KW_Q_REF): the default (login) keychain, where SecItemAdd put every key,
+// so an item of the same name in any other keychain on the search list is
+// never touched (the locked-keychain hardware test passes its own
+// temporary keychain instead). The delete itself has no per-call "never
+// ask" flag; that is what its two callers differ on:
+//
+//   - kw_item_delete_by_ref (CLI commands: the vault key's delete, a
+//     rotation's promote, the move) runs it with the process's keychain
+//     interaction off (kwWithoutUI).
+//   - kw_item_delete_by_ref_no_switch (the service's grant and job key
+//     deletes) runs it as it is: the switch is process-wide, and the
+//     long-running service must not flip it under every other request in
+//     flight. That is safe because the delete needs no UI on these items,
+//     measured three ways: S3g row 8 (SecKeychainItemDelete on an older
+//     jit's item succeeded with interaction OFF, so it needed none), S3g
+//     row 9 (Apple's own `security delete-generic-password`, interaction
+//     on, deleted the same item at once), and the locked-keychain test
+//     (the delete by reference needs no unlock). The hardware test
+//     TestHardwareGrantKeyDeleteAnOldJitsItemWithInteractionAllowed runs it
+//     with interaction ON, after proving the same with it off.
 //
 // Returns the lookup's status when it fails (errSecItemNotFound included:
 // the caller decides what an empty lookup means, and it is not "deleted"),
 // else the first failing delete's, else errSecSuccess.
-int kw_item_delete_by_ref(const char *service, const char *account) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+static OSStatus kwDeleteRefsIn(NSString *svc, NSString *acct, SecKeychainRef kc) {
+    CFTypeRef result = NULL;
+    OSStatus find = kwCopyMatching(KW_Q_REF, svc, acct, kc, &result);
+    if (find != errSecSuccess || !result) {
+        if (result) CFRelease(result);
+        return find != errSecSuccess ? find : errSecItemNotFound;
+    }
+    NSArray *refs = (__bridge_transfer NSArray *)result;
+    if (![refs isKindOfClass:[NSArray class]] || refs.count == 0) {
+        return errSecItemNotFound;
+    }
+    OSStatus out = errSecSuccess;
+    for (id ref in refs) {
+        if (CFGetTypeID((__bridge CFTypeRef)ref) != SecKeychainItemGetTypeID()) {
+            if (out == errSecSuccess) out = errSecInvalidItemRef;
+            continue;
+        }
+        OSStatus d = SecKeychainItemDelete((__bridge SecKeychainItemRef)ref);
+        if (d != errSecSuccess && out == errSecSuccess) {
+            out = d;
+        }
+    }
+    return out;
+}
+#pragma clang diagnostic pop
+
+// kwDeleteByRefInDefault runs kwDeleteRefsIn over the default keychain,
+// with the process's keychain interaction switched off around it when
+// withoutUI is set.
+static int kwDeleteByRefInDefault(const char *service, const char *account, int withoutUI) {
     __block OSStatus out = errSecSuccess;
     @autoreleasepool {
         NSString *svc = [NSString stringWithUTF8String:service];
@@ -522,37 +568,28 @@ int kw_item_delete_by_ref(const char *service, const char *account) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
         OSStatus kcStatus = SecKeychainCopyDefault(&kc);
+#pragma clang diagnostic pop
         if (kcStatus != errSecSuccess || !kc) {
             return kcStatus != errSecSuccess ? (int)kcStatus : (int)errSecNoDefaultKeychain;
         }
-        kwWithoutUI(^{
-            CFTypeRef result = NULL;
-            OSStatus find = kwCopyMatching(KW_Q_REF, svc, acct, kc, &result);
-            if (find != errSecSuccess || !result) {
-                if (result) CFRelease(result);
-                out = find != errSecSuccess ? find : errSecItemNotFound;
-                return;
-            }
-            NSArray *refs = (__bridge_transfer NSArray *)result;
-            if (![refs isKindOfClass:[NSArray class]] || refs.count == 0) {
-                out = errSecItemNotFound;
-                return;
-            }
-            for (id ref in refs) {
-                if (CFGetTypeID((__bridge CFTypeRef)ref) != SecKeychainItemGetTypeID()) {
-                    if (out == errSecSuccess) out = errSecInvalidItemRef;
-                    continue;
-                }
-                OSStatus d = SecKeychainItemDelete((__bridge SecKeychainItemRef)ref);
-                if (d != errSecSuccess && out == errSecSuccess) {
-                    out = d;
-                }
-            }
-        });
+        if (withoutUI) {
+            kwWithoutUI(^{
+                out = kwDeleteRefsIn(svc, acct, kc);
+            });
+        } else {
+            out = kwDeleteRefsIn(svc, acct, kc);
+        }
         CFRelease(kc);
-#pragma clang diagnostic pop
     }
     return (int)out;
+}
+
+int kw_item_delete_by_ref(const char *service, const char *account) {
+    return kwDeleteByRefInDefault(service, account, 1);
+}
+
+int kw_item_delete_by_ref_no_switch(const char *service, const char *account) {
+    return kwDeleteByRefInDefault(service, account, 0);
 }
 
 KWResult kw_add_mek(const char *service, const char *account, const unsigned char *key, int key_len) {
@@ -637,7 +674,8 @@ int kw_add_in_keychain(const char *path, const char *service, const char *accoun
 }
 
 // kw_probe_in_keychain runs one registry query (KW_Q_PRESENCE,
-// KW_Q_FETCH_QUIET or KW_Q_DELETE) against the keychain file at path alone
+// KW_Q_FETCH_QUIET or KW_Q_DELETE), or the delete by reference (KW_Q_REF:
+// kwDeleteRefsIn), against the keychain file at path alone
 // (kSecMatchSearchList), with the process's keychain interaction switched
 // off around it (kwWithoutUI) only when without_ui is set, and returns its
 // status. For the hardware test of a LOCKED temporary keychain. A read's
@@ -662,6 +700,11 @@ int kw_probe_in_keychain(const char *path, const char *service, const char *acco
                 break;
             case KW_Q_DELETE:
                 out = kwDeleteItemIn(which, svc, acct, kc);
+                break;
+            case KW_Q_REF:
+                // The delete by reference (kwDeleteRefsIn), in that
+                // keychain alone.
+                out = kwDeleteRefsIn(svc, acct, kc);
                 break;
             }
             if (result) CFRelease(result);

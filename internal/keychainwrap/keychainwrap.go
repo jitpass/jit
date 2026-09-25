@@ -391,7 +391,7 @@ func (w *Wrapper) DeleteMEK() error {
 // can only ever delete the identifier its own Wrapper was built with. The
 // service's grant and job keys never come here (GrantKeys.Delete).
 func (w *Wrapper) deleteMEK() error {
-	_, err := deleteItem(newItemOps(w), deleteOpts{cliRefFallback: true, verb: "delete failed"})
+	_, err := deleteItem(newItemOps(w), deleteOpts{fallback: cliRefFallback, verb: "delete failed"})
 	return err
 }
 
@@ -434,6 +434,7 @@ type itemOps interface {
 	presence() MEKPresence  // kw_mek_present: every keychain on the search list
 	secItemDelete() int32   // SecItemDelete, no dialog
 	deleteByRefNoUI() int32 // kw_item_delete_by_ref: switches the PROCESS's keychain UI off
+	deleteByRefAsIs() int32 // kw_item_delete_by_ref_no_switch: leaves the switch alone
 	presenceInDefault() MEKPresence
 	add(mek []byte) error // kw_add_mek
 }
@@ -442,16 +443,30 @@ type itemOps interface {
 // can put fakes under GrantKeys.Delete and setMEK.
 var newItemOps = func(w *Wrapper) itemOps { return cOps{w} }
 
+// refFallback is how deleteItem may delete through an item's reference.
+type refFallback int
+
+const (
+	// noRefFallback: SecItemDelete only.
+	noRefFallback refFallback = iota
+	// cliRefFallback: kw_item_delete_by_ref, which switches keychain UI off
+	// for the whole PROCESS while it runs (kwWithoutUI). Only a CLI command
+	// asks for it: the vault key's move, rotation, `jit vault delete`,
+	// init.
+	cliRefFallback
+	// serviceRefFallback: kw_item_delete_by_ref_no_switch, the same lookup
+	// and delete with the process's switch left as it is: the service's
+	// grant and job key deletes (GrantKeys.Delete), where flipping it would
+	// reach every other request in flight. The delete needs no UI on these
+	// items (keychain.m, kwDeleteRefsIn, has the measurements).
+	serviceRefFallback
+)
+
 // deleteOpts is what a caller of deleteItem asks for.
 type deleteOpts struct {
-	// cliRefFallback lets deleteItem delete through the item's reference on
-	// errSecInvalidOwnerEdit (kw_item_delete_by_ref, S3g). That fallback
-	// switches keychain UI off for the whole PROCESS while it runs
-	// (kwWithoutUI), so only a CLI command may ask for it: the vault key's
-	// move, rotation, `jit vault delete`, init. The long-running service
-	// never does (GrantKeys.Delete): there it would switch UI off under
-	// every other request in flight.
-	cliRefFallback bool
+	// fallback says whether, and how, deleteItem deletes through the
+	// item's reference on errSecInvalidOwnerEdit (S3g).
+	fallback refFallback
 	// addFollows: an add follows (setMEK), and fails with a duplicate if the
 	// item is really still there, so a reference delete whose result can't
 	// be confirmed is let through (reported as unconfirmed) rather than
@@ -463,9 +478,9 @@ type deleteOpts struct {
 }
 
 // deleteItem deletes an item and decides what the keychain's answers mean.
-// A missing item is done. On exactly errSecInvalidOwnerEdit, with
-// cliRefFallback set, it deletes through the item's reference
-// (kw_item_delete_by_ref, S3g), and then checks the item is gone, in the
+// A missing item is done. On exactly errSecInvalidOwnerEdit, with a
+// fallback asked for, it deletes through the item's reference (S3g), and
+// then checks the item is gone, in the
 // default keychain only, the one the reference delete deletes in (an item
 // of the same name in another keychain on the search list is not this one):
 //
@@ -484,10 +499,16 @@ func deleteItem(ops itemOps, o deleteOpts) (unconfirmed bool, err error) {
 	switch {
 	case status == errSecSuccess || status == errSecItemNotFound:
 		return false, nil
-	case status != errSecInvalidOwnerEdit || !o.cliRefFallback:
+	case status != errSecInvalidOwnerEdit || o.fallback == noRefFallback:
 		return false, fmt.Errorf("%s, OSStatus=%d", o.verb, status)
 	}
-	if ref := ops.deleteByRefNoUI(); ref != errSecSuccess {
+	var ref int32
+	if o.fallback == serviceRefFallback {
+		ref = ops.deleteByRefAsIs()
+	} else {
+		ref = ops.deleteByRefNoUI()
+	}
+	if ref != errSecSuccess {
 		return false, fmt.Errorf("%s, OSStatus=%d (deleting it through its reference: OSStatus=%d)", o.verb, status, ref)
 	}
 	switch ops.presenceInDefault() {
@@ -517,6 +538,13 @@ func (o cOps) deleteByRefNoUI() int32 {
 	defer C.free(unsafe.Pointer(cService))
 	defer C.free(unsafe.Pointer(cAccount))
 	return int32(C.kw_item_delete_by_ref(cService, cAccount))
+}
+
+func (o cOps) deleteByRefAsIs() int32 {
+	cService, cAccount := o.w.cNames()
+	defer C.free(unsafe.Pointer(cService))
+	defer C.free(unsafe.Pointer(cAccount))
+	return int32(C.kw_item_delete_by_ref_no_switch(cService, cAccount))
 }
 
 func (o cOps) presence() MEKPresence { return o.w.MEKPresence() }
@@ -590,6 +618,9 @@ const (
 	probePresence  = int(C.KW_Q_PRESENCE)
 	probeQuietRead = int(C.KW_Q_FETCH_QUIET)
 	probeDelete    = int(C.KW_Q_DELETE)
+	// probeDeleteByRef is the delete by reference (kwDeleteRefsIn), not a
+	// query of its own: KW_Q_REF's lookup, then SecKeychainItemDelete.
+	probeDeleteByRef = int(C.KW_Q_REF)
 )
 
 func probeInKeychain(path, service, account string, which int, withoutUI bool) int32 {

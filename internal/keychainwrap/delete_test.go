@@ -8,6 +8,7 @@ package keychainwrap
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -26,12 +27,14 @@ type fakeOps struct {
 	after         MEKPresence // presenceInDefault
 	anywhere      MEKPresence // presence (every keychain)
 	addErr        error
-	refs, pres    int
+	refs, pres    int // refs: the CLI reference delete (the process switch)
+	refsAsIs      int // the service's reference delete (no switch)
 	anyPres, adds int
 }
 
 func (f *fakeOps) secItemDelete() int32   { return f.del }
 func (f *fakeOps) deleteByRefNoUI() int32 { f.refs++; return f.ref }
+func (f *fakeOps) deleteByRefAsIs() int32 { f.refsAsIs++; return f.ref }
 func (f *fakeOps) presenceInDefault() MEKPresence {
 	f.pres++
 	return f.after
@@ -62,22 +65,35 @@ func TestDeleteItemDecisions(t *testing.T) {
 		{"owner edit, the reference delete said yes and the item stayed", fakeOps{del: errSecInvalidOwnerEdit, ref: errSecSuccess, after: MEKPresent}, true, "still there", 1, 1},
 		{"owner edit, gone can't be confirmed", fakeOps{del: errSecInvalidOwnerEdit, ref: errSecSuccess, after: MEKIndeterminate}, true, "couldn't confirm it is gone", 1, 1},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ops := tc.ops
-			_, err := deleteItem(&ops, deleteOpts{cliRefFallback: tc.fallback, verb: "delete failed"})
-			switch {
-			case tc.wantErr == "" && err != nil:
-				t.Fatalf("got %v, want success", err)
-			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
-				t.Fatalf("got %v, want an error containing %q", err, tc.wantErr)
-			}
-			if tc.wantErr != "" && !strings.Contains(err.Error(), "delete failed, OSStatus=") {
-				t.Errorf("error %q lost the original status", err)
-			}
-			if ops.refs != tc.wantRefs || ops.pres != tc.wantPres {
-				t.Errorf("reference deletes %d, presence checks %d; want %d, %d", ops.refs, ops.pres, tc.wantRefs, tc.wantPres)
-			}
-		})
+		// The same decisions whichever form of the fallback is asked for;
+		// only which reference delete runs differs.
+		forms := []refFallback{noRefFallback}
+		if tc.fallback {
+			forms = []refFallback{cliRefFallback, serviceRefFallback}
+		}
+		for _, form := range forms {
+			t.Run(fmt.Sprintf("%s/fallback %d", tc.name, form), func(t *testing.T) {
+				ops := tc.ops
+				_, err := deleteItem(&ops, deleteOpts{fallback: form, verb: "delete failed"})
+				switch {
+				case tc.wantErr == "" && err != nil:
+					t.Fatalf("got %v, want success", err)
+				case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+					t.Fatalf("got %v, want an error containing %q", err, tc.wantErr)
+				}
+				if tc.wantErr != "" && !strings.Contains(err.Error(), "delete failed, OSStatus=") {
+					t.Errorf("error %q lost the original status", err)
+				}
+				wantCLI, wantAsIs := tc.wantRefs, 0
+				if form == serviceRefFallback {
+					wantCLI, wantAsIs = 0, tc.wantRefs
+				}
+				if ops.refs != wantCLI || ops.refsAsIs != wantAsIs || ops.pres != tc.wantPres {
+					t.Errorf("reference deletes %d with the switch, %d without; presence checks %d; want %d, %d, %d",
+						ops.refs, ops.refsAsIs, ops.pres, wantCLI, wantAsIs, tc.wantPres)
+				}
+			})
+		}
 	}
 }
 
@@ -87,7 +103,7 @@ func TestDeleteItemDecisions(t *testing.T) {
 // and must not turn a delete that worked into "still there".
 func TestDeleteChecksOnlyTheDefaultKeychain(t *testing.T) {
 	ops := fakeOps{del: errSecInvalidOwnerEdit, ref: errSecSuccess, after: MEKAbsent, anywhere: MEKPresent}
-	if _, err := deleteItem(&ops, deleteOpts{cliRefFallback: true, verb: "delete failed"}); err != nil {
+	if _, err := deleteItem(&ops, deleteOpts{fallback: cliRefFallback, verb: "delete failed"}); err != nil {
 		t.Fatalf("an item in another keychain failed the delete: %v", err)
 	}
 	if ops.anyPres != 0 || ops.pres != 1 {
@@ -124,27 +140,48 @@ func TestSetMEKOverAnUnconfirmedDelete(t *testing.T) {
 }
 
 // The service deletes grant and job keys (revoke, expiry, the unused-key
-// cleanup, a move). That path must never take the reference fallback, which
-// switches keychain UI off for the whole process: here SecItemDelete answers
-// errSecInvalidOwnerEdit, the one status that triggers the fallback, and
-// the delete must return it without ever calling the reference delete.
-func TestGrantKeyDeleteNeverSwitchesKeychainUI(t *testing.T) {
+// cleanup, a move). A key another jit made at another path answers
+// SecItemDelete with errSecInvalidOwnerEdit (S3g), and the delete must get
+// past it, or a revoked grant's key stays and the cleanup fails on it at
+// every start. But never through the CLI's reference delete, which switches
+// keychain UI off for the whole process: through the service's form, which
+// leaves the switch alone.
+func TestGrantKeyDeleteFallsBackWithoutTheProcessSwitch(t *testing.T) {
 	var got *fakeOps
 	orig := newItemOps
-	newItemOps = func(*Wrapper) itemOps {
-		got = &fakeOps{del: errSecInvalidOwnerEdit, ref: errSecSuccess, after: MEKAbsent, anywhere: MEKPresent}
-		return got
-	}
 	t.Cleanup(func() { newItemOps = orig })
-	err := GrantKeys{service: "com.jitpass.grant.key.TEST-ONLY"}.Delete("g-1")
-	if got == nil {
-		t.Fatal("the delete did not go through newItemOps")
-	}
-	if got.refs != 0 {
-		t.Fatalf("the grant key delete called the reference delete %d times; it switches keychain UI off process-wide", got.refs)
-	}
-	if err == nil || !strings.Contains(err.Error(), "OSStatus=-25244") {
-		t.Fatalf("got %v, want errSecInvalidOwnerEdit returned as the error", err)
+	for _, tc := range []struct {
+		name    string
+		ref     int32
+		after   MEKPresence
+		wantErr string
+	}{
+		{"deleted through its reference", errSecSuccess, MEKAbsent, ""},
+		{"the reference delete fails", errSecInteractionNotAllowed, MEKPresent, "OSStatus=-25244 (deleting it through its reference: OSStatus=-25308)"},
+		{"the item stays", errSecSuccess, MEKPresent, "still there"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			newItemOps = func(*Wrapper) itemOps {
+				got = &fakeOps{del: errSecInvalidOwnerEdit, ref: tc.ref, after: tc.after, anywhere: MEKPresent}
+				return got
+			}
+			err := GrantKeys{service: "com.jitpass.grant.key.TEST-ONLY"}.Delete("g-1")
+			if got == nil {
+				t.Fatal("the delete did not go through newItemOps")
+			}
+			if got.refs != 0 {
+				t.Fatalf("the grant key delete called the CLI reference delete %d times; it switches keychain UI off process-wide", got.refs)
+			}
+			if got.refsAsIs != 1 {
+				t.Fatalf("the grant key delete called the service's reference delete %d times, want 1", got.refsAsIs)
+			}
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("got %v, want the key deleted", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Fatalf("got %v, want %q", err, tc.wantErr)
+			}
+		})
 	}
 }
 
@@ -259,8 +296,9 @@ func TestEveryQueryGoesThroughTheRegistry(t *testing.T) {
 	}
 	src := code.String()
 	for call, inside := range map[string]string{
-		"SecItemCopyMatching(": "static OSStatus kwCopyMatchingIn(",
-		"SecItemDelete(":       "static OSStatus kwDeleteItemIn(",
+		"SecItemCopyMatching(":   "static OSStatus kwCopyMatchingIn(",
+		"SecItemDelete(":         "static OSStatus kwDeleteItemIn(",
+		"SecKeychainItemDelete(": "static OSStatus kwDeleteRefsIn(",
 	} {
 		if n := strings.Count(src, call); n != 1 {
 			t.Errorf("keychain.m calls %s %d times, want once (through the registry)", call, n)
@@ -270,6 +308,23 @@ func TestEveryQueryGoesThroughTheRegistry(t *testing.T) {
 		at := strings.Index(src, call)
 		if fn < 0 || at < fn || strings.Contains(src[fn+len(inside):at], "\nstatic ") {
 			t.Errorf("%s is not inside %s", call, inside)
+		}
+	}
+	// The service's delete by reference leaves the process switch alone,
+	// and the CLI's switches it off: each passes its own withoutUI.
+	for fn, want := range map[string]string{
+		"int kw_item_delete_by_ref_no_switch(": "kwDeleteByRefInDefault(service, account, 0)",
+		"int kw_item_delete_by_ref(":           "kwDeleteByRefInDefault(service, account, 1)",
+	} {
+		at := strings.Index(src, fn)
+		if at < 0 {
+			t.Errorf("keychain.m has no %s", fn)
+			continue
+		}
+		body := src[at:]
+		body = body[:strings.Index(body, "\n}\n")]
+		if !strings.Contains(body, want) {
+			t.Errorf("%s...) does not call %s:\n%s", fn, want, body)
 		}
 	}
 }
