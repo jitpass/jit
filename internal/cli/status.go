@@ -67,6 +67,11 @@ type statusVault struct {
 	// bytes. "unknown" must never be read as "no"; a locked keychain at login
 	// is not a new user.
 	Initialized string `json:"initialized"`
+	// KeyStore says where the master key is kept: "keychain" or
+	// "secure-enclave" (internal/keystore), read from the vault's own files
+	// without a prompt. Added for the app's "Where the vault key is kept"
+	// card (design/secure-enclave-plan.md, A4).
+	KeyStore string `json:"key_store,omitempty"`
 	// SecretsStored counts real secrets only; `_backups/…` entries (kept
 	// for `jit migrate undo`) are reported separately so the headline
 	// number always agrees with `jit vault list`.
@@ -385,6 +390,7 @@ func gatherVaultStatus(v *vault.Vault, root string) (statusVault, error) {
 	secrets, backups := splitBackupPaths(paths)
 	result := statusVault{
 		Initialized:   vaultInitializedWord(vaultMasterKeyPresence()),
+		KeyStore:      string(openKeyStore(root).Kind()),
 		SecretsStored: len(secrets),
 		BackupsStored: len(backups),
 	}
@@ -417,7 +423,10 @@ func gatherVaultStatus(v *vault.Vault, root string) (statusVault, error) {
 // vaultInitializedWord renders the master-key probe for statusVault.Initialized.
 func vaultInitializedWord(p keystore.Presence) string {
 	switch p {
-	case keystore.Present:
+	// A lost or unreachable enclave key is still a vault that was set up:
+	// "no" would have the app offer a fresh setup over existing secrets.
+	// `jit doctor` is what says the key is lost.
+	case keystore.Present, keystore.KeyLost, keystore.Unavailable:
 		return "yes"
 	case keystore.Absent:
 		return "no"

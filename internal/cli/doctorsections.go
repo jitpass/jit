@@ -457,13 +457,21 @@ func gatherVaultIntegrityFindings(root string, v *vault.Vault) []checkFinding {
 	// exists to catch; MEKIndeterminate (a keychain error, or a query that
 	// would have required interaction) is reported as neither present nor gone,
 	// so doctor stays silent rather than raise a false alarm.
-	keyGone := vaultMasterKeyPresence() == keystore.Absent
+	// KeyLost is Absent's Secure Enclave twin: the vault's sealed key file
+	// names an enclave key this Mac does not have (the vault was copied
+	// here, or the enclave was reset). Same loss, same remedy, own sentence.
+	presence := vaultMasterKeyPresence()
+	keyGone := presence == keystore.Absent || presence == keystore.KeyLost
 	if keyGone {
+		where := "missing from the keychain"
+		if presence == keystore.KeyLost {
+			where = "not in this Mac's Secure Enclave"
+		}
 		out = append(out, checkFinding{
 			Kind: kindVaultKey,
 			Detail: fmt.Sprintf(
-				"the vault holds %s but this Mac's master key is missing from the keychain, so none of them can be decrypted. Every envelope is structurally intact; only the key is gone.",
-				countWord(len(paths), "secret", "secrets")),
+				"the vault holds %s but this Mac's master key is %s, so none of them can be decrypted. Every envelope is structurally intact; only the key is gone.",
+				countWord(len(paths), "secret", "secrets"), where),
 			Action: "`jit vault import <file>` from a `jit vault export` backup",
 			// Only the import is a step: with the key gone, an export can't
 			// run, and the prose names it as where the backup came from.

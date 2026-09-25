@@ -164,7 +164,7 @@ func TestUninstallPurgeLeavesNothingBehind(t *testing.T) {
 	})
 	launchctlRun = func(...string) ([]byte, error) { return nil, nil }
 	keysDeleted, challenged := false, false
-	deleteVaultKeys = func() error { keysDeleted = true; return nil }
+	deleteVaultKeys = func(keystore.Store) error { keysDeleted = true; return nil }
 	uninstallChallenge = func(string) error { challenged = true; return nil }
 
 	rc := writeRcWithPathLine(t, home)

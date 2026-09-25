@@ -89,11 +89,7 @@ func removeHistoryGuard(home string) (changed, rcEdited bool, err error) {
 // deleteVaultKeys removes the master key and any key a half-finished rekey
 // staged beside it. A var so no test can reach the production keychain: the
 // same seam, for the same reason, as vaultMasterKeyPresence.
-var deleteVaultKeys = func() error {
-	ks, err := vaultKeyStore()
-	if err != nil {
-		return err
-	}
+var deleteVaultKeys = func(ks keystore.Store) error {
 	var errs []error
 	if ks.Presence() != keystore.Absent {
 		errs = append(errs, ks.Delete())

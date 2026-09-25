@@ -8,11 +8,13 @@
 // reaches for it. Every command, the service's unlock, doctor and status get
 // a Store from Open and never build a key backend themselves.
 //
-// Today Open returns the login keychain (internal/keychainwrap) for every
-// vault, so this package changes nothing a user can see; it exists so that
-// the Secure Enclave backend (internal/secureenclave) can be chosen per vault
-// in one place (design/secure-enclave-plan.md, step B3) instead of at eleven.
-// TestNothingElseBuildsAKeychainWrapper holds that line.
+// Open chooses per vault: a vault whose root holds vault.SealedKeyFile keeps
+// its MEK sealed to a Secure Enclave key (internal/secureenclave); every
+// other vault keeps it in the login keychain (internal/keychainwrap). No
+// vault has a sealed file until `jit vault rekey --wrapper secure-enclave`
+// (design/secure-enclave-plan.md, step B4) writes one, so today every vault
+// still opens the keychain. TestNothingElseBuildsAKeychainWrapper keeps this
+// the one place the choice is made.
 //
 // Two things stay outside the Store on purpose:
 //
@@ -24,7 +26,13 @@
 package keystore
 
 import (
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+
 	"github.com/jitpass/jit/internal/keychainwrap"
+	"github.com/jitpass/jit/internal/secureenclave"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -36,6 +44,9 @@ const (
 	// KindKeychain: a plain item in the login keychain, behind jit's own
 	// Touch ID check (internal/keychainwrap).
 	KindKeychain Kind = "keychain"
+	// KindSecureEnclave: sealed to a key in this Mac's Secure Enclave
+	// (internal/secureenclave); the enclave asks, not jit.
+	KindSecureEnclave Kind = "secure-enclave"
 )
 
 // Presence is what can be said about the MEK without a prompt.
@@ -50,6 +61,13 @@ const (
 	// Absent: the key is genuinely gone. With secrets in the vault, the
 	// total-loss state `jit doctor` exists to catch.
 	Absent
+	// KeyLost: the vault says its key is in the Secure Enclave, and this
+	// Mac's enclave has no such key (the vault was copied here, or the
+	// enclave was reset). As final as Absent: only a recovery file helps.
+	KeyLost
+	// Unavailable: the key is in the Secure Enclave and this process cannot
+	// reach it (a jit outside JitPass.app). The key may be fine.
+	Unavailable
 )
 
 // Fetcher is what the service builds per unlock: FetchMEK copies the key
@@ -90,8 +108,15 @@ type Store interface {
 // keychain for every vault; root is taken now so that no caller changes
 // when the choice starts depending on the vault.
 func Open(root string) Store {
-	_ = root
-	return keychainStore{}
+	_, err := os.Lstat(filepath.Join(root, vault.SealedKeyFile))
+	if err != nil && errors.Is(err, fs.ErrNotExist) {
+		return keychainStore{}
+	}
+	// The file exists, or it could not be checked: either way this vault
+	// may be an enclave vault, and treating it as a keychain one would
+	// quietly use the wrong key (or, on delete, orphan the right one). The
+	// enclave store fails loudly instead.
+	return enclaveStore{root: root}
 }
 
 // Keychain returns the keychain backend's own Wrapper for `jit vault rekey`
@@ -122,3 +147,56 @@ func (keychainStore) NewWrapper() Wrapper { return keychainwrap.New() }
 func (keychainStore) Init() error { return keychainwrap.New().EnsureMEK() }
 
 func (keychainStore) Delete() error { return keychainwrap.New().DeleteMEK() }
+
+// enclaveWrapper is what enclaveStore needs from internal/secureenclave's
+// Wrapper; a package var builds it so tests never reach the real enclave.
+type enclaveWrapper interface {
+	Wrapper
+	Fetcher
+	Presence() secureenclave.Presence
+	Delete() error
+}
+
+var newEnclaveWrapper = func(root string) enclaveWrapper { return secureenclave.New(root) }
+
+type enclaveStore struct{ root string }
+
+func (enclaveStore) Kind() Kind { return KindSecureEnclave }
+
+func (s enclaveStore) Presence() Presence {
+	switch newEnclaveWrapper(s.root).Presence() {
+	case secureenclave.Present:
+		return Present
+	case secureenclave.Absent:
+		return Absent
+	case secureenclave.KeyLost:
+		return KeyLost
+	case secureenclave.Unavailable:
+		return Unavailable
+	}
+	return Indeterminate
+}
+
+func (s enclaveStore) NewFetcher() Fetcher { return newEnclaveWrapper(s.root) }
+
+func (s enclaveStore) NewWrapper() Wrapper { return newEnclaveWrapper(s.root) }
+
+// errEnclaveKeyLost is what `jit vault init` says over an enclave vault whose
+// key is gone: making a new key would not open a single existing secret.
+var errEnclaveKeyLost = errors.New("this vault's key is not in this Mac's Secure Enclave; restore it from a recovery file with `jit vault import <file>`")
+
+// Init has nothing to create for an enclave vault: the key was made when the
+// vault moved into the enclave. It confirms the key is there instead.
+func (s enclaveStore) Init() error {
+	switch s.Presence() {
+	case Present:
+		return nil
+	case KeyLost:
+		return errEnclaveKeyLost
+	case Unavailable:
+		return secureenclave.ErrUnavailable
+	}
+	return errors.New("could not check this vault's Secure Enclave key")
+}
+
+func (s enclaveStore) Delete() error { return newEnclaveWrapper(s.root).Delete() }
