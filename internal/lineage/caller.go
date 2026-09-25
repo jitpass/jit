@@ -218,7 +218,27 @@ func LaunchedBy(ancestors []Process) string {
 			return name
 		}
 	}
+	// An Electron app's helper is named for the app it is part of: Cursor
+	// starts MCP servers from "Cursor Helper", inside Cursor.app's
+	// Frameworks, and "Cursor Helper ran it" is the helper's name, not the
+	// app's (found by running the real thing). Display only, like the
+	// disclaimer, and by the helper's place inside the bundle.
+	if app := appOfHelper(p.ExecPath); app != "" {
+		return app
+	}
 	return p.Name()
+}
+
+// appOfHelper is the app a helper bundle nested in its Frameworks belongs
+// to ("/Applications/Cursor.app/Contents/Frameworks/Cursor Helper.app/
+// Contents/MacOS/Cursor Helper" is Cursor), or "" for anything else.
+func appOfHelper(execPath string) string {
+	const nest = ".app/Contents/Frameworks/"
+	i := strings.Index(execPath, nest)
+	if i <= 0 || !strings.Contains(execPath[i+len(nest):], ".app/Contents/MacOS/") {
+		return ""
+	}
+	return filepath.Base(execPath[:i])
 }
 
 // isAppDisclaimer reports whether p is an app bundle's disclaimer helper.

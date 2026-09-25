@@ -92,3 +92,23 @@ func TestLaunchedBySkipsClaudeDesktopsDisclaimer(t *testing.T) {
 		t.Fatalf("LaunchedBy(fake) = %q, want disclaimer", got)
 	}
 }
+
+// The chain the live Cursor test recorded: jit mcp, started by Cursor's
+// Electron helper. SHOWN as Cursor; a binary merely NAMED like a helper,
+// outside an app's Frameworks, is shown as itself.
+func TestLaunchedByNamesAnElectronHelpersApp(t *testing.T) {
+	chain := []Process{
+		{PID: 42673, ExecPath: "/Applications/Cursor.app/Contents/Frameworks/Cursor Helper.app/Contents/MacOS/Cursor Helper"},
+		{PID: 42606, ExecPath: "/Applications/Cursor.app/Contents/MacOS/Cursor"},
+	}
+	if got := LaunchedBy(chain); got != "Cursor" {
+		t.Fatalf("LaunchedBy = %q, want Cursor", got)
+	}
+	if p, _, ok := LaunchedByProcess(chain); !ok || p.PID != 42673 {
+		t.Fatalf("LaunchedByProcess = %+v; the consent key must stay the helper", p)
+	}
+	loose := []Process{{PID: 7, ExecPath: "/tmp/Cursor Helper.app/Contents/MacOS/Cursor Helper"}}
+	if got := LaunchedBy(loose); got != "Cursor Helper" {
+		t.Fatalf("LaunchedBy(loose) = %q, want Cursor Helper", got)
+	}
+}
