@@ -34,6 +34,7 @@ jit [flags]
 * [jit job](jit_job.md)	 - Let AI tools run approved scripts without seeing their keys
 * [jit k8s-exec-credential](jit_k8s-exec-credential.md)	 - Print a Kubernetes ExecCredential JSON for a migrated profile
 * [jit lock](jit_lock.md)	 - Lock jit's session immediately, without waiting for the TTL
+* [jit mcp](jit_mcp.md)	 - MCP server that lets AI apps run AI jobs (started by the app)
 * [jit migrate](jit_migrate.md)	 - Guided fix path for findings jit scan reports (name the file(s) to convert)
 * [jit mount](jit_mount.md)	 - Re-point or register a project's live mounts
 * [jit profile](jit_profile.md)	 - Write, edit, and delete profile manifests
