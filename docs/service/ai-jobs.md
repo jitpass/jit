@@ -17,9 +17,12 @@ without giving the tool the key.
 
 ## 1. Approve a job
 
-**In JitPass:** open **AI Jobs** from the menu bar, press **New AI Job…**,
-choose the folder, type the command as you would in a terminal there, and
-check the secrets it gets. Press **Approve with Touch ID**.
+**In JitPass:** open **AI Jobs** from the menu bar (or from AI Agents or
+Tools) and press **New AI Job…**. Pick the profile whose secrets the script
+needs: its folder is where the job runs, unless you choose a folder inside it
+where the script is. Then pick the script from the ones in that folder
+(Python runs from the folder's `.venv` when it has one), or type another
+command. Press **Approve with Touch ID**.
 
 **In a terminal**, from the job's folder:
 
@@ -77,8 +80,8 @@ The app's agent then has three tools: `list_jobs`, `run_job` and
   you look and approve it again (**Review…** in AI Jobs, or `jit job allow
   NAME --replace -- …`).
 - The tool gets the exit code and the output. Every secret value, and its
-  common encodings, is hidden. Files the job wrote to its output folder are
-  listed by path.
+  common encodings, is hidden. With `--output DIR` (terminal only), files the
+  job wrote there are listed by path.
 
 ## 4. When the tool asks for a job that does not exist
 
@@ -88,6 +91,14 @@ the agent's reason shown as its own words. You approve it with Touch ID or
 dismiss it. Without JitPass, the agent is told the exact `jit job allow`
 line to ask you to run. A proposal never creates anything, and never runs
 without asking: that choice is only yours.
+
+## Changing a job
+
+**Edit…** on a job's row opens the same sheet, filled in from the job. The
+name stays; anything else can change, and approving the change is one Touch
+ID. Until then the job runs as it was. A stopped job is changed from its
+**Review…**, which shows what changed and can also remove it. In a terminal,
+`jit job allow NAME --replace -- …` does the same.
 
 ## Jobs that run while you are away
 
@@ -106,6 +117,7 @@ its own in your keychain. Removing the job deletes that key.
 - **What the job can do with its key.** A read-only token limits that; jit
   does not.
 
-Every approval, run, refusal and removal is in `jit audit`.
+Every approval, run, refusal and removal is in `jit audit`. A stop and a
+proposal also notify you, unless Settings › Notifications turns it off.
 
 Design: [design/agent-jobs.md](../../design/agent-jobs.md).
