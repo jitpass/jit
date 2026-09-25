@@ -434,7 +434,8 @@ func lostKeyFixture(t *testing.T, paths ...string) (root string, v *vault.Vault)
 // Review finding 10 (and 2 from the CLI's side): a lost-key record jit
 // can't read must never go silent. Status says restore_pending, with why it
 // couldn't check; doctor gives the vault_restore finding saying the same,
-// with no command; the export advice stays out.
+// with the way out (review 3, finding 2: `jit vault import --finish`); the
+// export advice stays out.
 func TestAnUncheckableLostKeyIsReportedAsPending(t *testing.T) {
 	root, v := lostKeyFixture(t, "fixture/A")
 	if err := os.WriteFile(filepath.Join(root, vault.LostSealedKeyFile+".envelopes"), []byte("{not json"), 0o600); err != nil {
@@ -462,8 +463,18 @@ func TestAnUncheckableLostKeyIsReportedAsPending(t *testing.T) {
 	if len(f) != 1 || !strings.HasPrefix(f[0].Detail, "couldn't check the vault for secrets sealed to a lost key: ") {
 		t.Fatalf("want one vault_restore finding saying it couldn't check, got %+v", f)
 	}
-	if len(f[0].Fixes) != 0 {
-		t.Errorf("a failed check offers a command: %+v", f[0].Fixes)
+	if want := "`jit vault import --finish` once you've imported every recovery file you have"; f[0].Action != want {
+		t.Errorf("action = %q, want %q", f[0].Action, want)
+	}
+	wantFix := []doctorFix{{
+		Command: "jit vault import --finish",
+		Argv:    []string{"vault", "import", "--finish"},
+	}}
+	if !reflect.DeepEqual(f[0].Fixes, wantFix) {
+		t.Errorf("fixes = %+v, want %+v", f[0].Fixes, wantFix)
+	}
+	if !strings.Contains(buf.String(), "jit vault import --finish") {
+		t.Errorf("status text gives no way out of the failed check:\n%s", buf.String())
 	}
 	if b := backupFindings(v, root); len(b) != 0 {
 		t.Errorf("export advice while the restore can't be checked: %+v", b)
@@ -613,5 +624,107 @@ func TestRekeyReportsTheLostKeyCopiesItKept(t *testing.T) {
 	printKeptLostKeyCopies(&buf, nil)
 	if buf.Len() != 0 {
 		t.Errorf("nothing kept, yet: %q", buf.String())
+	}
+}
+
+// runFinish runs `jit vault import --finish` with answer on stdin.
+func runFinish(t *testing.T, answer string, extra ...string) (string, error) {
+	t.Helper()
+	t.Cleanup(func() { vaultImportFinish, vaultImportYes = false, false })
+	vaultImportFinish, vaultImportYes, vaultImportStdin = false, false, false // flags persist across Execute
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetIn(strings.NewReader(answer))
+	rootCmd.SetArgs(append([]string{"vault", "import", "--finish"}, extra...))
+	err := rootCmd.Execute()
+	vaultImportFinish, vaultImportYes = false, false
+	return buf.String(), err
+}
+
+// Review 3, finding 2: a lost-key record jit can't read settles nothing,
+// so without a way out the restore stayed pending, status red, forever.
+// `jit vault import --finish` is that way out: it asks first, lists the
+// secrets that may still not open, renames the lost key's files (never
+// deletes them), and clears the state.
+func TestImportFinishSettlesARestoreTheRecordCantCheck(t *testing.T) {
+	root, v := lostKeyFixture(t, "fixture/A", "fixture/B")
+	snapshot := filepath.Join(root, vault.LostSealedKeyFile+".envelopes")
+	if err := os.WriteFile(snapshot, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := runImport(t, writeRecoveryFile(t, "correct horse battery", "fixture/A"), "correct horse battery")
+	if !strings.Contains(out, "jit vault import --finish") {
+		t.Errorf("the import that couldn't check gives no way out:\n%s", out)
+	}
+
+	// Declining changes nothing.
+	out, err := runFinish(t, "n\n")
+	if err != nil || !strings.Contains(out, "Aborted.") {
+		t.Fatalf("declined --finish: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(root, vault.LostSealedKeyFile)); err != nil {
+		t.Fatalf("a declined --finish retired the lost key: %v", err)
+	}
+
+	out, err = runFinish(t, "y\n")
+	if err != nil {
+		t.Fatalf("--finish: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"jit can't check which secrets still won't open: the record of secrets sealed to the lost key is unreadable",
+		"1 secret was last changed before the key was lost, so may not open:\n  fixture/B\n",
+		"Stop tracking the restore? The lost key's files are kept. [y/N] ",
+		"Restore finished. The lost key's files are kept under a dated name.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("--finish output lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "fixture/A") {
+		t.Errorf("--finish lists a secret the import rewrote:\n%s", out)
+	}
+	vs, err := gatherVaultStatus(v, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vs.RestorePending || vs.RestoreCheckError != "" {
+		t.Errorf("still pending after --finish: %+v", vs)
+	}
+	if f := restoreFindings(t, root, v); len(f) != 0 {
+		t.Errorf("vault_restore after --finish: %+v", f)
+	}
+	for _, name := range []string{vault.LostSealedKeyFile, vault.LostSealedKeyFile + ".envelopes"} {
+		kept, _ := filepath.Glob(filepath.Join(root, name+"-*"))
+		if len(kept) != 1 {
+			t.Errorf("%s was not kept under a dated name: %q", name, kept)
+		}
+	}
+	if exists, _ := v.Exists("fixture/B"); !exists {
+		t.Error("--finish removed a secret")
+	}
+}
+
+// --finish is only for a record that can't say. While a readable record
+// still lists secrets it refuses, naming them, and changes nothing: an
+// import or `jit vault rm` settles those with proof. With no lost key it
+// says so.
+func TestImportFinishRefusesWhileTheRecordListsSecrets(t *testing.T) {
+	root, _ := lostKeyFixture(t, "fixture/A")
+	out, err := runFinish(t, "", "--yes")
+	if err == nil || !strings.Contains(out, "1 secret is still sealed to the lost key:\n  fixture/A\n") {
+		t.Fatalf("--finish over a readable record with secrets left: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(root, vault.LostSealedKeyFile)); err != nil {
+		t.Fatalf("a refused --finish retired the lost key: %v", err)
+	}
+	if err := os.Rename(filepath.Join(root, vault.LostSealedKeyFile), filepath.Join(root, "elsewhere")); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := runFinish(t, "", "--yes"); err != nil || !strings.Contains(out, "No lost key's restore is pending.") {
+		t.Errorf("--finish with no lost key: %v\n%s", err, out)
+	}
+	if _, err := runFinish(t, "", "some-file"); err == nil {
+		t.Error("--finish accepted a file")
 	}
 }
