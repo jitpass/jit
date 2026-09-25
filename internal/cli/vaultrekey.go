@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jitpass/jit/internal/keychainwrap"
+	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -61,7 +62,9 @@ var vaultRekeyCmd = &cobra.Command{
 		}
 
 		resume := rekeyInProgress(root)
-		primary := keychainwrap.New()
+		// Rekey rotates the keychain item's own bytes through staged items;
+		// it stays keychain-specific until plan step B4.
+		primary := keystore.Keychain()
 		hasPrimary := primary.HasMEK()
 		if !hasPrimary && !resume {
 			return fmt.Errorf("jit vault rekey: no vault master key found, run `jit vault init` first")
