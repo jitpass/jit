@@ -56,6 +56,40 @@ func moveInProgress(root string) string {
 	return strings.Fields(strings.TrimPrefix(line, moveMarkerPrefix))[0]
 }
 
+// moveUnfinished is moveInProgress for REPORTING (`jit status`
+// move_unfinished, doctor's vault_move): the target only when it is one this
+// jit knows, else "". A marker it cannot parse is left to the rotation
+// report, which says every write is refused, the way it always has; the
+// commands themselves keep refusing on the marker's mere presence
+// (rekeyInProgress), so nothing here loosens that.
+func moveUnfinished(root string) string {
+	switch t := moveInProgress(root); t {
+	case wrapperSecureEnclave, wrapperKeychain:
+		return t
+	}
+	return ""
+}
+
+// moveDescription is what an unfinished move to target was doing, in the
+// reader's words.
+func moveDescription(target string) string {
+	if target == wrapperKeychain {
+		return "moving the vault key back to your keychain"
+	}
+	return "moving the vault key into the Secure Enclave"
+}
+
+// rekeyMarkerRefusal is what a vault command reports while the marker
+// exists. A move's own sentence names the command that finishes it:
+// errRekeyInProgress sends the reader to `jit vault rekey`, which refuses
+// to finish a move.
+func rekeyMarkerRefusal(root string) error {
+	if t := moveUnfinished(root); t != "" {
+		return fmt.Errorf("%s did not finish, and vault changes are refused until it does; run `jit vault rekey --wrapper %s` to finish it", moveDescription(t), t)
+	}
+	return errRekeyInProgress
+}
+
 // The move's dialog reasons, shown after the app's name ("JitPass is trying
 // to move the vault key into the Secure Enclave.").
 const (

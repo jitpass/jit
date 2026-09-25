@@ -1758,8 +1758,40 @@ var vaultImportCmd = &cobra.Command{
 			return fmt.Errorf("jit vault import: %w", err)
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "Restored %s from %s.\n", countWord(n, "secret", "secrets"), srcPath)
+		reportLostKeyRestore(cmd, v.Root)
 		return nil
 	},
+}
+
+// reportLostKeyRestore finishes a restore after a lost Secure Enclave key
+// (vault.SettleLostKey). When every secret sealed to the lost key has been
+// replaced, the lost key's file is retired, kept under a timestamped name
+// and never deleted, and `jit status` stops reporting restore_pending. When
+// the recovery file did not hold them all, nothing is removed: the secrets
+// it left out stay on disk, still unopenable, and are named here so the
+// user decides (another recovery file, or `jit vault rm`). The import itself
+// already succeeded, so a failure here is reported, not returned.
+func reportLostKeyRestore(cmd *cobra.Command, root string) {
+	out := cmd.OutOrStdout()
+	remaining, unknown, err := vault.SettleLostKey(root, time.Now())
+	switch {
+	case err != nil:
+		fmt.Fprintf(cmd.ErrOrStderr(), "jit vault import: could not check for secrets sealed to the lost key: %v\n", err)
+	case len(remaining) > 0:
+		fmt.Fprintf(out, "%s still sealed to a key this Mac no longer has; this file didn't hold %s:\n",
+			countWord(len(remaining), "secret is", "secrets are"), pluralWord(len(remaining), "it", "them"))
+		const shown = 10
+		for i, p := range remaining {
+			if i == shown {
+				fmt.Fprintf(out, "  and %d more\n", len(remaining)-shown)
+				break
+			}
+			fmt.Fprintf(out, "  %s\n", p)
+		}
+		fmt.Fprint(out, hlCmds("Import a recovery file that holds them, or remove them with `jit vault rm <path>`.\n"))
+	case unknown:
+		fmt.Fprintln(out, "jit can't tell whether this file held every secret from before the key was lost; any it didn't hold won't open.")
+	}
 }
 
 // weakExportPassphraseLen is where the export passphrase stops being the
@@ -2754,7 +2786,7 @@ func openVaultFreshAuth() (*vault.Vault, error) {
 		return nil, err
 	}
 	if rekeyInProgress(root) {
-		return nil, errRekeyInProgress
+		return nil, rekeyMarkerRefusal(root)
 	}
 	deviceID, err := vault.EnsureDeviceID(root)
 	if err != nil {
@@ -2778,7 +2810,7 @@ func openVault() (*vault.Vault, error) {
 	// guaranteed to hold the right one — refuse rather than risk sealing
 	// anything under a key that's about to be destroyed.
 	if rekeyInProgress(root) {
-		return nil, errRekeyInProgress
+		return nil, rekeyMarkerRefusal(root)
 	}
 	// A persisted random ID, never os.Hostname() — a Mac rename or a
 	// DHCP-supplied hostname used to change the recipient key out from
