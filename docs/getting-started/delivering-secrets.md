@@ -19,6 +19,7 @@ are not alternatives to each other so much as answers to different questions.
 | A machine-wide credential *file* a tool reads (gcloud ADC, SOPS age key, global `~/.npmrc`, `~/.pypirc`) | **run it** and approve the prompt, or **`jit run --with <name>`** | Consent prompts on first read (default); `--with` is the explicit, hard-gated grant, never authorized by a repo |
 | Secrets in your current interactive shell | **`jit export`** | Prints `export` lines to `eval` |
 | Any of the above, but running while you are *away from the keyboard* (an overnight agent, a long build, a scheduled job) | **`jit grant`** first, then the command as usual | One disclosed Touch ID now covers a deadline you set, or lasts until you revoke it, so no prompt waits for a person who is not there |
+| A script an AI tool wants to run, and the tool should never hold the key (Claude Desktop, Cursor, a terminal agent) | **`jit job allow`** once, then the tool runs it by name | jit runs the command itself and hands the tool the output with every secret value hidden |
 
 ## `jit wrap`: a tool that carries its own token
 
@@ -157,6 +158,22 @@ and its limits (it does not cover live file mounts, which keep their own
 Note the word "grant" does double duty in jit: `jit run --with` above creates a
 grant scoped to a single run that ends when that run exits, while `jit grant`
 creates a standing one, scoped to a process tree and a deadline.
+
+## `jit job`: an AI tool runs it, you keep the key
+
+Every command above hands the secret to the process that runs. An
+[AI job](../service/ai-jobs.md) turns that around for an AI tool: you approve
+a command once, the tool asks jit to run it by name, and jit runs it and
+returns only the output, with every secret value replaced by `[hidden: NAME]`.
+The tool never holds a key.
+
+```sh
+cd ~/scripts/notion
+jit job allow notion-guests -- .venv/bin/python list_guest_users.py
+jit job run notion-guests          # what the AI tool runs
+```
+
+Claude Desktop and Cursor reach the same jobs through `jit mcp install`.
 
 ## How a migrated `.env` stays compatible with your scripts
 

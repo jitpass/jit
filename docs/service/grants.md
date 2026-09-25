@@ -43,6 +43,14 @@ scheduled script, the next `claude` you launch. Everything else keeps
 today's behavior: other processes still prompt, other secrets still prompt,
 and the vault's management commands still take a fresh gesture.
 
+**A grant or an AI job?** A grant lets a program *hold* the secrets while
+you are away: the agent, and everything it launches, reads the real values.
+An [AI job](./ai-jobs.md) never gives the program a secret at all: the AI
+tool can only run one command you approved, and gets its output with the
+values hidden. When the tool only needs a script's *result*, a job is the
+narrower answer, and it is the one that works from a VM sandbox like Claude
+Desktop's, which a grant cannot reach.
+
 ## What a grant anchors to
 
 `--process NAME` is scoped to **the terminal you type it in**. The anchor is
