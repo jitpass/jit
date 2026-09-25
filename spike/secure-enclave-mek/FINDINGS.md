@@ -227,6 +227,17 @@ ID certificate and `-i jit` satisfies every clause. jit-app PR #52 now signs
 the helper with `--identifier jit`, and `sign.sh` and `verify.sh` refuse any
 other identifier.
 
+## B4 on hardware: the move, both ways (2026-09-25, PASS)
+
+Not a spike: the production `keyMover` from PR #161 on the real enclave,
+with TEST-ONLY names. Run by Meni:
+`PKG=./internal/cli JIT_SE_INTERACTIVE=1 scripts/se-test.sh -test.run TestHardwareMoveRoundTrip`
+gave `--- PASS: TestHardwareMoveRoundTrip (11.69s)`, three approvals. The
+TEST-ONLY keychain key went into the enclave (keychain dialog, then the
+enclave's check of the staged copy, then promote, then the keychain copy
+deleted) and came back (enclave dialog, keychain write read back). It was
+byte-identical to the original, with no sealed file and no marker left.
+
 ## Not run yet
 
 - **S3d** (a same-user debugger is refused): needs the Developer ID build,
