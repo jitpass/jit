@@ -110,17 +110,36 @@ func runJobProcess(root string) func(j job.Job, deks map[string][]byte) (agent.J
 				hidden[sec.Var] = values[sec.Var]
 			}
 		}
-		return runJobCommand(j, values, hidden, jobEnv(root, j), job.RunTimeout)
+		scratch, err := os.MkdirTemp("", "jit-job-")
+		if err != nil {
+			return agent.JobResult{}, err
+		}
+		defer os.RemoveAll(scratch)
+		return runJobCommand(j, values, hidden, jobEnv(scratch, j), job.RunTimeout)
 	}
 }
 
 // jobEnv is the environment a job starts from, built from scratch: nothing
 // from the service's own environment and nothing from the caller, only what
 // the human's shell had at approval (PATH, HOME) and what a program needs to
-// behave (locale, temp dir, user). PYTHONPYCACHEPREFIX sends bytecode to a
-// jit-owned folder, so a Python run neither writes into the fingerprinted
-// tree nor reads a .pyc planted there.
-func jobEnv(root string, j job.Job) []string {
+// behave (locale, temp dir, user). scratch is a folder made for this one run
+// and removed after it.
+//
+// Three variables close doors the fingerprint cannot watch:
+//   - PYTHONPYCACHEPREFIX points at a fresh, empty folder under scratch, so
+//     a run neither writes bytecode into the fingerprinted tree nor loads a
+//     cached .pyc from an earlier run. A per-job cache that persisted was a
+//     place to leave poisoned bytecode that matched its source's mtime and
+//     size.
+//   - PYTHONNOUSERSITE=1 keeps ~/Library/Python/*/site-packages, and any
+//     .pth file dropped there, out of a non-venv Python.
+//   - ZDOTDIR points at an empty folder, so a `zsh script.sh` job does not
+//     source ~/.zshenv. /etc/zshenv still applies; it is root's.
+//
+// What remains trusted as installed, and is stated in the design rather than
+// hidden: the programs on the captured PATH that the job itself calls, and
+// their own configuration.
+func jobEnv(scratch string, j job.Job) []string {
 	user := os.Getenv("USER")
 	return []string{
 		"PATH=" + j.PathEnv,
@@ -129,7 +148,9 @@ func jobEnv(root string, j job.Job) []string {
 		"LOGNAME=" + user,
 		"LANG=en_US.UTF-8",
 		"TMPDIR=" + os.TempDir(),
-		"PYTHONPYCACHEPREFIX=" + filepath.Join(root, "job-cache", j.Name),
+		"PYTHONPYCACHEPREFIX=" + filepath.Join(scratch, "pycache"),
+		"PYTHONNOUSERSITE=1",
+		"ZDOTDIR=" + filepath.Join(scratch, "zdotdir"),
 		"JIT_JOB=" + j.Name,
 	}
 }

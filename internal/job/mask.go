@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"net/url"
 	"sort"
@@ -91,9 +92,21 @@ func NewMasker(w io.Writer, hidden map[string]string) *Masker {
 	return m
 }
 
-// encodings are the forms a value commonly takes in output: as is, base64
-// (standard and URL-safe, padded and not, since an Authorization header or a
-// JWT segment carries one of them), hex, and URL-escaped.
+// encodings are the forms a value commonly takes in output:
+//
+//   - as is, and hex, and URL-escaped;
+//   - base64, standard and URL-safe, padded and not, of the value alone;
+//   - base64 of the value EMBEDDED in something longer. An Authorization
+//     header is base64("user:" + token), and the token's own characters only
+//     match base64(token) when it starts on a 3-byte boundary. For each of
+//     the other two alignments, the characters that depend on the value
+//     alone are the same whatever surrounds it, and that run is a form too.
+//     At most two bytes of the value at either end share a character with
+//     its neighbours, and those characters stay visible;
+//   - JSON-escaped (json.dumps, a logged request body), which is how a
+//     multi-line key or a value with quotes appears in structured output;
+//   - each line of a multi-line value (a PEM key's base64 lines), so a key
+//     printed line by line, or next to other text, is still hidden.
 func encodings(v string) []string {
 	b := []byte(v)
 	out := []string{
@@ -107,7 +120,51 @@ func encodings(v string) []string {
 		url.QueryEscape(v),
 		url.PathEscape(v),
 	}
+	for _, enc := range []*base64.Encoding{base64.RawStdEncoding, base64.RawURLEncoding} {
+		for k := 1; k <= 2; k++ {
+			if mid := alignedBase64(enc, b, k); len(mid) >= MinHidden {
+				out = append(out, mid)
+			}
+		}
+	}
+	out = append(out, jsonEscaped(v, true), jsonEscaped(v, false))
+	if strings.ContainsAny(v, "\r\n") {
+		for _, line := range strings.FieldsFunc(v, func(r rune) bool { return r == '\n' || r == '\r' }) {
+			if line = strings.TrimSpace(line); len(line) >= 2*MinHidden {
+				out = append(out, line)
+			}
+		}
+	}
 	return out
+}
+
+// alignedBase64 is the run of base64 characters that encode only b's bytes
+// when b starts k bytes into a 3-byte group.
+func alignedBase64(enc *base64.Encoding, b []byte, k int) string {
+	e := enc.EncodeToString(append(make([]byte, k), b...))
+	first := 4 * ((k + 2) / 3)     // first group made of b's bytes only
+	last := 4 * ((k + len(b)) / 3) // end of the last complete group
+	if last > len(e) {
+		last = len(e)
+	}
+	if first >= last {
+		return ""
+	}
+	return e[first:last]
+}
+
+// jsonEscaped is v as it appears between the quotes of a JSON string, with
+// Go's HTML-safe escaping or without it (Python's json.dumps does not escape
+// <, > and &).
+func jsonEscaped(v string, html bool) string {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(html)
+	if err := enc.Encode(v); err != nil {
+		return v
+	}
+	out := strings.TrimSuffix(buf.String(), "\n")
+	return strings.TrimSuffix(strings.TrimPrefix(out, `"`), `"`)
 }
 
 func replacement(name string) []byte { return []byte("[hidden: " + name + "]") }

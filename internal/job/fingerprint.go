@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 )
 
 // Fingerprint is what a job's folder looked like when the human approved it.
@@ -42,18 +43,27 @@ const (
 const OutsidePrefix = "outside:"
 
 // ExternalFiles lists the files the command names that live outside dir:
-// `python ../run.py`, or `--config=/elsewhere/c.yaml`. The folder walk never
-// sees them, so without this an agent that proposed the path could edit the
-// script after approval and the job would keep running. An argument that is
-// not an existing regular file is not a file the job reads by name, and is
-// left alone.
-func ExternalFiles(argv []string, dir string) []string {
+// `python ../run.py`, `--config=/elsewhere/c.yaml`, or a path inside dir that
+// is a symlink out of it. The folder walk never sees them, so without this an
+// agent that proposed the path could edit the script after approval and the
+// job would keep running. Paths are resolved through symlinks before they are
+// judged inside or out, and recorded resolved. An argument that is not an
+// existing regular file is not a file the job reads by name and is left alone,
+// with one exception: the PROGRAM an interpreter is given (`python ../tool`,
+// `node ../pkg`) may be a folder, whose code no fingerprint covers, so that is
+// refused. dir must already be resolved (the service resolves it).
+func ExternalFiles(argv []string, dir string) ([]string, error) {
+	dir = ResolvePath(dir)
 	seen := map[string]bool{}
 	var out []string
-	for _, a := range argv {
+	prog := programArg(argv)
+	for i, a := range argv {
+		if i == 0 {
+			continue // the executable, hashed on its own
+		}
 		cands := []string{a}
-		if i := strings.IndexByte(a, '='); i > 0 {
-			cands = append(cands, a[i+1:])
+		if j := strings.IndexByte(a, '='); j > 0 {
+			cands = append(cands, a[j+1:])
 		}
 		for _, c := range cands {
 			if c == "" {
@@ -63,39 +73,82 @@ func ExternalFiles(argv []string, dir string) []string {
 			if !filepath.IsAbs(p) {
 				p = filepath.Join(dir, p)
 			}
-			p = filepath.Clean(p)
-			if p == dir || strings.HasPrefix(p, dir+string(filepath.Separator)) {
+			resolved, err := filepath.EvalSymlinks(p)
+			if err != nil {
 				continue
 			}
-			if info, err := os.Stat(p); err != nil || !info.Mode().IsRegular() {
+			if inside(resolved, dir) {
 				continue
 			}
-			if !seen[p] {
-				seen[p] = true
-				out = append(out, p)
+			info, err := os.Stat(resolved)
+			if err != nil {
+				continue
 			}
+			if info.IsDir() {
+				if c == prog {
+					return nil, fmt.Errorf("%s runs the folder %s, which is outside the job's folder, so no edit to it could stop the job: approve the job from a folder that contains it", a, resolved)
+				}
+				continue
+			}
+			if !info.Mode().IsRegular() || seen[resolved] {
+				continue
+			}
+			seen[resolved] = true
+			out = append(out, resolved)
 		}
 	}
 	sort.Strings(out)
-	return out
+	return out, nil
+}
+
+// ResolvePath resolves p through symlinks as far as it exists, keeping the
+// rest as written: an output folder a job has not created yet still has to
+// compare equal to the walk's resolved paths (/var → /private/var) once it
+// does.
+func ResolvePath(p string) string {
+	p = filepath.Clean(p)
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	parent := filepath.Dir(p)
+	if parent == p {
+		return p
+	}
+	return filepath.Join(ResolvePath(parent), filepath.Base(p))
+}
+
+func inside(p, dir string) bool {
+	return p == dir || strings.HasPrefix(p, dir+string(filepath.Separator))
 }
 
 // OutputCoversDir reports whether an output folder is dir or contains it.
 // Such an output would skip every file in the walk and leave an empty
 // fingerprint, so a job could never be stopped by an edit.
 func OutputCoversDir(output, dir string) bool {
-	output, dir = filepath.Clean(output), filepath.Clean(dir)
+	output, dir = ResolvePath(output), ResolvePath(dir)
 	return output == dir || strings.HasPrefix(dir, output+string(filepath.Separator))
 }
+
+// ErrLinkOutside means a symlink in the folder points at a folder outside it.
+var ErrLinkOutside = errors.New("links outside the job's folder")
+
+// LinkTargetSuffix marks the entry holding the content a symlink points at
+// when that content lives outside the folder.
+const LinkTargetSuffix = " (its target)"
 
 // ErrTooLarge means the folder is past Limits. The fix is a narrower folder.
 var ErrTooLarge = errors.New("too large to fingerprint")
 
-// skipDirs are directory NAMES never walked. .git holds nothing a job runs;
-// the other two are rewritten by the runtime on every run, and the runner
-// keeps Python from reading or writing __pycache__ in the tree at all
-// (PYTHONPYCACHEPREFIX), so skipping it hides nothing that executes.
-var skipDirs = map[string]bool{".git": true, "__pycache__": true}
+// skipDirs are directory NAMES never walked. .git holds nothing a job runs.
+//
+// __pycache__ is deliberately NOT skipped, though it once was. The runner
+// sends a job's own bytecode elsewhere (a fresh PYTHONPYCACHEPREFIX per run),
+// so a jit run never writes into the tree; but `python -I` and a child
+// started with a cleaned environment ignore that variable and load whatever
+// .pyc sits in the folder, and a planted .pyc whose header matches its
+// source's mtime and size runs in place of that source. Fingerprinted, a
+// planted or rewritten .pyc stops the job like any other edit.
+var skipDirs = map[string]bool{".git": true}
 
 // skipPaths are relative paths never walked, for caches whose parent name is
 // too common to skip whole.
@@ -106,19 +159,29 @@ var skipPaths = map[string]bool{"node_modules/.cache": true}
 // path with an "outside:" prefix. outputs are absolute folders the job writes
 // into; anything under them is skipped. FIFOs and sockets are skipped (a jit
 // mount's .env is a FIFO; opening it would block).
+//
+// dir is resolved through symlinks first: WalkDir does not descend into a
+// symlinked root, and walking one used to produce an empty fingerprint that
+// no edit could ever change. A symlink INSIDE the folder is recorded by its
+// target text and, when it resolves outside the folder, by the content it
+// points at (a file) or refused (a folder, whose code nothing would cover).
 func Compute(dir, exe string, outputs, extra []string) (Fingerprint, error) {
 	fp := Fingerprint{Files: map[string]string{}}
+	realDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return Fingerprint{}, err
+	}
 	var files int
 	var bytes int64
 	skipAbs := make([]string, 0, len(outputs))
 	for _, o := range outputs {
-		skipAbs = append(skipAbs, filepath.Clean(o))
+		skipAbs = append(skipAbs, ResolvePath(o))
 	}
-	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(realDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, rerr := filepath.Rel(dir, path)
+		rel, rerr := filepath.Rel(realDir, path)
 		if rerr != nil {
 			return rerr
 		}
@@ -147,6 +210,25 @@ func Compute(dir, exe string, outputs, extra []string) (Fingerprint, error) {
 				return lerr
 			}
 			fp.Files[rel] = "link:" + target
+			resolved, rerr := filepath.EvalSymlinks(path)
+			if rerr != nil || inside(resolved, realDir) {
+				return nil // dangling, or its target is walked in place
+			}
+			info, serr := os.Stat(resolved)
+			if serr != nil {
+				return nil
+			}
+			if info.IsDir() {
+				return fmt.Errorf("%s links to the folder %s, outside the job's folder, so no edit to it could stop the job: %w", rel, resolved, ErrLinkOutside)
+			}
+			if info.Mode().IsRegular() {
+				sum, n, herr := hashFile(resolved)
+				if herr != nil {
+					return herr
+				}
+				bytes += n
+				fp.Files[rel+LinkTargetSuffix] = "sha256:" + sum
+			}
 		case d.Type().IsRegular():
 			files++
 			if files > MaxFiles {
@@ -190,12 +272,19 @@ func Compute(dir, exe string, outputs, extra []string) (Fingerprint, error) {
 	return fp, nil
 }
 
+// hashFile hashes one regular file. It opens without blocking and refuses
+// anything that is not a regular file once open: a path swapped for a named
+// pipe (by whoever can write the folder, or a file named outside it) would
+// otherwise block the open forever, hanging every list and run behind it.
 func hashFile(path string) (string, int64, error) {
-	f, err := os.Open(path) // #nosec G304 -- a file inside the job folder the human approved
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0) // #nosec G304 -- a file the human approved as part of a job
 	if err != nil {
 		return "", 0, err
 	}
 	defer f.Close()
+	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+		return "", 0, fmt.Errorf("%s is not a regular file", path)
+	}
 	h := sha256.New()
 	n, err := io.Copy(h, f)
 	if err != nil {

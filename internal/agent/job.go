@@ -94,8 +94,13 @@ func (s *Server) allowJob(req Request, c *caller) Response {
 	if !filepath.IsAbs(spec.Dir) {
 		return Response{OK: false, Error: "job_allow: the job folder must be an absolute path"}
 	}
-	dir := filepath.Clean(spec.Dir)
-	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+	// Resolved through symlinks: the fingerprint walks the real folder, and a
+	// job stored under a symlinked path once fingerprinted as empty.
+	dir, err := filepath.EvalSymlinks(filepath.Clean(spec.Dir))
+	if err != nil {
+		return Response{OK: false, Error: fmt.Sprintf("job_allow: %s is not a folder", spec.Dir)}
+	}
+	if info, serr := os.Stat(dir); serr != nil || !info.IsDir() {
 		return Response{OK: false, Error: fmt.Sprintf("job_allow: %s is not a folder", dir)}
 	}
 	exe, err := job.ResolveExe(spec.Argv[0], dir, spec.PathEnv)
@@ -107,7 +112,7 @@ func (s *Server) allowJob(req Request, c *caller) Response {
 		if !filepath.IsAbs(o) {
 			o = filepath.Join(dir, o)
 		}
-		o = filepath.Clean(o)
+		o = job.ResolvePath(o)
 		if job.OutputCoversDir(o, dir) {
 			// Everything under an output is skipped by the fingerprint, so an
 			// output that holds the whole folder would leave nothing to stop
@@ -116,7 +121,10 @@ func (s *Server) allowJob(req Request, c *caller) Response {
 		}
 		outputs = append(outputs, o)
 	}
-	extra := job.ExternalFiles(spec.Argv[1:], dir)
+	extra, err := job.ExternalFiles(spec.Argv, dir)
+	if err != nil {
+		return Response{OK: false, Error: "job_allow: " + err.Error()}
+	}
 
 	s.jobMu.Lock()
 	_, exists := s.jobs[req.JobName]
@@ -161,8 +169,17 @@ func (s *Server) allowJob(req Request, c *caller) Response {
 	if err != nil {
 		return Response{OK: false, Error: "job_allow: fingerprinting the folder: " + err.Error()}
 	}
+	if len(before.Files) == 0 {
+		return Response{OK: false, Error: fmt.Sprintf("job_allow: %s has no files jit can fingerprint, so no edit could ever stop the job", dir)}
+	}
 
-	reason := jobAllowReason(req.JobName, len(sources), ask)
+	shownCount := 0
+	for _, src := range sources {
+		if containsString(spec.Shown, src.Var) {
+			shownCount++
+		}
+	}
+	reason := jobAllowReason(jobLabel(dir, spec.Argv), secretGroups(sources), len(sources), shownCount, ask)
 	event, mek, err := s.discloseChallengeOp(reason, OpJobAllow, c)
 	if event != nil && s.OnSessionEvent != nil {
 		s.OnSessionEvent(*event)
@@ -279,29 +296,78 @@ func newJobKeyID() (string, error) {
 	return "j-" + strings.TrimPrefix(id, "g-"), nil
 }
 
-// jobAllowReason completes macOS's "jit is trying to ___." Everything in it
-// is the human's own name for the job plus a count the agent resolved; the
-// command itself is too long for the dialog, so the CLI prints it in full
-// before asking, and the app's sheet shows it verbatim.
-func jobAllowReason(name string, secrets int, ask job.Ask) string {
-	if ask == job.AskNever {
-		// The scope clause changes the decision, so it is the half that must
-		// survive: 17 + 18 + 13 + 41 = 89 runes at 14 secrets.
-		return truncate(fmt.Sprintf("let AI tools run %s (%s) unasked, until removed; never the values",
-			truncate(name, 18), countNoun(secrets, "secret")), maxReasonLen)
+// jobAllowReason completes macOS's "jit is trying to ___." It is the line
+// the human decides by, so it names facts the SERVICE resolved, never the
+// caller's words: the folder and script it will run, the vault groups its
+// secrets come from, how many may appear in the output, and whether it will
+// ever ask again. Not the job's name: any process that reaches the socket
+// chooses that, and a familiar name ("notion-guests") on a request that
+// runs something else is the prompt the design must not show. The full
+// command is printed by the CLI, and shown by the app's sheet, before the
+// dialog appears.
+func jobAllowReason(label, groups string, secrets, shown int, ask job.Ask) string {
+	with := "no secrets"
+	if secrets > 0 {
+		with = fmt.Sprintf("%d %s %s", secrets, truncate(groups, 12), pluralNoun(secrets, "secret"))
 	}
-	// Budgets: 17 + 22 + 47 runes at 14 secrets = 86, under maxReasonLen,
-	// so the promise at the end is never what a long name pushes off.
-	return truncate(fmt.Sprintf("let AI tools run %s (%s); they see output, never the values",
-		truncate(name, 22), countNoun(secrets, "secret")), maxReasonLen)
+	if shown > 0 {
+		with += fmt.Sprintf(", %d shown", shown)
+	}
+	scope := ""
+	if ask == job.AskNever {
+		scope = ", unasked till removed"
+	}
+	// Budgets at the worst case: 11 + 24 + 6 + 27 + 9 + 22 = 99 would pass
+	// 90, so the label gives way first (truncate keeps its start, the folder).
+	room := maxReasonLen - len([]rune("let AI run  with "+with+scope))
+	if room < 12 {
+		room = 12
+	}
+	return truncate(fmt.Sprintf("let AI run %s with %s%s", truncate(label, room), with, scope), maxReasonLen)
+}
+
+// jobLabel is "folder/script": the folder's own name and the program the
+// command runs, which together say what a job is at a glance.
+func jobLabel(dir string, argv []string) string {
+	script := filepath.Base(argv[0])
+	for _, a := range argv[1:] {
+		if !strings.HasPrefix(a, "-") {
+			script = filepath.Base(a)
+			break
+		}
+	}
+	return filepath.Base(dir) + "/" + script
+}
+
+// secretGroups names where a job's secrets live, by the first segment of
+// their vault paths ("notion"), agent-resolved and deduplicated.
+func secretGroups(sources []JobSecretSource) string {
+	seen := map[string]bool{}
+	var out []string
+	for _, src := range sources {
+		g, _, _ := strings.Cut(src.Path, "/")
+		if !seen[g] {
+			seen[g] = true
+			out = append(out, g)
+		}
+	}
+	sort.Strings(out)
+	return strings.Join(out, "+")
+}
+
+func pluralNoun(n int, noun string) string {
+	if n == 1 {
+		return noun
+	}
+	return noun + "s"
 }
 
 // jobRunReason is the per-run prompt of an each-time job: who asked, which
 // job, and the promise.
-func jobRunReason(requester, name string, secrets int) string {
-	// Budgets: 4 + 20 + 18 + 12 + 34 = 88 at 14 secrets.
-	return truncate(fmt.Sprintf("run %s (%s) for %s; it sees output, never the values",
-		truncate(name, 20), countNoun(secrets, "secret"), truncate(requester, 12)), maxReasonLen)
+func jobRunReason(requester, label string, secrets int) string {
+	// 4 + 22 + 5 + 12 + 13 + 34 = 90 at 14 secrets.
+	return truncate(fmt.Sprintf("run %s for %s (%s); it sees output, never the values",
+		truncate(label, 22), truncate(requester, 12), countNoun(secrets, "secret")), maxReasonLen)
 }
 
 func countNoun(n int, noun string) string {
@@ -396,6 +462,10 @@ func (s *Server) jobStatus(j *job.Job) JobStatus {
 	if len(rotated) > 0 {
 		st.State = JobRotated
 	}
+	if j.Stopped != "" {
+		st.State = JobChanged
+		st.LastRefusal = j.Stopped
+	}
 	if changes := jobChanges(j); len(changes) > 0 {
 		st.State = JobChanged
 		if len(changes) > maxJobChanges {
@@ -450,12 +520,16 @@ func (s *Server) runJob(name string, c *caller) Response {
 	}
 	requester := jobRequester(c)
 
+	if j.Stopped != "" {
+		s.recordJobEvent(KindError, OpJobRun, c, &j, j.Name+": refused, stopped: "+j.Stopped)
+		return Response{OK: false, Error: fmt.Sprintf("job_run: %s: stopped because %s. It won't run until you approve it again", j.Name, j.Stopped)}
+	}
 	if changes := jobChanges(&j); len(changes) > 0 {
 		msg := fmt.Sprintf("%s %s since you approved it", changes[0].Path, changes[0].Kind)
 		if len(changes) > 1 {
 			msg += fmt.Sprintf(" (and %d more)", len(changes)-1)
 		}
-		return s.refuseJob(&j, c, requester, msg+". It won't run until you approve it again")
+		return s.refuseJob(&j, c, requester, msg)
 	}
 	if s.OnWrappedDEK == nil {
 		return Response{OK: false, Error: "job_run: this service cannot read the vault's wrapped keys"}
@@ -464,10 +538,10 @@ func (s *Server) runJob(name string, c *caller) Response {
 	for i, sec := range j.Secrets {
 		wrapped, _, err := s.OnWrappedDEK(sec.Path)
 		if err != nil {
-			return s.refuseJob(&j, c, requester, fmt.Sprintf("%s is no longer in the vault. It won't run until you approve it again", sec.Var))
+			return s.refuseJob(&j, c, requester, fmt.Sprintf("%s is no longer in the vault", sec.Var))
 		}
 		if wrappedDigest(wrapped) != sec.DeviceDigest {
-			return s.refuseJob(&j, c, requester, fmt.Sprintf("%s was rotated since you approved it. It won't run until you approve it again", sec.Var))
+			return s.refuseJob(&j, c, requester, fmt.Sprintf("%s was rotated since you approved it", sec.Var))
 		}
 		current[i] = wrapped
 	}
@@ -490,10 +564,10 @@ func (s *Server) runJob(name string, c *caller) Response {
 		// falls back to prompting, which would turn a job the human set to
 		// run while away into one that silently waits on a dialog.
 		if err := s.openJobKeys(&j, deks); err != nil {
-			return s.refuseJob(&j, c, requester, err.Error()+". Approve it again to make a new key")
+			return s.refuseJob(&j, c, requester, err.Error())
 		}
 	default:
-		reason := jobRunReason(requester, j.Name, len(j.Secrets))
+		reason := jobRunReason(requester, jobLabel(j.Dir, j.Argv), len(j.Secrets))
 		event, mek, err := s.discloseChallengeOp(reason, OpJobRun, c)
 		if event != nil && s.OnSessionEvent != nil {
 			s.OnSessionEvent(*event)
@@ -516,11 +590,19 @@ func (s *Server) runJob(name string, c *caller) Response {
 	// keeps values from, and it can write the folder. An edit landing while
 	// the human reads the dialog must not run with the secrets it unlocked.
 	if changes := jobChanges(&j); len(changes) > 0 {
-		return s.refuseJob(&j, c, requester, fmt.Sprintf("%s %s while the prompt was up. It won't run until you approve it again", changes[0].Path, changes[0].Kind))
+		return s.refuseJob(&j, c, requester, fmt.Sprintf("%s %s while the prompt was up", changes[0].Path, changes[0].Kind))
 	}
 	result, err := s.OnRunJob(j, deks)
 	if err != nil {
 		return Response{OK: false, Error: "job_run: " + err.Error()}
+	}
+	// And once more after the run. A swap that landed between the last
+	// check and the start, or a module the script imported late, shows here:
+	// the output is withheld (it may be shaped by the changed code) and the
+	// job stops until the human looks. A job that writes into its own folder
+	// stops here too, and the message says how to declare that folder.
+	if changes := jobChanges(&j); len(changes) > 0 {
+		return s.refuseJob(&j, c, requester, fmt.Sprintf("%s %s while the job ran, so its output was withheld (if the job writes there, approve it again with that folder as --output)", changes[0].Path, changes[0].Kind))
 	}
 	hidden := 0
 	for _, n := range result.Hidden {
@@ -578,14 +660,15 @@ func (s *Server) openJobKeys(j *job.Job, deks map[string][]byte) error {
 // the app's Changed card) and in the trail, and answers the caller.
 func (s *Server) refuseJob(j *job.Job, c *caller, requester, why string) Response {
 	s.jobMu.Lock()
-	if cur, ok := s.jobs[j.Name]; ok {
+	if cur, ok := s.jobs[j.Name]; ok && cur.ApprovedUnix == j.ApprovedUnix {
 		cur.LastRefusal = why
 		cur.LastCaller = requester
+		cur.Stopped = why
 		_ = s.saveJobsLocked()
 	}
 	s.jobMu.Unlock()
 	s.recordJobEvent(KindError, OpJobRun, c, j, j.Name+": refused, "+why)
-	return Response{OK: false, Error: fmt.Sprintf("job_run: %s: %s", j.Name, why)}
+	return Response{OK: false, Error: fmt.Sprintf("job_run: %s: %s. It won't run until you approve it again", j.Name, why)}
 }
 
 // recordJobEvent writes one job event to the ring and the durable trail,

@@ -331,6 +331,11 @@ func renderJobRows(out io.Writer, jobs []agent.JobStatus, now time.Time) {
 		case agent.JobChanged:
 			glyph, ink = glyphWarn, cWarn
 			state = "stopped · " + jobChangeLine(j.Changes)
+			if len(j.Changes) == 0 && j.LastRefusal != "" {
+				// Stopped earlier; the folder may match again now, and the
+				// stop still stands until the job is approved again.
+				state = "stopped · " + truncateRunes(j.LastRefusal, 60)
+			}
 		case agent.JobRotated:
 			glyph, ink = glyphWarn, cWarn
 			state = "stopped · a secret was rotated"

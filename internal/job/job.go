@@ -85,6 +85,13 @@ type Job struct {
 	Description  string `json:"description,omitempty"`
 	ApprovedUnix int64  `json:"approved_unix"`
 
+	// Stopped, when set, says why the job stopped: a file changed, a secret
+	// was rotated, its key is gone. A stop is STICKY. Only approving the job
+	// again clears it, because a stop that lifted itself when the file was
+	// put back would let a caller retry a swap for free until one landed
+	// between the check and the start.
+	Stopped string `json:"stopped,omitempty"`
+
 	Runs          int64  `json:"runs,omitempty"`
 	LastRunUnix   int64  `json:"last_run_unix,omitempty"`
 	LastExit      int    `json:"last_exit,omitempty"`

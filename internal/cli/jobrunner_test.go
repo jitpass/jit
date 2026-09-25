@@ -138,3 +138,36 @@ func TestRunJobCommandTruncationNoteNamesTheStreamCap(t *testing.T) {
 		t.Fatalf("notes = %v, want %q", res.Notes, want)
 	}
 }
+
+// Second review, findings 3 and 10: every run gets its own empty bytecode
+// cache, and the user-writable startup files are switched off.
+func TestJobEnvClosesStartupDoors(t *testing.T) {
+	scratch := t.TempDir()
+	env := strings.Join(jobEnv(scratch, job.Job{Name: "t", PathEnv: "/usr/bin:/bin", Home: "/Users/x"}), "\n")
+	for _, want := range []string{
+		"PYTHONPYCACHEPREFIX=" + filepath.Join(scratch, "pycache"),
+		"PYTHONNOUSERSITE=1",
+		"ZDOTDIR=" + filepath.Join(scratch, "zdotdir"),
+	} {
+		if !strings.Contains(env, want) {
+			t.Errorf("job env lacks %s", want)
+		}
+	}
+}
+
+// A zsh job must not source the user's ~/.zshenv, which an agent can write.
+func TestZshJobSkipsTheUsersZshenv(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".zshenv"), []byte("echo SOURCED-USER-ZSHENV\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	j := shJob(t, "echo ran\n")
+	j.Argv, j.Exe, j.Home = []string{"zsh", "run.sh"}, "/bin/zsh", home
+	res, err := runJobCommand(j, nil, nil, jobEnv(t.TempDir(), j), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(res.Stdout, "SOURCED-USER-ZSHENV") || !strings.Contains(res.Stdout, "ran") {
+		t.Fatalf("stdout = %q", res.Stdout)
+	}
+}
