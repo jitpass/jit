@@ -1063,3 +1063,44 @@ func TestJobProposalsGoToTheAppAndCreateNothing(t *testing.T) {
 		t.Fatal("the proposal list is not capped")
 	}
 }
+
+// job_preview is approval's own checks with no prompt: what it reports is
+// what approval then does, its Prompt is the sentence the Touch ID shows,
+// and a refusal is approval's refusal word for word.
+func TestJobPreviewIsApprovalWithoutThePrompt(t *testing.T) {
+	r := newJobRig(t)
+	reasons := r.captureReasons()
+	spec := r.spec()
+	spec.Shown = []string{"NOTION_API_KEY"}
+
+	p, err := r.c.JobPreview("notion-guests", spec)
+	if err != nil || p.Refusal != "" {
+		t.Fatalf("preview: %v %q", err, p.Refusal)
+	}
+	if len(*reasons) != 0 {
+		t.Fatal("a preview prompted")
+	}
+	if p.Program != "list_guest_users.py" || p.Files == 0 || len(p.Secrets) != 1 || !p.Secrets[0].Shown || p.Exists {
+		t.Fatalf("preview = %+v", p)
+	}
+	if jobs, _ := r.c.JobList(); len(jobs) != 0 {
+		t.Fatal("a preview kept a job")
+	}
+	if _, err := r.c.JobAllow("notion-guests", spec); err != nil {
+		t.Fatal(err)
+	}
+	if (*reasons)[0] != p.Prompt {
+		t.Fatalf("preview promised %q, the Touch ID said %q", p.Prompt, (*reasons)[0])
+	}
+	if again, _ := r.c.JobPreview("notion-guests", spec); !again.Exists {
+		t.Fatal("a preview over an existing job does not say it would replace it")
+	}
+
+	bad := r.spec()
+	bad.Argv = []string{"/bin/sh", "-c", "env"}
+	pv, _ := r.c.JobPreview("x", bad)
+	_, allowErr := r.c.JobAllow("x", bad)
+	if pv.Refusal == "" || allowErr == nil || !strings.Contains(allowErr.Error(), pv.Refusal) {
+		t.Fatalf("preview refusal %q, approval said %v", pv.Refusal, allowErr)
+	}
+}

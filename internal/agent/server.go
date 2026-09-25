@@ -706,6 +706,9 @@ func (s *Server) handle(req Request, c *caller) Response {
 			return Response{OK: false, Error: "job_remove: missing job_name"}
 		}
 		return s.removeJob(req.JobName, c)
+	case OpJobPreview:
+		// Prompt-free: a preview decides nothing and keeps nothing.
+		return Response{OK: true, Preview: s.previewJob(req)}
 	case OpJobRequest:
 		return s.requestJob(req, c)
 	case OpJobProposals:

@@ -339,6 +339,11 @@ const (
 	OpJobRequest   = "job_request"
 	OpJobProposals = "job_proposals"
 	OpJobDismiss   = "job_dismiss"
+	// OpJobPreview runs every check job_allow makes before its prompt and
+	// reports what it resolved, without prompting or keeping anything: what
+	// the app's New AI Job sheet shows before the human spends a Touch ID,
+	// and what `jit job allow --dry-run` prints.
+	OpJobPreview = "job_preview"
 )
 
 // SessionEvent.Kind values.
@@ -569,6 +574,8 @@ type Response struct {
 	JobResult *JobResult `json:"job_result,omitempty"`
 	// Proposals answers job_proposals, and job_request with the one kept.
 	Proposals []JobProposal `json:"proposals,omitempty"`
+	// Preview answers job_preview.
+	Preview *JobPreview `json:"preview,omitempty"`
 }
 
 // GrantStatus is one process grant as the agent reports it — deliberately
@@ -606,6 +613,24 @@ type JobStatus struct {
 	LastCaller   string       `json:"last_caller,omitempty"`
 	LastRefusal  string       `json:"last_refusal,omitempty"`
 	LastHidden   int          `json:"last_hidden,omitempty"`
+}
+
+// JobPreview is what approving a job WOULD do, from the same checks
+// job_allow runs before its prompt. Refusal, when set, is approval's own
+// reason, word for word; nothing else is meaningful then.
+type JobPreview struct {
+	Refusal string            `json:"refusal,omitempty"`
+	Dir     string            `json:"dir,omitempty"`
+	Exe     string            `json:"exe,omitempty"`
+	Program string            `json:"program,omitempty"`
+	Files   int               `json:"files,omitempty"`
+	Extra   []string          `json:"extra,omitempty"`
+	Secrets []JobSecretStatus `json:"secrets,omitempty"`
+	Ask     string            `json:"ask,omitempty"`
+	// Exists says approving would replace a job of the same name.
+	Exists bool `json:"exists,omitempty"`
+	// Prompt is the Touch ID sentence approval will show, exactly.
+	Prompt string `json:"prompt,omitempty"`
 }
 
 // JobProposal is a job an agent proposed and the human has not answered.

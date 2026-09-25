@@ -34,6 +34,7 @@ var (
 	jobReplace     bool
 	jobDescription string
 	jobAsk         string
+	jobDryRun      bool
 	jobListFormat  string
 	jobRunFormat   string
 )
@@ -148,6 +149,7 @@ func init() {
 	jobAllowCmd.Flags().StringArrayVar(&jobOutputs, "output", nil, "a folder the job writes into (repeatable)")
 	jobAllowCmd.Flags().BoolVar(&jobReplace, "replace", false, "approve over an existing job of the same name")
 	jobAllowCmd.Flags().StringVar(&jobDescription, "description", "", "one line an AI tool sees in the job list")
+	jobAllowCmd.Flags().BoolVar(&jobDryRun, "dry-run", false, "check the job and show what approving it would do, without asking or keeping anything")
 	jobAllowCmd.Flags().StringVar(&jobAsk, "ask", string(job.AskEachTime), "each-time (Touch ID per run) or never (runs unasked until you remove it)")
 	jobListCmd.Flags().StringVar(&jobListFormat, "format", "text", "output format: text or json")
 	jobRunCmd.Flags().StringVar(&jobRunFormat, "format", "text", "output format: text or json")
@@ -239,6 +241,9 @@ func runJobAllow(out io.Writer, name string, argv []string) error {
 	ac, err := agentClient()
 	if err != nil {
 		return err
+	}
+	if jobDryRun {
+		return printJobPreview(out, ac, name, spec, home)
 	}
 	st, err := ac.JobAllow(name, spec)
 	if err != nil {
@@ -541,4 +546,29 @@ func completeJobNames(cmd *cobra.Command, args []string, toComplete string) ([]s
 		}
 	}
 	return out, cobra.ShellCompDirectiveNoFileComp
+}
+
+// printJobPreview is `jit job allow --dry-run`: the service's own checks,
+// run exactly as approval runs them, with nothing asked and nothing kept.
+// It is the terminal's side of what the app's New AI Job sheet shows.
+func printJobPreview(out io.Writer, ac *agent.Client, name string, spec agent.JobSpec, home string) error {
+	p, err := ac.JobPreview(name, spec)
+	if err != nil {
+		return jobAgentErr("job_preview", err)
+	}
+	if p.Refusal != "" {
+		return fmt.Errorf("%s", strings.TrimPrefix(p.Refusal, "job_allow: "))
+	}
+	_, _ = cOK.Fprint(out, glyphOK)
+	fmt.Fprintf(out, " Would approve %s · %s fingerprinted\n", name, countWord(p.Files, "file", "files"))
+	fmt.Fprintf(out, "  program  %s\n", displayPath(home, p.Exe))
+	for _, e := range p.Extra {
+		fmt.Fprintf(out, "  outside  %s\n", displayPath(home, e))
+	}
+	if p.Exists {
+		fmt.Fprintf(out, "  replaces the job already named %s\n", name)
+	}
+	fmt.Fprintf(out, "  Touch ID will say: jit is trying to %s.\n", p.Prompt)
+	fmt.Fprintln(out, "  Nothing was asked and nothing was kept.")
+	return nil
 }
