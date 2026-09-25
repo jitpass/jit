@@ -109,3 +109,39 @@ func TestGrantKeysDeleteClearsBoth(t *testing.T) {
 	}
 	_ = keystore.KindKeychain
 }
+
+// Plan C3: the target is the vault key's kind.
+func TestGrantKeyMoverTargetFollowsTheVaultKey(t *testing.T) {
+	root := t.TempDir()
+	stubKeyStores(t)
+	g, _, _, _ := fakeGrantStore(t, root)
+	if w := g.TargetWrap(); w != agent.GrantWrapKeychain {
+		t.Fatalf("keychain vault target %q", w)
+	}
+	plantSealedKeyFile(t, root)
+	if w := g.TargetWrap(); w != agent.GrantWrapEnclave {
+		t.Fatalf("enclave vault target %q", w)
+	}
+}
+
+// A crashed move left a new key behind; the retry reuses it instead of being
+// refused by Create's "already exists".
+func TestGrantKeyMoverCreateReusesACrashedMovesKey(t *testing.T) {
+	g, calls, _, se := fakeGrantStore(t, t.TempDir())
+	se.have["g"] = true
+	if _, err := g.CreateWrap("g", agent.GrantWrapEnclave); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 1 || (*calls)[0] != "enclave load g" {
+		t.Fatalf("calls = %q, want a load of the existing key, not a create", *calls)
+	}
+}
+
+func TestGrantKeyMoverDeleteToleratesAnUnreachableEnclave(t *testing.T) {
+	g, _, _, se := fakeGrantStore(t, t.TempDir())
+	se.deleteErr = secureenclave.ErrUnavailable
+	g.enclave = se
+	if err := g.DeleteWrap("g", agent.GrantWrapEnclave); err != nil {
+		t.Fatalf("got %v", err)
+	}
+}

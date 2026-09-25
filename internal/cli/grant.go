@@ -696,6 +696,49 @@ func (g grantKeyStore) Delete(id string) error {
 	return errors.Join(err, g.keys.Delete(id))
 }
 
+// The agent.GrantKeyMover half (plan C3): at service start the agent moves
+// every existing grant and job key to TargetWrap, the kind the vault's own
+// key is.
+
+var _ agent.GrantKeyMover = grantKeyStore{}
+
+func (g grantKeyStore) TargetWrap() string {
+	if openKeyStore(g.root).Kind() == keystore.KindSecureEnclave {
+		return agent.GrantWrapEnclave
+	}
+	return agent.GrantWrapKeychain
+}
+
+func (g grantKeyStore) backend(wrap string) grantKeyBackend {
+	if wrap == agent.GrantWrapEnclave {
+		return g.enclave
+	}
+	return g.keys
+}
+
+func (g grantKeyStore) LoadWrap(id, wrap string) (agent.GrantKey, error) {
+	return g.backend(wrap).Load(id)
+}
+
+// CreateWrap returns the key a crashed move already made rather than
+// refusing it: that key sealed nothing that was kept, and the move is
+// starting over.
+func (g grantKeyStore) CreateWrap(id, wrap string) (agent.GrantKey, error) {
+	b := g.backend(wrap)
+	if ok, err := b.Present(id); err == nil && ok {
+		return b.Load(id)
+	}
+	return b.Create(id)
+}
+
+func (g grantKeyStore) DeleteWrap(id, wrap string) error {
+	err := g.backend(wrap).Delete(id)
+	if errors.Is(err, secureenclave.ErrUnavailable) {
+		return nil
+	}
+	return err
+}
+
 type keychainGrantKeys struct{ keys keychainwrap.GrantKeys }
 
 func (k keychainGrantKeys) Create(id string) (agent.GrantKey, error) {
