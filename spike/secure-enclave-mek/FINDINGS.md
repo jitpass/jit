@@ -292,6 +292,18 @@ it. Hardware tests: `TestHardwareDeleteAnOldJitsItem` and
 `TestHardwareFinishMoveOverAnOldJitsItem` (cli) run the owner's exact state
 with TEST-ONLY names, unattended; each fails with the fallback switched off.
 
+Review of #170 (2026-09-26) tightened the fix: the reference lookup carries
+`kSecUseAuthenticationUIFail` and searches only the default (login)
+keychain, the lookup and each `SecKeychainItemDelete` run with keychain
+interaction off (scoped, restored), an empty lookup after -25244 is the
+original error rather than success, and a reference delete counts only once
+a presence check finds the item gone (`deleteItem`, Go, fake-tested). The
+hardware tests now run with keychain interaction off for the whole binary
+(`DisallowKeychainUITesting`), and each old-jit test starts from the same
+control: `SecItemDelete` alone still answers -25244 on that item. All pass
+on this Mac; with the fallback switched off, the delete, the promote and
+the cli move test fail with -25244.
+
 Not measured: an item created by a Developer ID signed jit (this Mac has only
 the team's Apple Development identity). The partition entry is
 `teamid:CZC6BH93GJ` for both certificates, and row 4 shows the refusal

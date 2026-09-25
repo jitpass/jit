@@ -81,13 +81,15 @@ type statusVault struct {
 	// --wrapper <that value>` finishes it.
 	MoveUnfinished string `json:"move_unfinished,omitempty"`
 	// KeychainCopyLeft: the key is in the Secure Enclave, and the login
-	// keychain still holds a copy of it under the vault key's name
-	// (com.jitpass.vault.mek), which a move could not delete. jit never
-	// reads that copy (keystore.Open follows the sealed file), but any
-	// program running as the user could, which is what the move was meant
-	// to end. `jit vault rekey --wrapper secure-enclave` removes it. Read
-	// from the item's metadata, never its bytes: no prompt. Omitted when
-	// false, and while a move is unfinished (MoveUnfinished says that).
+	// keychain still holds an item under the vault key's name
+	// (com.jitpass.vault.mek): usually the copy a move could not delete,
+	// though only a read could say it is the same key. This jit never reads
+	// it (keystore.Open follows the sealed file), but any program running
+	// as the user, and an older jit, can, which is what the move was meant
+	// to end. `jit vault rekey --wrapper secure-enclave` removes it (and
+	// explains --force when it is not the vault's key or can't be read).
+	// Read from the item's metadata, never its bytes: no prompt. Omitted
+	// when false, and while a move is unfinished (MoveUnfinished says that).
 	KeychainCopyLeft bool `json:"keychain_copy_left,omitempty"`
 	// RestorePending: the vault's Secure Enclave key was lost, `jit vault
 	// init` made a new key, and secrets sealed to the old one are still on
@@ -482,8 +484,9 @@ func gatherVaultStatusWith(v *vault.Vault, root string, lost lostKeyCheck) (stat
 
 // printStatusKeyRows prints the vault-key states that need one command: an
 // unfinished move of the key and secrets still sealed to a lost key (red:
-// both are broken today), and a keychain copy a move left behind (amber).
-// Silent otherwise.
+// both are broken today), and a key under the vault key's name still in the
+// keychain of an enclave vault (red too: doctor's vault_key_copy is a
+// problem, and the two must agree). Silent otherwise.
 func printStatusKeyRows(w io.Writer, v statusVault) {
 	if v.MoveUnfinished != "" {
 		statusLabel(w, "key")
@@ -496,12 +499,14 @@ func printStatusKeyRows(w io.Writer, v statusVault) {
 		printStatusAction(w, fmt.Sprintf("`jit vault rekey --wrapper %s` to finish it", v.MoveUnfinished))
 	}
 	if v.KeychainCopyLeft {
-		// Amber, not red: nothing fails today and the vault opens from the
-		// enclave. It is exposure: the key the move was meant to lock away
-		// can still be read from the keychain.
+		// Red, like doctor's vault_key_copy: nothing fails today and the
+		// vault opens from the enclave, but a key the move was meant to lock
+		// away can be read from the keychain by any program running as you
+		// and by an older jit. Worded as what is known: an item has the
+		// vault key's name. Whether it holds the same key takes a read.
 		statusLabel(w, "key")
-		_, _ = cWarn.Fprint(w, glyphWarn+" ")
-		printStatusGlyphValue(w, "an old copy is still in your keychain")
+		_, _ = cRisk.Fprint(w, glyphRisk+" ")
+		printStatusGlyphValue(w, "a key is still in your keychain under the vault key's name")
 		printStatusAction(w, "`jit vault rekey --wrapper secure-enclave` to remove it")
 	}
 	switch {

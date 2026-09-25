@@ -758,8 +758,12 @@ func TestKeychainCopyIsReported(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	printStatusKeyRows(&buf, vs)
-	if out := strings.Join(strings.Fields(buf.String()), " "); !strings.Contains(out, "an old copy is still in your keychain") || !strings.Contains(out, "jit vault rekey --wrapper secure-enclave") {
+	if out := strings.Join(strings.Fields(buf.String()), " "); !strings.Contains(out, "a key is still in your keychain under the vault key's name") || !strings.Contains(out, "jit vault rekey --wrapper secure-enclave") {
 		t.Errorf("status text does not report the copy:\n%s", out)
+	}
+	// The same severity as doctor's finding (a problem, below): red.
+	if !strings.Contains(buf.String(), glyphRisk) || strings.Contains(buf.String(), glyphWarn) {
+		t.Errorf("status shows the copy as advisory, doctor as a problem:\n%s", buf.String())
 	}
 
 	findings := withFixes(gatherVaultIntegrityFindings(w.root, v))
@@ -767,7 +771,7 @@ func TestKeychainCopyIsReported(t *testing.T) {
 		t.Fatalf("want one vault_key_copy finding, got %+v", findings)
 	}
 	f := findings[0]
-	if want := "the vault key is in the Secure Enclave, but an old copy is still in your keychain, where any program running as you can read it."; f.Detail != want {
+	if want := "the vault key is in the Secure Enclave, but a key is still in your keychain under the vault key's name, where any program running as you can read it."; f.Detail != want {
 		t.Errorf("detail = %q, want %q", f.Detail, want)
 	}
 	wantFix := []doctorFix{{

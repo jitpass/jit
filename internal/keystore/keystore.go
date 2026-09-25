@@ -27,6 +27,7 @@ package keystore
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -100,10 +101,35 @@ type Store interface {
 	// command, so a command asks once and the next command asks again.
 	NewWrapper() Wrapper
 	// Init creates the key if there is none. Idempotent (`jit vault init`).
-	Init() error
+	// The result says what it did, for the command to report.
+	Init() (InitResult, error)
 	// Delete destroys the key. Every secret it protected is gone with it.
 	Delete() error
 }
+
+// InitResult is what Store.Init did.
+type InitResult int
+
+const (
+	// InitReady: the key was there, or was made for a new vault.
+	InitReady InitResult = iota
+	// InitNewKey: the vault's Secure Enclave key was lost and a new
+	// keychain key was made. The old secrets stay on disk, sealed to the
+	// lost key, until `jit vault import` brings them back (restore_pending).
+	InitNewKey
+	// InitRecovered: the vault's Secure Enclave key was lost, and the
+	// keychain still held the vault's own key (a copy a move into the
+	// enclave could not delete), measured by it opening every secret. The
+	// vault opens from the keychain now, and nothing waits for a restore.
+	InitRecovered
+)
+
+// ErrEnclaveKeyKept and ErrKeychainCopyKept say which key an enclave
+// vault's Delete could not remove; both may be in one error (errors.Is).
+var (
+	ErrEnclaveKeyKept   = errors.New("couldn't delete the vault key in the Secure Enclave")
+	ErrKeychainCopyKept = errors.New("couldn't delete the keychain copy of the vault key")
+)
 
 // Open returns the Store for the vault at root. Until step B3 it is the
 // keychain for every vault; root is taken now so that no caller changes
@@ -135,6 +161,14 @@ func Keychain() *keychainwrap.Wrapper {
 // vault_key_copy). Metadata only (keychainwrap.MEKPresence).
 func KeychainCopy() Presence { return keychainStore{}.Presence() }
 
+// DeleteKeychainCopy deletes the keychain item under the vault key's name,
+// whichever backend the vault uses; a missing item is done. For `jit vault
+// init` removing a key a deleted vault left behind, on the user's yes.
+func DeleteKeychainCopy() error { return deleteKeychainCopy() }
+
+// KeychainItemName is the vault key item's name as Keychain Access lists it.
+const KeychainItemName = keychainwrap.VaultKeyItem
+
 type keychainStore struct{}
 
 func (keychainStore) Kind() Kind { return KindKeychain }
@@ -153,7 +187,7 @@ func (keychainStore) NewFetcher() Fetcher { return keychainwrap.New() }
 
 func (keychainStore) NewWrapper() Wrapper { return keychainwrap.New() }
 
-func (keychainStore) Init() error { return initKeychain() }
+func (keychainStore) Init() (InitResult, error) { return InitReady, initKeychain() }
 
 // initKeychain creates the keychain key; a var so no test reaches the
 // production keychain item (keychainwrap's TEST-ONLY rule).
@@ -212,27 +246,139 @@ const LostSealedFile = vault.LostSealedKeyFile
 // were, and stay on disk; vault.SetAsideLostSealedKey records which they are
 // so `jit status` (restore_pending) and `jit doctor` (vault_restore) keep
 // saying so until the import has brought them back.
-func (s enclaveStore) Init() error {
+//
+// Except when the keychain already holds a key under the vault key's name.
+// Making a "new" key would quietly adopt it (kw_ensure_mek keeps an item it
+// finds), so Init never gets that far without deciding what the item is:
+//
+//   - It may be the vault's own key, left by a move into the enclave that
+//     could not delete it: then it rescues every secret. It counts as that
+//     only when it opens every live secret's key (leftoverOpens; the item is
+//     read with no challenge and no dialog, so init still asks nothing).
+//     The vault then opens from the keychain: the sealed file is set aside
+//     under a name no lost-key rule reads, no lost-key record is written,
+//     and Init reports InitRecovered.
+//   - Anything else (a key that opens none, or only some, of the secrets; a
+//     vault with no secrets to try it on; an item that can't be read without
+//     asking) is refused with nothing changed, naming the item to delete.
+//     Keeping the vault on a key jit can't vouch for, silently, is the one
+//     outcome this must not have.
+func (s enclaveStore) Init() (InitResult, error) {
 	switch s.Presence() {
 	case Present:
-		return nil
+		return InitReady, nil
 	case KeyLost:
-		if err := vault.SetAsideLostSealedKey(s.root, time.Now()); err != nil {
-			return err
+		switch leftoverPresence() {
+		case Absent:
+			if err := vault.SetAsideLostSealedKey(s.root, time.Now()); err != nil {
+				return InitReady, err
+			}
+			return InitNewKey, initKeychain()
+		case Present:
+			return s.initOverLeftover()
 		}
-		return keychainStore{}.Init()
+		return InitReady, errors.New("the vault's Secure Enclave key is lost,\n" +
+			"and jit couldn't check your keychain for a key under its name.\n" +
+			"Nothing changed; try again")
 	case Unavailable:
-		return secureenclave.ErrUnavailable
+		return InitReady, secureenclave.ErrUnavailable
 	}
-	return errors.New("could not check this vault's Secure Enclave key")
+	return InitReady, errors.New("could not check this vault's Secure Enclave key")
+}
+
+// initOverLeftover is Init's decision over a keychain item found when the
+// enclave key is lost (see Init).
+func (s enclaveStore) initOverLeftover() (InitResult, error) {
+	opened, total, err := leftoverOpens(s.root)
+	if err != nil {
+		return InitReady, fmt.Errorf("the vault's Secure Enclave key is lost,\n"+
+			"and jit couldn't check the key in your keychain under its name: %w\n"+
+			"Nothing changed; try again", err)
+	}
+	if total > 0 && opened == total {
+		from := filepath.Join(s.root, vault.SealedKeyFile)
+		to := filepath.Join(s.root, RecoveredSealedFile+"-"+time.Now().UTC().Format("20060102T150405.000000000Z"))
+		if err := os.Rename(from, to); err != nil {
+			return InitReady, fmt.Errorf("setting the lost vault key's file aside: %w", err)
+		}
+		return InitRecovered, nil
+	}
+	var why string
+	switch {
+	case total == 0:
+		why = "with no secrets to try it on, jit can't tell whose it is"
+	case opened == 0:
+		why = "it opens none of this vault's secrets"
+	default:
+		why = fmt.Sprintf("it opens only %d of this vault's %d secrets", opened, total)
+	}
+	return InitReady, fmt.Errorf("the vault's Secure Enclave key is lost.\n"+
+		"A key in your keychain has the vault key's name, but %s.\n"+
+		"jit won't use it; nothing changed.\n"+
+		"Delete %q in Keychain Access,\n"+
+		"then run `jit vault init` again", why, KeychainItemName)
+}
+
+// RecoveredSealedFile is where Init sets the sealed file aside once the
+// keychain's own copy of the key has rescued the vault. Not
+// LostSealedFile: nothing is sealed to a lost key any more, and every
+// lost-key rule reads that name.
+const RecoveredSealedFile = vault.SealedKeyFile + ".recovered"
+
+// leftoverPresence is KeychainCopy, and leftoverOpens is the measure of a
+// leftover key, as vars so no test reaches the production keychain item.
+var (
+	leftoverPresence = KeychainCopy
+	leftoverOpens    = func(root string) (int, int, error) { return keychainKeyOpens(root, keychainwrap.New()) }
+)
+
+// keyCounter is what keychainKeyOpens needs of a keychain item.
+type keyCounter interface {
+	CountOpens([]keychainwrap.WrappedKey) (int, error)
+}
+
+// keychainKeyOpens reports how many of the vault's live secrets the keychain
+// item kc opens, out of how many. It reads the item quietly
+// (keychainwrap.CountOpens: no challenge, no dialog); a secret whose
+// envelope can't be read counts as one it does not open.
+func keychainKeyOpens(root string, kc keyCounter) (opened, total int, err error) {
+	id, err := vault.EnsureDeviceID(root)
+	if err != nil {
+		return 0, 0, err
+	}
+	v := &vault.Vault{Root: root, RecipientID: id}
+	paths, err := v.List()
+	if err != nil {
+		return 0, 0, err
+	}
+	var keys []keychainwrap.WrappedKey
+	for _, p := range paths {
+		if wrapped, class, err := v.WrappedDEK(p); err == nil {
+			keys = append(keys, keychainwrap.WrappedKey{Wrapped: wrapped, Class: class})
+		}
+	}
+	if len(keys) == 0 {
+		return 0, len(paths), nil
+	}
+	opened, err = kc.CountOpens(keys)
+	return opened, len(paths), err
 }
 
 // Delete destroys the enclave key, and a keychain copy of the same key if a
 // move into the enclave left one: after `jit vault delete`, a copy left
 // behind would be picked up as the NEW vault's key by the next `jit vault
 // init` (kw_ensure_mek keeps an item it finds), quietly reviving the old key.
+// Each failure says which key it was (ErrEnclaveKeyKept,
+// ErrKeychainCopyKept), because the caller's next step depends on it.
 func (s enclaveStore) Delete() error {
-	return errors.Join(newEnclaveWrapper(s.root).Delete(), deleteKeychainCopy())
+	var errs []error
+	if err := newEnclaveWrapper(s.root).Delete(); err != nil {
+		errs = append(errs, fmt.Errorf("%w: %w", ErrEnclaveKeyKept, err))
+	}
+	if err := deleteKeychainCopy(); err != nil {
+		errs = append(errs, fmt.Errorf("%w: %w", ErrKeychainCopyKept, err))
+	}
+	return errors.Join(errs...)
 }
 
 // deleteKeychainCopy removes the keychain item under the vault key's name; a
