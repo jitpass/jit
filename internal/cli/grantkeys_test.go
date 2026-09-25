@@ -19,6 +19,7 @@ type fakeBackend struct {
 	have      map[string]bool
 	calls     *[]string
 	deleteErr error
+	listErr   error
 }
 
 type fakeGrantKey struct{ agent.GrantKey }
@@ -38,6 +39,17 @@ func (f fakeBackend) Load(id string) (agent.GrantKey, error) {
 }
 
 func (f fakeBackend) Present(id string) (bool, error) { return f.have[id], nil }
+
+func (f fakeBackend) List() ([]string, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	var out []string
+	for id := range f.have {
+		out = append(out, id)
+	}
+	return out, nil
+}
 
 func (f fakeBackend) Delete(id string) error {
 	*f.calls = append(*f.calls, f.name+" delete "+id)
@@ -108,4 +120,62 @@ func TestGrantKeysDeleteClearsBoth(t *testing.T) {
 		t.Fatal("a real enclave failure was swallowed")
 	}
 	_ = keystore.KindKeychain
+}
+
+// Plan C3: the target is the vault key's kind.
+func TestGrantKeyMoverTargetFollowsTheVaultKey(t *testing.T) {
+	root := t.TempDir()
+	stubKeyStores(t)
+	g, _, _, _ := fakeGrantStore(t, root)
+	if w := g.TargetWrap(); w != agent.GrantWrapKeychain {
+		t.Fatalf("keychain vault target %q", w)
+	}
+	plantSealedKeyFile(t, root)
+	if w := g.TargetWrap(); w != agent.GrantWrapEnclave {
+		t.Fatalf("enclave vault target %q", w)
+	}
+}
+
+// A crashed move left a new key behind; the retry reuses it instead of being
+// refused by Create's "already exists".
+func TestGrantKeyMoverCreateReusesACrashedMovesKey(t *testing.T) {
+	g, calls, _, se := fakeGrantStore(t, t.TempDir())
+	se.have["g"] = true
+	if _, err := g.CreateWrap("g", agent.GrantWrapEnclave); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 1 || (*calls)[0] != "enclave load g" {
+		t.Fatalf("calls = %q, want a load of the existing key, not a create", *calls)
+	}
+}
+
+func TestGrantKeyMoverDeleteToleratesAnUnreachableEnclave(t *testing.T) {
+	g, _, _, se := fakeGrantStore(t, t.TempDir())
+	se.deleteErr = secureenclave.ErrUnavailable
+	g.enclave = se
+	if err := g.DeleteWrap("g", agent.GrantWrapEnclave); err != nil {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// Plan C4: the ids come from both places; an enclave this jit cannot reach
+// adds none rather than failing the list.
+func TestGrantKeyListerUnionsBothBackends(t *testing.T) {
+	g, _, kc, se := fakeGrantStore(t, t.TempDir())
+	kc.have["g-00000001"] = true
+	se.have["j-00000002"] = true
+	ids, err := g.ListGrantKeyIDs()
+	if err != nil || len(ids) != 2 {
+		t.Fatalf("ids %v, err %v", ids, err)
+	}
+	se.listErr = secureenclave.ErrUnavailable
+	g.enclave = se
+	if ids, err := g.ListGrantKeyIDs(); err != nil || len(ids) != 1 {
+		t.Fatalf("unreachable enclave: ids %v, err %v", ids, err)
+	}
+	se.listErr = errors.New("boom")
+	g.enclave = se
+	if _, err := g.ListGrantKeyIDs(); err == nil {
+		t.Fatal("a real enclave failure was swallowed; the service log should show it")
+	}
 }

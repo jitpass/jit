@@ -5,9 +5,16 @@
 
 package keychainwrap
 
+/*
+#include "keychain.h"
+#include <stdlib.h>
+*/
+import "C"
+
 import (
 	"errors"
 	"fmt"
+	"unsafe"
 )
 
 // A standing grant's own key (design/standing-grants.md): one plain keychain
@@ -105,6 +112,29 @@ func (g GrantKeys) Delete(id string) error {
 		return nil
 	}
 	return w.deleteMEK()
+}
+
+// List returns every grant id with a keychain key, from metadata only: it
+// never reads a key and never prompts. For the orphan-key cleanup (plan C4).
+func (g GrantKeys) List() ([]string, error) {
+	cService := C.CString(g.serviceName())
+	defer C.free(unsafe.Pointer(cService))
+	var accounts **C.char
+	var n C.int
+	if err := goErr(C.kw_list_accounts(cService, &accounts, &n)); err != nil {
+		return nil, err
+	}
+	if accounts == nil {
+		return nil, nil
+	}
+	defer C.free(unsafe.Pointer(accounts))
+	list := unsafe.Slice(accounts, int(n))
+	ids := make([]string, 0, len(list))
+	for _, a := range list {
+		ids = append(ids, C.GoString(a))
+		C.free(unsafe.Pointer(a))
+	}
+	return ids, nil
 }
 
 // Seal wraps a DEK under the grant key with the secret's class as AAD,

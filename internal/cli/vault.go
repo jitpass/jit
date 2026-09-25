@@ -2437,7 +2437,7 @@ var vaultDeleteCmd = &cobra.Command{
 		// above is bypassable with --yes, so this fingerprint/passcode is the
 		// real barrier against a same-user process wiping everything, and it
 		// is required whether the agent is locked or not.
-		if err := requireUserPresence("permanently destroy the entire vault and its encryption key"); err != nil {
+		if err := requireUserPresence(reasonVaultDelete); err != nil {
 			return fmt.Errorf("jit vault delete: %w", err)
 		}
 

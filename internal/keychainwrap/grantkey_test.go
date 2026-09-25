@@ -187,3 +187,28 @@ func TestGrantKeysServiceName(t *testing.T) {
 		t.Error("a test store's service name must say so out loud")
 	}
 }
+
+// Plan C4: List names every grant key under the service, from metadata only.
+func TestGrantKeysList(t *testing.T) {
+	g := testGrantKeys(t)
+	if ids, err := g.List(); err != nil || len(ids) != 0 {
+		t.Fatalf("empty store: %v, %v", ids, err)
+	}
+	for _, id := range []string{"g-00000001", "j-00000002"} {
+		t.Cleanup(func() { _ = g.Delete(id) })
+		if _, err := g.Create(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids, err := g.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, id := range ids {
+		got[id] = true
+	}
+	if len(ids) != 2 || !got["g-00000001"] || !got["j-00000002"] {
+		t.Fatalf("List = %v", ids)
+	}
+}
