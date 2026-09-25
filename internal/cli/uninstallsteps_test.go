@@ -14,7 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jitpass/jit/internal/guard"
-	"github.com/jitpass/jit/internal/keychainwrap"
+	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/wrap"
 )
@@ -128,14 +128,14 @@ func TestUninstallGateRelaxesOnlyWhenTheKeyIsProvablyGone(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		secrets  int
-		presence keychainwrap.MEKPresence
+		presence keystore.Presence
 		want     bool
 	}{
-		{"secrets and a key", 3, keychainwrap.MEKPresent, true},
-		{"secrets, key gone", 3, keychainwrap.MEKAbsent, false},
-		{"secrets, key unknowable", 3, keychainwrap.MEKIndeterminate, true},
-		{"empty vault", 0, keychainwrap.MEKPresent, false},
-		{"unreadable vault", -1, keychainwrap.MEKPresent, false},
+		{"secrets and a key", 3, keystore.Present, true},
+		{"secrets, key gone", 3, keystore.Absent, false},
+		{"secrets, key unknowable", 3, keystore.Indeterminate, true},
+		{"empty vault", 0, keystore.Present, false},
+		{"unreadable vault", -1, keystore.Present, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stubKeychain(t, tc.presence)
@@ -155,7 +155,7 @@ func TestUninstallPurgeLeavesNothingBehind(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("SHELL", "/bin/zsh")
 	t.Setenv("ZDOTDIR", "")
-	stubKeychain(t, keychainwrap.MEKPresent)
+	stubKeychain(t, keystore.Present)
 
 	origLaunchctl, origDelete, origChallenge := launchctlRun, deleteVaultKeys, uninstallChallenge
 	t.Cleanup(func() {

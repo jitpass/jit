@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jitpass/jit/internal/keychainwrap"
+	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/profile"
 	"github.com/jitpass/jit/internal/vault"
 )
@@ -20,10 +20,10 @@ import (
 // master-key probe: the real vaultMasterKeyPresence reads the PRODUCTION
 // keychain, so an un-stubbed test would assert whatever the machine running it
 // happens to hold (present on a developer's Mac, absent on a CI runner).
-func stubKeychain(t *testing.T, presence keychainwrap.MEKPresence) {
+func stubKeychain(t *testing.T, presence keystore.Presence) {
 	t.Helper()
 	orig := vaultMasterKeyPresence
-	vaultMasterKeyPresence = func() keychainwrap.MEKPresence { return presence }
+	vaultMasterKeyPresence = func() keystore.Presence { return presence }
 	t.Cleanup(func() { vaultMasterKeyPresence = orig })
 }
 
@@ -45,7 +45,7 @@ func fixtureRoot(home string) string {
 func TestVaultKeyMissingIsAHardProblem(t *testing.T) {
 	home := withFixtureHome(t)
 	plantVaultSecret(t, home, "aws/s3-access-key")
-	stubKeychain(t, keychainwrap.MEKAbsent)
+	stubKeychain(t, keystore.Absent)
 
 	findings := gatherVaultIntegrityFindings(fixtureRoot(home), fixtureVault(home))
 	if len(findings) != 1 || findings[0].Kind != kindVaultKey {
@@ -63,7 +63,7 @@ func TestVaultKeyMissingIsAHardProblem(t *testing.T) {
 func TestVaultKeyPresentIsSilent(t *testing.T) {
 	home := withFixtureHome(t)
 	plantVaultSecret(t, home, "aws/s3-access-key")
-	stubKeychain(t, keychainwrap.MEKPresent)
+	stubKeychain(t, keystore.Present)
 
 	if findings := gatherVaultIntegrityFindings(fixtureRoot(home), fixtureVault(home)); len(findings) != 0 {
 		t.Errorf("a healthy vault must be silent, got %+v", findings)
@@ -75,7 +75,7 @@ func TestVaultKeyPresentIsSilent(t *testing.T) {
 // already reports it; doctor must not call it a problem.
 func TestVaultKeyEmptyVaultIsSilent(t *testing.T) {
 	home := withFixtureHome(t)
-	stubKeychain(t, keychainwrap.MEKAbsent)
+	stubKeychain(t, keystore.Absent)
 
 	if findings := gatherVaultIntegrityFindings(fixtureRoot(home), fixtureVault(home)); len(findings) != 0 {
 		t.Errorf("an empty vault with no key must be silent, got %+v", findings)
@@ -92,7 +92,7 @@ func TestVaultKeyEmptyVaultIsSilent(t *testing.T) {
 func TestVaultKeyMissingIsDetectedNonInteractively(t *testing.T) {
 	home := withFixtureHome(t)
 	plantVaultSecret(t, home, "aws/s3-access-key")
-	stubKeychain(t, keychainwrap.MEKAbsent)
+	stubKeychain(t, keystore.Absent)
 
 	findings := gatherVaultIntegrityFindings(fixtureRoot(home), fixtureVault(home))
 	if len(findings) != 1 || findings[0].Kind != kindVaultKey {
@@ -107,7 +107,7 @@ func TestVaultKeyMissingIsDetectedNonInteractively(t *testing.T) {
 func TestVaultKeyIndeterminateIsSilent(t *testing.T) {
 	home := withFixtureHome(t)
 	plantVaultSecret(t, home, "aws/s3-access-key")
-	stubKeychain(t, keychainwrap.MEKIndeterminate)
+	stubKeychain(t, keystore.Indeterminate)
 
 	if findings := gatherVaultIntegrityFindings(fixtureRoot(home), fixtureVault(home)); len(findings) != 0 {
 		t.Errorf("an indeterminate probe must stay silent, not raise a false alarm, got %+v", findings)
@@ -121,7 +121,7 @@ func TestVaultKeyIndeterminateIsSilent(t *testing.T) {
 func TestRekeyInProgressIsAHardProblem(t *testing.T) {
 	home := withFixtureHome(t)
 	root := fixtureRoot(home)
-	stubKeychain(t, keychainwrap.MEKPresent)
+	stubKeychain(t, keystore.Present)
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -483,7 +483,7 @@ func TestLegacyEnvelopesAreReportedAsAdvisory(t *testing.T) {
 	home := withFixtureHome(t)
 	plantLegacySecret(t, home, "legacy/old-key")
 	plantVaultSecret(t, home, "modern/current")
-	stubKeychain(t, keychainwrap.MEKPresent)
+	stubKeychain(t, keystore.Present)
 
 	findings := gatherVaultIntegrityFindings(fixtureRoot(home), fixtureVault(home))
 	if len(findings) != 1 || findings[0].Kind != kindLegacyEnvelope {
@@ -511,7 +511,7 @@ func TestCurrentEnvelopesAreSilent(t *testing.T) {
 	home := withFixtureHome(t)
 	plantVaultSecret(t, home, "modern/current")
 	plantOriginSecret(t, home, "modern/other", "~/code/app/.env")
-	stubKeychain(t, keychainwrap.MEKPresent)
+	stubKeychain(t, keystore.Present)
 
 	if findings := gatherVaultIntegrityFindings(fixtureRoot(home), fixtureVault(home)); len(findings) != 0 {
 		t.Errorf("a current vault must be silent about envelope formats, got %+v", findings)
@@ -525,7 +525,7 @@ func TestCurrentEnvelopesAreSilent(t *testing.T) {
 func TestLegacyEnvelopesStaySilentWhenTheMasterKeyIsGone(t *testing.T) {
 	home := withFixtureHome(t)
 	plantLegacySecret(t, home, "legacy/old-key")
-	stubKeychain(t, keychainwrap.MEKAbsent)
+	stubKeychain(t, keystore.Absent)
 
 	findings := gatherVaultIntegrityFindings(fixtureRoot(home), fixtureVault(home))
 	if len(findings) != 1 || findings[0].Kind != kindVaultKey {

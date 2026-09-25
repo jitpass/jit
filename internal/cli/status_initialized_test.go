@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/jitpass/jit/internal/keychainwrap"
+	"github.com/jitpass/jit/internal/keystore"
 )
 
 // TestStatusVaultInitialized pins the one thing a zero secret count cannot
@@ -17,12 +17,12 @@ import (
 // state, the empty vault included.
 func TestStatusVaultInitialized(t *testing.T) {
 	for _, tc := range []struct {
-		presence keychainwrap.MEKPresence
+		presence keystore.Presence
 		want     string
 	}{
-		{keychainwrap.MEKPresent, "yes"},
-		{keychainwrap.MEKAbsent, "no"},
-		{keychainwrap.MEKIndeterminate, "unknown"},
+		{keystore.Present, "yes"},
+		{keystore.Absent, "no"},
+		{keystore.Indeterminate, "unknown"},
 	} {
 		t.Run(tc.want, func(t *testing.T) {
 			home := withFixtureHome(t)

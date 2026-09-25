@@ -12,6 +12,7 @@ import (
 
 	"github.com/jitpass/jit/internal/guard"
 	"github.com/jitpass/jit/internal/keychainwrap"
+	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/vault"
 	"github.com/jitpass/jit/internal/wrap"
@@ -89,12 +90,17 @@ func removeHistoryGuard(home string) (changed, rcEdited bool, err error) {
 // staged beside it. A var so no test can reach the production keychain: the
 // same seam, for the same reason, as vaultMasterKeyPresence.
 var deleteVaultKeys = func() error {
-	w := keychainwrap.New()
-	var errs []error
-	if w.MEKPresence() != keychainwrap.MEKAbsent {
-		errs = append(errs, w.DeleteMEK())
+	ks, err := vaultKeyStore()
+	if err != nil {
+		return err
 	}
-	if w.StagedRekeyWrapper().MEKPresence() == keychainwrap.MEKPresent {
+	var errs []error
+	if ks.Presence() != keystore.Absent {
+		errs = append(errs, ks.Delete())
+	}
+	// The staged key a half-finished rekey left is the keychain's own item
+	// until plan step B4.
+	if w := keystore.Keychain(); w.StagedRekeyWrapper().MEKPresence() == keychainwrap.MEKPresent {
 		errs = append(errs, w.DeleteStagedRekeyMEK())
 	}
 	return errors.Join(errs...)
@@ -121,7 +127,7 @@ var uninstallChallenge = keychainwrap.Challenge
 // present by the bare challenge. An indeterminate probe keeps the strict
 // path: only a definite absence relaxes it.
 func uninstallNeedsVaultKey(secretCount int) bool {
-	return secretCount > 0 && vaultMasterKeyPresence() != keychainwrap.MEKAbsent
+	return secretCount > 0 && vaultMasterKeyPresence() != keystore.Absent
 }
 
 // helperScriptPaths is every credential-helper script migrate can drop.

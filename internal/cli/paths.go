@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -16,6 +17,17 @@ import (
 // (darwin-only, needs keychainwrap) and doctor.go (portable, only needs
 // Vault.Exists/List, neither of which touches KeyWrapper) can share it
 // without doctor.go picking up an unnecessary darwin build constraint.
+// vaultKeyStore is the vault's master-key store (internal/keystore): the one
+// way this package reaches the key, so choosing a backend per vault happens
+// in one place. Callers that already hold the root call keystore.Open.
+func vaultKeyStore() (keystore.Store, error) {
+	root, err := vaultRootDir()
+	if err != nil {
+		return nil, err
+	}
+	return keystore.Open(root), nil
+}
+
 func vaultRootDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {

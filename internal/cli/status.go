@@ -17,7 +17,7 @@ import (
 
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/guard"
-	"github.com/jitpass/jit/internal/keychainwrap"
+	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/vault"
@@ -415,11 +415,11 @@ func gatherVaultStatus(v *vault.Vault, root string) (statusVault, error) {
 }
 
 // vaultInitializedWord renders the master-key probe for statusVault.Initialized.
-func vaultInitializedWord(p keychainwrap.MEKPresence) string {
+func vaultInitializedWord(p keystore.Presence) string {
 	switch p {
-	case keychainwrap.MEKPresent:
+	case keystore.Present:
 		return "yes"
-	case keychainwrap.MEKAbsent:
+	case keystore.Absent:
 		return "no"
 	default:
 		return "unknown"
