@@ -26,7 +26,7 @@
   <a href="https://jitpass.com">jitpass.com</a>
 </p>
 
-<p align="center"><sub>Free for personal and internal company use · Source-available · No account · No telemetry · Nothing leaves your Mac · Secure Enclave protected · Every change can be undone</sub></p>
+<p align="center"><sub>Free for personal and internal company use · Source-available · No account · No telemetry · Nothing leaves your Mac · Secure Enclave ready · Every change can be undone</sub></p>
 
 <p align="center">
   <a href="docs/assets/readme/hero.png"><img src="docs/assets/readme/hero.png" width="880" alt="The JitPass Setup scan: 23 secrets in plain text, found in ~/.aws/credentials, a project .env, ~/.npmrc and ~/.zshrc, with masked values and a Protect 18 Secrets button. Beside it, JitPass asks: aws wants to use a credential, via claude. Deny, or Allow with Touch ID."></a>
