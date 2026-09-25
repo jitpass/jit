@@ -1104,3 +1104,21 @@ func TestJobPreviewIsApprovalWithoutThePrompt(t *testing.T) {
 		t.Fatalf("preview refusal %q, approval said %v", pv.Refusal, allowErr)
 	}
 }
+
+// A client approving a job again must send the profile it was made from:
+// the status says whether that profile is global, which the folder alone
+// cannot, so an edit never turns a ~/.jit/profiles job into a folder one.
+func TestJobStatusSaysWhenItsProfileIsGlobal(t *testing.T) {
+	r := newJobRig(t)
+	st, err := r.c.JobAllow("notion-guests", r.spec())
+	if err != nil || st.ProfileGlobal {
+		t.Fatalf("a folder profile: %v, global %v", err, st.ProfileGlobal)
+	}
+	spec := r.spec()
+	spec.Profile = &GrantProfile{Name: "notion"}
+	spec.Replace = true
+	st, err = r.c.JobAllow("notion-guests", spec)
+	if err != nil || !st.ProfileGlobal {
+		t.Fatalf("a global profile: %v, global %v", err, st.ProfileGlobal)
+	}
+}
