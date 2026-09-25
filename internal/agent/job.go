@@ -44,15 +44,11 @@ const maxJobChanges = 20
 
 // SetJobStore names jobs.json and loads it. Called once at service start. A
 // file that fails to load leaves the service with no jobs and never writes
-// over that file, grants.json's rule.
+// over that file, grants.json's rule. The file is read once: the jobs, the
+// records job.Decode skipped, and every key id it names all come from the
+// same bytes.
 func (s *Server) SetJobStore(path string) (int, error) {
-	jobs, kept, err := job.LoadKeeping(path)
-	var names map[string]bool
-	if err == nil {
-		// Every key id the file names, read raw, including a record
-		// job.Load skipped (grantorphans.go keeps those keys).
-		names, err = jobFileNames(path)
-	}
+	jobs, kept, names, err := loadJobFile(path)
 	s.jobMu.Lock()
 	defer s.jobMu.Unlock()
 	if err != nil {
@@ -63,41 +59,50 @@ func (s *Server) SetJobStore(path string) (int, error) {
 	return len(jobs), nil
 }
 
-func jobFileNames(path string) (map[string]bool, error) {
+func loadJobFile(path string) (map[string]*job.Job, []job.Kept, map[string]bool, error) {
 	data, err := os.ReadFile(path) // #nosec G304 -- a fixed path under jit's own config directory
 	if errors.Is(err, os.ErrNotExist) {
-		return map[string]bool{}, nil
+		return map[string]*job.Job{}, nil, map[string]bool{}, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
+	jobs, kept, err := job.Decode(data)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("%s: %w", path, err)
+	}
+	// Every key id the file names, read raw, including a record job.Decode
+	// skipped (grantorphans.go keeps those keys).
 	names, err := namedKeyIDs(data)
 	if err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", path, err)
+		return nil, nil, nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
-	return names, nil
+	return jobs, kept, names, nil
 }
 
-// saveJobsLocked writes the list. Caller holds jobMu.
+// saveJobsLocked writes the list: the jobs, and the records the loader
+// kept. Caller holds jobMu. Nothing in memory changes here, so a write that
+// fails leaves s.jobs and s.jobKept exactly as the caller's rollback expects.
 func (s *Server) saveJobsLocked() error {
 	if s.jobsPath == "" {
 		return fmt.Errorf("this service has no usable job list (see the service log for why it was not loaded)")
 	}
-	// A kept record a loaded job has since taken the name of is gone for
-	// good: the loaded one won, and must not bring the old one back if it
-	// is removed later.
-	kept := s.jobKept[:0:0]
-	for _, k := range s.jobKept {
-		if _, loaded := s.jobs[k.Name]; !loaded {
-			kept = append(kept, k)
-		}
-	}
-	s.jobKept = kept
 	data, err := job.Encode(s.jobs, s.jobKept)
 	if err != nil {
 		return err
 	}
 	return s.writeState(s.jobsPath, data)
+}
+
+// keptJobNamed reports whether jobs.json holds a record named name that
+// this build could not read (job.Kept). Caller holds jobMu.
+func (s *Server) keptJobNamed(name string) bool {
+	for _, k := range s.jobKept {
+		if k.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // preparedJob is everything approval settles before the Touch ID: the
@@ -182,9 +187,17 @@ func (s *Server) prepareJob(req Request) (*preparedJob, string) {
 	s.jobMu.Lock()
 	_, exists := s.jobs[req.JobName]
 	ready := s.jobsPath != ""
+	unreadable := s.keptJobNamed(req.JobName)
 	s.jobMu.Unlock()
 	if !ready {
 		return nil, "this service has no usable job list, so the job could not be kept (see the service log)"
+	}
+	if unreadable {
+		// Approving would replace a record this build cannot read or show,
+		// and leave its key named by nothing. Refused before the prompt; the
+		// kept records never change after load, so none can appear between
+		// here and the save.
+		return nil, fmt.Sprintf("a job named %s exists that this version of jit can't read - remove it with a newer jit, or choose another name", req.JobName)
 	}
 
 	var sources []JobSecretSource
@@ -496,12 +509,12 @@ func (s *Server) removeJob(name string, c *caller) Response {
 			mayBeEnclave = mayBeEnclave || sec.Wrap == GrantWrapEnclave || !knownWrap(sec.Wrap)
 		}
 		note, err := s.deleteKeyOf(j.KeyID, mayBeEnclave)
+		keyNote = keyNoteOf(note, err)
 		switch {
 		case err != nil:
 			cause = fmt.Sprintf("removed, but its key %s could not be deleted: %s", j.KeyID, err)
 		case note != "":
 			cause = "removed. " + note
-			keyNote = note
 		default:
 			cause = "removed, its key deleted"
 		}

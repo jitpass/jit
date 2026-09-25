@@ -6,11 +6,16 @@
 package agent
 
 import (
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/jitpass/jit/internal/atomicfile"
 	"github.com/jitpass/jit/internal/job"
 )
 
@@ -105,25 +110,31 @@ func TestLedgerKeepsGrantsItCouldNotLoad(t *testing.T) {
 		}
 	}
 
-	// A grant made later under a kept record's id wins, for good.
+	// A grant under a kept record's id (injected here: ids are random,
+	// and Create refuses an id that still has a key) hides the kept record
+	// only while it lives, and a save that fails meanwhile changes nothing
+	// in memory, so the rollback leaves the kept record to the next
+	// successful save.
 	s.grantMu.Lock()
 	s.standing["g-0000000a"] = &standingGrant{id: "g-0000000a", anchorPath: "/Applications/Claude.app", name: "fresh", secrets: map[string]standingSecret{}}
 	s.grantMu.Unlock()
-	if err := s.saveLedger(); err != nil {
-		t.Fatal(err)
+	s.stateWriter = func(string, []byte) error { return errors.New("disk full") }
+	if err := s.saveLedger(); err == nil {
+		t.Fatal("the failing write did not fail the save")
 	}
+	s.stateWriter = nil
 	s.grantMu.Lock()
-	delete(s.standing, "g-0000000a")
+	delete(s.standing, "g-0000000a") // the caller's rollback
 	s.grantMu.Unlock()
 	if err := s.saveLedger(); err != nil {
 		t.Fatal(err)
 	}
-	if n, _ := withField(records(t, ledger, "grants"), "id", "g-0000000a"); n != 0 {
-		t.Fatalf("the kept record came back after the grant that replaced it was revoked (%d copies)", n)
+	if n, got := withField(records(t, ledger, "grants"), "id", "g-0000000a"); n != 1 || !reflect.DeepEqual(got, generic(t, dropped)) {
+		t.Fatalf("a failed save lost the kept record: %d copies, %v", n, got)
 	}
 }
 
-// The same for jobs.json: a job job.Load skips (a name this build rejects,
+// The same for jobs.json: a job job.Decode skips (a name this build rejects,
 // an ask value from a newer jit) is written back unchanged by every save,
 // never listed or run, and its key survives every start. A skipped record
 // named like a loaded job is not kept.
@@ -183,21 +194,178 @@ func TestJobListKeepsJobsItCouldNotLoad(t *testing.T) {
 		}
 	}
 
-	// A job approved later under a kept record's name wins, for good.
+	// A job under a kept record's name (injected here: approval refuses
+	// one, TestApprovalRefusesTheNameOfAJobItCannotRead) hides the kept
+	// record only while it lives, and a save that fails meanwhile
+	// changes nothing in memory, so the rollback leaves the kept record to
+	// the next successful save.
 	s.jobMu.Lock()
 	s.jobs["later"] = &job.Job{Name: "later", Dir: "/tmp", Argv: []string{"y"}, Exe: "/bin/y", Ask: job.AskEachTime}
+	s.stateWriter = func(string, []byte) error { return errors.New("disk full") }
+	if err := s.saveJobsLocked(); err == nil {
+		t.Fatal("the failing write did not fail the save")
+	}
+	s.stateWriter = nil
+	delete(s.jobs, "later") // the caller's rollback
 	err := s.saveJobsLocked()
 	s.jobMu.Unlock()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n, got := withField(records(t, jobs, "jobs"), "name", "later"); n != 1 || got["ask"] != "each-time" {
-		t.Fatalf("later is in the list %d times (last %v); want the approved one alone", n, got)
+	if n, got := withField(records(t, jobs, "jobs"), "name", "later"); n != 1 || !reflect.DeepEqual(got, generic(t, later)) {
+		t.Fatalf("a failed save lost the kept record: %d copies, %v", n, got)
 	}
-	if resp := s.removeJob("later", nil); !resp.OK {
-		t.Fatal(resp.Error)
+}
+
+// saveJobFile writes jobs as jobs.json holds them, for a test's setup.
+func saveJobFile(path string, jobs map[string]*job.Job) error {
+	data, err := job.Encode(jobs, nil)
+	if err != nil {
+		return err
 	}
-	if n, _ := withField(records(t, jobs, "jobs"), "name", "later"); n != 0 {
-		t.Fatalf("the kept record came back after the job that replaced it was removed (%d copies)", n)
+	return atomicfile.WriteFile(path, data)
+}
+
+// Approving a job under the name of a record this build cannot
+// read would replace it unseen and leave its key named by nothing. Both
+// approval and its preview refuse, naming the conflict, before any prompt,
+// and the record stays in the file.
+func TestApprovalRefusesTheNameOfAJobItCannotRead(t *testing.T) {
+	r := newJobRig(t)
+	const kept = `{"name":"notion-guests","dir":"/tmp","argv":["x"],"exe":"/bin/x","ask":"on-weekdays","key_id":"j-0000000c","secrets":[]}`
+	if err := os.WriteFile(r.storeAt, []byte(`{"version":1,"jobs":[`+kept+`]}`), 0o600); err != nil {
+		t.Fatal(err)
 	}
+	if _, err := r.s.SetJobStore(r.storeAt); err != nil {
+		t.Fatal(err)
+	}
+	spec := r.spec()
+	spec.Replace = true
+	_, err := r.c.JobAllow("notion-guests", spec)
+	if err == nil || !strings.Contains(err.Error(), "a job named notion-guests exists that this version of jit can't read") {
+		t.Fatalf("JobAllow over an unreadable job: %v; want the conflict named", err)
+	}
+	if p, err := r.c.JobPreview("notion-guests", spec); err != nil || !strings.Contains(p.Refusal, "can't read") {
+		t.Fatalf("JobPreview over an unreadable job: refusal %q, %v; want the conflict named", p.Refusal, err)
+	}
+	if r.prompts() != 0 {
+		t.Errorf("the refused approval prompted %d times", r.prompts())
+	}
+	if n, got := withField(records(t, r.storeAt, "jobs"), "name", "notion-guests"); n != 1 || !reflect.DeepEqual(got, generic(t, kept)) {
+		t.Fatalf("the unreadable job did not survive: %d copies, %v", n, got)
+	}
+	if _, err := r.c.JobAllow("notion-guests-2", r.spec()); err != nil {
+		t.Fatalf("another name was refused too: %v", err)
+	}
+}
+
+// Every save writes back what this build does not know. The
+// ledger holds a grant with a field of its own, a field inside its anchor,
+// a known entry with a field of its own, and an entry whose sealed bytes
+// are not hex; jobs.json a job with a field of its own. Through two starts
+// and saves, and a key move in between, all of it survives, and the bad
+// entry is kept verbatim. The grant keeps its keychain key after the move,
+// since nothing here knows which kind the bad entry needs.
+func TestSavesKeepWhatThisBuildDoesNotKnow(t *testing.T) {
+	store := newMemMover()
+	dir := t.TempDir()
+	ledger, jobs := filepath.Join(dir, "grants.json"), filepath.Join(dir, "jobs.json")
+	key, err := store.CreateWrap("g-00000001", GrantWrapKeychain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := key.Seal(make([]byte, 32), "env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const bad = `{"path":"a/x","device_wrapped_sha256":"d9","grant_wrapped":"zz","wrap":"aead-v1","bad_extra":2}`
+	grant := `{"id":"g-00000001","created_unix":1,"anchor":{"exec_path":"/Applications/Claude.app","name":"Claude","anchor_extra":"a"},` +
+		`"program":{"name":"node"},"profiles":[],"grant_extra":{"n":1},"secrets":[` +
+		`{"path":"a/b","class":"env","device_wrapped_sha256":"d1","grant_wrapped":"` + hex.EncodeToString(sealed) + `","wrap":"aead-v1","secret_extra":"s"},` +
+		bad + `]}`
+	if err := os.WriteFile(ledger, []byte(`{"version":1,"grants":[`+grant+`]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const jobRec = `{"name":"notion","dir":"/tmp","argv":["x"],"exe":"/bin/x","ask":"each-time","job_extra":[1]}`
+	if err := os.WriteFile(jobs, []byte(`{"version":1,"jobs":[`+jobRec+`]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	check := func(when string) {
+		t.Helper()
+		recs := records(t, ledger, "grants")
+		if len(recs) != 1 {
+			t.Fatalf("%s: %d grants in the ledger, want 1", when, len(recs))
+		}
+		g := recs[0]
+		if x, _ := g["grant_extra"].(map[string]any); x["n"] != float64(1) {
+			t.Errorf("%s: the grant's unknown field is gone: %v", when, g)
+		}
+		if a, _ := g["anchor"].(map[string]any); a["anchor_extra"] != "a" || a["name"] != "Claude" {
+			t.Errorf("%s: the anchor's unknown field is gone: %v", when, g["anchor"])
+		}
+		secs, _ := g["secrets"].([]any)
+		var known, badSeen map[string]any
+		for _, e := range secs {
+			m := e.(map[string]any)
+			switch m["path"] {
+			case "a/b":
+				known = m
+			case "a/x":
+				badSeen = m
+			}
+		}
+		if known == nil || known["secret_extra"] != "s" {
+			t.Errorf("%s: the entry's unknown field is gone: %v", when, secs)
+		}
+		if badSeen == nil || !mapsEqual(badSeen, generic(t, bad)) {
+			t.Errorf("%s: the entry with bad sealed bytes did not come back verbatim: %v", when, badSeen)
+		}
+		jrecs := records(t, jobs, "jobs")
+		if len(jrecs) != 1 || jrecs[0]["job_extra"] == nil {
+			t.Errorf("%s: the job's unknown field is gone: %v", when, jrecs)
+		}
+	}
+
+	for start := 1; start <= 2; start++ {
+		s := &Server{GrantKeys: store}
+		load(t, s, ledger, jobs)
+		if got := len(s.standing["g-00000001"].secrets); got != 1 {
+			t.Fatalf("start %d: serving %d entries, want the good one alone", start, got)
+		}
+		if start == 2 {
+			store.mu.Lock()
+			store.target = GrantWrapEnclave
+			store.mu.Unlock()
+			if moved, errs := s.MoveGrantKeys(); moved != 1 || len(errs) != 0 {
+				t.Fatalf("move: moved %d, errs %v", moved, errs)
+			}
+			check("after the move")
+			if !store.has(GrantWrapKeychain, "g-00000001") {
+				t.Error("the move deleted the keychain key an unread entry may need")
+			}
+		}
+		if err := s.saveLedger(); err != nil {
+			t.Fatal(err)
+		}
+		s.jobMu.Lock()
+		err := s.saveJobsLocked()
+		s.jobMu.Unlock()
+		if err != nil {
+			t.Fatal(err)
+		}
+		check("after save " + string(rune('0'+start)))
+	}
+}
+
+func mapsEqual(a, b map[string]any) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }

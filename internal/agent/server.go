@@ -220,9 +220,10 @@ type Server struct {
 	// jobNames is every key id jobs.json named when it loaded, read raw
 	// (namedKeyIDs); nil when it did not load.
 	jobNames map[string]bool
-	// jobKept is every record jobs.json held that job.LoadKeeping could
-	// not accept, verbatim: never run or listed, written back on every save
-	// so the record and its key outlive this build.
+	// jobKept is every record jobs.json held that job.Decode could not
+	// accept, verbatim: never run or listed, written back on every save so
+	// the record and its key outlive this build. Set at load, never changed
+	// after: approval refuses a name it holds.
 	jobKept    []job.Kept
 	jobRunning map[string]bool
 	// jobProposals are agents' job proposals waiting for the human

@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/jitpass/jit/internal/atomicfile"
+	"github.com/jitpass/jit/internal/jsonkeep"
 )
 
 // storeVersion is bumped when a job's shape changes incompatibly. A newer
@@ -26,16 +26,11 @@ func StorePath(root string) string {
 	return filepath.Join(root, "jobs.json")
 }
 
-type storeFile struct {
-	Version int   `json:"version"`
-	Jobs    []Job `json:"jobs"`
-}
-
 // ErrNewerStore marks a file written by a newer jit. The caller must not save
 // over it.
 var ErrNewerStore = errors.New("written by a newer jit")
 
-// rawStoreFile is storeFile with every record left as it was written.
+// rawStoreFile is jobs.json with every record left as it was written.
 type rawStoreFile struct {
 	Version int               `json:"version"`
 	Jobs    []json.RawMessage `json:"jobs"`
@@ -55,70 +50,70 @@ type Kept struct {
 
 // Load reads the job list. A missing file is an empty list. A file that does
 // not parse, or is newer than this build, is an error; the caller then runs
-// with no jobs and must not Save over that path. Records it skips are
-// dropped; a caller that saves the list back uses LoadKeeping.
+// with no jobs and must not write over that path. Records it skips are
+// dropped; a caller that saves the list back uses Decode, and Encode.
 func Load(path string) (map[string]*Job, error) {
-	jobs, _, err := LoadKeeping(path)
-	return jobs, err
-}
-
-// LoadKeeping is Load, plus the records it skipped, verbatim, for Encode to
-// write back. A skipped record named like a loaded one is not kept: the
-// loaded one wins, and writing both would put two jobs of one name in the
-// file.
-func LoadKeeping(path string) (map[string]*Job, []Kept, error) {
 	data, err := os.ReadFile(path) // #nosec G304 -- a fixed path under jit's own config directory
 	if errors.Is(err, os.ErrNotExist) {
-		return map[string]*Job{}, nil, nil
+		return map[string]*Job{}, nil
 	}
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	var f storeFile
-	if err := json.Unmarshal(data, &f); err != nil {
-		return nil, nil, fmt.Errorf("parsing %s: %w", path, err)
+	jobs, _, err := Decode(data)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	if f.Version > storeVersion {
-		return nil, nil, fmt.Errorf("%s: %w (version %d, this build reads %d)", path, ErrNewerStore, f.Version, storeVersion)
-	}
+	return jobs, nil
+}
+
+// Decode reads a job list from the bytes of jobs.json, once: the jobs it
+// accepts, and the records it skipped, verbatim, for Encode to write back.
+// A file newer than this build is ErrNewerStore. A skipped record named
+// like a loaded one is not kept (Unshadowed).
+func Decode(data []byte) (map[string]*Job, []Kept, error) {
 	var raw rawStoreFile
-	if err := json.Unmarshal(data, &raw); err != nil || len(raw.Jobs) != len(f.Jobs) {
-		return nil, nil, fmt.Errorf("parsing %s: its records do not read the same twice", path)
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, nil, fmt.Errorf("parsing: %w", err)
 	}
-	out := make(map[string]*Job, len(f.Jobs))
+	if raw.Version > storeVersion {
+		return nil, nil, fmt.Errorf("%w (version %d, this build reads %d)", ErrNewerStore, raw.Version, storeVersion)
+	}
+	out := make(map[string]*Job, len(raw.Jobs))
 	var skipped []Kept
-	for i := range f.Jobs {
-		j := f.Jobs[i]
-		// A record missing what a run needs is skipped, not half-served.
-		if ValidateName(j.Name) != nil || j.Dir == "" || j.Exe == "" || len(j.Argv) == 0 || !j.Ask.Valid() {
-			skipped = append(skipped, Kept{Name: j.Name, Raw: raw.Jobs[i]})
+	for _, r := range raw.Jobs {
+		var j Job
+		err := json.Unmarshal(r, &j)
+		// A record missing what a run needs is skipped, not half-served; so
+		// is one whose fields do not read as this build's (a type a newer
+		// jit changed).
+		if err != nil || ValidateName(j.Name) != nil || j.Dir == "" || j.Exe == "" || len(j.Argv) == 0 || !j.Ask.Valid() {
+			skipped = append(skipped, Kept{Name: j.Name, Raw: r})
 			continue
 		}
 		out[j.Name] = &j
 	}
-	var kept []Kept
-	for _, k := range skipped {
-		if _, loaded := out[k.Name]; !loaded {
-			kept = append(kept, k)
+	return out, Unshadowed(skipped, out), nil
+}
+
+// Unshadowed is kept without every record a job in jobs has the name of:
+// the loaded one wins, and the file never holds two jobs of one name. The
+// one place that rule is applied, at load and at every save.
+func Unshadowed(kept []Kept, jobs map[string]*Job) []Kept {
+	var out []Kept
+	for _, k := range kept {
+		if _, loaded := jobs[k.Name]; !loaded {
+			out = append(out, k)
 		}
 	}
-	return out, kept, nil
+	return out
 }
 
-// Save writes the whole list atomically and durably (atomicfile.WriteFile:
-// fsynced, renamed into place, mode 0600), sorted by name so the file diffs
-// cleanly.
-func Save(path string, jobs map[string]*Job) error {
-	data, err := Encode(jobs, nil)
-	if err != nil {
-		return err
-	}
-	return atomicfile.WriteFile(path, data)
-}
-
-// Encode is the file Save writes, for a caller that writes it itself: jobs,
-// then every kept record whose name no job in jobs has (the loaded one
-// wins), unchanged but for indentation, all sorted by name.
+// Encode is the file jobs.json holds: jobs, then every kept record whose
+// name no job in jobs has (Unshadowed), unchanged but for indentation, all
+// sorted by name. A job read from the file keeps the fields this build does
+// not know, and so does each of its secrets (MarshalJSON). The caller
+// writes it, durably (atomicfile.WriteFile).
 func Encode(jobs map[string]*Job, kept []Kept) ([]byte, error) {
 	type rec struct {
 		name string
@@ -132,10 +127,7 @@ func Encode(jobs map[string]*Job, kept []Kept) ([]byte, error) {
 		}
 		recs = append(recs, rec{j.Name, b})
 	}
-	for _, k := range kept {
-		if _, loaded := jobs[k.Name]; loaded {
-			continue
-		}
+	for _, k := range Unshadowed(kept, jobs) {
 		recs = append(recs, rec{k.Name, k.Raw})
 	}
 	sort.SliceStable(recs, func(a, b int) bool { return recs[a].name < recs[b].name })
@@ -148,4 +140,43 @@ func Encode(jobs map[string]*Job, kept []Kept) ([]byte, error) {
 		return nil, err
 	}
 	return append(data, '\n'), nil
+}
+
+// MarshalJSON writes the job with every field of the record it was read
+// from that this build does not know (jsonkeep), so a save by this jit
+// never deletes what a newer one wrote.
+func (j Job) MarshalJSON() ([]byte, error) {
+	type plain Job
+	return jsonkeep.Marshal(plain(j), j.raw)
+}
+
+// UnmarshalJSON reads the job and keeps the record it came from, for
+// MarshalJSON.
+func (j *Job) UnmarshalJSON(b []byte) error {
+	type plain Job
+	var p plain
+	// A field of the wrong type still leaves the rest read (encoding/json
+	// completes what it can), so a record Decode skips keeps its name.
+	err := json.Unmarshal(b, &p)
+	*j = Job(p)
+	j.raw = append([]byte(nil), b...)
+	return err
+}
+
+// MarshalJSON is Job's, for one secret.
+func (s Secret) MarshalJSON() ([]byte, error) {
+	type plain Secret
+	return jsonkeep.Marshal(plain(s), s.raw)
+}
+
+// UnmarshalJSON is Job's, for one secret.
+func (s *Secret) UnmarshalJSON(b []byte) error {
+	type plain Secret
+	var p plain
+	// A field of the wrong type still leaves the rest read (encoding/json
+	// completes what it can), so a record Decode skips keeps its name.
+	err := json.Unmarshal(b, &p)
+	*s = Secret(p)
+	s.raw = append([]byte(nil), b...)
+	return err
 }

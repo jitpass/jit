@@ -29,7 +29,7 @@ import (
 //   - An id is known if the ledger or the job list NAMES it, read raw as the
 //     files stood when they loaded (before a move could rewrite them), not
 //     only if a loader accepted the record: a grant SetGrantLedger dropped
-//     (no anchor, no name), a job job.Load skipped (a name or an ask value
+//     (no anchor, no name), a job job.Decode skipped (a name or an ask value
 //     from a newer jit), and a grant whose entries this build cannot open
 //     (C1's unread) all keep their keys. Saves write the records the
 //     loaders skipped back verbatim (ledgerKept, jobKept), so those names
