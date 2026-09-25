@@ -152,16 +152,22 @@ key is one that was already on this Mac, readable by the same programs as
 before. A lockout of a working vault is neither.
 
 **Init over a lost enclave key.** `jit vault init` over a LOST enclave key
-measures an item it finds: if it
-opens every live secret (read with no challenge and no dialog), it is the
-vault's own key and the vault is restored from it, said in three lines,
-with `vault-key.sealed` set aside as `vault-key.sealed.recovered-<time>`
-and nothing pending. Anything else (a different key, some of the secrets,
-no secrets to try it on, an item it can't read without asking) is refused
-with nothing changed, naming the item to delete in Keychain Access. An
-item it can't read fails the same way every run, so that refusal is not
-"try again": it names the item and the way out (delete it if the
-recovery file has the secrets, init again, import the file).
+measures an item it finds: if it opens every live secret (read with no
+challenge and no dialog), it is the vault's own key and the vault is
+restored from it, said in three lines, with `vault-key.sealed` set aside
+as `vault-key.sealed.recovered-<time>` and nothing pending. A different
+key, some of the secrets, or no secrets to try it on is refused with
+nothing changed, naming the item to delete in Keychain Access; so is an
+item jit can't use (not a master key, say), which fails the same way every
+run, so that refusal is not "try again": it names the item and the way out
+(delete it if the recovery file has the secrets, init again, import the
+file). A keychain that won't be read right now is different: a LOCKED
+login keychain answers presence (the item counts as there) and fails the
+quiet read at once with -25293, and a read that would have had to ask
+fails -25308 (`keychainwrap.QuietReadError.MayBeLocked`). That says
+nothing about the item, which may be the vault's only key, so init says
+the keychain may be locked, to unlock it and run `jit vault init` again,
+and never advises deleting it.
 
 The reverse, `--wrapper keychain`, writes the plain item back, verifies it,
 then deletes the sealed file and the enclave key. **The reverse ships

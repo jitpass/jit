@@ -202,6 +202,7 @@ const (
 	errSecItemNotFound          int32 = -25300
 	errSecInvalidOwnerEdit      int32 = -25244
 	errSecInteractionNotAllowed int32 = -25308
+	errSecAuthFailed            int32 = -25293
 )
 
 // presenceFromStatus reads kw_mek_present's status. Only errSecItemNotFound
