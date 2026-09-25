@@ -56,6 +56,18 @@ func moveInProgress(root string) string {
 	return strings.Fields(strings.TrimPrefix(line, moveMarkerPrefix))[0]
 }
 
+// The move's dialog reasons, shown after the app's name ("JitPass is trying
+// to move the vault key into the Secure Enclave.").
+const (
+	reasonMoveIn    = "move the vault key into the Secure Enclave"
+	reasonMoveCheck = "check the vault key in the Secure Enclave"
+	reasonMoveBack  = "move the vault key back to the keychain"
+
+	reasonVaultDelete = "permanently destroy the entire vault and its encryption key"
+	reasonRekey       = "rotate the vault's master encryption key"
+	reasonRekeyFinish = "finish rotating the vault's master encryption key"
+)
+
 // keyMover holds every operation a move performs, so a test drives the same
 // sequence against fakes and can stop it after any step.
 type keyMover struct {
@@ -153,7 +165,7 @@ func (m *keyMover) toEnclave() error {
 		if err := m.seRemoveStaged(); err != nil {
 			return m.abort(err)
 		}
-		mek, err := m.kcFetch("move the vault key into the Secure Enclave")
+		mek, err := m.kcFetch(reasonMoveIn)
 		if err != nil {
 			return m.abort(err)
 		}
@@ -164,7 +176,7 @@ func (m *keyMover) toEnclave() error {
 		if err := m.step("staged"); err != nil {
 			return m.abort(err)
 		}
-		got, err := m.seOpenStaged("check the vault key in the Secure Enclave")
+		got, err := m.seOpenStaged(reasonMoveCheck)
 		if err != nil {
 			return m.abort(fmt.Errorf("checking the sealed key: %w (nothing changed, the key is still in the keychain)", err))
 		}
@@ -214,7 +226,7 @@ func (m *keyMover) toKeychain() error {
 	m.lockAgent()
 
 	if m.sealedExists() {
-		mek, err := m.seOpen("move the vault key back to the keychain")
+		mek, err := m.seOpen(reasonMoveBack)
 		if err != nil {
 			return m.abort(err)
 		}

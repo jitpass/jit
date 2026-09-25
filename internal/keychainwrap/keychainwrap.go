@@ -195,6 +195,15 @@ func (w *Wrapper) MEKPresence() MEKPresence {
 // what the CLI's error printer renders cyan.
 var errNoMEK = errors.New("no master key stored in the keychain, run `jit vault init` first")
 
+// The dialog reasons for a direct wrap and unwrap. macOS shows them after
+// the app's name: "JitPass is trying to unlock the vault to read a secret."
+// The same words internal/agent uses, so a prompt reads the same whichever
+// process asked.
+const (
+	reasonStore = "unlock the vault to store a secret"
+	reasonRead  = "unlock the vault to read a secret"
+)
+
 // WrapKey implements vault.KeyWrapper.
 func (w *Wrapper) WrapKey(dek []byte) ([]byte, error) {
 	return w.WrapKeyLabeled(dek, "", "")
@@ -210,7 +219,7 @@ func (w *Wrapper) UnwrapKey(wrapped []byte) ([]byte, error) {
 // to internal/agent (both wrappers protect the same vault; a DEK may cross
 // between them), so class flows into the AAD.
 func (w *Wrapper) WrapKeyLabeled(dek []byte, label, class string) ([]byte, error) {
-	mek, err := w.fetchMEK("unlock jit vault to store a secret")
+	mek, err := w.fetchMEK(reasonStore)
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +229,7 @@ func (w *Wrapper) WrapKeyLabeled(dek []byte, label, class string) ([]byte, error
 
 // UnwrapKeyLabeled implements vault.LabeledKeyWrapper — see WrapKeyLabeled.
 func (w *Wrapper) UnwrapKeyLabeled(wrapped []byte, label, class string) ([]byte, error) {
-	mek, err := w.fetchMEK("unlock jit vault to read a secret")
+	mek, err := w.fetchMEK(reasonRead)
 	if err != nil {
 		return nil, err
 	}
