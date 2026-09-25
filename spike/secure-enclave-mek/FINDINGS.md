@@ -58,6 +58,17 @@ without asking, and it is what a later prompt-free Protect would need.
   design's `CZC6BH93GJ.com.jitpass.vault` group is authorized with no portal
   capability), `ProvisionedDevices = [this Mac]`, and its one certificate's
   SHA-1 matches the local identity's (`3DCDB451…F139`).
+- Profile `JitPass Agent Developer ID` (Developer ID, UUID
+  `e38f5a5f-731c-4e23-82a2-5a5772250e38`, made 2026-09-25): same app
+  identifier, team and `keychain-access-groups = [CZC6BH93GJ.*]`,
+  `ProvisionsAllDevices = true` (no device list). Its one certificate is
+  `Developer ID Application: Meni Tasa (CZC6BH93GJ)`, SHA-1
+  `996392D0…0944`, the **same** leaf that signs the shipped JitPass.app and
+  its bundled jit (checked with `codesign -d --extract-certificates`), so
+  CI's p12 matches it.
+- **The profile's own ExpirationDate is 2044-09-20, but its certificate
+  expires 2031-07-31**, which is the real limit: `verify.sh` must check the
+  embedded certificate's notAfter, not only the profile's (plan A2).
 - The Developer ID Application key stays in CI only. Spikes sign with the
   development identity; S3d (debugger refused) needs the Developer ID build.
 
