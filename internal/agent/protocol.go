@@ -475,6 +475,12 @@ const OpGrantUse = "grant_use"
 type Response struct {
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
+	// KeyNote answers "grant_revoke" and "job_remove" when the grant or job
+	// is gone but its key could not be deleted: from this copy of jit (a
+	// Secure Enclave key, from a jit without the entitlement), or because
+	// the delete failed, which it names. A sentence to show, so no one is
+	// told the key was deleted. Empty otherwise.
+	KeyNote string `json:"key_note,omitempty"`
 	// Protocol is the answering agent's own socket-protocol revision (see
 	// Protocol). Set on every response, so a client can check what the
 	// running agent enforces before it sends a request whose safety depends
