@@ -402,37 +402,61 @@ type KeyCounter interface {
 	CountOpens([]keychainwrap.WrappedKey) (int, error)
 }
 
-// KeychainKeyOpens is keychainKeyOpens for internal/cli: `jit vault rekey
-// --wrapper secure-enclave --force` measures the item before deleting it.
-func KeychainKeyOpens(root string, kc KeyCounter) (opened, total int, err error) {
-	return keychainKeyOpens(root, kc)
+// KeyMeasure is what measuring a keychain item against a vault's live
+// secrets found.
+type KeyMeasure struct {
+	Opened   int // secrets whose data key the item opens
+	Untested int // secrets whose envelope couldn't be read, so never tried
+	Total    int // live secrets
+}
+
+// KeychainKeyOpens is the measure `jit vault rekey --wrapper secure-enclave
+// --force` takes before it deletes a keychain item: how many of this
+// vault's live secrets the item opens, and how many couldn't be tried. It
+// always reads the item (quietly), even with nothing to try it on, so a nil
+// error means the item itself was read.
+func KeychainKeyOpens(root string, kc KeyCounter) (KeyMeasure, error) {
+	return measureKeychainKey(root, kc, true)
 }
 
 // keychainKeyOpens reports how many of the vault's live secrets the keychain
-// item kc opens, out of how many. It reads the item quietly
-// (keychainwrap.CountOpens: no challenge, no dialog); a secret whose
-// envelope can't be read counts as one it does not open.
+// item kc opens, out of how many, for Init over a lost key. A secret whose
+// envelope can't be read counts as one it does not open (so the item can't
+// count as the vault's own key), and with no envelope to try, the item is
+// not read.
 func keychainKeyOpens(root string, kc KeyCounter) (opened, total int, err error) {
+	m, err := measureKeychainKey(root, kc, false)
+	return m.Opened, m.Total, err
+}
+
+// measureKeychainKey reads the item quietly (keychainwrap.CountOpens: no
+// challenge, no dialog) and tries it on every live secret's data key.
+// alwaysRead reads the item even when no envelope could be read.
+func measureKeychainKey(root string, kc KeyCounter, alwaysRead bool) (KeyMeasure, error) {
 	id, err := vault.EnsureDeviceID(root)
 	if err != nil {
-		return 0, 0, err
+		return KeyMeasure{}, err
 	}
 	v := &vault.Vault{Root: root, RecipientID: id}
 	paths, err := v.List()
 	if err != nil {
-		return 0, 0, err
+		return KeyMeasure{}, err
 	}
+	m := KeyMeasure{Total: len(paths)}
 	var keys []keychainwrap.WrappedKey
 	for _, p := range paths {
-		if wrapped, class, err := v.WrappedDEK(p); err == nil {
-			keys = append(keys, keychainwrap.WrappedKey{Wrapped: wrapped, Class: class})
+		wrapped, class, err := v.WrappedDEK(p)
+		if err != nil {
+			m.Untested++
+			continue
 		}
+		keys = append(keys, keychainwrap.WrappedKey{Wrapped: wrapped, Class: class})
 	}
-	if len(keys) == 0 {
-		return 0, len(paths), nil
+	if len(keys) == 0 && !alwaysRead {
+		return m, nil
 	}
-	opened, err = kc.CountOpens(keys)
-	return opened, len(paths), err
+	m.Opened, err = kc.CountOpens(keys)
+	return m, err
 }
 
 // Delete destroys the enclave key, and a keychain copy of the same key if a

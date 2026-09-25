@@ -41,6 +41,7 @@ type moveWorld struct {
 	failDelete error // kcDelete: the keychain refuses, as an older jit's item once did
 	failMatch  error // kcMatches: the keychain item can't be read
 	opens      int   // kcOpens: how many live secrets the item opens
+	untested   int   // kcOpens: how many live secrets couldn't be tried (unreadable envelopes)
 	failOpens  error // kcOpens: the item can't be measured
 	measured   int   // kcOpens calls
 	out        *bytes.Buffer
@@ -142,9 +143,9 @@ func (w *moveWorld) mover() *keyMover {
 			}
 			return bytes.Equal(w.kc, mek), nil
 		},
-		kcOpens: func() (int, error) {
+		kcOpens: func() (keystore.KeyMeasure, error) {
 			w.measured++
-			return w.opens, w.failOpens
+			return keystore.KeyMeasure{Opened: w.opens, Untested: w.untested, Total: w.opens + w.untested + 1}, w.failOpens
 		},
 		seInstallStaged: func(mek []byte) error {
 			// Like secureenclave.Wrapper.Install: never seal over a file.
@@ -643,6 +644,24 @@ func TestRemoveKeychainCopy(t *testing.T) {
 		assertShortLines(t, err.Error())
 		if !bytes.Equal(w.kc, other) {
 			t.Fatal("--force deleted a key that opens secrets in this vault")
+		}
+	})
+	// Every live secret must have been tried: one whose envelope couldn't be
+	// read is one the key may open. It used to count as "opens none", so a
+	// vault whose envelopes couldn't be read had the key deleted on a
+	// measure of nothing.
+	t.Run("--force when some secrets couldn't be tested", func(t *testing.T) {
+		w := setup(t)
+		other := bytes.Repeat([]byte{7}, 32)
+		w.kc = append([]byte(nil), other...)
+		w.untested = 2
+		err := w.mover().toEnclaveAs(planRemoveCopy, true)
+		if err == nil || err.Error() != "jit couldn't test 2 secrets against that key; it was left alone" {
+			t.Fatalf("got %v, want the untested refusal", err)
+		}
+		assertShortLines(t, err.Error())
+		if !bytes.Equal(w.kc, other) {
+			t.Fatal("--force deleted a key it couldn't test every secret against")
 		}
 	})
 	t.Run("--force over a key that can't be measured", func(t *testing.T) {
