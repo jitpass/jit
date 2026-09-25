@@ -121,7 +121,7 @@ func (s *Server) allowJob(req Request, c *caller) Response {
 		}
 		outputs = append(outputs, o)
 	}
-	extra, err := job.ExternalFiles(spec.Argv, dir)
+	extra, err := job.ExternalFiles(spec.Argv, dir, outputs)
 	if err != nil {
 		return Response{OK: false, Error: "job_allow: " + err.Error()}
 	}
@@ -323,20 +323,17 @@ func jobAllowReason(label, groups string, secrets, shown int, ask job.Ask) strin
 	if room < 12 {
 		room = 12
 	}
-	return truncate(fmt.Sprintf("let AI run %s with %s%s", truncate(label, room), with, scope), maxReasonLen)
+	return truncate(fmt.Sprintf("let AI run %s with %s%s", truncateMiddle(label, room), with, scope), maxReasonLen)
 }
 
-// jobLabel is "folder/script": the folder's own name and the program the
-// command runs, which together say what a job is at a glance.
+// jobLabel is "folder/program": the folder's own name and the file the
+// command actually runs (job.Label: the interpreter's program, never an
+// argument it merely passes along). The folder gets at most 14 runes and the
+// program the rest, so a long folder name can never push the program out of
+// the sentence: the program is the fact a caller must not be able to hide.
 func jobLabel(dir string, argv []string) string {
-	script := filepath.Base(argv[0])
-	for _, a := range argv[1:] {
-		if !strings.HasPrefix(a, "-") {
-			script = filepath.Base(a)
-			break
-		}
-	}
-	return filepath.Base(dir) + "/" + script
+	folder, program := job.Label(dir, argv)
+	return truncate(folder, 14) + "/" + program
 }
 
 // secretGroups names where a job's secrets live, by the first segment of
@@ -365,9 +362,10 @@ func pluralNoun(n int, noun string) string {
 // jobRunReason is the per-run prompt of an each-time job: who asked, which
 // job, and the promise.
 func jobRunReason(requester, label string, secrets int) string {
-	// 4 + 22 + 5 + 12 + 13 + 34 = 90 at 14 secrets.
+	// 4 + 24 + 5 + 10 + 13 + 34 = 90 at 14 secrets. The label keeps both
+	// ends (folder and program); the requester is a launcher's name.
 	return truncate(fmt.Sprintf("run %s for %s (%s); it sees output, never the values",
-		truncate(label, 22), truncate(requester, 12), countNoun(secrets, "secret")), maxReasonLen)
+		truncateMiddle(label, 24), truncate(requester, 10), countNoun(secrets, "secret")), maxReasonLen)
 }
 
 func countNoun(n int, noun string) string {
@@ -517,6 +515,25 @@ func (s *Server) runJob(name string, c *caller) Response {
 	if !ok {
 		return Response{OK: false, Error: fmt.Sprintf("job_run: no job named %s - `jit job list` shows the approved ones", name)}
 	}
+	// One run of a job at a time. Concurrent runs each carried their own
+	// snapshot of the job and could each pass their own checks while a
+	// caller toggled a file between them, so a stop that one run set did not
+	// reach the others: unlimited swap attempts per approval.
+	s.jobMu.Lock()
+	if s.jobRunning[name] {
+		s.jobMu.Unlock()
+		return Response{OK: false, Error: fmt.Sprintf("job_run: %s is already running - one run of a job at a time", name)}
+	}
+	if s.jobRunning == nil {
+		s.jobRunning = map[string]bool{}
+	}
+	s.jobRunning[name] = true
+	s.jobMu.Unlock()
+	defer func() {
+		s.jobMu.Lock()
+		delete(s.jobRunning, name)
+		s.jobMu.Unlock()
+	}()
 	if s.OnRunJob == nil {
 		return Response{OK: false, Error: "job_run: this service has no job runner wired"}
 	}
@@ -593,6 +610,16 @@ func (s *Server) runJob(name string, c *caller) Response {
 	// the human reads the dialog must not run with the secrets it unlocked.
 	if changes := jobChanges(&j); len(changes) > 0 {
 		return s.refuseJob(&j, c, requester, fmt.Sprintf("%s %s while the prompt was up", changes[0].Path, changes[0].Kind))
+	}
+	// The stored job, not the snapshot: approved again, removed or stopped
+	// while this run waited on its prompt means this run is not the job the
+	// human is looking at any more.
+	s.jobMu.Lock()
+	cur, still := s.jobs[j.Name]
+	live := still && cur.ApprovedUnix == j.ApprovedUnix && cur.Stopped == ""
+	s.jobMu.Unlock()
+	if !live {
+		return Response{OK: false, Error: fmt.Sprintf("job_run: %s was stopped, removed or approved again while this run waited; run it again", j.Name)}
 	}
 	result, err := s.OnRunJob(j, deks)
 	if err != nil {
@@ -709,4 +736,17 @@ func isThisBinary(path string) bool {
 	a, err1 := filepath.EvalSymlinks(path)
 	b, err2 := filepath.EvalSymlinks(self)
 	return err1 == nil && err2 == nil && a == b
+}
+
+// truncateMiddle shortens s to n runes by cutting its middle, keeping both
+// ends: for "folder/program" the start names the folder and the end the
+// program, and the end is the half a caller would want to push off.
+func truncateMiddle(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n || n < 5 {
+		return s
+	}
+	head := (n - 1) / 3
+	tail := n - 1 - head
+	return string(r[:head]) + "…" + string(r[len(r)-tail:])
 }

@@ -162,15 +162,14 @@ type mountManager struct {
 	grantModeRuns int32
 	swapMu        sync.Mutex
 
-	// AI job runs (mountjobs.go): the folders of the jobs running right now,
-	// counted, and jobRuns as the read path's fast-path counter, so a mount
-	// read with no job running pays one atomic load. servicePID and
-	// pointerFn are test seams; zero means this process and the registry.
-	jobMu      sync.Mutex
-	jobDirs    map[string]int
-	jobRuns    int32
-	servicePID int32
-	pointerFn  func(path string) ([]byte, bool)
+	// AI job runs (mountjobs.go): each running job's process and folder,
+	// and jobRuns as the read path's fast-path counter, so a mount read with
+	// no job running pays one atomic load. pointerFn is a test seam; nil
+	// means the registry.
+	jobMu     sync.Mutex
+	jobProcs  map[int32]string
+	jobRuns   int32
+	pointerFn func(path string) ([]byte, bool)
 
 	// Test seams for the grant gate's kernel lookups (mountgrants.go);
 	// nil means the real internal/lineage implementations. The gate's

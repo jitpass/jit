@@ -29,19 +29,27 @@ var printers = map[string]bool{
 // `python -X dev -c …` must still be read as far as the -c.
 // takesLong is the same for long flags given as two arguments: `node
 // --require ./m.js -e …` must be read past ./m.js.
+//
+// codeShort and codeLong are flags whose value is CODE the interpreter loads
+// before the program (`node -r ./hook.js`, `ruby -I ../lib`): they are
+// fingerprinted like the program, and refused when they name a folder
+// outside the job.
 var inlineFlags = map[string]struct {
 	short     string
 	long      []string
 	takes     string
 	takesLong []string
+	codeShort string
+	codeLong  []string
 }{
 	"python": {short: "c", takes: "WXQ", takesLong: []string{"--check-hash-based-pycs"}},
 	"sh":     {short: "c", takes: "oO", takesLong: []string{"--rcfile", "--init-file"}},
 	"node": {short: "ep", long: []string{"--eval", "--print"}, takes: "r",
-		takesLong: []string{"--require", "--import", "--loader", "--experimental-loader", "--env-file", "--conditions", "--input-type", "--title"}},
+		takesLong: []string{"--require", "--import", "--loader", "--experimental-loader", "--env-file", "--conditions", "--input-type", "--title"},
+		codeShort: "r", codeLong: []string{"--require", "--import", "--loader", "--experimental-loader"}},
 	"deno":      {short: "e", long: []string{"--eval"}}, // plus `deno eval`, below
 	"bun":       {short: "e", long: []string{"--eval", "--print"}},
-	"ruby":      {short: "e"},
+	"ruby":      {short: "e", takes: "Ir", codeShort: "Ir"},
 	"perl":      {short: "eE"},
 	"php":       {short: "r"},
 	"osascript": {short: "e"},
@@ -83,36 +91,8 @@ func CheckArgv(argv []string) error {
 		return fmt.Errorf("%s prints what it is given, so it would print the secrets. Run a script that uses them instead", base)
 	}
 	fam := family(argv[0])
-	flags, isInterp := inlineFlags[fam]
-	if !isInterp {
-		return nil
-	}
-	args := argv[1:]
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if a == "--" || !strings.HasPrefix(a, "-") || a == "-" {
-			break
-		}
-		for _, l := range flags.long {
-			if a == l || strings.HasPrefix(a, l+"=") {
-				return inlineError(base, a)
-			}
-		}
-		if strings.HasPrefix(a, "--") {
-			for _, l := range flags.takesLong {
-				if a == l {
-					i++ // the flag's value, not the script
-					break
-				}
-			}
-			continue
-		}
-		if flags.short != "" && strings.ContainsAny(a[1:], flags.short) {
-			return inlineError(base, a)
-		}
-		if len(a) == 2 && flags.takes != "" && strings.ContainsRune(flags.takes, rune(a[1])) {
-			i++ // the flag's value, not the script
-		}
+	if flag := scanArgs(argv).inline; flag != "" {
+		return inlineError(base, flag)
 	}
 	// deno's subcommand form: `deno eval <code>`.
 	if fam == "deno" && len(argv) > 1 && argv[1] == "eval" {
@@ -121,46 +101,120 @@ func CheckArgv(argv []string) error {
 	return nil
 }
 
-// programArg is the argument an interpreter runs as its program: the first
-// one that is not an interpreter flag or a flag's value. Empty for a program
-// that is not an interpreter jit knows, or for `python -m module`, whose
-// module is found on the path rather than named.
-func programArg(argv []string) string {
+// argScan is what an interpreter's arguments say, read once, by the one
+// scanner every check shares (CheckArgv, ExternalFiles, Label): three copies
+// of this loop drifted apart once, and a fix landed in one and not the other.
+type argScan struct {
+	// program is the file an interpreter runs, "" for `-m module`, for a
+	// program jit does not know as an interpreter, or when none is given.
+	program string
+	// module is `python -m`'s module, for display.
+	module string
+	// code holds the values of code-loading flags (node -r, ruby -I).
+	code []string
+	// inline is the flag that took a program inline (`-c`, `--eval`), if any.
+	inline string
+}
+
+// scanArgs reads an interpreter's own flags up to its program. A short
+// cluster is read letter by letter: an inline letter is refused wherever it
+// sits (`-Bc`), and a value-taking letter takes the rest of the cluster
+// (`-Wignore`) or, when it ends the cluster (`-uW ignore`), the next argument.
+func scanArgs(argv []string) argScan {
+	var out argScan
 	if len(argv) < 2 {
-		return ""
+		return out
 	}
 	flags, ok := inlineFlags[family(argv[0])]
 	if !ok {
-		return ""
+		return out
 	}
 	args := argv[1:]
+	value := func(i int) string {
+		if i < len(args) {
+			return args[i]
+		}
+		return ""
+	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
-		if a == "--" {
-			if i+1 < len(args) {
-				return args[i+1]
-			}
-			return ""
-		}
-		if a == "-m" {
-			return ""
-		}
-		if !strings.HasPrefix(a, "-") || a == "-" {
-			return a
-		}
-		if strings.HasPrefix(a, "--") {
-			for _, l := range flags.takesLong {
-				if a == l {
-					i++
+		switch {
+		case a == "--":
+			out.program = value(i + 1)
+			return out
+		case a == "-m":
+			out.module = value(i + 1)
+			return out
+		case !strings.HasPrefix(a, "-") || a == "-":
+			out.program = a
+			return out
+		case strings.HasPrefix(a, "--"):
+			name, inlineVal, hasVal := strings.Cut(a, "=")
+			for _, l := range flags.long {
+				if name == l {
+					out.inline = a
+					return out
 				}
 			}
-			continue
-		}
-		if len(a) == 2 && flags.takes != "" && strings.ContainsRune(flags.takes, rune(a[1])) {
-			i++
+			for _, l := range flags.takesLong {
+				if name != l {
+					continue
+				}
+				v := inlineVal
+				if !hasVal {
+					i++
+					v = value(i)
+				}
+				for _, cl := range flags.codeLong {
+					if name == cl {
+						out.code = append(out.code, v)
+					}
+				}
+			}
+		default:
+			cluster := a[1:]
+			for k, r := range cluster {
+				if strings.ContainsRune(flags.short, r) {
+					out.inline = a
+					return out
+				}
+				if !strings.ContainsRune(flags.takes, r) {
+					continue
+				}
+				v := cluster[k+1:]
+				if v == "" {
+					i++
+					v = value(i)
+				}
+				if strings.ContainsRune(flags.codeShort, r) {
+					out.code = append(out.code, v)
+				}
+				break
+			}
 		}
 	}
-	return ""
+	return out
+}
+
+// programArg is the file an interpreter runs as its program.
+func programArg(argv []string) string { return scanArgs(argv).program }
+
+// Label names what a job runs, for the one line the human decides by:
+// the folder and the program. The program is the file the interpreter runs
+// (`python -W x run.py` → run.py), `-m module` for a module, and otherwise
+// the executable itself: never an argument the command merely passes along.
+func Label(dir string, argv []string) (folder, program string) {
+	folder = filepath.Base(dir)
+	sc := scanArgs(argv)
+	switch {
+	case sc.program != "":
+		program = filepath.Base(sc.program)
+	case sc.module != "":
+		program = "-m " + sc.module
+	default:
+		program = filepath.Base(argv[0])
+	}
+	return folder, program
 }
 
 func inlineError(prog, flag string) error {

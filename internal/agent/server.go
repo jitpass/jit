@@ -214,9 +214,10 @@ type Server struct {
 	// jobs is the approved job list, loaded from jobsPath (SetJobStore) and
 	// saved on every change, guarded by jobMu. A run copies its job out and
 	// releases the lock: a run lasts minutes and must not hold up a list.
-	jobMu    sync.Mutex
-	jobs     map[string]*job.Job
-	jobsPath string
+	jobMu      sync.Mutex
+	jobs       map[string]*job.Job
+	jobsPath   string
+	jobRunning map[string]bool
 
 	// GrantKeys is where a standing grant's own key lives
 	// (design/standing-grants.md): one keychain item per grant, created

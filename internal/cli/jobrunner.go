@@ -88,10 +88,10 @@ func (k jobKeys) UnwrapKey(wrapped []byte) ([]byte, error) {
 	return append([]byte(nil), dek...), nil
 }
 
-// jobRunMarker is the mount manager's view of a running job: its folder, for
-// as long as the job runs (mountjobs.go). Nil marks nothing.
+// jobRunMarker is the mount manager's view of a running job: its process
+// and folder, for as long as the job runs (mountjobs.go). Nil marks nothing.
 type jobRunMarker interface {
-	beginJobRun(dir string) (end func())
+	beginJobRun(dir string, pid int32) (end func())
 }
 
 // runJobProcess is the service's OnRunJob.
@@ -116,18 +116,42 @@ func runJobProcess(root string, mounts jobRunMarker) func(j job.Job, deks map[st
 				hidden[sec.Var] = values[sec.Var]
 			}
 		}
-		scratch, err := os.MkdirTemp("", "jit-job-")
+		scratch, err := newJobScratch(root)
 		if err != nil {
 			return agent.JobResult{}, err
 		}
 		defer os.RemoveAll(scratch)
+		var onStart func(pid int32) func()
 		if mounts != nil {
-			// Marked before the start, so the child's first read of its own
-			// folder's .env already finds the job registered.
-			defer mounts.beginJobRun(j.Dir)()
+			onStart = func(pid int32) func() { return mounts.beginJobRun(j.Dir, pid) }
 		}
-		return runJobCommand(j, values, hidden, jobEnv(scratch, j), job.RunTimeout)
+		return runJobCommand(j, values, hidden, jobEnv(scratch, j), job.RunTimeout, onStart)
 	}
+}
+
+// newJobScratch makes the folder one run keeps its bytecode cache and empty
+// ZDOTDIR in, inside jit's own directory rather than $TMPDIR: a same-user
+// process watching $TMPDIR could otherwise plant a .zshenv or a .pyc there
+// between the folder's creation and the interpreter's start, and
+// docs/service/sandboxed-callers.md already says no sandbox is ever given
+// write access to jit's directory. Both subfolders exist, 0700, before the
+// command starts.
+func newJobScratch(root string) (string, error) {
+	base := filepath.Join(root, "job-scratch")
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		return "", err
+	}
+	scratch, err := os.MkdirTemp(base, "run-")
+	if err != nil {
+		return "", err
+	}
+	for _, sub := range []string{"pycache", "zdotdir"} {
+		if err := os.Mkdir(filepath.Join(scratch, sub), 0o700); err != nil {
+			_ = os.RemoveAll(scratch)
+			return "", err
+		}
+	}
+	return scratch, nil
 }
 
 // jobEnv is the environment a job starts from, built from scratch: nothing
@@ -169,7 +193,7 @@ func jobEnv(scratch string, j job.Job) []string {
 // runJobCommand starts j with base plus values, reads stdout and stderr
 // through a masker each, and returns the result. Split from runJobProcess so
 // a test can run a real process without a vault.
-func runJobCommand(j job.Job, values, hidden map[string]string, base []string, timeout time.Duration) (agent.JobResult, error) {
+func runJobCommand(j job.Job, values, hidden map[string]string, base []string, timeout time.Duration, onStart func(pid int32) func()) (agent.JobResult, error) {
 	env := inject.MergeEnv(base, values)
 	half := job.OutputCap / 2
 	outBuf, errBuf := newTailBuffer(half), newTailBuffer(half)
@@ -190,7 +214,15 @@ func runJobCommand(j job.Job, values, hidden map[string]string, base []string, t
 
 	before := snapshotOutputs(j.Outputs)
 	start := time.Now()
-	runErr := cmd.Run()
+	runErr := cmd.Start()
+	if runErr == nil {
+		if onStart != nil {
+			// Registered at once, microseconds after the start; a read that
+			// beats it gets the decoy, the safe side (mountjobs.go).
+			defer onStart(int32(cmd.Process.Pid))() // #nosec G115 -- a pid always fits int32 on darwin
+		}
+		runErr = cmd.Wait()
+	}
 	_ = outMask.Flush()
 	_ = errMask.Flush()
 
