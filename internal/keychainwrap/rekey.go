@@ -124,6 +124,46 @@ func (w *Wrapper) PromoteStagedRekeyMEK() error {
 	return staged.deleteMEK()
 }
 
+// InstallMEK stores mek as this wrapper's master key and reads it back — the
+// keychain half of moving a vault's key OUT of the Secure Enclave (`jit
+// vault rekey --wrapper keychain`), where the MEK comes from the enclave and
+// must land here byte for byte. An item already holding exactly these bytes
+// is success, so a resumed move is idempotent; one holding anything else is
+// refused, never overwritten: it would be the key some other vault state
+// depends on. No challenge: the caller opened the enclave to get mek, which
+// was the approval.
+func (w *Wrapper) InstallMEK(mek []byte) error {
+	if len(mek) != mekSize {
+		return fmt.Errorf("refusing to install a %d-byte master key, want %d", len(mek), mekSize)
+	}
+	check := &Wrapper{service: w.service, account: w.account, challenge: func(string) error { return nil }}
+	if w.MEKPresence() == MEKPresent {
+		got, err := check.fetchMEK("")
+		if err != nil {
+			return fmt.Errorf("reading the existing master key: %w", err)
+		}
+		defer wipe(got)
+		check.Close()
+		if !bytes.Equal(got, mek) {
+			return fmt.Errorf("the keychain already holds a different master key; refusing to replace it")
+		}
+		return nil
+	}
+	if err := w.setMEK(mek); err != nil {
+		return fmt.Errorf("installing the master key: %w", err)
+	}
+	got, err := check.fetchMEK("")
+	if err != nil {
+		return fmt.Errorf("verifying the installed master key: %w", err)
+	}
+	defer wipe(got)
+	check.Close()
+	if !bytes.Equal(got, mek) {
+		return fmt.Errorf("verifying the installed master key: the keychain read back a different key")
+	}
+	return nil
+}
+
 // DeleteStagedRekeyMEK removes a staged key outright — cleanup for `jit
 // vault delete` (which destroys the vault the staged key was meant for)
 // and for tests.
