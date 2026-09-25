@@ -165,8 +165,8 @@ func (w *Wrapper) InstallMEK(mek []byte) error {
 }
 
 // DeleteStagedRekeyMEK removes a staged key outright — cleanup for `jit
-// vault delete` (which destroys the vault the staged key was meant for)
-// and for tests.
+// uninstall --purge` (which destroys the vault the staged key was meant
+// for) and for tests.
 func (w *Wrapper) DeleteStagedRekeyMEK() error {
 	return w.StagedRekeyWrapper().deleteMEK()
 }

@@ -1,6 +1,6 @@
 # Secure Enclave: the master key behind hardware, nothing else moves
 
-**Status: design; spikes S1, S1b, S2, S3a, S3b, S3c and S4 passed 2026-09-25 (`spike/secure-enclave-mek/FINDINGS.md`). Nothing built in jit or jit-app. Parked behind AI Jobs.** Read
+**Status: jit built and merged (B1–B4, C1–C2, 2026-09-25); the app side (jit-app #52, #53) waits on a signed test build, so no user can move a vault yet. `design/secure-enclave-plan.md` has the per-step table; the spikes are in `spike/secure-enclave-mek/FINDINGS.md`.** Read
 `standing-grants.md` ("For the Secure Enclave move") and
 `agent-jobs.md` (branch `ai-jobs`) first; this page keeps both working
 unchanged.
