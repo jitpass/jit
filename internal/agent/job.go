@@ -493,7 +493,7 @@ func (s *Server) jobStatus(j *job.Job) JobStatus {
 		Files: len(j.Fingerprint.Files), State: JobReady, ApprovedUnix: j.ApprovedUnix,
 		Runs: j.Runs, LastRunUnix: j.LastRunUnix, LastExit: j.LastExit, LastCaller: j.LastCaller,
 		LastRefusal: j.LastRefusal, LastHidden: j.LastHiddenSum,
-		ProfileGlobal: j.Profile != "" && j.ProfileRoot == "",
+		ProfileGlobal: j.Profile != "" && j.ProfileRoot == "", ProfileRoot: j.ProfileRoot,
 	}
 	rotated := s.rotatedSecrets(j)
 	for _, sec := range j.Secrets {

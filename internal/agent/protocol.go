@@ -600,12 +600,16 @@ type JobStatus struct {
 	// ProfileGlobal says Profile is read from ~/.jit/profiles rather than
 	// the job's folder, so a client approving the job again (an edit, a
 	// stopped job) can send the same GrantProfile the job was made from.
-	ProfileGlobal bool              `json:"profile_global,omitempty"`
-	Secrets       []JobSecretStatus `json:"secrets,omitempty"`
-	Ask           string            `json:"ask"`
-	Outputs       []string          `json:"outputs,omitempty"`
-	Description   string            `json:"description,omitempty"`
-	Files         int               `json:"files"`
+	ProfileGlobal bool `json:"profile_global,omitempty"`
+	// ProfileRoot is the folder the profile is read from when it is not
+	// global. It differs from Dir when the job runs in a folder inside the
+	// profile's project.
+	ProfileRoot string            `json:"profile_root,omitempty"`
+	Secrets     []JobSecretStatus `json:"secrets,omitempty"`
+	Ask         string            `json:"ask"`
+	Outputs     []string          `json:"outputs,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Files       int               `json:"files"`
 	// State is JobReady, JobChanged or JobRotated; Changes names what
 	// changed, capped at maxJobChanges.
 	State        string       `json:"state"`
