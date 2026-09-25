@@ -170,6 +170,28 @@ The dialog read:
   sealed, to verify) adds no second prompt, and the agent's one-prompt-per-
   unlock holds.
 
+## S3e: existing installs through the old path (2026-09-25, PASS)
+
+`s3e/build.sh` builds the layout track A ships: an outer app
+(`OuterSpike.app`, no entitlements) whose old path `Contents/MacOS/jit` is
+a **symlink** to `../Helpers/JitPassAgentSpike.app/Contents/MacOS/jit`, the
+helper being the S3c Go `jit` with the entitlements and the dev profile.
+Signed inside out (helper, then outer). `codesign --verify --strict --deep`
+on the outer app: OK.
+
+| Reached as | Result |
+|---|---|
+| The old path inside the app (what every existing plist names) | create, find, MEK round trip, delete: OK |
+| An outside symlink to the old path (today's `/opt/homebrew/bin/jit`) | OK |
+| launchd, `ProgramArguments[0]` = the old path, label `com.jitpass.spike.s3e` | ppid 1, `last exit code = 0`, full cycle OK; booted out |
+
+- The compat symlink is enough: an upgraded install keeps its service, its
+  PATH link and its plist without a repair step.
+- `realpath` of the old path is the helper's path, so `selfpath.Stable`
+  (EvalSymlinks) records the new location. `jit service restart`'s
+  `agentPlistNeedsRepoint` sees the recorded old path differ and rewrites
+  the plist. The old path can be dropped a release or two later.
+
 ## Not run yet
 
 - **S3d** (a same-user debugger is refused): needs the Developer ID build,
