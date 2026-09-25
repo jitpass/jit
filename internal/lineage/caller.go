@@ -201,10 +201,49 @@ func Ancestry(pid int32) []Process {
 // Shared by the agent (who unlocked the vault) and the mount manager (who
 // read a secret file), which ask the same question of different processes.
 func LaunchedBy(ancestors []Process) string {
-	if p, _, ok := LaunchedByProcess(ancestors); ok {
-		return p.Name()
+	p, above, ok := LaunchedByProcess(ancestors)
+	if !ok {
+		return ""
 	}
-	return ""
+	// For DISPLAY only, an app's own disclaimer helper is looked through to
+	// the app. Claude Desktop starts every local MCP server through
+	// Contents/Helpers/disclaimer, so a prompt said "launched by disclaimer"
+	// (found by running the real thing). LaunchedByProcess, which consent and
+	// the prompt backoff KEY on, is deliberately untouched: widening those
+	// keys to the whole app would merge what the app launches through its
+	// helper with what it launches directly. Matched by the helper's place
+	// inside an app bundle, never by the bare name, which any binary can take.
+	if isAppDisclaimer(p) {
+		if name := LaunchedBy(above); name != "" {
+			return name
+		}
+	}
+	// An Electron app's helper is named for the app it is part of: Cursor
+	// starts MCP servers from "Cursor Helper", inside Cursor.app's
+	// Frameworks, and "Cursor Helper ran it" is the helper's name, not the
+	// app's (found by running the real thing). Display only, like the
+	// disclaimer, and by the helper's place inside the bundle.
+	if app := appOfHelper(p.ExecPath); app != "" {
+		return app
+	}
+	return p.Name()
+}
+
+// appOfHelper is the app a helper bundle nested in its Frameworks belongs
+// to ("/Applications/Cursor.app/Contents/Frameworks/Cursor Helper.app/
+// Contents/MacOS/Cursor Helper" is Cursor), or "" for anything else.
+func appOfHelper(execPath string) string {
+	const nest = ".app/Contents/Frameworks/"
+	i := strings.Index(execPath, nest)
+	if i <= 0 || !strings.Contains(execPath[i+len(nest):], ".app/Contents/MacOS/") {
+		return ""
+	}
+	return filepath.Base(execPath[:i])
+}
+
+// isAppDisclaimer reports whether p is an app bundle's disclaimer helper.
+func isAppDisclaimer(p Process) bool {
+	return strings.HasSuffix(p.ExecPath, ".app/Contents/Helpers/disclaimer")
 }
 
 // LaunchedByProcess is LaunchedBy's structured counterpart: it returns the

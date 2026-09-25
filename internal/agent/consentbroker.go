@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -61,9 +62,13 @@ var (
 type brokerVerdict int
 
 const (
-	// brokerProceed: show the Touch ID. Either a broker allowed it, or none
-	// was there to ask.
+	// brokerProceed: show the Touch ID, because no broker was there to ask
+	// (or it left mid-question). The human has seen nothing yet, so the
+	// dialog carries the whole sentence.
 	brokerProceed brokerVerdict = iota
+	// brokerAllowed: a broker showed the request and the human pressed
+	// Allow. The Touch ID still follows, and may say less (confirmReason).
+	brokerAllowed
 	brokerDenied
 	brokerUnanswered
 )
@@ -157,7 +162,7 @@ func (s *Server) brokerConsent(pending *SessionEvent) brokerVerdict {
 		select {
 		case d := <-p.answer:
 			if d == DecisionAllow {
-				return brokerProceed
+				return brokerAllowed
 			}
 			return brokerDenied
 		case <-p.gone:
@@ -183,6 +188,8 @@ func (s *Server) promptOrBroker(pending *SessionEvent, reason string, broker boo
 			return nil, false, errDeclinedByBroker
 		case brokerUnanswered:
 			return nil, false, fmt.Errorf("%w within %s", errUnansweredByBroker, s.brokerWait)
+		case brokerAllowed:
+			reason = confirmReason(reason)
 		case brokerProceed:
 		}
 	}
@@ -239,4 +246,26 @@ func (s *Server) answerConsent(id, decision string) error {
 	default:
 		return fmt.Errorf("consent_answer: request %q was already answered", id)
 	}
+}
+
+// confirmReason is the Touch ID sentence after the app's sheet already showed
+// the whole request and the human pressed Allow (design/agent-jobs.md, step
+// 4): "confirm: " and the FACTS clause of the full sentence, dropping only
+// the explanatory tail after "; " ("it sees output, never the values"). A
+// sentence with no tail is kept whole. It never says less than the facts,
+// because any same-user process can subscribe as a broker and "allow": the
+// dialog is what the fingerprint approves, and it must still say what runs
+// and who asked. The audit keeps the full sentence; only the dialog shortens.
+//
+// A sentence with no tail, or one whose short form would not be shorter or
+// would not fit whole, is returned unchanged: truncating a facts clause
+// could cut the scope ("until you revoke it"), which is the half that
+// changes the decision.
+func confirmReason(reason string) string {
+	facts, _, hasTail := strings.Cut(reason, "; ")
+	short := "confirm: " + facts
+	if !hasTail || len([]rune(short)) >= len([]rune(reason)) || len([]rune(short)) > maxReasonLen {
+		return reason
+	}
+	return short
 }

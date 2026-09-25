@@ -16,6 +16,7 @@ import (
 
 	"github.com/jitpass/jit/internal/auditlog"
 	"github.com/jitpass/jit/internal/consent"
+	"github.com/jitpass/jit/internal/job"
 )
 
 // Server is the session broker RFC.md Pillar II describes: holds the
@@ -195,6 +196,31 @@ type Server struct {
 	// means rotation goes unreported (never unserved-and-unreported: the
 	// serve path's hash miss stands on its own).
 	OnWrappedDEK func(path string) (wrapped []byte, class string, err error)
+
+	// OnResolveJob, if set, resolves a job's profile to its secrets (variable,
+	// vault path, wrapped DEK, class) through jit's own profile store, the
+	// same agent-side resolution OnResolveGrant does and for the same reason:
+	// the human approves what the agent resolved, never what a caller
+	// claims. Nil means a job can carry no secrets.
+	OnResolveJob func(p GrantProfile) ([]JobSecretSource, error)
+
+	// OnRunJob, if set, runs an approved job (design/agent-jobs.md): decrypt
+	// its secrets with deks (DEK by wrapped-bytes digest, unwrapped here under
+	// the job's own approval), start the command with them, and return the
+	// output with every hidden value replaced. The CLI wires it because
+	// decrypting needs internal/vault. Nil disables job_run.
+	OnRunJob func(j job.Job, deks map[string][]byte) (JobResult, error)
+
+	// jobs is the approved job list, loaded from jobsPath (SetJobStore) and
+	// saved on every change, guarded by jobMu. A run copies its job out and
+	// releases the lock: a run lasts minutes and must not hold up a list.
+	jobMu      sync.Mutex
+	jobs       map[string]*job.Job
+	jobsPath   string
+	jobRunning map[string]bool
+	// jobProposals are agents' job proposals waiting for the human
+	// (jobrequest.go), memory-only, capped and expiring. Guarded by jobMu.
+	jobProposals map[string]JobProposal
 
 	// GrantKeys is where a standing grant's own key lives
 	// (design/standing-grants.md): one keychain item per grant, created
@@ -668,6 +694,37 @@ func (s *Server) handle(req Request, c *caller) Response {
 			return Response{OK: false, Error: "grant_extend: missing grant_id"}
 		}
 		return s.extendGrant(req, c)
+	case OpJobAllow:
+		return s.allowJob(req, c)
+	case OpJobList:
+		// Prompt-free, OpHistory's reasoning: reading what may run must never
+		// itself cost an authentication.
+		return Response{OK: true, Jobs: s.listJobs(req.JobNamesOnly)}
+	case OpJobRemove:
+		// No prompt: reducing access is always free, like grant_revoke.
+		if req.JobName == "" {
+			return Response{OK: false, Error: "job_remove: missing job_name"}
+		}
+		return s.removeJob(req.JobName, c)
+	case OpJobPreview:
+		// Prompt-free: a preview decides nothing and keeps nothing.
+		return Response{OK: true, Preview: s.previewJob(req)}
+	case OpJobRequest:
+		return s.requestJob(req, c)
+	case OpJobProposals:
+		// Prompt-free: the app asking what to show must never cost a prompt.
+		return Response{OK: true, Proposals: s.listProposals()}
+	case OpJobDismiss:
+		if req.ProposalID == "" {
+			return Response{OK: false, Error: "job_dismiss: missing proposal_id"}
+		}
+		s.dropProposal(req.ProposalID)
+		return Response{OK: true}
+	case OpJobRun:
+		if req.JobName == "" {
+			return Response{OK: false, Error: "job_run: missing job_name"}
+		}
+		return s.runJob(req.JobName, c)
 	case OpUnwrap:
 		// A live process grant answers first: the human already approved this
 		// exact tree reaching these exact secrets (one disclosed challenge,

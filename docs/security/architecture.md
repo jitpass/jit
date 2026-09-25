@@ -75,6 +75,12 @@ Secrets materialize at the moment of use and nowhere else:
   prompts a fresh Touch ID naming it and remembers the answer until re-lock, so
   a migrated credential is never handed out completely silently even while the
   vault is unlocked.
+- An [AI job](../service/ai-jobs.md) delivers a secret to a command the
+  human approved, and to no caller at all. The AI tool asks the service to
+  run the job by name; the service spawns it with the secrets in a scratch
+  environment, and the tool gets the output with every value, and its
+  common encodings, replaced by `[hidden: NAME]`. The caller - a terminal
+  agent, or `jit mcp` inside Claude Desktop or Cursor - never holds a key.
 - The escape hatches are guarded too: `jit vault get --copy` conceals the
   value from clipboard managers and auto-clears it after 45 seconds, and
   `jit export` asks before printing plaintext to a terminal (its output is
@@ -181,6 +187,26 @@ nothing: the credential class it names is verified against the ciphertext it
 sent before anyone is asked, so a process holding no vault data at all can no
 longer put a dialog on your screen.
 
+## AI jobs
+
+An [AI job](../service/ai-jobs.md) is the one path where the service runs a
+command itself rather than handing a value to one. The approval pins what
+runs: the resolved executable, the command line, the profile's secrets, and
+a fingerprint of the job's folder (content hashes plus change-time stamps,
+so a file swapped and put back also counts as changed). Every run re-checks
+the fingerprint and the secrets' rotation before the prompt, after it, and
+after the command exits; any difference stops the job, and the stop is
+sticky until the human reviews and approves it again. The Touch ID prompt
+names the job, the command and who asked, as the service resolved them.
+
+A job that asks *never* runs with no prompt, even while the vault is
+locked, using a key of its own in the keychain that seals only that job's
+data keys; removing the job deletes the key. `jit mcp`, the stdio MCP
+server that Claude Desktop and Cursor start, is a plain socket client with
+no privilege of its own: it can list jobs, ask to run one, and propose a new
+one, which is only a suggestion the human approves or dismisses. It cannot
+create or approve a job.
+
 ## Deliberate limits
 
 jit narrows *where* and *when* plaintext exists; it does not make a
@@ -227,6 +253,14 @@ compromised user account safe. The boundaries:
   read. The ancestry check narrows a grant; it is never the security boundary on
   its own - the boundary is the grant (or the approved prompt), issued only for
   a read the user authorized.
+- **An AI job trusts the command it runs.** The job's command holds the
+  real value, so a script written to leak it, or to print it in an encoding
+  jit does not know, can. The fingerprint makes sure
+  the code that runs is the code the human approved; it cannot make that
+  code honest. Programs the job calls from `PATH` (`git`, `curl`, a Homebrew
+  tool) are trusted as installed, and a change that lands in the narrow
+  window between the last check and an import is caught by the re-check
+  after the run, which stops the job, not before it.
 
 Each published review carries a "known, accepted limitations" list that
 states these boundaries precisely as of that review -

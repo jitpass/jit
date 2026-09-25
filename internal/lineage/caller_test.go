@@ -68,3 +68,47 @@ func TestAncestryWalksUpwards(t *testing.T) {
 		t.Errorf("chain[1] (pid %d) is not chain[0]'s parent (ppid %d)", chain[1].PID, chain[0].PPID)
 	}
 }
+
+// The chain the live Cowork test recorded: jit mcp, started by Claude
+// Desktop through its disclaimer helper. SHOWN as Claude; KEYED, for consent
+// and the backoff, on the helper exactly as before, so no cache widens.
+func TestLaunchedBySkipsClaudeDesktopsDisclaimer(t *testing.T) {
+	chain := []Process{
+		{PID: 27067, ExecPath: "/Applications/Claude.app/Contents/Helpers/disclaimer"},
+		{PID: 27002, ExecPath: "/Applications/Claude.app/Contents/MacOS/Claude"},
+	}
+	if got := LaunchedBy(chain); got != "Claude" {
+		t.Fatalf("LaunchedBy = %q, want Claude", got)
+	}
+	if p, _, ok := LaunchedByProcess(chain); !ok || p.PID != 27067 {
+		t.Fatalf("LaunchedByProcess = %+v; the consent key must stay the helper", p)
+	}
+	// A binary merely NAMED disclaimer is not looked through.
+	fake := []Process{
+		{PID: 5, ExecPath: "/tmp/x/disclaimer"},
+		{PID: 6, ExecPath: "/Applications/Claude.app/Contents/MacOS/Claude"},
+	}
+	if got := LaunchedBy(fake); got != "disclaimer" {
+		t.Fatalf("LaunchedBy(fake) = %q, want disclaimer", got)
+	}
+}
+
+// The chain the live Cursor test recorded: jit mcp, started by Cursor's
+// Electron helper. SHOWN as Cursor; a binary merely NAMED like a helper,
+// outside an app's Frameworks, is shown as itself.
+func TestLaunchedByNamesAnElectronHelpersApp(t *testing.T) {
+	chain := []Process{
+		{PID: 42673, ExecPath: "/Applications/Cursor.app/Contents/Frameworks/Cursor Helper.app/Contents/MacOS/Cursor Helper"},
+		{PID: 42606, ExecPath: "/Applications/Cursor.app/Contents/MacOS/Cursor"},
+	}
+	if got := LaunchedBy(chain); got != "Cursor" {
+		t.Fatalf("LaunchedBy = %q, want Cursor", got)
+	}
+	if p, _, ok := LaunchedByProcess(chain); !ok || p.PID != 42673 {
+		t.Fatalf("LaunchedByProcess = %+v; the consent key must stay the helper", p)
+	}
+	loose := []Process{{PID: 7, ExecPath: "/tmp/Cursor Helper.app/Contents/MacOS/Cursor Helper"}}
+	if got := LaunchedBy(loose); got != "Cursor Helper" {
+		t.Fatalf("LaunchedBy(loose) = %q, want Cursor Helper", got)
+	}
+}

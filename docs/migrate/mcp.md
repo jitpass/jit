@@ -146,4 +146,13 @@ between machines) or when a profile is deleted. The host reports only
 `uv`/`npx` command is deliberately not checked: it resolves against the PATH
 the host gives the server, which jit can't see from a shell.
 
+## An AI app that needs to run a script, not a server
+
+Migrating keeps an MCP server's own secrets out of the config. When what the
+AI app actually needs is to run one of *your* scripts with a key, do not give
+it the key or a server that holds one: approve the script as an
+[AI job](../service/ai-jobs.md) and connect the app with `jit mcp install`
+(Claude Desktop) or `jit mcp install --client cursor`. The app gets the
+script's output with every secret value hidden.
+
 Reversing the migration: [`jit migrate undo`](./undo-and-remove.md).

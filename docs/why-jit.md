@@ -159,6 +159,14 @@ same biometric service, at about 25ms overhead. Because it is a shim and not a
 shell alias, it keeps working inside scripts, Makefiles, and git hooks.
 Anything not in the catalog works through `jit wrap add`.
 
+## 7. AI tools run your scripts, never your keys
+
+An AI tool that needs to run a script with a key does not have to be given
+the key. Approve the command once as an [AI job](./service/ai-jobs.md); the
+tool runs it by name, jit runs it on your Mac, and the tool reads the output
+with every secret value hidden. That works for terminal agents and for
+sandboxed apps like Claude Desktop and Cursor, through `jit mcp`.
+
 ## Start in one command
 
 ```
