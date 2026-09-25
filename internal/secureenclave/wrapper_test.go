@@ -310,3 +310,16 @@ func TestSealedPathIsTheVaultRoot(t *testing.T) {
 		t.Fatalf("path %q", w.path)
 	}
 }
+
+// A symlink where the sealed file belongs, dangling or not, says nothing
+// about the key: never Absent, which callers treat as "the key is gone".
+func TestPresenceOfASymlinkIsIndeterminate(t *testing.T) {
+	root := t.TempDir()
+	w := newWrapper(root, testTag, newFake(t))
+	if err := os.Symlink(filepath.Join(root, "nowhere"), w.path); err != nil {
+		t.Fatal(err)
+	}
+	if p := w.Presence(); p != Indeterminate {
+		t.Fatalf("a dangling symlink reads as %v, want Indeterminate", p)
+	}
+}
