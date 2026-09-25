@@ -86,6 +86,7 @@ This is the one layer of the stack that is unavoidably macOS-only and unavoidabl
 |---|---|
 | `net` (stdlib) | Unix domain socket for the TTL-scoped MEK cache (RFC.md:111). |
 | `golang.org/x/sys/unix` | Socket file permissions (`0600`, owner-only), and peer-credential verification (`LOCAL_PEERCRED` on Darwin) so the agent can confirm a connecting process belongs to the same UID before releasing anything from the cache. The FIFO mount itself ended up gated a different way (decoy-by-default, with the real value released only to a grant's process tree -- the grant lives in `internal/cli` mountgrants, and `internal/mount/doc.go` owns the reasoning; there is no `internal/mount.RevealState`, and no reveal-hook wiring at all). `spike/fifo-reader-identify/FINDINGS.md` found the peer-credential approach here doesn't carry over to a named pipe the way it does for this socket. |
+| `encoding/json`, `bufio` (stdlib) | `jit mcp`, the stdio MCP server for AI jobs (`internal/mcp`). Hand-rolled JSON-RPC 2.0 with three tools: an MCP SDK would add a dependency tree to the one process an AI app starts, for framing a few hundred lines do. It is a plain socket client of the service and holds no key. |
 
 ### 2.7 Named-pipe injection (Pillar III, Tiers 3–4)
 

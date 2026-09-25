@@ -114,6 +114,13 @@ reports when the socket is refused, and how a sandboxed caller still reaches
 the audit trail without write access to anything, are the subject of
 **[Calling jit from a sandbox](./sandboxed-callers.md)**.
 
+## Running jobs for AI tools
+
+The service also runs [AI jobs](./ai-jobs.md): commands you approved, which
+an AI tool asks it to run by name. The service checks the job has not
+changed, runs it with its secrets, and returns the output with every value
+hidden, so the tool never holds a key.
+
 ## Every unlock is attributed
 
 The service knows, from the kernel, exactly which process asked for every

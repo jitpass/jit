@@ -55,6 +55,11 @@ by what the tool is able to do:
    jit answers. No file is involved at any point.
 3. **A named-pipe mount**, for tools that only know how to read a file.
 
+One more path exists for AI tools, and it inverts the first: with an
+[AI job](../service/ai-jobs.md) the service itself starts a command you
+approved, injects the secrets into that command alone, and returns only its
+output to the tool, with every secret value hidden.
+
 The third mechanism, concretely: the "file" is a POSIX FIFO created with
 `mkfifo(2)` at mode `0600`. A program calling `open(".env")` **blocks in the
 kernel** until a writer connects. The background service is that writer. It

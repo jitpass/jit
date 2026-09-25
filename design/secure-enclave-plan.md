@@ -78,7 +78,7 @@ is separate from any fallout from the Secure Enclave.
   fresh install writes the helper path; `jit upgrade` still refuses inside
   the bundle (`upgrade.go:89` matches the nested `.app/Contents/MacOS`).
 
-**A2. Entitlements and the profile (S).** Needs the Developer ID profile.
+**A2. Entitlements and the profile (S).** The Developer ID profile exists (2026-09-25, `JitPass Agent Developer ID`); it becomes a CI secret here.
 
 - `Resources/Agent.entitlements` (new): `com.apple.application-identifier
   = CZC6BH93GJ.com.jitpass.agent`, `com.apple.developer.team-identifier`,
@@ -90,7 +90,9 @@ is separate from any fallout from the Secure Enclave.
   preflight refuses when it is empty. Decode it beside the p12 (L58).
 - `gate.sh`: a local sign reads the profile from `~/.apple-signing`.
 - `verify.sh`: assert the entitlements, the embedded profile's team,
-  app identifier and access group, and that it has at least 90 days left.
+  app identifier and access group, and at least 90 days left on **both**
+  the profile and the certificate inside it. The profile made 2026-09-25
+  says 2044, its certificate 2031-07-31; the certificate is the real limit.
 - **Spike S3d** on the first Developer ID build: `lldb -p` against the
   helper is refused.
 
@@ -244,7 +246,7 @@ release R5   C1–C5: grant and job keys, migrated silently
 | Existing plists point at the old path | Compat symlink, proven by S3e; `jit service restart` repoints |
 | Full Disk Access or another permission tied to the old identity | The scheduled-scan check in A1 |
 | Keys orphaned by a changed bundle ID or access group | The group is `CZC6BH93GJ.com.jitpass.vault`, not the bundle ID; A2's `verify.sh` asserts it on every release |
-| The Developer ID profile expires | `verify.sh` refuses under 90 days left |
+| The Developer ID profile or its certificate expires | `verify.sh` refuses under 90 days left on either (the certificate ends first: 2031-07-31) |
 | A tarball jit meets an enclave vault | B3's refusal sentence, tested |
 | Grants or jobs stop while locked | `AfterFirstUnlock` in C2; S4's recipe (hold the lock 15 s or more) as a manual pre-release check |
 | Losing the Mac loses the vault | D3's export check; S6 on a second Mac before R4 |
