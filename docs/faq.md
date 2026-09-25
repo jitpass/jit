@@ -92,6 +92,15 @@ Yes. Wrapping installs a `PATH` shim, not a shell alias, so any subprocess
 that spawns the tool hits the shim too. Overhead is about 25 ms per call with
 an unlocked service.
 
+### Can an AI tool run my script that needs a key, without seeing the key?
+
+Yes: make it an [AI job](./service/ai-jobs.md). You approve the command once,
+with the secrets it gets. The tool runs it by name (`jit job run`, or through
+`jit mcp` in Claude Desktop and Cursor), the service runs it on your Mac, and
+the tool gets the output with every secret value replaced by
+`[hidden: NAME]`. If the script or anything in its folder changes, the job
+stops until you look and approve it again.
+
 ### Does it work in CI?
 
 No, and it is not meant to. jit is a local developer-machine tool: it protects
