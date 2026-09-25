@@ -42,6 +42,8 @@ type GrantKeys struct {
 	tagPrefix string
 	// newKey builds the enclave handle for a tag; tests pass a fake.
 	newKey func(tag string) enclave
+	// list returns the ids under a prefix; tests pass a fake.
+	list func(prefix string) ([]string, error)
 }
 
 // NewTestingGrantKeys returns a store whose tags carry prefix, which must
@@ -119,6 +121,19 @@ func (g GrantKeys) Present(id string) (bool, error) {
 		return false, err
 	}
 	return k.present()
+}
+
+// List returns every grant id with an enclave key, from attributes only:
+// never uses a key, never prompts. For the orphan-key cleanup (plan C4).
+func (g GrantKeys) List() ([]string, error) {
+	prefix := g.tagPrefix
+	if prefix == "" {
+		prefix = grantTagPrefix
+	}
+	if g.list != nil {
+		return g.list(prefix)
+	}
+	return listTags(AccessGroup, prefix)
 }
 
 // Delete destroys the key; a key already gone is success. Every copy sealed

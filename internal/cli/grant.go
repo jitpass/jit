@@ -652,6 +652,7 @@ type grantKeyBackend interface {
 	Load(id string) (agent.GrantKey, error)
 	Present(id string) (bool, error)
 	Delete(id string) error
+	List() ([]string, error)
 }
 
 // grantKeyStore is the agent's GrantKeyStore over both backends (the agent
@@ -739,6 +740,23 @@ func (g grantKeyStore) DeleteWrap(id, wrap string) error {
 	return err
 }
 
+// The agent.GrantKeyLister half (plan C4): every id with a key of either
+// kind, for the service's start-up cleanup of keys nothing names.
+
+var _ agent.GrantKeyLister = grantKeyStore{}
+
+func (g grantKeyStore) ListGrantKeyIDs() ([]string, error) {
+	ids, err := g.keys.List()
+	if err != nil {
+		return nil, err
+	}
+	enc, err := g.enclave.List()
+	if err != nil && !errors.Is(err, secureenclave.ErrUnavailable) {
+		return nil, err
+	}
+	return append(ids, enc...), nil
+}
+
 type keychainGrantKeys struct{ keys keychainwrap.GrantKeys }
 
 func (k keychainGrantKeys) Create(id string) (agent.GrantKey, error) {
@@ -764,6 +782,8 @@ func (k keychainGrantKeys) Present(id string) (bool, error) {
 
 func (k keychainGrantKeys) Delete(id string) error { return k.keys.Delete(id) }
 
+func (k keychainGrantKeys) List() ([]string, error) { return k.keys.List() }
+
 type enclaveGrantKeys struct{ keys secureenclave.GrantKeys }
 
 func (e enclaveGrantKeys) Create(id string) (agent.GrantKey, error) {
@@ -785,6 +805,8 @@ func (e enclaveGrantKeys) Load(id string) (agent.GrantKey, error) {
 func (e enclaveGrantKeys) Present(id string) (bool, error) { return e.keys.Present(id) }
 
 func (e enclaveGrantKeys) Delete(id string) error { return e.keys.Delete(id) }
+
+func (e enclaveGrantKeys) List() ([]string, error) { return e.keys.List() }
 
 // completeGrantProcessNames offers --process candidates from the audit
 // trails: the programs that actually asked for secrets recently, annotated

@@ -274,3 +274,42 @@ KWResult kw_set_mek(const char *service, const char *account, const unsigned cha
     }
     return r;
 }
+
+KWResult kw_list_accounts(const char *service, char ***accounts, int *count) {
+    KWResult r = {0, NULL};
+    *accounts = NULL;
+    *count = 0;
+    @autoreleasepool {
+        NSDictionary *query = @{
+            (id)kSecClass: (id)kSecClassGenericPassword,
+            (id)kSecAttrService: [NSString stringWithUTF8String:service],
+            (id)kSecReturnAttributes: @YES,
+            (id)kSecMatchLimit: (id)kSecMatchLimitAll,
+        };
+        CFTypeRef result = NULL;
+        OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
+        if (status == errSecItemNotFound) {
+            r.success = 1;
+            return r;
+        }
+        if (status != errSecSuccess || !result) {
+            r.error_message = dupNSString([NSString stringWithFormat:@"listing keychain items failed, OSStatus=%d", (int)status]);
+            return r;
+        }
+        NSArray *items = (__bridge_transfer NSArray *)result;
+        char **out = calloc(items.count ? items.count : 1, sizeof(char *));
+        if (!out) {
+            r.error_message = dupNSString(@"listing keychain items: out of memory");
+            return r;
+        }
+        int n = 0;
+        for (NSDictionary *item in items) {
+            NSString *acct = item[(id)kSecAttrAccount];
+            if ([acct isKindOfClass:[NSString class]]) out[n++] = dupNSString(acct);
+        }
+        *accounts = out;
+        *count = n;
+        r.success = 1;
+    }
+    return r;
+}
