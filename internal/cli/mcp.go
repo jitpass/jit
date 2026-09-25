@@ -134,6 +134,10 @@ type mcpBackend struct{ c *agent.Client }
 
 func (b mcpBackend) ListJobs() ([]agent.JobStatus, error)        { return b.c.JobList() }
 func (b mcpBackend) RunJob(name string) (agent.JobResult, error) { return b.c.JobRun(name) }
+func (b mcpBackend) RequestJob(name string, spec agent.JobSpec, why string) error {
+	_, err := b.c.JobRequest(name, spec, why)
+	return err
+}
 
 // mcpServerName is the entry's key in an app's mcpServers.
 const mcpServerName = "jit"

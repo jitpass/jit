@@ -218,6 +218,9 @@ type Server struct {
 	jobs       map[string]*job.Job
 	jobsPath   string
 	jobRunning map[string]bool
+	// jobProposals are agents' job proposals waiting for the human
+	// (jobrequest.go), memory-only, capped and expiring. Guarded by jobMu.
+	jobProposals map[string]JobProposal
 
 	// GrantKeys is where a standing grant's own key lives
 	// (design/standing-grants.md): one keychain item per grant, created
@@ -703,6 +706,17 @@ func (s *Server) handle(req Request, c *caller) Response {
 			return Response{OK: false, Error: "job_remove: missing job_name"}
 		}
 		return s.removeJob(req.JobName, c)
+	case OpJobRequest:
+		return s.requestJob(req, c)
+	case OpJobProposals:
+		// Prompt-free: the app asking what to show must never cost a prompt.
+		return Response{OK: true, Proposals: s.listProposals()}
+	case OpJobDismiss:
+		if req.ProposalID == "" {
+			return Response{OK: false, Error: "job_dismiss: missing proposal_id"}
+		}
+		s.dropProposal(req.ProposalID)
+		return Response{OK: true}
 	case OpJobRun:
 		if req.JobName == "" {
 			return Response{OK: false, Error: "job_run: missing job_name"}

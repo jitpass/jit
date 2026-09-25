@@ -18,12 +18,24 @@ import (
 )
 
 type fakeBackend struct {
-	mu    sync.Mutex
-	jobs  []agent.JobStatus
-	res   agent.JobResult
-	err   error
-	delay time.Duration
-	ran   []string
+	mu        sync.Mutex
+	jobs      []agent.JobStatus
+	res       agent.JobResult
+	err       error
+	delay     time.Duration
+	ran       []string
+	appUp     bool
+	requested []string
+}
+
+func (f *fakeBackend) RequestJob(name string, spec agent.JobSpec, why string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.appUp {
+		return errors.New("agent: job_request: " + agent.ErrNoJobBroker.Error())
+	}
+	f.requested = append(f.requested, name)
+	return nil
 }
 
 func (f *fakeBackend) ListJobs() ([]agent.JobStatus, error) { return f.jobs, nil }
@@ -236,5 +248,25 @@ func TestUnknownMethodAndBadJSON(t *testing.T) {
 	s.send(`{not json`)
 	if e := s.recv()["error"].(map[string]any); e["code"] != float64(codeParse) {
 		t.Fatalf("error = %v", e)
+	}
+}
+
+// Step 4b: with JitPass running, a proposal goes to the app, and the model
+// is told nothing was created; without it, the jit job allow line.
+func TestRequestJobGoesToTheAppWhenItIsRunning(t *testing.T) {
+	b := &fakeBackend{appUp: true}
+	s := start(t, b)
+	s.send(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"request_job","arguments":{"name":"notion-guests","folder":"/n","command":["python","a.py"],"why":"access review"}}}`)
+	text, isErr := resultText(t, s.recv())
+	if isErr || !strings.HasPrefix(text, "Sent to JitPass") || strings.Contains(text, "jit job allow") {
+		t.Fatalf("with the app up: isError=%v %q", isErr, text)
+	}
+	if len(b.requested) != 1 || b.requested[0] != "notion-guests" {
+		t.Fatalf("requested = %v", b.requested)
+	}
+	b.appUp = false
+	s.send(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"request_job","arguments":{"name":"notion-guests","folder":"/n","command":["python","a.py"]}}}`)
+	if text, _ := resultText(t, s.recv()); !strings.Contains(text, "jit job allow notion-guests") {
+		t.Fatalf("with no app: %q", text)
 	}
 }

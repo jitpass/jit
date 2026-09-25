@@ -7,9 +7,11 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -970,5 +972,94 @@ func TestJobStopForBytecodeExplainsItself(t *testing.T) {
 	}
 	if _, err := r.c.JobRun("notion-guests"); err == nil || !strings.Contains(err.Error(), "runs outside jit") {
 		t.Fatalf("bytecode-only stop: %v", err)
+	}
+}
+
+// Step 4b: a proposal needs the app, creates nothing, can never ask to run
+// unasked, and is cleared by approving or dismissing it.
+func TestJobProposalsGoToTheAppAndCreateNothing(t *testing.T) {
+	r := newJobRig(t)
+	spec := r.spec()
+	spec.Ask = string(job.AskNever) // the agent asks for unattended; it must not get it
+
+	if _, err := r.c.JobRequest("notion-guests", spec, "access review"); err == nil || !strings.Contains(err.Error(), ErrNoJobBroker.Error()) {
+		t.Fatalf("with no app: %v", err)
+	}
+
+	events := make(chan SessionEvent, 4)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = r.c.SubscribeAsBroker(ctx, func(e SessionEvent) {
+			switch e.Kind {
+			case KindJobProposal:
+				events <- e
+			case KindPending:
+				// The approval's own sheet: the human presses Allow.
+				go func() { _ = r.c.ConsentAnswer(e.ConsentID, true) }()
+			}
+		})
+	}()
+	defer func() { cancel(); <-done }()
+	waitFor(t, "broker", func() bool { return r.s.brokerCount() == 1 })
+
+	p, err := r.c.JobRequest("notion-guests", spec, "access review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case e := <-events:
+		if e.ConsentID != p.ID || e.Job != "notion-guests" || e.Cause != "access review" {
+			t.Fatalf("app was shown %+v", e)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the app was never shown the proposal")
+	}
+	if p.Spec.Ask != string(job.AskEachTime) {
+		t.Fatalf("a proposal kept ask=%q; the agent cannot choose unattended", p.Spec.Ask)
+	}
+	if jobs, _ := r.c.JobList(); len(jobs) != 0 || r.prompts() != 0 {
+		t.Fatal("a proposal created a job or prompted")
+	}
+	if list, _ := r.c.JobProposals(); len(list) != 1 {
+		t.Fatalf("proposals = %v", list)
+	}
+
+	// Approving it is the ordinary approval, and it stops waiting.
+	if _, err := r.c.JobAllowProposal("notion-guests", p.Spec, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if r.prompts() != 1 {
+		t.Fatalf("approving a proposal prompted %d times, want the one Touch ID", r.prompts())
+	}
+	if list, _ := r.c.JobProposals(); len(list) != 0 {
+		t.Fatal("an approved proposal still waits")
+	}
+
+	// Dismissing drops one without a prompt.
+	q, _ := r.c.JobRequest("other", spec, "")
+	<-events
+	if err := r.c.JobDismiss(q.ID); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ := r.c.JobProposals(); len(list) != 0 {
+		t.Fatal("a dismissed proposal still waits")
+	}
+
+	// Refused before anything is kept.
+	bad := spec
+	bad.Argv = []string{"python3", "-c", "print(1)"}
+	if _, err := r.c.JobRequest("bad", bad, ""); err == nil {
+		t.Fatal("python -c was kept as a proposal")
+	}
+	for i := 0; i < maxJobProposals; i++ {
+		if _, err := r.c.JobRequest(fmt.Sprintf("p%d", i), spec, ""); err != nil {
+			t.Fatal(err)
+		}
+		<-events
+	}
+	if _, err := r.c.JobRequest("one-too-many", spec, ""); err == nil {
+		t.Fatal("the proposal list is not capped")
 	}
 }
