@@ -199,3 +199,110 @@ func TestKeychainKeyOpensMeasuresTheItem(t *testing.T) {
 		t.Error("no item, and no error")
 	}
 }
+
+// A leftover item that can't be read without a dialog fails the same way on
+// every run, so "try again" left a lost-key vault stuck for good. The
+// refusal names the item, the way out, and what comes after it; and once
+// the item is gone, the same Init makes a new key over the lost one.
+func TestInitOverAnUnreadableLeftoverNamesTheWayOut(t *testing.T) {
+	root := lostKeyVault(t)
+	withLeftover(t, Present, 0, 0, errors.New("reading the master key from the keychain failed, OSStatus=-25308"))
+	_, err := (enclaveStore{root: root}).Init()
+	if err == nil {
+		t.Fatal("Init adopted or replaced an item it couldn't read")
+	}
+	msg := err.Error()
+	for _, want := range []string{"can't read", "without asking", "-25308", "Nothing changed", `"` + KeychainItemName + `" in Keychain Access`, "`jit vault init` again"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("the refusal does not say %q:\n%s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "try again") {
+		t.Errorf("the refusal still says to try again:\n%s", msg)
+	}
+	for _, line := range strings.Split(msg, "\n") {
+		if n := len([]rune(line)); n > 76 {
+			t.Errorf("line of %d characters: %q", n, line)
+		}
+	}
+	// The way out works: with the item deleted, Init starts over.
+	_, made := withLeftover(t, Absent, 0, 0, nil)
+	if res, err := (enclaveStore{root: root}).Init(); err != nil || res != InitNewKey || *made != 1 {
+		t.Fatalf("after the item is deleted: Init = %v, %v, keys made %d; want InitNewKey and one key", res, err, *made)
+	}
+}
+
+// fakeKeychainKey stands in for the vault key item and counts every use.
+type fakeKeychainKey struct{ uses *int }
+
+func (f fakeKeychainKey) WrapKey(b []byte) ([]byte, error)   { *f.uses++; return b, nil }
+func (f fakeKeychainKey) UnwrapKey(b []byte) ([]byte, error) { *f.uses++; return b, nil }
+func (f fakeKeychainKey) RequireUserPresence(string) error   { *f.uses++; return nil }
+func (f fakeKeychainKey) FetchMEK(string) ([]byte, error)    { *f.uses++; return make([]byte, 32), nil }
+func (fakeKeychainKey) Close()                               {}
+
+// While `jit vault delete`'s leftover-key marker is in the vault root, no
+// use of a keychain vault's key reaches the item: not a command's wrapper
+// (vault set, migrate, everything through openVault) and not the fetcher
+// the service builds per unlock. Each answers ErrLeftoverKey, which sends
+// the reader to `jit vault init`. Only init itself may settle the item.
+func TestKeychainKeyRefusedWhileTheLeftoverMarkerIsThere(t *testing.T) {
+	root := t.TempDir()
+	uses, built := 0, 0
+	orig := newKeychainKey
+	newKeychainKey = func() KeychainKey { built++; return fakeKeychainKey{&uses} }
+	t.Cleanup(func() { newKeychainKey = orig })
+	if err := os.WriteFile(filepath.Join(root, vault.LeftoverKeyMarker), []byte("left by jit vault delete\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := Open(root)
+	w := s.NewWrapper()
+	if _, err := w.WrapKey(make([]byte, 32)); !errors.Is(err, ErrLeftoverKey) {
+		t.Errorf("WrapKey: %v, want ErrLeftoverKey", err)
+	}
+	if _, err := w.UnwrapKey(make([]byte, 60)); !errors.Is(err, ErrLeftoverKey) {
+		t.Errorf("UnwrapKey: %v, want ErrLeftoverKey", err)
+	}
+	if err := w.RequireUserPresence("test"); !errors.Is(err, ErrLeftoverKey) {
+		t.Errorf("RequireUserPresence: %v, want ErrLeftoverKey", err)
+	}
+	f := s.NewFetcher()
+	_, err := f.FetchMEK("unlock")
+	if !errors.Is(err, ErrLeftoverKey) {
+		t.Errorf("the service's unlock: %v, want ErrLeftoverKey", err)
+	}
+	f.Close()
+	if built != 0 || uses != 0 {
+		t.Fatalf("the keychain key was built %d times and used %d times with the marker there", built, uses)
+	}
+	if !strings.Contains(ErrLeftoverKey.Error(), "`jit vault init`") {
+		t.Errorf("the refusal does not name jit vault init: %q", ErrLeftoverKey)
+	}
+	// init still makes or keeps a key: the refusal is on USE, not on Init.
+	_, made := withLeftover(t, Absent, 0, 0, nil)
+	if _, err := s.Init(); err != nil || *made != 1 {
+		t.Errorf("Init with the marker there: %v, keys made %d; want it to run", err, *made)
+	}
+
+	// Once init has settled it (the marker gone), the key is used again.
+	if err := os.Remove(filepath.Join(root, vault.LeftoverKeyMarker)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(root).NewFetcher().FetchMEK("unlock"); err != nil || built != 1 || uses != 1 {
+		t.Fatalf("without the marker: err %v, built %d, used %d; want the key used once", err, built, uses)
+	}
+}
+
+// A marker that can't be checked counts as there: fail closed.
+func TestLeftoverKeyRefusalFailsClosed(t *testing.T) {
+	notADir := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(notADir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := LeftoverKeyRefusal(notADir); err == nil {
+		t.Fatal("an uncheckable marker was read as no marker")
+	}
+	if err := LeftoverKeyRefusal(t.TempDir()); err != nil {
+		t.Fatalf("no marker: %v", err)
+	}
+}

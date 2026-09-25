@@ -40,6 +40,9 @@ type moveWorld struct {
 	lie        bool  // seOpenStaged returns a different key
 	failDelete error // kcDelete: the keychain refuses, as an older jit's item once did
 	failMatch  error // kcMatches: the keychain item can't be read
+	opens      int   // kcOpens: how many live secrets the item opens
+	failOpens  error // kcOpens: the item can't be measured
+	measured   int   // kcOpens calls
 	out        *bytes.Buffer
 
 	// presence, when set, answers kcPresent in turn instead of w.kc (the
@@ -138,6 +141,10 @@ func (w *moveWorld) mover() *keyMover {
 				return false, errors.New("fake keychain: no key")
 			}
 			return bytes.Equal(w.kc, mek), nil
+		},
+		kcOpens: func() (int, error) {
+			w.measured++
+			return w.opens, w.failOpens
 		},
 		seInstallStaged: func(mek []byte) error {
 			// Like secureenclave.Wrapper.Install: never seal over a file.
@@ -583,15 +590,15 @@ func TestRemoveKeychainCopy(t *testing.T) {
 		w.failMatch = errors.New("OSStatus=-25293")
 		err := w.mover().toEnclave()
 		if err == nil || !strings.Contains(err.Error(), "couldn't read") || !strings.Contains(err.Error(), "-25293") ||
-			!strings.Contains(err.Error(), "--wrapper secure-enclave --force") {
-			t.Fatalf("got %v, want a refusal naming the read error and the --force form", err)
+			!strings.Contains(err.Error(), "Keychain Access") {
+			t.Fatalf("got %v, want a refusal naming the read error and Keychain Access", err)
 		}
 		if !bytes.Equal(w.kc, w.mek) {
 			t.Fatal("deleted an item it could not read")
 		}
 	})
-	// --force resolves both: whatever the item holds, it goes, and only
-	// once the enclave has opened in this run.
+	// --force resolves both when the item opens none of this vault's
+	// secrets: it goes, and only once the enclave has opened in this run.
 	for _, tc := range []struct {
 		name      string
 		kc        []byte
@@ -612,12 +619,45 @@ func TestRemoveKeychainCopy(t *testing.T) {
 			if w.kc != nil {
 				t.Fatal("--force left the item")
 			}
+			if w.measured != 1 {
+				t.Errorf("--force deleted after %d measures, want 1", w.measured)
+			}
 			if len(w.prompts) != 1 || w.prompts[0] != "enclave: "+reasonCopyGone {
 				t.Errorf("prompts = %q, want only the enclave's", w.prompts)
 			}
 			w.assertInEnclave()
 		})
 	}
+	// --force measures before it deletes: a key that opens any live secret
+	// in this vault (an older jit may have saved them with it) is refused,
+	// and so is one that can't be measured.
+	t.Run("--force over a key that opens secrets here", func(t *testing.T) {
+		w := setup(t)
+		other := bytes.Repeat([]byte{7}, 32)
+		w.kc = append([]byte(nil), other...)
+		w.opens = 2
+		err := w.mover().toEnclaveAs(planRemoveCopy, true)
+		if err == nil || !strings.Contains(err.Error(), "it opens 2 secrets in this vault; jit won't delete it") {
+			t.Fatalf("got %v, want a refusal naming how many secrets it opens", err)
+		}
+		assertShortLines(t, err.Error())
+		if !bytes.Equal(w.kc, other) {
+			t.Fatal("--force deleted a key that opens secrets in this vault")
+		}
+	})
+	t.Run("--force over a key that can't be measured", func(t *testing.T) {
+		w := setup(t)
+		w.failMatch = errors.New("OSStatus=-25308")
+		w.failOpens = errors.New("OSStatus=-25308")
+		err := w.mover().toEnclaveAs(planRemoveCopy, true)
+		if err == nil || !strings.Contains(err.Error(), "couldn't check whether") || !strings.Contains(err.Error(), "Keychain Access") {
+			t.Fatalf("got %v, want a refusal naming Keychain Access", err)
+		}
+		assertShortLines(t, err.Error())
+		if w.kc == nil {
+			t.Fatal("--force deleted a key it could not measure")
+		}
+	})
 	t.Run("--force when the enclave won't open", func(t *testing.T) {
 		w := setup(t)
 		w.kc = bytes.Repeat([]byte{7}, 32)
@@ -794,6 +834,9 @@ func TestVaultMoveForce(t *testing.T) {
 	withFixtureHome(t)
 	root := seedFixtureVault(t, "fixture/API_KEY")
 	stubKeyStores(t)
+	origTTY := stdinIsTerminal
+	stdinIsTerminal = func() bool { return true }
+	t.Cleanup(func() { stdinIsTerminal = origTTY })
 	run := func(w *moveWorld, stdin string, args ...string) (string, error) {
 		orig := runMover
 		runMover = func(string, io.Writer) *keyMover { return w.mover() }
@@ -836,6 +879,51 @@ func TestVaultMoveForce(t *testing.T) {
 	k.startInKeychain()
 	if _, err := run(k, "y\n", "vault", "rekey", "--wrapper", "secure-enclave", "--force"); err == nil || k.kc == nil {
 		t.Fatalf("--force on a keychain vault: err %v, its key gone %v", err, k.kc == nil)
+	}
+}
+
+// --force never runs on anything but a typed answer: not with --yes, and not
+// where no one can answer (stdin not a terminal), whatever stdin holds.
+// Before, `--force --yes` deleted the item with no question at all.
+func TestVaultMoveForceNeedsATypedAnswer(t *testing.T) {
+	withFixtureHome(t)
+	root := seedFixtureVault(t, "fixture/API_KEY")
+	stubKeyStores(t)
+	origTTY := stdinIsTerminal
+	t.Cleanup(func() { stdinIsTerminal = origTTY })
+	other := bytes.Repeat([]byte{7}, 32)
+	for _, tc := range []struct {
+		name string
+		tty  bool
+		args []string
+		want string
+	}{
+		{"--force --yes", true, []string{"--yes"}, "won't run with --yes"},
+		{"--force with no terminal", false, nil, "no terminal here to ask in"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdinIsTerminal = func() bool { return tc.tty }
+			w := &moveWorld{t: t, root: root, mek: bytes.Repeat([]byte{3}, 32)}
+			w.startInEnclave()
+			w.kc = append([]byte(nil), other...)
+			orig := runMover
+			runMover = func(string, io.Writer) *keyMover { return w.mover() }
+			t.Cleanup(func() { runMover = orig; vaultRekeyYes = false; vaultRekeyWrapper = ""; vaultRekeyForce = false })
+			var buf bytes.Buffer
+			rootCmd.SetOut(&buf)
+			rootCmd.SetErr(&buf)
+			rootCmd.SetIn(strings.NewReader("y\n"))
+			rootCmd.SetArgs(append([]string{"vault", "rekey", "--wrapper", "secure-enclave", "--force"}, tc.args...))
+			err := rootCmd.Execute()
+			vaultRekeyYes, vaultRekeyWrapper, vaultRekeyForce = false, "", false
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want a refusal saying %q\n%s", err, tc.want, buf.String())
+			}
+			assertShortLines(t, err.Error())
+			if !bytes.Equal(w.kc, other) || len(w.prompts) != 0 || w.measured != 0 {
+				t.Fatalf("item kept %v, prompts %q, measured %d: want nothing asked or deleted", bytes.Equal(w.kc, other), w.prompts, w.measured)
+			}
+		})
 	}
 }
 
