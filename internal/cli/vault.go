@@ -2606,12 +2606,12 @@ func pbcopy(value []byte) error {
 // openVault returns a Vault backed by whichever KeyWrapper is actually
 // available: a running jit-agent's already-unlocked shared session if
 // reachable (so this command doesn't prompt Touch ID independently when
-// the agent already has one cached), falling back to an independent
-// keychainwrap.Wrapper — this command's own Touch ID challenge — when no
-// agent is running. Either way the caller gets a real vault.KeyWrapper;
+// the agent already has one cached), falling back to the vault's own key
+// store's Wrapper (keystore.Open: keychain or Secure Enclave), this
+// command's own prompt, when no agent is running. Either way the caller gets a real vault.KeyWrapper;
 // which one is transparent beyond which prompts (if any) show up.
 // openVaultFreshAuth is openVault WITHOUT the agent-session shortcut:
-// always an independent keychainwrap challenge, even while a reachable
+// always an independent prompt from the vault's key store, even while a reachable
 // agent holds an unlocked session. Used by exactly the commands that put
 // plaintext back on disk or bundle every secret into one portable file
 // (unmount, migrate undo, vault export): riding the cached session meant
@@ -2619,9 +2619,10 @@ func pbcopy(value []byte) error {
 // forcing a fresh Touch ID/passcode turns that into a visible prompt the
 // human at the keyboard has to approve. A speed bump against quiet misuse
 // of jit's own commands, not a guarantee against an attacker who bypasses
-// jit entirely — the challenge is still application-enforced until the
-// Secure Enclave work lands (GAPS.md #1) — but "a prompt the user didn't
-// initiate just appeared" is precisely the signal that boundary can add.
+// jit entirely — on a keychain vault the challenge is application-enforced
+// (GAPS.md #1), on a Secure Enclave vault the enclave enforces it — but "a
+// prompt the user didn't initiate just appeared" is precisely the signal
+// that boundary can add.
 // completeVaultPaths powers tab completion for `jit vault get/set/rm
 // <path>` (via `jit completion <shell>`). It lists stored secret paths
 // with a bare Vault{Root} — List only walks filenames, so completion

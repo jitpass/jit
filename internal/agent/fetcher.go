@@ -11,7 +11,8 @@ package agent
 // ENTERS the process is readable on its own.
 
 // MEKFetcher provides the raw MEK bytes, challenging (Touch ID/passcode)
-// if necessary. internal/keychainwrap's *Wrapper satisfies this.
+// if necessary. keystore.Fetcher (a keychainwrap or secureenclave Wrapper,
+// chosen per vault) is what the CLI wires.
 //
 // Server calls newFetcher() to build a FRESH one on every unlock, never
 // reusing a single instance across unlocks — a Wrapper caches its MEK

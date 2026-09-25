@@ -442,6 +442,28 @@ the enclave.
 Written 2026-09-23 from the spikes, the shipped `keychainwrap`, and this
 design. Keep it current.
 
+**Built 2026-09-25** (`design/secure-enclave-plan.md`, track C). What
+changed from the list below, and what did not:
+
+- The ledger keeps each entry's own `wrap`, and keeps entries this build
+  cannot open byte for byte instead of dropping them on the next save
+  (C1, #162).
+- On a vault whose key is in the enclave, a new grant's or never-ask
+  job's key is an enclave key with no presence flag and
+  `AfterFirstUnlockThisDeviceOnly`, so it serves while the Mac is locked
+  (spike S4 measured a `WhenUnlocked` key failing about 9 s into a lock).
+  Its wrap is `se-p256-v1`, but it is Apple's ECIES, not ECDH → HKDF →
+  AEAD: ECIES takes no AAD, so the class is framed inside the sealed bytes
+  and checked on open (C2, #163).
+- The re-wrap is not a per-grant Touch ID: at service start, existing
+  grant and job keys are re-sealed to the vault key's kind with no prompt,
+  the old key deleted only after the ledger is written (C3).
+- Keys nothing names are deleted at service start, only when both the
+  ledger and the job list loaded (C4).
+- The grant key is not a `vault.KeyWrapper`: `GrantKeyStore` and
+  `GrantKey` stayed as they were, with an optional `Wrap()` naming the
+  kind, and that was enough.
+
 - **Both keys move, one flag apart.** The MEK becomes an enclave key
   created *with* the biometry access-control flag: the OS refuses to use
   it without a fingerprint. The grant key becomes an enclave key created

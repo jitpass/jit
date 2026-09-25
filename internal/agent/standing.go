@@ -57,7 +57,8 @@ type GrantKey interface {
 // GrantKeyStore creates, loads and deletes grant keys by grant id. Create
 // must mint a fresh random key and fail on an id that already has one; Load
 // must never prompt; Delete must be idempotent. The CLI wires the keychain
-// (internal/keychainwrap); tests wire memory.
+// and the Secure Enclave behind one store (cli's grantKeyStore); tests wire
+// memory.
 type GrantKeyStore interface {
 	Create(id string) (GrantKey, error)
 	Load(id string) (GrantKey, error)
@@ -66,16 +67,16 @@ type GrantKeyStore interface {
 
 // standingWrapAEAD names the wrap the ledger carries today: AES-256-GCM
 // under a 32-byte keychain-held grant key, class as AAD (seal/open in
-// crypto.go). The Secure Enclave move introduces a second value (P-256 ECDH
-// → HKDF → AEAD), and a ledger entry says which it is, so both can coexist
-// during that migration and a re-wrap is a per-grant Touch ID rather than
-// a flag day.
+// crypto.go). The Secure Enclave grant key is the second value,
+// standingWrapEnclave below, and a ledger entry says which it is, so both
+// coexist; MoveGrantKeys re-seals a grant to the vault's kind at service
+// start, with no prompt (plan C3).
 const standingWrapAEAD = "aead-v1"
 
 // standingWrapEnclave is the Secure Enclave grant key's wrap: ECIES to a
 // P-256 enclave key, class bound inside the sealed bytes (plan C2). Spelled
 // here, not imported, because this package never imports a CGo backend; a
-// test in internal/cli holds it equal to secureenclave.GrantWrap.
+// test in this package holds it equal to secureenclave.GrantWrap.
 const standingWrapEnclave = "se-p256-v1"
 
 // knownWrap reports whether this build can open a ledger entry's wrap with

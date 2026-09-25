@@ -54,7 +54,7 @@ the tool being old, not the config being wrong.
 
 The design maps onto four pillars from the (private) RFC, and the package `doc.go` files are authoritative and unusually detailed — **read the `doc.go` before the code** in any `internal/` package.
 
-**Storage and encryption.** `internal/vault` is atomic, file-per-secret storage with envelope encryption: each secret gets a random AES-256-GCM data key, wrapped by a caller-supplied `vault.KeyWrapper`. The package has no opinion on how the wrapping key is protected. `internal/keychainwrap` (CGo) is the shipped implementation. **`internal/keystore` is the only way in:** every command, the service's unlock, doctor and status get the vault's key through `keystore.Open(root)`, never `keychainwrap.New()` (`TestNothingElseBuildsAKeychainWrapper` fails on it), so a vault's backend is chosen in one place when the Secure Enclave arrives (`design/secure-enclave-plan.md`, B3).
+**Storage and encryption.** `internal/vault` is atomic, file-per-secret storage with envelope encryption: each secret gets a random AES-256-GCM data key, wrapped by a caller-supplied `vault.KeyWrapper`. The package has no opinion on how the wrapping key is protected. `internal/keychainwrap` (CGo, the login keychain) and `internal/secureenclave` (CGo, the MEK sealed to a Secure Enclave key) implement it. **`internal/keystore` is the only way in:** every command, the service's unlock, doctor and status get the vault's key through `keystore.Open(root)`, never `keychainwrap.New()` (`TestNothingElseBuildsAKeychainWrapper` fails on it), so a vault's backend is chosen in one place when the Secure Enclave arrives (`design/secure-enclave-plan.md`, B3).
 
 **The session broker.** `internal/agent` is a Unix-socket server holding the decrypted master key for a sliding idle TTL, so concurrent jit processes share one Touch ID instead of each prompting. It verifies peer credentials as same-user before serving anything, and drops the session on screen lock or sleep (`internal/screenlock`).
 
@@ -84,7 +84,7 @@ Caller identity — peercred, then pid command line and parent chain — **expla
 
 ### Platform scope
 
-**macOS-only by decision** (Apple Silicon), not by accident. A full review found no technical blocker to a Linux port — `GOOS=linux go build ./...` fails on only `internal/lineage` and `internal/keychainwrap` — but the support-matrix cost is permanent while the demand is hypothetical. Don't propose cross-platform work, and specifically do **not** do the "extract five platform interfaces" refactor: it is speculative abstraction with one implementation per seam, which `TECH_STACK.md` §3 warns against. The existing discipline (isolated CGo packages, `vault.KeyWrapper`, portable `internal/mount` and `internal/audit`) already is the portability investment.
+**macOS-only by decision** (Apple Silicon), not by accident. A full review found no technical blocker to a Linux port — `GOOS=linux go build ./...` fails on only `internal/lineage`, `internal/keychainwrap`, `internal/secureenclave` and `internal/keystore` (measured 2026-09-25) — but the support-matrix cost is permanent while the demand is hypothetical. Don't propose cross-platform work, and specifically do **not** do the "extract five platform interfaces" refactor: it is speculative abstraction with one implementation per seam, which `TECH_STACK.md` §3 warns against. The existing discipline (isolated CGo packages, `vault.KeyWrapper`, portable `internal/mount` and `internal/audit`) already is the portability investment.
 
 ## Conventions
 
