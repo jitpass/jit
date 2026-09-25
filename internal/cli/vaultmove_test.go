@@ -31,20 +31,22 @@ type moveWorld struct {
 	root string
 	mek  []byte
 
-	kc         []byte // the keychain item; nil = absent
-	enclaveKey bool   // the enclave key exists
-	prompts    []string
-	failFetch  error // kcFetch
-	failStaged error // seOpenStaged
-	failOpen   error // seOpen
-	lie        bool  // seOpenStaged returns a different key
-	failDelete error // kcDelete: the keychain refuses, as an older jit's item once did
-	failMatch  error // kcMatches: the keychain item can't be read
-	opens      int   // kcOpens: how many live secrets the item opens
-	untested   int   // kcOpens: how many live secrets couldn't be tried (unreadable envelopes)
-	failOpens  error // kcOpens: the item can't be measured
-	measured   int   // kcOpens calls
-	out        *bytes.Buffer
+	kc          []byte // the keychain item; nil = absent
+	enclaveKey  bool   // the enclave key exists
+	prompts     []string
+	failFetch   error // kcFetch
+	failStaged  error // seOpenStaged
+	failOpen    error // seOpen
+	lie         bool  // seOpenStaged returns a different key
+	failDelete  error // kcDelete: the keychain refuses, as an older jit's item once did
+	failMatch   error // kcMatches: the keychain item can't be read
+	failRead    error // kcReadable: the quiet read after a failed delete
+	failInstall error // kcInstall: the existing item can't be read (nothing is written)
+	opens       int   // kcOpens: how many live secrets the item opens
+	untested    int   // kcOpens: how many live secrets couldn't be tried (unreadable envelopes)
+	failOpens   error // kcOpens: the item can't be measured
+	measured    int   // kcOpens calls
+	out         *bytes.Buffer
 
 	// presence, when set, answers kcPresent in turn instead of w.kc (the
 	// keychain changing its answer between two checks); presenceCalls
@@ -121,6 +123,9 @@ func (w *moveWorld) mover() *keyMover {
 			return append([]byte(nil), w.kc...), nil
 		},
 		kcInstall: func(mek []byte) error {
+			if w.failInstall != nil {
+				return w.failInstall
+			}
 			if w.kc != nil && !bytes.Equal(w.kc, mek) {
 				return errors.New("fake keychain: a different key is already here")
 			}
@@ -143,6 +148,7 @@ func (w *moveWorld) mover() *keyMover {
 			}
 			return bytes.Equal(w.kc, mek), nil
 		},
+		kcReadable: func() error { return w.failRead },
 		kcOpens: func() (keystore.KeyMeasure, error) {
 			w.measured++
 			return keystore.KeyMeasure{Opened: w.opens, Untested: w.untested, Total: w.opens + w.untested + 1}, w.failOpens
@@ -491,7 +497,7 @@ func TestMoveFinishesWhenTheKeychainCopyWontGo(t *testing.T) {
 	out := w.out.String()
 	if !strings.Contains(out, "keychain copy could not be deleted") ||
 		!strings.Contains(out, "-25244") || !strings.Contains(out, "--wrapper secure-enclave") ||
-		!strings.Contains(out, `"com.jitpass.vault.mek" in Keychain Access`) {
+		!strings.Contains(out, `Keychain Access ("com.jitpass.vault.mek")`) {
 		t.Fatalf("output does not say a copy is left and how to remove it:\n%s", out)
 	}
 	// Not "never used again": an older jit still reads the keychain item.
@@ -588,9 +594,9 @@ func TestRemoveKeychainCopy(t *testing.T) {
 	})
 	t.Run("an item that can't be read", func(t *testing.T) {
 		w := setup(t)
-		w.failMatch = errors.New("OSStatus=-25293")
+		w.failMatch = quietReadErr(-25308)
 		err := w.mover().toEnclave()
-		if err == nil || !strings.Contains(err.Error(), "couldn't read") || !strings.Contains(err.Error(), "-25293") ||
+		if err == nil || !strings.Contains(err.Error(), "can't read") || !strings.Contains(err.Error(), "-25308") ||
 			!strings.Contains(err.Error(), "Keychain Access") {
 			t.Fatalf("got %v, want a refusal naming the read error and Keychain Access", err)
 		}
@@ -666,8 +672,8 @@ func TestRemoveKeychainCopy(t *testing.T) {
 	})
 	t.Run("--force over a key that can't be measured", func(t *testing.T) {
 		w := setup(t)
-		w.failMatch = errors.New("OSStatus=-25308")
-		w.failOpens = errors.New("OSStatus=-25308")
+		w.failMatch = quietReadErr(-25308)
+		w.failOpens = quietReadErr(-25308)
 		err := w.mover().toEnclaveAs(planRemoveCopy, true)
 		if err == nil || !strings.Contains(err.Error(), "couldn't check whether") || !strings.Contains(err.Error(), "Keychain Access") {
 			t.Fatalf("got %v, want a refusal naming Keychain Access", err)
