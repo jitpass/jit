@@ -443,3 +443,117 @@ func TestAFailedMoveDeletesTheKeyItMade(t *testing.T) {
 		t.Fatal("the failed move deleted the job's only key")
 	}
 }
+
+// manyWorld is a service with n standing grants and n never-ask jobs, each
+// sealed for its own keychain key, and a stateWriter that counts writes per
+// file. It writes nothing through the counter while it builds.
+func manyWorld(t *testing.T, n int) (s *Server, store *memMover, ledger, jobs string, writes map[string]int) {
+	t.Helper()
+	store = newMemMover()
+	dir := t.TempDir()
+	ledger, jobs = filepath.Join(dir, "grants.json"), filepath.Join(dir, "jobs.json")
+	s = &Server{GrantKeys: store}
+	if _, err := s.SetGrantLedger(ledger); err != nil {
+		t.Fatal(err)
+	}
+	all := map[string]*job.Job{}
+	for i := 0; i < n; i++ {
+		gid, jid := "g-0000000"+string(rune('1'+i)), "j-0000000"+string(rune('1'+i))
+		gk, _ := store.CreateWrap(gid, GrantWrapKeychain)
+		jk, _ := store.CreateWrap(jid, GrantWrapKeychain)
+		dek := bytes.Repeat([]byte{byte(i + 1)}, 32)
+		gs, _ := gk.Seal(dek, "env")
+		js, _ := jk.Seal(dek, "env")
+		s.standing[gid] = &standingGrant{id: gid, created: time.Unix(int64(i+1), 0), anchorPath: "/Applications/Claude.app", name: "node",
+			secrets: map[string]standingSecret{"d": {path: "a/b", class: "env", digest: "d", grantWrapped: gs, wrap: GrantWrapKeychain}}}
+		name := "job-" + string(rune('a'+i))
+		all[name] = &job.Job{Name: name, Dir: "/tmp", Argv: []string{"x"}, Exe: "/bin/x", Ask: job.AskNever, KeyID: jid,
+			Secrets: []job.Secret{{Var: "T", Path: "n/t", Class: "env", DeviceDigest: "dd", KeyWrapped: hex.EncodeToString(js), Wrap: GrantWrapKeychain}}}
+	}
+	if err := s.saveLedger(); err != nil {
+		t.Fatal(err)
+	}
+	if err := job.Save(jobs, all); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetJobStore(jobs); err != nil {
+		t.Fatal(err)
+	}
+	writes = map[string]int{}
+	s.stateWriter = func(path string, data []byte) error {
+		writes[filepath.Base(path)]++
+		return os.WriteFile(path, data, 0o600)
+	}
+	return s, store, ledger, jobs, writes
+}
+
+// Moving n grants and n jobs writes the ledger once and jobs.json once, not
+// once per grant and once per job (each write is the whole file).
+func TestMoveGrantKeysWritesEachFileOnce(t *testing.T) {
+	s, store, _, _, writes := manyWorld(t, 5)
+	store.target = GrantWrapEnclave
+	if moved, errs := s.MoveGrantKeys(); moved != 10 || len(errs) != 0 {
+		t.Fatalf("moved %d, errs %v; want all 10", moved, errs)
+	}
+	if writes["grants.json"] != 1 || writes["jobs.json"] != 1 {
+		t.Fatalf("wrote the ledger %d times and jobs.json %d times; want once each", writes["grants.json"], writes["jobs.json"])
+	}
+}
+
+// One grant that cannot move stays exactly as it was; the others move, in
+// the same single write.
+func TestMoveGrantKeysIsolatesAFailingGrant(t *testing.T) {
+	s, store, ledger, _, writes := manyWorld(t, 3)
+	// g-00000002's keychain key is gone: it cannot be re-sealed.
+	_ = store.DeleteWrap("g-00000002", GrantWrapKeychain)
+	store.target = GrantWrapEnclave
+	moved, errs := s.MoveGrantKeys()
+	if moved != 5 || len(errs) != 1 {
+		t.Fatalf("moved %d, errs %v; want 5 and one error", moved, errs)
+	}
+	if writes["grants.json"] != 1 {
+		t.Fatalf("wrote the ledger %d times, want once", writes["grants.json"])
+	}
+	raw, _ := os.ReadFile(ledger)
+	var f ledgerFile
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range f.Grants {
+		want := GrantWrapEnclave
+		if g.ID == "g-00000002" {
+			want = GrantWrapKeychain
+		}
+		if g.Secrets[0].Wrap != want {
+			t.Errorf("%s is %s on disk, want %s", g.ID, g.Secrets[0].Wrap, want)
+		}
+	}
+	if store.has(GrantWrapEnclave, "g-00000002") {
+		t.Error("the failed grant kept a new key it made")
+	}
+}
+
+// A ledger that will not save moves nothing: memory stays as the file is,
+// and no old key is deleted.
+func TestMoveGrantKeysKeepsEveryOldKeyWhenTheLedgerWillNotSave(t *testing.T) {
+	s, store, _, _, _ := manyWorld(t, 3)
+	s.stateWriter = func(path string, data []byte) error {
+		if filepath.Base(path) == "grants.json" {
+			return errors.New("disk full")
+		}
+		return os.WriteFile(path, data, 0o600)
+	}
+	store.target = GrantWrapEnclave
+	moved, errs := s.MoveGrantKeys()
+	if moved != 3 || len(errs) != 3 {
+		t.Fatalf("moved %d, errs %v; want the 3 jobs moved and 3 grant errors", moved, errs)
+	}
+	for _, id := range []string{"g-00000001", "g-00000002", "g-00000003"} {
+		if !store.has(GrantWrapKeychain, id) {
+			t.Errorf("%s's old key was deleted although the ledger was not written", id)
+		}
+		if w := s.standing[id].secrets["d"].wrap; w != GrantWrapKeychain {
+			t.Errorf("%s is %s in memory, but the file still says keychain", id, w)
+		}
+	}
+}
