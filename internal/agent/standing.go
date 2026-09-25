@@ -285,6 +285,22 @@ type ledgerFile struct {
 	Grants  []ledgerGrant `json:"grants"`
 }
 
+// rawLedgerFile is ledgerFile with every grant left as it was written.
+type rawLedgerFile struct {
+	Version int               `json:"version"`
+	Grants  []json.RawMessage `json:"grants"`
+}
+
+// keptGrant is a ledger record SetGrantLedger could not accept (no id,
+// anchor or program name), kept as the file held it. It is never served,
+// listed or revoked: it is not a grant. saveLedger writes it back
+// unchanged, so the record, and the key id it names, outlive every save
+// (the start-up key cleanup keeps any key the ledger names).
+type keptGrant struct {
+	id  string // as written, possibly empty; a loaded grant of this id wins
+	raw json.RawMessage
+}
+
 type ledgerGrant struct {
 	ID          string `json:"id"`
 	CreatedUnix int64  `json:"created_unix"`
@@ -322,6 +338,7 @@ func (s *Server) SetGrantLedger(path string) (count int, err error) {
 	s.ledgerPath = path
 	s.ledgerNames = nil
 	data, err := os.ReadFile(path) // #nosec G304 -- a fixed, well-known path under jit's own config directory
+	s.ledgerKept = nil
 	if errors.Is(err, os.ErrNotExist) {
 		s.standing = map[string]*standingGrant{}
 		s.ledgerNames = map[string]bool{}
@@ -344,8 +361,14 @@ func (s *Server) SetGrantLedger(path string) (count int, err error) {
 		s.ledgerPath = ""
 		return 0, fmt.Errorf("%s was written by a newer jit (version %d, this build reads %d)", path, f.Version, ledgerVersion)
 	}
+	var raw rawLedgerFile
+	if err := json.Unmarshal(data, &raw); err != nil || len(raw.Grants) != len(f.Grants) {
+		s.ledgerPath = ""
+		return 0, fmt.Errorf("parsing %s: its records do not read the same twice", path)
+	}
 	loaded := map[string]*standingGrant{}
-	for _, lg := range f.Grants {
+	var skipped []keptGrant
+	for i, lg := range f.Grants {
 		g := &standingGrant{
 			id:         lg.ID,
 			created:    time.Unix(lg.CreatedUnix, 0),
@@ -375,11 +398,20 @@ func (s *Server) SetGrantLedger(path string) (count int, err error) {
 			g.secrets[ls.DeviceDigest] = standingSecret{path: ls.Path, class: ls.Class, digest: ls.DeviceDigest, grantWrapped: gw, wrap: ls.Wrap}
 		}
 		if g.id == "" || g.anchorPath == "" || g.name == "" {
+			// Not served, but not dropped either: kept verbatim for
+			// saveLedger, unless a loaded grant has its id (that one wins).
+			skipped = append(skipped, keptGrant{id: g.id, raw: raw.Grants[i]})
 			continue
 		}
 		loaded[g.id] = g
 	}
 	s.standing = loaded
+	s.ledgerKept = nil
+	for _, k := range skipped {
+		if _, ok := loaded[k.id]; !ok {
+			s.ledgerKept = append(s.ledgerKept, k)
+		}
+	}
 	return len(loaded), nil
 }
 
@@ -516,12 +548,33 @@ func (s *Server) saveLedger() error {
 		sort.Slice(lg.Secrets, func(i, j int) bool { return lg.Secrets[i].Path < lg.Secrets[j].Path })
 		f.Grants = append(f.Grants, lg)
 	}
+	// The records SetGrantLedger could not accept go back as they came,
+	// after the grants. One a loaded grant has since taken the id of is
+	// gone for good: the loaded one won.
+	kept := s.ledgerKept[:0:0]
+	for _, k := range s.ledgerKept {
+		if _, loaded := s.standing[k.id]; !loaded {
+			kept = append(kept, k)
+		}
+	}
+	s.ledgerKept = kept
 	s.grantMu.Unlock()
 	if path == "" {
 		return nil
 	}
 	sort.Slice(f.Grants, func(i, j int) bool { return f.Grants[i].CreatedUnix < f.Grants[j].CreatedUnix })
-	data, err := json.MarshalIndent(f, "", "  ")
+	out := rawLedgerFile{Version: f.Version, Grants: make([]json.RawMessage, 0, len(f.Grants)+len(kept))}
+	for _, lg := range f.Grants {
+		b, err := json.Marshal(lg)
+		if err != nil {
+			return err
+		}
+		out.Grants = append(out.Grants, b)
+	}
+	for _, k := range kept {
+		out.Grants = append(out.Grants, k.raw)
+	}
+	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -534,10 +587,10 @@ func (s *Server) saveLedger() error {
 // temp file created exclusively under a fresh random name beside it (so a
 // leftover temp, or a symlink planted where one would go, is never written
 // through), mode 0600, fsynced, renamed over the old file, and the directory
-// fsynced so the rename itself survives a power cut. The fsyncs matter here more than for most files: a
-// move (plan C3) deletes a grant's old key right after the ledger names the
-// new one, and a ledger that reverted on power loss would then name a key
-// that no longer exists.
+// fsynced so the rename itself survives a power cut. The fsyncs matter here
+// more than for most files: a move (plan C3) deletes a grant's old key right
+// after the ledger names the new one, and a ledger that reverted on power
+// loss would then name a key that no longer exists.
 func (s *Server) writeState(path string, data []byte) error {
 	if s.stateWriter != nil {
 		return s.stateWriter(path, data)

@@ -46,7 +46,7 @@ const maxJobChanges = 20
 // file that fails to load leaves the service with no jobs and never writes
 // over that file, grants.json's rule.
 func (s *Server) SetJobStore(path string) (int, error) {
-	jobs, err := job.Load(path)
+	jobs, kept, err := job.LoadKeeping(path)
 	var names map[string]bool
 	if err == nil {
 		// Every key id the file names, read raw, including a record
@@ -56,10 +56,10 @@ func (s *Server) SetJobStore(path string) (int, error) {
 	s.jobMu.Lock()
 	defer s.jobMu.Unlock()
 	if err != nil {
-		s.jobs, s.jobsPath, s.jobNames = map[string]*job.Job{}, "", nil
+		s.jobs, s.jobsPath, s.jobNames, s.jobKept = map[string]*job.Job{}, "", nil, nil
 		return 0, err
 	}
-	s.jobs, s.jobsPath, s.jobNames = jobs, path, names
+	s.jobs, s.jobsPath, s.jobNames, s.jobKept = jobs, path, names, kept
 	return len(jobs), nil
 }
 
@@ -83,7 +83,17 @@ func (s *Server) saveJobsLocked() error {
 	if s.jobsPath == "" {
 		return fmt.Errorf("this service has no usable job list (see the service log for why it was not loaded)")
 	}
-	data, err := job.Encode(s.jobs)
+	// A kept record a loaded job has since taken the name of is gone for
+	// good: the loaded one won, and must not bring the old one back if it
+	// is removed later.
+	kept := s.jobKept[:0:0]
+	for _, k := range s.jobKept {
+		if _, loaded := s.jobs[k.Name]; !loaded {
+			kept = append(kept, k)
+		}
+	}
+	s.jobKept = kept
+	data, err := job.Encode(s.jobs, s.jobKept)
 	if err != nil {
 		return err
 	}
