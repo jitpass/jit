@@ -104,10 +104,15 @@ SEResult se_delete(const char *tag, const char *group) {
     }
 }
 
-static void copyOut(CFDataRef d, unsigned char **out, int *out_len) {
-    *out_len = (int)CFDataGetLength(d);
-    *out = malloc(*out_len);
-    memcpy(*out, CFDataGetBytePtr(d), *out_len);
+// copyOut returns 0 when it could not allocate; the caller reports it.
+static int copyOut(CFDataRef d, unsigned char **out, int *out_len) {
+    CFIndex n = CFDataGetLength(d);
+    if (n <= 0) return 0;
+    *out = malloc((size_t)n);
+    if (!*out) return 0;
+    memcpy(*out, CFDataGetBytePtr(d), (size_t)n);
+    *out_len = (int)n;
+    return 1;
 }
 
 SEResult se_seal(const char *tag, const char *group, const unsigned char *pt, int pt_len,
@@ -124,8 +129,9 @@ SEResult se_seal(const char *tag, const char *group, const unsigned char *pt, in
         CFDataRef ct = SecKeyCreateEncryptedData(pub, kSEAlgorithm, (__bridge CFDataRef)in, &e);
         CFRelease(pub);
         if (!ct) return failCF(@"sealing to the Secure Enclave key", e);
-        copyOut(ct, out, out_len);
+        int ok = copyOut(ct, out, out_len);
         CFRelease(ct);
+        if (!ok) return fail(@"copying the sealed key", errSecAllocate);
         SEResult r = {1, 0, NULL};
         return r;
     }
@@ -144,11 +150,12 @@ SEResult se_open(const char *tag, const char *group, const unsigned char *ct, in
         CFDataRef pt = SecKeyCreateDecryptedData(k, kSEAlgorithm, (__bridge CFDataRef)in, &e);
         CFRelease(k);
         if (!pt) return failCF(@"opening with the Secure Enclave key", e);
-        copyOut(pt, out, out_len);
+        int ok = copyOut(pt, out, out_len);
         // CoreFoundation's own copy is released, not zeroed: a CFDataRef is
         // immutable and writing through CFDataGetBytePtr is not a promise
         // the framework makes. The malloc'd copy handed to Go is wiped there.
         CFRelease(pt);
+        if (!ok) return fail(@"copying the opened key", errSecAllocate);
         SEResult r = {1, 0, NULL};
         return r;
     }
