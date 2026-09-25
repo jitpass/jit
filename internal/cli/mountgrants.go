@@ -144,6 +144,14 @@ func (m *mountManager) describeGrant(mounts []agent.RunMount) string {
 // ungranted mount pays exactly what it did before grants existed. A swapped
 // mount never reaches here — it's a plain file with no Serve goroutine.
 func (m *mountManager) serveContent(path string, sm *servedMount) []byte {
+	// An AI job the service itself started, reading the .env of its own
+	// folder, gets the inert pointer file `jit run` swaps in, and no serve is
+	// recorded: its real values are already in its environment, and the
+	// decoy it would otherwise get raised a "decoy served" alert on every
+	// ordinary run. mountjobs.go says exactly which reads qualify.
+	if content, ok := m.jobReaderContent(path); ok {
+		return content // before any pendingServe exists: nothing is recorded
+	}
 	authorized := false
 	grantServed := false
 	if atomic.LoadInt32(&m.grantModeRuns) > 0 {
