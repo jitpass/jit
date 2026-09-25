@@ -5,6 +5,7 @@ package agent
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,25 +44,65 @@ const maxJobChanges = 20
 
 // SetJobStore names jobs.json and loads it. Called once at service start. A
 // file that fails to load leaves the service with no jobs and never writes
-// over that file, grants.json's rule.
+// over that file, grants.json's rule. The file is read once: the jobs, the
+// records job.Decode skipped, and every key id it names all come from the
+// same bytes.
 func (s *Server) SetJobStore(path string) (int, error) {
-	jobs, err := job.Load(path)
+	jobs, kept, names, err := loadJobFile(path)
 	s.jobMu.Lock()
 	defer s.jobMu.Unlock()
 	if err != nil {
-		s.jobs, s.jobsPath = map[string]*job.Job{}, ""
+		s.jobs, s.jobsPath, s.jobNames, s.jobKept = map[string]*job.Job{}, "", nil, nil
 		return 0, err
 	}
-	s.jobs, s.jobsPath = jobs, path
+	s.jobs, s.jobsPath, s.jobNames, s.jobKept = jobs, path, names, kept
 	return len(jobs), nil
 }
 
-// saveJobsLocked writes the list. Caller holds jobMu.
+func loadJobFile(path string) (map[string]*job.Job, []job.Kept, map[string]bool, error) {
+	data, err := os.ReadFile(path) // #nosec G304 -- a fixed path under jit's own config directory
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]*job.Job{}, nil, map[string]bool{}, nil
+	}
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	jobs, kept, err := job.Decode(data)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("%s: %w", path, err)
+	}
+	// Every key id the file names, read raw, including a record job.Decode
+	// skipped (grantorphans.go keeps those keys).
+	names, err := namedKeyIDs(data)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	return jobs, kept, names, nil
+}
+
+// saveJobsLocked writes the list: the jobs, and the records the loader
+// kept. Caller holds jobMu. Nothing in memory changes here, so a write that
+// fails leaves s.jobs and s.jobKept exactly as the caller's rollback expects.
 func (s *Server) saveJobsLocked() error {
 	if s.jobsPath == "" {
 		return fmt.Errorf("this service has no usable job list (see the service log for why it was not loaded)")
 	}
-	return job.Save(s.jobsPath, s.jobs)
+	data, err := job.Encode(s.jobs, s.jobKept)
+	if err != nil {
+		return err
+	}
+	return s.writeState(s.jobsPath, data)
+}
+
+// keptJobNamed reports whether jobs.json holds a record named name that
+// this build could not read (job.Kept). Caller holds jobMu.
+func (s *Server) keptJobNamed(name string) bool {
+	for _, k := range s.jobKept {
+		if k.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // preparedJob is everything approval settles before the Touch ID: the
@@ -146,9 +187,17 @@ func (s *Server) prepareJob(req Request) (*preparedJob, string) {
 	s.jobMu.Lock()
 	_, exists := s.jobs[req.JobName]
 	ready := s.jobsPath != ""
+	unreadable := s.keptJobNamed(req.JobName)
 	s.jobMu.Unlock()
 	if !ready {
 		return nil, "this service has no usable job list, so the job could not be kept (see the service log)"
+	}
+	if unreadable {
+		// Approving would replace a record this build cannot read or show,
+		// and leave its key named by nothing. Refused before the prompt; the
+		// kept records never change after load, so none can appear between
+		// here and the save.
+		return nil, fmt.Sprintf("a job named %s exists that this version of jit can't read - remove it with a newer jit, or choose another name", req.JobName)
 	}
 
 	var sources []JobSecretSource
@@ -448,19 +497,30 @@ func (s *Server) removeJob(name string, c *caller) Response {
 	if err != nil {
 		return Response{OK: false, Error: "job_remove: " + err.Error()}
 	}
-	cause := "removed"
+	cause, keyNote := "removed", ""
 	if j.KeyID != "" && s.GrantKeys != nil {
 		// Removing is what ends a job that never asks, so the key goes with
 		// it. A delete that fails is said in the trail: the record is already
 		// gone, so nothing can use the key, but it is not destroyed either.
-		if err := s.GrantKeys.Delete(j.KeyID); err != nil {
+		// Nor is one in an enclave this jit cannot reach, and the trail and
+		// the caller say that rather than "deleted".
+		mayBeEnclave := false
+		for _, sec := range j.Secrets {
+			mayBeEnclave = mayBeEnclave || sec.Wrap == GrantWrapEnclave || !secretReadable(sec)
+		}
+		note, err := s.deleteKeyOf(j.KeyID, mayBeEnclave)
+		keyNote = keyNoteOf(note, err)
+		switch {
+		case err != nil:
 			cause = fmt.Sprintf("removed, but its key %s could not be deleted: %s", j.KeyID, err)
-		} else {
+		case note != "":
+			cause = "removed. " + note
+		default:
 			cause = "removed, its key deleted"
 		}
 	}
 	s.recordJobEvent(KindUse, OpJobRemove, c, j, cause)
-	return Response{OK: true}
+	return Response{OK: true, KeyNote: keyNote}
 }
 
 func (s *Server) listJobs(namesOnly bool) []JobStatus {
@@ -692,6 +752,27 @@ func (s *Server) runJob(name string, c *caller) Response {
 	return Response{OK: true, JobResult: &result}
 }
 
+// secretReadable reports whether this build fully understands a job's
+// secret: it knows the wrap it is sealed with, and every field it carries. A
+// field a newer jit added may be tied to the sealed bytes (a nonce, KDF
+// parameters, an AAD version), so a secret with one is neither opened nor
+// re-sealed here: the grant ledger's unread rule (standingGrant.unread).
+func secretReadable(sec job.Secret) bool {
+	return knownWrap(sec.Wrap) && len(sec.UnknownFields()) == 0
+}
+
+// unreadSecrets is how many of a job's secrets this build cannot fully read
+// (secretReadable).
+func unreadSecrets(j *job.Job) int {
+	n := 0
+	for _, sec := range j.Secrets {
+		if !secretReadable(sec) {
+			n++
+		}
+	}
+	return n
+}
+
 // openJobKeys fills deks from a never-asking job's own key: each secret's
 // KeyWrapped opened under it with the secret's class as AAD, filed by the
 // device digest the runner looks keys up by.
@@ -699,15 +780,23 @@ func (s *Server) openJobKeys(j *job.Job, deks map[string][]byte) error {
 	if s.GrantKeys == nil || j.KeyID == "" {
 		return fmt.Errorf("this job has no key of its own")
 	}
-	key, err := s.GrantKeys.Load(j.KeyID)
+	// Every secret is sealed for one kind of key, and that kind is the key
+	// loaded: not whichever kind exists (loadGrantKey says why).
+	wrap := ""
+	for _, sec := range j.Secrets {
+		if !secretReadable(sec) {
+			return fmt.Errorf("%s is sealed in a way this jit cannot open", sec.Var)
+		}
+		if wrap == "" {
+			wrap = sec.Wrap
+		}
+	}
+	key, err := s.loadGrantKey(j.KeyID, wrap)
 	if err != nil {
 		return fmt.Errorf("the job's key is gone")
 	}
 	defer key.Close()
 	for _, sec := range j.Secrets {
-		if !knownWrap(sec.Wrap) {
-			return fmt.Errorf("%s is sealed in a way this jit cannot open", sec.Var)
-		}
 		if sec.Wrap != keyWrap(key) {
 			return fmt.Errorf("%s is sealed for a different kind of key than the job's", sec.Var)
 		}

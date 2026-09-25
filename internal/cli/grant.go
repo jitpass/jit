@@ -252,7 +252,7 @@ func runGrantCreate(out io.Writer) error {
 	// is free, so revoke before reporting anything. The window is real but
 	// short: the service swaps itself onto a replaced binary within seconds.
 	if target.name != "" && st.Anchor == "" {
-		_ = ac.GrantRevoke(st.ID)
+		_, _ = ac.GrantRevoke(st.ID)
 		return fmt.Errorf("the running service predates tree grants and granted the whole terminal instead; revoked it - run `jit service restart` and retry")
 	}
 	printGrantCreated(out, st)
@@ -482,11 +482,13 @@ func runGrantRevoke(out io.Writer, id string) error {
 			}
 		}
 	}
-	if err := ac.GrantRevoke(id); err != nil {
+	keyNote, err := ac.GrantRevoke(id)
+	if err != nil {
 		return grantAgentErr("grant_revoke", err)
 	}
 	_, _ = cOKBold.Fprint(out, glyphDone+" revoked "+id)
 	fmt.Fprintln(out, who)
+	printKeyNote(out, keyNote)
 	return nil
 }
 
@@ -660,9 +662,10 @@ type grantKeyBackend interface {
 //
 // A NEW key goes where the vault's own key is: an enclave vault's grants and
 // jobs get enclave keys, which never ask and work while the Mac is locked
-// (design/secure-enclave-plan.md, C2). A key is LOADED from wherever that
-// grant's key exists, enclave first, so grants made before a vault moved
-// keep working until they are moved too (C3). Delete clears both.
+// (design/secure-enclave-plan.md, C2). The agent loads a grant's or job's
+// key by the kind its entries say they are sealed for (LoadWrap), never by
+// which kind exists: a move (C3) that made an enclave key and then failed
+// leaves both, and only the old one opens the entries. Delete clears both.
 type grantKeyStore struct {
 	root    string
 	keys    grantKeyBackend // the keychain
@@ -680,6 +683,8 @@ func (g grantKeyStore) Create(id string) (agent.GrantKey, error) {
 	return g.keys.Create(id)
 }
 
+// Load is the plain GrantKeyStore half, for a caller that does not know the
+// kind: the agent uses LoadWrap whenever a store offers it.
 func (g grantKeyStore) Load(id string) (agent.GrantKey, error) {
 	// A jit that cannot reach the enclave (ErrUnavailable) answers false
 	// here and loads the keychain key, which is all it could open anyway.
@@ -689,10 +694,15 @@ func (g grantKeyStore) Load(id string) (agent.GrantKey, error) {
 	return g.keys.Load(id)
 }
 
+// Delete clears both kinds. An enclave this jit cannot reach is not a
+// failure, but it is not a delete either: a jit with the entitlement may
+// have made a key there, so it says agent.ErrGrantKeyUnreachable (joined
+// with any keychain failure), and the agent decides whether that key
+// matters and never reports it deleted. The keychain half runs either way.
 func (g grantKeyStore) Delete(id string) error {
 	err := g.enclave.Delete(id)
 	if errors.Is(err, secureenclave.ErrUnavailable) {
-		err = nil // this jit cannot reach the enclave, so made no key there
+		err = agent.ErrGrantKeyUnreachable
 	}
 	return errors.Join(err, g.keys.Delete(id))
 }
@@ -1073,4 +1083,24 @@ func init() {
 
 	grantCmd.AddCommand(grantListCmd, grantRevokeCmd, grantExtendCmd)
 	rootCmd.AddCommand(grantCmd)
+}
+
+// printKeyNote shows a revoke's or a remove's Response.KeyNote, the key it
+// could not delete from the service's copy of jit, one clause a line. Empty
+// prints nothing.
+func printKeyNote(out io.Writer, note string) {
+	if note == "" {
+		return
+	}
+	clauses := strings.Split(note, "; ")
+	for i, clause := range clauses {
+		if i < len(clauses)-1 {
+			clause += ";"
+		}
+		lead := " "
+		if i == 0 {
+			lead = cWarn.Sprint(glyphWarn)
+		}
+		fmt.Fprintf(out, "  %s %s\n", lead, clause)
+	}
 }
