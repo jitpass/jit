@@ -20,7 +20,7 @@ jit mcp install [--client claude-desktop|cursor] [flags]
 
 ```
       --client string    the AI app: claude-desktop or cursor (default "claude-desktop")
-      --command string   the jit to start (default: the jit on your PATH)
+      --command string   the jit to start (default: the jit on your PATH when it has jit mcp, else this one)
 ```
 
 ### Options inherited from parent commands
