@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jitpass/jit/internal/atomicfile"
 	"github.com/jitpass/jit/internal/lineage"
-	"github.com/jitpass/jit/internal/vault"
 )
 
 // This file is the standing-grant store (design/standing-grants.md): a grant
@@ -475,11 +475,12 @@ func (s *Server) saveLedger() error {
 }
 
 // writeState writes one of the service's own state files (the grant ledger,
-// the job list) with vault.AtomicWriteFile: a temp file created exclusively
-// under a fresh random name beside it (so a leftover temp, or a symlink
-// planted where one would go, is never written through), mode 0600, fsynced,
-// renamed over the old file, and the directory fsynced so the rename itself
-// survives a power cut. The fsyncs matter here more than for most files: a
+// the job list) with atomicfile.WriteFile, the one implementation behind
+// vault.AtomicWriteFile too (this package never imports internal/vault): a
+// temp file created exclusively under a fresh random name beside it (so a
+// leftover temp, or a symlink planted where one would go, is never written
+// through), mode 0600, fsynced, renamed over the old file, and the directory
+// fsynced so the rename itself survives a power cut. The fsyncs matter here more than for most files: a
 // move (plan C3) deletes a grant's old key right after the ledger names the
 // new one, and a ledger that reverted on power loss would then name a key
 // that no longer exists.
@@ -487,7 +488,7 @@ func (s *Server) writeState(path string, data []byte) error {
 	if s.stateWriter != nil {
 		return s.stateWriter(path, data)
 	}
-	return vault.AtomicWriteFile(path, data)
+	return atomicfile.WriteFile(path, data)
 }
 
 // ---- create ----

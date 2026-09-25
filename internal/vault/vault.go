@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/jitpass/jit/internal/atomicfile"
 )
 
 // ErrNotFound is returned by Get/Remove when no secret exists at the given path.
@@ -613,70 +615,24 @@ func (v *Vault) List() ([]string, error) {
 }
 
 // AtomicWriteFile writes data to a temp file in dest's directory, fsyncs
-// it, then renames it into place — a reader never observes a partially-
-// written file, and a crash or power loss mid-write leaves the old
-// version (or nothing) rather than a corrupt one. The fsync before the
-// rename matters: without it, the rename can be durable while the data
-// isn't, so a power cut could leave a correctly-named empty/truncated
-// file — the one outcome atomicity was supposed to rule out. Exported
-// because internal/migrate's profile-manifest write needs the identical
-// guarantee (a manifest half-written at the moment the source file is
-// destroyed would orphan every secret it mapped).
+// it, then renames it into place and fsyncs the directory, mode 0600: a
+// reader never observes a partially-written file, and a crash or power loss
+// mid-write leaves the old version (or nothing) rather than a corrupt one.
+// It is atomicfile.WriteFile, which says why each step matters; the one
+// implementation lives in that leaf package so a package that must not
+// import this one (internal/agent) writes the same way. Exported because
+// internal/migrate's profile-manifest write needs the identical guarantee (a
+// manifest half-written at the moment the source file is destroyed would
+// orphan every secret it mapped).
 func AtomicWriteFile(dest string, data []byte) error {
-	dir := filepath.Dir(dest)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("creating %s: %w", dir, err)
-	}
-
-	tmp, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil {
-		return fmt.Errorf("creating temp file in %s: %w", dir, err)
-	}
-	tmpPath := tmp.Name()
-	// If anything below fails before the rename, clean up the temp file
-	// rather than leaving it behind.
-	success := false
-	defer func() {
-		if !success {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("setting permissions on %s: %w", tmpPath, err)
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("writing %s: %w", tmpPath, err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("syncing %s: %w", tmpPath, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("closing %s: %w", tmpPath, err)
-	}
-	if err := os.Rename(tmpPath, dest); err != nil {
-		return fmt.Errorf("renaming %s to %s: %w", tmpPath, dest, err)
-	}
-	success = true
-	// Fsync the directory too, so the rename itself survives power loss —
-	// best-effort: some filesystems don't support fsync on a directory,
-	// and the data-before-rename ordering above already holds without it.
-	syncDir(dir)
-	return nil
+	return atomicfile.WriteFile(dest, data)
 }
 
 // syncDir best-effort fsyncs a directory so a rename into it survives
-// power loss — the durability tail of AtomicWriteFile, shared with
-// Restore's own rename (which moves an already-synced file and needs
-// only this directory half).
+// power loss (atomicfile.SyncDir), for Restore's own rename, which moves an
+// already-synced file and needs only this directory half.
 func syncDir(dir string) {
-	if d, err := os.Open(dir); err == nil { // #nosec G304 -- a parent directory of jit's own files, not external input
-		_ = d.Sync()
-		_ = d.Close()
-	}
+	atomicfile.SyncDir(dir)
 }
 
 // UnboundPaths lists the secrets whose envelope predates AAD binding —

@@ -51,7 +51,7 @@ func calls(t *testing.T, file, fn string) []string {
 // a power cut could undo would leave a grant naming a deleted key. The
 // ledger once wrote its own temp and renamed it with no fsync of the file or
 // the directory; both now go through writeState, which is
-// vault.AtomicWriteFile.
+// atomicfile.WriteFile (vault.AtomicWriteFile's one implementation).
 func TestStateFilesAreWrittenDurably(t *testing.T) {
 	for _, c := range []struct{ file, fn string }{
 		{"standing.go", "saveLedger"},
@@ -70,8 +70,8 @@ func TestStateFilesAreWrittenDurably(t *testing.T) {
 		}
 	}
 	w := calls(t, "standing.go", "writeState")
-	if !strings.Contains(strings.Join(w, " "), "vault.AtomicWriteFile") {
-		t.Errorf("writeState does not use vault.AtomicWriteFile (calls %v)", w)
+	if !strings.Contains(strings.Join(w, " "), "atomicfile.WriteFile") {
+		t.Errorf("writeState does not use atomicfile.WriteFile (calls %v)", w)
 	}
 }
 
