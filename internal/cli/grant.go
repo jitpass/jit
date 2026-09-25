@@ -20,8 +20,10 @@ import (
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/auditlog"
 	"github.com/jitpass/jit/internal/keychainwrap"
+	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/lineage"
 	"github.com/jitpass/jit/internal/profile"
+	"github.com/jitpass/jit/internal/secureenclave"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -643,28 +645,103 @@ func wrappedDEKReader(root string) func(path string) ([]byte, string, error) {
 	}
 }
 
-// grantKeyStore adapts keychainwrap's grant-key store to the agent's
-// interface (the agent never imports keychainwrap; the CLI wires it, as it
-// wires the MEK fetcher).
-type grantKeyStore struct{ keys keychainwrap.GrantKeys }
+// grantKeyBackend is one place grant keys live: the login keychain
+// (keychainwrap.GrantKeys) or the Secure Enclave (secureenclave.GrantKeys).
+type grantKeyBackend interface {
+	Create(id string) (agent.GrantKey, error)
+	Load(id string) (agent.GrantKey, error)
+	Present(id string) (bool, error)
+	Delete(id string) error
+}
+
+// grantKeyStore is the agent's GrantKeyStore over both backends (the agent
+// never imports either; the CLI wires them, as it wires the MEK fetcher).
+//
+// A NEW key goes where the vault's own key is: an enclave vault's grants and
+// jobs get enclave keys, which never ask and work while the Mac is locked
+// (design/secure-enclave-plan.md, C2). A key is LOADED from wherever that
+// grant's key exists, enclave first, so grants made before a vault moved
+// keep working until they are moved too (C3). Delete clears both.
+type grantKeyStore struct {
+	root    string
+	keys    grantKeyBackend // the keychain
+	enclave grantKeyBackend // the Secure Enclave
+}
+
+func newGrantKeyStore(root string) grantKeyStore {
+	return grantKeyStore{root: root, keys: keychainGrantKeys{}, enclave: enclaveGrantKeys{}}
+}
 
 func (g grantKeyStore) Create(id string) (agent.GrantKey, error) {
-	k, err := g.keys.Create(id)
-	if err != nil {
-		return nil, err
+	if openKeyStore(g.root).Kind() == keystore.KindSecureEnclave {
+		return g.enclave.Create(id)
 	}
-	return k, nil
+	return g.keys.Create(id)
 }
 
 func (g grantKeyStore) Load(id string) (agent.GrantKey, error) {
-	k, err := g.keys.Load(id)
+	// A jit that cannot reach the enclave (ErrUnavailable) answers false
+	// here and loads the keychain key, which is all it could open anyway.
+	if ok, err := g.enclave.Present(id); err == nil && ok {
+		return g.enclave.Load(id)
+	}
+	return g.keys.Load(id)
+}
+
+func (g grantKeyStore) Delete(id string) error {
+	err := g.enclave.Delete(id)
+	if errors.Is(err, secureenclave.ErrUnavailable) {
+		err = nil // this jit cannot reach the enclave, so made no key there
+	}
+	return errors.Join(err, g.keys.Delete(id))
+}
+
+type keychainGrantKeys struct{ keys keychainwrap.GrantKeys }
+
+func (k keychainGrantKeys) Create(id string) (agent.GrantKey, error) {
+	key, err := k.keys.Create(id)
 	if err != nil {
 		return nil, err
 	}
-	return k, nil
+	return key, nil
 }
 
-func (g grantKeyStore) Delete(id string) error { return g.keys.Delete(id) }
+func (k keychainGrantKeys) Load(id string) (agent.GrantKey, error) {
+	key, err := k.keys.Load(id)
+	if err != nil {
+		return nil, err
+	}
+	return key, nil
+}
+
+func (k keychainGrantKeys) Present(id string) (bool, error) {
+	_, err := k.keys.Load(id)
+	return err == nil, nil
+}
+
+func (k keychainGrantKeys) Delete(id string) error { return k.keys.Delete(id) }
+
+type enclaveGrantKeys struct{ keys secureenclave.GrantKeys }
+
+func (e enclaveGrantKeys) Create(id string) (agent.GrantKey, error) {
+	key, err := e.keys.Create(id)
+	if err != nil {
+		return nil, err
+	}
+	return key, nil
+}
+
+func (e enclaveGrantKeys) Load(id string) (agent.GrantKey, error) {
+	key, err := e.keys.Load(id)
+	if err != nil {
+		return nil, err
+	}
+	return key, nil
+}
+
+func (e enclaveGrantKeys) Present(id string) (bool, error) { return e.keys.Present(id) }
+
+func (e enclaveGrantKeys) Delete(id string) error { return e.keys.Delete(id) }
 
 // completeGrantProcessNames offers --process candidates from the audit
 // trails: the programs that actually asked for secrets recently, annotated
