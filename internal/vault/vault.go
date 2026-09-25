@@ -73,6 +73,10 @@ type Vault struct {
 	// of the real value, which existed on disk regardless of where the
 	// vault now points.
 	LinkOnSet func(path string, value []byte, meta Meta) (ref string, ok bool)
+
+	// lost caches the lost-key records every archive consults
+	// (lostKeyCopies in lostkey.go), read once per Vault value.
+	lost lostKeyCache
 }
 
 func (v *Vault) vaultDir() string {

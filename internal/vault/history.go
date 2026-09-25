@@ -81,12 +81,15 @@ func (v *Vault) archiveVersion(path string, data []byte, stamp int64) error {
 // pruneHistory drops the oldest versions past HistoryKeep. Best-effort on
 // the removes themselves — a leftover extra version is untidy, not wrong.
 //
-// A version sealed to a lost Secure Enclave key (lostkey.go) is never
-// pruned and takes none of the HistoryKeep places, for as long as any
+// A version that is, or may be, sealed to a lost Secure Enclave key
+// (lostkey.go) is never pruned and takes none of the HistoryKeep places, for as long as any
 // record of that key exists, retired ones included: if the key was
 // reported lost by mistake, those copies are what it could still open, and
 // no number of later writes should push them out. When jit cannot read the
-// lost-key records at all, it prunes nothing.
+// lost-key records at all, it prunes nothing. The records are read once
+// per Vault, and not at all while a secret has HistoryKeep versions or
+// fewer; with no lost key, that one read is a ReadDir and nothing is
+// hashed.
 func (v *Vault) pruneHistory(path string) error {
 	stamps, err := v.historyStamps(path)
 	if err != nil {
@@ -95,13 +98,13 @@ func (v *Vault) pruneHistory(path string) error {
 	if len(stamps) <= HistoryKeep {
 		return nil
 	}
-	lost, err := loadLostKeyCopies(v.Root)
+	lost, err := v.lostKeyCopies()
 	if err != nil {
 		return nil // can't tell which copies are sealed to a lost key: keep them all
 	}
 	var prunable []int64
 	for _, s := range stamps {
-		if lost.sealedFile(filepath.Join(v.historyDir(path), fmt.Sprintf("%d.enc", s))) {
+		if lost.matchFile(v.vaultDir(), filepath.Join(v.historyDir(path), fmt.Sprintf("%d.enc", s))) != notLost {
 			continue
 		}
 		prunable = append(prunable, s)
