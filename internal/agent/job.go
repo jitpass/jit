@@ -544,11 +544,7 @@ func (s *Server) runJob(name string, c *caller) Response {
 		return Response{OK: false, Error: fmt.Sprintf("job_run: %s: stopped because %s. It won't run until you approve it again", j.Name, j.Stopped)}
 	}
 	if changes := jobChanges(&j); len(changes) > 0 {
-		msg := fmt.Sprintf("%s %s since you approved it", changes[0].Path, changes[0].Kind)
-		if len(changes) > 1 {
-			msg += fmt.Sprintf(" (and %d more)", len(changes)-1)
-		}
-		return s.refuseJob(&j, c, requester, msg)
+		return s.refuseJob(&j, c, requester, changeReason(changes, ""))
 	}
 	if s.OnWrappedDEK == nil {
 		return Response{OK: false, Error: "job_run: this service cannot read the vault's wrapped keys"}
@@ -609,7 +605,7 @@ func (s *Server) runJob(name string, c *caller) Response {
 	// keeps values from, and it can write the folder. An edit landing while
 	// the human reads the dialog must not run with the secrets it unlocked.
 	if changes := jobChanges(&j); len(changes) > 0 {
-		return s.refuseJob(&j, c, requester, fmt.Sprintf("%s %s while the prompt was up", changes[0].Path, changes[0].Kind))
+		return s.refuseJob(&j, c, requester, changeReason(changes, "while the prompt was up"))
 	}
 	// The stored job, not the snapshot: approved again, removed or stopped
 	// while this run waited on its prompt means this run is not the job the
@@ -631,7 +627,7 @@ func (s *Server) runJob(name string, c *caller) Response {
 	// job stops until the human looks. A job that writes into its own folder
 	// stops here too, and the message says how to declare that folder.
 	if changes := jobChanges(&j); len(changes) > 0 {
-		return s.refuseJob(&j, c, requester, fmt.Sprintf("%s %s while the job ran, so its output was withheld (if the job writes there, approve it again with that folder as --output)", changes[0].Path, changes[0].Kind))
+		return s.refuseJob(&j, c, requester, changeReason(changes, "while the job ran, so its output was withheld (if the job writes there, approve it again with that folder as --output)"))
 	}
 	hidden := 0
 	for _, n := range result.Hidden {
@@ -749,4 +745,24 @@ func truncateMiddle(s string, n int) string {
 	head := (n - 1) / 3
 	tail := n - 1 - head
 	return string(r[:head]) + "…" + string(r[len(r)-tail:])
+}
+
+// changeReason is the sentence a stop gives for a changed folder: the first
+// change in plain words, how many more, when it happened if not simply
+// "since you approved it", and the bytecode hint when only .pyc files moved.
+func changeReason(changes []job.Change, when string) string {
+	first := changes[0].Sentence()
+	if when != "" {
+		first = strings.Replace(first, "since you approved it", when, 1)
+		if changes[0].Kind == job.Changed || changes[0].Kind == job.Added || changes[0].Kind == job.Removed {
+			first = fmt.Sprintf("%s %s %s", changes[0].Path, changes[0].Kind, when)
+		}
+	}
+	if len(changes) > 1 {
+		first += fmt.Sprintf(" (and %d more)", len(changes)-1)
+	}
+	if hint := job.StopHint(changes); hint != "" {
+		first += ". " + hint
+	}
+	return first
 }

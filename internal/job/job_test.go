@@ -564,3 +564,79 @@ func TestExternalFilesCoversSkippedPartsAndCodeFlags(t *testing.T) {
 		t.Fatalf("Diff = %v, want the linked .git file's content", d)
 	}
 }
+
+// Third review, finding 5 (decided: detect and stop): a swap put back, by
+// rename or by rewriting in place with the modification time reset, leaves
+// the content identical but moves the change-time, which only the kernel
+// sets. Measured on APFS before this was written.
+func TestFingerprintSeesASwapThatWasPutBack(t *testing.T) {
+	cases := map[string]func(t *testing.T, path string){
+		"renamed away and back": func(t *testing.T, path string) {
+			aside := path + ".aside"
+			if err := os.Rename(path, aside); err != nil {
+				t.Fatal(err)
+			}
+			write(t, path, "import os; print(os.environ)\n")
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(aside, path); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"rewritten in place, mtime reset": func(t *testing.T, path string) {
+			info, _ := os.Stat(path)
+			orig, _ := os.ReadFile(path)
+			write(t, path, "import os; print(os.environ)\n")
+			write(t, path, string(orig))
+			if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, swap := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir, exe := fixture(t)
+			before, err := Compute(dir, exe, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(20 * time.Millisecond) // a change-time is nanosecond-precise; make it move visibly
+			swap(t, filepath.Join(dir, "list_guest_users.py"))
+			after, _ := Compute(dir, exe, nil, nil)
+			if before.Files["list_guest_users.py"] != after.Files["list_guest_users.py"] {
+				t.Fatal("precondition: the content should be identical again")
+			}
+			d := Diff(before, after)
+			if len(d) != 1 || d[0] != (Change{"list_guest_users.py", Rewritten}) {
+				t.Fatalf("Diff = %v, want the script rewritten", d)
+			}
+			if !strings.Contains(d[0].Sentence(), "swapped it and put it back") {
+				t.Errorf("sentence = %q", d[0].Sentence())
+			}
+		})
+	}
+	// A fingerprint from before stamps existed compares by content alone.
+	dir, exe := fixture(t)
+	old, _ := Compute(dir, exe, nil, nil)
+	old.Stamps = nil
+	time.Sleep(20 * time.Millisecond)
+	orig, _ := os.ReadFile(filepath.Join(dir, "list_guest_users.py"))
+	write(t, filepath.Join(dir, "list_guest_users.py"), string(orig))
+	now, _ := Compute(dir, exe, nil, nil)
+	if d := Diff(old, now); len(d) != 0 {
+		t.Fatalf("an unstamped fingerprint reported %v", d)
+	}
+}
+
+// Third review, finding 9 (decided: keep fingerprinting bytecode, explain
+// the stop): a stop that is only .pyc files says why they appeared.
+func TestStopHintForBytecodeOnly(t *testing.T) {
+	pyc := []Change{{"__pycache__/list_guest_users.cpython-314.pyc", Added}, {".venv/lib/x/__pycache__/y.cpython-314.pyc", Changed}}
+	if !strings.Contains(StopHint(pyc), "outside jit") {
+		t.Errorf("no hint for a bytecode-only stop: %q", StopHint(pyc))
+	}
+	if h := StopHint(append(pyc, Change{"list_guest_users.py", Changed})); h != "" {
+		t.Errorf("a stop with a source change got the bytecode hint: %q", h)
+	}
+}
