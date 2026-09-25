@@ -442,7 +442,7 @@ without it.
   and the message says to declare that folder with `--output`.
 - **The approval prompt names what the service resolved, never the job's
   name**: "jit is trying to let AI run notion/list_guest_users.py with 3
-  notion secrets, 1 shown, unasked till removed". Any process that reaches
+  notion secrets, 1 shown, runs without asking". Any process that reaches
   the socket can ask for an approval and chooses the name, so a familiar
   name on a request that runs something else is the prompt this must not
   show. The shown count is there because "never the values" is false for a
