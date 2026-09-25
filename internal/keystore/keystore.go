@@ -323,14 +323,27 @@ func (s enclaveStore) Init() (InitResult, error) {
 // enclave key is lost (see Init).
 func (s enclaveStore) initOverLeftover() (InitResult, error) {
 	opened, total, err := leftoverOpens(s.root)
+	if q := (*keychainwrap.QuietReadError)(nil); errors.As(err, &q) && q.MayBeLocked() {
+		// The keychain would not be read right now: a LOCKED login keychain
+		// answers presence (so this item counts as there) and fails the
+		// read at once with errSecAuthFailed (measured,
+		// TestHardwareLockedKeychainNeverAsks); errSecInteractionNotAllowed
+		// is a read that would have had to ask. Neither says anything about
+		// the item, which may be the vault's only key, so this never
+		// advises deleting it.
+		return InitReady, fmt.Errorf("the vault's Secure Enclave key is lost, and jit couldn't read\n"+
+			"the key in your keychain under the vault key's name right now\n"+
+			"(OSStatus=%d): your keychain may be locked.\n"+
+			"Nothing changed. Unlock it, then run `jit vault init` again", q.Status)
+	}
 	if err != nil {
-		// Not "try again": a read that needs a dialog (an item another
-		// program made, errSecInteractionNotAllowed) fails the same way
-		// every time. The way out is named, so a lost key never leaves the
-		// vault stuck: without the item, Init makes a new key and the
-		// recovery file brings the secrets back.
-		return InitReady, fmt.Errorf("the vault's Secure Enclave key is lost, and jit can't read\n"+
-			"the key in your keychain under the vault key's name without asking\n"+
+		// Not "try again": an item that isn't a master key, or can't be
+		// read for any other reason, fails the same way every time. The way
+		// out is named, so a lost key never leaves the vault stuck: without
+		// the item, Init makes a new key and the recovery file brings the
+		// secrets back.
+		return InitReady, fmt.Errorf("the vault's Secure Enclave key is lost, and jit can't use\n"+
+			"the key in your keychain under the vault key's name\n"+
 			"(%s). Nothing changed.\n"+
 			"If your recovery file has your secrets, delete\n"+
 			"%q in Keychain Access,\n"+

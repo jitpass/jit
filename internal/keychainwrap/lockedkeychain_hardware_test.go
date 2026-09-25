@@ -22,12 +22,10 @@ import (
 	"time"
 )
 
+// errSecUserCanceled is the status only this test decides on.
+const errSecUserCanceled int32 = -128
+
 // securityTool runs /usr/bin/security with args and fails the test on error.
-// The statuses only this test decides on.
-const (
-	errSecAuthFailed   int32 = -25293
-	errSecUserCanceled int32 = -128
-)
 
 func securityTool(t *testing.T, args ...string) string {
 	t.Helper()

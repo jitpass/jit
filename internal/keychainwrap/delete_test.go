@@ -397,8 +397,17 @@ func TestCountOpens(t *testing.T) {
 		t.Fatalf("a different key opened %d, err %v; want 0", n, err)
 	}
 	missing := &Wrapper{service: "com.jitpass.vault.mek.TEST-ONLY", account: "missing", challenge: noChallenge}
-	if _, err := missing.CountOpens(keys); err == nil {
-		t.Fatal("no item, and no error")
+	_, err := missing.CountOpens(keys)
+	var q *QuietReadError
+	if !errors.As(err, &q) || q.Status != errSecItemNotFound || q.MayBeLocked() {
+		t.Fatalf("no item: %v (%#v), want a QuietReadError with errSecItemNotFound that is no lock", err, q)
+	}
+	// The statuses a keychain that won't be read right now answers: a
+	// locked one's -25293 (measured) and a read that would have asked.
+	for st, want := range map[int32]bool{errSecAuthFailed: true, errSecInteractionNotAllowed: true, errSecItemNotFound: false, -34018: false} {
+		if got := (&QuietReadError{Status: st}).MayBeLocked(); got != want {
+			t.Errorf("OSStatus=%d: MayBeLocked %v, want %v", st, got, want)
+		}
 	}
 }
 

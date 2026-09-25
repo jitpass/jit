@@ -412,8 +412,19 @@ KWResult kw_fetch_mek(const char *service, const char *account, unsigned char **
         }
         if (status != errSecSuccess || !result) {
             if (result) CFRelease(result);
-            // Only errSecItemNotFound actually means "no MEK stored" — the
-            // old catch-all message told a user whose key EXISTS to consider
+            r.status = status != errSecSuccess ? (int)status : (int)errSecItemNotFound;
+            if (quiet) {
+                // The quiet read's caller decides from the status
+                // (keychainwrap.QuietReadError): the messages below name
+                // remedies for the read behind Touch ID, which do not fit a
+                // read that was never allowed to ask. A locked login
+                // keychain answers it with errSecAuthFailed (measured,
+                // TestHardwareLockedKeychainNeverAsks), which below would
+                // read "run `jit service restart`".
+                r.error_message = dupNSString([NSString stringWithFormat:@"reading the key in the keychain without asking failed, OSStatus=%d", (int)r.status]);
+                return r;
+            }
+            // Only errSecItemNotFound actually means "no MEK stored" — the old         // old catch-all message told a user whose key EXISTS to consider
             // re-running "jit vault init" (a real incident: errSecAuthFailed,
             // -25293, from macOS's per-code-signature keychain ACL after the
             // on-disk binary was replaced underneath the running agent, was

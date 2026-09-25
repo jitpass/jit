@@ -54,16 +54,38 @@ func (w *Wrapper) CountOpens(keys []WrappedKey) (int, error) {
 	return opened, nil
 }
 
+// QuietReadError is a quiet read (no challenge, no dialog) the keychain
+// refused, with its OSStatus, so a caller can tell "can't read it right
+// now" from an answer about the item.
+type QuietReadError struct {
+	Status int32
+	Msg    string
+}
+
+func (e *QuietReadError) Error() string { return e.Msg }
+
+// MayBeLocked reports a refusal that says nothing about the item: the
+// keychain would not be read right now. errSecAuthFailed (-25293) is what a
+// LOCKED file keychain answers a data read with, at once (measured,
+// TestHardwareLockedKeychainNeverAsks); errSecInteractionNotAllowed
+// (-25308) is a read that would have had to ask (an unlock, an access
+// dialog).
+func (e *QuietReadError) MayBeLocked() bool {
+	return e.Status == errSecAuthFailed || e.Status == errSecInteractionNotAllowed
+}
+
 // quietFetch reads the item with no challenge and no dialog, and checks it
-// is a master key's length.
+// is a master key's length. A refused read is a *QuietReadError.
 func (w *Wrapper) quietFetch() ([]byte, error) {
 	cService, cAccount := w.cNames()
 	defer C.free(unsafe.Pointer(cService))
 	defer C.free(unsafe.Pointer(cAccount))
 	var keyPtr *C.uchar
 	var keyLen C.int
-	if err := goErr(C.kw_fetch_mek(cService, cAccount, &keyPtr, &keyLen, 1)); err != nil {
-		return nil, err
+	r := C.kw_fetch_mek(cService, cAccount, &keyPtr, &keyLen, 1)
+	status := int32(r.status)
+	if err := goErr(r); err != nil {
+		return nil, &QuietReadError{Status: status, Msg: err.Error()}
 	}
 	mek := C.GoBytes(unsafe.Pointer(keyPtr), keyLen)
 	wipe(unsafe.Slice((*byte)(unsafe.Pointer(keyPtr)), int(keyLen)))

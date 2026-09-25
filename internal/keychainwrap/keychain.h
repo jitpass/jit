@@ -4,6 +4,9 @@
 typedef struct {
     int success;
     char *error_message;
+    // status is the failing call's OSStatus where the caller decides on it
+    // (kw_fetch_mek sets it); 0 otherwise.
+    int status;
 } KWResult;
 
 // kw_challenge triggers a standalone LocalAuthentication prompt (Touch ID,

@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -200,19 +201,20 @@ func TestKeychainKeyOpensMeasuresTheItem(t *testing.T) {
 	}
 }
 
-// A leftover item that can't be read without a dialog fails the same way on
-// every run, so "try again" left a lost-key vault stuck for good. The
-// refusal names the item, the way out, and what comes after it; and once
-// the item is gone, the same Init makes a new key over the lost one.
+// A leftover item that can't be used as a key (here, not a master key's
+// length) fails the same way on every run, so "try again" left a lost-key
+// vault stuck for good. The refusal names the item, the way out, and what
+// comes after it; and once the item is gone, the same Init makes a new key
+// over the lost one.
 func TestInitOverAnUnreadableLeftoverNamesTheWayOut(t *testing.T) {
 	root := lostKeyVault(t)
-	withLeftover(t, Present, 0, 0, errors.New("reading the master key from the keychain failed, OSStatus=-25308"))
+	withLeftover(t, Present, 0, 0, fmt.Errorf("the keychain item %q is not a master key: 16 bytes, want 32", KeychainItemName))
 	_, err := (enclaveStore{root: root}).Init()
 	if err == nil {
 		t.Fatal("Init adopted or replaced an item it couldn't read")
 	}
 	msg := err.Error()
-	for _, want := range []string{"can't read", "without asking", "-25308", "Nothing changed", `"` + KeychainItemName + `" in Keychain Access`, "`jit vault init` again"} {
+	for _, want := range []string{"can't use", "16 bytes, want 32", "Nothing changed", `"` + KeychainItemName + `" in Keychain Access`, "`jit vault init` again"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("the refusal does not say %q:\n%s", want, msg)
 		}
@@ -229,5 +231,47 @@ func TestInitOverAnUnreadableLeftoverNamesTheWayOut(t *testing.T) {
 	_, made := withLeftover(t, Absent, 0, 0, nil)
 	if res, err := (enclaveStore{root: root}).Init(); err != nil || res != InitNewKey || *made != 1 {
 		t.Fatalf("after the item is deleted: Init = %v, %v, keys made %d; want InitNewKey and one key", res, err, *made)
+	}
+}
+
+// A LOCKED login keychain with the enclave key lost: presence says the item
+// is there (metadata needs no unlock) and the quiet read fails at once with
+// errSecAuthFailed, the statuses TestHardwareLockedKeychainNeverAsks
+// measured. That says nothing about the item, which may be the vault's
+// only key, so Init says the keychain may be locked and to run init again,
+// and never advises deleting it. errSecInteractionNotAllowed, a read that
+// would have had to ask, is the same.
+func TestInitOverALockedKeychainNeverSaysDelete(t *testing.T) {
+	for _, status := range []int32{-25293, -25308} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			root := lostKeyVault(t)
+			measured, made := withLeftover(t, Present, 0, 0, &keychainwrap.QuietReadError{
+				Status: status,
+				Msg:    fmt.Sprintf("reading the key in the keychain without asking failed, OSStatus=%d", status),
+			})
+			_, err := (enclaveStore{root: root}).Init()
+			if err == nil {
+				t.Fatal("Init went on over a keychain it couldn't read")
+			}
+			msg := err.Error()
+			want := "the vault's Secure Enclave key is lost, and jit couldn't read\n" +
+				"the key in your keychain under the vault key's name right now\n" +
+				fmt.Sprintf("(OSStatus=%d): your keychain may be locked.\n", status) +
+				"Nothing changed. Unlock it, then run `jit vault init` again"
+			if msg != want {
+				t.Errorf("got:\n%s\nwant:\n%s", msg, want)
+			}
+			for _, never := range []string{"Keychain Access", "delete", "Delete", KeychainItemName} {
+				if strings.Contains(msg, never) {
+					t.Errorf("the refusal says %q, over an item that may be the vault's only key:\n%s", never, msg)
+				}
+			}
+			if *measured != 1 || *made != 0 {
+				t.Errorf("measured %d, keys made %d; want 1 and 0", *measured, *made)
+			}
+			if k := Open(root).Kind(); k != KindSecureEnclave {
+				t.Errorf("the sealed file moved: the vault now opens from %q", k)
+			}
+		})
 	}
 }
