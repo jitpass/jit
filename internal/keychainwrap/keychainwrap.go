@@ -49,6 +49,7 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"unsafe"
@@ -63,6 +64,10 @@ const (
 	prodAccount = "default" // Phase 1 is single-user per machine
 	mekSize     = 32        // AES-256
 )
+
+// VaultKeyItem is the vault key item's name as Keychain Access lists it (its
+// service), for messages that tell a person which item to delete by hand.
+const VaultKeyItem = prodService
 
 // Wrapper implements vault.KeyWrapper. Use New() to get one with the real
 // Touch ID/passcode challenge and the real production keychain identifier;
@@ -185,14 +190,34 @@ func (w *Wrapper) MEKPresence() MEKPresence {
 	cAccount := C.CString(w.account)
 	defer C.free(unsafe.Pointer(cAccount))
 
-	switch int(C.kw_mek_present(cService, cAccount)) {
-	case 1:
+	return presenceFromStatus(int32(C.kw_mek_present(cService, cAccount)))
+}
+
+// The OSStatus values this package decides on. Spelled out rather than taken
+// from cgo so the pure-Go decisions (presenceFromStatus, deleteItem) can be
+// tested with fakes.
+const (
+	errSecSuccess               int32 = 0
+	errSecItemNotFound          int32 = -25300
+	errSecInvalidOwnerEdit      int32 = -25244
+	errSecInteractionNotAllowed int32 = -25308
+)
+
+// presenceFromStatus reads kw_mek_present's status. Only errSecItemNotFound
+// is a key that is gone. errSecInteractionNotAllowed is a keychain that
+// would have had to ask (a locked one, say), which the query refuses to do
+// (kSecUseAuthenticationUIFail): not an answer, so indeterminate, like any
+// other error.
+func presenceFromStatus(status int32) MEKPresence {
+	switch status {
+	case errSecSuccess:
 		return MEKPresent
-	case 0:
+	case errSecItemNotFound:
 		return MEKAbsent
-	default:
+	case errSecInteractionNotAllowed:
 		return MEKIndeterminate
 	}
+	return MEKIndeterminate
 }
 
 // errNoMEK is the sentence kw_fetch_mek answers errSecItemNotFound with
@@ -271,7 +296,7 @@ func (w *Wrapper) fetchMEK(reason string) ([]byte, error) {
 
 		var keyPtr *C.uchar
 		var keyLen C.int
-		result := C.kw_fetch_mek(cService, cAccount, &keyPtr, &keyLen)
+		result := C.kw_fetch_mek(cService, cAccount, &keyPtr, &keyLen, 0)
 		if err := goErr(result); err != nil {
 			return nil, err
 		}
@@ -363,31 +388,125 @@ func (w *Wrapper) DeleteMEK() error {
 	return w.deleteMEK()
 }
 
-// deleteMEK removes the stored MEK for this Wrapper's service/account.
-// Test-only cleanup helper — normal CLI operation never deletes the MEK
-// (that would orphan every existing secret), and it's a method (not a
+// deleteMEK removes the stored MEK for this Wrapper's service/account, and
+// is what DeleteMEK and every other delete here run. It's a method (not a
 // free function keyed on the shared production constants) precisely so a
 // test can only ever delete the identifier its own Wrapper was built with.
 func (w *Wrapper) deleteMEK() error {
-	cService := C.CString(w.service)
-	defer C.free(unsafe.Pointer(cService))
-	cAccount := C.CString(w.account)
-	defer C.free(unsafe.Pointer(cAccount))
-	return goErr(C.kw_delete_mek(cService, cAccount, 1))
+	return deleteItem(w.cOps(), true, "delete failed")
 }
 
 // deleteMEKWithoutFallback is deleteMEK with only SecItemDelete, never the
-// legacy reference delete (keychain.m, kwDeleteItems). It exists for one
-// caller: the hardware test that shows an older jit's item still needs the
-// fallback, so the fallback is never kept after the reason for it is gone,
-// or dropped while it still matters.
+// reference delete (kw_item_delete_by_ref). It exists for the hardware
+// tests that show an older jit's item still needs the fallback, so the
+// fallback is never kept after the reason for it is gone, or dropped while
+// it still matters.
 func (w *Wrapper) deleteMEKWithoutFallback() error {
-	cService := C.CString(w.service)
-	defer C.free(unsafe.Pointer(cService))
-	cAccount := C.CString(w.account)
-	defer C.free(unsafe.Pointer(cAccount))
-	return goErr(C.kw_delete_mek(cService, cAccount, 0))
+	return deleteItem(w.cOps(), false, "delete failed")
 }
+
+// DeleteMEKWithoutFallbackTesting is deleteMEKWithoutFallback for another
+// package's hardware test (internal/cli's), which must show the same
+// precondition before relying on the fallback. It panics on anything but a
+// TEST-ONLY item.
+func (w *Wrapper) DeleteMEKWithoutFallbackTesting() error {
+	if !strings.Contains(w.service, "TEST-ONLY") || w.service == prodService {
+		panic("keychainwrap: DeleteMEKWithoutFallbackTesting on " + w.service)
+	}
+	return w.deleteMEKWithoutFallback()
+}
+
+// DisallowKeychainUITesting switches this process's keychain interaction off
+// for good, so no later keychain call can show a dialog: one that would
+// have to ask fails with errSecInteractionNotAllowed instead. For the
+// hardware tests only (scripts/se-test.sh sets JIT_SE_TEST=1), which must
+// never raise a dialog on the Mac running them; it panics anywhere else.
+func DisallowKeychainUITesting() {
+	if os.Getenv("JIT_SE_TEST") != "1" {
+		panic("keychainwrap: DisallowKeychainUITesting outside scripts/se-test.sh")
+	}
+	C.kw_set_user_interaction(0)
+}
+
+// itemOps are the three keychain calls deleteItem sequences, so its
+// decisions can be tested against fakes (cOps is the real one).
+type itemOps interface {
+	secItemDelete() int32 // SecItemDelete, no dialog
+	deleteByRef() int32   // kw_item_delete_by_ref
+	presence() MEKPresence
+}
+
+// deleteItem deletes an item and decides what the keychain's answers mean.
+// A missing item is done. On exactly errSecInvalidOwnerEdit, with fallback
+// set, it deletes through the item's reference (kw_item_delete_by_ref, S3g),
+// and then only a presence check that finds the item GONE counts as success:
+//
+//   - a reference lookup that finds nothing is not "deleted". SecItemDelete
+//     just saw an item; the lookup, which searches only the login keychain,
+//     not finding it means it is somewhere else, and still there. The
+//     original error is returned.
+//   - a reference delete that reports success is checked, because the item
+//     is what matters, not the status.
+//
+// verb starts the error ("delete failed", "replacing existing key failed"),
+// which carries the original OSStatus, as it always has.
+func deleteItem(ops itemOps, fallback bool, verb string) error {
+	status := ops.secItemDelete()
+	switch {
+	case status == errSecSuccess || status == errSecItemNotFound:
+		return nil
+	case status != errSecInvalidOwnerEdit || !fallback:
+		return fmt.Errorf("%s, OSStatus=%d", verb, status)
+	}
+	if ref := ops.deleteByRef(); ref != errSecSuccess {
+		return fmt.Errorf("%s, OSStatus=%d (deleting it through its reference: OSStatus=%d)", verb, status, ref)
+	}
+	if p := ops.presence(); p != MEKAbsent {
+		return fmt.Errorf("%s, OSStatus=%d (the item is still there after deleting it through its reference)", verb, status)
+	}
+	return nil
+}
+
+// cOps is itemOps over this wrapper's own item.
+type cOps struct{ w *Wrapper }
+
+func (w *Wrapper) cOps() cOps { return cOps{w} }
+
+func (o cOps) secItemDelete() int32 {
+	cService, cAccount := o.w.cNames()
+	defer C.free(unsafe.Pointer(cService))
+	defer C.free(unsafe.Pointer(cAccount))
+	return int32(C.kw_item_delete(cService, cAccount))
+}
+
+func (o cOps) deleteByRef() int32 {
+	cService, cAccount := o.w.cNames()
+	defer C.free(unsafe.Pointer(cService))
+	defer C.free(unsafe.Pointer(cAccount))
+	return int32(C.kw_item_delete_by_ref(cService, cAccount))
+}
+
+func (o cOps) presence() MEKPresence { return o.w.MEKPresence() }
+
+// cNames returns the wrapper's service and account as C strings; the caller
+// frees both.
+func (w *Wrapper) cNames() (*C.char, *C.char) {
+	return C.CString(w.service), C.CString(w.account)
+}
+
+// uiScopeProbe and queryTraits expose keychain.m's test probes (see
+// kw_ui_scope_probe and kw_query_traits in keychain.h) to this package's
+// tests, which cannot use cgo.
+func uiScopeProbe(start bool) (during, after bool) {
+	var s, d, a C.int
+	if start {
+		s = 1
+	}
+	C.kw_ui_scope_probe(s, &d, &a)
+	return d != 0, a != 0
+}
+
+func queryTraits(which int) int { return int(C.kw_query_traits(C.int(which))) }
 
 func realChallenge(reason string) error {
 	cReason := C.CString(reason)
