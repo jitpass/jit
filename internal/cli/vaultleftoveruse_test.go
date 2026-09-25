@@ -43,9 +43,21 @@ func (countingKeychainKey) Close() {}
 // leftover-key marker, with the key store opened through the real
 // keystore logic over a counting stand-in for the item. It returns the root
 // and the use count.
+//
+// launchd is faked, and a refused command must not have touched it. With a
+// refusal removed (each test's negative control) the command runs on, and
+// migrate's last step sets up the background service: during PR #170 that
+// booted the developer's real service out of launchd and bootstrapped this
+// fixture HOME's plist in its place.
 func leftoverVault(t *testing.T) (string, *int) {
 	t.Helper()
 	withFixtureHome(t)
+	launchd := withFakeLaunchd(t)
+	t.Cleanup(func() {
+		if calls := launchd(); len(calls) != 0 {
+			t.Errorf("a refused command ran launchctl %q", calls)
+		}
+	})
 	root, err := vaultRootDir()
 	if err != nil {
 		t.Fatal(err)

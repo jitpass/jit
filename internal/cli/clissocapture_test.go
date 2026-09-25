@@ -14,6 +14,7 @@ import (
 	"testing"
 	"testing/iotest"
 
+	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/vault"
 )
 
@@ -280,7 +281,16 @@ func TestMemoizedVaultOpenerOpensOnce(t *testing.T) {
 	}
 
 	// And the real constructor must memoize the same way: three calls,
-	// one result, identical pointer.
+	// one result, identical pointer. Over a fixture HOME, a stand-in key
+	// and a fake launchd: with the ambient HOME this opened the developer's
+	// real vault and dialed the real service's socket, and when that
+	// service was down the self-heal kickstarted it (PR #170).
+	withFixtureHome(t)
+	origOpen := openKeyStore
+	t.Cleanup(func() { openKeyStore = origOpen })
+	key := countingKeychainKey{kw: newFakeKeyWrapper(), uses: new(int)}
+	openKeyStore = func(r string) keystore.Store { return keystore.OpenTesting(r, key) }
+	launchd := withFakeLaunchd(t)
 	real := memoizedVaultOpener()
 	a, aErr := real()
 	b, bErr := real()
@@ -289,5 +299,8 @@ func TestMemoizedVaultOpenerOpensOnce(t *testing.T) {
 	}
 	if (aErr == nil) != (bErr == nil) {
 		t.Errorf("memoized opener disagreed with itself on error: %v vs %v", aErr, bErr)
+	}
+	if calls := launchd(); len(calls) != 0 {
+		t.Errorf("opening the vault ran launchctl %q", calls)
 	}
 }
