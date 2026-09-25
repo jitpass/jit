@@ -88,8 +88,14 @@ func (k jobKeys) UnwrapKey(wrapped []byte) ([]byte, error) {
 	return append([]byte(nil), dek...), nil
 }
 
+// jobRunMarker is the mount manager's view of a running job: its folder, for
+// as long as the job runs (mountjobs.go). Nil marks nothing.
+type jobRunMarker interface {
+	beginJobRun(dir string) (end func())
+}
+
 // runJobProcess is the service's OnRunJob.
-func runJobProcess(root string) func(j job.Job, deks map[string][]byte) (agent.JobResult, error) {
+func runJobProcess(root string, mounts jobRunMarker) func(j job.Job, deks map[string][]byte) (agent.JobResult, error) {
 	return func(j job.Job, deks map[string][]byte) (agent.JobResult, error) {
 		deviceID, err := vault.EnsureDeviceID(root)
 		if err != nil {
@@ -115,6 +121,11 @@ func runJobProcess(root string) func(j job.Job, deks map[string][]byte) (agent.J
 			return agent.JobResult{}, err
 		}
 		defer os.RemoveAll(scratch)
+		if mounts != nil {
+			// Marked before the start, so the child's first read of its own
+			// folder's .env already finds the job registered.
+			defer mounts.beginJobRun(j.Dir)()
+		}
 		return runJobCommand(j, values, hidden, jobEnv(scratch, j), job.RunTimeout)
 	}
 }

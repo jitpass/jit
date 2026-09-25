@@ -379,12 +379,14 @@ func countNoun(n int, noun string) string {
 
 // jobRequester names who is asking in the words a person recognises: the
 // program that launched the caller (claude, Claude) when the caller is jit
-// itself relaying the request, else the caller.
+// itself relaying the request (`jit job run`, `jit mcp`), else the caller.
+// jit is recognised by its executable, not only its name: the live Cowork
+// test ran a build named jit-dev, and the prompt said "for jit-dev".
 func jobRequester(c *caller) string {
 	if c == nil {
 		return "a program"
 	}
-	if name := c.self.Name(); name != "" && name != "jit" {
+	if name := c.self.Name(); name != "" && name != "jit" && !isThisBinary(c.self.ExecPath) {
 		return name
 	}
 	if l := c.launchedBy(); l != "" {
@@ -694,3 +696,16 @@ func (s *Server) recordJobEvent(kind, op string, c *caller, j *job.Job, cause st
 // wrapped bytes, hex. Exported for the CLI's runner, which receives the map
 // and must look keys up the same way the agent filed them.
 func WrappedDigest(wrapped []byte) string { return wrappedDigest(wrapped) }
+
+// isThisBinary reports whether path is the executable this service runs
+// from, through symlinks: the cask's /opt/homebrew/bin/jit is a link to the
+// same file the service runs inside JitPass.app.
+func isThisBinary(path string) bool {
+	self := currentExecutablePath()
+	if path == "" || self == "" {
+		return false
+	}
+	a, err1 := filepath.EvalSymlinks(path)
+	b, err2 := filepath.EvalSymlinks(self)
+	return err1 == nil && err2 == nil && a == b
+}

@@ -175,7 +175,7 @@ var agentRunCmd = &cobra.Command{
 		// socket opens, like the grant ledger, and a file that fails to load
 		// is reported and never written over.
 		server.OnResolveJob = resolveJobSecrets(root)
-		server.OnRunJob = runJobProcess(root)
+		server.OnRunJob = runJobProcess(root, mounts)
 		if n, err := server.SetJobStore(job.StorePath(root)); err != nil {
 			fmt.Fprintf(stderr, "jit service: AI jobs not loaded: %v\n", err)
 		} else if n > 0 {

@@ -437,14 +437,28 @@ What stays trusted, stated rather than hidden:
   interpreter reads a file it imports late. The sticky stop and the check
   after the run make every losing attempt stop the job for good.
 
-**Known gap: the folder's `.env` mount.** `jit run` swaps a project's
-mount to an inert pointer file for the run. A job does not yet: the job
-process is not in any grant's tree, so reading `.env` gets the decoy.
-Scripts that load `.env` without overriding what is already set (the notion
-script's `load_dotenv`) work unchanged, since the real values are already in
-the environment. A tool that lets `.env` override the environment would get
-decoys. Fix: register the swap for the child's pid, which needs the pid
-before the first read, so the child has to start suspended.
+### After the Cowork test (2026-09-25)
+
+Run end to end from Claude Desktop's Cowork with a dev build: Claude listed
+the job, called run_job, the human approved Touch ID, and the Notion script
+ran with its real key; Claude saw the summary and never the key. Three
+things it showed were wrong:
+
+- **Every run raised "decoy served".** The folder's `.env` mount handed the
+  job's `load_dotenv` the decoy and reported it like any stranger's read.
+  Now a reader gets the inert pointer file `jit run` swaps in, and no serve
+  is recorded, when every holder of the mount descends from the service
+  (every job is its child, so there is no pid to register and no race) and
+  the mount is inside the folder of a job running now. A job reading ANOTHER
+  project's `.env` still gets the decoy and still raises the alert.
+  (This replaces the known gap this page used to list.)
+- **The prompt said "for jit-dev" and the app "launched by disclaimer".**
+  Claude Desktop starts MCP servers through `Contents/Helpers/disclaimer`,
+  now a relay like a shell, so the launcher is Claude; and jit is recognised
+  by its executable, not its name, so a renamed build is still jit.
+- **The app's sheet says "remembered until the vault locks"**, which is
+  false for a job. That is the app's generic consent wording; step 4 gives
+  job runs their own sheet.
 
 ## Open decisions
 

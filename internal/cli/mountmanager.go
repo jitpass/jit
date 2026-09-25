@@ -162,6 +162,16 @@ type mountManager struct {
 	grantModeRuns int32
 	swapMu        sync.Mutex
 
+	// AI job runs (mountjobs.go): the folders of the jobs running right now,
+	// counted, and jobRuns as the read path's fast-path counter, so a mount
+	// read with no job running pays one atomic load. servicePID and
+	// pointerFn are test seams; zero means this process and the registry.
+	jobMu      sync.Mutex
+	jobDirs    map[string]int
+	jobRuns    int32
+	servicePID int32
+	pointerFn  func(path string) ([]byte, bool)
+
 	// Test seams for the grant gate's kernel lookups (mountgrants.go);
 	// nil means the real internal/lineage implementations. The gate's
 	// logic — fail-closed rules, verdict caching, pruning — is what unit
@@ -958,7 +968,10 @@ func (m *mountManager) finalizeServe(path string, sm *servedMount, delivered boo
 	sm.scanMissed = false
 	sm.mu.Unlock()
 	if ps == nil {
-		return // no decision this cycle (cannot happen in Serve's contract; refuse to invent one)
+		// No decision recorded this cycle: an AI job's own read of the inert
+		// pointer (serveContent says why it goes unrecorded). Refuse to
+		// invent a record for it.
+		return
 	}
 	rec := ps.rec
 	rec.undelivered = !delivered
