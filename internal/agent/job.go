@@ -5,6 +5,7 @@ package agent
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -46,14 +47,35 @@ const maxJobChanges = 20
 // over that file, grants.json's rule.
 func (s *Server) SetJobStore(path string) (int, error) {
 	jobs, err := job.Load(path)
+	var names map[string]bool
+	if err == nil {
+		// Every key id the file names, read raw, including a record
+		// job.Load skipped (grantorphans.go keeps those keys).
+		names, err = jobFileNames(path)
+	}
 	s.jobMu.Lock()
 	defer s.jobMu.Unlock()
 	if err != nil {
-		s.jobs, s.jobsPath = map[string]*job.Job{}, ""
+		s.jobs, s.jobsPath, s.jobNames = map[string]*job.Job{}, "", nil
 		return 0, err
 	}
-	s.jobs, s.jobsPath = jobs, path
+	s.jobs, s.jobsPath, s.jobNames = jobs, path, names
 	return len(jobs), nil
+}
+
+func jobFileNames(path string) (map[string]bool, error) {
+	data, err := os.ReadFile(path) // #nosec G304 -- a fixed path under jit's own config directory
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]bool{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	names, err := namedKeyIDs(data)
+	if err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	return names, nil
 }
 
 // saveJobsLocked writes the list. Caller holds jobMu.

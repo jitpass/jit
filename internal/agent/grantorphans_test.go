@@ -139,3 +139,91 @@ func TestOrphanCleanupKeepsAGrantItCannotRead(t *testing.T) {
 		t.Fatal("deleted the key of a grant whose entries this build cannot open")
 	}
 }
+
+// A record a loader skipped still names its key. The ledger's grant with no
+// anchor (SetGrantLedger drops it), a job whose name this build rejects and
+// one whose ask value it does not know (job.Load skips both, as from a newer
+// jit): none is in memory, and every one's key must survive. Both files are
+// saved before the cleanup runs, as a move does at a real start, and a save
+// writes back only what loaded: that is why the names are read as the files
+// stood when they loaded.
+func TestOrphanCleanupKeepsKeysOfRecordsTheLoadersSkipped(t *testing.T) {
+	s, store, ledger, jobs := orphanWorld(t)
+	raw, _ := os.ReadFile(ledger)
+	var lf ledgerFile
+	if err := json.Unmarshal(raw, &lf); err != nil {
+		t.Fatal(err)
+	}
+	dropped := ledgerGrant{ID: "g-0000000a", CreatedUnix: 2, Profiles: []GrantProfile{},
+		Secrets: []ledgerSecret{{Path: "a/c", DeviceDigest: "d", GrantWrapped: "00", Wrap: GrantWrapKeychain}}}
+	dropped.Program.Name = "node" // no anchor
+	lf.Grants = append(lf.Grants, dropped)
+	raw, _ = json.Marshal(lf)
+	if err := os.WriteFile(ledger, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	all, err := job.Load(jobs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all["Bad Name!"] = &job.Job{Name: "Bad Name!", Dir: "/tmp", Argv: []string{"x"}, Exe: "/bin/x", Ask: job.AskNever, KeyID: "j-0000000b",
+		Secrets: []job.Secret{{Var: "T", Path: "n/t", DeviceDigest: "d", KeyWrapped: "00", Wrap: GrantWrapKeychain}}}
+	all["later"] = &job.Job{Name: "later", Dir: "/tmp", Argv: []string{"x"}, Exe: "/bin/x", Ask: job.Ask("on-weekdays"), KeyID: "j-0000000c",
+		Secrets: []job.Secret{{Var: "T", Path: "n/t", DeviceDigest: "d", KeyWrapped: "00", Wrap: GrantWrapKeychain}}}
+	if err := job.Save(jobs, all); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"g-0000000a", "j-0000000b", "j-0000000c"} {
+		if _, err := store.CreateWrap(id, GrantWrapKeychain); err != nil {
+			t.Fatal(err)
+		}
+	}
+	load(t, s, ledger, jobs)
+	s.jobMu.Lock()
+	n := len(s.jobs)
+	s.jobMu.Unlock()
+	if len(s.standing) != 1 || n != 1 {
+		t.Fatalf("setup: loaded %d grants and %d jobs, want the loaders to skip all but one of each", len(s.standing), n)
+	}
+	// Any save before the cleanup (a move's, at a real start) writes back
+	// only what loaded, and the skipped records are gone from both files.
+	if err := s.saveLedger(); err != nil {
+		t.Fatal(err)
+	}
+	s.jobMu.Lock()
+	err = s.saveJobsLocked()
+	s.jobMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{ledger, jobs} {
+		b, _ := os.ReadFile(f)
+		if bytes.Contains(b, []byte("g-0000000a")) || bytes.Contains(b, []byte("j-0000000b")) || bytes.Contains(b, []byte("j-0000000c")) {
+			t.Fatalf("setup: %s still names a skipped record after the save", f)
+		}
+	}
+	deleted, errs := s.DeleteOrphanGrantKeys()
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	for _, id := range []string{"g-0000000a", "j-0000000b", "j-0000000c"} {
+		if !store.has(GrantWrapKeychain, id) {
+			t.Errorf("deleted %s, which the files name in a record the loaders skipped (deleted %v)", id, deleted)
+		}
+	}
+}
+
+// The names are read raw at load; a job list that loaded but could not be
+// read raw leaves no names, and the cleanup does nothing.
+func TestOrphanCleanupSkipsWithoutRawNames(t *testing.T) {
+	s, store, ledger, jobs := orphanWorld(t)
+	_, _ = store.CreateWrap("g-deadbeef", GrantWrapKeychain)
+	load(t, s, ledger, jobs)
+	s.jobMu.Lock()
+	s.jobNames = nil
+	s.jobMu.Unlock()
+	deleted, errs := s.DeleteOrphanGrantKeys()
+	if len(deleted) != 0 || len(errs) != 1 || !errors.Is(errs[0], errCleanupSkipped) {
+		t.Fatalf("deleted %v, errs %v; want nothing deleted and a skip", deleted, errs)
+	}
+}
