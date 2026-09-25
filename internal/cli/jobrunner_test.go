@@ -6,6 +6,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -119,5 +120,21 @@ func TestReapproveCommandKeepsEverySetting(t *testing.T) {
 	}
 	if strings.Contains(got, "--show NOTION_API_KEY") {
 		t.Errorf("a hidden secret was marked shown:\n%s", got)
+	}
+}
+
+// Review finding 6: the note names the per-stream cap, not the total.
+func TestRunJobCommandTruncationNoteNamesTheStreamCap(t *testing.T) {
+	j := shJob(t, "head -c 140000 /dev/zero | tr '\\0' a\necho END\n")
+	res, err := runJobCommand(j, nil, nil, jobEnv(t.TempDir(), j), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Truncated || !strings.HasSuffix(res.Stdout, "END\n") {
+		t.Fatalf("truncated=%v, tail %q", res.Truncated, res.Stdout[len(res.Stdout)-10:])
+	}
+	want := fmt.Sprintf("output passed %d KB on stdout or stderr", job.OutputCap/2>>10)
+	if len(res.Notes) == 0 || !strings.Contains(strings.Join(res.Notes, "\n"), want) {
+		t.Fatalf("notes = %v, want %q", res.Notes, want)
 	}
 }

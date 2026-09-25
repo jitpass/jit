@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -81,11 +82,11 @@ func (s *Server) allowJob(req Request, c *caller) Response {
 	if !ask.Valid() {
 		return Response{OK: false, Error: fmt.Sprintf("job_allow: ask must be %s or %s", job.AskEachTime, job.AskNever)}
 	}
-	if ask == job.AskNever {
-		// Step 2 of the build order: the job's own key, on the standing-grant
-		// ledger. Refused outright until it exists, rather than quietly
-		// storing a job that would still prompt.
-		return Response{OK: false, Error: "job_allow: a job that never asks is not available yet - approve it as each-time"}
+	if ask == job.AskNever && s.GrantKeys == nil {
+		// A job that never asks runs on a key of its own, in the same store
+		// standing grants use. Without one it could only ever prompt, which is
+		// not what the human would be approving.
+		return Response{OK: false, Error: "job_allow: this service has no key store wired, so it cannot keep a job that never asks - approve it as each-time"}
 	}
 	if err := job.CheckArgv(spec.Argv); err != nil {
 		return Response{OK: false, Error: "job_allow: " + err.Error()}
@@ -106,8 +107,16 @@ func (s *Server) allowJob(req Request, c *caller) Response {
 		if !filepath.IsAbs(o) {
 			o = filepath.Join(dir, o)
 		}
-		outputs = append(outputs, filepath.Clean(o))
+		o = filepath.Clean(o)
+		if job.OutputCoversDir(o, dir) {
+			// Everything under an output is skipped by the fingerprint, so an
+			// output that holds the whole folder would leave nothing to stop
+			// the job on. Refused rather than fingerprinted empty.
+			return Response{OK: false, Error: fmt.Sprintf("job_allow: --output %s holds the job's own folder, so no edit could ever stop the job - name the folder it writes into, inside or beside this one", o)}
+		}
+		outputs = append(outputs, o)
 	}
+	extra := job.ExternalFiles(spec.Argv[1:], dir)
 
 	s.jobMu.Lock()
 	_, exists := s.jobs[req.JobName]
@@ -148,12 +157,12 @@ func (s *Server) allowJob(req Request, c *caller) Response {
 		return Response{OK: false, Error: fmt.Sprintf("job_allow: --show names %s, which the profile does not set", strings.Join(names, ", "))}
 	}
 
-	before, err := job.Compute(dir, exe, outputs)
+	before, err := job.Compute(dir, exe, outputs, extra)
 	if err != nil {
 		return Response{OK: false, Error: "job_allow: fingerprinting the folder: " + err.Error()}
 	}
 
-	reason := jobAllowReason(req.JobName, len(sources))
+	reason := jobAllowReason(req.JobName, len(sources), ask)
 	event, mek, err := s.discloseChallengeOp(reason, OpJobAllow, c)
 	if event != nil && s.OnSessionEvent != nil {
 		s.OnSessionEvent(*event)
@@ -164,19 +173,25 @@ func (s *Server) allowJob(req Request, c *caller) Response {
 	// Every secret must open under its class, as a grant's must: the human
 	// approved a count, and a job that could not inject one of them would be
 	// a prompt that lied by omission.
-	for _, src := range sources {
+	deks := make([][]byte, len(sources))
+	defer func() {
+		for _, d := range deks {
+			wipe(d)
+		}
+	}()
+	for i, src := range sources {
 		dek, oerr := open(mek, src.Wrapped, []byte(src.Class))
 		if oerr != nil {
 			wipe(mek)
 			return Response{OK: false, Error: fmt.Sprintf("job_allow: %s cannot be unwrapped (%s), no job created", src.Path, oerr)}
 		}
-		wipe(dek)
+		deks[i] = dek
 	}
 	wipe(mek)
 
 	// The folder the human approved is the folder as it was when they were
 	// asked. A change while the prompt was up is refused, not absorbed.
-	after, err := job.Compute(dir, exe, outputs)
+	after, err := job.Compute(dir, exe, outputs, extra)
 	if err != nil {
 		return Response{OK: false, Error: "job_allow: fingerprinting the folder: " + err.Error()}
 	}
@@ -186,7 +201,7 @@ func (s *Server) allowJob(req Request, c *caller) Response {
 
 	j := &job.Job{
 		Name: req.JobName, Dir: dir, Argv: append([]string(nil), spec.Argv...), Exe: exe,
-		Profile: profileName, ProfileRoot: profileRoot, Ask: ask, Outputs: outputs,
+		Profile: profileName, ProfileRoot: profileRoot, Ask: ask, Outputs: outputs, Extra: extra,
 		PathEnv: spec.PathEnv, Home: spec.Home, Fingerprint: after,
 		Description: spec.Description, ApprovedUnix: time.Now().Unix(),
 	}
@@ -195,6 +210,36 @@ func (s *Server) allowJob(req Request, c *caller) Response {
 			Var: src.Var, Path: src.Path, Class: src.Class,
 			DeviceDigest: wrappedDigest(src.Wrapped), Shown: containsString(spec.Shown, src.Var),
 		})
+	}
+
+	// A job that never asks gets a key of its own, made now, under the
+	// approval just given: the DEKs are sealed under it and the key goes to
+	// the keychain, exactly as a standing grant's does. Everything that can
+	// fail without a key has already failed; from here, every failure
+	// deletes the key, so a refused approval never leaves one behind.
+	dropKey := func() {}
+	if ask == job.AskNever && len(j.Secrets) > 0 {
+		keyID, kerr := newJobKeyID()
+		if kerr != nil {
+			return Response{OK: false, Error: "job_allow: " + kerr.Error()}
+		}
+		key, kerr := s.GrantKeys.Create(keyID)
+		if kerr != nil {
+			return Response{OK: false, Error: "job_allow: making the job's key: " + kerr.Error()}
+		}
+		dropKey = func() { _ = s.GrantKeys.Delete(keyID) }
+		for i := range j.Secrets {
+			sealed, serr := key.Seal(deks[i], j.Secrets[i].Class)
+			if serr != nil {
+				key.Close()
+				dropKey()
+				return Response{OK: false, Error: fmt.Sprintf("job_allow: %s cannot be sealed under the job's key (%s), no job created", j.Secrets[i].Path, serr)}
+			}
+			j.Secrets[i].KeyWrapped = hex.EncodeToString(sealed)
+			j.Secrets[i].Wrap = standingWrapAEAD
+		}
+		key.Close()
+		j.KeyID = keyID
 	}
 	sort.Slice(j.Secrets, func(a, b int) bool { return j.Secrets[a].Var < j.Secrets[b].Var })
 
@@ -211,16 +256,40 @@ func (s *Server) allowJob(req Request, c *caller) Response {
 	}
 	s.jobMu.Unlock()
 	if err != nil {
+		dropKey()
 		return Response{OK: false, Error: "job_allow: saving the job: " + err.Error()}
 	}
+	// Approving again replaces the job, and with it the old key: a job that
+	// was never-asking and is now each-time must not keep a key that opens
+	// its secrets.
+	if prev != nil && prev.KeyID != "" && prev.KeyID != j.KeyID {
+		_ = s.GrantKeys.Delete(prev.KeyID)
+	}
 	return Response{OK: true, Jobs: []JobStatus{s.jobStatus(j)}}
+}
+
+// newJobKeyID mints a job key's keychain name: "j-" and random hex, never the
+// job's name, so a key outliving its record (a crash between the keychain
+// write and the file write) can never be mistaken for a later job's.
+func newJobKeyID() (string, error) {
+	id, err := newGrantID()
+	if err != nil {
+		return "", err
+	}
+	return "j-" + strings.TrimPrefix(id, "g-"), nil
 }
 
 // jobAllowReason completes macOS's "jit is trying to ___." Everything in it
 // is the human's own name for the job plus a count the agent resolved; the
 // command itself is too long for the dialog, so the CLI prints it in full
 // before asking, and the app's sheet shows it verbatim.
-func jobAllowReason(name string, secrets int) string {
+func jobAllowReason(name string, secrets int, ask job.Ask) string {
+	if ask == job.AskNever {
+		// The scope clause changes the decision, so it is the half that must
+		// survive: 17 + 18 + 13 + 41 = 89 runes at 14 secrets.
+		return truncate(fmt.Sprintf("let AI tools run %s (%s) unasked, until removed; never the values",
+			truncate(name, 18), countNoun(secrets, "secret")), maxReasonLen)
+	}
 	// Budgets: 17 + 22 + 47 runes at 14 secrets = 86, under maxReasonLen,
 	// so the promise at the end is never what a long name pushes off.
 	return truncate(fmt.Sprintf("let AI tools run %s (%s); they see output, never the values",
@@ -274,11 +343,22 @@ func (s *Server) removeJob(name string, c *caller) Response {
 	if err != nil {
 		return Response{OK: false, Error: "job_remove: " + err.Error()}
 	}
-	s.recordJobEvent(KindUse, OpJobRemove, c, j, "removed")
+	cause := "removed"
+	if j.KeyID != "" && s.GrantKeys != nil {
+		// Removing is what ends a job that never asks, so the key goes with
+		// it. A delete that fails is said in the trail: the record is already
+		// gone, so nothing can use the key, but it is not destroyed either.
+		if err := s.GrantKeys.Delete(j.KeyID); err != nil {
+			cause = fmt.Sprintf("removed, but its key %s could not be deleted: %s", j.KeyID, err)
+		} else {
+			cause = "removed, its key deleted"
+		}
+	}
+	s.recordJobEvent(KindUse, OpJobRemove, c, j, cause)
 	return Response{OK: true}
 }
 
-func (s *Server) listJobs() []JobStatus {
+func (s *Server) listJobs(namesOnly bool) []JobStatus {
 	s.jobMu.Lock()
 	jobs := make([]*job.Job, 0, len(s.jobs))
 	for _, j := range s.jobs {
@@ -289,6 +369,10 @@ func (s *Server) listJobs() []JobStatus {
 	sort.Slice(jobs, func(a, b int) bool { return jobs[a].Name < jobs[b].Name })
 	out := make([]JobStatus, 0, len(jobs))
 	for _, j := range jobs {
+		if namesOnly {
+			out = append(out, JobStatus{Name: j.Name, Dir: j.Dir, Argv: j.Argv, Ask: string(j.Ask), Description: j.Description})
+			continue
+		}
 		out = append(out, s.jobStatus(j))
 	}
 	return out
@@ -326,7 +410,7 @@ func (s *Server) jobStatus(j *job.Job) JobStatus {
 // is reported as one change on the folder itself, which stops the job the
 // same way.
 func jobChanges(j *job.Job) []job.Change {
-	now, err := job.Compute(j.Dir, j.Exe, j.Outputs)
+	now, err := job.Compute(j.Dir, j.Exe, j.Outputs, j.Extra)
 	if err != nil {
 		return []job.Change{{Path: j.Dir, Kind: job.Removed}}
 	}
@@ -394,7 +478,21 @@ func (s *Server) runJob(name string, c *caller) Response {
 			wipe(d)
 		}
 	}()
-	if len(j.Secrets) > 0 {
+	// A job with no secrets still asks when it was approved to: the prompt
+	// is consent to run a command, not only to hand out a key, and approval
+	// told the human "asks each time".
+	switch {
+	case j.Ask == job.AskNever && len(j.Secrets) == 0:
+	case j.Ask == job.AskNever:
+		// No prompt: the human approved this job to run unasked, and the
+		// job's own key is that decision (the standing grant's model). A key
+		// that is gone, or a wrap it cannot open, refuses the run. It never
+		// falls back to prompting, which would turn a job the human set to
+		// run while away into one that silently waits on a dialog.
+		if err := s.openJobKeys(&j, deks); err != nil {
+			return s.refuseJob(&j, c, requester, err.Error()+". Approve it again to make a new key")
+		}
+	default:
 		reason := jobRunReason(requester, j.Name, len(j.Secrets))
 		event, mek, err := s.discloseChallengeOp(reason, OpJobRun, c)
 		if event != nil && s.OnSessionEvent != nil {
@@ -414,6 +512,12 @@ func (s *Server) runJob(name string, c *caller) Response {
 		wipe(mek)
 	}
 
+	// Checked again now, after the prompt: the caller is the party the job
+	// keeps values from, and it can write the folder. An edit landing while
+	// the human reads the dialog must not run with the secrets it unlocked.
+	if changes := jobChanges(&j); len(changes) > 0 {
+		return s.refuseJob(&j, c, requester, fmt.Sprintf("%s %s while the prompt was up. It won't run until you approve it again", changes[0].Path, changes[0].Kind))
+	}
 	result, err := s.OnRunJob(j, deks)
 	if err != nil {
 		return Response{OK: false, Error: "job_run: " + err.Error()}
@@ -433,8 +537,41 @@ func (s *Server) runJob(name string, c *caller) Response {
 		_ = s.saveJobsLocked() // bookkeeping only; the run already happened
 	}
 	s.jobMu.Unlock()
-	s.recordJobEvent(KindUse, OpJobRun, c, &j, fmt.Sprintf("%s for %s, exit %d, %d hidden", j.Name, requester, result.Exit, hidden))
+	how := "asked"
+	if j.Ask == job.AskNever {
+		how = "unasked"
+	}
+	s.recordJobEvent(KindUse, OpJobRun, c, &j, fmt.Sprintf("%s for %s (%s), exit %d, %d hidden", j.Name, requester, how, result.Exit, hidden))
 	return Response{OK: true, JobResult: &result}
+}
+
+// openJobKeys fills deks from a never-asking job's own key: each secret's
+// KeyWrapped opened under it with the secret's class as AAD, filed by the
+// device digest the runner looks keys up by.
+func (s *Server) openJobKeys(j *job.Job, deks map[string][]byte) error {
+	if s.GrantKeys == nil || j.KeyID == "" {
+		return fmt.Errorf("this job has no key of its own")
+	}
+	key, err := s.GrantKeys.Load(j.KeyID)
+	if err != nil {
+		return fmt.Errorf("the job's key is gone from the keychain")
+	}
+	defer key.Close()
+	for _, sec := range j.Secrets {
+		if sec.Wrap != standingWrapAEAD {
+			return fmt.Errorf("%s is sealed in a way this jit cannot open", sec.Var)
+		}
+		sealed, herr := hex.DecodeString(sec.KeyWrapped)
+		if herr != nil {
+			return fmt.Errorf("%s's sealed key is damaged", sec.Var)
+		}
+		dek, oerr := key.Open(sealed, sec.Class)
+		if oerr != nil {
+			return fmt.Errorf("%s does not open under the job's key", sec.Var)
+		}
+		deks[sec.DeviceDigest] = dek
+	}
+	return nil
 }
 
 // refuseJob records why a run did not happen, on the job (for the list and

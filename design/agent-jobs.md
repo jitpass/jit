@@ -1,7 +1,7 @@
 # AI Jobs: an AI tool runs your script, and never holds the key
 
-**Status: step 1 (engine) built 2026-09-25 on branch `ai-jobs`, not yet
-merged or released.** Steps 2-4 are not built. App mockup:
+**Status: steps 1 (engine) and 2 (jobs that never ask) built 2026-09-25 on
+branch `ai-jobs`, not yet merged or released.** Steps 3-4 are not built. App mockup:
 `jit-app/docs/design/mockups/Jobs.html` (published as an artifact for
 review). Read `standing-grants.md` first; the job key below is its grant
 key, reused.
@@ -353,8 +353,20 @@ did not name:
   prints that exact line for a stopped job.
 - **The folder's only profile** is used when `--profile` is omitted; two or
   more is an error naming them.
-- **`never` jobs are refused at approval** until step 2 exists, rather than
-  stored and still prompting.
+- **`never` jobs** (step 2, `--ask never`). The approval mints a key named
+  `j-<random hex>` in the standing-grant key store (keychain service
+  `com.jitpass.grant.key`), seals each secret's DEK under it with the class
+  as AAD, and keeps the sealed copies in `jobs.json` (`key_wrapped`, `wrap:
+  aead-v1`). Never the job's name as the key's name: a key that outlives its
+  record after a crash can then never be mistaken for a later job's. Every
+  failure after the key exists deletes it; removing the job deletes it;
+  approving again mints a new one and deletes the old, including when the
+  job goes back to each-time. A missing or unopenable key **refuses** the
+  run and does not fall back to a prompt: a job set to run while the human is
+  away would otherwise sit on a dialog nobody answers. The one-time prompt
+  reads "let AI tools run notion-guests (3 secrets) unasked, until removed;
+  never the values". The orphan-key reconciler standing grants still lack
+  must know `j-` ids too.
 - **The job's environment** is PATH and HOME from approval, USER, LOGNAME,
   LANG, TMPDIR, `PYTHONPYCACHEPREFIX` (a jit-owned cache per job) and
   `JIT_JOB`, plus the secrets. Nothing from the service or the caller, and a

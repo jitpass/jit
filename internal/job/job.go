@@ -41,6 +41,14 @@ type Secret struct {
 	// credentials (the notion job's INTERNAL_DOMAINS is in every email the
 	// script prints).
 	Shown bool `json:"shown,omitempty"`
+	// KeyWrapped is the secret's DEK sealed under the job's own key (hex),
+	// set only on a job that never asks. The key itself is in the keychain,
+	// never here: this is the standing-grant ledger's trust tier, wrapped
+	// material on disk with its key elsewhere.
+	KeyWrapped string `json:"key_wrapped,omitempty"`
+	// Wrap names how KeyWrapped was sealed, so a later scheme (the Secure
+	// Enclave move) can coexist with this one, as the grant ledger's does.
+	Wrap string `json:"wrap,omitempty"`
 }
 
 // Job is one approved command and the secrets it gets.
@@ -57,9 +65,16 @@ type Job struct {
 	ProfileRoot string   `json:"profile_root,omitempty"`
 	Secrets     []Secret `json:"secrets"`
 	Ask         Ask      `json:"ask"`
+	// KeyID names the job's own key in the keychain, for a job that never
+	// asks. Minted fresh at every approval, so approving again replaces the
+	// key rather than reusing it.
+	KeyID string `json:"key_id,omitempty"`
 	// Outputs are folders the job writes into. New or changed files there are
 	// reported to the caller by path; they are skipped by the fingerprint.
 	Outputs []string `json:"outputs,omitempty"`
+	// Extra are files the command names outside Dir (ExternalFiles), found
+	// at approval and fingerprinted with the folder.
+	Extra []string `json:"extra,omitempty"`
 	// PathEnv and Home are captured from the approving shell, because the
 	// service's own environment is launchd's minimal one and the command must
 	// run the way it ran when the human read it.

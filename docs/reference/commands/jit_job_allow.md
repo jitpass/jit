@@ -34,6 +34,7 @@ jit job allow NAME [--profile NAME] [--show VAR] [--output DIR] -- COMMAND [ARGS
 ### Options
 
 ```
+      --ask string           each-time (Touch ID per run) or never (runs unasked until you remove it) (default "each-time")
       --description string   one line an AI tool sees in the job list
       --output stringArray   a folder the job writes into (repeatable)
       --profile string       profile whose secrets the job gets

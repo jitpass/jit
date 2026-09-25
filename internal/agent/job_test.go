@@ -7,6 +7,8 @@ package agent
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -27,6 +29,7 @@ type jobRig struct {
 	s       *Server
 	c       *Client
 	calls   *int32
+	keys    *memGrantKeys
 	dir     string
 	storeAt string
 
@@ -42,7 +45,7 @@ var jobDEK = bytes.Repeat([]byte{0x07}, 32)
 func newJobRig(t *testing.T) *jobRig {
 	t.Helper()
 	var calls int32
-	r := &jobRig{calls: &calls, vault: map[string][]byte{}}
+	r := &jobRig{calls: &calls, vault: map[string][]byte{}, keys: &memGrantKeys{}}
 	r.dir = t.TempDir()
 	if err := os.WriteFile(filepath.Join(r.dir, "list_guest_users.py"), []byte("print('hi')\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -85,6 +88,7 @@ func newJobRig(t *testing.T) *jobRig {
 			return JobResult{Exit: 0, Stdout: "Total users seen: 264\n"}, nil
 		}
 		s.discloseBackoff = nil
+		s.GrantKeys = r.keys
 	})
 	t.Cleanup(cleanup)
 	r.s, r.c = s, NewClient(socketPath)
@@ -224,7 +228,6 @@ func TestJobAllowRefusesBeforeThePrompt(t *testing.T) {
 		"inline program": func(s *JobSpec) string { s.Argv = []string{"/bin/sh", "-c", "env"}; return "a" },
 		"printer":        func(s *JobSpec) string { s.Argv = []string{"/usr/bin/env"}; return "b" },
 		"bad name":       func(*JobSpec) string { return "Bad Name" },
-		"never asks":     func(s *JobSpec) string { s.Ask = string(job.AskNever); return "c" },
 		"show unknown":   func(s *JobSpec) string { s.Shown = []string{"NOPE"}; return "d" },
 		"relative dir":   func(s *JobSpec) string { s.Dir = "notion"; return "e" },
 		"missing exe":    func(s *JobSpec) string { s.Argv = []string{"no-such-tool-xyz"}; return "f" },
@@ -299,15 +302,21 @@ func TestJobRemoveIsFreeAndFinal(t *testing.T) {
 func TestJobReasonsFitThePrompt(t *testing.T) {
 	long := strings.Repeat("x", 40)
 	for _, s := range []string{
-		jobAllowReason(long, 14),
+		jobAllowReason(long, 14, job.AskEachTime),
+		jobAllowReason(long, 14, job.AskNever),
 		jobRunReason("Claude Helper (Renderer)", long, 14),
 	} {
 		if len([]rune(s)) > maxReasonLen {
 			t.Errorf("%d runes > %d: %q", len([]rune(s)), maxReasonLen, s)
 		}
 		if !strings.Contains(s, "never the values") {
+			// both shapes end on the promise; the never shape also keeps
+			// "unasked, until removed" ahead of it, checked below
 			t.Errorf("the promise was truncated off: %q", s)
 		}
+	}
+	if r := jobAllowReason(long, 14, job.AskNever); !strings.Contains(r, "unasked, until removed") {
+		t.Errorf("the never-ask prompt lost its scope clause: %q", r)
 	}
 }
 
@@ -331,5 +340,283 @@ func TestJobAllowRefusesAFolderChangedDuringThePrompt(t *testing.T) {
 	}
 	if jobs, _ := r.c.JobList(); len(jobs) != 0 {
 		t.Fatalf("a job was stored: %+v", jobs)
+	}
+}
+
+func (r *jobRig) neverSpec() JobSpec {
+	spec := r.spec()
+	spec.Ask = string(job.AskNever)
+	return spec
+}
+
+func (r *jobRig) stored(t *testing.T) *job.Job {
+	t.Helper()
+	jobs, err := job.Load(r.storeAt)
+	if err != nil || jobs["notion-guests"] == nil {
+		t.Fatalf("jobs.json: %v %v", err, jobs)
+	}
+	return jobs["notion-guests"]
+}
+
+// The feature: approved once, then it runs with no prompt, including with
+// the vault locked, and its key dies with it.
+func TestNeverJobRunsUnaskedAndItsKeyDiesWithIt(t *testing.T) {
+	r := newJobRig(t)
+	if _, err := r.c.JobAllow("notion-guests", r.neverSpec()); err != nil {
+		t.Fatalf("JobAllow: %v", err)
+	}
+	keyID := r.stored(t).KeyID
+	if keyID == "" || !r.keys.has(keyID) {
+		t.Fatalf("no key made (id %q)", keyID)
+	}
+	if err := r.c.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := r.c.JobRun("notion-guests"); err != nil {
+			t.Fatalf("run %d: %v", i+1, err)
+		}
+	}
+	if r.prompts() != 1 {
+		t.Fatalf("prompted %d times in total, want only the approval's 1", r.prompts())
+	}
+	r.mu.Lock()
+	got := r.gotDEKs[1][wrappedDigest(r.sources[0].Wrapped)]
+	r.mu.Unlock()
+	if !bytes.Equal(got, jobDEK) {
+		t.Fatal("an unasked run got the wrong key")
+	}
+	if err := r.c.JobRemove("notion-guests"); err != nil {
+		t.Fatal(err)
+	}
+	if r.keys.has(keyID) {
+		t.Fatal("removing the job left its key in the keychain")
+	}
+}
+
+// jobs.json sits beside grants.json: wrapped material, never a plaintext key.
+func TestNeverJobStoresNoPlaintextKey(t *testing.T) {
+	r := newJobRig(t)
+	if _, err := r.c.JobAllow("notion-guests", r.neverSpec()); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(r.storeAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, form := range []string{hex.EncodeToString(jobDEK), base64.StdEncoding.EncodeToString(jobDEK)} {
+		if bytes.Contains(raw, []byte(form)) {
+			t.Fatal("jobs.json holds the plaintext DEK")
+		}
+	}
+	if sec := r.stored(t).Secrets[0]; sec.KeyWrapped == "" || sec.Wrap != standingWrapAEAD {
+		t.Fatalf("secret not sealed under the job key: %+v", sec)
+	}
+}
+
+// Approving again replaces the key. Going back to each-time must leave no
+// key that still opens the secrets.
+func TestReplacingANeverJobDropsItsOldKey(t *testing.T) {
+	r := newJobRig(t)
+	if _, err := r.c.JobAllow("notion-guests", r.neverSpec()); err != nil {
+		t.Fatal(err)
+	}
+	old := r.stored(t).KeyID
+	spec := r.spec()
+	spec.Replace = true
+	if _, err := r.c.JobAllow("notion-guests", spec); err != nil {
+		t.Fatal(err)
+	}
+	if r.keys.has(old) {
+		t.Fatal("the replaced job's key survived")
+	}
+	if j := r.stored(t); j.KeyID != "" || j.Secrets[0].KeyWrapped != "" {
+		t.Fatalf("an each-time job kept key material: %+v", j)
+	}
+	before := r.prompts()
+	if _, err := r.c.JobRun("notion-guests"); err != nil {
+		t.Fatal(err)
+	}
+	if r.prompts() != before+1 {
+		t.Fatal("the each-time replacement ran without asking")
+	}
+}
+
+// A key deleted out of band refuses the run. It must not fall back to a
+// prompt: a job set to run while the human is away would otherwise sit on a
+// dialog nobody is there to answer.
+func TestNeverJobWithItsKeyGoneRefusesWithoutPrompting(t *testing.T) {
+	r := newJobRig(t)
+	if _, err := r.c.JobAllow("notion-guests", r.neverSpec()); err != nil {
+		t.Fatal(err)
+	}
+	_ = r.keys.Delete(r.stored(t).KeyID)
+	before := r.prompts()
+	_, err := r.c.JobRun("notion-guests")
+	if err == nil || !strings.Contains(err.Error(), "key is gone") {
+		t.Fatalf("run with the key gone: %v", err)
+	}
+	if r.prompts() != before || r.runs() != 0 {
+		t.Fatal("a keyless run prompted or ran")
+	}
+}
+
+// A job that could not be saved must not leave its key behind.
+func TestNeverJobThatCannotBeSavedLeavesNoKey(t *testing.T) {
+	r := newJobRig(t)
+	blocker := filepath.Join(t.TempDir(), "a-file")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.s.jobMu.Lock()
+	r.s.jobsPath = filepath.Join(blocker, "jobs.json") // a directory that cannot exist
+	r.s.jobMu.Unlock()
+	if _, err := r.c.JobAllow("notion-guests", r.neverSpec()); err == nil {
+		t.Fatal("approval reported success with an unwritable job list")
+	}
+	r.keys.mu.Lock()
+	n := len(r.keys.keys)
+	r.keys.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d key(s) orphaned in the keychain", n)
+	}
+}
+
+func TestNeverJobRefusedWithoutAKeyStore(t *testing.T) {
+	r := newJobRig(t)
+	r.s.GrantKeys = nil
+	if _, err := r.c.JobAllow("notion-guests", r.neverSpec()); err == nil {
+		t.Fatal("a never-asking job was approved with nowhere to keep its key")
+	}
+	if r.prompts() != 0 {
+		t.Fatal("the refusal prompted")
+	}
+}
+
+// Review finding 1: the run re-checks the folder AFTER the prompt. An edit
+// made while the human reads the dialog must not run with the secrets.
+func TestJobRunRefusesAScriptEditedDuringThePrompt(t *testing.T) {
+	r := newJobRig(t)
+	if _, err := r.c.JobAllow("notion-guests", r.spec()); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(r.dir, "list_guest_users.py")
+	r.s.newFetcher = func() MEKFetcher {
+		return fnFetcher{fn: func(string) ([]byte, error) {
+			if err := os.WriteFile(script, []byte("import os; print(os.environ)\n"), 0o600); err != nil {
+				return nil, err
+			}
+			return append([]byte(nil), grantTestMEK...), nil
+		}}
+	}
+	_, err := r.c.JobRun("notion-guests")
+	if err == nil || !strings.Contains(err.Error(), "while the prompt was up") {
+		t.Fatalf("run with an edit during the prompt: %v", err)
+	}
+	if r.runs() != 0 {
+		t.Fatal("the edited script reached the runner")
+	}
+}
+
+// Review finding 2, at the service: --output . is refused before the prompt.
+func TestJobAllowRefusesAnOutputHoldingTheFolder(t *testing.T) {
+	r := newJobRig(t)
+	for _, o := range []string{".", r.dir, filepath.Dir(r.dir)} {
+		spec := r.spec()
+		spec.Outputs = []string{o}
+		if _, err := r.c.JobAllow("notion-guests", spec); err == nil {
+			t.Errorf("--output %s approved", o)
+		}
+	}
+	if r.prompts() != 0 {
+		t.Fatal("the refusal prompted")
+	}
+}
+
+// Review finding 3: a job with no secrets still asks when approved to ask,
+// and a never-asking one with no secrets needs no key.
+func TestJobWithNoSecretsStillAsks(t *testing.T) {
+	r := newJobRig(t)
+	spec := r.spec()
+	spec.Profile = nil
+	if _, err := r.c.JobAllow("notion-guests", spec); err != nil {
+		t.Fatal(err)
+	}
+	before := r.prompts()
+	if _, err := r.c.JobRun("notion-guests"); err != nil {
+		t.Fatal(err)
+	}
+	if r.prompts() != before+1 {
+		t.Fatal("an each-time job with no secrets ran without asking")
+	}
+	spec.Ask, spec.Replace = string(job.AskNever), true
+	if _, err := r.c.JobAllow("notion-guests", spec); err != nil {
+		t.Fatal(err)
+	}
+	if r.stored(t).KeyID != "" {
+		t.Fatal("a job with no secrets got a key")
+	}
+	before = r.prompts()
+	if _, err := r.c.JobRun("notion-guests"); err != nil {
+		t.Fatalf("never-asking job with no secrets: %v", err)
+	}
+	if r.prompts() != before {
+		t.Fatal("a never-asking job prompted")
+	}
+}
+
+// Review finding 7: the names-only list does no fingerprinting, so it
+// cannot report a change; the full list does.
+func TestJobNamesSkipsTheChecks(t *testing.T) {
+	r := newJobRig(t)
+	if _, err := r.c.JobAllow("notion-guests", r.spec()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(r.dir, "list_guest_users.py"), []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	names, err := r.c.JobNames()
+	if err != nil || len(names) != 1 || names[0].Name != "notion-guests" || names[0].State != "" {
+		t.Fatalf("JobNames = %v %+v", err, names)
+	}
+	full, _ := r.c.JobList()
+	if full[0].State != JobChanged {
+		t.Fatalf("full list state = %q", full[0].State)
+	}
+}
+
+// Found in the live test: a never-asking job printed "Touch ID required" on
+// every run, because the notice fires on any call slower than a moment and a
+// run lasts as long as its script. Only an each-time job may show it.
+func TestJobRunWaitNoticeOnlyWhenAPromptIsPossible(t *testing.T) {
+	r := newJobRig(t)
+	slow := r.s.OnRunJob
+	r.s.OnRunJob = func(j job.Job, deks map[string][]byte) (JobResult, error) {
+		time.Sleep(2 * waitNotifyDelay)
+		return slow(j, deks)
+	}
+	var notices int32
+	c := r.c.WithWaitNotifier(func() { atomic.AddInt32(&notices, 1) })
+
+	if _, err := r.c.JobAllow("notion-guests", r.neverSpec()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.JobRun("notion-guests"); err != nil {
+		t.Fatal(err)
+	}
+	if n := atomic.LoadInt32(&notices); n != 0 {
+		t.Fatalf("a never-asking run showed the Touch ID notice %d time(s)", n)
+	}
+
+	spec := r.spec()
+	spec.Replace = true
+	if _, err := r.c.JobAllow("notion-guests", spec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.JobRun("notion-guests"); err != nil {
+		t.Fatal(err)
+	}
+	if n := atomic.LoadInt32(&notices); n != 1 {
+		t.Fatalf("an each-time run showed the notice %d time(s), want 1", n)
 	}
 }

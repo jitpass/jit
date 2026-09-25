@@ -33,6 +33,7 @@ var (
 	jobOutputs     []string
 	jobReplace     bool
 	jobDescription string
+	jobAsk         string
 	jobListFormat  string
 	jobRunFormat   string
 )
@@ -147,6 +148,7 @@ func init() {
 	jobAllowCmd.Flags().StringArrayVar(&jobOutputs, "output", nil, "a folder the job writes into (repeatable)")
 	jobAllowCmd.Flags().BoolVar(&jobReplace, "replace", false, "approve over an existing job of the same name")
 	jobAllowCmd.Flags().StringVar(&jobDescription, "description", "", "one line an AI tool sees in the job list")
+	jobAllowCmd.Flags().StringVar(&jobAsk, "ask", string(job.AskEachTime), "each-time (Touch ID per run) or never (runs unasked until you remove it)")
 	jobListCmd.Flags().StringVar(&jobListFormat, "format", "text", "output format: text or json")
 	jobRunCmd.Flags().StringVar(&jobRunFormat, "format", "text", "output format: text or json")
 	jobCmd.AddCommand(jobAllowCmd, jobListCmd, jobRemoveCmd, jobRunCmd)
@@ -180,6 +182,9 @@ func runJobAllow(out io.Writer, name string, argv []string) error {
 	if err := job.ValidateName(name); err != nil {
 		return err
 	}
+	if !job.Ask(jobAsk).Valid() {
+		return fmt.Errorf("--ask takes %s or %s", job.AskEachTime, job.AskNever)
+	}
 	// Refuse here too, before the RPC, so the sentence reaches the terminal
 	// without a round trip; the service checks again and is what counts.
 	if err := job.CheckArgv(argv); err != nil {
@@ -208,7 +213,7 @@ func runJobAllow(out io.Writer, name string, argv []string) error {
 	}
 	home, _ := os.UserHomeDir()
 	spec := agent.JobSpec{
-		Dir: cwd, Argv: argv, Ask: string(job.AskEachTime), Shown: jobShown, Outputs: jobOutputs,
+		Dir: cwd, Argv: argv, Ask: jobAsk, Shown: jobShown, Outputs: jobOutputs,
 		PathEnv: os.Getenv("PATH"), Home: home, Description: jobDescription, Replace: jobReplace,
 	}
 	if prof != "" {
@@ -224,7 +229,11 @@ func runJobAllow(out io.Writer, name string, argv []string) error {
 	for _, o := range jobOutputs {
 		fmt.Fprintf(out, "  output   %s\n", displayPath(home, o))
 	}
-	fmt.Fprintln(out, "  asks     each time, naming who asked")
+	if job.Ask(jobAsk) == job.AskNever {
+		fmt.Fprintln(out, "  asks     never, until you remove it: runs while you are away")
+	} else {
+		fmt.Fprintln(out, "  asks     each time, naming who asked")
+	}
 	fmt.Fprintln(out)
 
 	ac, err := agentClient()
@@ -351,6 +360,9 @@ func renderJobRows(out io.Writer, jobs []agent.JobStatus, now time.Time) {
 // start stopping the job.
 func reapproveCommand(j agent.JobStatus) string {
 	parts := []string{"cd", quoteIfNeeded(j.Dir), "&&", "jit", "job", "allow", j.Name, "--replace"}
+	if j.Ask == string(job.AskNever) {
+		parts = append(parts, "--ask", string(job.AskNever))
+	}
 	if j.Profile != "" {
 		parts = append(parts, "--profile", quoteIfNeeded(j.Profile))
 	}
@@ -385,10 +397,14 @@ func quoteIfNeeded(s string) string {
 }
 
 func jobReadyLine(j agent.JobStatus, now time.Time) string {
-	if j.LastRunUnix == 0 {
-		return "ready · not run yet"
+	ready := "ready"
+	if j.Ask == string(job.AskNever) {
+		ready = "ready, runs unasked"
 	}
-	s := fmt.Sprintf("ready · %s ran it %s", j.LastCaller, agoPhrase(now.Sub(time.Unix(j.LastRunUnix, 0))))
+	if j.LastRunUnix == 0 {
+		return ready + " · not run yet"
+	}
+	s := fmt.Sprintf("%s · %s ran it %s", ready, j.LastCaller, agoPhrase(now.Sub(time.Unix(j.LastRunUnix, 0))))
 	if j.LastExit != 0 {
 		s += fmt.Sprintf(", exit %d", j.LastExit)
 	}
@@ -509,7 +525,7 @@ func completeJobNames(cmd *cobra.Command, args []string, toComplete string) ([]s
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	jobs, err := ac.JobList()
+	jobs, err := ac.JobNames()
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}

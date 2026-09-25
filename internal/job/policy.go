@@ -27,14 +27,18 @@ var printers = map[string]bool{
 // takes lists the short flags whose value is the NEXT argument, so the scan
 // steps over it rather than mistaking it for the script and stopping early:
 // `python -X dev -c …` must still be read as far as the -c.
+// takesLong is the same for long flags given as two arguments: `node
+// --require ./m.js -e …` must be read past ./m.js.
 var inlineFlags = map[string]struct {
-	short string
-	long  []string
-	takes string
+	short     string
+	long      []string
+	takes     string
+	takesLong []string
 }{
-	"python":    {short: "c", takes: "WXQ"},
-	"sh":        {short: "c", takes: "oO"},
-	"node":      {short: "ep", long: []string{"--eval", "--print"}, takes: "r"},
+	"python": {short: "c", takes: "WXQ", takesLong: []string{"--check-hash-based-pycs"}},
+	"sh":     {short: "c", takes: "oO", takesLong: []string{"--rcfile", "--init-file"}},
+	"node": {short: "ep", long: []string{"--eval", "--print"}, takes: "r",
+		takesLong: []string{"--require", "--import", "--loader", "--experimental-loader", "--env-file", "--conditions", "--input-type", "--title"}},
 	"deno":      {short: "e", long: []string{"--eval"}}, // plus `deno eval`, below
 	"bun":       {short: "e", long: []string{"--eval", "--print"}},
 	"ruby":      {short: "e"},
@@ -95,6 +99,12 @@ func CheckArgv(argv []string) error {
 			}
 		}
 		if strings.HasPrefix(a, "--") {
+			for _, l := range flags.takesLong {
+				if a == l {
+					i++ // the flag's value, not the script
+					break
+				}
+			}
 			continue
 		}
 		if flags.short != "" && strings.ContainsAny(a[1:], flags.short) {

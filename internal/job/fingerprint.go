@@ -38,6 +38,56 @@ const (
 	MaxBytes = 500 << 20
 )
 
+// OutsidePrefix marks a fingerprint entry for a file outside the job folder.
+const OutsidePrefix = "outside:"
+
+// ExternalFiles lists the files the command names that live outside dir:
+// `python ../run.py`, or `--config=/elsewhere/c.yaml`. The folder walk never
+// sees them, so without this an agent that proposed the path could edit the
+// script after approval and the job would keep running. An argument that is
+// not an existing regular file is not a file the job reads by name, and is
+// left alone.
+func ExternalFiles(argv []string, dir string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, a := range argv {
+		cands := []string{a}
+		if i := strings.IndexByte(a, '='); i > 0 {
+			cands = append(cands, a[i+1:])
+		}
+		for _, c := range cands {
+			if c == "" {
+				continue
+			}
+			p := c
+			if !filepath.IsAbs(p) {
+				p = filepath.Join(dir, p)
+			}
+			p = filepath.Clean(p)
+			if p == dir || strings.HasPrefix(p, dir+string(filepath.Separator)) {
+				continue
+			}
+			if info, err := os.Stat(p); err != nil || !info.Mode().IsRegular() {
+				continue
+			}
+			if !seen[p] {
+				seen[p] = true
+				out = append(out, p)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// OutputCoversDir reports whether an output folder is dir or contains it.
+// Such an output would skip every file in the walk and leave an empty
+// fingerprint, so a job could never be stopped by an edit.
+func OutputCoversDir(output, dir string) bool {
+	output, dir = filepath.Clean(output), filepath.Clean(dir)
+	return output == dir || strings.HasPrefix(dir, output+string(filepath.Separator))
+}
+
 // ErrTooLarge means the folder is past Limits. The fix is a narrower folder.
 var ErrTooLarge = errors.New("too large to fingerprint")
 
@@ -51,10 +101,12 @@ var skipDirs = map[string]bool{".git": true, "__pycache__": true}
 // too common to skip whole.
 var skipPaths = map[string]bool{"node_modules/.cache": true}
 
-// Compute fingerprints dir and the executable exe. outputs are absolute
-// folders the job writes into; anything under them is skipped. FIFOs and
-// sockets are skipped (a jit mount's .env is a FIFO; opening it would block).
-func Compute(dir, exe string, outputs []string) (Fingerprint, error) {
+// Compute fingerprints dir, the executable exe, and extra: files the command
+// names that live outside dir (ExternalFiles), recorded under their absolute
+// path with an "outside:" prefix. outputs are absolute folders the job writes
+// into; anything under them is skipped. FIFOs and sockets are skipped (a jit
+// mount's .env is a FIFO; opening it would block).
+func Compute(dir, exe string, outputs, extra []string) (Fingerprint, error) {
 	fp := Fingerprint{Files: map[string]string{}}
 	var files int
 	var bytes int64
@@ -117,6 +169,13 @@ func Compute(dir, exe string, outputs []string) (Fingerprint, error) {
 	})
 	if err != nil {
 		return Fingerprint{}, err
+	}
+	for _, p := range extra {
+		sum, _, herr := hashFile(p)
+		if herr != nil {
+			return Fingerprint{}, herr
+		}
+		fp.Files[OutsidePrefix+p] = "sha256:" + sum
 	}
 	resolved, err := filepath.EvalSymlinks(exe)
 	if err != nil {

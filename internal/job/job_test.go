@@ -33,6 +33,8 @@ func TestCheckArgv(t *testing.T) {
 		{"php", "-r", "var_dump(getenv());"},
 		{"osascript", "-e", "do shell script \"env\""},
 		{"deno", "eval", "console.log(Deno.env.toObject())"},
+		{"node", "--require", "./m.js", "-e", "console.log(process.env)"}, // review finding 5
+		{"bash", "--rcfile", "x", "-c", "env"},
 	}
 	for _, argv := range refused {
 		if err := CheckArgv(argv); err == nil {
@@ -134,7 +136,7 @@ func write(t *testing.T, path, body string) {
 
 func TestFingerprintStableAndSkips(t *testing.T) {
 	dir, exe := fixture(t)
-	a, err := Compute(dir, exe, nil)
+	a, err := Compute(dir, exe, nil, nil)
 	if err != nil {
 		t.Fatal(err) // a FIFO that was opened would hang here, not fail
 	}
@@ -151,7 +153,7 @@ func TestFingerprintStableAndSkips(t *testing.T) {
 	}
 	// A run rewrites bytecode; that alone must not stop the job.
 	write(t, filepath.Join(dir, "__pycache__/list_guest_users.cpython-314.pyc"), "new bytecode")
-	b, err := Compute(dir, exe, nil)
+	b, err := Compute(dir, exe, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,12 +193,12 @@ func TestFingerprintNamesWhatChanged(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir, exe := fixture(t)
 			target, _ := filepath.EvalSymlinks(exe)
-			before, err := Compute(dir, exe, nil)
+			before, err := Compute(dir, exe, nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			tc.edit(t, dir, target)
-			after, err := Compute(dir, exe, nil)
+			after, err := Compute(dir, exe, nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -214,12 +216,12 @@ func TestFingerprintNamesWhatChanged(t *testing.T) {
 func TestFingerprintSkipsOutputs(t *testing.T) {
 	dir, exe := fixture(t)
 	out := filepath.Join(dir, "reports")
-	before, err := Compute(dir, exe, []string{out})
+	before, err := Compute(dir, exe, []string{out}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(out, "notion_guest_users_1.csv"), "a,b\n")
-	after, err := Compute(dir, exe, []string{out})
+	after, err := Compute(dir, exe, []string{out}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,5 +338,51 @@ func TestResolveExe(t *testing.T) {
 	}
 	if _, err := ResolveExe("python3.14", "/", "relative/dir"); err == nil {
 		t.Fatal("a relative PATH entry was searched")
+	}
+}
+
+// Review finding 4: a script named outside the job folder is fingerprinted.
+func TestExternalFilesAreFingerprinted(t *testing.T) {
+	dir, exe := fixture(t)
+	outside := filepath.Join(t.TempDir(), "run.py")
+	write(t, outside, "print('v1')\n")
+	cfg := filepath.Join(filepath.Dir(outside), "c.yaml")
+	write(t, cfg, "a: 1\n")
+	extra := ExternalFiles([]string{outside, "--config=" + cfg, "list_guest_users.py", "not-a-file", "-u"}, dir)
+	if len(extra) != 2 {
+		t.Fatalf("ExternalFiles = %v, want the script and the config, nothing inside the folder", extra)
+	}
+	before, err := Compute(dir, exe, nil, extra)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, outside, "import os; print(os.environ)\n")
+	after, err := Compute(dir, exe, nil, extra)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := Diff(before, after)
+	if len(d) != 1 || d[0].Path != OutsidePrefix+outside {
+		t.Fatalf("Diff = %v, want the outside script", d)
+	}
+}
+
+// Review finding 2: an output that holds the folder would empty the
+// fingerprint.
+func TestOutputCoversDir(t *testing.T) {
+	for _, tc := range []struct {
+		out, dir string
+		want     bool
+	}{
+		{"/a/b", "/a/b", true},
+		{"/a", "/a/b", true},
+		{"/a/b/", "/a/b", true},
+		{"/a/b/reports", "/a/b", false},
+		{"/a/bc", "/a/b", false},
+		{"/x", "/a/b", false},
+	} {
+		if got := OutputCoversDir(tc.out, tc.dir); got != tc.want {
+			t.Errorf("OutputCoversDir(%q, %q) = %v", tc.out, tc.dir, got)
+		}
 	}
 }

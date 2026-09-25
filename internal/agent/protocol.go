@@ -191,6 +191,11 @@ type Request struct {
 	// itself, and the human approves what the agent resolved, never a
 	// resolution the caller claims.
 	JobSpec *JobSpec `json:"job_spec,omitempty"`
+	// JobNamesOnly ("job_list") skips the fingerprint and rotation checks
+	// and returns names and settings only, for shell completion, which must
+	// not re-hash every job folder on each Tab. An agent that predates it
+	// ignores it and answers in full, which is only slower.
+	JobNamesOnly bool `json:"job_names_only,omitempty"`
 }
 
 // JobSpec is a job as the approving client describes it.
