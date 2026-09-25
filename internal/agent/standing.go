@@ -203,10 +203,12 @@ type standingSecret struct {
 	// the ledger holds more than one kind once grant keys move to the
 	// Secure Enclave (design/secure-enclave-plan.md, C), and saving must
 	// never relabel one as another.
+	//
+	// A served entry has no field this build does not know (one that does
+	// is unread, below), so it is written back from these fields alone, and
+	// a move that re-seals it can never leave a newer jit's field, tied to
+	// the old sealed bytes, beside the new ones.
 	wrap string
-	// raw is the ledger entry this secret was read from, if it was: its
-	// fields this build does not know are written back with it (jsonkeep).
-	raw []byte
 }
 
 // standingGrant is one loaded standing grant. Immutable after creation
@@ -228,8 +230,11 @@ type standingGrant struct {
 	profiles []GrantProfile
 	secrets  map[string]standingSecret // digest -> secret
 	// unread holds ledger entries this build cannot serve: sealed in a way
-	// it cannot open (a newer jit's wrap), or not reading as an entry it
-	// knows (sealed bytes that are not hex, no digest, no path). They are
+	// it cannot open (a newer jit's wrap), not reading as an entry it knows
+	// (sealed bytes that are not hex, no digest, no path), or carrying any
+	// field it does not know (a newer jit may tie one to the sealed bytes: a
+	// nonce, KDF parameters, an AAD version; jit never serves or re-seals
+	// what it does not fully understand). They are
 	// not served, and they are written back byte for byte: an older jit
 	// that dropped them would delete them from the ledger on its next save,
 	// and a later upgrade could not get them back. Since nothing here knows
@@ -410,6 +415,13 @@ func (ls ledgerSecret) MarshalJSON() ([]byte, error) {
 	return jsonkeep.Marshal(plain(ls), ls.raw)
 }
 
+// unknownFields names the entry's fields this build does not know: any
+// makes it unread (grantFromLedger).
+func (ls ledgerSecret) unknownFields() []string {
+	type plain ledgerSecret
+	return jsonkeep.Unknown(plain{}, ls.raw)
+}
+
 // UnmarshalJSON is ledgerGrant's, for one entry.
 func (ls *ledgerSecret) UnmarshalJSON(b []byte) error {
 	type plain ledgerSecret
@@ -492,16 +504,17 @@ func grantFromLedger(lg ledgerGrant) *standingGrant {
 	}
 	for _, ls := range lg.Secrets {
 		gw, err := hex.DecodeString(ls.GrantWrapped)
-		if !knownWrap(ls.Wrap) || err != nil || ls.DeviceDigest == "" || ls.Path == "" {
-			// A wrap this build cannot open, or an entry that does not
-			// read as one, is not served: the grant then reports fewer
-			// secrets than it was made with, and the list shows the gap.
-			// It is kept, verbatim, for saveLedger.
+		if !knownWrap(ls.Wrap) || err != nil || ls.DeviceDigest == "" || ls.Path == "" || len(ls.unknownFields()) > 0 {
+			// A wrap this build cannot open, an entry that does not read
+			// as one, or one with a field this build does not know, is not
+			// served: the grant then reports fewer secrets than it was made
+			// with, and the list shows the gap. It is kept, verbatim, for
+			// saveLedger, and a move leaves it sealed as it is.
 			ls.verbatim = true
 			g.unread = append(g.unread, ls)
 			continue
 		}
-		g.secrets[ls.DeviceDigest] = standingSecret{path: ls.Path, class: ls.Class, digest: ls.DeviceDigest, grantWrapped: gw, wrap: ls.Wrap, raw: ls.raw}
+		g.secrets[ls.DeviceDigest] = standingSecret{path: ls.Path, class: ls.Class, digest: ls.DeviceDigest, grantWrapped: gw, wrap: ls.Wrap}
 	}
 	return g
 }
@@ -645,7 +658,7 @@ func (s *Server) saveLedger() error {
 			}
 			lg.Secrets = append(lg.Secrets, ledgerSecret{
 				Path: sec.path, Class: sec.class, DeviceDigest: sec.digest,
-				GrantWrapped: hex.EncodeToString(sec.grantWrapped), Wrap: wrap, raw: sec.raw,
+				GrantWrapped: hex.EncodeToString(sec.grantWrapped), Wrap: wrap,
 			})
 		}
 		lg.Secrets = append(lg.Secrets, g.unread...)

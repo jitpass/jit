@@ -9,8 +9,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
-
-	"github.com/jitpass/jit/internal/job"
 )
 
 // Moving existing grant and job keys to where the vault's key is
@@ -152,8 +150,9 @@ func reseal(mover GrantKeyMover, id, target string, items []sealedItem) (_ [][]b
 // the next start tries again.
 //
 // Unless unreadable: the grant or job also holds entries this build cannot
-// read (a newer jit's wrap, kept verbatim, C1). Nothing here knows which
-// kind of key such an entry is sealed for, so every kind is kept.
+// read (a newer jit's wrap, or a field it does not know, kept verbatim, C1).
+// Nothing here knows which kind of key such an entry is sealed for, so every
+// kind is kept.
 func deleteOthers(mover GrantKeyMover, id, target string, unreadable bool) {
 	if unreadable {
 		return
@@ -180,10 +179,16 @@ func (s *Server) moveStandingKeys(mover GrantKeyMover, target string) (int, []er
 	sort.Strings(ids)
 	var todo []*move
 	var settled []string // already on the target
+	var errs []error
 	unread := map[string]bool{}
 	for _, id := range ids {
 		g := s.standing[id]
 		unread[id] = len(g.unread) > 0
+		if n := len(g.unread); n > 0 {
+			// Left sealed as they are, and every kind of key kept for
+			// them; the entries this build does read still move.
+			errs = append(errs, keptUnreadError("standing grant", id, n))
+		}
 		m := &move{g: g}
 		pending := false
 		for d, sec := range g.secrets {
@@ -211,7 +216,6 @@ func (s *Server) moveStandingKeys(mover GrantKeyMover, target string) (int, []er
 
 	// Re-seal every grant in memory first. A grant that fails stays exactly
 	// as it was, and the rest go on.
-	var errs []error
 	var moving []*move
 	for _, m := range todo {
 		sealed, err := reseal(mover, m.g.id, target, m.items)
@@ -295,10 +299,12 @@ func (s *Server) moveJobKeys(mover GrantKeyMover, target string) (int, []error) 
 		if j.KeyID == "" {
 			continue // an each-time job has no key of its own
 		}
-		if !jobReadable(j) {
+		if n := unreadSecrets(j); n > 0 {
 			// Sealed, in part, in a way this build cannot open (a newer
-			// jit's): a run refuses it anyway, and its keys, of whatever
-			// kind, are left for the jit that can.
+			// jit's), or carrying a field it does not know: a run refuses
+			// it anyway, nothing of it is re-sealed, and its keys, of
+			// whatever kind, are left for the jit that can.
+			errs = append(errs, keptUnreadError("AI job", name, n))
 			continue
 		}
 		items := make([]sealedItem, len(j.Secrets))
@@ -358,13 +364,12 @@ func (s *Server) moveJobKeys(mover GrantKeyMover, target string) (int, []error) 
 	return len(moving), errs
 }
 
-// jobReadable reports whether this build knows every wrap a job's secrets
-// are sealed with.
-func jobReadable(j *job.Job) bool {
-	for _, sec := range j.Secrets {
-		if !knownWrap(sec.Wrap) {
-			return false
-		}
+// keptUnreadError is what a move reports for a grant or job holding entries
+// this build cannot read: left sealed as they are, every kind of key kept.
+func keptUnreadError(what, id string, n int) error {
+	which := "1 of its secrets can't be read by this copy of jit and stays as it was"
+	if n != 1 {
+		which = fmt.Sprintf("%d of its secrets can't be read by this copy of jit and stay as they were", n)
 	}
-	return true
+	return fmt.Errorf("%s %s kept every key: %s", what, id, which)
 }

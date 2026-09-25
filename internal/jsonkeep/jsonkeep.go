@@ -13,6 +13,7 @@ package jsonkeep
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -27,9 +28,18 @@ import (
 // cleared stays cleared. Names are matched without regard to case, as
 // encoding/json reads them. A known field whose type is a struct is merged
 // the same way, one level down and further, so an unknown field inside it
-// survives too; a slice or a map is v's alone (an element that must keep its
-// own unknown fields keeps its raw itself). Unknown fields follow the known
-// ones, sorted by name.
+// survives too. So does an element of a slice (or array) of structs, under
+// one rule: an element keeps the unknown fields of the old element whose
+// known fields are exactly its own (the first such not yet taken, wherever it
+// sat), and an element with no such twin, one this build added or changed,
+// is written as v holds it. Matching by index alone would hand one element's
+// fields to another the moment a slice was reordered or had an element
+// removed, and a field a newer jit ties to an element (a nonce beside sealed
+// bytes) must never end up next to different data; matching by content
+// cannot do that, and losing the unknown fields of an element this build
+// changed is what a changed element should lose. A map is v's alone, and so
+// is an element whose type has its own MarshalJSON (it keeps its raw
+// itself). Unknown fields follow the known ones, sorted by name.
 func Marshal(v any, raw json.RawMessage) ([]byte, error) {
 	known, err := json.Marshal(v)
 	if err != nil {
@@ -58,13 +68,20 @@ func merge(known []byte, raw json.RawMessage, t reflect.Type) ([]byte, error) {
 	fields := fieldsOf(t)
 	for i, k := range keys {
 		f, ok := fields.lookup(k)
-		if !ok || !f.nested {
+		if !ok || (!f.nested && f.elem == nil) {
 			continue
 		}
-		if prev, ok := takeFold(old, k, false); ok {
-			if vals[i], err = merge(vals[i], prev, f.typ); err != nil {
-				return nil, err
-			}
+		prev, ok := takeFold(old, k, false)
+		if !ok {
+			continue
+		}
+		if f.nested {
+			vals[i], err = merge(vals[i], prev, f.typ)
+		} else {
+			vals[i], err = mergeElems(vals[i], prev, f.elem)
+		}
+		if err != nil {
+			return nil, err
 		}
 	}
 	for name := range fields {
@@ -88,6 +105,112 @@ type field struct {
 	// nested: a struct (or pointer to one) with no marshaler of its own, so
 	// its unknown fields are merged too.
 	nested bool
+	// elem: for a slice or array of such structs (or pointers to them), the
+	// element type, so each element's unknown fields are merged too
+	// (mergeElems).
+	elem reflect.Type
+}
+
+// mergeable reports whether t (a pointer dereferenced) is a struct whose
+// unknown fields jsonkeep merges: one with no marshaler of its own.
+func mergeable(t reflect.Type) (reflect.Type, bool) {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	ok := t.Kind() == reflect.Struct &&
+		!t.Implements(marshalerType) && !reflect.PointerTo(t).Implements(marshalerType)
+	return t, ok
+}
+
+// mergeElems merges a slice's elements: each element of known takes the
+// unknown fields of the first element of raw not yet taken whose known
+// fields, read as et and written again, are byte for byte its own. An
+// element with no such twin keeps none (Marshal says why). Anything that is
+// not two arrays is known, as it is.
+func mergeElems(known []byte, raw json.RawMessage, et reflect.Type) ([]byte, error) {
+	var kn, old []json.RawMessage
+	if json.Unmarshal(known, &kn) != nil || kn == nil || json.Unmarshal(raw, &old) != nil {
+		return known, nil
+	}
+	// canon[j] is what this build writes for old[j]'s known fields; nil for
+	// one that does not read as et, which then matches nothing.
+	canon := make([][]byte, len(old))
+	for j, o := range old {
+		p := reflect.New(et)
+		if json.Unmarshal(o, p.Interface()) == nil {
+			canon[j], _ = json.Marshal(p.Elem().Interface())
+		}
+	}
+	taken := make([]bool, len(old))
+	var err error
+	for i := range kn {
+		for j := range old {
+			if taken[j] || canon[j] == nil || !bytes.Equal(canon[j], kn[i]) {
+				continue
+			}
+			taken[j] = true
+			if kn[i], err = merge(kn[i], old[j], et); err != nil {
+				return nil, err
+			}
+			break
+		}
+	}
+	var b bytes.Buffer
+	b.WriteByte('[')
+	for i, e := range kn {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.Write(e)
+	}
+	b.WriteByte(']')
+	return b.Bytes(), nil
+}
+
+// Unknown names every member of raw, the object a v was read from, that v's
+// type does not name: at the top, inside a known struct field, and inside
+// each element of a known slice of structs, as a dotted path ("secrets[0].x"),
+// sorted. Names are matched without regard to case, as encoding/json reads
+// them. A record with any is one this build does not fully understand, and a
+// caller that would rewrite what the record's other fields mean (re-seal it)
+// must leave it alone. raw that is not an object names nothing.
+func Unknown(v any, raw json.RawMessage) []string {
+	out := unknown(reflect.TypeOf(v), raw, "")
+	sort.Strings(out)
+	return out
+}
+
+func unknown(t reflect.Type, raw json.RawMessage, prefix string) []string {
+	if t == nil || len(raw) == 0 {
+		return nil
+	}
+	t, ok := mergeable(t)
+	if !ok {
+		return nil
+	}
+	var old map[string]json.RawMessage
+	if json.Unmarshal(raw, &old) != nil {
+		return nil
+	}
+	fields := fieldsOf(t)
+	var out []string
+	for k, val := range old {
+		f, ok := fields.lookup(k)
+		switch {
+		case !ok:
+			out = append(out, prefix+k)
+		case f.nested:
+			out = append(out, unknown(f.typ, val, prefix+k+".")...)
+		case f.elem != nil:
+			var elems []json.RawMessage
+			if json.Unmarshal(val, &elems) == nil {
+				for i, e := range elems {
+					out = append(out, unknown(f.elem, e, fmt.Sprintf("%s%s[%d].", prefix, k, i))...)
+				}
+			}
+		}
+	}
+	return out
 }
 
 type fieldSet map[string]field
@@ -131,9 +254,14 @@ func fieldsOf(t reflect.Type) fieldSet {
 		if name == "" {
 			name = sf.Name
 		}
-		nested := ft.Kind() == reflect.Struct &&
-			!ft.Implements(marshalerType) && !reflect.PointerTo(ft).Implements(marshalerType)
-		out[name] = field{typ: ft, nested: nested}
+		f := field{typ: ft}
+		_, f.nested = mergeable(ft)
+		if ft.Kind() == reflect.Slice || ft.Kind() == reflect.Array {
+			if et, ok := mergeable(ft.Elem()); ok {
+				f.elem = et
+			}
+		}
+		out[name] = f
 	}
 	return out
 }
