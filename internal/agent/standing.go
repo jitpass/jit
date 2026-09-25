@@ -72,6 +72,25 @@ type GrantKeyStore interface {
 // a flag day.
 const standingWrapAEAD = "aead-v1"
 
+// standingWrapEnclave is the Secure Enclave grant key's wrap: ECIES to a
+// P-256 enclave key, class bound inside the sealed bytes (plan C2). Spelled
+// here, not imported, because this package never imports a CGo backend; a
+// test in internal/cli holds it equal to secureenclave.GrantWrap.
+const standingWrapEnclave = "se-p256-v1"
+
+// knownWrap reports whether this build can open a ledger entry's wrap with
+// SOME key. Whether a given grant's key is that kind is keyWrap's question.
+func knownWrap(w string) bool { return w == standingWrapAEAD || w == standingWrapEnclave }
+
+// keyWrap names what k seals: a key that says (the enclave's), or the
+// keychain's aead-v1 for one that predates saying.
+func keyWrap(k GrantKey) string {
+	if w, ok := k.(interface{ Wrap() string }); ok {
+		return w.Wrap()
+	}
+	return standingWrapAEAD
+}
+
 // standingExpiryCompat is the ExpiresUnix a standing grant reports on the
 // WIRE, and nothing else: 2099-12-31, an obviously synthetic date meaning
 // "this does not expire".
@@ -279,7 +298,7 @@ func (s *Server) SetGrantLedger(path string) (count int, err error) {
 			g.lastServe = time.Unix(lg.LastServeUnix, 0)
 		}
 		for _, ls := range lg.Secrets {
-			if ls.Wrap != standingWrapAEAD {
+			if !knownWrap(ls.Wrap) {
 				// A wrap this build cannot open is not served: the grant
 				// then reports fewer secrets than it was made with, and the
 				// list shows the gap. It is kept, verbatim, for saveLedger.
@@ -472,11 +491,12 @@ func (s *Server) createStandingGrant(req Request, target lineage.Process, profil
 			return fail(fmt.Sprintf("grant_create: %s cannot be unwrapped (%s), no grant created", sec.Path, err))
 		}
 		gw, err := key.Seal(dek, sec.Class)
+		wrap := keyWrap(key)
 		wipe(dek)
 		if err != nil {
 			return fail(fmt.Sprintf("grant_create: %s cannot be sealed under the grant key (%s), no grant created", sec.Path, err))
 		}
-		g.secrets[wrappedDigest(sec.Wrapped)] = standingSecret{path: sec.Path, class: sec.Class, digest: wrappedDigest(sec.Wrapped), grantWrapped: gw, wrap: standingWrapAEAD}
+		g.secrets[wrappedDigest(sec.Wrapped)] = standingSecret{path: sec.Path, class: sec.Class, digest: wrappedDigest(sec.Wrapped), grantWrapped: gw, wrap: wrap}
 	}
 
 	s.grantMu.Lock()
@@ -536,6 +556,11 @@ func (s *Server) standingUnwrap(c *caller, wrapped []byte) (dek []byte, path str
 			continue
 		}
 		s.grantMu.Unlock()
+		// An entry sealed in another kind than this grant's key (mid-move
+		// between keychain and enclave) is never tried with the wrong key.
+		if w := sec.wrap; w != "" && w != keyWrap(key) {
+			continue
+		}
 		out, err := key.Open(sec.grantWrapped, sec.class)
 		if err != nil {
 			continue

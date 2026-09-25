@@ -167,10 +167,10 @@ var agentRunCmd = &cobra.Command{
 		// agent-side resolution is what makes the grant prompt trustworthy.
 		server.OnResolveGrant = resolveGrantSecrets(root)
 		// Standing grants (design/standing-grants.md): each holds its own
-		// keychain key and persists in the ledger, so they are loaded
+		// key (keychain, or Secure Enclave for an enclave vault) and persists in the ledger, so they are loaded
 		// before the socket opens and outlive this process. A ledger that
 		// fails to parse is left untouched and reported, never overwritten.
-		server.GrantKeys = grantKeyStore{}
+		server.GrantKeys = newGrantKeyStore(root)
 		server.OnWrappedDEK = wrappedDEKReader(root)
 		if n, err := server.SetGrantLedger(agent.GrantLedgerPath(root)); err != nil {
 			fmt.Fprintf(stderr, "jit service: standing grants not loaded: %v\n", err)
@@ -187,6 +187,27 @@ var agentRunCmd = &cobra.Command{
 			fmt.Fprintf(stderr, "jit service: AI jobs not loaded: %v\n", err)
 		} else if n > 0 {
 			fmt.Fprintf(stdout, "jit service: %s loaded\n", countWord(n, "AI job", "AI jobs"))
+		}
+		// Grant and job keys follow the vault's key (Secure Enclave plan C3):
+		// after a vault moves, its existing keys move at the next start,
+		// before the socket opens so nothing is served mid-move. A key that
+		// cannot move keeps working where it is, and the log says why.
+		moved, moveErrs := server.MoveGrantKeys()
+		if moved > 0 {
+			fmt.Fprintf(stdout, "jit service: moved %s to where the vault key is\n", countWord(moved, "grant or job key", "grant or job keys"))
+		}
+		for _, err := range moveErrs {
+			fmt.Fprintf(stderr, "jit service: %v\n", err)
+		}
+		// Keys nothing names any more (plan C4): only when both the ledger
+		// and the job list loaded, since otherwise every key looks unused.
+		if deleted, errs := server.DeleteOrphanGrantKeys(); len(deleted) > 0 || len(errs) > 0 {
+			if len(deleted) > 0 {
+				fmt.Fprintf(stdout, "jit service: deleted %s nothing uses\n", countWord(len(deleted), "grant or job key", "grant or job keys"))
+			}
+			for _, err := range errs {
+				fmt.Fprintf(stderr, "jit service: unused-key cleanup: %v\n", err)
+			}
 		}
 		// Best-effort "how were you asked" for the audit trail: probe once per
 		// fresh challenge whether Touch ID is currently usable, so a denial or

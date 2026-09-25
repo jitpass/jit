@@ -19,7 +19,7 @@ import (
 // so a downgrade and an upgrade again lost the grant's secrets.
 func TestLedgerKeepsEntriesItCannotOpen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "grants.json")
-	unknown := ledgerSecret{Path: "aws/secret", Class: "aws", DeviceDigest: "d2", GrantWrapped: "c0ffee", Wrap: "se-p256-v1"}
+	unknown := ledgerSecret{Path: "aws/secret", Class: "aws", DeviceDigest: "d2", GrantWrapped: "c0ffee", Wrap: "future-v9"}
 	known := ledgerSecret{Path: "stripe/key", Class: "env", DeviceDigest: "d1", GrantWrapped: "00ff", Wrap: standingWrapAEAD}
 	g := ledgerGrant{ID: "g-01", CreatedUnix: 1, Profiles: []GrantProfile{}, Secrets: []ledgerSecret{known, unknown}}
 	g.Anchor.ExecPath, g.Anchor.Name = "/Applications/Claude.app", "Claude"
