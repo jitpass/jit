@@ -23,6 +23,10 @@ func TestStatusVaultInitialized(t *testing.T) {
 		{keystore.Present, "yes"},
 		{keystore.Absent, "no"},
 		{keystore.Indeterminate, "unknown"},
+		// A lost or unreachable enclave key is a vault that exists: "no"
+		// would have the app offer setup over it.
+		{keystore.KeyLost, "yes"},
+		{keystore.Unavailable, "yes"},
 	} {
 		t.Run(tc.want, func(t *testing.T) {
 			home := withFixtureHome(t)

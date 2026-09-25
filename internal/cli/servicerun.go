@@ -46,6 +46,12 @@ import (
 // plaintext master key that outlives every lock, screen-lock and sleep wipe.
 var _ agent.ClosableFetcher = (*keychainwrap.Wrapper)(nil)
 
+// What the service actually builds per unlock is a keystore.Fetcher, whose
+// backend depends on the vault; if its method set drifted from
+// agent.ClosableFetcher, closeFetcher's runtime check would stop matching and
+// no fetcher would be wiped after an unlock.
+var _ agent.ClosableFetcher = keystore.Fetcher(nil)
+
 var agentTTL time.Duration
 
 // agentConsent turns on per-process credential consent in the running service
@@ -135,7 +141,7 @@ var agentRunCmd = &cobra.Command{
 			fmt.Fprintf(stderr, "jit service: rotating %s: %v\n", logPath, err)
 		}
 
-		server := agent.NewServer(agent.SocketPath(root), func() agent.MEKFetcher { return keystore.Open(root).NewFetcher() }, agentTTL)
+		server := agent.NewServer(agent.SocketPath(root), func() agent.MEKFetcher { return openKeyStore(root).NewFetcher() }, agentTTL)
 		home, _ := os.UserHomeDir()
 		mounts := &mountManager{root: root, home: home, keyWrapper: server, refResolver: onepassword.New(), stdout: stdout, stderr: stderr}
 		if agentConsent {

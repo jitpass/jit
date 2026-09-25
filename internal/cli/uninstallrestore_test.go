@@ -203,7 +203,7 @@ func stubUninstallSystem(t *testing.T, v *vault.Vault) (keysDeleted *bool) {
 	})
 	deleted := false
 	launchctlRun = func(...string) ([]byte, error) { return nil, nil }
-	deleteVaultKeys = func() error { deleted = true; return nil }
+	deleteVaultKeys = func(keystore.Store) error { deleted = true; return nil }
 	uninstallOpenVault = func(string) (*vault.Vault, error) { return v, nil }
 	uninstallChallenge = func(string) error { return nil }
 	return &deleted
