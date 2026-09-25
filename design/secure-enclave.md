@@ -1,0 +1,218 @@
+# Secure Enclave: the master key behind hardware, nothing else moves
+
+**Status: design; spikes S1, S1b, S2, S3a, S3b, S3c and S4 passed 2026-09-25 (`spike/secure-enclave-mek/FINDINGS.md`). Nothing built in jit or jit-app. Parked behind AI Jobs.** Read
+`standing-grants.md` ("For the Secure Enclave move") and
+`agent-jobs.md` (branch `ai-jobs`) first; this page keeps both working
+unchanged.
+
+Today the Touch ID prompt is a check jit runs on itself
+(`keychainwrap.go:19`, "not cryptographically enforced"): the master key
+(MEK) is a plain item in the login keychain, and any program running as the
+user that can read that item skips the prompt. Moving the key into the Secure
+Enclave makes the prompt the hardware's decision, not jit's.
+
+## Are we ready? (checked 2026-09-25)
+
+| Area | Ready? | Evidence |
+|---|---|---|
+| One place the key enters the service | **Yes** | `agent.MEKFetcher.FetchMEK` (`internal/agent/fetcher.go`). Every prompt goes through it (`promptOrBroker`, `consentbroker.go:189`), including an AI Job's per-run Touch ID |
+| Stored secrets independent of how the MEK is stored | **Yes** | Envelopes hold DEKs wrapped by the MEK (`vault.go:229`); nothing records where the MEK lives |
+| Grant and job keys behind an interface | **Yes** | `agent.GrantKeyStore` (`standing.go:61`); jobs reuse it (`ai-jobs` branch, `job.go:226`, `:555`) |
+| Key formats versioned, unknown ones refused | **Yes** | `standingWrapAEAD = "aead-v1"`; the grant loader skips an unknown wrap (`standing.go:271`); the job runner refuses one (`ai-jobs`, `job.go:643`) |
+| Enclave crypto works for our shape | **Yes, measured** | S1: a sealed 113-byte MEK, 4.5 ms to open, tamper and wrong-key refused. S1b: sealing never prompts |
+| Machinery to swap keys safely | **Yes** | `vault rekey`'s staged key, marker file and resume (`vaultrekey.go`) |
+| The agent runs from inside the app | **Yes** | The plist points at `/Applications/JitPass.app/Contents/MacOS/jit` |
+| A provisioning profile | **Half** | App ID `com.jitpass.agent` and the development profile `JitPass Agent Dev` exist (2026-09-25), carrying `keychain-access-groups = CZC6BH93GJ.*`. The Developer ID profile for CI is not made yet |
+| **Entitlements on jit's own signature** | **No** | jit-app's `sign.sh` signs without `--deep`, so the bundled `jit` keeps the signature goreleaser gave it, which carries no entitlements. The entitlement has to be on *that* binary |
+| **A helper bundle for the agent** | **No, and now required by measurement** | S3a: a second executable in a correctly signed bundle is killed at launch (exit 137); only the main executable gets the profile. `Contents/MacOS/jit` is a second executable in `JitPass.app` |
+| CLI commands that read the key without the service | **Yes** | Eleven call sites build `keychainwrap.New()` in the CLI process (below). S3c: a Go `jit` as the helper's main executable, reached through a symlink and a `PATH` lookup, creates and opens the key |
+| **Grants and never-ask jobs while the screen is locked** | **At risk, fix measured** | S4: `WhenUnlocked` fails `-25308` about 9 s after locking; `AfterFirstUnlock` keeps working. Today's items are in the file-based login keychain (checked: `login.keychain-db`), which ignores `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`. Enclave keys live in the data-protection keychain, which enforces it. A straight port stops never-ask jobs whenever the Mac is locked |
+| **Moving to a new Mac** | **Regression to design for** | A file-based login keychain item is carried by Migration Assistant; an enclave key never is. S6 confirms today's behaviour |
+| Macs without Touch ID | **Covered** | S2: a `UserPresence` key's dialog offers "Use Password…". The old spike used `BiometryAny`, which fails with no fingerprint enrolled. Use `UserPresence` (Touch ID or the login password), matching today's fallback |
+| Tarball / `go install` users | **Stay as they are** | A bare binary can never hold the entitlement (`spike/secure-enclave/FINDINGS.md`). They keep `keychainwrap` |
+
+**Verdict.** The code is ready: one seam, versioned formats, interfaces
+where the keys live, and nothing in AI Jobs or MCP that depends on how the
+MEK is stored. The packaging is not ready: profile, helper bundle,
+entitlements on jit's signature. Three behaviours need a decision before
+the first line of code: screen lock, a new Mac, and Macs without Touch ID.
+
+## The decision: the enclave key seals the MEK, the MEK stays
+
+The enclave holds a P-256 key. The MEK stays a 32-byte AES key, stored
+**sealed** to that enclave key (ECIES) instead of in the clear. Unlocking
+opens the sealed MEK, which asks for Touch ID in hardware. From there
+everything is today's code.
+
+```
+today      FetchMEK → jit's own LAContext check → read plain keychain item → MEK
+enclave    FetchMEK → SecKeyCreateDecryptedData(enclave key, sealed MEK)
+                        └ the enclave asks (Touch ID or password) → MEK
+```
+
+What does **not** change:
+
+- **Envelopes.** Every secret, backup and archived version stays wrapped by
+  the same MEK. Nothing is rewritten.
+- **The service's session.** The agent still keeps the MEK in memory for the
+  idle TTL, still drops it on lock and sleep, and still names the caller in
+  the prompt (the reason travels on the LAContext).
+- **Standing grants and AI Jobs.** In phase 1 they don't notice. Phase 2
+  moves their keys without a prompt and without re-approval (below).
+- **`jit mcp`.** A socket client that never unwraps.
+
+**Rejected: an enclave key per secret.** Each read would reach the enclave
+and could prompt; the session model, grants, the ledger and every envelope
+would change, and the whole vault would need rewriting. It costs far more
+and adds little: the MEK already sits in the service's memory during a
+session, whatever wraps it at rest.
+
+**What it buys, stated honestly.** At rest, the MEK can no longer be read by
+another program running as you, not even with the keychain unlocked. During
+a session, the MEK is still in the service's memory, as it is today. A
+hardened-runtime binary without `get-task-allow` cannot be attached to by a
+same-user debugger, which S3 confirms on the signed helper.
+
+## Phase 1: the master key
+
+**Keys.**
+
+| Item | Where | Access control |
+|---|---|---|
+| Vault key-encryption key | Secure Enclave, tag `com.jitpass.vault.kek` | `PrivateKeyUsage \| UserPresence`, `WhenUnlockedThisDeviceOnly` |
+| Sealed MEK | `<vault root>/vault-key.sealed`, 0600, JSON `{version, wrap: "se-p256-ecies-v1", kek_tag, blob}` | ciphertext; its presence is how every jit knows this vault uses the enclave |
+
+Both keys live in the keychain access group **`CZC6BH93GJ.com.jitpass.vault`**,
+not one derived from a bundle ID. `menu-bar-app.md` warns that a key tied to
+the bundle ID is orphaned if the ID changes; a named group can be granted to
+whichever signed binary needs it.
+
+**Code.** A new `internal/secureenclave` implementation of `agent.MEKFetcher`
+and `vault.KeyWrapper` (the package exists and holds only `doc.go`), plus one
+factory both the service and the CLI call, `keystore.Open(root)`, that
+returns the enclave wrapper when `vault-key.sealed` exists and
+`keychainwrap` otherwise. The eleven direct call sites move to the factory:
+
+| Call site | What it does |
+|---|---|
+| `servicerun.go:136` | the service's fetcher |
+| `vault.go:65`, `:1614`, `:2748` | fresh-auth commands: a presence check, restoring a version, `migrate caches`, export |
+| `vault.go:1009` | `vault init` |
+| `vault.go:2441`, `uninstallsteps.go:92` | deleting the key |
+| `vault.go:2775` | the CLI's fallback when the service is down |
+| `vaultrekey.go:64` | rekey |
+| `doctorsections.go:80` (which `status` also reads), `firstrun.go:148` | presence checks without a prompt: the sealed file exists **and** the enclave key is found by tag |
+
+If S3c fails (the CLI through the symlink doesn't get the entitlement), the
+fresh-auth commands need a new service op, and the service-down fallback
+becomes an error: *"Start the jit service: this vault's key is in the Secure
+Enclave."*
+
+**Migrating a vault.** `jit vault rekey --wrapper secure-enclave`, the name
+`menu-bar-app.md` already reserves, run by hand first:
+
+1. Fresh Touch ID; read the plain MEK. Write the rekey marker.
+2. Create the enclave key; seal the MEK; write `vault-key.sealed.next`.
+3. Open it back through the enclave and compare it with the MEK. S2 checks
+   whether the LAContext from step 1 covers this, so there is only one
+   prompt.
+4. Rename to `vault-key.sealed`; `lockAgent()` so the service reloads.
+5. Only then delete the plain keychain item. Remove the marker.
+
+A crash anywhere before step 5 leaves the plain key in place and working.
+The reverse, `--wrapper keychain`, writes the plain item back, verifies it,
+then deletes the sealed file and the enclave key. **The reverse ships
+tested before the forward** (`menu-bar-app.md:133`). Rotating the MEK
+itself stays today's `vault rekey`; under the enclave, staging a new MEK is
+sealing it, which S1b shows needs no prompt.
+
+## Phase 2: grant and job keys
+
+`standing-grants.md` has this rule: both keys move, one flag apart. If only
+the MEK moved, a grant key in the clear would be the weakest item in the
+vault.
+
+- Each grant or never-ask job gets an enclave key **without** `UserPresence`.
+  Only the signed service can use it, and it never asks.
+- Accessibility **`AfterFirstUnlockThisDeviceOnly`**, not `WhenUnlocked`.
+  This is the lock-screen trap from the readiness table: grants and never-ask
+  jobs are meant to work while you are away, and today they do only because
+  the file keychain ignores the setting. S4 checks it.
+- A DEK copy is sealed to the grant key's public half (`wrap:
+  "se-p256-v1"`, the name `standing-grants.md` already reserved). Revoking
+  deletes the enclave key, and every sealed copy becomes unreadable forever.
+- **The move needs no prompt and no re-approval.** On start, the service
+  opens each `aead-v1` copy with the old plain grant key (never prompts),
+  seals it to a new enclave key (never prompts, S1b), writes the ledger or
+  `jobs.json` atomically, then deletes the plain key. An older jit that meets
+  `se-p256-v1` refuses it, which is already tested behaviour (`standing.go:271`,
+  `job.go:643`).
+- Cost: 4.5 ms per secret per use (S1). A three-secret job adds about 14 ms
+  to a run.
+
+## Packaging (jit-app)
+
+1. **Apple Developer portal:** an App ID for the helper (`com.jitpass.agent`)
+   with the keychain access group above, and a **Developer ID** provisioning
+   profile for it. Stored as a CI secret beside `MACOS_SIGN_P12`.
+2. **Helper bundle:** `JitPass.app/Contents/Helpers/JitPass Agent.app/Contents/MacOS/jit`,
+   with its own `Info.plist` (`CFBundleExecutable = jit`) and
+   `embedded.provisionprofile`. The Homebrew cask's `binary` and the app's
+   `JitCLI` point at this path. `selfpath.Stable` writes it into the plist.
+3. **Signing inside out:** `fetch-jit.sh` still verifies goreleaser's
+   signature, then `sign.sh` re-signs the helper with
+   `Resources/Agent.entitlements` (`keychain-access-groups`,
+   `com.apple.application-identifier`, `com.apple.developer.team-identifier`),
+   then signs the outer app. Notarization covers the whole thing as today.
+4. **`verify.sh`** asserts the helper's entitlements, the embedded profile's
+   team and access group, and the profile's expiry date.
+5. **Updating the plist:** the first service start from a new app rewrites
+   `com.jitpass.agent.plist` to the helper path. The bundled-jit swap trap
+   (remove, copy, re-sign) applies to the helper as well.
+
+`upgrade.go`'s `inAppBundle` already refuses any `.app/Contents/MacOS/` path,
+so it covers the nested helper without a change.
+
+## Spike plan
+
+Each spike states what counts as a pass. S1 and S1b ran here
+(`spike/secure-enclave-mek/FINDINGS.md`).
+
+| # | Question | Needs | Pass |
+|---|---|---|---|
+| S1 | Seal and open the MEK with an enclave key | nothing | **Passed 2026-09-25:** identical round trip, tamper and wrong key refused, open p50 4.5 ms |
+| S1b | Sealing to a Touch ID key never prompts | nothing | **Passed 2026-09-25:** 0.31 s, no dialog |
+| — | **The name in the dialog** | — | S2 found the dialog says "<CFBundleName> is trying to …", so the helper's bundle name is user-facing text. Choose it on purpose ("JitPass") |
+| S2 | The prompt: our reason text, the password fallback, one LAContext covering two opens | a human, profile | **Passed 2026-09-25:** the 74-character AI Jobs sentence shows in full; "Use Password…" offered; the same LAContext's second open took 0.008 s with no dialog |
+| S3a | A **persistent** enclave key from the helper's main executable | profile | **Passed 2026-09-25:** created, found from two later processes, MEK round trip. Controls reproduce `-34018` (no entitlements) and exit 137 (no bundle). A second executable in the bundle is killed (137); a symlink to the main executable works |
+| S3b | The same, started by launchd | profile | **Passed 2026-09-25:** ppid 1, create, find, round trip, delete, exit 0. The prompt from a LaunchAgent is still to see; S2 ran from a terminal |
+| S3c | A Go `jit` through a symlink → the helper | profile | **Passed 2026-09-25** via symlink, `PATH` lookup and direct path. The real cask install is confirmed when the helper ships |
+| S3d | Hardened runtime blocks a same-user debugger | profile | `lldb -p <agent pid>` is refused |
+| S4 | A grant key while the screen is locked | profile, a human | **Passed 2026-09-25:** `AfterFirstUnlock` opened throughout a 45 s lock; `WhenUnlocked` failed `-25308` from about 9 s in. Hold a lock for at least 15 s when testing |
+| S3e | Existing installs: the old path as a symlink into the helper | profile | **Passed 2026-09-25:** direct, through an outside symlink, and under launchd; outer app verifies `--strict --deep` |
+| S5 | Migration both ways on test identifiers | profile | keychain → enclave → keychain with a test service name and tag; every envelope in a fixture vault opens at each step; a crash injected at each step leaves a working vault |
+| S6 | What a new Mac inherits today | a second Mac or a VM | Migration Assistant carries `com.jitpass.vault.mek`: yes or no. Yes means the enclave move needs a recovery step (below) |
+
+S3–S5 are one signed build: a minimal helper bundle made by the spike's own
+script, signed with the Developer ID identity and the new profile, on a Mac
+where CI's identity is imported. None of them touch the real MEK: test tag
+`com.jitpass.spike.kek`, test service names, per `keychainwrap`'s rule that
+no test ever shares a production identifier.
+
+## Open decisions
+
+1. **A new Mac.** If S6 says today's key travels with Migration Assistant,
+   the enclave takes that away. Options: (a) the migration command requires a
+   `jit vault export` first and says why; (b) a second recipient (a recovery
+   key the user writes down), which needs `wrappedDEKFor`'s single-recipient
+   fallback replaced first (`standing-grants.md`). Recommendation: (a) for
+   phase 1; (b) as its own design.
+2. **Default or opt-in.** Recommendation: opt-in via `vault rekey --wrapper
+   secure-enclave` for one release, then the default for new vaults only,
+   then an offer in the app for existing ones. An automatic flip for
+   existing vaults is the one-way door `menu-bar-app.md` warns about.
+3. **Order against AI Jobs.** AI Jobs and MCP can merge first; nothing on the
+   branch depends on how keys are stored. Two follow-ups to keep it that way:
+   the orphan-key reconciler both designs still lack must know enclave tags
+   as well as `j-` ids, and a job's per-run prompt text must stay within the
+   limit S2 measures.
