@@ -31,9 +31,9 @@ Rules that shape the order:
 
 Sizes: S is up to a day, M is 2–3 days, L is about a week.
 
-### Track A: jit-app, the helper bundle (can start now)
+### Track A: jit-app, the helper bundle (after jit-app `ai-jobs` merges)
 
-These touch packaging and two Swift files, not the AI Jobs window.
+These touch packaging and two Swift files. The AI Jobs session also has a jit-app `ai-jobs` branch, and agreed on 2026-09-25 to say when it merges; track A starts after that, so the two never collide.
 
 **A1. Move `jit` into a helper bundle, with no entitlements yet (M).**
 This ships the layout change on its own, so any fallout from moving the path
@@ -90,6 +90,15 @@ is separate from any fallout from the Secure Enclave.
   app identifier and access group, and that it has at least 90 days left.
 - **Spike S3d** on the first Developer ID build: `lldb -p` against the
   helper is refused.
+
+**A4. The app surfaces (M), for R3.** Built from the mockup at
+<https://claude.ai/artifact/LUYNYiqniK546yh3WMhA6U> once Meni approves it:
+a "Where the vault key is kept" card in Settings › Vault, the move sheet
+(recovery file first), the banner and the failure row, the Move Back alert
+in `···`, and two Doctor cards (Recommended: the offer; Fix now: the enclave
+has no key). It needs the engine to report the backend: `jit doctor
+--format json` gains the key's place, so the app runs no new command to
+learn it.
 
 **A3. Docs (S).** `menu-bar-app.md` (the Shape drawing L42–50 is stale
 twice over; Identity L63–65 moves to `com.jitpass.agent`; phase 3 L129–136;
@@ -213,13 +222,14 @@ tests stay. The CLI's fixed reasons (`vaultrekey.go:88,92`,
 ## Order and releases
 
 ```
-now          A1 ──▶ A2 (needs the Developer ID profile) ──▶ A3
-             B1 (new files)
-AI Jobs ✓    B2 ──▶ B3 ──▶ B4 ──▶ B5
+now          B1 (new files only)
+AI Jobs ✓    A1 ──▶ A2 (needs the Developer ID profile) ──▶ A3
+             B2 ──▶ B3 ──▶ B4 ──▶ B5
 release R1   A1 alone: the helper layout, no Secure Enclave
 release R2   A2 + B1–B4: `vault rekey --wrapper secure-enclave`, hidden;
              Meni's own vault first, then the reverse, then forward again
-release R3   flag documented; an app offer (mockup first, per the UI rule)
+release R3   flag documented; the app's Settings card, move sheet and Doctor offer
+             (mockup: https://claude.ai/artifact/LUYNYiqniK546yh3WMhA6U)
 release R4   the default for new vaults (D4)
 release R5   C1–C5: grant and job keys, migrated silently
 ```
