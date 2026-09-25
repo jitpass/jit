@@ -21,8 +21,8 @@
 // Wrapper satisfies vault.KeyWrapper, vault.LabeledKeyWrapper,
 // agent.MEKFetcher and agent.ClosableFetcher, and has keychainwrap's
 // RequireUserPresence. internal/keystore chooses it for a vault whose root
-// holds the sealed key file (step B3); no vault has one until step B4's
-// `jit vault rekey --wrapper secure-enclave` writes it.
+// holds the sealed key file (step B3), which `jit vault rekey --wrapper
+// secure-enclave` writes (step B4, internal/cli/vaultmove.go).
 //
 // # What it guarantees, and what it does not
 //

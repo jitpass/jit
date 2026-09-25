@@ -76,3 +76,16 @@ func TestInstallMEKRefusesAWrongSize(t *testing.T) {
 		t.Fatal("installed a 16-byte key")
 	}
 }
+
+func TestNewTestingRefusesProductionNames(t *testing.T) {
+	for _, service := range []string{prodService, "com.jitpass.vault.mek.other"} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("NewTesting(%q) did not refuse", service)
+				}
+			}()
+			NewTesting(service, "a", noChallenge)
+		}()
+	}
+}

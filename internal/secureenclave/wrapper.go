@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"golang.org/x/sys/unix"
@@ -68,6 +69,24 @@ func New(root string) *Wrapper {
 
 func newWrapper(root, tag string, enc enclave) *Wrapper {
 	return &Wrapper{path: filepath.Join(root, SealedFile), tag: tag, enc: enc}
+}
+
+// NewTesting and NewStagedTesting return the real enclave Wrapper under a
+// TEST-ONLY tag, for tests in other packages that drive the hardware
+// (internal/cli's move test, through scripts/se-test.sh). They panic on any
+// tag without "TEST-ONLY", so no test can reach the vault's own key.
+func NewTesting(root, tag string) *Wrapper {
+	if !strings.Contains(tag, "TEST-ONLY") || tag == prodTag {
+		panic("secureenclave.NewTesting: tag " + tag + " is not a TEST-ONLY identifier")
+	}
+	return newWrapper(root, tag, hardware{tag: tag, group: AccessGroup, presence: true})
+}
+
+// NewStagedTesting is NewTesting over the staged sealed file.
+func NewStagedTesting(root, tag string) *Wrapper {
+	w := NewTesting(root, tag)
+	w.path += stagedSuffix
+	return w
 }
 
 // stagedSuffix names the sealed file a move writes and verifies before it

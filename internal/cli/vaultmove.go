@@ -313,10 +313,20 @@ func runVaultMove(cmd *cobra.Command, root, target string) error {
 	return nil
 }
 
-// newKeyMover wires the production operations: keychainwrap for the
-// keychain half, secureenclave for the enclave half.
+// newKeyMover wires the production operations: the vault's own keychain
+// item and enclave key.
 func newKeyMover(root string, out io.Writer) *keyMover {
-	kc := keystore.Keychain()
+	return newKeyMoverWith(root, out, keystore.Keychain(),
+		func() *secureenclave.Wrapper { return secureenclave.New(root) },
+		func() *secureenclave.Wrapper { return secureenclave.NewStaged(root) },
+		lockAgent)
+}
+
+// newKeyMoverWith wires a mover to a keychain Wrapper and enclave Wrapper
+// constructors: production passes the vault's own, the hardware test passes
+// TEST-ONLY ones. Each enclave use gets a fresh Wrapper, closed after, so no
+// MEK stays cached in one.
+func newKeyMoverWith(root string, out io.Writer, kc *keychainwrap.Wrapper, se, seStaged func() *secureenclave.Wrapper, lock func()) *keyMover {
 	return &keyMover{
 		root: root,
 		out:  out,
@@ -334,24 +344,22 @@ func newKeyMover(root string, out io.Writer) *keyMover {
 			defer kc.Close()
 			return kc.FetchMEK(reason)
 		},
-		kcInstall: kc.InstallMEK,
-		kcDelete:  kc.DeleteMEK,
-		seInstallStaged: func(mek []byte) error {
-			return secureenclave.NewStaged(root).Install(mek)
-		},
+		kcInstall:       kc.InstallMEK,
+		kcDelete:        kc.DeleteMEK,
+		seInstallStaged: func(mek []byte) error { return seStaged().Install(mek) },
 		seOpenStaged: func(reason string) ([]byte, error) {
-			w := secureenclave.NewStaged(root)
+			w := seStaged()
 			defer w.Close()
 			return w.FetchMEK(reason)
 		},
 		sePromote:      func() error { return secureenclave.PromoteStaged(root) },
 		seRemoveStaged: func() error { return secureenclave.RemoveStaged(root) },
 		seOpen: func(reason string) ([]byte, error) {
-			w := secureenclave.New(root)
+			w := se()
 			defer w.Close()
 			return w.FetchMEK(reason)
 		},
-		seDelete:  func() error { return secureenclave.New(root).Delete() },
-		lockAgent: lockAgent,
+		seDelete:  func() error { return se().Delete() },
+		lockAgent: lock,
 	}
 }
