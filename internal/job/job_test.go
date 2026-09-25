@@ -84,11 +84,12 @@ func TestStoreRoundTripAndNewerRefused(t *testing.T) {
 		Name: "notion-guests", Dir: "/x", Argv: []string{"python", "a.py"}, Exe: "/usr/bin/python3",
 		Ask: AskEachTime, Secrets: []Secret{{Var: "K", Path: "notion/K", DeviceDigest: "ab"}},
 	}
-	if err := Save(path, jobs); err != nil {
+	data, err := Encode(jobs, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("jobs.json mode = %v, %v; want 0600", info.Mode().Perm(), err)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
 	}
 	back, err := Load(path)
 	if err != nil || back["notion-guests"] == nil || back["notion-guests"].Secrets[0].Path != "notion/K" {

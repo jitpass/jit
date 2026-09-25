@@ -13,6 +13,7 @@ import (
 
 	"github.com/jitpass/jit/internal/auditlog"
 	"github.com/jitpass/jit/internal/lineage"
+	"github.com/jitpass/jit/internal/unlockreason"
 )
 
 // caller is who asked the agent to do something, as the KERNEL describes
@@ -194,9 +195,9 @@ func intent(op string, c *caller) string {
 	}
 	switch op {
 	case OpWrap:
-		return "unlock the vault to store a secret"
+		return unlockreason.Store
 	case OpUnwrap:
-		return "unlock the vault to read a secret"
+		return unlockreason.Read
 	case opServeMounts:
 		return "unlock the vault to serve this project's mounted files"
 	default: // OpUnlock, OpRefresh, and anything added later

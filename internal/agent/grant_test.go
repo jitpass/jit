@@ -357,7 +357,7 @@ func TestGrantRevokeIsImmediateAndUnauthenticated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GrantCreate: %v", err)
 	}
-	if err := c.GrantRevoke(st.ID); err != nil {
+	if _, err := c.GrantRevoke(st.ID); err != nil {
 		t.Fatalf("GrantRevoke: %v", err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 1 {
@@ -371,7 +371,7 @@ func TestGrantRevokeIsImmediateAndUnauthenticated(t *testing.T) {
 	}
 	assertGrantEndEvent(t, s, grantEndRevoked)
 
-	if err := c.GrantRevoke(st.ID); err == nil || !strings.Contains(err.Error(), "no grant") {
+	if _, err := c.GrantRevoke(st.ID); err == nil || !strings.Contains(err.Error(), "no grant") {
 		t.Errorf("revoking twice = %v, want a no-such-grant error", err)
 	}
 }
@@ -533,7 +533,7 @@ func TestGrantEventsReachTheDurableSink(t *testing.T) {
 	// A serve pends in the collapse window; a history read is one of the
 	// moments that must flush it to the sink.
 	_ = s.history()
-	if err := c.GrantRevoke(st.ID); err != nil {
+	if _, err := c.GrantRevoke(st.ID); err != nil {
 		t.Fatalf("GrantRevoke: %v", err)
 	}
 
@@ -662,7 +662,7 @@ func TestGrantExpiryTimersDoNotAccumulate(t *testing.T) {
 	}
 
 	// Ending the grant leaves none behind.
-	if err := c.GrantRevoke(st.ID); err != nil {
+	if _, err := c.GrantRevoke(st.ID); err != nil {
 		t.Fatalf("GrantRevoke: %v", err)
 	}
 	s.grantMu.Lock()

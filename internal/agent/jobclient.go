@@ -49,9 +49,11 @@ func (c *Client) JobNames() ([]JobStatus, error) {
 }
 
 // JobRemove deletes a job now. No prompt: reducing access is always free.
-func (c *Client) JobRemove(name string) error {
-	_, err := c.call(Request{Op: OpJobRemove, JobName: name})
-	return err
+// keyNote is set when the job is gone but its key could not be deleted from
+// the service's copy of jit (Response.KeyNote); show it.
+func (c *Client) JobRemove(name string) (keyNote string, err error) {
+	resp, err := c.call(Request{Op: OpJobRemove, JobName: name})
+	return resp.KeyNote, err
 }
 
 // JobRun asks the service to run a job and waits for it to finish. The

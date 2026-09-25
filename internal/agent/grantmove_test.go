@@ -13,6 +13,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -29,7 +30,20 @@ type memMover struct {
 	target     string
 	failCreate error
 	failDelete error
+	// failSeal makes every key CreateWrap hands out refuse to seal: a move
+	// that got its new key and then could not re-seal with it.
+	failSeal error
 }
+
+// sealFails is a key whose Seal always fails, reporting the wrap of the key
+// it wraps.
+type sealFails struct {
+	GrantKey
+	err error
+}
+
+func (k sealFails) Seal([]byte, string) ([]byte, error) { return nil, k.err }
+func (k sealFails) Wrap() string                        { return keyWrap(k.GrantKey) }
 
 func newMemMover() *memMover {
 	return &memMover{kc: map[string][]byte{}, se: map[string][]byte{}, target: GrantWrapKeychain}
@@ -58,14 +72,17 @@ func (m *memMover) CreateWrap(id, wrap string) (GrantKey, error) {
 	if m.failCreate != nil {
 		return nil, m.failCreate
 	}
-	if k, ok := m.of(wrap)[id]; ok {
-		return handOut(wrap, k), nil
+	k, ok := m.of(wrap)[id]
+	if !ok {
+		k = make([]byte, 32)
+		if _, err := rand.Read(k); err != nil {
+			return nil, err
+		}
+		m.of(wrap)[id] = k
 	}
-	k := make([]byte, 32)
-	if _, err := rand.Read(k); err != nil {
-		return nil, err
+	if m.failSeal != nil {
+		return sealFails{handOut(wrap, k), m.failSeal}, nil
 	}
-	m.of(wrap)[id] = k
 	return handOut(wrap, k), nil
 }
 
@@ -264,7 +281,7 @@ func TestMoveGrantKeysMovesANeverAskJob(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "jobs.json")
 	j := &job.Job{Name: "notion-guests", Dir: "/tmp", Argv: []string{"x"}, Exe: "/bin/x", Ask: job.AskNever, KeyID: "j-1",
 		Secrets: []job.Secret{{Var: "TOKEN", Path: "notion/token", Class: "env", DeviceDigest: "dd", KeyWrapped: hex.EncodeToString(sealed), Wrap: GrantWrapKeychain}}}
-	if err := job.Save(path, map[string]*job.Job{j.Name: j}); err != nil {
+	if err := saveJobFile(path, map[string]*job.Job{j.Name: j}); err != nil {
 		t.Fatal(err)
 	}
 	s := &Server{GrantKeys: store}
@@ -288,5 +305,438 @@ func TestMoveGrantKeysMovesANeverAskJob(t *testing.T) {
 	deks := map[string][]byte{}
 	if err := s.openJobKeys(reloaded["notion-guests"], deks); err != nil || !bytes.Equal(deks["dd"], dek) {
 		t.Fatalf("the moved job does not open: %v", err)
+	}
+}
+
+// A move that made (or found) the new key and then failed leaves the grant
+// sealed for its old key, beside a key of the new kind. Serving must use the
+// key the entries are sealed for, not whichever kind exists: the store's
+// plain Load prefers the enclave's, which opens nothing here.
+func TestAGrantAMoveFailedOnStillServes(t *testing.T) {
+	var calls int32
+	store := newMemMover()
+	ledger := filepath.Join(t.TempDir(), "grants.json")
+	s, socketPath, cleanup := moverServer(t, &calls, store, ledger)
+	dek := bytes.Repeat([]byte{0x1a}, 32)
+	sec := sealGrantSecret(t, "jamf/api-pass", "mcp", dek)
+	wireGrantResolver(s, sec)
+	name, parent := ownNameAndParent(t)
+	st := standingCreate(t, NewClient(socketPath), name, parent)
+	cleanup()
+
+	// A crashed earlier move left an enclave key; this one fails to re-seal.
+	if _, err := store.CreateWrap(st.ID, GrantWrapEnclave); err != nil {
+		t.Fatal(err)
+	}
+	store.target, store.failSeal = GrantWrapEnclave, errors.New("sealing failed")
+	s2, socketPath2, cleanup2 := moverServer(t, &calls, store, ledger)
+	defer cleanup2()
+	if moved, errs := s2.MoveGrantKeys(); moved != 0 || len(errs) != 1 {
+		t.Fatalf("moved %d, errs %v; want 0 and one error", moved, errs)
+	}
+	if !store.has(GrantWrapEnclave, st.ID) || !store.has(GrantWrapKeychain, st.ID) {
+		t.Fatal("setup: both kinds of key should exist after the failed move")
+	}
+	before := atomic.LoadInt32(&calls)
+	got, err := NewClient(socketPath2).UnwrapKeyLabeled(sec.Wrapped, "jamf/api-pass", "mcp")
+	if err != nil || !bytes.Equal(got, dek) {
+		t.Fatalf("the grant stopped serving after a failed move: %v", err)
+	}
+	if atomic.LoadInt32(&calls) != before {
+		t.Error("the grant prompted to serve: it was not served from its own key")
+	}
+}
+
+// The same for a never-ask job, on both of its failure paths: the re-seal
+// failing, and jobs.json failing to save after the re-seal worked.
+func TestAJobAMoveFailedOnStillOpens(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fail func(t *testing.T, store *memMover, dir string)
+	}{
+		{"reseal fails", func(t *testing.T, store *memMover, dir string) {
+			if _, err := store.CreateWrap("j-1", GrantWrapEnclave); err != nil {
+				t.Fatal(err)
+			}
+			store.failSeal = errors.New("sealing failed")
+		}},
+		{"save fails", func(t *testing.T, store *memMover, dir string) {
+			if err := os.Chmod(dir, 0o500); err != nil { // #nosec G302 -- a test's own temp dir, made unwritable on purpose
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- restoring the test's temp dir
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMemMover()
+			kcKey, err := store.CreateWrap("j-1", GrantWrapKeychain)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dek := bytes.Repeat([]byte{0x1b}, 32)
+			sealed, err := kcKey.Seal(dek, "env")
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			path := filepath.Join(dir, "jobs.json")
+			j := &job.Job{Name: "notion-guests", Dir: "/tmp", Argv: []string{"x"}, Exe: "/bin/x", Ask: job.AskNever, KeyID: "j-1",
+				Secrets: []job.Secret{{Var: "TOKEN", Path: "notion/token", Class: "env", DeviceDigest: "dd", KeyWrapped: hex.EncodeToString(sealed), Wrap: GrantWrapKeychain}}}
+			if err := saveJobFile(path, map[string]*job.Job{j.Name: j}); err != nil {
+				t.Fatal(err)
+			}
+			s := &Server{GrantKeys: store}
+			if _, err := s.SetJobStore(path); err != nil {
+				t.Fatal(err)
+			}
+			store.target = GrantWrapEnclave
+			tc.fail(t, store, dir)
+			if moved, errs := s.MoveGrantKeys(); moved != 0 || len(errs) != 1 {
+				t.Fatalf("moved %d, errs %v; want 0 and one error", moved, errs)
+			}
+			if !store.has(GrantWrapEnclave, "j-1") {
+				t.Fatal("setup: the failed move should have left an enclave key")
+			}
+			s.jobMu.Lock()
+			cur := *s.jobs["notion-guests"]
+			s.jobMu.Unlock()
+			if cur.Secrets[0].Wrap != GrantWrapKeychain {
+				t.Fatalf("the job's record changed to %q although the move failed", cur.Secrets[0].Wrap)
+			}
+			deks := map[string][]byte{}
+			if err := s.openJobKeys(&cur, deks); err != nil || !bytes.Equal(deks["dd"], dek) {
+				t.Fatalf("the job no longer opens after a failed move: %v", err)
+			}
+		})
+	}
+}
+
+// A new key made for a move that then failed is deleted again: it sealed
+// nothing that was kept.
+func TestAFailedMoveDeletesTheKeyItMade(t *testing.T) {
+	store := newMemMover()
+	kcKey, err := store.CreateWrap("j-1", GrantWrapKeychain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := kcKey.Seal(bytes.Repeat([]byte{0x1c}, 32), "env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "jobs.json")
+	j := &job.Job{Name: "notion-guests", Dir: "/tmp", Argv: []string{"x"}, Exe: "/bin/x", Ask: job.AskNever, KeyID: "j-1",
+		Secrets: []job.Secret{{Var: "TOKEN", Path: "notion/token", Class: "env", DeviceDigest: "dd", KeyWrapped: hex.EncodeToString(sealed), Wrap: GrantWrapKeychain}}}
+	if err := saveJobFile(path, map[string]*job.Job{j.Name: j}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{GrantKeys: store}
+	if _, err := s.SetJobStore(path); err != nil {
+		t.Fatal(err)
+	}
+	store.target, store.failSeal = GrantWrapEnclave, errors.New("sealing failed")
+	if moved, errs := s.MoveGrantKeys(); moved != 0 || len(errs) != 1 {
+		t.Fatalf("moved %d, errs %v; want 0 and one error", moved, errs)
+	}
+	if store.has(GrantWrapEnclave, "j-1") {
+		t.Error("the failed move left behind the enclave key it made")
+	}
+	if !store.has(GrantWrapKeychain, "j-1") {
+		t.Fatal("the failed move deleted the job's only key")
+	}
+}
+
+// manyWorld is a service with n standing grants and n never-ask jobs, each
+// sealed for its own keychain key, and a stateWriter that counts writes per
+// file. It writes nothing through the counter while it builds.
+func manyWorld(t *testing.T, n int) (s *Server, store *memMover, ledger, jobs string, writes map[string]int) {
+	t.Helper()
+	store = newMemMover()
+	dir := t.TempDir()
+	ledger, jobs = filepath.Join(dir, "grants.json"), filepath.Join(dir, "jobs.json")
+	s = &Server{GrantKeys: store}
+	if _, err := s.SetGrantLedger(ledger); err != nil {
+		t.Fatal(err)
+	}
+	all := map[string]*job.Job{}
+	for i := 0; i < n; i++ {
+		gid, jid := "g-0000000"+string(rune('1'+i)), "j-0000000"+string(rune('1'+i))
+		gk, _ := store.CreateWrap(gid, GrantWrapKeychain)
+		jk, _ := store.CreateWrap(jid, GrantWrapKeychain)
+		dek := bytes.Repeat([]byte{byte(i + 1)}, 32)
+		gs, _ := gk.Seal(dek, "env")
+		js, _ := jk.Seal(dek, "env")
+		s.standing[gid] = &standingGrant{id: gid, created: time.Unix(int64(i+1), 0), anchorPath: "/Applications/Claude.app", name: "node",
+			secrets: map[string]standingSecret{"d": {path: "a/b", class: "env", digest: "d", grantWrapped: gs, wrap: GrantWrapKeychain}}}
+		name := "job-" + string(rune('a'+i))
+		all[name] = &job.Job{Name: name, Dir: "/tmp", Argv: []string{"x"}, Exe: "/bin/x", Ask: job.AskNever, KeyID: jid,
+			Secrets: []job.Secret{{Var: "T", Path: "n/t", Class: "env", DeviceDigest: "dd", KeyWrapped: hex.EncodeToString(js), Wrap: GrantWrapKeychain}}}
+	}
+	if err := s.saveLedger(); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveJobFile(jobs, all); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetJobStore(jobs); err != nil {
+		t.Fatal(err)
+	}
+	writes = map[string]int{}
+	s.stateWriter = func(path string, data []byte) error {
+		writes[filepath.Base(path)]++
+		return os.WriteFile(path, data, 0o600)
+	}
+	return s, store, ledger, jobs, writes
+}
+
+// Moving n grants and n jobs writes the ledger once and jobs.json once, not
+// once per grant and once per job (each write is the whole file).
+func TestMoveGrantKeysWritesEachFileOnce(t *testing.T) {
+	s, store, _, _, writes := manyWorld(t, 5)
+	store.target = GrantWrapEnclave
+	if moved, errs := s.MoveGrantKeys(); moved != 10 || len(errs) != 0 {
+		t.Fatalf("moved %d, errs %v; want all 10", moved, errs)
+	}
+	if writes["grants.json"] != 1 || writes["jobs.json"] != 1 {
+		t.Fatalf("wrote the ledger %d times and jobs.json %d times; want once each", writes["grants.json"], writes["jobs.json"])
+	}
+}
+
+// One grant that cannot move stays exactly as it was; the others move, in
+// the same single write.
+func TestMoveGrantKeysIsolatesAFailingGrant(t *testing.T) {
+	s, store, ledger, _, writes := manyWorld(t, 3)
+	// g-00000002's keychain key is gone: it cannot be re-sealed.
+	_ = store.DeleteWrap("g-00000002", GrantWrapKeychain)
+	store.target = GrantWrapEnclave
+	moved, errs := s.MoveGrantKeys()
+	if moved != 5 || len(errs) != 1 {
+		t.Fatalf("moved %d, errs %v; want 5 and one error", moved, errs)
+	}
+	if writes["grants.json"] != 1 {
+		t.Fatalf("wrote the ledger %d times, want once", writes["grants.json"])
+	}
+	raw, _ := os.ReadFile(ledger)
+	var f ledgerFile
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range f.Grants {
+		want := GrantWrapEnclave
+		if g.ID == "g-00000002" {
+			want = GrantWrapKeychain
+		}
+		if g.Secrets[0].Wrap != want {
+			t.Errorf("%s is %s on disk, want %s", g.ID, g.Secrets[0].Wrap, want)
+		}
+	}
+	if store.has(GrantWrapEnclave, "g-00000002") {
+		t.Error("the failed grant kept a new key it made")
+	}
+}
+
+// A ledger that will not save moves nothing: memory stays as the file is,
+// and no old key is deleted.
+func TestMoveGrantKeysKeepsEveryOldKeyWhenTheLedgerWillNotSave(t *testing.T) {
+	s, store, _, _, _ := manyWorld(t, 3)
+	s.stateWriter = func(path string, data []byte) error {
+		if filepath.Base(path) == "grants.json" {
+			return errors.New("disk full")
+		}
+		return os.WriteFile(path, data, 0o600)
+	}
+	store.target = GrantWrapEnclave
+	moved, errs := s.MoveGrantKeys()
+	if moved != 3 || len(errs) != 3 {
+		t.Fatalf("moved %d, errs %v; want the 3 jobs moved and 3 grant errors", moved, errs)
+	}
+	for _, id := range []string{"g-00000001", "g-00000002", "g-00000003"} {
+		if !store.has(GrantWrapKeychain, id) {
+			t.Errorf("%s's old key was deleted although the ledger was not written", id)
+		}
+		if w := s.standing[id].secrets["d"].wrap; w != GrantWrapKeychain {
+			t.Errorf("%s is %s in memory, but the file still says keychain", id, w)
+		}
+	}
+}
+
+// unreadWorld writes a ledger with one grant, g-00000001: a keychain entry
+// sealed for real when known is set, and an entry in a wrap this build
+// cannot read (a newer jit's), which C1 keeps verbatim.
+func unreadWorld(t *testing.T, store *memMover, known bool) (*Server, string) {
+	t.Helper()
+	g := ledgerGrant{ID: "g-00000001", CreatedUnix: 1, Profiles: []GrantProfile{}}
+	g.Anchor.ExecPath, g.Anchor.Name, g.Program.Name = "/Applications/Claude.app", "Claude", "node"
+	if known {
+		k, err := store.CreateWrap("g-00000001", GrantWrapKeychain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sealed, err := k.Seal(bytes.Repeat([]byte{0x2a}, 32), "env")
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.Secrets = append(g.Secrets, ledgerSecret{Path: "a/known", Class: "env", DeviceDigest: "d1", GrantWrapped: hex.EncodeToString(sealed), Wrap: GrantWrapKeychain})
+	}
+	g.Secrets = append(g.Secrets, ledgerSecret{Path: "a/future", Class: "env", DeviceDigest: "d2", GrantWrapped: "0badf00d", Wrap: "future-v9"})
+	ledger := filepath.Join(t.TempDir(), "grants.json")
+	data, _ := json.Marshal(ledgerFile{Version: ledgerVersion, Grants: []ledgerGrant{g}})
+	if err := os.WriteFile(ledger, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{GrantKeys: store}
+	if _, err := s.SetGrantLedger(ledger); err != nil {
+		t.Fatal(err)
+	}
+	return s, ledger
+}
+
+// A grant that moves its readable entries keeps its old key too while an
+// unreadable entry remains: that entry may be sealed for it.
+func TestMoveKeepsTheOldKeyWhileAnUnreadEntryRemains(t *testing.T) {
+	store := newMemMover()
+	s, ledger := unreadWorld(t, store, true)
+	store.target = GrantWrapEnclave
+	if moved, errs := s.MoveGrantKeys(); moved != 1 || !onlyKeptUnread(errs, "standing grant g-00000001") {
+		t.Fatalf("moved %d, errs %v", moved, errs)
+	}
+	raw, _ := os.ReadFile(ledger)
+	if !bytes.Contains(raw, []byte(`"future-v9"`)) {
+		t.Fatal("the unread entry was dropped from the ledger")
+	}
+	if !store.has(GrantWrapKeychain, "g-00000001") {
+		t.Fatal("the move deleted the keychain key an unread entry may be sealed for")
+	}
+}
+
+// A grant whose unread entries are the only thing naming a key of the other
+// kind: already "on the target" by its readable entries (it has none), it
+// must still keep that key.
+func TestMoveKeepsAKeyOnlyUnreadEntriesName(t *testing.T) {
+	store := newMemMover()
+	for _, w := range []string{GrantWrapKeychain, GrantWrapEnclave} {
+		if _, err := store.CreateWrap("g-00000001", w); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, _ := unreadWorld(t, store, false)
+	store.target = GrantWrapKeychain
+	if _, errs := s.MoveGrantKeys(); !onlyKeptUnread(errs, "standing grant g-00000001") {
+		t.Fatal(errs)
+	}
+	if !store.has(GrantWrapEnclave, "g-00000001") {
+		t.Fatal("the enclave key only an unread entry names was deleted")
+	}
+}
+
+// A job sealed, in part, in a wrap this build cannot read is left alone:
+// no attempt to re-seal it (which could only fail, every start), and every
+// kind of key kept.
+func TestMoveLeavesAJobItCannotReadAlone(t *testing.T) {
+	store := newMemMover()
+	for _, w := range []string{GrantWrapKeychain, GrantWrapEnclave} {
+		if _, err := store.CreateWrap("j-1", w); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "jobs.json")
+	j := &job.Job{Name: "notion-guests", Dir: "/tmp", Argv: []string{"x"}, Exe: "/bin/x", Ask: job.AskNever, KeyID: "j-1",
+		Secrets: []job.Secret{{Var: "TOKEN", Path: "notion/token", Class: "env", DeviceDigest: "dd", KeyWrapped: "0badf00d", Wrap: "future-v9"}}}
+	if err := saveJobFile(path, map[string]*job.Job{j.Name: j}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{GrantKeys: store}
+	if _, err := s.SetJobStore(path); err != nil {
+		t.Fatal(err)
+	}
+	store.target = GrantWrapKeychain
+	if moved, errs := s.MoveGrantKeys(); moved != 0 || !onlyKeptUnread(errs, "AI job notion-guests") {
+		t.Fatalf("moved %d, errs %v; want the job left alone, and said so", moved, errs)
+	}
+	if !store.has(GrantWrapEnclave, "j-1") || !store.has(GrantWrapKeychain, "j-1") {
+		t.Fatal("a key of a job this build cannot read was deleted")
+	}
+}
+
+// onlyKeptUnread reports whether errs is exactly one report that who kept
+// every key over secrets this build cannot read (keptUnreadError).
+func onlyKeptUnread(errs []error, who string) bool {
+	return len(errs) == 1 && strings.HasPrefix(errs[0].Error(), who+" kept every key: ")
+}
+
+// Third review of #168: a secret entry carrying a field this build does not
+// know (here "nonce", as a newer jit might tie to the sealed bytes) is never
+// re-sealed. A move used to seal it anew and keep the field beside the new
+// bytes. Now it is unread, in the ledger and in jobs.json alike: left
+// sealed as it was, its field kept, every kind of key kept, the move saying
+// so, and neither the grant nor the job opens it.
+func TestAMoveNeverReSealsASecretWithAFieldItDoesNotKnow(t *testing.T) {
+	store := newMemMover()
+	dir := t.TempDir()
+	ledger, jobs := filepath.Join(dir, "grants.json"), filepath.Join(dir, "jobs.json")
+	sealedFor := func(id string) string {
+		k, err := store.CreateWrap(id, GrantWrapKeychain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := k.Seal(bytes.Repeat([]byte{0x2a}, 32), "env")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hex.EncodeToString(b)
+	}
+	gSealed, jSealed := sealedFor("g-00000001"), sealedFor("j-00000001")
+	entry := `{"path":"a/b","class":"env","device_wrapped_sha256":"d1","grant_wrapped":"` + gSealed + `","wrap":"aead-v1","nonce":"n1"}`
+	grant := `{"id":"g-00000001","created_unix":1,"anchor":{"exec_path":"/Applications/Claude.app","name":"Claude"},` +
+		`"program":{"name":"node"},"profiles":[],"secrets":[` + entry + `]}`
+	if err := os.WriteFile(ledger, []byte(`{"version":1,"grants":[`+grant+`]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	secret := `{"var":"TOKEN","path":"n/t","class":"env","device_wrapped_sha256":"dd","key_wrapped":"` + jSealed + `","wrap":"aead-v1","nonce":"n2"}`
+	jobRec := `{"name":"notion","dir":"/tmp","argv":["x"],"exe":"/bin/x","ask":"never","key_id":"j-00000001","secrets":[` + secret + `]}`
+	if err := os.WriteFile(jobs, []byte(`{"version":1,"jobs":[`+jobRec+`]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{GrantKeys: store}
+	load(t, s, ledger, jobs)
+	if n := len(s.standing["g-00000001"].secrets); n != 0 {
+		t.Errorf("the grant serves %d entries; the one with a field this build does not know must not be", n)
+	}
+	s.jobMu.Lock()
+	j := *s.jobs["notion"]
+	s.jobMu.Unlock()
+	if err := s.openJobKeys(&j, map[string][]byte{}); err == nil {
+		t.Error("the job opened a secret with a field this build does not know")
+	}
+
+	store.mu.Lock()
+	store.target = GrantWrapEnclave
+	store.mu.Unlock()
+	moved, errs := s.MoveGrantKeys()
+	if moved != 0 || len(errs) != 2 ||
+		!strings.HasPrefix(errs[0].Error(), "standing grant g-00000001 kept every key: ") ||
+		!strings.HasPrefix(errs[1].Error(), "AI job notion kept every key: ") {
+		t.Fatalf("moved %d, errs %v; want nothing moved and both reported kept", moved, errs)
+	}
+	if err := s.saveLedger(); err != nil {
+		t.Fatal(err)
+	}
+	s.jobMu.Lock()
+	err := s.saveJobsLocked()
+	s.jobMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gs, _ := records(t, ledger, "grants")[0]["secrets"].([]any)
+	if len(gs) != 1 || !mapsEqual(gs[0].(map[string]any), generic(t, entry)) {
+		t.Errorf("the ledger entry was not left sealed as it was: %v", gs)
+	}
+	js, _ := records(t, jobs, "jobs")[0]["secrets"].([]any)
+	if len(js) != 1 || !mapsEqual(js[0].(map[string]any), generic(t, secret)) {
+		t.Errorf("the job's secret was not left sealed as it was: %v", js)
+	}
+	for _, id := range []string{"g-00000001", "j-00000001"} {
+		if !store.has(GrantWrapKeychain, id) {
+			t.Errorf("the move deleted %s's keychain key, which the kept entry is sealed for", id)
+		}
 	}
 }

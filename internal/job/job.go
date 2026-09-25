@@ -49,6 +49,10 @@ type Secret struct {
 	// Wrap names how KeyWrapped was sealed, so a later scheme (the Secure
 	// Enclave move) can coexist with this one, as the grant ledger's does.
 	Wrap string `json:"wrap,omitempty"`
+
+	// raw is the object this secret was read from, if it was: its fields
+	// this build does not know are written back with it (store.go).
+	raw []byte
 }
 
 // Job is one approved command and the secrets it gets.
@@ -98,6 +102,11 @@ type Job struct {
 	LastCaller    string `json:"last_caller,omitempty"`
 	LastRefusal   string `json:"last_refusal,omitempty"`
 	LastHiddenSum int    `json:"last_hidden,omitempty"`
+
+	// raw is the object this job was read from, if it was: its fields this
+	// build does not know are written back with it (store.go). A job
+	// approved again is a new Job, and starts without one.
+	raw []byte
 }
 
 var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)

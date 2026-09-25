@@ -613,8 +613,8 @@ func (s *Server) listGrants() []GrantStatus {
 // easiest operation in the feature — an auth gate on the kill switch only
 // ever delays the person pulling it.
 func (s *Server) revokeGrant(id string, c *caller) Response {
-	if s.revokeStanding(id, c) {
-		return Response{OK: true}
+	if revoked, note := s.revokeStanding(id, c); revoked {
+		return Response{OK: true, KeyNote: note}
 	}
 	s.grantMu.Lock()
 	_, exists := s.grants[id]
