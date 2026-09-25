@@ -56,8 +56,10 @@ is separate from any fallout from the Secure Enclave.
   rewrites a plist whose path still exists (`ensureAgentInstalled` repoints
   only an orphaned one, `servicelaunchd.go:321`).
 - `scripts/sign.sh:19`: sign inside out. First the helper, with
-  `--options runtime --timestamp` (this replaces goreleaser's signature, so
-  the hardened runtime must be passed again), then the outer app. Nothing
+  `--options runtime --timestamp --identifier jit` (this replaces
+  goreleaser's signature, so the hardened runtime must be passed again; the
+  identifier stays `jit` because every existing keychain vault key's ACL
+  trusts `identifier jit`, spike S3f), then the outer app. Nothing
   uses `--deep`; keep it that way.
 - `scripts/verify.sh:35`: the helper path, plus strict verify of the helper,
   its `CFBundleIdentifier` and its `(runtime)` flag.
