@@ -354,7 +354,7 @@ func jobAllowReason(label, groups string, secrets, shown int, ask job.Ask) strin
 	}
 	scope := ""
 	if ask == job.AskNever {
-		scope = ", unasked till removed"
+		scope = ", runs without asking"
 	}
 	// Budgets at the worst case: 11 + 24 + 6 + 27 + 9 + 22 = 99 would pass
 	// 90, so the label gives way first (truncate keeps its start, the folder).

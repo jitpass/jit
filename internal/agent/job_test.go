@@ -316,7 +316,7 @@ func TestJobReasonsFitThePrompt(t *testing.T) {
 	// The facts that change the decision survive a long label: how many
 	// secrets, how many shown, and that it never asks again.
 	r := jobAllowReason(long, "notion", 14, 3, job.AskNever)
-	for _, want := range []string{"14 notion secrets", "3 shown", "unasked till removed"} {
+	for _, want := range []string{"14 notion secrets", "3 shown", "runs without asking"} {
 		if !strings.Contains(r, want) {
 			t.Errorf("%q lost %q", r, want)
 		}
