@@ -244,6 +244,11 @@ type Server struct {
 	ledgerDirty   bool
 	ledgerSavedAt time.Time
 
+	// stateWriter, when a test sets it, replaces writeState's durable write
+	// of the ledger and the job list, to count or fail them. Nil in the
+	// service.
+	stateWriter func(path string, data []byte) error
+
 	// AuthMethodFn, if set, returns a best-effort description of how the local
 	// auth challenge asked the user ("Touch ID or device passcode" vs. "device
 	// passcode"), stamped onto the unlock/denied event a fresh challenge

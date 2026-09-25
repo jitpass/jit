@@ -61,7 +61,11 @@ func (s *Server) saveJobsLocked() error {
 	if s.jobsPath == "" {
 		return fmt.Errorf("this service has no usable job list (see the service log for why it was not loaded)")
 	}
-	return job.Save(s.jobsPath, s.jobs)
+	data, err := job.Encode(s.jobs)
+	if err != nil {
+		return err
+	}
+	return s.writeState(s.jobsPath, data)
 }
 
 // preparedJob is everything approval settles before the Touch ID: the

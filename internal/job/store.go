@@ -65,9 +65,19 @@ func Load(path string) (map[string]*Job, error) {
 	return out, nil
 }
 
-// Save writes the whole list atomically, mode 0600, sorted by name so the
-// file diffs cleanly.
+// Save writes the whole list atomically and durably (vault.AtomicWriteFile:
+// fsynced, renamed into place, mode 0600), sorted by name so the file diffs
+// cleanly.
 func Save(path string, jobs map[string]*Job) error {
+	data, err := Encode(jobs)
+	if err != nil {
+		return err
+	}
+	return vault.AtomicWriteFile(path, data)
+}
+
+// Encode is the file Save writes, for a caller that writes it itself.
+func Encode(jobs map[string]*Job) ([]byte, error) {
 	f := storeFile{Version: storeVersion, Jobs: make([]Job, 0, len(jobs))}
 	for _, j := range jobs {
 		f.Jobs = append(f.Jobs, *j)
@@ -75,7 +85,7 @@ func Save(path string, jobs map[string]*Job) error {
 	sort.Slice(f.Jobs, func(a, b int) bool { return f.Jobs[a].Name < f.Jobs[b].Name })
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return vault.AtomicWriteFile(path, append(data, '\n'))
+	return append(data, '\n'), nil
 }
