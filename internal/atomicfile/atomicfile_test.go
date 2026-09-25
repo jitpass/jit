@@ -50,3 +50,39 @@ func TestWriteFile(t *testing.T) {
 		}
 	}
 }
+
+// WriteFile fsyncs the temp file before the rename puts it in place, and the
+// directory after: the order the doc comment's durability claim rests on.
+// The test observes both through the syncFile and syncDir seams, and checks
+// what dest holds at each call.
+func TestWriteFileSyncsDataThenDirectory(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(dest, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	origFile, origDir := syncFile, syncDir
+	t.Cleanup(func() { syncFile, syncDir = origFile, origDir })
+
+	var calls []string
+	syncFile = func(f *os.File) error {
+		b, _ := os.ReadFile(dest)
+		calls = append(calls, "file:"+filepath.Dir(f.Name())+":dest="+string(b))
+		return origFile(f)
+	}
+	syncDir = func(d string) {
+		b, _ := os.ReadFile(dest)
+		calls = append(calls, "dir:"+d+":dest="+string(b))
+		origDir(d)
+	}
+	if err := WriteFile(dest, []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"file:" + dir + ":dest=old", // the data is synced while dest still holds the old file
+		"dir:" + dir + ":dest=new",  // the directory is synced once the rename landed
+	}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Errorf("sync calls:\n%s\nwant:\n%s", strings.Join(calls, "\n"), strings.Join(want, "\n"))
+	}
+}

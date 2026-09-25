@@ -53,7 +53,7 @@ func WriteFile(dest string, data []byte) error {
 		_ = tmp.Close()
 		return fmt.Errorf("writing %s: %w", tmpPath, err)
 	}
-	if err := tmp.Sync(); err != nil {
+	if err := syncFile(tmp); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("syncing %s: %w", tmpPath, err)
 	}
@@ -67,9 +67,17 @@ func WriteFile(dest string, data []byte) error {
 	// Fsync the directory too, so the rename itself survives power loss.
 	// Best-effort: some filesystems don't support fsync on a directory,
 	// and the data-before-rename ordering above already holds without it.
-	SyncDir(dir)
+	syncDir(dir)
 	return nil
 }
+
+// syncFile and syncDir are WriteFile's two fsyncs, as variables only so a
+// test can observe them: nothing else on disk tells a synced write from an
+// unsynced one, so without the seam a deleted fsync would pass every test.
+var (
+	syncFile = func(f *os.File) error { return f.Sync() }
+	syncDir  = SyncDir
+)
 
 // SyncDir best-effort fsyncs a directory so a rename into it survives power
 // loss: the durability tail of WriteFile, for a caller that renames an
