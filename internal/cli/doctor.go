@@ -286,13 +286,16 @@ func gatherDoctorOutcome(errOut io.Writer, profileName string, onePassword bool)
 	// profile's secrets just as unreadable as everyone else's, so
 	// "resolves cleanly" would be false. See gatherVaultIntegrityFindings.
 	outcome.Findings = append(outcome.Findings, launcherFound...)
-	outcome.Findings = append(outcome.Findings, gatherVaultIntegrityFindings(root, v)...)
+	// Hashes every envelope: made once, shared by the integrity and backup
+	// sections.
+	lost := checkLostKey(root)
+	outcome.Findings = append(outcome.Findings, gatherVaultIntegrityFindingsWith(root, v, lost)...)
 
 	// The absorbed system-health sections run on the full sweep only. A
 	// --profile run is a narrow "does THIS profile resolve" query; folding
 	// agent/backup/wrap warnings into it would be surprising noise.
 	if profileName == "" {
-		systemFindings, wrapOK := gatherSystemFindings(root, cwd, v)
+		systemFindings, wrapOK := gatherSystemFindings(root, cwd, v, lost)
 		outcome.Findings = append(outcome.Findings, systemFindings...)
 		outcome.OKChecks = wrapOK
 		opFindings, opOK := onePasswordFindings(v)
@@ -810,6 +813,12 @@ func findingLabel(f checkFinding) string {
 		return "[vault key]"
 	case kindRekey:
 		return "[rekey]"
+	case kindVaultMove:
+		return "[vault key move]"
+	case kindRekeyUnknown:
+		return "[vault key change]"
+	case kindVaultRestore:
+		return "[vault restore]"
 	case kindLegacyEnvelope:
 		// "storage format", not "envelope": the envelope is jit's own word
 		// for the on-disk shape and means nothing to the person reading a
@@ -872,7 +881,7 @@ func findingLabel(f checkFinding) string {
 // that identifies the file off the first line (rule 6).
 func formatFinding(f checkFinding) string {
 	switch f.Kind {
-	case kindParse, kindNotFound, kindService, kindBackup, kindWrap, kindWrapEnv, kindMount, kindMountStale, kindDuplicates, kindVaultKey, kindRekey, kindLegacyEnvelope, kindAudit, kindMCP, kindMCPNested, kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion, kindRegistryEmpty, kindStalePointers:
+	case kindParse, kindNotFound, kindService, kindBackup, kindWrap, kindWrapEnv, kindMount, kindMountStale, kindDuplicates, kindVaultKey, kindRekey, kindVaultMove, kindRekeyUnknown, kindVaultRestore, kindLegacyEnvelope, kindAudit, kindMCP, kindMCPNested, kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion, kindRegistryEmpty, kindStalePointers:
 		return shortHome(f.Detail)
 	case kindMissing:
 		return fmt.Sprintf("%s: %s "+glyphAction+" %s, not in the vault", profileRef(f), f.Variable, f.Path)

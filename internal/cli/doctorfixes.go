@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -48,7 +49,8 @@ type fixClass struct {
 
 // jitFixClasses classifies every jit command doctor's actions name, keyed by
 // cobra command path without the leading "jit" (plus " --prune" where that
-// flag turns a listing into a delete). Presence was read from the code, not
+// flag turns a listing into a delete, and " --finish" where it turns an
+// import into a rename). Presence was read from the code, not
 // assumed: requireUserPresence (vault rm, orphans/duplicates --prune),
 // requireFreshUserPresence (migrate undo/remove, a live unmount), the
 // keychain-direct openVaultFreshAuth (vault set/export/import/link) and the
@@ -69,8 +71,13 @@ var jitFixClasses = map[string]fixClass{
 	"vault export":             {presence: true},
 	// Overwrites any secret the file also holds.
 	"vault import": {destructive: true, presence: true},
-	"vault link":   {presence: true},
-	"migrate":      {},
+	// Stops tracking a lost-key restore its record can't check: renames the
+	// lost key's sealed file and record (never deletes them) and touches no
+	// secret, so no Touch ID. Confirms first, listing what may not open.
+	"vault import --finish": {},
+
+	"vault link": {presence: true},
+	"migrate":    {},
 	// Puts the original file back, plaintext and all.
 	"migrate undo": {destructive: true, presence: true},
 	// Deletes one pointer file jit wrote that nothing uses, and refuses
@@ -108,6 +115,10 @@ var jitFixClasses = map[string]fixClass{
 	"service restart": {},
 	"service log":     {},
 }
+
+// fixClassFlags are the flags that change what a command does enough to
+// have their own jitFixClasses entry.
+var fixClassFlags = []string{"--prune", "--finish"}
 
 // externalFixClasses is the same table for the commands that are not jit's,
 // keyed by their first two words (or the first alone).
@@ -187,8 +198,8 @@ func classifyFix(kind checkKind, words []string, external bool) fixClass {
 		return unknown
 	}
 	for _, w := range words {
-		if w == "--prune" {
-			key += " --prune"
+		if slices.Contains(fixClassFlags, w) {
+			key += " " + w
 			break
 		}
 	}

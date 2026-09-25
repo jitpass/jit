@@ -10,6 +10,13 @@ any existing secret at the same path. Confirms first unless --yes, the
 passphrase prompt only comes after that, so declining never costs a
 wasted attempt at typing it.
 
+After the vault's Secure Enclave key was lost, importing is how secrets
+come back, and jit tracks which ones still can't be opened. If it can't
+check (its record of them is unreadable), --finish stops tracking once
+you've imported every recovery file you have: it lists the secrets that
+may still not open, confirms unless --yes, and keeps the lost key's
+files under a dated name. It takes no file and needs no Touch ID.
+
 ```
 jit vault import <file> [flags]
 ```
@@ -17,8 +24,9 @@ jit vault import <file> [flags]
 ### Options
 
 ```
-      --stdin   read the passphrase from stdin instead of prompting
-  -y, --yes     skip the confirmation prompt and import immediately
+      --finish   after a lost key: stop tracking a restore jit can't check, once every recovery file is imported
+      --stdin    read the passphrase from stdin instead of prompting
+  -y, --yes      skip the confirmation prompt and import immediately
 ```
 
 ### Options inherited from parent commands

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -38,23 +39,74 @@ import (
 // the one the verify catches, and it's the difference between an error
 // now and a vault that reports success until the day it can't decrypt.
 func (v *Vault) RewrapAll(oldKW, newKW KeyWrapper) (rewrapped, current int, err error) {
+	r, err := v.Rewrap(oldKW, newKW)
+	return r.Rewrapped, r.Current, err
+}
+
+// RewrapResult is what Rewrap did.
+type RewrapResult struct {
+	Rewrapped, Current int
+	// Kept lists the envelope files (slash paths relative to vault/) left
+	// untouched because they are sealed to a lost Secure Enclave key: see
+	// Rewrap.
+	Kept []string
+}
+
+// Rewrap is RewrapAll, reporting the envelopes it kept.
+//
+// The one exception to "an envelope neither key opens is a hard error":
+// an envelope PROVABLY sealed to a lost Secure Enclave key (lostkey.go):
+// a lost key's readable record lists its bytes, or names it as unreadable
+// when the key was set aside and it has not been written since. No key
+// here ever opened it, so rotating cannot make it any less readable, and
+// stopping on it would leave the marker behind and refuse every vault
+// change, the import and rm that clear it included. It is left exactly as
+// it is, never rewritten and never deleted, and reported in Kept. The old
+// key is still tried first: an envelope it does open is rewrapped like any
+// other, whatever a record says.
+//
+// Anything short of proof stops the rotation, as it always has: an
+// envelope a record only presumes (an incomplete record, or one that is
+// missing or unreadable) may be sealed to the key this rotation is about
+// to destroy. The error says why jit could not prove it.
+func (v *Vault) Rewrap(oldKW, newKW KeyWrapper) (RewrapResult, error) {
+	var r RewrapResult
+	lost, err := v.lostKeyCopies()
+	if err != nil {
+		return r, err
+	}
 	files, err := v.allEnvelopeFiles()
 	if err != nil {
-		return 0, 0, err
+		return r, err
 	}
 	for _, file := range files {
 		changed, err := v.rewrapFile(file, oldKW, newKW)
 		if err != nil {
-			return rewrapped, current, err
+			if errors.Is(err, errNoKeyOpens) && lost.any() {
+				if lost.matchFile(v.vaultDir(), file) == provenLost {
+					rel, relErr := filepath.Rel(v.vaultDir(), file)
+					if relErr != nil {
+						rel = file
+					}
+					r.Kept = append(r.Kept, filepath.ToSlash(rel))
+					continue
+				}
+				return r, fmt.Errorf("%w; %s", err, lost.unproven())
+			}
+			return r, err
 		}
 		if changed {
-			rewrapped++
+			r.Rewrapped++
 		} else {
-			current++
+			r.Current++
 		}
 	}
-	return rewrapped, current, nil
+	return r, nil
 }
+
+// errNoKeyOpens marks rewrapFile's "neither key opens this" failure, the
+// one Rewrap may turn into a kept lost-key copy.
+var errNoKeyOpens = errors.New("cannot decrypt with the current or the staged master key")
 
 // allEnvelopeFiles returns every .enc file under the vault directory —
 // unlike List, nothing is excluded and paths are absolute: this is the
@@ -141,7 +193,7 @@ func (v *Vault) rewrapFile(file string, oldKW, newKW KeyWrapper) (changed bool, 
 			}
 		}
 		if oldKW == nil || err != nil {
-			return false, fmt.Errorf("%s: cannot decrypt with the current or the staged master key, rekey cannot proceed past it (err: %v)", file, err)
+			return false, fmt.Errorf("%s: %w, rekey cannot proceed past it (err: %v)", file, errNoKeyOpens, err)
 		}
 
 		rewrappedDEK, err := wrapWith(newKW, dek)

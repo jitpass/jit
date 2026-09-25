@@ -360,7 +360,7 @@ func ignoreDetailIdentifies(k checkKind) bool {
 	switch k {
 	case kindMissing, kindOrphan, kindOriginGone, kindProfileMissing, kindNotLoggedIn,
 		kindPointerMissing, kindConfigDeleted, kindConfigNotRecorded, kindNoKnownTool,
-		kindVaultKey, kindLegacyEnvelope:
+		kindVaultKey, kindVaultRestore, kindLegacyEnvelope:
 		return false
 	default:
 		return true
@@ -630,8 +630,10 @@ func ignoreStillFails(u *ignoreUnit) string {
 		return u.name + " still runs a jit that isn't there"
 	case kindVaultKey:
 		return "the vault still can't be decrypted"
-	case kindRekey:
+	case kindRekey, kindVaultMove, kindRekeyUnknown:
 		return "vault writes are still refused"
+	case kindVaultRestore:
+		return "some secrets still can't be opened"
 	case kind1Password:
 		return "linked secrets still can't resolve"
 	case kind1PasswordLink:

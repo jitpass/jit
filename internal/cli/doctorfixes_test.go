@@ -6,6 +6,7 @@ package cli
 import (
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -141,10 +142,21 @@ func TestDoctorFixesClassifyEachKind(t *testing.T) {
 // would fall back to "unknown, destructive" with nobody noticing why.
 func TestDoctorFixClassesNameRealCommands(t *testing.T) {
 	for key := range jitFixClasses {
-		words := strings.Fields(strings.TrimSuffix(key, " --prune"))
+		words := strings.Fields(key)
+		var flag string
+		if last := words[len(words)-1]; slices.Contains(fixClassFlags, last) {
+			flag, words = last, words[:len(words)-1]
+		}
 		path, ok := jitCommandPath(words)
 		if !ok || path != strings.Join(words, " ") {
 			t.Errorf("jitFixClasses key %q resolves to %q (ok=%v), not a jit command", key, path, ok)
+			continue
+		}
+		if flag != "" {
+			cmd, _, _ := rootCmd.Find(words)
+			if cmd.Flags().Lookup(strings.TrimPrefix(flag, "--")) == nil {
+				t.Errorf("jitFixClasses key %q: `jit %s` has no %s flag", key, path, flag)
+			}
 		}
 	}
 }

@@ -27,10 +27,10 @@ package keystore
 
 import (
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/secureenclave"
@@ -191,22 +191,26 @@ func (s enclaveStore) NewWrapper() Wrapper { return newEnclaveWrapper(s.root) }
 
 // LostSealedFile is where Init sets a sealed key file aside when this Mac's
 // enclave has no key for it: kept, not deleted, because it is the one record
-// of which key the old secrets were sealed under.
-const LostSealedFile = vault.SealedKeyFile + ".lost"
+// of which key the old secrets were sealed under. vault.SealedToLostKey
+// reads it (with the snapshot Init writes beside it) to tell status and
+// doctor which secrets a recovery file still has to bring back.
+const LostSealedFile = vault.LostSealedKeyFile
 
 // Init has nothing to create for an enclave vault whose key is there: it was
 // made when the vault moved into the enclave. When the key is LOST it starts
 // over the way a keychain vault whose key is gone does: the sealed file is
 // set aside and a new keychain key is made, so `jit vault import` can
 // restore a recovery file. The old secrets stay unreadable, as they already
-// were; nothing else would ever open them again.
+// were, and stay on disk; vault.SetAsideLostSealedKey records which they are
+// so `jit status` (restore_pending) and `jit doctor` (vault_restore) keep
+// saying so until the import has brought them back.
 func (s enclaveStore) Init() error {
 	switch s.Presence() {
 	case Present:
 		return nil
 	case KeyLost:
-		if err := os.Rename(filepath.Join(s.root, vault.SealedKeyFile), filepath.Join(s.root, LostSealedFile)); err != nil {
-			return fmt.Errorf("setting the lost vault key's file aside: %w", err)
+		if err := vault.SetAsideLostSealedKey(s.root, time.Now()); err != nil {
+			return err
 		}
 		return keychainStore{}.Init()
 	case Unavailable:
