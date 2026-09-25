@@ -13,6 +13,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -595,7 +596,7 @@ func TestMoveKeepsTheOldKeyWhileAnUnreadEntryRemains(t *testing.T) {
 	store := newMemMover()
 	s, ledger := unreadWorld(t, store, true)
 	store.target = GrantWrapEnclave
-	if moved, errs := s.MoveGrantKeys(); moved != 1 || len(errs) != 0 {
+	if moved, errs := s.MoveGrantKeys(); moved != 1 || !onlyKeptUnread(errs, "standing grant g-00000001") {
 		t.Fatalf("moved %d, errs %v", moved, errs)
 	}
 	raw, _ := os.ReadFile(ledger)
@@ -619,7 +620,7 @@ func TestMoveKeepsAKeyOnlyUnreadEntriesName(t *testing.T) {
 	}
 	s, _ := unreadWorld(t, store, false)
 	store.target = GrantWrapKeychain
-	if _, errs := s.MoveGrantKeys(); len(errs) != 0 {
+	if _, errs := s.MoveGrantKeys(); !onlyKeptUnread(errs, "standing grant g-00000001") {
 		t.Fatal(errs)
 	}
 	if !store.has(GrantWrapEnclave, "g-00000001") {
@@ -648,10 +649,94 @@ func TestMoveLeavesAJobItCannotReadAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	store.target = GrantWrapKeychain
-	if moved, errs := s.MoveGrantKeys(); moved != 0 || len(errs) != 0 {
-		t.Fatalf("moved %d, errs %v; want the job left alone", moved, errs)
+	if moved, errs := s.MoveGrantKeys(); moved != 0 || !onlyKeptUnread(errs, "AI job notion-guests") {
+		t.Fatalf("moved %d, errs %v; want the job left alone, and said so", moved, errs)
 	}
 	if !store.has(GrantWrapEnclave, "j-1") || !store.has(GrantWrapKeychain, "j-1") {
 		t.Fatal("a key of a job this build cannot read was deleted")
+	}
+}
+
+// onlyKeptUnread reports whether errs is exactly one report that who kept
+// every key over secrets this build cannot read (keptUnreadError).
+func onlyKeptUnread(errs []error, who string) bool {
+	return len(errs) == 1 && strings.HasPrefix(errs[0].Error(), who+" kept every key: ")
+}
+
+// Third review of #168: a secret entry carrying a field this build does not
+// know (here "nonce", as a newer jit might tie to the sealed bytes) is never
+// re-sealed. A move used to seal it anew and keep the field beside the new
+// bytes. Now it is unread, in the ledger and in jobs.json alike: left
+// sealed as it was, its field kept, every kind of key kept, the move saying
+// so, and neither the grant nor the job opens it.
+func TestAMoveNeverReSealsASecretWithAFieldItDoesNotKnow(t *testing.T) {
+	store := newMemMover()
+	dir := t.TempDir()
+	ledger, jobs := filepath.Join(dir, "grants.json"), filepath.Join(dir, "jobs.json")
+	sealedFor := func(id string) string {
+		k, err := store.CreateWrap(id, GrantWrapKeychain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := k.Seal(bytes.Repeat([]byte{0x2a}, 32), "env")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hex.EncodeToString(b)
+	}
+	gSealed, jSealed := sealedFor("g-00000001"), sealedFor("j-00000001")
+	entry := `{"path":"a/b","class":"env","device_wrapped_sha256":"d1","grant_wrapped":"` + gSealed + `","wrap":"aead-v1","nonce":"n1"}`
+	grant := `{"id":"g-00000001","created_unix":1,"anchor":{"exec_path":"/Applications/Claude.app","name":"Claude"},` +
+		`"program":{"name":"node"},"profiles":[],"secrets":[` + entry + `]}`
+	if err := os.WriteFile(ledger, []byte(`{"version":1,"grants":[`+grant+`]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	secret := `{"var":"TOKEN","path":"n/t","class":"env","device_wrapped_sha256":"dd","key_wrapped":"` + jSealed + `","wrap":"aead-v1","nonce":"n2"}`
+	jobRec := `{"name":"notion","dir":"/tmp","argv":["x"],"exe":"/bin/x","ask":"never","key_id":"j-00000001","secrets":[` + secret + `]}`
+	if err := os.WriteFile(jobs, []byte(`{"version":1,"jobs":[`+jobRec+`]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{GrantKeys: store}
+	load(t, s, ledger, jobs)
+	if n := len(s.standing["g-00000001"].secrets); n != 0 {
+		t.Errorf("the grant serves %d entries; the one with a field this build does not know must not be", n)
+	}
+	s.jobMu.Lock()
+	j := *s.jobs["notion"]
+	s.jobMu.Unlock()
+	if err := s.openJobKeys(&j, map[string][]byte{}); err == nil {
+		t.Error("the job opened a secret with a field this build does not know")
+	}
+
+	store.mu.Lock()
+	store.target = GrantWrapEnclave
+	store.mu.Unlock()
+	moved, errs := s.MoveGrantKeys()
+	if moved != 0 || len(errs) != 2 ||
+		!strings.HasPrefix(errs[0].Error(), "standing grant g-00000001 kept every key: ") ||
+		!strings.HasPrefix(errs[1].Error(), "AI job notion kept every key: ") {
+		t.Fatalf("moved %d, errs %v; want nothing moved and both reported kept", moved, errs)
+	}
+	if err := s.saveLedger(); err != nil {
+		t.Fatal(err)
+	}
+	s.jobMu.Lock()
+	err := s.saveJobsLocked()
+	s.jobMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gs, _ := records(t, ledger, "grants")[0]["secrets"].([]any)
+	if len(gs) != 1 || !mapsEqual(gs[0].(map[string]any), generic(t, entry)) {
+		t.Errorf("the ledger entry was not left sealed as it was: %v", gs)
+	}
+	js, _ := records(t, jobs, "jobs")[0]["secrets"].([]any)
+	if len(js) != 1 || !mapsEqual(js[0].(map[string]any), generic(t, secret)) {
+		t.Errorf("the job's secret was not left sealed as it was: %v", js)
+	}
+	for _, id := range []string{"g-00000001", "j-00000001"} {
+		if !store.has(GrantWrapKeychain, id) {
+			t.Errorf("the move deleted %s's keychain key, which the kept entry is sealed for", id)
+		}
 	}
 }

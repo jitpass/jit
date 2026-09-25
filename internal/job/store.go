@@ -180,3 +180,12 @@ func (s *Secret) UnmarshalJSON(b []byte) error {
 	s.raw = append([]byte(nil), b...)
 	return err
 }
+
+// UnknownFields names the secret's fields this build does not know, as it
+// was read from jobs.json (jsonkeep.Unknown). A secret with any is one this
+// build does not fully understand: a newer jit may have tied the field to
+// the sealed bytes, so the service neither opens nor re-seals it.
+func (s Secret) UnknownFields() []string {
+	type plain Secret
+	return jsonkeep.Unknown(plain{}, s.raw)
+}

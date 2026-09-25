@@ -506,7 +506,7 @@ func (s *Server) removeJob(name string, c *caller) Response {
 		// the caller say that rather than "deleted".
 		mayBeEnclave := false
 		for _, sec := range j.Secrets {
-			mayBeEnclave = mayBeEnclave || sec.Wrap == GrantWrapEnclave || !knownWrap(sec.Wrap)
+			mayBeEnclave = mayBeEnclave || sec.Wrap == GrantWrapEnclave || !secretReadable(sec)
 		}
 		note, err := s.deleteKeyOf(j.KeyID, mayBeEnclave)
 		keyNote = keyNoteOf(note, err)
@@ -752,6 +752,27 @@ func (s *Server) runJob(name string, c *caller) Response {
 	return Response{OK: true, JobResult: &result}
 }
 
+// secretReadable reports whether this build fully understands a job's
+// secret: it knows the wrap it is sealed with, and every field it carries. A
+// field a newer jit added may be tied to the sealed bytes (a nonce, KDF
+// parameters, an AAD version), so a secret with one is neither opened nor
+// re-sealed here: the grant ledger's unread rule (standingGrant.unread).
+func secretReadable(sec job.Secret) bool {
+	return knownWrap(sec.Wrap) && len(sec.UnknownFields()) == 0
+}
+
+// unreadSecrets is how many of a job's secrets this build cannot fully read
+// (secretReadable).
+func unreadSecrets(j *job.Job) int {
+	n := 0
+	for _, sec := range j.Secrets {
+		if !secretReadable(sec) {
+			n++
+		}
+	}
+	return n
+}
+
 // openJobKeys fills deks from a never-asking job's own key: each secret's
 // KeyWrapped opened under it with the secret's class as AAD, filed by the
 // device digest the runner looks keys up by.
@@ -763,7 +784,7 @@ func (s *Server) openJobKeys(j *job.Job, deks map[string][]byte) error {
 	// loaded: not whichever kind exists (loadGrantKey says why).
 	wrap := ""
 	for _, sec := range j.Secrets {
-		if !knownWrap(sec.Wrap) {
+		if !secretReadable(sec) {
 			return fmt.Errorf("%s is sealed in a way this jit cannot open", sec.Var)
 		}
 		if wrap == "" {

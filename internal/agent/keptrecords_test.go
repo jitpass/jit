@@ -260,12 +260,14 @@ func TestApprovalRefusesTheNameOfAJobItCannotRead(t *testing.T) {
 }
 
 // Every save writes back what this build does not know. The
-// ledger holds a grant with a field of its own, a field inside its anchor,
-// a known entry with a field of its own, and an entry whose sealed bytes
-// are not hex; jobs.json a job with a field of its own. Through two starts
-// and saves, and a key move in between, all of it survives, and the bad
-// entry is kept verbatim. The grant keeps its keychain key after the move,
-// since nothing here knows which kind the bad entry needs.
+// ledger holds a grant with a field of its own, a field inside its anchor
+// and inside a profile, an entry with a field of its own, an entry whose
+// sealed bytes are not hex, and a plain entry; jobs.json a job with a field
+// of its own. Through two starts and saves, and a key move in between, all
+// of it survives. The two odd entries are unread: kept verbatim, never
+// served, never re-sealed (the move says so), while the plain one moves.
+// The grant keeps its keychain key after the move, since nothing here knows
+// which kind the odd entries need.
 func TestSavesKeepWhatThisBuildDoesNotKnow(t *testing.T) {
 	store := newMemMover()
 	dir := t.TempDir()
@@ -279,9 +281,11 @@ func TestSavesKeepWhatThisBuildDoesNotKnow(t *testing.T) {
 		t.Fatal(err)
 	}
 	const bad = `{"path":"a/x","device_wrapped_sha256":"d9","grant_wrapped":"zz","wrap":"aead-v1","bad_extra":2}`
+	extra := `{"path":"a/b","class":"env","device_wrapped_sha256":"d1","grant_wrapped":"` + hex.EncodeToString(sealed) + `","wrap":"aead-v1","secret_extra":"s"}`
 	grant := `{"id":"g-00000001","created_unix":1,"anchor":{"exec_path":"/Applications/Claude.app","name":"Claude","anchor_extra":"a"},` +
-		`"program":{"name":"node"},"profiles":[],"grant_extra":{"n":1},"secrets":[` +
-		`{"path":"a/b","class":"env","device_wrapped_sha256":"d1","grant_wrapped":"` + hex.EncodeToString(sealed) + `","wrap":"aead-v1","secret_extra":"s"},` +
+		`"program":{"name":"node"},"profiles":[{"name":"notion","root":"/r","profile_extra":1}],"grant_extra":{"n":1},"secrets":[` +
+		extra + `,` +
+		`{"path":"a/c","class":"env","device_wrapped_sha256":"d3","grant_wrapped":"` + hex.EncodeToString(sealed) + `","wrap":"aead-v1"},` +
 		bad + `]}`
 	if err := os.WriteFile(ledger, []byte(`{"version":1,"grants":[`+grant+`]}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -304,6 +308,9 @@ func TestSavesKeepWhatThisBuildDoesNotKnow(t *testing.T) {
 		if a, _ := g["anchor"].(map[string]any); a["anchor_extra"] != "a" || a["name"] != "Claude" {
 			t.Errorf("%s: the anchor's unknown field is gone: %v", when, g["anchor"])
 		}
+		if ps, _ := g["profiles"].([]any); len(ps) != 1 || ps[0].(map[string]any)["profile_extra"] != float64(1) {
+			t.Errorf("%s: the profile's unknown field is gone: %v", when, g["profiles"])
+		}
 		secs, _ := g["secrets"].([]any)
 		var known, badSeen map[string]any
 		for _, e := range secs {
@@ -315,8 +322,8 @@ func TestSavesKeepWhatThisBuildDoesNotKnow(t *testing.T) {
 				badSeen = m
 			}
 		}
-		if known == nil || known["secret_extra"] != "s" {
-			t.Errorf("%s: the entry's unknown field is gone: %v", when, secs)
+		if known == nil || !mapsEqual(known, generic(t, extra)) {
+			t.Errorf("%s: the entry with a field of its own did not come back verbatim: %v", when, known)
 		}
 		if badSeen == nil || !mapsEqual(badSeen, generic(t, bad)) {
 			t.Errorf("%s: the entry with bad sealed bytes did not come back verbatim: %v", when, badSeen)
@@ -337,8 +344,11 @@ func TestSavesKeepWhatThisBuildDoesNotKnow(t *testing.T) {
 			store.mu.Lock()
 			store.target = GrantWrapEnclave
 			store.mu.Unlock()
-			if moved, errs := s.MoveGrantKeys(); moved != 1 || len(errs) != 0 {
+			if moved, errs := s.MoveGrantKeys(); moved != 1 || !onlyKeptUnread(errs, "standing grant g-00000001") {
 				t.Fatalf("move: moved %d, errs %v", moved, errs)
+			}
+			if w := ledgerWraps(t, ledger); len(w) != 3 || w[0] != GrantWrapKeychain || w[1] != GrantWrapEnclave || w[2] != GrantWrapKeychain {
+				t.Fatalf("wraps after the move, by path: %v; want only a/c moved", w)
 			}
 			check("after the move")
 			if !store.has(GrantWrapKeychain, "g-00000001") {
