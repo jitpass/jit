@@ -1111,8 +1111,8 @@ func TestJobPreviewIsApprovalWithoutThePrompt(t *testing.T) {
 func TestJobStatusSaysWhenItsProfileIsGlobal(t *testing.T) {
 	r := newJobRig(t)
 	st, err := r.c.JobAllow("notion-guests", r.spec())
-	if err != nil || st.ProfileGlobal {
-		t.Fatalf("a folder profile: %v, global %v", err, st.ProfileGlobal)
+	if err != nil || st.ProfileGlobal || st.ProfileRoot != r.dir {
+		t.Fatalf("a folder profile: %v, global %v, root %q", err, st.ProfileGlobal, st.ProfileRoot)
 	}
 	spec := r.spec()
 	spec.Profile = &GrantProfile{Name: "notion"}
