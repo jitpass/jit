@@ -164,6 +164,23 @@ func (w *Wrapper) InstallMEK(mek []byte) error {
 	return nil
 }
 
+// MatchesMEK reports whether this wrapper's keychain item holds exactly mek,
+// reading it with no challenge and handing no byte of it back. It is the
+// check before `jit vault rekey --wrapper secure-enclave` removes a copy a
+// move left behind: the caller has just opened the Secure Enclave to get
+// mek, which was the approval, and deletes the keychain item only when it is
+// that same key.
+func (w *Wrapper) MatchesMEK(mek []byte) (bool, error) {
+	check := &Wrapper{service: w.service, account: w.account, challenge: func(string) error { return nil }}
+	got, err := check.fetchMEK("")
+	if err != nil {
+		return false, err
+	}
+	defer wipe(got)
+	check.Close()
+	return bytes.Equal(got, mek), nil
+}
+
 // DeleteStagedRekeyMEK removes a staged key outright — cleanup for `jit
 // uninstall --purge` (which destroys the vault the staged key was meant
 // for) and for tests.

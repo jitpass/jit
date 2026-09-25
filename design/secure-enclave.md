@@ -120,6 +120,11 @@ Enclave."*
 5. Only then delete the plain keychain item. Remove the marker.
 
 A crash anywhere before step 5 leaves the plain key in place and working.
+Step 5 is the one that may fail without blocking the vault: once the sealed
+file is in place the vault opens from the enclave, so a keychain copy that
+won't delete (an older jit's item refused the delete on real hardware,
+S3g in `spike/secure-enclave-mek/FINDINGS.md`) finishes the move anyway and
+is reported until removed.
 The reverse, `--wrapper keychain`, writes the plain item back, verifies it,
 then deletes the sealed file and the enclave key. **The reverse ships
 tested before the forward** (`menu-bar-app.md:133`). Rotating the MEK
@@ -135,6 +140,7 @@ sealing it, which S1b shows needs no prompt.
 | A marker jit can't read, or a change it doesn't recognise (a move to a target only a newer jit knows) | nothing new | `rekey_unknown` | none: "update jit, then finish it with the newer jit", or make the file readable |
 | Secrets still sealed to a lost enclave key | `vault.restore_pending`: `true` | `vault_restore` | `jit vault import <file>` |
 | The lost-key record can't be checked | `vault.restore_pending`: `true`, `vault.restore_check_error`: why | `vault_restore`, detail "couldn't check the vault for secrets sealed to a lost key: …" | `jit vault import --finish` |
+| The key is in the enclave and a keychain copy is still there (a move could not delete it; S3g) | `vault.keychain_copy_left`: `true` (the keychain item's metadata, no prompt) | `vault_key_copy` | `jit vault rekey --wrapper secure-enclave` (one enclave dialog; deletes the copy only if it is the same key) |
 
 A rotation resumes only over a marker it can prove is a rotation's (the
 `started …` line `jit vault rekey` writes). Resuming over a move this jit

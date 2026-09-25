@@ -80,6 +80,15 @@ type statusVault struct {
 	// it is set, every vault change is refused until `jit vault rekey
 	// --wrapper <that value>` finishes it.
 	MoveUnfinished string `json:"move_unfinished,omitempty"`
+	// KeychainCopyLeft: the key is in the Secure Enclave, and the login
+	// keychain still holds a copy of it under the vault key's name
+	// (com.jitpass.vault.mek), which a move could not delete. jit never
+	// reads that copy (keystore.Open follows the sealed file), but any
+	// program running as the user could, which is what the move was meant
+	// to end. `jit vault rekey --wrapper secure-enclave` removes it. Read
+	// from the item's metadata, never its bytes: no prompt. Omitted when
+	// false, and while a move is unfinished (MoveUnfinished says that).
+	KeychainCopyLeft bool `json:"keychain_copy_left,omitempty"`
 	// RestorePending: the vault's Secure Enclave key was lost, `jit vault
 	// init` made a new key, and secrets sealed to the old one are still on
 	// disk, unopenable, until `jit vault import <file>` brings them back
@@ -437,6 +446,7 @@ func gatherVaultStatusWith(v *vault.Vault, root string, lost lostKeyCheck) (stat
 		SecretsStored:  len(secrets),
 		BackupsStored:  len(backups),
 	}
+	result.KeychainCopyLeft = keychainCopyLeft(root, keystore.Kind(result.KeyStore))
 	// Best-effort like StaleBackups, a lost-key file that can't be checked
 	// must not take the overview down, but it fails closed: it is reported
 	// as pending, with why it couldn't be checked.
@@ -470,9 +480,10 @@ func gatherVaultStatusWith(v *vault.Vault, root string, lost lostKeyCheck) (stat
 	return result, nil
 }
 
-// printStatusKeyRows prints the two vault-key states that block the vault
-// until one command runs: an unfinished move of the key, and secrets still
-// sealed to a lost key. Silent otherwise. Red: both are broken today.
+// printStatusKeyRows prints the vault-key states that need one command: an
+// unfinished move of the key and secrets still sealed to a lost key (red:
+// both are broken today), and a keychain copy a move left behind (amber).
+// Silent otherwise.
 func printStatusKeyRows(w io.Writer, v statusVault) {
 	if v.MoveUnfinished != "" {
 		statusLabel(w, "key")
@@ -483,6 +494,15 @@ func printStatusKeyRows(w io.Writer, v statusVault) {
 		}
 		printStatusGlyphValue(w, "unfinished move %s — vault changes refused", where)
 		printStatusAction(w, fmt.Sprintf("`jit vault rekey --wrapper %s` to finish it", v.MoveUnfinished))
+	}
+	if v.KeychainCopyLeft {
+		// Amber, not red: nothing fails today and the vault opens from the
+		// enclave. It is exposure: the key the move was meant to lock away
+		// can still be read from the keychain.
+		statusLabel(w, "key")
+		_, _ = cWarn.Fprint(w, glyphWarn+" ")
+		printStatusGlyphValue(w, "an old copy is still in your keychain")
+		printStatusAction(w, "`jit vault rekey --wrapper secure-enclave` to remove it")
 	}
 	switch {
 	case v.RestoreCheckError != "":
@@ -496,6 +516,22 @@ func printStatusKeyRows(w io.Writer, v statusVault) {
 		printStatusGlyphValue(w, "some secrets are sealed to a key this Mac no longer has")
 		printStatusAction(w, "`jit vault import <file>` brings them back from a recovery file")
 	}
+}
+
+// keychainCopyPresence is keystore.KeychainCopy, a var so no test answers
+// from the production keychain.
+var keychainCopyPresence = keystore.KeychainCopy
+
+// keychainCopyLeft reports a keychain copy of an enclave vault's key: the
+// vault is in the enclave, no change of its key is under way (a move's own
+// steps hold both copies on purpose, and move_unfinished reports that), and
+// the keychain item is there. Present only: a keychain that would not
+// answer is not a copy found.
+func keychainCopyLeft(root string, kind keystore.Kind) bool {
+	if kind != keystore.KindSecureEnclave || readRekeyMarker(root).kind != markerNone {
+		return false
+	}
+	return keychainCopyPresence() == keystore.Present
 }
 
 // printStatusBackupRow is the vault's backup row: whether an export exists

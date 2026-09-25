@@ -8,7 +8,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jitpass/jit/internal/keychainwrap"
@@ -84,5 +86,83 @@ func TestHardwareMoveRoundTrip(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, vault.SealedKeyFile)); err == nil {
 		t.Fatal("the sealed file survived the move back")
+	}
+}
+
+// TestHardwareFinishMoveOverAnOldJitsItem is the owner's Mac on 2026-09-25,
+// with TEST-ONLY names: a move into the enclave stopped at its last step
+// because the helper could not delete the keychain copy an older jit had
+// made (errSecInvalidOwnerEdit, S3g). The marker says "move secure-enclave",
+// the sealed file is in place, the old item is still there. Re-running the
+// move must finish it: delete the item (keychainwrap's fallback) and clear
+// the marker, touching neither the enclave nor any dialog. The sealed file
+// here is a stand-in; the resumed move only checks that it exists, and the
+// enclave constructors fail the test if the move reaches for them.
+//
+// Unattended, no dialog (the item is read by nothing here; the delete never
+// asks):
+//
+//	sh spike/secure-enclave-mek/s3g/build.sh
+//	JIT_KC_OLD_JIT=$PWD/spike/secure-enclave-mek/s3g/out/oldjit IDENTIFIER=jit \
+//	  PKG=./internal/cli scripts/se-test.sh -test.run TestHardwareFinishMoveOverAnOldJitsItem
+func TestHardwareFinishMoveOverAnOldJitsItem(t *testing.T) {
+	oldJit := os.Getenv("JIT_KC_OLD_JIT")
+	if os.Getenv("JIT_SE_TEST") != "1" || oldJit == "" {
+		t.Skip("needs se-test.sh and JIT_KC_OLD_JIT: see this test's comment")
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sig, _ := exec.Command("/usr/bin/codesign", "-dv", self).CombinedOutput(); !strings.Contains(string(sig), "\nIdentifier=jit\n") { // #nosec G204 -- fixed system tool, our own path
+		t.Fatal("not signed with identifier jit: run through scripts/se-test.sh with IDENTIFIER=jit")
+	}
+	suffix := make([]byte, 4)
+	if _, err := rand.Read(suffix); err != nil {
+		t.Fatal(err)
+	}
+	const service = "com.jitpass.spike.owner.TEST-ONLY" // s3g's old-jit build writes only this
+	account := "move-" + hex.EncodeToString(suffix)
+	tag := "com.jitpass.vault.kek.TEST-ONLY.owner." + hex.EncodeToString(suffix)
+	kc := keychainwrap.NewTesting(service, account, func(string) error {
+		t.Error("the resumed move asked for the keychain's Touch ID")
+		return nil
+	})
+	t.Cleanup(func() {
+		_ = kc.DeleteMEK()
+		_ = exec.Command(oldJit, "delete", account).Run() // #nosec G204 -- the test's own TEST-ONLY helper
+	})
+	if out, err := exec.Command(oldJit, "create", account).CombinedOutput(); err != nil || !strings.Contains(string(out), "OSStatus=0 ") { // #nosec G204 -- as above
+		t.Fatalf("the old jit could not create the item: %v\n%s", err, out)
+	}
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, vault.SealedKeyFile), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	noEnclave := func() *secureenclave.Wrapper {
+		t.Error("the resumed move reached for the enclave")
+		return secureenclave.NewTesting(root, tag)
+	}
+	var out bytes.Buffer
+	m := newKeyMoverWith(root, &out, kc, noEnclave, noEnclave, func() {})
+	if err := m.writeMarker(wrapperSecureEnclave); err != nil {
+		t.Fatal(err)
+	}
+	if kc.MEKPresence() != keychainwrap.MEKPresent {
+		t.Fatal("the old jit's item is not there")
+	}
+
+	if err := m.toEnclave(); err != nil {
+		t.Fatalf("finishing the move: %v", err)
+	}
+	if kc.MEKPresence() != keychainwrap.MEKAbsent {
+		t.Fatalf("the old jit's item survived the finished move:\n%s", out.String())
+	}
+	if rekeyInProgress(root) {
+		t.Fatal("the marker survived")
+	}
+	if !strings.Contains(out.String(), "Moved the vault key into the Secure Enclave") || strings.Contains(out.String(), "old copy") {
+		t.Fatalf("output:\n%s", out.String())
 	}
 }

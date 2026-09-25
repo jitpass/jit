@@ -819,6 +819,8 @@ func findingLabel(f checkFinding) string {
 		return "[vault key change]"
 	case kindVaultRestore:
 		return "[vault restore]"
+	case kindVaultKeyCopy:
+		return "[vault key copy]"
 	case kindLegacyEnvelope:
 		// "storage format", not "envelope": the envelope is jit's own word
 		// for the on-disk shape and means nothing to the person reading a
@@ -881,7 +883,7 @@ func findingLabel(f checkFinding) string {
 // that identifies the file off the first line (rule 6).
 func formatFinding(f checkFinding) string {
 	switch f.Kind {
-	case kindParse, kindNotFound, kindService, kindBackup, kindWrap, kindWrapEnv, kindMount, kindMountStale, kindDuplicates, kindVaultKey, kindRekey, kindVaultMove, kindRekeyUnknown, kindVaultRestore, kindLegacyEnvelope, kindAudit, kindMCP, kindMCPNested, kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion, kindRegistryEmpty, kindStalePointers:
+	case kindParse, kindNotFound, kindService, kindBackup, kindWrap, kindWrapEnv, kindMount, kindMountStale, kindDuplicates, kindVaultKey, kindRekey, kindVaultMove, kindRekeyUnknown, kindVaultRestore, kindVaultKeyCopy, kindLegacyEnvelope, kindAudit, kindMCP, kindMCPNested, kindInstall, kindJitPath, kindJitPathUpgrade, kindCompletion, kindRegistryEmpty, kindStalePointers:
 		return shortHome(f.Detail)
 	case kindMissing:
 		return fmt.Sprintf("%s: %s "+glyphAction+" %s, not in the vault", profileRef(f), f.Variable, f.Path)
