@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/jitpass/jit/internal/job"
+	"github.com/jitpass/jit/internal/lineage"
 )
 
 // jobRig is a running test server wired for jobs: a vault of wrapped DEKs
@@ -754,5 +755,27 @@ func TestJobAllowRefusesAFolderWithNothingToFingerprint(t *testing.T) {
 	spec.Dir, spec.Argv, spec.Profile = empty, []string{"/bin/sh", "/dev/null"}, nil
 	if _, err := r.c.JobAllow("empty", spec); err == nil || !strings.Contains(err.Error(), "no files") {
 		t.Fatalf("empty folder: %v", err)
+	}
+}
+
+// The live Cowork test's prompt said "for jit-dev" and the app said
+// "launched by disclaimer". The requester is the app behind jit, whatever
+// jit's own file is called.
+func TestJobRequesterNamesTheAppBehindJit(t *testing.T) {
+	behind := []lineage.Process{
+		{PID: 27067, ExecPath: "/Applications/Claude.app/Contents/Helpers/disclaimer"},
+		{PID: 27002, ExecPath: "/Applications/Claude.app/Contents/MacOS/Claude"},
+	}
+	for name, self := range map[string]lineage.Process{
+		"this binary, renamed": {PID: 27071, ExecPath: currentExecutablePath()},
+		"a jit elsewhere":      {PID: 27071, ExecPath: "/opt/homebrew/bin/jit"},
+	} {
+		if got := jobRequester(&caller{pid: 27071, self: self, ancestors: behind}); got != "Claude" {
+			t.Errorf("%s: requester = %q, want Claude", name, got)
+		}
+	}
+	other := &caller{pid: 5, self: lineage.Process{PID: 5, ExecPath: "/usr/local/bin/claude"}}
+	if got := jobRequester(other); got != "claude" {
+		t.Errorf("a direct caller: requester = %q, want claude", got)
 	}
 }

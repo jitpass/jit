@@ -233,10 +233,15 @@ func LaunchedByProcess(ancestors []Process) (launcher Process, above []Process, 
 // being the reason for it. Shells dominate, but the login/exec wrappers belong
 // here too — none of them is ever the interesting answer to "why is this
 // happening".
+//
+// "disclaimer" is the helper Claude Desktop (Contents/Helpers/disclaimer)
+// starts every local MCP server through, to disclaim macOS privacy
+// responsibility for it. Found by running the real thing: a Touch ID prompt
+// for a job Cowork asked for said it was "launched by disclaimer".
 func isRelay(name string) bool {
 	switch strings.TrimPrefix(name, "-") { // login shells appear as "-zsh"
 	case "zsh", "bash", "sh", "dash", "fish", "tcsh", "csh", "ksh",
-		"login", "env", "sudo", "xargs", "time":
+		"login", "env", "sudo", "xargs", "time", "disclaimer":
 		return true
 	}
 	return false

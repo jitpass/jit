@@ -68,3 +68,15 @@ func TestAncestryWalksUpwards(t *testing.T) {
 		t.Errorf("chain[1] (pid %d) is not chain[0]'s parent (ppid %d)", chain[1].PID, chain[0].PPID)
 	}
 }
+
+// The chain the live Cowork test recorded: jit mcp, started by Claude
+// Desktop through its disclaimer helper. The launcher is Claude.
+func TestLaunchedBySkipsClaudeDesktopsDisclaimer(t *testing.T) {
+	chain := []Process{
+		{PID: 27067, ExecPath: "/Applications/Claude.app/Contents/Helpers/disclaimer"},
+		{PID: 27002, ExecPath: "/Applications/Claude.app/Contents/MacOS/Claude"},
+	}
+	if got := LaunchedBy(chain); got != "Claude" {
+		t.Fatalf("LaunchedBy = %q, want Claude", got)
+	}
+}
