@@ -9,11 +9,18 @@ import (
 	"path/filepath"
 )
 
+// SealedKeyFile is the vault root's file holding the master key sealed to a
+// Secure Enclave key (internal/secureenclave). Named here, beside the rest of
+// the vault's local state, so DeleteLocalState removes it and
+// internal/keystore can tell which backend a vault uses from one constant.
+const SealedKeyFile = "vault-key.sealed"
+
 // DeleteLocalState permanently removes every file this package keeps
-// under root — the encrypted secrets tree, the device identity, and the
-// last-export marker — returning which of them actually existed and were
-// removed (for `jit vault delete`'s own report). The keychain-stored MEK
-// is deliberately NOT this function's job: this package stays portable,
+// under root — the encrypted secrets tree, the device identity, the
+// last-export marker and the sealed key file — returning which of them
+// actually existed and were removed (for `jit vault delete`'s own report).
+// The key itself (a keychain item, or a Secure Enclave key) is deliberately
+// NOT this function's job: this package stays portable,
 // and the keychain is internal/keychainwrap's darwin/CGo territory —
 // `jit vault delete` composes the two. Removing device.id here is what
 // makes a later `jit vault init` a genuinely fresh vault instead of one
@@ -28,7 +35,7 @@ func DeleteLocalState(root string) (removed []string, err error) {
 		}
 		removed = append(removed, secretsDir)
 	}
-	for _, name := range []string{deviceIDFile, lastExportFile} {
+	for _, name := range []string{deviceIDFile, lastExportFile, SealedKeyFile} {
 		path := filepath.Join(root, name)
 		if err := os.Remove(path); err != nil {
 			if os.IsNotExist(err) {

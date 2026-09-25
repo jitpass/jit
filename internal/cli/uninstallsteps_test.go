@@ -133,6 +133,9 @@ func TestUninstallGateRelaxesOnlyWhenTheKeyIsProvablyGone(t *testing.T) {
 	}{
 		{"secrets and a key", 3, keystore.Present, true},
 		{"secrets, key gone", 3, keystore.Absent, false},
+		// Review finding: a lost enclave key is the same provable absence;
+		// the strict path would need the very key that is gone.
+		{"secrets, enclave key lost", 3, keystore.KeyLost, false},
 		{"secrets, key unknowable", 3, keystore.Indeterminate, true},
 		{"empty vault", 0, keystore.Present, false},
 		{"unreadable vault", -1, keystore.Present, false},
@@ -164,7 +167,7 @@ func TestUninstallPurgeLeavesNothingBehind(t *testing.T) {
 	})
 	launchctlRun = func(...string) ([]byte, error) { return nil, nil }
 	keysDeleted, challenged := false, false
-	deleteVaultKeys = func() error { keysDeleted = true; return nil }
+	deleteVaultKeys = func(keystore.Store) error { keysDeleted = true; return nil }
 	uninstallChallenge = func(string) error { challenged = true; return nil }
 
 	rc := writeRcWithPathLine(t, home)

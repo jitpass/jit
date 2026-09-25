@@ -429,7 +429,7 @@ func TestStatusFormatJSONMatchesTextSections(t *testing.T) {
 
 	want := statusResult{
 		CLI:   statusCLI{Version: agent.Version(), Build: agent.BuildID()},
-		Vault: statusVault{Initialized: "yes", SecretsStored: 1},
+		Vault: statusVault{Initialized: "yes", KeyStore: "keychain", SecretsStored: 1},
 		Agent: statusAgent{Running: false, Unlocked: false},
 		Secrets: statusSecrets{
 			TotalSecrets: 1, TotalGroups: 1,
