@@ -699,15 +699,23 @@ func (s *Server) openJobKeys(j *job.Job, deks map[string][]byte) error {
 	if s.GrantKeys == nil || j.KeyID == "" {
 		return fmt.Errorf("this job has no key of its own")
 	}
-	key, err := s.GrantKeys.Load(j.KeyID)
+	// Every secret is sealed for one kind of key, and that kind is the key
+	// loaded: not whichever kind exists (loadGrantKey says why).
+	wrap := ""
+	for _, sec := range j.Secrets {
+		if !knownWrap(sec.Wrap) {
+			return fmt.Errorf("%s is sealed in a way this jit cannot open", sec.Var)
+		}
+		if wrap == "" {
+			wrap = sec.Wrap
+		}
+	}
+	key, err := s.loadGrantKey(j.KeyID, wrap)
 	if err != nil {
 		return fmt.Errorf("the job's key is gone")
 	}
 	defer key.Close()
 	for _, sec := range j.Secrets {
-		if !knownWrap(sec.Wrap) {
-			return fmt.Errorf("%s is sealed in a way this jit cannot open", sec.Var)
-		}
 		if sec.Wrap != keyWrap(key) {
 			return fmt.Errorf("%s is sealed for a different kind of key than the job's", sec.Var)
 		}

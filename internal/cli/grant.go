@@ -660,9 +660,10 @@ type grantKeyBackend interface {
 //
 // A NEW key goes where the vault's own key is: an enclave vault's grants and
 // jobs get enclave keys, which never ask and work while the Mac is locked
-// (design/secure-enclave-plan.md, C2). A key is LOADED from wherever that
-// grant's key exists, enclave first, so grants made before a vault moved
-// keep working until they are moved too (C3). Delete clears both.
+// (design/secure-enclave-plan.md, C2). The agent loads a grant's or job's
+// key by the kind its entries say they are sealed for (LoadWrap), never by
+// which kind exists: a move (C3) that made an enclave key and then failed
+// leaves both, and only the old one opens the entries. Delete clears both.
 type grantKeyStore struct {
 	root    string
 	keys    grantKeyBackend // the keychain
@@ -680,6 +681,8 @@ func (g grantKeyStore) Create(id string) (agent.GrantKey, error) {
 	return g.keys.Create(id)
 }
 
+// Load is the plain GrantKeyStore half, for a caller that does not know the
+// kind: the agent uses LoadWrap whenever a store offers it.
 func (g grantKeyStore) Load(id string) (agent.GrantKey, error) {
 	// A jit that cannot reach the enclave (ErrUnavailable) answers false
 	// here and loads the keychain key, which is all it could open anyway.
