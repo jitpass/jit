@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"sync"
 	"time"
@@ -265,14 +266,20 @@ func (s *Server) SetGrantLedger(path string) (count int, err error) {
 	s.grantMu.Lock()
 	defer s.grantMu.Unlock()
 	s.ledgerPath = path
+	s.ledgerNames = nil
 	data, err := os.ReadFile(path) // #nosec G304 -- a fixed, well-known path under jit's own config directory
 	if errors.Is(err, os.ErrNotExist) {
 		s.standing = map[string]*standingGrant{}
+		s.ledgerNames = map[string]bool{}
 		return 0, nil
 	}
 	if err != nil {
 		s.ledgerPath = "" // never overwrite a file we could not read
 		return 0, err
+	}
+	if s.ledgerNames, err = namedKeyIDs(data); err != nil {
+		s.ledgerPath = ""
+		return 0, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	var f ledgerFile
 	if err := json.Unmarshal(data, &f); err != nil {
@@ -320,6 +327,43 @@ func (s *Server) SetGrantLedger(path string) (count int, err error) {
 	}
 	s.standing = loaded
 	return len(loaded), nil
+}
+
+// mintedKeyID is the shape of every grant and job key id jit makes: g- or j-
+// and eight hex digits.
+var mintedKeyID = regexp.MustCompile(`^[gj]-[0-9a-f]{8}$`)
+
+// namedKeyIDs is every string in a JSON document that has the shape of a key
+// id jit mints, wherever it sits: the ids a file names, read raw, including
+// records a loader skips and fields a newer jit may add. The orphan cleanup
+// (grantorphans.go) keeps every key so named. A document that does not parse
+// is an error, and the caller keeps no names at all.
+func namedKeyIDs(data []byte) (map[string]bool, error) {
+	var v any
+	if err := json.Unmarshal(data, &v); err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	var walk func(any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case string:
+			if mintedKeyID.MatchString(x) {
+				out[x] = true
+			}
+		case []any:
+			for _, e := range x {
+				walk(e)
+			}
+		case map[string]any:
+			for k, e := range x {
+				walk(k)
+				walk(e)
+			}
+		}
+	}
+	walk(v)
+	return out, nil
 }
 
 // ledgerServeInterval bounds how often the SERVE path rewrites the ledger.

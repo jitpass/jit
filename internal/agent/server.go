@@ -214,9 +214,12 @@ type Server struct {
 	// jobs is the approved job list, loaded from jobsPath (SetJobStore) and
 	// saved on every change, guarded by jobMu. A run copies its job out and
 	// releases the lock: a run lasts minutes and must not hold up a list.
-	jobMu      sync.Mutex
-	jobs       map[string]*job.Job
-	jobsPath   string
+	jobMu    sync.Mutex
+	jobs     map[string]*job.Job
+	jobsPath string
+	// jobNames is every key id jobs.json named when it loaded, read raw
+	// (namedKeyIDs); nil when it did not load.
+	jobNames   map[string]bool
 	jobRunning map[string]bool
 	// jobProposals are agents' job proposals waiting for the human
 	// (jobrequest.go), memory-only, capped and expiring. Guarded by jobMu.
@@ -235,6 +238,9 @@ type Server struct {
 	// but the key.
 	standing   map[string]*standingGrant
 	ledgerPath string
+	// ledgerNames is every key id the ledger named when it loaded, read raw
+	// (namedKeyIDs); nil when it did not load. Guarded by grantMu.
+	ledgerNames map[string]bool
 	// ledgerMu serializes the whole save: snapshot, write, rename. It is
 	// NOT grantMu, because the file write must not hold the lock the serve
 	// path needs, and it is not optional — see saveLedger for the tear it
