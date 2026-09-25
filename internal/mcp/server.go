@@ -16,6 +16,7 @@ import (
 
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/job"
+	"github.com/jitpass/jit/internal/profile"
 )
 
 // Backend is what the server needs from the jit service: the two job RPCs
@@ -416,11 +417,29 @@ func (s *Server) requestJob(p jobProposal) callResult {
 	if p.Profile != "" && strings.ContainsAny(p.Profile, "/\\ \t\n") {
 		return textResult("profile must be a profile name, not a path", true)
 	}
-	var profile *agent.GrantProfile
-	if p.Profile != "" {
-		profile = &agent.GrantProfile{Name: p.Profile, Root: p.Folder}
+	// The folder's only profile when none is named, as `jit job allow`
+	// picks it: a proposal that left it out became, in the live test, a
+	// sheet whose approval would have made a job with no secrets.
+	if p.Profile == "" {
+		matches, _ := filepath.Glob(filepath.Join(p.Folder, profile.ProfilesDir, "*.yaml"))
+		names := make([]string, 0, len(matches))
+		for _, m := range matches {
+			names = append(names, strings.TrimSuffix(filepath.Base(m), ".yaml"))
+		}
+		sort.Strings(names)
+		switch len(names) {
+		case 1:
+			p.Profile = names[0]
+		case 0:
+		default:
+			return textResult(fmt.Sprintf("this folder has %d profiles (%s): name the one the job needs in profile", len(names), strings.Join(names, ", ")), true)
+		}
 	}
-	err := s.Backend.RequestJob(p.Name, agent.JobSpec{Dir: p.Folder, Argv: p.Command, Profile: profile}, p.Why)
+	var prof *agent.GrantProfile
+	if p.Profile != "" {
+		prof = &agent.GrantProfile{Name: p.Profile, Root: p.Folder}
+	}
+	err := s.Backend.RequestJob(p.Name, agent.JobSpec{Dir: p.Folder, Argv: p.Command, Profile: prof}, p.Why)
 	if err == nil {
 		return textResult("Sent to JitPass on the user's Mac. Nothing was created: the user reads the whole job there and approves it with Touch ID, or dismisses it. "+
 			"Once approved, call run_job with the name "+p.Name+". You will see the job's output, never its secret values.", false)

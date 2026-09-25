@@ -7,7 +7,10 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -26,6 +29,7 @@ type fakeBackend struct {
 	ran       []string
 	appUp     bool
 	requested []string
+	specs     []agent.JobSpec
 }
 
 func (f *fakeBackend) RequestJob(name string, spec agent.JobSpec, why string) error {
@@ -35,6 +39,7 @@ func (f *fakeBackend) RequestJob(name string, spec agent.JobSpec, why string) er
 		return errors.New("agent: job_request: " + agent.ErrNoJobBroker.Error())
 	}
 	f.requested = append(f.requested, name)
+	f.specs = append(f.specs, spec)
 	return nil
 }
 
@@ -268,5 +273,34 @@ func TestRequestJobGoesToTheAppWhenItIsRunning(t *testing.T) {
 	s.send(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"request_job","arguments":{"name":"notion-guests","folder":"/n","command":["python","a.py"]}}}`)
 	if text, _ := resultText(t, s.recv()); !strings.Contains(text, "jit job allow notion-guests") {
 		t.Fatalf("with no app: %q", text)
+	}
+}
+
+// A proposal that names no profile gets the folder's only one, as
+// `jit job allow` does: the live test's proposal left it out, and its sheet
+// would have approved a job with no secrets. Two profiles are a question
+// for the model, not a guess.
+func TestRequestJobTakesTheFoldersOnlyProfile(t *testing.T) {
+	dir := t.TempDir()
+	store := filepath.Join(dir, ".jit", "profiles")
+	if err := os.MkdirAll(store, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store, "notion.yaml"), []byte("K: notion/K\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b := &fakeBackend{appUp: true}
+	s := start(t, b)
+	call := `{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"request_job","arguments":{"name":"g","folder":%q,"command":["python","a.py"]}}}`
+	s.send(fmt.Sprintf(call, 1, dir))
+	if _, isErr := resultText(t, s.recv()); isErr || len(b.specs) != 1 || b.specs[0].Profile == nil || b.specs[0].Profile.Name != "notion" {
+		t.Fatalf("one profile: isError=%v specs=%+v", isErr, b.specs)
+	}
+	if err := os.WriteFile(filepath.Join(store, "other.yaml"), []byte("K: o/K\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.send(fmt.Sprintf(call, 2, dir))
+	if text, isErr := resultText(t, s.recv()); !isErr || !strings.Contains(text, "notion, other") {
+		t.Fatalf("two profiles: isError=%v %q", isErr, text)
 	}
 }
