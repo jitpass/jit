@@ -362,7 +362,7 @@ func jobAllowReason(label, groups string, secrets, shown int, ask job.Ask) strin
 	if room < 12 {
 		room = 12
 	}
-	return truncate(fmt.Sprintf("let AI run %s with %s%s", truncateMiddle(label, room), with, scope), maxReasonLen)
+	return truncate(fmt.Sprintf("let AI run %s with %s%s", fitLabel(label, room), with, scope), maxReasonLen)
 }
 
 // jobLabel is "folder/program": the folder's own name and the file the
@@ -404,7 +404,7 @@ func jobRunReason(requester, label string, secrets int) string {
 	// 4 + 24 + 5 + 10 + 13 + 34 = 90 at 14 secrets. The label keeps both
 	// ends (folder and program); the requester is a launcher's name.
 	return truncate(fmt.Sprintf("run %s for %s (%s); it sees output, never the values",
-		truncateMiddle(label, 24), truncate(requester, 10), countNoun(secrets, "secret")), maxReasonLen)
+		fitLabel(label, 24), truncate(requester, 10), countNoun(secrets, "secret")), maxReasonLen)
 }
 
 func countNoun(n int, noun string) string {
@@ -777,6 +777,21 @@ func isThisBinary(path string) bool {
 // truncateMiddle shortens s to n runes by cutting its middle, keeping both
 // ends: for "folder/program" the start names the folder and the end the
 // program, and the end is the half a caller would want to push off.
+// fitLabel fits a "folder/program" label into n runes by dropping the folder
+// before cutting anything: the program is the fact the prompt exists to
+// show, and "notion/…t_guest_users.py" (the live Cursor run) hid its name
+// to keep a folder the sheet had already shown. Only a program too long on
+// its own is cut, keeping both of its ends.
+func fitLabel(label string, n int) string {
+	if len([]rune(label)) <= n {
+		return label
+	}
+	if _, program, ok := strings.Cut(label, "/"); ok {
+		return truncateMiddle(program, n)
+	}
+	return truncateMiddle(label, n)
+}
+
 func truncateMiddle(s string, n int) string {
 	r := []rune(s)
 	if len(r) <= n || n < 5 {

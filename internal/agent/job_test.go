@@ -1122,3 +1122,20 @@ func TestJobStatusSaysWhenItsProfileIsGlobal(t *testing.T) {
 		t.Fatalf("a global profile: %v, global %v", err, st.ProfileGlobal)
 	}
 }
+
+// The live Cursor run's prompt read "run notion/…t_guest_users.py": the
+// folder kept, the script cut. The script is what the prompt is for.
+func TestFitLabelDropsTheFolderBeforeCuttingTheProgram(t *testing.T) {
+	if got := fitLabel("notion/list_guest_users.py", 24); got != "list_guest_users.py" {
+		t.Fatalf("fitLabel = %q, want the whole script", got)
+	}
+	if got := fitLabel("jamf/x.py", 24); got != "jamf/x.py" {
+		t.Fatalf("a label that fits is kept whole: %q", got)
+	}
+	if got := fitLabel("n/a_script_name_far_too_long_to_fit.py", 20); len([]rune(got)) != 20 || !strings.HasSuffix(got, ".py") {
+		t.Fatalf("a program too long alone keeps both ends: %q", got)
+	}
+	if got := jobRunReason("Cursor", "notion/list_guest_users.py", 3); !strings.Contains(got, "run list_guest_users.py for Cursor") {
+		t.Fatalf("run reason = %q", got)
+	}
+}
