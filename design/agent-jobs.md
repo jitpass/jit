@@ -1,7 +1,8 @@
 # AI Jobs: an AI tool runs your script, and never holds the key
 
-**Status: steps 1 (engine) and 2 (jobs that never ask) built 2026-09-25 on
-branch `ai-jobs`, not yet merged or released.** Steps 3-4 are not built. App mockup:
+**Status: steps 1 (engine), 2 (jobs that never ask) and 3 (`jit mcp`) built
+2026-09-25 on branch `ai-jobs`, not yet merged or released.** Step 4 (the
+app) is not built. App mockup:
 `jit-app/docs/design/mockups/Jobs.html` (published as an artifact for
 review). Read `standing-grants.md` first; the job key below is its grant
 key, reused.
@@ -377,6 +378,64 @@ did not name:
   they see output, never the values." and, per run, "…run notion-guests (3
   secrets) for Claude; it sees output, never the values." A test holds both
   under the 90-rune dialog limit with the promise intact at the worst case.
+
+### After the second review (2026-09-25)
+
+A review of steps 1 and 2 found ten gaps; each fix has a test that fails
+without it.
+
+- **The folder is resolved through symlinks** at approval, and an empty
+  fingerprint is refused. A job approved through a symlinked path
+  (`/tmp` → `/private/tmp`, a linked project) used to fingerprint as empty,
+  so no edit could stop it. Output folders are resolved the same way, as far
+  as they exist, or every declared output would have stopped the job.
+- **`__pycache__` is fingerprinted.** It was skipped on the grounds that the
+  runner redirects bytecode, but `python -I` and a child with a cleaned
+  environment ignore `PYTHONPYCACHEPREFIX` and load a planted `.pyc` whose
+  header matches its source. A jit run never writes there, so the entry is
+  stable.
+- **Each run gets a fresh, empty bytecode cache**, removed afterwards. A
+  per-job cache that persisted was a place to leave poisoned bytecode.
+- **Symlinks out of the folder**: one to a file is fingerprinted by the
+  content it points at; one to a folder is refused, as is an interpreter
+  pointed at a folder outside (`python ../tool`). Files are hashed only when
+  they are regular files once opened, without blocking, so a path swapped
+  for a named pipe fails fast instead of hanging every list and run.
+- **A stop is sticky.** A detected change, rotation or missing key stops
+  the job until it is approved again; putting the file back does not
+  reopen it. Without this a caller could retry a swap for free until one
+  landed between the check and the start.
+- **The folder is checked again after the run.** A change during the run
+  withholds the output, which may have been shaped by the changed code, and
+  stops the job. A job that writes into its own folder stops the same way,
+  and the message says to declare that folder with `--output`.
+- **The approval prompt names what the service resolved, never the job's
+  name**: "jit is trying to let AI run notion/list_guest_users.py with 3
+  notion secrets, 1 shown, unasked till removed". Any process that reaches
+  the socket can ask for an approval and chooses the name, so a familiar
+  name on a request that runs something else is the prompt this must not
+  show. The shown count is there because "never the values" is false for a
+  value marked shown.
+- **The masker also hides** base64 of a value embedded at either of the
+  other two alignments (`Basic base64("user:" + token)`), the JSON-escaped
+  form (a key with quotes, or a multi-line key in a JSON log), and each line
+  of a multi-line value from 16 characters (a PEM body).
+- **The run environment switches off** `~/.zshenv` (`ZDOTDIR` empty) and
+  user site-packages (`PYTHONNOUSERSITE=1`).
+
+What stays trusted, stated rather than hidden:
+
+- **Programs the job calls** from the captured `PATH` (`git`, `curl`, a
+  Homebrew tool) and their own configuration. The fingerprint covers the
+  folder, the files the command names, and the program it starts.
+- **Code a Python venv loads through an editable install** (`.pth` pointing
+  outside): the `.pth` file is fingerprinted, the code it points at is not.
+- **A process that reaches the socket can ask for approval.** The Touch ID
+  prompt is the boundary, which is why it names resolved facts. Step 4's
+  sheet shows the whole command before the prompt.
+- **A narrow race remains** between the last check and the moment the
+  interpreter reads a file it imports late. The sticky stop and the check
+  after the run make every losing attempt stop the job for good.
 
 **Known gap: the folder's `.env` mount.** `jit run` swaps a project's
 mount to an inert pointer file for the run. A job does not yet: the job
