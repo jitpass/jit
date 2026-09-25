@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/keystore"
@@ -203,6 +204,7 @@ type keyMover struct {
 	kcInstall func(mek []byte) error              // writes and reads back; no prompt
 	kcDelete  func() error
 	kcMatches func(mek []byte) (bool, error) // reads with no prompt; returns no bytes
+	kcOpens   func() (int, error)            // how many live secrets the item opens; reads with no prompt or dialog
 
 	seInstallStaged func(mek []byte) error              // seals; never prompts
 	seOpenStaged    func(reason string) ([]byte, error) // the enclave's dialog
@@ -406,10 +408,13 @@ func copyLeftWarning(err error) string {
 //
 //   - the item holds the same key: it is deleted.
 //   - it holds a different key, or can't be read: without force it is left
-//     alone, and the error says why and names the --force form. With force
-//     it is deleted all the same; runVaultMove asked first, naming the risk
-//     (whatever that key protects is lost). The vault itself never uses a
-//     keychain item once its key is in the enclave, so it loses nothing.
+//     alone, and the error says why and what to do. With force it is
+//     measured first (kcOpens: how many of this vault's live secrets it
+//     opens, read with no dialog): one that opens any is refused, since an
+//     older jit may have saved those secrets with it, and one that can't be
+//     measured is refused too. Only a key that opens none is deleted;
+//     runVaultMove asked first, on a typed yes, naming the risk (whatever
+//     that key protects elsewhere is lost).
 //
 // Changes nothing about where the vault opens from, so no marker.
 func (m *keyMover) removeKeychainCopy(force bool) error {
@@ -422,10 +427,13 @@ func (m *keyMover) removeKeychainCopy(force bool) error {
 	switch {
 	case err == nil && same:
 	case force:
+		if err := m.forceCheck(); err != nil {
+			return err
+		}
 	case err != nil:
 		return fmt.Errorf("couldn't read the key in your keychain under the vault key's name: %s\n"+
 			"It was left alone.\n"+
-			"To delete it unread: `jit vault rekey --wrapper secure-enclave --force`", truncateEnd(err.Error(), 54))
+			"If nothing needs it, delete %q in Keychain Access", truncateEnd(err.Error(), 54), keystore.KeychainItemName)
 	default:
 		return errors.New("the key in your keychain under the vault key's name isn't this vault's.\n" +
 			"It was left alone.\n" +
@@ -439,6 +447,28 @@ func (m *keyMover) removeKeychainCopy(force bool) error {
 	fmt.Fprintln(m.out, "The vault key is only in the Secure Enclave now.")
 	return nil
 }
+
+// forceCheck is --force's measure before it deletes a key that isn't this
+// vault's (or can't be matched): whether it opens any live secret here.
+func (m *keyMover) forceCheck() error {
+	n, err := m.kcOpens()
+	switch {
+	case err != nil:
+		return fmt.Errorf("jit couldn't check whether the key in your keychain\n"+
+			"opens any of this vault's secrets (%s).\n"+
+			"It was left alone.\n"+
+			"If nothing needs it, delete %q in Keychain Access", truncateEnd(err.Error(), 40), keystore.KeychainItemName)
+	case n > 0:
+		return fmt.Errorf("the key in your keychain under the vault key's name isn't this vault's,\n"+
+			"but it opens %s in this vault; jit won't delete it.\n"+
+			"It was left alone: an older jit may have saved them with it", countWord(n, "secret", "secrets"))
+	}
+	return nil
+}
+
+// stdinIsTerminal reports whether a question can be answered here; a var so
+// a test can say yes.
+var stdinIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
 
 // toKeychain moves the MEK from the Secure Enclave back into the keychain.
 // One dialog: the enclave's, to read the key. The keychain copy is read
@@ -549,6 +579,16 @@ func runVaultMove(cmd *cobra.Command, root, target string) error {
 		return errors.New("jit vault rekey: --force only removes a keychain key from a vault\n" +
 			"already in the Secure Enclave, and there is none to remove")
 	}
+	// --force deletes a key that may protect something else, so it never
+	// runs on anything but a person's typed answer to its question.
+	if vaultRekeyForce && vaultRekeyYes {
+		return errors.New("jit vault rekey: --force deletes a key only on your typed yes,\n" +
+			"so it won't run with --yes")
+	}
+	if vaultRekeyForce && !stdinIsTerminal() {
+		return errors.New("jit vault rekey: --force deletes a key only on your typed yes,\n" +
+			"and there's no terminal here to ask in")
+	}
 	var prompt string
 	switch plan {
 	case planMove:
@@ -614,9 +654,13 @@ func newKeyMoverWith(root string, out io.Writer, kc *keychainwrap.Wrapper, se, s
 			defer kc.Close()
 			return kc.FetchMEK(reason)
 		},
-		kcInstall:       kc.InstallMEK,
-		kcDelete:        kc.DeleteMEK,
-		kcMatches:       kc.MatchesMEK,
+		kcInstall: kc.InstallMEK,
+		kcDelete:  kc.DeleteMEK,
+		kcMatches: kc.MatchesMEK,
+		kcOpens: func() (int, error) {
+			n, _, err := keystore.KeychainKeyOpens(root, kc)
+			return n, err
+		},
 		seInstallStaged: func(mek []byte) error { return seStaged().Install(mek) },
 		seOpenStaged: func(reason string) ([]byte, error) {
 			w := seStaged()

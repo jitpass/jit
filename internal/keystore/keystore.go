@@ -137,13 +137,51 @@ var (
 func Open(root string) Store {
 	_, err := os.Lstat(filepath.Join(root, vault.SealedKeyFile))
 	if err != nil && errors.Is(err, fs.ErrNotExist) {
-		return keychainStore{}
+		return keychainStore{root: root}
 	}
 	// The file exists, or it could not be checked: either way this vault
 	// may be an enclave vault, and treating it as a keychain one would
 	// quietly use the wrong key (or, on delete, orphan the right one). The
 	// enclave store fails loudly instead.
 	return enclaveStore{root: root}
+}
+
+// OpenTesting is Open for another package's tests, with key standing in for
+// the login keychain's vault key item, so a test drives every command's real
+// path through the Store (the leftover-key refusal included) without
+// reaching the production item. It panics for a vault in the Secure Enclave,
+// which it cannot stand in for.
+func OpenTesting(root string, key KeychainKey) Store {
+	s := Open(root)
+	if s.Kind() != KindKeychain {
+		panic("keystore.OpenTesting: " + root + " is not a keychain vault")
+	}
+	return keychainStore{root: root, key: func() KeychainKey { return key }}
+}
+
+// ErrLeftoverKey is what every use of a keychain vault's key answers while
+// vault.LeftoverKeyMarker is in the vault root: `jit vault delete` found a
+// keychain item under the vault key's name still there after it, the
+// deleted vault's key. Using it would adopt that key as the new vault's,
+// silently, which only `jit vault init` may decide, by asking
+// (settleLeftoverKey in internal/cli).
+var ErrLeftoverKey = errors.New("the vault you deleted left its key in your keychain;\n" +
+	"run `jit vault init` to deal with it")
+
+// LeftoverKeyRefusal returns ErrLeftoverKey while the vault at root has the
+// leftover-key marker, nil when it has none, and an error when the marker
+// can't be checked (fail closed: an unchecked marker may be there). The
+// keychain Store's fetchers and wrappers answer with it; `jit vault rekey`,
+// which works on the keychain item directly (Keychain), asks it first.
+func LeftoverKeyRefusal(root string) error {
+	_, err := os.Lstat(filepath.Join(root, vault.LeftoverKeyMarker))
+	switch {
+	case err == nil:
+		return ErrLeftoverKey
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	}
+	return fmt.Errorf("checking for a key a deleted vault left in your keychain: %w", err)
 }
 
 // Keychain returns the keychain backend's own Wrapper for `jit vault rekey`
@@ -169,7 +207,25 @@ func DeleteKeychainCopy() error { return deleteKeychainCopy() }
 // KeychainItemName is the vault key item's name as Keychain Access lists it.
 const KeychainItemName = keychainwrap.VaultKeyItem
 
-type keychainStore struct{}
+// KeychainKey is what the keychain Store hands out: the vault key item's
+// Wrapper, which is also each unlock's Fetcher (keychainwrap.Wrapper).
+type KeychainKey interface {
+	Wrapper
+	Fetcher
+}
+
+// newKeychainKey builds the production item's Wrapper; a var so this
+// package's tests never reach that item.
+var newKeychainKey = func() KeychainKey { return keychainwrap.New() }
+
+// keychainStore is a keychain vault's key. root is the vault's, for the
+// leftover-key marker; key, when set, stands in for the item (OpenTesting).
+// The zero value (no root) is only ever asked for Presence and Delete
+// (KeychainCopy, DeleteKeychainCopy).
+type keychainStore struct {
+	root string
+	key  func() KeychainKey
+}
 
 func (keychainStore) Kind() Kind { return KindKeychain }
 
@@ -183,9 +239,34 @@ func (keychainStore) Presence() Presence {
 	return Indeterminate
 }
 
-func (keychainStore) NewFetcher() Fetcher { return keychainwrap.New() }
+// NewFetcher and NewWrapper are every use of a keychain vault's key: every
+// command through openVault, and each of the service's unlocks, which builds
+// a fetcher per unlock. While the leftover-key marker is there they hand
+// back a refusal instead (LeftoverKeyRefusal), so no path can adopt a key a
+// deleted vault left behind: only `jit vault init` settles it.
+func (s keychainStore) NewFetcher() Fetcher { return s.open() }
 
-func (keychainStore) NewWrapper() Wrapper { return keychainwrap.New() }
+func (s keychainStore) NewWrapper() Wrapper { return s.open() }
+
+func (s keychainStore) open() KeychainKey {
+	if err := LeftoverKeyRefusal(s.root); err != nil {
+		return refusal{err}
+	}
+	if s.key != nil {
+		return s.key()
+	}
+	return newKeychainKey()
+}
+
+// refusal is a Wrapper and Fetcher whose every use fails with err, without
+// touching any key.
+type refusal struct{ err error }
+
+func (r refusal) WrapKey([]byte) ([]byte, error)   { return nil, r.err }
+func (r refusal) UnwrapKey([]byte) ([]byte, error) { return nil, r.err }
+func (r refusal) RequireUserPresence(string) error { return r.err }
+func (r refusal) FetchMEK(string) ([]byte, error)  { return nil, r.err }
+func (refusal) Close()                             {}
 
 func (keychainStore) Init() (InitResult, error) { return InitReady, initKeychain() }
 
@@ -279,7 +360,8 @@ func (s enclaveStore) Init() (InitResult, error) {
 		}
 		return InitReady, errors.New("the vault's Secure Enclave key is lost,\n" +
 			"and jit couldn't check your keychain for a key under its name.\n" +
-			"Nothing changed; try again")
+			"Nothing changed. If your keychain is locked, unlock it;\n" +
+			"then run `jit vault init` again")
 	case Unavailable:
 		return InitReady, secureenclave.ErrUnavailable
 	}
@@ -291,9 +373,17 @@ func (s enclaveStore) Init() (InitResult, error) {
 func (s enclaveStore) initOverLeftover() (InitResult, error) {
 	opened, total, err := leftoverOpens(s.root)
 	if err != nil {
-		return InitReady, fmt.Errorf("the vault's Secure Enclave key is lost,\n"+
-			"and jit couldn't check the key in your keychain under its name: %w\n"+
-			"Nothing changed; try again", err)
+		// Not "try again": a read that needs a dialog (an item another
+		// program made, errSecInteractionNotAllowed) fails the same way
+		// every time. The way out is named, so a lost key never leaves the
+		// vault stuck: without the item, Init makes a new key and the
+		// recovery file brings the secrets back.
+		return InitReady, fmt.Errorf("the vault's Secure Enclave key is lost, and jit can't read\n"+
+			"the key in your keychain under the vault key's name without asking\n"+
+			"(%s). Nothing changed.\n"+
+			"If your recovery file has your secrets, delete\n"+
+			"%q in Keychain Access,\n"+
+			"then run `jit vault init` again and import the file", truncateStart(err.Error(), 48), KeychainItemName)
 	}
 	if total > 0 && opened == total {
 		from := filepath.Join(s.root, vault.SealedKeyFile)
@@ -332,16 +422,33 @@ var (
 	leftoverOpens    = func(root string) (int, int, error) { return keychainKeyOpens(root, keychainwrap.New()) }
 )
 
-// keyCounter is what keychainKeyOpens needs of a keychain item.
-type keyCounter interface {
+// truncateStart shortens s to n runes from the front, marking the cut: the
+// end of a keychain error is where its OSStatus is.
+func truncateStart(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return "…" + string(r[len(r)-n+1:])
+}
+
+// KeyCounter is what KeychainKeyOpens needs of a keychain item
+// (keychainwrap.Wrapper's CountOpens).
+type KeyCounter interface {
 	CountOpens([]keychainwrap.WrappedKey) (int, error)
+}
+
+// KeychainKeyOpens is keychainKeyOpens for internal/cli: `jit vault rekey
+// --wrapper secure-enclave --force` measures the item before deleting it.
+func KeychainKeyOpens(root string, kc KeyCounter) (opened, total int, err error) {
+	return keychainKeyOpens(root, kc)
 }
 
 // keychainKeyOpens reports how many of the vault's live secrets the keychain
 // item kc opens, out of how many. It reads the item quietly
 // (keychainwrap.CountOpens: no challenge, no dialog); a secret whose
 // envelope can't be read counts as one it does not open.
-func keychainKeyOpens(root string, kc keyCounter) (opened, total int, err error) {
+func keychainKeyOpens(root string, kc KeyCounter) (opened, total int, err error) {
 	id, err := vault.EnsureDeviceID(root)
 	if err != nil {
 		return 0, 0, err

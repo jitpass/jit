@@ -52,6 +52,14 @@ var _ agent.ClosableFetcher = (*keychainwrap.Wrapper)(nil)
 // no fetcher would be wiped after an unlock.
 var _ agent.ClosableFetcher = keystore.Fetcher(nil)
 
+// serviceFetchers is what the service builds a fresh fetcher from on every
+// unlock: the vault's key store, opened each time, so a change on disk (a
+// move of the key, `jit vault delete`'s leftover-key marker) is seen by the
+// next unlock without a restart.
+func serviceFetchers(root string) func() agent.MEKFetcher {
+	return func() agent.MEKFetcher { return openKeyStore(root).NewFetcher() }
+}
+
 var agentTTL time.Duration
 
 // agentConsent turns on per-process credential consent in the running service
@@ -141,7 +149,7 @@ var agentRunCmd = &cobra.Command{
 			fmt.Fprintf(stderr, "jit service: rotating %s: %v\n", logPath, err)
 		}
 
-		server := agent.NewServer(agent.SocketPath(root), func() agent.MEKFetcher { return openKeyStore(root).NewFetcher() }, agentTTL)
+		server := agent.NewServer(agent.SocketPath(root), serviceFetchers(root), agentTTL)
 		home, _ := os.UserHomeDir()
 		mounts := &mountManager{root: root, home: home, keyWrapper: server, refResolver: onepassword.New(), stdout: stdout, stderr: stderr}
 		if agentConsent {

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/jitpass/jit/internal/agent"
+	"github.com/jitpass/jit/internal/keychainwrap"
 	"github.com/jitpass/jit/internal/secureenclave"
 	"github.com/jitpass/jit/internal/vault"
 )
@@ -35,6 +36,7 @@ func TestMain(m *testing.M) {
 	// key: no item there, unless a test says otherwise (withLeftover).
 	leftoverPresence = func() Presence { return Absent }
 	leftoverOpens = func(string) (int, int, error) { panic("a keystore test reached the production keychain item") }
+	newKeychainKey = func() KeychainKey { panic("a keystore test reached the production keychain item") }
 	os.Exit(m.Run())
 }
 
@@ -205,6 +207,10 @@ func TestEnclaveDeleteAlsoDeletesAKeychainCopy(t *testing.T) {
 // life, so handing out one shared wrapper would let every later unlock or
 // command skip its challenge.
 func TestFetchersAndWrappersAreFreshEachTime(t *testing.T) {
+	// The real constructor: building a keychainwrap.Wrapper touches no item.
+	orig := newKeychainKey
+	newKeychainKey = func() KeychainKey { return keychainwrap.New() }
+	t.Cleanup(func() { newKeychainKey = orig })
 	s := Open(t.TempDir())
 	if s.NewFetcher() == s.NewFetcher() {
 		t.Fatal("NewFetcher returned the same fetcher twice")
