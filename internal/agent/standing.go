@@ -531,19 +531,27 @@ func (s *Server) standingUnwrap(c *caller, wrapped []byte) (dek []byte, path str
 		return nil, "", false
 	}
 	digest := wrappedDigest(wrapped)
+	type cand struct {
+		g    *standingGrant
+		wrap string
+	}
 	s.grantMu.Lock()
-	var cands []*standingGrant
+	var cands []cand
 	for _, g := range s.standing {
-		if _, covered := g.secrets[digest]; covered {
-			cands = append(cands, g)
+		if sec, covered := g.secrets[digest]; covered {
+			cands = append(cands, cand{g, sec.wrap})
 		}
 	}
 	s.grantMu.Unlock()
-	for _, g := range cands {
+	for _, cd := range cands {
+		g := cd.g
 		if !lineage.AncestryNamedUnderPath(c.pid, g.anchorPath, g.name) {
 			continue
 		}
-		key, err := s.grantKey(g)
+		// The key of the kind the entry is sealed for, not whichever kind
+		// exists: a move that made the new key and then failed leaves the
+		// grant sealed for its old one, and that is the key that opens it.
+		key, err := s.grantKey(g, cd.wrap)
 		if err != nil {
 			// A grant whose key is gone (deleted out of band) cannot serve;
 			// it falls through to the ordinary path, and the list will say
@@ -580,19 +588,42 @@ func (s *Server) standingUnwrap(c *caller, wrapped []byte) (dek []byte, path str
 	return nil, "", false
 }
 
-// grantKey returns a grant's key, loading it from the store on first use.
-func (s *Server) grantKey(g *standingGrant) (GrantKey, error) {
+// grantKey returns a grant's key of the kind wrap names, loading it from
+// the store on first use (or when the cached one is the other kind).
+func (s *Server) grantKey(g *standingGrant, wrap string) (GrantKey, error) {
+	if wrap == "" {
+		wrap = standingWrapAEAD
+	}
 	g.keyMu.Lock()
 	defer g.keyMu.Unlock()
-	if g.key != nil {
+	if g.key != nil && keyWrap(g.key) == wrap {
 		return g.key, nil
 	}
-	key, err := s.GrantKeys.Load(g.id)
+	key, err := s.loadGrantKey(g.id, wrap)
 	if err != nil {
 		return nil, err
 	}
+	if g.key != nil {
+		g.key.Close()
+	}
 	g.key = key
 	return key, nil
+}
+
+// loadGrantKey loads id's key of the kind wrap names. A store that holds
+// both kinds (GrantKeyMover) is asked for exactly that kind: its plain Load
+// prefers the enclave's whenever one exists, and an enclave key can exist
+// beside a grant or job still sealed for its keychain key (a move that made
+// the new key and then failed to re-seal or to save, or a move back). A
+// store of one kind has nothing to choose between.
+func (s *Server) loadGrantKey(id, wrap string) (GrantKey, error) {
+	if wrap == "" {
+		wrap = standingWrapAEAD
+	}
+	if m, ok := s.GrantKeys.(GrantKeyMover); ok {
+		return m.LoadWrap(id, wrap)
+	}
+	return s.GrantKeys.Load(id)
 }
 
 // ---- list ----

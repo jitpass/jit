@@ -86,13 +86,27 @@ type sealedItem struct {
 
 // reseal opens each item with the old key of its kind and seals it to the
 // new key. It returns the new sealed bytes, index for index, or the first
-// failure, having changed nothing.
-func reseal(mover GrantKeyMover, id, target string, items []sealedItem) ([][]byte, error) {
+// failure, having changed nothing: a new key it made for a failure is
+// deleted again, while one an earlier, crashed move made is kept for the
+// next start to reuse. Either way the entries still name their old kind,
+// and serving loads that kind (loadGrantKey), so a key of the new kind left
+// beside them never stops the grant.
+func reseal(mover GrantKeyMover, id, target string, items []sealedItem) (_ [][]byte, err error) {
+	existed := false
+	if k, lerr := mover.LoadWrap(id, target); lerr == nil {
+		k.Close()
+		existed = true
+	}
 	newKey, err := mover.CreateWrap(id, target)
 	if err != nil {
 		return nil, fmt.Errorf("making its %s key: %w", target, err)
 	}
 	defer newKey.Close()
+	defer func() {
+		if err != nil && !existed {
+			_ = mover.DeleteWrap(id, target)
+		}
+	}()
 	old := map[string]GrantKey{}
 	defer func() {
 		for _, k := range old {
