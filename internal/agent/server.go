@@ -219,7 +219,11 @@ type Server struct {
 	jobsPath string
 	// jobNames is every key id jobs.json named when it loaded, read raw
 	// (namedKeyIDs); nil when it did not load.
-	jobNames   map[string]bool
+	jobNames map[string]bool
+	// jobKept is every record jobs.json held that job.LoadKeeping could
+	// not accept, verbatim: never run or listed, written back on every save
+	// so the record and its key outlive this build.
+	jobKept    []job.Kept
 	jobRunning map[string]bool
 	// jobProposals are agents' job proposals waiting for the human
 	// (jobrequest.go), memory-only, capped and expiring. Guarded by jobMu.
@@ -241,6 +245,10 @@ type Server struct {
 	// ledgerNames is every key id the ledger named when it loaded, read raw
 	// (namedKeyIDs); nil when it did not load. Guarded by grantMu.
 	ledgerNames map[string]bool
+	// ledgerKept is every ledger record SetGrantLedger could not accept,
+	// verbatim: never served or listed, written back on every save so the
+	// record and its key outlive this build. Guarded by grantMu.
+	ledgerKept []keptGrant
 	// ledgerMu serializes the whole save: snapshot, write, rename. It is
 	// NOT grantMu, because the file write must not hold the lock the serve
 	// path needs, and it is not optional — see saveLedger for the tear it

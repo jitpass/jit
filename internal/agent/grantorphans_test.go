@@ -127,9 +127,9 @@ func TestOrphanCleanupSkipsWhenTheJobListDidNotLoad(t *testing.T) {
 // anchor (SetGrantLedger drops it), a job whose name this build rejects and
 // one whose ask value it does not know (job.Load skips both, as from a newer
 // jit): none is in memory, and every one's key must survive. Both files are
-// saved before the cleanup runs, as a move does at a real start, and a save
-// writes back only what loaded: that is why the names are read as the files
-// stood when they loaded.
+// saved before the cleanup runs, as a move does at a real start, by a save
+// that drops them (as every save did before they were kept verbatim): the
+// names read as the files stood at load must keep the keys on their own.
 func TestOrphanCleanupKeepsKeysOfRecordsTheLoadersSkipped(t *testing.T) {
 	s, store, ledger, jobs := orphanWorld(t)
 	raw, _ := os.ReadFile(ledger)
@@ -168,8 +168,17 @@ func TestOrphanCleanupKeepsKeysOfRecordsTheLoadersSkipped(t *testing.T) {
 	if len(s.standing) != 1 || n != 1 {
 		t.Fatalf("setup: loaded %d grants and %d jobs, want the loaders to skip all but one of each", len(s.standing), n)
 	}
-	// Any save before the cleanup (a move's, at a real start) writes back
-	// only what loaded, and the skipped records are gone from both files.
+	// A save before the cleanup (a move's, at a real start) now writes the
+	// skipped records back (TestLedgerKeepsGrantsItCouldNotLoad and
+	// TestJobListKeepsJobsItCouldNotLoad pin that). Model one that does
+	// not, as every save did before: the names read at load must still
+	// keep the keys on their own.
+	s.grantMu.Lock()
+	s.ledgerKept = nil
+	s.grantMu.Unlock()
+	s.jobMu.Lock()
+	s.jobKept = nil
+	s.jobMu.Unlock()
 	if err := s.saveLedger(); err != nil {
 		t.Fatal(err)
 	}

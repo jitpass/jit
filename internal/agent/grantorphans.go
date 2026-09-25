@@ -31,7 +31,10 @@ import (
 //     only if a loader accepted the record: a grant SetGrantLedger dropped
 //     (no anchor, no name), a job job.Load skipped (a name or an ask value
 //     from a newer jit), and a grant whose entries this build cannot open
-//     (C1's unread) all keep their keys.
+//     (C1's unread) all keep their keys. Saves write the records the
+//     loaders skipped back verbatim (ledgerKept, jobKept), so those names
+//     are still in the files at the next start; reading them at load is
+//     the second line, for anything a save might still drop.
 
 // GrantKeyLister is what a GrantKeyStore offers when it can list its keys.
 type GrantKeyLister interface {
