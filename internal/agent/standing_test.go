@@ -249,7 +249,7 @@ func TestStandingGrantRevokeDeletesTheKeyAndPromptsAgain(t *testing.T) {
 
 	c := NewClient(socketPath)
 	st := standingCreate(t, c, name, parent)
-	if err := c.GrantRevoke(st.ID); err != nil {
+	if _, err := c.GrantRevoke(st.ID); err != nil {
 		t.Fatalf("GrantRevoke: %v", err)
 	}
 	if store.has(st.ID) {

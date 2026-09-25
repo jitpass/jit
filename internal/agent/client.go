@@ -523,9 +523,11 @@ func (c *Client) GrantList() ([]GrantStatus, error) {
 
 // GrantRevoke ends a grant now. No challenge, by design: reducing access is
 // always free, and the kill switch must be the easiest thing in the feature.
-func (c *Client) GrantRevoke(id string) error {
-	_, err := c.call(Request{Op: OpGrantRevoke, GrantID: id})
-	return err
+// keyNote is set when the grant ended but its key could not be deleted from
+// the service's copy of jit (Response.KeyNote); show it.
+func (c *Client) GrantRevoke(id string) (keyNote string, err error) {
+	resp, err := c.call(Request{Op: OpGrantRevoke, GrantID: id})
+	return resp.KeyNote, err
 }
 
 // GrantExtend moves a grant's deadline to now+ttl, behind a fresh disclosed

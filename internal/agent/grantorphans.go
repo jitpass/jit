@@ -91,7 +91,10 @@ func (s *Server) DeleteOrphanGrantKeys() (deleted []string, errs []error) {
 		if known[id] || !mintedKeyID.MatchString(id) {
 			continue
 		}
-		if err := s.GrantKeys.Delete(id); err != nil {
+		// An enclave this jit cannot reach listed nothing, so the id came
+		// from the keychain, and that key is gone: the unreachable half is
+		// not a failure here.
+		if err := withoutUnreachable(s.GrantKeys.Delete(id)); err != nil {
 			errs = append(errs, fmt.Errorf("deleting unused key %s: %w", id, err))
 			continue
 		}
