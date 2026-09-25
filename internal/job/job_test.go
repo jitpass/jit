@@ -6,12 +6,14 @@ package job
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestCheckArgv(t *testing.T) {
@@ -143,22 +145,85 @@ func TestFingerprintStableAndSkips(t *testing.T) {
 	if _, ok := a.Files[".env"]; ok {
 		t.Error("the mount FIFO was fingerprinted")
 	}
-	for p := range a.Files {
-		if strings.Contains(p, "__pycache__") {
-			t.Errorf("fingerprinted %s; the runtime rewrites it every run", p)
-		}
-	}
 	if a.Files[".venv/bin/python"] == "" || !strings.HasPrefix(a.Files[".venv/bin/python"], "link:") {
 		t.Errorf("venv symlink = %q, want its target recorded", a.Files[".venv/bin/python"])
 	}
-	// A run rewrites bytecode; that alone must not stop the job.
-	write(t, filepath.Join(dir, "__pycache__/list_guest_users.cpython-314.pyc"), "new bytecode")
 	b, err := Compute(dir, exe, nil, nil)
+	if err != nil || a.Root != b.Root {
+		t.Fatalf("two fingerprints of an unchanged folder differ: %v", err)
+	}
+}
+
+// Second review, finding 4: `python -I` ignores PYTHONPYCACHEPREFIX and
+// loads in-tree bytecode, so a planted .pyc must stop the job.
+func TestFingerprintCoversBytecode(t *testing.T) {
+	dir, exe := fixture(t)
+	before, _ := Compute(dir, exe, nil, nil)
+	write(t, filepath.Join(dir, "__pycache__/list_guest_users.cpython-314.pyc"), "planted bytecode")
+	after, _ := Compute(dir, exe, nil, nil)
+	if d := Diff(before, after); len(d) != 1 || !strings.Contains(d[0].Path, "__pycache__") {
+		t.Fatalf("Diff = %v, want the rewritten .pyc", d)
+	}
+}
+
+// Second review, finding 1: a folder reached through a symlink (cd through
+// /tmp, a linked project) used to fingerprint as empty.
+func TestFingerprintThroughASymlinkedFolder(t *testing.T) {
+	dir, exe := fixture(t)
+	link := filepath.Join(t.TempDir(), "linked")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	real, _ := Compute(dir, exe, nil, nil)
+	via, err := Compute(link, exe, nil, nil)
+	if err != nil || len(via.Files) == 0 || via.Root != real.Root {
+		t.Fatalf("via symlink: %d files, root match %v, err %v", len(via.Files), via.Root == real.Root, err)
+	}
+}
+
+// Second review, finding 6: a symlink out of the folder is covered by what it
+// points at (a file) or refused (a folder).
+func TestFingerprintFollowsLinksOutOfTheFolder(t *testing.T) {
+	dir, exe := fixture(t)
+	shared := t.TempDir()
+	write(t, filepath.Join(shared, "run.py"), "print('v1')\n")
+	if err := os.Symlink(filepath.Join(shared, "run.py"), filepath.Join(dir, "run.py")); err != nil {
+		t.Fatal(err)
+	}
+	before, err := Compute(dir, exe, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Root != b.Root || len(Diff(a, b)) != 0 {
-		t.Fatalf("fingerprint moved on a bytecode rewrite: %v", Diff(a, b))
+	write(t, filepath.Join(shared, "run.py"), "import os; print(os.environ)\n")
+	after, _ := Compute(dir, exe, nil, nil)
+	if d := Diff(before, after); len(d) != 1 || d[0].Path != "run.py"+LinkTargetSuffix {
+		t.Fatalf("Diff = %v, want the linked file's content", d)
+	}
+	if err := os.Symlink(shared, filepath.Join(dir, "lib")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Compute(dir, exe, nil, nil); !errors.Is(err, ErrLinkOutside) {
+		t.Fatalf("a link to a folder outside: err = %v, want ErrLinkOutside", err)
+	}
+}
+
+// Second review, finding 9: a file swapped for a named pipe must fail fast,
+// not block every list and run behind it.
+func TestFingerprintRefusesAPipeInsteadOfHanging(t *testing.T) {
+	dir, exe := fixture(t)
+	outside := filepath.Join(t.TempDir(), "run.py")
+	if err := syscall.Mkfifo(outside, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := Compute(dir, exe, nil, []string{outside}); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a pipe was fingerprinted as a file")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Compute blocked on a named pipe")
 	}
 }
 
@@ -203,8 +268,10 @@ func TestFingerprintNamesWhatChanged(t *testing.T) {
 				t.Fatal(err)
 			}
 			got := Diff(before, after)
-			if len(got) != 1 || got[0] != tc.want {
-				t.Fatalf("Diff = %v, want [%v]", got, tc.want)
+			// Swapping the interpreter also changes the venv link's target
+			// content: two true facts. Every other edit is exactly one.
+			if len(got) == 0 || got[0] != tc.want || (tc.want.Path != ExePath && len(got) != 1) {
+				t.Fatalf("Diff = %v, want %v first", got, tc.want)
 			}
 			if before.Root == after.Root {
 				t.Fatal("root hash did not move")
@@ -348,8 +415,8 @@ func TestExternalFilesAreFingerprinted(t *testing.T) {
 	write(t, outside, "print('v1')\n")
 	cfg := filepath.Join(filepath.Dir(outside), "c.yaml")
 	write(t, cfg, "a: 1\n")
-	extra := ExternalFiles([]string{outside, "--config=" + cfg, "list_guest_users.py", "not-a-file", "-u"}, dir)
-	if len(extra) != 2 {
+	extra, err := ExternalFiles([]string{"python", outside, "--config=" + cfg, "list_guest_users.py", "not-a-file", "-u"}, dir)
+	if err != nil || len(extra) != 2 {
 		t.Fatalf("ExternalFiles = %v, want the script and the config, nothing inside the folder", extra)
 	}
 	before, err := Compute(dir, exe, nil, extra)
@@ -357,6 +424,7 @@ func TestExternalFilesAreFingerprinted(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, outside, "import os; print(os.environ)\n")
+	outside, _ = filepath.EvalSymlinks(outside) // recorded resolved: /var → /private/var
 	after, err := Compute(dir, exe, nil, extra)
 	if err != nil {
 		t.Fatal(err)
@@ -384,5 +452,51 @@ func TestOutputCoversDir(t *testing.T) {
 		if got := OutputCoversDir(tc.out, tc.dir); got != tc.want {
 			t.Errorf("OutputCoversDir(%q, %q) = %v", tc.out, tc.dir, got)
 		}
+	}
+}
+
+// Second review, finding 6: an interpreter pointed at a folder outside the
+// job runs code nothing covers.
+func TestExternalFilesRefusesAProgramFolderOutside(t *testing.T) {
+	dir, _ := fixture(t)
+	pkg := t.TempDir()
+	if _, err := ExternalFiles([]string{"python", pkg}, dir); err == nil {
+		t.Fatal("python <folder outside> was accepted")
+	}
+	if _, err := ExternalFiles([]string{"python", "run.py", "--out", pkg}, dir); err != nil {
+		t.Fatalf("a folder given to the script as an argument was refused: %v", err)
+	}
+}
+
+// Second review, finding 8: embedded and escaped forms.
+func TestMaskerHidesEmbeddedAndEscapedForms(t *testing.T) {
+	for _, prefix := range []string{"", "u:", "user:", "me@x.com:"} {
+		b64 := base64.StdEncoding.EncodeToString([]byte(prefix + key))
+		got, _ := masked(t, map[string]string{"K": key}, "Authorization: Basic "+b64+"\n")
+		if strings.Contains(got, b64) || !strings.Contains(got, "[hidden: K]") {
+			t.Errorf("prefix %q: base64 of the header passed: %q", prefix, got)
+		}
+	}
+	pem := "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\nq2bm0T2p3xYvS7kEo4jRmN8cWfU1dL6aZqPp9hXvTt0YQeKs1a\n-----END PRIVATE KEY-----\n"
+	escaped := strings.ReplaceAll(pem, "\n", `\n`)
+	got, _ := masked(t, map[string]string{"SA_KEY": pem}, `{"private_key": "`+escaped+`"}`+"\n")
+	if strings.Contains(got, "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7") {
+		t.Errorf("a JSON-escaped key passed: %q", got)
+	}
+	// Only the JSON-escaped form catches these: one line with a quote and a
+	// backslash, and a multi-line value whose lines are too short to be
+	// hidden one by one. (The PEM above is also caught line by line, so it
+	// cannot tell whether JSON escaping works; the first version of this test
+	// passed with it removed.)
+	for _, v := range []string{`pa"ss\word-4f9a2c81`, "tok-line-one\ntok-line-two"} {
+		js, _ := json.Marshal(map[string]string{"v": v})
+		got, _ := masked(t, map[string]string{"V": v}, string(js)+"\n")
+		if !strings.Contains(got, "[hidden: V]") {
+			t.Errorf("JSON-escaped %q passed: %s", v, got)
+		}
+	}
+	got, _ = masked(t, map[string]string{"SA_KEY": pem}, "line: q2bm0T2p3xYvS7kEo4jRmN8cWfU1dL6aZqPp9hXvTt0YQeKs1a\n")
+	if strings.Contains(got, "q2bm0T2p3xYvS7kEo4jRmN8c") {
+		t.Errorf("one line of a multi-line key passed: %q", got)
 	}
 }

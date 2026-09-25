@@ -300,23 +300,26 @@ func TestJobRemoveIsFreeAndFinal(t *testing.T) {
 }
 
 func TestJobReasonsFitThePrompt(t *testing.T) {
-	long := strings.Repeat("x", 40)
-	for _, s := range []string{
-		jobAllowReason(long, 14, job.AskEachTime),
-		jobAllowReason(long, 14, job.AskNever),
+	long := strings.Repeat("x", 40) + "/" + strings.Repeat("y", 40) + ".py"
+	for _, r := range []string{
+		jobAllowReason(long, "notion+jamf+wiz", 14, 3, job.AskEachTime),
+		jobAllowReason(long, "notion+jamf+wiz", 14, 3, job.AskNever),
 		jobRunReason("Claude Helper (Renderer)", long, 14),
 	} {
-		if len([]rune(s)) > maxReasonLen {
-			t.Errorf("%d runes > %d: %q", len([]rune(s)), maxReasonLen, s)
-		}
-		if !strings.Contains(s, "never the values") {
-			// both shapes end on the promise; the never shape also keeps
-			// "unasked, until removed" ahead of it, checked below
-			t.Errorf("the promise was truncated off: %q", s)
+		if len([]rune(r)) > maxReasonLen {
+			t.Errorf("%d runes > %d: %q", len([]rune(r)), maxReasonLen, r)
 		}
 	}
-	if r := jobAllowReason(long, 14, job.AskNever); !strings.Contains(r, "unasked, until removed") {
-		t.Errorf("the never-ask prompt lost its scope clause: %q", r)
+	// The facts that change the decision survive a long label: how many
+	// secrets, how many shown, and that it never asks again.
+	r := jobAllowReason(long, "notion", 14, 3, job.AskNever)
+	for _, want := range []string{"14 notion secrets", "3 shown", "unasked till removed"} {
+		if !strings.Contains(r, want) {
+			t.Errorf("%q lost %q", r, want)
+		}
+	}
+	if r := jobRunReason("claude", long, 14); !strings.Contains(r, "never the values") {
+		t.Errorf("the run promise was truncated off: %q", r)
 	}
 }
 
@@ -618,5 +621,138 @@ func TestJobRunWaitNoticeOnlyWhenAPromptIsPossible(t *testing.T) {
 	}
 	if n := atomic.LoadInt32(&notices); n != 1 {
 		t.Fatalf("an each-time run showed the notice %d time(s), want 1", n)
+	}
+}
+
+// captureReasons swaps in a fetcher that approves and records each prompt.
+func (r *jobRig) captureReasons() *[]string {
+	var mu sync.Mutex
+	reasons := &[]string{}
+	r.s.newFetcher = func() MEKFetcher {
+		return fnFetcher{fn: func(reason string) ([]byte, error) {
+			mu.Lock()
+			*reasons = append(*reasons, reason)
+			mu.Unlock()
+			return append([]byte(nil), grantTestMEK...), nil
+		}}
+	}
+	return reasons
+}
+
+// Second review, findings 2 and 7: the approval prompt names what the
+// service resolved (folder/script, vault group, shown count) and never the
+// caller-chosen job name.
+func TestJobAllowPromptNamesResolvedFacts(t *testing.T) {
+	r := newJobRig(t)
+	reasons := r.captureReasons()
+	spec := r.spec()
+	spec.Shown = []string{"NOTION_API_KEY"}
+	if _, err := r.c.JobAllow("trusted-name", spec); err != nil {
+		t.Fatal(err)
+	}
+	got := (*reasons)[0]
+	for _, want := range []string{filepath.Base(r.dir) + "/list_guest_users.py", "1 notion secret", "1 shown"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("prompt %q lacks %q", got, want)
+		}
+	}
+	if strings.Contains(got, "trusted-name") {
+		t.Errorf("prompt shows the caller-chosen name: %q", got)
+	}
+}
+
+// Second review, finding 1: a job approved through a symlinked path is kept
+// under the real folder, with its files.
+func TestJobAllowResolvesASymlinkedFolder(t *testing.T) {
+	r := newJobRig(t)
+	link := filepath.Join(t.TempDir(), "linked")
+	if err := os.Symlink(r.dir, link); err != nil {
+		t.Fatal(err)
+	}
+	spec := r.spec()
+	spec.Dir = link
+	st, err := r.c.JobAllow("notion-guests", spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	real, _ := filepath.EvalSymlinks(r.dir)
+	if st.Dir != real || st.Files == 0 {
+		t.Fatalf("Dir %q (want %q), %d files", st.Dir, real, st.Files)
+	}
+	if err := os.WriteFile(filepath.Join(r.dir, "list_guest_users.py"), []byte("changed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.c.JobRun("notion-guests"); err == nil {
+		t.Fatal("an edit under a symlinked job folder did not stop the job")
+	}
+}
+
+// Second review, finding 5: a stop is sticky. Putting the file back does
+// not make the job runnable, so a swap cannot be retried for free.
+func TestJobStopIsStickyUntilApprovedAgain(t *testing.T) {
+	r := newJobRig(t)
+	if _, err := r.c.JobAllow("notion-guests", r.spec()); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(r.dir, "list_guest_users.py")
+	orig, _ := os.ReadFile(script)
+	if err := os.WriteFile(script, []byte("import os; print(os.environ)\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.c.JobRun("notion-guests"); err == nil {
+		t.Fatal("the swapped script ran")
+	}
+	if err := os.WriteFile(script, orig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.c.JobRun("notion-guests"); err == nil || !strings.Contains(err.Error(), "stopped because") {
+		t.Fatalf("after putting the file back: %v, want still stopped", err)
+	}
+	if jobs, _ := r.c.JobList(); jobs[0].State != JobChanged {
+		t.Fatalf("list state = %q, want stopped", jobs[0].State)
+	}
+	spec := r.spec()
+	spec.Replace = true
+	if _, err := r.c.JobAllow("notion-guests", spec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.c.JobRun("notion-guests"); err != nil {
+		t.Fatalf("after approving again: %v", err)
+	}
+}
+
+// Second review, finding 5: a change that lands during the run withholds
+// the output and stops the job.
+func TestJobOutputWithheldWhenTheFolderChangesDuringTheRun(t *testing.T) {
+	r := newJobRig(t)
+	if _, err := r.c.JobAllow("notion-guests", r.spec()); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(r.dir, "list_guest_users.py")
+	inner := r.s.OnRunJob
+	r.s.OnRunJob = func(j job.Job, deks map[string][]byte) (JobResult, error) {
+		res, err := inner(j, deks)
+		_ = os.WriteFile(script, []byte("swapped mid-run\n"), 0o600)
+		res.Stdout = "shaped by the swapped code"
+		return res, err
+	}
+	res, err := r.c.JobRun("notion-guests")
+	if err == nil || !strings.Contains(err.Error(), "while the job ran, so its output was withheld") {
+		t.Fatalf("run = %+v, %v", res, err)
+	}
+	if strings.Contains(err.Error(), "shaped by") {
+		t.Fatal("the output reached the caller")
+	}
+}
+
+// Second review, finding 1: nothing to fingerprint means nothing could ever
+// stop the job.
+func TestJobAllowRefusesAFolderWithNothingToFingerprint(t *testing.T) {
+	r := newJobRig(t)
+	empty := t.TempDir()
+	spec := r.spec()
+	spec.Dir, spec.Argv, spec.Profile = empty, []string{"/bin/sh", "/dev/null"}, nil
+	if _, err := r.c.JobAllow("empty", spec); err == nil || !strings.Contains(err.Error(), "no files") {
+		t.Fatalf("empty folder: %v", err)
 	}
 }

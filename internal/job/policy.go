@@ -121,6 +121,48 @@ func CheckArgv(argv []string) error {
 	return nil
 }
 
+// programArg is the argument an interpreter runs as its program: the first
+// one that is not an interpreter flag or a flag's value. Empty for a program
+// that is not an interpreter jit knows, or for `python -m module`, whose
+// module is found on the path rather than named.
+func programArg(argv []string) string {
+	if len(argv) < 2 {
+		return ""
+	}
+	flags, ok := inlineFlags[family(argv[0])]
+	if !ok {
+		return ""
+	}
+	args := argv[1:]
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+			return ""
+		}
+		if a == "-m" {
+			return ""
+		}
+		if !strings.HasPrefix(a, "-") || a == "-" {
+			return a
+		}
+		if strings.HasPrefix(a, "--") {
+			for _, l := range flags.takesLong {
+				if a == l {
+					i++
+				}
+			}
+			continue
+		}
+		if len(a) == 2 && flags.takes != "" && strings.ContainsRune(flags.takes, rune(a[1])) {
+			i++
+		}
+	}
+	return ""
+}
+
 func inlineError(prog, flag string) error {
 	return fmt.Errorf("%s %s runs a program written into the command itself, so it can print the secrets it is given. Save it as a file and approve that file", prog, flag)
 }
