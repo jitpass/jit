@@ -14,16 +14,16 @@ import (
 // generic-password item per grant, under grantService with the grant id as
 // the account, the same posture as the MEK item and for the same reason
 // (see the package comment: an OS-enforced ACL needs a provisioning profile
-// this binary cannot carry). What differs from the MEK is the challenge:
+// a bare binary cannot carry). What differs from the MEK is the challenge:
 // there is none. A grant key is used with no prompt, which is the whole
 // feature, and the human's decision was the disclosed Touch ID that made
 // the grant. Its protection equals the MEK's and it opens strictly fewer
 // secrets.
 //
-// When the Secure Enclave path exists, both items move there one flag
-// apart: the MEK with the biometry access-control flag, the grant key
-// without. This type is built behind the same Wrapper so that swap is a
-// change of constructor, not of the agent.
+// On a vault whose key is in the Secure Enclave, grant and job keys live
+// there too, one flag apart from the MEK: the MEK's enclave key asks for
+// presence, a grant key's does not (secureenclave.GrantKeys, plan C2).
+// These keychain grant keys remain for keychain vaults.
 
 const grantService = "com.jitpass.grant.key"
 

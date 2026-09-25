@@ -3,18 +3,22 @@
 
 //go:build darwin
 
-// Package keychainwrap is Phase 1's interim implementation of
+// Package keychainwrap is the login-keychain implementation of
 // vault.KeyWrapper: a Master Encryption Key stored as a plain macOS
 // Keychain item, gated by an application-level LocalAuthentication
-// challenge (Touch ID/passcode) before every use.
+// challenge (Touch ID/passcode) before every use. It is every vault's
+// backend unless the vault has moved into the Secure Enclave
+// (internal/secureenclave; internal/keystore chooses per vault), and the
+// only one a jit outside JitPass.app can use.
 //
 // This is deliberately NOT the "hardware-bound" guarantee RFC.md Pillar II
 // describes — see spike/keychain-interim-key/FINDINGS.md. Any keychain
 // item with real OS-enforced access control (SecAccessControl, whether
-// backed by a Secure Enclave key or a plain software key) requires a code
-// signature this project doesn't have yet (a real Developer ID identity,
-// currently blocked on an unresolved Apple account issue). Only a plain,
-// non-ACL keychain item persists without it. To still provide a real
+// backed by a Secure Enclave key or a plain software key) needs an
+// entitlement only a provisioning profile embedded in an .app bundle can
+// authorize, which a bare jit binary can never carry
+// (spike/secure-enclave-mek/FINDINGS.md, S3a). Only a plain, non-ACL
+// keychain item persists without it. To still provide a real
 // local-auth gate, this package enforces it in application code via
 // LAContext.evaluatePolicy (independent of Keychain ACL, confirmed working
 // without special entitlements), rather than relying on the OS to refuse
@@ -27,9 +31,11 @@
 // challenge call entirely. RFC.md B9 calls this distinction out explicitly
 // as "OS local-authentication-bound" vs. a stronger, enforced guarantee.
 //
-// internal/secureenclave is where the real Secure-Enclave-token-bound
-// implementation of vault.KeyWrapper lands once a signing identity exists
-// — same interface, swapped in behind it, no changes needed elsewhere.
+// internal/secureenclave is the enforced implementation: the same MEK,
+// sealed to a Secure Enclave key that only opens after the enclave's own
+// prompt. It needs the jit inside JitPass.app's signed helper bundle, and a
+// vault moves to it only by `jit vault rekey --wrapper secure-enclave`
+// (design/secure-enclave-plan.md).
 package keychainwrap
 
 /*
