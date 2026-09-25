@@ -122,6 +122,9 @@ func TestHardwareGrantKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if ids, err := g.List(); err != nil || len(ids) != 1 || ids[0] != "g-hw" {
+		t.Fatalf("List on hardware = %v, %v; want exactly g-hw", ids, err)
+	}
 	loaded, err := g.Load("g-hw")
 	if err != nil {
 		t.Fatal(err)
@@ -137,5 +140,8 @@ func TestHardwareGrantKey(t *testing.T) {
 	}
 	if ok, _ := g.Present("g-hw"); ok {
 		t.Fatal("key survived Delete")
+	}
+	if ids, err := g.List(); err != nil || len(ids) != 0 {
+		t.Fatalf("List after Delete = %v, %v; want none", ids, err)
 	}
 }
