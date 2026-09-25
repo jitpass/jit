@@ -189,7 +189,7 @@ func runJobCommand(j job.Job, values, hidden map[string]string, base []string, t
 		res.Notes = append(res.Notes, fmt.Sprintf("%s is under %d characters, too short to hide; it may appear in the output", name, job.MinHiddenRaw))
 	}
 	if res.Truncated {
-		res.Notes = append(res.Notes, fmt.Sprintf("output passed %d KB; only the end is kept", job.OutputCap>>10))
+		res.Notes = append(res.Notes, fmt.Sprintf("output passed %d KB on stdout or stderr; only the end of it is kept", half>>10))
 	}
 	return res, nil
 }

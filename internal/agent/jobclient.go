@@ -32,6 +32,16 @@ func (c *Client) JobList() ([]JobStatus, error) {
 	return resp.Jobs, nil
 }
 
+// JobNames lists the jobs without checking their state: names and settings
+// only, cheap enough for shell completion. State is empty.
+func (c *Client) JobNames() ([]JobStatus, error) {
+	resp, err := c.call(Request{Op: OpJobList, JobNamesOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Jobs, nil
+}
+
 // JobRemove deletes a job now. No prompt: reducing access is always free.
 func (c *Client) JobRemove(name string) error {
 	_, err := c.call(Request{Op: OpJobRemove, JobName: name})
@@ -42,9 +52,23 @@ func (c *Client) JobRemove(name string) error {
 // deadline covers a Touch ID (for an each-time job) plus the run itself, so
 // it is the default response window plus job.RunTimeout, never shorter
 // than what the service may legitimately take.
+//
+// The "waiting for Touch ID" notice is for a prompt, and only an each-time
+// job has one. A job that never asks takes as long as its script, so the
+// notice would fire on every run and say something false; it is switched
+// off for those, looked up with one cheap names-only list first.
 func (c *Client) JobRun(name string) (JobResult, error) {
 	run := *c
 	run.respTimeout = c.respTimeout + job.RunTimeout
+	if run.waitNotify != nil {
+		if jobs, err := c.JobNames(); err == nil {
+			for _, j := range jobs {
+				if j.Name == name && j.Ask == string(job.AskNever) {
+					run.waitNotify = nil
+				}
+			}
+		}
+	}
 	resp, err := run.call(Request{Op: OpJobRun, JobName: name})
 	if err != nil {
 		return JobResult{}, err

@@ -695,7 +695,7 @@ func (s *Server) handle(req Request, c *caller) Response {
 	case OpJobList:
 		// Prompt-free, OpHistory's reasoning: reading what may run must never
 		// itself cost an authentication.
-		return Response{OK: true, Jobs: s.listJobs()}
+		return Response{OK: true, Jobs: s.listJobs(req.JobNamesOnly)}
 	case OpJobRemove:
 		// No prompt: reducing access is always free, like grant_revoke.
 		if req.JobName == "" {
