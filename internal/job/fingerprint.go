@@ -30,6 +30,14 @@ type Fingerprint struct {
 	// Exe is the entry for the resolved executable, which usually lives
 	// outside the folder (a venv's python links to uv's interpreter).
 	Exe string `json:"exe"`
+	// Stamps holds each hashed file's change-time, keyed like Files. Only
+	// the kernel sets a change-time, and on APFS it moves on every write and
+	// on a rename away and back (measured 2026-09-25), even when the content
+	// ends up identical and the modification time is reset. So a file
+	// swapped for a moment and put back, which a content hash cannot see,
+	// still shows here. A fingerprint from before stamps existed has none,
+	// and is compared by content alone.
+	Stamps map[string]string `json:"stamps,omitempty"`
 }
 
 // Limits bound a fingerprint. Guesses sized well above the one folder
@@ -218,7 +226,7 @@ var skipPaths = map[string]bool{"node_modules/.cache": true}
 // target text and, when it resolves outside the folder, by the content it
 // points at (a file) or refused (a folder, whose code nothing would cover).
 func Compute(dir, exe string, outputs, extra []string) (Fingerprint, error) {
-	fp := Fingerprint{Files: map[string]string{}}
+	fp := Fingerprint{Files: map[string]string{}, Stamps: map[string]string{}}
 	realDir, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		return Fingerprint{}, err
@@ -262,6 +270,11 @@ func Compute(dir, exe string, outputs, extra []string) (Fingerprint, error) {
 				return lerr
 			}
 			fp.Files[rel] = "link:" + target
+			if li, lerr := os.Lstat(path); lerr == nil {
+				if st, ok := li.Sys().(*syscall.Stat_t); ok {
+					fp.Stamps[rel] = fmt.Sprintf("%d.%09d", st.Ctimespec.Sec, st.Ctimespec.Nsec)
+				}
+			}
 			resolved, rerr := filepath.EvalSymlinks(path)
 			if rerr != nil {
 				return nil // dangling
@@ -281,19 +294,20 @@ func Compute(dir, exe string, outputs, extra []string) (Fingerprint, error) {
 				return fmt.Errorf("%s links to the folder %s, %s, so no edit to it could stop the job: %w", rel, resolved, where, ErrLinkOutside)
 			}
 			if info.Mode().IsRegular() {
-				sum, n, herr := hashFile(resolved)
+				sum, n, stamp, herr := hashFileStamp(resolved)
 				if herr != nil {
 					return herr
 				}
 				bytes += n
 				fp.Files[rel+LinkTargetSuffix] = "sha256:" + sum
+				fp.Stamps[rel+LinkTargetSuffix] = stamp
 			}
 		case d.Type().IsRegular():
 			files++
 			if files > MaxFiles {
 				return fmt.Errorf("%s: more than %d files: %w", dir, MaxFiles, ErrTooLarge)
 			}
-			sum, n, herr := hashFile(path)
+			sum, n, stamp, herr := hashFileStamp(path)
 			if herr != nil {
 				return herr
 			}
@@ -302,6 +316,7 @@ func Compute(dir, exe string, outputs, extra []string) (Fingerprint, error) {
 				return fmt.Errorf("%s: more than %d MB: %w", dir, MaxBytes>>20, ErrTooLarge)
 			}
 			fp.Files[rel] = "sha256:" + sum
+			fp.Stamps[rel] = stamp
 		default:
 			// FIFO, socket, device: nothing a job executes, and a FIFO would
 			// block the read.
@@ -312,21 +327,23 @@ func Compute(dir, exe string, outputs, extra []string) (Fingerprint, error) {
 		return Fingerprint{}, err
 	}
 	for _, p := range extra {
-		sum, _, herr := hashFile(p)
+		sum, _, stamp, herr := hashFileStamp(p)
 		if herr != nil {
 			return Fingerprint{}, herr
 		}
 		fp.Files[OutsidePrefix+p] = "sha256:" + sum
+		fp.Stamps[OutsidePrefix+p] = stamp
 	}
 	resolved, err := filepath.EvalSymlinks(exe)
 	if err != nil {
 		return Fingerprint{}, fmt.Errorf("resolving %s: %w", exe, err)
 	}
-	sum, _, err := hashFile(resolved)
+	sum, _, stamp, err := hashFileStamp(resolved)
 	if err != nil {
 		return Fingerprint{}, err
 	}
 	fp.Exe = "sha256:" + sum
+	fp.Stamps[ExePath] = stamp
 	fp.Root = fp.rootHash()
 	return fp, nil
 }
@@ -336,20 +353,31 @@ func Compute(dir, exe string, outputs, extra []string) (Fingerprint, error) {
 // pipe (by whoever can write the folder, or a file named outside it) would
 // otherwise block the open forever, hanging every list and run behind it.
 func hashFile(path string) (string, int64, error) {
+	sum, n, _, err := hashFileStamp(path)
+	return sum, n, err
+}
+
+// hashFileStamp is hashFile plus the file's change-time, read from the same
+// open file the hash is taken from.
+func hashFileStamp(path string) (sum string, n int64, stamp string, err error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0) // #nosec G304 -- a file the human approved as part of a job
 	if err != nil {
-		return "", 0, err
+		return "", 0, "", err
 	}
 	defer f.Close()
-	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
-		return "", 0, fmt.Errorf("%s is not a regular file", path)
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return "", 0, "", fmt.Errorf("%s is not a regular file", path)
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		stamp = fmt.Sprintf("%d.%09d", st.Ctimespec.Sec, st.Ctimespec.Nsec)
 	}
 	h := sha256.New()
-	n, err := io.Copy(h, f)
+	n, err = io.Copy(h, f)
 	if err != nil {
-		return "", 0, err
+		return "", 0, "", err
 	}
-	return hex.EncodeToString(h.Sum(nil)), n, nil
+	return hex.EncodeToString(h.Sum(nil)), n, stamp, nil
 }
 
 func (fp Fingerprint) rootHash() string {
@@ -373,6 +401,10 @@ const (
 	Changed ChangeKind = "changed"
 	Added   ChangeKind = "added"
 	Removed ChangeKind = "removed"
+	// Rewritten: the content matches approval, but the file was written to
+	// or replaced and put back since (its change-time moved). The swap a
+	// content hash cannot see.
+	Rewritten ChangeKind = "rewritten"
 )
 
 // Change is one difference, for the sentence that names it.
@@ -385,12 +417,51 @@ type Change struct {
 // inside the folder.
 const ExePath = "(the program itself)"
 
+// stampMoved reports a change-time that moved. A fingerprint with no stamp
+// for the key (taken before stamps existed) compares by content alone.
+func stampMoved(approved, now Fingerprint, key string) bool {
+	a, ok := approved.Stamps[key]
+	if !ok || a == "" {
+		return false
+	}
+	return now.Stamps[key] != a
+}
+
+// Sentence says what happened to one path, in the words a stop reports:
+// "list_guest_users.py changed since you approved it".
+func (c Change) Sentence() string {
+	switch c.Kind {
+	case Rewritten:
+		return c.Path + " was written to since you approved it: its content matches, but something rewrote it or swapped it and put it back"
+	default:
+		return fmt.Sprintf("%s %s since you approved it", c.Path, c.Kind)
+	}
+}
+
+// StopHint explains a stop whose changes are all Python bytecode: running the
+// script outside jit writes it (review finding 9, kept fingerprinted by
+// decision). Empty for any other stop.
+func StopHint(changes []Change) string {
+	if len(changes) == 0 {
+		return ""
+	}
+	for _, c := range changes {
+		if !strings.HasSuffix(c.Path, ".pyc") || !(strings.HasPrefix(c.Path, "__pycache__/") || strings.Contains(c.Path, "/__pycache__/")) {
+			return ""
+		}
+	}
+	return "Python writes these .pyc files when the script runs outside jit. Run it with `jit job run` instead, or approve the job again"
+}
+
 // Diff lists what now differs from approved, sorted by path, executable
 // first. Empty means the job may run.
 func Diff(approved, now Fingerprint) []Change {
 	var out []Change
 	if approved.Exe != now.Exe {
 		out = append(out, Change{Path: ExePath, Kind: Changed})
+	}
+	if approved.Exe == now.Exe && stampMoved(approved, now, ExePath) {
+		out = append(out, Change{Path: ExePath, Kind: Rewritten})
 	}
 	var rest []Change
 	for p, a := range approved.Files {
@@ -400,6 +471,8 @@ func Diff(approved, now Fingerprint) []Change {
 			rest = append(rest, Change{Path: p, Kind: Removed})
 		case n != a:
 			rest = append(rest, Change{Path: p, Kind: Changed})
+		case stampMoved(approved, now, p):
+			rest = append(rest, Change{Path: p, Kind: Rewritten})
 		}
 	}
 	for p := range now.Files {

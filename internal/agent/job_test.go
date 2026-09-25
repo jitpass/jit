@@ -928,3 +928,47 @@ func TestJobRunRechecksTheStoredJobAfterThePrompt(t *testing.T) {
 		t.Fatal("it ran")
 	}
 }
+
+// Third review, finding 5: a swap made during the run and put back before
+// it ends leaves the content identical, and is still caught after the run.
+func TestJobRunWithholdsOutputAfterASwapPutBack(t *testing.T) {
+	r := newJobRig(t)
+	if _, err := r.c.JobAllow("notion-guests", r.spec()); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(r.dir, "list_guest_users.py")
+	inner := r.s.OnRunJob
+	r.s.OnRunJob = func(j job.Job, deks map[string][]byte) (JobResult, error) {
+		time.Sleep(20 * time.Millisecond)
+		aside := script + ".aside"
+		_ = os.Rename(script, aside)
+		_ = os.WriteFile(script, []byte("import os; print(os.environ)\n"), 0o600)
+		_ = os.Rename(aside, script) // put back: identical content
+		res, err := inner(j, deks)
+		res.Stdout = "shaped by the swapped code"
+		return res, err
+	}
+	_, err := r.c.JobRun("notion-guests")
+	if err == nil || !strings.Contains(err.Error(), "list_guest_users.py was written to") || strings.Contains(err.Error(), "shaped by") {
+		t.Fatalf("run with a swap put back: %v", err)
+	}
+	if jobs, _ := r.c.JobList(); jobs[0].State != JobChanged {
+		t.Fatal("the job was not stopped")
+	}
+}
+
+func TestJobStopForBytecodeExplainsItself(t *testing.T) {
+	r := newJobRig(t)
+	if _, err := r.c.JobAllow("notion-guests", r.spec()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(r.dir, "__pycache__"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(r.dir, "__pycache__", "list_guest_users.cpython-314.pyc"), []byte("bytecode"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.c.JobRun("notion-guests"); err == nil || !strings.Contains(err.Error(), "runs outside jit") {
+		t.Fatalf("bytecode-only stop: %v", err)
+	}
+}

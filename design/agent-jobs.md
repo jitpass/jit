@@ -493,9 +493,9 @@ things it showed were wrong:
 
 ### After the third review (2026-09-25)
 
-A review of `jit mcp` and the second round's fixes found ten more; eight are
-fixed, each with a control run against the code without it, and two are
-open decisions (below).
+A review of `jit mcp` and the second round's fixes found ten more. All are
+addressed, each with a control run against the code without it; two were
+decisions, taken by Meni on 2026-09-25 and recorded at the end of this list.
 
 - **The prompt names the program that runs.** The label is the file the
   interpreter runs (`python -W x run.py evil.py` runs evil.py), `-m module`,
@@ -522,6 +522,24 @@ open decisions (below).
   helper, so no cache widens.
 - **The scratch folder is inside jit's own directory**, not `$TMPDIR`, with
   its `pycache` and `zdotdir` created 0700 before the command starts.
+- **Decided: a swap put back is detected, and stops the job.** An agent that
+  can write the folder could swap the script in the moment between jit's
+  check and the interpreter reading it, then put it back: the content hash
+  matches before and after. The fingerprint now also keeps each file's
+  change-time, which only the kernel sets; on APFS it moves on every write
+  and on a rename away and back, even when the content ends identical and
+  the modification time is reset (measured). A put-back swap therefore shows
+  as "rewritten" after the run: output withheld, job stopped, audit says why.
+  The swapped code did run once; detection is after the fact, and the only
+  prevention is a job folder the AI cannot write. Accepted cost: a sync tool
+  that touches files can stop a job by mistake. Measured on the notion
+  folder: 242 files, no stamp moved across a mount read and a wait.
+  Folder modification times were considered and not used: the `.env` mount
+  recreates its pipe on every read, which would move them on every run.
+- **Decided: bytecode stays fingerprinted, and the stop explains itself.**
+  Running the script outside jit writes `.pyc` files and stops the job; a
+  stop made only of `.pyc` files now says so, and how to get back (run it
+  with `jit job run`, or approve it again).
 
 ## Open decisions
 
