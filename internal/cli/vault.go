@@ -24,7 +24,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/jitpass/jit/internal/agent"
-	"github.com/jitpass/jit/internal/keychainwrap"
+	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/onepassword"
@@ -62,7 +62,11 @@ var (
 // tests can replace it with a no-op — an automated test must never touch the
 // real production keychain (see internal/keychainwrap's TEST-ONLY rule).
 var requireUserPresence = func(reason string) error {
-	return keychainwrap.New().RequireUserPresence(reason)
+	ks, err := vaultKeyStore()
+	if err != nil {
+		return err
+	}
+	return ks.NewWrapper().RequireUserPresence(reason)
 }
 
 // vaultListResult is jit vault list's --format json shape (GAPS.md #22).
@@ -1006,11 +1010,11 @@ var vaultInitCmd = &cobra.Command{
 	Short: "Set up the local vault (generates the master encryption key)",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := keychainwrap.New().EnsureMEK(); err != nil {
-			return fmt.Errorf("jit vault init: %w", err)
-		}
 		root, err := vaultRootDir()
 		if err != nil {
+			return fmt.Errorf("jit vault init: %w", err)
+		}
+		if err := keystore.Open(root).Init(); err != nil {
 			return fmt.Errorf("jit vault init: %w", err)
 		}
 		// Pin this machine's envelope-recipient identifier now, at init,
@@ -1611,8 +1615,11 @@ var vaultRestoreCmd = &cobra.Command{
 		// so without an explicit challenge the promised approval would
 		// silently never happen — and riding a cached agent session would
 		// let any same-user process quietly repoint a secret's value.
-		wrapper := keychainwrap.New()
-		if err := wrapper.RequireUserPresence(fmt.Sprintf("restore a previous version of %q", args[0])); err != nil {
+		ks, err := vaultKeyStore()
+		if err != nil {
+			return fmt.Errorf("jit vault restore: %w", err)
+		}
+		if err := ks.NewWrapper().RequireUserPresence(fmt.Sprintf("restore a previous version of %q", args[0])); err != nil {
 			return fmt.Errorf("jit vault restore: %w", err)
 		}
 		v, err := openVaultReadOnly()
@@ -2438,7 +2445,7 @@ var vaultDeleteCmd = &cobra.Command{
 		// above, a keychain entry that couldn't be removed (or was already
 		// gone) protects nothing — warn rather than leave the command
 		// half-failed over the least consequential step.
-		if err := keychainwrap.New().DeleteMEK(); err != nil {
+		if err := keystore.Open(root).Delete(); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: couldn't remove the vault's keychain entry (it may already be gone): %v\n", err)
 		} else {
 			removed = append(removed, "the vault's macOS keychain entry")
@@ -2745,7 +2752,7 @@ func openVaultFreshAuth() (*vault.Vault, error) {
 	}
 	return &vault.Vault{
 		Root:        root,
-		KeyWrapper:  keychainwrap.New(),
+		KeyWrapper:  keystore.Open(root).NewWrapper(),
 		RecipientID: deviceID,
 		RefResolver: onepassword.New(),
 	}, nil
@@ -2772,7 +2779,7 @@ func openVault() (*vault.Vault, error) {
 		return nil, fmt.Errorf("determining device recipient ID: %w", err)
 	}
 
-	var kw vault.KeyWrapper = keychainwrap.New()
+	var kw vault.KeyWrapper = keystore.Open(root).NewWrapper()
 	// The retry-configured client (agentClient): when the agent is
 	// installed, a dial failure is usually its own restart gap (`jit service
 	// restart`, stale-binary self-retirement) — without the retry, a

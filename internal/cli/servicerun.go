@@ -23,6 +23,7 @@ import (
 	"github.com/jitpass/jit/internal/consent"
 	"github.com/jitpass/jit/internal/job"
 	"github.com/jitpass/jit/internal/keychainwrap"
+	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/onepassword"
 	"github.com/jitpass/jit/internal/screenlock"
 )
@@ -134,7 +135,7 @@ var agentRunCmd = &cobra.Command{
 			fmt.Fprintf(stderr, "jit service: rotating %s: %v\n", logPath, err)
 		}
 
-		server := agent.NewServer(agent.SocketPath(root), func() agent.MEKFetcher { return keychainwrap.New() }, agentTTL)
+		server := agent.NewServer(agent.SocketPath(root), func() agent.MEKFetcher { return keystore.Open(root).NewFetcher() }, agentTTL)
 		home, _ := os.UserHomeDir()
 		mounts := &mountManager{root: root, home: home, keyWrapper: server, refResolver: onepassword.New(), stdout: stdout, stderr: stderr}
 		if agentConsent {

@@ -18,7 +18,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/jitpass/jit/internal/auditlog"
-	"github.com/jitpass/jit/internal/keychainwrap"
+	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/vault"
 	"github.com/jitpass/jit/internal/wrap"
@@ -144,7 +144,7 @@ func execDoctor(t *testing.T, args ...string) (stdout string, err error) {
 	// hold (present on a dev Mac, absent on CI). Default it to present here;
 	// the unit tests in doctorsections_test.go stub each presence explicitly.
 	origMEK := vaultMasterKeyPresence
-	vaultMasterKeyPresence = func() keychainwrap.MEKPresence { return keychainwrap.MEKPresent }
+	vaultMasterKeyPresence = func() keystore.Presence { return keystore.Present }
 	t.Cleanup(func() { vaultMasterKeyPresence = origMEK })
 	// Cobra remembers which flags were SET across Execute calls in the same
 	// process, and MarkFlagsMutuallyExclusive checks Changed, not the value —

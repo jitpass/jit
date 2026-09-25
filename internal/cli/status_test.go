@@ -15,7 +15,7 @@ import (
 
 	"github.com/jitpass/jit/internal/agent"
 	"github.com/jitpass/jit/internal/guard"
-	"github.com/jitpass/jit/internal/keychainwrap"
+	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/migrate"
 	"github.com/jitpass/jit/internal/mount"
 	"github.com/jitpass/jit/internal/vault"
@@ -411,7 +411,7 @@ func TestStatusFormatJSONMatchesTextSections(t *testing.T) {
 	plantVaultSecret(t, home, "aws/s3-access-key")
 	// The vault section now reports the master key's presence, and the real
 	// probe answers from the production keychain of whatever machine runs this.
-	stubKeychain(t, keychainwrap.MEKPresent)
+	stubKeychain(t, keystore.Present)
 	writeFixtureProfile(t, cwd, "aws-admin", "AWS_ACCESS_KEY_ID: aws/s3-access-key\n")
 	root := filepath.Join(home, "Library", "Application Support", "jitpass")
 	if err := mount.AddMount(mount.RegistryPath(root), mount.Entry{MountPath: "/tmp/fixture/.env", ProfilePath: "/tmp/fixture/profile.yaml"}); err != nil {
