@@ -189,6 +189,7 @@ Each spike states what counts as a pass. S1 and S1b ran here
 | S3c | A Go `jit` through a symlink → the helper | profile | **Passed 2026-09-25** via symlink, `PATH` lookup and direct path. The real cask install is confirmed when the helper ships |
 | S3d | Hardened runtime blocks a same-user debugger | profile | `lldb -p <agent pid>` is refused |
 | S4 | A grant key while the screen is locked | profile, a human | **Passed 2026-09-25:** `AfterFirstUnlock` opened throughout a 45 s lock; `WhenUnlocked` failed `-25308` from about 9 s in. Hold a lock for at least 15 s when testing |
+| S3e | Existing installs: the old path as a symlink into the helper | profile | **Passed 2026-09-25:** direct, through an outside symlink, and under launchd; outer app verifies `--strict --deep` |
 | S5 | Migration both ways on test identifiers | profile | keychain → enclave → keychain with a test service name and tag; every envelope in a fixture vault opens at each step; a crash injected at each step leaves a working vault |
 | S6 | What a new Mac inherits today | a second Mac or a VM | Migration Assistant carries `com.jitpass.vault.mek`: yes or no. Yes means the enclave move needs a recovery step (below) |
 

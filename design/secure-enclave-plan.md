@@ -18,14 +18,19 @@ Rules that shape the order:
 - **No test ever uses a production identifier**, per `keychainwrap`'s
   incident: test tags and services carry `TEST-ONLY`.
 
-## Decisions needed from Meni before building
+## Decisions (accepted as recommended by Meni, 2026-09-25)
 
-| # | Decision | Recommendation | Why it matters |
+| # | Decision | Decided | Why it matters |
 |---|---|---|---|
 | D1 | The helper's name (`CFBundleName`) | **JitPass** | The Touch ID dialog reads "*<name>* is trying to …" (S2). Today it says "jit". The folder can be `JitPass Agent.app`; the name users read is `CFBundleName` |
 | D2 | Where the sealed master key lives | **`<vault root>/vault-key.sealed`**, and `DeleteLocalState` learns to remove it | `vault delete` today removes only `vault/`, `device.id` and the export marker (`vault/localstate.go:23`). A sealed file it missed would keep choosing the enclave |
 | D3 | New Mac | `vault rekey --wrapper secure-enclave` first requires a recent `jit vault export`, and says why | An enclave key never moves to another Mac; today's key probably does (S6 not run) |
 | D4 | Opt-in, then default | CLI opt-in for one release, then an app offer, then the default for **new** vaults only | Moving an existing vault automatically is the one-way door |
+
+Also accepted from the mockup's list: the offer lives in Doctor
+(Recommended); a recovery file is required before the move; it counts when
+it holds as many secrets as the vault (30 days as the fallback); the dialog
+says JitPass.
 
 ## The work, as pull requests
 
@@ -60,13 +65,11 @@ is separate from any fallout from the Secure Enclave.
 - Swift: one shared `bundledJit` for `JitCLI.swift:14` and
   `StatusItemController+Updates.swift:113`; fixture paths in
   `CommandLineToolTests.swift:28,37,44`.
-- **Spike S3e first** (1 hour, dev profile): launchd started through a
-  symlink inside a bundle that points at another bundle's main executable.
-  S3b ran the direct path and S3c ran the symlink from a shell; this
-  combination is the one existing plists will hit. If it fails, A1 replaces
-  the compat symlink with a one-time `jit service restart` from the app on
-  first launch after the update, which repoints when paths differ
-  (`servicecmds.go:287`).
+- **Spike S3e passed 2026-09-25:** the old path as a symlink into the
+  helper works run directly, through an outside symlink and under launchd,
+  and the outer app still passes `codesign --verify --strict --deep`. Its
+  `realpath` is the helper, so `jit service restart` repoints old plists
+  (`servicecmds.go:287`); the compat symlink can go a release or two later.
 - **Check, not assume:** Full Disk Access is granted to JitPass, the app
   (`ScanReportView+Header.swift:33`). Confirm a scheduled scan still runs
   without prompts after the move, since the service binary gets a new code
@@ -238,7 +241,7 @@ release R5   C1–C5: grant and job keys, migrated silently
 
 | Risk | Caught by |
 |---|---|
-| Existing plists point at the old path | Compat symlink + S3e before A1; `jit service restart` repoint as fallback |
+| Existing plists point at the old path | Compat symlink, proven by S3e; `jit service restart` repoints |
 | Full Disk Access or another permission tied to the old identity | The scheduled-scan check in A1 |
 | Keys orphaned by a changed bundle ID or access group | The group is `CZC6BH93GJ.com.jitpass.vault`, not the bundle ID; A2's `verify.sh` asserts it on every release |
 | The Developer ID profile expires | `verify.sh` refuses under 90 days left |
