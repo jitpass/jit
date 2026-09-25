@@ -104,11 +104,11 @@ var vaultRekeyCmd = &cobra.Command{
 		// would make "kill rekey at the right moment" a way to finish a
 		// rotation with no approval at all.
 		if hasPrimary {
-			if err := primary.RequireUserPresence("rotate the vault's master encryption key"); err != nil {
+			if err := primary.RequireUserPresence(reasonRekey); err != nil {
 				return fmt.Errorf("jit vault rekey: %w", err)
 			}
 		} else {
-			if err := keychainwrap.Challenge("finish rotating the vault's master encryption key"); err != nil {
+			if err := keychainwrap.Challenge(reasonRekeyFinish); err != nil {
 				return fmt.Errorf("jit vault rekey: %w", err)
 			}
 		}
