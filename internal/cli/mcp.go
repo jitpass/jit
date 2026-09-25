@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -39,8 +40,8 @@ var mcpCmd = &cobra.Command{
 	GroupID: groupSecrets,
 	Short:   "MCP server that lets AI apps run AI jobs (started by the app)",
 	Long: `jit mcp is an MCP server over stdin and stdout. An AI app starts it on
-this Mac (Claude Desktop does, from its config) and gets three tools:
-list_jobs, run_job and request_job. It is how Claude Desktop's Cowork,
+this Mac (Claude Desktop and Cursor do, from their config) and gets three
+tools: list_jobs, run_job and request_job. It is how Claude Desktop's Cowork,
 whose shell is a Linux VM that cannot run jit, runs your approved AI jobs.
 
 It never holds a key. It asks the jit service to run a job by name and
@@ -48,7 +49,8 @@ relays the output, in which the service has already hidden every secret
 value. A proposal from request_job creates nothing: it answers with the
 'jit job allow' line for you to run.
 
-You do not run this by hand. 'jit mcp install' adds it to Claude Desktop.`,
+You do not run this by hand. 'jit mcp install' adds it to Claude Desktop,
+and 'jit mcp install --client cursor' to Cursor.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		c, err := mcpAgentClient()
@@ -61,12 +63,12 @@ You do not run this by hand. 'jit mcp install' adds it to Claude Desktop.`,
 }
 
 var mcpInstallCmd = &cobra.Command{
-	Use:   "install [--client claude-desktop]",
-	Short: "Add jit's MCP server to Claude Desktop",
-	Long: `Add one entry, "jit", to Claude Desktop's MCP servers, so Cowork can list
-and run your AI jobs. The config file is backed up first, beside itself,
-and nothing else in it changes. Claude Desktop reads it at start, so quit
-and reopen it afterwards.
+	Use:   "install [--client claude-desktop|cursor]",
+	Short: "Add jit's MCP server to Claude Desktop or Cursor",
+	Long: `Add one entry, "jit", to the app's MCP servers, so its agent can list
+and run your AI jobs: Claude Desktop (the default) or Cursor. The config
+file is backed up first, beside itself, and nothing else in it changes.
+The app reads it at start, so quit and reopen it afterwards.
 
 Connecting approves nothing. Claude can only run jobs you approved with
 'jit job allow', and can only propose new ones for you to approve.`,
@@ -80,9 +82,9 @@ Connecting approves nothing. Claude can only run jobs you approved with
 }
 
 var mcpUninstallCmd = &cobra.Command{
-	Use:   "uninstall [--client claude-desktop]",
-	Short: "Remove jit's MCP server from Claude Desktop",
-	Long:  "Remove the \"jit\" entry from Claude Desktop's MCP servers, after a backup. Your AI jobs stay; only this app's way in goes.",
+	Use:   "uninstall [--client claude-desktop|cursor]",
+	Short: "Remove jit's MCP server from Claude Desktop or Cursor",
+	Long:  "Remove the \"jit\" entry from the app's MCP servers, after a backup. Your AI jobs stay; only this app's way in goes.",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := runMCPInstall(cmd.OutOrStdout(), false); err != nil {
@@ -93,8 +95,8 @@ var mcpUninstallCmd = &cobra.Command{
 }
 
 var mcpStatusCmd = &cobra.Command{
-	Use:   "status [--client claude-desktop]",
-	Short: "Show whether Claude Desktop can reach jit's MCP server",
+	Use:   "status [--client claude-desktop|cursor]",
+	Short: "Show whether an AI app can reach jit's MCP server",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := runMCPStatus(cmd.OutOrStdout()); err != nil {
@@ -106,7 +108,7 @@ var mcpStatusCmd = &cobra.Command{
 
 func init() {
 	for _, c := range []*cobra.Command{mcpInstallCmd, mcpUninstallCmd, mcpStatusCmd} {
-		c.Flags().StringVar(&mcpClientName, "client", "claude-desktop", "the AI app: claude-desktop")
+		c.Flags().StringVar(&mcpClientName, "client", "claude-desktop", "the AI app: claude-desktop or cursor")
 	}
 	mcpInstallCmd.Flags().StringVar(&mcpCommandPath, "command", "", "the jit to start (default: the jit on your PATH)")
 	mcpStatusCmd.Flags().StringVar(&mcpStatusFmt, "format", "text", "output format: text or json")
@@ -142,18 +144,40 @@ func (b mcpBackend) RequestJob(name string, spec agent.JobSpec, why string) erro
 // mcpServerName is the entry's key in an app's mcpServers.
 const mcpServerName = "jit"
 
-// mcpConfigPath is where the named app keeps its MCP servers. Only Claude
-// Desktop is automated; others are documented until each is checked to start
-// stdio servers on the host rather than inside its own sandbox.
-func mcpConfigPath(client string) (string, error) {
-	if client != "claude-desktop" {
-		return "", fmt.Errorf("--client %s is not supported yet: only claude-desktop is set up automatically. For another app, add an MCP server that runs `jit mcp`", client)
+// mcpClient is an AI app `jit mcp install` sets up: where it keeps its MCP
+// servers, and what connecting it lets its agent do. An app is added here
+// only once it is checked to start stdio MCP servers on this Mac rather than
+// inside a sandbox of its own (the condition design/agent-jobs.md sets).
+// Both files share the `mcpServers` shape setMCPEntry edits.
+type mcpClient struct {
+	id, name string
+	// config is relative to the home folder.
+	config string
+	// gain is what connecting gives, for the status line.
+	gain string
+}
+
+var mcpClients = []mcpClient{
+	{"claude-desktop", "Claude Desktop", "Library/Application Support/Claude/claude_desktop_config.json", "lets Cowork run your AI jobs"},
+	{"cursor", "Cursor", ".cursor/mcp.json", "lets Cursor's agent run your AI jobs"},
+}
+
+func findMCPClient(id string) (mcpClient, string, error) {
+	for _, c := range mcpClients {
+		if c.id != id {
+			continue
+		}
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return mcpClient{}, "", err
+		}
+		return c, filepath.Join(home, filepath.FromSlash(c.config)), nil
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
+	ids := make([]string, 0, len(mcpClients))
+	for _, c := range mcpClients {
+		ids = append(ids, c.id)
 	}
-	return filepath.Join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json"), nil
+	return mcpClient{}, "", fmt.Errorf("--client %s is not set up automatically (%s are). For another app, add an MCP server that runs `jit mcp`", id, strings.Join(ids, ", "))
 }
 
 // mcpCommand is the jit the app should start: the one on PATH (the cask's
@@ -248,7 +272,7 @@ func jsonEqual(a, b json.RawMessage) bool {
 }
 
 func runMCPInstall(out io.Writer, install bool) error {
-	path, err := mcpConfigPath(mcpClientName)
+	client, path, err := findMCPClient(mcpClientName)
 	if err != nil {
 		return err
 	}
@@ -268,24 +292,24 @@ func runMCPInstall(out io.Writer, install bool) error {
 	switch {
 	case !changed && install:
 		_, _ = cOK.Fprint(out, glyphOK)
-		fmt.Fprintln(out, " Claude Desktop already starts jit's MCP server")
+		fmt.Fprintf(out, " %s already starts jit's MCP server\n", client.name)
 		return nil
 	case !changed:
 		_, _ = cOK.Fprint(out, glyphOK)
-		fmt.Fprintln(out, " Claude Desktop does not start jit's MCP server")
+		fmt.Fprintf(out, " %s does not start jit's MCP server\n", client.name)
 		return nil
 	}
 	_, _ = cOK.Fprint(out, glyphDone)
 	if install {
-		fmt.Fprintf(out, " Claude Desktop will start %s mcp\n", entry.Command)
+		fmt.Fprintf(out, " %s will start %s mcp\n", client.name, entry.Command)
 	} else {
-		fmt.Fprintln(out, " Removed jit from Claude Desktop's MCP servers")
+		fmt.Fprintf(out, " Removed jit from %s's MCP servers\n", client.name)
 	}
 	fmt.Fprintf(out, "  changed  %s\n", displayPath(home, path))
 	if backup != "" {
 		fmt.Fprintf(out, "  backup   %s\n", displayPath(home, backup))
 	}
-	fmt.Fprintln(out, "  Quit and reopen Claude Desktop to pick this up.")
+	fmt.Fprintf(out, "  Quit and reopen %s to pick this up.\n", client.name)
 	return nil
 }
 
@@ -303,7 +327,7 @@ func runMCPStatus(out io.Writer) error {
 	if err := validateOutputFormat(mcpStatusFmt); err != nil {
 		return err
 	}
-	path, err := mcpConfigPath(mcpClientName)
+	client, path, err := findMCPClient(mcpClientName)
 	if err != nil {
 		return err
 	}
@@ -327,19 +351,28 @@ func runMCPStatus(out io.Writer) error {
 	switch {
 	case st.Installed && st.Runnable:
 		_, _ = cOK.Fprint(out, glyphOK)
-		fmt.Fprintf(out, " Claude Desktop starts %s mcp\n", st.Command)
+		fmt.Fprintf(out, " %s starts %s mcp\n", client.name, st.Command)
 	case st.Installed:
 		_, _ = cRisk.Fprint(out, glyphRisk)
-		fmt.Fprintf(out, " Claude Desktop starts %s, which is not there\n", st.Command)
+		fmt.Fprintf(out, " %s starts %s, which is not there\n", client.name, st.Command)
 		fmt.Fprint(out, "  ")
-		_, _ = cPath.Fprintf(out, "%s jit mcp install", glyphAction)
+		_, _ = cPath.Fprintf(out, "%s %s", glyphAction, mcpInstallLine(client))
 		fmt.Fprintln(out, "   points it at the jit on your PATH")
 	default:
 		_, _ = cWarn.Fprint(out, glyphWarn)
-		fmt.Fprintln(out, " Claude Desktop does not start jit's MCP server")
+		fmt.Fprintf(out, " %s does not start jit's MCP server\n", client.name)
 		fmt.Fprint(out, "  ")
-		_, _ = cPath.Fprintf(out, "%s jit mcp install", glyphAction)
-		fmt.Fprintln(out, "   lets Cowork run your AI jobs")
+		_, _ = cPath.Fprintf(out, "%s %s", glyphAction, mcpInstallLine(client))
+		fmt.Fprintf(out, "   %s\n", client.gain)
 	}
 	return nil
+}
+
+// mcpInstallLine is the command that connects client, spelled the way the
+// user would type it: no flag for the default.
+func mcpInstallLine(c mcpClient) string {
+	if c.id == mcpClients[0].id {
+		return "jit mcp install"
+	}
+	return "jit mcp install --client " + c.id
 }

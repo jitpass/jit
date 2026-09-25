@@ -1,19 +1,19 @@
 ## jit mcp uninstall
 
-Remove jit's MCP server from Claude Desktop
+Remove jit's MCP server from Claude Desktop or Cursor
 
 ### Synopsis
 
-Remove the "jit" entry from Claude Desktop's MCP servers, after a backup. Your AI jobs stay; only this app's way in goes.
+Remove the "jit" entry from the app's MCP servers, after a backup. Your AI jobs stay; only this app's way in goes.
 
 ```
-jit mcp uninstall [--client claude-desktop] [flags]
+jit mcp uninstall [--client claude-desktop|cursor] [flags]
 ```
 
 ### Options
 
 ```
-      --client string   the AI app: claude-desktop (default "claude-desktop")
+      --client string   the AI app: claude-desktop or cursor (default "claude-desktop")
 ```
 
 ### Options inherited from parent commands
