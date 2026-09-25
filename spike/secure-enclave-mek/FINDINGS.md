@@ -304,6 +304,33 @@ control: `SecItemDelete` alone still answers -25244 on that item. All pass
 on this Mac; with the fallback switched off, the delete, the promote and
 the cli move test fail with -25244.
 
+Second review of #170 (2026-09-26): the process-wide switch
+(`SecKeychainSetUserInteractionAllowed`) was reachable from the service,
+through a grant key's delete. It now runs only from CLI commands:
+`deleteItem` takes the reference fallback only when its caller asks for it
+(`cliRefFallback`), and `GrantKeys.Delete` never does (this helper made
+every grant key at its own path, so -25244 does not arise; if it does, it
+is the error). Overlapping and nested uses share one save and one restore
+(a mutex and a depth count), race-tested. The check after a reference
+delete searches only the default keychain, where the fallback deletes; an
+unconfirmed answer there lets a replace go on to the add, which fails on a
+duplicate if the item really stayed.
+
+Measured on a temporary, LOCKED file keychain (TEST-ONLY item made by the
+test binary, interaction off; `TestHardwareLockedKeychainNeverAsks`): the
+presence query answers 0 and the delete answers 0 (and deletes): neither
+needs an unlock. The data read fails at once with errSecAuthFailed
+(-25293), not errSecInteractionNotAllowed. So a locked keychain is not a
+case where `kSecUseAuthenticationUIFail` stands between presence or the
+delete and a dialog, and it cannot make them answer -25308. Whether the
+flag alone (switch ON) keeps the READ from asking to unlock is not
+measured: that half of the test runs only attended (JIT_SE_INTERACTIVE=1),
+because an openclaw fix measured the flag NOT holding for a legacy item's
+access dialog. While writing the test, `security show-keychain-info` on the
+locked temporary keychain raised its unlock prompt once (the `security`
+tool's, cancelled); the test uses only subcommands that take the password
+or never prompt.
+
 Not measured: an item created by a Developer ID signed jit (this Mac has only
 the team's Apple Development identity). The partition entry is
 `teamid:CZC6BH93GJ` for both certificates, and row 4 shows the refusal
