@@ -10,8 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/importer"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -30,6 +32,20 @@ type fakeOps struct {
 	refs, pres    int // refs: the CLI reference delete (the process switch)
 	refsAsIs      int // the service's reference delete (no switch)
 	anyPres, adds int
+	locked        bool  // defaultKeychainLock: the default keychain is locked
+	lockErr       int32 // defaultKeychainLock: the check failed with this status
+	lockChecks    int
+}
+
+func (f *fakeOps) defaultKeychainLock() (keychainLock, int32) {
+	f.lockChecks++
+	switch {
+	case f.locked:
+		return lockLocked, 0
+	case f.lockErr != 0:
+		return lockUnknown, f.lockErr
+	}
+	return lockUnlocked, 0
 }
 
 func (f *fakeOps) secItemDelete() int32   { return f.del }
@@ -185,6 +201,63 @@ func TestGrantKeyDeleteFallsBackWithoutTheProcessSwitch(t *testing.T) {
 	}
 }
 
+// The service's reference delete runs with keychain interaction on, as the
+// service has it, and a delete on a LOCKED keychain was never measured that
+// way: it might ask to unlock. So the service checks the default
+// keychain's lock state first (SecKeychainGetStatus, no UI) and, locked or
+// not known, never attempts the reference delete: the error says why, and
+// GrantKeys.Delete's caller turns it into the key note ("... tries again
+// the next time it starts"). The CLI form, whose delete runs with
+// interaction off, needs no such check and makes none.
+func TestServiceReferenceDeleteSkipsALockedKeychain(t *testing.T) {
+	orig := newItemOps
+	t.Cleanup(func() { newItemOps = orig })
+	for _, tc := range []struct {
+		name    string
+		ops     fakeOps
+		wantErr string
+	}{
+		{"locked", fakeOps{del: errSecInvalidOwnerEdit, ref: errSecSuccess, after: MEKAbsent, anywhere: MEKPresent, locked: true},
+			"your keychain is locked: delete failed, OSStatus=-25244"},
+		{"lock state unknown", fakeOps{del: errSecInvalidOwnerEdit, ref: errSecSuccess, after: MEKAbsent, anywhere: MEKPresent, lockErr: -25294},
+			"couldn't check whether your keychain is locked (OSStatus=-25294): delete failed, OSStatus=-25244"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got *fakeOps
+			newItemOps = func(*Wrapper) itemOps {
+				ops := tc.ops
+				got = &ops
+				return got
+			}
+			err := GrantKeys{service: "com.jitpass.grant.key.TEST-ONLY"}.Delete("g-1")
+			if err == nil || err.Error() != tc.wantErr {
+				t.Fatalf("got %v, want %q", err, tc.wantErr)
+			}
+			// The key note splits on "; " into lines (printKeyNote).
+			if strings.Contains(err.Error(), "; ") {
+				t.Errorf("%q would split the key note mid-clause", err)
+			}
+			if got.lockChecks != 1 || got.refsAsIs != 0 || got.refs != 0 {
+				t.Fatalf("lock checks %d, reference deletes %d (service) %d (CLI); want 1, 0, 0", got.lockChecks, got.refsAsIs, got.refs)
+			}
+		})
+	}
+	t.Run("the CLI form makes no check", func(t *testing.T) {
+		ops := fakeOps{del: errSecInvalidOwnerEdit, ref: errSecSuccess, after: MEKAbsent, locked: true}
+		if _, err := deleteItem(&ops, deleteOpts{fallback: cliRefFallback, verb: "delete failed"}); err != nil {
+			t.Fatalf("the CLI's reference delete (interaction off) was stopped by the lock check: %v", err)
+		}
+		if ops.lockChecks != 0 || ops.refs != 1 {
+			t.Fatalf("lock checks %d, CLI reference deletes %d; want 0 and 1", ops.lockChecks, ops.refs)
+		}
+	})
+	for st, want := range map[int32]keychainLock{1: lockUnlocked, 0: lockLocked, -25294: lockUnknown, errSecInteractionNotAllowed: lockUnknown} {
+		if got, _ := lockFromState(st); got != want {
+			t.Errorf("lockFromState(%d) = %v, want %v", st, got, want)
+		}
+	}
+}
+
 // kwWithoutUI, which the fallback's lookup and deletes and the quiet read
 // run inside: interaction is off inside it (and inside a nested use) and
 // back to what it was after, whichever way it started. Nothing here touches
@@ -298,10 +371,51 @@ var promptingReadCallers = map[string]map[string]bool{
 	},
 }
 
+// neverPrompts are the functions that read an item that may be another
+// jit's, which must not reach the prompting read by ANY path: not by
+// calling fetchMEK, and not by calling something that does (w.FetchMEK,
+// RequireUserPresence, ...).
+var neverPrompts = []string{"MatchesMEK", "InstallMEK", "CountOpens", "CheckQuietRead", "quietFetch"}
+
+// calledName is the name a call goes to, whether written f(...) or
+// x.f(...); "" for anything else (a call through a func value).
+func calledName(call *ast.CallExpr) string {
+	switch fun := call.Fun.(type) {
+	case *ast.Ident:
+		return fun.Name
+	case *ast.SelectorExpr:
+		return fun.Sel.Name
+	}
+	return ""
+}
+
+// inPackage reports whether call goes to a function or method of this
+// package, resolved by the type checker, so a call such as an AEAD's
+// Open is not taken for this package's Open. A C.* call counts (keychain.m
+// is this package's too); a call through an interface of this package
+// counts as a call to every method of that name here.
+func inPackage(info *types.Info, pkg *types.Package, call *ast.CallExpr) bool {
+	var id *ast.Ident
+	switch fun := call.Fun.(type) {
+	case *ast.Ident:
+		id = fun
+	case *ast.SelectorExpr:
+		if x, ok := fun.X.(*ast.Ident); ok && x.Name == "C" {
+			return true
+		}
+		id = fun.Sel
+	default:
+		return false
+	}
+	obj, ok := info.Uses[id].(*types.Func)
+	return ok && obj.Pkg() == pkg
+}
+
 // assertPromptingReadCallers walks this package's source (tests excluded)
 // for every call that reaches the prompting read, fails on a caller not in
-// promptingReadCallers, and checks keychain.m builds KW_Q_FETCH in one
-// place, kw_fetch_mek's non-quiet branch.
+// promptingReadCallers, fails when a function in neverPrompts reaches it
+// through any chain of calls, and checks keychain.m builds KW_Q_FETCH in
+// one place, kw_fetch_mek's non-quiet branch.
 func assertPromptingReadCallers(t *testing.T) {
 	t.Helper()
 	_, self, _, _ := runtime.Caller(0)
@@ -311,7 +425,12 @@ func assertPromptingReadCallers(t *testing.T) {
 		t.Fatal(err)
 	}
 	seen := map[string]map[string]bool{"kw_fetch_mek": {}, "fetchMEK": {}}
+	// calls: function (or method) name -> the names it calls. By name
+	// alone, so a method and a function of the same name are one node: a
+	// chain can only be over-reported, never missed.
+	calls := map[string]map[string]bool{}
 	fset := token.NewFileSet()
+	var parsed []*ast.File
 	for _, file := range files {
 		if strings.HasSuffix(file, "_test.go") {
 			continue
@@ -320,22 +439,31 @@ func assertPromptingReadCallers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		parsed = append(parsed, f)
+	}
+	info := &types.Info{Uses: map[*ast.Ident]types.Object{}}
+	conf := types.Config{FakeImportC: true, Importer: importer.Default(), Error: func(error) {}}
+	pkg, _ := conf.Check("keychainwrap", fset, parsed, info)
+	for _, f := range parsed {
 		for _, decl := range f.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Body == nil {
 				continue
+			}
+			caller := fn.Name.Name
+			if calls[caller] == nil {
+				calls[caller] = map[string]bool{}
 			}
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
 				if !ok {
 					return true
 				}
-				sel, ok := call.Fun.(*ast.SelectorExpr)
-				if !ok {
-					return true
-				}
+				name := calledName(call)
 				var target string
-				switch sel.Sel.Name {
+				switch name {
+				case "":
+					return true
 				case "kw_fetch_mek":
 					// quiet is the last argument: a literal 1 is the quiet
 					// read; anything else may prompt.
@@ -345,12 +473,16 @@ func assertPromptingReadCallers(t *testing.T) {
 					target = "kw_fetch_mek"
 				case "fetchMEK":
 					target = "fetchMEK"
-				default:
+				}
+				if inPackage(info, pkg, call) {
+					calls[caller][name] = true
+				}
+				if target == "" {
 					return true
 				}
-				seen[target][fn.Name.Name] = true
-				if !promptingReadCallers[target][fn.Name.Name] {
-					t.Errorf("%s: %s calls %s, the read that may show the keychain's dialog; a comparison or check that must not prompt uses quietFetch", fset.Position(call.Pos()), fn.Name.Name, target)
+				seen[target][caller] = true
+				if !promptingReadCallers[target][caller] {
+					t.Errorf("%s: %s calls %s, the read that may show the keychain's dialog; a comparison or check that must not prompt uses quietFetch", fset.Position(call.Pos()), caller, target)
 				}
 				return true
 			})
@@ -360,6 +492,42 @@ func assertPromptingReadCallers(t *testing.T) {
 		for c := range callers {
 			if !seen[target][c] {
 				t.Errorf("%s is listed as calling %s but no longer does: take it off the list", c, target)
+			}
+		}
+	}
+	// The graph is only as good as the type check: a known edge of each
+	// kind must be in it, or every chain below would pass by being empty.
+	for _, e := range [][2]string{{"MatchesMEK", "quietFetch"}, {"FetchMEK", "fetchMEK"}, {"InstallMEK", "setMEK"}, {"deleteItem", "secItemDelete"}, {"quietFetch", "cNames"}, {"setMEKWith", "add"}} {
+		if !calls[e[0]][e[1]] {
+			t.Errorf("the call graph has no %s -> %s: the type check resolved too little to trust it", e[0], e[1])
+		}
+	}
+	// Every chain from a function that must never prompt: none may reach
+	// the prompting read (a non-quiet kw_fetch_mek, or fetchMEK).
+	for _, root := range neverPrompts {
+		if calls[root] == nil {
+			t.Errorf("%s is listed as never prompting but isn't in this package", root)
+			continue
+		}
+		prev := map[string]string{root: ""}
+		queue := []string{root}
+		for len(queue) > 0 {
+			fn := queue[0]
+			queue = queue[1:]
+			for callee := range calls[fn] {
+				if _, ok := prev[callee]; ok {
+					continue
+				}
+				prev[callee] = fn
+				if seen["kw_fetch_mek"][callee] || callee == "fetchMEK" {
+					chain := []string{callee}
+					for at := fn; at != ""; at = prev[at] {
+						chain = append([]string{at}, chain...)
+					}
+					t.Errorf("%s reaches the read that may show the keychain's dialog: %s", root, strings.Join(chain, " -> "))
+					continue
+				}
+				queue = append(queue, callee)
 			}
 		}
 	}
@@ -497,14 +665,21 @@ func TestCountOpens(t *testing.T) {
 	missing := &Wrapper{service: "com.jitpass.vault.mek.TEST-ONLY", account: "missing", challenge: noChallenge}
 	_, err := missing.CountOpens(keys)
 	var q *QuietReadError
-	if !errors.As(err, &q) || q.Status != errSecItemNotFound || q.MayBeLocked() {
-		t.Fatalf("no item: %v (%#v), want a QuietReadError with errSecItemNotFound that is no lock", err, q)
+	if !errors.As(err, &q) || q.Status != errSecItemNotFound || q.MayBeLocked() || q.NotAllowed() {
+		t.Fatalf("no item: %v (%#v), want a QuietReadError with errSecItemNotFound that is neither a lock nor a refusal", err, q)
 	}
-	// The statuses a keychain that won't be read right now answers: a
-	// locked one's -25293 (measured) and a read that would have asked.
-	for st, want := range map[int32]bool{errSecAuthFailed: true, errSecInteractionNotAllowed: true, errSecItemNotFound: false, -34018: false} {
-		if got := (&QuietReadError{Status: st}).MayBeLocked(); got != want {
-			t.Errorf("OSStatus=%d: MayBeLocked %v, want %v", st, got, want)
+	// Only -25293 is a locked keychain (measured); -25308 is a read this
+	// copy of jit isn't allowed to make without asking, which unlocking
+	// changes nothing about. Neither is the other.
+	for st, want := range map[int32][2]bool{
+		errSecAuthFailed:            {true, false},
+		errSecInteractionNotAllowed: {false, true},
+		errSecItemNotFound:          {false, false},
+		-34018:                      {false, false},
+	} {
+		e := &QuietReadError{Status: st}
+		if got := [2]bool{e.MayBeLocked(), e.NotAllowed()}; got != want {
+			t.Errorf("OSStatus=%d: MayBeLocked, NotAllowed = %v, want %v", st, got, want)
 		}
 	}
 }

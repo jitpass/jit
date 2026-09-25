@@ -290,11 +290,18 @@ const LostSealedFile = vault.LostSealedKeyFile
 //     The vault then opens from the keychain: the sealed file is set aside
 //     under a name no lost-key rule reads, no lost-key record is written,
 //     and Init reports InitRecovered.
-//   - Anything else (a key that opens none, or only some, of the secrets; a
-//     vault with no secrets to try it on; an item that can't be read without
-//     asking) is refused with nothing changed, naming the item to delete.
-//     Keeping the vault on a key jit can't vouch for, silently, is the one
-//     outcome this must not have.
+//   - Anything else is refused with nothing changed. The refusal advises
+//     removing the item only when the measure PROVED it opens none of this
+//     vault's secrets: it was read, every live secret was tried against it
+//     (none untested) and none opened. A locked keychain is "unlock it and
+//     run init again"; a secret that couldn't be tried is "run init again
+//     once jit can read it"; an item this copy of jit isn't allowed to read,
+//     one it can't use, a vault with no secrets to try it on, or a key that
+//     opens only some of them leaves removing it to the person, recovery
+//     file first, saying what jit couldn't tell (and, for some, what it
+//     would cost). Keeping the vault on a key jit can't vouch for,
+//     silently, is the one outcome this must not have; advising the delete
+//     of what may be the vault's only key is the other.
 func (s enclaveStore) Init() (InitResult, error) {
 	switch s.Presence() {
 	case Present:
@@ -322,55 +329,98 @@ func (s enclaveStore) Init() (InitResult, error) {
 // initOverLeftover is Init's decision over a keychain item found when the
 // enclave key is lost (see Init).
 func (s enclaveStore) initOverLeftover() (InitResult, error) {
-	opened, total, err := leftoverOpens(s.root)
-	if q := (*keychainwrap.QuietReadError)(nil); errors.As(err, &q) && q.MayBeLocked() {
-		// The keychain would not be read right now: a LOCKED login keychain
-		// answers presence (so this item counts as there) and fails the
-		// read at once with errSecAuthFailed (measured,
-		// TestHardwareLockedKeychainNeverAsks); errSecInteractionNotAllowed
-		// is a read that would have had to ask. Neither says anything about
-		// the item, which may be the vault's only key, so this never
-		// advises deleting it.
+	m, err := leftoverOpens(s.root)
+	var q *keychainwrap.QuietReadError
+	switch {
+	case errors.As(err, &q) && q.MayBeLocked():
+		// A LOCKED login keychain answers presence (so this item counts as
+		// there) and fails the read at once with errSecAuthFailed
+		// (measured, TestHardwareLockedKeychainNeverAsks). That says
+		// nothing about the item, which may be the vault's only key.
 		return InitReady, fmt.Errorf("the vault's Secure Enclave key is lost, and jit couldn't read\n"+
 			"the key in your keychain under the vault key's name right now\n"+
 			"(OSStatus=%d): your keychain may be locked.\n"+
 			"Nothing changed. Unlock it, then run `jit vault init` again", q.Status)
-	}
-	if err != nil {
-		// Not "try again": an item that isn't a master key, or can't be
-		// read for any other reason, fails the same way every time. The way
-		// out is named, so a lost key never leaves the vault stuck: without
-		// the item, Init makes a new key and the recovery file brings the
-		// secrets back.
+	case errors.As(err, &q) && q.NotAllowed():
+		// errSecInteractionNotAllowed: this copy of jit isn't on the item's
+		// access list (S3g: another signer or path made it). Not a lock,
+		// and every run of this jit fails the same way, so the way on is
+		// the person's own, recovery file first; and the item may be the
+		// vault's only key, so jit never advises it.
+		return InitReady, fmt.Errorf("the vault's Secure Enclave key is lost, and this copy of jit\n"+
+			"isn't allowed to read the key in your keychain under the vault\n"+
+			"key's name (OSStatus=%d); another copy of jit likely saved it.\n"+
+			"Nothing changed.\n%s", q.Status, removeItYourself())
+	case err != nil:
+		// An item that isn't a master key, or can't be read for another
+		// reason: it fails the same way every run, so not "try again", and
+		// nothing about it was measured.
 		return InitReady, fmt.Errorf("the vault's Secure Enclave key is lost, and jit can't use\n"+
 			"the key in your keychain under the vault key's name\n"+
-			"(%s). Nothing changed.\n"+
-			"If your recovery file has your secrets, delete\n"+
-			"%q in Keychain Access,\n"+
-			"then run `jit vault init` again and import the file", truncateStart(err.Error(), 48), KeychainItemName)
-	}
-	if total > 0 && opened == total {
+			"(%s). Nothing changed.\n%s", truncateStart(err.Error(), 48), removeItYourself())
+	case m.Total > 0 && m.Opened == m.Total:
 		from := filepath.Join(s.root, vault.SealedKeyFile)
 		to := filepath.Join(s.root, RecoveredSealedFile+"-"+time.Now().UTC().Format("20060102T150405.000000000Z"))
 		if err := os.Rename(from, to); err != nil {
 			return InitReady, fmt.Errorf("setting the lost vault key's file aside: %w", err)
 		}
 		return InitRecovered, nil
+	case m.Untested > 0:
+		// A secret that couldn't be tried is one the key may open.
+		files := "their files couldn't be read"
+		if m.Untested == 1 {
+			files = "its file couldn't be read"
+		}
+		return InitReady, fmt.Errorf("the vault's Secure Enclave key is lost, and jit couldn't test\n"+
+			"%s against the key in your keychain: %s.\n"+
+			"Nothing changed; jit won't use that key or remove it.\n"+
+			"Once jit can read them, run `jit vault init` again", secretsWord(m.Untested), files)
+	case m.Total == 0:
+		return InitReady, fmt.Errorf("the vault's Secure Enclave key is lost.\n"+
+			"A key in your keychain has the vault key's name, but with no\n"+
+			"secrets to try it on, jit can't tell whose it is.\n"+
+			"jit won't use it; nothing changed.\n%s", removeItYourself())
+	case m.Opened == 0:
+		// The one case that may advise removing it: read, tried against
+		// every live secret, and it opened none.
+		return InitReady, fmt.Errorf("the vault's Secure Enclave key is lost.\n"+
+			"A key in your keychain has the vault key's name, but it opens\n"+
+			"none of this vault's %s. jit won't use it; nothing changed.\n"+
+			"Remove %q in Keychain Access,\n"+
+			"then run `jit vault init` again", secretsWord(m.Total), KeychainItemName)
 	}
-	var why string
-	switch {
-	case total == 0:
-		why = "with no secrets to try it on, jit can't tell whose it is"
-	case opened == 0:
-		why = "it opens none of this vault's secrets"
-	default:
-		why = fmt.Sprintf("it opens only %d of this vault's %d secrets", opened, total)
+	// Some, not all: the item is proven to open those, so the cost of
+	// removing it is said plainly.
+	lose := fmt.Sprintf("those %d unless your recovery file has them", m.Opened)
+	if m.Opened == 1 {
+		lose = "that one unless your recovery file has it"
 	}
 	return InitReady, fmt.Errorf("the vault's Secure Enclave key is lost.\n"+
-		"A key in your keychain has the vault key's name, but %s.\n"+
-		"jit won't use it; nothing changed.\n"+
-		"Delete %q in Keychain Access,\n"+
-		"then run `jit vault init` again", why, KeychainItemName)
+		"A key in your keychain has the vault key's name, and it opens\n"+
+		"%d of this vault's %s. Removing it loses\n"+
+		"%s.\n"+
+		"jit won't use it or remove it; nothing changed.\n"+
+		"If your recovery file has your secrets, you can remove that key\n"+
+		"yourself in Keychain Access (%q),\n"+
+		"run `jit vault init` again, then import the file", m.Opened, secretsWord(m.Total), lose, KeychainItemName)
+}
+
+// removeItYourself is the way on from a refusal over an item jit couldn't
+// measure: the person's choice, recovery file first, never jit's advice to
+// delete what may be the vault's only key.
+func removeItYourself() string {
+	return fmt.Sprintf("If your recovery file has your secrets, you can remove that key\n"+
+		"yourself in Keychain Access (%q),\n"+
+		"run `jit vault init` again, then import the file;\n"+
+		"jit can't tell whether that key is still needed", KeychainItemName)
+}
+
+// secretsWord is "1 secret" or "n secrets".
+func secretsWord(n int) string {
+	if n == 1 {
+		return "1 secret"
+	}
+	return fmt.Sprintf("%d secrets", n)
 }
 
 // RecoveredSealedFile is where Init sets the sealed file aside once the
@@ -383,7 +433,7 @@ const RecoveredSealedFile = vault.SealedKeyFile + ".recovered"
 // leftover key, as vars so no test reaches the production keychain item.
 var (
 	leftoverPresence = KeychainCopy
-	leftoverOpens    = func(root string) (int, int, error) { return keychainKeyOpens(root, keychainwrap.New()) }
+	leftoverOpens    = func(root string) (KeyMeasure, error) { return KeychainKeyOpens(root, keychainwrap.New()) }
 )
 
 // truncateStart shortens s to n runes from the front, marking the cut: the
@@ -410,29 +460,14 @@ type KeyMeasure struct {
 	Total    int // live secrets
 }
 
-// KeychainKeyOpens is the measure `jit vault rekey --wrapper secure-enclave
-// --force` takes before it deletes a keychain item: how many of this
-// vault's live secrets the item opens, and how many couldn't be tried. It
-// always reads the item (quietly), even with nothing to try it on, so a nil
-// error means the item itself was read.
+// KeychainKeyOpens measures a keychain item against a vault's live
+// secrets: how many it opens, and how many couldn't be tried (an envelope
+// that couldn't be read). Init over a lost key takes it before deciding on
+// an item it found, and `jit vault rekey --wrapper secure-enclave --force`
+// before it deletes one. It reads the item quietly (keychainwrap.CountOpens:
+// no challenge, no dialog), always, even with nothing to try it on, so a
+// nil error means the item itself was read.
 func KeychainKeyOpens(root string, kc KeyCounter) (KeyMeasure, error) {
-	return measureKeychainKey(root, kc, true)
-}
-
-// keychainKeyOpens reports how many of the vault's live secrets the keychain
-// item kc opens, out of how many, for Init over a lost key. A secret whose
-// envelope can't be read counts as one it does not open (so the item can't
-// count as the vault's own key), and with no envelope to try, the item is
-// not read.
-func keychainKeyOpens(root string, kc KeyCounter) (opened, total int, err error) {
-	m, err := measureKeychainKey(root, kc, false)
-	return m.Opened, m.Total, err
-}
-
-// measureKeychainKey reads the item quietly (keychainwrap.CountOpens: no
-// challenge, no dialog) and tries it on every live secret's data key.
-// alwaysRead reads the item even when no envelope could be read.
-func measureKeychainKey(root string, kc KeyCounter, alwaysRead bool) (KeyMeasure, error) {
 	id, err := vault.EnsureDeviceID(root)
 	if err != nil {
 		return KeyMeasure{}, err
@@ -451,9 +486,6 @@ func measureKeychainKey(root string, kc KeyCounter, alwaysRead bool) (KeyMeasure
 			continue
 		}
 		keys = append(keys, keychainwrap.WrappedKey{Wrapped: wrapped, Class: class})
-	}
-	if len(keys) == 0 && !alwaysRead {
-		return m, nil
 	}
 	m.Opened, err = kc.CountOpens(keys)
 	return m, err

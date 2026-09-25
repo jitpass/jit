@@ -53,8 +53,18 @@ int kw_item_delete_by_ref(const char *service, const char *account);
 // that switch would reach every other request in flight. The lookup still
 // carries kSecUseAuthenticationUIFail; the delete needs no UI on these
 // items (S3g rows 8 and 9, the locked-keychain test; keychain.m has the
-// measurements).
+// measurements). Its caller checks the default keychain is unlocked first
+// (kw_default_keychain_lock_state).
 int kw_item_delete_by_ref_no_switch(const char *service, const char *account);
+
+// kw_default_keychain_lock_state reads the default (login) keychain's lock
+// state with SecKeychainGetStatus, which shows no UI: 1 unlocked, 0 locked,
+// else the failing OSStatus (SecKeychainCopyDefault's or
+// SecKeychainGetStatus's; never 0 or 1). The service asks it before its
+// reference delete (keychainwrap's deleteItem, serviceRefFallback), which
+// runs with the process's interaction as the service has it: on a locked
+// keychain the delete is not attempted at all.
+int kw_default_keychain_lock_state(void);
 
 // kw_add_mek stores the GIVEN key bytes under service/account, which must
 // not exist: the add half of keychainwrap's setMEK (the promote step of
@@ -117,6 +127,11 @@ void kw_set_user_interaction(int allowed);
 // reference (KW_Q_REF), against that keychain alone, with the process's
 // interaction switched off around it only when without_ui is set, and
 // returns its status.
+//
+// KW_PROBE_LOCK_STATE is not a registry query: with it, the probe returns
+// that keychain's lock state as kw_default_keychain_lock_state reads the
+// default one's (the same helper).
+#define KW_PROBE_LOCK_STATE 1000
 int kw_add_in_keychain(const char *path, const char *service, const char *account);
 int kw_probe_in_keychain(const char *path, const char *service, const char *account, int which, int without_ui);
 

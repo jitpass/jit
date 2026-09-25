@@ -369,11 +369,12 @@ func (w *Wrapper) RequireUserPresence(reason string) error {
 
 // DeleteMEK permanently removes this wrapper's keychain-stored MEK — the
 // key protecting every secret in a keychain vault. Its callers, each behind
-// its own explicit confirmation: `jit vault delete` and `jit uninstall
-// --purge` (with a fresh presence check, the second only after the vault
-// directory itself is gone); a move into the Secure Enclave, and the
-// removal of a copy it left, only once the enclave copy has opened; and
-// `jit vault init` deleting a key a deleted vault left behind, on a yes.
+// its own explicit confirmation, all CLI commands: `jit vault delete` and
+// `jit uninstall --purge` (through keystore's Delete, with a fresh presence
+// check, the second only after the vault directory itself is gone); and a
+// move into the Secure Enclave, and the removal of a copy it left (`jit
+// vault rekey --wrapper secure-enclave`, with or without --force), only once
+// the enclave copy has opened. `jit vault init` never deletes it.
 // Without the MEK, every envelope in the vault (and the encrypted
 // `_backups/` entries) is permanently undecryptable; passphrase-encrypted
 // `jit vault export` files are the only thing that survives it. Never
@@ -386,8 +387,8 @@ func (w *Wrapper) DeleteMEK() error {
 
 // deleteMEK removes the stored MEK for this Wrapper's service/account, and
 // is what DeleteMEK and the staged-key deletes run: all CLI commands (`jit
-// vault delete`, `jit uninstall --purge`, the vault key's move, rotation,
-// init), so it may take the reference fallback. It's a method (not a free
+// vault delete`, `jit uninstall --purge`, the vault key's move, rotation),
+// so it may take the CLI's reference fallback. It's a method (not a free
 // function keyed on the shared production constants) precisely so a test
 // can only ever delete the identifier its own Wrapper was built with. The
 // service's grant and job keys never come here (GrantKeys.Delete).
@@ -432,10 +433,11 @@ func DisallowKeychainUITesting() {
 // itemOps are the keychain calls deleteItem and setMEK sequence, so their
 // decisions can be tested against fakes (cOps is the real one).
 type itemOps interface {
-	presence() MEKPresence  // kw_mek_present: every keychain on the search list
-	secItemDelete() int32   // SecItemDelete, no dialog
-	deleteByRefNoUI() int32 // kw_item_delete_by_ref: switches the PROCESS's keychain UI off
-	deleteByRefAsIs() int32 // kw_item_delete_by_ref_no_switch: leaves the switch alone
+	presence() MEKPresence                      // kw_mek_present: every keychain on the search list
+	secItemDelete() int32                       // SecItemDelete, no dialog
+	deleteByRefNoUI() int32                     // kw_item_delete_by_ref: switches the PROCESS's keychain UI off
+	deleteByRefAsIs() int32                     // kw_item_delete_by_ref_no_switch: leaves the switch alone
+	defaultKeychainLock() (keychainLock, int32) // kw_default_keychain_lock_state: no UI
 	presenceInDefault() MEKPresence
 	add(mek []byte) error // kw_add_mek
 }
@@ -452,16 +454,40 @@ const (
 	noRefFallback refFallback = iota
 	// cliRefFallback: kw_item_delete_by_ref, which switches keychain UI off
 	// for the whole PROCESS while it runs (kwWithoutUI). Only a CLI command
-	// asks for it: the vault key's move, rotation, `jit vault delete`,
-	// init.
+	// asks for it (deleteMEK, setMEK): the vault key's move, rotation, `jit
+	// vault delete`, `jit uninstall --purge`.
 	cliRefFallback
 	// serviceRefFallback: kw_item_delete_by_ref_no_switch, the same lookup
 	// and delete with the process's switch left as it is: the service's
 	// grant and job key deletes (GrantKeys.Delete), where flipping it would
 	// reach every other request in flight. The delete needs no UI on these
-	// items (keychain.m, kwDeleteRefsIn, has the measurements).
+	// items (keychain.m, kwDeleteRefsIn, has the measurements), and it is
+	// never tried on a LOCKED default keychain, where that was not measured
+	// with interaction on (deleteItem checks the lock first).
 	serviceRefFallback
 )
+
+// keychainLock is the default keychain's lock state, as the service's
+// reference delete checks it first.
+type keychainLock int
+
+const (
+	lockUnknown  keychainLock = iota // SecKeychainGetStatus (or finding the keychain) failed
+	lockUnlocked                     // unlocked
+	lockLocked                       // locked
+)
+
+// lockFromState reads kw_default_keychain_lock_state: 1 unlocked, 0 locked,
+// anything else the OSStatus that stopped the check.
+func lockFromState(st int32) (keychainLock, int32) {
+	switch st {
+	case 1:
+		return lockUnlocked, 0
+	case 0:
+		return lockLocked, 0
+	}
+	return lockUnknown, st
+}
 
 // deleteOpts is what a caller of deleteItem asks for.
 type deleteOpts struct {
@@ -505,6 +531,18 @@ func deleteItem(ops itemOps, o deleteOpts) (unconfirmed bool, err error) {
 	}
 	var ref int32
 	if o.fallback == serviceRefFallback {
+		// The service's form runs with keychain interaction as the service
+		// has it (on), and a delete on a LOCKED keychain was never measured
+		// with interaction on: it might ask to unlock. So it is not tried
+		// on one. The grant or job record is already gone, so nothing uses
+		// the key, and the start-up cleanup tries it again the next time
+		// the service starts (the key note says so).
+		switch lock, st := ops.defaultKeychainLock(); lock {
+		case lockLocked:
+			return false, fmt.Errorf("your keychain is locked: %s, OSStatus=%d", o.verb, status)
+		case lockUnknown:
+			return false, fmt.Errorf("couldn't check whether your keychain is locked (OSStatus=%d): %s, OSStatus=%d", st, o.verb, status)
+		}
 		ref = ops.deleteByRefAsIs()
 	} else {
 		ref = ops.deleteByRefNoUI()
@@ -546,6 +584,10 @@ func (o cOps) deleteByRefAsIs() int32 {
 	defer C.free(unsafe.Pointer(cService))
 	defer C.free(unsafe.Pointer(cAccount))
 	return int32(C.kw_item_delete_by_ref_no_switch(cService, cAccount))
+}
+
+func (o cOps) defaultKeychainLock() (keychainLock, int32) {
+	return lockFromState(int32(C.kw_default_keychain_lock_state()))
 }
 
 func (o cOps) presence() MEKPresence { return o.w.MEKPresence() }
@@ -622,6 +664,9 @@ const (
 	// probeDeleteByRef is the delete by reference (kwDeleteRefsIn), not a
 	// query of its own: KW_Q_REF's lookup, then SecKeychainItemDelete.
 	probeDeleteByRef = int(C.KW_Q_REF)
+	// probeLockState is the service's lock check before its reference
+	// delete (kwKeychainLockState) on that keychain: 1 unlocked, 0 locked.
+	probeLockState = int(C.KW_PROBE_LOCK_STATE)
 )
 
 func probeInKeychain(path, service, account string, which int, withoutUI bool) int32 {
