@@ -557,3 +557,101 @@ func TestMoveGrantKeysKeepsEveryOldKeyWhenTheLedgerWillNotSave(t *testing.T) {
 		}
 	}
 }
+
+// unreadWorld writes a ledger with one grant, g-00000001: a keychain entry
+// sealed for real when known is set, and an entry in a wrap this build
+// cannot read (a newer jit's), which C1 keeps verbatim.
+func unreadWorld(t *testing.T, store *memMover, known bool) (*Server, string) {
+	t.Helper()
+	g := ledgerGrant{ID: "g-00000001", CreatedUnix: 1, Profiles: []GrantProfile{}}
+	g.Anchor.ExecPath, g.Anchor.Name, g.Program.Name = "/Applications/Claude.app", "Claude", "node"
+	if known {
+		k, err := store.CreateWrap("g-00000001", GrantWrapKeychain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sealed, err := k.Seal(bytes.Repeat([]byte{0x2a}, 32), "env")
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.Secrets = append(g.Secrets, ledgerSecret{Path: "a/known", Class: "env", DeviceDigest: "d1", GrantWrapped: hex.EncodeToString(sealed), Wrap: GrantWrapKeychain})
+	}
+	g.Secrets = append(g.Secrets, ledgerSecret{Path: "a/future", Class: "env", DeviceDigest: "d2", GrantWrapped: "0badf00d", Wrap: "future-v9"})
+	ledger := filepath.Join(t.TempDir(), "grants.json")
+	data, _ := json.Marshal(ledgerFile{Version: ledgerVersion, Grants: []ledgerGrant{g}})
+	if err := os.WriteFile(ledger, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{GrantKeys: store}
+	if _, err := s.SetGrantLedger(ledger); err != nil {
+		t.Fatal(err)
+	}
+	return s, ledger
+}
+
+// A grant that moves its readable entries keeps its old key too while an
+// unreadable entry remains: that entry may be sealed for it.
+func TestMoveKeepsTheOldKeyWhileAnUnreadEntryRemains(t *testing.T) {
+	store := newMemMover()
+	s, ledger := unreadWorld(t, store, true)
+	store.target = GrantWrapEnclave
+	if moved, errs := s.MoveGrantKeys(); moved != 1 || len(errs) != 0 {
+		t.Fatalf("moved %d, errs %v", moved, errs)
+	}
+	raw, _ := os.ReadFile(ledger)
+	if !bytes.Contains(raw, []byte(`"future-v9"`)) {
+		t.Fatal("the unread entry was dropped from the ledger")
+	}
+	if !store.has(GrantWrapKeychain, "g-00000001") {
+		t.Fatal("the move deleted the keychain key an unread entry may be sealed for")
+	}
+}
+
+// A grant whose unread entries are the only thing naming a key of the other
+// kind: already "on the target" by its readable entries (it has none), it
+// must still keep that key.
+func TestMoveKeepsAKeyOnlyUnreadEntriesName(t *testing.T) {
+	store := newMemMover()
+	for _, w := range []string{GrantWrapKeychain, GrantWrapEnclave} {
+		if _, err := store.CreateWrap("g-00000001", w); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, _ := unreadWorld(t, store, false)
+	store.target = GrantWrapKeychain
+	if _, errs := s.MoveGrantKeys(); len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	if !store.has(GrantWrapEnclave, "g-00000001") {
+		t.Fatal("the enclave key only an unread entry names was deleted")
+	}
+}
+
+// A job sealed, in part, in a wrap this build cannot read is left alone:
+// no attempt to re-seal it (which could only fail, every start), and every
+// kind of key kept.
+func TestMoveLeavesAJobItCannotReadAlone(t *testing.T) {
+	store := newMemMover()
+	for _, w := range []string{GrantWrapKeychain, GrantWrapEnclave} {
+		if _, err := store.CreateWrap("j-1", w); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "jobs.json")
+	j := &job.Job{Name: "notion-guests", Dir: "/tmp", Argv: []string{"x"}, Exe: "/bin/x", Ask: job.AskNever, KeyID: "j-1",
+		Secrets: []job.Secret{{Var: "TOKEN", Path: "notion/token", Class: "env", DeviceDigest: "dd", KeyWrapped: "0badf00d", Wrap: "future-v9"}}}
+	if err := job.Save(path, map[string]*job.Job{j.Name: j}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{GrantKeys: store}
+	if _, err := s.SetJobStore(path); err != nil {
+		t.Fatal(err)
+	}
+	store.target = GrantWrapKeychain
+	if moved, errs := s.MoveGrantKeys(); moved != 0 || len(errs) != 0 {
+		t.Fatalf("moved %d, errs %v; want the job left alone", moved, errs)
+	}
+	if !store.has(GrantWrapEnclave, "j-1") || !store.has(GrantWrapKeychain, "j-1") {
+		t.Fatal("a key of a job this build cannot read was deleted")
+	}
+}
