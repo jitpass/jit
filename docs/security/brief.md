@@ -78,6 +78,13 @@ account safe.
   commands bypass the session entirely and require a fresh Touch ID/passcode
   every time, so an unlocked session can't be used to read or destroy the
   vault silently.
+- **AI jobs.** For an AI tool, the service runs a command the human approved
+  and returns its output with every secret value hidden; the tool never
+  holds a key. The approval pins the executable, the command line, the
+  secrets and a fingerprint of the job's folder, re-checked on every run; any
+  change stops the job until the human approves it again. Claude Desktop and
+  Cursor reach jobs through `jit mcp`, a plain socket client that can run and
+  propose jobs but never approve one.
 
 ## The machine-global invariant
 
@@ -137,6 +144,11 @@ session, not the scope. A cloned repo's config, or a script that slips a
   grant serves real content only to the authorized run's tree, checked per
   read and fail-closed. Winning an identity race yields at most what the grant
   already authorized, never more.
+- **An AI job trusts the command it runs.** Its command holds the real
+  value; the fingerprint guarantees the code that runs is the code approved,
+  not that it is honest. Programs it calls from `PATH` are trusted as
+  installed, and a change landing between the last check and an import is
+  caught by the re-check after the run, not before it.
 - **Git history is never rewritten.** A committed secret still lives in
   `git log -p`; the fix is rotation, which jit cannot do for you.
 - **Local machine only.** Once a secret reaches a cluster or a CI store, jit
