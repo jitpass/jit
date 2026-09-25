@@ -61,10 +61,64 @@ type GrantKey interface {
 // must never prompt; Delete must be idempotent. The CLI wires the keychain
 // and the Secure Enclave behind one store (cli's grantKeyStore); tests wire
 // memory.
+//
+// A Delete that removed what it could reach but could not reach where a key
+// of the other kind may live (the Secure Enclave, from a jit without its
+// entitlement) returns an error that is ErrGrantKeyUnreachable, joined with
+// any real failure.
 type GrantKeyStore interface {
 	Create(id string) (GrantKey, error)
 	Load(id string) (GrantKey, error)
 	Delete(id string) error
+}
+
+// ErrGrantKeyUnreachable is a GrantKeyStore's Delete saying it could not
+// reach the Secure Enclave, so a key there, if any, is still there. It is
+// not a failure of the revoke or the remove: the record is gone, so nothing
+// can use that key, and the start-up cleanup (grantorphans.go) deletes it
+// once a jit that can reach the enclave runs the service, because nothing
+// names it any more. But no one may be told it was deleted.
+var ErrGrantKeyUnreachable = errors.New("the Secure Enclave could not be reached from this copy of jit")
+
+// keyKeptNote is what a revoke or a remove says, instead of claiming a
+// delete, when the key its entries are sealed for is in an enclave this
+// copy of jit cannot reach.
+const keyKeptNote = "Its Secure Enclave key couldn't be reached from this copy of jit; JitPass's service deletes it the next time it starts."
+
+// deleteKeyOf deletes a grant's or job's key after its record is gone, and
+// says what happened. note is keyKeptNote when the store could not reach
+// the enclave and the record's entries may be sealed for a key there
+// (mayBeEnclave: an enclave entry, or one this build cannot read); a record
+// sealed only for the keychain had that key deleted, and whatever leftover
+// the enclave may hold goes at the next start's cleanup. err is any other
+// failure.
+func (s *Server) deleteKeyOf(id string, mayBeEnclave bool) (note string, err error) {
+	err = s.GrantKeys.Delete(id)
+	if errors.Is(err, ErrGrantKeyUnreachable) {
+		err = withoutUnreachable(err)
+		if mayBeEnclave {
+			note = keyKeptNote
+		}
+	}
+	return note, err
+}
+
+// withoutUnreachable is err with every ErrGrantKeyUnreachable taken out of
+// an errors.Join (the store's shape): nil if that was all it said.
+func withoutUnreachable(err error) error {
+	if j, ok := err.(interface{ Unwrap() []error }); ok {
+		var rest []error
+		for _, e := range j.Unwrap() {
+			if e = withoutUnreachable(e); e != nil {
+				rest = append(rest, e)
+			}
+		}
+		return errors.Join(rest...)
+	}
+	if errors.Is(err, ErrGrantKeyUnreachable) {
+		return nil
+	}
+	return err
 }
 
 // standingWrapAEAD names the wrap the ledger carries today: AES-256-GCM
@@ -726,16 +780,25 @@ func (s *Server) standingStatuses() []GrantStatus {
 // ledger's copies are garbage before the record goes), then the record,
 // then the ledger is rewritten. Idempotent on a missing id. No challenge,
 // as with every revoke: reducing access is free.
-func (s *Server) revokeStanding(id string, c *caller) bool {
+//
+// keyNote is keyKeptNote when the key could not be deleted from here (the
+// grant's entries are sealed for a Secure Enclave this jit cannot reach):
+// the grant is revoked all the same, and the caller must not be told the key
+// went with it.
+func (s *Server) revokeStanding(id string, c *caller) (revoked bool, keyNote string) {
 	s.grantMu.Lock()
 	g := s.standing[id]
 	if g == nil {
 		s.grantMu.Unlock()
-		return false
+		return false, ""
 	}
 	delete(s.standing, id)
 	paths := g.secretPaths()
 	name := g.name
+	mayBeEnclave := len(g.unread) > 0
+	for _, sec := range g.secrets {
+		mayBeEnclave = mayBeEnclave || sec.wrap == standingWrapEnclave
+	}
 	s.grantMu.Unlock()
 
 	g.keyMu.Lock()
@@ -745,15 +808,19 @@ func (s *Server) revokeStanding(id string, c *caller) bool {
 	}
 	g.keyMu.Unlock()
 	if s.GrantKeys != nil {
-		_ = s.GrantKeys.Delete(id)
+		keyNote, _ = s.deleteKeyOf(id, mayBeEnclave)
 	}
 	_ = s.saveLedger()
 
+	cause := fmt.Sprintf("%s's grant %s", name, grantEndRevoked)
+	if keyNote != "" {
+		cause += ". " + keyNote
+	}
 	event := SessionEvent{
 		UnixTime: time.Now().Unix(),
 		Kind:     KindGrantEnd,
 		Op:       id,
-		Cause:    fmt.Sprintf("%s's grant %s", name, grantEndRevoked),
+		Cause:    cause,
 		Labels:   paths,
 	}
 	if c != nil {
@@ -767,7 +834,7 @@ func (s *Server) revokeStanding(id string, c *caller) bool {
 	if s.OnSessionEvent != nil {
 		s.OnSessionEvent(event)
 	}
-	return true
+	return true, keyNote
 }
 
 // closeStanding releases every cached grant key. Called from Server.Close;

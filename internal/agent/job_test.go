@@ -287,7 +287,7 @@ func TestJobRemoveIsFreeAndFinal(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := r.prompts()
-	if err := r.c.JobRemove("notion-guests"); err != nil {
+	if _, err := r.c.JobRemove("notion-guests"); err != nil {
 		t.Fatal(err)
 	}
 	if r.prompts() != before {
@@ -392,7 +392,7 @@ func TestNeverJobRunsUnaskedAndItsKeyDiesWithIt(t *testing.T) {
 	if !bytes.Equal(got, jobDEK) {
 		t.Fatal("an unasked run got the wrong key")
 	}
-	if err := r.c.JobRemove("notion-guests"); err != nil {
+	if _, err := r.c.JobRemove("notion-guests"); err != nil {
 		t.Fatal(err)
 	}
 	if r.keys.has(keyID) {

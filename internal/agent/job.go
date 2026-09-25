@@ -474,19 +474,30 @@ func (s *Server) removeJob(name string, c *caller) Response {
 	if err != nil {
 		return Response{OK: false, Error: "job_remove: " + err.Error()}
 	}
-	cause := "removed"
+	cause, keyNote := "removed", ""
 	if j.KeyID != "" && s.GrantKeys != nil {
 		// Removing is what ends a job that never asks, so the key goes with
 		// it. A delete that fails is said in the trail: the record is already
 		// gone, so nothing can use the key, but it is not destroyed either.
-		if err := s.GrantKeys.Delete(j.KeyID); err != nil {
+		// Nor is one in an enclave this jit cannot reach, and the trail and
+		// the caller say that rather than "deleted".
+		mayBeEnclave := false
+		for _, sec := range j.Secrets {
+			mayBeEnclave = mayBeEnclave || sec.Wrap == GrantWrapEnclave || !knownWrap(sec.Wrap)
+		}
+		note, err := s.deleteKeyOf(j.KeyID, mayBeEnclave)
+		switch {
+		case err != nil:
 			cause = fmt.Sprintf("removed, but its key %s could not be deleted: %s", j.KeyID, err)
-		} else {
+		case note != "":
+			cause = "removed. " + note
+			keyNote = note
+		default:
 			cause = "removed, its key deleted"
 		}
 	}
 	s.recordJobEvent(KindUse, OpJobRemove, c, j, cause)
-	return Response{OK: true}
+	return Response{OK: true, KeyNote: keyNote}
 }
 
 func (s *Server) listJobs(namesOnly bool) []JobStatus {
