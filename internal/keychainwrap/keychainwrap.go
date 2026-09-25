@@ -373,7 +373,20 @@ func (w *Wrapper) deleteMEK() error {
 	defer C.free(unsafe.Pointer(cService))
 	cAccount := C.CString(w.account)
 	defer C.free(unsafe.Pointer(cAccount))
-	return goErr(C.kw_delete_mek(cService, cAccount))
+	return goErr(C.kw_delete_mek(cService, cAccount, 1))
+}
+
+// deleteMEKWithoutFallback is deleteMEK with only SecItemDelete, never the
+// legacy reference delete (keychain.m, kwDeleteItems). It exists for one
+// caller: the hardware test that shows an older jit's item still needs the
+// fallback, so the fallback is never kept after the reason for it is gone,
+// or dropped while it still matters.
+func (w *Wrapper) deleteMEKWithoutFallback() error {
+	cService := C.CString(w.service)
+	defer C.free(unsafe.Pointer(cService))
+	cAccount := C.CString(w.account)
+	defer C.free(unsafe.Pointer(cAccount))
+	return goErr(C.kw_delete_mek(cService, cAccount, 0))
 }
 
 func realChallenge(reason string) error {

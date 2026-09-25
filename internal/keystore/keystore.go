@@ -127,6 +127,14 @@ func Keychain() *keychainwrap.Wrapper {
 	return keychainwrap.New()
 }
 
+// KeychainCopy reports, without a prompt, whether the login keychain holds
+// the vault key item, whichever backend the vault uses. For an enclave vault
+// that item is a copy a move into the Secure Enclave could not delete: never
+// read (Open follows the sealed file), but still a readable key, so `jit
+// status` and `jit doctor` report it (internal/cli, keychain_copy_left and
+// vault_key_copy). Metadata only (keychainwrap.MEKPresence).
+func KeychainCopy() Presence { return keychainStore{}.Presence() }
+
 type keychainStore struct{}
 
 func (keychainStore) Kind() Kind { return KindKeychain }
@@ -219,4 +227,14 @@ func (s enclaveStore) Init() error {
 	return errors.New("could not check this vault's Secure Enclave key")
 }
 
-func (s enclaveStore) Delete() error { return newEnclaveWrapper(s.root).Delete() }
+// Delete destroys the enclave key, and a keychain copy of the same key if a
+// move into the enclave left one: after `jit vault delete`, a copy left
+// behind would be picked up as the NEW vault's key by the next `jit vault
+// init` (kw_ensure_mek keeps an item it finds), quietly reviving the old key.
+func (s enclaveStore) Delete() error {
+	return errors.Join(newEnclaveWrapper(s.root).Delete(), deleteKeychainCopy())
+}
+
+// deleteKeychainCopy removes the keychain item under the vault key's name; a
+// missing item is done. A var so no test reaches the production keychain.
+var deleteKeychainCopy = func() error { return keychainStore{}.Delete() }

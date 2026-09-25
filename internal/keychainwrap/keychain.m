@@ -216,17 +216,70 @@ int kw_mek_present(const char *service, const char *account) {
     }
 }
 
-KWResult kw_delete_mek(const char *service, const char *account) {
+// kwDeleteItems removes every generic-password item under service/account
+// and returns SecItemDelete's status, or the legacy fallback's.
+//
+// The fallback exists for one measured case (spike/secure-enclave-mek/
+// FINDINGS.md, S3g). In the file-based login keychain, SecItemDelete answers
+// errSecInvalidOwnerEdit (-25244) to any process that is not the executable,
+// at the same PATH, that created the item: the JitPass Agent helper could
+// read the vault key an older jit had made (same identifier, same team),
+// yet could not delete it, and the move into the Secure Enclave stopped one
+// step from done. The same binary copied to another path fails the same way,
+// so it follows every vault whose jit was installed somewhere else since.
+// SecKeychainItemDelete on the item's reference removes it with no dialog
+// (measured with user interaction disallowed, so a dialog would have failed
+// the call instead), so on that one status this finds the references and
+// deletes each. It is the legacy API, deprecated since macOS 10.10 and still
+// the one that works on a legacy-keychain item; it is used for nothing else.
+//
+// legacyFallback is 0 only for the hardware test that proves the fallback is
+// still needed (keychainwrap's TestHardwareDeleteAnOldJitsItem).
+static OSStatus kwDeleteItems(NSString *svc, NSString *acct, int legacyFallback) {
+    NSDictionary *query = @{
+        (id)kSecClass: (id)kSecClassGenericPassword,
+        (id)kSecAttrService: svc,
+        (id)kSecAttrAccount: acct,
+    };
+    OSStatus status = SecItemDelete((__bridge CFDictionaryRef)query);
+    if (status != errSecInvalidOwnerEdit || !legacyFallback) {
+        return status;
+    }
+    NSMutableDictionary *refQuery = [query mutableCopy];
+    refQuery[(id)kSecReturnRef] = @YES;
+    refQuery[(id)kSecMatchLimit] = (id)kSecMatchLimitAll;
+    CFTypeRef result = NULL;
+    OSStatus findStatus = SecItemCopyMatching((__bridge CFDictionaryRef)refQuery, &result);
+    if (findStatus != errSecSuccess || !result) {
+        return findStatus == errSecItemNotFound ? errSecItemNotFound : status;
+    }
+    NSArray *refs = (__bridge_transfer NSArray *)result;
+    if (![refs isKindOfClass:[NSArray class]]) {
+        return status;
+    }
+    OSStatus out = errSecSuccess;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    for (id ref in refs) {
+        if (CFGetTypeID((__bridge CFTypeRef)ref) != SecKeychainItemGetTypeID()) {
+            out = status;
+            continue;
+        }
+        OSStatus d = SecKeychainItemDelete((__bridge SecKeychainItemRef)ref);
+        if (d != errSecSuccess && d != errSecItemNotFound) {
+            out = d;
+        }
+    }
+#pragma clang diagnostic pop
+    return out;
+}
+
+KWResult kw_delete_mek(const char *service, const char *account, int legacy_fallback) {
     KWResult r = {0, NULL};
     @autoreleasepool {
         NSString *svc = [NSString stringWithUTF8String:service];
         NSString *acct = [NSString stringWithUTF8String:account];
-        NSDictionary *query = @{
-            (id)kSecClass: (id)kSecClassGenericPassword,
-            (id)kSecAttrService: svc,
-            (id)kSecAttrAccount: acct,
-        };
-        OSStatus status = SecItemDelete((__bridge CFDictionaryRef)query);
+        OSStatus status = kwDeleteItems(svc, acct, legacy_fallback);
         if (status != errSecSuccess && status != errSecItemNotFound) {
             r.error_message = dupNSString([NSString stringWithFormat:@"delete failed, OSStatus=%d", (int)status]);
             return r;
@@ -243,16 +296,13 @@ KWResult kw_set_mek(const char *service, const char *account, const unsigned cha
         NSString *acct = [NSString stringWithUTF8String:account];
         NSData *keyData = [NSData dataWithBytes:key length:(NSUInteger)key_len];
 
-        NSDictionary *query = @{
-            (id)kSecClass: (id)kSecClassGenericPassword,
-            (id)kSecAttrService: svc,
-            (id)kSecAttrAccount: acct,
-        };
         // Replace-then-add, not SecItemUpdate: identical outcome for the
         // promote step either way, and this reuses the exact add-shape
         // kw_ensure_mek already uses (same accessibility attribute, same
         // plain-item posture) rather than a second code path to keep in sync.
-        OSStatus delStatus = SecItemDelete((__bridge CFDictionaryRef)query);
+        // The delete takes kwDeleteItems' fallback: the item being replaced
+        // may be one an older jit, at another path, created (S3g).
+        OSStatus delStatus = kwDeleteItems(svc, acct, 1);
         if (delStatus != errSecSuccess && delStatus != errSecItemNotFound) {
             r.error_message = dupNSString([NSString stringWithFormat:@"replacing existing key failed, OSStatus=%d", (int)delStatus]);
             return r;

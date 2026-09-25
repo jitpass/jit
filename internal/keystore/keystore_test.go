@@ -25,6 +25,15 @@ var _ agent.ClosableFetcher = Fetcher(nil)
 // no test may (its package comment has the incident). Construction is safe:
 // keychainwrap.New touches nothing until used.
 
+// TestMain disarms deleteKeychainCopy for the whole package before any test
+// runs: enclaveStore.Delete calls it, and the real one deletes the
+// production vault key item. A test that wants it counts calls through
+// withFakeEnclave.
+func TestMain(m *testing.M) {
+	deleteKeychainCopy = func() error { panic("a keystore test reached the production keychain item") }
+	os.Exit(m.Run())
+}
+
 func TestOpenWithoutASealedFileIsTheKeychain(t *testing.T) {
 	if k := Open(t.TempDir()).Kind(); k != KindKeychain {
 		t.Fatalf("Open chose %q for a vault with no sealed key file, want %q", k, KindKeychain)
@@ -68,6 +77,9 @@ type fakeEnclave struct {
 	deleted  *int
 }
 
+// kcCopyDeletes counts deleteKeychainCopy calls under withFakeEnclave.
+var kcCopyDeletes int
+
 func (f fakeEnclave) Presence() secureenclave.Presence { return f.presence }
 func (f fakeEnclave) Delete() error                    { *f.deleted++; return nil }
 
@@ -76,7 +88,10 @@ func withFakeEnclave(t *testing.T, p secureenclave.Presence) *int {
 	deleted := new(int)
 	orig := newEnclaveWrapper
 	newEnclaveWrapper = func(string) enclaveWrapper { return fakeEnclave{presence: p, deleted: deleted} }
-	t.Cleanup(func() { newEnclaveWrapper = orig })
+	origCopy := deleteKeychainCopy
+	kcCopyDeletes = 0
+	deleteKeychainCopy = func() error { kcCopyDeletes++; return nil }
+	t.Cleanup(func() { newEnclaveWrapper, deleteKeychainCopy = orig, origCopy })
 	return deleted
 }
 
@@ -166,6 +181,19 @@ func TestEnclaveDeleteDeletesTheEnclaveKey(t *testing.T) {
 	deleted := withFakeEnclave(t, secureenclave.Present)
 	if err := (enclaveStore{}).Delete(); err != nil || *deleted != 1 {
 		t.Fatalf("Delete: err=%v, enclave deletes=%d, want 1", err, *deleted)
+	}
+}
+
+// A keychain copy a move left behind is the same key; deleting the vault
+// must take it too, or the next `jit vault init` keeps it (kw_ensure_mek
+// reuses an item it finds) and the "new" vault runs on the old key.
+func TestEnclaveDeleteAlsoDeletesAKeychainCopy(t *testing.T) {
+	withFakeEnclave(t, secureenclave.Present)
+	if err := (enclaveStore{}).Delete(); err != nil {
+		t.Fatal(err)
+	}
+	if kcCopyDeletes != 1 {
+		t.Fatalf("keychain copy deletes = %d, want 1", kcCopyDeletes)
 	}
 }
 

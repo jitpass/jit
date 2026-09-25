@@ -31,6 +31,19 @@ import (
 // after the new one has been read back and compared. A crash anywhere
 // leaves the rekey marker, which makes every other vault command refuse,
 // and re-running the same command finishes the move.
+//
+// One step may not complete and still not block the vault: deleting the
+// keychain copy once the enclave copy is proven. An older jit's keychain item
+// once refused the delete (errSecInvalidOwnerEdit, S3g in
+// spike/secure-enclave-mek/FINDINGS.md; keychainwrap now removes it another
+// way). If a delete still fails, the move finishes anyway, because the vault
+// already opens from the enclave and keystore.Open never reads the keychain
+// for a vault with a sealed file. The copy left behind is not recorded
+// anywhere: `jit status` (keychain_copy_left) and `jit doctor`
+// (vault_key_copy) see it directly, an item under the vault key's name in an
+// enclave vault, so the report can't go stale and also catches a copy that
+// got there some other way. `jit vault rekey --wrapper secure-enclave` on an
+// enclave vault with such a copy removes it (removeKeychainCopy).
 
 // moveMarkerPrefix marks rekey.inprogress as a MOVE, not a rotation: the
 // two share the marker (so every command refuses mid-move the way it does
@@ -169,6 +182,7 @@ const (
 	reasonMoveIn    = "move the vault key into the Secure Enclave"
 	reasonMoveCheck = "check the vault key in the Secure Enclave"
 	reasonMoveBack  = "move the vault key back to the keychain"
+	reasonCopyGone  = "remove the old copy of the vault key from your keychain"
 
 	reasonVaultDelete = "permanently destroy the entire vault and its encryption key"
 	reasonRekey       = "rotate the vault's master encryption key"
@@ -185,6 +199,7 @@ type keyMover struct {
 	kcFetch   func(reason string) ([]byte, error) // the keychain's own Touch ID
 	kcInstall func(mek []byte) error              // writes and reads back; no prompt
 	kcDelete  func() error
+	kcMatches func(mek []byte) (bool, error) // reads with no prompt; returns no bytes
 
 	seInstallStaged func(mek []byte) error              // seals; never prompts
 	seOpenStaged    func(reason string) ([]byte, error) // the enclave's dialog
@@ -256,6 +271,9 @@ func (m *keyMover) finish() error {
 func (m *keyMover) toEnclave() error {
 	resumed := moveInProgress(m.root) == wrapperSecureEnclave
 	if !resumed && m.sealedExists() {
+		if m.kcPresent() == keystore.Present {
+			return m.removeKeychainCopy()
+		}
 		fmt.Fprintln(m.out, "The vault key is already in the Secure Enclave. Nothing to do.")
 		return nil
 	}
@@ -303,10 +321,12 @@ func (m *keyMover) toEnclave() error {
 		}
 	}
 
+	// From here the vault opens from the enclave (keystore.Open follows the
+	// sealed file), so a keychain copy that won't go must not keep the
+	// vault refusing changes: the move finishes, and says so.
+	var copyErr error
 	if m.kcPresent() != keystore.Absent {
-		if err := m.kcDelete(); err != nil {
-			return fmt.Errorf("the key is in the Secure Enclave, but its old keychain copy could not be deleted: %w (re-run to finish)", err)
-		}
+		copyErr = m.kcDelete()
 	}
 	if err := m.step("keychain deleted"); err != nil {
 		return err
@@ -315,6 +335,47 @@ func (m *keyMover) toEnclave() error {
 		return err
 	}
 	fmt.Fprintln(m.out, "Moved the vault key into the Secure Enclave. Every secret opens as before.")
+	if copyErr != nil {
+		fmt.Fprintln(m.out, hlCmds(copyLeftWarning(copyErr)))
+	}
+	return nil
+}
+
+// copyLeftWarning is what the move, and the removal, print when the old
+// keychain copy would not go. The Keychain Access step is there for the day
+// no API removes it: then a person can.
+func copyLeftWarning(err error) string {
+	return fmt.Sprintf("An old copy of the vault key is still in your keychain; jit couldn't delete it (%v). "+
+		"Run `jit vault rekey --wrapper secure-enclave` to try again, or delete %q in Keychain Access.", err, keychainItemName)
+}
+
+// keychainItemName is the vault key item's name as Keychain Access lists it.
+const keychainItemName = "com.jitpass.vault.mek"
+
+// removeKeychainCopy deletes a keychain copy of the vault key from a vault
+// whose key is already in the Secure Enclave: what a move whose last delete
+// failed leaves behind. One dialog, the enclave's: the copy goes only once
+// the enclave copy has opened in this run and the keychain copy has been
+// read and found to be the same key, so it can never delete the only key
+// that works. A keychain item that holds a different key is left alone.
+// Changes nothing about where the vault opens from, so no marker.
+func (m *keyMover) removeKeychainCopy() error {
+	mek, err := m.seOpen(reasonCopyGone)
+	if err != nil {
+		return fmt.Errorf("opening the vault key in the Secure Enclave: %w (nothing changed)", err)
+	}
+	defer wipeBytes(mek)
+	same, err := m.kcMatches(mek)
+	if err != nil {
+		return fmt.Errorf("reading the keychain copy: %w (nothing changed)", err)
+	}
+	if !same {
+		return fmt.Errorf("the keychain item %q holds a different key from the one in the Secure Enclave, so jit left it alone; delete it in Keychain Access if you know it isn't needed", keychainItemName)
+	}
+	if err := m.kcDelete(); err != nil {
+		return errors.New(copyLeftWarning(err))
+	}
+	fmt.Fprintln(m.out, "Removed the old copy of the vault key from your keychain. The key is only in the Secure Enclave now.")
 	return nil
 }
 
@@ -407,25 +468,31 @@ func runVaultMove(cmd *cobra.Command, root, target string) error {
 		}
 	}
 	resuming := marker.kind == markerMove && marker.target == target
-	if target == wrapperSecureEnclave && !resuming {
+	m := runMover(root, out)
+	// Already in the enclave, with the keychain copy a move could not delete
+	// still there: this run removes that copy and moves nothing, so the
+	// recovery-file rule (which guards the move itself) does not apply.
+	copyOnly := target == wrapperSecureEnclave && !resuming && m.sealedExists() && m.kcPresent() == keystore.Present
+	if target == wrapperSecureEnclave && !resuming && !copyOnly {
 		if err := recoveryFileCurrent(root); err != nil {
 			return fmt.Errorf("jit vault rekey: %w", err)
 		}
 	}
 	if !vaultRekeyYes {
 		prompt := "Move the vault key into the Secure Enclave? After this it can't leave this Mac; your recovery file is how the secrets would. [y/N] "
-		if target == wrapperKeychain {
-			prompt = "Move the vault key back to the keychain? A program running as you could read it there again. [y/N] "
-		}
-		if resuming {
+		switch {
+		case resuming:
 			prompt = "A move of the vault key was interrupted. Finish it now? [y/N] "
+		case copyOnly:
+			prompt = "The vault key is in the Secure Enclave, and an old copy is still in your keychain. Remove that copy? [y/N] "
+		case target == wrapperKeychain:
+			prompt = "Move the vault key back to the keychain? A program running as you could read it there again. [y/N] "
 		}
 		if !confirmPrompt(cmd, prompt) {
 			fmt.Fprintln(out, "Aborted. Nothing was changed.")
 			return nil
 		}
 	}
-	m := newKeyMover(root, out)
 	var err error
 	if target == wrapperSecureEnclave {
 		err = m.toEnclave()
@@ -437,6 +504,10 @@ func runVaultMove(cmd *cobra.Command, root, target string) error {
 	}
 	return nil
 }
+
+// runMover is the mover runVaultMove drives: newKeyMover, a var so a test
+// runs the command against the in-memory keychain and enclave.
+var runMover = newKeyMover
 
 // newKeyMover wires the production operations: the vault's own keychain
 // item and enclave key.
@@ -471,6 +542,7 @@ func newKeyMoverWith(root string, out io.Writer, kc *keychainwrap.Wrapper, se, s
 		},
 		kcInstall:       kc.InstallMEK,
 		kcDelete:        kc.DeleteMEK,
+		kcMatches:       kc.MatchesMEK,
 		seInstallStaged: func(mek []byte) error { return seStaged().Install(mek) },
 		seOpenStaged: func(reason string) ([]byte, error) {
 			w := seStaged()

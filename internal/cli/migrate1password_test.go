@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/onepassword"
 	"github.com/jitpass/jit/internal/ui"
 	"github.com/jitpass/jit/internal/vault"
@@ -29,6 +30,9 @@ func TestMain(m *testing.M) {
 	}
 	doctorOpVerified = func() (string, error) { return "", errors.New("op pinned off in tests") }
 	doctorOpVersion = func(string) string { return "" }
+	// The production keychain's vault key item, for status's and doctor's
+	// keychain-copy check: never probed from a test.
+	keychainCopyPresence = func() keystore.Presence { return keystore.Absent }
 	os.Exit(m.Run())
 }
 

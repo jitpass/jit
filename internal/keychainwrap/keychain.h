@@ -29,9 +29,12 @@ KWResult kw_fetch_mek(const char *service, const char *account, unsigned char **
 // non-interactive run instead of skipping it to avoid a possible hang.
 int kw_mek_present(const char *service, const char *account);
 
-// kw_delete_mek removes the stored item. Used by tests for cleanup; not
-// expected to be part of normal CLI operation.
-KWResult kw_delete_mek(const char *service, const char *account);
+// kw_delete_mek removes the stored item: a vault's delete, the move into the
+// Secure Enclave, and tests' cleanup. With legacy_fallback set, an item
+// SecItemDelete refuses as another executable's (errSecInvalidOwnerEdit, an
+// older jit's item in the file-based login keychain) is removed through its
+// reference instead (keychain.m, kwDeleteItems). Only a hardware test passes 0.
+KWResult kw_delete_mek(const char *service, const char *account, int legacy_fallback);
 
 // kw_set_mek stores the GIVEN key bytes under service/account, replacing
 // any existing item — the promote step of `jit vault rekey`, which must

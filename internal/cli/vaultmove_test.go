@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,6 +34,8 @@ type moveWorld struct {
 	failStaged error // seOpenStaged
 	failOpen   error // seOpen
 	lie        bool  // seOpenStaged returns a different key
+	failDelete error // kcDelete: the keychain refuses, as an older jit's item once did
+	out        *bytes.Buffer
 }
 
 func newMoveWorld(t *testing.T) *moveWorld {
@@ -76,9 +79,10 @@ func (w *moveWorld) readSealed(path string) ([]byte, error) {
 }
 
 func (w *moveWorld) mover() *keyMover {
+	w.out = &bytes.Buffer{}
 	return &keyMover{
 		root: w.root,
-		out:  &bytes.Buffer{},
+		out:  w.out,
 		kcPresent: func() keystore.Presence {
 			if w.kc == nil {
 				return keystore.Absent
@@ -102,7 +106,19 @@ func (w *moveWorld) mover() *keyMover {
 			w.kc = append([]byte(nil), mek...)
 			return nil
 		},
-		kcDelete: func() error { w.kc = nil; return nil },
+		kcDelete: func() error {
+			if w.failDelete != nil {
+				return w.failDelete
+			}
+			w.kc = nil
+			return nil
+		},
+		kcMatches: func(mek []byte) (bool, error) {
+			if w.kc == nil {
+				return false, errors.New("fake keychain: no key")
+			}
+			return bytes.Equal(w.kc, mek), nil
+		},
 		seInstallStaged: func(mek []byte) error {
 			// Like secureenclave.Wrapper.Install: never seal over a file.
 			if exists(w.staged()) {
@@ -418,5 +434,198 @@ func TestVaultMoveRefusals(t *testing.T) {
 	}
 	if err := run("--wrapper", "keychain"); err == nil || !strings.Contains(err.Error(), "--wrapper secure-enclave") {
 		t.Errorf("the other direction over a move marker: %v", err)
+	}
+}
+
+// errOwnerEdit is what the keychain answered on the owner's Mac when the
+// helper deleted a key an older jit had made (S3g).
+var errOwnerEdit = errors.New("delete failed, OSStatus=-25244")
+
+// The fail-safe: once the enclave copy is proven and promoted, a keychain
+// copy that won't delete must not leave the vault refusing every change. The
+// move finishes, the vault is an enclave vault, and it says a copy is left.
+func TestMoveFinishesWhenTheKeychainCopyWontGo(t *testing.T) {
+	w := newMoveWorld(t)
+	w.startInKeychain()
+	w.failDelete = errOwnerEdit
+	if err := w.mover().toEnclave(); err != nil {
+		t.Fatalf("the move failed over a keychain copy that wouldn't delete: %v", err)
+	}
+	if rekeyInProgress(w.root) {
+		t.Fatal("the marker was left: every vault change would be refused")
+	}
+	if got, err := w.readSealed(w.real()); err != nil || !bytes.Equal(got, w.mek) {
+		t.Fatalf("the vault's sealed file does not open to the MEK: %v", err)
+	}
+	if !bytes.Equal(w.kc, w.mek) {
+		t.Fatal("the fake keychain copy changed")
+	}
+	out := w.out.String()
+	if !strings.Contains(out, "old copy of the vault key is still in your keychain") ||
+		!strings.Contains(out, "-25244") || !strings.Contains(out, "--wrapper secure-enclave") ||
+		!strings.Contains(out, `"com.jitpass.vault.mek" in Keychain Access`) {
+		t.Fatalf("output does not say a copy is left and how to remove it:\n%s", out)
+	}
+	if !keychainCopyLeftWith(t, w.root, keystore.Present) {
+		t.Fatal("status would not report the copy left behind")
+	}
+}
+
+// The owner's Mac on 2026-09-25: the marker says "move secure-enclave", the
+// sealed file is in place, the keychain copy is still there. Re-running the
+// move finishes it with no dialog at all: the enclave copy was verified
+// before the sealed file was renamed into place.
+func TestMoveResumedAtTheKeychainDelete(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		failDel   error
+		wantKCGon bool
+	}{
+		{"the delete works now", nil, true},
+		{"the delete still fails", errOwnerEdit, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newMoveWorld(t)
+			w.startInEnclave()
+			w.kc = append([]byte(nil), w.mek...)
+			if err := w.mover().writeMarker(wrapperSecureEnclave); err != nil {
+				t.Fatal(err)
+			}
+			w.failDelete = tc.failDel
+			if err := w.mover().toEnclave(); err != nil {
+				t.Fatalf("finishing the move: %v", err)
+			}
+			if len(w.prompts) != 0 {
+				t.Errorf("prompts = %q, want none", w.prompts)
+			}
+			if rekeyInProgress(w.root) {
+				t.Fatal("the marker survived")
+			}
+			if gone := w.kc == nil; gone != tc.wantKCGon {
+				t.Fatalf("keychain copy gone = %v, want %v", gone, tc.wantKCGon)
+			}
+		})
+	}
+}
+
+// `jit vault rekey --wrapper secure-enclave` on an enclave vault with a
+// keychain copy removes the copy, and only once the enclave has opened and
+// the copy has been found to be the same key.
+func TestRemoveKeychainCopy(t *testing.T) {
+	setup := func(t *testing.T) *moveWorld {
+		w := newMoveWorld(t)
+		w.startInEnclave()
+		w.kc = append([]byte(nil), w.mek...)
+		return w
+	}
+	t.Run("removed after one enclave dialog", func(t *testing.T) {
+		w := setup(t)
+		if err := w.mover().toEnclave(); err != nil {
+			t.Fatal(err)
+		}
+		if w.kc != nil {
+			t.Fatal("the keychain copy is still there")
+		}
+		if len(w.prompts) != 1 || w.prompts[0] != "enclave: "+reasonCopyGone {
+			t.Errorf("prompts = %q, want only the enclave's %q", w.prompts, reasonCopyGone)
+		}
+		w.assertInEnclave()
+	})
+	t.Run("enclave dialog canceled", func(t *testing.T) {
+		w := setup(t)
+		w.failOpen = errors.New("canceled")
+		if err := w.mover().toEnclave(); err == nil {
+			t.Fatal("removed the copy without opening the enclave")
+		}
+		if !bytes.Equal(w.kc, w.mek) {
+			t.Fatal("the copy went without the enclave's approval")
+		}
+	})
+	t.Run("a different key under the vault key's name", func(t *testing.T) {
+		w := setup(t)
+		w.kc = bytes.Repeat([]byte{7}, 32)
+		if err := w.mover().toEnclave(); err == nil || !strings.Contains(err.Error(), "different key") {
+			t.Fatalf("got %v, want a refusal naming a different key", err)
+		}
+		if !bytes.Equal(w.kc, bytes.Repeat([]byte{7}, 32)) {
+			t.Fatal("deleted a key that is not the vault's")
+		}
+	})
+	t.Run("the delete still fails", func(t *testing.T) {
+		w := setup(t)
+		w.failDelete = errOwnerEdit
+		err := w.mover().toEnclave()
+		if err == nil || !strings.Contains(err.Error(), "Keychain Access") {
+			t.Fatalf("got %v, want the Keychain Access fallback", err)
+		}
+	})
+	t.Run("no copy: nothing asked", func(t *testing.T) {
+		w := newMoveWorld(t)
+		w.startInEnclave()
+		if err := w.mover().toEnclave(); err != nil || len(w.prompts) != 0 {
+			t.Fatalf("err=%v prompts=%q", err, w.prompts)
+		}
+	})
+}
+
+// The recovery-file rule guards a move. Removing a copy moves nothing, so a
+// stale (here: missing) recovery file must not stand in its way.
+func TestVaultMoveRemovesACopyWithoutARecoveryFile(t *testing.T) {
+	withFixtureHome(t)
+	root := seedFixtureVault(t, "fixture/API_KEY")
+	stubKeyStores(t)
+	w := &moveWorld{t: t, root: root, mek: bytes.Repeat([]byte{3}, 32)}
+	w.startInEnclave()
+	w.kc = append([]byte(nil), w.mek...)
+	orig := runMover
+	runMover = func(string, io.Writer) *keyMover { return w.mover() }
+	vaultRekeyYes = true
+	t.Cleanup(func() { runMover = orig; vaultRekeyYes = false; vaultRekeyWrapper = "" })
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"vault", "rekey", "--wrapper", "secure-enclave"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("jit vault rekey --wrapper secure-enclave: %v", err)
+	}
+	if w.kc != nil {
+		t.Fatal("the keychain copy is still there")
+	}
+}
+
+// keychainCopyLeftWith runs status's check with the keychain answering p.
+func keychainCopyLeftWith(t *testing.T, root string, p keystore.Presence) bool {
+	t.Helper()
+	orig := keychainCopyPresence
+	keychainCopyPresence = func() keystore.Presence { return p }
+	t.Cleanup(func() { keychainCopyPresence = orig })
+	kind := keystore.KindKeychain
+	if exists(filepath.Join(root, vault.SealedKeyFile)) {
+		kind = keystore.KindSecureEnclave
+	}
+	return keychainCopyLeft(root, kind)
+}
+
+// Only a copy found counts, only in an enclave vault, and not while a move
+// holds both copies on purpose.
+func TestKeychainCopyLeft(t *testing.T) {
+	w := newMoveWorld(t)
+	if keychainCopyLeftWith(t, w.root, keystore.Present) {
+		t.Error("a keychain vault's own key reported as a copy")
+	}
+	w.startInEnclave()
+	if !keychainCopyLeftWith(t, w.root, keystore.Present) {
+		t.Error("an enclave vault's keychain copy not reported")
+	}
+	for _, p := range []keystore.Presence{keystore.Absent, keystore.Indeterminate} {
+		if keychainCopyLeftWith(t, w.root, p) {
+			t.Errorf("reported a copy when the keychain answered %v", p)
+		}
+	}
+	if err := w.mover().writeMarker(wrapperSecureEnclave); err != nil {
+		t.Fatal(err)
+	}
+	if keychainCopyLeftWith(t, w.root, keystore.Present) {
+		t.Error("reported a copy mid-move; move_unfinished says that")
 	}
 }
