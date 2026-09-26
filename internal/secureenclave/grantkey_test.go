@@ -213,9 +213,9 @@ func TestOpenFailureTellsTheStepApart(t *testing.T) {
 // never-ask job stops on (the default the caller must not invert).
 func TestNotNowIsOnlyALockOrAnUnentitledJit(t *testing.T) {
 	for err, want := range map[error]bool{
-		ErrLocked:                              true,
-		ErrUnavailable:                         true,
-		fmt.Errorf("grant key: %w", ErrLocked): true,
+		ErrLocked:                                       true,
+		ErrUnavailable:                                  true,
+		fmt.Errorf("grant key: %w", ErrLocked):          true,
 		classify(statusInteractionNotAllowed, "x"):      true,
 		classify(statusMissingEntitlement, "x"):         true,
 		ErrWrongKey:                                     false,
