@@ -16,18 +16,33 @@ import (
 // hang (2026-09-10). maxTokenScanLen caps the inspected prefix, so the cost is
 // flat regardless of value size.
 func TestMatchKnownTokenPatternBoundsLargeValues(t *testing.T) {
-	// The threshold is generous because -race and CI load inflate wall-clock
-	// by ~20x; it still separates cleanly, since the unbounded gauntlet took
-	// ~2.5 s per 4 MiB uninstrumented (tens of seconds under race), while the
-	// capped scan is flat at a few ms (~1-2 s under race).
+	// A fixed wall-clock limit flaked on loaded CI runners (5.1 s against a
+	// 5 s limit, 2026-09-26), since -race and load inflate every scan alike.
+	// So the test compares against itself on the same machine: a value of
+	// exactly the cap is the baseline, and a bounded scan of a far larger
+	// value costs about the same. The unbounded gauntlet grows with the
+	// value, 80x at 5 MiB against the 64 KiB cap, which no load hides.
+	baseline := fastestScan(strings.Repeat("a1B2_-", maxTokenScanLen/6+1)[:maxTokenScanLen])
 	for _, sz := range []int{1 << 20, 5 << 20} {
 		val := strings.Repeat("a1B2_-", sz/6+1)[:sz]
-		start := time.Now()
-		MatchKnownTokenPattern(val)
-		if el := time.Since(start); el > 5*time.Second {
-			t.Errorf("len=%d took %s; the token gauntlet is not bounded", sz, el)
+		if el := fastestScan(val); el > 8*baseline+50*time.Millisecond {
+			t.Errorf("len=%d took %s against %s at the cap; the token gauntlet is not bounded", sz, el, baseline)
 		}
 	}
+}
+
+// fastestScan is the best of three scans of val, so one pause on a busy
+// machine doesn't decide the comparison.
+func fastestScan(val string) time.Duration {
+	best := time.Duration(1<<63 - 1)
+	for range 3 {
+		start := time.Now()
+		MatchKnownTokenPattern(val)
+		if el := time.Since(start); el < best {
+			best = el
+		}
+	}
+	return best
 }
 
 // TestMatchKnownTokenPatternStillMatchesWithinBound confirms the cap did not
