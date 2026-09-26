@@ -10,8 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -52,7 +54,8 @@ type RewrapResult struct {
 	Kept []string
 }
 
-// Rewrap is RewrapAll, reporting the envelopes it kept.
+// Rewrap is RewrapAll, reporting the envelopes it kept: RewrapWith with no
+// hooks.
 //
 // The one exception to "an envelope neither key opens is a hard error":
 // an envelope PROVABLY sealed to a lost Secure Enclave key (lostkey.go):
@@ -68,8 +71,64 @@ type RewrapResult struct {
 // Anything short of proof stops the rotation, as it always has: an
 // envelope a record only presumes (an incomplete record, or one that is
 // missing or unreadable) may be sealed to the key this rotation is about
-// to destroy. The error says why jit could not prove it.
+// to destroy. The error says why jit could not prove it. Since the rewrap
+// plans every envelope before writing any, it stops before the first
+// write.
 func (v *Vault) Rewrap(oldKW, newKW KeyWrapper) (RewrapResult, error) {
+	return v.RewrapWith(oldKW, newKW, RewrapOptions{})
+}
+
+// WrapChange is one recipient's wrapped DEK before and after a rewrap. The
+// plan pass proved both wrap the same DEK: New unwraps, under the new key,
+// to the DEK Old unwrapped to under the old one.
+type WrapChange struct {
+	// File is the envelope's slash path relative to vault/ ("aws/key.enc").
+	File string
+	// Old and New are the wrapped DEK bytes, hex-decoded from the envelope
+	// (what WrappedDEK returns for the path).
+	Old, New []byte
+}
+
+// RewrapOptions are RewrapWith's hooks. Each is optional; an error from
+// any of them stops the rewrap right there, with nothing undone, exactly
+// as a crash at that point would (both keys still open every envelope).
+type RewrapOptions struct {
+	// BeforeWrite is called once, after every envelope has been read,
+	// rewrapped and verified in memory and before the first is written,
+	// with every change the writes will make (none for a run that finds
+	// everything current). It is where the rotation writes its digest map
+	// (internal/rekeymap): the new wrapped bytes are random, so they exist
+	// only once planned, and the old ones are gone once written.
+	BeforeWrite func(changes []WrapChange) error
+	// AfterWrite is called after each envelope is written, with how many
+	// have been so far: the crash hook's "written N".
+	AfterWrite func(written int) error
+	// AfterAll is called once every planned envelope is written and the
+	// vault has been checked to hold exactly what the plan left in it,
+	// with every recipient's wrapped DEK in the vault now (rekeymap.Prune's
+	// onDisk).
+	AfterAll func(onDisk [][]byte) error
+}
+
+// RewrapWith is Rewrap in two passes, with hooks between them.
+//
+// Pass 1 plans: it reads every envelope, rewraps each recipient's DEK under
+// newKW and verifies it, all in memory (each DEK wiped as soon as it is
+// verified; what is held is the new envelope bytes). It classifies every
+// envelope neither key opens as Rewrap does. Any error stops it with
+// nothing written, so an unproven lost-key copy stops the rotation before
+// any envelope changes.
+//
+// Pass 2 calls BeforeWrite, then writes each planned envelope, atomically,
+// after checking its bytes are still the ones planned from: a file changed
+// under the marker stops the rewrap, left as it is, both keys intact.
+// Envelopes found current, and kept lost-key copies, are never written.
+//
+// Last, it walks the vault again: every envelope file must be one it
+// planned, holding the bytes it wrote or left. A file that appeared,
+// changed or went during the rewrap stops it before the caller destroys
+// the old key, which would orphan an envelope sealed under it.
+func (v *Vault) RewrapWith(oldKW, newKW KeyWrapper, opts RewrapOptions) (RewrapResult, error) {
 	var r RewrapResult
 	lost, err := v.lostKeyCopies()
 	if err != nil {
@@ -79,32 +138,86 @@ func (v *Vault) Rewrap(oldKW, newKW KeyWrapper) (RewrapResult, error) {
 	if err != nil {
 		return r, err
 	}
+
+	plan := make([]plannedEnvelope, 0, len(files))
+	var changes []WrapChange
+	var current int
+	var kept []string
 	for _, file := range files {
-		changed, err := v.rewrapFile(file, oldKW, newKW)
+		p, fileChanges, err := v.planRewrap(file, oldKW, newKW)
 		if err != nil {
 			if errors.Is(err, errNoKeyOpens) && lost.any() {
 				if lost.matchFile(v.vaultDir(), file) == provenLost {
-					rel, relErr := filepath.Rel(v.vaultDir(), file)
-					if relErr != nil {
-						rel = file
-					}
-					r.Kept = append(r.Kept, filepath.ToSlash(rel))
+					kept = append(kept, p.rel)
+					plan = append(plan, p) // p.out is nil: left as it is
 					continue
 				}
 				return r, fmt.Errorf("%w; %s", err, lost.unproven())
 			}
 			return r, err
 		}
-		if changed {
-			r.Rewrapped++
-		} else {
-			r.Current++
+		if p.out == nil {
+			current++
+		}
+		plan = append(plan, p)
+		changes = append(changes, fileChanges...)
+	}
+	r.Current, r.Kept = current, kept
+
+	if opts.BeforeWrite != nil {
+		if err := opts.BeforeWrite(changes); err != nil {
+			return r, err
+		}
+	}
+	for _, p := range plan {
+		if p.out == nil {
+			continue
+		}
+		data, err := os.ReadFile(p.file) // #nosec G304 -- p.file comes from walking jit's own vault directory
+		if errors.Is(err, fs.ErrNotExist) {
+			return r, fmt.Errorf("%s went while the key was being rotated", p.rel)
+		}
+		if err != nil {
+			return r, fmt.Errorf("reading %s again: %w", p.rel, err)
+		}
+		if digest(data) != p.from {
+			return r, fmt.Errorf("%s changed while the key was being rotated, so it was left as it is", p.rel)
+		}
+		if err := AtomicWriteFile(p.file, p.out); err != nil {
+			return r, err
+		}
+		r.Rewrapped++
+		if opts.AfterWrite != nil {
+			if err := opts.AfterWrite(r.Rewrapped); err != nil {
+				return r, err
+			}
+		}
+	}
+
+	onDisk, err := v.checkRewrapped(plan)
+	if err != nil {
+		return r, err
+	}
+	if opts.AfterAll != nil {
+		if err := opts.AfterAll(onDisk); err != nil {
+			return r, err
 		}
 	}
 	return r, nil
 }
 
-// errNoKeyOpens marks rewrapFile's "neither key opens this" failure, the
+// plannedEnvelope is one envelope file in RewrapWith's plan.
+type plannedEnvelope struct {
+	file, rel string
+	// from is the digest of the bytes the plan read; out the bytes to
+	// write, nil when the file is left as it is (current, or a kept
+	// lost-key copy); final the digest the file must hold at the end.
+	from  string
+	out   []byte
+	final string
+}
+
+// errNoKeyOpens marks planRewrap's "neither key opens this" failure, the
 // one Rewrap may turn into a kept lost-key copy.
 var errNoKeyOpens = errors.New("cannot decrypt with the current or the staged master key")
 
@@ -133,16 +246,30 @@ func (v *Vault) allEnvelopeFiles() ([]string, error) {
 	return files, nil
 }
 
-// rewrapFile rewraps one envelope file's recipient entries, reporting
-// whether anything changed (and was therefore rewritten).
-func (v *Vault) rewrapFile(file string, oldKW, newKW KeyWrapper) (changed bool, err error) {
+// relSlash is file's slash path relative to vault/, or file itself.
+func (v *Vault) relSlash(file string) string {
+	rel, err := filepath.Rel(v.vaultDir(), file)
+	if err != nil {
+		return file
+	}
+	return filepath.ToSlash(rel)
+}
+
+// planRewrap rewraps one envelope file's recipient entries in memory,
+// writing nothing. It returns the planned file (out nil when every entry is
+// already current) and one change per entry it rewrapped. On an
+// errNoKeyOpens failure the plan still names the file and the bytes read,
+// for a kept lost-key copy.
+func (v *Vault) planRewrap(file string, oldKW, newKW KeyWrapper) (plannedEnvelope, []WrapChange, error) {
+	p := plannedEnvelope{file: file, rel: v.relSlash(file)}
 	data, err := os.ReadFile(file) // #nosec G304 -- file comes from walking jit's own vault directory
 	if err != nil {
-		return false, fmt.Errorf("reading %s: %w", file, err)
+		return p, nil, fmt.Errorf("reading %s: %w", file, err)
 	}
+	p.from, p.final = digest(data), digest(data)
 	var env envelope
 	if err := json.Unmarshal(data, &env); err != nil {
-		return false, fmt.Errorf("parsing envelope %s: %w", file, err)
+		return p, nil, fmt.Errorf("parsing envelope %s: %w", file, err)
 	}
 	// An envelope with no recipient entries would fall straight through
 	// the loop below and count as "current" — a silent skip of a file
@@ -150,7 +277,7 @@ func (v *Vault) rewrapFile(file string, oldKW, newKW KeyWrapper) (changed bool, 
 	// can never happen. Fail loudly instead, before the old MEK's
 	// deletion turns a corrupt-but-diagnosable file into a lost one.
 	if len(env.Recipients) == 0 {
-		return false, fmt.Errorf("%s has no recipient entries (corrupt envelope?), rekey cannot proceed past it", file)
+		return p, nil, fmt.Errorf("%s has no recipient entries (corrupt envelope?), rekey cannot proceed past it", file)
 	}
 
 	// The DEK-wrap now binds the secret's Class as AEAD (see keywrapper.go),
@@ -172,10 +299,11 @@ func (v *Vault) rewrapFile(file string, oldKW, newKW KeyWrapper) (changed bool, 
 		return kw.WrapKey(dek)
 	}
 
-	for id, wrappedHex := range env.Recipients {
-		wrapped, err := hex.DecodeString(wrappedHex)
+	var changes []WrapChange
+	for _, id := range slices.Sorted(maps.Keys(env.Recipients)) {
+		wrapped, err := hex.DecodeString(env.Recipients[id])
 		if err != nil {
-			return false, fmt.Errorf("corrupt envelope %s: invalid recipient encoding: %w", file, err)
+			return p, nil, fmt.Errorf("corrupt envelope %s: invalid recipient encoding: %w", file, err)
 		}
 
 		if dek, err := unwrapWith(newKW, wrapped); err == nil {
@@ -193,36 +321,76 @@ func (v *Vault) rewrapFile(file string, oldKW, newKW KeyWrapper) (changed bool, 
 			}
 		}
 		if oldKW == nil || err != nil {
-			return false, fmt.Errorf("%s: %w, rekey cannot proceed past it (err: %v)", file, errNoKeyOpens, err)
+			return p, nil, fmt.Errorf("%s: %w, rekey cannot proceed past it (err: %v)", file, errNoKeyOpens, err)
 		}
 
 		rewrappedDEK, err := wrapWith(newKW, dek)
 		if err != nil {
 			wipe(dek)
-			return false, fmt.Errorf("rewrapping key for %s: %w", file, err)
+			return p, nil, fmt.Errorf("rewrapping key for %s: %w", file, err)
 		}
 		verify, err := unwrapWith(newKW, rewrappedDEK)
 		if err != nil || !bytes.Equal(verify, dek) {
 			wipe(dek)
 			wipe(verify)
-			return false, fmt.Errorf("verifying rewrapped key for %s failed (err: %v), envelope left untouched", file, err)
+			return p, nil, fmt.Errorf("verifying rewrapped key for %s failed (err: %v), envelope left untouched", file, err)
 		}
 		wipe(dek)
 		wipe(verify)
 
 		env.Recipients[id] = hex.EncodeToString(rewrappedDEK)
-		changed = true
+		changes = append(changes, WrapChange{File: p.rel, Old: wrapped, New: rewrappedDEK})
 	}
 
-	if !changed {
-		return false, nil
+	if len(changes) == 0 {
+		return p, nil, nil
 	}
 	out, err := json.MarshalIndent(env, "", "  ")
 	if err != nil {
-		return false, fmt.Errorf("encoding envelope %s: %w", file, err)
+		return p, nil, fmt.Errorf("encoding envelope %s: %w", file, err)
 	}
-	if err := AtomicWriteFile(file, out); err != nil {
-		return false, err
+	p.out, p.final = out, digest(out)
+	return p, changes, nil
+}
+
+// checkRewrapped walks the vault once every write is done: the envelope
+// files must be exactly the planned ones, each holding the bytes the plan
+// wrote or left. It returns every recipient's wrapped DEK on disk.
+func (v *Vault) checkRewrapped(plan []plannedEnvelope) ([][]byte, error) {
+	files, err := v.allEnvelopeFiles()
+	if err != nil {
+		return nil, err
 	}
-	return true, nil
+	want := make(map[string]string, len(plan))
+	for _, p := range plan {
+		want[p.file] = p.final
+	}
+	var onDisk [][]byte
+	for _, file := range files {
+		sum, planned := want[file]
+		if !planned {
+			return nil, fmt.Errorf("%s appeared while the key was being rotated", v.relSlash(file))
+		}
+		delete(want, file)
+		data, err := os.ReadFile(file) // #nosec G304 -- file comes from walking jit's own vault directory
+		if err != nil {
+			return nil, fmt.Errorf("reading %s again: %w", v.relSlash(file), err)
+		}
+		if digest(data) != sum {
+			return nil, fmt.Errorf("%s changed while the key was being rotated", v.relSlash(file))
+		}
+		var env envelope
+		if err := json.Unmarshal(data, &env); err != nil {
+			return nil, fmt.Errorf("parsing envelope %s again: %w", v.relSlash(file), err)
+		}
+		for _, w := range env.Recipients {
+			if b, err := hex.DecodeString(w); err == nil {
+				onDisk = append(onDisk, b)
+			}
+		}
+	}
+	if len(want) > 0 {
+		return nil, fmt.Errorf("%s went while the key was being rotated", v.relSlash(slices.Min(slices.Collect(maps.Keys(want)))))
+	}
+	return onDisk, nil
 }
