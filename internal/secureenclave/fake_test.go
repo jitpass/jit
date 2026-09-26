@@ -69,6 +69,20 @@ func (f *fakeEnclave) open(ct []byte, reason string) ([]byte, error) {
 	return open(f.key, ct, []byte("fake-enclave"))
 }
 
+// fakeWrapper is the Wrapper at root over fakes: a is slot A (testTag), b
+// slot B (testTag+".b"). No other tag is ever built.
+func fakeWrapper(root string, a, b *fakeEnclave) *Wrapper {
+	return newWrapper(root, testTag, func(tag string) enclave {
+		switch tag {
+		case testTag:
+			return a
+		case testTag + slotBSuffix:
+			return b
+		}
+		panic("fake enclave: no slot " + tag)
+	})
+}
+
 func TestFakeHonoursTheContract(t *testing.T) {
 	f := newFake(t)
 	if _, err := f.seal([]byte("x")); !errors.Is(err, ErrNoKey) {

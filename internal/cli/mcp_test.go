@@ -28,11 +28,11 @@ func TestSetMCPEntryAddsOnlyItsOwnEntryAndBacksUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry := &mcpServerEntry{Command: "/opt/homebrew/bin/jit", Args: []string{"mcp"}}
-	changed, backup, err := setMCPEntry(path, entry, time.Unix(0, 0))
-	if err != nil || !changed || backup == "" {
-		t.Fatalf("install: changed=%v backup=%q err=%v", changed, backup, err)
+	ed, err := setMCPEntry(path, entry, time.Unix(0, 0))
+	if err != nil || !ed.changed || ed.backup == "" {
+		t.Fatalf("install: %+v err=%v", ed, err)
 	}
-	if b, _ := os.ReadFile(backup); string(b) != desktopConfig {
+	if b, _ := os.ReadFile(ed.backup); string(b) != desktopConfig {
 		t.Fatal("the backup is not the original file")
 	}
 	var cfg map[string]any
@@ -49,17 +49,17 @@ func TestSetMCPEntryAddsOnlyItsOwnEntryAndBacksUp(t *testing.T) {
 	}
 
 	// Idempotent: the same entry again changes nothing and backs up nothing.
-	changed, backup, err = setMCPEntry(path, entry, time.Unix(1, 0))
-	if err != nil || changed || backup != "" {
-		t.Fatalf("second install: changed=%v backup=%q err=%v", changed, backup, err)
+	ed, err = setMCPEntry(path, entry, time.Unix(1, 0))
+	if err != nil || ed.changed || ed.backup != "" {
+		t.Fatalf("second install: %+v err=%v", ed, err)
 	}
 
 	// Removing takes only its own entry, and leaves the rest.
 	if err := os.WriteFile(path, []byte(strings.Replace(string(raw), `"jit"`, `"other": {"command": "/x"}, "jit"`, 1)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if changed, _, err := setMCPEntry(path, nil, time.Unix(2, 0)); err != nil || !changed {
-		t.Fatalf("uninstall: %v %v", changed, err)
+	if ed, err := setMCPEntry(path, nil, time.Unix(2, 0)); err != nil || !ed.changed {
+		t.Fatalf("uninstall: %+v %v", ed, err)
 	}
 	raw, _ = os.ReadFile(path)
 	if strings.Contains(string(raw), `"jit"`) || !strings.Contains(string(raw), `"other"`) {
@@ -72,7 +72,7 @@ func TestSetMCPEntryLeavesABrokenFileAlone(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"preferences": {`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := setMCPEntry(path, &mcpServerEntry{Command: "/j", Args: []string{"mcp"}}, time.Now()); err == nil {
+	if _, err := setMCPEntry(path, &mcpServerEntry{Command: "/j", Args: []string{"mcp"}}, time.Now()); err == nil {
 		t.Fatal("a broken config was rewritten")
 	}
 	if b, _ := os.ReadFile(path); string(b) != `{"preferences": {` {
@@ -82,9 +82,9 @@ func TestSetMCPEntryLeavesABrokenFileAlone(t *testing.T) {
 
 func TestSetMCPEntryCreatesAMissingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "Claude", "claude_desktop_config.json")
-	changed, backup, err := setMCPEntry(path, &mcpServerEntry{Command: "/j", Args: []string{"mcp"}}, time.Now())
-	if err != nil || !changed || backup != "" {
-		t.Fatalf("changed=%v backup=%q err=%v", changed, backup, err)
+	ed, err := setMCPEntry(path, &mcpServerEntry{Command: "/j", Args: []string{"mcp"}}, time.Now())
+	if err != nil || !ed.changed || ed.backup != "" {
+		t.Fatalf("%+v err=%v", ed, err)
 	}
 }
 

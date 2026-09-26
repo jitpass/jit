@@ -11,9 +11,11 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -33,6 +35,72 @@ var mcpConfigFileNames = map[string]bool{
 // a finding has no fix path — and migrate kept a hand-mirrored copy of this
 // map behind a comment saying so, which is a contract by reminder.
 func IsMCPConfigFileName(name string) bool { return mcpConfigFileNames[name] }
+
+// mcpConfigBackupPattern is the name `jit mcp install` and `jit mcp
+// uninstall` give the copy of an app's config they save beside it before
+// editing it: "<config name>.jit-backup-YYYYMMDD-HHMMSS" (MCPConfigBackupName).
+// The copy is the file as it was, so it holds every token the config held.
+// Recognizing only the exact config names made such a copy invisible: a
+// folder holding one with a ghp_ token in an env block scanned CLEAN while
+// the same bytes under the real name were HIGH, and `jit migrate` never saw
+// it, so install-then-migrate left the token in the copy alone (pre-release
+// review, 2026-09-26).
+//
+// Strict on purpose. The stamp is exactly what MCPConfigBackupName writes,
+// because `jit mcp install` also DELETES older copies by this pattern, and a
+// looser one ("*.jit-backup*") would let it delete a file jit did not make.
+var mcpConfigBackupPattern = regexp.MustCompile(`^(.+)\.jit-backup-[0-9]{8}-[0-9]{6}$`)
+
+// MCPConfigBackupName is the path `jit mcp install` saves config's backup
+// to at t: beside it, under the name mcpConfigBackupPattern recognizes. Kept
+// here, beside the recognizer, so what is written and what is scanned for
+// are one definition.
+func MCPConfigBackupName(config string, t time.Time) string {
+	return config + ".jit-backup-" + t.Format("20060102-150405")
+}
+
+// mcpConfigBackupOriginal returns the config name a backup name was made
+// from, and whether name is a backup name at all.
+func mcpConfigBackupOriginal(name string) (string, bool) {
+	m := mcpConfigBackupPattern.FindStringSubmatch(name)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
+// IsMCPConfigBackupName reports whether name is a jit-made backup of a file
+// IsMCPConfigFileName recognizes. Such a file is scanned, and migrated, as
+// the same kind of file as its original. It is deliberately NOT folded into
+// IsMCPConfigFileName: that one also decides what counts as a live config
+// an app reads (internal/launchers), and nothing reads a backup.
+func IsMCPConfigBackupName(name string) bool {
+	orig, ok := mcpConfigBackupOriginal(name)
+	return ok && mcpConfigFileNames[orig]
+}
+
+// MCPConfigBackups lists the jit-made backups of the config at path: regular
+// files beside it named MCPConfigBackupName(path, some time), oldest first
+// (the stamp sorts as it reads). A symlink or directory with the name is not
+// one, and neither is any other file, whatever it is called. An unreadable
+// directory lists nothing.
+func MCPConfigBackups(path string) []string {
+	dir, base := filepath.Split(path)
+	entries, err := os.ReadDir(filepath.Clean(dir))
+	if err != nil {
+		return nil
+	}
+	var found []string
+	for _, e := range entries {
+		orig, ok := mcpConfigBackupOriginal(e.Name())
+		if !ok || orig != base || !e.Type().IsRegular() {
+			continue
+		}
+		found = append(found, filepath.Join(dir, e.Name()))
+	}
+	sort.Strings(found)
+	return found
+}
 
 // mcpConfigFile covers both "mcpServers" (Claude Desktop, Cursor) and
 // "servers" (VS Code's MCP schema) top-level keys, since this is a
@@ -120,15 +188,20 @@ func ScanMCPConfigs(cfg Config) ([]Finding, error) {
 // has to be probed directly.
 func scanClaudeDesktopMCPConfig(cfg Config) ([]Finding, error) {
 	var findings []Finding
-	for _, path := range fixedMCPConfigPaths(cfg.HomeDir) {
-		if _, err := os.Stat(path); err != nil {
-			continue // absent (or unstattable) — nothing to scan, never an error
+	for _, fixed := range fixedMCPConfigPaths(cfg.HomeDir) {
+		// The backups `jit mcp install` leaves beside a fixed config are in
+		// the same pruned folder, so no walk reaches them either. Probed
+		// whether or not the config itself is still there.
+		for _, path := range append([]string{fixed}, MCPConfigBackups(fixed)...) {
+			if _, err := os.Stat(path); err != nil {
+				continue // absent (or unstattable) — nothing to scan, never an error
+			}
+			fs, err := scanMCPConfigFile(cfg, path)
+			if err != nil {
+				continue
+			}
+			findings = append(findings, fs...)
 		}
-		fs, err := scanMCPConfigFile(cfg, path)
-		if err != nil {
-			continue
-		}
-		findings = append(findings, fs...)
 	}
 	return findings, nil
 }
@@ -172,8 +245,11 @@ func FixedMCPConfigPaths(home string) []string {
 // that path. Leaving the guard out is also what keeps `jit scan
 // ~/Library/Application\ Support/Claude` — a path the user named explicitly,
 // where the known-location half never runs — reporting anything at all.
+//
+// A jit-made backup of one of those names (IsMCPConfigBackupName) is the
+// same kind of file, and is classified as one.
 func classifyMCPFile(cfg Config, path, name string) []Finding {
-	if !mcpConfigFileNames[name] {
+	if !isMCPConfigScanName(name) {
 		return nil
 	}
 	findings, err := scanMCPConfigFile(cfg, path)
@@ -181,6 +257,12 @@ func classifyMCPFile(cfg Config, path, name string) []Finding {
 		return nil
 	}
 	return findings
+}
+
+// isMCPConfigScanName reports whether a file called name is scanned as an
+// MCP config: one of the config names, or a jit-made backup of one.
+func isMCPConfigScanName(name string) bool {
+	return mcpConfigFileNames[name] || IsMCPConfigBackupName(name)
 }
 
 func scanMCPConfigFile(cfg Config, path string) ([]Finding, error) {

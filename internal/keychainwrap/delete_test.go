@@ -374,8 +374,9 @@ var promptingReadCallers = map[string]map[string]bool{
 // neverPrompts are the functions that read an item that may be another
 // jit's, which must not reach the prompting read by ANY path: not by
 // calling fetchMEK, and not by calling something that does (w.FetchMEK,
-// RequireUserPresence, ...).
-var neverPrompts = []string{"MatchesMEK", "InstallMEK", "CountOpens", "CheckQuietRead", "quietFetch"}
+// RequireUserPresence, ...). A grant key's Seal and Open are the service's
+// reads, where a dialog would wait on nobody (GrantKey.key).
+var neverPrompts = []string{"MatchesMEK", "InstallMEK", "CountOpens", "CheckQuietRead", "quietFetch", "quietFetchNoSwitch", "Seal", "Open"}
 
 // calledName is the name a call goes to, whether written f(...) or
 // x.f(...); "" for anything else (a call through a func value).
@@ -531,6 +532,17 @@ func assertPromptingReadCallers(t *testing.T) {
 			}
 		}
 	}
+	// The service's reads (a grant key's Seal and Open) take the quiet
+	// read's service form, never quietFetch, whose kw_fetch_mek flips the
+	// process-wide interaction switch under every request in flight.
+	for _, root := range []string{"Seal", "Open"} {
+		if !reaches(calls, root, "quietFetchNoSwitch") {
+			t.Errorf("%s does not reach quietFetchNoSwitch, the service's quiet read", root)
+		}
+		if reaches(calls, root, "quietFetch") {
+			t.Errorf("%s reaches quietFetch, which switches keychain interaction off for the whole service", root)
+		}
+	}
 	data, err := os.ReadFile(filepath.Join(dir, "keychain.m"))
 	if err != nil {
 		t.Fatal(err)
@@ -542,6 +554,26 @@ func assertPromptingReadCallers(t *testing.T) {
 		strings.Contains(src[fn:strings.Index(src, "kwCopyMatching(KW_Q_FETCH,")], "\n}\n") {
 		t.Error("keychain.m's KW_Q_FETCH read is not inside kw_fetch_mek")
 	}
+}
+
+// reaches reports whether calls has a chain from root to target.
+func reaches(calls map[string]map[string]bool, root, target string) bool {
+	seen := map[string]bool{root: true}
+	queue := []string{root}
+	for len(queue) > 0 {
+		fn := queue[0]
+		queue = queue[1:]
+		for callee := range calls[fn] {
+			if callee == target {
+				return true
+			}
+			if !seen[callee] {
+				seen[callee] = true
+				queue = append(queue, callee)
+			}
+		}
+	}
+	return false
 }
 
 // No query is built outside the registry: keychain.m calls
@@ -574,6 +606,18 @@ func TestEveryQueryGoesThroughTheRegistry(t *testing.T) {
 		at := strings.Index(src, call)
 		if fn < 0 || at < fn || strings.Contains(src[fn+len(inside):at], "\nstatic ") {
 			t.Errorf("%s is not inside %s", call, inside)
+		}
+	}
+	// The service's quiet read is the registry's no-dialog query, after
+	// the lock check, and never under the process-wide switch.
+	if at := strings.Index(src, "KWResult kw_fetch_quiet_no_switch("); at < 0 {
+		t.Error("keychain.m has no kw_fetch_quiet_no_switch")
+	} else {
+		body := src[at:]
+		body = body[:strings.Index(body, "\n}\n")]
+		lock, read := strings.Index(body, "kw_default_keychain_lock_state()"), strings.Index(body, "kwCopyMatching(KW_Q_FETCH_QUIET,")
+		if lock < 0 || read < 0 || read < lock || strings.Contains(body, "kwWithoutUI") {
+			t.Errorf("kw_fetch_quiet_no_switch must check the lock, then read with KW_Q_FETCH_QUIET, never under kwWithoutUI:\n%s", body)
 		}
 	}
 	// The service's delete by reference leaves the process switch alone,

@@ -10,9 +10,11 @@ service runs it on this Mac and hands back the output with every secret
 value hidden, so the tool never holds a key.
 
 Two things keep an approval meaning what you approved. jit fingerprints
-the job's folder, so a script, a library or a profile edited afterwards
-stops the job until you approve it again. And the secrets are fixed at
-approval: editing the profile later never changes what the job gets.
+the job's folder and what its program loads from outside it (Python's
+standard library and packages, the native libraries it links), so a
+script, a library or a profile edited afterwards stops the job until you
+approve it again. And the secrets are fixed at approval: editing the
+profile later never changes what the job gets.
 
 ```
 jit job

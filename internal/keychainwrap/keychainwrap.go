@@ -326,6 +326,19 @@ func (w *Wrapper) fetchMEK(reason string) ([]byte, error) {
 	return out, nil
 }
 
+// ErrCantReadNow is a quiet read (no challenge, no dialog) the keychain
+// refused because it would have had to ask: errSecInteractionNotAllowed
+// (-25308), which a *QuietReadError with that status is (errors.Is). It says
+// nothing about the item, and it is the one refusal of a grant key's read
+// that skips a never-ask job's run rather than stopping the job (a skip
+// that goes on is surfaced). errSecAuthFailed (-25293) is not it: keychain.m's
+// fetch reads it as the per-code-signature ACL refusing this binary (the
+// binary under a running process replaced), and a locked file keychain
+// answers a quiet read with it too (TestHardwareLockedKeychainNeverAsks),
+// so it can't be told from a refusal that lasts, and a caller that stops
+// on an answer must stop on it.
+var ErrCantReadNow = errors.New("the keychain can't be read right now without asking")
+
 // Close wipes the cached MEK and releases the mlock pinning its page. It is
 // idempotent, and safe to call on a Wrapper that never fetched anything.
 //

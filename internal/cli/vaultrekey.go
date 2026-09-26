@@ -49,17 +49,50 @@ var errRekeyInProgress = fmt.Errorf("a master-key rotation is in progress (or wa
 
 var vaultRekeyCmd = &cobra.Command{
 	Use:   "rekey",
-	Short: "Rotate the vault's master encryption key",
-	Long: "Generates a new master encryption key, re-wraps every stored secret's key\n" +
-		"under it (live secrets, file backups, and archived versions, the encrypted\n" +
-		"values themselves are never touched), then replaces the old master key.\n" +
-		"One Touch ID/passcode approval covers the whole operation.\n\n" +
-		"Run it if the old key may have been exposed, or simply on a schedule,\n" +
-		"the vault's master key otherwise never changes for its whole life.\n\n" +
-		"Safe to interrupt: until the very last step both keys exist, every\n" +
-		"re-wrapped secret is verified before it's written, and re-running\n" +
-		"`jit vault rekey` finishes an interrupted rotation. Other vault commands\n" +
-		"refuse to write while one is in progress.",
+	Short: "Rotate the vault's master key, or move it into the Secure Enclave",
+	Long: "Does one of two things to the vault's master key.\n\n" +
+		"Without --wrapper, it rotates the key of a vault\n" +
+		"whose key is in your login keychain.\n" +
+		"It generates a new master key,\n" +
+		"re-wraps every stored secret's key under it\n" +
+		"(live secrets, file backups and archived versions;\n" +
+		"the encrypted values themselves are never touched),\n" +
+		"then replaces the old master key.\n" +
+		"One Touch ID/passcode approval covers the whole operation.\n" +
+		"Run it if the old key may have been exposed, or on a schedule;\n" +
+		"otherwise the master key never changes for the vault's whole life.\n" +
+		"After a rotation, approve your AI jobs and grants again;\n" +
+		"the ones made before it stop working.\n\n" +
+		"Rotating a key that is in the Secure Enclave isn't available yet;\n" +
+		"it comes in a later version.\n" +
+		"To rotate one now, move it back with --wrapper keychain,\n" +
+		"rotate, save a new recovery file, then move it in again.\n\n" +
+		"A rotation is safe to interrupt: until the last step both keys exist,\n" +
+		"every re-wrapped secret is verified before it's written,\n" +
+		"and running `jit vault rekey` again finishes it.\n" +
+		"Other vault commands refuse to write while one is in progress.\n\n" +
+		"With --wrapper, it moves the key and doesn't change it.\n" +
+		"Nothing is re-encrypted, and your grants and AI jobs keep working;\n" +
+		"their own keys follow the next time the jit service starts.\n" +
+		"--wrapper secure-enclave moves the key from your login keychain\n" +
+		"into this Mac's Secure Enclave.\n" +
+		"There, only JitPass can use it, after Touch ID or your password,\n" +
+		"and no other program running as you can read it.\n" +
+		"--wrapper keychain moves it back.\n\n" +
+		"Before a move into the Secure Enclave,\n" +
+		"save a recovery file with `jit vault export <file>`;\n" +
+		"jit refuses the move until one is newer than your newest secret.\n" +
+		"After the move the key can't leave this Mac:\n" +
+		"if the Mac is lost, replaced or erased,\n" +
+		"that file is how your secrets come back.\n" +
+		"A move works only from the jit inside JitPass.app;\n" +
+		"any other copy of jit is refused.\n" +
+		"In the app, Settings › Protection makes the same move.\n" +
+		"An interrupted move finishes when you run the same command again.",
+	Example: "  jit vault rekey                              # rotate the master key\n" +
+		"  jit vault export ~/jit-recovery.json         # a recovery file, before a move\n" +
+		"  jit vault rekey --wrapper secure-enclave     # move the key into the Secure Enclave\n" +
+		"  jit vault rekey --wrapper keychain           # move it back to the keychain",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		root, err := vaultRootDir()
@@ -81,9 +114,10 @@ var vaultRekeyCmd = &cobra.Command{
 			return fmt.Errorf("jit vault rekey: %w", rekeyMarkerRefusal(root))
 		}
 		// Rotation rewrites the keychain item; an enclave vault does not use
-		// one. Rotating an enclave vault's key is not built yet.
+		// one. Rotating an enclave vault's key comes later
+		// (design/secure-enclave-rotation.md); this jit only reads both slots.
 		if openKeyStore(root).Kind() == keystore.KindSecureEnclave {
-			return errors.New("jit vault rekey: this vault's key is in the Secure Enclave, and rotating it is not available yet")
+			return errors.New("jit vault rekey: this vault's key is in the Secure Enclave, and rotating it comes in a later version of jit")
 		}
 		resume := rekeyInProgress(root)
 		// Rekey rotates the keychain item's own bytes through staged items;
@@ -206,15 +240,14 @@ func lockAgent() {
 
 func init() {
 	vaultRekeyCmd.Flags().BoolVarP(&vaultRekeyYes, "yes", "y", false, "skip the confirmation prompt")
-	// Hidden until JitPass ships the signed helper bundle that can reach the
-	// enclave (design/secure-enclave-plan.md, A2): before that, every jit
-	// in the field would only be refused.
-	vaultRekeyCmd.Flags().StringVar(&vaultRekeyWrapper, "wrapper", "", `move the vault key: "secure-enclave" or "keychain"`)
-	_ = vaultRekeyCmd.Flags().MarkHidden("wrapper")
+	// Shown since v2.3.0, the release whose JitPass carries the signed helper
+	// bundle that can reach the enclave (design/secure-enclave-plan.md, A2).
+	// A jit outside JitPass.app is refused with a sentence that says so.
+	vaultRekeyCmd.Flags().StringVar(&vaultRekeyWrapper, "wrapper", "", `move the key instead of rotating it: "secure-enclave" or "keychain"`)
 	// With --wrapper secure-enclave on a vault already in the enclave:
 	// delete the keychain item under the vault key's name even when it is
-	// not this vault's key, or can't be read (removeKeychainCopy). Hidden
-	// with --wrapper, which it only goes with.
+	// not this vault's key, or can't be read (removeKeychainCopy). Stays
+	// hidden: doctor never offers it, and it deletes a key on a typed yes.
 	vaultRekeyCmd.Flags().BoolVar(&vaultRekeyForce, "force", false, "with --wrapper secure-enclave: also delete a keychain key that isn't this vault's")
 	_ = vaultRekeyCmd.Flags().MarkHidden("force")
 	vaultCmd.AddCommand(vaultRekeyCmd)

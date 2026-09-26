@@ -49,9 +49,11 @@ service runs it on this Mac and hands back the output with every secret
 value hidden, so the tool never holds a key.
 
 Two things keep an approval meaning what you approved. jit fingerprints
-the job's folder, so a script, a library or a profile edited afterwards
-stops the job until you approve it again. And the secrets are fixed at
-approval: editing the profile later never changes what the job gets.`,
+the job's folder and what its program loads from outside it (Python's
+standard library and packages, the native libraries it links), so a
+script, a library or a profile edited afterwards stops the job until you
+approve it again. And the secrets are fixed at approval: editing the
+profile later never changes what the job gets.`,
 	Example: `  cd ~/code/scripts/notion
   jit job allow notion-export -- .venv/bin/python export_pages.py
   jit job run notion-export
@@ -79,7 +81,12 @@ to the tool by path, and changes there never stop the job.
 
 Some commands are refused because they hand the values straight back:
 env, cat, echo, or a program written into the command (python -c,
-sh -c, node -e). Save it as a file and approve that file.`,
+sh -c, node -e). Save it as a file and approve that file.
+
+--ask never is refused when jit cannot fingerprint what the program
+loads: a launcher that picks the interpreter when it runs (uv run, npx,
+a pyenv shim), or ruby and other interpreters whose libraries it does
+not read. Approve the interpreter itself: .venv/bin/python script.py.`,
 	Example: `  jit job allow notion-export --show NOTION_WORKSPACE \
     --output ~/code/scripts/notion/out \
     -- .venv/bin/python export_pages.py`,
@@ -236,6 +243,15 @@ func runJobAllow(out io.Writer, name string, argv []string) error {
 	} else {
 		fmt.Fprintln(out, "  asks     each time, naming who asked")
 	}
+	// What the fingerprint cannot cover, said before the Touch ID rather
+	// than after. The service decides (and refuses it for a never job); this
+	// is the same check, run here so the line comes before the prompt.
+	if exe, rerr := job.ResolveExe(argv[0], cwd, spec.PathEnv); rerr == nil {
+		if gap := job.Unfingerprinted(cwd, job.Program{Exe: exe, Argv: argv, PathEnv: spec.PathEnv, Home: home}); gap != "" {
+			_, _ = cWarn.Fprint(out, "  "+glyphWarn)
+			fmt.Fprintf(out, " %s\n", gap)
+		}
+	}
 	fmt.Fprintln(out)
 
 	ac, err := agentClient()
@@ -251,6 +267,9 @@ func runJobAllow(out io.Writer, name string, argv []string) error {
 	}
 	_, _ = cOK.Fprint(out, glyphDone)
 	fmt.Fprintf(out, " Approved %s · %s fingerprinted\n", st.Name, countWord(st.Files, "file", "files"))
+	if st.Libraries > 0 {
+		fmt.Fprintf(out, "  and %s the program loads from outside the folder\n", countWord(st.Libraries, "file", "files"))
+	}
 	fmt.Fprint(out, "  ")
 	_, _ = cPath.Fprintf(out, "%s jit job run %s", glyphAction, st.Name)
 	fmt.Fprintln(out, "   how an AI tool runs it")
@@ -566,6 +585,13 @@ func printJobPreview(out io.Writer, ac *agent.Client, name string, spec agent.Jo
 	fmt.Fprintf(out, "  program  %s\n", displayPath(home, p.Exe))
 	for _, e := range p.Extra {
 		fmt.Fprintf(out, "  outside  %s\n", displayPath(home, e))
+	}
+	if p.Libraries > 0 {
+		fmt.Fprintf(out, "  loads    %s from outside the folder, fingerprinted too\n", countWord(p.Libraries, "file", "files"))
+	}
+	if p.Unfingerprinted != "" {
+		_, _ = cWarn.Fprint(out, "  "+glyphWarn)
+		fmt.Fprintf(out, " %s\n", p.Unfingerprinted)
 	}
 	if p.Exists {
 		fmt.Fprintf(out, "  replaces the job already named %s\n", name)

@@ -19,6 +19,11 @@ Some commands are refused because they hand the values straight back:
 env, cat, echo, or a program written into the command (python -c,
 sh -c, node -e). Save it as a file and approve that file.
 
+--ask never is refused when jit cannot fingerprint what the program
+loads: a launcher that picks the interpreter when it runs (uv run, npx,
+a pyenv shim), or ruby and other interpreters whose libraries it does
+not read. Approve the interpreter itself: .venv/bin/python script.py.
+
 ```
 jit job allow NAME [--profile NAME] [--show VAR] [--output DIR] -- COMMAND [ARGS...] [flags]
 ```

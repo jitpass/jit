@@ -152,11 +152,12 @@ func prodFirstRunDeps(cmd *cobra.Command) firstRunDeps {
 			if err != nil {
 				return false
 			}
-			// An enclave vault this jit can't reach, or whose key is lost,
-			// still exists: offering first-run setup over it would only fail
-			// halfway (status reports these as initialized, for the same reason).
+			// An enclave vault this jit can't reach, whose key is lost, or
+			// that a newer jit sealed, still exists: offering first-run setup
+			// over it would only fail halfway (status reports these as
+			// initialized, for the same reason).
 			switch ks.Presence() {
-			case keystore.Present, keystore.KeyLost, keystore.Unavailable:
+			case keystore.Present, keystore.KeyLost, keystore.Unavailable, keystore.NeedsNewerJit:
 				return true
 			}
 			return false

@@ -217,6 +217,11 @@ type Server struct {
 	jobMu    sync.Mutex
 	jobs     map[string]*job.Job
 	jobsPath string
+	// jobLibs is the library manifests' folder beside jobsPath
+	// (job.LibManifests), guarded by jobMu. jobLibMu is held across every
+	// manifest write and prune, and taken before jobMu, never after.
+	jobLibs  job.LibManifests
+	jobLibMu sync.Mutex
 	// jobNames is every key id jobs.json named when it loaded, read raw
 	// (namedKeyIDs); nil when it did not load.
 	jobNames map[string]bool

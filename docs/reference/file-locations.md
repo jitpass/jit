@@ -10,9 +10,12 @@ description: Where the vault, profiles, shims, and rewritten config files live o
 | Path | What it is |
 |---|---|
 | `~/Library/Application Support/jitpass/` | the vault - one encrypted file per secret, plus encrypted pre-migration file backups |
-| macOS login Keychain | the vault's master encryption key (Touch ID/passcode gated) |
+| macOS login Keychain | the vault's master encryption key (Touch ID/passcode gated), unless you moved it into the Secure Enclave |
+| `~/Library/Application Support/jitpass/vault-key.sealed` | only when the vault's key is in the [Secure Enclave](../vault/secure-enclave.md): the master key, sealed so only this Mac's Secure Enclave can open it. Its presence is how jit knows where the key is |
+| `~/Library/Application Support/jitpass/vault-key.sealed.lost` and `.lost.envelopes` | written by `jit vault init` when this Mac's Secure Enclave no longer has the vault's key: the old sealed key, set aside rather than deleted, and a record of which secrets were sealed to it. Renamed with a date once a [restore](../vault/secure-enclave.md#a-new-or-erased-mac) is done |
+| `~/Library/Application Support/jitpass/vault-key.sealed.recovered-<time>` | the old sealed key, set aside when `jit vault init` found the same key still in your keychain and restored the vault from it |
 | `~/Library/Application Support/jitpass/agent.sock` | the [background service](../service/index.md)'s socket - the one path a [sandboxed caller](../service/sandboxed-callers.md) has to be allowed to reach |
-| `~/Library/Application Support/jitpass/jobs.json` | the approved [AI jobs](../service/ai-jobs.md): each job's command, folder, fingerprint and secret paths, and for a job that never asks its secrets' keys sealed under a key of its own in the keychain - never a value or a plain key |
+| `~/Library/Application Support/jitpass/jobs.json` | the approved [AI jobs](../service/ai-jobs.md): each job's command, folder, fingerprint and secret paths, and for a job that never asks its secrets' keys sealed under a key of its own, kept where the vault's key is (the keychain, or the Secure Enclave) - never a value or a plain key |
 | `~/.jit/profiles/` | global [profile](../run/profiles.md) manifests (machine-wide migrations, `wrap-<tool>` profiles) |
 | `<project>/.jit/profiles/` | project profile manifests - names and vault paths only, safe to commit |
 | `<project>/.jit/config.yaml` | optional per-project settings, currently `read_as_file: true` to pin [`jit run`](../run/index.md) to live mode - safe to commit |

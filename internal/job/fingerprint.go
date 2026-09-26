@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -21,8 +20,8 @@ import (
 // Hashes, never copies: jit can name which file changed, not show what it
 // was before.
 type Fingerprint struct {
-	// Root is one hash over every entry and the executable, for a cheap
-	// equality check.
+	// Root is one hash over every entry, the executable and the libraries,
+	// for a cheap equality check.
 	Root string `json:"root"`
 	// Files maps a slash-separated path relative to the job folder to its
 	// entry: "sha256:<hex>" for a regular file, "link:<target>" for a symlink.
@@ -30,14 +29,37 @@ type Fingerprint struct {
 	// Exe is the entry for the resolved executable, which usually lives
 	// outside the folder (a venv's python links to uv's interpreter).
 	Exe string `json:"exe"`
-	// Stamps holds each hashed file's change-time, keyed like Files. Only
-	// the kernel sets a change-time, and on APFS it moves on every write and
-	// on a rename away and back (measured 2026-09-25), even when the content
-	// ends up identical and the modification time is reset. So a file
-	// swapped for a moment and put back, which a content hash cannot see,
-	// still shows here. A fingerprint from before stamps existed has none,
-	// and is compared by content alone.
+	// Stamps holds each hashed file's change-time, keyed like Files, and
+	// the executable's under ExePath (a library's are in its root's hash,
+	// LibRoot.Stamps). Only the kernel sets a change-time, and on APFS it
+	// moves on every write and on a rename away and back (measured
+	// 2026-09-25), even when the content ends up identical and the
+	// modification time is reset. So a file swapped for a moment and put
+	// back, which a content hash cannot see, still shows here. A fingerprint
+	// from before stamps existed has none, and is compared by content alone.
 	Stamps map[string]string `json:"stamps,omitempty"`
+	// LibRoots is what the job's program loads from outside the folder
+	// (libs.go, interp.go), one entry per library root (libroots.go): an
+	// installation prefix, a venv outside the folder, a folder a .pth file
+	// adds, each native library and each place the interpreter looks. One
+	// hash per root over the listing of every file in it, so a Python job
+	// stores a handful of entries here rather than two thousand.
+	LibRoots map[string]LibRoot `json:"lib_roots,omitempty"`
+	// LibsV is libsVersion on a fingerprint that took LibRoots, even an
+	// empty one. A fingerprint from a jit before it cannot be compared: 0
+	// said nothing of what the program loaded, and 1 kept a per-file map
+	// this build no longer reads. A job approved with either stops once its
+	// program loads anything from outside the folder (Unchecked).
+	LibsV int `json:"libs_v,omitempty"`
+
+	// Libs is every entry LibRoots summarises, keyed by absolute path and
+	// valued like Files (AbsentEntry for a place that held nothing; a value
+	// ending " @ <path>" also says where a named path resolved). Compute
+	// fills it; jobs.json never holds it. The per-file lists live in
+	// LibManifests, outside jobs.json, only to NAME what changed.
+	Libs map[string]string `json:"-"`
+	// libLines is Libs grouped by root, as each root's listing.
+	libLines map[string][]libLine
 }
 
 // Limits bound a fingerprint. Guesses sized well above the one folder
@@ -214,7 +236,8 @@ var skipDirs = map[string]bool{".git": true}
 // too common to skip whole.
 var skipPaths = map[string]bool{"node_modules/.cache": true}
 
-// Compute fingerprints dir, the executable exe, and extra: files the command
+// Compute fingerprints dir, the program p starts (its executable, and in Libs
+// what it loads from outside dir: libs.go), and extra: files the command
 // names that live outside dir (ExternalFiles), recorded under their absolute
 // path with an "outside:" prefix. outputs are absolute folders the job writes
 // into; anything under them is skipped. FIFOs and sockets are skipped (a jit
@@ -225,14 +248,16 @@ var skipPaths = map[string]bool{"node_modules/.cache": true}
 // no edit could ever change. A symlink INSIDE the folder is recorded by its
 // target text and, when it resolves outside the folder, by the content it
 // points at (a file) or refused (a folder, whose code nothing would cover).
-func Compute(dir, exe string, outputs, extra []string) (Fingerprint, error) {
+func Compute(dir string, p Program, outputs, extra []string) (Fingerprint, error) {
 	fp := Fingerprint{Files: map[string]string{}, Stamps: map[string]string{}}
 	realDir, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		return Fingerprint{}, err
 	}
-	var files int
-	var bytes int64
+	b := &budget{dir: dir}
+	// The Mach-O files hashed here: what each links is fingerprinted with
+	// the libraries (a venv's compiled module can link Homebrew's libpq).
+	var machos []string
 	skipAbs := make([]string, 0, len(outputs))
 	for _, o := range outputs {
 		skipAbs = append(skipAbs, ResolvePath(o))
@@ -294,29 +319,35 @@ func Compute(dir, exe string, outputs, extra []string) (Fingerprint, error) {
 				return fmt.Errorf("%s links to the folder %s, %s, so no edit to it could stop the job: %w", rel, resolved, where, ErrLinkOutside)
 			}
 			if info.Mode().IsRegular() {
-				sum, n, stamp, herr := hashFileStamp(resolved)
+				h, herr := hashFileStamp(resolved)
 				if herr != nil {
 					return herr
 				}
-				bytes += n
-				fp.Files[rel+LinkTargetSuffix] = "sha256:" + sum
-				fp.Stamps[rel+LinkTargetSuffix] = stamp
+				b.bytes += h.n
+				fp.Files[rel+LinkTargetSuffix] = "sha256:" + h.sum
+				fp.Stamps[rel+LinkTargetSuffix] = h.stamp
+				if h.macho {
+					machos = append(machos, resolved)
+				}
 			}
 		case d.Type().IsRegular():
-			files++
-			if files > MaxFiles {
-				return fmt.Errorf("%s: more than %d files: %w", dir, MaxFiles, ErrTooLarge)
+			b.files++
+			if b.files > limitFiles {
+				return fmt.Errorf("%s: more than %d files: %w", dir, limitFiles, ErrTooLarge)
 			}
-			sum, n, stamp, herr := hashFileStamp(path)
+			h, herr := hashFileStamp(path)
 			if herr != nil {
 				return herr
 			}
-			bytes += n
-			if bytes > MaxBytes {
-				return fmt.Errorf("%s: more than %d MB: %w", dir, MaxBytes>>20, ErrTooLarge)
+			b.bytes += h.n
+			if b.bytes > limitBytes {
+				return fmt.Errorf("%s: more than %d MB: %w", dir, limitBytes>>20, ErrTooLarge)
 			}
-			fp.Files[rel] = "sha256:" + sum
-			fp.Stamps[rel] = stamp
+			fp.Files[rel] = "sha256:" + h.sum
+			fp.Stamps[rel] = h.stamp
+			if h.macho {
+				machos = append(machos, path)
+			}
 		default:
 			// FIFO, socket, device: nothing a job executes, and a FIFO would
 			// block the read.
@@ -326,24 +357,33 @@ func Compute(dir, exe string, outputs, extra []string) (Fingerprint, error) {
 	if err != nil {
 		return Fingerprint{}, err
 	}
-	for _, p := range extra {
-		sum, _, stamp, herr := hashFileStamp(p)
+	for _, e := range extra {
+		h, herr := hashFileStamp(e)
 		if herr != nil {
 			return Fingerprint{}, herr
 		}
-		fp.Files[OutsidePrefix+p] = "sha256:" + sum
-		fp.Stamps[OutsidePrefix+p] = stamp
+		fp.Files[OutsidePrefix+e] = "sha256:" + h.sum
+		fp.Stamps[OutsidePrefix+e] = h.stamp
+		if h.macho {
+			machos = append(machos, e)
+		}
 	}
-	resolved, err := filepath.EvalSymlinks(exe)
+	resolved, err := filepath.EvalSymlinks(p.Exe)
 	if err != nil {
-		return Fingerprint{}, fmt.Errorf("resolving %s: %w", exe, err)
+		return Fingerprint{}, fmt.Errorf("resolving %s: %w", p.Exe, err)
 	}
-	sum, _, stamp, err := hashFileStamp(resolved)
+	h, err := hashFileStamp(resolved)
 	if err != nil {
 		return Fingerprint{}, err
 	}
-	fp.Exe = "sha256:" + sum
-	fp.Stamps[ExePath] = stamp
+	fp.Exe = "sha256:" + h.sum
+	fp.Stamps[ExePath] = h.stamp
+	set, err := collectLibs(realDir, skipAbs, p, classify(realDir, p), machos, b)
+	if err != nil {
+		return Fingerprint{}, err
+	}
+	fp.Libs, fp.LibsV = set.entries, libsVersion
+	fp.LibRoots, fp.libLines = set.group()
 	fp.Root = fp.rootHash()
 	return fp, nil
 }
@@ -353,25 +393,21 @@ func Compute(dir, exe string, outputs, extra []string) (Fingerprint, error) {
 // a regular file once open: a path swapped for a named pipe (by whoever can
 // write the folder, or a file named outside it) would otherwise block the
 // open forever, hanging every list and run behind it.
-func hashFileStamp(path string) (sum string, n int64, stamp string, err error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0) // #nosec G304 -- a file the human approved as part of a job
+func hashFileStamp(path string) (fileHash, error) {
+	f, err := openRegular(path)
 	if err != nil {
-		return "", 0, "", err
+		return fileHash{}, err
 	}
 	defer f.Close()
 	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		return "", 0, "", fmt.Errorf("%s is not a regular file", path)
-	}
-	if st, ok := info.Sys().(*syscall.Stat_t); ok {
-		stamp = fmt.Sprintf("%d.%09d", st.Ctimespec.Sec, st.Ctimespec.Nsec)
-	}
-	h := sha256.New()
-	n, err = io.Copy(h, f)
 	if err != nil {
-		return "", 0, "", err
+		return fileHash{}, err
 	}
-	return hex.EncodeToString(h.Sum(nil)), n, stamp, nil
+	sum, n, isMachO, err := hashReader(f)
+	if err != nil {
+		return fileHash{}, err
+	}
+	return fileHash{sum: sum, n: n, stamp: ctimeStamp(info), mode: info.Mode(), macho: isMachO}, nil
 }
 
 func (fp Fingerprint) rootHash() string {
@@ -385,6 +421,15 @@ func (fp Fingerprint) rootHash() string {
 		fmt.Fprintf(h, "%s\x00%s\n", k, fp.Files[k])
 	}
 	fmt.Fprintf(h, "\x00exe\x00%s\n", fp.Exe)
+	roots := make([]string, 0, len(fp.LibRoots))
+	for k := range fp.LibRoots {
+		roots = append(roots, k)
+	}
+	sort.Strings(roots)
+	for _, k := range roots {
+		r := fp.LibRoots[k]
+		fmt.Fprintf(h, "\x00lib\x00%d:%s\x00%s\x00%t\n", len(k), k, r.Sum, r.Dir)
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -399,6 +444,16 @@ const (
 	// or replaced and put back since (its change-time moved). The swap a
 	// content hash cannot see.
 	Rewritten ChangeKind = "rewritten"
+	// Unchecked: the approval predates LibRoots, so nothing this build reads
+	// says what the program loaded from outside the folder then. Only
+	// approving again can.
+	Unchecked ChangeKind = "not fingerprinted when you approved it"
+	// FolderChanged and FolderRewritten are a library folder whose hash no
+	// longer matches approval, when jit's list of the files it held
+	// (LibManifests) is missing or does not match that hash: the job stops
+	// all the same, and the stop names the folder.
+	FolderChanged   ChangeKind = "has a file that changed"
+	FolderRewritten ChangeKind = "has a file that was written to"
 )
 
 // Change is one difference, for the sentence that names it.
@@ -410,6 +465,9 @@ type Change struct {
 // ExePath is the Change.Path used for the executable, which has no path
 // inside the folder.
 const ExePath = "(the program itself)"
+
+// LibsPath is the Change.Path of an Unchecked change: everything Libs holds.
+const LibsPath = "(what the program loads from outside the folder)"
 
 // stampMoved reports a change-time that moved. A fingerprint with no stamp
 // for the key (taken before stamps existed) compares by content alone.
@@ -427,29 +485,53 @@ func (c Change) Sentence() string {
 	switch c.Kind {
 	case Rewritten:
 		return c.Path + " was written to since you approved it: its content matches, but something rewrote it or swapped it and put it back"
+	case Unchecked:
+		return "this job was approved by an older jit, which did not fingerprint what its program loads from outside the folder (the interpreter's own libraries); approve it again"
+	case FolderChanged:
+		return "a file in " + c.Path + " changed since you approved it, and jit can't say which: its list of the files there is missing or damaged"
+	case FolderRewritten:
+		return "a file in " + c.Path + " was written to since you approved it (its content matches), and jit can't say which: its list of the files there is missing or damaged"
 	default:
 		return fmt.Sprintf("%s %s since you approved it", c.Path, c.Kind)
 	}
 }
 
 // StopHint explains a stop whose changes are all Python bytecode: running the
-// script outside jit writes it (review finding 9, kept fingerprinted by
-// decision). Empty for any other stop.
+// script outside jit writes it into the folder (review finding 9, kept
+// fingerprinted by decision), and running that Python outside jit writes it
+// into the interpreter's own library the first time a module is imported.
+// Empty for any other stop.
 func StopHint(changes []Change) string {
 	if len(changes) == 0 {
 		return ""
 	}
+	library := false
 	for _, c := range changes {
 		if !strings.HasSuffix(c.Path, ".pyc") || !(strings.HasPrefix(c.Path, "__pycache__/") || strings.Contains(c.Path, "/__pycache__/")) {
 			return ""
 		}
+		library = library || filepath.IsAbs(c.Path)
+	}
+	if library {
+		return "Python writes .pyc files into its own library the first time it imports a module outside jit. If you ran this Python yourself, approve the job again"
 	}
 	return "Python writes these .pyc files when the script runs outside jit. Run it with `jit job run` instead, or approve the job again"
 }
 
 // Diff lists what now differs from approved, sorted by path, executable
-// first. Empty means the job may run.
+// first. Empty means the job may run. now must come from Compute. A library
+// change is named from approved's own file lists when it has them (a
+// fingerprint Compute returned); one read back from jobs.json has none, and
+// LibManifests.Diff names the file from the manifests instead.
 func Diff(approved, now Fingerprint) []Change {
+	return LibManifests("").Diff(approved, now)
+}
+
+// Diff is the package's Diff, naming a changed library file from the
+// manifests in m when approved carries no file lists of its own. Whether
+// a library root changed is decided by its hash in approved alone,
+// recomputed from disk into now: a manifest only names the file.
+func (m LibManifests) Diff(approved, now Fingerprint) []Change {
 	var out []Change
 	if approved.Exe != now.Exe {
 		out = append(out, Change{Path: ExePath, Kind: Changed})
@@ -457,23 +539,48 @@ func Diff(approved, now Fingerprint) []Change {
 	if approved.Exe == now.Exe && stampMoved(approved, now, ExePath) {
 		out = append(out, Change{Path: ExePath, Kind: Rewritten})
 	}
-	var rest []Change
-	for p, a := range approved.Files {
-		n, ok := now.Files[p]
-		switch {
-		case !ok:
-			rest = append(rest, Change{Path: p, Kind: Removed})
-		case n != a:
-			rest = append(rest, Change{Path: p, Kind: Changed})
-		case stampMoved(approved, now, p):
-			rest = append(rest, Change{Path: p, Kind: Rewritten})
+	rest := diffEntries(approved, now, approved.Files, now.Files)
+	if approved.LibsV < libsVersion {
+		if len(now.LibRoots) > 0 {
+			rest = append(rest, Change{Path: LibsPath, Kind: Unchecked})
 		}
-	}
-	for p := range now.Files {
-		if _, ok := approved.Files[p]; !ok {
-			rest = append(rest, Change{Path: p, Kind: Added})
-		}
+	} else {
+		rest = append(rest, m.diffLibs(approved, now)...)
 	}
 	sort.Slice(rest, func(a, b int) bool { return rest[a].Path < rest[b].Path })
 	return append(out, rest...)
+}
+
+// diffEntries compares one map of entries. An AbsentEntry is compared as a
+// missing one: a place that held nothing and now holds a file is Added.
+func diffEntries(approved, now Fingerprint, a, n map[string]string) []Change {
+	var out []Change
+	present := func(m map[string]string, k string) (string, bool) {
+		v, ok := m[k]
+		return v, ok && v != AbsentEntry
+	}
+	for p := range a {
+		av, aok := present(a, p)
+		nv, nok := present(n, p)
+		switch {
+		case !aok && nok:
+			out = append(out, Change{Path: p, Kind: Added})
+		case !aok:
+		case !nok:
+			out = append(out, Change{Path: p, Kind: Removed})
+		case nv != av:
+			out = append(out, Change{Path: p, Kind: Changed})
+		case stampMoved(approved, now, p):
+			out = append(out, Change{Path: p, Kind: Rewritten})
+		}
+	}
+	for p := range n {
+		if _, ok := a[p]; ok {
+			continue
+		}
+		if _, nok := present(n, p); nok {
+			out = append(out, Change{Path: p, Kind: Added})
+		}
+	}
+	return out
 }

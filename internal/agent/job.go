@@ -52,11 +52,34 @@ func (s *Server) SetJobStore(path string) (int, error) {
 	s.jobMu.Lock()
 	defer s.jobMu.Unlock()
 	if err != nil {
-		s.jobs, s.jobsPath, s.jobNames, s.jobKept = map[string]*job.Job{}, "", nil, nil
+		s.jobs, s.jobsPath, s.jobNames, s.jobKept, s.jobLibs = map[string]*job.Job{}, "", nil, nil, ""
 		return 0, err
 	}
 	s.jobs, s.jobsPath, s.jobNames, s.jobKept = jobs, path, names, kept
+	s.jobLibs = job.LibManifests(job.LibManifestDir(filepath.Dir(path)))
 	return len(jobs), nil
+}
+
+// libManifests is where the per-file lists of the jobs' library roots are
+// kept (job.LibManifests): only to name a changed file in a stop, never to
+// decide one.
+func (s *Server) libManifests() job.LibManifests {
+	s.jobMu.Lock()
+	defer s.jobMu.Unlock()
+	return s.jobLibs
+}
+
+// pruneLibManifestsLocked deletes the manifests no job names any more.
+// Caller holds jobLibMu, which every manifest write and prune takes, so a
+// prune never deletes one an approval is about to name.
+func (s *Server) pruneLibManifestsLocked(libs job.LibManifests) {
+	s.jobMu.Lock()
+	fps := make([]job.Fingerprint, 0, len(s.jobs))
+	for _, j := range s.jobs {
+		fps = append(fps, j.Fingerprint)
+	}
+	s.jobMu.Unlock()
+	_ = libs.Keep(fps)
 }
 
 func loadJobFile(path string) (map[string]*job.Job, []job.Kept, map[string]bool, error) {
@@ -121,6 +144,10 @@ type preparedJob struct {
 	shownCount               int
 	exists                   bool
 	reason                   string
+	// unfingerprinted is why jit cannot fingerprint all the program loads
+	// from outside the folder (job.Unfingerprinted), for an each-time job's
+	// sheet; a never job with one is refused.
+	unfingerprinted string
 }
 
 // prepareJob runs every check approval makes before its prompt. The string
@@ -183,6 +210,14 @@ func (s *Server) prepareJob(req Request) (*preparedJob, string) {
 	if err != nil {
 		return nil, err.Error()
 	}
+	prog := job.Program{Exe: exe, Argv: spec.Argv, PathEnv: spec.PathEnv, Home: spec.Home}
+	gap := job.Unfingerprinted(dir, prog)
+	if gap != "" && ask == job.AskNever {
+		// A job that never asks runs with its secrets while nobody watches,
+		// so everything it runs must be fingerprinted: the promise approval
+		// makes is that the code that runs is the code approved.
+		return nil, gap + ". A job that runs without asking must run only code jit fingerprints: approve it as each-time, or start the interpreter directly (a venv's bin/python, not a launcher)"
+	}
 
 	s.jobMu.Lock()
 	_, exists := s.jobs[req.JobName]
@@ -228,7 +263,7 @@ func (s *Server) prepareJob(req Request) (*preparedJob, string) {
 		return nil, fmt.Sprintf("--show names %s, which the profile does not set", strings.Join(names, ", "))
 	}
 
-	before, err := job.Compute(dir, exe, outputs, extra)
+	before, err := job.Compute(dir, prog, outputs, extra)
 	if err != nil {
 		return nil, "fingerprinting the folder: " + err.Error()
 	}
@@ -245,7 +280,7 @@ func (s *Server) prepareJob(req Request) (*preparedJob, string) {
 	return &preparedJob{
 		name: req.JobName, dir: dir, exe: exe, spec: spec, ask: ask, outputs: outputs, extra: extra,
 		sources: sources, profileName: profileName, profileRoot: profileRoot, before: before,
-		shownCount: shownCount, exists: exists,
+		shownCount: shownCount, exists: exists, unfingerprinted: gap,
 		reason: jobAllowReason(jobLabel(dir, spec.Argv), secretGroups(sources), len(sources), shownCount, ask),
 	}, ""
 }
@@ -293,7 +328,7 @@ func (s *Server) allowJob(req Request, c *caller) Response {
 
 	// The folder the human approved is the folder as it was when they were
 	// asked. A change while the prompt was up is refused, not absorbed.
-	after, err := job.Compute(dir, exe, outputs, extra)
+	after, err := job.Compute(dir, job.Program{Exe: exe, Argv: spec.Argv, PathEnv: spec.PathEnv, Home: spec.Home}, outputs, extra)
 	if err != nil {
 		return Response{OK: false, Error: "job_allow: fingerprinting the folder: " + err.Error()}
 	}
@@ -345,6 +380,15 @@ func (s *Server) allowJob(req Request, c *caller) Response {
 	}
 	sort.Slice(j.Secrets, func(a, b int) bool { return j.Secrets[a].Var < j.Secrets[b].Var })
 
+	// jobs.json keeps one hash per library root; the per-file lists go to
+	// the manifests, written before the job that names them is saved. A
+	// manifest that fails to write costs only the name of a changed file
+	// in a later stop, which then names its folder: no reason to refuse.
+	libs := s.libManifests()
+	s.jobLibMu.Lock()
+	_ = libs.Save(after)
+	j.Fingerprint = after.Compact()
+
 	s.jobMu.Lock()
 	prev := s.jobs[j.Name]
 	s.jobs[j.Name] = j
@@ -357,6 +401,8 @@ func (s *Server) allowJob(req Request, c *caller) Response {
 		}
 	}
 	s.jobMu.Unlock()
+	s.pruneLibManifestsLocked(libs)
+	s.jobLibMu.Unlock()
 	if err != nil {
 		dropKey()
 		return Response{OK: false, Error: "job_allow: saving the job: " + err.Error()}
@@ -493,10 +539,14 @@ func (s *Server) removeJob(name string, c *caller) Response {
 	if err != nil {
 		s.jobs[name] = j
 	}
+	libs := s.jobLibs
 	s.jobMu.Unlock()
 	if err != nil {
 		return Response{OK: false, Error: "job_remove: " + err.Error()}
 	}
+	s.jobLibMu.Lock()
+	s.pruneLibManifestsLocked(libs)
+	s.jobLibMu.Unlock()
 	cause, keyNote := "removed", ""
 	if j.KeyID != "" && s.GrantKeys != nil {
 		// Removing is what ends a job that never asks, so the key goes with
@@ -519,7 +569,7 @@ func (s *Server) removeJob(name string, c *caller) Response {
 			cause = "removed, its key deleted"
 		}
 	}
-	s.recordJobEvent(KindUse, OpJobRemove, c, j, cause)
+	s.recordJobEvent(KindUse, OpJobRemove, c, j, cause, "")
 	return Response{OK: true, KeyNote: keyNote}
 }
 
@@ -550,7 +600,7 @@ func (s *Server) jobStatus(j *job.Job) JobStatus {
 	st := JobStatus{
 		Name: j.Name, Dir: j.Dir, Argv: append([]string(nil), j.Argv...), Exe: j.Exe,
 		Profile: j.Profile, Ask: string(j.Ask), Outputs: j.Outputs, Description: j.Description,
-		Files: len(j.Fingerprint.Files), State: JobReady, ApprovedUnix: j.ApprovedUnix,
+		Files: len(j.Fingerprint.Files), Libraries: j.Fingerprint.LibraryFiles(), State: JobReady, ApprovedUnix: j.ApprovedUnix,
 		Runs: j.Runs, LastRunUnix: j.LastRunUnix, LastExit: j.LastExit, LastCaller: j.LastCaller,
 		LastRefusal: j.LastRefusal, LastHidden: j.LastHiddenSum,
 		ProfileGlobal: j.Profile != "" && j.ProfileRoot == "", ProfileRoot: j.ProfileRoot,
@@ -566,25 +616,42 @@ func (s *Server) jobStatus(j *job.Job) JobStatus {
 		st.State = JobChanged
 		st.LastRefusal = j.Stopped
 	}
-	if changes := jobChanges(j); len(changes) > 0 {
+	if changes := s.jobChanges(j); len(changes) > 0 {
 		st.State = JobChanged
 		if len(changes) > maxJobChanges {
 			changes = changes[:maxJobChanges]
 		}
 		st.Changes = changes
 	}
+	st.Stopped = st.State != JobReady
+	switch {
+	case st.Stopped:
+		st.Outcome = JobOutcomeStop
+	case j.SkipTold:
+		st.Outcome = JobOutcomePersistingSkip
+	case j.SkipsInARow > 0:
+		st.Outcome = JobOutcomeSkip
+	}
+	if !st.Stopped {
+		st.Skips, st.SkippingSinceUnix = j.SkipsInARow, j.SkippingSinceUnix
+	}
 	return st
 }
 
 // jobChanges re-fingerprints j's folder. A folder that cannot be read at all
 // is reported as one change on the folder itself, which stops the job the
-// same way.
-func jobChanges(j *job.Job) []job.Change {
-	now, err := job.Compute(j.Dir, j.Exe, j.Outputs, j.Extra)
+// same way. A changed library file is named from the manifests.
+func (s *Server) jobChanges(j *job.Job) []job.Change {
+	now, err := job.Compute(j.Dir, jobProgram(j), j.Outputs, j.Extra)
 	if err != nil {
 		return []job.Change{{Path: j.Dir, Kind: job.Removed}}
 	}
-	return job.Diff(j.Fingerprint, now)
+	return s.libManifests().Diff(j.Fingerprint, now)
+}
+
+// jobProgram is what j starts, as approval resolved it.
+func jobProgram(j *job.Job) job.Program {
+	return job.Program{Exe: j.Exe, Argv: j.Argv, PathEnv: j.PathEnv, Home: j.Home}
 }
 
 // rotatedSecrets maps each secret path whose wrapped bytes no longer match
@@ -640,10 +707,10 @@ func (s *Server) runJob(name string, c *caller) Response {
 	requester := jobRequester(c)
 
 	if j.Stopped != "" {
-		s.recordJobEvent(KindError, OpJobRun, c, &j, j.Name+": refused, stopped: "+j.Stopped)
+		s.recordJobEvent(KindError, OpJobRun, c, &j, j.Name+": refused, stopped: "+j.Stopped, JobOutcomeStillStopped)
 		return Response{OK: false, Error: fmt.Sprintf("job_run: %s: stopped because %s. It won't run until you approve it again", j.Name, j.Stopped)}
 	}
-	if changes := jobChanges(&j); len(changes) > 0 {
+	if changes := s.jobChanges(&j); len(changes) > 0 {
 		return s.refuseJob(&j, c, requester, changeReason(changes, ""))
 	}
 	if s.OnWrappedDEK == nil {
@@ -679,6 +746,9 @@ func (s *Server) runJob(name string, c *caller) Response {
 		// falls back to prompting, which would turn a job the human set to
 		// run while away into one that silently waits on a dialog.
 		if err := s.openJobKeys(&j, deks); err != nil {
+			if errors.As(err, &jobKeyUnready{}) {
+				return s.refuseJobRun(&j, c, requester, err.Error())
+			}
 			return s.refuseJob(&j, c, requester, err.Error())
 		}
 	default:
@@ -704,7 +774,7 @@ func (s *Server) runJob(name string, c *caller) Response {
 	// Checked again now, after the prompt: the caller is the party the job
 	// keeps values from, and it can write the folder. An edit landing while
 	// the human reads the dialog must not run with the secrets it unlocked.
-	if changes := jobChanges(&j); len(changes) > 0 {
+	if changes := s.jobChanges(&j); len(changes) > 0 {
 		return s.refuseJob(&j, c, requester, changeReason(changes, "while the prompt was up"))
 	}
 	// The stored job, not the snapshot: approved again, removed or stopped
@@ -726,7 +796,7 @@ func (s *Server) runJob(name string, c *caller) Response {
 	// the output is withheld (it may be shaped by the changed code) and the
 	// job stops until the human looks. A job that writes into its own folder
 	// stops here too, and the message says how to declare that folder.
-	if changes := jobChanges(&j); len(changes) > 0 {
+	if changes := s.jobChanges(&j); len(changes) > 0 {
 		return s.refuseJob(&j, c, requester, changeReason(changes, "while the job ran, so its output was withheld (if the job writes there, approve it again with that folder as --output)"))
 	}
 	hidden := 0
@@ -741,6 +811,7 @@ func (s *Server) runJob(name string, c *caller) Response {
 		cur.LastCaller = requester
 		cur.LastRefusal = ""
 		cur.LastHiddenSum = hidden
+		endSkipStreak(cur)
 		_ = s.saveJobsLocked() // bookkeeping only; the run already happened
 	}
 	s.jobMu.Unlock()
@@ -748,7 +819,7 @@ func (s *Server) runJob(name string, c *caller) Response {
 	if j.Ask == job.AskNever {
 		how = "unasked"
 	}
-	s.recordJobEvent(KindUse, OpJobRun, c, &j, fmt.Sprintf("%s for %s (%s), exit %d, %d hidden", j.Name, requester, how, result.Exit, hidden))
+	s.recordJobEvent(KindUse, OpJobRun, c, &j, fmt.Sprintf("%s for %s (%s), exit %d, %d hidden", j.Name, requester, how, result.Exit, hidden), "")
 	return Response{OK: true, JobResult: &result}
 }
 
@@ -791,9 +862,17 @@ func (s *Server) openJobKeys(j *job.Job, deks map[string][]byte) error {
 			wrap = sec.Wrap
 		}
 	}
+	// Only a key that can't be used right now (ErrGrantKeyNotNow) skips
+	// this one run; every other failure is an answer about the key, and
+	// stops the job, naming it.
 	key, err := s.loadGrantKey(j.KeyID, wrap)
-	if err != nil {
+	switch {
+	case errors.Is(err, ErrGrantKeyAbsent):
 		return fmt.Errorf("the job's key is gone")
+	case errors.Is(err, ErrGrantKeyNotNow):
+		return jobKeyUnready{"the job's key couldn't be loaded", err}
+	case err != nil:
+		return fmt.Errorf("the job's key couldn't be loaded (%v)", err)
 	}
 	defer key.Close()
 	for _, sec := range j.Secrets {
@@ -805,8 +884,16 @@ func (s *Server) openJobKeys(j *job.Job, deks map[string][]byte) error {
 			return fmt.Errorf("%s's sealed key is damaged", sec.Var)
 		}
 		dek, oerr := key.Open(sealed, sec.Class)
-		if oerr != nil {
+		switch {
+		case errors.Is(oerr, ErrGrantKeyWrongKey):
 			return fmt.Errorf("%s does not open under the job's key", sec.Var)
+		case errors.Is(oerr, ErrGrantKeyNotNow):
+			// A read that would have had to ask, an enclave locked or out
+			// of reach: nothing is known to be wrong with the job or its
+			// copy, so this one run is skipped, not the job stopped.
+			return jobKeyUnready{"the job's key couldn't open " + sec.Var, oerr}
+		case oerr != nil:
+			return fmt.Errorf("the job's key couldn't open %s (%v)", sec.Var, oerr)
 		}
 		deks[sec.DeviceDigest] = dek
 	}
@@ -821,21 +908,84 @@ func (s *Server) refuseJob(j *job.Job, c *caller, requester, why string) Respons
 		cur.LastRefusal = why
 		cur.LastCaller = requester
 		cur.Stopped = why
+		endSkipStreak(cur) // the stop is what the owner hears now
 		_ = s.saveJobsLocked()
 	}
 	s.jobMu.Unlock()
-	s.recordJobEvent(KindError, OpJobRun, c, j, j.Name+": refused, "+why)
+	s.recordJobEvent(KindError, OpJobRun, c, j, j.Name+": refused, "+why, JobOutcomeStop)
 	return Response{OK: false, Error: fmt.Sprintf("job_run: %s: %s. It won't run until you approve it again", j.Name, why)}
+}
+
+// jobKeyUnready is openJobKeys failing because the key can't be used right
+// now (ErrGrantKeyNotNow, on Load or Open), which proves nothing about the
+// job, its key or its copies. Not a stop: every other failure is.
+type jobKeyUnready struct {
+	what string
+	err  error
+}
+
+func (e jobKeyUnready) Error() string { return fmt.Sprintf("%s (%s)", e.what, e.err) }
+
+func (e jobKeyUnready) Unwrap() error { return e.err }
+
+// refuseJobRun is refuseJob for a cause outside the job: the run did not
+// happen and says why, but the job is NOT stopped, so the next run tries
+// again without a new approval. Its event says "didn't run", never
+// "refused", and its JobOutcome is JobOutcomeSkip: the app announces a
+// stop, and this is not one.
+//
+// A skip that goes on is: jobSkipsToTell skipped runs in a row, or
+// jobSkipTimeToTell since the first of them, whichever comes first, and the
+// event of the run that crosses the line is JobOutcomePersistingSkip,
+// saying how long: once per streak, so the owner learns the job hasn't
+// been running without being told at every attempt. The job still is not
+// stopped; the next run still tries.
+func (s *Server) refuseJobRun(j *job.Job, c *caller, requester, why string) Response {
+	now := time.Now()
+	outcome, cause := JobOutcomeSkip, j.Name+": didn't run, "+why
+	s.jobMu.Lock()
+	if cur, ok := s.jobs[j.Name]; ok && cur.ApprovedUnix == j.ApprovedUnix {
+		cur.LastRefusal = why
+		cur.LastCaller = requester
+		if cur.SkipsInARow == 0 {
+			cur.SkippingSinceUnix = now.Unix()
+		}
+		cur.SkipsInARow++
+		since := time.Unix(cur.SkippingSinceUnix, 0)
+		if !cur.SkipTold && (cur.SkipsInARow >= jobSkipsToTell || now.Sub(since) >= jobSkipTimeToTell) {
+			cur.SkipTold = true
+			outcome = JobOutcomePersistingSkip
+			cause = fmt.Sprintf("%s: didn't run %d times in a row since %s, %s", j.Name, cur.SkipsInARow, since.Format("Jan 2 15:04"), why)
+		}
+		_ = s.saveJobsLocked()
+	}
+	s.jobMu.Unlock()
+	s.recordJobEvent(KindError, OpJobRun, c, j, cause, outcome)
+	return Response{OK: false, Error: fmt.Sprintf("job_run: %s: %s. The job wasn't stopped; the next run tries again", j.Name, why)}
+}
+
+// When a streak of skipped runs is told (refuseJobRun): after this many in
+// a row, or this long after the first, whichever comes first.
+const (
+	jobSkipsToTell    = 3
+	jobSkipTimeToTell = 24 * time.Hour
+)
+
+// endSkipStreak clears j's streak of skipped runs: a run ran, or the job
+// stopped (the stop is then what the owner hears).
+func endSkipStreak(j *job.Job) {
+	j.SkipsInARow, j.SkippingSinceUnix, j.SkipTold = 0, 0, false
 }
 
 // recordJobEvent writes one job event to the ring and the durable trail,
 // never collapsed: a run is a discrete fact, and two runs a minute apart are
 // two runs. Labels are the job's vault paths, like a grant's.
-func (s *Server) recordJobEvent(kind, op string, c *caller, j *job.Job, cause string) {
+func (s *Server) recordJobEvent(kind, op string, c *caller, j *job.Job, cause, outcome string) {
 	e := unlockEvent(op, c)
 	e.Kind = kind
 	e.Cause = cause
 	e.Job = j.Name
+	e.JobOutcome = outcome
 	e.UnixTime = time.Now().Unix()
 	for _, sec := range j.Secrets {
 		if len(e.Labels) < maxUseLabels {
@@ -923,6 +1073,7 @@ func (s *Server) previewJob(req Request) *JobPreview {
 	_, program := job.Label(pj.dir, pj.spec.Argv)
 	p := &JobPreview{
 		Dir: pj.dir, Exe: pj.exe, Program: program, Files: len(pj.before.Files), Extra: pj.extra,
+		Libraries: pj.before.LibraryFiles(), Unfingerprinted: pj.unfingerprinted,
 		Ask: string(pj.ask), Exists: pj.exists, Prompt: pj.reason,
 	}
 	for _, src := range pj.sources {

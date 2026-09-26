@@ -7,7 +7,8 @@ description: Store, read, list, and delete secrets in the local encrypted vault.
 
 The vault is a local encrypted store at
 `~/Library/Application Support/jitpass/` - each secret an individually
-encrypted file, with the master key in your macOS login Keychain. Create it
+encrypted file, with the master key in your macOS login Keychain, or, if
+you choose, in your Mac's [Secure Enclave](./secure-enclave.md). Create it
 once with `jit vault init` (part of the
 [Quickstart](../getting-started/quickstart.md)).
 
@@ -143,6 +144,9 @@ credential helper.
   resolves it on use
 - **[Back up and restore](./backup-restore.md)** - `vault export` /
   `vault import`, for disaster recovery
+- **[The vault key in the Secure Enclave](./secure-enclave.md)** - move
+  the master key into the Secure Enclave and back, keep a recovery file,
+  and restore on a new or erased Mac
 - **[Maintenance](./maintenance.md)** - `rekey` the master key, find
   copies of the same secret with `duplicates`, `prune` stale backups,
   delete secrets nothing references with `orphans`, `clean` out all

@@ -131,6 +131,12 @@ func discoverMCPConfigFiles(home, cwd string, includeClaudeDesktop bool, accept 
 			if _, err := os.Stat(fixed); err == nil {
 				check(fixed)
 			}
+			// And the copies `jit mcp install` saved beside it: audit scans
+			// them (audit.MCPConfigBackups), and they sit in the same folder
+			// no walk reaches, so without this their tokens have no fix path.
+			for _, backup := range audit.MCPConfigBackups(fixed) {
+				check(backup)
+			}
 		}
 	}
 
@@ -156,7 +162,10 @@ func discoverMCPConfigFiles(home, cwd string, includeClaudeDesktop bool, accept 
 		if !d.Type().IsRegular() {
 			return nil
 		}
-		if audit.IsMCPConfigFileName(d.Name()) {
+		// A jit-made backup of a config (audit.IsMCPConfigBackupName) is
+		// the same kind of file, holding the same tokens: audit reports
+		// them, so it is migrated like its original.
+		if audit.IsMCPConfigFileName(d.Name()) || audit.IsMCPConfigBackupName(d.Name()) {
 			check(path)
 		}
 		return nil

@@ -24,7 +24,7 @@ func TestStagedWrapperWritesBesideTheRealFile(t *testing.T) {
 func TestStageVerifyPromote(t *testing.T) {
 	root := t.TempDir()
 	f := newFake(t)
-	staged := newWrapper(root, testTag, f)
+	staged := fakeWrapper(root, f, newFake(t))
 	staged.path += stagedSuffix
 	mek := testMEK(t)
 	if err := staged.Install(mek); err != nil {
@@ -42,7 +42,7 @@ func TestStageVerifyPromote(t *testing.T) {
 	if _, err := os.Stat(staged.path); err == nil {
 		t.Fatal("the staged file survived promotion")
 	}
-	real := newWrapper(root, testTag, f)
+	real := fakeWrapper(root, f, newFake(t))
 	if got, err := real.FetchMEK("open"); err != nil || !bytes.Equal(got, mek) {
 		t.Fatalf("the promoted file does not open to the MEK: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestStageVerifyPromote(t *testing.T) {
 func TestRemoveStagedLeavesTheRealFileAndKey(t *testing.T) {
 	root := t.TempDir()
 	f := newFake(t)
-	real := newWrapper(root, testTag, f)
+	real := fakeWrapper(root, f, newFake(t))
 	if err := real.Install(testMEK(t)); err != nil {
 		t.Fatal(err)
 	}

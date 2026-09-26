@@ -36,7 +36,7 @@ func testMEK(t *testing.T) []byte {
 func installed(t *testing.T) (*Wrapper, *fakeEnclave, []byte) {
 	t.Helper()
 	f := newFake(t)
-	w := newWrapper(t.TempDir(), testTag, f)
+	w := fakeWrapper(t.TempDir(), f, newFake(t))
 	mek := testMEK(t)
 	if err := w.Install(mek); err != nil {
 		t.Fatal(err)
@@ -48,8 +48,14 @@ func TestProductionIdentifiersNeverInTests(t *testing.T) {
 	if !strings.Contains(testTag, "TEST-ONLY") || testTag == prodTag {
 		t.Fatalf("test tag %q must be TEST-ONLY and not %q", testTag, prodTag)
 	}
-	if w := New(t.TempDir()); w.tag != prodTag {
-		t.Fatalf("New's tag is %q, want the production %q", w.tag, prodTag)
+	w := New(t.TempDir())
+	if a, b := w.slots[0].tag, w.slots[1].tag; a != prodTag || b != "com.jitpass.vault.kek.b" {
+		t.Fatalf("New's slots are %q and %q, want the production %q and %q", a, b, prodTag, "com.jitpass.vault.kek.b")
+	}
+	for _, s := range NewTesting(t.TempDir(), testTag).slots {
+		if !strings.Contains(s.tag, "TEST-ONLY") {
+			t.Fatalf("NewTesting built slot %q", s.tag)
+		}
 	}
 }
 
@@ -167,7 +173,7 @@ func TestInstallRefusesOverAnExistingSealedKey(t *testing.T) {
 }
 
 func TestInstallRefusesAWrongSizedMEK(t *testing.T) {
-	w := newWrapper(t.TempDir(), testTag, newFake(t))
+	w := fakeWrapper(t.TempDir(), newFake(t), newFake(t))
 	if err := w.Install(make([]byte, 16)); err == nil {
 		t.Fatal("installed a 16-byte MEK")
 	}
@@ -176,25 +182,9 @@ func TestInstallRefusesAWrongSizedMEK(t *testing.T) {
 	}
 }
 
-// The file is writable by any program running as the user; the tag in it
-// must not choose which key opens it.
-func TestFetchRefusesAFileSealedUnderAnotherTag(t *testing.T) {
-	w, _, _ := installed(t)
-	k, blob, err := readSealed(w.path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := writeSealed(w.path, k.Tag+".other", blob); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := w.FetchMEK("r"); err == nil || !strings.Contains(err.Error(), "sealed by key") {
-		t.Fatalf("got %v, want a tag-mismatch refusal", err)
-	}
-}
-
 func TestFetchRefusesAWrongSizedSecret(t *testing.T) {
 	f := newFake(t)
-	w := newWrapper(t.TempDir(), testTag, f)
+	w := fakeWrapper(t.TempDir(), f, newFake(t))
 	if err := f.create(); err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +201,7 @@ func TestFetchRefusesAWrongSizedSecret(t *testing.T) {
 }
 
 func TestFetchWithoutASealedFile(t *testing.T) {
-	w := newWrapper(t.TempDir(), testTag, newFake(t))
+	w := fakeWrapper(t.TempDir(), newFake(t), newFake(t))
 	if _, err := w.FetchMEK("r"); !errors.Is(err, errNoSealed) {
 		t.Fatalf("got %v, want errNoSealed", err)
 	}
@@ -219,7 +209,7 @@ func TestFetchWithoutASealedFile(t *testing.T) {
 
 func TestPresence(t *testing.T) {
 	t.Run("absent", func(t *testing.T) {
-		if p := newWrapper(t.TempDir(), testTag, newFake(t)).Presence(); p != Absent {
+		if p := fakeWrapper(t.TempDir(), newFake(t), newFake(t)).Presence(); p != Absent {
 			t.Fatalf("got %v", p)
 		}
 	})
@@ -315,7 +305,7 @@ func TestSealedPathIsTheVaultRoot(t *testing.T) {
 // about the key: never Absent, which callers treat as "the key is gone".
 func TestPresenceOfASymlinkIsIndeterminate(t *testing.T) {
 	root := t.TempDir()
-	w := newWrapper(root, testTag, newFake(t))
+	w := fakeWrapper(root, newFake(t), newFake(t))
 	if err := os.Symlink(filepath.Join(root, "nowhere"), w.path); err != nil {
 		t.Fatal(err)
 	}

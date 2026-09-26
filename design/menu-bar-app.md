@@ -15,10 +15,13 @@ Three problems share one fix.
    with one line of text. It cannot say who asked, why, what "deny" does, or
    how to stop it asking. Prompt fatigue is the most likely reason an
    installed user uninstalls.
-3. **Secure Enclave.** `internal/secureenclave` is deferred because keychain
-   persistence of an SE key needs a provisioning-profile entitlement that
-   only an `.app` bundle can carry (`spike/secure-enclave/FINDINGS.md`,
-   re-confirmed 2026-07-11). A bare Mach-O can never have it.
+3. **Secure Enclave.** Keychain persistence of an SE key needs a
+   provisioning-profile entitlement that only an `.app` bundle can carry
+   (`spike/secure-enclave/FINDINGS.md`, re-confirmed 2026-07-11); a bare
+   Mach-O can never have it. **Resolved in v2.3.0:** jit runs as the main
+   executable of a helper bundle inside the app, which carries the
+   entitlement, and `internal/secureenclave` ships behind an opt-in move
+   (`secure-enclave.md`, `secure-enclave-plan.md`).
 
 A menu bar app answers all three: it is a GUI, it is where a prompt can
 explain itself, and it is the bundle the agent has to live in.

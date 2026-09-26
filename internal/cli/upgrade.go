@@ -243,7 +243,7 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 		// command that finishes the job.
 		if kept, keepErr := preserveStagedBinary(staged, latest); keepErr == nil {
 			fmt.Fprintf(out, "\nThe verified %s binary is kept at %s.\n", latest, kept)
-			fmt.Fprint(out, hlCmds(fmt.Sprintf("  Finish the upgrade with: sudo mv -f %s %s && jit service restart\n", kept, exePath)))
+			fmt.Fprint(out, hlCmds(fmt.Sprintf("  Finish the upgrade with: %s\n", upgradeFinishCommand(kept, exePath))))
 			fmt.Fprintln(out, hlCmds("  (Or re-run `jit upgrade` from a terminal where sudo can prompt for your password.)"))
 		}
 		return fmt.Errorf("jit upgrade: replacing %s: %w", exePath, err)
@@ -254,12 +254,52 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintf(out, "Replaced %s.\n", exePath)
 	}
 
-	// Move the service onto the just-installed binary now, rather than waiting
-	// on the stale-binary poll. Best-effort: the upgrade itself succeeded even
-	// if the restart hiccups, so a restart failure is a warning, not an error
-	// that would wrongly imply the binary wasn't swapped.
+	upgradeMoveService(out, latest)
+	return nil
+}
+
+// upgradeFinishCommand is the one line that finishes an upgrade whose
+// binary could not be swapped: the move, then the service restart, which
+// is left off when this jit would refuse it (serviceNeedsApp: on an
+// enclave vault only JitPass.app's jit may restart the service). Advice
+// must never name a command this jit refuses.
+func upgradeFinishCommand(kept, exePath string) string {
+	finish := fmt.Sprintf("sudo mv -f %s %s", kept, exePath)
+	if _, refused := serviceNeedsApp("service restart"); refused == nil {
+		finish += " && jit service restart"
+	}
+	return finish
+}
+
+// upgradeMoveService moves the service onto the just-installed binary now,
+// rather than waiting on the stale-binary poll, and ends the upgrade's
+// output. Best-effort: the upgrade itself succeeded even if the restart
+// hiccups, so a restart failure is a warning, not an error that would
+// wrongly imply the binary wasn't swapped.
+//
+// A jit serviceNeedsApp refuses (on an enclave vault, any jit outside
+// JitPass.app) leaves the service where it is and prints no "Done": its
+// promise of a Touch ID next time would be false, and its advice, `jit
+// service restart`, is a command this jit refuses too. When it was refused
+// only for running outside the app (needsAppJitError) and the service
+// already runs the app's jit, signature checked (serviceRunsAppJit), that
+// is where the service belongs, and the upgrade ends quietly. Any other
+// refusal (a signature this jit couldn't read, a vault it couldn't find) is
+// printed, whatever the service runs.
+func upgradeMoveService(out io.Writer, latest string) {
+	cleared, refused := serviceNeedsApp("service restart")
+	if refused != nil {
+		var needsApp needsAppJitError
+		if errors.As(refused, &needsApp) && serviceRunsAppJit() {
+			fmt.Fprintf(out, "Upgraded this jit to %s. The service keeps running JitPass's jit.\n", latest)
+			return
+		}
+		fmt.Fprintf(out, "Upgraded this jit to %s.\nThe service was not moved onto it:\n", latest)
+		fmt.Fprint(out, hlCmds(refused.Error()+"\n"))
+		return
+	}
 	fmt.Fprintf(out, "Restarting service ... ")
-	running, restartErr := restartServiceOntoCurrentBinary()
+	running, restartErr := restartServiceOntoCurrentBinary(cleared)
 	switch {
 	case restartErr != nil:
 		fmt.Fprintln(out, "could not restart automatically")
@@ -272,7 +312,6 @@ func runUpgrade(cmd *cobra.Command, _ []string) error {
 	}
 
 	fmt.Fprintf(out, "Done. Upgraded to %s. The next vault use will prompt Touch ID.\n", latest)
-	return nil
 }
 
 // upgradeLatestTag resolves the latest release's tag (e.g. "v0.41.0") from
@@ -561,7 +600,13 @@ func sudoCommand(args ...string) *exec.Cmd {
 // what the service will exec), so build equality can never hold, and
 // demanding it made every successful upgrade wait out the full timeout and
 // then report failure over a healthy service.
-func restartServiceOntoCurrentBinary() (running bool, err error) {
+//
+// cleared is the caller's serviceNeedsApp answer, which covers every branch:
+// the reload restarts a service on a binary as surely as a repoint does.
+func restartServiceOntoCurrentBinary(cleared serviceCleared) (running bool, err error) {
+	if !cleared.ok {
+		return false, errors.New("the service wasn't checked against this vault's key; nothing was changed")
+	}
 	plistPath, err := agentPlistPath()
 	if err != nil {
 		return false, err
@@ -579,7 +624,7 @@ func restartServiceOntoCurrentBinary() (running bool, err error) {
 		// No plist to preserve a setting from, so install with the defaults
 		// (default TTL, consent on). An existing plist takes a branch below,
 		// which keeps whatever TTL and consent state it already has baked in.
-		_, running, ierr := installAgentServiceReady(agentInstallDefaultTTL, true, ready)
+		_, running, ierr := installAgentServiceReady(agentInstallDefaultTTL, true, ready, cleared)
 		return running, ierr
 	} else if statErr != nil {
 		return false, statErr
@@ -593,7 +638,7 @@ func restartServiceOntoCurrentBinary() (running bool, err error) {
 		if d, ok := configuredAgentTTL(); ok {
 			ttl = d
 		}
-		_, running, ierr := installAgentServiceReady(ttl, configuredAgentConsent(), ready)
+		_, running, ierr := installAgentServiceReady(ttl, configuredAgentConsent(), ready, cleared)
 		return running, ierr
 	}
 	if out, err := reloadAgentService(plistPath); err != nil {

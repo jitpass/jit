@@ -138,8 +138,9 @@ SEResult se_seal(const char *tag, const char *group, const unsigned char *pt, in
 }
 
 SEResult se_open(const char *tag, const char *group, const unsigned char *ct, int ct_len,
-                 const char *reason, unsigned char **out, int *out_len) {
+                 const char *reason, unsigned char **out, int *out_len, int *decrypting) {
     @autoreleasepool {
+        *decrypting = 0;
         LAContext *ctx = [[LAContext alloc] init];
         ctx.localizedReason = [NSString stringWithUTF8String:reason];
         OSStatus st = 0;
@@ -149,7 +150,10 @@ SEResult se_open(const char *tag, const char *group, const unsigned char *ct, in
         NSData *in = [NSData dataWithBytesNoCopy:(void *)ct length:ct_len freeWhenDone:NO];
         CFDataRef pt = SecKeyCreateDecryptedData(k, kSEAlgorithm, (__bridge CFDataRef)in, &e);
         CFRelease(k);
-        if (!pt) return failCF(@"opening with the Secure Enclave key", e);
+        if (!pt) {
+            *decrypting = 1;
+            return failCF(@"opening with the Secure Enclave key", e);
+        }
         int ok = copyOut(pt, out, out_len);
         // CoreFoundation's own copy is released, not zeroed: a CFDataRef is
         // immutable and writing through CFDataGetBytePtr is not a promise
@@ -194,6 +198,33 @@ SEResult se_list_tags(const char *group, const char *prefix, char ***tags, int *
         }
         *tags = out;
         *count = n;
+        SEResult r = {1, 0, NULL};
+        return r;
+    }
+}
+
+SEResult se_entitlements(const char *group, int *has_group, char **app_id) {
+    @autoreleasepool {
+        *has_group = 0;
+        *app_id = NULL;
+        SecTaskRef task = SecTaskCreateFromSelf(kCFAllocatorDefault);
+        if (!task) return fail(@"reading this process's code signature", errSecInternalComponent);
+        CFErrorRef e = NULL;
+        id groups = CFBridgingRelease(SecTaskCopyValueForEntitlement(task, CFSTR("keychain-access-groups"), &e));
+        if (e) {
+            CFRelease(task);
+            return failCF(@"reading the keychain-access-groups entitlement", e);
+        }
+        id appID = CFBridgingRelease(SecTaskCopyValueForEntitlement(task, CFSTR("com.apple.application-identifier"), &e));
+        CFRelease(task);
+        if (e) return failCF(@"reading the application-identifier entitlement", e);
+        NSString *want = [NSString stringWithUTF8String:group];
+        if ([groups isKindOfClass:[NSArray class]]) {
+            for (id g in (NSArray *)groups) {
+                if ([g isKindOfClass:[NSString class]] && [g isEqualToString:want]) *has_group = 1;
+            }
+        }
+        if ([appID isKindOfClass:[NSString class]]) *app_id = dupNSString(appID);
         SEResult r = {1, 0, NULL};
         return r;
     }
