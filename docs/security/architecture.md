@@ -202,8 +202,19 @@ longer put a dialog on your screen.
 An [AI job](../service/ai-jobs.md) is the one path where the service runs a
 command itself rather than handing a value to one. The approval pins what
 runs: the resolved executable, the command line, the profile's secrets, and
-a fingerprint of the job's folder (content hashes plus change-time stamps,
-so a file swapped and put back also counts as changed). Every run re-checks
+a fingerprint of the job's folder and of what its program loads from
+outside it (content hashes plus change-time stamps, so a file swapped and
+put back also counts as changed). For Python that is the interpreter's
+whole installation, a venv outside the folder and the folders its `.pth`
+files add; for Node, the folders it searches for packages above the job's;
+for every program, the native libraries it and its compiled modules link,
+wherever macOS would look for them. jit reads that layout from files
+(`pyvenv.cfg`, the standard library's landmark, Mach-O load commands) and
+never runs the interpreter to find it, which would run the code being
+checked before anything was approved. A job whose program jit cannot cover
+this way (a launcher such as `uv run` or `npx`, a version manager's shim,
+Ruby and other interpreters whose libraries it does not read) cannot be
+approved to run without asking. Every run re-checks
 the fingerprint and the secrets' rotation before the prompt, after it, and
 after the command exits; any difference stops the job, and the stop is
 sticky until the human reviews and approves it again. The Touch ID prompt
@@ -275,9 +286,14 @@ compromised user account safe. The boundaries:
   jit does not know, can. The fingerprint makes sure
   the code that runs is the code the human approved; it cannot make that
   code honest. Programs the job calls from `PATH` (`git`, `curl`, a Homebrew
-  tool) are trusted as installed, and a change that lands in the narrow
-  window between the last check and an import is caught by the re-check
-  after the run, which stops the job, not before it.
+  tool) are trusted as installed, with their own configuration; so is
+  configuration a library reads at run time (OpenSSL's `openssl.cnf`), a
+  native library a program opens by name rather than linking, and an
+  editable Python install that loads through an import hook rather than a
+  `.pth` path line. The system's own libraries in `/usr/lib` and `/System`
+  are not fingerprinted: System Integrity Protection keeps them. A change
+  that lands in the narrow window between the last check and an import is
+  caught by the re-check after the run, which stops the job, not before it.
 
 Each published review carries a "known, accepted limitations" list that
 states these boundaries precisely as of that review -

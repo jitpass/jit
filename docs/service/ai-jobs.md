@@ -81,11 +81,15 @@ The app's agent then has three tools: `list_jobs`, `run_job` and
 - A job approved to ask **each time** shows a Touch ID naming who asked. With
   JitPass running you first see the job's own sheet (the command, the folder,
   who asked), press Allow, and confirm with Touch ID.
-- The service checks the job's folder first. If anything changed since you
-  approved it, a script, a library, the profile file, even a file swapped
-  and put back, **the job stops** and says which file. It stays stopped until
-  you look and approve it again (**Review…** in AI Jobs, or `jit job allow
-  NAME --replace -- …`).
+- The service checks the job's folder first, and the interpreter the job
+  runs (see [What the fingerprint covers](#what-the-fingerprint-covers)). If
+  anything changed since you approved it, a script, a library, Python's own
+  standard library, the profile file, even a file swapped and put back,
+  **the job stops** and says which file. It stays stopped until you look and
+  approve it again (**Review…** in AI Jobs, or `jit job allow NAME --replace
+  -- …`). For a library outside the folder, jit keeps the list of its files
+  beside the job list; if that list is missing, the job stops all the same
+  and names the library's folder instead of the file.
 - The tool gets the exit code and the output. Every secret value, and its
   common encodings, is hidden. With `--output DIR` (terminal only), files the
   job wrote there are listed by path.
@@ -116,14 +120,71 @@ moved the vault key into the [Secure Enclave](../vault/secure-enclave.md),
 the Secure Enclave, where it opens without Touch ID and only JitPass can use
 it. Removing the job deletes that key.
 
+A job can run unasked only when jit fingerprints everything its program
+loads from outside the folder. jit refuses `--ask never`, and says why, for:
+
+- **a launcher that picks the interpreter when it runs**: `uv run`,
+  `poetry run`, `npx`, `pyenv` and other version managers' shims, Apple's
+  `/usr/bin/python3`, `go run`. Approve the interpreter itself instead:
+  `.venv/bin/python script.py`.
+- **an interpreter whose libraries jit does not fingerprint**: Ruby, Perl,
+  PHP, Lua, Deno, Bun, PowerShell, `osascript`.
+- **a Python or Node script outside the job's folder**, since both load
+  modules from the script's own folder.
+
+Such a job can still be approved to ask each time; the approval says what
+jit cannot fingerprint before you touch Touch ID.
+
+## What the fingerprint covers
+
+At approval and before, during and after every run, jit hashes:
+
+- **The job's folder**: every file, including its `.venv` and `__pycache__`.
+- **The program**: the executable, wherever it lives, and where its path
+  resolves. For a script with a `#!` line, the interpreter that line names
+  (found on the job's `PATH`, as `env` would).
+- **For Python**: the interpreter's whole installation (the standard
+  library, its compiled modules, its site-packages, its bytecode), a venv
+  outside the folder, the folders a `.pth` file adds as a path line (how uv
+  and pip write most editable installs), and Apple's extra site-packages
+  folders for its own Pythons. Also the places Python looks at start that
+  hold nothing (a `pyvenv.cfg` beside the executable, a `._pth` file, a
+  standard-library zip), so one appearing stops the job.
+- **For Node**: a `node_modules` or `package.json` in any folder above the
+  job's, `~/.node_modules`, `~/.node_libraries` and Node's own `lib/node`.
+- **For every program**: the native libraries it and every compiled module
+  link, at every place macOS would look for them. Homebrew's Python and Node
+  load dozens from `/opt/homebrew`. The system's own libraries (`/usr/lib`,
+  `/System`) are left out: macOS protects them from every program, jit
+  included.
+
+jit reads where the interpreter loads from out of its files (`pyvenv.cfg`,
+the standard library's location, the libraries a binary links). It never
+runs the interpreter to ask: that would run the very code being checked,
+before you approved anything.
+
+Python writes bytecode into its own library the first time it imports a
+module (uv's and pyenv's Pythons are yours to write). So running that
+Python yourself can stop a job that uses it; the stop says so, and
+approving the job again is the fix. jit keeps that bytecode fingerprinted
+because a planted `.pyc` runs in place of its source.
+
 ## What this does not protect
 
 - **A script written to leak.** One you approved that sends its key
   somewhere, or prints it encoded in a way jit does not know. The fingerprint
-  makes sure the code that runs is the code you read; it cannot make that
-  code honest. Read what you approve.
+  makes sure the code that runs is the code you read, and the interpreter
+  that runs it is the one you approved; it cannot make that code honest.
+  Read what you approve.
 - **Programs the job calls.** `git`, `curl` or a Homebrew tool it runs are
-  trusted as installed.
+  trusted as installed, with their own configuration. So is configuration a
+  library reads when it runs (OpenSSL's `openssl.cnf`), a native library a
+  program opens by name rather than linking, and an editable install that
+  loads through an import hook instead of a path line: the hook's file is
+  fingerprinted, the folder it maps to is not.
+- **What a launcher picks.** For a job approved to ask each time through
+  `uv run` or `npx`, the interpreter it picks and that interpreter's
+  libraries.
 - **What the job can do with its key.** A read-only token limits that; jit
   does not.
 
