@@ -28,9 +28,9 @@ jit profile create <name> [VAR=<vault path>]... [flags]
 ### Examples
 
 ```
-  jit profile create mcp-jamf
-  jit profile create mcp-jamf --global
-  jit profile create mcp-jamf --from jamf
+  jit profile create mcp-sentry
+  jit profile create mcp-sentry --global
+  jit profile create mcp-sentry --from sentry
   jit profile create deploy AWS_SECRET=aws-prod/SECRET DB_URL=rds/URL
 ```
 

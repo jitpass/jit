@@ -48,7 +48,7 @@ var (
 
 // forgetExamplePath spells the companion suffix from the package that owns
 // it, so the help text cannot drift from the format jit actually writes.
-var forgetExamplePath = pointerfile.CompanionPath("~/Security-Ops/custom_scripts/wiz/.env")
+var forgetExamplePath = pointerfile.CompanionPath("~/code/myapp/.env")
 
 var migrateForgetCmd = &cobra.Command{
 	Use:   "forget <pointer file>...",

@@ -9,7 +9,7 @@ fails the run, flips ok or trips --strict, and the report folds it into one
 [ignored] line at the end (--show-ignored lists them). Nothing is fixed: a
 problem you ignore is still broken, doctor just stops counting it.
 
-A name is what a row leads with: a profile (aws-dev, mcp-okta), a file
+A name is what a row leads with: a profile (aws-dev, mcp-github), a file
 (~/.clisso.yaml, ~/ or absolute), or, for a section whose rows have no
 name of their own, the section (backup, orphan, storage-format). All of a
 profile's rows in one section are one finding. A name in more than one
@@ -33,7 +33,7 @@ jit doctor ignore <name>... [flags]
 
 ```
   jit doctor ignore aws-dev aws-admin
-  jit doctor ignore --kind config-deleted mcp-okta-mcp-server
+  jit doctor ignore --kind config-deleted mcp-github-server
   jit doctor ignore --format json backup
 ```
 

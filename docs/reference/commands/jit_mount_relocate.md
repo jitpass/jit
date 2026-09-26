@@ -21,7 +21,7 @@ jit mount relocate <project dir> [flags]
 ### Examples
 
 ```
-  jit mount relocate ~/work/hibob
+  jit mount relocate ~/work/billing
 ```
 
 ### Options

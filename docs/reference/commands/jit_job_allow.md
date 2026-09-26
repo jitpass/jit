@@ -26,9 +26,9 @@ jit job allow NAME [--profile NAME] [--show VAR] [--output DIR] -- COMMAND [ARGS
 ### Examples
 
 ```
-  jit job allow notion-guests --show INTERNAL_DOMAINS \
-    --output ~/Security-Ops/reports_and_archives/csv_reports \
-    -- .venv/bin/python list_guest_users.py
+  jit job allow notion-export --show NOTION_WORKSPACE \
+    --output ~/code/scripts/notion/out \
+    -- .venv/bin/python export_pages.py
 ```
 
 ### Options

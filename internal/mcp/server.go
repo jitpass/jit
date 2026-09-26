@@ -232,9 +232,9 @@ func tools() []tool {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"name":    str("a short name: lowercase letters, digits and dashes, e.g. notion-guests"),
+					"name":    str("a short name: lowercase letters, digits and dashes, e.g. notion-export"),
 					"folder":  str("absolute path of the folder the command runs in; its profile and script live there"),
-					"command": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "the command and its arguments, e.g. [\".venv/bin/python\", \"list_guest_users.py\"]"},
+					"command": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "the command and its arguments, e.g. [\".venv/bin/python\", \"export_pages.py\"]"},
 					"profile": str("the jit profile whose secrets the job needs; optional when the folder has only one"),
 					"why":     str("one sentence for the user: what the job is for"),
 				},
