@@ -38,9 +38,11 @@ SEResult se_seal(const char *tag, const char *group, const unsigned char *pt, in
 
 // se_open decrypts with the private key. For a presence key this is where
 // the dialog appears, reading "<app> is trying to <reason>." *out is
-// malloc'd.
+// malloc'd. On failure *decrypting says which step failed: 0 finding the
+// key (a lookup: its status is about reaching the key, never the bytes), 1
+// SecKeyCreateDecryptedData (its status may be about the bytes).
 SEResult se_open(const char *tag, const char *group, const unsigned char *ct, int ct_len,
-                 const char *reason, unsigned char **out, int *out_len);
+                 const char *reason, unsigned char **out, int *out_len, int *decrypting);
 
 // se_list_tags returns the tag of every enclave key in group whose tag
 // starts with prefix, from attributes only (never uses a key, never

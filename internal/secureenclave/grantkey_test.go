@@ -8,6 +8,7 @@ package secureenclave
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -176,8 +177,58 @@ func TestGrantKeyOpenTellsAWrongKeyFromAnUnusableOne(t *testing.T) {
 	for _, cause := range []error{ErrLocked, ErrUnavailable} {
 		fake.openErr = cause
 		_, err := k.Open(sealed, "aws")
-		if !errors.Is(err, cause) || errors.Is(err, ErrWrongKey) {
-			t.Errorf("the enclave answering %v: Open = %v, want it, and not ErrWrongKey", cause, err)
+		if !errors.Is(err, cause) || errors.Is(err, ErrWrongKey) || !NotNow(err) {
+			t.Errorf("the enclave answering %v: Open = %v, want it, NotNow, and not ErrWrongKey", cause, err)
+		}
+	}
+}
+
+// Only the decryption's errSecParam is a wrong key: the same -50 from
+// finding the key (se_open's lookup) is about the query, and any other
+// status is the bridge's own error. Measured on hardware: a copy cut short
+// is the decryption's -50; a damaged ephemeral key is CryptoTokenKit's -3
+// (TestHardwareDamagedGrantCopiesAreAnswers).
+func TestOpenFailureTellsTheStepApart(t *testing.T) {
+	bridge := errors.New("the bridge's sentence")
+	for _, tc := range []struct {
+		name       string
+		status     int
+		decrypting bool
+		wrong      bool
+	}{
+		{"the decryption's -50", statusParam, true, true},
+		{"the lookup's -50", statusParam, false, false},
+		{"CryptoTokenKit's -3", -3, true, false},
+		{"a lookup that failed", -25291, false, false},
+	} {
+		err := openFailure(tc.status, tc.decrypting, bridge)
+		if errors.Is(err, ErrWrongKey) != tc.wrong || !errors.Is(err, bridge) {
+			t.Errorf("%s: %v; ErrWrongKey should be %v, the bridge's error kept", tc.name, err, tc.wrong)
+		}
+	}
+}
+
+// NotNow is the enclave's "can't be used right now", and nothing else: a
+// lock and an unentitled jit. Every other failure is an answer, which a
+// never-ask job stops on (the default the caller must not invert).
+func TestNotNowIsOnlyALockOrAnUnentitledJit(t *testing.T) {
+	for err, want := range map[error]bool{
+		ErrLocked:                              true,
+		ErrUnavailable:                         true,
+		fmt.Errorf("grant key: %w", ErrLocked): true,
+		classify(statusInteractionNotAllowed, "x"):      true,
+		classify(statusMissingEntitlement, "x"):         true,
+		ErrWrongKey:                                     false,
+		ErrNoKey:                                        false,
+		ErrNoGrantKey:                                   false,
+		ErrCanceled:                                     false,
+		classify(-3, "CryptoTokenKit error -3"):         false,
+		classify(statusParam, "a lookup's -50"):         false,
+		classify(-25293, "errSecAuthFailed"):            false,
+		errors.New("grant key: sealed copy is damaged"): false,
+	} {
+		if NotNow(err) != want {
+			t.Errorf("NotNow(%v) = %v, want %v", err, !want, want)
 		}
 	}
 }
@@ -204,4 +255,52 @@ func TestLookupOnlyGrantKeysAnswerThroughLoad(t *testing.T) {
 		}
 	}()
 	NewTestingGrantKeysLookup(grantTagPrefix, nil, nil)
+}
+
+// On the real enclave: a sealed copy damaged in ways other than the
+// AES-GCM tag (an ephemeral public key that isn't one, a copy cut short)
+// fails with whatever SecKeyCreateDecryptedData answers, and none of those
+// answers may read as "can't be used right now" (NotNow): a never-ask job
+// stops on them for good, cause named. A key that never asks, TEST-ONLY
+// tags, no dialog: `IDENTIFIER=jit scripts/se-test.sh`.
+func TestHardwareDamagedGrantCopiesAreAnswers(t *testing.T) {
+	if os.Getenv("JIT_SE_TEST") != "1" {
+		t.Skip("real enclave: run scripts/se-test.sh")
+	}
+	g := NewTestingGrantKeys("com.jitpass.grant.TEST-ONLY." + strings.TrimPrefix(hardwareTag(t), testTag+".") + ".")
+	t.Cleanup(func() { _ = g.Delete("g-damaged") })
+	k, err := g.Create("g-damaged")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := k.Seal(testMEK(t), "aws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The ECIES output starts with the ephemeral public key, uncompressed:
+	// 0x04, then X and Y (65 bytes for P-256).
+	if len(sealed) < 65+16 || sealed[0] != 0x04 {
+		t.Fatalf("sealed copy is %d bytes starting %#x; not the ECIES layout this test damages", len(sealed), sealed[0])
+	}
+	damage := func(f func([]byte) []byte) []byte { return f(append([]byte(nil), sealed...)) }
+	for _, tc := range []struct {
+		name string
+		copy []byte
+	}{
+		{"the ephemeral key's prefix", damage(func(b []byte) []byte { b[0] = 0x05; return b })},
+		{"a coordinate of the ephemeral key", damage(func(b []byte) []byte { b[20] ^= 0x01; return b })},
+		{"cut after the ephemeral key", damage(func(b []byte) []byte { return b[:65] })},
+		{"cut inside the ephemeral key", damage(func(b []byte) []byte { return b[:30] })},
+		{"cut by one byte", damage(func(b []byte) []byte { return b[:len(b)-1] })},
+	} {
+		_, err := k.Open(tc.copy, "aws")
+		t.Logf("%s: %v", tc.name, err)
+		if err == nil {
+			t.Errorf("%s: opened", tc.name)
+			continue
+		}
+		if NotNow(err) {
+			t.Errorf("%s: %v reads as a key that can't be used right now; it is an answer about the copy", tc.name, err)
+		}
+	}
 }

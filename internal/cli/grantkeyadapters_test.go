@@ -6,6 +6,7 @@
 package cli
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -35,11 +36,11 @@ func testGrantKeyStore(t *testing.T, present func(tag string) (bool, error), ope
 	}
 }
 
-// Through the production adapters, not absentAs alone: a key its store
-// proves gone comes out of keychainGrantKeys.Load, enclaveGrantKeys.Load,
-// grantKeyStore.LoadWrap (both kinds) and grantKeyStore.Load as
-// agent.ErrGrantKeyAbsent; an enclave that can't be reached or used right
-// now does not.
+// Through the production adapters: a key its store proves gone comes out
+// of keychainGrantKeys.Load, enclaveGrantKeys.Load, grantKeyStore.LoadWrap
+// (both kinds) and grantKeyStore.Load as agent.ErrGrantKeyAbsent; an
+// enclave that can't be used right now as agent.ErrGrantKeyNotNow; any
+// other lookup failure unmarked, which stops a never-ask job.
 func TestGrantKeyAdaptersMarkAGoneKeyAbsent(t *testing.T) {
 	absent := func(string) (bool, error) { return false, nil }
 	g := testGrantKeyStore(t, absent, nil)
@@ -54,35 +55,58 @@ func TestGrantKeyAdaptersMarkAGoneKeyAbsent(t *testing.T) {
 			t.Errorf("%s of a gone key = %v, want ErrGrantKeyAbsent", name, err)
 		}
 	}
-	for _, cause := range []error{secureenclave.ErrUnavailable, secureenclave.ErrLocked} {
+	for cause, notNow := range map[error]bool{
+		secureenclave.ErrUnavailable: true,
+		secureenclave.ErrLocked:      true,
+		errors.New("checking for the Secure Enclave key failed (OSStatus=-50)"): false,
+	} {
 		g := testGrantKeyStore(t, func(string) (bool, error) { return false, cause }, nil)
 		_, err := g.LoadWrap("j-x", agent.GrantWrapEnclave)
-		if err == nil || errors.Is(err, agent.ErrGrantKeyAbsent) || !errors.Is(err, cause) {
-			t.Errorf("the enclave answering %v: LoadWrap = %v, want it unmarked", cause, err)
+		if err == nil || errors.Is(err, agent.ErrGrantKeyAbsent) || !errors.Is(err, cause) || errors.Is(err, agent.ErrGrantKeyNotNow) != notNow {
+			t.Errorf("the enclave answering %v: LoadWrap = %v; ErrGrantKeyNotNow should be %v, cause kept", cause, err, notNow)
 		}
 	}
 }
 
-// And Open: only a copy that doesn't open under the key is
-// agent.ErrGrantKeyWrongKey (the sticky stop); a key that can't be used
-// right now passes through unmarked, cause kept. The kinds' wraps survive
-// the adapter, so the agent still tells them apart. The enclave runs
-// through the production adapter (enclaveGrantKeys.Load, LoadWrap); the
-// keychain's Load needs an item, and this suite writes none (its HOME is a
-// temp dir, under which a keychain write blocks), so its markedKey is
-// driven with keychainwrap's own errors, and keychainwrap's
-// TestGrantKeyOpenTellsAWrongKeyFromAKeychainThatWontRead pins that a real
-// item's Open gives them.
-func TestGrantKeyAdaptersMarkOnlyAWrongKeyOnOpen(t *testing.T) {
+// And Open, through each kind's production Load (keychainGrantKeys.Load,
+// enclaveGrantKeys.Load, LoadWrap): only a copy that doesn't open under the
+// key is agent.ErrGrantKeyWrongKey; only a key that can't be used right now
+// is agent.ErrGrantKeyNotNow (the keychain refusing a read that would have
+// had to ask, the enclave locked or unentitled); everything else passes
+// through unmarked, cause kept, and stops the job. The kinds' wraps survive
+// the adapter, so the agent still tells them apart. The keychain's key is
+// keychainwrap's own GrantKey, whose read is faked
+// (NewTestingGrantKeysReading: this suite's HOME can hold no item), so what
+// is marked is what keychainwrap's Open really returns for each read.
+func TestGrantKeyAdaptersMarkOpenErrorsByWhatTheyProve(t *testing.T) {
+	const (
+		wrong = iota
+		notNow
+		answer
+	)
+	marks := func(err error) int {
+		switch {
+		case errors.Is(err, agent.ErrGrantKeyWrongKey) && !errors.Is(err, agent.ErrGrantKeyNotNow):
+			return wrong
+		case errors.Is(err, agent.ErrGrantKeyNotNow) && !errors.Is(err, agent.ErrGrantKeyWrongKey):
+			return notNow
+		case err != nil && !errors.Is(err, agent.ErrGrantKeyNotNow) && !errors.Is(err, agent.ErrGrantKeyWrongKey):
+			return answer
+		}
+		return -1
+	}
+
 	// The enclave: the lookup-only store, its Open answering as told.
 	for _, tc := range []struct {
 		openErr error
-		wrong   bool
+		want    int
 	}{
-		{secureenclave.ErrLocked, false},
-		{secureenclave.ErrUnavailable, false},
-		{errors.New("opening with the Secure Enclave key: OSStatus=-25291"), false},
-		{fmt.Errorf("opening with the Secure Enclave key: %w", secureenclave.ErrWrongKey), true},
+		{secureenclave.ErrLocked, notNow},
+		{secureenclave.ErrUnavailable, notNow},
+		{errors.New("opening with the Secure Enclave key: OSStatus=-25291"), answer},
+		{errors.New("opening with the Secure Enclave key: The operation couldn't be completed. (CryptoTokenKit error -3.)"), answer},
+		{errors.New("finding the Secure Enclave key (OSStatus=-50)"), answer},
+		{fmt.Errorf("opening with the Secure Enclave key: %w", secureenclave.ErrWrongKey), wrong},
 	} {
 		g := testGrantKeyStore(t, func(string) (bool, error) { return true, nil }, tc.openErr)
 		for name, load := range map[string]func() (agent.GrantKey, error){
@@ -97,39 +121,85 @@ func TestGrantKeyAdaptersMarkOnlyAWrongKeyOnOpen(t *testing.T) {
 				t.Errorf("%s: the key's wrap = %q", name, keyWrapOf(se))
 			}
 			_, err = se.Open([]byte{1}, "mcp")
-			if errors.Is(err, agent.ErrGrantKeyWrongKey) != tc.wrong || !errors.Is(err, tc.openErr) {
-				t.Errorf("%s, Open answering %v: %v; marked should be %v, cause kept", name, tc.openErr, err, tc.wrong)
+			if marks(err) != tc.want || !errors.Is(err, tc.openErr) {
+				t.Errorf("%s, Open answering %v: %v; marked %d, want %d, cause kept", name, tc.openErr, err, marks(err), tc.want)
 			}
 		}
 	}
 
-	// The keychain's errors, through the same markedKey keychainGrantKeys
-	// wraps its keys in.
+	// The keychain: keychainwrap's GrantKey over a faked read.
+	key := bytes.Repeat([]byte{0x05}, 32)
+	sealed := sealUnder(t, key, "mcp")
 	for _, tc := range []struct {
-		openErr error
-		wrong   bool
+		name string
+		read func() ([]byte, error)
+		want int
 	}{
-		{fmt.Errorf("grant key: %w", keychainwrap.ErrCantReadNow), false},
-		{errors.New("grant key: reading the master key from the keychain failed, OSStatus=-25291"), false},
-		{fmt.Errorf("%w: cipher: message authentication failed", keychainwrap.ErrWrongKey), true},
+		{"a read that would have had to ask", func() ([]byte, error) {
+			return nil, &keychainwrap.QuietReadError{Status: -25308, Msg: "reading the key in the keychain without asking failed, OSStatus=-25308"}
+		}, notNow},
+		{"errSecAuthFailed", func() ([]byte, error) {
+			return nil, &keychainwrap.QuietReadError{Status: -25293, Msg: "reading the key in the keychain without asking failed, OSStatus=-25293"}
+		}, answer},
+		{"another OSStatus", func() ([]byte, error) {
+			return nil, &keychainwrap.QuietReadError{Status: -25291, Msg: "reading the key in the keychain without asking failed, OSStatus=-25291"}
+		}, answer},
+		{"another key", func() ([]byte, error) { return bytes.Repeat([]byte{0x06}, 32), nil }, wrong},
 	} {
-		k := markedKey{failingOpen{tc.openErr}, keychainwrap.ErrWrongKey}
-		if keyWrapOf(k) != agent.GrantWrapKeychain {
-			t.Errorf("the keychain key's wrap = %q", keyWrapOf(k))
+		g := testGrantKeyStoreReading(t, tc.read)
+		for name, load := range map[string]func() (agent.GrantKey, error){
+			"keychainGrantKeys.Load":   func() (agent.GrantKey, error) { return g.keys.Load("j-open") },
+			"LoadWrap, the keychain's": func() (agent.GrantKey, error) { return g.LoadWrap("j-open", agent.GrantWrapKeychain) },
+		} {
+			kc, err := load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if keyWrapOf(kc) != agent.GrantWrapKeychain {
+				t.Errorf("%s: the keychain key's wrap = %q", name, keyWrapOf(kc))
+			}
+			_, err = kc.Open(sealed, "mcp")
+			if marks(err) != tc.want {
+				t.Errorf("%s, %s: %v; marked %d, want %d", name, tc.name, err, marks(err), tc.want)
+			}
 		}
-		_, err := k.Open([]byte{1}, "mcp")
-		if errors.Is(err, agent.ErrGrantKeyWrongKey) != tc.wrong || !errors.Is(err, tc.openErr) {
-			t.Errorf("keychain Open answering %v: %v; marked should be %v, cause kept", tc.openErr, err, tc.wrong)
-		}
+	}
+	// The control: the same key opens what it sealed, through the adapter.
+	g := testGrantKeyStoreReading(t, func() ([]byte, error) { return append([]byte(nil), key...), nil })
+	kc, err := g.keys.Load("j-open")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dek, err := kc.Open(sealed, "mcp"); err != nil || string(dek) != "the dek" {
+		t.Fatalf("the faked read's own key: %q, %v", dek, err)
 	}
 }
 
-// failingOpen is a grant key whose Open fails with err.
-type failingOpen struct{ err error }
+// testGrantKeyStoreReading is testGrantKeyStore whose keychain half is
+// keychainwrap's store over a faked read (NewTestingGrantKeysReading).
+func testGrantKeyStoreReading(t *testing.T, read func() ([]byte, error)) grantKeyStore {
+	t.Helper()
+	g := testGrantKeyStore(t, func(string) (bool, error) { return false, nil }, nil)
+	g.keys = keychainGrantKeys{keys: keychainwrap.NewTestingGrantKeysReading("com.jitpass.grant.key.TEST-ONLY.cli.reading", read)}
+	return g
+}
 
-func (failingOpen) Seal([]byte, string) ([]byte, error)   { return nil, errors.New("unused") }
-func (f failingOpen) Open([]byte, string) ([]byte, error) { return nil, f.err }
-func (failingOpen) Close()                                {}
+// sealUnder seals "the dek" for class under key, as keychainwrap's GrantKey
+// Seal does, through that Seal itself over a faked read.
+func sealUnder(t *testing.T, key []byte, class string) []byte {
+	t.Helper()
+	k, err := keychainwrap.NewTestingGrantKeysReading("com.jitpass.grant.key.TEST-ONLY.cli.seal", func() ([]byte, error) {
+		return append([]byte(nil), key...), nil
+	}).Load("j-seal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := k.Seal([]byte("the dek"), class)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sealed
+}
 
 // keyWrapOf is the agent's keyWrap: the key's Wrap, else the keychain's.
 func keyWrapOf(k agent.GrantKey) string {

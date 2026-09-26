@@ -645,20 +645,28 @@ func TestProductionMoverAsksTheSignature(t *testing.T) {
 	}
 }
 
-// The grant key stores mark only their own proven-gone answer as
-// agent.ErrGrantKeyAbsent, the one Load error that stops a never-ask job
-// for good; an enclave this jit can't reach is not "gone".
-func TestGrantKeyStoresMarkOnlyAProvenGoneKeyAbsent(t *testing.T) {
+// The grant key stores mark a Load error by what it proves: their own
+// proven-gone answer as agent.ErrGrantKeyAbsent, their "can't be used right
+// now" as agent.ErrGrantKeyNotNow (an enclave locked or this jit
+// unentitled), and nothing else: an unmarked error stops a never-ask job.
+func TestGrantKeyStoresMarkLoadErrorsByWhatTheyProve(t *testing.T) {
 	gone := fmt.Errorf("no Secure Enclave key for grant j-1: %w", secureenclave.ErrNoGrantKey)
-	if err := absentAs(gone, secureenclave.ErrNoGrantKey); !errors.Is(err, agent.ErrGrantKeyAbsent) || !errors.Is(err, secureenclave.ErrNoGrantKey) {
+	if err := markLoad(gone, secureenclave.ErrNoGrantKey, secureenclave.NotNow); !errors.Is(err, agent.ErrGrantKeyAbsent) || !errors.Is(err, secureenclave.ErrNoGrantKey) {
 		t.Fatalf("a gone key = %v, want ErrGrantKeyAbsent keeping its cause", err)
 	}
-	for _, other := range []error{
+	for _, notNow := range []error{
 		fmt.Errorf("grant key: %w", secureenclave.ErrUnavailable),
 		fmt.Errorf("grant key: %w", secureenclave.ErrLocked),
-		errors.New("grant key: empty grant id"),
 	} {
-		if err := absentAs(other, secureenclave.ErrNoGrantKey); errors.Is(err, agent.ErrGrantKeyAbsent) || err != other {
+		if err := markLoad(notNow, secureenclave.ErrNoGrantKey, secureenclave.NotNow); !errors.Is(err, agent.ErrGrantKeyNotNow) || errors.Is(err, agent.ErrGrantKeyAbsent) || !errors.Is(err, notNow) {
+			t.Errorf("%v: %v, want ErrGrantKeyNotNow keeping its cause", notNow, err)
+		}
+	}
+	for _, other := range []error{
+		errors.New("grant key: empty grant id"),
+		errors.New("grant key: checking for the Secure Enclave key failed (OSStatus=-50)"),
+	} {
+		if err := markLoad(other, secureenclave.ErrNoGrantKey, secureenclave.NotNow); err != other {
 			t.Errorf("%v was marked or changed: %v", other, err)
 		}
 	}

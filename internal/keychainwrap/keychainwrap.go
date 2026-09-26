@@ -291,7 +291,7 @@ func (w *Wrapper) fetchMEK(reason string) ([]byte, error) {
 		var keyPtr *C.uchar
 		var keyLen C.int
 		result := C.kw_fetch_mek(cService, cAccount, &keyPtr, &keyLen, 0)
-		if err := readErr(result); err != nil {
+		if err := goErr(result); err != nil {
 			return nil, err
 		}
 		mek := C.GoBytes(unsafe.Pointer(keyPtr), keyLen)
@@ -326,41 +326,18 @@ func (w *Wrapper) fetchMEK(reason string) ([]byte, error) {
 	return out, nil
 }
 
-// ErrCantReadNow is a keychain read that failed for a reason that says
-// nothing about the item: a locked keychain (errSecAuthFailed, -25293, the
-// answer a locked login keychain gives; TestHardwareLockedKeychainNeverAsks),
-// or a read that would have had to ask where no dialog may be shown
-// (errSecInteractionNotAllowed, -25308). The item may read fine a moment
-// later, so a caller must not take it for a key that is gone or wrong.
-var ErrCantReadNow = errors.New("the keychain can't be read right now")
-
-// readError is a failed read of the item's bytes, in the bridge's own
-// sentence (kw_fetch_mek's), with the OSStatus the sentence came from so a
-// caller can decide without parsing it.
-type readError struct {
-	status int32
-	msg    string
-}
-
-func (e *readError) Error() string { return e.msg }
-
-func (e *readError) Is(target error) bool {
-	return target == ErrCantReadNow && (e.status == errSecAuthFailed || e.status == errSecInteractionNotAllowed)
-}
-
-// readErr is goErr for kw_fetch_mek: the same sentence, as a *readError
-// that keeps the OSStatus.
-func readErr(r C.KWResult) error {
-	if r.success != 0 {
-		return nil
-	}
-	msg := "unknown error"
-	if r.error_message != nil {
-		msg = C.GoString(r.error_message)
-		C.free(unsafe.Pointer(r.error_message))
-	}
-	return &readError{status: int32(r.status), msg: msg}
-}
+// ErrCantReadNow is a quiet read (no challenge, no dialog) the keychain
+// refused because it would have had to ask: errSecInteractionNotAllowed
+// (-25308), which a *QuietReadError with that status is (errors.Is). It says
+// nothing about the item, and it is the one refusal of a grant key's read
+// that skips a never-ask job's run rather than stopping the job (a skip
+// that goes on is surfaced). errSecAuthFailed (-25293) is not it: keychain.m's
+// fetch reads it as the per-code-signature ACL refusing this binary (the
+// binary under a running process replaced), and a locked file keychain
+// answers a quiet read with it too (TestHardwareLockedKeychainNeverAsks),
+// so it can't be told from a refusal that lasts, and a caller that stops
+// on an answer must stop on it.
+var ErrCantReadNow = errors.New("the keychain can't be read right now without asking")
 
 // Close wipes the cached MEK and releases the mlock pinning its page. It is
 // idempotent, and safe to call on a Wrapper that never fetched anything.

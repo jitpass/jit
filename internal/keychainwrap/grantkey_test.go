@@ -236,11 +236,12 @@ func TestGrantKeysList(t *testing.T) {
 }
 
 // Open tells a copy that doesn't open under the key (ErrWrongKey) from a
-// keychain that won't hand the key over right now (ErrCantReadNow: locked,
-// or a read that would have had to ask), which says nothing about the copy.
-// The keychain's refusal is faked (GrantKey.read): the item itself is real
-// and TEST-ONLY, so Load and the presence check are the production path;
-// TestReadErrorKeepsItsStatus pins what fetchMEK's own failure carries.
+// keychain that won't hand the key over: only a read that would have had to
+// ask is ErrCantReadNow (the one refusal a never-ask job skips a run for);
+// errSecAuthFailed and anything else are the keychain's answers, cause
+// kept. The keychain's refusal is faked (GrantKey.read): the item itself is
+// real and TEST-ONLY, so Create, Load, Seal and the first Opens take the
+// production read (quietFetchNoSwitch).
 func TestGrantKeyOpenTellsAWrongKeyFromAKeychainThatWontRead(t *testing.T) {
 	keys := testGrantKeys(t)
 	id := testGrantID(t, keys, "g-open")
@@ -253,6 +254,9 @@ func TestGrantKeyOpenTellsAWrongKeyFromAKeychainThatWontRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if dek, err := key.Open(sealed, "mcp"); err != nil || !bytes.Equal(dek, bytes.Repeat([]byte{0x07}, 32)) {
+		t.Fatalf("the production read: %v", err)
+	}
 	if _, err := key.Open(sealed, "aws"); !errors.Is(err, ErrWrongKey) || errors.Is(err, ErrCantReadNow) {
 		t.Errorf("another class: %v, want ErrWrongKey", err)
 	}
@@ -264,16 +268,15 @@ func TestGrantKeyOpenTellsAWrongKeyFromAKeychainThatWontRead(t *testing.T) {
 
 	for status, cantRead := range map[int32]bool{
 		errSecInteractionNotAllowed: true,
-		errSecAuthFailed:            true,
-		-25291:                      false, // errSecNotAvailable: neither a lock nor a wrong key
+		errSecAuthFailed:            false, // the per-signature ACL's refusal (keychain.m); a lock looks the same
+		-25291:                      false, // errSecNotAvailable
 	} {
-		// A fresh Load: its first Open reads the keychain.
 		loaded, err := keys.Load(id)
 		if err != nil {
 			t.Fatal(err)
 		}
 		loaded.read = func() ([]byte, error) {
-			return nil, &readError{status: status, msg: fmt.Sprintf("reading failed, OSStatus=%d", status)}
+			return nil, &QuietReadError{Status: status, Msg: fmt.Sprintf("reading failed, OSStatus=%d", status)}
 		}
 		_, err = loaded.Open(sealed, "mcp")
 		if errors.Is(err, ErrCantReadNow) != cantRead || errors.Is(err, ErrWrongKey) {
@@ -283,6 +286,62 @@ func TestGrantKeyOpenTellsAWrongKeyFromAKeychainThatWontRead(t *testing.T) {
 			t.Errorf("OSStatus=%d: the cause was lost: %v", status, err)
 		}
 	}
+}
+
+// A key whose item went after Load is the grant's own "no key", read
+// quietly: the service's read (quietFetchNoSwitch) of a missing item.
+func TestGrantKeyOpenOfAKeyGoneSinceLoad(t *testing.T) {
+	keys := testGrantKeys(t)
+	id := testGrantID(t, keys, "g-gone")
+	key, err := keys.Create(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := key.Seal(bytes.Repeat([]byte{0x07}, 32), "mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := keys.Load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := keys.Delete(id); err != nil {
+		t.Fatal(err)
+	}
+	_, err = loaded.Open(sealed, "mcp")
+	if !errors.Is(err, ErrNoGrantKey) || errors.Is(err, ErrCantReadNow) || errors.Is(err, ErrWrongKey) {
+		t.Fatalf("Open with the item gone = %v, want ErrNoGrantKey", err)
+	}
+}
+
+// The store other packages' tests use finds every key and reads it through
+// its read: Load never asks the keychain, and Open's answers are the
+// production Open's over what read gives.
+func TestGrantKeysReadingAnswersThroughOpen(t *testing.T) {
+	key := bytes.Repeat([]byte{0x05}, mekSize)
+	g := NewTestingGrantKeysReading("com.jitpass.grant.key.TEST-ONLY.reading", func() ([]byte, error) {
+		return append([]byte(nil), key...), nil
+	})
+	k, err := g.Load("never-made")
+	if err != nil {
+		t.Fatalf("Load = %v, want a key without the keychain", err)
+	}
+	sealed, err := seal(key, []byte("dek"), []byte("mcp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dek, err := k.Open(sealed, "mcp"); err != nil || string(dek) != "dek" {
+		t.Fatalf("Open = %q, %v", dek, err)
+	}
+	if _, err := k.Open(sealed, "aws"); !errors.Is(err, ErrWrongKey) {
+		t.Fatalf("Open of another class = %v, want ErrWrongKey", err)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("a service without TEST-ONLY was accepted")
+		}
+	}()
+	NewTestingGrantKeysReading(grantService, nil)
 }
 
 func TestNewTestingGrantKeysRefusesProductionNames(t *testing.T) {
@@ -298,16 +357,16 @@ func TestNewTestingGrantKeysRefusesProductionNames(t *testing.T) {
 	}
 }
 
-// fetchMEK's failure keeps its OSStatus behind the bridge's own sentence,
-// and only a lock or a read that would have had to ask is ErrCantReadNow.
-func TestReadErrorKeepsItsStatus(t *testing.T) {
+// Only a quiet read that would have had to ask is ErrCantReadNow; its text
+// is the bridge's own sentence either way.
+func TestQuietReadErrorCantReadNowIsOnlyAReadThatWouldAsk(t *testing.T) {
 	for status, want := range map[int32]bool{
-		errSecAuthFailed:            true,
 		errSecInteractionNotAllowed: true,
+		errSecAuthFailed:            false,
 		errSecItemNotFound:          false,
 		-34018:                      false,
 	} {
-		e := &readError{status: status, msg: "the bridge's sentence"}
+		e := &QuietReadError{Status: status, Msg: "the bridge's sentence"}
 		if errors.Is(e, ErrCantReadNow) != want || e.Error() != "the bridge's sentence" {
 			t.Errorf("OSStatus=%d: ErrCantReadNow %v (want %v), text %q", status, errors.Is(e, ErrCantReadNow), want, e)
 		}

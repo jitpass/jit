@@ -218,7 +218,9 @@ func (gk *GrantKey) Seal(dek []byte, class string) ([]byte, error) {
 // and returns the DEK only if the sealed class is exactly class. Bytes that
 // don't open, or open to another class, are ErrWrongKey; an enclave that
 // can't be used right now is the enclave's own error (ErrLocked,
-// ErrUnavailable), which says nothing about the bytes.
+// ErrUnavailable: NotNow), which says nothing about the bytes. Everything
+// else (a damaged ephemeral key's CryptoTokenKit -3, a lookup's -50) is
+// the bridge's error as it came, and not NotNow.
 func (gk *GrantKey) Open(wrapped []byte, class string) ([]byte, error) {
 	framed, err := gk.k.open(wrapped, "")
 	if err != nil {

@@ -16,8 +16,6 @@ import (
 	"fmt"
 	"strings"
 	"unsafe"
-
-	"github.com/jitpass/jit/internal/unlockreason"
 )
 
 // A standing grant's own key (design/standing-grants.md): one plain keychain
@@ -63,6 +61,21 @@ type GrantKeys struct {
 	// dialog on a real user's screen, one click from deleting the key
 	// protecting their whole vault. Never let a test near grantService.
 	service string
+	// read, when set, makes every Load find a key without asking the
+	// keychain, and stands in for that key's read (NewTestingGrantKeysReading).
+	read func() ([]byte, error)
+}
+
+// NewTestingGrantKeysReading is NewTestingGrantKeys whose keys are never
+// in the keychain: every Load finds one, and every read of it (Seal, Open)
+// is read, in place of the keychain's. It is for another package's tests of
+// what the keychain's answers become (internal/cli's grant key adapters),
+// from a test HOME where no item can be written. It panics on a service
+// without "TEST-ONLY", as NewTestingGrantKeys does.
+func NewTestingGrantKeysReading(service string, read func() ([]byte, error)) GrantKeys {
+	g := NewTestingGrantKeys(service)
+	g.read = read
+	return g
 }
 
 // NewTestingGrantKeys returns a store over TEST-ONLY keychain items, for
@@ -87,8 +100,8 @@ func (g GrantKeys) serviceName() string {
 // whose "missing" error names the grant rather than the vault.
 type GrantKey struct {
 	w *Wrapper
-	// read, when set, stands in for Open's keychain read: a test's way to
-	// have the keychain refuse to read an item that is there.
+	// read, when set, stands in for the keychain read (key): a test's way
+	// to have the keychain refuse to read an item that is there.
 	read func() ([]byte, error)
 }
 
@@ -127,6 +140,9 @@ func (g GrantKeys) Load(id string) (*GrantKey, error) {
 	w, err := g.wrapper(id)
 	if err != nil {
 		return nil, err
+	}
+	if g.read != nil {
+		return &GrantKey{w: w, read: g.read}, nil
 	}
 	if w.MEKPresence() == MEKAbsent {
 		return nil, w.missing
@@ -189,29 +205,28 @@ func (g GrantKeys) List() ([]string, error) {
 }
 
 // Seal wraps a DEK under the grant key with the secret's class as AAD,
-// byte-compatible with the MEK wrap (same seal, same AAD rule).
+// byte-compatible with the MEK wrap (same seal, same AAD rule). It reads
+// the key the quiet way (read), as Open does.
 func (k *GrantKey) Seal(dek []byte, class string) ([]byte, error) {
-	return k.w.WrapKeyLabeled(dek, "", class)
+	key, err := k.key()
+	if err != nil {
+		return nil, fmt.Errorf("grant key: %w", err)
+	}
+	defer wipe(key)
+	return seal(key, dek, []byte(class))
 }
 
 // ErrWrongKey is Open saying the copy does not open under this key: the
 // AES-GCM authentication failed (tampered or damaged bytes, another key, or
-// another class). A key Open couldn't read (ErrCantReadNow, or any other
-// keychain failure) is not this: it says nothing about the copy.
+// another class). A key Open couldn't read is not this: it says nothing
+// about the copy.
 var ErrWrongKey = errors.New("the sealed copy does not open under this grant's key")
 
-// Open unwraps a copy Seal made. Reading the key (the keychain, on the
-// first Open after a Load) fails with the keychain's own error, which is
-// ErrCantReadNow for a locked keychain; only the unwrap failing is
-// ErrWrongKey.
+// Open unwraps a copy Seal made. Only the unwrap failing is ErrWrongKey;
+// reading the key fails with the keychain's own error (key), which is
+// ErrCantReadNow only for a read that would have had to ask.
 func (k *GrantKey) Open(wrapped []byte, class string) ([]byte, error) {
-	var key []byte
-	var err error
-	if k.read != nil {
-		key, err = k.read()
-	} else {
-		key, err = k.w.fetchMEK(unlockreason.Read)
-	}
+	key, err := k.key()
 	if err != nil {
 		return nil, fmt.Errorf("grant key: %w", err)
 	}
@@ -221,6 +236,30 @@ func (k *GrantKey) Open(wrapped []byte, class string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: %w", ErrWrongKey, err)
 	}
 	return dek, nil
+}
+
+// key reads the grant's key the quiet way: no challenge, and no keychain
+// dialog either (the registry's KW_Q_FETCH_QUIET, kSecUseAuthenticationUIFail),
+// in the service's form (quietFetchNoSwitch: the process's interaction
+// switch left alone, a locked default keychain not read at all). Grant keys
+// are read only by the long-running service, where a dialog would wait on
+// nobody: a never-ask job runs while the owner is away, and one keychain
+// dialog would hold its run, and every run after it, until someone clicked.
+// A read that would need one fails with errSecInteractionNotAllowed instead
+// (ErrCantReadNow: the caller skips that one run, and a skip that persists
+// is surfaced, internal/agent's job escalation). A key gone since Load is
+// the grant's own "no key" (ErrNoGrantKey). Every other failure (a
+// malformed item, errSecAuthFailed) is the keychain's answer, kept whole.
+func (k *GrantKey) key() ([]byte, error) {
+	if k.read != nil {
+		return k.read()
+	}
+	key, err := k.w.quietFetchNoSwitch()
+	var q *QuietReadError
+	if errors.As(err, &q) && q.Status == errSecItemNotFound && k.w.missing != nil {
+		return nil, k.w.missing
+	}
+	return key, err
 }
 
 // Close wipes the cached key bytes; the keychain item stays.

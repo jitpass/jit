@@ -794,15 +794,17 @@ func (s *Server) openJobKeys(j *job.Job, deks map[string][]byte) error {
 			wrap = sec.Wrap
 		}
 	}
+	// Only a key that can't be used right now (ErrGrantKeyNotNow) skips
+	// this one run; every other failure is an answer about the key, and
+	// stops the job, naming it.
 	key, err := s.loadGrantKey(j.KeyID, wrap)
-	if errors.Is(err, ErrGrantKeyAbsent) {
+	switch {
+	case errors.Is(err, ErrGrantKeyAbsent):
 		return fmt.Errorf("the job's key is gone")
-	}
-	if err != nil {
-		// The store couldn't say whether the key is there (an enclave this
-		// jit can't reach, a lookup that failed): nothing about the job
-		// changed, so this run is refused and the next one tries again.
+	case errors.Is(err, ErrGrantKeyNotNow):
 		return jobKeyUnready{"the job's key couldn't be loaded", err}
+	case err != nil:
+		return fmt.Errorf("the job's key couldn't be loaded (%v)", err)
 	}
 	defer key.Close()
 	for _, sec := range j.Secrets {
@@ -814,14 +816,16 @@ func (s *Server) openJobKeys(j *job.Job, deks map[string][]byte) error {
 			return fmt.Errorf("%s's sealed key is damaged", sec.Var)
 		}
 		dek, oerr := key.Open(sealed, sec.Class)
-		if errors.Is(oerr, ErrGrantKeyWrongKey) {
+		switch {
+		case errors.Is(oerr, ErrGrantKeyWrongKey):
 			return fmt.Errorf("%s does not open under the job's key", sec.Var)
-		}
-		if oerr != nil {
-			// The key couldn't be used right now (a locked keychain, an
-			// enclave out of reach): nothing is known to be wrong with the
-			// job or its copy, so this is not a stop.
+		case errors.Is(oerr, ErrGrantKeyNotNow):
+			// A read that would have had to ask, an enclave locked or out
+			// of reach: nothing is known to be wrong with the job or its
+			// copy, so this one run is skipped, not the job stopped.
 			return jobKeyUnready{"the job's key couldn't open " + sec.Var, oerr}
+		case oerr != nil:
+			return fmt.Errorf("the job's key couldn't open %s (%v)", sec.Var, oerr)
 		}
 		deks[sec.DeviceDigest] = dek
 	}
@@ -843,10 +847,9 @@ func (s *Server) refuseJob(j *job.Job, c *caller, requester, why string) Respons
 	return Response{OK: false, Error: fmt.Sprintf("job_run: %s: %s. It won't run until you approve it again", j.Name, why)}
 }
 
-// jobKeyUnready is openJobKeys failing for a reason that proves nothing
-// about the job, its key or its copies: a Load that doesn't prove the key
-// gone (ErrGrantKeyAbsent does), or an Open that doesn't prove the copy
-// wrong (ErrGrantKeyWrongKey does). Not a stop.
+// jobKeyUnready is openJobKeys failing because the key can't be used right
+// now (ErrGrantKeyNotNow, on Load or Open), which proves nothing about the
+// job, its key or its copies. Not a stop: every other failure is.
 type jobKeyUnready struct {
 	what string
 	err  error

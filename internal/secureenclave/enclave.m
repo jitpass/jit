@@ -138,8 +138,9 @@ SEResult se_seal(const char *tag, const char *group, const unsigned char *pt, in
 }
 
 SEResult se_open(const char *tag, const char *group, const unsigned char *ct, int ct_len,
-                 const char *reason, unsigned char **out, int *out_len) {
+                 const char *reason, unsigned char **out, int *out_len, int *decrypting) {
     @autoreleasepool {
+        *decrypting = 0;
         LAContext *ctx = [[LAContext alloc] init];
         ctx.localizedReason = [NSString stringWithUTF8String:reason];
         OSStatus st = 0;
@@ -149,7 +150,10 @@ SEResult se_open(const char *tag, const char *group, const unsigned char *ct, in
         NSData *in = [NSData dataWithBytesNoCopy:(void *)ct length:ct_len freeWhenDone:NO];
         CFDataRef pt = SecKeyCreateDecryptedData(k, kSEAlgorithm, (__bridge CFDataRef)in, &e);
         CFRelease(k);
-        if (!pt) return failCF(@"opening with the Secure Enclave key", e);
+        if (!pt) {
+            *decrypting = 1;
+            return failCF(@"opening with the Secure Enclave key", e);
+        }
         int ok = copyOut(pt, out, out_len);
         // CoreFoundation's own copy is released, not zeroed: a CFDataRef is
         // immutable and writing through CFDataGetBytePtr is not a promise

@@ -61,6 +61,18 @@ var (
 	ErrWrongKey = errors.New("the sealed bytes don't open under this key")
 )
 
+// NotNow reports whether err is the enclave saying its key can't be used
+// right now, for a reason that says nothing about the key or the sealed
+// bytes and may pass by itself: ErrLocked (the Mac is locked, or no dialog
+// may be shown) or ErrUnavailable (this copy of jit isn't entitled: a
+// service run by a jit outside JitPass.app, until the app's jit runs it).
+// Nothing else is: a wrong key, damaged or truncated bytes, a lookup's
+// other statuses and CryptoTokenKit's errors are answers, and a caller
+// that stops on an answer (a never-ask job) must stop on them.
+func NotNow(err error) bool {
+	return errors.Is(err, ErrLocked) || errors.Is(err, ErrUnavailable)
+}
+
 // classify turns a status into one of the errors above where one applies,
 // keeping the bridge's own sentence for everything else.
 func classify(status int, msg string) error {
@@ -187,21 +199,29 @@ func (h hardware) open(sealed []byte, reason string) ([]byte, error) {
 	cReason := C.CString(reason)
 	defer C.free(unsafe.Pointer(cReason))
 	var out *C.uchar
-	var n C.int
+	var n, decrypting C.int
 	n0 := C.int(len(sealed)) // #nosec G115 -- bounded by maxBytes above
-	r := C.se_open(tag, group, (*C.uchar)(unsafe.Pointer(&sealed[0])), n0, cReason, &out, &n)
+	r := C.se_open(tag, group, (*C.uchar)(unsafe.Pointer(&sealed[0])), n0, cReason, &out, &n, &decrypting)
 	// A blob that won't decrypt is errSecParam from SecKeyCreateDecryptedData
-	// ("ECIES: Failed to aes-gcm decrypt data", TestHardwareKeyNeverAsking);
-	// only se_open's use of the key says it, so it is told apart here, not
-	// in classify.
-	param := r.success == 0 && int(r.status) == statusParam
+	// ("ECIES: Failed to aes-gcm decrypt data", TestHardwareKeyNeverAsking).
+	// Only the decryption's -50 says that: the same status from finding the
+	// key (se_open's lookup, decrypting 0) is about the query, never the
+	// bytes, so it is told apart here by the failing step, not in classify.
+	status := int(r.status)
 	if err := goResult(r); err != nil {
-		if param {
-			return nil, fmt.Errorf("%w: %w", ErrWrongKey, err)
-		}
-		return nil, err
+		return nil, openFailure(status, decrypting != 0, err)
 	}
 	return takeBytes(out, n), nil
+}
+
+// openFailure is se_open's failure as open returns it: ErrWrongKey only for
+// the decryption's errSecParam; any other status, and a lookup's -50, keep
+// goResult's error as it is.
+func openFailure(status int, decrypting bool, err error) error {
+	if decrypting && status == statusParam {
+		return fmt.Errorf("%w: %w", ErrWrongKey, err)
+	}
+	return err
 }
 
 // listTags returns, with prefix removed, the tag of every enclave key in

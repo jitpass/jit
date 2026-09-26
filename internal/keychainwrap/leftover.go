@@ -80,6 +80,11 @@ func (e *QuietReadError) MayBeLocked() bool { return e.Status == errSecAuthFaile
 // says nothing about whether the item is still needed.
 func (e *QuietReadError) NotAllowed() bool { return e.Status == errSecInteractionNotAllowed }
 
+// Is makes a refusal that would have had to ask ErrCantReadNow.
+func (e *QuietReadError) Is(target error) bool {
+	return target == ErrCantReadNow && e.NotAllowed()
+}
+
 // CheckQuietRead reads the item the quiet way (no challenge, no dialog) and
 // keeps nothing: nil when this copy of jit can read it without asking, else
 // quietFetch's error (a *QuietReadError for a refused read). The move asks
@@ -99,7 +104,10 @@ func (w *Wrapper) CheckQuietRead() error {
 var ErrNotAMasterKey = errors.New("is not a master key")
 
 // quietFetch reads the item with no challenge and no dialog, and checks it
-// is a master key's length. A refused read is a *QuietReadError.
+// is a master key's length. A refused read is a *QuietReadError. It switches
+// the process's keychain interaction off around the read (kw_fetch_mek's
+// quiet branch, kwWithoutUI), so only CLI commands take it; the service
+// takes quietFetchNoSwitch.
 func (w *Wrapper) quietFetch() ([]byte, error) {
 	cService, cAccount := w.cNames()
 	defer C.free(unsafe.Pointer(cService))
@@ -107,6 +115,28 @@ func (w *Wrapper) quietFetch() ([]byte, error) {
 	var keyPtr *C.uchar
 	var keyLen C.int
 	r := C.kw_fetch_mek(cService, cAccount, &keyPtr, &keyLen, 1)
+	return w.quietResult(r, keyPtr, keyLen)
+}
+
+// quietFetchNoSwitch is quietFetch for the long-running service (a grant or
+// job key's read): the same no-dialog query, WITHOUT the process-wide
+// interaction switch, which would reach every other request in flight, and
+// never on a locked default keychain, which it answers as a read that would
+// have had to ask (kw_fetch_quiet_no_switch, keychain.m).
+func (w *Wrapper) quietFetchNoSwitch() ([]byte, error) {
+	cService, cAccount := w.cNames()
+	defer C.free(unsafe.Pointer(cService))
+	defer C.free(unsafe.Pointer(cAccount))
+	var keyPtr *C.uchar
+	var keyLen C.int
+	r := C.kw_fetch_quiet_no_switch(cService, cAccount, &keyPtr, &keyLen)
+	return w.quietResult(r, keyPtr, keyLen)
+}
+
+// quietResult is a quiet read's answer: a refused read as a
+// *QuietReadError, else the bytes (the C copy wiped and freed), which must
+// be a master key's length.
+func (w *Wrapper) quietResult(r C.KWResult, keyPtr *C.uchar, keyLen C.int) ([]byte, error) {
 	status := int32(r.status)
 	if err := goErr(r); err != nil {
 		return nil, &QuietReadError{Status: status, Msg: err.Error()}

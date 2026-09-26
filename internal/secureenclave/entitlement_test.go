@@ -46,16 +46,30 @@ func TestEntitled(t *testing.T) {
 // The measurement, on the real signature: a plain `go test` binary is a
 // jit outside JitPass.app and is not entitled; the same tests signed by
 // scripts/se-test.sh (IDENTIFIER=jit signs as the shipped helper is) are.
-// Reading a signature is no keychain query: no key is looked up or made.
+// Both halves are asserted, the signed one gated on JIT_SE_TEST (only
+// se-test.sh sets it): a plain run alone would pass an se_entitlements that
+// always answered no. Reading a signature is no keychain query: no key is
+// looked up or made.
 func TestThisBinarysEntitlement(t *testing.T) {
-	want := os.Getenv("JIT_SE_TEST") == "1"
+	signed := os.Getenv("JIT_SE_TEST") == "1"
 	got, err := Entitled()
 	if err != nil {
 		t.Fatalf("reading this binary's own signature failed: %v", err)
 	}
-	if got != want {
-		t.Fatalf("Entitled() = %v for this binary (signed by se-test.sh: %v)", got, want)
+	e, err := hardwareEntitlements()
+	if err != nil {
+		t.Fatal(err)
 	}
-	e, _ := hardwareEntitlements()
 	t.Logf("keychain-access-groups names %s: %v; application identifier %q", AccessGroup, e.hasGroup, e.appID)
+	if signed {
+		// se-test.sh's entitlements: the vault's group and the agent's
+		// application identifier, exactly.
+		if !got || !e.hasGroup || e.appID != TeamID+".com.jitpass.agent" {
+			t.Fatalf("signed by se-test.sh: Entitled() = %v, group %v, app id %q; want true, true, %q", got, e.hasGroup, e.appID, TeamID+".com.jitpass.agent")
+		}
+		return
+	}
+	if got || e.hasGroup || e.appID != "" {
+		t.Fatalf("a plain test binary: Entitled() = %v, group %v, app id %q; want false, false, none", got, e.hasGroup, e.appID)
+	}
 }

@@ -81,19 +81,32 @@ type GrantKeyStore interface {
 // names it any more. But no one may be told it was deleted.
 var ErrGrantKeyUnreachable = errors.New("the Secure Enclave could not be reached from this copy of jit")
 
+// ErrGrantKeyNotNow is a GrantKeyStore's Load, or a GrantKey's Open, saying
+// the key can't be used right now, for a reason that says nothing about the
+// key or the sealed copy and may pass by itself: the keychain refusing a
+// read that would have had to ask (errSecInteractionNotAllowed, -25308), the
+// Secure Enclave locked (its ErrLocked), or out of this jit's reach (its
+// ErrUnavailable: a service run by a jit outside JitPass.app). It is the ONE
+// Load or Open error that does not stop a never-ask job: that run is
+// skipped, and a skip that goes on is surfaced (jobSkipsBeforeTelling).
+// Every other error is an answer, and stops the job until it is approved
+// again, its cause in the reason: a key proven gone (ErrGrantKeyAbsent), a
+// copy that doesn't open (ErrGrantKeyWrongKey), and anything nobody listed
+// (a malformed item, errSecAuthFailed, a failed lookup, CryptoTokenKit's
+// errors). A store adds this mark only to the conditions above: an
+// unmarked error is never taken for a passing one.
+var ErrGrantKeyNotNow = errors.New("the key can't be used right now")
+
 // ErrGrantKeyAbsent is a GrantKeyStore's Load saying the key is proven gone:
 // its store was reached and has no key under the id (revoked, or deleted
-// out of band). Only this makes a never-ask job's stop sticky. A store that
-// could not be reached, or a lookup that failed, says nothing about the key,
-// so any other Load error is a refusal of that one run.
+// out of band). A never-ask job stops on it as "the job's key is gone".
 var ErrGrantKeyAbsent = errors.New("the key is gone")
 
 // ErrGrantKeyWrongKey is a GrantKey's Open saying the sealed copy does not
 // open under the key: its authentication failed (tampered or damaged bytes,
-// another key, another class). Only this makes a never-ask job's stop
-// sticky at Open. Any other Open error (a locked keychain, an enclave this
-// jit can't use right now, a read that failed) says nothing about the copy,
-// so it refuses that one run.
+// another key, another class). A never-ask job stops on it as "<VAR> does
+// not open under the job's key"; it stops on any other unmarked Open error
+// too, naming that error instead.
 var ErrGrantKeyWrongKey = errors.New("the sealed copy does not open under this key")
 
 // keyKeptNote is what a revoke or a remove says, instead of claiming a

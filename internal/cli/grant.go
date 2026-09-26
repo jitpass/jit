@@ -769,38 +769,49 @@ func (g grantKeyStore) ListGrantKeyIDs() ([]string, error) {
 
 type keychainGrantKeys struct{ keys keychainwrap.GrantKeys }
 
+// keychainNotNow is the keychain's "can't be used right now": a read that
+// would have had to ask (errSecInteractionNotAllowed), and nothing else.
+func keychainNotNow(err error) bool { return errors.Is(err, keychainwrap.ErrCantReadNow) }
+
 func (k keychainGrantKeys) Create(id string) (agent.GrantKey, error) {
 	key, err := k.keys.Create(id)
 	if err != nil {
 		return nil, err
 	}
-	return markedKey{key, keychainwrap.ErrWrongKey}, nil
+	return markedKey{key, keychainwrap.ErrWrongKey, keychainNotNow}, nil
 }
 
 func (k keychainGrantKeys) Load(id string) (agent.GrantKey, error) {
 	key, err := k.keys.Load(id)
 	if err != nil {
-		return nil, absentAs(err, keychainwrap.ErrNoGrantKey)
+		return nil, markLoad(err, keychainwrap.ErrNoGrantKey, keychainNotNow)
 	}
-	return markedKey{key, keychainwrap.ErrWrongKey}, nil
+	return markedKey{key, keychainwrap.ErrWrongKey, keychainNotNow}, nil
 }
 
 // markedKey is a backend's grant key whose Open marks the backend's own
-// "the copy doesn't open under this key" (wrong) as
-// agent.ErrGrantKeyWrongKey, the one Open error that stops a never-ask job
-// for good; every other Open error (a locked keychain, an enclave this jit
-// can't use right now) passes through unmarked, and refuses one run.
+// answers the way the agent reads them: its "the copy doesn't open under
+// this key" (wrong) as agent.ErrGrantKeyWrongKey, and its "can't be used
+// right now" (notNow) as agent.ErrGrantKeyNotNow, the one Open error that
+// doesn't stop a never-ask job. Every other error passes through unmarked,
+// and stops the job, cause named.
 type markedKey struct {
 	agent.GrantKey
-	wrong error
+	wrong  error
+	notNow func(error) bool
 }
 
 func (k markedKey) Open(wrapped []byte, class string) ([]byte, error) {
 	dek, err := k.GrantKey.Open(wrapped, class)
-	if errors.Is(err, k.wrong) {
+	switch {
+	case err == nil:
+		return dek, nil
+	case errors.Is(err, k.wrong):
 		return nil, fmt.Errorf("%w: %w", agent.ErrGrantKeyWrongKey, err)
+	case k.notNow(err):
+		return nil, fmt.Errorf("%w: %w", agent.ErrGrantKeyNotNow, err)
 	}
-	return dek, err
+	return nil, err
 }
 
 // Wrap is the wrapped key's, so the agent still tells the two kinds apart:
@@ -812,12 +823,16 @@ func (k markedKey) Wrap() string {
 	return agent.GrantWrapKeychain
 }
 
-// absentAs marks a backend's own "no such key" (gone) as
-// agent.ErrGrantKeyAbsent, the one Load error the agent treats as proof the
-// key is gone; every other error passes through unmarked.
-func absentAs(err, gone error) error {
-	if errors.Is(err, gone) {
+// markLoad marks a backend's Load error the way the agent reads it: its own
+// "no such key" (gone) as agent.ErrGrantKeyAbsent, its "can't be used right
+// now" (notNow) as agent.ErrGrantKeyNotNow; every other error passes
+// through unmarked, and stops a never-ask job, cause named.
+func markLoad(err, gone error, notNow func(error) bool) error {
+	switch {
+	case errors.Is(err, gone):
 		return fmt.Errorf("%w: %w", agent.ErrGrantKeyAbsent, err)
+	case notNow(err):
+		return fmt.Errorf("%w: %w", agent.ErrGrantKeyNotNow, err)
 	}
 	return err
 }
@@ -838,15 +853,15 @@ func (e enclaveGrantKeys) Create(id string) (agent.GrantKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	return markedKey{key, secureenclave.ErrWrongKey}, nil
+	return markedKey{key, secureenclave.ErrWrongKey, secureenclave.NotNow}, nil
 }
 
 func (e enclaveGrantKeys) Load(id string) (agent.GrantKey, error) {
 	key, err := e.keys.Load(id)
 	if err != nil {
-		return nil, absentAs(err, secureenclave.ErrNoGrantKey)
+		return nil, markLoad(err, secureenclave.ErrNoGrantKey, secureenclave.NotNow)
 	}
-	return markedKey{key, secureenclave.ErrWrongKey}, nil
+	return markedKey{key, secureenclave.ErrWrongKey, secureenclave.NotNow}, nil
 }
 
 func (e enclaveGrantKeys) Present(id string) (bool, error) { return e.keys.Present(id) }
