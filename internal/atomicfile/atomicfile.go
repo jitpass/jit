@@ -26,6 +26,15 @@ import (
 // (os.CreateTemp: O_EXCL), so a leftover temp, or a symlink planted where
 // one would go, is never written through. The result is mode 0600.
 func WriteFile(dest string, data []byte) error {
+	return WriteFileMode(dest, data, 0o600)
+}
+
+// WriteFileMode is WriteFile for a file that is not jit's own: it keeps the
+// permission bits its owner chose (an AI app's config jit adds one entry to),
+// where WriteFile always leaves jit's 0600. The temp file carries perm before
+// a byte is written, so the finished file is never briefly wider or
+// narrower than perm.
+func WriteFileMode(dest string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(dest)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("creating %s: %w", dir, err)
@@ -45,7 +54,7 @@ func WriteFile(dest string, data []byte) error {
 		}
 	}()
 
-	if err := tmp.Chmod(0o600); err != nil {
+	if err := tmp.Chmod(perm.Perm()); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("setting permissions on %s: %w", tmpPath, err)
 	}

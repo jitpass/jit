@@ -5,9 +5,16 @@ Add jit's MCP server to Claude Desktop or Cursor
 ### Synopsis
 
 Add one entry, "jit", to the app's MCP servers, so its agent can list
-and run your AI jobs: Claude Desktop (the default) or Cursor. The config
-file is backed up first, beside itself, and nothing else in it changes.
-The app reads it at start, so quit and reopen it afterwards.
+and run your AI jobs: Claude Desktop (the default) or Cursor. Nothing else
+in the file changes: the rest keeps its order, spacing and characters. A
+config that is a link to another file is edited there, and stays a link.
+
+First, a copy of the file as it was is saved beside it, named
+<file>.jit-backup-<date>-<time>. The copy holds whatever the file held,
+API keys included, so only you can read it, jit keeps only the latest
+one, and jit scan reports any key in it.
+
+The app reads its config at start, so quit and reopen it afterwards.
 
 Connecting approves nothing. Claude can only run jobs you approved with
 'jit job allow', and can only propose new ones for you to approve.
