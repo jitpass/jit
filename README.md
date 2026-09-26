@@ -354,8 +354,8 @@ jit guard history             # keep typed tokens out of your zsh history file
 
 </details>
 
-**Your shell history stays clean too.** Turn on **Keep typed credentials out
-of zsh history** in Settings › Protection, or run `jit guard history`. A
+**Your shell history stays clean too.** Turn on **Keep typed secrets out of
+zsh history** in Settings › Protection, or run `jit guard history`. A
 command you type with a token in it still works, and up-arrow still finds it,
 but it is never written to your history file, so it can't end up in a backup
 or a dotfiles repo. The hook fails open: if anything goes wrong, the
@@ -424,7 +424,7 @@ JitPass never destroys a credential. It moves the value into the vault, leaves
 a working hook where it was, and backs the file up, encrypted, before it
 touches it.
 
-**Changed your mind about all of it?** Settings › **Remove JitPass…** shows
+**Changed your mind about all of it?** Settings › Reset › **Remove JitPass…** shows
 you the plan before anything changes, then runs it with one Touch ID:
 
 <a href="docs/assets/readme/remove.png"><img align="right" src="docs/assets/readme/remove.png" width="380" alt="The Remove JitPass window: 17 files go back to plain files, then everything JitPass installed is removed. Cancel, or Remove JitPass. Touch ID follows."></a>
@@ -567,8 +567,8 @@ A session ends after 5 minutes without use, and never lasts longer than
 8 hours. When the app is not running, the second question is a Touch ID
 prompt that names the program.
 
-Only want the vault lock? Turn off **Ask before each tool's first credential
-use** in Settings › Protection, or run `jit service consent off`. Starting something that needs several secrets at
+Only want the vault lock? Turn off **Ask before a tool's first use** in
+Settings › Protection, or run `jit service consent off`. Starting something that needs several secrets at
 once? `jit run --trust -- terraform apply` approves that whole run in one
 gesture. Details: [per-process consent](./docs/service/consent.md).
 
