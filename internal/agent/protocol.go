@@ -616,6 +616,10 @@ type JobStatus struct {
 	Outputs     []string          `json:"outputs,omitempty"`
 	Description string            `json:"description,omitempty"`
 	Files       int               `json:"files"`
+	// Libraries counts the files fingerprinted outside the folder: what the
+	// program loads (its interpreter's installation, the native libraries
+	// it links). Files stays the folder's own count.
+	Libraries int `json:"libraries,omitempty"`
 	// State is JobReady, JobChanged or JobRotated; Changes names what
 	// changed, capped at maxJobChanges.
 	State        string       `json:"state"`
@@ -633,14 +637,20 @@ type JobStatus struct {
 // job_allow runs before its prompt. Refusal, when set, is approval's own
 // reason, word for word; nothing else is meaningful then.
 type JobPreview struct {
-	Refusal string            `json:"refusal,omitempty"`
-	Dir     string            `json:"dir,omitempty"`
-	Exe     string            `json:"exe,omitempty"`
-	Program string            `json:"program,omitempty"`
-	Files   int               `json:"files,omitempty"`
-	Extra   []string          `json:"extra,omitempty"`
-	Secrets []JobSecretStatus `json:"secrets,omitempty"`
-	Ask     string            `json:"ask,omitempty"`
+	Refusal string   `json:"refusal,omitempty"`
+	Dir     string   `json:"dir,omitempty"`
+	Exe     string   `json:"exe,omitempty"`
+	Program string   `json:"program,omitempty"`
+	Files   int      `json:"files,omitempty"`
+	Extra   []string `json:"extra,omitempty"`
+	// Libraries is JobStatus.Libraries for the job as it would be approved.
+	Libraries int `json:"libraries,omitempty"`
+	// Unfingerprinted, when set, says what the program loads from outside
+	// the folder that jit cannot fingerprint (a launcher like uv, or ruby's
+	// gems). Approval refuses such a job as never; each-time shows this.
+	Unfingerprinted string            `json:"unfingerprinted,omitempty"`
+	Secrets         []JobSecretStatus `json:"secrets,omitempty"`
+	Ask             string            `json:"ask,omitempty"`
 	// Exists says approving would replace a job of the same name.
 	Exists bool `json:"exists,omitempty"`
 	// Prompt is the Touch ID sentence approval will show, exactly.

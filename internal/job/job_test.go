@@ -141,7 +141,7 @@ func write(t *testing.T, path, body string) {
 
 func TestFingerprintStableAndSkips(t *testing.T) {
 	dir, exe := fixture(t)
-	a, err := Compute(dir, exe, nil, nil)
+	a, err := Compute(dir, Program{Exe: exe}, nil, nil)
 	if err != nil {
 		t.Fatal(err) // a FIFO that was opened would hang here, not fail
 	}
@@ -151,7 +151,7 @@ func TestFingerprintStableAndSkips(t *testing.T) {
 	if a.Files[".venv/bin/python"] == "" || !strings.HasPrefix(a.Files[".venv/bin/python"], "link:") {
 		t.Errorf("venv symlink = %q, want its target recorded", a.Files[".venv/bin/python"])
 	}
-	b, err := Compute(dir, exe, nil, nil)
+	b, err := Compute(dir, Program{Exe: exe}, nil, nil)
 	if err != nil || a.Root != b.Root {
 		t.Fatalf("two fingerprints of an unchanged folder differ: %v", err)
 	}
@@ -161,9 +161,9 @@ func TestFingerprintStableAndSkips(t *testing.T) {
 // loads in-tree bytecode, so a planted .pyc must stop the job.
 func TestFingerprintCoversBytecode(t *testing.T) {
 	dir, exe := fixture(t)
-	before, _ := Compute(dir, exe, nil, nil)
+	before, _ := Compute(dir, Program{Exe: exe}, nil, nil)
 	write(t, filepath.Join(dir, "__pycache__/list_guest_users.cpython-314.pyc"), "planted bytecode")
-	after, _ := Compute(dir, exe, nil, nil)
+	after, _ := Compute(dir, Program{Exe: exe}, nil, nil)
 	if d := Diff(before, after); len(d) != 1 || !strings.Contains(d[0].Path, "__pycache__") {
 		t.Fatalf("Diff = %v, want the rewritten .pyc", d)
 	}
@@ -177,8 +177,8 @@ func TestFingerprintThroughASymlinkedFolder(t *testing.T) {
 	if err := os.Symlink(dir, link); err != nil {
 		t.Fatal(err)
 	}
-	real, _ := Compute(dir, exe, nil, nil)
-	via, err := Compute(link, exe, nil, nil)
+	real, _ := Compute(dir, Program{Exe: exe}, nil, nil)
+	via, err := Compute(link, Program{Exe: exe}, nil, nil)
 	if err != nil || len(via.Files) == 0 || via.Root != real.Root {
 		t.Fatalf("via symlink: %d files, root match %v, err %v", len(via.Files), via.Root == real.Root, err)
 	}
@@ -193,19 +193,19 @@ func TestFingerprintFollowsLinksOutOfTheFolder(t *testing.T) {
 	if err := os.Symlink(filepath.Join(shared, "run.py"), filepath.Join(dir, "run.py")); err != nil {
 		t.Fatal(err)
 	}
-	before, err := Compute(dir, exe, nil, nil)
+	before, err := Compute(dir, Program{Exe: exe}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(shared, "run.py"), "import os; print(os.environ)\n")
-	after, _ := Compute(dir, exe, nil, nil)
+	after, _ := Compute(dir, Program{Exe: exe}, nil, nil)
 	if d := Diff(before, after); len(d) != 1 || d[0].Path != "run.py"+LinkTargetSuffix {
 		t.Fatalf("Diff = %v, want the linked file's content", d)
 	}
 	if err := os.Symlink(shared, filepath.Join(dir, "lib")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Compute(dir, exe, nil, nil); !errors.Is(err, ErrLinkOutside) {
+	if _, err := Compute(dir, Program{Exe: exe}, nil, nil); !errors.Is(err, ErrLinkOutside) {
 		t.Fatalf("a link to a folder outside: err = %v, want ErrLinkOutside", err)
 	}
 }
@@ -219,7 +219,7 @@ func TestFingerprintRefusesAPipeInsteadOfHanging(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { _, err := Compute(dir, exe, nil, []string{outside}); done <- err }()
+	go func() { _, err := Compute(dir, Program{Exe: exe}, nil, []string{outside}); done <- err }()
 	select {
 	case err := <-done:
 		if err == nil {
@@ -261,12 +261,12 @@ func TestFingerprintNamesWhatChanged(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir, exe := fixture(t)
 			target, _ := filepath.EvalSymlinks(exe)
-			before, err := Compute(dir, exe, nil, nil)
+			before, err := Compute(dir, Program{Exe: exe}, nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			tc.edit(t, dir, target)
-			after, err := Compute(dir, exe, nil, nil)
+			after, err := Compute(dir, Program{Exe: exe}, nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -286,12 +286,12 @@ func TestFingerprintNamesWhatChanged(t *testing.T) {
 func TestFingerprintSkipsOutputs(t *testing.T) {
 	dir, exe := fixture(t)
 	out := filepath.Join(dir, "reports")
-	before, err := Compute(dir, exe, []string{out}, nil)
+	before, err := Compute(dir, Program{Exe: exe}, []string{out}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(out, "notion_guest_users_1.csv"), "a,b\n")
-	after, err := Compute(dir, exe, []string{out}, nil)
+	after, err := Compute(dir, Program{Exe: exe}, []string{out}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,13 +422,13 @@ func TestExternalFilesAreFingerprinted(t *testing.T) {
 	if err != nil || len(extra) != 2 {
 		t.Fatalf("ExternalFiles = %v, want the script and the config, nothing inside the folder", extra)
 	}
-	before, err := Compute(dir, exe, nil, extra)
+	before, err := Compute(dir, Program{Exe: exe}, nil, extra)
 	if err != nil {
 		t.Fatal(err)
 	}
 	write(t, outside, "import os; print(os.environ)\n")
 	outside, _ = filepath.EvalSymlinks(outside) // recorded resolved: /var → /private/var
-	after, err := Compute(dir, exe, nil, extra)
+	after, err := Compute(dir, Program{Exe: exe}, nil, extra)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -555,12 +555,12 @@ func TestExternalFilesCoversSkippedPartsAndCodeFlags(t *testing.T) {
 	if err := os.Symlink(filepath.Join(dir, ".git/run.py"), filepath.Join(dir, "run.py")); err != nil {
 		t.Fatal(err)
 	}
-	before, err := Compute(dir, exe, nil, nil)
+	before, err := Compute(dir, Program{Exe: exe}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(dir, ".git/run.py"), "import os; print(os.environ)\n")
-	after, _ := Compute(dir, exe, nil, nil)
+	after, _ := Compute(dir, Program{Exe: exe}, nil, nil)
 	if d := Diff(before, after); len(d) != 1 || d[0].Path != "run.py"+LinkTargetSuffix {
 		t.Fatalf("Diff = %v, want the linked .git file's content", d)
 	}
@@ -598,13 +598,13 @@ func TestFingerprintSeesASwapThatWasPutBack(t *testing.T) {
 	for name, swap := range cases {
 		t.Run(name, func(t *testing.T) {
 			dir, exe := fixture(t)
-			before, err := Compute(dir, exe, nil, nil)
+			before, err := Compute(dir, Program{Exe: exe}, nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			time.Sleep(20 * time.Millisecond) // a change-time is nanosecond-precise; make it move visibly
 			swap(t, filepath.Join(dir, "list_guest_users.py"))
-			after, _ := Compute(dir, exe, nil, nil)
+			after, _ := Compute(dir, Program{Exe: exe}, nil, nil)
 			if before.Files["list_guest_users.py"] != after.Files["list_guest_users.py"] {
 				t.Fatal("precondition: the content should be identical again")
 			}
@@ -619,12 +619,12 @@ func TestFingerprintSeesASwapThatWasPutBack(t *testing.T) {
 	}
 	// A fingerprint from before stamps existed compares by content alone.
 	dir, exe := fixture(t)
-	old, _ := Compute(dir, exe, nil, nil)
+	old, _ := Compute(dir, Program{Exe: exe}, nil, nil)
 	old.Stamps = nil
 	time.Sleep(20 * time.Millisecond)
 	orig, _ := os.ReadFile(filepath.Join(dir, "list_guest_users.py"))
 	write(t, filepath.Join(dir, "list_guest_users.py"), string(orig))
-	now, _ := Compute(dir, exe, nil, nil)
+	now, _ := Compute(dir, Program{Exe: exe}, nil, nil)
 	if d := Diff(old, now); len(d) != 0 {
 		t.Fatalf("an unstamped fingerprint reported %v", d)
 	}

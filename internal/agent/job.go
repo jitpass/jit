@@ -121,6 +121,10 @@ type preparedJob struct {
 	shownCount               int
 	exists                   bool
 	reason                   string
+	// unfingerprinted is why jit cannot fingerprint all the program loads
+	// from outside the folder (job.Unfingerprinted), for an each-time job's
+	// sheet; a never job with one is refused.
+	unfingerprinted string
 }
 
 // prepareJob runs every check approval makes before its prompt. The string
@@ -183,6 +187,14 @@ func (s *Server) prepareJob(req Request) (*preparedJob, string) {
 	if err != nil {
 		return nil, err.Error()
 	}
+	prog := job.Program{Exe: exe, Argv: spec.Argv, PathEnv: spec.PathEnv, Home: spec.Home}
+	gap := job.Unfingerprinted(dir, prog)
+	if gap != "" && ask == job.AskNever {
+		// A job that never asks runs with its secrets while nobody watches,
+		// so everything it runs must be fingerprinted: the promise approval
+		// makes is that the code that runs is the code approved.
+		return nil, gap + ". A job that runs without asking must run only code jit fingerprints: approve it as each-time, or start the interpreter directly (a venv's bin/python, not a launcher)"
+	}
 
 	s.jobMu.Lock()
 	_, exists := s.jobs[req.JobName]
@@ -228,7 +240,7 @@ func (s *Server) prepareJob(req Request) (*preparedJob, string) {
 		return nil, fmt.Sprintf("--show names %s, which the profile does not set", strings.Join(names, ", "))
 	}
 
-	before, err := job.Compute(dir, exe, outputs, extra)
+	before, err := job.Compute(dir, prog, outputs, extra)
 	if err != nil {
 		return nil, "fingerprinting the folder: " + err.Error()
 	}
@@ -245,7 +257,7 @@ func (s *Server) prepareJob(req Request) (*preparedJob, string) {
 	return &preparedJob{
 		name: req.JobName, dir: dir, exe: exe, spec: spec, ask: ask, outputs: outputs, extra: extra,
 		sources: sources, profileName: profileName, profileRoot: profileRoot, before: before,
-		shownCount: shownCount, exists: exists,
+		shownCount: shownCount, exists: exists, unfingerprinted: gap,
 		reason: jobAllowReason(jobLabel(dir, spec.Argv), secretGroups(sources), len(sources), shownCount, ask),
 	}, ""
 }
@@ -293,7 +305,7 @@ func (s *Server) allowJob(req Request, c *caller) Response {
 
 	// The folder the human approved is the folder as it was when they were
 	// asked. A change while the prompt was up is refused, not absorbed.
-	after, err := job.Compute(dir, exe, outputs, extra)
+	after, err := job.Compute(dir, job.Program{Exe: exe, Argv: spec.Argv, PathEnv: spec.PathEnv, Home: spec.Home}, outputs, extra)
 	if err != nil {
 		return Response{OK: false, Error: "job_allow: fingerprinting the folder: " + err.Error()}
 	}
@@ -550,7 +562,7 @@ func (s *Server) jobStatus(j *job.Job) JobStatus {
 	st := JobStatus{
 		Name: j.Name, Dir: j.Dir, Argv: append([]string(nil), j.Argv...), Exe: j.Exe,
 		Profile: j.Profile, Ask: string(j.Ask), Outputs: j.Outputs, Description: j.Description,
-		Files: len(j.Fingerprint.Files), State: JobReady, ApprovedUnix: j.ApprovedUnix,
+		Files: len(j.Fingerprint.Files), Libraries: libraryFiles(j.Fingerprint), State: JobReady, ApprovedUnix: j.ApprovedUnix,
 		Runs: j.Runs, LastRunUnix: j.LastRunUnix, LastExit: j.LastExit, LastCaller: j.LastCaller,
 		LastRefusal: j.LastRefusal, LastHidden: j.LastHiddenSum,
 		ProfileGlobal: j.Profile != "" && j.ProfileRoot == "", ProfileRoot: j.ProfileRoot,
@@ -580,11 +592,28 @@ func (s *Server) jobStatus(j *job.Job) JobStatus {
 // is reported as one change on the folder itself, which stops the job the
 // same way.
 func jobChanges(j *job.Job) []job.Change {
-	now, err := job.Compute(j.Dir, j.Exe, j.Outputs, j.Extra)
+	now, err := job.Compute(j.Dir, jobProgram(j), j.Outputs, j.Extra)
 	if err != nil {
 		return []job.Change{{Path: j.Dir, Kind: job.Removed}}
 	}
 	return job.Diff(j.Fingerprint, now)
+}
+
+// jobProgram is what j starts, as approval resolved it.
+func jobProgram(j *job.Job) job.Program {
+	return job.Program{Exe: j.Exe, Argv: j.Argv, PathEnv: j.PathEnv, Home: j.Home}
+}
+
+// libraryFiles counts the files a fingerprint holds from outside the folder
+// (its Libs), not the places recorded as empty or the resolutions.
+func libraryFiles(fp job.Fingerprint) int {
+	n := 0
+	for _, v := range fp.Libs {
+		if strings.HasPrefix(v, "sha256:") {
+			n++
+		}
+	}
+	return n
 }
 
 // rotatedSecrets maps each secret path whose wrapped bytes no longer match
@@ -923,6 +952,7 @@ func (s *Server) previewJob(req Request) *JobPreview {
 	_, program := job.Label(pj.dir, pj.spec.Argv)
 	p := &JobPreview{
 		Dir: pj.dir, Exe: pj.exe, Program: program, Files: len(pj.before.Files), Extra: pj.extra,
+		Libraries: libraryFiles(pj.before), Unfingerprinted: pj.unfingerprinted,
 		Ask: string(pj.ask), Exists: pj.exists, Prompt: pj.reason,
 	}
 	for _, src := range pj.sources {

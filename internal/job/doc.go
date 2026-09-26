@@ -23,6 +23,13 @@
 //     approval and re-taken before every run. A script, a library in its
 //     .venv, or the profile manifest changed after approval stops the job
 //     until the human looks. The executable is hashed too, wherever it lives.
+//   - interp.go and libs.go: what the program loads from OUTSIDE the folder,
+//     fingerprinted with it: a Python's whole installation and the folders
+//     its .pth files add, the places Node searches for packages, and the
+//     native libraries every fingerprinted Mach-O links. Read from files,
+//     never by running the interpreter, which would run the code being
+//     checked before the human approved anything. A program jit cannot
+//     cover this way (a launcher like uv run, ruby) may not run unasked.
 //   - policy.go: commands refused at approval because they hand the values
 //     straight back (`python -c`, `env`, `cat`). A guard against the obvious
 //     mistake, never the boundary: the boundary is the human reading the

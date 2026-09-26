@@ -458,9 +458,14 @@ What stays trusted, stated rather than hidden:
 
 - **Programs the job calls** from the captured `PATH` (`git`, `curl`, a
   Homebrew tool) and their own configuration. The fingerprint covers the
-  folder, the files the command names, and the program it starts.
-- **Code a Python venv loads through an editable install** (`.pth` pointing
-  outside): the `.pth` file is fingerprinted, the code it points at is not.
+  folder, the files the command names, the program it starts, and (since
+  the interpreter review below) what that program loads from outside the
+  folder.
+- **Code a Python venv loads through an editable install that uses an
+  import hook** (setuptools' `__editable__` finder): the hook's file is
+  fingerprinted, the folder it maps to is not. A `.pth` path line, the form
+  uv and pip write for most editable installs, is followed and its folder
+  fingerprinted (interpreter review, below).
 - **A process that reaches the socket can ask for approval.** The Touch ID
   prompt is the boundary, which is why it names resolved facts. Step 4's
   sheet shows the whole command before the prompt.
@@ -540,6 +545,132 @@ decisions, taken by Meni on 2026-09-25 and recorded at the end of this list.
   Running the script outside jit writes `.pyc` files and stops the job; a
   stop made only of `.pyc` files now says so, and how to get back (run it
   with `jit job run`, or approve it again).
+
+### After the interpreter review (2026-09-26)
+
+A review before v2.3.0 found the fingerprint stopped at the executable. The
+interpreter loads its own standard library and site-packages from outside
+the job folder: the notion job's `.venv/bin/python` is uv's CPython under
+`~/.local/share/uv/python`, and Homebrew's lives under `/opt/homebrew`, both
+writable by the user and so by any agent running as the user. An agent that
+edited `encodings/__init__.py` (imported before any script line runs) or
+dropped a `.pth` into site-packages had a never job run its code with the
+secrets, while this page promised the code that runs is the code approved.
+Decided with Meni: fix before shipping.
+
+**What is fingerprinted now** (`internal/job/interp.go`, `libs.go`), into a
+second map of the fingerprint, `Libs`, keyed by absolute path, with
+change-time stamps like the folder's:
+
+- **Python**: the installation's whole prefix (every file under the folder
+  holding `lib/python3.X/os.py`, CPython's own landmark): the stdlib,
+  `lib-dynload`, the base site-packages, `bin`. A venv outside the folder.
+  The folders a site-packages `.pth` path line adds. Folders a symlink in
+  any of these points at (Homebrew's `site-packages` is one). Apple's extra
+  site-packages folders (`/Library/Python/X.Y/site-packages` and the
+  AppleInternal ones), which its patched `site.py` adds for Xcode's Python.
+- **Node**: `node_modules` and `package.json` in every folder above the
+  job's, `~/.node_modules`, `~/.node_libraries`, `<prefix>/lib/node`.
+- **Every program**: the Mach-O closure. Each fingerprinted Mach-O (the
+  executable, a compiled module in the folder or the installation) has its
+  `LC_LOAD_DYLIB`, weak, re-exported, lazy and upward dylibs recorded at
+  every place dyld would try (`@rpath` over the image's, its loaders' and
+  the main executable's `LC_RPATH`s, `@loader_path`, `@executable_path`,
+  absolute), recursively. Homebrew's Node links 162 dylibs from
+  `/opt/homebrew`. `/usr/lib`, `/System`, `/bin`, `/sbin` and the rest of
+  `/usr` are left out: SIP. `/usr/local` and `/System/Volumes` (where the
+  Data volume, and so every home folder, is reachable) are not, compared
+  without case as APFS compares names.
+- **A `#!` script**: the interpreter its first line names (for
+  `/usr/bin/env NAME`, NAME found on the captured `PATH`), classified and
+  covered as if the command had named it.
+- **Places that held nothing**, recorded `absent`: `pyvenv.cfg` beside the
+  started executable and one folder up, a `._pth` beside it (which replaces
+  `sys.path` whole), every `@rpath` candidate dyld would try first, Node's
+  global folders. One appearing is a file added, and stops the job.
+- **Resolutions**: the executable as started, and each `pyvenv.cfg` `home`,
+  record where they resolve. Re-pointing uv's minor-version link, or
+  `/opt/homebrew/opt/python@3.13`, at a copy with an identical binary and a
+  poisoned stdlib moves every key, so it stops the job.
+
+**Read from files, never by running the interpreter.** Asking it (`python
+-I -S -c 'import sys; print(sys.path)'`) would be exact, but it executes
+code from the tree being checked (`encodings` is imported before any `-c`),
+and approval checks run before the Touch ID for any process that reaches
+the socket: a preview must never make the service start a program nobody
+approved, as its own child. So `interp.go` finds the layout the way CPython
+does, from `pyvenv.cfg`, the stdlib landmark searched upward from the
+resolved executable, each venv `home` and the folder of any libpython it
+links (a framework build), and fingerprints the files that reading depends
+on. It only has to be right on the day of approval: after that, anything
+that could change its answer is a fingerprinted file. The gated
+`TestRealInterpreters` checks the reading against each real Python's own
+answer (`sys.path`, `sysconfig`, `site.getsitepackages()`, asked with
+`-I -S -B`), and it found the Apple site folders the first version missed.
+
+**Bytecode stays fingerprinted**, in the library too. A run's own bytecode
+goes to its scratch `PYTHONPYCACHEPREFIX`, but a child started with `-I` or
+a cleaned environment reads the library's `__pycache__`, and a planted
+`.pyc` whose header matches its source runs instead of it. The cost: the
+first time that Python imports a module outside jit, it writes a `.pyc`
+into its own library (uv's 3.14 stdlib on this Mac holds 326 `.pyc` files
+beside 1,059 `.py`, written as it was used), and every job using it stops. The stop says so
+(`StopHint`), and approving again is the fix. The same trade the folder's
+`__pycache__` made.
+
+**Where jit cannot cover the program, a job cannot run unasked.**
+`job.Unfingerprinted` names why, and `prepareJob` refuses `--ask never`
+with it, before the prompt: a launcher that picks the interpreter when it
+runs (`uv`, `poetry`, `npx`, `pyenv`, `go`, …), a `python` or `node` that
+is itself a script (a version manager's shim), a Python whose installation
+cannot be found (Apple's `/usr/bin/python3` stub), an interpreter whose
+library search jit does not read (Ruby, Perl, PHP, Lua, Deno, Bun,
+PowerShell, `osascript`), and a Python or Node script outside the folder
+(both load modules from the script's own folder). An each-time job may
+still be approved; the preview (`unfingerprinted`) and the CLI say what is
+not covered before the Touch ID.
+
+**Limits and speed.** Library files count toward the per-job 20,000 files
+and 500 MB with the folder's. A library file whose inode, size,
+modification time and change-time are unchanged is not read again: only the
+kernel sets a change-time, and a file is cached only when its change-time is
+older than two seconds before the read began, so a write during the read
+always gives a new key (`racyWindow`). Load commands are cached the same
+way. The folder's own walk is not cached. Measured on this Mac
+(2026-09-26, `JIT_REAL_INTERPRETERS=1`; no Homebrew Python is installed
+here):
+
+| Program | Library files | Size | First check | Cached |
+|---|---|---|---|---|
+| uv CPython 3.14.7 (the notion job's) | 2,014 (9 native) | 73.9 MB | 106 ms | 18 ms |
+| uv CPython 3.13.15 | 1,858 (9 native) | 69.5 MB | 96 ms | 17 ms |
+| Xcode's Python 3.9 | 1,811 (74 native) | 48.2 MB | 102 ms | 14 ms |
+| Homebrew Node 26.9 | 163 (162 native) | 120.9 MB | 107 ms | 30 ms |
+| the notion job: its folder (242 entries) and its Python | 2,014 outside | 73.9 MB outside | 136 ms | 46 ms |
+
+The cached figure for a job includes its own folder, which is read every
+time. The cache lives in the service while it runs, so after the first
+check only files that changed are read again; a run checks three times.
+The cost on disk: each Python job adds about 740 KB to `jobs.json` (the
+hash and change-time of every library file, measured on the notion job),
+and the file is rewritten after every run. A compact encoding is possible
+if that ever matters.
+
+**A job approved before this** has no `Libs` (`libs_v` 0). If its program
+loads anything from outside the folder now, it stops with "approved by an
+older jit … approve it again" (`Unchecked`) rather than a list of two
+thousand added files; a `/bin/sh` job, which loads nothing jit records,
+keeps running.
+
+Tests (each run against the code without its safeguard): an edited stdlib
+file, a `.pth` dropped into site-packages, an edited module in a venv
+outside the folder, an edited module in a `.pth` folder, a stdlib zip, a
+`._pth`, a lower landmark, a `pyvenv.cfg` beside a linked interpreter, a
+re-pointed installation, new library bytecode, a rewritten dylib (direct,
+transitive, and one a venv's compiled module links), a dylib planted at an
+earlier `@rpath`, a missing weak dylib appearing, a package planted where
+Node searches, the per-job limits, a same-size rewrite with its time put
+back through the cache, the refusals, and the old-approval stop.
 
 ## Open decisions
 
