@@ -28,11 +28,14 @@ const (
 	// TEST-ONLY tag through newWrapper.
 	prodTag = "com.jitpass.vault.kek"
 
+	// TeamID is the Apple team that signs JitPass.app.
+	TeamID = "CZC6BH93GJ"
+
 	// AccessGroup is where every JitPass enclave key lives. It is named for
 	// the vault, not a bundle ID, so moving the service between bundles never
 	// orphans a key (design/secure-enclave.md). The provisioning profile
 	// authorizes CZC6BH93GJ.* (checked 2026-09-25).
-	AccessGroup = "CZC6BH93GJ.com.jitpass.vault"
+	AccessGroup = TeamID + ".com.jitpass.vault"
 
 	mekSize = 32 // AES-256, the same MEK keychainwrap holds
 )
@@ -169,18 +172,6 @@ func (w *Wrapper) Presence() Presence {
 		return Unavailable
 	}
 	return Indeterminate
-}
-
-// Reachable reports whether this process can reach the enclave's access
-// group at all, whatever the sealed file says: nil when it can (with or
-// without a key under the tag), ErrUnavailable when it can't (a jit outside
-// JitPass.app), and any other error when it couldn't tell. Like Presence it
-// only looks the key up, so it never prompts and never makes a key; a
-// command that can only fail from here (`jit vault rekey --wrapper`) asks
-// it before its questions and its keychain reads.
-func (w *Wrapper) Reachable() error {
-	_, err := w.enc.present()
-	return err
 }
 
 // Install seals mek to the enclave key, creating the key when it does not

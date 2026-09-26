@@ -101,13 +101,14 @@ var serviceTTLCmd = &cobra.Command{
 		if err := validateAgentTTLSetting(d); err != nil {
 			return fmt.Errorf("jit service ttl: %w", err)
 		}
-		if err := serviceNeedsApp(serviceCommand(cmd, args)); err != nil {
+		cleared, err := serviceNeedsApp(serviceCommand(cmd, args))
+		if err != nil {
 			return fmt.Errorf("jit service ttl: %w", err)
 		}
 		// installAgentService writes the plist with the new --ttl and reloads
 		// it, creating the login item if it wasn't there yet. Preserve the
 		// consent setting across the TTL change.
-		_, running, err := installAgentService(d, configuredAgentConsent())
+		_, running, err := installAgentService(d, configuredAgentConsent(), cleared)
 		if err != nil {
 			return fmt.Errorf("jit service ttl: %w", err)
 		}
@@ -164,7 +165,8 @@ var serviceConsentCmd = &cobra.Command{
 			return fmt.Errorf("jit service consent: expected 'on' or 'off', got %q", args[0])
 		}
 		// Before the Touch ID below: a refusal must not follow a prompt.
-		if err := serviceNeedsApp(serviceCommand(cmd, args)); err != nil {
+		cleared, err := serviceNeedsApp(serviceCommand(cmd, args))
+		if err != nil {
 			return fmt.Errorf("jit service consent: %w", err)
 		}
 		// Turning consent OFF reopens the exact window the feature exists to
@@ -181,7 +183,7 @@ var serviceConsentCmd = &cobra.Command{
 		if !ok {
 			ttl = agentInstallDefaultTTL
 		}
-		_, running, err := installAgentService(ttl, on)
+		_, running, err := installAgentService(ttl, on, cleared)
 		if err != nil {
 			return fmt.Errorf("jit service consent: %w", err)
 		}
@@ -258,7 +260,8 @@ var agentRestartCmd = &cobra.Command{
 		// Every branch below, the plain reload too: a service this copy of
 		// jit set up or restarted on an enclave vault it can't reach could
 		// never unlock, and "Restarted" would say it could.
-		if err := serviceNeedsApp(serviceCommand(cmd, args)); err != nil {
+		cleared, err := serviceNeedsApp(serviceCommand(cmd, args))
+		if err != nil {
 			return fmt.Errorf("jit service restart: %w", err)
 		}
 		plistPath, err := agentPlistPath()
@@ -280,7 +283,7 @@ var agentRestartCmd = &cobra.Command{
 			// against a concurrent session's install, and installAgentService
 			// already waited for the socket — its result is the answer, a
 			// second wait would only double the worst-case silence.
-			if _, running, ierr := installAgentService(agentInstallDefaultTTL, true); ierr != nil {
+			if _, running, ierr := installAgentService(agentInstallDefaultTTL, true, cleared); ierr != nil {
 				return fmt.Errorf("jit service restart: %w", ierr)
 			} else if !running {
 				return fmt.Errorf("jit service restart: %w", agentStartFailure())
@@ -308,7 +311,7 @@ var agentRestartCmd = &cobra.Command{
 			if d, ok := configuredAgentTTL(); ok {
 				ttl = d
 			}
-			if _, running, ierr := installAgentService(ttl, configuredAgentConsent()); ierr != nil {
+			if _, running, ierr := installAgentService(ttl, configuredAgentConsent(), cleared); ierr != nil {
 				return fmt.Errorf("jit service restart: %w", ierr)
 			} else if !running {
 				return fmt.Errorf("jit service restart: %w", agentStartFailure())

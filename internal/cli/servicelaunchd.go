@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,8 +17,8 @@ import (
 	"time"
 
 	"github.com/jitpass/jit/internal/agent"
-	"github.com/jitpass/jit/internal/keystore"
 	"github.com/jitpass/jit/internal/selfpath"
+	"github.com/jitpass/jit/internal/vault"
 )
 
 // This file is the launchd mechanics: writing the LaunchAgent plist, reading
@@ -194,30 +195,52 @@ func agentPlistNeedsRepoint(data []byte) bool {
 // success. command is what to run from the app instead ("service
 // restart"), for the refusal to name.
 //
-// The check reads the sealed file and looks the vault's enclave key up
-// (keystore.Store.Presence): it never prompts and never makes a key. It
-// fails closed: an enclave vault whose key jit couldn't look up refuses
-// too. A keychain vault is never refused, and costs one lstat.
-func serviceNeedsApp(command string) error {
+// Whether this is an enclave vault is the sealed file's lstat, the test
+// keystore.Open makes (an lstat that fails for any reason but "not there"
+// counts as one). Whether this jit can reach the enclave is a property of
+// the binary, its signature's entitlements (secureenclave.Entitled), never
+// a keychain query: a lookup can fail while the screen is locked or in a
+// session with no UI, and refusing then locked out the app's own jit. So an
+// entitled jit always goes on, a keychain vault always goes on (for one
+// lstat), and only an unentitled jit on an enclave vault is refused; every
+// refusal names its cause.
+//
+// It runs once per command: the command passes its serviceCleared to
+// installAgentService, which cannot run without one.
+func serviceNeedsApp(command string) (serviceCleared, error) {
 	root, err := vaultRootDir()
 	if err != nil {
-		return fmt.Errorf("couldn't find the vault to check where its key is: %w", err)
+		return serviceCleared{}, serviceRefusal{fmt.Errorf("couldn't find the vault to check where its key is: %w", err)}
 	}
-	ks := openKeyStore(root)
-	if ks.Kind() != keystore.KindSecureEnclave {
-		return nil
+	_, lerr := os.Lstat(filepath.Join(root, vault.SealedKeyFile))
+	if errors.Is(lerr, fs.ErrNotExist) {
+		return serviceCleared{ok: true}, nil
 	}
-	switch ks.Presence() {
-	case keystore.Present, keystore.KeyLost:
-		// Reachable. A lost key is the service's to report, not this
-		// command's to hide by refusing.
-		return nil
-	case keystore.Unavailable:
-		return needsAppJitError{sealed: true, command: command}
+	entitled, eerr := thisJitEntitled()
+	switch {
+	case eerr != nil:
+		return serviceCleared{}, serviceRefusal{fmt.Errorf("couldn't read this jit's own signature,\n"+
+			"so the service was left as it was:\n%w", eerr)}
+	case entitled:
+		return serviceCleared{ok: true}, nil
+	case lerr != nil:
+		return serviceCleared{}, serviceRefusal{fmt.Errorf("couldn't tell whether this vault's key is\n"+
+			"in the Secure Enclave, so the service was left as it was:\n%w", lerr)}
 	}
-	return errors.New("this vault's key is in the Secure Enclave, and jit couldn't\n" +
-		"check whether this copy of jit can reach it; the service was left as it was")
+	return serviceCleared{}, serviceRefusal{needsAppJitError{sealed: true, command: command, jit: findAppJit()}}
 }
+
+// serviceCleared is serviceNeedsApp's yes, which installAgentService
+// requires: proof the command checked, once, before it wrote the plist.
+type serviceCleared struct{ ok bool }
+
+// serviceRefusal is every refusal serviceNeedsApp gives, so a caller (jit
+// upgrade) can tell "this jit may not move the service" from the move
+// failing, and never follows one with advice this jit would refuse too.
+type serviceRefusal struct{ err error }
+
+func (r serviceRefusal) Error() string { return r.err.Error() }
+func (r serviceRefusal) Unwrap() error { return r.err }
 
 // installAgentService writes the launchd LaunchAgent plist that runs
 // `jit service run --ttl <ttl>` and (re)loads it, returning the plist path and
@@ -229,19 +252,19 @@ func serviceNeedsApp(command string) error {
 // NO consent prompt of its own: the service is a solid part of the app that
 // sets itself up on first use, and the plist is a low-privilege, fully
 // reversible user LaunchAgent.
-func installAgentService(ttl time.Duration, consent bool) (plistPath string, running bool, err error) {
-	return installAgentServiceReady(ttl, consent, sameBuildAsThisProcess)
+func installAgentService(ttl time.Duration, consent bool, cleared serviceCleared) (plistPath string, running bool, err error) {
+	return installAgentServiceReady(ttl, consent, sameBuildAsThisProcess, cleared)
 }
 
 // installAgentServiceReady is installAgentService with the "it's up" test
 // injected, for the one caller whose new build is not its own: `jit upgrade`
 // (see restartServiceOntoCurrentBinary). Everything else wants the default.
-func installAgentServiceReady(ttl time.Duration, consent bool, ready agentReady) (plistPath string, running bool, err error) {
-	// Every path that writes the plist comes through here, so this is the
-	// one check none of them can skip; the commands also check first, to
-	// refuse before anything else they do.
-	if err := serviceNeedsApp("service restart"); err != nil {
-		return "", false, err
+//
+// Every path that writes the plist comes through here, so none can skip
+// serviceNeedsApp: each passes the serviceCleared its own check returned.
+func installAgentServiceReady(ttl time.Duration, consent bool, ready agentReady, cleared serviceCleared) (plistPath string, running bool, err error) {
+	if !cleared.ok {
+		return "", false, errors.New("the service wasn't checked against this vault's key; nothing was changed")
 	}
 	exePath, err := agentBinaryPath()
 	if err != nil {
@@ -338,17 +361,25 @@ func ensureAgentInstalled() (didInstall, running bool) {
 		if err != nil || agent.NewClient(agent.SocketPath(root)).Reachable() {
 			return false, false
 		}
+		cleared, err := serviceNeedsApp("service restart")
+		if err != nil {
+			return false, false
+		}
 		ttl := agentInstallDefaultTTL
 		if configured, ok := configuredAgentTTL(); ok {
 			ttl = configured
 		}
-		_, running, err := installAgentService(ttl, configuredAgentConsent())
+		_, running, err := installAgentService(ttl, configuredAgentConsent(), cleared)
 		if err != nil {
 			return false, false
 		}
 		return true, running
 	}
-	_, running, err := installAgentService(agentInstallDefaultTTL, true)
+	cleared, err := serviceNeedsApp("service restart")
+	if err != nil {
+		return false, false
+	}
+	_, running, err = installAgentService(agentInstallDefaultTTL, true, cleared)
 	if err != nil {
 		return false, false
 	}

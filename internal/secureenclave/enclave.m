@@ -198,3 +198,30 @@ SEResult se_list_tags(const char *group, const char *prefix, char ***tags, int *
         return r;
     }
 }
+
+SEResult se_entitlements(const char *group, int *has_group, char **app_id) {
+    @autoreleasepool {
+        *has_group = 0;
+        *app_id = NULL;
+        SecTaskRef task = SecTaskCreateFromSelf(kCFAllocatorDefault);
+        if (!task) return fail(@"reading this process's code signature", errSecInternalComponent);
+        CFErrorRef e = NULL;
+        id groups = CFBridgingRelease(SecTaskCopyValueForEntitlement(task, CFSTR("keychain-access-groups"), &e));
+        if (e) {
+            CFRelease(task);
+            return failCF(@"reading the keychain-access-groups entitlement", e);
+        }
+        id appID = CFBridgingRelease(SecTaskCopyValueForEntitlement(task, CFSTR("com.apple.application-identifier"), &e));
+        CFRelease(task);
+        if (e) return failCF(@"reading the application-identifier entitlement", e);
+        NSString *want = [NSString stringWithUTF8String:group];
+        if ([groups isKindOfClass:[NSArray class]]) {
+            for (id g in (NSArray *)groups) {
+                if ([g isKindOfClass:[NSString class]] && [g isEqualToString:want]) *has_group = 1;
+            }
+        }
+        if ([appID isKindOfClass:[NSString class]]) *app_id = dupNSString(appID);
+        SEResult r = {1, 0, NULL};
+        return r;
+    }
+}

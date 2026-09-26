@@ -47,4 +47,11 @@ SEResult se_open(const char *tag, const char *group, const unsigned char *ct, in
 // prompts). *tags is a malloc'd array of *count malloc'd strings.
 SEResult se_list_tags(const char *group, const char *prefix, char ***tags, int *count);
 
+// se_entitlements reads this process's OWN code-signing entitlements
+// (SecTaskCreateFromSelf): *has_group is 1 when keychain-access-groups
+// names group, and *app_id is the application identifier (malloc'd, NULL
+// when there is none). It is no keychain query: it never prompts, and it
+// answers the same whether the Mac is locked or not.
+SEResult se_entitlements(const char *group, int *has_group, char **app_id);
+
 #endif

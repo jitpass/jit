@@ -213,7 +213,7 @@ type keyMover struct {
 	seRemoveStaged  func() error                        // drop an unverified staged file
 	seOpen          func(reason string) ([]byte, error) // the enclave's dialog
 	seDelete        func() error                        // the sealed file and the enclave key
-	seReachable     func() error                        // looks the key up only: no prompt, no key made
+	seReachable     func() error                        // this binary's entitlement: no keychain query, no prompt
 
 	lockAgent func()
 
@@ -718,18 +718,15 @@ func recoveryFileCurrent(root string) error {
 	return nil
 }
 
-// appJit is the jit inside JitPass.app, the one copy that can reach the
-// Secure Enclave: a symlink to the signed helper's main executable
-// (design/secure-enclave.md, Packaging). The refusals below name it.
-const appJit = "/Applications/JitPass.app/Contents/MacOS/jit"
-
 // needsAppJitError refuses a command this copy of jit can't do because it
-// can't reach the Secure Enclave (secureenclave.ErrUnavailable): a jit
-// outside JitPass.app. sealed says the vault's key is already there;
-// command is what to run from the app instead.
+// can't reach the Secure Enclave (it isn't entitled: a jit outside
+// JitPass.app). sealed says the vault's key is already there; command is
+// what to run from the app instead; jit is the app's jit (findAppJit), ""
+// when it wasn't found, and then the refusal names no path.
 type needsAppJitError struct {
 	sealed  bool
 	command string
+	jit     string
 }
 
 func (e needsAppJitError) Error() string {
@@ -738,7 +735,10 @@ func (e needsAppJitError) Error() string {
 		head = "this vault's key is in the Secure Enclave,\n" +
 			"and only the jit inside JitPass.app can reach it; "
 	}
-	return head + "run it from there:\n`" + appJit + " " + e.command + "`"
+	if e.jit == "" {
+		return head + "use that jit to run:\n" + e.command
+	}
+	return head + "run it from there:\n`" + e.jit + " " + e.command + "`"
 }
 
 // checkReach is the move's first check, before the marker, the
@@ -748,7 +748,9 @@ func (e needsAppJitError) Error() string {
 // keychain copy), and a move back needs it whenever there is a sealed file
 // or an unfinished move back; with neither, the key is already in the
 // keychain and the move says so without the enclave. A sealed file jit
-// can't check counts as there.
+// can't check counts as there. Whether this jit can reach the enclave is
+// its signature's entitlement (enclaveReach), not a keychain lookup, which
+// a locked screen could fail for a jit that can.
 func (m *keyMover) checkReach(target string) error {
 	_, err := os.Lstat(m.sealedPath())
 	sealed := !errors.Is(err, os.ErrNotExist)
@@ -759,7 +761,7 @@ func (m *keyMover) checkReach(target string) error {
 	case err == nil:
 		return nil
 	case errors.Is(err, secureenclave.ErrUnavailable):
-		return needsAppJitError{sealed: sealed, command: "vault rekey --wrapper " + target}
+		return needsAppJitError{sealed: sealed, command: "vault rekey --wrapper " + target, jit: findAppJit()}
 	default:
 		return fmt.Errorf("couldn't check whether this copy of jit can reach\n"+
 			"the Secure Enclave (%v). Nothing changed", err)
@@ -906,7 +908,7 @@ func newKeyMoverWith(root string, out io.Writer, kc *keychainwrap.Wrapper, se, s
 			return w.FetchMEK(reason)
 		},
 		seDelete:    func() error { return se().Delete() },
-		seReachable: func() error { return se().Reachable() },
+		seReachable: enclaveReach,
 		lockAgent:   lock,
 	}
 }

@@ -146,7 +146,7 @@ func TestProductionLaunchdCallersCannotReachTheRealServiceFromATest(t *testing.T
 	// ensureAgentInstalled first: it installs only while no plist is there,
 	// and the install below leaves one behind in the temp HOME.
 	mustPanicOnRealLabel(t, "ensureAgentInstalled", func() { _, _ = ensureAgentInstalled() })
-	mustPanicOnRealLabel(t, "installAgentService", func() { _, _, _ = installAgentService(time.Minute, true) })
+	mustPanicOnRealLabel(t, "installAgentService", func() { _, _, _ = installAgentService(time.Minute, true, serviceCleared{ok: true}) })
 	agentHealOnce = sync.Once{}
 	mustPanicOnRealLabel(t, "healDeadService", func() { _ = healDeadService() })
 	mustPanicOnRealLabel(t, "queryLaunchdJobState", func() { _, _ = queryLaunchdJobState() })
