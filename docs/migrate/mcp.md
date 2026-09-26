@@ -93,6 +93,10 @@ need once the path is fixed.
 - Claude Desktop's config and `~/.claude.json` are machine-wide - name them
   explicitly to convert them; a project `.mcp.json` is picked up when you
   name that project's directory.
+- The backup `jit mcp install` saves beside a config
+  (`<config>.jit-backup-<date>-<time>`) holds whatever the config held, so it
+  is converted the same way, into the same profile when its token is the
+  same.
 
 ### Claude Code's `~/.claude.json`
 

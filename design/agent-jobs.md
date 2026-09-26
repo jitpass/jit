@@ -255,7 +255,12 @@ service, so the terminal and the MCP paths cannot drift.
 
 `jit mcp install --client claude-desktop` adds the entry to
 `claude_desktop_config.json` after writing a backup beside it, and prints
-the one change it made. `--client cursor` and others follow once each is
+the one change it made. The edit is a splice of the file's own bytes, so
+every other entry keeps its order, spacing and characters, and a config
+that is a symlink is written through, keeping the link and its mode. The
+backup (`<config>.jit-backup-YYYYMMDD-HHMMSS`, 0600) holds whatever the
+config held, so only the latest is kept, and `jit scan` and `jit migrate`
+treat it as the config it came from (`audit.IsMCPConfigBackupName`). `--client cursor` and others follow once each is
 checked to start stdio servers on the host rather than in its sandbox;
 until then they are documented, not automated.
 

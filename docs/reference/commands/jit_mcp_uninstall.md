@@ -4,7 +4,9 @@ Remove jit's MCP server from Claude Desktop or Cursor
 
 ### Synopsis
 
-Remove the "jit" entry from the app's MCP servers, after a backup. Your AI jobs stay; only this app's way in goes.
+Remove the "jit" entry from the app's MCP servers. Nothing else in the
+file changes, and a copy of it as it was is saved beside it first, as
+'jit mcp install' does. Your AI jobs stay; only this app's way in goes.
 
 ```
 jit mcp uninstall [--client claude-desktop|cursor] [flags]
